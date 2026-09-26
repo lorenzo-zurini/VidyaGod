@@ -1,8 +1,9 @@
 #include "nodegraph.h"
+#include "cid.h"   // a node's identity: the CID of its canonical bytes
 
 #include <mutex>
 #include <unordered_map>
-#include "ipfswrapper.h"     // DagGet, DagPut, FetchToPath
+#include "ipfswrapper.h"     // BlockGet, BlockPut, FetchToPath
 #include "commonutils.h"     // Log*
 
 #include <deque>
@@ -14,7 +15,7 @@
 
 namespace NodeGraph {
 
-// Untrusted-block guards. A fetched dag-json block's bytes hash to its CID, but the CID is attacker-chosen (pasted),
+// Untrusted-block guards. A fetched node block's bytes hash to its CID, but the CID is attacker-chosen (pasted),
 // so the CONTENT is untrusted: it can be arbitrarily deep JSON. nlohmann's parser is recursive-descent, so a deeply
 // nested block overflows the stack before any callback can stop it. JsonDepthWithinLimit is a cheap string-aware
 // bracket-depth pre-scan that rejects such a block WITHOUT recursing (JsonDepthWithinLimit, nodegraphpure.cpp —
@@ -31,17 +32,6 @@ static bool ParseBlockBounded(const std::string &Js, nlohmann::ordered_json &J)
     catch (const std::exception &) { return false; }
 }
 
-// True iff P resolves within Base (no `..` escape, not an absolute path elsewhere). Guards hydrate against a hostile
-// content PATH / SOURCE.PATH writing outside the checkout dir. Works on not-yet-existent paths (weakly_canonical).
-static bool PathWithin(const std::filesystem::path &Base, const std::filesystem::path &P)
-{
-    std::error_code Ec;
-    std::filesystem::path B = std::filesystem::weakly_canonical(Base, Ec); if (Ec) B = Base.lexically_normal();
-    std::filesystem::path Q = std::filesystem::weakly_canonical(P, Ec);    if (Ec) Q = P.lexically_normal();
-    const std::filesystem::path Rel = Q.lexically_relative(B);
-    if (Rel.empty()) return false;                       // unrelated / not under Base
-    return Rel.begin()->native() != "..";                // first COMPONENT ".." ⇒ escapes (a leading-dot NAME like .wine is fine)
-}
 
 NodeIndex BuildFrozenIndex(const std::vector<std::string> &RootCids, std::vector<std::string> *Missing)
 {
@@ -61,7 +51,7 @@ NodeIndex BuildFrozenIndex(const std::vector<std::string> &RootCids, std::vector
         }
 
         std::string Err;
-        const std::string Js = IpfsWrapper::DagGet(C, &Err);
+        const std::string Js = IpfsWrapper::BlockGet(C, &Err);
         if (Js.empty())
         {
             LogWarn("NodeGraph::BuildFrozenIndex", "cannot fetch node block " + C + ": " + Err);
@@ -69,13 +59,12 @@ NodeIndex BuildFrozenIndex(const std::vector<std::string> &RootCids, std::vector
             continue;
         }
         nlohmann::ordered_json J;
-        if (!ParseBlockBounded(Js, J))   // untrusted bytes: depth-checked, never recurse into hostile JSON
+        if (!VerifyNodeBytes(Js, C, J, &Err))   // untrusted bytes: depth-checked, canonical, hashing to C
         {
-            LogWarn("NodeGraph::BuildFrozenIndex", "unparseable / too-deep node block " + C);
+            LogWarn("NodeGraph::BuildFrozenIndex", "node block " + C + " refused: " + Err);
             if (Missing) Missing->push_back(C);
             continue;
         }
-        NormalizeLinks(J);
 
         Node N;
         if (!ManifestModel::ParseNode(J, {}, {}, N))   // not a node object
@@ -86,12 +75,11 @@ NodeIndex BuildFrozenIndex(const std::vector<std::string> &RootCids, std::vector
         N.Cid = C;                                     // identity = the block's own CID
         auto [It, Ins] = Idx.Nodes.emplace(C, std::move(N));
         (void)Ins;                                     // Seen already guaranteed uniqueness
-        // Recurse into OVER's positive refs (the composition). A NOT ref is deliberately NOT followed: the excluded
-        // node's block is not part of this node's closure (it is a plain string in the frozen block, not a link).
-        // SOURCE/COVER are content-leaf (dag-pb) CIDs fetched lazily at hydrate — never enqueued here.
-        for (const std::string &P : It->second.Parents) Q.push_back(P);   // the full closure: composition edges too
+        // What it contains (NODE layers). ANY/NOT are compared, never fetched; SOURCE/COVER are content CIDs
+        // fetched lazily at hydrate — never enqueued here.
+        for (const std::string &P : It->second.Refs) Q.push_back(P);
     }
-    ManifestModel::DeriveIdentity(Idx);
+    ManifestModel::DeriveFacts(Idx);
     return Idx;
 }
 
@@ -107,49 +95,26 @@ NodeIndex FreezeToIndex(const std::map<std::string, nlohmann::ordered_json> &Wor
     int Skipped = 0;
     for (const std::string &Handle : Order)
     {
-        // Freeze (resolve handles→CIDs, linkify) and derive the CID with NO side effects. DagCid is PURE
-        // (canonical bytes → CID), so memoize dump→cid across rebuilds: every catalog rebuild used to re-hash the
-        // ENTIRE library through cgo — measured as a top slice of the GUI-thread startup freeze (rebuilds fire on
-        // node-ready, source sync, friend snapshots, transfer completion…). Mutex'd: rebuilds run on several threads.
-        static std::mutex CidMemoMu;
-        static std::unordered_map<std::string, std::string> CidMemo;
-        const nlohmann::ordered_json Frozen = FreezeNodeJson(WorkingTree.at(Handle), HandleToCid);
-        std::string Err;
-        std::string Cid;
-        const std::string Dump = Frozen.dump();
-        {
-            std::lock_guard<std::mutex> Lk(CidMemoMu);
-            const auto Mit = CidMemo.find(Dump);
-            if (Mit != CidMemo.end()) Cid = Mit->second;
-        }
+        // Freeze (resolve handles→CIDs) and derive the CID: the hash of the canonical bytes, computed here — pure,
+        // local, the same on every machine (Cid::OfNode).
+        std::string Dangling, Err;
+        const nlohmann::ordered_json Frozen = FreezeNodeJson(WorkingTree.at(Handle), HandleToCid, &WorkingTree, &Dangling);
+        if (!Dangling.empty()) Err = "it references '" + Dangling + "', which did not freeze";
+        const std::string Cid = Dangling.empty() ? Cid::OfNode(Frozen, &Err) : std::string();
         if (Cid.empty())
         {
-            Cid = IpfsWrapper::DagCid(Dump, &Err);
-            if (!Cid.empty())
-            {
-                std::lock_guard<std::mutex> Lk(CidMemoMu);
-                if (CidMemo.size() >= 50000) CidMemo.clear();   // bound the memo; a reset just re-hashes once
-                CidMemo.emplace(Dump, Cid);
-            }
-        }
-        if (Cid.empty())
-        {
-            // A per-node failure — almost always a DANGLING ref (an OVER handle not in the tree, so it
-            // linkified into an invalid CID). SKIP this node, never abort the whole index: one typo'd edge or one
-            // deleted dependency must not empty the entire library. Its referrers will fail the same way and skip too,
-            // so a dangling subtree drops while every other game survives.
-            LogWarn("NodeGraph::FreezeToIndex", "skipping node '" + Handle + "' (dangling ref / bad link): " + Err);
+            // A per-node failure: SKIP this node, never abort the whole index — one bad node must not empty the
+            // library. Its referrers keep a ref to a CID nothing holds, which validation names.
+            LogWarn("NodeGraph::FreezeToIndex", "skipping node '" + Handle + "': " + Err);
             ++Skipped;
             continue;
         }
         HandleToCid[Handle] = Cid;
 
-        // Build the in-memory Node from the resolved-but-plain form (links back to plain CID strings for ParseNode).
-        nlohmann::ordered_json Plain = Frozen;
-        NormalizeLinks(Plain);
         Node N;
-        if (!ManifestModel::ParseNode(Plain, {}, {}, N)) { ++Skipped; continue; }
+        if (!ManifestModel::ParseNode(Frozen, {}, {}, N)) { ++Skipped; continue; }
         N.Cid = Cid;
+        if (!Handle.empty() && (unsigned char)Handle[0] >= 0x20) N.Handle = Handle;   // the working tree's name for it
         const auto It = Dirs.find(Handle);
         if (It != Dirs.end()) N.BundleDir = It->second;   // on-disk content home → launch mounts from here
         // A handle-less node was gathered under "\x01<file>#<n>": that IS its file — the received-stub pruner needs it.
@@ -168,7 +133,7 @@ NodeIndex FreezeToIndex(const std::map<std::string, nlohmann::ordered_json> &Wor
     }
     if (Skipped) LogWarn("NodeGraph::FreezeToIndex", "skipped " + std::to_string(Skipped)
                          + " node(s) with dangling/bad refs — the rest of the library is intact");
-    ManifestModel::DeriveIdentity(Idx);
+    ManifestModel::DeriveFacts(Idx);
     return Idx;
 }
 
@@ -192,8 +157,8 @@ std::string HydratePackage(const std::filesystem::path &DestRoot, const std::str
     if (!Launch)
     { if (Error) *Error = "launchable " + LaunchableCid + " not a node after fetch"; return {}; }
 
-    // Bundle dir name from the tile: "[uid] title" (the pretty layout). A launchable carries its TILE; a graft
-    // inherits its game's through OVER (DeriveIdentity ran inside BuildFrozenIndex).
+    // Bundle dir name from the tile: "[uid] title" (the pretty layout) — the tile its entries fold (DeriveFacts ran
+    // inside BuildFrozenIndex).
     std::string Uid   = Launch->Uid.empty() ? Launch->NodeId : Launch->Uid;
     std::string Title = Launch->Meta.is_object() ? Launch->Meta.value("TITLE", Launch->NodeId) : Launch->NodeId;
     const fs::path Dir    = DestRoot / SanitizeSegment("[" + Uid + "] " + Title);
@@ -208,26 +173,15 @@ std::string HydratePackage(const std::filesystem::path &DestRoot, const std::str
     if (Ec) { if (Error) *Error = "cannot create " + Dir.string() + ": " + Ec.message(); return {}; }
     { std::ofstream M(Marker); }   // claim the dir as ours so a failed run can be RETRIED (resumes into it), not bricked
 
-    // Write each closure node's JSON (readable plain-CID form) + fetch its content leaves to their PATHs.
+    // Write each closure node VERBATIM as <cid>.json (the block IS the file; BuildFrozenIndex verified it) + fetch
+    // its content leaves to their PATHs.
     int Files = 0, Fetched = 0, FetchFailed = 0;
-    std::set<std::string> UsedFiles;   // guard two closure nodes sharing a NODE_ID label (attacker-mintable)
     for (const auto &[C, N] : Idx.Nodes)
     {
         std::string Err;
-        const std::string Js = IpfsWrapper::DagGet(C, &Err);
+        const std::string Js = IpfsWrapper::BlockGet(C, &Err);
         if (Js.empty()) { if (Error) *Error = "re-fetch " + C + ": " + Err; return {}; }
-        nlohmann::ordered_json J;
-        if (!ParseBlockBounded(Js, J)) { if (Error) *Error = "unparseable / too-deep block " + C; return {}; }
-        NormalizeLinks(J);   // {"/":cid} → plain CID strings: readable, and re-freezes to the same CID
-        // SECURITY: an honest frozen block never carries a top-level "CID" (it is stripped at freeze — a block can't
-        // contain its own hash). A MALICIOUS block can embed one equal to a local node's handle to hijack it at the
-        // next gather (and get baked into the author's files by StampNodeCids). A fetched block is identified solely by
-        // the CID we fetched it BY, so drop any embedded handle — the node re-keys synthetically and can't hijack.
-        if (J.is_object()) J.erase("CID");
-
-        std::string Base = SanitizeSegment(N.NodeId);
-        if (!UsedFiles.insert(Base).second) Base += "_" + C.substr(0, 12);   // NODE_ID collision → disambiguate by CID
-        { std::ofstream Out(Dir / (Base + ".json")); Out << J.dump(2) << "\n"; }
+        { std::ofstream Out(Dir / (C + ".json"), std::ios::binary); Out << Js; }
         ++Files;
 
         // Content leaves: fetch each VFS layer's SOURCE.CID to its local PATH (BundleDir = Dir). Iterate N.Layers
@@ -281,9 +235,16 @@ bool Mint(const std::map<std::string, nlohmann::ordered_json> &WorkingTree, Mint
     for (const std::string &Handle : Order)
     {
         const nlohmann::ordered_json &Raw = WorkingTree.at(Handle);
-        const nlohmann::ordered_json Frozen = FreezeNodeJson(Raw, Out.HandleToCid);
-        std::string Err;
-        const std::string Cid = IpfsWrapper::DagPut(Frozen.dump(), &Err);
+        std::string Dangling, Err;
+        const std::string Bytes = Cid::Canonical(FreezeNodeJson(Raw, Out.HandleToCid, &WorkingTree, &Dangling));
+        if (!Dangling.empty()) Err = "it references '" + Dangling + "', which did not freeze";
+        const std::string Want = Dangling.empty() ? Cid::OfBytes(Bytes, &Err) : std::string();
+        const std::string Cid = Want.empty() ? std::string() : IpfsWrapper::BlockPut(Bytes, &Err);
+        if (!Cid.empty() && Cid != Want)
+        {   // the node stored something else than the app computes: every reference to it would dangle
+            if (Error) *Error = "node '" + Handle + "' stored as " + Cid + " but its bytes hash to " + Want;
+            return false;
+        }
         if (Cid.empty())
         {
             // Dangling ref / bad link on one node — skip it (and its dependents will skip too), never abort the whole
@@ -294,12 +255,8 @@ bool Mint(const std::map<std::string, nlohmann::ordered_json> &WorkingTree, Mint
         }
         Out.HandleToCid[Handle] = Cid;
 
-        // A playable list root: a node with an entrypoint that has NO GUEST. A GUEST-bearing entrypoint is a runner
-        // (it provides platforms) — distributed as a runner, not listed as a game. This is the LAUNCH axis (launch/CLI).
-        if (Raw.contains("ENTRYPOINTS") && Raw["ENTRYPOINTS"].is_array())
-            for (const auto &E : Raw["ENTRYPOINTS"])
-                if (E.is_object() && !(E.contains("GUEST") && E["GUEST"].is_array() && !E["GUEST"].empty()))
-                { Out.Launchables.push_back(Cid); break; }
+        // A playable list root: a variant (on the shelf). This is the LAUNCH axis (launch/CLI).
+        if (Raw.contains("VARIANT")) Out.Launchables.push_back(Cid);
     }
     if (Skipped) LogWarn("NodeGraph::Mint", "skipped " + std::to_string(Skipped) + " node(s) with dangling/bad refs");
     LogSucc("NodeGraph::Mint", "froze " + std::to_string(Out.HandleToCid.size()) + " node(s), "

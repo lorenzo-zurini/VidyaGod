@@ -4,6 +4,7 @@
 
 //Intentional: includes live outside the guard so this header can be used as a
 //forward-declaration-only unit; the actual types are pulled in by the includes below.
+#include <optional>
 #include <filesystem>
 #include <iostream>
 #include <fstream>
@@ -68,9 +69,8 @@ struct LaunchParameters
     std::string RuntimeDirOverride;                                       //--runtime-dir <PATH>: override the container runtime (FUSE mount) path
     std::string UserDataDirOverride;                                      //--userdata-dir <PATH>: override the save/persist (USERDATA) path
     std::map<std::string, std::string> VariableOverrides;                 //Custom variable overrides from --var KEY=VALUE flags
-    std::map<std::string, bool> ModuleStates;                             //Toggles from --module NODE=on|off (a node key/CID or its LABEL): a TOGGLE'd node in the closure, or a graft to select
-    std::string Entrypoint;                                               //--entrypoint LABEL: which ENTRYPOINTS entry of the launch node to run (default: RECOMMENDED, else first)
-    std::string EntryNode;                                                //--entry-node KEY: run this ticked graft's entry (a mod loader) over the variant's mount
+    std::optional<std::vector<std::string>> Grafts;                      //--graft KEY (repeatable, in order) / --no-grafts: the grafts to apply; unset = the row's pre-ticked ones
+    std::string Entrypoint;                                               //--entrypoint LABEL: which entry of the row's folded EXEC to run (default: the first game entry; a graft's entry is one of them)
     std::string VariantID;                                                //Variant override from --variant (selects which variant to build)
     std::string RunnerID;                                                 //Runner override from --runner (RUNNER_ID; = chain front, back-compat)
     std::vector<std::string> RunnerChain;                                 //Runner daisy-chain from repeated --runner (innermost→outermost); empty = auto-resolve

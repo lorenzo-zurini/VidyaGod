@@ -352,6 +352,7 @@ int main(int argc, char *argv[])
     {
         NodeIndex PkgIndex;
         ManifestModel::ScanBundleNodes(LaunchParameters.HeadlessPackagePath.string(), PkgIndex);
+        ManifestModel::DeriveFacts(PkgIndex);   // entries, runners and tiles are folded facts
         auto Groups = PackageCatalog::PresentableGroups(PkgIndex);
         if (Groups.empty())
         {
@@ -723,22 +724,15 @@ LaunchParameters ParseCommandLineArguments(int argc, char* argv[])
         {
             RuntimeParameters.Entrypoint = argv[++i];
         }
-        else if (arg == "--entry-node" && i + 1 < argc)
+        else if (arg == "--graft" && i + 1 < argc)
         {
-            RuntimeParameters.EntryNode = argv[++i];   // run a ticked graft's entry (a mod loader) over the variant's mount
+            //A graft to apply (its CID or LABEL); repeat for more — the order given is the order applied (later wins).
+            if (!RuntimeParameters.Grafts) RuntimeParameters.Grafts.emplace();
+            RuntimeParameters.Grafts->push_back(argv[++i]);
         }
-        else if (arg == "--module" && i + 1 < argc)
+        else if (arg == "--no-grafts")
         {
-            //Expects NODE=on|off (also true|false / 1|0); NODE = a node key (CID) or LABEL. Toggles a TOGGLE'd node in
-            //the launch closure, or selects/deselects a graft. Malformed skipped.
-            std::string kv = argv[++i];
-            auto eq = kv.find('=');
-            if (eq != std::string::npos)
-            {
-                std::string val = kv.substr(eq + 1);
-                bool on = (val == "on" || val == "true" || val == "1" || val == "yes");
-                RuntimeParameters.ModuleStates[kv.substr(0, eq)] = on;
-            }
+            RuntimeParameters.Grafts.emplace();                       // an explicitly empty list: not even the pre-ticked
         }
         else if (arg == "--import-runner" && i + 1 < argc)
         {

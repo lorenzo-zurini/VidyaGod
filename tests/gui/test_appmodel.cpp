@@ -91,23 +91,17 @@ private slots:
         QVERIFY(true);
     }
 
-    // Registering a package whose launchable declares DeclareExec.RUNNER seeds the package's PREFERRED_RUNNER
-    // (a soft, package-side runner recommendation the user later overrides). A fresh entry only — never clobbers a
-    // user's existing choice.
-    // Per-package config (incl. PREFERRED_RUNNER) now lives in the INSTANCE file, not the LIBRARY entry — register
-    // must leave the entry PACKAGE-FREE. The recommended runner is still applied at launch by PickRunnerNode's
-    // RECOMMENDED-first default (see test_launchresolver::pick_runner_prefers_recommended), not by a seed here.
+    // Per-package config lives in the INSTANCE file, not the LIBRARY entry — register must leave the entry
+    // PACKAGE-FREE. (A package never names a runner; runners say which tiles they are recommended for.)
     void register_leaves_library_entry_package_free()
     {
         QTemporaryDir d; QVERIFY(d.isValid());
         QDir appDir(d.path());
         QTemporaryDir pkg; QVERIFY(pkg.isValid());
-        json exec = NodeFixture::Exec("win32", "g.exe");
-        exec["ENTRYPOINTS"][0]["RUNNER"] = "geproton_10_20_runner";
-        exec["VARIANT"] = "Play";                                    // on the shelf: what an import registers
-        // The tile is the launchable's PARENT (pure Meta upstream, exec terminal).
-        json node = NodeFixture::Chain("tg", {NodeFixture::Tile("999", "Test Game"), exec});
-        { std::ofstream f((pkg.path() + "/tg.json").toStdString()); f << node.dump(); }
+        // On the shelf (a VARIANT whose Play entry carries a tile): what an import registers.
+        json node = NodeFixture::Chain("tg", {NodeFixture::Merge({NodeFixture::Tile("999", "Test Game"),
+                                                                  NodeFixture::Exec("win32", "g.exe"), NodeFixture::Variant("Play")})});
+        { std::ofstream f((pkg.path() + "/tg.json").toStdString()); f << node[0].dump(); }
 
         json cfg = json{{"Settings", json::object()}, {"LIBRARY", json::array()}};
         AppModel m(&cfg, &appDir);
@@ -239,8 +233,8 @@ private slots:
         const auto Plan = PackageCatalog::PlanReceivedFetches(cfg, P.substr(P.size() - 8), cfg["FriendLibraries"][P]);
         QVERIFY(!Plan.empty());
         const std::filesystem::path LibDir = std::filesystem::path(Plan.front().Dest).parent_path().parent_path();
-        std::filesystem::create_directories(std::filesystem::path(Plan.front().Dest).parent_path());
-        { std::ofstream S(Plan.front().Dest); S << "{}"; }
+        std::filesystem::create_directories(Plan.front().Dest);                     // a landed package folder: node files only
+        { std::ofstream S(std::filesystem::path(Plan.front().Dest) / "n.json"); S << "{}"; }
         QVERIFY(std::filesystem::exists(Plan.front().Dest));
         // identical snapshot → stubs stay
         m.applyFriendLibrarySnapshot(peer, R"({"Games":[{"cid":"bafyold","node":"Old Game"}]})");
@@ -258,7 +252,7 @@ private slots:
         QVERIFY(std::filesystem::exists(Installed / "game.zip"));
         QVERIFY(cfg["FriendLibraries"][P].contains("Games"));
         // an EMPTY snapshot is what a restarting seeder pushes before its library loads: a transient, nothing is dropped
-        { std::filesystem::create_directories(std::filesystem::path(Plan.front().Dest).parent_path()); std::ofstream S(Plan.front().Dest); S << "{}"; }
+        { std::filesystem::create_directories(Plan.front().Dest); std::ofstream S(std::filesystem::path(Plan.front().Dest) / "n.json"); S << "{}"; }
         m.applyFriendLibrarySnapshot(peer, R"({})");
         QVERIFY(std::filesystem::exists(Plan.front().Dest));
         QVERIFY(std::filesystem::exists(Installed / "game.zip"));
@@ -279,13 +273,13 @@ private slots:
         const auto Plan = PackageCatalog::PlanReceivedFetches(cfg, P.substr(P.size() - 8), cfg["FriendLibraries"][P]);
         QVERIFY(!Plan.empty());
         const std::filesystem::path Pkg = std::filesystem::path(Plan.front().Dest).parent_path();
-        std::filesystem::create_directories(Pkg);
-        { std::ofstream S(Plan.front().Dest); S << "{}"; }
+        std::filesystem::create_directories(Plan.front().Dest);
+        { std::ofstream S(std::filesystem::path(Plan.front().Dest) / "n.json"); S << "{}"; }
         m.stopReceivingFromFriend(peer);                                     // record erased, stubs swept
         QVERIFY(!std::filesystem::exists(Pkg));
         QVERIFY(!cfg["FriendLibraries"].contains(P));
-        std::filesystem::create_directories(Pkg);                            // a late block from the in-flight pass
-        { std::ofstream S(Plan.front().Dest); S << "{}"; }
+        std::filesystem::create_directories(Plan.front().Dest);              // a late block from the in-flight pass
+        { std::ofstream S(std::filesystem::path(Plan.front().Dest) / "n.json"); S << "{}"; }
         m.stopReceivingFromFriend(peer);                                     // the re-drop path with NO record
         QVERIFY(!std::filesystem::exists(Pkg));
     }

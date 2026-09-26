@@ -1,6 +1,7 @@
 #include "downloadqueue.h"
 #include "ipfswrapper.h"
 #include "commonutils.h"
+#include "nodegraph.h"   // PathWithin
 
 #include <algorithm>
 #include <chrono>
@@ -37,6 +38,9 @@ struct Job {
     int                      Attempts = 0;       // completed attempts — drives the retry backoff
     SteadyTP                 ReadyAt;            // not eligible to (re)dispatch until now >= ReadyAt (rotation backoff)
     std::string              Error;
+    // Dests dropped by ForgetDestsUnder while this job was ACTIVE: {dest, the dir being dropped}. The worker holds its
+    // own copy of Dests, so it may land into them after the caller removed the dir; RunJob removes them again.
+    std::vector<std::pair<std::string, std::string>> Forgotten;
 };
 
 // Exponential retry backoff after a rotated (stalled/exhausted) attempt: 2s,4s,8s,16s, capped at 30s.
@@ -114,6 +118,30 @@ std::string FirstExisting(const Job &J)
     std::error_code Ec;
     fs::create_directories(fs::path(To).parent_path(), Ec);
     Ec.clear();
+    //A FOLDER job's result is a tree the fetch owns whole (a re-landed package folder replaces its dir): place the
+    //tree, file by file, the same way — hard link, else copy.
+    if (fs::is_directory(From, Ec))
+    {
+        fs::remove_all(To, Ec);
+        std::error_code Wc;
+        for (auto It = fs::recursive_directory_iterator(From, Wc); !Wc && It != fs::recursive_directory_iterator(); It.increment(Wc))
+        {
+            const fs::path Rel = fs::relative(It->path(), From, Wc);
+            if (Wc) break;
+            const fs::path Out = fs::path(To) / Rel;
+            std::error_code Fc;
+            if (It->is_directory(Fc)) { fs::create_directories(Out, Fc); continue; }
+            fs::create_directories(Out.parent_path(), Fc);
+            Fc.clear();
+            fs::create_hard_link(It->path(), Out, Fc);
+            if (Fc) { Fc.clear(); fs::copy_file(It->path(), Out, fs::copy_options::overwrite_existing, Fc); }
+            if (Fc) { Wc = Fc; break; }
+        }
+        if (!Wc) return true;
+        LogWarn("DownloadQueue::Materialize", "could not place " + To + " from " + From + " (" + Wc.message() + ")");
+        if (Error) *Error = "could not place " + To + " (" + Wc.message() + ")";
+        return false;
+    }
     fs::create_hard_link(From, To, Ec);
     if (!Ec) return true;
     std::error_code Ec2;
@@ -179,6 +207,19 @@ void RunJob(const std::string &Cid, std::vector<std::string> Dests, bool Dir, bo
         auto It = Q().Jobs.find(Cid);
         if (It != Q().Jobs.end()) {
             Job &J = It->second;
+            // A dir dropped mid-fetch (an adopted or withdrawn package stub) must stay dropped: undo what this attempt
+            // landed there — the dest, then every directory above it the fetch re-created, up to the dropped dir.
+            // Under Mu, so a re-enqueue that claims the dest again (it is back in J.Dests) is never undone.
+            for (const auto &[D, Root] : std::exchange(J.Forgotten, {}))
+            {
+                if (std::find(J.Dests.begin(), J.Dests.end(), D) != J.Dests.end()) continue;
+                std::error_code Ec;
+                std::filesystem::remove_all(D, Ec);
+                const std::filesystem::path R = std::filesystem::path(Root).lexically_normal();
+                for (std::filesystem::path P = std::filesystem::path(D).parent_path().lexically_normal();
+                     !P.empty() && (P == R || NodeGraph::PathWithin(R, P)); P = P.parent_path())
+                    if (!std::filesystem::remove(P, Ec)) break;   // only an empty dir goes; the first non-empty stops it
+            }
             if (UserCancel) {
                 // A user cancel of this ACTIVE job wins over everything (incl. a concurrent preemption): terminal.
                 ClearCancel(Cid);
@@ -413,7 +454,11 @@ void ForgetDestsUnder(const std::string &Dir)
     const std::string Prefix = Dir.empty() || Dir.back() == '/' ? Dir : Dir + "/";
     for (auto &[C, J] : Q().Jobs)
         J.Dests.erase(std::remove_if(J.Dests.begin(), J.Dests.end(),
-                                     [&](const std::string &D) { return D.compare(0, Prefix.size(), Prefix) == 0; }),
+                                     [&](const std::string &D) {
+                                         if (D.compare(0, Prefix.size(), Prefix) != 0) return false;
+                                         if (J.State == Job::Active) J.Forgotten.emplace_back(D, Dir);   // RunJob undoes a late landing
+                                         return true;
+                                     }),
                       J.Dests.end());
 }
 

@@ -40,6 +40,8 @@ ALLOW = {
 def rel(p, root):
     if p and "%" in p:                     # runtime-sourced: gen 5's AbsLayers glued a bundle dir in front of it
         return p[p.index("%"):]
+    if p and "/LIBRARY/" in p:             # whichever data dir (a worker's) the library was read through
+        return p[p.rindex("/LIBRARY/") + len("/LIBRARY/"):]
     return os.path.relpath(p, root) if p and os.path.isabs(p) else p
 
 

@@ -86,22 +86,15 @@ std::string AddNoCopy(const std::string &Path, std::string *Error = nullptr);
 // staging mirror), skipping content + DEFPREFIX/USERDATA. Same CID as adding a JSON-only mirror of the tree.
 std::string AddNoCopyMeta(const std::string &Path, std::string *Error = nullptr);
 
-// ----- dag-json node graph (the gigagraph: one node = one dag-json block, identity = its CID) -----
-// A VidyaGod node is one dag-json IPLD block; its CID is its identity, computed recursively over the CIDs it links
-// (PARENTS/SOURCE.CID/COVER). Encoding is CANONICAL, so the same node yields the same CID on every machine (dag.go).
-// DagPut stores + direct-pins + announces a node block and returns its CID; DagGet returns a block's canonical
-// dag-json bytes (fetching over bitswap when remote); DagCid computes the CID with no side effects. Links travel in
-// dag-json form ({"/":cid}); nodegraph.cpp normalizes ↔ plain-string CIDs at the ingest/mint boundary.
-std::string DagPut(const std::string &Json, std::string *Error = nullptr);
-std::string DagGet(const std::string &Cid, std::string *Error = nullptr);
-// Batched dag-get: fetch many node blocks at once through the windowed session (the same rolling want-window + friend
-// providers content uses). Returns cid -> canonical dag-json for those fetched (missing ones absent). For the browse path.
-std::map<std::string, std::string> DagGetMany(const std::vector<std::string> &Cids);
-// Local-only variant: reads ONLY blocks already in the blockstore (no bitswap) — for catalog-build, so it never stalls
-// on a friend block that hasn't been fetched yet. Same {cid -> dag-json} shape; absent CIDs simply omitted.
-std::map<std::string, std::string> DagGetManyLocal(const std::vector<std::string> &Cids);
-bool        DagHas(const std::string &Cid);
-std::string DagCid(const std::string &Json, std::string *Error = nullptr);
+// ----- node blocks and package folders (generation 6: plain files, no IPLD codec) -----
+// A node is canonical JSON bytes of at most one 256 KiB chunk; stored as ONE raw leaf its CID is the file CID of
+// those bytes — the CID Cid::OfBytes computes locally. A package is a UnixFS folder of its node files.
+// BlockPut stores + direct-pins + announces the bytes and returns the CID; BlockGet returns one raw block's bytes
+// (fetching over bitswap when remote, bounded); MakeDir builds the folder {name: CID} over blocks the node holds,
+// pins it recursively, announces it and returns its CID.
+std::string BlockPut(const std::string &Bytes, std::string *Error = nullptr);
+std::string BlockGet(const std::string &Cid, std::string *Error = nullptr);
+std::string MakeDir(const std::map<std::string, std::string> &Entries, std::string *Error = nullptr);
 
 // ----- concurrency throttle: cap how many FetchToPath calls run at once (configurable) -----
 // A single global limit shared across all downloads (every package's hydrate worker draws from it), so the user can

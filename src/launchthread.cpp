@@ -84,7 +84,7 @@ void LaunchThread::run()
     std::filesystem::path NoPath;
     struct ContainerParams Params(NoPath, std::string(), std::string());
     Params.VariableOverrides = this->VariableOverrides;
-    Params.ModuleStates      = this->ModuleStates;
+    Params.Grafts            = this->Grafts;
     //Engine-injected session facts: the virtual-LAN vars (SELF_VIP / PEER_VIPS / PEER_NAMES / SUBNET / SANDBOX)
     //plus the player's own display name. Lowest priority (see ContainerParams::SessionVars) and seeded early enough
     //to reach EXEARGS / other CustomVar DEFAULTs. LanLaunchVars is empty when the node is down, so SELF_NAME needs a
@@ -113,8 +113,6 @@ void LaunchThread::run()
     Params.NodeIdxOwned = Index;         // the wrapper's ContainerParams copy co-owns the index — no dangling
     Params.LaunchNodeId = this->LaunchNodeId;
     Params.Entrypoint   = this->Entrypoint;
-    Params.EntryNode    = this->EntryNode;
-    Params.GraftPrecedence = this->GraftPrecedence;
     Params.InstanceName = this->InstanceName;   // which instance's config + USERDATA to use ("" ⇒ active)
 
     nlohmann::ordered_json UnusedManifest = nlohmann::ordered_json::object();

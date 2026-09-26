@@ -156,7 +156,7 @@ private:
     void drawPayload(nlohmann::ordered_json &node, int index);
     void drawActions(nlohmann::ordered_json &node, int index, const PkgGraph::Graph &g);
     void drawField(nlohmann::ordered_json &node, const PkgGraph::Field &f, int index);
-    void drawRegEdits(nlohmann::ordered_json &node, int index);
+    void drawRegTree(nlohmann::ordered_json &layer, const PkgGraph::Field &f, int index);
     void drawCustomVarUI(nlohmann::ordered_json &node);
     //`Drawn` marks the nodes submitted THIS frame (viewport culling) — a wire can only be drawn
     //between two endpoints that exist, so culled nodes take their wires with them.

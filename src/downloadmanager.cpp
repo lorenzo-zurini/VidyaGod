@@ -40,6 +40,16 @@
 
 #include "guiformat.h"   // HumanBytesQ — the one shared GUI byte formatter
 
+//The dialog's graft ticks (graft key → ticked) as a content walk's graft choice: nothing decided yet = the row's
+//pre-ticked grafts; otherwise exactly the ticked ones.
+static PackageCatalog::GraftChoice TickedGrafts(const std::map<std::string, bool> &Ticks)
+{
+    if (Ticks.empty()) return std::nullopt;
+    std::vector<std::string> Out;
+    for (const auto &[K, On] : Ticks) if (On) Out.push_back(K);
+    return Out;
+}
+
 DownloadManager::DownloadManager(AppModel &model, IpfsModel &ipfs, QWidget *dialogParent, QObject *parent)
     : QObject(parent), Model(model), Ipfs(ipfs), DialogParent(dialogParent)
 {
@@ -142,9 +152,10 @@ void DownloadManager::startDownload(LibraryGameCard *card)
         for (const std::string & Lid : Variants)
         {
             const Node * N = (*Snap)->Find(Lid);
-            std::string Lbl = (N && !N->Label.empty()) ? N->Label
+            std::string Lbl = (N && !N->Variant.empty()) ? N->Variant
                               : (N && N->Meta.is_object() ? N->Meta.value("TITLE", Lid) : Lid);
-            Es.push_back({ Lid, QString::fromStdString(Lbl), N && N->Recommended });
+            const bool Rec = N && std::find(N->Recommended.begin(), N->Recommended.end(), N->Uid) != N->Recommended.end();
+            Es.push_back({ Lid, QString::fromStdString(Lbl), Rec });
         }
         CustomPicker->setEntries(Es);                                  // nothing ticked — endpoints carry the default
     }
@@ -273,8 +284,8 @@ void DownloadManager::startDownload(LibraryGameCard *card)
             [S, SelL, SelR, Tg, Out, Stamped]{
                 for (const std::string & Lid : SelL)
                 {
-                    for (const auto & C : PackageCatalog::NodeContentCids(*S, Lid, *Tg)) Out->insert(C);
-                    for (const auto & [C, Sz] : PackageCatalog::NodeContentSizes(*S, Lid, *Tg)) (*Stamped)[C] = Sz;
+                    for (const auto & C : PackageCatalog::NodeContentCids(*S, Lid, TickedGrafts(*Tg))) Out->insert(C);
+                    for (const auto & [C, Sz] : PackageCatalog::NodeContentSizes(*S, Lid, TickedGrafts(*Tg))) (*Stamped)[C] = Sz;
                 }
                 for (const std::string & Rid : SelR)
                 {
@@ -329,10 +340,13 @@ void DownloadManager::startDownload(LibraryGameCard *card)
                 //pre-ticked ones (a soundtrack, a fix) default on; the hydrate fetches whatever is ticked here.
                 std::set<std::string> Seen;
                 for (const std::string & Lid : SelL)
-                    for (const ManifestModel::GraftOffer & O : ManifestModel::OfferedGrafts(*S, Lid, {},
-                             [](const Node & N) { return !N.Received && !N.BundleDir.empty(); }))
-                        if (Seen.insert(O.Graft->Key()).second)
-                            Found->push_back({ O.Graft->Key(), O.Graft->NodeId.empty() ? O.Graft->Key().substr(0, 12) : O.Graft->NodeId, O.Selected });
+                {
+                    std::vector<std::string> Pre;
+                    for (const std::string & G : PackageCatalog::OfferedGrafts(*S, Lid, &Pre))
+                        if (const Node * Gn = S->Find(G); Gn && Seen.insert(G).second)
+                            Found->push_back({ G, Gn->NodeId.empty() ? G.substr(0, 12) : Gn->NodeId,
+                                               std::find(Pre.begin(), Pre.end(), G) != Pre.end() });
+                }
             },
             [Found, OptStates, OptBox, OptL, Debounce]{
                 QLayoutItem * It;
@@ -474,7 +488,7 @@ void DownloadManager::beginDownload(const QString &Key, const std::vector<std::s
             Cids << Qc; DownloadCidToUid[Qc] = Key;
         }
     };
-    for (const std::string & Lid : LaunchIds) AddCids(PackageCatalog::NodeContentCids(Model.catalogIndex(), Lid, Toggles));
+    for (const std::string & Lid : LaunchIds) AddCids(PackageCatalog::NodeContentCids(Model.catalogIndex(), Lid, TickedGrafts(Toggles)));
     for (const std::string & Rid : RunnerIds) AddCids(PackageCatalog::NodeContentCids(Model.catalogIndex(), Rid));  // runner build CIDs
     DownloadUidCids[Key] = Cids;
 
@@ -546,7 +560,7 @@ void DownloadManager::beginDownload(const QString &Key, const std::vector<std::s
         std::vector<IpfsWrapper::FetchTarget> Targets;
         if (Ok) for (const std::string & Lid : LaunchIds)
         {
-            if (!PackageCatalog::CollectContentTargets(Idx, Lid, Toggles, Targets, &Err)) { Ok = false; break; }
+            if (!PackageCatalog::CollectContentTargets(Idx, Lid, TickedGrafts(Toggles), Targets, &Err)) { Ok = false; break; }
             //Best-effort by design — a game whose runtime cannot be resolved should still download. But silently
             //best-effort meant the download finished green and the game then would not launch, with nothing
             //anywhere connecting the two. Still non-fatal; now at least it is on the record.

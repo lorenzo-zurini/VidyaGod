@@ -283,6 +283,7 @@ struct PkgCanvasState
     //So the rows an entry is being edited with live here, keyed "NODE_ID#entry", and are committed to the
     //tree when the field is DEACTIVATED - the same "commit on finish" rule the KeyValue rename uses.
     std::map<std::string, std::vector<PkgGraph::RegRow>> RegBuf;
+    int CurLayer = -1;   // the LAYERS index drawPayload is drawing (keys per-layer edit buffers)
 
     bool Dirty = false;            // document mutated this frame; persist on mouse-up
     //Every mutation goes through here, so the cached graph can never outlive the document it was built from.
@@ -529,10 +530,10 @@ int PkgCanvas::addNode(const std::string &type, float x, float y)
     // freeze, so it never ships). The retry loop guards the astronomically-unlikely in-bundle collision.
     std::string Draft;
     do { Draft = MakeDraftHandle(); } while (indexOf(Draft) >= 0);
-    json Out = json::object({{"OVER", json::array()}});
-    for (const auto &[K, V] : N.items()) Out[K] = V;
+    json Out = json::object();
     Out["CID"] = Draft;
-    if (!Out.contains("LABEL")) Out["LABEL"] = Label;
+    Out["LABEL"] = Label;
+    for (const auto &[K, V] : N.items()) Out[K] = V;
     if (m_s->Layout) { SetPos(*m_s->Layout, Draft, x, y); m_s->PosDirty = true; }
     m_s->Nodes().push_back(std::move(Out));
     m_s->MarkDirty();
@@ -566,7 +567,7 @@ bool PkgCanvas::removeNode(int index)
     // Drop every reference to it so the graph never carries a dangling parent after a delete.
     for (auto &N : Ns)
     {
-        PkgGraph::RemoveOverRefs(N, Id);
+        PkgGraph::RemoveRefs(N, Id);
     }
     //imnodes' own selection set stores INDICES, which every later node's index has just shifted under, and it
     //never validates them: leaving it populated makes the next frame report a selection for whichever node
@@ -584,7 +585,7 @@ bool PkgCanvas::connect(int parentIndex, int childIndex)
     if (parentIndex == childIndex) return false;
     const std::string Pid = Handle(Ns[parentIndex]);
     if (Pid.empty()) return false;
-    if (!PkgGraph::AddOverRef(Ns[childIndex], Pid)) return false;
+    if (!PkgGraph::AddNodeRef(Ns[childIndex], Pid)) return false;
     m_s->MarkDirty();
     return true;
 }
@@ -594,7 +595,7 @@ bool PkgCanvas::disconnect(int parentIndex, int childIndex)
     json &Ns = m_s->Nodes();
     if (parentIndex < 0 || childIndex < 0 || parentIndex >= (int)Ns.size() || childIndex >= (int)Ns.size()) return false;
     const std::string Pid = Handle(Ns[parentIndex]);
-    const bool Removed = PkgGraph::RemoveOverRefs(Ns[childIndex], Pid);
+    const bool Removed = PkgGraph::RemoveRefs(Ns[childIndex], Pid);
     if (Removed) m_s->MarkDirty();
     return Removed;
 }
@@ -604,7 +605,7 @@ bool PkgCanvas::connectExternal(const std::string &parentId, int childIndex)
     json &Ns = m_s->Nodes();
     if (parentId.empty() || childIndex < 0 || childIndex >= (int)Ns.size()) return false;
     if (Handle(Ns[childIndex]) == parentId) return false;
-    if (!PkgGraph::AddOverRef(Ns[childIndex], parentId)) return false;
+    if (!PkgGraph::AddNodeRef(Ns[childIndex], parentId)) return false;
     m_s->MarkDirty();
     return true;
 }
@@ -857,28 +858,198 @@ void PkgCanvas::drawField(json &Node, const Field &F, int Index)
     }
     case FieldKind::Object:
     {
-        //ONE nested object (the TILE facet): its sub-fields draw against the object. Refuses to draw into a
-        //value of the wrong shape, like every other writer here.
+        //ONE optional nested object (an entry's TILE): absent, a button adds it — drawing must never materialise
+        //it, or every runner entry would grow an empty tile. Refuses a value of the wrong shape, like every other
+        //writer here.
+        if (!Node.contains(F.Key) || Node[F.Key].is_null())
+        {
+            if (ImGui::SmallButton((std::string("+ ") + F.Label).c_str())) { Node[F.Key] = json::object(); m_s->MarkDirty(); }
+            break;
+        }
+        if (!Node[F.Key].is_object()) { ImGui::TextDisabled("(%s is not an object - fix it in the JSON view)", F.Label); break; }
         ImGui::TextUnformatted(F.Label);
-        if (Node.contains(F.Key) && !Node[F.Key].is_object())
-        { ImGui::TextDisabled("(this field is not an object - fix it in the JSON view)"); break; }
-        if (!Node.contains(F.Key)) Node[F.Key] = json::object();
+        //Removing it drops every field inside, so, like a layer, it is in the label's context menu, not a button.
+        if (ImGui::IsItemHovered()) ImGui::SetTooltip("right-click: remove the %s", F.Label);
+        bool Remove = false;
+        if (ImGui::BeginPopupContextItem("##objmenu"))
+        {
+            if (ImGui::Selectable((std::string("Remove ") + F.Label).c_str())) Remove = true;
+            ImGui::EndPopup();
+        }
+        if (Remove) { Node.erase(F.Key); m_s->MarkDirty(); break; }
         json &O = Node[F.Key];
         for (const Field &S : F.Sub) drawField(O, S, Index);
         break;
     }
-    case FieldKind::RegEdits:
-        drawRegEdits(Node, Index);
+    case FieldKind::TakeList:
+    {
+        const json *Val = (Node.is_object() && Node.contains(F.Key)) ? &Node[F.Key] : nullptr;
+        ImGui::TextUnformatted(F.Label); ImGui::SameLine(kLabelCol);
+        if (PkgGraph::TakeFault(Val)) { ImGui::TextDisabled("%s", PkgGraph::DescribeValue(*Val).c_str()); break; }
+        std::string T = Val ? PkgGraph::TakeToText(*Val) : std::string();
+        const int Lines = (int)std::count(T.begin(), T.end(), '\n') + (T.empty() ? 0 : 1);
+        auto Write = [&](const std::string &Text) {
+            json A = PkgGraph::TextToTake(Text);
+            if (A.empty()) Node.erase(F.Key); else Node[F.Key] = std::move(A);   // no TAKE = the whole node
+            m_s->MarkDirty();
+        };
+        ImGui::SetNextItemWidth(kFieldWidth);
+        if (Lines <= 1) { if (ImGui::InputTextWithHint("##v", F.Hint, &T)) Write(T); }
+        else if (ImGui::InputTextMultiline("##v", &T, ImVec2(kFieldWidth, 16.0f * (float)std::min(Lines + 1, 6)))) Write(T);
         break;
+    }
+    case FieldKind::Arch:
+    {
+        //The views this REG layer writes. Read without inserting: drawing a node must never dirty the document.
+        const json Arch = (Node.contains(F.Key) && Node[F.Key].is_array()) ? Node[F.Key] : json::array();
+        ImGui::TextUnformatted(F.Label); ImGui::SameLine(kLabelCol);
+        for (const char *A : {"32", "64"})
+        {
+            bool On = false;
+            for (const auto &X : Arch) if (X.is_string() && X.get<std::string>() == A) On = true;
+            if (ImGui::Checkbox(A, &On))
+            {
+                json Next = json::array();
+                for (const auto &X : Arch) if (!(X.is_string() && X.get<std::string>() == A)) Next.push_back(X);
+                if (On) Next.push_back(A);
+                if (Next.empty()) Node.erase(F.Key); else Node[F.Key] = std::move(Next);
+                m_s->MarkDirty();
+            }
+            ImGui::SameLine();
+        }
+        ImGui::NewLine();
+        break;
+    }
+    case FieldKind::RegTree:
+        drawRegTree(Node, F, Index);
+        break;
+    case FieldKind::VarMap:
+    {
+        if (Node.contains(F.Key) && !Node[F.Key].is_null() && !Node[F.Key].is_object())
+        { ImGui::TextDisabled("(%s is not an object - fix it in the JSON view)", F.Label); break; }
+        static json EmptyObj = json::object();          // stays empty: every write goes through Node[F.Key]
+        json &Map = Node.contains(F.Key) ? Node[F.Key] : EmptyObj;
+        ImGui::Text("%s (%d)", F.Label, (int)Map.size());
+        std::string DelKey; std::pair<std::string, std::string> Rename;
+        int Row = 0;
+        for (auto &[K, D] : Map.items())
+        {
+            if (Row >= 12) break;
+            ImGui::PushID(Row++);
+            ImGui::Separator();
+            //The key IS the variable's name: renamed when the field is finished, never mid-typing (a half-typed
+            //name must not churn the map or collide).
+            std::string Key = K;
+            ImGui::TextUnformatted("Key"); ImGui::SameLine(kLabelCol); ImGui::SetNextItemWidth(kFieldWidth);
+            ImGui::InputTextWithHint("##k", "used as %KEY%", &Key);
+            if (ImGui::IsItemDeactivatedAfterEdit() && Key != K && !Key.empty() && !Map.contains(Key)) Rename = {K, Key};
+            if (!D.is_object())
+            {
+                ImGui::TextDisabled("(malformed declaration - fix it in the JSON view)");
+                if (ImGui::SmallButton("remove")) DelKey = K;
+                ImGui::PopID();
+                continue;
+            }
+            for (const Field &S : F.Sub) drawField(D, S, Index);
+            if (F.VarUI) drawCustomVarUI(D);
+            if (ImGui::SmallButton("remove")) DelKey = K;
+            ImGui::PopID();
+        }
+        if ((int)Map.size() > 12) ImGui::TextDisabled("... and %d more (edit in the JSON view)", (int)Map.size() - 12);
+        if (!DelKey.empty()) { Node[F.Key].erase(DelKey); m_s->MarkDirty(); }
+        if (!Rename.first.empty())
+        {
+            json D = Node[F.Key][Rename.first];
+            Node[F.Key].erase(Rename.first);
+            Node[F.Key][Rename.second] = std::move(D);
+            m_s->MarkDirty();
+        }
+        if (ImGui::SmallButton("+ add"))
+        {
+            std::string K = "var";
+            for (int N = 2; Map.contains(K); ++N) K = "var" + std::to_string(N);
+            if (!Node.contains(F.Key)) Node[F.Key] = json::object();
+            Node[F.Key][K] = json::object({{"DEFAULT", ""}});
+            m_s->MarkDirty();
+        }
+        break;
+    }
+    case FieldKind::KeepMap:
+    {
+        if (Node.contains(F.Key) && !Node[F.Key].is_null() && !Node[F.Key].is_object())
+        { ImGui::TextDisabled("(%s is not an object - fix it in the JSON view)", F.Label); break; }
+        static json EmptyObj = json::object();
+        json &Map = Node.contains(F.Key) ? Node[F.Key] : EmptyObj;
+        ImGui::TextUnformatted(F.Label);
+        std::string DelKey; std::pair<std::string, std::string> Rename;
+        int Row = 0;
+        for (auto &[K, E] : Map.items())
+        {
+            ImGui::PushID(Row++);
+            std::string Addr = K;
+            ImGui::SetNextItemWidth(180.0f);
+            ImGui::InputTextWithHint("##a", F.Hint, &Addr);
+            if (ImGui::IsItemDeactivatedAfterEdit() && Addr != K && !Addr.empty() && !Map.contains(Addr)) Rename = {K, Addr};
+            ImGui::SameLine();
+            //Three shapes, one meaning each: true (the user owns it), {NAME, CLOUD} (owns it, stored under NAME),
+            //false (a more specific address the package takes back).
+            const bool Back = E.is_boolean() && !E.get<bool>();
+            ImGui::SetNextItemWidth(90.0f);
+            if (ImGui::BeginCombo("##m", Back ? "take back" : "keep"))
+            {
+                if (ImGui::Selectable("keep", !Back) && Back) { Node[F.Key][K] = true; m_s->MarkDirty(); }
+                if (ImGui::Selectable("take back", Back) && !Back) { Node[F.Key][K] = false; m_s->MarkDirty(); }
+                ImGui::EndCombo();
+            }
+            ImGui::SameLine();
+            if (ImGui::SmallButton("x")) DelKey = K;
+            if (!Back)
+            {
+                std::string Name = E.is_object() ? StrOf(E, "NAME") : std::string();
+                bool Cloud = !(E.is_object() && E.contains("CLOUD") && E["CLOUD"].is_boolean() && !E["CLOUD"].get<bool>());
+                ImGui::SetNextItemWidth(180.0f);
+                const bool NameEdit = ImGui::InputTextWithHint("##n", "stored as (optional)", &Name);
+                ImGui::SameLine();
+                const bool CloudEdit = ImGui::Checkbox("cloud", &Cloud);
+                if (NameEdit || CloudEdit)
+                {
+                    json O = E.is_object() ? E : json::object();
+                    if (Name.empty()) O.erase("NAME"); else O["NAME"] = Name;
+                    if (Cloud) O.erase("CLOUD"); else O["CLOUD"] = false;
+                    Node[F.Key][K] = O.empty() ? json(true) : O;
+                    m_s->MarkDirty();
+                }
+            }
+            ImGui::PopID();
+        }
+        if (!DelKey.empty()) { Node[F.Key].erase(DelKey); m_s->MarkDirty(); }
+        if (!Rename.first.empty())
+        {
+            json V = Node[F.Key][Rename.first];
+            Node[F.Key].erase(Rename.first);
+            Node[F.Key][Rename.second] = std::move(V);
+            m_s->MarkDirty();
+        }
+        if (ImGui::SmallButton("+ add"))
+        {
+            if (!Node.contains(F.Key)) Node[F.Key] = json::object();
+            if (!Node[F.Key].contains("FILES/")) { Node[F.Key]["FILES/"] = true; m_s->MarkDirty(); }
+        }
+        break;
+    }
     case FieldKind::Cover:
     {
-        //COVER is DUAL-FORM: a bare filename OR a {PATH, SOURCE} object. Both are legal (CoverCache handles
-        //each, NodeLower accepts each), so the widget has to read BOTH — it read only the object form, so a
-        //string cover rendered as an empty box, and the first keystroke wrote ["PATH"] into a string and threw.
+        //COVER is {FILE, SOURCE, SIZE} (SOURCE/SIZE stamped by publish). A bare string is shown too, never
+        //written through: the first keystroke writing ["FILE"] into a string would throw out of paintGL.
+        if (Node.contains(F.Key) && !Node[F.Key].is_null() && !Node[F.Key].is_object() && !Node[F.Key].is_string())
+        {   //a number, list or bool: shown, never written through (a click would replace it with an object)
+            ImGui::TextDisabled("(%s is not an object - fix it in the JSON view)", F.Label);
+            break;
+        }
         std::string P;
         if (Node.contains(F.Key))
         {
-            if (Node[F.Key].is_object())      P = StrOf(Node[F.Key], "PATH");
+            if (Node[F.Key].is_object())      P = StrOf(Node[F.Key], "FILE");
             else if (Node[F.Key].is_string()) P = Node[F.Key].get<std::string>();
         }
         ImGui::TextUnformatted(F.Label); ImGui::SameLine(kLabelCol);
@@ -890,7 +1061,7 @@ void PkgCanvas::drawField(json &Node, const Field &F, int Index)
             //The `else` used to be unconditional, so a COVER that was a number, an array or a bool threw on
             //the FIRST KEYSTROKE — no click needed, and the comment above stopped at the string case.
             if (Node.contains(F.Key) && Node[F.Key].is_string()) { Node[F.Key] = P; m_s->MarkDirty(); }
-            else if (PkgGraph::WriteSubKey(Node, F.Key, "PATH", P))          m_s->MarkDirty();
+            else if (PkgGraph::WriteSubKey(Node, F.Key, "FILE", P))          m_s->MarkDirty();
         }
         ImGui::SameLine();
         if (ImGui::SmallButton("browse")) m_s->Pending = {Handle(Node), "browse_cover"};
@@ -900,99 +1071,59 @@ void PkgCanvas::drawField(json &Node, const Field &F, int Index)
     ImGui::PopID();
 }
 
-void PkgCanvas::drawRegEdits(json &Node, int Index)
+void PkgCanvas::drawRegTree(json &Layer, const Field &F, int Index)
 {
-    (void)Index;
-    static json EmptyEdits = json::array();      // see drawField/ObjArray: stays empty, writes go via Node
-    const bool HasEdits = Node.contains("REGEDITS") && Node["REGEDITS"].is_array();
-    json &Edits = HasEdits ? Node["REGEDITS"] : EmptyEdits;
-
-    int DelEntry = -1;
-    for (int E = 0; E < (int)Edits.size(); ++E)
+    //A REG layer's hive tree ({HKLM: {...}, HKCU: {...}}). The registry IS a tree on disk; a human edits flat key
+    //paths. Round-trip through RegRows, but hold the rows steady while a field is live (see RegBuf) and commit when
+    //it is finished. Refuses a value of the wrong shape: a hand-edited list here would lose its tree to one click.
+    if (Layer.contains(F.Key) && !Layer[F.Key].is_null() && !Layer[F.Key].is_object())
+    { ImGui::TextDisabled("(%s is not an object - fix it in the JSON view)", F.Label); return; }
+    ImGui::TextUnformatted(F.Label);
+    static const json EmptyObj = json::object();
+    const json &Tree = Layer.contains(F.Key) ? Layer[F.Key] : EmptyObj;
+    json &Ns = m_s->Nodes();
+    const std::string BufKey = ((Index >= 0 && Index < (int)Ns.size()) ? Handle(Ns[(size_t)Index]) : std::string())
+                             + "#" + std::to_string(m_s->CurLayer);
+    auto Buf = m_s->RegBuf.find(BufKey);
+    std::vector<RegRow> Rows = (Buf != m_s->RegBuf.end()) ? Buf->second : RegRowsOf(Tree);
+    bool Commit = false, Editing = false;
+    int DelRow = -1;
+    for (int R = 0; R < (int)Rows.size(); ++R)
     {
-        ImGui::PushID(E);
-        ImGui::Separator();
-        // ARCHITECTURE is arrayable — the same tree written into several registry views.
-        if (!Edits[E].is_object()) { ImGui::TextDisabled("(malformed entry - fix it in the JSON view)"); ImGui::PopID(); continue; }
-        // Read without inserting: drawing a node must never dirty the document, or merely opening a package
-        // rewrites every RegEdit on disk.
-        json ArchRead = (Edits[E].contains("ARCHITECTURE") && Edits[E]["ARCHITECTURE"].is_array())
-                            ? Edits[E]["ARCHITECTURE"] : json::array();
-        const json &Arch = ArchRead;
-        ImGui::TextUnformatted("views"); ImGui::SameLine(kLabelCol);
-        for (const char *A : {"32", "64"})
-        {
-            bool On = false;
-            for (const auto &X : Arch) if (X.is_string() && X.get<std::string>() == A) On = true;
-            if (ImGui::Checkbox(A, &On))
-            {
-                json Next = json::array();
-                for (const auto &X : Arch) if (!(X.is_string() && X.get<std::string>() == A)) Next.push_back(X);
-                if (On) Next.push_back(A);
-                Edits[E]["ARCHITECTURE"] = std::move(Next);
-                m_s->MarkDirty();
-            }
-            ImGui::SameLine();
-        }
-        bool Ov = BoolOf(Edits[E], "OVERRIDE");
-        if (ImGui::Checkbox("override pass", &Ov)) { Edits[E]["OVERRIDE"] = Ov; m_s->MarkDirty(); }
-
-        // The registry IS a tree on disk; a human edits flat key paths. Round-trip through RegRows, but hold
-        // the rows steady while a field is live (see RegBuf) and commit when it is finished.
-        const std::string BufKey = Handle(Node) + "#" + std::to_string(E);
-        auto Buf = m_s->RegBuf.find(BufKey);
-        std::vector<RegRow> Rows = (Buf != m_s->RegBuf.end()) ? Buf->second : RegRowsOf(Edits[E]);
-        bool Commit = false, Editing = false;
-        int DelRow = -1;
-        for (int R = 0; R < (int)Rows.size(); ++R)
-        {
-            ImGui::PushID(R);
-            auto Cell = [&](const char *Id, const char *Hint, std::string &Field, float W) {
-                ImGui::SetNextItemWidth(W);
-                ImGui::InputTextWithHint(Id, Hint, &Field);
-                if (ImGui::IsItemActive()) Editing = true;
-                if (ImGui::IsItemDeactivatedAfterEdit()) Commit = true;
-            };
-            Cell("##p", "HKLM\\Software\\...", Rows[R].Path, 150.0f);  ImGui::SameLine();
-            const std::string WasName = Rows[R].Name, WasValue = Rows[R].Value;
-            Cell("##n", "value", Rows[R].Name, 78.0f);                   ImGui::SameLine();
-            Cell("##v", "data",  Rows[R].Value, 78.0f);                  ImGui::SameLine();
-            //A "create this key, no values" row is still an editable row on screen — so the moment the author
-            //types a name or a value into it, it STOPS being key-only. Without this the cells accepted the
-            //keystrokes and RegRowsInto then dropped the whole row: the edit simply vanished.
-            if (Rows[R].KeyOnly && (Rows[R].Name != WasName || Rows[R].Value != WasValue))
-                Rows[R].KeyOnly = false;
-            if (ImGui::SmallButton("x")) DelRow = R;
-            ImGui::PopID();
-        }
-        if (DelRow >= 0) { Rows.erase(Rows.begin() + DelRow); Commit = true; }
-        //"+ value" adds a row for a value the author is about to name. Until they do it is a KEY row, not an
-        //empty DEFAULT value — writing the latter puts a spurious `@=""` into the prefix on every launch.
-        if (ImGui::SmallButton("+ value"))
-        { RegRow N{"HKLM\\Software\\", "", ""}; N.KeyOnly = true; Rows.push_back(std::move(N)); Commit = true; }
-        ImGui::SameLine();
-        if (ImGui::SmallButton("remove group")) DelEntry = E;
-        if (Commit)
-        {
-            RegRowsInto(Edits[E], Rows);               // HasEdits is implied: the loop body only runs if it is
-            m_s->MarkDirty();
-            m_s->RegBuf.erase(BufKey);                 // re-read the (possibly reordered) tree next frame
-        }
-        else if (Editing) m_s->RegBuf[BufKey] = std::move(Rows);
-        else m_s->RegBuf.erase(BufKey);
+        ImGui::PushID(R);
+        auto Cell = [&](const char *Id, const char *Hint, std::string &Field, float W) {
+            ImGui::SetNextItemWidth(W);
+            ImGui::InputTextWithHint(Id, Hint, &Field);
+            if (ImGui::IsItemActive()) Editing = true;
+            if (ImGui::IsItemDeactivatedAfterEdit()) Commit = true;
+        };
+        //Widths keep the node inside one layout column (430px) with the layer's indent and the row's "x".
+        Cell("##p", "HKLM\\Software\\...", Rows[R].Path, 118.0f);  ImGui::SameLine();
+        const std::string WasName = Rows[R].Name, WasValue = Rows[R].Value;
+        Cell("##n", "value", Rows[R].Name, 56.0f);                   ImGui::SameLine();
+        Cell("##v", "data",  Rows[R].Value, 56.0f);                  ImGui::SameLine();
+        //A "create this key, no values" row is still an editable row on screen — so the moment the author types
+        //a name or a value into it, it STOPS being key-only. Without this the edit simply vanished.
+        if (Rows[R].KeyOnly && (Rows[R].Name != WasName || Rows[R].Value != WasValue))
+            Rows[R].KeyOnly = false;
+        if (ImGui::SmallButton("x")) DelRow = R;
         ImGui::PopID();
     }
-    if (DelEntry >= 0) { Edits.erase(DelEntry); m_s->MarkDirty(); }
-    //Same refusal: a hand-edited `"EDITS": {"HKLM": {...}}` lost its entire registry tree to one click here.
-    const bool EditsReplaceable = !Node.is_object() || !Node.contains("REGEDITS")
-                               || Node["REGEDITS"].is_null() || Node["REGEDITS"].is_array();
-    if (!EditsReplaceable) ImGui::TextDisabled("(EDITS is not a list - fix it in the JSON view)");
-    else if (ImGui::SmallButton("+ group"))
+    if (DelRow >= 0) { Rows.erase(Rows.begin() + DelRow); Commit = true; }
+    //"+ value" adds a row for a value the author is about to name. Until they do it is a KEY row, not an empty
+    //DEFAULT value — writing the latter puts a spurious `@=""` into the prefix on every launch.
+    if (ImGui::SmallButton("+ value"))
+    { RegRow N{"HKLM\\Software\\", "", ""}; N.KeyOnly = true; Rows.push_back(std::move(N)); Commit = true; }
+    if (Commit)
     {
-        if (!HasEdits) Node["REGEDITS"] = json::array();
-        Node["REGEDITS"].push_back(json::object({{"ARCHITECTURE", json::array({"32"})}}));
+        json T = Tree;
+        RegRowsInto(T, Rows);
+        Layer[F.Key] = std::move(T);
         m_s->MarkDirty();
+        m_s->RegBuf.erase(BufKey);                 // re-read the (possibly reordered) tree next frame
     }
+    else if (Editing) m_s->RegBuf[BufKey] = std::move(Rows);
+    else m_s->RegBuf.erase(BufKey);
 }
 
 void PkgCanvas::drawActions(json &Node, int Index, const Graph &G)
@@ -1037,52 +1168,18 @@ void PkgCanvas::drawActions(json &Node, int Index, const Graph &G)
     }
 }
 
-// TOGGLE / WHEN / EXCLUDE belong to EVERY node regardless of TYPE, so they are drawn once here rather than
-// repeated in ten per-type tables. Folded away when all three are at their defaults — which is the common case —
-// and opened automatically when any is set, so a node that is conditional or off never hides the reason.
+// VARIANT and RECOMMENDED describe the node itself (they never fold), so they are drawn once here, above its layers.
+// Folded away when both are at their defaults, opened automatically when either is set.
 void PkgCanvas::drawEnvelope(json &Node)
 {
-    //THREE states, not two. ABSENT means "not user-toggleable at all"; "on" means "toggleable, starts on";
-    //"off" means "toggleable, starts off" (ParseNode: Optional = !TOGGLE.empty()). Rendering absent and "on"
-    //as the same thing, with "on" ERASING the key, silently converted a user-switchable module into a
-    //permanently-on one — and left the combo still reading "on" afterwards. Eight shipping nodes are exactly
-    //that shape (the Wipeout soundtrack and widescreen toggles, the NFSU2 extras, ...), and "on" was not
-    //authorable from the canvas at all.
-    const bool HasToggle     = Node.contains("TOGGLE") && Node["TOGGLE"].is_string();
-    const std::string Toggle = HasToggle ? Node["TOGGLE"].get<std::string>() : std::string();
-    const std::string When   = StrOf(Node, "WHEN");
-    //The node's exclusions are its OVER NOT entries — one edge, with a negative form. Read here directly (the
-    //canvas renders raw JSON and must not pull the engine's Node type into a file that has its own).
-    std::vector<std::string> Nots;
-    if (Node.contains("OVER") && Node["OVER"].is_array())
-        for (const auto &E : Node["OVER"])
-            if (E.is_object() && E.contains("NOT") && E["NOT"].is_string()) Nots.push_back(E["NOT"].get<std::string>());
-    const bool HasExclude    = !Nots.empty();
     const std::string Variant = StrOf(Node, "VARIANT");
-    const bool Recommended   = Node.contains("RECOMMENDED") && Node["RECOMMENDED"].is_boolean() && Node["RECOMMENDED"].get<bool>();
-    const bool Interesting   = HasToggle || !When.empty() || HasExclude || !Variant.empty() || Recommended;
-
+    //RECOMMENDED is the list of tile UIDs under which this node comes first (a variant) or is pre-ticked (a graft).
+    json Rec = (Node.contains("RECOMMENDED") && Node["RECOMMENDED"].is_array()) ? Node["RECOMMENDED"] : json::array();
+    const bool Interesting = !Variant.empty() || !Rec.empty();
     if (Interesting) ImGui::SetNextItemOpen(true, ImGuiCond_Once);
     if (!ImGui::TreeNodeEx("node options")) return;   // no SpanAvailWidth: it spans the WINDOW, overrunning the node
 
-    const char *ToggleLabel = !HasToggle     ? "always on (not a toggle)"
-                            : Toggle == "off" ? "toggle, starts OFF"
-                                              : "toggle, starts on";
-    ImGui::TextUnformatted("toggle"); ImGui::SameLine(kLabelCol);
-    ImGui::SetNextItemWidth(kFieldWidth);
-    if (ImGui::BeginCombo("##toggle", ToggleLabel))
-    {
-        if (ImGui::Selectable("always on (not a toggle)", !HasToggle))
-        { Node.erase("TOGGLE"); m_s->MarkDirty(); }
-        if (ImGui::Selectable("toggle, starts on", HasToggle && Toggle != "off"))
-        { Node["TOGGLE"] = "on"; m_s->MarkDirty(); }
-        if (ImGui::Selectable("toggle, starts OFF", HasToggle && Toggle == "off"))
-        { Node["TOGGLE"] = "off"; m_s->MarkDirty(); }
-        ImGui::EndCombo();
-    }
-
-    //The two declared facets: VARIANT (on the shelf under this name) and RECOMMENDED (prefer me among my
-    //siblings). Empty VARIANT = not on the shelf (runnable from the CLI if something beneath declares an entry).
+    //Empty VARIANT = not on the shelf (a library, a graft, or reachable only through something that contains it).
     std::string V = Variant;
     ImGui::TextUnformatted("variant"); ImGui::SameLine(kLabelCol);
     ImGui::SetNextItemWidth(kFieldWidth);
@@ -1091,37 +1188,16 @@ void PkgCanvas::drawEnvelope(json &Node)
         if (V.empty()) Node.erase("VARIANT"); else Node["VARIANT"] = V;
         m_s->MarkDirty();
     }
-    bool R = Recommended;
+    std::string R;
+    for (const auto &U : Rec) if (U.is_string()) R += (R.empty() ? "" : " ") + U.get<std::string>();
     ImGui::TextUnformatted("recommended"); ImGui::SameLine(kLabelCol);
-    if (ImGui::Checkbox("##recommended", &R))
-    {
-        if (R) Node["RECOMMENDED"] = true; else Node.erase("RECOMMENDED");
-        m_s->MarkDirty();
-    }
-
-    std::string W = When;
-    ImGui::TextUnformatted("when"); ImGui::SameLine(kLabelCol);
     ImGui::SetNextItemWidth(kFieldWidth);
-    if (ImGui::InputTextWithHint("##when", "condition - node is inert when false", &W))
+    if (ImGui::InputTextWithHint("##recommended", "tile UIDs - first under / pre-ticked on those tiles", &R))
     {
-        if (W.empty()) Node.erase("WHEN"); else Node["WHEN"] = W;
-        m_s->MarkDirty();
-    }
-
-    //NOT entries, edited as a list of handles: the positive entries of OVER are untouched, the NOT entries are
-    //replaced wholesale by what the box holds.
-    json NotList = json::array();
-    for (const std::string &N : Nots) NotList.push_back(N);
-    std::string Ex = ListToText(NotList);
-    ImGui::TextUnformatted("not with"); ImGui::SameLine(kLabelCol);
-    ImGui::SetNextItemWidth(kFieldWidth);
-    if (ImGui::InputTextWithHint("##excl", "handles this node must not be selected with", &Ex))
-    {
-        json Kept = json::array();
-        if (Node.contains("OVER") && Node["OVER"].is_array())
-            for (const auto &E : Node["OVER"]) if (!(E.is_object() && E.contains("NOT"))) Kept.push_back(E);
-        for (const auto &H : TextToList(Ex)) Kept.push_back(json{{"NOT", H}});
-        if (Kept.empty()) Node.erase("OVER"); else Node["OVER"] = std::move(Kept);
+        json Out = json::array();
+        std::stringstream SS(R); std::string U;
+        while (SS >> U) Out.push_back(U);
+        if (Out.empty()) Node.erase("RECOMMENDED"); else Node["RECOMMENDED"] = std::move(Out);
         m_s->MarkDirty();
     }
     ImGui::TreePop();
@@ -1129,21 +1205,56 @@ void PkgCanvas::drawEnvelope(json &Node)
 
 void PkgCanvas::drawPayload(json &Node, int Index)
 {
-    //A node is any subset of the SECTIONS; each present one draws its declared field table, and a "+ section"
-    //popup adds an absent one. Removing a section is a JSON-view edit (it is destructive).
-    const std::vector<std::string> Sections = SectionsOf(Node);
-    if (Sections.empty()) ImGui::TextDisabled("no payload - a plain node (OVER only)");
-    for (const std::string &S : Sections)
-        for (const Field &F : FieldsFor(S))
-            drawField(Node, F, Index);   // BASE_TARGETS gating is per-LAYERS-entry (see the ObjArray loop)
-    if (ImGui::SmallButton("+ section")) ImGui::OpenPopup("##addsection");
-    if (ImGui::BeginPopup("##addsection"))
+    //The node's LAYERS, in order — the order IS the fold order. Each layer: a header (its type, move up/down,
+    //remove), then its declared rows, drawn against the layer object. "+ layer" appends one of any type.
+    if (Node.contains("LAYERS") && !Node["LAYERS"].is_array())
+    { ImGui::TextDisabled("(LAYERS is not a list - fix it in the JSON view)"); return; }
+    static json EmptyArr = json::array();      // stays empty: every write goes through Node["LAYERS"]
+    json &Ls = Node.contains("LAYERS") ? Node["LAYERS"] : EmptyArr;
+    if (Ls.empty()) ImGui::TextDisabled("no layers yet");
+    int Del = -1, MoveFrom = -1, MoveBy = 0;
+    for (int I = 0; I < (int)Ls.size(); ++I)
     {
-        for (const std::string &S : AllTypes())
+        ImGui::PushID(I);
+        ImGui::Separator();
+        const std::string T = LayerType(Ls[(size_t)I]);
+        int R, Gc, B;
+        TypeColour(T, R, Gc, B);
+        ImGui::TextColored(ImVec4((float)(R + 70) / 255.0f, (float)(Gc + 70) / 255.0f, (float)(B + 70) / 255.0f, 1.0f),
+                           "%s", T.empty() ? "?" : T.c_str());
+        if (ImGui::IsItemHovered())
+            EditorTooltip(m_s->RealMouse, m_s->ScreenViewportPos, m_s->ScreenViewportSize,
+                          (std::string(TypeHelp(T)) + "\n(right-click: remove this layer)").c_str());
+        //Removing a layer drops its whole payload, so it is not a button a stray click lands on: it is in the
+        //type label's context menu.
+        if (ImGui::BeginPopupContextItem("##layermenu"))
         {
-            if (Node.contains(S)) continue;
-            if (ImGui::Selectable(S.c_str()) && PkgGraph::AddSection(Node, S)) m_s->MarkDirty();
-            if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s", TypeHelp(S));
+            if (ImGui::Selectable("Remove layer")) Del = I;
+            ImGui::EndPopup();
+        }
+        ImGui::SameLine();
+        if (ImGui::SmallButton("^")) { MoveFrom = I; MoveBy = -1; }
+        ImGui::SameLine();
+        if (ImGui::SmallButton("v")) { MoveFrom = I; MoveBy = +1; }
+        if (T.empty())
+            ImGui::TextDisabled("(needs one type key - fix in JSON view)");
+        else
+        {
+            m_s->CurLayer = I;
+            for (const Field &F : FieldsFor(T)) drawField(Ls[(size_t)I], F, Index);
+            m_s->CurLayer = -1;
+        }
+        ImGui::PopID();
+    }
+    if (Del >= 0) { Ls.erase((size_t)Del); m_s->MarkDirty(); }
+    else if (MoveFrom >= 0 && PkgGraph::MoveLayer(Node, MoveFrom, MoveBy)) m_s->MarkDirty();
+    if (ImGui::SmallButton("+ layer")) ImGui::OpenPopup("##addlayer");
+    if (ImGui::BeginPopup("##addlayer"))
+    {
+        for (const std::string &T : AllTypes())
+        {
+            if (ImGui::Selectable(T.c_str()) && PkgGraph::AddLayer(Node, T)) m_s->MarkDirty();
+            if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s", TypeHelp(T));
         }
         ImGui::EndPopup();
     }
@@ -1305,8 +1416,11 @@ void PkgCanvas::drawNode(int Index, Graph &G)
     // Nothing depends on this node yet, and it is not a launchable — so nothing mounts it. That is NORMAL
     // while authoring (you capture, then wire, then declare the exec last), so it is a note rather than an
     // error: the canvas makes the state visible instead of silently rewiring the graph to "fix" it.
-    if (!Node.contains("ENTRYPOINTS") && !m_s->HasDependent.count(Index))
-        ImGui::TextColored(ImVec4(0.55f, 0.60f, 0.68f, 1.0f), "not wired yet - nothing is OVER this");
+    {
+        const std::vector<std::string> Types = LayerTypes(Node);
+        if (std::find(Types.begin(), Types.end(), "EXEC") == Types.end() && !m_s->HasDependent.count(Index))
+            ImGui::TextColored(ImVec4(0.55f, 0.60f, 0.68f, 1.0f), "not wired yet - nothing contains this");
+    }
 
     // A node's problems are drawn ON the node, at the moment it becomes wrong.
     auto It = m_s->Issues.find(Id);
@@ -1499,9 +1613,11 @@ void PkgCanvas::drawToolbar()
     {
         struct Grp { const char *Title; std::vector<const char *> Types; };
         static const std::vector<Grp> Groups = {
-            {"Payload",     {"LAYERS", "REGEDITS", "FILEEDITS", "PATCHES", "DLLOVERRIDES", "ENV", "PERSISTS", "VARS"}},
-            {"Facet",       {"ENTRYPOINTS", "TILE"}},
-            {"Composition", {"plain node"}},
+            {"Content",     {"ZIP", "DIR", "FILE", "DELTA"}},
+            {"Transforms",  {"EDIT", "REG", "DLL", "ENV"}},
+            {"Facts",       {"VARS", "KEEP"}},
+            {"Entries",     {"EXEC"}},
+            {"Composition", {"NODE", "ANY", "NOT", "empty node"}},
         };
         std::string Pick; bool Picked = false;
         for (const Grp &Gp : Groups)
@@ -1509,7 +1625,7 @@ void PkgCanvas::drawToolbar()
             ImGui::SeparatorText(Gp.Title);
             for (const char *T : Gp.Types)
             {
-                const std::string Section = std::string(T) == "plain node" ? std::string() : std::string(T);
+                const std::string Section = std::string(T) == "empty node" ? std::string() : std::string(T);
                 if (ImGui::Selectable(T)) { Pick = Section; Picked = true; }
                 if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s", TypeHelp(Section));
             }
@@ -2277,7 +2393,7 @@ void PkgCanvas::frame()
     {
         const int Child = LinkChild(DeadLink), Slot = LinkSlot(DeadLink);
         json &Ns = m_s->Nodes();
-        if (Child >= 0 && Child < (int)Ns.size() && PkgGraph::EraseOverRef(Ns[Child], Slot)) m_s->MarkDirty();
+        if (Child >= 0 && Child < (int)Ns.size() && PkgGraph::EraseRef(Ns[Child], Slot)) m_s->MarkDirty();
     }
 
     int Sel = -1;

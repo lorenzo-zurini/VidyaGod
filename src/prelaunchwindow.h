@@ -116,7 +116,7 @@ private:
     void PropagateModuleItem(QTreeWidgetItem* Item);
     void RefreshModuleLocks();
     // Collects the toggle states into a node-id -> enabled map (passed to the engine as ModuleStates).
-    std::map<std::string, bool> CollectModuleStates() const;
+    std::vector<std::string> CollectGrafts() const;   // the ticked grafts, in list order (= the order applied)
 
     // ----- data -----
     nlohmann::ordered_json* GlobalConfigJSON = nullptr;
@@ -124,7 +124,6 @@ private:
     std::vector<std::string> GroupNodeIds;
     std::string             LaunchNodeId;   // current variant's node id
     std::string             Entrypoint;     // current entry LABEL ("" = the default)
-    std::string             EntryNode;      // "" = the variant's effective entries; else a ticked graft that carries an entry
     std::string             BundleDir;      // current variant's bundle dir
     std::string             PackageUID;     // current variant's UID — USERSETTINGS key
 
@@ -157,7 +156,6 @@ private:
     QFormLayout*  CustomVarForm         = nullptr;
     QGroupBox*    ModuleGroup           = nullptr;
     QTreeWidget*  ModuleTree            = nullptr;
-    std::map<std::string, std::set<std::string>> ModuleExcludes; // node key -> nodes its OVER NOTs (symmetric in effect)
     QTextEdit*    ConsoleEdit       = nullptr;
     QStringList   ConsolePending;                    // lines buffered between console flushes (see onLogLine)
     QTimer*       ConsoleFlushTimer = nullptr;       // single-shot ~60ms batcher — one document edit per burst

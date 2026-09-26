@@ -257,8 +257,8 @@ class Resolver:
     def phase1(self, root, builtins, instance):
         decls, seen = {}, set()
 
-        def walk(cid, take):
-            key = (cid, json.dumps(take, sort_keys=True) if take else "")
+        def walk(cid, view):
+            key = (cid, json.dumps(list(view_steps(view)), sort_keys=True) if view_takes(view) else "")
             if key in seen or cid not in self.nodes:
                 return
             seen.add(key)
@@ -266,10 +266,10 @@ class Resolver:
                 if "WHEN" in L:
                     continue
                 if "NODE" in L:
-                    walk(L["NODE"], self._compose_take(take, L.get("TAKE")))
+                    walk(L["NODE"], within(view, L.get("TAKE"), ""))
                 elif "VARS" in L:
                     for k, d in L["VARS"].items():
-                        a = self._taken(take, "VARS/" + k)
+                        a = self._map_fact(view, "VARS/" + k)
                         if a is None:
                             continue
                         k = a.split("/", 1)[1]
@@ -287,11 +287,12 @@ class Resolver:
             self._expand(g, None, "", ())
         return self._fold(instance, builtins)
 
-    def _occ(self, cid, take, prefix):
-        return (cid, json.dumps(take, sort_keys=True) if take else "", prefix)
+    def _occ(self, cid, view, prefix):
+        return (cid, json.dumps(list(view_steps(view)), sort_keys=True) if view_takes(view) else "", prefix)
 
-    def _expand(self, cid, take, prefix, containers):
-        occ = self._occ(cid, take, prefix)
+    def _expand(self, cid, view, prefix, containers):
+        """view: how this occurrence's addresses reach the root — its (TAKE, TARGET) steps, innermost first."""
+        occ = self._occ(cid, view, prefix)
         if any(c[0] == cid for c in containers):
             self.events.append(("cycle", cid)); return
         if occ in self.first:
@@ -313,13 +314,13 @@ class Resolver:
             t = type_of(L)
             if t == "NODE":
                 tgt = L.get("TARGET")
-                sub = prefix
+                sub, at = prefix, ""
                 if tgt is not None:
-                    ns, p = ns_path(tgt)
+                    ns, at = ns_path(tgt)
                     if ns != "FILES":
                         raise ValueError(f"NODE TARGET outside FILES: {tgt}")
-                    sub = place(p, prefix)
-                self._expand(L["NODE"], self._compose_take(take, L.get("TAKE")), sub, inner)
+                    sub = place(at, prefix)
+                self._expand(L["NODE"], within(view, L.get("TAKE"), at), sub, inner)
             elif t == "ANY":
                 present = {o[0] for o in self.order}
                 if not any(m in present for m in L["ANY"]):
@@ -328,14 +329,7 @@ class Resolver:
                 self.slots.append({"kind": "NOT", "node": L["NOT"], "occ": inner, "from": cid})
             else:
                 self.slots.append({"kind": t, "layer": L, "at": i, "occ": inner, "from": cid, "dir": bdir,
-                                   "prefix": prefix, "take": take})
-
-    def _compose_take(self, outer, inner):
-        if not outer:
-            return inner
-        if not inner:
-            return outer
-        return {"outer": outer, "inner": inner}              # applied inner first, then outer
+                                   "prefix": prefix, "view": view})
 
     def _remove(self, occ):
         gone = {o for o in self.first if o == occ or occ in self.first[o]}
@@ -344,13 +338,33 @@ class Resolver:
             del self.first[o]
         self.order = [o for o in self.order if o not in gone]
 
-    # TAKE: filter + rename a fact's addresses; None = not taken
+    # A fact's address through a view: each step's TAKE filters and renames it; facts are never re-rooted.
+    def _map_fact(self, view, addr):
+        if not view_takes(view):
+            return addr
+        for take, _ in view_steps(view):
+            addr = self._taken(take, addr)
+            if addr is None:
+                return None
+        return addr
+
+    # A FILES address through a view: each step's TAKE, then its TARGET — so an outer TAKE sees the inner node's
+    # files where they landed in the node that placed them.
+    def _map_files(self, view, addr, prefix=""):
+        if not view_takes(view):                           # no take: the composed placement alone
+            return "FILES/" + place(ns_path(addr)[1], prefix)
+        for take, at in view_steps(view):
+            addr = self._taken(take, addr)
+            if addr is None:
+                return None
+            if at:
+                addr = "FILES/" + place(ns_path(addr)[1], at)
+        return addr
+
+    # TAKE: filter + rename one address; None = not taken
     def _taken(self, take, addr):
         if not take:
             return addr
-        if isinstance(take, dict):
-            a = self._taken(take["inner"], addr)
-            return None if a is None else self._taken(take["outer"], a)
         for sel in take:
             if isinstance(sel, list):                          # [address, new name]: rename a file/dir/key
                 src, dst = sel
@@ -370,26 +384,28 @@ class Resolver:
     def _fold(self, instance, builtins):
         seq, reg, regkeys, dll, env, exe, keep, decls, nots = [], {}, {}, {}, {}, {}, {}, {}, []
         for s in self.slots:
-            k, L, take, prefix = s["kind"], s.get("layer"), s.get("take"), s.get("prefix", "")
+            k, L, view, prefix = s["kind"], s.get("layer"), s.get("view"), s.get("prefix", "")
             if k == "NOT":
                 nots.append(s["node"]); continue
             if k in CONTENT:
                 ns, tp = ns_path(L.get("TARGET", "FILES"))
-                item = {"kind": k, "payload": L[k], "dir": s["dir"], "source": L.get("SOURCE"),
-                        "target": place(tp, prefix), "submounts": L.get("SUBMOUNTS"), "take": take, "from": s["from"], "at": s["at"]}
+                item = {"kind": k, "payload": L[k], "dir": s["dir"], "source": L.get("SOURCE"), "size": L.get("SIZE"),
+                        "target": place(tp, prefix), "own": tp, "submounts": L.get("SUBMOUNTS"),
+                        "view": [[t, a] for t, a in view_steps(view)] if view_takes(view) else None,
+                        "from": s["from"], "at": s["at"]}
                 seq.append(item)
             elif k == "EDIT":
                 ns, tp = ns_path(L["TARGET"])
-                a = self._taken(take, "FILES/" + tp)
+                a = self._map_files(view, "FILES/" + tp, prefix)
                 if a is None:
                     continue
-                seq.append({"kind": "EDIT", "ops": L["EDIT"], "target": place(ns_path(a)[1], prefix), "from": s["from"], "at": s["at"]})
+                seq.append({"kind": "EDIT", "ops": L["EDIT"], "target": ns_path(a)[1], "from": s["from"], "at": s["at"]})
             elif k == "REG":
                 for arch in (L.get("ARCH") or [None]):
-                    self._fold_reg(L["REG"], arch, "", reg, regkeys, take)
+                    self._fold_reg(L["REG"], arch, "", reg, regkeys, view)
             elif k == "DLL":
                 for n, o in L["DLL"].items():
-                    a = self._taken(take, "DLL/" + n)
+                    a = self._map_fact(view, "DLL/" + n)
                     if a is None:
                         continue
                     n2 = a.split("/", 1)[1].lower()
@@ -399,38 +415,36 @@ class Resolver:
                         dll.pop(n2, None); dll[n2] = o
             elif k == "ENV":
                 for n, v in L["ENV"].items():
-                    a = self._taken(take, "ENV/" + n)
+                    a = self._map_fact(view, "ENV/" + n)
                     if a is None:
                         continue
                     n = a.split("/", 1)[1]
                     env.pop(n, None); env[n] = v
             elif k == "VARS":
                 for n, d in L["VARS"].items():
-                    a = self._taken(take, "VARS/" + n)
+                    a = self._map_fact(view, "VARS/" + n)
                     if a is None:
                         continue
                     n = a.split("/", 1)[1]
                     decls.pop(n, None); decls[n] = d
             elif k == "EXEC":
                 for e in L["EXEC"]:
-                    a = self._taken(take, "EXEC/" + e["LABEL"])
+                    a = self._map_fact(view, "EXEC/" + e["LABEL"])
                     if a is None:
                         continue
                     lab = a.split("/", 1)[1]
                     e = dict(e, LABEL=lab)
-                    if prefix:
+                    if prefix or view_takes(view):             # its paths go where the node's files went
                         for f in ("EXE", "WORKDIR"):
-                            if f in e:
-                                e[f] = place(e[f], prefix)
+                            if isinstance(e.get(f), str):
+                                m = self._map_files(view, "FILES/" + e[f], prefix)
+                                e[f] = ns_path(m)[1] if m is not None else place(e[f], prefix)
                     exe[lab] = merge(exe.get(lab), e) if lab in exe else copy.deepcopy(e)
             elif k == "KEEP":
                 for a0, v in L["KEEP"].items():
-                    a = self._taken(take, a0)
+                    a = self._map_files(view, a0, prefix) if ns_path(a0)[0] == "FILES" else self._map_fact(view, a0)
                     if a is None:
                         continue
-                    ns, p = ns_path(a)
-                    if ns == "FILES":
-                        a = "FILES/" + place(p, prefix)
                     keep.pop(a, None); keep[a] = v
         present = {o[0] for o in self.order}
         for n in nots:
@@ -439,23 +453,45 @@ class Resolver:
         return {"seq": seq, "reg": reg, "regkeys": regkeys, "dll": dll, "env": env, "exec": exe, "keep": keep,
                 "decls": decls, "order": [o[0] for o in self.order], "events": self.events, "when_vars": self.wv}
 
-    def _fold_reg(self, tree, arch, path, reg, regkeys, take):
+    def _fold_reg(self, tree, arch, path, reg, regkeys, view):
         for k, v in tree.items():
             p = k if not path else path + "\\" + k
             if isinstance(v, dict):
                 if not v:                                  # an empty key: "create this key" (keys with content are implied)
-                    if self._taken(take, "REG/" + p.replace("\\", "/")) is not None:
+                    if self._map_fact(view, "REG/" + p.replace("\\", "/")) is not None:
                         regkeys[(arch, p.lower())] = p
                     continue
-                self._fold_reg(v, arch, p, reg, regkeys, take)
-            elif v is None and path:                       # a null value deletes it
+                self._fold_reg(v, arch, p, reg, regkeys, view)
+            elif v is None:                                # null deletes: the value k, and the key p with all below it
+                if self._map_fact(view, "REG/" + p.replace("\\", "/")) is None:
+                    continue
+                sub = p.lower()
                 reg.pop((arch, path.lower(), k.lower()), None)
-            elif v is None:
-                pass
+                for key in [key for key in reg if key[0] == arch and (key[1] == sub or key[1].startswith(sub + "\\"))]:
+                    del reg[key]
+                for key in [key for key in regkeys if key[0] == arch and (key[1] == sub or key[1].startswith(sub + "\\"))]:
+                    del regkeys[key]
             else:
-                if self._taken(take, "REG/" + p.replace("\\", "/")) is None:
+                if self._map_fact(view, "REG/" + p.replace("\\", "/")) is None:
                     continue
                 reg[(arch, path.lower(), k.lower())] = (path, k, v)
+
+
+# A view is how an occurrence's addresses reach the root: (take, at, outer view, any step takes) — a shared linked
+# list, innermost step first, so a chain 900 deep costs one tuple per level (not a copied list).
+def within(view, take, at):
+    return (take or None, at, view, bool(take) or view_takes(view))
+
+
+def view_takes(view):
+    """Whether any step of a view takes (a view with none only places)."""
+    return bool(view) and view[3]
+
+
+def view_steps(view):
+    while view:
+        yield view[0], view[1]
+        view = view[2]
 
 
 def merge(a, b):
@@ -479,7 +515,7 @@ def plan_json(plan):
         if it["kind"] == "EDIT":
             e["ops"] = it["ops"]
         else:
-            e.update(payload=it["payload"], dir=it["dir"], source=it["source"], submounts=it["submounts"], take=it["take"])
+            e.update(payload=it["payload"], dir=it["dir"], source=it["source"], size=it.get("size"), submounts=it["submounts"], view=it["view"])
         e.update({"target": it["target"], "from": it["from"], "at": it["at"]})
         seq.append(e)
     return {"seq": seq,
@@ -510,6 +546,46 @@ def offered_grafts(nodes, idx, plan, face_uid=None):
     offered = sorted({g for m in present for g in idx.get(m, ())}, key=lambda g: (nodes[g][0].get("LABEL", ""), g))
     ticked = [g for g in offered if face_uid is not None and face_uid in (nodes[g][0].get("RECOMMENDED") or [])]
     return offered, ticked
+
+
+def unsatisfied(plan):
+    """How many of the resolution's requirements fail: a NOT that hits, an ANY unmet."""
+    return sum(1 for e in plan["events"] if e[0] in ("not-hit", "any-unmet"))
+
+
+def applied_grafts(R, idx, root, face_uid=None, requested=None, instance=None, builtins=None, dropped=None):
+    """The grafts a row applies, in order. A graft may need another graft (its ANY names it), so each is judged
+    against the row with the grafts before it applied; a graft that is not offered there, or whose application
+    leaves a requirement unmet (its NOT hits, an ANY fails), does not apply. requested = the instance's list;
+    None = a fresh instance: the grafts RECOMMENDED under the row's tile, in rounds — each round's newly offered
+    ones by LABEL — so a graft always follows the graft it needs."""
+    instance, builtins = instance or {}, builtins or {}
+    applied, refused = [], set()
+    plan = R.resolve(root, instance, builtins)
+
+    def attempt(g):
+        nonlocal plan
+        if g in applied or g in refused:
+            return
+        if g in offered_grafts(R.nodes, idx, plan, face_uid)[0]:
+            trial = R.resolve(root, instance, builtins, applied + [g])
+            if unsatisfied(trial) <= unsatisfied(plan):
+                applied.append(g); plan = trial
+                return
+        refused.add(g)
+        if dropped is not None:
+            dropped.append(g)
+
+    if requested is not None:
+        for g in requested:
+            attempt(g)
+        return applied
+    while True:
+        new = [g for g in offered_grafts(R.nodes, idx, plan, face_uid)[1] if g not in applied and g not in refused]
+        if not new:
+            return applied
+        for g in new:
+            attempt(g)
 
 
 # ---------------------------------------------------------------- the shelf (§2)
@@ -660,6 +736,14 @@ def fixtures():
                                                   "FILES/MS/x86/", ["REG/HKCU/B", "REG/HKCU/C"]]},
                           {"NODE": "mid", "TAKE": ["DLL/ddraw", "FILES/MS/"], "TARGET": "FILES/C:/g"}])},
          [("g", {}, [])]),
+        ("take-placed", {"lib": N([{"DIR": "lz", "TARGET": "FILES/bin"},
+                                   {"EDIT": [{"MODE": "Poke", "OFFSET": "0x1", "VALUE": "00"}], "TARGET": "FILES/bin/a.dll"},
+                                   {"EXEC": [{"LABEL": "Tool", "HOST": "h", "EXE": "bin/a.exe", "WORKDIR": "bin"}]},
+                                   {"KEEP": {"FILES/bin/save/": True, "REG/HKCU/S": True}}]),
+                         "mid": N([{"NODE": "lib", "TAKE": [["FILES/bin/a.dll", "FILES/b.dll"], "FILES/bin/save", "FILES/bin/a.exe",
+                                                            "EXEC", "REG"], "TARGET": "FILES/lib"}]),
+                         "g": N([{"NODE": "mid", "TAKE": ["FILES/lib/", "EXEC", "REG"], "TARGET": "FILES/C:/g"}])},
+         [("g", {}, []), ("mid", {}, [])]),
         ("exec-fold", {"t": N([{"EXEC": [{"LABEL": "Play", "TILE": {"UID": "1", "TITLE": "T", "META": {"A": 1, "B": 2}}},
                                           {"LABEL": "B", "HOST": "h", "ARGS": ["x"]}]}]),
                        "v": N([{"NODE": "t"}, {"EXEC": [{"LABEL": "Play", "HOST": "win32", "TILE": {"TITLE": "T2", "META": {"B": None, "C": 3}}},
@@ -667,14 +751,20 @@ def fixtures():
         ("reg+dll+env", {"r": N([{"REG": {"HKCU": {"S": {"a": "1", "b": "2"}}}, "ARCH": ["32", "64"]},
                                  {"REG": {"HKCU": {"S": {"a": "0", "b": "1", "c": "k"}}}},
                                  {"REG": {"HKCU": {"S": {"a": "3", "b": None}, "E": {}}, "HKLM": {"X": {"v": 1}}}},
+                                 {"REG": {"HKCU": {"T": {"x": "1", "Sub": {"y": "2"}, "K": {}}, "TT": {"z": "3"}}}},
+                                 {"REG": {"HKCU": {"T": None}}},
                                  {"DLL": {"D3D8": "n,b", "ddraw": "b"}}, {"DLL": {"d3d8": None}},
                                  {"ENV": {"A": "1", "B": "2"}}, {"ENV": {"A": None}}])}, [("r", {}, [])]),
         ("any+not+grafts", {"base": N([Z("b")]), "m": N([{"ANY": ["base"]}, Z("m")]), "w": N([{"NOT": "base"}]),
                             "v1": N([{"NODE": "base"}, {"EXEC": [{"LABEL": "Play", "HOST": "h", "TILE": {"UID": "9", "TITLE": "t"}}]}]),
                             "v2": N([{"NODE": "m"}]), "v3": N([{"NODE": "base"}, {"NODE": "w"}]),
                             "g1": N([{"ANY": ["base", "zzz"]}, Z("g1"), {"NODE": "base"}], LABEL="b-graft", RECOMMENDED=["9"]),
-                            "g2": N([{"ANY": ["v1"]}, Z("g2")], LABEL="a-graft")},
-         [("v1", {}, []), ("v1", {}, ["g2", "g1"]), ("v2", {}, []), ("v3", {}, [])]),
+                            "g2": N([{"ANY": ["v1"]}, Z("g2")], LABEL="a-graft"),
+                            "g3": N([{"ANY": ["g1"]}, Z("g3")], LABEL="a-on-b", RECOMMENDED=["9"]),
+                            "g4": N([{"ANY": ["base"]}, {"NOT": "g1"}, Z("g4")], LABEL="c-conflicts", RECOMMENDED=["9"])},
+         [("v1", {}, []), ("v1", {}, ["g2", "g1"]), ("v1", {}, ["g3", "g1"]), ("v1", {}, ["g1", "g3"]),
+          ("v1", {}, ["g1", "g4"]), ("v1", {}, ["g4", "g1"]),
+          ("v2", {}, []), ("v3", {}, [])]),
     ]
 
 
@@ -711,6 +801,16 @@ def self_test():
              "g": N([{"NODE": "lib", "TAKE": ["DLL/d3d8", ["VARS/a", "VARS/z"], "EXEC/Tool"]}])}
     p = R(nodes).resolve("g")
     assert p["dll"] == {"d3d8": "n,b"} and list(p["decls"]) == ["z"] and list(p["exec"]) == ["Tool"], p
+    # placement between takes: an outer TAKE sees the inner node's files where the middle node PLACED them (lib/…),
+    # so left-stripping "FILES/lib/" brings them to the outer TARGET; facts pass through, never re-rooted
+    fx = dict(next(f for n, f, _ in fixtures() if n == "take-placed"))
+    p = R(fx).resolve("g")
+    assert [it["target"] for it in p["seq"] if it["kind"] == "EDIT"] == ["C:/g/b.dll"], p["seq"]
+    assert p["exec"]["Tool"]["EXE"] == "C:/g/a.exe" and p["exec"]["Tool"]["WORKDIR"] == "C:/g/lib/bin", p["exec"]
+    assert list(p["keep"]) == ["FILES/C:/g/save/", "REG/HKCU/S"], p["keep"]
+    assert [it["target"] for it in p["seq"] if it["kind"] == "DIR"] == ["C:/g/lib/bin"]      # the plan: its placement
+    p = R(fx).resolve("mid")
+    assert [it["target"] for it in p["seq"] if it["kind"] == "EDIT"] == ["lib/b.dll"] and list(p["keep"])[0] == "FILES/lib/save/"
     assert take_match("FILES/a/b/c.dll", "FILES/a/b/c.dll") == "c.dll"
     assert take_match("FILES/a/b/x", "FILES/a/b") == "b/x" and take_match("FILES/a/b/x", "FILES/a/b/") == "x"
     # EXEC folds per field: a partial entry beneath (a tile) + the variant's entry; first-declared order
@@ -722,6 +822,10 @@ def self_test():
     nodes = {"r": N([{"REG": {"HKCU": {"S": {"a": "1", "b": "2"}}}}, {"REG": {"HKCU": {"S": {"a": "3", "b": None}, "E": {}}}}])}
     p = R(nodes).resolve("r")
     assert {k[2]: v[2] for k, v in p["reg"].items()} == {"a": "3"} and (None, "hkcu\\e") in p["regkeys"], p["reg"]
+    # a null key deletes its whole subtree (values, subkeys, created keys) — and nothing that merely shares a prefix
+    nodes = {"r": N([{"REG": {"HKCU": {"T": {"x": "1", "Sub": {"y": "2"}, "K": {}}, "TT": {"z": "3"}}}}, {"REG": {"HKCU": {"T": None}}}])}
+    p = R(nodes).resolve("r")
+    assert [k[1] for k in p["reg"]] == ["hkcu\\tt"] and not p["regkeys"], (p["reg"], p["regkeys"])
     # ANY / NOT
     nodes = {"base": N([Z("b")]), "m": N([{"ANY": ["base"]}, Z("m")]), "w": N([{"NOT": "base"}]),
              "v1": N([{"NODE": "base"}, {"NODE": "m"}]), "v2": N([{"NODE": "m"}]), "v3": N([{"NODE": "base"}, {"NODE": "w"}])}
@@ -746,6 +850,20 @@ def self_test():
         r = Resolver({k: (dict(v, CID=k), "") for k, v in fx.items()})
         for root, inst, gs in cases:
             r.resolve(root, inst, {}, gs)
+        if name == "any+not+grafts":
+            # a graft on a graft: offered once the graft it needs is applied — a fresh list puts it after that graft
+            # (though its LABEL sorts first); an instance order that puts it first drops it
+            gi = graft_index(r.nodes)
+            assert "g3" not in offered_grafts(r.nodes, gi, r.resolve("v1"), "9")[0]
+            assert applied_grafts(r, gi, "v1", "9") == ["g1", "g3"], applied_grafts(r, gi, "v1", "9")
+            d = []
+            assert applied_grafts(r, gi, "v1", "9", ["g3", "g1"], dropped=d) == ["g1"] and d == ["g3"]
+            assert applied_grafts(r, gi, "v1", "9", ["g1", "g3", "g1"]) == ["g1", "g3"]
+            # a graft whose NOT hits a graft already applied is not applicable; before that graft it is
+            d = []
+            assert applied_grafts(r, gi, "v1", "9", ["g1", "g4"], dropped=d) == ["g1"] and d == ["g4"]
+            assert applied_grafts(r, gi, "v1", "9", ["g4"]) == ["g4"]
+            assert applied_grafts(r, gi, "v1", None) == []          # no tile: nothing is pre-ticked
     print("self-test OK")
 
 

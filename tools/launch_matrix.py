@@ -27,10 +27,12 @@ BINARY   = os.path.join(ROOT, "build", "VidyaGod")
 #The runtime probe's report, delimited so the surrounding launch log never reaches the golden.
 #Every launchable that is meant to RUN, not just resolve. lm_run_chained goes through a two-hop runner
 #chain, where the environment is assembled in a different order — a property no plan can show.
-#(node, entry node): the entry node is a ticked graft that carries an entry (a mod loader) — its entry runs over
-#the variant's mount. None = the variant's own (or inherited) entry.
+#(node, entry label): the entry is a ticked graft's (a mod loader) — it runs over the variant's mount. None = the
+#row's own game entry.
 RUN_CASES = [("lm_run", None), ("lm_run_chained", None), ("lm_inherits", None), ("lm_run", "lm_graft_entry")]
 ENTRY_CASES = [("lm_run", "lm_graft_entry")]
+#Variants the engine must REFUSE (a requirement fails): the resolve exits non-zero and says why.
+BLOCKED = {"lm_blocked": "is blocked"}
 RUN_BEGIN = "=== argv"
 RUN_END   = "=== done"
 
@@ -41,17 +43,22 @@ VOLATILE_VARS = ("VIDYAGOD_SELF_NAME", "VIDYAGOD_SELF_VIP", "VIDYAGOD_PEER_NAMES
                  "ScreenWidth", "ScreenHeight")   # the machine's display (the dump's built-in variable map)
 
 def launchables(bundle):
-    with open(os.path.join(bundle, "launchmatrix.json")) as F:
-        nodes = json.load(F)
-    #A launchable is a VARIANT — a node on the shelf; its entry may be its own or inherited from beneath. Derived,
-    #not listed, so a variant added to the fixture is covered without touching this script.
-    return sorted(n["LABEL"] for n in nodes if n.get("VARIANT"))
+    #A launchable is a VARIANT — a node on the shelf; its entry may be its own or folded from what it contains.
+    #Derived, not listed, so a variant added to the fixture is covered without touching this script.
+    out = []
+    for f in os.listdir(bundle):
+        if f.endswith(".json"):
+            with open(os.path.join(bundle, f)) as F:
+                n = json.load(F)
+            if isinstance(n, dict) and n.get("VARIANT"):
+                out.append(n["LABEL"])
+    return sorted(out)
 
 def case_name(node, entry):
     return f"{node}@{entry}" if entry else node
 
 def entry_args(entry):
-    return ["--entry-node", entry] if entry else []
+    return ["--entrypoint", entry] if entry else []
 
 def normalise(obj, data_dir):
     """Strip everything that is a property of WHERE this ran rather than WHAT was resolved."""
@@ -116,6 +123,12 @@ def main():
                 failures.append(f"{name}: resolve TIMED OUT after 300s")
                 continue
             dump = os.path.join(data, f"vg_resolve_{node}.json")
+            if node in BLOCKED:
+                checked += 1
+                if run.returncode == 0 or os.path.isfile(dump) or BLOCKED[node] not in run.stdout + run.stderr:
+                    failures.append(f"{name}: must be REFUSED ('{BLOCKED[node]}') — exit {run.returncode}, dump "
+                                    f"{'written' if os.path.isfile(dump) else 'absent'}")
+                continue
             if run.returncode != 0 or not os.path.isfile(dump):
                 failures.append(f"{name}: resolve FAILED (exit {run.returncode})")
                 tail = [l for l in run.stdout.splitlines() if "[ERR" in l][-3:]
@@ -143,7 +156,7 @@ def main():
         #--offline: a headless run that must not bring the node up (a resolve sweep over a whole library). The node
         #creates its repo under the data dir when it starts, so after an offline resolve there must be none.
         if not args.update:
-            node = launchables(bundle)[0]
+            node = next(n for n in launchables(bundle) if n not in BLOCKED)
             shutil.rmtree(os.path.join(data, "IPFS"), ignore_errors=True)
             run = subprocess.run([binary, "--bypass-single-instance-lock", "--offline", "--data-dir", data,
                                   "--resolve-only", node], capture_output=True, text=True, timeout=300)

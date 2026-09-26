@@ -30,14 +30,11 @@ long long VgCidSize(const char *cid);          // CumulativeSize, -1 if unknown 
 long long VgCidSizeLocal(const char *cid);     // CumulativeSize from the LOCAL store only — fast -1 when unreadable
 int  VgCidMissing(const char *cid);            // 1 if a pinned CID's backing file is gone (orphaned ref), 0 ok, -1 n/a
 int  VgComputeCid(const char *path, char **outCid, char **errOut); // a file's CID with NO side effects (nothing seeded/pinned)
-// dag-json node graph (the gigagraph: one node = one dag-json block, identity = CID; dag.go). Deterministic — any
-// key order in the JSON yields the same CID.
-int  VgDagPut(const char *json, char **outCid, char **errOut); // store a node block (direct-pinned + announced) -> its CID
-int  VgDagGet(const char *cid, char **outJson, char **errOut); // node block's canonical dag-json bytes (fetches over bitswap if remote)
-int  VgDagGetMany(const char *cidsJson, char **outJson, char **errOut); // batched: {cid:dagjson} for a JSON array of CIDs (windowed fetch)
-int  VgDagGetManyLocal(const char *cidsJson, char **outJson, char **errOut); // batched, LOCAL blockstore only (no bitswap)
-int  VgDagHas(const char *cid);                                // 1 if the node block is local, 0 no, -1 n/a / bad CID
-int  VgDagCid(const char *json, char **outCid, char **errOut); // the CID a node's JSON WOULD have, NO side effects
+// Node blocks and package folders (blocks.go): a node is ONE raw leaf (its CID = the file CID of its bytes), a
+// package is a UnixFS folder of node files.
+int  VgBlockPut(const char *bytes, char **outCid, char **errOut);   // store one raw leaf (direct-pinned + announced) -> its CID
+int  VgBlockGet(const char *cid, char **outBytes, char **errOut);   // one raw block's bytes (fetches over bitswap if remote)
+int  VgMakeDir(const char *entriesJson, char **outCid, char **errOut); // folder of {name: CID} over held blocks (pinned) -> its CID
 long long VgCidFileSizeLocal(const char *cid);   // UnixFS FILE size (payload bytes) from the local store, -1 unknown
 char *VgCidServeStatus(const char *cid); // "" if deliverable (cheap: stat only), else the reason (caller frees)
 int  VgServeFailures(char **outJson); // JSON [{cid,err,when}] of blocks a PEER asked for that we could not deliver (drains)

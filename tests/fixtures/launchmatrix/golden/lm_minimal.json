@@ -1,8 +1,8 @@
 {
   "ComposedExec": {
-    "CONTENTPATH": "%PrefixRoot%/drive_c/%PackageUID%/game/data.txt",
+    "CONTENTPATH": "C:/%PackageUID%/game/data.txt",
     "EXEARGS": [],
-    "LABEL": "lm_minimal",
+    "LABEL": "Play",
     "PLATFORM": "linux64"
   },
   "Content": "<TMP>/90000000000001/DefaultInstance/RUNTIME/drive_c/90000000000001/game/data.txt",
@@ -20,6 +20,9 @@
   "DLLOverrides": [],
   "ExeArgs": [],
   "GameName": "Launch Matrix",
+  "GuestRoots": {
+    "C:": "%PrefixRoot%/drive_c"
+  },
   "KeepDirs": [],
   "KeepFiles": [],
   "KeepRegHives": [],
@@ -31,8 +34,7 @@
   "PrefixGenerate": false,
   "PrefixRoot": "",
   "Recipe": [
-    "lm_minimal_content",
-    "lm_tile"
+    "lm_minimal"
   ],
   "RunnerArgs": [
     "%Content%"
@@ -45,7 +47,7 @@
       ],
       "Host": "linux64",
       "Native": true,
-      "NodeId": "baguqeerao6hwt2a5bltaftwjbwo2wenrnjhypth4tbdrbohc6wvdbi6cjgca"
+      "NodeId": "bafkreih4upa57ohm3lembna2gbkalhnax5vjx43i3745e3qpxuughpfwpm"
     }
   ],
   "RunnerComponents": [
@@ -75,6 +77,11 @@
       "PATH": "<DATA>/fixture/[90000000000001][v1.0] Launch Matrix/base.zip",
       "TARGET": "/drive_c/90000000000001",
       "TYPE": "VFSZipLayer"
+    },
+    {
+      "PATH": "<DATA>/fixture/[90000000000001][v1.0] Launch Matrix/graftwrong",
+      "TARGET": "/drive_c/90000000000001",
+      "TYPE": "VFSDirLayer"
     }
   ],
   "UnifiedRuntime": false,

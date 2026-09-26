@@ -35,50 +35,55 @@ loss of. Put it in `make_fixture.py`, `--update`, and the golden diff shows exac
 
 ## What the fixture contains
 
-One bundle, three launchables:
+One bundle (generation 6: one node per file, parents are `NODE` layers), these variants:
 
-| Launchable | Purpose |
+| Variant | Purpose |
 |---|---|
-| `lm_minimal` | The least that can launch: one zip, one exec. The control — a regression that shows up *here* is in the spine, not in a feature. |
-| `lm_all` | Everything below, on the native runner. |
+| `lm_minimal` | The least that can launch: one zip, one entry. The control — a regression that shows up *here* is in the spine, not in a feature. |
+| `lm_all` | Everything below, on the native runner (plan only: it contains the un-hydrated branch). |
 | `lm_chained` | The same content reached through a two-hop runner chain (`fixture32` → `linux64`). |
-| `lm_run` | The runtime case: mounts for real and runs the probe. Its grafts (`lm_graft_*`) mount above it when ticked. |
-| `lm_inherits` | A variant `OVER` `lm_run` with content and **no entry**: runs `lm_run`'s entry (inherited), mounts its closure — and none of `lm_run`'s grafts (picking a variant selects exactly that node). |
-| `lm_run@lm_graft_entry` | `lm_run` run through `--entry-node lm_graft_entry`: a ticked graft that carries an entry (a mod loader) runs over the variant's mount + grafts. |
+| `lm_run` | The runtime case: mounts for real and runs the probe. The grafts `ANY`-ing it mount above it when ticked. |
+| `lm_run_chained` | `lm_run`'s resolution through the two-hop chain, at runtime (the exec-time environment order). |
+| `lm_inherits` | A variant containing `lm_run` with content and **no entry**: runs `lm_run`'s entry (folded), and — `lm_run` being in its resolution — is offered and pre-ticked `lm_run`'s grafts too. |
+| `lm_blocked` | A variant whose `NOT` names something it contains: the launch is **refused**, with the reason (no golden; the harness expects the refusal). |
+| `lm_run@lm_graft_entry` | `lm_run` run through `--entrypoint lm_graft_entry`: a ticked graft that carries an entry (a mod loader) runs over the variant's mount + grafts. |
 
 Covered, by type:
 
-- **Content** — `zip`, `dir`, `file`, `delta`; a patch zip overlapping the base at the same target;
-  `SUBMOUNTS` relocating a nested archive; a delta on its own target (implicit base) and one over the
-  **concatenation** of two targets (`BASE_TARGETS`); content present only as a `SOURCE.CID` (un-hydrated).
-- **CustomVar** — `DEFAULT`; `text`/`enum`/`bool` UI; a var whose default **references another var**
-  (resolution is a fixpoint, so declaration order must not matter); a var gated by `WHEN`.
-- **FileEdit** — `ConfigWrite`, `Overwrite`, `AppendLine`; override pass *and* base pass; `%var%` in a value;
-  an edit gated by `WHEN`.
-- **BinaryPatch** — `Replace` (with an `EXPECT` guard), `Poke`, `Cave` (with `CAVE: auto`).
-- **RegEdit** — both architecture views; a key's **default value** (the empty name) and a key-only entry;
-  a per-entry `WHEN`.
-- **DllOverride** — several load orders, plus an empty one.
-- **Persist** — `KEEP` of a dir, a file, a whole hive and a single key; a `DROP` hole punched inside a `KEEP`.
-- **DeclareExec** — launchable and runner forms, runner `ENV`/`ENV_REMOVE`/`CONTENT_ROOT`, a two-hop chain.
-- **DeclareLibraryItem** (`UID`, `TITLE`, `META`) and **Group** (payload-less composition).
-- **The final chain** — `VARIANT` on the shelf nodes; an entry inherited from beneath (`lm_inherits`); grafts:
-  pre-ticked, unticked, a graft on a graft, a branch off an ancestor (never offered), substance pulled in
-  beneath, and a graft carrying an entry (`lm_graft_entry`).
+- **Content** — `ZIP`, `DIR`, `FILE`, `DELTA`; a patch zip overlapping the base at the same target;
+  `SUBMOUNTS` relocating one file out of an archive; a delta over the nearest content beneath it at its target,
+  opaque over the dir beneath that; content present only as a `SOURCE` CID (un-hydrated).
+- **`NODE` + `TAKE`/`TARGET`** — a library contained selectively and placed (`lm_uses_lib`): a file out of a zip,
+  renamed; a directory's contents (`FILES/doc/`) landing at the target; a loose `FILE`, renamed; a variable taken,
+  one not, a `DLL` not taken at all. A diamond (`lm_shared` in two containers) mounts once.
+- **`VARS`** — `DEFAULT`; `text`/`enum`/`bool` UI; a default **referencing another variable** (a fixpoint, so
+  order must not matter); a declaration gated by `WHEN` (it gates the value).
+- **`EDIT`** — `ConfigWrite`, `Overwrite`, `AppendLine`; `Replace` (with an `EXPECT` guard), `Poke`, `Cave`
+  (`CAVE: auto`); a relative target (relative to where the node landed); a layer gated by `WHEN` (phase-1 rule);
+  an edit of a KEEP'd file — a package **default**, applied while the user has no saved copy (`IF_UNSAVED`).
+- **`REG`** — both architecture views; a key's **default value** (the empty name) and a key-only entry; a gated layer.
+- **`DLL`** — several load orders, plus an empty one.
+- **`KEEP`** — a dir, a file, a machine-local dir (`CLOUD: false`), a whole hive and a single key.
+- **`EXEC`** — game entries (`Play`, folded with the tile's partial entry) and runner entries (`GUEST`,
+  `GUEST_ROOTS`, `CONTENT_ROOT`); `ENV` beneath, on and above the variant (null removes), a two-hop chain.
+- **Tiles** — `TILE` (`UID`, `TITLE`, `META`) on the `Play` entry every variant folds.
+- **Grafts** — pre-ticked (`RECOMMENDED`), offered-not-ticked, a graft on a graft (offered once its base is
+  applied), one whose `ANY` names another variant, one containing a library, one carrying an entry, and one whose
+  `NOT` hits the row (pre-ticked, never applied).
 
 ## Two layers of golden
 
 **Plans** (`golden/<node>.json`) — the resolved `ContainerParams` for every launchable: closure, variables,
 runner chain, persistence, the ordered layer list.
 
-**Runtime** (`golden/lm_run.runtime.txt`) — `lm_run` is launched *for real*. The mount is composed, the edits
+**Runtime** (`golden/*.runtime.txt`) — `lm_run` (and the other `RUN_CASES`) is launched *for real*. The mount is composed, the edits
 and patches are applied, and a probe process runs inside it and reports what it can actually see: the merged
 tree, which layer won a contested path, the contents of every edited file, the patched bytes of a PE, the
 reconstructed delta output, and whether a `KEEP` dir is writable. A plan can be perfectly correct and still
 mount to the wrong thing; this is the layer that notices.
 
-The deltas are **real** — generated by `vg_make_delta` (built from the same `vgdelta` the mount uses, and
-verified to reconstruct before they are written), including one over the **concatenation** of two base targets.
+The delta is **real** — generated by `vg_make_delta` (built from the same `vgdelta` the mount uses, and
+verified to reconstruct before it is written).
 The PE that `BinaryPatch` edits is a real minimal PE32 built by `make_fixture.py`, so `Replace`, `Poke` and
 `Cave` all apply and the resulting bytes — jmp rel32 at the site, payload + displaced original + jump back in
 the cave — are in the golden.
@@ -95,22 +100,22 @@ the cave — are in the golden.
 These are recorded as they are **today**, not as they should be — when one is fixed, the matrix will diff, and
 that diff is the proof the fix landed.
 
-- `ENV` on a **launchable** `DeclareExec` is dropped by the lowering (only runners copy it), so `lm_all`'s
-  `LM_EXEC_ENV` never reaches the plan.
-- `DLLOverrides` resolves empty for a native runner despite four `DllOverride` layers being present.
+- `DLLOverrides` resolves empty for a native runner despite four DLL overrides being present.
 
 ## Traps this fixture found (they are why the fixture is shaped the way it is)
 
 - **`%PrefixRoot%/x` is relative on wine and ABSOLUTE natively.** `PrefixRoot` is `pfx` under a prefix runner
-  and `""` under a native one, so the same string becomes `/drive_c/...` and silently escapes the pass base.
-  Layer `TARGET`s are normalised and survive it; `FileEdit`/`BinaryPatch` `FILE`s are not, and every edit
-  failed. Author edit paths relative (`drive_c/%PackageUID%/...`).
-- **A `FORM: "file"` layer's `TARGET` is the containing DIRECTORY**; the file appears at `TARGET/<basename>`.
+  and `""` under a native one, so the same string becomes `/drive_c/...`. Packages now write guest coordinates
+  (`C:/…`) and the runner's `GUEST_ROOTS` lays them out; the edit pass re-anchors a root-relative path.
+- **A base-pass edit cannot see content.** Gen 5's base pass wrote into DEFAULTDATA before the mount, so a
+  `ConfigWrite` of a zip's file there produced a one-line stub shadowing it. Every file `EDIT` now runs after the
+  mount (the matrix's `config.ini` caught the regression when the pass was dropped).
+- **A `FILE` layer's `TARGET` is the containing DIRECTORY**; the file appears at `TARGET/<its name>`.
   Naming the file in `TARGET` makes a directory of that name.
 - **`SUBMOUNTS` relocate a FILE out of the archive** — they do not mount a nested archive — and declaring any
   submount REPLACES the layer's whole-archive mount, so only the listed files appear.
 - **A `Cave`'s `EXPECT` must be at least 5 bytes** — the site is overwritten with a jmp rel32.
 - **A delta's opacity cannot be tested with a zip below it.** A base zip at the delta's target is folded into
   the chain as a byte input and never becomes a layer, so there is nothing for opacity to mask. It takes a
-  `dir` layer (not a byte view, not folded) to observe it — the fixture missed this until a mutation that
-  disabled opacity changed nothing.
+  `dir` layer (not a byte view, not folded) to observe it — beneath the base zip, since the delta's base is the
+  nearest content beneath it.

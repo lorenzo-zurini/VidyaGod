@@ -1,9 +1,16 @@
 #include "manifestmodel.h"
 #include "commonutils.h"
-#include "nodelower.h"   // NodeLower::Lower — flat node payload → the executor's ordered layer sequence
+#include "fold.h"        // Fold::Resolve — a node's facts are folded, never inherited by graph distance
+#include "nodelower.h"   // NodeLower — the gen-6 vocabulary check and the lowering to engine ops
 #include "varsubst.h"    // VarSubst::ConditionParses — WHEN syntax lint
 #include "launchparams.h"   // ContainerParams::GetVariablesMap — the single source of truth for built-in %variables%
+#include "bytesource.h"  // FdByteSource — a delta chain's zip listing (covered-edit check)
+#include "vgdelta.h"     // DeltaByteSource — reconstructs a delta chain's zip on the fly
+#include "zipscan.h"     // WalkCentralDir — the member names of a (reconstructed) zip
+#include "hostio.h"      // HostIO::OpenRead / Close — the byte sources' fds
 
+#include <atomic>
+#include <thread>
 #include <set>
 #include <map>
 #include <unordered_set>
@@ -21,14 +28,14 @@
 
 const Node *NodeIndex::Find(const std::string &Key) const
 {
-    // Primary key = the map key. In the gigagraph catalog that is a node's CID (identity); the resolver walks edges
-    // by CID, so every internal Find hits this fast path. (A NODE_ID-keyed index — a single working-tree bundle scan —
-    // hits it too.)
+    // Primary key = the map key: a node's CID handle. The resolver walks refs by CID, so every internal Find hits
+    // this fast path.
     auto It = Nodes.find(Key);
     if (It != Nodes.end()) return &It->second;
-    // Fallback alias: resolve a human NODE_ID label to its node. Only entry points (a GUI launch id, a persisted
-    // reference) look up by NODE_ID against a CID-keyed index; it is never on the resolver's hot path, so the linear
-    // scan is cheap in practice. NODE_IDs are unique within a local library (first match wins).
+    // Fallback alias: a human LABEL (a GUI launch id, a CLI argument). Never on the resolver's hot path; LABELs may
+    // repeat, first match wins.
+    for (const auto &[K, N] : Nodes)
+        if (N.Handle == Key) return &N;                       // a working-tree handle (the stored CID before a re-freeze)
     for (const auto &[K, N] : Nodes)
         if (N.NodeId == Key) return &N;
     return nullptr;
@@ -36,370 +43,125 @@ const Node *NodeIndex::Find(const std::string &Key) const
 
 namespace ManifestModel {
 
-// ----- node graph (everything is a node; one edge) -----
+// ----- node graph -----
 
 const std::set<std::string> &NodeFields()
 {
-    //The whole top-level vocabulary of a node. A key outside this set is refused at lower (a typo'd payload key —
-    //"LAYER" — would otherwise be a payload that silently never applies, the exact failure the lowerer exists to
-    //prevent). COMMENT is author prose; POS is the canvas layout (stripped at freeze).
-    static const std::set<std::string> F = {
-        "CID", "LABEL", "WHEN", "TOGGLE", "POS", "COMMENT",
-        "TILE", "ENTRYPOINTS", "OVER", "VARIANT", "RECOMMENDED",
-        "LAYERS", "PATCHES", "FILEEDITS", "REGEDITS", "DLLOVERRIDES", "VARS", "PERSISTS", "ENV", "ENV_REMOVE",
-    };
+    static const std::set<std::string> F = { "CID", "LABEL", "POS", "COMMENT", "VARIANT", "RECOMMENDED", "LAYERS" };
     return F;
-}
-
-const std::vector<std::string> &PayloadKeys()
-{
-    static const std::vector<std::string> K = { "LAYERS", "PATCHES", "FILEEDITS", "REGEDITS", "DLLOVERRIDES", "VARS", "PERSISTS", "ENV", "ENV_REMOVE" };
-    return K;
 }
 
 bool IsNodeObject(const nlohmann::ordered_json &J)
 {
-    if (!J.is_object()) return false;
-    //A legacy TYPE-bearing object is refused outright, not read as a node: the library is migrated in one pass
-    //and never read two ways. Detecting it by its own fields would silently index an un-migrated file as a
-    //payload-less node — a package that quietly does less than it says.
-    if (J.contains("TYPE")) return false;
-    static const char *Marks[] = { "CID", "LABEL", "OVER", "TILE", "ENTRYPOINTS",
-                                   "LAYERS", "PATCHES", "FILEEDITS", "REGEDITS", "DLLOVERRIDES", "VARS", "PERSISTS", "ENV", "ENV_REMOVE" };
-    for (const char *M : Marks) if (J.contains(M)) return true;
-    return false;
+    return J.is_object() && J.contains("LAYERS") && J["LAYERS"].is_array();
 }
 
-bool ParseOver(const nlohmann::ordered_json &Over, std::vector<OverReq> &Out, std::string *Error)
-{
-    Out.clear();
-    auto Fail = [&](const std::string &Why) { if (Error) *Error = Why; Out.clear(); return false; };
-    if (Over.is_null()) return true;
-    if (!Over.is_array()) return Fail("OVER must be a list of requirements, not " + std::string(Over.type_name()));
-    for (const auto &E : Over)
-    {
-        OverReq R;
-        if (E.is_string())
-        {
-            if (E.get<std::string>().empty()) return Fail("OVER has an empty ref");
-            R.Any.push_back(E.get<std::string>());
-        }
-        else if (E.is_array())
-        {
-            //An any-of group. A group of one is just a plain entry; an EMPTY group is unsatisfiable and almost
-            //certainly an editing slip — say so rather than silently blocking the node forever.
-            if (E.empty()) return Fail("OVER has an empty any-of group (nothing could ever satisfy it)");
-            for (const auto &M : E)
-            {
-                if (!M.is_string() || M.get<std::string>().empty())
-                    return Fail("OVER any-of group members must be refs (strings)");
-                R.Any.push_back(M.get<std::string>());
-            }
-        }
-        else if (E.is_object())
-        {
-            //{"NOT": cid} — the one negative form. Anything else object-shaped is unknown vocabulary.
-            if (E.size() != 1 || !E.contains("NOT") || !E["NOT"].is_string() || E["NOT"].get<std::string>().empty())
-                return Fail("OVER entry objects must be exactly {\"NOT\": ref}");
-            R.Not = true;
-            R.Any.push_back(E["NOT"].get<std::string>());
-        }
-        else return Fail("OVER entry must be a ref, an any-of list, or {\"NOT\": ref}, not " + std::string(E.type_name()));
-        Out.push_back(std::move(R));
-    }
-    return true;
-}
-
-std::vector<std::string> OverRefs(const nlohmann::ordered_json &J, std::vector<std::string> *Excludes)
+std::vector<std::string> NodeRefs(const nlohmann::ordered_json &J, std::vector<std::string> *Requires)
 {
     std::vector<std::string> Out;
-    if (!J.is_object() || !J.contains("OVER")) return Out;
-    std::vector<OverReq> Reqs;
-    if (!ParseOver(J["OVER"], Reqs)) return Out;
-    for (const OverReq &R : Reqs)
+    if (!IsNodeObject(J)) return Out;
+    for (const auto &L : J["LAYERS"])
     {
-        if (R.Not) { if (Excludes) Excludes->push_back(R.Any.front()); continue; }
-        for (const std::string &M : R.Any) Out.push_back(M);
+        if (!L.is_object()) continue;
+        if (L.contains("NODE") && L["NODE"].is_string()) Out.push_back(L["NODE"].get<std::string>());
+        if (!Requires) continue;
+        if (L.contains("ANY") && L["ANY"].is_array())
+            for (const auto &M : L["ANY"]) if (M.is_string()) Requires->push_back(M.get<std::string>());
+        if (L.contains("NOT") && L["NOT"].is_string()) Requires->push_back(L["NOT"].get<std::string>());
     }
     return Out;
 }
 
-bool RemapOverRefs(nlohmann::ordered_json &J, const std::function<std::string(const std::string &)> &Map)
+bool RemapNodeRefs(nlohmann::ordered_json &J, const std::function<std::string(const std::string &)> &Map)
 {
-    if (!J.is_object() || !J.contains("OVER") || !J["OVER"].is_array()) return false;
+    if (!IsNodeObject(J)) return false;
     bool Changed = false;
     auto One = [&](nlohmann::ordered_json &S) {
         if (!S.is_string()) return;
         const std::string New = Map(S.get<std::string>());
         if (New != S.get<std::string>()) { S = New; Changed = true; }
     };
-    for (auto &E : J["OVER"])
+    for (auto &L : J["LAYERS"])
     {
-        if (E.is_string())      One(E);
-        else if (E.is_array())  for (auto &M : E) One(M);
-        else if (E.is_object() && E.contains("NOT")) One(E["NOT"]);
+        if (!L.is_object()) continue;
+        if (L.contains("NODE")) One(L["NODE"]);
+        if (L.contains("NOT")) One(L["NOT"]);
+        if (L.contains("ANY") && L["ANY"].is_array()) for (auto &M : L["ANY"]) One(M);
     }
     return Changed;
 }
 
-static bool ParseNodeOrThrow(const nlohmann::ordered_json &J, const std::filesystem::path &File,
-                             const std::filesystem::path &BundleDir, Node &Out);
-
-//THE boundary where untrusted JSON becomes a Node, and therefore the place that must be TOTAL.
-//
-//NodeLower::Lower already guarantees its OUTPUT is well-typed, which protects every consumer of Node::Layers.
-//But ParseNode also reads facets off the RAW node — TOGGLE, LABEL, OVER, TILE, ENTRYPOINTS — and nlohmann's
-//.value() throws on a type mismatch. `{"TOGGLE": true}` (a plausible authoring slip) would abort the process
-//inside BuildNodeIndex, which runs at STARTUP. So the whole derivation is guarded and a throw becomes the same
-//refusal a malformed payload produces: the node is indexed, named by validation, and never routed through.
+//THE boundary where untrusted JSON becomes a Node. It must be TOTAL: a node file arrives from a peer or from an
+//author's typo, and BuildNodeIndex runs at startup — a throw here would keep the app from starting. Everything
+//read below is checked by NodeLower::CheckNode first; a node that fails is indexed with the reason and no layers.
 bool ParseNode(const nlohmann::ordered_json &J, const std::filesystem::path &File,
                const std::filesystem::path &BundleDir, Node &Out)
 {
-    try
-    {
-        return ParseNodeOrThrow(J, File, BundleDir, Out);
-    }
-    catch (const std::exception &E)
-    {
-        if (!IsNodeObject(J)) return false;
-        const std::string Id = (J.contains("LABEL") && J["LABEL"].is_string()) ? J["LABEL"].get<std::string>() : std::string();
-        LogWarn("ManifestModel::ParseNode",
-                "Malformed node '" + Id + "' — " + E.what() + " (" + File.string() + ")");
-        Out = Node{};
-        Out.NodeId     = Id;
-        Out.Cid        = (J.contains("CID") && J["CID"].is_string()) ? J["CID"].get<std::string>() : std::string();
-        Out.LowerError = "node '" + Id + "': malformed field (" + E.what() + ")";
-        Out.Layers     = nlohmann::ordered_json::array();
-        Out.Entrypoints = nlohmann::ordered_json::array();
-        Out.Parents    = OverRefs(J, &Out.Excludes);
-        Out.File      = File;
-        Out.BundleDir = BundleDir;
-        return true;
-    }
-}
-
-static bool EntryIsRunner(const nlohmann::ordered_json &E)
-{
-    return E.is_object() && E.contains("GUEST") && E["GUEST"].is_array() && !E["GUEST"].empty();
-}
-
-//Apply one lowered entrypoint's view onto the node's launch fields.
-static void ApplyEntrypoint(Node &N, const nlohmann::ordered_json &Entry, const nlohmann::ordered_json &Exec)
-{
-    N.Exec = Exec;
-    if (EntryIsRunner(Entry))
-    {
-        N.HostPlatform = Entry.value("HOST", std::string());
-        N.GuestPlatform.clear();
-        for (const auto &G : Entry["GUEST"]) if (G.is_string()) N.GuestPlatform.push_back(G.get<std::string>());
-    }
-    else
-    {
-        N.HostPlatform = Entry.value("HOST", std::string());
-        N.GuestPlatform.clear();
-    }
-    N.Label            = Entry.value("LABEL", N.NodeId);
-    N.RecommendedRunner= Entry.value("RUNNER", std::string());
-}
-
-//Set a node's launch fields from an ENTRYPOINTS list (its own, or the inherited one): HasExec/HasRunner over every
-//entry, the default (first) entry's view. Empty list ⇒ nothing runs.
-static void ApplyEntrypoints(Node &N, const nlohmann::ordered_json &Eps, const std::string &Source)
-{
-    N.EffectiveEntrypoints = Eps.is_array() ? Eps : nlohmann::ordered_json::array();
-    N.EntrySource = N.EffectiveEntrypoints.empty() ? std::string() : Source;
-    N.HasExec = N.HasRunner = false;
-    N.Exec = nlohmann::ordered_json();
-    N.HostPlatform.clear(); N.GuestPlatform.clear(); N.RecommendedRunner.clear();
-    N.Label = N.NodeId;
-    if (N.EffectiveEntrypoints.empty()) return;
-    for (const auto &E : N.EffectiveEntrypoints) { if (EntryIsRunner(E)) N.HasRunner = true; else N.HasExec = true; }
-    std::string Err;
-    ApplyEntrypoint(N, N.EffectiveEntrypoints[0], NodeLower::LowerEntrypoint(N.EffectiveEntrypoints[0], N.NodeId, Err));
-}
-
-static bool ParseNodeOrThrow(const nlohmann::ordered_json &J, const std::filesystem::path &File,
-                             const std::filesystem::path &BundleDir, Node &Out)
-{
     if (!IsNodeObject(J)) return false;
     Out = Node{};
-    // Identity/wiring is the CID. A working-tree node stores its last-minted CID in "CID" (its authoring handle,
-    // which OVER refs name) — read it into Cid so Key() returns it. LABEL is the OPTIONAL cosmetic name, kept in
-    // NodeId as a display fallback (and passed to the lowerer for error/layer naming). A FROZEN block has no "CID"
-    // field (a block can't contain its own hash); its caller (FreezeToIndex) sets Cid to the DERIVED hash.
-    Out.Cid      = (J.contains("CID") && J["CID"].is_string()) ? J["CID"].get<std::string>() : std::string();
-    Out.NodeId   = (J.contains("LABEL") && J["LABEL"].is_string()) ? J["LABEL"].get<std::string>() : std::string();
+    Out.Cid       = (J.contains("CID") && J["CID"].is_string()) ? J["CID"].get<std::string>() : std::string();
+    Out.NodeId    = (J.contains("LABEL") && J["LABEL"].is_string()) ? J["LABEL"].get<std::string>() : std::string();
     Out.File      = File;
     Out.BundleDir = BundleDir;
-    Out.Entrypoints = nlohmann::ordered_json::array();
-    Out.EffectiveEntrypoints = nlohmann::ordered_json::array();
-    Out.Layers = nlohmann::ordered_json::array();
-    Out.Recommended = J.contains("RECOMMENDED") && J["RECOMMENDED"].is_boolean() && J["RECOMMENDED"].get<bool>();
-    Out.RawWhen = (J.contains("WHEN") && J["WHEN"].is_string()) ? J["WHEN"].get<std::string>() : std::string();
-
-    //A refusal keeps the node INDEXED with the reason attached and no layers: validation names it, and
-    //ResolveNodeOrder refuses to route through it. Dropping it removed the node from the graph entirely, so a
-    //referrer dangled (loud) but a LEAF mistake was reported by nothing at all. Its edges are still read so a
-    //scoped validate (`--validate-nodes <bundle>`) can reach it.
-    auto Refuse = [&](const std::string &Why) {
-        LogWarn("ManifestModel::ParseNode", "Malformed node — " + Why + " (" + File.string() + ")");
-        Out.LowerError = Why;
-        Out.Layers = nlohmann::ordered_json::array();
-        Out.Excludes.clear();                         // the CNF loop below may have filled it before the refusal
-        Out.Parents = OverRefs(J, &Out.Excludes);
+    Out.Json      = J;
+    Out.Layers    = nlohmann::ordered_json::array();
+    Out.Entries   = nlohmann::ordered_json::object();
+    Out.LowerError = NodeLower::CheckNode(J, Out.NodeId.empty() ? Out.Cid : Out.NodeId);
+    Out.Refs = NodeRefs(J, &Out.Requires);
+    if (!Out.LowerError.empty())
+    {
+        LogWarn("ManifestModel::ParseNode", "Malformed node — " + Out.LowerError + " (" + File.string() + ")");
         return true;
-    };
-
-    //--- the edge ---
-    std::string OverErr;
-    if (J.contains("OVER") && !ParseOver(J["OVER"], Out.Over, &OverErr))
-        return Refuse("node '" + Out.NodeId + "': " + OverErr);
-    for (const OverReq &R : Out.Over)
-    {
-        if (R.Not) Out.Excludes.push_back(R.Any.front());
-        else for (const std::string &M : R.Any) Out.Parents.push_back(M);
-        if (R.Composes()) Out.Composes.push_back(R.Any.front());
     }
-
-    //--- VARIANT: on the shelf under this name. A non-string or empty value is refused, never guessed. ---
-    if (J.contains("VARIANT"))
-    {
-        if (!J["VARIANT"].is_string() || J["VARIANT"].get<std::string>().empty())
-            return Refuse("node '" + Out.NodeId + "': VARIANT must be a non-empty name");
-        Out.Variant = J["VARIANT"].get<std::string>();
-    }
-    if (J.contains("RECOMMENDED") && !J["RECOMMENDED"].is_boolean())
-        return Refuse("node '" + Out.NodeId + "': RECOMMENDED must be true or false");
-
-    //--- the payload: every present payload array lowers into the executor's flat layer stream ---
-    std::string LowerErr;
-    Out.Layers = NodeLower::Lower(J, Out.NodeId, LowerErr);
-    if (!LowerErr.empty()) return Refuse(LowerErr);
-
-    //--- TOGGLE: present ⇒ user-toggleable, and the value IS the initial state. An UNKNOWN value is refused, not
-    //guessed: `Out.Default = (Toggle != "off")` would make every typo — "of", "Off", "false" — read as ON. ---
-    const std::string Toggle = J.value("TOGGLE", std::string());
-    if (!Toggle.empty() && Toggle != "on" && Toggle != "off")
-        return Refuse("node '" + Out.NodeId + "': TOGGLE must be \"on\" or \"off\", not \"" + Toggle + "\"");
-    Out.Optional = !Toggle.empty();
-    Out.Default  = (Toggle != "off");
-
-    //--- TILE: identity of a title. UID keys saves/settings/the content root; missing, it used to fall back
-    //silently at launch — and the user lost their saves to a path that moved. ---
-    if (J.contains("TILE"))
-    {
-        const auto &T = J["TILE"];
-        if (!T.is_object()) return Refuse("node '" + Out.NodeId + "': TILE must be an object");
-        if (!T.contains("UID") || !T["UID"].is_string() || T["UID"].get<std::string>().empty())
-            return Refuse("node '" + Out.NodeId + "': TILE has no UID (it keys saves, settings and the content root)");
-        if (T.contains("TITLE") && !T["TITLE"].is_string())
-            return Refuse("node '" + Out.NodeId + "': TILE.TITLE must be a string");
-        //Descriptive catalog fields live in an opaque META bag on disk (the engine names only a handful of
-        //them); the tile consumers read them flat, so they re-join here.
-        nlohmann::ordered_json Meta = nlohmann::ordered_json::object();
-        for (const auto &[K, V] : T.items())
-        {
-            if (K == "META") continue;
-            Meta[K] = V;
-        }
-        if (T.contains("META"))
-        {
-            if (!T["META"].is_object()) return Refuse("node '" + Out.NodeId + "': TILE.META must be an object");
-            // The tile's own fields win: META is free-form (and, on a received block, foreign) — a META "TITLE": 5
-            // must not overwrite the validated string the consumers read without a type check.
-            for (const auto &[K, V] : T["META"].items())
-                if (K != "UID" && K != "TITLE" && K != "COVER") Meta[K] = V;
-        }
-        Out.OwnTile   = true;
-        Out.Uid       = T["UID"].get<std::string>();
-        Out.Uids      = { Out.Uid };
-        Out.FaceKey   = Out.Key();
-        Out.FaceDistance = 0;
-        Out.AnchorKey = Out.Key();
-        Out.Meta      = std::move(Meta);
-    }
-
-    //--- ENV / ENV_REMOVE: the process environment is mutation, folded along the chain like the registry. A value
-    //that is not a string is refused here (not skipped at exec, where the same mistake used to have two endings).
-    if (J.contains("ENV"))
-    {
-        if (!J["ENV"].is_object()) return Refuse("node '" + Out.NodeId + "': ENV must be an object (name → value)");
-        for (const auto &[K, V] : J["ENV"].items())
-            if (!V.is_string()) return Refuse("node '" + Out.NodeId + "': ENV." + K + " is " + std::string(V.type_name()) + ", not a string — quote it");
-        Out.Env = J["ENV"];
-    }
-    if (J.contains("ENV_REMOVE"))
-    {
-        if (!J["ENV_REMOVE"].is_array()) return Refuse("node '" + Out.NodeId + "': ENV_REMOVE must be a list of names");
-        for (const auto &V : J["ENV_REMOVE"])
-        {
-            if (!V.is_string() || V.get<std::string>().empty()) return Refuse("node '" + Out.NodeId + "': ENV_REMOVE entries are names (strings)");
-            Out.EnvRemove.push_back(V.get<std::string>());
-        }
-    }
-
-    //--- ENTRYPOINTS: the node's OWN list. Each entry lowers to the exec block the engine consumes. The node's
-    //launch fields are set from it here; DeriveIdentity replaces them with the INHERITED list for a node that
-    //declares none (a fact that folds along the chain). ---
-    if (J.contains("ENTRYPOINTS"))
-    {
-        const auto &Eps = J["ENTRYPOINTS"];
-        if (!Eps.is_array()) return Refuse("node '" + Out.NodeId + "': ENTRYPOINTS must be a list");
-        if (Eps.empty()) return Refuse("node '" + Out.NodeId + "': ENTRYPOINTS is empty (nothing to run — remove it or add an entry)");
-        for (const auto &E : Eps)
-        {
-            std::string EpErr;
-            const nlohmann::ordered_json Ex = NodeLower::LowerEntrypoint(E, Out.NodeId, EpErr);
-            if (!EpErr.empty()) return Refuse(EpErr);
-            if (EntryIsRunner(E)) Out.OwnRunner = true;
-        }
-        Out.Entrypoints = Eps;
-        ApplyEntrypoints(Out, Eps, Out.Key());
-        if (Out.OwnRunner && Out.AnchorKey.empty()) Out.AnchorKey = Out.Key();
-    }
+    if (J.contains("VARIANT")) Out.Variant = J["VARIANT"].get<std::string>();
+    if (J.contains("RECOMMENDED")) for (const auto &U : J["RECOMMENDED"]) Out.Recommended.push_back(U.get<std::string>());
+    Out.Layers = NodeLower::LowerNode(J, Out.NodeId);
+    const auto &Ls = J["LAYERS"];
+    Out.IsGraft = !Ls.empty() && Ls[0].contains("ANY");
+    for (const auto &L : Ls)
+        if (L.contains("EXEC"))
+            for (const auto &E : L["EXEC"])
+            {
+                if (E.contains("GUEST") && E["GUEST"].is_array() && !E["GUEST"].empty()) Out.OwnRunner = true;
+                if (E.contains("TILE")) Out.OwnTile = true;
+            }
     return true;
 }
 
 } // namespace ManifestModel
 
+//The default entry: the first game entry (no GUEST) for a runnable node, else the first runner entry.
+static const nlohmann::ordered_json *DefaultEntry(const nlohmann::ordered_json &Entries)
+{
+    const nlohmann::ordered_json *Runner = nullptr;
+    for (const auto &[L, E] : Entries.items())
+    {
+        const bool IsRunner = E.contains("GUEST") && E["GUEST"].is_array() && !E["GUEST"].empty();
+        if (!IsRunner && E.contains("HOST")) return &E;
+        if (IsRunner && !Runner) Runner = &E;
+    }
+    return Runner;
+}
+
 nlohmann::ordered_json Node::ExecFor(const std::string &Lbl) const
 {
-    if (!EffectiveEntrypoints.is_array() || EffectiveEntrypoints.empty()) return nlohmann::ordered_json();
+    if (!Entries.is_object() || Entries.empty()) return nlohmann::ordered_json();
     if (Lbl.empty()) return Exec;
-    const std::vector<std::string> Labels = EntrypointLabels();
-    for (size_t i = 0; i < Labels.size(); ++i)
-        if (Labels[i] == Lbl)
-        {
-            std::string Err;
-            return NodeLower::LowerEntrypoint(EffectiveEntrypoints[i], NodeId, Err);
-        }
-    return nlohmann::ordered_json();
+    if (!Entries.contains(Lbl)) return nlohmann::ordered_json();
+    return NodeLower::LowerEntry(Entries[Lbl]);
 }
 
 std::string Node::HostFor(const std::string &Lbl) const
 {
     if (Lbl.empty()) return HostPlatform;
     const nlohmann::ordered_json E = ExecFor(Lbl);
-    return E.is_object() ? E.value("PLATFORM", HostPlatform) : HostPlatform;
-}
-
-std::string Node::RunnerFor(const std::string &Lbl) const
-{
-    if (Lbl.empty()) return RecommendedRunner;
-    const nlohmann::ordered_json E = ExecFor(Lbl);
-    return E.is_object() ? E.value("RUNNER", std::string()) : RecommendedRunner;
+    return E.is_object() ? E.value("PLATFORM", E.value("HOST", HostPlatform)) : HostPlatform;
 }
 
 std::vector<std::string> Node::EntrypointLabels() const
 {
     std::vector<std::string> Out;
-    if (!EffectiveEntrypoints.is_array()) return Out;
-    for (size_t i = 0; i < EffectiveEntrypoints.size(); ++i)
-    {
-        const auto &E = EffectiveEntrypoints[i];
-        const std::string L = E.is_object() ? E.value("LABEL", std::string()) : std::string();
-        Out.push_back(L.empty() ? std::to_string(i) : L);
-    }
+    if (Entries.is_object()) for (const auto &[L, E] : Entries.items()) Out.push_back(L);
     return Out;
 }
 
@@ -418,27 +180,16 @@ void ScanBundleNodes(const std::filesystem::path &BundleDir, NodeIndex &Idx)
         try { In >> J; }
         catch (const std::exception &E)
         { LogWarn("ManifestModel::ScanBundleNodes", "Skipping unparseable " + Entry.path().string() + ": " + E.what()); continue; }
-        //A file holds ONE node or an ARRAY of them. Grouping nodes into files is pure presentation —
-        //it carries no semantics.
-        nlohmann::ordered_json Single;                                    // only materialised for the 1-node form
-        if (!J.is_array()) Single = nlohmann::ordered_json::array({J});   // (both operands lvalues ⇒ no copy of J)
-        const nlohmann::ordered_json &Nodes = J.is_array() ? J : Single;
-        for (const auto &Doc : Nodes)
-        {
-            if (Doc.is_object() && Doc.contains("TYPE"))
-                LogWarn("ManifestModel::ScanBundleNodes", "Legacy TYPE node ignored (run tools/migrate_one_edge.py): " + Entry.path().string());
-            Node N;
-            if (!ParseNode(Doc, Entry.path(), BundleDir, N)) continue;    // not a node
-            // Key by the node's HANDLE — its stored CID (Key() = Cid). A node with no stored CID (a never-minted
-            // draft caught mid-author, or a frozen block with no "CID" field) gets a synthetic per-node key so
-            // handle-less nodes never fold together. Refs (OVER) are CIDs, so they resolve against these keys.
-            std::string K = N.Key();
-            for (unsigned char c : K) if (c < 0x20) { K.clear(); break; }   // control-byte handle -> synthetic (unforgeable key)
-            if (K.empty()) K = std::string("\x01") + Entry.path().string() + "#unnamed" + std::to_string(Idx.Nodes.size());  // control-byte prefix: unforgeable
-            else if (Idx.Nodes.count(K))
-            { LogWarn("ManifestModel::ScanBundleNodes", "Duplicate node handle '" + K + "' (" + Entry.path().string() + ") — keeping first-seen."); continue; }
-            Idx.Nodes.emplace(K, std::move(N));
-        }
+        Node N;
+        if (!ParseNode(J, Entry.path(), BundleDir, N)) continue;         // not a node
+        // Key by the node's HANDLE — its stored CID. A node with no stored CID (a never-minted draft) gets a
+        // synthetic per-file key so handle-less nodes never fold together.
+        std::string K = N.Key();
+        for (unsigned char c : K) if (c < 0x20) { K.clear(); break; }    // control-byte handle -> synthetic (unforgeable key)
+        if (K.empty()) K = std::string("\x01") + Entry.path().string() + "#unnamed" + std::to_string(Idx.Nodes.size());
+        else if (Idx.Nodes.count(K))
+        { LogWarn("ManifestModel::ScanBundleNodes", "Duplicate node handle '" + K + "' (" + Entry.path().string() + ") — keeping first-seen."); continue; }
+        Idx.Nodes.emplace(K, std::move(N));
     }
 }
 
@@ -455,400 +206,155 @@ NodeIndex BuildNodeIndex(const std::vector<std::filesystem::path> &LibraryRoots,
     }
     for (const auto &Bundle : ExtraBundleDirs)               // locally-added packages: each dir IS a bundle
         if (std::filesystem::is_directory(Bundle, Ec)) ScanBundleNodes(Bundle, Idx);
-    DeriveIdentity(Idx);
+    DeriveFacts(Idx);
     LogOut("ManifestModel::BuildNodeIndex", "Indexed " + std::to_string(Idx.Nodes.size()) + " node(s) across "
            + std::to_string(LibraryRoots.size()) + " root(s).");
     return Idx;
 }
 
-void DeriveIdentity(NodeIndex &Idx)
+Fold::Library LibraryOf(const NodeIndex &Idx)
 {
-    // ---- identity: the union of the faces beneath a node, across EVERY positive ref (bare refs and group members
-    // alike — a mod OVER [[aok, conq]] belongs to both). Own tile = itself. Memoized, cycle-guarded. ----
-    struct G { std::vector<std::string> Uids; bool Done = false; };
-    std::unordered_map<std::string, G> Memo;
-    std::function<const G &(const std::string &)> Of = [&](const std::string &Id) -> const G & {
-        auto It = Memo.find(Id);
-        if (It != Memo.end()) return It->second;
-        G &g = Memo[Id];                                                     // placeholder first: cycle guard
-        const Node *N = Idx.Find(Id);
-        if (!N) return g;
-        if (N->OwnTile) { g.Uids = { N->Uid }; g.Done = true; return g; }
-        for (const std::string &P : N->Parents)
+    Fold::Library L;
+    L.Nodes.reserve(Idx.Nodes.size());
+    for (const auto &[K, N] : Idx.Nodes)
+        if (N.LowerError.empty()) L.Nodes.emplace(K, Fold::Library::Entry{ &N.Json, N.BundleDir.string() });
+    return L;
+}
+
+//A tile's cover in the engine's layer vocabulary ({PATH, SOURCE{TYPE, CID, SIZE}}), the shape every cover reader
+//(LayerLocator) already takes; the rest of the tile flat, META fields beside the tile's own (the tile's own win).
+static nlohmann::ordered_json FlatTile(const nlohmann::ordered_json &T)
+{
+    nlohmann::ordered_json M = nlohmann::ordered_json::object();
+    for (const auto &[K, V] : T.items())
+    {
+        if (K == "META") continue;
+        if (K == "COVER" && V.is_object())
         {
-            if (!Idx.Find(P)) continue;
-            const G &pg = Of(P);
-            for (const std::string &U : pg.Uids)
-                if (std::find(g.Uids.begin(), g.Uids.end(), U) == g.Uids.end()) g.Uids.push_back(U);
-        }
-        g.Done = true;
-        return g;
-    };
-    // ---- nearest-beneath facts, one generic memoized DP: the nearest node beneath (own = 0) that satisfies a
-    // predicate, by OVER distance over the given refs, ties by OVER order. A placeholder entry is the cycle guard. ----
-    struct Near { std::string Key; int Dist = -1; };
-    struct NearestDP {
-        const NodeIndex &Idx; std::function<bool(const Node &)> Base; bool BareOnly;
-        std::unordered_map<std::string, Near> Memo;
-        const Near &operator()(const std::string &Id)
-        {
-            auto It = Memo.find(Id);
-            if (It != Memo.end()) return It->second;
-            Near &n = Memo[Id];
-            const Node *N = Idx.Find(Id);
-            if (!N) return n;
-            if (Base(*N)) { n.Key = Id; n.Dist = 0; return n; }
-            Near Best;
-            for (const std::string &P : (BareOnly ? N->Composes : N->Parents))
+            nlohmann::ordered_json C = { {"PATH", V.value("FILE", std::string())} };
+            if (V.contains("SOURCE") && V["SOURCE"].is_string())
             {
-                if (!Idx.Find(P)) continue;
-                const Near pn = (*this)(P);                    // by value: the recursion may rehash Memo
-                if (pn.Dist < 0) continue;
-                if (Best.Dist < 0 || pn.Dist + 1 < Best.Dist) { Best.Dist = pn.Dist + 1; Best.Key = pn.Key; }
+                C["SOURCE"] = { {"TYPE", "ipfs"}, {"CID", V["SOURCE"]} };
+                if (V.contains("SIZE") && V["SIZE"].is_number()) C["SOURCE"]["SIZE"] = V["SIZE"];
             }
-            Near &out = Memo[Id];                              // re-find: Memo may have rehashed
-            out = Best;
-            return out;
+            M["COVER"] = std::move(C);
+            continue;
+        }
+        M[K] = V;
+    }
+    if (T.contains("META") && T["META"].is_object())
+        for (const auto &[K, V] : T["META"].items())
+            if (!M.contains(K)) M[K] = V;
+    return M;
+}
+
+void DeriveFacts(NodeIndex &Idx)
+{
+    const Fold::Library Lib = LibraryOf(Idx);
+    // 1. Each node's own fold: its effective entries (the folded EXEC) and the tiles they present.
+    struct Presented { std::string Node; nlohmann::ordered_json Tile; bool Variant = false, Recommended = false; std::string Sort; };
+    std::map<std::string, std::vector<Presented>> ByUid;
+    //Each node's entries, resolved in parallel: the library is read-only and every resolve is independent.
+    std::vector<std::pair<const std::string *, Node *>> Work;
+    for (auto &[K, N] : Idx.Nodes) Work.push_back({ &K, &N });
+    {
+        std::atomic<size_t> Next{ 0 };
+        auto Run = [&] {
+            for (size_t I; (I = Next.fetch_add(1)) < Work.size();)
+            {
+                Node &N = *Work[I].second;
+                N.Entries = N.LowerError.empty() ? Fold::ResolveEntries(Lib, *Work[I].first).Exec : nlohmann::ordered_json::object();
+            }
+        };
+        const unsigned Threads = std::max(1u, std::min(16u, std::thread::hardware_concurrency()));
+        std::vector<std::thread> Pool;
+        for (unsigned T = 1; T < Threads; ++T) Pool.emplace_back(Run);
+        Run();
+        for (auto &T : Pool) T.join();
+    }
+    for (auto &[K, N] : Idx.Nodes)
+    {
+        N.HasExec = N.HasRunner = false;
+        N.Exec = nlohmann::ordered_json();
+        N.HostPlatform.clear(); N.GuestPlatform.clear(); N.Label.clear(); N.Faces.clear();
+        N.Uid.clear(); N.PackageUid.clear(); N.Meta = nlohmann::ordered_json();
+        if (!N.LowerError.empty()) continue;
+        for (const auto &[L, E] : N.Entries.items())
+        {
+            const bool IsRunner = E.contains("GUEST") && E["GUEST"].is_array() && !E["GUEST"].empty();
+            if (IsRunner) N.HasRunner = true;
+            else if (E.contains("HOST")) N.HasExec = true;
+            if (!IsRunner && E.contains("TILE") && E["TILE"].is_object() && E["TILE"].contains("UID"))
+            {
+                const std::string Uid = E["TILE"]["UID"].get<std::string>();
+                if (std::find(N.Faces.begin(), N.Faces.end(), Uid) == N.Faces.end()) N.Faces.push_back(Uid);
+                ByUid[Uid].push_back({ K, E["TILE"], !N.Variant.empty(),
+                                       std::find(N.Recommended.begin(), N.Recommended.end(), Uid) != N.Recommended.end(),
+                                       N.Variant + '\x1f' + K });
+            }
+        }
+        if (const nlohmann::ordered_json *D = DefaultEntry(N.Entries))
+        {
+            N.Exec = NodeLower::LowerEntry(*D);
+            N.Label = D->value("LABEL", std::string());
+            N.HostPlatform = D->value("HOST", std::string());
+            if (D->contains("GUEST") && (*D)["GUEST"].is_array())
+                for (const auto &G : (*D)["GUEST"]) if (G.is_string()) N.GuestPlatform.push_back(G.get<std::string>());
+        }
+    }
+    // 2. The tile table: faces with one UID are one tile. Its presentation is its recommended variant's folded tile,
+    //    else its first variant's (by VARIANT, then handle), else — no variant presents it — any node's.
+    std::map<std::string, nlohmann::ordered_json> Tiles;
+    for (auto &[Uid, Ps] : ByUid)
+    {
+        std::stable_sort(Ps.begin(), Ps.end(), [](const Presented &A, const Presented &B) {
+            if (A.Variant != B.Variant) return A.Variant;
+            if (A.Recommended != B.Recommended) return A.Recommended;
+            return A.Sort < B.Sort;
+        });
+        Tiles[Uid] = Ps.front().Tile;
+    }
+    auto Root = [&](std::string Uid) {
+        std::set<std::string> Seen;
+        for (;;)
+        {
+            auto It = Tiles.find(Uid);
+            if (It == Tiles.end() || !It->second.contains("PARENTUID") || !Seen.insert(Uid).second) return Uid;
+            Uid = It->second["PARENTUID"].get<std::string>();
         }
     };
-    NearestDP Face  { Idx, [](const Node &N) { return N.OwnTile; }, /*BareOnly=*/false, {} };
-    NearestDP Anchor{ Idx, [](const Node &N) { return N.OwnTile || N.OwnRunner; }, /*BareOnly=*/false, {} };
-    NearestDP Entry { Idx, [](const Node &N) { return N.Entrypoints.is_array() && !N.Entrypoints.empty(); }, /*BareOnly=*/true, {} };
-
-    for (auto &[Id, N] : Idx.Nodes)
+    for (auto &[K, N] : Idx.Nodes)
     {
-        // A face's key is its INDEX key. ParseNode stamped Key() before the caller assigned the node's CID (a frozen
-        // or fetched block carries no handle, so Key() was the LABEL then) — re-derive it here, where the key is known.
-        if (N.OwnTile) { N.FaceKey = Id; N.FaceDistance = 0; }
-        else
-        {
-            const G &g = Of(Id);
-            N.Uids = g.Uids;
-            const Near &f = Face(Id);
-            N.FaceKey = f.Key; N.FaceDistance = f.Dist;
-            const Node *F = f.Key.empty() ? nullptr : Idx.Find(f.Key);
-            N.Uid  = F ? F->Uid : (g.Uids.empty() ? std::string() : g.Uids.front());
-            N.Meta = F ? F->Meta : nlohmann::ordered_json();
-        }
-        const Near &a = Anchor(Id);
-        N.AnchorKey = a.Key;
-        // Entries: a node with its own list keeps it (ParseNode applied it); one without inherits the nearest.
-        if (!(N.Entrypoints.is_array() && !N.Entrypoints.empty()))
-        {
-            const Near &e = Entry(Id);
-            const Node *S = e.Key.empty() ? nullptr : Idx.Find(e.Key);
-            ApplyEntrypoints(N, S ? S->Entrypoints : nlohmann::ordered_json::array(), e.Key);
-        }
+        if (N.Faces.empty()) continue;
+        N.Uid = N.Faces.front();
+        N.PackageUid = Root(N.Uid);
+        N.Meta = FlatTile(Tiles[N.Uid]);
     }
 }
 
-bool SameTile(const Node &A, const Node &B)
+std::vector<std::string> Closure(const NodeIndex &Idx, const std::string &Root, std::vector<std::string> *Missing)
 {
-    auto F = [](const Node &N, const char *K) { return N.Meta.is_object() && N.Meta.contains(K) ? N.Meta[K] : nlohmann::ordered_json(); };
-    return A.Uid == B.Uid && F(A, "TITLE") == F(B, "TITLE") && F(A, "COVER") == F(B, "COVER");
-}
-
-//Everything reachable from `Start` through BARE OVER refs — the node's own composition. A node in there is part
-//of the node, never a graft on it.
-static std::unordered_set<std::string> Reachable(const NodeIndex &Idx, const std::string &Start)
-{
-    std::unordered_set<std::string> Seen;
-    std::vector<std::string> Stack{Start};
-    while (!Stack.empty())
-    {
-        const std::string Cur = Stack.back(); Stack.pop_back();
-        if (!Seen.insert(Cur).second) continue;
-        const Node *N = Idx.Find(Cur);
-        if (N) for (const std::string &P : N->Composes) Stack.push_back(P);
-    }
-    return Seen;
-}
-
-int FaceDepth(const NodeIndex &Idx, const Node &FaceNode)
-{
-    if (!FaceNode.OwnTile) return -1;
-    int D = 0;
-    for (const std::string &Id : Reachable(Idx, FaceNode.Key()))
-    {
-        if (Id == FaceNode.Key()) continue;
-        const Node *P = Idx.Find(Id);
-        if (P && P->OwnTile && P->Uid == FaceNode.Uid && !SameTile(*P, FaceNode)) ++D;
-    }
-    return D;
-}
-
-std::vector<const Node *> OrderVariants(const NodeIndex &Idx, std::vector<const Node *> Variants)
-{
-    if (Variants.empty()) return Variants;
-    //Each variant's face node; its depth (0 = a main face). A variant with no face sorts last.
-    std::map<const Node *, int> Depth;
-    std::map<const Node *, const Node *> FaceOf;
-    std::map<std::string, int> DepthOfFace;
-    for (const Node *V : Variants)
-    {
-        const Node *F = V->FaceKey.empty() ? nullptr : Idx.Find(V->FaceKey);
-        FaceOf[V] = F;
-        if (!F) { Depth[V] = 1 << 20; continue; }
-        auto It = DepthOfFace.find(F->Key());
-        if (It == DepthOfFace.end()) It = DepthOfFace.emplace(F->Key(), FaceDepth(Idx, *F)).first;
-        Depth[V] = It->second;
-    }
-    std::stable_sort(Variants.begin(), Variants.end(), [&](const Node *A, const Node *B) {
-        if (Depth[A] != Depth[B]) return Depth[A] < Depth[B];                      // main face first, then children by depth
-        const std::string Fa = FaceOf[A] ? FaceOf[A]->Meta.value("TITLE", std::string()) : std::string();
-        const std::string Fb = FaceOf[B] ? FaceOf[B]->Meta.value("TITLE", std::string()) : std::string();
-        if (Fa != Fb) return Fa < Fb;                                                 // faces of equal depth by title
-        if (A->Recommended != B->Recommended) return A->Recommended;                  // the face's default variant
-        if (A->Variant != B->Variant) return A->Variant < B->Variant;
-        return A->Key() < B->Key();
-    });
-    return Variants;
-}
-
-void FoldEnv(const NodeIndex &Idx, const std::vector<std::string> &Order, nlohmann::ordered_json &Env, std::vector<std::string> &Remove)
-{
-    if (!Env.is_object()) Env = nlohmann::ordered_json::object();
-    std::vector<std::string> Removed;
-    auto Forget = [&](const std::string &K) { Removed.erase(std::remove(Removed.begin(), Removed.end(), K), Removed.end()); };
-    for (const std::string &Id : Order)
-    {
-        const Node *N = Idx.Find(Id);
-        if (!N) continue;
-        for (const std::string &K : N->EnvRemove)
-        {
-            Env.erase(K);
-            if (std::find(Removed.begin(), Removed.end(), K) == Removed.end()) Removed.push_back(K);
-        }
-        if (N->Env.is_object())
-            for (const auto &[K, V] : N->Env.items()) { Env[K] = V; Forget(K); }
-    }
-    for (const std::string &K : Removed)
-        if (std::find(Remove.begin(), Remove.end(), K) == Remove.end()) Remove.push_back(K);
-}
-
-std::vector<std::string> ResolveNodeOrder(const NodeIndex &Idx, const std::string &LaunchNodeId,
-                                          const std::map<std::string, bool> &Toggles,
-                                          std::vector<std::string> *Missing)
-{
-    (void)Toggles;   // nothing inside a closure is a choice
     std::vector<std::string> Order;
-    const Node *Launch = Idx.Find(LaunchNodeId);
-    //A node whose payload never lowered is unusable: routing through it would apply nothing where the author
-    //declared something. Treated as missing so the launch refuses loudly instead of quietly doing less.
-    if (!Launch || !Launch->LowerError.empty())
-    { if (Missing) Missing->push_back(LaunchNodeId); return Order; }
-
-    //The closure: post-order DFS over BARE refs in list order — a node is emitted after everything it is made of,
-    //so the launch node is last (= highest priority). Cycles are reported and broken (the back-edge is skipped).
     std::unordered_set<std::string> Visited, OnStack;
     std::function<void(const std::string &)> Emit = [&](const std::string &Id) {
-        if (Visited.count(Id)) return;
-        if (OnStack.count(Id)) { LogWarn("ManifestModel::ResolveNodeOrder", "Cycle through node '" + Id + "' — breaking edge."); return; }
+        if (Visited.count(Id) || OnStack.count(Id)) return;              // a cycle is broken at its back-edge
         const Node *N = Idx.Find(Id);
-        if (!N || !N->LowerError.empty()) { if (Missing) Missing->push_back(Id); Visited.insert(Id); return; }
+        if (!N) { if (Missing) Missing->push_back(Id); Visited.insert(Id); return; }
         OnStack.insert(Id);
-        for (const std::string &P : N->Composes) Emit(P);
+        for (const std::string &R : N->Refs) Emit(R);
         OnStack.erase(Id);
         Visited.insert(Id);
-        Order.push_back(Id);
+        Order.push_back(N->Key());
     };
-    Emit(Launch->Key() == LaunchNodeId ? LaunchNodeId : Launch->Key());
-    //The caller's spelling of the launch id (a LABEL from the CLI) must head the result under that spelling.
-    if (!Order.empty() && Order.back() != LaunchNodeId) Order.back() = LaunchNodeId;
+    Emit(Root);
     return Order;
-}
-
-std::vector<GraftOffer> OfferedGrafts(const NodeIndex &Idx, const std::string &LaunchNodeId,
-                                      const std::map<std::string, bool> &Toggles,
-                                      const std::function<bool(const Node &)> &Scope)
-{
-    std::vector<GraftOffer> Out;
-    const Node *Launch = Idx.Find(LaunchNodeId);
-    if (!Launch) return Out;
-    const std::string LaunchKey = Launch->Key();
-    const bool OnRunner = Launch->IsRunner() && !Launch->HasExec;
-    if (!OnRunner && Launch->Uids.empty()) return Out;
-    const std::unordered_set<std::string> Own = Reachable(Idx, LaunchKey);
-
-    //Candidates: every node with the selection's identity (the same UID; for a runner: anchored on it) that is
-    //OVER something, is NOT part of the selection's own composition, and is neither a variant nor a runner
-    //(those are picked, never ticked). Deterministic order: by label, then key.
-    std::vector<const Node *> Cands;
-    for (const auto &[Id, N] : Idx.Nodes)
-    {
-        if (N.Over.empty() || Own.count(Id)) continue;
-        if (N.IsVariant() || N.OwnRunner || !N.LowerError.empty()) continue;
-        bool Mine = false;
-        if (OnRunner) Mine = (N.AnchorKey == LaunchKey && Id != LaunchKey);
-        else for (const std::string &U : N.Uids) for (const std::string &LU : Launch->Uids) if (U == LU) { Mine = true; break; }
-        if (!Mine) continue;
-        if (Scope && !Scope(N)) continue;
-        Cands.push_back(&N);
-    }
-    std::sort(Cands.begin(), Cands.end(), [](const Node *A, const Node *B) {
-        if (A->NodeId != B->NodeId) return A->NodeId < B->NodeId;
-        return A->Key() < B->Key();
-    });
-
-    auto SelectedByUser = [&](const Node &N) {
-        auto It = Toggles.find(N.Key());
-        if (It != Toggles.end()) return It->second;
-        if (!N.NodeId.empty()) { It = Toggles.find(N.NodeId); if (It != Toggles.end()) return It->second; }
-        return N.Optional && N.Default;                        // TOGGLE "on" = shipped pre-ticked
-    };
-
-    std::unordered_set<std::string> Selected{ LaunchKey };
-    //What a graft BRINGS: its own closure minus the selection's own composition — mounted beneath it when ticked.
-    std::unordered_map<const Node *, std::vector<std::string>> Brings;
-    for (const Node *G : Cands)
-        for (const std::string &Id : Reachable(Idx, G->Key()))
-            if (Id != G->Key() && !Own.count(Id)) Brings[G].push_back(Id);
-
-    //Applicable against a selected set S (the graft itself and what it brings held OUT of S). A BARE ref REQUIRES
-    //only when it names a VARIANT (that variant must be the selection — a mod OVER [640] is not for you on 659);
-    //anything else it names it is MADE OF and brings along beneath it when ticked (tex-hd brings tex; a fix brings
-    //its library). A group requires one member selected; a NOT requires the node not selected. NOT is one-sided
-    //in the file and symmetric in effect: a selected node's NOT naming this graft — or anything it brings — blocks
-    //it, and a NOT carried by anything it brings counts as its own.
-    //The requirements of ONE node against S. Applicability is transitive over composition: a graft made of a
-    //graft that requires version 640 requires 640 too, so every node a graft brings is checked the same way.
-    auto Requirements = [&](const Node &N, const std::unordered_set<std::string> &S, std::string &Why, std::string &ExcludedBy) {
-        for (const OverReq &R : N.Over)
-        {
-            if (R.Not)
-            {
-                if (S.count(R.Any.front())) { ExcludedBy = R.Any.front(); return false; }
-                continue;
-            }
-            if (R.Composes())
-            {
-                const Node *Mn = Idx.Find(R.Any.front());
-                if (!Mn) { Why = R.Any.front(); return false; }              // a ref not in the graph is a blocker, never "composed"
-                // The DECLARED facet decides — not IsVariant(), which also needs HasExec and flips to false while the
-                // entry-bearing node beneath has not landed yet (a receiver mid-closure), turning a requirement
-                // into composition that would bring the wrong version's whole chain.
-                if (!Mn->Variant.empty() && !S.count(R.Any.front())) { Why = R.Any.front(); return false; }
-                continue;                                                    // composition: mounted beneath the graft
-            }
-            bool Ok = false;
-            for (const std::string &M : R.Any) if (S.count(M)) { Ok = true; break; }
-            if (!Ok) { Why = R.Any.front(); return false; }
-        }
-        return true;
-    };
-    auto Applicable = [&](const Node &G, const std::unordered_set<std::string> &S, std::string &Why, std::string &ExcludedBy) {
-        Why.clear(); ExcludedBy.clear();
-        if (!Requirements(G, S, Why, ExcludedBy)) return false;
-        for (const std::string &B : Brings[&G])
-            if (const Node *Bn = Idx.Find(B))
-                if (!Requirements(*Bn, S, Why, ExcludedBy)) return false;
-        auto NamedBy = [&](const std::vector<std::string> &Ex, std::string &Who, const std::string &Owner) {
-            for (const std::string &E : Ex)
-            {
-                if (E == G.Key()) { Who = Owner; return true; }
-                for (const std::string &B : Brings[&G]) if (E == B) { Who = Owner; return true; }
-            }
-            return false;
-        };
-        if (NamedBy(Launch->Excludes, ExcludedBy, LaunchKey)) return false;
-        for (const Node *H : Cands)
-            if (H != &G && S.count(H->Key()) && NamedBy(H->Excludes, ExcludedBy, H->Key())) return false;
-        return true;
-    };
-    //Fixpoint WITH RETRACTION: the selected set = the launch node, every ticked graft applicable against the
-    //others, and everything those bring. Re-derived in candidate order until it settles — a ticked graft enters
-    //when applicable and LEAVES when a selection made after it (a NOT, a lost requirement) blocks it, and whatever
-    //it brought leaves with it. Between two ticked grafts that exclude each other the first in candidate order wins
-    //(the GUI unticks the loser at tick time). NOT makes this non-monotone, so the pass count is bounded; a set that
-    //will not settle is reported and the last pass stands.
-    std::unordered_set<const Node *> Chosen;
-    auto Rebuild = [&]() {
-        Selected.clear(); Selected.insert(LaunchKey);
-        for (const Node *G : Chosen) { Selected.insert(G->Key()); for (const std::string &B : Brings[G]) Selected.insert(B); }
-    };
-    bool Settled = false;
-    for (size_t Pass = 0; Pass <= Cands.size() + 1 && !Settled; ++Pass)
-    {
-        Settled = true;
-        for (const Node *G : Cands)
-        {
-            const bool In = Chosen.count(G) != 0;
-            Chosen.erase(G); Rebuild();
-            std::string Why, ExcludedBy;
-            const bool Want = SelectedByUser(*G) && Applicable(*G, Selected, Why, ExcludedBy);
-            if (Want) { Chosen.insert(G); Rebuild(); }
-            if (Want != In) Settled = false;
-        }
-    }
-    if (!Settled)
-        LogWarn("ManifestModel::OfferedGrafts", "graft selection for '" + Launch->NodeId + "' did not settle — last pass stands.");
-    for (const Node *G : Cands)
-    {
-        GraftOffer O;
-        O.Graft = G;
-        O.Selected = Chosen.count(G) != 0;                      // in the settled set ⇒ applicable by construction
-        Chosen.erase(G); Rebuild();
-        O.Applicable = Applicable(*G, Selected, O.Blocker, O.ExcludedBy);
-        if (O.Selected) { Chosen.insert(G); Rebuild(); }
-        Out.push_back(std::move(O));
-    }
-    return Out;
-}
-
-std::vector<std::string> ResolveGraftOrder(const NodeIndex &Idx, const std::string &LaunchNodeId,
-                                           const std::map<std::string, bool> &Toggles,
-                                           const std::vector<std::string> &BaseOrder,
-                                           const std::map<std::string, int> &Precedence,
-                                           const std::function<bool(const Node &)> &Scope)
-{
-    std::vector<std::string> Out;
-    std::vector<GraftOffer> Offers = OfferedGrafts(Idx, LaunchNodeId, Toggles, Scope);
-    std::vector<const Node *> Active;
-    for (const GraftOffer &O : Offers) if (O.Selected) Active.push_back(O.Graft);
-    if (Active.empty()) return Out;
-    //Precedence: higher = mounted later = wins at a conflict; ties by LABEL then key, so an untouched instance is
-    //reproducible AND survives a re-mint (a CID changes with every edit; a label does not).
-    auto PrecOf = [&](const Node *N) {
-        auto It = Precedence.find(N->Key());
-        if (It != Precedence.end()) return It->second;
-        if (!N->NodeId.empty()) { It = Precedence.find(N->NodeId); if (It != Precedence.end()) return It->second; }
-        return 0;
-    };
-    std::stable_sort(Active.begin(), Active.end(), [&](const Node *A, const Node *B) {
-        const int Pa = PrecOf(A), Pb = PrecOf(B);
-        if (Pa != Pb) return Pa < Pb;
-        if (A->NodeId != B->NodeId) return A->NodeId < B->NodeId;
-        return A->Key() < B->Key();
-    });
-    //Each graft's own closure (its substance, its private ancestors) beneath it; nodes already in the base mount,
-    //or already emitted by an earlier graft, are not repeated. Its identity-bearing requirements are SELECTED by
-    //construction (that is what made it applicable) — they are in BaseOrder or among the grafts — so descending
-    //into a bare ref never pulls a second copy of the game.
-    std::unordered_set<std::string> Seen(BaseOrder.begin(), BaseOrder.end());
-    if (const Node *L = Idx.Find(LaunchNodeId)) { Seen.insert(L->Key()); Seen.insert(LaunchNodeId); }
-    for (const Node *G : Active)
-    {
-        std::vector<std::string> Missing;
-        for (const std::string &Id : ResolveNodeOrder(Idx, G->Key(), Toggles, &Missing))
-        {
-            if (Seen.count(Id)) continue;
-            Seen.insert(Id);
-            Out.push_back(Id);
-        }
-        for (const auto &M : Missing) LogWarn("ManifestModel::ResolveGraftOrder", "graft '" + G->NodeId + "': unresolved requirement " + M);
-    }
-    return Out;
 }
 
 std::vector<EndpointInfo> TileEndpoints(const NodeIndex &Idx, const std::vector<std::string> &VariantIds)
 {
-    // Endpoints are computed over the CONTENT-CARRYING subgraph, not raw graph sinks. Lesson learned the hard way:
-    // every launchable variant is typically a graph sink (MC's per-version "..._game" wrapper holds only
-    // DeclareExec/CustomVar and hangs OFF the delta chain — nothing depends on it), so "sinks of the node DAG"
-    // yielded 903 endpoints. What actually nests is the CONTENT: a content-sink is a content node no other content
-    // node (transitively) depends on, and the endpoint shown to the user is the VARIANT with the smallest closure
-    // covering that sink — "the version that owns the tip". Variants covering no sink are dominated (their content
-    // ⊆ an endpoint's) and remain reachable via the dialog's Custom list.
+    // Endpoints are computed over the CONTENT-CARRYING subgraph, not raw graph sinks: every variant is typically a
+    // sink (nothing contains it), so "sinks" would be one row per version. What nests is the CONTENT; a greedy
+    // set-cover over it picks the variants that own the tips.
 
     // 1. Union closure over all variants: one shared-visited DFS — O(distinct nodes), never per-variant.
     std::unordered_set<std::string> Visited;
@@ -861,11 +367,11 @@ std::vector<EndpointInfo> TileEndpoints(const NodeIndex &Idx, const std::vector<
         const Node *N = Idx.Find(Cur);
         if (!N) continue;
         Union.push_back(N);
-        for (const std::string &Pid : N->Parents) Stack.push_back(Pid);
+        for (const std::string &Pid : N->Refs) Stack.push_back(Pid);
     }
     const int Nn = (int)Union.size();
     std::unordered_map<std::string, int> IxOf;
-    for (int i = 0; i < Nn; ++i) IxOf[Union[i]->NodeId] = i;
+    for (int i = 0; i < Nn; ++i) { IxOf[Union[i]->Key()] = i; IxOf.emplace(Union[i]->NodeId, i); }
 
     auto CarriesContent = [](const Node *N) {
         if (!N->Layers.is_array()) return false;
@@ -873,18 +379,18 @@ std::vector<EndpointInfo> TileEndpoints(const NodeIndex &Idx, const std::vector<
         return false;
     };
 
-    // 2. Per-node closure BITSETS, memoized bottom-up (closure(n) = self ∪ closure(parents)) — cheap: Nn ≤ a few
-    //    thousand, so Nn²/64 words total. Everything below is bit arithmetic on these.
+    // 2. Per-node closure BITSETS, memoized bottom-up (closure(n) = self ∪ closure(refs)).
     const int Words = (Nn + 63) / 64;
     std::vector<std::vector<uint64_t>> Clo(Nn);
     std::function<const std::vector<uint64_t>&(int)> CloOf = [&](int I) -> const std::vector<uint64_t>& {
         if (!Clo[I].empty()) return Clo[I];
         std::vector<uint64_t> B(Words, 0);
         B[I >> 6] |= (uint64_t)1 << (I & 63);
-        for (const std::string &Pid : Union[I]->Parents)
+        Clo[I] = B;                                                   // placeholder: a cycle reads the partial set
+        for (const std::string &Pid : Union[I]->Refs)
             if (auto It = IxOf.find(Pid); It != IxOf.end())
             {
-                const std::vector<uint64_t> &P = CloOf(It->second);
+                const std::vector<uint64_t> P = CloOf(It->second);
                 for (int W = 0; W < Words; ++W) B[W] |= P[W];
             }
         Clo[I] = std::move(B);
@@ -896,11 +402,10 @@ std::vector<EndpointInfo> TileEndpoints(const NodeIndex &Idx, const std::vector<
     for (int i = 0; i < Nn; ++i)
         if (CarriesContent(Union[i])) ContentMask[i >> 6] |= (uint64_t)1 << (i & 63);
 
-    // 3. The REQUIRED region: reachable without descending into Optional nodes — an optional add-on's private
-    //    content must not surface endpoints (it belongs to the optional-content section).
+    // 3. The REQUIRED region: reachable through UNGATED NODE layers only — an option's content (a WHEN-gated NODE
+    //    layer) must not surface endpoints of its own.
     std::vector<uint64_t> Required(Words, 0);
     {
-        const std::unordered_set<std::string> VarSet(VariantIds.begin(), VariantIds.end());
         std::unordered_set<std::string> Seen;
         std::vector<std::string> St(VariantIds.begin(), VariantIds.end());
         while (!St.empty())
@@ -910,16 +415,15 @@ std::vector<EndpointInfo> TileEndpoints(const NodeIndex &Idx, const std::vector<
             auto It = IxOf.find(Cur);
             if (It == IxOf.end()) continue;
             const Node *N = Union[It->second];
-            if (N->Optional && !VarSet.count(Cur)) continue;           // don't descend into optionals
             Required[It->second >> 6] |= (uint64_t)1 << (It->second & 63);
-            for (const std::string &Pid : N->Parents) St.push_back(Pid);
+            if (N->Json.contains("LAYERS"))
+                for (const auto &L : N->Json["LAYERS"])
+                    if (L.is_object() && L.contains("NODE") && L["NODE"].is_string() && !L.contains("WHEN"))
+                        St.push_back(L["NODE"].get<std::string>());
         }
     }
 
-    // 4. GREEDY SET-COVER over the required content: repeatedly pick the variant covering the most still-uncovered
-    //    content bits. Nesting collapses to one pick; genuine branches each get one; small unique-content leaves
-    //    (natives bundles, wrapper scripts) trail at the end with tiny gains. Deterministic tie-break: larger total
-    //    content, then node id.
+    // 4. GREEDY SET-COVER over the required content (deterministic tie-break: larger total content, then key).
     std::vector<int> VarIx; VarIx.reserve(VariantIds.size());
     for (const std::string &V : VariantIds)
         if (auto It = IxOf.find(V); It != IxOf.end()) VarIx.push_back(It->second);
@@ -943,24 +447,21 @@ std::vector<EndpointInfo> TileEndpoints(const NodeIndex &Idx, const std::vector<
             }
             if (Gain > BestGain
                 || (Gain == BestGain && Gain > 0
-                    && (Total > BestTotal || (Total == BestTotal && Best >= 0 && Union[V]->NodeId < Union[Best]->NodeId))))
+                    && (Total > BestTotal || (Total == BestTotal && Best >= 0 && Union[V]->Key() < Union[Best]->Key()))))
             { Best = V; BestGain = Gain; BestTotal = Total; }
         }
         if (Best < 0 || BestGain == 0) break;
         Picks.push_back(Best); PickGains.push_back(BestGain); Picked.insert(Best);
         for (int W = 0; W < Words; ++W) Uncovered[W] &= ~Clo[Best][W];
     }
-    // Contentless tile (nothing to download by closure) → degrade to the variants themselves so the dialog isn't empty.
-    if (Picks.empty())
+    if (Picks.empty())                     // contentless tile → the variants themselves, so the dialog isn't empty
     {
         Picks = VarIx;
         PickGains.assign(Picks.size(), 1);
     }
 
-    // 5. Rows: a pick stands alone only when it contributed a MEANINGFUL share of the content (≥5% of the total —
-    //    real branches like MC's forked snapshot chains, AoE2's editions); the long tail of small unique-content
-    //    owners (per-era natives bundles, wrapper scripts — 11 of them in the real MC graph) folds into one
-    //    "Everything else" row. Always at least one named row; capped so the dialog stays a short honest list.
+    // 5. Rows: a pick stands alone only when it contributed ≥5% of the content; the long tail folds into
+    //    "Everything else". Always at least one named row; capped.
     int TotalContent = 0;
     for (int W = 0; W < Words; ++W) TotalContent += (int)std::popcount(Required[W] & ContentMask[W]);
     constexpr size_t MaxNamedRows = 6;
@@ -968,14 +469,14 @@ std::vector<EndpointInfo> TileEndpoints(const NodeIndex &Idx, const std::vector<
     while (Named < Picks.size() && Named < MaxNamedRows
            && (Named == 0 || (long long)PickGains[Named] * 20 >= TotalContent))
         ++Named;
-    if (Named + 1 == Picks.size()) ++Named;   // never fold a single leftover — its own row is shorter than the fold
+    if (Named + 1 == Picks.size()) ++Named;
     std::vector<EndpointInfo> Out;
     for (size_t K = 0; K < Named; ++K)
     {
         const Node *N = Union[Picks[K]];
         EndpointInfo E;
-        E.Ids   = { N->NodeId };
-        E.Label = !N->Label.empty() ? N->Label
+        E.Ids   = { N->Key() };
+        E.Label = !N->Variant.empty() ? N->Variant
                   : (N->Meta.is_object() ? N->Meta.value("TITLE", N->NodeId) : N->NodeId);
         for (int V : VarIx)
         {
@@ -990,7 +491,7 @@ std::vector<EndpointInfo> TileEndpoints(const NodeIndex &Idx, const std::vector<
     {
         EndpointInfo Rest;
         Rest.Label = "Everything else";
-        for (size_t K = Named; K < Picks.size(); ++K) Rest.Ids.push_back(Union[Picks[K]]->NodeId);
+        for (size_t K = Named; K < Picks.size(); ++K) Rest.Ids.push_back(Union[Picks[K]]->Key());
         Out.push_back(std::move(Rest));
     }
     return Out;
@@ -1038,44 +539,144 @@ std::string JoinTarget(std::string Target, std::string Rel)
     return Target.empty() ? Rel : Target + "/" + Rel;
 }
 
-// The case-sensitive set of content-root-relative file paths a launchable's closure provides, from LOCALLY-present
-// VFS layers only (zips via libzip, dirs walked). AnyLocal=≥1 layer read; AllLocal=every VFS layer was on disk.
-void GatherLaunchContentFiles(const NodeIndex &Idx, const Node &Launch,
+// A resolved content item's local file: its bundle dir + payload (a %runtime% payload has none).
+std::filesystem::path ItemLocal(const Fold::Item &I)
+{
+    if (I.Dir.empty() || I.Payload.find('%') != std::string::npos) return {};
+    return std::filesystem::path(I.Dir) / I.Payload;
+}
+
+// The case-sensitive set of target-relative file paths a launchable's resolved plan mounts, from LOCALLY-present
+// content only (zips via libzip, dirs walked). AnyLocal = ≥1 layer read; AllLocal = every content layer was on disk.
+void GatherLaunchContentFiles(const Fold::Plan &P,
         std::unordered_map<std::string, std::vector<std::string>> &ZipCache,
         std::set<std::string> &Files, bool &AnyLocal, bool &AllLocal)
 {
     AnyLocal = false; AllLocal = true;
-    for (const std::string &Id : ResolveNodeOrder(Idx, Launch.Key(), {}))
+    for (const Fold::Item &I : P.Seq)
     {
-        const Node *N = Idx.Find(Id);
-        if (!N || !N->Layers.is_array()) continue;
-        for (const auto &L : N->Layers)
+        if (I.Kind == "EDIT") continue;
+        const std::filesystem::path Local = ItemLocal(I);
+        if (Local.empty()) continue;
+        std::error_code Ec;
+        if (!std::filesystem::exists(Local, Ec)) { AllLocal = false; continue; }   // remote-only / not hydrated
+        AnyLocal = true;
+        if (I.Kind == "FILE")
+            //A FILE layer mounts one file at TARGET/<its name> (overlay.cpp: fileVPath).
+            Files.insert(JoinTarget(I.Target, Local.filename().string()));
+        else if (std::filesystem::is_directory(Local, Ec))
+            for (auto It = std::filesystem::recursive_directory_iterator(Local, Ec);
+                 !Ec && It != std::filesystem::recursive_directory_iterator(); It.increment(Ec))
+            {
+                if (!It->is_regular_file(Ec)) continue;
+                Files.insert(JoinTarget(I.Target, std::filesystem::relative(It->path(), Local, Ec).generic_string()));
+            }
+        else
+            for (const std::string &Entry : ZipEntriesCached(Local.string(), ZipCache))
+                Files.insert(JoinTarget(I.Target, Entry));
+    }
+}
+
+// ----- what a content layer REPLACES (the covered-edit check, §1.5; mirrors tools/gen6/resolve.py provided()) -----
+// The lower-cased member names of the zip content item Seq[J] mounts: a ZIP's own, a DELTA's = the zip its chain
+// reconstructs (its base = the content beneath at the same TARGET, down to the zip). nullopt when unknowable.
+std::optional<std::set<std::string>> MemberNames(const std::vector<Fold::Item> &Seq, size_t J,
+        std::map<std::vector<std::string>, std::optional<std::set<std::string>>> &Cache)
+{
+    const Fold::Item &C = Seq[J];
+    std::vector<std::string> Chain = { ItemLocal(C).string() };
+    if (Chain[0].empty()) return std::nullopt;
+    if (C.Kind == "DELTA")
+    {
+        bool Based = false;
+        for (size_t I = J; I-- > 0;)
         {
-            if (!L.is_object() || !IsVfsLayer(LayerType(L))) continue;
-            std::filesystem::path Local; std::string Cid;
-            LayerLocator(L, N->BundleDir, Local, Cid);
-            if (Local == N->BundleDir) continue;                             // no PATH at all
-            std::error_code Ec;
-            if (!std::filesystem::exists(Local, Ec)) { AllLocal = false; continue; }   // remote-only / not hydrated
-            AnyLocal = true;
-            const std::string Target = L.value("TARGET", std::string());
-            if (LayerType(L) == "VFSFileLayer")
-                //A VFSFileLayer mounts one file at TARGET/<source basename> (overlay.cpp: fileVPath) — its Local is a
-                //regular file, NOT a zip, so it must be added directly (else ZipEntriesCached opens it as an archive,
-                //finds nothing, and the CONTENTPATH check false-positives "not found in the package content").
-                Files.insert(JoinTarget(Target, Local.filename().string()));
-            else if (std::filesystem::is_directory(Local, Ec))
-                for (auto It = std::filesystem::recursive_directory_iterator(Local, Ec);
-                     !Ec && It != std::filesystem::recursive_directory_iterator(); It.increment(Ec))
-                {
-                    if (!It->is_regular_file(Ec)) continue;
-                    Files.insert(JoinTarget(Target, std::filesystem::relative(It->path(), Local, Ec).generic_string()));
-                }
-            else
-                for (const std::string &Entry : ZipEntriesCached(Local.string(), ZipCache))
-                    Files.insert(JoinTarget(Target, Entry));
+            const Fold::Item &B = Seq[I];
+            if (B.Kind == "EDIT" || B.Target != C.Target) continue;
+            if ((B.Kind != "ZIP" && B.Kind != "DELTA") || ItemLocal(B).empty()) return std::nullopt;
+            Chain.insert(Chain.begin(), ItemLocal(B).string());
+            if (B.Kind == "ZIP") { Based = true; break; }
+        }
+        if (!Based) return std::nullopt;
+    }
+    if (auto It = Cache.find(Chain); It != Cache.end()) return It->second;
+    std::optional<std::set<std::string>> Names;
+    auto Open = [](const std::string &P) -> std::shared_ptr<ByteSource> {
+        const HostIO::Fd Fd = HostIO::Open(P, 0 /*O_RDONLY*/);
+        if (Fd < 0) return nullptr;
+        HostIO::Stat St;
+        if (HostIO::Fstat(Fd, St) != 0) { HostIO::Close(Fd); return nullptr; }
+        return std::make_shared<FdByteSource>(Fd, St.size, /*owns=*/true);
+    };
+    std::shared_ptr<ByteSource> Src = Open(Chain[0]);
+    for (size_t I = 1; Src && I < Chain.size(); ++I)
+    {
+        std::shared_ptr<ByteSource> D = Open(Chain[I]);
+        std::string Err;
+        Src = D ? vgdelta::DeltaByteSource::Create(D, Src, Err) : nullptr;
+    }
+    if (Src)
+    {
+        std::set<std::string> S;
+        const bool Ok = zipscan::WalkCentralDir(*Src, [&](const std::string &Name, uint16_t, uint64_t) {
+            std::string N = Name;
+            std::replace(N.begin(), N.end(), '\\', '/');
+            while (!N.empty() && N.back() == '/') N.pop_back();
+            S.insert(ToLowerAscii(N));
+            return true;
+        });
+        if (Ok) Names = std::move(S);
+    }
+    return Cache.emplace(Chain, Names).first->second;
+}
+
+// The lower-cased paths content Seq[J] provides as the mount sees them (SUBMOUNTS mount only their sub-paths, a
+// FILE lands at TARGET/<name>), or nullopt = everything under its TARGET (a DIR, an unreadable file).
+std::optional<std::set<std::string>> Provided(const std::vector<Fold::Item> &Seq, size_t J,
+        std::map<std::vector<std::string>, std::optional<std::set<std::string>>> &Cache)
+{
+    const Fold::Item &C = Seq[J];
+    const std::string T = ToLowerAscii(C.Target);
+    const std::string Pre = T.empty() ? std::string() : T + "/";
+    if (C.Kind == "DIR" || C.Dir.empty()) return std::nullopt;
+    if (C.Kind == "FILE") return std::set<std::string>{ Pre + ToLowerAscii(std::filesystem::path(C.Payload).filename().string()) };
+    auto Names = MemberNames(Seq, J, Cache);
+    if (!Names) return std::nullopt;
+    std::set<std::string> Out;
+    if (!C.Submounts.is_array() || C.Submounts.empty())
+    {
+        for (const auto &N : *Names) Out.insert(Pre + N);
+        return Out;
+    }
+    for (const auto &Sm : C.Submounts)
+    {
+        const std::string X = Sm.is_string() ? Sm.get<std::string>() : std::string();
+        const size_t Colon = X.find(':');
+        if (Colon == std::string::npos) continue;
+        std::string Src = ToLowerAscii(X.substr(0, Colon)), Dst = ToLowerAscii(X.substr(Colon + 1));
+        while (!Src.empty() && Src.front() == '/') Src.erase(Src.begin());
+        while (!Src.empty() && Src.back() == '/') Src.pop_back();
+        while (!Dst.empty() && Dst.back() == '/') Dst.pop_back();
+        for (const auto &N : *Names)
+        {
+            if (N == Src) Out.insert(Dst);
+            else if (N.rfind(Src + "/", 0) == 0) Out.insert(Dst + N.substr(Src.size()));
         }
     }
+    return Out;
+}
+
+bool Covers(const std::vector<Fold::Item> &Seq, size_t J, const std::string &File,
+            std::map<std::vector<std::string>, std::optional<std::set<std::string>>> &Cache)
+{
+    const std::string F = ToLowerAscii(File);
+    const auto P = Provided(Seq, J, Cache);
+    if (!P)
+    {
+        const std::string T = ToLowerAscii(Seq[J].Target);
+        return F == T || F.rfind(T + "/", 0) == 0 || T.empty();
+    }
+    return P->count(F) != 0;
 }
 
 // One layer's contribution to the merged content view, fully prepared for the case lint: the joined
@@ -1121,29 +722,26 @@ std::vector<std::string> SplitPath(const std::string &S)
 // Reports case collisions across DIFFERENT layers in a launchable's merged content view: two layers contributing
 // paths that differ only in case (e.g. base ships 'MAPS/foo', a patch ships 'maps/foo'). On the case-sensitive mount
 // both exist, so a lookup can resolve to the wrong file → crashes / missing data. Collisions WITHIN one layer are the
-// upstream game's own content (unavoidable, merges fine on real Windows) and are deliberately ignored. A directory-case
-// difference collapses to one report; GlobalSeen dedups the same collision across launchables that share the content.
-void FindCrossLayerCaseCollisions(const NodeIndex &Idx, const Node &Launch,
+// upstream game's own content and are deliberately ignored. GlobalSeen dedups across launchables sharing content.
+void FindCrossLayerCaseCollisions(const Fold::Plan &P,
         std::unordered_map<std::string, std::vector<std::string>> &ZipCache,
         std::unordered_map<std::string, std::vector<PreparedEntry>> &PrepCache,
         std::vector<std::string> &Out, std::unordered_set<std::string> &GlobalSeen)
 {
-    // Values POINT INTO PrepCache / the per-node label — safe because the cache only ever grows within one
-    // validate run and a vector's heap buffer doesn't move when the cache map rehashes.
     std::unordered_map<std::string_view, std::pair<std::string_view, const std::string *>> Seen;  // lowered -> (exact, label)
-    std::unordered_set<std::string> LocalReported;                             // collapse repeats within this launchable
+    std::unordered_set<std::string> LocalReported;
 
     auto Consider = [&](const PreparedEntry &E, const std::string &Lbl)
     {
         auto It = Seen.find(std::string_view(E.Lower));
         if (It == Seen.end()) { Seen.emplace(std::string_view(E.Lower), std::make_pair(std::string_view(E.Exact), &Lbl)); return; }
         const std::string Prev(It->second.first), PrevLbl = *It->second.second, F = E.Exact;
-        if (Prev == F || PrevLbl == Lbl) return;                     // same case, or same layer → not a cross-layer case collision
+        if (Prev == F || PrevLbl == Lbl) return;
         const std::vector<std::string> A = SplitPath(Prev), B = SplitPath(F);
         size_t i = 0; while (i < A.size() && i < B.size() && A[i] == B[i]) ++i;
         if (i >= A.size() || i >= B.size()) return;
         std::string Key; for (size_t k = 0; k <= i; ++k) { if (k) Key += '/'; Key += ToLowerAscii(A[k]); }
-        if (!LocalReported.insert(Key).second) return;               // already reported this dir/file collision here
+        if (!LocalReported.insert(Key).second) return;
         if (!GlobalSeen.insert(Key + "|" + ToLowerAscii(PrevLbl) + "|" + ToLowerAscii(Lbl)).second) return;
         const bool IsDir = (i + 1 < A.size()) || (i + 1 < B.size());
         Out.push_back(std::string("content case conflict across layers: ") + (IsDir ? "directory '" : "file '")
@@ -1151,24 +749,17 @@ void FindCrossLayerCaseCollisions(const NodeIndex &Idx, const Node &Launch,
     };
 
     std::deque<std::string> Labels;                              // stable storage — Seen holds pointers into it
-    for (const std::string &Id : ResolveNodeOrder(Idx, Launch.Key(), {}))
+    for (const Fold::Item &I : P.Seq)
     {
-        const Node *N = Idx.Find(Id);
-        if (!N || N->IsRunner() || !N->Layers.is_array()) continue;
-        for (const auto &L : N->Layers)
-        {
-            if (!L.is_object() || !IsVfsLayer(LayerType(L))) continue;
-            std::filesystem::path Local; std::string Cid;
-            LayerLocator(L, N->BundleDir, Local, Cid);
-            if (Local == N->BundleDir) continue;
-            std::error_code Ec;
-            if (!std::filesystem::exists(Local, Ec)) continue;
-            const std::string &Lbl = Labels.emplace_back(N->NodeId + " (" + Local.filename().string() + ")");
-            const bool IsDir = std::filesystem::is_directory(Local, Ec);
-            for (const PreparedEntry &E : LayerEntriesPrepared(Local.string(), IsDir,
-                                                               L.value("TARGET", std::string()), ZipCache, PrepCache))
-                Consider(E, Lbl);
-        }
+        if (I.Kind == "EDIT") continue;
+        const std::filesystem::path Local = ItemLocal(I);
+        if (Local.empty()) continue;
+        std::error_code Ec;
+        if (!std::filesystem::exists(Local, Ec)) continue;
+        const std::string &Lbl = Labels.emplace_back(Local.filename().string());
+        const bool IsDir = std::filesystem::is_directory(Local, Ec);
+        for (const PreparedEntry &E : LayerEntriesPrepared(Local.string(), IsDir, I.Target, ZipCache, PrepCache))
+            Consider(E, Lbl);
     }
 }
 
@@ -1178,62 +769,48 @@ void ValidateNodeGraph(const NodeIndex &Idx, std::vector<std::string> &Errors, s
                        const std::set<std::string> *OnlyNodes)
 {
     const std::string Machine = MachinePlatform();
-    std::unordered_map<std::string, std::vector<std::string>> ZipCache;   // local zip path -> its file entries (shared content read once)
-    std::unordered_map<std::string, std::vector<PreparedEntry>> PrepCache; // (layer path, TARGET) -> prepared case-lint entries (see LayerEntriesPrepared)
-    std::unordered_set<std::string> CrossLayerSeen;             // dedup cross-layer case collisions across launchables
+    std::unordered_map<std::string, std::vector<std::string>> ZipCache;   // local zip path -> its file entries
+    std::unordered_map<std::string, std::vector<PreparedEntry>> PrepCache; // (layer path, TARGET) -> prepared case-lint entries
+    std::map<std::vector<std::string>, std::optional<std::set<std::string>>> NameCache;   // content chain -> member names
+    std::unordered_set<std::string> CrossLayerSeen;
+    const Fold::Library Lib = LibraryOf(Idx);
+    const Fold::GraftIndex Grafts = Fold::BuildGraftIndex(Lib);
+    auto InScope = [&](const std::string &Id) { return !OnlyNodes || OnlyNodes->count(Id); };
 
-    //Does any runner node serve this guest platform on this machine? (used for launchable runner-resolution.)
     auto HasRunnerFor = [&](const std::string &Host) {
         for (const auto &[Id, R] : Idx.Nodes)
-            if (R.IsRunner() && R.HostPlatform == Machine)
+            if (R.OwnRunner && R.HostPlatform == Machine)
                 for (const auto &G : R.GuestPlatform) if (G == Host) return true;
         return false;
     };
+    std::set<std::string> KnownTiles;
+    for (const auto &[Id, N] : Idx.Nodes) for (const auto &U : N.Faces) KnownTiles.insert(U);
 
-    //A VFS layer whose PATH/SOURCE.PATH carries a %VAR% is RUNTIME-SOURCED (IsRuntimeSourcedLayer): its source is a
-    //mount path resolved at launch (e.g. a proton prefix-assembly layer PATH="%DefaultPfxDir%" pointing into the
-    //runner mount), NOT local authoring content. Such layers are never seeded to IPFS, so the "convert to STORE zip"
-    //warning doesn't apply to them.
-    const auto &RuntimeSourced = IsRuntimeSourcedLayer;
-
-    //Cycle-detection memo shared across the whole pass: a node proven acyclic (fully explored with no back-edge)
-    //never participates in a cycle, so later roots skip it. Hoisting this out of the per-node loop turns the
-    //check from O(N·depth) — every node re-walking its whole ancestor chain, quadratic on a deep delta chain — into
-    //O(N+E) total. OnStack stays per-root (a cycle is a back-edge on the current root's path).
+    //Cycle memo shared across the pass: a node proven acyclic never participates in a cycle (O(N+E) overall).
     std::unordered_set<std::string> CycleDone;
     for (const auto &[Id, N] : Idx.Nodes)
     {
-        if (OnlyNodes && !OnlyNodes->count(Id)) continue;   // scoped validation: skip nodes outside the requested set
+        if (!InScope(Id)) continue;
         const std::string Tag = "node '" + Id + "'";
+        //A malformed node is indexed with the reason and routed through by nothing — a package that quietly does
+        //less than it says. Name it.
+        if (!N.LowerError.empty()) { Errors.push_back(N.LowerError); continue; }
 
-        //OVER resolves: every PLAIN ref must exist; an any-of MEMBER may be absent (the group is a choice, and
-        //resolution picks among the present members — a partial library holding one version of [[SP, MP]] is
-        //fine) as long as SOME member is present; a NOT naming a node we do not have is harmless (the excluded
-        //node cannot be selected) but worth a word.
-        std::set<std::string> GroupMembers;
-        for (const OverReq &R : N.Over) if (R.IsGroup()) for (const std::string &M : R.Any) GroupMembers.insert(M);
-        for (const std::string &P : N.Parents)
-            if (!Idx.Find(P))
-            {
-                if (GroupMembers.count(P)) Warnings.push_back(Tag + ": OVER any-of member '" + P + "' is not in the library");
-                else Errors.push_back(Tag + ": OVER references missing node '" + P + "'");
-            }
-        for (const std::string &E : N.Excludes)
-            if (!Idx.Find(E)) Warnings.push_back(Tag + ": OVER NOT references missing node '" + E + "'");
-        for (const OverReq &R : N.Over)
+        //Refs: a contained node must exist; an ANY member or a NOT may name a node this library lacks (a graft for a
+        //version you don't have; an exclusion that cannot happen), but an ANY with no member here is unsatisfiable.
+        for (const std::string &R : N.Refs)
+            if (!Idx.Find(R)) Errors.push_back(Tag + ": contains missing node '" + R + "'");
+        for (const auto &L : N.Json["LAYERS"])
         {
-            if (!R.IsGroup()) continue;
-            bool AnyPresent = false;
-            for (const std::string &M : R.Any) if (Idx.Find(M)) { AnyPresent = true; break; }
-            if (!AnyPresent) Errors.push_back(Tag + ": OVER any-of group has no member in the library (unsatisfiable)");
-            std::set<std::string> Seen;
-            for (const std::string &M : R.Any) if (!Seen.insert(M).second) Warnings.push_back(Tag + ": OVER any-of group repeats '" + M + "'");
+            if (L.contains("ANY"))
+            {
+                bool Present = false;
+                for (const auto &M : L["ANY"]) if (Idx.Find(M.get<std::string>())) { Present = true; break; }
+                if (!Present) Warnings.push_back(Tag + ": ANY names no node in this library (nothing it applies onto is here)");
+            }
+            if (L.contains("NOT") && !Idx.Find(L["NOT"].get<std::string>()))
+                Warnings.push_back(Tag + ": NOT names node '" + L["NOT"].get<std::string>() + "', which is not in the library");
         }
-        for (const std::string &E : N.Excludes)
-            if (std::find(N.Parents.begin(), N.Parents.end(), E) != N.Parents.end())
-                Errors.push_back(Tag + ": OVER both requires and excludes '" + E + "'");
-
-        //No cycles reachable from this node (DFS over PARENTS).
         {
             std::unordered_set<std::string> OnStack;
             std::function<bool(const std::string &)> HasCycle = [&](const std::string &Cur) -> bool {
@@ -1241,352 +818,261 @@ void ValidateNodeGraph(const NodeIndex &Idx, std::vector<std::string> &Errors, s
                 if (OnStack.count(Cur)) return true;
                 OnStack.insert(Cur);
                 const Node *C = Idx.Find(Cur);
-                if (C) for (const std::string &P : C->Parents) if (Idx.Find(P) && HasCycle(P)) return true;
+                if (C) for (const std::string &P : C->Refs) if (Idx.Find(P) && HasCycle(P)) return true;
                 OnStack.erase(Cur); CycleDone.insert(Cur);
                 return false;
             };
-            if (HasCycle(Id)) Errors.push_back(Tag + ": OVER forms a cycle");
+            if (HasCycle(Id)) Errors.push_back(Tag + ": NODE layers form a cycle");
         }
 
-        //(The old "a runner node carries its own VFS layer — runner layers are IGNORED" warning is GONE, because the
-        //footgun it guarded is now unrepresentable: a node is one layer of one TYPE, so a runner DECLARATION node
-        //cannot also carry content. Whether a VFS layer in a runner's closure is the BUILD or prefix ASSEMBLY is
-        //decided by IsRuntimeSourcedLayer, not by which node it sits on — so there is no longer a place to put a
-        //layer where it would be silently dropped.)
-
-        //VFS layers must declare a local PATH (or SOURCE.PATH).
-        if (N.Layers.is_array())
-            for (const auto &L : N.Layers)
-                if (L.is_object() && IsVfsLayer(L.value("TYPE", std::string())))
-                {
-                    const bool HasPath = (L.contains("PATH") && L["PATH"].is_string() && !std::string(L["PATH"]).empty())
-                        || (L.contains("SOURCE") && L["SOURCE"].is_object() && L["SOURCE"].contains("PATH")
-                            && L["SOURCE"]["PATH"].is_string() && !std::string(L["SOURCE"]["PATH"]).empty());
-                    const std::string LType = L.value("TYPE", std::string());
-                    if (!HasPath) Errors.push_back(Tag + ": a " + (LType.empty() ? "VFS" : LType) + " layer has no PATH");
-
-                    //A VFSDirLayer is an UNZIPPED authoring intermediary: it runs from the editor but cannot be
-                    //published (IPFS seeds files/zips only). Warn — not an error — so the node still test-runs; use
-                    //the layer's "→ ZIP" button to convert it to a STORE zip before publishing.
-                    if (LType == "VFSDirLayer" && !RuntimeSourced(L))
-                        Warnings.push_back(Tag + ": VFSDirLayer '" + std::string(L.value("PATH", std::string()))
-                            + "' is an unzipped authoring layer — convert it to a STORE zip ('→ ZIP') before publishing "
-                            "(dir layers cannot be seeded to IPFS).");
-
-                    //A locally-present zip layer must be STOREd (uncompressed) or it will not mount. Catch it here
-                    //(authoring/validate/publish) rather than at launch.
-                    if (HasPath && LType == "VFSZipLayer")
-                    {
-                        const std::string Local = ResolveLayerSource(L, N.BundleDir);
-                        std::string FirstCompressed;
-                        if (!Local.empty() && std::filesystem::exists(Local) && !ZipFullyStored(Local, &FirstCompressed))
-                            Errors.push_back(Tag + ": VFSZipLayer '" + std::string(L.value("PATH", std::string()))
-                                + "' is DEFLATE-compressed (entry '" + FirstCompressed + "') — VidyaGodFS requires a "
-                                "STORE (uncompressed) zip; it will not mount. Re-create it with `zip -0`.");
-                    }
-                }
-
-        //BinaryPatch structural lint: a malformed patch does nothing (or worse, patches blindly). Mirror the
-        //audit's checks here so the editor/validate flags them before launch.
-        if (N.Layers.is_array())
-            for (const auto &L : N.Layers)
-            {
-                if (!L.is_object() || L.value("TYPE", std::string()) != "BinaryPatch") continue;
-                const std::string M = L.value("MODE", std::string());
-                if (M != "Replace" && M != "Cave" && M != "Poke")
-                    Errors.push_back(Tag + ": BinaryPatch MODE '" + M + "' is not Replace/Cave/Poke.");
-                if (!L.contains("ANCHOR") && !L.contains("OFFSET"))
-                    Errors.push_back(Tag + ": BinaryPatch has neither ANCHOR nor OFFSET (no site to patch).");
-                if (!L.contains("EXPECT"))
-                    Warnings.push_back(Tag + ": BinaryPatch has no EXPECT guard — it will patch without verifying "
-                        "the original bytes (a mispointed FILE or stale offset corrupts silently).");
-                if (M == "Replace" && !L.contains("REPLACE"))
-                    Errors.push_back(Tag + ": Replace BinaryPatch has no REPLACE bytes.");
-                if (M == "Poke" && !L.contains("VALUE"))
-                    Errors.push_back(Tag + ": Poke BinaryPatch has no VALUE.");
-                if (M == "Cave" && !L.contains("PAYLOAD"))
-                    Errors.push_back(Tag + ": Cave BinaryPatch has no PAYLOAD.");
-                if (const std::string F = L.value("FILE", std::string());
-                    F.rfind("%RuntimePath%", 0) == 0 || (!F.empty() && F[0] == '/'))
-                    Errors.push_back(Tag + ": BinaryPatch FILE '" + F + "' is absolute; author it relative to the mount root.");
-            }
-
-        //(A NOT is one-sided by design and symmetric in EFFECT: selecting the named node makes this one unsatisfied.
-        //There is no symmetry rule to lint.)
-
-        if (N.Entrypoints.is_array() && !N.Entrypoints.empty())
+        //Content: a local zip must be STOREd (VidyaGodFS reads entries at their backing offset); a DIR that is not a
+        //%runtime% path is an authoring intermediary that cannot be published.
+        for (const auto &L : N.Layers)
         {
-            //Every entry is a way to run the user can pick, so every one is checked — not just the default.
-            std::set<std::string> EpLabels;
-            for (const std::string &L : N.EntrypointLabels())
-                if (!EpLabels.insert(L).second) Errors.push_back(Tag + ": two ENTRYPOINTS share the LABEL '" + L + "' (the picker could not tell them apart)");
-            for (const auto &E : N.Entrypoints)
+            const std::string LType = LayerType(L);
+            if (!IsVfsLayer(LType)) continue;
+            if (LType == "VFSDirLayer" && !IsRuntimeSourcedLayer(L))
+                Warnings.push_back(Tag + ": DIR '" + L.value("PATH", std::string())
+                    + "' is an unzipped authoring layer — convert it to a STORE zip ('→ ZIP') before publishing.");
+            if (LType == "VFSZipLayer")
             {
-            std::string EpErr;
-            const nlohmann::ordered_json Ex = NodeLower::LowerEntrypoint(E, N.NodeId, EpErr);
-            if (!Ex.is_object() || Ex.contains("GUEST")) continue;   // a runner entry is checked below
-            const std::string Host = Ex.value("PLATFORM", std::string());
-            if (Host.empty()) Warnings.push_back(Tag + ": entrypoint has no HOST platform");
-            else if (!HasRunnerFor(Host))
-                Warnings.push_back(Tag + ": no runner node serves platform '" + Host + "' on this machine");
-
-            //CONTENTPATH must case-EXACTLY match a real content file: the runner sees a case-sensitive mount, so a
-            //typo'd case (e.g. MW4mercs.exe vs MW4Mercs.exe) means the exe is never found → silent crash on launch.
-            //Only checked where the content is locally present (skips remote/un-hydrated nodes and %var% paths).
-            std::string Cp = Ex.value("CONTENTPATH", std::string());
-            if (!Cp.empty() && Cp.find('%') == std::string::npos)
-            {
-                std::replace(Cp.begin(), Cp.end(), '\\', '/');
-                while (Cp.rfind("./", 0) == 0) Cp.erase(0, 2);
-                while (!Cp.empty() && Cp.front() == '/') Cp.erase(Cp.begin());
-
-                std::set<std::string> Files; bool AnyLocal = false, AllLocal = true;
-                GatherLaunchContentFiles(Idx, N, ZipCache, Files, AnyLocal, AllLocal);
-
-                if (AnyLocal && !Cp.empty() && !Files.count(Cp))
-                {
-                    const std::string CpL = ToLowerAscii(Cp);
-                    std::string Hit;
-                    for (const std::string &F : Files) if (ToLowerAscii(F) == CpL) { Hit = F; break; }
-                    if (!Hit.empty())
-                        Errors.push_back(Tag + ": CONTENTPATH '" + Cp + "' case-mismatches content file '" + Hit
-                                         + "' — the mount is case-sensitive, fix the casing");
-                    else if (AllLocal)
-                    {
-                        //Common authoring slip: a hand-made zip nests the content under a top dir (e.g. "payload/"),
-                        //so CONTENTPATH "game.exe" lands at "payload/game.exe". If exactly the same basename exists
-                        //nested, suggest the full path rather than just "not found".
-                        const std::string Base = Cp.substr(Cp.find_last_of('/') + 1);
-                        const std::string BaseL = ToLowerAscii(Base);
-                        std::string Suggest; int Matches = 0;
-                        for (const std::string &F : Files)
-                        {
-                            const std::string FB = F.substr(F.find_last_of('/') + 1);
-                            if (ToLowerAscii(FB) == BaseL) { Suggest = F; ++Matches; }
-                        }
-                        if (Matches == 1 && Suggest != Cp)
-                            Warnings.push_back(Tag + ": CONTENTPATH '" + Cp + "' not found at the content root — did you "
-                                "mean '" + Suggest + "'? (a zip layer that nests its files under a top folder shifts the path)");
-                        else
-                            Warnings.push_back(Tag + ": CONTENTPATH '" + Cp + "' not found in the package content");
-                    }
-                }
+                const std::string Local = ResolveLayerSource(L, N.BundleDir);
+                std::string FirstCompressed;
+                if (!Local.empty() && std::filesystem::exists(Local) && !ZipFullyStored(Local, &FirstCompressed))
+                    Errors.push_back(Tag + ": ZIP '" + L.value("PATH", std::string()) + "' is DEFLATE-compressed (entry '"
+                        + FirstCompressed + "') — VidyaGodFS requires a STORE (uncompressed) zip. Re-create it with `zip -0`.");
             }
-            }
-
-            //Cross-layer case collisions in the merged content view (two layers' paths differing only in case) are
-            //ERRORS: both files exist on the case-sensitive mount and a lookup can hit the wrong one → crashes.
-            FindCrossLayerCaseCollisions(Idx, N, ZipCache, PrepCache, Errors, CrossLayerSeen);
         }
-        if (N.IsRunner())
+        //Binary EDIT ops: a malformed one does nothing, or patches blindly.
+        for (const auto &L : N.Layers)
         {
-            if (N.GuestPlatform.empty()) Warnings.push_back(Tag + ": runner declares no PLATFORM.GUEST");
-            const bool PrefixGen = N.Exec.is_object() && N.Exec.value("PREFIX_GENERATE", false);
-            const std::string CR = N.Exec.is_object() ? N.Exec.value("CONTENT_ROOT", std::string()) : std::string();
-            if (PrefixGen && CR.find("drive_c") == std::string::npos)
-                Warnings.push_back(Tag + ": PREFIX_GENERATE runner's CONTENT_ROOT has no drive_c");
+            if (LayerType(L) != "BinaryPatch") continue;
+            const std::string M = L.value("MODE", std::string());
+            if (!L.contains("ANCHOR") && !L.contains("OFFSET"))
+                Errors.push_back(Tag + ": binary EDIT op has neither ANCHOR nor OFFSET (no site to patch).");
+            if (!L.contains("EXPECT"))
+                Warnings.push_back(Tag + ": binary EDIT op has no EXPECT guard — it patches without verifying the original bytes.");
+            if (M == "Replace" && !L.contains("REPLACE")) Errors.push_back(Tag + ": Replace has no REPLACE bytes.");
+            if (M == "Poke" && !L.contains("VALUE"))      Errors.push_back(Tag + ": Poke has no VALUE.");
+            if (M == "Cave" && !L.contains("PAYLOAD"))    Errors.push_back(Tag + ": Cave has no PAYLOAD.");
         }
-        //----- the two declared facets -----
-        //A VARIANT with nothing to run, or whose effective entries are a runner's, is on the shelf for nothing.
+
+        //Runners: what they serve, and how a prefix they generate maps guest coordinates.
+        if (N.OwnRunner)
+        {
+            if (N.GuestPlatform.empty()) Warnings.push_back(Tag + ": runner entry declares no GUEST platforms");
+            if (N.Exec.is_object() && N.Exec.value("PREFIX_GENERATE", false) && !N.Exec.contains("GUEST_ROOTS"))
+                Warnings.push_back(Tag + ": a runner that generates a prefix declares no GUEST_ROOTS — packages' C:/ paths cannot be placed");
+        }
+
+        //The node's own facets.
         if (!N.Variant.empty() && !N.HasExec)
-            Errors.push_back(Tag + ": VARIANT '" + N.Variant + "' has no effective entrypoint (nothing beneath declares one"
-                             + (N.HasRunner ? ", only a runner's" : "") + ") — nothing to run");
-        //A variant with no face beneath it appears under no card.
-        if (N.IsVariant() && N.Uids.empty())
-            Warnings.push_back(Tag + ": VARIANT '" + N.Variant + "' has no face (no TILE beneath it) — it appears under no card");
-        //Requirements (TOGGLE, a group, a NOT) mean something only when the node is OFFERED as a graft. On a
-        //variant (picked, never offered) or on substance (no identity, nothing offers it) they are inert.
-        bool HasReq = N.Optional;
-        for (const OverReq &R : N.Over) if (R.Not || R.IsGroup()) { HasReq = true; break; }
-        if (HasReq && (N.IsVariant() || N.OwnRunner))
-            Warnings.push_back(Tag + ": TOGGLE / any-of / NOT on a " + std::string(N.IsVariant() ? "variant" : "runner")
-                               + " are inert — requirements are evaluated only when a node is offered as a graft");
-        else if (HasReq && N.Uids.empty() && N.AnchorKey.empty())
-            Warnings.push_back(Tag + ": TOGGLE / any-of / NOT on substance (no face or runner beneath) are inert — nothing offers it");
-        //Inheritance is unambiguous: two nodes at the same nearest distance beneath declare DIFFERENT entries (or
-        //different faces). OVER order decides; the author should mean it.
-        if (!(N.Entrypoints.is_array() && !N.Entrypoints.empty()) && !N.EntrySource.empty())
+            Errors.push_back(Tag + ": VARIANT '" + N.Variant + "' has no effective entry to run");
+        if (!N.Variant.empty() && N.HasExec && N.Faces.empty())
+            Errors.push_back(Tag + ": VARIANT '" + N.Variant + "' presents no tile (no entry in its fold carries a TILE) — it appears under no card");
+        for (const std::string &U : N.Recommended)
         {
-            const Node *Src = Idx.Find(N.EntrySource);
-            for (const std::string &P : N.Composes)
+            if (!N.Variant.empty() && std::find(N.Faces.begin(), N.Faces.end(), U) == N.Faces.end())
+                Errors.push_back(Tag + ": RECOMMENDED names tile '" + U + "', which this variant does not present");
+            else if (N.Variant.empty() && !N.IsGraft)
+                Warnings.push_back(Tag + ": RECOMMENDED on a node that is neither a variant nor a graft means nothing");
+            else if (N.IsGraft && !KnownTiles.count(U))
+                Warnings.push_back(Tag + ": RECOMMENDED names tile '" + U + "', which no variant in this library presents");
+        }
+        if (N.Json["LAYERS"].empty()) Warnings.push_back(Tag + ": pointless node (no layers)");
+
+        //Per ROW (a variant; a runner root): resolve it — default options, and every bool option on with every
+        //offered graft ticked — and check what the resolution itself can see.
+        if (!N.IsVariant() && !N.OwnRunner) continue;
+        std::vector<std::pair<Fold::Vars, std::vector<std::string>>> Configs = { {{}, {}} };
+        {
+            const Fold::Plan P0 = Fold::Resolve(Lib, Id);
+            Fold::Vars AllOn;
+            for (const auto &[K, D] : P0.Decls.items())
+                if (D.is_object() && D.contains("UI") && D["UI"].is_object() && D["UI"].value("CONTROL", std::string()) == "bool")
+                    AllOn[K] = "1";
+            //every offered graft, a graft on a graft included (offered once the graft it needs is applied)
+            const std::vector<std::string> All = Fold::ApplyGrafts(Lib, Grafts, Id, AllOn, {}, N.Uid, nullptr, nullptr, true);
+            if (!AllOn.empty() || !All.empty()) Configs.push_back({ AllOn, All });
+        }
+        std::set<std::string> Said;                                     // one report per problem across configs
+        auto Once = [&](std::vector<std::string> &Where, const std::string &Msg) { if (Said.insert(Msg).second) Where.push_back(Msg); };
+        for (const auto &[Inst, Gs] : Configs)
+        {
+            const Fold::Plan P = Fold::Resolve(Lib, Id, Inst, {}, Gs);
+            if (!P.Error.empty()) Once(Errors, Tag + ": " + P.Error);
+            for (const auto &[Ev, Cid] : P.Events)
             {
-                const Node *Pn = Idx.Find(P);
-                if (!Pn || Pn->EntrySource.empty() || Pn->EntrySource == N.EntrySource || !Src) continue;
-                const Node *Alt = Idx.Find(Pn->EntrySource);
-                if (Alt && Alt->Entrypoints != Src->Entrypoints && Pn->EffectiveEntrypoints == Alt->Entrypoints)
-                {
-                    //Same distance? Src is nearest; Alt is nearest through P. Ambiguous only if P is a direct
-                    //ref reaching Alt at the same depth as the chosen one — approximate by "another branch
-                    //declares a different list": worth a word either way.
-                    Warnings.push_back(Tag + ": inherits its entrypoints from '" + Src->NodeId + "' while another branch (via '" + Pn->NodeId + "') would give '" + Alt->NodeId + "' — OVER order decides");
-                    break;
-                }
+                if (Ev == "cycle")     Once(Errors, Tag + ": resolving it meets a cycle through '" + Cid + "'");
+                if (Ev == "missing")   Once(Errors, Tag + ": resolving it needs node '" + Cid + "', which is not in the library");
+                if (Ev == "any-unmet" && !Gs.empty()) Once(Warnings, Tag + ": graft '" + Cid + "' is offered but its ANY does not hold");
+                else if (Ev == "any-unmet") Once(Errors, Tag + ": '" + Cid + "' requires (ANY) something this row does not contain");
+                if (Ev == "not-hit")   Once(Errors, Tag + ": its resolution contains '" + Cid + "', which a NOT excludes");
+            }
+            //A node mentioned twice: where it counts (the first mention holds; a later one in the same list moves it)
+            //is a rule, not a choice the author made — warn where the other reading would change what wins.
+            for (const auto &[Ev, Cid] : Fold::DecidingMentions(Lib, Id, Inst, {}, Gs, P))
+                Once(Warnings, Tag + ": '" + [&]{ const Node *M = Idx.Find(Cid); return M && !M->NodeId.empty() ? M->NodeId + "' (" + Cid + ")" : Cid + "'"; }()
+                     + " is mentioned twice and " + (Ev == "held"
+                     ? std::string("its FIRST mention counts — folding it at the later one would change what wins")
+                     : std::string("its LATER mention in the same list counts — folding it at the first would change what wins")));
+            //A DELTA needs its base beneath: content at its target, lower in the stack.
+            for (size_t J = 0; J < P.Seq.size(); ++J)
+            {
+                const Fold::Item &D = P.Seq[J];
+                if (D.Kind != "DELTA") continue;
+                bool Base = false;
+                for (size_t I = 0; I < J && !Base; ++I)
+                    Base = P.Seq[I].Kind != "EDIT" && P.Seq[I].Target == D.Target;
+                if (!Base) Once(Errors, Tag + ": DELTA '" + D.Payload + "' has no content beneath it at '" + D.Target + "' to rebuild from");
+            }
+            //Covered edits: an EDIT beneath a layer that replaces its file has no effect — always a mistake.
+            for (size_t I = 0; I < P.Seq.size(); ++I)
+            {
+                if (P.Seq[I].Kind != "EDIT") continue;
+                for (size_t J = I + 1; J < P.Seq.size(); ++J)
+                    if (P.Seq[J].Kind != "EDIT" && Covers(P.Seq, J, P.Seq[I].Target, NameCache))
+                    {
+                        Once(Errors, Tag + ": the EDIT of '" + P.Seq[I].Target + "' (from '" + P.Seq[I].From + "') lies beneath '"
+                             + P.Seq[J].Payload + "', which replaces that file — move the EDIT above it");
+                        break;
+                    }
             }
         }
-    }
-
-    //----- Faces: within one UID, a tile with no same-UID tile beneath it is a MAIN face; two different main faces
-    //leave the card unable to say which title names it (two independent installs). A tile equal to one beneath
-    //it adds nothing. -----
-    {
-        std::map<std::string, std::vector<const Node *>> Tiles;
-        for (const auto &[Id, N] : Idx.Nodes) if (N.OwnTile && !N.LowerError.empty() == false) Tiles[N.Uid].push_back(&N);
-        for (const auto &[Uid, Ns] : Tiles)
+        if (!N.IsVariant()) continue;
+        const Fold::Plan P = Fold::Resolve(Lib, Id);
+        //Every entry is a way to run the user can pick, so every one is checked.
+        for (const auto &[Lbl, E] : N.Entries.items())
         {
-            std::vector<const Node *> Mains;
-            for (const Node *N : Ns)
-            {
-                if (OnlyNodes && !OnlyNodes->count(N->Key())) continue;
-                bool Redundant = false;
-                for (const std::string &Id : Reachable(Idx, N->Key()))
-                {
-                    const Node *P = Idx.Find(Id);
-                    if (Id != N->Key() && P && P->OwnTile && SameTile(*P, *N)) { Redundant = true; break; }
-                }
-                if (Redundant) Warnings.push_back("node '" + N->Key() + "': TILE equals one beneath it — the face is already inherited");
-                if (FaceDepth(Idx, *N) == 0)
-                {
-                    bool New = true;
-                    for (const Node *M : Mains) if (SameTile(*M, *N)) { New = false; break; }
-                    if (New) Mains.push_back(N);
-                }
-            }
-            if (Mains.size() > 1)
-            {
-                std::string List; for (const Node *M : Mains) List += (List.empty() ? "" : ", ") + M->Meta.value("TITLE", M->NodeId);
-                Warnings.push_back("UID '" + Uid + "': " + std::to_string(Mains.size()) + " main faces (" + List + ") — the card cannot tell which names it");
-            }
+            if (E.contains("GUEST") && E["GUEST"].is_array() && !E["GUEST"].empty()) continue;
+            const std::string Host = E.value("HOST", std::string());
+            if (Host.empty()) { Warnings.push_back(Tag + ": entry '" + Lbl + "' has no HOST platform"); continue; }
+            if (!HasRunnerFor(Host)) Warnings.push_back(Tag + ": no runner serves platform '" + Host + "' on this machine");
+            //EXE must case-EXACTLY match a real content file: the mount is case-sensitive. Checked where the content
+            //is local and the path is plain (a %variable% or a guest drive is placed at launch).
+            std::string Cp = E.value("EXE", std::string());
+            if (Cp.empty() || Cp.find('%') != std::string::npos || Cp.find(':') != std::string::npos) continue;
+            std::replace(Cp.begin(), Cp.end(), '\\', '/');
+            while (Cp.rfind("./", 0) == 0) Cp.erase(0, 2);
+            while (!Cp.empty() && Cp.front() == '/') Cp.erase(Cp.begin());
+            std::set<std::string> Files; bool AnyLocal = false, AllLocal = true;
+            GatherLaunchContentFiles(P, ZipCache, Files, AnyLocal, AllLocal);
+            if (!AnyLocal || Files.count(Cp)) continue;
+            const std::string CpL = ToLowerAscii(Cp);
+            std::string Hit;
+            for (const std::string &F : Files) if (ToLowerAscii(F) == CpL) { Hit = F; break; }
+            if (!Hit.empty())
+                Errors.push_back(Tag + ": EXE '" + Cp + "' case-mismatches content file '" + Hit + "' — the mount is case-sensitive");
+            else if (AllLocal)
+                Warnings.push_back(Tag + ": EXE '" + Cp + "' is not in the package content");
         }
+        FindCrossLayerCaseCollisions(P, ZipCache, PrepCache, Errors, CrossLayerSeen);
     }
 
-    //----- Node lint: a payload that never lowered; a WHEN with nothing to gate. -----
-    for (const auto &[Id, N] : Idx.Nodes)
-    {
-        if (OnlyNodes && !OnlyNodes->count(Id)) continue;
-        if (!N.Layers.is_array()) continue;
-        const std::string Tag = "node '" + Id + "'";
-        //The payload never lowered — an unknown field, an unknown FORM, malformed EDITS. A node whose payload
-        //nobody applies is a package that quietly does less than it says. LowerError already names the node.
-        if (!N.LowerError.empty()) Errors.push_back(N.LowerError);
-        //A WHEN on a node with no payload has NO CONSUMER: TILE and ENTRYPOINTS are folded into the node's
-        //identity at index time and never re-evaluated, and a pure composition node emits no layer for the
-        //condition to ride on. TOGGLE is the mechanism for "this node is off".
-        if (N.Layers.empty() && !N.RawWhen.empty())
-            Errors.push_back(Tag + ": WHEN on a payload-less node is never evaluated (it emits no layer to gate). "
-                             "Move the condition to a payload entry.");
-        //A node that is nothing at all — no payload, no tile, no entrypoint, no variant, no edge — is a mistake.
-        if (N.Layers.empty() && !N.OwnTile && N.Entrypoints.empty() && N.Variant.empty() && N.Over.empty())
-            Warnings.push_back(Tag + ": pointless node (no payload, no TILE, no ENTRYPOINTS, no VARIANT, no OVER)");
-    }
-
-    //----- WHEN lint: a malformed condition fail-opens (silently always-applies), so catch it statically. -----
-    //(Undefined %KEY% refs inside a WHEN are already caught by the reference scan below, which dumps every layer.)
-    for (const auto &[Id, N] : Idx.Nodes)
-        if (N.Layers.is_array())
-            for (const auto &L : N.Layers)
-                if (L.is_object() && L.contains("WHEN") && L["WHEN"].is_string()
-                    && !VarSubst::ConditionParses(std::string(L["WHEN"])))
-                    Errors.push_back("node '" + Id + "': malformed WHEN condition \"" + std::string(L["WHEN"])
-                                     + "\" — it would silently always-apply. Grammar: %KEY% == value, && || ! ( ).");
-
-    //----- CustomVar lint: undefined %KEY% references (typos) + orphan UI options (dead knobs) -----
-    //The built-in tokens always available at substitution time. Derived from ContainerParams::GetVariablesMap() (the
-    //single source of truth — a default instance yields every built-in KEY) so the lint stays in sync automatically as
-    //runtime vars change instead of drifting from a hand-maintained list. Plus per-context tokens that live outside the
-    //global map: %REL% is injected by the guest-path templater (LaunchResolver). A %KEY% that is neither a built-in nor
-    //declared by some CustomVar is almost always a typo and would survive as a literal.
+    //----- WHEN: a malformed condition fail-opens (silently always-applies); and a LAYER's WHEN may only read what
+    //phase 1 resolves — instance values, built-ins, and ungated VARS defaults (§4.1). -----
     static const std::set<std::string> Builtins = []{
-        // Context tokens that are valid built-ins but NOT in a default GetVariablesMap because they are injected at
-        // launch AFTER a runtime probe, so they can't be known statically — always legitimate references, named here:
-        //  • %REL% — injected by the guest-path templater (LaunchResolver).
-        //  • the prefix-layout probe vars — set by ContainerWrapper once the runner build is mounted and its layout
-        //    (files/ vs dist/, lib vs lib64, system.reg mtime) is probed; the node-declared proton prefix layers
-        //    reference them (see ContainerWrapper::BuildContainerRuntime).
-        //  • the VIDYAGOD_* session tokens — injected per launch from the friend LAN / presence layer
-        //    (ContainerParams::SessionVars), so they are equally unknowable statically. Without them every
-        //    package that legitimately references one is reported as an undefined-variable typo.
-        std::set<std::string> B = { "REL", "DefaultPfxDir", "WineFontsDir", "WineLibDir",
-                                    "WineSys32Dir", "WineSysWow64Dir", "SysRegMtime",
-                                    "VIDYAGOD_SANDBOX", "VIDYAGOD_SANDBOX_NET", "VIDYAGOD_SELF_VIP",
-                                    "VIDYAGOD_SELF_NAME", "VIDYAGOD_SUBNET", "VIDYAGOD_PEER_VIPS",
-                                    "VIDYAGOD_PEER_NAMES",
+        std::set<std::string> B = { "REL", "DefaultPfxDir", "WineFontsDir", "WineLibDir", "WineSys32Dir", "WineSysWow64Dir",
+                                    "SysRegMtime", "UID", "VIDYAGOD_SANDBOX", "VIDYAGOD_SANDBOX_NET", "VIDYAGOD_SELF_VIP",
+                                    "VIDYAGOD_SELF_NAME", "VIDYAGOD_SUBNET", "VIDYAGOD_PEER_VIPS", "VIDYAGOD_PEER_NAMES",
                                     "VIDYAGOD_LAN_BRIDGE", "VIDYAGOD_LAN_HOSTRELAY" };
         for (const auto &[K, V] : ContainerParams(std::filesystem::path(), std::string(), std::string()).GetVariablesMap())
             B.insert(K);
         return B;
     }();
-
-    std::set<std::string> Declared;                       // every CustomVar KEY in the graph
-    std::map<std::string, std::string> UiDeclared;        // UI-facet option KEY -> its declaring node id
+    std::set<std::string> Declared, DeclaredUngated;
+    std::map<std::string, std::string> UiDeclared;                       // option KEY -> its declaring node
+    //A guest-root anchor a runner declares (GUEST_ROOTS {"%UserProfile%": ...}) is a canonical coordinate the launch
+    //maps to where the runner puts it — not a variable, and never a typo.
+    std::set<std::string> Anchors;
     for (const auto &[Id, N] : Idx.Nodes)
-        if (N.Layers.is_array())
-            for (const auto &L : N.Layers)
-                if (L.is_object() && L.value("TYPE", std::string()) == "CustomVar")
+        for (const auto &L : N.Json["LAYERS"])
+            if (L.contains("EXEC") && L["EXEC"].is_array())
+                for (const auto &E : L["EXEC"])
+                    if (E.is_object() && E.contains("GUEST_ROOTS") && E["GUEST_ROOTS"].is_object())
+                        for (const auto &[A, To] : E["GUEST_ROOTS"].items())
+                            if (A.size() > 2 && A.front() == '%' && A.back() == '%') Anchors.insert(A.substr(1, A.size() - 2));
+    for (const auto &[Id, N] : Idx.Nodes)
+    {
+        if (!N.LowerError.empty()) continue;
+        for (const auto &L : N.Json["LAYERS"])
+            if (L.contains("VARS"))
+                for (const auto &[K, D] : L["VARS"].items())
                 {
-                    const std::string K = L.value("KEY", std::string());
-                    if (K.empty()) continue;
                     Declared.insert(K);
-                    if (L.contains("UI") && L["UI"].is_object()) UiDeclared.emplace(K, Id);
+                    if (!L.contains("WHEN")) DeclaredUngated.insert(K);
+                    if (D.contains("UI")) UiDeclared.emplace(K, Id);
                 }
-
-    const std::regex Tok(R"(%([A-Za-z0-9_]+)(?::[A-Za-z0-9]+)?%)");   // %KEY% or %KEY:format%
+    }
+    const std::regex Tok(R"(%([A-Za-z0-9_]+)(?::[A-Za-z0-9]+)?%)");     // %KEY% or %KEY:format%
     std::set<std::string> ReferencedAll;
     for (const auto &[Id, N] : Idx.Nodes)
     {
-        std::string Scan;
-        if (N.Layers.is_array()) Scan += N.Layers.dump();
-        if (N.Exec.is_object())  Scan += N.Exec.dump();
-        if (N.Env.is_object())   Scan += N.Env.dump();      // the environment is a node section now: %KEY% in a value is a use
+        if (!N.LowerError.empty()) continue;
+        const std::string Tag = "node '" + Id + "'";
+        for (const auto &L : N.Json["LAYERS"])
+        {
+            std::vector<std::string> Conds;
+            if (L.contains("WHEN")) Conds.push_back(L["WHEN"].get<std::string>());
+            if (L.contains("VARS")) for (const auto &[K, D] : L["VARS"].items()) if (D.contains("WHEN")) Conds.push_back(D["WHEN"].get<std::string>());
+            for (const auto &C : Conds)
+                if (!VarSubst::ConditionParses(C) && InScope(Id))
+                    Errors.push_back(Tag + ": malformed WHEN \"" + C + "\" — it would silently always-apply. Grammar: %KEY% == value, && || ! ( ).");
+            if (L.contains("WHEN") && InScope(Id))
+            {
+                const std::string W = L["WHEN"].get<std::string>();
+                for (auto It = std::sregex_iterator(W.begin(), W.end(), Tok); It != std::sregex_iterator(); ++It)
+                {
+                    const std::string K = (*It)[1].str();
+                    if (!Builtins.count(K) && Declared.count(K) && !DeclaredUngated.count(K))
+                        Errors.push_back(Tag + ": a layer WHEN reads %" + K + "%, which is only declared in WHEN-gated "
+                                         "layers — a layer condition may only read ungated variables (§4.1)");
+                }
+            }
+        }
+        //Undefined %KEY% references (typos) — over everything the node writes and runs.
+        const std::string Scan = N.Json["LAYERS"].dump();
         std::set<std::string> Refs;
         for (auto It = std::sregex_iterator(Scan.begin(), Scan.end(), Tok); It != std::sregex_iterator(); ++It)
             Refs.insert((*It)[1].str());
         for (const std::string &R : Refs)
         {
             ReferencedAll.insert(R);
-            if (!Builtins.count(R) && !Declared.count(R) && (!OnlyNodes || OnlyNodes->count(Id)))
-                Errors.push_back("node '" + Id + "': references undefined variable %" + R
-                                 + "% — no CustomVar declares it (typo?)");
+            if (!Builtins.count(R) && !Declared.count(R) && !Anchors.count(R) && InScope(Id))
+                Errors.push_back(Tag + ": references undefined variable %" + R + "% — no VARS declares it (typo?)");
         }
     }
-
-    //Orphan options (a declared user knob nobody reads) only matter for full-graph validation, not the launch gate.
     if (!OnlyNodes)
         for (const auto &[K, Owner] : UiDeclared)
-            if (!ReferencedAll.count(K))
-                Warnings.push_back("node '" + Owner + "': option %" + K
-                                   + "% has a UI but is referenced nowhere (dead knob)");
+            if (!ReferencedAll.count(K) && !Idx.Find(Owner)->Json.dump().empty())
+            {
+                //An option read by nothing is a dead knob — unless it is a bool option gating a layer (its reader is
+                //that WHEN, which the scan above already counts).
+                Warnings.push_back("node '" + Owner + "': option %" + K + "% has a UI but is referenced nowhere (dead knob)");
+            }
 
-    //----- DeclarePersist lint: the unified persistence primitive. Each layer promotes a file path or registry key
-    //to a durable TARGET under the instance. PATH "" persists the WHOLE scope (a PersistAll) — legal but discouraged
-    //(it drags the instance's own config into the game-writable mount), so it's an authoring warning; nothing should
-    //rely on it. An unknown SCOPE is a structural mistake. -----
+    //----- KEEP lint: what the user owns persists under a NAMED dir beside the instance's own state. -----
     for (const auto &[Id, N] : Idx.Nodes)
     {
-        if (OnlyNodes && !OnlyNodes->count(Id)) continue;
-        if (!N.Layers.is_array()) continue;
+        if (!InScope(Id) || !N.LowerError.empty()) continue;
         const std::string Tag = "node '" + Id + "'";
         for (const auto &L : N.Layers)
         {
-            if (!L.is_object() || L.value("TYPE", std::string()) != "DeclarePersist") continue;
-            const std::string Scope = ToLowerAscii(L.value("SCOPE", std::string("file")));
-            const std::string Path  = L.value("PATH", std::string());
-            if (Scope != "file" && Scope != "registry")
-                Warnings.push_back(Tag + ": DeclarePersist SCOPE '" + Scope + "' is not 'file' or 'registry'");
+            if (LayerType(L) != "DeclarePersist") continue;
+            const std::string Path = L.value("PATH", std::string());
             if (Path.empty())
-                Warnings.push_back(Tag + ": a DeclarePersist with an empty PATH persists the ENTIRE " + Scope
-                                   + " scope — prefer mapping named TARGETs (nothing should need a catch-all persist)");
-            //A file TARGET names a subdir directly under the instance, beside its OWN state — so instance.json /
-            //REGISTRY / REGKEYS are off-limits (the resolver refuses them at launch; flag it at authoring time too).
-            if (Scope == "file" && L.contains("TARGET") && L["TARGET"].is_string())
+                Warnings.push_back(Tag + ": a KEEP of a whole namespace persists ALL of it — prefer named addresses");
+            if (L.value("SCOPE", std::string()) == "file" && L.contains("TARGET") && L["TARGET"].is_string())
             {
                 const std::string T = ToLowerAscii(L["TARGET"].get<std::string>());
                 if (T == "instance.json" || T == "registry" || T == "regkeys")
-                    Warnings.push_back(Tag + ": DeclarePersist TARGET '" + L["TARGET"].get<std::string>()
+                    Warnings.push_back(Tag + ": KEEP NAME '" + L["TARGET"].get<std::string>()
                                        + "' is RESERVED for the instance's own state — it will be refused at launch");
             }
         }
     }
 }
+
 
 
 // ----- VFS layer helpers -----
@@ -1619,13 +1105,6 @@ std::string VfsSpecType(const std::string &Type)
          : Type == "VFSFileLayer" ? "file": Type == "VFSDeltaLayer" ? "delta" : "";
 }
 
-void ForEachClosureNode(const NodeIndex &Idx, const std::string &RootId,
-                        const std::map<std::string, bool> &Toggles,
-                        const std::function<void(const Node &)> &Visit)
-{
-    for (const std::string &Id : ResolveNodeOrder(Idx, RootId, Toggles))
-        if (const Node *N = Idx.Find(Id)) Visit(*N);
-}
 
 bool IsVfsLayer(const std::string &Type) { return !VfsSpecType(Type).empty(); }
 
@@ -2065,24 +1544,22 @@ ComputeCaseRenames(const NodeIndex &Idx, std::vector<std::string> &Log)
     std::unordered_map<std::string, std::vector<std::string>> AllCache;
     std::map<std::string, std::map<std::string, std::string>> Renames;   // zipPath -> (old -> new)
 
+    const Fold::Library Lib = LibraryOf(Idx);
     for (const auto &[LId, LN] : Idx.Nodes)
     {
         if (!LN.IsVariant()) continue;
         std::map<std::string, std::string> Canon;   // lowercased prefix key -> canonical exact component
 
-        for (const std::string &Id : ResolveNodeOrder(Idx, LN.Key(), {}))
+        const Fold::Plan Plan = Fold::Resolve(Lib, LId);
         {
-            const Node *N = Idx.Find(Id);
-            if (!N || N->IsRunner() || !N->Layers.is_array()) continue;
-            for (const auto &L : N->Layers)
+            for (const Fold::Item &I : Plan.Seq)
             {
-                if (!L.is_object() || !IsVfsLayer(LayerType(L))) continue;
-                std::filesystem::path Local; std::string Cid;
-                LayerLocator(L, N->BundleDir, Local, Cid);
+                if (I.Kind == "EDIT") continue;
+                const std::filesystem::path Local = ItemLocal(I);
                 std::error_code Ec;
-                if (Local == N->BundleDir || !std::filesystem::exists(Local, Ec)
+                if (Local.empty() || !std::filesystem::exists(Local, Ec)
                     || std::filesystem::is_directory(Local, Ec)) continue;   // only rewrite ZIPs (skip dir layers)
-                const std::string Target  = L.value("TARGET", std::string());
+                const std::string Target  = I.Target;
                 const std::string ZipPath = Local.string();
 
                 for (std::string Entry : ZipAllEntriesRaw(ZipPath, AllCache))
@@ -2203,3 +1680,4 @@ int FixCaseConflicts(const NodeIndex &Idx, std::vector<std::string> &Log, const 
 }
 
 } // namespace ManifestModel
+

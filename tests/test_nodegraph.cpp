@@ -1,5 +1,6 @@
 #include "vgtest.h"
 #include "nodegraph.h"
+#include "cid.h"
 
 #include <cstdio>
 #include <cstdlib>
@@ -11,10 +12,9 @@
 
 using nlohmann::ordered_json;
 
-// Teeth for the gigagraph PURE transforms (nodegraphpure.cpp): link normalize ↔ linkify, POS strip + handle
-// resolution + linkify in FreezeNodeJson, and deps-first topo order with cycle detection. Each assertion fails if the
-// corresponding behavior is removed or inverted. The end-to-end CID determinism is proven separately in Go
-// (VidyaGodIPFS/dag_test.go); these cover the C++ side that shapes what gets hashed.
+// Teeth for the node graph's PURE transforms (nodegraphpure.cpp): POS/CID strip + ref resolution in FreezeNodeJson
+// (references stay plain CID strings), deps-first topo order with cycle breaking, the working-tree gather's defences,
+// and the edit cascade over real identities (Cid::OfNode). Each assertion fails if its behaviour is removed.
 
 static int IndexOf(const std::vector<std::string> &V, const std::string &S)
 {
@@ -22,37 +22,7 @@ static int IndexOf(const std::vector<std::string> &V, const std::string &S)
     return -1;
 }
 
-TEST(nodegraph_normalizelinks_collapses_link_objects)
-{
-    ordered_json J = {
-        {"LABEL", "x"},
-        {"OVER", ordered_json::array({ {{"/", "cidA"}}, ordered_json::array({ {{"/", "cidB"}} }), {{"NOT", "cidN"}} })},
-        {"SOURCE", {{"TYPE", "ipfs"}, {"CID", {{"/", "cidContent"}}}, {"SIZE", 5}}},
-    };
-    NodeGraph::NormalizeLinks(J);
-    CHECK(J["OVER"][0] == "cidA");
-    CHECK(J["OVER"][1][0] == "cidB");                  // inside an any-of group too
-    CHECK(J["OVER"][2]["NOT"] == "cidN");              // a NOT is a plain string on the wire — untouched
-    CHECK(J["SOURCE"]["CID"] == "cidContent");   // nested link collapsed
-    CHECK(J["SOURCE"]["SIZE"] == 5);             // non-link sibling untouched
-}
-
-TEST(nodegraph_normalizelinks_leaves_nonlinks_alone)
-{
-    // A byte value {"/":{"bytes":...}} is NOT a link (non-string "/") and must survive; a plain object too.
-    ordered_json J = {
-        {"BYTES", {{"/", {{"bytes", "abcd"}}}}},
-        {"NESTED", {{"a", 1}, {"b", 2}}},
-        {"SLASH_PLUS", {{"/", "notalink"}, {"extra", 1}}},   // 2 keys ⇒ not a link
-    };
-    NodeGraph::NormalizeLinks(J);
-    CHECK(J["BYTES"]["/"].is_object());
-    CHECK(J["NESTED"]["a"] == 1);
-    CHECK(J["SLASH_PLUS"]["/"] == "notalink");   // still an object, not collapsed
-    CHECK(J["SLASH_PLUS"]["extra"] == 1);
-}
-
-TEST(nodegraph_freeze_strips_pos_resolves_and_linkifies)
+TEST(nodegraph_freeze_strips_pos_and_resolves_every_ref)
 {
     std::map<std::string, std::string> HandleToCid = {
         {"content_node", "cidContent"},
@@ -62,74 +32,59 @@ TEST(nodegraph_freeze_strips_pos_resolves_and_linkifies)
         {"CID", "premint-9"},                                   // the working-tree handle (last-minted CID / draft)
         {"LABEL", "exec"},
         {"POS", ordered_json::array({100.0, 200.0})},
-        {"PUBLISH", true},
-        {"OVER", ordered_json::array({"content_node", "external_already_a_cid",
-                                      ordered_json::array({"tile_node", "content_node"}), ordered_json{{"NOT", "tile_node"}}})},
-        {"TILE", {{"UID", "1"}, {"COVER", {{"PATH", "c.png"}, {"SOURCE", {{"TYPE", "ipfs"}, {"CID", "cidCover"}, {"SIZE", 9}}}}}}},
+        {"LAYERS", ordered_json::array({
+            {{"NODE", "content_node"}}, {{"NODE", "external_already_a_cid"}},
+            {{"ANY", ordered_json::array({"tile_node", "content_node"})}}, {{"NOT", "tile_node"}},
+            {{"ZIP", "g.zip"}, {"SOURCE", "cidBytes"}},
+            {{"EXEC", ordered_json::array({ {{"LABEL", "Play"}, {"TILE", {{"UID", "1"}, {"COVER", {{"FILE", "c.png"}, {"SOURCE", "cidCover"}}}}}} })}},
+        })},
     };
     const ordered_json F = NodeGraph::FreezeNodeJson(Raw, HandleToCid);
 
-    CHECK(!F.contains("POS"));                                   // non-semantic canvas coords dropped
-    CHECK(!F.contains("CID"));                                   // the node's OWN handle is STRIPPED (a block can't
-                                                               // contain its own hash) → identity stays purely the
-                                                               // hash of {TYPE, refs→CIDs, LABEL, payload}
-    CHECK(F.contains("PUBLISH") && F["PUBLISH"] == true);       // PUBLISH is minted IN (identity-bearing): unlike POS it
-                                                               // is NOT stripped, so shareability travels with the node
-    // intra-tree handle → CID, then linkified; external ref passes through, linkified; group members too
-    CHECK(F["OVER"][0] == ordered_json({{"/", "cidContent"}}));
-    CHECK(F["OVER"][1] == ordered_json({{"/", "external_already_a_cid"}}));
-    CHECK(F["OVER"][2][0] == ordered_json({{"/", "cidTile"}}));
-    CHECK(F["OVER"][2][1] == ordered_json({{"/", "cidContent"}}));
-    // A NOT is REMAPPED (it names a CID, part of identity) but NOT linkified: the excluded node is not in this
-    // node's DAG closure — a recursive pin/fetch must never pull in the thing it excludes.
-    CHECK(F["OVER"][3] == ordered_json({{"NOT", "cidTile"}}));
-    CHECK(F["TILE"]["COVER"]["SOURCE"]["CID"] == ordered_json({{"/", "cidCover"}}));   // nested SOURCE.CID linkified
-    CHECK(F["LABEL"] == "exec");                              // identity label preserved
+    CHECK(!F.contains("POS"));                                  // non-semantic canvas coords dropped
+    CHECK(!F.contains("CID"));                                  // the node's OWN handle is stripped (a file cannot hold its own hash)
+    // every ref form follows a re-minted node to its CID — and stays a PLAIN string (there are no links)
+    CHECK(F["LAYERS"][0]["NODE"] == "cidContent");
+    CHECK(F["LAYERS"][1]["NODE"] == "external_already_a_cid");  // an external ref passes through
+    CHECK(F["LAYERS"][2]["ANY"][0] == "cidTile");
+    CHECK(F["LAYERS"][2]["ANY"][1] == "cidContent");
+    CHECK(F["LAYERS"][3]["NOT"] == "cidTile");
+    CHECK(F["LAYERS"][4]["SOURCE"] == "cidBytes");              // content CIDs untouched
+    CHECK(F["LAYERS"][5]["EXEC"][0]["TILE"]["COVER"]["SOURCE"] == "cidCover");
+    CHECK(F["LABEL"] == "exec");
 }
 
-TEST(nodegraph_freeze_then_normalize_roundtrips)
+// The CID write-back and the freeze share ONE remapper (ManifestModel::RemapNodeRefs): a NODE, an ANY member and a
+// NOT all follow a re-minted node to its new CID; an external ref passes through.
+TEST(nodegraph_remap_node_refs_reaches_every_ref_form)
 {
-    std::map<std::string, std::string> HandleToCid = {{"dep", "cidDep"}};
-    ordered_json Raw = {
-        {"LABEL", "n"},
-        {"OVER", ordered_json::array({"dep"})},
-        {"SOURCE", {{"TYPE", "ipfs"}, {"CID", "cidBytes"}, {"SIZE", 1}}},
-    };
-    ordered_json F = NodeGraph::FreezeNodeJson(Raw, HandleToCid);
-    NodeGraph::NormalizeLinks(F);
-    CHECK(F["OVER"][0] == "cidDep");        // handle resolved, link collapsed back to a plain CID
-    CHECK(F["SOURCE"]["CID"] == "cidBytes");
-}
-
-// The CID write-back and the freeze share ONE remapper (ManifestModel::RemapOverRefs): a plain ref, an any-of
-// member and a NOT all follow a re-minted node to its new CID; an external ref passes through.
-TEST(nodegraph_remap_over_refs_reaches_every_ref_form)
-{
-    ordered_json N = {{"LABEL", "n"}, {"OVER", ordered_json::array({"a", ordered_json::array({"b", "ext"}), ordered_json{{"NOT", "c"}}})}};
+    ordered_json N = {{"LABEL", "n"}, {"LAYERS", ordered_json::array({
+        {{"NODE", "a"}}, {{"ANY", ordered_json::array({"b", "ext"})}}, {{"NOT", "c"}}, {{"ZIP", "x.zip"}} })}};
     const std::map<std::string, std::string> Map = {{"a", "A"}, {"b", "B"}, {"c", "C"}};
-    CHECK(ManifestModel::RemapOverRefs(N, [&](const std::string &R) { auto It = Map.find(R); return It == Map.end() ? R : It->second; }));
-    CHECK(N["OVER"][0] == "A");
-    CHECK(N["OVER"][1][0] == "B");
-    CHECK(N["OVER"][1][1] == "ext");
-    CHECK(N["OVER"][2]["NOT"] == "C");
-    // A node with no OVER, or a malformed one, is left alone and reports no change.
-    ordered_json Bare = {{"LABEL", "x"}};
-    CHECK(!ManifestModel::RemapOverRefs(Bare, [](const std::string &R) { return R + "!"; }));
-    ordered_json Odd = {{"LABEL", "x"}, {"OVER", "notalist"}};
-    CHECK(!ManifestModel::RemapOverRefs(Odd, [](const std::string &R) { return R + "!"; }));
+    CHECK(ManifestModel::RemapNodeRefs(N, [&](const std::string &R) { auto It = Map.find(R); return It == Map.end() ? R : It->second; }));
+    CHECK(N["LAYERS"][0]["NODE"] == "A");
+    CHECK(N["LAYERS"][1]["ANY"][0] == "B");
+    CHECK(N["LAYERS"][1]["ANY"][1] == "ext");
+    CHECK(N["LAYERS"][2]["NOT"] == "C");
+    CHECK(N["LAYERS"][3]["ZIP"] == "x.zip");                      // a payload is not a ref
+    // A node with no refs, or not a node at all, is left alone and reports no change.
+    ordered_json Bare = {{"LABEL", "x"}, {"LAYERS", ordered_json::array()}};
+    CHECK(!ManifestModel::RemapNodeRefs(Bare, [](const std::string &R) { return R + "!"; }));
+    ordered_json Odd = {{"LABEL", "x"}, {"LAYERS", "notalist"}};
+    CHECK(!ManifestModel::RemapNodeRefs(Odd, [](const std::string &R) { return R + "!"; }));
 }
 
 TEST(nodegraph_topo_order_is_deps_first)
 {
-    // exec → (OVER) content → (OVER) lib ; exec → (OVER any-of) tile ; exec → (OVER NOT) rival. Every ref form is a
-    // freeze dependency: the frozen block embeds the CID of each, NOT included.
+    // exec contains content, which contains lib; exec's ANY names tile; its NOT names rival. Every ref form is a
+    // freeze dependency: the frozen file embeds the CID of each, NOT included.
     std::map<std::string, ordered_json> Tree = {
-        {"lib",     {{"LABEL", "lib"}}},
-        {"content", {{"LABEL", "content"}, {"OVER", ordered_json::array({"lib"})}}},
-        {"tile",    {{"LABEL", "tile"}}},
-        {"rival",   {{"LABEL", "rival"}}},
-        {"exec",    {{"LABEL", "exec"},
-                     {"OVER", ordered_json::array({"content", ordered_json::array({"tile", "lib"}), ordered_json{{"NOT", "rival"}}})}}},
+        {"lib",     {{"LABEL", "lib"}, {"LAYERS", ordered_json::array()}}},
+        {"content", {{"LABEL", "content"}, {"LAYERS", ordered_json::array({ {{"NODE", "lib"}} })}}},
+        {"tile",    {{"LABEL", "tile"}, {"LAYERS", ordered_json::array()}}},
+        {"rival",   {{"LABEL", "rival"}, {"LAYERS", ordered_json::array()}}},
+        {"exec",    {{"LABEL", "exec"}, {"LAYERS", ordered_json::array({
+                        {{"NODE", "content"}}, {{"ANY", ordered_json::array({"tile", "lib"})}}, {{"NOT", "rival"}} })}}},
     };
     std::vector<std::string> Order;
     std::string Err;
@@ -137,46 +92,40 @@ TEST(nodegraph_topo_order_is_deps_first)
     CHECK(Order.size() == 5);
     CHECK(IndexOf(Order, "lib")     < IndexOf(Order, "content"));
     CHECK(IndexOf(Order, "content") < IndexOf(Order, "exec"));
-    CHECK(IndexOf(Order, "tile")    < IndexOf(Order, "exec"));   // an any-of member is a freeze dependency too
+    CHECK(IndexOf(Order, "tile")    < IndexOf(Order, "exec"));   // an ANY member is a freeze dependency too
     CHECK(IndexOf(Order, "rival")   < IndexOf(Order, "exec"));   // ...and so is a NOT (it names a CID)
 }
 
 TEST(nodegraph_edit_cascades_new_cids_up_the_chain)
 {
-    // THE Model C cascade: references are CID handles; a mint freezes leaf→root, resolving each ref to the freshly
-    // computed CID of its target (FreezeNodeJson via HandleToCid). So editing a LEAF must change its CID AND every
-    // ancestor's CID, and each ancestor's reference must re-point to the new child CID. We stand in a deterministic
-    // fake "CID" (a hash of the frozen bytes) for IpfsWrapper::DagCid — the CASCADE LOGIC is pure (topo + resolve).
-    // Teeth: if FreezeNodeJson stopped resolving handles (or topo stopped being deps-first), an ancestor would keep
-    // the OLD child CID and its own CID would not move.
-    auto fakeCid = [](const ordered_json &Frozen) {
-        return "cid_" + std::to_string(std::hash<std::string>{}(Frozen.dump()) & 0xffffffffULL);
-    };
-    // Handles are the stored "CID" values; refs point to them. base(A) ← content(B) ← exec(C).
+    // References are CIDs; a mint freezes leaf→root, resolving each ref to the freshly computed CID of its target. So
+    // editing a LEAF must change its CID AND every container's CID, each container re-pointing to the new child CID.
+    // Identity is the real one (Cid::OfNode: the canonical bytes' raw CID). Teeth: if FreezeNodeJson stopped
+    // resolving handles (or topo stopped being deps-first), a container would keep the OLD child CID.
     auto mint = [&](std::map<std::string, ordered_json> Tree) {
         std::vector<std::string> Order; std::string Err;
         CHECK(NodeGraph::TopoOrderForMint(Tree, Order, &Err));
         std::map<std::string, std::string> H2C;
         for (const std::string &H : Order)
-            H2C[H] = fakeCid(NodeGraph::FreezeNodeJson(Tree.at(H), H2C));   // deps already in H2C ⇒ refs resolve
+            H2C[H] = Cid::OfNode(NodeGraph::FreezeNodeJson(Tree.at(H), H2C));   // deps already in H2C ⇒ refs resolve
         return H2C;
     };
     auto tree = [](const std::string &basePayload) {
         return std::map<std::string, ordered_json>{
-            {"A", {{"CID", "A"}, {"LABEL", "base"}, {"PATH", "b.zip"}, {"NOTE", basePayload}}},
-            {"B", {{"CID", "B"}, {"LABEL", "content"}, {"OVER", ordered_json::array({"A"})}}},
-            {"C", {{"CID", "C"}, {"LABEL", "exec"}, {"OVER", ordered_json::array({"B"})}}},
+            {"A", {{"CID", "A"}, {"LABEL", "base"}, {"LAYERS", ordered_json::array({ {{"ZIP", basePayload}} })}}},
+            {"B", {{"CID", "B"}, {"LABEL", "content"}, {"LAYERS", ordered_json::array({ {{"NODE", "A"}} })}}},
+            {"C", {{"CID", "C"}, {"LABEL", "exec"}, {"LAYERS", ordered_json::array({ {{"NODE", "B"}} })}}},
         };
     };
-    const auto V1 = mint(tree("v1"));
-    const auto V2 = mint(tree("v2"));            // ONLY the leaf A's payload changed
+    const auto V1 = mint(tree("v1.zip"));
+    const auto V2 = mint(tree("v2.zip"));        // ONLY the leaf A's payload changed
     CHECK(V1.at("A") != V2.at("A"));             // the edited leaf's CID moved
-    CHECK(V1.at("B") != V2.at("B"));             // its parent re-minted (its ref resolved to A's NEW cid)
-    CHECK(V1.at("C") != V2.at("C"));             // cascade reached the root exec
-    // And an UNRELATED edit does NOT move a node that does not transitively depend on it: freezing B in V2 must embed
-    // A's V2 cid, proving the ref actually re-pointed (not a coincidental hash).
-    const ordered_json FB = NodeGraph::FreezeNodeJson(tree("v2").at("B"), { {"A", V2.at("A")} });
-    CHECK(FB["OVER"][0] == ordered_json({{"/", V2.at("A")}}));   // B's parent link IS A's new cid
+    CHECK(V1.at("B") != V2.at("B"));             // its container re-minted (its ref resolved to A's NEW cid)
+    CHECK(V1.at("C") != V2.at("C"));             // cascade reached the root
+    const ordered_json FB = NodeGraph::FreezeNodeJson(tree("v2.zip").at("B"), { {"A", V2.at("A")} });
+    CHECK(FB["LAYERS"][0]["NODE"] == V2.at("A"));
+    // The same bytes give the same CID on every run (identity is content).
+    CHECK(mint(tree("v1.zip")) == V1);
 }
 
 TEST(nodegraph_topo_order_breaks_cycle)
@@ -185,9 +134,9 @@ TEST(nodegraph_topo_order_breaks_cycle)
     // edge is broken, both nodes still enter the order, and they get dropped later at freeze (unfreezable). A THIRD
     // acyclic node must survive regardless — the degrade-per-node guarantee.
     std::map<std::string, ordered_json> Tree = {
-        {"a",    {{"LABEL", "a"}, {"OVER", ordered_json::array({"b"})}}},
-        {"b",    {{"LABEL", "b"}, {"OVER", ordered_json::array({"a"})}}},
-        {"good", {{"LABEL", "good"}}},
+        {"a",    {{"LABEL", "a"}, {"LAYERS", ordered_json::array({ {{"NODE", "b"}} })}}},
+        {"b",    {{"LABEL", "b"}, {"LAYERS", ordered_json::array({ {{"NODE", "a"}} })}}},
+        {"good", {{"LABEL", "good"}, {"LAYERS", ordered_json::array()}}},
     };
     std::vector<std::string> Order;
     std::string Err;
@@ -198,10 +147,10 @@ TEST(nodegraph_topo_order_breaks_cycle)
 
 TEST(nodegraph_topo_external_refs_impose_no_order)
 {
-    // A PARENTS ref not in the tree is an external (already-frozen) dep — it must not block ordering or error.
+    // A ref not in the tree is an external (already-frozen) dep — it must not block ordering or error.
     std::map<std::string, ordered_json> Tree = {
         {"only", {{"LABEL", "only"},
-                  {"OVER", ordered_json::array({"some_external_cid", ordered_json{{"NOT", "another_external_cid"}}})}}},
+                  {"LAYERS", ordered_json::array({ {{"NODE", "some_external_cid"}}, {{"NOT", "another_external_cid"}} })}}},
     };
     std::vector<std::string> Order;
     std::string Err;
@@ -227,7 +176,7 @@ struct ScanDir
 TEST(nodegraph_scan_rejects_hostile_deep_json_without_crashing)
 {
     // UNTRUSTED bytes live in the tree now (a received share's block lands verbatim): a deeply nested file must be
-    // SKIPPED by the depth pre-scan, not parsed — nlohmann's parser and NormalizeLinks both recurse per level, so
+    // SKIPPED by the depth pre-scan, not parsed — nlohmann's parser recurses per level, so
     // without the guard this test dies by stack overflow (no assert ever fires — the crash IS the failure).
     ScanDir D;
     std::string Deep;
@@ -235,7 +184,7 @@ TEST(nodegraph_scan_rejects_hostile_deep_json_without_crashing)
     for (int i = 0; i < 200000; ++i) Deep += ']';
     D.Write("Evil - Lib/[x] x/bomb.json", Deep);
     // Model C: a node is KEYED by its stored "CID" handle (LABEL is cosmetic).
-    D.Write("Games/[1] A/a.json", ordered_json{{"CID", "cidA"}, {"LABEL", "a_exec"}}.dump());
+    D.Write("Games/[1] A/a.json", ordered_json{{"CID", "cidA"}, {"LABEL", "a_exec"}, {"LAYERS", ordered_json::array()}}.dump());
     std::map<std::string, ordered_json> Tree;
     std::map<std::string, std::filesystem::path> Dirs;
     NodeGraph::GatherWorkingTree(D.P, Tree, Dirs);
@@ -253,9 +202,9 @@ TEST(nodegraph_scan_survives_hostile_handle_and_keeps_handleless)
     // under a synthetic key, never dropped. LABEL is cosmetic and is NEVER a key. Teeth: revert GatherWorkingTree's
     // is_string guard → this throws; drop the synthetic-key path → the handle-less node vanishes.
     ScanDir D;
-    D.Write("A/hostile.json",  std::string("{\"CID\":1,\"LABEL\":\"x\"}"));                                       // non-string handle
-    D.Write("A/nameless.json", std::string("{\"LAYERS\":[{\"FORM\":\"zip\",\"PATH\":\"x.zip\"}]}"));            // no handle
-    D.Write("A/named.json",    ordered_json{{"CID","cidN"},{"LABEL","named"}}.dump());
+    D.Write("A/hostile.json",  std::string("{\"CID\":1,\"LABEL\":\"x\",\"LAYERS\":[]}"));                        // non-string handle
+    D.Write("A/nameless.json", std::string("{\"LAYERS\":[{\"ZIP\":\"x.zip\"}]}"));                                // no handle
+    D.Write("A/named.json",    ordered_json{{"CID","cidN"},{"LABEL","named"},{"LAYERS",ordered_json::array()}}.dump());
     std::map<std::string, ordered_json> Tree;
     std::map<std::string, std::filesystem::path> Dirs;
     NodeGraph::GatherWorkingTree(D.P, Tree, Dirs);   // must NOT throw
@@ -272,8 +221,8 @@ TEST(nodegraph_duplicate_LABEL_is_fine_distinct_handles_both_kept)
     // collision at all — they have distinct CID handles and BOTH gather normally. Teeth: if anything still keyed on
     // LABEL, one of these would evict the other.
     ScanDir D;
-    D.Write("Games/[1] RoC/roc.json", ordered_json{{"CID","cidRoC"},{"LABEL","v1.21b"}}.dump());
-    D.Write("Games/[2] TfT/tft.json", ordered_json{{"CID","cidTfT"},{"LABEL","v1.21b"}}.dump());
+    D.Write("Games/[1] RoC/roc.json", ordered_json{{"CID","cidRoC"},{"LABEL","v1.21b"},{"LAYERS",ordered_json::array()}}.dump());
+    D.Write("Games/[2] TfT/tft.json", ordered_json{{"CID","cidTfT"},{"LABEL","v1.21b"},{"LAYERS",ordered_json::array()}}.dump());
     std::map<std::string, ordered_json> Tree;
     std::map<std::string, std::filesystem::path> Dirs;
     NodeGraph::GatherWorkingTree(D.P, Tree, Dirs);
@@ -290,7 +239,7 @@ TEST(nodegraph_untrusted_gather_ignores_forged_cid_handle)
     // re-opening the dependency-substitution / BundleDir-steal hijacks.
     ScanDir D;
     D.Write("Mallory - Lib/[x] x/forge.json",
-            ordered_json{{"CID", "bafyVICTIMdep"}, {"LABEL", "innocent"}}.dump());
+            ordered_json{{"CID", "bafyVICTIMdep"}, {"LABEL", "innocent"}, {"LAYERS", ordered_json::array()}}.dump());
     std::map<std::string, ordered_json> Untrusted;
     std::map<std::string, std::filesystem::path> DirsU;
     NodeGraph::GatherWorkingTree(D.P, Untrusted, DirsU, /*SkipReserved=*/false, /*TrustStoredCid=*/false);
@@ -309,7 +258,7 @@ TEST(nodegraph_duplicate_HANDLE_keeps_first_seen_local_wins)
     // CID. Keep FIRST-SEEN; BuildCatalogIndex scans LIBRARY before CATALOG, so a local node wins the handle over a
     // later-scanned received one (a received block can never shadow a local handle by order). The loser is NOT dropped
     // — it survives under a synthetic key so no node vanishes. Teeth: drop the re-key path → the loser is erased.
-    const ordered_json Wine = {{"CID","cidW"},{"LABEL","wine"},{"EXECUTABLE","wine"}};
+    const ordered_json Wine = {{"CID","cidW"},{"LABEL","wine"},{"EXECUTABLE","wine"},{"LAYERS",ordered_json::array()}};
     ordered_json Evil = Wine; Evil["EXECUTABLE"] = "pwned";   // same forged handle "cidW", different content
     ScanDir Lib;   Lib.Write("VidyaGodRunners/wine/wine.json", Wine.dump());
     ScanDir Cat;   Cat.Write("Mallory - Lib/[x] x/wine.json",  Evil.dump());
@@ -352,4 +301,49 @@ TEST(nodegraph_duplicate_HANDLE_keeps_first_seen_local_wins)
         if (N.value("EXECUTABLE", std::string()) == "wine") w++;
         else if (N.value("EXECUTABLE", std::string()) == "pwned") p++;
     CHECK(w == 1); CHECK(p == 1);
+}
+
+// Landing a peer's node bytes (a received package folder, a fetched closure node, a hydrated CID): only an honest
+// node gets in. Each refusal below is a way a hostile or broken peer's file would otherwise reach the working tree —
+// a handle ("CID") that hijacks a local node once the package is installed, bytes that are not the CID they are
+// named by, a non-canonical encoding that re-freezes to another identity, or JSON that is not a node at all.
+TEST(nodegraph_landing_verifies_node_bytes)
+{
+    const ordered_json Node = { {"LABEL", "n"}, {"LAYERS", ordered_json::array({ ordered_json{{"ZIP", "a.zip"}} })} };
+    const std::string Bytes = Cid::Canonical(Node);
+    const std::string C = Cid::OfBytes(Bytes);
+    ordered_json J;
+    std::string Err;
+    CHECK(NodeGraph::VerifyNodeBytes(Bytes, C, J, &Err));
+    CHECK(J == Node);
+    CHECK(!NodeGraph::VerifyNodeBytes(Bytes, Cid::OfBytes("other"), J, &Err));                       // not its name
+    ordered_json WithHandle = Node; WithHandle["CID"] = "bafkrei-local-handle";
+    const std::string H = nlohmann::json(WithHandle).dump();                                           // canonical, but a handle
+    CHECK(!NodeGraph::VerifyNodeBytes(H, Cid::OfBytes(H), J, &Err));
+    ordered_json WithPos = Node; WithPos["POS"] = ordered_json::array({ 1, 2 });
+    const std::string P = nlohmann::json(WithPos).dump();
+    CHECK(!NodeGraph::VerifyNodeBytes(P, Cid::OfBytes(P), J, &Err));
+    const std::string Pretty = Node.dump(2);                                                           // not canonical
+    CHECK(!NodeGraph::VerifyNodeBytes(Pretty, Cid::OfBytes(Pretty), J, &Err));
+    const std::string NotNode = R"({"LABEL":"x"})";                                                   // no LAYERS
+    CHECK(!NodeGraph::VerifyNodeBytes(NotNode, Cid::OfBytes(NotNode), J, &Err));
+    const std::string Deep = std::string(200, '[') + std::string(200, ']');
+    CHECK(!NodeGraph::VerifyNodeBytes(Deep, Cid::OfBytes(Deep), J, &Err));
+    // …and over a landed file.
+    const std::filesystem::path F = std::filesystem::temp_directory_path() / ("vg_landing_" + std::to_string(getpid()) + ".json");
+    { std::ofstream O(F, std::ios::binary); O << Bytes; }
+    CHECK(NodeGraph::VerifyLanded(F, C, &J, &Err));
+    CHECK(!NodeGraph::VerifyLanded(F, Cid::OfBytes("x"), nullptr, &Err));
+    std::filesystem::remove(F);
+    CHECK(!NodeGraph::VerifyLanded(F, C, nullptr, &Err));                                             // absent
+}
+
+TEST(nodegraph_path_within_refuses_escapes)
+{
+    const std::filesystem::path B = "/tmp/vg_pkg_base";
+    CHECK(NodeGraph::PathWithin(B, B / "x.zip"));
+    CHECK(NodeGraph::PathWithin(B, B / "sub" / "x.zip"));
+    CHECK(NodeGraph::PathWithin(B, B / ".wine" / "x"));                 // a leading-dot NAME is fine
+    CHECK(!NodeGraph::PathWithin(B, B / ".." / "x.zip"));
+    CHECK(!NodeGraph::PathWithin(B, "/home/u/.bashrc"));
 }

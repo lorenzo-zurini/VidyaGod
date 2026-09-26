@@ -31,7 +31,7 @@ static std::string LaunchableForNode(const NodeIndex & Idx, const std::string & 
     for (const auto & [Id, Node] : Idx.Nodes)
     {
         if (!Node.IsVariant()) continue;
-        const auto Order = ManifestModel::ResolveNodeOrder(Idx, Id, {});
+        const auto Order = ManifestModel::Closure(Idx, Id);
         if (std::find(Order.begin(), Order.end(), nodeId) != Order.end()) return Id;
     }
     return "";
@@ -63,7 +63,7 @@ QString PackageEditorModel::FileForNode(const nlohmann::ordered_json & Node) con
 {
     //Model C: the filename is PURE PRESENTATION (nothing keys on it — identity is the CID). Prefer the file the node
     //was LOADED from (__FILE__) so it stays put: renaming is now just editing the cosmetic LABEL and must NOT re-file
-    //the node (and array-file grouping must survive a save). A brand-new node has no __FILE__ → name it from its
+    //the node. A brand-new node has no __FILE__ → name it from its
     //LABEL (a readable filename), else its short CID handle, else "untitled".
     if (Node.is_object() && Node.contains("__FILE__") && Node["__FILE__"].is_string()
         && !std::string(Node["__FILE__"]).empty())
@@ -85,50 +85,30 @@ QString PackageEditorModel::FileForNode(const nlohmann::ordered_json & Node) con
 void PackageEditorModel::LoadNodes()
 {
     Doc = json::object({ {"NODES", json::array()} });
-    Carried.clear();
 
+    //One node per file: the file IS the node. A JSON file that is not a node (a note, a stray list) is left alone —
+    //never loaded, and never rewritten or swept by SaveNodes.
     const QStringList Files = PackageDir->entryList(QStringList() << "*.json", QDir::Files, QDir::Name);
     for (const QString &FileName : Files)
     {
         nlohmann::ordered_json J;
         QFile F(PackageDir->filePath(FileName));
         if (JSONOps::LoadJSON(&F, &J)) continue;                     // LoadJSON returns true on FAILURE
-        //A file holds ONE node or an ARRAY of them — grouping nodes into files is pure presentation, so the
-        //editor reads either and (see SaveNodes) writes back the grouping it found.
-        if (ManifestModel::IsNodeObject(J))
+        if (!ManifestModel::IsNodeObject(J))
         {
-            J["__FILE__"] = FileName.toStdString();
-            Doc["NODES"].push_back(std::move(J));
+            if (J.is_array()) LogWarn("PackageEditorModel", FileName.toStdString() + " is a list, not a node (a file "
+                                      "holds one node) — left as it is.");
+            continue;
         }
-        else if (J.is_array())
-        {
-            //An entry we do not recognise as a node is CARRIED, not dropped: SaveNodes rewrites the whole file
-            //from what was loaded, so skipping an element here would erase it from disk the next time anything
-            //in that file is touched.
-            nlohmann::ordered_json Strays = nlohmann::ordered_json::array();
-            for (auto &N : J)
-            {
-                if (ManifestModel::IsNodeObject(N))
-                {
-                    N["__FILE__"] = FileName.toStdString();
-                    Doc["NODES"].push_back(std::move(N));
-                }
-                else Strays.push_back(N);
-            }
-            if (!Strays.empty())
-            {
-                Carried[FileName.toStdString()] = std::move(Strays);
-                LogWarn("PackageEditorModel", "Carrying " + std::to_string(Carried[FileName.toStdString()].size())
-                        + " unrecognised entr(ies) in " + FileName.toStdString() + " through untouched.");
-            }
-        }
+        J["__FILE__"] = FileName.toStdString();
+        Doc["NODES"].push_back(std::move(J));
     }
 
     if (Doc["NODES"].empty())
         // A fresh empty bundle gets one plain node with a GLOBALLY-unique draft HANDLE ("CID") so the canvas can wire
         // it; the real CID is minted at Publish. (A hardcoded "draft-1" here would collide with every other fresh
         // bundle at the library-wide publish and cross-wire them.) LABEL is empty (cosmetic — shows its kind until named).
-        Doc["NODES"].push_back(json::object({ {"CID", MakeDraftHandle()}, {"LABEL", ""}, {"OVER", json::array()} }));   // a plain node until given a payload
+        Doc["NODES"].push_back(json::object({ {"CID", MakeDraftHandle()}, {"LABEL", ""}, {"LAYERS", json::array()} }));   // no layers until given some
 
     Validated = false; emit validationChanged();   // validation is on-demand ("Check Package Validity"); don't auto-run on load
     LoadLayout();
@@ -227,56 +207,32 @@ void PackageEditorModel::SaveNodes()
     InvalidateExecIndex();   // the bundle's nodes are changing — drop the cached catalog index
     auto &Nodes = Doc["NODES"];
 
-    // Which file each node belongs to. A node whose __FILE__ is SHARED with others stays in that file (the
-    // author grouped them; file grouping carries no semantics, so the editor must not silently re-shuffle it).
-    // A node that owns its file keeps the old behaviour — <NODE_ID>.json, so a rename re-files it.
-    std::map<std::string, int> Occupants;
-    for (auto &N : Nodes)
-        if (N.contains("__FILE__") && N["__FILE__"].is_string()) ++Occupants[N["__FILE__"].get<std::string>()];
-    auto TargetFile = [&](nlohmann::ordered_json &N) -> QString {
-        if (N.contains("__FILE__") && N["__FILE__"].is_string())
-        {
-            const std::string F = N["__FILE__"].get<std::string>();
-            //Keep the file when it is SHARED, and also when it carries entries we did not parse as nodes —
-            //re-filing the node away from it would orphan the file, and the orphan sweep would then delete
-            //the strays with it.
-            if (Occupants[F] > 1 || Carried.count(F)) return QString::fromStdString(F);
-        }
-        return FileForNode(N);
-    };
-
-    // Group the nodes by destination file, preserving document order within each.
-    std::map<QString, std::vector<nlohmann::ordered_json *>> ByFile;
-    std::vector<QString> FileOrder;
-    for (auto &N : Nodes)
+    //Each node to its own file: the one it was loaded from, else one named from its LABEL (FileForNode). A name
+    //already taken — by another node this save writes, or by a JSON file that is not a node — gets a numbered
+    //sibling instead: a file holds one node, and a note someone keeps in the bundle is never overwritten.
+    std::set<QString> Taken;
+    for (const QString &Existing : PackageDir->entryList(QStringList() << "*.json", QDir::Files))
     {
-        const QString F = TargetFile(N);
-        if (F.isEmpty()) continue;
-        if (ByFile.find(F) == ByFile.end()) FileOrder.push_back(F);
-        ByFile[F].push_back(&N);
+        nlohmann::ordered_json J; QFile F(PackageDir->filePath(Existing));
+        if (JSONOps::LoadJSON(&F, &J) || !ManifestModel::IsNodeObject(J)) Taken.insert(Existing);   // not a node file
     }
-
-    // Write each file: one node → an object, several → an array (the form it was read in).
-    // WRITES COME FIRST. Deleting orphans up front meant a failed write (full disk, read-only bundle) left the
-    // node existing only in memory, with the old file already gone and nothing but a log line to say so.
+    std::set<QString> Written;
     bool Ok = true;
-    for (const QString &FileName : FileOrder)
+    for (auto &N : Nodes)
     {
-        auto &Group = ByFile[FileName];
-        nlohmann::ordered_json Out;
-        if (Group.size() == 1) { Out = *Group.front(); Out.erase("__FILE__"); }
-        else
+        if (!N.is_object()) continue;
+        QString FileName = FileForNode(N);
+        if (FileName.isEmpty()) continue;
+        if (Taken.count(FileName))
         {
-            Out = nlohmann::ordered_json::array();
-            for (auto *N : Group) { nlohmann::ordered_json C = *N; C.erase("__FILE__"); Out.push_back(std::move(C)); }
+            const QString Stem = FileName.chopped(5);   // ".json"
+            for (int K = 2; Taken.count(FileName); ++K) FileName = Stem + "_" + QString::number(K) + ".json";
         }
-        //Re-append anything this file held that we did not parse as a node, so a save never erases it.
-        if (auto Cit = Carried.find(FileName.toStdString()); Cit != Carried.end())
-        {
-            if (!Out.is_array()) { nlohmann::ordered_json A = nlohmann::ordered_json::array(); A.push_back(Out); Out = std::move(A); }
-            for (const auto &X : Cit->second) Out.push_back(X);
-        }
-        for (auto *N : Group) (*N)["__FILE__"] = FileName.toStdString();
+        Taken.insert(FileName);
+        Written.insert(FileName);
+        nlohmann::ordered_json Out = N;
+        Out.erase("__FILE__");
+        N["__FILE__"] = FileName.toStdString();
         QFile F(PackageDir->filePath(FileName));
         if (!JSONOps::SaveJSON(&Out, &F)) Ok = false;
     }
@@ -294,12 +250,10 @@ void PackageEditorModel::SaveNodes()
     // Only now sweep the files that are genuinely orphaned (a *.json holding nodes no current node claims).
     for (const QString &Existing : PackageDir->entryList(QStringList() << "*.json", QDir::Files))
     {
-        if (ByFile.count(Existing)) continue;
+        if (Written.count(Existing)) continue;
         nlohmann::ordered_json J; QFile F(PackageDir->filePath(Existing));
         if (JSONOps::LoadJSON(&F, &J)) continue;
-        const bool IsNodeFile = ManifestModel::IsNodeObject(J)
-                             || (J.is_array() && !J.empty() && ManifestModel::IsNodeObject(J[0]));
-        if (IsNodeFile) PackageDir->remove(Existing);
+        if (ManifestModel::IsNodeObject(J)) PackageDir->remove(Existing);
     }
 
     emit savedToDisk(PackageDir->path());
@@ -330,7 +284,7 @@ void PackageEditorModel::Revalidate()
             const std::string Id = (N.contains("CID") && N["CID"].is_string()) ? N["CID"].get<std::string>() : std::string();
             if (Id.empty()) continue;
             Scope.insert(Id);
-            for (const std::string & Dep : ManifestModel::ResolveNodeOrder(Idx, Id, {})) Scope.insert(Dep);
+            for (const std::string & Dep : ManifestModel::Closure(Idx, Id)) Scope.insert(Dep);
         }
     ManifestModel::ValidateNodeGraph(Idx, ValErrors, ValWarnings, &Scope);
     Validated = true;
@@ -349,7 +303,7 @@ NodeIndex PackageEditorModel::BuildExecIndex() const
     // Merge in the rest of the catalog (CID package sources + local bundles); std::map::emplace keeps this bundle's nodes.
     NodeIndex Cat = PackageCatalog::BuildCatalogIndex(*GlobalConfigJSON);
     for (auto &[Id, N] : Cat.Nodes) Idx.Nodes.emplace(Id, N);
-    ManifestModel::DeriveIdentity(Idx);   // grafts inherit their game's identity through OVER
+    ManifestModel::DeriveFacts(Idx);   // entries, runners and tiles are folded facts
     return Idx;
 }
 
@@ -434,7 +388,7 @@ std::string PackageEditorModel::createNode(nlohmann::ordered_json Payload,
                                            const std::string & IdHint)
 {
     // Model C: a new node gets a unique, STABLE draft HANDLE (its "CID"); the real CID is minted at Publish. Callers
-    // wire by the RETURNED handle (they push it into another node's OVER). IdHint becomes the cosmetic LABEL — a
+    // wire by the RETURNED handle (a NODE layer naming it). IdHint becomes the cosmetic LABEL — a
     // readable display name, not a key, so it need not be unique.
     auto HandleExists = [this](const std::string & H) {
         for (const auto & N : Doc["NODES"]) if (N.contains("CID") && N["CID"].is_string() && N["CID"].get<std::string>() == H) return true;
@@ -443,11 +397,17 @@ std::string PackageEditorModel::createNode(nlohmann::ordered_json Payload,
     std::string Handle;
     do { Handle = MakeDraftHandle(); } while (HandleExists(Handle));   // globally unique — never a per-bundle counter
 
+    //The parents come FIRST, as NODE layers: the new node contains what it was made on, and its own layers (the
+    //payload's) fold over them — a capture applies exactly where it was taken.
     nlohmann::ordered_json N = nlohmann::ordered_json::object({{"CID", Handle}, {"LABEL", IdHint}});
-    nlohmann::ordered_json P = nlohmann::ordered_json::array();
-    for (const std::string & X : Parents) if (!X.empty()) P.push_back(X);
-    N["OVER"] = std::move(P);
-    for (const auto & [K, V] : Payload.items()) N[K] = V;
+    nlohmann::ordered_json Ls = nlohmann::ordered_json::array();
+    for (const std::string & X : Parents) if (!X.empty()) Ls.push_back(nlohmann::ordered_json{{"NODE", X}});
+    for (const auto & [K, V] : Payload.items())
+    {
+        if (K != "LAYERS") { N[K] = V; continue; }
+        if (V.is_array()) for (const auto & L : V) Ls.push_back(L);
+    }
+    N["LAYERS"] = std::move(Ls);
     Doc["NODES"].push_back(std::move(N));
     SaveNodes();
     emit documentReloaded();

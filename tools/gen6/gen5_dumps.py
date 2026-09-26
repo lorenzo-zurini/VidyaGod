@@ -100,6 +100,9 @@ def main():
     ap.add_argument("--only", nargs="*")
     ap.add_argument("--option-configs", action="store_true", help="dump the non-default option launches instead")
     ap.add_argument("--relink", action="store_true", help="only restore content symlinks under an extracted archive")
+    ap.add_argument("--replay", help="a gen-5 dumps dir: dump the SAME launches (plain + @configs) with a gen-6 binary over "
+                                     "<work>/base (already holding a gen-6 LIBRARY); a gen-5 TOGGLE'd graft becomes --graft "
+                                     "when it is still a graft (its list begins with ANY), else its bool option --var LABEL=1/0")
     a = ap.parse_args()
     base, dumps = os.path.join(a.work, "base"), os.path.join(a.work, "dumps")
     os.makedirs(dumps, exist_ok=True)
@@ -109,8 +112,43 @@ def main():
         return 0
     if not os.path.isdir(os.path.join(base, "LIBRARY")):
         os.makedirs(base, exist_ok=True); mirror(a.seeder, base)
-    configs = {}
-    if a.option_configs:
+    configs, replay = {}, {}
+    if a.replay:
+        gen6 = {}
+        for dp, dn, fns in os.walk(os.path.join(base, "LIBRARY")):
+            for fn in fns:
+                if fn.endswith(".json"):
+                    try:
+                        j = json.load(open(os.path.join(dp, fn)))
+                    except Exception:
+                        continue
+                    if isinstance(j, dict) and j.get("CID"):
+                        gen6[j["CID"]] = j
+        pooled = {k for n in gen6.values() for L in n.get("LAYERS", []) for k, d in (L.get("VARS") or {}).items()
+                  if (d.get("UI") or {}).get("CONTROL") == "secret" and (d.get("UI") or {}).get("POOL")}
+        for fn in sorted(os.listdir(a.replay)):
+            if not fn.endswith(".json") or fn == "shelf.list":
+                continue
+            name = fn[:-5]
+            cfg = json.load(open(os.path.join(a.replay, name + ".cfg"))) if "@" in name else None
+            # a secret drawn from its POOL on first launch: replay gen 5's draw, it is instance data
+            drawn = json.load(open(os.path.join(a.replay, fn))).get("CustomVariables", {})
+            extra = [x for k in sorted(pooled) if k in drawn for x in ("--var", f"{k}={drawn[k]}")]
+            if cfg:
+                grafts = []
+                for g, on in sorted(cfg["modules"].items(), key=lambda x: (gen6.get(x[0], {}).get("LABEL", ""), x[0])):
+                    n = gen6.get(g, {})
+                    if n.get("LAYERS") and "ANY" in n["LAYERS"][0]:
+                        if on:
+                            grafts.append(g)
+                    else:
+                        extra += ["--var", f"{n.get('LABEL', g)}={'1' if on else '0'}"]
+                extra += [x for g in grafts for x in ("--graft", g)] or ["--no-grafts"]
+                for k, v in cfg["vars"].items():
+                    extra += ["--var", f"{k}={v}"]
+            replay[name] = (name.split("@")[0], extra)
+        cids = sorted(replay)
+    elif a.option_configs:
         for cid, tag, cfg in option_configs(os.path.join(base, "LIBRARY")):
             configs[f"{cid}@{tag}"] = (cid, cfg)
         cids = sorted(configs)
@@ -131,7 +169,9 @@ def main():
         i, name = i_cid
         w = workers[i % len(workers)]
         cid, extra = name, []
-        if name in configs:
+        if name in replay:
+            cid, extra = replay[name]
+        elif name in configs:
             cid, cfg = configs[name]
             for m, on in cfg["modules"].items():
                 extra += ["--module", f"{m}={'on' if on else 'off'}"]

@@ -188,6 +188,8 @@ set(SHARED_SOURCES
 
     src/manifestmodel.h
     src/manifestmodel.cpp
+    src/fold.cpp
+    src/cid.cpp
 
     src/nodegraph.h
     src/nodegraph.cpp
@@ -381,7 +383,9 @@ add_executable(vg_tests
     tests/test_pkglayout.cpp
     tests/test_vgdelta.cpp
     src/manifestmodel.cpp
-    src/nodegraphpure.cpp   # gigagraph PURE transforms (normalize/linkify/freeze/topo) — no IPFS/Qt
+    src/fold.cpp
+    src/cid.cpp
+    src/nodegraphpure.cpp   # gigagraph PURE transforms (freeze/topo/gather/landing checks) — no IPFS/Qt
     src/nodelower.cpp
     src/varsubst.cpp
     src/registrywrapper.cpp
@@ -430,11 +434,14 @@ if(NOT WIN32)
 endif()
 
 # vg_fold — the generation-6 resolver in batch, gated plan-for-plan against tools/gen6/resolve.py (fold_gate.py).
-add_executable(vg_fold tools/gen6/vg_fold.cpp src/fold.cpp src/varsubst.cpp src/commonutils.cpp)
+add_executable(vg_fold tools/gen6/vg_fold.cpp src/fold.cpp src/cid.cpp src/varsubst.cpp src/commonutils.cpp)
 target_include_directories(vg_fold PRIVATE src)
 target_link_libraries(vg_fold PRIVATE nlohmann_json::nlohmann_json)
 target_compile_options(vg_fold PRIVATE ${VG_WARNINGS} $<$<BOOL:${VIDYAGOD_WERROR}>:-Werror>)
 set_target_properties(vg_fold PROPERTIES AUTOMOC OFF AUTOUIC OFF AUTORCC OFF)
+# The rule fixtures through both resolvers: the C++ fold must equal the reference on every rule the real library
+# does not exercise yet (diamonds, moves, WHEN phases, TAKE, ANY/NOT, grafts on grafts).
+add_test(NAME fold_fixtures COMMAND python3 ${CMAKE_SOURCE_DIR}/tools/gen6/fold_gate.py --fixtures --vg-fold $<TARGET_FILE:vg_fold>)
 
 # ---- Launch matrix — a synthetic package exercising every launch-engine feature, diffed against golden plans.
 # Not a unit test: it runs the built binary against a generated fixture in a throwaway data dir and compares the

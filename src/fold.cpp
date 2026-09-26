@@ -112,15 +112,10 @@ std::optional<std::string> TakeMatch(const std::string &Addr, const std::string 
     return std::nullopt;
 }
 
-//What TAKE keeps of an address, renamed; nullopt = not taken. A composed take is {"outer", "inner"}: inner first.
+//What one TAKE keeps of an address, renamed; nullopt = not taken.
 std::optional<std::string> Taken(const json &Take, const std::string &Addr)
 {
     if (Take.is_null() || (Take.is_array() && Take.empty())) return Addr;
-    if (Take.is_object())
-    {
-        auto A = Taken(Take["inner"], Addr);
-        return A ? Taken(Take["outer"], *A) : std::nullopt;
-    }
     for (const auto &Sel : Take)
     {
         if (Sel.is_array() && Sel.size() == 2)
@@ -143,21 +138,71 @@ std::optional<std::string> Taken(const json &Take, const std::string &Addr)
     return std::nullopt;
 }
 
-json ComposeTake(const json &Outer, const json &Inner)
+//A VIEW is how an occurrence's addresses reach the root: its [TAKE, TARGET] steps, innermost first — the NODE layer
+//that brought it in, then that node's own view. Facts go through the takes only (never re-rooted); FILES addresses
+//go through each take and then its placement, so an outer TAKE sees an inner node's files where they landed. A view
+//is a shared list (one step per expansion, like the occurrence chain): chains 900 deep must not copy it per level.
+struct Step
 {
-    const bool NoOuter = Outer.is_null() || (Outer.is_array() && Outer.empty());
-    const bool NoInner = Inner.is_null() || (Inner.is_array() && Inner.empty());
-    if (NoOuter) return NoInner ? json() : Inner;
-    if (NoInner) return Outer;
-    json J = json::object();
-    J["outer"] = Outer;
-    J["inner"] = Inner;
-    return J;
+    const json *Take;                       // the NODE layer's TAKE (nullptr: none)
+    std::string At;                         // its TARGET's path ("" = placed where the container is)
+    std::shared_ptr<const Step> Next;       // the container's view
+    bool AnyTake;                           // this step or one outside it takes
+};
+using View = std::shared_ptr<const Step>;
+
+bool Takes(const json *T) { return T && !T->is_null() && !(T->is_array() && T->empty()); }
+
+View Within(const View &V, const json *Take, std::string At)
+{
+    return std::make_shared<const Step>(Step{ Take, std::move(At), V, Takes(Take) || (V && V->AnyTake) });
 }
 
-std::string TakeKey(const json &Take)
+bool ViewTakes(const View &V) { return V && V->AnyTake; }
+
+std::string ViewKey(const View &V)
 {
-    return (Take.is_null() || (Take.is_array() && Take.empty())) ? std::string() : Take.dump();
+    if (!ViewTakes(V)) return std::string();
+    std::string K;
+    for (const Step *S = V.get(); S; S = S->Next.get()) { K += Takes(S->Take) ? S->Take->dump() : "-"; K += '\x1e'; K += S->At; K += '\x1d'; }
+    return K;
+}
+
+json ViewJson(const View &V)
+{
+    json A = json::array();
+    for (const Step *S = V.get(); S; S = S->Next.get()) A.push_back(json::array({ Takes(S->Take) ? *S->Take : json(), S->At }));
+    return A;
+}
+
+std::optional<std::string> MapFact(const View &V, std::string Addr)
+{
+    if (!ViewTakes(V)) return Addr;
+    for (const Step *S = V.get(); S; S = S->Next.get())
+    {
+        if (!Takes(S->Take)) continue;
+        const auto A = Taken(*S->Take, Addr);
+        if (!A) return std::nullopt;
+        Addr = *A;
+    }
+    return Addr;
+}
+
+//Prefix: the view's placements composed — a view with no take places by it alone.
+std::optional<std::string> MapFiles(const View &V, std::string Addr, const std::string &Prefix)
+{
+    if (!ViewTakes(V)) return "FILES/" + Place(NsPath(Addr).second, Prefix);
+    for (const Step *S = V.get(); S; S = S->Next.get())
+    {
+        if (Takes(S->Take))
+        {
+            const auto A = Taken(*S->Take, Addr);
+            if (!A) return std::nullopt;
+            Addr = *A;
+        }
+        if (!S->At.empty()) Addr = "FILES/" + Place(NsPath(Addr).second, S->At);
+    }
+    return Addr;
 }
 
 //EXEC entries fold per field (EXEC/<label>/<field>/…): objects merge, anything else is replaced; null deletes.
@@ -184,8 +229,13 @@ void Put(json &Obj, const std::string &K, const json &V)          // a later wri
 struct Occ { std::string Key, Cid; std::shared_ptr<const Occ> Parent; };
 using Chain = std::shared_ptr<const Occ>;
 
-bool ChainHasCid(Chain C, const std::string &Cid) { for (; C; C = C->Parent) if (C->Cid == Cid) return true; return false; }
-bool ChainHasKey(Chain C, const std::string &Key) { for (; C; C = C->Parent) if (C->Key == Key) return true; return false; }
+//Walked by raw pointer: a shared_ptr copy per step is two atomic refcount ops, and deep chains (a version history
+//nine hundred nodes long) made that the whole cost of a resolve.
+bool ChainHasKey(const Chain &C, const std::string &Key)
+{
+    for (const Occ *P = C.get(); P; P = P->Parent.get()) if (P->Key == Key) return true;
+    return false;
+}
 
 struct Slot
 {
@@ -194,22 +244,24 @@ struct Slot
     int At = 0;
     Chain Inner;               // the containers + this node's own occurrence
     std::string From, Dir, Prefix;
-    json Take;
+    View Through;
 };
 
 class Expander
 {
 public:
-    Expander(const Library &L, const Vars &Wv) : Lib(L), Wv(Wv) {}
+    Expander(const Library &L, const Vars &Wv, bool ExecOnly = false, int Flip = -1)
+        : Lib(L), Wv(Wv), ExecOnly(ExecOnly), Flip(Flip) {}
 
-    void Expand(const std::string &Cid, const json &Take, const std::string &Prefix, Chain Containers)
+    void Expand(const std::string &Cid, const View &Through, const std::string &Prefix, Chain Containers)
     {
-        const std::string Key = Cid + '\x1f' + TakeKey(Take) + '\x1f' + Prefix;
-        if (ChainHasCid(Containers, Cid)) { Events.push_back({ "cycle", Cid }); return; }
+        const std::string Key = Cid + '\x1f' + ViewKey(Through) + '\x1f' + Prefix;
+        if (OnPath.count(Cid)) { Events.push_back({ "cycle", Cid }); return; }   // a node inside itself
         if (auto It = First.find(Key); It != First.end())
         {
             const Chain Prev = It->second;
-            if (Prev && Containers && Prev->Key == Containers->Key)          // a later mention in the SAME list moves it
+            const bool SameList = Prev && Containers && Prev->Key == Containers->Key;   // a later mention in the SAME list moves it
+            if (SameList != (Decisions++ == Flip))                       // (Flip: DecidingMentions asks "and otherwise?")
             {
                 Remove(Key);
                 Events.push_back({ "move", Cid });
@@ -221,7 +273,9 @@ public:
         First[Key] = Containers;
         Order.push_back({ Key, Cid });
         const Chain Inner = std::make_shared<const Occ>(Occ{ Key, Cid, Containers });
-        const json &Layers = E->Node.contains("LAYERS") ? E->Node["LAYERS"] : Empty();
+        ++OnPath[Cid];
+        struct Leave { std::unordered_map<std::string, int> &M; const std::string &C; ~Leave() { if (--M[C] == 0) M.erase(C); } } L_{ OnPath, Cid };
+        const json &Layers = E->Node->contains("LAYERS") ? (*E->Node)["LAYERS"] : Empty();
         for (int I = 0; I < static_cast<int>(Layers.size()); ++I)
         {
             const json &L = Layers[I];
@@ -230,14 +284,15 @@ public:
             if (T.empty()) { Error = "node " + Cid + " layer " + std::to_string(I) + " has no single type key"; continue; }
             if (T == "NODE")
             {
-                std::string Sub = Prefix;
+                std::string Sub = Prefix, At;
                 if (L.contains("TARGET"))
                 {
                     const auto [Ns, P] = NsPath(Str(L["TARGET"]));
                     if (Ns != "FILES") { Error = "node " + Cid + ": NODE TARGET outside FILES"; continue; }
                     Sub = Place(P, Prefix);
+                    At = P;
                 }
-                Expand(Str(L["NODE"]), ComposeTake(Take, L.contains("TAKE") ? L["TAKE"] : json()), Sub, Inner);
+                Expand(Str(L["NODE"]), Within(Through, L.contains("TAKE") ? &L["TAKE"] : nullptr, At), Sub, Inner);
             }
             else if (T == "ANY")
             {
@@ -246,15 +301,19 @@ public:
                     for (const auto &O : Order) if (O.second == Str(M)) { Met = true; break; }
                 if (!Met) Events.push_back({ "any-unmet", Cid });
             }
-            else
-                Slots.push_back({ T, &L, I, Inner, Cid, E->Dir, Prefix, Take });
+            else if (!ExecOnly || T == "EXEC")
+                Slots.push_back({ T, &L, I, Inner, Cid, E->Dir, Prefix, Through });
         }
     }
 
     const Library &Lib;
     const Vars &Wv;
+    const bool ExecOnly;
+    const int Flip;                                                         // the held/move decision to take the other way
+    int Decisions = 0;                                                      // held/move decisions taken so far
     std::vector<Slot> Slots;
     std::unordered_map<std::string, Chain> First;
+    std::unordered_map<std::string, int> OnPath;                             // nodes being expanded right now (cycle guard)
     std::vector<std::pair<std::string, std::string>> Order;                  // (occurrence key, cid)
     std::vector<std::pair<std::string, std::string>> Events;
     std::string Error;
@@ -276,52 +335,64 @@ private:
 
 std::string ArchKey(const json &Arch) { return Arch.is_null() ? std::string() : Str(Arch); }
 
-void FoldReg(const json &Tree, const json &Arch, const std::string &Path, const json &Take, Plan &P)
+void FoldReg(const json &Tree, const json &Arch, const std::string &Path, const View &V, Plan &P)
 {
-    for (const auto &[K, V] : Tree.items())
+    for (const auto &[K, Val] : Tree.items())
     {
         const std::string Pth = Path.empty() ? K : Path + "\\" + K;
         std::string Addr = "REG/" + Pth;
         std::replace(Addr.begin(), Addr.end(), '\\', '/');
-        if (V.is_object())
+        if (Val.is_object())
         {
-            if (V.empty())                                     // an empty key: "create this key"
+            if (Val.empty())                                     // an empty key: "create this key"
             {
-                if (Taken(Take, Addr)) P.RegKeys[ArchKey(Arch) + '\x1f' + Lower(Pth)] = { Arch, Pth };
+                if (MapFact(V, Addr)) P.RegKeys[ArchKey(Arch) + '\x1f' + Lower(Pth)] = { Arch, Pth };
                 continue;
             }
-            FoldReg(V, Arch, Pth, Take, P);
+            FoldReg(Val, Arch, Pth, V, P);
         }
-        else if (V.is_null())
+        else if (Val.is_null())                                  // null deletes: the value K, and the key Pth with all below it
         {
-            if (!Path.empty()) P.Reg.erase(ArchKey(Arch) + '\x1f' + Lower(Path) + '\x1f' + Lower(K));   // null deletes
+            if (!MapFact(V, Addr)) continue;
+            const std::string A = ArchKey(Arch) + '\x1f', Sub = Lower(Pth);
+            const auto Under = [&](const std::string &Key) {     // Key = A + path-lower [+ \x1f name]
+                if (Key.compare(0, A.size() + Sub.size(), A + Sub) != 0) return false;
+                const size_t E = A.size() + Sub.size();
+                return E == Key.size() || Key[E] == '\x1f' || Key[E] == '\\';
+            };
+            P.Reg.erase(A + Lower(Path) + '\x1f' + Lower(K));
+            for (auto It = P.Reg.begin(); It != P.Reg.end();) It = Under(It->first) ? P.Reg.erase(It) : std::next(It);
+            for (auto It = P.RegKeys.begin(); It != P.RegKeys.end();) It = Under(It->first) ? P.RegKeys.erase(It) : std::next(It);
         }
         else
         {
-            if (!Taken(Take, Addr)) continue;
-            P.Reg[ArchKey(Arch) + '\x1f' + Lower(Path) + '\x1f' + Lower(K)] = { Arch, Path, K, V };
+            if (!MapFact(V, Addr)) continue;
+            P.Reg[ArchKey(Arch) + '\x1f' + Lower(Path) + '\x1f' + Lower(K)] = { Arch, Path, K, Val };
         }
     }
 }
 
 // Phase 1: the declarations a layer WHEN may read — ungated VARS, through ungated NODE layers, honouring TAKE.
-void Phase1Walk(const Library &Lib, const std::string &Cid, const json &Take, std::set<std::string> &Seen, json &Decls)
+void Phase1Walk(const Library &Lib, const std::string &Cid, const View &V, std::set<std::string> &Seen, json &Decls)
 {
-    const std::string Key = Cid + '\x1f' + TakeKey(Take);
+    const std::string Key = Cid + '\x1f' + ViewKey(V);
     const Library::Entry *E = Lib.Find(Cid);
     if (!E || !Seen.insert(Key).second) return;
-    if (!E->Node.contains("LAYERS")) return;
-    for (const auto &L : E->Node["LAYERS"])
+    if (!E->Node->contains("LAYERS")) return;
+    for (const auto &L : (*E->Node)["LAYERS"])
     {
         if (L.contains("WHEN")) continue;
-        if (L.contains("NODE")) Phase1Walk(Lib, Str(L["NODE"]), ComposeTake(Take, L.contains("TAKE") ? L["TAKE"] : json()), Seen, Decls);
+        if (L.contains("NODE")) Phase1Walk(Lib, Str(L["NODE"]), Within(V, L.contains("TAKE") ? &L["TAKE"] : nullptr, std::string()), Seen, Decls);
         else if (L.contains("VARS") && L["VARS"].is_object())
             for (const auto &[K, D] : L["VARS"].items())
-                if (auto A = Taken(Take, "VARS/" + K)) Put(Decls, A->substr(A->find('/') + 1), D);
+                if (auto A = MapFact(V, "VARS/" + K)) Put(Decls, A->substr(A->find('/') + 1), D);
     }
 }
 
 } // namespace
+
+std::string PlaceUnder(const std::string &Path, const std::string &Prefix) { return Place(Path, Prefix); }
+std::optional<std::string> TakeView(const json &Take, const std::string &Addr) { return Taken(Take, Addr); }
 
 std::string TypeOf(const json &Layer)
 {
@@ -380,21 +451,21 @@ std::string ToLayout(const std::string &Path, const json &GuestRoots)
     return Path;
 }
 
-Plan Resolve(const Library &Lib, const std::string &Root, const Vars &Instance, const Vars &Builtins,
-             const std::vector<std::string> &Grafts)
+static Plan ResolveImpl(const Library &Lib, const std::string &Root, const Vars &Instance, const Vars &Builtins,
+                        const std::vector<std::string> &Grafts, bool ExecOnly, int Flip = -1)
 {
     Plan P;
     // phase 1
     json Decls1 = json::object();
     std::set<std::string> Seen;
-    Phase1Walk(Lib, Root, json(), Seen, Decls1);
+    Phase1Walk(Lib, Root, nullptr, Seen, Decls1);
     Vars Wv = Builtins;
     for (const auto &[K, V] : ResolveVars(Decls1, Builtins, Instance)) Wv[K] = V;
     P.WhenVars = Wv;
     // phase 2
-    Expander X(Lib, Wv);
-    X.Expand(Root, json(), std::string(), nullptr);
-    for (const auto &G : Grafts) X.Expand(G, json(), std::string(), nullptr);    // grafts after the variant, in order
+    Expander X(Lib, Wv, ExecOnly, Flip);
+    X.Expand(Root, nullptr, std::string(), nullptr);
+    for (const auto &G : Grafts) X.Expand(G, nullptr, std::string(), nullptr);    // grafts after the variant, in order
     P.Error = X.Error;
     // phase 3
     std::vector<std::string> Nots;
@@ -405,30 +476,33 @@ Plan Resolve(const Library &Lib, const std::string &Root, const Vars &Instance, 
         if (IsContent(S.Kind))
         {
             Item It;
-            It.Kind = S.Kind; It.Payload = Str(L[S.Kind]); It.Dir = S.Dir; It.From = S.From; It.At = S.At; It.Take = S.Take;
+            It.Kind = S.Kind; It.Payload = Str(L[S.Kind]); It.Dir = S.Dir; It.From = S.From; It.At = S.At;
+            if (ViewTakes(S.Through)) It.View = ViewJson(S.Through);
             It.Source = L.contains("SOURCE") ? L["SOURCE"] : json();
+            It.Size = L.contains("SIZE") ? L["SIZE"] : json();
             It.Submounts = L.contains("SUBMOUNTS") ? L["SUBMOUNTS"] : json();
-            It.Target = Place(NsPath(L.contains("TARGET") ? Str(L["TARGET"]) : std::string("FILES")).second, S.Prefix);
+            It.Own = NsPath(L.contains("TARGET") ? Str(L["TARGET"]) : std::string("FILES")).second;
+            It.Target = Place(It.Own, S.Prefix);
             P.Seq.push_back(std::move(It));
         }
         else if (S.Kind == "EDIT")
         {
-            const auto A = Taken(S.Take, "FILES/" + NsPath(Str(L["TARGET"])).second);
+            const auto A = MapFiles(S.Through, "FILES/" + NsPath(Str(L["TARGET"])).second, S.Prefix);
             if (!A) continue;
             Item It;
-            It.Kind = "EDIT"; It.Ops = L["EDIT"]; It.Target = Place(NsPath(*A).second, S.Prefix); It.From = S.From; It.At = S.At;
+            It.Kind = "EDIT"; It.Ops = L["EDIT"]; It.Target = NsPath(*A).second; It.From = S.From; It.At = S.At;
             P.Seq.push_back(std::move(It));
         }
         else if (S.Kind == "REG")
         {
             const json Arches = (L.contains("ARCH") && L["ARCH"].is_array() && !L["ARCH"].empty()) ? L["ARCH"] : json::array({ nullptr });
-            for (const auto &Arch : Arches) FoldReg(L["REG"], Arch, std::string(), S.Take, P);
+            for (const auto &Arch : Arches) FoldReg(L["REG"], Arch, std::string(), S.Through, P);
         }
         else if (S.Kind == "DLL")
         {
             for (const auto &[N, O] : L["DLL"].items())
             {
-                const auto A = Taken(S.Take, "DLL/" + N);
+                const auto A = MapFact(S.Through, "DLL/" + N);
                 if (!A) continue;
                 const std::string N2 = Lower(A->substr(A->find('/') + 1));
                 P.Dll.erase(N2);
@@ -438,25 +512,29 @@ Plan Resolve(const Library &Lib, const std::string &Root, const Vars &Instance, 
         else if (S.Kind == "ENV")
         {
             for (const auto &[N, V] : L["ENV"].items())
-                if (const auto A = Taken(S.Take, "ENV/" + N)) Put(P.Env, A->substr(A->find('/') + 1), V);
+                if (const auto A = MapFact(S.Through, "ENV/" + N)) Put(P.Env, A->substr(A->find('/') + 1), V);
         }
         else if (S.Kind == "VARS")
         {
             for (const auto &[N, D] : L["VARS"].items())
-                if (const auto A = Taken(S.Take, "VARS/" + N)) Put(P.Decls, A->substr(A->find('/') + 1), D);
+                if (const auto A = MapFact(S.Through, "VARS/" + N)) Put(P.Decls, A->substr(A->find('/') + 1), D);
         }
         else if (S.Kind == "EXEC")
         {
             for (const auto &E : L["EXEC"])
             {
-                const auto A = Taken(S.Take, "EXEC/" + Str(E.value("LABEL", json())));
+                const auto A = MapFact(S.Through, "EXEC/" + Str(E.value("LABEL", json())));
                 if (!A) continue;
                 const std::string Lab = A->substr(A->find('/') + 1);
                 json E2 = E;
                 E2["LABEL"] = Lab;
-                if (!S.Prefix.empty())
+                if (!S.Prefix.empty() || ViewTakes(S.Through))         // its paths go where the node's files went
                     for (const char *F : { "EXE", "WORKDIR" })
-                        if (E2.contains(F)) E2[F] = Place(Str(E2[F]), S.Prefix);
+                        if (E2.contains(F) && E2[F].is_string())
+                        {
+                            const auto M = MapFiles(S.Through, "FILES/" + Str(E2[F]), S.Prefix);
+                            E2[F] = M ? NsPath(*M).second : Place(Str(E2[F]), S.Prefix);
+                        }
                 if (P.Exec.contains(Lab)) P.Exec[Lab] = Merge(P.Exec[Lab], E2);
                 else P.Exec[Lab] = E2;
             }
@@ -465,10 +543,8 @@ Plan Resolve(const Library &Lib, const std::string &Root, const Vars &Instance, 
         {
             for (const auto &[A0, V] : L["KEEP"].items())
             {
-                auto A = Taken(S.Take, A0);
+                const auto A = NsPath(A0).first == "FILES" ? MapFiles(S.Through, A0, S.Prefix) : MapFact(S.Through, A0);
                 if (!A) continue;
-                const auto [Ns, Pth] = NsPath(*A);
-                if (Ns == "FILES") A = "FILES/" + Place(Pth, S.Prefix);
                 Put(P.Keep, *A, V);
             }
         }
@@ -480,13 +556,73 @@ Plan Resolve(const Library &Lib, const std::string &Root, const Vars &Instance, 
     return P;
 }
 
+Plan Resolve(const Library &Lib, const std::string &Root, const Vars &Instance, const Vars &Builtins,
+             const std::vector<std::string> &Grafts)
+{
+    return ResolveImpl(Lib, Root, Instance, Builtins, Grafts, false);
+}
+
+//Two placed targets that can hold the same file: equal, or one a folder of the other (case aside; "" is the root).
+static bool TargetsOverlap(const std::string &A, const std::string &B)
+{
+    const std::string X = Lower(A), Y = Lower(B);
+    const std::string &S = X.size() <= Y.size() ? X : Y, &L = X.size() <= Y.size() ? Y : X;
+    return S.empty() || L == S || L.compare(0, S.size() + 1, S + "/") == 0;
+}
+
+std::vector<std::pair<std::string, std::string>> DecidingMentions(const Library &Lib, const std::string &Root,
+                                                                  const Vars &Instance, const Vars &Builtins,
+                                                                  const std::vector<std::string> &Grafts, const Plan &P)
+{
+    std::vector<std::pair<std::string, std::string>> Out;
+    std::vector<std::pair<std::string, std::string>> Decided;               // the held/move events, in decision order
+    for (const auto &E : P.Events) if (E.first == "held" || E.first == "move") Decided.push_back(E);
+    if (Decided.empty()) return Out;
+    const json Facts = PlanToJson(P);
+    const auto Key = [](const Item &I) { return I.Kind + '\x1f' + I.From + '\x1f' + std::to_string(I.At) + '\x1f' + I.Target; };
+    for (int D = 0; D < (int)Decided.size(); ++D)
+    {
+        const Plan A = ResolveImpl(Lib, Root, Instance, Builtins, Grafts, false, D);
+        const json AFacts = PlanToJson(A);
+        bool Changed = false;
+        for (const char *F : { "reg", "regkeys", "dll", "env", "decls", "exec", "keep" })
+            if (Facts.value(F, json()) != AFacts.value(F, json())) { Changed = true; break; }
+        //The file stack: only two layers that can hold the same file decide a winner between them — a flipped
+        //decision that merely reorders layers at unrelated targets changes nothing anyone sees.
+        if (!Changed)
+        {
+            std::unordered_map<std::string, size_t> At;
+            for (size_t I = 0; I < A.Seq.size(); ++I) At.emplace(Key(A.Seq[I]), I);
+            Changed = A.Seq.size() != P.Seq.size();
+            for (size_t I = 0; I < P.Seq.size() && !Changed; ++I)
+            {
+                const auto Ai = At.find(Key(P.Seq[I]));
+                if (Ai == At.end()) { Changed = true; break; }
+                for (size_t J = I + 1; J < P.Seq.size() && !Changed; ++J)
+                {
+                    if (!TargetsOverlap(P.Seq[I].Target, P.Seq[J].Target)) continue;
+                    const auto Aj = At.find(Key(P.Seq[J]));
+                    Changed = Aj == At.end() || Aj->second < Ai->second;
+                }
+            }
+        }
+        if (Changed) Out.push_back(Decided[(size_t)D]);
+    }
+    return Out;
+}
+
+Plan ResolveEntries(const Library &Lib, const std::string &Root)
+{
+    return ResolveImpl(Lib, Root, {}, {}, {}, true);
+}
+
 GraftIndex BuildGraftIndex(const Library &Lib)
 {
     GraftIndex Idx;
     for (const auto &[H, E] : Lib.Nodes)
     {
-        if (!E.Node.contains("LAYERS") || !E.Node["LAYERS"].is_array() || E.Node["LAYERS"].empty()) continue;
-        const json &L0 = E.Node["LAYERS"][0];
+        if (!E.Node->contains("LAYERS") || !(*E.Node)["LAYERS"].is_array() || (*E.Node)["LAYERS"].empty()) continue;
+        const json &L0 = (*E.Node)["LAYERS"][0];
         if (!L0.is_object() || !L0.contains("ANY")) continue;
         for (const auto &M : L0["ANY"]) Idx[Str(M)].push_back(H);
     }
@@ -500,7 +636,7 @@ Offer OfferedGrafts(const Library &Lib, const GraftIndex &Idx, const Plan &P, co
         if (auto It = Idx.find(C); It != Idx.end()) Set.insert(It->second.begin(), It->second.end());
     Offer O;
     O.Offered.assign(Set.begin(), Set.end());
-    auto Label = [&](const std::string &G) { const auto *E = Lib.Find(G); return E ? Str(E->Node.value("LABEL", json())) : std::string(); };
+    auto Label = [&](const std::string &G) { const auto *E = Lib.Find(G); return E ? Str(E->Node->value("LABEL", json())) : std::string(); };
     std::sort(O.Offered.begin(), O.Offered.end(), [&](const std::string &A, const std::string &B) {
         const std::string La = Label(A), Lb = Label(B);
         return La != Lb ? La < Lb : A < B;
@@ -508,10 +644,53 @@ Offer OfferedGrafts(const Library &Lib, const GraftIndex &Idx, const Plan &P, co
     for (const auto &G : O.Offered)
     {
         const auto *E = Lib.Find(G);
-        if (!E || FaceUid.empty() || !E->Node.contains("RECOMMENDED") || !E->Node["RECOMMENDED"].is_array()) continue;
-        for (const auto &U : E->Node["RECOMMENDED"]) if (Str(U) == FaceUid) { O.Ticked.push_back(G); break; }
+        if (!E || FaceUid.empty() || !E->Node->contains("RECOMMENDED") || !(*E->Node)["RECOMMENDED"].is_array()) continue;
+        for (const auto &U : (*E->Node)["RECOMMENDED"]) if (Str(U) == FaceUid) { O.Ticked.push_back(G); break; }
     }
     return O;
+}
+
+int Unsatisfied(const Plan &P)
+{
+    int N = 0;
+    for (const auto &E : P.Events) if (E.first == "not-hit" || E.first == "any-unmet") ++N;
+    return N;
+}
+
+std::vector<std::string> ApplyGrafts(const Library &Lib, const GraftIndex &Idx, const std::string &Root, const Vars &Instance,
+                                     const Vars &Builtins, const std::string &FaceUid,
+                                     const std::vector<std::string> *Requested, std::vector<std::string> *Dropped, bool EveryOffered)
+{
+    std::vector<std::string> Applied;
+    std::set<std::string> Refused;
+    Plan P = Resolve(Lib, Root, Instance, Builtins);
+    const auto Has = [](const std::vector<std::string> &V, const std::string &X) { return std::find(V.begin(), V.end(), X) != V.end(); };
+    //A graft applies when it is offered here and applying it leaves no requirement newly unmet (its NOT, an ANY).
+    const auto Attempt = [&](const std::string &G) {
+        if (Has(Applied, G) || Refused.count(G)) return;
+        if (Has(OfferedGrafts(Lib, Idx, P, FaceUid).Offered, G))
+        {
+            std::vector<std::string> Trial = Applied;
+            Trial.push_back(G);
+            Plan T = Resolve(Lib, Root, Instance, Builtins, Trial);
+            if (Unsatisfied(T) <= Unsatisfied(P)) { Applied = std::move(Trial); P = std::move(T); return; }
+        }
+        Refused.insert(G);
+        if (Dropped) Dropped->push_back(G);
+    };
+    if (Requested)
+    {
+        for (const std::string &G : *Requested) Attempt(G);
+        return Applied;
+    }
+    for (;;)
+    {
+        const Offer O = OfferedGrafts(Lib, Idx, P, FaceUid);
+        std::vector<std::string> New;
+        for (const std::string &G : EveryOffered ? O.Offered : O.Ticked) if (!Has(Applied, G) && !Refused.count(G)) New.push_back(G);
+        if (New.empty()) return Applied;
+        for (const std::string &G : New) Attempt(G);
+    }
 }
 
 json PlanToJson(const Plan &P)
@@ -525,8 +704,8 @@ json PlanToJson(const Plan &P)
         if (I.Kind == "EDIT") E["ops"] = I.Ops;
         else
         {
-            E["payload"] = I.Payload; E["dir"] = I.Dir; E["source"] = I.Source;
-            E["submounts"] = I.Submounts; E["take"] = I.Take;
+            E["payload"] = I.Payload; E["dir"] = I.Dir; E["source"] = I.Source; E["size"] = I.Size;
+            E["submounts"] = I.Submounts; E["view"] = I.View;
         }
         E["target"] = I.Target; E["from"] = I.From; E["at"] = I.At;
         Seq.push_back(std::move(E));

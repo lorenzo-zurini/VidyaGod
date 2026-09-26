@@ -5,6 +5,7 @@
 #include <string>
 #include <vector>
 #include <map>
+#include <optional>
 #include <set>
 #include <utility>
 #include <functional>
@@ -22,6 +23,10 @@
 // machinery to generate a DEFPREFIX, so it lives with the code that owns prefix-building.)
 // ---------------------------------------------------------------------------
 namespace PackageCatalog {
+
+//Which grafts a content walk includes: the given list, or (unset) the row's pre-ticked grafts.
+using GraftChoice = std::optional<std::vector<std::string>>;
+
 
 // ----- per-package user settings (now the INSTANCE file — see InstanceStore) -----
 // The blob lives at <root>/USERDATA/<uid>/<instance>/instance.json, NOT GlobalConfig. GlobalConfigJSON is passed
@@ -254,11 +259,13 @@ int StampNodeCids(const std::filesystem::path &Root,
 // {Level, Name, Cid} rows for a re-mint listing (Level = "package" | "collection"). Used by the per-package mint path.
 struct RemintEntry { std::string Level, Name, Cid; };
 
-// PublishLibrary (gigagraph): freeze the whole on-disk library into dag-json blocks and STORE them (DagPut → pinned,
-// announced, seedable) so peers can fetch the node graph, and record the shareable list of launchable root CIDs in
-// Config["PublishedList"]. Returns that list ("" / empty on failure). No IPNS — a list is off-IPFS VidyaGod data,
-// shared directly. Call OFF the UI thread + with the node online (DagPut stores blocks). Supersedes PublishLibraries.
-std::vector<std::string> PublishLibrary(nlohmann::ordered_json &Config, std::string *Error = nullptr);
+// PublishLibrary: freeze every node of the on-disk library into its canonical bytes and STORE them (pinned, announced,
+// seedable), make one UnixFS folder per package (+ its pin folder), and record Config["Libraries"] (the share sheet)
+// and Config["PublishedList"] (the package folders), which it returns (empty on failure, *Error says why). What did
+// not publish whole — nodes that did not freeze, content this machine does not hold (a Pinata-only receiver could
+// never fetch it) — is summed up in *Gaps ("" when everything published). Call OFF the UI thread, node online.
+std::vector<std::string> PublishLibrary(nlohmann::ordered_json &Config, std::string *Error = nullptr,
+                                        std::string *Gaps = nullptr);
 
 // Receiver: turn a friend's share snapshot into plain rolling-queue fetch targets whose destinations are the FINAL
 // working-tree paths — LIBRARY/<nick> - <lib>/[uid] <title>/<node>.json — straight from the snapshot's routing
@@ -344,10 +351,24 @@ std::unordered_map<std::string, NodeHydration> HydrationMap(const NodeIndex &Idx
 // Returns the number of files removed. Use only for managed (library-root) packages, never local/portable ones.
 int DehydrateNode(const NodeIndex &Idx, const std::string &LaunchNodeId);
 // Every distinct ipfs CID a launchable node's content closure must fetch (its layers' SOURCE CIDs). Drives the
-// Catalog download-progress aggregation. Excludes the runner build; cover CIDs are not included. Toggles select
-// optional content (node-id -> enabled; absent optional nodes fall back to their DEFAULT).
+// Catalog download-progress aggregation. Excludes the runner build; cover CIDs are not included. The whole closure is
+// counted (options included: a download is whole chains); Grafts adds the chosen grafts' content.
 std::vector<std::string> NodeContentCids(const NodeIndex &Idx, const std::string &LaunchNodeId,
-                                         const std::map<std::string, bool> &Toggles = {});
+                                         const GraftChoice &Grafts = std::nullopt);
+
+// ---- grafts ----
+// The grafts a row applies, in order (Fold::ApplyGrafts over the local grafts): Chosen = the instance's list, each
+// kept when it is offered with those before it applied (the rest go to *Dropped); nullopt = a fresh instance's list,
+// the grafts RECOMMENDED under the row's tile. A received browse stub never applies: it would mount un-hydrated.
+std::vector<std::string> AppliedGrafts(const NodeIndex &Idx, const std::string &LaunchNodeId, const GraftChoice &Chosen,
+                                       const std::map<std::string, std::string> &Instance = {},
+                                       const std::map<std::string, std::string> &Builtins = {},
+                                       std::vector<std::string> *Dropped = nullptr);
+// The grafts this row offers with Chosen applied (a graft on a graft is offered once the graft it needs is), in the
+// default order (LABEL, then CID); into *PreTicked, a fresh instance's list (AppliedGrafts with nullopt).
+std::vector<std::string> OfferedGrafts(const NodeIndex &Idx, const std::string &LaunchNodeId,
+                                       std::vector<std::string> *PreTicked = nullptr,
+                                       const GraftChoice &Chosen = std::nullopt);
 
 // ---- grouping ----
 // Every launchable sharing this node's game (its pre-launch "tile group"), with NodeId first so it is preselected.
@@ -359,7 +380,7 @@ std::vector<std::string> GroupNodeIds(const NodeIndex &Idx, const std::string &L
 // The stamped SOURCE.SIZE per content CID of a launchable's selection — instant + offline (sizes-in-JSON); only
 // stamped entries are returned, the caller network-probes the rare unstamped rest.
 std::map<std::string, long long> NodeContentSizes(const NodeIndex &Idx, const std::string &LaunchNodeId,
-                                                  const std::map<std::string, bool> &Toggles = {});
+                                                  const GraftChoice &Grafts = std::nullopt);
 
 // The launchable's RESOLVED runner-chain node ids (native terminal excluded) — what CollectRunnerChainTargets pools;
 // exposed so an installer can COMPLETE a received runner's closure before collecting its build.
@@ -367,7 +388,7 @@ std::vector<std::string> RunnerChainIds(const NodeIndex &Idx, const std::string 
                                         const nlohmann::ordered_json &GlobalConfigJSON);
 
 [[nodiscard]] bool CollectContentTargets(const NodeIndex &Idx, const std::string &LaunchNodeId,
-                           const std::map<std::string, bool> &Toggles,
+                           const GraftChoice &Grafts,
                            std::vector<IpfsWrapper::FetchTarget> &Out, std::string *Error = nullptr);
 // Gather (without fetching) the build download targets of the launchable's RESOLVED runner CHAIN, appending to Out —
 // so a full-closure hydrate pulls the game's runtime (JRE / Proton build) alongside its content. The game's own PARENTS
@@ -381,7 +402,7 @@ std::vector<std::string> RunnerChainIds(const NodeIndex &Idx, const std::string 
 // failed required fetch. (= CollectContentTargets + IpfsWrapper::FetchTargetsConcurrent.) When GlobalConfigJSON is
 // given, ALSO pools the resolved runner chain's build (CollectRunnerChainTargets) so the game is immediately playable.
 [[nodiscard]] bool HydrateNode(const NodeIndex &Idx, const std::string &LaunchNodeId,
-                 const std::map<std::string, bool> &Toggles = {}, std::string *Error = nullptr,
+                 const GraftChoice &Grafts = std::nullopt, std::string *Error = nullptr,
                  const nlohmann::ordered_json *GlobalConfigJSON = nullptr);
 
 } // namespace PackageCatalog

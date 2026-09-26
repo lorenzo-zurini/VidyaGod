@@ -35,27 +35,57 @@ std::string StrOf(const json & N, const char * Key)
     return (N.is_object() && N.contains(Key) && N[Key].is_string()) ? N[Key].get<std::string>() : std::string();
 }
 
-//A content node carries a LAYERS list; per-node content actions (browse/convert/delta/capture) target its FIRST
-//layer — the common single-layer case. A multi-layer node's other layers are edited as rows in the canvas.
-//Returns a mutable ref to that primary layer, materialising an empty one if needed.
-json & PrimaryLayer(json & N)
+bool HasLayers(const json & N) { return N.is_object() && N.contains("LAYERS") && N["LAYERS"].is_array(); }
+
+using PkgGraph::ContentIndex;
+using PkgGraph::ContentType;
+using PkgGraph::ContentName;
+using PkgGraph::ContentTarget;
+
+//Point the content layer at new bytes: TYPE now names NAME. Where the layer sits, its TARGET, SUBMOUNTS and WHEN
+//stay; SOURCE and SIZE described the OLD bytes and go (publish stamps the new ones). A node without a content layer
+//gets one, appended. False (nothing written) when LAYERS is there but not a list — the JSON view's to fix.
+bool SetContent(json & N, const std::string & Type, const std::string & Name)
 {
-    if (N.is_object() && N.contains("LAYERS"))
-    {
-        if (!N["LAYERS"].is_array()) N["LAYERS"] = json::array();
-        if (N["LAYERS"].empty()) N["LAYERS"].push_back(json::object());
-        return N["LAYERS"][0];
-    }
-    return N;   // no LAYERS (e.g. a cover action targets the node's TILE)
+    if (!N.is_object() || (N.contains("LAYERS") && !N["LAYERS"].is_array())) return false;
+    if (!N.contains("LAYERS")) N["LAYERS"] = json::array();
+    json L = json::object();
+    L[Type] = Name;
+    const int I = ContentIndex(N);
+    if (I < 0) { N["LAYERS"].push_back(std::move(L)); return true; }
+    const json & Old = N["LAYERS"][(size_t)I];
+    const std::string OldType = PkgGraph::LayerType(Old);
+    for (const auto & [K, V] : Old.items())
+        if (K != OldType && K != "SOURCE" && K != "SIZE") L[K] = V;
+    N["LAYERS"][(size_t)I] = std::move(L);
+    return true;
 }
 
-//Read a content field from the primary layer of a content node (or the node itself otherwise).
-std::string LayerStr(const json & N, const char * Key)
+//The EXEC entry a cover belongs to: the first entry carrying a TILE, else the first entry. Null without one.
+json * CoverEntry(json & N)
 {
-    if (N.is_object() && N.contains("LAYERS") && N["LAYERS"].is_array()
-        && !N["LAYERS"].empty() && N["LAYERS"][0].is_object())
-        return StrOf(N["LAYERS"][0], Key);
-    return StrOf(N, Key);
+    if (!HasLayers(N)) return nullptr;
+    json * First = nullptr;
+    for (auto & L : N["LAYERS"])
+        if (PkgGraph::LayerType(L) == "EXEC" && L["EXEC"].is_array())
+            for (auto & E : L["EXEC"])
+            {
+                if (!E.is_object()) continue;
+                if (E.contains("TILE")) return &E;
+                if (!First) First = &E;
+            }
+    return First;
+}
+
+//Every variable KEY the node's VARS layers declare.
+std::vector<std::string> VarKeysOf(const json & N)
+{
+    std::vector<std::string> Keys;
+    if (!HasLayers(N)) return Keys;
+    for (const auto & L : N["LAYERS"])
+        if (PkgGraph::LayerType(L) == "VARS" && L["VARS"].is_object())
+            for (const auto & [K, V] : L["VARS"].items()) Keys.push_back(K);
+    return Keys;
 }
 
 
@@ -253,27 +283,28 @@ void PkgActions::browsePath(const std::string & NodeId)
     int I = indexOf(NodeId);
     if (I < 0) return;
     const QString Bundle = Model->packageDir() ? Model->packageDir()->path() : QDir::homePath();
-    const std::string Form = [&]{ const std::string F = LayerStr(Model->doc()["NODES"][I], "FORM"); return F.empty() ? std::string("zip") : F; }();
+    const std::string Type = [&]{ const std::string T = ContentType(Model->doc()["NODES"][I]); return T.empty() ? std::string("ZIP") : T; }();
 
-    const QString Picked = (Form == "dir")
+    const QString Picked = (Type == "DIR")
         ? pick("Pick the folder this layer supplies", Bundle, QString(), true)
         : pick("Pick the file this layer supplies", Bundle, QString());
     if (Picked.isEmpty()) return;
 
-    // A layer's PATH is relative to its bundle — content lives WITH the package. If the pick is from elsewhere,
+    // A layer's file name is relative to its bundle — content lives WITH the package. If the pick is from elsewhere,
     // say so rather than silently writing an absolute path that only resolves on this machine.
     const QString Rel = QDir(Bundle).relativeFilePath(Picked);
     if (Rel.startsWith(".."))
     {
         tell("Outside the bundle",
             "“" + QFileInfo(Picked).fileName() + "” is outside this package.\n\n"
-            "A layer's PATH is relative to the bundle, so the file has to live here. Copy it into\n"
+            "A layer's file is named relative to the bundle, so it has to live here. Copy it into\n"
             + Bundle + "\nand pick it again.");
         return;
     }
     I = indexOf(NodeId);                          // re-resolved after the modal — see the note above
     if (I < 0) { tell("Browse", "That node is no longer in the package."); return; }
-    PrimaryLayer(Model->doc()["NODES"][I])["PATH"] = Rel.toStdString();
+    if (!SetContent(Model->doc()["NODES"][I], Type, Rel.toStdString()))
+    { tell("Browse", "This node's LAYERS is not a list - fix it in the JSON view first."); return; }
     Model->SaveNodes();
     Model->requestReload();
 }
@@ -288,10 +319,21 @@ void PkgActions::browseCover(const std::string & NodeId)
     if (Rel.startsWith("..")) { tell("Outside the bundle", "The cover must live in the package folder."); return; }
     const int I = indexOf(NodeId);                // re-resolved after the modal — see browsePath
     if (I < 0) { tell("Browse", "That node is no longer in the package."); return; }
-    json & N = Model->doc()["NODES"][I];
-    if (!N.contains("TILE") || !N["TILE"].is_object()) N["TILE"] = json::object({{"UID", ""}, {"TITLE", ""}});
-    if (!N["TILE"].contains("COVER") || !N["TILE"]["COVER"].is_object()) N["TILE"]["COVER"] = json::object();
-    N["TILE"]["COVER"]["PATH"] = Rel.toStdString();
+    //A cover belongs to a TILE, and a tile rides an EXEC entry. Anything of the wrong shape on the way is refused,
+    //never replaced: the author reaches for this button on nodes they are still fixing.
+    json * E = CoverEntry(Model->doc()["NODES"][I]);
+    if (!E) { tell("Cover", "A cover belongs to a tile on an EXEC entry, and this node has no EXEC entry yet."); return; }
+    if (!E->contains("TILE") || (*E)["TILE"].is_null()) (*E)["TILE"] = json::object({{"UID", ""}, {"TITLE", ""}});
+    json & T = (*E)["TILE"];
+    if (!T.is_object()) { tell("Cover", "This entry's TILE is not an object - fix it in the JSON view first."); return; }
+    if (T.contains("COVER") && T["COVER"].is_string()) T["COVER"] = Rel.toStdString();   // keep the form it uses
+    else if (!T.contains("COVER") || T["COVER"].is_null() || T["COVER"].is_object())
+    {
+        if (!T.contains("COVER") || T["COVER"].is_null()) T["COVER"] = json::object();
+        T["COVER"]["FILE"] = Rel.toStdString();
+        T["COVER"].erase("SOURCE"); T["COVER"].erase("SIZE");   // they described the old image
+    }
+    else { tell("Cover", "This tile's COVER is not an object - fix it in the JSON view first."); return; }
     Model->SaveNodes();
     Model->requestReload();
 }
@@ -300,12 +342,12 @@ void PkgActions::convertZipDir(const std::string & NodeId, bool ToZip)
 {
     const int I = indexOf(NodeId);
     json & N = Model->doc()["NODES"][I];
-    const std::string Path = LayerStr(N, "PATH");
-    if (Path.empty()) { tell("Nothing to convert", "This layer has no PATH yet."); return; }
+    const std::string Path = ContentName(N);
+    if (Path.empty()) { tell("Nothing to convert", "This node's content layer names no file yet."); return; }
     const std::filesystem::path Bundle = Model->packageDir()->path().toStdString();
     const std::filesystem::path Src = ResolveInBundle(Bundle, Path);
     if (Src.empty())
-    { tell("Unsafe path", "This layer's PATH does not point inside the package folder:\n\n  " +
+    { tell("Unsafe path", "This layer's file does not point inside the package folder:\n\n  " +
                           QString::fromStdString(Path) +
                           "\n\nA layer's content must live in its own bundle. Nothing was changed."); return; }
     std::error_code Ec;
@@ -359,7 +401,7 @@ void PkgActions::convertZipDir(const std::string & NodeId, bool ToZip)
             std::filesystem::remove_all(Src, Rc);         // only now is the folder redundant
             const int J = indexOf(NodeId);
             if (J < 0) return;
-            { json & Lp = PrimaryLayer(Model->doc()["NODES"][J]); Lp["FORM"] = "zip"; Lp["PATH"] = ZipName; }
+            SetContent(Model->doc()["NODES"][J], "ZIP", ZipName);
             Model->SaveNodes(); Model->requestReload();
             refreshHints();
         });
@@ -416,7 +458,7 @@ void PkgActions::convertZipDir(const std::string & NodeId, bool ToZip)
             std::filesystem::remove(Src, Rc);
             const int J = indexOf(NodeId);
             if (J < 0) return;
-            { json & Lp = PrimaryLayer(Model->doc()["NODES"][J]); Lp["FORM"] = "dir"; Lp["PATH"] = DirName; }
+            SetContent(Model->doc()["NODES"][J], "DIR", DirName);
             Model->SaveNodes(); Model->requestReload();
             refreshHints();
         });
@@ -426,11 +468,11 @@ void PkgActions::convertZipDir(const std::string & NodeId, bool ToZip)
 void PkgActions::reStore(const std::string & NodeId)
 {
     const int I = indexOf(NodeId);
-    const std::string Path = LayerStr(Model->doc()["NODES"][I], "PATH");
+    const std::string Path = ContentName(Model->doc()["NODES"][I]);
     const std::filesystem::path Bundle = Model->packageDir()->path().toStdString();
     const std::filesystem::path Zip = ResolveInBundle(Bundle, Path);
     if (Zip.empty())
-    { tell("Unsafe path", "This layer's PATH does not point inside the package folder. Nothing was changed."); return; }
+    { tell("Unsafe path", "This layer's file does not point inside the package folder. Nothing was changed."); return; }
 
     const QString Msg = "“" + QString::fromStdString(Path) + "” is DEFLATE-compressed.\n\n"
         "VidyaGod mounts zip layers by reading each file at its position inside the zip — it cannot decompress "
@@ -490,9 +532,8 @@ void PkgActions::refreshHints()
     struct Probe { std::string Id; std::string Path; };
     auto Todo = std::make_shared<std::vector<Probe>>();
     for (const auto & N : Ns)
-        if (N.is_object() && N.contains("LAYERS") && LayerStr(N, "FORM") == "zip"
-            && !LayerStr(N, "PATH").empty())
-            Todo->push_back({StrOf(N, "CID"), LayerStr(N, "PATH")});   // Probe.Id = handle (Running is keyed by it)
+        if (ContentType(N) == "ZIP" && !ContentName(N).empty())
+            Todo->push_back({StrOf(N, "CID"), ContentName(N)});   // Probe.Id = handle (Running is keyed by it)
     if (Todo->empty()) return;
     auto Deflated = std::make_shared<std::vector<std::string>>();
     AsyncWork::Run(this,
@@ -562,10 +603,7 @@ void PkgActions::findUsages(const std::string & NodeId)
 {
     const int I = indexOf(NodeId);
     //Every KEY this node's VARS declare — a node may carry many.
-    std::vector<std::string> Keys;
-    const json & Self = Model->doc()["NODES"][I];
-    if (Self.is_object() && Self.contains("VARS") && Self["VARS"].is_array())
-        for (const auto & V : Self["VARS"]) if (V.is_object() && !StrOf(V, "KEY").empty()) Keys.push_back(StrOf(V, "KEY"));
+    const std::vector<std::string> Keys = VarKeysOf(Model->doc()["NODES"][I]);
     if (Keys.empty()) { tell("Find usages", "This node declares no variable KEY yet."); return; }
     // A whole-document text scan for %KEY%: a var nothing consumes is dead weight, and two nodes declaring the
     // same KEY is the ambiguity the lint is about.
@@ -582,8 +620,7 @@ void PkgActions::findUsages(const std::string & NodeId)
             const std::string Disp = !StrOf(N, "LABEL").empty() ? StrOf(N, "LABEL") : H;   // show the readable name
             const std::string Dump = N.dump();
             bool SameKey = false;
-            if (N.is_object() && N.contains("VARS") && N["VARS"].is_array())
-                for (const auto & V : N["VARS"]) if (V.is_object() && StrOf(V, "KEY") == Key) SameKey = true;
+            for (const std::string & K : VarKeysOf(N)) if (K == Key) SameKey = true;
             if (Dump.find(Token) != std::string::npos) Users << QString::fromStdString(Disp);
             else if (SameKey) Users << QString::fromStdString(Disp) + "  (declares the same KEY)";
         }
@@ -672,8 +709,8 @@ void PkgActions::importReg(const std::string & NodeId)
     if (Rows.empty())
     {
         tell("Import .reg", Deletions > 0
-                 ? QString("That file only DELETES registry entries (%1). A RegEdit layer can only write, so "
-                           "there is nothing to import.").arg(Deletions)
+                 ? QString("That file only DELETES registry entries (%1). Import brings in values; write a "
+                           "deletion as null in the JSON view.").arg(Deletions)
                  : QString("No keys or values found in that file."));
         return;
     }
@@ -683,75 +720,43 @@ void PkgActions::importReg(const std::string & NodeId)
     const int I = indexOf(NodeId);
     if (I < 0) { tell("Import .reg", "That node is no longer in the package."); return; }
     json & N = Model->doc()["NODES"][I];
-    //A malformed EDITS is REFUSED, not replaced. The canvas already refuses to overwrite a hand-edited
-    //`"EDITS": {"HKLM": {...}}` from its "+ group" button — this path would have thrown the same registry tree
-    //away on one click and saved the loss, which is the harder failure to notice because the author reaches
-    //for Import precisely when the node is in a state they are trying to repair. Absent, null and empty are
-    //still materialised: those are "nothing to lose", not "something of the wrong shape".
-    if (N.contains("EDITS") && !N["EDITS"].is_null() && !N["EDITS"].is_array())
+    //Into the node's first REG layer (a new one, both views, when it has none). A value of the wrong shape on the
+    //way is REFUSED, not replaced: the author reaches for Import precisely when the node is in a state they are
+    //trying to repair, and replacing a hand-edited tree would save the loss.
+    if (N.contains("LAYERS") && !N["LAYERS"].is_array())
+    { tell("Import .reg", "This node's LAYERS is not a list - fix it in the JSON view first."); return; }
+    json * Layer = nullptr;
+    if (N.contains("LAYERS"))
+        for (auto & L : N["LAYERS"]) if (PkgGraph::LayerType(L) == "REG") { Layer = &L; break; }
+    if (!Layer)
+    {
+        //BOTH views, not 32 alone: a 64-bit-only import silently landing in the 32-bit view is the silent-nothing
+        //the audit exists to catch. Narrowing it afterwards is one checkbox.
+        N["LAYERS"].push_back(json{{"REG", json::object()}, {"ARCH", json::array({"32", "64"})}});
+        Layer = &N["LAYERS"].back();
+    }
+    if ((*Layer)["REG"].is_null()) (*Layer)["REG"] = json::object();
+    if (!(*Layer)["REG"].is_object())
     {
         tell("Import .reg",
-             "This node's EDITS is not a list, so importing would replace it and lose what is there.\n\n"
+             "This node's REG layer is not a hive tree, so importing would replace it and lose what is there.\n\n"
              "Fix it in the JSON view first.");
         return;
     }
-    if (!N.contains("EDITS") || !N["EDITS"].is_array() || N["EDITS"].empty())
-        //BOTH views, not 32 alone: a 64-bit-only import silently landing in the 32-bit view is the
-        //silent-nothing this codebase's audit exists to catch, and the author has no way to see it.
-        //Narrowing it afterwards is one checkbox; discovering it was wrong is a debugging session.
-        N["EDITS"] = json::array({json::object({{"ARCHITECTURE", json::array({"32", "64"})}})});
-    //...and the ENTRY, one index deeper. RegRowsOf reads nothing out of a non-object and RegRowsInto then
-    //iterates it as one, so `"EDITS": ["x"]` — the exact shape drawRegEdits refuses to touch, printing
-    //"(malformed entry - fix it in the JSON view)" — came back as {"": "x", "HKLM": {...}} and was saved. A
-    //refusal that stops at the container and reshapes what is inside it is not a refusal.
-    //Nothing to lose, so materialised — but materialised INTO THE SAME THING the container rule below writes,
-    //views and all. `json::object()` here was not "the same rule": NodeLower turns a missing ARCHITECTURE into
-    //a single un-redirected view, so the import would have landed in one view instead of both and a 64-bit
-    //game would read nothing from a node that validates clean. That is the silent-nothing the comment under
-    //the container rule cites as the reason for writing both views in the first place.
-    if (N["EDITS"][0].is_null()) N["EDITS"][0] = json::object({{"ARCHITECTURE", json::array({"32", "64"})}});
-    if (!N["EDITS"][0].is_object())
-    {
-        tell("Import .reg",
-             "This node's first EDITS entry is not an object, so importing would rewrite it into one.\n\n"
-             "Fix it in the JSON view first.");
-        return;
-    }
-    json & Entry = N["EDITS"][0];
+    json & Entry = (*Layer)["REG"];
     std::vector<PkgGraph::RegRow> Merged = PkgGraph::RegRowsOf(Entry);
     Merged.insert(Merged.end(), Rows.begin(), Rows.end());
     PkgGraph::RegRowsInto(Entry, Merged);
     Model->SaveNodes(); Model->requestReload();
     tell("Import .reg",
          QString("Imported %1 key/value row(s).").arg((int)Rows.size())
-             + (Deletions > 0 ? QString("\n\nSkipped %1 DELETION(s) - a RegEdit layer only writes.").arg(Deletions)
+             + (Deletions > 0 ? QString("\n\nSkipped %1 DELETION(s) - write each as null in the JSON view.").arg(Deletions)
                               : QString()));
 }
 
 // ---------------------------------------------------------------------------
 // Content: delta <-> full
 // ---------------------------------------------------------------------------
-
-//The Content PARENT whose bytes this node can be diffed against, with its mount target. "" if there is none —
-//which is why the "-> delta" button only appears when one exists.
-static bool DeltaBaseOf(const json & Nodes, int Index, std::string & BasePath, std::string & BaseTarget)
-{
-    const json & N = Nodes[Index];
-    for (const std::string & P : ManifestModel::OverRefs(N))
-    {
-        for (const auto & C : Nodes)
-        {
-            if (StrOf(C, "CID") != P) continue;   // an OVER ref is a CID → match the handle
-            if (!C.is_object() || !C.contains("LAYERS")) continue;
-            if (LayerStr(C, "FORM") != "zip") continue;
-            BasePath   = LayerStr(C, "PATH");
-            BaseTarget = LayerStr(C, "TARGET");
-            return !BasePath.empty();
-        }
-    }
-    return false;
-}
-
 
 //Reconstruct a delta node's content into a real archive next to it. DeltaByteSource composes the delta over its
 //base and serves the target's bytes on the fly, so this is a straight stream-to-file — no re-diffing, and a
@@ -799,8 +804,8 @@ void PkgActions::undelta(const std::string & NodeId)
 {
     const int I = indexOf(NodeId);
     const json & Ns = Model->doc()["NODES"];
-    const std::string Path = LayerStr(Ns[I], "PATH");
-    if (Path.empty()) { tell("Undelta", "This layer has no PATH yet."); return; }
+    const std::string Path = ContentName(Ns[I]);
+    if (Path.empty()) { tell("Undelta", "This node's content layer names no file yet."); return; }
 
     // Name the restored archive after the delta, minus the .vgdelta suffix — "delta_from__base.zip.vgdelta"
     // came from "base.zip", so the round trip lands back on a sensible name rather than a doubled extension.
@@ -822,23 +827,14 @@ void PkgActions::undelta(const std::string & NodeId)
     const std::filesystem::path Out = Bundle / ZipName;
     const std::filesystem::path DeltaFile = ResolveInBundle(Bundle, Path);
     if (DeltaFile.empty())
-    { tell("Unsafe path", "This layer's PATH does not point inside the package folder. Nothing was changed."); return; }
+    { tell("Unsafe path", "This layer's file does not point inside the package folder. Nothing was changed."); return; }
 
     // Resolve everything the reconstruction needs BEFORE going off-thread. reconstructDelta used to read the
     // model from the worker — for as long as a multi-GB stream takes — so closing the editor freed the
     // document under it, and any edit that grew the NODES array reallocated it mid-read.
-    //A MULTI-BASE delta reconstructs against the CONCATENATION of several mounted targets, which exists only
-    //inside a live mount — there is no single parent archive to hand DeltaByteSource here. Say that, rather than
-    //composing it over one base and reporting the resulting hash mismatch as "could not be composed".
-    const json & Ly0 = (Ns[I].is_object() && Ns[I].contains("LAYERS") && Ns[I]["LAYERS"].is_array()
-                        && !Ns[I]["LAYERS"].empty()) ? Ns[I]["LAYERS"][0] : Ns[I];   // read-only, no materialise
-    if (ManifestModel::LayerBaseTargets(Ly0).size() > 1)
-    { tell("Undelta", "This delta is based on several targets at once (a concatenation), which only exists inside "
-                      "a mounted runtime. Reconstructing it from the package folder is not possible."); return; }
-
-    std::string BasePath, BaseTarget;
-    if (!DeltaBaseOf(Ns, I, BasePath, BaseTarget))
-    { tell("Undelta", "This delta has no Content parent to reconstruct against."); return; }
+    const std::string BasePath = PkgGraph::DeltaBase(Ns, I);
+    if (BasePath.empty())
+    { tell("Undelta", "This delta has no base to reconstruct against: a contained node with a zip at its target."); return; }
 
     Canvas->beginAction(NodeId, "reconstructing...", /*cancellable=*/false);   // a stream with no interrupt point
     auto Ok  = std::make_shared<bool>(false);
@@ -846,7 +842,7 @@ void PkgActions::undelta(const std::string & NodeId)
     auto Alive = Alive_;
     const std::filesystem::path BaseFile = ResolveInBundle(Bundle, BasePath);
     if (BaseFile.empty())
-    { tell("Unsafe path", "The base layer's PATH does not point inside the package folder."); return; }
+    { tell("Unsafe path", "The base layer's file does not point inside the package folder."); return; }
     AsyncWork::Run(this,
         [BaseFile, DeltaFile, Out, Ok, Err]() { *Ok = ReconstructTo(BaseFile, DeltaFile, Out, *Err); },
         [this, NodeId, ZipName, Out, DeltaFile, Ok, Err, Alive]() {
@@ -862,9 +858,7 @@ void PkgActions::undelta(const std::string & NodeId)
             std::error_code Rc; std::filesystem::remove(DeltaFile, Rc);
             const int J = indexOf(NodeId);
             if (J < 0) return;
-            json & N = Model->doc()["NODES"][J];
-            { json & Lp = PrimaryLayer(N); Lp["FORM"] = "zip"; Lp["PATH"] = ZipName;
-              Lp.erase("BASE_TARGETS"); }                 // a full archive has no byte-base (on the LAYER, where it lives)
+            SetContent(Model->doc()["NODES"][J], "ZIP", ZipName);
             Model->SaveNodes(); Model->requestReload();
             refreshHints();
         });
@@ -874,17 +868,16 @@ void PkgActions::makeDelta(const std::string & NodeId)
 {
     const int I = indexOf(NodeId);
     const json & Ns = Model->doc()["NODES"];
-    const std::string TgtPath   = LayerStr(Ns[I], "PATH");
-    const std::string TgtTarget = LayerStr(Ns[I], "TARGET");
-    std::string BasePath, BaseTarget;
-    if (!DeltaBaseOf(Ns, I, BasePath, BaseTarget) || TgtPath.empty())
-    { tell("Make delta", "This node needs a Content parent with a zip to diff against."); return; }
+    const std::string TgtPath = ContentName(Ns[I]);
+    const std::string BasePath = PkgGraph::DeltaBase(Ns, I);
+    if (ContentType(Ns[I]) != "ZIP" || TgtPath.empty() || BasePath.empty())
+    { tell("Make delta", "This node needs a zip, and a node it contains with a zip at the same target to diff against."); return; }
 
     const std::filesystem::path Bundle = Model->packageDir()->path().toStdString();
     const std::filesystem::path BaseFile = ResolveInBundle(Bundle, BasePath);
     const std::filesystem::path TgtFile   = ResolveInBundle(Bundle, TgtPath);
     if (BaseFile.empty() || TgtFile.empty())
-    { tell("Unsafe path", "A layer's PATH does not point inside the package folder. Nothing was changed."); return; }
+    { tell("Unsafe path", "A layer's file does not point inside the package folder. Nothing was changed."); return; }
     std::error_code Ec;
     if (!std::filesystem::exists(BaseFile, Ec) || !std::filesystem::exists(TgtFile, Ec))
     { tell("Make delta", "Both this layer's zip and its parent's must be present locally."); return; }
@@ -961,7 +954,7 @@ void PkgActions::makeDelta(const std::string & NodeId)
             { *ErrText = "the delta blob is the wrong size on disk"; std::filesystem::remove(BlobPath, Sc); return; }
             *Ok = true;
         },
-        [this, NodeId, Blob, TgtFile, BaseTarget, TgtTarget, Ok, ErrText]() {
+        [this, NodeId, Blob, TgtFile, Ok, ErrText]() {
             Aborts.erase(NodeId);
             Canvas->endAction(NodeId);
             if (!*Ok)
@@ -974,12 +967,7 @@ void PkgActions::makeDelta(const std::string & NodeId)
             std::error_code Rc; std::filesystem::remove(TgtFile, Rc);
             const int J = indexOf(NodeId);
             if (J < 0) return;
-            json & N = Model->doc()["NODES"][J];
-            { json & Lp = PrimaryLayer(N); Lp["FORM"] = "delta"; Lp["PATH"] = Blob; }
-            // Cross-target: when the byte-base mounts at a DIFFERENT target, name it so the FS can pair them.
-            //A base at the ROOT ("") is a real, ordinary base — the wine/runner-build shape. Skipping the key for it
-            //left an UNDECLARED base, so the FS looks at the delta's OWN target, finds nothing, and drops the layer.
-            if (BaseTarget != TgtTarget) PrimaryLayer(N)["BASE_TARGETS"] = json::array({BaseTarget});  // on the LAYER, where lowering reads it
+            SetContent(Model->doc()["NODES"][J], "DELTA", Blob);   // its base is the zip at the same target, beneath it
             Model->SaveNodes(); Model->requestReload();
         });
 }

@@ -5,6 +5,7 @@
 
 #include <filesystem>
 #include <map>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -155,24 +156,23 @@ public:
     //still overwrite it in the prelaunch window). Empty once a value is persisted.
     std::map<std::string, std::string> PickedSecrets;
 
-    //Module toggles (optional modules only; REQUIRED modules ignore this):
-    std::map<std::string, bool> ModuleStates;                       //PASSED (UI tree / --module COMP=on|off); component → enabled. Absent → REQUIRED||DEFAULT
-
     //Variant resolution:
     std::string VariantID;                                           //VARIANT_ID — resolved in DecideComponent (RECOMMENDED/first) or set by the caller
 
-    //The launch EXEC: the SELECTED entrypoint of the launch node, lowered (NodeLower::LowerEntrypoint). Execution is
-    //NOT transitive — nothing under the launch node contributes to it. Set by InitializeFromNode; consumed by
-    //ResolveExecutableDefinition. Empty ⇒ fall back to the launch node's default Exec.
+    //The launch EXEC: the SELECTED entry of the resolved row, lowered (NodeLower::LowerEntry) and mapped into the
+    //runner's layout. Set by InitializeFromNode; consumed by ResolveExecutableDefinition.
     nlohmann::ordered_json ComposedExec;
-    //Which entry to run, by LABEL ("" = the default: the first) — of the launch node's EFFECTIVE entrypoints, or of
-    //EntryNode's when set: a ticked graft that carries an entry (a mod loader) is a way to run the selected
-    //variant's mount. PASSED (picker / --entrypoint / --entry-node).
+    //Which entry to run, by LABEL ("" = the default: the first game entry) — of the row's folded EXEC, which
+    //includes the entries its ticked grafts add (a mod loader is a way to run the variant). PASSED (picker / --entry).
     std::string Entrypoint;
-    std::string EntryNode;
-    //Per-graft precedence (node key → rank; higher = mounted later = wins at a conflict). Grafts absent from the
-    //map rank 0 and order by key. PASSED (instance config).
-    std::map<std::string, int> GraftPrecedence;
+    //The boundary runner's map from guest coordinates to its layout (GUEST_ROOTS: {"C:": "%PrefixRoot%/drive_c", …}).
+    //Applied to every path AFTER substitution (a %variable% may carry a guest path) — LaunchResolver::GuestToLayout.
+    nlohmann::ordered_json GuestRoots;
+    //The instance's graft list, in order (later = applied later = wins at a conflict). Unset = the grafts offered to
+    //this row that are RECOMMENDED under its tile (a fresh instance). PASSED (instance GRAFTS / --graft).
+    std::optional<std::vector<std::string>> Grafts;
+    //AUTO-RESOLVED (out): the grafts actually applied (Grafts filtered to what this row offers), in order.
+    std::vector<std::string> AppliedGrafts;
 
     //Native node-graph launch (everything-is-a-node): when NodeIdx+LaunchNodeId are set, the engine resolves
     //EVERYTHING from the global node graph (InitializeFromNode) instead of from a MANIFESTJSON.

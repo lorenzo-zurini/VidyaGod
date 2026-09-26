@@ -111,6 +111,7 @@ bool LaunchResolver::DerivePersistence(const nlohmann::ordered_json &MANIFESTJSO
         const std::string Scope = ToLower(S.value("SCOPE", std::string("file")));
         std::string Path = S.value("PATH", std::string());
         VarSubst::StringVariableSubstitution(Path, Vars);
+        if (Scope != "registry") Path = LaunchResolver::GuestToLayout(ContainerParams, Path);   // guest coordinates → layout
         const bool Cloud = S.value("CLOUD", true);
         if (Scope == "registry")
         {

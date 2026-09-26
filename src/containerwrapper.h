@@ -37,6 +37,10 @@ public:
     ContainerWrapper(const nlohmann::ordered_json &Passed_GlobalConfigJSON, nlohmann::ordered_json &Passed_MANIFESTJSON, ContainerParams &Passed_ContainerParams);
     struct ContainerParams ContainerParams;
 
+    //Whether the constructor's resolve succeeded — false for a blocked, malformed or runnerless row. Nothing is
+    //built, dumped or run from a wrapper that did not resolve.
+    bool Resolved() const { return InitOk; }
+
     //Mounts VFS layers, applies registry patches and DLL overrides, checks for case conflicts.
     //Must be called before Execute(). Returns false if VFS setup fails.
     bool BuildContainerRuntime();

@@ -1,4 +1,5 @@
 #include "prelaunchwindow.h"
+#include "fold.h"   // a row's options and entries are its resolution's
 #include "apppaths.h"
 #include "packageeditor.h"
 #include "mainwindow.h"
@@ -55,7 +56,8 @@ PreLaunchWindow::PreLaunchWindow(
     // else the first.
     if (!this->GroupNodeIds.empty()) LaunchNodeId = this->GroupNodeIds.front();
     for (const std::string& Id : this->GroupNodeIds)
-        if (const Node* N = Index ? Index->Find(Id) : nullptr; N && N->Recommended) { LaunchNodeId = Id; break; }
+        if (const Node* N = Index ? Index->Find(Id) : nullptr;
+            N && std::find(N->Recommended.begin(), N->Recommended.end(), N->Uid) != N->Recommended.end()) { LaunchNodeId = Id; break; }
     if (const Node* L = CurrentLaunch()) { BundleDir = L->BundleDir.string(); PackageUID = L->Uid; }
 
     // ----- Layout: cover (left) | controls+console (right) -----
@@ -335,9 +337,15 @@ std::string PreLaunchWindow::ChainStepInput(int Step) const
 {
     if (Step <= 0)
     {
-        const Node* E = (!EntryNode.empty() && Index) ? Index->Find(EntryNode) : nullptr;
-        const Node* L = E ? E : CurrentLaunch();
-        return L ? L->HostFor(Entrypoint) : ManifestModel::MachinePlatform();
+        const Node* L = CurrentLaunch();
+        if (!L) return ManifestModel::MachinePlatform();
+        //The entry may be one a ticked graft adds: read it off the row's resolution with the grafts applied.
+        if (!Entrypoint.empty() && !L->Entries.contains(Entrypoint))
+        {
+            const Fold::Plan P = Fold::Resolve(ManifestModel::LibraryOf(*Index), L->Key(), {}, {}, CollectGrafts());
+            if (P.Exec.contains(Entrypoint)) return P.Exec[Entrypoint].value("HOST", L->HostPlatform);
+        }
+        return L->HostFor(Entrypoint);
     }
     if (Step - 1 >= (int)CurrentChain.size()) return ManifestModel::MachinePlatform();
     const std::string& Prev = CurrentChain[Step - 1];
@@ -363,7 +371,8 @@ void PreLaunchWindow::RebuildRunnerChain()
     if (L)
     {
         ContainerParams Cp(std::filesystem::path(BundleDir), LaunchNodeId, std::string());
-        Cp.NodeIdx = Index; Cp.LaunchNodeId = LaunchNodeId; Cp.Entrypoint = Entrypoint; Cp.EntryNode = EntryNode; Cp.PackageUID = PackageUID;
+        Cp.NodeIdx = Index; Cp.LaunchNodeId = LaunchNodeId; Cp.Entrypoint = Entrypoint; Cp.PackageUID = PackageUID;
+        Cp.Platform = ChainStepInput(0);
         CurrentChain = LaunchResolver::ResolveChainIds(*Index, *L, Cp, *GlobalConfigJSON);
     }
     RenderChainCombos();
@@ -466,51 +475,38 @@ void PreLaunchWindow::RebuildModuleTree()
     if (!ModuleTree) return;
     QSignalBlocker B(ModuleTree);
     ModuleTree->clear();
-    ModuleExcludes.clear();
 
     const Node* L = CurrentLaunch();
     if (!L) { ModuleGroup->setVisible(false); return; }
 
+    //The GRAFTS this row offers (a node whose list begins with ANY naming something the row contains), ticked by the
+    //instance's saved graft list — else the ones RECOMMENDED under this tile (a fresh instance). The saved order is
+    //the order they apply in; unsaved offers follow in the default order.
     auto US = PackageCatalog::GetPackageUserSettings(*GlobalConfigJSON, PackageUID);
-    const nlohmann::ordered_json SavedMods = (US.contains("MODULES") && US["MODULES"].is_object())
-                                              ? US["MODULES"] : nlohmann::ordered_json::object();
-
-    //Two kinds of tick, one tree, keyed by node KEY (CID): the TOGGLE'd nodes inside the launchable's own closure
-    //(the author's optional modules), and the GRAFTS — nodes of this title in nobody's list that are OVER
-    //something selected. A graft that is not yet applicable (needs another graft first) is listed disabled with
-    //its blocker, so the fixpoint is visible: tick tex, and tex-hd becomes tickable.
-    auto Row = [&](const Node* N, bool Desired, bool Enabled, const QString& Note) {
+    PackageCatalog::GraftChoice Saved;
+    if (US.contains("GRAFTS") && US["GRAFTS"].is_array())
+    {
+        Saved.emplace();
+        for (const auto& G : US["GRAFTS"]) if (G.is_string()) Saved->push_back(G.get<std::string>());
+    }
+    //Offered with the ticked ones applied: a graft on a graft appears once the graft it needs is ticked.
+    std::vector<std::string> PreTicked;
+    std::vector<std::string> Offered = PackageCatalog::OfferedGrafts(*Index, LaunchNodeId, &PreTicked, Saved);
+    const std::vector<std::string> Ticked = Saved ? *Saved : PreTicked;
+    std::vector<std::string> Rows;
+    for (const std::string& G : Ticked) if (std::find(Offered.begin(), Offered.end(), G) != Offered.end()) Rows.push_back(G);
+    for (const std::string& G : Offered) if (std::find(Rows.begin(), Rows.end(), G) == Rows.end()) Rows.push_back(G);
+    for (const std::string& G : Rows)
+    {
+        const Node* N = Index->Find(G);
+        if (!N) continue;
         QTreeWidgetItem* It = new QTreeWidgetItem(ModuleTree);
-        const QString Name = QString::fromStdString(N->NodeId.empty() ? N->Key().substr(0, 12) : N->NodeId);
-        It->setText(0, Note.isEmpty() ? Name : Name + "   (" + Note + ")");
-        It->setData(0, Qt::UserRole,     QString::fromStdString(N->Key()));   // node key
-        It->setData(0, Qt::UserRole + 1, false);                              // required (never here)
-        It->setData(0, Qt::UserRole + 2, Desired);                            // desired state
-        It->setData(0, Qt::UserRole + 4, Enabled);                            // tickable now
-        for (const std::string& E : N->Excludes) { ModuleExcludes[N->Key()].insert(E); ModuleExcludes[E].insert(N->Key()); }
-    };
-    auto Saved = [&](const Node* N, bool Def) {
-        if (SavedMods.contains(N->Key()) && SavedMods[N->Key()].is_boolean()) return bool(SavedMods[N->Key()]);
-        return Def;
-    };
-    (void)Saved;
-    //Every tick is a graft: the author's pre-ticked pieces and the mods alike, judged against the SAVED ticks (the
-    //selected set), scoped to our own tree.
-    std::map<std::string, bool> Ticks;
-    for (const auto& [K, V] : SavedMods.items()) if (V.is_boolean()) Ticks[K] = V.get<bool>();
-    auto NameOf = [&](const std::string& Key) {
-        const Node* B = Index->Find(Key);
-        return QString::fromStdString(B && !B->NodeId.empty() ? B->NodeId : Key.substr(0, 12));
-    };
-    for (const ManifestModel::GraftOffer& O : ManifestModel::OfferedGrafts(*Index, LaunchNodeId, Ticks,
-                                                  [](const Node& N) { return !N.Received && !N.BundleDir.empty(); }))
-        Row(O.Graft, O.Selected, O.Applicable,
-            O.Applicable ? QStringLiteral("mod")
-                         : !O.ExcludedBy.empty() ? QStringLiteral("excluded by ") + NameOf(O.ExcludedBy)
-                                                 : QStringLiteral("needs ") + NameOf(O.Blocker));
+        It->setText(0, QString::fromStdString(N->NodeId.empty() ? N->Key().substr(0, 12) : N->NodeId));
+        It->setData(0, Qt::UserRole,     QString::fromStdString(N->Key()));
+        It->setData(0, Qt::UserRole + 2, std::find(Ticked.begin(), Ticked.end(), G) != Ticked.end());
+        It->setData(0, Qt::UserRole + 4, true);
+    }
     ModuleGroup->setVisible(ModuleTree->topLevelItemCount() > 0);
-    // Size the tree to its content (capped at 8 rows) so all modules are visible without an inner scrollbar — the
-    // group then claims its proper space in the control pane instead of being squashed to a couple of rows.
     if (const int Rows = ModuleTree->topLevelItemCount(); Rows > 0)
     {
         int RowH = ModuleTree->sizeHintForRow(0);
@@ -518,7 +514,7 @@ void PreLaunchWindow::RebuildModuleTree()
         const int VisibleRows = std::min(Rows, 8);
         const int H = VisibleRows * RowH + 2 * ModuleTree->frameWidth() + 4;
         ModuleTree->setMinimumHeight(H);
-        ModuleTree->setMaximumHeight(Rows <= 8 ? H : QWIDGETSIZE_MAX);   // exact fit if few; scroll if many
+        ModuleTree->setMaximumHeight(Rows <= 8 ? H : QWIDGETSIZE_MAX);
     }
     RefreshModuleLocks();
 }
@@ -541,45 +537,26 @@ void PreLaunchWindow::RefreshModuleLocks()
 void PreLaunchWindow::PropagateModuleItem(QTreeWidgetItem* Item)
 {
     if (!Item) return;
-    const bool NowChecked = Item->checkState(0) == Qt::Checked;
-    const std::string Node = Item->data(0, Qt::UserRole).toString().toStdString();
-    Item->setData(0, Qt::UserRole + 2, NowChecked);
-
-    // Mutual exclusion: ticking one unticks every sibling it excludes.
-    auto ai = ModuleExcludes.find(Node);
-    if (NowChecked && ai != ModuleExcludes.end())
-        for (int i = 0; i < ModuleTree->topLevelItemCount(); ++i)
-        {
-            QTreeWidgetItem* It = ModuleTree->topLevelItem(i);
-            if (It != Item && ai->second.count(It->data(0, Qt::UserRole).toString().toStdString()))
-                It->setData(0, Qt::UserRole + 2, false);
-        }
-    //Ticking a graft can make another graft applicable (tex → tex-hd) or unselect one whose NOT it trips: persist
-    //the ticks and rebuild the tree from the fixpoint rather than reasoning about one row at a time.
-    {
-        nlohmann::ordered_json Mods = nlohmann::ordered_json::object();
-        for (int i = 0; i < ModuleTree->topLevelItemCount(); ++i)
-        {
-            QTreeWidgetItem* It = ModuleTree->topLevelItem(i);
-            Mods[It->data(0, Qt::UserRole).toString().toStdString()] = It->data(0, Qt::UserRole + 2).toBool();
-        }
-        PackageCatalog::SetPackageUserSetting(*GlobalConfigJSON, PackageUID, "MODULES", Mods);
-    }
+    Item->setData(0, Qt::UserRole + 2, Item->checkState(0) == Qt::Checked);
+    //The instance's graft list = the ticked rows, in list order.
+    nlohmann::ordered_json List = nlohmann::ordered_json::array();
+    for (const std::string& G : CollectGrafts()) List.push_back(G);
+    PackageCatalog::SetPackageUserSetting(*GlobalConfigJSON, PackageUID, "GRAFTS", List);
     RebuildModuleTree();
-    RebuildCustomVarPickers();   // toggling a module changes the enabled closure's CustomVars
+    RebuildCustomVarPickers();   // a graft brings its own options
     RefreshGraftEntryRows();     // a ticked mod loader adds a way to run; an unticked one takes it away
 }
 
-std::map<std::string, bool> PreLaunchWindow::CollectModuleStates() const
+std::vector<std::string> PreLaunchWindow::CollectGrafts() const
 {
-    std::map<std::string, bool> States;
-    if (!ModuleTree) return States;
+    std::vector<std::string> Out;
+    if (!ModuleTree) return Out;
     for (int i = 0; i < ModuleTree->topLevelItemCount(); ++i)
     {
         QTreeWidgetItem* It = ModuleTree->topLevelItem(i);
-        States[It->data(0, Qt::UserRole).toString().toStdString()] = It->data(0, Qt::UserRole + 2).toBool();
+        if (It->data(0, Qt::UserRole + 2).toBool()) Out.push_back(It->data(0, Qt::UserRole).toString().toStdString());
     }
-    return States;
+    return Out;
 }
 
 // Reads the current value of every var control (tagged CVKey) under `Group`, by widget type. Shared by the WHEN
@@ -659,17 +636,22 @@ void PreLaunchWindow::RebuildCustomVarPickers()
     const Node* L = CurrentLaunch();
     if (!L) { CustomVarGroup->setVisible(false); return; }
 
-    const std::map<std::string, bool> Toggles = CollectModuleStates();
-
-    // The enabled content-node closure (package), then every chain runner's content closure — both contribute knobs.
-    std::vector<std::pair<std::string, bool>> Nodes;   // (node id, isRunnerKnob)
-    const Node* CL = CurrentLaunch();
-    for (const std::string& Id : ManifestModel::ResolveNodeOrder(*Index, CL ? CL->Key() : LaunchNodeId, Toggles)) Nodes.push_back({Id, false});
+    // The knobs are the FOLDED declarations: the row's (with the ticked grafts), then every chain runner's.
+    const Fold::Library Lib = ManifestModel::LibraryOf(*Index);
+    std::vector<std::pair<nlohmann::ordered_json, bool>> Decls;   // (a CustomVar-shaped declaration, isRunnerKnob)
+    auto AddDecls = [&](const Fold::Plan& P, bool IsRunner) {
+        for (const auto& [K, D] : P.Decls.items())
+        {
+            nlohmann::ordered_json CV = { {"TYPE", "CustomVar"}, {"KEY", K} };
+            if (D.is_object()) for (const auto& [F, X] : D.items()) CV[F] = X;
+            Decls.push_back({ std::move(CV), IsRunner });
+        }
+    };
+    AddDecls(Fold::Resolve(Lib, L->Key(), {}, {}, CollectGrafts()), false);
     for (const std::string& Rid : CurrentChain)
     {
         if (Rid == LaunchResolver::kNativeTerminalId || !Index->Find(Rid)) continue;
-        for (const std::string& Id : ManifestModel::ResolveNodeOrder(*Index, Rid, Toggles))
-        { if (Index->Find(Id)) Nodes.push_back({Id, true}); }
+        AddDecls(Fold::Resolve(Lib, Rid), true);
     }
 
     const nlohmann::ordered_json SavedVars = PackageCatalog::GetPackageVariables(*GlobalConfigJSON, PackageUID);
@@ -687,12 +669,10 @@ void PreLaunchWindow::RebuildCustomVarPickers()
     bool AnyVisible = false, AnyCond = false;
     std::set<std::string> SeenKeys;   // a KEY surfaces once; package nodes walked first so they win on collision
 
-    for (const auto& [Id, IsRunner] : Nodes)
+    for (const auto& [CVj, IsRunner] : Decls)
     {
-        const Node* N = Index->Find(Id);
-        if (!N || !N->Layers.is_array()) continue;
-        for (const auto& CV : N->Layers)
         {
+            const nlohmann::ordered_json& CV = CVj;
             if (!CV.is_object() || CV.value("TYPE", std::string()) != "CustomVar") continue;
             if (!CV.contains("UI") || !CV["UI"].is_object()) continue;          // only UI-facet vars are shown
             const std::string Key = CV.value("KEY", std::string());
@@ -932,9 +912,7 @@ void PreLaunchWindow::onVariantChanged()
     const std::string PrevLaunch = LaunchNodeId;
     LaunchNodeId = Data.substr(0, Sep);
     std::string Rest = Sep == std::string::npos ? std::string() : Data.substr(Sep + 1);
-    const size_t Sep2 = Rest.find('\x1f');
-    Entrypoint = Rest.substr(0, Sep2);
-    EntryNode  = Sep2 == std::string::npos ? std::string() : Rest.substr(Sep2 + 1);
+    Entrypoint = Rest.substr(0, Rest.find('\x1f'));
     if (const Node* L = CurrentLaunch()) { BundleDir = L->BundleDir.string(); PackageUID = L->Uid; }
     RebuildCover();
     RebuildRunnerChain();
@@ -954,25 +932,14 @@ void PreLaunchWindow::RefreshGraftEntryRows()
     const Node* L = CurrentLaunch();
     if (L && Index)
     {
-        std::map<std::string, bool> Ticks;
-        const auto US = PackageCatalog::GetPackageUserSettings(*GlobalConfigJSON, PackageUID, std::string());
-        if (US.contains("MODULES") && US["MODULES"].is_object())
-            for (const auto& [K, V] : US["MODULES"].items()) if (V.is_boolean()) Ticks[K] = V.get<bool>();
-        for (const ManifestModel::GraftOffer& O : ManifestModel::OfferedGrafts(*Index, LaunchNodeId, Ticks,
-                                                      [](const Node& N) { return !N.Received && !N.BundleDir.empty(); }))
+        //The entries the ticked grafts ADD to this row's fold (a mod loader), beyond the row's own.
+        const Fold::Plan P = Fold::Resolve(ManifestModel::LibraryOf(*Index), L->Key(), {}, {}, CollectGrafts());
+        for (const auto& [Label, E] : P.Exec.items())
         {
-            if (!O.Selected || !O.Graft->IsRunnable()) continue;
-            const std::vector<std::string> Labels = O.Graft->EntrypointLabels();
-            for (size_t I = 0; I < Labels.size(); ++I)
-            {
-                const auto& Ep = O.Graft->EffectiveEntrypoints[I];
-                if (Ep.is_object() && Ep.contains("GUEST") && Ep["GUEST"].is_array() && !Ep["GUEST"].empty()) continue;
-                const std::string GName = O.Graft->NodeId.empty() ? O.Graft->Key().substr(0, 12) : O.Graft->NodeId;
-                const std::string EpLabel = Ep.is_object() ? Ep.value("LABEL", std::string()) : std::string();
-                const std::string Shown = "run " + GName + ((Labels.size() > 1 && !EpLabel.empty()) ? " - " + EpLabel : std::string());
-                VariantCombo->addItem(QString::fromStdString(Shown),
-                                      QString::fromStdString(LaunchNodeId + "\x1f" + Labels[I] + "\x1f" + O.Graft->Key()));
-            }
+            if (L->Entries.contains(Label)) continue;
+            if (E.contains("GUEST") && E["GUEST"].is_array() && !E["GUEST"].empty()) continue;   // a runner entry
+            VariantCombo->addItem(QString::fromStdString("run " + Label),
+                                  QString::fromStdString(LaunchNodeId + "\x1f" + Label + "\x1fgraft"));
         }
     }
     int Sel = VariantCombo->findData(Keep);
@@ -980,7 +947,7 @@ void PreLaunchWindow::RefreshGraftEntryRows()
     if (Sel < 0)
     {
         // The selected row was a graft's entry and that graft was just unticked: fall back to the variant's own
-        // rows and RE-READ the selection, or Entrypoint/EntryNode keep naming a loader the mount no longer holds.
+        // rows and RE-READ the selection, or Entrypoint keeps naming a loader the mount no longer holds.
         Sel = VariantCombo->findData(QString::fromStdString(LaunchNodeId + "\x1f" + Entrypoint));
         if (Sel < 0) Sel = VariantCombo->findData(QString::fromStdString(LaunchNodeId), Qt::UserRole, Qt::MatchStartsWith);
         Vanished = Sel >= 0;
@@ -997,7 +964,7 @@ void PreLaunchWindow::ReloadAndRebuild()
     GroupNodeIds = Live;
     QSignalBlocker B(VariantCombo);
     FillVariantCombo();
-    int Sel = VariantCombo->findData(QString::fromStdString(LaunchNodeId + "\x1f" + Entrypoint + (EntryNode.empty() ? std::string() : "\x1f" + EntryNode)));
+    int Sel = VariantCombo->findData(QString::fromStdString(LaunchNodeId + "\x1f" + Entrypoint));
     if (Sel < 0) Sel = VariantCombo->findData(QString::fromStdString(LaunchNodeId), Qt::UserRole, Qt::MatchStartsWith);
     VariantCombo->setCurrentIndex(Sel >= 0 ? Sel : 0);
     onVariantChanged();
@@ -1023,18 +990,19 @@ void PreLaunchWindow::FillVariantCombo()
         //variant reads as its VARIANT name; a multi-entry one names each entry. Faces qualify the row when the
         //card has several.
         const std::vector<std::string> Labels = N->EntrypointLabels();
+        const bool Rec = std::find(N->Recommended.begin(), N->Recommended.end(), N->Uid) != N->Recommended.end();
         std::string NodeName = !N->Variant.empty() ? N->Variant : (!N->NodeId.empty() ? N->NodeId
                                : (N->Meta.is_object() ? N->Meta.value("TITLE", Id) : Id));
         if (Qualify && N->Meta.is_object() && !N->Meta.value("TITLE", std::string()).empty())
             NodeName = N->Meta.value("TITLE", std::string()) + " - " + NodeName;
         for (size_t I = 0; I < Labels.size(); ++I)
         {
-            const auto& Ep = N->EffectiveEntrypoints[I];
+            const auto& Ep = N->Entries[Labels[I]];
             if (Ep.is_object() && Ep.contains("GUEST") && Ep["GUEST"].is_array() && !Ep["GUEST"].empty()) continue;   // a runner entry
             const std::string EpLabel = Ep.is_object() ? Ep.value("LABEL", std::string()) : std::string();
             const std::string Shown = (Labels.size() == 1 || EpLabel.empty()) ? (EpLabel.empty() ? NodeName : (NodeName == EpLabel ? EpLabel : NodeName + " - " + EpLabel))
                                                                                 : NodeName + " - " + EpLabel;
-            Es.push_back({ Id + "\x1f" + Labels[I], QString::fromStdString(Shown), N->Recommended && I == 0 });
+            Es.push_back({ Id + "\x1f" + Labels[I], QString::fromStdString(Shown), Rec && I == 0 });
         }
     }
     // Recommended first, then NATURAL version order (1.9 < 1.10 < 1.10.2, NaturalLess) — with hundreds of variants
@@ -1084,9 +1052,9 @@ void PreLaunchWindow::onLaunchClicked()
     if (!PackageUID.empty())
     {
         PackageCatalog::MergePackageVariables(*GlobalConfigJSON, PackageUID, PickerVars);
-        nlohmann::ordered_json Mods = nlohmann::ordered_json::object();
-        for (const auto& [N, On] : CollectModuleStates()) Mods[N] = On;
-        PackageCatalog::SetPackageUserSetting(*GlobalConfigJSON, PackageUID, "MODULES", Mods);
+        nlohmann::ordered_json List = nlohmann::ordered_json::array();
+        for (const std::string& G : CollectGrafts()) List.push_back(G);
+        PackageCatalog::SetPackageUserSetting(*GlobalConfigJSON, PackageUID, "GRAFTS", List);
         //Persist the whole resolved chain (RUNNER_CHAIN supersedes the old single PREFERRED_RUNNER). The resolver
         //honours it on the next launch (and the chain UI pre-selects it).
         { nlohmann::ordered_json ChainJson = nlohmann::ordered_json::array();
@@ -1111,9 +1079,8 @@ void PreLaunchWindow::onLaunchClicked()
     LaunchWorker->GlobalConfigJSON = *GlobalConfigJSON;
     LaunchWorker->LaunchNodeId     = LaunchNodeId;
     LaunchWorker->Entrypoint       = Entrypoint;
-    LaunchWorker->EntryNode        = EntryNode;
     LaunchWorker->VariableOverrides = PickerVars;
-    LaunchWorker->ModuleStates      = CollectModuleStates();
+    LaunchWorker->Grafts            = CollectGrafts();
     LaunchWorker->RunnerChain       = SelectedChain;                          // the full daisy-chain (innermost→outermost)
     LaunchWorker->RunnerID          = SelectedChain.empty() ? std::string() : SelectedChain.front();  // back-compat
     LaunchWorker->DryRun            = DryRunCheck->isChecked();

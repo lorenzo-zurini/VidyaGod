@@ -43,7 +43,7 @@ void AuthoringWorker::start(QString configDump, QString bundlePath, QString node
     ManifestModel::ScanBundleNodes(bundlePath.toStdString(), Idx);              // this bundle wins (first-seen)
     NodeIndex Cat = PackageCatalog::BuildCatalogIndex(Config);                  // CID package sources + local bundles
     for (auto & [Id, N] : Cat.Nodes) Idx.Nodes.emplace(Id, N);
-    ManifestModel::DeriveIdentity(Idx);   // grafts inherit their game's identity through OVER
+    ManifestModel::DeriveFacts(Idx);   // entries, runners and tiles are folded facts
 
     // The "Run Windows program" tool's choices: every Windows-capable runner usable on this machine (guest covers
     // win32/win64). Independent of the package's platform — you might run a Windows editor on a Linux game's runtime.
@@ -223,19 +223,19 @@ void AuthoringSessionModel::captureSelectedRegistry(const QStringList & RegPaths
         for (const auto & [K, V] : KV.items())
             ByArch[Arch].push_back({Path, K, V.is_string() ? V.get<std::string>() : V.dump()});
     }
-    nlohmann::ordered_json Edits = nlohmann::ordered_json::array();
+    //One REG layer per view the keys were captured in.
+    nlohmann::ordered_json Layers = nlohmann::ordered_json::array();
     for (const auto & [Arch, Rows] : ByArch)
     {
-        nlohmann::ordered_json Entry = nlohmann::ordered_json::object({
-            {"ARCHITECTURE", nlohmann::ordered_json::array({Arch})}});
-        PkgGraph::RegRowsInto(Entry, Rows);
-        Edits.push_back(std::move(Entry));
+        nlohmann::ordered_json Tree = nlohmann::ordered_json::object();
+        PkgGraph::RegRowsInto(Tree, Rows);
+        Layers.push_back(nlohmann::ordered_json{{"REG", std::move(Tree)}, {"ARCH", nlohmann::ordered_json::array({Arch})}});
     }
     const std::string NewId = Editor->createNode(
-        nlohmann::ordered_json::object({{"REGEDITS", Edits}}), {TargetNodeId}, "captured_registry");
+        nlohmann::ordered_json::object({{"LAYERS", Layers}}), {TargetNodeId}, "captured_registry");
     emit registryCaptured(RegPaths);
     emit nodeCreated(QString::fromStdString(NewId));
-    emit captured(QString("Captured %1 registry key(s) → new REGEDITS node '%2'.")
+    emit captured(QString("Captured %1 registry key(s) → new REG node '%2'.")
                       .arg((int)Picked.size()).arg(QString::fromStdString(NewId)));
 }
 
@@ -261,18 +261,18 @@ void AuthoringSessionModel::onFilesCopied(int count)
     emit busyChanged(false, QString());
     if (count <= 0) { emit captured("Nothing copied — check the selection."); return; }
     if (!Editor) return;
-    // A capture IS a node: one Content node holding what the run wrote, parented at the anchor so it applies
-    // exactly where the capture was taken.
-    //A capture is one node holding a single dir layer.
-    nlohmann::ordered_json Layer = nlohmann::ordered_json::object({
-        {"FORM", "dir"}, {"PATH", PendDestName.toStdString()}});
-    if (!PendTarget.isEmpty()) Layer["TARGET"] = PendTarget.toStdString();
+    // A capture IS a node: one DIR layer holding what the run wrote, over the anchor (createNode puts the anchor
+    // first, as a NODE layer) so it applies exactly where the capture was taken. The target is a guest path; a
+    // layer's TARGET is its FILES address.
+    nlohmann::ordered_json Layer = nlohmann::ordered_json::object({{"DIR", PendDestName.toStdString()}});
+    if (!PendTarget.isEmpty())
+        Layer["TARGET"] = PendTarget.startsWith("FILES/") ? PendTarget.toStdString() : "FILES/" + PendTarget.toStdString();
     nlohmann::ordered_json Payload = nlohmann::ordered_json::object({
         {"LAYERS", nlohmann::ordered_json::array({std::move(Layer)})}});
     const std::string NewId = Editor->createNode(Payload, {TargetNodeId}, PendDestName.toStdString() + "_files");
     emit filesCaptured(PendRoots);
     emit nodeCreated(QString::fromStdString(NewId));
-    emit captured(QString("Captured %1 file(s) → new Content node '%2'.").arg(count).arg(QString::fromStdString(NewId)));
+    emit captured(QString("Captured %1 file(s) → new node '%2'.").arg(count).arg(QString::fromStdString(NewId)));
 }
 
 void AuthoringSessionModel::onRegistryScan(QString deltaJsonDump, QStringList regPaths)

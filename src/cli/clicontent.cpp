@@ -491,7 +491,7 @@ int CliModes::RunContentModes(LaunchParameters &LaunchParameters, nlohmann::orde
             const std::string &L = MR.Launchables.front();
             const bool InCat = Cat.Find(L) != nullptr;   // Mint (DagPut) CID must be a key in the DagCid catalog
             std::vector<std::string> RMissing;
-            const auto Order = ManifestModel::ResolveNodeOrder(Cat, L, {}, &RMissing);
+            const auto Order = ManifestModel::Closure(Cat, L, &RMissing);
             LogOut("main.cpp", "resolve " + L.substr(0, 20) + "…: in-catalog=" + std::string(InCat ? "yes" : "NO")
                    + ", closure=" + std::to_string(Order.size()) + " node(s), "
                    + std::to_string(RMissing.size()) + " missing edge(s)");

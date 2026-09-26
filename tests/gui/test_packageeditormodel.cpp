@@ -57,10 +57,10 @@ private slots:
     void load_nodes_reads_bundle_and_tags_files()
     {
         QTemporaryDir dir; QVERIFY(dir.isValid());
-        writeNode(dir.path(), "base.json", json{{"LABEL", "base"}});
-        writeNode(dir.path(), "game.json", json{{"LABEL", "game"}, 
-                                               {"OVER", json::array({"base"})}});
-        writeNode(dir.path(), "MANIFEST.json", json{{"LEGACY", true}});   // no NODE_ID → ignored
+        writeNode(dir.path(), "base.json", json{{"LABEL", "base"}, {"LAYERS", json::array()}});
+        writeNode(dir.path(), "game.json", json{{"LABEL", "game"},
+                                               {"LAYERS", json::array({ json{{"NODE", "base"}} })}});
+        writeNode(dir.path(), "MANIFEST.json", json{{"LEGACY", true}});   // not a node → ignored
 
         PackageEditorModel m(&Cfg, nullptr);
         m.initPackage(dir.path(), nullptr);
@@ -77,8 +77,8 @@ private slots:
         PackageEditorModel m(&Cfg, nullptr);
         m.initPackage(dir.path(), nullptr);
         QCOMPARE((int)m.doc()["NODES"].size(), 1);
-        QVERIFY(!m.doc()["NODES"][0].contains("TYPE"));                                       // a plain node: no payload, no identity
-        QVERIFY(m.doc()["NODES"][0].contains("OVER"));
+        QVERIFY(m.doc()["NODES"][0]["LAYERS"].is_array() && m.doc()["NODES"][0]["LAYERS"].empty());   // no layers yet
+        QVERIFY(!m.doc()["NODES"][0].contains("OVER"));
     }
 
     // FileForNode prefers <NODE_ID>.json (so a rename re-files), falling back to __FILE__ then untitled.
@@ -91,12 +91,12 @@ private slots:
     }
 
     // Model C: a node's file is pure presentation and is pinned by its __FILE__ provenance — renaming is just
-    // editing the cosmetic LABEL and must NOT re-file the node (nor split an array file). SaveNodes rewrites the
-    // node in place, keeping its file, and fires savedToDisk.
+    // editing the cosmetic LABEL and must NOT re-file the node. SaveNodes rewrites the node in place, keeping its
+    // file, and fires savedToDisk.
     void save_nodes_rename_keeps_the_file_and_persists_the_label()
     {
         QTemporaryDir dir; QVERIFY(dir.isValid());
-        writeNode(dir.path(), "old.json", json{{"LABEL", "old"}});
+        writeNode(dir.path(), "old.json", json{{"LABEL", "old"}, {"LAYERS", json::array()}});
 
         PackageEditorModel m(&Cfg, nullptr);
         m.initPackage(dir.path(), nullptr);
@@ -109,8 +109,7 @@ private slots:
         QVERIFY(QFile::exists(dir.path() + "/old.json"));       // stays put — the file is provenance, not identity
         QVERIFY(!QFile::exists(dir.path() + "/renamed.json"));  // a rename does NOT create a new file
         const json Back = json::parse(readFile(dir.path() + "/old.json"));
-        const json &N = Back.is_array() ? Back[0] : Back;
-        QCOMPARE(N.value("LABEL", std::string()), std::string("renamed"));   // the new cosmetic name persisted
+        QCOMPARE(Back.value("LABEL", std::string()), std::string("renamed"));   // the new cosmetic name persisted
         QVERIFY(saved.count() >= 1);
     }
 
@@ -118,16 +117,17 @@ private slots:
     void replace_node_json_preserves_tag_and_reloads()
     {
         QTemporaryDir dir; QVERIFY(dir.isValid());
-        writeNode(dir.path(), "n.json", json{{"LABEL", "n"}});
+        writeNode(dir.path(), "n.json", json{{"LABEL", "n"}, {"LAYERS", json::array()}});
 
         PackageEditorModel m(&Cfg, nullptr);
         m.initPackage(dir.path(), nullptr);
 
         QSignalSpy reloaded(&m, &PackageEditorModel::documentReloaded);
-        json swapped = NodeFixture::Exec("win32", "n.exe"); swapped["LABEL"] = "n";
+        const json swapped = json{{"LABEL", "n"}, {"LAYERS", json::array({
+            json{{"EXEC", json::array({ json{{"LABEL", "Play"}, {"HOST", "win32"}, {"EXE", "C:/g/n.exe"}} })}} })}};
         m.replaceNodeJson(0, swapped);
 
-        QVERIFY(m.doc()["NODES"][0].contains("ENTRYPOINTS"));
+        QCOMPARE(m.doc()["NODES"][0]["LAYERS"][0]["EXEC"][0]["EXE"], json("C:/g/n.exe"));
         QVERIFY(m.doc()["NODES"][0].contains("__FILE__"));   // provenance tag survived the swap
         QVERIFY(reloaded.count() >= 1);
     }
@@ -138,7 +138,7 @@ private slots:
         QTemporaryDir dir; QVERIFY(dir.isValid());
         writeNode(dir.path(), "game.json",
                   json{{"CID", "game"}, {"LABEL", "game"}, 
-                       {"LAYERS", json::array({ json{{"FORM", "dir"}} })}});   // a VFS layer with no PATH → error
+                       {"LAYERS", json::array({ json{{"DIR", ""}} })}});   // a content layer naming no file → error
 
         PackageEditorModel m(&Cfg, nullptr);
         m.initPackage(dir.path(), nullptr);   // LoadNodes already validated once
@@ -153,9 +153,9 @@ private slots:
     void revalidate_clean_graph_has_no_errors()
     {
         QTemporaryDir dir; QVERIFY(dir.isValid());
-        writeNode(dir.path(), "base.json", json{{"CID", "base"}, {"LABEL", "base"}});
-        writeNode(dir.path(), "game.json", json{{"CID", "game"}, {"LABEL", "game"}, 
-                                               {"OVER", json::array({"base"})}});
+        writeNode(dir.path(), "base.json", json{{"CID", "base"}, {"LABEL", "base"}, {"LAYERS", json::array()}});
+        writeNode(dir.path(), "game.json", json{{"CID", "game"}, {"LABEL", "game"},
+                                               {"LAYERS", json::array({ json{{"NODE", "base"}} })}});
 
         PackageEditorModel m(&Cfg, nullptr);
         m.initPackage(dir.path(), nullptr);
@@ -169,7 +169,7 @@ private slots:
     void create_node_parents_at_the_anchor_and_uniquifies()
     {
         QTemporaryDir dir; QVERIFY(dir.isValid());
-        writeNode(dir.path(), "base.json", json{{"CID", "base"}, {"LABEL", "base"}});
+        writeNode(dir.path(), "base.json", json{{"CID", "base"}, {"LABEL", "base"}, {"LAYERS", json::array()}});
 
         PackageEditorModel m(&Cfg, nullptr);
         m.initPackage(dir.path(), nullptr);
@@ -182,19 +182,20 @@ private slots:
             return -1;
         };
 
-        const std::string a = m.createNode(json{{"LAYERS",json::array({json{{"FORM","dir"},{"PATH","cap"}}})}}, {"base"}, "cap_files");
+        const std::string a = m.createNode(json{{"LAYERS",json::array({json{{"DIR","cap"}}})}}, {"base"}, "cap_files");
         QVERIFY(!a.empty() && a != "cap_files");           // a draft handle, not the hint
         const int ai = byHandle(m, a);
         QVERIFY(ai >= 0);
         QCOMPARE(m.doc()["NODES"][ai].value("LABEL", std::string()), std::string("cap_files"));   // hint → cosmetic LABEL
-        QCOMPARE(m.doc()["NODES"][ai]["OVER"].size(), size_t(1));
-        QCOMPARE(m.doc()["NODES"][ai]["OVER"][0].get<std::string>(), std::string("base"));      // wired to the anchor handle
-        QVERIFY(m.doc()["NODES"][ai].contains("LAYERS"));
+        // The anchor comes FIRST, as a NODE layer, and the payload's layers fold over it.
+        QCOMPARE(m.doc()["NODES"][ai]["LAYERS"], json::parse(R"([{"NODE":"base"},{"DIR":"cap"}])"));
 
         // A second create with the same hint gets its OWN handle (handles are always unique; labels may repeat).
-        const std::string b = m.createNode(json{{"LAYERS",json::array({json{{"FORM","dir"},{"PATH","cap2"}}})}}, {"base"}, "cap_files");
+        const std::string b = m.createNode(json{{"LAYERS",json::array({json{{"DIR","cap2"}}})}}, {"base"}, "cap_files");
         QVERIFY(b != a);
         QVERIFY(byHandle(m, b) >= 0);
+        // Same label, one node per file: the second lands in a numbered sibling, never an array.
+        QVERIFY(QFile::exists(dir.path() + "/cap_files.json") && QFile::exists(dir.path() + "/cap_files_2.json"));
 
         // And both are on disk, not just in the document.
         PackageEditorModel m2(&Cfg, nullptr);
@@ -203,42 +204,33 @@ private slots:
         QVERIFY(byHandle(m2, b) >= 0);
     }
 
-    // A multi-node file may hold entries we do not recognise as nodes. SaveNodes rewrites the whole file from
-    // what it loaded, so anything skipped on load is erased from disk the next time that file is touched.
-    void unrecognised_entries_in_a_node_file_survive_a_save()
+    // One node per file: a JSON file that is not a node — a list, a note — is never loaded, and a save neither
+    // rewrites nor sweeps it; a new node whose name would land on it gets a numbered sibling instead.
+    void a_file_that_is_not_a_node_survives_a_save()
     {
         QTemporaryDir dir; QVERIFY(dir.isValid());
-        // One node PLUS a stray — the shape where the node would otherwise be re-filed to <id>.json and the
-        // original file swept away, taking the stray with it.
-        writeNode(dir.path(), "pack.json", json::array({
-            json{{"LABEL", "a"}},
-            json{{"NOTE", "keep me"}} }));
+        writeNode(dir.path(), "pack.json", json::array({ json{{"LABEL", "a"}, {"LAYERS", json::array()}}, json{{"NOTE", "keep me"}} }));
+        writeNode(dir.path(), "notes.json", json{{"NOTE", "mine"}});
+        writeNode(dir.path(), "a.json", json{{"LABEL", "a"}, {"LAYERS", json::array()}});
+        const std::string PackBefore = readFile(dir.path() + "/pack.json"), NotesBefore = readFile(dir.path() + "/notes.json");
 
         PackageEditorModel m(&Cfg, nullptr);
         m.initPackage(dir.path(), nullptr);
-        QCOMPARE((int)m.doc()["NODES"].size(), 1);
-        m.doc()["NODES"][0]["OVER"] = json::array();       // touch something
+        QCOMPARE((int)m.doc()["NODES"].size(), 1);                  // only a.json is a node
+        m.createNode(json{{"LAYERS", json::array()}}, {}, "notes");   // its name is a note's file
+        m.doc()["NODES"][0]["LAYERS"] = json::array({ json{{"ENV", {{"A", "1"}}}} });
         m.SaveNodes();
 
-        QFile f(dir.path() + "/pack.json");
-        QVERIFY2(f.exists(), "the file carrying the stray must not be swept");
-        QVERIFY(f.open(QIODevice::ReadOnly));
-        const json back = json::parse(f.readAll().toStdString(), nullptr, false);
-        QVERIFY(back.is_array());
-        bool sawNode = false, sawStray = false;
-        for (const auto &e : back)
-        {
-            if (e.value("LABEL", std::string()) == "a") sawNode = true;
-            if (e.value("NOTE", std::string()) == "keep me") sawStray = true;
-        }
-        QVERIFY(sawNode);
-        QVERIFY2(sawStray, "the unrecognised entry was erased");
+        QCOMPARE(readFile(dir.path() + "/pack.json"), PackBefore);
+        QCOMPARE(readFile(dir.path() + "/notes.json"), NotesBefore);
+        QVERIFY(QFile::exists(dir.path() + "/notes_2.json"));
+        QCOMPARE(json::parse(readFile(dir.path() + "/a.json"))["LAYERS"][0]["ENV"]["A"], json("1"));
     }
 
     void known_node_ids_and_platforms()
     {
         QTemporaryDir dir; QVERIFY(dir.isValid());
-        writeNode(dir.path(), "base.json", json{{"LABEL", "base"}});
+        writeNode(dir.path(), "base.json", json{{"LABEL", "base"}, {"LAYERS", json::array()}});
 
         PackageEditorModel m(&Cfg, nullptr);
         m.initPackage(dir.path(), nullptr);
@@ -257,7 +249,7 @@ private slots:
     void onlyOneEditorIsEverOpen()
     {
         QTemporaryDir dir; QVERIFY(dir.isValid());
-        writeNode(dir.path(), "solo.json", json{{"LABEL", "solo"}});
+        writeNode(dir.path(), "solo.json", json{{"LABEL", "solo"}, {"LAYERS", json::array()}});
         json cfg = json{{"Settings", json::object()}};
 
         bool createdA = false, createdB = false;

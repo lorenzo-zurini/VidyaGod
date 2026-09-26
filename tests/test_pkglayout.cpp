@@ -22,6 +22,31 @@
 
 using ordered_json = nlohmann::ordered_json;
 
+namespace {
+//A node CONTAINS what its leading NODE layers name (generation 6: the parents are layers).
+void Contain(ordered_json &J, const ordered_json &Refs)
+{
+    ordered_json L = ordered_json::array();
+    for (const auto &R : Refs) L.push_back(ordered_json{{"NODE", R}});
+    if (J.contains("LAYERS")) for (const auto &X : J["LAYERS"]) L.push_back(X);
+    J["LAYERS"] = std::move(L);
+}
+//A REG layer from a registry entry's shape ({ARCHITECTURE: [...], <hive>: {...}}).
+ordered_json RegLayer(const ordered_json &Entry)
+{
+    ordered_json R = ordered_json::object(), L = ordered_json::object();
+    for (const auto &[K, V] : Entry.items()) if (V.is_object()) R[K] = V;
+    L["REG"] = R;
+    if (Entry.contains("ARCHITECTURE")) L["ARCH"] = Entry["ARCHITECTURE"];
+    return L;
+}
+void AddLayer(ordered_json &J, const ordered_json &L)
+{
+    if (!J.contains("LAYERS")) J["LAYERS"] = ordered_json::array();
+    J["LAYERS"].push_back(L);
+}
+}
+
 
 namespace {
 
@@ -34,7 +59,7 @@ ordered_json Chain(int N)
         ordered_json Nd;
         Nd["CID"] = "n" + std::to_string(I);
 
-        if (I > 0) Nd["OVER"] = ordered_json::array({"n" + std::to_string(I - 1)});
+        if (I > 0) Contain(Nd, ordered_json::array({"n" + std::to_string(I - 1)}));
         A.push_back(Nd);
     }
     return A;
@@ -51,7 +76,7 @@ ordered_json Fan(int N)
         ordered_json Nd;
         Nd["CID"] = "c" + std::to_string(I);
 
-        Nd["OVER"] = ordered_json::array({"root"});
+        Contain(Nd, ordered_json::array({"root"}));
         A.push_back(Nd);
     }
     return A;
@@ -170,7 +195,7 @@ TEST(ordering_reduces_crossings_versus_document_order)
         ordered_json C;
         C["CID"] = "c" + std::to_string(I);
 
-        C["OVER"] = ordered_json::array({"p" + std::to_string(N - 1 - I)});
+        Contain(C, ordered_json::array({"p" + std::to_string(N - 1 - I)}));
         A.push_back(C);
     }
     PkgGraph::Graph Ordered = PkgGraph::Build(A);
@@ -226,7 +251,7 @@ TEST(a_malformed_POS_falls_through_to_the_computed_layout)
     {
         ordered_json A = ordered_json::array();
         ordered_json N; N["CID"] = "a"; N["POS"] = Bad;
-        ordered_json M; M["CID"] = "b"; M["OVER"] = ordered_json::array({"a"});
+        ordered_json M; M["CID"] = "b"; Contain(M, ordered_json::array({"a"}));
         A.push_back(N); A.push_back(M);
         PkgGraph::Graph G = PkgGraph::Build(A);
         CHECK(!G.Nodes[0].HasPos);                // a malformed POS is ABSENT, not a declared position
@@ -240,7 +265,7 @@ TEST(placed_nodes_keep_their_position_when_a_new_one_is_added)
     //of one of them either.
     ordered_json A = ordered_json::array();
     ordered_json N; N["CID"] = "a"; N["POS"] = ordered_json::array({500.0, 500.0});
-    ordered_json M; M["CID"] = "b"; M["OVER"] = ordered_json::array({"a"});
+    ordered_json M; M["CID"] = "b"; Contain(M, ordered_json::array({"a"}));
     A.push_back(N); A.push_back(M);
     PkgGraph::Graph G = PkgGraph::Build(A);
     CHECK_EQ(G.Nodes[0].X, 500.0f);
@@ -255,8 +280,8 @@ TEST(placed_nodes_keep_their_position_when_a_new_one_is_added)
 TEST(a_parents_cycle_still_produces_a_layout)
 {
     ordered_json A = ordered_json::array();
-    ordered_json X; X["CID"] = "x"; X["OVER"] = ordered_json::array({"y"});
-    ordered_json Y; Y["CID"] = "y"; Y["OVER"] = ordered_json::array({"x"});
+    ordered_json X; X["CID"] = "x"; Contain(X, ordered_json::array({"y"}));
+    ordered_json Y; Y["CID"] = "y"; Contain(Y, ordered_json::array({"x"}));
     A.push_back(X); A.push_back(Y);
     PkgGraph::Graph G = PkgGraph::Build(A);
     CHECK_EQ(G.Nodes.size(), (size_t)2);
@@ -295,7 +320,7 @@ TEST(tall_nodes_do_not_overlap_the_ones_below_them)
     auto Child = [&](const char *Id, const ordered_json &Extra) {
         ordered_json J = Extra;
         J["CID"] = Id;
-        J["OVER"] = ordered_json::array({"root"});
+        Contain(J, ordered_json::array({"root"}));
         A.push_back(J);
     };
     auto RegNode = [&](int Rows) {
@@ -304,11 +329,11 @@ TEST(tall_nodes_do_not_overlap_the_ones_below_them)
         ordered_json Entry = ordered_json::object();
         Entry["ARCHITECTURE"] = ordered_json::array({"64"});
         Entry["HKLM"] = Keys;
-        ordered_json J; J["REGEDITS"] = ordered_json::array({Entry});
+        ordered_json J; AddLayer(J, RegLayer(Entry));
         return J;
     };
     ordered_json Grp;
-    ordered_json Cnt; Cnt["LAYERS"] = ordered_json::array({ ordered_json{{"FORM", "zip"}, {"PATH", "game.zip"}} });
+    ordered_json Cnt; Cnt["LAYERS"] = ordered_json::array({ ordered_json{{"ZIP", "game.zip"}} });
     Child("c1_group", Grp);
     Child("c2_content", Cnt);
     Child("c3_reg5",   RegNode(5));
@@ -347,8 +372,8 @@ TEST(no_node_overlaps_another_on_a_realistic_mixed_graph)
     {
         ordered_json Nd;
         Nd["CID"] = "n" + std::to_string(I);
-        Nd["LAYERS"]  = ordered_json::array({ ordered_json{{"FORM", "zip"}, {"PATH", "layer.zip"}} });
-        if (I) Nd["OVER"] = ordered_json::array({"n" + std::to_string(I - 1)});
+        Nd["LAYERS"]  = ordered_json::array({ ordered_json{{"ZIP", "layer.zip"}} });
+        if (I) Contain(Nd, ordered_json::array({"n" + std::to_string(I - 1)}));
         A.push_back(Nd);
         if (I % 4) continue;
         for (int K = 0; K < 7; ++K)
@@ -358,8 +383,8 @@ TEST(no_node_overlaps_another_on_a_realistic_mixed_graph)
             ordered_json E = ordered_json::object(); E["HKLM"] = Keys;
             ordered_json C;
             C["CID"] = "f" + std::to_string(I) + "_" + std::to_string(K);
-            C["REGEDITS"] = ordered_json::array({E});
-            C["OVER"] = ordered_json::array({"n" + std::to_string(I)});
+            AddLayer(C, RegLayer(E));
+            Contain(C, ordered_json::array({"n" + std::to_string(I)}));
             A.push_back(C);
         }
     }
@@ -439,8 +464,8 @@ TEST(a_wide_fanout_of_varied_heights_stays_a_rectangle)
         ordered_json E = ordered_json::object(); E["HKLM"] = Keys;
         ordered_json N;
         N["CID"] = "f" + std::to_string(I);
-        N["REGEDITS"] = ordered_json::array({E});
-        N["OVER"] = ordered_json::array({"root"});
+        AddLayer(N, RegLayer(E));
+        Contain(N, ordered_json::array({"root"}));
         A.push_back(N);
     }
 
@@ -708,7 +733,7 @@ TEST(the_string_list_fault_predicate_is_the_one_both_sides_use)
     //and an EDITABLE list must cost more, or the predicate has grown to cover values that still draw a box.
     //The absolute pixel agreement with the widget is theEstimatedNodeHeightMatchesTheDrawnOne's job.
     auto HeightWith = [](const ordered_json &Args) {
-        return PkgGraph::EstimateHeight(ordered_json{{"ENTRYPOINTS", ordered_json::array({ ordered_json{{"HOST", "win32"}, {"ARGS", Args}} })}});
+        return PkgGraph::EstimateHeight(ordered_json{{"LAYERS", ordered_json::array({ ordered_json{{"EXEC", ordered_json::array({ ordered_json{{"LABEL", "Play"}, {"HOST", "win32"}, {"ARGS", Args}} })}} })}});
     };
     const float Refused = HeightWith(Str);
     for (const ordered_json *V : {&Obj, &Num, &Bad0, &Bad2, &Nest, &NullIn})
@@ -757,15 +782,14 @@ TEST(a_layered_graph_lays_out_at_pinned_coordinates)
         {
             ordered_json P = ordered_json::array();
             for (const char *X : Parents) P.push_back(X);
-            J["OVER"] = P;
+            Contain(J, P);
         }
         A.push_back(J);
     };
     N("root", "",        {});
     N("a",    "",        {"root"});     // short
-    N("b",    "LAYERS", {"root"});      // taller: a content node draws its LAYERS list as an ObjArray
-    // Give b a one-layer LAYERS so its ObjArray has an entry to render (height > a bare node).
-    A.back()["LAYERS"] = ordered_json::array({ ordered_json{{"FORM","zip"},{"PATH","x.zip"},{"TARGET","t"}} });
+    N("b",    "ZIP",    {"root"});      // taller: its own ZIP layer after the reference
+    A.back()["LAYERS"].back() = ordered_json{{"ZIP","x.zip"},{"TARGET","FILES/t"}};
     N("c",    "",        {"root"});     // short again, so it must clear b's height and not a's
     N("tail", "",        {"a", "b", "c"});
 
@@ -773,8 +797,8 @@ TEST(a_layered_graph_lays_out_at_pinned_coordinates)
     CHECK_EQ(G.Nodes.size(), (size_t)5);
     CHECK_EQ(G.Nodes[0].X,  60.0f);  CHECK_EQ(G.Nodes[0].Y,  60.0f);   // root, layer 0
     CHECK_EQ(G.Nodes[1].X, 490.0f);  CHECK_EQ(G.Nodes[1].Y,  60.0f);   // a,    layer 1 row 0
-    CHECK_EQ(G.Nodes[2].X, 490.0f);  CHECK_EQ(G.Nodes[2].Y, 447.0f);   // b,    after a's 297 + 90 gap
-    CHECK_EQ(G.Nodes[3].X, 490.0f);  CHECK_EQ(G.Nodes[3].Y, 1019.0f);  // c,    after b's 482 + 90 gap (LAYERS ObjArray)
+    CHECK_EQ(G.Nodes[2].X, 490.0f);  CHECK_EQ(G.Nodes[2].Y, 523.0f);   // b,    after a's 373 + 90 gap
+    CHECK_EQ(G.Nodes[3].X, 490.0f);  CHECK_EQ(G.Nodes[3].Y, 1121.0f);  // c,    after b's 508 + 90 gap
     CHECK_EQ(G.Nodes[4].X, 920.0f);  CHECK_EQ(G.Nodes[4].Y,  60.0f);   // tail, layer 2
     //And the heights those Y values are made of, so a failure says WHICH half moved. These moved by 2px when
     //the height estimate stopped charging a full label-and-widget row for rows that hold only SmallButtons —
@@ -784,9 +808,12 @@ TEST(a_layered_graph_lays_out_at_pinned_coordinates)
     //canvas has never drawn that field there, so the 35px were a hole reserved in every published layout.
     //A fourth move (+17 on every node) when the one-edge editor started drawing the "+ section" button row on
     //every node — a node is any subset of sections now, and adding one is a per-node act. A fifth (+38) when the
-    //final chain gave the envelope its two declared facets, VARIANT and RECOMMENDED, as rows.
-    CHECK_EQ(G.Nodes[1].Height, 297.0f);
-    CHECK_EQ(G.Nodes[2].Height, 482.0f);   // b: a node with one LAYERS entry (ObjArray)
+    //final chain gave the envelope its two declared facets, VARIANT and RECOMMENDED, as rows. A sixth in
+    //generation 6: a node's parents are LAYERS now, so `a` draws its NODE layer (header + node, take, target,
+    //when, comment) and every layer its own header row — and the envelope lost its toggle/when/not rows.
+    CHECK_EQ(G.Nodes[0].Height, 257.0f);   // root: a node with no layers
+    CHECK_EQ(G.Nodes[1].Height, 373.0f);   // a: one NODE layer
+    CHECK_EQ(G.Nodes[2].Height, 508.0f);   // b: a NODE layer and a ZIP layer
 }
 
 TEST(an_impossible_declared_position_is_rejected_not_honoured)
@@ -831,7 +858,7 @@ TEST(a_fixed_graph_lays_out_at_pinned_coordinates)
         {
             ordered_json P = ordered_json::array();
             for (const char *X : Parents) P.push_back(X);
-            J["OVER"] = P;
+            Contain(J, P);
         }
         A.push_back(J);
     };
@@ -857,9 +884,9 @@ TEST(a_fixed_graph_lays_out_at_pinned_coordinates)
     //And the estimate itself is a real number of pixels, not zero (which would silently restore the constant
     //step through the Height == 0 fallback) and not something absurd. A bare Group is the smallest node the
     //canvas draws — a title, a pin row, an id — plus the two reservations it always makes: the "node options"
-    //tree as though it were open, and a couple of validation-warning lines.
+    //tree as though it were open, and a couple of validation-warning lines — and `a` holds one NODE layer.
     CHECK(G.Nodes[1].Height > 90.0f);
-    CHECK(G.Nodes[1].Height < 320.0f);
+    CHECK(G.Nodes[1].Height < 420.0f);
 }
 
 //Every golden above this point fits in ONE band, so the two knobs that make a DEEP graph readable — BandGap
@@ -873,7 +900,7 @@ TEST(a_deep_chain_wraps_into_bands_and_stays_readable)
     for (int I = 0; I < Depth; ++I)
     {
         ordered_json J; J["CID"] = "n" + std::to_string(I);
-        if (I) J["OVER"] = ordered_json::array({"n" + std::to_string(I - 1)});
+        if (I) Contain(J, ordered_json::array({"n" + std::to_string(I - 1)}));
         A.push_back(J);
     }
 
@@ -940,7 +967,7 @@ TEST(a_wide_layers_ordering_does_not_depend_on_document_order)
             ordered_json J;
             J["CID"] = "c" + std::to_string(I);
 
-            J["OVER"] = ordered_json::array({"root"});
+            Contain(J, ordered_json::array({"root"}));
             Ns.push_back(J);
         }
         if (Reversed) std::reverse(Ns.begin(), Ns.end());

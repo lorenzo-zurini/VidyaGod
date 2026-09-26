@@ -159,10 +159,13 @@ private slots:
         NodeIndex idx;
         for (const char * id : {"g1", "g2"})
         {
-            Node n; n.NodeId = id; n.HasExec = true; n.Uid = id; n.Uids = {id}; n.OwnTile = true;
-            n.Meta = json{{"TITLE", std::string("Game ") + id}};
+            const json j = { {"CID", id}, {"LABEL", id}, {"VARIANT", "Play"}, {"LAYERS", json::array({ json{{"EXEC", json::array({
+                json{{"LABEL", "Play"}, {"HOST", "win32"}, {"EXE", "g.exe"}, {"TILE", {{"UID", id}, {"TITLE", std::string("Game ") + id}}}} })}} })} };
+            Node n;
+            QVERIFY(ManifestModel::ParseNode(j, "f.json", "/tmp/vg_bundle", n));
             idx.Nodes[id] = n;
         }
+        ManifestModel::DeriveFacts(idx);
         json cfg = json{{"Settings", json::object()}};
         GamePicker p(&cfg, &idx);
         QVERIFY(renders(&p));   // two game cards laid out

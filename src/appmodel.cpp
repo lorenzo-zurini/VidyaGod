@@ -158,7 +158,7 @@ std::pair<int, int> AppModel::importPackagesFromDir(const QString & Sel)
     {
         // Node-native identity: a library bundle must define a launchable node (runner-only bundles aren't games).
         NodeIndex BIdx; ManifestModel::ScanBundleNodes(Path.toStdString(), BIdx);
-        ManifestModel::DeriveIdentity(BIdx);   // the representative launchable carries (or inherits) its UID/TITLE
+        ManifestModel::DeriveFacts(BIdx);   // the representative launchable carries (or inherits) its UID/TITLE
         const Node * Rep = nullptr;
         for (const auto & [Id, N] : BIdx.Nodes)
             if (N.IsVariant() && (!Rep || (N.Presentable() && !Rep->Presentable()))) Rep = &N;
@@ -271,9 +271,9 @@ void AppModel::removePackage(const QString & uid)
 //    the worker never mutates the live GlobalConfigJSON the GUI may be reading/writing. The model outlives every view,
 //    so capturing `this` is safe. Called on node-ready (bootstrap of the default runners source) and "Sync now". ──
 
-// Give the node what to announce FIRST, tracked, ahead of the batched content queue: the published ROOT CIDs (the
-// share record — what a friend or a pin-by-CID service looks up) and then every node block of our own tree (the
-// current library; stale blocks of earlier publishes stay pinned and are announced after). Called on node-ready +
+// Give the node what to announce FIRST, tracked, ahead of the batched content queue: the published package folders
+// (the share record — what a friend fetches) and pin folders (what a pinning service looks up), then every node block
+// of our own tree. Everything else pinned is content, announced after in the batched queue. Called on node-ready +
 // after every publish; idempotent on the node side.
 void AppModel::pushSeedLevels()
 {
@@ -282,7 +282,9 @@ void AppModel::pushSeedLevels()
         for (const auto & [Lib, Rows] : (*Config)["Libraries"].items())
             if (Rows.is_array())
                 for (const auto & R : Rows)
-                    if (R.is_object() && R.value("cid", std::string()).size()) Roots.push_back(R["cid"].get<std::string>());
+                    if (R.is_object())
+                        for (const char * K : { "cid", "pin" })   // the share folder, then the pin folder
+                            if (R.contains(K) && R[K].is_string() && !R[K].get<std::string>().empty()) Roots.push_back(R[K].get<std::string>());
     for (const auto & [Cid, N] : CatalogIndex.Nodes)
         if (!N.Received && !N.Cid.empty()) Nodes.push_back(Cid);
     IpfsWrapper::SetSeedLevels(Roots, Nodes);
@@ -889,13 +891,13 @@ void AppModel::setNewPeerShareDefault(const QString & lib, bool on)
 
 void AppModel::enqueueReceivedShares(const QString & peer)
 {
-    // Receiver = ONE step, zero special machinery: each shared node CID becomes a plain FetchTarget whose dest is its
-    // FINAL library path — LIBRARY/<Nick> - <Lib>/[uid] Title/<node>.json — computed from the snapshot's routing
-    // metadata (PackageCatalog::PlanReceivedFetches). The ONE rolling queue writes + pins the block at that path like
-    // any file; from there the ordinary catalog scan / hydration / install / re-publish handle it (a received library
+    // Receiver = ONE step, zero special machinery: each shared PACKAGE FOLDER becomes a plain folder FetchTarget whose
+    // dest is its final dir — CATALOG/<Nick> - <Lib>/<pkg>/.package/ — computed from the snapshot's routing metadata
+    // (PackageCatalog::PlanReceivedFetches). The ONE rolling queue lands every node file verbatim and pins it like any
+    // file; from there the ordinary catalog scan / hydration / install / re-publish handle it (a received library
     // re-publishes to identical CIDs — the multi-seeder design). Re-runs on node-ready, presence-online and snapshot
-    // apply; a satisfied target (file present + block local) is skipped, so repeats converge to a no-op. A re-publish
-    // (same NODE_ID, NEW cid, same dest) re-enqueues naturally: the new block isn't local yet.
+    // apply; a satisfied target is skipped, so repeats converge to a no-op. A re-publish (a NEW folder, same dest)
+    // re-enqueues naturally: the new folder isn't local yet.
     if (!isReceivingFrom(peer)) return;
     const std::string P = peer.toStdString();
     if (!Config->contains("FriendLibraries") || !(*Config)["FriendLibraries"].is_object()
@@ -916,7 +918,7 @@ void AppModel::enqueueReceivedShares(const QString & peer)
         // its job already wrote is a no-op at enqueue), and the Go fetch hash-verifies a reused dest exactly —
         // overwriting a stale file, no-oping a current one.
         FriendBrowseCids.insert(T.Cid);
-        Batch.push_back(IpfsWrapper::FetchTarget{ T.Cid, T.Dest, /*Optional=*/true, /*Dir=*/false, /*Verify=*/true });
+        Batch.push_back(IpfsWrapper::FetchTarget{ T.Cid, T.Dest, /*Optional=*/true, /*Dir=*/true, /*Verify=*/true });
     }
     if (!Batch.empty()) IpfsWrapper::EnqueueBatch(Batch);
 }
@@ -1009,9 +1011,10 @@ void AppModel::publishLibraries()
     auto Cfg  = std::make_shared<nlohmann::ordered_json>(*Config);
     auto Cids = std::make_shared<std::vector<std::string>>();
     auto Err  = std::make_shared<std::string>();
+    auto Gaps = std::make_shared<std::string>();
     AsyncWork::Run(this,
-        [Cfg, Cids, Err]{ *Cids = PackageCatalog::PublishLibrary(*Cfg, Err.get()); },
-        [this, Cfg, Cids, Err]{
+        [Cfg, Cids, Err, Gaps]{ *Cids = PackageCatalog::PublishLibrary(*Cfg, Err.get(), Gaps.get()); },
+        [this, Cfg, Cids, Err, Gaps]{
             if (Cids->empty()) { emit libraryPublishFailed(QString::fromStdString(*Err)); return; }
             (*Config)["PublishedList"] = (*Cfg)["PublishedList"];   // adopt the freshly-written flat list…
             (*Config)["Libraries"]     = (*Cfg)["Libraries"];       // …AND the per-library grouping (drives Share ▾)
@@ -1020,8 +1023,8 @@ void AppModel::publishLibraries()
             pushSeedLevels();
             reRegisterShares();   // re-push every active share with the fresh CIDs (a re-publish can move them)
             emit libraryPublished(QString::fromStdString(IpfsWrapper::FriendCode()),
-                                  QString::number(static_cast<int>(Cids->size())) + " game(s)",
-                                  QString());
+                                  QString::number(static_cast<int>(Cids->size())) + " package(s)",
+                                  QString::fromStdString(*Gaps));
         });
 }
 

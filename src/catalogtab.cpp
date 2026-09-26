@@ -207,7 +207,7 @@ void CatalogTab::rebuild()
         const std::string & Lid = c->RepNodeId;
         if (Lid.empty()) return 0;
         int n = 0;
-        for (const std::string & Nid : ManifestModel::ResolveNodeOrder(Model.catalogIndex(), Lid, {})) {
+        for (const std::string & Nid : ManifestModel::Closure(Model.catalogIndex(), Lid)) {
             if (Model.catalogIndex().Find(Nid)) n++;
         }
         return n;

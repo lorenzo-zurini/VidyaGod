@@ -2,8 +2,8 @@
 """Builds the launch-matrix fixture: a synthetic library exercising every launch-engine feature.
 
 The point is COVERAGE, not realism. Every node type, every mode of every type, and the combinations that have
-actually broken before (a delta over several bases, a WHEN that reads inert and fires anyway, a runner chain
-two hops long) exist here so that touching the launch engine has something to fail against.
+actually broken before (a delta over the zip beneath it, a WHEN that reads inert and fires anyway, a runner chain
+two hops long, a graft on a graft) exist here so that touching the launch engine has something to fail against.
 
 Everything is generated, deterministically, from this file: content zips are STORE (the format's own
 requirement), file mtimes are pinned, and no bytes are committed to the repo. Run it, resolve the launchables,
@@ -56,11 +56,16 @@ od -An -tx1 -j 1024 -N40 game/patch.exe 2>/dev/null | tr -s ' ' | sed 's/^ */  /
 echo "  cave region: $(od -An -tx1 -j 1088 -N8 game/patch.exe 2>/dev/null | tr -s ' ')"
 echo "=== delta reconstruction"
 echo "  chain/added.txt:     $(cat deltatarget/chain/added.txt 2>/dev/null || echo MISSING)"
-echo "  combined/from_b.txt: $(cat combined/combined/from_b.txt 2>/dev/null || echo MISSING)"
 echo "  deltatarget/masked.txt (opaque delta must hide it): $(cat deltatarget/masked.txt 2>/dev/null || echo MASKED)"
 echo "=== submount"
 echo "  unpacked/relocated.txt: $(cat unpacked/relocated.txt 2>/dev/null || echo MISSING)"
 echo "  carrier/nested/ignored.txt (must be absent): $(cat carrier/nested/ignored.txt 2>/dev/null || echo ABSENT)"
+echo "=== take (a library, contained selectively and placed at libs/)"
+echo "  libs/kept.dll:    $(cat libs/kept.dll 2>/dev/null || echo MISSING)"
+echo "  libs/readme.txt:  $(cat libs/readme.txt 2>/dev/null || echo MISSING)"
+echo "  libs/renamed.txt: $(cat libs/renamed.txt 2>/dev/null || echo MISSING)"
+echo "  drop.dll / keep.dll / libfile.txt (must be absent): $(ls libs/bin libs/drop.dll libs/keep.dll libs/libfile.txt 2>/dev/null || echo ABSENT)"
+echo "  shared/diamond.txt: $(cat shared/diamond.txt 2>/dev/null || echo MISSING)"
 echo "=== writability (a KEEP dir must be writable, and survive)"
 mkdir -p game/saves 2>/dev/null && echo "written by the probe" > game/saves/save.txt 2>/dev/null \
   && echo "  game/saves: writable" || echo "  game/saves: NOT writable"
@@ -116,8 +121,6 @@ def make_content(B):
         "game/patch.exe":     minimal_pe(),
     })
     store_zip(f"{B}/patch.zip", {"game/shared.txt": "from-patch\n", "game/added.txt": "added\n"})
-    # A zip whose interesting content is NESTED, mounted through SUBMOUNTS.
-    store_zip(f"{B}/inner.zip", {"payload/inner.txt": "inner\n"})
     # A SUBMOUNT relocates ONE FILE out of the archive to a path of its own — it does not mount a nested
     # archive. Declaring submounts also REPLACES the layer's whole-archive mount: only the listed files appear.
     store_zip(f"{B}/carrier.zip", {"nested/relocated.txt": "relocated by a submount\n",
@@ -136,6 +139,15 @@ def make_content(B):
     write(f"{B}/graftoff/game/never.txt", "an unticked graft must not mount\n")
     write(f"{B}/graftwrong/game/wrong.txt", "a branch off an ancestor must not mount\n")
     write(f"{B}/graftlib/game/lib.txt", "substance pulled in beneath a graft\n")
+    # TAKE: a library whose zip holds more than the matrix takes — only kept.dll (renamed), doc/'s contents and the
+    # renamed loose file may appear, under libs/.
+    store_zip(f"{B}/lib.zip", {"bin/keep.dll": "taken and renamed\n", "bin/drop.dll": "never taken\n",
+                               "doc/readme.txt": "taken: doc/'s contents land in libs/\n"})
+    write(f"{B}/libfile.txt", "a loose FILE, taken and renamed\n")
+    # A diamond: two nodes contain the same one; it mounts once.
+    write(f"{B}/shareddir/diamond.txt", "one occurrence, however many containers\n")
+    # A graft whose NOT hits the row: pre-ticked, and still never mounted.
+    write(f"{B}/graftconflict/game/conflict.txt", "a graft whose NOT hits must not mount\n")
     # The final chain: a variant that inherits its entry, and a graft that carries one.
     write(f"{B}/inheritdir/game/inherited.txt", "a variant over lm_run, running lm_run's inherited entry\n")
     write(f"{B}/graftentry/game/from_graft_entry.txt", "a graft that is also a way to run\n")
@@ -150,10 +162,6 @@ def make_content(B):
         "chain/added.txt":  "added by the delta\n",
         "chain/deep/x.txt": "x\n",
     })
-    store_zip(f"{B}/combined_target.zip", {
-        "combined/from_a.txt": "a\n",
-        "combined/from_b.txt": "b\n",
-    })
     # The synthetic "game" and the synthetic runner binary. probe.sh is mounted at its own sub-target so the
     # opaque delta above cannot mask it.
     write(f"{B}/probe.sh", PROBE, 0o755)
@@ -166,295 +174,228 @@ def make_deltas(B, tool):
     if not tool or not os.path.isfile(tool):
         return False
     import subprocess
-    # over_base: base = the zip directly below at the delta's own target (base.zip).
+    # over_base: base = the nearest content beneath at the delta's own target (base.zip).
     subprocess.run([tool, f"{B}/over_base.vgdelta", f"{B}/delta_target.zip", f"{B}/base.zip"], check=True)
-    # over_concat: base = the CONCATENATION of the two declared BASE_TARGETS, in order — the reconstructed
-    # view at the chain target (delta_target.zip) followed by the zip at the inner target.
-    subprocess.run([tool, f"{B}/over_concat.vgdelta", f"{B}/combined_target.zip",
-                    f"{B}/delta_target.zip", f"{B}/inner.zip"], check=True)
     return True
 
 # ---------------------------------------------------------------------------------------------------------
-# the node matrix
+# the node matrix (generation 6: a node is {LABEL, VARIANT?, RECOMMENDED?, LAYERS}; its parents are NODE layers)
 # ---------------------------------------------------------------------------------------------------------
+
+UID = "90000000000001"
+G = "C:/%PackageUID%"                       # the game's folder, in guest coordinates (the runner maps them)
+ROOTS = {"C:": "%PrefixRoot%/drive_c"}      # both fixture runners lay a guest drive out the way a wine prefix does
+
+def F(path=""):
+    """A FILES address."""
+    return "FILES/" + path if path else "FILES"
 
 def nodes():
     N = []
-    def add(**kw):
-        # Model C: a node's wiring handle is its stored "CID". For this fixture we use the readable LABEL string as the
-        # handle (unique here) so PARENTS — which reference the returned handle — stay legible. GatherWorkingTree keys
-        # on "CID"; FreezeToIndex then derives the real CID and indexes by it. LABEL rides along as the cosmetic name.
-        kw.setdefault("CID", kw["LABEL"])
-        # ONE-EDGE schema: no TYPE. Each add() declares ONE item of one kind in the old flat vocabulary (kept here
-        # because it reads well); collapse it into the node's SECTION — LAYERS/VARS/PERSISTS/REGEDITS/FILEEDITS/
-        # PATCHES/DLLOVERRIDES/ENTRYPOINTS/TILE — and PARENTS into OVER. NodeLower expands each section entry into the
-        # same flat layer the resolvers consume, so the resolved plan (and thus the golden) is unchanged by the shape.
-        SECTION = {"Content":        ("LAYERS",   ("FORM", "PATH", "TARGET", "SOURCE", "WHEN", "SUBMOUNTS", "BASE_TARGETS", "COMMENT")),
-                   "CustomVar":      ("VARS",     ("KEY", "DEFAULT", "COMMENT", "UI", "WHEN")),
-                   "DeclarePersist": ("PERSISTS", ("SCOPE", "PATH", "TARGET", "CLOUD", "WHEN")),
-                   "DeclareExec":    ("ENTRYPOINTS", ("HOST", "GUEST", "PATH", "ARGS", "WORKDIR",
-                                                      "RUNNER", "CONTENT_ROOT", "PREFIX_GENERATE", "UNIFIED_RUNTIME"))}
-        # ENV / ENV_REMOVE are NODE sections (the environment folds along the chain) — they pass through in kw.
-        t = kw.pop("TYPE", "Group")
-        if t in SECTION:
-            key, fields = SECTION[t]
-            item = {f: kw.pop(f) for f in fields if f in kw}
-            if t == "DeclareExec":
-                item["LABEL"] = kw["LABEL"]                        # the entry's label = the node's name
-                if "GUEST" not in item: kw["VARIANT"] = kw["LABEL"]   # a game entry ⇒ on the shelf; RECOMMENDED stays a NODE facet
-            kw[key] = [item]
-        elif t == "RegEdit":      kw["REGEDITS"] = kw.pop("EDITS")
-        elif t == "FileEdit":     kw["FILEEDITS"] = [{k: kw.pop(k) for k in ("FILE", "EDITS", "OVERRIDE") if k in kw}]
-        elif t == "BinaryPatch":  kw["PATCHES"] = [{k: kw.pop(k) for k in ("FILE", "EDITS") if k in kw}]
-        elif t == "DllOverride":  kw["DLLOVERRIDES"] = kw.pop("OVERRIDES")
-        elif t == "DeclareLibraryItem": kw["TILE"] = {k: kw.pop(k) for k in ("UID", "TITLE", "COVER", "META") if k in kw}
-        elif t == "Group": pass
-        else: raise SystemExit(f"make_fixture: unknown kind {t}")
-        parents = kw.pop("PARENTS", [])
-        if parents: kw["OVER"] = parents
-        N.append(kw); return kw["CID"]
+    def add(label, layers, **fields):
+        # The readable LABEL doubles as the working-tree handle (the stored "CID"), so NODE layers stay legible;
+        # the freeze derives the real CID and remaps every reference to it.
+        N.append(dict({"CID": label, "LABEL": label}, **fields, LAYERS=layers))
+        return label
+    def node(ref, **kw):
+        return dict({"NODE": ref}, **kw)
 
-    # ---- identity -------------------------------------------------------------------------------------
-    add(LABEL="lm_tile", TYPE="DeclareLibraryItem", PARENTS=[], UID="90000000000001",
-        TITLE="Launch Matrix", META={"SERIES": "Fixtures", "YEAR": "2026"})
+    # ---- identity: the tile rides the "Play" entry — a partial entry every variant folds with its own -----
+    add("lm_tile", [{"EXEC": [{"LABEL": "Play", "TILE": {"UID": UID, "TITLE": "Launch Matrix",
+                                                           "META": {"SERIES": "Fixtures", "YEAR": "2026"}}}]}])
 
     # ---- runners: a native terminal, and a two-hop chain through a synthetic "prefix" runner ------------
     # Runs the content through an explicit interpreter rather than exec'ing it directly, so the fixture does
     # not depend on the FUSE mount preserving an executable bit.
-    add(LABEL="lm_runner_native", TYPE="DeclareExec", PARENTS=[], HOST="linux64",
-        GUEST=["linux64"], PATH="/bin/sh", ARGS=["%Content%"],
+    add("lm_runner_native", [
         # The runner sets both: one the launchable overrides, one it REMOVES. Removal has to beat the runner,
         # or a launchable can never get rid of something its runner insists on.
-        ENV={"LM_RUNNER_ONLY": "from-runner", "LM_SHOULD_BE_GONE": "runner-set-this",
-             "LM_EXEC_ENV": "runner-loses"},
-        # LOAD-BEARING — do not delete as dead weight. As an OUTER link of lm_run_chained's chain this runner
-        # asks for LM_GAME_KEEPS_THIS to be removed, and the game sets it, so the golden's
-        # "LM_GAME_KEEPS_THIS=survived-the-outer-remove" is a real assertion that an outer wrapper cannot
-        # strip a key the GAME declared. Verified: the run logs "Chain wrap: lm_runner_native (/bin/sh)" (it is
-        # wrapped precisely because its PATH is a real program rather than %Content%), and restoring the old
-        # exec-time environment order makes that line vanish from the golden.
-        ENV_REMOVE=["LM_GAME_KEEPS_THIS"])
-    add(LABEL="lm_runner_content", TYPE="Content", PARENTS=[], FORM="file", PATH="fakerunner.sh",
-        TARGET="runner/fakerunner.sh")
+        # LM_GAME_KEEPS_THIS: null is LOAD-BEARING — as an OUTER link of lm_run_chained's chain this runner asks
+        # for it to be removed, and the game sets it, so the golden's "LM_GAME_KEEPS_THIS=survived-the-outer-remove"
+        # is a real assertion that an outer wrapper cannot strip a key the GAME declared.
+        {"ENV": {"LM_RUNNER_ONLY": "from-runner", "LM_SHOULD_BE_GONE": "runner-set-this",
+                 "LM_EXEC_ENV": "runner-loses", "LM_GAME_KEEPS_THIS": None}},
+        {"EXEC": [{"LABEL": "lm_runner_native", "HOST": "linux64", "GUEST": ["linux64"], "EXE": "/bin/sh",
+                   "ARGS": ["%Content%"], "GUEST_ROOTS": ROOTS}]}])
+    add("lm_runner_content", [{"FILE": "fakerunner.sh", "TARGET": F("runner/fakerunner.sh")}])
     # HOST linux64 / GUEST fixture32 ⇒ running fixture32 content takes two hops: this, then the native one.
-    add(LABEL="lm_runner_prefix", TYPE="DeclareExec", PARENTS=["lm_runner_content"], HOST="linux64",
-        GUEST=["fixture32"], PATH="%RunnerMount%/runner/fakerunner.sh", ARGS=["--run"],
-        ENV={"LM_RUNNER_ENV": "set", "LM_FROM_VAR": "%lm_text%"}, ENV_REMOVE=["LM_UNWANTED"],
-        CONTENT_ROOT="%PrefixRoot%/drive_c/%PackageUID%", PREFIX_GENERATE=False)
+    add("lm_runner_prefix", [
+        node("lm_runner_content"),
+        {"ENV": {"LM_RUNNER_ENV": "set", "LM_FROM_VAR": "%lm_text%", "LM_UNWANTED": None}},
+        {"EXEC": [{"LABEL": "lm_runner_prefix", "HOST": "linux64", "GUEST": ["fixture32"],
+                   "EXE": "%RunnerMount%/runner/fakerunner.sh", "ARGS": ["--run"],
+                   "CONTENT_ROOT": "%PrefixRoot%/drive_c/%PackageUID%", "PREFIX_GENERATE": False,
+                   "GUEST_ROOTS": ROOTS}]}])
 
-    # ---- Content: every FORM, every TARGET shape, submounts, deltas -------------------------------------
-    base   = add(LABEL="lm_c_zip_base", TYPE="Content", PARENTS=[], FORM="zip", PATH="base.zip",
-                 TARGET="%PrefixRoot%/drive_c/%PackageUID%", COMMENT="the base layer")
-    patch  = add(LABEL="lm_c_zip_patch", TYPE="Content", PARENTS=[base], FORM="zip", PATH="patch.zip",
-                 TARGET="%PrefixRoot%/drive_c/%PackageUID%")
-    subm   = add(LABEL="lm_c_submount", TYPE="Content", PARENTS=[patch], FORM="zip", PATH="carrier.zip",
-                 TARGET="%PrefixRoot%/drive_c/%PackageUID%/carrier",
-                 # SUBMOUNTS is a list of "source/path:dest/path" strings, not objects.
-                 SUBMOUNTS=["nested/relocated.txt:%PrefixRoot%/drive_c/%PackageUID%/unpacked/relocated.txt"])
-    dirl   = add(LABEL="lm_c_dir", TYPE="Content", PARENTS=[subm], FORM="dir", PATH="loosedir",
-                 TARGET="%PrefixRoot%/drive_c/%PackageUID%/loose")
-    # A FORM "file" layer's TARGET is the CONTAINING DIRECTORY — the file appears as TARGET/<basename of
-    # PATH>. Naming the file itself in TARGET creates a directory of that name with the file inside it.
-    filel  = add(LABEL="lm_c_file", TYPE="Content", PARENTS=[dirl], FORM="file", PATH="single.txt",
-                 TARGET="%PrefixRoot%/drive_c/%PackageUID%/loosefile")
-    # A delta reconstructs a COMPLETE archive and MASKS everything below it at its target, so each one gets a
-    # target whose byte view is exactly one known zip. dbase mounts base.zip at the chain target; the delta
-    # above it rebuilds delta_target.zip from those bytes.
-    dbase  = add(LABEL="lm_c_delta_base", TYPE="Content", PARENTS=[filel], FORM="zip", PATH="base.zip",
-                 TARGET="%PrefixRoot%/drive_c/%PackageUID%/deltatarget")
-    masked = add(LABEL="lm_c_masked_dir", TYPE="Content", PARENTS=[dbase], FORM="dir", PATH="maskeddir",
-                 TARGET="%PrefixRoot%/drive_c/%PackageUID%/deltatarget")
-    d1     = add(LABEL="lm_c_delta_implicit", TYPE="Content", PARENTS=[masked], FORM="delta",
-                 PATH="over_base.vgdelta", TARGET="%PrefixRoot%/drive_c/%PackageUID%/deltatarget")
-    # A second byte view for the multi-base delta to concatenate with.
-    innerz = add(LABEL="lm_c_inner_zip", TYPE="Content", PARENTS=[d1], FORM="zip", PATH="inner.zip",
-                 TARGET="%PrefixRoot%/drive_c/%PackageUID%/innerzip")
-    # BASE_TARGETS order is load-bearing: it must match the order the delta was generated against.
-    d2     = add(LABEL="lm_c_delta_multibase", TYPE="Content", PARENTS=[innerz], FORM="delta",
-                 PATH="over_concat.vgdelta", TARGET="%PrefixRoot%/drive_c/%PackageUID%/combined",
-                 BASE_TARGETS=["%PrefixRoot%/drive_c/%PackageUID%/deltatarget",
-                               "%PrefixRoot%/drive_c/%PackageUID%/innerzip"])
+    # ---- content: every payload type, every TARGET shape, submounts, deltas -----------------------------
+    base   = add("lm_c_zip_base", [{"ZIP": "base.zip", "TARGET": F(G), "COMMENT": "the base layer"}])
+    patch  = add("lm_c_zip_patch", [node(base), {"ZIP": "patch.zip", "TARGET": F(G)}])
+    # SUBMOUNTS: "source/path:dest" strings; declaring them REPLACES the layer's whole-archive mount.
+    subm   = add("lm_c_submount", [node(patch), {"ZIP": "carrier.zip", "TARGET": F(G + "/carrier"),
+                                                 "SUBMOUNTS": [f"nested/relocated.txt:{G}/unpacked/relocated.txt"]}])
+    dirl   = add("lm_c_dir", [node(subm), {"DIR": "loosedir", "TARGET": F(G + "/loose")}])
+    # A FILE layer's TARGET is the CONTAINING DIRECTORY — the file appears as TARGET/<its name>.
+    filel  = add("lm_c_file", [node(dirl), {"FILE": "single.txt", "TARGET": F(G + "/loosefile")}])
+    # A DELTA reconstructs a COMPLETE archive from the nearest content beneath it at its target (the zip it was
+    # built on) and MASKS everything below: the dir under that zip must disappear (opacity), and a dir is not a
+    # byte view, so it sits BENEATH the base (a dir between would be "the nearest content", a refused base).
+    masked = add("lm_c_masked_dir", [node(filel), {"DIR": "maskeddir", "TARGET": F(G + "/deltatarget")}])
+    dbase  = add("lm_c_delta_base", [node(masked), {"ZIP": "base.zip", "TARGET": F(G + "/deltatarget")}])
+    d1     = add("lm_c_delta", [node(dbase), {"DELTA": "over_base.vgdelta", "TARGET": F(G + "/deltatarget")}])
     # The probe sits at its own sub-target so the opaque delta cannot mask it.
-    probe  = add(LABEL="lm_c_probe", TYPE="Content", PARENTS=[d2], FORM="file", PATH="probe.sh",
-                 TARGET="%PrefixRoot%/drive_c/%PackageUID%/bin")
-    # Content that is only present as a CID — un-hydrated, so the plan must report it rather than mount silence.
-    # Un-hydrated content: present only as a CID, never fetched. The engine REFUSES to launch a closure with
-    # missing sources, which is correct and is why this hangs off a SIDE BRANCH — only the plan-level
-    # launchables pull it in. Putting it in the runnable closure would test nothing but the refusal.
-    # A REAL, well-formed CIDv1 (dag-raw sha2-256) whose blocks are simply never in the local store — the accurate
-    # shape of un-hydrated remote content in the gigagraph, where a SOURCE.CID is a live IPLD link the freeze must be
-    # able to decode. (A bogus non-CID string used to sit here; it parsed fine when a CID was an opaque field, but the
-    # content-addressed freeze now decodes every link, so it made this node — and its whole downstream — unindexable.)
-    remote = add(LABEL="lm_c_remote", TYPE="Content", PARENTS=[probe], FORM="zip",
-                 TARGET="%PrefixRoot%/drive_c/%PackageUID%/remote",
-                 SOURCE={"PATH": "never_fetched.zip",
-                         "CID": "bafkreib52upmn2n6u65qll6mmj2dft4ddgnvrkcvyhiczcbjlrv2lu766e"})
-    add(LABEL="lm_unhydrated", TYPE="Group", PARENTS=[remote])
+    probe  = add("lm_c_probe", [node(d1), {"FILE": "probe.sh", "TARGET": F(G + "/bin")}])
+    # Un-hydrated content: present only as a CID (a real, well-formed one whose block is simply never in the local
+    # store). The engine REFUSES to launch with missing sources, so this hangs off a SIDE BRANCH — only the
+    # plan-level launchables contain it.
+    remote = add("lm_c_remote", [node(probe), {"ZIP": "never_fetched.zip", "TARGET": F(G + "/remote"),
+                                               "SOURCE": "bafkreib52upmn2n6u65qll6mmj2dft4ddgnvrkcvyhiczcbjlrv2lu766e"}])
+    add("lm_unhydrated", [node(remote)])
 
-    # ---- CustomVar: defaults, UI kinds, cross-reference, WHEN, format spec ------------------------------
-    v1 = add(LABEL="lm_v_text", TYPE="CustomVar", PARENTS=[probe], KEY="lm_text", DEFAULT="hello",
-             UI={"LABEL": "Text", "CONTROL": "text", "GROUP": "Matrix"})
-    v2 = add(LABEL="lm_v_enum", TYPE="CustomVar", PARENTS=[v1], KEY="lm_mode", DEFAULT="beta",
-             UI={"LABEL": "Mode", "CONTROL": "enum", "GROUP": "Matrix",
-                 "CHOICES": [{"LABEL": "Alpha", "VALUE": "alpha"}, {"LABEL": "Beta", "VALUE": "beta"}]})
-    v3 = add(LABEL="lm_v_bool", TYPE="CustomVar", PARENTS=[v2], KEY="lm_flag", DEFAULT="1",
-             UI={"LABEL": "Flag", "CONTROL": "bool", "GROUP": "Matrix"})
-    # A var whose DEFAULT references another var — resolution is a fixpoint, so forward order must not matter.
-    v4 = add(LABEL="lm_v_derived", TYPE="CustomVar", PARENTS=[v3], KEY="lm_derived",
-             DEFAULT="%lm_text%-%lm_mode%")
-    # A var that only exists when another var says so.
-    v5 = add(LABEL="lm_v_conditional", TYPE="CustomVar", PARENTS=[v4], KEY="lm_conditional",
-             DEFAULT="on-because-beta", WHEN="%lm_mode% == beta")
-    vars_tip = v5
+    # ---- VARS: defaults, UI kinds, cross-reference, a gated value -----------------------------------------
+    v1 = add("lm_v_text", [node(probe), {"VARS": {"lm_text": {"DEFAULT": "hello",
+                                                              "UI": {"LABEL": "Text", "CONTROL": "text", "GROUP": "Matrix"}}}}])
+    v2 = add("lm_v_enum", [node(v1), {"VARS": {"lm_mode": {"DEFAULT": "beta", "UI": {
+        "LABEL": "Mode", "CONTROL": "enum", "GROUP": "Matrix",
+        "CHOICES": [{"LABEL": "Alpha", "VALUE": "alpha"}, {"LABEL": "Beta", "VALUE": "beta"}]}}}}])
+    v3 = add("lm_v_bool", [node(v2), {"VARS": {"lm_flag": {"DEFAULT": "1",
+                                                           "UI": {"LABEL": "Flag", "CONTROL": "bool", "GROUP": "Matrix"}}}}])
+    # A DEFAULT that references other variables — resolution is a fixpoint, so forward order must not matter.
+    v4 = add("lm_v_derived", [node(v3), {"VARS": {"lm_derived": {"DEFAULT": "%lm_text%-%lm_mode%"}}}])
+    # A declaration's WHEN gates its VALUE (to ""), inside the fixpoint.
+    v5 = add("lm_v_conditional", [node(v4), {"VARS": {"lm_conditional": {"DEFAULT": "on-because-beta",
+                                                                         "WHEN": "%lm_mode% == beta"}}}])
 
-    # NOTE, and the reason these say drive_c/... rather than %PrefixRoot%/drive_c/...: a FileEdit/BinaryPatch
-    # FILE must be RELATIVE to its pass base. "%PrefixRoot%/x" is relative only while PrefixRoot is non-empty
-    # (a wine prefix: "pfx"); on a native runner PrefixRoot is "" and the same string becomes the ABSOLUTE
-    # "/drive_c/x", which silently escapes the pass. Layer TARGETs are normalised and survive it; edit FILEs
-    # are not. The fixture found this by running.
-    # ---- FileEdit: all three modes, both passes --------------------------------------------------------
-    fe1 = add(LABEL="lm_fe_config", TYPE="FileEdit", PARENTS=[vars_tip], OVERRIDE=True,
-              FILE="%PrefixRoot%/drive_c/%PackageUID%/game/config.ini",
-              EDITS=[{"MODE": "ConfigWrite", "KEY": "Setting=", "VALUE": "1"},
-                     {"MODE": "ConfigWrite", "KEY": "FromVar=", "VALUE": "%lm_derived%"}])
-    fe2 = add(LABEL="lm_fe_overwrite", TYPE="FileEdit", PARENTS=[fe1], OVERRIDE=True,
-              FILE="%PrefixRoot%/drive_c/%PackageUID%/game/written.txt",
-              EDITS=[{"MODE": "Overwrite", "VALUE": "overwritten by the matrix\n"}])
-    fe3 = add(LABEL="lm_fe_append", TYPE="FileEdit", PARENTS=[fe2], OVERRIDE=True,
-              FILE="%PrefixRoot%/drive_c/%PackageUID%/game/config.ini",
-              EDITS=[{"MODE": "AppendLine", "VALUE": "; appended once", "COMMENT": "idempotent by contract"}])
-    # A BASE-pass edit (OVERRIDE absent) — it runs against DEFAULTDATA, before anything is mounted.
-    fe4 = add(LABEL="lm_fe_basepass", TYPE="FileEdit", PARENTS=[fe3],
-              FILE="basepass.txt", EDITS=[{"MODE": "Overwrite", "VALUE": "base pass ran\n"}])
-    # A conditional edit: inert unless the flag is on. The class of bug this guards is a WHEN that reads
-    # inert in the file and fires at launch anyway.
-    fe5 = add(LABEL="lm_fe_when", TYPE="FileEdit", PARENTS=[fe4], OVERRIDE=True, WHEN="%lm_flag% == 1",
-              FILE="%PrefixRoot%/drive_c/%PackageUID%/game/conditional.txt",
-              EDITS=[{"MODE": "Overwrite", "VALUE": "flag was on\n"}])
+    # ---- EDIT: text modes and binary modes, applied at their position in the fold -------------------------
+    fe1 = add("lm_fe_config", [node(v5), {"EDIT": [{"MODE": "ConfigWrite", "KEY": "Setting=", "VALUE": "1"},
+                                                   {"MODE": "ConfigWrite", "KEY": "FromVar=", "VALUE": "%lm_derived%"}],
+                                          "TARGET": F(G + "/game/config.ini")}])
+    fe2 = add("lm_fe_overwrite", [node(fe1), {"EDIT": [{"MODE": "Overwrite", "VALUE": "overwritten by the matrix\n"}],
+                                              "TARGET": F(G + "/game/written.txt")}])
+    fe3 = add("lm_fe_append", [node(fe2), {"EDIT": [{"MODE": "AppendLine", "VALUE": "; appended once",
+                                                     "COMMENT": "idempotent by contract"}],
+                                           "TARGET": F(G + "/game/config.ini")}])
+    # A relative TARGET: relative to where the node landed (here the mount root).
+    fe4 = add("lm_fe_relative", [node(fe3), {"EDIT": [{"MODE": "Overwrite", "VALUE": "relative target\n"}],
+                                             "TARGET": F("relative.txt")}])
+    # A gated layer: inert unless the flag is on. A layer WHEN reads only phase-1 variables (ungated VARS reached
+    # through ungated NODE layers) — lm_flag is one. The bug class: a WHEN that reads inert and fires anyway.
+    fe5 = add("lm_fe_when", [node(fe4), {"EDIT": [{"MODE": "Overwrite", "VALUE": "flag was on\n"}],
+                                         "TARGET": F(G + "/game/conditional.txt"), "WHEN": "%lm_flag% == 1"}])
+    # Binary modes name their bytes differently: Replace->REPLACE, Poke->VALUE, Cave->PAYLOAD.
+    bp = add("lm_bp", [node(fe5), {"EDIT": [
+        {"MODE": "Replace", "OFFSET": "0x401000", "EXPECT": "000102", "REPLACE": "aabbcc",
+         "COMMENT": "VA replace behind an EXPECT guard"},
+        {"MODE": "Poke", "OFFSET": "0x401010", "VALUE": "ff"},
+        # EXPECT must be >= 5 bytes: the patcher replaces it with a jmp rel32 to the cave.
+        {"MODE": "Cave", "OFFSET": "0x401020", "EXPECT": "2021222324", "PAYLOAD": "9090",
+         "CAVE": "auto", "COMMENT": "cave into section slack the patcher picks itself"}],
+        "TARGET": F(G + "/game/patch.exe")}])
 
-    # ---- BinaryPatch: every MODE ----------------------------------------------------------------------
-    bp = add(LABEL="lm_bp", TYPE="BinaryPatch", PARENTS=[fe5],
-             FILE="%PrefixRoot%/drive_c/%PackageUID%/game/patch.exe",
-             # Each MODE names its bytes differently: Replace->REPLACE, Poke->VALUE, Cave->PAYLOAD.
-             EDITS=[{"MODE": "Replace", "OFFSET": "0x401000", "EXPECT": "000102", "REPLACE": "aabbcc",
-                     "COMMENT": "VA replace behind an EXPECT guard"},
-                    {"MODE": "Poke", "OFFSET": "0x401010", "VALUE": "ff"},
-                    {"MODE": "Cave", "OFFSET": "0x401020", "EXPECT": "2021222324", "PAYLOAD": "9090",
-                     # EXPECT must be >= 5 bytes: the patcher replaces it with a jmp rel32 to the cave, and
-                     # the displaced original runs there before jumping back.
-                     "CAVE": "auto", "COMMENT": "cave into section slack the patcher picks itself"}])
+    # ---- REG: both views, a default value, a key-only entry, a gated layer ---------------------------------
+    reg = add("lm_reg", [node(bp),
+        {"REG": {"HKLM": {"Software": {"LaunchMatrix": {"Value": "plain", "Number": "dword:0000002a",
+                                                        "FromVar": "%lm_mode%"}}}},
+         "ARCH": ["32", "64"], "COMMENT": "written into both views"},
+        {"REG": {"HKCU": {"Software": {"LaunchMatrix": {"": "this is the key's DEFAULT value", "EmptyKey": {}}}}},
+         "ARCH": ["64"]},
+        {"REG": {"HKLM": {"Software": {"LaunchMatrixConditional": {"Only": "when the flag is on"}}}},
+         "WHEN": "%lm_flag% == 1"}])
 
-    # ---- RegEdit: both views, default value, key-only, conditional entry -------------------------------
-    reg = add(LABEL="lm_reg", TYPE="RegEdit", PARENTS=[bp], EDITS=[
-        {"ARCHITECTURE": ["32", "64"], "COMMENT": "written into both views",
-         "HKLM": {"Software": {"LaunchMatrix": {"Value": "plain", "Number": "dword:0000002a",
-                                                "FromVar": "%lm_mode%"}}}},
-        {"ARCHITECTURE": ["64"],
-         "HKCU": {"Software": {"LaunchMatrix": {"": "this is the key's DEFAULT value",
-                                                "EmptyKey": {}}}}},
-        {"WHEN": "%lm_flag% == 1",
-         "HKLM": {"Software": {"LaunchMatrixConditional": {"Only": "when the flag is on"}}}},
-    ])
+    # ---- DLL ---------------------------------------------------------------------------------------------
+    dll = add("lm_dll", [node(reg), {"DLL": {"ddraw": "n,b", "dinput8": "n,b", "winmm": "b,n", "broken": ""}}])
 
-    # ---- DllOverride ----------------------------------------------------------------------------------
-    dll = add(LABEL="lm_dll", TYPE="DllOverride", PARENTS=[reg],
-              OVERRIDES={"ddraw": "n,b", "dinput8": "n,b", "winmm": "b,n", "broken": ""})
+    # ---- KEEP: a dir, a single file, a machine-local dir (CLOUD false), registry keys -------------------
+    per = add("lm_keep", [node(dll), {"KEEP": {
+        F(G + "/game/saves/"): {"NAME": "Saves"},
+        F(G + "/game/config.ini"): {"NAME": "Config"},
+        F(G + "/game/shadercache/"): {"NAME": "ShaderCache", "CLOUD": False},
+        "REG/HKCU": True,
+        "REG/HKLM/Software/LaunchMatrix": True}}])
 
-    # ---- DeclarePersist: one node = one persist, exercising every classification the parser produces -----
-    #   file dir  → KeepDirs ;  file single-file → KeepFiles ;  registry key → KeepRegKeys (x2).
-    #   TARGET names the durable subdir under the instance; CLOUD=false marks machine-specific data (shader cache).
-    per_dir = add(LABEL="lm_persist_saves", TYPE="DeclarePersist", PARENTS=[dll],
-                  SCOPE="file", PATH="%PrefixRoot%/drive_c/%PackageUID%/game/saves/", TARGET="Saves")
-    per_file = add(LABEL="lm_persist_config", TYPE="DeclarePersist", PARENTS=[per_dir],
-                   SCOPE="file", PATH="%PrefixRoot%/drive_c/%PackageUID%/game/config.ini", TARGET="Config")
-    per_cache = add(LABEL="lm_persist_cache", TYPE="DeclarePersist", PARENTS=[per_file],
-                    SCOPE="file", PATH="%PrefixRoot%/drive_c/%PackageUID%/game/shadercache/",
-                    TARGET="ShaderCache", CLOUD=False)
-    per_reg1 = add(LABEL="lm_persist_hkcu", TYPE="DeclarePersist", PARENTS=[per_cache],
-                   SCOPE="registry", PATH="HKCU")
-    per = add(LABEL="lm_persist_hklm", TYPE="DeclarePersist", PARENTS=[per_reg1],
-              SCOPE="registry", PATH="HKLM\\Software\\LaunchMatrix")
+    # ---- TAKE: a library contained selectively and placed. Left-strip: a file lands under its own name, a
+    # directory's CONTENTS ("FILES/doc/") land at the target; a pair renames. Facts are taken too: lm_lib_var
+    # arrives, lm_lib_hidden does not; the DLL is not taken at all.
+    add("lm_lib", [{"ZIP": "lib.zip"}, {"FILE": "libfile.txt"},
+                   {"VARS": {"lm_lib_var": {"DEFAULT": "from-the-library"}, "lm_lib_hidden": {"DEFAULT": "not-taken"}}},
+                   {"DLL": {"libonly": "n"}}])
+    lib = add("lm_uses_lib", [node(per), node("lm_lib", TAKE=[["FILES/bin/keep.dll", "FILES/kept.dll"], "FILES/doc/",
+                                                               ["FILES/libfile.txt", "FILES/renamed.txt"], "VARS/lm_lib_var"],
+                                               TARGET=F(G + "/libs"))])
+    # ---- a diamond: two containers, one occurrence (at its first position)
+    add("lm_shared", [{"DIR": "shareddir", "TARGET": F(G + "/shared")}])
+    add("lm_diamond_a", [node("lm_shared")])
+    add("lm_diamond_b", [node("lm_shared")])
+    dia = add("lm_diamond", [node(lib), node("lm_diamond_a"), node("lm_diamond_b")])
 
-    # ---- Group: payload-less composition --------------------------------------------------------------
-    # ENV on a node BENEATH the launchable: the environment folds along the mount, so these reach the process
-    # unless a node above overrides (LM_OVERRIDDEN) or removes (LM_REMOVED_ABOVE) them.
-    grp = add(LABEL="lm_group", TYPE="Group", PARENTS=[per],
-              ENV={"LM_FOLDED": "from-below", "LM_OVERRIDDEN": "below", "LM_REMOVED_ABOVE": "set-below"})
+    # ---- ENV beneath the launchable: it folds along the resolution, so it reaches the process unless a later
+    # layer overrides (LM_OVERRIDDEN) or removes (LM_REMOVED_ABOVE) it.
+    grp = add("lm_group", [node(dia), {"ENV": {"LM_FOLDED": "from-below", "LM_OVERRIDDEN": "below",
+                                               "LM_REMOVED_ABOVE": "set-below"}}])
 
-    # ---- launchables ----------------------------------------------------------------------------------
-    # (1) the whole matrix, on the native runner.
-    add(LABEL="lm_all", TYPE="DeclareExec", PARENTS=[grp, "lm_unhydrated", "lm_tile"], HOST="linux64",
-        PATH="%PrefixRoot%/drive_c/%PackageUID%/probe.sh", ARGS=["--matrix", "%lm_derived%"],
-        RECOMMENDED=True,
-        # ENV on a LAUNCHABLE reaches the process (it used to be dropped by the lowering, and had no consumer
-        # either). lm_run proves the whole path at runtime; this one pins it in the plan.
-        ENV={"LM_EXEC_ENV": "does-this-arrive"})
-    # (2) THE RUNTIME CASE: mounts for real and runs the probe, whose stdout is its own golden. Same closure
-    # as lm_all except it points at a program instead of a data file.
-    add(LABEL="lm_run", TYPE="DeclareExec", PARENTS=[grp, "lm_tile"], HOST="linux64",
-        PATH="%PrefixRoot%/drive_c/%PackageUID%/bin/probe.sh", ARGS=["--matrix", "%lm_derived%"],
-        # WORKDIR: without it the working directory is the exe's own folder (bin/), and everything the probe
-        # inspects is one level up. Setting it here exercises the field AND anchors the report.
-        WORKDIR="%PrefixRoot%/drive_c/%PackageUID%",
-        # A launchable's own ENV, including a %var% reference — the probe prints every LM_* it was given, so
-        # this is the end-to-end proof that a game's environment reaches its process.
-        ENV={"LM_EXEC_ENV": "arrived", "LM_FROM_VAR": "%lm_derived%", "LM_OVERRIDDEN": "above"},
-        ENV_REMOVE=["LM_SHOULD_BE_GONE", "LM_REMOVED_ABOVE"])
-    # (3) THE RUNTIME TWO-HOP CASE. Same runnable closure as lm_run, reached through the chain, and its ENV
-    # collides with the OUTER link's on purpose: the game's value must survive, which is a property of the
-    # order the environment is assembled in at exec time and is invisible in a plan.
-    add(LABEL="lm_run_chained", TYPE="DeclareExec", PARENTS=[grp, "lm_tile"], HOST="fixture32",
-        PATH="%PrefixRoot%/drive_c/%PackageUID%/bin/probe.sh", ARGS=["--chained"],
-        WORKDIR="%PrefixRoot%/drive_c/%PackageUID%",
-        ENV={"LM_EXEC_ENV": "game-beats-the-outer-link",
-             #The outer link asks for this key to be REMOVED. The game sets it, so it must survive.
-             "LM_GAME_KEEPS_THIS": "survived-the-outer-remove"})
-    # (4) the same content routed through the two-hop chain, plus the un-hydrated branch (plan only).
-    add(LABEL="lm_chained", TYPE="DeclareExec", PARENTS=[grp, "lm_unhydrated", "lm_tile"], HOST="fixture32",
-        PATH="%PrefixRoot%/drive_c/%PackageUID%/probe.sh", ARGS=[],
-        # The game's own ENV against a CHAIN: the outer native link sets LM_EXEC_ENV too, and the game must
-        # still win. Before the ordering fix the outer wrapper was applied last and silently overrode it.
-        ENV={"LM_EXEC_ENV": "game-wins-over-the-chain"})
+    def play(host, exe, args, **kw):
+        return {"EXEC": [dict({"LABEL": "Play", "HOST": host, "EXE": exe, "ARGS": args}, **kw)]}
+
+    # ---- variants --------------------------------------------------------------------------------------
+    # (1) the whole matrix, on the native runner (plan only: it contains the un-hydrated branch).
+    add("lm_all", [node(grp), node("lm_unhydrated"), node("lm_tile"),
+                   {"ENV": {"LM_EXEC_ENV": "does-this-arrive"}},
+                   play("linux64", G + "/probe.sh", ["--matrix", "%lm_derived%"])],
+        VARIANT="lm_all", RECOMMENDED=[UID])
+    # (2) THE RUNTIME CASE: mounts for real and runs the probe, whose stdout is its own golden. WORKDIR anchors
+    # the probe's report; its own ENV (with a %var%) is the end-to-end proof a game's environment reaches it.
+    add("lm_run", [node(grp), node("lm_tile"),
+                   {"ENV": {"LM_EXEC_ENV": "arrived", "LM_FROM_VAR": "%lm_derived%", "LM_OVERRIDDEN": "above",
+                            "LM_SHOULD_BE_GONE": None, "LM_REMOVED_ABOVE": None}},
+                   play("linux64", G + "/bin/probe.sh", ["--matrix", "%lm_derived%"], WORKDIR=G)],
+        VARIANT="lm_run")
+    # (3) THE RUNTIME TWO-HOP CASE: the same resolution through the chain; its ENV collides with the OUTER link's
+    # on purpose — the game's value must survive (an exec-time property no plan can show).
+    add("lm_run_chained", [node(grp), node("lm_tile"),
+                           {"ENV": {"LM_EXEC_ENV": "game-beats-the-outer-link",
+                                    "LM_GAME_KEEPS_THIS": "survived-the-outer-remove"}},
+                           play("fixture32", G + "/bin/probe.sh", ["--chained"], WORKDIR=G)],
+        VARIANT="lm_run_chained")
+    # (4) the matrix through the two-hop chain, plus the un-hydrated branch (plan only).
+    add("lm_chained", [node(grp), node("lm_unhydrated"), node("lm_tile"),
+                       {"ENV": {"LM_EXEC_ENV": "game-wins-over-the-chain"}},
+                       play("fixture32", G + "/probe.sh", [])],
+        VARIANT="lm_chained")
     # (5) the minimum that can launch at all — the control case a regression shows up against first.
-    # ---- grafts: selection ≠ closure ---------------------------------------------------------------------
-    # A graft is a node in nobody's list that is OVER something of this title. It mounts ABOVE lm_run only when
-    # SELECTED — here by the author's default (TOGGLE on). The probe's "mounted tree" is the proof: grafted.txt
-    # and grafted_hd.txt (a graft on a graft, applicable through the fixpoint) and lib.txt (substance pulled in
-    # beneath) appear; never.txt (no TOGGLE ⇒ not selected) and wrong.txt (OVER lm_v_text, an ANCESTOR of lm_run
-    # that is never SELECTED — a sibling branch, not a mod for lm_run) do not. None of these touch lm_all /
-    # lm_chained / lm_minimal / lm_run_chained: lm_run is not selected there, so nothing is applicable.
-    add(LABEL="lm_graft_on", TYPE="Content", PARENTS=["lm_run"], FORM="dir", PATH="graftdir",
-        TARGET="%PrefixRoot%/drive_c/%PackageUID%", TOGGLE="on",
-        ENV={"LM_GRAFT_ENV": "grafted"})            # a ticked graft's ENV folds ABOVE the variant's
-    add(LABEL="lm_graft_hd", TYPE="Content", PARENTS=["lm_graft_on"], FORM="dir", PATH="grafthd",
-        TARGET="%PrefixRoot%/drive_c/%PackageUID%", TOGGLE="on")
-    add(LABEL="lm_graft_off", TYPE="Content", PARENTS=["lm_run"], FORM="dir", PATH="graftoff",
-        TARGET="%PrefixRoot%/drive_c/%PackageUID%")
-    add(LABEL="lm_graft_wrong_branch", TYPE="Content", PARENTS=["lm_v_text"], FORM="dir", PATH="graftwrong",
-        TARGET="%PrefixRoot%/drive_c/%PackageUID%", TOGGLE="on")
-    add(LABEL="lm_graft_lib", TYPE="Content", PARENTS=[], FORM="dir", PATH="graftlib",
-        TARGET="%PrefixRoot%/drive_c/%PackageUID%")
-    add(LABEL="lm_graft_uses_lib", TYPE="Group", PARENTS=["lm_run", "lm_graft_lib"], TOGGLE="on")
-    # ---- the final chain: facts fold, choices don't ---------------------------------------------------------
-    # lm_inherits is a VARIANT over lm_run that declares no entry: it runs lm_run's entry (inherited — the
-    # nearest beneath), mounts lm_run's whole closure plus its own dir, and NONE of lm_run's grafts: picking
-    # lm_inherits selects exactly lm_inherits, and a graft OVER lm_run needs lm_run — a variant — selected.
-    add(LABEL="lm_inherits", TYPE="Content", PARENTS=["lm_run"], FORM="dir", PATH="inheritdir",
-        TARGET="%PrefixRoot%/drive_c/%PackageUID%", VARIANT="lm_inherits")
-    # lm_graft_entry is a graft that CARRIES an entry (a mod loader): ticked on lm_run it mounts above lm_run
-    # like any graft, and it is also a way to RUN that mount — `--entry-node lm_graft_entry` runs its entry
-    # over lm_run's closure + grafts. It is not a variant, so it is never on the shelf by itself.
-    add(LABEL="lm_graft_entry", TYPE="Content", PARENTS=["lm_run"], FORM="dir", PATH="graftentry",
-        TARGET="%PrefixRoot%/drive_c/%PackageUID%", TOGGLE="on",
-        ENTRYPOINTS=[{"LABEL": "lm_graft_entry", "HOST": "linux64",
-                      "PATH": "%PrefixRoot%/drive_c/%PackageUID%/bin/probe.sh", "ARGS": ["--via-graft-entry"],
-                      "WORKDIR": "%PrefixRoot%/drive_c/%PackageUID%"}],
-        ENV={"LM_EXEC_ENV": "from-the-graft-entry"})   # the graft's own ENV: a node section, folded above lm_run's
+    add("lm_minimal_content", [{"ZIP": "base.zip", "TARGET": F(G)}])
+    add("lm_minimal", [node("lm_minimal_content"), node("lm_tile"), play("linux64", G + "/game/data.txt", [])],
+        VARIANT="lm_minimal")
+    # (6) a BLOCKED variant: a NOT names something it contains — the launch is refused, naming the reason.
+    add("lm_blocked", [node("lm_minimal_content"), {"NOT": "lm_minimal_content"}, node("lm_tile"),
+                       play("linux64", G + "/game/data.txt", [])],
+        VARIANT="lm_blocked")
+    # (7) a variant over lm_run that declares no entry: it runs lm_run's (folded), mounts lm_run's whole
+    # resolution plus its own dir — and, lm_run being in its resolution, is offered lm_run's grafts too.
+    add("lm_inherits", [node("lm_run"), {"DIR": "inheritdir", "TARGET": F(G)}], VARIANT="lm_inherits")
 
-    add(LABEL="lm_minimal_content", TYPE="Content", PARENTS=[], FORM="zip", PATH="base.zip",
-        TARGET="%PrefixRoot%/drive_c/%PackageUID%")
-    add(LABEL="lm_minimal", TYPE="DeclareExec", PARENTS=["lm_minimal_content", "lm_tile"], HOST="linux64",
-        PATH="%PrefixRoot%/drive_c/%PackageUID%/game/data.txt", ARGS=[])
+    # ---- grafts: a node whose list begins with ANY (what it applies onto) ----------------------------------
+    # Offered to a row whose resolution contains a member of its ANY, applied above the variant in the
+    # instance's order; a fresh instance ticks the ones RECOMMENDED under the row's tile. The probe's "mounted
+    # tree" is the proof: grafted.txt, grafted_hd.txt (a graft on a graft: offered once lm_graft_on is applied)
+    # and lib.txt (a library the graft contains) appear; never.txt (offered, not recommended) does not, and
+    # elsewhere.txt (its ANY names lm_minimal) is offered to lm_minimal only.
+    add("lm_graft_on", [{"ANY": ["lm_run"]}, {"DIR": "graftdir", "TARGET": F(G)},
+                        {"ENV": {"LM_GRAFT_ENV": "grafted"}}],          # a ticked graft's ENV folds above the variant's
+        RECOMMENDED=[UID])
+    add("lm_graft_hd", [{"ANY": ["lm_graft_on"]}, {"DIR": "grafthd", "TARGET": F(G)}], RECOMMENDED=[UID])
+    add("lm_graft_off", [{"ANY": ["lm_run"]}, {"DIR": "graftoff", "TARGET": F(G)}])
+    # Offered (its ANY holds) and pre-ticked — but its NOT names something lm_run contains, so it does not apply.
+    add("lm_graft_conflict", [{"ANY": ["lm_run"]}, {"NOT": "lm_c_probe"}, {"DIR": "graftconflict", "TARGET": F(G)}],
+        RECOMMENDED=[UID])
+    add("lm_graft_elsewhere", [{"ANY": ["lm_minimal"]}, {"DIR": "graftwrong", "TARGET": F(G)}], RECOMMENDED=[UID])
+    add("lm_graft_lib", [{"DIR": "graftlib", "TARGET": F(G)}])
+    add("lm_graft_uses_lib", [{"ANY": ["lm_run"]}, node("lm_graft_lib")], RECOMMENDED=[UID])
+    # A graft that CARRIES an entry (a mod loader): ticked, it mounts above the variant like any graft, and its
+    # entry is a way to RUN that mount (--entrypoint lm_graft_entry). Its ENV folds above lm_run's.
+    add("lm_graft_entry", [{"ANY": ["lm_run"]}, {"DIR": "graftentry", "TARGET": F(G)},
+                           {"ENV": {"LM_EXEC_ENV": "from-the-graft-entry"}},
+                           {"EXEC": [{"LABEL": "lm_graft_entry", "HOST": "linux64", "EXE": G + "/bin/probe.sh",
+                                      "ARGS": ["--via-graft-entry"], "WORKDIR": G}]}],
+        RECOMMENDED=[UID])
     return N
 
 def main():
@@ -474,9 +415,10 @@ def main():
         print(f"make_fixture: {tool} missing — build vg_make_delta; the fixture needs REAL deltas",
               file=sys.stderr)
         return 3
-    with open(f"{Bundle}/launchmatrix.json", "w") as F:
-        json.dump(nodes(), F, indent=2)
-        F.write("\n")
+    for n in nodes():                              # one node per file: the file IS the node's block
+        with open(f"{Bundle}/{n['LABEL']}.json", "w") as Out:
+            json.dump(n, Out, indent=2)
+            Out.write("\n")
 
     # A config with exactly ONE package source: the fixture. The default sources are CIDs, and leaving them in
     # would make the harness depend on the network and on whatever the library happens to contain today — the

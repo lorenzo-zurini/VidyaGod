@@ -61,7 +61,7 @@ private slots:
         F.act->perform(F.nodeId(n), "to_dir");
         QVERIFY(F.waitIdle(F.nodeId(n)));
 
-        QCOMPARE(F.layer(n)["FORM"].get<std::string>(), std::string("dir"));
+        QCOMPARE(F.type(n), std::string("DIR"));
         const QString Dir = F.path("content");
         QVERIFY(QFile::exists(Dir + "/hello/world.txt"));
         QVERIFY(!QFile::exists(F.path("content.zip")));            // replaced, not duplicated
@@ -69,7 +69,8 @@ private slots:
 
         F.act->perform(F.nodeId(n), "to_zip");
         QVERIFY(F.waitIdle(F.nodeId(n)));
-        QCOMPARE(F.layer(n)["FORM"].get<std::string>(), std::string("zip"));
+        QCOMPARE(F.type(n), std::string("ZIP"));
+        QCOMPARE(F.name(n), std::string("content.zip"));
         QVERIFY(QFile::exists(F.path("content.zip")));
         QVERIFY(!QDir(Dir).exists());
     }
@@ -85,14 +86,14 @@ private slots:
         F.write(F.path("stuff/a.txt"), "mine");
         F.write(F.path("stuff.zip"), "SOMEONE ELSE'S ARCHIVE");   // the name is taken
         const int n = F.addContentNode("stuff");
-        F.layer(n)["FORM"] = "dir";
+        F.setType(n, "DIR");
 
         F.act->perform(F.nodeId(n), "to_zip");
         QTest::qWait(300);
 
         QVERIFY(QDir(F.path("stuff")).exists());                   // the folder was NOT deleted
         QCOMPARE(F.read(F.path("stuff.zip")), QByteArray("SOMEONE ELSE'S ARCHIVE"));   // untouched
-        QCOMPARE(F.layer(n)["FORM"].get<std::string>(), std::string("dir"));  // node unchanged
+        QCOMPARE(F.type(n), std::string("DIR"));                          // node unchanged
         QVERIFY(!F.notices.isEmpty());                             // and it SAID so rather than failing quietly
         QVERIFY(F.notices.join(" ").contains("already exists"));
     }
@@ -117,7 +118,7 @@ private slots:
 
         QCOMPARE(F.read(F.path("stuff.zip")), QByteArray("MY ARCHIVE"));            // the zip was NOT deleted
         QCOMPARE(F.read(F.path("stuff/theirs.txt")), QByteArray("SOMEONE ELSE'S LAYER"));  // nor contaminated
-        QCOMPARE(F.layer(n)["FORM"].get<std::string>(), std::string("zip"));      // node unchanged
+        QCOMPARE(F.type(n), std::string("ZIP"));                                  // node unchanged
         QVERIFY(!F.notices.isEmpty());                                              // and it SAID so
         QVERIFY(F.notices.join(" ").contains("already exists"));
 
@@ -155,16 +156,16 @@ private slots:
         // EVERY action that touches a path, and every way out of the bundle. "nosuch/.." is the one that
         // canonicalises back to the bundle ROOT with a trailing separator — which the first version of the
         // guard compared as a different path and let through.
-        // ("" is refused earlier, by the has-a-PATH check — also correct, also not what this pins.)
+        // ("" is refused earlier, by the names-a-file check — also correct, also not what this pins.)
         for (const char *Bad : {".", "./", "..", "nosuch/..", "a/b/../../..",
                                 "../vg_outside_probe", "../vg_outside_probe/precious.txt", "/tmp"})
         {
             const int n = F.addContentNode(Bad);
-            // to_delta is omitted: it refuses earlier and for a different reason (no Content parent to diff
-            // against), which is also correct but not what this test is pinning.
+            // to_delta is omitted: it refuses earlier and for a different reason (no base to diff against),
+            // which is also correct but not what this test is pinning.
             for (const char *Act : {"to_zip", "to_dir", "restore", "undelta"})
             {
-                F.layer(n)["FORM"] = (std::string(Act) == "to_zip") ? "dir" : "zip";
+                F.setType(n, (std::string(Act) == "to_zip") ? "DIR" : "ZIP");
                 F.notices.clear();
                 F.act->perform(F.nodeId(n), Act);
                 QTest::qWait(120);
@@ -172,7 +173,7 @@ private slots:
                 // happen to fail later anyway (the zip tool errors on a nonexistent path), so a survival-only
                 // check passes just as well with the guard removed.
                 QVERIFY2(F.notices.join(" ").contains("does not point inside"),
-                         qUtf8Printable(QString("%1 on PATH \"%2\" was not refused: %3")
+                         qUtf8Printable(QString("%1 on file \"%2\" was not refused: %3")
                                             .arg(Act).arg(Bad).arg(F.notices.join(" | "))));
             }
         }
@@ -200,7 +201,7 @@ private slots:
         QVERIFY(F.waitIdle(F.nodeId(n)));                          // the node did NOT stay locked
         QVERIFY(QFile::exists(F.path("content.zip")));             // and the source is still here
         QVERIFY(!F.notices.isEmpty());                             // the failure was reported, not swallowed
-        QCOMPARE(F.layer(n)["FORM"].get<std::string>(), std::string("zip"));
+        QCOMPARE(F.type(n), std::string("ZIP"));
     }
 
     // Declining the confirmation must be a complete no-op — these actions delete things.
@@ -215,7 +216,7 @@ private slots:
         QTest::qWait(200);
         QVERIFY(QFile::exists(F.path("content.zip")));
         QVERIFY(!F.canvas->isBusy(F.nodeId(n).toStdString()));
-        QCOMPARE(F.layer(n)["FORM"].get<std::string>(), std::string("zip"));
+        QCOMPARE(F.type(n), std::string("ZIP"));
     }
 
     // The DEFAULT path — no injected handlers at all — is the one that ships, and the previous suite never
@@ -233,7 +234,7 @@ private slots:
         QVERIFY(QFile::exists(F.path("content.zip")));                    // refused, so nothing was deleted
         QVERIFY(!F.canvas->isBusy(F.nodeId(n).toStdString()));
 
-        F.layer(n)["PATH"] = "";                                          // drives the "Nothing to convert" report
+        F.setName(n, "");                                                 // drives the "Nothing to convert" report
         F.act->perform(F.nodeId(n), "to_zip");
         QTest::qWait(100);
         QVERIFY(true);                                                    // reaching here at all is the assertion
@@ -287,92 +288,188 @@ private slots:
     // import .reg — the only action that WRITES into a payload it did not create.
     // ------------------------------------------------------------------------------------------------
 
-    // THE property, and the positive control for the one below: an import into a node with no registry rows
-    // yet materialises the entry and lands the rows in BOTH architecture views.
-    void importIntoAnEmptyRegEditLandsTheRows()
+    // THE property, and the positive control for the ones below: an import into a node with no REG layer yet
+    // appends one and lands the rows in BOTH architecture views.
+    void importIntoANodeWithoutARegLayerLandsTheRows()
     {
         Fixture F(this);
-        const int n = F.addRegEditNode();
-        F.doc()["NODES"][n].erase("EDITS");                         // absent = nothing to lose
+        const int n = F.addRegNode();
+        F.doc()["NODES"][n]["LAYERS"] = json::array();              // nothing to lose
         F.model->SaveNodes();
 
         F.pickThisFile(F.writeReg("good.reg"));
         F.act->perform(F.nodeId(n), "import_reg");
         QTest::qWait(100);
 
-        const json &E = F.doc()["NODES"][n]["EDITS"];
-        QVERIFY2(E.is_array() && !E.empty(), E.dump().c_str());
-        QCOMPARE(E[0]["ARCHITECTURE"], json::array({"32", "64"}));
-        const std::string Dump = E.dump();
+        const json &Ls = F.doc()["NODES"][n]["LAYERS"];
+        QVERIFY2(Ls.is_array() && Ls.size() == 1 && Ls[0].contains("REG"), Ls.dump().c_str());
+        QCOMPARE(Ls[0]["ARCH"], json::array({"32", "64"}));
+        const std::string Dump = Ls[0]["REG"].dump();
         QVERIFY2(Dump.find("TONICT") != std::string::npos, Dump.c_str());
         QVERIFY2(Dump.find("1.00")   != std::string::npos, Dump.c_str());
     }
 
-    // A hand-written `"EDITS": {"HKLM": {...}}` is the shape the canvas ALREADY refuses to overwrite from its
-    // "+ group" button — but Import offered the same node the same destruction from a different button, and
-    // then SAVED it. It is the likelier of the two, because the author reaches for Import precisely when the
-    // node is in a state they are trying to repair. Refuse, say why, and change nothing on disk.
-    void importRefusesAMalformedEditsInsteadOfDestroyingIt()
+    // An existing REG layer is merged into, not replaced: its own rows and its views stay.
+    void importMergesIntoTheFirstRegLayer()
     {
         Fixture F(this);
-        const int n = F.addRegEditNode();
-        const json Hand = json::parse(R"({"HKLM":{"Software":{"Mine":{"Keep":"precious"}}}})");
-        F.doc()["NODES"][n]["EDITS"] = Hand;                        // not an array — the author's own tree
+        const int n = F.addRegNode();
+        F.doc()["NODES"][n]["LAYERS"] = json::parse(R"([{"ZIP":"a.zip"},
+            {"REG":{"HKLM":{"Software":{"Mine":{"Keep":"precious"}}}},"ARCH":["64"]}])");
         F.model->SaveNodes();
 
         F.pickThisFile(F.writeReg("good.reg"));
         F.act->perform(F.nodeId(n), "import_reg");
         QTest::qWait(100);
 
-        QCOMPARE(F.doc()["NODES"][n]["EDITS"], Hand);               // in memory...
-        // ...and ON DISK, which is what the button used to lose: the destruction was followed by SaveNodes().
+        const json &L = F.doc()["NODES"][n]["LAYERS"][1];
+        QCOMPARE(L["ARCH"], json::array({"64"}));
+        QCOMPARE(L["REG"]["HKLM"]["Software"]["Mine"]["Keep"], json("precious"));
+        QVERIFY2(L["REG"].dump().find("TONICT") != std::string::npos, L.dump().c_str());
+        QCOMPARE((int)F.doc()["NODES"][n]["LAYERS"].size(), 2);   // no second REG layer
+    }
+
+    // A LAYERS that is not a list is the author's own hand-written shape: Import must refuse it, say why, and change
+    // nothing ON DISK — the destruction used to be followed by SaveNodes(), and the author reaches for Import
+    // precisely when the node is in a state they are trying to repair.
+    void importRefusesALayersThatIsNotAList()
+    {
+        Fixture F(this);
+        const int n = F.addRegNode();
+        const json Hand = json::parse(R"({"REG":{"HKLM":{"Software":{"Mine":{"Keep":"precious"}}}}})");
+        F.doc()["NODES"][n]["LAYERS"] = Hand;
+        F.model->SaveNodes();
+
+        F.pickThisFile(F.writeReg("good.reg"));
+        F.act->perform(F.nodeId(n), "import_reg");
+        QTest::qWait(100);
+
+        QCOMPARE(F.doc()["NODES"][n]["LAYERS"], Hand);              // in memory...
         const json Saved = json::parse(F.read(F.path(F.nodeFile(n))).toStdString());
-        QCOMPARE(Saved["EDITS"], Hand);
-        QVERIFY(!F.notices.isEmpty());
+        QCOMPARE(Saved["LAYERS"], Hand);                            // ...and on disk
         QVERIFY2(F.notices.join(" ").contains("not a list"), qUtf8Printable(F.notices.join(" ")));
     }
 
-    // The refusal has to hold at the ENTRY too, not just the container. `"EDITS": ["x"]` is a list, so it
-    // passed the check above — and RegRowsInto then iterated a string as an object and wrote it back as
-    // {"": "x", "HKLM": {...}}. That is the exact shape drawRegEdits refuses to touch, reshaped and saved by
-    // a different button on the same node.
-    void importRefusesAMalformedEditsEntry()
+    // The refusal holds one level down too: a REG layer whose tree is not an object. RegRowsInto would iterate it as
+    // one and write back {"": ..., "HKLM": {...}} — the shape the canvas refuses to touch, reshaped and saved.
+    void importRefusesARegLayerThatIsNotAHiveTree()
     {
         Fixture F(this);
-        const int n = F.addRegEditNode();
-        const json Hand = json::parse(R"(["a hand-written entry"])");
-        F.doc()["NODES"][n]["EDITS"] = Hand;
+        const int n = F.addRegNode();
+        const json Hand = json::parse(R"([{"REG":["a hand-written entry"],"ARCH":["32"]}])");
+        F.doc()["NODES"][n]["LAYERS"] = Hand;
         F.model->SaveNodes();
 
         F.pickThisFile(F.writeReg("good.reg"));
         F.act->perform(F.nodeId(n), "import_reg");
         QTest::qWait(100);
 
-        QCOMPARE(F.doc()["NODES"][n]["EDITS"], Hand);
+        QCOMPARE(F.doc()["NODES"][n]["LAYERS"], Hand);
         const json Saved = json::parse(F.read(F.path(F.nodeFile(n))).toStdString());
-        QCOMPARE(Saved["EDITS"], Hand);
-        QVERIFY2(F.notices.join(" ").contains("not an object"), qUtf8Printable(F.notices.join(" ")));
+        QCOMPARE(Saved["LAYERS"], Hand);
+        QVERIFY2(F.notices.join(" ").contains("not a hive tree"), qUtf8Printable(F.notices.join(" ")));
     }
 
-    // A null first entry IS materialised — there is nothing there to lose — but into the same thing the
-    // absent-EDITS rule writes, views and all. NodeLower turns a missing ARCHITECTURE into one un-redirected
-    // view, so materialising a bare {} would land the import in one view and a 64-bit game would read nothing
-    // from a node that validates clean.
-    void importIntoANullEntryLandsInBothViews()
+    // A null tree IS materialised — there is nothing there to lose — and the layer's views stay as they are.
+    void importIntoANullTreeLandsTheRows()
     {
         Fixture F(this);
-        const int n = F.addRegEditNode();
-        F.doc()["NODES"][n]["EDITS"] = json::array({nullptr});
+        const int n = F.addRegNode();
+        F.doc()["NODES"][n]["LAYERS"] = json::parse(R"([{"REG":null,"ARCH":["32","64"]}])");
         F.model->SaveNodes();
 
         F.pickThisFile(F.writeReg("good.reg"));
         F.act->perform(F.nodeId(n), "import_reg");
         QTest::qWait(100);
 
-        const json &E = F.doc()["NODES"][n]["EDITS"];
-        QVERIFY2(E.is_array() && !E.empty() && E[0].is_object(), E.dump().c_str());
-        QCOMPARE(E[0]["ARCHITECTURE"], json::array({"32", "64"}));
-        QVERIFY2(E[0].dump().find("TONICT") != std::string::npos, E[0].dump().c_str());
+        const json &L = F.doc()["NODES"][n]["LAYERS"][0];
+        QVERIFY2(L["REG"].is_object() && L["REG"].dump().find("TONICT") != std::string::npos, L.dump().c_str());
+        QCOMPARE(L["ARCH"], json::array({"32", "64"}));
+    }
+
+    // ------------------------------------------------------------------------------------------------
+    // make delta / cover — generation 6 shapes
+    // ------------------------------------------------------------------------------------------------
+
+    // A delta's base is the nearest content at its own target, so "-> delta" is offered — and the action runs — only
+    // for a zip whose node contains, EARLIER in its LAYERS and whole, a node with a zip at the SAME target. A base at
+    // another target, placed elsewhere or narrowed by a TAKE, or contained AFTER the content, could never be paired.
+    void aDeltaBaseIsTheZipBeneathAtTheSameTarget()
+    {
+        const auto nodes = [](const json &RefLayer, bool After, const char *BaseTarget) {
+            json Base = {{"CID", "hB"}, {"LABEL", "b"}, {"LAYERS", json::array({ {{"ZIP", "base.zip"}, {"TARGET", BaseTarget}} })}};
+            json Own = json::array({ {{"ZIP", "new.zip"}, {"TARGET", "FILES/C:/g"}} });
+            if (After) Own.push_back(RefLayer); else Own.insert(Own.begin(), RefLayer);
+            return json::array({ Base, json{{"CID", "hN"}, {"LABEL", "n"}, {"LAYERS", Own}} });
+        };
+        QCOMPARE(PkgGraph::DeltaBase(nodes({{"NODE", "hB"}}, false, "FILES/C:/g"), 1), std::string("base.zip"));
+        QCOMPARE(PkgGraph::DeltaBase(nodes({{"NODE", "hB"}}, true, "FILES/C:/g"), 1), std::string());      // after it
+        QCOMPARE(PkgGraph::DeltaBase(nodes({{"NODE", "hB"}}, false, "FILES/C:/other"), 1), std::string()); // elsewhere
+        QCOMPARE(PkgGraph::DeltaBase(nodes({{"NODE", "hB"}, {"TARGET", "FILES/x"}}, false, "FILES/C:/g"), 1), std::string());
+        QCOMPARE(PkgGraph::DeltaBase(nodes({{"NODE", "hB"}, {"TAKE", json::array({"FILES/a"})}}, false, "FILES/C:/g"), 1), std::string());
+        QCOMPARE(PkgGraph::DeltaBase(nodes({{"ANY", json::array({"hB"})}}, false, "FILES/C:/g"), 1), std::string()); // not contained
+        // The button asks the same question as the action.
+        const json Doc = nodes({{"NODE", "hB"}}, false, "FILES/C:/g");
+        const PkgGraph::Graph G = PkgGraph::Build(Doc);
+        auto offers = [&](const PkgGraph::Graph &Gr, const json &D) {
+            for (const auto &A : PkgGraph::ActionsFor(D[1], Gr, 1, {})) if (std::string(A.Id) == "to_delta") return true;
+            return false;
+        };
+        QVERIFY(offers(G, Doc));
+        const json Elsewhere = nodes({{"NODE", "hB"}}, false, "FILES/C:/other");
+        QVERIFY(!offers(PkgGraph::Build(Elsewhere), Elsewhere));
+    }
+
+    // Undelta turns the content layer back into a ZIP in place: its TARGET stays, the stale SOURCE/SIZE go. The
+    // action's end state is what this pins (the reconstruction itself is vgdelta's, tested there).
+    void aContentRewriteKeepsItsPlaceAndDropsTheOldBytesIdentity()
+    {
+        if (!HaveZipTools) QSKIP("zip/unzip not installed");
+        Fixture F(this);
+        F.makeZip("content.zip", "a.txt", "bytes");
+        const int n = F.addContentNode("content.zip");
+        F.doc()["NODES"][n]["LAYERS"] = json::parse(R"([{"ENV":{"A":"1"}},
+            {"ZIP":"content.zip","TARGET":"FILES/C:/g","SOURCE":"bafkreiold","SIZE":5,"WHEN":"%X% == 1"}])");
+        F.model->SaveNodes();
+        F.act->perform(F.nodeId(n), "to_dir");
+        QVERIFY(F.waitIdle(F.nodeId(n)));
+        const json &L = F.doc()["NODES"][n]["LAYERS"][1];
+        QCOMPARE(PkgGraph::LayerType(L), std::string("DIR"));
+        QCOMPARE(L["DIR"], json("content"));
+        QCOMPARE(L["TARGET"], json("FILES/C:/g"));
+        QCOMPARE(L["WHEN"], json("%X% == 1"));
+        QVERIFY2(!L.contains("SOURCE") && !L.contains("SIZE"), L.dump().c_str());
+        QCOMPARE(F.doc()["NODES"][n]["LAYERS"][0], json::parse(R"({"ENV":{"A":"1"}})"));   // other layers untouched
+    }
+
+    // A cover belongs to a TILE on an EXEC entry: the picked image lands in that entry's TILE.COVER.FILE (the entry
+    // carrying a TILE, not merely the first), keeping a string COVER a string; a malformed COVER is refused.
+    void aCoverLandsOnTheTiledEntry()
+    {
+        Fixture F(this);
+        F.write(F.path("cover.png"), "png");
+        const int n = F.addRegNode();
+        F.doc()["NODES"][n]["LAYERS"] = json::parse(R"([{"EXEC":[{"LABEL":"Setup","HOST":"win32"},
+            {"LABEL":"Play","HOST":"win32","TILE":{"UID":"1","COVER":{"FILE":"old.png","SOURCE":"bafkreiold"}}}]}])");
+        F.model->SaveNodes();
+        F.pickThisFile(F.path("cover.png"));
+        F.act->perform(F.nodeId(n), "browse_cover");
+        QTest::qWait(50);
+        const json &E = F.doc()["NODES"][n]["LAYERS"][0]["EXEC"];
+        QCOMPARE(E[1]["TILE"]["COVER"], json::parse(R"({"FILE":"cover.png"})"));
+        QVERIFY(!E[0].contains("TILE"));
+
+        F.doc()["NODES"][n]["LAYERS"][0]["EXEC"][1]["TILE"]["COVER"] = "old.png";
+        F.act->perform(F.nodeId(n), "browse_cover");
+        QTest::qWait(50);
+        QCOMPARE(F.doc()["NODES"][n]["LAYERS"][0]["EXEC"][1]["TILE"]["COVER"], json("cover.png"));
+
+        F.doc()["NODES"][n]["LAYERS"][0]["EXEC"][1]["TILE"]["COVER"] = 5;
+        F.notices.clear();
+        F.act->perform(F.nodeId(n), "browse_cover");
+        QTest::qWait(50);
+        QCOMPARE(F.doc()["NODES"][n]["LAYERS"][0]["EXEC"][1]["TILE"]["COVER"], json(5));
+        QVERIFY2(F.notices.join(" ").contains("not an object"), qUtf8Printable(F.notices.join(" ")));
     }
 
 private:
@@ -406,9 +503,9 @@ private:
         // The on-disk file, in contrast, is named from the cosmetic LABEL (Model C: filename is pure presentation).
         QString nodeFile(int i) { return QString::fromStdString(doc()["NODES"][i].value("LABEL", std::string())) + ".json"; }
 
-        int addRegEditNode()
+        int addRegNode()
         {
-            const int i = canvas->addNode("REGEDITS");
+            const int i = canvas->addNode("REG");
             model->SaveNodes();
             return i;
         }
@@ -427,13 +524,18 @@ private:
 
         int addContentNode(const QString &p)
         {
-            const int i = canvas->addNode("LAYERS");           // batched: one node, LAYERS[0] is the primary layer
-            layer(i)["PATH"] = p.toStdString();
+            const int i = canvas->addNode("ZIP");              // one ZIP layer: the node's content layer
+            doc()["NODES"][i]["LAYERS"] = json::array({ json{{"ZIP", p.toStdString()}} });
             model->SaveNodes();
             return i;
         }
-        // The primary VFS layer of a batched VFSLayer node — where FORM/PATH/SOURCE live post-batching.
-        json &layer(int i) { return doc()["NODES"][i]["LAYERS"][0]; }
+        // The content layer's type and file name, and rewriting them (as a hand edit would).
+        std::string type(int i) { return PkgGraph::ContentType(doc()["NODES"][i]); }
+        std::string name(int i) { return PkgGraph::ContentName(doc()["NODES"][i]); }
+        void setType(int i, const std::string &T)
+        { const std::string N = name(i); doc()["NODES"][i]["LAYERS"] = json::array({ json{{T, N}} }); }
+        void setName(int i, const std::string &N)
+        { const std::string T = type(i); doc()["NODES"][i]["LAYERS"] = json::array({ json{{T, N}} }); }
         void write(const QString &p, const QByteArray &b)
         { QDir().mkpath(QFileInfo(p).path()); QFile f(p); QVERIFY2(f.open(QIODevice::WriteOnly), qUtf8Printable(p)); f.write(b); }
         QByteArray read(const QString &p) const { QFile f(p); if (!f.open(QIODevice::ReadOnly)) return {}; return f.readAll(); }

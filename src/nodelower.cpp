@@ -1,5 +1,10 @@
 #include "nodelower.h"
+#include "fold.h"
 
+#include <algorithm>
+#include <cctype>
+#include <filesystem>
+#include <map>
 #include <set>
 #include <vector>
 
@@ -10,472 +15,581 @@ namespace NodeLower
 
 namespace {
 
-//A Content node's FORM selects how its PATH is interpreted; the executor still distinguishes these by
-//layer TYPE, so the four collapse on disk and re-expand here.
-const char *VfsTypeForForm(const std::string &Form)
+std::string Str(const ordered_json &V) { return V.is_string() ? V.get<std::string>() : std::string(); }
+
+std::string LowerAscii(std::string S)
 {
-    if (Form == "zip")   return "VFSZipLayer";
-    if (Form == "dir")   return "VFSDirLayer";
-    if (Form == "file")  return "VFSFileLayer";
-    if (Form == "delta") return "VFSDeltaLayer";
+    std::transform(S.begin(), S.end(), S.begin(), [](unsigned char C) { return static_cast<char>(std::tolower(C)); });
+    return S;
+}
+
+//The FILES address of a layer's TARGET, namespace stripped ("FILES/C:/x" -> "C:/x", "FILES" -> "").
+std::string FilesPath(const ordered_json &L)
+{
+    const std::string T = L.contains("TARGET") ? Str(L["TARGET"]) : std::string("FILES");
+    if (T == "FILES") return std::string();
+    return T.rfind("FILES/", 0) == 0 ? T.substr(6) : T;
+}
+
+const char *VfsType(const std::string &T)
+{
+    if (T == "ZIP")   return "VFSZipLayer";
+    if (T == "DIR")   return "VFSDirLayer";
+    if (T == "FILE")  return "VFSFileLayer";
+    if (T == "DELTA") return "VFSDeltaLayer";
     return nullptr;
 }
 
-void CopyIf(const ordered_json &From, ordered_json &To, std::initializer_list<const char *> Keys)
-{
-    for (const char *K : Keys) if (From.contains(K)) To[K] = From[K];
-}
+bool IsBinaryMode(const std::string &M) { return M == "Replace" || M == "Cave" || M == "Poke"; }
 
-//Walk one hive tree, emitting a RegEdit layer per key path that carries values (or that is an EMPTY
-//object — "create this key, no values", which the old schema spelled as a null KEYVALUES).
-//A key may hold values AND subkeys at once, so both are handled at every level.
-void EmitRegTree(const std::string &Path, const ordered_json &Tree, const ordered_json &Arch,
-                 bool Override, const std::string &When, ordered_json &Out)
+//One hive tree -> a RegEdit per key path that carries values (or is an empty object: "create this key").
+void EmitRegTree(const std::string &Path, const ordered_json &Tree, const ordered_json &Arch, ordered_json &Out)
 {
     ordered_json Values = ordered_json::object();
     std::vector<std::pair<std::string, const ordered_json *>> Subkeys;
     for (const auto &[K, V] : Tree.items())
     {
         if (V.is_object()) Subkeys.emplace_back(K, &V);
-        else               Values[K] = V;
+        else if (!V.is_null()) Values[K] = V;
     }
     if (!Values.empty() || (Subkeys.empty() && Tree.empty()))
     {
-        ordered_json L = {{"TYPE", "RegEdit"}, {"REGPATH", Path}, {"KEYVALUES", Values}};
+        ordered_json L = { {"TYPE", "RegEdit"}, {"REGPATH", Path}, {"KEYVALUES", Values} };
         if (!Arch.is_null()) L["ARCHITECTURE"] = Arch;
-        if (Override)        L["OVERRIDE"]     = true;
-        if (!When.empty())   L["WHEN"]         = When;
         Out.push_back(std::move(L));
     }
-    for (const auto &[K, V] : Subkeys)
+    for (const auto &[K, V] : Subkeys) EmitRegTree(Path.empty() ? K : Path + "\\" + K, *V, Arch, Out);
+}
+
+ordered_json ContentOp(const std::string &Kind, const std::string &Payload, const std::string &Target,
+                       const ordered_json &Source, const ordered_json &Size, const ordered_json &Submounts)
+{
+    ordered_json L = { {"TYPE", VfsType(Kind)}, {"PATH", Payload} };
+    if (!Target.empty()) L["TARGET"] = Target;
+    if (Source.is_string())
     {
-        std::string Child = Path;
-        Child += '\\';
-        Child += K;
-        EmitRegTree(Child, *V, Arch, Override, When, Out);
+        L["SOURCE"] = { {"TYPE", "ipfs"}, {"CID", Source} };
+        if (Size.is_number()) L["SOURCE"]["SIZE"] = Size;
     }
+    if (Submounts.is_array() && !Submounts.empty()) L["SUBMOUNTS"] = Submounts;
+    return L;
+}
+
+//An EDIT op -> the engine op (FileEdit for text, BinaryPatch for bytes) on File.
+ordered_json EditOp(const ordered_json &Op, const std::string &File)
+{
+    ordered_json L = Op;
+    L["TYPE"] = IsBinaryMode(Str(Op.value("MODE", ordered_json()))) ? "BinaryPatch" : "FileEdit";
+    L["FILE"] = File;
+    return L;
+}
+
+//A KEEP address -> a DeclarePersist (the persistence engine's primitive).
+ordered_json PersistOp(const std::string &Address, const ordered_json &Val, const std::function<std::string(const std::string &)> &Map)
+{
+    const size_t S = Address.find('/');
+    const std::string Ns = Address.substr(0, S), Rest = S == std::string::npos ? std::string() : Address.substr(S + 1);
+    ordered_json P = { {"TYPE", "DeclarePersist"} };
+    if (Ns == "REG")
+    {
+        std::string K = Rest;
+        std::replace(K.begin(), K.end(), '/', '\\');
+        P["SCOPE"] = "registry";
+        P["PATH"] = K;
+    }
+    else
+    {
+        P["SCOPE"] = "file";
+        P["PATH"] = Map(Rest);
+    }
+    if (Val.is_object())
+    {
+        if (Val.contains("NAME")) P["TARGET"] = Val["NAME"];
+        if (Val.contains("CLOUD")) P["CLOUD"] = Val["CLOUD"];
+    }
+    return P;
+}
+
+// ---- the vocabulary ------------------------------------------------------------------------------------------
+bool StrArray(const ordered_json &V)
+{
+    if (!V.is_array()) return false;
+    for (const auto &E : V) if (!E.is_string()) return false;
+    return true;
+}
+
+//A package file name: relative to the node's own package dir, or a runtime path anchored at a %VARIABLE%. A node
+//arrives from a peer — an absolute name or a ".." would make a DOWNLOAD write outside the package. "" if fine.
+std::string FileNameFault(const std::string &F)
+{
+    for (size_t A = 0, B; A <= F.size(); A = B + 1)
+    {
+        B = F.find_first_of("/\\", A);
+        if (B == std::string::npos) B = F.size();
+        if (F.compare(A, B - A, "..") == 0) return "file name must stay inside the package (no \"..\")";
+    }
+    const bool Anchored = !F.empty() && F.front() == '%';
+    const bool Absolute = !F.empty() && (F.front() == '/' || F.front() == '\\' || (F.size() >= 2 && F[1] == ':'));
+    if (Absolute && !Anchored) return "file name must be relative to the package (or anchored at a %VARIABLE%)";
+    return std::string();
+}
+
+std::string CheckLayer(const ordered_json &L)
+{
+    if (!L.is_object()) return "is not an object";
+    const std::string T = Fold::TypeOf(L);
+    if (T.empty()) return "needs exactly one type key (ZIP FILE DELTA DIR NODE EDIT REG VARS ENV DLL EXEC KEEP ANY NOT)";
+    static const std::map<std::string, std::set<std::string>> Allowed = {
+        {"ZIP",   {"SOURCE", "SIZE", "TARGET", "SUBMOUNTS"}}, {"FILE",  {"SOURCE", "SIZE", "TARGET", "SUBMOUNTS"}},
+        {"DELTA", {"SOURCE", "SIZE", "TARGET", "SUBMOUNTS"}}, {"DIR",   {"TARGET", "SUBMOUNTS"}},
+        {"NODE",  {"TAKE", "TARGET"}}, {"EDIT", {"TARGET"}}, {"REG", {"ARCH"}},
+        {"VARS", {}}, {"ENV", {}}, {"DLL", {}}, {"EXEC", {}}, {"KEEP", {}}, {"ANY", {}}, {"NOT", {}},
+    };
+    for (const auto &[K, V] : L.items())
+    {
+        if (K == T || K == "WHEN" || K == "COMMENT") continue;
+        if (!Allowed.at(T).count(K)) return T + " layer has an unknown field '" + K + "'";
+    }
+    if (L.contains("WHEN") && !L["WHEN"].is_string()) return "WHEN must be a string (a condition)";
+    if (L.contains("COMMENT") && !L["COMMENT"].is_string()) return "COMMENT must be a string";
+    if (L.contains("TARGET"))
+    {
+        const std::string Tg = Str(L["TARGET"]);
+        if (!L["TARGET"].is_string()) return "TARGET must be a string";
+        if (T != "NODE" && Tg != "FILES" && Tg.rfind("FILES/", 0) != 0) return T + " TARGET must name a FILES address";
+    }
+    const ordered_json &P = L[T];
+    if (VfsType(T))
+    {
+        if (!P.is_string() || P.get<std::string>().empty()) return T + " needs a file name";
+        if (const std::string Why = FileNameFault(P.get<std::string>()); !Why.empty()) return T + " " + Why;
+        if (L.contains("SOURCE") && !L["SOURCE"].is_string()) return "SOURCE must be a CID (a string)";
+        if (L.contains("SIZE") && !L["SIZE"].is_number()) return "SIZE must be a number";
+        if (L.contains("SUBMOUNTS") && !StrArray(L["SUBMOUNTS"])) return "SUBMOUNTS must be a list of \"src:dst\" strings";
+    }
+    else if (T == "NODE")
+    {
+        if (!P.is_string() || P.get<std::string>().empty()) return "NODE must be a node CID";
+        if (L.contains("TAKE"))
+        {
+            if (!L["TAKE"].is_array()) return "TAKE must be a list";
+            //Where each named selection lands (a leaf keeps its last segment; a pair lands at its new name): two landing
+            //on one address would leave the winner to match order. A whole namespace or a folder's contents lands many
+            //addresses, merged like any other layers, and is not a collision.
+            std::map<std::string, std::string> Landed;
+            for (const auto &S : L["TAKE"])
+            {
+                if (!S.is_string() && !(S.is_array() && S.size() == 2 && S[0].is_string() && S[1].is_string()))
+                    return "a TAKE selection is an address or an [address, new name] pair";
+                const std::string Src = Str(S.is_array() ? S[0] : S);
+                const std::string Ns = Src.substr(0, Src.find('/'));
+                std::string At;
+                if (S.is_array())
+                {
+                    At = Str(S[1]);
+                    if (At.compare(0, Ns.size() + 1, Ns + "/") != 0) At = Ns + "/" + At;
+                }
+                else if (Src.find('/') != std::string::npos && Src.back() != '/')
+                    At = Ns + "/" + Src.substr(Src.rfind('/') + 1);
+                while (!At.empty() && At.back() == '/') At.pop_back();
+                if (At.empty()) continue;
+                if (Ns == "FILES" || Ns == "REG") At = LowerAscii(At);   // file systems and the registry ignore case
+                if (const auto [It, Fresh] = Landed.emplace(At, Src); !Fresh)
+                    return "TAKE selections '" + It->second + "' and '" + Src + "' both land at " + At;
+            }
+        }
+        if (L.contains("TARGET") && Str(L["TARGET"]) != "FILES" && Str(L["TARGET"]).rfind("FILES/", 0) != 0)
+            return "a NODE TARGET places files — it must name a FILES address";
+    }
+    else if (T == "EDIT")
+    {
+        if (!P.is_array() || P.empty()) return "EDIT needs a non-empty list of ops";
+        if (!L.contains("TARGET") || FilesPath(L).empty()) return "EDIT needs a TARGET file";
+        for (const auto &O : P)
+        {
+            if (!O.is_object() || !O.contains("MODE") || !O["MODE"].is_string()) return "every EDIT op needs a MODE";
+            static const std::set<std::string> Text = { "MODE", "OFFSET", "EXPECT", "REPLACE", "VALUE", "PAYLOAD", "CAVE",
+                                                        "ANCHOR", "KEY", "SECTION", "APPLY", "COMMENT", "WHEN" };
+            for (const auto &[K, V] : O.items())
+            {
+                if (Text.count(K) && !V.is_string()) return "EDIT op field '" + K + "' must be a string";
+                if (!V.is_string() && !V.is_boolean() && !V.is_number()) return "EDIT op field '" + K + "' must be a scalar";
+            }
+        }
+    }
+    else if (T == "REG")
+    {
+        if (!P.is_object()) return "REG must be a hive tree";
+        if (L.contains("ARCH"))
+        {
+            if (!StrArray(L["ARCH"])) return "ARCH must be a list of \"32\"/\"64\"";
+            for (const auto &A : L["ARCH"]) if (A != "32" && A != "64") return "ARCH must be a list of \"32\"/\"64\"";
+        }
+    }
+    else if (T == "VARS")
+    {
+        if (!P.is_object()) return "VARS must be {KEY: declaration}";
+        for (const auto &[K, D] : P.items())
+        {
+            if (K.empty() || !D.is_object()) return "VARS." + K + " must be a declaration object";
+            for (const char *F : {"DEFAULT", "COMMENT", "WHEN"})
+                if (D.contains(F) && !D[F].is_string()) return "VARS." + K + "." + F + " must be a string";
+            if (D.contains("UI") && !D["UI"].is_object()) return "VARS." + K + ".UI must be an object";
+        }
+    }
+    else if (T == "ENV" || T == "DLL")
+    {
+        if (!P.is_object()) return T + " must be {name: value}";
+        for (const auto &[K, V] : P.items()) if (!V.is_string() && !V.is_null()) return T + "." + K + " must be a string or null";
+    }
+    else if (T == "EXEC")
+    {
+        if (!P.is_array() || P.empty()) return "EXEC must be a non-empty list of entries";
+        std::set<std::string> Labels;
+        for (const auto &E : P)
+        {
+            if (!E.is_object() || !E.contains("LABEL") || !E["LABEL"].is_string()) return "every EXEC entry needs a LABEL";
+            if (!Labels.insert(E["LABEL"].get<std::string>()).second) return "two EXEC entries share the LABEL '" + E["LABEL"].get<std::string>() + "'";
+            for (const char *F : {"HOST", "EXE", "WORKDIR", "CONTENT_ROOT"})
+                if (E.contains(F) && !E[F].is_string()) return std::string("EXEC ") + F + " must be a string";
+            for (const char *F : {"GUEST", "ARGS"})
+                if (E.contains(F) && !E[F].is_null() && !StrArray(E[F])) return std::string("EXEC ") + F + " must be a list of strings";
+            for (const char *F : {"PREFIX_GENERATE", "UNIFIED_RUNTIME"})
+                if (E.contains(F) && !E[F].is_boolean()) return std::string("EXEC ") + F + " must be true or false";
+            if (E.contains("GUEST_ROOTS") && !E["GUEST_ROOTS"].is_object()) return "GUEST_ROOTS must be {anchor: layout path}";
+            if (E.contains("TILE"))
+            {
+                const auto &Ti = E["TILE"];
+                if (!Ti.is_object()) return "TILE must be an object";
+                for (const char *F : {"UID", "PARENTUID", "TITLE"})
+                    if (Ti.contains(F) && !Ti[F].is_string()) return std::string("TILE.") + F + " must be a string";
+                if (Ti.contains("META") && !Ti["META"].is_object()) return "TILE.META must be an object";
+                if (Ti.contains("COVER") && !Ti["COVER"].is_object()) return "TILE.COVER must be {FILE, SOURCE, SIZE}";
+                if (Ti.contains("COVER"))
+                {
+                    const ordered_json &C = Ti["COVER"];
+                    if (C.contains("FILE") && (!C["FILE"].is_string() || C["FILE"].get<std::string>().empty()))
+                        return "TILE.COVER.FILE must be a file name";
+                    if (C.contains("FILE"))
+                        if (const std::string Why = FileNameFault(C["FILE"].get<std::string>()); !Why.empty()) return "TILE.COVER " + Why;
+                    if (C.contains("SOURCE") && !C["SOURCE"].is_string()) return "TILE.COVER.SOURCE must be a CID (a string)";
+                }
+            }
+        }
+    }
+    else if (T == "KEEP")
+    {
+        if (!P.is_object()) return "KEEP must be {address: true | false | options}";
+        for (const auto &[K, V] : P.items())
+        {
+            if (K.rfind("FILES", 0) != 0 && K.rfind("REG", 0) != 0 && K.rfind("VARS", 0) != 0)
+                return "KEEP address '" + K + "' must be in FILES, REG or VARS";
+            if (!V.is_boolean() && !V.is_object()) return "KEEP." + K + " must be true, false or {NAME, CLOUD}";
+        }
+    }
+    else if (T == "ANY")
+    {
+        if (!StrArray(P) || P.empty()) return "ANY must be a non-empty list of node CIDs";
+    }
+    else if (T == "NOT")
+    {
+        if (!P.is_string() || P.get<std::string>().empty()) return "NOT must be a node CID";
+    }
+    return std::string();
 }
 
 } // namespace
 
-//A raw ENTRYPOINTS entry → the engine's exec block. Exec and runner are ONE declaration: HOST is the platform I
-//need, GUEST the platforms I provide. No GUEST ⇒ nothing runs inside me ⇒ I am the terminal link, a launchable.
-static ordered_json LowerEntrypointOrThrow(const ordered_json &E, const std::string &NodeId, std::string &Err)
+std::string CheckNode(const nlohmann::ordered_json &J, const std::string &NodeId)
 {
-    Err.clear();
-    auto Fail = [&](const std::string &Why) { Err = "node '" + NodeId + "': ENTRYPOINTS entry " + Why; return ordered_json(); };
-    if (!E.is_object()) return Fail("is not an object");
-    if (E.contains("GUEST") && !E["GUEST"].is_array()) return Fail("GUEST must be a list of platforms");
-    if (!E.contains("HOST") || !E["HOST"].is_string()) return Fail("has no HOST platform");
-    if (E.contains("WHEN"))
-        return Fail("carries a WHEN — an entrypoint is never conditional (its payload becomes the node's identity at index time). Use two entries, or two variants.");
-    if (E.contains("RECOMMENDED"))
-        return Fail("carries RECOMMENDED — that is a node facet (prefer me among my siblings), not an entry field; the first entry is the default");
-    if (E.contains("ENV") || E.contains("ENV_REMOVE"))
-        return Fail("carries ENV/ENV_REMOVE — the environment is a NODE section that folds along the chain (like the registry), not an entry field; move it up to the node");
-    const bool IsRunner = E.contains("GUEST") && !E["GUEST"].empty();
-    ordered_json L = ordered_json::object();
-    if (IsRunner)
+    const std::string Tag = "node '" + NodeId + "'";
+    if (!J.is_object()) return Tag + ": not an object";
+    static const std::set<std::string> Fields = { "CID", "LABEL", "POS", "COMMENT", "VARIANT", "RECOMMENDED", "LAYERS" };
+    for (const auto &[K, V] : J.items())
+        if (!Fields.count(K)) return Tag + ": unknown field '" + K + "' (a node is CID LABEL VARIANT RECOMMENDED LAYERS)";
+    if (J.contains("LABEL") && !J["LABEL"].is_string()) return Tag + ": LABEL must be a string";
+    if (J.contains("VARIANT") && (!J["VARIANT"].is_string() || J["VARIANT"].get<std::string>().empty()))
+        return Tag + ": VARIANT must be a non-empty name";
+    if (J.contains("RECOMMENDED") && !StrArray(J["RECOMMENDED"])) return Tag + ": RECOMMENDED must be a list of tile UIDs";
+    if (!J.contains("LAYERS") || !J["LAYERS"].is_array()) return Tag + ": LAYERS must be a list";
+    for (size_t I = 0; I < J["LAYERS"].size(); ++I)
     {
-        L["HOST"]  = E["HOST"];
-        L["GUEST"] = E["GUEST"];
-        L["EXECUTABLE"] = E.value("PATH", std::string());
-        L["ARGS"] = E.contains("ARGS") ? E["ARGS"] : ordered_json::array();
-        CopyIf(E, L, {"CONTENT_ROOT", "PREFIX_GENERATE", "UNIFIED_RUNTIME", "LABEL"});
+        const std::string Why = CheckLayer(J["LAYERS"][I]);
+        if (!Why.empty()) return Tag + ": layer " + std::to_string(I) + " — " + Why;
     }
-    else
-    {
-        L["PLATFORM"] = E["HOST"];
-        if (E.contains("PATH")) L["CONTENTPATH"] = E["PATH"];
-        if (E.contains("ARGS")) L["EXEARGS"]     = E["ARGS"];
-        CopyIf(E, L, {"LABEL", "WORKDIR", "RUNNER"});
-    }
-    return L;
+    return std::string();
 }
 
-//The real work. Every read below assumes a well-typed payload; Lower() converts any type mismatch into a
-//refusal, so this is free to be written for the shape the format defines rather than defensively field by field.
-static ordered_json LowerOrThrow(const ordered_json &J, const std::string &NodeId, std::string &Err)
+nlohmann::ordered_json LowerNode(const nlohmann::ordered_json &J, const std::string &NodeId)
 {
-    Err.clear();
     ordered_json Out = ordered_json::array();
-    auto Fail = [&](const std::string &Why) { Err = "node '" + NodeId + "': " + Why; return ordered_json::array(); };
-    //A node-level WHEN gates the whole contribution; applied to every emitted layer at the end.
-    //A non-string WHEN used to be silently IGNORED, so the layer applied UNCONDITIONALLY — the exact "inert-
-    //looking in the file, live at launch" failure this mechanism exists to prevent.
-    const bool HasWhen = J.contains("WHEN");
-    if (J.contains("WHEN") && !J["WHEN"].is_string())
-        return Fail("WHEN must be a string (a condition), not " + std::string(J["WHEN"].type_name()));
-
-    //STRICT VOCABULARY: a key the format does not define is refused. Without this a typo'd payload key
-    //("LAYER", "PATCHS") is a node that validates clean and applies nothing — the one silent failure the
-    //whole front-end exists to make impossible.
-    static const std::set<std::string> Known = {
-        "CID", "LABEL", "WHEN", "TOGGLE", "POS", "COMMENT", "TILE", "ENTRYPOINTS", "OVER", "VARIANT", "RECOMMENDED",
-        "LAYERS", "PATCHES", "FILEEDITS", "REGEDITS", "DLLOVERRIDES", "VARS", "PERSISTS", "ENV", "ENV_REMOVE",
-    };
-    for (const auto &[K, V] : J.items())
-        if (!Known.count(K))
-            return Fail("unknown field '" + K + "' (a node is CID/LABEL/WHEN/TOGGLE/TILE/ENTRYPOINTS/OVER + "
-                        "LAYERS/PATCHES/FILEEDITS/REGEDITS/DLLOVERRIDES/VARS/PERSISTS/ENV/ENV_REMOVE)");
-    //ENV / ENV_REMOVE are node sections (the environment folds along the chain); ParseNode reads them, the
-    //lowerer only refuses the wrong shape so a typo is never a value that silently fails to apply.
-    if (J.contains("ENV"))
+    if (!CheckNode(J, NodeId).empty()) return Out;
+    const auto Id = [](const std::string &P) { return P; };
+    for (const auto &L : J["LAYERS"])
     {
-        if (!J["ENV"].is_object()) return Fail("ENV must be an object (name -> value)");
-        for (const auto &[K, V] : J["ENV"].items()) if (!V.is_string()) return Fail("ENV." + K + " must be a string (quote the number)");
-    }
-    if (J.contains("ENV_REMOVE"))
-    {
-        if (!J["ENV_REMOVE"].is_array()) return Fail("ENV_REMOVE must be a list of names");
-        for (const auto &V : J["ENV_REMOVE"]) if (!V.is_string() || V.get<std::string>().empty()) return Fail("ENV_REMOVE entries are names (strings)");
-    }
-
-    //An EMPTY payload array is a node that says it contributes something and contributes nothing — refused, like
-    //an unknown key. A node with NO payload arrays at all is fine: it is just a node (composition, a tile, an
-    //entrypoint).
-    auto ArrayOf = [&](const char *Key, const ordered_json *&Arr) -> bool {
-        Arr = nullptr;
-        if (!J.contains(Key)) return true;
-        if (!J[Key].is_array()) { Fail(std::string(Key) + " must be a list, not " + std::string(J[Key].type_name())); return false; }
-        if (J[Key].empty())     { Fail(std::string(Key) + " is empty (a node with an empty payload contributes nothing — remove the key or add an entry)"); return false; }
-        Arr = &J[Key];
-        return true;
-    };
-    const ordered_json *Arr = nullptr;
-
-    //LAYERS — VFS content. FORM selects how PATH is interpreted; the executor distinguishes the four by layer
-    //TYPE, so they re-expand here. Order = mount/precedence order.
-    if (!ArrayOf("LAYERS", Arr)) return ordered_json::array();
-    if (Arr)
-        for (const auto &Ly : *Arr)
+        const std::string T = Fold::TypeOf(L);
+        ordered_json Ops = ordered_json::array();
+        if (VfsType(T))
+            Ops.push_back(ContentOp(T, Str(L[T]), FilesPath(L), L.value("SOURCE", ordered_json()),
+                                    L.value("SIZE", ordered_json()), L.value("SUBMOUNTS", ordered_json())));
+        else if (T == "EDIT")
+            for (const auto &O : L["EDIT"]) Ops.push_back(EditOp(O, FilesPath(L)));
+        else if (T == "REG")
         {
-            if (!Ly.is_object()) return Fail("LAYERS entry is not an object");
-            if (Ly.contains("WHEN") && !Ly["WHEN"].is_string())
-                return Fail("LAYERS entry WHEN must be a string (a condition), not " + std::string(Ly["WHEN"].type_name()));
-            const std::string Form = Ly.value("FORM", std::string());
-            const char *VfsType = VfsTypeForForm(Form);
-            if (!VfsType) return Fail("LAYERS entry has unknown FORM '" + Form + "'");
-            ordered_json L = {{"TYPE", VfsType}};
-            CopyIf(Ly, L, {"PATH", "TARGET", "SOURCE", "SUBMOUNTS", "COMMENT", "WHEN"});   // node WHEN ANDed at the tail
-            //BASE_TARGETS is a delta's byte-base(s): ALWAYS a list, because the base may be the CONCATENATION of
-            //several composed views. "" is a real target (the mount root) a lone string could not tell apart
-            //from "no base declared".
-            if (Ly.contains("BASE_TARGET"))
-                return Fail("BASE_TARGET does not exist — a delta's base(s) are BASE_TARGETS, always a list");
-            if (Ly.contains("BASE_TARGETS") && Form != "delta")
-                return Fail("BASE_TARGETS is a delta's byte-base — it means nothing on FORM \"" + Form + "\"");
-            if (Ly.contains("BASE_TARGETS"))
-            {
-                const auto &B = Ly["BASE_TARGETS"];
-                if (!B.is_array()) return Fail("BASE_TARGETS must be an array of mount targets, not " + std::string(B.type_name()));
-                if (B.empty()) return Fail("BASE_TARGETS is an empty array (omit it to base the delta on its own TARGET)");
-                for (const auto &E : B) if (!E.is_string()) return Fail("BASE_TARGETS entries must be strings");
-                L["BASE_TARGETS"] = B;
-            }
-            Out.push_back(std::move(L));
+            const ordered_json Arches = (L.contains("ARCH") && !L["ARCH"].empty()) ? L["ARCH"] : ordered_json::array({ nullptr });
+            for (const auto &A : Arches) EmitRegTree(std::string(), L["REG"], A, Ops);
         }
-
-    //PATCHES — one entry per FILE: {FILE, EDITS:[{MODE, OFFSET|ANCHOR, EXPECT, REPLACE|VALUE|PAYLOAD, …}]}.
-    if (!ArrayOf("PATCHES", Arr)) return ordered_json::array();
-    if (Arr)
-        for (const auto &P : *Arr)
+        else if (T == "DLL")
         {
-            if (!P.is_object()) return Fail("PATCHES entry is not an object");
-            if (!P.contains("FILE") || !P["FILE"].is_string()) return Fail("PATCHES entry has no FILE");
-            if (!P.contains("EDITS") || !P["EDITS"].is_array() || P["EDITS"].empty()) return Fail("PATCHES entry has no EDITS");
-            for (const auto &E : P["EDITS"])
+            for (const auto &[N, O] : L["DLL"].items())
+                if (O.is_string()) Ops.push_back({ {"TYPE", "DllOverride"}, {"DLLOVERRIDE", N + "=" + O.get<std::string>()} });
+        }
+        else if (T == "VARS")
+        {
+            for (const auto &[K, D] : L["VARS"].items())
             {
-                if (!E.is_object()) return Fail("PATCHES EDITS entry is not an object");
-                ordered_json L = E;
-                L["TYPE"] = "BinaryPatch";
-                L["FILE"] = P["FILE"];
-                Out.push_back(std::move(L));
+                ordered_json V = { {"TYPE", "CustomVar"}, {"KEY", K} };
+                for (const auto &[F, X] : D.items()) V[F] = X;
+                Ops.push_back(std::move(V));
             }
         }
-
-    //FILEEDITS — one entry per FILE: {FILE, EDITS:[{MODE, …}], OVERRIDE?}.
-    if (!ArrayOf("FILEEDITS", Arr)) return ordered_json::array();
-    if (Arr)
-        for (const auto &F : *Arr)
+        else if (T == "KEEP")
         {
-            if (!F.is_object()) return Fail("FILEEDITS entry is not an object");
-            if (!F.contains("FILE") || !F["FILE"].is_string()) return Fail("FILEEDITS entry has no FILE");
-            if (!F.contains("EDITS") || !F["EDITS"].is_array() || F["EDITS"].empty()) return Fail("FILEEDITS entry has no EDITS");
-            if (F.contains("OVERRIDE") && !F["OVERRIDE"].is_boolean()) return Fail("FILEEDITS OVERRIDE must be a boolean");
-            for (const auto &E : F["EDITS"])
-            {
-                if (!E.is_object()) return Fail("FILEEDITS EDITS entry is not an object");
-                ordered_json L = E;
-                L["TYPE"] = "FileEdit";
-                L["FILE"] = F["FILE"];
-                if (F.value("OVERRIDE", false)) L["OVERRIDE"] = true;
-                Out.push_back(std::move(L));
-            }
+            for (const auto &[A, V] : L["KEEP"].items())
+                if (!V.is_boolean() || V.get<bool>()) Ops.push_back(PersistOp(A, V, Id));
         }
-
-    //REGEDITS — each entry a hive tree ({HKLM:{…}, ARCHITECTURE?, OVERRIDE?, WHEN?}); one RegEdit layer per key
-    //path that carries values, per architecture view.
-    if (!ArrayOf("REGEDITS", Arr)) return ordered_json::array();
-    if (Arr)
-        for (const auto &E : *Arr)
+        for (auto &O : Ops)
         {
-            if (!E.is_object()) return Fail("REGEDITS entry is not an object");
-            const bool Override = E.value("OVERRIDE", false);
-            const std::string EntryWhen = E.value("WHEN", std::string());
-            std::vector<ordered_json> Arches;
-            if (E.contains("ARCHITECTURE") && E["ARCHITECTURE"].is_array())
-                for (const auto &A : E["ARCHITECTURE"]) Arches.push_back(A);
-            //A STRING here ("ARCHITECTURE": "32") is an authoring mistake the schema does not allow, and it
-            //used to vanish twice over. Refuse it.
-            else if (E.contains("ARCHITECTURE") && !E["ARCHITECTURE"].is_null())
-                return Fail("REGEDITS ARCHITECTURE must be an ARRAY of \"32\"/\"64\"");
-            if (Arches.empty()) Arches.push_back(ordered_json(nullptr));
-            for (const ordered_json &Arch : Arches)
-                for (const auto &[Hive, Tree] : E.items())
-                {
-                    if (Hive == "ARCHITECTURE" || Hive == "OVERRIDE" || Hive == "WHEN" || Hive == "COMMENT") continue;
-                    if (!Tree.is_object()) return Fail("REGEDITS hive '" + Hive + "' is not an object");
-                    EmitRegTree(Hive, Tree, Arch, Override, EntryWhen, Out);
-                }
-        }
-
-    //DLLOVERRIDES — a {dll: order} map; one DllOverride layer per entry.
-    if (J.contains("DLLOVERRIDES"))
-    {
-        if (!J["DLLOVERRIDES"].is_object()) return Fail("DLLOVERRIDES must be a {dll: order} object");
-        if (J["DLLOVERRIDES"].empty()) return Fail("DLLOVERRIDES is empty (remove the key or add an override)");
-        for (const auto &[Dll, Order] : J["DLLOVERRIDES"].items())
-        {
-            if (!Order.is_string()) return Fail("DLLOVERRIDES order for '" + Dll + "' is not a string");
-            std::string Spec = Dll; Spec += '='; Spec += Order.get<std::string>();
-            Out.push_back({{"TYPE", "DllOverride"}, {"DLLOVERRIDE", Spec}});
-        }
-    }
-
-    //VARS — resolution is a global KEY namespace (override by closure order), so N vars in one node resolve
-    //identically to N one-var nodes; each entry lowers to one CustomVar layer.
-    if (!ArrayOf("VARS", Arr)) return ordered_json::array();
-    if (Arr)
-        for (const auto &V : *Arr)
-        {
-            if (!V.is_object()) return Fail("VARS entry is not an object");
-            if (V.contains("WHEN") && !V["WHEN"].is_string())
-                return Fail("VARS entry WHEN must be a string (a condition), not " + std::string(V["WHEN"].type_name()));
-            if (!V.contains("KEY") || !V["KEY"].is_string() || V["KEY"].get<std::string>().empty())
-                return Fail("VARS entry has no KEY");
-            ordered_json L = {{"TYPE", "CustomVar"}};
-            CopyIf(V, L, {"KEY", "DEFAULT", "COMMENT", "UI", "WHEN"});         // node WHEN ANDed at the tail
-            Out.push_back(std::move(L));
-        }
-
-    //PERSISTS — SCOPE=file|registry (default file); PATH is the runtime source; TARGET the durable subdir; CLOUD
-    //the future Cloud-Saves flag. Each entry lowers to one DeclarePersist layer.
-    if (!ArrayOf("PERSISTS", Arr)) return ordered_json::array();
-    if (Arr)
-        for (const auto &Pe : *Arr)
-        {
-            if (!Pe.is_object()) return Fail("PERSISTS entry is not an object");
-            if (Pe.contains("WHEN") && !Pe["WHEN"].is_string())
-                return Fail("PERSISTS entry WHEN must be a string (a condition), not " + std::string(Pe["WHEN"].type_name()));
-            nlohmann::ordered_json P = {{"TYPE", "DeclarePersist"}};
-            if (Pe.contains("SCOPE"))  { if (!Pe["SCOPE"].is_string())  return Fail("SCOPE must be a string (file|registry)"); P["SCOPE"]  = Pe["SCOPE"]; }
-            if (Pe.contains("PATH"))   { if (!Pe["PATH"].is_string())   return Fail("PATH must be a string");                  P["PATH"]   = Pe["PATH"]; }
-            if (Pe.contains("TARGET")) { if (!Pe["TARGET"].is_string()) return Fail("TARGET must be a string");                P["TARGET"] = Pe["TARGET"]; }
-            if (Pe.contains("CLOUD"))  { if (!Pe["CLOUD"].is_boolean()) return Fail("CLOUD must be a boolean");                P["CLOUD"]  = Pe["CLOUD"]; }
-            CopyIf(Pe, P, {"WHEN"});                                       // node WHEN ANDed at the tail
-            Out.push_back(std::move(P));
-        }
-
-    //The node's WHEN gates every layer it produced, applied in ONE place. Where a layer carries its OWN
-    //condition BOTH must hold, so they are ANDed. No copier may also copy WHEN, or the node's own text doubles
-    //back on it.
-    if (HasWhen)
-    {
-        std::string NodeWhen = J.value("WHEN", std::string());
-        {
-            const size_t NB = NodeWhen.find_first_not_of(" \t\r\n");
-            NodeWhen = (NB == std::string::npos) ? std::string()
-                     : NodeWhen.substr(NB, NodeWhen.find_last_not_of(" \t\r\n") - NB + 1);
-        }
-        for (auto &L : Out)
-        {
-            if (!L.is_object()) continue;
-            std::string Own = L.value("WHEN", std::string());
-            const size_t B = Own.find_first_not_of(" \t\r\n");
-            Own = (B == std::string::npos) ? std::string() : Own.substr(B, Own.find_last_not_of(" \t\r\n") - B + 1);
-            if (NodeWhen.empty()) { if (Own.empty()) L.erase("WHEN"); continue; }
-            L["WHEN"] = Own.empty() ? NodeWhen : ("(" + NodeWhen + ") && (" + Own + ")");
+            if (L.contains("WHEN") && O.value("TYPE", std::string()) != "CustomVar") O["WHEN"] = L["WHEN"];
+            Out.push_back(std::move(O));
         }
     }
     return Out;
 }
 
-//THE entry point, and the only place that may throw-check the payload.
-//
-//A node file is UNTRUSTED INPUT: it arrives from a peer over IPFS, or from an author's typo. nlohmann's
-//value()/get() throw type_error on a mismatch ("TYPE": 5, "OVERRIDE": "true"), and nothing above this catches
-//it — BuildNodeIndex runs at startup, so one such node in a fetched package source aborted the process before
-//the GUI existed, on every launch, with no way to remove the source from inside the app. A remote, persistent
-//denial of service.
-//
-//Guarded HERE rather than field by field: hardening the seven reads that throw today leaves the eighth one
-//added tomorrow unguarded, and the comment on the DllOverride check already claimed the property that the
-//other reads did not have. One choke point makes it true for the whole function by construction.
-//The TYPE every key the engine reads is required to have. Lowering copies payload fields VERBATIM out of
-//untrusted JSON (a node file arrives from a peer, or from an author's typo), and every consumer downstream —
-//ParseNode's identity derivation, LayerLocator, ValidateNodeGraph, the executor — then reads them with
-//nlohmann's .value(), which THROWS on a mismatch. Those reads happen outside any guard and BuildNodeIndex runs
-//at STARTUP, inside MainWindow's constructor: one such node in a fetched package source and no window ever
-//appears, so the source cannot be removed from inside the app.
-//
-//Guarding each reader is the losing move — there are a dozen and a half, and the next one added is unguarded
-//again. The property that holds the line is: WHAT LOWERING EMITS IS WELL-TYPED. Checked once, here.
-//
-//STRUCTURAL, not flat: a first version checked only top-level keys, so `"SOURCE": {"CID": 5}` sailed through
-//and LayerLocator aborted the app exactly as before. It recurses into the NAMED structural sub-payloads and
-//checks the ELEMENT type of the string arrays.
-//
-//It deliberately does NOT blanket-recurse. KEYVALUES, ENV and a tile's hoisted META are AUTHOR-KEYED BAGS —
-//a registry value legitimately named "PATH" or "TYPE" would be rejected by a generic walk, which is the same
-//wrong-rule mistake that COVER (dual-form: a filename OR an object) already caught against the live library.
-namespace TypeCheck {
-
-enum Kind { Str, Bool, Num, Arr, Obj, StrArr };
-
-const std::map<std::string, Kind> &Table()
+nlohmann::ordered_json LowerEntry(const nlohmann::ordered_json &E)
 {
-    static const std::map<std::string, Kind> T = {
-        {"TYPE",Str},{"PATH",Str},{"TARGET",Str},{"REGPATH",Str},{"DLLOVERRIDE",Str},
-        {"FILE",Str},{"MODE",Str},{"OFFSET",Str},{"EXPECT",Str},{"REPLACE",Str},{"VALUE",Str},{"PAYLOAD",Str},
-        {"CAVE",Str},{"ANCHOR",Str},{"APPLY",Str},{"KEY",Str},{"DEFAULT",Str},{"COMMENT",Str},{"WHEN",Str},
-        {"PLATFORM",Str},{"HOST",Str},{"EXECUTABLE",Str},{"CONTENTPATH",Str},{"WORKDIR",Str},{"LABEL",Str},
-        {"RUNNER",Str},{"UID",Str},{"TITLE",Str},{"CONTENT_ROOT",Str},{"ARCHITECTURE",Str},
-        {"CID",Str},{"CONTROL",Str},{"GROUP",Str},{"SCOPE",Str},
-        {"MIN",Num},{"MAX",Num},{"SIZE",Num},
-        {"OVERRIDE",Bool},{"RECOMMENDED",Bool},{"PREFIX_GENERATE",Bool},{"UNIFIED_RUNTIME",Bool},{"CLOUD",Bool},
-        {"GUEST",StrArr},{"EXEARGS",StrArr},{"ARGS",StrArr},{"REMOVE_ENV",StrArr},{"SUBMOUNTS",StrArr},
-        {"BASE_TARGETS",StrArr},{"CHOICES",Arr},
-        {"SOURCE",Obj},{"ENV",Obj},{"KEYVALUES",Obj},{"UI",Obj},
-    };
-    return T;
-}
-
-//The sub-objects worth descending into BY KEY: their keys are schema, so the table applies inside them.
-bool Structural(const std::string &Key)
-{
-    return Key == "SOURCE" || Key == "COVER" || Key == "UI" || Key == "CHOICES";
-}
-
-//The AUTHOR-KEYED BAGS. Their KEYS are arbitrary (a registry value may legitimately be named "PATH", an env
-//var "TYPE"), so the table cannot apply — but their VALUES are all read as strings, so the rule for them is
-//a value SHAPE rule instead. Without this the whitelist was blind by construction: a tile's META is hoisted
-//FLAT onto the layer, so `"UMUID": 12345` landed at top level where an unlisted key is simply skipped, and
-//the launch aborted reading it. Adding UMUID to the table would have closed exactly one of five and
-//guaranteed a ninth round of this.
-bool Bag(const std::string &Key)
-{
-    return Key == "KEYVALUES" || Key == "ENV" || Key == "OVERRIDES";
-}
-
-//Returns "" when fine, else the offending key.
-//`TopLevel` is true for a layer itself and false inside a schema sub-object. It matters for exactly one rule:
-//a tile's META bag is hoisted FLAT onto the layer, so an unlisted key there is AUTHOR DATA read as a string —
-//while an unlisted key inside SOURCE/UI/COVER is simply a key this table does not know yet, and constraining
-//it would be the COVER mistake again.
-std::string Bad(const ordered_json &Node, bool TopLevel = true)
-{
-    if (!Node.is_object()) return {};
-    for (const auto &[K, V] : Node.items())
+    ordered_json L = ordered_json::object();
+    if (!E.is_object()) return L;
+    const bool Runner = E.contains("GUEST") && E["GUEST"].is_array() && !E["GUEST"].empty();
+    if (Runner)
     {
-        auto It = Table().find(K);
-        if (It != Table().end())
+        L["HOST"] = E.value("HOST", ordered_json(""));
+        L["GUEST"] = E["GUEST"];
+        L["EXECUTABLE"] = E.value("EXE", ordered_json(""));
+        L["ARGS"] = E.contains("ARGS") && E["ARGS"].is_array() ? E["ARGS"] : ordered_json::array();
+        for (const char *F : {"CONTENT_ROOT", "PREFIX_GENERATE", "UNIFIED_RUNTIME", "GUEST_ROOTS", "LABEL"})
+            if (E.contains(F)) L[F] = E[F];
+    }
+    else
+    {
+        L["PLATFORM"] = E.value("HOST", ordered_json(""));
+        if (E.contains("EXE")) L["CONTENTPATH"] = E["EXE"];
+        if (E.contains("ARGS") && E["ARGS"].is_array()) L["EXEARGS"] = E["ARGS"];
+        for (const char *F : {"WORKDIR", "LABEL"})
+            if (E.contains(F)) L[F] = E[F];
+    }
+    return L;
+}
+
+bool UserOwned(const nlohmann::ordered_json &Keep, const std::string &Address)
+{
+    if (!Keep.is_object()) return false;
+    const std::string A = LowerAscii(Address);
+    size_t Best = 0;
+    bool Owned = false, Any = false;
+    for (const auto &[K, V] : Keep.items())
+    {
+        std::string Kl = LowerAscii(K);
+        while (!Kl.empty() && Kl.back() == '/') Kl.pop_back();
+        const bool Covers = A == Kl || A.rfind(Kl + "/", 0) == 0 || A.rfind(Kl + "#", 0) == 0;
+        if (!Covers || (Any && Kl.size() < Best)) continue;
+        Best = Kl.size(); Any = true;
+        Owned = !(V.is_boolean() && !V.get<bool>());
+    }
+    return Owned;
+}
+
+namespace {
+
+//A content layer seen through one TAKE, as mounts: (the path inside the layer, the FILES address it lands at). Each
+//selection keeps the part of the layer it covers — the whole layer when it lies inside the selection, the selection
+//alone when that lies inside the layer — named as TAKE names it (left-stripped, renamed). Empty: nothing is taken.
+using Mount = std::pair<std::string, std::string>;
+std::vector<Mount> ApplyTake(const std::vector<Mount> &In, const ordered_json &Take)
+{
+    if (Take.is_null() || (Take.is_array() && Take.empty())) return In;
+    std::vector<Mount> Out;
+    const auto Add = [&](const Mount &M) { if (std::find(Out.begin(), Out.end(), M) == Out.end()) Out.push_back(M); };
+    for (const auto &[Src, A] : In)
+        for (const auto &Sel : Take)
         {
-            bool Ok = true;
-            switch (It->second)
+            const bool Pair = Sel.is_array() && Sel.size() == 2;
+            const std::string S = Pair ? Str(Sel[0]) : Sel.is_string() ? Sel.get<std::string>() : std::string();
+            const std::string Ns = S.substr(0, S.find('/'));
+            if (Ns != "FILES") continue;                                    // facts are not files
+            std::string Base = S;
+            while (!Base.empty() && Base.back() == '/') Base.pop_back();
+            const bool Contents = !Pair && Base.size() != S.size();
+            if (A == Base || A.rfind(Base + "/", 0) == 0)                   // the layer lies inside the selection
             {
-                case Str:    Ok = V.is_string();  break;
-                case Bool:   Ok = V.is_boolean(); break;
-                case Num:    Ok = V.is_number();  break;
-                case Arr:    Ok = V.is_array();   break;
-                case Obj:    Ok = V.is_object();  break;
-                case StrArr: Ok = V.is_array();
-                             if (Ok) for (const auto &E : V) if (!E.is_string()) { Ok = false; break; }
-                             break;
+                if (Contents && A == Base) Add({ Src, Ns });
+                else if (auto T = Fold::TakeView(ordered_json::array({ Sel }), A)) Add({ Src, *T });
             }
-            if (!Ok) return K;
-        }
-        if (Bag(K) && V.is_object())
-        {
-            for (const auto &[BK, BV] : V.items())
-                if (!BV.is_string() && !BV.is_null()) return K + "." + BK;
-            continue;
-        }
-        if (Structural(K))
-        {
-            if (V.is_object()) { const std::string B = Bad(V, false); if (!B.empty()) return B; }
-            else if (V.is_array())
-                for (const auto &E : V)
+            else if (Base.rfind(A + "/", 0) == 0)                           // the selection lies inside the layer
+            {
+                const std::string Rest = Base.substr(A.size() + 1);
+                std::string To;
+                if (Pair)
                 {
-                    //A CHOICES element may be a bare string shorthand OR an object; only the object form has
-                    //fields to check, and calling value() on the string form is what threw in the picker.
-                    if (!E.is_object() && !E.is_string()) return K;
-                    const std::string B = Bad(E, false);
-                    if (!B.empty()) return B;
+                    To = Str(Sel[1]);
+                    if (To.rfind(Ns + "/", 0) != 0) To = Ns + "/" + To;
                 }
-            continue;
-        }
-        //An UNLISTED key AT TOP LEVEL is a hoisted META field (see above): author data that every reader takes
-        //as a string. Inside a schema sub-object an unlisted key is just one this table has not learned yet.
-        if (TopLevel && !V.is_string() && !V.is_null() && !V.is_boolean() && !V.is_array() && !V.is_object())
-            return K;
-    }
-    return {};
-}
-
-} // namespace TypeCheck
-
-ordered_json Lower(const ordered_json &J, const std::string &NodeId, std::string &Err)
-{
-    try
-    {
-        ordered_json Out = LowerOrThrow(J, NodeId, Err);
-        if (!Err.empty()) return Out;
-        //The emitted layers are the engine's input from here on, so they must be well-typed BEFORE anything
-        //reads them — see TypeOk. A mismatch is a refusal naming the field, not a crash three frames later.
-        for (const auto &L : Out)
-        {
-            const std::string Bad = TypeCheck::Bad(L);
-            if (!Bad.empty())
-            {
-                Err = "node '" + NodeId + "': field " + Bad + " has the wrong type";
-                return ordered_json::array();
+                else To = Contents ? Ns : Ns + "/" + Base.substr(Base.rfind('/') + 1);
+                Add({ Src.empty() ? Rest : Src + "/" + Rest, To });
             }
         }
-        return Out;
-    }
-    catch (const std::exception &E)
-    {
-        Err = "node '" + NodeId + "': malformed payload (" + E.what() + ")";
-        return ordered_json::array();
-    }
+    return Out;
 }
 
-ordered_json LowerEntrypoint(const ordered_json &Entry, const std::string &NodeId, std::string &Err)
+//Through a whole view ([TAKE, TARGET] steps, innermost first): each step's take, then its placement — the addresses
+//end in the root's namespace.
+std::vector<Mount> ApplyView(std::vector<Mount> Ms, const ordered_json &View)
 {
-    try
+    for (const auto &Step : View)
     {
-        ordered_json Out = LowerEntrypointOrThrow(Entry, NodeId, Err);
-        if (!Err.empty()) return ordered_json();
-        const std::string Bad = TypeCheck::Bad(Out);
-        if (!Bad.empty()) { Err = "node '" + NodeId + "': ENTRYPOINTS field " + Bad + " has the wrong type"; return ordered_json(); }
-        return Out;
+        Ms = ApplyTake(Ms, Step[0]);
+        const std::string At = Str(Step[1]);
+        if (At.empty()) continue;
+        for (auto &M : Ms) M.second = "FILES/" + Fold::PlaceUnder(M.second.size() > 6 ? M.second.substr(6) : std::string(), At);
     }
-    catch (const std::exception &E)
+    return Ms;
+}
+
+} // namespace
+
+nlohmann::ordered_json LowerPlan(const Fold::Plan &P, const nlohmann::ordered_json &GuestRoots)
+{
+    ordered_json Out = ordered_json::array();
+    const auto Map = [&](const std::string &Path) { return Fold::ToLayout(Path, GuestRoots); };
+
+    //Package-owned inside a user-owned subtree: re-applied after the user's state is restored.
+    const auto TakenBack = [&](const std::string &Address) {
+        std::string Parent = Address;
+        const size_t Hash = Parent.find('#');
+        if (Hash != std::string::npos) Parent = Parent.substr(0, Hash);
+        bool Inside = false;
+        for (const auto &[K, V] : P.Keep.items())
+        {
+            std::string Kl = LowerAscii(K);
+            while (!Kl.empty() && Kl.back() == '/') Kl.pop_back();
+            if (!(V.is_boolean() && !V.get<bool>()) && LowerAscii(Parent).rfind(Kl + "/", 0) == 0) Inside = true;
+        }
+        return Inside && !UserOwned(P.Keep, Address);
+    };
+
+    for (const Fold::Item &I : P.Seq)
     {
-        Err = "node '" + NodeId + "': malformed ENTRYPOINTS entry (" + E.what() + ")";
-        return ordered_json();
+        if (I.Kind == "EDIT")
+        {
+            for (const auto &O : I.Ops)
+            {
+                ordered_json L = EditOp(O, Map(I.Target));
+                const std::string Addr = "FILES/" + I.Target
+                                       + (Str(O.value("MODE", ordered_json())) == "ConfigWrite" ? "#" + Str(O.value("KEY", ordered_json())) : std::string());
+                //An EDIT applies to the value beneath it: the composed files, so after the mount. On a user-owned
+                //address it is the package's default — applied while the user has no saved copy of the file.
+                //(A BinaryPatch always runs after the mount.)
+                if (L["TYPE"] == "FileEdit")
+                {
+                    L["OVERRIDE"] = true;
+                    if (UserOwned(P.Keep, Addr)) L["IF_UNSAVED"] = true;
+                }
+                Out.push_back(std::move(L));
+            }
+            continue;
+        }
+        const std::string Path = (I.Payload.find('%') != std::string::npos || I.Dir.empty())
+                               ? I.Payload : (std::filesystem::path(I.Dir) / I.Payload).string();
+        ordered_json Sub = I.Submounts;
+        if (Sub.is_array())
+            for (auto &S : Sub)
+            {
+                const std::string X = Str(S);
+                const size_t C = X.find(':');
+                if (C != std::string::npos) S = X.substr(0, C + 1) + Map(X.substr(C + 1));
+            }
+        if (I.View.is_null())
+        {
+            Out.push_back(ContentOp(I.Kind, Path, Map(I.Target), I.Source, I.Size, Sub));
+            continue;
+        }
+        //Seen through TAKE: only what is taken mounts, where TAKE puts it — as submounts (the FS's "src:dst" view of
+        //a source). A FILE is its bundle directory with the one file submounted, so a TAKE can rename it too.
+        const std::string Name = std::filesystem::path(I.Payload).filename().string();
+        const std::string OwnAddr = I.Own.empty() ? std::string("FILES") : "FILES/" + I.Own;
+        std::vector<Mount> Ms;
+        if (I.Kind == "FILE") Ms.push_back({ Name, OwnAddr + "/" + Name });
+        else if (I.Submounts.is_array() && !I.Submounts.empty())
+            for (const auto &S : I.Submounts)
+            {
+                const std::string X = Str(S);
+                const size_t C = X.find(':');
+                if (C != std::string::npos) Ms.push_back({ X.substr(0, C), "FILES/" + X.substr(C + 1) });
+            }
+        else Ms.push_back({ std::string(), OwnAddr });
+        Ms = ApplyView(Ms, I.View);
+        if (Ms.empty()) continue;                                            // nothing of this layer is taken
+        ordered_json Mounts = ordered_json::array();
+        for (const auto &[Src, Addr] : Ms)
+            Mounts.push_back(Src + ":" + Map(Addr.size() > 6 ? Addr.substr(6) : std::string()));   // strip "FILES/"
+        if (I.Kind == "FILE")
+            Out.push_back(ContentOp("DIR", std::filesystem::path(Path).parent_path().string(), Map(I.Target), ordered_json(), ordered_json(), Mounts));
+        else
+            Out.push_back(ContentOp(I.Kind, Path, Map(I.Target), I.Source, I.Size, Mounts));
     }
+    //The folded registry, one RegEdit per (architecture, key) — values in fold order within a key.
+    std::map<std::string, ordered_json> ByKey;
+    std::vector<std::string> KeyOrder;
+    for (const auto &[K, V] : P.Reg)
+    {
+        const std::string Arch = V.Arch.is_null() ? std::string() : Str(V.Arch);
+        const std::string Kk = Arch + '\x1f' + LowerAscii(V.Path);
+        auto It = ByKey.find(Kk);
+        if (It == ByKey.end())
+        {
+            ordered_json R = { {"TYPE", "RegEdit"}, {"REGPATH", V.Path}, {"KEYVALUES", ordered_json::object()} };
+            if (!V.Arch.is_null()) R["ARCHITECTURE"] = V.Arch;
+            std::string A = "REG/" + V.Path;
+            std::replace(A.begin(), A.end(), '\\', '/');
+            if (TakenBack(A)) R["OVERRIDE"] = true;
+            It = ByKey.emplace(Kk, std::move(R)).first;
+            KeyOrder.push_back(Kk);
+        }
+        It->second["KEYVALUES"][V.Name] = V.Value;
+    }
+    for (const auto &[K, V] : P.RegKeys)
+    {
+        const std::string Arch = V.first.is_null() ? std::string() : Str(V.first);
+        const std::string Kk = Arch + '\x1f' + LowerAscii(V.second);
+        if (ByKey.count(Kk)) continue;
+        ordered_json R = { {"TYPE", "RegEdit"}, {"REGPATH", V.second}, {"KEYVALUES", ordered_json::object()} };
+        if (!V.first.is_null()) R["ARCHITECTURE"] = V.first;
+        ByKey.emplace(Kk, std::move(R));
+        KeyOrder.push_back(Kk);
+    }
+    for (const auto &K : KeyOrder) Out.push_back(ByKey[K]);
+    for (const auto &[N, O] : P.Dll.items())
+        if (O.is_string()) Out.push_back({ {"TYPE", "DllOverride"}, {"DLLOVERRIDE", N + "=" + O.get<std::string>()} });
+    for (const auto &[K, D] : P.Decls.items())
+    {
+        ordered_json V = { {"TYPE", "CustomVar"}, {"KEY", K} };
+        if (D.is_object()) for (const auto &[F, X] : D.items()) V[F] = X;
+        Out.push_back(std::move(V));
+    }
+    for (const auto &[A, V] : P.Keep.items())
+        if (!V.is_boolean() || V.get<bool>()) Out.push_back(PersistOp(A, V, Map));
+    return Out;
 }
 
 } // namespace NodeLower

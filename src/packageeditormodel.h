@@ -108,9 +108,6 @@ private:
     nlohmann::ordered_json         Doc;                       // working document { "NODES": [...] }
     nlohmann::ordered_json         Layout = nlohmann::ordered_json::object();   // NODE_ID -> [x,y], see layout()
     QDir *                         PackageDir = nullptr;
-    //Entries in a multi-node file that are not nodes. Held so SaveNodes can write them back rather
-    //than erasing them when it rewrites the file from the nodes it loaded.
-    std::map<std::string, nlohmann::ordered_json> Carried;
     nlohmann::ordered_json *       GlobalConfigJSON = nullptr;
     QWidget *                      DialogParent = nullptr;
     std::vector<std::string>       ValErrors, ValWarnings;

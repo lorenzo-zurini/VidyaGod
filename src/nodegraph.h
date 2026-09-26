@@ -16,21 +16,22 @@
 // unit-tested) and the I/O orchestration (BuildFrozenIndex / Mint — call the node; nodegraph.cpp).
 namespace NodeGraph {
 
+// A received package folder lands in <package dir>/.package/ — a dir its fetch owns whole (a re-publish replaces it).
+// The nodes in it belong to the package dir itself: their bundle (where content hydrates) is the parent.
+inline constexpr const char *kPackageFolderDir = ".package";
+
 // ---- pure transforms (nodegraphpure.cpp) ----
 
-// Normalize dag-json links IN PLACE: any object of the exact shape {"/":"<string>"} becomes that string, recursively.
-// After this, OVER refs and SOURCE.CID / COVER.SOURCE.CID read as plain CID strings — what
-// ParseNode and every consumer expect. A dag-json byte value ({"/":{"bytes":...}}) is left alone (non-string "/").
-void NormalizeLinks(nlohmann::ordered_json &J);
 
-// Freeze one working-tree node's raw JSON into its canonical-intent dag-json form: strip POS (canvas coords — the one
-// non-semantic field), rewrite intra-tree OVER handles → their frozen CIDs (via HandleToCid; a ref not in
-// HandleToCid is an already-frozen external dep and passes through), and linkify every POSITIVE CID-bearing field
-// (OVER's plain entries and any-of members, and any SOURCE.CID) into {"/":cid} — a NOT ref stays a plain string so
-// it is identity but not closure. The returned JSON is handed to DagPut/DagCid (which
-// canonicalizes, so C++ key order is irrelevant). Pure — no node required.
+// Freeze one working-tree node's raw JSON: strip its handle ("CID") and canvas coordinates ("POS") and rewrite every
+// NODE/ANY/NOT ref naming a working-tree node to that node's frozen CID (via HandleToCid). A ref absent from
+// HandleToCid is an already-frozen external node and passes through — unless it names a node of Tree: that node did
+// not freeze (a bad node, or a cycle), so the ref would publish a handle nothing holds. The first such ref is
+// reported in *Dangling and the caller skips this node too. Pure — no node required.
 nlohmann::ordered_json FreezeNodeJson(nlohmann::ordered_json Raw,
-                                      const std::map<std::string, std::string> &HandleToCid);
+                                      const std::map<std::string, std::string> &HandleToCid,
+                                      const std::map<std::string, nlohmann::ordered_json> *Tree = nullptr,
+                                      std::string *Dangling = nullptr);
 
 // Read every *.json node under Root (RECURSIVELY) into a working tree: stored "CID" handle → raw node JSON, and handle
 // → the bundle dir it came from (for BundleDir). A node with no stored "CID" (a fetched/received block, whose handle
@@ -40,7 +41,7 @@ nlohmann::ordered_json FreezeNodeJson(nlohmann::ordered_json Raw,
 // SkipReserved: skip reserved "_friend_*" received-stub dirs (used by PublishLibrary so a friend's stub can never enter
 // the mint tree — no re-share, no hostile handle shadowing our nodes). Default false (the catalog gather wants them).
 // Cheap string-aware bracket-depth pre-scan: true iff the JSON text nests no deeper than MaxDepth. nlohmann's parser
-// is recursive-descent and NormalizeLinks recurses per level, so UNTRUSTED bytes (a fetched block, a landed received
+// is recursive-descent, so UNTRUSTED bytes (a fetched block, a landed received
 // node file) must pass this BEFORE any parse — a hostile deep block otherwise overflows the stack (no exception).
 bool JsonDepthWithinLimit(const std::string &S, int MaxDepth);
 
@@ -66,6 +67,19 @@ void GatherWorkingTree(const std::filesystem::path &Root,
 // but fail to freeze downstream and are skipped, so one bad edge never aborts the whole freeze. Always returns true. Pure.
 bool TopoOrderForMint(const std::map<std::string, nlohmann::ordered_json> &WorkingTree,
                       std::vector<std::string> &Order, std::string *Error = nullptr);
+
+// ---- landing untrusted node bytes (nodegraph.cpp) ----
+
+// Node bytes a peer sent, checked before anything reads them: at most one block, hashing to ExpectCid, a node object
+// (depth-checked parse), canonical, and carrying no working-tree field (CID, POS — a handle would hijack a local
+// node once the package is installed). Parsed into J on success; the reason in *Error otherwise.
+bool VerifyNodeBytes(const std::string &Bytes, const std::string &ExpectCid, nlohmann::ordered_json &J, std::string *Error = nullptr);
+// True iff P resolves within Base (no ".." escape, no absolute path elsewhere; works on not-yet-existent paths). What
+// guards every write a node's content can direct (a download, a hydrate) to its own package dir.
+bool PathWithin(const std::filesystem::path &Base, const std::filesystem::path &P);
+// VerifyNodeBytes over a landed file (a received <cid>.json).
+bool VerifyLanded(const std::filesystem::path &File, const std::string &ExpectCid, nlohmann::ordered_json *Out = nullptr,
+                  std::string *Error = nullptr);
 
 // ---- I/O orchestration (nodegraph.cpp) ----
 

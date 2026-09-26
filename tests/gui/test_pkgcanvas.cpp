@@ -61,35 +61,71 @@ private slots:
         delete Canvas; Canvas = nullptr;
     }
 
-    // Adding nodes and wiring them writes PARENTS into the very document the model persists — there is no
-    // second representation, so "the graph is the package" is a testable claim, not a slogan.
-    void wiringWritesParentsIntoTheDocument()
+    // A node's contained nodes (its NODE layers), in LAYERS order.
+    static std::vector<std::string> refs(const json &N)
     {
-        const int content = Canvas->addNode("LAYERS", 40, 40);
-        const int exec    = Canvas->addNode("ENTRYPOINTS", 400, 40);
+        std::vector<std::string> Out;
+        if (N.is_object() && N.contains("LAYERS") && N["LAYERS"].is_array())
+            for (const auto &L : N["LAYERS"]) if (L.is_object() && L.contains("NODE") && L["NODE"].is_string()) Out.push_back(L["NODE"].get<std::string>());
+        return Out;
+    }
+    // The first layer of a type in a node — a reference into the document.
+    static json &layer(json &N, const char *T)
+    {
+        for (auto &L : N["LAYERS"]) if (L.is_object() && L.contains(T)) return L;
+        static json None; None = json(); return None;
+    }
+    // A node with these layers (a fixture).
+    static json node(const std::string &Handle, const json &Layers, const json &Extra = json::object())
+    {
+        json N = {{"CID", Handle}, {"LABEL", Handle}, {"LAYERS", Layers}};
+        for (auto It = Extra.begin(); It != Extra.end(); ++It) N[It.key()] = It.value();
+        return N;
+    }
+
+    // Adding nodes and wiring them writes a NODE layer into the very document the model persists — there is no
+    // second representation, so "the graph is the package" is a testable claim, not a slogan. The contained node
+    // goes BEFORE the node's own layers: what a node contains lies beneath what it adds.
+    void wiringWritesNodeLayersIntoTheDocument()
+    {
+        const int content = Canvas->addNode("ZIP", 40, 40);
+        const int exec    = Canvas->addNode("EXEC", 400, 40);
         runFrame();
 
         QCOMPARE(Canvas->nodeCount(), 2);
         QVERIFY(Canvas->connect(content, exec));
-        QCOMPARE(Doc["NODES"][exec]["OVER"].size(), size_t(1));
-        QCOMPARE(Doc["NODES"][exec]["OVER"][0].get<std::string>(),   // wired by the HANDLE (CID), not the cosmetic LABEL
+        QCOMPARE(refs(Doc["NODES"][exec]).size(), size_t(1));
+        QCOMPARE(refs(Doc["NODES"][exec])[0],                          // wired by the HANDLE (CID), not the cosmetic LABEL
                  Doc["NODES"][content]["CID"].get<std::string>());
+        QVERIFY(Doc["NODES"][exec]["LAYERS"][0].contains("NODE"));     // beneath the node's own EXEC layer
+        QVERIFY(Doc["NODES"][exec]["LAYERS"][1].contains("EXEC"));
 
         QVERIFY(!Canvas->connect(content, exec));            // idempotent — no duplicate edge
         QVERIFY(Canvas->disconnect(content, exec));
-        QCOMPARE(Doc["NODES"][exec]["OVER"].size(), size_t(0));
+        QCOMPARE(refs(Doc["NODES"][exec]).size(), size_t(0));
+        QCOMPARE(Doc["NODES"][exec]["LAYERS"].size(), size_t(1));      // only its own layer left
     }
 
     // A fresh node is valid by construction. The old editor created content layers with NO TARGET at all,
     // which is exactly how Tonic Trouble died as Proton "create process: 2".
     void newContentNodeIsAnchored()
     {
-        const int i = Canvas->addNode("LAYERS");
-        const json &L0 = Doc["NODES"][i]["LAYERS"][0];   // batched: fields live in the first layer entry
-        QCOMPARE(L0["FORM"].get<std::string>(), std::string("zip"));
-        QCOMPARE(L0["TARGET"].get<std::string>(),
-                 std::string("%PrefixRoot%/drive_c/%PackageUID%"));
+        const int i = Canvas->addNode("ZIP");
+        const json &L0 = Doc["NODES"][i]["LAYERS"][0];
+        QVERIFY(L0.contains("ZIP"));
+        QCOMPARE(L0["TARGET"].get<std::string>(), std::string("FILES/C:/%PackageUID%"));
         QVERIFY(!Doc["NODES"][i]["LABEL"].get<std::string>().empty());
+        // …and every starter layer is one layer of its type — with a placement where one is needed (the file
+        // name or the reference it holds is the author's to fill; validation names it until then).
+        for (const std::string &T : PkgGraph::AllTypes())
+        {
+            const json L = PkgGraph::NewLayer(T);
+            QCOMPARE(PkgGraph::LayerType(L), T);
+            if (T == "ZIP" || T == "DIR" || T == "FILE" || T == "DELTA" || T == "EDIT")
+                QVERIFY2(L.contains("TARGET") && L["TARGET"].get<std::string>().rfind("FILES/", 0) == 0, T.c_str());
+        }
+        for (const char *T : {"EDIT", "REG", "DLL", "ENV", "VARS", "KEEP", "EXEC"})   // complete as they stand
+            QVERIFY2(NodeLower::CheckNode(PkgGraph::NewPayload(T), T).empty(), T);
     }
 
     // Model C: HANDLES (the stored "CID") are unique by construction; a rename sets only the COSMETIC LABEL and
@@ -97,18 +133,18 @@ private slots:
     // allowed (a label is a display name, not a key; RoC/TFT "v1.21b" are legitimate namesakes).
     void idsAreUniqueAndRenamesRepointChildren()
     {
-        const int a = Canvas->addNode("LAYERS");
-        const int b = Canvas->addNode("LAYERS");
+        const int a = Canvas->addNode("ZIP");
+        const int b = Canvas->addNode("ZIP");
         const std::string aH = Doc["NODES"][a]["CID"].get<std::string>();   // the wiring HANDLE
         const std::string bH = Doc["NODES"][b]["CID"].get<std::string>();
         QVERIFY(aH != bH);                                               // handles are unique by construction
 
-        QVERIFY(Canvas->connect(a, b));                                  // b depends on a — via a's HANDLE
-        QCOMPARE(Doc["NODES"][b]["OVER"][0].get<std::string>(), aH);
+        QVERIFY(Canvas->connect(a, b));                                  // b contains a — via a's HANDLE
+        QCOMPARE(refs(Doc["NODES"][b])[0], aH);
 
         QVERIFY(Canvas->renameNode(a, "renamed_base"));
         QCOMPARE(Doc["NODES"][a]["LABEL"].get<std::string>(), std::string("renamed_base"));
-        QCOMPARE(Doc["NODES"][b]["OVER"][0].get<std::string>(), aH);  // UNCHANGED — refs are handles, not names
+        QCOMPARE(refs(Doc["NODES"][b])[0], aH);  // UNCHANGED — refs are handles, not names
         QCOMPARE(Doc["NODES"][a]["CID"].get<std::string>(), aH);         // the handle itself never moves on rename
 
         QVERIFY(Canvas->renameNode(b, "renamed_base"));                  // a duplicate LABEL is allowed (cosmetic)
@@ -124,8 +160,8 @@ private slots:
     void storedPositionsSurviveRendering()
     {
         Doc["NODES"] = json::array({
-            json{{"LABEL","a"},{"LAYERS",json::array({json{{"FORM","zip"},{"PATH","a.zip"}}})}},
-            json{{"LABEL","b"},{"LAYERS",json::array({json{{"FORM","zip"},{"PATH","b.zip"}}})}},
+            node("a", json::array({json{{"ZIP","a.zip"}}})),
+            node("b", json::array({json{{"ZIP","b.zip"}}})),
         });
         Layout = json{{"a", json::array({250.0, 140.0})}, {"b", json::array({900.0, 430.0})}};
         Canvas->invalidateGraph();
@@ -140,19 +176,23 @@ private slots:
     // Deleting a node takes its inbound references with it, so the graph never carries a dangling parent.
     void deletingANodeDropsReferencesToIt()
     {
-        const int a = Canvas->addNode("LAYERS");
-        const int b = Canvas->addNode("ENTRYPOINTS");
+        const int a = Canvas->addNode("ZIP");
+        const int b = Canvas->addNode("EXEC");
         QVERIFY(Canvas->connect(a, b));
+        Doc["NODES"][b]["LAYERS"].push_back(json{{"ANY", json::array({Doc["NODES"][a]["CID"], "other"})}});
+        Doc["NODES"][b]["LAYERS"].push_back(json{{"NOT", Doc["NODES"][a]["CID"]}});
         QVERIFY(Canvas->removeNode(a));
         QCOMPARE(Canvas->nodeCount(), 1);
-        QCOMPARE(Doc["NODES"][0]["OVER"].size(), size_t(0));   // b's edge went with it
+        QCOMPARE(refs(Doc["NODES"][0]).size(), size_t(0));   // b's edge went with it…
+        QCOMPARE(Doc["NODES"][0]["LAYERS"].size(), size_t(2));  // …and its NOT; the ANY keeps its other member
+        QCOMPARE(Doc["NODES"][0]["LAYERS"][1]["ANY"], json::array({"other"}));
     }
 
     // Out-of-bundle parents (MediaStack_MS, asiloader…) are reference chips, not boxes we own.
     void externalParentsBecomeChips()
     {
-        const int b = Canvas->addNode("ENTRYPOINTS");
-        Doc["NODES"][b]["OVER"] = json::array({"MediaStack_MS"});
+        const int b = Canvas->addNode("EXEC");
+        QVERIFY(Canvas->connectExternal("MediaStack_MS", b));
         const PkgGraph::Graph g = Canvas->graph();
         QCOMPARE(g.Externals.size(), size_t(1));
         QCOMPARE(g.Externals[0], std::string("MediaStack_MS"));
@@ -165,7 +205,7 @@ private slots:
     // dragging a box change the package's bytes, and therefore its CID, for every peer.
     void positionsPersistIntoTheLayoutSidecarNotThePackage()
     {
-        const int i = Canvas->addNode("LAYERS", 123.0f, 456.0f);
+        const int i = Canvas->addNode("ZIP", 123.0f, 456.0f);
         const std::string id = Doc["NODES"][i]["CID"].get<std::string>();   // the layout sidecar is keyed by the HANDLE
         QVERIFY(!Doc["NODES"][i].contains("POS"));               // NOT in the package
         QVERIFY(Layout.contains(id));                            // in the sidecar
@@ -192,9 +232,9 @@ private slots:
     {
         // Handles (CID) are what PARENTS reference and the layout keys on; batched content is a VFSLayer/LAYERS node.
         Doc["NODES"] = json::array({
-            json{{"CID","base"},{"LABEL","base"},{"LAYERS",json::array({json{{"FORM","zip"},{"PATH","a.zip"}}})}},
-            json{{"CID","mid"}, {"LABEL","mid"}, {"LAYERS",json::array({json{{"FORM","zip"},{"PATH","b.zip"}}})},{"OVER",json::array({"base"})}},
-            json{{"CID","tip"}, {"LABEL","tip"}, {"ENTRYPOINTS",json::array({json{{"HOST","win32"}}})},{"OVER",json::array({"mid"})}},
+            node("base", json::array({json{{"ZIP","a.zip"}}})),
+            node("mid",  json::array({json{{"NODE","base"}}, json{{"ZIP","b.zip"}}})),
+            node("tip",  json::array({json{{"NODE","mid"}}, json{{"EXEC",json::array({json{{"LABEL","Play"},{"HOST","win32"}}})}}})),
         });
         const PkgGraph::Graph g = Canvas->graph();
         QVERIFY(g.Nodes[0].X < g.Nodes[1].X);                 // depth increases left → right
@@ -208,11 +248,10 @@ private slots:
     // every codec. The distinction is a FLAG, and these are the assertions that make reinstating the bug fail.
     void registryDefaultValuesSurviveAndKeyOnlyRowsStayKeyOnly()
     {
-        json entry = json{{"ARCHITECTURE", json::array({"64"})},
-                          {"COMMENT", "why this exists"},
-                          {"HKLM", {{"Classes", {{"CLSID", {{"{abc}", {{"", "LAV Splitter"},
+        json entry = json{{"HKLM", {{"Classes", {{"CLSID", {{"{abc}", {{"", "LAV Splitter"},
                                                                       {"Merit", "dword:00600000"}}}}}}}}},
-                          {"HKCU", {{"Software", {{"EmptyKey", json::object()}}}}}};
+                          {"HKCU", {{"Software", {{"EmptyKey", json::object()}}}}},
+                          {"NOTE", "a non-hive member survives"}};
         const std::string before = entry.dump();
 
         const auto rows = PkgGraph::RegRowsOf(entry);
@@ -233,8 +272,8 @@ private slots:
                  std::string("LAV Splitter"));
         QVERIFY(rebuilt["HKCU"]["Software"]["EmptyKey"].is_object());
         QVERIFY(rebuilt["HKCU"]["Software"]["EmptyKey"].empty());        // still key-only
-        // Non-hive fields survive (COMMENT is legal here and NodeLower goes out of its way to permit it)...
-        QCOMPARE(rebuilt.value("COMMENT", std::string()), std::string("why this exists"));
+        // Non-hive members survive...
+        QCOMPARE(rebuilt.value("NOTE", std::string()), std::string("a non-hive member survives"));
         // ...and the whole entry is byte-identical: a round trip must not churn the package's CID.
         QCOMPARE(rebuilt.dump(), before);
     }
@@ -251,17 +290,15 @@ private slots:
             std::ifstream In(It.next().toStdString());
             json D; if (!In) continue;
             try { In >> D; } catch (...) { continue; }
-            for (auto &N : (D.is_array() ? D : json::array({D})))
+            if (!D.is_object() || !D.contains("LAYERS") || !D["LAYERS"].is_array()) continue;
+            for (auto &L : D["LAYERS"])
             {
-                if (!N.is_object() || !N.contains("REGEDITS") || !N["REGEDITS"].is_array()) continue;
-                for (auto &E : N["REGEDITS"])
-                {
-                    json After = E;
-                    PkgGraph::RegRowsInto(After, PkgGraph::RegRowsOf(E));
-                    ++checked;
-                    if (After.dump() != E.dump()) { ++bad;
-                        qWarning("DIFF in %s", N.value("LABEL", std::string()).c_str()); }
-                }
+                if (!L.is_object() || !L.contains("REG") || !L["REG"].is_object()) continue;
+                json After = L["REG"];
+                PkgGraph::RegRowsInto(After, PkgGraph::RegRowsOf(L["REG"]));
+                ++checked;
+                if (After.dump() != L["REG"].dump()) { ++bad;
+                    qWarning("DIFF in %s", D.value("LABEL", std::string()).c_str()); }
             }
         }
         QVERIFY2(checked > 0, "found no RegEdit entries to check");
@@ -271,12 +308,12 @@ private slots:
     // The registry is a TREE on disk and flat key paths to a human; the editor round-trips between them.
     void registryRowsRoundTripThroughTheTree()
     {
-        json entry = json::object({{"ARCHITECTURE", json::array({"32"})}});
+        json entry = json::object({{"NOTE", "kept"}});
         PkgGraph::RegRowsInto(entry, {{"HKLM\\Software\\Ubi Soft\\TONICT", "Version", "1.00"},
                                       {"HKLM\\Software\\Ubi Soft\\TONICT", "Lang",    "en"}});
         QVERIFY(entry.contains("HKLM"));
         QCOMPARE(entry["HKLM"]["Software"]["Ubi Soft"]["TONICT"]["Version"].get<std::string>(), std::string("1.00"));
-        QCOMPARE(entry["ARCHITECTURE"].size(), size_t(1));    // non-hive fields survive the rebuild
+        QCOMPARE(entry["NOTE"].get<std::string>(), std::string("kept"));    // non-hive members survive the rebuild
 
         const auto rows = PkgGraph::RegRowsOf(entry);
         QCOMPARE(rows.size(), size_t(2));
@@ -288,7 +325,7 @@ private slots:
     // against, which means a Content PARENT.
     void actionsAreContextual()
     {
-        const int zip = Canvas->addNode("LAYERS");
+        const int zip = Canvas->addNode("ZIP");
         auto names = [&](int i, const std::vector<std::string> &hints = {}) {
             std::vector<std::string> out;
             for (const auto &a : PkgGraph::ActionsFor(Doc["NODES"][i], Canvas->graph(), i, hints))
@@ -305,13 +342,17 @@ private slots:
         QVERIFY(!has(names(zip), "restore"));          // not known to be DEFLATE
         QVERIFY(has(names(zip, {"deflate"}), "restore"));   // the host probed the zip: now it is offered
 
-        const int child = Canvas->addNode("LAYERS");
+        const int child = Canvas->addNode("ZIP");
         QVERIFY(Canvas->connect(zip, child));
-        QVERIFY(has(names(child), "to_delta"));        // its parent is Content — a base exists
+        QVERIFY(!has(names(child), "to_delta"));       // the zip beneath names no file yet: nothing to diff against
+        layer(Doc["NODES"][zip], "ZIP")["ZIP"] = "base.zip";
+        layer(Doc["NODES"][child], "ZIP")["ZIP"] = "new.zip";
+        Canvas->invalidateGraph();
+        QVERIFY(has(names(child), "to_delta"));        // it contains a zip at its own target, beneath its own
 
         // A delta offers exactly one reverse conversion — undelta, the inverse of "-> delta". It is not a zip,
         // so the zip actions do not apply until it has been undelta'd.
-        Doc["NODES"][child]["LAYERS"][0]["FORM"] = "delta";
+        layer(Doc["NODES"][child], "ZIP") = json{{"DELTA", "d.vgdelta"}, {"TARGET", "FILES/C:/%PackageUID%"}};
         QVERIFY(has(names(child), "undelta"));
         QVERIFY(!has(names(child), "to_dir"));         // a delta is not a zip
         QVERIFY(!has(names(child), "to_delta"));       // it already is one
@@ -324,10 +365,13 @@ private slots:
             QVERIFY2(has(names(i), "capture_setup"), t.c_str());
         }
 
-        // A runner (has GUEST) is not a launchable, so it offers no test launch.
-        const int exec = Canvas->addNode("ENTRYPOINTS");
+        // A runner (has GUEST) is not a launchable, so it offers no test launch; a tiled entry offers its cover.
+        const int exec = Canvas->addNode("EXEC");
         QVERIFY(has(names(exec), "test_launch"));
-        Doc["NODES"][exec]["ENTRYPOINTS"][0]["GUEST"] = json::array({"win32"});
+        QVERIFY(!has(names(exec), "browse_cover"));
+        layer(Doc["NODES"][exec], "EXEC")["EXEC"][0]["TILE"] = json{{"UID", "1"}};
+        QVERIFY(has(names(exec), "browse_cover"));
+        layer(Doc["NODES"][exec], "EXEC")["EXEC"][0]["GUEST"] = json::array({"win32"});
         QVERIFY(!has(names(exec), "test_launch"));
     }
 
@@ -335,7 +379,7 @@ private slots:
     // forever is the failure mode, so the begin/end pairing is what this pins.
     void busyStateLocksAndAlwaysClears()
     {
-        const int i = Canvas->addNode("LAYERS");
+        const int i = Canvas->addNode("ZIP");
         const std::string id = Doc["NODES"][i]["LABEL"].get<std::string>();
         QVERIFY(!Canvas->isBusy(id));
 
@@ -360,10 +404,10 @@ private slots:
     // is what exercises it, so this renders frames and then checks the graph the renderer was handed.
     void multiParentNodesKeepEveryWire()
     {
-        const int a = Canvas->addNode("LAYERS");
-        const int b = Canvas->addNode("LAYERS");
-        const int c = Canvas->addNode("REGEDITS");
-        const int exec = Canvas->addNode("ENTRYPOINTS");
+        const int a = Canvas->addNode("ZIP");
+        const int b = Canvas->addNode("ZIP");
+        const int c = Canvas->addNode("REG");
+        const int exec = Canvas->addNode("EXEC");
         QVERIFY(Canvas->connect(a, exec));
         QVERIFY(Canvas->connect(b, exec));
         QVERIFY(Canvas->connect(c, exec));
@@ -375,32 +419,32 @@ private slots:
         int into = 0;
         for (const auto &l : g.Links) if (l.ChildIndex == exec) ++into;
         QCOMPARE(into, 4);                                   // three in-bundle + one external chip
-        QCOMPARE(Doc["NODES"][exec]["OVER"].size(), size_t(4));
+        QCOMPARE(refs(Doc["NODES"][exec]).size(), size_t(4));
         // The externals list is what the chips are drawn from; a missing entry means a wire with no source.
         QCOMPARE(g.Externals.size(), size_t(1));
     }
 
     // Model C: every reference to a node is its HANDLE (the stored CID), and a rename touches only the cosmetic
-    // LABEL — so a rename carries nothing and, crucially, BREAKS nothing. PARENTS/EXCLUDE/RUNNER (all handle refs)
+    // LABEL — so a rename carries nothing and, crucially, BREAKS nothing. NODE/ANY/NOT (all handle refs)
     // still resolve, and the canvas position (keyed by the handle) does not move — which matters because renameNode
     // runs per KEYSTROKE, so the old name-keyed scheme made the box jump on the first character typed.
     void renamingANodeCarriesEveryReferenceToIt()
     {
-        const int a = Canvas->addNode("LAYERS", 300.0f, 400.0f);
-        const int b = Canvas->addNode("ENTRYPOINTS");
+        const int a = Canvas->addNode("ZIP", 300.0f, 400.0f);
+        const int b = Canvas->addNode("EXEC");
         const std::string handle = Doc["NODES"][a]["CID"].get<std::string>();   // the stable identity
         QVERIFY(Canvas->connect(a, b));
-        Doc["NODES"][b]["OVER"].push_back(json{{"NOT", handle}});   // these reference the HANDLE, as authoring does
-        Doc["NODES"][b]["ENTRYPOINTS"][0]["RUNNER"] = handle;
+        Doc["NODES"][b]["LAYERS"].push_back(json{{"NOT", handle}});   // these reference the HANDLE, as authoring does
+        Doc["NODES"][b]["LAYERS"].push_back(json{{"ANY", json::array({handle})}});
         QVERIFY(Layout.contains(handle));
 
         QVERIFY(Canvas->renameNode(a, "renamed"));
 
         QCOMPARE(Doc["NODES"][a]["LABEL"].get<std::string>(), std::string("renamed"));  // only the label changed
         QCOMPARE(Doc["NODES"][a]["CID"].get<std::string>(), handle);                    // the handle never moves
-        QCOMPARE(Doc["NODES"][b]["OVER"][0].get<std::string>(), handle);             // refs still resolve...
-        QCOMPARE(Doc["NODES"][b]["OVER"][1]["NOT"].get<std::string>(), handle);
-        QCOMPARE(Doc["NODES"][b]["ENTRYPOINTS"][0]["RUNNER"].get<std::string>(), handle);
+        QCOMPARE(refs(Doc["NODES"][b])[0], handle);                                     // refs still resolve...
+        QCOMPARE(layer(Doc["NODES"][b], "NOT")["NOT"].get<std::string>(), handle);
+        QCOMPARE(layer(Doc["NODES"][b], "ANY")["ANY"][0].get<std::string>(), handle);
         QVERIFY(Layout.contains(handle));                     // ...and the position stayed put (no per-keystroke jump)
         QCOMPARE(Layout[handle][0].get<double>(), 300.0);
     }
@@ -410,24 +454,28 @@ private slots:
     // would erase a DIFFERENT parent than the one the user pulled off.
     void linkSlotsAddressTheRealParentsIndex()
     {
-        const int p1 = Canvas->addNode("LAYERS");
-        const int p2 = Canvas->addNode("LAYERS");
-        const int c  = Canvas->addNode("ENTRYPOINTS");
-        const std::string a = Doc["NODES"][p1]["LABEL"].get<std::string>();
-        const std::string b = Doc["NODES"][p2]["LABEL"].get<std::string>();
-        // A junk entry BETWEEN two real ones: a running counter over G.Links would put b at slot 1, not 2.
-        Doc["NODES"][c]["OVER"] = json::array({a, nullptr, b});
+        const int p1 = Canvas->addNode("ZIP");
+        const int p2 = Canvas->addNode("ZIP");
+        const int c  = Canvas->addNode("EXEC");
+        const std::string a = Doc["NODES"][p1]["CID"].get<std::string>();
+        const std::string b = Doc["NODES"][p2]["CID"].get<std::string>();
+        // A junk reference BETWEEN two real ones (a NODE layer naming nothing), and an ANY whose second member is
+        // b: a running counter over G.Links would put b's ANY member at slot 1, not 2.
+        Doc["NODES"][c]["LAYERS"] = json::array({ json{{"NODE", a}}, json{{"NODE", nullptr}}, json{{"ANY", json::array({"x", b})}} });
         Canvas->invalidateGraph();
 
         const PkgGraph::Graph g = Canvas->graph();
-        QCOMPARE(g.Links.size(), size_t(2));                 // the null is skipped as an edge...
+        QCOMPARE(g.Links.size(), size_t(3));                 // the null is skipped as an edge...
         for (const auto &L : g.Links)
         {
-            QVERIFY(L.Slot >= 0 && L.Slot < (int)Doc["NODES"][c]["OVER"].size());
-            const json &Ent = Doc["NODES"][c]["OVER"][L.Slot];   // ...but the slot still points AT it
-            QVERIFY(Ent.is_string());
+            //...but every slot addresses the reference it was drawn from: erasing slot S removes exactly it.
+            json Copy = Doc["NODES"][c];
+            QVERIFY(PkgGraph::EraseRef(Copy, L.Slot));
             const std::string want = (L.ParentIndex >= 0) ? g.Nodes[L.ParentIndex].Id : L.ExternalId;
-            QCOMPARE(Ent.get<std::string>(), want);
+            std::string Gone;
+            for (const std::string &R : {a, std::string("x"), b})
+                if (Copy.dump().find("\"" + R + "\"") == std::string::npos) Gone = R;
+            QCOMPARE(Gone, want);
         }
     }
 
@@ -445,7 +493,7 @@ private slots:
     // Every field the engine reads must be reachable from the editor. The MODE combo offered Cave and Poke
     // while the table had no PAYLOAD and no VALUE, so choosing either produced a node validation then rejected
     // with no way to fix it here — and the CAVE patches already in the library rendered as patches with no
-    // body. TOGGLE/WHEN/EXCLUDE are node-level, so they are the envelope's job, not each type's.
+    // body. VARIANT/RECOMMENDED are node-level, so they are the envelope's job, not each type's.
     void everyEngineReadableFieldIsAuthorable()
     {
         auto keys = [](const std::string &type) {
@@ -461,240 +509,38 @@ private slots:
             return std::find(v.begin(), v.end(), std::string(k)) != v.end();
         };
 
-        const auto bp = keys("PATCHES");
-        for (const char *k : {"FILE","MODE","OFFSET","ANCHOR","EXPECT","REPLACE","VALUE","PAYLOAD","CAVE","APPLY","WHEN"})
-            QVERIFY2(has(bp, k), k);
+        const auto ed = keys("EDIT");
+        for (const char *k : {"TARGET","MODE","SECTION","KEY","VALUE","OFFSET","ANCHOR","EXPECT","REPLACE","PAYLOAD","CAVE","WHEN"})
+            QVERIFY2(has(ed, k), k);
         // ...and every MODE the combo offers has the field it needs, or the combo is lying.
-        for (const PkgGraph::Field &f : PkgGraph::FieldsFor("PATCHES"))
-            for (const PkgGraph::Field &s : f.Sub)
-                for (const PkgGraph::Field &ss : s.Sub)
+        for (const PkgGraph::Field &f : PkgGraph::FieldsFor("EDIT"))
+            for (const PkgGraph::Field &ss : f.Sub)
                 if (std::string(ss.Key) == "MODE")
                     for (const auto &o : ss.Options)
                     {
                         const std::string m = o.first;
-                        if (m == "Cave")    QVERIFY(has(bp, "PAYLOAD"));
-                        if (m == "Poke")    QVERIFY(has(bp, "VALUE"));
-                        if (m == "Replace") QVERIFY(has(bp, "REPLACE"));
+                        if (m == "Cave")        QVERIFY(has(ed, "PAYLOAD"));
+                        if (m == "Poke")        QVERIFY(has(ed, "VALUE"));
+                        if (m == "Replace")     QVERIFY(has(ed, "REPLACE"));
+                        if (m == "ConfigWrite") QVERIFY(has(ed, "KEY"));
                     }
 
-        const auto ex = keys("ENTRYPOINTS");
-        for (const char *k : {"HOST","GUEST","PATH","ARGS","CONTENT_ROOT",
-                              "PREFIX_GENERATE","UNIFIED_RUNTIME","RUNNER"})
+        const auto ex = keys("EXEC");
+        for (const char *k : {"LABEL","HOST","GUEST","EXE","ARGS","WORKDIR","CONTENT_ROOT","PREFIX_GENERATE",
+                              "UNIFIED_RUNTIME","GUEST_ROOTS","TILE","UID","PARENTUID","TITLE","COVER","META"})
             QVERIFY2(has(ex, k), k);
-        QVERIFY2(!has(ex, "ENV") && !has(ex, "ENV_REMOVE"), "the environment is a node section, not an entry field");
-        for (const char *k : {"ENV", "ENV_REMOVE"}) QVERIFY2(has(keys("ENV"), k), k);
+        for (const char *k : {"NODE","TAKE","TARGET"}) QVERIFY2(has(keys("NODE"), k), k);
+        for (const char *k : {"REG","ARCH"})           QVERIFY2(has(keys("REG"), k), k);
+        for (const char *k : {"ZIP","TARGET","SUBMOUNTS","SOURCE"}) QVERIFY2(has(keys("ZIP"), k), k);
 
-        QVERIFY(has(keys("FILEEDITS"), "WHEN"));
-        for (const char *k : {"UID","TITLE","COVER","META"}) QVERIFY2(has(keys("TILE"), k), k);
-
-        // The envelope: settable on ANY node, so it must not live in a per-section table.
+        // Every layer can be gated; the node itself carries no layer field (VARIANT/RECOMMENDED are the envelope's).
         for (const std::string &t : PkgGraph::AllTypes())
-            for (const char *k : {"TOGGLE", "OVER"})
+        {
+            QVERIFY2(has(keys(t), "WHEN"), t.c_str());
+            QVERIFY2(has(keys(t), t.c_str()), (t + " edits its own payload").c_str());
+            for (const char *k : {"VARIANT", "RECOMMENDED", "LAYERS"})
                 QVERIFY2(!has(keys(t), k), (t + "/" + k).c_str());
-    }
-
-    // TOGGLE has THREE states and the editor must render three. ABSENT = not user-toggleable; "on" =
-    // toggleable, starts on; "off" = toggleable, starts off. An editor that draws absent and "on" as the same
-    // thing — and writes "on" by ERASING the key — silently converts a user-switchable module into a
-    // permanently-on one. Eight shipping nodes are exactly that shape (the Wipeout and NFSU2 toggles).
-    //
-    // LIMIT, stated because a test that looks like more than it is is worse than none: this pins the three
-    // SEMANTIC states (what ParseNode makes of each) and that rendering preserves whichever one is set. It
-    // does NOT drive the combo's popup — selecting an item needs a two-level click the input harness here
-    // cannot target — so the mapping from menu entry to written value is covered by review, not by this.
-    void toggleHasThreeDistinctStatesInTheEditor()
-    {
-        const int n = Canvas->addNode("LAYERS");
-        json &N = Doc["NODES"][n];
-        QVERIFY(!N.contains("TOGGLE"));                      // a fresh node is not a toggle
-
-        // Each state survives a render unchanged — in particular "on" is NOT erased back to absent.
-        for (const char *V : {"on", "off"})
-        {
-            N["TOGGLE"] = V;
-            N["WHEN"] = "%MODE% == host";
-            N["OVER"] = json::array({ json{{"NOT", "other"}} });
-            Canvas->invalidateGraph();
-            runFrame(); runFrame();
-            QVERIFY2(N.contains("TOGGLE"), V);
-            QCOMPARE(N["TOGGLE"].get<std::string>(), std::string(V));
-            QCOMPARE(N["WHEN"].get<std::string>(), std::string("%MODE% == host"));
-            QCOMPARE(N["OVER"].size(), size_t(1));
         }
-
-        // ...and all three are what ParseNode distinguishes, so the editor's three map onto real semantics.
-        auto parsed = [](const char *toggle) {
-            json J{{"LABEL","x"}, {"LAYERS", json::array({ json{{"FORM","zip"},{"PATH","a.zip"}} })}};
-            if (toggle) J["TOGGLE"] = toggle;
-            Node P; ManifestModel::ParseNode(J, "f.json", "/b", P);
-            return std::make_pair(P.Optional, P.Default);
-        };
-        QCOMPARE(parsed(nullptr), std::make_pair(false, true));    // absent: not a toggle
-        QCOMPARE(parsed("on"),    std::make_pair(true,  true));    // a toggle that starts on
-        QCOMPARE(parsed("off"),   std::make_pair(true,  false));   // a toggle that starts off
-    }
-
-    // Clearing a list ERASES the key rather than writing []. They are not the same thing: an empty
-    // BASE_TARGETS is a delta with no base and is refused outright, so clearing the box produced a node the
-    // format rejects and the editor could not repair — the refusal says "omit it" and there was no way to.
-    void clearingAListErasesTheKeyRatherThanWritingAnEmptyArray()
-    {
-        QSKIP("TODO(batch): base-targets is now a sub-field inside the LAYERS ObjArray; this coordinate-sweep test needs rework for the nested widget. BASE_TARGETS logic is covered by test_nodelower.");
-        // First, why it matters: [] and absent are NOT the same node. An empty BASE_TARGETS is a delta with
-        // no base and is refused outright, and the refusal says "omit it" — which the editor must be able to.
-        {
-            //FORM must be "delta": BASE_TARGETS on any other form is refused for a DIFFERENT reason ("it means
-            //nothing on FORM zip"), which would make this assertion pass without testing the empty-array rule.
-            json N{{"LABEL","c"}, {"LAYERS", json::array({ json{{"FORM","delta"},{"PATH","a.vgdelta"},{"BASE_TARGETS", json::array()}} })}};
-            std::string Err;
-            NodeLower::Lower(N, "c", Err);
-            QVERIFY2(!Err.empty(), "an empty BASE_TARGETS must be refused");
-            N["LAYERS"][0].erase("BASE_TARGETS");
-            NodeLower::Lower(N, "c", Err);
-            QVERIFY(Err.empty());
-        }
-
-        // Now drive the REAL widget: find the list field by effect, type into it, then clear it.
-        const int n = Canvas->addNode("LAYERS");
-        const std::string id = Doc["NODES"][n]["LABEL"].get<std::string>();
-        //FORM must be "delta": the base-targets box is offered only there, because the key means nothing on any
-        //other form and NodeLower refuses it outright.
-        Doc["NODES"][n]["LAYERS"][0]["FORM"] = "delta";
-        Doc["NODES"][n]["LAYERS"][0]["PATH"] = "d.vgdelta";
-        auto reset = [&] {
-            Doc["NODES"][n]["LAYERS"][0].erase("BASE_TARGETS");
-            Layout[id] = json::array({30.0, 30.0});
-            Canvas->invalidateGraph();
-            runFrame(); runFrame();
-        };
-
-        ImVec2 box(-1, -1);
-        for (float y = 30.0f; y < 700.0f && box.x < 0; y += 4.0f)
-            for (float x = 40.0f; x < 420.0f; x += 10.0f)
-            {
-                reset();
-                clickAt(ImVec2(x, y));
-                if (!ImGui::IsAnyItemActive()) continue;
-                type("Q");
-                clickAt(ImVec2(1100, 850));
-                runFrame();
-                const json &N = Doc["NODES"][n];
-                if (N["LAYERS"][0].contains("BASE_TARGETS") && N["LAYERS"][0]["BASE_TARGETS"].is_array()
-                    && N["BASE_TARGETS"].size() == 1
-                    && N["BASE_TARGETS"][0].get<std::string>() == "Q") { box = ImVec2(x, y); break; }
-            }
-        QVERIFY2(box.x >= 0, "could not find the base-target list field");
-
-        // Typed a character, then removed it — the key must be GONE, not [].
-        reset();
-        clickAt(box);
-        type("Q");
-        runFrame();
-        QVERIFY(Doc["NODES"][n].contains("BASE_TARGETS"));
-        ImGui::GetIO().AddKeyEvent(ImGuiKey_Backspace, true);
-        runFrame(LastMouse);
-        ImGui::GetIO().AddKeyEvent(ImGuiKey_Backspace, false);
-        runFrame(LastMouse);
-        clickAt(ImVec2(1100, 850));
-        runFrame();
-        QVERIFY2(!Doc["NODES"][n].contains("BASE_TARGETS"),
-                 "an emptied list wrote [] - which the format refuses and the editor cannot undo");
-    }
-
-    // "" is a REAL base target — the mount root — and it is the shape the whole one-key design exists to make
-    // expressible. The generic list writer trimmed blank lines as typing noise, so this entry could not be
-    // typed AND, far worse, vanished from any node that already had one the moment the box was touched:
-    // ["", "dxvk"] silently became ["dxvk"], turning a two-base delta into a one-base one — a base of the
-    // wrong SIZE, a reconstruction that fails its size check, and a layer the mount skips without a word.
-    void anEmptyBaseTargetEntryIsDataAndSurvivesEditing()
-    {
-        QSKIP("TODO(batch): base-targets is now a sub-field inside the LAYERS ObjArray; this coordinate-sweep test needs rework for the nested widget. BASE_TARGETS logic is covered by test_nodelower.");
-        const int n = Canvas->addNode("LAYERS");
-        const std::string id = Doc["NODES"][n]["LABEL"].get<std::string>();
-        Doc["NODES"][n]["LAYERS"][0]["FORM"] = "delta";
-        Doc["NODES"][n]["LAYERS"][0]["PATH"] = "d.vgdelta";
-        Layout[id] = json::array({30.0, 30.0});
-
-        auto seed = [&](const json &V) {
-            if (V.is_null()) Doc["NODES"][n]["LAYERS"][0].erase("BASE_TARGETS"); else Doc["NODES"][n]["LAYERS"][0]["BASE_TARGETS"] = V;
-            Canvas->invalidateGraph();
-            runFrame(); runFrame();
-        };
-        auto key = [&](ImGuiKey K, int Times = 1) {
-            for (int i = 0; i < Times; ++i) {
-                ImGui::GetIO().AddKeyEvent(K, true);  runFrame(LastMouse);
-                ImGui::GetIO().AddKeyEvent(K, false); runFrame(LastMouse);
-            }
-        };
-
-        // Find the base-targets box BY EFFECT — an edit that lands in BASE_TARGETS and nowhere else. Sweeping
-        // for "some active widget" is not enough: any other focused field leaves BASE_TARGETS untouched, which
-        // reads as success and makes the whole test vacuous.
-        ImVec2 box(-1, -1);
-        for (float y = 30.0f; y < 700.0f && box.x < 0; y += 4.0f)
-            for (float x = 40.0f; x < 420.0f; x += 10.0f)
-            {
-                seed(json(nullptr));
-                clickAt(ImVec2(x, y));
-                if (!ImGui::IsAnyItemActive()) continue;
-                type("Q");
-                clickAt(ImVec2(1100, 850));
-                runFrame();
-                const json &N = Doc["NODES"][n];
-                if (N["LAYERS"][0].contains("BASE_TARGETS") && N["LAYERS"][0]["BASE_TARGETS"].is_array() && N["BASE_TARGETS"].size() == 1
-                    && N["BASE_TARGETS"][0].get<std::string>() == "Q") { box = ImVec2(x, y); break; }
-            }
-        QVERIFY2(box.x >= 0, "could not find the base-targets list field");
-
-        // Merely PAINTING a node that already has a root base must not rewrite it.
-        seed(json::array({ "", "dxvk" }));
-        QCOMPARE(Doc["NODES"][n]["BASE_TARGETS"].size(), size_t(2));
-        QCOMPARE(Doc["NODES"][n]["BASE_TARGETS"][0].get<std::string>(), std::string(""));
-
-        // ...and neither must EDITING it. Append at the very end (down past the last line, then End) so the
-        // blank first line is untouched by the edit itself — the only thing that can remove it is the writer.
-        clickAt(box);
-        QVERIFY2(ImGui::IsAnyItemActive(), "the box must activate on click");
-        key(ImGuiKey_DownArrow, 4);
-        key(ImGuiKey_End);
-        type("Z");
-        clickAt(ImVec2(1100, 850));
-        runFrame();
-
-        const json &B = Doc["NODES"][n]["BASE_TARGETS"];
-        QVERIFY2(B.is_array() && B.size() == 2, "the empty (root) entry was silently dropped by the list writer");
-        QCOMPARE(B[0].get<std::string>(), std::string(""));
-        QCOMPARE(B[1].get<std::string>(), std::string("dxvkZ"));
-
-        // ...and the TRAILING position too, which is the shape a prefix delta over the runner-mount root has
-        // (["dxvk", ""]). It renders as "dxvk\n", whose final blank line is an ENTRY, not a separator.
-        seed(json::array({ "dxvk", "" }));
-        clickAt(box);
-        QVERIFY(ImGui::IsAnyItemActive());
-        key(ImGuiKey_UpArrow, 4);
-        key(ImGuiKey_Home);
-        type("Z");
-        clickAt(ImVec2(1100, 850));
-        runFrame();
-        const json &B2 = Doc["NODES"][n]["BASE_TARGETS"];
-        QVERIFY2(B2.is_array() && B2.size() == 2, "a TRAILING empty entry is an entry, not a separator");
-        QCOMPARE(B2[0].get<std::string>(), std::string("Zdxvk"));
-        QCOMPARE(B2[1].get<std::string>(), std::string(""));
-
-        // ...and the root base must be TYPEABLE, not merely preserved: the field's hint says "a blank line is
-        // the mount root", which a single-line input cannot accept at all — Enter commits instead of inserting.
-        seed(json(nullptr));
-        clickAt(box);
-        QVERIFY(ImGui::IsAnyItemActive());
-        type("wine");
-        key(ImGuiKey_Enter);
-        clickAt(ImVec2(1100, 850));
-        runFrame();
-        const json &B3 = Doc["NODES"][n]["BASE_TARGETS"];
-        QVERIFY2(B3.is_array() && B3.size() == 2,
-                 "a blank line must be typeable, or the field cannot express the root base at all");
-        QCOMPARE(B3[0].get<std::string>(), std::string("wine"));
-        QCOMPARE(B3[1].get<std::string>(), std::string(""));
     }
 
     // THE editor must be able to DISPLAY a node the format refuses — it is the tool you open to fix one, and
@@ -705,13 +551,13 @@ private slots:
     void malformedNodesRenderInsteadOfThrowing()
     {
         Doc["NODES"] = json::array({
-            json{{"LABEL","a"}, {"LAYERS", json::array({json{{"FORM","zip"}, {"PATH","a.zip"}}})}, {"WHEN", true}},
-            json{{"LABEL","b"}, {"REGEDITS", json::array({
-                json{{"OVERRIDE","true"}, {"ARCHITECTURE","32"}, {"HKCU", {{"S", {{"v","1"}}}}}}})}},
-            json{{"LABEL","c"}, {"TILE", {{"UID","1"}, {"COVER","cover.png"}}}},
-            json{{"LABEL","d"}, {"LAYERS", 5}},
-            json{{"LABEL","e"}, {"LAYERS", json::array({json{{"FORM", 7}, {"PATH", 9}}})}},
-            json{{"LABEL","f"}, {"ENTRYPOINTS", json::array({json{{"HOST","win32"}, {"RECOMMENDED","yes"}}})}},
+            node("a", json::array({json{{"ZIP","a.zip"}, {"WHEN", true}}})),
+            node("b", json::array({json{{"REG", {{"HKCU", {{"S", {{"v","1"}}}}}}}, {"ARCH","32"}}})),
+            node("c", json::array({json{{"EXEC", json::array({json{{"LABEL","Play"}, {"TILE", {{"UID","1"}, {"COVER","cover.png"}}}}})}}})),
+            node("d", 5),
+            node("e", json::array({json{{"ZIP", 7}, {"TARGET", 9}}, json{{"ZIP","a"}, {"DIR","b"}}, 5})),
+            node("f", json::array({json{{"EXEC", json::array({json{{"HOST","win32"}, {"GUEST","yes"}}, 3})}}, json{{"KEEP", 1}},
+                                   json{{"VARS", {{"x", 5}}}}, json{{"ANY", "notalist"}}, json{{"NODE", 7}}}), {{"RECOMMENDED", "yes"}}),
         });
         Canvas->invalidateGraph();
         runFrame();
@@ -722,49 +568,51 @@ private slots:
         // as empty (so the box looked unset and inviting) and the first keystroke wrote ["PATH"] into a string.
         const PkgGraph::Graph g = Canvas->graph();
         QCOMPARE(g.Nodes.size(), size_t(6));
-        QVERIFY(Doc["NODES"][2]["TILE"]["COVER"].is_string());
+        QVERIFY(Doc["NODES"][2]["LAYERS"][0]["EXEC"][0]["TILE"]["COVER"].is_string());
     }
 
-    // COVER is DUAL-FORM — a bare filename or a {PATH, SOURCE} object — and the widget must read AND write
-    // both. It read only the object form, so a string cover rendered as an empty box (inviting a keystroke)
-    // and that keystroke wrote ["PATH"] into a string, which throws. Editing must also PRESERVE the form:
-    // promoting a string to an object changes the package's bytes for a cosmetic edit.
+    // A COVER is {FILE, SOURCE, SIZE} on an entry's TILE; a bare string is shown and edited in place (never
+    // promoted — that would change the package's bytes for a cosmetic edit), and the object's SOURCE survives an
+    // edit of its FILE.
     void coverEditingHandlesBothFormsAndPreservesWhichever()
     {
-        const int n = Canvas->addNode("TILE");
-        const std::string id = Doc["NODES"][n]["LABEL"].get<std::string>();
+        const int n = Canvas->addNode("EXEC");
+        const std::string id = Doc["NODES"][n]["CID"].get<std::string>();
         //No reference into NODES is held across frames: a frame may reshape the array (imnodes seeding, a
         //popup), and a dangling json& is a segfault, not a failure.
-        Doc["NODES"][n]["TILE"]["COVER"] = "cover.png";
+        auto Cover = [&]() -> json & { return Doc["NODES"][n]["LAYERS"][0]["EXEC"][0]["TILE"]["COVER"]; };
+        Doc["NODES"][n]["LAYERS"][0]["EXEC"][0]["TILE"] = json{{"UID", "1"}};
+        Cover() = "cover.png";
         Layout[id] = json::array({30.0, 30.0});
         Canvas->invalidateGraph();
         runFrame(); runFrame();
 
         // The string form must be VISIBLE, not read as empty: find the box by effect and check what it holds.
         ImVec2 box(-1, -1);
-        for (float y = 30.0f; y < 700.0f && box.x < 0; y += 4.0f)
+        for (float y = 30.0f; y < 900.0f && box.x < 0; y += 4.0f)
             for (float x = 40.0f; x < 420.0f; x += 10.0f)
             {
-                Doc["NODES"][n]["TILE"]["COVER"] = "cover.png";
+                Cover() = "cover.png";
                 Canvas->invalidateGraph(); runFrame(); runFrame();
                 clickAt(ImVec2(x, y));
                 if (!ImGui::IsAnyItemActive()) continue;
                 type("Z");
                 clickAt(ImVec2(1100, 850));
                 runFrame();
-                const json &C = Doc["NODES"][n]["TILE"]["COVER"];
+                const json &C = Cover();
                 if (C.is_string() && C.get<std::string>().find("cover.png") != std::string::npos
                     && C.get<std::string>() != "cover.png") { box = ImVec2(x, y); break; }
             }
         QVERIFY2(box.x >= 0, "the string-form cover was not editable (it read as empty)");
-        QVERIFY2(Doc["NODES"][n]["TILE"]["COVER"].is_string(), "editing promoted a string COVER to an object");
+        QVERIFY2(Cover().is_string(), "editing promoted a string COVER to an object");
 
-        // ...and the object form stays an object.
-        Doc["NODES"][n]["TILE"]["COVER"] = json{{"PATH", "cover.png"}, {"SOURCE", json{{"CID", "Qm1"}}}};
+        // ...and the object form stays an object, its SOURCE kept.
+        Cover() = json{{"FILE", "cover.png"}, {"SOURCE", "bafkreiaaaa"}};
         Canvas->invalidateGraph(); runFrame(); runFrame();
         clickAt(box); type("Z"); clickAt(ImVec2(1100, 850)); runFrame();
-        QVERIFY(Doc["NODES"][n]["TILE"]["COVER"].is_object());
-        QVERIFY(Doc["NODES"][n]["TILE"]["COVER"].contains("SOURCE"));                 // the CID was not dropped
+        QVERIFY(Cover().is_object());
+        QCOMPARE(Cover()["FILE"].get<std::string>(), std::string("cover.pngZ"));
+        QVERIFY(Cover().contains("SOURCE"));                 // the CID was not dropped
     }
 
     // A stale selection must not grow the document. nlohmann's non-const operator[](size_type) FILLS the
@@ -772,8 +620,8 @@ private slots:
     // document did not merely read garbage — it appended nulls that SaveNodes would write to disk.
     void aStaleSelectionCannotGrowTheDocument()
     {
-        Canvas->addNode("LAYERS");
-        Canvas->addNode("LAYERS");
+        Canvas->addNode("ZIP");
+        Canvas->addNode("ZIP");
         Canvas->selectNode(1);
         Doc["NODES"] = json::array({ json{{"LABEL","only"}} });   // document swapped
         Canvas->invalidateGraph();
@@ -835,18 +683,17 @@ private slots:
     // keystrokes through ImGui to prove the row you are typing in is the row that changes.
     void registryRowsDoNotMoveUnderTheCursor()
     {
-        const int n = Canvas->addNode("REGEDITS");
+        const int n = Canvas->addNode("REG");
         // Flattens to exactly two rows, subkey first: [ HKLM\Soft\Sub -> X , HKLM\So -> Y ].
         auto reset = [&] {
-            Doc["NODES"][n]["REGEDITS"] = json::array({ json{{"ARCHITECTURE", json::array({"32"})},
-                {"HKLM", json{{"Soft", json{{"Sub", json{{"X", "1"}}}}},
-                              {"So",   json{{"Y", "2"}}}}}} });
-            Layout[Doc["NODES"][n]["LABEL"].get<std::string>()] = json::array({30.0, 30.0});
+            Doc["NODES"][n]["LAYERS"][0]["REG"] = json{{"HKLM", json{{"Soft", json{{"Sub", json{{"X", "1"}}}}},
+                                                                    {"So",   json{{"Y", "2"}}}}}};
+            Layout[Doc["NODES"][n]["CID"].get<std::string>()] = json::array({30.0, 30.0});
             Canvas->invalidateGraph();
             runFrame(); runFrame();
         };
         auto pathOf = [&](const char *name) -> std::string {
-            for (const auto &r : PkgGraph::RegRowsOf(Doc["NODES"][n]["REGEDITS"][0])) if (r.Name == name) return r.Path;
+            for (const auto &r : PkgGraph::RegRowsOf(Doc["NODES"][n]["LAYERS"][0]["REG"])) if (r.Name == name) return r.Path;
             return "<missing>";
         };
         reset();
@@ -897,8 +744,8 @@ private slots:
         //Culling is unconditional now; the minimap is off here only so the overview cannot be what a
         //measurement picks up.
         Canvas->setMiniMap(false);
-        Canvas->addNode("LAYERS", 300, 200);
-        Canvas->addNode("LAYERS", 90000, 90000);   // far away: something to scroll to
+        Canvas->addNode("ZIP", 300, 200);
+        Canvas->addNode("ZIP", 90000, 90000);   // far away: something to scroll to
         runFrame();
         QCOMPARE(Canvas->visibleNodes(), 1);
 
@@ -923,8 +770,8 @@ private slots:
     void aDraggedPositionReachesTheCacheThatCullingReads()
     {
         Canvas->setMiniMap(false);
-        Canvas->addNode("LAYERS", 100, 100);
-        Canvas->addNode("LAYERS", 300, 100);
+        Canvas->addNode("ZIP", 100, 100);
+        Canvas->addNode("ZIP", 300, 100);
         runFrame();
         QCOMPARE(Canvas->visibleNodes(), 2);
 
@@ -940,8 +787,8 @@ private slots:
     void aSelectedNodeIsNeverCulled()
     {
         Canvas->setMiniMap(false);
-        Canvas->addNode("LAYERS", 40, 40);
-        Canvas->addNode("LAYERS", 600, 300);
+        Canvas->addNode("ZIP", 40, 40);
+        Canvas->addNode("ZIP", 600, 300);
         runFrame();
         QCOMPARE(Canvas->visibleNodes(), 2);
 
@@ -965,7 +812,7 @@ private slots:
     void aPureDragSavesOnlyTheLayout()
     {
         Canvas->setMiniMap(false);
-        Canvas->addNode("LAYERS", 100, 100);
+        Canvas->addNode("ZIP", 100, 100);
         runFrame();
         FullSaves = 0; LayoutSaves = 0;
 
@@ -979,7 +826,7 @@ private slots:
     void aDocumentEditStillSavesEverything()
     {
         Canvas->setMiniMap(false);
-        Canvas->addNode("LAYERS", 100, 100);
+        Canvas->addNode("ZIP", 100, 100);
         runFrame();
         FullSaves = 0; LayoutSaves = 0;
 
@@ -1002,7 +849,7 @@ private slots:
     void aDocumentEditCombinedWithADragStillSavesTheDocument()
     {
         Canvas->setMiniMap(false);
-        Canvas->addNode("LAYERS", 100, 100);
+        Canvas->addNode("ZIP", 100, 100);
         runFrame();
         FullSaves = 0; LayoutSaves = 0;
 
@@ -1033,8 +880,8 @@ private slots:
     void wheelSizedZoomStepsDoNotDriftAnyPosition()
     {
         Canvas->setMiniMap(false);
-        Canvas->addNode("LAYERS", 137, 449);          // deliberately not round numbers
-        Canvas->addNode("ENTRYPOINTS", 911, 1303);
+        Canvas->addNode("ZIP", 137, 449);          // deliberately not round numbers
+        Canvas->addNode("EXEC", 911, 1303);
         runFrame();
         const std::string Before = Layout.dump();
         const int SavesBefore = Saves;
@@ -1066,8 +913,8 @@ private slots:
     void wheelingOverTheCanvasDoesNotMoveAnyPosition()
     {
         Canvas->setMiniMap(false);
-        Canvas->addNode("LAYERS", 137, 449);
-        Canvas->addNode("ENTRYPOINTS", 911, 1303);
+        Canvas->addNode("ZIP", 137, 449);
+        Canvas->addNode("EXEC", 911, 1303);
         runFrame();
         const std::string Before = Layout.dump();
         const int SavesBefore = Saves;
@@ -1118,8 +965,8 @@ private slots:
     void zoomScalesTheEmittedGeometry()
     {
         Canvas->setMiniMap(false);
-        Canvas->addNode("LAYERS", 100, 100);
-        Canvas->addNode("ENTRYPOINTS", 700, 400);
+        Canvas->addNode("ZIP", 100, 100);
+        Canvas->addNode("EXEC", 700, 400);
 
         // The SURFACE's own bounds, not the whole draw data: the canvas window's background spans the display
         // at every zoom, so a bbox over everything is pinned to the window width and cannot shrink.
@@ -1150,7 +997,7 @@ private slots:
     void theCursorIsInverseTransformedForHitTesting()
     {
         Canvas->setMiniMap(false);
-        Canvas->addNode("LAYERS", 100, 100);
+        Canvas->addNode("ZIP", 100, 100);
         runFrame(ImVec2(900, 600));
         float ex = 0, ey = 0;
         Canvas->editorMouse(ex, ey);
@@ -1241,7 +1088,7 @@ private slots:
     void noScreenFurnitureMovesWithTheZoom()
     {
         Canvas->setMiniMap(true);
-        for (int i = 0; i < 6; ++i) Canvas->addNode("LAYERS", 100.0f + i * 400.0f, 80.0f + i * 250.0f);
+        for (int i = 0; i < 6; ++i) Canvas->addNode("ZIP", 100.0f + i * 400.0f, 80.0f + i * 250.0f);
         runFrame(); runFrame();
 
         auto rects = [&]() {
@@ -1294,7 +1141,7 @@ private slots:
         Canvas->setMiniMap(false);
         // Spread well past the viewport (1400x900) horizontally and vertically, so at 1:1 most of it is off
         // screen and at 0.3 all of it is on.
-        for (int i = 0; i < 12; ++i) Canvas->addNode("LAYERS", 60.0f + i * 520.0f, 40.0f + i * 240.0f);
+        for (int i = 0; i < 12; ++i) Canvas->addNode("ZIP", 60.0f + i * 520.0f, 40.0f + i * 240.0f);
         auto verticesAt = [&](float z) {
             Canvas->setZoom(z);
             runFrame(); runFrame();
@@ -1327,7 +1174,7 @@ private slots:
     void theMinimapRendersAboveTheCanvas()
     {
         Canvas->setMiniMap(true);
-        for (int i = 0; i < 6; ++i) Canvas->addNode("LAYERS", 100.0f + i * 300.0f, 80.0f + i * 200.0f);
+        for (int i = 0; i < 6; ++i) Canvas->addNode("ZIP", 100.0f + i * 300.0f, 80.0f + i * 200.0f);
         runFrame(); runFrame();
 
         const ImGuiContext &C = *ImGui::GetCurrentContext();
@@ -1372,14 +1219,14 @@ private slots:
     void theMinimapDrawsTheWholeGraphWhileCullingHidesMostOfIt()
     {
         Canvas->setMiniMap(true);
-        for (int i = 0; i < 6; ++i) Canvas->addNode("LAYERS", 100.0f + i * 120.0f, 80.0f + i * 90.0f);
+        for (int i = 0; i < 6; ++i) Canvas->addNode("ZIP", 100.0f + i * 120.0f, 80.0f + i * 90.0f);
         runFrame(); runFrame();
         const int Small = miniMapVertices();
         const int SmallDrawn = Canvas->visibleNodes();
         QVERIFY2(Small > 0, "the minimap painted nothing at all");
 
         // Ten times the nodes, spread far enough that culling submits FEWER than the small graph did.
-        for (int i = 0; i < 60; ++i) Canvas->addNode("LAYERS", 4000.0f + i * 2600.0f, 3000.0f + i * 1700.0f);
+        for (int i = 0; i < 60; ++i) Canvas->addNode("ZIP", 4000.0f + i * 2600.0f, 3000.0f + i * 1700.0f);
         runFrame(); runFrame();
         const int Big = miniMapVertices();
         QVERIFY2(Canvas->visibleNodes() <= SmallDrawn,
@@ -1399,8 +1246,8 @@ private slots:
     {
         Canvas->setMiniMap(true);
         // Two nodes far apart, so the overview spans a wide world and a click at one end is unambiguous.
-        Canvas->addNode("LAYERS", 0, 0);
-        Canvas->addNode("LAYERS", 6000, 3600);
+        Canvas->addNode("ZIP", 0, 0);
+        Canvas->addNode("ZIP", 6000, 3600);
         runFrame(); runFrame();
         float mx0 = 0, my0 = 0, mx1 = 0, my1 = 0;
         Canvas->miniMapRect(mx0, my0, mx1, my1);
@@ -1445,7 +1292,7 @@ private slots:
     void draggingANodeAcrossTheMinimapDoesNotDestroyIt()
     {
         Canvas->setMiniMap(true);
-        Canvas->addNode("LAYERS", 200, 200);
+        Canvas->addNode("ZIP", 200, 200);
         runFrame(); runFrame();
         float mx0 = 0, my0 = 0, mx1 = 0, my1 = 0;
         Canvas->miniMapRect(mx0, my0, mx1, my1);
@@ -1506,7 +1353,7 @@ private slots:
     {
         Canvas->setMiniMap(true);
         // A node placed so it sits UNDER the minimap corner at 1:1.
-        Canvas->addNode("LAYERS", 1050, 700);
+        Canvas->addNode("ZIP", 1050, 700);
         runFrame(); runFrame();
         float mx0 = 0, my0 = 0, mx1 = 0, my1 = 0;
         Canvas->miniMapRect(mx0, my0, mx1, my1);
@@ -1528,7 +1375,7 @@ private slots:
     void everyVisibleNodeIsClickableAtEveryZoom()
     {
         Canvas->setMiniMap(false);
-        Canvas->addNode("LAYERS", 1500, 1000);        // off-screen at 1:1, well on-screen zoomed out
+        Canvas->addNode("ZIP", 1500, 1000);        // off-screen at 1:1, well on-screen zoomed out
         QStringList outliers;
         for (float z : {1.0f, 0.75f, 0.5f, 0.3f}) {
             Canvas->setZoom(z);
@@ -1561,7 +1408,7 @@ private slots:
         Canvas->setMiniMap(false);
         //Placed so the drag below starts on EMPTY canvas: a middle-drag begun ON a node is a different
         //gesture, imnodes never reaches BeginCanvasInteraction, and the pan silently measures zero.
-        Canvas->addNode("LAYERS", 300, 300);
+        Canvas->addNode("ZIP", 300, 300);
         QStringList outliers;
         for (float z : {1.0f, 0.5f, 2.0f}) {
             Canvas->setZoom(z);
@@ -1613,7 +1460,7 @@ private slots:
     {
         Canvas->setMiniMap(false);
         // SUBMOUNTS is a StringList; several lines make it a multiline box, which is what opens the child.
-        const int N = Canvas->addNode("LAYERS", 500, 300);
+        const int N = Canvas->addNode("ZIP", 500, 300);
         Doc["NODES"][N]["LAYERS"][0]["SUBMOUNTS"] = json::array({"a/b:c/d", "e/f:g/h", "i/j:k/l"});
         Canvas->invalidateGraph();
         runFrame(); runFrame();
@@ -1704,9 +1551,9 @@ private slots:
     void theMeasuredSizeCacheFollowsRenamesAndDeletes()
     {
         Canvas->setMiniMap(false);
-        Canvas->addNode("LAYERS", 100, 100);
-        Canvas->addNode("ENTRYPOINTS", 500, 100);
-        Canvas->addNode("PERSISTS", 900, 100);
+        Canvas->addNode("ZIP", 100, 100);
+        Canvas->addNode("EXEC", 500, 100);
+        Canvas->addNode("KEEP", 900, 100);
         runFrame(); runFrame();
         QCOMPARE(Canvas->cachedNodeSizes(), 3);
 
@@ -1736,7 +1583,7 @@ private slots:
     void panningDuringAZoomEaseIsNotThrownAway()
     {
         Canvas->setMiniMap(false);
-        Canvas->addNode("LAYERS", 300, 300);
+        Canvas->addNode("ZIP", 300, 300);
         runFrame(); runFrame();
         const ImVec2 Pan0 = ImNodes::EditorContextGetPanning();
 
@@ -1792,7 +1639,8 @@ private slots:
         //So measure BOTH states and compare against the taller. No guessing, no ordering.
         auto measure = [&](const char *Type, const json &Payload) {
             const int N = Canvas->addNode(Type, 100.0f, 100.0f);
-            for (auto It = Payload.begin(); It != Payload.end(); ++It) Doc["NODES"][N][It.key()] = It.value();
+            if (Payload.is_array()) Doc["NODES"][N]["LAYERS"] = Payload;      // the layers under test
+            else for (auto It = Payload.begin(); It != Payload.end(); ++It) Doc["NODES"][N][It.key()] = It.value();
             //Hints are host facts ("this zip is deflate") that add ACTION BUTTONS, and an id reused from an
             //earlier test in this suite arrives carrying them — worth 50-odd pixels of extra button rows on
             //every measurement. Cleared for the node under test so what is measured is the payload.
@@ -1867,110 +1715,96 @@ private slots:
 
         for (const std::string &T : PkgGraph::AllTypes()) measure(T.c_str(), json::object());
 
+        auto reg = [](const json &Hive) { return json{{"REG", {{"HKLM", Hive}}}, {"ARCH", json::array({"64"})}}; };
+
         // The payloads that actually make a node tall.
         json Keys = json::object();
         for (int r = 0; r < 24; ++r) Keys["Software"]["App"]["v" + std::to_string(r)] = "data";
-        json E = json::object(); E["ARCHITECTURE"] = json::array({"64"}); E["HKLM"] = Keys;
-        measure("RegEdit", json{{"EDITS", json::array({E})}});
+        measure("REG", json::array({reg(Keys)}));
 
-        // SEVERAL ENTRIES, which is the shape with a per-entry cost and the one every case here had missed:
-        // one entry hides an error worth a whole row each time, and `capture_reg` emits an entry per captured
-        // hive and architecture. Measured with that error present: +17px per entry, 1091px on a 59-entry node.
+        // SEVERAL LAYERS, which is the shape with a per-layer cost: one layer hides an error worth a whole row
+        // each time, and `capture_reg` emits a layer per captured hive and architecture.
+        for (int Count : {10, 45})
         {
-            json Entries = json::array();
-            for (int e = 0; e < 10; ++e) {
+            json Ls = json::array();
+            for (int e = 0; e < Count; ++e) {
                 json K = json::object();
                 for (int r = 0; r < 4; ++r) K["Software"]["G" + std::to_string(e)]["v" + std::to_string(r)] = "d";
-                json En = json::object(); En["ARCHITECTURE"] = json::array({"64"}); En["HKLM"] = K;
-                Entries.push_back(En);
+                Ls.push_back(reg(K));
             }
-            measure("RegEdit", json{{"EDITS", Entries}});
+            measure("REG", Ls);
         }
 
-        // FORTY-FIVE entries. The per-entry arms are the ones that hide errors — one entry conceals a whole
-        // row's worth either way — and the bound only turns per-entry drift into a failure once enough entries
-        // have accumulated it. `capture_reg` emits an entry per captured hive and architecture.
-        {
-            json Es = json::array();
-            for (int e = 0; e < 45; ++e) {
-                json K = json::object();
-                for (int r = 0; r < 4; ++r) K["Software"]["G" + std::to_string(e)]["v" + std::to_string(r)] = "d";
-                json En = json::object(); En["ARCHITECTURE"] = json::array({"64"}); En["HKLM"] = K;
-                Es.push_back(En);
-            }
-            measure("RegEdit", json{{"EDITS", Es}});
-        }
+        // MALFORMED layers, which drawPayload short-circuits to its header and one disabled line — the editor
+        // exists to open broken packages — and a REG whose tree is not an object.
+        measure("REG", json::array({"nope", 7, json::object({{"HKLM", json::object()}}), "also nope",
+                                    json{{"REG", 5}}, json{{"ZIP", "a"}, {"DIR", "b"}}}));
 
-        // MALFORMED entries, which drawRegEdits short-circuits to a separator and one disabled line. The
-        // editor exists to open broken packages, so this is a shape it must measure correctly — charging a
-        // full entry for it was 19.6px each, enough to trip the slack bound on a node made of them.
-        measure("RegEdit", json{{"EDITS", json::array({"nope", 7, json::object({{"HKLM", json::object()}}),
-                                                       "also nope", 9, "and again"})}});
-
-        // And a REALLY tall one. The slack the estimate reserves is fixed, so a per-ROW calibration error only
-        // becomes visible once enough rows have accumulated it: shaving 1.5px off the constant every row is
-        // multiplied by is invisible at 24 rows and 180px short at 120. The codec libraries ship 59-row nodes,
-        // so this is the direction the real library grows in.
+        // And a REALLY tall one. The slack is fixed, so a per-ROW calibration error only becomes visible once
+        // enough rows have accumulated it: shaving 1.5px off the per-row constant is invisible at 24 rows and
+        // 180px short at 120. The codec libraries ship 59-row layers.
         json ManyKeys = json::object();
         for (int r = 0; r < 120; ++r) ManyKeys["Software"]["App"]["v" + std::to_string(r)] = "data";
-        json E2 = json::object(); E2["ARCHITECTURE"] = json::array({"64"}); E2["HKLM"] = ManyKeys;
-        measure("RegEdit", json{{"EDITS", json::array({E2})}});
+        measure("REG", json::array({reg(ManyKeys)}));
 
-        json Patches = json::array();
-        for (int r = 0; r < 5; ++r)
-            Patches.push_back(json{{"MODE", "Replace"}, {"OFFSET", "0x1000"}, {"EXPECT", "90"}, {"REPLACE", "cc"}});
-        measure("BinaryPatch", json{{"EDITS", Patches}});
+        auto edit = [](int Ops) {
+            json O = json::array();
+            for (int r = 0; r < Ops; ++r)
+                O.push_back(json{{"MODE", "Replace"}, {"OFFSET", "0x1000"}, {"EXPECT", "90"}, {"REPLACE", "cc"}});
+            return json::array({ json{{"EDIT", O}, {"TARGET", "FILES/C:/g/g.exe"}} });
+        };
+        measure("EDIT", edit(5));
+        // PAST the cap. drawField reads a list capped at 12 entries and prints "... and N more" instead, so the
+        // estimate must stop growing at exactly the same point.
+        measure("EDIT", edit(30));
 
-        // PAST the cap. drawField reads a batched payload capped at 12 entries and prints "... and N more"
-        // instead, so the estimate must stop growing at exactly the same point: count past the cap and the
-        // layout reserves a screenful nothing occupies; ignore the cap and it under-reserves, which overlaps.
-        json Many = json::array();
-        for (int r = 0; r < 30; ++r)
-            Many.push_back(json{{"MODE", "Replace"}, {"OFFSET", "0x1000"}, {"EXPECT", "90"}, {"REPLACE", "cc"}});
-        measure("BinaryPatch", json{{"EDITS", Many}});
-
-        // A list longer than the multiline box's own 6-line cap, for the same reason.
+        // A list longer than the multiline box's own 6-line cap, for the same reason — and a short multi-line one.
         json Lines = json::array();
         for (int r = 0; r < 20; ++r) Lines.push_back("a" + std::to_string(r) + ":b");
-        measure("Content", json{{"SUBMOUNTS", Lines}});
+        measure("ZIP", json::array({ json{{"ZIP", "a.zip"}, {"SUBMOUNTS", Lines}} }));
+        measure("ZIP", json::array({ json{{"ZIP", "a.zip"}, {"SUBMOUNTS", json::array({"a:b", "c:d", "e:f", "g:h"})}} }));
 
-        // TOGGLE/WHEN open the "node options" tree, which is three more rows.
-        measure("CustomVar", json{{"TOGGLE", "on"}, {"WHEN", "%x%==1"}});
-        // A multi-line StringList becomes a multiline box rather than a single-line input.
-        measure("Content", json{{"SUBMOUNTS", json::array({"a:b", "c:d", "e:f", "g:h"})}});
+        // Declarations with their launcher facets: an enum's choices, a secret's pool, an int's range.
+        measure("VARS", json::array({ json{{"VARS", {
+            {"mode", {{"DEFAULT", "a"}, {"UI", {{"CONTROL", "enum"}, {"CHOICES", json::array({"a", "b", "c", "d"})}}}}},
+            {"key",  {{"DEFAULT", ""},  {"UI", {{"CONTROL", "secret"}, {"POOL", json::array({"k1", "k2", "k3", "k4", "k5", "k6", "k7"})}}}}},
+            {"fps",  {{"DEFAULT", "60"}, {"UI", {{"CONTROL", "int"}, {"MIN", 30}, {"MAX", 240}}}}},
+            {"hidden", {{"DEFAULT", "x"}, {"WHEN", "%mode%==a"}}} }}} }));
 
-        // MALFORMED StringLists, which drawField short-circuits to one disabled line. This is the shape that
-        // was drawing a node 477px WIDE — past the 430px column step, i.e. across its right-hand neighbour —
-        // because the arm printed the whole value with dump() on a single unwrapped line. A 2000-character
-        // value measured 14407px. Both checks in `measure` bear on it: the width one is what catches the
-        // overflow, and the height one pins the estimate's new kTextPx arm for this shape.
-        measure("DeclareExec", json{{"ARGS", json("not a list")}});
-        measure("DeclareExec", json{{"ARGS", json::object({{"looks", "structured"}})}});
-        measure("DeclareExec", json{{"ARGS", json(std::string(2000, 'w'))}});
-        measure("DeclareExec", json{{"ARGS", json::array({5})}});
-        // SEVERAL GOOD ENTRIES AND ONE BAD ONE. This is the shape that catches the renderer and the estimator
-        // drifting apart: [5] has no strings to measure either way, so it cannot. With the element scan in
-        // drawField only, this measured 437px drawn against 600px estimated — a 163px hole reserved in the
-        // stamped POS for a delta's BASE_TARGETS with one number in it.
-        measure("DeclareExec", json{{"ARGS", json::array({"a", "b", "c", "d", "e", "f", 5})}});
-        measure("Content", json{{"BASE_TARGETS", json::array({"", "x", 5})}, {"FORM", "delta"}});
-        // A container holding a real payload, with one entry of the wrong type so it actually REACHES the
-        // refusal arm: a list of 5000 strings is well-formed and takes the ordinary path. The describer must
-        // report the value's SIZE and never serialise it — this one dumps to over a megabyte, which on a
-        // per-frame path is the editor freezing on the package you opened to repair it.
+        // References, a TAKE, a KEEP map, an entry with its tile, an ENV map.
+        measure("NODE", json::array({ json{{"NODE", "a"}},
+                                      json{{"NODE", "b"}, {"TAKE", json::array({"FILES/x/", json::array({"FILES/a.dll", "FILES/b.dll"}), "VARS/v"})},
+                                           {"TARGET", "FILES/lib"}},
+                                      json{{"ANY", json::array({"c", "d"})}}, json{{"NOT", "e"}} }));
+        measure("KEEP", json::array({ json{{"KEEP", {{"FILES/C:/g/saves/", {{"NAME", "Saves"}}}, {"FILES/C:/g/saves/cfg.ini", false},
+                                                     {"REG/HKCU", true}, {"FILES/C:/g/cache/", {{"CLOUD", false}}}}}} }));
+        measure("EXEC", json::array({ json{{"EXEC", json::array({ json{{"LABEL", "Play"}, {"HOST", "win32"}, {"EXE", "C:/g/g.exe"},
+                                          {"ARGS", json::array({"-a", "-b"})},
+                                          {"TILE", {{"UID", "1"}, {"TITLE", "T"}, {"COVER", {{"FILE", "c.png"}}}, {"META", {{"YEAR", "1999"}, {"GENRE", "x"}}}}}} })}} }));
+        measure("ENV", json::array({ json{{"ENV", {{"A", "1"}, {"B", nullptr}, {"C", "3"}}}} }));
+
+        // MALFORMED lists, which drawField short-circuits to one disabled line — the shape that once drew a node
+        // 477px WIDE (past the 430px column step) because the arm printed the whole value on one unwrapped line.
+        auto args = [](const json &A) { return json::array({ json{{"EXEC", json::array({ json{{"LABEL", "Play"}, {"ARGS", A}} })}} }); };
+        measure("EXEC", args(json("not a list")));
+        measure("EXEC", args(json::object({{"looks", "structured"}})));
+        measure("EXEC", args(json(std::string(2000, 'w'))));
+        measure("EXEC", args(json::array({5})));
+        // SEVERAL GOOD ENTRIES AND ONE BAD ONE — the shape that catches the renderer and the estimator drifting
+        // apart (437px drawn against 600px estimated when the element scan lived in drawField only).
+        measure("EXEC", args(json::array({"a", "b", "c", "d", "e", "f", 5})));
+        measure("NODE", json::array({ json{{"NODE", "a"}, {"TAKE", json::array({"FILES/a", 5})}} }));
+        // A container holding a real payload with one bad entry, a huge string, a huge container: the describer
+        // reports SIZE and never serialises (a per-frame dump of a megabyte froze the editor).
         {
             json Huge = json::array();
             for (int r = 0; r < 5000; ++r) Huge.push_back(std::string(200, 'q'));
             Huge.push_back(7);
-            measure("DeclareExec", json{{"ARGS", Huge}});
-            json HugeStr = std::string(4 * 1024 * 1024, 'w');
-            measure("DeclareExec", json{{"ARGS", HugeStr}});
-            //A huge CONTAINER, which is the arm the list above does not reach: with a bad entry the canvas
-            //describes THAT ENTRY, so only a value that is not a list at all sends the container itself to
-            //the describer. This one dumps to ~1.5 MB.
+            measure("EXEC", args(Huge));
+            measure("EXEC", args(json(std::string(4 * 1024 * 1024, 'w'))));
             json HugeObj = json::object();
             for (int r = 0; r < 5000; ++r) HugeObj[std::to_string(r)] = std::string(200, 'q');
-            measure("DeclareExec", json{{"ARGS", HugeObj}});
+            measure("EXEC", args(HugeObj));
         }
 
         // The malformed-NODES placeholder: a title bar and one disabled line, and the only node whose height
@@ -2009,7 +1843,7 @@ private slots:
     void aNestedFieldIsClickableWhereItIsDrawn()
     {
         Canvas->setMiniMap(false);
-        const int N = Canvas->addNode("LAYERS", 120, 120);
+        const int N = Canvas->addNode("ZIP", 120, 120);
         Doc["NODES"][N]["LAYERS"][0]["SUBMOUNTS"] = json::array({"a/b:c/d", "e/f:g/h", "i/j:k/l"});
         Canvas->invalidateGraph();
         //Start from a known scale: the canvas is shared with every earlier test in this suite and a leftover
@@ -2077,7 +1911,7 @@ private slots:
     void setZoomHoldsTheMiddleOfTheViewStill()
     {
         Canvas->setMiniMap(false);
-        Canvas->addNode("LAYERS", 1400, 900);
+        Canvas->addNode("ZIP", 1400, 900);
         runFrame(); runFrame();
         float vx0 = 0, vy0 = 0, vx1 = 0, vy1 = 0;
         Canvas->canvasViewport(vx0, vy0, vx1, vy1);
@@ -2121,11 +1955,11 @@ private slots:
     void aTallNodeIsDrawnWhileAnyOfItIsOnScreen()
     {
         Canvas->setMiniMap(false);
-        const int N = Canvas->addNode("PATCHES", 0, 0);
+        const int N = Canvas->addNode("EDIT", 0, 0);
         json Patches = json::array();
         for (int r = 0; r < 12; ++r)
             Patches.push_back(json{{"MODE", "Replace"}, {"OFFSET", "0x1000"}, {"EXPECT", "90"}, {"REPLACE", "cc"}});
-        Doc["NODES"][N]["PATCHES"] = json::array({ json{{"FILE", "g.exe"}, {"EDITS", Patches}} });
+        Doc["NODES"][N]["LAYERS"][0] = json{{"EDIT", Patches}, {"TARGET", "FILES/C:/g/g.exe"}};
         Canvas->invalidateGraph();
         runFrame(); runFrame();
         const float H = Canvas->graph().Nodes[(size_t)N].Height;
@@ -2154,7 +1988,7 @@ private slots:
     void twoZoomChangesInOneFrameStillHoldTheCentre()
     {
         Canvas->setMiniMap(false);
-        Canvas->addNode("LAYERS", 400, 300);
+        Canvas->addNode("ZIP", 400, 300);
         Canvas->setZoom(1.0f);
         runFrame(); runFrame();
         float vx0 = 0, vy0 = 0, vx1 = 0, vy1 = 0;
@@ -2230,7 +2064,7 @@ private slots:
     void anInNodeComboOpensWhereItWasClicked()
     {
         Canvas->setMiniMap(false);
-        Canvas->addNode("LAYERS", 200, 200);          // FORM is an enum, so the node has a combo
+        Canvas->addNode("EDIT", 200, 200);         // an EDIT op's MODE is an enum, so the node has a combo
         Canvas->setZoom(1.0f);
         runFrame(); runFrame();
 
@@ -2330,7 +2164,7 @@ private slots:
     void anEditorTooltipLandsAtTheCursorAndStaysOnScreen()
     {
         Canvas->setMiniMap(false);
-        Canvas->addNode("LAYERS", 200, 200);          // Content has action buttons, which carry tooltips
+        Canvas->addNode("ZIP", 200, 200);          // Content has action buttons, which carry tooltips
         Canvas->setZoom(1.0f);
         //An ACTIVE item swallows hovering everywhere else, and an earlier test in this suite leaves one behind
         //(the nested-field click test focuses a text box). Without this the search below finds no tooltip
@@ -2439,7 +2273,7 @@ private slots:
         // fallback of Height * 0.4 left an earlier version of this test, which compared the boxes only to each
         // other, completely green. A measured node and an unmeasured TWIN must get the same box.
         auto reg = [&](float x, float y, int rows) {
-            const int N = Canvas->addNode("REGEDITS", x, y);
+            const int N = Canvas->addNode("REG", x, y);
             json K = json::object();
             for (int r = 0; r < rows; ++r) K["Software"]["v" + std::to_string(r)] = "d";
             json E = json::object(); E["HKLM"] = K;
@@ -2495,9 +2329,9 @@ private slots:
     void aRefusedPositionIsReportedOnceNotPerKeystroke()
     {
         Canvas->setMiniMap(false);
-        const int N = Canvas->addNode("LAYERS", 100, 100);
+        const int N = Canvas->addNode("ZIP", 100, 100);
         Doc["NODES"][N]["POS"] = json::array({5.0e9, 5.0e9});
-        Canvas->addNode("LAYERS", 500, 100);          // something else to type into
+        Canvas->addNode("ZIP", 500, 100);          // something else to type into
         Canvas->invalidateGraph();
 
         int Warnings = 0;
@@ -2545,7 +2379,7 @@ private slots:
     void aMalformedBatchedEntryIsNotDrawnAsFields()
     {
         Canvas->setMiniMap(false);
-        const int N = Canvas->addNode("PATCHES", 200, 200);
+        const int N = Canvas->addNode("EDIT", 200, 200);
         Doc["NODES"][N]["EDITS"] = json::array({"oops", 42, json::object({{"MODE", "Replace"}})});
         Canvas->invalidateGraph();
         runFrame(); runFrame();
@@ -2585,20 +2419,20 @@ private slots:
         // parallel copy lets the call sites drift; calling the one exported writer does neither.
         // KeyValue: the "+ add" button and a rename both write Node[key][sub].
         for (const char *Bad : {"\"oops\"", "5", "[]", "true", "null"}) {
-            const int N = Canvas->addNode("DLLOVERRIDES", 200, 200);
-            Doc["NODES"][N]["DLLOVERRIDES"] = json::parse(Bad);
+            const int N = Canvas->addNode("DLL", 200, 200);
+            Doc["NODES"][N]["LAYERS"][0]["DLL"] = json::parse(Bad);
             Canvas->invalidateGraph(); runFrame();
-            attempt(QString("DLLOVERRIDES=%1").arg(Bad).toUtf8().constData(),
-                    [&] { if (PkgGraph::WriteSubKey(Doc["NODES"][N], "DLLOVERRIDES", "k", "v")) Canvas->invalidateGraph(); });
+            attempt(QString("DLL=%1").arg(Bad).toUtf8().constData(),
+                    [&] { if (PkgGraph::WriteSubKey(Doc["NODES"][N]["LAYERS"][0], "DLL", "k", "v")) Canvas->invalidateGraph(); });
             Canvas->removeNode(N); Canvas->invalidateGraph(); runFrame();
         }
-        // Cover: one KEYSTROKE reached Node[key]["PATH"].
+        // Cover: one KEYSTROKE reached Node[key]["FILE"].
         for (const char *Bad : {"5", "[]", "true"}) {
-            const int N = Canvas->addNode("TILE", 200, 200);
-            Doc["NODES"][N]["TILE"]["COVER"] = json::parse(Bad);
+            const int N = Canvas->addNode("EXEC", 200, 200);
+            Doc["NODES"][N]["LAYERS"][0]["EXEC"][0]["TILE"]["COVER"] = json::parse(Bad);
             Canvas->invalidateGraph(); runFrame();
             attempt(QString("TILE COVER=%1").arg(Bad).toUtf8().constData(),
-                    [&] { if (PkgGraph::WriteSubKey(Doc["NODES"][N]["TILE"], "COVER", "PATH", "x.png")) Canvas->invalidateGraph(); });
+                    [&] { if (PkgGraph::WriteSubKey(Doc["NODES"][N]["LAYERS"][0]["EXEC"][0]["TILE"], "COVER", "FILE", "x.png")) Canvas->invalidateGraph(); });
             Canvas->removeNode(N); Canvas->invalidateGraph(); runFrame();
         }
         // A NODES entry that is not an object at all: renameNode and the envelope both write through it.
@@ -2684,7 +2518,7 @@ private slots:
     void thePopupExtentFollowsTheEditorAtEveryZoom()
     {
         Canvas->setMiniMap(false);
-        Canvas->addNode("LAYERS", 300, 300);
+        Canvas->addNode("ZIP", 300, 300);
         QStringList outliers;
         //Several display sizes, including ones small enough that the region alone could not hold a dropdown —
         //that is the case the code has to handle, and an earlier version of this test skipped it with a
@@ -2726,7 +2560,7 @@ private slots:
     void deletingANodeForgetsThatItWasWarnedAbout()
     {
         Canvas->setMiniMap(false);
-        const int N = Canvas->addNode("LAYERS", 100, 100);
+        const int N = Canvas->addNode("ZIP", 100, 100);
         const std::string Id = Doc["NODES"][N].value("LABEL", std::string());
         Doc["NODES"][N]["POS"] = json::array({5.0e9, 5.0e9});
         Canvas->invalidateGraph();
@@ -2742,7 +2576,7 @@ private slots:
         // Delete it, then create a DIFFERENT node that happens to reuse the id with the same bad position —
         // which is what opening a second package does, since ids are auto-generated from the type name.
         Canvas->removeNode(N);
-        const int M2 = Canvas->addNode("LAYERS", 400, 100);
+        const int M2 = Canvas->addNode("ZIP", 400, 100);
         Doc["NODES"][M2]["LABEL"] = Id;
         Doc["NODES"][M2]["POS"] = json::array({5.0e9, 5.0e9});
         Canvas->invalidateGraph();
@@ -2760,7 +2594,7 @@ private slots:
     void anImpossiblePositionFromTheEditorIsReportedOncePerNode()
     {
         Canvas->setMiniMap(false);
-        const int A = Canvas->addNode("LAYERS", 100, 100);
+        const int A = Canvas->addNode("ZIP", 100, 100);
         runFrame(); runFrame();
 
         int Warnings = 0;
@@ -2787,7 +2621,7 @@ private slots:
         // producers disagree about the key shape is that this one is swallowed.
         const std::string Id = Doc["NODES"][A].value("LABEL", std::string());
         Canvas->removeNode(A);
-        const int B = Canvas->addNode("LAYERS", 400, 100);
+        const int B = Canvas->addNode("ZIP", 400, 100);
         Doc["NODES"][B]["LABEL"] = Id;
         Canvas->invalidateGraph();
         runFrame(); runFrame();
@@ -2803,7 +2637,7 @@ private slots:
     void theMalformedNodePlaceholderBehavesLikeANode()
     {
         Canvas->setMiniMap(false);
-        Canvas->addNode("LAYERS", 100, 100);
+        Canvas->addNode("ZIP", 100, 100);
         Doc["NODES"].push_back("not a node");
         Canvas->invalidateGraph();
         runFrame(); runFrame();
@@ -2842,7 +2676,7 @@ private slots:
     void theEditorHandsTheWholeViewportBack()
     {
         Canvas->setMiniMap(true);
-        Canvas->addNode("LAYERS", 300, 300);
+        Canvas->addNode("ZIP", 300, 300);
         QStringList outliers;
         //Checked at the moment post-editor windows are submitted, NOT after frame() returns: imgui's NewFrame
         //rebuilds the main viewport every frame, so a viewport left in world space is invisible from outside
@@ -2921,10 +2755,12 @@ private slots:
         //legitimately typed into by the sweep, so only its COVER is compared.
         using Picker = std::function<json(const json &)>;
         const Picker Whole = [](const json &V) { return V; };
+        //Key is a JSON pointer into the node: in generation 6 a value lives inside a layer (an entry's TILE, a DLL map).
         auto drive = [&](const char *Type, const char *Key, const json &Bad, bool Typing, const Picker &Pick = Picker()) {
             const Picker &Sel = Pick ? Pick : Whole;
             const int N = Canvas->addNode(Type, 220, 180);
-            Doc["NODES"][N][Key] = Bad;
+            const json::json_pointer Ptr(Key);
+            Doc["NODES"][N][Ptr] = Bad;
             Canvas->invalidateGraph();
             ImGui::ClearActiveID();
             ImNodes::EditorContextResetPanning(ImVec2(0, 0));
@@ -2951,18 +2787,29 @@ private slots:
                         //up is still holding it. Without this the sweep never presses a single button, and
                         //"the malformed value was not rewritten" becomes true for the wrong reason.
                         ImGui::ClearActiveID();
+                        const json Before = Doc["NODES"][N];
                         clickAt(At);
                         runFrame();
                         // A click focused something: type into it. The Cover write happens on the KEYSTROKE,
                         // with no click needed beyond focusing the box, so a click-only sweep never reaches it.
                         if (Typing && ImGui::GetActiveID() != 0) { type("z"); runFrame(); }
+                        //A click that removed the value's container (an entry's or a list's own delete) is another
+                        //control doing its job, not a rewrite: put the node back and keep sweeping, or every row
+                        //below it — the Cover box among them — would never be reached.
+                        if (!Doc["NODES"][N].contains(Ptr))
+                        {
+                            ImGui::ClearActiveID();
+                            Doc["NODES"][N] = Before;
+                            Canvas->invalidateGraph();
+                            runFrame(); runFrame();
+                        }
                     }
             } catch (const std::exception &E) {
                 died << QString("%1: threw %2").arg(Who).arg(E.what());
             }
             closeAnyPopup();
             ImGui::ClearActiveID();
-            const bool Changed = !Doc["NODES"][N].contains(Key) || Sel(Doc["NODES"][N][Key]) != Sel(Bad);
+            const bool Changed = Sel(Doc["NODES"][N][Ptr]) != Sel(Bad);
             Canvas->removeNode(N);
             Canvas->invalidateGraph();
             runFrame();
@@ -2975,19 +2822,19 @@ private slots:
         //must leave the TILE value untouched).
         auto tileWith = [](const json &Cover) { return json{{"UID", "1"}, {"TITLE", "t"}, {"COVER", Cover}}; };
         const Picker CoverOf = [](const json &T) { return T.is_object() && T.contains("COVER") ? T["COVER"] : json(); };
-        if (!drive("TILE", "TILE", tileWith(json("cover.png")), true, CoverOf))
+        if (!drive("EXEC", "/LAYERS/0/EXEC/0/TILE", tileWith(json("cover.png")), true, CoverOf))
             died << "the sweep never reached the Cover box - every Cover result below is vacuous";
-        if (!drive("DLLOVERRIDES", "DLLOVERRIDES", json::object(), false))
-            died << "the sweep never reached the KeyValue add button - every DLLOVERRIDES result below is vacuous";
+        if (!drive("DLL", "/LAYERS/0/DLL", json::object(), false))
+            died << "the sweep never reached the KeyValue add button - every DLL result below is vacuous";
 
-        // Cover: Node[TILE][COVER]["PATH"] on every keystroke — no click beyond focusing the box.
+        // Cover: TILE.COVER.FILE on every keystroke — no click beyond focusing the box.
         for (const char *Bad : {"5", "[]", "true"})
-            if (drive("TILE", "TILE", tileWith(json::parse(Bad)), true, CoverOf))
+            if (drive("EXEC", "/LAYERS/0/EXEC/0/TILE", tileWith(json::parse(Bad)), true, CoverOf))
                 died << QString("TILE COVER=%1: the malformed value was rewritten").arg(Bad);
-        // KeyValue: Node[DLLOVERRIDES][""] on the "+ add" button.
+        // KeyValue: DLL[""] on the "+ add" button.
         for (const char *Bad : {"\"oops\"", "5", "[]", "true"})
-            if (drive("DLLOVERRIDES", "DLLOVERRIDES", json::parse(Bad), false))
-                died << QString("DLLOVERRIDES=%1: the malformed value was rewritten").arg(Bad);
+            if (drive("DLL", "/LAYERS/0/DLL", json::parse(Bad), false))
+                died << QString("DLL=%1: the malformed value was rewritten").arg(Bad);
 
         QVERIFY2(died.isEmpty(),
                  qPrintable("a malformed package did not survive being used:\n  " + died.join("\n  ")));
@@ -3006,8 +2853,8 @@ private slots:
 
     void zoomingDoesNotMoveTheStoredPositions()
     {
-        Canvas->addNode("LAYERS", 400, 300);
-        Canvas->addNode("ENTRYPOINTS", 900, 300);
+        Canvas->addNode("ZIP", 400, 300);
+        Canvas->addNode("EXEC", 900, 300);
         runFrame();
         const std::string Before = Layout.dump();
 
@@ -3032,7 +2879,7 @@ private slots:
         //for a node the canvas submitted.
         //the whole culling block deleted.
         Canvas->setMiniMap(false);
-        for (int I = 0; I < 6; ++I) Canvas->addNode("LAYERS", 60.0f + I * 120.0f, 80.0f);
+        for (int I = 0; I < 6; ++I) Canvas->addNode("ZIP", 60.0f + I * 120.0f, 80.0f);
         runFrame();
         QCOMPARE(Canvas->visibleNodes(), 6);
     }
@@ -3042,8 +2889,8 @@ private slots:
         //Culling is unconditional now; the minimap is off here only so the overview cannot be what a
         //measurement picks up.
         Canvas->setMiniMap(false);
-        Canvas->addNode("LAYERS", 40, 40);
-        Canvas->addNode("LAYERS", 90000, 90000);   // far off-screen at 1.0x
+        Canvas->addNode("ZIP", 40, 40);
+        Canvas->addNode("ZIP", 90000, 90000);   // far off-screen at 1.0x
         runFrame();
         QCOMPARE(Canvas->nodeCount(), 2);
         QCOMPARE(Canvas->visibleNodes(), 1);
@@ -3055,9 +2902,9 @@ private slots:
     void aLinkCrossingTheViewportIsDrawnThoughBothNodesAreCulled()
     {
         Canvas->setMiniMap(false);
-        const int p = Canvas->addNode("LAYERS", -90000, -90000);   // far top-left, off-screen
-        const int c = Canvas->addNode("ENTRYPOINTS", 90000, 90000); // far bottom-right, off-screen
-        Doc["NODES"][c]["OVER"] = json::array({ Doc["NODES"][p]["CID"].get<std::string>() });   // wire by handle
+        const int p = Canvas->addNode("ZIP", -90000, -90000);   // far top-left, off-screen
+        const int c = Canvas->addNode("EXEC", 90000, 90000); // far bottom-right, off-screen
+        QVERIFY(Canvas->connect(p, c));                                    // wire by handle
         Canvas->invalidateGraph();
         runFrame();
         QCOMPARE(Canvas->visibleNodes(), 0);   // both nodes are culled...
@@ -3069,9 +2916,9 @@ private slots:
     void aLinkThatMissesTheViewportIsNotDrawn()
     {
         Canvas->setMiniMap(false);
-        const int p = Canvas->addNode("LAYERS", 90000, 90000);
-        const int c = Canvas->addNode("ENTRYPOINTS", 95000, 95000);   // both far bottom-right; wire stays off-screen
-        Doc["NODES"][c]["OVER"] = json::array({ Doc["NODES"][p]["CID"].get<std::string>() });   // wire by handle
+        const int p = Canvas->addNode("ZIP", 90000, 90000);
+        const int c = Canvas->addNode("EXEC", 95000, 95000);   // both far bottom-right; wire stays off-screen
+        QVERIFY(Canvas->connect(p, c));                                    // wire by handle
         Canvas->invalidateGraph();
         runFrame();
         QCOMPARE(Canvas->visibleNodes(), 0);
@@ -3085,8 +2932,8 @@ private slots:
         //Culling is unconditional now; the minimap is off here only so the overview cannot be what a
         //measurement picks up.
         Canvas->setMiniMap(false);
-        Canvas->addNode("LAYERS", 90000, 90000);
-        Canvas->addNode("LAYERS", 40, 40);
+        Canvas->addNode("ZIP", 90000, 90000);
+        Canvas->addNode("ZIP", 40, 40);
         runFrame();
         runFrame();
         const PkgGraph::Graph G = Canvas->graph();

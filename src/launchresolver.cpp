@@ -4,6 +4,8 @@
 #include "packagecatalog.h"  // GetPackageUserSettings (catalog/user-settings service)
 #include "runnerwrapper.h"   // RunnerWrapper::ExecutableAvailable / DefPrefixDir
 #include "commonutils.h"     // Log*
+#include "fold.h"            // Fold::Resolve — the row, resolved
+#include "nodelower.h"       // NodeLower::LowerPlan / LowerEntry — the plan as engine ops
 
 #include <QDir>
 #include <QGuiApplication>
@@ -60,6 +62,30 @@ void LaunchResolver::AbsolutizeLayerPaths(nlohmann::ordered_json &L, const std::
     { std::filesystem::path P = std::string(L["SOURCE"]["PATH"]); if (!P.is_absolute()) L["SOURCE"]["PATH"] = (BundleDir / P).string(); }
 }
 
+//A runner's build, resolved on its own node (§4.5: each runner resolves the same way a game does) and lowered in its
+//own layout (a runner's layers are written in it; GUEST_ROOTS map only a PACKAGE's guest coordinates).
+nlohmann::ordered_json LaunchResolver::RunnerOps(const NodeIndex &Idx, const std::string &RunnerId, Fold::Plan *PlanOut)
+{
+    const Fold::Plan P = Fold::Resolve(ManifestModel::LibraryOf(Idx), RunnerId);
+    if (!P.Error.empty()) LogWarn("LaunchResolver::RunnerOps", "runner '" + RunnerId + "': " + P.Error);
+    if (PlanOut) *PlanOut = P;
+    return NodeLower::LowerPlan(P, nlohmann::ordered_json());
+}
+
+std::string LaunchResolver::GuestToLayout(struct ContainerParams &CP, const std::string &Path)
+{
+    if (!CP.GuestRoots.is_object() || CP.GuestRoots.empty()) return Path;
+    const std::map<std::string, std::string> Vars = CP.GetVariablesMap();
+    nlohmann::ordered_json Roots = nlohmann::ordered_json::object();
+    for (const auto &[A, V] : CP.GuestRoots.items())
+    {
+        std::string R = V.is_string() ? V.get<std::string>() : std::string();
+        VarSubst::StringVariableSubstitution(R, Vars);
+        Roots[A] = R;
+    }
+    return Fold::ToLayout(Path, Roots);
+}
+
 bool LaunchResolver::InitializeFromNode(struct ContainerParams &ContainerParams, nlohmann::ordered_json &ComponentPool, const nlohmann::ordered_json &GlobalConfigJSON)
 {
     auto &CP = ContainerParams;
@@ -67,82 +93,93 @@ bool LaunchResolver::InitializeFromNode(struct ContainerParams &ContainerParams,
     const std::string LaunchId = CP.LaunchNodeId;
     const Node *Launch = Idx.Find(LaunchId);
     if (!Launch) { LogErr("InitializeFromNode", "Launch node not found: " + LaunchId); return false; }
-    if (!CP.AuthoringBare && !Launch->IsRunnable())
-        LogWarn("InitializeFromNode", "Node '" + LaunchId + "' has no effective ENTRYPOINTS (nothing beneath declares one) — not runnable.");
+    if (!Launch->LowerError.empty()) { LogErr("InitializeFromNode", Launch->LowerError); return false; }
+    const std::string LaunchKey = Launch->Key();
+    const Fold::Library Lib = ManifestModel::LibraryOf(Idx);
 
-    //The exec is the SELECTED entry of the launch node's EFFECTIVE entrypoints (own, else inherited — a fact that
-    //folds along the chain), or of EntryNode's: a ticked graft carrying an entry (a mod loader) runs over the
-    //selected variant's mount. Nothing beneath the variant is OFFERED as a way to run it.
-    const Node *ExecNode = Launch;
-    if (!CP.EntryNode.empty() && CP.EntryNode != LaunchId)
-    {
-        ExecNode = Idx.Find(CP.EntryNode);
-        if (!ExecNode) { LogErr("InitializeFromNode", "Entry node not found: " + CP.EntryNode); return false; }
-        // The entry node must be a graft that is SELECTED for this launch (ticked and applicable): its entry runs
-        // over a mount that contains it. A stale or unticked one would exec a loader that is not on the mount.
-        bool Selected = false;
-        for (const auto &O : ManifestModel::OfferedGrafts(Idx, LaunchId, CP.ModuleStates))
-            if (O.Graft == ExecNode || O.Graft->Key() == ExecNode->Key()) { Selected = O.Selected && O.Applicable; break; }
-        if (!Selected) { LogErr("InitializeFromNode", "Entry node '" + CP.EntryNode + "' is not a selected graft of '" + LaunchId + "' — it would run off a mount that does not contain it."); return false; }
-    }
-    CP.ComposedExec = ExecNode->ExecFor(CP.Entrypoint);
-    if (!CP.Entrypoint.empty() && !CP.ComposedExec.is_object())
-    {
-        LogErr("InitializeFromNode", "Node '" + ExecNode->NodeId + "' has no entrypoint labelled '" + CP.Entrypoint + "'.");
-        return false;
-    }
     CP.subgame_id = LaunchId;  CP.VariantID = CP.Entrypoint.empty() ? "default" : CP.Entrypoint;
-    CP.PackageUID = Launch->Uid.empty() ? LaunchId : Launch->Uid;
+    CP.PackageUID = Launch->PackageUid.empty() ? LaunchId : Launch->PackageUid;
     CP.PackageName= Launch->Meta.is_object() ? Launch->Meta.value("TITLE", LaunchId) : LaunchId;
     CP.GameName   = CP.PackageName;
-    CP.Platform   = CP.ComposedExec.is_object() ? CP.ComposedExec.value("PLATFORM", Launch->HostPlatform) : Launch->HostPlatform;
     CP.PackagePath= AppPaths::PackagePathOverride().empty() ? Launch->BundleDir : AppPaths::PackagePathOverride();  // --package-dir / in-package
     CP.UMUID      = Launch->Meta.is_object() ? Launch->Meta.value("UMUID", std::string("0")) : "0";
 
-    //Absolutize a node's LAYERS PATH/SOURCE.PATH against its OWN bundle dir (cross-bundle-correct).
-    auto AbsLayers = [](const Node *N) -> nlohmann::ordered_json
+    //Phase 1 reads the instance's values and the built-ins (%UID% = the launched face, %PackageUID% = its family).
+    Fold::Vars Instance;
     {
-        nlohmann::ordered_json Out = nlohmann::ordered_json::array();
-        if (!N->Layers.is_array()) return Out;
-        for (nlohmann::ordered_json L : N->Layers)
+        const nlohmann::ordered_json Saved = GetPackageVariables(GlobalConfigJSON, CP.PackageUID, CP.InstanceName);
+        if (Saved.is_object()) for (const auto &[K, V] : Saved.items()) if (V.is_string()) Instance[K] = V.get<std::string>();
+        for (const auto &[K, V] : CP.VariableOverrides) Instance[K] = V;
+    }
+    Fold::Vars Builtins = CP.GetVariablesMap();
+    Builtins["UID"] = Launch->Uid;
+    Builtins["PackageUID"] = CP.PackageUID;
+
+    //The grafts: the instance's list in its order — each applies when it is offered with those before it applied (a
+    //graft may need another graft) — else a fresh instance's: the ones RECOMMENDED under this tile.
+    std::vector<std::string> Dropped;
+    CP.AppliedGrafts = PackageCatalog::AppliedGrafts(Idx, LaunchKey, CP.Grafts, Instance, Builtins, &Dropped);
+    for (const std::string &G : Dropped)
+        LogWarn("InitializeFromNode", "Graft '" + G + "' is not offered to '" + LaunchId + "' at its position (its ANY does not hold, or it is not installed) — not applied.");
+    const Fold::Plan Plan = Fold::Resolve(Lib, LaunchKey, Instance, Builtins, CP.AppliedGrafts);
+    if (!Plan.Error.empty()) { LogErr("InitializeFromNode", "Node '" + LaunchId + "': " + Plan.Error); return false; }
+    const auto Name = [&](const std::string &Cid) { const Node *N = Idx.Find(Cid); return N && !N->NodeId.empty() ? N->NodeId : Cid; };
+    for (const auto &[Ev, Cid] : Plan.Events)
+        if (Ev == "missing" || Ev == "cycle")
+            LogWarn("InitializeFromNode", "Resolving '" + LaunchId + "': " + Ev + " " + Name(Cid));
+    //A row whose requirements fail is blocked (§4): a NOT names something it contains, or an ANY finds none.
+    if (Fold::Unsatisfied(Plan) > 0)
+    {
+        for (const auto &[Ev, Cid] : Plan.Events)
         {
-            LaunchResolver::AbsolutizeLayerPaths(L, N->BundleDir);
-            Out.push_back(std::move(L));
+            if (Ev == "not-hit")
+                LogErr("InitializeFromNode", "'" + LaunchId + "' is blocked: it contains '" + Name(Cid) + "', which a NOT in it excludes.");
+            else if (Ev == "any-unmet")
+                LogErr("InitializeFromNode", "'" + LaunchId + "' is blocked: '" + Name(Cid) + "' requires one of the nodes its ANY names, and none is present.");
         }
-        return Out;
-    };
+        return false;
+    }
+
+    //The entry that runs: the one named (the row's folded EXEC, grafts' entries included), else the first game entry.
+    const nlohmann::ordered_json *Entry = nullptr;
+    if (!CP.Entrypoint.empty())
+    {
+        if (!Plan.Exec.contains(CP.Entrypoint))
+        { LogErr("InitializeFromNode", "Node '" + LaunchId + "' has no entry labelled '" + CP.Entrypoint + "'."); return false; }
+        Entry = &Plan.Exec[CP.Entrypoint];
+    }
+    else
+        for (const auto &[L, E] : Plan.Exec.items())
+            if (!(E.contains("GUEST") && E["GUEST"].is_array() && !E["GUEST"].empty()) && E.contains("HOST")) { Entry = &E; break; }
+    if (!Entry && !CP.AuthoringBare)
+        LogWarn("InitializeFromNode", "Node '" + LaunchId + "' has no entry to run (nothing in its fold declares one) — not runnable.");
+    CP.ComposedExec = Entry ? NodeLower::LowerEntry(*Entry) : nlohmann::ordered_json::object();
+    CP.Platform = CP.ComposedExec.value("PLATFORM", Launch->HostPlatform);
 
     nlohmann::ordered_json Components = nlohmann::ordered_json::array();
     CP.Recipe.clear();
-    auto AddComponent = [&](const Node *N)
-    { Components.push_back({{"COMPONENTID", N->NodeId}, {"SUBCOMPONENTS", AbsLayers(N)}}); CP.Recipe.push_back(N->NodeId); };
+    nlohmann::ordered_json GuestRoots;                                   // the boundary runner's guest-coordinate map
+    nlohmann::ordered_json RunnerOpsJ = nlohmann::ordered_json::array();  // the boundary runner's build, lowered
 
-    //AUTHORING BARE MODE: no runner, no prefix, content at the root. The session just wants the node's content overlay
-    //mounted with a writable upper as a capture workbench (a fresh node has no content at all — that's fine). Runner-
-    //driven tools (e.g. "run a Windows exe in a wine prefix") rebuild via the normal path below with a pinned runner.
+    //AUTHORING BARE MODE: no runner, no prefix, content at the root — the session wants the node's content overlay
+    //mounted with a writable upper as a capture workbench.
     if (CP.AuthoringBare)
     {
       CP.ContentRoot.clear();
-      CP.RunnerPersistLayers = nlohmann::ordered_json::array();   // no runner → no runner keep-set
+      CP.RunnerPersistLayers = nlohmann::ordered_json::array();
     }
     else
     {
-    //Resolve the runner CHAIN (daisy-chaining): innermost→outermost runner links from the content platform to the
-    //machine, always terminated by a native runner. A length-1 bridge ([proton, native]) is the classic case.
+    //The runner CHAIN (daisy-chaining): innermost→outermost links from the entry's platform to the machine, always
+    //terminated by a native runner — found by capability, never named by the package.
     CP.RunnerChain = ResolveRunnerChain(Idx, *Launch, CP, GlobalConfigJSON);
     if (CP.RunnerChain.empty())
     {
-        //No runner chain reaches this machine — the container cannot be built (there is no runnerless launch path;
-        //even native games resolve through native-passthrough). Abort rather than building around an empty command.
         LogErr("InitializeFromNode", "No runner chain found for platform '" + CP.Platform
                + "' — cannot launch '" + LaunchId + "'. Install a compatible runner.");
         return false;
     }
-
-    //The runtime BOUNDARY runner owns the FUSE mount / wine prefix: the OUTERMOST link that creates a guest fs
-    //(non-native namespace, e.g. proton). If the whole chain is native (native content), it's the first link (the
-    //terminal running content directly). The legacy single-runner fields below are this boundary runner's view —
-    //a length-1 [proton, native] chain populates them exactly as the old single-runner path did.
+    //The runtime BOUNDARY runner owns the FUSE mount / wine prefix: the OUTERMOST link that creates a guest fs.
     int BoundaryIdx = 0;
     for (int i = 0; i < (int)CP.RunnerChain.size(); ++i) if (!CP.RunnerChain[i].NativeNamespace()) BoundaryIdx = i;
     const RunnerLink &Boundary = CP.RunnerChain[BoundaryIdx];
@@ -160,91 +197,50 @@ bool LaunchResolver::InitializeFromNode(struct ContainerParams &ContainerParams,
     CP.UnifiedRuntime    = Boundary.UnifiedRuntime;
     CP.RunnerLayers      = Boundary.Layers;
     CP.RunnerShipsBuild  = Boundary.ShipsBuild;
+    if (RunnerNode && RunnerNode->Exec.is_object() && RunnerNode->Exec.contains("GUEST_ROOTS")) GuestRoots = RunnerNode->Exec["GUEST_ROOTS"];
+    CP.GuestRoots = GuestRoots;
 
-    //The runner platform keep-set: the Persist entries anywhere in the runner CHAIN's closures (where a
-    //runner's user-state lives, with prefix-correct paths — e.g. proton's "pfx/drive_c/users" + "HKCU").
-    //Folded into DerivePersistence before the game's, so every launch persists the standard save/config
-    //locations with no per-game work.
-    //
-    //CLOSURE, not the runner node's own layers — and EVERY runner in the chain, not just the boundary.
-    //
-    //This was the THIRD read of "the runner node's own LAYERS", and the one the flat cutover missed while
-    //generalising the other two (the prefix-assembly VFS walk and the order-independent edit fold). Pre-flat
-    //the keep-set sat on the runner node itself; now it is its own Persist node in the runner's PARENTS — so
-    //the old read returned the lone DeclareRunner layer and the keep-set reached NOTHING. Every game silently
-    //lost its saves and its HKCU at exit, while DerivePersistence printed a green summary and
-    //--audit-packages reported 960/960 clean, because nothing else resolves a runner closure for persistence.
-    //
-    //A node is one layer of one TYPE, so a DeclareExec node can never also carry a Persist: there is no
-    //"the runner node's own keep-set" case left to fall back to.
+    //Where user state lives by the runner's choice: the KEEP entries of every runner in the chain (ours keep
+    //nothing; the author decides). Folded into DerivePersistence before the game's.
     nlohmann::ordered_json RunnerKeep = nlohmann::ordered_json::array();
     for (const RunnerLink &Lnk : CP.RunnerChain)
     {
-        //Every link that IS a node. Not filtered on NativeNamespace(): that asks whether the runner gives the
-        //content its own root, which has nothing to do with whether it has user-state to keep — and with a
-        //chain of runners that declare no CONTENT_ROOT it skipped all but one of them.
         if (!Idx.Find(Lnk.NodeId)) continue;
-        ManifestModel::ForEachClosureNode(Idx, Lnk.NodeId, CP.ModuleStates, [&](const Node &N) {
-            if (!N.Layers.is_array()) return;
-            for (const auto &L : N.Layers)
-                if (L.is_object() && L.value("TYPE", std::string()) == "DeclarePersist") RunnerKeep.push_back(L);
-        });
+        for (const auto &L : RunnerOps(Idx, Lnk.NodeId))
+            if (LayerType(L) == "DeclarePersist") RunnerKeep.push_back(L);
     }
     CP.RunnerPersistLayers = std::move(RunnerKeep);
 
     if (RunnerNode)
     {
-        //Runner build = the boundary runner node's closure, itself LAST (highest priority: it carries the placement
-        //CustomVars — %DXVK_TARGET%/%FONTS_TARGET% — and, for a folded runner, the build layer itself) — for runner
-        //CustomVar resolution (RunnerComponents/RunnerRecipe) and the UNIFIED fold.
-        nlohmann::ordered_json RunnerComps = nlohmann::ordered_json::array();
-        std::vector<std::string> RunnerBuildIds;
-        ManifestModel::ForEachClosureNode(Idx, RunnerNode->Key(), CP.ModuleStates, [&](const Node &N) {
-            RunnerComps.push_back({{"COMPONENTID", N.NodeId}, {"SUBCOMPONENTS", AbsLayers(&N)}});
-            RunnerBuildIds.push_back(N.NodeId);
-        });
-        CP.RunnerComponents = RunnerComps;
-        CP.RunnerRecipe     = RunnerBuildIds;
-        CP.RunnerEndpoints  = CP.UnifiedRuntime ? RunnerBuildIds : std::vector<std::string>{};
-        //UNIFIED: fold the runner build into the game RUNTIME (mount first = lowest priority).
+        RunnerOpsJ = RunnerOps(Idx, RunnerNode->Key());
+        CP.RunnerComponents = nlohmann::ordered_json::array({ { {"COMPONENTID", RunnerNode->NodeId}, {"SUBCOMPONENTS", RunnerOpsJ} } });
+        CP.RunnerRecipe     = { RunnerNode->NodeId };
+        CP.RunnerEndpoints  = CP.UnifiedRuntime ? CP.RunnerRecipe : std::vector<std::string>{};
+        //UNIFIED: the runner build is mounted in the game RUNTIME, beneath the game (first = lowest priority).
         if (CP.UnifiedRuntime)
-            for (const std::string &Id : RunnerBuildIds) { const Node *N = Idx.Find(Id); if (N) AddComponent(N); }
+        {
+            Components.push_back({ {"COMPONENTID", RunnerNode->NodeId + "__runner"}, {"SUBCOMPONENTS", RunnerOpsJ} });
+            CP.Recipe.push_back(RunnerNode->NodeId + "__runner");
+        }
     }
     }   // end !AuthoringBare
 
-    //Game content nodes (resolved order; runners + the launch node excluded), then the launch node's own layers.
-    std::vector<std::string> Missing;
-    const std::vector<std::string> BaseOrder = ManifestModel::ResolveNodeOrder(Idx, LaunchId, CP.ModuleStates, &Missing);
-    for (const std::string &Id : BaseOrder)
-    {
-        if (Id == LaunchId) continue;
-        const Node *N = Idx.Find(Id);
-        if (!N) continue;
-        AddComponent(N);
-    }
-    for (const auto &M : Missing) LogWarn("InitializeFromNode", "Unresolved requirement: " + M);
-    if (Launch->Layers.is_array() && !Launch->Layers.empty())
-    { Components.push_back({{"COMPONENTID", LaunchId + "__self"}, {"SUBCOMPONENTS", AbsLayers(Launch)}}); CP.Recipe.push_back(LaunchId + "__self"); }
+    //The game: the resolved row, lowered. Its paths stay in guest coordinates until substituted (GuestToLayout).
+    Components.push_back({ {"COMPONENTID", LaunchId}, {"SUBCOMPONENTS", NodeLower::LowerPlan(Plan, nlohmann::ordered_json())} });
+    CP.Recipe.push_back(LaunchId);
 
-    std::vector<std::string> MountOrder = BaseOrder;   // every node the mount is made of, lowest first — the fold order
-
-    //GRAFTS — the selected nodes that are OVER this title without being in anybody's list — mount ABOVE the
-    //launchable's own closure (later component = higher priority), in instance precedence. Scope: never a
-    //RECEIVED browse stub (a friend's node, not hydrated) — only nodes of our own tree.
-    for (const std::string &Id : ManifestModel::ResolveGraftOrder(Idx, LaunchId, CP.ModuleStates, BaseOrder, CP.GraftPrecedence,
-                                                                  [](const Node &N) { return !N.Received && !N.BundleDir.empty(); }))
+    //The environment folds per name like everything else (null = removed) — the GAME's, merged over the runner's at exec.
+    CP.LaunchEnv = nlohmann::ordered_json::object();
+    CP.LaunchRemoveEnv.clear();
+    for (const auto &[K, V] : Plan.Env.items())
     {
-        MountOrder.push_back(Id);
-        const Node *N = Idx.Find(Id);
-        if (!N) continue;
-        AddComponent(N);
+        if (V.is_null()) CP.LaunchRemoveEnv.push_back(K);
+        else CP.LaunchEnv[K] = V;
     }
-    //The environment is mutation and folds like the registry: every node of the mount, lowest first, the
-    //grafts above. What comes out is THE GAME's environment — merged over the runner boundary's at exec.
-    ManifestModel::FoldEnv(Idx, MountOrder, CP.LaunchEnv, CP.LaunchRemoveEnv);
 
     //The internal component pool the generic iterators (BuildSubComponentsArray/ResolveCustomVariables/
-    //DerivePersistence/BuildDefaultData) consume — built from nodes, never authored or read from disk.
+    //DerivePersistence/BuildDefaultData) consume — built from the plan, never authored or read from disk.
     ComponentPool = nlohmann::ordered_json::object();
     ComponentPool["PACKAGEUID"]  = CP.PackageUID;
     ComponentPool["PACKAGENAME"] = CP.PackageName;
@@ -253,76 +249,34 @@ bool LaunchResolver::InitializeFromNode(struct ContainerParams &ContainerParams,
     DerivePaths(CP, GlobalConfigJSON);
     ResolveCustomVariables(ComponentPool, CP, GlobalConfigJSON);
     BuildSubComponentsArray(ComponentPool, CP);
-    //A prefix-generating runner contributes prefix-ASSEMBLY layers to the RUNTIME closure: default_pfx/DLL VFSDirLayers
-    //(sourced from "%RunnerMount%/..." — the enabler substitutes the runtime path), config_info/version/marker FileEdits,
-    //and wineboot RegEdits. Route the VFS ones into SubComponentsArray here (their %RunnerMount%/%TempPath% resolve
-    //downstream, at mount/edit time). The generic BuildLayerSpec loop + BuildDefaultData then assemble the prefix with NO
-    //special-case branch. Persist/CustomVar stay handled by RunnerPersistLayers / the resolver.
-    //
-    //WHICH layers are assembly is decided by the layer, not by which node it sits on: a RUNTIME-SOURCED layer
-    //(%variable% PATH) resolves against the live runner mount, so it assembles the prefix; a layer with real
-    //on-disk content IS the runner build and is mounted separately at RunnerMount. That used to be implicit —
-    //assembly layers happened to sit on the same node as DeclareRunner, so "the runner node's own LAYERS" picked
-    //them out. One node per layer makes node membership meaningless, so the real property is tested directly.
-    //
-    //LAYER PRIORITY (vidyagodfs: later layer = higher priority): the wine prefix (default_pfx + system32/syswow64 builtin
-    //DLLs) is the BASE SYSTEM — it must sit BENEATH the game/library content so a package's native override DLLs win over
-    //wine's builtins at the same path (e.g. DirectPlay's native dplayx.dll in syswow64 overriding proton's builtin). So the
-    //runner's prefix-assembly VFS layers are PREPENDED (lowest priority), NOT appended. Appending them (the proton-decompose
-    //regression) put wine builtins ON TOP, shadowing every syswow64/system32 native override (DirectPlay broke; any
-    //game-supplied system DLL was masked). FileEdit/RegEdit are order-independent (separate DEFAULTDATA/registry passes) so
-    //they stay appended.
-    //The non-VFS layers come from the runner's WHOLE CLOSURE, not just the runner node: a runner may pin library
-    //nodes that carry DllOverride/RegEdit/FileEdit (e.g. a media stack that installs native DirectShow filters and
-    //switches winegstreamer off). Previously only the runner NODE's own FileEdit/RegEdit were routed and
-    //DllOverride was dropped entirely, so such a library silently did nothing when pinned by a runner — the runner
-    //chain was strictly less capable than the content chain. VFS stays split by design: the runner node's own VFS
-    //layers are prefix ASSEMBLY (below), while its PARENTS' VFS layers build the runner tree itself and are mounted
-    //separately at RunnerMount — a runner-side layer therefore cannot target the game prefix, which is why
-    //prefix-content libraries still belong on the game.
+    //A prefix-generating runner assembles the prefix from RUNTIME-SOURCED layers (a %variable% PATH resolved against
+    //the live runner mount: default_pfx, the builtin DLL dirs). They are the BASE SYSTEM — prepended beneath the game
+    //so a package's native DLLs win over wine's builtins at the same path. A layer with real bytes is the runner
+    //BUILD, mounted separately at RunnerMount.
     {
-        //Taken from the closure NODES, deliberately un-absolutized: a runtime-sourced PATH substitutes to an
-        //ABSOLUTE runtime path downstream and is used as-is, so prepending a bundle dir (which the resolved
-        //RunnerComponents subcomponents carry) would corrupt it into <bundle>/<abs path>.
-        nlohmann::ordered_json PrefixVfs = nlohmann::ordered_json::array();   // base system → front (low priority)
-        // Gate with the USER's toggles — the same map that produced RunnerRecipe just above, so the two walks
-        // see the same closure by construction. Reconstructing a toggle map by first walking with {} could only
-        // ever move a node OFF: the default-gated walk never visits an off-by-default node, so a node the user
-        // switched ON got no entry and was gated off again, silently dropping its prefix-assembly layers.
-        ManifestModel::ForEachClosureNode(Idx, CP.RunnerID, CP.ModuleStates, [&](const Node &N) {
-            if (!N.Layers.is_array()) return;
-            for (const auto &L : N.Layers)
-                if (ManifestModel::IsVfsLayer(L.value("TYPE", std::string()))
-                    && ManifestModel::IsRuntimeSourcedLayer(L)) PrefixVfs.push_back(L);
-        });
+        nlohmann::ordered_json PrefixVfs = nlohmann::ordered_json::array();
+        for (const auto &L : RunnerOpsJ)
+            if (ManifestModel::IsVfsLayer(LayerType(L)) && ManifestModel::IsRuntimeSourcedLayer(L)) PrefixVfs.push_back(L);
         if (!PrefixVfs.empty())
         {
-            for (auto &L : CP.SubComponentsArray) PrefixVfs.push_back(std::move(L));   // game/library content ON TOP
+            for (auto &L : CP.SubComponentsArray) PrefixVfs.push_back(std::move(L));
             CP.SubComponentsArray = std::move(PrefixVfs);
         }
     }
-    //Order-independent edits from every active runner component (scoped to RunnerRecipe so an inactive
-    //multi-version component can't contribute), appended last — separate DEFAULTDATA/registry/override passes.
+    //The runner's edits, registry and DLL overrides, appended — separate DEFAULTDATA/registry/override passes.
     {
-        const std::set<std::string> RunnerWant(CP.RunnerRecipe.begin(), CP.RunnerRecipe.end());
-        for (const auto &Comp : CP.RunnerComponents)
+        const std::map<std::string, std::string> RunnerVars = CP.GetVariablesMap();
+        for (const auto &L : RunnerOpsJ)
         {
-            if (!Comp.is_object() || !Comp.contains("SUBCOMPONENTS") || !Comp["SUBCOMPONENTS"].is_array()) continue;
-            if (!RunnerWant.empty() && !RunnerWant.count(Comp.value("COMPONENTID", std::string()))) continue;
-            const std::map<std::string, std::string> RunnerVars = CP.GetVariablesMap();
-            for (const auto &L : Comp["SUBCOMPONENTS"])
-            {
-                const std::string T = L.value("TYPE", std::string());
-                if (T != "FileEdit" && T != "RegEdit" && T != "DllOverride" && T != "BinaryPatch") continue;
-                if (L.contains("WHEN") && L["WHEN"].is_string()
-                    && !VarSubst::EvaluateCondition(L["WHEN"], RunnerVars)) continue;   // WHEN false → inert
-                CP.SubComponentsArray.push_back(L);
-            }
+            const std::string T = LayerType(L);
+            if (T != "FileEdit" && T != "RegEdit" && T != "DllOverride" && T != "BinaryPatch") continue;
+            if (L.contains("WHEN") && L["WHEN"].is_string() && !VarSubst::EvaluateCondition(L["WHEN"], RunnerVars)) continue;
+            CP.SubComponentsArray.push_back(L);
         }
     }
     DerivePersistence(ComponentPool, CP);
     LogSucc("InitializeFromNode", "Resolved node '" + LaunchId + "' (runner " + CP.RunnerName + ", "
-            + std::to_string(CP.Recipe.size()) + " component(s)).");
+            + std::to_string(Plan.Order.size()) + " node(s), " + std::to_string(CP.AppliedGrafts.size()) + " graft(s)).");
     return true;
 }
 

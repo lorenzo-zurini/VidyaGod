@@ -40,265 +40,126 @@ struct VariantInfo {
 };
 
 // ---------------------------------------------------------------------------
-// The one-edge graph ("everything is a node"). The whole library is ONE flat graph of globally-referenceable
-// nodes; each node lives in its own .json file inside a "bundle" directory (which just groups node files + their
-// shared content). There is ONE node kind and ONE edge:
-//
-//   node = facets (CID LABEL WHEN TOGGLE) + TILE + ENTRYPOINTS + payload arrays + OVER
-//
-// A node is one meaningful change, which may span kinds (a widescreen fix = PATCHES + FILEEDITS + VARS in one
-// node). A node with no payload is just a node. Everything else is DERIVED, never stored: launchable (has
-// ENTRYPOINTS), identity (own TILE, else inherited through OVER), runner (an entrypoint with GUEST), graft (in
-// nobody's list), canonical (a lint).
-//
-// OVER = "I am made of you; you are under me" — a CNF list of requirements: a CID (must be present), a list of
-// CIDs (any one), {"NOT": cid} (must be absent). Order is the mount order among a node's own entries (later =
-// higher). No other edge exists.
-//
-// Selection ≠ closure: what the user CHOOSES (the launchable, a member per any-of group, ticked grafts) is the
-// selected set; the MOUNT is its closure over plain OVER entries; a graft is OFFERED when the selected set
-// satisfies its identity-bearing requirements; execution runs an entrypoint of a SELECTED node only — a plain
-// OVER entry is never a choice and never a branch point (1.16.5 OVER [1.16.4] puts 1.16.4's bytes under you
-// and nothing else: not its entrypoint, not its mods).
+// The node graph (MetaPackageFormat generation 6). A node is a plain JSON file {LABEL, VARIANT?, RECOMMENDED?,
+// LAYERS}: an ordered list of typed layers (ZIP FILE DELTA DIR NODE EDIT REG VARS ENV DLL EXEC KEEP ANY NOT, any
+// with WHEN). Parents are layers: a NODE layer CONTAINS another node, selected by TAKE and placed by TARGET. What a
+// node runs, which tile it presents and what it writes are all FOLDED from its list (Fold::Resolve) — nothing is
+// inherited by graph distance. A node whose list begins with ANY is a graft.
 // ---------------------------------------------------------------------------
-
-//One entry of a node's OVER list. A bare ref COMPOSES (Any = {cid}): it is in the node's closure — and, when the
-//node is offered as a graft, a requirement too. An any-of group (Any = {cid, cid, …}) and an exclusion (Not = true,
-//Any = {cid}) only REQUIRE: evaluated when the node is offered, never followed by the closure walk.
-struct OverReq {
-    std::vector<std::string> Any;
-    bool Not = false;
-    bool IsGroup() const { return !Not && Any.size() > 1; }
-    bool Composes() const { return !Not && Any.size() == 1; }
-};
 
 //One node, parsed from a node .json file.
 struct Node {
-    // Cid — the node's IDENTITY in the gigagraph: the CID of its canonical dag-json block, computed recursively over
-    // the CIDs it links (OVER/SOURCE/COVER). Empty for a working-tree node not yet frozen. When set, the index is
-    // keyed by this (NodeId demotes to a human label). Set by the DAG traversal / disk ingest, never parsed from the
-    // block (a block does not contain its own CID). See [[gigagraph]] plan + nodegraph.cpp.
-    std::string Cid;
+    std::string Cid;                         // the node's identity: the CID of its canonical bytes (or, in a working-tree
+                                             // scan, its stored "CID" handle)
+    std::string Handle;                      // its working-tree handle (the stored "CID" of the last freeze) when the
+                                             // index was frozen from the working tree — still its name there
     std::string NodeId;                      // LABEL — the optional cosmetic name (may repeat; never a key)
-    //Non-empty when the node could not be lowered (unknown field, unknown FORM, malformed EDITS…).
-    //Such a node is STILL INDEXED, deliberately: dropping it made the whole node vanish, so a leaf mistake was
-    //reported by NOTHING. It is indexed so validation can name it and so resolution can refuse to launch through
-    //it; it contributes NO layers, so it can never be applied.
+    //Non-empty when the node is malformed (not exactly one type key on a layer, a mistyped field…). Such a node is
+    //STILL INDEXED so validation can name it; resolution never routes through it.
     std::string LowerError;
-    //The node's own WHEN as authored. Kept because a payload-less node emits no layer for the condition to ride
-    //on, so validation has nothing else to see it in — and a silently-dropped condition applies unconditionally.
-    std::string RawWhen;
 
-    // ---- ENTRYPOINTS: how to run — a FACT that folds along the chain. Entrypoints = the node's OWN list (empty
-    // when it declares none); EffectiveEntrypoints = own, else the nearest node's beneath (by OVER distance over
-    // bare refs, ties by OVER order), EntrySource = the key of the node they come from. Each entry: {LABEL, HOST,
-    // PATH, ARGS, ENV, ENV_REMOVE, WORKDIR, RUNNER}; a runner entry additionally carries GUEST (+ CONTENT_ROOT /
-    // PREFIX_GENERATE / UNIFIED_RUNTIME). The fields below are the DEFAULT effective entry's view (the first),
-    // lowered to the exec block the engine consumes; ExecFor() selects another entry by LABEL. Derived by
-    // DeriveIdentity; for a node parsed alone they reflect its own entries. ----
-    nlohmann::ordered_json Entrypoints;      // the raw OWN ENTRYPOINTS array (empty array when none)
-    nlohmann::ordered_json EffectiveEntrypoints;   // own, else inherited (empty array when nothing beneath declares)
-    std::string EntrySource;                 // key of the node whose entries apply ("" when none)
-    bool HasExec   = false;                  // an effective entry without GUEST ⇒ RUNNABLE
-    bool HasRunner = false;                  // an effective entry with GUEST ⇒ a RUNNER
-    bool OwnRunner = false;                  // declares a GUEST entry itself (an anchor for grafts on runners)
-    std::string Label;                       // the default entry's LABEL (else the node LABEL)
-    std::string RecommendedRunner;           // the default entry's RUNNER — a soft package-side runner default
+    std::string Variant;                     // VARIANT — non-empty ⇒ on the shelf under this name
+    std::vector<std::string> Recommended;    // RECOMMENDED — tile UIDs: the default row under them (a variant), or
+                                             // pre-ticked under them (a graft)
+    nlohmann::ordered_json Json;             // the node as authored — what Fold resolves
+    //The node's OWN layers lowered to the engine's vocabulary (VFSZipLayer/FileEdit/RegEdit/CustomVar/…), where
+    //they land relative to this node. For content bookkeeping (what files and CIDs a node carries), never for a
+    //launch: a launch lowers the resolved plan, where TAKE and TARGET have placed everything.
+    nlohmann::ordered_json Layers;
+    std::vector<std::string> Refs;           // NODE refs, in order — what it contains (followed, fetched)
+    std::vector<std::string> Requires;       // ANY members and NOT refs — compared, never followed
+    bool IsGraft = false;                    // its list begins with ANY
+
+    // ---- folded facts: this node's own resolve (default instance), derived by DeriveFacts ----
+    nlohmann::ordered_json Entries;          // the folded EXEC: entry label -> entry, first-declared order
+    bool HasExec   = false;                  // an effective entry without GUEST ⇒ runnable
+    bool HasRunner = false;                  // an effective entry with GUEST ⇒ a runner
+    bool OwnRunner = false;                  // its OWN list declares a GUEST entry (a runner root)
+    std::string Label;                       // the default entry's LABEL
     std::string HostPlatform;                // the default entry's HOST
     std::vector<std::string> GuestPlatform;  // the default entry's GUEST[] (runner)
-    nlohmann::ordered_json Exec;             // the default entry lowered: CONTENTPATH/EXEARGS/PLATFORM/… or
-                                             // EXECUTABLE/ARGS/HOST/GUEST/… for a runner (see NodeLower::LowerEntrypoint)
+    nlohmann::ordered_json Exec;             // the default entry lowered for the engine (CONTENTPATH/EXEARGS/PLATFORM/…
+                                             // or EXECUTABLE/ARGS/HOST/GUEST/CONTENT_ROOT/GUEST_ROOTS/…)
+    std::vector<std::string> Faces;          // the tile UIDs its effective entries present
+    std::string Uid;                         // the first face
+    std::string PackageUid;                  // the root of that face's PARENTUID chain — %PackageUID%, the family
+    nlohmann::ordered_json Meta;             // that face's tile (merged across the library), flat: UID PARENTUID TITLE
+                                             // COVER{PATH,SOURCE} + the META fields
+    bool OwnTile = false;                    // its OWN list carries an entry with a TILE
 
-    // ---- the two declared facets ----
-    std::string Variant;                     // VARIANT — non-empty ⇒ ON THE SHELF under this name; picking it selects it alone
-    bool Recommended = false;                // RECOMMENDED — prefer me among my siblings (variants of a face; runners of a platform)
-
-    // ---- TILE / identity. A TILE is a FACE placed at the base of what it names; identity ASCENDS from it. Uids =
-    // every UID this node belongs to (the faces beneath it, across branches; a mod for two games has two); Uid =
-    // the first (its grouping key); FaceKey = the nearest tile beneath (own = distance 0); Meta = that face's
-    // fields, flat; AnchorKey = the nearest PICKABLE beneath — a face, or a runner (grafts on runners). ----
-    bool OwnTile = false;                    // carries a TILE of its own
-    std::string Uid;                         // primary identity (the nearest face's UID)
-    std::vector<std::string> Uids;           // every identity, in OVER order
-    std::string FaceKey;                     // the node carrying the nearest tile beneath (own counts), "" if none
-    int FaceDistance = -1;                   // OVER distance to that tile (0 = own), -1 = no face
-    std::string AnchorKey;                   // nearest pickable beneath: the face, or a runner node (own counts)
-    nlohmann::ordered_json Meta;             // the face's fields, flat (TITLE/COVER/UID + META)
-
-    bool Optional = false;                   // TOGGLE present ⇒ (on a graft) user-toggleable
-    bool Default  = true;                    // TOGGLE value ("on"/"off") — pre-ticked or not
-
-    std::vector<OverReq> Over;               // OVER — the one edge, as authored (CNF)
-    std::vector<std::string> Composes;       // the BARE refs — what the node is made of: the closure, identity,
-                                             // inheritance of entries and face all follow these
-    std::vector<std::string> Parents;        // every node OVER names POSITIVELY (bare refs + group members), flat,
-                                             // in list order — the reference set for validation/freeze/hydrate/canvas
-    std::vector<std::string> Excludes;       // every node OVER names under NOT
-    nlohmann::ordered_json Layers;           // the lowered payload: the executor's ordered layer sequence
-    nlohmann::ordered_json Env;              // ENV — this node's environment mutation (name → value), folded along the chain
-    std::vector<std::string> EnvRemove;      // ENV_REMOVE — names this node removes at its point of the chain
     std::filesystem::path File;              // source .json path
-    std::filesystem::path BundleDir;         // owning bundle dir — content PATHs inside LAYERS resolve here
-    bool Received = false;                   // a browse stub gathered from CATALOG (a friend's bytes, not hydrated):
-                                             // browsable and downloadable, never a graft candidate
+    std::filesystem::path BundleDir;         // owning bundle dir — content PATHs resolve here
+    bool Received = false;                   // a browse stub gathered from a friend's catalog (not hydrated)
 
-    // The node's key in a NodeIndex: its CID in the gigagraph catalog (identity), or its LABEL in a legacy single-
-    // bundle scan (Cid unset). Use this — never NodeId directly — whenever an id must index back into the catalog
-    // (hydration maps, launch ids, download ids), or a CID-keyed index and a NodeId lookup silently miss.
     std::string Key() const { return Cid.empty() ? NodeId : Cid; }
-    bool Presentable()  const { return Meta.is_object() && !Meta.empty(); }   // has a face
+    bool Presentable()  const { return Meta.is_object() && !Meta.empty(); }
     bool IsRunner()     const { return HasRunner; }
-    bool IsRunnable()   const { return HasExec; }                              // effective entries without GUEST
-    bool IsVariant()    const { return !Variant.empty() && HasExec; }          // on the shelf
-    bool HasIdentity()  const { return !Uids.empty(); }
-    std::string GameKey() const { return Uid.empty() ? NodeId : Uid; }   // the tile this node belongs to (group-by-UID key)
-    // The lowered exec block of the entrypoint labelled `Label` ("" ⇒ the default entry). Null json if no such entry.
+    bool IsRunnable()   const { return HasExec; }
+    bool IsVariant()    const { return !Variant.empty() && HasExec; }
+    bool HasIdentity()  const { return !Uid.empty(); }
+    std::string GameKey() const { return PackageUid.empty() ? NodeId : PackageUid; }   // the card this node belongs to
+    // The lowered exec block of the entry labelled `Label` ("" ⇒ the default entry). Null json if no such entry.
     nlohmann::ordered_json ExecFor(const std::string &Label) const;
-    //The SELECTED entry's platform / declared runner ("" = the default entry). The runner chain bridges the entry
-    //that runs — a node may carry a native and a win32 entry — never the default view.
     std::string HostFor(const std::string &Label) const;
-    std::string RunnerFor(const std::string &Label) const;
-    // The entrypoint labels, in ENTRYPOINTS order (a nameless entry reads as its index).
     std::vector<std::string> EntrypointLabels() const;
 };
 
-//The global node graph: NODE_ID → Node, built by scanning bundle dirs for node files.
+//The global node graph: handle -> Node, built by scanning bundle dirs for node files.
 struct NodeIndex {
     std::map<std::string, Node> Nodes;
     const Node *Find(const std::string &NodeId) const;
 };
 
+namespace Fold { struct Library; struct Plan; }
+
 namespace ManifestModel {
 
-// ----- node graph (schema: everything is a node) -----
-// True iff J is a node object: an object carrying at least one node field (CID/LABEL/OVER/TILE/ENTRYPOINTS or a
-// payload array). The ONE definition of "is this JSON a node" — every scanner of node files must use it. A legacy
-// TYPE-bearing object is NOT a node (the library is migrated, never read two ways).
+// ----- node graph -----
+// True iff J is a node object: an object with a LAYERS list. The ONE definition — every scanner uses it.
 bool IsNodeObject(const nlohmann::ordered_json &J);
-// The node fields the format defines (the whole top-level vocabulary). Anything else on a node is refused at lower.
+// The top-level vocabulary of a node: CID LABEL POS COMMENT VARIANT RECOMMENDED LAYERS.
 const std::set<std::string> &NodeFields();
-// The payload array keys (LAYERS PATCHES FILEEDITS REGEDITS DLLOVERRIDES VARS PERSISTS).
-const std::vector<std::string> &PayloadKeys();
-// Parse an OVER value (the raw JSON list) into requirements. Malformed entries are refused via *Error (if given).
-// Tolerant of dag-json links already normalized to strings.
-bool ParseOver(const nlohmann::ordered_json &Over, std::vector<OverReq> &Out, std::string *Error = nullptr);
-// The positive refs (plain entries + group members) of a RAW node JSON's OVER, in order — for readers that walk
-// node JSON without ParseNode (freeze, hydrate, publish). Negative (NOT) refs go to *Excludes if given.
-std::vector<std::string> OverRefs(const nlohmann::ordered_json &J, std::vector<std::string> *Excludes = nullptr);
-// Rewrite every ref in a RAW node JSON's OVER (plain, group members, NOT) through Map (unmapped refs pass
-// through). Returns whether anything changed. Shared by freeze and the CID write-back so they can never disagree
-// on where refs live.
-bool RemapOverRefs(nlohmann::ordered_json &J, const std::function<std::string(const std::string &)> &Map);
-// Parse a single node object (already-loaded JSON) sourced from File in BundleDir. False if it is not a node.
+// Every ref a RAW node names, in order: NODE refs (what it contains) and, into *Requires, ANY members + NOT refs.
+std::vector<std::string> NodeRefs(const nlohmann::ordered_json &J, std::vector<std::string> *Requires = nullptr);
+// Rewrite every ref in a RAW node (NODE, ANY members, NOT) through Map. Returns whether anything changed. Shared by
+// freeze and the CID write-back so they can never disagree on where refs live.
+bool RemapNodeRefs(nlohmann::ordered_json &J, const std::function<std::string(const std::string &)> &Map);
+// Parse a single node object sourced from File in BundleDir. False if it is not a node.
 bool ParseNode(const nlohmann::ordered_json &J, const std::filesystem::path &File,
                const std::filesystem::path &BundleDir, Node &Out);
 // Scan one bundle dir (non-recursive) for *.json node files, adding them to Idx. Duplicate handles are reported
-// and the first-seen wins.
+// and the first-seen wins. Run DeriveFacts after assembling an index by hand.
 void ScanBundleNodes(const std::filesystem::path &BundleDir, NodeIndex &Idx);
-// Build the global index from library roots; each root holds bundle dirs (one level down). Runs DeriveIdentity.
-// Scans each LibraryRoot's immediate subdirectories as bundles, plus any ExtraBundleDirs as bundles DIRECTLY (a
-// locally-added package's own dir, not a root of bundles). ExtraBundleDirs lets externally-added local packages
-// (their PATH is the bundle itself) be indexed alongside the repo-rooted ones.
+// Build the global index from library roots (each holds bundle dirs one level down) plus ExtraBundleDirs scanned as
+// bundles directly (locally-added packages). Runs DeriveFacts.
 NodeIndex BuildNodeIndex(const std::vector<std::filesystem::path> &LibraryRoots,
                          const std::vector<std::filesystem::path> &ExtraBundleDirs = {});
+// The resolver's view of an index (borrows the nodes' JSON; cheap).
+Fold::Library LibraryOf(const NodeIndex &Idx);
+// Derive every node's folded facts (entries, runner/runnable, faces, the merged tile) from its own resolve, and the
+// library-wide tile table (tiles merge by UID; a tile's presentation comes from its recommended variant's fold,
+// else its first variant's).
+void DeriveFacts(NodeIndex &Idx);
 
-// Post-parse pass over a fully-assembled index: derive every FACT that folds along the chain (memoized, O(N+E)).
-//  identity — the union of the faces beneath a node across every positive ref (a mod OVER [[aok, conq]] belongs to
-//             both); Uid = the nearest face's; Meta = its fields.
-//  face     — the nearest tile beneath (own = 0), by OVER distance, ties by OVER order.
-//  anchor   — the nearest pickable beneath: a tile, or a runner (a graft on a runner is offered on the runner).
-//  entries  — EffectiveEntrypoints/EntrySource: own, else the nearest beneath over BARE refs; and the derived
-//             launch fields (HasExec/HasRunner/Host/Guest/Exec/Label/RecommendedRunner) from the default entry.
-// Called by BuildNodeIndex and must be re-run by any caller that assembles an index manually (ScanBundleNodes).
-void DeriveIdentity(NodeIndex &Idx);
+// Everything a node contains, following every NODE ref regardless of WHEN — what a download or a hydration check
+// needs (options included: the user may switch them on). Post-order: contained nodes first, Root last. Refs missing
+// from Idx go to *Missing. Cycles are broken.
+std::vector<std::string> Closure(const NodeIndex &Idx, const std::string &Root, std::vector<std::string> *Missing = nullptr);
 
-// Nesting inside one card is CONTAINMENT, never declared. Two tiles with equal fields are one FACE. Within one UID,
-// a tile with no same-UID tile beneath it is the card's MAIN face; a tile with one beneath it is a CHILD face,
-// nested under the nearest face beneath it. FaceDepth = how many same-UID tiles a face has beneath it (0 = main).
-// OrderVariants orders a card's VARIANTS: main face first (its RECOMMENDED variant, then by label), then the child
-// faces by depth — so a card reads its TITLE/COVER off the front and opens on the main face's default.
-bool SameTile(const Node &A, const Node &B);
-int FaceDepth(const NodeIndex &Idx, const Node &FaceNode);
-// Fold the environment of a mount: for each node in ORDER (lowest first) apply its ENV_REMOVE, then its ENV — a later
-// node wins a shared name, a later set undoes an earlier remove, a later remove undoes an earlier set. Env = the
-// names to set, Remove = the names removed and never set again. Values are not substituted here.
-void FoldEnv(const NodeIndex &Idx, const std::vector<std::string> &Order, nlohmann::ordered_json &Env, std::vector<std::string> &Remove);
-
-std::vector<const Node *> OrderVariants(const NodeIndex &Idx, std::vector<const Node *> Variants);
-
-// The CLOSURE of a node: everything reachable from it through the BARE refs of OVER — what it is made of — as a
-// topologically-ordered mount, requirements before dependants, the node itself LAST (= highest overlay priority);
-// OVER list order is the tie-break (later = higher). No gates, no groups, no exclusions, no toggles: a bare ref
-// composes, and requirements are evaluated only when a node is OFFERED (OfferedGrafts). Detects cycles. Any ref
-// missing from Idx (or unlowerable) is appended to Missing. The Toggles parameter is accepted for call-site
-// compatibility and IGNORED: nothing inside a closure is a choice.
-std::vector<std::string> ResolveNodeOrder(const NodeIndex &Idx, const std::string &LaunchNodeId,
-                                          const std::map<std::string, bool> &Toggles,
-                                          std::vector<std::string> *Missing = nullptr);
-
-// ----- grafts (facts fold, choices don't) -----
-// Relative to a selected VARIANT, a graft is a node with the variant's identity that is not itself a variant (or a
-// runner), is not in the variant's closure, and is OVER something; it enters a mount only when TICKED (Toggles[key]
-// == true, else its TOGGLE default). It is APPLICABLE when every REQUIREMENT in its OVER holds against the SELECTED
-// set: a bare ref to a VARIANT requires that variant to be the selection (a mod OVER [1.16.4] is not for you when
-// you play 1.16.5); a bare ref to anything else is COMPOSITION — it mounts beneath the graft when ticked (tex-hd
-// brings tex; a fix brings its library) and counts as selected from then on; a group: any member selected; a NOT:
-// not selected, symmetrically. Picking a variant selects exactly that node. A graft may carry entries (a mod
-// loader): ticked, it is a way to run. For a RUNNER as the selection, candidates are the nodes anchored on it.
-struct GraftOffer {
-    const Node *Graft = nullptr;
-    bool Applicable = false;       // every requirement satisfied by the selected set (minus itself)
-    bool Selected   = false;       // in the settled selected set: ticked (Toggles, else TOGGLE "on") AND applicable
-    std::string Blocker;           // when !Applicable: the first unsatisfied requirement (a key), for the UI…
-    std::string ExcludedBy;        // …or the selected node whose NOT (its own, or one naming it) blocks it
-};
-// Every graft with the launchable's identity, in a deterministic order, with its applicability against Toggles.
-// The selected set is a fixpoint WITH retraction (a later selection can untick an earlier one through NOT).
-// Scope (optional) restricts candidates — callers pass "not Received" so a CATALOG browse stub never grafts.
-std::vector<GraftOffer> OfferedGrafts(const NodeIndex &Idx, const std::string &LaunchNodeId,
-                                      const std::map<std::string, bool> &Toggles,
-                                      const std::function<bool(const Node &)> &Scope = nullptr);
-// The extra nodes a launch mounts ABOVE the launchable's own closure: the closure of every selected applicable
-// graft (minus nodes already in BaseOrder), grafts ordered by Precedence (higher = later = wins) then by key.
-// Returns them topo-ordered, requirements first. Substance requirements are pulled in here.
-std::vector<std::string> ResolveGraftOrder(const NodeIndex &Idx, const std::string &LaunchNodeId,
-                                           const std::map<std::string, bool> &Toggles,
-                                           const std::vector<std::string> &BaseOrder,
-                                           const std::map<std::string, int> &Precedence = {},
-                                           const std::function<bool(const Node &)> &Scope = nullptr);
-
-// Visits every resolvable node in RootId's closure — RootId INCLUDED, in ResolveNodeOrder order — with no special
-// case for what the nodes are: a node's mount IS its closure, whether the root is a launchable or a runner used
-// as a chain link (its build = its own layers + what it is OVER, exactly like a game's).
-void ForEachClosureNode(const NodeIndex &Idx, const std::string &RootId,
-                        const std::map<std::string, bool> &Toggles,
-                        const std::function<void(const Node &)> &Visit);
-
-// The DOWNLOAD units of a tile, derived from its CONTENT structure (not raw graph sinks — every launchable variant
-// is typically a graph sink, e.g. MC's content-free per-version "_game" wrappers hanging off the delta chain).
-// Ticking a row means downloading the closures of its Ids; the rows together always cover the tile's whole required
-// content (all ticked = "everything"). Rows come from a GREEDY SET-COVER over the content bitsets: each pick is the
-// variant covering the most still-uncovered content — so nesting collapses (a delta chain is one pick) and genuine
-// branches (divergent editions, forked snapshot chains) each get a row. Real graphs also carry many small unique-
-// content leaves (per-era natives bundles, wrapper scripts) whose "owning" variants would make meaningless rows —
-// picks beyond the first few are folded into a single "Everything else" row. Content reached only through Optional
-// nodes never surfaces here (that's the optional-content section's domain). LaunchableCount = how many of the
-// tile's variants the row's first pick DOMINATES (content ⊆ its content) — the "(270 versions)" hint; 0 on the
-// folded row. Cost: one shared-visited union walk + bitset closure algebra — never per-variant walks.
+// The DOWNLOAD units of a tile: a greedy set-cover over the content its variants' closures carry (a delta chain is
+// one pick; genuine branches each get a row; a long tail folds into "Everything else"). LaunchableCount = how many
+// variants a row's pick dominates.
 struct EndpointInfo {
-    std::vector<std::string> Ids;  // the variant(s) this row downloads (closure union); 1 for real picks, many when folded
-    std::string Label;             // first pick's Label (else Meta.TITLE, else id), or "Everything else"
+    std::vector<std::string> Ids;
+    std::string Label;
     int         LaunchableCount = 0;
 };
 std::vector<EndpointInfo> TileEndpoints(const NodeIndex &Idx, const std::vector<std::string> &VariantIds);
 
-// Validate the whole node graph: every PARENTS id resolves + no cycles; VFS layers declare a PATH; each
-// launchable resolves a runner (platform match) + has content or is self-contained; runner nodes declare GUEST
-// platforms; a PREFIX_GENERATE runner routes content through drive_c; EXCLUDE is symmetric. Errors should block
-// (e.g. in the editor/CI), warnings advise. NODE_ID uniqueness is enforced earlier by the index (dups dropped).
-// When OnlyNodes is non-null, only those node ids are validated (the rest of Idx is still consulted for cross-
-// references like runner availability and PARENTS) — used by the launch gate to validate just the package being
-// launched, not the whole catalog.
+// Validate the node graph (generation 6): refs resolve, no cycles, one type key per layer, well-typed payloads,
+// STORE zips, BinaryPatch shape, WHEN grammar and the phase rule, undefined %KEY%s, KEEP lint, a VARIANT presents a
+// tiled entry, RECOMMENDED names a presented tile, and — per variant, over its resolved plan — no EDIT beneath a
+// layer that replaces its file, and every DELTA sits on content. OnlyNodes scopes it (the rest of Idx is consulted).
 void ValidateNodeGraph(const NodeIndex &Idx, std::vector<std::string> &Errors, std::vector<std::string> &Warnings,
                        const std::set<std::string> *OnlyNodes = nullptr);
 

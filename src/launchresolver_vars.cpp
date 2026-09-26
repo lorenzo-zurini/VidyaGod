@@ -264,8 +264,26 @@ bool LaunchResolver::BuildSubComponentsArray(const nlohmann::ordered_json &MANIF
             //parsed with exceptions ON and there is no catch anywhere on the launch path, so a CustomVar the
             //user typed containing a quote — or any Windows path, where "\U" is an invalid JSON escape —
             //threw parse_error out of the resolve and killed the app at launch.
-            ContainerParams.SubComponentsArray.push_back(
-                VarSubst::SubstituteJsonValues(Subs[j], FrozenVars));
+            nlohmann::ordered_json Sub = VarSubst::SubstituteJsonValues(Subs[j], FrozenVars);
+            //Paths are guest coordinates until here: map them into the boundary runner's layout now that every
+            //%variable% (which may itself carry a guest path) has been substituted.
+            {
+                const std::string T = Sub.value("TYPE", std::string());
+                if (IsVfsLayer(T))
+                {
+                    if (Sub.contains("TARGET") && Sub["TARGET"].is_string()) Sub["TARGET"] = GuestToLayout(ContainerParams, Sub["TARGET"]);
+                    if (Sub.contains("SUBMOUNTS") && Sub["SUBMOUNTS"].is_array())
+                        for (auto &Sm : Sub["SUBMOUNTS"])
+                        {
+                            const std::string X = Sm.is_string() ? Sm.get<std::string>() : std::string();
+                            const size_t C = X.find(':');
+                            if (C != std::string::npos) Sm = X.substr(0, C + 1) + GuestToLayout(ContainerParams, X.substr(C + 1));
+                        }
+                }
+                else if ((T == "FileEdit" || T == "BinaryPatch") && Sub.contains("FILE") && Sub["FILE"].is_string())
+                    Sub["FILE"] = GuestToLayout(ContainerParams, Sub["FILE"]);
+            }
+            ContainerParams.SubComponentsArray.push_back(std::move(Sub));
             if (VerboseLogging())   // per-subcomponent trace — 81 lines per resolve, gated like the rest
                 LogOut("BuildSubComponentsArray", "Added COMPONENT " + RecipeComponentID + " SUBCOMPONENT " + std::to_string(j + 1));
         }

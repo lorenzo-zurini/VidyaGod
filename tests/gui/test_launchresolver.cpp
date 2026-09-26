@@ -19,26 +19,55 @@ namespace {
 // chain resolves EMPTY, and the tests' ids[0] indexed out of bounds (a SEGFAULT under the Windows/MinGW CI). Use
 // the real machine platform so these tests exercise the same win32->machine bridge on every OS.
 const std::string kMachine = ManifestModel::MachinePlatform();
+
+// ---- generation-6 node builders: the JSON a node file holds, parsed as the index would parse it ----
+json nodeRefs(const std::vector<std::string> & parents)
+{
+    json L = json::array();
+    for (const auto & P : parents) L.push_back({ {"NODE", P} });
+    return L;
+}
+Node parse(const json & j, const std::string & bundle)
+{
+    Node n;
+    ManifestModel::ParseNode(j, "f.json", bundle, n);
+    return n;
+}
+// A node's facts (entries, runner, tile) are FOLDED; a node handed around on its own gets its own fold derived.
+Node standalone(Node n)
+{
+    NodeIndex t; const std::string k = n.Key(); t.Nodes[k] = n; ManifestModel::DeriveFacts(t); return t.Nodes.at(k);
+}
+// An index is complete once every node is in: its facts fold across containment.
+void finish(NodeIndex & idx) { ManifestModel::DeriveFacts(idx); }
+
 Node contentNode(const std::string & id, const json & layers = json::array())
 {
-    Node n; n.NodeId = id; n.Layers = layers; n.BundleDir = "/tmp/vg_bundle"; return n;
+    return parse(json{ {"CID", id}, {"LABEL", id}, {"LAYERS", layers} }, "/tmp/vg_bundle");
 }
-Node launchNode(const std::string & id, const std::string & host, const std::vector<std::string> & parents)
+// A variant: its content ("game" dir), a "Play" entry carrying its tile, extra layers before the entry.
+Node launchNode(const std::string & id, const std::string & host, const std::vector<std::string> & parents,
+                const json & entryExtra = json::object(), const json & extraLayers = json::array())
 {
-    Node n; n.NodeId = id; n.HasExec = true; n.HostPlatform = host; NodeFixture::Wire(n, parents);
-    n.Meta = json{{"TITLE", id}};
-    n.Exec = json{{"CONTENTPATH", "game.exe"}};
-    n.Layers = json::array({ json{{"TYPE", "VFSDirLayer"}, {"PATH", "game"}} });
-    n.BundleDir = "/tmp/vg_bundle"; return n;
+    json L = nodeRefs(parents);
+    L.push_back({ {"DIR", "game"} });
+    for (const auto & X : extraLayers) L.push_back(X);
+    json E = { {"LABEL", "Play"}, {"HOST", host}, {"EXE", "game.exe"}, {"TILE", {{"UID", id}, {"TITLE", id}}} };
+    for (const auto & [K, V] : entryExtra.items()) E[K] = V;
+    L.push_back({ {"EXEC", json::array({ E })} });
+    return standalone(parse(json{ {"CID", id}, {"LABEL", id}, {"VARIANT", id}, {"LAYERS", L} }, "/tmp/vg_bundle"));
 }
+// A prefix-generating runner (proton-like) whose build is what it contains.
 Node runnerNode(const std::string & id, const std::vector<std::string> & guests,
-                const std::vector<std::string> & parents = {})
+                const std::vector<std::string> & parents = {}, const json & entryExtra = json::object())
 {
-    Node n; n.NodeId = id; n.HasRunner = true; n.GuestPlatform = guests; NodeFixture::Wire(n, parents);
-    n.HostPlatform = ManifestModel::MachinePlatform();
-    n.Exec = json{{"EXECUTABLE", "%RunnerMount%/proton"}, {"CONTENT_ROOT", "pfx/drive_c/%PackageUID%"},
-                  {"PREFIX_GENERATE", true}, {"ARGS", json::array({"waitforexitandrun", "%Content%"})}};
-    n.BundleDir = "/tmp/vg_runner"; return n;
+    json L = nodeRefs(parents);
+    json E = { {"LABEL", "run"}, {"HOST", ManifestModel::MachinePlatform()}, {"GUEST", guests}, {"EXE", "%RunnerMount%/proton"},
+               {"CONTENT_ROOT", "pfx/drive_c/%PackageUID%"}, {"PREFIX_GENERATE", true},
+               {"ARGS", json::array({"waitforexitandrun", "%Content%"})} };
+    for (const auto & [K, V] : entryExtra.items()) E[K] = V;
+    L.push_back({ {"EXEC", json::array({ E })} });
+    return standalone(parse(json{ {"CID", id}, {"LABEL", id}, {"LAYERS", L} }, "/tmp/vg_runner"));
 }
 bool recipeHas(const std::vector<std::string> & r, const std::string & needle)
 {
@@ -48,11 +77,15 @@ bool recipeHas(const std::vector<std::string> & r, const std::string & needle)
 // A runner edge GUEST→HOST for daisy-chain tests. A '%'-bearing or empty EXECUTABLE is always "available"
 // (ExecutableAvailable), so these resolve without a real binary on PATH.
 Node chainRunner(const std::string & id, const std::vector<std::string> & guests, const std::string & host,
-                 const std::string & exec = "%RunnerMount%/run")
+                 const std::string & exec = "%RunnerMount%/run", const std::vector<std::string> & parents = {},
+                 const json & extraLayers = json::array(), const std::string & label = std::string())
 {
-    Node n; n.NodeId = id; n.HasRunner = true; n.GuestPlatform = guests; n.HostPlatform = host;
-    n.Exec = json{{"EXECUTABLE", exec}};
-    n.BundleDir = "/tmp/vg_runner"; return n;
+    json L = nodeRefs(parents);
+    for (const auto & X : extraLayers) L.push_back(X);
+    json E = { {"LABEL", "run"}, {"HOST", host}, {"GUEST", guests} };
+    if (!exec.empty()) E["EXE"] = exec;
+    L.push_back({ {"EXEC", json::array({ E })} });
+    return standalone(parse(json{ {"CID", id}, {"LABEL", label.empty() ? id : label}, {"LAYERS", L} }, "/tmp/vg_runner"));
 }
 // A resolved RunnerLink for cross-namespace composition tests.
 RunnerLink mkLink(const std::string & id, const std::string & host, const std::string & exec,
@@ -77,11 +110,10 @@ private slots:
     {
         NodeIndex idx;
         idx.Nodes["wine"] = runnerNode("wine", {"win32"});
-        Node g = launchNode("game", "win32", {});
-        g.Layers = json::array({ json{{"TYPE", "CustomVar"}, {"KEY", "join"}, {"DEFAULT", "%VIDYAGOD_JOIN_ADDRESS%"}} });
-        g.Exec = json{{"CONTENTPATH", "game.exe"},
-                      {"EXEARGS", json::array({"--player", "%VIDYAGOD_SELF_NAME%", "--address=%join%"})}};
-        idx.Nodes["game"] = g;
+        idx.Nodes["game"] = launchNode("game", "win32", {},
+            json{{"ARGS", json::array({"--player", "%VIDYAGOD_SELF_NAME%", "--address=%join%"})}},
+            json::array({ json{{"VARS", {{"join", {{"DEFAULT", "%VIDYAGOD_JOIN_ADDRESS%"}}}}}} }));
+        finish(idx);
 
         ContainerParams cp("/tmp/vg_bundle");
         cp.NodeIdx = &idx; cp.LaunchNodeId = "game";
@@ -102,10 +134,9 @@ private slots:
     {
         NodeIndex idx;
         idx.Nodes["wine"] = runnerNode("wine", {"win32"});
-        Node g = launchNode("game", "win32", {});
-        g.Exec = json{{"CONTENTPATH", "game.exe"},
-                      {"EXEARGS", json::array({"--address=%VIDYAGOD_JOIN_ADDRESS%", "%VIDYAGOD_JOIN_ADDRESS%", "--wait"})}};
-        idx.Nodes["game"] = g;
+        idx.Nodes["game"] = launchNode("game", "win32", {},
+            json{{"ARGS", json::array({"--address=%VIDYAGOD_JOIN_ADDRESS%", "%VIDYAGOD_JOIN_ADDRESS%", "--wait"})}});
+        finish(idx);
 
         ContainerParams cp("/tmp/vg_bundle");
         cp.NodeIdx = &idx; cp.LaunchNodeId = "game";
@@ -126,9 +157,9 @@ private slots:
     {
         NodeIndex idx;
         idx.Nodes["wine"] = runnerNode("wine", {"win32"});
-        Node g = launchNode("game", "win32", {});
-        g.Layers = json::array({ json{{"TYPE", "CustomVar"}, {"KEY", "VIDYAGOD_SELF_NAME"}, {"DEFAULT", "PackageChoice"}} });
-        idx.Nodes["game"] = g;
+        idx.Nodes["game"] = launchNode("game", "win32", {}, json::object(),
+            json::array({ json{{"VARS", {{"VIDYAGOD_SELF_NAME", {{"DEFAULT", "PackageChoice"}}}}}} }));
+        finish(idx);
 
         ContainerParams cp("/tmp/vg_bundle");
         cp.NodeIdx = &idx; cp.LaunchNodeId = "game";
@@ -146,10 +177,11 @@ private slots:
     void initialize_from_node_resolves_runner_and_recipe()
     {
         NodeIndex idx;
-        idx.Nodes["wine"]   = runnerNode("wine", {"win32"}, {"proton"});   // build ships via parent content node
-        idx.Nodes["proton"] = contentNode("proton", json::array({ json{{"TYPE", "VFSZipLayer"}, {"PATH", "proton.zip"}} }));
-        idx.Nodes["base"]   = contentNode("base", json::array({ json{{"TYPE", "VFSDirLayer"}, {"PATH", "base"}} }));
+        idx.Nodes["wine"]   = runnerNode("wine", {"win32"}, {"proton"});   // build ships via the content node it contains
+        idx.Nodes["proton"] = contentNode("proton", json::array({ json{{"ZIP", "proton.zip"}} }));
+        idx.Nodes["base"]   = contentNode("base", json::array({ json{{"DIR", "base"}} }));
         idx.Nodes["game"]   = launchNode("game", "win32", {"base"});
+        finish(idx);
 
         ContainerParams cp("/tmp/vg_bundle");
         cp.NodeIdx = &idx;
@@ -163,9 +195,12 @@ private slots:
         QVERIFY(cp.PrefixGenerate);
         QVERIFY(cp.RunnerShipsBuild);                          // runner has VFS build layers
         QCOMPARE(cp.ContentRoot, std::string("pfx/drive_c/game"));   // %PackageUID% substituted by DerivePaths
-        QVERIFY(recipeHas(cp.Recipe, "base"));                 // content parent in the recipe
-        QVERIFY(recipeHas(cp.Recipe, "game"));                 // launch node's own layers
+        QVERIFY(recipeHas(cp.Recipe, "game"));                 // the resolved row is the recipe
         QVERIFY(pool.contains("COMPONENTS") && !pool["COMPONENTS"].empty());
+        int base = 0;                                          // …and the content it contains is in it, placed
+        for (const auto & L : cp.SubComponentsArray)
+            if (L.value("TYPE", std::string()) == "VFSDirLayer" && L.value("PATH", std::string()).find("/base") != std::string::npos) ++base;
+        QCOMPARE(base, 1);
     }
 
     // A library pinned by the RUNNER contributes its order-independent layers to the game runtime, exactly as a
@@ -175,11 +210,12 @@ private slots:
     {
         NodeIndex idx;
         idx.Nodes["mediastack"] = contentNode("mediastack", json::array({
-            json{{"TYPE", "DllOverride"}, {"DLLOVERRIDE", "winegstreamer="}},
-            json{{"TYPE", "RegEdit"}, {"REGPATH", "HKLM\\Software\\Lav"}},
-            json{{"TYPE", "VFSZipLayer"}, {"PATH", "codecs.zip"}, {"TARGET", "files/lib/gstreamer-1.0"}} }));
+            json{{"DLL", {{"winegstreamer", ""}}}},
+            json{{"REG", {{"HKLM", {{"Software", {{"Lav", json::object()}}}}}}}},
+            json{{"ZIP", "codecs.zip"}, {"TARGET", "FILES/files/lib/gstreamer-1.0"}} }));
         idx.Nodes["wine"] = runnerNode("wine", {"win32"}, {"mediastack"});
         idx.Nodes["game"] = launchNode("game", "win32", {});
+        finish(idx);
 
         ContainerParams cp("/tmp/vg_bundle");
         cp.NodeIdx = &idx; cp.LaunchNodeId = "game";
@@ -192,43 +228,31 @@ private slots:
             const std::string T = L.value("TYPE", std::string());
             if (T == "DllOverride" && L.value("DLLOVERRIDE", std::string()) == "winegstreamer=") ++overrides;
             else if (T == "RegEdit" && L.value("REGPATH", std::string()) == "HKLM\\Software\\Lav") ++regedits;
-            else if (T == "VFSZipLayer" && L.value("PATH", std::string()) == "codecs.zip") ++prefixVfs;
+            else if (T == "VFSZipLayer" && L.value("PATH", std::string()).find("codecs.zip") != std::string::npos) ++prefixVfs;
         }
         QCOMPARE(overrides, 1);    // reaches WINEDLLOVERRIDES (FileEdits::ProcessDLLOverrides reads this array)
         QCOMPARE(regedits, 1);     // applied to the game prefix
         QCOMPARE(prefixVfs, 0);    // runner-tree build layer stays in the runner mount, not the prefix
     }
 
-    // A node in a runner's closure is COMPOSITION: it contributes its prefix-assembly layers whatever the
-    // toggles say — a TOGGLE inside a closure is inert (an optional runner piece is a graft on the runner, ticked
-    // from the outside). This pins that the runner-side walk uses the same pure closure as the game side.
+    // A node a runner CONTAINS is its composition: its prefix-assembly layers (a %runtime% PATH) reach the game's
+    // prefix. There is no toggle inside a fold — a runner's optional piece would be a WHEN-gated NODE layer.
     void runner_closure_nodes_always_contribute_prefix_layers()
     {
-        auto build = [](const std::map<std::string, bool> & states) {
-            NodeIndex idx;
-            // Prefix-ASSEMBLY layer: runtime-sourced PATH, so it assembles the game prefix rather than the
-            // runner tree - which is exactly the set the toggled walk collects.
-            Node extra = contentNode("wine_extra_dlls", json::array({
-                json{{"TYPE", "VFSDirLayer"}, {"PATH", "%RunnerMount%/extra"}, {"TARGET", "pfx/drive_c/extra"}} }));
-            extra.Optional = true;
-            extra.Default  = false;                       // OFF unless the user says otherwise
-            idx.Nodes["wine_extra_dlls"] = extra;
-            idx.Nodes["wine"] = runnerNode("wine", {"win32"}, {"wine_extra_dlls"});
-            idx.Nodes["game"] = launchNode("game", "win32", {});
-
-            ContainerParams cp("/tmp/vg_bundle");
-            cp.NodeIdx = &idx; cp.LaunchNodeId = "game"; cp.ModuleStates = states;
-            json pool = json::object();
-            LaunchResolver::InitializeFromNode(cp, pool, json{{"Settings", json::object()}});
-            int n = 0;
-            for (const auto & L : cp.SubComponentsArray)
-                if (L.value("PATH", std::string()) == "%RunnerMount%/extra") ++n;
-            return n;
-        };
-
-        QCOMPARE(build({}), 1);                                        // composed: mounted
-        QCOMPARE(build({{"wine_extra_dlls", false}}), 1);               // a toggle changes nothing inside a closure
-        QCOMPARE(build({{"wine_extra_dlls", true}}), 1);
+        NodeIndex idx;
+        idx.Nodes["wine_extra_dlls"] = contentNode("wine_extra_dlls", json::array({
+            json{{"DIR", "%RunnerMount%/extra"}, {"TARGET", "FILES/pfx/drive_c/extra"}} }));
+        idx.Nodes["wine"] = runnerNode("wine", {"win32"}, {"wine_extra_dlls"});
+        idx.Nodes["game"] = launchNode("game", "win32", {});
+        finish(idx);
+        ContainerParams cp("/tmp/vg_bundle");
+        cp.NodeIdx = &idx; cp.LaunchNodeId = "game";
+        json pool = json::object();
+        QVERIFY(LaunchResolver::InitializeFromNode(cp, pool, json{{"Settings", json::object()}}));
+        int n = 0;
+        for (const auto & L : cp.SubComponentsArray)
+            if (L.value("PATH", std::string()) == "%RunnerMount%/extra") ++n;
+        QCOMPARE(n, 1);
     }
 
     // No qualifying runner (guest platform mismatch) → no runner picked.
@@ -237,6 +261,7 @@ private slots:
         NodeIndex idx;
         idx.Nodes["wine"] = runnerNode("wine", {"win64"});     // serves win64
         idx.Nodes["game"] = launchNode("game", "win32", {});   // needs win32
+        finish(idx);
         ContainerParams cp("/tmp/vg_bundle");
         cp.NodeIdx = &idx; cp.LaunchNodeId = "game";
         json pool = json::object();
@@ -250,8 +275,8 @@ private slots:
     void initialize_from_node_authoring_bare()
     {
         NodeIndex idx;
-        Node n; n.NodeId = "fresh"; n.BundleDir = "/tmp/vg_bundle";   // no Declare* layers → content, no platform
-        idx.Nodes["fresh"] = n;
+        idx.Nodes["fresh"] = contentNode("fresh");                  // no entry, no content: a fresh node
+        finish(idx);
 
         ContainerParams cp("/tmp/vg_bundle");
         cp.NodeIdx = &idx; cp.LaunchNodeId = "fresh";
@@ -270,13 +295,15 @@ private slots:
     void initialize_from_node_authoring_bare_with_content()
     {
         NodeIndex idx;
-        idx.Nodes["c"] = contentNode("c", json::array({ json{{"TYPE", "VFSDirLayer"}, {"PATH", "files"}} }));
+        idx.Nodes["c"] = contentNode("c", json::array({ json{{"DIR", "files"}} }));
+        finish(idx);
         ContainerParams cp("/tmp/vg_bundle");
         cp.NodeIdx = &idx; cp.LaunchNodeId = "c"; cp.AuthoringBare = true;
         json pool = json::object();
         QVERIFY(LaunchResolver::InitializeFromNode(cp, pool, json{{"Settings", json::object()}}));
         QVERIFY(cp.RunnerChain.empty());
         QVERIFY(recipeHas(cp.Recipe, "c"));                   // the node's own content layer is in the recipe
+        QCOMPARE((int)cp.SubComponentsArray.size(), 1);
     }
 
     // PickRunnerNode honours an explicit RunnerID pin over the first-qualifying default.
@@ -298,12 +325,13 @@ private slots:
         QCOMPARE(pinned->NodeId, std::string("wineB"));
     }
 
-    // The default pick prefers a RECOMMENDED runner over the alphabetically-first one (no arbitrary default).
+    // The default pick prefers a runner RECOMMENDED for this tile over the alphabetically-first one. (A package never
+    // names a runner; a runner may say which tiles it is recommended for.)
     void pick_runner_prefers_recommended()
     {
         NodeIndex idx;
         idx.Nodes["aaa_wine"] = runnerNode("aaa_wine", {"win32"});   // sorts first
-        Node rec = runnerNode("zzz_wine", {"win32"}); rec.Recommended = true;
+        Node rec = runnerNode("zzz_wine", {"win32"}); rec.Recommended = {"game"};
         idx.Nodes["zzz_wine"] = rec;
         Node launch = launchNode("game", "win32", {});
         const json cfg = json{{"Settings", json::object()}};
@@ -399,10 +427,10 @@ private slots:
             return std::any_of(cp.KeepDirs.begin(), cp.KeepDirs.end(), [&](const PersistTarget &d){ return d.Path == p; }); };
         NodeIndex idx;
         idx.Nodes["proton_keepset"] = contentNode("proton_keepset", json::array({
-            json{{"TYPE","DeclarePersist"},{"SCOPE","file"},{"PATH","pfx/drive_c/users"}},
-            json{{"TYPE","DeclarePersist"},{"SCOPE","registry"},{"PATH","HKCU"}} }));
+            json{{"KEEP", {{"FILES/pfx/drive_c/users", true}, {"REG/HKCU", true}}}} }));
         idx.Nodes["wine"] = runnerNode("wine", {"win32"}, {"proton_keepset"});
         idx.Nodes["game"] = launchNode("game", "win32", {});
+        finish(idx);
 
         ContainerParams cp("/tmp/vg_bundle");
         cp.NodeIdx = &idx; cp.LaunchNodeId = "game";
@@ -417,16 +445,13 @@ private slots:
         // ...and in a CHAIN, every runner's keep-set counts, not just the boundary's: an emulator nested
         // under proton has user-state of its own, and taking only the outermost link drops it silently.
         NodeIndex ch;
-        ch.Nodes["emu_keep"] = contentNode("emu_keep", json::array({
-            json{{"TYPE","DeclarePersist"},{"SCOPE","file"},{"PATH","drive_c/emu_state"}} }));
-        ch.Nodes["emu"]      = chainRunner("emu", {"vortex"}, "win32");
-        NodeFixture::Wire(ch.Nodes["emu"], {"emu_keep"});
-        ch.Nodes["proton"]   = chainRunner("proton", {"win32"}, kMachine);
-        NodeFixture::Wire(ch.Nodes["proton"], {"proton_keep"});
-        ch.Nodes["proton_keep"] = contentNode("proton_keep", json::array({
-            json{{"TYPE","DeclarePersist"},{"SCOPE","file"},{"PATH","pfx/drive_c/users"}} }));
+        ch.Nodes["emu_keep"] = contentNode("emu_keep", json::array({ json{{"KEEP", {{"FILES/drive_c/emu_state", true}}}} }));
+        ch.Nodes["emu"]      = chainRunner("emu", {"vortex"}, "win32", "%RunnerMount%/run", {"emu_keep"});
+        ch.Nodes["proton"]   = chainRunner("proton", {"win32"}, kMachine, "%RunnerMount%/run", {"proton_keep"});
+        ch.Nodes["proton_keep"] = contentNode("proton_keep", json::array({ json{{"KEEP", {{"FILES/pfx/drive_c/users", true}}}} }));
         ch.Nodes["nativerun"] = chainRunner("nativerun", {kMachine}, kMachine, "");
         ch.Nodes["vgame"]     = launchNode("vgame", "vortex", {});
+        finish(ch);
 
         ContainerParams cp2("/tmp/vg_bundle");
         cp2.NodeIdx = &ch; cp2.LaunchNodeId = "vgame";
@@ -445,9 +470,10 @@ private slots:
         auto build = [](const char *when) {
             NodeIndex idx;
             idx.Nodes["keep"] = contentNode("keep", json::array({
-                json{{"TYPE","DeclarePersist"},{"SCOPE","file"},{"PATH","drive_c/Saves"},{"WHEN", when}} }));
+                json{{"KEEP", {{"FILES/drive_c/Saves", true}}}, {"WHEN", when}} }));
             idx.Nodes["wine"] = runnerNode("wine", {"win32"}, {"keep"});
             idx.Nodes["game"] = launchNode("game", "win32", {});
+            finish(idx);
             ContainerParams cp("/tmp/vg_bundle");
             cp.NodeIdx = &idx; cp.LaunchNodeId = "game";
             json pool = json::object();
@@ -508,19 +534,16 @@ private slots:
         QCOMPARE(ids.back(), std::string("nativerun"));        // native terminal always last
     }
 
-    // The chain bridges the SELECTED entrypoint's platform, never the node's default view: a node carrying a
-    // native entry (the default) and a win32 entry routes the win32 one through proton — and the win32 entry's
-    // own RUNNER is honoured as its soft pin.
+    // The chain bridges the SELECTED entry's platform, never the node's default view: a node carrying a native entry
+    // (the default) and a win32 entry routes the win32 one through a win32 runner.
     void chain_follows_the_selected_entrypoint()
     {
         NodeIndex idx;
         idx.Nodes["protonA"] = chainRunner("protonA", {"win32"}, kMachine);
         idx.Nodes["protonB"] = chainRunner("protonB", {"win32"}, kMachine);
-        Node launch = launchNode("game", kMachine, {});
-        launch.Entrypoints = json::array({
-            json{{"LABEL", "Native"}, {"HOST", kMachine}, {"PATH", "game"}},
-            json{{"LABEL", "Windows"}, {"HOST", "win32"}, {"PATH", "game.exe"}, {"RUNNER", "protonB"}} });
-        launch.EffectiveEntrypoints = launch.Entrypoints;   // a hand-built node: what DeriveIdentity would set
+        Node launch = standalone(parse(json{ {"CID", "game"}, {"LABEL", "game"}, {"VARIANT", "game"}, {"LAYERS", json::array({
+            json{{"EXEC", json::array({ json{{"LABEL", "Native"}, {"HOST", kMachine}, {"EXE", "game"}, {"TILE", {{"UID", "game"}}}},
+                                        json{{"LABEL", "Windows"}, {"HOST", "win32"}, {"EXE", "game.exe"}} })}} })} }, "/tmp/vg_bundle"));
         ContainerParams cp("/tmp/vg_bundle");
         const json cfg = json{{"Settings", json::object()}};
         auto def = LaunchResolver::ResolveChainIds(idx, launch, cp, cfg);
@@ -528,22 +551,19 @@ private slots:
         cp.Entrypoint = "Windows";
         auto win = LaunchResolver::ResolveChainIds(idx, launch, cp, cfg);
         QCOMPARE((int)win.size(), 2);
-        QCOMPARE(win[0], std::string("protonB"));                              // the ENTRY's declared runner, not BFS's protonA
+        QCOMPARE(win[0], std::string("protonA"));                              // a win32 bridge (BFS: first by key)
         cp.Entrypoint = "Native";
         QCOMPARE((int)LaunchResolver::ResolveChainIds(idx, launch, cp, cfg).size(), 1);
     }
 
-    // A runner's build is its closure, ITSELF INCLUDED — the same rule as a game's mount, no runner special case.
-    // A runner whose build lives ON the runner node (ENTRYPOINTS + LAYERS in one node — the java runners after the
-    // one-edge fold) ships that build: it is available with a bare EXECUTABLE, and its link mounts the layer.
-    // Before this, every runner-build walk skipped the runner node itself, so Minecraft's JRE was never mounted
-    // (execvp of /__jre/bin/java → exit 127) while proton, whose build is a chain it is OVER, kept working.
+    // A runner's build is its resolution, ITSELF INCLUDED — the same rule as a game's: a runner whose build lives on
+    // the runner node (the java runners: EXEC + the JRE zip in one node) ships it, and its link mounts the layer.
     void runner_build_on_the_runner_node_itself_ships()
     {
         NodeIndex idx;
-        Node java = chainRunner("java8", {"java_8"}, kMachine, "%RunnerMount%/__jre/bin/java");
-        java.Layers = json::array({ json{{"TYPE", "VFSZipLayer"}, {"PATH", "jre_8.zip"}, {"TARGET", "__jre"}} });
-        idx.Nodes["java8"] = java;
+        idx.Nodes["java8"] = chainRunner("java8", {"java_8"}, kMachine, "%RunnerMount%/__jre/bin/java", {},
+                                         json::array({ json{{"ZIP", "jre_8.zip"}, {"TARGET", "FILES/__jre"}} }));
+        finish(idx);
         Node launch = launchNode("mc", "java_8", {});
         ContainerParams cp("/tmp/vg_bundle");
         const json cfg = json{{"Settings", json::object()}};
@@ -554,68 +574,57 @@ private slots:
         QVERIFY2(chain[0].ShipsBuild, "the link ships a build");
         QCOMPARE((int)chain[0].Layers.size(), 1);                  // the runner's OWN layer is the build
         QCOMPARE(chain[0].Layers[0].value("TARGET", std::string()), std::string("__jre"));
-        // What the runner is OVER is part of its build too — whatever kind of node it is (no special case).
-        Node lib = chainRunner("lib", {"snes"}, "win32", "snes9x.exe");
-        lib.Layers = json::array({ json{{"TYPE", "VFSZipLayer"}, {"PATH", "lib.zip"}} });
-        idx.Nodes["lib"] = lib;
-        NodeFixture::Wire(idx.Nodes["java8"], {"lib"});
+        // What the runner CONTAINS is part of its build too, beneath its own layer.
+        idx.Nodes["lib"] = contentNode("lib", json::array({ json{{"ZIP", "lib.zip"}} }));
+        idx.Nodes["java8"] = chainRunner("java8", {"java_8"}, kMachine, "%RunnerMount%/__jre/bin/java", {"lib"},
+                                         json::array({ json{{"ZIP", "jre_8.zip"}, {"TARGET", "FILES/__jre"}} }));
+        finish(idx);
         auto chain2 = LaunchResolver::ResolveRunnerChain(idx, launch, cp, cfg);
         QCOMPARE((int)chain2[0].Layers.size(), 2);
         QCOMPARE(chain2[0].Layers.back().value("TARGET", std::string()), std::string("__jre"));   // own layer last = on top
     }
 
-    // A ticked graft that carries an entry (a mod loader) is a WAY TO RUN the selected variant: EntryNode names it,
-    // its entry becomes the exec and its HOST drives the chain, while the mount stays the variant's closure plus
-    // the graft. The variant is never replaced as the launch node.
+    // A graft (a node whose list begins with ANY naming the variant) that carries an entry is a WAY TO RUN the
+    // variant: applied, its entry is in the row's fold, --entry picks it, and its HOST drives the chain — the mount
+    // stays the variant's plus the graft.
     void a_grafts_entry_runs_over_the_variants_mount()
     {
         NodeIndex idx;
         idx.Nodes["protonA"] = chainRunner("protonA", {"win32"}, kMachine);
-        Node game = launchNode("game", kMachine, {});
-        game.Variant = "Play"; game.OwnTile = true; game.Uid = "1"; game.Uids = {"1"};
-        idx.Nodes["game"] = game;
-        Node loader = launchNode("loader", "win32", {"game"});           // the graft: OVER the game, its own win32 entry
-        loader.Entrypoints = json::array({ json{{"LABEL", "Loader"}, {"HOST", "win32"}, {"PATH", "loader.exe"}} });
-        loader.EffectiveEntrypoints = loader.Entrypoints;
-        loader.Exec = json{{"CONTENTPATH", "loader.exe"}, {"PLATFORM", "win32"}};
-        loader.Uid = "1"; loader.Uids = {"1"};
-        idx.Nodes["loader"] = loader;
+        idx.Nodes["game"] = launchNode("game", kMachine, {});
+        idx.Nodes["loader"] = parse(json{ {"CID", "loader"}, {"LABEL", "loader"}, {"LAYERS", json::array({
+            json{{"ANY", json::array({"game"})}}, json{{"DIR", "loader"}},
+            json{{"EXEC", json::array({ json{{"LABEL", "Loader"}, {"HOST", "win32"}, {"EXE", "loader.exe"}} })}} })} }, "/tmp/vg_bundle");
+        finish(idx);
         ContainerParams cp("/tmp/vg_bundle");
-        cp.NodeIdx = &idx; cp.LaunchNodeId = "game"; cp.ModuleStates = {{"loader", true}};
-        cp.EntryNode = "loader";
+        cp.NodeIdx = &idx; cp.LaunchNodeId = "game";
+        cp.Grafts = std::vector<std::string>{ "loader" };
+        cp.Entrypoint = "Loader";
         json pool = json::object();
         const json cfg = json{{"Settings", json::object()}};
         QVERIFY(LaunchResolver::InitializeFromNode(cp, pool, cfg));
         QCOMPARE(cp.ComposedExec.value("CONTENTPATH", std::string()), std::string("loader.exe"));   // the graft's entry
         QCOMPARE(cp.LaunchNodeId, std::string("game"));                                              // over the variant's mount
-        QVERIFY(recipeHas(cp.Recipe, "loader"));                                                     // the graft is mounted
-        auto ids = LaunchResolver::ResolveChainIds(idx, game, cp, cfg);
-        QVERIFY2(!ids.empty() && ids[0] == "protonA", "the chain serves the ENTRY's platform (win32), not the variant's");
+        QVERIFY(cp.AppliedGrafts == std::vector<std::string>{ "loader" });                            // the graft is applied
+        QCOMPARE(cp.RunnerID, std::string("protonA"));   // the chain serves the ENTRY's platform (win32), not the variant's
     }
 
-    // The game's environment is the fold of its MOUNT: every node beneath it, itself, and the ticked grafts above —
-    // not a field of the entry. The runner link's environment is the fold of the runner's build closure.
+    // The game's environment is the fold of its resolution: what it contains, itself, and the applied grafts above
+    // it — later wins, null removes. The runner link's environment is the fold of the runner's own resolution.
     void the_environment_folds_from_the_mount_and_from_the_runner_build()
     {
         NodeIndex idx;
-        Node lib = Node(); lib.NodeId = "lib"; lib.Env = json{{"A", "lib"}, {"B", "lib"}, {"C", "lib"}};
-        lib.Layers = json::array({ json{{"TYPE", "VFSDirLayer"}, {"PATH", "lib"}} }); lib.BundleDir = "/tmp/vg_bundle";
-        idx.Nodes["lib"] = lib;
-        Node game = launchNode("game", kMachine, {"lib"});
-        game.Variant = "Play"; game.OwnTile = true; game.Uid = "1"; game.Uids = {"1"};
-        game.Env = json{{"A", "game"}}; game.EnvRemove = {"B", "HOST_ONLY"};
-        idx.Nodes["game"] = game;
-        Node mod = Node(); mod.NodeId = "mod"; NodeFixture::Wire(mod, {"game"}); mod.Uid = "1"; mod.Uids = {"1"};
-        mod.Env = json{{"C", "mod"}}; mod.Layers = json::array({ json{{"TYPE", "VFSDirLayer"}, {"PATH", "mod"}} }); mod.BundleDir = "/tmp/vg_bundle";
-        idx.Nodes["mod"] = mod;
-        Node rlib = Node(); rlib.NodeId = "rlib"; rlib.Env = json{{"R", "rlib"}, {"S", "rlib"}, {"T", "rlib"}};
-        rlib.Layers = json::array({ json{{"TYPE", "VFSZipLayer"}, {"PATH", "rlib.zip"}} }); rlib.BundleDir = "/tmp/vg_runner";
-        idx.Nodes["rlib"] = rlib;
-        Node runner = chainRunner("native", {kMachine}, kMachine);
-        NodeFixture::Wire(runner, {"rlib"}); runner.Env = json{{"S", "runner"}}; runner.EnvRemove = {"R"};
-        idx.Nodes["native"] = runner;
+        idx.Nodes["lib"] = contentNode("lib", json::array({ json{{"DIR", "lib"}}, json{{"ENV", {{"A", "lib"}, {"B", "lib"}, {"C", "lib"}}}} }));
+        idx.Nodes["game"] = launchNode("game", kMachine, {"lib"}, json::object(),
+                                       json::array({ json{{"ENV", {{"A", "game"}, {"B", nullptr}, {"HOST_ONLY", nullptr}}}} }));
+        idx.Nodes["mod"] = parse(json{ {"CID", "mod"}, {"LABEL", "mod"}, {"LAYERS", json::array({
+            json{{"ANY", json::array({"game"})}}, json{{"DIR", "mod"}}, json{{"ENV", {{"C", "mod"}}}} })} }, "/tmp/vg_bundle");
+        idx.Nodes["rlib"] = contentNode("rlib", json::array({ json{{"ZIP", "rlib.zip"}}, json{{"ENV", {{"R", "rlib"}, {"S", "rlib"}, {"T", "rlib"}}}} }));
+        idx.Nodes["native"] = chainRunner("native", {kMachine}, kMachine, "%RunnerMount%/run", {"rlib"},
+                                          json::array({ json{{"ENV", {{"S", "runner"}, {"R", nullptr}}}} }));
+        finish(idx);
         ContainerParams cp("/tmp/vg_bundle");
-        cp.NodeIdx = &idx; cp.LaunchNodeId = "game"; cp.ModuleStates = {{"mod", true}};
+        cp.NodeIdx = &idx; cp.LaunchNodeId = "game"; cp.Grafts = std::vector<std::string>{ "mod" };
         json pool = json::object();
         const json cfg = json{{"Settings", json::object()}};
         QVERIFY(LaunchResolver::InitializeFromNode(cp, pool, cfg));
@@ -623,29 +632,28 @@ private slots:
         QCOMPARE(cp.LaunchEnv.value("C", std::string()), std::string("mod"));    // the graft over the game
         QVERIFY(!cp.LaunchEnv.contains("B"));                                       // removed by the game
         QVERIFY(std::find(cp.LaunchRemoveEnv.begin(), cp.LaunchRemoveEnv.end(), "HOST_ONLY") != cp.LaunchRemoveEnv.end());
-        auto chain = LaunchResolver::ResolveRunnerChain(idx, game, cp, cfg);
+        auto chain = LaunchResolver::ResolveRunnerChain(idx, idx.Nodes.at("game"), cp, cfg);
         QVERIFY(!chain.empty());
         QCOMPARE(chain[0].Env.value("S", std::string()), std::string("runner"));   // the runner over its library
-        QCOMPARE(chain[0].Env.value("T", std::string()), std::string("rlib"));     // the library beneath the runner reaches the link
+        QCOMPARE(chain[0].Env.value("T", std::string()), std::string("rlib"));     // the library it contains reaches the link
         QVERIFY(!chain[0].Env.contains("R"));                                        // removed by the runner
         QVERIFY(std::find(chain[0].RemoveEnv.begin(), chain[0].RemoveEnv.end(), "R") != chain[0].RemoveEnv.end());
     }
 
-    // A label may repeat (a friend's received stub of "proton" beside the local "proton"): every closure walk on the
-    // launch path is keyed by the INDEX key, or the first label match — the stub, sorted first here — is walked
-    // instead of the runner that ships the build.
+    // A label may repeat (a friend's received stub of "proton" beside the local "proton"): every walk on the launch
+    // path is keyed by the INDEX key, or the first label match — the stub, sorted first here — is walked instead of
+    // the runner that ships the build.
     void closure_walks_are_keyed_by_the_index_key_not_the_label()
     {
         NodeIndex idx;
-        Node stub = chainRunner("proton", {"nothing"}, kMachine);         // same LABEL, no build, sorts first, serves nothing
-        stub.Cid = "aaa_stub"; stub.Received = true;
+        Node stub = chainRunner("aaa_stub", {"nothing"}, kMachine, "%RunnerMount%/run", {}, json::array(), "proton");
+        stub.Received = true;
         idx.Nodes["aaa_stub"] = stub;
-        Node local = chainRunner("proton", {"win32"}, kMachine);
-        local.Cid = "zzz_local";
-        local.Layers = json::array({ json{{"TYPE", "VFSZipLayer"}, {"PATH", "proton.zip"}, {"TARGET", "__build"}} });
-        idx.Nodes["zzz_local"] = local;
-        Node launch = launchNode("game", "win32", {});
-        idx.Nodes["game"] = launch;
+        idx.Nodes["zzz_local"] = chainRunner("zzz_local", {"win32"}, kMachine, "%RunnerMount%/run", {},
+                                             json::array({ json{{"ZIP", "proton.zip"}, {"TARGET", "FILES/__build"}} }), "proton");
+        idx.Nodes["game"] = launchNode("game", "win32", {});
+        finish(idx);
+        const Node & launch = idx.Nodes.at("game");
         ContainerParams cp("/tmp/vg_bundle");
         cp.NodeIdx = &idx; cp.LaunchNodeId = "game";
         const json cfg = json{{"Settings", json::object()}};
@@ -660,28 +668,61 @@ private slots:
         QCOMPARE((int)chain[0].Layers.size(), 1);
     }
 
-    // An entry node that is not a SELECTED graft of the launch is refused: its loader would not be on the mount.
+    // An entry that is not in the row's fold is refused — a graft's entry exists only while the graft is applied, and
+    // a graft this row does not offer is not applied.
     void an_unticked_grafts_entry_is_refused()
     {
         NodeIndex idx;
         idx.Nodes["protonA"] = chainRunner("protonA", {"win32"}, kMachine);
-        Node game = launchNode("game", kMachine, {});
-        game.Variant = "Play"; game.OwnTile = true; game.Uid = "1"; game.Uids = {"1"};
-        idx.Nodes["game"] = game;
-        Node loader = launchNode("loader", "win32", {"game"});
-        loader.Entrypoints = json::array({ json{{"LABEL", "Loader"}, {"HOST", "win32"}, {"PATH", "loader.exe"}} });
-        loader.EffectiveEntrypoints = loader.Entrypoints;
-        loader.Exec = json{{"CONTENTPATH", "loader.exe"}, {"PLATFORM", "win32"}};
-        loader.Uid = "1"; loader.Uids = {"1"};
-        idx.Nodes["loader"] = loader;
+        idx.Nodes["game"] = launchNode("game", kMachine, {});
+        idx.Nodes["loader"] = parse(json{ {"CID", "loader"}, {"LABEL", "loader"}, {"LAYERS", json::array({
+            json{{"ANY", json::array({"game"})}},
+            json{{"EXEC", json::array({ json{{"LABEL", "Loader"}, {"HOST", "win32"}, {"EXE", "loader.exe"}} })}} })} }, "/tmp/vg_bundle");
+        idx.Nodes["elsewhere"] = parse(json{ {"CID", "elsewhere"}, {"LABEL", "elsewhere"}, {"LAYERS", json::array({
+            json{{"ANY", json::array({"other_game"})}},
+            json{{"EXEC", json::array({ json{{"LABEL", "Loader"}, {"HOST", "win32"}, {"EXE", "x.exe"}} })}} })} }, "/tmp/vg_bundle");
+        finish(idx);
         ContainerParams cp("/tmp/vg_bundle");
-        cp.NodeIdx = &idx; cp.LaunchNodeId = "game"; cp.ModuleStates = {{"loader", false}};   // unticked
-        cp.EntryNode = "loader";
+        cp.NodeIdx = &idx; cp.LaunchNodeId = "game"; cp.Grafts = std::vector<std::string>{};   // unticked
+        cp.Entrypoint = "Loader";
         json pool = json::object();
         const json cfg = json{{"Settings", json::object()}};
         QVERIFY(!LaunchResolver::InitializeFromNode(cp, pool, cfg));
-        cp.EntryNode = "nowhere";                                                                 // not a node at all
+        cp.Grafts = std::vector<std::string>{ "elsewhere" };                                  // not offered to this row
         QVERIFY(!LaunchResolver::InitializeFromNode(cp, pool, cfg));
+        QVERIFY(cp.AppliedGrafts.empty());
+    }
+
+    // A row whose requirements fail is blocked (§4): a NOT naming something the row contains, or an ANY that finds
+    // none. A graft whose NOT would hit is not applied — the row still launches without it.
+    void an_unsatisfied_row_is_blocked_and_a_conflicting_graft_is_not_applied()
+    {
+        NodeIndex idx;
+        idx.Nodes["base"] = contentNode("base", json::array({ json{{"DIR", "base"}} }));
+        idx.Nodes["game"] = launchNode("game", kMachine, {"base"});
+        idx.Nodes["blocked"] = launchNode("blocked", kMachine, {"base"}, json::object(), json::array({ json{{"NOT", "base"}} }));
+        idx.Nodes["needs"] = launchNode("needs", kMachine, {}, json::object(), json::array({ json{{"ANY", json::array({"nowhere"})}} }));
+        idx.Nodes["conflict"] = parse(json{ {"CID", "conflict"}, {"LABEL", "conflict"}, {"RECOMMENDED", json::array({"game"})},
+            {"LAYERS", json::array({ json{{"ANY", json::array({"game"})}}, json{{"NOT", "base"}}, json{{"DIR", "c"}} })} }, "/tmp/vg_bundle");
+        idx.Nodes["fine"] = parse(json{ {"CID", "fine"}, {"LABEL", "fine"}, {"RECOMMENDED", json::array({"game"})},
+            {"LAYERS", json::array({ json{{"ANY", json::array({"game"})}}, json{{"DIR", "f"}} })} }, "/tmp/vg_bundle");
+        finish(idx);
+        const json cfg = json{{"Settings", json::object()}};
+        for (const char *Row : {"blocked", "needs"})
+        {
+            ContainerParams cp("/tmp/vg_bundle");
+            cp.NodeIdx = &idx; cp.LaunchNodeId = Row;
+            json pool = json::object();
+            QVERIFY2(!LaunchResolver::InitializeFromNode(cp, pool, cfg), Row);
+        }
+        ContainerParams cp("/tmp/vg_bundle");
+        cp.NodeIdx = &idx; cp.LaunchNodeId = "game";
+        json pool = json::object();
+        QVERIFY(LaunchResolver::InitializeFromNode(cp, pool, cfg));
+        QVERIFY(cp.AppliedGrafts == std::vector<std::string>{ "fine" });   // both pre-ticked; the conflicting one does not apply
+        cp.Grafts = std::vector<std::string>{ "conflict", "fine" };
+        QVERIFY(LaunchResolver::InitializeFromNode(cp, pool, cfg));
+        QVERIFY(cp.AppliedGrafts == std::vector<std::string>{ "fine" });
     }
 
     // No authored native runner → the terminal is the synthesized passthrough sentinel.
@@ -725,12 +766,12 @@ private slots:
         QCOMPARE(ids[0], std::string("nativerun"));
     }
 
-    // BFS tie-break: a RECOMMENDED bridge runner beats the alphabetically-first one.
+    // BFS tie-break: a bridge runner RECOMMENDED for this tile beats the alphabetically-first one.
     void chain_bridge_prefers_recommended()
     {
         NodeIndex idx;
         idx.Nodes["aaa_proton"] = chainRunner("aaa_proton", {"win32"}, kMachine);
-        Node rec = chainRunner("zzz_proton", {"win32"}, kMachine); rec.Recommended = true;
+        Node rec = chainRunner("zzz_proton", {"win32"}, kMachine); rec.Recommended = {"game"};
         idx.Nodes["zzz_proton"] = rec;
         idx.Nodes["nativerun"]  = chainRunner("nativerun", {kMachine}, kMachine, "");
         Node launch = launchNode("game", "win32", {});
@@ -757,27 +798,6 @@ private slots:
         auto ids = LaunchResolver::ResolveChainIds(idx, launch, cp, cfg);
         QCOMPARE((int)ids.size(), 2);
         QCOMPARE(ids[0], std::string("protonB"));              // pin beats default (protonA sorts first)
-        QCOMPARE(ids.back(), std::string("nativerun"));
-    }
-
-    // A launchable's DECLARED runner (DeclareExec.RUNNER → Node.RecommendedRunner) is honoured with NO persisted
-    // pin — the job the removed appmodel PREFERRED_RUNNER seed used to do, now at the resolver so a FRESH game gets
-    // it. Teeth: drop the RecommendedRunner soft-pin in ResolveChainIds → the BFS default picks protonA (sorts
-    // first, same node-Recommended flag) and this fails.
-    void chain_honours_declared_runner()
-    {
-        NodeIndex idx;
-        idx.Nodes["protonA"]   = chainRunner("protonA", {"win32"}, kMachine);   // sorts first by node-id
-        idx.Nodes["protonB"]   = chainRunner("protonB", {"win32"}, kMachine);
-        idx.Nodes["nativerun"] = chainRunner("nativerun", {kMachine}, kMachine, "");
-        Node launch = launchNode("game", "win32", {});
-        launch.RecommendedRunner = "protonB";                  // the DeclareExec.RUNNER the package declares
-        ContainerParams cp("/tmp/vg_bundle"); cp.PackageUID = "pkg";
-        QTemporaryDir ud; QVERIFY(ud.isValid());               // no pin persisted (temp root, empty instance)
-        const json cfg = json{{"Settings", {{"Paths", {{"UserDataRoot", ud.path().toStdString()}}}}}};
-        auto ids = LaunchResolver::ResolveChainIds(idx, launch, cp, cfg);
-        QCOMPARE((int)ids.size(), 2);
-        QCOMPARE(ids[0], std::string("protonB"));              // declared runner beats the default
         QCOMPARE(ids.back(), std::string("nativerun"));
     }
 

@@ -19,8 +19,7 @@ using json = nlohmann::ordered_json;
 
 static void writeJson(const QString & path, const json & j)
 {
-    std::ofstream f(path.toStdString());
-    f << j.dump(2);
+    NodeFixture::WriteNodes(path.toStdString(), j);
 }
 
 class DownloadManagerTest : public QObject
@@ -49,7 +48,7 @@ private slots:
         const json Items = seeder["Libraries"]["Games"];
         QCOMPARE((int)Items.size(), 1);
 
-        // The receiver: the package received (manifest + every node block landed), nothing installed.
+        // The receiver: the package received (its folder landed: every node file + the manifest), nothing installed.
         QTemporaryDir RxData; QVERIFY(RxData.isValid());
         json cfg = json{{"Settings", {{"Paths", {{"LibraryRoot", (RxData.path() + "/LIBRARY").toStdString()}}}}},
                         {"FriendLibraries", {{"12D3KooWSeederAlice", {{"Games", Items}}}}}};
@@ -57,14 +56,14 @@ private slots:
         {
             std::vector<IpfsWrapper::FetchTarget> B;
             for (const auto & T : PackageCatalog::PlanReceivedFetches(cfg, Nick, json{{"Games", Items}}))
-                B.push_back(IpfsWrapper::FetchTarget{ T.Cid, T.Dest, false, false, /*Verify=*/true });
+                B.push_back(IpfsWrapper::FetchTarget{ T.Cid, T.Dest, false, /*Dir=*/true, /*Verify=*/true });
             std::string WErr;
             QVERIFY2(IpfsWrapper::WaitBatch(IpfsWrapper::EnqueueBatch(B), 30000, &WErr), WErr.c_str());
         }
         QVERIFY2(PackageCatalog::LandReceivedPackages(cfg, &Err), Err.c_str());
         const std::filesystem::path Stub = std::filesystem::path(PackageCatalog::CatalogRootDir(cfg)) / (Nick + " - Games") / "[1] A";
         const std::filesystem::path Home = std::filesystem::path(RxData.path().toStdString()) / "LIBRARY" / "Games" / "[1] A";
-        QVERIFY(std::filesystem::exists(Stub / ".package.json"));
+        QVERIFY(std::filesystem::exists(Stub / ".package" / ".package.json"));
 
         QDir appDir(RxData.path());
         AppModel model(&cfg, &appDir);

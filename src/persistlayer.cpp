@@ -1,6 +1,7 @@
 #include "persistlayer.h"
 #include "commonutils.h"   // Log*
 
+#include <algorithm>
 #include <filesystem>
 #include <string>
 
@@ -42,4 +43,28 @@ bool PersistLayer::CapturePersistFiles(struct ContainerParams &ContainerParams)
         else    LogOut("PersistLayer::CapturePersistFiles", "Captured file " + F.Path + " (to " + F.Target + ")");
     }
     return Ok;
+}
+bool PersistLayer::HasSavedCopy(const struct ContainerParams &ContainerParams, const std::string &RuntimeRel)
+{
+    const auto Norm = [](std::string P) {
+        std::replace(P.begin(), P.end(), '\\', '/');
+        while (!P.empty() && P.front() == '/') P.erase(P.begin());
+        while (!P.empty() && P.back() == '/') P.pop_back();
+        return P;
+    };
+    const std::string Rel = Norm(RuntimeRel);
+    std::error_code Ec;
+    for (const PersistTarget &F : ContainerParams.KeepFiles)
+        if (Norm(F.Path) == Rel) return std::filesystem::exists(ContainerParams.UserDataPath / F.Target, Ec);
+    //The most specific kept directory holding it decides.
+    const PersistTarget *Best = nullptr;
+    size_t BestLen = 0;
+    for (const PersistTarget &D : ContainerParams.KeepDirs)
+    {
+        const std::string Dp = Norm(D.Path);
+        if ((Dp.empty() || Rel.rfind(Dp + "/", 0) == 0) && (!Best || Dp.size() > BestLen)) { Best = &D; BestLen = Dp.size(); }
+    }
+    if (!Best) return false;
+    const std::string Rest = BestLen == 0 ? Rel : Rel.substr(BestLen + 1);
+    return std::filesystem::exists(ContainerParams.UserDataPath / Best->Target / Rest, Ec);
 }

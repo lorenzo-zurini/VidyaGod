@@ -69,6 +69,7 @@ static nlohmann::ordered_json DumpResolution(struct ContainerParams &CP)   // no
     J["RunnerLayers"]      = CP.RunnerLayers;
     J["RunnerPersistLayers"]= CP.RunnerPersistLayers;
     J["Variables"]         = CP.GetVariablesMap();   // every %KEY% the resolve substituted with (built-ins included)
+    J["GuestRoots"]        = CP.GuestRoots;          // guest coordinates → the boundary runner's layout
     return J;
 }
 
@@ -103,9 +104,8 @@ int CliModes::RunNodeLaunch(LaunchParameters &LaunchParameters, nlohmann::ordere
         NewContainerParams.NodeIdxOwned      = Index;         // the wrapper's copy co-owns the index
         NewContainerParams.LaunchNodeId      = LookupCid;
         NewContainerParams.VariableOverrides = LaunchParameters.VariableOverrides;
-        NewContainerParams.ModuleStates      = LaunchParameters.ModuleStates;
+        NewContainerParams.Grafts            = LaunchParameters.Grafts;
         NewContainerParams.Entrypoint        = LaunchParameters.Entrypoint;
-        NewContainerParams.EntryNode         = LaunchParameters.EntryNode;
         //Same engine-injected session facts as the GUI path (see LaunchThread::run): the virtual-LAN vIPs + the
         //player's own display name, so `--node` behaves identically to a GUI launch.
         NewContainerParams.SessionVars = IpfsWrapper::LanLaunchVars();
@@ -120,6 +120,10 @@ int CliModes::RunNodeLaunch(LaunchParameters &LaunchParameters, nlohmann::ordere
         if (!LaunchParameters.RunnerChain.empty())   NewContainerParams.RunnerChainIds = LaunchParameters.RunnerChain;
         else if (!LaunchParameters.RunnerID.empty()) NewContainerParams.RunnerChainIds = { LaunchParameters.RunnerID };
         class ContainerWrapper NewContainerWrapper = ContainerWrapper(GlobalConfigJSON, MANIFESTJSON, NewContainerParams);
+        //A row that does not resolve (blocked, malformed, no runner) has nothing to dump or run.
+        if (!NewContainerWrapper.Resolved())
+        { LogErr("main.cpp", "Resolving '" + LaunchParameters.LaunchNodeId + "' failed (see above) — aborting.");
+          Diagnostics::ReportVerdict("Launch of '" + LaunchParameters.LaunchNodeId + "'"); return 1; }
         if (!LaunchResolver::ResolveExecutableDefinition(MANIFESTJSON, NewContainerWrapper.ContainerParams))
         { LogErr("main.cpp", "ResolveExecutableDefinition failed, aborting.");
           //A failed launch is exactly when the verdict matters most; returning early without one means the runs

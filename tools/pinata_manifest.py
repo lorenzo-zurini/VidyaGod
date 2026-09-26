@@ -1,12 +1,14 @@
 #!/usr/bin/env python3
-"""Keep Pinata pinned to exactly the published PACKAGE manifests.
+"""Keep Pinata pinned to exactly the published PACKAGE pin folders.
 
-A pinning service pins recursively and bills every pin its whole closure, so the pin set must be the set of
-package manifests: each one reaches its package's node blocks and, through them, its content CIDs — the package
-once, and only a changed package re-pins. There is no library-level block (a library is a name, never a CID).
+A pinning service pins recursively and bills every pin its whole closure, so the pin set must be one folder per
+package: its pin folder links the package folder (node files + manifest) and the package's OWN content — the
+package once, and only a changed package re-pins. References inside a node are plain CIDs (nothing follows them),
+so a library a package contains is its own package with its own pin: no byte is billed twice. There is no
+library-level block (a library is a name, never a CID).
 
   tools/pinata_manifest.py status         pins, billed size, and the diff against config["Libraries"]
-  tools/pinata_manifest.py sync           pin every package manifest not yet pinned, unpin everything else
+  tools/pinata_manifest.py sync           pin every package pin folder not yet pinned, unpin everything else
   tools/pinata_manifest.py jobs           list pending pin jobs
 
 Credential: ~/.pinata_jwt (never printed). Data dir: --data-dir <dir> (default ~/.VidyaGodSeeder).
@@ -51,10 +53,10 @@ if "--data-dir" in argv:
 args = [a for a in argv if not a.startswith("--data-dir=")]
 dd = next((a.split("=", 1)[1] for a in argv if a.startswith("--data-dir=")), dd)
 cfg = json.load(open(os.path.expanduser(dd + "/GlobalConfig.JSON")))
-wanted = {}                                     # package manifest cid → "lib / pkg"
+wanted = {}                                     # package pin folder cid → "lib / pkg"
 for lib, rows in (cfg.get("Libraries") or {}).items():
     for r in rows or []:
-        if isinstance(r, dict) and r.get("cid"): wanted[r["cid"]] = f"{lib} / {r.get('pkg', '')}"
+        if isinstance(r, dict) and r.get("pin"): wanted[r["pin"]] = f"{lib} / {r.get('pkg', '')}"
 phase = args[0] if args else "status"
 tot = call("/data/userPinnedDataTotal")
 have = {r["ipfs_pin_hash"] for r in pins()}

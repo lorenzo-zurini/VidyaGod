@@ -4,7 +4,8 @@
 #include <nlohmann/json.hpp>
 
 #include "launchparams.h"    // ContainerParams
-#include "manifestmodel.h"   // NodeIndex, Node
+#include "manifestmodel.h"
+#include "fold.h"   // NodeIndex, Node
 
 // LaunchResolver — resolves a launch request into a fully-populated ContainerParams from the global node graph:
 // the param / recipe / runner-pick / persistence / exec / path resolution lifted out of ContainerWrapper. Free
@@ -90,6 +91,12 @@ GuestTarget ComposeGuestTarget(struct ContainerParams &CP);
 
 //Native node-graph init — populates ContainerParams + the component pool (ComponentPool, out) DIRECTLY from the
 //node graph (ContainerParams.NodeIdx / .LaunchNodeId): runner pick, recipe, paths, custom vars, persistence.
+//A substituted path in guest coordinates (C:/…, %UserProfile%/…) → the boundary runner's layout. Paths are mapped
+//after substitution because a variable may carry one; anything not under a mapped anchor is returned unchanged.
+std::string GuestToLayout(struct ContainerParams &ContainerParams, const std::string &Path);
+//A runner's build: its own node resolved (Fold) and lowered in its own layout — the ops a launch mounts at the runner
+//mount (real bytes), assembles into the prefix (%runtime% layers) and applies (edits, registry, DLLs, variables).
+nlohmann::ordered_json RunnerOps(const NodeIndex &Idx, const std::string &RunnerId, Fold::Plan *PlanOut = nullptr);
 [[nodiscard]] bool InitializeFromNode(struct ContainerParams &ContainerParams, nlohmann::ordered_json &ComponentPool, const nlohmann::ordered_json &GlobalConfigJSON);
 
 //Picks the best ROLE:"runner" node for a launch node (GUEST ∋ launch host, HOST==machine, executable available),

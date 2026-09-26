@@ -13,6 +13,8 @@
 
 #include "fileedits.h"
 #include "commonutils.h"
+#include "launchparams.h"
+#include "persistlayer.h"
 
 namespace {
 
@@ -182,6 +184,49 @@ private slots:
         Complaints C;
         QVERIFY2(!FileEdits::FileOverwrite("x", P), "writing a file over a directory must fail");
         QVERIFY(!C.Lines.empty());
+    }
+
+    // ---- ownership: a user-owned file's package default ----
+
+    // An edit on a user-owned file (inside a KEEP) is the package's DEFAULT: it applies while the user has no saved
+    // copy, and stands down once there is one — a kept single file, or a file under a kept directory. An edit on a
+    // package-owned file applies every launch, whatever is saved.
+    void a_user_owned_files_default_stands_down_once_the_user_has_a_copy()
+    {
+        QTemporaryDir Dir;
+        const std::filesystem::path Root = Dir.path().toStdString();
+        ContainerParams CP(Root / "bundle");
+        CP.RuntimePath  = Root / "runtime";
+        CP.UserDataPath = Root / "user";
+        std::filesystem::create_directories(CP.RuntimePath / "saves");
+        std::filesystem::create_directories(CP.RuntimePath / "cfg");
+        CP.KeepDirs  = { PersistTarget{ "saves", "Saves" } };
+        CP.KeepFiles = { PersistTarget{ "cfg/p.ini", "P" } };
+        auto Edit = [](const std::string &File, bool Default) {
+            nlohmann::ordered_json E = { {"TYPE", "FileEdit"}, {"MODE", "Overwrite"}, {"VALUE", "package"}, {"FILE", File}, {"OVERRIDE", true} };
+            if (Default) E["IF_UNSAVED"] = true;
+            return E;
+        };
+        CP.SubComponentsArray = nlohmann::ordered_json::array({ Edit("saves/prefs.ini", true), Edit("cfg/p.ini", true), Edit("game.ini", false) });
+        const auto Rt = [&](const char *F) { return (CP.RuntimePath / F).string(); };
+
+        QVERIFY(!PersistLayer::HasSavedCopy(CP, "saves/prefs.ini"));
+        QVERIFY(FileEdits::ProcessFileEdits(CP, /*OverridePass=*/true));
+        QCOMPARE(ReadAll(Rt("saves/prefs.ini")), std::string("package"));   // nothing saved: the default applies
+        QCOMPARE(ReadAll(Rt("cfg/p.ini")), std::string("package"));
+
+        std::filesystem::create_directories(CP.UserDataPath / "Saves");
+        Write((CP.UserDataPath / "Saves" / "prefs.ini").string(), "user");
+        Write((CP.UserDataPath / "P").string(), "user");
+        for (const char *F : {"saves/prefs.ini", "cfg/p.ini", "game.ini"}) Write(Rt(F), "user");   // restored state
+        QVERIFY(PersistLayer::HasSavedCopy(CP, "saves/prefs.ini"));
+        QVERIFY(PersistLayer::HasSavedCopy(CP, "/cfg/p.ini"));
+        QVERIFY(!PersistLayer::HasSavedCopy(CP, "saves/other.ini"));   // under the kept dir, nothing saved for it
+        QVERIFY(!PersistLayer::HasSavedCopy(CP, "game.ini"));          // not kept at all
+        QVERIFY(FileEdits::ProcessFileEdits(CP, /*OverridePass=*/true));
+        QCOMPARE(ReadAll(Rt("saves/prefs.ini")), std::string("user"));      // the user's copy stands
+        QCOMPARE(ReadAll(Rt("cfg/p.ini")), std::string("user"));
+        QCOMPARE(ReadAll(Rt("game.ini")), std::string("package"));          // the package's file: every launch
     }
 };
 

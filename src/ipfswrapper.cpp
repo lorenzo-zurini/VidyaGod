@@ -182,96 +182,38 @@ std::string AddNoCopyMeta(const std::string &PathStr, std::string *Error)
 }
 
 // ---- dag-json node graph (the gigagraph: one node = one dag-json block, identity = CID) ----
-// The node's JSON is canonicalized in Go (deterministic — any key order yields the same CID); the block is
-// direct-pinned and announced. Links (PARENTS/SOURCE.CID/COVER) travel as dag-json links {"/":cid} in the stored
-// block; the caller passes/receives that form (nodegraph.cpp normalizes ↔ plain-string CIDs at the ingest/mint edge).
-
-std::string DagPut(const std::string &Json, std::string *Error)
+std::string BlockPut(const std::string &Bytes, std::string *Error)
 {
-    if (Json.empty()) { if (Error) *Error = "empty node JSON"; return std::string(); }
+    if (Bytes.empty()) { if (Error) *Error = "empty block"; return std::string(); }
+    if (Bytes.find('\0') != std::string::npos) { if (Error) *Error = "a node block is text: it cannot hold NUL"; return std::string(); }
     char *Cid = nullptr, *Err = nullptr;
-    const int Rc = VgDagPut(Json.c_str(), &Cid, &Err);
+    const int Rc = VgBlockPut(Bytes.c_str(), &Cid, &Err);
     const std::string CidS = TakeStr(Cid);
     const std::string ErrS = TakeStr(Err);
-    if (Rc != 0) { if (Error) *Error = ErrS.empty() ? "dag put failed" : ErrS; return std::string(); }
+    if (Rc != 0) { if (Error) *Error = ErrS.empty() ? "block put failed" : ErrS; return std::string(); }
     return CidS;
 }
 
-std::string DagGet(const std::string &Cid, std::string *Error)
+std::string BlockGet(const std::string &Cid, std::string *Error)
 {
     if (Cid.empty()) { if (Error) *Error = "empty CID"; return std::string(); }
-    char *Json = nullptr, *Err = nullptr;
-    const int Rc = VgDagGet(Cid.c_str(), &Json, &Err);
-    const std::string JsonS = TakeStr(Json);
-    const std::string ErrS  = TakeStr(Err);
-    if (Rc != 0) { if (Error) *Error = ErrS.empty() ? ("dag get failed: " + Cid) : ErrS; return std::string(); }
-    return JsonS;
+    char *Bytes = nullptr, *Err = nullptr;
+    const int Rc = VgBlockGet(Cid.c_str(), &Bytes, &Err);
+    const std::string BytesS = TakeStr(Bytes);
+    const std::string ErrS   = TakeStr(Err);
+    if (Rc != 0) { if (Error) *Error = ErrS.empty() ? ("block get failed: " + Cid) : ErrS; return std::string(); }
+    return BytesS;
 }
 
-std::map<std::string, std::string> DagGetMany(const std::vector<std::string> &Cids)
+std::string MakeDir(const std::map<std::string, std::string> &Entries, std::string *Error)
 {
-    std::map<std::string, std::string> Out;
-    if (Cids.empty()) return Out;
-    nlohmann::json Arr = nlohmann::json::array();
-    for (const std::string &C : Cids) Arr.push_back(C);
-    char *OutJson = nullptr, *Err = nullptr;
-    const int Rc = VgDagGetMany(Arr.dump().c_str(), &OutJson, &Err);
-    const std::string JsonS = TakeStr(OutJson);
-    const std::string ErrS  = TakeStr(Err);
-    if (Rc != 0) { LogWarn("IpfsWrapper::DagGetMany", ErrS.empty() ? "batched dag-get failed" : ErrS); return Out; }
-    try
-    {
-        const nlohmann::json O = nlohmann::json::parse(JsonS);
-        if (O.is_object())
-            for (auto It = O.begin(); It != O.end(); ++It)
-                Out[It.key()] = It.value().dump();
-    }
-    catch (const std::exception &Ex)
-    {
-        LogWarn("IpfsWrapper::DagGetMany", std::string("bad batched dag-get JSON: ") + Ex.what());
-    }
-    return Out;
-}
-
-std::map<std::string, std::string> DagGetManyLocal(const std::vector<std::string> &Cids)
-{
-    std::map<std::string, std::string> Out;
-    if (Cids.empty()) return Out;
-    nlohmann::json Arr = nlohmann::json::array();
-    for (const std::string &C : Cids) Arr.push_back(C);
-    char *OutJson = nullptr, *Err = nullptr;
-    const int Rc = VgDagGetManyLocal(Arr.dump().c_str(), &OutJson, &Err);
-    const std::string JsonS = TakeStr(OutJson);
-    const std::string ErrS  = TakeStr(Err);
-    if (Rc != 0) { LogWarn("IpfsWrapper::DagGetManyLocal", ErrS.empty() ? "local batched dag-get failed" : ErrS); return Out; }
-    try
-    {
-        const nlohmann::json O = nlohmann::json::parse(JsonS);
-        if (O.is_object())
-            for (auto It = O.begin(); It != O.end(); ++It)
-                Out[It.key()] = It.value().dump();
-    }
-    catch (const std::exception &Ex)
-    {
-        LogWarn("IpfsWrapper::DagGetManyLocal", std::string("bad local batched dag-get JSON: ") + Ex.what());
-    }
-    return Out;
-}
-
-bool DagHas(const std::string &Cid)
-{
-    if (Cid.empty()) return false;
-    return VgDagHas(Cid.c_str()) == 1;
-}
-
-std::string DagCid(const std::string &Json, std::string *Error)
-{
-    if (Json.empty()) { if (Error) *Error = "empty node JSON"; return std::string(); }
+    nlohmann::json E = nlohmann::json::object();
+    for (const auto &[Name, Cid] : Entries) E[Name] = Cid;
     char *Cid = nullptr, *Err = nullptr;
-    const int Rc = VgDagCid(Json.c_str(), &Cid, &Err);
+    const int Rc = VgMakeDir(E.dump().c_str(), &Cid, &Err);
     const std::string CidS = TakeStr(Cid);
     const std::string ErrS = TakeStr(Err);
-    if (Rc != 0) { if (Error) *Error = ErrS.empty() ? "dag cid failed" : ErrS; return std::string(); }
+    if (Rc != 0) { if (Error) *Error = ErrS.empty() ? "make dir failed" : ErrS; return std::string(); }
     return CidS;
 }
 

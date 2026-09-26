@@ -15,6 +15,11 @@ bool SeedPersistFiles(struct ContainerParams &ContainerParams);
 //Copies each persisted file from RuntimePath/<Path> into UserDataPath/<Target> on Cleanup, capturing the session's
 //writes. Must run BEFORE the runtime is unmounted/wiped. No-op when no file persists are declared.
 bool CapturePersistFiles(struct ContainerParams &ContainerParams);
+
+//Whether the user has a saved copy of the runtime-relative file RuntimeRel: a kept single file whose durable copy
+//exists, or a file under a kept directory present in its durable home. A package default for a user-owned file
+//(an EDIT lowered with IF_UNSAVED) applies only while there is none.
+bool HasSavedCopy(const struct ContainerParams &ContainerParams, const std::string &RuntimeRel);
 }
 
 #endif // PERSISTLAYER_H

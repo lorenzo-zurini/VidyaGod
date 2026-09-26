@@ -1,4 +1,5 @@
-#include "pkggraph.h"   // AddOverRef
+#include "pkggraph.h"   // AddNodeRef
+#include "fold.h"   // Fold::TypeOf — a layer's one type key
 #include "cli/climodes.h"
 #include "main.h"
 #include "apppaths.h"
@@ -59,7 +60,7 @@ int CliModes::RunMaintenanceModes(LaunchParameters &LaunchParameters, nlohmann::
             for (const std::string &Sd : Seeds)
             {
                 Scope.insert(Sd);
-                for (const std::string &Dep : ManifestModel::ResolveNodeOrder(Index, Sd, {})) Scope.insert(Dep);
+                for (const std::string &Dep : ManifestModel::Closure(Index, Sd)) Scope.insert(Dep);
             }
             if (Scope.empty()) { LogErr("validate-nodes", "scope '" + S + "' matched no package/node."); return 1; }
         }
@@ -87,8 +88,8 @@ int CliModes::RunMaintenanceModes(LaunchParameters &LaunchParameters, nlohmann::
     }
 
     //HEADLESS: reduce a version chain to one base full zip + per-version .vgdelta layers (byte-verified).
-    //Each node after the first has its VFSZipLayer replaced by a VFSDeltaLayer diffed against the version
-    //before it (overlay-relative chaining) and is reparented onto it; the now-redundant full zips are deleted.
+    //Each node after the first has its ZIP layer replaced by a DELTA diffed against the version before it and
+    //contains that version (a NODE layer); the now-redundant full zips are listed for deletion.
     if (!LaunchParameters.ConvertDeltaChain.empty())
     {
         namespace fs = std::filesystem;
@@ -125,6 +126,10 @@ int CliModes::RunMaintenanceModes(LaunchParameters &LaunchParameters, nlohmann::
         // the .vgdelta and rewrite the node JSON. Deletion of the redundant full zips is deferred to pass 2.
         std::vector<std::string> toDelete;
         for (size_t i = 1; i < vs.size(); ++i)
+            if (vs[i].target != vs[i - 1].target)
+            { LogErr("convert-delta", "a delta rebuilds the content beneath it at ITS target, and " + vs[i - 1].node->NodeId
+                     + " mounts at '" + vs[i - 1].target + "', not '" + vs[i].target + "' — nothing changed"); return 1; }
+        for (size_t i = 1; i < vs.size(); ++i)
         {
             auto base = std::make_shared<MapSrc>();
             auto tgt  = std::make_shared<MapSrc>();
@@ -145,40 +150,21 @@ int CliModes::RunMaintenanceModes(LaunchParameters &LaunchParameters, nlohmann::
             { std::ofstream o(vs[i].node->BundleDir / blob, std::ios::binary); o.write((const char *)delta.data(), (std::streamsize)delta.size()); }
             after += delta.size();
 
-            // Batched: a content node is a VFSLayer holding a LAYERS list — convert its PRIMARY layer to a
-            // delta. A file holds one node or an array of them.
+            // The node file holds ONE node: contain the version before it, then swap its zip layer for the delta
+            // (rebuilt from the nearest content beneath at the same target — the previous version's zip).
             nlohmann::ordered_json J; { std::ifstream in(vs[i].node->File); in >> J; }
-            nlohmann::ordered_json *Nd = nullptr;
-            auto LabelOf = [](const nlohmann::ordered_json &E) {
-                return (E.contains("LABEL") && E["LABEL"].is_string()) ? E["LABEL"].get<std::string>() : std::string();
-            };
-            if (vs[i].node->NodeId.empty())   // a nameless node has no handle -> would clobber the first unlabeled object
-            { LogErr("convert-delta", "cannot convert a nameless node (no LABEL) in " + vs[i].node->File.string() + " - give it a LABEL first"); return 1; }
-            if (J.is_object() && LabelOf(J) == vs[i].node->NodeId) Nd = &J;
-            else if (J.is_array())
-                for (auto &E : J)
-                    if (E.is_object() && LabelOf(E) == vs[i].node->NodeId) { Nd = &E; break; }
-            if (!Nd) { LogErr("convert-delta", "could not find node " + vs[i].node->NodeId + " in " + vs[i].node->File.string()); return 1; }
-
-            //The delta composes over the view below it, so the previous version must be OVER'd (by handle).
-            PkgGraph::AddOverRef(*Nd, vs[i - 1].node->Key());
-            // Convert the SAME entry the chain selection matched — the VFSZipLayer at layerIdx. A batched node may
-            // carry its zip at a later LAYERS entry, and each LAYERS[k] lowers to Layers[k] one-to-one, so blindly
-            // rewriting LAYERS[0] would corrupt a different layer and orphan the real zip. Refuse if it is missing.
-            if (!Nd->contains("LAYERS") || !(*Nd)["LAYERS"].is_array() || (int)(*Nd)["LAYERS"].size() <= vs[i].layerIdx)
-            { LogErr("convert-delta", "node " + vs[i].node->NodeId + " has no LAYERS[" + std::to_string(vs[i].layerIdx)
-                     + "] to convert in " + vs[i].node->File.string()); return 1; }
-            nlohmann::ordered_json &L0 = (*Nd)["LAYERS"][vs[i].layerIdx];
-            L0["FORM"]   = "delta";
-            L0["PATH"]   = blob;
-            L0["TARGET"] = vs[i].target;
-            // Cross-target: when the byte-base zip mounts at a DIFFERENT target than this layer (e.g. a complete
-            // archive at the package root diffed over a base zip at a sub-target), name it so the FS can pair
-            // them. Arrayable, because a delta may dedup against a CONCATENATION of bases.
-            if (vs[i - 1].target != vs[i].target)
-                L0["BASE_TARGETS"] = nlohmann::ordered_json::array({vs[i - 1].target});
-            else
-                L0.erase("BASE_TARGETS");
+            if (!ManifestModel::IsNodeObject(J)) { LogErr("convert-delta", "not a node: " + vs[i].node->File.string()); return 1; }
+            int Raw = -1;
+            for (int k = 0; k < (int)J["LAYERS"].size(); ++k)
+                if (Fold::TypeOf(J["LAYERS"][(size_t)k]) == "ZIP") { Raw = k; break; }
+            if (Raw < 0) { LogErr("convert-delta", "node " + vs[i].node->NodeId + " has no ZIP layer in " + vs[i].node->File.string()); return 1; }
+            PkgGraph::AddNodeRef(J, vs[i - 1].node->Key());
+            for (int k = 0; k < (int)J["LAYERS"].size(); ++k)       // the insert may have shifted it
+                if (Fold::TypeOf(J["LAYERS"][(size_t)k]) == "ZIP") { Raw = k; break; }
+            nlohmann::ordered_json &L0 = J["LAYERS"][(size_t)Raw];
+            nlohmann::ordered_json D = { {"DELTA", blob} };
+            for (const char *K : { "TARGET", "SUBMOUNTS", "WHEN", "COMMENT" }) if (L0.contains(K)) D[K] = L0[K];
+            L0 = std::move(D);
             { std::ofstream o(vs[i].node->File); o << J.dump(4) << "\n"; }
 
             toDelete.push_back(vs[i].zipPath);

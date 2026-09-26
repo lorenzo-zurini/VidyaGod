@@ -42,9 +42,9 @@ NetworkTab::NetworkTab(AppModel & model, QWidget * parent) : QWidget(parent), Mo
     connect(&Model, &AppModel::networkingChanged,    this, [this]{ scheduleRefresh(); });
     connect(&Model, &AppModel::nodeReady,            this, [this]{ scheduleRefresh(); });   // node came up async — friend code + Publish are live now
 
-    connect(&Model, &AppModel::libraryPublished, this, [this](const QString & addr, const QString & top, const QString &){
+    connect(&Model, &AppModel::libraryPublished, this, [this](const QString & addr, const QString & top, const QString & note){
         if (PublishButton) PublishButton->setEnabled(true);
-        if (PublishStatus) PublishStatus->setText("Published " + addr + " — " + top);
+        if (PublishStatus) PublishStatus->setText("Published " + addr + " — " + top + (note.isEmpty() ? QString() : "\nNot published whole: " + note));
         scheduleRefresh();   // a publish can add libraries (e.g. VidyaGodRunners) → rebuild the matrix so the new Share column shows
     });
     connect(&Model, &AppModel::libraryPublishFailed, this, [this](const QString & m){

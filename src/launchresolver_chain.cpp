@@ -43,6 +43,13 @@ using namespace PackageCatalog;
 //  3. the winning DEFAULT (or, for a secret+POOL var with nothing persisted yet, one pool entry drawn ONCE as a
 //     seed and reported in ContainerParams.PickedSecrets for the caller to persist)
 
+//A runner RECOMMENDED under the launched tile (or its family) is preferred for it.
+static bool RecommendedFor(const Node &R, const Node &Launch)
+{
+    for (const auto &U : R.Recommended) if (U == Launch.Uid || U == Launch.PackageUid) return true;
+    return false;
+}
+
 // P6 split: the runner daisy-chain machinery (availability, BFS bridge, links, nesting) — spine in launchresolver.cpp.
 const Node *LaunchResolver::PickRunnerNode(const NodeIndex &Idx, const Node &Launch, const struct ContainerParams &CP,
                                              const nlohmann::ordered_json &GlobalConfigJSON)
@@ -55,9 +62,7 @@ const Node *LaunchResolver::PickRunnerNode(const NodeIndex &Idx, const Node &Lau
     }
     //The platform to bridge and the declared runner are the SELECTED entry's (CP.Entrypoint of CP.EntryNode, else
     //of the launch node), never the node's default view: the chain serves the entry that runs.
-    const Node *EN = CP.EntryNode.empty() ? nullptr : Idx.Find(CP.EntryNode);
-    const std::string Host   = (EN ? *EN : Launch).HostFor(CP.Entrypoint);
-    const std::string Runner = (EN ? *EN : Launch).RunnerFor(CP.Entrypoint);
+    const std::string Host = !CP.Platform.empty() ? CP.Platform : Launch.HostFor(CP.Entrypoint);
     auto Qualifies = [&](const Node &N) -> bool
     {
         if (!N.IsRunner()) return false;
@@ -69,19 +74,13 @@ const Node *LaunchResolver::PickRunnerNode(const NodeIndex &Idx, const Node &Lau
     };
     if (!CP.RunnerID.empty()) { const Node *N = Idx.Find(CP.RunnerID); if (N && Qualifies(*N)) return N; }
     if (!Preferred.empty())   { const Node *N = Idx.Find(Preferred);   if (N && Qualifies(*N)) return N; }
-    // The launchable's DECLARED runner (DeclareExec.RUNNER → Launch.RecommendedRunner): honoured after an explicit
-    // pin / persisted preference, before the generic default. Restores what the removed appmodel PREFERRED_RUNNER
-    // seed did — a package that names a specific runner gets it — but at the resolver, so a FRESH (un-persisted)
-    // game honours it too. (Distinct from the runner NODE's own Recommended flag used in the default rank below.)
-    if (!Runner.empty())
-    { const Node *N = Idx.Find(Runner); if (N && Qualifies(*N)) return N; }
-
-    //Default pick — rank by (RECOMMENDED, package-local, node-id).
+    //Default pick — rank by (RECOMMENDED for this tile, package-local, node-id). A package never names a runner; a
+    //runner may say which tiles it is recommended for.
     auto Local  = [&](const Node &N) { return !Launch.BundleDir.empty() && N.BundleDir == Launch.BundleDir; };
     auto Better = [&](const Node &A, const Node *B) -> bool
     {
         if (!B) return true;
-        if (A.Recommended != B->Recommended) return A.Recommended;   // RECOMMENDED runner wins
+        if (RecommendedFor(A, Launch) != RecommendedFor(*B, Launch)) return RecommendedFor(A, Launch);
         if (Local(A) != Local(*B))           return Local(A);        // runner in the launch's own package wins
         return A.NodeId < B->NodeId;                                 // deterministic last resort
     };
@@ -104,7 +103,7 @@ namespace {
 //bundle) > lowest node-id. Runners are pre-sorted better-first so the first edge that discovers a platform is best.
 bool RunnerBetterPtr(const Node *A, const Node *B, const Node &Launch)
 {
-    if (A->Recommended != B->Recommended) return A->Recommended;
+    if (RecommendedFor(*A, Launch) != RecommendedFor(*B, Launch)) return RecommendedFor(*A, Launch);
     const bool LA = !Launch.BundleDir.empty() && A->BundleDir == Launch.BundleDir;
     const bool LB = !Launch.BundleDir.empty() && B->BundleDir == Launch.BundleDir;
     if (LA != LB) return LA;
@@ -120,13 +119,11 @@ bool RunnerServes(const Node *R, const std::string &Platform)
 //proton). Local-PATH or CID layers both count.
 bool RunnerShipsBuild(const NodeIndex &Idx, const Node &R)
 {
-    bool Ships = false;
-    ManifestModel::ForEachClosureNode(Idx, R.Key(), {}, [&](const Node &N) {
-        if (Ships || !N.Layers.is_array()) return;
-        for (const auto &L : N.Layers)
-            if (ManifestModel::IsRunnerBuildLayer(L)) { Ships = true; return; }
-    });
-    return Ships;
+    for (const std::string &Id : ManifestModel::Closure(Idx, R.Key()))
+        if (const Node *N = Idx.Find(Id))
+            for (const auto &L : N->Layers)
+                if (ManifestModel::IsRunnerBuildLayer(L)) return true;
+    return false;
 }
 
 //A runner can be used on this machine when its executable resolves on the system PATH OR it ships its own build (the
@@ -183,7 +180,7 @@ const Node *PickNativeTerminal(const std::vector<const Node *> &Runners, const s
 
 //Build a resolved RunnerLink for a runner node id (synthesizing a passthrough terminal for kNativeTerminalId or a
 //missing node). Build layers = the runner's content closure (PARENTS) minus the runner, in load order, absolutized.
-RunnerLink BuildLink(const NodeIndex &Idx, const std::string &Id, const std::map<std::string, bool> &Toggles)
+RunnerLink BuildLink(const NodeIndex &Idx, const std::string &Id)
 {
     RunnerLink L;
     const std::string Machine = MachinePlatform();
@@ -196,27 +193,26 @@ RunnerLink BuildLink(const NodeIndex &Idx, const std::string &Id, const std::map
     L.NodeId = R->Key(); L.Name = R->NodeId; L.PackagePath = R->BundleDir;   // the link is keyed by the INDEX key: a label may repeat (a received stub beside a local runner)
     L.Executable = E.value("EXECUTABLE", std::string());
     if (E.contains("ARGS") && E["ARGS"].is_array())             for (const auto &X : E["ARGS"])       L.Args.push_back(std::string(X));
-    //The link's environment is its BUILD's folded ENV: the runner node and everything beneath it (a shared
-    //library chain sets what its runner needs), lowest first — the same fold as the game's mount.
-    ManifestModel::FoldEnv(Idx, ManifestModel::ResolveNodeOrder(Idx, R->Key(), Toggles), L.Env, L.RemoveEnv);
+    //The link's environment and build are its OWN resolve (the runner node and everything it contains), the same
+    //fold as a game's.
+    Fold::Plan P;
+    const nlohmann::ordered_json Ops = LaunchResolver::RunnerOps(Idx, R->Key(), &P);
+    L.Env = nlohmann::ordered_json::object();
+    for (const auto &[K, V] : P.Env.items())
+    {
+        if (V.is_null()) L.RemoveEnv.push_back(K);
+        else L.Env[K] = V;
+    }
     L.ContentRoot      = E.value("CONTENT_ROOT", std::string());
     L.PrefixGenerate   = E.value("PREFIX_GENERATE", false);
     L.UnifiedRuntime   = E.value("UNIFIED_RUNTIME", false);
     L.GuestPathTemplate= E.value("GUEST_PATH", std::string());
     L.HostPlatform     = R->HostPlatform;
     L.GuestPlatform    = R->GuestPlatform;
-    ManifestModel::ForEachClosureNode(Idx, R->Key(), Toggles, [&](const Node &N) {
-        if (!N.Layers.is_array()) return;
-        for (nlohmann::ordered_json Lay : N.Layers)
-        {
-            //A runtime-sourced layer (a %variable% PATH — the prefix-assembly mounts) is NOT part of the
-            //runner's importable build: there is nothing on disk to hydrate or verify, and EnsureSources
-            //would block the launch on a path that only exists once the mount is live.
-            if (!ManifestModel::IsRunnerBuildLayer(Lay)) continue;
-            LaunchResolver::AbsolutizeLayerPaths(Lay, N.BundleDir);
-            L.Layers.push_back(std::move(Lay));
-        }
-    });
+    //A runtime-sourced layer (a %variable% PATH — the prefix-assembly mounts) is NOT part of the runner's importable
+    //build: nothing on disk to hydrate or verify. LowerPlan already made the real ones absolute.
+    for (const auto &Lay : Ops)
+        if (ManifestModel::IsRunnerBuildLayer(Lay)) L.Layers.push_back(Lay);
     L.ShipsBuild = !L.Layers.empty();
     return L;
 }
@@ -251,18 +247,7 @@ std::vector<std::string> LaunchResolver::ResolveChainIds(const NodeIndex &Idx, c
         if (US.contains("RUNNER_CHAIN") && US["RUNNER_CHAIN"].is_array())
             for (const auto &X : US["RUNNER_CHAIN"]) if (X.is_string()) Pinned.push_back(std::string(X));
     }
-    //Nothing pinned → fall back to the launchable's DECLARED runner (DeclareExec.RUNNER) as a SOFT pin, so a package
-    //that names a specific runner gets it on a fresh launch (the removed appmodel seed's job, now at the resolver).
-    //The pin-validation below vets it and appends a terminal; if it doesn't reach the machine it falls to the BFS.
-    //Platform and declared runner are the SELECTED entry's (of CP.EntryNode when set), not the node's default view.
-    const Node *EN = CP.EntryNode.empty() ? nullptr : Idx.Find(CP.EntryNode);
-    const std::string Host   = (EN ? *EN : Launch).HostFor(CP.Entrypoint);
-    const std::string Runner = (EN ? *EN : Launch).RunnerFor(CP.Entrypoint);
-    if (Pinned.empty() && !Runner.empty())
-    {
-        const Node *R = Idx.Find(Runner);
-        if (R && R->IsRunner()) Pinned.push_back(Runner);
-    }
+    const std::string Host = !CP.Platform.empty() ? CP.Platform : Launch.HostFor(CP.Entrypoint);
     //A MULTI-VERSION package selects its runner through the PLATFORM GRAPH (below), not a per-node pin: e.g. each
     //Minecraft version declares PLATFORM "java_<N>" and the matching java_<N> runner declares GUEST ["java_<N>"], so
     //FindBridge routes it to exactly that runner — the native cross-platform mechanism, no runner recommendation needed.
@@ -317,7 +302,7 @@ std::vector<RunnerLink> LaunchResolver::ResolveRunnerChain(const NodeIndex &Idx,
 {
     std::vector<RunnerLink> Out;
     for (const std::string &Id : ResolveChainIds(Idx, Launch, CP, GlobalConfigJSON))
-        Out.push_back(BuildLink(Idx, Id, CP.ModuleStates));
+        Out.push_back(BuildLink(Idx, Id));
     return Out;
 }
 

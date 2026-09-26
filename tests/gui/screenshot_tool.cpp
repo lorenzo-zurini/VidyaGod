@@ -26,11 +26,9 @@ using json = nlohmann::ordered_json;
 // references, and the one whose id the fixture was built around.
 static void writeNodes(const QString & dir, const json & nodes)
 {
-    json doc = nodes;
-    const std::string id = (doc.is_array() && !doc.empty())
-                               ? doc.back().value("LABEL", std::string("node")) : std::string("node");
-    QFile f(dir + "/" + QString::fromStdString(id) + ".json");
-    JSONOps::SaveJSON(&doc, &f);
+    const std::string id = (nodes.is_array() && !nodes.empty())
+                               ? nodes.back().value("LABEL", std::string("node")) : std::string("node");
+    NodeFixture::WriteNodes((dir + "/" + QString::fromStdString(id) + ".json").toStdString(), nodes);
 }
 
 static void shot(QWidget * w, int width, int height, const QString & path)

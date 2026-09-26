@@ -7,10 +7,11 @@
 #include <vector>
 
 // ---------------------------------------------------------------------------
-// PkgGraph — the package as a graph, plus the per-SECTION payload schema the editor renders. A node has no TYPE:
-// it is facets + any subset of SECTIONS (the payload arrays LAYERS/PATCHES/FILEEDITS/REGEDITS/DLLOVERRIDES/VARS/
-// PERSISTS and the facets ENTRYPOINTS/TILE) + the one edge OVER. The editor renders each section the node
-// carries; "Type" below is the node's derived KIND (its first section) — a display word, never stored.
+// PkgGraph — the package as a graph, plus the per-LAYER-TYPE payload schema the editor renders (generation 6). A
+// node is {LABEL, VARIANT?, RECOMMENDED?, LAYERS}: an ordered list of typed layers (ZIP DIR FILE DELTA NODE EDIT REG
+// VARS ENV DLL EXEC KEEP ANY NOT), each with an optional WHEN. The node's parents are its NODE layers — they are
+// the wires — and ANY/NOT layers are wires too (a requirement, an exclusion). "Type" below is the node's derived
+// KIND (its first layer that is not a reference) — a display word, never stored.
 //
 // Pure data + description, NO UI and NO filesystem: the canvas renders a Graph and edits the SAME
 // `{"NODES":[…]}` document the model persists one-file-per-node, so the graph IS the package — there is no
@@ -37,8 +38,10 @@ struct Node
 {
     int         Index = 0;      // position in doc()["NODES"] — the identity the canvas binds to
     std::string Id;             // the wiring handle (stored CID)
-    std::string Type;           // the node's KIND: its first section key (LAYERS/…/ENTRYPOINTS/TILE), "" when plain
-    std::string Form;           // LAYERS[0].FORM ("" without content) — what a delta can be based on
+    std::string Type;           // the node's KIND: its first layer type that is not a reference, "" when plain
+    std::string Form;           // its first content layer's type, lower case ("zip"/"dir"/"file"/"delta"; "" without
+                                // content) — what a delta can be based on
+    bool        HasDeltaBase = false;   // a zip whose DeltaBase exists: "-> delta" is offered
     float       X = 0, Y = 0;   // canvas position: node POS, then this machine's override, then computed
     bool        HasPos = false; // false → nothing declared one, so PkgLayout placed it
     //Estimated DRAWN height, in the same units as X/Y. A node's box is as tall as its payload makes it — a
@@ -48,20 +51,22 @@ struct Node
     float       Height = 0.0f;
 };
 
-// One OVER ref drawn as a wire. `ParentIndex` >= 0 is an in-bundle node; -1 means the ref names a node in another
-// bundle and is drawn as a reference chip (MediaStack_MS, dgvoodoo, asiloader…) rather than a full box.
+// One reference layer drawn as a wire: a NODE layer (the child contains the parent), one member of an ANY layer (the
+// child requires one of them), or a NOT layer (the child excludes it). `ParentIndex` >= 0 is an in-bundle node; -1
+// means the ref names a node in another bundle and is drawn as a reference chip rather than a full box.
 struct Link
 {
     int         ChildIndex  = 0;
     int         ParentIndex = -1;
     std::string ExternalId;     // set when ParentIndex < 0
-    //The ordinal of this ref among the child's OVER refs FLATTENED in list order (a group's members count one
-    //each, a NOT counts one). Carried rather than recovered: the renderer needs it every frame to key the wire.
-    //EraseOverRef(child, Slot) walks the same flattening, so a detach addresses exactly this ref.
+    //The ordinal of this ref among the child's references FLATTENED in LAYERS order (an ANY's members count one
+    //each). Carried rather than recovered: the renderer needs it every frame to key the wire. EraseRef(child,
+    //Slot) walks the same flattening, so a detach addresses exactly this ref.
     int         Slot        = 0;
-    int         OverIndex   = 0;    // the OVER entry this ref lives in
-    int         Member      = -1;   // -1: a plain entry; >= 0: this member of an any-of group
-    bool        Not         = false;// a {"NOT": ref} exclusion
+    int         Layer       = 0;    // the LAYERS entry this ref lives in
+    int         Member      = -1;   // -1: a NODE or NOT layer; >= 0: this member of an ANY layer
+    bool        Any         = false;// an ANY member (a requirement, not containment)
+    bool        Not         = false;// a NOT layer (an exclusion)
 };
 
 //A declared position that was refused because no layout could have produced it. Carried rather than logged:
@@ -104,29 +109,48 @@ inline int OutPin(int Index) { return Index * 4 + 1; }
 inline int PinNode(int Pin)  { return Pin / 4;       }
 inline bool PinIsIn(int Pin) { return (Pin % 4) == 0; }
 
-// ---- section vocabulary ---------------------------------------------------
+// ---- layer vocabulary -----------------------------------------------------
 
-//Every SECTION a node may carry, in palette order (the seven payload arrays, then ENTRYPOINTS, then TILE).
+//Every LAYER TYPE, in palette order (content, references, transforms, facts, entries).
 const std::vector<std::string> &AllTypes();
-//The sections THIS node carries, in palette order — what the canvas draws, what the height counts.
-std::vector<std::string> SectionsOf(const nlohmann::ordered_json &Node);
-//The node's KIND: its first section ("" for a plain node) — the display word and the accent colour key.
+//A layer's one type key ("" when it has none or several — a malformed layer).
+std::string LayerType(const nlohmann::ordered_json &Layer);
+//The layer types THIS node carries, in LAYERS order.
+std::vector<std::string> LayerTypes(const nlohmann::ordered_json &Node);
+//The node's KIND: its first layer that is not a reference (NODE/ANY/NOT), else "NODE" for a node made only of
+//references, else "" — the display word and the accent colour key.
 std::string KindOf(const nlohmann::ordered_json &Node);
-//One line for the palette and the node tooltip — discoverability in the format, not in a manual.
-const char *TypeHelp(const std::string &Section);
-//Node accent colour (r,g,b) by kind — content, transforms, identity and composition read differently at a glance.
+//One line for the palette and the layer tooltip — discoverability in the format, not in a manual.
+const char *TypeHelp(const std::string &Type);
+//Accent colour (r,g,b) by kind — content, transforms, facts, entries and composition read differently at a glance.
 void TypeColour(const std::string &Kind, int &R, int &G, int &B);
-//A fresh node carrying ONE section (valid by construction: required keys present). "" ⇒ a plain node.
-nlohmann::ordered_json NewPayload(const std::string &Section);
-//Add a section's starter value to an existing node (no-op when present). Returns whether it changed.
-bool AddSection(nlohmann::ordered_json &Node, const std::string &Section);
-//Erase the OVER ref at flattened ordinal `Slot` (the Link::Slot of its wire): a plain entry is removed, a group
-//member is removed (a group left with one member collapses to a plain entry), a NOT is removed. False if none.
-bool EraseOverRef(nlohmann::ordered_json &Node, int Slot);
-//Append a plain OVER ref (no-op if already referenced anywhere in OVER). Returns whether it changed.
-bool AddOverRef(nlohmann::ordered_json &Node, const std::string &Ref);
-//Remove every OVER ref naming `Ref` (plain, member or NOT). Returns whether anything changed.
-bool RemoveOverRefs(nlohmann::ordered_json &Node, const std::string &Ref);
+//A node's CONTENT layer — its first ZIP, FILE, DELTA or DIR layer, the one the per-node content actions work on —
+//as an index into LAYERS (-1 without one), its type, its file name (the payload) and its TARGET.
+int ContentIndex(const nlohmann::ordered_json &Node);
+std::string ContentType(const nlohmann::ordered_json &Node);
+std::string ContentName(const nlohmann::ordered_json &Node);
+std::string ContentTarget(const nlohmann::ordered_json &Node);
+//The file a node's content can be diffed against, "" when there is none. In the fold a delta's base is the nearest
+//content at its own target, so it is a node this one contains EARLIER in its LAYERS — whole (no TAKE, no TARGET:
+//either moves or narrows what lands) — whose content layer is a ZIP at the SAME target. Nearest first. The "-> delta"
+//button (ActionsFor) and the action itself both ask this, so the button never offers what the action refuses.
+std::string DeltaBase(const nlohmann::ordered_json &NodesArray, int Index);
+//A starter layer of a type (valid by construction: required keys present).
+nlohmann::ordered_json NewLayer(const std::string &Type);
+//A fresh node carrying ONE starter layer ("" ⇒ a node with no layers yet).
+nlohmann::ordered_json NewPayload(const std::string &Type);
+//Append a starter layer of a type to a node. Returns whether it changed.
+bool AddLayer(nlohmann::ordered_json &Node, const std::string &Type);
+//Move layer I by Delta (-1 up, +1 down) — the order IS the fold order. Returns whether it moved.
+bool MoveLayer(nlohmann::ordered_json &Node, int I, int Delta);
+//Erase the reference at flattened ordinal `Slot` (the Link::Slot of its wire): a NODE or NOT layer is removed, an
+//ANY member is removed (an ANY left with none is removed). False if none.
+bool EraseRef(nlohmann::ordered_json &Node, int Slot);
+//Contain `Ref`: a NODE layer, after the node's leading NODE layers (what it contains lies beneath its own layers).
+//No-op if a NODE layer already names it. Returns whether it changed.
+bool AddNodeRef(nlohmann::ordered_json &Node, const std::string &Ref);
+//Remove every reference naming `Ref` (NODE layers, ANY members, NOT layers). Returns whether anything changed.
+bool RemoveRefs(nlohmann::ordered_json &Node, const std::string &Ref);
 
 // ---- payload schema -------------------------------------------------------
 
@@ -142,11 +166,15 @@ enum class FieldKind
     // worse, an existing ["", "dxvk"] lost its first element the moment anyone touched the box — turning a
     // two-base delta into a one-base one, which is a base of the wrong SIZE and a layer the mount silently skips.
     StringListKeepEmpty,
-    KeyValue,    // an object of string→string
+    KeyValue,    // an object of string→string (a null value is shown as a removal)
     ObjArray,    // an array of objects, each described by `Sub`
-    RegEdits,    // REGEDITS[]: ARCHITECTURE + a hive tree, edited as flattened key paths
-    Cover,       // a COVER {PATH, SOURCE}
-    Object,      // ONE nested object described by `Sub` (the TILE facet)
+    RegTree,     // a REG layer's hive tree, edited as flattened key paths
+    Arch,        // a REG layer's ARCH: the 32/64-bit views, as checkboxes
+    TakeList,    // a NODE layer's TAKE: selections, one per line ("FILES/a/b", "FILES/dir/" for contents, "X => Y" renames)
+    VarMap,      // a VARS layer: {KEY: declaration described by `Sub`, plus its launcher UI facet}
+    KeepMap,     // a KEEP layer: {ADDRESS: true | false | {NAME, CLOUD}}
+    Cover,       // a COVER {FILE, SOURCE, SIZE}
+    Object,      // ONE optional nested object described by `Sub` (an entry's TILE)
 };
 
 struct Field
@@ -160,8 +188,8 @@ struct Field
     bool VarUI = false;                                           // ObjArray of CustomVars: draw the UI facet per entry
 };
 
-//The rows to render for ONE section, in order (one Field per section today, keyed by the section itself).
-const std::vector<Field> &FieldsFor(const std::string &Section);
+//The rows to render for ONE layer of a type, in order, drawn against the layer object (WHEN and COMMENT included).
+const std::vector<Field> &FieldsFor(const std::string &Type);
 
 //Toggle a CustomVar's launch-dialog visibility, which the format expresses as the PRESENCE of the UI facet
 //(08-variables.md): visible adds a minimal UI object (keeping any existing one), hidden removes it so the var
@@ -210,7 +238,8 @@ struct RegRow
     bool KeyOnly = false;
 };
 
-//Flatten one EDITS entry's hive trees into rows (the tree is the on-disk shape; rows are what a human edits).
+//Flatten a hive tree object ({HKLM: {...}, HKCU: {...}}) into rows (the tree is the on-disk shape; rows are what a
+//human edits).
 std::vector<RegRow> RegRowsOf(const nlohmann::ordered_json &Entry);
 //How many rows RegRowsOf WOULD produce, without producing them. The height estimate needs the count on every
 //graph rebuild and building the rows for it was 40% of that rebuild; the two are pinned against each other by
@@ -250,8 +279,14 @@ std::string DescribeValue(const nlohmann::ordered_json &V, size_t MaxChars = 24)
 bool WritableObject(nlohmann::ordered_json &Node, const char *Key);
 bool WriteSubKey(nlohmann::ordered_json &Node, const char *Key, const std::string &Sub,
                  const nlohmann::ordered_json &Value);
-//Rebuild an entry's hive trees from rows, preserving ARCHITECTURE/OVERRIDE.
+//Rebuild a hive tree object from rows, preserving any non-hive member.
 void RegRowsInto(nlohmann::ordered_json &Entry, const std::vector<RegRow> &Rows);
+
+//A NODE layer's TAKE as text, one selection per line ("X => Y" for a rename pair), and back. TextToTake drops blank
+//lines. A TAKE entry that is neither a string nor a [from, to] pair makes TakeFault report it (not editable here).
+std::string TakeToText(const nlohmann::ordered_json &Take);
+nlohmann::ordered_json TextToTake(const std::string &Text);
+bool TakeFault(const nlohmann::ordered_json *Take);
 
 } // namespace PkgGraph
 

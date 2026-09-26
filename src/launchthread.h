@@ -5,6 +5,7 @@
 #include <QMutex>
 
 #include <map>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -26,13 +27,11 @@ public:
     nlohmann::ordered_json GlobalConfigJSON;
     std::string            LaunchNodeId;      // Native node-graph launch: the launchable node to run
     std::string            Entrypoint;        // which entry (LABEL; "" = default)
-    std::string            EntryNode;         // whose entries: "" = the launch node's effective ones, else a ticked graft's
-    std::map<std::string, int> GraftPrecedence;  // per-graft rank (node key → rank) from the instance config
     std::string            InstanceName;      // Which INSTANCE to launch (config + USERDATA); "" ⇒ the active one
     std::string                        RunnerID;          // RUNNER_ID chosen in the picker (legacy single-runner; = chain front)
     std::vector<std::string>           RunnerChain;       // Runner daisy-chain (innermost→outermost node ids); empty = auto-resolve
     std::map<std::string, std::string> VariableOverrides; // CustomVar values from picker / variant FORCEVARS seeds
-    std::map<std::string, bool>        ModuleStates;      // Optional-module toggles from the prelaunch tree (component → enabled)
+    std::optional<std::vector<std::string>> Grafts;   // the instance's graft list, in order (unset = the row's pre-ticked)
     std::string                        ScreenWidth;       // Captured on the MAIN thread before start() — never query Qt GUI from run()
     std::string                        ScreenHeight;      // (QGuiApplication screen access off the main thread is undefined behaviour)
     bool                               DryRun = false;    // If true, WRITELAYER is deleted after cleanup

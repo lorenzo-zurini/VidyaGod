@@ -1,9 +1,11 @@
 #include "packagecatalog.h"
+#include "fold.h"   // Fold — a row's grafts are what its resolution offers
 #include "packagecatalog_p.h"
 #include "apppaths.h"
 #include "instancestore.h"
 #include "manifestmodel.h"
 #include "nodegraph.h"        // gigagraph catalog: GatherWorkingTree / FreezeToIndex
+#include "cid.h"              // a package manifest's canonical bytes
 #include "commonutils.h"
 #include "jsonoperations.h"
 #include "ipfswrapper.h"
@@ -286,7 +288,7 @@ BundleIdentity ScanBundleIdentity(const std::string &BundleDir)   // decl + Bund
     BundleIdentity Id;
     NodeIndex Idx;
     ManifestModel::ScanBundleNodes(BundleDir, Idx);
-    ManifestModel::DeriveIdentity(Idx);   // a graft inherits its game's UID/TITLE through OVER
+    ManifestModel::DeriveFacts(Idx);   // entries, runners and tiles are folded facts
     const Node *Rep = nullptr;                                                    // prefer a presentable launchable
     for (const auto &[NodeId, N] : Idx.Nodes)
     {
@@ -966,7 +968,13 @@ std::string LibraryOf(const std::filesystem::path &BundleDir, const std::filesys
     return First.string();
 }
 
-std::vector<std::string> PublishLibrary(nlohmann::ordered_json &Config, std::string *Error)
+// The file inside a package folder naming its node files (never a node: the scan skips it).
+static constexpr const char *kPackageManifestFile = ".package.json";
+// Where a received package folder lands inside its package dir (NodeGraph::kPackageFolderDir — its nodes' bundle is
+// the package dir).
+static constexpr const char *kPackageFolderDir = NodeGraph::kPackageFolderDir;
+
+std::vector<std::string> PublishLibrary(nlohmann::ordered_json &Config, std::string *Error, std::string *Gaps)
 {
     const std::filesystem::path Root = LibraryRootDir(Config);
     std::map<std::string, nlohmann::ordered_json> Tree;
@@ -974,7 +982,7 @@ std::vector<std::string> PublishLibrary(nlohmann::ordered_json &Config, std::str
     NodeGraph::GatherWorkingTree(Root, Tree, Dirs, /*SkipReserved=*/true);   // never mint a received friend stub
     if (Tree.empty()) { if (Error) *Error = "no packages to publish under " + Root.string(); return {}; }
     NodeGraph::MintResult MR;
-    if (!NodeGraph::Mint(Tree, MR, Error)) return {};   // DagPut every node block → pinned + announced + seedable
+    if (!NodeGraph::Mint(Tree, MR, Error)) return {};   // BlockPut every node → pinned + announced + seedable
 
     // Re-stabilise the on-disk tree at the freshly-minted identities: stamp each node's new CID + remap its refs.
     // Non-fatal — the blocks are already stored; a failed write-back only leaves the on-disk handles stale (freeze
@@ -984,17 +992,23 @@ std::vector<std::string> PublishLibrary(nlohmann::ordered_json &Config, std::str
                 + " — handles left stale; re-run Verify & Publish");
 
     // SHARING IS PER PACKAGE. Every node of every bundle dir is shared with whoever gets its library — there is no
-    // per-node flag (a forgotten one was an unshared game with nothing anywhere saying so). For each package one
-    // MANIFEST block links every node block of the package — and that is the only manifest there is. The
-    // package manifest is the unit a receiver lands, the unit a pinning service pins (its closure = the package once,
-    // and only a changed package re-pins), and `Libraries` = {lib: [{cid: <package manifest>, pkg: <dir>}]} is what the
-    // share sheet pushes to a friend. Off-IPFS VidyaGod app data (friend channel).
+    // per-node flag (a forgotten one was an unshared game with nothing anywhere saying so). Each package is ONE UnixFS
+    // folder: its node files (<cid>.json, the canonical bytes) and .package.json naming them. The folder is the unit a
+    // receiver lands (verbatim, like any folder), the unit a pinning service pins (the package's own bytes; only a
+    // changed package re-pins), and `Libraries` = {lib: [{cid: <package folder>, pkg: <dir>}]} is what the share sheet
+    // pushes to a friend. Off-IPFS VidyaGod app data (friend channel).
     std::map<std::string, std::map<std::string, std::vector<std::string>>> ByLibPkg;   // lib → package dir → node cids
+    std::map<std::string, std::map<std::string, std::vector<std::string>>> HandlesOf;  // lib → package dir → node handles
+    std::vector<std::string> Unfrozen;                  // "<package>/<label>" of nodes Mint skipped
+    std::map<std::string, size_t> Unheld;               // package → content CIDs it names that are not held here
     for (const auto &[Handle, Doc] : Tree)
     {
-        (void)Doc;
         const auto CidIt = MR.HandleToCid.find(Handle);
-        if (CidIt == MR.HandleToCid.end()) continue;   // node was skipped (dangling/bad) — not shareable
+        if (CidIt == MR.HandleToCid.end())             // node was skipped (dangling/bad) — not shareable
+        {
+            Unfrozen.push_back(Dirs[Handle].filename().string() + "/" + Doc.value("LABEL", std::string("?")));
+            continue;
+        }
         std::error_code Ec;
         const std::filesystem::path Rel = std::filesystem::relative(Dirs[Handle], Root, Ec);
         std::vector<std::string> Seg;
@@ -1003,6 +1017,7 @@ std::vector<std::string> PublishLibrary(nlohmann::ordered_json &Config, std::str
         const std::string LibName = Seg.size() >= 2 ? Seg[0] : std::string("Library");   // the collection dir
         const std::string Pkg     = Seg.size() >= 2 ? Seg[1] : Seg[0];                    // the bundle dir under it
         ByLibPkg[LibName][Pkg].push_back(CidIt->second);
+        HandlesOf[LibName][Pkg].push_back(Handle);
     }
     nlohmann::ordered_json Libs = nlohmann::ordered_json::object();
     nlohmann::ordered_json Flat = nlohmann::ordered_json::array();
@@ -1013,12 +1028,39 @@ std::vector<std::string> PublishLibrary(nlohmann::ordered_json &Config, std::str
         {
             std::sort(Cids.begin(), Cids.end());
             Cids.erase(std::unique(Cids.begin(), Cids.end()), Cids.end());
-            nlohmann::ordered_json Nodes = nlohmann::ordered_json::array();
-            for (const auto &C : Cids) Nodes.push_back(nlohmann::ordered_json{{"/", C}});
-            nlohmann::ordered_json Manifest{{"VIDYAGOD_PACKAGE_MANIFEST", 1}, {"PKG", Pkg}, {"NODES", std::move(Nodes)}};
+            std::map<std::string, std::string> Entries;
+            for (const auto &C : Cids) Entries[C + ".json"] = C;
+            const nlohmann::ordered_json Manifest{{"NODES", Cids}, {"PKG", Pkg}};
             std::string MErr;
-            const std::string PCid = IpfsWrapper::DagPut(Manifest.dump(), &MErr);
-            if (PCid.empty()) { if (Error) *Error = "package manifest for '" + Pkg + "' not stored: " + MErr; return {}; }
+            const std::string MCid = IpfsWrapper::BlockPut(Cid::Canonical(Manifest), &MErr);
+            if (MCid.empty()) { if (Error) *Error = "package manifest for '" + Pkg + "' not stored: " + MErr; return {}; }
+            Entries[kPackageManifestFile] = MCid;
+            const std::string PCid = IpfsWrapper::MakeDir(Entries, &MErr);
+            if (PCid.empty()) { if (Error) *Error = "package folder for '" + Pkg + "' not made: " + MErr; return {}; }
+            // The PIN folder: the package folder + the package's own content, linked — what a pinning service pins,
+            // so it holds the package whole (references inside a node are plain CIDs: nothing follows them). A
+            // library the package contains is its own package with its own pin: no byte is billed twice.
+            std::map<std::string, std::string> Content;
+            for (const std::string &H : HandlesOf[LibName][Pkg])
+                for (const std::string &C : NodeContentCids(Tree.at(H)))
+                {
+                    if (IpfsWrapper::HasLocal(C)) Content[C] = C;
+                    else
+                    {
+                        ++Unheld[Pkg];
+                        LogWarn("PackageCatalog::PublishLibrary", "package '" + Pkg + "': content " + C
+                                + " is not held here — its pin leaves it out (seed it, then publish again)");
+                    }
+                }
+            std::map<std::string, std::string> Pin{ {"package", PCid} };
+            if (!Content.empty())
+            {
+                const std::string CCid = IpfsWrapper::MakeDir(Content, &MErr);
+                if (CCid.empty()) { if (Error) *Error = "content folder for '" + Pkg + "' not made: " + MErr; return {}; }
+                Pin["content"] = CCid;
+            }
+            const std::string PinCid = IpfsWrapper::MakeDir(Pin, &MErr);
+            if (PinCid.empty()) { if (Error) *Error = "pin folder for '" + Pkg + "' not made: " + MErr; return {}; }
             // A bounded display title for the receiver's dir segment (NAME_MAX): the dir basename, cut at a UTF-8 boundary.
             std::string Title = Pkg;
             if (Title.size() > 120)
@@ -1026,8 +1068,8 @@ std::vector<std::string> PublishLibrary(nlohmann::ordered_json &Config, std::str
                 Title.resize(120);
                 while (!Title.empty() && (static_cast<unsigned char>(Title.back()) & 0xC0) == 0x80) Title.pop_back();
             }
-            Libs[LibName].push_back(nlohmann::ordered_json{{"cid", PCid}, {"node", Title}, {"pkg", Title}, {"title", Title},
-                                                            {"nodes", Cids.size()}});
+            Libs[LibName].push_back(nlohmann::ordered_json{{"cid", PCid}, {"pin", PinCid}, {"node", Title}, {"pkg", Title},
+                                                            {"title", Title}, {"nodes", Cids.size()}});
             Flat.push_back(PCid);
             ++PkgCount;
         }
@@ -1038,15 +1080,31 @@ std::vector<std::string> PublishLibrary(nlohmann::ordered_json &Config, std::str
     Config["PublishedList"] = std::move(Flat);
     Config.erase("PublishedManifest");
     LogSucc("PackageCatalog::PublishLibrary", "published " + std::to_string(MR.HandleToCid.size())
-            + " node block(s) in " + std::to_string(PkgCount) + " package manifest(s), "
+            + " node block(s) in " + std::to_string(PkgCount) + " package folder(s), "
             + std::to_string(Config["Libraries"].size()) + " library(ies)");
+    // The verdict names what did not publish whole: a partial publish must never read as a clean one.
+    std::string Gap;
+    const auto List = [](const std::vector<std::string> &V) {
+        std::string S;
+        for (size_t I = 0; I < V.size() && I < 5; ++I) S += (I ? ", " : "") + V[I];
+        return V.size() > 5 ? S + " and " + std::to_string(V.size() - 5) + " more" : S;
+    };
+    if (!Unfrozen.empty())
+        Gap += std::to_string(Unfrozen.size()) + " node(s) did not freeze and were left out (" + List(Unfrozen) + ")";
+    if (!Unheld.empty())
+    {
+        std::vector<std::string> P;
+        for (const auto &[Pkg, N] : Unheld) P.push_back(Pkg + " (" + std::to_string(N) + ")");
+        Gap += (Gap.empty() ? "" : "; ") + std::to_string(Unheld.size())
+               + " package(s) name content this machine does not hold — no one can fetch it from here or from a pin: "
+               + List(P);
+    }
+    if (!Gap.empty()) LogErr("PackageCatalog::PublishLibrary", "published with gaps: " + Gap);
+    if (Gaps) *Gaps = Gap;
     std::vector<std::string> Out;
     for (const auto &C : Config["PublishedList"]) Out.push_back(C.get<std::string>());
-    return Out;   // the share list: one package manifest per package
+    return Out;   // the share list: one package folder per package
 }
-
-// The file a received package manifest lands as, inside the package dir (never a node: the scan skips it).
-static constexpr const char *kPackageManifestFile = ".package.json";
 
 // Bounds for the received-share planner (a friend's snapshot is UNTRUSTED input).
 static constexpr size_t kMaxFriendRootsPerLib = 20000;    // cap a hostile/huge per-library item set (Go caps at 100k)
@@ -1071,43 +1129,48 @@ bool DirHasContent(const std::string &Dir)
     return Ec ? true : false;   // couldn't fully inspect (permission/IO) → assume content; never rm what we can't read
 }
 
+// One path segment from UNTRUSTED input (a friend's snapshot: a library name, a package dir, a CID): plain filename
+// characters only — no separator, no traversal — capped under NAME_MAX (a within-bounds snapshot must still yield
+// satisfiable dests, or the queue retries an ENAMETOOLONG mkdir forever), never empty and never "." or "..".
+static std::string SafeSegment(const std::string &In)
+{
+    std::string O;
+    for (char c : In) O.push_back((std::isalnum((unsigned char)c) || c == '_' || c == '-' || c == '.'
+                                   || c == ' ' || c == '[' || c == ']' || c == '(' || c == ')') ? c : '_');
+    if (O.size() > 120) O.resize(120);
+    if (O.find_first_not_of('.') == std::string::npos) O = std::string(O.size() ? O.size() : 1, '_');   // "", ".", ".."
+    return O;
+}
+
 std::vector<ReceivedFetch> PlanReceivedFetches(const nlohmann::ordered_json &GlobalConfigJSON,
                                                const std::string &NickLabel, const nlohmann::ordered_json &Libs)
 {
     namespace fs = std::filesystem;
-    // UNTRUSTED input (a friend's snapshot): every path segment is sanitized to a plain filename — no separators, no
-    // traversal — and the "[uid] title" / "<nick> - <lib>" shapes keep any segment from ever being "." or "..".
-    auto San = [](const std::string &In) {
-        std::string O;
-        for (char c : In) O.push_back((std::isalnum((unsigned char)c) || c == '_' || c == '-' || c == '.'
-                                       || c == ' ' || c == '[' || c == ']') ? c : '_');
-        if (O.size() > 120) O.resize(120);   // NAME_MAX is 255 BYTES; wire caps (512-byte title) exceed it — a
-                                             // within-bounds snapshot must still yield satisfiable dests, or the
-                                             // queue retries an ENAMETOOLONG mkdir forever. San output is ASCII.
-        return O.empty() ? std::string("x") : O;
-    };
+    // UNTRUSTED input (a friend's snapshot): every path segment goes through SafeSegment — a plain filename, no
+    // separators, never "", "." or ".." (a collision-qualified "X (<cid>)" keeps its parentheses, so adopting it and
+    // re-planning agree on the name).
     std::vector<ReceivedFetch> Out;
     if (!Libs.is_object()) return Out;
     const fs::path Root = fs::path(CatalogRootDir(GlobalConfigJSON));   // received stubs live in CATALOG, not LIBRARY
     std::map<std::string, std::string> DestCid;   // dest → the CID that claimed it (the same CID twice = one target)
     auto Add = [&](const std::string &Cid, fs::path Dest) {
         if (Cid.empty() || Cid.size() > 128) return;
-        // Two ROOTS of one package sharing a LABEL (Reign of Chaos' and The Frozen Throne's "v1.29.2", AoE2's two
-        // "Vanilla") map to the same file: the second gets a CID-qualified name instead of being silently dropped.
+        // Two packages sharing a dir name map to the same dir: the second gets a CID-qualified name instead of being
+        // silently dropped.
         if (auto It = DestCid.find(Dest.string()); It != DestCid.end())
         {
             if (It->second == Cid) return;
-            Dest = Dest.parent_path() / (Dest.stem().string() + " (" + Cid.substr(0, 12) + ")" + Dest.extension().string());
+            Dest = Dest.parent_path() / (Dest.filename().string() + " (" + Cid.substr(0, 12) + ")");
             if (DestCid.count(Dest.string())) return;
         }
         DestCid[Dest.string()] = Cid;
-        Out.push_back(ReceivedFetch{Cid, Dest.string()});
+        Out.push_back(ReceivedFetch{Cid, (Dest / kPackageFolderDir).string()});
     };
     size_t Total = 0;   // snapshot-wide bound (a hostile friend could send many libs x many items)
     for (const auto &[LibName, Items] : Libs.items())
     {
         if (!Items.is_array()) continue;
-        const fs::path LibDir = Root / San(NickLabel + " - " + LibName);
+        const fs::path LibDir = Root / SafeSegment(NickLabel + " - " + LibName);
         size_t PerLib = 0;
         for (const auto &It : Items)
         {
@@ -1127,47 +1190,40 @@ std::vector<ReceivedFetch> PlanReceivedFetches(const nlohmann::ordered_json &Glo
             if (!It.is_object()) continue;
             const std::string Cid = It.value("cid", std::string());
             if (Cid.empty()) continue;
-            // One entry = one PACKAGE: its manifest block lands as <pkg dir>/.package.json and names every node
-            // block of the package; LandReceivedPackages fetches those. The seeder's real dir name keeps a
-            // multi-game package ONE dir; a snapshot without it falls back to the CID.
+            // One entry = one PACKAGE FOLDER: it lands as <pkg dir>/.package/ — every node file verbatim plus
+            // .package.json naming them — a dir the fetch owns whole (a re-publish replaces it), while the package's
+            // content hydrates beside it into <pkg dir>/. The seeder's real dir name keeps a multi-game package ONE
+            // dir; a snapshot without it falls back to the CID.
             std::string PkgSeg = It.value("pkg", std::string());
             if (PkgSeg.empty()) PkgSeg = It.value("node", std::string());
             if (PkgSeg.empty()) PkgSeg = Cid.substr(0, 12);
             // A package the library already holds under this library and dir name was INSTALLED (adopted out of
             // CATALOG) or authored here: it is ours now and is not re-landed as a stub beside itself.
             std::error_code Ec;
-            if (fs::is_directory(fs::path(LibraryRootDir(GlobalConfigJSON)) / San(LibName) / San(PkgSeg), Ec)) continue;
-            Add(Cid, LibDir / San(PkgSeg) / kPackageManifestFile);
+            if (fs::is_directory(fs::path(LibraryRootDir(GlobalConfigJSON)) / SafeSegment(LibName) / SafeSegment(PkgSeg), Ec)) continue;
+            Add(Cid, LibDir / SafeSegment(PkgSeg));
         }
     }
     return Out;
 }
 
-// CompleteClosure: fetch a launchable's MISSING node blocks (OVER refs reachable from it that the index cannot
-// resolve — the state every received share starts in: only the exec + tile were shared) into its OWN package dir,
-// through the ONE rolling queue — each missing CID is a plain FetchTarget {cid, <bundle>/<cid>.json, Verify}, the
-// same path as every other CID in the app. Waves: fetch the frontier, read the landed blocks (blockstore, local),
-// discover the next frontier from their OVER refs, repeat until the closure closes. Landed files are
-// renamed to their NODE_ID (cosmetic — identity is the NODE_ID inside; the scan never cares about filenames).
+// CompleteClosure: fetch a launchable's MISSING node blocks (NODE refs reachable from it that the index cannot
+// resolve — a received package that contains another package's node, a library nobody shared) into its OWN package
+// dir, through the ONE rolling queue — each missing CID is a plain FetchTarget {cid, <bundle>/<cid>.json, Verify}, the
+// same path as every other CID in the app. Waves: fetch the frontier, read the landed files (verbatim — verified,
+// never rewritten), discover the next frontier from their NODE refs, repeat until the closure closes.
 // Synchronous (WaitBatch) — call OFF the GUI thread. False + *Error when the closure cannot converge (a dangling
 // ref, an unreachable seeder past the wait bound — the queue keeps retrying in the background either way).
 bool CompleteClosure(const NodeIndex &Idx, const std::string &LaunchId, std::string *Error)
 {
     namespace fs = std::filesystem;
-    auto San = [](const std::string &In) {
-        std::string O;
-        for (char c : In) O.push_back((std::isalnum((unsigned char)c) || c == '_' || c == '-' || c == '.'
-                                       || c == ' ' || c == '[' || c == ']') ? c : '_');
-        if (O.size() > 120) O.resize(120);
-        return O.empty() ? std::string("x") : O;
-    };
     const Node *Root = Idx.Find(LaunchId);
     if (!Root) { if (Error) *Error = "unknown node " + LaunchId; return false; }
     if (Root->BundleDir.empty()) { if (Error) *Error = LaunchId + " has no package dir to complete into"; return false; }
     const fs::path Bundle = Root->BundleDir;
 
-    // Refs of one node: its positive OVER refs (a NOT is never fetched). Resolvable via the index (disk tree) or via
-    // a block landed this call.
+    // Refs of one node: what it contains (NODE layers; ANY/NOT are compared, never fetched). Resolvable via the index
+    // (disk tree) or via a block landed this call.
     std::map<std::string, nlohmann::ordered_json> LandedDoc;       // cid → parsed block (this call)
     auto RefsOf = [](const std::vector<std::string> &Ps, std::vector<std::string> &Out) {
         for (const std::string &P : Ps) if (!P.empty()) Out.push_back(P);
@@ -1181,7 +1237,7 @@ bool CompleteClosure(const NodeIndex &Idx, const std::string &LaunchId, std::str
     {
         const Node *N = Q.front(); Q.pop_front();
         std::vector<std::string> Refs;
-        RefsOf(N->Parents, Refs);
+        RefsOf(N->Refs, Refs);
         for (const std::string &R : Refs)
         {
             if (!Visited.insert(R).second) continue;
@@ -1199,54 +1255,43 @@ bool CompleteClosure(const NodeIndex &Idx, const std::string &LaunchId, std::str
         std::vector<IpfsWrapper::FetchTarget> Batch;
         std::vector<std::string> Wave(Missing.begin(), Missing.end());
         for (const std::string &C : Wave)
-            Batch.push_back(IpfsWrapper::FetchTarget{ C, (Bundle / (San(C) + ".json")).string(),
+            Batch.push_back(IpfsWrapper::FetchTarget{ C, (Bundle / (SafeSegment(C) + ".json")).string(),
                                                       /*Optional=*/false, /*Dir=*/false, /*Verify=*/true });
         const auto H = IpfsWrapper::EnqueueBatch(Batch);
         std::string WErr;
         if (!IpfsWrapper::WaitBatch(H, 10 * 60 * 1000, &WErr))           // bounded; the queue keeps rolling regardless
         { if (Error) *Error = "closure fetch did not converge: " + WErr; return false; }
 
-        // Read the landed blocks (local), discover the NEXT frontier, and give each file its NODE_ID name.
-        const auto Blocks = IpfsWrapper::DagGetManyLocal(Wave);
+        // Read the landed files, discover the NEXT frontier. A file that fails verification (not the bytes its name
+        // says, not canonical, or carrying a working-tree field) is removed: it never enters the tree.
         std::set<std::string> Next;
         for (const std::string &C : Wave)
         {
-            const auto It = Blocks.find(C);
-            if (It == Blocks.end()) { if (Error) *Error = "closure block " + C + " did not land"; return false; }
-            // UNTRUSTED bytes (a friend controls the block content behind its CID): depth pre-scan BEFORE the
-            // recursive parse/NormalizeLinks (a deep block is a stack-overflow bomb), and every field read must
-            // tolerate a non-string value without throwing (a hostile LABEL/LIBRARYITEM = int/object would abort
-            // this detached worker → std::terminate).
-            if (!NodeGraph::JsonDepthWithinLimit(It->second, 64))
-            { if (Error) *Error = "closure block " + C + " too deep"; return false; }
-            nlohmann::ordered_json J = nlohmann::ordered_json::parse(It->second, nullptr, false);
-            if (J.is_discarded() || !J.is_object()) { if (Error) *Error = "closure block " + C + " is not a node"; return false; }
-            NodeGraph::NormalizeLinks(J);
-            // SECURITY: an honest frozen block never carries a top-level "CID" (stripped at freeze). A malicious block
-            // can embed one equal to a local node's handle to hijack it at the next gather. The block is identified by
-            // the CID we fetched it BY, so drop any embedded handle before it is written to the working tree.
-            J.erase("CID");
+            const fs::path F = Bundle / (SafeSegment(C) + ".json");
+            nlohmann::ordered_json J;
+            std::string VErr;
+            if (!NodeGraph::VerifyLanded(F, C, &J, &VErr))
+            {
+                std::error_code Ec; fs::remove(F, Ec);
+                if (Error) *Error = "closure block " + C + " refused: " + VErr;
+                return false;
+            }
             std::vector<std::string> Refs;
-            RefsOf(ManifestModel::OverRefs(J), Refs);
+            RefsOf(ManifestModel::NodeRefs(J), Refs);
             for (const std::string &R : Refs)
             {
                 if (!Visited.insert(R).second) continue;
                 if (!Idx.Find(R) && !LandedDoc.count(R)) Next.insert(R);
             }
-            LandedDoc[C] = J;
-
-            // The Go fetch wrote the RAW block bytes (which may carry the forged "CID"); overwrite that file with the
-            // normalized, handle-stripped J so the on-disk working tree never carries a hijackable handle. The file
-            // keeps its CID name: a label-named file was a path two generations could both claim.
-            { std::ofstream Out(Bundle / (San(C) + ".json"), std::ios::binary); Out << J.dump(2) << "\n"; }
+            LandedDoc[C] = std::move(J);
         }
         Missing = std::move(Next);
     }
     return true;
 }
 
-// The received package manifests on disk: every CATALOG/<nick - lib>/<pkg>/.package.json (a collision-qualified
-// ".package (cid).json" too). Returns dir → the node CIDs its manifest names. Bounded, untrusted bytes.
+// The received package manifests on disk: every CATALOG/<nick - lib>/<pkg>/.package/.package.json (landed with its
+// folder). Returns the folder dir → the node CIDs its manifest names. Bounded, untrusted bytes.
 static std::map<std::filesystem::path, std::vector<std::string>> ReceivedPackageManifests(const nlohmann::ordered_json &Config)
 {
     namespace fs = std::filesystem;
@@ -1260,21 +1305,19 @@ static std::map<std::filesystem::path, std::vector<std::string>> ReceivedPackage
         for (const auto &Pkg : fs::directory_iterator(Lib.path(), Ec))
         {
             if (!Pkg.is_directory(Ec)) continue;
-            for (const auto &F : fs::directory_iterator(Pkg.path(), Ec))
+            const fs::path Folder = Pkg.path() / kPackageFolderDir;
             {
-                const std::string Name = F.path().filename().string();
-                if (!F.is_regular_file(Ec) || Name.rfind(".package", 0) != 0 || F.path().extension() != ".json") continue;
-                std::ifstream In(F.path(), std::ios::binary);
+                const fs::path F = Folder / kPackageManifestFile;
+                if (!fs::is_regular_file(F, Ec)) continue;
+                std::ifstream In(F, std::ios::binary);
                 std::string Text((std::istreambuf_iterator<char>(In)), std::istreambuf_iterator<char>());
                 if (Text.size() > 8 * 1024 * 1024 || !NodeGraph::JsonDepthWithinLimit(Text, 8)) continue;
                 nlohmann::ordered_json J = nlohmann::ordered_json::parse(Text, nullptr, false);
                 if (J.is_discarded() || !J.is_object() || !J.contains("NODES") || !J["NODES"].is_array()) continue;
-                auto &Cids = Out[Pkg.path()];
+                auto &Cids = Out[Folder];
                 for (const auto &L : J["NODES"])
                 {
-                    std::string C;
-                    if (L.is_object() && L.contains("/") && L["/"].is_string()) C = L["/"].get<std::string>();
-                    else if (L.is_string()) C = L.get<std::string>();
+                    std::string C = L.is_string() ? L.get<std::string>() : std::string();
                     if (C.empty() || C.size() > 128) continue;
                     for (unsigned char ch : C) if (!std::isalnum(ch)) { C.clear(); break; }   // a CID is base32/58: a path is not
                     if (!C.empty()) Cids.push_back(C);
@@ -1290,13 +1333,6 @@ static std::map<std::filesystem::path, std::vector<std::string>> ReceivedPackage
 // matched against the snapshots we hold. "" when nothing matches (a dir of a forgotten friend).
 static std::string ReceivedLibraryName(const nlohmann::ordered_json &Config, const std::string &LibDirName)
 {
-    auto San = [](const std::string &In) {
-        std::string O;
-        for (char c : In) O.push_back((std::isalnum((unsigned char)c) || c == '_' || c == '-' || c == '.'
-                                       || c == ' ' || c == '[' || c == ']') ? c : '_');
-        if (O.size() > 120) O.resize(120);
-        return O.empty() ? std::string("x") : O;
-    };
     if (!Config.contains("FriendLibraries") || !Config["FriendLibraries"].is_object()) return {};
     const auto Friends = IpfsWrapper::FriendList();
     for (const auto &[P, Libs] : Config["FriendLibraries"].items())
@@ -1306,7 +1342,7 @@ static std::string ReceivedLibraryName(const nlohmann::ordered_json &Config, con
         if (Nick.empty()) Nick = P.size() > 8 ? P.substr(P.size() - 8) : P;
         if (!Libs.is_object()) continue;
         for (const auto &[L, Items] : Libs.items())
-            if (San(Nick + " - " + L) == LibDirName) return L;
+            if (SafeSegment(Nick + " - " + L) == LibDirName) return L;
     }
     return {};
 }
@@ -1325,12 +1361,25 @@ bool AdoptReceivedPackage(const nlohmann::ordered_json &Config, const std::files
     { if (Error) *Error = "not a received package dir: " + PkgDir.string(); return false; }
     const std::string Lib = ReceivedLibraryName(Config, Src.parent_path().filename().string());
     if (Lib.empty()) { if (Error) *Error = "no share snapshot names " + Src.parent_path().filename().string(); return false; }
-    const fs::path Dest = fs::path(LibraryRootDir(Config)) / Lib / Src.filename();
+    //The library NAME is the friend's (their snapshot): one sanitised segment, and the destination must lie inside
+    //the library whatever it held — an absolute or ".." name would otherwise plant the package anywhere writable.
+    const fs::path Dest = fs::path(LibraryRootDir(Config)) / SafeSegment(Lib) / SafeSegment(Src.filename().string());
+    if (!NodeGraph::PathWithin(LibraryRootDir(Config), Dest))
+    { if (Error) *Error = "refused: " + Dest.string() + " is outside the library"; return false; }
     if (fs::exists(Dest, Ec)) { if (Error) *Error = "a package named '" + Src.filename().string() + "' already exists in library '" + Lib + "'"; return false; }
-    // The manifest was the receive artifact; the package's own nodes are what moves.
-    for (const auto &F : fs::directory_iterator(Src, Ec))
-        if (F.is_regular_file(Ec) && F.path().filename().string().rfind(".package", 0) == 0 && F.path().extension() == ".json")
-            fs::remove(F.path(), Ec);
+    // The landed folder was the receive artifact: its node files move up into the package dir (an installed package is
+    // an ordinary bundle), its manifest is dropped. A name already there is the same node (files are CID-named).
+    const fs::path Folder = Src / kPackageFolderDir;
+    if (fs::is_directory(Folder, Ec))
+    {
+        for (const auto &F : fs::directory_iterator(Folder, Ec))
+        {
+            if (!F.is_regular_file(Ec) || F.path().filename() == kPackageManifestFile) continue;
+            if (!fs::exists(Src / F.path().filename(), Ec)) fs::rename(F.path(), Src / F.path().filename(), Ec);
+        }
+        fs::remove_all(Folder, Ec);
+    }
+    IpfsWrapper::ForgetDestsUnder(Folder.string());   // the queue must never re-land the folder into the old stub
     fs::create_directories(Dest.parent_path(), Ec);
     fs::rename(Src, Dest, Ec);
     if (Ec)
@@ -1358,41 +1407,32 @@ bool ReceivedPackagesIncomplete(const nlohmann::ordered_json &Config)
 
 bool LandReceivedPackages(const nlohmann::ordered_json &Config, std::string *Error)
 {
+    // A package folder lands whole (the queue fetched it); this completes and checks it: a node file its manifest
+    // names but the folder did not bring is fetched on its own, and every named file is verified — one that is not
+    // the bytes its name says (or not a canonical node) is removed and the package reported, never repaired.
     namespace fs = std::filesystem;
     std::error_code Ec;
     bool Ok = true;
     for (const auto &[Dir, Cids] : ReceivedPackageManifests(Config))
     {
         std::vector<IpfsWrapper::FetchTarget> Batch;
-        std::vector<std::string> Wave;
         for (const std::string &C : Cids)
             if (!fs::exists(Dir / (C + ".json"), Ec))
-            {
                 Batch.push_back(IpfsWrapper::FetchTarget{ C, (Dir / (C + ".json")).string(), /*Optional=*/false, /*Dir=*/false, /*Verify=*/true });
-                Wave.push_back(C);
-            }
-        if (Batch.empty()) continue;
-        std::string WErr;
-        if (!IpfsWrapper::WaitBatch(IpfsWrapper::EnqueueBatch(Batch), 10 * 60 * 1000, &WErr))
-        { if (Error) *Error = "package " + Dir.filename().string() + ": " + WErr; Ok = false; continue; }
-        // Normalize what landed: links to plain CIDs, any embedded handle stripped (the block is identified by the
-        // CID we fetched it BY — a forged "CID" must never reach the working tree).
-        const auto Blocks = IpfsWrapper::DagGetManyLocal(Wave);
-        auto Bad = [&](const std::string &C, const char *Why) {
-            if (Error) *Error = "package " + Dir.filename().string() + ": block " + C.substr(0, 16) + "… " + Why;
-            LogWarn("PackageCatalog::LandReceivedPackages", "package '" + Dir.filename().string() + "': block " + C + " " + Why);
-            Ok = false;
-        };
-        for (const std::string &C : Wave)
+        if (!Batch.empty())
         {
-            const auto It = Blocks.find(C);
-            if (It == Blocks.end()) { Bad(C, "did not land"); continue; }
-            if (!NodeGraph::JsonDepthWithinLimit(It->second, 64)) { Bad(C, "is too deep"); continue; }
-            nlohmann::ordered_json J = nlohmann::ordered_json::parse(It->second, nullptr, false);
-            if (J.is_discarded() || !J.is_object()) { Bad(C, "is not a node"); continue; }
-            NodeGraph::NormalizeLinks(J);
-            J.erase("CID");
-            std::ofstream Out(Dir / (C + ".json"), std::ios::binary); Out << J.dump(2) << "\n";
+            std::string WErr;
+            if (!IpfsWrapper::WaitBatch(IpfsWrapper::EnqueueBatch(Batch), 10 * 60 * 1000, &WErr))
+            { if (Error) *Error = "package " + Dir.filename().string() + ": " + WErr; Ok = false; continue; }
+        }
+        for (const std::string &C : Cids)
+        {
+            std::string VErr;
+            if (NodeGraph::VerifyLanded(Dir / (C + ".json"), C, nullptr, &VErr)) continue;
+            fs::remove(Dir / (C + ".json"), Ec);
+            if (Error) *Error = "package " + Dir.filename().string() + ": node " + C.substr(0, 16) + "… " + VErr;
+            LogWarn("PackageCatalog::LandReceivedPackages", "package '" + Dir.filename().string() + "': node " + C + " refused: " + VErr);
+            Ok = false;
         }
     }
     return Ok;
@@ -1414,7 +1454,7 @@ int PruneStaleReceived(const NodeIndex &Idx, const nlohmann::ordered_json &Confi
         {
             const Node *N = Idx.Find(Q.front()); Q.pop_front();
             if (!N) continue;
-            for (const std::string &P : N->Parents) if (Keep.insert(P).second) Q.push_back(P);
+            for (const std::string &P : N->Refs) if (Keep.insert(P).second) Q.push_back(P);
         }
         // Per FILE, not per index node: the same CID landed in two libraries is ONE index entry, and a landed file is
         // named by its CID (a label-named file is a pre-manifest root: stale by definition).
@@ -1433,7 +1473,7 @@ bool NodeClosureIncomplete(const NodeIndex &Idx, const std::string &Id)
 {
     const Node *N = Idx.Find(Id);
     if (!N) return false;
-    for (const auto &P : N->Parents)                                    // adapt iteration to the actual Parents type
+    for (const auto &P : N->Refs)
         if (!Idx.Find(P)) return true;
     return false;
 }
@@ -1478,19 +1518,95 @@ NodeIndex BuildCatalogIndex(const nlohmann::ordered_json &GlobalConfigJSON)
 
 std::vector<std::vector<const Node*>> PresentableGroups(const NodeIndex &Idx)
 {
+    //A card = a family (the root of the PARENTUID chain: the base game). Within it the faces nest by PARENTUID — the
+    //base game's first, then its children by depth, then by title; under each face its rows (variant nodes presenting
+    //it) with the RECOMMENDED one first, then by VARIANT name.
+    std::map<std::string, nlohmann::ordered_json> Tile;                 // face UID -> its merged tile (flat)
+    for (const auto &[Id, N] : Idx.Nodes)
+        if (N.Presentable() && !N.Uid.empty() && !Tile.count(N.Uid)) Tile[N.Uid] = N.Meta;
+    auto Depth = [&](std::string Uid) {
+        int D = 0;
+        std::set<std::string> Seen;
+        for (;;)
+        {
+            auto It = Tile.find(Uid);
+            if (It == Tile.end() || !It->second.contains("PARENTUID") || !Seen.insert(Uid).second) return D;
+            Uid = It->second["PARENTUID"].get<std::string>();
+            ++D;
+        }
+    };
+    auto TitleOf = [&](const std::string &Uid) {
+        auto It = Tile.find(Uid);
+        return It == Tile.end() ? Uid : It->second.value("TITLE", Uid);
+    };
     std::map<std::string, std::vector<const Node*>> Groups;
     for (const auto &[Id, N] : Idx.Nodes)
         if (N.IsVariant() && N.Presentable())
             Groups[N.GameKey()].push_back(&N);
-
-    //Within a card: the main's tile first (it names the card), RECOMMENDED first among those, then the children
-    //(expansions: a different tile OVER the main) in chain order — nesting derived from OVER, never declared.
     std::vector<std::vector<const Node*>> Out;
-    for (auto &[K, V] : Groups) Out.push_back(ManifestModel::OrderVariants(Idx, std::move(V)));
-    auto Title = [](const Node *N){ return N->Meta.is_object() ? N->Meta.value("TITLE", N->NodeId) : N->NodeId; };
+    for (auto &[K, V] : Groups)
+    {
+        std::stable_sort(V.begin(), V.end(), [&](const Node *A, const Node *B) {
+            const int Da = Depth(A->Uid), Db = Depth(B->Uid);
+            if (Da != Db) return Da < Db;
+            const std::string Ta = TitleOf(A->Uid), Tb = TitleOf(B->Uid);
+            if (Ta != Tb) return Ta < Tb;
+            const bool Ra = std::find(A->Recommended.begin(), A->Recommended.end(), A->Uid) != A->Recommended.end();
+            const bool Rb = std::find(B->Recommended.begin(), B->Recommended.end(), B->Uid) != B->Recommended.end();
+            if (Ra != Rb) return Ra;
+            if (A->Variant != B->Variant) return A->Variant < B->Variant;
+            return A->Key() < B->Key();
+        });
+        Out.push_back(std::move(V));
+    }
     std::sort(Out.begin(), Out.end(), [&](const std::vector<const Node*> &A, const std::vector<const Node*> &B){
-        return Title(A.front()) < Title(B.front());
+        return TitleOf(A.front()->Uid) < TitleOf(B.front()->Uid);
     });
+    return Out;
+}
+
+namespace {
+bool LocalGraft(const NodeIndex &Idx, const std::string &G)
+{
+    const Node *N = Idx.Find(G);
+    return N && !N->Received && !N->BundleDir.empty();
+}
+}
+
+std::vector<std::string> AppliedGrafts(const NodeIndex &Idx, const std::string &LaunchNodeId, const GraftChoice &Chosen,
+                                       const std::map<std::string, std::string> &Instance,
+                                       const std::map<std::string, std::string> &Builtins, std::vector<std::string> *Dropped)
+{
+    const Node *L = Idx.Find(LaunchNodeId);
+    if (!L) return {};
+    const Fold::Library Lib = ManifestModel::LibraryOf(Idx);
+    const Fold::GraftIndex GIdx = Fold::BuildGraftIndex(Lib);
+    std::vector<std::string> Requested;
+    if (Chosen)
+        for (const std::string &G : *Chosen) { const Node *Gn = Idx.Find(G); Requested.push_back(Gn ? Gn->Key() : G); }
+    else
+        Requested = Fold::ApplyGrafts(Lib, GIdx, L->Key(), Instance, Builtins, L->Uid, nullptr);
+    //Only local grafts apply; judging the list again keeps a graft that needed a dropped one out as well.
+    std::vector<std::string> Local;
+    for (const std::string &G : Requested)
+        if (LocalGraft(Idx, G)) Local.push_back(G);
+        else if (Dropped) Dropped->push_back(G);
+    return Fold::ApplyGrafts(Lib, GIdx, L->Key(), Instance, Builtins, L->Uid, &Local, Dropped);
+}
+
+std::vector<std::string> OfferedGrafts(const NodeIndex &Idx, const std::string &LaunchNodeId, std::vector<std::string> *PreTicked,
+                                       const GraftChoice &Chosen)
+{
+    if (PreTicked) PreTicked->clear();
+    const Node *L = Idx.Find(LaunchNodeId);
+    if (!L) return {};
+    const Fold::Library Lib = ManifestModel::LibraryOf(Idx);
+    const std::vector<std::string> Fresh = AppliedGrafts(Idx, LaunchNodeId, std::nullopt);
+    if (PreTicked) *PreTicked = Fresh;
+    const Fold::Plan P = Fold::Resolve(Lib, L->Key(), {}, {}, Chosen ? AppliedGrafts(Idx, LaunchNodeId, Chosen) : Fresh);
+    std::vector<std::string> Out;
+    for (const auto &G : Fold::OfferedGrafts(Lib, Fold::BuildGraftIndex(Lib), P, L->Uid).Offered)
+        if (LocalGraft(Idx, G)) Out.push_back(G);
     return Out;
 }
 
@@ -1526,10 +1642,9 @@ bool RunnerInstalled(const NodeIndex &Idx, const std::string &RunnerNodeId)
     // Ships its own build (any VFS layer in its closure — local PATH or a remote CID) → must be imported (build
     // hydrated + DEFPREFIX). Otherwise it's a PATH runner → usable iff its executable resolves on this system.
     bool ShipsBuild = false;
-    ManifestModel::ForEachClosureNode(Idx, R->Key(), {}, [&](const Node &N) {
-        if (ShipsBuild || !N.Layers.is_array()) return;
-        for (const auto &L : N.Layers) if (ManifestModel::IsRunnerBuildLayer(L)) { ShipsBuild = true; return; }
-    });
+    for (const std::string &Id : ManifestModel::Closure(Idx, R->Key()))
+        if (const Node *N = Idx.Find(Id))
+            for (const auto &L : N->Layers) if (ManifestModel::IsRunnerBuildLayer(L)) { ShipsBuild = true; break; }
     if (ShipsBuild)
         return RunnerInstall::RunnerNodeImported(Idx, RunnerNodeId);
     return RunnerWrapper::ExecutableAvailable(R->Exec);
@@ -1574,21 +1689,25 @@ std::vector<const Node*> CandidateRunners(const NodeIndex &Idx, const std::strin
 //Invoke Fn for every VFS layer in a launchable's content closure (runner build excluded), with its resolved local
 //path + ipfs CID (resolved against the OWNING node's bundle dir — cross-bundle-correct).
 static void ForEachContentLayer(const NodeIndex &Idx, const std::string &LaunchNodeId,
-    const std::map<std::string, bool> &Toggles,
+    const GraftChoice &Grafts,
     const std::function<void(const nlohmann::ordered_json&, const std::filesystem::path&, const std::string&)> &Fn,
     bool WithGrafts = false)
 {
-    //The launchable's own closure — and, for the FETCH pool only (WithGrafts), the SELECTED grafts above it (same
-    //toggles, same scope as the launch): a ticked mod's content is part of what the launch mounts, so a hydrate
-    //fetches it too. A dehydrate / hydration verdict never walks grafts: a graft is shared across every variant
-    //of its title, so deleting or dropping its bytes with one variant would break the others.
+    //The launchable's whole closure (options included: a download is whole chains) — and, for the FETCH pool only
+    //(WithGrafts), the chosen grafts' closures: a ticked mod's content is part of what the launch mounts. A dehydrate or
+    //a hydration verdict never walks grafts: a graft is shared across every variant of its title.
     const Node *LN = Idx.Find(LaunchNodeId);
     const std::string LaunchKey = LN ? LN->Key() : LaunchNodeId;   // walk by the index key, never by a label that may repeat
-    std::vector<std::string> Order = ManifestModel::ResolveNodeOrder(Idx, LaunchKey, Toggles);
-    if (WithGrafts)
-        for (const std::string &Id : ManifestModel::ResolveGraftOrder(Idx, LaunchKey, Toggles, Order, {},
-                                                                      [](const Node &N) { return !N.Received && !N.BundleDir.empty(); }))
-            Order.push_back(Id);
+    std::vector<std::string> Order = ManifestModel::Closure(Idx, LaunchKey);
+    if (WithGrafts && LN)
+    {
+        const std::vector<std::string> Chosen = AppliedGrafts(Idx, LaunchKey, Grafts);
+        std::set<std::string> Seen(Order.begin(), Order.end());
+        for (const std::string &G : Chosen)
+            if (const Node *Gn = Idx.Find(G); Gn && !Gn->Received && !Gn->BundleDir.empty())
+                for (const std::string &Id : ManifestModel::Closure(Idx, Gn->Key()))
+                    if (Seen.insert(Id).second) Order.push_back(Id);
+    }
     for (const std::string &Id : Order)
     {
         const Node *N = Idx.Find(Id);
@@ -1599,6 +1718,14 @@ static void ForEachContentLayer(const NodeIndex &Idx, const std::string &LaunchN
             std::filesystem::path Local; std::string Cid;
             LayerLocator(L, N->BundleDir, Local, Cid);
             if (Local == N->BundleDir) continue;                                 // no PATH
+            //A node's content lives in its own package dir: anything else (a peer's absolute or ".." name the
+            //vocabulary would already refuse) is never read, sized or — above all — fetched INTO.
+            if (!IsRuntimeSourcedLayer(L) && !NodeGraph::PathWithin(N->BundleDir, Local))
+            {
+                LogWarn("PackageCatalog::ForEachContentLayer", "node '" + N->NodeId + "': content " + Local.string()
+                        + " lies outside its package dir " + N->BundleDir.string() + " — refused");
+                continue;
+            }
             Fn(L, Local, Cid);
         }
     }
@@ -1716,7 +1843,7 @@ std::unordered_map<std::string, NodeHydration> HydrationMap(const NodeIndex &Idx
         // "hydrated" previously held VACUOUSLY for such nodes (no reachable content layers → nothing missing), which
         // filed un-installed received games under the Library tab as playable and left the Catalog empty.
         if (N)
-            for (const std::string &P : N->Parents)
+            for (const std::string &P : N->Refs)
             {
                 if (!Idx.Find(P)) { R.Hydrated = false; continue; }
                 const NodeHydration PC = Compute(P);
@@ -1761,24 +1888,24 @@ std::vector<std::string> GroupNodeIds(const NodeIndex &Idx, const std::string &L
     return Ids;
 }
 
-std::vector<std::string> NodeContentCids(const NodeIndex &Idx, const std::string &LaunchNodeId, const std::map<std::string, bool> &Toggles)
+std::vector<std::string> NodeContentCids(const NodeIndex &Idx, const std::string &LaunchNodeId, const GraftChoice &Grafts)
 {
     std::vector<std::string> Cids;
     std::set<std::string> Seen;
-    ForEachContentLayer(Idx, LaunchNodeId, Toggles, [&](const nlohmann::ordered_json&, const std::filesystem::path&, const std::string &Cid){
+    ForEachContentLayer(Idx, LaunchNodeId, Grafts, [&](const nlohmann::ordered_json&, const std::filesystem::path&, const std::string &Cid){
         if (!Cid.empty() && Seen.insert(Cid).second) Cids.push_back(Cid);
     });
     return Cids;
 }
 
 std::map<std::string, long long> NodeContentSizes(const NodeIndex &Idx, const std::string &LaunchNodeId,
-                                                  const std::map<std::string, bool> &Toggles)
+                                                  const GraftChoice &Grafts)
 {
     // The stamped SOURCE.SIZE per content CID — the sizes-in-JSON keystone: a download size must derive INSTANTLY
     // and OFFLINE from the graph, never from a ~35s network probe per CID (which left the pre-download dialog
     // "estimating…" for minutes). Only stamped (>0) entries are returned; the caller probes the rare unstamped rest.
     std::map<std::string, long long> Out;
-    ForEachContentLayer(Idx, LaunchNodeId, Toggles, [&](const nlohmann::ordered_json &L, const std::filesystem::path&, const std::string &Cid){
+    ForEachContentLayer(Idx, LaunchNodeId, Grafts, [&](const nlohmann::ordered_json &L, const std::filesystem::path&, const std::string &Cid){
         if (Cid.empty() || !L.contains("SOURCE") || !L["SOURCE"].is_object()) return;
         const long long Sz = L["SOURCE"].value("SIZE", (long long)0);
         if (Sz > 0) Out[Cid] = Sz;
@@ -1786,7 +1913,7 @@ std::map<std::string, long long> NodeContentSizes(const NodeIndex &Idx, const st
     return Out;
 }
 
-bool CollectContentTargets(const NodeIndex &Idx, const std::string &LaunchNodeId, const std::map<std::string, bool> &Toggles,
+bool CollectContentTargets(const NodeIndex &Idx, const std::string &LaunchNodeId, const GraftChoice &Grafts,
                            std::vector<IpfsWrapper::FetchTarget> &Out, std::string *Error)
 {
     auto Fail = [&](const std::string &M) -> bool { if (Error) *Error = M; LogErr("PackageCatalog::CollectContentTargets", M); return false; };
@@ -1798,9 +1925,9 @@ bool CollectContentTargets(const NodeIndex &Idx, const std::string &LaunchNodeId
     // bricks the base game's download.
     bool MissingSource = false; std::string MissingErr;
     std::set<std::string> OwnLayers;
-    ForEachContentLayer(Idx, LaunchNodeId, Toggles, [&](const nlohmann::ordered_json &, const std::filesystem::path &Local, const std::string &){
+    ForEachContentLayer(Idx, LaunchNodeId, Grafts, [&](const nlohmann::ordered_json &, const std::filesystem::path &Local, const std::string &){
         OwnLayers.insert(Local.string()); });
-    ForEachContentLayer(Idx, LaunchNodeId, Toggles, [&](const nlohmann::ordered_json &L, const std::filesystem::path &Local, const std::string &Cid){
+    ForEachContentLayer(Idx, LaunchNodeId, Grafts, [&](const nlohmann::ordered_json &L, const std::filesystem::path &Local, const std::string &Cid){
         if (MissingSource) return;
         std::error_code Ec;
         if (std::filesystem::exists(Local, Ec)) return;                          // already present
@@ -1894,11 +2021,11 @@ bool CollectRunnerChainTargets(const NodeIndex &Idx, const std::string &LaunchNo
     return true;
 }
 
-bool HydrateNode(const NodeIndex &Idx, const std::string &LaunchNodeId, const std::map<std::string, bool> &Toggles,
+bool HydrateNode(const NodeIndex &Idx, const std::string &LaunchNodeId, const GraftChoice &Grafts,
                  std::string *Error, const nlohmann::ordered_json *GlobalConfigJSON)
 {
     std::vector<IpfsWrapper::FetchTarget> Targets;
-    if (!CollectContentTargets(Idx, LaunchNodeId, Toggles, Targets, Error)) return false;
+    if (!CollectContentTargets(Idx, LaunchNodeId, Grafts, Targets, Error)) return false;
     // Full-closure: also pool the resolved runner chain's build so the game is immediately launchable (identity = the
     // node's Declare* layers; a game hydrate pulls the whole runtime, no separate "install the runner" step).
     //Discarding this told the caller the hydrate SUCCEEDED with the runner build silently absent from the batch:

@@ -120,6 +120,34 @@ private slots:
         QTRY_COMPARE_WITH_TIMEOUT(IpfsWrapper::DebugJobState(C), 3 /* Failed */, 5000);
     }
 
+    // A folder fetch still in flight when its stub dir is dropped (the package was adopted, or the friend withdrew it)
+    // must not re-create the stub when it lands: the worker holds its own copy of the dests. Teeth: stop
+    // ForgetDestsUnder recording active jobs' dests (or RunJob undoing them) and the dropped dir comes back.
+    void aFolderLandingAfterItsDirWasDroppedIsUndone()
+    {
+        QTemporaryDir dir; QVERIFY(dir.isValid());
+        const std::string Stub = (dir.path() + "/CATALOG/Alice - Games/[1] Game").toStdString();
+        const std::string Dest = Stub + "/.package";
+        std::filesystem::create_directories(Stub);
+        std::atomic<bool> Started{false}, Release{false};
+        IpfsWrapper::SetFetchOnceHook([&](const std::string &, const std::string &dest, bool, std::string *) {
+            Started = true;
+            while (!Release && !g_stopHook) std::this_thread::sleep_for(std::chrono::milliseconds(5));
+            std::filesystem::create_directories(dest);                 // like Go: MkdirAll + land the tree
+            std::ofstream(dest + "/n.json") << "{}";
+            return 0; });
+        g_stopHook = false;
+        auto H = IpfsWrapper::EnqueueBatch({{"CID_DQ_LATE_DIR", Dest, false, /*Dir=*/true}});
+        QTRY_VERIFY_WITH_TIMEOUT(Started.load(), 5000);
+        std::filesystem::remove_all(dir.path().toStdString() + "/CATALOG/Alice - Games");   // the caller drops the stub
+        IpfsWrapper::ForgetDestsUnder(dir.path().toStdString() + "/CATALOG/Alice - Games");
+        Release = true;
+        IpfsWrapper::WaitBatch(H, 5000);
+        std::error_code Ec;
+        QVERIFY2(!std::filesystem::exists(dir.path().toStdString() + "/CATALOG/Alice - Games", Ec), "the dropped dir stays dropped");
+        QVERIFY2(std::filesystem::exists(dir.path().toStdString() + "/CATALOG", Ec), "nothing above the dropped dir is touched");
+    }
+
     // A dest belongs to ONE CID. A node path is reused across generations (same label, new CID), and a job
     // materialises every dest it remembers — so when a NEW cid claims a path, the OLD cid's job must forget it, or
     // its next run rewrites the path with the old block (three "Vanilla" files, all the Age of Kings block).

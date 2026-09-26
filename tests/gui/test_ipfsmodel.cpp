@@ -92,7 +92,7 @@ private slots:
         QTemporaryDir Root; QVERIFY(Root.isValid());
         const QString R = Root.path() + "/LIBRARY";                 // a real LIBRARY component → SourceOfBundle works
         QDir().mkpath(R + "/VidyaGod/[1] Game");
-        auto writeJson = [](const QString & path, const json & j) { std::ofstream o(path.toStdString()); o << j.dump(2); };
+        auto writeJson = [](const QString & path, const json & j) { NodeFixture::WriteNodes(path.toStdString(), j); };
         writeJson(R + "/VidyaGod/[1] Game/tile.json", NodeFixture::Chain("g_tile", {NodeFixture::Tile("1", "Game")}));
         writeJson(R + "/VidyaGod/[1] Game/game.json",
                   NodeFixture::Chain("g_exec", {NodeFixture::Exec("win32", "g.exe")}, {"g_tile"}));

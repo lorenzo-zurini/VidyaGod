@@ -3,6 +3,7 @@
 #include "pkggraph.h"
 #include "packagecatalog_p.h"
 #include "nodegraph.h"       // ReadTreeJsonBounded — every library-root walker reads bounded
+#include "fold.h"            // Fold::TypeOf — a layer's one type key
 #include "apppaths.h"
 #include "manifestmodel.h"
 #include "commonutils.h"
@@ -30,27 +31,47 @@ using namespace ManifestModel;
 
 namespace PackageCatalog {
 
-//A node file holds ONE node object or an ARRAY of them (grouping nodes into files is pure presentation). These
-//helpers are the whole difference for the seed/publish readers, which parse node JSON directly rather than
-//through ParseNode (they must MUTATE it in place to record the minted SOURCE.CID).
-static std::vector<nlohmann::ordered_json *> NodeDocsOf(nlohmann::ordered_json &J)
+//The file-backed entries of a node (generation 6), as the seed/publish readers see them — raw node JSON, mutated in
+//place to record the CID and SIZE: each content layer (its payload key names the file; SOURCE is its CID, SIZE beside
+//it) and each tile cover on an entry ({FILE, SOURCE, SIZE}).
+struct FileEntry { nlohmann::ordered_json *Holder; std::string File; bool Cover; bool MaySource; };
+static std::vector<FileEntry> FileEntriesOf(nlohmann::ordered_json &N)
 {
-    std::vector<nlohmann::ordered_json *> Out;
-    // A node is any object carrying a node field (ManifestModel::IsNodeObject — the ONE definition). Detecting by
-    // LABEL silently skipped legal nameless nodes → their content was never seeded.
-    if (J.is_array()) { for (auto &N : J) if (ManifestModel::IsNodeObject(N)) Out.push_back(&N); }
-    else if (ManifestModel::IsNodeObject(J)) Out.push_back(&J);
+    std::vector<FileEntry> Out;
+    if (!ManifestModel::IsNodeObject(N)) return Out;
+    for (auto &L : N["LAYERS"])
+    {
+        if (!L.is_object()) continue;
+        const std::string K = Fold::TypeOf(L);
+        if ((K == "ZIP" || K == "FILE" || K == "DELTA" || K == "DIR") && L[K].is_string())
+            Out.push_back({ &L, L[K].get<std::string>(), false, K != "DIR" });   // a DIR is local: it carries no SOURCE
+        else if (K == "EXEC" && L["EXEC"].is_array())
+            for (auto &E : L["EXEC"])
+                if (E.is_object() && E.contains("TILE") && E["TILE"].is_object() && E["TILE"].contains("COVER"))
+                {
+                    auto &C = E["TILE"]["COVER"];
+                    Out.push_back({ &C, (C.is_object() && C.contains("FILE") && C["FILE"].is_string()) ? C["FILE"].get<std::string>() : std::string(), true, true });
+                }
+    }
     return Out;
 }
-//The individual content-layer objects (each {FORM, PATH, SOURCE{ipfs,CID}, …}) of a node's LAYERS — the units that
-//carry seedable bytes. Mutable pointers so callers can backfill SOURCE.SIZE / re-stamp CIDs in place.
-static std::vector<nlohmann::ordered_json *> ContentLayerDocsOf(nlohmann::ordered_json &N)
+std::vector<std::string> NodeContentCids(const nlohmann::ordered_json &Node)
 {
-    std::vector<nlohmann::ordered_json *> Out;
-    if (!N.is_object() || !N.contains("LAYERS") || !N["LAYERS"].is_array()) return Out;
-    for (auto &Ly : N["LAYERS"]) if (Ly.is_object()) Out.push_back(&Ly);
+    std::vector<std::string> Out;
+    nlohmann::ordered_json N = Node;
+    for (const FileEntry &F : FileEntriesOf(N))
+    {
+        const nlohmann::ordered_json &H = *F.Holder;
+        if (!H.is_object() || !H.contains("SOURCE") || !H["SOURCE"].is_string()) continue;
+        const std::string C = H["SOURCE"].get<std::string>();
+        if (!C.empty() && std::find(Out.begin(), Out.end(), C) == Out.end()) Out.push_back(C);
+    }
     return Out;
 }
+
+//A runtime-sourced payload (a %variable% that resolves to a live mount at launch) has no package file, by design.
+//THE predicate (a matched pair around an identifier) — a URL-escaped name like "100%25%20done.zip" is a real file.
+static bool RuntimeSourced(const std::string &File) { return !ManifestModel::PathVariableTokens(File).empty(); }
 
 
 // ----- import / publish -----
@@ -254,7 +275,7 @@ bool PublishPackage(const std::string &PackageDir, const std::string &Dehydrated
     //peer then fetches, and it is missing in a way nothing downstream can distinguish from "the author never wrote
     //that node". So both quiet skips below are counted and reported.
     int Unparseable = 0, BadCovers = 0;
-    std::vector<std::string> Unfetchable;
+    std::vector<std::string> Unfetchable, Unshareable;
 
     //A recorded CID is taken on FAITH by the mint (skipped as idempotent), the deliverability check (stat-only), and
     //every peer that fetches it — nothing re-hashes the bytes until bitswap serves them. So a backing file rebuilt in
@@ -293,106 +314,43 @@ bool PublishPackage(const std::string &PackageDir, const std::string &Dehydrated
         }
 
         bool Mutated = false;
-
-        //Cover art: content-address a DeclareLibraryItem's COVER like a layer — keep the filename in PATH, add
-        //SOURCE:{ipfs,CID}. Idempotent once a CID is present. OBJECT FORM ONLY: the bare-string COVER was
-        //reachable only through the deleted GAMES pass, so the branch that handled it went with it rather than
-        //staying as an unreachable kindness — the caller below now REFUSES a non-object instead.
-        auto SeedCover = [&](nlohmann::ordered_json &Holder)
+        if (!ManifestModel::IsNodeObject(Frag)) continue;                         // not a node (a manifest, a config)
+        for (const FileEntry &F : FileEntriesOf(Frag))
         {
-            if (!Holder.contains("COVER")) return;
-            nlohmann::ordered_json &Cover = Holder["COVER"];
-            if (!Cover.is_object()) return;                                       // refused and reported at the call site
-            //CONST-SAFE: a bare Cover["SOURCE"] would INSERT a null "SOURCE" member on a cover that has none, and the
-            //SIZE backfill below now saves fragments that used to be left untouched — writing that null out, which the
-            //node validator then rejects (whole tile vanishes). Read through contains(), never operator[].
-            const std::string CoverCid = (Cover.contains("SOURCE") && Cover["SOURCE"].is_object())
-                                       ? Cover["SOURCE"].value("CID", std::string()) : std::string();
-            const std::string File = Cover.value("PATH", std::string());
-            if (!File.empty() && !NeedsSeed(CoverCid, Pkg / File))                // has a CID that still verifies its bytes — keep
-            {
-                //Idempotent CID — but backfill SOURCE.SIZE if absent (no re-seed of bytes needed), so an existing
-                //library gains sizes on the next --remint-library without re-adding every layer.
-                const std::filesystem::path CLocal = Pkg / File;
-                std::error_code Sc;
-                if (Cover.contains("SOURCE") && Cover["SOURCE"].is_object() && !Cover["SOURCE"].contains("SIZE")
-                    && std::filesystem::exists(CLocal, Sc))
-                { Cover["SOURCE"]["SIZE"] = LocalPayloadSize(CLocal); Mutated = true; ++SizesStamped; }
-                return;
-            }
-            if (File.empty()) return;
-            std::error_code Rc;
-            const std::filesystem::path Local = Pkg / File;
-            if (!std::filesystem::exists(Local, Rc)) return;                      // not a local file (CID-only ref)
-            std::string Err;
-            const std::string NewCid = IpfsWrapper::AddNoCopy(Local.string(), &Err);
-            if (NewCid.empty()) { LogWarn("PackageCatalog::PublishPackage", "could not seed cover " + Local.string() + " (" + Err + ")"); return; }
-            Cover = nlohmann::ordered_json{ {"PATH", File}, {"SOURCE", {{"TYPE", "ipfs"}, {"CID", NewCid}, {"SIZE", LocalPayloadSize(Local)}}} };
-            Mutated = true;
-            ++Covers;
-        };
-        //Node files (everything-is-a-node): seed each Content node's bytes + the cover on a DeclareLibraryItem node.
-        for (nlohmann::ordered_json *Np : NodeDocsOf(Frag))
-        {
-            nlohmann::ordered_json &S = *Np;
-            //Cover art lives on the node's TILE.COVER field ({PATH, SOURCE:{ipfs,CID}}, like content).
-            //A COVER of any OTHER shape is content that will never be addressed: this was `is_object()` and
-            //nothing else, so a bare-string COVER — the pre-node form — was stepped over in total silence.
-            //One shipped that way (Tonic Trouble's library tile): the PNG sat in the bundle, was never seeded,
-            //and ManifestTargets and PackageCoverCids both require the object form, so no peer could ever
-            //receive the tile art and nothing anywhere said so. Counted as a gap, because that is what it is.
-            if (S.contains("TILE") && S["TILE"].is_object() && S["TILE"].contains("COVER") && !S["TILE"]["COVER"].is_null())
-            {
-                if (S["TILE"]["COVER"].is_object()) SeedCover(S["TILE"]);
-                else ++BadCovers;
-            }
-            //Batched: a VFSLayer node carries a LAYERS list; seed each layer object (each {FORM,PATH,SOURCE}).
-            //A non-VFSLayer node yields none, so this naturally skips it.
-            for (nlohmann::ordered_json *Lp : ContentLayerDocsOf(S))
-            {
-            nlohmann::ordered_json &Ly = *Lp;
+            nlohmann::ordered_json &H = *F.Holder;
+            if (F.Cover && (!H.is_object() || F.File.empty())) { ++BadCovers; continue; }   // a cover is {FILE, SOURCE, SIZE}
             ++Walked;
-            std::filesystem::path Local; std::string Cid;
-            LayerLocator(Ly, Pkg, Local, Cid);
-            std::error_code Rc;
-            if (!NeedsSeed(Cid, Local))                                          // has a CID that still verifies — idempotent
-            {
-                //Backfill SOURCE.SIZE if absent (no re-seed): existing packages gain the download-size hint on the
-                //next --remint-library without re-adding bytes. Skips CID-only refs (no local file to measure).
-                std::error_code Sc;
-                if (Ly["SOURCE"].is_object() && !Ly["SOURCE"].contains("SIZE") && std::filesystem::exists(Local, Sc))
-                { Ly["SOURCE"]["SIZE"] = LocalPayloadSize(Local); Mutated = true; ++SizesStamped; }
+            //Runtime-sourced (a %VAR% resolved at launch): absent BY DESIGN — the predicate gates only the gap
+            //REPORTS below, never the seed: a token-shaped name whose bytes ARE here still ships.
+            const bool Runtime = RuntimeSourced(F.File);
+            const std::filesystem::path Local = Pkg / F.File;
+            std::error_code Sc;
+            if (!F.MaySource)
+            {   // a DIR layer is local content: no peer can fetch it
+                if (!Runtime && std::filesystem::exists(Local, Sc)) Unshareable.push_back(Local.string());
                 continue;
             }
-            if (!std::filesystem::exists(Local, Rc))                             // no local content to seed
+            const std::string Cid = (H.contains("SOURCE") && H["SOURCE"].is_string()) ? H["SOURCE"].get<std::string>() : std::string();
+            if (!NeedsSeed(Cid, Local))                                         // has a CID that still verifies — idempotent
             {
-                //A RUNTIME-SOURCED layer is absent because it is SUPPOSED to be: its PATH carries a %VAR%
-                //that resolves to a live mount at launch (a proton prefix-assembly layer, "%DefaultPfxDir%"),
-                //so there is no package file to ship and there never will be. It is not a gap, and saying it
-                //is put 30 UNFETCHABLE lines and a "PUBLISHED WITH GAPS ... the content will not be there"
-                //over the runners collection on every mint — the un-ignorable summary, crying wolf.
-                //launchsources.cpp records fixing the identical false alarm on the launch side with this same
-                //predicate, having printed three phantom errors per wine launch before it.
-                //
-                //The predicate gates ONLY THIS REPORT, deliberately. Placing it earlier also skipped the
-                //VerifyCid drift repair above and the seeding below, which made "log-only" a property of the
-                //library's current contents (no token-bearing layer happens to have bytes) rather than of the
-                //code. Here it cannot suppress a seed: anything with content or a CID has already been
-                //handled before this line is reached.
-                //LIMITATION, named because it is invisible otherwise: a CustomVar-templated PATH whose tokens
-                //all resolve to a real file (ResolvePathState treats that as real content) is absent HERE and
-                //is now silently not reported. No such node exists in the library; if one is ever authored,
-                //this report has to substitute defaults before deciding.
-                if (!ManifestModel::IsRuntimeSourcedLayer(Ly)) Unfetchable.push_back(Local.string());
+                //Backfill SIZE if absent (no re-seed): existing packages gain the download-size hint on the next
+                //--remint-library without re-adding bytes. Skips CID-only refs (no local file to measure).
+                if (!Cid.empty() && !H.contains("SIZE") && std::filesystem::exists(Local, Sc))
+                { H["SIZE"] = LocalPayloadSize(Local); Mutated = true; ++SizesStamped; }
                 continue;
             }
+            if (!std::filesystem::exists(Local, Sc)) { if (!Runtime) Unfetchable.push_back(Local.string()); continue; }
             std::string Err;
             const std::string NewCid = IpfsWrapper::AddNoCopy(Local.string(), &Err);
-            if (NewCid.empty()) return Fail("could not seed layer " + Local.string() + " (" + Err + ")");
-            nlohmann::ordered_json Src = (Ly.contains("SOURCE") && Ly["SOURCE"].is_object()) ? Ly["SOURCE"] : nlohmann::ordered_json::object();
-            Src["TYPE"] = "ipfs"; Src["CID"] = NewCid; Src["SIZE"] = LocalPayloadSize(Local); Ly["SOURCE"] = std::move(Src);
-            Mutated = true; ++Seeded;
+            if (NewCid.empty())
+            {
+                if (F.Cover) { LogWarn("PackageCatalog::PublishPackage", "could not seed cover " + Local.string() + " (" + Err + ")"); continue; }
+                return Fail("could not seed layer " + Local.string() + " (" + Err + ")");
             }
+            H["SOURCE"] = NewCid;
+            H["SIZE"] = LocalPayloadSize(Local);
+            Mutated = true;
+            ++(F.Cover ? Covers : Seeded);
         }
 
         if (Mutated && !JSONOps::SaveJSON(&Frag, &FragFile))
@@ -409,13 +367,17 @@ bool PublishPackage(const std::string &PackageDir, const std::string &Dehydrated
     for (const std::string &P : Unfetchable)
         LogErr("PackageCatalog::PublishPackage", "layer '" + P + "' has no CID and no local file — it will be "
                                                  "published as an UNFETCHABLE reference.");
+    for (const std::string &P : Unshareable)
+        LogErr("PackageCatalog::PublishPackage", "DIR layer '" + P + "' is local content — a peer cannot fetch a "
+                                                 "directory; ship it as a ZIP.");
     if (BadCovers)
         LogErr("PackageCatalog::PublishPackage", std::to_string(BadCovers) + " COVER field(s) in " + PackageDir
-                   + " are not objects ({PATH, SOURCE}) — cover art in any other shape is never content-addressed, "
+                   + " are not {FILE, SOURCE, SIZE} objects — cover art in any other shape is never content-addressed, "
                      "so the tile ships with no image on every machine but this one.");
-    if (Unparseable || !Unfetchable.empty() || BadCovers)
+    if (Unparseable || !Unfetchable.empty() || !Unshareable.empty() || BadCovers)
         LogErr("PackageCatalog::PublishPackage", "PUBLISHED WITH GAPS: " + std::to_string(Unparseable)
                    + " unparseable fragment(s), " + std::to_string(Unfetchable.size()) + " unfetchable layer(s), "
+                   + std::to_string(Unshareable.size()) + " local-only DIR layer(s), "
                    + std::to_string(BadCovers) + " unaddressable cover(s) in "
                    + PackageDir + ". The CID will look healthy and the content will not be there.");
 
@@ -450,7 +412,7 @@ int StampNodeCids(const std::filesystem::path &Root,
         const auto It = HandleToCid.find(N["CID"].get<std::string>());
         if (It != HandleToCid.end() && It->second != N["CID"].get<std::string>()) { N["CID"] = It->second; Ch = true; }
         // Every OVER ref (plain, any-of member, NOT) through the ONE remapper freeze uses.
-        Ch = ManifestModel::RemapOverRefs(N, [&](const std::string &R) {
+        Ch = ManifestModel::RemapNodeRefs(N, [&](const std::string &R) {
             const auto Rt = HandleToCid.find(R);
             return Rt != HandleToCid.end() ? Rt->second : R;
         }) || Ch;
@@ -531,34 +493,23 @@ std::map<std::string, std::string> ManifestTargets(const std::string &Dir, bool 
 
         nlohmann::ordered_json J;
         if (!NodeGraph::ReadTreeJsonBounded(It->path(), J)) continue;   // bounded: hostile bytes live in the tree now
-        if (!J.is_object() && !J.is_array()) continue;      // one node, or an array of them
-        const fs::path Bundle = It->path().parent_path();
+        //A node in a landed package folder (<pkg>/.package/) has its content beside the folder, in the package dir.
+        fs::path Bundle = It->path().parent_path();
+        if (Bundle.filename() == NodeGraph::kPackageFolderDir) Bundle = Bundle.parent_path();
 
-        auto Consider = [&](const nlohmann::ordered_json &Obj) {            // an object with PATH + SOURCE{ipfs,CID}
-            if (!Obj.is_object()) return;
-            const std::string Path = Obj.value("PATH", std::string());
-            if (Path.empty() || !Obj.contains("SOURCE") || !Obj["SOURCE"].is_object()) return;
-            const auto &S = Obj["SOURCE"];
-            if (!(S.contains("TYPE") && S["TYPE"].is_string() && S["TYPE"].get<std::string>() == "ipfs")) return;
-            const std::string Cid = S.value("CID", std::string());
-            if (Cid.empty()) return;
-            const fs::path Local = Bundle / Path;
-            // ExistingOnly is what SEEDING wants (you cannot reference bytes you do not have). An UPGRADE diff wants
-            // the recorded targets regardless: the staged new tree is manifests-only, so every content file is absent.
-            // generic_string() (forward slashes) NOT string() (native): on Windows string() yields backslash keys,
-            // so the same package produced a different seed map than on Linux — breaking cross-platform path lookups
-            // (and de-dup) while the tests looked keys up with '/'. Windows file APIs accept '/', so this stays valid.
-            if (!ExistingOnly || fs::exists(Local, Ec)) ToSeed[Local.generic_string()] = Cid;
-        };
-
-        // A node IS its layer, so the node object itself carries PATH + SOURCE when it is Content. Cover art is
-        // ALWAYS seeded and lives on the DeclareLibraryItem node's COVER field — {PATH, SOURCE:{ipfs,CID}}, the
-        // same shape as content.
-        for (nlohmann::ordered_json *Np : NodeDocsOf(J))
+        //Every file-backed entry recorded with a CID (a content layer's SOURCE, a cover's SOURCE). ExistingOnly is
+        //what SEEDING wants (you cannot reference bytes you do not have). An UPGRADE diff wants the recorded targets
+        //regardless: the staged new tree is manifests-only, so every content file is absent. generic_string()
+        //(forward slashes) NOT string() (native): Windows backslash keys broke cross-platform lookups and de-dup.
+        for (const FileEntry &F : FileEntriesOf(J))
         {
-            if (!CoversOnly) for (nlohmann::ordered_json *Lp : ContentLayerDocsOf(*Np)) Consider(*Lp);  // each VFSLayer LAYERS entry (skipped in covers-only)
-            if (Np->contains("TILE") && (*Np)["TILE"].is_object() && (*Np)["TILE"].contains("COVER") && (*Np)["TILE"]["COVER"].is_object())
-                Consider((*Np)["TILE"]["COVER"]);
+            if (CoversOnly && !F.Cover) continue;                          // covers-only skips layers
+            const nlohmann::ordered_json &H = *F.Holder;
+            if (!H.is_object() || F.File.empty() || RuntimeSourced(F.File)) continue;
+            const std::string Cid = (H.contains("SOURCE") && H["SOURCE"].is_string()) ? H["SOURCE"].get<std::string>() : std::string();
+            if (Cid.empty()) continue;
+            const fs::path Local = Bundle / F.File;
+            if (!ExistingOnly || fs::exists(Local, Ec)) ToSeed[Local.generic_string()] = Cid;
         }
     }
     return ToSeed;
@@ -723,8 +674,8 @@ HealReport HealSourceContent(const nlohmann::ordered_json &GlobalConfigJSON, con
                 R.Drift.push_back(Path + ": recorded " + Cid + " is not held locally at all (never seeded)");
     }
 
-    // Config-level meta-CIDs (package sources + published package CIDs) are pinned but never appear inside node
-    // JSONs — count them as referenced so the prune below can never touch them.
+    // Config-level CIDs (package sources, published package folders) are pinned but never appear inside node JSONs —
+    // count them as referenced so the prune below can never touch them.
     if (GlobalConfigJSON.contains("Settings") && GlobalConfigJSON["Settings"].is_object())
     {
         const auto &S = GlobalConfigJSON["Settings"];
@@ -739,6 +690,16 @@ HealReport HealSourceContent(const nlohmann::ordered_json &GlobalConfigJSON, con
             for (const auto &[Key, Val] : S["PackageCids"].items())
                 if (Val.is_string() && !Val.get<std::string>().empty()) Referenced.insert(Val.get<std::string>());
     }
+    // The published packages: each row's share folder (manifest + node files) and pin folder (+ its content), both
+    // pinned recursively — dropping one unshares the package from every friend or every pinning service.
+    if (GlobalConfigJSON.contains("Libraries") && GlobalConfigJSON["Libraries"].is_object())
+        for (const auto &[Lib, Rows] : GlobalConfigJSON["Libraries"].items())
+            if (Rows.is_array())
+                for (const auto &Row : Rows)
+                    if (Row.is_object())
+                        for (const char *K : { "cid", "pin" })
+                            if (Row.contains(K) && Row[K].is_string() && !Row[K].get<std::string>().empty())
+                                Referenced.insert(Row[K].get<std::string>());
 
     // Prune: a pin that is UNREFERENCED by any source AND UNSERVABLE (a backing file is gone) is the leftover of a
     // superseded publish — a deleted .meta staging mirror, a replaced delta, a re-published package. The re-point pass

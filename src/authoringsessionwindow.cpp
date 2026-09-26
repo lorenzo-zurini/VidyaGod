@@ -96,7 +96,7 @@ AuthoringSessionWindow::AuthoringSessionWindow(PackageEditorModel * Editor, cons
     DestNameEdit = new QLineEdit(QString::fromStdString(TargetNodeId + "_files"), FilesTab);
     FForm->addRow("Captured dir (in bundle)", DestNameEdit);
     TargetEdit = new QLineEdit(FilesTab);
-    TargetEdit->setToolTip("Where the captured layer mounts, relative to the content root ('' = at the content root).");
+    TargetEdit->setToolTip("Where the captured layer lands, as a guest path (C:/Game, %UserProfile%/Saves; '' = the root).");
     connect(TargetEdit, &QLineEdit::textChanged, this, [this]{ updateCapturePreview(); });
     FForm->addRow("Mount TARGET", TargetEdit);
     FLay->addLayout(FForm);

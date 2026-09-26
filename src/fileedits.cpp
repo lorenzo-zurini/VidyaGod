@@ -1,4 +1,5 @@
 #include "fileedits.h"
+#include "persistlayer.h"   // HasSavedCopy — a user-owned file's package default
 #include "commonutils.h"   // Log*
 #include "varsubst.h"      // %variable% substitution in FileEdit VALUEs (e.g. config_info's %RunnerMount%/%TempPath%)
 
@@ -117,6 +118,14 @@ bool FileEdits::ProcessFileEdits(struct ContainerParams &ContainerParams, bool O
                 LogWarn("FileEdits::ProcessFileEdits",
                         "FILE '" + File + "' is ABSOLUTE and escapes the " + PassName + " pass base — the edit will not land where "
                         "anything reads it. Author it relative to the base.");
+        }
+
+        //A package default for a user-owned file: the user's saved copy stands once there is one.
+        if (Sub.value("IF_UNSAVED", false) && PersistLayer::HasSavedCopy(ContainerParams, File))
+        {
+            LogOut("FileEdits::ProcessFileEdits", "'" + File + "' is the user's (a saved copy exists) — the package default "
+                   + (Mode.empty() ? std::string("edit") : Mode) + " is not re-applied.");
+            continue;
         }
 
         std::filesystem::path FilePath;

@@ -82,6 +82,7 @@ bool LaunchResolver::ResolveExecutableDefinition(const nlohmann::ordered_json &M
     {
         std::string ExeStr = Resolved.value("CONTENTPATH", std::string());
         VarSubst::StringVariableSubstitution(ExeStr, ExecVars);
+        ExeStr = GuestToLayout(ContainerParams, ExeStr);                    // guest coordinates → the runner's layout
         for (char &c : ExeStr) if (c == '\\') c = '/';
         while (!ExeStr.empty() && ExeStr.front() == '/') ExeStr.erase(ExeStr.begin());
         while (!ExeStr.empty() && ExeStr.back()  == '/') ExeStr.pop_back();
@@ -137,6 +138,7 @@ bool LaunchResolver::ResolveExecutableDefinition(const nlohmann::ordered_json &M
     {
         std::string WorkDirStr = std::string(WorkDirVal);
         VarSubst::StringVariableSubstitution(WorkDirStr, ExecVars);
+        WorkDirStr = GuestToLayout(ContainerParams, WorkDirStr);
         for (char &c : WorkDirStr) if (c == '\\') c = '/';
         while (!WorkDirStr.empty() && WorkDirStr.front() == '/') WorkDirStr.erase(WorkDirStr.begin());
         while (!WorkDirStr.empty() && WorkDirStr.back()  == '/') WorkDirStr.pop_back();

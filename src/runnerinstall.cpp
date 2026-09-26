@@ -7,18 +7,17 @@
 #include <string>
 #include <vector>
 
-//VFS-layer helpers (IsVfsLayer/LayerType/ResolveNodeOrder/ResolveLayerSource/LayerLocator) live in ManifestModel.
+//VFS-layer helpers (IsVfsLayer/LayerType/Closure/ResolveLayerSource/LayerLocator) live in ManifestModel.
 using namespace ManifestModel;
 
 namespace {
 //A runner's BUILD = its closure, itself included (its own layers — the java runners carry the JRE zip on the node
-//— plus what it is OVER — proton's wine chain), in load order. The same rule as a game's mount; nothing special.
+//— plus what it contains — proton's wine chain), in load order. The same rule as a game's mount; nothing special.
 std::vector<const Node *> RunnerBuildNodes(const NodeIndex &Idx, const std::string &RunnerNodeId)
 {
     std::vector<const Node *> Out;
-    ManifestModel::ForEachClosureNode(Idx, RunnerNodeId, {}, [&](const Node &C) {
-        if (C.Layers.is_array() && !C.Layers.empty()) Out.push_back(&C);
-    });
+    for (const std::string &Id : ManifestModel::Closure(Idx, RunnerNodeId))
+        if (const Node *C = Idx.Find(Id); C && C->Layers.is_array() && !C->Layers.empty()) Out.push_back(C);
     return Out;
 }
 
