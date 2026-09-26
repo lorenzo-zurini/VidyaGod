@@ -784,6 +784,58 @@ private slots:
         QVERIFY2(Why.find("999") != std::string::npos, Why.c_str());
     }
 
+    // A tile is one presentable game: each UID is its own card — the expansion too, nested after its base game by
+    // PARENTUID — and a version presenting two tiles is a row under both. Launched from a card it runs AS that tile:
+    // %UID% is the card's, and (no entry named) the entry that presents it runs.
+    void each_tile_is_a_card_and_a_row_runs_as_its_card()
+    {
+        NodeIndex idx;
+        const auto entry = [](const char *Label, const char *Uid, const char *Parent, const char *Exe) {
+            json T = {{"UID", Uid}, {"TITLE", std::string("T") + Uid}};
+            if (Parent) T["PARENTUID"] = Parent;
+            return json{ {"LABEL", Label}, {"HOST", kMachine}, {"EXE", Exe}, {"TILE", T} };
+        };
+        // v1 presents both RoC (802) and TFT (803, child of 802); v2 presents only RoC; z is an unrelated game.
+        idx.Nodes["v1"] = parse(json{ {"CID", "v1"}, {"LABEL", "v1"}, {"VARIANT", "1.0"}, {"RECOMMENDED", json::array({"803"})},
+            {"LAYERS", json::array({ json{{"DIR", "g"}}, json{{"EXEC", json::array({ entry("Reign of Chaos", "802", nullptr, "roc.exe"),
+                                                                                entry("The Frozen Throne", "803", "802", "tft.exe") })}} })} }, "/tmp/vg_bundle");
+        idx.Nodes["v2"] = parse(json{ {"CID", "v2"}, {"LABEL", "v2"}, {"VARIANT", "2.0"}, {"RECOMMENDED", json::array({"802"})},
+            {"LAYERS", json::array({ json{{"NODE", "v1"}}, json{{"EXEC", json::array({ json{{"LABEL", "Reign of Chaos"}, {"EXE", "roc2.exe"}} })}} })} }, "/tmp/vg_bundle");
+        idx.Nodes["z"] = parse(json{ {"CID", "z"}, {"LABEL", "z"}, {"VARIANT", "1"},
+            {"LAYERS", json::array({ json{{"DIR", "z"}}, json{{"EXEC", json::array({ entry("Play", "9", nullptr, "z.exe") })}} })} }, "/tmp/vg_bundle");
+        finish(idx);
+
+        std::vector<std::string> Order;
+        std::map<std::string, std::vector<std::string>> Rows;
+        for (const auto &T : PackageCatalog::ShelfTiles(idx))
+        {
+            Order.push_back(T.Uid);
+            for (const Node *N : T.Rows) Rows[T.Uid].push_back(N->NodeId);
+        }
+        QCOMPARE(Order, (std::vector<std::string>{"802", "803", "9"}));              // families by title; the child follows its base game
+        QCOMPARE(Rows["802"], (std::vector<std::string>{"v2", "v1"}));                // recommended under 802 first
+        QCOMPARE(Rows["803"], (std::vector<std::string>{"v1", "v2"}));                // v2 contains v1: its fold presents 803 too
+        QCOMPARE(idx.Tile("803")->value("PARENTUID", std::string()), std::string("802"));
+
+        const json cfg = json{{"Settings", json::object()}};
+        const auto launch = [&](const char *Node, const char *Face) {
+            ContainerParams cp("/tmp/vg_bundle");
+            cp.NodeIdx = &idx; cp.LaunchNodeId = Node; cp.LaunchFace = Face;
+            json pool = json::object();
+            const bool Ok = LaunchResolver::InitializeFromNode(cp, pool, cfg);
+            const std::string Exe = cp.ComposedExec.is_object() ? cp.ComposedExec.value("CONTENTPATH", std::string()) : std::string();
+            return std::make_tuple(Ok, Exe, cp.PackageName);
+        };
+        const auto [OkT, ExeT, NameT] = launch("v1", "803");
+        QVERIFY(OkT);
+        QVERIFY2(ExeT.find("tft.exe") != std::string::npos, ExeT.c_str());          // the card's entry runs
+        QCOMPARE(NameT, std::string("T803"));
+        const auto [OkR, ExeR, NameR] = launch("v1", "802");
+        QVERIFY(OkR && ExeR.find("roc.exe") != std::string::npos);
+        QCOMPARE(NameR, std::string("T802"));
+        QVERIFY(!std::get<0>(launch("v1", "9")));                                     // a tile the node does not present
+    }
+
     // No authored native runner → the terminal is the synthesized passthrough sentinel.
     void chain_synthesizes_native_terminal_when_unauthored()
     {

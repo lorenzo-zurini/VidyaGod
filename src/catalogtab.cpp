@@ -170,11 +170,11 @@ void CatalogTab::rebuild()
     //One card per un-hydrated presentable group: at least one edition's content is still missing AND fetchable
     //over IPFS. (A fully-hydrated group lives in the Library tab.)
     const auto Hyd = PackageCatalog::HydrationMap(Model.catalogIndex());   // O(N+E) once — never per-launchable (deep chains → O(N²))
-    for (const std::vector<const Node*> & Group : PackageCatalog::PresentableGroups(Model.catalogIndex()))
+    for (const PackageCatalog::ShelfTile & Tile : PackageCatalog::ShelfTiles(Model.catalogIndex()))
     {
         std::vector<std::string> Ids;
         bool AnyMissing = false, AnyFetchable = false;
-        for (const Node * N : Group)
+        for (const Node * N : Tile.Rows)
         {
             Ids.push_back(N->NodeId);
             auto H = Hyd.find(N->Key());
@@ -190,7 +190,7 @@ void CatalogTab::rebuild()
             }
         }
         if (!AnyMissing || !AnyFetchable || Ids.empty()) continue;
-        auto * c = new LibraryGameCard(Model.config(), &Model.catalogIndex(), std::move(Ids));
+        auto * c = new LibraryGameCard(Model.config(), &Model.catalogIndex(), std::move(Ids), Tile.Uid);
         c->InitializeClassVariables();
 
         const bool Busy = ActiveDownloads.contains(c->GameKey);
@@ -212,14 +212,14 @@ void CatalogTab::rebuild()
         }
         return n;
     };
-    // Sibling games group by PACKAGE UID — the package's identity — not by directory: a received package's games
-    // may land per-tile before the seeder's dir name reaches the wire (and a dir is an on-disk accident anyway).
-    // A card with no UID falls back to its bundle dir so unrelated UID-less packages never merge.
+    // Sibling games group by FAMILY (%PackageUID%: the base game a tile's PARENTUID chain ends at) — not by
+    // directory: a received package's games may land per-tile before the seeder's dir name reaches the wire (and a
+    // dir is an on-disk accident anyway). A card with no family falls back to its bundle dir.
     std::map<std::string, std::vector<LibraryGameCard*>> ByBundle;     // PACKAGEUID (or dir) → its un-hydrated game cards
     std::vector<std::string> BundleOrder;
     for (LibraryGameCard * c : *AvailableGameCards) {
         const Node * N = Model.catalogIndex().Find(c->RepNodeId);
-        std::string Key = N ? N->Uid : std::string();
+        std::string Key = N ? N->PackageUid : std::string();
         if (Key.empty()) Key = c->PackagePath.string();
         if (ByBundle.find(Key) == ByBundle.end()) BundleOrder.push_back(Key);
         ByBundle[Key].push_back(c);

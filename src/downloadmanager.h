@@ -9,6 +9,7 @@
 
 #include <map>
 #include <string>
+#include <thread>
 #include <vector>
 
 class AppModel;
@@ -27,6 +28,9 @@ class DownloadManager : public QObject
     Q_OBJECT
 public:
     DownloadManager(AppModel & model, IpfsModel & ipfs, QWidget * dialogParent, QObject * parent = nullptr);
+    //Cancels the downloads in flight and JOINS their workers: a worker must never outlive the manager it posts back to
+    //(nor the application — a thread still inside Qt while the app tears down crashes its cleanup).
+    ~DownloadManager() override;
 
 public slots:
     // The per-package download dialog + worker.
@@ -50,6 +54,7 @@ signals:
     void downloadFinished(const QString & groupKey);           // clear the package's downloading state
 
 private:
+    std::vector<std::thread> Workers;                                        // beginDownload's workers — joined on destruction
     void persistActive(const QString & key, const std::vector<std::string> & launchIds,
                        const std::vector<std::string> & runnerIds, const std::map<std::string, bool> & toggles);
     void unpersistActive(const QString & key);

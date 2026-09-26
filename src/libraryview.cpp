@@ -41,8 +41,8 @@ bool IpfsFetchReady(QWidget * parent)
 // ═════════════════════════════════════════════════════════════════════════════
 
 LibraryGameCard::LibraryGameCard(nlohmann::ordered_json * gc, const NodeIndex * index,
-                                 std::vector<std::string> groupNodeIds)
-    : Index(index), GroupNodeIds(std::move(groupNodeIds)), GlobalConfigJSON(gc)
+                                 std::vector<std::string> groupNodeIds, std::string faceUid)
+    : Index(index), GroupNodeIds(std::move(groupNodeIds)), FaceUid(std::move(faceUid)), GlobalConfigJSON(gc)
 {
     if (!GroupNodeIds.empty()) RepNodeId = GroupNodeIds.front();
 }
@@ -54,10 +54,13 @@ void LibraryGameCard::InitializeClassVariables()
 
     PackagePath = Rep->BundleDir;
     Local       = GlobalConfigJSON && PackageCatalog::IsLocalPackagePath(*GlobalConfigJSON, PackagePath);
-    GameKey    = QString::fromStdString(Rep->GameKey());
-    RepUid      = Rep->Uid;
+    GameKey    = QString::fromStdString(FaceUid.empty() ? Rep->GameKey() : FaceUid);
+    RepUid      = Rep->GameKey();
 
-    const nlohmann::ordered_json & Meta = Rep->Meta;
+    //The card presents its tile — not the representative node's first face (a version may present several tiles).
+    static const nlohmann::ordered_json None;
+    const nlohmann::ordered_json * T = Index->Tile(FaceUid);
+    const nlohmann::ordered_json & Meta = T ? *T : (FaceUid.empty() ? Rep->Meta : None);
     GameTitle = QString::fromStdString(Meta.is_object() ? Meta.value("TITLE", RepNodeId) : RepNodeId);
 
     // Sort keys
@@ -123,7 +126,7 @@ void LibraryGameCard::play()
             skip = bool(US["SKIP_LAUNCH_DIALOG"]);
     }
     bool shift = (QGuiApplication::keyboardModifiers() & Qt::ShiftModifier) != 0;
-    auto * dlg = new PreLaunchWindow(GlobalConfigJSON, Index, GroupNodeIds, nullptr);
+    auto * dlg = new PreLaunchWindow(GlobalConfigJSON, Index, GroupNodeIds, FaceUid, nullptr);
     dlg->show();
     if (skip && !shift)
         QMetaObject::invokeMethod(dlg, "onLaunchClicked", Qt::QueuedConnection);
@@ -132,7 +135,7 @@ void LibraryGameCard::play()
 void LibraryGameCard::edit()
 {
     if (!Index || GroupNodeIds.empty()) return;
-    (new PreLaunchWindow(GlobalConfigJSON, Index, GroupNodeIds, nullptr))->show();
+    (new PreLaunchWindow(GlobalConfigJSON, Index, GroupNodeIds, FaceUid, nullptr))->show();
 }
 
 

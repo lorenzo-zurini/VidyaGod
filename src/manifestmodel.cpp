@@ -323,12 +323,14 @@ void DeriveFacts(NodeIndex &Idx)
             Uid = It->second["PARENTUID"].get<std::string>();
         }
     };
+    Idx.Tiles.clear();
+    for (const auto &[Uid, T] : Tiles) Idx.Tiles[Uid] = FlatTile(T);
     for (auto &[K, N] : Idx.Nodes)
     {
         if (N.Faces.empty()) continue;
         N.Uid = N.Faces.front();
         N.PackageUid = Root(N.Uid);
-        N.Meta = FlatTile(Tiles[N.Uid]);
+        N.Meta = Idx.Tiles[N.Uid];
     }
 }
 

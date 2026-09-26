@@ -41,24 +41,24 @@ PreLaunchWindow::PreLaunchWindow(
     nlohmann::ordered_json*  GlobalConfigJSON,
     const NodeIndex*         Index,
     std::vector<std::string> GroupNodeIds,
+    std::string              FaceUid,
     QWidget*                 parent)
     : QDialog(parent)
     , GlobalConfigJSON(GlobalConfigJSON)
     , Index(Index)
     , GroupNodeIds(std::move(GroupNodeIds))
+    , FaceUid(std::move(FaceUid))
 {
     setWindowTitle("Launch");
     setMinimumSize(800, 600);
     setAttribute(Qt::WA_DeleteOnClose);
 
-    // Initial variant = the RECOMMENDED one anywhere in the group (the main's tile comes first in the group so the
-    // card is named after it, but the recommended edition may be an expansion: The Conquerors over Age of Kings),
-    // else the first.
+    // Initial variant = the one RECOMMENDED under this tile, else the first row.
     if (!this->GroupNodeIds.empty()) LaunchNodeId = this->GroupNodeIds.front();
     for (const std::string& Id : this->GroupNodeIds)
         if (const Node* N = Index ? Index->Find(Id) : nullptr;
-            N && std::find(N->Recommended.begin(), N->Recommended.end(), N->Uid) != N->Recommended.end()) { LaunchNodeId = Id; break; }
-    if (const Node* L = CurrentLaunch()) { BundleDir = L->BundleDir.string(); PackageUID = L->Uid; }
+            N && std::find(N->Recommended.begin(), N->Recommended.end(), Face(N)) != N->Recommended.end()) { LaunchNodeId = Id; break; }
+    if (const Node* L = CurrentLaunch()) { BundleDir = L->BundleDir.string(); PackageUID = L->GameKey(); }
 
     // ----- Layout: cover (left) | controls+console (right) -----
     QHBoxLayout* RootLayout = new QHBoxLayout(this);
@@ -296,13 +296,16 @@ void PreLaunchWindow::RebuildCover()
     PendingCoverCid.clear();
     const Node* L = CurrentLaunch();
     if (!L) return;
-    const std::string Title = L->Meta.is_object() ? L->Meta.value("TITLE", LaunchNodeId) : LaunchNodeId;
+    //The window presents its tile (a version may present several).
+    const nlohmann::ordered_json* T = Index ? Index->Tile(Face(L)) : nullptr;
+    const nlohmann::ordered_json& Meta = T ? *T : L->Meta;
+    const std::string Title = Meta.is_object() ? Meta.value("TITLE", LaunchNodeId) : LaunchNodeId;
     setWindowTitle("Launch " + QString::fromStdString(Title));
 
     CoverLabel->clear();
     CoverPixmap = QPixmap();
-    if (!L->Meta.is_object() || !L->Meta.contains("COVER")) return;
-    const nlohmann::ordered_json& CoverNode = L->Meta["COVER"];
+    if (!Meta.is_object() || !Meta.contains("COVER")) return;
+    const nlohmann::ordered_json& CoverNode = Meta["COVER"];
     const QString Pkg = QString::fromStdString(L->BundleDir.string());
     auto setFrom = [this](const QString& Path){
         QPixmap Pix(Path);
@@ -522,7 +525,7 @@ void PreLaunchWindow::RebuildModuleTree()
     }
     //Offered with the ticked ones applied: a graft on a graft appears once the graft it needs is ticked.
     std::vector<std::string> PreTicked;
-    std::vector<std::string> Offered = PackageCatalog::OfferedGrafts(*Index, LaunchNodeId, &PreTicked, Saved);
+    std::vector<std::string> Offered = PackageCatalog::OfferedGrafts(*Index, LaunchNodeId, &PreTicked, Saved, FaceUid);
     const std::vector<std::string> Ticked = Saved ? *Saved : PreTicked;
     std::vector<std::string> Rows;
     for (const std::string& G : Ticked) if (std::find(Offered.begin(), Offered.end(), G) != Offered.end()) Rows.push_back(G);
@@ -975,7 +978,7 @@ void PreLaunchWindow::onVariantChanged()
     LaunchNodeId = Data.substr(0, Sep);
     std::string Rest = Sep == std::string::npos ? std::string() : Data.substr(Sep + 1);
     Entrypoint = Rest.substr(0, Rest.find('\x1f'));
-    if (const Node* L = CurrentLaunch()) { BundleDir = L->BundleDir.string(); PackageUID = L->Uid; }
+    if (const Node* L = CurrentLaunch()) { BundleDir = L->BundleDir.string(); PackageUID = L->GameKey(); }
     RebuildCover();
     RebuildRunnerChain();
     RebuildModuleTree();
@@ -1038,25 +1041,23 @@ void PreLaunchWindow::FillVariantCombo()
     VariantCombo->clear();
     struct E { std::string Id; QString Lbl; bool Rec; };
     std::vector<E> Es;
-    //Several TITLEs under one card (a base game and its expansions sharing a UID): qualify each row with its
-    //launchable's own title so "v1.31.1" of Reign of Chaos and of The Frozen Throne stay distinguishable.
-    std::set<std::string> Titles;
-    for (const std::string& Id : GroupNodeIds)
-        if (const Node* N = Index ? Index->Find(Id) : nullptr; N && N->Meta.is_object()) Titles.insert(N->Meta.value("TITLE", std::string()));
-    const bool Qualify = Titles.size() > 1;
     for (const std::string& Id : GroupNodeIds)
     {
         const Node* N = Index ? Index->Find(Id) : nullptr;
         if (!N) continue;
-        //A row is (variant, entry): one per EFFECTIVE entry (own, else inherited from beneath). A single-entry
-        //variant reads as its VARIANT name; a multi-entry one names each entry. Faces qualify the row when the
-        //card has several.
-        const std::vector<std::string> Labels = N->EntrypointLabels();
-        const bool Rec = std::find(N->Recommended.begin(), N->Recommended.end(), N->Uid) != N->Recommended.end();
-        std::string NodeName = !N->Variant.empty() ? N->Variant : (!N->NodeId.empty() ? N->NodeId
-                               : (N->Meta.is_object() ? N->Meta.value("TITLE", Id) : Id));
-        if (Qualify && N->Meta.is_object() && !N->Meta.value("TITLE", std::string()).empty())
-            NodeName = N->Meta.value("TITLE", std::string()) + " - " + NodeName;
+        //A row is (variant, entry): one per EFFECTIVE entry of this tile (own, else inherited from beneath) — an
+        //entry presenting ANOTHER tile belongs to that tile's card; an entry with no tile (a mod loader's) is an
+        //extra way to run this one. A single-entry variant reads as its VARIANT name; a multi-entry one names each.
+        std::vector<std::string> Labels;
+        for (const std::string& Lb : N->EntrypointLabels())
+        {
+            const auto& Ep = N->Entries[Lb];
+            const bool OtherTile = !FaceUid.empty() && Ep.is_object() && Ep.contains("TILE") && Ep["TILE"].is_object()
+                                && Ep["TILE"].value("UID", std::string()) != FaceUid;
+            if (!OtherTile) Labels.push_back(Lb);
+        }
+        const bool Rec = std::find(N->Recommended.begin(), N->Recommended.end(), Face(N)) != N->Recommended.end();
+        const std::string NodeName = !N->Variant.empty() ? N->Variant : (!N->NodeId.empty() ? N->NodeId : Id);
         for (size_t I = 0; I < Labels.size(); ++I)
         {
             const auto& Ep = N->Entries[Labels[I]];
@@ -1139,6 +1140,7 @@ void PreLaunchWindow::onLaunchClicked()
     LaunchWorker->GlobalConfigJSON = *GlobalConfigJSON;
     LaunchWorker->LaunchNodeId     = LaunchNodeId;
     LaunchWorker->Entrypoint       = Entrypoint;
+    LaunchWorker->Face             = FaceUid;
     LaunchWorker->VariableOverrides = PickerVars;
     LaunchWorker->Grafts            = CollectGrafts();
     LaunchWorker->RunnerChain       = SelectedChain;                          // the full daisy-chain (innermost→outermost)

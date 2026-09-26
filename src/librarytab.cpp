@@ -158,19 +158,25 @@ void LibraryTab::buildCards()
     //One tile per presentable GROUP of launchable nodes. Only HYDRATED groups (every edition's content present
     //locally) appear in the Library; un-hydrated ones live in the Available tab.
     const auto Hyd = PackageCatalog::HydrationMap(Model.catalogIndex());   // O(N+E) once — never per-launchable (deep chains → O(N²))
-    for (const std::vector<const Node*> & Group : PackageCatalog::PresentableGroups(Model.catalogIndex()))
+    for (const PackageCatalog::ShelfTile & Tile : PackageCatalog::ShelfTiles(Model.catalogIndex()))
     {
         std::vector<std::string> Ids;
         bool AllHydrated = true, HasContent = false;
-        for (const Node * N : Group)
+        for (const Node * N : Tile.Rows)
         {
             Ids.push_back(N->Key());
             auto H = Hyd.find(N->Key());
             if (H == Hyd.end() || !H->second.Hydrated) AllHydrated = false;
             if (H != Hyd.end() && H->second.HasContent) HasContent = true;
         }
-        if (!AllHydrated || Ids.empty() || !HasContent) continue;   // skip content-less/malformed (vacuously hydrated)
-        auto * c = new LibraryGameCard(Model.config(), &Model.catalogIndex(), std::move(Ids));
+        if (!AllHydrated || Ids.empty() || !HasContent)            // skip content-less/malformed (vacuously hydrated)
+        {
+            if (AllHydrated && !Ids.empty())                      // every row installed, yet nothing of its own on disk
+                LogOut("LibraryTab", "not shown: '" + Tile.Tile.value("TITLE", Tile.Uid) + "' (tile " + Tile.Uid
+                                     + ") — none of its rows has content of its own on disk");
+            continue;
+        }
+        auto * c = new LibraryGameCard(Model.config(), &Model.catalogIndex(), std::move(Ids), Tile.Uid);
         c->InitializeClassVariables();
         LibraryGameCards->append(c);
     }

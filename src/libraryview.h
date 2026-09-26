@@ -38,8 +38,9 @@ enum class SortMode { Name = 0, Date = 1, Series = 2 };
 class LibraryGameCard
 {
 public:
+    //One card = one tile (a presentable game): FaceUid is its UID, groupNodeIds its rows (RECOMMENDED first).
     LibraryGameCard(nlohmann::ordered_json * globalConfig, const NodeIndex * index,
-                    std::vector<std::string> groupNodeIds);
+                    std::vector<std::string> groupNodeIds, std::string faceUid);
 
     void InitializeClassVariables();
     void play();
@@ -47,9 +48,10 @@ public:
 
     const NodeIndex *        Index = nullptr;          // shared global node graph (owned by MainWindow)
     std::vector<std::string> GroupNodeIds;             // the tile's launchable node ids (editions; RECOMMENDED first)
-    std::string              RepNodeId;                // representative node (front of GroupNodeIds) for meta/cover/sort
-    QString                  GameKey;                 // tile grouping key (download tracking, repo grouping)
-    std::string              RepUid;                   // representative node UID (USERSETTINGS key)
+    std::string              RepNodeId;                // representative node (front of GroupNodeIds): bundle, runner gate
+    std::string              FaceUid;                  // the tile this card shows (title/cover/meta, %UID% at launch)
+    QString                  GameKey;                 // the card's identity: its tile UID (download tracking)
+    std::string              RepUid;                   // the family (%PackageUID%): the USERSETTINGS key
     QString                  GameTitle;
     std::filesystem::path    PackagePath;              // representative node's bundle dir
     bool                   Local = false;         // a locally-added package (bundle outside any repo) — paints a "LOCAL" badge

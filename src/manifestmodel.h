@@ -86,7 +86,13 @@ struct Node {
 //The global node graph: handle -> Node, built by scanning bundle dirs for node files.
 struct NodeIndex {
     std::map<std::string, Node> Nodes;
+    //The tiles: UID -> the tile (flat, merged across the library: its recommended variant's folded tile, else its first
+    //variant's), derived by DeriveFacts. A tile is one presentable game; a node may present several.
+    std::map<std::string, nlohmann::ordered_json> Tiles;
     const Node *Find(const std::string &NodeId) const;
+    //The tile a UID names (null when no node presents it).
+    const nlohmann::ordered_json *Tile(const std::string &Uid) const
+    { auto It = Tiles.find(Uid); return It == Tiles.end() ? nullptr : &It->second; }
 };
 
 namespace Fold { struct Library; struct Plan; }

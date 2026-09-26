@@ -569,7 +569,7 @@ void PkgActions::testLaunch(const std::string & NodeId)
     auto Idx = std::make_unique<NodeIndex>(Model->BuildExecIndex());
     if (!Idx->Find(NodeId))
     { tell("Test launch", "This node isn't in the catalog index yet — save the package first."); return; }
-    auto * Dlg = new PreLaunchWindow(Model->globalConfig(), Idx.get(), {NodeId}, Parent);
+    auto * Dlg = new PreLaunchWindow(Model->globalConfig(), Idx.get(), {NodeId}, std::string(), Parent);   // the node's first tile
     Dlg->setAttribute(Qt::WA_DeleteOnClose);
     //Hand ownership to the dialog: destroyed() fires before ~QObject finishes but after the dialog has stopped
     //using the index, and WA_DeleteOnClose means that is the only exit.

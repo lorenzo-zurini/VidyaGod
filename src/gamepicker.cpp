@@ -1,6 +1,6 @@
 #include "gamepicker.h"
 #include "libraryview.h"     // LibraryView + LibraryGameCard
-#include "packagecatalog.h"  // PresentableGroups
+#include "packagecatalog.h"  // ShelfTiles
 #include "covercache.h"      // lazy cover refresh
 #include "commonutils.h"     // Log*
 
@@ -51,14 +51,14 @@ void GamePicker::buildCards()
     qDeleteAll(Cards);
     Cards.clear();
 
-    // One card per presentable game group in this bundle.
-    for (const std::vector<const Node *> & Group : PackageCatalog::PresentableGroups(*Index))
+    // One card per tile in this bundle.
+    for (const PackageCatalog::ShelfTile & Tile : PackageCatalog::ShelfTiles(*Index))
     {
         std::vector<std::string> Ids;
-        Ids.reserve(Group.size());
-        for (const Node * N : Group) Ids.push_back(N->Key());
+        Ids.reserve(Tile.Rows.size());
+        for (const Node * N : Tile.Rows) Ids.push_back(N->Key());
         if (Ids.empty()) continue;
-        auto * c = new LibraryGameCard(Config, Index, std::move(Ids));
+        auto * c = new LibraryGameCard(Config, Index, std::move(Ids), Tile.Uid);
         c->InitializeClassVariables();
         Cards.append(c);
     }

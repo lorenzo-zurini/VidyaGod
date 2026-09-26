@@ -313,9 +313,18 @@ bool IsIpnsSource(const nlohmann::ordered_json &Source);
 // Build the global cross-bundle node graph from the configured CID package sources + locally-added bundles — the
 // node-native catalog source.
 NodeIndex BuildCatalogIndex(const nlohmann::ordered_json &GlobalConfigJSON);
-// Presentable launchable nodes (ROLE:"launchable" + META) grouped by GROUP for library tiles: one inner vector per
-// tile (the group's editions, RECOMMENDED first then by id). Groups are ordered by the recommended edition's title.
-std::vector<std::vector<const Node*>> PresentableGroups(const NodeIndex &Idx);
+// One presentable game on the shelf: a tile (its UID), its presentation (the merged tile), and its rows — the variant
+// nodes whose fold presents it.
+struct ShelfTile
+{
+    std::string Uid;
+    nlohmann::ordered_json Tile;
+    std::vector<const Node*> Rows;
+};
+// The shelf: one entry per tile UID (faces merged by UID across the library). A family nests by PARENTUID — the base
+// game, then its children by depth, then by title — and families order by the base game's title. Under a tile, the
+// variant RECOMMENDED under it comes first, then by VARIANT name. A variant presenting two tiles is a row under each.
+std::vector<ShelfTile> ShelfTiles(const NodeIndex &Idx);
 // The row a tile shows for a variant: the variant (a node with VARIANT) presenting tile Uid whose VARIANT is Variant;
 // with Variant empty, the tile's default row — the variant RECOMMENDED under it, else the first by VARIANT name. ""
 // when there is none, *Why saying what the tile offers instead.
@@ -363,7 +372,8 @@ std::vector<std::string> NodeContentCids(const NodeIndex &Idx, const std::string
 // ---- grafts ----
 // The grafts a row applies, in order (Fold::ApplyGrafts over the local grafts): Chosen = the instance's list, each
 // kept when it is offered with those before it applied (the rest go to *Dropped); nullopt = a fresh instance's list,
-// the grafts RECOMMENDED under the row's tile. A received browse stub never applies: it would mount un-hydrated.
+// the grafts RECOMMENDED under the row's tile (Builtins' %UID% when given — the launched tile — else the node's first).
+// A received browse stub never applies: it would mount un-hydrated.
 std::vector<std::string> AppliedGrafts(const NodeIndex &Idx, const std::string &LaunchNodeId, const GraftChoice &Chosen,
                                        const std::map<std::string, std::string> &Instance = {},
                                        const std::map<std::string, std::string> &Builtins = {},
@@ -378,7 +388,8 @@ bool MoveGraft(const NodeIndex &Idx, const std::string &LaunchNodeId, std::vecto
 // default order (LABEL, then CID); into *PreTicked, a fresh instance's list (AppliedGrafts with nullopt).
 std::vector<std::string> OfferedGrafts(const NodeIndex &Idx, const std::string &LaunchNodeId,
                                        std::vector<std::string> *PreTicked = nullptr,
-                                       const GraftChoice &Chosen = std::nullopt);
+                                       const GraftChoice &Chosen = std::nullopt,
+                                       const std::string &FaceUid = std::string());   // "" = the node's first tile
 
 // ---- grouping ----
 // Every launchable sharing this node's game (its pre-launch "tile group"), with NodeId first so it is preselected.

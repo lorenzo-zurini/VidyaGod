@@ -97,12 +97,18 @@ bool LaunchResolver::InitializeFromNode(struct ContainerParams &ContainerParams,
     const std::string LaunchKey = Launch->Key();
     const Fold::Library Lib = ManifestModel::LibraryOf(Idx);
 
+    //The launched TILE: the one asked for (a card is one tile; a version may present several), else the node's first.
+    const std::string Face = !CP.LaunchFace.empty() ? CP.LaunchFace : Launch->Uid;
+    if (!CP.LaunchFace.empty() && std::find(Launch->Faces.begin(), Launch->Faces.end(), Face) == Launch->Faces.end())
+    { LogErr("InitializeFromNode", "Node '" + LaunchId + "' does not present tile '" + Face + "'."); return false; }
+    const nlohmann::ordered_json *FaceTile = Idx.Tile(Face);
+    const nlohmann::ordered_json &FaceMeta = FaceTile ? *FaceTile : Launch->Meta;
     CP.subgame_id = LaunchId;  CP.VariantID = CP.Entrypoint.empty() ? "default" : CP.Entrypoint;
     CP.PackageUID = Launch->PackageUid.empty() ? LaunchId : Launch->PackageUid;
-    CP.PackageName= Launch->Meta.is_object() ? Launch->Meta.value("TITLE", LaunchId) : LaunchId;
+    CP.PackageName= FaceMeta.is_object() ? FaceMeta.value("TITLE", LaunchId) : LaunchId;
     CP.GameName   = CP.PackageName;
     CP.PackagePath= AppPaths::PackagePathOverride().empty() ? Launch->BundleDir : AppPaths::PackagePathOverride();  // --package-dir / in-package
-    CP.UMUID      = Launch->Meta.is_object() ? Launch->Meta.value("UMUID", std::string("0")) : "0";
+    CP.UMUID      = FaceMeta.is_object() ? FaceMeta.value("UMUID", std::string("0")) : "0";
 
     //Phase 1 reads the instance's values and the built-ins (%UID% = the launched face, %PackageUID% = its family).
     Fold::Vars Instance;
@@ -112,7 +118,7 @@ bool LaunchResolver::InitializeFromNode(struct ContainerParams &ContainerParams,
         for (const auto &[K, V] : CP.VariableOverrides) Instance[K] = V;
     }
     Fold::Vars Builtins = CP.GetVariablesMap();
-    Builtins["UID"] = Launch->Uid;
+    Builtins["UID"] = Face;
     Builtins["PackageUID"] = CP.PackageUID;
 
     //The grafts: the instance's list in its order — each applies when it is offered with those before it applied (a
@@ -140,8 +146,11 @@ bool LaunchResolver::InitializeFromNode(struct ContainerParams &ContainerParams,
         return false;
     }
 
-    //The entry that runs: the one named (the row's folded EXEC, grafts' entries included), else the first game entry.
+    //The entry that runs: the one named (the row's folded EXEC, grafts' entries included), else the launched tile's
+    //entry, else the first game entry.
     const nlohmann::ordered_json *Entry = nullptr;
+    const auto IsGame = [](const nlohmann::ordered_json &E) {
+        return !(E.contains("GUEST") && E["GUEST"].is_array() && !E["GUEST"].empty()) && E.contains("HOST"); };
     if (!CP.Entrypoint.empty())
     {
         if (!Plan.Exec.contains(CP.Entrypoint))
@@ -149,8 +158,13 @@ bool LaunchResolver::InitializeFromNode(struct ContainerParams &ContainerParams,
         Entry = &Plan.Exec[CP.Entrypoint];
     }
     else
+    {
         for (const auto &[L, E] : Plan.Exec.items())
-            if (!(E.contains("GUEST") && E["GUEST"].is_array() && !E["GUEST"].empty()) && E.contains("HOST")) { Entry = &E; break; }
+            if (IsGame(E) && E.contains("TILE") && E["TILE"].is_object() && E["TILE"].value("UID", std::string()) == Face) { Entry = &E; break; }
+        if (!Entry)
+            for (const auto &[L, E] : Plan.Exec.items())
+                if (IsGame(E)) { Entry = &E; break; }
+    }
     if (!Entry && !CP.AuthoringBare)
         LogWarn("InitializeFromNode", "Node '" + LaunchId + "' has no entry to run (nothing in its fold declares one) — not runnable.");
     CP.ComposedExec = Entry ? NodeLower::LowerEntry(*Entry) : nlohmann::ordered_json::object();

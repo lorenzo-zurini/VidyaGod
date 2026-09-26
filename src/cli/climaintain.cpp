@@ -187,17 +187,18 @@ int CliModes::RunMaintenanceModes(LaunchParameters &LaunchParameters, nlohmann::
     if (LaunchParameters.ListNodes)
     {
         NodeIndex Index = PackageCatalog::BuildCatalogIndex(GlobalConfigJSON);
-        auto Groups = PackageCatalog::PresentableGroups(Index);
+        const auto Tiles = PackageCatalog::ShelfTiles(Index);
         const auto Hyd = PackageCatalog::HydrationMap(Index);   // O(N+E) once, not per-launchable
-        LogOut("list-nodes", std::to_string(Groups.size()) + " library tile(s):");
-        for (const auto &G : Groups)
+        LogOut("list-nodes", std::to_string(Tiles.size()) + " library tile(s):");
+        for (const auto &T : Tiles)
         {
-            const Node *Rep = G.front();
             std::string Variants;
-            for (const Node *N : G)
-                Variants += " " + N->NodeId + ((Hyd.count(N->NodeId) && Hyd.at(N->NodeId).Hydrated) ? "[hydrated]" : "[remote]");
-            LogOut("list-nodes", "  " + (Rep->Meta.is_object() ? Rep->Meta.value("TITLE", Rep->NodeId) : Rep->NodeId)
-                   + "  (game " + Rep->GameKey() + "):" + Variants);
+            for (const Node *N : T.Rows)
+                Variants += " " + (N->Variant.empty() ? N->NodeId : N->Variant)
+                          + ((Hyd.count(N->Key()) && Hyd.at(N->Key()).Hydrated) ? "[hydrated]" : "[remote]");
+            const std::string Parent = T.Tile.value("PARENTUID", std::string());
+            LogOut("list-nodes", "  " + T.Tile.value("TITLE", T.Uid) + "  (tile " + T.Uid
+                   + (Parent.empty() ? std::string() : ", in " + Parent) + "):" + Variants);
         }
         return 0;
     }

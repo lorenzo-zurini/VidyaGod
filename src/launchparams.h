@@ -179,6 +179,7 @@ public:
                                                                     //wrapper's ContainerParams COPY owns the index for its
                                                                     //whole life (P7: removes the raw-pointer lifetime pact)
     std::string LaunchNodeId;                                       //PASSED — the launchable node to run
+    std::string LaunchFace;                                         //PASSED — the launched tile (its UID; "" = the node's first tile)
 
     //System Variables — queried from Qt at runtime
     std::string ScreenWidth;

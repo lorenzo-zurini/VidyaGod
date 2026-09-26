@@ -1518,75 +1518,72 @@ NodeIndex BuildCatalogIndex(const nlohmann::ordered_json &GlobalConfigJSON)
 
 std::string RowUnderTile(const NodeIndex &Idx, const std::string &Uid, const std::string &Variant, std::string *Why)
 {
-    //The tile's rows: every variant presenting it (a variant presenting two tiles is a row under each), in the
-    //shelf's order within a face — RECOMMENDED under it first, then by VARIANT name.
-    std::vector<const Node *> Rows;
-    for (const auto &[Id, N] : Idx.Nodes)
-        if (N.IsVariant() && N.Presentable() && std::find(N.Faces.begin(), N.Faces.end(), Uid) != N.Faces.end())
-            Rows.push_back(&N);
-    const auto Rec = [&](const Node *N) { return std::find(N->Recommended.begin(), N->Recommended.end(), Uid) != N->Recommended.end(); };
-    std::sort(Rows.begin(), Rows.end(), [&](const Node *A, const Node *B) {
-        if (Rec(A) != Rec(B)) return Rec(A);
-        if (A->Variant != B->Variant) return A->Variant < B->Variant;
-        return A->Key() < B->Key();
-    });
-    if (Rows.empty()) { if (Why) *Why = "no tile with UID '" + Uid + "' in the library"; return {}; }
-    if (Variant.empty()) return Rows.front()->Key();
-    for (const Node *N : Rows) if (N->Variant == Variant) return N->Key();
-    if (Why)
+    for (const ShelfTile &T : ShelfTiles(Idx))
     {
-        std::string Names;
-        for (const Node *N : Rows) Names += (Names.empty() ? "" : ", ") + N->Variant;
-        *Why = "tile '" + Uid + "' has no variant '" + Variant + "' (it has: " + Names + ")";
+        if (T.Uid != Uid) continue;
+        if (Variant.empty()) return T.Rows.front()->Key();
+        for (const Node *N : T.Rows) if (N->Variant == Variant) return N->Key();
+        if (Why)
+        {
+            std::string Names;
+            for (const Node *N : T.Rows) Names += (Names.empty() ? "" : ", ") + N->Variant;
+            *Why = "tile '" + Uid + "' has no variant '" + Variant + "' (it has: " + Names + ")";
+        }
+        return {};
     }
+    if (Why) *Why = "no tile with UID '" + Uid + "' in the library";
     return {};
 }
 
-std::vector<std::vector<const Node*>> PresentableGroups(const NodeIndex &Idx)
+std::vector<ShelfTile> ShelfTiles(const NodeIndex &Idx)
 {
-    //A card = a family (the root of the PARENTUID chain: the base game). Within it the faces nest by PARENTUID — the
-    //base game's first, then its children by depth, then by title; under each face its rows (variant nodes presenting
-    //it) with the RECOMMENDED one first, then by VARIANT name.
-    std::map<std::string, nlohmann::ordered_json> Tile;                 // face UID -> its merged tile (flat)
-    for (const auto &[Id, N] : Idx.Nodes)
-        if (N.Presentable() && !N.Uid.empty() && !Tile.count(N.Uid)) Tile[N.Uid] = N.Meta;
-    auto Depth = [&](std::string Uid) {
-        int D = 0;
-        std::set<std::string> Seen;
-        for (;;)
-        {
-            auto It = Tile.find(Uid);
-            if (It == Tile.end() || !It->second.contains("PARENTUID") || !Seen.insert(Uid).second) return D;
-            Uid = It->second["PARENTUID"].get<std::string>();
-            ++D;
-        }
+    auto Parent = [&](const std::string &Uid) {
+        const nlohmann::ordered_json *T = Idx.Tile(Uid);
+        return T && T->contains("PARENTUID") && (*T)["PARENTUID"].is_string() ? (*T)["PARENTUID"].get<std::string>() : std::string();
     };
     auto TitleOf = [&](const std::string &Uid) {
-        auto It = Tile.find(Uid);
-        return It == Tile.end() ? Uid : It->second.value("TITLE", Uid);
+        const nlohmann::ordered_json *T = Idx.Tile(Uid);
+        return T ? T->value("TITLE", Uid) : Uid;
     };
-    std::map<std::string, std::vector<const Node*>> Groups;
+    //A tile's chain up to its family root (root first): the sort key that keeps a family together, parent before child.
+    auto Chain = [&](std::string Uid) {
+        std::vector<std::string> Up;
+        std::set<std::string> Seen;
+        while (!Uid.empty() && Seen.insert(Uid).second) { Up.push_back(Uid); Uid = Parent(Uid); }
+        std::reverse(Up.begin(), Up.end());
+        return Up;
+    };
+    std::map<std::string, ShelfTile> ByUid;
     for (const auto &[Id, N] : Idx.Nodes)
-        if (N.IsVariant() && N.Presentable())
-            Groups[N.GameKey()].push_back(&N);
-    std::vector<std::vector<const Node*>> Out;
-    for (auto &[K, V] : Groups)
+        if (N.IsVariant())
+            for (const std::string &U : N.Faces)
+                if (const nlohmann::ordered_json *T = Idx.Tile(U))
+                {
+                    ShelfTile &S = ByUid[U];
+                    if (S.Uid.empty()) { S.Uid = U; S.Tile = *T; }
+                    S.Rows.push_back(&N);
+                }
+    std::vector<ShelfTile> Out;
+    for (auto &[U, S] : ByUid)
     {
-        std::stable_sort(V.begin(), V.end(), [&](const Node *A, const Node *B) {
-            const int Da = Depth(A->Uid), Db = Depth(B->Uid);
-            if (Da != Db) return Da < Db;
-            const std::string Ta = TitleOf(A->Uid), Tb = TitleOf(B->Uid);
-            if (Ta != Tb) return Ta < Tb;
-            const bool Ra = std::find(A->Recommended.begin(), A->Recommended.end(), A->Uid) != A->Recommended.end();
-            const bool Rb = std::find(B->Recommended.begin(), B->Recommended.end(), B->Uid) != B->Recommended.end();
-            if (Ra != Rb) return Ra;
+        const auto Rec = [&](const Node *N) { return std::find(N->Recommended.begin(), N->Recommended.end(), U) != N->Recommended.end(); };
+        std::stable_sort(S.Rows.begin(), S.Rows.end(), [&](const Node *A, const Node *B) {
+            if (Rec(A) != Rec(B)) return Rec(A);
             if (A->Variant != B->Variant) return A->Variant < B->Variant;
             return A->Key() < B->Key();
         });
-        Out.push_back(std::move(V));
+        Out.push_back(std::move(S));
     }
-    std::sort(Out.begin(), Out.end(), [&](const std::vector<const Node*> &A, const std::vector<const Node*> &B){
-        return TitleOf(A.front()->Uid) < TitleOf(B.front()->Uid);
+    //Families by their base game's title; within a family, parent before child, siblings by title.
+    std::stable_sort(Out.begin(), Out.end(), [&](const ShelfTile &A, const ShelfTile &B) {
+        const std::vector<std::string> Ca = Chain(A.Uid), Cb = Chain(B.Uid);
+        for (size_t I = 0; I < std::min(Ca.size(), Cb.size()); ++I)
+            if (Ca[I] != Cb[I])
+            {
+                const std::string Ta = TitleOf(Ca[I]), Tb = TitleOf(Cb[I]);
+                return Ta != Tb ? Ta < Tb : Ca[I] < Cb[I];
+            }
+        return Ca.size() < Cb.size();
     });
     return Out;
 }
@@ -1607,17 +1604,20 @@ std::vector<std::string> AppliedGrafts(const NodeIndex &Idx, const std::string &
     if (!L) return {};
     const Fold::Library Lib = ManifestModel::LibraryOf(Idx);
     const Fold::GraftIndex GIdx = Fold::BuildGraftIndex(Lib);
+    //The launched tile (%UID%, when the caller resolved one): what a fresh instance ticks is RECOMMENDED under IT.
+    const auto U = Builtins.find("UID");
+    const std::string Face = U != Builtins.end() && !U->second.empty() ? U->second : L->Uid;
     std::vector<std::string> Requested;
     if (Chosen)
         for (const std::string &G : *Chosen) { const Node *Gn = Idx.Find(G); Requested.push_back(Gn ? Gn->Key() : G); }
     else
-        Requested = Fold::ApplyGrafts(Lib, GIdx, L->Key(), Instance, Builtins, L->Uid, nullptr);
+        Requested = Fold::ApplyGrafts(Lib, GIdx, L->Key(), Instance, Builtins, Face, nullptr);
     //Only local grafts apply; judging the list again keeps a graft that needed a dropped one out as well.
     std::vector<std::string> Local;
     for (const std::string &G : Requested)
         if (LocalGraft(Idx, G)) Local.push_back(G);
         else if (Dropped) Dropped->push_back(G);
-    return Fold::ApplyGrafts(Lib, GIdx, L->Key(), Instance, Builtins, L->Uid, &Local, Dropped);
+    return Fold::ApplyGrafts(Lib, GIdx, L->Key(), Instance, Builtins, Face, &Local, Dropped);
 }
 
 bool MoveGraft(const NodeIndex &Idx, const std::string &LaunchNodeId, std::vector<std::string> &Ticked, size_t From,
@@ -1648,17 +1648,19 @@ bool MoveGraft(const NodeIndex &Idx, const std::string &LaunchNodeId, std::vecto
 }
 
 std::vector<std::string> OfferedGrafts(const NodeIndex &Idx, const std::string &LaunchNodeId, std::vector<std::string> *PreTicked,
-                                       const GraftChoice &Chosen)
+                                       const GraftChoice &Chosen, const std::string &FaceUid)
 {
     if (PreTicked) PreTicked->clear();
     const Node *L = Idx.Find(LaunchNodeId);
     if (!L) return {};
+    const std::string Face = FaceUid.empty() ? L->Uid : FaceUid;
+    const std::map<std::string, std::string> Builtins{ {"UID", Face} };
     const Fold::Library Lib = ManifestModel::LibraryOf(Idx);
-    const std::vector<std::string> Fresh = AppliedGrafts(Idx, LaunchNodeId, std::nullopt);
+    const std::vector<std::string> Fresh = AppliedGrafts(Idx, LaunchNodeId, std::nullopt, {}, Builtins);
     if (PreTicked) *PreTicked = Fresh;
-    const Fold::Plan P = Fold::Resolve(Lib, L->Key(), {}, {}, Chosen ? AppliedGrafts(Idx, LaunchNodeId, Chosen) : Fresh);
+    const Fold::Plan P = Fold::Resolve(Lib, L->Key(), {}, Builtins, Chosen ? AppliedGrafts(Idx, LaunchNodeId, Chosen, {}, Builtins) : Fresh);
     std::vector<std::string> Out;
-    for (const auto &G : Fold::OfferedGrafts(Lib, Fold::BuildGraftIndex(Lib), P, L->Uid).Offered)
+    for (const auto &G : Fold::OfferedGrafts(Lib, Fold::BuildGraftIndex(Lib), P, Face).Offered)
         if (LocalGraft(Idx, G)) Out.push_back(G);
     return Out;
 }
@@ -1933,11 +1935,10 @@ std::vector<std::string> GroupNodeIds(const NodeIndex &Idx, const std::string &L
     std::vector<std::string> Ids{LaunchNodeId};     // first ⇒ preselected in the variant picker
     const Node *N = Idx.Find(LaunchNodeId);
     if (!N) return Ids;
-    const std::string Key = N->GameKey();
-    for (const std::vector<const Node*> &Group : PresentableGroups(Idx))
-        for (const Node *G : Group)
-            if (G->GameKey() == Key && G->NodeId != LaunchNodeId)
-                Ids.push_back(G->NodeId);
+    for (const ShelfTile &T : ShelfTiles(Idx))
+        if (T.Uid == N->Uid)
+            for (const Node *G : T.Rows)
+                if (G->NodeId != LaunchNodeId) Ids.push_back(G->NodeId);
     return Ids;
 }
 

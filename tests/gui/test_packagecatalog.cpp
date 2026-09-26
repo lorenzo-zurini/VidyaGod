@@ -433,18 +433,25 @@ private slots:
         const auto Hit = Hyd.find(A->Key());
         QVERIFY2(Hit != Hyd.end() && !Hit->second.Hydrated, "a received, un-installed package must not count as hydrated");
 
-        // The card nests exactly as on the seeder: the expansion's tile is a child of the base game's (PARENTUID),
-        // so the expansion's row is under the family A.
+        // The shelf derives exactly as on the seeder: the expansion is its own tile, a child of the base game's
+        // (PARENTUID) — its own card, right after its family's base game — and each tile lists its own row.
         const Node * X = Idx.Find("a_x");
         QVERIFY(X);
         QCOMPARE(X->Uid, std::string("1x"));
         QCOMPARE(X->PackageUid, std::string("1"));
         QCOMPARE(A->Uid, std::string("1"));
         QCOMPARE(A->Meta.value("TITLE", std::string()), std::string("A"));
-        int Rows = 0;
-        for (const auto & G : PackageCatalog::PresentableGroups(Idx))
-            for (const Node * N : G) if (N->NodeId == "a_exec" || N->NodeId == "a_x") ++Rows;
-        QCOMPARE(Rows, 2);
+        std::vector<std::string> Order;
+        std::map<std::string, std::vector<std::string>> RowsOf;
+        for (const auto & T : PackageCatalog::ShelfTiles(Idx))
+        {
+            Order.push_back(T.Uid);
+            for (const Node * N : T.Rows) RowsOf[T.Uid].push_back(N->NodeId);
+        }
+        const auto Base = std::find(Order.begin(), Order.end(), std::string("1"));
+        QVERIFY2(Base != Order.end() && Base + 1 != Order.end() && *(Base + 1) == "1x", "the expansion's tile follows its base game's");
+        QCOMPARE(RowsOf["1"], std::vector<std::string>{"a_exec"});
+        QCOMPARE(RowsOf["1x"], std::vector<std::string>{"a_x"});
 
         // A HOSTILE snapshot (traversal in every routed field) must stay inside the CATALOG root.
         const json Evil = json::array({json{{"cid", Items[0].value("cid", std::string())}, {"node", "../../pwn"}, {"pkg", "../../.."}}});

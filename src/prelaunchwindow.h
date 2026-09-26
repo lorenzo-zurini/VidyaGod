@@ -43,7 +43,8 @@ public:
     PreLaunchWindow(
         nlohmann::ordered_json* GlobalConfigJSON,
         const NodeIndex*        Index,           // shared global node graph (owned by MainWindow)
-        std::vector<std::string> GroupNodeIds,   // the tile's launchable node ids (editions)
+        std::vector<std::string> GroupNodeIds,   // the tile's rows (variant node ids)
+        std::string             FaceUid = std::string(),   // the tile (its UID): title, cover, rows' entries, %UID%
         QWidget*                parent = nullptr);
 
     ~PreLaunchWindow() override;
@@ -77,6 +78,8 @@ private:
     void persistGlobalConfig();
     // The currently-selected launchable node (the chosen variant). nullptr if the group is empty.
     const Node* CurrentLaunch() const;
+    //The tile this window launches: its FaceUid, else (a caller that names none) the node's first tile.
+    std::string Face(const Node* N) const { return !FaceUid.empty() ? FaceUid : (N ? N->Uid : std::string()); }
     // Refresh the cover from the current variant's META.COVER.
     void RebuildCover();
     // Scale CoverPixmap to fit CoverLabel's current size (aspect-preserving) — called from RebuildCover + resizeEvent.
@@ -124,6 +127,7 @@ private:
     nlohmann::ordered_json* GlobalConfigJSON = nullptr;
     const NodeIndex*        Index            = nullptr;
     std::vector<std::string> GroupNodeIds;
+    std::string              FaceUid;
     std::string             LaunchNodeId;   // current variant's node id
     std::string             Entrypoint;     // current entry LABEL ("" = the default)
     std::string             BundleDir;      // current variant's bundle dir

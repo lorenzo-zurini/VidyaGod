@@ -168,22 +168,22 @@ int CliModes::RunAuditPackages(nlohmann::ordered_json &GlobalConfigJSON, const s
     //the launch window's variant combo, indistinguishable to the user. Found live: an obsolete Wipeout XL lobby
     //node (WOLOBBY.EXE, superseded by vglobby) kept its "Multiplayer (TCP/IP)" label next to the real one, so
     //which multiplayer you got depended on which identical entry you happened to click.
-    for (const auto &Group : PackageCatalog::PresentableGroups(Index))
+    for (const auto &Tile : PackageCatalog::ShelfTiles(Index))
     {
         std::map<std::string, std::vector<const Node *>> ByLabel;
-        for (const Node *N : Group)
+        for (const Node *N : Tile.Rows)
         {
             if (!Scope.empty())
             {
                 const std::string Dir = std::filesystem::path(N->BundleDir).filename().string();
                 if (N->NodeId != Scope && N->Uid != Scope && Dir != Scope && Dir.find(Scope) == std::string::npos) continue;
             }
-            //The name the picker SHOWS is face × VARIANT: "Reign of Chaos / v1.31.1" and "The Frozen Throne / v1.31.1"
-            //are distinguishable rows, so they are not duplicates. The entry label is NOT part of the key — entries
-            //fold along the chain and are "Play" on every version by design; two VARIANTS of one face with the same
-            //name are the real ambiguity.
-            const std::string Title = N->Meta.is_object() ? N->Meta.value("TITLE", std::string()) : std::string();
-            const std::string L = Title + "\x1f" + (!N->Variant.empty() ? N->Variant : (Title.empty() ? N->NodeId : Title));
+            //A row is named by its VARIANT on its tile's card: "v1.31.1" of Reign of Chaos and of The Frozen Throne are
+            //on different cards, so they are not duplicates. The entry label is NOT part of the key — entries fold
+            //along the chain and are "Play" on every version by design; two VARIANTS of one tile with the same name
+            //are the real ambiguity.
+            const std::string Title = Tile.Tile.value("TITLE", std::string());
+            const std::string L = Title + "\x1f" + (!N->Variant.empty() ? N->Variant : N->NodeId);
             ByLabel[L].push_back(N);
         }
         for (const auto &[Label, Ns] : ByLabel)

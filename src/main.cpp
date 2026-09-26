@@ -353,11 +353,11 @@ int main(int argc, char *argv[])
         NodeIndex PkgIndex;
         ManifestModel::ScanBundleNodes(LaunchParameters.HeadlessPackagePath.string(), PkgIndex);
         ManifestModel::DeriveFacts(PkgIndex);   // entries, runners and tiles are folded facts
-        auto Groups = PackageCatalog::PresentableGroups(PkgIndex);
+        const auto Groups = PackageCatalog::ShelfTiles(PkgIndex);
         if (Groups.empty())
         {
             QMessageBox::critical(nullptr, "VidyaGod",
-                "This folder has no launchable game in it (no presentable node group).");
+                "This folder has no launchable game in it (no variant presents a tile).");
             return 1;
         }
         //Multi-game bundle → a picker grid (clicking a game opens its PreLaunchWindow). Single game → straight to it.
@@ -368,8 +368,8 @@ int main(int argc, char *argv[])
             return Application.exec();
         }
         std::vector<std::string> GroupNodeIds;
-        for (const Node *N : Groups.front()) GroupNodeIds.push_back(N->NodeId);
-        PreLaunchWindow Dialog(&GlobalConfigJSON, &PkgIndex, GroupNodeIds);
+        for (const Node *N : Groups.front().Rows) GroupNodeIds.push_back(N->NodeId);
+        PreLaunchWindow Dialog(&GlobalConfigJSON, &PkgIndex, GroupNodeIds, Groups.front().Uid);
         Dialog.show();
         return Application.exec();
     }

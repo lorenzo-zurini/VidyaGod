@@ -6,6 +6,7 @@
 #include "manifestmodel.h"
 #include "containerwrapper.h"
 #include "ipfswrapper.h"
+#include "downloadqueue.h"   // CancelDownload
 #include "commonutils.h"
 #include "variantpicker.h"     // virtualized, searchable variant list — scales to any variant count
 #include "asyncwork.h"         // AsyncWork::Run — closure walks off the GUI thread, guarded by the dialog's lifetime
@@ -503,7 +504,8 @@ void DownloadManager::beginDownload(const QString &Key, const std::vector<std::s
     // completing download reassigns it (rebuildCatalog). (DEFPREFIX generation reads only the index, not the config.)
     NodeIndex Snapshot = Model.catalogIndex();
     nlohmann::ordered_json ConfigSnap = Model.config() ? *Model.config() : nlohmann::ordered_json::object();
-    std::thread([this, LaunchIds, RunnerIds, Toggles, Key, Snapshot = std::move(Snapshot), ConfigSnap = std::move(ConfigSnap)]{
+    //Owned, not detached: the destructor cancels and joins it, so it never posts to a destroyed manager.
+    Workers.emplace_back([this, LaunchIds, RunnerIds, Toggles, Key, Snapshot = std::move(Snapshot), ConfigSnap = std::move(ConfigSnap)]{
         std::string Err; bool Ok = true;
         // A RECEIVED package's closure is incomplete (only its exec + tile were shared) — complete it FIRST, through
         // the same rolling queue (CompleteClosure: each missing node block is a plain FetchTarget into the package
@@ -598,7 +600,17 @@ void DownloadManager::beginDownload(const QString &Key, const std::vector<std::s
             Model.rebuildCatalog();       // emits catalogChanged → Catalog rebuild + Library rebuild + IPFS refresh
             emit transfersChanged();
         }, Qt::QueuedConnection);
-    }).detach();
+    });
+}
+
+DownloadManager::~DownloadManager()
+{
+    //Make every fetch this manager started return (a cancelled CID fails its batch), then wait for the workers: none
+    //may still be running, or inside Qt, once the manager and the application are gone. A worker's last act posts its
+    //result to this manager, which is still whole while it waits here; Qt drops that event with the object.
+    for (auto It = DownloadCidToUid.constBegin(); It != DownloadCidToUid.constEnd(); ++It)
+        IpfsWrapper::CancelDownload(It.key().toStdString());
+    for (std::thread &T : Workers) if (T.joinable()) T.join();
 }
 
 // ── Persistence of in-flight downloads (Settings.ActiveDownloads) so a crash/close resumes them next launch ──
