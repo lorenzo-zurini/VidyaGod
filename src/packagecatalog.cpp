@@ -1144,7 +1144,7 @@ std::vector<ReceivedFetch> PlanReceivedFetches(const nlohmann::ordered_json &Glo
     if (!Libs.is_object()) return Out;
     const fs::path Root = fs::path(CatalogRootDir(GlobalConfigJSON));   // received stubs live in CATALOG, not LIBRARY
     std::map<std::string, std::string> DestCid;   // dest → the CID that claimed it (the same CID twice = one target)
-    auto Add = [&](const std::string &Cid, fs::path Dest) {
+    auto Add = [&](const std::string &Cid, fs::path Dest, const std::string &LibName) {
         if (Cid.empty() || Cid.size() > 128) return;
         // Two packages sharing a dir name map to the same dir: the second gets a CID-qualified name instead of being
         // silently dropped.
@@ -1154,7 +1154,12 @@ std::vector<ReceivedFetch> PlanReceivedFetches(const nlohmann::ordered_json &Glo
             Dest = Dest.parent_path() / (Dest.filename().string() + " (" + Cid.substr(0, 12) + ")");
             if (DestCid.count(Dest.string())) return;
         }
-        DestCid[Dest.string()] = Cid;
+        DestCid[Dest.string()] = Cid;   // claimed even when installed: the name the other package gets depends on it
+        // A package the library already holds under this library and dir name was INSTALLED (adopted out of
+        // CATALOG) or authored here: it is ours now and is not re-landed as a stub beside itself. Its FINAL name:
+        // the unqualified one said "installed" for both of two colliding packages, or re-planned the installed one.
+        std::error_code Ec;
+        if (fs::is_directory(fs::path(LibraryRootDir(GlobalConfigJSON)) / SafeSegment(LibName) / Dest.filename(), Ec)) return;
         Out.push_back(ReceivedFetch{Cid, (Dest / kPackageFolderDir).string()});
     };
     size_t Total = 0;   // snapshot-wide bound (a hostile friend could send many libs x many items)
@@ -1188,11 +1193,7 @@ std::vector<ReceivedFetch> PlanReceivedFetches(const nlohmann::ordered_json &Glo
             std::string PkgSeg = It.value("pkg", std::string());
             if (PkgSeg.empty()) PkgSeg = It.value("node", std::string());
             if (PkgSeg.empty()) PkgSeg = Cid.substr(0, 12);
-            // A package the library already holds under this library and dir name was INSTALLED (adopted out of
-            // CATALOG) or authored here: it is ours now and is not re-landed as a stub beside itself.
-            std::error_code Ec;
-            if (fs::is_directory(fs::path(LibraryRootDir(GlobalConfigJSON)) / SafeSegment(LibName) / SafeSegment(PkgSeg), Ec)) continue;
-            Add(Cid, LibDir / SafeSegment(PkgSeg));
+            Add(Cid, LibDir / SafeSegment(PkgSeg), LibName);
         }
     }
     return Out;

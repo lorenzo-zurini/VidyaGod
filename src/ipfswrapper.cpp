@@ -109,6 +109,7 @@ DownloadSlot::~DownloadSlot()
 ForegroundHold::ForegroundHold() : Handle(VgNetHold()) {}
 ForegroundHold::~ForegroundHold() { VgNetRelease(Handle); }
 bool DebugNetForegroundIdle() { return VgDebugNetForegroundIdle() != 0; }
+long long DebugNetHolds() { return VgDebugNetHolds(); }
 
 void RequestCancel(const std::string &Cid) { VgRequestCancel(Cid.c_str()); }
 void ClearCancel(const std::string &Cid)   { VgClearCancel(Cid.c_str()); }

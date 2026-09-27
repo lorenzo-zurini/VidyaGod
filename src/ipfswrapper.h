@@ -135,6 +135,7 @@ private:
     long long Handle = 0;   // VgNetHold
 };
 bool DebugNetForegroundIdle();   // TEST ONLY: no fetch holds or waits for a slot, nobody holds the foreground
+long long DebugNetHolds();       // TEST ONLY: foreground holds taken since start
 
 // One file to fetch: its CID, the destination path, and whether a failure is tolerable (covers are optional).
 struct FetchTarget {

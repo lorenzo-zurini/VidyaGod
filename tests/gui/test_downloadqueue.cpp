@@ -91,8 +91,10 @@ private slots:
     // failed every later install with "already exists"). A sibling folder that merely starts the same is untouched,
     // and the landed folder's own redirect (its files moved up) wins over the package's. Teeth: drop the redirect in
     // EnqueueBatch (the dest stays under CATALOG), or the longest-prefix choice (.package lands under .package).
-    // Teeth: drop the "move still true" check in RedirectedLocked and the re-received stub is sent to the deleted
-    // package; match only paths under the folder and the folder itself is not redirected.
+    // A file under a moved folder lands where the folder is now; a FOLDER target is never redirected (a folder fetch
+    // replaces its destination whole: a received package folder sent onto the installed package deleted the game);
+    // the move ends when the package is landed as a stub again. Teeth: redirect Dir targets too and the package folder
+    // lands on the installed package; drop DropRedirectsUnder's erase and the re-received stub's file is redirected.
     void aRequestForAMovedFolderLandsWhereItIsNow()
     {
         QTemporaryDir dir; QVERIFY(dir.isValid());
@@ -107,11 +109,12 @@ private slots:
         QCOMPARE(IpfsWrapper::QueueDestForCid("CID_DQ_MOVED"), Lib + "/n.json");
         QCOMPARE(IpfsWrapper::QueueDestForCid("CID_DQ_LANDED"), Lib + "/m.json");
         QCOMPARE(IpfsWrapper::QueueDestForCid("CID_DQ_SIBLING"), (dir.path() + "/CATALOG/Alice - Games/[1] AB/s.json").toStdString());
-        // The folder itself (a landed package folder is fetched AS a folder: no trailing slash).
-        QCOMPARE(IpfsWrapper::Redirected(Cat + "/.package"), Lib);
-        // The installed package deleted, the package received again: a new stub at the old place, not the deleted one.
-        std::filesystem::remove_all(Lib);
-        std::filesystem::create_directories(Cat + "/.package");
+        IpfsWrapper::EnqueueBatch({IpfsWrapper::FetchTarget{"CID_DQ_FOLDER", Cat + "/.package", /*Optional=*/true, /*Dir=*/true}});
+        QCOMPARE(IpfsWrapper::QueueDestForCid("CID_DQ_FOLDER"), Cat + "/.package");      // a folder target: never redirected
+        IpfsWrapper::EnqueueBatch({IpfsWrapper::FetchTarget{"CID_DQ_UNDER", Cat + "/.package/sub", /*Optional=*/true, /*Dir=*/true}});
+        QCOMPARE(IpfsWrapper::QueueDestForCid("CID_DQ_UNDER"), Cat + "/.package/sub");
+        // The installed package deleted, the package landed as a stub again: its moves are over.
+        IpfsWrapper::DropRedirectsUnder(Cat);
         IpfsWrapper::EnqueueBatch({{"CID_DQ_AGAIN", Cat + "/.package/n.json", /*Optional=*/true}});
         QCOMPARE(IpfsWrapper::QueueDestForCid("CID_DQ_AGAIN"), Cat + "/.package/n.json");
         IpfsWrapper::DebugResetQueue();

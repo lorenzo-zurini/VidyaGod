@@ -303,7 +303,10 @@ BatchHandle EnqueueBatch(const std::vector<FetchTarget> &Targets)
         std::lock_guard<std::mutex> Lk(Q().Mu);
         for (const FetchTarget &T0 : Targets) {
             FetchTarget T = T0;
-            T.LocalPath = RedirectedLocked(T.LocalPath);   // a folder moved since the caller read it: land where it is now
+            // A file under a folder moved since the caller read it lands where the folder is now. Never a FOLDER target:
+            // a folder fetch replaces its destination whole, and a received package folder redirected onto the
+            // installed package deleted the game.
+            if (!T.Dir) T.LocalPath = RedirectedLocked(T.LocalPath);
             Handle.Items.emplace_back(T.Cid, T.Optional);
             if (Q().Closed) {                                 // shutting down: the request fails at once, never waits
                 Job &J = Q().Jobs[T.Cid];
@@ -489,28 +492,13 @@ bool WaitBatch(const BatchHandle &Handle, int TimeoutMs, std::string *Error)
 
 bool WaitBatch(const BatchHandle &Handle, std::string *Error) { return WaitBatch(Handle, 0, Error); }
 
-// The path's place now: under the longest moved folder it names (or that folder itself), rewritten to where that folder
-// went. A move holds while it is still true — the folder is gone from where it was and present where it went: an
-// installed package deleted and received again is a new stub at the old place, never sent to the deleted one.
-// A move no longer true is forgotten. Q().Mu held.
+// The path's place now: under the longest moved folder it lies in, rewritten to where that folder went. Q().Mu held.
 static std::string RedirectedLocked(const std::string &Path)
 {
-    namespace fs = std::filesystem;
-    const std::string Dir = Path.empty() || Path.back() == '/' ? Path : Path + "/";   // matches the folder itself too
-    for (;;)
-    {
-        auto Best = Q().Moved.end();
-        for (auto It = Q().Moved.begin(); It != Q().Moved.end(); ++It)
-            if (Dir.compare(0, It->first.size(), It->first) == 0 && (Best == Q().Moved.end() || It->first.size() > Best->first.size()))
-                Best = It;
-        if (Best == Q().Moved.end()) return Path;
-        std::error_code Ec;
-        const fs::path From(Best->first.substr(0, Best->first.size() - 1)), To(Best->second.substr(0, Best->second.size() - 1));
-        if (fs::exists(To, Ec) && !fs::exists(From, Ec))
-            return Dir.size() == Best->first.size() && Path.back() != '/' ? To.string()                 // the folder itself
-                                                                           : Best->second + Path.substr(Best->first.size());
-        Q().Moved.erase(Best);
-    }
+    const std::pair<const std::string, std::string> *Best = nullptr;
+    for (const auto &M : Q().Moved)
+        if (Path.compare(0, M.first.size(), M.first) == 0 && (!Best || M.first.size() > Best->first.size())) Best = &M;
+    return Best ? Best->second + Path.substr(Best->first.size()) : Path;
 }
 
 std::string Redirected(const std::string &Path)
@@ -524,6 +512,14 @@ void RedirectDestsUnder(const std::string &From, const std::string &To)
     auto Slash = [](const std::string &D) { return D.empty() || D.back() == '/' ? D : D + "/"; };
     std::lock_guard<std::mutex> Lk(Q().Mu);
     Q().Moved[Slash(From)] = Slash(To);
+}
+
+void DropRedirectsUnder(const std::string &Dir)
+{
+    const std::string Prefix = Dir.empty() || Dir.back() == '/' ? Dir : Dir + "/";
+    std::lock_guard<std::mutex> Lk(Q().Mu);
+    for (auto It = Q().Moved.begin(); It != Q().Moved.end();)
+        It = It->first.compare(0, Prefix.size(), Prefix) == 0 ? Q().Moved.erase(It) : std::next(It);
 }
 
 void ForgetDestsUnder(const std::string &Dir)

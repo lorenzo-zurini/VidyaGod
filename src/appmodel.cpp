@@ -918,6 +918,9 @@ void AppModel::enqueueReceivedShares(const QString & peer)
         // its job already wrote is a no-op at enqueue), and the Go fetch hash-verifies a reused dest exactly —
         // overwriting a stale file, no-oping a current one.
         FriendBrowseCids.insert(T.Cid);
+        // Planned = not installed (the planner skips what the library holds): an install's redirect of this package
+        // dir is over — the package was deleted from the library, and lands here as a stub again.
+        IpfsWrapper::DropRedirectsUnder(std::filesystem::path(T.Dest).parent_path().string());
         Batch.push_back(IpfsWrapper::FetchTarget{ T.Cid, T.Dest, /*Optional=*/true, /*Dir=*/true, /*Verify=*/true });
     }
     if (!Batch.empty()) IpfsWrapper::EnqueueBatch(Batch);

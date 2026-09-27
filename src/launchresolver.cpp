@@ -94,26 +94,9 @@ std::string LaunchResolver::GuestToLayout(struct ContainerParams &CP, const std:
         VarSubst::StringVariableSubstitution(R, Vars);
         Drives[D] = R;
     }
-    return Fold::ToLayout(P, Drives);
-}
-
-std::string LaunchResolver::UnmappedAnchor(struct ContainerParams &CP)
-{
-    if (!CP.GuestRoots.is_object() || !CP.Drives.is_object() || CP.Drives.empty()) return {};   // no guest to map into
-    const std::map<std::string, std::string> Vars = CP.GetVariablesMap();
-    for (const auto &[A, V] : CP.GuestRoots.items())
-    {
-        if (A.size() < 3) continue;
-        const auto It = Vars.find(A.substr(1, A.size() - 2));
-        if (It == Vars.end()) continue;
-        const std::string &G = It->second;
-        if (G.size() < 2 || !std::isalpha(static_cast<unsigned char>(G[0])) || G[1] != ':') continue;
-        bool Mapped = false;
-        for (const auto &[D, To] : CP.Drives.items())
-            Mapped |= D.size() == 2 && D[1] == ':' && std::tolower(static_cast<unsigned char>(D[0])) == std::tolower(static_cast<unsigned char>(G[0]));
-        if (!Mapped) return "GUEST_ROOTS " + A + " resolves to " + G + ", on drive " + G.substr(0, 2) + ", which DRIVES does not lay out";
-    }
-    return {};
+    std::string Out = Fold::ToLayout(P, Drives);
+    if (Out == P) CP.UnmappedPlacements.push_back(P);   // no drive holds it: it would land in a literal "E:" folder
+    return Out;
 }
 
 nlohmann::ordered_json LaunchResolver::AnchorRegEdits(struct ContainerParams &CP, nlohmann::ordered_json Edits)
@@ -334,10 +317,17 @@ bool LaunchResolver::InitializeFromNode(struct ContainerParams &ContainerParams,
 
     DerivePaths(CP, GlobalConfigJSON);
     ResolveCustomVariables(ComponentPool, CP, GlobalConfigJSON);
-    //An anchor spelled from a variable ("%X%", X = "E:\\") is known only now — CheckLayer sees literal drives only. On a
-    //drive DRIVES does not lay out, every file placed through it would land in a literal "E:" folder, silently.
-    if (const std::string Why = UnmappedAnchor(CP); !Why.empty()) { LogErr("InitializeFromNode", Why); return false; }
+    //A place spelled from a variable ("%X%", X = "E:\\") is known only now — CheckLayer sees literal drives only. A
+    //layer placed on a drive DRIVES does not lay out would land in a literal "E:" folder, silently: refused. (An
+    //anchor only named in a value or an argument is not placed, and fine.)
+    CP.UnmappedPlacements.clear();
     BuildSubComponentsArray(ComponentPool, CP);
+    if (!CP.UnmappedPlacements.empty())
+    {
+        LogErr("InitializeFromNode", "'" + CP.UnmappedPlacements.front() + "' is placed on drive "
+               + CP.UnmappedPlacements.front().substr(0, 2) + ", which the runner's DRIVES does not lay out");
+        return false;
+    }
     //A prefix-generating runner assembles the prefix from RUNTIME-SOURCED layers (a %variable% PATH resolved against
     //the live runner mount: default_pfx, the builtin DLL dirs). They are the BASE SYSTEM — prepended beneath the game
     //so a package's native DLLs win over wine's builtins at the same path. A layer with real bytes is the runner

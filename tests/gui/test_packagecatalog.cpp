@@ -299,6 +299,23 @@ private slots:
         IpfsWrapper::StopNode();
     }
 
+    // Two packages whose names collide ("Foo:1", "Foo?1" → "Foo_1") land as Foo_1 and "Foo_1 (<cid>)". Installed is
+    // judged by the FINAL name: the qualified one installed is not planned again (planned, its folder fetch was
+    // redirected onto the installed package and deleted it), and the unqualified one, not installed, still is.
+    // Teeth: check the unqualified name again and the installed qualified package is re-planned.
+    void a_colliding_package_is_judged_installed_by_its_final_name()
+    {
+        QTemporaryDir RxData; QVERIFY(RxData.isValid());
+        json rx = json{{"Settings", {{"Paths", {{"LibraryRoot", (RxData.path() + "/LIBRARY").toStdString()}}}}}};
+        const json Items = json::array({ json{{"cid", "bafyfirstpackage0"}, {"pkg", "Foo:1"}},
+                                         json{{"cid", "bafysecondpackage"}, {"pkg", "Foo?1"}} });
+        std::filesystem::create_directories(RxData.path().toStdString() + "/LIBRARY/Games/Foo_1 (bafysecondpa)");
+        const auto Plan = PackageCatalog::PlanReceivedFetches(rx, "Alice", json{{"Games", Items}});
+        QCOMPARE((int)Plan.size(), 1);
+        QCOMPARE(Plan[0].Cid, std::string("bafyfirstpackage0"));
+        QVERIFY2(Plan[0].Dest.find("Foo_1/.package") != std::string::npos, Plan[0].Dest.c_str());
+    }
+
     // One entry = one package folder, landing in <pkg dir>/.package. Two folders naming the same package dir (only
     // a hostile or a mid-change snapshot does that) both land, the second under a CID-qualified dir; the same CID
     // twice is one target.
@@ -658,7 +675,10 @@ private slots:
         QVERIFY(!LibCid.empty());
         NodeIndex Before = PackageCatalog::BuildCatalogIndex(rx);
         QVERIFY2(PackageCatalog::NodeClosureIncomplete(Before, "c_exec"), "precondition: the library node is missing");
+        const long long Holds = IpfsWrapper::DebugNetHolds();
         QVERIFY2(PackageCatalog::CompleteClosure(Before, "c_exec", &Err), Err.c_str());
+        // Wave after wave, it holds the network queue's foreground (no gap for provider walks). Teeth: drop its hold.
+        QVERIFY2(IpfsWrapper::DebugNetHolds() > Holds, "CompleteClosure fetched in waves without holding the foreground");
         const QString PkgDir = QString::fromStdString(Catalog) + "/Alice - Games/[3] C";
         QVERIFY2(QFile::exists(PkgDir + "/" + QString::fromStdString(LibCid) + ".json"), "the library node landed CID-named in the package dir");
 
@@ -865,7 +885,9 @@ private slots:
         // A node the folder did not bring is fetched ON ITS OWN into the landed folder — a file referenced in place
         // (LandReceivedPackages). Make a_exec one of those, so installing has a reference under .package to carry.
         std::filesystem::remove(Stub / ".package" / (ACid + ".json"));
+        const long long Holds = IpfsWrapper::DebugNetHolds();
         QVERIFY2(PackageCatalog::LandReceivedPackages(rx, &Err), Err.c_str());
+        QVERIFY2(IpfsWrapper::DebugNetHolds() > Holds, "LandReceivedPackages fetched package after package without holding the foreground");
         QVERIFY2(IpfsWrapper::HasLocal(ACid) && !IpfsWrapper::CidMissing(ACid), "precondition: the landed node is held, referenced in place");
 
         std::filesystem::path NewDir;

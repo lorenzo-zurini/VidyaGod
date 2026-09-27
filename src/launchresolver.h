@@ -103,9 +103,6 @@ nlohmann::ordered_json AnchorRegEdits(struct ContainerParams &ContainerParams, n
 
 //Each anchor this runtime maps, with where it lands in the runtime's layout (%GameDir% → pfx/drive_c/802).
 std::vector<std::pair<std::string, std::string>> AnchorLayouts(struct ContainerParams &ContainerParams);
-//Why the runtime cannot lay out an anchor — one resolving, through its variables, onto a drive DRIVES does not map — or
-//"" when every anchor lands somewhere.
-std::string UnmappedAnchor(struct ContainerParams &ContainerParams);
 //A runner's build: its own node resolved (Fold) and lowered in its own layout — the ops a launch mounts at the runner
 //mount (real bytes), assembles into the prefix (%runtime% layers) and applies (edits, registry, DLLs, variables).
 nlohmann::ordered_json RunnerOps(const NodeIndex &Idx, const std::string &RunnerId, Fold::Plan *PlanOut = nullptr);

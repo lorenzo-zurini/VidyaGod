@@ -169,6 +169,7 @@ public:
     //(a registry InstallPath, an argument) gets the guest path, a file it places gets the layout path.
     nlohmann::ordered_json GuestRoots;
     nlohmann::ordered_json Drives;
+    std::vector<std::string> UnmappedPlacements;  //guest paths placed on a drive DRIVES does not lay out (GuestToLayout)
     //The instance's graft list, in order (later = applied later = wins at a conflict). Unset = the grafts offered to
     //this row that are RECOMMENDED under its tile (a fresh instance). PASSED (instance GRAFTS / --graft).
     std::optional<std::vector<std::string>> Grafts;

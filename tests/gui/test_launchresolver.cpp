@@ -1173,19 +1173,30 @@ private slots:
     }
 
     // What an installer wrote (a captured registry delta) comes back spelled by anchor; the rest untouched.
-    // An anchor spelled from a variable is known only at launch; one on a drive the runner does not lay out is refused
-    // there (its files would land in a literal "E:" folder), a mapped one is fine. Teeth: return "" from UnmappedAnchor
-    // and the E: anchor passes; compare the drive case-sensitively and "c:" is refused.
-    void an_anchor_resolving_onto_an_unmapped_drive_is_refused()
+    // A place spelled from a variable is known only at launch. A layer placed through an anchor that resolves onto a drive
+    // the runner does not lay out is refused (its files would land in a literal "E:" folder); the same anchor only named
+    // in an argument places nothing and launches. Teeth: drop the check after BuildSubComponentsArray and the E: layer
+    // launches; refuse on any unmapped anchor, or count every placement, and the second launch is refused.
+    void a_layer_placed_on_an_unmapped_drive_is_refused()
     {
-        ContainerParams cp("/tmp/vg_bundle"); cp.PackageUID = "802"; cp.PrefixRoot = "pfx";
-        cp.Drives = { {"C:", "%PrefixRoot%/drive_c"} };
-        cp.GuestRoots = { {"%GameDir%", "c:\\%PackageUID%"}, {"%Media%", "%MEDIA%"} };
-        cp.CustomVariables["MEDIA"] = "C:\\media";
-        QCOMPARE(LaunchResolver::UnmappedAnchor(cp), std::string());
-        cp.CustomVariables["MEDIA"] = "E:\\";
-        const std::string Why = LaunchResolver::UnmappedAnchor(cp);
-        QVERIFY2(Why.find("%Media%") != std::string::npos && Why.find("E:") != std::string::npos, Why.c_str());
+        const json Wine = json{{"GUEST_ROOTS", {{"%GameDir%", "C:\\%PackageUID%"}, {"%Media%", "%MEDIA%"}}},
+                               {"DRIVES", {{"C:", "%PrefixRoot%/drive_c"}}}};
+        const json Media = json{{"VARS", {{"MEDIA", {{"DEFAULT", "E:\\"}}}}}};
+        const auto launch = [&](const json &Entry, const json &Layers) {
+            NodeIndex idx;
+            idx.Nodes["wine"] = runnerNode("wine", {"win32"}, {}, Wine);
+            idx.Nodes["game"] = launchNode("game", "win32", {}, Entry, Layers);
+            finish(idx);
+            ContainerParams cp("/tmp/vg_bundle");
+            cp.NodeIdx = &idx; cp.LaunchNodeId = "game";
+            json pool = json::object();
+            return LaunchResolver::InitializeFromNode(cp, pool, json{{"Settings", json::object()}});
+        };
+        QVERIFY2(!launch(json::object(), json::array({ Media, json{{"DIR", "music"}, {"TARGET", "FILES/%Media%/music"}} })),
+                 "a layer placed on E:, which DRIVES does not lay out, launched");
+        QVERIFY2(launch(json{{"ARGS", json::array({"-cd=%Media%"})}},
+                        json::array({ Media, json{{"DIR", "cfg"}, {"TARGET", "FILES/%GameDir%/cfg"}} })),   // C: is laid out
+                 "an anchor only named in an argument (beside a layer placed on a mapped drive) refused the launch");
     }
 
     void captured_registry_values_are_respelled_by_anchor()

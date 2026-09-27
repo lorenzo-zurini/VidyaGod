@@ -161,8 +161,12 @@ private slots:
         IpfsModel ipfs(model);
         DownloadManager dm(model, ipfs, nullptr);
         QSignalSpy Finished(&dm, &DownloadManager::downloadFinished);
+        const long long Holds = IpfsWrapper::DebugNetHolds();
         dm.beginDownload("9", {NKey}, {}, {});
         QTRY_COMPARE_WITH_TIMEOUT(Finished.count(), 1, 30000);                 // nothing to fetch: done at once
+        // A download's whole run holds the network queue's foreground — its own hold around the closure, install and
+        // content steps, besides the content fetch's. Teeth: drop the worker's hold and only the fetch's is taken.
+        QVERIFY2(IpfsWrapper::DebugNetHolds() - Holds >= 2, "the download worker ran without holding the foreground");
         dm.beginDownload("9", {NKey}, {}, {});
         QCOMPARE(dm.workerCount(), 1);                                        // the first was joined, not kept
         QTRY_COMPARE_WITH_TIMEOUT(Finished.count(), 2, 30000);

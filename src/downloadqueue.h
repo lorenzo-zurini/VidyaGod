@@ -60,6 +60,8 @@ void ForgetDestsUnder(const std::string &Dir);
 void RedirectDestsUnder(const std::string &From, const std::string &To);
 // Where a path is now: rewritten under the longest folder moved by RedirectDestsUnder, else unchanged.
 std::string Redirected(const std::string &Path);
+// The moves of Dir and of folders under it no longer hold (the package is landed there again as a stub): forget them.
+void DropRedirectsUnder(const std::string &Dir);
 
 // Move a still-queued CID ahead of all other queued jobs so the dispatcher picks it next. No-op once it is active/done.
 void PrioritizeDownload(const std::string &Cid);
