@@ -687,9 +687,6 @@ HealReport HealSourceContent(const nlohmann::ordered_json &GlobalConfigJSON, con
                                       : (Src.is_string() ? Src.get<std::string>() : std::string());
                 if (!Cid.empty()) Referenced.insert(Cid);
             }
-        if (S.contains("PackageCids") && S["PackageCids"].is_object())
-            for (const auto &[Key, Val] : S["PackageCids"].items())
-                if (Val.is_string() && !Val.get<std::string>().empty()) Referenced.insert(Val.get<std::string>());
     }
     // The published packages: each row's share folder (manifest + node files) and pin folder (+ its content), both
     // pinned recursively — dropping one unshares the package from every friend or every pinning service.

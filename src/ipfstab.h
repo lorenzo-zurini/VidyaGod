@@ -44,6 +44,8 @@ private:
     void buildUi();
     QWidget * buildSidebar();                            // the Status + Categories filter lists
     QTreeWidgetItem * ensureLeaf(const QString & cid);   // find/create a CID's leaf under its category→package group
+    QTreeWidgetItem * ensureGroup(const QString & cid);             // find/create the package group row a CID belongs to
+    QTreeWidgetItem * ensurePackageRow(const QString & cid);        // a package's own folder CID: its group row
     void renderLeaf(const QString & cid);                // paint one CID's columns from the model's CidState
     void removeLeaf(const QString & cid);                // drop a CID's leaf
     void reconcile();                                    // full rebuild from the model's CID set (on modelReset)
@@ -81,6 +83,7 @@ private:
     QHash<QString, QTreeWidgetItem*> IpfsPinSourceGroups; // "Content\x1f<source>" → source row (Content only; the extra tier that splits runners/games/libraries apart)
     QHash<QString, QTreeWidgetItem*> IpfsPinGroups;       // package group row: "<cat>\x1f<pkg>" (Assets/Meta) or "Content\x1f<source>\x1f<pkg>" (Content)
     QHash<QString, QTreeWidgetItem*> IpfsPinChildren;     // CID → leaf row
+    QHash<QString, QTreeWidgetItem*> IpfsPkgRows;         // package folder CID → its package group row (painted there)
 };
 
 #endif // IPFSTAB_H

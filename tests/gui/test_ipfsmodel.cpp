@@ -7,9 +7,11 @@
 #include <QTemporaryDir>
 #include <QDir>
 #include <QSignalSpy>
+#include <QTreeWidget>
 
 #include "appmodel.h"
 #include "ipfsmodel.h"
+#include "ipfstab.h"
 #include "ipfswrapper.h"   // IpfsManager (its signals are invoked to simulate the node's transfer events)
 #include "downloadqueue.h" // EnqueueBatch/DebugResetQueue (the queue-destination naming under test)
 #include "packagecatalog.h"
@@ -110,6 +112,48 @@ private slots:
         QCOMPARE(im.state(NodeCid).package,  QString("Game"));
         QCOMPARE(im.state(NodeCid).category, QString("Content"));   // node rows live INSIDE their package's tree
         QCOMPARE(im.state(NodeCid).source,   QString("VidyaGod"));
+        IpfsWrapper::StopNode();
+    }
+
+    // A package's own folder CID (what it is shared as) is named from the published / received row and belongs ON
+    // its package row: in the tab it is the "Game" group's CID, never a leaf and never under "Unknown / not in your
+    // library" — nothing inside a node names it, so 39 of them sat there on a receiver. A publisher's pin folder is
+    // named as part of the package. Teeth: drop the package-folder pass in BuildCidLabels (every assert fails), or
+    // the packageLevel branch in IpfsTab::renderLeaf (the tab asserts fail).
+    void package_folder_cid_is_the_package_row()
+    {
+        std::string Err;
+        QTemporaryDir Repo; QVERIFY(Repo.isValid());
+        QVERIFY2(IpfsWrapper::StartNode((Repo.path() + "/ipfs").toStdString(), &Err), Err.c_str());
+        QTemporaryDir Root; QVERIFY(Root.isValid());
+        const QString R = Root.path() + "/LIBRARY";
+        QDir().mkpath(R + "/VidyaGod/[1] Game");
+        NodeFixture::WriteNodes((R + "/VidyaGod/[1] Game/game.json").toStdString(),
+                                NodeFixture::Chain("g_exec", {NodeFixture::Exec("win32", "g.exe")}));
+        json cfg = json{{"Settings", {{"Paths", {{"LibraryRoot", R.toStdString()}}}}}, {"LIBRARY", json::array()},
+                        {"Libraries", {{"VidyaGod", json::array({json{{"cid", "QmGameFolder"}, {"pin", "QmGamePin"}, {"pkg", "[1] Game"}}})}}}};
+        AppModel m(&cfg, &AppDir);
+        m.rebuildCatalog();
+        IpfsModel im(m);
+        IpfsTab tab(im);
+        started("QmGameFolder");
+        started("QmGamePin");
+        QCOMPARE(im.state("QmGameFolder").label,   QString("Game (package)"));
+        QCOMPARE(im.state("QmGameFolder").package, QString("Game"));
+        QCOMPARE(im.state("QmGameFolder").source,  QString("VidyaGod"));
+        QVERIFY2(im.state("QmGameFolder").packageLevel, "the share folder is the package itself");
+        QCOMPARE(im.state("QmGamePin").package,    QString("Game"));
+        QVERIFY2(!im.state("QmGamePin").packageLevel, "the pin folder is part of the package, not the package");
+        QCOMPARE(im.packageCid("Game"), QString("QmGameFolder"));
+
+        QTreeWidget * tree = tab.findChild<QTreeWidget *>();
+        QVERIFY(tree);
+        QList<QTreeWidgetItem *> rows = tree->findItems("QmGameFolder", Qt::MatchExactly | Qt::MatchRecursive, 6);
+        QCOMPARE(rows.size(), 1);
+        QCOMPARE(rows[0]->text(0), QString("Game"));                                   // the package row itself
+        QVERIFY2(rows[0]->childCount() > 0, "…with the package's leaves under it (the pin folder)");
+        QVERIFY2(tree->findItems("Unknown / not in your library", Qt::MatchExactly | Qt::MatchRecursive, 0).isEmpty(),
+                 "nothing of this package lands in Unknown");
         IpfsWrapper::StopNode();
     }
 

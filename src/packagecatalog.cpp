@@ -873,16 +873,6 @@ std::set<std::string> SourceContentCids(const nlohmann::ordered_json &GlobalConf
     const std::string Dir = PackageSourceDir(GlobalConfigJSON, Source);
     if (!Dir.empty())
         for (const auto &[Path, C] : SeedTargets(Dir)) Cids.insert(C);   // every SOURCE.CID under it
-
-    // Package meta-CIDs live only in config (they never appear inside a node JSON), keyed by package dir/UID.
-    if (GlobalConfigJSON.contains("Settings") && GlobalConfigJSON["Settings"].is_object())
-    {
-        const auto &S = GlobalConfigJSON["Settings"];
-        if (S.contains("PackageCids") && S["PackageCids"].is_object())
-            for (const auto &[Key, Val] : S["PackageCids"].items())
-                if (Val.is_string() && !Val.get<std::string>().empty() && !Dir.empty() && PathUnder(Dir, Key))
-                    Cids.insert(Val.get<std::string>());
-    }
     return Cids;
 }
 
@@ -1401,6 +1391,11 @@ bool AdoptReceivedPackage(const nlohmann::ordered_json &Config, const std::files
             if (!fs::exists(Src / F.path().filename(), Ec)) fs::rename(F.path(), Src / F.path().filename(), Ec);
         }
         fs::remove_all(Folder, Ec);
+        // The node files were fetched into the folder and are referenced THERE; they now live one level up (a name
+        // already there is the same node — CID-named — so its reference lands on identical bytes).
+        std::string MErr;
+        if (IpfsWrapper::MoveRefs(Folder.string(), Src.string(), &MErr) < 0)
+        { if (Error) *Error = "cannot re-point the references of " + Folder.string() + ": " + MErr; return false; }
     }
     IpfsWrapper::ForgetDestsUnder(Folder.string());   // the queue must never re-land the folder into the old stub
     fs::create_directories(Dest.parent_path(), Ec);
@@ -1413,10 +1408,44 @@ bool AdoptReceivedPackage(const nlohmann::ordered_json &Config, const std::files
         fs::remove_all(Src, Ec);
     }
     IpfsWrapper::ForgetDestsUnder(Src.string());   // the queue must never re-materialise the old paths
+    // Everything fetched into the package so far is referenced in place: the references follow the folder, or the
+    // installed package's files read as missing and can be served to no one.
+    {
+        std::string MErr;
+        if (IpfsWrapper::MoveRefs(Src.string(), Dest.string(), &MErr) < 0)
+        { if (Error) *Error = "cannot re-point the references of " + Src.string() + " to " + Dest.string() + ": " + MErr; return false; }
+    }
     if (fs::is_empty(Src.parent_path(), Ec)) fs::remove(Src.parent_path(), Ec);
     if (NewDir) *NewDir = Dest;
     LogOut("PackageCatalog::AdoptReceivedPackage", "installed '" + Src.filename().string() + "' into library '" + Lib + "'");
     return true;
+}
+
+std::string PackageFolderCid(const nlohmann::ordered_json &Config, const std::filesystem::path &PkgDir, const std::string &Field)
+{
+    const std::string Pkg = PkgDir.filename().string(), Parent = PkgDir.parent_path().filename().string();
+    auto find = [&](const nlohmann::ordered_json &Libs, auto &&LibMatches) -> std::string {
+        if (!Libs.is_object()) return {};
+        for (const auto &[L, Rows] : Libs.items())
+        {
+            if (!Rows.is_array() || !LibMatches(L)) continue;
+            for (const auto &R : Rows)
+                if (R.is_object() && SafeSegment(R.value("pkg", std::string())) == Pkg && !R.value(Field, std::string()).empty())
+                    return R.value(Field, std::string());
+        }
+        return {};
+    };
+    if (Config.contains("Libraries"))
+        if (std::string C = find(Config["Libraries"], [&](const std::string &L) { return SafeSegment(L) == Parent; }); !C.empty())
+            return C;
+    if (Config.contains("FriendLibraries") && Config["FriendLibraries"].is_object())
+        for (const auto &[Peer, Libs] : Config["FriendLibraries"].items())
+            if (std::string C = find(Libs, [&](const std::string &L) {
+                    const std::string S = SafeSegment(L);
+                    return S == Parent || (Parent.size() > S.size() + 3 && Parent.compare(Parent.size() - S.size() - 3, std::string::npos, " - " + S) == 0);
+                }); !C.empty())
+                return C;
+    return {};
 }
 
 bool ReceivedPackagesIncomplete(const nlohmann::ordered_json &Config)

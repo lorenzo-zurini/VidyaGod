@@ -101,19 +101,6 @@ IpfsTab::IpfsTab(IpfsModel & model, QWidget * parent)
     connect(&Model, &IpfsModel::cidRemoved,        this, [this](const QString & cid){ removeLeaf(cid); });
     connect(&Model, &IpfsModel::modelReset,        this, [this]{ reconcile(); });
     connect(&Model, &IpfsModel::nodeStatusChanged, this, [this]{ paintStatus(); });
-    connect(&Model, &IpfsModel::packagePublished,  this, [this](const QString & pkg, const QString & cid, const QString & err){
-        if (cid.isEmpty())
-        {
-            QMessageBox::warning(this, "Publish package", QString("Publishing \"%1\" failed:\n%2").arg(pkg, err));
-            return;
-        }
-        for (auto it = IpfsPinGroups.constBegin(); it != IpfsPinGroups.constEnd(); ++it)
-            if (it.key().section(QChar(0x1f), 1) == pkg) paintGroupCid(it.value(), pkg);
-        QApplication::clipboard()->setText(cid);
-        QMessageBox::information(this, "Publish package",
-            QString("Package CID for \"%1\" (copied to clipboard):\n\n%2\n\nAnyone can add it as a package source "
-                    "to receive this package.").arg(pkg, cid));
-    });
 
     paintStatus();
     reconcile();
@@ -349,11 +336,9 @@ static inline void SetTextIfChanged(QTreeWidgetItem * It, int Col, const QString
 
 // Find or create a CID's leaf under its category (Content/Assets/Meta) → package group, using the model's label/
 // package/category for this CID. Default expansion: categories open (Assets closed), package groups closed.
-QTreeWidgetItem * IpfsTab::ensureLeaf(const QString & cid)
+// The package group row a CID belongs to (Category → [Source →] Package), created on first use.
+QTreeWidgetItem * IpfsTab::ensureGroup(const QString & cid)
 {
-    if (!IpfsPins) return nullptr;
-    if (QTreeWidgetItem * leaf = IpfsPinChildren.value(cid, nullptr)) return leaf;
-
     const IpfsModel::CidState st = Model.state(cid);
     const QString PkgName = st.package.isEmpty() ? QStringLiteral("Unknown / not in your library") : st.package;
     const QString CatName = st.category.isEmpty() ? QStringLiteral("Content") : st.category;
@@ -403,6 +388,18 @@ QTreeWidgetItem * IpfsTab::ensureLeaf(const QString & cid)
         IpfsPinGroups.insert(GroupKey, grp);
     }
 
+    return grp;
+}
+
+QTreeWidgetItem * IpfsTab::ensureLeaf(const QString & cid)
+{
+    if (!IpfsPins) return nullptr;
+    if (QTreeWidgetItem * leaf = IpfsPinChildren.value(cid, nullptr)) return leaf;
+
+    const IpfsModel::CidState st = Model.state(cid);
+    const QString PkgName = st.package.isEmpty() ? QStringLiteral("Unknown / not in your library") : st.package;
+    QTreeWidgetItem * grp = ensureGroup(cid);
+
     QString LeafName = st.label.isEmpty() ? QStringLiteral("(unknown)") : st.label;
     if (LeafName.startsWith(PkgName + " — ")) LeafName = LeafName.mid(PkgName.size() + 3);
     else if (LeafName == PkgName)             LeafName = QStringLiteral("content");
@@ -415,14 +412,27 @@ QTreeWidgetItem * IpfsTab::ensureLeaf(const QString & cid)
     return child;
 }
 
-// The package-level meta-CID lives on the package group row (CID column) once published.
+// A package's own folder CID IS the package: it is shown on the package row (its CID and state), never as a leaf of
+// its own — as a leaf nothing named it, and 39 of them sat under "Unknown / not in your library" on a receiver.
+QTreeWidgetItem * IpfsTab::ensurePackageRow(const QString & cid)
+{
+    if (!IpfsPins) return nullptr;
+    if (QTreeWidgetItem * grp = IpfsPkgRows.value(cid, nullptr)) return grp;
+    if (QTreeWidgetItem * leaf = IpfsPinChildren.take(cid)) delete leaf;   // shown as a leaf before it was named
+    QTreeWidgetItem * grp = ensureGroup(cid);
+    grp->setText(6, cid);
+    IpfsPkgRows.insert(cid, grp);
+    return grp;
+}
+
+// The package's folder CID — what it is shared as — lives on the package group row (CID column).
 void IpfsTab::paintGroupCid(QTreeWidgetItem * grp, const QString & pkg)
 {
     const QString Cid = Model.packageCid(pkg);
     grp->setText(6, Cid);
     grp->setForeground(6, QColor("#8f98a0"));
     grp->setToolTip(6, Cid.isEmpty() ? QString()
-        : QString("Package CID — share it; others add it as a package source to receive \"%1\".").arg(pkg));
+        : QString("Package CID — the folder \"%1\" is shared as.").arg(pkg));
 }
 
 // Paint one CID's columns from the model's CidState (creating its leaf if needed). A seeded pin whose backing files
@@ -430,16 +440,19 @@ void IpfsTab::paintGroupCid(QTreeWidgetItem * grp, const QString & pkg)
 void IpfsTab::renderLeaf(const QString & cid)
 {
     if (!Model.has(cid)) { removeLeaf(cid); return; }
-    QTreeWidgetItem * leaf = ensureLeaf(cid);
-    if (!leaf) return;
     const IpfsModel::CidState * StP = Model.stateRef(cid);
     if (!StP) return;
     const IpfsModel::CidState & st = *StP;
     using P = IpfsModel::CidState;
+    QTreeWidgetItem * leaf = st.packageLevel ? ensurePackageRow(cid) : ensureLeaf(cid);
+    if (!leaf) return;
 
-    // Size.
-    SetTextIfChanged(leaf, 1, st.phase == P::Pending ? QString() : HumanBytesQ(st.size));
-    leaf->setData(1, Qt::UserRole, (qlonglong)(st.size < 0 ? 0 : st.size));
+    // Size (a package row's size column holds its group total instead).
+    if (!st.packageLevel)
+    {
+        SetTextIfChanged(leaf, 1, st.phase == P::Pending ? QString() : HumanBytesQ(st.size));
+        leaf->setData(1, Qt::UserRole, (qlonglong)(st.size < 0 ? 0 : st.size));
+    }
 
     // Progress bar value + colour code.
     const bool MissingFiles = (st.phase == P::Seeded && st.missing == 1);
@@ -515,6 +528,8 @@ void IpfsTab::renderLeaf(const QString & cid)
 void IpfsTab::removeLeaf(const QString & cid)
 {
     if (QTreeWidgetItem * leaf = IpfsPinChildren.take(cid)) delete leaf;
+    if (QTreeWidgetItem * grp = IpfsPkgRows.take(cid))   // the package row stays (its leaves); only its own state goes
+        for (int c : {2, 3, 4}) { grp->setData(c, Qt::DisplayRole, QVariant()); grp->setToolTip(c, QString()); }
     if (CountsDebounce) CountsDebounce->start();
 }
 
@@ -527,6 +542,8 @@ void IpfsTab::reconcile()
 
     const QHash<QString, IpfsModel::CidState> & Cids = Model.cids();
     for (const QString & cid : IpfsPinChildren.keys())
+        if (!Cids.contains(cid)) removeLeaf(cid);
+    for (const QString & cid : IpfsPkgRows.keys())
         if (!Cids.contains(cid)) removeLeaf(cid);
     for (auto it = Cids.constBegin(); it != Cids.constEnd(); ++it) renderLeaf(it.key());
 
@@ -605,6 +622,7 @@ void IpfsTab::applyFilters()
     {
         bool AnyVisible = false;
         for (int i = 0; i < grp->childCount() && !AnyVisible; ++i) AnyVisible = !grp->child(i)->isHidden();
+        if (const QString PkgCid = IpfsPkgRows.key(grp); !AnyVisible && !PkgCid.isEmpty()) AnyVisible = leafMatches(PkgCid);
         grp->setHidden(!AnyVisible);
         if (Filtered && AnyVisible) grp->setExpanded(true);
     }
@@ -746,13 +764,8 @@ void IpfsTab::showContextMenu(const QPoint & pos)
     {
         const QString Pkg = Clicked->text(0);
         const QString PkgCid = Model.packageCid(Pkg);
-        const bool CanPublish = !Model.packageDir(Pkg).isEmpty();
         if (!PkgCid.isEmpty())
             menu.addAction("Copy package CID", this, [PkgCid]{ QApplication::clipboard()->setText(PkgCid); });
-        if (CanPublish)
-            menu.addAction(PkgCid.isEmpty() ? QStringLiteral("Publish package CID…")
-                                            : QStringLiteral("Re-publish package CID…"),
-                           this, [this, Pkg]{ Model.publishPackage(Pkg); });
         if (!menu.isEmpty()) menu.addSeparator();
         menu.addAction(Clicked->isExpanded() ? "Collapse" : "Expand",
                        this, [Clicked]{ Clicked->setExpanded(!Clicked->isExpanded()); });
@@ -785,7 +798,7 @@ void IpfsTab::updateGroupTotals()
     {
         QTreeWidgetItem * g = IpfsPinGroups.value(Key, nullptr);
         if (!g) continue;
-        if (g->childCount() == 0) { IpfsPinGroups.remove(Key); delete g; continue; }
+        if (g->childCount() == 0 && !IpfsPkgRows.key(g).size()) { IpfsPinGroups.remove(Key); delete g; continue; }
         int items = 0; long long bytes = 0; subtree(g, items, bytes); setTotal(g, items, bytes);
     }
     for (const QString & Key : IpfsPinSourceGroups.keys())

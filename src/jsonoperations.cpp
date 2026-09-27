@@ -51,7 +51,7 @@ bool JSONOps::LoadJSON(QFile * JSONFile, nlohmann::ordered_json * JSONDocument)
 //Truncates the file if it already exists so stale content is never left behind.
 //Returns true on success, false if the file cannot be written.
 //
-//ATOMIC. This writes GlobalConfig.JSON — PackageSources, PackageCids, friends, module toggles, every persisted
+//ATOMIC. This writes GlobalConfig.JSON — PackageSources, friends, module toggles, every persisted
 //CustomVar — and every node .json in a bundle, and it used to truncate in place. A crash, a kill or ENOSPC part
 //way through left the user with a half-written config or a half-written package and no second copy. QSaveFile
 //writes a sibling temp and renames on commit, so the file on disk is always either the old one or the new one.

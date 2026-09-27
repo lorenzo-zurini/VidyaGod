@@ -654,8 +654,41 @@ private slots:
         QVERIFY2(!PackageCatalog::NodeContentCids(Fresh, "c_exec").empty(),
                  "content targets (and thus sizes) now resolve — the Download button has something to do");
 
+        // Installing the package MOVES its folder into the library; the node CompleteClosure fetched into it is
+        // referenced in place, and that reference must follow it — else it reads as missing and can be served to no
+        // one (678 such on a replication receiver, Minecraft's 645 among them). Teeth: drop the Src→Dest MoveRefs in
+        // AdoptReceivedPackage and the library node reads as missing below.
+        QVERIFY2(IpfsWrapper::HasLocal(LibCid) && !IpfsWrapper::CidMissing(LibCid), "precondition: the fetched node is referenced in place");
+        rx["FriendLibraries"] = json{{"Alice", {{"Games", json::array()}}}};   // the share snapshot that names the library
+        std::filesystem::path Installed;
+        QVERIFY2(PackageCatalog::AdoptReceivedPackage(rx, PkgDir.toStdString(), &Installed, &Err), Err.c_str());
+        QVERIFY2(std::filesystem::exists(Installed / (LibCid + ".json")), "the node moved with its package");
+        QVERIFY2(!IpfsWrapper::CidMissing(LibCid), "the node's reference followed the folder");
+
         IpfsWrapper::DebugResetQueue();
         IpfsWrapper::StopNode();
+    }
+
+    // A package row shows what the package is SHARED AS: its folder CID — ours from our published rows, a received
+    // one's from the friend's snapshot, found whether it still sits in CATALOG ("<nick> - <lib>/<pkg>") or was
+    // installed (LIBRARY/<lib>/<pkg>, its name sanitised: "Baldur's" → "Baldur_s"). A same-named package in another
+    // library is a different package. Teeth: drop the library match, or the sanitised compare, and a row below
+    // reads the wrong CID or none.
+    void package_row_shows_its_folder_cid()
+    {
+        const json Cfg = json{
+            {"Libraries", {{"VidyaGod", json::array({json{{"cid", "QmOwnSH2"}, {"pkg", "[10972][v1.0] Silent Hill 2"}}})},
+                           {"VidyaGodRunners", json::array({json{{"cid", "QmOwnProton"}, {"pkg", "proton"}}})}}},
+            {"FriendLibraries", {{"12D3KooWPeer", {
+                {"VidyaGod", json::array({json{{"cid", "QmBG"}, {"pkg", "[2190][v1.0] Baldur's Gate"}}})},
+                {"VidyaGodRunners", json::array({json{{"cid", "QmFriendProton"}, {"pkg", "proton"}}})}}}}}};
+        using PackageCatalog::PackageFolderCid;
+        QCOMPARE(PackageFolderCid(Cfg, "/r/LIBRARY/VidyaGod/[10972][v1.0] Silent Hill 2"), std::string("QmOwnSH2"));
+        QCOMPARE(PackageFolderCid(Cfg, "/r/CATALOG/Alice - VidyaGod/[2190][v1.0] Baldur_s Gate"), std::string("QmBG"));
+        QCOMPARE(PackageFolderCid(Cfg, "/r/LIBRARY/VidyaGod/[2190][v1.0] Baldur_s Gate"), std::string("QmBG"));
+        QCOMPARE(PackageFolderCid(Cfg, "/r/LIBRARY/VidyaGodRunners/proton"), std::string("QmOwnProton"));   // ours wins
+        QCOMPARE(PackageFolderCid(Cfg, "/r/LIBRARY/VidyaGod/proton"), std::string());       // not proton's library
+        QCOMPARE(PackageFolderCid(Cfg, "/r/LIBRARY/VidyaGod/[1][v1.0] Nothing"), std::string());
     }
 
     // What a download adopts is every received package its closures reach — not just the packages of the nodes it
@@ -725,14 +758,22 @@ private slots:
         landShares(rx, Nick, json{{"Games", Items}});
         const std::filesystem::path Stub = std::filesystem::path(Catalog) / (Nick + " - Games") / "[1] A";
         QVERIFY(std::filesystem::exists(Stub / ".package" / ".package.json"));
+        const std::string ACid = cidOfLabel(Items[0].value("cid", std::string()), "a_exec");
+        // A node the folder did not bring is fetched ON ITS OWN into the landed folder — a file referenced in place
+        // (LandReceivedPackages). Make a_exec one of those, so installing has a reference under .package to carry.
+        std::filesystem::remove(Stub / ".package" / (ACid + ".json"));
+        QVERIFY2(PackageCatalog::LandReceivedPackages(rx, &Err), Err.c_str());
+        QVERIFY2(IpfsWrapper::HasLocal(ACid) && !IpfsWrapper::CidMissing(ACid), "precondition: the landed node is held, referenced in place");
 
         std::filesystem::path NewDir;
         QVERIFY2(PackageCatalog::AdoptReceivedPackage(rx, Stub, &NewDir, &Err), Err.c_str());
         QCOMPARE(NewDir, std::filesystem::path(RxData.path().toStdString()) / "LIBRARY" / "Games" / "[1] A");
         QVERIFY2(!std::filesystem::exists(Stub), "the stub dir is gone from CATALOG");
         QVERIFY2(std::filesystem::exists(NewDir) && !std::filesystem::exists(NewDir / ".package"), "moved, the landed folder dissolved");
-        const std::string ACid = cidOfLabel(Items[0].value("cid", std::string()), "a_exec");
         QVERIFY2(std::filesystem::exists(NewDir / (ACid + ".json")), "its node files are the package's own now");
+        // The references moved with the files: the installed node still reads (and so can be served / re-shared).
+        // Teeth: drop the .package→package MoveRefs in AdoptReceivedPackage and the node reads as missing here.
+        QVERIFY2(!IpfsWrapper::CidMissing(ACid), "the installed node's reference points at its new place");
         // Another download sharing this package (a runner every game reaches) adopts it again from its older snapshot:
         // already installed — success, the library's copy — not a failure that sinks that whole download.
         std::filesystem::path Again;

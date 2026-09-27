@@ -304,6 +304,13 @@ int PruneStaleReceived(const NodeIndex &Idx, const nlohmann::ordered_json &Globa
 // an ordinary local package from then on. False + *Error on a name collision or an unknown lib dir.
 [[nodiscard]] bool AdoptReceivedPackage(const nlohmann::ordered_json &GlobalConfigJSON, const std::filesystem::path &PkgDir,
                                         std::filesystem::path *NewDir = nullptr, std::string *Error = nullptr);
+// The package's folder CID — what it is shared as: our own published row (Libraries) for a package of ours, else the
+// friend's share snapshot (FriendLibraries) it came from. Matched by the package dir's name and its library (the
+// dir's parent: "<lib>" in LIBRARY, "<nick> - <lib>" in CATALOG), names compared as the receiver sanitises them.
+// Empty if the package was never published nor received. Field "pin" names a publisher's pin folder (content +
+// share folder, what a pinning service is given) instead of the share folder.
+std::string PackageFolderCid(const nlohmann::ordered_json &GlobalConfigJSON, const std::filesystem::path &PkgDir,
+                             const std::string &Field = "cid");
 // The received package dirs a download must adopt before fetching: every package any node in the CLOSURE of each
 // launchable, of each runner its chain resolves to, and of each ticked runner lives in — a runner's own NODE layers
 // reach other packages too (proton contains proton-wine's chain).

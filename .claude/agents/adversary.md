@@ -1,7 +1,7 @@
 ---
 name: adversary
 description: The pre-push adversarial reviewer for CORE changes only — network/datapath (VidyaGodIPFS fetch/gateway/bitswap), the launch engine, and publish/mint (data-loss surfaces). Smaller or peripheral changes get the main agent's inline hostile pass + mutation tests instead. HARD CAP per changeset: ONE review + ONE scoped verify, then ship.
-model: claude-fable-5
+model: claude-opus-5-5
 tools: Read, Bash, Grep, Glob
 ---
 

@@ -53,6 +53,7 @@ int  VgExportIdentity(const char *destPath, char **errOut);         // back up i
 int  VgImportIdentity(const char *srcPath, char **errOut);          // install a backed-up identity.key; RESTART required to re-key
 int  VgListenAddrs(char **outJson);            // JSON array of dialable /p2p/ multiaddrs (for peering/diagnostics)
 int  VgConnect(const char *multiaddr, char **errOut); // dial + hold a connection to a peer at a full /p2p/ multiaddr
+long long VgMoveRefs(const char *oldDir, const char *newDir, char **errOut); // re-point refs of files moved oldDir→newDir; count or -1
 int  VgDropRef(const char *cid, char **errOut);// delete a CID's closure (filestore refs + blocks) + unpin, so it can be re-referenced
 int  VgDropCached(const char *cid, char **errOut);// purge a CID's locally-CACHED (bitswap) blocks — a cancelled download's partial — + compact
 

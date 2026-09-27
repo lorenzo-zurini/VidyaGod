@@ -50,8 +50,11 @@ static QHash<QString, QString> BuildCidLabels(const NodeIndex & Idx, const nlohm
                                               QHash<QString, QString> * OutCategory,
                                               QHash<QString, QString> * OutPkgDirs = nullptr,
                                               QHash<QString, QString> * OutSource = nullptr,
-                                              QHash<QString, qlonglong> * OutSizes = nullptr)
+                                              QHash<QString, qlonglong> * OutSizes = nullptr,
+                                              QSet<QString> * OutPackageLevel = nullptr)
 {
+    QHash<QString, QString> LocalPkgDirs;
+    if (!OutPkgDirs) OutPkgDirs = &LocalPkgDirs;
     QHash<QString, QString> Labels;
     for (const auto & [NodeCid, N] : Idx.Nodes)
     {
@@ -115,6 +118,26 @@ static QHash<QString, QString> BuildCidLabels(const NodeIndex & Idx, const nlohm
                 }
             }
         }
+    }
+
+    // Each package's own CIDs — the folder it is shared as, and (a publisher's) its pin folder. The share folder IS
+    // the package, so it belongs ON the package row (package-level), not in "Unknown": nothing inside a node names it.
+    for (auto It = OutPkgDirs->constBegin(); It != OutPkgDirs->constEnd(); ++It)
+    {
+        const std::filesystem::path Dir = It.value().toStdString();
+        const QString Src = SourceOfBundle(Dir);
+        auto name = [&](const std::string &Cid, const QString &Label) {
+            if (Cid.empty()) return;
+            const QString QCid = QString::fromStdString(Cid);
+            Labels.insert(QCid, Label);
+            if (OutPackages) OutPackages->insert(QCid, It.key());
+            if (OutCategory) OutCategory->insert(QCid, CatContent);
+            if (OutSource)   OutSource->insert(QCid, Src.isEmpty() ? QStringLiteral("Other") : Src);
+        };
+        const std::string Share = PackageCatalog::PackageFolderCid(Config, Dir);
+        name(Share, It.key() + " (package)");
+        if (OutPackageLevel && !Share.empty()) OutPackageLevel->insert(QString::fromStdString(Share));
+        name(PackageCatalog::PackageFolderCid(Config, Dir, "pin"), It.key() + " — pin folder");
     }
 
     if (Config.contains("Settings") && Config["Settings"].is_object()
@@ -305,9 +328,10 @@ static bool LabelFromQueueDest(const QString & cid, IpfsModel::CidState & s)
 // result is read from the cache everywhere else.
 void IpfsModel::rebuildLabelCache()
 {
-    CachedPkgs.clear(); CachedCats.clear(); CachedSrcs.clear();
+    CachedPkgs.clear(); CachedCats.clear(); CachedSrcs.clear(); CachedPackageLevel.clear();
     QHash<QString, qlonglong> Sizes;
-    CachedLabels = BuildCidLabels(Model.catalogIndex(), *Model.config(), &CachedPkgs, &CachedCats, &PkgDirs, &CachedSrcs, &Sizes);
+    CachedLabels = BuildCidLabels(Model.catalogIndex(), *Model.config(), &CachedPkgs, &CachedCats, &PkgDirs, &CachedSrcs, &Sizes,
+                                  &CachedPackageLevel);
     ManifestSizes = Sizes;   // for the Size column + per-item speed (display). The NODE registration for gateway
                              // progress happens at fetch-build in PackageCatalog::CollectContentTargets (GUI + CLI),
                              // not here — this model only exists in the GUI, and a fetch can precede a refresh.
@@ -322,6 +346,7 @@ void IpfsModel::applyLabels(const QString & cid, CidState & s)
     s.package  = CachedPkgs.value(cid, s.package.isEmpty() ? QStringLiteral("Unknown / not in your library") : s.package);
     s.category = CachedCats.value(cid, s.category.isEmpty() ? CatContent : s.category);
     s.source   = CachedSrcs.value(cid, s.source);
+    s.packageLevel = CachedPackageLevel.contains(cid);
     if (s.size < 0 && ManifestSizes.contains(cid)) s.size = ManifestSizes.value(cid);
 }
 
@@ -346,6 +371,7 @@ void IpfsModel::rebuildLabels()
         it->package  = Pkgs.value(cid, it->package.isEmpty() ? QStringLiteral("Unknown / not in your library") : it->package);
         it->category = Cats.value(cid, it->category.isEmpty() ? CatContent : it->category);
         it->source   = Srcs.value(cid, it->source);
+        it->packageLevel = CachedPackageLevel.contains(cid);
         // Prefer the manifest size — instant and exact — over the ~35 s network CidSize; only when we have no size yet.
         if (it->size < 0 && Sizes.contains(cid)) it->size = Sizes.value(cid);
     }
@@ -358,33 +384,7 @@ QString IpfsModel::packageCid(const QString & pkg) const
 {
     const QString Dir = PkgDirs.value(pkg);
     if (Dir.isEmpty()) return {};
-    const std::string Key = std::filesystem::path(Dir.toStdString()).filename().string();
-    const auto & Cfg = *Model.config();
-    if (Cfg.contains("Settings") && Cfg["Settings"].is_object()
-        && Cfg["Settings"].contains("PackageCids") && Cfg["Settings"]["PackageCids"].is_object())
-        return QString::fromStdString(Cfg["Settings"]["PackageCids"].value(Key, std::string()));
-    return {};
-}
-
-// Mint (or re-mint after edits) the package-level meta-CID: the text-only folder CID of ONE package's bundle dir —
-// the shareable unit between a single file's content CID and a whole source's library CID. Persisted in
-// Settings.PackageCids so the tree can keep showing it; anyone can add it as a package source to receive the package.
-void IpfsModel::publishPackage(const QString & pkg)
-{
-    const QString Dir = PkgDirs.value(pkg);
-    if (Dir.isEmpty()) { emit packagePublished(pkg, {}, QStringLiteral("package folder unknown")); return; }
-    auto Cid = std::make_shared<std::string>();
-    auto Err = std::make_shared<std::string>();
-    AsyncWork::Run(this,
-        [Dir, Cid, Err]{ *Cid = PackageCatalog::PublishMetaCid(Dir.toStdString(), Err.get()); },
-        [this, pkg, Dir, Cid, Err]{
-            if (Cid->empty()) { emit packagePublished(pkg, {}, QString::fromStdString(*Err)); return; }
-            auto & Cfg = *Model.config();
-            Cfg["Settings"]["PackageCids"][std::filesystem::path(Dir.toStdString()).filename().string()] = *Cid;
-            Model.save();
-            emit packagePublished(pkg, QString::fromStdString(*Cid), {});
-            refresh();   // the publish pinned the package's fragment CIDs — reflect them
-        });
+    return QString::fromStdString(PackageCatalog::PackageFolderCid(*Model.config(), Dir.toStdString()));
 }
 
 void IpfsModel::forceRecheck(const QStringList & cids)

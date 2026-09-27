@@ -201,6 +201,10 @@ bool CidMissing(const std::string &Cid);
 // An orphaned reference (backing file gone) still counts as held — pair with CidMissing to tell them apart.
 bool HasLocal(const std::string &Cid);
 
+// A folder was moved on disk (a received package installed): re-points the filestore references of every file under
+// OldDir to the same relative path under NewDir — nothing re-read or re-hashed. Returns the number moved, -1 on error.
+long long MoveRefs(const std::string &OldDir, const std::string &NewDir, std::string *Error = nullptr);
+
 // Deletes a CID's closure (filestore references + plain blocks) and unpins it, so a subsequent AddNoCopy re-creates
 // fresh references against a new backing file (the node's filestore otherwise skips re-adding a block it already has).
 bool DropRef(const std::string &Cid);

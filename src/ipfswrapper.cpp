@@ -110,6 +110,15 @@ void RequestCancel(const std::string &Cid) { VgRequestCancel(Cid.c_str()); }
 void ClearCancel(const std::string &Cid)   { VgClearCancel(Cid.c_str()); }
 void SetExpectedSize(const std::string &Cid, long long Size) { VgSetExpectedSize(Cid.c_str(), Size); }
 
+// Whether a node is open — so the exit hook calls into Go only when there is something to close. A call into the Go
+// runtime from an atexit handler, after the host has torn down the thread's alternate signal stack, dies if a Go
+// preemption signal (SIGURG) lands meanwhile: "no signal stack" → abort. QtTest removes its fatal-signal stack at the
+// end of a run, and the unconditional atexit(VgStop) re-entered Go right after it — test binaries whose every test had
+// passed aborted under load (cores: runtime.noSignalStack sig=23 inside cgocallback VgStop). A node already stopped
+// needs no call at all.
+static std::atomic<bool> g_NodeOpen{false};
+static void StopNodeAtExit() { if (g_NodeOpen.exchange(false)) VgStop(); }
+
 bool StartNode(const std::string &RepoPath, std::string *Error)
 {
     char *Err = nullptr;
@@ -121,13 +130,14 @@ bool StartNode(const std::string &RepoPath, std::string *Error)
         LogErr("IpfsWrapper::StartNode", Msg);
         return false;
     }
+    g_NodeOpen = true;
     static bool AtexitSet = false;
-    if (!AtexitSet) { std::atexit(VgStop); AtexitSet = true; }   // best-effort clean leveldb shutdown on any exit path
+    if (!AtexitSet) { std::atexit(StopNodeAtExit); AtexitSet = true; }   // clean leveldb shutdown on any exit path
     LogSucc("IpfsWrapper::StartNode", "embedded IPFS node started at " + RepoPath);
     return true;
 }
 
-void StopNode() { VgStop(); }
+void StopNode() { g_NodeOpen = false; VgStop(); }
 
 bool Available()
 {
@@ -401,6 +411,15 @@ bool HasLocal(const std::string &Cid)
 {
     if (Cid.empty()) return false;
     return VgHasLocal(Cid.c_str()) == 1;
+}
+
+long long MoveRefs(const std::string &OldDir, const std::string &NewDir, std::string *Error)
+{
+    char *Err = nullptr;
+    const long long N = VgMoveRefs(OldDir.c_str(), NewDir.c_str(), &Err);
+    const std::string E = TakeStr(Err);
+    if (N < 0 && Error) *Error = E;
+    return N;
 }
 
 bool DropRef(const std::string &Cid)

@@ -44,6 +44,7 @@ public:
         int       missing   = -1;     // -1 unknown, 0 present, 1 backing file gone
         bool      uploading = false;  // a peer is pulling it right now
         bool      announced = false;  // Seeded only: its DHT announce completed (→ "seeding") vs still "queued for seeding"
+        bool      packageLevel = false; // a package's own folder CID: shown ON its package row, not as a leaf
         QString   error;              // failure reason (Errored)
         QString   activity;           // the transfer's own narration ("attempt 3 — connecting to providers"); shown
                                       // verbatim while Downloading/Stalled so a hunting fetch never LOOKS stuck
@@ -75,7 +76,7 @@ public:
     // ── Package-level CIDs (first-class): the meta-CID of ONE package folder, between a file's content CID and a
     // whole source's library meta-CID. Others add it in Settings → Sources to receive exactly that package. ──
     QString packageDir(const QString & pkg) const { return PkgDirs.value(pkg); }
-    QString packageCid(const QString & pkg) const;   // recorded CID from Settings.PackageCids, empty if never published
+    QString packageCid(const QString & pkg) const;   // the package's folder CID (published or received), empty if neither
 
 public slots:
     void setActive(bool on);                 // tab shown/hidden → start/stop the periodic refresh
@@ -85,7 +86,6 @@ public slots:
     void markQueued(const QString & cid);    // a download enqueued a CID (pre-show it as Queued)
     void clearQueued(const QString & cid);   // a queued CID was dropped/finished before starting
     void seedFolder(const QString & dir);    // add a folder's published content to the node (off-thread)
-    void publishPackage(const QString & pkg);       // mint/refresh the package-level meta-CID (off-thread), persist it
     void recheckHealth(const QStringList & cids);   // drop cached health for these CIDs and re-gather
     // FORCE RECHECK — the qBittorrent equivalent, and a genuinely different operation from recheckHealth():
     // that one only stats the backing file and counts providers, so it calls same-size corruption perfectly
@@ -103,7 +103,6 @@ signals:
     void nodeStatusChanged();                // the status strip data changed
     void seedProgress(int done, int total);  // "Seeding N/M…" for the tab's Seed button
     void seedFinished(int seeded, int mismatched);
-    void packagePublished(const QString & pkg, const QString & cid, const QString & error);
     void recheckProgress(int done, int total);
     void recheckFinished(int checked, int failed);
 
@@ -131,6 +130,7 @@ private:
     QSet<QString>                              PendingSources;    // configured source CIDs not yet fetched
     bool                                       LabelsDirty = true;   // catalog changed since the last cache rebuild
     QHash<QString, QString>                    CachedLabels, CachedPkgs, CachedCats, CachedSrcs;   // CID→naming cache
+    QSet<QString>                              CachedPackageLevel;   // package folder CIDs (their package's own CID)
     QSet<QString>                              LastAnnounced;     // pins whose DHT announce completed — gathered off-thread per refresh
     QHash<QString, QString>                    SeedVerdict;       // cid → deliverability reason ("" = servable); ABSENT = needs (re)verify.
                                                                   // Computed OFF-THREAD (startup + new pins), invalidated by an actual
