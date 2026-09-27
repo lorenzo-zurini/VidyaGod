@@ -489,13 +489,28 @@ bool WaitBatch(const BatchHandle &Handle, int TimeoutMs, std::string *Error)
 
 bool WaitBatch(const BatchHandle &Handle, std::string *Error) { return WaitBatch(Handle, 0, Error); }
 
-// The path's place now: under the longest moved folder it names, rewritten to where that folder went. Q().Mu held.
+// The path's place now: under the longest moved folder it names (or that folder itself), rewritten to where that folder
+// went. A move holds while it is still true — the folder is gone from where it was and present where it went: an
+// installed package deleted and received again is a new stub at the old place, never sent to the deleted one.
+// A move no longer true is forgotten. Q().Mu held.
 static std::string RedirectedLocked(const std::string &Path)
 {
-    const std::pair<const std::string, std::string> *Best = nullptr;
-    for (const auto &M : Q().Moved)
-        if (Path.compare(0, M.first.size(), M.first) == 0 && (!Best || M.first.size() > Best->first.size())) Best = &M;
-    return Best ? Best->second + Path.substr(Best->first.size()) : Path;
+    namespace fs = std::filesystem;
+    const std::string Dir = Path.empty() || Path.back() == '/' ? Path : Path + "/";   // matches the folder itself too
+    for (;;)
+    {
+        auto Best = Q().Moved.end();
+        for (auto It = Q().Moved.begin(); It != Q().Moved.end(); ++It)
+            if (Dir.compare(0, It->first.size(), It->first) == 0 && (Best == Q().Moved.end() || It->first.size() > Best->first.size()))
+                Best = It;
+        if (Best == Q().Moved.end()) return Path;
+        std::error_code Ec;
+        const fs::path From(Best->first.substr(0, Best->first.size() - 1)), To(Best->second.substr(0, Best->second.size() - 1));
+        if (fs::exists(To, Ec) && !fs::exists(From, Ec))
+            return Dir.size() == Best->first.size() && Path.back() != '/' ? To.string()                 // the folder itself
+                                                                           : Best->second + Path.substr(Best->first.size());
+        Q().Moved.erase(Best);
+    }
 }
 
 std::string Redirected(const std::string &Path)
@@ -618,6 +633,7 @@ bool FetchTargetsConcurrent(const std::vector<FetchTarget> &Targets, std::string
     // Retryable) with no signal — the old node-backed API returned "node not started". Callers here (CLI,
     // --download-all, the download manager) run with the node up; a genuine offline is a real error to surface.
     if (!DaemonRunning()) { if (Error) *Error = "IPFS networking is offline"; return false; }
+    const ForegroundHold Hold;
     const BatchHandle Handle = EnqueueBatch(Targets);
     return WaitBatch(Handle, Error);
 }

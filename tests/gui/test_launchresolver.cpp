@@ -1173,6 +1173,21 @@ private slots:
     }
 
     // What an installer wrote (a captured registry delta) comes back spelled by anchor; the rest untouched.
+    // An anchor spelled from a variable is known only at launch; one on a drive the runner does not lay out is refused
+    // there (its files would land in a literal "E:" folder), a mapped one is fine. Teeth: return "" from UnmappedAnchor
+    // and the E: anchor passes; compare the drive case-sensitively and "c:" is refused.
+    void an_anchor_resolving_onto_an_unmapped_drive_is_refused()
+    {
+        ContainerParams cp("/tmp/vg_bundle"); cp.PackageUID = "802"; cp.PrefixRoot = "pfx";
+        cp.Drives = { {"C:", "%PrefixRoot%/drive_c"} };
+        cp.GuestRoots = { {"%GameDir%", "c:\\%PackageUID%"}, {"%Media%", "%MEDIA%"} };
+        cp.CustomVariables["MEDIA"] = "C:\\media";
+        QCOMPARE(LaunchResolver::UnmappedAnchor(cp), std::string());
+        cp.CustomVariables["MEDIA"] = "E:\\";
+        const std::string Why = LaunchResolver::UnmappedAnchor(cp);
+        QVERIFY2(Why.find("%Media%") != std::string::npos && Why.find("E:") != std::string::npos, Why.c_str());
+    }
+
     void captured_registry_values_are_respelled_by_anchor()
     {
         ContainerParams cp("/tmp/vg_bundle"); cp.PackageUID = "802";

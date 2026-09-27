@@ -958,6 +958,7 @@ void AppModel::completeReceivedClosures()
     const unsigned Gen = FriendClosureGen.load();
     AsyncWork::Run(this,
         [this, Snap, Cfg, Roots, Packages, Gen]{
+            const IpfsWrapper::ForegroundHold Hold;   // packages, then closures: one landing, no gap for walks
             size_t Ok = 0, Done = 0;
             if (Packages)
             {   // the packages first: every node block each manifest names, into the package's dir

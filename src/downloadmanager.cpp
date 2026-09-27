@@ -455,6 +455,7 @@ void DownloadManager::startDownload(LibraryGameCard *card)
             const std::shared_ptr<const NodeIndex> S = *Snap;
             nlohmann::ordered_json ConfigSnap = Model.config() ? *Model.config() : nlohmann::ordered_json::object();
             std::thread([this, S, Variants, Snap, Alive, DeriveEndpoints, DeriveRunners, Debounce, ConfigSnap = std::move(ConfigSnap)]{
+                const IpfsWrapper::ForegroundHold Hold;
                 for (const std::string & V : Variants)
                 {
                     std::string CErr;
@@ -538,6 +539,7 @@ void DownloadManager::beginDownload(const QString &Key, const std::vector<std::s
     reapWorkers();
     auto Done = std::make_shared<std::atomic<bool>>(false);
     Workers.push_back({std::thread([this, Done, LaunchIds, RunnerIds, Toggles, Key, Snapshot = std::move(Snapshot), ConfigSnap = std::move(ConfigSnap)]{
+        const IpfsWrapper::ForegroundHold Hold;   // closures, installs, content: one download, no gap for walks
         std::string Err; bool Ok = true;
         // A RECEIVED package's closure is incomplete (only its exec + tile were shared) — complete it FIRST, through
         // the same rolling queue (CompleteClosure: each missing node block is a plain FetchTarget into the package

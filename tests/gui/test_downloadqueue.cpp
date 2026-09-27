@@ -91,11 +91,14 @@ private slots:
     // failed every later install with "already exists"). A sibling folder that merely starts the same is untouched,
     // and the landed folder's own redirect (its files moved up) wins over the package's. Teeth: drop the redirect in
     // EnqueueBatch (the dest stays under CATALOG), or the longest-prefix choice (.package lands under .package).
+    // Teeth: drop the "move still true" check in RedirectedLocked and the re-received stub is sent to the deleted
+    // package; match only paths under the folder and the folder itself is not redirected.
     void aRequestForAMovedFolderLandsWhereItIsNow()
     {
         QTemporaryDir dir; QVERIFY(dir.isValid());
         const std::string Cat = (dir.path() + "/CATALOG/Alice - Games/[1] A").toStdString();
         const std::string Lib = (dir.path() + "/LIBRARY/Games/[1] A").toStdString();
+        std::filesystem::create_directories(Lib);                             // installed: the stub is gone, the package here
         IpfsWrapper::RedirectDestsUnder(Cat + "/.package", Lib);
         IpfsWrapper::RedirectDestsUnder(Cat, Lib);
         IpfsWrapper::EnqueueBatch({{"CID_DQ_MOVED", Cat + "/n.json", /*Optional=*/true},
@@ -104,7 +107,29 @@ private slots:
         QCOMPARE(IpfsWrapper::QueueDestForCid("CID_DQ_MOVED"), Lib + "/n.json");
         QCOMPARE(IpfsWrapper::QueueDestForCid("CID_DQ_LANDED"), Lib + "/m.json");
         QCOMPARE(IpfsWrapper::QueueDestForCid("CID_DQ_SIBLING"), (dir.path() + "/CATALOG/Alice - Games/[1] AB/s.json").toStdString());
+        // The folder itself (a landed package folder is fetched AS a folder: no trailing slash).
+        QCOMPARE(IpfsWrapper::Redirected(Cat + "/.package"), Lib);
+        // The installed package deleted, the package received again: a new stub at the old place, not the deleted one.
+        std::filesystem::remove_all(Lib);
+        std::filesystem::create_directories(Cat + "/.package");
+        IpfsWrapper::EnqueueBatch({{"CID_DQ_AGAIN", Cat + "/.package/n.json", /*Optional=*/true}});
+        QCOMPARE(IpfsWrapper::QueueDestForCid("CID_DQ_AGAIN"), Cat + "/.package/n.json");
         IpfsWrapper::DebugResetQueue();
+    }
+
+    // A job that fetches in waves holds the network queue in foreground mode across them (background work: one
+    // slot), and lets go when it ends; holds nest. Teeth: construct ForegroundHold without VgNetHold and the queue
+    // still reads idle inside the hold.
+    void aForegroundHoldKeepsTheQueueBusyUntilReleased()
+    {
+        QVERIFY2(IpfsWrapper::DebugNetForegroundIdle(), "precondition: nothing downloading");
+        {
+            const IpfsWrapper::ForegroundHold Outer;
+            QVERIFY(!IpfsWrapper::DebugNetForegroundIdle());
+            { const IpfsWrapper::ForegroundHold Inner; }
+            QVERIFY2(!IpfsWrapper::DebugNetForegroundIdle(), "the outer hold still stands");
+        }
+        QVERIFY2(IpfsWrapper::DebugNetForegroundIdle(), "released");
     }
 
     void cleanup()

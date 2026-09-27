@@ -1033,23 +1033,22 @@ std::vector<std::string> PublishLibrary(nlohmann::ordered_json &Config, std::str
             // library the package contains is its own package with its own pin: no byte is billed twice.
             std::map<std::string, std::string> Content;
             for (const std::string &H : HandlesOf[LibName][Pkg])
-                for (const std::string &C : NodeContentCids(Tree.at(H)))
-                {
-                    if (IpfsWrapper::HeldWhole(C)) Content[C] = C;              // every block, every backing file
-                    else
-                    {
-                        ++Unheld[Pkg];
-                        LogWarn("PackageCatalog::PublishLibrary", "package '" + Pkg + "': content " + C
-                                + " is not held whole here (missing blocks or a moved/removed file) — its pin leaves it"
-                                  " out (seed it, then publish again)");
-                    }
-                }
+                for (const std::string &C : NodeContentCids(Tree.at(H))) Content[C] = C;
             std::map<std::string, std::string> Pin{ {"package", PCid} };
             if (!Content.empty())
-            {
-                const std::string CCid = IpfsWrapper::MakeDir(Content, &MErr);
-                if (CCid.empty()) { if (Error) *Error = "content folder for '" + Pkg + "' not made: " + MErr; return {}; }
-                Pin["content"] = CCid;
+            {   // the folder of the content held whole (every block, every backing file); the rest is named, not linked
+                std::vector<std::string> NotWhole;
+                const std::string CCid = IpfsWrapper::MakeDir(Content, &MErr, &NotWhole);
+                if (CCid.empty() && NotWhole.size() != Content.size())
+                { if (Error) *Error = "content folder for '" + Pkg + "' not made: " + MErr; return {}; }
+                for (const std::string &C : NotWhole)
+                {
+                    ++Unheld[Pkg];
+                    LogWarn("PackageCatalog::PublishLibrary", "package '" + Pkg + "': content " + C
+                            + " is not held whole here (missing blocks or a moved/removed file) — its pin leaves it"
+                              " out (seed it, then publish again)");
+                }
+                if (!CCid.empty()) Pin["content"] = CCid;
             }
             const std::string PinCid = IpfsWrapper::MakeDir(Pin, &MErr);
             if (PinCid.empty()) { if (Error) *Error = "pin folder for '" + Pkg + "' not made: " + MErr; return {}; }
@@ -1233,6 +1232,7 @@ bool CompleteClosure(const NodeIndex &Idx, const std::string &LaunchId, std::str
     const Node *Root = Idx.Find(LaunchId);
     if (!Root) { if (Error) *Error = "unknown node " + LaunchId; return false; }
     if (Root->BundleDir.empty()) { if (Error) *Error = LaunchId + " has no package dir to complete into"; return false; }
+    const IpfsWrapper::ForegroundHold Hold;                             // one wave after another: no gap for walks
     const fs::path Bundle = Root->BundleDir;
 
     // Refs of one node: what it contains (NODE layers; ANY/NOT are compared, never fetched). Resolvable via the index
@@ -1408,16 +1408,16 @@ bool AdoptReceivedPackage(const nlohmann::ordered_json &Config, const std::files
         fs::remove_all(Folder, Ec);
     }
     //Every file fetched into the package is referenced in place, and the references move to the installed place BEFORE
-    //the package does: the landed folder's first (its files moved up), then the package dir's. Both moves are
-    //idempotent and never look at the files, so a failure or crash anywhere up to the rename leaves a stub still
+    //the package does, in one scan: the landed folder's (its files moved up) and the package dir's. The move is
+    //idempotent and never looks at the files, so a failure or crash anywhere up to the rename leaves a stub still
     //Received in CATALOG, which the next download adopts again. Moved after the rename, a failure left an installed
     //package (never adopted again) whose files read as missing, unservable for good.
     std::string MErr;
-    if (IpfsWrapper::MoveRefs(Folder.string(), Dest.string(), &MErr) < 0 || IpfsWrapper::MoveRefs(Src.string(), Dest.string(), &MErr) < 0)
+    if (IpfsWrapper::MoveRefs({{Folder.string(), Dest.string()}, {Src.string(), Dest.string()}}, &MErr) < 0)
     { if (Error) *Error = "cannot re-point the references of " + Src.string() + " to " + Dest.string() + ": " + MErr; return false; }
     auto Refuse = [&](const std::string &Why) {                            // the package stays where its files are
         std::string BErr;
-        if (IpfsWrapper::MoveRefs(Dest.string(), Src.string(), &BErr) < 0)
+        if (IpfsWrapper::MoveRefs({{Dest.string(), Src.string()}}, &BErr) < 0)
             LogErr("PackageCatalog::AdoptReceivedPackage", "cannot point the references back at " + Src.string() + ": " + BErr);
         if (Error) *Error = Why;
         return false;
@@ -1486,6 +1486,7 @@ bool ReceivedPackagesIncomplete(const nlohmann::ordered_json &Config)
 
 bool LandReceivedPackages(const nlohmann::ordered_json &Config, std::string *Error)
 {
+    const IpfsWrapper::ForegroundHold Hold;                             // package after package: no gap for walks
     // A package folder lands whole (the queue fetched it); this completes and checks it: a node file its manifest
     // names but the folder did not bring is fetched on its own, and every named file is verified — one that is not
     // the bytes its name says (or not a canonical node) is removed and the package reported, never repaired.

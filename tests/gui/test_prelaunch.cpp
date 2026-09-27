@@ -3,6 +3,7 @@
 // on a graft moved above the graft it needs) is refused on screen and changes nothing saved.
 
 #include <QtTest>
+#include <QCheckBox>
 #include <QLabel>
 #include <QPushButton>
 #include <QTreeWidget>
@@ -95,6 +96,48 @@ private slots:
 
         select("a");
         QVERIFY(!Up->isEnabled());                                        // nothing above the first
+    }
+
+    // A move is judged as the launch would judge it: with the values the pickers hold now, saved or not. Here ona
+    // needs a only while "strict" is on; the user unticks it (not saved yet) and ona may move above a. Teeth: judge
+    // with the saved instance only and the move is refused.
+    void aGraftMoveIsJudgedWithThePickersCurrentValues()
+    {
+        NodeIndex idx;
+        idx.Nodes["base"] = parse(json{ {"CID", "base"}, {"LABEL", "base"}, {"LAYERS", json::array({ json{{"DIR", "base"}} })} });
+        idx.Nodes["game"] = parse(json{ {"CID", "game"}, {"LABEL", "game"}, {"VARIANT", "v1"},
+            {"LAYERS", json::array({ json{{"NODE", "base"}},
+                json{{"VARS", {{"strict", {{"DEFAULT", "1"}, {"UI", {{"CONTROL", "bool"}}}}}}}},
+                json{{"EXEC", json::array({ json{{"LABEL", "Play"}, {"HOST", ManifestModel::MachinePlatform()}, {"EXE", "game.exe"},
+                    {"TILE", {{"UID", "9"}, {"TITLE", "Strict"}}}} })}} })} });
+        idx.Nodes["a"] = parse(json{ {"CID", "a"}, {"LABEL", "a"}, {"RECOMMENDED", json::array({"9"})},
+            {"LAYERS", json::array({ json{{"ANY", json::array({"game"})}}, json{{"DIR", "a"}} })} });
+        idx.Nodes["ona"] = parse(json{ {"CID", "ona"}, {"LABEL", "ona"}, {"RECOMMENDED", json::array({"9"})},
+            {"LAYERS", json::array({ json{{"ANY", json::array({"game"})}},
+                                     json{{"ANY", json::array({"a"})}, {"WHEN", "%strict%==1"}}, json{{"DIR", "ona"}} })} });
+        ManifestModel::DeriveFacts(idx);
+
+        json Cfg = json{{"Settings", json::object()}};
+        PreLaunchWindow W(&Cfg, &idx, {"game"});
+        W.show();
+        QCoreApplication::processEvents();
+        auto *List = W.findChild<QTreeWidget *>("graftList");
+        auto *Up = W.findChild<QPushButton *>("graftUp");
+        QVERIFY(List && Up);
+        const auto rows = [&] {
+            std::vector<std::string> R;
+            for (int i = 0; i < List->topLevelItemCount(); ++i) R.push_back(List->topLevelItem(i)->text(0).toStdString());
+            return R;
+        };
+        QCOMPARE(rows(), (std::vector<std::string>{"a", "ona"}));
+        QCheckBox *Strict = nullptr;
+        for (QCheckBox *C : W.findChildren<QCheckBox *>()) if (C->property("CVKey").toString() == "strict") Strict = C;
+        QVERIFY2(Strict && Strict->isChecked(), "the strict picker, on by default");
+        Strict->setChecked(false);                                        // not saved: the window is still open
+        List->setCurrentItem(List->topLevelItem(1));
+        QVERIFY(Up->isEnabled());
+        QTest::mouseClick(Up, Qt::LeftButton);
+        QCOMPARE(rows(), (std::vector<std::string>{"ona", "a"}));
     }
 
     // Instance settings are the family's (RoC and TFT share one), but the graft list is the TILE's: saving under one

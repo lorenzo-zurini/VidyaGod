@@ -9,6 +9,7 @@
 #include <string>
 
 #include "authoringsession.h"
+#include "authoringsessionmodel.h"   // CapturePreview
 
 namespace fs = std::filesystem;
 using json = nlohmann::ordered_json;
@@ -25,6 +26,20 @@ class AuthoringSessionTest : public QObject
 {
     Q_OBJECT
 private slots:
+
+    // The capture preview says where a capture mounts: a TARGET naming an anchor under that anchor's layout in this
+    // runtime (sent from the worker as "%Anchor%\tlayout" lines), any other under the content root. Teeth: drop the
+    // insert in ParseAnchors (or the anchor branch of MountBase) and %GameDir%/data previews under the content root.
+    void capture_preview_mounts_an_anchored_target_where_the_runtime_lays_it_out()
+    {
+        const QMap<QString, QString> A = CapturePreview::ParseAnchors(CapturePreview::EncodeAnchors(
+            {{"%GameDir%", "pfx/drive_c/802"}, {"%ProgramFiles32%", "pfx/drive_c/Program Files (x86)"}}));
+        QCOMPARE(CapturePreview::MountBase("FILES/%GameDir%/data", "pfx/drive_c", A), QString("pfx/drive_c/802/data"));
+        QCOMPARE(CapturePreview::MountBase("%ProgramFiles32%", "pfx/drive_c", A), QString("pfx/drive_c/Program Files (x86)"));
+        QCOMPARE(CapturePreview::MountBase("mods", "pfx/drive_c", A), QString("pfx/drive_c/mods"));
+        QCOMPARE(CapturePreview::MountBase("  ", "pfx/drive_c", A), QString("pfx/drive_c"));
+        QCOMPARE(CapturePreview::MountBase("%Nope%/x", "pfx/drive_c", A), QString("pfx/drive_c/%Nope%/x"));   // not this runtime's
+    }
 
     // IsChurn: registry hives + wine-managed trees are filtered; real content is not.
     void is_churn()

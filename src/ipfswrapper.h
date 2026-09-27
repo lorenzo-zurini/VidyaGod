@@ -91,10 +91,13 @@ std::string AddNoCopyMeta(const std::string &Path, std::string *Error = nullptr)
 // those bytes — the CID Cid::OfBytes computes locally. A package is a UnixFS folder of its node files.
 // BlockPut stores + direct-pins + announces the bytes and returns the CID; BlockGet returns one raw block's bytes
 // (fetching over bitswap when remote, bounded); MakeDir builds the folder {name: CID} over blocks the node holds,
-// pins it recursively, announces it and returns its CID.
+// pins it recursively, announces it and returns its CID. Every entry must be held whole (every block, every backing
+// file) — unless NotWhole is given: then the folder holds the whole entries and NotWhole names the rest ("" and no
+// error when none is whole: no folder).
 std::string BlockPut(const std::string &Bytes, std::string *Error = nullptr);
 std::string BlockGet(const std::string &Cid, std::string *Error = nullptr);
-std::string MakeDir(const std::map<std::string, std::string> &Entries, std::string *Error = nullptr);
+std::string MakeDir(const std::map<std::string, std::string> &Entries, std::string *Error = nullptr,
+                    std::vector<std::string> *NotWhole = nullptr);
 
 // ----- concurrency throttle: cap how many FetchToPath calls run at once (configurable) -----
 // A single global limit shared across all downloads (every package's hydrate worker draws from it), so the user can
@@ -118,6 +121,20 @@ private:
     long long Handle = 0;   // the network-queue slot (VgNetAcquire)
     bool Owned = true;      // false after being moved-from, so only the live instance releases on destruction
 };
+
+// Keeps the network queue in foreground mode for a job that fetches in waves — a closure landing, a download's whole
+// run. Between its fetches no slot is held, and background work (provider walks) took all but one slot at every wave
+// boundary, the next wave waiting behind them; held, background gets one. Nests.
+class ForegroundHold {
+public:
+    ForegroundHold();
+    ~ForegroundHold();
+    ForegroundHold(const ForegroundHold &) = delete;
+    ForegroundHold &operator=(const ForegroundHold &) = delete;
+private:
+    long long Handle = 0;   // VgNetHold
+};
+bool DebugNetForegroundIdle();   // TEST ONLY: no fetch holds or waits for a slot, nobody holds the foreground
 
 // One file to fetch: its CID, the destination path, and whether a failure is tolerable (covers are optional).
 struct FetchTarget {
@@ -201,13 +218,10 @@ bool CidMissing(const std::string &Cid);
 // An orphaned reference (backing file gone) still counts as held — pair with CidMissing to tell them apart.
 bool HasLocal(const std::string &Cid);
 
-// A folder was moved on disk (a received package installed): re-points the filestore references of every file under
-// OldDir to the same relative path under NewDir — nothing re-read or re-hashed. Returns the number moved, -1 on error.
-long long MoveRefs(const std::string &OldDir, const std::string &NewDir, std::string *Error = nullptr);
-
-// True if every block of the CID's DAG is held here and every file it is referenced into is present — what pinning
-// or publishing it claims. HasLocal is the top block only.
-bool HeldWhole(const std::string &Cid);
+// Folders were moved on disk (a received package installed): re-points the filestore references of every file under
+// each move's old folder to the same relative path under its new one — the longest old folder holding a file wins —
+// in one scan, nothing re-read or re-hashed. Returns the number moved, -1 on error.
+long long MoveRefs(const std::vector<std::pair<std::string, std::string>> &Moves, std::string *Error = nullptr);
 
 // Deletes a CID's closure (filestore references + plain blocks) and unpins it, so a subsequent AddNoCopy re-creates
 // fresh references against a new backing file (the node's filestore otherwise skips re-adding a block it already has).

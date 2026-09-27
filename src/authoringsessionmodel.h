@@ -1,12 +1,15 @@
 #ifndef AUTHORINGSESSIONMODEL_H
 #define AUTHORINGSESSIONMODEL_H
 
+#include <QMap>
 #include <QObject>
 #include <QStringList>
 #include <QThread>
 
 #include <memory>
 #include <string>
+#include <utility>
+#include <vector>
 
 #include "authoringsession.h"
 
@@ -20,6 +23,16 @@ enum class CaptureMode
     Files,      // open a file manager on the runtime; capture what appeared → a Content node
     Registry,   // open regedit on the prefix; capture what changed → a RegEdit node
 };
+
+// Where a capture will mount, for the window's preview. The runtime's anchor layouts travel from the worker thread as
+// "%Anchor%\tlayout" lines (EncodeAnchors → ParseAnchors); a TARGET naming an anchor mounts where the runtime lays that
+// anchor out, any other TARGET under the content root (MountBase).
+namespace CapturePreview
+{
+QStringList EncodeAnchors(const std::vector<std::pair<std::string, std::string>> &Layouts);
+QMap<QString, QString> ParseAnchors(const QStringList &Lines);
+QString MountBase(QString Target, const QString &ContentRoot, const QMap<QString, QString> &Anchors);
+}
 
 // ---------------------------------------------------------------------------
 // AuthoringWorker — owns the AuthoringSession and runs every heavy op (wineboot, installer runs, multi-GB captures,

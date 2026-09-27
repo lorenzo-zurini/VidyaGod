@@ -26,6 +26,8 @@ int  VgFetchOnce(const char *cid, const char *dest, int isDir, char **errOut); /
 // The one network queue (netq.go): a fetch job's slot (blocks; release the handle once), and its size.
 long long VgNetAcquire(void);
 void VgNetRelease(long long handle);
+long long VgNetHold(void);
+int VgDebugNetForegroundIdle(void);   // tests only   // foreground mode for a multi-wave job (background at most one slot); release with VgNetRelease
 void VgSetNetSlots(int n);
 
 int  VgPinLs(char **outJson, char **errOut);   // JSON array of recursively-pinned CIDs
@@ -39,6 +41,7 @@ int  VgComputeCid(const char *path, char **outCid, char **errOut); // a file's C
 int  VgBlockPut(const char *bytes, char **outCid, char **errOut);   // store one raw leaf (direct-pinned + announced) -> its CID
 int  VgBlockGet(const char *cid, char **outBytes, char **errOut);   // one raw block's bytes (fetches over bitswap if remote)
 int  VgMakeDir(const char *entriesJson, char **outCid, char **errOut); // folder of {name: CID} over held blocks (pinned) -> its CID
+int  VgMakeWholeDir(const char *entriesJson, char **outCid, char **outNotWhole, char **errOut); // …of the entries held whole; the rest named (JSON)
 long long VgCidFileSizeLocal(const char *cid);   // UnixFS FILE size (payload bytes) from the local store, -1 unknown
 char *VgCidServeStatus(const char *cid); // "" if deliverable (cheap: stat only), else the reason (caller frees)
 int  VgServeFailures(char **outJson); // JSON [{cid,err,when}] of blocks a PEER asked for that we could not deliver (drains)
@@ -53,8 +56,7 @@ int  VgExportIdentity(const char *destPath, char **errOut);         // back up i
 int  VgImportIdentity(const char *srcPath, char **errOut);          // install a backed-up identity.key; RESTART required to re-key
 int  VgListenAddrs(char **outJson);            // JSON array of dialable /p2p/ multiaddrs (for peering/diagnostics)
 int  VgConnect(const char *multiaddr, char **errOut); // dial + hold a connection to a peer at a full /p2p/ multiaddr
-long long VgMoveRefs(const char *oldDir, const char *newDir, char **errOut); // re-point refs of files moved oldDir→newDir; count or -1
-int  VgHeldWhole(const char *cid);                 // 1 = every block held and every backing file present
+long long VgMoveRefs(const char *movesJson, char **errOut); // [[oldDir,newDir],…]: re-point refs of moved files (longest oldDir wins), one scan; count or -1
 int  VgDropRef(const char *cid, char **errOut);// delete a CID's closure (filestore refs + blocks) + unpin, so it can be re-referenced
 int  VgDropCached(const char *cid, char **errOut);// purge a CID's locally-CACHED (bitswap) blocks — a cancelled download's partial — + compact
 

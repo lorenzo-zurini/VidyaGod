@@ -612,6 +612,8 @@ void PreLaunchWindow::SaveGrafts()
     StoreGrafts(CollectGrafts());   //the tile's graft list = the ticked rows, in list order
 }
 
+static std::map<std::string, std::string> CollectVarValues(QObject* Group);   // below
+
 void PreLaunchWindow::MoveSelectedGraft(int By)
 {
     const QTreeWidgetItem* It = ModuleTree ? ModuleTree->currentItem() : nullptr;
@@ -621,10 +623,12 @@ void PreLaunchWindow::MoveSelectedGraft(int By)
     const auto At = std::find(Ticked.begin(), Ticked.end(), Key);
     if (At == Ticked.end()) return;
     std::string Why;
-    //Judged as the launch judges it: the instance's values, and the tile this window launches.
+    //Judged as the launch judges it: the instance's values with what the pickers hold now merged over them (saved at
+    //launch), and the tile this window launches.
     std::map<std::string, std::string> Instance;
     if (const auto Saved = PackageCatalog::GetPackageVariables(*GlobalConfigJSON, PackageUID); Saved.is_object())
         for (const auto &[K, V] : Saved.items()) if (V.is_string()) Instance[K] = V.get<std::string>();
+    if (CustomVarGroup) for (const auto &[K, V] : CollectVarValues(CustomVarGroup)) Instance[K] = V;
     const std::map<std::string, std::string> Builtins{ {"UID", Face(Index->Find(LaunchNodeId))}, {"PackageUID", PackageUID} };
     if (!PackageCatalog::MoveGraft(*Index, LaunchNodeId, Ticked, (size_t)(At - Ticked.begin()), By, &Why, Instance, Builtins))
     {

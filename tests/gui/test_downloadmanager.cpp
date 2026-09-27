@@ -206,6 +206,15 @@ private slots:
         QVERIFY(dm.cidsOf("802").contains(QShared));
         QVERIFY2(!dm.cancellableCids("803").contains(QShared), "cancelling one card leaves content another still needs");
         QVERIFY2(dm.cancellableCids("900").contains(QOwn), "a card's own content is its to cancel");
+        // Progress on the shared CID moves BOTH cards' bars, and only theirs. Teeth: recompute only the first card a
+        // CID maps to and 803's bar never moves.
+        {
+            QSignalSpy Prog(&dm, &DownloadManager::downloadProgress);
+            emit ipfs.cidChanged(QShared);
+            QSet<QString> Moved;
+            for (const QList<QVariant> &A : Prog) Moved.insert(A.at(0).toString());
+            QCOMPARE(Moved, (QSet<QString>{"802", "803"}));
+        }
 
         // Cancelling purges the cache only for what the cancel aborted and did not finish: a shared CID (another card's
         // download) and a finished file are never purged — purging them wiped the other card's just-finished files.

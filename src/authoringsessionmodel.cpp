@@ -21,12 +21,33 @@ void AuthoringWorker::emitDeltaList()
     emit delta(D);
 }
 
+QStringList CapturePreview::EncodeAnchors(const std::vector<std::pair<std::string, std::string>> &Layouts)
+{
+    QStringList Out;
+    for (const auto & [A, Layout] : Layouts) Out << QString::fromStdString(A) + "\t" + QString::fromStdString(Layout);
+    return Out;
+}
+
+QMap<QString, QString> CapturePreview::ParseAnchors(const QStringList &Lines)
+{
+    QMap<QString, QString> Out;
+    for (const QString & L : Lines) Out.insert(L.section('\t', 0, 0), L.section('\t', 1));
+    return Out;
+}
+
+QString CapturePreview::MountBase(QString Target, const QString &ContentRoot, const QMap<QString, QString> &Anchors)
+{
+    Target = Target.trimmed();
+    if (Target.startsWith("FILES/")) Target = Target.mid(6);
+    const int Close = Target.startsWith('%') ? Target.indexOf('%', 1) : -1;
+    if (Close > 0 && Anchors.contains(Target.left(Close + 1))) return Anchors.value(Target.left(Close + 1)) + Target.mid(Close + 1);
+    return Target.isEmpty() ? ContentRoot : ContentRoot + "/" + Target;
+}
+
 void AuthoringWorker::emitSessionInfo()
 {
     if (!Session) { emit started(false, QString(), QString(), false, QString(), WineRunners); return; }
-    QStringList Anchors;
-    for (const auto & [A, Layout] : Session->AnchorLayouts())
-        Anchors << QString::fromStdString(A) + "\t" + QString::fromStdString(Layout);
+    const QStringList Anchors = CapturePreview::EncodeAnchors(Session->AnchorLayouts());
     emit started(true, QString::fromStdString(Session->RuntimePath().string()),
                  QString::fromStdString(Session->ContentRoot()), Session->PrefixGenerate(),
                  QString::fromStdString(Session->RunnerId()), WineRunners, Anchors);

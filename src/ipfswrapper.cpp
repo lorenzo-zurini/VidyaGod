@@ -106,6 +106,10 @@ DownloadSlot::~DownloadSlot()
     if (Owned) VgNetRelease(Handle);   // moved-from: the slot now lives in another instance
 }
 
+ForegroundHold::ForegroundHold() : Handle(VgNetHold()) {}
+ForegroundHold::~ForegroundHold() { VgNetRelease(Handle); }
+bool DebugNetForegroundIdle() { return VgDebugNetForegroundIdle() != 0; }
+
 void RequestCancel(const std::string &Cid) { VgRequestCancel(Cid.c_str()); }
 void ClearCancel(const std::string &Cid)   { VgClearCancel(Cid.c_str()); }
 void SetExpectedSize(const std::string &Cid, long long Size) { VgSetExpectedSize(Cid.c_str(), Size); }
@@ -198,15 +202,22 @@ std::string BlockGet(const std::string &Cid, std::string *Error)
     return BytesS;
 }
 
-std::string MakeDir(const std::map<std::string, std::string> &Entries, std::string *Error)
+std::string MakeDir(const std::map<std::string, std::string> &Entries, std::string *Error, std::vector<std::string> *NotWhole)
 {
     nlohmann::json E = nlohmann::json::object();
     for (const auto &[Name, Cid] : Entries) E[Name] = Cid;
-    char *Cid = nullptr, *Err = nullptr;
-    const int Rc = VgMakeDir(E.dump().c_str(), &Cid, &Err);
+    char *Cid = nullptr, *Err = nullptr, *Nw = nullptr;
+    const int Rc = NotWhole ? VgMakeWholeDir(E.dump().c_str(), &Cid, &Nw, &Err) : VgMakeDir(E.dump().c_str(), &Cid, &Err);
     const std::string CidS = TakeStr(Cid);
     const std::string ErrS = TakeStr(Err);
+    const std::string NwS = TakeStr(Nw);
     if (Rc != 0) { if (Error) *Error = ErrS.empty() ? "make dir failed" : ErrS; return std::string(); }
+    if (NotWhole)
+    {
+        NotWhole->clear();
+        const nlohmann::json J = nlohmann::json::parse(NwS, nullptr, /*allow_exceptions=*/false);
+        if (J.is_array()) for (const auto &N : J) if (N.is_string()) NotWhole->push_back(N.get<std::string>());
+    }
     return CidS;
 }
 
@@ -413,16 +424,17 @@ bool HasLocal(const std::string &Cid)
     return VgHasLocal(Cid.c_str()) == 1;
 }
 
-long long MoveRefs(const std::string &OldDir, const std::string &NewDir, std::string *Error)
+long long MoveRefs(const std::vector<std::pair<std::string, std::string>> &Moves, std::string *Error)
 {
+    nlohmann::json J = nlohmann::json::array();
+    for (const auto &[From, To] : Moves) J.push_back({From, To});
     char *Err = nullptr;
-    const long long N = VgMoveRefs(OldDir.c_str(), NewDir.c_str(), &Err);
+    const long long N = VgMoveRefs(J.dump().c_str(), &Err);
     const std::string E = TakeStr(Err);
     if (N < 0 && Error) *Error = E;
     return N;
 }
 
-bool HeldWhole(const std::string &Cid) { return !Cid.empty() && VgHeldWhole(Cid.c_str()) == 1; }
 
 bool DropRef(const std::string &Cid)
 {
