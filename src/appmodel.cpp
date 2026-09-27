@@ -360,12 +360,15 @@ std::shared_ptr<const NodeIndex> AppModel::catalogSnapshot() const
 void AppModel::healOrphansIfAny()
 {
     bool Expected = false;
-    if (!HealInFlight.compare_exchange_strong(Expected, true)) return;   // single-flight: a heal is already running
+    if (!HealInFlight->compare_exchange_strong(Expected, true)) return;  // single-flight: a heal is already running
     auto Cfg = std::make_shared<nlohmann::ordered_json>(*Config);
-    // NOTE: the worker must not touch members (KnownUnhealable is main-thread state) — it computes into
-    // shared locals; the completion applies them. HealInFlight is atomic and may clear from the worker.
+    // NOTE: the worker must not touch this model at all — it can outlive it (a model torn down mid-pass: a closed
+    // app, every test). It computes into shared locals; the completion, which runs only while the model lives,
+    // applies them and reports. InFlight is the one thing the worker clears, and it holds its own reference.
     auto Unhealable = std::make_shared<std::set<std::string>>(KnownUnhealable);
     auto Healed     = std::make_shared<bool>(false);
+    auto Unservable = std::make_shared<std::vector<std::pair<std::string, std::string>>>();   // (recorded CID, why)
+    auto InFlight   = HealInFlight;
     //Once per run, after the orphans: hold every content file the seed roots name that is not held whole
     //(SeedUnheld) — inside this single flight, so the two passes never race over the same files.
     //Armed only with a started node (the 90 s timer heals with networking off too), and re-armed if the node went away
@@ -374,7 +377,7 @@ void AppModel::healOrphansIfAny()
     if (SeedUnheldNow) SeededUnheld = true;
     auto SeedDone = std::make_shared<bool>(false);
     AsyncWork::Run(this,
-        [Cfg, Unhealable, Healed, SeedUnheldNow, SeedDone, this]{
+        [Cfg, Unhealable, Healed, Unservable, SeedUnheldNow, SeedDone, InFlight]{
             const std::vector<std::string> Orphans = IpfsWrapper::OrphanedRefPaths();
             // Drop any previously-unhealable path that's no longer orphaned (content was restored), then treat the
             // rest as "known gone" so we don't re-run the (heavier) heal for content that genuinely can't be found.
@@ -396,10 +399,7 @@ void AppModel::healOrphansIfAny()
                     std::vector<PackageCatalog::SeedFailure> Bad;
                     PackageCatalog::SeedDirectory(Dir, {}, nullptr, false, false, false, &Bad);
                     for (const auto &F : Bad)
-                        QMetaObject::invokeMethod(this, [this, F]{
-                            emit contentUnservable(QString::fromStdString(F.RecordedCid),
-                                QString::fromStdString("content no longer matches the published CID (" + F.Path + ")"));
-                        }, Qt::QueuedConnection);
+                        Unservable->emplace_back(F.RecordedCid, "content no longer matches the published CID (" + F.Path + ")");
                 }
                 // Whatever is STILL orphaned after the heal is content truly gone (no on-disk copy to re-point to):
                 // remember it so subsequent sweeps skip the heavy re-seed until something changes.
@@ -413,18 +413,18 @@ void AppModel::healOrphansIfAny()
                     std::vector<PackageCatalog::SeedFailure> Bad;
                     if (PackageCatalog::SeedUnheld(Dir, &Bad) > 0) *Healed = true;
                     for (const auto &F : Bad)
-                        QMetaObject::invokeMethod(this, [this, F]{
-                            emit contentUnservable(QString::fromStdString(F.RecordedCid), QString::fromStdString(
-                                F.ActualCid.empty() ? "content could not be read or added (" + F.Path + ")"
-                                                    : "content does not match its recorded CID (" + F.Path + ")"));
-                        }, Qt::QueuedConnection);
+                        Unservable->emplace_back(F.RecordedCid, F.ActualCid.empty()
+                            ? "content could not be read or added (" + F.Path + ")"
+                            : "content does not match its recorded CID (" + F.Path + ")");
                 }
             *SeedDone = IpfsWrapper::Available();                   // stopped early: the next heal runs it again
-            HealInFlight.store(false);
+            InFlight->store(false);
         },
-        [this, Unhealable, Healed, SeedUnheldNow, SeedDone]{
+        [this, Unhealable, Healed, Unservable, SeedUnheldNow, SeedDone]{
             if (SeedUnheldNow && !*SeedDone) SeededUnheld = false;
             KnownUnhealable = std::move(*Unhealable);
+            for (const auto &[Cid, Why] : *Unservable)
+                emit contentUnservable(QString::fromStdString(Cid), QString::fromStdString(Why));
             if (*Healed) emit ipfsHealthChanged();
         });
 }
@@ -733,7 +733,7 @@ void AppModel::dropReceivedStubs(const std::string & P)
     // A closure pass in flight walks a SNAPSHOT of the index taken before this drop and would write the old
     // generation's blocks right back into the dirs removed here. Bump the generation so the pass stops at its next
     // root, and remember to drop once more when it ends (the root it was on may have landed after the rm).
-    ++FriendClosureGen;
+    ++*FriendClosureGen;
     if (FriendClosureRunning) FriendStubsDirtyPeers.insert(P);
     // The dirs come from the snapshot we hold — or, once that is gone (receive-off / forget erased it), from what
     // this peer's last drop swept: a late block from the pass can still recreate a dir after the record is gone.
@@ -981,9 +981,9 @@ void AppModel::completeReceivedClosures()
     if (!Roots.empty()) LogOut("AppModel::completeReceivedClosures", "landing the node closure of " + std::to_string(Roots.size()) + " received node(s)");
     auto Snap = catalogSnapshot();
     auto Cfg  = std::make_shared<const nlohmann::ordered_json>(*Config);
-    const unsigned Gen = FriendClosureGen.load();
-    AsyncWork::Run(this,
-        [this, Snap, Cfg, Roots, Packages, Gen]{
+    const unsigned Gen = FriendClosureGen->load();
+    AsyncWork::Run(this,   // the pass touches nothing of this model: it can outlive it
+        [Snap, Cfg, Roots, Packages, Gen, CurGen = FriendClosureGen]{
             const IpfsWrapper::ForegroundHold Hold;   // packages, then closures: one landing, no gap for walks
             size_t Ok = 0, Done = 0;
             if (Packages)
@@ -994,7 +994,7 @@ void AppModel::completeReceivedClosures()
             }
             for (const std::string & R : Roots)
             {
-                if (FriendClosureGen.load() != Gen)
+                if (CurGen->load() != Gen)
                 {   // the snapshot changed under us: these roots are the OLD generation's — stop, never resurrect them
                     LogOut("AppModel::completeReceivedClosures", "snapshot changed — stopped after " + std::to_string(Done) + "/" + std::to_string(Roots.size()) + " root(s) of the previous generation");
                     return;

@@ -190,7 +190,8 @@ private:
     int                      CardPixelWidth = 185;
     QTimer *                 OrphanHealTimer = nullptr;   // periodic background orphan check (tab-independent)
     bool                     SyncRetryPending = false;    // a re-sync is scheduled for a source that failed to fetch
-    std::atomic<bool>        HealInFlight{false};         // single-flight guard for healOrphansIfAny
+    // single-flight guard for healOrphansIfAny — shared, because the worker clears it and may outlive this model
+    std::shared_ptr<std::atomic<bool>> HealInFlight = std::make_shared<std::atomic<bool>>(false);
     bool                     SeededUnheld = false;   // SeedUnheld ran this process (healOrphansIfAny, first pass)
     std::set<std::string>    KnownUnhealable;             // orphaned paths a heal couldn't fix (content truly gone) → don't re-loop
     std::map<std::string, quint64> FriendLibSeq;         // per-peer highest applied snapshot stamp (last-writer-wins; session-only)
@@ -198,7 +199,8 @@ private:
     bool                           FriendReconcilePending = false;  // debounce: coalesce a burst of landed blocks into one catalog rebuild
     bool                           FriendClosureRunning = false;    // a closure-completion worker is in flight
     bool                           FriendClosureAgain = false;      // blocks landed while it ran → run once more
-    std::atomic<unsigned>          FriendClosureGen{0};             // bumped by dropReceivedStubs: an older pass stops at its next root
+    // bumped by dropReceivedStubs: an older pass stops at its next root (shared: the pass may outlive this model)
+    std::shared_ptr<std::atomic<unsigned>> FriendClosureGen = std::make_shared<std::atomic<unsigned>>(0);
     std::set<std::string>          FriendStubsDirtyPeers;           // peers whose stubs were dropped while a pass ran → drop again when it ends
     std::map<std::string, std::set<std::filesystem::path>> DroppedStubDirs;   // peer → the lib dirs last dropped: swept again after the snapshot is gone
 };
