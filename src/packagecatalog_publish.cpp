@@ -620,7 +620,9 @@ int SeedUnheld(const std::string &Dir, std::vector<SeedFailure> *Failures)
     int Added = 0;
     for (const auto &[Path, Cid] : SeedTargets(Dir))
     {
-        if (IpfsWrapper::HasLocal(Cid)) continue;
+        //Whole, not merely "has": that seeder HELD each zip's root block — and served it, and announced it — with none
+        //of the leaves.
+        if (IpfsWrapper::HeldWhole(Cid)) continue;
         std::string Err;
         const std::string Is = IpfsWrapper::ComputeCid(Path, &Err);
         if (Is != Cid)

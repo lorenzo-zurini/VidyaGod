@@ -42,6 +42,7 @@ int  VgComputeCid(const char *path, char **outCid, char **errOut); // a file's C
 int  VgBlockPut(const char *bytes, char **outCid, char **errOut);   // store one raw leaf (direct-pinned + announced) -> its CID
 int  VgBlockGet(const char *cid, char **outBytes, char **errOut);   // one raw block's bytes (fetches over bitswap if remote)
 int  VgMakeDir(const char *entriesJson, char **outCid, char **errOut); // folder of {name: CID} over held blocks (pinned) -> its CID
+int  VgHeldWhole(const char *cid);                 // 1 = every block held and every backing file present
 int  VgMakeWholeDir(const char *entriesJson, char **outCid, char **outNotWhole, char **errOut); // …of the entries held whole; the rest named (JSON)
 long long VgCidFileSizeLocal(const char *cid);   // UnixFS FILE size (payload bytes) from the local store, -1 unknown
 char *VgCidServeStatus(const char *cid); // "" if deliverable (cheap: stat only), else the reason (caller frees)

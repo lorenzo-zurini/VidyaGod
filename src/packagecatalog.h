@@ -167,9 +167,9 @@ struct SeedFailure { std::string Path, RecordedCid, ActualCid; };
 // package source. Only package sources were ever re-seeded, so an authoring machine never re-added a LIBRARY file it
 // did not hold, and re-pointed no orphaned reference there.
 std::vector<std::string> SeedRoots(const nlohmann::ordered_json &GlobalConfigJSON);
-// Adds by reference every content file under Dir that Dir's nodes name and this node does not hold at all, when its
-// bytes are the recorded CID — checked first, so wrong bytes are never added (or announced); those are returned in
-// Failures. Held content, intact or orphaned, is left to the orphan heal. Returns how many files were added.
+// Adds by reference every content file under Dir that Dir's nodes name and this node does not hold WHOLE (a root without
+// its leaves, a reference whose file is gone, nothing at all), when its bytes are the recorded CID — checked first, so
+// wrong bytes are never added (or announced); those are returned in Failures. Returns how many files were added.
 int SeedUnheld(const std::string &Dir, std::vector<SeedFailure> *Failures = nullptr);
 int SeedDirectory(const std::string &Dir,
                   const std::function<void(int, int, const std::string &)> &Progress = {},

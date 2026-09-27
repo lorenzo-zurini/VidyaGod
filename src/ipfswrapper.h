@@ -224,6 +224,10 @@ bool HasLocal(const std::string &Cid);
 // in one scan, nothing re-read or re-hashed. Returns the number moved, -1 on error.
 long long MoveRefs(const std::vector<std::pair<std::string, std::string>> &Moves, std::string *Error = nullptr);
 
+// True if every block of the CID's DAG is held here and every file it is referenced into is present — what serving it
+// needs. HasLocal is the top block only: a seeder held the roots of four library zips, and none of their leaves.
+bool HeldWhole(const std::string &Cid);
+
 // Deletes a CID's closure (filestore references + plain blocks) and unpins it, so a subsequent AddNoCopy re-creates
 // fresh references against a new backing file (the node's filestore otherwise skips re-adding a block it already has).
 bool DropRef(const std::string &Cid);

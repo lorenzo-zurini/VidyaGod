@@ -341,8 +341,10 @@ private slots:
 
     // The machine's own LIBRARY is a seed root: a content file its nodes name but the node does not hold is added (the
     // seeder answered "block not found" for four library zips on the replication; only a pinning gateway saved the
-    // download) — unless its bytes are not the recorded CID, which is reported and never added. Teeth: leave LIBRARY
-    // out of SeedRoots and nothing under it is found; add without checking the CID first and the wrong bytes are held.
+    // download), and so is one held only in part (that seeder held each zip's root and none of its leaves; here a
+    // reference whose file is gone) — unless its bytes are not the recorded CID, which is reported and never added.
+    // Teeth: leave LIBRARY out of SeedRoots and nothing under it is found; skip what HasLocal holds instead of what is
+    // held whole and the half-held file stays unservable; add without checking the CID first and the wrong bytes are held.
     void the_library_seeds_what_its_nodes_name_and_it_does_not_hold()
     {
         std::string Err;
@@ -355,11 +357,21 @@ private slots:
         const auto write = [](const std::string &P, const std::string &Bytes) { std::ofstream O(P, std::ios::binary); O << Bytes; };
         write(Pkg + "/good.zip", std::string(300000, 'g') + QUuid::createUuid().toString().toStdString());
         write(Pkg + "/bad.zip", "bytes that are not the recorded CID " + QUuid::createUuid().toString().toStdString());
+        const std::string HalfBytes = std::string(600000, 'h') + QUuid::createUuid().toString().toStdString();
+        write(Pkg + "/half.zip", HalfBytes);
         const std::string Good = IpfsWrapper::ComputeCid(Pkg + "/good.zip", &Err);
         QVERIFY2(!Good.empty(), Err.c_str());
+        // half.zip: held only through a copy elsewhere, since deleted — its root is held, its leaves are not servable.
+        const std::string Elsewhere = D.path().toStdString() + "/copy.zip";
+        write(Elsewhere, HalfBytes);
+        const std::string Half = IpfsWrapper::AddNoCopy(Elsewhere, &Err);
+        QVERIFY2(!Half.empty(), Err.c_str());
+        std::filesystem::remove(Elsewhere);
+        QVERIFY2(IpfsWrapper::HasLocal(Half) && !IpfsWrapper::HeldWhole(Half), "precondition: held in part only");
         const std::string Recorded = Cid::OfBytes("what bad.zip was published as " + QUuid::createUuid().toString().toStdString());
         writeJson(QString::fromStdString(Pkg + "/codec.json"), NodeFixture::Chain("codec", {NodeFixture::Merge({
-            NodeFixture::ContentCid("zip", "good.zip", Good), NodeFixture::ContentCid("zip", "bad.zip", Recorded)})}));
+            NodeFixture::ContentCid("zip", "good.zip", Good), NodeFixture::ContentCid("zip", "bad.zip", Recorded),
+            NodeFixture::ContentCid("zip", "half.zip", Half)})}));
         json cfg = json{{"Settings", {{"Paths", {{"LibraryRoot", R}}}}}};
         const auto Roots = PackageCatalog::SeedRoots(cfg);
         QVERIFY2(std::find(Roots.begin(), Roots.end(), R) != Roots.end(), "the LIBRARY is a seed root");
@@ -367,8 +379,9 @@ private slots:
         std::vector<PackageCatalog::SeedFailure> Bad;
         int Added = 0;
         for (const std::string &Dir : Roots) Added += PackageCatalog::SeedUnheld(Dir, &Bad);
-        QCOMPARE(Added, 1);
-        QVERIFY2(IpfsWrapper::HasLocal(Good) && !IpfsWrapper::CidMissing(Good), "the file its node names is held and servable");
+        QCOMPARE(Added, 2);
+        QVERIFY2(IpfsWrapper::HeldWhole(Good), "the file its node names is held and servable");
+        QVERIFY2(IpfsWrapper::HeldWhole(Half), "the half-held file is held whole again, from the library's copy");
         QCOMPARE((int)Bad.size(), 1);
         QCOMPARE(Bad[0].RecordedCid, Recorded);
         QVERIFY2(!IpfsWrapper::HasLocal(Bad[0].ActualCid), "bytes that are not the recorded CID are never added");

@@ -425,6 +425,8 @@ bool HasLocal(const std::string &Cid)
     return VgHasLocal(Cid.c_str()) == 1;
 }
 
+bool HeldWhole(const std::string &Cid) { return !Cid.empty() && VgHeldWhole(Cid.c_str()) == 1; }
+
 long long MoveRefs(const std::vector<std::pair<std::string, std::string>> &Moves, std::string *Error)
 {
     nlohmann::json J = nlohmann::json::array();
