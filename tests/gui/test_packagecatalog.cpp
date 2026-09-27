@@ -316,6 +316,29 @@ private slots:
         QVERIFY2(Plan[0].Dest.find("Foo_1/.package") != std::string::npos, Plan[0].Dest.c_str());
     }
 
+    // A package received again after its installed copy was deleted is a stub again: planning it forgets the install's
+    // redirect, or its files went into the deleted package (which then read as installed, and it never came back). An
+    // install that finished just after the plan was read keeps its redirect. Teeth: drop the DropRedirectsUnder call in
+    // ReceivedFetchTargets and the re-received file is sent to the deleted package; drop its "destination gone" check
+    // and the fresh install loses its redirect.
+    void planning_a_package_again_ends_its_install_redirect()
+    {
+        QTemporaryDir D; QVERIFY(D.isValid());
+        const std::string Src = D.path().toStdString() + "/CATALOG/Alice - Games/[1] A";
+        const std::string Dest = D.path().toStdString() + "/LIBRARY/Games/[1] A";
+        std::filesystem::create_directories(Dest);
+        IpfsWrapper::RedirectDestsUnder(Src, Dest);
+        const std::vector<PackageCatalog::ReceivedFetch> Plan{ {"bafyfolder", Src + "/.package"} };
+        const auto Targets = PackageCatalog::ReceivedFetchTargets(Plan);
+        QCOMPARE((int)Targets.size(), 1);
+        QVERIFY(Targets[0].Dir);
+        QCOMPARE(IpfsWrapper::Redirected(Src + "/x.json"), Dest + "/x.json");       // the install is there: it holds
+        std::filesystem::remove_all(Dest);                                           // the installed package deleted
+        (void)PackageCatalog::ReceivedFetchTargets(Plan);
+        QCOMPARE(IpfsWrapper::Redirected(Src + "/x.json"), Src + "/x.json");
+        IpfsWrapper::DebugResetQueue();
+    }
+
     // One entry = one package folder, landing in <pkg dir>/.package. Two folders naming the same package dir (only
     // a hostile or a mid-change snapshot does that) both land, the second under a CID-qualified dir; the same CID
     // twice is one target.

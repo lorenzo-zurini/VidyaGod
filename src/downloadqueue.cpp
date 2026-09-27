@@ -516,10 +516,16 @@ void RedirectDestsUnder(const std::string &From, const std::string &To)
 
 void DropRedirectsUnder(const std::string &Dir)
 {
+    //Only a move whose destination is gone (the installed package deleted): the plan that calls this was read a moment
+    //ago, and an install finishing in between registered a move that holds. One stat per move, on a rare call.
     const std::string Prefix = Dir.empty() || Dir.back() == '/' ? Dir : Dir + "/";
     std::lock_guard<std::mutex> Lk(Q().Mu);
     for (auto It = Q().Moved.begin(); It != Q().Moved.end();)
-        It = It->first.compare(0, Prefix.size(), Prefix) == 0 ? Q().Moved.erase(It) : std::next(It);
+    {
+        std::error_code Ec;
+        const bool Gone = !std::filesystem::exists(It->second.substr(0, It->second.size() - 1), Ec);
+        It = It->first.compare(0, Prefix.size(), Prefix) == 0 && Gone ? Q().Moved.erase(It) : std::next(It);
+    }
 }
 
 void ForgetDestsUnder(const std::string &Dir)

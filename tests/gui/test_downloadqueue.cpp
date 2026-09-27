@@ -114,6 +114,7 @@ private slots:
         IpfsWrapper::EnqueueBatch({IpfsWrapper::FetchTarget{"CID_DQ_UNDER", Cat + "/.package/sub", /*Optional=*/true, /*Dir=*/true}});
         QCOMPARE(IpfsWrapper::QueueDestForCid("CID_DQ_UNDER"), Cat + "/.package/sub");
         // The installed package deleted, the package landed as a stub again: its moves are over.
+        std::filesystem::remove_all(Lib);
         IpfsWrapper::DropRedirectsUnder(Cat);
         IpfsWrapper::EnqueueBatch({{"CID_DQ_AGAIN", Cat + "/.package/n.json", /*Optional=*/true}});
         QCOMPARE(IpfsWrapper::QueueDestForCid("CID_DQ_AGAIN"), Cat + "/.package/n.json");

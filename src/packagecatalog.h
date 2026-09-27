@@ -280,6 +280,11 @@ struct ReceivedFetch { std::string Cid; std::string Dest; };
 // Source removal and stub replacement must never delete such a dir — it is an install, not a stub.
 bool DirHasContent(const std::string &Dir);
 
+// The queue targets of a plan: each package folder a folder fetch (Verify), and each planned package's old install
+// redirect forgotten when that install is gone — else its files were sent into the deleted package, which then read as
+// installed, and the package never came back.
+std::vector<IpfsWrapper::FetchTarget> ReceivedFetchTargets(const std::vector<ReceivedFetch> &Plan);
+
 std::vector<ReceivedFetch> PlanReceivedFetches(const nlohmann::ordered_json &GlobalConfigJSON,
                                                const std::string &NickLabel, const nlohmann::ordered_json &Libs);
 

@@ -1133,6 +1133,18 @@ static std::string SafeSegment(const std::string &In)
     return O;
 }
 
+std::vector<IpfsWrapper::FetchTarget> ReceivedFetchTargets(const std::vector<ReceivedFetch> &Plan)
+{
+    std::vector<IpfsWrapper::FetchTarget> Out;
+    Out.reserve(Plan.size());
+    for (const ReceivedFetch &T : Plan)
+    {
+        IpfsWrapper::DropRedirectsUnder(std::filesystem::path(T.Dest).parent_path().string());
+        Out.push_back(IpfsWrapper::FetchTarget{ T.Cid, T.Dest, /*Optional=*/true, /*Dir=*/true, /*Verify=*/true });
+    }
+    return Out;
+}
+
 std::vector<ReceivedFetch> PlanReceivedFetches(const nlohmann::ordered_json &GlobalConfigJSON,
                                                const std::string &NickLabel, const nlohmann::ordered_json &Libs)
 {

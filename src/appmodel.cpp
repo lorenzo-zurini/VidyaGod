@@ -908,21 +908,12 @@ void AppModel::enqueueReceivedShares(const QString & peer)
     if (Nick.empty()) Nick = P.size() > 8 ? P.substr(P.size() - 8) : P;   // never an empty dir prefix
 
     const auto Plan = PackageCatalog::PlanReceivedFetches(*Config, Nick, (*Config)["FriendLibraries"][P]);
-    std::vector<IpfsWrapper::FetchTarget> Batch;
-    Batch.reserve(Plan.size());
-    for (const auto & T : Plan)
-    {
-        // No local "satisfied" guess: presence and even HasLocal both LIE for reusable node dests (HasLocal is
-        // GLOBAL block membership — another friend's fetch of v2 would mark this friend's stale v1 file settled
-        // forever). Enqueue every planned target with Verify semantics: the QUEUE settles repeats for free (a dest
-        // its job already wrote is a no-op at enqueue), and the Go fetch hash-verifies a reused dest exactly —
-        // overwriting a stale file, no-oping a current one.
-        FriendBrowseCids.insert(T.Cid);
-        // Planned = not installed (the planner skips what the library holds): an install's redirect of this package
-        // dir is over — the package was deleted from the library, and lands here as a stub again.
-        IpfsWrapper::DropRedirectsUnder(std::filesystem::path(T.Dest).parent_path().string());
-        Batch.push_back(IpfsWrapper::FetchTarget{ T.Cid, T.Dest, /*Optional=*/true, /*Dir=*/true, /*Verify=*/true });
-    }
+    // No local "satisfied" guess: presence and even HasLocal both LIE for reusable node dests (HasLocal is GLOBAL
+    // block membership — another friend's fetch of v2 would mark this friend's stale v1 file settled forever). Every
+    // planned target is enqueued with Verify semantics: the QUEUE settles repeats for free (a dest its job already
+    // wrote is a no-op at enqueue), and the Go fetch hash-verifies a reused dest exactly.
+    for (const auto & T : Plan) FriendBrowseCids.insert(T.Cid);
+    const std::vector<IpfsWrapper::FetchTarget> Batch = PackageCatalog::ReceivedFetchTargets(Plan);
     if (!Batch.empty()) IpfsWrapper::EnqueueBatch(Batch);
 }
 
