@@ -1,5 +1,6 @@
 #include "registrywrapper.h"
 #include "commonutils.h"
+#include "varsubst.h"
 
 #include <fstream>
 #include <sstream>
@@ -580,6 +581,32 @@ bool RegistryWrapper::DeleteValue(const std::string &FullPath, const std::string
 // ============================================================================
 //  Manifest <-> value conversion, RegEdit application
 // ============================================================================
+
+ordered_json RegistryWrapper::SubstituteRegEdit(const ordered_json &Edit, const std::map<std::string, std::string> &Vars)
+{
+    if (!Edit.is_object() || !Edit.contains("KEYVALUES") || !Edit["KEYVALUES"].is_object())
+        return VarSubst::SubstituteJsonValues(Edit, Vars);
+    ordered_json Rest = Edit;
+    Rest.erase("KEYVALUES");
+    ordered_json Out = VarSubst::SubstituteJsonValues(Rest, Vars);
+    std::map<std::string, std::string> Escaped;                         // built only if a typed string needs it
+    ordered_json KV = ordered_json::object();
+    for (const auto &[K, V] : Edit["KEYVALUES"].items())
+    {
+        std::string Name = K;
+        VarSubst::StringVariableSubstitution(Name, Vars);
+        if (V.is_string() && V.get<std::string>().rfind("str(", 0) == 0)
+        {
+            if (Escaped.empty()) for (const auto &[Key, Val] : Vars) Escaped[Key] = EscapeValueStr(Val);
+            std::string P = V.get<std::string>();
+            VarSubst::StringVariableSubstitution(P, Escaped);
+            KV[Name] = P;
+        }
+        else KV[Name] = VarSubst::SubstituteJsonValues(V, Vars);
+    }
+    Out["KEYVALUES"] = KV;
+    return Out;
+}
 
 RegistryValue RegistryWrapper::ManifestStringToValue(const ordered_json &V)
 {

@@ -4,6 +4,7 @@
 #include "packagecatalog.h"  // GetPackageUserSettings (catalog/user-settings service)
 #include "runnerwrapper.h"   // RunnerWrapper::ExecutableAvailable / DefPrefixDir
 #include "commonutils.h"     // Log*
+#include "registrywrapper.h"  // RegistryWrapper::SubstituteRegEdit (typed strings take escaped values)
 
 #include <QDir>
 #include <QGuiApplication>
@@ -264,7 +265,9 @@ bool LaunchResolver::BuildSubComponentsArray(const nlohmann::ordered_json &MANIF
             //parsed with exceptions ON and there is no catch anywhere on the launch path, so a CustomVar the
             //user typed containing a quote — or any Windows path, where "\U" is an invalid JSON escape —
             //threw parse_error out of the resolve and killed the app at launch.
-            nlohmann::ordered_json Sub = VarSubst::SubstituteJsonValues(Subs[j], FrozenVars);
+            nlohmann::ordered_json Sub = Subs[j].value("TYPE", std::string()) == "RegEdit"
+                                       ? RegistryWrapper::SubstituteRegEdit(Subs[j], FrozenVars)
+                                       : VarSubst::SubstituteJsonValues(Subs[j], FrozenVars);
             //Paths are guest coordinates until here: map them into the boundary runner's layout now that every
             //%variable% (which may itself carry a guest path) has been substituted.
             {

@@ -36,6 +36,12 @@ bool WaitBatch(const BatchHandle &Handle, std::string *Error = nullptr);
 // queue (they keep rolling) — the launch semantic. TimeoutMs<=0 waits forever.
 bool WaitBatch(const BatchHandle &Handle, int TimeoutMs, std::string *Error = nullptr);
 
+// Shut the queue for the app's exit: every queued job fails, every active fetch is aborted, and anything enqueued
+// afterwards fails at once — so every WaitBatch returns, however its fetches were doing (a retryable job otherwise
+// rotates with backoff for ever, and a worker waiting on it could never be joined). OpenQueue reverses it.
+void CloseQueue();
+void OpenQueue();
+
 // Cancel a CID's download: drop it if still queued, abort it (RequestCancel) if active. A batch waiting on a required
 // cancelled CID sees the cancellation as a failure.
 void CancelDownload(const std::string &Cid);
@@ -43,6 +49,11 @@ void CancelDownload(const std::string &Cid);
 // called when those files are removed on purpose (a friend's stubs replaced by a new generation), so a job re-run
 // later never materialises a path nobody asked for any more.
 void ForgetDestsUnder(const std::string &Dir);
+
+// A folder moved (a received package installed: CATALOG → LIBRARY). Anything enqueued later for a path under From lands
+// under To instead — a download working from an index read before the move (its CompleteClosure, its targets) would
+// otherwise re-create the old folder as a stub beside the installed package, which then fails every later install.
+void RedirectDestsUnder(const std::string &From, const std::string &To);
 
 // Move a still-queued CID ahead of all other queued jobs so the dispatcher picks it next. No-op once it is active/done.
 void PrioritizeDownload(const std::string &Cid);

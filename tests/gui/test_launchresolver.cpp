@@ -5,6 +5,8 @@
 #include <QtTest>
 
 #include "launchresolver.h"
+#include "nodelower.h"
+#include "registrywrapper.h"
 #include "packagecatalog.h"
 #include "launchparams.h"
 #include "manifestmodel.h"
@@ -773,6 +775,36 @@ private slots:
         QVERIFY((T == std::vector<std::string>{ "a", "b", "ona" }));
         QVERIFY(!PackageCatalog::MoveGraft(idx, "game", T, 0, -1));                // nothing above the first
         QVERIFY(!PackageCatalog::MoveGraft(idx, "game", T, 2, +1));                // nothing below the last
+
+        // Two grafts that exclude each other: the first applies, the second not. Swapping them keeps the COUNT (one
+        // applies either way) while the one that applied stops — refused by WHICH grafts apply, not how many.
+        // Teeth: compare the sizes again and the swap is accepted.
+        const auto excl = [](const char *Id, const char *Not) {
+            return parse(json{ {"CID", Id}, {"LABEL", Id},
+                {"LAYERS", json::array({ json{{"ANY", json::array({"game"})}}, json{{"NOT", Not}}, json{{"DIR", Id}} })} }, "/tmp/vg_bundle");
+        };
+        idx.Nodes["x"] = excl("x", "y");
+        idx.Nodes["y"] = excl("y", "x");
+        finish(idx);
+        std::vector<std::string> XY{ "x", "y" };
+        QVERIFY((PackageCatalog::AppliedGrafts(idx, "game", XY) == std::vector<std::string>{ "x" }));
+        std::string WhyX;
+        QVERIFY(!PackageCatalog::MoveGraft(idx, "game", XY, 1, -1, &WhyX));
+        QVERIFY2(WhyX.find("'x'") != std::string::npos, WhyX.c_str());
+        // The tile decides it too: graft p brings q only under tile 7, and onq is a graft on q. Under tile 7 moving onq
+        // above p drops it; judged without the tile (the node's own, "game") onq applies in neither order and the drop
+        // goes unseen. The pre-launch window judges as the launch does (%UID% = the tile it launches).
+        // Teeth: ignore Builtins in MoveGraft and the move below is accepted.
+        idx.Nodes["q"] = contentNode("q", json::array({ json{{"DIR", "q"}} }));
+        idx.Nodes["p"] = parse(json{ {"CID", "p"}, {"LABEL", "p"},
+            {"LAYERS", json::array({ json{{"ANY", json::array({"game"})}}, json{{"NODE", "q"}, {"WHEN", "%UID%==7"}} })} }, "/tmp/vg_bundle");
+        idx.Nodes["onq"] = graft("onq", "q");
+        finish(idx);
+        std::vector<std::string> PQ{ "p", "onq" };
+        const std::map<std::string, std::string> Tile7{ {"UID", "7"} };
+        QCOMPARE(PackageCatalog::AppliedGrafts(idx, "game", PQ, {}, Tile7).size(), size_t(2));
+        QCOMPARE(PackageCatalog::AppliedGrafts(idx, "game", PQ).size(), size_t(1));      // not under the node's own tile
+        QVERIFY2(!PackageCatalog::MoveGraft(idx, "game", PQ, 1, -1, nullptr, {}, Tile7), "under tile 7 the move drops onq");
     }
 
     // `--tile <UID> [--variant <name>]` launches what the shelf shows: the named variant under that tile, else the
@@ -810,19 +842,23 @@ private slots:
     void each_tile_is_a_card_and_a_row_runs_as_its_card()
     {
         NodeIndex idx;
-        const auto entry = [](const char *Label, const char *Uid, const char *Parent, const char *Exe) {
-            json T = {{"UID", Uid}, {"TITLE", std::string("T") + Uid}};
+        const auto entry = [](const char *Label, const char *Uid, const char *Parent, const char *Exe, const char *Title) {
+            json T = {{"UID", Uid}, {"TITLE", Title}};
             if (Parent) T["PARENTUID"] = Parent;
             return json{ {"LABEL", Label}, {"HOST", kMachine}, {"EXE", Exe}, {"TILE", T} };
         };
-        // v1 presents both RoC (802) and TFT (803, child of 802); v2 presents only RoC; z is an unrelated game.
+        // v1 presents both RoC (802) and TFT (803, child of 802); v2 presents only RoC; z and s are unrelated games.
+        // Titles disagree with UID order, and s's title falls BETWEEN RoC's and TFT's: a UID sort, or a flat title sort
+        // that ignores PARENTUID, both get the order wrong.
         idx.Nodes["v1"] = parse(json{ {"CID", "v1"}, {"LABEL", "v1"}, {"VARIANT", "1.0"}, {"RECOMMENDED", json::array({"803"})},
-            {"LAYERS", json::array({ json{{"DIR", "g"}}, json{{"EXEC", json::array({ entry("Reign of Chaos", "802", nullptr, "roc.exe"),
-                                                                                entry("The Frozen Throne", "803", "802", "tft.exe") })}} })} }, "/tmp/vg_bundle");
+            {"LAYERS", json::array({ json{{"DIR", "g"}}, json{{"EXEC", json::array({ entry("Reign of Chaos", "802", nullptr, "roc.exe", "Warcraft III: Reign of Chaos"),
+                                                                                entry("The Frozen Throne", "803", "802", "tft.exe", "Warcraft III: The Frozen Throne") })}} })} }, "/tmp/vg_bundle");
         idx.Nodes["v2"] = parse(json{ {"CID", "v2"}, {"LABEL", "v2"}, {"VARIANT", "2.0"}, {"RECOMMENDED", json::array({"802"})},
             {"LAYERS", json::array({ json{{"NODE", "v1"}}, json{{"EXEC", json::array({ json{{"LABEL", "Reign of Chaos"}, {"EXE", "roc2.exe"}} })}} })} }, "/tmp/vg_bundle");
         idx.Nodes["z"] = parse(json{ {"CID", "z"}, {"LABEL", "z"}, {"VARIANT", "1"},
-            {"LAYERS", json::array({ json{{"DIR", "z"}}, json{{"EXEC", json::array({ entry("Play", "9", nullptr, "z.exe") })}} })} }, "/tmp/vg_bundle");
+            {"LAYERS", json::array({ json{{"DIR", "z"}}, json{{"EXEC", json::array({ entry("Play", "9", nullptr, "z.exe", "Age of Empires II") })}} })} }, "/tmp/vg_bundle");
+        idx.Nodes["s"] = parse(json{ {"CID", "s"}, {"LABEL", "s"}, {"VARIANT", "1"},
+            {"LAYERS", json::array({ json{{"DIR", "s"}}, json{{"EXEC", json::array({ entry("Play", "850", nullptr, "s.exe", "Warcraft III: Scenario Pack") })}} })} }, "/tmp/vg_bundle");
         finish(idx);
 
         std::vector<std::string> Order;
@@ -832,7 +868,7 @@ private slots:
             Order.push_back(T.Uid);
             for (const Node *N : T.Rows) Rows[T.Uid].push_back(N->NodeId);
         }
-        QCOMPARE(Order, (std::vector<std::string>{"802", "803", "9"}));              // families by title; the child follows its base game
+        QCOMPARE(Order, (std::vector<std::string>{"9", "802", "803", "850"}));       // families by title; the child follows its base game
         QCOMPARE(Rows["802"], (std::vector<std::string>{"v2", "v1"}));                // recommended under 802 first
         QCOMPARE(Rows["803"], (std::vector<std::string>{"v1", "v2"}));                // v2 contains v1: its fold presents 803 too
         QCOMPARE(idx.Tile("803")->value("PARENTUID", std::string()), std::string("802"));
@@ -849,10 +885,10 @@ private slots:
         const auto [OkT, ExeT, NameT] = launch("v1", "803");
         QVERIFY(OkT);
         QVERIFY2(ExeT.find("tft.exe") != std::string::npos, ExeT.c_str());          // the card's entry runs
-        QCOMPARE(NameT, std::string("T803"));
+        QCOMPARE(NameT, std::string("Warcraft III: The Frozen Throne"));
         const auto [OkR, ExeR, NameR] = launch("v1", "802");
         QVERIFY(OkR && ExeR.find("roc.exe") != std::string::npos);
-        QCOMPARE(NameR, std::string("T802"));
+        QCOMPARE(NameR, std::string("Warcraft III: Reign of Chaos"));
         QVERIFY(!std::get<0>(launch("v1", "9")));                                     // a tile the node does not present
     }
 
@@ -1103,8 +1139,37 @@ private slots:
         const auto V = cp.GetVariablesMap();
         QCOMPARE(V.at("AppData"), std::string("C:\\users\\me\\AppData\\Roaming"));
         QCOMPARE(V.at("Saves"), std::string("C:\\users\\me\\AppData\\Roaming\\G"));
-        cp.GuestRoots = { {"%A%", "%B%\\a"}, {"%B%", "%A%\\b"} };                                    // a cycle ends
+        // Anchors spelled from each other have no place: resolving must end AND stay small (repeated passes doubled
+        // "%A%%A%" every pass — ≈25 GB at 30 anchors). Teeth: go back to re-substituting pass after pass and the
+        // self-doubling value blows past the bound below.
+        cp.GuestRoots = { {"%A%", "%B%\\a"}, {"%B%", "%A%\\b"} };
         QVERIFY(cp.GetVariablesMap().count("A"));
+        nlohmann::ordered_json Many = { {"%A%", "%A%%A%"} };
+        for (int i = 0; i < 30; ++i) Many["%P" + std::to_string(i) + "%"] = "C:\\p" + std::to_string(i);
+        cp.GuestRoots = Many;
+        const auto V2 = cp.GetVariablesMap();
+        QVERIFY2(V2.at("A").size() < 64, "a self-referencing anchor must not grow");
+    }
+
+    // A runner whose anchors are spelled from each other is refused before any launch reads it (it is shared JSON).
+    // Teeth: drop the circle check in CheckLayer and both nodes pass CheckNode.
+    void a_runner_with_anchors_in_a_circle_is_refused()
+    {
+        for (const nlohmann::ordered_json &Roots : { nlohmann::ordered_json{ {"%A%", "%A%\\x"} },
+                                                     nlohmann::ordered_json{ {"%A%", "%B%\\a"}, {"%B%", "%A%\\b"} } })
+        {
+            nlohmann::ordered_json L = { {"EXEC", nlohmann::ordered_json::array({ { {"LABEL", "run"}, {"HOST", "linux64"},
+                {"GUEST", nlohmann::ordered_json::array({"win32"})}, {"EXE", "wine"}, {"GUEST_ROOTS", Roots},
+                {"DRIVES", { {"C:", "pfx/drive_c"} }} } })} };
+            const std::string Why = NodeLower::CheckNode({ {"LABEL", "r"}, {"LAYERS", nlohmann::ordered_json::array({L})} }, "r");
+            QVERIFY2(Why.find("in a circle") != std::string::npos, Why.c_str());
+        }
+        nlohmann::ordered_json Ok = { {"EXEC", nlohmann::ordered_json::array({ { {"LABEL", "run"}, {"HOST", "linux64"},
+            {"GUEST", nlohmann::ordered_json::array({"win32"})}, {"EXE", "wine"},
+            {"GUEST_ROOTS", { {"%AppData%", "%UserProfile%\\AppData"}, {"%UserProfile%", "C:\\users\\me"} }},
+            {"DRIVES", { {"C:", "pfx/drive_c"} }} } })} };
+        const std::string OkWhy = NodeLower::CheckNode({ {"LABEL", "r"}, {"LAYERS", nlohmann::ordered_json::array({Ok})} }, "r");
+        QVERIFY2(OkWhy.empty(), OkWhy.c_str());
     }
 
     // What an installer wrote (a captured registry delta) comes back spelled by anchor; the rest untouched.
@@ -1126,6 +1191,35 @@ private slots:
         QCOMPARE((int)L.size(), 2);
         QCOMPARE(L[0].second, std::string("pfx/drive_c/802"));
         QCOMPARE(L[1].second, std::string("pfx/drive_c/Program Files (x86)"));
+    }
+
+    // Typed strings and value names are captured too: a REG_EXPAND_SZ / REG_MULTI_SZ value is the raw .reg payload
+    // (backslashes escaped: "C:\\\\Program Files"), and SharedDLLs / AppCompatFlags\\Layers are KEYED by the full path —
+    // left as drive letters, the validator refused every such capture. At launch a token in a typed payload takes its
+    // value escaped, so the round trip is exact. Teeth: drop the separator-run match in Fold::ToAnchors (typed values
+    // stay as drives), the key re-spelling in AnchorRegEdits (the name stays), or the escaped map in
+    // SubstituteRegEdit (the payload comes back with single backslashes).
+    void typed_registry_strings_and_value_names_round_trip_through_anchors()
+    {
+        ContainerParams cp("/tmp/vg_bundle"); cp.PackageUID = "802";
+        cp.GuestRoots = { {"%GameDir%", "C:\\%PackageUID%"}, {"%ProgramFiles32%", "C:\\Program Files (x86)"} };
+        const std::string Expand = R"(str(2):"C:\\Program Files (x86)\\LAV\\a.ax")";
+        const std::string Multi  = R"(str(7):"C:\\802\0C:\\802\\x")";
+        const nlohmann::ordered_json D = LaunchResolver::AnchorRegEdits(cp, nlohmann::ordered_json::array({
+            { {"REGPATH", "HKLM\\Software\\G"}, {"KEYVALUES", { {"Expand", Expand}, {"Multi", Multi},
+                                                              {"C:\\802\\g.exe", "~ RUNASADMIN"} }} } }));
+        const auto &KV = D[0]["KEYVALUES"];
+        QCOMPARE(KV["Expand"].get<std::string>(), std::string(R"(str(2):"%ProgramFiles32%\\LAV\\a.ax")"));
+        QCOMPARE(KV["Multi"].get<std::string>(),  std::string(R"(str(7):"%GameDir%\0%GameDir%\\x")"));
+        QVERIFY2(KV.contains("%GameDir%\\g.exe") && !KV.contains("C:\\802\\g.exe"), "the value NAME is re-spelled");
+
+        nlohmann::ordered_json Edit = D[0];
+        Edit["TYPE"] = "RegEdit";
+        const auto Vars = cp.GetVariablesMap();
+        const nlohmann::ordered_json Back = RegistryWrapper::SubstituteRegEdit(Edit, Vars);
+        QCOMPARE(Back["KEYVALUES"]["Expand"].get<std::string>(), Expand);                // escaped exactly as captured
+        QCOMPARE(Back["KEYVALUES"]["Multi"].get<std::string>(), Multi);
+        QVERIFY2(Back["KEYVALUES"].contains("C:\\802\\g.exe"), "the value name comes back as the path");
     }
 
     // ResolveCustomVariables priority: CLI override > USERSETTINGS > DEFAULT.

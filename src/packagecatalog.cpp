@@ -1035,12 +1035,13 @@ std::vector<std::string> PublishLibrary(nlohmann::ordered_json &Config, std::str
             for (const std::string &H : HandlesOf[LibName][Pkg])
                 for (const std::string &C : NodeContentCids(Tree.at(H)))
                 {
-                    if (IpfsWrapper::HasLocal(C)) Content[C] = C;
+                    if (IpfsWrapper::HeldWhole(C)) Content[C] = C;              // every block, every backing file
                     else
                     {
                         ++Unheld[Pkg];
                         LogWarn("PackageCatalog::PublishLibrary", "package '" + Pkg + "': content " + C
-                                + " is not held here — its pin leaves it out (seed it, then publish again)");
+                                + " is not held whole here (missing blocks or a moved/removed file) — its pin leaves it"
+                                  " out (seed it, then publish again)");
                     }
                 }
             std::map<std::string, std::string> Pin{ {"package", PCid} };
@@ -1209,11 +1210,21 @@ std::vector<ReceivedFetch> PlanReceivedFetches(const nlohmann::ordered_json &Glo
 //referenced in place, so deleting it without this left an orphaned reference — hundreds per receive, each an
 //"Errored: missing files" row and a re-seeding heal pass. A reference to ANOTHER copy of the block (the same node
 //landed in two packages) is not orphaned by this removal and stays.
-static void RemoveLandedNode(const std::filesystem::path &F, const std::string &Cid)
+static void RemoveLandedNode(const std::filesystem::path &F, const std::string &Cid,
+                             const std::vector<std::filesystem::path> &Elsewhere = {})
 {
     std::error_code Ec;
     if (!std::filesystem::remove(F, Ec)) return;
-    if (IpfsWrapper::CidMissing(Cid)) IpfsWrapper::DropRef(Cid);
+    if (!IpfsWrapper::CidMissing(Cid)) return;                       // its reference is to another copy: nothing to do
+    IpfsWrapper::DropRef(Cid);                                       // it was to this file: gone with it
+    //The same node landed in another package too (a node two packages share): seed that copy, or it would be on disk
+    //and silently not held — never served, never re-shared.
+    for (const std::filesystem::path &S : Elsewhere)
+        if (S != F && std::filesystem::is_regular_file(S, Ec))
+        {
+            std::string AErr;
+            if (IpfsWrapper::AddNoCopy(S.string(), &AErr) == Cid) return;
+        }
 }
 
 bool CompleteClosure(const NodeIndex &Idx, const std::string &LaunchId, std::string *Error)
@@ -1373,29 +1384,44 @@ bool AdoptReceivedPackage(const nlohmann::ordered_json &Config, const std::files
     const fs::path Dest = fs::path(LibraryRootDir(Config)) / SafeSegment(Lib) / SafeSegment(Src.filename().string());
     if (!NodeGraph::PathWithin(LibraryRootDir(Config), Dest))
     { if (Error) *Error = "refused: " + Dest.string() + " is outside the library"; return false; }
+    const fs::path Folder = Src / kPackageFolderDir;
+    //Every file fetched into the package is referenced in place; the references follow the files, the landed folder's
+    //first (its node files move up into the package dir — a name already there is the same node, CID-named), then the
+    //package dir's. Both moves are idempotent, so an install interrupted after its rename is completed by the next.
+    auto MoveAllRefs = [&](const fs::path &To) -> bool {
+        std::string MErr;
+        if (IpfsWrapper::MoveRefs(Folder.string(), To.string(), &MErr) < 0 || IpfsWrapper::MoveRefs(Src.string(), To.string(), &MErr) < 0)
+        { if (Error) *Error = "cannot re-point the references of " + Src.string() + " to " + To.string() + ": " + MErr; return false; }
+        return true;
+    };
     if (!fs::is_directory(Src, Ec))
     {
-        if (fs::is_directory(Dest, Ec)) { if (NewDir) *NewDir = Dest; return true; }   // installed meanwhile
+        if (fs::is_directory(Dest, Ec))                                  // installed meanwhile (or by an interrupted adopt)
+        {
+            if (!MoveAllRefs(Dest)) return false;
+            if (NewDir) *NewDir = Dest;
+            return true;
+        }
         if (Error) *Error = "not a received package dir: " + PkgDir.string();
         return false;
     }
     if (fs::exists(Dest, Ec)) { if (Error) *Error = "a package named '" + Src.filename().string() + "' already exists in library '" + Lib + "'"; return false; }
     // The landed folder was the receive artifact: its node files move up into the package dir (an installed package is
-    // an ordinary bundle), its manifest is dropped. A name already there is the same node (files are CID-named).
-    const fs::path Folder = Src / kPackageFolderDir;
+    // an ordinary bundle), its manifest is dropped. A name already there is the same node (files are CID-named). The
+    // folder goes only once every file is out and its references point at the new place.
     if (fs::is_directory(Folder, Ec))
     {
         for (const auto &F : fs::directory_iterator(Folder, Ec))
         {
             if (!F.is_regular_file(Ec) || F.path().filename() == kPackageManifestFile) continue;
-            if (!fs::exists(Src / F.path().filename(), Ec)) fs::rename(F.path(), Src / F.path().filename(), Ec);
+            std::error_code Rc;
+            if (!fs::exists(Src / F.path().filename(), Rc)) fs::rename(F.path(), Src / F.path().filename(), Rc);
+            if (Rc) { if (Error) *Error = "cannot move " + F.path().string() + " into its package: " + Rc.message(); return false; }
         }
-        fs::remove_all(Folder, Ec);
-        // The node files were fetched into the folder and are referenced THERE; they now live one level up (a name
-        // already there is the same node — CID-named — so its reference lands on identical bytes).
         std::string MErr;
         if (IpfsWrapper::MoveRefs(Folder.string(), Src.string(), &MErr) < 0)
         { if (Error) *Error = "cannot re-point the references of " + Folder.string() + ": " + MErr; return false; }
+        fs::remove_all(Folder, Ec);
     }
     IpfsWrapper::ForgetDestsUnder(Folder.string());   // the queue must never re-land the folder into the old stub
     fs::create_directories(Dest.parent_path(), Ec);
@@ -1408,13 +1434,11 @@ bool AdoptReceivedPackage(const nlohmann::ordered_json &Config, const std::files
         fs::remove_all(Src, Ec);
     }
     IpfsWrapper::ForgetDestsUnder(Src.string());   // the queue must never re-materialise the old paths
+    IpfsWrapper::RedirectDestsUnder(Folder.string(), Dest.string());   // …and a later request for them lands in the
+    IpfsWrapper::RedirectDestsUnder(Src.string(), Dest.string());      // installed package (landed folder: files moved up)
     // Everything fetched into the package so far is referenced in place: the references follow the folder, or the
     // installed package's files read as missing and can be served to no one.
-    {
-        std::string MErr;
-        if (IpfsWrapper::MoveRefs(Src.string(), Dest.string(), &MErr) < 0)
-        { if (Error) *Error = "cannot re-point the references of " + Src.string() + " to " + Dest.string() + ": " + MErr; return false; }
-    }
+    if (!MoveAllRefs(Dest)) return false;
     if (fs::is_empty(Src.parent_path(), Ec)) fs::remove(Src.parent_path(), Ec);
     if (NewDir) *NewDir = Dest;
     LogOut("PackageCatalog::AdoptReceivedPackage", "installed '" + Src.filename().string() + "' into library '" + Lib + "'");
@@ -1515,7 +1539,12 @@ int PruneStaleReceived(const NodeIndex &Idx, const nlohmann::ordered_json &Confi
             const std::string Name = F.path().filename().string();
             if (!F.is_regular_file(Ec) || F.path().extension() != ".json" || Name.rfind(".package", 0) == 0) continue;
             if (Keep.count(F.path().stem().string())) continue;
-            RemoveLandedNode(F.path(), F.path().stem().string());
+            const std::string Cid = F.path().stem().string();
+            std::vector<fs::path> Elsewhere;                         // the same node's other landed copies
+            for (const auto &[Other, OtherCids] : ReceivedPackageManifests(Config))
+                if (Other != Dir) { Elsewhere.push_back(Other / (Cid + ".json")); Elsewhere.push_back(Other.parent_path() / (Cid + ".json")); }
+            if (const Node *N = Idx.Find(Cid); N && !N->File.empty()) Elsewhere.push_back(N->File);
+            RemoveLandedNode(F.path(), Cid, Elsewhere);
             if (!fs::exists(F.path(), Ec)) ++Removed;
         }
     }
@@ -1674,15 +1703,20 @@ std::vector<std::string> AppliedGrafts(const NodeIndex &Idx, const std::string &
 }
 
 bool MoveGraft(const NodeIndex &Idx, const std::string &LaunchNodeId, std::vector<std::string> &Ticked, size_t From,
-               int By, std::string *Why)
+               int By, std::string *Why, const std::map<std::string, std::string> &Instance,
+               const std::map<std::string, std::string> &Builtins)
 {
     const long To = (long)From + By;
     if (From >= Ticked.size() || To < 0 || To >= (long)Ticked.size()) return false;
     std::vector<std::string> Proposed = Ticked;
     std::swap(Proposed[From], Proposed[(size_t)To]);
-    const size_t Before = AppliedGrafts(Idx, LaunchNodeId, Ticked).size();
+    //By WHICH grafts apply, not how many: two that exclude each other keep the count equal when the move swaps them.
+    const std::vector<std::string> Before = AppliedGrafts(Idx, LaunchNodeId, Ticked, Instance, Builtins);
+    const std::vector<std::string> After = AppliedGrafts(Idx, LaunchNodeId, Proposed, Instance, Builtins);
     std::vector<std::string> Dropped;
-    if (AppliedGrafts(Idx, LaunchNodeId, Proposed, {}, {}, &Dropped).size() < Before)
+    for (const std::string &G : Before)
+        if (std::find(After.begin(), After.end(), G) == After.end()) Dropped.push_back(G);
+    if (!Dropped.empty())
     {
         if (Why)
         {
@@ -1981,18 +2015,6 @@ int DehydrateNode(const NodeIndex &Idx, const std::string &LaunchNodeId)
     });
     for (const std::string &C : Cids) { IpfsWrapper::Unpin(C); IpfsWrapper::DropRef(C); }
     return Removed;
-}
-
-std::vector<std::string> GroupNodeIds(const NodeIndex &Idx, const std::string &LaunchNodeId)
-{
-    std::vector<std::string> Ids{LaunchNodeId};     // first ⇒ preselected in the variant picker
-    const Node *N = Idx.Find(LaunchNodeId);
-    if (!N) return Ids;
-    for (const ShelfTile &T : ShelfTiles(Idx))
-        if (T.Uid == N->Uid)
-            for (const Node *G : T.Rows)
-                if (G->NodeId != LaunchNodeId) Ids.push_back(G->NodeId);
-    return Ids;
 }
 
 std::vector<std::string> NodeContentCids(const NodeIndex &Idx, const std::string &LaunchNodeId, const GraftChoice &Grafts)

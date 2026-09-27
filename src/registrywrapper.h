@@ -117,6 +117,11 @@ public:
 
     //Manifest-string <-> RegistryValue conversion (preserves the existing KEYVALUES encoding).
     static RegistryValue          ManifestStringToValue(const nlohmann::ordered_json &V);
+    //A RegEdit's %tokens% substituted for the launch: value names and plain string values as everywhere, but a typed
+    //string ("str(2):\"…\"", REG_EXPAND_SZ / REG_MULTI_SZ) is a raw .reg payload whose backslashes are escaped — a token
+    //there takes its value ESCAPED, or "C:\\x" would reach wine as "C:\x" (an escape) instead of a path.
+    static nlohmann::ordered_json SubstituteRegEdit(const nlohmann::ordered_json &Edit,
+                                                    const std::map<std::string, std::string> &Vars);
     static nlohmann::ordered_json ValueToManifestString(const RegistryValue &V);
 
     //Path/root helpers.

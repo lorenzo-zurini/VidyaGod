@@ -285,6 +285,13 @@ private slots:
         QVERIFY2(Gaps.find("[3] Gap (1)") != std::string::npos, Gaps.c_str());
         QVERIFY2(Gaps.find("did not freeze") != std::string::npos && Gaps.find("[3] Gap/loop") != std::string::npos, Gaps.c_str());
         QVERIFY2(Gaps.find("[2] Other") == std::string::npos, "held content is not a gap");
+        // Content whose file was moved or removed after it was seeded still "has" its block (the reference stays), but
+        // nothing can serve it: publishing it into a pin folder recorded a package as pinned that no one could fetch.
+        // It is a gap. Teeth: gate the pin folder on HasLocal again and [2] Other publishes "clean".
+        QFile::remove(R + "/VidyaGod/[2] Other/u.zip");
+        QVERIFY2(IpfsWrapper::HasLocal(UCid), "precondition: the orphaned reference still claims the block");
+        PackageCatalog::PublishLibrary(cfg, &Err, &Gaps);
+        QVERIFY2(Gaps.find("[2] Other (1)") != std::string::npos, Gaps.c_str());
         IpfsWrapper::StopNode();
     }
 
@@ -359,7 +366,8 @@ private slots:
         writeJson(root + "/VidyaGod/[1] A/ax.json",
                   NodeFixture::Chain("a_x", {NodeFixture::Merge({NodeFixture::Exec("win32", "ax.exe"), NodeFixture::Tile("1x", "A: Expansion", nlohmann::ordered_json::object(), "1"), NodeFixture::Variant("Expansion")})},
                                      {"a_exec"}));
-        writeJson(root + "/VidyaGod/[2] B/tile.json", NodeFixture::Chain("b_tile", {NodeFixture::Tile("2", "B")}));
+        // B's title falls BETWEEN the base game's and its expansion's: a flat title sort would split the family.
+        writeJson(root + "/VidyaGod/[2] B/tile.json", NodeFixture::Chain("b_tile", {NodeFixture::Tile("2", "A: Bonus")}));
         writeJson(root + "/VidyaGod/[2] B/b.json",
                   NodeFixture::Chain("b_exec", {NodeFixture::Merge({NodeFixture::Exec("win32", "b.exe"), NodeFixture::Variant("Play")})}, {"b_tile"}));
         json seeder = json{{"Settings", {{"Paths", {{"LibraryRoot", root.toStdString()}}}}}};
@@ -450,6 +458,8 @@ private slots:
         }
         const auto Base = std::find(Order.begin(), Order.end(), std::string("1"));
         QVERIFY2(Base != Order.end() && Base + 1 != Order.end() && *(Base + 1) == "1x", "the expansion's tile follows its base game's");
+        // … even though "A: Bonus" sorts between "A" and "A: Expansion". Teeth: sort tiles by title alone and 2 lands
+        // between 1 and 1x.
         QCOMPARE(RowsOf["1"], std::vector<std::string>{"a_exec"});
         QCOMPARE(RowsOf["1x"], std::vector<std::string>{"a_x"});
 
@@ -691,6 +701,75 @@ private slots:
         QCOMPARE(PackageFolderCid(Cfg, "/r/LIBRARY/VidyaGod/[1][v1.0] Nothing"), std::string());
     }
 
+    // An install interrupted after its folder moved (the node stopped, a datastore error) left every reference at the
+    // CATALOG path; the retry found the package installed and returned "installed meanwhile" — the references stayed
+    // orphaned for good (the 678-row bug, one step later). The next adopt completes the move: both reference moves are
+    // idempotent. Teeth: return without MoveAllRefs in the installed-meanwhile branch and the node reads as missing.
+    void an_interrupted_install_is_completed_by_the_next_adopt()
+    {
+        std::string Err;
+        QTemporaryDir Repo; QVERIFY(Repo.isValid());
+        QVERIFY2(IpfsWrapper::StartNode((Repo.path() + "/ipfs").toStdString(), &Err), Err.c_str());
+        QTemporaryDir SeedRoot; QVERIFY(SeedRoot.isValid());
+        const json Items = publishTwoGames(SeedRoot.path());
+        QTemporaryDir RxData; QVERIFY(RxData.isValid());
+        json rx = json{{"Settings", {{"Paths", {{"LibraryRoot", (RxData.path() + "/LIBRARY").toStdString()}}}}},
+                       {"FriendLibraries", {{"12D3KooWSeederAlice", {{"Games", Items}}}}}};
+        const std::string Nick = "derAlice";
+        landShares(rx, Nick, json{{"Games", Items}});
+        const std::filesystem::path Stub = std::filesystem::path(PackageCatalog::CatalogRootDir(rx)) / (Nick + " - Games") / "[1] A";
+        const std::string ACid = cidOfLabel(Items[0].value("cid", std::string()), "a_exec");
+        std::filesystem::remove(Stub / ".package" / (ACid + ".json"));        // fetched on its own: referenced in place
+        QVERIFY2(PackageCatalog::LandReceivedPackages(rx, &Err), Err.c_str());
+        QVERIFY2(!IpfsWrapper::CidMissing(ACid), "precondition: referenced in the landed folder");
+
+        // The interrupted install: files up, folder moved — references never re-pointed.
+        const std::filesystem::path Dest = std::filesystem::path(RxData.path().toStdString()) / "LIBRARY" / "Games" / "[1] A";
+        for (const auto &F : std::filesystem::directory_iterator(Stub / ".package"))
+            if (F.path().filename() != ".package.json") std::filesystem::rename(F.path(), Stub / F.path().filename());
+        std::filesystem::remove_all(Stub / ".package");
+        std::filesystem::create_directories(Dest.parent_path());
+        std::filesystem::rename(Stub, Dest);
+        QVERIFY2(IpfsWrapper::CidMissing(ACid), "precondition: the interruption left the reference behind");
+
+        std::filesystem::path NewDir;
+        QVERIFY2(PackageCatalog::AdoptReceivedPackage(rx, Stub, &NewDir, &Err), Err.c_str());
+        QCOMPARE(NewDir, Dest);
+        QVERIFY2(!IpfsWrapper::CidMissing(ACid), "the retry completed the move: the node reads at its installed place");
+        IpfsWrapper::StopNode();
+    }
+
+    // Pruning an old generation's node file from one package must not un-seed the same node landed in another (a node
+    // two packages share): the reference pointed at the pruned copy; dropping it left the surviving copy on disk and
+    // silently not held — never served, never re-shared. Teeth: drop the re-seed from Elsewhere in RemoveLandedNode.
+    void pruning_a_stale_copy_keeps_the_same_node_held_from_another_package()
+    {
+        std::string Err;
+        QTemporaryDir Repo; QVERIFY(Repo.isValid());
+        QVERIFY2(IpfsWrapper::StartNode((Repo.path() + "/ipfs").toStdString(), &Err), Err.c_str());
+        QTemporaryDir RxData; QVERIFY(RxData.isValid());
+        json rx = json{{"Settings", {{"Paths", {{"LibraryRoot", (RxData.path() + "/LIBRARY").toStdString()}}}}}};
+        const std::string Cat = PackageCatalog::CatalogRootDir(rx) + "/Alice - Games";
+        const json X = json{{"LABEL", "shared"}, {"LAYERS", json::array({ json{{"DIR", "s"}} })}};
+        const json Y = json{{"LABEL", "only_p1"}, {"LAYERS", json::array({ json{{"DIR", "y"}} })}};
+        const std::string XB = Cid::Canonical(X), XC = Cid::OfBytes(XB), YB = Cid::Canonical(Y), YC = Cid::OfBytes(YB);
+        auto land = [&](const std::string &Pkg, const std::vector<std::pair<std::string, std::string>> &Files, const json &Names) {
+            const std::string D = Cat + "/" + Pkg + "/.package";
+            std::filesystem::create_directories(D);
+            for (const auto &[C, B] : Files) { std::ofstream O(D + "/" + C + ".json", std::ios::binary); O << B; }
+            std::ofstream(D + "/.package.json") << json{{"NODES", Names}, {"PKG", Pkg}}.dump();
+            return D;
+        };
+        const std::string P1 = land("[1] P1", {{XC, XB}, {YC, YB}}, json::array({YC}));   // X stale here
+        land("[2] P2", {{XC, XB}}, json::array({XC}));                                   // …named here
+        QCOMPARE(IpfsWrapper::AddNoCopy(P1 + "/" + XC + ".json", &Err), XC);             // referenced at P1's copy
+        const NodeIndex Idx = PackageCatalog::BuildCatalogIndex(rx);
+        QVERIFY(PackageCatalog::PruneStaleReceived(Idx, rx) >= 1);
+        QVERIFY2(!std::filesystem::exists(P1 + "/" + XC + ".json"), "precondition: the stale copy was pruned");
+        QVERIFY2(IpfsWrapper::HasLocal(XC) && !IpfsWrapper::CidMissing(XC), "the node stays held, from P2's copy");
+        IpfsWrapper::StopNode();
+    }
+
     // What a download adopts is every received package its closures reach — not just the packages of the nodes it
     // names. A runner's own NODE layers reach other packages (proton contains proton-wine's chain); left in CATALOG,
     // that package is never ours (never re-shared: a friend of ours would get proton without its wine), and on the
@@ -774,6 +853,10 @@ private slots:
         // The references moved with the files: the installed node still reads (and so can be served / re-shared).
         // Teeth: drop the .package→package MoveRefs in AdoptReceivedPackage and the node reads as missing here.
         QVERIFY2(!IpfsWrapper::CidMissing(ACid), "the installed node's reference points at its new place");
+        // A download still reading the old index asks for the old place: it lands in the installed package, never
+        // re-creating the stub. Teeth: drop the RedirectDestsUnder calls in AdoptReceivedPackage.
+        IpfsWrapper::EnqueueBatch({{"CID_LATE_AFTER_ADOPT", (Stub / "late.json").string(), /*Optional=*/true}});
+        QCOMPARE(IpfsWrapper::QueueDestForCid("CID_LATE_AFTER_ADOPT"), (NewDir / "late.json").string());
         // Another download sharing this package (a runner every game reaches) adopts it again from its older snapshot:
         // already installed — success, the library's copy — not a failure that sinks that whole download.
         std::filesystem::path Again;

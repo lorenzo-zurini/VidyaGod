@@ -209,6 +209,22 @@ std::string VarSubst::RenderValue(const std::string &Value, const std::string &F
 //further substitution and logs a warning (the remainder is appended unchanged).
 //Unknown keys are left as %KEY% and logged as warnings.
 //Returns true if at least one replacement was made.
+std::vector<std::string> VarSubst::TokenKeys(const std::string &S)
+{
+    std::vector<std::string> Keys;
+    for (size_t Pos = 0;;)
+    {
+        const size_t Start = S.find('%', Pos);
+        if (Start == std::string::npos) break;
+        const size_t End = S.find('%', Start + 1);
+        if (End == std::string::npos) break;
+        const std::string Token = S.substr(Start + 1, End - Start - 1);
+        Keys.push_back(Token.substr(0, Token.find(':')));
+        Pos = End + 1;
+    }
+    return Keys;
+}
+
 bool VarSubst::StringVariableSubstitution(
     std::string &SourceString,
     const std::map<std::string, std::string>& VariablesMap)

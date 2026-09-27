@@ -5,6 +5,7 @@
 
 #include <map>
 #include <string>
+#include <vector>
 
 // VarSubst — the pure %TOKEN% substitution + custom-var value encoding seam, lifted out of ContainerWrapper.
 // Zero heavy deps (no Qt / IPFS / catalog), so it is unit-testable in isolation (tests/test_varsubst.cpp).
@@ -26,6 +27,10 @@ nlohmann::ordered_json SubstituteJsonValues(const nlohmann::ordered_json &V,
 //%KEY% yields the raw value. An unmatched '%' aborts further substitution (the remainder is preserved); unknown
 //keys are left as %KEY%[:format] and logged. Returns true if at least one replacement was made.
 bool StringVariableSubstitution(std::string &SourceString, const std::map<std::string, std::string> &VariablesMap);
+
+//The KEYs a string's %KEY% / %KEY:format% tokens name, in order — tokens read exactly as StringVariableSubstitution
+//reads them (pairwise '%', the format after the first ':'); an unmatched trailing '%' names nothing.
+std::vector<std::string> TokenKeys(const std::string &S);
 
 //Evaluates a WHEN condition string to a bool, resolving %KEY% operands from VariablesMap. This is the data-driven
 //conditional primitive: a layer with WHEN applies only when it holds (a CustomVar gates its value + UI, any other

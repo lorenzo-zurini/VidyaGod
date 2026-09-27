@@ -467,18 +467,32 @@ std::string ToAnchors(const std::string &Value, const std::map<std::string, std:
         if (G.size() >= 2 && std::isalpha(static_cast<unsigned char>(G[0])) && G[1] == ':') By.emplace_back(Norm(G), A);
     std::stable_sort(By.begin(), By.end(), [](const auto &X, const auto &Y) { return X.first.size() > Y.first.size(); });
     const std::string L = Flat(Value);
+    //A separator in the guest path matches a RUN of them in the value: a typed registry string ("str(2):\"C:\\x\"") is
+    //the raw .reg payload, its backslashes escaped — "C:\\Program Files" is still C:\Program Files.
+    auto MatchEnd = [&](size_t I, const std::string &G) -> size_t {
+        size_t J = I;
+        for (size_t K = 0; K < G.size(); ++K)
+        {
+            if (J >= L.size() || L[J] != G[K]) return std::string::npos;
+            ++J;
+            if (G[K] == '/') while (J < L.size() && L[J] == '/') ++J;
+        }
+        return J;
+    };
     std::string Out;
     size_t I = 0;
     while (I < Value.size())
     {
+        //a path starts at the value's start, after a non-word character, or after a multi-string's "\0" separator
         const bool Start = std::isalpha(static_cast<unsigned char>(Value[I])) && I + 1 < Value.size() && Value[I + 1] == ':'
-                        && (I == 0 || !std::isalnum(static_cast<unsigned char>(Value[I - 1])));
+                        && (I == 0 || !std::isalnum(static_cast<unsigned char>(Value[I - 1]))
+                            || (I >= 2 && Value[I - 1] == '0' && Value[I - 2] == '\\'));
         bool Hit = false;
         if (Start)
             for (const auto &[G, A] : By)
             {
-                if (L.compare(I, G.size(), G) != 0) continue;
-                const size_t E = I + G.size();
+                const size_t E = MatchEnd(I, G);
+                if (E == std::string::npos) continue;
                 const char N = E < Value.size() ? Value[E] : '\0';
                 if (N != '\0' && N != '\\' && N != '/' && N != '"' && N != '\'' && N != ',' && N != ';') continue;   // C:\\8020 is not C:\\802
                 Out += A;

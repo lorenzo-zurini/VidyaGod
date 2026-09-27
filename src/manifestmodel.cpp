@@ -1010,7 +1010,8 @@ void ValidateNodeGraph(const NodeIndex &Idx, std::vector<std::string> &Errors, s
     {
         //a drive path (C:\x, E:/), or a value that is only a drive ("E:") — not a config key like "/W:"
         const std::regex Drive(R"((^|[^A-Za-z0-9])[A-Za-z]:[\\/]|^[A-Za-z]:$)");
-        const std::regex Anchored(R"(%([A-Za-z0-9_]+)%([\\/][^"]*)?)");
+        //an anchor and the path after it — up to the next token, so a second anchor in the same value is checked too
+        const std::regex Anchored(R"(%([A-Za-z0-9_]+)%([\\/][^"%]*)?)");
         std::function<void(const nlohmann::ordered_json &, const std::string &, std::set<std::string> &)> Scan =
             [&](const nlohmann::ordered_json &J, const std::string &Where, std::set<std::string> &Out) {
                 auto Check = [&](const std::string &S) {
@@ -1053,9 +1054,17 @@ void ValidateNodeGraph(const NodeIndex &Idx, std::vector<std::string> &Errors, s
                 for (const auto &M : L["SUBMOUNTS"])
                     if (M.is_string()) { const std::string X = M.get<std::string>(); const size_t C = X.find(':');
                                          if (C != std::string::npos) PathCheck(X.substr(C + 1), Where, Out); }
+            //A TAKE pair's destination may carry the source's namespace or not (Fold::Taken adds it): the path is
+            //what follows it — "FILES/%SysDir32%/x.dll" and "%SysDir32%/x.dll" name the same place.
             if (L.contains("TAKE") && L["TAKE"].is_array())
                 for (const auto &T : L["TAKE"])
-                    if (T.is_array() && T.size() == 2 && T[1].is_string()) PathCheck(T[1].get<std::string>(), Where, Out);
+                    if (T.is_array() && T.size() == 2 && T[0].is_string() && T[1].is_string())
+                    {
+                        const std::string Src = T[0].get<std::string>(), Ns = Src.substr(0, Src.find('/')) + "/";
+                        std::string Dst = T[1].get<std::string>();
+                        if (Dst.compare(0, Ns.size(), Ns) == 0) Dst.erase(0, Ns.size());
+                        PathCheck(Dst, Where, Out);
+                    }
             if (L.contains("KEEP") && L["KEEP"].is_object())
                 for (const auto &[K, V] : L["KEEP"].items()) PathCheck(Addr(K), Where, Out);
             if (L.contains("EXEC") && L["EXEC"].is_array())

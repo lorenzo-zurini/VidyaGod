@@ -73,7 +73,7 @@ private slots:
         const auto saved = [&] {
             const json US = PackageCatalog::GetPackageUserSettings(Cfg, idx.Find("game")->PackageUid);
             std::vector<std::string> G;
-            if (US.contains("GRAFTS")) for (const auto &X : US["GRAFTS"]) G.push_back(X.get<std::string>());
+            if (US.contains("GRAFTS") && US["GRAFTS"].contains("7")) for (const auto &X : US["GRAFTS"]["7"]) G.push_back(X.get<std::string>());
             return G;
         };
         QCOMPARE(rows(), (std::vector<std::string>{"a", "b", "ona"}));   // all three recommended, a before what needs it
@@ -95,6 +95,54 @@ private slots:
 
         select("a");
         QVERIFY(!Up->isEnabled());                                        // nothing above the first
+    }
+
+    // Instance settings are the family's (RoC and TFT share one), but the graft list is the TILE's: saving under one
+    // tile must neither replace the sibling's recommended pre-ticks nor drop the grafts only the sibling offers.
+    // Teeth: key GRAFTS by family again (one list) and tile 8 opens with tile 7's list instead of its own pre-tick.
+    void eachTileKeepsItsOwnGraftList()
+    {
+        NodeIndex idx;
+        const std::string Host = ManifestModel::MachinePlatform();
+        idx.Nodes["fam"] = parse(json{ {"CID", "fam"}, {"LABEL", "fam"}, {"VARIANT", "v1"},
+            {"LAYERS", json::array({ json{{"DIR", "fam"}}, json{{"EXEC", json::array({
+                json{{"LABEL", "RoC"}, {"HOST", Host}, {"EXE", "roc.exe"}, {"TILE", {{"UID", "70"}, {"TITLE", "RoC"}}}},
+                json{{"LABEL", "TFT"}, {"HOST", Host}, {"EXE", "tft.exe"}, {"TILE", {{"UID", "80"}, {"TITLE", "TFT"}}}} })}} })} });
+        const auto graft = [](const char *Id, const char *Tile) {
+            return parse(json{ {"CID", Id}, {"LABEL", Id}, {"RECOMMENDED", json::array({Tile})},
+                {"LAYERS", json::array({ json{{"ANY", json::array({"fam"})}}, json{{"DIR", Id}} })} });
+        };
+        idx.Nodes["a"] = graft("a", "70");
+        idx.Nodes["b"] = graft("b", "80");
+        ManifestModel::DeriveFacts(idx);
+        json Cfg = json{{"Settings", json::object()}};
+        const auto ticked = [](PreLaunchWindow &W) {
+            std::vector<std::string> R;
+            auto *List = W.findChild<QTreeWidget *>("graftList");
+            for (int i = 0; List && i < List->topLevelItemCount(); ++i)
+                if (List->topLevelItem(i)->checkState(0) == Qt::Checked) R.push_back(List->topLevelItem(i)->text(0).toStdString());
+            return R;
+        };
+        {
+            PreLaunchWindow W7(&Cfg, &idx, {"fam"}, "70");
+            W7.show(); QCoreApplication::processEvents();
+            QCOMPARE(ticked(W7), (std::vector<std::string>{"a"}));               // its own recommendation
+            auto *List = W7.findChild<QTreeWidget *>("graftList");
+            for (int i = 0; i < List->topLevelItemCount(); ++i)                  // the user unticks a: a saved list
+                if (List->topLevelItem(i)->text(0) == "a") { List->topLevelItem(i)->setCheckState(0, Qt::Unchecked); break; }   // (the list rebuilds)
+            QCoreApplication::processEvents();
+            QCOMPARE(ticked(W7), (std::vector<std::string>{}));
+        }
+        {
+            PreLaunchWindow W8(&Cfg, &idx, {"fam"}, "80");
+            W8.show(); QCoreApplication::processEvents();
+            QCOMPARE(ticked(W8), (std::vector<std::string>{"b"}));               // not tile 7's (empty) list
+        }
+        {
+            PreLaunchWindow W7(&Cfg, &idx, {"fam"}, "70");
+            W7.show(); QCoreApplication::processEvents();
+            QCOMPARE(ticked(W7), (std::vector<std::string>{}));                  // 7 keeps what was saved for 7
+        }
     }
 
 private:

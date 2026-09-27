@@ -6,7 +6,7 @@
 #include "manifestmodel.h"
 #include "containerwrapper.h"
 #include "ipfswrapper.h"
-#include "downloadqueue.h"   // CancelDownload
+#include "downloadqueue.h"   // CancelDownload, CloseQueue/OpenQueue
 #include "commonutils.h"
 #include "variantpicker.h"     // virtualized, searchable variant list — scales to any variant count
 #include "asyncwork.h"         // AsyncWork::Run — closure walks off the GUI thread, guarded by the dialog's lifetime
@@ -54,6 +54,7 @@ static PackageCatalog::GraftChoice TickedGrafts(const std::map<std::string, bool
 DownloadManager::DownloadManager(AppModel &model, IpfsModel &ipfs, QWidget *dialogParent, QObject *parent)
     : QObject(parent), Model(model), Ipfs(ipfs), DialogParent(dialogParent)
 {
+    IpfsWrapper::OpenQueue();   // a previous manager's exit closed it (tests build several in one process)
     // Per-CID progress lives in IpfsModel now; recompute a package's averaged bar whenever one of its CIDs changes.
     connect(&Ipfs, &IpfsModel::cidChanged, this, [this](const QString &cid){ recomputeProgress(cid); });
 }
@@ -66,15 +67,27 @@ void DownloadManager::requestCancel(LibraryGameCard *card)
     if (QMessageBox::question(DialogParent, "Cancel download?",
             "Stop downloading “" + card->GameTitle + "”?") != QMessageBox::Yes) return;
     CancellingUids.insert(Key);                                   // suppress the failure dialog on abort
-    for (const QString & c : DownloadUidCids.value(Key)) IpfsWrapper::RequestCancel(c.toStdString());
+    for (const QString & c : cancellableCids(Key)) IpfsWrapper::RequestCancel(c.toStdString());
+}
+
+QStringList DownloadManager::cancellableCids(const QString &Key) const
+{
+    QStringList Out;
+    for (const QString & c : DownloadUidCids.value(Key))
+        if (DownloadCidToUid.value(c) == QSet<QString>{Key}) Out << c;   // shared with another card: leave it running
+    return Out;
 }
 
 void DownloadManager::recomputeProgress(const QString &cid)
 {
     auto it = DownloadCidToUid.constFind(cid);
     if (it == DownloadCidToUid.constEnd()) return;
-    const QString Key = it.value();
-    const QStringList & Cids = DownloadUidCids[Key];
+    for (const QString & Key : it.value()) recomputeKeyProgress(Key);
+}
+
+void DownloadManager::recomputeKeyProgress(const QString &Key)
+{
+    const QStringList Cids = DownloadUidCids.value(Key);
     if (Cids.isEmpty()) { emit downloadProgress(Key, -1.0); return; }
     // SIZE-WEIGHTED average from IpfsModel (per-CID pct/size): a package's bar reflects bytes downloaded, not files
     // completed — otherwise a tiny file finishing jerks the bar (the "staggered" bug). Falls back to an equal-weight
@@ -485,8 +498,8 @@ void DownloadManager::beginDownload(const QString &Key, const std::vector<std::s
         for (const auto & C : CidList)
         {
             const QString Qc = QString::fromStdString(C);
-            if (DownloadCidToUid.contains(Qc)) continue;
-            Cids << Qc; DownloadCidToUid[Qc] = Key;
+            if (Cids.contains(Qc)) continue;
+            Cids << Qc; DownloadCidToUid[Qc].insert(Key);
         }
     };
     for (const std::string & Lid : LaunchIds) AddCids(PackageCatalog::NodeContentCids(Model.catalogIndex(), Lid, TickedGrafts(Toggles)));
@@ -505,7 +518,9 @@ void DownloadManager::beginDownload(const QString &Key, const std::vector<std::s
     NodeIndex Snapshot = Model.catalogIndex();
     nlohmann::ordered_json ConfigSnap = Model.config() ? *Model.config() : nlohmann::ordered_json::object();
     //Owned, not detached: the destructor cancels and joins it, so it never posts to a destroyed manager.
-    Workers.emplace_back([this, LaunchIds, RunnerIds, Toggles, Key, Snapshot = std::move(Snapshot), ConfigSnap = std::move(ConfigSnap)]{
+    reapWorkers();
+    auto Done = std::make_shared<std::atomic<bool>>(false);
+    Workers.push_back({std::thread([this, Done, LaunchIds, RunnerIds, Toggles, Key, Snapshot = std::move(Snapshot), ConfigSnap = std::move(ConfigSnap)]{
         std::string Err; bool Ok = true;
         // A RECEIVED package's closure is incomplete (only its exec + tile were shared) — complete it FIRST, through
         // the same rolling queue (CompleteClosure: each missing node block is a plain FetchTarget into the package
@@ -574,13 +589,16 @@ void DownloadManager::beginDownload(const QString &Key, const std::vector<std::s
         if (Ok && !IpfsWrapper::FetchTargetsConcurrent(Targets, &Err)) Ok = false;
         // Builds are now present locally → the runner is ready. Its prefix assembles from the build at launch
         // (node-declared layers), so there is NO post-fetch generation step — fetching the build IS the install.
+        Done->store(true);   // before the post: whoever sees the result may reap this thread (its join returns at once)
         QMetaObject::invokeMethod(this, [this, Ok, Err, Key]{
             DownloadingUids.remove(Key);
             const bool Cancelled = CancellingUids.remove(Key);
             const QStringList DoneCids = DownloadUidCids.value(Key);
             for (const QString & c : DoneCids)
             {
-                IpfsWrapper::ClearCancel(c.toStdString()); DownloadCidToUid.remove(c);
+                auto It = DownloadCidToUid.find(c);
+                if (It != DownloadCidToUid.end()) { It->remove(Key); if (It->isEmpty()) DownloadCidToUid.erase(It); }
+                if (!DownloadCidToUid.contains(c)) IpfsWrapper::ClearCancel(c.toStdString());   // no card needs it now
                 // IpfsModel owns the transfer rows now; a still-queued CID clears itself via the queue's callback and
                 // the post-completion refresh() (transfersChanged → IpfsModel::refreshNow).
             }
@@ -597,17 +615,27 @@ void DownloadManager::beginDownload(const QString &Key, const std::vector<std::s
             Model.rebuildCatalog();       // emits catalogChanged → Catalog rebuild + Library rebuild + IPFS refresh
             emit transfersChanged();
         }, Qt::QueuedConnection);
-    });
+    }), Done});
+}
+
+void DownloadManager::reapWorkers()
+{
+    for (auto It = Workers.begin(); It != Workers.end(); )
+        if (It->Done->load()) { It->T.join(); It = Workers.erase(It); }   // finished: the join is immediate
+        else ++It;
 }
 
 DownloadManager::~DownloadManager()
 {
-    //Make every fetch this manager started return (a cancelled CID fails its batch), then wait for the workers: none
-    //may still be running, or inside Qt, once the manager and the application are gone. A worker's last act posts its
-    //result to this manager, which is still whole while it waits here; Qt drops that event with the object.
-    for (auto It = DownloadCidToUid.constBegin(); It != DownloadCidToUid.constEnd(); ++It)
-        IpfsWrapper::CancelDownload(It.key().toStdString());
-    for (std::thread &T : Workers) if (T.joinable()) T.join();
+    //Make every fetch return, then wait for the workers: none may still be running, or inside Qt, once the manager and
+    //the application are gone. Cancelling only the CIDs mapped when a download began was not enough — a worker also
+    //fetches closure blocks, received content and runner chains it learns of later, and a retryable job never fails on
+    //its own: quitting with an unprovidable fetch in flight hung the exit on join() for good, the lock still held.
+    //Closing the queue fails everything queued, aborts everything active and fails whatever is enqueued next.
+    //A worker's last act posts its result to this manager, which is still whole while it waits here; Qt drops that
+    //event with the object.
+    IpfsWrapper::CloseQueue();
+    for (Worker &W : Workers) if (W.T.joinable()) W.T.join();
 }
 
 // ── Persistence of in-flight downloads (Settings.ActiveDownloads) so a crash/close resumes them next launch ──

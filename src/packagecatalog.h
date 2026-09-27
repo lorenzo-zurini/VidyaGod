@@ -393,10 +393,13 @@ std::vector<std::string> AppliedGrafts(const NodeIndex &Idx, const std::string &
                                        std::vector<std::string> *Dropped = nullptr);
 // Move the graft at Ticked[From] one place (By = -1 up, +1 down) in the instance's ordered graft list. The order is
 // the order they apply in, and a graft is only applied when it is offered with those before it applied — so a move
-// that would leave a graft unapplied (a graft on a graft moved above the graft it needs) is REFUSED, *Why naming it;
-// Ticked is changed only on success.
+// after which ANY graft that applied no longer does (a graft on a graft moved above the graft it needs, or one of two
+// grafts that exclude each other swapped in ahead) is REFUSED, *Why naming it; Ticked is changed only on success.
+// Judged as the launch judges it: Instance = the instance's values, Builtins = at least %UID% (the tile) and
+// %PackageUID% (see AppliedGrafts).
 bool MoveGraft(const NodeIndex &Idx, const std::string &LaunchNodeId, std::vector<std::string> &Ticked, size_t From,
-               int By, std::string *Why = nullptr);
+               int By, std::string *Why = nullptr, const std::map<std::string, std::string> &Instance = {},
+               const std::map<std::string, std::string> &Builtins = {});
 // The grafts this row offers with Chosen applied (a graft on a graft is offered once the graft it needs is), in the
 // default order (LABEL, then CID); into *PreTicked, a fresh instance's list (AppliedGrafts with nullopt).
 std::vector<std::string> OfferedGrafts(const NodeIndex &Idx, const std::string &LaunchNodeId,
@@ -404,9 +407,6 @@ std::vector<std::string> OfferedGrafts(const NodeIndex &Idx, const std::string &
                                        const GraftChoice &Chosen = std::nullopt,
                                        const std::string &FaceUid = std::string());   // "" = the node's first tile
 
-// ---- grouping ----
-// Every launchable sharing this node's game (its pre-launch "tile group"), with NodeId first so it is preselected.
-std::vector<std::string> GroupNodeIds(const NodeIndex &Idx, const std::string &LaunchNodeId);
 // Gather (without fetching) every missing content-layer + cover target for a launchable's closure, appending to Out.
 // Lets a caller pool a game's content with its runners' build layers into ONE concurrent download batch. Returns
 // false (with *Error) if a required layer is locally missing AND has no IPFS source. Also seeds an already-present

@@ -443,6 +443,23 @@ TEST(validate_refuses_drive_letters_and_non_canonical_anchors)
     CHECK(!AnyContains(E, "node 'proton'"));                                                   // the map is not a use
 }
 
+// Every anchor in a value is held to its most specific spelling — the second one too ("%GameDir%\\a;%Windows%\\
+// syswow64\\x" names a %SysDir32% place). Teeth: let the anchor's tail run past the next token ([^"]*) and the second
+// anchor is never looked at.
+TEST(validate_holds_every_anchor_in_a_value_to_its_most_specific_spelling)
+{
+    NodeIndex Idx;
+    ordered_json R = NF::Runner("linux64", {"win32"}, "%RunnerMount%/proton");
+    R["LAYERS"][0]["EXEC"][0]["GUEST_ROOTS"] = { {"%GameDir%", "C:\\%PackageUID%"}, {"%Windows%", "C:\\windows"},
+                                                 {"%SysDir32%", "C:\\windows\\syswow64"} };
+    R["LAYERS"][0]["EXEC"][0]["DRIVES"] = { {"C:", "%PrefixRoot%/drive_c"} };
+    AddChain(Idx, "proton", { R });
+    Add(Idx, { {"CID", "g"}, {"LABEL", "g"}, {"LAYERS", ordered_json::array({
+        {{"REG", {{"HKLM", {{"Software", {{"G", {{"Paths", "%GameDir%\\a;%Windows%\\syswow64\\x.dll"}}}}}}}}}},
+    })} });
+    CHECK(AnyContains(Validate(Idx), "is inside %SysDir32%"));
+}
+
 TEST(validate_places_anchors_at_the_start_of_paths_and_reads_every_value)
 {
     NodeIndex Idx;
@@ -459,8 +476,18 @@ TEST(validate_places_anchors_at_the_start_of_paths_and_reads_every_value)
         {{"REG", {{"HKLM", {{"Software", {{"G", {{"U", "RunDll32 %ProgramFiles32%\\x.dll"}}}}}}}}}, // a value may embed one
          {"COMMENT", "the installer wrote C:\\Program Files (x86)\\G"}},                     // prose is not a place
         {{"EXEC", ordered_json::array({ {{"LABEL", "Play"}, {"EXE", "%GameDir%/g.exe"}, {"WORKDIR", "bin/%GameDir%"}} })}},
+        // TAKE destinations: with the namespace or without (Fold::Taken adds it) the path starts at the anchor —
+        // only an anchor INSIDE the path is refused.
+        {{"NODE", "lib"}, {"TAKE", ordered_json::array({ ordered_json::array({"FILES/a/", "FILES/%GameDir%/a"}),
+                                                          ordered_json::array({"FILES/b/", "%ProgramFiles32%/b"}),
+                                                          ordered_json::array({"FILES/c/", "FILES/mods/%GameDir%"}) })}},
     })} });
+    Add(Idx, { {"CID", "lib"}, {"LABEL", "lib"}, {"LAYERS", ordered_json::array({ {{"ZIP", "l.zip"}} })} });
     const auto E = Validate(Idx);
+    CHECK(!AnyContains(E, "path 'FILES/%GameDir%/a'"));
+    CHECK(!AnyContains(E, "path '%GameDir%/a'"));
+    CHECK(!AnyContains(E, "%ProgramFiles32%/b' has"));
+    CHECK(AnyContains(E, "path 'mods/%GameDir%' has %GameDir% inside it"));
     CHECK(AnyContains(E, "path 'mods/%GameDir%/x' has %GameDir% inside it"));
     CHECK(AnyContains(E, "path 'b/%GameDir%' has %GameDir% inside it"));
     CHECK(AnyContains(E, "path 'saves/%GameDir%/' has %GameDir% inside it"));

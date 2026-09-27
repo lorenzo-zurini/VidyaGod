@@ -1,9 +1,11 @@
 #include "nodelower.h"
 #include "fold.h"
+#include "varsubst.h"
 
 #include <algorithm>
 #include <cctype>
 #include <filesystem>
+#include <functional>
 #include <map>
 #include <set>
 #include <vector>
@@ -280,6 +282,28 @@ std::string CheckLayer(const ordered_json &L)
                         if (!Mapped) return "GUEST_ROOTS " + K + " is on drive " + G.substr(0, 2) + ", which DRIVES does not lay out";
                     }
                 }
+            //Anchors may be spelled from each other, never in a circle: "%A%" = "%A%\\x" (or A from B from A) has no
+            //place — resolving it would only grow. A runner is shared JSON; refuse it here, before any launch reads it.
+            if (E.contains("GUEST_ROOTS"))
+            {
+                const auto &Roots = E["GUEST_ROOTS"];
+                std::map<std::string, int> State;                          // 1 = on the path, 2 = done
+                std::string Cycle;
+                std::function<bool(const std::string &)> Acyclic = [&](const std::string &A) -> bool {
+                    State[A] = 1;
+                    for (const std::string &Dep : VarSubst::TokenKeys(Roots[A].get<std::string>()))
+                    {
+                        const std::string D = "%" + Dep + "%";
+                        if (!Roots.contains(D)) continue;
+                        if (State[D] == 1) { Cycle = A + " → " + D; return false; }
+                        if (State[D] == 0 && !Acyclic(D)) return false;
+                    }
+                    State[A] = 2;
+                    return true;
+                };
+                for (const auto &[K, V] : Roots.items())
+                    if (State[K] == 0 && !Acyclic(K)) return "GUEST_ROOTS anchors are spelled from each other in a circle (" + Cycle + ")";
+            }
             if (E.contains("TILE"))
             {
                 const auto &Ti = E["TILE"];

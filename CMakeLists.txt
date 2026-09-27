@@ -459,6 +459,13 @@ if(NOT WIN32)
     set_tests_properties(launch_matrix PROPERTIES TIMEOUT 2400)
 endif()
 
+# --variant names a row of a tile: alone it is refused (exit 2, a message) — not a GUI that silently launches nothing.
+# A throwaway data dir so the run never touches the developer's config or instance lock.
+add_test(NAME cli_variant_needs_a_tile
+         COMMAND ${CMAKE_COMMAND} -E env QT_QPA_PLATFORM=offscreen
+                 $<TARGET_FILE:VidyaGod> --data-dir ${CMAKE_BINARY_DIR}/cli_variant_test_data --offline --variant x)
+set_tests_properties(cli_variant_needs_a_tile PROPERTIES PASS_REGULAR_EXPRESSION "needs --tile" TIMEOUT 30)
+
 add_gui_test(test_pkgcanvas)
 add_gui_test(test_canvasperf)
 add_gui_test(test_pkgactions)

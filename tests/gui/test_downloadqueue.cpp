@@ -86,6 +86,27 @@ private slots:
 
     // ---- rolling scheduler (stall-demotion), driven by the FetchOnce test hook ----
 
+    // A package installed while another download still reads the old index: what that download enqueues for the old
+    // CATALOG folder lands in the installed package instead — never re-creating the old folder as a stub (which then
+    // failed every later install with "already exists"). A sibling folder that merely starts the same is untouched,
+    // and the landed folder's own redirect (its files moved up) wins over the package's. Teeth: drop the redirect in
+    // EnqueueBatch (the dest stays under CATALOG), or the longest-prefix choice (.package lands under .package).
+    void aRequestForAMovedFolderLandsWhereItIsNow()
+    {
+        QTemporaryDir dir; QVERIFY(dir.isValid());
+        const std::string Cat = (dir.path() + "/CATALOG/Alice - Games/[1] A").toStdString();
+        const std::string Lib = (dir.path() + "/LIBRARY/Games/[1] A").toStdString();
+        IpfsWrapper::RedirectDestsUnder(Cat + "/.package", Lib);
+        IpfsWrapper::RedirectDestsUnder(Cat, Lib);
+        IpfsWrapper::EnqueueBatch({{"CID_DQ_MOVED", Cat + "/n.json", /*Optional=*/true},
+                                   {"CID_DQ_LANDED", Cat + "/.package/m.json", /*Optional=*/true},
+                                   {"CID_DQ_SIBLING", (dir.path() + "/CATALOG/Alice - Games/[1] AB/s.json").toStdString(), /*Optional=*/true}});
+        QCOMPARE(IpfsWrapper::QueueDestForCid("CID_DQ_MOVED"), Lib + "/n.json");
+        QCOMPARE(IpfsWrapper::QueueDestForCid("CID_DQ_LANDED"), Lib + "/m.json");
+        QCOMPARE(IpfsWrapper::QueueDestForCid("CID_DQ_SIBLING"), (dir.path() + "/CATALOG/Alice - Games/[1] AB/s.json").toStdString());
+        IpfsWrapper::DebugResetQueue();
+    }
+
     void cleanup()
     {
         g_stopHook = true;                       // unblock any hook still holding a slot

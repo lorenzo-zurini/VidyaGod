@@ -1,4 +1,5 @@
 #include "main.h"
+#include <iostream>
 #include "cli/climodes.h"
 #include "apppaths.h"
 #include "platform/platform.h"
@@ -98,6 +99,13 @@ int main(int argc, char *argv[])
     //Parse command line arguments and initialize RuntimeParameters struct.
     //Must happen before QApplication so headless runs never touch the display.
     LaunchParameters LaunchParameters = ParseCommandLineArguments(argc, argv);
+    //--variant names a row OF a tile: without --tile (or a --node to launch) it has nothing to select, and the GUI
+    //starting instead read as a launch that silently did nothing.
+    if (!LaunchParameters.LaunchVariant.empty() && LaunchParameters.LaunchTile.empty() && LaunchParameters.LaunchNodeId.empty())
+    {
+        std::cerr << "--variant '" << LaunchParameters.LaunchVariant << "' needs --tile <UID> (or --node <id>) to choose from\n";
+        return 2;
+    }
 
     //--log <file>: capture the ENTIRE run for a field-debug session. freopen reuses fd 2, so BOTH the C++ side
     //(std::cerr) and the embedded Go node (os.Stderr) land in one file; unbuffered so the last lines survive a

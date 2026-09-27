@@ -77,10 +77,12 @@ std::string LaunchResolver::GuestToLayout(struct ContainerParams &CP, const std:
 {
     //An anchor resolves to its guest path (C:\802 — the variables map says so: the same spelling a registry value
     //gets); a guest path lands where its drive lives in the runner's layout.
+    const bool NoDrives = !CP.Drives.is_object() || CP.Drives.empty();
+    if (NoDrives && Path.find('%') == std::string::npos) return Path;    // nothing to substitute, nothing to map
     const std::map<std::string, std::string> Vars = CP.GetVariablesMap();
     std::string P = Path;
     if (P.find('%') != std::string::npos) VarSubst::StringVariableSubstitution(P, Vars);
-    if (!CP.Drives.is_object() || CP.Drives.empty()) return P;           // no drives: nothing is a guest path to map
+    if (NoDrives) return P;                                              // no drives: nothing is a guest path to map
     const bool Guest = P.size() >= 2 && std::isalpha(static_cast<unsigned char>(P[0])) && P[1] == ':';
     if (!Guest) return P;
     std::replace(P.begin(), P.end(), '\\', '/');                        // a guest path: Windows separators
@@ -106,10 +108,15 @@ nlohmann::ordered_json LaunchResolver::AnchorRegEdits(struct ContainerParams &CP
             if (It != Vars.end()) Anchors[A] = It->second;
         }
     if (Anchors.empty() || !Edits.is_array()) return Edits;
+    //Values AND value names: SharedDLLs, AppCompatFlags\\Layers and the like are keyed by the full path.
     for (auto &E : Edits)
         if (E.is_object() && E.contains("KEYVALUES") && E["KEYVALUES"].is_object())
-            for (auto &[K, V] : E["KEYVALUES"].items())
-                if (V.is_string()) V = Fold::ToAnchors(V.get<std::string>(), Anchors);
+        {
+            nlohmann::ordered_json KV = nlohmann::ordered_json::object();
+            for (const auto &[K, V] : E["KEYVALUES"].items())
+                KV[Fold::ToAnchors(K, Anchors)] = V.is_string() ? nlohmann::ordered_json(Fold::ToAnchors(V.get<std::string>(), Anchors)) : V;
+            E["KEYVALUES"] = KV;
+        }
     return Edits;
 }
 

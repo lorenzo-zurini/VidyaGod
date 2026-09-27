@@ -7,7 +7,10 @@
 #include <QString>
 #include <QStringList>
 
+#include <atomic>
+#include <list>
 #include <map>
+#include <memory>
 #include <string>
 #include <thread>
 #include <vector>
@@ -54,7 +57,18 @@ signals:
     void downloadFinished(const QString & groupKey);           // clear the package's downloading state
 
 private:
-    std::vector<std::thread> Workers;                                        // beginDownload's workers — joined on destruction
+    //beginDownload's workers: a finished one is joined when the next download starts (a thread's stack is kept until
+    //join — the tray daemon grew one per download), the rest on destruction.
+    struct Worker { std::thread T; std::shared_ptr<std::atomic<bool>> Done; };
+    std::list<Worker> Workers;
+    void recomputeKeyProgress(const QString &Key);   // one card's size-weighted average
+    void reapWorkers();
+public:
+    int workerCount() const { return (int)Workers.size(); }   // test observability: worker threads not yet joined
+    QStringList cidsOf(const QString &Key) const { return DownloadUidCids.value(Key); }   // a download's content CIDs
+    //The CIDs cancelling Key's download may abort: its own, minus those another in-flight download still needs.
+    QStringList cancellableCids(const QString &Key) const;
+private:
     void persistActive(const QString & key, const std::vector<std::string> & launchIds,
                        const std::vector<std::string> & runnerIds, const std::map<std::string, bool> & toggles);
     void unpersistActive(const QString & key);
@@ -67,7 +81,9 @@ private:
 
     QSet<QString>               DownloadingUids;   // PACKAGEUIDs with an import in flight (survives rebuilds)
     QSet<QString>               CancellingUids;    // PACKAGEUIDs the user cancelled (suppresses the failure dialog)
-    QHash<QString, QString>     DownloadCidToUid;  // in-flight content CID → its owning PACKAGEUID
+    //in-flight content CID → every download (card key) that needs it: one variant sits under several tiles (RoC and
+    //TFT), so two cards can download the same CIDs — each tracks and averages all of its own
+    QHash<QString, QSet<QString>> DownloadCidToUid;
     QHash<QString, QStringList> DownloadUidCids;   // PACKAGEUID → its content CIDs (for averaging progress)
 };
 

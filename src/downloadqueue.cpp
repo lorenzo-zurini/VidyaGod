@@ -59,6 +59,8 @@ struct QState {
     long long                         Seq = 0;
     int                               TopPriority = 0;
     bool                              DispatcherStarted = false;
+    bool                              Closed = false;   // shutting down: nothing new runs, every waiter is released
+    std::map<std::string, std::string> Moved;           // a moved folder (with '/') → its new place (with '/')
 };
 
 QState &Q()
@@ -287,6 +289,8 @@ void EnsureDispatcher()   // caller holds Mu
 
 } // namespace
 
+static std::string RedirectedLocked(const std::string &Path);   // below
+
 BatchHandle EnqueueBatch(const std::vector<FetchTarget> &Targets)
 {
     BatchHandle Handle;
@@ -297,8 +301,16 @@ BatchHandle EnqueueBatch(const std::vector<FetchTarget> &Targets)
                                  // and EnqueueBatch runs on the GUI thread via the cover sweep)
     {
         std::lock_guard<std::mutex> Lk(Q().Mu);
-        for (const FetchTarget &T : Targets) {
+        for (const FetchTarget &T0 : Targets) {
+            FetchTarget T = T0;
+            T.LocalPath = RedirectedLocked(T.LocalPath);   // a folder moved since the caller read it: land where it is now
             Handle.Items.emplace_back(T.Cid, T.Optional);
+            if (Q().Closed) {                                 // shutting down: the request fails at once, never waits
+                Job &J = Q().Jobs[T.Cid];
+                J.Cid = T.Cid;
+                if (J.State != Job::Done) { J.State = Job::Failed; J.Error = "shutting down"; }
+                continue;
+            }
             ClearCancel(T.Cid);   // a fresh request clears any prior user-cancel so a re-download is not pre-aborted
             ClaimDest(T.Cid, T.LocalPath);   // whatever job held this path before, it is this CID's now
             auto It = Q().Jobs.find(T.Cid);
@@ -401,6 +413,26 @@ bool DebugIsPreempting(const std::string & Cid)
     return Q().Preempting.count(Cid) > 0;
 }
 
+void CloseQueue()
+{
+    std::vector<std::string> Dropped;
+    {
+        std::lock_guard<std::mutex> Lk(Q().Mu);
+        Q().Closed = true;
+        for (auto &[Cid, J] : Q().Jobs)
+            if (J.State == Job::Queued) { J.State = Job::Failed; J.Error = "shutting down"; Dropped.push_back(Cid); }
+            else if (J.State == Job::Active) { Q().UserCancelled.insert(Cid); RequestCancel(Cid); }
+    }
+    Q().Cv.notify_all();
+    notifyQueued(Dropped, false);
+}
+
+void OpenQueue()
+{
+    std::lock_guard<std::mutex> Lk(Q().Mu);
+    Q().Closed = false;
+}
+
 void DebugResetQueue()
 {
     std::lock_guard<std::mutex> Lk(Q().Mu);
@@ -408,6 +440,8 @@ void DebugResetQueue()
     Q().Preempting.clear();
     Q().UserCancelled.clear();
     Q().TopPriority = 0;
+    Q().Closed = false;
+    Q().Moved.clear();
 }
 
 bool DebugJobPrioritized(const std::string & Cid)
@@ -447,6 +481,22 @@ bool WaitBatch(const BatchHandle &Handle, int TimeoutMs, std::string *Error)
 }
 
 bool WaitBatch(const BatchHandle &Handle, std::string *Error) { return WaitBatch(Handle, 0, Error); }
+
+// The path's place now: under the longest moved folder it names, rewritten to where that folder went. Q().Mu held.
+static std::string RedirectedLocked(const std::string &Path)
+{
+    const std::pair<const std::string, std::string> *Best = nullptr;
+    for (const auto &M : Q().Moved)
+        if (Path.compare(0, M.first.size(), M.first) == 0 && (!Best || M.first.size() > Best->first.size())) Best = &M;
+    return Best ? Best->second + Path.substr(Best->first.size()) : Path;
+}
+
+void RedirectDestsUnder(const std::string &From, const std::string &To)
+{
+    auto Slash = [](const std::string &D) { return D.empty() || D.back() == '/' ? D : D + "/"; };
+    std::lock_guard<std::mutex> Lk(Q().Mu);
+    Q().Moved[Slash(From)] = Slash(To);
+}
 
 void ForgetDestsUnder(const std::string &Dir)
 {

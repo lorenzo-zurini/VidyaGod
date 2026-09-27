@@ -171,7 +171,14 @@ PreLaunchWindow::PreLaunchWindow(
     }
     ModuleGroup->setVisible(false);
     CVContainerLayout->addWidget(ModuleGroup);
-    connect(ModuleTree, &QTreeWidget::itemChanged, this, [this](QTreeWidgetItem* It, int){ PropagateModuleItem(It); });
+    //A toggle rebuilds the list — deleting the very row whose setData emitted itemChanged, while Qt is still inside it
+    //(a use-after-free: ticking a graft's box could crash). Take the row's key and state now, rebuild after it returns.
+    connect(ModuleTree, &QTreeWidget::itemChanged, this, [this](QTreeWidgetItem* It, int){
+        if (!It) return;
+        const QString Key = It->data(0, Qt::UserRole).toString();
+        const bool Checked = It->checkState(0) == Qt::Checked;
+        QMetaObject::invokeMethod(this, [this, Key, Checked]{ PropagateModuleToggle(Key, Checked); }, Qt::QueuedConnection);
+    });
 
     CustomVarGroup = new QGroupBox("Options", CVContainer);
     CustomVarForm  = new QFormLayout(CustomVarGroup);
@@ -516,13 +523,7 @@ void PreLaunchWindow::RebuildModuleTree()
     //The GRAFTS this row offers (a node whose list begins with ANY naming something the row contains), ticked by the
     //instance's saved graft list — else the ones RECOMMENDED under this tile (a fresh instance). The saved order is
     //the order they apply in; unsaved offers follow in the default order.
-    auto US = PackageCatalog::GetPackageUserSettings(*GlobalConfigJSON, PackageUID);
-    PackageCatalog::GraftChoice Saved;
-    if (US.contains("GRAFTS") && US["GRAFTS"].is_array())
-    {
-        Saved.emplace();
-        for (const auto& G : US["GRAFTS"]) if (G.is_string()) Saved->push_back(G.get<std::string>());
-    }
+    const PackageCatalog::GraftChoice Saved = SavedGrafts();
     //Offered with the ticked ones applied: a graft on a graft appears once the graft it needs is ticked.
     std::vector<std::string> PreTicked;
     std::vector<std::string> Offered = PackageCatalog::OfferedGrafts(*Index, LaunchNodeId, &PreTicked, Saved, FaceUid);
@@ -568,22 +569,47 @@ void PreLaunchWindow::RefreshModuleLocks()
     }
 }
 
-void PreLaunchWindow::PropagateModuleItem(QTreeWidgetItem* Item)
+void PreLaunchWindow::PropagateModuleToggle(const QString& Key, bool Checked)
 {
+    if (!ModuleTree) return;
+    QTreeWidgetItem* Item = nullptr;
+    for (int i = 0; i < ModuleTree->topLevelItemCount() && !Item; ++i)
+        if (ModuleTree->topLevelItem(i)->data(0, Qt::UserRole).toString() == Key) Item = ModuleTree->topLevelItem(i);
     if (!Item) return;
-    Item->setData(0, Qt::UserRole + 2, Item->checkState(0) == Qt::Checked);
+    Item->setData(0, Qt::UserRole + 2, Checked);
     SaveGrafts();
     RebuildModuleTree();
     RebuildCustomVarPickers();   // a graft brings its own options
     RefreshGraftEntryRows();     // a ticked mod loader adds a way to run; an unticked one takes it away
 }
 
+//The instance's graft lists are PER TILE: {"<tile UID>": [graft, …]}. Instance settings are the family's (RoC and TFT
+//share one), so one list for the family meant a sibling tile's saved list replaced this tile's recommended pre-ticks,
+//and saving on the sibling dropped the grafts only this tile offers.
+std::optional<std::vector<std::string>> PreLaunchWindow::SavedGrafts() const
+{
+    const auto US = PackageCatalog::GetPackageUserSettings(*GlobalConfigJSON, PackageUID);
+    const std::string Tile = Face(CurrentLaunch());
+    PackageCatalog::GraftChoice Saved;
+    if (US.contains("GRAFTS") && US["GRAFTS"].is_object() && US["GRAFTS"].contains(Tile) && US["GRAFTS"][Tile].is_array())
+    {
+        Saved.emplace();
+        for (const auto& G : US["GRAFTS"][Tile]) if (G.is_string()) Saved->push_back(G.get<std::string>());
+    }
+    return Saved;
+}
+
+void PreLaunchWindow::StoreGrafts(const std::vector<std::string>& List)
+{
+    const auto US = PackageCatalog::GetPackageUserSettings(*GlobalConfigJSON, PackageUID);
+    nlohmann::ordered_json ByTile = US.contains("GRAFTS") && US["GRAFTS"].is_object() ? US["GRAFTS"] : nlohmann::ordered_json::object();
+    ByTile[Face(CurrentLaunch())] = List;
+    PackageCatalog::SetPackageUserSetting(*GlobalConfigJSON, PackageUID, "GRAFTS", ByTile);
+}
+
 void PreLaunchWindow::SaveGrafts()
 {
-    //The instance's graft list = the ticked rows, in list order.
-    nlohmann::ordered_json List = nlohmann::ordered_json::array();
-    for (const std::string& G : CollectGrafts()) List.push_back(G);
-    PackageCatalog::SetPackageUserSetting(*GlobalConfigJSON, PackageUID, "GRAFTS", List);
+    StoreGrafts(CollectGrafts());   //the tile's graft list = the ticked rows, in list order
 }
 
 void PreLaunchWindow::MoveSelectedGraft(int By)
@@ -595,15 +621,18 @@ void PreLaunchWindow::MoveSelectedGraft(int By)
     const auto At = std::find(Ticked.begin(), Ticked.end(), Key);
     if (At == Ticked.end()) return;
     std::string Why;
-    if (!PackageCatalog::MoveGraft(*Index, LaunchNodeId, Ticked, (size_t)(At - Ticked.begin()), By, &Why))
+    //Judged as the launch judges it: the instance's values, and the tile this window launches.
+    std::map<std::string, std::string> Instance;
+    if (const auto Saved = PackageCatalog::GetPackageVariables(*GlobalConfigJSON, PackageUID); Saved.is_object())
+        for (const auto &[K, V] : Saved.items()) if (V.is_string()) Instance[K] = V.get<std::string>();
+    const std::map<std::string, std::string> Builtins{ {"UID", Face(Index->Find(LaunchNodeId))}, {"PackageUID", PackageUID} };
+    if (!PackageCatalog::MoveGraft(*Index, LaunchNodeId, Ticked, (size_t)(At - Ticked.begin()), By, &Why, Instance, Builtins))
     {
         if (!Why.empty()) { GraftNote->setText(QString::fromStdString("Not moved: " + Why)); GraftNote->setVisible(true); }
         return;
     }
     GraftNote->setVisible(false);
-    nlohmann::ordered_json List = nlohmann::ordered_json::array();
-    for (const std::string& G : Ticked) List.push_back(G);
-    PackageCatalog::SetPackageUserSetting(*GlobalConfigJSON, PackageUID, "GRAFTS", List);
+    StoreGrafts(Ticked);
     RebuildModuleTree();                 // rows follow the saved order
     for (int i = 0; i < ModuleTree->topLevelItemCount(); ++i)
         if (ModuleTree->topLevelItem(i)->data(0, Qt::UserRole).toString().toStdString() == Key)

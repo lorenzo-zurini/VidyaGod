@@ -5,6 +5,7 @@
 #include <QtTest>
 #include <QTemporaryDir>
 #include <QDir>
+#include <QSignalSpy>
 #include <filesystem>
 #include <fstream>
 #include "appmodel.h"
@@ -14,6 +15,10 @@
 #include "ipfswrapper.h"
 #include "downloadqueue.h"
 #include "nodefixture.h"
+#include "cid.h"
+#include <QElapsedTimer>
+#include <QUuid>
+#include <future>
 
 using json = nlohmann::ordered_json;
 
@@ -86,6 +91,120 @@ private slots:
         QCOMPARE(A2->BundleDir, Home);
 
         IpfsWrapper::DebugResetQueue();   // the content fetch (an unserved CID) must not keep the process alive
+        IpfsWrapper::StopNode();
+    }
+
+    // Quitting while a download waits on a fetch no one can serve must not hang the exit. The worker fetches what it
+    // learns of AFTER the download began — here the node a received game contains, which nobody has — and a retryable
+    // fetch never fails on its own; the destructor cancelled only the CIDs it mapped up front, so join() waited for
+    // ever (the window gone, the process still holding the lock and the repo). Teeth: go back to cancelling only
+    // DownloadCidToUid in ~DownloadManager and the destruction below does not finish.
+    void exit_does_not_wait_on_a_fetch_no_one_can_serve()
+    {
+        std::string Err;
+        QTemporaryDir Repo; QVERIFY(Repo.isValid());
+        QVERIFY2(IpfsWrapper::StartNode((Repo.path() + "/ipfs").toStdString(), &Err), Err.c_str());
+        QTemporaryDir RxData; QVERIFY(RxData.isValid());
+        json cfg = json{{"Settings", {{"Paths", {{"LibraryRoot", (RxData.path() + "/LIBRARY").toStdString()}}}}},
+                        {"FriendLibraries", {{"Alice", {{"Games", json::array()}}}}}};
+        // A node no one can have: the CID of bytes made up now (a fixed test CID may exist somewhere — one did).
+        const std::string Nobody = Cid::OfBytes("vidyagod unserved " + QUuid::createUuid().toString().toStdString());
+        const std::string Dir = PackageCatalog::CatalogRootDir(cfg) + "/Alice - Games/[7] G/.package";
+        std::filesystem::create_directories(Dir);
+        const json Game = json{{"LABEL", "g_exec"}, {"VARIANT", "Play"}, {"LAYERS", json::array({
+            json{{"NODE", Nobody}},
+            json{{"EXEC", json::array({json{{"LABEL", "Play"}, {"HOST", "linux64"}, {"EXE", "g"}, {"TILE", {{"UID", "7"}, {"TITLE", "G"}}}}})}}})}};
+        const std::string Bytes = Cid::Canonical(Game), GCid = Cid::OfBytes(Bytes);
+        { std::ofstream O(Dir + "/" + GCid + ".json", std::ios::binary); O << Bytes; }
+        { std::ofstream O(Dir + "/.package.json"); O << json{{"NODES", json::array({GCid})}, {"PKG", "[7] G"}}.dump(); }
+
+        QDir appDir(RxData.path());
+        AppModel model(&cfg, &appDir);
+        model.rebuildCatalog();
+        const Node * G = model.catalogIndex().Find("g_exec");
+        QVERIFY2(G && PackageCatalog::NodeClosureIncomplete(model.catalogIndex(), "g_exec"), "precondition: its closure is incomplete");
+        IpfsModel ipfs(model);
+        auto dm = std::make_unique<DownloadManager>(model, ipfs, nullptr);
+        dm->beginDownload("7", {G->Key()}, {}, {});
+        QTRY_VERIFY_WITH_TIMEOUT(IpfsWrapper::DebugJobState(Nobody) >= 0, 30000);
+
+        QElapsedTimer T; T.start();
+        auto Gone = std::async(std::launch::async, [&]{ dm.reset(); });
+        const bool Joined = Gone.wait_for(std::chrono::seconds(20)) == std::future_status::ready;
+        if (!Joined) { IpfsWrapper::CloseQueue(); Gone.wait(); }             // let the test process end either way
+        QVERIFY2(Joined, "destroying the manager waited on the unservable fetch");
+        IpfsWrapper::DebugResetQueue();
+        IpfsWrapper::StopNode();
+    }
+
+    // A finished download's worker thread is joined when the next download starts — a thread's stack is kept until
+    // join, and the tray daemon grew one per download (53 for one replication). Teeth: drop reapWorkers() from
+    // beginDownload and two workers are still held after the second start.
+    void a_finished_download_worker_is_joined_by_the_next()
+    {
+        std::string Err;
+        QTemporaryDir Repo; QVERIFY(Repo.isValid());
+        QVERIFY2(IpfsWrapper::StartNode((Repo.path() + "/ipfs").toStdString(), &Err), Err.c_str());
+        QTemporaryDir Data; QVERIFY(Data.isValid());
+        const QString R = Data.path() + "/LIBRARY";
+        QDir().mkpath(R + "/Games/[9] N");
+        writeJson(R + "/Games/[9] N/n.json", json{{"CID", "hN"}, {"LABEL", "n_exec"}, {"VARIANT", "Play"}, {"LAYERS", json::array({
+            json{{"EXEC", json::array({json{{"LABEL", "Play"}, {"HOST", "linux64"}, {"EXE", "n"}, {"TILE", {{"UID", "9"}, {"TITLE", "N"}}}}})}}})}});
+        json cfg = json{{"Settings", {{"Paths", {{"LibraryRoot", R.toStdString()}}}}}};
+        QDir appDir(Data.path());
+        AppModel model(&cfg, &appDir);
+        model.rebuildCatalog();
+        const Node * N = model.catalogIndex().Find("n_exec");
+        QVERIFY(N);
+        const std::string NKey = N->Key();                                    // a finished download rebuilds the index
+        IpfsModel ipfs(model);
+        DownloadManager dm(model, ipfs, nullptr);
+        QSignalSpy Finished(&dm, &DownloadManager::downloadFinished);
+        dm.beginDownload("9", {NKey}, {}, {});
+        QTRY_COMPARE_WITH_TIMEOUT(Finished.count(), 1, 30000);                 // nothing to fetch: done at once
+        dm.beginDownload("9", {NKey}, {}, {});
+        QCOMPARE(dm.workerCount(), 1);                                        // the first was joined, not kept
+        QTRY_COMPARE_WITH_TIMEOUT(Finished.count(), 2, 30000);
+        IpfsWrapper::StopNode();
+    }
+
+    // One variant sits under two tiles (RoC and TFT), so two cards can download the same content. Each card tracks
+    // all of it (its progress averages its own CIDs), and cancelling one card aborts only what no other in-flight
+    // download still needs. Teeth: map a CID to its first card only (the old QHash<cid, key>) and the second card
+    // tracks nothing; drop the shared-CID filter in cancellableCids and cancelling TFT aborts RoC's content.
+    void two_cards_on_one_variant_each_track_its_content()
+    {
+        std::string Err;
+        QTemporaryDir Repo; QVERIFY(Repo.isValid());
+        QVERIFY2(IpfsWrapper::StartNode((Repo.path() + "/ipfs").toStdString(), &Err), Err.c_str());
+        QTemporaryDir Data; QVERIFY(Data.isValid());
+        const QString R = Data.path() + "/LIBRARY";
+        const std::string Shared = Cid::OfBytes("shared " + QUuid::createUuid().toString().toStdString());
+        const std::string Own = Cid::OfBytes("own " + QUuid::createUuid().toString().toStdString());
+        QDir().mkpath(R + "/Games/[802] W");
+        writeJson(R + "/Games/[802] W/w.json", NodeFixture::Chain("w_exec", {NodeFixture::Merge({
+            NodeFixture::ContentCid("zip", "w.zip", Shared), NodeFixture::Exec("linux64", "w")})}));
+        QDir().mkpath(R + "/Games/[900] O");
+        writeJson(R + "/Games/[900] O/o.json", NodeFixture::Chain("o_exec", {NodeFixture::Merge({
+            NodeFixture::ContentCid("zip", "o.zip", Own), NodeFixture::Exec("linux64", "o")})}));
+        json cfg = json{{"Settings", {{"Paths", {{"LibraryRoot", R.toStdString()}}}}}};
+        QDir appDir(Data.path());
+        AppModel model(&cfg, &appDir);
+        model.rebuildCatalog();
+        const Node * W = model.catalogIndex().Find("w_exec");
+        const Node * O = model.catalogIndex().Find("o_exec");
+        QVERIFY(W && O);
+        const std::string WKey = W->Key(), OKey = O->Key();
+        IpfsModel ipfs(model);
+        DownloadManager dm(model, ipfs, nullptr);
+        dm.beginDownload("802", {WKey}, {}, {});
+        dm.beginDownload("803", {WKey}, {}, {});
+        dm.beginDownload("900", {OKey}, {}, {});
+        const QString QShared = QString::fromStdString(Shared), QOwn = QString::fromStdString(Own);
+        QVERIFY2(dm.cidsOf("803").contains(QShared), "the second card tracks the content it shares with the first");
+        QVERIFY(dm.cidsOf("802").contains(QShared));
+        QVERIFY2(!dm.cancellableCids("803").contains(QShared), "cancelling one card leaves content another still needs");
+        QVERIFY2(dm.cancellableCids("900").contains(QOwn), "a card's own content is its to cancel");
         IpfsWrapper::StopNode();
     }
 };

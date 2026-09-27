@@ -422,6 +422,8 @@ long long MoveRefs(const std::string &OldDir, const std::string &NewDir, std::st
     return N;
 }
 
+bool HeldWhole(const std::string &Cid) { return !Cid.empty() && VgHeldWhole(Cid.c_str()) == 1; }
+
 bool DropRef(const std::string &Cid)
 {
     if (Cid.empty()) return false;

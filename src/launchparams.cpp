@@ -2,6 +2,9 @@
 #include "commonutils.h"   // LogOut
 #include "varsubst.h"
 
+#include <functional>
+#include <map>
+
 //Minimal constructor — stores only the three PASSED values; everything else is derived later
 //by the LaunchResolver pipeline once the node graph and GlobalConfig are available.
 ContainerParams::ContainerParams(std::filesystem::path Passed_PackagePath, std::string Passed_subgame_id, std::string Passed_component_id)
@@ -49,23 +52,34 @@ std::map<std::string, std::string> ContainerParams::GetVariablesMap()
     //A guest-root anchor (GUEST_ROOTS {"%GameDir%": "C:\\%PackageUID%", "%UserProfile%": "C:\\users\\steamuser"}) resolves
     //to its guest path — what a value naming it (a registry InstallPath, an argument, a config line) must say. A path
     //the launch PLACES is then mapped through the runner's DRIVES (GuestToLayout). A custom variable is not shadowed.
-    //An anchor may be spelled from another (%AppData% = "%UserProfile%\\AppData\\Roaming"), declared in any order: resolve
-    //to a fixpoint — each pass from the raw spelling against the map so far; a cycle stops after one pass per anchor.
+    //An anchor may be spelled from another (%AppData% = "%UserProfile%\\AppData\\Roaming"), declared in any order: each
+    //anchor is resolved once, after the anchors it names. Anchors spelled from each other have no value — CheckLayer
+    //refuses such a runner; were one to get here anyway, the cycle stays unexpanded (reported), never grows: repeated
+    //passes over "%A%" = "%A%%A%" doubled it every pass (≈25 GB at 30 anchors).
     if (this->GuestRoots.is_object())
-        for (size_t Pass = 0; Pass <= this->GuestRoots.size(); ++Pass)
+    {
+        std::map<std::string, std::string> Raw;                         // anchor KEY → its raw spelling
+        for (const auto &[Anchor, Place] : this->GuestRoots.items())
         {
-            bool Changed = false;
-            for (const auto &[Anchor, Place] : this->GuestRoots.items())
-            {
-                if (Anchor.size() < 3 || Anchor.front() != '%' || Anchor.back() != '%' || !Place.is_string()) continue;
-                const std::string Key = Anchor.substr(1, Anchor.size() - 2);
-                if (this->CustomVariables.count(Key)) continue;
-                std::string R = Place.get<std::string>();
-                VarSubst::StringVariableSubstitution(R, VariablesMap);
-                auto It = VariablesMap.find(Key);
-                if (It == VariablesMap.end() || It->second != R) { VariablesMap[Key] = R; Changed = true; }
-            }
-            if (!Changed) break;
+            if (Anchor.size() < 3 || Anchor.front() != '%' || Anchor.back() != '%' || !Place.is_string()) continue;
+            const std::string Key = Anchor.substr(1, Anchor.size() - 2);
+            if (!this->CustomVariables.count(Key)) Raw[Key] = Place.get<std::string>();
         }
+        std::map<std::string, int> State;                               // 1 = resolving, 2 = resolved
+        std::function<void(const std::string &)> Resolve = [&](const std::string &Key) {
+            State[Key] = 1;
+            for (const std::string &Dep : VarSubst::TokenKeys(Raw[Key]))
+                if (Raw.count(Dep) && State[Dep] == 0) Resolve(Dep);
+                else if (Raw.count(Dep) && State[Dep] == 1)
+                    LogErr("ContainerParams::GetVariablesMap", "GUEST_ROOTS %" + Key + "% and %" + Dep
+                                                             + "% are spelled from each other — left unresolved");
+            std::string R = Raw[Key];
+            VarSubst::StringVariableSubstitution(R, VariablesMap);
+            VariablesMap[Key] = R;
+            State[Key] = 2;
+        };
+        for (const auto &[Key, Spelling] : Raw)
+            if (State[Key] == 0) Resolve(Key);
+    }
     return VariablesMap;
 }
