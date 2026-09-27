@@ -66,6 +66,7 @@ public:
     // single-flight, and remembers genuinely-gone content so it never loops. Driven by a background timer + the IPFS
     // tab's health check, so orphans are repaired the moment they're noticed rather than only on next launch.
     void healOrphansIfAny();
+    void seedUnheldContent();       // node-ready: hold every content file the seed roots name (SeedUnheld)
     void importRunner(const QString & runnerNodeId);   // emit runnerImportRequested → the ONE download pump (build fetch + DEFPREFIX)
     // Package sources by IPFS folder CID (dehydrated package sets; content hydrates on demand).
     bool addPackageSource(const QString & cid, const QString & name);   // append + fetch dehydrated tree off-thread; false if empty/duplicate

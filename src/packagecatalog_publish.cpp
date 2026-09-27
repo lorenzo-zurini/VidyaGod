@@ -601,6 +601,41 @@ int SeedDirectory(const std::string &Dir,
     return Seeded;
 }
 
+std::vector<std::string> SeedRoots(const nlohmann::ordered_json &GlobalConfigJSON)
+{
+    std::vector<std::string> Roots;
+    std::error_code Ec;
+    if (const std::string Lib = LibraryRootDir(GlobalConfigJSON); !Lib.empty() && std::filesystem::is_directory(Lib, Ec))
+        Roots.push_back(Lib);
+    for (const std::string &D : PackageSourceDirs(GlobalConfigJSON))
+        if (std::find(Roots.begin(), Roots.end(), D) == Roots.end()) Roots.push_back(D);
+    return Roots;
+}
+
+int SeedUnheld(const std::string &Dir, std::vector<SeedFailure> *Failures)
+{
+    //A friend's download of a game containing a library this machine never held stalled on it: the seeder answered
+    //"block not found" for DirectShow, LAVFilters, DirectPlay and DxWnd on the replication, and only a pinning
+    //gateway saved the download.
+    int Added = 0;
+    for (const auto &[Path, Cid] : SeedTargets(Dir))
+    {
+        if (IpfsWrapper::HasLocal(Cid)) continue;
+        std::string Err;
+        const std::string Is = IpfsWrapper::ComputeCid(Path, &Err);
+        if (Is != Cid)
+        {
+            if (Failures) Failures->push_back({ Path, Cid, Is });
+            LogWarn("PackageCatalog::SeedUnheld", "not added — " + Path + (Is.empty() ? (": " + Err) : (" is " + Is + ", its node records " + Cid)));
+            continue;
+        }
+        if (IpfsWrapper::AddNoCopy(Path, &Err) == Cid) ++Added;
+        else LogWarn("PackageCatalog::SeedUnheld", "could not add " + Path + ": " + Err);
+    }
+    if (Added) LogSucc("PackageCatalog::SeedUnheld", "added " + std::to_string(Added) + " content file(s) this node named but did not hold, under " + Dir);
+    return Added;
+}
+
 HealReport HealSourceContent(const nlohmann::ordered_json &GlobalConfigJSON, const HealOptions &Options)
 {
     HealReport R;

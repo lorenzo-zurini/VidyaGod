@@ -163,6 +163,14 @@ bool IsLocalPackagePath(const nlohmann::ordered_json &GlobalConfigJSON, const st
 // the UI can show it as an ERROR instead of it living only in a log line — a stale reference is otherwise
 // invisible until a peer requests it and hangs.
 struct SeedFailure { std::string Path, RecordedCid, ActualCid; };
+// Every directory whose nodes' content this machine serves: its own LIBRARY (authored and installed packages) and each
+// package source. Only package sources were ever re-seeded, so an authoring machine never re-added a LIBRARY file it
+// did not hold, and re-pointed no orphaned reference there.
+std::vector<std::string> SeedRoots(const nlohmann::ordered_json &GlobalConfigJSON);
+// Adds by reference every content file under Dir that Dir's nodes name and this node does not hold at all, when its
+// bytes are the recorded CID — checked first, so wrong bytes are never added (or announced); those are returned in
+// Failures. Held content, intact or orphaned, is left to the orphan heal. Returns how many files were added.
+int SeedUnheld(const std::string &Dir, std::vector<SeedFailure> *Failures = nullptr);
 int SeedDirectory(const std::string &Dir,
                   const std::function<void(int, int, const std::string &)> &Progress = {},
                   int *Mismatched = nullptr, bool CoversOnly = false, bool Overwrite = false,

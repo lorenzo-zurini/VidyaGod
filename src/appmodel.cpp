@@ -317,6 +317,7 @@ void AppModel::syncSources()
                 emit packageSourcesChanged();
             }
             healOrphansIfAny();            // re-point any orphaned no-copy refs so the node can actually SERVE its content
+            seedUnheldContent();           // node-ready → hold every content file our nodes name (the LIBRARY too)
             completeReceivedClosures();    // node-ready → finish landing any received root's node closure (resumes after a restart)
             reRegisterShares();            // node-ready → replay config["Sharing"] into the node's in-memory share table: a
                                            // restarted seeder shared NOTHING until its next publish (the durable record
@@ -346,6 +347,23 @@ void AppModel::pushLanRoster()
     IpfsWrapper::SetLanExcluded(Ex);
 }
 
+void AppModel::seedUnheldContent()
+{
+    auto Cfg = std::make_shared<const nlohmann::ordered_json>(*Config);
+    AsyncWork::Run(this, [this, Cfg]{
+        for (const std::string &Dir : PackageCatalog::SeedRoots(*Cfg))
+        {
+            std::vector<PackageCatalog::SeedFailure> Bad;
+            PackageCatalog::SeedUnheld(Dir, &Bad);
+            for (const auto &F : Bad)
+                QMetaObject::invokeMethod(this, [this, F]{
+                    emit contentUnservable(QString::fromStdString(F.RecordedCid),
+                        QString::fromStdString("content does not match its recorded CID (" + F.Path + ")"));
+                }, Qt::QueuedConnection);
+        }
+    });
+}
+
 void AppModel::healOrphansIfAny()
 {
     bool Expected = false;
@@ -373,7 +391,7 @@ void AppModel::healOrphansIfAny()
                 // is the very same per-dir SeedDirectory — so every heal swept all 1150 referenced files TWICE
                 // (each sweep a cidMissing walk through the Go node's leveldb + sha256), and the report the extra
                 // call produced was discarded. Startup profiling found the node burning steady CPU on exactly this.
-                for (const std::string &Dir : PackageCatalog::PackageSourceDirs(*Cfg))
+                for (const std::string &Dir : PackageCatalog::SeedRoots(*Cfg))
                 {
                     std::vector<PackageCatalog::SeedFailure> Bad;
                     PackageCatalog::SeedDirectory(Dir, {}, nullptr, false, false, false, &Bad);

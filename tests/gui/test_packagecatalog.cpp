@@ -339,6 +339,43 @@ private slots:
         IpfsWrapper::DebugResetQueue();
     }
 
+    // The machine's own LIBRARY is a seed root: a content file its nodes name but the node does not hold is added (the
+    // seeder answered "block not found" for four library zips on the replication; only a pinning gateway saved the
+    // download) — unless its bytes are not the recorded CID, which is reported and never added. Teeth: leave LIBRARY
+    // out of SeedRoots and nothing under it is found; add without checking the CID first and the wrong bytes are held.
+    void the_library_seeds_what_its_nodes_name_and_it_does_not_hold()
+    {
+        std::string Err;
+        QTemporaryDir Repo; QVERIFY(Repo.isValid());
+        QVERIFY2(IpfsWrapper::StartNode((Repo.path() + "/ipfs").toStdString(), &Err), Err.c_str());
+        QTemporaryDir D; QVERIFY(D.isValid());
+        const std::string R = D.path().toStdString() + "/LIBRARY";
+        const std::string Pkg = R + "/VidyaGodLibraries/[5] Codec";
+        std::filesystem::create_directories(Pkg);
+        const auto write = [](const std::string &P, const std::string &Bytes) { std::ofstream O(P, std::ios::binary); O << Bytes; };
+        write(Pkg + "/good.zip", std::string(300000, 'g') + QUuid::createUuid().toString().toStdString());
+        write(Pkg + "/bad.zip", "bytes that are not the recorded CID " + QUuid::createUuid().toString().toStdString());
+        const std::string Good = IpfsWrapper::ComputeCid(Pkg + "/good.zip", &Err);
+        QVERIFY2(!Good.empty(), Err.c_str());
+        const std::string Recorded = Cid::OfBytes("what bad.zip was published as " + QUuid::createUuid().toString().toStdString());
+        writeJson(QString::fromStdString(Pkg + "/codec.json"), NodeFixture::Chain("codec", {NodeFixture::Merge({
+            NodeFixture::ContentCid("zip", "good.zip", Good), NodeFixture::ContentCid("zip", "bad.zip", Recorded)})}));
+        json cfg = json{{"Settings", {{"Paths", {{"LibraryRoot", R}}}}}};
+        const auto Roots = PackageCatalog::SeedRoots(cfg);
+        QVERIFY2(std::find(Roots.begin(), Roots.end(), R) != Roots.end(), "the LIBRARY is a seed root");
+        QVERIFY2(!IpfsWrapper::HasLocal(Good), "precondition: the good file is not held");
+        std::vector<PackageCatalog::SeedFailure> Bad;
+        int Added = 0;
+        for (const std::string &Dir : Roots) Added += PackageCatalog::SeedUnheld(Dir, &Bad);
+        QCOMPARE(Added, 1);
+        QVERIFY2(IpfsWrapper::HasLocal(Good) && !IpfsWrapper::CidMissing(Good), "the file its node names is held and servable");
+        QCOMPARE((int)Bad.size(), 1);
+        QCOMPARE(Bad[0].RecordedCid, Recorded);
+        QVERIFY2(!IpfsWrapper::HasLocal(Bad[0].ActualCid), "bytes that are not the recorded CID are never added");
+        QCOMPARE(PackageCatalog::SeedUnheld(R, &Bad), 0);                     // held now: nothing to add again
+        IpfsWrapper::StopNode();
+    }
+
     // One entry = one package folder, landing in <pkg dir>/.package. Two folders naming the same package dir (only
     // a hostile or a mid-change snapshot does that) both land, the second under a CID-qualified dir; the same CID
     // twice is one target.
