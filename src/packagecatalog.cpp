@@ -1628,12 +1628,19 @@ std::shared_ptr<const NodeIndex> FreshCatalogIndex(const nlohmann::ordered_json 
     static std::condition_variable Cv;
     static std::uint64_t Asked = 0, Served = 0;
     static bool Building = false;
+    static int Callers = 0;                                             // in here now; the last one out lets go of Latest
     static std::shared_ptr<const NodeIndex> Latest;
     std::unique_lock<std::mutex> Lk(Mu);
     const std::uint64_t Mine = ++Asked;
+    ++Callers;
     for (;;)
     {
-        if (Served >= Mine) return Latest;
+        if (Served >= Mine)
+        {
+            std::shared_ptr<const NodeIndex> Got = Latest;
+            if (--Callers == 0) Latest.reset();                         // no 17 MB copy kept past its last reader
+            return Got;
+        }
         if (!Building)
         {
             Building = true;
@@ -1641,7 +1648,7 @@ std::shared_ptr<const NodeIndex> FreshCatalogIndex(const nlohmann::ordered_json 
             Lk.unlock();
             std::shared_ptr<const NodeIndex> Built;
             try { Built = std::make_shared<const NodeIndex>(BuildCatalogIndex(GlobalConfigJSON)); }
-            catch (...) { Lk.lock(); Building = false; Cv.notify_all(); throw; }   // the next caller builds; never wedged
+            catch (...) { Lk.lock(); Building = false; --Callers; Cv.notify_all(); throw; }   // the next caller builds
             Lk.lock();
             Latest = std::move(Built);
             Served = Covers;

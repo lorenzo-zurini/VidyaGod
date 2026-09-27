@@ -143,8 +143,7 @@ void DownloadManager::startDownload(LibraryGameCard *card)
     // Snapshot handle for every async walk. Double indirection: *Snap is REPLACED (GUI thread only) after a received
     // package's closure completes mid-dialog, so sizes/optionals/endpoints re-derive against the full graph; each
     // derivation copies the inner pointer on the GUI thread before handing it to its worker (no cross-thread swap race).
-    auto Snap  = std::make_shared<std::shared_ptr<const NodeIndex>>(
-                     std::make_shared<const NodeIndex>(Model.catalogIndex()));
+    auto Snap  = std::make_shared<std::shared_ptr<const NodeIndex>>(Model.catalogSnapshot());
     auto Alive = std::make_shared<std::atomic<bool>>(true);                 // false once the dialog closes
 
     QDialog Dlg(DialogParent);
@@ -474,7 +473,7 @@ void DownloadManager::startDownload(LibraryGameCard *card)
                 QMetaObject::invokeMethod(this, [this, Snap, Alive, DeriveEndpoints, DeriveRunners, Debounce]{
                     Model.rebuildCatalog();                       // the landed node files are ordinary tree packages
                     if (!Alive->load()) return;                   // dialog closed meanwhile — catalog is fresh anyway
-                    *Snap = std::make_shared<const NodeIndex>(Model.catalogIndex());
+                    *Snap = Model.catalogSnapshot();
                     (*DeriveEndpoints)();
                     (*DeriveRunners)();                           // proton's node is present now → the choice appears
                     Debounce->start();                            // sizes + optionals re-derive on the full graph
@@ -606,7 +605,7 @@ void DownloadManager::beginDownload(const QString &Key, const std::vector<std::s
             for (const std::string & Rid : RunnerIds)
                 if (!RunnerInstall::CollectRunnerNodeTargets(*Idx, Rid, Targets, &Err)) { Ok = false; break; }
         Idx.reset();   // targets collected: the index is not held through the (long) fetch
-                if (Ok && !IpfsWrapper::FetchTargetsConcurrent(Targets, &Err)) Ok = false;
+        if (Ok && !IpfsWrapper::FetchTargetsConcurrent(Targets, &Err)) Ok = false;
         // Builds are now present locally → the runner is ready. Its prefix assembles from the build at launch
         // (node-declared layers), so there is NO post-fetch generation step — fetching the build IS the install.
         Done->store(true);   // before the post: whoever sees the result may reap this thread (its join returns at once)

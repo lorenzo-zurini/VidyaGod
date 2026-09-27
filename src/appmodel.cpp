@@ -351,8 +351,10 @@ void AppModel::pushLanRoster()
 
 std::shared_ptr<const NodeIndex> AppModel::catalogSnapshot() const
 {
-    if (!CatalogShared) CatalogShared = std::make_shared<const NodeIndex>(CatalogIndex);
-    return CatalogShared;
+    if (auto S = CatalogShared.lock()) return S;                       // shared while anyone holds it, never cached
+    auto S = std::make_shared<const NodeIndex>(CatalogIndex);           // past the last user (a 17 MB copy)
+    CatalogShared = S;
+    return S;
 }
 
 void AppModel::healOrphansIfAny()
@@ -366,10 +368,13 @@ void AppModel::healOrphansIfAny()
     auto Healed     = std::make_shared<bool>(false);
     //Once per run, after the orphans: hold every content file the seed roots name that is not held whole
     //(SeedUnheld) — inside this single flight, so the two passes never race over the same files.
-    const bool SeedUnheldNow = !SeededUnheld;
-    SeededUnheld = true;
+    //Armed only with a started node (the 90 s timer heals with networking off too), and re-armed if the node went away
+    //mid-pass: the flag used up while offline meant the pass never ran that session.
+    const bool SeedUnheldNow = !SeededUnheld && IpfsWrapper::Available();
+    if (SeedUnheldNow) SeededUnheld = true;
+    auto SeedDone = std::make_shared<bool>(false);
     AsyncWork::Run(this,
-        [Cfg, Unhealable, Healed, SeedUnheldNow, this]{
+        [Cfg, Unhealable, Healed, SeedUnheldNow, SeedDone, this]{
             const std::vector<std::string> Orphans = IpfsWrapper::OrphanedRefPaths();
             // Drop any previously-unhealable path that's no longer orphaned (content was restored), then treat the
             // rest as "known gone" so we don't re-run the (heavier) heal for content that genuinely can't be found.
@@ -414,9 +419,11 @@ void AppModel::healOrphansIfAny()
                                                     : "content does not match its recorded CID (" + F.Path + ")"));
                         }, Qt::QueuedConnection);
                 }
+            *SeedDone = IpfsWrapper::Available();                   // stopped early: the next heal runs it again
             HealInFlight.store(false);
         },
-        [this, Unhealable, Healed]{
+        [this, Unhealable, Healed, SeedUnheldNow, SeedDone]{
+            if (SeedUnheldNow && !*SeedDone) SeededUnheld = false;
             KnownUnhealable = std::move(*Unhealable);
             if (*Healed) emit ipfsHealthChanged();
         });

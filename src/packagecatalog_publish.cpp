@@ -629,7 +629,7 @@ int SeedUnheld(const std::string &Dir, std::vector<SeedFailure> *Failures)
     int Added = 0;
     for (const auto &[Path, Cid] : SeedTargets(Dir))
     {
-        if (!IpfsWrapper::DaemonRunning()) break;                       // stopped meanwhile: nothing can be added
+        if (!IpfsWrapper::Available()) break;                           // no node (adding needs no network, just a node)
         //Whole, not merely "has": that seeder HELD each zip's root block — and served it, and announced it — with none
         //of the leaves.
         if (IpfsWrapper::HeldWhole(Cid)) continue;

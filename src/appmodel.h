@@ -186,7 +186,7 @@ private:
     nlohmann::ordered_json * Config;
     QDir *                   AppDataDir;
     NodeIndex                CatalogIndex;
-    mutable std::shared_ptr<const NodeIndex> CatalogShared;   // catalogSnapshot's copy; reset when CatalogIndex is reassigned
+    mutable std::weak_ptr<const NodeIndex> CatalogShared;     // catalogSnapshot's copy while in use; reset on reassignment
     int                      CardPixelWidth = 185;
     QTimer *                 OrphanHealTimer = nullptr;   // periodic background orphan check (tab-independent)
     bool                     SyncRetryPending = false;    // a re-sync is scheduled for a source that failed to fetch

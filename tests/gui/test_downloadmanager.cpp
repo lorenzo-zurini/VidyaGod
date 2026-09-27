@@ -173,6 +173,33 @@ private slots:
         IpfsWrapper::StopNode();
     }
 
+    // The startup seed pass (SeedUnheld, inside the orphan heal) is not used up by a heal that runs before the node is
+    // up — the 90 s timer heals with networking off too — and once the node is up, a heal holds the library's content
+    // whole. Teeth: arm the pass without checking the node is available and it never runs after the node starts.
+    void the_library_is_seeded_once_the_node_is_up()
+    {
+        QTemporaryDir Data; QVERIFY(Data.isValid());
+        const QString R = Data.path() + "/LIBRARY";
+        const std::string Pkg = (R + "/VidyaGodLibraries/[7] Lib").toStdString();
+        std::filesystem::create_directories(Pkg);
+        { std::ofstream O(Pkg + "/lib.zip", std::ios::binary); O << std::string(400000, 'q') << QUuid::createUuid().toString().toStdString(); }
+        std::string Err;
+        const std::string Want = IpfsWrapper::ComputeCid(Pkg + "/lib.zip", &Err);
+        QVERIFY2(!Want.empty(), Err.c_str());
+        writeJson(QString::fromStdString(Pkg + "/lib.json"), NodeFixture::Chain("lib", {NodeFixture::ContentCid("zip", "lib.zip", Want)}));
+        json cfg = json{{"Settings", {{"Paths", {{"LibraryRoot", R.toStdString()}}}}}};
+        QDir appDir(Data.path());
+        AppModel model(&cfg, &appDir);
+        QVERIFY2(!IpfsWrapper::Available(), "precondition: no node yet");
+        model.healOrphansIfAny();                                           // networking off: nothing to seed into
+        QTest::qWait(300);
+        QTemporaryDir Repo; QVERIFY(Repo.isValid());
+        QVERIFY2(IpfsWrapper::StartNode((Repo.path() + "/ipfs").toStdString(), &Err), Err.c_str());
+        QVERIFY2(!IpfsWrapper::HeldWhole(Want), "precondition: the library's file is not held");
+        QTRY_VERIFY_WITH_TIMEOUT([&]{ model.healOrphansIfAny(); return IpfsWrapper::HeldWhole(Want); }(), 20000);
+        IpfsWrapper::StopNode();
+    }
+
     // One variant sits under two tiles (RoC and TFT), so two cards can download the same content. Each card tracks
     // all of it (its progress averages its own CIDs), and cancelling one card aborts only what no other in-flight
     // download still needs. Teeth: map a CID to its first card only (the old QHash<cid, key>) and the second card
