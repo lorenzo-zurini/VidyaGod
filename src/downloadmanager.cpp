@@ -531,46 +531,46 @@ void DownloadManager::beginDownload(const QString &Key, const std::vector<std::s
     emit downloadStarted(Key);
     emit transfersChanged();
 
-    // Snapshot the node index for THIS worker: concurrent downloads must not read the shared CatalogIndex while a
-    // completing download reassigns it (rebuildCatalog). (DEFPREFIX generation reads only the index, not the config.)
-    NodeIndex Snapshot = Model.catalogIndex();
+    // The node index as this worker reads it: concurrent downloads must not read the shared CatalogIndex while a
+    // completing download reassigns it (rebuildCatalog). One immutable copy per rebuild, shared by every worker.
+    std::shared_ptr<const NodeIndex> Snapshot = Model.catalogSnapshot();
     nlohmann::ordered_json ConfigSnap = Model.config() ? *Model.config() : nlohmann::ordered_json::object();
     //Owned, not detached: the destructor cancels and joins it, so it never posts to a destroyed manager.
     reapWorkers();
     auto Done = std::make_shared<std::atomic<bool>>(false);
-    Workers.push_back({std::thread([this, Done, LaunchIds, RunnerIds, Toggles, Key, Snapshot = std::move(Snapshot), ConfigSnap = std::move(ConfigSnap)]{
+    Workers.push_back({std::thread([this, Done, LaunchIds, RunnerIds, Toggles, Key, Snapshot = std::move(Snapshot), ConfigSnap = std::move(ConfigSnap)]() mutable {
         const IpfsWrapper::ForegroundHold Hold;   // closures, installs, content: one download, no gap for walks
         std::string Err; bool Ok = true;
         // A RECEIVED package's closure is incomplete (only its exec + tile were shared) — complete it FIRST, through
         // the same rolling queue (CompleteClosure: each missing node block is a plain FetchTarget into the package
         // dir), then resolve targets against a FRESH index: the snapshot predates the just-landed blocks.
-        NodeIndex Idx = Snapshot;
+        std::shared_ptr<const NodeIndex> Idx = std::move(Snapshot);
         {
             bool Completed = false;
             std::vector<std::string> All = LaunchIds;
             All.insert(All.end(), RunnerIds.begin(), RunnerIds.end());
             for (const std::string & Lid : All)
-                if (PackageCatalog::NodeClosureIncomplete(Idx, Lid))
+                if (PackageCatalog::NodeClosureIncomplete(*Idx, Lid))
                 {
-                    if (!PackageCatalog::CompleteClosure(Idx, Lid, &Err)) { Ok = false; break; }
+                    if (!PackageCatalog::CompleteClosure(*Idx, Lid, &Err)) { Ok = false; break; }
                     Completed = true;
                 }
-            if (Ok && Completed) { Idx = PackageCatalog::BuildCatalogIndex(ConfigSnap); Completed = false; }
+            if (Ok && Completed) { Idx = PackageCatalog::FreshCatalogIndex(ConfigSnap); Completed = false; }
             // The AUTO-POOLED runtime too: a received game's resolved runner chain (proton/wine) is itself received
             // — exec + tile only — and CollectRunnerChainTargets can enumerate NOTHING from a headless runner graph
             // (the game downloaded but its runtime silently didn't). Resolve the chain on the fresh index, complete
             // each incomplete runner's closure the same way, and re-index once more.
             if (Ok)
                 for (const std::string & Lid : LaunchIds)
-                    for (const std::string & Rid : PackageCatalog::RunnerChainIds(Idx, Lid, ConfigSnap))
-                        if (PackageCatalog::NodeClosureIncomplete(Idx, Rid))
+                    for (const std::string & Rid : PackageCatalog::RunnerChainIds(*Idx, Lid, ConfigSnap))
+                        if (PackageCatalog::NodeClosureIncomplete(*Idx, Rid))
                         {
                             std::string CErr;
-                            if (!PackageCatalog::CompleteClosure(Idx, Rid, &CErr))
+                            if (!PackageCatalog::CompleteClosure(*Idx, Rid, &CErr))
                                 LogWarn("DownloadManager::beginDownload", "runner closure '" + Rid + "': " + CErr);
                             else Completed = true;
                         }
-            if (Ok && Completed) Idx = PackageCatalog::BuildCatalogIndex(ConfigSnap);
+            if (Ok && Completed) Idx = PackageCatalog::FreshCatalogIndex(ConfigSnap);
         }
         // INSTALL = ADOPT: a received package (its nodes live under CATALOG) moves into LIBRARY/<lib>/<pkg> before a
         // byte of content is fetched, so the content lands in the library and the package is ours from here on —
@@ -578,13 +578,13 @@ void DownloadManager::beginDownload(const QString &Key, const std::vector<std::s
         // (PackagesToAdopt): whatever is received, adopt; then re-index once.
         if (Ok)
         {
-            const std::set<std::filesystem::path> Adopt = PackageCatalog::PackagesToAdopt(Idx, LaunchIds, RunnerIds, ConfigSnap);
+            const std::set<std::filesystem::path> Adopt = PackageCatalog::PackagesToAdopt(*Idx, LaunchIds, RunnerIds, ConfigSnap);
             for (const std::filesystem::path & D : Adopt)
             {
                 std::string AErr;
                 if (!PackageCatalog::AdoptReceivedPackage(ConfigSnap, D, nullptr, &AErr)) { Err = AErr; Ok = false; break; }
             }
-            if (Ok && !Adopt.empty()) Idx = PackageCatalog::BuildCatalogIndex(ConfigSnap);
+            if (Ok && !Adopt.empty()) Idx = PackageCatalog::FreshCatalogIndex(ConfigSnap);
         }
         // Pool EVERY fetch — all selected launchables' content layers + each launchable's RESOLVED runner chain build +
         // any extra runners the user ticked — into ONE concurrent batch, so a game downloads TOGETHER with the runtime
@@ -593,19 +593,20 @@ void DownloadManager::beginDownload(const QString &Key, const std::vector<std::s
         std::vector<IpfsWrapper::FetchTarget> Targets;
         if (Ok) for (const std::string & Lid : LaunchIds)
         {
-            if (!PackageCatalog::CollectContentTargets(Idx, Lid, TickedGrafts(Toggles), Targets, &Err)) { Ok = false; break; }
+            if (!PackageCatalog::CollectContentTargets(*Idx, Lid, TickedGrafts(Toggles), Targets, &Err)) { Ok = false; break; }
             //Best-effort by design — a game whose runtime cannot be resolved should still download. But silently
             //best-effort meant the download finished green and the game then would not launch, with nothing
             //anywhere connecting the two. Still non-fatal; now at least it is on the record.
-            if (!PackageCatalog::CollectRunnerChainTargets(Idx, Lid, ConfigSnap, Targets, &Err))
+            if (!PackageCatalog::CollectRunnerChainTargets(*Idx, Lid, ConfigSnap, Targets, &Err))
                 LogWarn("DownloadManager::beginDownload", "could not resolve the runner chain for '" + Lid
                             + "' — its runtime is NOT in this batch, so the download will complete but the game "
                               "will not be launchable" + (Err.empty() ? "" : " (" + Err + ")"));
         }
         if (Ok)
             for (const std::string & Rid : RunnerIds)
-                if (!RunnerInstall::CollectRunnerNodeTargets(Idx, Rid, Targets, &Err)) { Ok = false; break; }
-        if (Ok && !IpfsWrapper::FetchTargetsConcurrent(Targets, &Err)) Ok = false;
+                if (!RunnerInstall::CollectRunnerNodeTargets(*Idx, Rid, Targets, &Err)) { Ok = false; break; }
+        Idx.reset();   // targets collected: the index is not held through the (long) fetch
+                if (Ok && !IpfsWrapper::FetchTargetsConcurrent(Targets, &Err)) Ok = false;
         // Builds are now present locally → the runner is ready. Its prefix assembles from the build at launch
         // (node-declared layers), so there is NO post-fetch generation step — fetching the build IS the install.
         Done->store(true);   // before the post: whoever sees the result may reap this thread (its join returns at once)

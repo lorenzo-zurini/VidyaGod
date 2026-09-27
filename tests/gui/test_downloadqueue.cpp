@@ -49,6 +49,24 @@ private slots:
         QCOMPARE(std::filesystem::file_size(B, Ec), std::filesystem::file_size(A, Ec));
     }
 
+    // Two packages sharing a zip: another request already placed the file at this dest (a hard link of the fetched one).
+    // Placing it again — a Verify join re-places even over an existing file — is success: copy_file refuses to copy
+    // a file onto itself, and that "File exists" failed a whole download on the replication. Teeth: drop the
+    // equivalent() check in Materialize and this batch fails.
+    void placingAFileWhereTheSameFileAlreadyIsSucceeds()
+    {
+        QTemporaryDir dir; QVERIFY(dir.isValid());
+        const std::string A = (dir.path() + "/a.zip").toStdString();
+        const std::string B = (dir.path() + "/other/a.zip").toStdString();
+        { std::ofstream(A) << "a zip two packages share"; }
+        QVERIFY(IpfsWrapper::WaitBatch(IpfsWrapper::EnqueueBatch({{"CID_DQ_SAME", A, false}})));
+        std::filesystem::create_directories(std::filesystem::path(B).parent_path());
+        std::filesystem::create_hard_link(A, B);                           // placed already, by the other package
+        std::string Err;
+        QVERIFY2(IpfsWrapper::WaitBatch(IpfsWrapper::EnqueueBatch({IpfsWrapper::FetchTarget{"CID_DQ_SAME", B, false, false, /*Verify=*/true}}), &Err),
+                 Err.c_str());
+    }
+
     // THE review finding. Teeth (each caught): drop the `J.State = Job::Failed` on the EnqueueBatch materialize
     // → WaitBatch returns true over the hole; make Materialize void again → same.
     void aMaterializeFailureFailsTheBatchInsteadOfReportingAMirrorOverAHole()

@@ -23,6 +23,7 @@
 #include <cstdint>
 #include <map>
 #include <mutex>
+#include <condition_variable>
 #include <set>
 #include <deque>
 #include <fstream>
@@ -1617,6 +1618,39 @@ NodeIndex BuildCatalogIndex(const nlohmann::ordered_json &GlobalConfigJSON)
     }
 
     return Idx;
+}
+
+std::shared_ptr<const NodeIndex> FreshCatalogIndex(const nlohmann::ordered_json &GlobalConfigJSON)
+{
+    // Single flight: a build serves every caller that asked before it STARTED (it scans the disk as it is now, after
+    // their changes); a caller arriving mid-build waits for the next one.
+    static std::mutex Mu;
+    static std::condition_variable Cv;
+    static std::uint64_t Asked = 0, Served = 0;
+    static bool Building = false;
+    static std::shared_ptr<const NodeIndex> Latest;
+    std::unique_lock<std::mutex> Lk(Mu);
+    const std::uint64_t Mine = ++Asked;
+    for (;;)
+    {
+        if (Served >= Mine) return Latest;
+        if (!Building)
+        {
+            Building = true;
+            const std::uint64_t Covers = Asked;
+            Lk.unlock();
+            std::shared_ptr<const NodeIndex> Built;
+            try { Built = std::make_shared<const NodeIndex>(BuildCatalogIndex(GlobalConfigJSON)); }
+            catch (...) { Lk.lock(); Building = false; Cv.notify_all(); throw; }   // the next caller builds; never wedged
+            Lk.lock();
+            Latest = std::move(Built);
+            Served = Covers;
+            Building = false;
+            Cv.notify_all();
+            continue;
+        }
+        Cv.wait(Lk);
+    }
 }
 
 std::string RowUnderTile(const NodeIndex &Idx, const std::string &Uid, const std::string &Variant, std::string *Why)

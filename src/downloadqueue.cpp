@@ -146,6 +146,9 @@ std::string FirstExisting(const Job &J)
     }
     fs::create_hard_link(From, To, Ec);
     if (!Ec) return true;
+    //Already the same file (another request for the same CID placed it here first — two packages sharing a zip):
+    //placed. copy_file refuses to copy a file onto itself ("File exists"), and that failed the whole download.
+    if (std::error_code Eq; fs::equivalent(From, To, Eq)) return true;
     std::error_code Ec2;
     fs::copy_file(From, To, fs::copy_options::overwrite_existing, Ec2);
     if (!Ec2) return true;

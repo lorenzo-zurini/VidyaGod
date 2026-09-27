@@ -50,6 +50,7 @@ AppModel::AppModel(nlohmann::ordered_json * config, QDir * appDataDir, QObject *
     if (PackageCatalog::PruneMovedLocalPackages(*Config) > 0) save();
 
     CatalogIndex = PackageCatalog::BuildCatalogIndex(*Config);   // node-native catalog source
+    CatalogShared.reset();
 
     // A friend sent us their COMPLETE shared set (a snapshot, per the bilateral protocol — pushed on any share change
     // and on our explicit requestFriendLibraries). We REPLACE our record for that peer wholesale: this is the only way
@@ -110,6 +111,7 @@ bool AppModel::save()
 void AppModel::rebuildCatalog()
 {
     CatalogIndex = PackageCatalog::BuildCatalogIndex(*Config);   // re-scan the node graph from disk
+    CatalogShared.reset();
 
     // Covers ride the ONE rolling queue, no bespoke trigger: walk every tile's cover and enqueue any that isn't
     // already in ASSETS as an ordinary (optional, verified) fetch. Uniform for LOCAL tiles (the fetch resolves from
@@ -313,11 +315,11 @@ void AppModel::syncSources()
                 (*Config)["LIBRARY"] = (*Cfg)["LIBRARY"];
                 save();
                 CatalogIndex = std::move(*NewIndex);   // cheap swap on the main thread (build already done)
+                CatalogShared.reset();
                 emit catalogChanged();
                 emit packageSourcesChanged();
             }
             healOrphansIfAny();            // re-point any orphaned no-copy refs so the node can actually SERVE its content
-            seedUnheldContent();           // node-ready → hold every content file our nodes name (the LIBRARY too)
             completeReceivedClosures();    // node-ready → finish landing any received root's node closure (resumes after a restart)
             reRegisterShares();            // node-ready → replay config["Sharing"] into the node's in-memory share table: a
                                            // restarted seeder shared NOTHING until its next publish (the durable record
@@ -347,21 +349,10 @@ void AppModel::pushLanRoster()
     IpfsWrapper::SetLanExcluded(Ex);
 }
 
-void AppModel::seedUnheldContent()
+std::shared_ptr<const NodeIndex> AppModel::catalogSnapshot() const
 {
-    auto Cfg = std::make_shared<const nlohmann::ordered_json>(*Config);
-    AsyncWork::Run(this, [this, Cfg]{
-        for (const std::string &Dir : PackageCatalog::SeedRoots(*Cfg))
-        {
-            std::vector<PackageCatalog::SeedFailure> Bad;
-            PackageCatalog::SeedUnheld(Dir, &Bad);
-            for (const auto &F : Bad)
-                QMetaObject::invokeMethod(this, [this, F]{
-                    emit contentUnservable(QString::fromStdString(F.RecordedCid),
-                        QString::fromStdString("content does not match its recorded CID (" + F.Path + ")"));
-                }, Qt::QueuedConnection);
-        }
-    });
+    if (!CatalogShared) CatalogShared = std::make_shared<const NodeIndex>(CatalogIndex);
+    return CatalogShared;
 }
 
 void AppModel::healOrphansIfAny()
@@ -373,8 +364,12 @@ void AppModel::healOrphansIfAny()
     // shared locals; the completion applies them. HealInFlight is atomic and may clear from the worker.
     auto Unhealable = std::make_shared<std::set<std::string>>(KnownUnhealable);
     auto Healed     = std::make_shared<bool>(false);
+    //Once per run, after the orphans: hold every content file the seed roots name that is not held whole
+    //(SeedUnheld) — inside this single flight, so the two passes never race over the same files.
+    const bool SeedUnheldNow = !SeededUnheld;
+    SeededUnheld = true;
     AsyncWork::Run(this,
-        [Cfg, Unhealable, Healed, this]{
+        [Cfg, Unhealable, Healed, SeedUnheldNow, this]{
             const std::vector<std::string> Orphans = IpfsWrapper::OrphanedRefPaths();
             // Drop any previously-unhealable path that's no longer orphaned (content was restored), then treat the
             // rest as "known gone" so we don't re-run the (heavier) heal for content that genuinely can't be found.
@@ -407,6 +402,18 @@ void AppModel::healOrphansIfAny()
                 for (const std::string & P : IpfsWrapper::OrphanedRefPaths()) Unhealable->insert(P);
                 *Healed = true;
             }
+            if (SeedUnheldNow)
+                for (const std::string &Dir : PackageCatalog::SeedRoots(*Cfg))
+                {
+                    std::vector<PackageCatalog::SeedFailure> Bad;
+                    if (PackageCatalog::SeedUnheld(Dir, &Bad) > 0) *Healed = true;
+                    for (const auto &F : Bad)
+                        QMetaObject::invokeMethod(this, [this, F]{
+                            emit contentUnservable(QString::fromStdString(F.RecordedCid), QString::fromStdString(
+                                F.ActualCid.empty() ? "content could not be read or added (" + F.Path + ")"
+                                                    : "content does not match its recorded CID (" + F.Path + ")"));
+                        }, Qt::QueuedConnection);
+                }
             HealInFlight.store(false);
         },
         [this, Unhealable, Healed]{
@@ -965,7 +972,7 @@ void AppModel::completeReceivedClosures()
     FriendClosureRunning = true;
     if (Packages) LogOut("AppModel::completeReceivedClosures", "landing received package(s)");
     if (!Roots.empty()) LogOut("AppModel::completeReceivedClosures", "landing the node closure of " + std::to_string(Roots.size()) + " received node(s)");
-    auto Snap = std::make_shared<const NodeIndex>(CatalogIndex);
+    auto Snap = catalogSnapshot();
     auto Cfg  = std::make_shared<const nlohmann::ordered_json>(*Config);
     const unsigned Gen = FriendClosureGen.load();
     AsyncWork::Run(this,
@@ -1109,6 +1116,7 @@ void AppModel::applySourceUpgrade(bool force)
             (*Config)["Settings"]["PackageSources"] = (*Cfg)["Settings"]["PackageSources"];
             save();
             CatalogIndex = std::move(*Index);
+            CatalogShared.reset();
             emit catalogChanged();
             emit packageSourcesChanged();
         });

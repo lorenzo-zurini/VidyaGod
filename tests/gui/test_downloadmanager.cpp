@@ -196,6 +196,16 @@ private slots:
         QDir appDir(Data.path());
         AppModel model(&cfg, &appDir);
         model.rebuildCatalog();
+        // One immutable copy per rebuild, shared by every download worker (each copied the whole index, twice: 46
+        // resumed downloads held ~90 copies). Teeth: make a copy per call and the two snapshots differ; skip the reset
+        // on rebuild and a worker reads the index as it was.
+        {
+            const auto S1 = model.catalogSnapshot(), S2 = model.catalogSnapshot();
+            QVERIFY2(S1 == S2, "the snapshot is shared, not copied per download");
+            model.rebuildCatalog();
+            QVERIFY2(model.catalogSnapshot() != S1, "a rebuild makes a new snapshot");
+            QVERIFY(model.catalogSnapshot()->Find("w_exec"));
+        }
         const Node * W = model.catalogIndex().Find("w_exec");
         const Node * O = model.catalogIndex().Find("o_exec");
         QVERIFY(W && O);

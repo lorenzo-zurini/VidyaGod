@@ -37,6 +37,10 @@ public:
     nlohmann::ordered_json * config()       const { return Config; }
     NodeIndex &              catalogIndex()        { return CatalogIndex; }
     const NodeIndex &        catalogIndex()  const { return CatalogIndex; }
+    // The index as one immutable copy a worker thread may read while CatalogIndex is reassigned under it: made once per
+    // rebuild, shared by every download (each worker copied the whole index, twice: 46 resumed downloads held ~90
+    // copies, 1.6 GB). GUI thread.
+    std::shared_ptr<const NodeIndex> catalogSnapshot() const;
     QDir *                   appDataDir()    const { return AppDataDir; }
     int                      cardPixelWidth() const { return CardPixelWidth; }
 
@@ -66,7 +70,6 @@ public:
     // single-flight, and remembers genuinely-gone content so it never loops. Driven by a background timer + the IPFS
     // tab's health check, so orphans are repaired the moment they're noticed rather than only on next launch.
     void healOrphansIfAny();
-    void seedUnheldContent();       // node-ready: hold every content file the seed roots name (SeedUnheld)
     void importRunner(const QString & runnerNodeId);   // emit runnerImportRequested → the ONE download pump (build fetch + DEFPREFIX)
     // Package sources by IPFS folder CID (dehydrated package sets; content hydrates on demand).
     bool addPackageSource(const QString & cid, const QString & name);   // append + fetch dehydrated tree off-thread; false if empty/duplicate
@@ -183,10 +186,12 @@ private:
     nlohmann::ordered_json * Config;
     QDir *                   AppDataDir;
     NodeIndex                CatalogIndex;
+    mutable std::shared_ptr<const NodeIndex> CatalogShared;   // catalogSnapshot's copy; reset when CatalogIndex is reassigned
     int                      CardPixelWidth = 185;
     QTimer *                 OrphanHealTimer = nullptr;   // periodic background orphan check (tab-independent)
     bool                     SyncRetryPending = false;    // a re-sync is scheduled for a source that failed to fetch
     std::atomic<bool>        HealInFlight{false};         // single-flight guard for healOrphansIfAny
+    bool                     SeededUnheld = false;   // SeedUnheld ran this process (healOrphansIfAny, first pass)
     std::set<std::string>    KnownUnhealable;             // orphaned paths a heal couldn't fix (content truly gone) → don't re-loop
     std::map<std::string, quint64> FriendLibSeq;         // per-peer highest applied snapshot stamp (last-writer-wins; session-only)
     std::set<std::string>          FriendBrowseCids;     // received-share CIDs we enqueued (roots+tiles) — scopes the transferFinished reaction

@@ -510,7 +510,10 @@ std::map<std::string, std::string> ManifestTargets(const std::string &Dir, bool 
             const std::string Cid = (H.contains("SOURCE") && H["SOURCE"].is_string()) ? H["SOURCE"].get<std::string>() : std::string();
             if (Cid.empty()) continue;
             const fs::path Local = Bundle / F.File;
-            if (!ExistingOnly || fs::exists(Local, Ec)) ToSeed[Local.generic_string()] = Cid;
+            //A node names a file of ITS package: an absolute or "../" FILE (a friend's node, landed verbatim) would
+            //have seeding read — and pin, and announce — any file on the machine, /dev/zero included (forever).
+            if (!NodeGraph::PathWithin(Bundle, Local)) continue;
+            if (!ExistingOnly || fs::is_regular_file(Local, Ec)) ToSeed[Local.generic_string()] = Cid;
         }
     }
     return ToSeed;
@@ -580,16 +583,21 @@ int SeedDirectory(const std::string &Dir,
                 LogOut("PackageCatalog::SeedDirectory", "re-pointing orphaned reference " + Cid + " -> " + Path);
             if (Has) IpfsWrapper::DropRef(Cid);                       // clear the stale/old reference so the re-add isn't deduped
             std::string Err;
-            const std::string Got = IpfsWrapper::AddNoCopy(Path, &Err);
+            //Not held: its bytes are checked before anything is added — a file that is not its recorded CID must not
+            //be pinned and announced under whatever it does hash to.
+            const std::string Is = Has ? Cid : IpfsWrapper::ComputeCid(Path, &Err);
+            const std::string Got = Is == Cid ? IpfsWrapper::AddNoCopy(Path, &Err) : Is;
             // A re-add that yields the SAME CID is a genuine self-heal: the reference was stale, the bytes are the
             // ones we published, and we can serve it again. A DIFFERENT CID is NOT a heal — the file no longer is
             // what we published, and silently accepting it would republish under a new CID while quietly orphaning
             // the one peers are asking for. That is an error for a human, never an automatic fix.
-            if (Got == Cid)            ++Seeded;
-            else if (Mismatched) { ++*Mismatched;
+            if (Got == Cid) ++Seeded;
+            else
+            {
+                if (Mismatched) ++*Mismatched;
                 if (Failures) Failures->push_back({ Path, Cid, Got });
                 LogWarn("PackageCatalog::SeedDirectory", "CID mismatch (file changed since publish?) for " + Path
-                        + (Got.empty() ? (" — add failed: " + Err) : (" — got " + Got + ", expected " + Cid)));
+                        + (Got.empty() ? (" — could not read or add: " + Err) : (" — got " + Got + ", expected " + Cid)));
             }
         }
         ++Done;
@@ -607,8 +615,9 @@ std::vector<std::string> SeedRoots(const nlohmann::ordered_json &GlobalConfigJSO
     std::error_code Ec;
     if (const std::string Lib = LibraryRootDir(GlobalConfigJSON); !Lib.empty() && std::filesystem::is_directory(Lib, Ec))
         Roots.push_back(Lib);
-    for (const std::string &D : PackageSourceDirs(GlobalConfigJSON))
-        if (std::find(Roots.begin(), Roots.end(), D) == Roots.end()) Roots.push_back(D);
+    for (const std::string &D : PackageSourceDirs(GlobalConfigJSON))   // a source inside the LIBRARY is walked with it
+        if (std::none_of(Roots.begin(), Roots.end(), [&](const std::string &R) { return R == D || NodeGraph::PathWithin(R, D); }))
+            Roots.push_back(D);
     return Roots;
 }
 
@@ -620,6 +629,7 @@ int SeedUnheld(const std::string &Dir, std::vector<SeedFailure> *Failures)
     int Added = 0;
     for (const auto &[Path, Cid] : SeedTargets(Dir))
     {
+        if (!IpfsWrapper::DaemonRunning()) break;                       // stopped meanwhile: nothing can be added
         //Whole, not merely "has": that seeder HELD each zip's root block — and served it, and announced it — with none
         //of the leaves.
         if (IpfsWrapper::HeldWhole(Cid)) continue;
@@ -628,11 +638,13 @@ int SeedUnheld(const std::string &Dir, std::vector<SeedFailure> *Failures)
         if (Is != Cid)
         {
             if (Failures) Failures->push_back({ Path, Cid, Is });
-            LogWarn("PackageCatalog::SeedUnheld", "not added — " + Path + (Is.empty() ? (": " + Err) : (" is " + Is + ", its node records " + Cid)));
+            LogWarn("PackageCatalog::SeedUnheld", "not added — " + Path + (Is.empty() ? (" could not be read: " + Err) : (" is " + Is + ", its node records " + Cid)));
             continue;
         }
-        if (IpfsWrapper::AddNoCopy(Path, &Err) == Cid) ++Added;
-        else LogWarn("PackageCatalog::SeedUnheld", "could not add " + Path + ": " + Err);
+        const std::string Got = IpfsWrapper::AddNoCopy(Path, &Err);
+        if (Got == Cid) { ++Added; continue; }
+        if (Failures) Failures->push_back({ Path, Cid, Got });           // changed since it was checked, or not added
+        LogWarn("PackageCatalog::SeedUnheld", "could not add " + Path + (Got.empty() ? (": " + Err) : (" — it is now " + Got)));
     }
     if (Added) LogSucc("PackageCatalog::SeedUnheld", "added " + std::to_string(Added) + " content file(s) this node named but did not hold, under " + Dir);
     return Added;

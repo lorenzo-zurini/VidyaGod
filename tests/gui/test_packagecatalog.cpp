@@ -24,6 +24,8 @@
 #include <filesystem>
 #include <fstream>
 #include <set>
+#include <atomic>
+#include <thread>
 #ifndef Q_OS_WIN
 #include <unistd.h>
 #endif
@@ -386,7 +388,77 @@ private slots:
         QCOMPARE(Bad[0].RecordedCid, Recorded);
         QVERIFY2(!IpfsWrapper::HasLocal(Bad[0].ActualCid), "bytes that are not the recorded CID are never added");
         QCOMPARE(PackageCatalog::SeedUnheld(R, &Bad), 0);                     // held now: nothing to add again
+
+        // A node naming files outside its package (a friend's node lands verbatim) yields no target: seeding read,
+        // pinned and announced whatever it named — /dev/zero, forever. Teeth: drop the PathWithin check in
+        // ManifestTargets and these two are targets.
+        std::filesystem::create_directories(D.path().toStdString() + "/outside");
+        write(D.path().toStdString() + "/outside/escape.zip", "outside the package");
+        writeJson(QString::fromStdString(Pkg + "/hostile.json"), NodeFixture::Chain("hostile", {NodeFixture::Merge({
+            NodeFixture::ContentCid("file", "/etc/hostname", Good), NodeFixture::ContentCid("zip", "../../../outside/escape.zip", Good)})}));
+        for (const auto &[Path, Cid] : PackageCatalog::SeedTargets(R))
+            QVERIFY2(NodeGraph::PathWithin(R, Path), ("a seed target outside the library: " + Path).c_str());
+
+        // A package source inside the LIBRARY is walked with it, once (every heal swept each source twice). Teeth:
+        // compare roots by string only and the source dir is listed again.
+        std::filesystem::create_directories(R + "/VidyaGodLibraries");
+        json withSrc = cfg;
+        withSrc["Settings"]["PackageSources"] = json::array({ json{{"CID", "bafysourcefolder"}, {"NAME", "VidyaGodLibraries"}} });
+        QCOMPARE((int)PackageCatalog::PackageSourceDirs(withSrc).size(), 1);  // precondition: the source is there
+        QCOMPARE((int)PackageCatalog::SeedRoots(withSrc).size(), 1);
+
+        // The heal's SeedDirectory never adds wrong bytes either, and names them even with no counter passed. Teeth:
+        // add before checking the CID in SeedDirectory's not-held branch, or gate Failures on the counter again.
+        const std::string Wrong = Cid::OfBytes("recorded, never these bytes " + QUuid::createUuid().toString().toStdString());
+        write(Pkg + "/wrong.zip", "these are not the recorded bytes " + QUuid::createUuid().toString().toStdString());
+        writeJson(QString::fromStdString(Pkg + "/wrong.json"), NodeFixture::Chain("wrong", {NodeFixture::Merge({
+            NodeFixture::ContentCid("zip", "wrong.zip", Wrong)})}));
+        std::vector<PackageCatalog::SeedFailure> HealBad;
+        PackageCatalog::SeedDirectory(R, {}, nullptr, false, false, false, &HealBad);
+        const auto W = std::find_if(HealBad.begin(), HealBad.end(), [&](const PackageCatalog::SeedFailure &F) { return F.RecordedCid == Wrong; });
+        QVERIFY2(W != HealBad.end(), "the heal names the file whose bytes are not its CID");
+        QVERIFY2(!IpfsWrapper::HasLocal(W->ActualCid), "and never adds them");
+
+        // Stopped: nothing is read or hashed. Teeth: drop the DaemonRunning check and the unheld file is hashed and
+        // reported as not added.
+        write(Pkg + "/later.zip", std::string(1000, 'z') + QUuid::createUuid().toString().toStdString());
+        writeJson(QString::fromStdString(Pkg + "/later.json"), NodeFixture::Chain("later", {NodeFixture::Merge({
+            NodeFixture::ContentCid("zip", "later.zip", IpfsWrapper::ComputeCid(Pkg + "/later.zip", &Err))})}));
         IpfsWrapper::StopNode();
+        std::vector<PackageCatalog::SeedFailure> Stopped;
+        QCOMPARE(PackageCatalog::SeedUnheld(R, &Stopped), 0);
+        QVERIFY2(Stopped.empty(), "a stopped node read and reported files");
+    }
+
+    // A fresh index is built after the call began (a node written just before is in it), and callers asking at once
+    // share builds: 8 at once get at most two. Every download rebuilt the whole index itself — 46 resumed downloads
+    // ran up to 138 scans together. Teeth: build per call (no single flight) and 8 callers get 8 indexes; return the
+    // last build without checking it began after the call and the node written just before is missing.
+    void a_fresh_catalog_index_is_shared_and_never_stale()
+    {
+        QTemporaryDir D; QVERIFY(D.isValid());
+        const QString R = D.path() + "/LIBRARY";
+        for (int i = 0; i < 300; ++i)                                         // enough that a build outlasts the arrivals
+        {
+            QDir().mkpath(R + QString("/VidyaGod/[%1] P%1").arg(i + 10));
+            writeJson(R + QString("/VidyaGod/[%1] P%1/n.json").arg(i + 10),
+                      json{{"LABEL", "n" + std::to_string(i)}, {"LAYERS", json::array({ json{{"DIR", "d"}} })}});
+        }
+        json cfg = json{{"Settings", {{"Paths", {{"LibraryRoot", R.toStdString()}}}}}};
+        QVERIFY(PackageCatalog::FreshCatalogIndex(cfg)->Find("n0"));
+        QVERIFY(!PackageCatalog::FreshCatalogIndex(cfg)->Find("late"));
+        QDir().mkpath(R + "/VidyaGod/[5] Late");
+        writeJson(R + "/VidyaGod/[5] Late/l.json", json{{"LABEL", "late"}, {"LAYERS", json::array({ json{{"DIR", "l"}} })}});
+        QVERIFY2(PackageCatalog::FreshCatalogIndex(cfg)->Find("late"), "a node written before the call is in the index");
+        std::vector<std::thread> T;
+        std::vector<const NodeIndex *> Got(8, nullptr);
+        std::vector<std::shared_ptr<const NodeIndex>> Keep(8);
+        std::atomic<int> Ready{0};
+        for (int i = 0; i < 8; ++i)
+            T.emplace_back([&, i]{ ++Ready; while (Ready < 8) {} Keep[i] = PackageCatalog::FreshCatalogIndex(cfg); Got[i] = Keep[i].get(); });
+        for (auto &t : T) t.join();
+        std::set<const NodeIndex *> Distinct(Got.begin(), Got.end());
+        QVERIFY2(Distinct.size() <= 2, ("8 callers at once got " + std::to_string(Distinct.size()) + " indexes").c_str());
     }
 
     // One entry = one package folder, landing in <pkg dir>/.package. Two folders naming the same package dir (only

@@ -339,6 +339,11 @@ bool IsIpnsSource(const nlohmann::ordered_json &Source);
 // Build the global cross-bundle node graph from the configured CID package sources + locally-added bundles — the
 // node-native catalog source.
 NodeIndex BuildCatalogIndex(const nlohmann::ordered_json &GlobalConfigJSON);
+// A catalog index built AFTER the call began, shared: callers waiting at once get one scan between them. Every download
+// rebuilt the whole index itself (≈8 s, ≈17 MB) after landing closures and after installing — 46 resumed downloads
+// ran up to 138 scans at once: 1700 % CPU, and 3 GB of heap glibc then kept. Any caller's config is used (they name
+// the same library).
+std::shared_ptr<const NodeIndex> FreshCatalogIndex(const nlohmann::ordered_json &GlobalConfigJSON);
 // One presentable game on the shelf: a tile (its UID), its presentation (the merged tile), and its rows — the variant
 // nodes whose fold presents it.
 struct ShelfTile
