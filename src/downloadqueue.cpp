@@ -392,6 +392,13 @@ std::string QueueDestForCid(const std::string & Cid)
     return (It == Q().Jobs.end() || It->second.Dests.empty()) ? std::string() : It->second.Dests.front();
 }
 
+bool JobUnfinished(const std::string &Cid)
+{
+    std::lock_guard<std::mutex> Lk(Q().Mu);
+    auto It = Q().Jobs.find(Cid);
+    return It != Q().Jobs.end() && It->second.State != Job::Done;
+}
+
 int DebugJobState(const std::string & Cid)
 {
     std::lock_guard<std::mutex> Lk(Q().Mu);
@@ -489,6 +496,12 @@ static std::string RedirectedLocked(const std::string &Path)
     for (const auto &M : Q().Moved)
         if (Path.compare(0, M.first.size(), M.first) == 0 && (!Best || M.first.size() > Best->first.size())) Best = &M;
     return Best ? Best->second + Path.substr(Best->first.size()) : Path;
+}
+
+std::string Redirected(const std::string &Path)
+{
+    std::lock_guard<std::mutex> Lk(Q().Mu);
+    return RedirectedLocked(Path);
 }
 
 void RedirectDestsUnder(const std::string &From, const std::string &To)

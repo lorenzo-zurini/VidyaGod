@@ -68,6 +68,11 @@ public:
     QStringList cidsOf(const QString &Key) const { return DownloadUidCids.value(Key); }   // a download's content CIDs
     //The CIDs cancelling Key's download may abort: its own, minus those another in-flight download still needs.
     QStringList cancellableCids(const QString &Key) const;
+    //Cancel Key's download (requestCancel, after the user confirms): abort what is its own alone, and remember it.
+    void cancelKey(const QString &Key);
+    //What a cancelled download's end may purge from the cache: the CIDs its cancel aborted whose fetch did not finish
+    //and that no other in-flight download needs — never a finished file, never another card's content.
+    QStringList purgeOnCancel(const QString &Key) const;
 private:
     void persistActive(const QString & key, const std::vector<std::string> & launchIds,
                        const std::vector<std::string> & runnerIds, const std::map<std::string, bool> & toggles);
@@ -84,7 +89,8 @@ private:
     //in-flight content CID → every download (card key) that needs it: one variant sits under several tiles (RoC and
     //TFT), so two cards can download the same CIDs — each tracks and averages all of its own
     QHash<QString, QSet<QString>> DownloadCidToUid;
-    QHash<QString, QStringList> DownloadUidCids;   // PACKAGEUID → its content CIDs (for averaging progress)
+    QHash<QString, QStringList> DownloadUidCids;
+    QHash<QString, QStringList> CancelledCids;     // key → the CIDs its cancel aborted   // PACKAGEUID → its content CIDs (for averaging progress)
 };
 
 #endif // DOWNLOADMANAGER_H

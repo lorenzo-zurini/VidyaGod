@@ -278,6 +278,18 @@ private slots:
         QCOMPARE(rebuilt.dump(), before);
     }
 
+    // A received node is canonical JSON, keys sorted at every level, so a subkey can come before its key's values
+    // ("1.0" before "3D Card"). Rows are flattened values-first; the rebuild must still give back the same bytes.
+    // Teeth: restore the key order at the top level only and the subkey moves after the values.
+    void registryOrderSurvivesAtEveryLevel()
+    {
+        json entry = json::parse(R"({"HKLM":{"Software":{"Game":{"1.0":{"Language":"dword:00000001"},"3D Card":"hex(1):","Zed":"z"}}}})");
+        const std::string before = entry.dump();
+        json rebuilt = entry;
+        PkgGraph::RegRowsInto(rebuilt, PkgGraph::RegRowsOf(entry));
+        QCOMPARE(rebuilt.dump(), before);
+    }
+
     // The same, over the REAL library: the shape that actually ships is the one that must round-trip.
     void everyRegEditInTheLibraryRoundTripsByteIdentically()
     {

@@ -66,8 +66,25 @@ void DownloadManager::requestCancel(LibraryGameCard *card)
     if (Key.isEmpty() || !DownloadingUids.contains(Key)) return;
     if (QMessageBox::question(DialogParent, "Cancel download?",
             "Stop downloading “" + card->GameTitle + "”?") != QMessageBox::Yes) return;
+    cancelKey(Key);
+}
+
+void DownloadManager::cancelKey(const QString &Key)
+{
+    if (Key.isEmpty() || !DownloadingUids.contains(Key)) return;
     CancellingUids.insert(Key);                                   // suppress the failure dialog on abort
-    for (const QString & c : cancellableCids(Key)) IpfsWrapper::RequestCancel(c.toStdString());
+    CancelledCids[Key] = cancellableCids(Key);
+    for (const QString & c : CancelledCids[Key]) IpfsWrapper::RequestCancel(c.toStdString());
+}
+
+QStringList DownloadManager::purgeOnCancel(const QString &Key) const
+{
+    QStringList Out;
+    for (const QString & c : CancelledCids.value(Key))
+        if (IpfsWrapper::JobUnfinished(c.toStdString())                         // a finished or never-fetched file is kept
+            && (DownloadCidToUid.value(c) - QSet<QString>{Key}).isEmpty())       // and so is what another card needs now
+            Out << c;
+    return Out;
 }
 
 QStringList DownloadManager::cancellableCids(const QString &Key) const
@@ -594,6 +611,8 @@ void DownloadManager::beginDownload(const QString &Key, const std::vector<std::s
             DownloadingUids.remove(Key);
             const bool Cancelled = CancellingUids.remove(Key);
             const QStringList DoneCids = DownloadUidCids.value(Key);
+            const QStringList Purge = Cancelled ? purgeOnCancel(Key) : QStringList();   // before the maps forget Key
+            CancelledCids.remove(Key);
             for (const QString & c : DoneCids)
             {
                 auto It = DownloadCidToUid.find(c);
@@ -608,7 +627,9 @@ void DownloadManager::beginDownload(const QString &Key, const std::vector<std::s
             {
                 // Voluntary abort → purge the partial's cached blocks off the GUI thread so a re-download is a real
                 // download (and we don't hoard the aborted bytes). A crash/close leaves them — they speed the resume.
-                std::thread([DoneCids]{ for (const QString & c : DoneCids) IpfsWrapper::DropCached(c.toStdString()); }).detach();
+                //Only what its cancel aborted and did not finish: purging a shared CID wiped another card's just-finished
+                //files (their dag-pb blocks), silently unservable.
+                std::thread([Purge]{ for (const QString & c : Purge) IpfsWrapper::DropCached(c.toStdString()); }).detach();
             }
             else if (!Ok) LogErr("DownloadManager::beginDownload", "Download failed: " + Err);   // shows as a "Failed" row
             emit downloadFinished(Key);   // the Catalog card(s) drop the "Downloading…" overlay BEFORE the rebuild reads state

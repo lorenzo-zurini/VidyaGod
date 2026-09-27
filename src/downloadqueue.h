@@ -42,6 +42,10 @@ bool WaitBatch(const BatchHandle &Handle, int TimeoutMs, std::string *Error = nu
 void CloseQueue();
 void OpenQueue();
 
+// True while a CID has a job this session that has not finished its fetch (queued, active or failed). A CID that
+// never needed a job (already in place) or whose job is done is not unfinished.
+bool JobUnfinished(const std::string &Cid);
+
 // Cancel a CID's download: drop it if still queued, abort it (RequestCancel) if active. A batch waiting on a required
 // cancelled CID sees the cancellation as a failure.
 void CancelDownload(const std::string &Cid);
@@ -54,6 +58,8 @@ void ForgetDestsUnder(const std::string &Dir);
 // under To instead — a download working from an index read before the move (its CompleteClosure, its targets) would
 // otherwise re-create the old folder as a stub beside the installed package, which then fails every later install.
 void RedirectDestsUnder(const std::string &From, const std::string &To);
+// Where a path is now: rewritten under the longest folder moved by RedirectDestsUnder, else unchanged.
+std::string Redirected(const std::string &Path);
 
 // Move a still-queued CID ahead of all other queued jobs so the dispatcher picks it next. No-op once it is active/done.
 void PrioritizeDownload(const std::string &Cid);

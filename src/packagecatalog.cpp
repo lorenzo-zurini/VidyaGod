@@ -1280,7 +1280,8 @@ bool CompleteClosure(const NodeIndex &Idx, const std::string &LaunchId, std::str
         std::set<std::string> Next;
         for (const std::string &C : Wave)
         {
-            const fs::path F = Bundle / (SafeSegment(C) + ".json");
+            //Where the queue landed it: another download may have installed the package meanwhile (its redirect).
+            const fs::path F = IpfsWrapper::Redirected((Bundle / (SafeSegment(C) + ".json")).string());
             nlohmann::ordered_json J;
             std::string VErr;
             if (!NodeGraph::VerifyLanded(F, C, &J, &VErr))
@@ -1385,23 +1386,9 @@ bool AdoptReceivedPackage(const nlohmann::ordered_json &Config, const std::files
     if (!NodeGraph::PathWithin(LibraryRootDir(Config), Dest))
     { if (Error) *Error = "refused: " + Dest.string() + " is outside the library"; return false; }
     const fs::path Folder = Src / kPackageFolderDir;
-    //Every file fetched into the package is referenced in place; the references follow the files, the landed folder's
-    //first (its node files move up into the package dir — a name already there is the same node, CID-named), then the
-    //package dir's. Both moves are idempotent, so an install interrupted after its rename is completed by the next.
-    auto MoveAllRefs = [&](const fs::path &To) -> bool {
-        std::string MErr;
-        if (IpfsWrapper::MoveRefs(Folder.string(), To.string(), &MErr) < 0 || IpfsWrapper::MoveRefs(Src.string(), To.string(), &MErr) < 0)
-        { if (Error) *Error = "cannot re-point the references of " + Src.string() + " to " + To.string() + ": " + MErr; return false; }
-        return true;
-    };
     if (!fs::is_directory(Src, Ec))
     {
-        if (fs::is_directory(Dest, Ec))                                  // installed meanwhile (or by an interrupted adopt)
-        {
-            if (!MoveAllRefs(Dest)) return false;
-            if (NewDir) *NewDir = Dest;
-            return true;
-        }
+        if (fs::is_directory(Dest, Ec)) { if (NewDir) *NewDir = Dest; return true; }   // installed meanwhile
         if (Error) *Error = "not a received package dir: " + PkgDir.string();
         return false;
     }
@@ -1418,27 +1405,43 @@ bool AdoptReceivedPackage(const nlohmann::ordered_json &Config, const std::files
             if (!fs::exists(Src / F.path().filename(), Rc)) fs::rename(F.path(), Src / F.path().filename(), Rc);
             if (Rc) { if (Error) *Error = "cannot move " + F.path().string() + " into its package: " + Rc.message(); return false; }
         }
-        std::string MErr;
-        if (IpfsWrapper::MoveRefs(Folder.string(), Src.string(), &MErr) < 0)
-        { if (Error) *Error = "cannot re-point the references of " + Folder.string() + ": " + MErr; return false; }
         fs::remove_all(Folder, Ec);
     }
+    //Every file fetched into the package is referenced in place, and the references move to the installed place BEFORE
+    //the package does: the landed folder's first (its files moved up), then the package dir's. Both moves are
+    //idempotent and never look at the files, so a failure or crash anywhere up to the rename leaves a stub still
+    //Received in CATALOG, which the next download adopts again. Moved after the rename, a failure left an installed
+    //package (never adopted again) whose files read as missing, unservable for good.
+    std::string MErr;
+    if (IpfsWrapper::MoveRefs(Folder.string(), Dest.string(), &MErr) < 0 || IpfsWrapper::MoveRefs(Src.string(), Dest.string(), &MErr) < 0)
+    { if (Error) *Error = "cannot re-point the references of " + Src.string() + " to " + Dest.string() + ": " + MErr; return false; }
+    auto Refuse = [&](const std::string &Why) {                            // the package stays where its files are
+        std::string BErr;
+        if (IpfsWrapper::MoveRefs(Dest.string(), Src.string(), &BErr) < 0)
+            LogErr("PackageCatalog::AdoptReceivedPackage", "cannot point the references back at " + Src.string() + ": " + BErr);
+        if (Error) *Error = Why;
+        return false;
+    };
     IpfsWrapper::ForgetDestsUnder(Folder.string());   // the queue must never re-land the folder into the old stub
     fs::create_directories(Dest.parent_path(), Ec);
     fs::rename(Src, Dest, Ec);
     if (Ec)
-    {   // a different filesystem: copy, then remove the source
+    {   // a different filesystem: copy, then remove the source; a partial copy goes, or it blocks every later install
         Ec.clear();
         fs::copy(Src, Dest, fs::copy_options::recursive, Ec);
-        if (Ec) { if (Error) *Error = "cannot move " + Src.string() + " to " + Dest.string() + ": " + Ec.message(); return false; }
+        if (Ec)
+        {
+            const std::string Why = "cannot move " + Src.string() + " to " + Dest.string() + ": " + Ec.message();
+            fs::remove_all(Dest, Ec);
+            return Refuse(Why);
+        }
         fs::remove_all(Src, Ec);
     }
-    IpfsWrapper::ForgetDestsUnder(Src.string());   // the queue must never re-materialise the old paths
-    IpfsWrapper::RedirectDestsUnder(Folder.string(), Dest.string());   // …and a later request for them lands in the
-    IpfsWrapper::RedirectDestsUnder(Src.string(), Dest.string());      // installed package (landed folder: files moved up)
-    // Everything fetched into the package so far is referenced in place: the references follow the folder, or the
-    // installed package's files read as missing and can be served to no one.
-    if (!MoveAllRefs(Dest)) return false;
+    // A later request for the old paths lands in the installed package (landed folder: files moved up); registered
+    // before the queue forgets them, so no request in between re-materialises the stub.
+    IpfsWrapper::RedirectDestsUnder(Folder.string(), Dest.string());
+    IpfsWrapper::RedirectDestsUnder(Src.string(), Dest.string());
+    IpfsWrapper::ForgetDestsUnder(Src.string());
     if (fs::is_empty(Src.parent_path(), Ec)) fs::remove(Src.parent_path(), Ec);
     if (NewDir) *NewDir = Dest;
     LogOut("PackageCatalog::AdoptReceivedPackage", "installed '" + Src.filename().string() + "' into library '" + Lib + "'");
@@ -1522,7 +1525,10 @@ int PruneStaleReceived(const NodeIndex &Idx, const nlohmann::ordered_json &Confi
     namespace fs = std::filesystem;
     std::error_code Ec;
     int Removed = 0;
-    for (const auto &[Dir, Cids] : ReceivedPackageManifests(Config))
+    const auto Manifests = ReceivedPackageManifests(Config);                 // one read, not one per stale file
+    std::set<fs::path> Installed;                                            // installed packages hold CID-named nodes too
+    for (const auto &[Id, N] : Idx.Nodes) if (!N.Received && !N.BundleDir.empty()) Installed.insert(N.BundleDir);
+    for (const auto &[Dir, Cids] : Manifests)
     {
         std::set<std::string> Keep(Cids.begin(), Cids.end());
         std::deque<std::string> Q(Cids.begin(), Cids.end());
@@ -1541,8 +1547,9 @@ int PruneStaleReceived(const NodeIndex &Idx, const nlohmann::ordered_json &Confi
             if (Keep.count(F.path().stem().string())) continue;
             const std::string Cid = F.path().stem().string();
             std::vector<fs::path> Elsewhere;                         // the same node's other landed copies
-            for (const auto &[Other, OtherCids] : ReceivedPackageManifests(Config))
+            for (const auto &[Other, OtherCids] : Manifests)
                 if (Other != Dir) { Elsewhere.push_back(Other / (Cid + ".json")); Elsewhere.push_back(Other.parent_path() / (Cid + ".json")); }
+            for (const fs::path &P : Installed) Elsewhere.push_back(P / (Cid + ".json"));
             if (const Node *N = Idx.Find(Cid); N && !N->File.empty()) Elsewhere.push_back(N->File);
             RemoveLandedNode(F.path(), Cid, Elsewhere);
             if (!fs::exists(F.path(), Ec)) ++Removed;

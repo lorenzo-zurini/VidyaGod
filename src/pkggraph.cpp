@@ -1022,6 +1022,16 @@ std::vector<RegRow> RegRowsOf(const json &Entry)
     return Rows;
 }
 
+// Rebuilt to Orig's key order, at every level: Orig's keys first, where they were, then the new ones.
+static json OrderedLike(const json &Rebuilt, const json &Orig)
+{
+    if (!Rebuilt.is_object() || !Orig.is_object()) return Rebuilt;
+    json Out = json::object();
+    for (const auto &[K, V] : Orig.items()) if (Rebuilt.contains(K)) Out[K] = OrderedLike(Rebuilt[K], V);
+    for (const auto &[K, V] : Rebuilt.items()) if (!Out.contains(K)) Out[K] = V;
+    return Out;
+}
+
 void RegRowsInto(json &Entry, const std::vector<RegRow> &Rows)
 {
     // Keep the non-hive fields, rebuild the trees from scratch.
@@ -1064,13 +1074,11 @@ void RegRowsInto(json &Entry, const std::vector<RegRow> &Rows)
         (*Cur)[R.Name] = (Parsed.is_discarded() || Parsed.is_object() || Parsed.is_array())
                              ? json(R.Value) : Parsed;
     }
-    //Preserve the ORIGINAL key order. The rebuild emits the non-hive fields first and the hives after, so an
-    //entry authored the other way round came back with the same content in a different order — same size,
-    //different bytes, and therefore a different content CID for every peer, from touching one row.
-    json Ordered = json::object();
-    for (const auto &[K, V] : Entry.items()) if (Kept.contains(K)) Ordered[K] = Kept[K];
-    for (const auto &[K, V] : Kept.items())  if (!Ordered.contains(K)) Ordered[K] = V;
-    Entry = std::move(Ordered);
+    //Preserve the ORIGINAL key order, at every level. The rebuild emits the non-hive fields first and the hives after,
+    //and within a key its values before its subkeys (rows are flattened values-first), so an entry written the other
+    //way round — every received node: canonical JSON, keys sorted, "1.0" before "3D Card" — came back with the same
+    //content in a different order: same size, different bytes, a file that no longer is the node its name says.
+    Entry = OrderedLike(Kept, Entry);
 }
 
 } // namespace PkgGraph

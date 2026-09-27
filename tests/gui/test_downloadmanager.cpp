@@ -5,6 +5,7 @@
 #include <QtTest>
 #include <QTemporaryDir>
 #include <QDir>
+#include <QFile>
 #include <QSignalSpy>
 #include <filesystem>
 #include <fstream>
@@ -205,6 +206,41 @@ private slots:
         QVERIFY(dm.cidsOf("802").contains(QShared));
         QVERIFY2(!dm.cancellableCids("803").contains(QShared), "cancelling one card leaves content another still needs");
         QVERIFY2(dm.cancellableCids("900").contains(QOwn), "a card's own content is its to cancel");
+
+        // Cancelling purges the cache only for what the cancel aborted and did not finish: a shared CID (another card's
+        // download) and a finished file are never purged — purging them wiped the other card's just-finished files.
+        // Teeth: purge DownloadUidCids[Key] again (the old handler) and 803 purges the shared CID; drop purgeOnCancel's
+        // own shared filter and 900 purges what 901 started needing after the cancel; test "no finished job" instead of
+        // "an unfinished job" and 902 purges the file already in place.
+        const QString LocalFile = Data.path() + "/local.bin";
+        { std::ofstream Lf(LocalFile.toStdString(), std::ios::binary); Lf << std::string(5000, 'L'); }
+        const std::string Local = IpfsWrapper::AddNoCopy(LocalFile.toStdString(), &Err);
+        QVERIFY2(!Local.empty(), Err.c_str());
+        const std::string Unserved = Cid::OfBytes("unserved " + QUuid::createUuid().toString().toStdString());
+        const QString HereFile = Data.path() + "/here.bin";
+        { std::ofstream Hf(HereFile.toStdString(), std::ios::binary); Hf << std::string(5000, 'H'); }
+        const std::string Here = IpfsWrapper::AddNoCopy(HereFile.toStdString(), &Err);
+        QVERIFY2(!Here.empty(), Err.c_str());
+        QDir().mkpath(R + "/Games/[902] L");                         // local.bin: held, not in place → a job, done at once
+        QVERIFY(QFile::copy(HereFile, R + "/Games/[902] L/here.bin"));  // here.bin: already in place → no job at all
+        writeJson(R + "/Games/[902] L/l.json", NodeFixture::Chain("l_exec", {NodeFixture::Merge({
+            NodeFixture::ContentCid("file", "local.bin", Local), NodeFixture::ContentCid("file", "here.bin", Here),
+            NodeFixture::ContentCid("zip", "u.zip", Unserved),
+            NodeFixture::Exec("linux64", "l")})}));
+        model.rebuildCatalog();
+        const std::string LKey = model.catalogIndex().Find("l_exec")->Key();
+        dm.beginDownload("902", {LKey}, {}, {});
+        QTRY_COMPARE_WITH_TIMEOUT(IpfsWrapper::DebugJobState(Local), 2, 30000);        // Done
+        dm.cancelKey("803");
+        dm.cancelKey("900");
+        dm.cancelKey("902");
+        QVERIFY2(!dm.purgeOnCancel("803").contains(QShared), "the shared CID is 802's too");
+        QVERIFY(dm.purgeOnCancel("900").contains(QOwn));
+        dm.beginDownload("901", {OKey}, {}, {});                            // another card needs it before the abort lands
+        QVERIFY2(!dm.purgeOnCancel("900").contains(QOwn), "a CID another card started needing after the cancel is kept");
+        QVERIFY2(!dm.purgeOnCancel("902").contains(QString::fromStdString(Local)), "a finished file is never purged");
+        QVERIFY2(!dm.purgeOnCancel("902").contains(QString::fromStdString(Here)), "nor one this download never fetched");
+        QVERIFY(dm.purgeOnCancel("902").contains(QString::fromStdString(Unserved)));
         IpfsWrapper::StopNode();
     }
 };
