@@ -1359,15 +1359,17 @@ static std::optional<std::vector<std::string>> FolderNodes(const std::string &Fo
     return Cids;
 }
 
-// Says once per dir why a landed package is not completed or pruned — silence here was a package quietly frozen.
-static void ReportUnjudged(const std::filesystem::path &Folder, const std::string &Why)
+// Says once per dir and reason why a landed package is not completed or pruned — silence here was a package quietly
+// frozen. Informational: a folder not held yet is the normal moment after a friend re-publishes (every package's
+// folder changes at once), not a fault. Keyed without the folder CID, so re-mints neither repeat it nor grow the set.
+static void ReportUnjudged(const std::filesystem::path &Folder, const std::string &Why, const std::string &Detail)
 {
     static std::mutex Mu;
     static std::set<std::string> Said;
     std::lock_guard<std::mutex> L(Mu);
     if (Said.insert(Folder.string() + "\n" + Why).second)
-        LogWarn("PackageCatalog::ReceivedPackageFolders", "received package " + Folder.parent_path().filename().string()
-                + ": " + Why + " — not completed or pruned until it is");
+        LogOut("PackageCatalog::ReceivedPackageFolders", "received package " + Folder.parent_path().filename().string()
+               + ": " + Why + Detail + " — not completed or pruned until it is");
 }
 
 // The received package folders on disk: every CATALOG/<nick - lib>/<pkg>/.package/ a friend's share entry landed
@@ -1391,10 +1393,10 @@ static std::map<std::filesystem::path, std::vector<std::string>> ReceivedPackage
             const fs::path Folder = Pkg.path() / kPackageFolderDir;
             if (!fs::is_directory(Folder, Ec)) continue;
             const auto It = Landed.find(Folder);
-            if (It == Landed.end()) { ReportUnjudged(Folder, "no share entry routes here now"); continue; }
+            if (It == Landed.end()) { ReportUnjudged(Folder, "no share entry routes here now", ""); continue; }
             std::string Err;
             auto Cids = FolderNodes(It->second, &Err);
-            if (!Cids) { ReportUnjudged(Folder, "its folder " + It->second + " is not held (" + Err + ")"); continue; }
+            if (!Cids) { ReportUnjudged(Folder, "its folder is not held yet", " (" + It->second + ": " + Err + ")"); continue; }
             Out[Folder] = std::move(*Cids);
         }
     }
@@ -1406,12 +1408,9 @@ static std::map<std::filesystem::path, std::vector<std::string>> ReceivedPackage
 static std::string ReceivedLibraryName(const nlohmann::ordered_json &Config, const std::string &LibDirName)
 {
     if (!Config.contains("FriendLibraries") || !Config["FriendLibraries"].is_object()) return {};
-    const auto Friends = IpfsWrapper::FriendList();
     for (const auto &[P, Libs] : Config["FriendLibraries"].items())
     {
-        std::string Nick;
-        for (const auto &C : Friends) if (C.PeerID == P) { Nick = C.Nick; break; }
-        if (Nick.empty()) Nick = P.size() > 8 ? P.substr(P.size() - 8) : P;
+        const std::string Nick = ReceivedNickLabel(P);
         if (!Libs.is_object()) continue;
         for (const auto &[L, Items] : Libs.items())
             if (SafeSegment(Nick + " - " + L) == LibDirName) return L;

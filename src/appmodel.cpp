@@ -741,10 +741,8 @@ void AppModel::dropReceivedStubs(const std::string & P)
     if (Config->contains("FriendLibraries") && (*Config)["FriendLibraries"].is_object()
         && (*Config)["FriendLibraries"].contains(P) && (*Config)["FriendLibraries"][P].is_object())
     {
-        std::string Nick;
-        for (const auto & C : IpfsWrapper::FriendList()) if (C.PeerID == P) { Nick = C.Nick; break; }
-        if (Nick.empty()) Nick = P.size() > 8 ? P.substr(P.size() - 8) : P;
-        for (const auto & T : PackageCatalog::PlanReceivedFetches(*Config, Nick, (*Config)["FriendLibraries"][P]))
+        for (const auto & T : PackageCatalog::PlanReceivedFetches(*Config, PackageCatalog::ReceivedNickLabel(P),
+                                                                  (*Config)["FriendLibraries"][P]))
         {
             LibDirs.insert(std::filesystem::path(T.Dest).parent_path().parent_path());   // …/<Nick> - <Lib>
             if (!FriendBrowseCids.erase(T.Cid)) continue;   // only cancel what WE enqueued for this browse flow

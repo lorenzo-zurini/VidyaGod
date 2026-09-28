@@ -1270,6 +1270,14 @@ private slots:
         QVERIFY2(PackageCatalog::LandReceivedPackages(rx, &Err), Err.c_str());
         QVERIFY2(!std::filesystem::exists(Bob + "/" + XC + ".json"), "Alice's node landed in Bob's dir");
         QVERIFY2(!std::filesystem::exists(Alice + "/" + YC + ".json"), "Bob's node landed in Alice's dir");
+        // …and Bob's dir IS judged, against Bob's folder: a stray node file there is pruned, a listed one missing is noticed.
+        const json Z = json{{"LABEL", "stray"}, {"LAYERS", json::array({ json{{"DIR", "z"}} })}};
+        const std::string ZB = Cid::Canonical(Z), ZC = Cid::OfBytes(ZB);
+        { std::ofstream O(Bob + "/" + ZC + ".json", std::ios::binary); O << ZB; }
+        QVERIFY(PackageCatalog::PruneStaleReceived(PackageCatalog::BuildCatalogIndex(rx), rx) >= 1);
+        QVERIFY2(!std::filesystem::exists(Bob + "/" + ZC + ".json"), "Bob's dir was never judged: a stray node survived");
+        std::filesystem::remove(Bob + "/" + YC + ".json");
+        QVERIFY2(PackageCatalog::ReceivedPackagesIncomplete(rx), "Bob's dir was never judged: a missing listed node went unnoticed");
         IpfsWrapper::DebugResetQueue();
         IpfsWrapper::StopNode();
     }
