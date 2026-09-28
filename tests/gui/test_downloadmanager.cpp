@@ -54,7 +54,7 @@ private slots:
         const json Items = seeder["Libraries"]["Games"];
         QCOMPARE((int)Items.size(), 1);
 
-        // The receiver: the package received (its folder landed: every node file + the manifest), nothing installed.
+        // The receiver: the package received (its folder landed: every node file), nothing installed.
         QTemporaryDir RxData; QVERIFY(RxData.isValid());
         json cfg = json{{"Settings", {{"Paths", {{"LibraryRoot", (RxData.path() + "/LIBRARY").toStdString()}}}}},
                         {"FriendLibraries", {{"12D3KooWSeederAlice", {{"Games", Items}}}}}};
@@ -69,7 +69,7 @@ private slots:
         QVERIFY2(PackageCatalog::LandReceivedPackages(cfg, &Err), Err.c_str());
         const std::filesystem::path Stub = std::filesystem::path(PackageCatalog::CatalogRootDir(cfg)) / (Nick + " - Games") / "[1] A";
         const std::filesystem::path Home = std::filesystem::path(RxData.path().toStdString()) / "LIBRARY" / "Games" / "[1] A";
-        QVERIFY(std::filesystem::exists(Stub / ".package" / ".package.json"));
+        QVERIFY(std::filesystem::is_directory(Stub / ".package"));
 
         QDir appDir(RxData.path());
         AppModel model(&cfg, &appDir);
@@ -84,7 +84,7 @@ private slots:
         QTRY_VERIFY_WITH_TIMEOUT(std::filesystem::exists(Home / "a.json") || std::filesystem::exists(Home / "tile.json")
                                  || std::filesystem::is_directory(Home), 60000);
         QVERIFY2(!std::filesystem::exists(Stub), "the received stub dir is gone from CATALOG");
-        QVERIFY2(!std::filesystem::exists(Home / ".package.json"), "the manifest was a receive artifact");
+        QVERIFY2(!std::filesystem::exists(Home / ".package"), "the landed folder was a receive artifact");
         // From here on the package is ours: not Received, its bundle dir in the library.
         const NodeIndex Fresh = PackageCatalog::BuildCatalogIndex(cfg);
         const Node * A2 = Fresh.Find("a_exec");
@@ -117,7 +117,6 @@ private slots:
             json{{"EXEC", json::array({json{{"LABEL", "Play"}, {"HOST", "linux64"}, {"EXE", "g"}, {"TILE", {{"UID", "7"}, {"TITLE", "G"}}}}})}}})}};
         const std::string Bytes = Cid::Canonical(Game), GCid = Cid::OfBytes(Bytes);
         { std::ofstream O(Dir + "/" + GCid + ".json", std::ios::binary); O << Bytes; }
-        { std::ofstream O(Dir + "/.package.json"); O << json{{"NODES", json::array({GCid})}, {"PKG", "[7] G"}}.dump(); }
 
         QDir appDir(RxData.path());
         AppModel model(&cfg, &appDir);

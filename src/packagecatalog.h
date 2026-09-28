@@ -306,8 +306,8 @@ std::vector<ReceivedFetch> PlanReceivedFetches(const nlohmann::ordered_json &Glo
 // NodeContentCids can enumerate nothing from the incomplete graph.
 bool NodeClosureIncomplete(const NodeIndex &Idx, const std::string &Id);
 
-// Received PACKAGES: a friend's share entry is a package manifest (landed as <pkg dir>/.package.json). True while any
-// manifest names a node block not yet on disk; LandReceivedPackages fetches them through the one rolling queue
+// Received PACKAGES: a friend's share entry is a package folder (landed as <pkg dir>/.package/). True while any
+// landed folder lists a node block not yet on disk; LandReceivedPackages fetches them through the one rolling queue
 // (synchronous — OFF the GUI thread); PruneStaleReceived removes received node files that neither a manifest names
 // nor its closure reaches (an older generation's copy in a kept, installed dir). Returns the number removed.
 bool ReceivedPackagesIncomplete(const nlohmann::ordered_json &GlobalConfigJSON);

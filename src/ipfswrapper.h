@@ -96,6 +96,9 @@ std::string AddNoCopyMeta(const std::string &Path, std::string *Error = nullptr)
 // error when none is whole: no folder).
 std::string BlockPut(const std::string &Bytes, std::string *Error = nullptr);
 std::string BlockGet(const std::string &Cid, std::string *Error = nullptr);
+// The entries of a UnixFS folder this node holds (name → CID), from local blocks only — false when the folder is not
+// held (or is not a folder).
+bool DirEntries(const std::string &Cid, std::map<std::string, std::string> &Out, std::string *Error = nullptr);
 std::string MakeDir(const std::map<std::string, std::string> &Entries, std::string *Error = nullptr,
                     std::vector<std::string> *NotWhole = nullptr);
 

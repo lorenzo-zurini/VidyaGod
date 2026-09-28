@@ -203,6 +203,21 @@ std::string BlockGet(const std::string &Cid, std::string *Error)
     return BytesS;
 }
 
+bool DirEntries(const std::string &Cid, std::map<std::string, std::string> &Out, std::string *Error)
+{
+    Out.clear();
+    if (Cid.empty()) { if (Error) *Error = "empty CID"; return false; }
+    char *Json = nullptr, *Err = nullptr;
+    const int Rc = VgDirEntries(Cid.c_str(), &Json, &Err);
+    const std::string JsonS = TakeStr(Json);
+    const std::string ErrS  = TakeStr(Err);
+    if (Rc != 0) { if (Error) *Error = ErrS.empty() ? ("dir entries failed: " + Cid) : ErrS; return false; }
+    const nlohmann::json J = nlohmann::json::parse(JsonS, nullptr, false);
+    if (!J.is_object()) { if (Error) *Error = "dir entries: bad listing for " + Cid; return false; }
+    for (const auto &[Name, C] : J.items()) if (C.is_string()) Out[Name] = C.get<std::string>();
+    return true;
+}
+
 std::string MakeDir(const std::map<std::string, std::string> &Entries, std::string *Error, std::vector<std::string> *NotWhole)
 {
     nlohmann::json E = nlohmann::json::object();
