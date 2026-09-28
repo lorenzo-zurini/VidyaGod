@@ -493,7 +493,7 @@ private slots:
         }
         const std::string F = IpfsWrapper::MakeDir(E, &Err);
         QVERIFY2(!F.empty(), Err.c_str());
-        Rx["FriendLibraries"]["12D3KooWAlice"][Lib].push_back(json{{"cid", F}, {"pkg", Pkg}});
+        Rx["FriendLibraries"]["Alice"][Lib].push_back(json{{"cid", F}, {"pkg", Pkg}});   // an unknown peer files under its id
     }
 
     std::map<std::string, std::string> folderFiles(const std::string & FolderCid)
@@ -1181,7 +1181,10 @@ private slots:
         json rx = json{{"Settings", {{"Paths", {{"LibraryRoot", (RxData.path() + "/LIBRARY").toStdString()}}}}}};
         const std::string Catalog = PackageCatalog::CatalogRootDir(rx);
         // TWO libraries carry the same items (the multi-dest normal: one CID job, several dests).
-        auto Land = [&](const json & SnapItems) { landShares(rx, "Alice", json{{"Games", SnapItems}, {"Favs", SnapItems}}); };
+        auto Land = [&](const json & SnapItems) {   // the snapshot held, then landed — as the app does
+            rx["FriendLibraries"]["Alice"] = json{{"Games", SnapItems}, {"Favs", SnapItems}};
+            landShares(rx, "Alice", json{{"Games", SnapItems}, {"Favs", SnapItems}});
+        };
         auto Has = [&](const std::string & Lib, const std::string & Cid) {
             return std::filesystem::exists(Catalog + "/Alice - " + Lib + "/[1] A/.package/" + Cid + ".json");
         };
@@ -1221,10 +1224,52 @@ private slots:
         QVERIFY2(Landed("Games", FolderV2) && Landed("Favs", FolderV2), "v2's folder REPLACED the stale one at EVERY dest");
         QVERIFY2(Has("Games", CidV2) && Has("Favs", CidV2), "v2's node file landed in both");
         QVERIFY2(!Has("Games", CidV1) && !Has("Favs", CidV1), "the stale v1 file went with the replaced folder");
-        rx["FriendLibraries"]["12D3KooWAlice"] = json{{"Games", Items2}, {"Favs", Items2}};   // the snapshot now held
         NodeIndex After = PackageCatalog::BuildCatalogIndex(rx);
         QCOMPARE(PackageCatalog::PruneStaleReceived(After, rx), 0);   // nothing stale left in a folder dir
+        // …and the prune does judge these dirs: a node file their folder does not list goes.
+        const std::string Stray = Catalog + "/Alice - Games/[1] A/.package/" + CidV1 + ".json";
+        std::filesystem::copy_file(Catalog + "/Alice - Games/[1] A/.package/" + CidV2 + ".json", Stray);
+        QVERIFY(PackageCatalog::PruneStaleReceived(PackageCatalog::BuildCatalogIndex(rx), rx) >= 1);
+        QVERIFY2(!std::filesystem::exists(Stray), "a node file the current folder does not list survived the prune");
 
+        IpfsWrapper::DebugResetQueue();
+        IpfsWrapper::StopNode();
+    }
+
+    // Two friends share the same library and package name — the multi-seeder normal. Each landed dir is judged against
+    // ITS friend's folder: Bob's current node is neither pruned for missing from Alice's folder, nor joined by Alice's.
+    // Teeth: map a dir to a folder by library and package name alone (whichever friend's row comes first).
+    void two_friends_packages_of_one_name_are_judged_each_by_its_own_folder()
+    {
+        std::string Err;
+        QTemporaryDir Repo; QVERIFY(Repo.isValid());
+        QVERIFY2(IpfsWrapper::StartNode((Repo.path() + "/ipfs").toStdString(), &Err), Err.c_str());
+        QTemporaryDir RxData; QVERIFY(RxData.isValid());
+        json rx = json{{"Settings", {{"Paths", {{"LibraryRoot", (RxData.path() + "/LIBRARY").toStdString()}}}}}};
+        const std::string Root = PackageCatalog::CatalogRootDir(rx);
+        const json X = json{{"LABEL", "v1"}, {"LAYERS", json::array({ json{{"DIR", "s"}} })}};
+        const json Y = json{{"LABEL", "v2"}, {"LAYERS", json::array({ json{{"DIR", "y"}} })}};
+        const std::string XB = Cid::Canonical(X), XC = Cid::OfBytes(XB), YB = Cid::Canonical(Y), YC = Cid::OfBytes(YB);
+        auto land = [&](const std::string &Peer, const std::string &C, const std::string &B) {
+            const std::string D = Root + "/" + Peer + " - Games/[1] A/.package";
+            std::filesystem::create_directories(D);
+            { std::ofstream O(D + "/" + C + ".json", std::ios::binary); O << B; }
+            std::string E;
+            if (IpfsWrapper::AddNoCopy(D + "/" + C + ".json", &E) != C) return std::string();
+            rx["FriendLibraries"][Peer]["Games"].push_back(json{{"cid", IpfsWrapper::MakeDir({{C + ".json", C}}, &E)}, {"pkg", "[1] A"}});
+            return D;
+        };
+        const std::string Alice = land("Alice", XC, XB);
+        const std::string Bob = land("Bob", YC, YB);
+        QVERIFY(!Alice.empty() && !Bob.empty());
+        QVERIFY2(!PackageCatalog::ReceivedPackagesIncomplete(rx), "each dir holds everything its own folder lists");
+        { std::ofstream O(Bob + "/.package.json"); O << "{}"; }                           // an old format's leftover
+        QCOMPARE(PackageCatalog::PruneStaleReceived(PackageCatalog::BuildCatalogIndex(rx), rx), 0);
+        QVERIFY2(std::filesystem::exists(Bob + "/.package.json"), "a file not named by a CID was pruned as a node");
+        QVERIFY2(std::filesystem::exists(Bob + "/" + YC + ".json"), "Bob's current node was pruned against Alice's folder");
+        QVERIFY2(PackageCatalog::LandReceivedPackages(rx, &Err), Err.c_str());
+        QVERIFY2(!std::filesystem::exists(Bob + "/" + XC + ".json"), "Alice's node landed in Bob's dir");
+        QVERIFY2(!std::filesystem::exists(Alice + "/" + YC + ".json"), "Bob's node landed in Alice's dir");
         IpfsWrapper::DebugResetQueue();
         IpfsWrapper::StopNode();
     }
@@ -1253,7 +1298,7 @@ private slots:
         QTemporaryDir RxData; QVERIFY(RxData.isValid());
         const json Items = json::array({ json{{"cid", F1}, {"pkg", "[1] Same"}}, json{{"cid", F2}, {"pkg", "[1] Same"}} });
         json rx = json{{"Settings", {{"Paths", {{"LibraryRoot", (RxData.path() + "/LIBRARY").toStdString()}}}}},
-                       {"FriendLibraries", {{"12D3KooWAlice", {{"Games", Items}}}}}};
+                       {"FriendLibraries", {{"Alice", {{"Games", Items}}}}}};
         landShares(rx, "Alice", json{{"Games", Items}});
         const std::string Second = PackageCatalog::CatalogRootDir(rx) + "/Alice - Games/[1] Same (" + F2.substr(0, 12) + ")/.package";
         QVERIFY2(std::filesystem::exists(Second + "/" + C2 + ".json"), "precondition: the second package landed qualified");

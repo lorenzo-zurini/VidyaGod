@@ -293,6 +293,10 @@ bool DirHasContent(const std::string &Dir);
 // installed, and the package never came back.
 std::vector<IpfsWrapper::FetchTarget> ReceivedFetchTargets(const std::vector<ReceivedFetch> &Plan);
 
+// The label a friend's received libraries are filed under ("<label> - <lib>"): their nickname from the address book,
+// else the tail of their peer ID. The ONE rule — the receiver plans with it and later finds its landed dirs by it.
+std::string ReceivedNickLabel(const std::string &PeerID);
+
 std::vector<ReceivedFetch> PlanReceivedFetches(const nlohmann::ordered_json &GlobalConfigJSON,
                                                const std::string &NickLabel, const nlohmann::ordered_json &Libs);
 
@@ -308,7 +312,7 @@ bool NodeClosureIncomplete(const NodeIndex &Idx, const std::string &Id);
 
 // Received PACKAGES: a friend's share entry is a package folder (landed as <pkg dir>/.package/). True while any
 // landed folder lists a node block not yet on disk; LandReceivedPackages fetches them through the one rolling queue
-// (synchronous — OFF the GUI thread); PruneStaleReceived removes received node files that neither a manifest names
+// (synchronous — OFF the GUI thread); PruneStaleReceived removes received node files that neither their folder lists
 // nor its closure reaches (an older generation's copy in a kept, installed dir). Returns the number removed.
 bool ReceivedPackagesIncomplete(const nlohmann::ordered_json &GlobalConfigJSON);
 [[nodiscard]] bool LandReceivedPackages(const nlohmann::ordered_json &GlobalConfigJSON, std::string *Error = nullptr);

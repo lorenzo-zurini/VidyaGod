@@ -935,11 +935,8 @@ void AppModel::enqueueReceivedShares(const QString & peer)
     if (!Config->contains("FriendLibraries") || !(*Config)["FriendLibraries"].is_object()
         || !(*Config)["FriendLibraries"].contains(P) || !(*Config)["FriendLibraries"][P].is_object()) return;
 
-    std::string Nick;
-    for (const auto & C : IpfsWrapper::FriendList()) if (C.PeerID == P) { Nick = C.Nick; break; }
-    if (Nick.empty()) Nick = P.size() > 8 ? P.substr(P.size() - 8) : P;   // never an empty dir prefix
-
-    const auto Plan = PackageCatalog::PlanReceivedFetches(*Config, Nick, (*Config)["FriendLibraries"][P]);
+    const auto Plan = PackageCatalog::PlanReceivedFetches(*Config, PackageCatalog::ReceivedNickLabel(P),
+                                                          (*Config)["FriendLibraries"][P]);
     // No local "satisfied" guess: presence and even HasLocal both LIE for reusable node dests (HasLocal is GLOBAL
     // block membership — another friend's fetch of v2 would mark this friend's stale v1 file settled forever). Every
     // planned target is enqueued with Verify semantics: the QUEUE settles repeats for free (a dest its job already
@@ -974,7 +971,7 @@ void AppModel::completeReceivedClosures()
     std::vector<std::string> Roots;
     for (const auto & [Key, N] : CatalogIndex.Nodes)
         if (N.Received && !N.BundleDir.empty() && PackageCatalog::NodeClosureIncomplete(CatalogIndex, Key)) Roots.push_back(Key);
-    const bool Packages = PackageCatalog::ReceivedPackagesIncomplete(*Config);   // a manifest naming blocks not yet on disk
+    const bool Packages = PackageCatalog::ReceivedPackagesIncomplete(*Config);   // a landed package folder listing blocks not yet on disk
     if (Roots.empty() && !Packages) return;
     FriendClosureRunning = true;
     if (Packages) LogOut("AppModel::completeReceivedClosures", "landing received package(s)");
@@ -987,7 +984,7 @@ void AppModel::completeReceivedClosures()
             const IpfsWrapper::ForegroundHold Hold;   // packages, then closures: one landing, no gap for walks
             size_t Ok = 0, Done = 0;
             if (Packages)
-            {   // the packages first: every node block each manifest names, into the package's dir
+            {   // the packages first: every node block each landed folder lists, into the package's dir
                 std::string PErr;
                 if (!PackageCatalog::LandReceivedPackages(*Cfg, &PErr))
                     LogWarn("AppModel::completeReceivedClosures", "received package(s): " + PErr);

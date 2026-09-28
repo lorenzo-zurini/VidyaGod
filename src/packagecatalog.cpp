@@ -5,7 +5,8 @@
 #include "instancestore.h"
 #include "manifestmodel.h"
 #include "nodegraph.h"        // gigagraph catalog: GatherWorkingTree / FreezeToIndex
-#include "cid.h"              // a package manifest's canonical bytes
+#include <optional>
+#include <mutex>
 #include "commonutils.h"
 #include "jsonoperations.h"
 #include "ipfswrapper.h"
@@ -1313,36 +1314,66 @@ bool CompleteClosure(const NodeIndex &Idx, const std::string &LaunchId, std::str
     return true;
 }
 
-// The folder CID a received package dir landed from: its share entry (PackageFolderCid), or — for a dir the planner
-// qualified as "<pkg> (<cid prefix>)" because two packages shared a name — the entry of that library whose CID has
-// the prefix.
-static std::string LandedFolderCid(const nlohmann::ordered_json &Config, const std::filesystem::path &PkgDir)
+std::string ReceivedNickLabel(const std::string &PeerID)
 {
-    if (std::string C = PackageFolderCid(Config, PkgDir); !C.empty()) return C;
-    const std::string Name = PkgDir.filename().string(), Parent = PkgDir.parent_path().filename().string();
-    const size_t Open = Name.rfind(" (");
-    if (Open == std::string::npos || Name.back() != ')') return {};
-    const std::string Prefix = Name.substr(Open + 2, Name.size() - Open - 3);
-    if (Prefix.size() != 12 || !Config.contains("FriendLibraries") || !Config["FriendLibraries"].is_object()) return {};
-    for (const auto &[Peer, Libs] : Config["FriendLibraries"].items())
-    {
-        if (!Libs.is_object()) continue;
-        for (const auto &[L, Rows] : Libs.items())
-        {
-            const std::string S = SafeSegment(L);
-            if (!(Parent.size() > S.size() + 3 && Parent.compare(Parent.size() - S.size() - 3, std::string::npos, " - " + S) == 0)) continue;
-            if (!Rows.is_array()) continue;
-            for (const auto &R : Rows)
-                if (R.is_object() && R.value("cid", std::string()).rfind(Prefix, 0) == 0) return R.value("cid", std::string());
-        }
-    }
-    return {};
+    for (const auto &C : IpfsWrapper::FriendList()) if (C.PeerID == PeerID && !C.Nick.empty()) return C.Nick;
+    return PeerID.size() > 8 ? PeerID.substr(PeerID.size() - 8) : PeerID;   // never an empty dir prefix
 }
 
-// The received package folders on disk: every CATALOG/<nick - lib>/<pkg>/.package/ (landed from a share entry's
-// folder). Returns the folder dir → the node CIDs the folder lists: its own listing, from blocks held here (the folder
-// root lands first) — the share entry names the folder, nothing inside it repeats the list. A folder whose share entry
-// is gone, or whose root is not held, is left out: nothing to complete it against. Bounded, untrusted bytes.
+// Where each friend's share entries landed: the planner's own routing, replayed (landed folder dir → folder CID). Exact
+// per friend — two friends sharing the same library and package name land in different dirs, and each dir is judged
+// against its own friend's folder, never the other's.
+static std::map<std::filesystem::path, std::string> LandedFolders(const nlohmann::ordered_json &Config)
+{
+    std::map<std::filesystem::path, std::string> Out;
+    if (!Config.contains("FriendLibraries") || !Config["FriendLibraries"].is_object()) return Out;
+    for (const auto &[Peer, Libs] : Config["FriendLibraries"].items())
+        for (const ReceivedFetch &T : PlanReceivedFetches(Config, ReceivedNickLabel(Peer), Libs))
+            Out[std::filesystem::path(T.Dest)] = T.Cid;
+    return Out;
+}
+
+// A folder's node files — its listing's "<cid>.json" entries — read once per folder CID: a folder never changes (its
+// CID is its content), and the receiver asks on every catalog pass. Empty optional: the folder is not held here.
+static std::optional<std::vector<std::string>> FolderNodes(const std::string &FolderCid, std::string *Error)
+{
+    static std::mutex Mu;
+    static std::map<std::string, std::vector<std::string>> Cache;
+    {
+        std::lock_guard<std::mutex> L(Mu);
+        if (auto It = Cache.find(FolderCid); It != Cache.end()) return It->second;
+    }
+    std::map<std::string, std::string> Entries;
+    if (!IpfsWrapper::DirEntries(FolderCid, Entries, Error)) return std::nullopt;
+    std::vector<std::string> Cids;
+    for (const auto &[Name, C] : Entries)
+    {
+        if (C.empty() || C.size() > 128 || Name != C + ".json") continue;   // a node file is named by its CID
+        bool Plain = true;
+        for (unsigned char ch : C) if (!std::isalnum(ch)) { Plain = false; break; }   // a CID is base32/58: a path is not
+        if (Plain) Cids.push_back(C);
+    }
+    std::lock_guard<std::mutex> L(Mu);
+    if (Cache.size() > 20000) Cache.clear();
+    Cache[FolderCid] = Cids;
+    return Cids;
+}
+
+// Says once per dir why a landed package is not completed or pruned — silence here was a package quietly frozen.
+static void ReportUnjudged(const std::filesystem::path &Folder, const std::string &Why)
+{
+    static std::mutex Mu;
+    static std::set<std::string> Said;
+    std::lock_guard<std::mutex> L(Mu);
+    if (Said.insert(Folder.string() + "\n" + Why).second)
+        LogWarn("PackageCatalog::ReceivedPackageFolders", "received package " + Folder.parent_path().filename().string()
+                + ": " + Why + " — not completed or pruned until it is");
+}
+
+// The received package folders on disk: every CATALOG/<nick - lib>/<pkg>/.package/ a friend's share entry landed
+// (LandedFolders). Returns the folder dir → the node CIDs its folder lists: its own listing, read from blocks held here
+// (the folder root lands first) — the share entry names the folder, nothing inside it repeats the list. A dir no
+// current share entry routes to, or whose folder is not held, is left out, and said so.
 static std::map<std::filesystem::path, std::vector<std::string>> ReceivedPackageFolders(const nlohmann::ordered_json &Config)
 {
     namespace fs = std::filesystem;
@@ -1350,6 +1381,7 @@ static std::map<std::filesystem::path, std::vector<std::string>> ReceivedPackage
     std::error_code Ec;
     const fs::path Root = fs::path(CatalogRootDir(Config));
     if (!fs::is_directory(Root, Ec)) return Out;
+    const auto Landed = LandedFolders(Config);
     for (const auto &Lib : fs::directory_iterator(Root, Ec))
     {
         if (!Lib.is_directory(Ec)) continue;
@@ -1358,17 +1390,12 @@ static std::map<std::filesystem::path, std::vector<std::string>> ReceivedPackage
             if (!Pkg.is_directory(Ec)) continue;
             const fs::path Folder = Pkg.path() / kPackageFolderDir;
             if (!fs::is_directory(Folder, Ec)) continue;
-            const std::string FolderCid = LandedFolderCid(Config, Pkg.path());
-            std::map<std::string, std::string> Entries;
-            if (FolderCid.empty() || !IpfsWrapper::DirEntries(FolderCid, Entries)) continue;
-            auto &Cids = Out[Folder];
-            for (const auto &[Name, C] : Entries)
-            {
-                if (C.empty() || C.size() > 128 || Name != C + ".json") continue;   // a node file is named by its CID
-                bool Plain = true;
-                for (unsigned char ch : C) if (!std::isalnum(ch)) { Plain = false; break; }   // a CID is base32/58: a path is not
-                if (Plain) Cids.push_back(C);
-            }
+            const auto It = Landed.find(Folder);
+            if (It == Landed.end()) { ReportUnjudged(Folder, "no share entry routes here now"); continue; }
+            std::string Err;
+            auto Cids = FolderNodes(It->second, &Err);
+            if (!Cids) { ReportUnjudged(Folder, "its folder " + It->second + " is not held (" + Err + ")"); continue; }
+            Out[Folder] = std::move(*Cids);
         }
     }
     return Out;
@@ -1577,6 +1604,7 @@ int PruneStaleReceived(const NodeIndex &Idx, const nlohmann::ordered_json &Confi
             const std::string Name = F.path().filename().string();
             if (!F.is_regular_file(Ec) || F.path().extension() != ".json") continue;
             if (Keep.count(F.path().stem().string())) continue;
+            if (!std::all_of(Name.begin(), Name.end() - 5, [](unsigned char c) { return std::isalnum(c); })) continue;   // not a node file
             const std::string Cid = F.path().stem().string();
             std::vector<fs::path> Elsewhere;                         // the same node's other landed copies
             for (const auto &[Other, OtherCids] : Manifests)
