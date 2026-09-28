@@ -605,6 +605,7 @@ extern "C" void IpfsNodeFriendCb(int kind, const char *json)
     case 4: E.Kind = FriendEvent::Profile;  break;
     case 5: E.Kind = FriendEvent::Removed;  break;
     case 6: E.Kind = FriendEvent::Library;  break;
+    case 7: E.Kind = FriendEvent::Sent;     break;
     default:
         LogWarn("IpfsWrapper::FriendEventTrampoline", "unknown friend event kind " + std::to_string(kind) + " — dropped");
         return;
@@ -958,6 +959,9 @@ FriendsManager::FriendsManager(QObject * parent) : QObject(parent)
         {
         case IpfsWrapper::FriendEvent::Request:
             QMetaObject::invokeMethod(this, [this, Peer, Nick, Pic]{ emit friendRequest(Peer, Nick, Pic); }, Qt::QueuedConnection);
+            break;
+        case IpfsWrapper::FriendEvent::Sent:
+            QMetaObject::invokeMethod(this, [this, Peer]{ emit friendRequestSent(Peer); }, Qt::QueuedConnection);
             break;
         case IpfsWrapper::FriendEvent::Accept:
             QMetaObject::invokeMethod(this, [this, Peer, Nick, Pic]{ emit friendAccepted(Peer, Nick, Pic); }, Qt::QueuedConnection);

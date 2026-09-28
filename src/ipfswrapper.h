@@ -368,7 +368,7 @@ bool RequestFriendLibraries(const std::string &PeerID, std::string *Error = null
 // Inbound friend event (mirrors friend.go evFriend*). Delivered on a node thread; the FriendsManager marshals it
 // to the GUI thread as Qt signals.
 struct FriendEvent {
-    enum Kind { Request, Accept, Decline, Presence, Profile, Removed, Library } Kind;
+    enum Kind { Request, Accept, Decline, Presence, Profile, Removed, Library, Sent } Kind;   // Sent: our own request
     Contact C;             // the affected contact (Request..Removed); for Removed/Library only PeerID is set
     std::string LibsJson;  // Library: the friend's COMPLETE shared set as {libName:[launchable CIDs]} JSON — a snapshot
                            // to replace wholesale ("{}" = they share nothing / withdrew everything)
@@ -469,6 +469,7 @@ public:
 
 signals:
     void friendRequest(QString peer, QString nick, QString pic);   // someone wants to be our friend
+    void friendRequestSent(QString peer);                          // we asked someone (never auto-accepted)
     void friendAccepted(QString peer, QString nick, QString pic);  // a request we sent was accepted (or crossed)
     void friendDeclined(QString peer);                             // declined / unfriended by the peer
     void friendPresence(QString peer, bool online);                // a friend's reachability changed

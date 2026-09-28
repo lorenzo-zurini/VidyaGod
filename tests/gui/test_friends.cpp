@@ -74,6 +74,23 @@ private slots:
         QCOMPARE(Spy.first().at(2).toString(), QStringLiteral("QmBobPic"));
     }
 
+    // Our own outgoing request (evFriendSent, kind 7) reaches the app as friendRequestSent — never as friendRequest,
+    // the signal the auto-accept path listens to. Taken for an incoming request, it was auto-accepted on the spot:
+    // the contact flipped to accepted, the node's retry loop (pending only) stopped, and a request whose first send
+    // missed never reached the peer (laptop replication: the seeder "accepted" a friend who never heard of it).
+    // The Go side proves addFriend emits kind 7 (TestOurOwnRequestIsNotAnIncomingOne). Teeth: map kind 7 to Request.
+    void friendsmanager_marshals_our_own_request_as_sent()
+    {
+        FriendsManager *FM = FriendsManager::instance();
+        QSignalSpy Sent(FM, &FriendsManager::friendRequestSent);
+        QSignalSpy Req(FM, &FriendsManager::friendRequest);
+        IpfsNodeFriendCb(7, R"({"peer":"12D3KooWOurRequest","state":"pending"})");   // evFriendSent
+        QVERIFY(Sent.wait(1000));
+        QCOMPARE(Sent.first().at(0).toString(), QStringLiteral("12D3KooWOurRequest"));
+        QCoreApplication::processEvents();
+        QCOMPARE(Req.count(), 0);
+    }
+
     void friendsmanager_marshals_presence_and_removed()
     {
         FriendsManager *FM = FriendsManager::instance();

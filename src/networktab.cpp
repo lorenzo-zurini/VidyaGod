@@ -33,6 +33,7 @@ NetworkTab::NetworkTab(AppModel & model, QWidget * parent) : QWidget(parent), Mo
 
     FriendsManager * FM = FriendsManager::instance();
     connect(FM, &FriendsManager::friendRequest,  this, [this]{ scheduleRefresh(); });
+    connect(FM, &FriendsManager::friendRequestSent, this, [this]{ scheduleRefresh(); });
     connect(FM, &FriendsManager::friendAccepted, this, [this]{ scheduleRefresh(); });
     connect(FM, &FriendsManager::friendDeclined, this, [this]{ scheduleRefresh(); });
     connect(FM, &FriendsManager::friendPresence, this, [this]{ scheduleRefresh(); });
