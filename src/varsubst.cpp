@@ -1,4 +1,7 @@
 #include "varsubst.h"
+
+#include <cstring>
+#include <limits>
 #include "commonutils.h"   // Log*
 
 #include <algorithm>
@@ -117,6 +120,94 @@ bool VarSubst::ConditionParses(const std::string &Expr)
     CondParser Parser(Toks);
     (void)Parser.parseOr();
     return Parser.Ok && Parser.P == Toks.size();
+}
+
+namespace {
+//EVAL's integer expression: a precedence-climbing parser over the substituted text (C precedence). Arithmetic is
+//64-bit two's complement done in unsigned (wraps, never undefined); what has no defined result fails the parse —
+//division or modulo by 0 or of INT64_MIN by -1 (a hardware trap, not an exception), a shift count outside 0..63, a
+//literal beyond 64 bits — and nesting is capped so a hostile "((((…" cannot exhaust the stack. Package data reaches
+//this on the launch path, where nothing above may throw or trap.
+struct IntParser
+{
+    using U = unsigned long long;
+    const std::string &S; size_t P = 0; bool Ok = true; int Depth = 0;
+    explicit IntParser(const std::string &Src) : S(Src) {}
+    static long long W(U V) { return static_cast<long long>(V); }
+    void Ws() { while (P < S.size() && std::isspace(static_cast<unsigned char>(S[P]))) ++P; }
+    bool Eat(const char *Op)
+    {
+        Ws();
+        const size_t N = std::strlen(Op);
+        if (S.compare(P, N, Op) != 0) return false;
+        if (N == 1 && (Op[0] == '<' || Op[0] == '>') && P + 1 < S.size() && S[P + 1] == Op[0]) return false;
+        P += N; return true;
+    }
+    long long Primary()
+    {
+        Ws();
+        if (++Depth > 64) { Ok = false; return 0; }
+        long long V = 0;
+        if (Eat("(")) { V = Or(); if (!Eat(")")) Ok = false; }
+        else if (Eat("-")) V = W(U(0) - U(Primary()));
+        else if (Eat("~")) V = W(~U(Primary()));
+        else if (Eat("!")) V = !Primary();
+        else
+        {
+            int Base = 10;
+            if (S.compare(P, 2, "0x") == 0 || S.compare(P, 2, "0X") == 0) { P += 2; Base = 16; }
+            const size_t D = P;
+            while (P < S.size() && (Base == 16 ? std::isxdigit(static_cast<unsigned char>(S[P])) : std::isdigit(static_cast<unsigned char>(S[P])))) ++P;
+            if (P == D) { Ok = false; --Depth; return 0; }
+            try { V = std::stoll(S.substr(D, P - D), nullptr, Base); } catch (...) { Ok = false; }   // beyond 64 bits
+        }
+        --Depth;
+        return V;
+    }
+    long long Mul()
+    {
+        long long V = Primary();
+        for (;;)
+        {
+            if (Eat("*")) V = W(U(V) * U(Primary()));
+            else if (Eat("/") || Eat("%"))
+            {
+                const bool Div = S[P - 1] == '/';
+                const long long R = Primary();
+                if (R == 0 || (V == std::numeric_limits<long long>::min() && R == -1)) { Ok = false; return 0; }
+                V = Div ? V / R : V % R;
+            }
+            else return V;
+        }
+    }
+    long long Add()   { long long V = Mul(); for (;;) { if (Eat("+")) V = W(U(V) + U(Mul())); else if (Eat("-")) V = W(U(V) - U(Mul())); else return V; } }
+    long long Shift()
+    {
+        long long V = Add();
+        for (;;)
+        {
+            const bool L = Eat("<<"), R = !L && Eat(">>");
+            if (!L && !R) return V;
+            const long long N = Add();
+            if (N < 0 || N > 63) { Ok = false; return 0; }
+            V = L ? W(U(V) << N) : (V >> N);   // >> of a negative: arithmetic (C++20)
+        }
+    }
+    long long And()   { long long V = Shift(); while (Eat("&")) V &= Shift(); return V; }
+    long long Xor()   { long long V = And();   while (Eat("^")) V ^= And();   return V; }
+    long long Or()    { long long V = Xor();   while (Eat("|")) V |= Xor();   return V; }
+};
+}
+
+bool VarSubst::EvaluateInteger(const std::string &Expr, long long &Out)
+{
+    IntParser Pr(Expr);
+    long long V = 0;
+    try { V = Pr.Or(); } catch (...) { return false; }
+    Pr.Ws();
+    if (!Pr.Ok || Pr.P != Expr.size()) return false;
+    Out = V;
+    return true;
 }
 
 //Renders a raw value into a consumer-specific form, requested at the point of use as %KEY:format%.

@@ -224,6 +224,25 @@ TEST(user_ownership_is_decided_by_the_most_specific_keep)
     CHECK(!NodeLower::UserOwned(Keep, "FILES/%GameDir%/Default.cfg"));                        // the file is the package's…
     CHECK(NodeLower::UserOwned(Keep, "FILES/%GameDir%/Default.cfg#/W:"));                     // …one key in it is the user's
     CHECK(!NodeLower::UserOwned(Keep, "FILES/%Documents%/elsewhere"));                            // nothing covers it: the package's
+    // A pattern keep covers the files it names (AoE2's per-profile hotkeys) and nothing beside them.
+    // Teeth: compare the pattern as a literal path.
+    const ordered_json Hk = { {"FILES/%GameDir%/player*.hki", true} };
+    CHECK(NodeLower::UserOwned(Hk, "FILES/%GameDir%/player2.hki"));
+    CHECK(NodeLower::UserOwned(Hk, "FILES/%GameDir%/PLAYER12.HKI"));
+    CHECK(!NodeLower::UserOwned(Hk, "FILES/%GameDir%/player.nfz"));
+    CHECK(!NodeLower::UserOwned(Hk, "FILES/%GameDir%/Data/player2.hki.bak"));
+    CHECK(!NodeLower::UserOwned(Hk, "FILES/%GameDir%/sub/player2.hki"));   // only files in the pattern's own folder, as persistence keeps
+    const ordered_json Ini = { {"FILES/%GameDir%/*.ini", true} };
+    CHECK(NodeLower::UserOwned(Ini, "FILES/%GameDir%/game.ini"));
+    CHECK(!NodeLower::UserOwned(Ini, "FILES/%GameDir%/sub/x.ini"));        // a * does not cross a folder
+    // The validator: a pattern only in a FILES address's last segment, and never a folder.
+    const auto Keeps = [](const char *A) {
+        return NodeLower::CheckNode(ordered_json{ {"LABEL", "n"}, {"LAYERS", ordered_json::array({ ordered_json{{"KEEP", {{A, true}}}} })} }, "n");
+    };
+    CHECK(Keeps("FILES/%GameDir%/save/slot*").empty());
+    CHECK(!Keeps("FILES/%GameDir%/*/profile.dat").empty());
+    CHECK(!Keeps("REG/HKCU/Software/*").empty());
+    CHECK(!Keeps("FILES/%GameDir%/save*/").empty());
 }
 
 TEST(lower_plan_places_folds_and_applies_edits_by_ownership)
@@ -271,6 +290,46 @@ TEST(lower_plan_places_folds_and_applies_edits_by_ownership)
     int Persists = 0;
     for (const auto &O : Ops) if (O.value("TYPE", std::string()) == "DeclarePersist") ++Persists;
     CHECK_EQ(Persists, 1);                                              // a KEEP false persists nothing
+}
+
+TEST(a_registry_value_taken_back_inside_a_kept_key_is_reapplied)
+{
+    // AoE2: the user keeps TC's key (music/sound volume) while UserPatch's options in it stay the package's (they come
+    // from the pre-launch options). The kept value is a base default under the user's restored state; the value taken
+    // back goes to the key's OVERRIDE RegEdit, re-applied after the restore. Teeth: judge the key, not the value
+    // (both values land in one base RegEdit and the user's stored option wins over the picker).
+    const ordered_json Game = { {"CID", "g"}, {"LABEL", "g"}, {"LAYERS", ordered_json::array({
+        {{"REG", {{"HKCU", {{"Software", {{"K", {{"Music Volume", "dword:00000001"}, {"Numeric Age", "dword:00000000"}}}}}}}}}},
+        {{"KEEP", {{"REG/HKCU/Software/K", true}, {"REG/HKCU/Software/K/Numeric Age", false}}}},
+    })} };
+    Fold::Library Lib;
+    Lib.Nodes["g"] = { &Game, "/b" };
+    const ordered_json Ops = NodeLower::LowerPlan(Fold::Resolve(Lib, "g"));
+    const ordered_json *Base = nullptr, *Over = nullptr;
+    for (const auto &O : Ops)
+        if (O.value("TYPE", std::string()) == "RegEdit" && O.value("REGPATH", std::string()) == "HKCU\\Software\\K")
+            (O.value("OVERRIDE", false) ? Over : Base) = &O;
+    CHECK(Base && Over);
+    CHECK(Base && (*Base)["KEYVALUES"] == ordered_json({{"Music Volume", "dword:00000001"}}));
+    CHECK(Over && (*Over)["KEYVALUES"] == ordered_json({{"Numeric Age", "dword:00000000"}}));
+    int Persists = 0;
+    for (const auto &O : Ops) if (O.value("TYPE", std::string()) == "DeclarePersist") ++Persists;
+    CHECK_EQ(Persists, 1);                                              // the key; the value taken back persists nothing
+}
+
+// EVAL is honoured only as a boolean true; anything else (a string from a foreign or unvalidated node) is ignored,
+// never thrown out of the resolve. Teeth: read it with .value("EVAL", false) (type_error on "true").
+TEST(eval_only_a_boolean_true_evaluates)
+{
+    const nlohmann::ordered_json D = { {"a", {{"DEFAULT", "1+1"}, {"EVAL", true}}}, {"b", {{"DEFAULT", "1+1"}, {"EVAL", "true"}}},
+                                       {"c", {{"DEFAULT", "1+1"}, {"EVAL", 1}}} };
+    Fold::Vars V;
+    bool Threw = false;
+    try { V = Fold::ResolveVars(D, {}, {}); } catch (...) { Threw = true; }
+    CHECK(!Threw);
+    CHECK_EQ(V["a"], std::string("2"));
+    CHECK_EQ(V["b"], std::string("1+1"));
+    CHECK_EQ(V["c"], std::string("1+1"));
 }
 
 TEST(lower_plan_mounts_only_what_take_selects_where_it_lands)

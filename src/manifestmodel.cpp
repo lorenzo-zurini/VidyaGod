@@ -47,7 +47,7 @@ namespace ManifestModel {
 
 const std::set<std::string> &NodeFields()
 {
-    static const std::set<std::string> F = { "CID", "LABEL", "POS", "COMMENT", "VARIANT", "RECOMMENDED", "LAYERS" };
+    static const std::set<std::string> F = { "CID", "LABEL", "POS", "COMMENT", "VARIANT", "RECOMMENDED", "SECTION", "LAYERS" };
     return F;
 }
 
@@ -852,8 +852,10 @@ void ValidateNodeGraph(const NodeIndex &Idx, std::vector<std::string> &Errors, s
             const std::string M = L.value("MODE", std::string());
             if (!L.contains("ANCHOR") && !L.contains("OFFSET"))
                 Errors.push_back(Tag + ": binary EDIT op has neither ANCHOR nor OFFSET (no site to patch).");
-            if (!L.contains("EXPECT"))
+            if (!L.contains("EXPECT") && M != "Or")
                 Warnings.push_back(Tag + ": binary EDIT op has no EXPECT guard — it patches without verifying the original bytes.");
+            if (M == "Or" && L.contains("EXPECT")) Errors.push_back(Tag + ": Or takes no EXPECT (the byte also carries other options' bits).");
+            if (M == "Or" && !L.contains("VALUE")) Errors.push_back(Tag + ": Or has no VALUE (the bits to set).");
             if (M == "Replace" && !L.contains("REPLACE")) Errors.push_back(Tag + ": Replace has no REPLACE bytes.");
             if (M == "Poke" && !L.contains("VALUE"))      Errors.push_back(Tag + ": Poke has no VALUE.");
             if (M == "Cave" && !L.contains("PAYLOAD"))    Errors.push_back(Tag + ": Cave has no PAYLOAD.");

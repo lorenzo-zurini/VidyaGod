@@ -201,6 +201,25 @@ BinaryPatch::Result BinaryPatch::ApplyOne(const nlohmann::ordered_json &Patch, s
         return v;
     };
 
+    // ---- Or: set bits at the site ----------------------------------------------------------------------------
+    // A flag byte several options share (UserPatch keeps six installer checkboxes as bits of one byte): each option
+    // ORs its own bits in, so any combination composes in any order. No EXPECT — the other options' bits may already
+    // be there; bits already set are the idempotent skip.
+    if (Mode == "Or")
+    {
+        if (!expect.empty()) { Msg = "Or takes no EXPECT (the byte also carries other options' bits)"; return Result::Error; }
+        auto bitsOpt = ParseHex(RenderField("VALUE"));
+        if (!bitsOpt || bitsOpt->empty()) { Msg = "VALUE is not valid hex"; return Result::Error; }
+        const std::vector<uint8_t> &bits = *bitsOpt;
+        if (site + bits.size() > Image.size()) { Msg = "patch region runs past end of file"; return Result::Error; }
+        bool set = true;
+        for (size_t i = 0; i < bits.size(); ++i) if ((Image[site + i] & bits[i]) != bits[i]) set = false;
+        if (set) { Msg = "bits already set at " + VaStr(OffToVa(*pe, site).value_or(0)); return Result::Skipped; }
+        for (size_t i = 0; i < bits.size(); ++i) Image[site + i] |= bits[i];
+        Msg = "Or " + std::to_string(bits.size()) + " byte(s)";
+        return Result::Applied;
+    }
+
     // ---- Replace / Poke: overwrite bytes at the site -------------------------------------------------------
     if (Mode == "Replace" || Mode == "Poke")
     {

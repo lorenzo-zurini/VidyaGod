@@ -412,6 +412,21 @@ private slots:
         QCOMPARE((int)cp2.KeepRegHives.size(), 3);                  // registry PATH "" → all three hives
     }
 
+    // A pattern names files in one folder: always a file keep, whatever its last segment looks like ("slot*" has no
+    // dot — by shape alone it would become a passthrough of a folder literally named "slot*" and persist nothing),
+    // and a pattern outside the last segment is refused, loudly. Teeth: classify patterns by shape; accept "save/*/x".
+    void derive_persistence_patterns_are_file_keeps()
+    {
+        ContainerParams cp("/tmp/vg_bundle"); cp.Recipe = {"c1"};
+        json pool = json{{"COMPONENTS", json::array({ json{{"COMPONENTID", "c1"}, {"SUBCOMPONENTS", json::array({
+            json{{"TYPE","DeclarePersist"},{"SCOPE","file"},{"PATH","game/save/slot*"},{"TARGET","Slots"}},
+            json{{"TYPE","DeclarePersist"},{"SCOPE","file"},{"PATH","game/*/profile.dat"},{"TARGET","Profiles"}} })}} })}};
+        LaunchResolver::DerivePersistence(pool, cp);
+        QCOMPARE((int)cp.KeepDirs.size(), 0);
+        QCOMPARE((int)cp.KeepFiles.size(), 1);
+        QCOMPARE(cp.KeepFiles[0].Path, std::string("game/save/slot*"));
+    }
+
     // Every file/dir persist lands at UserDataPath/<TARGET>. Two guards keep that namespace safe from SILENT SAVE
     // LOSS: (a) a TARGET colliding with an earlier one is refused (else the second capture clobbers the first, or two
     // dir persists mount the same durable dir RW and corrupt it); (b) a TARGET naming the instance's OWN reserved
@@ -807,6 +822,75 @@ private slots:
         QVERIFY2(!PackageCatalog::MoveGraft(idx, "game", PQ, 1, -1, nullptr, {}, Tile7), "under tile 7 the move drops onq");
     }
 
+    // The default graft order keeps related grafts together: a graft follows every offered graft its ANY/NOT names,
+    // and the one naming the latest listed goes next; unrelated ones go by LABEL. AoE2's soundtracks stay adjacent
+    // though a patch's LABEL sorts between them. Teeth: sort by LABEL (patch lands between aok and tc).
+    void the_default_graft_order_keeps_related_grafts_together()
+    {
+        NodeIndex idx;
+        idx.Nodes["base"] = contentNode("base", json::array({ json{{"DIR", "base"}} }));
+        idx.Nodes["game"] = launchNode("game", kMachine, {"base"});
+        const auto graft = [](const char *Id, const char *Label, const json &Extra) {
+            json L = json::array({ json{{"ANY", json::array({"game"})}} });
+            for (const auto &X : Extra) L.push_back(X);
+            L.push_back(json{{"DIR", Id}});
+            return parse(json{ {"CID", Id}, {"LABEL", Label}, {"LAYERS", L} }, "/tmp/vg_bundle");
+        };
+        idx.Nodes["aok"] = graft("aok", "Age of Kings", json::array());
+        idx.Nodes["tc"] = graft("tc", "The Conquerors", json::array({ json{{"NOT", "aok"}} }));
+        idx.Nodes["both"] = graft("both", "Both", json::array({ json{{"NOT", "aok"}}, json{{"NOT", "tc"}} }));
+        idx.Nodes["patch"] = graft("patch", "Patch", json::array());
+        finish(idx);
+        QCOMPARE(PackageCatalog::OfferedGrafts(idx, "game"), (std::vector<std::string>{ "aok", "tc", "both", "patch" }));
+        // A variant that contains a graft (FE holds UserPatch) is not offered it again. Teeth: offer contained grafts.
+        idx.Nodes["mod"] = parse(json{ {"CID", "mod"}, {"LABEL", "mod"}, {"VARIANT", "m"},
+            {"LAYERS", json::array({ json{{"NODE", "game"}}, json{{"NODE", "patch"}} })} }, "/tmp/vg_bundle");
+        finish(idx);
+        QCOMPARE(PackageCatalog::OfferedGrafts(idx, "mod"), (std::vector<std::string>{ "aok", "tc", "both" }));
+    }
+
+    // Ticking a graft in the pre-launch window goes through TickGraft: the graft just ticked wins, so grafts that
+    // exclude each other (AoE2's three soundtracks: TC NOT AoK, Both NOT AoK + NOT TC — a CID can only name an earlier
+    // one) behave as a choice of one, whichever side carries the NOT. A graft the ticked one needs, or one unrelated,
+    // stays ticked. Teeth: skip the unticking (all three stay ticked); untick without judging the whole list (a graft
+    // on a graft whose base is ticked unticks that base); keep G in its old place (it must go last).
+    void ticking_a_graft_unticks_the_grafts_it_excludes()
+    {
+        NodeIndex idx;
+        idx.Nodes["base"] = contentNode("base", json::array({ json{{"DIR", "base"}} }));
+        idx.Nodes["game"] = launchNode("game", kMachine, {"base"});
+        const auto graft = [](const char *Id, const json &Layers) {
+            json L = json::array({ json{{"ANY", json::array({"game"})}} });
+            for (auto &X : Layers) L.push_back(X);
+            L.push_back(json{{"DIR", Id}});
+            return parse(json{ {"CID", Id}, {"LABEL", Id}, {"LAYERS", L} }, "/tmp/vg_bundle");
+        };
+        idx.Nodes["aok"]  = graft("aok",  json::array());
+        idx.Nodes["tc"]   = graft("tc",   json::array({ json{{"NOT", "aok"}} }));
+        idx.Nodes["both"] = graft("both", json::array({ json{{"NOT", "aok"}}, json{{"NOT", "tc"}} }));
+        idx.Nodes["free"] = graft("free", json::array());
+        idx.Nodes["ona"] = parse(json{ {"CID", "ona"}, {"LABEL", "ona"},
+            {"LAYERS", json::array({ json{{"ANY", json::array({"aok"})}}, json{{"DIR", "ona"}} })} }, "/tmp/vg_bundle");
+        finish(idx);
+        using V = std::vector<std::string>;
+        V Un;
+        QCOMPARE(PackageCatalog::TickGraft(idx, "game", V{ "free", "aok" }, "both", &Un), (V{ "free", "both" }));   // both's NOT
+        QCOMPARE(Un, V{ "aok" });
+        Un.clear();
+        QCOMPARE(PackageCatalog::TickGraft(idx, "game", V{ "both", "free" }, "aok", &Un), (V{ "free", "aok" }));    // the other side's NOT
+        QCOMPARE(Un, V{ "both" });
+        Un.clear();
+        QCOMPARE(PackageCatalog::TickGraft(idx, "game", V{ "tc" }, "aok", &Un), (V{ "aok" }));
+        QCOMPARE(Un, V{ "tc" });
+        Un.clear();
+        QCOMPARE(PackageCatalog::TickGraft(idx, "game", V{ "aok", "free" }, "ona", &Un), (V{ "aok", "free", "ona" })); // needs aok
+        QVERIFY(Un.empty());
+        QCOMPARE(PackageCatalog::TickGraft(idx, "game", V{ "free", "aok" }, "ona", &Un), (V{ "free", "aok", "ona" })); // ...ticked after free:
+        QVERIFY(Un.empty());                                                     // ona cannot apply before aok, so free is not to blame
+        QCOMPARE(PackageCatalog::AppliedGrafts(idx, "game", PackageCatalog::TickGraft(idx, "game", V{ "aok", "tc", "both" }, "tc")),
+                 (V{ "tc" }));                                                                  // one soundtrack applies
+    }
+
     // `--tile <UID> [--variant <name>]` launches what the shelf shows: the named variant under that tile, else the
     // tile's default row (the variant RECOMMENDED under it). A variant presenting two tiles is a row under each.
     void the_row_under_a_tile_is_picked_by_variant_name_or_recommendation()
@@ -1014,6 +1098,25 @@ private slots:
           cp.VariableOverrides["SECRET"] = "X";                      // CLI/--var beats the pool
           LaunchResolver::ResolveCustomVariables(pool, cp, json{{"Settings", json::object()}});
           QCOMPARE(cp.CustomVariables["SECRET"], std::string("X")); }
+    }
+
+    // EVAL: a declaration whose value is an integer expression over other vars — UserPatch's Mini-map Colors from its
+    // three installer options — evaluates once its operands resolve (forward references included); an override of an
+    // operand reaches it; a plain declaration stays text. Teeth: skip EVAL (the value stays "1*2 | 0*32 | ...").
+    void resolve_custom_var_eval()
+    {
+        auto cv = [](const std::string& k, const std::string& d){ return json{{"TYPE","CustomVar"},{"KEY",k},{"DEFAULT",d}}; };
+        json mm = cv("MM", "%RED%*2 | %PURPLE%*32 | (1-%GREY%)*64"); mm["EVAL"] = true;
+        const json pool = json{{"COMPONENTS", json::array({ json{{"COMPONENTID","c1"}, {"SUBCOMPONENTS", json::array({
+            mm, cv("RED","1"), cv("PURPLE","0"), cv("GREY","1"), cv("RAW","%RED%*2") })}} })}};
+        { ContainerParams cp("/tmp/vg_bundle"); cp.Recipe = {"c1"}; cp.PackageUID = "pkg";
+          LaunchResolver::ResolveCustomVariables(pool, cp, json{{"Settings", json::object()}});
+          QCOMPARE(cp.CustomVariables["MM"], std::string("2"));
+          QCOMPARE(cp.CustomVariables["RAW"], std::string("1*2")); }            // no EVAL: text
+        { ContainerParams cp("/tmp/vg_bundle"); cp.Recipe = {"c1"}; cp.PackageUID = "pkg";
+          cp.VariableOverrides["GREY"] = "0"; cp.VariableOverrides["PURPLE"] = "1";
+          LaunchResolver::ResolveCustomVariables(pool, cp, json{{"Settings", json::object()}});
+          QCOMPARE(cp.CustomVariables["MM"], std::string("98")); }              // 2 | 32 | 64
     }
 
     // Absolute scope: a var's hierarchy-final value is visible to every reference, regardless of declaration order

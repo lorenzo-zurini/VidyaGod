@@ -1,4 +1,5 @@
 #include "nodelower.h"
+#include "commonutils.h"
 #include "fold.h"
 #include "varsubst.h"
 
@@ -42,7 +43,7 @@ const char *VfsType(const std::string &T)
     return nullptr;
 }
 
-bool IsBinaryMode(const std::string &M) { return M == "Replace" || M == "Cave" || M == "Poke"; }
+bool IsBinaryMode(const std::string &M) { return M == "Replace" || M == "Cave" || M == "Poke" || M == "Or"; }
 
 //One hive tree -> a RegEdit per key path that carries values (or is an empty object: "create this key").
 void EmitRegTree(const std::string &Path, const ordered_json &Tree, const ordered_json &Arch, ordered_json &Out)
@@ -237,6 +238,9 @@ std::string CheckLayer(const ordered_json &L)
             for (const char *F : {"DEFAULT", "COMMENT", "WHEN"})
                 if (D.contains(F) && !D[F].is_string()) return "VARS." + K + "." + F + " must be a string";
             if (D.contains("UI") && !D["UI"].is_object()) return "VARS." + K + ".UI must be an object";
+            if (D.contains("UI") && D["UI"].contains("SECTION") && !D["UI"]["SECTION"].is_string())
+                return "VARS." + K + ".UI.SECTION must be a path string";
+            if (D.contains("EVAL") && !D["EVAL"].is_boolean()) return "VARS." + K + ".EVAL must be true or false";
         }
     }
     else if (T == "ENV" || T == "DLL")
@@ -332,6 +336,14 @@ std::string CheckLayer(const ordered_json &L)
             if (K.rfind("FILES", 0) != 0 && K.rfind("REG", 0) != 0 && K.rfind("VARS", 0) != 0)
                 return "KEEP address '" + K + "' must be in FILES, REG or VARS";
             if (!V.is_boolean() && !V.is_object()) return "KEEP." + K + " must be true, false or {NAME, CLOUD}";
+            //A pattern (* or ?) names files in ONE folder: only a FILES address, only in its last segment.
+            if (HasWildcard(K))
+            {
+                if (K.rfind("FILES/", 0) != 0) return "KEEP address '" + K + "': a pattern (* ?) is only for FILES";
+                std::string Parent = K.substr(0, K.find_last_of('/'));
+                if (HasWildcard(Parent)) return "KEEP address '" + K + "': a pattern (* ?) may only be in the last segment";
+                if (K.back() == '/') return "KEEP address '" + K + "': a pattern names files, not a folder";
+            }
         }
     }
     else if (T == "ANY")
@@ -351,13 +363,16 @@ std::string CheckNode(const nlohmann::ordered_json &J, const std::string &NodeId
 {
     const std::string Tag = "node '" + NodeId + "'";
     if (!J.is_object()) return Tag + ": not an object";
-    static const std::set<std::string> Fields = { "CID", "LABEL", "POS", "COMMENT", "VARIANT", "RECOMMENDED", "LAYERS" };
+    static const std::set<std::string> Fields = { "CID", "LABEL", "POS", "COMMENT", "VARIANT", "RECOMMENDED", "SECTION", "LAYERS" };
     for (const auto &[K, V] : J.items())
-        if (!Fields.count(K)) return Tag + ": unknown field '" + K + "' (a node is CID LABEL VARIANT RECOMMENDED LAYERS)";
+        if (!Fields.count(K)) return Tag + ": unknown field '" + K + "' (a node is CID LABEL VARIANT RECOMMENDED SECTION LAYERS)";
     if (J.contains("LABEL") && !J["LABEL"].is_string()) return Tag + ": LABEL must be a string";
     if (J.contains("VARIANT") && (!J["VARIANT"].is_string() || J["VARIANT"].get<std::string>().empty()))
         return Tag + ": VARIANT must be a non-empty name";
     if (J.contains("RECOMMENDED") && !StrArray(J["RECOMMENDED"])) return Tag + ": RECOMMENDED must be a list of tile UIDs";
+    //SECTION: where a graft sits in the pre-launch graft tree, a path ("Soundtrack", "Mods/Graphics"; '/' nests).
+    if (J.contains("SECTION") && (!J["SECTION"].is_string() || J["SECTION"].get<std::string>().empty()))
+        return Tag + ": SECTION must be a non-empty path";
     if (!J.contains("LAYERS") || !J["LAYERS"].is_array()) return Tag + ": LAYERS must be a list";
     for (size_t I = 0; I < J["LAYERS"].size(); ++I)
     {
@@ -448,7 +463,11 @@ bool UserOwned(const nlohmann::ordered_json &Keep, const std::string &Address)
     {
         std::string Kl = LowerAscii(K);
         while (!Kl.empty() && Kl.back() == '/') Kl.pop_back();
-        const bool Covers = A == Kl || A.rfind(Kl + "/", 0) == 0 || A.rfind(Kl + "#", 0) == 0;
+        const std::string Hashless = A.substr(0, A.find('#'));
+        const bool Covers = A == Kl || A.rfind(Kl + "/", 0) == 0 || A.rfind(Kl + "#", 0) == 0
+                         || (HasWildcard(Kl) && Kl.rfind('/') != std::string::npos && Hashless.rfind('/') != std::string::npos
+                             && Kl.substr(0, Kl.rfind('/')) == Hashless.substr(0, Hashless.rfind('/'))
+                             && WildcardMatch(Kl.substr(Kl.rfind('/') + 1), Hashless.substr(Hashless.rfind('/') + 1)));   // a pattern keep: player*.hki, files in its own folder
         if (!Covers || (Any && Kl.size() < Best)) continue;
         Best = Kl.size(); Any = true;
         Owned = !(V.is_boolean() && !V.get<bool>());
@@ -586,21 +605,25 @@ nlohmann::ordered_json LowerPlan(const Fold::Plan &P)
         else
             Out.push_back(ContentOp(I.Kind, Path, I.Target, I.Source, I.Size, Mounts));
     }
-    //The folded registry, one RegEdit per (architecture, key) — values in fold order within a key.
+    //The folded registry, one RegEdit per (architecture, key, ownership) — values in fold order within a key. A value
+    //is judged by its own address (REG/<key>/<value>): one the package takes back inside a kept key (UserPatch's
+    //options in a key whose volumes are the user's) goes to the key's OVERRIDE RegEdit, re-applied after the user's
+    //state is restored.
     std::map<std::string, ordered_json> ByKey;
     std::vector<std::string> KeyOrder;
     for (const auto &[K, V] : P.Reg)
     {
         const std::string Arch = V.Arch.is_null() ? std::string() : Str(V.Arch);
-        const std::string Kk = Arch + '\x1f' + LowerAscii(V.Path);
+        std::string A = "REG/" + V.Path + "/" + V.Name;
+        std::replace(A.begin(), A.end(), '\\', '/');
+        const bool Over = TakenBack(A);
+        const std::string Kk = Arch + '\x1f' + LowerAscii(V.Path) + '\x1f' + (Over ? "o" : "b");
         auto It = ByKey.find(Kk);
         if (It == ByKey.end())
         {
             ordered_json R = { {"TYPE", "RegEdit"}, {"REGPATH", V.Path}, {"KEYVALUES", ordered_json::object()} };
             if (!V.Arch.is_null()) R["ARCHITECTURE"] = V.Arch;
-            std::string A = "REG/" + V.Path;
-            std::replace(A.begin(), A.end(), '\\', '/');
-            if (TakenBack(A)) R["OVERRIDE"] = true;
+            if (Over) R["OVERRIDE"] = true;
             It = ByKey.emplace(Kk, std::move(R)).first;
             KeyOrder.push_back(Kk);
         }
@@ -609,8 +632,8 @@ nlohmann::ordered_json LowerPlan(const Fold::Plan &P)
     for (const auto &[K, V] : P.RegKeys)
     {
         const std::string Arch = V.first.is_null() ? std::string() : Str(V.first);
-        const std::string Kk = Arch + '\x1f' + LowerAscii(V.second);
-        if (ByKey.count(Kk)) continue;
+        const std::string Kk = Arch + '\x1f' + LowerAscii(V.second) + '\x1f' + "b";
+        if (ByKey.count(Kk) || ByKey.count(Kk.substr(0, Kk.size() - 1) + "o")) continue;
         ordered_json R = { {"TYPE", "RegEdit"}, {"REGPATH", V.second}, {"KEYVALUES", ordered_json::object()} };
         if (!V.first.is_null()) R["ARCHITECTURE"] = V.first;
         ByKey.emplace(Kk, std::move(R));

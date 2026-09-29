@@ -1168,14 +1168,14 @@ void PkgCanvas::drawActions(json &Node, int Index, const Graph &G)
     }
 }
 
-// VARIANT and RECOMMENDED describe the node itself (they never fold), so they are drawn once here, above its layers.
+// VARIANT, RECOMMENDED and SECTION describe the node itself (they never fold), so they are drawn once here, above its layers.
 // Folded away when both are at their defaults, opened automatically when either is set.
 void PkgCanvas::drawEnvelope(json &Node)
 {
     const std::string Variant = StrOf(Node, "VARIANT");
     //RECOMMENDED is the list of tile UIDs under which this node comes first (a variant) or is pre-ticked (a graft).
     json Rec = (Node.contains("RECOMMENDED") && Node["RECOMMENDED"].is_array()) ? Node["RECOMMENDED"] : json::array();
-    const bool Interesting = !Variant.empty() || !Rec.empty();
+    const bool Interesting = !Variant.empty() || !Rec.empty() || !StrOf(Node, "SECTION").empty();
     if (Interesting) ImGui::SetNextItemOpen(true, ImGuiCond_Once);
     if (!ImGui::TreeNodeEx("node options")) return;   // no SpanAvailWidth: it spans the WINDOW, overrunning the node
 
@@ -1186,6 +1186,15 @@ void PkgCanvas::drawEnvelope(json &Node)
     if (ImGui::InputTextWithHint("##variant", "name in the picker - empty = not on the shelf", &V))
     {
         if (V.empty()) Node.erase("VARIANT"); else Node["VARIANT"] = V;
+        m_s->MarkDirty();
+    }
+    //SECTION: where a graft sits in the pre-launch graft tree (a path; '/' nests).
+    std::string Sec = StrOf(Node, "SECTION");
+    ImGui::TextUnformatted("section"); ImGui::SameLine(kLabelCol);
+    ImGui::SetNextItemWidth(kFieldWidth);
+    if (ImGui::InputTextWithHint("##section", "graft tree section - a path, / nests (Soundtrack)", &Sec))
+    {
+        if (Sec.empty()) Node.erase("SECTION"); else Node["SECTION"] = Sec;
         m_s->MarkDirty();
     }
     std::string R;
@@ -1358,7 +1367,7 @@ void PkgCanvas::drawCustomVarUI(json &Node)
             UI["CHOICES"] = std::move(Arr); m_s->MarkDirty();
         }
     }
-    TextRow("GROUP", "Group", "collapsible section in the dialog");
+    TextRow("SECTION", "Section", "dialog tree section, / nests");
     ImGui::PopID();
 }
 

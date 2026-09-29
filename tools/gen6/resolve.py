@@ -184,12 +184,88 @@ def when(expr, vars_):
         return True
 
 
+def evaluate_integer(expr):
+    """EVAL: an integer expression, exactly as VarSubst::EvaluateInteger — C precedence (unary - ~ !, * / %, + -,
+    << >>, &, ^, |), decimal or 0x hex, 64-bit two's complement wrapping; None (no value) for what has no defined
+    result there: division/modulo by 0 or of INT64_MIN by -1, a shift count outside 0..63, a literal beyond 64 bits,
+    nesting deeper than 64, an operand still a %token% or empty."""
+    MIN = -(1 << 63)
+    def w(v): return ((v - MIN) % (1 << 64)) + MIN
+    toks = re.findall(r"0[xX][0-9a-fA-F]+|[0-9]+|<<|>>|[-+*/%&|^~!()]|[^ \t\n\v\f\r]", expr)   # only ASCII whitespace separates (C isspace)
+    pos, depth = [0], [0]
+    def peek(): return toks[pos[0]] if pos[0] < len(toks) else None
+    def eat(t):
+        if peek() == t:
+            pos[0] += 1
+            return True
+        return False
+    def primary():
+        depth[0] += 1
+        if depth[0] > 64: raise ValueError
+        if eat("("):
+            v = orr()
+            if not eat(")"): raise ValueError
+        elif eat("-"): v = w(-primary())
+        elif eat("~"): v = w(~primary())
+        elif eat("!"): v = int(not primary())
+        else:
+            t = peek()
+            if t is None or not re.match(r"^(0[xX][0-9a-fA-F]+|[0-9]+)$", t): raise ValueError
+            pos[0] += 1
+            v = int(t, 16) if t[:2].lower() == "0x" else int(t)
+            if v > (1 << 63) - 1: raise ValueError                      # stoll: out of range
+        depth[0] -= 1
+        return v
+    def mul():
+        v = primary()
+        while peek() in ("*", "/", "%"):
+            o = toks[pos[0]]; pos[0] += 1; r = primary()
+            if o == "*": v = w(v * r); continue
+            if r == 0 or (v == MIN and r == -1): raise ValueError
+            q = abs(v) // abs(r) * (1 if (v < 0) == (r < 0) else -1)   # C: truncate toward zero
+            v = q if o == "/" else v - q * r
+        return v
+    def add():
+        v = mul()
+        while peek() in ("+", "-"):
+            o = toks[pos[0]]; pos[0] += 1; r = mul()
+            v = w(v + r if o == "+" else v - r)
+        return v
+    def shift():
+        v = add()
+        while peek() in ("<<", ">>"):
+            o = toks[pos[0]]; pos[0] += 1; n = add()
+            if n < 0 or n > 63: raise ValueError
+            v = w(v << n) if o == "<<" else v >> n
+        return v
+    def andd():
+        v = shift()
+        while eat("&"): v &= shift()
+        return v
+    def xor():
+        v = andd()
+        while eat("^"): v ^= andd()
+        return v
+    def orr():
+        v = xor()
+        while eat("|"): v |= xor()
+        return v
+    if not toks:
+        return None
+    try:
+        v = orr()
+    except (ValueError, IndexError):
+        return None
+    return str(v) if pos[0] == len(toks) else None
+
+
 def resolve_vars(decls, builtins, instance):
     """decls: ordered {key: declaration} (runner's first, then the game's — later wins, as the fold). Returns values.
     Priority instance > DEFAULT; a declaration's WHEN gates its VALUE to "" (evaluated inside the fixpoint)."""
-    src, gate = {}, {}
+    src, gate, ev = {}, {}, set()
     for k, d in decls.items():
         src[k] = instance.get(k, d.get("DEFAULT", ""))
+        (ev.add if d.get("EVAL") is True else ev.discard)(k)   # only a boolean true, as the engine
         w = d.get("WHEN") or (d.get("UI") or {}).get("WHEN")
         if w:
             gate[k] = w
@@ -199,6 +275,7 @@ def resolve_vars(decls, builtins, instance):
     for _ in range(16):
         m = dict(builtins); m.update(cur)
         nxt = {k: ("" if k in gate and not when(gate[k], m) else subst(src[k], m)) for k in src}
+        nxt = {k: (evaluate_integer(v) if k in ev and evaluate_integer(v) is not None else v) for k, v in nxt.items()}
         if nxt == cur:
             break
         cur = nxt
@@ -254,7 +331,7 @@ class Resolver:
         self.nodes = nodes
 
     # phase 1: variables a WHEN may read — ungated VARS, descending through ungated NODE layers
-    def phase1(self, root, builtins, instance):
+    def phase1(self, root, builtins, instance, grafts=()):
         decls, seen = {}, set()
 
         def walk(cid, view):
@@ -275,11 +352,13 @@ class Resolver:
                         k = a.split("/", 1)[1]
                         decls.pop(k, None); decls[k] = d
         walk(root, None)
+        for g in grafts:                                   # grafts follow the variant: their declarations count too
+            walk(g, None)
         return resolve_vars(decls, builtins, instance)
 
     def resolve(self, root, instance=None, builtins=None, grafts=()):
         instance, builtins = dict(instance or {}), dict(builtins or {})
-        wv = dict(builtins); wv.update(self.phase1(root, builtins, instance))
+        wv = dict(builtins); wv.update(self.phase1(root, builtins, instance, grafts))
         self.wv = wv
         self.slots, self.first, self.events, self.order = [], {}, [], []
         self._expand(root, None, "", ())
@@ -540,10 +619,27 @@ def graft_index(nodes):
 
 
 def offered_grafts(nodes, idx, plan, face_uid=None):
-    """(offered, pre-ticked): the grafts whose ANY holds against the resolved row, in the default order (LABEL, then
-    CID); pre-ticked = RECOMMENDED under the row's tile."""
+    """(offered, pre-ticked): the grafts whose ANY holds against the resolved row, in the default order; pre-ticked =
+    RECOMMENDED under the row's tile. The default order keeps related grafts together: a graft comes after every
+    offered graft its ANY/NOT names, and of the grafts that may come next, the one naming the latest listed goes first
+    (then LABEL, then CID); unrelated grafts go by LABEL."""
     present = set(plan["order"])
-    offered = sorted({g for m in present for g in idx.get(m, ())}, key=lambda g: (nodes[g][0].get("LABEL", ""), g))
+    contained = {L["NODE"] for c in present if c in nodes for L in nodes[c][0]["LAYERS"] if "NODE" in L}
+    offer = sorted({g for m in present for g in idx.get(m, ())} - contained)   # one a node of the row contains is part of it
+    names = {}
+    for g in offer:
+        for L in nodes[g][0]["LAYERS"]:
+            for m in (L.get("ANY") or []) + ([L["NOT"]] if "NOT" in L else []):
+                if m in offer and m != g:
+                    names.setdefault(g, set()).add(m)
+    at, offered, left = {}, [], list(offer)
+    while left:
+        ready = [(max([at[m] for m in names.get(g, ())], default=-1), g) for g in left if all(m in at for m in names.get(g, ()))]
+        if ready:
+            g = min(ready, key=lambda r: (-r[0], nodes[r[1]][0].get("LABEL", ""), r[1]))[1]
+        else:
+            g = left[0]                                    # grafts naming each other (a working tree): break the cycle
+        at[g] = len(offered); offered.append(g); left.remove(g)
     ticked = [g for g in offered if face_uid is not None and face_uid in (nodes[g][0].get("RECOMMENDED") or [])]
     return offered, ticked
 
@@ -716,6 +812,15 @@ def fixtures():
                           "x": N([{"NODE": "b"}, {"NODE": "c"}]), "y": N([{"NODE": "a"}, {"NODE": "b"}, Z("y"), {"NODE": "a"}])},
          [("x", {}, []), ("y", {}, [])]),
         ("cycle+missing", {"p": N([{"NODE": "q"}, {"NODE": "nope"}]), "q": N([{"NODE": "p"}, Z("q")])}, [("p", {}, [])]),
+        ("graft-when", {"base": N([Z("b")]), "v": N([{"NODE": "base"}]),
+                        "g": N([{"ANY": ["v"]}, {"VARS": {"win": {"DEFAULT": "1"}}}, {"DIR": "wnd", "TARGET": "FILES/C:/g", "WHEN": "%win%==1"},
+                                {"DIR": "cls", "TARGET": "FILES/C:/g", "WHEN": "%win%==0"}])},
+         [("v", {}, ["g"]), ("v", {"win": "0"}, ["g"])]),
+        ("eval", {"v": N([{"VARS": {"red": {"DEFAULT": "1"}, "purple": {"DEFAULT": "0"}, "grey": {"DEFAULT": "1"},
+                                    "mm": {"DEFAULT": "%red%*2 | %purple%*32 | (1-%grey%)*64", "EVAL": True},
+                                    "raw": {"DEFAULT": "%red%*2"}}},
+                          {"REG": {"HKCU": {"K": {"Mini-map Colors": "%mm:dword%"}}}}])},
+         [("v", {}, []), ("v", {"grey": "0", "purple": "1"}, [])]),
         ("when", {"opt": N([Z("opt"), {"VARS": {"inner": {"DEFAULT": "%o%x"}}}]),
                   "v": N([{"VARS": {"o": {"DEFAULT": "0"}, "g": {"DEFAULT": "a", "WHEN": "%o%==1"}}},
                           {"NODE": "opt", "WHEN": "%o%==1 && %g%==a"}, Z("v"), {"DLL": {"x": "n"}, "WHEN": "!(%o%==1)"}])},
@@ -850,6 +955,11 @@ def self_test():
         r = Resolver({k: (dict(v, CID=k), "") for k, v in fx.items()})
         for root, inst, gs in cases:
             r.resolve(root, inst, {}, gs)
+        if name == "graft-when":
+            # a graft's own declaration gates its own layer: the default applies it, the instance can turn it off
+            labs = lambda p: [it.get("payload") for it in p["seq"]]
+            assert labs(r.resolve("v", {}, {}, ["g"])) == ["b", "wnd"], labs(r.resolve("v", {}, {}, ["g"]))
+            assert labs(r.resolve("v", {"win": "0"}, {}, ["g"])) == ["b", "cls"]
         if name == "any+not+grafts":
             # a graft on a graft: offered once the graft it needs is applied — a fresh list puts it after that graft
             # (though its LABEL sorts first); an instance order that puts it first drops it
@@ -859,13 +969,33 @@ def self_test():
             d = []
             assert applied_grafts(r, gi, "v1", "9", ["g3", "g1"], dropped=d) == ["g1"] and d == ["g3"]
             assert applied_grafts(r, gi, "v1", "9", ["g1", "g3", "g1"]) == ["g1", "g3"]
+            # the default order keeps related grafts together: AoE2's soundtracks (tc NOT aok, both NOT aok + NOT tc)
+            # follow each other though "patch" sorts between them by LABEL
+            o = {"base": N([Z("b")]), "v": N([{"NODE": "base"}]),
+                 "aok": N([{"ANY": ["v"]}, Z("a")], LABEL="Age of Kings"), "tc": N([{"ANY": ["v"]}, {"NOT": "aok"}, Z("t")], LABEL="The Conquerors"),
+                 "both": N([{"ANY": ["v"]}, {"NOT": "aok"}, {"NOT": "tc"}, Z("o")], LABEL="Both"),
+                 "patch": N([{"ANY": ["v"]}, Z("p")], LABEL="Patch"), "onp": N([{"ANY": ["patch"]}, Z("q")], LABEL="A on patch")}
+            ro = R(o)
+            assert offered_grafts(ro.nodes, graft_index(ro.nodes), ro.resolve("v"))[0] == ["aok", "tc", "both", "patch"], \
+                offered_grafts(ro.nodes, graft_index(ro.nodes), ro.resolve("v"))[0]
+            assert offered_grafts(ro.nodes, graft_index(ro.nodes), ro.resolve("v", {}, {}, ["patch"]))[0] == ["aok", "tc", "both", "patch", "onp"]
+            ro.nodes["m"] = (N([{"NODE": "v"}, {"NODE": "patch"}]), "/b")   # contains patch: not offered it again
+            assert offered_grafts(ro.nodes, graft_index(ro.nodes), ro.resolve("m"))[0] == ["onp", "aok", "tc", "both"]   # onp: by LABEL
             # a graft whose NOT hits a graft already applied is not applicable; before that graft it is
             d = []
             assert applied_grafts(r, gi, "v1", "9", ["g1", "g4"], dropped=d) == ["g1"] and d == ["g4"]
             assert applied_grafts(r, gi, "v1", "9", ["g4"]) == ["g4"]
             assert applied_grafts(r, gi, "v1", None) == []          # no tile: nothing is pre-ticked
     print("self-test OK")
-
+    # EVAL arithmetic: the same table as test_varsubst.cpp's eval_integer_undefined_results_fail (64-bit, C semantics)
+    for bad in ["(~0x7fffffffffffffff)/-1", "(~0x7fffffffffffffff)%-1", "1<<64", "1<<-1", "8>>64", "0x1ffffffffffffffff",
+                "99999999999999999999", "(" * 200 + "1" + ")" * 200, "-" * 200 + "1", "1\u00a0+1", "", "%a%*2", "3+", "(1", "4/0", "12abc", "٣+1"]:
+        assert evaluate_integer(bad) is None, bad
+    for expr, want in [("1*2 | 0*32 | (1-0)*64", 66), ("0x40 & ~0x40", 0), ("1 << 3 | 2", 10), ("2 + 3 | 8", 13),
+                       ("0x7fffffffffffffff + 1", -(1 << 63)), ("-1 << 63", -(1 << 63)), ("-8 >> 1", -4), ("-7 / 2", -3),
+                       ("-7 % 2", -1), ("9007199254740993 / 1", 9007199254740993), ("(" * 30 + "1" + ")" * 30, 1)]:
+        assert evaluate_integer(expr) == str(want), (expr, evaluate_integer(expr))
+    assert resolve_vars({"x": {"DEFAULT": "1+1", "EVAL": "true"}}, {}, {})["x"] == "1+1"   # only a boolean true evaluates
 
 if __name__ == "__main__":
     if sys.argv[1:] == ["--self-test"]:

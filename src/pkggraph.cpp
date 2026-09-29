@@ -548,7 +548,7 @@ const std::vector<std::pair<const char *, const char *>> DllOpts    = {{"n,b","n
                                                                        {"n","native only"},{"b","builtin only"},{"d","disabled"}};
 const std::vector<std::pair<const char *, const char *>> ModeOpts   = {{"ConfigWrite","key = value"},{"Overwrite","whole file"},
                                                                        {"AppendLine","append a line"},{"Replace","bytes: replace"},
-                                                                       {"Poke","bytes: poke"},{"Cave","bytes: cave"}};
+                                                                       {"Poke","bytes: poke"},{"Or","bytes: set bits"},{"Cave","bytes: cave"}};
 
 //Every layer ends with its gate and its note.
 std::vector<Field> WithGate(std::vector<Field> F)
@@ -595,7 +595,7 @@ std::vector<Field> MakeFields(const std::string &Type)
                 {"MODE",    "Mode",    FieldKind::Enum, "", ModeOpts, {}},
                 {"SECTION", "Section", FieldKind::Text, "ConfigWrite: [section] (optional)", {}, {}},
                 {"KEY",     "Key",     FieldKind::Text, "ConfigWrite: the key", {}, {}},
-                {"VALUE",   "Value",   FieldKind::Text, "text value / Poke: the scalar", {}, {}},
+                {"VALUE",   "Value",   FieldKind::Text, "text value / Poke: the scalar / Or: the bits", {}, {}},
                 {"OFFSET",  "Offset",  FieldKind::Text, "bytes: 0x... (VA or file offset)", {}, {}},
                 {"ANCHOR",  "Anchor",  FieldKind::Text, "bytes: hex signature, ?? = wildcard (instead of Offset)", {}, {}},
                 {"EXPECT",  "Expect",  FieldKind::Text, "bytes: pristine bytes (the guard)", {}, {}},

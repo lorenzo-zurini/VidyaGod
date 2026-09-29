@@ -1840,6 +1840,53 @@ bool MoveGraft(const NodeIndex &Idx, const std::string &LaunchNodeId, std::vecto
     return true;
 }
 
+GraftChoice CurrentGraftChoice(const NodeIndex &Idx, const GraftChoice &Saved)
+{
+    if (!Saved) return Saved;
+    for (const std::string &G : *Saved)
+        if (!Idx.Find(G))
+        {
+            LogOut("PackageCatalog::CurrentGraftChoice", "saved graft list names " + G + ", no longer in the library — "
+                   "saved against an older version of the package; using the tile's defaults");
+            return std::nullopt;
+        }
+    return Saved;
+}
+
+std::vector<std::string> TickGraft(const NodeIndex &Idx, const std::string &LaunchNodeId, const std::vector<std::string> &Ticked,
+                                   const std::string &G, std::vector<std::string> *Unticked,
+                                   const std::map<std::string, std::string> &Instance,
+                                   const std::map<std::string, std::string> &Builtins)
+{
+    const auto Applies = [&](std::vector<std::string> List) {
+        List.push_back(G);
+        const std::vector<std::string> A = AppliedGrafts(Idx, LaunchNodeId, List, Instance, Builtins);
+        return std::find(A.begin(), A.end(), G) != A.end();
+    };
+    //In list order: X goes when G applies after the grafts kept so far but not once X is among them — so several
+    //exclusions go at once, and a graft that needs an earlier one is judged with it in place.
+    std::vector<std::string> Keep;
+    for (const std::string &X : Ticked)
+    {
+        if (X == G) continue;
+        std::vector<std::string> With = Keep;
+        With.push_back(X);
+        if (Applies(Keep) && !Applies(With)) { if (Unticked) Unticked->push_back(X); continue; }
+        Keep = std::move(With);
+    }
+    //G needs a graft ticked after the one that excludes it (it could not apply at that point): the one whose removal
+    //lets it apply goes.
+    for (size_t I = 0; I < Keep.size() && !Applies(Keep);)
+    {
+        std::vector<std::string> Without = Keep;
+        Without.erase(Without.begin() + (long)I);
+        if (Applies(Without)) { if (Unticked) Unticked->push_back(Keep[I]); Keep = std::move(Without); }
+        else ++I;
+    }
+    Keep.push_back(G);
+    return Keep;
+}
+
 std::vector<std::string> OfferedGrafts(const NodeIndex &Idx, const std::string &LaunchNodeId, std::vector<std::string> *PreTicked,
                                        const GraftChoice &Chosen, const std::string &FaceUid)
 {

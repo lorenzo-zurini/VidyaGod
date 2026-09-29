@@ -80,6 +80,11 @@ std::string HumanBytes(long long Bytes);
 //uniqueness needs no shared counter across bundles/sessions/machines. Replaced by the real CID at the next publish.
 std::string MakeDraftHandle();
 
+//A file-name pattern: '*' matches any run of characters, '?' one; ASCII case-insensitive (the games' file systems
+//ignore case). HasWildcard: does a name use either.
+bool WildcardMatch(const std::string &Pattern, const std::string &Name);
+inline bool HasWildcard(const std::string &S) { return S.find_first_of("*?") != std::string::npos; }
+
 //Structured launch-step marker: context "LaunchStep", message "<k>/<n> <label>". This is a CONTRACT, not
 //log phrasing: the prelaunch progress bar/status parse exactly this shape (LaunchThread), so the engine
 //announces every phase through here — never by ad-hoc log-line heuristics.

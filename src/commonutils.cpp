@@ -1,5 +1,6 @@
 #include "commonutils.h"
 
+#include <cctype>
 #include <cstdlib>
 #include <cstdint>
 
@@ -185,4 +186,19 @@ std::string MakeDraftHandle()
     char Buf[24];
     std::snprintf(Buf, sizeof Buf, "draft-%016llx", (unsigned long long)R);
     return Buf;
+}
+
+bool WildcardMatch(const std::string &Pattern, const std::string &Name)
+{
+    const auto Low = [](char C) { return (char)std::tolower((unsigned char)C); };
+    size_t P = 0, N = 0, Star = std::string::npos, Mark = 0;
+    while (N < Name.size())
+    {
+        if (P < Pattern.size() && (Pattern[P] == '?' || Low(Pattern[P]) == Low(Name[N]))) { ++P; ++N; }
+        else if (P < Pattern.size() && Pattern[P] == '*') { Star = P++; Mark = N; }
+        else if (Star != std::string::npos) { P = Star + 1; N = ++Mark; }   // let the last '*' take one more
+        else return false;
+    }
+    while (P < Pattern.size() && Pattern[P] == '*') ++P;
+    return P == Pattern.size();
 }

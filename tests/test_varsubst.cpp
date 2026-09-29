@@ -1,3 +1,4 @@
+#include <limits>
 #include "vgtest.h"
 #include "varsubst.h"
 
@@ -187,4 +188,52 @@ TEST(json_substitution_covers_keys_values_and_nesting)
     CHECK_EQ(Out["LIST"][2].get<bool>(), true);
     CHECK(Out["NESTED"]["inner"].contains("host"));
     CHECK_EQ(Out["NESTED"]["inner"].value("host", std::string()), std::string("C:\\Program Files"));
+}
+
+// EVAL's integer expressions: a registry bitfield from independent options (UserPatch's Mini-map Colors: darken red
+// 0x02, darken purple 0x20, light grey 0x40 unless darkened). C precedence; hex and decimal; anything unresolved or
+// malformed fails and leaves the output alone. Teeth: drop | (the bits no longer combine); parse a %token% as 0;
+// give + and | one precedence.
+TEST(eval_integer_expressions)
+{
+    long long V = -1;
+    CHECK(VarSubst::EvaluateInteger("1*2 | 0*32 | (1-0)*64", V)); CHECK_EQ(V, 66LL);
+    CHECK(VarSubst::EvaluateInteger("0x40 & ~0x40", V));          CHECK_EQ(V, 0LL);
+    CHECK(VarSubst::EvaluateInteger("1 << 3 | 2", V));             CHECK_EQ(V, 10LL);
+    CHECK(VarSubst::EvaluateInteger("2 + 3 | 8", V));              CHECK_EQ(V, 13LL);     // + binds tighter than |
+    CHECK(VarSubst::EvaluateInteger(" 2*(3+4) ", V));              CHECK_EQ(V, 14LL);
+    V = 99;
+    CHECK(!VarSubst::EvaluateInteger("%a%*2", V));                 CHECK_EQ(V, 99LL);     // not resolved yet
+    CHECK(!VarSubst::EvaluateInteger("", V));
+    CHECK(!VarSubst::EvaluateInteger("3+", V));
+    CHECK(!VarSubst::EvaluateInteger("(1", V));
+    CHECK(!VarSubst::EvaluateInteger("4/0", V));
+    CHECK(!VarSubst::EvaluateInteger("12abc", V));
+}
+
+// What has no defined result fails instead of trapping or invoking UB — package data reaches this on the launch path:
+// INT64_MIN / -1 and % -1 (a hardware trap on x86), shift counts outside 0..63, literals beyond 64 bits, runaway
+// nesting. Overflow wraps as 64-bit two's complement. The Python reference (resolve.py self-test) holds the same table.
+// Teeth: drop the MIN/-1 guard (the test process dies of SIGFPE); drop the shift range check (UBSan, and 1<<64 == 1).
+TEST(eval_integer_undefined_results_fail)
+{
+    long long V = 7;
+    CHECK(!VarSubst::EvaluateInteger("(~0x7fffffffffffffff)/-1", V));
+    CHECK(!VarSubst::EvaluateInteger("(~0x7fffffffffffffff)%-1", V));
+    CHECK(!VarSubst::EvaluateInteger("1<<64", V));
+    CHECK(!VarSubst::EvaluateInteger("1<<-1", V));
+    CHECK(!VarSubst::EvaluateInteger("8>>64", V));
+    CHECK(!VarSubst::EvaluateInteger("0x1ffffffffffffffff", V));
+    CHECK(!VarSubst::EvaluateInteger("99999999999999999999", V));
+    CHECK(!VarSubst::EvaluateInteger(std::string(200, '(') + "1" + std::string(200, ')'), V));
+    CHECK(!VarSubst::EvaluateInteger(std::string(200, '-') + "1", V));
+    CHECK(!VarSubst::EvaluateInteger("1\xc2\xa0+1", V));                // only ASCII whitespace separates
+    CHECK_EQ(V, 7LL);
+    CHECK(VarSubst::EvaluateInteger("0x7fffffffffffffff + 1", V));   CHECK_EQ(V, std::numeric_limits<long long>::min());
+    CHECK(VarSubst::EvaluateInteger("-1 << 63", V));                 CHECK_EQ(V, std::numeric_limits<long long>::min());
+    CHECK(VarSubst::EvaluateInteger("-8 >> 1", V));                  CHECK_EQ(V, -4LL);
+    CHECK(VarSubst::EvaluateInteger("-7 / 2", V));                   CHECK_EQ(V, -3LL);
+    CHECK(VarSubst::EvaluateInteger("-7 % 2", V));                   CHECK_EQ(V, -1LL);
+    CHECK(VarSubst::EvaluateInteger("9007199254740993 / 1", V));     CHECK_EQ(V, 9007199254740993LL);
+    CHECK(VarSubst::EvaluateInteger(std::string(30, '(') + "1" + std::string(30, ')'), V));  CHECK_EQ(V, 1LL);
 }

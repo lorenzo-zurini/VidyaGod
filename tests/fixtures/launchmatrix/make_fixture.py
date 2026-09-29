@@ -258,12 +258,12 @@ def nodes():
 
     # ---- VARS: defaults, UI kinds, cross-reference, a gated value -----------------------------------------
     v1 = add("lm_v_text", [node(probe), {"VARS": {"lm_text": {"DEFAULT": "hello",
-                                                              "UI": {"LABEL": "Text", "CONTROL": "text", "GROUP": "Matrix"}}}}])
+                                                              "UI": {"LABEL": "Text", "CONTROL": "text", "SECTION": "Matrix"}}}}])
     v2 = add("lm_v_enum", [node(v1), {"VARS": {"lm_mode": {"DEFAULT": "beta", "UI": {
-        "LABEL": "Mode", "CONTROL": "enum", "GROUP": "Matrix",
+        "LABEL": "Mode", "CONTROL": "enum", "SECTION": "Matrix",
         "CHOICES": [{"LABEL": "Alpha", "VALUE": "alpha"}, {"LABEL": "Beta", "VALUE": "beta"}]}}}}])
     v3 = add("lm_v_bool", [node(v2), {"VARS": {"lm_flag": {"DEFAULT": "1",
-                                                           "UI": {"LABEL": "Flag", "CONTROL": "bool", "GROUP": "Matrix"}}}}])
+                                                           "UI": {"LABEL": "Flag", "CONTROL": "bool", "SECTION": "Matrix"}}}}])
     # A DEFAULT that references other variables — resolution is a fixpoint, so forward order must not matter.
     v4 = add("lm_v_derived", [node(v3), {"VARS": {"lm_derived": {"DEFAULT": "%lm_text%-%lm_mode%"}}}])
     # A declaration's WHEN gates its VALUE (to ""), inside the fixpoint.

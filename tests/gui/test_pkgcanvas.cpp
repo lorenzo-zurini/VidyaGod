@@ -2141,7 +2141,10 @@ private slots:
             //no room below, which is exactly what it does for a combo near the bottom of the screen — and
             //driving the node low, which this test now does on purpose, makes that the common case.
             const float DEdge = std::min(std::abs(Min.y - Hit.y), std::abs(Max.y - Hit.y));
-            if (DX > 60.0f || DEdge > 60.0f)
+            //"Within a widget's height": a widget is z times taller at zoom z, so the tolerance scales with it (a
+            //click near a combo's top edge is one frame height from the popup that opens at its bottom edge).
+            const float Tol = std::max(60.0f, ImGui::GetFrameHeight() * z + 8.0f);
+            if (DX > Tol || DEdge > Tol)
                 outliers << QString("zoom %1: clicked at (%2,%3) and the popup opened at [%4,%5 .. %6,%7] - "
                                     "%8px off horizontally, nearest edge %9px from the click")
                                 .arg(z).arg(Hit.x).arg(Hit.y).arg(Min.x).arg(Min.y).arg(Max.x).arg(Max.y)

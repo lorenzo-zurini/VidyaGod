@@ -6,6 +6,7 @@
 #include <filesystem>
 #include <map>
 #include <optional>
+#include <set>
 #include <string>
 #include <vector>
 
@@ -136,6 +137,7 @@ public:
     //instance config, which sits OUTSIDE any Target, is never in a game-writable mount). DROP was removed.
     std::vector<PersistTarget> KeepDirs;                            //file dir persists — durable UserDataPath/<Target> unioned RW at runtime <Path> ("" = whole runtime)
     std::vector<PersistTarget> KeepFiles;                           //file single-file persists — seeded/captured by copy: UserDataPath/<Target> <-> runtime <Path>
+    std::map<std::string, std::set<std::string>> SeededPatternFiles; //a pattern keep's Path -> the names (lower case) seeded this session: capture drops only these
     std::vector<std::string> KeepRegKeys;                           //registry key-subtree persists (SCOPE registry, PATH HKCU\..) — partial-hive merge (Wine-only)
     std::vector<std::string> KeepRegHives;                          //registry whole-hive persist (SCOPE registry, PATH "" — authoring): the three .reg files (Wine-only)
     nlohmann::ordered_json RunnerPersistLayers = nlohmann::ordered_json::array(); //RESOLVED — every Persist layer in the runner CHAIN's closures (its platform keep-set: where user-state lives), folded into DerivePersistence before the game's. NOT the boundary node's own layers: a node is one layer of one TYPE, so a DeclareExec node cannot also carry a Persist

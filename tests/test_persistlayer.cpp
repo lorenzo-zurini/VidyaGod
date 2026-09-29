@@ -81,3 +81,79 @@ TEST(persistlayer_empty_is_graceful)
     CHECK(!fs::exists(CP.WriteLayerPath / "pfx/drive_c/game/save.dat"));
     fs::remove_all(d);
 }
+
+// A pattern keep (AoE2's per-profile hotkeys, player*.hki beside the executable): every matching file the session left
+// is captured into the durable directory (Target) under its own name, and every stored one is seeded back beside the
+// game; a non-matching neighbour is left alone, and a stored file the session deleted is dropped from the store.
+// Matching ignores case, as the game's file system does. Teeth: treat the pattern as a plain file (nothing captured);
+// skip the drop (a deleted profile's hotkeys come back); match case-sensitively (PLAYER3.HKI is lost).
+TEST(persistlayer_pattern_keep_captures_seeds_and_drops_by_name)
+{
+    auto d = PlTmp("pattern");
+    ContainerParams CP(d);
+    CP.UserDataPath   = d / "USERDATA";
+    CP.WriteLayerPath = d / "WRITELAYER";
+    CP.RuntimePath    = d / "RUNTIME";
+    CP.KeepFiles      = { { "pfx/drive_c/749/player*.hki", "Hotkeys", true } };
+    const fs::path Game = CP.RuntimePath / "pfx/drive_c/749";
+    WriteFileAt(Game / "player1.hki", "one");
+    WriteFileAt(Game / "player2.hki", "two");
+    WriteFileAt(Game / "PLAYER3.HKI", "three");
+    WriteFileAt(Game / "player.nfz", "profiles");                               // a neighbour the pattern does not name
+    CHECK(PersistLayer::CapturePersistFiles(CP));
+    CHECK_EQ(ReadFileAt(CP.UserDataPath / "Hotkeys/player1.hki"), std::string("one"));
+    CHECK_EQ(ReadFileAt(CP.UserDataPath / "Hotkeys/player2.hki"), std::string("two"));
+    CHECK_EQ(ReadFileAt(CP.UserDataPath / "Hotkeys/PLAYER3.HKI"), std::string("three"));
+    CHECK(!fs::exists(CP.UserDataPath / "Hotkeys/player.nfz"));
+    CHECK(PersistLayer::SeedPersistFiles(CP));
+    CHECK_EQ(ReadFileAt(CP.WriteLayerPath / "pfx/drive_c/749/player2.hki"), std::string("two"));
+    CHECK_EQ(ReadFileAt(CP.WriteLayerPath / "pfx/drive_c/749/PLAYER3.HKI"), std::string("three"));
+    CHECK(PersistLayer::HasSavedCopy(CP, "pfx/drive_c/749/player2.hki"));
+    CHECK(!PersistLayer::HasSavedCopy(CP, "pfx/drive_c/749/player9.hki"));
+    fs::remove(Game / "player2.hki");                                           // the user deleted that profile
+    CHECK(PersistLayer::CapturePersistFiles(CP));
+    CHECK(!fs::exists(CP.UserDataPath / "Hotkeys/player2.hki"));
+    CHECK(fs::exists(CP.UserDataPath / "Hotkeys/player1.hki"));
+    fs::remove_all(d);
+}
+
+// A pattern keep never takes "missing" for "deleted" unless this session put the file there: a stored profile whose
+// seed failed (here the write layer's game folder is a file, so the copy cannot land) is absent from the runtime, and
+// capture must keep the only good copy. Teeth: drop every stored match absent from the runtime (the old rule).
+TEST(persistlayer_pattern_capture_keeps_a_file_it_could_not_seed)
+{
+    auto d = PlTmp("pattern_seedfail");
+    ContainerParams CP(d);
+    CP.UserDataPath   = d / "USERDATA";
+    CP.WriteLayerPath = d / "WRITELAYER";
+    CP.RuntimePath    = d / "RUNTIME";
+    CP.KeepFiles      = { { "pfx/drive_c/749/player*.hki", "Hotkeys", true } };
+    WriteFileAt(CP.UserDataPath / "Hotkeys/player2.hki", "saved");
+    WriteFileAt(CP.WriteLayerPath / "pfx/drive_c/749", "not a directory");     // the seed's copy cannot land
+    CHECK(!PersistLayer::SeedPersistFiles(CP));
+    WriteFileAt(CP.RuntimePath / "pfx/drive_c/749/player1.hki", "new");         // the session ran without player2
+    CHECK(PersistLayer::CapturePersistFiles(CP));
+    CHECK_EQ(ReadFileAt(CP.UserDataPath / "Hotkeys/player2.hki"), std::string("saved"));
+    CHECK_EQ(ReadFileAt(CP.UserDataPath / "Hotkeys/player1.hki"), std::string("new"));
+    fs::remove_all(d);
+}
+
+// Names compare ignoring case, as the game's file system does: a game that rewrites player1.hki as PLAYER1.HKI leaves
+// ONE stored copy — the new one — never both (seeded together, they would shadow each other unpredictably), and the
+// seeded name counts as still present. Teeth: compare names case-sensitively (the fresh save is dropped, or both kept).
+TEST(persistlayer_pattern_capture_matches_names_ignoring_case)
+{
+    auto d = PlTmp("pattern_case");
+    ContainerParams CP(d);
+    CP.UserDataPath   = d / "USERDATA";
+    CP.WriteLayerPath = d / "WRITELAYER";
+    CP.RuntimePath    = d / "RUNTIME";
+    CP.KeepFiles      = { { "pfx/drive_c/749/player*.hki", "Hotkeys", true } };
+    WriteFileAt(CP.UserDataPath / "Hotkeys/player1.hki", "old");
+    CHECK(PersistLayer::SeedPersistFiles(CP));
+    WriteFileAt(CP.RuntimePath / "pfx/drive_c/749/PLAYER1.HKI", "new");
+    CHECK(PersistLayer::CapturePersistFiles(CP));
+    CHECK(!fs::exists(CP.UserDataPath / "Hotkeys/player1.hki"));
+    CHECK_EQ(ReadFileAt(CP.UserDataPath / "Hotkeys/PLAYER1.HKI"), std::string("new"));
+    fs::remove_all(d);
+}

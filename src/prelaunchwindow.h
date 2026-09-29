@@ -121,6 +121,8 @@ private:
     void RefreshModuleLocks();
     // Collects the toggle states into a node-id -> enabled map (passed to the engine as ModuleStates).
     std::vector<std::string> CollectGrafts() const;
+    std::vector<std::string> AppliedOrder;            // the ticked grafts in the order they apply (see CollectGrafts)
+    std::pair<std::map<std::string, std::string>, std::map<std::string, std::string>> GraftJudging() const;   // (instance, builtins)
     void MoveSelectedGraft(int By);                   // reorder the instance's graft list (refused if a graft would drop)
     std::optional<std::vector<std::string>> SavedGrafts() const;  // this tile's saved graft list (nullopt: none yet)
     void StoreGrafts(const std::vector<std::string>& List);       // save this tile's graft list
@@ -162,7 +164,7 @@ private:
     QCheckBox*    DryRunCheck           = nullptr;
     QCheckBox*    PreserveRuntimeCheck  = nullptr;
     QGroupBox*    CustomVarGroup        = nullptr;
-    QFormLayout*  CustomVarForm         = nullptr;
+    QTreeWidget*  OptionsTree           = nullptr;   // options, in collapsible SECTION rows
     QGroupBox*    ModuleGroup           = nullptr;
     QTreeWidget*  ModuleTree            = nullptr;
     QPushButton*  GraftUp               = nullptr;   // move the selected ticked graft earlier / later in the order

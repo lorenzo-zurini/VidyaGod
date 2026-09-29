@@ -122,6 +122,7 @@ bool LaunchResolver::ResolveCustomVariables(const nlohmann::ordered_json &MANIFE
     std::map<std::string, std::string> Sources;
     std::set<std::string> Secret;                                  // keys whose value must not be logged
     std::map<std::string, std::string> WhenCond;                   // key -> its WHEN condition (gates value to "")
+    std::set<std::string> Eval;                                    // keys whose value is an integer expression (EVAL)
     for (const std::string &Key : KeyOrder)
     {
         const nlohmann::ordered_json &CV = Winning[Key];
@@ -132,6 +133,7 @@ bool LaunchResolver::ResolveCustomVariables(const nlohmann::ordered_json &MANIFE
         std::string When = CV.value("WHEN", std::string());
         if (When.empty() && UI.contains("WHEN") && UI["WHEN"].is_string()) When = UI["WHEN"].get<std::string>();
         if (!When.empty()) WhenCond[Key] = When;
+        if (CV.contains("EVAL") && CV["EVAL"].is_boolean() && CV["EVAL"].get<bool>()) Eval.insert(Key);   // a non-boolean is ignored, never thrown
         const bool Pooled = UI.value("CONTROL", std::string()) == "secret"
                             && UI.contains("POOL") && UI["POOL"].is_array() && !UI["POOL"].empty();
         if (Pooled) Secret.insert(Key);
@@ -197,10 +199,26 @@ bool LaunchResolver::ResolveCustomVariables(const nlohmann::ordered_json &MANIFE
             const auto Wit = WhenCond.find(Key);
             if (Wit != WhenCond.end() && !VarSubst::EvaluateCondition(Wit->second, Map))
                 Val.clear();                                       // WHEN false → gated off (empty)
-            else { Val = Sources[Key]; VarSubst::StringVariableSubstitution(Val, Map); }
+            else
+            {
+                Val = Sources[Key]; VarSubst::StringVariableSubstitution(Val, Map);
+                //EVAL: once every operand has resolved, the value is the expression's integer (until then the text
+                //stays, and a later pass evaluates it).
+                long long N;
+                if (Eval.count(Key) && VarSubst::EvaluateInteger(Val, N)) Val = std::to_string(N);
+            }
             if (Val != ContainerParams.CustomVariables[Key]) { ContainerParams.CustomVariables[Key] = Val; Changed = true; }
         }
         if (!Changed) break;
+    }
+    //An EVAL that never evaluated (an operand gated to "" by its WHEN, a typo, a value out of range) would otherwise
+    //pass its raw text on — into a registry dword, a patch byte — with only a generic render warning. Say which.
+    for (const std::string &Key : Eval)
+    {
+        long long N;
+        if (!VarSubst::EvaluateInteger(ContainerParams.CustomVariables[Key], N))
+            LogErr("ResolveCustomVariables", "EVAL of " + Key + " did not evaluate to an integer: '"
+                   + ContainerParams.CustomVariables[Key] + "' (an operand empty or unresolved, or out of range)");
     }
     for (const std::string &Key : KeyOrder)
         LogOut("ResolveCustomVariables", "  " + Key + " = " + (Secret.count(Key) ? std::string("[secret] (set)") : ContainerParams.CustomVariables[Key]));

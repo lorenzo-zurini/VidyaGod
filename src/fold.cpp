@@ -408,10 +408,12 @@ Vars ResolveVars(const json &Decls, const Vars &Builtins, const Vars &Instance)
     std::vector<std::string> Keys;
     Vars Src;
     std::map<std::string, std::string> Gate;
+    std::set<std::string> Eval;
     if (Decls.is_object())
         for (const auto &[K, D] : Decls.items())
         {
             if (!Src.count(K)) Keys.push_back(K);
+            if (D.is_object() && D.contains("EVAL") && D["EVAL"].is_boolean() && D["EVAL"].get<bool>()) Eval.insert(K); else Eval.erase(K);
             const auto It = Instance.find(K);
             Src[K] = It != Instance.end() ? It->second : (D.is_object() && D.contains("DEFAULT") ? Str(D["DEFAULT"]) : std::string());
             std::string W = D.is_object() ? Str(D.value("WHEN", json())) : std::string();
@@ -429,6 +431,8 @@ Vars ResolveVars(const json &Decls, const Vars &Builtins, const Vars &Instance)
         {
             const auto G = Gate.find(K);
             Next[K] = (G != Gate.end() && !VarSubst::EvaluateCondition(G->second, M)) ? std::string() : Subst(Src[K], M);
+            long long N;
+            if (Eval.count(K) && VarSubst::EvaluateInteger(Next[K], N)) Next[K] = std::to_string(N);   // EVAL: an integer
         }
         if (Next == Cur) break;
         Cur = std::move(Next);
@@ -513,6 +517,9 @@ static Plan ResolveImpl(const Library &Lib, const std::string &Root, const Vars 
     json Decls1 = json::object();
     std::set<std::string> Seen;
     Phase1Walk(Lib, Root, nullptr, Seen, Decls1);
+    //Grafts follow the variant in the list, so their plain declarations count too — a graft's own options (UserPatch's
+    //installer features) gate its own layers.
+    for (const auto &G : Grafts) Phase1Walk(Lib, G, nullptr, Seen, Decls1);
     Vars Wv = Builtins;
     for (const auto &[K, V] : ResolveVars(Decls1, Builtins, Instance)) Wv[K] = V;
     P.WhenVars = Wv;
@@ -688,13 +695,53 @@ Offer OfferedGrafts(const Library &Lib, const GraftIndex &Idx, const Plan &P, co
     std::set<std::string> Set;
     for (const auto &C : P.Order)
         if (auto It = Idx.find(C); It != Idx.end()) Set.insert(It->second.begin(), It->second.end());
+    //A graft a node of the row contains (FE holds UserPatch in a NODE layer) is part of it, not an option; an applied
+    //graft sits at the top of the list, contained by nothing, and stays offered.
+    for (const auto &C : P.Order)
+        if (const auto *E = Lib.Find(C); E && E->Node->contains("LAYERS") && (*E->Node)["LAYERS"].is_array())
+            for (const auto &L : (*E->Node)["LAYERS"])
+                if (L.is_object() && L.contains("NODE")) Set.erase(Str(L["NODE"]));
     Offer O;
     O.Offered.assign(Set.begin(), Set.end());
     auto Label = [&](const std::string &G) { const auto *E = Lib.Find(G); return E ? Str(E->Node->value("LABEL", json())) : std::string(); };
-    std::sort(O.Offered.begin(), O.Offered.end(), [&](const std::string &A, const std::string &B) {
-        const std::string La = Label(A), Lb = Label(B);
-        return La != Lb ? La < Lb : A < B;
-    });
+    //The default order keeps related grafts together: a graft comes after every offered graft its ANY/NOT names, and of
+    //the grafts that may come next, the one naming the latest listed goes first (then LABEL, then CID) — a graft on a
+    //graft, or one excluding another, follows it; unrelated grafts go by LABEL.
+    std::map<std::string, std::set<std::string>> Names;
+    for (const auto &G : Set)
+    {
+        const auto *E = Lib.Find(G);
+        if (!E || !E->Node->contains("LAYERS") || !(*E->Node)["LAYERS"].is_array()) continue;
+        for (const auto &L : (*E->Node)["LAYERS"])
+        {
+            if (!L.is_object()) continue;
+            if (L.contains("ANY") && L["ANY"].is_array()) for (const auto &M : L["ANY"]) if (Set.count(Str(M)) && Str(M) != G) Names[G].insert(Str(M));
+            if (L.contains("NOT") && Set.count(Str(L["NOT"])) && Str(L["NOT"]) != G) Names[G].insert(Str(L["NOT"]));
+        }
+    }
+    std::map<std::string, int> At;
+    std::vector<std::string> Left(Set.begin(), Set.end()), Ordered;
+    while (!Left.empty())
+    {
+        int Best = -1, BestLatest = -2;
+        for (int I = 0; I < (int)Left.size(); ++I)
+        {
+            int Latest = -1;
+            bool Ready = true;
+            for (const auto &M : Names[Left[(size_t)I]])
+                if (const auto It = At.find(M); It == At.end()) { Ready = false; break; } else Latest = std::max(Latest, It->second);
+            if (!Ready) continue;
+            const bool Better = Best < 0 || Latest > BestLatest
+                || (Latest == BestLatest && (Label(Left[(size_t)I]) != Label(Left[(size_t)Best]) ? Label(Left[(size_t)I]) < Label(Left[(size_t)Best])
+                                                                                                  : Left[(size_t)I] < Left[(size_t)Best]));
+            if (Better) { Best = I; BestLatest = Latest; }
+        }
+        if (Best < 0) Best = 0;   // grafts naming each other (a working tree): break the cycle at the first
+        At[Left[(size_t)Best]] = (int)Ordered.size();
+        Ordered.push_back(Left[(size_t)Best]);
+        Left.erase(Left.begin() + Best);
+    }
+    O.Offered = std::move(Ordered);
     for (const auto &G : O.Offered)
     {
         const auto *E = Lib.Find(G);

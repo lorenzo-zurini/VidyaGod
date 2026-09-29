@@ -348,3 +348,27 @@ TEST(an_absolute_binarypatch_path_already_inside_the_runtime_is_used_as_is)
     if (After.size() > 0x400) CHECK_EQ((int)After[0x400], 0xff);   // the patch landed
     std::filesystem::remove_all(Root);
 }
+
+// Or sets bits in a flag byte several options share (UserPatch keeps six installer checkboxes as bits of one byte):
+// each option ORs its own bits, so any subset composes in any order; bits already set are an idempotent skip; an
+// EXPECT is refused (the byte legitimately carries other options' bits). Teeth: overwrite instead of OR (the second
+// option wipes the first's bit); treat "already set" as an error; accept EXPECT.
+TEST(bp_or_sets_bits_and_composes)
+{
+    auto img = MakePe(Bytes({0x80, 0x00, 0x00}));   // bit 0x80 already there (another option, or the original)
+    nlohmann::ordered_json a{{"MODE", "Or"}, {"OFFSET", "0x401000"}, {"VALUE", "04"}};
+    nlohmann::ordered_json b{{"MODE", "Or"}, {"OFFSET", "0x401000"}, {"VALUE", "03"}};
+    std::string msg;
+    CHECK(ApplyOne(a, img, NoVars, msg) == Result::Applied);
+    CHECK(ApplyOne(b, img, NoVars, msg) == Result::Applied);
+    CHECK_EQ(int(img[kTextOff]), 0x87);
+    auto img2 = MakePe(Bytes({0x80, 0x00, 0x00}));
+    CHECK(ApplyOne(b, img2, NoVars, msg) == Result::Applied);
+    CHECK(ApplyOne(a, img2, NoVars, msg) == Result::Applied);
+    CHECK(img2 == img);                                                     // order does not matter
+    CHECK(ApplyOne(a, img, NoVars, msg) == Result::Skipped);                // already set
+    CHECK_EQ(int(img[kTextOff]), 0x87);
+    nlohmann::ordered_json g{{"MODE", "Or"}, {"OFFSET", "0x401001"}, {"VALUE", "01"}, {"EXPECT", "00"}};
+    CHECK(ApplyOne(g, img, NoVars, msg) == Result::Error);
+    CHECK_EQ(int(img[kTextOff + 1]), 0x00);
+}

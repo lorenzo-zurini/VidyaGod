@@ -422,6 +422,18 @@ std::vector<std::string> AppliedGrafts(const NodeIndex &Idx, const std::string &
 bool MoveGraft(const NodeIndex &Idx, const std::string &LaunchNodeId, std::vector<std::string> &Ticked, size_t From,
                int By, std::string *Why = nullptr, const std::map<std::string, std::string> &Instance = {},
                const std::map<std::string, std::string> &Builtins = {});
+// The saved graft list as the current library sees it: a list naming a graft that no longer exists was saved against
+// an older version of the package (every edit re-mints its grafts), so the choice is stale and the tile falls back to
+// its defaults (nullopt: the grafts RECOMMENDED under it). A list whose grafts all exist is the user's choice.
+GraftChoice CurrentGraftChoice(const NodeIndex &Idx, const GraftChoice &Saved);
+// Tick graft G in the instance's ordered graft list: G goes last, and every ticked graft it cannot apply beside is
+// unticked (into *Unticked) — one whose NOT names G, or one G's NOT names. The graft just ticked wins, so grafts that
+// exclude each other behave as a choice of one. Judged in list order with the grafts kept so far in place (G or X may
+// need another ticked graft): X is unticked when adding it is what stops G applying. Instance/Builtins as MoveGraft.
+std::vector<std::string> TickGraft(const NodeIndex &Idx, const std::string &LaunchNodeId, const std::vector<std::string> &Ticked,
+                                   const std::string &G, std::vector<std::string> *Unticked = nullptr,
+                                   const std::map<std::string, std::string> &Instance = {},
+                                   const std::map<std::string, std::string> &Builtins = {});
 // The grafts this row offers with Chosen applied (a graft on a graft is offered once the graft it needs is), in the
 // default order (LABEL, then CID); into *PreTicked, a fresh instance's list (AppliedGrafts with nullopt).
 std::vector<std::string> OfferedGrafts(const NodeIndex &Idx, const std::string &LaunchNodeId,

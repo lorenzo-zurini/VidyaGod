@@ -26,12 +26,77 @@
 #include <QRegularExpression>
 #include <QRegularExpressionValidator>
 #include <QScrollArea>
+#include <QGridLayout>
+#include <QTreeWidgetItemIterator>
+#include <QHeaderView>
 #include <QGuiApplication>
 #include <QApplication>
 #include <QScrollBar>
 #include <QMessageBox>
 #include <QSignalBlocker>
 #include <QResizeEvent>
+
+namespace {
+//The graft rows of the graft tree, depth-first (section rows carry no key) — the order grafts apply in.
+std::vector<QTreeWidgetItem*> GraftRows(QTreeWidget* T)
+{
+    std::vector<QTreeWidgetItem*> Out;
+    if (!T) return Out;
+    for (QTreeWidgetItemIterator It(T); *It; ++It)
+        if (!(*It)->data(0, Qt::UserRole).toString().isEmpty()) Out.push_back(*It);
+    return Out;
+}
+
+//The row of a SECTION path ("UserPatch/Interface": '/' nests) — created on first use under its parent section,
+//collapsed; "" is the tree's root. Sections appear in the order their first entry does.
+QTreeWidgetItem* SectionRow(QTreeWidget* T, std::map<std::string, QTreeWidgetItem*>& Made, const std::string& Path)
+{
+    if (Path.empty()) return T->invisibleRootItem();
+    if (const auto It = Made.find(Path); It != Made.end()) return It->second;
+    const size_t Slash = Path.rfind('/');
+    QTreeWidgetItem* Parent = SectionRow(T, Made, Slash == std::string::npos ? std::string() : Path.substr(0, Slash));
+    auto* S = new QTreeWidgetItem(Parent);
+    S->setText(0, QString::fromStdString(Slash == std::string::npos ? Path : Path.substr(Slash + 1)));
+    QFont F = S->font(0); F.setBold(true); S->setFont(0, F);
+    S->setFlags(Qt::ItemIsEnabled);
+    S->setFirstColumnSpanned(true);
+    S->setData(0, Qt::UserRole + 10, QString::fromStdString(Path));   // a section row
+    S->setExpanded(false);
+    Made[Path] = S;
+    return S;
+}
+
+//A section with nothing visible in it (every option gated off by its WHEN) hides too.
+bool HideEmptySections(QTreeWidgetItem* I)
+{
+    bool Any = false;
+    for (int c = 0; c < I->childCount(); ++c)
+    {
+        QTreeWidgetItem* C = I->child(c);
+        if (C->data(0, Qt::UserRole + 10).isValid()) { const bool V = HideEmptySections(C); C->setHidden(!V); Any |= V; }
+        else Any |= !C->isHidden();
+    }
+    return Any;
+}
+
+//A tree sized to its shown rows, so it never scrolls inside the dialog's own scroll area.
+void FitTree(QTreeWidget* T)
+{
+    if (!T) return;
+    const int Base = std::max(T->fontMetrics().height() + 8, 22);
+    int H = 2 * T->frameWidth() + 4;
+    for (QTreeWidgetItemIterator It(T); *It; ++It)
+    {
+        bool Shown = !(*It)->isHidden();
+        for (QTreeWidgetItem* P = (*It)->parent(); Shown && P; P = P->parent()) Shown = P->isExpanded() && !P->isHidden();
+        if (!Shown) continue;
+        const QWidget* W = T->columnCount() > 1 ? T->itemWidget(*It, 1) : nullptr;
+        H += std::max(Base, W ? W->sizeHint().height() + 4 : 0);
+    }
+    T->setMinimumHeight(H);
+    T->setMaximumHeight(H);
+}
+}
 
 // ============================================================================
 // PreLaunchWindow — node-native launch dialog (one library tile = a GROUP of launchable nodes).
@@ -136,7 +201,7 @@ PreLaunchWindow::PreLaunchWindow(
     ModuleTree = new QTreeWidget(ModuleGroup);
     ModuleTree->setObjectName("graftList");
     ModuleTree->setHeaderHidden(true);
-    ModuleTree->setRootIsDecorated(false);
+    ModuleTree->setRootIsDecorated(true);   // grafts sit in collapsible SECTION rows
     //Single selection: the selected TICKED graft can be moved — the list order is the order grafts apply in.
     ModuleTree->setSelectionMode(QAbstractItemView::SingleSelection);
     ModuleLayout->addWidget(ModuleTree);
@@ -173,18 +238,36 @@ PreLaunchWindow::PreLaunchWindow(
     CVContainerLayout->addWidget(ModuleGroup);
     //A toggle rebuilds the list — deleting the very row whose setData emitted itemChanged, while Qt is still inside it
     //(a use-after-free: ticking a graft's box could crash). Take the row's key and state now, rebuild after it returns.
+    connect(ModuleTree, &QTreeWidget::itemExpanded,  this, [this](QTreeWidgetItem*){ FitTree(ModuleTree); });
+    connect(ModuleTree, &QTreeWidget::itemCollapsed, this, [this](QTreeWidgetItem*){ FitTree(ModuleTree); });
     connect(ModuleTree, &QTreeWidget::itemChanged, this, [this](QTreeWidgetItem* It, int){
         if (!It) return;
         const QString Key = It->data(0, Qt::UserRole).toString();
+        if (Key.isEmpty()) return;   // a section row
         const bool Checked = It->checkState(0) == Qt::Checked;
         QMetaObject::invokeMethod(this, [this, Key, Checked]{ PropagateModuleToggle(Key, Checked); }, Qt::QueuedConnection);
     });
 
     CustomVarGroup = new QGroupBox("Options", CVContainer);
-    CustomVarForm  = new QFormLayout(CustomVarGroup);
-    CustomVarForm->setVerticalSpacing(8);
-    CustomVarForm->setHorizontalSpacing(12);
-    CustomVarForm->setContentsMargins(10, 8, 10, 8);
+    {
+        //Options are a tree: collapsible SECTION rows ("UserPatch/Interface": '/' nests), each option a row with its
+        //label in column 0 and its control in column 1.
+        auto* OL = new QVBoxLayout(CustomVarGroup);
+        OL->setContentsMargins(6, 6, 6, 6);
+        OptionsTree = new QTreeWidget(CustomVarGroup);
+        OptionsTree->setObjectName("optionsTree");
+        OptionsTree->setColumnCount(2);
+        OptionsTree->setHeaderHidden(true);
+        OptionsTree->setRootIsDecorated(true);
+        OptionsTree->setSelectionMode(QAbstractItemView::NoSelection);
+        OptionsTree->setFocusPolicy(Qt::NoFocus);
+        OptionsTree->header()->setSectionResizeMode(0, QHeaderView::ResizeToContents);
+        OptionsTree->header()->setSectionResizeMode(1, QHeaderView::Stretch);
+        OptionsTree->header()->setStretchLastSection(true);
+        OL->addWidget(OptionsTree);
+        connect(OptionsTree, &QTreeWidget::itemExpanded,  this, [this](QTreeWidgetItem*){ FitTree(OptionsTree); });
+        connect(OptionsTree, &QTreeWidget::itemCollapsed, this, [this](QTreeWidgetItem*){ FitTree(OptionsTree); });
+    }
     CustomVarGroup->setVisible(false);
     CVContainerLayout->addWidget(CustomVarGroup);
 
@@ -521,46 +604,69 @@ void PreLaunchWindow::RebuildModuleTree()
     if (!L) { ModuleGroup->setVisible(false); return; }
 
     //The GRAFTS this row offers (a node whose list begins with ANY naming something the row contains), ticked by the
-    //instance's saved graft list — else the ones RECOMMENDED under this tile (a fresh instance). The saved order is
-    //the order they apply in; unsaved offers follow in the default order.
+    //instance's saved graft list — else the ones RECOMMENDED under this tile (a fresh instance).
     const PackageCatalog::GraftChoice Saved = SavedGrafts();
     //Offered with the ticked ones applied: a graft on a graft appears once the graft it needs is ticked.
     std::vector<std::string> PreTicked;
     std::vector<std::string> Offered = PackageCatalog::OfferedGrafts(*Index, LaunchNodeId, &PreTicked, Saved, FaceUid);
-    const std::vector<std::string> Ticked = Saved ? *Saved : PreTicked;
-    std::vector<std::string> Rows;
-    for (const std::string& G : Ticked) if (std::find(Offered.begin(), Offered.end(), G) != Offered.end()) Rows.push_back(G);
-    for (const std::string& G : Offered) if (std::find(Rows.begin(), Rows.end(), G) == Rows.end()) Rows.push_back(G);
-    for (const std::string& G : Rows)
+    //Ticked = what the launch applies: a saved graft it would drop (one another ticked graft excludes) shows unticked.
+    std::vector<std::string> Ticked = PreTicked;
+    if (Saved)
+    {
+        const auto [Instance, Builtins] = GraftJudging();
+        Ticked = PackageCatalog::AppliedGrafts(*Index, LaunchNodeId, *Saved, Instance, Builtins);
+    }
+    Ticked.erase(std::remove_if(Ticked.begin(), Ticked.end(), [&](const std::string& G) {
+        return std::find(Offered.begin(), Offered.end(), G) == Offered.end(); }), Ticked.end());
+    //One stable list in the default order, so ticking never moves a row: the ticked rows' places hold the ticked grafts
+    //in the order they apply (a move swaps two ticked rows; with no move made that is the default order itself).
+    //Grafts sit in their SECTION's row (collapsed); sections in the order their first graft is offered. Within a
+    //section the ticked rows' places hold that section's ticked grafts in the order they apply, and the tree read
+    //depth-first is the order the launch applies them (CollectGrafts).
+    const auto SectionOf = [&](const std::string& G) {
+        const Node* N = Index->Find(G);
+        return N && N->Json.contains("SECTION") && N->Json["SECTION"].is_string() ? N->Json["SECTION"].get<std::string>() : std::string();
+    };
+    std::vector<std::string> SectionOrder;
+    std::map<std::string, std::vector<std::string>> BySection;
+    for (const std::string& G : Offered)
+    {
+        const std::string S = SectionOf(G);
+        if (!BySection.count(S)) SectionOrder.push_back(S);
+        BySection[S].push_back(G);
+    }
+    AppliedOrder = Ticked;   // the order they apply in (CollectGrafts); the tree below only displays them
+    std::map<std::string, QTreeWidgetItem*> Sections;
+    std::vector<std::pair<std::string, QTreeWidgetItem*>> Rows;
+    for (const std::string& S : SectionOrder)
+    {
+        std::vector<std::string> Mine;
+        for (const std::string& G : Ticked) if (SectionOf(G) == S) Mine.push_back(G);
+        size_t Next = 0;
+        for (const std::string& G : BySection[S])
+            Rows.push_back({ std::find(Mine.begin(), Mine.end(), G) != Mine.end() ? Mine[Next++] : G, SectionRow(ModuleTree, Sections, S) });
+    }
+    for (const auto& [G, Parent] : Rows)
     {
         const Node* N = Index->Find(G);
         if (!N) continue;
-        QTreeWidgetItem* It = new QTreeWidgetItem(ModuleTree);
+        QTreeWidgetItem* It = new QTreeWidgetItem(Parent);
         It->setText(0, QString::fromStdString(N->NodeId.empty() ? N->Key().substr(0, 12) : N->NodeId));
         It->setData(0, Qt::UserRole,     QString::fromStdString(N->Key()));
         It->setData(0, Qt::UserRole + 2, std::find(Ticked.begin(), Ticked.end(), G) != Ticked.end());
         It->setData(0, Qt::UserRole + 4, true);
     }
-    ModuleGroup->setVisible(ModuleTree->topLevelItemCount() > 0);
-    if (const int Rows = ModuleTree->topLevelItemCount(); Rows > 0)
-    {
-        int RowH = ModuleTree->sizeHintForRow(0);
-        if (RowH <= 0) RowH = 22;
-        const int VisibleRows = std::min(Rows, 8);
-        const int H = VisibleRows * RowH + 2 * ModuleTree->frameWidth() + 4;
-        ModuleTree->setMinimumHeight(H);
-        ModuleTree->setMaximumHeight(Rows <= 8 ? H : QWIDGETSIZE_MAX);
-    }
+    ModuleGroup->setVisible(!GraftRows(ModuleTree).empty());
     RefreshModuleLocks();
+    FitTree(ModuleTree);
 }
 
 void PreLaunchWindow::RefreshModuleLocks()
 {
     if (!ModuleTree) return;
     QSignalBlocker B(ModuleTree);
-    for (int i = 0; i < ModuleTree->topLevelItemCount(); ++i)
+    for (QTreeWidgetItem* It : GraftRows(ModuleTree))
     {
-        QTreeWidgetItem* It = ModuleTree->topLevelItem(i);
         bool Desired = It->data(0, Qt::UserRole + 2).toBool();
         const bool Tickable = !It->data(0, Qt::UserRole + 4).isValid() || It->data(0, Qt::UserRole + 4).toBool();
         It->setFlags(Tickable ? (Qt::ItemIsEnabled | Qt::ItemIsUserCheckable) : Qt::ItemIsUserCheckable);
@@ -573,11 +679,41 @@ void PreLaunchWindow::PropagateModuleToggle(const QString& Key, bool Checked)
 {
     if (!ModuleTree) return;
     QTreeWidgetItem* Item = nullptr;
-    for (int i = 0; i < ModuleTree->topLevelItemCount() && !Item; ++i)
-        if (ModuleTree->topLevelItem(i)->data(0, Qt::UserRole).toString() == Key) Item = ModuleTree->topLevelItem(i);
+    for (QTreeWidgetItem* It : GraftRows(ModuleTree)) if (It->data(0, Qt::UserRole).toString() == Key) { Item = It; break; }
     if (!Item) return;
+    //The toggle arrives queued, and a rebuild can come between: judge the row as it is NOW, and a row already recorded
+    //in that state is a duplicate or stale event (one emitted from a row since rebuilt) — acting on it would untick a
+    //graft the user just ticked.
+    (void)Checked;
+    const bool Now = Item->checkState(0) == Qt::Checked;
+    if (Now == Item->data(0, Qt::UserRole + 2).toBool()) return;
+    Checked = Now;
     Item->setData(0, Qt::UserRole + 2, Checked);
-    SaveGrafts();
+    if (Checked)
+    {
+        //The graft just ticked wins: those it excludes (either side's NOT) are unticked — exclusive grafts are a choice
+        //of one — and it goes last in the ordered list.
+        const std::string G = Key.toStdString();
+        std::vector<std::string> Others = CollectGrafts();
+        Others.erase(std::remove(Others.begin(), Others.end(), G), Others.end());
+        const auto [Instance, Builtins] = GraftJudging();
+        std::vector<std::string> List = PackageCatalog::TickGraft(*Index, LaunchNodeId, Others, G, nullptr, Instance, Builtins);
+        //Keep its row where it is: it applies after the ticked rows above it — unless it needs one below (then last).
+        List.pop_back();
+        size_t Above = 0;
+        for (QTreeWidgetItem* Row : GraftRows(ModuleTree))
+        {
+            const std::string K = Row->data(0, Qt::UserRole).toString().toStdString();
+            if (K == G) break;
+            if (std::find(List.begin(), List.end(), K) != List.end()) ++Above;
+        }
+        std::vector<std::string> InPlace = List;
+        InPlace.insert(InPlace.begin() + (long)std::min(Above, InPlace.size()), G);
+        const std::vector<std::string> A = PackageCatalog::AppliedGrafts(*Index, LaunchNodeId, InPlace, Instance, Builtins);
+        if (std::find(A.begin(), A.end(), G) == A.end()) { InPlace = List; InPlace.push_back(G); }
+        StoreGrafts(InPlace);
+    }
+    else SaveGrafts();
     RebuildModuleTree();
     RebuildCustomVarPickers();   // a graft brings its own options
     RefreshGraftEntryRows();     // a ticked mod loader adds a way to run; an unticked one takes it away
@@ -596,7 +732,7 @@ std::optional<std::vector<std::string>> PreLaunchWindow::SavedGrafts() const
         Saved.emplace();
         for (const auto& G : US["GRAFTS"][Tile]) if (G.is_string()) Saved->push_back(G.get<std::string>());
     }
-    return Saved;
+    return PackageCatalog::CurrentGraftChoice(*Index, Saved);
 }
 
 void PreLaunchWindow::StoreGrafts(const std::vector<std::string>& List)
@@ -614,6 +750,17 @@ void PreLaunchWindow::SaveGrafts()
 
 static std::map<std::string, std::string> CollectVarValues(QObject* Group);   // below
 
+//Grafts are judged as the launch judges them: the instance's values with what the pickers hold now merged over them
+//(saved at launch), and the tile this window launches.
+std::pair<std::map<std::string, std::string>, std::map<std::string, std::string>> PreLaunchWindow::GraftJudging() const
+{
+    std::map<std::string, std::string> Instance;
+    if (const auto Saved = PackageCatalog::GetPackageVariables(*GlobalConfigJSON, PackageUID); Saved.is_object())
+        for (const auto &[K, V] : Saved.items()) if (V.is_string()) Instance[K] = V.get<std::string>();
+    if (CustomVarGroup) for (const auto &[K, V] : CollectVarValues(CustomVarGroup)) Instance[K] = V;
+    return { Instance, { {"UID", Face(Index->Find(LaunchNodeId))}, {"PackageUID", PackageUID} } };
+}
+
 void PreLaunchWindow::MoveSelectedGraft(int By)
 {
     const QTreeWidgetItem* It = ModuleTree ? ModuleTree->currentItem() : nullptr;
@@ -623,13 +770,7 @@ void PreLaunchWindow::MoveSelectedGraft(int By)
     const auto At = std::find(Ticked.begin(), Ticked.end(), Key);
     if (At == Ticked.end()) return;
     std::string Why;
-    //Judged as the launch judges it: the instance's values with what the pickers hold now merged over them (saved at
-    //launch), and the tile this window launches.
-    std::map<std::string, std::string> Instance;
-    if (const auto Saved = PackageCatalog::GetPackageVariables(*GlobalConfigJSON, PackageUID); Saved.is_object())
-        for (const auto &[K, V] : Saved.items()) if (V.is_string()) Instance[K] = V.get<std::string>();
-    if (CustomVarGroup) for (const auto &[K, V] : CollectVarValues(CustomVarGroup)) Instance[K] = V;
-    const std::map<std::string, std::string> Builtins{ {"UID", Face(Index->Find(LaunchNodeId))}, {"PackageUID", PackageUID} };
+    const auto [Instance, Builtins] = GraftJudging();
     if (!PackageCatalog::MoveGraft(*Index, LaunchNodeId, Ticked, (size_t)(At - Ticked.begin()), By, &Why, Instance, Builtins))
     {
         if (!Why.empty()) { GraftNote->setText(QString::fromStdString("Not moved: " + Why)); GraftNote->setVisible(true); }
@@ -638,22 +779,28 @@ void PreLaunchWindow::MoveSelectedGraft(int By)
     GraftNote->setVisible(false);
     StoreGrafts(Ticked);
     RebuildModuleTree();                 // rows follow the saved order
-    for (int i = 0; i < ModuleTree->topLevelItemCount(); ++i)
-        if (ModuleTree->topLevelItem(i)->data(0, Qt::UserRole).toString().toStdString() == Key)
-            ModuleTree->setCurrentItem(ModuleTree->topLevelItem(i));
+    for (QTreeWidgetItem* It : GraftRows(ModuleTree))
+        if (It->data(0, Qt::UserRole).toString().toStdString() == Key)
+        {
+            for (QTreeWidgetItem* P = It->parent(); P; P = P->parent()) P->setExpanded(true);   // keep it in view
+            ModuleTree->setCurrentItem(It);
+        }
+    FitTree(ModuleTree);
     RebuildCustomVarPickers();
     RefreshGraftEntryRows();             // the entries grafts add follow the order too
 }
 
+//The ticked grafts in the order they APPLY — the list the last rebuild settled on (saved, or the tile's defaults),
+//less any row unticked since. Not the tree's order: sections group grafts for display, and a graft in an earlier
+//section can need one in a later section — read depth-first, it would be judged before what it needs and dropped.
 std::vector<std::string> PreLaunchWindow::CollectGrafts() const
 {
     std::vector<std::string> Out;
     if (!ModuleTree) return Out;
-    for (int i = 0; i < ModuleTree->topLevelItemCount(); ++i)
-    {
-        QTreeWidgetItem* It = ModuleTree->topLevelItem(i);
-        if (It->data(0, Qt::UserRole + 2).toBool()) Out.push_back(It->data(0, Qt::UserRole).toString().toStdString());
-    }
+    std::set<std::string> TickedRows;
+    for (QTreeWidgetItem* It : GraftRows(ModuleTree))
+        if (It->data(0, Qt::UserRole + 2).toBool()) TickedRows.insert(It->data(0, Qt::UserRole).toString().toStdString());
+    for (const std::string& G : AppliedOrder) if (TickedRows.count(G)) Out.push_back(G);
     return Out;
 }
 
@@ -683,17 +830,13 @@ static std::map<std::string, std::string> CollectVarValues(QObject* Group)
 // via the same VarSubst::EvaluateCondition. Rows without a CVWhen are always active.
 static std::set<std::string> ActiveVarKeys(QObject* Group)
 {
-    // Map each row's WHEN to the KEY of the control it wraps.
+    // Each gated row's WHEN, by its KEY (the row's label and control both carry them).
     std::map<std::string, std::string> KeyWhen;
-    for (QWidget* Row : Group->findChildren<QWidget*>())
+    for (QWidget* Cell : Group->findChildren<QWidget*>())
     {
-        const QVariant W = Row->property("CVWhen");
-        if (!W.isValid()) continue;
-        for (QWidget* Child : Row->findChildren<QWidget*>())
-        {
-            const QString K = Child->property("CVKey").toString();
-            if (!K.isEmpty()) { KeyWhen[K.toStdString()] = W.toString().toStdString(); break; }
-        }
+        const QVariant W = Cell->property("CVWhen");
+        const QString K = Cell->property("CVRowKey").toString();
+        if (W.isValid() && !K.isEmpty()) KeyWhen[K.toStdString()] = W.toString().toStdString();
     }
     std::map<std::string, std::string> Vals = CollectVarValues(Group);
     std::set<std::string> Active;
@@ -717,20 +860,26 @@ static std::set<std::string> ActiveVarKeys(QObject* Group)
 void PreLaunchWindow::EvaluateVarConditions()
 {
     const std::set<std::string> Active = ActiveVarKeys(CustomVarGroup);
-    for (QWidget* Row : CustomVarGroup->findChildren<QWidget*>())
+    for (QWidget* Cell : CustomVarGroup->findChildren<QWidget*>())
     {
-        const QVariant W = Row->property("CVWhen");
-        if (!W.isValid()) continue;                                             // only var-row wrappers carry CVWhen
-        std::string Key;
-        for (QWidget* Child : Row->findChildren<QWidget*>())
-        { const QString K = Child->property("CVKey").toString(); if (!K.isEmpty()) { Key = K.toStdString(); break; } }
-        Row->setVisible(Key.empty() || Active.count(Key) > 0);
+        if (!Cell->property("CVWhen").isValid()) continue;                      // a gated row's control carries it
+        const std::string Key = Cell->property("CVRowKey").toString().toStdString();
+        if (auto* Row = reinterpret_cast<QTreeWidgetItem*>(Cell->property("CVItem").value<quintptr>()))
+            Row->setHidden(!(Key.empty() || Active.count(Key) > 0));
     }
+    if (OptionsTree) { HideEmptySections(OptionsTree->invisibleRootItem()); FitTree(OptionsTree); }
 }
 
 void PreLaunchWindow::RebuildCustomVarPickers()
 {
-    while (CustomVarForm->rowCount() > 0) CustomVarForm->removeRow(0);
+    //clear() frees the rows at once but only deleteLater()s their controls — which still carry CVWhen/CVItem (a
+    //pointer to the freed row) until the event loop runs, and the condition pass below walks them in this very call.
+    //So the controls go first, synchronously (their pending deleteLater is dropped with them).
+    std::vector<QWidget*> OldControls;
+    for (QTreeWidgetItemIterator It(OptionsTree); *It; ++It)
+        if (QWidget* W = OptionsTree->itemWidget(*It, 1)) OldControls.push_back(W);
+    OptionsTree->clear();
+    for (QWidget* W : OldControls) delete W;
     const Node* L = CurrentLaunch();
     if (!L) { CustomVarGroup->setVisible(false); return; }
 
@@ -754,15 +903,8 @@ void PreLaunchWindow::RebuildCustomVarPickers()
 
     const nlohmann::ordered_json SavedVars = PackageCatalog::GetPackageVariables(*GlobalConfigJSON, PackageUID);
 
-    // Group boxes keyed by title (UI.GROUP, or "Options"; runner knobs get a "Runner · " prefix), in first-seen order.
-    std::vector<QGroupBox*> Boxes; std::map<std::string, QVBoxLayout*> ByTitle;
-    auto LayoutFor = [&](const std::string& Title) -> QVBoxLayout* {
-        auto It = ByTitle.find(Title);
-        if (It != ByTitle.end()) return It->second;
-        QGroupBox* Box = new QGroupBox(QString::fromStdString(Title), CustomVarGroup);
-        QVBoxLayout* V = new QVBoxLayout(Box); V->setContentsMargins(10, 8, 10, 8); V->setSpacing(6);
-        Boxes.push_back(Box); ByTitle[Title] = V; return V;
-    };
+    // Sections (UI.SECTION paths; a runner's options under "Runner"), created as their first option appears.
+    std::map<std::string, QTreeWidgetItem*> Sections;
 
     bool AnyVisible = false, AnyCond = false;
     std::set<std::string> SeenKeys;   // a KEY surfaces once; package nodes walked first so they win on collision
@@ -868,25 +1010,28 @@ void PreLaunchWindow::RebuildCustomVarPickers()
                 Field->setProperty("CVKey", QString::fromStdString(Key));
             SeenKeys.insert(Key); AnyVisible = true;
 
-            // Row wrapper (label + control) so UI.WHEN can show/hide the whole row.
-            QWidget* Row = new QWidget(CustomVarGroup);
-            QHBoxLayout* RL = new QHBoxLayout(Row); RL->setContentsMargins(0, 0, 0, 0); RL->setSpacing(8);
-            QLabel* Lbl = new QLabel(Label + ":", Row); Lbl->setMinimumWidth(140);
-            RL->addWidget(Lbl); RL->addWidget(Field, 1);
-            //WHEN gates this row's visibility (and, in the resolver, its value). Top-level preferred; UI.WHEN is a
-            //UI-era alias.
+            std::string Section = UI.value("SECTION", std::string());
+            if (IsRunner) Section = Section.empty() ? std::string("Runner") : "Runner/" + Section;
+            auto* Row = new QTreeWidgetItem(SectionRow(OptionsTree, Sections, Section));
+            Row->setText(0, Label);
+            Row->setFlags(Qt::ItemIsEnabled);
+            OptionsTree->setItemWidget(Row, 1, Field);
+            Field->setProperty("CVItem", QVariant::fromValue<quintptr>(reinterpret_cast<quintptr>(Row)));
+            //WHEN gates this row's visibility (and, in the resolver, its value); the control carries it with the row's
+            //key. Top-level preferred; UI.WHEN is a UI-era alias.
             std::string When = CV.value("WHEN", std::string());
             if (When.empty()) When = UI.value("WHEN", std::string());
-            if (!When.empty()) { Row->setProperty("CVWhen", QString::fromStdString(When)); AnyCond = true; }
-
-            std::string Title = UI.value("GROUP", std::string("Options"));
-            if (IsRunner) Title = "Runner · " + Title;
-            LayoutFor(Title)->addWidget(Row);
+            if (!When.empty())
+            {
+                Field->setProperty("CVWhen", QString::fromStdString(When));
+                Field->setProperty("CVRowKey", QString::fromStdString(Key));
+                AnyCond = true;
+            }
         }
     }
 
-    for (QGroupBox* Box : Boxes) CustomVarForm->addRow(Box);
     if (AnyCond) EvaluateVarConditions();                                       // apply initial WHEN visibility
+    FitTree(OptionsTree);
     CustomVarGroup->setVisible(AnyVisible);
 }
 

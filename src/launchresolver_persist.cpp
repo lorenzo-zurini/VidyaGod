@@ -133,8 +133,13 @@ bool LaunchResolver::DerivePersistence(const nlohmann::ordered_json &MANIFESTJSO
             return;
         }
         const std::string Rel = NormalizeRel(Path);
+        //A pattern (player*.hki) names files in one folder: always a file keep, whatever its extension looks like, and
+        //only in the last segment (the validator refuses the rest; a node that skipped validation is refused here).
+        const bool Pattern = HasWildcard(Leaf(Rel));
+        if (HasWildcard(Rel) && (!Pattern || HasWildcard(Rel.substr(0, Rel.find_last_of("/\\") == std::string::npos ? 0 : Rel.find_last_of("/\\")))))
+        { LogErr("DerivePersistence", "  persist PATH '" + Rel + "': a pattern (* ?) may only be in the last segment — skipped."); return; }
         if (!ClaimFileTarget(Target, Rel)) return;
-        if (IsDirTarget(Path)) { ContainerParams.KeepDirs.push_back({ Rel, Target, Cloud });  LogOut("DerivePersistence", "  persist dir  " + Rel + " → " + Target + (Cloud ? "" : " (local-only)")); }
+        if (!Pattern && IsDirTarget(Path)) { ContainerParams.KeepDirs.push_back({ Rel, Target, Cloud });  LogOut("DerivePersistence", "  persist dir  " + Rel + " → " + Target + (Cloud ? "" : " (local-only)")); }
         else                   { ContainerParams.KeepFiles.push_back({ Rel, Target, Cloud }); LogOut("DerivePersistence", "  persist file " + Rel + " → " + Target + (Cloud ? "" : " (local-only)")); }
     };
 

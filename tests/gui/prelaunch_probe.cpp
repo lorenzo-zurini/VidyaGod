@@ -4,6 +4,7 @@
 //   prelaunch_probe <nodeId> [<nodeId>...]
 
 #include <QApplication>
+#include <QGridLayout>
 #include <QGroupBox>
 #include <QLabel>
 #include <QLineEdit>
@@ -73,14 +74,13 @@ int main(int argc, char **argv)
     for (QGroupBox *Box : W.findChildren<QGroupBox *>())
     {
         bool printedBox = false;
-        for (QWidget *Row : Box->findChildren<QWidget *>(QString(), Qt::FindDirectChildrenOnly))
+        auto *Grid = qobject_cast<QGridLayout *>(Box->layout());
+        for (int r = 0; Grid && r < Grid->rowCount(); ++r)
         {
-            QLabel *Lbl = Row->findChild<QLabel *>(QString(), Qt::FindDirectChildrenOnly);
-            if (!Lbl) continue;
-            QWidget *Field = nullptr;
-            for (QWidget *c : Row->findChildren<QWidget *>(QString(), Qt::FindDirectChildrenOnly))
-                if (c != Lbl) { Field = c; break; }
-            if (!Field) continue;
+            QLayoutItem *LI = Grid->itemAtPosition(r, 0), *FI = Grid->itemAtPosition(r, 1);
+            QLabel *Lbl = LI ? qobject_cast<QLabel *>(LI->widget()) : nullptr;
+            QWidget *Field = FI ? FI->widget() : nullptr;
+            if (!Lbl || !Field) continue;
             if (!printedBox) { std::cout << "[" << Box->title().toStdString() << "]\n"; printedBox = true; }
             const QString CVKey = Field->property("CVKey").toString();
             std::string kind = Field->metaObject()->className();
