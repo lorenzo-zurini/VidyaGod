@@ -190,6 +190,21 @@ TEST(json_substitution_covers_keys_values_and_nesting)
     CHECK_EQ(Out["NESTED"]["inner"].value("host", std::string()), std::string("C:\\Program Files"));
 }
 
+//A layer's or an op's COMMENT is prose, carried verbatim: UserPatch's save-name comment quotes "%s-%s", and rendering
+//it warned about undefined variables on every launch. A value merely NAMED COMMENT elsewhere is still data.
+//Teeth: substitute COMMENT like any value (the op's comment loses nothing here, but the ENV check below keeps the
+//rule from widening to every key named COMMENT).
+TEST(json_substitution_leaves_prose_comments_alone)
+{
+    const std::map<std::string, std::string> Vars = {{"s", "S"}, {"MODE", "host"}};
+    const nlohmann::ordered_json Op = {{"MODE", "Replace"}, {"COMMENT", "quotes '%s%s.%s' and %MODE%"}, {"VALUE", "%MODE%"}};
+    const nlohmann::ordered_json Out = VarSubst::SubstituteJsonValues(Op, Vars);
+    CHECK_EQ(Out["COMMENT"].get<std::string>(), std::string("quotes '%s%s.%s' and %MODE%"));
+    CHECK_EQ(Out["VALUE"].get<std::string>(), std::string("host"));
+    const nlohmann::ordered_json Env = {{"ENV", {{"COMMENT", "%MODE%"}}}};
+    CHECK_EQ(VarSubst::SubstituteJsonValues(Env, Vars)["ENV"]["COMMENT"].get<std::string>(), std::string("host"));
+}
+
 // EVAL's integer expressions: a registry bitfield from independent options (UserPatch's Mini-map Colors: darken red
 // 0x02, darken purple 0x20, light grey 0x40 unless darkened). C precedence; hex and decimal; anything unresolved or
 // malformed fails and leaves the output alone. Teeth: drop | (the bits no longer combine); parse a %token% as 0;

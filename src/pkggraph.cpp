@@ -10,6 +10,7 @@
 #include <functional>
 #include <map>
 #include <set>
+#include <sstream>
 
 using json = nlohmann::ordered_json;
 
@@ -123,6 +124,7 @@ Graph Build(const json &NodesArray, const json *Layout)
     if (!NodesArray.is_array()) return G;
 
     std::map<std::string, int> ById;
+    const VarFacets Facets = CollectVarFacets(NodesArray);   // what WHEN-gated layers are grouped by (their height)
     for (const auto &N : NodesArray)
     {
         //NOT skipped: G.Nodes[i] MUST correspond to NodesArray[i]. The link pass indexes NodesArray by
@@ -132,7 +134,7 @@ Graph Build(const json &NodesArray, const json *Layout)
         //graph. (LoadNodes does not produce these; a hand-edited file can.)
         Node Nd;
         Nd.Index = (int)G.Nodes.size();
-        if (!N.is_object()) { Nd.Height = EstimateHeight(N); G.Nodes.push_back(std::move(Nd)); continue; }
+        if (!N.is_object()) { Nd.Height = EstimateHeight(N, &Facets); G.Nodes.push_back(std::move(Nd)); continue; }
         //TOTAL: the editor renders raw on-disk JSON, deliberately — it is the tool you open to fix a node the
         //format rejects — so any of these may be the wrong type, and value() throws on a mismatch.
         auto Str = [&](const char *K, const char *Def) {
@@ -194,7 +196,7 @@ Graph Build(const json &NodesArray, const json *Layout)
         if (N.contains("POS")) ReadPos(N["POS"], "its own POS");
         if (Layout && Layout->is_object() && !Nd.Id.empty() && Layout->contains(Nd.Id))
             ReadPos((*Layout)[Nd.Id], "this machine's saved layout");
-        Nd.Height = EstimateHeight(N);
+        Nd.Height = EstimateHeight(N, &Facets);
         if (!Nd.Id.empty()) ById[Nd.Id] = Nd.Index;
         G.Nodes.push_back(std::move(Nd));
     }
@@ -554,7 +556,9 @@ const std::vector<std::pair<const char *, const char *>> ModeOpts   = {{"ConfigW
 std::vector<Field> WithGate(std::vector<Field> F)
 {
     F.push_back({"WHEN",    "When",    FieldKind::Text, "condition - the layer is inert when false", {}, {}});
-    F.push_back({"COMMENT", "Comment", FieldKind::Text, "", {}, {}});
+    F.push_back({"COMMENT", "Comment", FieldKind::Text, "why this layer is here", {}, {}});
+    F.push_back({"LABEL",   "Label",   FieldKind::Text, "the row's name - blank: from its WHEN variable / payload", {}, {}});
+    F.push_back({"SECTION", "Section", FieldKind::Text, "the row's folder - a path, / nests; blank: from WHEN", {}, {}});
     return F;
 }
 
@@ -695,15 +699,6 @@ constexpr float kChromePx  = 26.0f;   // imnodes' own node padding, top and bott
 constexpr float kSepPx     =  4.0f;   // an ImGui::Separator() between batched entries
 constexpr float kBtnPx     = 17.0f;   // a row holding SmallButtons (no frame padding, unlike kRowPx)
 
-//Rows a StringList spends: one for the label line, plus the multiline box when the value has several lines.
-//The box is 16px per line, capped at 6 lines.
-//
-//LINES, not entries. drawField renders the joined text and counts newlines in it, and the join does not escape
-//a newline INSIDE an entry — so one array element carrying embedded newlines is a multiline box that an
-//entry count calls a single-line input. Measured on a DeclareExec whose GUEST/ARGS/ENV_REMOVE each held one
-//such entry: drawn 682px against an estimated 542, a 140px shortfall — 50px past the layout's whole RowGap,
-//i.e. a real box-on-box overlap, stamped into POS at publish time. Any package this canvas did not author can
-//contain one, because ARGS and friends are unvalidated strings.
 } // namespace
 
 //Rows one registry TREE contributes, by exactly the rules FlattenTree walks: a row per non-object value, one
@@ -732,147 +727,245 @@ size_t CountRegRows(const json &Entry)
     return Rows;
 }
 
+
+// ---- the layer tree -------------------------------------------------------
+
+VarFacets CollectVarFacets(const json &NodesArray)
+{
+    VarFacets Out;
+    if (!NodesArray.is_array()) return Out;
+    for (const json &N : NodesArray)
+    {
+        if (!N.is_object() || !N.contains("LAYERS") || !N["LAYERS"].is_array()) continue;
+        for (const json &L : N["LAYERS"])
+        {
+            if (!L.is_object() || !L.contains("VARS") || !L["VARS"].is_object()) continue;
+            for (const auto &[K, D] : L["VARS"].items())
+            {
+                if (!D.is_object() || !D.contains("UI") || !D["UI"].is_object()) continue;
+                const json &UI = D["UI"];
+                auto S = [&](const char *F) { return UI.contains(F) && UI[F].is_string() ? UI[F].get<std::string>() : std::string(); };
+                VarFacet F{S("LABEL"), S("SECTION"), S("CONTROL"), {}};
+                if (UI.contains("CHOICES") && UI["CHOICES"].is_array())
+                    for (const json &C : UI["CHOICES"])
+                        if (C.is_object() && C.contains("VALUE") && C["VALUE"].is_string())
+                            F.Choices[C["VALUE"].get<std::string>()] =
+                                C.contains("LABEL") && C["LABEL"].is_string() ? C["LABEL"].get<std::string>() : C["VALUE"].get<std::string>();
+                Out[K] = std::move(F);                    // a later declaration of the same key wins, as in the fold
+            }
+        }
+    }
+    return Out;
+}
+
 namespace {
 
-float StringListPx(const json &V, bool ForceMultiline)
+std::string StrField(const json &O, const char *K)
 {
-    int Lines = 0;
-    if (V.is_array())
-    {
-        for (const auto &E : *V.get_ptr<const json::array_t *>())
-            if (E.is_string())
-                Lines += 1 + (int)std::count(E.get_ref<const std::string &>().begin(),
-                                             E.get_ref<const std::string &>().end(), '\n');
-    }
-    else if (V.is_string() && !V.get<std::string>().empty())
-    {
-        Lines = 1 + (int)std::count(V.get_ref<const std::string &>().begin(),
-                                    V.get_ref<const std::string &>().end(), '\n');
-    }
-    if (Lines <= 1 && !ForceMultiline) return kRowPx;
-    return kRowPx + 16.0f * (float)std::min(Lines + 1, 6);
+    return O.is_object() && O.contains(K) && O[K].is_string() ? O[K].get<std::string>() : std::string();
 }
 
-//The launcher facet drawCustomVarUI draws under a declaration: the Visible checkbox, then — when the UI object is
-//there — its label and control rows, the control's own rows, and the group row.
-float VarUIPx(const json &Decl)
+std::string Trim(std::string S)
 {
-    float Px = kRowPx;
-    if (!Decl.contains("UI") || !Decl["UI"].is_object()) return Px;
-    const json &UI = Decl["UI"];
-    const std::string Ctl = (UI.contains("CONTROL") && UI["CONTROL"].is_string()) ? UI["CONTROL"].get<std::string>() : "text";
-    Px += 2.0f * kRowPx;                                        // label, control
-    if (Ctl == "int" || Ctl == "float") Px += 2.0f * kRowPx;    // min, max
-    else if (Ctl == "text" || Ctl == "secret") Px += kRowPx;    // pattern
-    auto Lines = [&](const char *K) {
-        int N = 1;
-        if (UI.contains(K) && UI[K].is_array()) N += (int)UI[K].size();
-        return kRowPx + 16.0f * (float)std::min(N + 1, 6);
-    };
-    if (Ctl == "secret") Px += Lines("POOL");
-    else if (Ctl == "enum") Px += Lines("CHOICES");
-    return Px + kRowPx;                                         // group
+    while (!S.empty() && (S.back() == ' ' || S.back() == '\t')) S.pop_back();
+    size_t I = 0;
+    while (I < S.size() && (S[I] == ' ' || S[I] == '\t')) ++I;
+    return S.substr(I);
 }
 
-float FieldPx(const json &Node, const Field &F)
+std::string BaseName(const std::string &P)
 {
-    const json *V = (Node.is_object() && Node.contains(F.Key)) ? &Node[F.Key] : nullptr;
-    switch (F.Kind)
+    std::string S = P;
+    while (!S.empty() && (S.back() == '/' || S.back() == '\\')) S.pop_back();
+    const size_t Slash = S.find_last_of("/\\");
+    return Slash == std::string::npos ? S : S.substr(Slash + 1);
+}
+
+std::string Join(const std::vector<std::string> &V, const char *Sep, size_t Max = 4)
+{
+    std::string Out;
+    for (size_t I = 0; I < V.size() && I < Max; ++I) Out += (I ? Sep : "") + V[I];
+    if (V.size() > Max) Out += std::string(Sep) + "+" + std::to_string(V.size() - Max);
+    return Out;
+}
+
+std::string RefName(const json &R, const LabelFn &NodeLabel)
+{
+    if (!R.is_string()) return "?";
+    const std::string Ref = R.get<std::string>();
+    const std::string L = NodeLabel ? NodeLabel(Ref) : std::string();
+    return !L.empty() ? L : (Ref.size() > 16 ? Ref.substr(0, 10) + ".." + Ref.substr(Ref.size() - 4) : Ref);
+}
+
+//Where a placed layer lands, without the FILES/ namespace: "%GameDir%/age2_x1".
+std::string Where(const json &L)
+{
+    std::string T = StrField(L, "TARGET");
+    if (T.rfind("FILES/", 0) == 0) T = T.substr(6);
+    return T;
+}
+
+std::string PayloadSummary(const json &L, const std::string &T, const LabelFn &NodeLabel)
+{
+    const json &V = L[T];
+    auto Keys = [&]() { std::vector<std::string> K; if (V.is_object()) for (const auto &[Key, X] : V.items()) K.push_back(Key); return K; };
+    if (T == "ZIP" || T == "FILE" || T == "DELTA" || T == "DIR")
     {
-    case FieldKind::Text:
-    case FieldKind::Enum:
-    case FieldKind::Check:
-    case FieldKind::Cover:
-        return kRowPx;
-    case FieldKind::Object:
+        const std::string W = Where(L);
+        return BaseName(V.is_string() ? V.get<std::string>() : std::string("?")) + (W.empty() ? "" : " -> " + W);
+    }
+    if (T == "NODE")
     {
-        //Optional: absent draws one "+ add" button line; present, its label, its rows and a remove button.
-        if (!V || V->is_null()) return kBtnPx;
-        if (!V->is_object()) return kTextPx;                    // a disabled "not an object" line
-        float Px = kTextPx;                                     // the label line
-        for (const Field &S : F.Sub) Px += FieldPx(*V, S);
-        return Px + kBtnPx;                                     // "remove"
+        std::string S = RefName(V, NodeLabel);
+        if (L.contains("TAKE") && L["TAKE"].is_array()) S += " (" + std::to_string(L["TAKE"].size()) + " taken)";
+        const std::string W = Where(L);
+        return W.empty() ? S : S + " -> " + W;
     }
-    case FieldKind::TakeList:
+    if (T == "EDIT")
+        return BaseName(Where(L)) + " (" + std::to_string(V.is_array() ? V.size() : 0) + " ops)";
+    if (T == "REG")
     {
-        if (TakeFault(V)) return kTextPx;
-        const std::string T = V ? TakeToText(*V) : std::string();
-        return StringListPx(json(T), false);
+        //The deepest single path from the hive down: where the layer writes, e.g. HKLM\...\Age of Empires\2.0.
+        std::vector<std::string> Path;
+        const json *At = &V;
+        while (At->is_object() && At->size() == 1 && At->begin().value().is_object())
+        { Path.push_back(At->begin().key()); At = &At->begin().value(); }
+        if (Path.empty()) return Join(Keys(), ", ");
+        if (Path.size() > 3) Path.erase(Path.begin() + 1, Path.end() - 2), Path.insert(Path.begin() + 1, "..");
+        return Join(Path, "\\", 8);
     }
-    case FieldKind::Arch:
-        return kRowPx;
-    case FieldKind::RegTree:
-        //The one payload with no cap at all: a registry layer draws every row it holds (the codec libraries
-        //ship some with 59): the label line, a row per value, the "+ value" button. Counted, not built.
-        if (V && !V->is_null() && !V->is_object()) return kTextPx;
-        return kTextPx + (float)(V ? CountRegRows(*V) : 0) * kRowPx + kBtnPx;
-    case FieldKind::VarMap:
+    if (T == "KEEP")
     {
-        if (V && !V->is_null() && !V->is_object()) return kTextPx;
-        const size_t N = V ? V->size() : 0, Shown = std::min<size_t>(N, 12);
-        float Px = kTextPx;                                     // "Label (N)"
-        size_t I = 0;
-        if (V)
-            for (const auto &[K, D] : V->items())
-            {
-                if (I++ >= Shown) break;
-                Px += kSepPx + kRowPx;                          // the separator, the key row
-                if (!D.is_object()) { Px += kTextPx + kBtnPx; continue; }
-                for (const Field &S : F.Sub) Px += FieldPx(D, S);
-                Px += VarUIPx(D) + kBtnPx;                      // the launcher facet, the remove button
-            }
-        if (N > Shown) Px += kTextPx;
-        return Px + kBtnPx;                                     // "+ add"
+        std::vector<std::string> K;
+        for (const std::string &A : Keys()) K.push_back(BaseName(A) + (A.size() && A.back() == '/' ? "/" : ""));
+        return Join(K, ", ");
     }
-    case FieldKind::KeepMap:
+    if (T == "EXEC")
     {
-        if (V && !V->is_null() && !V->is_object()) return kTextPx;
-        float Px = kTextPx;
-        if (V)
-            for (const auto &[K, E] : V->items())
-                Px += kRowPx + ((E.is_boolean() && !E.get<bool>()) ? 0.0f : kRowPx);   // address row, + name/cloud unless taken back
-        return Px + kBtnPx;
+        std::vector<std::string> K;
+        if (V.is_array()) for (const json &E : V) K.push_back(StrField(E, "LABEL").empty() ? "?" : StrField(E, "LABEL"));
+        return "Run: " + Join(K, ", ");
     }
-    case FieldKind::StringList:
-    case FieldKind::StringListKeepEmpty:
-        //A value of the wrong shape draws as ONE line — the label, then a short description as disabled text
-        //and no widget at all (drawField refuses to edit it). Through the SHARED predicate, so "wrong shape"
-        //cannot come to mean two different things on the two sides of it.
-        if (StringListFault(V) != kStringListOk) return kTextPx;
-        //KeepEmpty is ALWAYS a box: a blank line is data there, so drawField never collapses it to a
-        //single-line input.
-        return StringListPx(V ? *V : json(), F.Kind == FieldKind::StringListKeepEmpty);
-    case FieldKind::KeyValue:
+    if (T == "ANY")
     {
-        const size_t N = (V && V->is_object()) ? V->size() : 0;
-        return kTextPx + (float)N * kRowPx + kBtnPx;            // label, one row per pair, the add row
+        std::vector<std::string> K;
+        if (V.is_array()) for (const json &R : V) K.push_back(RefName(R, NodeLabel));
+        return "Needs " + Join(K, " or ");
     }
-    case FieldKind::ObjArray:
+    if (T == "NOT") return "Not with " + RefName(V, NodeLabel);
+    return Join(Keys(), ", ");                    // VARS, ENV, DLL: their names
+}
+
+//"%up_style%==widescreen" → ("up_style", "widescreen"); anything more than one comparison of one variable → the
+//first variable named, no value.
+std::pair<std::string, std::string> WhenVar(const std::string &When)
+{
+    const size_t A = When.find('%');
+    if (A == std::string::npos) return {};
+    const size_t B = When.find('%', A + 1);
+    if (B == std::string::npos) return {};
+    std::string Key = When.substr(A + 1, B - A - 1);
+    if (const size_t C = Key.find(':'); C != std::string::npos) Key = Key.substr(0, C);
+    const std::string Rest = Trim(When.substr(B + 1));
+    if (Trim(When.substr(0, A)).empty() && Rest.rfind("==", 0) == 0)
     {
-        const size_t N = (V && V->is_array()) ? V->size() : 0;
-        //drawField reads a batched payload CAPPED at 12 entries and prints a "... and N more" line instead —
-        //77 BinaryPatches must not turn the node into a wall, and the height must agree with that or the
-        //layout reserves a screenful of space nothing occupies.
-        const size_t Shown = std::min<size_t>(N, 12);
-        float Px = kTextPx;                                     // "Label (N)"
-        for (size_t I = 0; I < Shown; ++I)
-        {
-            Px += kSepPx;                                       // the separator between entries
-            //Same malformed-entry branch the canvas draws: one disabled line and a remove button.
-            if (!V->at(I).is_object()) { Px += kTextPx + kBtnPx; continue; }
-            for (const Field &S : F.Sub) Px += FieldPx(V->at(I), S);
-            Px += kBtnPx;                                       // the entry's remove button
-        }
-        if (N > Shown) Px += kTextPx;                           // "... and N more"
-        return Px + kBtnPx;                                     // the add button
+        const std::string Val = Trim(Rest.substr(2));
+        if (!Val.empty() && Val.find_first_of(" %&|()!=<>") == std::string::npos) return {Key, Val};
     }
-    }
-    return kRowPx;
+    return {Key, std::string()};
 }
 
 } // namespace
 
-float EstimateHeight(const json &Node)
+std::vector<LayerItem> LayerItems(const json &Node, const VarFacets &Facets, const LabelFn &NodeLabel)
+{
+    std::vector<LayerItem> Out;
+    if (!Node.is_object() || !Node.contains("LAYERS") || !Node["LAYERS"].is_array()) return Out;
+    const json &Ls = Node["LAYERS"];
+    for (size_t I = 0; I < Ls.size(); ++I)
+    {
+        const json &L = Ls[I];
+        LayerItem It;
+        It.Layer = (int)I;
+        It.Type  = LayerType(L);
+        if (It.Type.empty()) { It.Title = "(malformed layer)"; Out.push_back(std::move(It)); continue; }
+        It.Summary = PayloadSummary(L, It.Type, NodeLabel);
+        std::string Derived, DerivedSection;
+        if (const std::string When = StrField(L, "WHEN"); !When.empty())
+        {
+            const auto [Key, Val] = WhenVar(When);
+            const auto F = Facets.find(Key);
+            if (F != Facets.end() && !F->second.Label.empty())
+            {
+                const VarFacet &Fa = F->second;
+                Derived = Fa.Label;
+                if (!Val.empty())
+                {
+                    if (Fa.Control == "bool") { if (Val != "1" && Val != "true") Derived += ": off"; }
+                    else if (const auto C = Fa.Choices.find(Val); C != Fa.Choices.end()) Derived += ": " + C->second;
+                    else Derived += " = " + Val;
+                }
+                DerivedSection = Fa.Section;
+            }
+        }
+        const std::string Label = StrField(L, "LABEL");
+        It.Title   = !Label.empty() ? Label : !Derived.empty() ? Derived : It.Summary;
+        //The path without empty segments ("/a//b" is "a/b"), so the tree and the row count agree on its folders.
+        const std::string Section = StrField(L, "SECTION");
+        std::string Seg;
+        std::stringstream SS(!Section.empty() ? Section : DerivedSection);
+        while (std::getline(SS, Seg, '/')) if (!Seg.empty()) It.Section += (It.Section.empty() ? "" : "/") + Seg;
+        Out.push_back(std::move(It));
+    }
+    return Out;
+}
+
+int TopLevelRows(const std::vector<LayerItem> &Items)
+{
+    std::set<std::string> Heads;
+    int Rows = 0;
+    for (const LayerItem &It : Items)
+    {
+        if (It.Section.empty()) { ++Rows; continue; }
+        if (Heads.insert(It.Section.substr(0, It.Section.find('/'))).second) ++Rows;
+    }
+    return Rows;
+}
+
+std::string EntrySummary(const json &E)
+{
+    if (!E.is_object()) return "(malformed entry)";
+    const std::string Mode = StrField(E, "MODE");
+    if (Mode.empty()) return StrField(E, "LABEL");
+    std::string Site = StrField(E, "OFFSET");
+    if (Site.empty() && !StrField(E, "ANCHOR").empty()) Site = "@" + StrField(E, "ANCHOR").substr(0, 12);
+    if (Mode == "ConfigWrite")
+    {
+        const std::string Sec = StrField(E, "SECTION");
+        return (Sec.empty() ? "" : "[" + Sec + "] ") + StrField(E, "KEY") + " = " + StrField(E, "VALUE");
+    }
+    auto Short = [](const std::string &H) { return H.size() > 12 ? H.substr(0, 10) + ".." : H; };
+    if (Mode == "Replace") return Site + " " + Short(StrField(E, "EXPECT")) + " -> " + Short(StrField(E, "REPLACE"));
+    if (Mode == "Or" || Mode == "Poke") return Site + " " + Mode + " " + Short(StrField(E, "VALUE"));
+    if (Mode == "Cave") return Site + " Cave " + std::to_string(StrField(E, "PAYLOAD").size() / 2) + " bytes";
+    return Mode;
+}
+
+std::string EntryTitle(const json &E)
+{
+    const std::string L = StrField(E, "LABEL");
+    if (!L.empty()) return L;
+    const std::string C = StrField(E, "COMMENT");
+    return !C.empty() ? C : EntrySummary(E);
+}
+
+std::string VarTitle(const std::string &Key, const json &Decl)
+{
+    const std::string L = Decl.is_object() && Decl.contains("UI") ? StrField(Decl["UI"], "LABEL") : std::string();
+    return L.empty() ? Key : L + " (" + Key + ")";
+}
+
+float EstimateHeight(const json &Node, const VarFacets *Facets)
 {
     //A NODES entry that is not an object is a PLACEHOLDER, and it draws as one: a title bar and a single
     //disabled line saying so (see PkgCanvas::drawNode). Falling through to the payload arms below charged it
@@ -887,20 +980,19 @@ float EstimateHeight(const json &Node)
     //purpose — one text line of slack on a wired node is the cheap direction to be wrong in.
     Px += kTextPx;
     Px += kRowPx + kTextPx;                          // the name row, the cid line
-    //"node options" counted as though it were OPEN, always — its tree line and its two rows (variant,
-    //recommended). Whether it is open is ImGui's per-window state, not the payload's; guessing it closed is
-    //unsafe in the one direction that matters (the node drawn taller than the space reserved).
-    Px += kTextPx + 2.0f * kRowPx;
-    //Each layer: a separator, its header line (type, move up/down, remove), then its declared rows.
+    //"node options" counted as though it were OPEN, always — its tree line and its rows (variant, recommended,
+    //section). Whether it is open is ImGui's per-window state, not the payload's; guessing it closed is unsafe in
+    //the one direction that matters (the node drawn taller than the space reserved).
+    Px += kTextPx + 3.0f * kRowPx;
+    //The folded layer tree: one row per top-level entry (a layer's row carries its SmallButtons), or one line
+    //saying there is nothing / that LAYERS is not a list.
     if (Node.contains("LAYERS") && Node["LAYERS"].is_array())
-        for (const json &L : Node["LAYERS"])
-        {
-            Px += kSepPx + kBtnPx;
-            const std::string T = LayerType(L);
-            if (T.empty()) { Px += kTextPx; continue; }      // a malformed layer: one disabled line
-            for (const Field &F : FieldsFor(T)) Px += FieldPx(L, F);
-        }
-    else if (Node.contains("LAYERS")) Px += kTextPx;       // LAYERS that is not a list: one disabled line
+    {
+        static const VarFacets None;
+        const int Rows = TopLevelRows(LayerItems(Node, Facets ? *Facets : None));
+        Px += Rows ? (float)Rows * kBtnPx : kTextPx;
+    }
+    else Px += kTextPx;
     Px += kBtnPx;                                    // the "+ layer" row drawPayload always draws
     //The action row: a Separator, then one SmallButton line per wrap. drawActions starts a new line whenever
     //the next button would pass the node width, and a Content zip with a deflate hint and a zip parent has
@@ -910,15 +1002,8 @@ float EstimateHeight(const json &Node)
     Px += kSepPx + kBtnPx;
     //Room for a couple of the validation warnings the canvas draws ON a node. They are host state rather than
     //payload — the same node has none at publish time, which is when this number is stamped — and there can be
-    //any number of them, so they cannot be counted properly here.
-    //
-    //MEASURED, 2026-09-14 (theEstimatedNodeHeightMatchesTheDrawnOne prints every shape): the leftover slack is
-    //31px on the tightest shapes (a bare Group, any RegEdit) and 48-65px on the rest, against a warning line
-    //of 17px. So this reservation buys ONE warning outright and the second overruns the estimate by 3px on a
-    //Group — the "six findings" figure an earlier version of this comment gave was attached to the wrong
-    //quantity. Overrunning the ESTIMATE is not overlap: PkgLayout pitches by Height + RowGap, so a node has
-    //31 + 90 = 121px, about seven warning lines, before it reaches the node beneath it. That is the number
-    //that matters, and it is why two lines is the right reservation rather than a generous one.
+    //any number of them, so they cannot be counted properly here. Overrunning the ESTIMATE is not overlap:
+    //PkgLayout pitches by Height + RowGap, so a node has RowGap to spare before it reaches the node beneath it.
     Px += 2.0f * kTextPx;
     return Px;
 }

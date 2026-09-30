@@ -314,8 +314,8 @@ TEST(an_empty_graph_is_not_a_crash)
 TEST(tall_nodes_do_not_overlap_the_ones_below_them)
 {
     ordered_json A = ordered_json::array();
-    //One parent, and a fan of children of WILDLY different heights hanging off it: a bare Group, a Content,
-    //and RegEdits carrying 5, 40 and 120 registry rows. The 120-row node is roughly ten nominal steps tall.
+    //One parent, and a fan of children of WILDLY different heights hanging off it: a bare node, a one-layer node,
+    //and nodes with 5, 40 and 120 top-level layer rows (a node is drawn folded, one row per unsectioned layer).
     ordered_json Root; Root["CID"] = "root"; A.push_back(Root);
     auto Child = [&](const char *Id, const ordered_json &Extra) {
         ordered_json J = Extra;
@@ -324,12 +324,8 @@ TEST(tall_nodes_do_not_overlap_the_ones_below_them)
         A.push_back(J);
     };
     auto RegNode = [&](int Rows) {
-        ordered_json Keys = ordered_json::object();
-        for (int R = 0; R < Rows; ++R) Keys["Software"]["App"]["v" + std::to_string(R)] = "data";
-        ordered_json Entry = ordered_json::object();
-        Entry["ARCHITECTURE"] = ordered_json::array({"64"});
-        Entry["HKLM"] = Keys;
-        ordered_json J; AddLayer(J, RegLayer(Entry));
+        ordered_json J;
+        for (int R = 0; R < Rows; ++R) AddLayer(J, ordered_json{{"ENV", {{"V" + std::to_string(R), "1"}}}});
         return J;
     };
     ordered_json Grp;
@@ -697,11 +693,10 @@ TEST(a_hostile_node_id_cannot_reach_the_terminal_through_the_log)
     CHECK_EQ(Kept.substr(94, 4), std::string(Four));
 }
 
-//The renderer and the height estimator must answer "can this be edited as a list?" the same way, because
-//drawField draws one line for a value it refuses and FieldPx has to charge one line for it — and that number
-//is stamped into the package at publish. They drifted once already: the element scan went into drawField
-//alone, and a list of six strings plus one number was drawn 437px and estimated 600px.
-TEST(the_string_list_fault_predicate_is_the_one_both_sides_use)
+//"Can this be edited as a list?" — drawField draws a box for a list of strings and one descriptive line for anything
+//else, and names the first bad entry. (The height estimate used to charge by it too; a node is estimated folded now,
+//so only the renderer reads it.)
+TEST(the_string_list_fault_predicate_names_the_first_bad_entry)
 {
     //Editable: absent, null, empty, and every entry a string.
     CHECK_EQ(PkgGraph::StringListFault(nullptr), PkgGraph::kStringListOk);
@@ -727,20 +722,6 @@ TEST(the_string_list_fault_predicate_is_the_one_both_sides_use)
     CHECK_EQ(PkgGraph::StringListFault(&Bad2), 2);
     CHECK_EQ(PkgGraph::StringListFault(&Nest), 1);
     CHECK_EQ(PkgGraph::StringListFault(&NullIn), 1);
-    //And the estimator charges the SAME single line for every one of those, which is what the renderer draws
-    //for them. Asserted through EstimateHeight — FieldPx is internal — by comparing the shapes against each
-    //other rather than against a constant: every refused shape must cost exactly what every other one does,
-    //and an EDITABLE list must cost more, or the predicate has grown to cover values that still draw a box.
-    //The absolute pixel agreement with the widget is theEstimatedNodeHeightMatchesTheDrawnOne's job.
-    auto HeightWith = [](const ordered_json &Args) {
-        return PkgGraph::EstimateHeight(ordered_json{{"LAYERS", ordered_json::array({ ordered_json{{"EXEC", ordered_json::array({ ordered_json{{"LABEL", "Play"}, {"HOST", "win32"}, {"ARGS", Args}} })}} })}});
-    };
-    const float Refused = HeightWith(Str);
-    for (const ordered_json *V : {&Obj, &Num, &Bad0, &Bad2, &Nest, &NullIn})
-        CHECK_EQ(HeightWith(*V), Refused);
-    //A good list is measured as the box it actually is. One entry is a single-line input, so it is the
-    //TIGHTEST comparison available — and it must still be at least as tall as the refused line, never less.
-    CHECK(HeightWith(ordered_json::array({"a", "b", "c"})) > Refused);
 }
 
 //DescribeValue is the other half of the same promise: the canvas has to SHOW an author a payload of the wrong
@@ -797,8 +778,8 @@ TEST(a_layered_graph_lays_out_at_pinned_coordinates)
     CHECK_EQ(G.Nodes.size(), (size_t)5);
     CHECK_EQ(G.Nodes[0].X,  60.0f);  CHECK_EQ(G.Nodes[0].Y,  60.0f);   // root, layer 0
     CHECK_EQ(G.Nodes[1].X, 490.0f);  CHECK_EQ(G.Nodes[1].Y,  60.0f);   // a,    layer 1 row 0
-    CHECK_EQ(G.Nodes[2].X, 490.0f);  CHECK_EQ(G.Nodes[2].Y, 523.0f);   // b,    after a's 373 + 90 gap
-    CHECK_EQ(G.Nodes[3].X, 490.0f);  CHECK_EQ(G.Nodes[3].Y, 1121.0f);  // c,    after b's 508 + 90 gap
+    CHECK_EQ(G.Nodes[2].X, 490.0f);  CHECK_EQ(G.Nodes[2].Y, 443.0f);   // b,    after a's 293 + 90 gap
+    CHECK_EQ(G.Nodes[3].X, 490.0f);  CHECK_EQ(G.Nodes[3].Y, 843.0f);   // c,    after b's 310 + 90 gap
     CHECK_EQ(G.Nodes[4].X, 920.0f);  CHECK_EQ(G.Nodes[4].Y,  60.0f);   // tail, layer 2
     //And the heights those Y values are made of, so a failure says WHICH half moved. These moved by 2px when
     //the height estimate stopped charging a full label-and-widget row for rows that hold only SmallButtons —
@@ -810,10 +791,12 @@ TEST(a_layered_graph_lays_out_at_pinned_coordinates)
     //every node — a node is any subset of sections now, and adding one is a per-node act. A fifth (+38) when the
     //final chain gave the envelope its two declared facets, VARIANT and RECOMMENDED, as rows. A sixth in
     //generation 6: a node's parents are LAYERS now, so `a` draws its NODE layer (header + node, take, target,
-    //when, comment) and every layer its own header row — and the envelope lost its toggle/when/not rows.
-    CHECK_EQ(G.Nodes[0].Height, 257.0f);   // root: a node with no layers
-    CHECK_EQ(G.Nodes[1].Height, 373.0f);   // a: one NODE layer
-    CHECK_EQ(G.Nodes[2].Height, 508.0f);   // b: a NODE layer and a ZIP layer
+    //when, comment) and every layer its own header row — and the envelope lost its toggle/when/not rows. A seventh
+    //when layers became a folded tree: a node is estimated as it opens, one row per top-level layer or section; the
+    //"no layers yet" line is charged (it was drawn but not counted), and so is the envelope's SECTION row.
+    CHECK_EQ(G.Nodes[0].Height, 293.0f);   // root: a node with no layers
+    CHECK_EQ(G.Nodes[1].Height, 293.0f);   // a: one NODE layer, folded to its row
+    CHECK_EQ(G.Nodes[2].Height, 310.0f);   // b: a NODE row and a ZIP row
 }
 
 TEST(an_impossible_declared_position_is_rejected_not_honoured)

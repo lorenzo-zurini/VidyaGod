@@ -3,6 +3,8 @@
 
 #include <nlohmann/json.hpp>
 
+#include <functional>
+#include <map>
 #include <string>
 #include <vector>
 
@@ -196,14 +198,51 @@ const std::vector<Field> &FieldsFor(const std::string &Type);
 //resolves from DEFAULT and never renders. Pure — the editor's Visible checkbox and tests both call it.
 void SetVarVisible(nlohmann::ordered_json &node, bool visible);
 
-//How tall this node will be drawn, in canvas units. Derived from the SAME declared field table the canvas
-//renders from, so it tracks a schema change instead of drifting away from one, and from the payload's own
-//sizes (registry rows, patch entries, list lines) because that is what actually makes a node tall.
+// ---- the layer tree -------------------------------------------------------
+//A node's layers are drawn as a tree of collapsible rows: SECTION folders ('/' nests), each layer a row named by its
+//LABEL. Neither is required: a layer without them takes both from the launcher facet of the variable its WHEN tests
+//(UserPatch's 28 byte-patch layers name and group themselves from the options they implement), else it is named by
+//what it holds. Pure, so the renderer and the height estimate read one structure.
+
+//The launcher facet of every VARS declaration in a document: what a WHEN-gated layer is named after.
+struct VarFacet
+{
+    std::string Label, Section, Control;
+    std::map<std::string, std::string> Choices;   // enum: stored value -> shown label
+};
+using VarFacets = std::map<std::string, VarFacet>;
+VarFacets CollectVarFacets(const nlohmann::ordered_json &NodesArray);
+
+//A node reference's display name (the canvas knows every node's LABEL by handle); empty = show the reference.
+using LabelFn = std::function<std::string(const std::string &Ref)>;
+
+struct LayerItem
+{
+    int         Layer = -1;   // index into LAYERS (fold order)
+    std::string Type;         // the layer's type key; "" = malformed
+    std::string Title;        // LABEL, else derived from its WHEN's variable, else from its payload
+    std::string Section;      // SECTION, else its WHEN variable's section; "" = top level
+    std::string Summary;      // what the payload holds, one line (the row's tooltip)
+};
+//One item per layer, in fold order. A LAYERS that is not a list gives none.
+std::vector<LayerItem> LayerItems(const nlohmann::ordered_json &Node, const VarFacets &Facets, const LabelFn &NodeLabel = {});
+//Rows the collapsed tree shows at its top level: each unsectioned layer, plus one per distinct first section segment.
+int TopLevelRows(const std::vector<LayerItem> &Items);
+//One line naming an entry of a layer's list (an edit op, an exec entry): its LABEL, else its COMMENT, else a summary.
+std::string EntryTitle(const nlohmann::ordered_json &Entry);
+//The same for an entry's facts alone (mode, site, bytes / key = value), whatever its COMMENT says.
+std::string EntrySummary(const nlohmann::ordered_json &Entry);
+//A variable's row name: its launcher LABEL with the key, else the key.
+std::string VarTitle(const std::string &Key, const nlohmann::ordered_json &Decl);
+
+//How tall this node is drawn in its DEFAULT state — every section and layer folded — in canvas units. The layout
+//steps by it and stamps it into POS at publish time, headless, so it can only be the state a package opens in; an
+//opened layer grows its node over whatever sits below, and imnodes draws the node being worked on on top.
 //
-//It is an estimate and is allowed to be generous: the cost of over-estimating is a little white space, the
-//cost of under-estimating is two nodes drawn on top of each other. It is pinned to the real renderer by
-//theEstimatedNodeHeightMatchesTheDrawnOne, which measures every SECTION and fails if the estimate falls short.
-float EstimateHeight(const nlohmann::ordered_json &Node);
+//Allowed to be generous: over-estimating costs white space, under-estimating draws two folded nodes on top of each
+//other. Pinned to the renderer by theEstimatedNodeHeightMatchesTheDrawnOne. Without Facets a WHEN-derived section is
+//unknown, so every such layer is counted as its own row — generous, never short.
+float EstimateHeight(const nlohmann::ordered_json &Node, const VarFacets *Facets = nullptr);
 
 // ---- node actions ---------------------------------------------------------
 

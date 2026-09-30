@@ -150,11 +150,17 @@ std::string CheckLayer(const ordered_json &L)
     };
     for (const auto &[K, V] : L.items())
     {
-        if (K == T || K == "WHEN" || K == "COMMENT") continue;
+        if (K == T || K == "WHEN" || K == "COMMENT" || K == "LABEL" || K == "SECTION") continue;
         if (!Allowed.at(T).count(K)) return T + " layer has an unknown field '" + K + "'";
     }
     if (L.contains("WHEN") && !L["WHEN"].is_string()) return "WHEN must be a string (a condition)";
     if (L.contains("COMMENT") && !L["COMMENT"].is_string()) return "COMMENT must be a string";
+    //LABEL + SECTION: what the layer is called and where it sits in the editor's tree ('/' nests). Presentation only —
+    //the fold never reads them. Absent, the editor names the layer from its WHEN variable's UI facet (else its payload).
+    if (L.contains("LABEL") && (!L["LABEL"].is_string() || L["LABEL"].get<std::string>().empty()))
+        return "LABEL must be a non-empty string";
+    if (L.contains("SECTION") && (!L["SECTION"].is_string() || L["SECTION"].get<std::string>().empty()))
+        return "SECTION must be a non-empty path";
     if (L.contains("TARGET"))
     {
         const std::string Tg = Str(L["TARGET"]);

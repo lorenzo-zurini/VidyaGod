@@ -1127,8 +1127,17 @@ void ValidateNodeGraph(const NodeIndex &Idx, std::vector<std::string> &Errors, s
                 }
             }
         }
-        //Undefined %KEY% references (typos) — over everything the node writes and runs.
-        const std::string Scan = N.Json["LAYERS"].dump();
+        //Undefined %KEY% references (typos) — over everything the node writes and runs. Not its prose: a COMMENT
+        //(on a layer or an op) and a layer's LABEL/SECTION are never rendered, so a '%' in them references nothing.
+        nlohmann::ordered_json Live = N.Json["LAYERS"];
+        for (auto &L : Live)
+        {
+            if (!L.is_object()) continue;
+            L.erase("COMMENT"); L.erase("LABEL"); L.erase("SECTION");
+            if (L.contains("EDIT") && L["EDIT"].is_array())
+                for (auto &Op : L["EDIT"]) if (Op.is_object()) Op.erase("COMMENT");
+        }
+        const std::string Scan = Live.dump();
         std::set<std::string> Refs;
         for (auto It = std::sregex_iterator(Scan.begin(), Scan.end(), Tok); It != std::sregex_iterator(); ++It)
             Refs.insert((*It)[1].str());

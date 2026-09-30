@@ -142,6 +142,9 @@ public:
     bool  miniMap() const;
     void  setMiniMap(bool on);
     void selectNode(int index);
+    //Open every fold in a node (its sections, layers and list entries) on its next frame, or fold it all again.
+    //Everything starts folded; this is the node's "open all" / "fold all".
+    void setExpanded(int index, bool open);
 
 signals:
     void documentChanged();                       // the canvas mutated the document (already saved)
@@ -158,6 +161,8 @@ private:
     void drawField(nlohmann::ordered_json &node, const PkgGraph::Field &f, int index);
     void drawRegTree(nlohmann::ordered_json &layer, const PkgGraph::Field &f, int index);
     void drawCustomVarUI(nlohmann::ordered_json &node);
+    bool fold(const std::string &key, const std::string &label);   // a TreeNode whose open state the canvas holds
+    std::string refLabel(const std::string &ref);                   // a node reference's LABEL, if known
     //`Drawn` marks the nodes submitted THIS frame (viewport culling) — a wire can only be drawn
     //between two endpoints that exist, so culled nodes take their wires with them.
     void syncLinks(const PkgGraph::Graph &g, const std::vector<char> &Drawn);

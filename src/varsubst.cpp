@@ -430,8 +430,14 @@ nlohmann::ordered_json VarSubst::SubstituteJsonValues(const nlohmann::ordered_js
     if (V.is_object())
     {
         nlohmann::ordered_json Out = nlohmann::ordered_json::object();
+        //A layer's or an op's COMMENT is prose for people: it is carried through verbatim, never rendered. It may
+        //quote anything — UserPatch's save-name comment quotes the game's "%s-%s" format strings — and rendering
+        //it reported each as an undefined variable. Only on a layer or op (TYPE / MODE), so an ENV or registry value
+        //that happens to be NAMED COMMENT is still substituted.
+        const bool Prose = V.contains("TYPE") || V.contains("MODE");
         for (const auto &[K, E] : V.items())
         {
+            if (Prose && K == "COMMENT") { Out[K] = E; continue; }
             //KEYS are substituted too. The dump-and-reparse form this replaced did, and a key is a real place
             //for a token: a RegEdit's KEYVALUES is keyed by the registry VALUE NAME, so "%NETMODE%_Port" is
             //legitimate authoring. Dropping key substitution would have written the literal token into the

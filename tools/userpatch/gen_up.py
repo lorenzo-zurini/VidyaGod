@@ -13,6 +13,7 @@ sys.path.insert(0, os.path.expanduser("~/Code/VidyaGod/tools/gen6"))
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from resolve import canonical, cid_of
 import model
+import describe
 
 D = os.path.expanduser("~/.VidyaGod/LIBRARY/VidyaGod/[749][v1.0] Age of Empires II")
 PKG = "VidyaGod/[749][v1.0] Age of Empires II"
@@ -124,24 +125,30 @@ def ops_for(diff, gap=8):
         i += 1
     return ops
 
-LABEL_OF = {pos: label for pos, var, label, group, default in EXE_OPTS}
+EXE_DESC = describe.Exe(Z)
+def explained(ops):
+    """Each Replace op's COMMENT says what its bytes do (describe.py); an op that already explains itself keeps that."""
+    return [o if "COMMENT" in o or o["MODE"] != "Replace" else dict(o, COMMENT=describe.describe(EXE_DESC, o)) for o in ops]
+
+FLAGS_VA = EXE_DESC.where(model.FLAGS)[1]
+WATER_VA = EXE_DESC.where(model.WATER)[1]
 edit_layers = []
-edit_layers.append({"EDIT": [dict(o, COMMENT="Widescreen command bar (installer: Command bar style = widescreen)") if n == 0 else o
-                             for n, o in enumerate(ops_for(model.STYLE["widescreen"]))],
-                    "TARGET": EXE, "WHEN": "%up_style%==widescreen"})
-edit_layers.append({"EDIT": [dict(o, COMMENT="Classic left-aligned command bar") if n == 0 else o
-                             for n, o in enumerate(ops_for(model.STYLE["left"]))],
-                    "TARGET": EXE, "WHEN": "%up_style%==left"})
+edit_layers.append({"EDIT": explained(ops_for(model.STYLE["widescreen"])), "TARGET": EXE, "WHEN": "%up_style%==widescreen",
+                    "COMMENT": "SetupAoC's widescreen command bar (feature 1 on): the installer's bytes for that style"})
+edit_layers.append({"EDIT": explained(ops_for(model.STYLE["left"])), "TARGET": EXE, "WHEN": "%up_style%==left",
+                    "COMMENT": "SetupAoC's classic left-aligned command bar (feature 24 on, 1 off): the installer's bytes for that style"})
 for pos, var, label, group, default in EXE_OPTS:
-    ops = ops_for(model.F[pos])
+    ops = explained(ops_for(model.F[pos]))
     if pos in model.BITS:
         ops.append({"MODE": "Or", "OFFSET": hex(model.FLAGS), "VALUE": "%02x" % model.BITS[pos],
-                    "COMMENT": "sync feature flags (one bit per sync feature)"})
+                    "COMMENT": f"sets bit {model.BITS[pos]:#04x} of UserPatch's sync-feature flag byte (VA {FLAGS_VA:#x}); "
+                               "the other sync options own the other bits"})
     if pos == 9:
         ops.append({"MODE": "Replace", "OFFSET": hex(model.WATER), "EXPECT": "%02x" % Z[model.WATER], "REPLACE": "%02x" % model.WATER_ON,
-                    "WHEN": "%up_lower_quality%!=1", "COMMENT": "water animation rate (lower quality environment keeps the base rate)"})
-    ops[0] = dict(ops[0], COMMENT=f"{label} (installer feature {pos})" + (" — " + ops[0]["COMMENT"] if "COMMENT" in ops[0] else ""))
-    edit_layers.append({"EDIT": ops, "TARGET": EXE, "WHEN": f"%{var}%==1"})
+                    "WHEN": "%up_lower_quality%!=1",
+                    "COMMENT": f"water animation rate byte (VA {WATER_VA:#x}); Lower quality environment keeps the base rate"})
+    edit_layers.append({"EDIT": ops, "TARGET": EXE, "WHEN": f"%{var}%==1",
+                        "COMMENT": f"SetupAoC feature {pos}: the installer's bytes for this option, reproduced exactly"})
 
 # split the patch layers into content nodes under the block limit
 NEW, patch_nodes, cur = [], [], []

@@ -90,6 +90,18 @@ TEST(a_graft_is_a_node_whose_list_begins_with_any)
     CHECK(!H.IsGraft);                                                // an ANY later in the list is a check, not an anchor
 }
 
+// A layer's LABEL and SECTION name it and place it in the editor's tree; the fold never reads them, so a named layer
+// lowers exactly like the bare one. Teeth: drop them from CheckLayer's accepted keys (the node stops lowering).
+TEST(a_layer_label_and_section_are_presentation_only)
+{
+    Node Bare, Named;
+    CHECK(ManifestModel::ParseNode({{"LABEL", "n"}, {"LAYERS", ordered_json::array({ {{"ENV", {{"A", "1"}}}} })}}, "f", "/b", Bare));
+    CHECK(ManifestModel::ParseNode({{"LABEL", "n"}, {"LAYERS", ordered_json::array({ {{"ENV", {{"A", "1"}}},
+          {"LABEL", "Font hinting"}, {"SECTION", "Compatibility/Fonts"}, {"COMMENT", "why"}} })}}, "f", "/b", Named));
+    CHECK(Named.LowerError.empty());
+    CHECK_EQ(Named.Layers.dump(), Bare.Layers.dump());
+}
+
 TEST(the_vocabulary_refuses_malformed_nodes_and_keeps_them_indexed)
 {
     const std::vector<ordered_json> Bad = {
@@ -103,6 +115,8 @@ TEST(the_vocabulary_refuses_malformed_nodes_and_keeps_them_indexed)
         {{"LABEL", "h"}, {"LAYERS", ordered_json::array({ {{"ZIP", "x.zip"}, {"TARGET", "REG/HKCU"}} })}},     // content TARGET not in FILES
         {{"LABEL", "i"}, {"LAYERS", ordered_json::array({ {{"EDIT", ordered_json::array({ {{"MODE", "Poke"}, {"VALUE", 5}} })}, {"TARGET", "FILES/x"}} })}},   // VALUE not text
         {{"LABEL", "j"}, {"LAYERS", ordered_json::array({ {{"EXEC", ordered_json::array({ {{"LABEL", "Play"}}, {{"LABEL", "Play"}} })}} })}},   // two entries, one label
+        {{"LABEL", "k"}, {"LAYERS", ordered_json::array({ {{"ENV", {{"A", "1"}}}, {"LABEL", ""}} })}},             // empty layer LABEL
+        {{"LABEL", "l"}, {"LAYERS", ordered_json::array({ {{"ENV", {{"A", "1"}}}, {"SECTION", 3}} })}},            // SECTION not a path
     };
     for (const auto &J : Bad)
     {
@@ -468,8 +482,13 @@ TEST(validate_names_undefined_variables_and_malformed_whens)
     Add(Idx, { {"CID", "n"}, {"LABEL", "n"}, {"LAYERS", ordered_json::array({
         {{"ZIP", "%typo_var%.zip"}},
         {{"DIR", "d"}, {"WHEN", "%a% === 1"}},
+        {{"EDIT", ordered_json::array({ {{"MODE", "Poke"}, {"OFFSET", "0x1"}, {"VALUE", "01"}, {"COMMENT", "keeps '%prose%'"}} })},
+         {"TARGET", "FILES/%GameDir%/g.exe"}, {"COMMENT", "%also_prose%"}, {"LABEL", "%label_prose%"}},
     })} });
     const auto E = Validate(Idx);
+    CHECK(!AnyContains(E, "%prose%"));                                  // a COMMENT is prose, not a reference
+    CHECK(!AnyContains(E, "%also_prose%"));
+    CHECK(!AnyContains(E, "%label_prose%"));
     CHECK(AnyContains(E, "undefined variable %typo_var%"));
     CHECK(AnyContains(E, "malformed WHEN"));
 }

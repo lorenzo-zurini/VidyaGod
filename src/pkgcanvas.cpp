@@ -9,6 +9,8 @@
 #include "imnodes.h"
 #include "imnodes_internal.h"   // GImNodes: the canvas rect and the live click interaction
 
+#include <functional>
+#include <sstream>
 #include <algorithm>
 #include <cmath>
 #include <map>
@@ -110,6 +112,21 @@ constexpr float kNodeWidth  = 330.0f;
 //emits, so scaling these as well multiplied the two together and nodes grew with the square of the zoom.
 constexpr float kLabelCol   = 96.0f;
 constexpr float kFieldWidth = 228.0f;
+
+namespace {
+//A row title cut to what fits beside its buttons, at a UTF-8 boundary.
+std::string Fit(const std::string &S, int Chars)
+{
+    Chars = std::max(Chars, 10);
+    if ((int)S.size() <= Chars) return S;
+    size_t Cut = (size_t)Chars - 2;
+    while (Cut > 0 && ((unsigned char)S[Cut] & 0xC0) == 0x80) --Cut;
+    return S.substr(0, Cut) + "..";
+}
+//Characters of title a row at this depth has room for: the node width, less the fold arrow and indents, less the
+//move buttons a layer row carries.
+int TitleChars(int Depth, bool Buttons) { return (int)((kNodeWidth - 24.0f - 21.0f * (float)Depth - (Buttons ? 44.0f : 0.0f)) / 7.0f); }
+}
 
 //A node-width separator. ImGui::Separator() DRAWS across the window's content-region (not the imnodes node's), so
 //inside a node the line shot hundreds of px past the box — but its LAYOUT cost is width-0 + ItemSpacing.y, which the
@@ -284,6 +301,15 @@ struct PkgCanvasState
     //tree when the field is DEACTIVATED - the same "commit on finish" rule the KeyValue rename uses.
     std::map<std::string, std::vector<PkgGraph::RegRow>> RegBuf;
     int CurLayer = -1;   // the LAYERS index drawPayload is drawing (keys per-layer edit buffers)
+    //The layer tree's folds: every section, layer and list entry starts folded, and the ones opened are held HERE,
+    //not in ImGui's per-context storage — that outlives the canvas and is keyed by the node's INDEX, so a fold would
+    //follow an index to another node and no test could say what state it starts from. Keyed "<node>|<path>".
+    std::set<std::string> Open;
+    std::set<std::string> ExpandAll;     // node prefixes to open completely the next time they are drawn
+    std::string FoldPrefix;              // the node drawPayload is drawing
+    PkgGraph::VarFacets Facets;          // every variable's launcher facet in the document (rebuilt with the graph)
+    std::map<std::string, std::string> RefLabels;   // handle -> LABEL: this bundle's nodes, then the catalog's
+    bool CatalogLabels = false;          // the catalog's labels were read into RefLabels
 
     bool Dirty = false;            // document mutated this frame; persist on mouse-up
     //Every mutation goes through here, so the cached graph can never outlive the document it was built from.
@@ -810,12 +836,11 @@ void PkgCanvas::drawField(json &Node, const Field &F, int Index)
         json &Arr = Present ? Node[F.Key] : EmptyArr;
         ImGui::Text("%s (%d)", F.Label, (int)Arr.size());
         int Del = -1;
-        //A batched payload is read capped — 77 BinaryPatches must not turn the node into a wall.
-        const int Cap = 12;
-        for (int I = 0; I < (int)Arr.size() && I < Cap; ++I)
+        //Each entry is one folded row named by EntryTitle (its LABEL, its COMMENT, else its mode and site), so a
+        //layer of 77 byte patches reads as 77 lines rather than a wall of fields — and none is out of reach.
+        for (int I = 0; I < (int)Arr.size(); ++I)
         {
             ImGui::PushID(I);
-            ImGui::Separator();
             //A batched entry that is not an OBJECT is malformed content, and this editor exists to open
             //malformed content. Drawing its fields anyway means the first write — `Node[F.Key] = V` on a JSON
             //string — throws type_error.305 out of paintGL, which has no catch: one click on a MODE dropdown
@@ -827,18 +852,30 @@ void PkgCanvas::drawField(json &Node, const Field &F, int Index)
                 ImGui::PopID();
                 continue;
             }
-            for (const Field &S : F.Sub)
+            const std::string Title = PkgGraph::EntryTitle(Arr[I]);
+            const bool Open = fold("L" + std::to_string(m_s->CurLayer) + "/" + F.Key + "/" + std::to_string(I),
+                                   Fit(Title.empty() ? "(new entry)" : Title, TitleChars(2, false)));
+            if (ImGui::IsItemHovered())
             {
-                //A VFS layer's BASE_TARGETS means nothing except on a delta, and NodeLower REFUSES it elsewhere —
-                //offering the box on a zip/dir/file entry is a two-click way to make a node that will not lower.
-                if (S.Key == std::string("BASE_TARGETS") && StrOf(Arr[I], "FORM") != "delta") continue;
-                drawField(Arr[I], S, Index);
+                const std::string Facts = PkgGraph::EntrySummary(Arr[I]);
+                EditorTooltip(m_s->RealMouse, m_s->ScreenViewportPos, m_s->ScreenViewportSize,
+                              (Title + (Facts != Title ? "\n" + Facts : std::string())).c_str());
             }
-            if (F.VarUI) drawCustomVarUI(Arr[I]);   // a batched CustomVar entry carries its own launcher UI facet
-            if (ImGui::SmallButton("remove")) Del = I;
+            if (Open)
+            {
+                for (const Field &S : F.Sub)
+                {
+                    //A VFS layer's BASE_TARGETS means nothing except on a delta, and NodeLower REFUSES it elsewhere —
+                    //offering the box on a zip/dir/file entry is a two-click way to make a node that will not lower.
+                    if (S.Key == std::string("BASE_TARGETS") && StrOf(Arr[I], "FORM") != "delta") continue;
+                    drawField(Arr[I], S, Index);
+                }
+                if (F.VarUI) drawCustomVarUI(Arr[I]);   // a batched CustomVar entry carries its own launcher UI facet
+                if (ImGui::SmallButton("remove")) Del = I;
+                ImGui::TreePop();
+            }
             ImGui::PopID();
         }
-        if ((int)Arr.size() > Cap) ImGui::TextDisabled("... and %d more (edit in the JSON view)", (int)Arr.size() - Cap);
         if (Del >= 0) { Arr.erase(Del); m_s->MarkDirty(); }
         //Refuses rather than overwrites when the value is there but is not an array. The Cover and KeyValue
         //writers next door were taught to refuse a malformed value in the same sweep that left this one
@@ -932,11 +969,12 @@ void PkgCanvas::drawField(json &Node, const Field &F, int Index)
         ImGui::Text("%s (%d)", F.Label, (int)Map.size());
         std::string DelKey; std::pair<std::string, std::string> Rename;
         int Row = 0;
+        //One folded row per variable, named by its launcher label: UserPatch declares 60, all of them reachable.
         for (auto &[K, D] : Map.items())
         {
-            if (Row >= 12) break;
             ImGui::PushID(Row++);
-            ImGui::Separator();
+            if (!fold("L" + std::to_string(m_s->CurLayer) + "/" + F.Key + "/" + K, Fit(PkgGraph::VarTitle(K, D), TitleChars(2, false))))
+            { ImGui::PopID(); continue; }
             //The key IS the variable's name: renamed when the field is finished, never mid-typing (a half-typed
             //name must not churn the map or collide).
             std::string Key = K;
@@ -947,15 +985,16 @@ void PkgCanvas::drawField(json &Node, const Field &F, int Index)
             {
                 ImGui::TextDisabled("(malformed declaration - fix it in the JSON view)");
                 if (ImGui::SmallButton("remove")) DelKey = K;
-                ImGui::PopID();
-                continue;
             }
-            for (const Field &S : F.Sub) drawField(D, S, Index);
-            if (F.VarUI) drawCustomVarUI(D);
-            if (ImGui::SmallButton("remove")) DelKey = K;
+            else
+            {
+                for (const Field &S : F.Sub) drawField(D, S, Index);
+                if (F.VarUI) drawCustomVarUI(D);
+                if (ImGui::SmallButton("remove")) DelKey = K;
+            }
+            ImGui::TreePop();
             ImGui::PopID();
         }
-        if ((int)Map.size() > 12) ImGui::TextDisabled("... and %d more (edit in the JSON view)", (int)Map.size() - 12);
         if (!DelKey.empty()) { Node[F.Key].erase(DelKey); m_s->MarkDirty(); }
         if (!Rename.first.empty())
         {
@@ -1212,49 +1251,132 @@ void PkgCanvas::drawEnvelope(json &Node)
     ImGui::TreePop();
 }
 
+
+bool PkgCanvas::fold(const std::string &Key, const std::string &Label)
+{
+    const std::string K = m_s->FoldPrefix + Key;
+    bool Was = m_s->Open.count(K) > 0;
+    if (!Was && m_s->ExpandAll.count(m_s->FoldPrefix)) { m_s->Open.insert(K); Was = true; }
+    ImGui::SetNextItemOpen(Was, ImGuiCond_Always);
+    //"###key": the id is the path, so a title that changes (a LABEL being typed) is still the same fold.
+    const bool Now = ImGui::TreeNodeEx((Label + "###" + Key).c_str());
+    if (Now != Was) { if (Now) m_s->Open.insert(K); else m_s->Open.erase(K); }
+    return Now;
+}
+
+std::string PkgCanvas::refLabel(const std::string &Ref)
+{
+    auto It = m_s->RefLabels.find(Ref);
+    if (It == m_s->RefLabels.end() && !m_s->CatalogLabels && m_s->KnownIds)
+    {
+        m_s->CatalogLabels = true;                       // read once: a miss is usually a library node
+        for (const auto &[Hnd, Lbl] : m_s->KnownIds()) if (!Lbl.empty()) m_s->RefLabels.emplace(Hnd, Lbl);
+        It = m_s->RefLabels.find(Ref);
+    }
+    return It == m_s->RefLabels.end() ? std::string() : It->second;
+}
+
+void PkgCanvas::setExpanded(int index, bool open)
+{
+    const json &Ns = m_s->Nodes();
+    if (index < 0 || index >= (int)Ns.size()) return;
+    const std::string Prefix = (Ns[(size_t)index].is_object() && !Handle(Ns[(size_t)index]).empty()
+                                    ? Handle(Ns[(size_t)index]) : "#" + std::to_string(index)) + "|";
+    if (open) { m_s->ExpandAll.insert(Prefix); return; }
+    m_s->ExpandAll.erase(Prefix);
+    for (auto It = m_s->Open.lower_bound(Prefix); It != m_s->Open.end() && It->rfind(Prefix, 0) == 0;) It = m_s->Open.erase(It);
+}
+
 void PkgCanvas::drawPayload(json &Node, int Index)
 {
-    //The node's LAYERS, in order — the order IS the fold order. Each layer: a header (its type, move up/down,
-    //remove), then its declared rows, drawn against the layer object. "+ layer" appends one of any type.
+    //The node's LAYERS as a tree of folded rows: SECTION folders ('/' nests), then each layer, named by its LABEL or
+    //by what PkgGraph derives (its WHEN variable's launcher label, else its payload). Opening a row shows the layer's
+    //declared fields. Sections sit where their first layer is and keep their layers in fold order — the order IS the
+    //fold order, which the move buttons change and the tooltip's "#n" states.
     if (Node.contains("LAYERS") && !Node["LAYERS"].is_array())
     { ImGui::TextDisabled("(LAYERS is not a list - fix it in the JSON view)"); return; }
     static json EmptyArr = json::array();      // stays empty: every write goes through Node["LAYERS"]
     json &Ls = Node.contains("LAYERS") ? Node["LAYERS"] : EmptyArr;
     if (Ls.empty()) ImGui::TextDisabled("no layers yet");
-    int Del = -1, MoveFrom = -1, MoveBy = 0;
-    for (int I = 0; I < (int)Ls.size(); ++I)
+    const std::vector<PkgGraph::LayerItem> Items =
+        PkgGraph::LayerItems(Node, m_s->Facets, [this](const std::string &Ref) { return refLabel(Ref); });
+
+    struct Group { std::string Name, Path; std::vector<std::pair<bool, int>> Kids; };   // kid: (is a group, index)
+    std::vector<Group> Gs(1);
+    for (int I = 0; I < (int)Items.size(); ++I)
     {
+        int G = 0;
+        std::string Path, Seg;
+        std::stringstream SS(Items[(size_t)I].Section);
+        while (std::getline(SS, Seg, '/'))
+        {
+            Path += (Path.empty() ? "" : "/") + Seg;
+            int Found = -1;
+            for (const auto &[IsG, K] : Gs[(size_t)G].Kids) if (IsG && Gs[(size_t)K].Name == Seg) { Found = K; break; }
+            if (Found < 0)
+            {
+                Gs.push_back({Seg, Path, {}});
+                Found = (int)Gs.size() - 1;
+                Gs[(size_t)G].Kids.push_back({true, Found});
+            }
+            G = Found;
+        }
+        Gs[(size_t)G].Kids.push_back({false, I});
+    }
+
+    int Del = -1, MoveFrom = -1, MoveBy = 0;
+    auto DrawLayer = [&](const PkgGraph::LayerItem &It, int Depth) {
+        const int I = It.Layer;
         ImGui::PushID(I);
-        ImGui::Separator();
-        const std::string T = LayerType(Ls[(size_t)I]);
         int R, Gc, B;
-        TypeColour(T, R, Gc, B);
-        ImGui::TextColored(ImVec4((float)(R + 70) / 255.0f, (float)(Gc + 70) / 255.0f, (float)(B + 70) / 255.0f, 1.0f),
-                           "%s", T.empty() ? "?" : T.c_str());
+        TypeColour(It.Type, R, Gc, B);
+        ImGui::PushStyleColor(ImGuiCol_Text, ImVec4((float)(R + 70) / 255.0f, (float)(Gc + 70) / 255.0f, (float)(B + 70) / 255.0f, 1.0f));
+        const std::string Type = It.Type.empty() ? std::string("?") : It.Type;
+        const bool Open = fold("L" + std::to_string(I), Type + "  " + Fit(It.Title, TitleChars(Depth, true) - (int)Type.size() - 2));
+        ImGui::PopStyleColor();
         if (ImGui::IsItemHovered())
-            EditorTooltip(m_s->RealMouse, m_s->ScreenViewportPos, m_s->ScreenViewportSize,
-                          (std::string(TypeHelp(T)) + "\n(right-click: remove this layer)").c_str());
+        {
+            std::string Tip = "#" + std::to_string(I) + " " + Type + ": " + It.Title;
+            if (It.Summary != It.Title) Tip += "\n" + It.Summary;
+            if (const std::string W = StrOf(Ls[(size_t)I], "WHEN"); !W.empty()) Tip += "\nwhen " + W;
+            Tip += std::string("\n\n") + TypeHelp(It.Type) + "\n(right-click: remove this layer)";
+            EditorTooltip(m_s->RealMouse, m_s->ScreenViewportPos, m_s->ScreenViewportSize, Tip.c_str());
+        }
         //Removing a layer drops its whole payload, so it is not a button a stray click lands on: it is in the
-        //type label's context menu.
+        //row's context menu.
         if (ImGui::BeginPopupContextItem("##layermenu"))
         {
             if (ImGui::Selectable("Remove layer")) Del = I;
             ImGui::EndPopup();
         }
-        ImGui::SameLine();
+        ImGui::SameLine(kNodeWidth - 36.0f);
         if (ImGui::SmallButton("^")) { MoveFrom = I; MoveBy = -1; }
         ImGui::SameLine();
         if (ImGui::SmallButton("v")) { MoveFrom = I; MoveBy = +1; }
-        if (T.empty())
-            ImGui::TextDisabled("(needs one type key - fix in JSON view)");
-        else
+        if (Open)
         {
-            m_s->CurLayer = I;
-            for (const Field &F : FieldsFor(T)) drawField(Ls[(size_t)I], F, Index);
-            m_s->CurLayer = -1;
+            if (It.Type.empty())
+                ImGui::TextDisabled("(needs one type key - fix in JSON view)");
+            else
+            {
+                m_s->CurLayer = I;
+                for (const Field &F : FieldsFor(It.Type)) drawField(Ls[(size_t)I], F, Index);
+                m_s->CurLayer = -1;
+            }
+            ImGui::TreePop();
         }
         ImGui::PopID();
-    }
+    };
+    std::function<void(int, int)> DrawGroup = [&](int G, int Depth) {
+        for (const auto &[IsG, K] : Gs[(size_t)G].Kids)
+        {
+            if (!IsG) { DrawLayer(Items[(size_t)K], Depth); continue; }
+            if (fold("S:" + Gs[(size_t)K].Path, Fit(Gs[(size_t)K].Name, TitleChars(Depth, false))))
+            { DrawGroup(K, Depth + 1); ImGui::TreePop(); }
+        }
+    };
+    DrawGroup(0, 0);
+
     if (Del >= 0) { Ls.erase((size_t)Del); m_s->MarkDirty(); }
     else if (MoveFrom >= 0 && PkgGraph::MoveLayer(Node, MoveFrom, MoveBy)) m_s->MarkDirty();
     if (ImGui::SmallButton("+ layer")) ImGui::OpenPopup("##addlayer");
@@ -1267,6 +1389,10 @@ void PkgCanvas::drawPayload(json &Node, int Index)
         }
         ImGui::EndPopup();
     }
+    ImGui::SameLine();
+    if (ImGui::SmallButton("open all")) setExpanded(Index, true);
+    ImGui::SameLine();
+    if (ImGui::SmallButton("fold all")) setExpanded(Index, false);
 }
 
 //The CustomVar UI facet — the thing whose PRESENCE makes the var user-facing (08-variables.md). The generic field
@@ -1468,7 +1594,9 @@ void PkgCanvas::drawNode(int Index, Graph &G)
     const bool Locked = m_s->Running.find(Id) != m_s->Running.end();
     if (Locked) ImGui::BeginDisabled();
     drawEnvelope(Node);
+    m_s->FoldPrefix = (Id.empty() ? "#" + std::to_string(Index) : Id) + "|";
     drawPayload(Node, Index);
+    m_s->ExpandAll.erase(m_s->FoldPrefix);           // "open all" happens in one frame: every fold drawn opened
     if (Locked) ImGui::EndDisabled();
     drawActions(Node, Index, G);
 
@@ -1715,6 +1843,9 @@ void PkgCanvas::frame()
                         + ", which no layout could have produced - that declaration is ignored");
         m_s->HasDependent.clear();
         for (const Link &L : m_s->Cache.Links) if (L.ParentIndex >= 0) m_s->HasDependent.insert(L.ParentIndex);
+        m_s->Facets = PkgGraph::CollectVarFacets(m_s->Nodes());
+        for (const auto &N : m_s->Nodes())
+            if (N.is_object() && !Handle(N).empty() && !StrOf(N, "LABEL").empty()) m_s->RefLabels[Handle(N)] = StrOf(N, "LABEL");
         m_s->CacheValid = true;
     }
     Graph &G = m_s->Cache;
@@ -2023,7 +2154,11 @@ void PkgCanvas::frame()
         //on a 12-entry BinaryPatch (2950px tall), the canvas went blank for 2400px of panning with the node
         //covering the entire viewport, unclickable. The height is already computed for the layout; this is the
         //other place that needs it.
-        const float H = (G.Nodes[I].Height > 1.0f ? G.Nodes[I].Height : 200.0f) * m_s->Zoom;
+        //The TALLER of the estimate and the last measured size: the estimate describes the node folded, and a node
+        //whose layers were opened is drawn taller than that — measured the last time it was on screen.
+        float H = G.Nodes[I].Height > 1.0f ? G.Nodes[I].Height : 200.0f;
+        if (const auto D = m_s->NodeDims.find(G.Nodes[I].Id); D != m_s->NodeDims.end()) H = std::max(H, D->second.y);
+        H *= m_s->Zoom;
         return X > -MarginX && Y + H > -MarginY && X < Canvas.x + MarginX && Y < Canvas.y + MarginY;
     };
     //A SELECTED node is never culled. imnodes keeps a culled node's index in SelectedNodeIndices with no

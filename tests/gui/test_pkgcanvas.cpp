@@ -596,6 +596,7 @@ private slots:
         Doc["NODES"][n]["LAYERS"][0]["EXEC"][0]["TILE"] = json{{"UID", "1"}};
         Cover() = "cover.png";
         Layout[id] = json::array({30.0, 30.0});
+        Canvas->setExpanded(n, true);          // the cover is inside the folded exec entry
         Canvas->invalidateGraph();
         runFrame(); runFrame();
 
@@ -701,6 +702,7 @@ private slots:
             Doc["NODES"][n]["LAYERS"][0]["REG"] = json{{"HKLM", json{{"Soft", json{{"Sub", json{{"X", "1"}}}}},
                                                                     {"So",   json{{"Y", "2"}}}}}};
             Layout[Doc["NODES"][n]["CID"].get<std::string>()] = json::array({30.0, 30.0});
+            Canvas->setExpanded(n, true);          // the registry rows are inside the folded layer
             Canvas->invalidateGraph();
             runFrame(); runFrame();
         };
@@ -957,6 +959,81 @@ private slots:
     // SetVarVisible IS the visibility contract (UI-facet presence). A hidden var carries no UI and resolves from
     // DEFAULT; making it visible adds a minimal UI (control+label) without clobbering an existing facet. Teeth:
     // make "hidden" keep UI, or "visible" overwrite an existing UI — each flips an assertion here.
+    // The layer tree's names and folders. A layer's LABEL/SECTION win; without them a WHEN-gated layer is named and
+    // filed by the launcher facet of the variable it tests (a bool as its label, an enum as "label: choice"), and
+    // anything else by its payload. Teeth: drop the facet derivation (titles fall back to "age2.exe (1 ops)").
+    void layerRowsAreNamedByLabelElseByTheirWhenVariable()
+    {
+        const json Doc2 = json::array({ json{{"LAYERS", json::array({ json{{"VARS", {
+            {"wat", {{"DEFAULT", "1"}, {"UI", {{"CONTROL", "bool"}, {"LABEL", "Water animation"}, {"SECTION", "UP/Graphics"}}}}},
+            {"sty", {{"DEFAULT", "c"}, {"UI", {{"CONTROL", "enum"}, {"LABEL", "Bar style"}, {"SECTION", "UP/Interface"},
+                     {"CHOICES", json::array({ json{{"LABEL", "Widescreen"}, {"VALUE", "w"}} })}}}}} }}} })}} });
+        const PkgGraph::VarFacets F = PkgGraph::CollectVarFacets(Doc2);
+        const json Op = json{{"MODE", "Replace"}, {"OFFSET", "0x10"}, {"EXPECT", "7e"}, {"REPLACE", "eb"}};
+        const json N = json{{"LAYERS", json::array({
+            json{{"EDIT", json::array({Op})}, {"TARGET", "FILES/%GameDir%/age2.exe"}, {"WHEN", "%wat%==1"}},
+            json{{"EDIT", json::array({Op})}, {"TARGET", "FILES/%GameDir%/age2.exe"}, {"WHEN", "%sty%==w"}},
+            json{{"EDIT", json::array({Op})}, {"TARGET", "FILES/%GameDir%/age2.exe"}, {"WHEN", "%wat%==1"},
+                 {"LABEL", "Own name"}, {"SECTION", "/Mine//Here/"}},
+            json{{"NODE", "bafyfonts"}, {"TARGET", "FILES/%Windows%/Fonts"}},
+            json{{"ENV", {{"A", "1"}}}} })}};
+        const auto It = PkgGraph::LayerItems(N, F, [](const std::string &R) { return R == "bafyfonts" ? std::string("Core Fonts") : std::string(); });
+        QCOMPARE((int)It.size(), 5);
+        QCOMPARE(It[0].Title, std::string("Water animation"));
+        QCOMPARE(It[0].Section, std::string("UP/Graphics"));
+        QCOMPARE(It[1].Title, std::string("Bar style: Widescreen"));
+        QCOMPARE(It[1].Section, std::string("UP/Interface"));
+        QCOMPARE(It[2].Title, std::string("Own name"));
+        QCOMPARE(It[2].Section, std::string("Mine/Here"));                 // empty segments dropped
+        QCOMPARE(It[0].Summary, std::string("age2.exe (1 ops)"));
+        QCOMPARE(It[3].Title, std::string("Core Fonts -> %Windows%/Fonts"));
+        QCOMPARE(It[4].Section, std::string());
+        QCOMPARE(PkgGraph::TopLevelRows(It), 4);                           // UP, Mine, the NODE, the ENV
+        //An entry is its LABEL, else its COMMENT, else its facts.
+        QCOMPARE(PkgGraph::EntryTitle(Op), std::string("0x10 7e -> eb"));
+        json Commented = Op; Commented["COMMENT"] = "jle -> jmp: always scroll";
+        QCOMPARE(PkgGraph::EntryTitle(Commented), std::string("jle -> jmp: always scroll"));
+        QCOMPARE(PkgGraph::EntrySummary(Commented), std::string("0x10 7e -> eb"));
+    }
+
+    // A node opens FOLDED: UserPatch's 28 byte-patch layers (187 ops) are a handful of section rows, drawn no taller
+    // than the layout reserved. "open all" unfolds everything in one frame; folds belong to their node. Teeth: start
+    // folds open (Was = true) — the folded node is thousands of px and overruns its estimate.
+    void aNodeOpensFoldedAndOpenAllUnfoldsIt()
+    {
+        Canvas->setMiniMap(false);
+        Canvas->setIssues({});
+        const int V = Canvas->addNode("VARS", 40.0f, 40.0f);
+        json Vars = json::object();
+        for (int K = 0; K < 28; ++K)
+            Vars["o" + std::to_string(K)] = json{{"DEFAULT", "1"}, {"UI", {{"CONTROL", "bool"}, {"LABEL", "Option " + std::to_string(K)},
+                                                 {"SECTION", "UserPatch/Group " + std::to_string(K % 4)}}}};
+        Doc["NODES"][V]["LAYERS"] = json::array({ json{{"VARS", Vars}} });
+        const int E = Canvas->addNode("EDIT", 500.0f, 40.0f);
+        json Ls = json::array();
+        for (int K = 0; K < 28; ++K)
+        {
+            json Ops = json::array();
+            for (int O = 0; O < 7; ++O) Ops.push_back(json{{"MODE", "Replace"}, {"OFFSET", "0x" + std::to_string(1000 + O)}, {"EXPECT", "7e"}, {"REPLACE", "eb"}});
+            Ls.push_back(json{{"EDIT", Ops}, {"TARGET", "FILES/C:/g/g.exe"}, {"WHEN", "%o" + std::to_string(K) + "%==1"}});
+        }
+        Doc["NODES"][E]["LAYERS"] = Ls;
+        Canvas->invalidateGraph();
+        runFrame(); runFrame();
+        const float Folded = ImNodes::GetNodeDimensions(E).y, Est = Canvas->graph().Nodes[(size_t)E].Height;
+        QVERIFY2(Folded < 400.0f, qPrintable(QString("folded, 28 layers under one section draw %1px").arg(Folded)));
+        QVERIFY2(Est >= Folded, qPrintable(QString("drawn %1px, estimated %2px - SHORT").arg(Folded).arg(Est)));
+        const float VarsFolded = ImNodes::GetNodeDimensions(V).y;
+        Canvas->setExpanded(E, true);
+        runFrame(); runFrame();
+        const float Open = ImNodes::GetNodeDimensions(E).y;
+        QVERIFY2(Open > 28.0f * 7.0f * 17.0f, qPrintable(QString("open all drew only %1px").arg(Open)));
+        QCOMPARE(ImNodes::GetNodeDimensions(V).y, VarsFolded);             // the other node stays folded
+        Canvas->setExpanded(E, false);
+        runFrame(); runFrame();
+        QCOMPARE(ImNodes::GetNodeDimensions(E).y, Folded);
+    }
+
     void setVarVisibleTogglesTheUiFacet()
     {
         nlohmann::ordered_json V{{"KEY", "tt_width"}, {"DEFAULT", "%ScreenWidth%"}};
@@ -1474,6 +1551,7 @@ private slots:
         // SUBMOUNTS is a StringList; several lines make it a multiline box, which is what opens the child.
         const int N = Canvas->addNode("ZIP", 500, 300);
         Doc["NODES"][N]["LAYERS"][0]["SUBMOUNTS"] = json::array({"a/b:c/d", "e/f:g/h", "i/j:k/l"});
+        Canvas->setExpanded(N, true);          // the nested field is inside the folded layer
         Canvas->invalidateGraph();
         runFrame(); runFrame();
 
@@ -1857,6 +1935,7 @@ private slots:
         Canvas->setMiniMap(false);
         const int N = Canvas->addNode("ZIP", 120, 120);
         Doc["NODES"][N]["LAYERS"][0]["SUBMOUNTS"] = json::array({"a/b:c/d", "e/f:g/h", "i/j:k/l"});
+        Canvas->setExpanded(N, true);          // the nested field is inside the folded layer
         Canvas->invalidateGraph();
         //Start from a known scale: the canvas is shared with every earlier test in this suite and a leftover
         //zoom decides whether the node is on screen at all.
@@ -1972,9 +2051,12 @@ private slots:
         for (int r = 0; r < 12; ++r)
             Patches.push_back(json{{"MODE", "Replace"}, {"OFFSET", "0x1000"}, {"EXPECT", "90"}, {"REPLACE", "cc"}});
         Doc["NODES"][N]["LAYERS"][0] = json{{"EDIT", Patches}, {"TARGET", "FILES/C:/g/g.exe"}};
+        Canvas->setExpanded(N, true);          // tall only when its layer and ops are open
         Canvas->invalidateGraph();
         runFrame(); runFrame();
-        const float H = Canvas->graph().Nodes[(size_t)N].Height;
+        //Its DRAWN height: the estimate describes the node folded (a few rows), and culling has to go by the node
+        //as it is on screen — opened, it is far taller than any estimate. Teeth: cull by the estimate alone.
+        const float H = ImNodes::GetNodeDimensions(N).y;
         QVERIFY2(H > 1500.0f,
                  qPrintable(QString("the test node is only %1px tall - the -1400 case below needs it to reach "
                                     "the viewport top from there, so a shorter node would make this test "
@@ -2076,7 +2158,7 @@ private slots:
     void anInNodeComboOpensWhereItWasClicked()
     {
         Canvas->setMiniMap(false);
-        Canvas->addNode("EDIT", 200, 200);         // an EDIT op's MODE is an enum, so the node has a combo
+        Canvas->setExpanded(Canvas->addNode("EDIT", 200, 200), true);         // an EDIT op's MODE is an enum, so the node has a combo
         Canvas->setZoom(1.0f);
         runFrame(); runFrame();
 
@@ -2776,6 +2858,7 @@ private slots:
             const int N = Canvas->addNode(Type, 220, 180);
             const json::json_pointer Ptr(Key);
             Doc["NODES"][N][Ptr] = Bad;
+            Canvas->setExpanded(N, true);          // the malformed field sits inside a folded layer
             Canvas->invalidateGraph();
             ImGui::ClearActiveID();
             ImNodes::EditorContextResetPanning(ImVec2(0, 0));
