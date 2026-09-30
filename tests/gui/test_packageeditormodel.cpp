@@ -207,6 +207,24 @@ private slots:
         QVERIFY(!M2.doc().Positions().count(New));
     }
 
+    // A package received from a friend (a CATALOG stub) is theirs: the editor may show it but never saves into it.
+    // Teeth: drop the refusal (the stub is re-minted in place).
+    void aReceivedPackageIsNeverSaved()
+    {
+        library();
+        const QString Stub = Root->path() + "/CATALOG/Bob - Games/[9][v1] Theirs";
+        QDir().mkpath(Stub);
+        const std::string C = Freeze(Stub, Zip("Theirs", "t.zip"));
+        PackageEditorModel M(&Cfg, nullptr);
+        M.initPackage(Stub, nullptr);
+        json N = M.doc().Node(0); N["LABEL"] = "mine"; M.replaceNode(C, N);
+        QString Err;
+        QVERIFY(!M.Save(&Err));
+        QVERIFY(Err.contains("friend"));
+        QVERIFY(QFile::exists(Stub + "/" + QString::fromStdString(C) + ".json"));
+        QCOMPARE(NodeFiles(Stub), 1);
+    }
+
     // A JSON file in the package that is not a node is never loaded, rewritten or swept by a save.
     void aFileThatIsNotANodeSurvivesASave()
     {

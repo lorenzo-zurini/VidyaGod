@@ -104,6 +104,7 @@ private:
     const NodeIndex & ExecIndex() const;           // BuildExecIndex, cached until the document changes
     const NodeIndex & LibraryIndex() const;        // the library as on disk (the other packages), cached
     void LoadLayout();
+    void WriteConfig();                            // GlobalConfig.JSON (this machine's layouts) to disk
 
     PkgDoc::Document         Doc;
     std::map<std::string, PkgDoc::Pos> SavedLayout;   // what GlobalConfig holds, to write only on change

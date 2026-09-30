@@ -149,6 +149,11 @@ void PackageEditorModel::SaveLayout()
     if (L.empty()) (*GlobalConfigJSON)["EDITORLAYOUT"].erase(Key);
     else (*GlobalConfigJSON)["EDITORLAYOUT"][Key] = std::move(L);
     SavedLayout = Now;
+    WriteConfig();
+}
+
+void PackageEditorModel::WriteConfig()
+{
     QFile Cfg(QString::fromStdString((AppPaths::DataRoot() / "GlobalConfig.JSON").string()));
     if (!JSONOps::SaveJSON(GlobalConfigJSON, &Cfg))
         LogWarn("PackageEditorModel", "could not write the canvas layout to GlobalConfig.JSON");
@@ -177,6 +182,17 @@ void PackageEditorModel::replaceNode(const std::string & Handle, json Node)
 bool PackageEditorModel::Save(QString * Error)
 {
     if (!PackageDir) return false;
+    //A received stub (CATALOG) is a friend's bytes, browsable, never ours to rewrite.
+    if (GlobalConfigJSON)
+    {
+        const fs::path Cat = fs::weakly_canonical(PackageCatalog::CatalogRootDir(*GlobalConfigJSON));
+        const fs::path Here = fs::weakly_canonical(PackageDir->path().toStdString());
+        if (std::mismatch(Cat.begin(), Cat.end(), Here.begin(), Here.end()).first == Cat.end())
+        {
+            if (Error) *Error = "This package was received from a friend (" + packagePath() + "): it is theirs, and is never rewritten here.";
+            return false;
+        }
+    }
     const std::vector<fs::path> Roots = GlobalConfigJSON ? PackageCatalog::EditableRoots(*GlobalConfigJSON) : std::vector<fs::path>();
     const std::string Users = GlobalConfigJSON ? InstanceStore::Root(*GlobalConfigJSON).string() : std::string();
     const PkgDoc::SaveReport R = Doc.Save(PackageDir->path().toStdString(), Roots, Users);
@@ -209,6 +225,7 @@ bool PackageEditorModel::Save(QString * Error)
             }
             Layout = std::move(Moved);
         }
+    if (R.Cascaded) WriteConfig();
     LastRenames = Doc.TakeRenames();
     if (!LastRenames.empty()) emit handlesRenamed();
     SaveLayout();                                         // positions follow their renamed nodes

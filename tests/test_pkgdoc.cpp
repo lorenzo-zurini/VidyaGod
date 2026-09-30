@@ -446,3 +446,64 @@ TEST(pkgdoc_a_friends_package_is_never_saved)
     CHECK(!Doc.Save(D, "", "").Ok);
     CHECK_EQ((int)Files(D).size(), 1);
 }
+
+// Another package's copy of a node here was edited in place (its bytes no longer hash to its name). A save that does
+// not rename that node leaves the file alone, and its hash never renames the node here. Teeth: re-derive every
+// library file the save looks at (the node here is renamed to the other package's content, and the next save
+// overwrites that package's file).
+TEST(pkgdoc_a_misnamed_copy_elsewhere_never_renames_a_node_here)
+{
+    const fs::path Lib = Fresh("misnamed"), A = Lib / "a", B = Lib / "b";
+    for (const fs::path &P : {A, B}) fs::create_directories(P);
+    const std::string X = Freeze(A, Zip("x", "x.zip"));
+    Freeze(A, Over("p", X));
+    std::ofstream(B / (X + ".json"), std::ios::binary) << Cid::Canonical(Zip("x", "edited-in-place.zip"));
+    const std::string TheirBytes = Slurp(B / (X + ".json"));
+    PkgDoc::Document Doc;
+    Doc.Load(A);
+    const int P = Doc.IndexOf(X) == 0 ? 1 : 0;
+    json N = Doc.Node(P); N["LABEL"] = "p renamed"; Doc.Replace(P, N);
+    const PkgDoc::SaveReport R = Doc.Save(A, Lib, "");
+    CHECK(R.Ok);
+    CHECK(Doc.IndexOf(X) >= 0);                           // the node here keeps its name
+    CHECK_EQ(Slurp(B / (X + ".json")), TheirBytes);       // theirs is untouched
+    CHECK_EQ(R.Cascaded, 0);
+    CHECK(AllFrozen(A));
+    CHECK_EQ(Dangling(A), 0);
+}
+
+// A save with no edits changes nothing anywhere — not even a misnamed file elsewhere that names a node here.
+TEST(pkgdoc_a_save_without_edits_writes_nothing_anywhere)
+{
+    const fs::path Lib = Fresh("noop"), A = Lib / "a", B = Lib / "b";
+    for (const fs::path &P : {A, B}) fs::create_directories(P);
+    const std::string X = Freeze(A, Zip("x", "x.zip"));
+    const std::string Bogus = "bafkreiaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+    std::ofstream(B / (Bogus + ".json"), std::ios::binary) << Cid::Canonical(Over("theirs", X));
+    PkgDoc::Document Doc;
+    Doc.Load(A);
+    const PkgDoc::SaveReport R = Doc.Save(A, Lib, "");
+    CHECK(R.Ok);
+    CHECK_EQ(R.Written, 0);
+    CHECK_EQ(R.Removed, 0);
+    CHECK(fs::exists(B / (Bogus + ".json")));
+}
+
+// A package added from outside the library is itself one of the roots a save walks: its own files are never taken
+// for another package's copies (which let a deleted node an instance names be removed). Teeth: gather the package
+// being saved when it is a root.
+TEST(pkgdoc_a_package_that_is_a_root_is_not_its_own_copy)
+{
+    const fs::path P = Fresh("localpkg"), Lib = Fresh("locallib"), Users = Fresh("local_users");
+    fs::create_directories(Users / "1" / "I");
+    const std::string G = Freeze(P, Zip("graft", "g.zip"));
+    std::ofstream(Users / "1" / "I" / "instance.json") << json{{"GRAFTS", {{"t", json::array({G})}}}}.dump();
+    PkgDoc::Document Doc;
+    Doc.Load(P);
+    Doc.Remove(0);
+    const PkgDoc::SaveReport R = Doc.Save(P, std::vector<fs::path>{Lib, P}, Users);
+    CHECK(R.Ok);
+    CHECK(fs::exists(P / (G + ".json")));
+    CHECK_EQ((int)R.Kept.size(), 1);
+    CHECK_EQ(R.Cascaded, 0);
+}

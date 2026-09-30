@@ -123,6 +123,7 @@ bool GatherLibrary(const fs::path &Root, const fs::path &Skip, std::vector<LibFi
             continue;
         }
         if (P.extension() != ".json" || !LooksLikeCid(Stem(P))) continue;
+        if (fs::weakly_canonical(P.parent_path(), E2) == SkipCanon) continue;   // the package being saved is a root
         std::string Bytes;
         if (!ReadFile(P, Bytes)) { Err = "cannot read " + P.string(); return false; }
         json J = json::parse(Bytes, nullptr, /*allow_exceptions=*/false);
@@ -488,13 +489,13 @@ SaveReport Document::Save(const fs::path &Dir, const std::vector<fs::path> &Root
     {
         std::error_code Ec, Probe;
         if (!UserDataRoot.empty() && fs::is_directory(UserDataRoot, Probe))
-            for (const auto &Pkg : fs::directory_iterator(UserDataRoot, Ec))
+            for (fs::directory_iterator Pkg(UserDataRoot, Ec), End; !Ec && Pkg != End; Pkg.increment(Ec))
             {
-                if (!Pkg.is_directory(Probe)) continue;
-                for (const auto &Inst : fs::directory_iterator(Pkg.path(), Ec))
+                if (!Pkg->is_directory(Probe)) continue;
+                for (fs::directory_iterator Inst(Pkg->path(), Ec); !Ec && Inst != End; Inst.increment(Ec))
                 {
-                    const fs::path Cfg = Inst.path() / "instance.json";
-                    if (!Inst.is_directory(Probe) || !fs::exists(Cfg, Probe)) continue;
+                    const fs::path Cfg = Inst->path() / "instance.json";
+                    if (!Inst->is_directory(Probe) || !fs::exists(Cfg, Probe)) continue;
                     std::string B;
                     if (!ReadFile(Cfg, B)) { R.Error = "Nothing was saved: cannot read " + Cfg.string(); return R; }
                     json J = json::parse(B, nullptr, false);
@@ -579,11 +580,13 @@ SaveReport Document::Save(const fs::path &Dir, const std::vector<fs::path> &Root
             const size_t K = *It;
             const std::string Old = Stem(Lib[K].Path);
             if (DocPendingNames.count(Old) || Waits(Lib[K].Node)) { ++It; continue; }   // a copy follows its original
-            std::string New;
+            //It changes only because something did: the node of ours it is a copy of was renamed, or a node it names
+            //was. Otherwise it is left exactly as it is — even a file whose bytes no longer hash to its name (edited
+            //in place) is not this save's to rename, and its hash must never redefine the name of a node of ours.
+            std::string New = Old;
             if (const auto Copy = M.find(Old); Copy != M.end() && Bytes.count(Copy->second)) New = Copy->second;
-            else
+            else if (const json Out = RemapRefs(Lib[K].Node, M); Out != Lib[K].Node)
             {
-                const json Out = RemapRefs(Lib[K].Node, M);
                 std::string Err;
                 New = Cid::OfNode(Out, &Err);
                 if (New.empty()) { R.Error = "Nothing was saved: " + Lib[K].Path.string() + ": " + Err; return R; }
@@ -669,15 +672,22 @@ SaveReport Document::Save(const fs::path &Dir, const std::vector<fs::path> &Root
         std::string Err;
         if (!WriteFileAtomic(W.Path, W.Bytes, Err))
         {
+            std::vector<std::string> Stuck;
             for (auto It = Journal.rbegin(); It != Journal.rend(); ++It)
             {
                 std::string E2;
                 std::error_code Ec;
-                if (It->Existed) WriteFileAtomic(It->Path, It->Old, E2);
-                else fs::remove(It->Path, Ec);
+                if (It->Existed ? !WriteFileAtomic(It->Path, It->Old, E2) : !fs::remove(It->Path, Ec))
+                    Stuck.push_back(It->Path.string());
             }
-            R.Error = "Nothing was saved: " + Err;
             R.Written = 0; R.Cascaded = 0; R.InstancesUpdated = 0; R.Renamed.clear(); R.Kept.clear(); R.Log.clear();
+            if (Stuck.empty()) R.Error = "Nothing was saved: " + Err;
+            else
+            {
+                R.Error = "Saving failed (" + Err + ") and could not be fully undone: these files are left as the save "
+                          "wrote them - check them by hand";
+                for (const std::string &P : Stuck) R.Warnings.push_back("left as written: " + P);
+            }
             return R;
         }
         Journal.push_back({W.Path, Existed, std::move(Have)});
