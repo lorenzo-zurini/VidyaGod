@@ -397,7 +397,7 @@ int CliModes::RunContentModes(LaunchParameters &LaunchParameters, nlohmann::orde
         const std::string Dest = LaunchParameters.PublishToDir;
         LogOut("main.cpp", "Publishing package: " + Dir + (Dest.empty() ? "" : (" -> " + Dest)));
         std::string Err;
-        const bool Ok = PackageCatalog::PublishPackage(Dir, Dest, &Err, PackageCatalog::LibraryRootDir(GlobalConfigJSON),
+        const bool Ok = PackageCatalog::PublishPackage(Dir, Dest, &Err, PackageCatalog::EditableRoots(GlobalConfigJSON),
                                                        InstanceStore::Root(GlobalConfigJSON).string());
         LogOut("main.cpp", Ok ? "Package published." : ("Package publish failed: " + Err));
         return Ok ? 0 : 1;
@@ -427,7 +427,9 @@ int CliModes::RunContentModes(LaunchParameters &LaunchParameters, nlohmann::orde
     if (!LaunchParameters.PublishMetaSrc.empty())
     {
         std::string Err;
-        const std::string Cid = PackageCatalog::PublishMetaCid(LaunchParameters.PublishMetaSrc, &Err);
+        const std::string Cid = PackageCatalog::PublishMetaCid(LaunchParameters.PublishMetaSrc, &Err,
+                                                              PackageCatalog::EditableRoots(GlobalConfigJSON),
+                                                              InstanceStore::Root(GlobalConfigJSON).string());
         if (Cid.empty()) { LogErr("main.cpp", "publish-meta failed: " + Err); return 1; }
         LogSucc("main.cpp", "Meta-CID: " + Cid);
         std::cout << Cid << "\n";   // machine-readable on stdout

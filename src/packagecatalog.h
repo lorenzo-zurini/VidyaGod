@@ -63,6 +63,9 @@ std::string LibraryOf(const std::filesystem::path &BundleDir, const std::filesys
 // Library's "Add Local Package", not fetched from a CID source). The bundle dirs of every such entry whose PATH still
 // exists — fed to BuildNodeIndex's ExtraBundleDirs so they're indexed alongside CID-source packages.
 std::vector<std::filesystem::path> LocalPackageDirs(const nlohmann::ordered_json &GlobalConfigJSON);
+//Every tree holding packages this machine authors — LIBRARY and the local packages outside it (never CATALOG: a
+//friend's stubs). A save that renames a node follows it through all of them.
+std::vector<std::filesystem::path> EditableRoots(const nlohmann::ordered_json &GlobalConfigJSON);
 // Drop LIBRARY entries for local packages whose bundle dir no longer exists (the user moved/deleted it). CID-source
 // entries are never touched (their content may just be un-hydrated). Mutates GlobalConfigJSON; returns count removed.
 int PruneMovedLocalPackages(nlohmann::ordered_json &GlobalConfigJSON);
@@ -146,10 +149,10 @@ bool IsLocalPackagePath(const nlohmann::ordered_json &GlobalConfigJSON, const st
 //had POS written into its node files and its bytes stopped matching the CID that served them. It also meant
 //the three call sites that pass no override minted a DIFFERENT CID from the editor's button for the same
 //bundle, because they baked the computed layout where the editor bakes the author's.
-//LibraryRoot/UserDataRoot: where the save's re-mint follows renamed nodes (other packages that contain them, the
-//instances that remember them) — "" skips that.
+//Roots/UserDataRoot: where the save's re-mint follows renamed nodes (other packages that contain them, the instances
+//that remember them) — EditableRoots and InstanceStore::Root for a real library; none only for a throwaway folder.
 [[nodiscard]] bool PublishPackage(const std::string &PackageDir, const std::string &DehydratedDestDir,
-                                  std::string *Error = nullptr, const std::string &LibraryRoot = std::string(),
+                                  std::string *Error = nullptr, const std::vector<std::filesystem::path> &Roots = {},
                                   const std::string &UserDataRoot = std::string());
 
 //What seeding a node's content did (see SeedNodeContent).
@@ -246,7 +249,8 @@ int MirrorDehydrated(const std::string &SrcDir, const std::string &DestDir);
 // Mint a JSON-only Meta-CID for SrcDir (single bundle OR a dir of bundle subdirs): idempotently content-address content
 // + covers (PublishPackage), mirror the JSON-only tree into StagingDir (must persist — the CID seeds from there by
 // reference), then AddNoCopy it. Returns the folder CID, or "" on failure.
-std::string PublishMetaCid(const std::string &SrcDir, std::string *Error = nullptr);
+std::string PublishMetaCid(const std::string &SrcDir, std::string *Error = nullptr,
+                           const std::vector<std::filesystem::path> &Roots = {}, const std::string &UserDataRoot = std::string());
 
 //The GlobalConfig["EDITORLAYOUT"] key for a bundle (the package editor's positions on this machine): its path made
 //ABSOLUTE, normalised, and stripped of any trailing separator, so every way of naming the folder finds the same entry.

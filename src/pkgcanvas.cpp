@@ -349,6 +349,21 @@ float EstimateHeight(const json &N, const PkgGraph::VarFacets &Facets, size_t Is
 
 } // namespace
 
+//Base, or "Base 2", "Base 3"... — the first no node of the package is called. A new or duplicated node differs from
+//every other by its name at least: two byte-identical nodes would be one file, and saving refuses them.
+static std::string FreeLabel(const PkgDoc::Document &D, const std::string &Base)
+{
+    const auto Labels = D.Labels();
+    std::string Label = Base;
+    for (int K = 2; ; ++K)
+    {
+        bool Taken = false;
+        for (const auto &[H, L] : Labels) if (L == Label) { Taken = true; break; }
+        if (!Taken) return Label;
+        Label = Base + " " + std::to_string(K);
+    }
+}
+
 static void Rebuild(PkgCanvasState &S)
 {
     S.RectsValid = false;                                // views are about to be renumbered
@@ -650,16 +665,7 @@ int PkgCanvas::addNode(const std::string &Type, float X, float Y)
     json N = PkgGraph::NewPayload(Type);
     json Out = json::object();
     std::string Base = Type.empty() ? std::string("New node") : "New " + Type;
-    std::string Label = Base;
-    const auto Labels = m_s->Doc->Labels();
-    for (int K = 2; ; ++K)
-    {
-        bool Taken = false;
-        for (const auto &[H, L] : Labels) if (L == Label) { Taken = true; break; }
-        if (!Taken) break;
-        Label = Base + " " + std::to_string(K);
-    }
-    Out["LABEL"] = Label;
+    Out["LABEL"] = FreeLabel(*m_s->Doc, Base);
     for (const auto &[K, V] : N.items()) Out[K] = V;
     const int I = m_s->Doc->Add(std::move(Out));
     //Where asked, unless that lands on a node: then straight down, below whatever it would cover. A new node is
@@ -898,7 +904,7 @@ static void DrawNode(PkgCanvas &Self, PkgCanvasState &S, int Vi, std::vector<ImG
         if (ImGui::MenuItem("Duplicate", "Ctrl+D"))
         {
             json N = D.Node(V.Doc);
-            if (N.is_object()) N["LABEL"] = StrOf(N, "LABEL") + " copy";
+            if (N.is_object()) N["LABEL"] = FreeLabel(D, StrOf(N, "LABEL") + " copy");
             const int I = D.Add(std::move(N));
             D.SetPos(D.Handle(I), {WR.x + 40.0f, WR.y + 40.0f});
             S.Sel = {D.Handle(I)};
@@ -1863,7 +1869,7 @@ void PkgCanvas::frame()
                 const int I = D.IndexOf(H);
                 if (I < 0) continue;
                 json N = D.Node(I);
-                if (N.is_object()) N["LABEL"] = StrOf(N, "LABEL") + " copy";
+                if (N.is_object()) N["LABEL"] = FreeLabel(D, StrOf(N, "LABEL") + " copy");
                 const ImVec2 P = WorldPos(S, S.Views[(size_t)S.ViewOf[H]]);
                 const int J = D.Add(std::move(N));
                 D.SetPos(D.Handle(J), {P.x + 40.0f, P.y + 40.0f});

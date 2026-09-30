@@ -220,6 +220,12 @@ bool PackageEditor::save()
     QGuiApplication::restoreOverrideCursor();
     if (!Ok) { QMessageBox::warning(this, "Save", "The package was not saved:\n\n" + Err); return false; }
     status("Saved");
+    if (!Model->saveNotes().empty())
+    {
+        QString Notes;
+        for (const std::string & N : Model->saveNotes()) Notes += "\u2022 " + QString::fromStdString(N) + "\n\n";
+        QMessageBox::information(this, "Saved", "The package was saved. Note:\n\n" + Notes.trimmed());
+    }
     Canvas->requestFrame();
     validate();
     return true;

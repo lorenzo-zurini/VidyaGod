@@ -7,6 +7,7 @@
 
 #include <filesystem>
 #include <fstream>
+#include <set>
 #include <sstream>
 
 namespace fs = std::filesystem;
@@ -50,6 +51,29 @@ int CountCidFiles(const fs::path &Dir)
     for (const auto &E : fs::directory_iterator(Dir))
         if (E.path().extension() == ".json" && PkgDoc::LooksLikeCid(E.path().stem().string())) ++N;
     return N;
+}
+
+//References in every node file under Root that name no file under Root.
+int Dangling(const fs::path &Root)
+{
+    std::set<std::string> Have;
+    std::vector<json> All;
+    for (const auto &E : fs::recursive_directory_iterator(Root))
+        if (E.path().extension() == ".json" && PkgDoc::LooksLikeCid(E.path().stem().string()))
+        {
+            Have.insert(E.path().stem().string());
+            All.push_back(json::parse(Slurp(E.path()), nullptr, false));
+        }
+    int N = 0;
+    for (const json &J : All) PkgDoc::ForEachRef(J, [&](const std::string &R) { if (!Have.count(R)) ++N; });
+    return N;
+}
+
+std::set<std::string> Files(const fs::path &Dir)
+{
+    std::set<std::string> Out;
+    for (const auto &E : fs::directory_iterator(Dir)) Out.insert(E.path().filename().string());
+    return Out;
 }
 
 json Zip(const std::string &Label, const std::string &File) { return json{{"LABEL", Label}, {"LAYERS", json::array({ json{{"ZIP", File}} })}}; }
@@ -279,4 +303,146 @@ TEST(pkgdoc_a_removed_node_goes_unless_another_package_contains_it)
     bool Said = false;
     for (const std::string &L : R.Log) if (L.find("kept") != std::string::npos) Said = true;
     CHECK(Said);
+}
+
+// ---- what a save must never do (each found by an adversarial review of the first version) ------------------------
+
+// A node here contains a node in another package that contains a node here: editing the inner one renames the
+// other package's node, so the outer one here must be named after it — one graph across packages, not "this
+// package, then the others". Teeth: mint this package first (the outer node names the other package's old file).
+TEST(pkgdoc_a_loop_through_another_package_is_followed)
+{
+    const fs::path Lib = Fresh("loop"), A = Lib / "a", B = Lib / "b";
+    for (const fs::path &P : {A, B}) fs::create_directories(P);
+    const std::string X = Freeze(A, Zip("x", "x.zip"));
+    const std::string E = Freeze(B, Over("e", X));
+    Freeze(A, Over("p", E));
+    PkgDoc::Document Doc;
+    Doc.Load(A);
+    json N = Doc.Node(Doc.IndexOf(X)); N["LAYERS"][0]["ZIP"] = "x2.zip"; Doc.Replace(Doc.IndexOf(X), N);
+    const PkgDoc::SaveReport R = Doc.Save(A, Lib, "");
+    CHECK(R.Ok);
+    CHECK_EQ(Dangling(Lib), 0);
+    CHECK(AllFrozen(A) && AllFrozen(B));
+}
+
+// Two nodes identical byte for byte would be one file: the save refuses and writes nothing (it used to merge their
+// handles, and every later save flipped other packages between the two). Teeth: allow the twin.
+TEST(pkgdoc_two_identical_nodes_are_refused)
+{
+    const fs::path D = Fresh("twins");
+    PkgDoc::Document Doc;
+    Doc.Load(D);
+    Doc.Add(Zip("X copy", "x.zip"));
+    Doc.Add(Zip("X copy", "x.zip"));
+    const PkgDoc::SaveReport R = Doc.Save(D, "", "");
+    CHECK(!R.Ok);
+    CHECK(R.Error.find("same node") != std::string::npos);
+    CHECK(Files(D).empty());
+    CHECK(Doc.Dirty());
+}
+
+// A library it cannot read in full is a library it cannot follow renames through: nothing is saved, nothing removed.
+// Teeth: skip what cannot be read (the unreadable package keeps naming a removed file).
+TEST(pkgdoc_an_unreadable_package_stops_the_save)
+{
+    const fs::path Lib = Fresh("unreadable"), P = Lib / "p", O = Lib / "o";
+    for (const fs::path &Q : {P, O}) fs::create_directories(Q);
+    const std::string X = Freeze(P, Zip("x", "x.zip"));
+    Freeze(O, Over("uses x", X));
+    fs::permissions(O, fs::perms::none);
+    const bool Locked = [&] { std::error_code Ec; fs::directory_iterator It(O, Ec); return (bool)Ec; }();
+    PkgDoc::Document Doc;
+    Doc.Load(P);
+    json N = Doc.Node(0); N["LAYERS"][0]["ZIP"] = "x2.zip"; Doc.Replace(0, N);
+    const PkgDoc::SaveReport R = Doc.Save(P, Lib, "");
+    fs::permissions(O, fs::perms::owner_all);
+    if (!Locked) return;                                  // running as root: the folder cannot be made unreadable
+    CHECK(!R.Ok);
+    CHECK(fs::exists(P / (X + ".json")));
+    CHECK_EQ((int)Files(P).size(), 1);
+    CHECK_EQ(Dangling(Lib), 0);
+}
+
+// A write that fails partway (this package's folder is read-only) undoes the ones before it — the other package's
+// re-minted node — so no half-saved state is left to load as duplicates. Teeth: keep what was written.
+TEST(pkgdoc_a_failed_write_undoes_the_save)
+{
+    const fs::path Lib = Fresh("rollback"), P = Lib / "p", O = Lib / "o";
+    for (const fs::path &Q : {P, O}) fs::create_directories(Q);
+    const std::string X = Freeze(P, Zip("x", "x.zip"));
+    Freeze(O, Over("uses x", X));
+    const auto BeforeP = Files(P), BeforeO = Files(O);
+    PkgDoc::Document Doc;
+    Doc.Load(P);
+    json N = Doc.Node(0); N["LAYERS"][0]["ZIP"] = "x2.zip"; Doc.Replace(0, N);
+    fs::permissions(P, fs::perms::owner_read | fs::perms::owner_exec);
+    const PkgDoc::SaveReport R = Doc.Save(P, Lib, "");
+    fs::permissions(P, fs::perms::owner_all);
+    if (R.Ok) return;                                     // root writes anyway: nothing to test
+    CHECK(Files(P) == BeforeP);
+    CHECK(Files(O) == BeforeO);
+    CHECK(Doc.Dirty());
+}
+
+// One save renames X to what Y was and Y to something new; another package keeps copies of both and a node naming
+// X. Its copy of old-Y is now its copy of new-X: it must stay. Teeth: spare only files this save wrote.
+TEST(pkgdoc_a_file_a_save_ends_up_with_is_never_removed)
+{
+    const fs::path Lib = Fresh("chain"), P = Lib / "p", O = Lib / "o";
+    for (const fs::path &Q : {P, O}) fs::create_directories(Q);
+    const json Jx = Zip("n", "x.zip"), Jy = Zip("n", "y.zip");
+    const std::string X = Freeze(P, Jx), Y = Freeze(P, Jy);
+    Freeze(O, Jx); Freeze(O, Jy);
+    Freeze(O, Over("uses x", X));
+    PkgDoc::Document Doc;
+    Doc.Load(P);
+    Doc.Replace(Doc.IndexOf(Y), Zip("n", "z.zip"));
+    Doc.Replace(Doc.IndexOf(X), Jy);
+    CHECK(Doc.Save(P, Lib, "").Ok);
+    CHECK(fs::exists(O / (Y + ".json")));
+    CHECK_EQ(Dangling(O), 0);                             // the other package stands on its own
+}
+
+// Deleting a node another package names: when that package keeps its own copy, ours goes (it used to come back on
+// every reload); an instance naming it is a user too, so with no other copy the file stays and the save says so.
+TEST(pkgdoc_a_deleted_node_goes_unless_it_is_the_last_copy_something_names)
+{
+    const fs::path Lib = Fresh("deleted"), P = Lib / "p", O = Lib / "o";
+    for (const fs::path &Q : {P, O}) fs::create_directories(Q);
+    const std::string X = Freeze(P, Zip("x", "x.zip"));
+    Freeze(O, Zip("x", "x.zip"));
+    Freeze(O, Over("uses x", X));
+    PkgDoc::Document Doc;
+    Doc.Load(P);
+    Doc.Remove(0);
+    CHECK(Doc.Save(P, Lib, "").Ok);
+    PkgDoc::Document Again;
+    Again.Load(P);
+    CHECK_EQ(Again.Count(), 0);
+
+    const fs::path P2 = Fresh("graft"), Users = Fresh("graft_users");
+    fs::create_directories(Users / "1" / "I");
+    const std::string G = Freeze(P2, Zip("graft", "g.zip"));
+    std::ofstream(Users / "1" / "I" / "instance.json") << json{{"GRAFTS", {{"t", json::array({G})}}}}.dump();
+    PkgDoc::Document Doc2;
+    Doc2.Load(P2);
+    Doc2.Remove(0);
+    const PkgDoc::SaveReport R = Doc2.Save(P2, "", Users);
+    CHECK(R.Ok);
+    CHECK(fs::exists(P2 / (G + ".json")));
+    CHECK_EQ((int)R.Kept.size(), 1);
+}
+
+// A friend's package is theirs: a save into it is refused.
+TEST(pkgdoc_a_friends_package_is_never_saved)
+{
+    const fs::path D = Fresh("friend") / "_friend_bob" / "game";
+    fs::create_directories(D);
+    Freeze(D, Zip("x", "x.zip"));
+    PkgDoc::Document Doc;
+    Doc.Load(D);
+    json N = Doc.Node(0); N["LABEL"] = "mine now"; Doc.Replace(0, N);
+    CHECK(!Doc.Save(D, "", "").Ok);
+    CHECK_EQ((int)Files(D).size(), 1);
 }

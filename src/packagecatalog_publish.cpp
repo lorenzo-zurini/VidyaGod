@@ -187,7 +187,7 @@ bool SeedNodeContent(nlohmann::ordered_json &Node, const std::filesystem::path &
 // Share a local package: seed every node's content (SeedNodeContent), then SAVE the package — a generation-6 re-mint,
 // since recording a SOURCE changes a node's bytes and so its name — and optionally export a node-files-only copy.
 bool PublishPackage(const std::string &PackageDir, const std::string &DehydratedDestDir, std::string *Error,
-                    const std::string &LibraryRoot, const std::string &UserDataRoot)
+                    const std::vector<std::filesystem::path> &Roots, const std::string &UserDataRoot)
 {
     auto Fail = [&](const std::string &M) -> bool { if (Error) *Error = M; LogErr("PackageCatalog::PublishPackage", M); return false; };
     std::error_code Ec;
@@ -211,9 +211,10 @@ bool PublishPackage(const std::string &PackageDir, const std::string &Dehydrated
         if (!SeedNodeContent(N, Pkg, R, Changed, &Err)) return Fail(Err);
         if (Changed) Doc.Replace(I, std::move(N));
     }
-    const PkgDoc::SaveReport S = Doc.Save(Pkg, LibraryRoot, UserDataRoot);
+    const PkgDoc::SaveReport S = Doc.Save(Pkg, Roots, UserDataRoot);
     if (!S.Ok) return Fail("could not save the seeded package: " + S.Error);
     for (const std::string &L : S.Log) LogOut("PackageCatalog::PublishPackage", L);
+    for (const std::string &W : S.Warnings) LogErr("PackageCatalog::PublishPackage", W);
     LogSucc("PackageCatalog::PublishPackage", "Seeded " + PackageDir + " (" + std::to_string(R.Seeded)
             + " of " + std::to_string(R.Walked) + " layer(s) + " + std::to_string(R.Covers) + " cover(s) newly seeded"
             + (R.Repaired ? ", " + std::to_string(R.Repaired) + " re-seeded after DRIFT" : "")
@@ -677,7 +678,8 @@ int MirrorDehydrated(const std::string &SrcDir, const std::string &DestDir)
 // (2) AddNoCopyMeta(SrcDir) → the folder CID, seeded IN PLACE from the *.json manifests (no staging mirror; content +
 // DEFPREFIX/USERDATA are excluded by the filestore builder itself). The CID is identical to a JSON-only mirror's.
 // Returns "" on failure.
-std::string PublishMetaCid(const std::string &SrcDir, std::string *Error)
+std::string PublishMetaCid(const std::string &SrcDir, std::string *Error, const std::vector<std::filesystem::path> &Roots,
+                           const std::string &UserDataRoot)
 {
     auto Fail = [&](const std::string &M) -> std::string { if (Error) *Error = M; LogErr("PackageCatalog::PublishMetaCid", M); return {}; };
     std::error_code Ec;
@@ -686,7 +688,7 @@ std::string PublishMetaCid(const std::string &SrcDir, std::string *Error)
     // 1. Content-address content + covers (idempotent: already-CID'd layers are skipped).
     auto EnsureSeeded = [&](const std::string &PkgDir) -> bool {
         std::string E;
-        if (!PublishPackage(PkgDir, "", &E)) { Fail("seed " + PkgDir + ": " + E); return false; }
+        if (!PublishPackage(PkgDir, "", &E, Roots, UserDataRoot)) { Fail("seed " + PkgDir + ": " + E); return false; }
         return true;
     };
     if (ScanBundleIdentity(SrcDir).Valid) { if (!EnsureSeeded(SrcDir)) return {}; }               // single package

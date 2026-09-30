@@ -177,9 +177,9 @@ void PackageEditorModel::replaceNode(const std::string & Handle, json Node)
 bool PackageEditorModel::Save(QString * Error)
 {
     if (!PackageDir) return false;
-    const std::string Lib = GlobalConfigJSON ? PackageCatalog::LibraryRootDir(*GlobalConfigJSON) : std::string();
+    const std::vector<fs::path> Roots = GlobalConfigJSON ? PackageCatalog::EditableRoots(*GlobalConfigJSON) : std::vector<fs::path>();
     const std::string Users = GlobalConfigJSON ? InstanceStore::Root(*GlobalConfigJSON).string() : std::string();
-    const PkgDoc::SaveReport R = Doc.Save(PackageDir->path().toStdString(), Lib, Users);
+    const PkgDoc::SaveReport R = Doc.Save(PackageDir->path().toStdString(), Roots, Users);
     for (const std::string & L : R.Log) LogOut("PackageEditorModel", L);
     if (!R.Ok)
     {
@@ -191,6 +191,24 @@ bool PackageEditorModel::Save(QString * Error)
             + std::to_string(R.Removed) + " replaced" + (R.Cascaded ? ", " + std::to_string(R.Cascaded) + " node(s) in other packages re-minted" : "")
             + (R.InstancesUpdated ? ", " + std::to_string(R.InstancesUpdated) + " instance(s) updated" : ""));
     if (R.Cascaded) LibraryCache.reset();                 // other packages changed on disk
+    SaveNotes = R.Warnings;
+    for (const std::string & K : R.Kept)
+        SaveNotes.push_back("A deleted node was kept on disk (" + K + "): another package or an instance still names it, "
+                            "and this package holds its only copy.");
+    for (const std::string & W : R.Warnings) LogWarn("PackageEditorModel", W);
+    //Other packages' nodes the save renamed keep their place on this machine's canvas too.
+    if (GlobalConfigJSON && R.Cascaded && GlobalConfigJSON->contains("EDITORLAYOUT") && (*GlobalConfigJSON)["EDITORLAYOUT"].is_object())
+        for (auto & [Pkg, Layout] : (*GlobalConfigJSON)["EDITORLAYOUT"].items())
+        {
+            if (!Layout.is_object()) continue;
+            json Moved = json::object();
+            for (auto & [H, P] : Layout.items())
+            {
+                const auto It = R.Renamed.find(H);
+                Moved[It == R.Renamed.end() ? H : It->second] = P;
+            }
+            Layout = std::move(Moved);
+        }
     LastRenames = Doc.TakeRenames();
     if (!LastRenames.empty()) emit handlesRenamed();
     SaveLayout();                                         // positions follow their renamed nodes

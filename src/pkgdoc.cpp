@@ -5,6 +5,14 @@
 #include "manifestmodel.h"   // IsNodeObject: which *.json in a package dir is a node
 
 #include <algorithm>
+#include <cstdio>
+#include <functional>
+#ifdef _WIN32
+#include <io.h>
+#else
+#include <fcntl.h>
+#include <unistd.h>
+#endif
 #include <fstream>
 #include <random>
 #include <sstream>
@@ -65,19 +73,27 @@ bool ReadFile(const fs::path &P, std::string &Out)
     return true;
 }
 
-//Write through a temporary sibling and rename over: a crash mid-save leaves the old file or the new one, never half.
+//Write through a temporary sibling, flushed to the disk, and rename over; then flush the folder (POSIX), so the new
+//name survives a power cut: a crash mid-save leaves the old file or the new one, never half and never neither.
 bool WriteFileAtomic(const fs::path &P, const std::string &Bytes, std::string &Err)
 {
     const fs::path Tmp = P.string() + ".tmp-save";
-    {
-        std::ofstream Out(Tmp, std::ios::binary | std::ios::trunc);
-        if (!Out) { Err = "cannot write " + Tmp.string(); return false; }
-        Out.write(Bytes.data(), (std::streamsize)Bytes.size());
-        if (!Out) { Err = "short write to " + Tmp.string(); return false; }
-    }
+    std::FILE *F = std::fopen(Tmp.string().c_str(), "wb");
+    if (!F) { Err = "cannot write " + Tmp.string(); return false; }
+    const bool Wrote = std::fwrite(Bytes.data(), 1, Bytes.size(), F) == Bytes.size() && std::fflush(F) == 0;
+#ifdef _WIN32
+    const bool Synced = Wrote && _commit(_fileno(F)) == 0;
+#else
+    const bool Synced = Wrote && ::fsync(fileno(F)) == 0;
+#endif
+    const bool Closed = std::fclose(F) == 0;
     std::error_code Ec;
+    if (!Wrote || !Synced || !Closed) { Err = "could not write " + Tmp.string() + " (disk full?)"; fs::remove(Tmp, Ec); return false; }
     fs::rename(Tmp, P, Ec);
     if (Ec) { Err = "cannot rename " + Tmp.string() + " -> " + P.string() + ": " + Ec.message(); fs::remove(Tmp, Ec); return false; }
+#ifndef _WIN32
+    if (const int D = ::open(P.parent_path().string().c_str(), O_RDONLY | O_DIRECTORY); D >= 0) { ::fsync(D); ::close(D); }
+#endif
     return true;
 }
 
@@ -86,33 +102,35 @@ std::string Stem(const fs::path &P) { return P.stem().string(); }
 //Every node file under Root named by a CID, skipping friends' landed copies (`_friend_*`, never ours to rewrite)
 //and the package being saved (Skip).
 struct LibFile { fs::path Path; json Node; };
-std::vector<LibFile> GatherLibrary(const fs::path &Root, const fs::path &Skip)
+//False, with Err, if any part of Root could not be read: a save that cannot see every package cannot know which of
+//them name the nodes it renames, so it does not start.
+bool GatherLibrary(const fs::path &Root, const fs::path &Skip, std::vector<LibFile> &Out, std::string &Err)
 {
-    std::vector<LibFile> Out;
     std::error_code Ec;
-    if (Root.empty() || !fs::is_directory(Root, Ec)) return Out;
+    if (Root.empty() || !fs::is_directory(Root, Ec)) return true;
     const fs::path SkipCanon = fs::weakly_canonical(Skip, Ec);
-    for (auto It = fs::recursive_directory_iterator(Root, fs::directory_options::skip_permission_denied, Ec);
-         It != fs::recursive_directory_iterator(); It.increment(Ec))
+    auto It = fs::recursive_directory_iterator(Root, Ec);
+    if (Ec) { Err = "cannot read " + Root.string() + ": " + Ec.message(); return false; }
+    for (; It != fs::recursive_directory_iterator(); It.increment(Ec))
     {
-        if (Ec) break;
-        const fs::path &P = It->path();
-        if (It->is_directory(Ec))
+        if (Ec) { Err = "cannot read the library under " + Root.string() + ": " + Ec.message(); return false; }
+        const fs::path P = It->path();
+        std::error_code E2;
+        if (It->is_directory(E2))
         {
-            std::error_code E2;
             if (P.filename().string().rfind("_friend_", 0) == 0 || fs::weakly_canonical(P, E2) == SkipCanon)
                 It.disable_recursion_pending();
             continue;
         }
         if (P.extension() != ".json" || !LooksLikeCid(Stem(P))) continue;
         std::string Bytes;
-        if (!ReadFile(P, Bytes)) continue;
+        if (!ReadFile(P, Bytes)) { Err = "cannot read " + P.string(); return false; }
         json J = json::parse(Bytes, nullptr, /*allow_exceptions=*/false);
         if (J.is_discarded() || !ManifestModel::IsNodeObject(J)) continue;
         Out.push_back({P, std::move(J)});
     }
-    std::sort(Out.begin(), Out.end(), [](const LibFile &A, const LibFile &B) { return A.Path < B.Path; });
-    return Out;
+    if (Ec) { Err = "cannot read the library under " + Root.string() + ": " + Ec.message(); return false; }
+    return true;
 }
 
 //Every string in J equal to a key of M, renamed. True if anything changed.
@@ -394,225 +412,307 @@ void Document::RenameIn(std::vector<Entry> &E, std::map<std::string, Pos> &W, co
 
 SaveReport Document::Save(const fs::path &Dir, const fs::path &LibraryRoot, const fs::path &UserDataRoot)
 {
+    std::vector<fs::path> Roots;
+    if (!LibraryRoot.empty()) Roots.push_back(LibraryRoot);
+    return Save(Dir, Roots, UserDataRoot);
+}
+
+//Saving plans everything in memory first — every file to write, rename and remove, here and across the library —
+//and refuses before touching the disk when it cannot be done right: a circle, two nodes that would be one file, a
+//library it could not read in full. Then it writes (journalled: a failed write undoes the ones before it), and only
+//once every write has landed removes what they replace.
+SaveReport Document::Save(const fs::path &Dir, const std::vector<fs::path> &Roots, const fs::path &UserDataRoot)
+{
     SaveReport R;
     Commit();
+    auto LabelOf = [](const json &N, const std::string &Fallback) {
+        return N.is_object() && N.contains("LABEL") && N["LABEL"].is_string() ? N["LABEL"].get<std::string>() : Fallback;
+    };
+    for (const auto &Part : Dir)
+        if (Part.string().rfind("_friend_", 0) == 0)
+        { R.Error = "This is a friend's package (" + Dir.string() + "): it is theirs, and is never rewritten here."; return R; }
 
-    // 1. Order the package's nodes so every node comes after what it names: a node's name includes its references'.
-    std::map<std::string, int> ByHandle;
-    for (int I = 0; I < Count(); ++I) ByHandle[Handle(I)] = I;
-    std::vector<std::vector<int>> Needs((size_t)Count());
-    std::vector<int> Missing((size_t)Count(), 0);
-    std::vector<std::vector<int>> Users((size_t)Count());
-    for (int I = 0; I < Count(); ++I)
+    // 1. This package's nodes, in the order they contain each other — a circle cannot be named (a node's name is its
+    //    content, and its content names the others), so it is refused with the nodes in it.
     {
-        std::set<int> Deps;
-        ForEachRef(Node(I), [&](const std::string &Ref) {
-            const auto It = ByHandle.find(Ref);
-            if (It != ByHandle.end()) Deps.insert(It->second);
-        });
-        for (int D : Deps) { Users[(size_t)D].push_back(I); ++Missing[(size_t)I]; }
-    }
-    std::vector<int> Order, Ready;
-    for (int I = 0; I < Count(); ++I) if (!Missing[(size_t)I]) Ready.push_back(I);
-    while (!Ready.empty())
-    {
-        const int I = Ready.back(); Ready.pop_back();
-        Order.push_back(I);
-        for (int U : Users[(size_t)I]) if (--Missing[(size_t)U] == 0) Ready.push_back(U);
-    }
-    if ((int)Order.size() != Count())
-    {
-        std::string Names;
+        std::map<std::string, int> ByHandle;
+        for (int I = 0; I < Count(); ++I) ByHandle[Handle(I)] = I;
+        std::vector<int> Missing((size_t)Count(), 0);
+        std::vector<std::vector<int>> Users((size_t)Count());
         for (int I = 0; I < Count(); ++I)
-            if (Missing[(size_t)I] > 0)
-            {
-                const json &N = Node(I);
-                const std::string L = N.is_object() && N.contains("LABEL") && N["LABEL"].is_string() ? N["LABEL"].get<std::string>() : Handle(I);
-                Names += (Names.empty() ? "" : ", ") + L;
-            }
-        R.Error = "These nodes contain each other in a circle, so they cannot be saved (a node is named by its content, "
-                  "and its content names the others): " + Names + ". Remove one of the wires between them.";
-        return R;
-    }
-
-    // 2. Name each node by its bytes, with the references it makes already renamed.
-    std::map<std::string, std::string> Minted;            // handle -> cid
-    std::map<std::string, std::string> Bytes;             // cid -> canonical bytes
-    std::vector<std::string> CidOf((size_t)Count());
-    for (int I : Order)
-    {
-        const json Out = RemapRefs(Node(I), Minted);
-        std::string Err;
-        const std::string C = Cid::OfNode(Out, &Err);
-        if (C.empty())
         {
-            const json &N = Node(I);
-            R.Error = "Node '" + (N.contains("LABEL") && N["LABEL"].is_string() ? N["LABEL"].get<std::string>() : Handle(I))
-                    + "' cannot be saved: " + Err;
+            std::set<int> Deps;
+            ForEachRef(Node(I), [&](const std::string &Ref) { if (const auto It = ByHandle.find(Ref); It != ByHandle.end()) Deps.insert(It->second); });
+            for (int D : Deps) { Users[(size_t)D].push_back(I); ++Missing[(size_t)I]; }
+        }
+        std::vector<int> Ready;
+        int Done = 0;
+        for (int I = 0; I < Count(); ++I) if (!Missing[(size_t)I]) Ready.push_back(I);
+        while (!Ready.empty())
+        {
+            const int I = Ready.back(); Ready.pop_back(); ++Done;
+            for (int U : Users[(size_t)I]) if (--Missing[(size_t)U] == 0) Ready.push_back(U);
+        }
+        if (Done != Count())
+        {
+            std::string Names;
+            for (int I = 0; I < Count(); ++I)
+                if (Missing[(size_t)I] > 0) Names += (Names.empty() ? "" : ", ") + LabelOf(Node(I), Handle(I));
+            R.Error = "These nodes contain each other in a circle, so they cannot be saved (a node is named by its content, "
+                      "and its content names the others): " + Names + ". Remove one of the wires between them.";
             return R;
         }
-        Minted[Handle(I)] = C;
-        CidOf[(size_t)I] = C;
-        Bytes[C] = Cid::Canonical(Out);
     }
 
-    // 3. Write this package's changed files; remember the ones they replace.
-    std::error_code Ec;
-    std::set<fs::path> Written, Replaced;
-    auto Put = [&](const fs::path &P, const std::string &B) {
-        std::string Have;
-        if (ReadFile(P, Have) && Have == B) return true;  // already there, byte for byte
-        std::string Err;
-        if (!WriteFileAtomic(P, B, Err)) { R.Error = Err; return false; }
-        ++R.Written;
-        R.Log.push_back("wrote " + P.string());
-        Written.insert(P);
-        return true;
-    };
-    for (int I = 0; I < Count(); ++I)
+    // 2. Everything else that could name them: every package under the roots (friends' excepted) and the instances.
+    std::vector<LibFile> Lib;
     {
-        const fs::path Target = Dir / (CidOf[(size_t)I] + ".json");
-        if (!Put(Target, Bytes[CidOf[(size_t)I]])) return R;
-        const std::string &Old = File(I);
-        if (!Old.empty() && Old != Target.filename().string()) Replaced.insert(Dir / Old);
-        if (Handle(I) != CidOf[(size_t)I]) R.Renamed[Handle(I)] = CidOf[(size_t)I];
-    }
-
-    // Nodes removed in the editor: their files go — unless another package still names them (checked below, once
-    // the library has been read), because deleting a node others contain would leave them naming nothing.
-    std::set<std::string> Claimed;
-    for (int I = 0; I < Count(); ++I) Claimed.insert(CidOf[(size_t)I] + ".json");
-    std::vector<std::string> Dropped;
-    for (const std::string &F : LoadedFiles)
-        if (!Claimed.count(F) && !Replaced.count(Dir / F)) Dropped.push_back(F);
-
-    // 4. Follow the renames through the library: referrers are re-minted (recursively), copies renamed.
-    std::map<std::string, std::string> M;                 // old cid -> new cid, across the library
-    for (auto &[Old, New] : R.Renamed) if (LooksLikeCid(Old)) M[Old] = New;
-    if (!M.empty() && !LibraryRoot.empty())
-    {
-        std::vector<LibFile> Lib = GatherLibrary(LibraryRoot, Dir);
-        //Which files change: copies of a renamed node, and every node containing a changed one, transitively. A node
-        //is re-minted only once everything it contains that changes has its final name — else a node reached twice
-        //(a diamond: it contains a changed node directly AND through another) would be written naming the other's
-        //OLD name. CIDs cannot form a circle, so this order always exists.
-        std::map<std::string, std::vector<size_t>> ByName, Referrers;
-        for (size_t K = 0; K < Lib.size(); ++K)
+        std::set<fs::path> Seen;
+        for (const fs::path &Root : Roots)
         {
-            ByName[Stem(Lib[K].Path)].push_back(K);
-            ForEachRef(Lib[K].Node, [&](const std::string &Ref) { Referrers[Ref].push_back(K); });
+            std::string Err;
+            if (!GatherLibrary(Root, Dir, Lib, Err)) { R.Error = "Nothing was saved: " + Err; return R; }
         }
-        std::set<size_t> Pending;
+        std::vector<LibFile> Unique;
+        for (LibFile &F : Lib)
+        {
+            std::error_code Ec;
+            const fs::path C = fs::weakly_canonical(F.Path, Ec);
+            if (Seen.insert(Ec ? F.Path : C).second) Unique.push_back(std::move(F));
+        }
+        Lib.swap(Unique);
+        std::sort(Lib.begin(), Lib.end(), [](const LibFile &A, const LibFile &B) { return A.Path < B.Path; });
+    }
+    struct Instance { fs::path Path; json J; };
+    std::vector<Instance> Instances;
+    {
+        std::error_code Ec, Probe;
+        if (!UserDataRoot.empty() && fs::is_directory(UserDataRoot, Probe))
+            for (const auto &Pkg : fs::directory_iterator(UserDataRoot, Ec))
+            {
+                if (!Pkg.is_directory(Probe)) continue;
+                for (const auto &Inst : fs::directory_iterator(Pkg.path(), Ec))
+                {
+                    const fs::path Cfg = Inst.path() / "instance.json";
+                    if (!Inst.is_directory(Probe) || !fs::exists(Cfg, Probe)) continue;
+                    std::string B;
+                    if (!ReadFile(Cfg, B)) { R.Error = "Nothing was saved: cannot read " + Cfg.string(); return R; }
+                    json J = json::parse(B, nullptr, false);
+                    if (!J.is_discarded()) Instances.push_back({Cfg, std::move(J)});
+                }
+                if (Ec) break;
+            }
+        if (Ec) { R.Error = "Nothing was saved: cannot read the instances under " + UserDataRoot.string() + ": " + Ec.message(); return R; }
+    }
+
+    // 3. One graph: this package's nodes and every library node that contains one of them (or a copy of one, or a
+    //    node that does, transitively). Each is named only once everything it contains has its final name — through
+    //    other packages too (this package's node P can contain E in another package, which contains this package's X).
+    std::map<std::string, std::vector<size_t>> ByName, Referrers;
+    for (size_t K = 0; K < Lib.size(); ++K)
+    {
+        ByName[Stem(Lib[K].Path)].push_back(K);
+        ForEachRef(Lib[K].Node, [&](const std::string &Ref) { Referrers[Ref].push_back(K); });
+    }
+    std::set<size_t> LibPending;
+    {
         std::vector<std::string> Frontier;
-        for (auto &[Old, New] : M) Frontier.push_back(Old);
+        for (int I = 0; I < Count(); ++I) Frontier.push_back(Handle(I));
         while (!Frontier.empty())
         {
             const std::string C = Frontier.back();
             Frontier.pop_back();
             for (const auto *Hits : {&ByName[C], &Referrers[C]})
                 for (size_t K : *Hits)
-                    if (Pending.insert(K).second) Frontier.push_back(Stem(Lib[K].Path));
+                    if (LibPending.insert(K).second) Frontier.push_back(Stem(Lib[K].Path));
         }
-        std::map<std::string, int> PendingNames;          // name -> pending files carrying it (copies share one)
-        for (size_t K : Pending) ++PendingNames[Stem(Lib[K].Path)];
-        while (!Pending.empty())
+    }
+    std::set<int> DocPending;
+    for (int I = 0; I < Count(); ++I) DocPending.insert(I);
+    std::map<std::string, int> PendingNames;              // name -> pending items carrying it (copies share one)
+    std::set<std::string> DocPendingNames;
+    for (int I : DocPending) { ++PendingNames[Handle(I)]; DocPendingNames.insert(Handle(I)); }
+    for (size_t K : LibPending) ++PendingNames[Stem(Lib[K].Path)];
+    auto Settle = [&](const std::string &Name) { if (--PendingNames[Name] == 0) PendingNames.erase(Name); };
+
+    std::map<std::string, std::string> M;                 // old name -> new CID, everything that changes
+    std::map<std::string, std::string> Bytes;             // cid -> canonical bytes
+    std::vector<std::string> CidOf((size_t)Count());
+    std::map<std::string, int> MintedBy;                  // cid -> the node of this package it names
+    struct Write { fs::path Path; std::string Bytes; };
+    std::vector<Write> Writes;
+    std::vector<fs::path> Replaced;
+    std::map<std::string, std::string> LibNew;            // library file path -> its new cid (renamed ones)
+    while (!DocPending.empty() || !LibPending.empty())
+    {
+        bool Progress = false;
+        auto Waits = [&](const json &N) {
+            bool W = false;
+            ForEachRef(N, [&](const std::string &Ref) { if (PendingNames.count(Ref)) W = true; });
+            return W;
+        };
+        for (auto It = DocPending.begin(); It != DocPending.end();)
         {
-            std::vector<size_t> Final;
-            for (size_t K : Pending)
+            const int I = *It;
+            if (Waits(Node(I))) { ++It; continue; }
+            const json Out = RemapRefs(Node(I), M);
+            std::string Err;
+            const std::string C = Cid::OfNode(Out, &Err);
+            if (C.empty()) { R.Error = "Node '" + LabelOf(Node(I), Handle(I)) + "' cannot be saved: " + Err; return R; }
+            if (const auto Twin = MintedBy.find(C); Twin != MintedBy.end())
             {
-                bool Waits = false;
-                ForEachRef(Lib[K].Node, [&](const std::string &Ref) { if (PendingNames.count(Ref)) Waits = true; });
-                if (!Waits) Final.push_back(K);
+                R.Error = "'" + LabelOf(Node(Twin->second), Handle(Twin->second)) + "' and '" + LabelOf(Node(I), Handle(I))
+                        + "' are the same node, byte for byte, so they would be one file. Delete one, or make them differ.";
+                return R;
             }
-            if (Final.empty()) { R.Error = "The library's nodes contain each other in a circle: cannot follow the renames"; return R; }
-            for (size_t K : Final)
+            MintedBy[C] = I;
+            CidOf[(size_t)I] = C;
+            Bytes[C] = Cid::Canonical(Out);
+            if (Handle(I) != C) M[Handle(I)] = C;
+            Settle(Handle(I));
+            DocPendingNames.erase(Handle(I));
+            It = DocPending.erase(It);
+            Progress = true;
+        }
+        for (auto It = LibPending.begin(); It != LibPending.end();)
+        {
+            const size_t K = *It;
+            const std::string Old = Stem(Lib[K].Path);
+            if (DocPendingNames.count(Old) || Waits(Lib[K].Node)) { ++It; continue; }   // a copy follows its original
+            std::string New;
+            if (const auto Copy = M.find(Old); Copy != M.end() && Bytes.count(Copy->second)) New = Copy->second;
+            else
             {
-                Pending.erase(K);
-                const std::string OldName = Stem(Lib[K].Path);
-                if (--PendingNames[OldName] == 0) PendingNames.erase(OldName);
-                const auto Copy = M.find(OldName);
-                std::string NewName, NewBytes;
-                if (Copy != M.end() && Bytes.count(Copy->second))
-                {
-                    NewName = Copy->second;                // another package keeps a copy of a node renamed already
-                    NewBytes = Bytes[NewName];
-                }
-                else
-                {
-                    const json Out = RemapRefs(Lib[K].Node, M);
-                    std::string Err;
-                    NewName = Cid::OfNode(Out, &Err);
-                    if (NewName.empty()) { R.Error = Lib[K].Path.string() + ": " + Err; return R; }
-                    NewBytes = Cid::Canonical(Out);
-                    Bytes[NewName] = NewBytes;
-                }
-                if (NewName == OldName) continue;
-                if (!Put(Lib[K].Path.parent_path() / (NewName + ".json"), NewBytes)) return R;
-                Replaced.insert(Lib[K].Path);
-                M[OldName] = NewName;
-                R.Renamed[OldName] = NewName;
+                const json Out = RemapRefs(Lib[K].Node, M);
+                std::string Err;
+                New = Cid::OfNode(Out, &Err);
+                if (New.empty()) { R.Error = "Nothing was saved: " + Lib[K].Path.string() + ": " + Err; return R; }
+                Bytes[New] = Cid::Canonical(Out);
+            }
+            if (New != Old)
+            {
+                M[Old] = New;
+                LibNew[Lib[K].Path.string()] = New;
+                Writes.push_back({Lib[K].Path.parent_path() / (New + ".json"), Bytes[New]});
+                Replaced.push_back(Lib[K].Path);
                 ++R.Cascaded;
             }
+            Settle(Old);
+            It = LibPending.erase(It);
+            Progress = true;
+        }
+        if (!Progress)
+        {
+            std::string Names;
+            int Shown = 0;
+            for (int I : DocPending) if (Shown++ < 6) Names += (Names.empty() ? "" : ", ") + LabelOf(Node(I), Handle(I));
+            for (size_t K : LibPending) if (Shown++ < 6) Names += (Names.empty() ? "" : ", ") + Lib[K].Path.string();
+            R.Error = "Nothing was saved: these nodes contain each other in a circle, through other packages — " + Names;
+            return R;
         }
     }
+    R.Renamed = M;
 
-    if (!Dropped.empty())
+    // 4. This package's files: every node under its CID; what the edits replace and what was deleted goes.
+    std::set<std::string> Claimed;
+    for (int I = 0; I < Count(); ++I)
     {
-        std::set<std::string> NamedElsewhere;
-        for (const LibFile &F : GatherLibrary(LibraryRoot, Dir))
-            ForEachRef(F.Node, [&](const std::string &Ref) { NamedElsewhere.insert(Ref); });
-        for (const std::string &F : Dropped)
+        Writes.push_back({Dir / (CidOf[(size_t)I] + ".json"), Bytes[CidOf[(size_t)I]]});
+        Claimed.insert(CidOf[(size_t)I] + ".json");
+        if (!File(I).empty() && File(I) != CidOf[(size_t)I] + ".json") Replaced.push_back(Dir / File(I));
+    }
+    //What still names a node, once everything is renamed: the library's nodes (as they will be) and the instances.
+    std::set<std::string> NamedElsewhere;
+    for (const LibFile &F : Lib) ForEachRef(RemapRefs(F.Node, M), [&](const std::string &Ref) { NamedElsewhere.insert(Ref); });
+    for (Instance &In : Instances)
+    {
+        json J = In.J;
+        RenameStrings(J, M);
+        std::function<void(const json &)> Collect = [&](const json &V) {
+            if (V.is_string()) NamedElsewhere.insert(V.get<std::string>());
+            else if (V.is_array() || V.is_object()) for (const auto &E : V) Collect(E);
+        };
+        Collect(J);
+    }
+    for (const std::string &F : LoadedFiles)
+    {
+        if (Claimed.count(F) || std::find(Replaced.begin(), Replaced.end(), Dir / F) != Replaced.end()) continue;
+        const std::string C = fs::path(F).stem().string();
+        bool CopyElsewhere = false;                        // another package keeps this node's file under its name
+        for (size_t K : ByName[C]) if (!LibNew.count(Lib[K].Path.string())) CopyElsewhere = true;
+        if (NamedElsewhere.count(C) && !CopyElsewhere)
         {
-            const std::string C = fs::path(F).stem().string();
-            if (NamedElsewhere.count(C) && !M.count(C))
-                R.Log.push_back("kept " + (Dir / F).string() + ": removed here, but another package still contains it");
-            else Replaced.insert(Dir / F);
+            R.Kept.push_back(C);
+            R.Log.push_back("kept " + (Dir / F).string() + ": deleted here, but another package or an instance still names "
+                            "it, and this is its only copy");
         }
+        else Replaced.push_back(Dir / F);
+    }
+    for (Instance &In : Instances)
+    {
+        json J = In.J;
+        if (!RenameStrings(J, M)) continue;
+        Writes.push_back({In.Path, J.dump(4)});
+        ++R.InstancesUpdated;
     }
 
-    // 5. Instances remember nodes by CID (the grafts ticked per tile, the runner chain): follow the renames there.
-    if (!M.empty() && !UserDataRoot.empty() && fs::is_directory(UserDataRoot, Ec))
-        for (const auto &Pkg : fs::directory_iterator(UserDataRoot, Ec))
+    // 5. Write, journalled: a write that fails undoes every one before it, and nothing is removed.
+    struct Undo { fs::path Path; bool Existed; std::string Old; };
+    std::vector<Undo> Journal;
+    std::set<fs::path> Final;                             // every file the package state ends up with, written or not
+    for (const Write &W : Writes) Final.insert(W.Path);
+    for (const Write &W : Writes)
+    {
+        std::string Have;
+        const bool Existed = ReadFile(W.Path, Have);
+        if (Existed && Have == W.Bytes) continue;         // already there, byte for byte
+        std::string Err;
+        if (!WriteFileAtomic(W.Path, W.Bytes, Err))
         {
-            if (!Pkg.is_directory(Ec)) continue;
-            for (const auto &Inst : fs::directory_iterator(Pkg.path(), Ec))
+            for (auto It = Journal.rbegin(); It != Journal.rend(); ++It)
             {
-                const fs::path Cfg = Inst.path() / "instance.json";
-                std::string B;
-                if (!Inst.is_directory(Ec) || !ReadFile(Cfg, B)) continue;
-                json J = json::parse(B, nullptr, false);
-                if (J.is_discarded() || !RenameStrings(J, M)) continue;
-                std::string Err;
-                if (!WriteFileAtomic(Cfg, J.dump(4), Err)) { R.Error = Err; return R; }
-                ++R.InstancesUpdated;
-                R.Log.push_back("renamed node references in " + Cfg.string());
+                std::string E2;
+                std::error_code Ec;
+                if (It->Existed) WriteFileAtomic(It->Path, It->Old, E2);
+                else fs::remove(It->Path, Ec);
             }
+            R.Error = "Nothing was saved: " + Err;
+            R.Written = 0; R.Cascaded = 0; R.InstancesUpdated = 0; R.Renamed.clear(); R.Kept.clear(); R.Log.clear();
+            return R;
         }
+        Journal.push_back({W.Path, Existed, std::move(Have)});
+        ++R.Written;
+        R.Log.push_back((W.Path.filename() == "instance.json" ? "renamed node references in " : "wrote ") + W.Path.string());
+    }
 
-    // 6. Every write landed: only now remove what they replace.
+    // 6. Every write landed: remove what they replace — never a file something ends up as.
+    std::set<fs::path> Gone;
     for (const fs::path &P : Replaced)
     {
-        if (Written.count(P)) continue;                   // a replaced name that is also a new one (two swapped)
-        bool StillOurs = false;
-        for (int I = 0; I < Count(); ++I) if (Dir / (CidOf[(size_t)I] + ".json") == P) StillOurs = true;
-        if (StillOurs) continue;
+        if (Final.count(P) || !Gone.insert(P).second) continue;
+        std::error_code Ec;
         if (fs::remove(P, Ec)) { ++R.Removed; R.Log.push_back("removed " + P.string()); }
+        else if (Ec)
+        {
+            R.Warnings.push_back("could not remove " + P.string() + " (" + Ec.message() + "): the old version of the node is "
+                                 "still there beside the new one - remove it by hand");
+            R.Log.push_back(R.Warnings.back());
+        }
     }
 
     // 7. The document is now what is on disk: handles are the CIDs, in the undo history too.
     for (int I = 0; I < Count(); ++I) Entries[(size_t)I].File = CidOf[(size_t)I] + ".json";
     LoadedFiles.clear();
+    std::error_code Ec;
     for (const auto &E : fs::directory_iterator(Dir, Ec))
         if (E.path().extension() == ".json" && LooksLikeCid(Stem(E.path()))) LoadedFiles.insert(E.path().filename().string());
-    std::map<std::string, std::string> Here;
-    for (auto &[Old, New] : R.Renamed) Here[Old] = New;
-    RenameIn(Entries, Where, Here);
-    for (Snapshot &S : UndoStack) RenameIn(S.Entries, S.Where, Here);
-    for (Snapshot &S : RedoStack) RenameIn(S.Entries, S.Where, Here);
-    RenameIn(Before.Entries, Before.Where, Here);
+    RenameIn(Entries, Where, M);
+    for (Snapshot &S : UndoStack) RenameIn(S.Entries, S.Where, M);
+    for (Snapshot &S : RedoStack) RenameIn(S.Entries, S.Where, M);
+    RenameIn(Before.Entries, Before.Where, M);
     SavedContentRev = ContentRev;
     ++Rev;
-    for (auto &[Old, New] : Here) Renames[Old] = New;
+    for (auto &[Old, New] : M) Renames[Old] = New;
     R.Ok = true;
     return R;
 }

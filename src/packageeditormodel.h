@@ -49,6 +49,8 @@ public:
     bool isDirty() const { return Doc.Dirty(); }
     //Handles the last Save renamed (old -> new): the canvas, the JSON panel and a pending run follow their nodes.
     const std::map<std::string, std::string> & lastRenames() const { return LastRenames; }
+    //What the last successful save needs the author to know (a deleted node kept, an old file not removed).
+    const std::vector<std::string> & saveNotes() const { return SaveNotes; }
     void SaveLayout();                             // this machine's node positions -> GlobalConfig
     //Replace one node's JSON (the JSON panel): one undo step, the canvas repaints.
     void replaceNode(const std::string & Handle, nlohmann::ordered_json Node);
@@ -106,6 +108,7 @@ private:
     PkgDoc::Document         Doc;
     std::map<std::string, PkgDoc::Pos> SavedLayout;   // what GlobalConfig holds, to write only on change
     std::map<std::string, std::string> LastRenames;
+    std::vector<std::string> SaveNotes;
     QDir *                   PackageDir = nullptr;
     nlohmann::ordered_json * GlobalConfigJSON = nullptr;
     QWidget *                DialogParent = nullptr;

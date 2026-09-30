@@ -52,6 +52,8 @@ struct SaveReport
     std::map<std::string, std::string> Renamed;          // every name that changed: this package's handles and the
                                                          // library nodes the cascade re-minted (old -> new CID)
     int Written = 0, Removed = 0, Cascaded = 0, InstancesUpdated = 0;
+    std::vector<std::string> Kept;                       // deleted here, kept on disk: something still names it
+    std::vector<std::string> Warnings;                   // saved, but something needs the author (a file not removed)
     std::vector<std::string> Log;                        // one line per file written/removed, for the editor log
 };
 
@@ -114,9 +116,13 @@ public:
     std::map<std::string, std::string> TakeRenames();
 
     // ---- saving -----------------------------------------------------------------------------------------------
-    //Save the package into Dir (see the header comment). LibraryRoot: the tree the cascade follows ("" = none).
+    //Save the package into Dir (see the header comment). Roots: every tree whose packages may name its nodes (the
+    //library and packages added from elsewhere); an unreadable one refuses the save.
     //UserDataRoot: the instances to rename remembered CIDs in ("" = none). On success the document is clean and
     //its handles are the CIDs on disk.
+    SaveReport Save(const std::filesystem::path &Dir, const std::vector<std::filesystem::path> &Roots,
+                    const std::filesystem::path &UserDataRoot);
+    //One root (or none: "" = this package only, nothing else is followed — tests and throwaway folders).
     SaveReport Save(const std::filesystem::path &Dir, const std::filesystem::path &LibraryRoot,
                     const std::filesystem::path &UserDataRoot);
 

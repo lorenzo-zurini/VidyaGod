@@ -247,6 +247,13 @@ bool IsLocalPackagePath(const nlohmann::ordered_json &GlobalConfigJSON, const st
     return !PathUnderManagedSource(GlobalConfigJSON, BundleDir);
 }
 
+std::vector<std::filesystem::path> EditableRoots(const nlohmann::ordered_json &GlobalConfigJSON)
+{
+    std::vector<std::filesystem::path> Out{ std::filesystem::path(LibraryRootDir(GlobalConfigJSON)) };
+    for (const auto &D : LocalPackageDirs(GlobalConfigJSON)) Out.push_back(D);
+    return Out;
+}
+
 std::vector<std::filesystem::path> LocalPackageDirs(const nlohmann::ordered_json &GlobalConfigJSON)
 {
     std::vector<std::filesystem::path> Out;
