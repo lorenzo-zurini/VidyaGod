@@ -40,7 +40,7 @@ using namespace PackageCatalog;
 //
 //Per-key source priority (highest to lowest):
 //  1. ContainerParams.VariableOverrides — set from --var KEY=VALUE CLI flags or UI picker
-//  2. GlobalConfigJSON["USERSETTINGS"][PackageUID]["VARIABLES"] — persisted user choices
+//  2. the instance's persisted VARIABLES — user choices, honoured only for a key with a UI facet (a setting)
 //  3. the winning DEFAULT (or, for a secret+POOL var with nothing persisted yet, one pool entry drawn ONCE as a
 //     seed and reported in ContainerParams.PickedSecrets for the caller to persist)
 
@@ -51,8 +51,11 @@ bool LaunchResolver::ResolveCustomVariables(const nlohmann::ordered_json &MANIFE
     //O(LIBRARY) settings scan (with a deep USERSETTINGS copy) for EVERY custom-var key.
     const nlohmann::ordered_json SavedVars = GetPackageVariables(GlobalConfigJSON, ContainerParams.PackageUID, ContainerParams.InstanceName);
 
-    //Helper: resolve a single bare KEY/DEFAULT pair through the priority chain.
-    auto ResolveOne = [&](const std::string &Key, const std::string &DefaultValue) -> std::string
+    //Helper: resolve a single bare KEY/DEFAULT pair through the priority chain. A persisted value counts only for a
+    //Settable key — one whose winning declaration has a UI facet, the only vars the prelaunch window shows and saves.
+    //A saved value for any other key is left over from when it was settable (an option turned into a computed EVAL
+    //bitfield keeps its old saved "0" forever), and honouring it would silently pin the derived value.
+    auto ResolveOne = [&](const std::string &Key, const std::string &DefaultValue, bool Settable) -> std::string
     {
         //Trace-gated: ResolveOne runs once per key per FIXPOINT ITERATION, so these lines repeat until the
         //var set converges (240 of one resolve's 2036 log lines, measured). The final resolved table below is
@@ -62,7 +65,9 @@ bool LaunchResolver::ResolveCustomVariables(const nlohmann::ordered_json &MANIFE
             if (VerboseLogging()) LogOut("ResolveCustomVariables", "CLI override: " + Key + " = " + ContainerParams.VariableOverrides.at(Key));
             return ContainerParams.VariableOverrides.at(Key);
         }
-        if (SavedVars.contains(Key))
+        if (SavedVars.contains(Key) && !Settable)
+            LogOut("ResolveCustomVariables", "Ignoring the saved value of '" + Key + "': it has no UI, so it is not a setting.");
+        else if (SavedVars.contains(Key))
         {
             std::string Val = SavedVars[Key];
             if (VerboseLogging()) LogOut("ResolveCustomVariables", "User setting: " + Key + " = " + Val);
@@ -165,7 +170,7 @@ bool LaunchResolver::ResolveCustomVariables(const nlohmann::ordered_json &MANIFE
                 LogOut("ResolveCustomVariables", "Pool seed (first launch): " + Key + " = [secret]");
             }
         }
-        else Sources[Key] = ResolveOne(Key, CV.value("DEFAULT", std::string()));
+        else Sources[Key] = ResolveOne(Key, CV.value("DEFAULT", std::string()), CV.contains("UI") && CV["UI"].is_object());
     }
 
     //Engine-injected session facts (friend LAN vIPs + SELF_NAME) enter here, as if they were declared with
@@ -181,7 +186,7 @@ bool LaunchResolver::ResolveCustomVariables(const nlohmann::ordered_json &MANIFE
     {
         if (Sources.count(Key)) continue;                          // a package declaration wins
         KeyOrder.push_back(Key);
-        Sources[Key] = ResolveOne(Key, Value);
+        Sources[Key] = ResolveOne(Key, Value, true);             // documented: a persisted setting still wins
     }
 
     //Phase 2 — fixpoint. Seed raw, then substitute every source against (built-ins + all vars) until a full pass

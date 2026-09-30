@@ -1351,11 +1351,17 @@ private slots:
         QVERIFY2(Back["KEYVALUES"].contains("C:\\802\\g.exe"), "the value name comes back as the path");
     }
 
-    // ResolveCustomVariables priority: CLI override > USERSETTINGS > DEFAULT.
+    // ResolveCustomVariables priority: CLI override > saved setting > DEFAULT — and a saved value counts only for a var
+    // with a UI facet (a setting). UserPatch's Setup Terrain was an option, then became an EVAL bitfield over four
+    // options; the instance's old saved "0" kept pinning it, so ticking "Disable weather" changed nothing. Teeth: honour
+    // SavedVars regardless of the UI facet (DERIVED stays "0").
     void resolve_custom_variables_priority()
     {
+        json derived = json{{"TYPE", "CustomVar"}, {"KEY", "DERIVED"}, {"DEFAULT", "%WEATHER%*4"}, {"EVAL", true}};
         json pool = json{{"COMPONENTS", json::array({ json{{"COMPONENTID", "c1"}, {"SUBCOMPONENTS", json::array({
-            json{{"TYPE", "CustomVar"}, {"KEY", "MYVAR"}, {"DEFAULT", "def"}, {"VARTYPE", "string"}} })}} })}};
+            json{{"TYPE", "CustomVar"}, {"KEY", "MYVAR"}, {"DEFAULT", "def"}, {"UI", {{"CONTROL", "text"}}}},
+            json{{"TYPE", "CustomVar"}, {"KEY", "WEATHER"}, {"DEFAULT", "1"}, {"UI", {{"CONTROL", "bool"}}}},
+            derived })}} })}};
 
         // temp UserDataRoot isolates every read/write here from the real ~/.VidyaGod (the accessors now hit disk).
         QTemporaryDir ud; QVERIFY(ud.isValid());
@@ -1365,10 +1371,11 @@ private slots:
           LaunchResolver::ResolveCustomVariables(pool, cp, cfg);
           QCOMPARE(cp.CustomVariables["MYVAR"], std::string("def")); }
         // user setting (now lives in the INSTANCE file — write it there)
-        QVERIFY(InstanceStore::WriteConfig(cfg, "pkg", "DefaultInstance", json{{"VARIABLES", {{"MYVAR", "cfg"}}}}));
+        QVERIFY(InstanceStore::WriteConfig(cfg, "pkg", "DefaultInstance", json{{"VARIABLES", {{"MYVAR", "cfg"}, {"DERIVED", "0"}}}}));
         { ContainerParams cp("/tmp/vg_bundle"); cp.Recipe = {"c1"}; cp.PackageUID = "pkg";
           LaunchResolver::ResolveCustomVariables(pool, cp, cfg);
-          QCOMPARE(cp.CustomVariables["MYVAR"], std::string("cfg")); }
+          QCOMPARE(cp.CustomVariables["MYVAR"], std::string("cfg"));
+          QCOMPARE(cp.CustomVariables["DERIVED"], std::string("4")); }        // the stale saved "0" is not a setting
         // CLI override wins
         { ContainerParams cp("/tmp/vg_bundle"); cp.Recipe = {"c1"}; cp.PackageUID = "pkg";
           cp.VariableOverrides["MYVAR"] = "ovr";
