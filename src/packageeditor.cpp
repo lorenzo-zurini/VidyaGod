@@ -1,231 +1,171 @@
 #include "packageeditor.h"
 #include "packageeditormodel.h"
-#include "manifestmodel.h"   // the state/signal hub
-#include "pkgcanvaspanel.h"       // the blueprint canvas (the editing surface)
-#include "pkgactions.h"           // performs the node actions the canvas asks for
-#include "jsonraweditor.h"        // raw-JSON view
-#include "validationpanel.h"      // docked validation panel
-#include "packagecatalog.h"       // PackageCatalog::PublishPackage (dehydrate) + IsPackageSourcePath (own-library check)
+#include "pkgcanvaspanel.h"
+#include "pkgactions.h"
+#include "jsonraweditor.h"
+#include "validationpanel.h"
+#include "packagecatalog.h"
 #include "commonutils.h"
 
-#include <QGuiApplication>
-#include <QScreen>
-#include <QFileDialog>
+#include <QAction>
+#include <QApplication>
+#include <QCloseEvent>
 #include <QDir>
+#include <QFileDialog>
+#include <QGuiApplication>
+#include <QLabel>
 #include <QMessageBox>
 #include <QMetaMethod>
-#include <filesystem>
-#include <QPushButton>
-#include <QFile>
-#include <QScrollArea>
+#include <QScreen>
 #include <QSplitter>
+#include <QTimer>
+#include <QToolBar>
 #include <QVBoxLayout>
-#include <QHBoxLayout>
+
+#include <filesystem>
 
 using json = nlohmann::ordered_json;
 
-// ============================================================================
-// Helpers
-// ============================================================================
+PackageEditor * PackageEditor::Live = nullptr;
 
-
-
-// ============================================================================
-// Construction / teardown
-// ============================================================================
-
-PackageEditor::PackageEditor(nlohmann::ordered_json * GlobalConfigJSON, QWidget * parent, const QString &PreselectedPath)
+PackageEditor::PackageEditor(nlohmann::ordered_json * GlobalConfigJSON, QWidget * parent, const QString & PreselectedPath)
     : QDialog(parent)
 {
-    // The state/signal hub: owns the working document, node I/O, validation, and the authoring runs. Created first
-    // so the toolbar/Publish lambdas below can reach it; it parents its modal dialogs on this editor.
     Model = new PackageEditorModel(GlobalConfigJSON, this, this);
-    //Registered HERE, not in OpenFor, so every construction path counts - the canvas's single Dear ImGui
-    //context is a process-wide resource and a second editor cannot render regardless of who built it.
     if (!Live) Live = this;
-    else LogErr("PackageEditor", "A second package editor was constructed; its canvas cannot render. "
-                                   "Open the editor through PackageEditor::OpenFor().");
-    // A first-class top-level window: a parented QDialog gets _NET_WM_WINDOW_TYPE_DIALOG (no taskbar entry, rides the
-    // parent's minimize/tray). Qt::Window makes it a normal window — its own taskbar button + ordinary minimize.
+    else LogErr("PackageEditor", "A second package editor was constructed; its canvas cannot render. Open it through PackageEditor::OpenFor().");
     setWindowFlags(Qt::Window);
-    setWindowTitle("VidyaGod Package Editor");
-    setGeometry(0, 0, QGuiApplication::primaryScreen()->geometry().width(), QGuiApplication::primaryScreen()->geometry().height());
+    resize(QGuiApplication::primaryScreen()->availableGeometry().size() * 0.9);
     setWindowState(Qt::WindowMaximized);
 
-    QVBoxLayout * MainLayout = new QVBoxLayout(this);
-    MainLayout->setSpacing(1);
-    MainLayout->setContentsMargins(0, 0, 0, 0);
-    setLayout(MainLayout);
+    QVBoxLayout * Main = new QVBoxLayout(this);
+    Main->setSpacing(0);
+    Main->setContentsMargins(0, 0, 0, 0);
 
-    // Toolbar: add a node / publish the bundle.
-    QHBoxLayout * Toolbar = new QHBoxLayout();
-    Toolbar->setSpacing(1);
-    QPushButton * ValidateBtn  = new QPushButton("Check Package Validity", this);
-    QPushButton * FixCaseBtn   = new QPushButton("Fix Case Conflicts", this);
-    QPushButton * PublishBtn   = new QPushButton("Publish",  this);
-    ValidateBtn->setToolTip("Validate the node graph on demand: dangling/cyclic PARENTS, layer paths, runner resolution,\n"
-                            "cross-layer case collisions. Authoring-only — the regular launcher assumes packages are valid.");
-    FixCaseBtn->setToolTip("Resolve cross-layer case conflicts: rename case-colliding zip entries in the higher-priority\n"
-                           "layers to the base layer's case (unpack→rename→repackage) so patches/add-ons override cleanly.");
-    Toolbar->addStretch();
-    Toolbar->addWidget(ValidateBtn);
-    Toolbar->addWidget(FixCaseBtn);
-    Toolbar->addWidget(PublishBtn);
-    MainLayout->addLayout(Toolbar);
+    // ---- toolbar ----
+    QToolBar * Bar = new QToolBar(this);
+    Bar->setToolButtonStyle(Qt::ToolButtonTextOnly);
+    Bar->setIconSize(QSize(16, 16));
+    QAction * OpenAct = Bar->addAction("Open package...");
+    OpenAct->setShortcut(QKeySequence::Open);
+    OpenAct->setToolTip("Open another package folder (Ctrl+O)");
+    SaveAct = Bar->addAction("Save");
+    SaveAct->setShortcut(QKeySequence::Save);
+    SaveAct->setToolTip("Save the package (Ctrl+S). Every edited node is renamed to the CID of its new content,\n"
+                        "and every node that contains it - here or in other packages - follows.");
+    Bar->addSeparator();
+    UndoAct = Bar->addAction("Undo");
+    UndoAct->setToolTip("Undo the last edit (Ctrl+Z on the canvas)");
+    RedoAct = Bar->addAction("Redo");
+    RedoAct->setToolTip("Redo (Ctrl+Shift+Z or Ctrl+Y on the canvas)");
+    Bar->addSeparator();
+    QAction * ValidateAct = Bar->addAction("Validate");
+    ValidateAct->setToolTip("Check the package as it is now (unsaved edits included): references, layer paths,\n"
+                            "runner resolution, case collisions. Problems appear on the nodes and in the list.");
+    QAction * FixCaseAct = Bar->addAction("Fix case collisions");
+    FixCaseAct->setToolTip("Rename zip entries that differ from a lower layer's only by case to that layer's case,\n"
+                           "so patches and add-ons override cleanly (rewrites this package's zips; saves first).");
+    QAction * SeedAct = Bar->addAction("Seed && share");
+    SeedAct->setToolTip("Put this package's content (zips, files, covers) on IPFS, record each file's CID in its node,\n"
+                        "and save - so friends can fetch it.");
+    QWidget * Spacer = new QWidget(this);
+    Spacer->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Preferred);
+    Bar->addWidget(Spacer);
+    StatusText = new QLabel(this);
+    StatusText->setContentsMargins(8, 0, 12, 0);
+    Bar->addWidget(StatusText);
+    Main->addWidget(Bar);
 
-    //Publish (dehydrate): flush edits, seed each layer's content over IPFS + record its CID into the node files in
-    //place, and export a manifest-only copy to a chosen folder (ready to commit into a sharing repo).
-    connect(PublishBtn, &QPushButton::clicked, this, [this](){
-        if (!PackageDir) return;
-        Model->SaveNodes();
-        const QString Dest = QFileDialog::getExistingDirectory(
-            this, "Export dehydrated copy to… (cancel to dehydrate in place only)");
-        std::string Err;
-        //Hand the publisher THIS machine's drags: they live only in GlobalConfig, so without them the stamp
-        //would bake the computed layout over the arrangement the author is looking at.
-        const nlohmann::ordered_json *Local =
-            Model->globalConfig() ? PackageCatalog::EditorLayoutFor(
-                                        *Model->globalConfig(),
-                                        std::filesystem::path(PackageDir->path().toStdString()))
-                                  : nullptr;
-        //Stamp FIRST and explicitly — but ONLY when this machine has actually arranged the bundle. Stamping
-        //an unarranged one writes the COMPUTED layout into its node files, which adds no information (the
-        //receiving machine computes the identical layout from the same graph) and does change bytes: on a
-        //bundle fetched from someone else's CID source — they live in the same LIBRARY tree the editor
-        //browses — pressing Publish would make its bytes stop matching the CID still advertising them.
-        if (Local)
-        {
-            std::string StampErr;
-            if (!PackageCatalog::StampNodePositions(PackageDir->path().toStdString(), Local, &StampErr))
-                LogWarn("PackageEditor", "could not stamp node positions (" + StampErr + ") — publishing "
-                                         "without them; the package will open unlaid-out for whoever gets it.");
-        }
-        const bool Ok = PackageCatalog::PublishPackage(PackageDir->path().toStdString(), Dest.toStdString(), &Err);
-        if (Ok)
-        {
-            Model->LoadNodes(); BuildUI();
-            //Per-package publish to your IPNS library: if this bundle is in YOUR OWN library (not a friend's mirrored
-            //source), offer to republish your signed index so the edit is live under your friend code. The heavy work
-            //(whole-library re-mint + a DHT put) MUST run off the GUI thread — so we REQUEST it via a signal that the
-            //opener wires to AppModel::publishLibraries (off-thread + correct Settings merge + persistence). The editor
-            //never blocks the UI or persists config itself. (An opener without an AppModel, e.g. the prelaunch window,
-            //simply doesn't connect it — publishing is then done from the Sharing tab.)
-            nlohmann::ordered_json *Cfg = Model->globalConfig();
-            const bool OwnLibrary = Cfg && PackageCatalog::IsPackageSourcePath(
-                                        *Cfg, std::filesystem::path(PackageDir->path().toStdString()));
-            //Only OFFER the publish when something is actually wired to carry it out — the signal is connected by an
-            //opener that has an AppModel (the Library tab), NOT by the prelaunch window. Prompting where nothing
-            //listens would emit into the void and then claim success — a silent no-op behind an explicit success
-            //message. Where it isn't connected, publishing is done from the Sharing tab instead.
-            const bool CanPublish = isSignalConnected(QMetaMethod::fromSignal(&PackageEditor::publishToLibraryRequested));
-            bool RequestedPublish = false;
-            if (OwnLibrary && CanPublish &&
-                QMessageBox::question(this, "Publish to your library",
-                    "Bundle dehydrated. Publish it to your friend-code library now so friends see the update?\n\n"
-                    "(This rebuilds your signed index and points your friend code at it — runs in the background; "
-                    "networking must be on. Watch the Sharing tab for the result.)",
-                    QMessageBox::Yes | QMessageBox::No, QMessageBox::Yes) == QMessageBox::Yes)
-            {
-                emit publishToLibraryRequested();
-                RequestedPublish = true;
-            }
-            if (RequestedPublish)
-                QMessageBox::information(this, "Publishing",
-                    "Publishing to your library in the background — the Sharing tab shows the result.");
-            else
-                QMessageBox::information(this, "Publish",
-                    Dest.isEmpty() ? "Bundle dehydrated (content seeded, CIDs written into the node files)."
-                                   : ("Bundle published.\nManifest-only copy exported to:\n" + Dest));
-        }
-        else QMessageBox::critical(this, "Publish", "Publish failed:\n" + QString::fromStdString(Err));
+    // ---- canvas | JSON + validation ----
+    Canvas = new PkgCanvasPanel(&Model->doc(), this);
+    PkgCanvas * C = Canvas->canvas();
+    C->setExternalLookup([this](const std::string & Cid) {
+        const auto E = Model->externalInfo(Cid);
+        return PkgCanvas::External{E.Label, E.Package, E.PackageDir};
     });
-
-    //Check package validity: on-demand node-graph validation (the regular launcher no longer validates per-launch).
-    //Can be slow for very large packages (deep chains) — that's fine as an explicit authoring action.
-    connect(ValidateBtn, &QPushButton::clicked, this, [this](){
-        QGuiApplication::setOverrideCursor(Qt::WaitCursor);
-        Model->Revalidate();
-        QGuiApplication::restoreOverrideCursor();
-        const int Errs = (int)Model->validationErrors().size(), Warns = (int)Model->validationWarnings().size();
-        if (!Errs && !Warns) QMessageBox::information(this, "Check Package Validity", "✓ No problems found.");
-        else QMessageBox::warning(this, "Check Package Validity",
-            QString("%1 error(s), %2 warning(s) — see the Validation panel below.").arg(Errs).arg(Warns));
+    C->setOffers([this] {
+        std::vector<PkgCanvas::Offer> Out;
+        for (const auto & O : Model->offers()) Out.push_back({O.Cid, O.Label, O.Package});
+        return Out;
     });
+    Actions = new PkgActions(Model, C, this, this);
 
-    //Fix case conflicts: canonicalize case-colliding zip entries in this bundle's higher-priority layers to the
-    //base layer's case (unpack→rename→repackage STORE) so patches/add-ons override cleanly on the case-sensitive mount.
-    connect(FixCaseBtn, &QPushButton::clicked, this, [this](){
-        if (!PackageDir) return;
-        Model->SaveNodes();
-        std::vector<std::string> Log;
-        const std::filesystem::path Scope = PackageDir->path().toStdString();   // only rewrite THIS bundle's zips
-        const int Fixed = ManifestModel::FixCaseConflicts(Model->BuildExecIndex(), Log, &Scope);
-        Model->Revalidate();
-        if (Fixed == 0) { QMessageBox::information(this, "Fix Case Conflicts", "No cross-layer case conflicts found in this package."); return; }
-        QString Report; for (const auto &L : Log) Report += QString::fromStdString(L) + "\n";
-        QMessageBox::information(this, "Fix Case Conflicts",
-            QString("Rewrote %1 zip(s) — case-colliding entries were renamed to the base layer's case.\n\n%2").arg(Fixed).arg(Report));
-    });
-
-    // The editing surface IS the graph. A node is one layer of one TYPE, so it draws as one box with pins and
-    // its payload inline — which is exactly what the two-tier model could not be rendered as (a node containing
-    // an ordered array has no pins to wire). The old tab-strip of per-node forms is gone.
-    //The save hook persists BOTH: the package (node files) and this machine's canvas positions (GlobalConfig EDITORLAYOUT).
-    //They are deliberately separate files — a drag must never rewrite package bytes.
-    Canvas = new PkgCanvasPanel(&Model->doc(), [this]{ Model->SaveNodes(); Model->SaveLayout(); }, this,
-                                &Model->layout(),
-                                //A drag changed no node file, so it saves only the positions. The full hook
-                                //rewrites every .json in the bundle, which for moving one box is pure waste.
-                                [this]{ Model->SaveLayout(); });
-    Canvas->canvas()->setKnownIds([this]{ return Model->KnownNodeIds(); });
-
-    // The canvas draws action buttons and reports clicks; PkgActions does everything that touches disk, spawns
-    // a process, opens a dialog or builds a runtime — which is what keeps the canvas headlessly testable.
-    Actions = new PkgActions(Model, Canvas->canvas(), this, this);
-    // QUEUED: an action opens file dialogs and confirmations. Even dispatched after the ImGui frame closes,
-    // running it inline would still sit inside paintGL's call stack; a queued connection puts it on a clean
-    // turn of the event loop instead.
-    connect(Canvas->canvas(), &PkgCanvas::nodeAction, Actions, &PkgActions::perform, Qt::QueuedConnection);
-    connect(Canvas->canvas(), &PkgCanvas::cancelRequested, Actions, &PkgActions::cancel);
-
-    // Right: the raw JSON of the selected node (unchanged — it is the escape hatch and it works), with the
-    // validation panel docked beneath it.
-    QWidget * RightPanel = new QWidget(this);
-    QVBoxLayout * RightLayout = new QVBoxLayout(RightPanel);
-    RightLayout->setContentsMargins(0, 0, 0, 0);
-    RightLayout->setSpacing(1);
-    Json = new JsonRawEditor(Model, RightPanel);
-    RightLayout->addWidget(Json, 1);
-    RightLayout->addWidget(new ValidationPanel(Model, RightPanel), 0);
-
+    QWidget * Right = new QWidget(this);
+    QVBoxLayout * RL = new QVBoxLayout(Right);
+    RL->setContentsMargins(0, 0, 0, 0);
+    QSplitter * RightSplit = new QSplitter(Qt::Vertical, Right);
+    Json = new JsonRawEditor(Model, RightSplit);
+    ValidationPanel * Val = new ValidationPanel(Model, RightSplit);
+    RightSplit->addWidget(Json);
+    RightSplit->addWidget(Val);
+    RightSplit->setStretchFactor(0, 1);
+    RL->addWidget(RightSplit);
     QSplitter * Split = new QSplitter(Qt::Horizontal, this);
     Split->addWidget(Canvas);
-    Split->addWidget(RightPanel);
+    Split->addWidget(Right);
     Split->setStretchFactor(0, 1);
     Split->setStretchFactor(1, 0);
-    Split->setSizes({ 1250, 470 });
-    MainLayout->addWidget(Split, 1);
+    Split->setSizes({1300, 420});
+    Split->setCollapsible(0, false);
+    Main->addWidget(Split, 1);
 
-    // Open the bundle (pick a dir if none was preselected), then point our working-doc/PackageDir aliases at the
-    // model's owned state so the existing BuildUI machinery reads them unchanged.
-    Model->initPackage(PreselectedPath, this);
-    MANIFESTJSON = &Model->doc();
-    PackageDir   = Model->packageDir();
-
-    // React to the model: structural change → rebuild tabs; validation update → repaint the panel; a disk write →
-    // relay to packageSaved (so library tiles / prelaunch dialogs reload).
-    connect(Model, &PackageEditorModel::documentReloaded, this, [this]{ BuildUI(); });
-    // Canvas selection → the JSON panel shows that node (selection-driven, live both ways).
-    connect(Canvas, &PkgCanvasPanel::nodeSelected, Json, &JsonRawEditor::showNode);
-    // A live JSON edit changed a node's CONTENT → rebuild the canvas graph cache + repaint, WITHOUT a shell
-    // rebuild (which would recreate the JSON panel mid-keystroke).
-    connect(Model, &PackageEditorModel::nodeContentChanged, this, [this]{
-        if (Canvas && Canvas->canvas()) { Canvas->canvas()->refreshFromDocument(); Canvas->update(); }
+    // ---- wiring ----
+    auto UpdateUndo = [this] {
+        UndoAct->setEnabled(Model->doc().CanUndo());
+        RedoAct->setEnabled(Model->doc().CanRedo());
+    };
+    connect(OpenAct, &QAction::triggered, this, [this] {
+        const QString D = QFileDialog::getExistingDirectory(this, "Open a package folder", bundleDir());
+        if (!D.isEmpty()) openPackage(D);
     });
+    connect(SaveAct, &QAction::triggered, this, [this] { save(); });
+    connect(UndoAct, &QAction::triggered, this, [this, UpdateUndo] { Canvas->canvas()->undo(); Canvas->requestFrame(); UpdateUndo(); });
+    connect(RedoAct, &QAction::triggered, this, [this, UpdateUndo] { Canvas->canvas()->redo(); Canvas->requestFrame(); UpdateUndo(); });
+    connect(ValidateAct, &QAction::triggered, this, [this] { validate(); });
+    connect(FixCaseAct, &QAction::triggered, this, [this] { fixCase(); });
+    connect(SeedAct, &QAction::triggered, this, [this] { seedAndShare(); });
+
+    connect(C, &PkgCanvas::selectionChanged, Json, &JsonRawEditor::showNode);
+    connect(C, &PkgCanvas::documentEdited, this, [this, UpdateUndo] { Model->noteEdited(); Json->refresh(); UpdateUndo(); });
+    connect(C, &PkgCanvas::saveRequested, this, [this] { save(); });
+    connect(C, &PkgCanvas::statusMessage, this, [this](const QString & T) { status(T); });
+    connect(C, &PkgCanvas::openPackageRequested, this, [this](const QString & D) { openPackage(D); });
+    connect(C, &PkgCanvas::nodeAction, Actions, &PkgActions::perform, Qt::QueuedConnection);
+    connect(C, &PkgCanvas::cancelRequested, Actions, &PkgActions::cancel);
+    connect(Val, &ValidationPanel::nodeClicked, this, [this](const QString & H) {
+        Canvas->canvas()->select(H.toStdString(), true);
+        Canvas->setFocus();
+        Canvas->requestFrame();
+    });
+    connect(Model, &PackageEditorModel::documentReloaded, this, [this, UpdateUndo] {
+        Canvas->canvas()->documentReset();
+        Canvas->canvas()->setIssues({});
+        Actions->refreshHints();
+        updateTitle();
+        UpdateUndo();
+        Canvas->requestFrame();
+    });
+    connect(Model, &PackageEditorModel::nodeContentChanged, this, [this, UpdateUndo] { Canvas->requestFrame(); UpdateUndo(); });
+    connect(Model, &PackageEditorModel::handlesRenamed, this, [this] { Canvas->canvas()->applyRenames(Model->lastRenames()); });
+    connect(Model, &PackageEditorModel::validationChanged, this, [this] {
+        Canvas->canvas()->setIssues(Model->validated() ? Model->issuesByHandle() : std::map<std::string, std::vector<std::string>>());
+        Canvas->requestFrame();
+        if (!Model->validated()) return;
+        const int E = (int)Model->validationErrors().size(), W = (int)Model->validationWarnings().size();
+        const QString Said = E || W ? QString("%1 error(s), %2 warning(s) - see the nodes marked ⚠").arg(E).arg(W) : QString("No problems found");
+        if (Said != LastVerdict || ValidationAsked) status(Said);   // a live re-check that found the same says nothing
+        LastVerdict = Said;
+        ValidationAsked = false;
+    });
+    connect(Model, &PackageEditorModel::dirtyChanged, this, [this, UpdateUndo] { updateTitle(); UpdateUndo(); });
     connect(Model, &PackageEditorModel::savedToDisk, this, &PackageEditor::packageSaved);
 
-    BuildUI();
-
+    Model->initPackage(PreselectedPath, this);
+    updateTitle();
+    UpdateUndo();
+    //Checked once on open, so problems are on the nodes from the start (it reads the library index, which the canvas
+    //needs for its external chips anyway).
+    QTimer::singleShot(0, this, [this] { validate(); });
 }
 
 PackageEditor::~PackageEditor()
@@ -233,116 +173,149 @@ PackageEditor::~PackageEditor()
     if (Live == this) Live = nullptr;
 }
 
-PackageEditor *PackageEditor::Live = nullptr;
+QString PackageEditor::bundleDir() const { return Model ? Model->packagePath() : QString(); }
 
-QString PackageEditor::bundleDir() const
-{
-    return Model ? Model->packagePath() : QString();
-}
-
-PackageEditor *PackageEditor::OpenFor(nlohmann::ordered_json *GlobalConfigJSON, QWidget *parent,
-                                      const QString &PackagePath, bool *Created)
+PackageEditor * PackageEditor::OpenFor(nlohmann::ordered_json * GlobalConfigJSON, QWidget * parent,
+                                       const QString & PackagePath, bool * Created)
 {
     if (Created) *Created = false;
     if (Live)
     {
-        const QString Open = Live->bundleDir();
-        if (!PackagePath.isEmpty() && !Open.isEmpty() && QDir(Open) != QDir(PackagePath))
-            QMessageBox::information(parent, "Package Editor",
-                "The package editor is already open on:\n\n" + Open +
-                "\n\nClose it before opening another bundle - the blueprint canvas can only run one at a time.");
+        //One canvas at a time: an open editor switches to the asked-for package (asking about unsaved edits first).
+        if (!PackagePath.isEmpty() && QDir(Live->bundleDir()) != QDir(PackagePath)) Live->openPackage(PackagePath);
         Live->show();
         Live->raise();
         Live->activateWindow();
         return Live;
     }
-    auto *Ed = new PackageEditor(GlobalConfigJSON, parent, PackagePath);
+    auto * Ed = new PackageEditor(GlobalConfigJSON, parent, PackagePath);
+    Ed->setAttribute(Qt::WA_DeleteOnClose);
     Live = Ed;
     if (Created) *Created = true;
     Ed->show();
     return Ed;
 }
 
-
-
-
-
-
-
-
-
-
-
-// ============================================================================
-// UI
-// ============================================================================
-
-bool PackageEditor::BuildUI()
+void PackageEditor::updateTitle()
 {
-    Model->Revalidate();
-    if (!Canvas) return true;
-    // Validation findings are attached to the node they are ABOUT, so a problem is drawn on the node that is
-    // wrong instead of in a report you have to correlate by hand. Messages are tagged "node '<id>': …".
-    std::vector<std::pair<std::string, std::string>> Issues;
-    auto Attach = [&Issues](const std::vector<std::string> &Msgs) {
-        for (const std::string &M : Msgs)
-        {
-            const size_t A = M.find("node '");
-            if (A == std::string::npos) continue;
-            const size_t B = M.find('\'', A + 6);
-            if (B == std::string::npos) continue;
-            const std::string Id = M.substr(A + 6, B - (A + 6));
-            std::string Text = M.substr(B + 1);
-            if (Text.rfind(": ", 0) == 0) Text = Text.substr(2);
-            Issues.emplace_back(Id, Text);
-        }
-    };
-    Attach(Model->validationErrors());
-    Attach(Model->validationWarnings());
-    Canvas->canvas()->invalidateGraph();   // the document may have changed under the cached graph
-    Canvas->canvas()->setIssues(Issues);
-    if (Actions) Actions->refreshHints();
-    Canvas->update();
+    const QString Dir = bundleDir();
+    const QString Name = Dir.isEmpty() ? QString("no package") : QDir(Dir).dirName();
+    setWindowTitle((Model->isDirty() ? QString("● ") : QString()) + Name + " - Package Editor");
+    SaveAct->setEnabled(!Dir.isEmpty());
+    SaveAct->setText(Model->isDirty() ? "Save ●" : "Save");
+}
+
+void PackageEditor::status(const QString & Text, int Ms)
+{
+    StatusText->setText(Text);
+    QTimer::singleShot(Ms, StatusText, [L = StatusText, Text] { if (L->text() == Text) L->clear(); });
+}
+
+bool PackageEditor::save()
+{
+    if (bundleDir().isEmpty()) return false;
+    QGuiApplication::setOverrideCursor(Qt::WaitCursor);
+    QString Err;
+    const bool Ok = Model->Save(&Err);
+    QGuiApplication::restoreOverrideCursor();
+    if (!Ok) { QMessageBox::warning(this, "Save", "The package was not saved:\n\n" + Err); return false; }
+    status("Saved");
+    Canvas->requestFrame();
+    validate();
     return true;
 }
 
-//Selects the node with this NODE_ID on the canvas.
-void PackageEditor::SelectNodeTab(const std::string & NodeId)
+bool PackageEditor::maybeSave(const QString & Why)
 {
-    if (!Canvas) return;
-    const int I = Canvas->canvas()->indexOf(NodeId);
-    if (I >= 0) { Canvas->canvas()->selectNode(I); Canvas->update(); }
+    if (!Model->isDirty()) return true;
+    const auto B = QMessageBox::question(this, "Unsaved changes",
+        "This package has unsaved changes. Save them before " + Why + "?",
+        QMessageBox::Save | QMessageBox::Discard | QMessageBox::Cancel, QMessageBox::Save);
+    if (B == QMessageBox::Cancel) return false;
+    if (B == QMessageBox::Save) return save();
+    return true;
 }
 
-// ============================================================================
-// Field-change slots
-// ============================================================================
+void PackageEditor::closeEvent(QCloseEvent * E)
+{
+    if (!maybeSave("closing")) { E->ignore(); return; }
+    E->accept();
+}
 
+void PackageEditor::reject()
+{
+    if (maybeSave("closing")) QDialog::reject();
+}
 
+void PackageEditor::openPackage(const QString & Dir)
+{
+    if (QDir(Dir) == QDir(bundleDir())) return;
+    if (!maybeSave("opening another package")) return;
+    Model->initPackage(Dir, this);
+    QTimer::singleShot(0, this, [this] { validate(); });
+}
 
+void PackageEditor::validate()
+{
+    if (bundleDir().isEmpty()) return;
+    status("Checking the package...");
+    ValidationAsked = true;
+    Model->validateNow();                                 // the result arrives as validationChanged
+}
 
-// ============================================================================
-// LAYERS — add-actions
-// ============================================================================
+void PackageEditor::fixCase()
+{
+    if (bundleDir().isEmpty()) return;
+    if (Model->isDirty() && !save()) return;
+    std::vector<std::string> Log;
+    const std::filesystem::path Scope = bundleDir().toStdString();
+    QGuiApplication::setOverrideCursor(Qt::WaitCursor);
+    const int Fixed = ManifestModel::FixCaseConflicts(Model->BuildExecIndex(), Log, &Scope);
+    QGuiApplication::restoreOverrideCursor();
+    validate();
+    if (Fixed == 0) { QMessageBox::information(this, "Fix case collisions", "No cross-layer case collisions in this package."); return; }
+    QString Report;
+    for (const auto & L : Log) Report += QString::fromStdString(L) + "\n";
+    QMessageBox::information(this, "Fix case collisions",
+        QString("Rewrote %1 zip(s): entries that collided only by case now use the lower layer's case.\n\n%2").arg(Fixed).arg(Report));
+}
 
-
-
-
-
-
-
-// ============================================================================
-// Authoring execute (native node engine)
-// ============================================================================
-
-
-
-
-
-// ============================================================================
-// META — cover drop
-// ============================================================================
-
-
-
-
+void PackageEditor::seedAndShare()
+{
+    if (bundleDir().isEmpty()) return;
+    const std::filesystem::path Pkg = bundleDir().toStdString();
+    PackageCatalog::SeedReport R;
+    QGuiApplication::setOverrideCursor(Qt::WaitCursor);
+    PkgDoc::Document & D = Model->doc();
+    for (int I = 0; I < D.Count(); ++I)
+    {
+        json N = D.Node(I);
+        bool Changed = false;
+        std::string Err;
+        if (!PackageCatalog::SeedNodeContent(N, Pkg, R, Changed, &Err))
+        {
+            QGuiApplication::restoreOverrideCursor();
+            QMessageBox::warning(this, "Seed & share", QString::fromStdString(Err));
+            return;
+        }
+        if (Changed) D.Replace(I, std::move(N));
+    }
+    D.Commit();
+    Model->notifyNodeChanged();
+    QGuiApplication::restoreOverrideCursor();
+    if (!save()) return;
+    QString Summary = QString("%1 of %2 file(s) newly seeded, %3 cover(s).").arg(R.Seeded).arg(R.Walked).arg(R.Covers);
+    if (!R.Unfetchable.empty()) Summary += QString("\n\n%1 layer(s) name a file that is not here - they cannot be fetched.").arg(R.Unfetchable.size());
+    if (!R.Unshareable.empty()) Summary += QString("\n\n%1 DIR layer(s) are local only - convert them to zips to share them.").arg(R.Unshareable.size());
+    nlohmann::ordered_json * Cfg = Model->globalConfig();
+    const bool OwnLibrary = Cfg && PackageCatalog::IsPackageSourcePath(*Cfg, Pkg);
+    const bool CanPublish = isSignalConnected(QMetaMethod::fromSignal(&PackageEditor::publishToLibraryRequested));
+    if (OwnLibrary && CanPublish &&
+        QMessageBox::question(this, "Seed & share", Summary + "\n\nPublish your library now, so friends see the update?",
+                              QMessageBox::Yes | QMessageBox::No, QMessageBox::Yes) == QMessageBox::Yes)
+    {
+        emit publishToLibraryRequested();
+        status("Publishing in the background - the Sharing tab shows the result", 8000);
+    }
+    else QMessageBox::information(this, "Seed & share", Summary);
+}

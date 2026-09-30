@@ -238,7 +238,8 @@ void Compute(Graph &G, const Options &O)
     };
     const int Low  = std::max(1, (int)std::floor(Ideal));
     const int High = std::max(1, (int)std::ceil(Ideal));
-    const int BandBudget = (Badness(High) < Badness(Low)) ? High : Low;
+    const int BandBudget = TotalColumns <= (long long)O.MaxUnwrappedColumns ? (int)std::max(1LL, TotalColumns)
+                         : (Badness(High) < Badness(Low)) ? High : Low;
 
     const double ColumnW = (double)O.ColumnStep;
 
@@ -263,6 +264,7 @@ void Compute(Graph &G, const Options &O)
     float BandTop = O.OriginY;
     int   ColumnInBand = 0;
     float TallestInBand = 0.0f;
+    std::vector<char> Placed((size_t)N, 0);
 
     for (size_t D = 0; D < Layers.size(); ++D)
     {
@@ -289,8 +291,24 @@ void Compute(Graph &G, const Options &O)
             {
                 PkgGraph::Node &Nd = G.Nodes[(size_t)Idx];
                 Nd.X = O.OriginX + (float)((double)(ColumnInBand + C) * ColumnW);
+                const float H = Pitch[(size_t)Idx] - O.RowGap;
+                //Level with its parents already placed in THIS band (to its left): the mean of their centres —
+                //never above the node over it in its column, which is what keeps the column free of overlaps.
+                if (O.AlignToParents)
+                {
+                    double Sum = 0.0; int Count = 0;
+                    for (int P : A.Parents[(size_t)Idx])
+                    {
+                        if (!Placed[(size_t)P] || G.Nodes[(size_t)P].Y < BandTop) continue;
+                        Sum += (double)G.Nodes[(size_t)P].Y + (double)(Pitch[(size_t)P] - O.RowGap) * 0.5;
+                        ++Count;
+                    }
+                    if (Count) Y = std::max(Y, (float)(Sum / Count) - H * 0.5f);
+                }
                 Nd.Y = Y;
+                Placed[(size_t)Idx] = 1;
                 Y += Pitch[(size_t)Idx];
+                TallestInBand = std::max(TallestInBand, Y - BandTop);
                 //HasPos stays as it was on purpose: it means "somebody DECLARED this position" (a node's POS
                 //or this machine's override), which is what tells the canvas there is nothing to persist. A
                 //computed position is a default the reader made up, so it must not masquerade as a declared one.

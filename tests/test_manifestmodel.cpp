@@ -733,3 +733,29 @@ TEST(deciding_mentions_are_the_ones_whose_position_picks_a_winner)
     const Fold::Plan P3 = Fold::Resolve(L, "v3");
     CHECK(P3.Seq.size() == 2 && P3.Seq[0].Payload == "v.zip" && P3.Seq[1].Payload == "a.zip");
 }
+
+// A published (generation-6) package names each node by its file, <cid>.json; the node carries no "CID" field. The
+// scan keys it by that name, so two nodes sharing a LABEL are both indexed and a reference by CID resolves. Teeth:
+// ignore the file name (key by LABEL) — the second "Soundtrack" is dropped and the reference dangles.
+TEST(scan_names_a_published_node_by_its_file)
+{
+    namespace fs = std::filesystem;
+    const fs::path D = fs::temp_directory_path() / "vg_scan_gen6";
+    fs::remove_all(D); fs::create_directories(D);
+    auto Put = [&](const ordered_json &N) {
+        const std::string C = Cid::OfNode(N);
+        std::ofstream(D / (C + ".json"), std::ios::binary) << Cid::Canonical(N);
+        return C;
+    };
+    const std::string A = Put({{"LABEL", "Soundtrack"}, {"LAYERS", ordered_json::array({ {{"ZIP", "a.zip"}} })}});
+    const std::string B = Put({{"LABEL", "Soundtrack"}, {"LAYERS", ordered_json::array({ {{"ZIP", "b.zip"}} })}});
+    const std::string G = Put({{"LABEL", "Game"}, {"LAYERS", ordered_json::array({ {{"NODE", A}}, {{"ENV", {{"X", "1"}}}} })}});
+    NodeIndex Idx;
+    ManifestModel::ScanBundleNodes(D, Idx);
+    CHECK_EQ(Idx.Nodes.size(), (size_t)3);
+    CHECK(Idx.Find(A) && Idx.Find(B) && Idx.Find(G));
+    std::vector<std::string> Missing;
+    const auto Order = ManifestModel::Closure(Idx, G, &Missing);
+    CHECK(Missing.empty());
+    CHECK(std::find(Order.begin(), Order.end(), A) != Order.end());
+}

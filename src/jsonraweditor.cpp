@@ -1,13 +1,9 @@
 #include "jsonraweditor.h"
 #include "packageeditormodel.h"
 
-#include <QComboBox>
-#include <QHBoxLayout>
+#include <QFontDatabase>
 #include <QLabel>
-#include <QMessageBox>
-#include <QPushButton>
-#include <QSignalBlocker>
-#include <QTextEdit>
+#include <QPlainTextEdit>
 #include <QTimer>
 #include <QVBoxLayout>
 
@@ -16,103 +12,106 @@ using json = nlohmann::ordered_json;
 JsonRawEditor::JsonRawEditor(PackageEditorModel * model, QWidget * parent)
     : QWidget(parent), Model(model)
 {
-    QVBoxLayout * Layout = new QVBoxLayout(this);
-
-    QHBoxLayout * FileRow = new QHBoxLayout();
-    FileRow->addWidget(new QLabel("Node:", this));
-    FileCombo = new QComboBox(this);
-    FileRow->addWidget(FileCombo, 1);
-    Layout->addLayout(FileRow);
-
-    Text = new QTextEdit(this);
-    Layout->addWidget(Text);
-    connect(Text, &QTextEdit::textChanged, this, &JsonRawEditor::onTextChanged);
-
-    SaveBtn = new QPushButton("Apply now", this);   // live apply is automatic; this is just an immediate flush
-    Layout->addWidget(SaveBtn);
-    connect(SaveBtn, &QPushButton::clicked, this, &JsonRawEditor::onSavePressed);
-
-    // Live apply: a valid edit flows to the node after a short debounce — no Save click, and the canvas repaints.
+    QVBoxLayout * L = new QVBoxLayout(this);
+    L->setContentsMargins(6, 6, 6, 6);
+    L->setSpacing(4);
+    Title = new QLabel(this);
+    Title->setTextInteractionFlags(Qt::TextSelectableByMouse);
+    Title->setWordWrap(true);
+    L->addWidget(Title);
+    Text = new QPlainTextEdit(this);
+    Text->setFont(QFontDatabase::systemFont(QFontDatabase::FixedFont));
+    Text->setLineWrapMode(QPlainTextEdit::NoWrap);
+    Text->setTabStopDistance(4 * Text->fontMetrics().horizontalAdvance(' '));
+    L->addWidget(Text, 1);
+    Status = new QLabel(this);
+    Status->setWordWrap(true);
+    L->addWidget(Status);
     ApplyTimer = new QTimer(this);
     ApplyTimer->setSingleShot(true);
     connect(ApplyTimer, &QTimer::timeout, this, &JsonRawEditor::onApplyTimeout);
-
-    rebuildCombo();
-    // Structural change (a node added/removed) → refresh the node list, preserving the current pick by id.
-    connect(Model, &PackageEditorModel::documentReloaded, this, &JsonRawEditor::rebuildCombo);
-    connect(FileCombo, &QComboBox::currentIndexChanged, this, &JsonRawEditor::refreshText);
-    // A disk write elsewhere → re-show the current node's JSON, UNLESS it was our own live apply (which would
-    // otherwise reset the cursor mid-type).
-    connect(Model, &PackageEditorModel::savedToDisk, this, &JsonRawEditor::refreshText);
-    refreshText();
+    connect(Text, &QPlainTextEdit::textChanged, this, &JsonRawEditor::onTextChanged);
+    if (Model)
+    {
+        connect(Model, &PackageEditorModel::documentReloaded, this, [this] { showNode(QString()); });
+        connect(Model, &PackageEditorModel::nodeContentChanged, this, &JsonRawEditor::refresh);
+        connect(Model, &PackageEditorModel::handlesRenamed, this, [this] {
+            const auto & R = Model->lastRenames();
+            if (const auto It = R.find(Handle); It != R.end()) Handle = It->second;
+            refresh();
+        });
+    }
+    showNode(QString());
 }
 
-void JsonRawEditor::refreshText()
+void JsonRawEditor::showNode(const QString & H)
 {
-    if (!Text || !FileCombo || ApplyingLocally) return;
-    const int Idx = FileCombo->currentIndex();
-    QSignalBlocker B(Text);
-    const auto & Nodes = Model->doc()["NODES"];
-    if (Idx < 0 || Idx >= (int)Nodes.size()) { Text->setText("{}"); return; }
-    json Out = Nodes[Idx]; Out.erase("__FILE__");
-    Text->setText(QString::fromStdString(Out.dump(4)));
+    if (ApplyTimer->isActive()) { ApplyTimer->stop(); onApplyTimeout(); }   // a pending edit lands on the node it was for
+    Handle = H.toStdString();
+    Shown.clear();
+    refresh();
 }
 
-void JsonRawEditor::showNode(const QString & nodeId)
+void JsonRawEditor::refresh()
 {
-    if (!FileCombo) return;
-    int Idx = FileCombo->findText(nodeId);
-    if (Idx < 0) { rebuildCombo(); Idx = FileCombo->findText(nodeId); }
-    if (Idx < 0) return;
-    if (Idx == FileCombo->currentIndex()) { refreshText(); return; }
-    QSignalBlocker B(FileCombo);
-    FileCombo->setCurrentIndex(Idx);
-    refreshText();
+    if (Applying || !Model) return;
+    const int I = Handle.empty() ? -1 : Model->doc().IndexOf(Handle);
+    if (I < 0)
+    {
+        Title->setText("<span style='color:#888'>Select a node on the canvas to see and edit its JSON.</span>");
+        Text->blockSignals(true); Text->setPlainText(QString()); Text->blockSignals(false);
+        Text->setEnabled(false);
+        Status->clear();
+        Shown.clear();
+        return;
+    }
+    Text->setEnabled(true);
+    const json & N = Model->doc().Node(I);
+    const std::string Label = N.is_object() && N.contains("LABEL") && N["LABEL"].is_string() ? N["LABEL"].get<std::string>() : std::string();
+    const bool Draft = Handle.rfind("draft-", 0) == 0;
+    Title->setText("<b>" + QString::fromStdString(Label.empty() ? std::string("(unnamed)") : Label).toHtmlEscaped() + "</b><br>"
+                   "<span style='color:#888'>" + (Draft ? QString("new - named when the package is saved")
+                                                        : QString::fromStdString(Handle)) + "</span>");
+    const std::string Now = N.dump(2);
+    //Changed elsewhere (the canvas, an undo) while not being typed into: show the new content.
+    if (Now != Shown && !Text->hasFocus())
+    {
+        Text->blockSignals(true);
+        Text->setPlainText(QString::fromStdString(Now));
+        Text->blockSignals(false);
+        Shown = Now;
+        Status->clear();
+        Text->setStyleSheet(QString());
+    }
 }
 
 void JsonRawEditor::onTextChanged()
 {
-    if (!Text || !SaveBtn) return;
-    const bool Valid = json::accept(Text->toPlainText().toUtf8());
-    Text->setStyleSheet(Valid ? "" : "background-color:#58111A; color: white;");
-    SaveBtn->setDisabled(!Valid);
-    if (Valid && ApplyTimer) ApplyTimer->start(300);   // debounced live apply
+    const QByteArray Data = Text->toPlainText().toUtf8();
+    const bool Valid = json::accept(Data);
+    Text->setStyleSheet(Valid ? QString() : QString("QPlainTextEdit{background-color:#3a1418;}"));
+    if (!Valid)
+    {
+        //Say where, not just that: the parser's own message has the line and column.
+        try { const json Probe = json::parse(Data); (void)Probe; }
+        catch (const json::parse_error & E) { Status->setText("<span style='color:#e07070'>" + QString(E.what()).toHtmlEscaped() + "</span>"); }
+        ApplyTimer->stop();
+        return;
+    }
+    Status->setText("<span style='color:#888'>applying...</span>");
+    ApplyTimer->start(350);
 }
 
 void JsonRawEditor::onApplyTimeout()
 {
-    const int Idx = FileCombo ? FileCombo->currentIndex() : -1;
-    if (Idx < 0 || Idx >= (int)Model->doc()["NODES"].size()) return;
+    if (!Model || Handle.empty()) return;
     const QByteArray Data = Text->toPlainText().toUtf8();
-    if (!json::accept(Data)) return;   // still invalid — do not write (red style already shown)
-    ApplyingLocally = true;
-    Model->updateNodeLive(Idx, json::parse(Data));   // content edit: canvas repaints, no shell rebuild
-    ApplyingLocally = false;
-}
-
-void JsonRawEditor::onSavePressed()
-{
-    const int Idx = FileCombo ? FileCombo->currentIndex() : -1;
-    if (Idx < 0 || Idx >= (int)Model->doc()["NODES"].size()) return;
-    QByteArray Data = Text->toPlainText().toUtf8();
-    if (!json::accept(Data)) { QMessageBox::warning(this, "Apply", "Invalid JSON — not applied."); return; }
-    ApplyingLocally = true;
-    Model->updateNodeLive(Idx, json::parse(Data));    // preserves __FILE__, saves, repaints — no widget rebuild
-    ApplyingLocally = false;
-}
-
-void JsonRawEditor::rebuildCombo()
-{
-    if (!FileCombo) return;
-    const QString Keep = FileCombo->currentText();
-    QSignalBlocker B(FileCombo);
-    FileCombo->clear();
-    const auto & Nodes = Model->doc()["NODES"];
-    for (int n = 0; n < (int)Nodes.size(); n++)
-    {
-        const std::string Id = (Nodes[n].contains("LABEL") && Nodes[n]["LABEL"].is_string()) ? Nodes[n]["LABEL"].get<std::string>() : std::string();
-        FileCombo->addItem(QString::fromStdString(Id.empty() ? ("node " + std::to_string(n + 1)) : Id));
-    }
-    const int K = FileCombo->findText(Keep);
-    FileCombo->setCurrentIndex(K >= 0 ? K : (FileCombo->count() ? 0 : -1));
+    if (!json::accept(Data)) return;
+    json N = json::parse(Data);
+    if (!N.is_object()) { Status->setText("<span style='color:#e07070'>A node is a JSON object.</span>"); return; }
+    Applying = true;
+    Model->replaceNode(Handle, N);
+    Applying = false;
+    Shown = N.dump(2);
+    Status->setText("<span style='color:#6c6'>applied (Ctrl+Z on the canvas undoes it)</span>");
 }

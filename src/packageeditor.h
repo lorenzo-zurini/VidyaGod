@@ -2,71 +2,63 @@
 #define PACKAGEEDITOR_H
 
 #include <QDialog>
-#include <QDir>
 #include <QString>
 
 #include "nlohmann/json.hpp"
 
-// ---------------------------------------------------------------------------
-// PackageEditor — the node-native bundle editor ("everything is a node"), a THIN COMPOSITION ROOT. A bundle is a
-// directory of <node_id>.json files; the dialog frames the blueprint CANVAS (the editing surface) beside the raw
-// JSON view and a docked ValidationPanel. The canvas edits the same document the model persists, so a wire
-// dragged on screen is a PARENTS entry on disk and nothing has to be kept in sync. All state and logic live in
-// PackageEditorModel (the working { "NODES":[...] } document, node I/O, validation, catalog/exec queries, the
-// authoring runs); the editor owns the model, rebuilds its tabs on documentReloaded, and relays savedToDisk →
-// packageSaved. The per-concern widgets talk only to the model — never to each other or back to this shell.
-// ---------------------------------------------------------------------------
 class PackageEditorModel;
-class JsonRawEditor;   // the state/signal hub (packageeditormodel.h) — owned by PackageEditor
-class PkgCanvasPanel;       // the blueprint canvas — the editing surface
-class PkgActions;           // performs the node actions the canvas asks for
+class JsonRawEditor;
+class PkgCanvasPanel;
+class PkgActions;
+class QAction;
+class QLabel;
+class QSplitter;
 
+// ---------------------------------------------------------------------------
+// PackageEditor — the package editor window: the node canvas, the selected node's JSON, validation, and the
+// package-level commands (open, save, undo/redo, validate, fix case collisions, seed & share). One at a time (the
+// canvas's Dear ImGui context is global) — OpenFor is the door.
+// ---------------------------------------------------------------------------
 class PackageEditor : public QDialog
 {
     Q_OBJECT
 
 public:
-    //If PackagePath is non-empty, the directory picker is skipped and that bundle is opened directly.
-    explicit PackageEditor(nlohmann::ordered_json * GlobalConfigJSON, QWidget *parent = nullptr, const QString &PackagePath = "");
-    ~PackageEditor();
+    explicit PackageEditor(nlohmann::ordered_json * GlobalConfigJSON, QWidget * parent = nullptr, const QString & PackagePath = "");
+    ~PackageEditor() override;
 
-    //THE way to open the editor. The canvas is Dear ImGui, which has ONE global context — a second editor
-    //therefore cannot render, and used to appear as a blank/garbage widget with the reason only in the log.
-    //So there is one editor: this raises the open one (saying so when it holds a different bundle) instead of
-    //constructing a second that cannot work. Returns the live editor, or nullptr if the user cancelled the
-    //directory picker. Ownership is the parent's, as before.
-    //`Created` (optional) reports whether this call constructed the editor, so a caller only wires its
-    //signals once - raising the existing editor must not stack another copy of the same connection.
-    static PackageEditor *OpenFor(nlohmann::ordered_json *GlobalConfigJSON, QWidget *parent = nullptr,
-                                  const QString &PackagePath = "", bool *Created = nullptr);
-    //The bundle directory this editor has open ("" until one is chosen).
+    static PackageEditor * OpenFor(nlohmann::ordered_json * GlobalConfigJSON, QWidget * parent = nullptr,
+                                   const QString & PackagePath = "", bool * Created = nullptr);
     QString bundleDir() const;
 
 signals:
-    //Emitted whenever the bundle's node files are written to disk, so open library tiles / prelaunch dialogs
-    //can reload and re-render. Carries the bundle directory path.
-    void packageSaved(const QString &PackagePath);
-    //Emitted when the author asks to publish the just-dehydrated package to their IPNS library. The opener wires this
-    //to AppModel::publishLibraries (off-thread re-mint + DHT put); an opener without an AppModel leaves it unconnected.
+    void packageSaved(const QString & PackagePath);
     void publishToLibraryRequested();
 
+protected:
+    void closeEvent(QCloseEvent * E) override;
+    void reject() override;                       // Esc: close through the same unsaved-changes question
+
 private:
-    static PackageEditor *Live;      // the one open editor, or null
+    bool save();
+    bool maybeSave(const QString & Why);          // unsaved changes: save / discard / cancel. False = cancelled
+    void openPackage(const QString & Dir);
+    void validate();
+    void fixCase();
+    void seedAndShare();
+    void updateTitle();
+    void status(const QString & Text, int Ms = 5000);
 
-    //Re-validates and pushes the per-node findings onto the canvas. Called on documentReloaded.
-    bool BuildUI();
-    //Selects the node with this NODE_ID on the canvas.
-    void SelectNodeTab(const std::string & NodeId);
+    static PackageEditor * Live;                  // the one open editor, or null
 
-    QDir *           PackageDir = nullptr;             // non-owning alias of Model->packageDir()
-    PkgCanvasPanel * Canvas  = nullptr;                // the editing surface
-    JsonRawEditor  * Json    = nullptr;                // the live, selection-driven raw-JSON panel
-    PkgActions *     Actions = nullptr;                // node-action executor
-
-    //The state/signal hub: owns the working document, node I/O, validation, authoring. PackageEditor is the thin
-    //composition root over it; MANIFESTJSON is a non-owning alias of Model->doc() for the BuildUI tab loop.
-    PackageEditorModel *     Model = nullptr;
-    nlohmann::ordered_json * MANIFESTJSON = nullptr;
+    PackageEditorModel * Model  = nullptr;
+    PkgCanvasPanel *     Canvas = nullptr;
+    JsonRawEditor *      Json   = nullptr;
+    PkgActions *         Actions = nullptr;
+    QLabel *             StatusText = nullptr;
+    QString              LastVerdict;                 // the validation summary last shown
+    bool                 ValidationAsked = false;     // Validate was pressed: say the result even if unchanged
+    QAction *            SaveAct = nullptr, * UndoAct = nullptr, * RedoAct = nullptr;
 };
 
 #endif // PACKAGEEDITOR_H

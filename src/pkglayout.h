@@ -47,6 +47,12 @@ struct Options
     //Target width/height of the finished drawing. Bands are chosen to approach it, so a graph that is mostly
     //depth (Minecraft) and one that is mostly breadth both land on a readable rectangle.
     float TargetAspect = 16.0f / 9.0f;
+    //A drawing this many columns wide or less is never wrapped into bands: wrapping exists for the pathological
+    //shapes (a 904-layer chain), and on an ordinary package it throws its deepest nodes under the rest, wires and all.
+    int   MaxUnwrappedColumns = 16;
+    //Place each node level with what it connects to on its left (the mean centre of its parents), pushed down only
+    //as far as the node above it in its column requires. Off: every column simply stacks from the band's top.
+    bool  AlignToParents = true;
 };
 
 //Assigns X/Y to EVERY node in G (including ones that already carry a position — callers decide what to keep).

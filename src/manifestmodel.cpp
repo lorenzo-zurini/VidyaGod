@@ -100,13 +100,24 @@ bool ParseNode(const nlohmann::ordered_json &J, const std::filesystem::path &Fil
     if (!IsNodeObject(J)) return false;
     Out = Node{};
     Out.Cid       = (J.contains("CID") && J["CID"].is_string()) ? J["CID"].get<std::string>() : std::string();
+    //A published (generation-6) node carries no "CID": it is NAMED by one — its file is <cid>.json. Without this every
+    //such node fell back to its LABEL as its key, so the references between them (all CIDs) dangled and two nodes
+    //sharing a LABEL collided.
+    if (Out.Cid.empty())
+    {
+        const std::string Stem = File.stem().string();
+        bool Cidish = Stem.size() >= 50 && Stem.rfind("bafk", 0) == 0;
+        for (char C : Stem) if (!((C >= 'a' && C <= 'z') || (C >= '2' && C <= '7'))) Cidish = false;
+        if (Cidish) Out.Cid = Stem;
+    }
     Out.NodeId    = (J.contains("LABEL") && J["LABEL"].is_string()) ? J["LABEL"].get<std::string>() : std::string();
     Out.File      = File;
     Out.BundleDir = BundleDir;
     Out.Json      = J;
     Out.Layers    = nlohmann::ordered_json::array();
     Out.Entries   = nlohmann::ordered_json::object();
-    Out.LowerError = NodeLower::CheckNode(J, Out.NodeId.empty() ? Out.Cid : Out.NodeId);
+    //Named by its KEY (its CID), the label alongside: a message must name exactly one node, and labels repeat.
+    Out.LowerError = Out.Cid.empty() ? NodeLower::CheckNode(J, Out.NodeId) : NodeLower::CheckNode(J, Out.Cid, Out.NodeId);
     Out.Refs = NodeRefs(J, &Out.Requires);
     if (!Out.LowerError.empty())
     {

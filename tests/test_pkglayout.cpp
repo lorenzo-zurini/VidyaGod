@@ -82,6 +82,24 @@ ordered_json Fan(int N)
     return A;
 }
 
+
+//The graph the canvas lays out: nodes by their fixture "CID" (their handle), heights given ("_H", else a folded node's
+//180) — heights come from the renderer now, so a layout test states them — then PkgLayout.
+PkgGraph::Graph Lay(const ordered_json &Arr, const PkgLayout::Options &O = {})
+{
+    std::vector<PkgGraph::NodeRef> Refs;
+    std::vector<std::string> Handles;
+    Handles.reserve(Arr.size());
+    for (size_t I = 0; I < Arr.size(); ++I)
+        Handles.push_back(Arr[I].is_object() && Arr[I].contains("CID") && Arr[I]["CID"].is_string() ? Arr[I]["CID"].get<std::string>() : "#" + std::to_string(I));
+    for (size_t I = 0; I < Arr.size(); ++I) Refs.push_back({Handles[I], &Arr[I]});
+    PkgGraph::Graph G = PkgGraph::Build(Refs);
+    for (size_t I = 0; I < Arr.size(); ++I)
+        G.Nodes[I].Height = Arr[I].is_object() && Arr[I].contains("_H") ? Arr[I]["_H"].get<float>() : 180.0f;
+    PkgLayout::Compute(G, O);
+    return G;
+}
+
 struct Extent { float W = 0, H = 0; };
 
 Extent ExtentOf(const PkgGraph::Graph &G)
@@ -113,8 +131,8 @@ size_t DistinctPoints(const PkgGraph::Graph &G)
 TEST(layout_is_deterministic_across_runs)
 {
     const ordered_json Doc = Chain(200);
-    PkgGraph::Graph A = PkgGraph::Build(Doc);
-    PkgGraph::Graph B = PkgGraph::Build(Doc);
+    PkgGraph::Graph A = Lay(Doc);
+    PkgGraph::Graph B = Lay(Doc);
     CHECK_EQ(A.Nodes.size(), B.Nodes.size());
     for (size_t I = 0; I < A.Nodes.size(); ++I)
     {
@@ -130,7 +148,7 @@ TEST(layout_is_deterministic_across_runs)
 TEST(a_904_layer_chain_does_not_draw_as_a_ribbon)
 {
     //Minecraft: 904 layers, ~3 nodes wide. One column per layer is 388,720 px across — the wrap is the point.
-    PkgGraph::Graph G = PkgGraph::Build(Chain(904));
+    PkgGraph::Graph G = Lay(Chain(904));
     const Extent E = ExtentOf(G);
     CHECK(E.W > 0);
     CHECK(E.H > 0);
@@ -144,7 +162,7 @@ TEST(a_904_layer_chain_does_not_draw_as_a_ribbon)
 
 TEST(a_1000_wide_layer_wraps_into_a_block)
 {
-    PkgGraph::Graph G = PkgGraph::Build(Fan(1000));
+    PkgGraph::Graph G = Lay(Fan(1000));
     const Extent E = ExtentOf(G);
     //1000 stacked rows would be 299,700 px tall.
     CHECK(E.H < 1000.0f * 300.0f / 4.0f);
@@ -160,7 +178,7 @@ TEST(no_two_nodes_share_a_point)
 {
     for (const ordered_json &Doc : {Chain(904), Fan(1000), Chain(3), Fan(17)})
     {
-        PkgGraph::Graph G = PkgGraph::Build(Doc);
+        PkgGraph::Graph G = Lay(Doc);
         CHECK_EQ(DistinctPoints(G), G.Nodes.size());
     }
 }
@@ -171,7 +189,7 @@ TEST(no_two_nodes_share_a_point)
 
 TEST(a_parent_is_never_drawn_right_of_its_child_within_a_band)
 {
-    PkgGraph::Graph G = PkgGraph::Build(Chain(50));
+    PkgGraph::Graph G = Lay(Chain(50));
     for (const auto &L : G.Links)
     {
         if (L.ParentIndex < 0) continue;
@@ -198,11 +216,11 @@ TEST(ordering_reduces_crossings_versus_document_order)
         Contain(C, ordered_json::array({"p" + std::to_string(N - 1 - I)}));
         A.push_back(C);
     }
-    PkgGraph::Graph Ordered = PkgGraph::Build(A);
+    PkgGraph::Graph Ordered = Lay(A);
 
     PkgLayout::Options NoSweeps;
     NoSweeps.Sweeps = 0;
-    PkgGraph::Graph Raw = PkgGraph::Build(A);
+    PkgGraph::Graph Raw = Lay(A);
     PkgLayout::Compute(Raw, NoSweeps);
 
     //Asserting only "ordered <= raw" is blind: disabling the ordering pass changes BOTH sides identically and
@@ -217,80 +235,20 @@ TEST(ordering_reduces_crossings_versus_document_order)
 // POS on the node, and the local override on top of it.
 // ---------------------------------------------------------------------------
 
-TEST(a_node_POS_is_used_as_the_default_position)
-{
-    ordered_json A = ordered_json::array();
-    ordered_json N; N["CID"] = "a"; N["POS"] = ordered_json::array({1234.0, 567.0});
-    A.push_back(N);
-    PkgGraph::Graph G = PkgGraph::Build(A);
-    CHECK_EQ(G.Nodes[0].X, 1234.0f);
-    CHECK_EQ(G.Nodes[0].Y, 567.0f);
-    CHECK(G.Nodes[0].HasPos);
-}
-
-TEST(a_local_override_beats_the_node_POS)
-{
-    ordered_json A = ordered_json::array();
-    ordered_json N; N["CID"] = "a"; N["POS"] = ordered_json::array({1234.0, 567.0});
-    A.push_back(N);
-    ordered_json Override = ordered_json::object();
-    Override["a"] = ordered_json::array({10.0, 20.0});
-    PkgGraph::Graph G = PkgGraph::Build(A, &Override);
-    CHECK_EQ(G.Nodes[0].X, 10.0f);
-    CHECK_EQ(G.Nodes[0].Y, 20.0f);
-}
-
-TEST(a_malformed_POS_falls_through_to_the_computed_layout)
-{
-    //A hand-edited node file can carry anything; a bad POS must not leave the node stacked at the origin with
-    //HasPos set, which would also suppress the auto-layout for it.
-    for (const ordered_json &Bad : {ordered_json("nope"),
-                                    ordered_json::array({1.0}),
-                                    ordered_json::array({"x", "y"}),
-                                    ordered_json::object()})
-    {
-        ordered_json A = ordered_json::array();
-        ordered_json N; N["CID"] = "a"; N["POS"] = Bad;
-        ordered_json M; M["CID"] = "b"; Contain(M, ordered_json::array({"a"}));
-        A.push_back(N); A.push_back(M);
-        PkgGraph::Graph G = PkgGraph::Build(A);
-        CHECK(!G.Nodes[0].HasPos);                // a malformed POS is ABSENT, not a declared position
-        CHECK(G.Nodes[1].X > G.Nodes[0].X);       // and the graph still reads parent → child
-    }
-}
-
-TEST(placed_nodes_keep_their_position_when_a_new_one_is_added)
-{
-    //ComputeUnplaced must not move what the author already positioned — and must not drop the new node on top
-    //of one of them either.
-    ordered_json A = ordered_json::array();
-    ordered_json N; N["CID"] = "a"; N["POS"] = ordered_json::array({500.0, 500.0});
-    ordered_json M; M["CID"] = "b"; Contain(M, ordered_json::array({"a"}));
-    A.push_back(N); A.push_back(M);
-    PkgGraph::Graph G = PkgGraph::Build(A);
-    CHECK_EQ(G.Nodes[0].X, 500.0f);
-    CHECK_EQ(G.Nodes[0].Y, 500.0f);
-    CHECK(G.Nodes[1].X != 500.0f || G.Nodes[1].Y != 500.0f);
-}
-
-// ---------------------------------------------------------------------------
-// Malformed graphs still draw.
-// ---------------------------------------------------------------------------
-
 TEST(a_parents_cycle_still_produces_a_layout)
 {
     ordered_json A = ordered_json::array();
     ordered_json X; X["CID"] = "x"; Contain(X, ordered_json::array({"y"}));
     ordered_json Y; Y["CID"] = "y"; Contain(Y, ordered_json::array({"x"}));
     A.push_back(X); A.push_back(Y);
-    PkgGraph::Graph G = PkgGraph::Build(A);
+    PkgGraph::Graph G = Lay(A);
     CHECK_EQ(G.Nodes.size(), (size_t)2);
     CHECK_EQ(DistinctPoints(G), (size_t)2);
 }
 
 TEST(an_empty_graph_is_not_a_crash)
 {
-    PkgGraph::Graph G = PkgGraph::Build(ordered_json::array());
+    PkgGraph::Graph G = Lay(ordered_json::array());
     CHECK_EQ(G.Nodes.size(), (size_t)0);
     PkgLayout::Compute(G);
 }
@@ -323,23 +281,15 @@ TEST(tall_nodes_do_not_overlap_the_ones_below_them)
         Contain(J, ordered_json::array({"root"}));
         A.push_back(J);
     };
-    auto RegNode = [&](int Rows) {
-        ordered_json J;
-        for (int R = 0; R < Rows; ++R) AddLayer(J, ordered_json{{"ENV", {{"V" + std::to_string(R), "1"}}}});
-        return J;
-    };
-    ordered_json Grp;
-    ordered_json Cnt; Cnt["LAYERS"] = ordered_json::array({ ordered_json{{"ZIP", "game.zip"}} });
-    Child("c1_group", Grp);
-    Child("c2_content", Cnt);
-    Child("c3_reg5",   RegNode(5));
-    Child("c4_reg40",  RegNode(40));
-    Child("c5_reg120", RegNode(120));
+    auto Tall = [&](float H) { ordered_json J; J["_H"] = H; return J; };
+    Child("c1", Tall(60));
+    Child("c2", Tall(90));
+    Child("c3", Tall(250));
+    Child("c4", Tall(1000));
+    Child("c5", Tall(3000));
 
-    const PkgGraph::Graph G = PkgGraph::Build(A);
+    const PkgGraph::Graph G = Lay(A);
     CHECK_EQ(G.Nodes.size(), (size_t)6);
-    //The estimate has to actually vary with the payload, or the overlap check below passes on a flat graph.
-    CHECK(G.Nodes[5].Height > G.Nodes[1].Height * 5.0f);
     //And the horizontal assumption the per-column check rests on: a node has to be narrower than the step, or
     //"different X cannot collide" stops being true and this test silently stops covering half the plane.
     CHECK(PkgLayout::Options{}.ColumnStep > 400.0f);
@@ -385,7 +335,7 @@ TEST(no_node_overlaps_another_on_a_realistic_mixed_graph)
         }
     }
 
-    const PkgGraph::Graph G = PkgGraph::Build(A);
+    const PkgGraph::Graph G = Lay(A);
     int Overlaps = 0;
     std::string First;
     for (size_t I = 0; I < G.Nodes.size(); ++I)
@@ -465,7 +415,7 @@ TEST(a_wide_fanout_of_varied_heights_stays_a_rectangle)
         A.push_back(N);
     }
 
-    const PkgGraph::Graph G = PkgGraph::Build(A);
+    const PkgGraph::Graph G = Lay(A);
     float MinX = 1e30f, MinY = 1e30f, MaxX = -1e30f, MaxY = -1e30f;
     for (const auto &N : G.Nodes)
     {
@@ -496,84 +446,8 @@ TEST(a_wide_fanout_of_varied_heights_stays_a_rectangle)
     CHECK_EQ(Overlaps, 0);
 }
 
-//Build REFUSES a declared position it could not have produced, and hands the refusal back rather than logging
-//it (it runs per keystroke in the editor). Both halves have to be observable, and neither was: deleting the
-//malformed-shape record left every suite green, because the only test feeding a bad POS used the out-of-range
-//arm and never looked at what came back.
-TEST(every_refused_position_is_handed_back_with_its_reason)
-{
-    ordered_json A = ordered_json::array();
-    auto N = [&](const char *Id, ordered_json Pos) {
-        ordered_json J; J["CID"] = Id;
-        if (!Pos.is_null()) J["POS"] = Pos;
-        A.push_back(J);
-    };
-    N("ok",       ordered_json::array({120, 340}));
-    N("huge",     ordered_json::array({5e9, 5e9}));                     // out of range
-    N("strings",  ordered_json::array({"10", "20"}));                   // malformed shape
-    N("three",    ordered_json::array({1, 2, 3}));                      // malformed shape
-    N("object",   ordered_json{{"x", 1}, {"y", 2}});                    // malformed shape
-    N("none",     ordered_json());
-
-    const PkgGraph::Graph G = PkgGraph::Build(A);
-    //One record per refusal, and none for the good one or the absent one.
-    CHECK_EQ(G.RejectedPositions.size(), (size_t)4);
-    std::set<std::string> Ids;
-    for (const auto &R : G.RejectedPositions)
-    {
-        Ids.insert(R.NodeId);
-        CHECK(!R.Source.empty());
-        CHECK(!R.Value.empty());
-        //Never the raw value: a package from a content source can carry a megabytes-long POS, and this is
-        //built on the per-keystroke path.
-        CHECK(R.Value.size() < 80);
-    }
-    CHECK(Ids.count("huge") == 1);
-    CHECK(Ids.count("strings") == 1);
-    CHECK(Ids.count("three") == 1);
-    CHECK(Ids.count("object") == 1);
-    CHECK(Ids.count("ok") == 0);
-    CHECK(Ids.count("none") == 0);
-
-    //And this machine's override is named as a DIFFERENT source from the package's own POS, because the two
-    //are fixed in different places.
-    ordered_json Layout = ordered_json::object();
-    Layout["ok"] = ordered_json::array({1e300, 4.0});
-    const PkgGraph::Graph G2 = PkgGraph::Build(A, &Layout);
-    bool SawOverride = false;
-    for (const auto &R : G2.RejectedPositions)
-        if (R.NodeId == "ok") { SawOverride = true; CHECK(R.Source.find("machine") != std::string::npos); }
-    CHECK(SawOverride);
-
-    //Each refusal addresses ONE slot of NODES. The consumer of these (StampNodePositions) has to answer
-    //"was THIS node's file rewritten?", and it used to ask by id — so two nodes sharing a name, or two with
-    //no name at all, answered for each other and the publish line said a file was rewritten that was not.
-    ordered_json D = ordered_json::array();
-    auto Dup = [&](const char *Id, ordered_json Pos) {
-        ordered_json J;
-        if (Id) J["CID"] = Id;
-        J["POS"] = Pos;
-        D.push_back(J);
-    };
-    Dup("same", ordered_json::array({0, 0}));          // slot 0: fine
-    Dup("same", ordered_json::array({5e9, 5e9}));      // slot 1: refused
-    Dup(nullptr, ordered_json::array({10, 10}));       // slot 2: fine, and nameless
-    Dup(nullptr, ordered_json::array({"a", "b"}));     // slot 3: refused, and nameless
-
-    const PkgGraph::Graph G3 = PkgGraph::Build(D);
-    CHECK_EQ(G3.RejectedPositions.size(), (size_t)2);
-    std::set<int> Slots;
-    for (const auto &R : G3.RejectedPositions) Slots.insert(R.Index);
-    CHECK(Slots.count(1) == 1);
-    CHECK(Slots.count(3) == 1);
-    CHECK(Slots.count(0) == 0);
-    CHECK(Slots.count(2) == 0);
-}
-
 //A NODES entry that is not an object is kept as a PLACEHOLDER so every index still addresses its own node
-//(PkgGraph::Build). It is drawn — a title bar and a line saying what is wrong — so the layout has to reserve
-//space for it like anything else. It did not: Build push_backs the placeholder before Height is ever
-//computed, so it stayed 0 and the next node in the column was placed on top of it.
+//(PkgGraph::Build), and the layout reserves space for it like anything else.
 TEST(a_malformed_node_still_gets_room_in_the_layout)
 {
     ordered_json A = ordered_json::array();
@@ -584,16 +458,8 @@ TEST(a_malformed_node_still_gets_room_in_the_layout)
     A.push_back("this entry is not an object");     // the placeholder, same layer
     Group("third");
 
-    const PkgGraph::Graph G = PkgGraph::Build(A);
+    const PkgGraph::Graph G = Lay(A);
     CHECK_EQ(G.Nodes.size(), (size_t)3);
-    //EXACT, not a range. `> 40 && < a Group's 242` is a 200px window that cannot tell 77 from 177 — a test
-    //that passes for any plausible mistake is not covering the number, only its sign. The value is
-    //kChromePx 26 + kTitlePx 34 + kTextPx 17, which is what drawNode's placeholder arm draws: a title bar and
-    //one disabled line. It measures 63px against the renderer (theEstimatedNodeHeightMatchesTheDrawnOne
-    //checks that directly), so 14px of this is chrome padding the placeholder does not spend — over-estimating,
-    //which is the safe direction, and small enough that the GUI check bounds it at 20.
-    CHECK_EQ(G.Nodes[1].Height, 77.0f);
-    CHECK(G.Nodes[1].Height < G.Nodes[0].Height);
     //All three are unparented, so they stack in ONE column — in whatever order the ordering pass chose
     //(it is not document order: an idless node barycentres to the front), so this reads the column off the
     //Y values rather than assuming which node is which.
@@ -757,8 +623,8 @@ TEST(a_value_of_the_wrong_shape_is_described_without_being_serialised)
 TEST(a_layered_graph_lays_out_at_pinned_coordinates)
 {
     ordered_json A = ordered_json::array();
-    auto N = [&](const char *Id, const char *Section, std::initializer_list<const char *> Parents) {
-        ordered_json J = PkgGraph::NewPayload(Section); J["CID"] = Id;
+    auto N = [&](const char *Id, float H, std::initializer_list<const char *> Parents) {
+        ordered_json J; J["CID"] = Id; J["_H"] = H;
         if (Parents.size())
         {
             ordered_json P = ordered_json::array();
@@ -767,76 +633,29 @@ TEST(a_layered_graph_lays_out_at_pinned_coordinates)
         }
         A.push_back(J);
     };
-    N("root", "",        {});
-    N("a",    "",        {"root"});     // short
-    N("b",    "ZIP",    {"root"});      // taller: its own ZIP layer after the reference
-    A.back()["LAYERS"].back() = ordered_json{{"ZIP","x.zip"},{"TARGET","FILES/t"}};
-    N("c",    "",        {"root"});     // short again, so it must clear b's height and not a's
-    N("tail", "",        {"a", "b", "c"});
-
-    const PkgGraph::Graph G = PkgGraph::Build(A);
+    N("root", 100, {});
+    N("a",    100, {"root"});
+    N("b",    200, {"root"});      // taller, so c must clear b's height and not a's
+    N("c",    100, {"root"});
+    N("tail", 100, {"a", "b", "c"});
+    const PkgGraph::Graph G = Lay(A);
     CHECK_EQ(G.Nodes.size(), (size_t)5);
-    CHECK_EQ(G.Nodes[0].X,  60.0f);  CHECK_EQ(G.Nodes[0].Y,  60.0f);   // root, layer 0
-    CHECK_EQ(G.Nodes[1].X, 490.0f);  CHECK_EQ(G.Nodes[1].Y,  60.0f);   // a,    layer 1 row 0
-    CHECK_EQ(G.Nodes[2].X, 490.0f);  CHECK_EQ(G.Nodes[2].Y, 443.0f);   // b,    after a's 293 + 90 gap
-    CHECK_EQ(G.Nodes[3].X, 490.0f);  CHECK_EQ(G.Nodes[3].Y, 843.0f);   // c,    after b's 310 + 90 gap
-    CHECK_EQ(G.Nodes[4].X, 920.0f);  CHECK_EQ(G.Nodes[4].Y,  60.0f);   // tail, layer 2
-    //And the heights those Y values are made of, so a failure says WHICH half moved. These moved by 2px when
-    //the height estimate stopped charging a full label-and-widget row for rows that hold only SmallButtons —
-    //a deliberate correction, and this golden is where that shows up as a decision rather than a side effect.
-    //They moved again when the action row started charging for the Separator above it, and a third time (353
-    //-> 318) when the estimate stopped charging BASE_TARGETS on a Content node that is not a delta — the
-    //canvas has never drawn that field there, so the 35px were a hole reserved in every published layout.
-    //A fourth move (+17 on every node) when the one-edge editor started drawing the "+ section" button row on
-    //every node — a node is any subset of sections now, and adding one is a per-node act. A fifth (+38) when the
-    //final chain gave the envelope its two declared facets, VARIANT and RECOMMENDED, as rows. A sixth in
-    //generation 6: a node's parents are LAYERS now, so `a` draws its NODE layer (header + node, take, target,
-    //when, comment) and every layer its own header row — and the envelope lost its toggle/when/not rows. A seventh
-    //when layers became a folded tree: a node is estimated as it opens, one row per top-level layer or section; the
-    //"no layers yet" line is charged (it was drawn but not counted), and so is the envelope's SECTION row.
-    CHECK_EQ(G.Nodes[0].Height, 293.0f);   // root: a node with no layers
-    CHECK_EQ(G.Nodes[1].Height, 293.0f);   // a: one NODE layer, folded to its row
-    CHECK_EQ(G.Nodes[2].Height, 310.0f);   // b: a NODE row and a ZIP row
+    //Columns 430 apart; in a column each node sits level with its parents' mean centre, pushed down only as far as
+    //the node above it (plus the 90 gap) requires.
+    CHECK_EQ(G.Nodes[0].X,  60.0f);  CHECK_EQ(G.Nodes[0].Y,  60.0f);   // root
+    CHECK_EQ(G.Nodes[1].X, 490.0f);  CHECK_EQ(G.Nodes[1].Y,  60.0f);   // a: level with root (centre 110)
+    CHECK_EQ(G.Nodes[2].X, 490.0f);  CHECK_EQ(G.Nodes[2].Y, 250.0f);   // b: pushed below a (60 + 100 + 90)
+    CHECK_EQ(G.Nodes[3].X, 490.0f);  CHECK_EQ(G.Nodes[3].Y, 540.0f);   // c: below b (250 + 200 + 90)
+    CHECK_EQ(G.Nodes[4].X, 920.0f);  CHECK_EQ(G.Nodes[4].Y, 300.0f);   // tail: centred on a, b, c (110, 350, 590)
 }
 
-TEST(an_impossible_declared_position_is_rejected_not_honoured)
-{
-    ordered_json A = ordered_json::array();
-    auto N = [&](const char *Id, ordered_json Pos) {
-        ordered_json J; J["CID"] = Id;
-        if (!Pos.is_null()) J["POS"] = Pos;
-        A.push_back(J);
-    };
-    N("sane",     ordered_json::array({120, 340}));
-    N("huge",     ordered_json::array({5e9, 5e9}));
-    N("enormous", ordered_json::array({1e300, 1.0}));
-    N("nan",      ordered_json::array({std::numeric_limits<double>::quiet_NaN(), 0.0}));
-    N("none",     ordered_json());
-
-    const PkgGraph::Graph G = PkgGraph::Build(A);
-    CHECK_EQ(G.Nodes.size(), (size_t)5);
-    //The sane one is honoured, exactly.
-    CHECK(G.Nodes[0].HasPos);
-    CHECK_EQ(G.Nodes[0].X, 120.0f);
-    CHECK_EQ(G.Nodes[0].Y, 340.0f);
-    //The rest are treated as undeclared, so the layout places them where they can be seen and fixed.
-    for (size_t I = 1; I < G.Nodes.size(); ++I)
-    {
-        CHECK(!G.Nodes[I].HasPos);
-        CHECK(std::isfinite(G.Nodes[I].X));
-        CHECK(std::isfinite(G.Nodes[I].Y));
-        CHECK(std::abs(G.Nodes[I].X) < 1.0e6f);
-        CHECK(std::abs(G.Nodes[I].Y) < 1.0e6f);
-    }
-}
-
-TEST(a_fixed_graph_lays_out_at_pinned_coordinates)
+//The parent-aligned placement, stated as its rule: a node sits level with the mean centre of its parents unless the
+//node above it in its column is in the way. Teeth: Options.AlignToParents = false stacks every column from the top.
+TEST(a_node_sits_level_with_its_parents)
 {
     ordered_json A = ordered_json::array();
     auto N = [&](const char *Id, std::initializer_list<const char *> Parents) {
-        ordered_json J;
-        J["CID"] = Id;
-
+        ordered_json J; J["CID"] = Id;
         if (Parents.size())
         {
             ordered_json P = ordered_json::array();
@@ -845,31 +664,23 @@ TEST(a_fixed_graph_lays_out_at_pinned_coordinates)
         }
         A.push_back(J);
     };
-    N("root",  {});
-    N("a",     {"root"});
-    N("b",     {"root"});
-    N("c",     {"a", "b"});
-    N("d",     {"c"});
-
-    const PkgGraph::Graph G = PkgGraph::Build(A);
-    CHECK_EQ(G.Nodes.size(), (size_t)5);
-    const float X0 = 60.0f, Y0 = 60.0f, CW = 430.0f, Gap = 90.0f;
-    //The vertical step is the node's OWN height plus the gap, which is the whole point of the change: a
-    //constant step is what drew tall nodes through the ones beneath them. Asserted as the rule rather than as
-    //a literal, so re-calibrating the height estimate against the renderer does not churn this golden — the
-    //magnitude of the estimate is pinned separately, just below.
-    CHECK_EQ(G.Nodes[0].X, X0);              CHECK_EQ(G.Nodes[0].Y, Y0);            // root   layer 0
-    CHECK_EQ(G.Nodes[1].X, X0 + CW);         CHECK_EQ(G.Nodes[1].Y, Y0);            // a      layer 1 row 0
-    CHECK_EQ(G.Nodes[2].X, X0 + CW);
-    CHECK_EQ(G.Nodes[2].Y, Y0 + G.Nodes[1].Height + Gap);                           // b      layer 1 row 1
-    CHECK_EQ(G.Nodes[3].X, X0 + 2 * CW);     CHECK_EQ(G.Nodes[3].Y, Y0);            // c      layer 2
-    CHECK_EQ(G.Nodes[4].X, X0 + 3 * CW);     CHECK_EQ(G.Nodes[4].Y, Y0);            // d      layer 3
-    //And the estimate itself is a real number of pixels, not zero (which would silently restore the constant
-    //step through the Height == 0 fallback) and not something absurd. A bare Group is the smallest node the
-    //canvas draws — a title, a pin row, an id — plus the two reservations it always makes: the "node options"
-    //tree as though it were open, and a couple of validation-warning lines — and `a` holds one NODE layer.
-    CHECK(G.Nodes[1].Height > 90.0f);
-    CHECK(G.Nodes[1].Height < 420.0f);
+    N("root", {});
+    N("a", {"root"});
+    N("b", {"root"});
+    N("c", {"a", "b"});
+    N("d", {"c"});
+    const PkgGraph::Graph G = Lay(A);
+    const float X0 = 60.0f, Y0 = 60.0f, CW = 430.0f, Hh = 180.0f, Gap = 90.0f;
+    CHECK_EQ(G.Nodes[0].X, X0);          CHECK_EQ(G.Nodes[0].Y, Y0);                       // root
+    CHECK_EQ(G.Nodes[1].X, X0 + CW);     CHECK_EQ(G.Nodes[1].Y, Y0);                       // a
+    CHECK_EQ(G.Nodes[2].X, X0 + CW);     CHECK_EQ(G.Nodes[2].Y, Y0 + Hh + Gap);            // b
+    CHECK_EQ(G.Nodes[3].X, X0 + 2 * CW); CHECK_EQ(G.Nodes[3].Y, Y0 + (Hh + Gap) * 0.5f);   // c: between a and b
+    CHECK_EQ(G.Nodes[4].X, X0 + 3 * CW); CHECK_EQ(G.Nodes[4].Y, G.Nodes[3].Y);             // d: level with c
+    //Off: the plain stacking.
+    PkgLayout::Options O;
+    O.AlignToParents = false;
+    const PkgGraph::Graph F = Lay(A, O);
+    CHECK_EQ(F.Nodes[3].Y, Y0);
 }
 
 //Every golden above this point fits in ONE band, so the two knobs that make a DEEP graph readable — BandGap
@@ -887,7 +698,7 @@ TEST(a_deep_chain_wraps_into_bands_and_stays_readable)
         A.push_back(J);
     }
 
-    PkgGraph::Graph G = PkgGraph::Build(A);
+    PkgGraph::Graph G = Lay(A);
     CHECK_EQ(G.Nodes.size(), (size_t)Depth);
     const PkgLayout::Options O;
 
@@ -957,7 +768,7 @@ TEST(a_wide_layers_ordering_does_not_depend_on_document_order)
         ordered_json A = ordered_json::array();
         for (const auto &J : Ns) A.push_back(J);
         std::map<std::string, std::pair<float, float>> Pos;
-        const PkgGraph::Graph G = PkgGraph::Build(A);
+        const PkgGraph::Graph G = Lay(A);
         for (const auto &Nd : G.Nodes) Pos[Nd.Id] = {Nd.X, Nd.Y};
         return Pos;
     };
@@ -968,5 +779,17 @@ TEST(a_wide_layers_ordering_does_not_depend_on_document_order)
         if (Backward.count(Id) != 1) continue;
         CHECK_EQ(Backward.at(Id).first,  P.first);
         CHECK_EQ(Backward.at(Id).second, P.second);
+    }
+}
+
+//An ordinary package — a handful of layers deep — is ONE band, read left to right: wrapping (for the 904-layer shapes)
+//would put its deepest nodes under the rest with every wire crossing the drawing. Teeth: wrap by aspect ratio alone.
+TEST(a_shallow_graph_is_never_wrapped_into_bands)
+{
+    const PkgGraph::Graph G = Lay(Chain(10));
+    for (size_t I = 1; I < G.Nodes.size(); ++I)
+    {
+        CHECK_EQ(G.Nodes[I].Y, G.Nodes[0].Y);
+        CHECK(G.Nodes[I].X > G.Nodes[I - 1].X);
     }
 }

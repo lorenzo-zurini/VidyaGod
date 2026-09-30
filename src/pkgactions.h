@@ -69,6 +69,9 @@ public slots:
 
 private:
     int  indexOf(const std::string & nodeId) const;
+    std::string current(std::string Handle) const;               // the node's handle after any saves since
+    void commitNode(int I, nlohmann::ordered_json N, bool Persist);
+    bool saveFirst(const QString & Title);
     void browsePath(const std::string & nodeId);
     void browseCover(const std::string & nodeId);
     void convertZipDir(const std::string & nodeId, bool ToZip);
@@ -106,6 +109,7 @@ private:
     //Cleared in the destructor: a worker thread running a multi-minute diff must be able to tell that the
     //editor went away before it touches this object or the canvas again.
     std::shared_ptr<std::atomic<bool>>                          Alive_ = std::make_shared<std::atomic<bool>>(true);
+    std::map<std::string, std::string>                          Moves;    // handles renamed by saves (old -> new)
     std::map<std::string, QProcess *>                           Procs;    // process-backed actions, for kill()
     std::map<std::string, std::shared_ptr<std::atomic<bool>>>   Aborts;   // in-process actions, polled by the worker
 };

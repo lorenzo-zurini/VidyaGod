@@ -39,7 +39,7 @@ namespace PkgGraph
 struct Node
 {
     int         Index = 0;      // position in doc()["NODES"] — the identity the canvas binds to
-    std::string Id;             // the wiring handle (stored CID)
+    std::string Id;             // the node's handle (its CID, or a draft handle — see PkgDoc)
     std::string Type;           // the node's KIND: its first layer type that is not a reference, "" when plain
     std::string Form;           // its first content layer's type, lower case ("zip"/"dir"/"file"/"delta"; "" without
                                 // content) — what a delta can be based on
@@ -71,45 +71,19 @@ struct Link
     bool        Not         = false;// a NOT layer (an exclusion)
 };
 
-//A declared position that was refused because no layout could have produced it. Carried rather than logged:
-//Build runs on every cache rebuild — every keystroke — and the canvas is where the "said it once" state lives.
-//`Source` names WHICH of the two declarations was bad, because they are fixed in different places: the
-//package's own POS by editing the package, this machine's override by clearing a local setting.
-struct RejectedPosition
-{
-    //The INDEX as well as the id, because an id is not a key. A hand-edited bundle can carry two nodes named
-    //the same, or a node with no NODE_ID at all — and every such node collapses onto one id, so a consumer
-    //asking "was THIS node's file rewritten?" by id answers for a different node. The index addresses exactly
-    //one entry of NODES by construction.
-    int         Index = -1;
-    std::string NodeId;
-    std::string Source;
-    std::string Value;
-};
-
 struct Graph
 {
     std::vector<Node> Nodes;
-    std::vector<RejectedPosition> RejectedPositions;
     std::vector<Link> Links;
     std::vector<std::string> Externals;   // distinct out-of-bundle parent ids, in first-seen order
 };
 
-//Read the document into a Graph. `Layout` (optional) is THIS MACHINE's position override — an object keyed by
-//NODE_ID whose values are [x, y], held in GlobalConfig — and it wins over a node's own POS. Anything neither
-//declares is placed by PkgLayout, so a bundle always opens readable instead of stacked at the origin.
-//
-Graph Build(const nlohmann::ordered_json &NodesArray, const nlohmann::ordered_json *Layout = nullptr);
+//One node of the document: its handle and its JSON (the handle is never inside the JSON — see PkgDoc).
+struct NodeRef { std::string Handle; const nlohmann::ordered_json *Json = nullptr; };
 
-//Write a node's position into THIS MACHINE's override object (GlobalConfig, never the package). Returns false
-//if the id is empty.
-bool SetPos(nlohmann::ordered_json &Layout, const std::string &NodeId, float X, float Y);
-
-//Pin ids, derived (never stored) — imnodes needs ints: in = idx*4, out = idx*4+1.
-inline int InPin (int Index) { return Index * 4;     }
-inline int OutPin(int Index) { return Index * 4 + 1; }
-inline int PinNode(int Pin)  { return Pin / 4;       }
-inline bool PinIsIn(int Pin) { return (Pin % 4) == 0; }
+//The document as a Graph: one Node per entry (same order), one Link per reference, the out-of-package references
+//listed as Externals. Positions are left at 0 — the canvas places nodes (PkgLayout) and the document holds moves.
+Graph Build(const std::vector<NodeRef> &Nodes);
 
 // ---- layer vocabulary -----------------------------------------------------
 
@@ -136,7 +110,7 @@ std::string ContentTarget(const nlohmann::ordered_json &Node);
 //content at its own target, so it is a node this one contains EARLIER in its LAYERS — whole (no TAKE, no TARGET:
 //either moves or narrows what lands) — whose content layer is a ZIP at the SAME target. Nearest first. The "-> delta"
 //button (ActionsFor) and the action itself both ask this, so the button never offers what the action refuses.
-std::string DeltaBase(const nlohmann::ordered_json &NodesArray, int Index);
+std::string DeltaBase(const std::vector<NodeRef> &Nodes, int Index);
 //A starter layer of a type (valid by construction: required keys present).
 nlohmann::ordered_json NewLayer(const std::string &Type);
 //A fresh node carrying ONE starter layer ("" ⇒ a node with no layers yet).
@@ -212,6 +186,8 @@ struct VarFacet
 };
 using VarFacets = std::map<std::string, VarFacet>;
 VarFacets CollectVarFacets(const nlohmann::ordered_json &NodesArray);
+struct NodeRef;
+VarFacets CollectVarFacets(const std::vector<NodeRef> &Nodes);
 
 //A node reference's display name (the canvas knows every node's LABEL by handle); empty = show the reference.
 using LabelFn = std::function<std::string(const std::string &Ref)>;
@@ -235,14 +211,7 @@ std::string EntrySummary(const nlohmann::ordered_json &Entry);
 //A variable's row name: its launcher LABEL with the key, else the key.
 std::string VarTitle(const std::string &Key, const nlohmann::ordered_json &Decl);
 
-//How tall this node is drawn in its DEFAULT state — every section and layer folded — in canvas units. The layout
-//steps by it and stamps it into POS at publish time, headless, so it can only be the state a package opens in; an
-//opened layer grows its node over whatever sits below, and imnodes draws the node being worked on on top.
-//
-//Allowed to be generous: over-estimating costs white space, under-estimating draws two folded nodes on top of each
-//other. Pinned to the renderer by theEstimatedNodeHeightMatchesTheDrawnOne. Without Facets a WHEN-derived section is
-//unknown, so every such layer is counted as its own row — generous, never short.
-float EstimateHeight(const nlohmann::ordered_json &Node, const VarFacets *Facets = nullptr);
+
 
 // ---- node actions ---------------------------------------------------------
 
@@ -259,8 +228,7 @@ struct Action
 //The actions VALID FOR THIS NODE RIGHT NOW — contextual, not a fixed per-type list: "flatten" only on a delta,
 //"make delta" only when a parent can be its base, "re-store" only when the zip is actually DEFLATE. `Hints` are
 //facts the canvas cannot know without touching disk (e.g. "deflate"), pushed in by the host.
-std::vector<Action> ActionsFor(const nlohmann::ordered_json &Node, const Graph &G, int Index,
-                               const std::vector<std::string> &Hints);
+std::vector<Action> ActionsFor(const nlohmann::ordered_json &Node, bool HasDeltaBase, const std::vector<std::string> &Hints);
 
 // ---- flattened registry editing -------------------------------------------
 

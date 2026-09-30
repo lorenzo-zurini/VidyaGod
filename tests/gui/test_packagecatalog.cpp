@@ -167,13 +167,24 @@ private slots:
         Tile["LAYERS"][0]["EXEC"][0]["TILE"]["COVER"] = json{{"FILE", "cover.png"}};
         writeJson(Pkg.path() + "/tile.json", NodeFixture::Chain("tile", {Tile}));
 
-        auto Read = [&](const QString & file) { std::ifstream in((Pkg.path() + "/" + file).toStdString()); return json::parse(in, nullptr, false); };
-        auto Layer = [&](const QString & file) { return Read(file)["LAYERS"][0]; };
-        auto Cover = [&]() { return Read("tile.json")["LAYERS"][0]["EXEC"][0]["TILE"]["COVER"]; };
+        //Publishing re-mints (a node's file is named by the CID of its bytes, and recording a SOURCE changes them), so
+        //a node is found by its LABEL, not by the name it was written under.
+        auto FileOf = [&](const QString & label) -> QString {
+            for (const QString &F : QDir(Pkg.path()).entryList({"*.json"}, QDir::Files))
+            {
+                std::ifstream in((Pkg.path() + "/" + F).toStdString());
+                const json J = json::parse(in, nullptr, false);
+                if (J.is_object() && J.value("LABEL", std::string()) == label.toStdString()) return F;
+            }
+            return QString();
+        };
+        auto Read = [&](const QString & label) { std::ifstream in((Pkg.path() + "/" + FileOf(label)).toStdString()); json J = json::parse(in, nullptr, false); return J.is_object() ? J : json::object({{"LAYERS", json::array({json::object()})}}); };
+        auto Layer = [&](const QString & label) { return Read(label)["LAYERS"][0]; };
+        auto Cover = [&]() { return Read("tile")["LAYERS"][0]["EXEC"][0]["TILE"]["COVER"]; };
 
         // 1) Fresh mint → CID + SIZE stamped on the file and the cover; the DIR carries neither.
         QVERIFY2(PackageCatalog::PublishPackage(Pkg.path().toStdString(), "", &Err), Err.c_str());
-        const json File = Layer("game.json"), Dir = Layer("data.json"), Cov = Cover();
+        const json File = Layer("game"), Dir = Layer("data"), Cov = Cover();
         QVERIFY2(File.value("SOURCE", std::string()).rfind("baf", 0) == 0, "mint must stamp a CID");
         QCOMPARE((qulonglong)File.value("SIZE", (qulonglong)0), (qulonglong)4096);
         QVERIFY2(!Dir.contains("SOURCE") && !Dir.contains("SIZE"), "a DIR layer is never content-addressed");
@@ -185,14 +196,22 @@ private slots:
         // 2) Simulate a pre-SIZE package: strip the layer's SIZE, re-mint → backfilled, CID UNCHANGED (the idempotent
         //    branch stamped SIZE without re-adding the bytes).
         {
-            json N = Read("game.json");
+            const QString F = FileOf("game");
+            json N = Read("game");
             N["LAYERS"][0].erase("SIZE");
-            writeJson(Pkg.path() + "/game.json", N);
+            writeJson(Pkg.path() + "/" + F, N);
         }
-        QVERIFY2(!Layer("game.json").contains("SIZE"), "precondition: SIZE stripped");
+        QVERIFY2(!Layer("game").contains("SIZE"), "precondition: SIZE stripped");
         QVERIFY2(PackageCatalog::PublishPackage(Pkg.path().toStdString(), "", &Err), Err.c_str());
-        QCOMPARE((qulonglong)Layer("game.json").value("SIZE", (qulonglong)0), (qulonglong)4096);   // backfilled
-        QCOMPARE(Layer("game.json").value("SOURCE", std::string()), Cid);                          // same bytes → same CID
+        QCOMPARE((qulonglong)Layer("game").value("SIZE", (qulonglong)0), (qulonglong)4096);   // backfilled
+        QCOMPARE(Layer("game").value("SOURCE", std::string()), Cid);                          // same bytes → same CID
+        //And every node file is canonical bytes named by their CID: publishing re-minted, it did not edit in place.
+        for (const QString &F : QDir(Pkg.path()).entryList({"*.json"}, QDir::Files))
+        {
+            std::ifstream in((Pkg.path() + "/" + F).toStdString(), std::ios::binary);
+            const std::string B((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+            QCOMPARE(QString::fromStdString(Cid::OfBytes(B)) + ".json", F);
+        }
 
         IpfsWrapper::StopNode();
     }
@@ -1460,148 +1479,6 @@ private slots:
         IpfsWrapper::StopNode();
     }
 
-    // Publish is where a REFUSED declared position has its real consequence: PkgGraph::Build drops a position
-    // no layout could have produced, StampNodePositions then writes a computed one over it, the node file's
-    // bytes change and the package's Meta-CID with them. So the warning has to say which of those two things
-    // happened — and decide it from what was actually WRITTEN. Deciding it by matching the source label was
-    // wrong in both directions in turn (first "stamped over it" for a rejected local override that rewrites
-    // nothing, then "ignored" for a node that was rewritten), and neither version was caught by anything.
-    void thePublishWarningSaysWhatWasActuallyWritten()
-    {
-        QTemporaryDir Dir;
-        QVERIFY(Dir.isValid());
-        auto Write = [&](const char *Name, const nlohmann::ordered_json &J) {
-            std::ofstream F((Dir.path() + "/" + Name).toStdString());
-            F << J.dump(2);
-        };
-        // Model C: the layout override + warnings key on the node's stored CID HANDLE, so each fixture node carries
-        // one (= its readable name here); NODE layers reference those handles.
-        // Its OWN POS is impossible: publish computes one and writes it, changing the file.
-        Write("bad.json",  nlohmann::ordered_json{{"CID", "bad"}, {"LABEL", "bad"},  
-                                                  {"POS", nlohmann::ordered_json::array({5e9, 5e9})}, {"LAYERS", nlohmann::ordered_json::array()}});
-        // A good POS with an impossible LOCAL override: the node keeps its POS and nothing is rewritten.
-        Write("keep.json", nlohmann::ordered_json{{"CID", "keep"}, {"LABEL", "keep"}, 
-                                                  {"POS", nlohmann::ordered_json::array({60.0, 60.0})},
-                                                  {"LAYERS", nlohmann::ordered_json::array({ nlohmann::ordered_json{{"NODE", "bad"}} })}});
-        // NO POS of its own, plus an impossible local override. This is the case where the source label and
-        // the outcome DIVERGE: the label says "this machine's saved layout", which sounds like nothing in the
-        // package changed — but with no POS to fall back on the layout supplies one, the file GAINS a POS it
-        // never had, and the Meta-CID moves. Both earlier versions of this line got this case wrong, and a
-        // test built only from the two agreeing cases could not tell the difference.
-        Write("fresh.json", nlohmann::ordered_json{{"CID", "fresh"}, {"LABEL", "fresh"}, 
-                                                   {"LAYERS", nlohmann::ordered_json::array({ nlohmann::ordered_json{{"NODE", "bad"}} })}});
-        nlohmann::ordered_json Override = nlohmann::ordered_json::object();
-        Override["keep"]  = nlohmann::ordered_json::array({std::numeric_limits<double>::quiet_NaN(), 1.0});
-        Override["fresh"] = nlohmann::ordered_json::array({1e300, 2.0});
-
-        QStringList Warnings;
-        struct Sink { ~Sink() { ClearLogCallback(); } } SinkGuard;
-        SetLogCallback([&](LogLevel L, const std::string &, const std::string &M) {
-            if (L == LogLevel::WARN && M.find("no layout could have produced") != std::string::npos)
-                Warnings << QString::fromStdString(M);
-        });
-        std::string Err;
-        QVERIFY2(PackageCatalog::StampNodePositions(Dir.path().toStdString(), &Override, &Err),
-                 qPrintable(QString::fromStdString(Err)));
-
-        QString BadLine, KeepLine, FreshLine;
-        for (const QString &W : Warnings) {
-            if (W.contains("'bad'"))   BadLine = W;
-            if (W.contains("'keep'"))  KeepLine = W;
-            if (W.contains("'fresh'")) FreshLine = W;
-        }
-        QVERIFY2(!BadLine.isEmpty() && !KeepLine.isEmpty() && !FreshLine.isEmpty(),
-                 qPrintable("all three refusals should be reported; saw:\n  " + Warnings.join("\n  ")));
-        // The one that WAS rewritten says so, and names the consequence that matters at publish time.
-        QVERIFY2(BadLine.contains("written over it") && BadLine.contains("changing this package's bytes"),
-                 qPrintable("the rewritten node's line does not say so: " + BadLine));
-        // The one that was not says the opposite.
-        QVERIFY2(KeepLine.contains("nothing was rewritten"),
-                 qPrintable("the untouched node's line claims a rewrite: " + KeepLine));
-        // And the divergent one is worded by what HAPPENED, not by which declaration was bad.
-        QVERIFY2(FreshLine.contains("written over it") && FreshLine.contains("changing this package's bytes"),
-                 qPrintable("a node that gained a POS is reported as untouched: " + FreshLine));
-
-        // And the files agree with the lines.
-        auto Read = [&](const char *Name) {
-            nlohmann::ordered_json J;
-            std::ifstream F((Dir.path() + "/" + Name).toStdString());
-            F >> J;
-            return J;
-        };
-        const nlohmann::ordered_json B = Read("bad.json"), K = Read("keep.json"), Fr = Read("fresh.json");
-        QVERIFY2(Fr.contains("POS"), "the node with no POS did not gain one, so this case proves nothing");
-        QVERIFY2(B.contains("POS") && std::abs(B["POS"][0].get<double>()) < 1.0e6,
-                 "the impossible POS was kept or replaced with another impossible one");
-        QCOMPARE(K["POS"][0].get<double>(), 60.0);
-    }
-
-    //Two nodes with the SAME NODE_ID. A bundle is a folder of files, so nothing stops it, and a hand-edited
-    //or peer-authored one can hold a duplicate — the editor's rename guard only covers renames made THROUGH
-    //it. The publish line asks "was THIS node's file rewritten?", and it asked by id: one namesake being
-    //rewritten made the line claim the other's bytes had changed too, in the one message an author has
-    //telling them whether their declared layout survived publish.
-    void thePublishWarningDistinguishesTwoNodesSharingAName()
-    {
-        QTemporaryDir Dir;
-        QVERIFY(Dir.isValid());
-        auto Write = [&](const char *Name, const nlohmann::ordered_json &J) {
-            std::ofstream F((Dir.path() + "/" + Name).toStdString());
-            F << J.dump(2);
-        };
-        //Both share the handle "same" (Model C: the CID handle is the identity the override + warnings key on; the
-        //point of this test is two nodes with the SAME handle). The first carries an impossible POS, so publish
-        //computes one and REWRITES it.
-        Write("a.json", nlohmann::ordered_json{{"CID", "same"}, {"LABEL", "same"}, 
-                                               {"POS", nlohmann::ordered_json::array({5e9, 5e9})}, {"LAYERS", nlohmann::ordered_json::array()}});
-        //The second carries a POS the layout would produce anyway, plus an impossible local OVERRIDE. It is
-        //refused like the first, but its file is left exactly as it was — 60,60 is where the layout puts the
-        //first node of the first layer, so "already correct: do not touch the bytes" fires.
-        Write("b.json", nlohmann::ordered_json{{"CID", "same"}, {"LABEL", "same"}, 
-                                               {"POS", nlohmann::ordered_json::array({60.0, 60.0})}, {"LAYERS", nlohmann::ordered_json::array()}});
-        nlohmann::ordered_json Override = nlohmann::ordered_json::object();
-        Override["same"] = nlohmann::ordered_json::array({1e300, 2.0});
-
-        QStringList Warnings;
-        struct Sink { ~Sink() { ClearLogCallback(); } } SinkGuard;
-        SetLogCallback([&](LogLevel L, const std::string &, const std::string &M) {
-            if (L == LogLevel::WARN && M.find("no layout could have produced") != std::string::npos)
-                Warnings << QString::fromStdString(M);
-        });
-        std::string Err;
-        QVERIFY2(PackageCatalog::StampNodePositions(Dir.path().toStdString(), &Override, &Err),
-                 qPrintable(QString::fromStdString(Err)));
-
-        //One line per REFUSAL, and the two nodes are refused for different reasons — so the lines are
-        //distinguishable by their source even though the id is identical.
-        QString Own, Local;
-        for (const QString &W : Warnings) {
-            if (W.contains("its own POS")) Own = W;
-            if (W.contains("machine"))     Local = W;
-        }
-        QVERIFY2(!Own.isEmpty() && !Local.isEmpty(),
-                 qPrintable("both refusals should be reported; saw:\n  " + Warnings.join("\n  ")));
-
-        auto Read = [&](const char *Name) {
-            nlohmann::ordered_json J;
-            std::ifstream F((Dir.path() + "/" + Name).toStdString());
-            F >> J;
-            return J;
-        };
-        const nlohmann::ordered_json A = Read("a.json"), B = Read("b.json");
-        //Establish what actually happened on disk FIRST, so the assertions about the wording below are
-        //anchored to the files rather than to each other.
-        QVERIFY2(std::abs(A["POS"][0].get<double>()) < 1.0e6, "the impossible POS was not replaced");
-        QCOMPARE(B["POS"][0].get<double>(), 60.0);
-        QCOMPARE(B["POS"][1].get<double>(), 60.0);
-
-        //THE PROPERTY. Keyed by id, the untouched node's line inherited its namesake's rewrite.
-        QVERIFY2(Own.contains("written over it"),
-                 qPrintable("the rewritten node's line does not say so: " + Own));
-        QVERIFY2(Local.contains("nothing was rewritten"),
-                 qPrintable("a node whose file was NOT rewritten is reported as rewritten, because a node "
-                            "sharing its NODE_ID was: " + Local));
-    }
     //The data root is PROCESS-GLOBAL and sticky, and PackageEditorModel::SaveLayout flushes GlobalConfig.JSON
     //to it — so a suite that does not claim it writes to AppPaths' fallback, which is the developer's REAL
     //~/.VidyaGod/GlobalConfig.JSON. Running a single slot by name replaced a 50 KB config (sources, CIDs,
@@ -2248,7 +2125,7 @@ private slots:
         std::vector<std::string> Errors; QString Walked;
         SetLogCallback([&](LogLevel L, const std::string &, const std::string &M){
             if (L == LogLevel::ERR) Errors.push_back(M);
-            if (M.find("Dehydrated") != std::string::npos) Walked = QString::fromStdString(M); });
+            if (M.find("Seeded") != std::string::npos) Walked = QString::fromStdString(M); });
         const bool Ok = PackageCatalog::PublishPackage(bundle.toStdString(), std::string(), nullptr);
         ClearLogCallback();
 
@@ -2392,174 +2269,25 @@ private slots:
         QVERIFY2(Summarised, "and it must count toward the gaps summary, which is the line that gets read");
     }
 
-    // ---- StampNodePositions: the layout the author sees is what a peer receives -------------------------
-    // Positions are the one thing allowed to enter the package's bytes only at publish time. These pin the
-    // three properties that makes that safe: it writes POS for everything, it bakes the CURRENT layout (a
-    // local drag beats the node's old POS), and it is a no-op on an unchanged bundle — because a stamp that
-    // rewrote bytes every run would mint a new CID, and re-download the package for every peer, for nothing.
-
-    void stamp_writes_POS_for_every_node()
-    {
-        QTemporaryDir Dir;
-        QVERIFY(Dir.isValid());
-        for (int I = 0; I < 5; ++I)
-        {
-            json N;
-            N["LABEL"] = "n" + std::to_string(I);
-            N["LAYERS"] = json::array();
-
-            if (I > 0) N["LAYERS"] = json::array({ json{{"NODE", "n" + std::to_string(I - 1)}} });
-            writeJson(Dir.filePath(QString("n%1.json").arg(I)), N);
-        }
-        std::string Err;
-        QVERIFY2(PackageCatalog::StampNodePositions(Dir.path().toStdString(), nullptr, &Err), Err.c_str());
-
-        std::set<std::pair<double, double>> Seen;
-        for (int I = 0; I < 5; ++I)
-        {
-            std::ifstream In(Dir.filePath(QString("n%1.json").arg(I)).toStdString());
-            json J; In >> J;
-            QVERIFY(J.contains("POS"));
-            QVERIFY(J["POS"].is_array() && J["POS"].size() == 2);
-            Seen.insert({J["POS"][0].get<double>(), J["POS"][1].get<double>()});
-        }
-        QCOMPARE(Seen.size(), (size_t)5);          // distinct: nothing stacked on the origin
-    }
-
-    void stamp_is_a_no_op_the_second_time()
-    {
-        QTemporaryDir Dir;
-        QVERIFY(Dir.isValid());
-        json A; A["LABEL"] = "a"; A["LAYERS"] = json::array();
-        json B; B["LABEL"] = "b"; B["LAYERS"] = json::array({ json{{"NODE", "a"}} });
-        writeJson(Dir.filePath("a.json"), A);
-        writeJson(Dir.filePath("b.json"), B);
-
-        std::string Err;
-        QVERIFY(PackageCatalog::StampNodePositions(Dir.path().toStdString(), nullptr, &Err));
-        auto Read = [&](const char *F) {
-            std::ifstream In(Dir.filePath(F).toStdString());
-            return std::string((std::istreambuf_iterator<char>(In)), std::istreambuf_iterator<char>());
-        };
-        const std::string A1 = Read("a.json"), B1 = Read("b.json");
-        //Byte equality alone proves nothing here — rewriting the same content produces the same bytes, so it
-        //holds even if the skip is gone. The property worth pinning is that an unchanged node is NOT WRITTEN
-        //at all, so assert the mtime too, after letting the clock move far enough to tell.
-        const QDateTime AT = QFileInfo(Dir.filePath("a.json")).lastModified();
-        QTest::qSleep(1100);
-        QVERIFY(PackageCatalog::StampNodePositions(Dir.path().toStdString(), nullptr, &Err));
-        QCOMPARE(Read("a.json"), A1);              // byte-identical ⇒ same Meta-CID on republish
-        QCOMPARE(Read("b.json"), B1);
-        QCOMPARE(QFileInfo(Dir.filePath("a.json")).lastModified(), AT);   // and untouched on disk
-    }
-
-    void stamp_bakes_a_local_drag_over_the_existing_POS()
-    {
-        QTemporaryDir Dir;
-        QVERIFY(Dir.isValid());
-        json A; A["CID"] = "a"; A["LABEL"] = "a"; A["POS"] = json::array({10.0, 20.0}); A["LAYERS"] = json::array();
-        writeJson(Dir.filePath("a.json"), A);
-
-        json Local = json::object();
-        Local["a"] = json::array({777.0, 888.0});   // the author dragged it; keyed by the node's CID handle "a"
-        std::string Err;
-        QVERIFY(PackageCatalog::StampNodePositions(Dir.path().toStdString(), &Local, &Err));
-
-        std::ifstream In(Dir.filePath("a.json").toStdString());
-        json J; In >> J;
-        QCOMPARE(J["POS"][0].get<double>(), 777.0);
-        QCOMPARE(J["POS"][1].get<double>(), 888.0);
-    }
-
-    // The WIRING, not the function. Every other stamp test calls StampNodePositions with a hand-built override,
-    // so when the editor's key and publishing's lookup drifted apart — which they did — nothing failed: the
-    // lookup simply missed and the author's whole arrangement was replaced by the algorithm's default at the
-    // one moment it was supposed to be preserved. This asserts the two agree on the same bundle.
-    void theEditorsLayoutKeyIsTheOnePublishingLooksUp()
-    {
-        QTemporaryDir Dir;
-        QVERIFY(Dir.isValid());
-        const QString Bundle = Dir.filePath("[999][v1.0] Keyed");
-        QVERIFY(QDir().mkpath(Bundle));
-        json A; A["CID"] = "a"; A["LABEL"] = "a"; A["LAYERS"] = json::array();   // handle "a" is what SetPos + the override key on
-        writeJson(Bundle + "/a.json", A);
-
-        // What the editor writes, through the editor's own path.
-        json Cfg = json::object();
-        PackageEditorModel Model(&Cfg, nullptr);
-        Model.initPackage(Bundle, nullptr);
-        PkgGraph::SetPos(Model.layout(), "a", 4242.0, 2424.0);
-        Model.SaveLayout();
-        QVERIFY2(Cfg.contains("EDITORLAYOUT"), "the editor wrote no layout at all");
-
-        // What publishing reads, through publishing's own path.
-        // Through the SAME function the publisher calls, and — critically — with the path SHAPES the publisher
-        // actually produces. An already-absolute, already-normal path makes both sides equal by construction,
-        // so the test would pass with EditorLayoutKey implemented as `return BundleDir.string();` and could not
-        // see a relative root (--remint-library LIBRARY), a trailing slash, or a "/./" segment.
-        for (const std::string &Shape : { Bundle.toStdString(),
-                                          Bundle.toStdString() + "/",
-                                          Bundle.toStdString() + "/./",
-                                          std::filesystem::relative(Bundle.toStdString()).string() })
-        {
-            if (Shape.empty()) continue;   // relative() yields "" across filesystems; not a case we can force
-            QVERIFY2(PackageCatalog::EditorLayoutFor(Cfg, std::filesystem::path(Shape)) != nullptr,
-                     qPrintable(QString("publishing finds nothing for bundle path shape '%1'")
-                                .arg(QString::fromStdString(Shape))));
-        }
-        const json *Local = PackageCatalog::EditorLayoutFor(Cfg, std::filesystem::path(Bundle.toStdString()));
-        QVERIFY2(Local != nullptr,
-                 "publishing's own lookup finds nothing for the bundle the editor just wrote");
-        QCOMPARE((*Local)["a"][0].get<double>(), 4242.0);
-
-        // ...and end to end: the drag must reach POS.
-        std::string Err;
-        QVERIFY2(PackageCatalog::StampNodePositions(Bundle.toStdString(), Local, &Err), Err.c_str());
-        std::ifstream In((Bundle + "/a.json").toStdString());
-        json J; In >> J;
-        QCOMPARE(J["POS"][0].get<double>(), 4242.0);
-        QCOMPARE(J["POS"][1].get<double>(), 2424.0);
-    }
-
-    // The two properties the publish split exists for. Both were unpinned: re-inserting the stamp into
-    // PublishPackage, or dropping the has-a-layout gate, left the whole suite green — and four consecutive
-    // fix-ups in this changeset each introduced a regression, so the fixes themselves get the tests.
-
+    // Positions are this machine's view of a package (GlobalConfig), never its content: publishing writes none into
+    // the node files it re-mints.
     void publishingDoesNotWritePositionsIntoNodeFiles()
     {
         QTemporaryDir Dir;
         QVERIFY(Dir.isValid());
-        json A; A["LABEL"] = "a";
+        json A; A["LABEL"] = "a"; A["LAYERS"] = json::array();
         writeJson(Dir.filePath("a.json"), A);
-
         std::string Err;
-        // Dehydrated destination empty = publish in place, which is what the IPFS tab and --publish do.
         (void)PackageCatalog::PublishPackage(Dir.path().toStdString(), std::string(), &Err);
-
-        std::ifstream In(Dir.filePath("a.json").toStdString());
-        json J; In >> J;
-        QVERIFY2(!J.contains("POS"),
-                 "PublishPackage stamped a layout — it is reached for bundles fetched from other people, "
-                 "whose bytes must keep matching the CID that serves them");
-    }
-
-    // Pins the LOOKUP CONTRACT the two authoring gates are built on: nullptr for a bundle nobody arranged,
-    // non-null once one exists. It does NOT pin the gates themselves — removing `if (Local)` from
-    // packageeditor.cpp or packagecatalog_publish.cpp leaves this green, because reaching either needs a live
-    // PackageEditor or a RemintLibrary run (IPFS). The PublishPackage half IS pinned, by
-    // publishingDoesNotWritePositionsIntoNodeFiles; the editor-side gate is currently unguarded.
-    void theLayoutLookupIsNullUntilSomethingIsArranged()
-    {
-        QTemporaryDir Dir;
-        QVERIFY(Dir.isValid());
-        json Cfg = json::object();
-        QCOMPARE(PackageCatalog::EditorLayoutFor(Cfg, std::filesystem::path(Dir.path().toStdString())),
-                 (const json *)nullptr);
-
-        Cfg["EDITORLAYOUT"] = json::object();
-        Cfg["EDITORLAYOUT"][PackageCatalog::EditorLayoutKey(
-            std::filesystem::path(Dir.path().toStdString()))] = json{{"a", json::array({1.0, 2.0})}};
-        QVERIFY(PackageCatalog::EditorLayoutFor(Cfg, std::filesystem::path(Dir.path().toStdString())) != nullptr);
+        int Nodes = 0;
+        for (const QString &F : QDir(Dir.path()).entryList({"*.json"}, QDir::Files))
+        {
+            std::ifstream In(Dir.filePath(F).toStdString());
+            json J; In >> J;
+            ++Nodes;
+            QVERIFY2(!J.contains("POS"), "PublishPackage stamped a layout into a node");
+        }
+        QCOMPARE(Nodes, 1);
     }
 
 private:

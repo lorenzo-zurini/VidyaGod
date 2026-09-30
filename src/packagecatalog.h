@@ -146,8 +146,24 @@ bool IsLocalPackagePath(const nlohmann::ordered_json &GlobalConfigJSON, const st
 //had POS written into its node files and its bytes stopped matching the CID that served them. It also meant
 //the three call sites that pass no override minted a DIFFERENT CID from the editor's button for the same
 //bundle, because they baked the computed layout where the editor bakes the author's.
+//LibraryRoot/UserDataRoot: where the save's re-mint follows renamed nodes (other packages that contain them, the
+//instances that remember them) — "" skips that.
 [[nodiscard]] bool PublishPackage(const std::string &PackageDir, const std::string &DehydratedDestDir,
-                                  std::string *Error = nullptr);
+                                  std::string *Error = nullptr, const std::string &LibraryRoot = std::string(),
+                                  const std::string &UserDataRoot = std::string());
+
+//What seeding a node's content did (see SeedNodeContent).
+struct SeedReport
+{
+    int Walked = 0, Seeded = 0, Covers = 0, Repaired = 0, SizesStamped = 0, BadCovers = 0;
+    std::vector<std::string> Unfetchable, Unshareable;
+};
+//Seed ONE node's content — each content layer's file and each tile cover — into IPFS where its SOURCE is missing or
+//no longer serves its bytes, and write SOURCE and SIZE into the node. IN MEMORY: the node's bytes change, so the
+//caller saves it as a re-mint (PkgDoc::Document::Save), never by rewriting its file. False (Error) when a layer's file
+//exists and cannot be seeded; a cover that cannot be seeded is only reported.
+[[nodiscard]] bool SeedNodeContent(nlohmann::ordered_json &Node, const std::filesystem::path &PackageDir, SeedReport &R,
+                                   bool &Changed, std::string *Error = nullptr);
 
 // Re-establish seeding from a publisher's master: walk every node bundle under Dir and add each CID-referenced file
 // (LAYER + META.COVER SOURCE.ipfs content) to the IPFS node BY REFERENCE, so the node serves it (and reprovides it
@@ -232,28 +248,9 @@ int MirrorDehydrated(const std::string &SrcDir, const std::string &DestDir);
 // reference), then AddNoCopy it. Returns the folder CID, or "" on failure.
 std::string PublishMetaCid(const std::string &SrcDir, std::string *Error = nullptr);
 
-//The GlobalConfig["EDITORLAYOUT"] key for a bundle: its path made ABSOLUTE, normalised, and stripped of
-//any trailing separator. ONE function because the
-//writer (the editor) and the reader (publishing) must agree exactly — they did not, and a mismatch is
-//invisible: the lookup simply misses, publishing stamps the algorithm's default, and the author's whole
-//arrangement is discarded at the moment it was supposed to be preserved.
+//The GlobalConfig["EDITORLAYOUT"] key for a bundle (the package editor's positions on this machine): its path made
+//ABSOLUTE, normalised, and stripped of any trailing separator, so every way of naming the folder finds the same entry.
 std::string EditorLayoutKey(const std::filesystem::path &BundleDir);
-
-//This machine's stored canvas positions for a bundle, or nullptr when it has none. The LOOKUP is a function
-//rather than two lines inlined at the call site so a test can hold the publisher to the same key the editor
-//writes — inlined, the two drifted and nothing failed, because a missed lookup is indistinguishable from
-//"this bundle was never arranged".
-const nlohmann::ordered_json *EditorLayoutFor(const nlohmann::ordered_json &GlobalConfigJSON,
-                                              const std::filesystem::path &BundleDir);
-
-//Writes the canvas layout into the bundle's nodes as POS, so a published package opens laid out for someone who
-//has never seen it. Stamps the layout AS IT STANDS — `LocalOverride` (this machine's drags, from GlobalConfig's
-//EDITORLAYOUT) beats a node's current POS, which beats the computed default — so publishing bakes the picture
-//the author is actually looking at, and the algorithm only supplies positions for nodes nobody ever moved.
-//Rewrites nothing whose POS is already correct, so republishing an unchanged bundle mints the same CID.
-[[nodiscard]] bool StampNodePositions(const std::string &PackageDir,
-                                      const nlohmann::ordered_json *LocalOverride = nullptr,
-                                      std::string *Error = nullptr);
 
 // After a mint, write each node's freshly-minted CID back into its working-tree file (the stored top-level "CID"
 // handle) and remap every reference (PARENTS / LIBRARYITEM) old-CID → new-CID via HandleToCid, so the on-disk tree

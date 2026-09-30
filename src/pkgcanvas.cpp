@@ -1,2619 +1,1921 @@
 #include "pkgcanvas.h"
 
-#include "commonutils.h"   // Log
+#include "pkgform.h"
+#include "pkglayout.h"
+#include "commonutils.h"
 
-//imnodes_internal.h pulls in imgui_internal.h, which insists on this before imgui.h.
-#define IMGUI_DEFINE_MATH_OPERATORS
 #include "imgui.h"
+#include "imgui_internal.h"   // the window list, to keep hover order = draw order among node windows
 #include "imgui_stdlib.h"
-#include "imnodes.h"
-#include "imnodes_internal.h"   // GImNodes: the canvas rect and the live click interaction
 
-#include <functional>
-#include <sstream>
 #include <algorithm>
-#include <cmath>
-#include <map>
 #include <cfloat>
-#include <set>
+#include <cmath>
+#include <functional>
 
 using json = nlohmann::ordered_json;
-using namespace PkgGraph;
+using PkgDoc::Document;
 
 namespace {
+#include "../third_party/fonts/editor_fonts.inc"
 
-//An OVER wire needs a stable int id for imnodes. Slot = the ref's ordinal among the child's OVER refs, flattened.
-constexpr int kMaxParents = 256;
-inline int LinkId(int ChildIndex, int Slot) { return ChildIndex * kMaxParents + Slot; }
-inline int LinkChild(int Id)                { return Id / kMaxParents; }
-inline int LinkSlot(int Id)                 { return Id % kMaxParents; }
+ImFont *GBold = nullptr;
+ImFont *GMono = nullptr;
 
-//External parents are drawn as chips; give them node ids past the real ones so imnodes keeps them distinct.
-constexpr int kExternalBase = 100000;
+// ---- geometry, in WORLD units (one unit = one pixel at 100%) -------------------------------------------------------
+constexpr float kFont     = 14.0f;    // body text
+constexpr float kNodeW    = 360.0f;   // a node's width
+constexpr float kPadX     = 9.0f;     // body padding, left and right
+constexpr float kPadY     = 6.0f;     // body padding, top and bottom
+constexpr float kTitleH   = 30.0f;    // the title bar
+constexpr float kChipW    = 250.0f;   // another package's node
+constexpr float kChipH    = 46.0f;
+constexpr float kPortR    = 6.0f;     // port radius
+constexpr float kLodZoom  = 0.42f;    // below this, nodes are boxes with names
+constexpr float kMinZoom  = 0.08f, kMaxZoom = 2.5f;
+constexpr float kColumnGap = 130.0f;  // clear space between layout columns (room for the wires)
+constexpr float kNodeGap  = 24.0f;    // clear space kept around a node placed by hand
 
-//A tooltip raised from INSIDE the editor. ImGui places a tooltip at io.MousePos, which for the duration of the
-//editor is the cursor inverse-transformed into world space — so at 0.5x the tooltip lands twice as far from the
-//origin as the pointer that raised it and gets clamped into a corner of the screen, and at 3x it lands a third
-//of the way back. A tooltip is screen furniture like the minimap, so it is placed at the REAL cursor. (The
-//window it makes carries neither the Popup nor the ChildWindow flag, so imgui leaves its ParentWindow null and
-//the nested-window walk below never sees it — this is the only thing that can fix it.)
-void EditorTooltip(const ImVec2 &RealMouse, const ImVec2 &ScreenPos, const ImVec2 &ScreenSize, const char *Text)
+float RowH() { return kFont + 2.0f * 3.0f + 4.0f; }   // FramePadding.y 3, ItemSpacing.y 4 (see PushNodeStyle)
+
+ImU32 Col(int R, int G, int B, int A = 255) { return IM_COL32(std::clamp(R, 0, 255), std::clamp(G, 0, 255), std::clamp(B, 0, 255), A); }
+
+std::string StrOf(const json &N, const char *K)
 {
-    //The cursor is handed BACK for the duration of the call rather than the window being pinned. Pinning it
-    //with SetNextWindowPos sets window_pos_set_by_api, which makes imgui skip both FindBestWindowPosForPopup
-    //(the code that flips a tooltip to the other side of the cursor at a screen edge) and ClampWindowPos — so
-    //a tip raised near the right or bottom edge ran off-screen with nothing to pull it back. Giving imgui the
-    //real position instead lets all of that work exactly as it does everywhere else in the app.
-    //The VIEWPORT goes back with it, for the same reason. While the editor lays out, the viewport is pointed
-    //at the world region being drawn so that in-node popups flip and clamp in the space their widgets live in
-    //— but a tooltip is screen furniture placed at the real cursor, so it has to be kept inside the real
-    //screen. Handing both back for the duration of the call is the whole of it.
-    ImGuiIO &Io = ImGui::GetIO();
-    ImGuiViewport *VP = ImGui::GetMainViewport();
-    const ImVec2 WasMouse = Io.MousePos, WasPos = VP->Pos, WasSize = VP->Size;
-    Io.MousePos = RealMouse;
-    VP->Pos = ScreenPos; VP->Size = ScreenSize;
-    VP->WorkPos = ScreenPos; VP->WorkSize = ScreenSize;
-    ImGui::SetTooltip("%s", Text);
-    Io.MousePos = WasMouse;
-    VP->Pos = WasPos; VP->Size = WasSize;
-    VP->WorkPos = WasPos; VP->WorkSize = WasSize;
+    return (N.is_object() && N.contains(K) && N[K].is_string()) ? N[K].get<std::string>() : std::string();
 }
 
-//The canvas borrows several pieces of global imgui state for the duration of the editor — the cursor position
-//and delta it hands imnodes, a widened clip rect for submission, and the main viewport (so in-node popups
-//place themselves in the space their widgets are laid out in) — and every one must be handed back on EVERY
-//exit from frame(). This guard is that. imnodes' own canvas rectangle is imnodes state rather than imgui's
-//and is restored beside the call that changes it. A throw escaping frame() still leaves imnodes mid-scope with
-//its draw-list splitter split, which no RAII here can repair; the value is that what THIS file borrowed is
-//always returned, and the viewport in particular feeds the backend's projection matrix.
-struct EditorIoGuard
+std::string ShortCid(const std::string &C)
 {
-    ImGuiIO       &Io;
-    ImGuiViewport *VP;
-    ImVec2         Pos, Delta, VPos, VSize, VWorkPos, VWorkSize;
-    bool           Clip = false;
-    explicit EditorIoGuard(ImGuiIO &I)
-        : Io(I), VP(ImGui::GetMainViewport()), Pos(I.MousePos), Delta(I.MouseDelta),
-          VPos(VP->Pos), VSize(VP->Size), VWorkPos(VP->WorkPos), VWorkSize(VP->WorkSize) {}
-    void popClip() { if (Clip) { ImGui::PopClipRect(); Clip = false; } }
-    void restoreViewport()
-    { VP->Pos = VPos; VP->Size = VSize; VP->WorkPos = VWorkPos; VP->WorkSize = VWorkSize; }
-    //The viewport is in here rather than relying on "there is no early return between" — SetupDrawData takes
-    //the backend's projection straight from it, so reaching Render() with it still pointed at the world region
-    //draws the WHOLE application frame at the wrong scale. Restoring it twice (here and after EndNodeEditor)
-    //costs four assignments; not restoring it once costs the frame.
-    ~EditorIoGuard()
-    {
-        popClip();
-        Io.MousePos = Pos; Io.MouseDelta = Delta;
-        restoreViewport();
-    }
-    EditorIoGuard(const EditorIoGuard &) = delete;
-    EditorIoGuard &operator=(const EditorIoGuard &) = delete;
-};
-
-//A node's size for the overview: its last MEASURED size, or the layout's estimate for one culling has never let
-//on screen. The minimap draws every node, those included, and after a document swap that is all of them.
-inline ImVec2 NodeSize(const std::map<std::string, ImVec2> &Dims, const PkgGraph::Node &N)
-{
-    const auto It = Dims.find(N.Id);
-    if (It != Dims.end()) return It->second;
-    //Nothing measured yet — after a document swap that is EVERY node, and a culled one is never measured at
-    //all, so it would keep the placeholder forever. The layout already estimated this node's height from its
-    //payload; using it means a 2950px BinaryPatch shows as a tall box in the overview rather than a stub.
-    return ImVec2(330.0f, N.Height > 1.0f ? N.Height : 140.0f);
+    return C.size() > 18 ? C.substr(0, 10) + "\xE2\x80\xA6" + C.substr(C.size() - 5) : C;
 }
 
-//One uniform node body, so the graph tiles predictably and long ids/paths scroll inside their field instead of
-//stretching the box. The old editor's forms grew to their longest string and the canvas inherited that.
-constexpr float kNodeWidth  = 330.0f;
-//Node and field widths are CONSTANTS and must stay that way: zoom is a transform over the geometry imnodes
-//emits, so scaling these as well multiplied the two together and nodes grew with the square of the zoom.
-constexpr float kLabelCol   = 96.0f;
-constexpr float kFieldWidth = 228.0f;
-
-namespace {
-//A row title cut to what fits beside its buttons, at a UTF-8 boundary.
-std::string Fit(const std::string &S, int Chars)
+bool IsGraft(const json &N)
 {
-    Chars = std::max(Chars, 10);
-    if ((int)S.size() <= Chars) return S;
-    size_t Cut = (size_t)Chars - 2;
-    while (Cut > 0 && ((unsigned char)S[Cut] & 0xC0) == 0x80) --Cut;
-    return S.substr(0, Cut) + "..";
-}
-//Characters of title a row at this depth has room for: the node width, less the fold arrow and indents, less the
-//move buttons a layer row carries.
-int TitleChars(int Depth, bool Buttons) { return (int)((kNodeWidth - 24.0f - 21.0f * (float)Depth - (Buttons ? 44.0f : 0.0f)) / 7.0f); }
+    return N.is_object() && N.contains("LAYERS") && N["LAYERS"].is_array() && !N["LAYERS"].empty()
+        && N["LAYERS"][0].is_object() && N["LAYERS"][0].contains("ANY");
 }
 
-//A node-width separator. ImGui::Separator() DRAWS across the window's content-region (not the imnodes node's), so
-//inside a node the line shot hundreds of px past the box — but its LAYOUT cost is width-0 + ItemSpacing.y, which the
-//height estimator (pkggraph kSepPx) models exactly. So keep the real Separator (height + zoom-scaling unchanged) and
-//just CLIP its drawing to kNodeWidth: the overrun is cut, nothing else moves.
-
-//TOTAL readers. The editor loads raw JSON off disk — deliberately, since it is the tool you open to FIX a
-//node the format rejects — so every field here may be any type. nlohmann's value() THROWS on a mismatch, and
-//a throw out of frame() escapes with ImGui scopes still open: the next paint then segfaults on the half-open
-//state. `"WHEN": true` and `"OVERRIDE": "true"` are both plausible slips, and NodeLower has a dedicated
-//diagnostic telling the author to come here and fix exactly those.
-std::string StrOf(const json &N, const char *Key, const std::string &Def = {})
+bool HasExec(const json &N)
 {
-    return (N.is_object() && N.contains(Key) && N[Key].is_string()) ? N[Key].get<std::string>() : Def;
-}
-// Model C: a node is IDENTIFIED for wiring by its stored "CID" handle — the CID it last minted to (or a stable
-// "draft-…" handle for a node not yet published). This is the authoring handle PARENTS/LIBRARYITEM reference and
-// everything (indexOf, canvas buffers, running state) keys on; it stays STABLE across an edit session (edits leave
-// it stale-on-purpose until Publish re-mints + write-backs). LABEL is PURELY COSMETIC — the pretty display name.
-std::string Handle(const json &N) { return StrOf(N, "CID"); }
-bool BoolOf(const json &N, const char *Key, bool Def = false)
-{
-    return (N.is_object() && N.contains(Key) && N[Key].is_boolean()) ? N[Key].get<bool>() : Def;
+    if (!N.is_object() || !N.contains("LAYERS") || !N["LAYERS"].is_array()) return false;
+    for (const json &L : N["LAYERS"]) if (L.is_object() && L.contains("EXEC")) return true;
+    return false;
 }
 
-//NOTE on the one shape this cannot express: the text is entries joined by newlines with no terminator, so []
-//and [""] both render as "". A LONE root base therefore shows as an empty box. It is PRESERVED — the list is
-//only rewritten when its own box is edited, and editing an empty box is the user replacing it — but it cannot
-//be typed from scratch here; author it as BASE_TARGETS: [""] (or let makeDelta write it). Adding a terminator
-//to disambiguate was tried and is worse: ListToText(TextToList(t)) then stops being the identity, so the text
-//grows a newline under the cursor while you type.
-std::string ListToText(const json &Arr)
+//Cubic bezier point.
+ImVec2 Bez(const ImVec2 &A, const ImVec2 &B, const ImVec2 &C, const ImVec2 &D, float T)
 {
-    std::string T;
-    if (Arr.is_array())
-        for (const auto &E : Arr) if (E.is_string()) { T += E.get<std::string>(); T += '\n'; }
-    if (!T.empty() && T.back() == '\n') T.pop_back();
-    return T;
+    const float U = 1.0f - T;
+    const float W0 = U * U * U, W1 = 3 * U * U * T, W2 = 3 * U * T * T, W3 = T * T * T;
+    return ImVec2(W0 * A.x + W1 * B.x + W2 * C.x + W3 * D.x, W0 * A.y + W1 * B.y + W2 * C.y + W3 * D.y);
 }
 
-//One line per entry, trimmed. `KeepEmpty` decides what a BLANK line means: for most lists it is typing noise
-//and is dropped, but for a delta's BASE_TARGETS an empty entry is the MOUNT ROOT — a real target. Dropping it
-//there made the root base untypeable, and silently deleted it from any node that already had one.
-json TextToList(const std::string &T, bool KeepEmpty = false)
+float DistToSegment(const ImVec2 &P, const ImVec2 &A, const ImVec2 &B)
 {
-    json Arr = json::array();
-    std::string Line;
-    for (size_t I = 0; I <= T.size(); ++I)
-    {
-        if (I == T.size() || T[I] == '\n')
-        {
-            size_t B = Line.find_first_not_of(" \t\r"), E = Line.find_last_not_of(" \t\r");
-            if (B != std::string::npos)   Arr.push_back(Line.substr(B, E - B + 1));
-            //A blank line is an entry — INCLUDING the last one. ListToText writes no terminator, so "a\n" is
-            //["a",""] and "a" is ["a"]; treating the final blank as a separator silently ate a TRAILING root
-            //base, which is exactly the ["dxvk", ""] shape a prefix delta over the runner-mount root has.
-            //Wholly empty text is the one exception: that is no entries, and it ERASES the key.
-            else if (KeepEmpty && !T.empty()) Arr.push_back(std::string());
-            Line.clear();
-        }
-        else Line += T[I];
-    }
-    return Arr;
+    const ImVec2 AB(B.x - A.x, B.y - A.y), AP(P.x - A.x, P.y - A.y);
+    const float L = AB.x * AB.x + AB.y * AB.y;
+    const float T = L > 0.0f ? std::clamp((AP.x * AB.x + AP.y * AB.y) / L, 0.0f, 1.0f) : 0.0f;
+    const float Dx = A.x + AB.x * T - P.x, Dy = A.y + AB.y * T - P.y;
+    return std::sqrt(Dx * Dx + Dy * Dy);
 }
+
+bool Overlaps(const ImVec4 &A, const ImVec4 &B) { return A.x < B.z && B.x < A.z && A.y < B.w && B.y < A.w; }
 
 } // namespace
 
-//Zoom bounds: below ~0.2 a node is a smudge, above ~3 one node fills the screen and panning is easier.
-static constexpr float kMinZoom = 0.2f;
-static constexpr float kMaxZoom = 3.0f;
+// ================================================================================================================
+// State
+// ================================================================================================================
+
+struct NodeView
+{
+    int Index = 0;                      // position in Views
+    float Est = kChipH;                 // estimated folded height (world units) until a drawn height is measured
+    std::string Handle;
+    int Doc = -1;                       // >= 0: the document's node; -1: another package's node (a chip)
+    std::string Title, Kind, Package;   // Package: the chip's package name
+    bool Graft = false, Variant = false, Launchable = false, Unwired = false;
+    float W = kNodeW;
+};
+
+struct WireView
+{
+    int From = -1, To = -1;             // views: the parent (contained / required / excluded) and the child
+    PkgGraph::Link L;
+};
 
 struct PkgCanvasState
 {
-    //Viewport culling + the minimap. They used to be in tension — imnodes' minimap re-drew the WHOLE graph
-    //from the nodes submitted, so it cost as much again as the graph and could not coexist with culling. The
-    //minimap is ours now and draws from G.Nodes, so culling is unconditional, the minimap is always available,
-    //and the toolbar reports how much of the graph is actually on screen.
-    //Zoom, done as a VIEW TRANSFORM: imnodes is handed unscaled world coordinates and an unscaled style, and
-    //the vertices it emits are scaled about the canvas origin afterwards. Nothing the document or the layout
-    //holds is ever in a zoomed unit, so looking at the graph cannot edit it — by construction, not by a guard.
-    float Zoom        = 1.0f;
-    //The wheel sets a TARGET and the view WALKS to it. A notch is a 10% multiplicative jump applied whole,
-    //which reads as a teleport; easing over ~120 ms reads as zooming. Kept separate from Zoom so that
-    //setZoom() — the toolbar, a test, "reset" — still lands instantly, where an animation would be a lie.
-    float ZoomTarget  = 1.0f;
-    bool  Zooming     = false;
-    //setZoom happens outside a frame, where the viewport is not known; the recentre it wants is done next
-    //frame, and needs the scale it came from as well as the one it went to.
-    float RecentreFromZoom = 0.0f;   // the zoom the pending recentre is coming FROM; 0 = none pending
-    //The anchor the easing holds still: a screen offset from the canvas origin, and the WORLD point that was
-    //under it when the gesture started. The pan is re-solved from these EVERY eased frame — easing the zoom
-    //alone would let the point under the cursor drift away while the animation runs, which is the one thing a
-    //cursor-anchored zoom must not do.
-    ImVec2 ZoomAnchor{0, 0};
-    ImVec2 ZoomAnchorWorld{0, 0};
-    //Bounds of the transformed surface (min x, min y, max x, max y) from the last frame. Computed while the
-    //view transform walks the vertices, so it costs nothing, and it is the only way to observe the transform
-    //from outside — imnodes' own reported sizes are deliberately unscaled now.
-    ImVec4 SurfaceBounds{0, 0, 0, 0};
-    //Last frame's minimap rectangle, the widest clip rect the canvas drew through, and the canvas viewport.
-    //All three are screen-space furniture that zoom must not move; recorded so a test can say so.
-    ImVec4 MiniMapRect{0, 0, 0, 0};
-    ImVec4 SurfaceClip{0, 0, 0, 0};
-    ImVec4 ViewportRect{0, 0, 0, 0};
-    int    SurfaceVertices = 0;
-    //The rectangle the overview drew for each node this frame, by node index.
-    std::vector<ImVec4> MiniBoxes;
-    //The rectangle in-node popups were placed against last frame (position + size), in the editor's own
-    //units: the region being laid out, enlarged to fit a dropdown. Never the screen.
-    ImVec4 PopupExtent{0, 0, 0, 0};
-    //The main viewport and its work rect at the point post-editor windows are submitted — the minimap child
-    //and the delete-confirmation modal. Both must be back in SCREEN space by then.
-    ImVec4 PostEditorViewport{0, 0, 0, 0};
-    ImVec4 PostEditorWorkRect{0, 0, 0, 0};
-    //The cursor position actually handed to the editor. Zoom scales the emitted geometry, so input must be
-    //inverse-transformed on the way IN or every click lands where the node would have been drawn unzoomed.
-    //Recorded because that mapping is otherwise invisible — and a click landing on the wrong node is the
-    //quietest way for this whole approach to be wrong.
-    ImVec2 EditorMouse{0, 0};
-    //The REAL cursor, kept for the things inside the editor that are screen furniture rather than content —
-    //a tooltip is placed by imgui at io.MousePos, which in there is the world cursor.
-    ImVec2 RealMouse{0, 0};
-    //The real screen viewport, kept for the same reason: while the editor runs the viewport is pointed at the
-    //world region being laid out, and screen furniture raised from inside it needs the real one back.
-    ImVec2 ScreenViewportPos{0, 0};
-    ImVec2 ScreenViewportSize{0, 0};
-    //imnodes DESTROYS every node not submitted during a frame (ObjectPoolUpdate) and re-creates it at
-    //Origin(0,0) the next time it is begun. With viewport culling that happens constantly, so "have I ever
-    //seeded this node" is the wrong question — the right one is "was it submitted LAST frame", which is the
-    //only thing that says whether imnodes still remembers where it goes.
-    std::set<std::string> DrawnLast;
-    //Last frame's selected node indices — read after EndNodeEditor, where asking imnodes is legal.
-    std::set<int>         SelectedLast;
-    bool  ShowMiniMap = true;
-    int  VisibleNodes = 0;
-    int  VisibleLinks = 0;   // links actually submitted this frame (incl. via a crossing-link proxy)
-    //Measured node sizes by NODE_ID. The minimap draws the WHOLE graph, including the nodes culling never
-    //submitted — and a node that was never submitted has no size imnodes can be asked for. Whatever was
-    //measured the last time it WAS on screen is kept here; a node never yet seen falls back to a nominal box.
-    std::map<std::string, ImVec2> NodeDims;
-    //Node ids already warned about an impossible position — the warning is worth one line, not one per frame.
-    //Keyed "<id>@<source>@<value>", so the only thing ever suppressed is a message identical to one already
-    //printed. Maintained by removeNode and renameNode BY PREFIX — the composite shape is why erasing a bare id
-    //silently did nothing — and deliberately NOT cleared by invalidateGraph, which runs on every keystroke.
-    std::set<std::string> WarnedPos;
+    Document *Doc = nullptr;
 
-    json *Doc = nullptr;
-    //The canvas-position sidecar (NODE_ID -> [x,y]), owned by the model and persisted to
-    //GlobalConfig under EDITORLAYOUT, keyed by bundle path. Never the document: see PkgGraph::Build
-    //(a node's own POS is the published default). Null = positions are not persisted.
-    json *Layout = nullptr;
-    PkgCanvas::SaveFn Save;
-    PkgCanvas::SaveFn SaveLayoutOnly;   // used when a frame changed ONLY positions
-    PkgCanvas::KnownIdsFn KnownIds;
-    PkgCanvas::ActionFn Action;
-    ImNodesContext *Ctx = nullptr;
-    std::map<std::string, std::vector<std::string>> Issues;   // NODE_ID → messages
-    //A heavy action in flight on one node. Canvas-local and keyed by NODE_ID so it is immune to the node's
-    //index moving, and so it never reaches the document.
-    struct Busy { QString What; QString Detail; float Frac = -1.0f; bool Cancellable = false; };
+    // ---- the graph, rebuilt when the document changes ----
+    uint64_t BuiltRev = 0;
+    std::vector<NodeView> Views;
+    std::map<std::string, int> ViewOf;
+    std::vector<WireView> Wires;
+    PkgGraph::VarFacets Facets;
+    std::map<std::string, std::string> Labels;           // handle -> LABEL (this package), for wires and pickers
+    std::map<std::string, PkgCanvas::External> ExtCache;
+    std::vector<std::string> Offered;                    // library nodes brought in by the picker, not yet wired
+    std::string Structure;                               // nodes + wires: a change re-runs the layout
+    //The layout's position for nodes the document does not place. STABLE: once a node has been shown somewhere it
+    //stays there when the graph changes (a new wire must not rearrange the package under the author's hands); only
+    //nodes without one are laid out, clear of everything already placed. A FULL layout (open, Tidy, the first
+    //measurement while the view is untouched) starts over.
+    std::map<std::string, ImVec2> AutoPos;
+    bool LayoutValid = false;
+    bool FullLayout = true;
+    std::map<std::string, float> Measured;               // drawn height (world units), by handle
+    std::set<std::string> MeasuredOnce;                  // first measurement corrects the layout; later ones do not
+
+    // ---- the view ----
+    ImVec2 Cam{0, 0};                                    // world point at the canvas's top-left
+    float Z = 1.0f, ZTarget = 1.0f;
+    bool Zooming = false;
+    ImVec2 ZAnchorScreen{0, 0}, ZAnchorWorld{0, 0};
+    bool FramePending = true;                            // frame the graph on the first frame
+    ImVec4 Canvas{0, 0, 0, 0};                           // last frame's canvas rect (screen)
+    bool ShowMini = true;
+    ImVec4 MiniRect{0, 0, 0, 0};
+
+    // ---- selection and interaction ----
+    std::set<std::string> Sel;
+    std::string SelWireChild; int SelWireSlot = -1;
+    enum class Mode : uint8_t { Idle, Pan, Box, Drag, Link } M = Mode::Idle;
+    ImVec2 PressScreen{0, 0};
+    ImVec2 DragDelta{0, 0};                              // world offset of the selection being dragged
+    std::string LinkHandle; bool LinkFromOut = true;     // the port a wire is being dragged from
+    std::string DropTarget;                              // the node the dragged wire would land on
+    std::string HoverNode, HoverWireChild; int HoverWireSlot = -1;
+    std::string PortHover;                               // the node whose port is under the cursor
+    bool AutoFrame = true;                               // re-frame after the first layouts, until the user moves the view
+    bool RightPressedOnBg = false;
+    ImVec2 ContextWorld{0, 0};
+    std::string Renaming, RenameBuf;
+    bool RenameFocus = false;
+    std::string Search;
+    bool SearchFocus = false;
+    std::string OfferFilter;
+    std::string LastSelEmitted = "\x01";
+
+    // ---- per-node view state ----
+    std::set<std::string> Open;                          // "<handle>|<key>" folds that are open
+    std::set<std::string> ExpandAll;                     // nodes to unfold completely on their next draw
+    std::string FoldNode;                                // the node whose folds are being drawn
+    std::map<std::string, std::vector<PkgGraph::RegRow>> RegBuf;   // "<handle>|reg#<layer>"
+    std::vector<std::string> ZOrder;                     // handles, bottom -> top
+
+    // ---- host facts ----
+    PkgCanvas::ExternalFn ExternalLookup;
+    PkgCanvas::OffersFn Offers;
+    std::map<std::string, std::vector<std::string>> Issues, Hints;
+    struct Busy { QString What, Detail; float Frac = -1.0f; bool Cancellable = false; };
     std::map<std::string, Busy> Running;
-    std::map<std::string, std::vector<std::string>> Hints;   // NODE_ID → host-probed facts ("deflate")
-    //imnodes keys nodes by the int we hand it (the array INDEX), and it has no persisted state of its own
-    //(IniFilename is null). So a node's stored position has to be pushed in, and pushed in AGAIN whenever its index
-    //moves — otherwise a delete slides every node's position onto its neighbour. Keyed by NODE_ID, which is
-    //what actually identifies the node.
-    std::map<std::string, int> Seeded;                       // NODE_ID -> the index its position was pushed at
-    //RegEdit rows are a FLATTENING of the hive tree: committing one on every keystroke rebuilt the tree and
-    //re-flattened it next frame, which reorders rows (values sort before subkeys) and merges two rows the
-    //instant a half-typed path matches another. The row being edited then moved out from under the cursor.
-    //So the rows an entry is being edited with live here, keyed "NODE_ID#entry", and are committed to the
-    //tree when the field is DEACTIVATED - the same "commit on finish" rule the KeyValue rename uses.
-    std::map<std::string, std::vector<PkgGraph::RegRow>> RegBuf;
-    int CurLayer = -1;   // the LAYERS index drawPayload is drawing (keys per-layer edit buffers)
-    //The layer tree's folds: every section, layer and list entry starts folded, and the ones opened are held HERE,
-    //not in ImGui's per-context storage — that outlives the canvas and is keyed by the node's INDEX, so a fold would
-    //follow an index to another node and no test could say what state it starts from. Keyed "<node>|<path>".
-    std::set<std::string> Open;
-    std::set<std::string> ExpandAll;     // node prefixes to open completely the next time they are drawn
-    std::string FoldPrefix;              // the node drawPayload is drawing
-    PkgGraph::VarFacets Facets;          // every variable's launcher facet in the document (rebuilt with the graph)
-    std::map<std::string, std::string> RefLabels;   // handle -> LABEL: this bundle's nodes, then the catalog's
-    bool CatalogLabels = false;          // the catalog's labels were read into RefLabels
+    std::pair<std::string, std::string> Pending;         // an action clicked this frame, dispatched after it
 
-    bool Dirty = false;            // document mutated this frame; persist on mouse-up
-    //Every mutation goes through here, so the cached graph can never outlive the document it was built from.
-    void MarkDirty() { Dirty = true; CacheValid = false; }
-    bool PosDirty = false;
-    int  Selected = -1;
-    int  ConfirmDelete = -1;                                 // a Delete awaiting confirmation
-    std::pair<std::string, std::string> Pending;              // an action clicked this frame, run after it
-    //The graph is rebuilt from the document, which is O(nodes+links). Doing that at 60Hz on a 2775-node
-    //bundle pins a core for no reason: the document only changes when something edits it.
-    PkgGraph::Graph Cache;
-    bool CacheValid = false;
-    std::set<int> HasDependent;                              // precomputed once per rebuild
-    std::vector<std::string> OfferedExternals;               // chips placed by the picker, not yet wired (by handle)
-    std::map<std::string, std::string> ExternalLabels;       // handle → pretty label, for chip display (from the picker)
-    std::string ExternalFilter;
-    float SidePanel = 360.0f;
-    std::string AddType = "VFSLayer";
+    // ---- last frame, for introspection ----
+    std::map<std::string, ImVec4> DrawnRect;
+    int VisibleNodes = 0, VisibleWires = 0;
+    bool Animating = false;
+    std::vector<ImVec4> Rects;                           // this frame's world rect of every view (see WorldRect)
+    bool RectsValid = false;
 
-    json &Nodes()
-    {
-        if (!Doc->contains("NODES") || !(*Doc)["NODES"].is_array()) (*Doc)["NODES"] = json::array();
-        return (*Doc)["NODES"];
-    }
+    ImVec2 W2S(const ImVec2 &W) const { return ImVec2(Canvas.x + (W.x - Cam.x) * Z, Canvas.y + (W.y - Cam.y) * Z); }
+    ImVec2 S2W(const ImVec2 &S) const { return ImVec2(Cam.x + (S.x - Canvas.x) / Z, Cam.y + (S.y - Canvas.y) / Z); }
 };
 
-PkgCanvas::PkgCanvas(json *doc, SaveFn save, QObject *parent, json *layout, SaveFn saveLayoutOnly)
-    : QObject(parent), m_s(std::make_unique<PkgCanvasState>())
+static void RefreshEstimates(PkgCanvasState &S);
+
+// ================================================================================================================
+// Fonts and style
+// ================================================================================================================
+
+void PkgCanvas::InstallFontsAndStyle()
+{
+    ImGuiIO &Io = ImGui::GetIO();
+    ImFontConfig Cfg;
+    Cfg.OversampleH = 2;
+    Cfg.PixelSnapH = false;
+    Io.Fonts->Clear();
+    Io.Fonts->AddFontFromMemoryCompressedTTF(NotoSansRegular_compressed_data, (int)NotoSansRegular_compressed_size, kFont, &Cfg);
+    GBold = Io.Fonts->AddFontFromMemoryCompressedTTF(NotoSansBold_compressed_data, (int)NotoSansBold_compressed_size, kFont, &Cfg);
+    GMono = Io.Fonts->AddFontFromMemoryCompressedTTF(NotoSansMono_compressed_data, (int)NotoSansMono_compressed_size, kFont, &Cfg);
+
+    ImGui::StyleColorsDark();
+    ImGuiStyle &S = ImGui::GetStyle();
+    S.WindowPadding = ImVec2(8, 6);
+    S.FramePadding = ImVec2(6, 3);
+    S.ItemSpacing = ImVec2(6, 4);
+    S.ItemInnerSpacing = ImVec2(4, 4);
+    S.IndentSpacing = 16.0f;
+    S.FrameRounding = 3.0f;
+    S.PopupRounding = 4.0f;
+    S.WindowRounding = 0.0f;
+    S.ChildRounding = 6.0f;
+    S.GrabRounding = 3.0f;
+    S.ScrollbarSize = 12.0f;
+    S.WindowBorderSize = 0.0f;
+    S.PopupBorderSize = 1.0f;
+    ImVec4 *C = S.Colors;
+    C[ImGuiCol_WindowBg]        = ImVec4(0.105f, 0.110f, 0.125f, 1.0f);
+    C[ImGuiCol_ChildBg]         = ImVec4(0.0f, 0.0f, 0.0f, 0.0f);
+    C[ImGuiCol_PopupBg]         = ImVec4(0.135f, 0.140f, 0.160f, 0.98f);
+    C[ImGuiCol_Border]          = ImVec4(0.30f, 0.32f, 0.37f, 0.60f);
+    C[ImGuiCol_FrameBg]         = ImVec4(0.180f, 0.190f, 0.215f, 1.0f);
+    C[ImGuiCol_FrameBgHovered]  = ImVec4(0.230f, 0.245f, 0.280f, 1.0f);
+    C[ImGuiCol_FrameBgActive]   = ImVec4(0.260f, 0.280f, 0.320f, 1.0f);
+    C[ImGuiCol_Button]          = ImVec4(0.220f, 0.240f, 0.285f, 1.0f);
+    C[ImGuiCol_ButtonHovered]   = ImVec4(0.290f, 0.330f, 0.410f, 1.0f);
+    C[ImGuiCol_ButtonActive]    = ImVec4(0.330f, 0.400f, 0.520f, 1.0f);
+    C[ImGuiCol_Header]          = ImVec4(0.230f, 0.260f, 0.320f, 0.55f);
+    C[ImGuiCol_HeaderHovered]   = ImVec4(0.270f, 0.310f, 0.390f, 0.80f);
+    C[ImGuiCol_HeaderActive]    = ImVec4(0.300f, 0.360f, 0.460f, 1.0f);
+    C[ImGuiCol_Text]            = ImVec4(0.900f, 0.910f, 0.930f, 1.0f);
+    C[ImGuiCol_TextDisabled]    = ImVec4(0.560f, 0.580f, 0.620f, 1.0f);
+    C[ImGuiCol_CheckMark]       = ImVec4(0.520f, 0.720f, 1.000f, 1.0f);
+    C[ImGuiCol_SliderGrab]      = ImVec4(0.520f, 0.720f, 1.000f, 1.0f);
+    C[ImGuiCol_Separator]       = ImVec4(0.300f, 0.320f, 0.370f, 0.60f);
+}
+
+ImFont *PkgCanvas::BoldFont() { return GBold; }
+ImFont *PkgCanvas::MonoFont() { return GMono; }
+
+// ================================================================================================================
+// Construction and host facts
+// ================================================================================================================
+
+PkgCanvas::PkgCanvas(Document *doc, QObject *parent) : QObject(parent), m_s(std::make_unique<PkgCanvasState>())
 {
     m_s->Doc = doc;
-    m_s->Layout = layout;
-    m_s->Save = std::move(save);
-    m_s->SaveLayoutOnly = std::move(saveLayoutOnly);
 }
 
 PkgCanvas::~PkgCanvas() = default;
 
-//Dropping imnodes' own selection, but only where there IS an imnodes context. invalidateGraph runs from
-//model-level paths (a reload, a rebuild) that can happen with no canvas realised at all — calling into
-//imnodes there dereferences a null context and takes the process down, which is how test_packageeditormodel
-//started segfaulting.
-void PkgCanvas::clearSelection()
+void PkgCanvas::setExternalLookup(ExternalFn fn) { m_s->ExternalLookup = std::move(fn); m_s->ExtCache.clear(); m_s->BuiltRev = 0; }
+void PkgCanvas::setOffers(OffersFn fn)            { m_s->Offers = std::move(fn); }
+void PkgCanvas::setIssues(const std::map<std::string, std::vector<std::string>> &I) { m_s->Issues = I; RefreshEstimates(*m_s); }
+void PkgCanvas::setNodeHints(const std::string &H, const std::vector<std::string> &Hints) { m_s->Hints[H] = Hints; }
+void PkgCanvas::beginAction(const std::string &H, const QString &What, bool Cancellable)
+{ m_s->Running[H] = PkgCanvasState::Busy{What, QString(), -1.0f, Cancellable}; RefreshEstimates(*m_s); }
+void PkgCanvas::setProgress(const std::string &H, float F, const QString &Detail)
 {
-    m_s->Selected = -1;
-    m_s->SelectedLast.clear();
-    if (m_s->Ctx) ImNodes::ClearNodeSelection();
-}
-
-void PkgCanvas::initContexts()
-{
-    m_s->Ctx = ImNodes::CreateContext();
-    ImNodes::GetIO().LinkDetachWithModifierClick.Modifier = &ImGui::GetIO().KeyCtrl;
-    ImNodes::PushAttributeFlag(ImNodesAttributeFlags_EnableLinkDetachWithDragClick);
-}
-
-void PkgCanvas::shutdownContexts()
-{
-    if (!m_s->Ctx) return;
-    ImNodes::PopAttributeFlag();
-    ImNodes::DestroyContext(m_s->Ctx);
-    m_s->Ctx = nullptr;
-}
-
-void PkgCanvas::setKnownIds(KnownIdsFn fn)       { m_s->KnownIds = std::move(fn); }
-//The document was replaced behind the canvas, so every INDEX we were holding is meaningless — including the
-//selection, which the Delete key reads, and the imnodes position seeding, which is keyed by (id, index).
-void PkgCanvas::invalidateGraph()
-{
-    m_s->CacheValid = false;
-    clearSelection();
-    m_s->ConfirmDelete = -1;
-    //...and imnodes' own selection, plus the snapshot culling reads. Clearing only our copy left the stale
-    //INDEX in both: the next frame force-draws every index in SelectedLast (a selected node is never culled),
-    //which makes Drawn[stale] true — so the Drawn guard, the only thing between a stale index and Selected,
-    //passes precisely BECAUSE of the force-draw, and Selected is restored to an index that now addresses a
-    //different node.
-    //
-    //And the measured sizes, for the same reason removeNode drops them: this is also the path a whole
-    //DOCUMENT SWAP takes, and auto-generated ids repeat across packages ("content", "group", "declareexec"),
-    //so a second package's nodes would inherit the first one's boxes in the overview. Unlike the maps above
-    //this one grows without bound, because nothing else ever removes an entry on this path.
-    m_s->NodeDims.clear();
-
-    //AND THE SEED MAP. This is the document-REPLACEMENT path — the JSON view's Save, PackageEditor's
-    //LoadNodes — so a node's declared POS can be different on the other side of it, while imnodes is still
-    //holding the position from before. seedNodePosition re-pushes only when the index moved or the node was
-    //not drawn last frame, and a reload changes neither: so imnodes kept the stale origin, flushPositions
-    //compared it against the freshly-built graph, decided the node had been DRAGGED there, wrote the old
-    //coordinate into the layout sidecar and marked it for saving. Editing a POS in the JSON view therefore
-    //reverted itself and persisted the value it had just replaced — into GlobalConfig, which outranks the
-    //package's own POS for the rest of that bundle's life. Clearing this makes the next frame push every
-    //drawn node from the rebuilt cache, which is what "the document changed underneath you" has to mean.
-    //
-    //Safe for a drag, because a drag does not come through here: the per-keystroke and per-edit path is
-    //MarkDirty(), which only drops CacheValid. This function has exactly one caller (PackageEditor::BuildUI).
-    m_s->Seeded.clear();
-    //NOT the warned-about set. The reason previously given for that — "this runs on every keystroke" — is
-    //false (that is MarkDirty); the real one is that its key carries the VALUE, so the only thing a stale
-    //entry can ever suppress is a message character-identical to one already printed. Clearing it here would
-    //buy a duplicate of that same line every time the editor rebuilds its UI, and nothing else.
-}
-
-void PkgCanvas::setNodeHints(const std::string &nodeId, const std::vector<std::string> &hints)
-{ m_s->Hints[nodeId] = hints; }
-
-void PkgCanvas::beginAction(const std::string &nodeId, const QString &what, bool cancellable)
-{ m_s->Running[nodeId] = PkgCanvasState::Busy{what, {}, -1.0f, cancellable}; }
-
-void PkgCanvas::setProgress(const std::string &nodeId, float fraction, const QString &detail)
-{
-    auto It = m_s->Running.find(nodeId);
+    auto It = m_s->Running.find(H);
     if (It == m_s->Running.end()) return;
-    It->second.Frac = fraction;
-    if (!detail.isNull()) It->second.Detail = detail;
+    It->second.Frac = F;
+    It->second.Detail = Detail;
+}
+void PkgCanvas::endAction(const std::string &H) { m_s->Running.erase(H); RefreshEstimates(*m_s); }
+bool PkgCanvas::isBusy(const std::string &H) const { return m_s->Running.count(H) != 0; }
+
+void PkgCanvas::documentReset()
+{
+    m_s->BuiltRev = 0;
+    m_s->LayoutValid = false;
+    m_s->FullLayout = true;
+    m_s->AutoPos.clear();
+    m_s->Measured.clear(); m_s->MeasuredOnce.clear();
+    m_s->Sel.clear(); m_s->SelWireSlot = -1;
+    m_s->Open.clear(); m_s->RegBuf.clear(); m_s->ZOrder.clear();
+    m_s->Renaming.clear();
+    m_s->FramePending = true;
+    m_s->AutoFrame = true;
 }
 
-void PkgCanvas::endAction(const std::string &nodeId) { m_s->Running.erase(nodeId); }
-
-bool PkgCanvas::isBusy(const std::string &nodeId) const
-{ return m_s->Running.find(nodeId) != m_s->Running.end(); }
-void PkgCanvas::setActionHandler(ActionFn fn)    { m_s->Action   = std::move(fn); }
-
-void PkgCanvas::setIssues(const std::vector<std::pair<std::string, std::string>> &issues)
+void PkgCanvas::applyRenames(const std::map<std::string, std::string> &R)
 {
-    m_s->Issues.clear();
-    for (const auto &[Id, Msg] : issues) m_s->Issues[Id].push_back(Msg);
+    if (R.empty()) return;
+    auto Swap = [&](const std::string &H) { const auto It = R.find(H); return It == R.end() ? H : It->second; };
+    auto Prefixed = [&](const std::string &K) {                      // "<handle>|rest"
+        const size_t Bar = K.find('|');
+        return Bar == std::string::npos ? K : Swap(K.substr(0, Bar)) + K.substr(Bar);
+    };
+    std::set<std::string> Sel, Open, Exp;
+    for (const auto &H : m_s->Sel) Sel.insert(Swap(H));
+    for (const auto &K : m_s->Open) Open.insert(Prefixed(K));
+    for (const auto &K : m_s->ExpandAll) Exp.insert(Prefixed(K));
+    m_s->Sel.swap(Sel); m_s->Open.swap(Open); m_s->ExpandAll.swap(Exp);
+    std::map<std::string, float> Me;
+    for (auto &[H, V] : m_s->Measured) Me[Swap(H)] = V;
+    m_s->Measured.swap(Me);
+    std::set<std::string> Mo;
+    for (const auto &H : m_s->MeasuredOnce) Mo.insert(Swap(H));
+    m_s->MeasuredOnce.swap(Mo);
+    std::map<std::string, ImVec2> Ap;
+    for (auto &[H, V] : m_s->AutoPos) Ap[Swap(H)] = V;
+    m_s->AutoPos.swap(Ap);
+    for (auto &H : m_s->ZOrder) H = Swap(H);
+    decltype(m_s->Issues) Is;
+    for (auto &[H, V] : m_s->Issues) Is[Swap(H)] = V;
+    m_s->Issues.swap(Is);
+    decltype(m_s->Hints) Hs;
+    for (auto &[H, V] : m_s->Hints) Hs[Swap(H)] = V;
+    m_s->Hints.swap(Hs);
+    decltype(m_s->Running) Rn;
+    for (auto &[H, V] : m_s->Running) Rn[Swap(H)] = V;
+    m_s->Running.swap(Rn);
+    m_s->RegBuf.clear();
+    if (!m_s->SelWireChild.empty()) m_s->SelWireChild = Swap(m_s->SelWireChild);
+    m_s->Renaming = m_s->Renaming.empty() ? std::string() : Swap(m_s->Renaming);
+    m_s->Structure.clear();                                          // same structure: keep the layout, rebuild the rest
+    m_s->BuiltRev = 0;
+    m_s->LayoutValid = true;
 }
 
-int PkgCanvas::nodeCount() const
+// ================================================================================================================
+// The graph: views, wires, layout
+// ================================================================================================================
+
+namespace {
+
+std::string NodeTitle(const json &N, const std::string &Handle)
 {
-    return (m_s->Doc && m_s->Doc->contains("NODES") && (*m_s->Doc)["NODES"].is_array())
-               ? (int)(*m_s->Doc)["NODES"].size() : 0;
+    const std::string L = StrOf(N, "LABEL");
+    if (!L.empty()) return L;
+    const std::string K = PkgGraph::KindOf(N);
+    return (K.empty() ? std::string("node") : K) + " " + ShortCid(Handle);
 }
 
-int PkgCanvas::indexOf(const std::string &nodeId) const
+//How tall a node is drawn folded, in world units: the title, then one row each for its properties, its issues, the
+//top level of its layer tree, and its footer (two when busy). The renderer uses exactly these rows.
+float EstimateHeight(const json &N, const PkgGraph::VarFacets &Facets, size_t Issues, bool Busy)
 {
-    const int N = nodeCount();
-    for (int I = 0; I < N; ++I)
-        if (Handle((*m_s->Doc)["NODES"][I]) == nodeId) return I;
-    return -1;
+    int Rows = 1 + (int)Issues + 1;                                     // properties, issues, footer
+    const auto Items = PkgGraph::LayerItems(N, Facets);
+    Rows += std::max(1, PkgGraph::TopLevelRows(Items));
+    if (Busy) Rows += 1;
+    return kTitleH + kPadY * 2.0f + (float)Rows * RowH() - 4.0f;
 }
 
-Graph PkgCanvas::graph() const { return Build(m_s->Nodes(), m_s->Layout); }
+} // namespace
 
-float PkgCanvas::zoom() const { return m_s->Zoom; }
-void  PkgCanvas::setZoom(float Z)
+static void Rebuild(PkgCanvasState &S)
 {
-    const float New = std::clamp(Z, kMinZoom, kMaxZoom);
-    //An explicit set is not a gesture: it lands on the frame it is asked for, and cancels any easing in
-    //flight (otherwise "reset" would be overridden by the tail of the wheel motion that prompted it).
-    m_s->ZoomTarget = New;
-    m_s->Zooming    = false;
-    if (New == m_s->Zoom) return;
-    const float Old = m_s->Zoom;
-    m_s->Zoom = New;
-    //Anchored on the middle of the viewport, applied on the next frame because the viewport is only known
-    //there. Without it "reset" from 3x left the pan untouched and the view landed on a different part of the
-    //graph than the one you were looking at. The zoom it is coming FROM has to be carried across — solving for
-    //the new pan needs both scales, and an earlier version that used the new one twice reduced to Pan = Pan
-    //and silently did nothing at all. (No Seeded.clear() any more: it carried a comment claiming every pushed
-    //position was in the old scale, which stopped being true when zoom became a view transform — imnodes holds
-    //world coordinates. All it did was re-push N positions and stomp an in-flight drag.)
-    //Only if nothing is already pending. Two setZoom calls before a frame would otherwise leave the SECOND
-    //call's "from" against a pan that still belongs to the FIRST one's scale: measured at 203px of drift for
-    //setZoom(2) followed by setZoom(0.5) in the same frame, against 0px when a frame runs between them.
-    if (m_s->RecentreFromZoom <= 0.0f) m_s->RecentreFromZoom = Old;
-}
-std::string PkgCanvas::selectedNodeId() const
-{
-    auto &Ns = m_s->Nodes();
-    if (m_s->Selected < 0 || m_s->Selected >= (int)Ns.size()) return std::string();
-    return Ns[m_s->Selected].value("LABEL", std::string());
-}
+    S.RectsValid = false;                                // views are about to be renumbered
+    Document &D = *S.Doc;
+    std::vector<PkgGraph::NodeRef> Refs;
+    Refs.reserve((size_t)D.Count());
+    for (int I = 0; I < D.Count(); ++I) Refs.push_back({D.Handle(I), &D.Node(I)});
+    const PkgGraph::Graph G = PkgGraph::Build(Refs);
+    S.Facets = PkgGraph::CollectVarFacets(Refs);
+    S.Labels = D.Labels();
 
-//A live JSON edit already persisted the change; the canvas only needs to rebuild its cached graph from the doc,
-//keeping the selection index (a content edit does not move the node). MarkDirty is per-frame private; this is its
-//public, selection-preserving cousin for an external editor.
-void PkgCanvas::refreshFromDocument() { m_s->CacheValid = false; }
-
-int  PkgCanvas::visibleNodes() const { return m_s->VisibleNodes; }
-int  PkgCanvas::visibleLinks() const { return m_s->VisibleLinks; }
-void PkgCanvas::editorMouse(float &X, float &Y) const { X = m_s->EditorMouse.x; Y = m_s->EditorMouse.y; }
-
-void PkgCanvas::surfaceBounds(float &MinX, float &MinY, float &MaxX, float &MaxY) const
-{
-    MinX = m_s->SurfaceBounds.x; MinY = m_s->SurfaceBounds.y;
-    MaxX = m_s->SurfaceBounds.z; MaxY = m_s->SurfaceBounds.w;
-}
-bool PkgCanvas::miniMap() const      { return m_s->ShowMiniMap; }
-void PkgCanvas::setMiniMap(bool On)  { m_s->ShowMiniMap = On; }
-void PkgCanvas::miniMapRect(float &MinX, float &MinY, float &MaxX, float &MaxY) const
-{ MinX = m_s->MiniMapRect.x; MinY = m_s->MiniMapRect.y; MaxX = m_s->MiniMapRect.z; MaxY = m_s->MiniMapRect.w; }
-void PkgCanvas::surfaceClip(float &MinX, float &MinY, float &MaxX, float &MaxY) const
-{ MinX = m_s->SurfaceClip.x; MinY = m_s->SurfaceClip.y; MaxX = m_s->SurfaceClip.z; MaxY = m_s->SurfaceClip.w; }
-//How many vertices the canvas emitted last frame. The only direct evidence that a node's CONTENTS were drawn
-//rather than culled — a node whose fields imgui threw away still leaves its box behind, so every bound and
-//size looks perfectly healthy while the box is empty.
-int PkgCanvas::surfaceVertices() const { return m_s->SurfaceVertices; }
-int PkgCanvas::cachedNodeSizes() const { return (int)m_s->NodeDims.size(); }
-void PkgCanvas::popupExtent(float &X, float &Y, float &W, float &H) const
-{ X = m_s->PopupExtent.x; Y = m_s->PopupExtent.y; W = m_s->PopupExtent.z; H = m_s->PopupExtent.w; }
-void PkgCanvas::postEditorViewport(float &X, float &Y, float &W, float &H, float &WX, float &WY,
-                                   float &WW, float &WH) const
-{
-    X = m_s->PostEditorViewport.x; Y = m_s->PostEditorViewport.y;
-    W = m_s->PostEditorViewport.z; H = m_s->PostEditorViewport.w;
-    WX = m_s->PostEditorWorkRect.x; WY = m_s->PostEditorWorkRect.y;
-    WW = m_s->PostEditorWorkRect.z; WH = m_s->PostEditorWorkRect.w;
-}
-void PkgCanvas::miniMapNodeBox(int Index, float &X, float &Y, float &W, float &H) const
-{
-    X = Y = W = H = 0.0f;
-    if (Index < 0 || Index >= (int)m_s->MiniBoxes.size()) return;
-    const ImVec4 &R = m_s->MiniBoxes[(size_t)Index];
-    X = R.x; Y = R.y; W = R.z - R.x; H = R.w - R.y;
-}
-void PkgCanvas::canvasViewport(float &MinX, float &MinY, float &MaxX, float &MaxY) const
-{ MinX = m_s->ViewportRect.x; MinY = m_s->ViewportRect.y; MaxX = m_s->ViewportRect.z; MaxY = m_s->ViewportRect.w; }
-//VALIDATED: this is public, and a selection is an INDEX into a document that can be replaced underneath it.
-void PkgCanvas::selectNode(int index)
-{
-    m_s->Selected = (index >= 0 && index < (int)m_s->Nodes().size()) ? index : -1;
+    S.Views.clear(); S.ViewOf.clear(); S.Wires.clear();
+    std::set<int> Contained;
+    for (const PkgGraph::Link &L : G.Links) if (L.ParentIndex >= 0) Contained.insert(L.ParentIndex);
+    for (int I = 0; I < D.Count(); ++I)
+    {
+        NodeView V;
+        V.Handle = D.Handle(I);
+        V.Doc = I;
+        V.Title = NodeTitle(D.Node(I), V.Handle);
+        V.Kind = PkgGraph::KindOf(D.Node(I));
+        V.Graft = IsGraft(D.Node(I));
+        V.Variant = !StrOf(D.Node(I), "VARIANT").empty();
+        V.Launchable = HasExec(D.Node(I));
+        V.Unwired = !Contained.count(I) && !V.Launchable && !V.Graft;
+        V.Index = (int)S.Views.size();
+        S.ViewOf[V.Handle] = V.Index;
+        S.Views.push_back(std::move(V));
+    }
+    std::vector<std::string> Externals = G.Externals;
+    for (const std::string &O : S.Offered)
+        if (!S.ViewOf.count(O) && std::find(Externals.begin(), Externals.end(), O) == Externals.end()) Externals.push_back(O);
+    for (const std::string &E : Externals)
+    {
+        auto It = S.ExtCache.find(E);
+        if (It == S.ExtCache.end())
+            It = S.ExtCache.emplace(E, S.ExternalLookup ? S.ExternalLookup(E) : PkgCanvas::External{}).first;
+        NodeView V;
+        V.Handle = E;
+        V.Title = It->second.Label.empty() ? ShortCid(E) : It->second.Label;
+        V.Package = It->second.Package.empty() ? std::string("another package") : It->second.Package;
+        V.W = kChipW;
+        V.Index = (int)S.Views.size();
+        S.ViewOf[E] = V.Index;
+        S.Views.push_back(std::move(V));
+    }
+    std::string Structure;
+    for (const NodeView &V : S.Views) Structure += V.Handle + ";";
+    for (const PkgGraph::Link &L : G.Links)
+    {
+        WireView W;
+        W.L = L;
+        W.To = L.ChildIndex;
+        W.From = L.ParentIndex >= 0 ? L.ParentIndex : S.ViewOf.count(L.ExternalId) ? S.ViewOf[L.ExternalId] : -1;
+        if (W.From < 0) continue;
+        Structure += std::to_string(W.From) + ">" + std::to_string(W.To) + ";";
+        S.Wires.push_back(W);
+    }
+    if (Structure != S.Structure) { S.Structure = Structure; S.LayoutValid = false; }
+    //Z-order: keep what exists, add new nodes on top, drop the gone.
+    std::vector<std::string> Z;
+    for (const std::string &H : S.ZOrder) if (S.ViewOf.count(H)) Z.push_back(H);
+    std::set<std::string> In(Z.begin(), Z.end());
+    for (const NodeView &V : S.Views) if (!In.count(V.Handle)) Z.push_back(V.Handle);
+    S.ZOrder.swap(Z);
+    for (auto It = S.Sel.begin(); It != S.Sel.end();) It = S.ViewOf.count(*It) ? std::next(It) : S.Sel.erase(It);
+    S.BuiltRev = D.Revision();
+    RefreshEstimates(S);
 }
 
-int PkgCanvas::addNode(const std::string &type, float x, float y)
+static float ViewHeight(const PkgCanvasState &S, const NodeView &V)
 {
-    json N = NewPayload(type);
-    // A readable default cosmetic name (LABEL). LABEL is cosmetic now, so it need NOT be unique — the counter just
-    // keeps freshly-dropped nodes visually distinct until the author names them.
-    std::string Base = type.empty() ? "node" : type;
-    for (char &C : Base) C = (char)std::tolower((unsigned char)C);
+    if (V.Doc < 0) return kChipH;
+    const auto M = S.Measured.find(V.Handle);
+    return M != S.Measured.end() ? M->second : V.Est;
+}
+
+//The folded-height estimate of every node, recomputed when what it depends on changes (the document, the issues, a
+//running action) — never per frame: it walks the node's layer tree, and wires, ports and culling ask for heights
+//tens of thousands of times a frame on a big package.
+static void RefreshEstimates(PkgCanvasState &S)
+{
+    for (NodeView &V : S.Views)
+    {
+        if (V.Doc < 0) { V.Est = kChipH; continue; }
+        const auto Is = S.Issues.find(V.Handle);
+        V.Est = EstimateHeight(S.Doc->Node(V.Doc), S.Facets, Is == S.Issues.end() ? 0 : Is->second.size(), S.Running.count(V.Handle) != 0);
+    }
+}
+
+//Lay out every node (and chip); nodes this machine placed keep their place, and a laid-out node never lands on a
+//placed one (pushed down its column until clear).
+static void Layout(PkgCanvasState &S)
+{
+    PkgGraph::Graph G;
+    for (int I = 0; I < (int)S.Views.size(); ++I)
+    {
+        PkgGraph::Node N;
+        N.Index = I;
+        N.Id = S.Views[(size_t)I].Handle;
+        N.Height = ViewHeight(S, S.Views[(size_t)I]);
+        G.Nodes.push_back(N);
+    }
+    for (const WireView &W : S.Wires)
+    {
+        PkgGraph::Link L;
+        L.ParentIndex = W.From;
+        L.ChildIndex = W.To;
+        G.Links.push_back(L);
+    }
+    PkgLayout::Options O;
+    O.ColumnStep = kNodeW + kColumnGap;
+    O.RowGap = 36.0f;
+    O.BandGap = 160.0f;
+    PkgLayout::Compute(G, O);
+    const auto &Placed = S.Doc->Positions();
+    if (S.FullLayout) S.AutoPos.clear();
+    std::vector<ImVec4> Taken;
+    for (int I = 0; I < (int)S.Views.size(); ++I)
+    {
+        const NodeView &V = S.Views[(size_t)I];
+        const auto P = Placed.find(V.Handle);
+        if (P != Placed.end()) Taken.push_back(ImVec4(P->second.X, P->second.Y, P->second.X + V.W, P->second.Y + ViewHeight(S, V)));
+        else if (const auto Ap = S.AutoPos.find(V.Handle); Ap != S.AutoPos.end())
+            Taken.push_back(ImVec4(Ap->second.x, Ap->second.y, Ap->second.x + V.W, Ap->second.y + ViewHeight(S, V)));
+    }
+    for (int I = 0; I < (int)S.Views.size(); ++I)
+    {
+        const NodeView &V = S.Views[(size_t)I];
+        if (Placed.count(V.Handle) || S.AutoPos.count(V.Handle)) continue;   // it has a place already
+        ImVec2 P(G.Nodes[(size_t)I].X, G.Nodes[(size_t)I].Y);
+        //A chip is narrower than a node: centre it in its column's width, so its wire leaves from where the column's
+        //nodes' wires do.
+        if (V.Doc < 0) P.x += kNodeW - kChipW;
+        const float H = ViewHeight(S, V);
+        for (int Guard = 0; Guard < 1000; ++Guard)
+        {
+            bool Hit = false;
+            for (const ImVec4 &T : Taken)
+                if (Overlaps(ImVec4(P.x, P.y, P.x + V.W, P.y + H), ImVec4(T.x - 20, T.y - 20, T.z + 20, T.w + 20)))
+                { P.y = T.w + 36.0f; Hit = true; }
+            if (!Hit) break;
+        }
+        S.AutoPos[V.Handle] = P;
+        Taken.push_back(ImVec4(P.x, P.y, P.x + V.W, P.y + H));
+    }
+    S.LayoutValid = true;
+    S.FullLayout = false;
+}
+
+//Where a view is in the world right now: the document's position, else the layout's, plus a drag in progress.
+static ImVec2 WorldPos(const PkgCanvasState &S, const NodeView &V)
+{
+    ImVec2 P(0, 0);
+    const auto &Placed = S.Doc->Positions();
+    const auto It = Placed.find(V.Handle);
+    if (It != Placed.end()) P = ImVec2(It->second.X, It->second.Y);
+    else if (const auto A = S.AutoPos.find(V.Handle); A != S.AutoPos.end()) P = A->second;
+    if (S.M == PkgCanvasState::Mode::Drag && S.Sel.count(V.Handle)) { P.x += S.DragDelta.x; P.y += S.DragDelta.y; }
+    return P;
+}
+
+static ImVec4 ComputeRect(const PkgCanvasState &S, const NodeView &V)
+{
+    const ImVec2 P = WorldPos(S, V);
+    return ImVec4(P.x, P.y, P.x + V.W, P.y + ViewHeight(S, V));
+}
+
+//Where a view is this frame. Every node's rectangle is computed once per frame (Rects) — wires, ports, culling and the
+//minimap all ask — and recomputed outside a frame (the public API).
+static ImVec4 WorldRect(const PkgCanvasState &S, const NodeView &V)
+{
+    if (S.RectsValid && V.Index < (int)S.Rects.size()) return S.Rects[(size_t)V.Index];
+    return ComputeRect(S, V);
+}
+
+static void UpdateRects(PkgCanvasState &S)
+{
+    S.RectsValid = false;
+    S.Rects.resize(S.Views.size());
+    for (const NodeView &V : S.Views) S.Rects[(size_t)V.Index] = ComputeRect(S, V);
+    S.RectsValid = true;
+}
+
+// ================================================================================================================
+// Public view API
+// ================================================================================================================
+
+float PkgCanvas::zoom() const { return m_s->Z; }
+
+void PkgCanvas::setZoom(float Z)
+{
+    Z = std::clamp(Z, kMinZoom, kMaxZoom);
+    const ImVec2 Mid((m_s->Canvas.x + m_s->Canvas.z) * 0.5f, (m_s->Canvas.y + m_s->Canvas.w) * 0.5f);
+    const ImVec2 W = m_s->S2W(Mid);
+    m_s->Z = m_s->ZTarget = Z;
+    m_s->Zooming = false;
+    m_s->Cam = ImVec2(W.x - (Mid.x - m_s->Canvas.x) / Z, W.y - (Mid.y - m_s->Canvas.y) / Z);
+    m_s->FramePending = false;
+    m_s->AutoFrame = false;
+}
+
+void PkgCanvas::setCamera(float X, float Y) { m_s->Cam = ImVec2(X, Y); m_s->FramePending = false; m_s->AutoFrame = false; m_s->Zooming = false; }
+void PkgCanvas::cameraPos(float &X, float &Y) const { X = m_s->Cam.x; Y = m_s->Cam.y; }
+bool PkgCanvas::miniMap() const { return m_s->ShowMini; }
+void PkgCanvas::setMiniMap(bool On) { m_s->ShowMini = On; }
+
+static void FrameRect(PkgCanvasState &S, ImVec4 R)
+{
+    const float CW = std::max(100.0f, S.Canvas.z - S.Canvas.x), CH = std::max(100.0f, S.Canvas.w - S.Canvas.y);
+    if (R.z <= R.x || R.w <= R.y) return;
+    const float Pad = 60.0f;
+    const float Z = std::clamp(std::min((CW - 2 * Pad) / (R.z - R.x), (CH - 2 * Pad) / (R.w - R.y)), kMinZoom, 1.0f);
+    S.Z = S.ZTarget = Z;
+    S.Zooming = false;
+    S.Cam = ImVec2((R.x + R.z) * 0.5f - CW * 0.5f / Z, (R.y + R.w) * 0.5f - CH * 0.5f / Z);
+}
+
+static ImVec4 BoundsOf(const PkgCanvasState &S, const std::set<std::string> *Only)
+{
+    ImVec4 B(FLT_MAX, FLT_MAX, -FLT_MAX, -FLT_MAX);
+    for (const NodeView &V : S.Views)
+    {
+        if (Only && !Only->count(V.Handle)) continue;
+        const ImVec4 R = WorldRect(S, V);
+        B = ImVec4(std::min(B.x, R.x), std::min(B.y, R.y), std::max(B.z, R.z), std::max(B.w, R.w));
+    }
+    return B;
+}
+
+void PkgCanvas::frameAll()
+{
+    if (m_s->BuiltRev != m_s->Doc->Revision()) Rebuild(*m_s);
+    if (!m_s->LayoutValid) Layout(*m_s);
+    if (m_s->Views.empty()) { m_s->Cam = ImVec2(0, 0); m_s->Z = m_s->ZTarget = 1.0f; return; }
+    if (m_s->Canvas.z <= m_s->Canvas.x) { m_s->FramePending = true; return; }
+    FrameRect(*m_s, BoundsOf(*m_s, nullptr));
+    m_s->FramePending = false;
+}
+
+void PkgCanvas::frameSelection()
+{
+    if (m_s->Sel.empty()) { frameAll(); return; }
+    FrameRect(*m_s, BoundsOf(*m_s, &m_s->Sel));
+}
+
+void PkgCanvas::tidyLayout()
+{
+    for (const NodeView &V : m_s->Views) m_s->Doc->ClearPos(V.Handle);
+    m_s->Doc->Commit();
+    m_s->LayoutValid = false;
+    m_s->FullLayout = true;
+    emit documentEdited();
+}
+
+void PkgCanvas::setExpanded(const std::string &H, bool Open)
+{
+    const std::string Pre = H + "|";
+    if (Open) { m_s->ExpandAll.insert(Pre); return; }
+    m_s->ExpandAll.erase(Pre);
+    for (auto It = m_s->Open.lower_bound(Pre); It != m_s->Open.end() && It->rfind(Pre, 0) == 0;) It = m_s->Open.erase(It);
+}
+
+std::string PkgCanvas::selectedHandle() const
+{
+    return m_s->Sel.size() == 1 ? *m_s->Sel.begin() : std::string();
+}
+std::set<std::string> PkgCanvas::selection() const { return m_s->Sel; }
+
+void PkgCanvas::select(const std::string &H, bool Frame)
+{
+    if (m_s->BuiltRev != m_s->Doc->Revision()) Rebuild(*m_s);
+    m_s->Sel.clear();
+    m_s->SelWireSlot = -1;
+    if (m_s->ViewOf.count(H))
+    {
+        m_s->Sel.insert(H);
+        auto &Z = m_s->ZOrder;
+        Z.erase(std::remove(Z.begin(), Z.end(), H), Z.end());
+        Z.push_back(H);
+        if (Frame)
+        {
+            if (!m_s->LayoutValid) Layout(*m_s);
+            const ImVec4 R = WorldRect(*m_s, m_s->Views[(size_t)m_s->ViewOf[H]]);
+            //Centre it, keeping the zoom unless it would not fit.
+            const float CW = m_s->Canvas.z - m_s->Canvas.x, CH = m_s->Canvas.w - m_s->Canvas.y;
+            if (CW > 0 && CH > 0)
+            {
+                if ((R.z - R.x) * m_s->Z > CW * 0.9f || m_s->Z < kLodZoom) m_s->Z = m_s->ZTarget = std::min(1.0f, CW * 0.6f / (R.z - R.x));
+                m_s->Cam = ImVec2((R.x + R.z) * 0.5f - CW * 0.5f / m_s->Z, R.y - CH * 0.25f / m_s->Z);
+                m_s->FramePending = false;
+            }
+        }
+    }
+}
+
+int PkgCanvas::addNode(const std::string &Type, float X, float Y)
+{
+    json N = PkgGraph::NewPayload(Type);
+    json Out = json::object();
+    std::string Base = Type.empty() ? std::string("New node") : "New " + Type;
     std::string Label = Base;
+    const auto Labels = m_s->Doc->Labels();
     for (int K = 2; ; ++K)
     {
         bool Taken = false;
-        for (const auto &Nn : m_s->Nodes()) if (StrOf(Nn, "LABEL") == Label) { Taken = true; break; }
+        for (const auto &[H, L] : Labels) if (L == Label) { Taken = true; break; }
         if (!Taken) break;
-        Label = Base + "_" + std::to_string(K);
+        Label = Base + " " + std::to_string(K);
     }
-    // A GLOBALLY-unique, stable draft HANDLE. A new node has no CID until the next Publish mints it (the cascade is
-    // fully deferred): the draft handle is what PARENTS reference meanwhile and Publish remaps to the real CID via
-    // HandleToCid + StampNodeCids. It MUST be globally unique (publish is library-wide) — a per-bundle counter would
-    // give every fresh bundle the same handle and cross-wire them at the first mint. Stored in "CID" (stripped at
-    // freeze, so it never ships). The retry loop guards the astronomically-unlikely in-bundle collision.
-    std::string Draft;
-    do { Draft = MakeDraftHandle(); } while (indexOf(Draft) >= 0);
-    json Out = json::object();
-    Out["CID"] = Draft;
     Out["LABEL"] = Label;
     for (const auto &[K, V] : N.items()) Out[K] = V;
-    if (m_s->Layout) { SetPos(*m_s->Layout, Draft, x, y); m_s->PosDirty = true; }
-    m_s->Nodes().push_back(std::move(Out));
-    m_s->MarkDirty();
-    return (int)m_s->Nodes().size() - 1;
+    const int I = m_s->Doc->Add(std::move(Out));
+    //Where asked, unless that lands on a node: then straight down, below whatever it would cover. A new node is
+    //opened for filling in, so room is kept for its rows, not just its title.
+    const float Room = std::max(EstimateHeight(m_s->Doc->Node(I), m_s->Facets, 0, false), 14.0f * RowH());
+    for (int Guard = 0; Guard < 256; ++Guard)
+    {
+        const ImVec4 Want(X - kNodeGap, Y - kNodeGap, X + kNodeW + kNodeGap, Y + Room + kNodeGap);
+        float Below = -FLT_MAX;
+        for (const NodeView &V : m_s->Views)
+            if (const ImVec4 R = ComputeRect(*m_s, V); Overlaps(R, Want)) Below = std::max(Below, R.w);
+        if (Below == -FLT_MAX) break;
+        Y = Below + kNodeGap;
+    }
+    m_s->Doc->SetPos(m_s->Doc->Handle(I), {X, Y});
+    m_s->Doc->Commit();
+    Rebuild(*m_s);
+    select(m_s->Doc->Handle(I));
+    emit documentEdited();
+    return I;
 }
 
-bool PkgCanvas::removeNode(int index)
+bool PkgCanvas::removeNodes(const std::set<std::string> &Handles)
 {
-    json &Ns = m_s->Nodes();
-    if (index < 0 || index >= (int)Ns.size()) return false;
-    const std::string Id = Handle(Ns[index]);
-    //Deleting shifts every later index, so every seeded position is now against the wrong node. Drop them all
-    //and let the next frame re-seed from the layout sidecar.
-    m_s->Seeded.clear();
-    //...and take this node's canvas state with it, or a later node reusing the id inherits a stale position,
-    //a stale busy state and stale registry edit buffers.
-    if (m_s->Layout && m_s->Layout->is_object()) { m_s->Layout->erase(Id); m_s->PosDirty = true; }
-    m_s->Running.erase(Id);
-    m_s->Hints.erase(Id);
-    m_s->Seeded.erase(Id);
-    m_s->NodeDims.erase(Id);
-    //By PREFIX: the key is "<id>@<source>@<value>", the same shape RegBuf uses below, so erasing the bare id
-    //removes nothing at all. An id containing '@' can reach another node's keys through this — the same
-    //hazard the RegBuf loop below carries for '#'. Accepted for a suppression cache (the cost is a warning
-    //printed twice or once too few) where it would not be for the position and buffer maps.
-    for (auto It = m_s->WarnedPos.begin(); It != m_s->WarnedPos.end(); )
-        It = (It->rfind(Id + "@", 0) == 0) ? m_s->WarnedPos.erase(It) : std::next(It);
-    for (auto It = m_s->RegBuf.begin(); It != m_s->RegBuf.end(); )
-        It = (It->first.rfind(Id + "#", 0) == 0) ? m_s->RegBuf.erase(It) : std::next(It);
-    Ns.erase(index);
-    // Drop every reference to it so the graph never carries a dangling parent after a delete.
-    for (auto &N : Ns)
+    bool Any = false;
+    for (const std::string &H : Handles)
     {
-        PkgGraph::RemoveRefs(N, Id);
+        if (isBusy(H)) continue;                         // a conversion is rewriting its file right now
+        const int I = m_s->Doc->IndexOf(H);
+        if (I >= 0) { m_s->Doc->Remove(I); Any = true; }
+        else if (std::find(m_s->Offered.begin(), m_s->Offered.end(), H) != m_s->Offered.end())
+        { m_s->Offered.erase(std::remove(m_s->Offered.begin(), m_s->Offered.end(), H), m_s->Offered.end()); m_s->BuiltRev = 0; }
     }
-    //imnodes' own selection set stores INDICES, which every later node's index has just shifted under, and it
-    //never validates them: leaving it populated makes the next frame report a selection for whichever node
-    //inherited the index — and since a selected node is never culled, that wrong index can never be culled
-    //away either, so it persists for the rest of the session.
-    clearSelection();
-    m_s->MarkDirty();
+    if (!Any) return false;
+    m_s->Doc->Commit();
+    m_s->Sel.clear();
+    emit documentEdited();
+    emit statusMessage(QString("Deleted %1 node(s) - Ctrl+Z to undo").arg(Handles.size()));
     return true;
 }
 
-bool PkgCanvas::connect(int parentIndex, int childIndex)
+void PkgCanvas::undo() { if (m_s->Doc->Undo()) { m_s->RegBuf.clear(); emit documentEdited(); } }
+void PkgCanvas::redo() { if (m_s->Doc->Redo()) { m_s->RegBuf.clear(); emit documentEdited(); } }
+
+bool PkgCanvas::nodeRect(const std::string &H, float &X0, float &Y0, float &X1, float &Y1) const
 {
-    json &Ns = m_s->Nodes();
-    if (parentIndex < 0 || childIndex < 0 || parentIndex >= (int)Ns.size() || childIndex >= (int)Ns.size()) return false;
-    if (parentIndex == childIndex) return false;
-    const std::string Pid = Handle(Ns[parentIndex]);
-    if (Pid.empty()) return false;
-    if (!PkgGraph::AddNodeRef(Ns[childIndex], Pid)) return false;
-    m_s->MarkDirty();
+    const auto It = m_s->DrawnRect.find(H);
+    if (It == m_s->DrawnRect.end()) return false;
+    X0 = It->second.x; Y0 = It->second.y; X1 = It->second.z; Y1 = It->second.w;
     return true;
 }
 
-bool PkgCanvas::disconnect(int parentIndex, int childIndex)
+static ImVec2 PortScreen(const PkgCanvasState &S, const NodeView &V, bool Out)
 {
-    json &Ns = m_s->Nodes();
-    if (parentIndex < 0 || childIndex < 0 || parentIndex >= (int)Ns.size() || childIndex >= (int)Ns.size()) return false;
-    const std::string Pid = Handle(Ns[parentIndex]);
-    const bool Removed = PkgGraph::RemoveRefs(Ns[childIndex], Pid);
-    if (Removed) m_s->MarkDirty();
-    return Removed;
+    const ImVec4 R = WorldRect(S, V);
+    const float Y = R.y + (V.Doc < 0 ? kChipH * 0.5f : kTitleH * 0.5f);
+    return S.W2S(ImVec2(Out ? R.z : R.x, Y));
 }
 
-bool PkgCanvas::connectExternal(const std::string &parentId, int childIndex)
+bool PkgCanvas::portPos(const std::string &H, bool Out, float &X, float &Y) const
 {
-    json &Ns = m_s->Nodes();
-    if (parentId.empty() || childIndex < 0 || childIndex >= (int)Ns.size()) return false;
-    if (Handle(Ns[childIndex]) == parentId) return false;
-    if (!PkgGraph::AddNodeRef(Ns[childIndex], parentId)) return false;
-    m_s->MarkDirty();
+    const auto It = m_s->ViewOf.find(H);
+    if (It == m_s->ViewOf.end()) return false;
+    const ImVec2 P = PortScreen(*m_s, m_s->Views[(size_t)It->second], Out);
+    X = P.x; Y = P.y;
     return true;
 }
 
-void PkgCanvas::offerExternal(const std::string &parentId, const std::string &label)
+bool PkgCanvas::canvasRect(float &X0, float &Y0, float &X1, float &Y1) const
 {
-    if (parentId.empty()) return;
-    auto &O = m_s->OfferedExternals;
-    if (std::find(O.begin(), O.end(), parentId) == O.end()) O.push_back(parentId);
-    if (!label.empty()) m_s->ExternalLabels[parentId] = label;   // remember the pretty name for the chip
+    X0 = m_s->Canvas.x; Y0 = m_s->Canvas.y; X1 = m_s->Canvas.z; Y1 = m_s->Canvas.w;
+    return X1 > X0;
 }
 
-bool PkgCanvas::renameNode(int index, const std::string &newId)
+int PkgCanvas::visibleNodes() const { return m_s->VisibleNodes; }
+int PkgCanvas::visibleWires() const { return m_s->VisibleWires; }
+int PkgCanvas::externalCount() const
 {
-    json &Ns = m_s->Nodes();
-    if (index < 0 || index >= (int)Ns.size()) return false;
-    //A NODES entry that is not an object has no LABEL to set, and writing one through operator[](string) throws
-    //type_error.305 — out of frame(), out of paintGL, which has no catch. Build keeps such an entry as a
-    //placeholder so indices stay aligned, so this is reachable from any malformed or peer-authored package.
-    if (!Ns[index].is_object()) return false;
-    // Model C: "rename" sets the node's COSMETIC LABEL. It is NOT the wiring handle — the handle is the node's CID
-    // (derived, not user-set) — so NOTHING else moves: no reference re-pointing (refs are CIDs, unchanged by a
-    // rename), and no canvas position / Seeded / Running / Hints / NodeDims / RegBuf / WarnedPos migration (all keyed
-    // by the stable handle, which the rename never touches). A blank label is allowed (the node then shows its short
-    // CID); duplicate labels are allowed (LABEL is cosmetic — RoC/TFT "v1.21b" are legitimate namesakes).
-    if (StrOf(Ns[index], "LABEL") == newId) return false;   // no-op (also stops a per-keystroke rebuild storm)
-    Ns[index]["LABEL"] = newId;
-    m_s->MarkDirty();
+    int N = 0;
+    for (const NodeView &V : m_s->Views) if (V.Doc < 0) ++N;
+    return N;
+}
+std::string PkgCanvas::externalLabel(const std::string &C) const
+{
+    const auto It = m_s->ViewOf.find(C);
+    if (It == m_s->ViewOf.end() || m_s->Views[(size_t)It->second].Doc >= 0) return {};
+    const NodeView &V = m_s->Views[(size_t)It->second];
+    return V.Package + ": " + V.Title;
+}
+
+bool PkgCanvas::worldRect(const std::string &H, float &X, float &Y, float &W, float &Hh) const
+{
+    const auto It = m_s->ViewOf.find(H);
+    if (It == m_s->ViewOf.end()) return false;
+    const ImVec4 R = WorldRect(*m_s, m_s->Views[(size_t)It->second]);
+    X = R.x; Y = R.y; W = R.z - R.x; Hh = R.w - R.y;
     return true;
 }
 
-// ---- payload rendering ----------------------------------------------------
-
-void PkgCanvas::drawField(json &Node, const Field &F, int Index)
+bool PkgCanvas::wantsFrames() const
 {
-    ImGui::PushID(F.Key);
-    const float W = kFieldWidth;
-    switch (F.Kind)
-    {
-    case FieldKind::Text:
-    {
-        std::string V = StrOf(Node, F.Key);
-        ImGui::TextUnformatted(F.Label); ImGui::SameLine(kLabelCol);
-        ImGui::SetNextItemWidth(W);
-        if (ImGui::InputTextWithHint("##v", F.Hint, &V)) { Node[F.Key] = V; m_s->MarkDirty(); }
-        break;
-    }
-    case FieldKind::Enum:
-    {
-        const std::string Cur = Node.contains(F.Key) && Node[F.Key].is_string() ? Node[F.Key].get<std::string>() : std::string();
-        const char *Shown = Cur.c_str();
-        for (const auto &O : F.Options) if (Cur == O.first) Shown = O.second;
-        ImGui::TextUnformatted(F.Label); ImGui::SameLine(kLabelCol);
-        ImGui::SetNextItemWidth(W);
-        if (ImGui::BeginCombo("##v", Shown))
-        {
-            for (const auto &O : F.Options)
-                if (ImGui::Selectable(O.second, Cur == O.first)) { Node[F.Key] = O.first; m_s->MarkDirty(); }
-            ImGui::EndCombo();
-        }
-        break;
-    }
-    case FieldKind::Check:
-    {
-        bool V = BoolOf(Node, F.Key);
-        if (ImGui::Checkbox(F.Label, &V)) { Node[F.Key] = V; m_s->MarkDirty(); }
-        break;
-    }
-    case FieldKind::StringList:
-    case FieldKind::StringListKeepEmpty:
-    {
-        const bool KeepEmpty = (F.Kind == FieldKind::StringListKeepEmpty);
-        //A value of the WRONG SHAPE is shown, not hidden. ListToText yields "" for anything that is not an
-        //array AND silently drops any entry that is not a string, so a hand-written `"ARGS": "not a list"` or
-        //`"ARGS": [5]` drew an EMPTY box — identical to an unset field — and the first character typed into it
-        //replaced the value. That is the same destruction the KeyValue and Cover writers were taught to
-        //refuse, arriving through a widget instead of a button, and it is worse here because the editor is the
-        //tool you open to REPAIR such a node: it showed you nothing was wrong.
-        //
-        //ELEMENTS as well as the container, because the round trip is what destroys: ListToText drops the
-        //entry, the author types, TextToList writes back what is left, and the dropped entry is gone. A list
-        //of the right shape with one wrong entry is not a lesser case of this — it is the likelier one.
-        const json *Val = (Node.is_object() && Node.contains(F.Key)) ? &Node[F.Key] : nullptr;
-        //THE SHARED PREDICATE, not a copy of it. PkgGraph::FieldPx has to charge one line for exactly the
-        //values this draws one line for, and when this scan lived only here the two disagreed by 163px on a
-        //list with one bad entry — a hole reserved in the POS stamped into the package at publish.
-        const int BadAt = PkgGraph::StringListFault(Val);
-        if (BadAt != PkgGraph::kStringListOk)
-        {
-            //DESCRIBED, never dumped. This runs on every frame of every visible node, and a package from a
-            //content source can carry megabytes in any field: `dump()` here is that many bytes allocated and
-            //measured sixty times a second, and the resulting single unwrapped line drew the node clean across
-            //the column to its right. Same hazard PkgGraph::Build refuses for the same reason, one path hotter.
-            const std::string What = (BadAt >= 0)
-                ? "entry " + std::to_string(BadAt) + " is " + PkgGraph::DescribeValue(Val->at((size_t)BadAt))
-                : PkgGraph::DescribeValue(*Val);   // kStringListNotAList: describe the value itself
-            ImGui::TextUnformatted(F.Label); ImGui::SameLine(kLabelCol);
-            ImGui::TextDisabled("%s", What.c_str());
-            if (ImGui::IsItemHovered())
-                ImGui::SetTooltip("%s", BadAt >= 0
-                                      ? "Every entry of this list has to be a string. Fix it in the JSON view."
-                                      : "This is not a list. Fix it in the JSON view - editing here would "
-                                        "replace it.");
-            break;
-        }
-        std::string T = ListToText(Node.contains(F.Key) ? Node[F.Key] : json::array());
-        //A KeepEmpty field is ALWAYS multiline — not "when it has entries". A blank line cannot be typed into a
-        //single-line input at all, so the field's own hint ("a blank line is the mount root") would be an
-        //instruction the widget forbids; and a lone [""] renders as empty text, so a single-line box would show
-        //only the hint and look identical to an unset field. Deciding per-value instead flips the widget between
-        //the two shapes on the first keystroke, which deactivates it mid-edit and swallows the next key.
-        const bool ForceMultiline = KeepEmpty;
-        // An empty list gets a single line: a package's optional lists (submounts, base targets, args) are empty
-        // far more often than not, and a stack of empty textareas is what made the node bodies tall and unreadable.
-        const int Lines = (int)std::count(T.begin(), T.end(), '\n') + (T.empty() ? 0 : 1);
-        ImGui::TextUnformatted(F.Label); ImGui::SameLine(kLabelCol);
-        ImGui::SetNextItemWidth(kFieldWidth);
-        //An emptied list ERASES the key rather than writing []. The two are not the same thing: BASE_TARGETS []
-        //is a delta with no base and is refused outright, so clearing the box in the editor produced a node
-        //the format rejects and the editor could not repair (the refusal says "omit it", and there was no way
-        //to omit). drawEnvelope already erases WHEN/EXCLUDE this way; the list writer just never learned it.
-        auto Write = [&](const std::string &Text) {
-            json A = TextToList(Text, KeepEmpty);
-            if (A.empty()) Node.erase(F.Key); else Node[F.Key] = std::move(A);
-            m_s->MarkDirty();
-        };
-        if (Lines <= 1 && !ForceMultiline)
-        {
-            if (ImGui::InputTextWithHint("##v", F.Hint, &T)) Write(T);
-        }
-        else if (ImGui::InputTextMultiline("##v", &T, ImVec2(kFieldWidth, 16.0f * (float)std::min(Lines + 1, 6))))
-            Write(T);
-        break;
-    }
-    case FieldKind::KeyValue:
-    {
-        // Read-only view: rendering must not insert the container. Writing it in here is what stamped empty
-        // objects onto every node in the bundle the first time anything was edited.
-        static const json EmptyObj = json::object();
-        const json &Map = (Node.contains(F.Key) && Node[F.Key].is_object()) ? Node[F.Key] : EmptyObj;
-        ImGui::TextUnformatted(F.Label);
-        std::string DelKey; std::pair<std::string, std::string> Rename;
-        int Row = 0;
-        for (const auto &[K, V] : Map.items())
-        {
-            // Identify the widget by ROW, not by the key being typed: keying on the text changed the widget's
-            // id on every character, so imgui lost the active item and focus after each keystroke.
-            ImGui::PushID(Row++);
-            std::string Key = K, Val = V.is_string() ? V.get<std::string>() : V.dump();
-            ImGui::SetNextItemWidth(120.0f);
-            // ...and commit the rename only when the field is finished, so a half-typed name does not churn
-            // the map (and erase the entry the moment it collides with an existing key).
-            ImGui::InputText("##k", &Key);
-            if (ImGui::IsItemDeactivatedAfterEdit() && Key != K && !Key.empty()
-                && !Node[F.Key].contains(Key)) Rename = {K, Key};
-            ImGui::SameLine();
-            ImGui::SetNextItemWidth(160.0f);
-            if (!F.Options.empty())
-            {
-                const char *Shown = Val.c_str();
-                for (const auto &O : F.Options) if (Val == O.first) Shown = O.second;
-                if (ImGui::BeginCombo("##v", Shown))
-                {
-                    for (const auto &O : F.Options)
-                        if (ImGui::Selectable(O.second, Val == O.first)) { Node[F.Key][K] = O.first; m_s->MarkDirty(); }
-                    //An order the enum does not list (a multi-spec value) must stay editable, or picking
-                    //anything silently discards it.
-                    ImGui::Separator();
-                    ImGui::SetNextItemWidth(150.0f);
-                    std::string Free = Val;
-                    if (ImGui::InputTextWithHint("##free", "custom", &Free) && Free != Val)
-                    { Node[F.Key][K] = Free; m_s->MarkDirty(); }
-                    ImGui::EndCombo();
-                }
-            }
-            else if (ImGui::InputText("##v", &Val)) { Node[F.Key][K] = Val; m_s->MarkDirty(); }
-            ImGui::SameLine();
-            if (ImGui::SmallButton("x")) DelKey = K;
-            ImGui::PopID();
-        }
-        if (!DelKey.empty()) { Node[F.Key].erase(DelKey); m_s->MarkDirty(); }
-        if (!Rename.first.empty())
-        {
-            json V = Node[F.Key][Rename.first];
-            if (PkgGraph::WritableObject(Node, F.Key))
-            {
-                Node[F.Key].erase(Rename.first);
-                if (PkgGraph::WriteSubKey(Node, F.Key, Rename.second, V)) m_s->MarkDirty();
-            }
-        }
-        if (ImGui::SmallButton("+ add")
-            && PkgGraph::WriteSubKey(Node, F.Key, "", F.Options.empty() ? "" : F.Options.front().first))
-            m_s->MarkDirty();
-        break;
-    }
-    case FieldKind::ObjArray:
-    {
-        //Not const: bound as a mutable reference so the draw loop below needs no second code path. It stays
-        //empty because every loop over it is size-bounded and every WRITE goes through Node[F.Key].
-        static json EmptyArr = json::array();
-        const bool Present = Node.contains(F.Key) && Node[F.Key].is_array();
-        json &Arr = Present ? Node[F.Key] : EmptyArr;
-        ImGui::Text("%s (%d)", F.Label, (int)Arr.size());
-        int Del = -1;
-        //Each entry is one folded row named by EntryTitle (its LABEL, its COMMENT, else its mode and site), so a
-        //layer of 77 byte patches reads as 77 lines rather than a wall of fields — and none is out of reach.
-        for (int I = 0; I < (int)Arr.size(); ++I)
-        {
-            ImGui::PushID(I);
-            //A batched entry that is not an OBJECT is malformed content, and this editor exists to open
-            //malformed content. Drawing its fields anyway means the first write — `Node[F.Key] = V` on a JSON
-            //string — throws type_error.305 out of paintGL, which has no catch: one click on a MODE dropdown
-            //terminates the app. drawRegEdits already guards exactly this shape; this arm did not.
-            if (!Arr[I].is_object())
-            {
-                ImGui::TextDisabled("(malformed entry - fix it in the JSON view)");
-                if (ImGui::SmallButton("remove")) Del = I;
-                ImGui::PopID();
-                continue;
-            }
-            const std::string Title = PkgGraph::EntryTitle(Arr[I]);
-            const bool Open = fold("L" + std::to_string(m_s->CurLayer) + "/" + F.Key + "/" + std::to_string(I),
-                                   Fit(Title.empty() ? "(new entry)" : Title, TitleChars(2, false)));
-            if (ImGui::IsItemHovered())
-            {
-                const std::string Facts = PkgGraph::EntrySummary(Arr[I]);
-                EditorTooltip(m_s->RealMouse, m_s->ScreenViewportPos, m_s->ScreenViewportSize,
-                              (Title + (Facts != Title ? "\n" + Facts : std::string())).c_str());
-            }
-            if (Open)
-            {
-                for (const Field &S : F.Sub)
-                {
-                    //A VFS layer's BASE_TARGETS means nothing except on a delta, and NodeLower REFUSES it elsewhere —
-                    //offering the box on a zip/dir/file entry is a two-click way to make a node that will not lower.
-                    if (S.Key == std::string("BASE_TARGETS") && StrOf(Arr[I], "FORM") != "delta") continue;
-                    drawField(Arr[I], S, Index);
-                }
-                if (F.VarUI) drawCustomVarUI(Arr[I]);   // a batched CustomVar entry carries its own launcher UI facet
-                if (ImGui::SmallButton("remove")) Del = I;
-                ImGui::TreePop();
-            }
-            ImGui::PopID();
-        }
-        if (Del >= 0) { Arr.erase(Del); m_s->MarkDirty(); }
-        //Refuses rather than overwrites when the value is there but is not an array. The Cover and KeyValue
-        //writers next door were taught to refuse a malformed value in the same sweep that left this one
-        //destroying it: a hand-edited object here was replaced by an empty array on one click, MarkDirty'd,
-        //and saved — silent data loss in the editor you opened to REPAIR the package.
-        const bool Replaceable = !Node.contains(F.Key) || Node[F.Key].is_null() || Node[F.Key].is_array();
-        if (!Replaceable) ImGui::TextDisabled("(this field is not a list - fix it in the JSON view)");
-        else if (ImGui::SmallButton("+ add entry"))
-        {
-            if (!Present) Node[F.Key] = json::array();      // materialise only when something is added
-            json E = json::object();
-            for (const Field &S : F.Sub) if (S.Kind == FieldKind::Enum && !S.Options.empty()) E[S.Key] = S.Options.front().first;
-            Node[F.Key].push_back(std::move(E));
-            m_s->MarkDirty();
-        }
-        break;
-    }
-    case FieldKind::Object:
-    {
-        //ONE optional nested object (an entry's TILE): absent, a button adds it — drawing must never materialise
-        //it, or every runner entry would grow an empty tile. Refuses a value of the wrong shape, like every other
-        //writer here.
-        if (!Node.contains(F.Key) || Node[F.Key].is_null())
-        {
-            if (ImGui::SmallButton((std::string("+ ") + F.Label).c_str())) { Node[F.Key] = json::object(); m_s->MarkDirty(); }
-            break;
-        }
-        if (!Node[F.Key].is_object()) { ImGui::TextDisabled("(%s is not an object - fix it in the JSON view)", F.Label); break; }
-        ImGui::TextUnformatted(F.Label);
-        //Removing it drops every field inside, so, like a layer, it is in the label's context menu, not a button.
-        if (ImGui::IsItemHovered()) ImGui::SetTooltip("right-click: remove the %s", F.Label);
-        bool Remove = false;
-        if (ImGui::BeginPopupContextItem("##objmenu"))
-        {
-            if (ImGui::Selectable((std::string("Remove ") + F.Label).c_str())) Remove = true;
-            ImGui::EndPopup();
-        }
-        if (Remove) { Node.erase(F.Key); m_s->MarkDirty(); break; }
-        json &O = Node[F.Key];
-        for (const Field &S : F.Sub) drawField(O, S, Index);
-        break;
-    }
-    case FieldKind::TakeList:
-    {
-        const json *Val = (Node.is_object() && Node.contains(F.Key)) ? &Node[F.Key] : nullptr;
-        ImGui::TextUnformatted(F.Label); ImGui::SameLine(kLabelCol);
-        if (PkgGraph::TakeFault(Val)) { ImGui::TextDisabled("%s", PkgGraph::DescribeValue(*Val).c_str()); break; }
-        std::string T = Val ? PkgGraph::TakeToText(*Val) : std::string();
-        const int Lines = (int)std::count(T.begin(), T.end(), '\n') + (T.empty() ? 0 : 1);
-        auto Write = [&](const std::string &Text) {
-            json A = PkgGraph::TextToTake(Text);
-            if (A.empty()) Node.erase(F.Key); else Node[F.Key] = std::move(A);   // no TAKE = the whole node
-            m_s->MarkDirty();
-        };
-        ImGui::SetNextItemWidth(kFieldWidth);
-        if (Lines <= 1) { if (ImGui::InputTextWithHint("##v", F.Hint, &T)) Write(T); }
-        else if (ImGui::InputTextMultiline("##v", &T, ImVec2(kFieldWidth, 16.0f * (float)std::min(Lines + 1, 6)))) Write(T);
-        break;
-    }
-    case FieldKind::Arch:
-    {
-        //The views this REG layer writes. Read without inserting: drawing a node must never dirty the document.
-        const json Arch = (Node.contains(F.Key) && Node[F.Key].is_array()) ? Node[F.Key] : json::array();
-        ImGui::TextUnformatted(F.Label); ImGui::SameLine(kLabelCol);
-        for (const char *A : {"32", "64"})
-        {
-            bool On = false;
-            for (const auto &X : Arch) if (X.is_string() && X.get<std::string>() == A) On = true;
-            if (ImGui::Checkbox(A, &On))
-            {
-                json Next = json::array();
-                for (const auto &X : Arch) if (!(X.is_string() && X.get<std::string>() == A)) Next.push_back(X);
-                if (On) Next.push_back(A);
-                if (Next.empty()) Node.erase(F.Key); else Node[F.Key] = std::move(Next);
-                m_s->MarkDirty();
-            }
-            ImGui::SameLine();
-        }
-        ImGui::NewLine();
-        break;
-    }
-    case FieldKind::RegTree:
-        drawRegTree(Node, F, Index);
-        break;
-    case FieldKind::VarMap:
-    {
-        if (Node.contains(F.Key) && !Node[F.Key].is_null() && !Node[F.Key].is_object())
-        { ImGui::TextDisabled("(%s is not an object - fix it in the JSON view)", F.Label); break; }
-        static json EmptyObj = json::object();          // stays empty: every write goes through Node[F.Key]
-        json &Map = Node.contains(F.Key) ? Node[F.Key] : EmptyObj;
-        ImGui::Text("%s (%d)", F.Label, (int)Map.size());
-        std::string DelKey; std::pair<std::string, std::string> Rename;
-        int Row = 0;
-        //One folded row per variable, named by its launcher label: UserPatch declares 60, all of them reachable.
-        for (auto &[K, D] : Map.items())
-        {
-            ImGui::PushID(Row++);
-            if (!fold("L" + std::to_string(m_s->CurLayer) + "/" + F.Key + "/" + K, Fit(PkgGraph::VarTitle(K, D), TitleChars(2, false))))
-            { ImGui::PopID(); continue; }
-            //The key IS the variable's name: renamed when the field is finished, never mid-typing (a half-typed
-            //name must not churn the map or collide).
-            std::string Key = K;
-            ImGui::TextUnformatted("Key"); ImGui::SameLine(kLabelCol); ImGui::SetNextItemWidth(kFieldWidth);
-            ImGui::InputTextWithHint("##k", "used as %KEY%", &Key);
-            if (ImGui::IsItemDeactivatedAfterEdit() && Key != K && !Key.empty() && !Map.contains(Key)) Rename = {K, Key};
-            if (!D.is_object())
-            {
-                ImGui::TextDisabled("(malformed declaration - fix it in the JSON view)");
-                if (ImGui::SmallButton("remove")) DelKey = K;
-            }
-            else
-            {
-                for (const Field &S : F.Sub) drawField(D, S, Index);
-                if (F.VarUI) drawCustomVarUI(D);
-                if (ImGui::SmallButton("remove")) DelKey = K;
-            }
-            ImGui::TreePop();
-            ImGui::PopID();
-        }
-        if (!DelKey.empty()) { Node[F.Key].erase(DelKey); m_s->MarkDirty(); }
-        if (!Rename.first.empty())
-        {
-            json D = Node[F.Key][Rename.first];
-            Node[F.Key].erase(Rename.first);
-            Node[F.Key][Rename.second] = std::move(D);
-            m_s->MarkDirty();
-        }
-        if (ImGui::SmallButton("+ add"))
-        {
-            std::string K = "var";
-            for (int N = 2; Map.contains(K); ++N) K = "var" + std::to_string(N);
-            if (!Node.contains(F.Key)) Node[F.Key] = json::object();
-            Node[F.Key][K] = json::object({{"DEFAULT", ""}});
-            m_s->MarkDirty();
-        }
-        break;
-    }
-    case FieldKind::KeepMap:
-    {
-        if (Node.contains(F.Key) && !Node[F.Key].is_null() && !Node[F.Key].is_object())
-        { ImGui::TextDisabled("(%s is not an object - fix it in the JSON view)", F.Label); break; }
-        static json EmptyObj = json::object();
-        json &Map = Node.contains(F.Key) ? Node[F.Key] : EmptyObj;
-        ImGui::TextUnformatted(F.Label);
-        std::string DelKey; std::pair<std::string, std::string> Rename;
-        int Row = 0;
-        for (auto &[K, E] : Map.items())
-        {
-            ImGui::PushID(Row++);
-            std::string Addr = K;
-            ImGui::SetNextItemWidth(180.0f);
-            ImGui::InputTextWithHint("##a", F.Hint, &Addr);
-            if (ImGui::IsItemDeactivatedAfterEdit() && Addr != K && !Addr.empty() && !Map.contains(Addr)) Rename = {K, Addr};
-            ImGui::SameLine();
-            //Three shapes, one meaning each: true (the user owns it), {NAME, CLOUD} (owns it, stored under NAME),
-            //false (a more specific address the package takes back).
-            const bool Back = E.is_boolean() && !E.get<bool>();
-            ImGui::SetNextItemWidth(90.0f);
-            if (ImGui::BeginCombo("##m", Back ? "take back" : "keep"))
-            {
-                if (ImGui::Selectable("keep", !Back) && Back) { Node[F.Key][K] = true; m_s->MarkDirty(); }
-                if (ImGui::Selectable("take back", Back) && !Back) { Node[F.Key][K] = false; m_s->MarkDirty(); }
-                ImGui::EndCombo();
-            }
-            ImGui::SameLine();
-            if (ImGui::SmallButton("x")) DelKey = K;
-            if (!Back)
-            {
-                std::string Name = E.is_object() ? StrOf(E, "NAME") : std::string();
-                bool Cloud = !(E.is_object() && E.contains("CLOUD") && E["CLOUD"].is_boolean() && !E["CLOUD"].get<bool>());
-                ImGui::SetNextItemWidth(180.0f);
-                const bool NameEdit = ImGui::InputTextWithHint("##n", "stored as (optional)", &Name);
-                ImGui::SameLine();
-                const bool CloudEdit = ImGui::Checkbox("cloud", &Cloud);
-                if (NameEdit || CloudEdit)
-                {
-                    json O = E.is_object() ? E : json::object();
-                    if (Name.empty()) O.erase("NAME"); else O["NAME"] = Name;
-                    if (Cloud) O.erase("CLOUD"); else O["CLOUD"] = false;
-                    Node[F.Key][K] = O.empty() ? json(true) : O;
-                    m_s->MarkDirty();
-                }
-            }
-            ImGui::PopID();
-        }
-        if (!DelKey.empty()) { Node[F.Key].erase(DelKey); m_s->MarkDirty(); }
-        if (!Rename.first.empty())
-        {
-            json V = Node[F.Key][Rename.first];
-            Node[F.Key].erase(Rename.first);
-            Node[F.Key][Rename.second] = std::move(V);
-            m_s->MarkDirty();
-        }
-        if (ImGui::SmallButton("+ add"))
-        {
-            if (!Node.contains(F.Key)) Node[F.Key] = json::object();
-            if (!Node[F.Key].contains("FILES/")) { Node[F.Key]["FILES/"] = true; m_s->MarkDirty(); }
-        }
-        break;
-    }
-    case FieldKind::Cover:
-    {
-        //COVER is {FILE, SOURCE, SIZE} (SOURCE/SIZE stamped by publish). A bare string is shown too, never
-        //written through: the first keystroke writing ["FILE"] into a string would throw out of paintGL.
-        if (Node.contains(F.Key) && !Node[F.Key].is_null() && !Node[F.Key].is_object() && !Node[F.Key].is_string())
-        {   //a number, list or bool: shown, never written through (a click would replace it with an object)
-            ImGui::TextDisabled("(%s is not an object - fix it in the JSON view)", F.Label);
-            break;
-        }
-        std::string P;
-        if (Node.contains(F.Key))
-        {
-            if (Node[F.Key].is_object())      P = StrOf(Node[F.Key], "FILE");
-            else if (Node[F.Key].is_string()) P = Node[F.Key].get<std::string>();
-        }
-        ImGui::TextUnformatted(F.Label); ImGui::SameLine(kLabelCol);
-        ImGui::SetNextItemWidth(W - 60.0f);
-        if (ImGui::InputTextWithHint("##v", "cover image in this bundle", &P))
-        {
-            //Keep whichever form the node already uses: promoting a string to an object would drop nothing
-            //here, but it would change the package's bytes for a cosmetic edit.
-            //The `else` used to be unconditional, so a COVER that was a number, an array or a bool threw on
-            //the FIRST KEYSTROKE — no click needed, and the comment above stopped at the string case.
-            if (Node.contains(F.Key) && Node[F.Key].is_string()) { Node[F.Key] = P; m_s->MarkDirty(); }
-            else if (PkgGraph::WriteSubKey(Node, F.Key, "FILE", P))          m_s->MarkDirty();
-        }
-        ImGui::SameLine();
-        if (ImGui::SmallButton("browse")) m_s->Pending = {Handle(Node), "browse_cover"};
-        break;
-    }
-    }
-    ImGui::PopID();
+    return m_s->Animating || m_s->Zooming || m_s->M != PkgCanvasState::Mode::Idle || !m_s->Running.empty()
+        || (ImGui::GetCurrentContext() && (ImGui::IsAnyItemActive() || ImGui::GetCurrentContext()->OpenPopupStack.Size > 0));
 }
 
-void PkgCanvas::drawRegTree(json &Layer, const Field &F, int Index)
+// ================================================================================================================
+// Drawing
+// ================================================================================================================
+
+namespace {
+
+struct NodeStyle
 {
-    //A REG layer's hive tree ({HKLM: {...}, HKCU: {...}}). The registry IS a tree on disk; a human edits flat key
-    //paths. Round-trip through RegRows, but hold the rows steady while a field is live (see RegBuf) and commit when
-    //it is finished. Refuses a value of the wrong shape: a hand-edited list here would lose its tree to one click.
-    if (Layer.contains(F.Key) && !Layer[F.Key].is_null() && !Layer[F.Key].is_object())
-    { ImGui::TextDisabled("(%s is not an object - fix it in the JSON view)", F.Label); return; }
-    ImGui::TextUnformatted(F.Label);
-    static const json EmptyObj = json::object();
-    const json &Tree = Layer.contains(F.Key) ? Layer[F.Key] : EmptyObj;
-    json &Ns = m_s->Nodes();
-    const std::string BufKey = ((Index >= 0 && Index < (int)Ns.size()) ? Handle(Ns[(size_t)Index]) : std::string())
-                             + "#" + std::to_string(m_s->CurLayer);
-    auto Buf = m_s->RegBuf.find(BufKey);
-    std::vector<RegRow> Rows = (Buf != m_s->RegBuf.end()) ? Buf->second : RegRowsOf(Tree);
-    bool Commit = false, Editing = false;
-    int DelRow = -1;
-    for (int R = 0; R < (int)Rows.size(); ++R)
+    int Vars = 0, Cols = 0;
+    void Push(float Z, ImU32 Bg)
     {
-        ImGui::PushID(R);
-        auto Cell = [&](const char *Id, const char *Hint, std::string &Field, float W) {
-            ImGui::SetNextItemWidth(W);
-            ImGui::InputTextWithHint(Id, Hint, &Field);
-            if (ImGui::IsItemActive()) Editing = true;
-            if (ImGui::IsItemDeactivatedAfterEdit()) Commit = true;
-        };
-        //Widths keep the node inside one layout column (430px) with the layer's indent and the row's "x".
-        Cell("##p", "HKLM\\Software\\...", Rows[R].Path, 118.0f);  ImGui::SameLine();
-        const std::string WasName = Rows[R].Name, WasValue = Rows[R].Value;
-        Cell("##n", "value", Rows[R].Name, 56.0f);                   ImGui::SameLine();
-        Cell("##v", "data",  Rows[R].Value, 56.0f);                  ImGui::SameLine();
-        //A "create this key, no values" row is still an editable row on screen — so the moment the author types
-        //a name or a value into it, it STOPS being key-only. Without this the edit simply vanished.
-        if (Rows[R].KeyOnly && (Rows[R].Name != WasName || Rows[R].Value != WasValue))
-            Rows[R].KeyOnly = false;
-        if (ImGui::SmallButton("x")) DelRow = R;
-        ImGui::PopID();
+        auto V2 = [&](ImGuiStyleVar V, float X, float Y) { ImGui::PushStyleVar(V, ImVec2(X * Z, Y * Z)); ++Vars; };
+        auto V1 = [&](ImGuiStyleVar V, float X) { ImGui::PushStyleVar(V, X * Z); ++Vars; };
+        V2(ImGuiStyleVar_WindowPadding, 0, 0);
+        V2(ImGuiStyleVar_FramePadding, 6, 3);
+        V2(ImGuiStyleVar_ItemSpacing, 6, 4);
+        V2(ImGuiStyleVar_ItemInnerSpacing, 4, 4);
+        V1(ImGuiStyleVar_IndentSpacing, 16);
+        V1(ImGuiStyleVar_FrameRounding, 3);
+        V1(ImGuiStyleVar_ChildRounding, 7);
+        V1(ImGuiStyleVar_GrabMinSize, 10);
+        V1(ImGuiStyleVar_ScrollbarSize, 10);
+        ImGui::PushStyleVar(ImGuiStyleVar_ChildBorderSize, 1.0f); ++Vars;
+        ImGui::PushStyleColor(ImGuiCol_ChildBg, Bg); ++Cols;
+        ImGui::PushFont(nullptr, kFont * Z);
     }
-    if (DelRow >= 0) { Rows.erase(Rows.begin() + DelRow); Commit = true; }
-    //"+ value" adds a row for a value the author is about to name. Until they do it is a KEY row, not an empty
-    //DEFAULT value — writing the latter puts a spurious `@=""` into the prefix on every launch.
-    if (ImGui::SmallButton("+ value"))
-    { RegRow N{"HKLM\\Software\\", "", ""}; N.KeyOnly = true; Rows.push_back(std::move(N)); Commit = true; }
-    if (Commit)
-    {
-        json T = Tree;
-        RegRowsInto(T, Rows);
-        Layer[F.Key] = std::move(T);
-        m_s->MarkDirty();
-        m_s->RegBuf.erase(BufKey);                 // re-read the (possibly reordered) tree next frame
-    }
-    else if (Editing) m_s->RegBuf[BufKey] = std::move(Rows);
-    else m_s->RegBuf.erase(BufKey);
+    void Pop() { ImGui::PopFont(); ImGui::PopStyleColor(Cols); ImGui::PopStyleVar(Vars); }
+};
+
+void DrawPort(ImDrawList *DL, ImVec2 C, float R, ImU32 Fill, bool Hot)
+{
+    DL->AddCircleFilled(C, R * (Hot ? 1.35f : 1.0f), IM_COL32(24, 26, 31, 255));
+    DL->AddCircleFilled(C, R * (Hot ? 1.1f : 0.78f), Fill);
 }
 
-void PkgCanvas::drawActions(json &Node, int Index, const Graph &G)
+void Arrow(ImDrawList *DL, ImVec2 Tip, ImVec2 From, float Size, ImU32 C)
 {
-    const std::string Id = Handle(Node);
-    auto Run = m_s->Running.find(Id);
-    if (Run != m_s->Running.end())
+    ImVec2 D(Tip.x - From.x, Tip.y - From.y);
+    const float L = std::sqrt(D.x * D.x + D.y * D.y);
+    if (L < 1e-3f) return;
+    D = ImVec2(D.x / L, D.y / L);
+    const ImVec2 N(-D.y, D.x);
+    DL->AddTriangleFilled(Tip, ImVec2(Tip.x - D.x * Size + N.x * Size * 0.55f, Tip.y - D.y * Size + N.y * Size * 0.55f),
+                          ImVec2(Tip.x - D.x * Size - N.x * Size * 0.55f, Tip.y - D.y * Size - N.y * Size * 0.55f), C);
+}
+
+} // namespace
+
+// ---- one node (a child window) -------------------------------------------------------------------------------------
+
+static void DrawNode(PkgCanvas &Self, PkgCanvasState &S, int Vi, std::vector<ImGuiWindow *> &Windows)
+{
+    NodeView &V = S.Views[(size_t)Vi];
+    Document &D = *S.Doc;
+    const float Z = S.Z;
+    const ImVec4 WR = WorldRect(S, V);
+    const ImVec2 P0 = S.W2S(ImVec2(WR.x, WR.y));
+    const bool Selected = S.Sel.count(V.Handle) != 0;
+    int R, G, B;
+    PkgGraph::TypeColour(V.Kind, R, G, B);
+
+    NodeStyle St;
+    St.Push(Z, IM_COL32(34, 36, 42, 245));
+    ImGui::SetCursorScreenPos(P0);
+    ImGui::BeginChild(("##node" + V.Handle).c_str(), ImVec2(V.W * Z, 0), ImGuiChildFlags_AutoResizeY | ImGuiChildFlags_Borders,
+                      ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse | ImGuiWindowFlags_NoSavedSettings);
+    Windows.push_back(ImGui::GetCurrentWindow());
+    ImDrawList *DL = ImGui::GetWindowDrawList();
+    const ImVec2 WinPos = ImGui::GetWindowPos();
+    const float Wd = V.W * Z, Th = kTitleH * Z;
+    //Hover is what a dragged wire drops on, so it counts while the canvas owns the mouse.
+    if (ImGui::IsWindowHovered(ImGuiHoveredFlags_ChildWindows | ImGuiHoveredFlags_AllowWhenBlockedByPopup | ImGuiHoveredFlags_AllowWhenBlockedByActiveItem))
+        S.HoverNode = V.Handle;
+
+    //Clicking anywhere on a node selects it and brings it to the front (its widgets still get the click).
+    if (ImGui::IsWindowHovered(ImGuiHoveredFlags_ChildWindows) && (ImGui::IsMouseClicked(0) || ImGui::IsMouseClicked(1)))
     {
-        // Busy: the buttons are replaced by what is happening, so there is exactly one thing to look at.
-        const PkgCanvasState::Busy &B = Run->second;
+        if (ImGui::GetIO().KeyCtrl && ImGui::IsMouseClicked(0)) { if (!S.Sel.erase(V.Handle)) S.Sel.insert(V.Handle); }
+        else if (!Selected) { S.Sel.clear(); S.Sel.insert(V.Handle); }
+        S.SelWireSlot = -1;
+        S.ZOrder.erase(std::remove(S.ZOrder.begin(), S.ZOrder.end(), V.Handle), S.ZOrder.end());
+        S.ZOrder.push_back(V.Handle);
+    }
+
+    // ---- title bar ----
+    const ImRect Full(WinPos, ImVec2(WinPos.x + Wd, WinPos.y + ImGui::GetWindowHeight()));
+    DL->PushClipRect(ImVec2(S.Canvas.x, S.Canvas.y), ImVec2(S.Canvas.z, S.Canvas.w), false);
+    DL->AddRectFilled(WinPos, ImVec2(WinPos.x + Wd, WinPos.y + Th), Col(R, G, B), 7.0f * Z, ImDrawFlags_RoundCornersTop);
+    ImGui::PushClipRect(WinPos, ImVec2(WinPos.x + Wd, WinPos.y + Th), false);
+    ImGui::SetCursorPos(ImVec2(0, 0));
+    //A port under the cursor wins the click (it starts a wire): the title's drag stands down for it.
+    if (S.PortHover == V.Handle) ImGui::Dummy(ImVec2(Wd, Th));
+    else ImGui::InvisibleButton("##title", ImVec2(Wd, Th), ImGuiButtonFlags_MouseButtonLeft | ImGuiButtonFlags_MouseButtonRight);
+    const bool TitleHovered = ImGui::IsItemHovered();
+    if (ImGui::IsItemActivated() && ImGui::IsMouseClicked(0)) { S.M = PkgCanvasState::Mode::Drag; S.DragDelta = ImVec2(0, 0); S.PressScreen = ImGui::GetIO().MousePos; }
+    if (TitleHovered && ImGui::IsMouseDoubleClicked(0) && V.Doc >= 0)
+    { S.Renaming = V.Handle; S.RenameBuf = StrOf(D.Node(V.Doc), "LABEL"); S.RenameFocus = true; S.M = PkgCanvasState::Mode::Idle; }
+    if (TitleHovered && S.M == PkgCanvasState::Mode::Idle)
+    {
+        std::string Tip = V.Title + "\n" + (V.Kind.empty() ? std::string("empty node") : V.Kind + " node") + "   " + V.Handle;
+        if (V.Graft) Tip += "\nA graft: it rides on the node its ANY names, ticked in the pre-launch window.";
+        if (V.Variant) Tip += "\nOn the shelf as \"" + StrOf(D.Node(V.Doc), "VARIANT") + "\".";
+        if (V.Unwired) Tip += "\nNothing contains this node yet - drag a wire from its right port into the node that should.";
+        Tip += "\n\ndrag to move - double-click to rename - right-click for more";
+        ImGui::SetTooltip("%s", Tip.c_str());
+    }
+    if (ImGui::BeginPopupContextItem("##nodemenu"))
+    {
+        if (ImGui::MenuItem("Rename", "double-click")) { S.Renaming = V.Handle; S.RenameBuf = StrOf(D.Node(V.Doc), "LABEL"); S.RenameFocus = true; }
+        if (ImGui::MenuItem("Open all rows", "E")) Self.setExpanded(V.Handle, true);
+        if (ImGui::MenuItem("Fold all rows", "E")) Self.setExpanded(V.Handle, false);
         ImGui::Separator();
-        ImGui::TextColored(ImVec4(0.55f, 0.78f, 1.0f, 1.0f), "%s", B.What.toUtf8().constData());
-        if (B.Frac >= 0.0f)
-            ImGui::ProgressBar(B.Frac, ImVec2(kFieldWidth, 14.0f),
-                               B.Detail.isEmpty() ? nullptr : B.Detail.toUtf8().constData());
-        else
+        if (ImGui::BeginMenu("Add layer"))
         {
-            //Indeterminate: a bar that sweeps rather than a fake percentage. An honest "working" beats a
-            //progress number nothing is actually measuring.
-            const float T = (float)ImGui::GetTime();
-            const float P = 0.5f + 0.5f * std::sin(T * 3.0f);
-            ImGui::ProgressBar(P, ImVec2(kFieldWidth, 14.0f), B.Detail.isEmpty() ? "working..." : B.Detail.toUtf8().constData());
-        }
-        if (B.Cancellable && ImGui::SmallButton("cancel")) emit cancelRequested(QString::fromStdString(Id));
-        return;
-    }
-
-    const std::vector<std::string> &Hints = m_s->Hints[Id];
-    const std::vector<PkgGraph::Action> Acts = PkgGraph::ActionsFor(Node, G, Index, Hints);
-    if (Acts.empty()) return;
-    ImGui::Separator();
-    float Width = 0.0f;
-    for (size_t I = 0; I < Acts.size(); ++I)
-    {
-        const float W = ImGui::CalcTextSize(Acts[I].Label).x + 14.0f;
-        if (I && Width + W < kNodeWidth) ImGui::SameLine(); else Width = 0.0f;
-        Width += W + 4.0f;
-        //Recorded, not invoked: an action opens dialogs, and a nested Qt event loop inside an ImGui frame
-        //lets the repaint timer re-enter NewFrame() with a node scope still open.
-        if (ImGui::SmallButton(Acts[I].Label)) m_s->Pending = {Id, Acts[I].Id};
-        if (ImGui::IsItemHovered()) EditorTooltip(m_s->RealMouse, m_s->ScreenViewportPos, m_s->ScreenViewportSize, Acts[I].Tip);
-    }
-}
-
-// VARIANT, RECOMMENDED and SECTION describe the node itself (they never fold), so they are drawn once here, above its layers.
-// Folded away when both are at their defaults, opened automatically when either is set.
-void PkgCanvas::drawEnvelope(json &Node)
-{
-    const std::string Variant = StrOf(Node, "VARIANT");
-    //RECOMMENDED is the list of tile UIDs under which this node comes first (a variant) or is pre-ticked (a graft).
-    json Rec = (Node.contains("RECOMMENDED") && Node["RECOMMENDED"].is_array()) ? Node["RECOMMENDED"] : json::array();
-    const bool Interesting = !Variant.empty() || !Rec.empty() || !StrOf(Node, "SECTION").empty();
-    if (Interesting) ImGui::SetNextItemOpen(true, ImGuiCond_Once);
-    if (!ImGui::TreeNodeEx("node options")) return;   // no SpanAvailWidth: it spans the WINDOW, overrunning the node
-
-    //Empty VARIANT = not on the shelf (a library, a graft, or reachable only through something that contains it).
-    std::string V = Variant;
-    ImGui::TextUnformatted("variant"); ImGui::SameLine(kLabelCol);
-    ImGui::SetNextItemWidth(kFieldWidth);
-    if (ImGui::InputTextWithHint("##variant", "name in the picker - empty = not on the shelf", &V))
-    {
-        if (V.empty()) Node.erase("VARIANT"); else Node["VARIANT"] = V;
-        m_s->MarkDirty();
-    }
-    //SECTION: where a graft sits in the pre-launch graft tree (a path; '/' nests).
-    std::string Sec = StrOf(Node, "SECTION");
-    ImGui::TextUnformatted("section"); ImGui::SameLine(kLabelCol);
-    ImGui::SetNextItemWidth(kFieldWidth);
-    if (ImGui::InputTextWithHint("##section", "graft tree section - a path, / nests (Soundtrack)", &Sec))
-    {
-        if (Sec.empty()) Node.erase("SECTION"); else Node["SECTION"] = Sec;
-        m_s->MarkDirty();
-    }
-    std::string R;
-    for (const auto &U : Rec) if (U.is_string()) R += (R.empty() ? "" : " ") + U.get<std::string>();
-    ImGui::TextUnformatted("recommended"); ImGui::SameLine(kLabelCol);
-    ImGui::SetNextItemWidth(kFieldWidth);
-    if (ImGui::InputTextWithHint("##recommended", "tile UIDs - first under / pre-ticked on those tiles", &R))
-    {
-        json Out = json::array();
-        std::stringstream SS(R); std::string U;
-        while (SS >> U) Out.push_back(U);
-        if (Out.empty()) Node.erase("RECOMMENDED"); else Node["RECOMMENDED"] = std::move(Out);
-        m_s->MarkDirty();
-    }
-    ImGui::TreePop();
-}
-
-
-bool PkgCanvas::fold(const std::string &Key, const std::string &Label)
-{
-    const std::string K = m_s->FoldPrefix + Key;
-    bool Was = m_s->Open.count(K) > 0;
-    if (!Was && m_s->ExpandAll.count(m_s->FoldPrefix)) { m_s->Open.insert(K); Was = true; }
-    ImGui::SetNextItemOpen(Was, ImGuiCond_Always);
-    //"###key": the id is the path, so a title that changes (a LABEL being typed) is still the same fold.
-    const bool Now = ImGui::TreeNodeEx((Label + "###" + Key).c_str());
-    if (Now != Was) { if (Now) m_s->Open.insert(K); else m_s->Open.erase(K); }
-    return Now;
-}
-
-std::string PkgCanvas::refLabel(const std::string &Ref)
-{
-    auto It = m_s->RefLabels.find(Ref);
-    if (It == m_s->RefLabels.end() && !m_s->CatalogLabels && m_s->KnownIds)
-    {
-        m_s->CatalogLabels = true;                       // read once: a miss is usually a library node
-        for (const auto &[Hnd, Lbl] : m_s->KnownIds()) if (!Lbl.empty()) m_s->RefLabels.emplace(Hnd, Lbl);
-        It = m_s->RefLabels.find(Ref);
-    }
-    return It == m_s->RefLabels.end() ? std::string() : It->second;
-}
-
-void PkgCanvas::setExpanded(int index, bool open)
-{
-    const json &Ns = m_s->Nodes();
-    if (index < 0 || index >= (int)Ns.size()) return;
-    const std::string Prefix = (Ns[(size_t)index].is_object() && !Handle(Ns[(size_t)index]).empty()
-                                    ? Handle(Ns[(size_t)index]) : "#" + std::to_string(index)) + "|";
-    if (open) { m_s->ExpandAll.insert(Prefix); return; }
-    m_s->ExpandAll.erase(Prefix);
-    for (auto It = m_s->Open.lower_bound(Prefix); It != m_s->Open.end() && It->rfind(Prefix, 0) == 0;) It = m_s->Open.erase(It);
-}
-
-void PkgCanvas::drawPayload(json &Node, int Index)
-{
-    //The node's LAYERS as a tree of folded rows: SECTION folders ('/' nests), then each layer, named by its LABEL or
-    //by what PkgGraph derives (its WHEN variable's launcher label, else its payload). Opening a row shows the layer's
-    //declared fields. Sections sit where their first layer is and keep their layers in fold order — the order IS the
-    //fold order, which the move buttons change and the tooltip's "#n" states.
-    if (Node.contains("LAYERS") && !Node["LAYERS"].is_array())
-    { ImGui::TextDisabled("(LAYERS is not a list - fix it in the JSON view)"); return; }
-    static json EmptyArr = json::array();      // stays empty: every write goes through Node["LAYERS"]
-    json &Ls = Node.contains("LAYERS") ? Node["LAYERS"] : EmptyArr;
-    if (Ls.empty()) ImGui::TextDisabled("no layers yet");
-    const std::vector<PkgGraph::LayerItem> Items =
-        PkgGraph::LayerItems(Node, m_s->Facets, [this](const std::string &Ref) { return refLabel(Ref); });
-
-    struct Group { std::string Name, Path; std::vector<std::pair<bool, int>> Kids; };   // kid: (is a group, index)
-    std::vector<Group> Gs(1);
-    for (int I = 0; I < (int)Items.size(); ++I)
-    {
-        int G = 0;
-        std::string Path, Seg;
-        std::stringstream SS(Items[(size_t)I].Section);
-        while (std::getline(SS, Seg, '/'))
-        {
-            Path += (Path.empty() ? "" : "/") + Seg;
-            int Found = -1;
-            for (const auto &[IsG, K] : Gs[(size_t)G].Kids) if (IsG && Gs[(size_t)K].Name == Seg) { Found = K; break; }
-            if (Found < 0)
+            for (const std::string &T : PkgGraph::AllTypes())
             {
-                Gs.push_back({Seg, Path, {}});
-                Found = (int)Gs.size() - 1;
-                Gs[(size_t)G].Kids.push_back({true, Found});
+                if (ImGui::MenuItem(T.c_str()))
+                {
+                    json N = D.Node(V.Doc);
+                    if (PkgGraph::AddLayer(N, T))
+                    {
+                        const int At = (int)N["LAYERS"].size() - 1;
+                        D.Replace(V.Doc, std::move(N));
+                        S.Open.insert(V.Handle + "|L" + std::to_string(At));
+                    }
+                }
+                if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s", PkgGraph::TypeHelp(T));
             }
-            G = Found;
+            ImGui::EndMenu();
         }
-        Gs[(size_t)G].Kids.push_back({false, I});
+        if (ImGui::MenuItem("Duplicate", "Ctrl+D"))
+        {
+            json N = D.Node(V.Doc);
+            if (N.is_object()) N["LABEL"] = StrOf(N, "LABEL") + " copy";
+            const int I = D.Add(std::move(N));
+            D.SetPos(D.Handle(I), {WR.x + 40.0f, WR.y + 40.0f});
+            S.Sel = {D.Handle(I)};
+        }
+        if (ImGui::MenuItem("Copy CID")) ImGui::SetClipboardText(V.Handle.c_str());
+        ImGui::Separator();
+        if (ImGui::MenuItem("Delete", "Del")) Self.removeNodes({V.Handle});
+        ImGui::EndPopup();
     }
-
-    int Del = -1, MoveFrom = -1, MoveBy = 0;
-    auto DrawLayer = [&](const PkgGraph::LayerItem &It, int Depth) {
-        const int I = It.Layer;
-        ImGui::PushID(I);
-        int R, Gc, B;
-        TypeColour(It.Type, R, Gc, B);
-        ImGui::PushStyleColor(ImGuiCol_Text, ImVec4((float)(R + 70) / 255.0f, (float)(Gc + 70) / 255.0f, (float)(B + 70) / 255.0f, 1.0f));
-        const std::string Type = It.Type.empty() ? std::string("?") : It.Type;
-        const bool Open = fold("L" + std::to_string(I), Type + "  " + Fit(It.Title, TitleChars(Depth, true) - (int)Type.size() - 2));
-        ImGui::PopStyleColor();
-        if (ImGui::IsItemHovered())
+    //Title text: the name in bold, badges right-aligned.
+    std::string Badge = V.Graft ? "graft" : V.Variant ? "variant" : V.Launchable ? "entry" : "";
+    float BadgeW = 0.0f;
+    ImGui::PushFont(GBold, kFont * Z);
+    const float TextY = WinPos.y + (Th - ImGui::GetFontSize()) * 0.5f;
+    if (!Badge.empty())
+    {
+        ImGui::PushFont(nullptr, kFont * 0.8f * Z);
+        const ImVec2 BS = ImGui::CalcTextSize(Badge.c_str());
+        BadgeW = BS.x + 12.0f * Z;
+        const ImVec2 B0(WinPos.x + Wd - BadgeW - 14.0f * Z, WinPos.y + (Th - BS.y - 4.0f * Z) * 0.5f);
+        DL->AddRectFilled(B0, ImVec2(B0.x + BadgeW, B0.y + BS.y + 4.0f * Z), IM_COL32(0, 0, 0, 70), 8.0f * Z);
+        DL->AddText(ImVec2(B0.x + 6.0f * Z, B0.y + 2.0f * Z), IM_COL32(235, 238, 245, 230), Badge.c_str());
+        ImGui::PopFont();
+    }
+    if (S.Renaming == V.Handle)
+    {
+        ImGui::SetCursorScreenPos(ImVec2(WinPos.x + 12.0f * Z, WinPos.y + (Th - ImGui::GetFrameHeight()) * 0.5f));
+        ImGui::SetNextItemWidth(Wd - 24.0f * Z - BadgeW);
+        if (S.RenameFocus) { ImGui::SetKeyboardFocusHere(); S.RenameFocus = false; }
+        const bool Enter = ImGui::InputText("##rename", &S.RenameBuf, ImGuiInputTextFlags_EnterReturnsTrue | ImGuiInputTextFlags_AutoSelectAll);
+        if (Enter || ImGui::IsItemDeactivated())
         {
-            std::string Tip = "#" + std::to_string(I) + " " + Type + ": " + It.Title;
-            if (It.Summary != It.Title) Tip += "\n" + It.Summary;
-            if (const std::string W = StrOf(Ls[(size_t)I], "WHEN"); !W.empty()) Tip += "\nwhen " + W;
-            Tip += std::string("\n\n") + TypeHelp(It.Type) + "\n(right-click: remove this layer)";
-            EditorTooltip(m_s->RealMouse, m_s->ScreenViewportPos, m_s->ScreenViewportSize, Tip.c_str());
-        }
-        //Removing a layer drops its whole payload, so it is not a button a stray click lands on: it is in the
-        //row's context menu.
-        if (ImGui::BeginPopupContextItem("##layermenu"))
-        {
-            if (ImGui::Selectable("Remove layer")) Del = I;
-            ImGui::EndPopup();
-        }
-        ImGui::SameLine(kNodeWidth - 36.0f);
-        if (ImGui::SmallButton("^")) { MoveFrom = I; MoveBy = -1; }
-        ImGui::SameLine();
-        if (ImGui::SmallButton("v")) { MoveFrom = I; MoveBy = +1; }
-        if (Open)
-        {
-            if (It.Type.empty())
-                ImGui::TextDisabled("(needs one type key - fix in JSON view)");
-            else
+            if (!ImGui::IsKeyPressed(ImGuiKey_Escape) && V.Doc >= 0 && S.RenameBuf != StrOf(D.Node(V.Doc), "LABEL"))
             {
-                m_s->CurLayer = I;
-                for (const Field &F : FieldsFor(It.Type)) drawField(Ls[(size_t)I], F, Index);
-                m_s->CurLayer = -1;
+                json N = D.Node(V.Doc);
+                if (N.is_object()) { if (S.RenameBuf.empty()) N.erase("LABEL"); else N["LABEL"] = S.RenameBuf; D.Replace(V.Doc, std::move(N)); }
             }
-            ImGui::TreePop();
+            S.Renaming.clear();
         }
-        ImGui::PopID();
-    };
-    std::function<void(int, int)> DrawGroup = [&](int G, int Depth) {
-        for (const auto &[IsG, K] : Gs[(size_t)G].Kids)
-        {
-            if (!IsG) { DrawLayer(Items[(size_t)K], Depth); continue; }
-            if (fold("S:" + Gs[(size_t)K].Path, Fit(Gs[(size_t)K].Name, TitleChars(Depth, false))))
-            { DrawGroup(K, Depth + 1); ImGui::TreePop(); }
-        }
-    };
-    DrawGroup(0, 0);
+    }
+    else
+    {
+        const std::string T = PkgForm::FitWidth(V.Title, Wd - 30.0f * Z - BadgeW);
+        DL->AddText(ImVec2(WinPos.x + 12.0f * Z, TextY), IM_COL32(248, 249, 252, 255), T.c_str());
+    }
+    ImGui::PopFont();
+    ImGui::PopClipRect();
 
-    if (Del >= 0) { Ls.erase((size_t)Del); m_s->MarkDirty(); }
-    else if (MoveFrom >= 0 && PkgGraph::MoveLayer(Node, MoveFrom, MoveBy)) m_s->MarkDirty();
-    if (ImGui::SmallButton("+ layer")) ImGui::OpenPopup("##addlayer");
+    // ---- body ----
+    ImGui::SetCursorPos(ImVec2(0, Th + kPadY * Z));
+    ImGui::Indent(kPadX * Z);
+    const bool Busy = S.Running.count(V.Handle) != 0;
+    if (const auto Is = S.Issues.find(V.Handle); Is != S.Issues.end())
+        for (const std::string &M : Is->second)
+        {
+            ImGui::AlignTextToFramePadding();
+            ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1.0f, 0.74f, 0.32f, 1.0f));
+            ImGui::TextUnformatted(PkgForm::FitWidth("\xE2\x9A\xA0 " + M, Wd - 2.0f * kPadX * Z).c_str());
+            ImGui::PopStyleColor();
+            if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s", M.c_str());
+        }
+    json Work = D.Node(V.Doc);                            // edited here, handed back only if something changed
+    bool Dirty = false;
+    if (Busy) ImGui::BeginDisabled();
+    if (Work.is_object())
+    {
+        PkgForm::Host H;
+        H.Z = Z;
+        H.PadRight = kPadX;
+        S.FoldNode = V.Handle;
+        H.Fold = [&S](const std::string &Key, const std::string &Label) {
+            const std::string K = S.FoldNode + "|" + Key;
+            bool Was = S.Open.count(K) > 0;
+            if (!Was && S.ExpandAll.count(S.FoldNode + "|")) { S.Open.insert(K); Was = true; }
+            ImGui::AlignTextToFramePadding();
+            ImGui::SetNextItemOpen(Was, ImGuiCond_Always);
+            const bool Now = ImGui::TreeNodeEx((Label + "###" + Key).c_str(), ImGuiTreeNodeFlags_SpanAvailWidth);
+            if (Now != Was) { if (Now) S.Open.insert(K); else S.Open.erase(K); }
+            return Now;
+        };
+        H.RefLabel = [&S](const std::string &Ref) {
+            if (const auto It = S.Labels.find(Ref); It != S.Labels.end()) return It->second;
+            if (const auto It = S.ExtCache.find(Ref); It != S.ExtCache.end()) return It->second.Label;
+            return std::string();
+        };
+        H.Facets = &S.Facets;
+        H.Dirty = [&Dirty] { Dirty = true; };
+        const std::string Handle = V.Handle;
+        H.Request = [&S, Handle](const std::string &A) { S.Pending = {Handle, A}; };
+        std::map<std::string, std::vector<PkgGraph::RegRow>> Reg;   // this node's slice of the edit buffers
+        const std::string Pre = V.Handle + "|";
+        for (auto It = S.RegBuf.lower_bound(Pre); It != S.RegBuf.end() && It->first.rfind(Pre, 0) == 0; ++It) Reg[It->first.substr(Pre.size())] = It->second;
+        H.RegBuf = &Reg;
+        PkgForm::Body(Work, H);
+        for (auto It = S.RegBuf.lower_bound(Pre); It != S.RegBuf.end() && It->first.rfind(Pre, 0) == 0;) It = S.RegBuf.erase(It);
+        for (auto &[K, Rows] : Reg) S.RegBuf[Pre + K] = std::move(Rows);
+    }
+    else
+    {
+        ImGui::AlignTextToFramePadding();
+        ImGui::TextDisabled("This node is not a JSON object - fix it in the JSON view.");
+    }
+    if (Busy) ImGui::EndDisabled();
+    S.ExpandAll.erase(V.Handle + "|");                   // "open all" unfolds everything in one frame
+    if (Dirty && Work.is_object()) D.Replace(V.Doc, std::move(Work));
+
+    // ---- footer: add a layer, actions, or what is running ----
+    if (Busy)
+    {
+        const auto &Bz = S.Running[V.Handle];
+        const float Frac = Bz.Frac >= 0.0f ? Bz.Frac : 0.5f + 0.5f * std::sin((float)ImGui::GetTime() * 3.0f);
+        const std::string Txt = (Bz.What + (Bz.Detail.isEmpty() ? QString() : " - " + Bz.Detail)).toStdString();
+        ImGui::ProgressBar(Frac, ImVec2(Wd - 2.0f * kPadX * Z - (Bz.Cancellable ? 70.0f * Z : 0.0f), 0), Txt.c_str());
+        if (Bz.Cancellable) { ImGui::SameLine(); if (ImGui::Button("cancel")) emit Self.cancelRequested(QString::fromStdString(V.Handle)); }
+    }
+    if (ImGui::Button("+ layer")) ImGui::OpenPopup("##addlayer");
     if (ImGui::BeginPopup("##addlayer"))
     {
-        for (const std::string &T : AllTypes())
+        for (const std::string &T : PkgGraph::AllTypes())
         {
-            if (ImGui::Selectable(T.c_str()) && PkgGraph::AddLayer(Node, T)) m_s->MarkDirty();
-            if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s", TypeHelp(T));
-        }
-        ImGui::EndPopup();
-    }
-    ImGui::SameLine();
-    if (ImGui::SmallButton("open all")) setExpanded(Index, true);
-    ImGui::SameLine();
-    if (ImGui::SmallButton("fold all")) setExpanded(Index, false);
-}
-
-//The CustomVar UI facet — the thing whose PRESENCE makes the var user-facing (08-variables.md). The generic field
-//table is flat (KEY→one JSON key) and can't express a nested object that toggles in and out, so it is drawn here,
-//the way RegEdit's hive is. "Visible" is the presence of the UI object; unchecking it removes UI (→ hidden, the var
-//resolves from DEFAULT). This restores editor control over visibility, which was JSON-only after the refactor.
-void PkgCanvas::drawCustomVarUI(json &Node)
-{
-    ImGui::PushID("uifacet");
-    bool Visible = Node.contains("UI") && Node["UI"].is_object();
-    if (ImGui::Checkbox("Visible in launcher", &Visible))
-    {
-        PkgGraph::SetVarVisible(Node, Visible);
-        m_s->MarkDirty();
-    }
-    if (ImGui::IsItemHovered())
-        ImGui::SetTooltip("Shown as a control in the pre-launch dialog. Off = internal binding: it resolves from "
-                          "DEFAULT (or another var) and never appears.");
-    if (!Visible) { ImGui::PopID(); return; }
-
-    json &UI = Node["UI"];
-    auto TextRow = [&](const char *Key, const char *Label, const char *Hint) {
-        std::string V = UI.value(Key, std::string());
-        ImGui::TextUnformatted(Label); ImGui::SameLine(kLabelCol); ImGui::SetNextItemWidth(kFieldWidth);
-        if (ImGui::InputTextWithHint((std::string("##") + Key).c_str(), Hint, &V)) { UI[Key] = V; m_s->MarkDirty(); }
-    };
-    TextRow("LABEL", "Label", "shown in the dialog");
-
-    static const char *Controls[] = {"text", "bool", "int", "float", "enum", "secret"};
-    std::string Ctl = UI.value("CONTROL", std::string("text"));
-    ImGui::TextUnformatted("Control"); ImGui::SameLine(kLabelCol); ImGui::SetNextItemWidth(kFieldWidth);
-    if (ImGui::BeginCombo("##ctl", Ctl.c_str()))
-    {
-        for (const char *C : Controls) if (ImGui::Selectable(C, Ctl == C)) { UI["CONTROL"] = std::string(C); m_s->MarkDirty(); }
-        ImGui::EndCombo();
-    }
-    Ctl = UI.value("CONTROL", std::string("text"));
-
-    auto IntRow = [&](const char *Key, const char *Label) {
-        int V = UI.contains(Key) && UI[Key].is_number_integer() ? UI[Key].get<int>() : 0;
-        ImGui::TextUnformatted(Label); ImGui::SameLine(kLabelCol); ImGui::SetNextItemWidth(kFieldWidth);
-        if (ImGui::InputInt((std::string("##") + Key).c_str(), &V)) { UI[Key] = V; m_s->MarkDirty(); }
-    };
-    if (Ctl == "int" || Ctl == "float") { IntRow("MIN", "Min"); IntRow("MAX", "Max"); }
-    else if (Ctl == "text" || Ctl == "secret") TextRow("PATTERN", "Pattern", "regex the value must match (optional)");
-    if (Ctl == "secret")
-    {
-        //POOL: seed values one per line (a CD-key list). The runtime draws one at first launch; the user can
-        //overwrite. Stored as a string array.
-        std::string Text;
-        if (UI.contains("POOL") && UI["POOL"].is_array())
-            for (const auto &V : UI["POOL"]) if (V.is_string()) Text += V.get<std::string>() + "\n";
-        ImGui::TextUnformatted("Pool"); ImGui::SameLine(kLabelCol);
-        const int Lines = (int)std::count(Text.begin(), Text.end(), '\n') + 1;
-        if (ImGui::InputTextMultiline("##pool", &Text, ImVec2(kFieldWidth, 16.0f * (float)std::min(Lines + 1, 6))))
-        {
-            nlohmann::ordered_json Arr = nlohmann::ordered_json::array();
-            std::stringstream SS(Text); std::string Line;
-            while (std::getline(SS, Line)) { if (!Line.empty() && Line.back() == '\r') Line.pop_back();
-                                             if (!Line.empty()) Arr.push_back(Line); }
-            UI["POOL"] = std::move(Arr); m_s->MarkDirty();
-        }
-    }
-    else if (Ctl == "enum")
-    {
-        //CHOICES editor: one "value" or "Label = value" per line ↔ the array of {LABEL,VALUE} (bare string = both).
-        std::string Text;
-        if (UI.contains("CHOICES") && UI["CHOICES"].is_array())
-            for (const auto &O : UI["CHOICES"])
+            if (ImGui::Selectable(T.c_str()))
             {
-                if (O.is_string()) Text += O.get<std::string>() + "\n";
-                else if (O.is_object())
+                json N = D.Node(V.Doc);
+                if (PkgGraph::AddLayer(N, T))
                 {
-                    const std::string L = O.value("LABEL", std::string()), Va = O.value("VALUE", std::string());
-                    Text += (L.empty() || L == Va) ? (Va + "\n") : (L + " = " + Va + "\n");
+                    const int At = N.contains("LAYERS") && N["LAYERS"].is_array() ? (int)N["LAYERS"].size() - 1 : 0;
+                    D.Replace(V.Doc, std::move(N));
+                    S.Open.insert(V.Handle + "|L" + std::to_string(At));   // a new layer opens, ready to fill in
                 }
             }
-        ImGui::TextUnformatted("Choices"); ImGui::SameLine(kLabelCol);
-        int Lines = (int)std::count(Text.begin(), Text.end(), '\n') + 1;
-        if (ImGui::InputTextMultiline("##choices", &Text, ImVec2(kFieldWidth, 16.0f * (float)std::min(Lines + 1, 6))))
-        {
-            json Arr = json::array();
-            std::stringstream SS(Text); std::string Line;
-            while (std::getline(SS, Line))
-            {
-                //trim
-                size_t A = Line.find_first_not_of(" \t"); if (A == std::string::npos) continue;
-                size_t B = Line.find_last_not_of(" \t\r"); Line = Line.substr(A, B - A + 1);
-                const size_t Eq = Line.find('=');
-                if (Eq == std::string::npos) Arr.push_back(Line);
-                else
-                {
-                    auto Trim = [](std::string X){ size_t a=X.find_first_not_of(" \t"); size_t b=X.find_last_not_of(" \t");
-                                                   return a==std::string::npos?std::string():X.substr(a,b-a+1); };
-                    Arr.push_back(json{{"LABEL", Trim(Line.substr(0, Eq))}, {"VALUE", Trim(Line.substr(Eq + 1))}});
-                }
-            }
-            UI["CHOICES"] = std::move(Arr); m_s->MarkDirty();
-        }
-    }
-    TextRow("SECTION", "Section", "dialog tree section, / nests");
-    ImGui::PopID();
-}
-
-// ---- node rendering -------------------------------------------------------
-
-void PkgCanvas::drawNode(int Index, Graph &G)
-{
-    //Bounds FIRST. nlohmann's non-const operator[](size_type) GROWS the array with nulls up to the index — the
-    //hazard this file documents elsewhere — so binding the reference before the check made the check
-    //unfalsifiable and would have appended nulls to the document had it ever been reachable.
-    json &Ns = m_s->Nodes();
-    if (Index < 0 || Index >= (int)Ns.size()) return;
-
-    //A NODES entry that is not an object is kept as a placeholder so indices stay aligned (PkgGraph::Build),
-    //and it used to be rendered like any other node — where one character in the id box reaches
-    //`Ns[index]["LABEL"] = ...` and drawEnvelope reaches `Node.erase("TOGGLE")`, i.e. type_error.305 and
-    //307 out of paintGL, which has no catch. It draws as a box that says what is wrong and offers nothing to
-    //touch — but it is a NORMAL node in every other respect: same colour pushes and pops (an early return
-    //between the pushes and the pops leaked three ImNodesColElement per frame, forever, on a canvas left open
-    //with one malformed node in it), and the same position seeding, or it is drawn at the grid origin while
-    //the layout, the culling test and the overview all place it in its computed slot.
-    const bool Malformed = !Ns[Index].is_object();
-    json &Node = Ns[Index];
-    const std::string Type = Malformed ? std::string() : KindOf(Node);
-    const std::string Id   = Malformed ? std::string()        : Handle(Node);   // wiring handle (CID): Issues/Running keys
-
-    int R, Gc, B;
-    TypeColour(Type, R, Gc, B);
-    ImNodes::PushColorStyle(ImNodesCol_TitleBar,         IM_COL32(R, Gc, B, 255));
-    ImNodes::PushColorStyle(ImNodesCol_TitleBarHovered,  IM_COL32(R + 26, Gc + 26, B + 26, 255));
-    ImNodes::PushColorStyle(ImNodesCol_TitleBarSelected, IM_COL32(R + 40, Gc + 40, B + 40, 255));
-
-    ImNodes::BeginNode(Index);
-    if (Malformed)
-    {
-        ImNodes::BeginNodeTitleBar();
-        ImGui::TextUnformatted("malformed node");
-        ImNodes::EndNodeTitleBar();
-        ImGui::Dummy(ImVec2(kNodeWidth, 1.0f));
-        ImGui::TextDisabled("this entry is not a JSON object - fix it in the JSON view");
-        ImNodes::EndNode();
-        seedNodePosition(Index, G);
-        ImNodes::PopColorStyle();
-        ImNodes::PopColorStyle();
-        ImNodes::PopColorStyle();
-        return;
-    }
-
-    ImNodes::BeginNodeTitleBar();
-    // Title = the cosmetic name (LABEL) when the node has one, else the KIND. The title-bar COLOUR already encodes
-    // the kind, so a named node reads as its pretty name; an unnamed one falls back to its kind.
-    { const std::string Nm = StrOf(Node, "LABEL"); ImGui::TextUnformatted(Nm.empty() ? (Type.empty() ? "node" : Type.c_str()) : Nm.c_str()); }
-    ImNodes::EndNodeTitleBar();
-
-    // Nothing depends on this node yet, and it is not a launchable — so nothing mounts it. That is NORMAL
-    // while authoring (you capture, then wire, then declare the exec last), so it is a note rather than an
-    // error: the canvas makes the state visible instead of silently rewiring the graph to "fix" it.
-    {
-        const std::vector<std::string> Types = LayerTypes(Node);
-        if (std::find(Types.begin(), Types.end(), "EXEC") == Types.end() && !m_s->HasDependent.count(Index))
-            ImGui::TextColored(ImVec4(0.55f, 0.60f, 0.68f, 1.0f), "not wired yet - nothing contains this");
-    }
-
-    // A node's problems are drawn ON the node, at the moment it becomes wrong.
-    auto It = m_s->Issues.find(Id);
-    if (It != m_s->Issues.end())
-        for (const std::string &M : It->second)
-            ImGui::TextColored(ImVec4(1.0f, 0.72f, 0.28f, 1.0f), "! %s", M.substr(0, 58).c_str());
-
-    // Dependency pins: one IN accepting many parents, one OUT. Nothing flows along the wire — this is a
-    // composition graph, not dataflow — so there is no per-column pin fan-out.
-    ImNodes::BeginInputAttribute(InPin(Index));
-    ImGui::TextUnformatted("over");
-    ImNodes::EndInputAttribute();
-    ImGui::SameLine();
-    ImNodes::BeginOutputAttribute(OutPin(Index));
-    ImGui::TextUnformatted("under");
-    ImNodes::EndOutputAttribute();
-
-    ImGui::Dummy(ImVec2(kNodeWidth, 1.0f));
-    // The editable field is the node's COSMETIC name (LABEL), NOT the handle (the handle is the derived CID, shown
-    // read-only below). Blank is allowed — the node then shows its short CID. renameNode just sets LABEL.
-    std::string EditLabel = StrOf(Node, "LABEL");
-    ImGui::TextUnformatted("name"); ImGui::SameLine(kLabelCol);
-    ImGui::SetNextItemWidth(kFieldWidth);
-    if (m_s->Running.find(Id) == m_s->Running.end()
-        && ImGui::InputText("##name", &EditLabel)) renameNode(Index, EditLabel);
-    // The identity (CID) handle, read-only, so the author can see/copy what this node resolves to. A never-minted
-    // draft shows its "draft-…" handle until the next Publish assigns a real CID.
-    if (!Id.empty())
-    {
-        ImGui::TextDisabled("cid"); ImGui::SameLine(kLabelCol);
-        ImGui::TextDisabled("%s", Id.size() > 20 ? (Id.substr(0, 12) + "…" + Id.substr(Id.size() - 6)).c_str() : Id.c_str());
-    }
-
-    // A node running a heavy action is READ-ONLY: a zip conversion is rewriting the very file these fields
-    // describe, so an edit landing mid-flight would describe a file that no longer exists.
-    const bool Locked = m_s->Running.find(Id) != m_s->Running.end();
-    if (Locked) ImGui::BeginDisabled();
-    drawEnvelope(Node);
-    m_s->FoldPrefix = (Id.empty() ? "#" + std::to_string(Index) : Id) + "|";
-    drawPayload(Node, Index);
-    m_s->ExpandAll.erase(m_s->FoldPrefix);           // "open all" happens in one frame: every fold drawn opened
-    if (Locked) ImGui::EndDisabled();
-    drawActions(Node, Index, G);
-
-    ImNodes::EndNode();
-    ImNodes::PopColorStyle();
-    ImNodes::PopColorStyle();
-    ImNodes::PopColorStyle();
-
-    seedNodePosition(Index, G);
-}
-
-// Seed imnodes with this node's position the first time it is drawn, and re-seed if its index moved.
-// Previously this ran only for nodes with NO stored position, so a saved layout was never restored: every
-// node rendered at imnodes' default origin and the next mouse-release wrote [0,0] over the whole bundle.
-//
-// Its own function because the malformed-node placeholder needs it too — it returns early, and without this
-// it was drawn at the grid origin while the layout, the viewport culling and the overview all placed it in
-// its computed slot: the box you could see vanished when you panned to where it supposedly was.
-void PkgCanvas::seedNodePosition(int Index, const Graph &G)
-{
-    const std::string Id = G.Nodes[(size_t)Index].Id;
-    //A malformed placeholder has no id. Every such node would share Seeded[""] and DrawnLast[""] and re-seed
-    //each other every frame; it has nothing to read back anyway, so it is simply pushed to its layout slot.
-    if (Id.empty())
-    {
-        ImNodes::SetNodeGridSpacePos(Index, ImVec2(G.Nodes[(size_t)Index].X, G.Nodes[(size_t)Index].Y));
-        return;
-    }
-    auto Sit = m_s->Seeded.find(Id);
-    //Re-seed when the index moved (a different node now owns this id) OR when the node was not submitted last
-    //frame: in that case imnodes destroyed it and BeginNode just created a fresh one at (0,0). Skipping the
-    //re-seed there is how a node that scrolled out and back collapsed to the origin — and the read-back then
-    //wrote that origin into the layout.
-    if (Sit == m_s->Seeded.end() || Sit->second != Index || !m_s->DrawnLast.count(Id))
-    {
-        //UNSCALED. Zoom is a view transform applied to the emitted geometry, not to the coordinates —
-        //imnodes only ever sees world space, so nothing about zoom can reach the document.
-        ImNodes::SetNodeGridSpacePos(Index, ImVec2(G.Nodes[Index].X, G.Nodes[Index].Y));
-        m_s->Seeded[Id] = Index;
-    }
-}
-
-void PkgCanvas::syncLinks(const Graph &G, const std::vector<char> &Drawn)
-{
-    m_s->VisibleLinks = 0;
-    //A link can only be submitted when BOTH of its endpoints were submitted this frame: imnodes resolves a
-    //link through the attribute ids, and an id that was never begun this frame has no position to draw to.
-    auto EndsDrawn = [&](const Link &L) {
-        const bool ChildOk  = L.ChildIndex  >= 0 && L.ChildIndex  < (int)Drawn.size() && Drawn[(size_t)L.ChildIndex];
-        //An external parent is a chip, always submitted, so only the in-bundle end needs checking.
-        const bool ParentOk = L.ParentIndex < 0
-                              || (L.ParentIndex < (int)Drawn.size() && Drawn[(size_t)L.ParentIndex]);
-        return ChildOk && ParentOk;
-    };
-    // The link id must address the exact PARENTS entry it came from. G.Links SKIPS empty/non-string entries,
-    // so a running counter over it drifts from the real array index and a detach would erase a different
-    // parent. Recover the true index instead.
-    for (const Link &L : G.Links)
-    {
-        if (!EndsDrawn(L)) continue;
-        //The link id must address the exact PARENTS entry the edge came from. Build already knows it, so it is
-        //carried on the Link — recovering it here meant a linear scan of the child's PARENTS with a
-        //std::string construction per comparison, EVERY FRAME: on the Minecraft bundle (39k links, 902 nodes
-        //with 75 parents each) millions of allocations at 60Hz, which is the same shape already hoisted out of
-        //DepthOf. An earlier attempt used a per-child running counter, which drifts past skipped entries and
-        //silently dropped every wire after the first on a multi-parent node.
-        //A slot at or past kMaxParents would alias into the NEXT child's id space, so ctrl-click-detaching
-        //that wire would erase a PARENTS entry from a DIFFERENT node. The live maximum is 75, so this is
-        //headroom rather than a live bug — but silence at the boundary is how it would stop being one.
-        //Reported ONCE per node, not appended per frame: Issues is cleared only by setIssues, so an
-        //unconditional push_back here grew the map by a duplicate string every frame at 60Hz.
-        const int S = L.Slot;
-        if (S >= kMaxParents)
-        {
-            std::vector<std::string> &Msgs = m_s->Issues[G.Nodes[L.ChildIndex].Id];
-            const std::string M = "more than " + std::to_string(kMaxParents)
-                                + " parents - later wires are not drawn";
-            if (std::find(Msgs.begin(), Msgs.end(), M) == Msgs.end()) Msgs.push_back(M);
-            continue;
-        }
-        const int From = (L.ParentIndex >= 0) ? OutPin(L.ParentIndex)
-                                              : OutPin(kExternalBase + (int)(std::find(G.Externals.begin(),
-                                                    G.Externals.end(), L.ExternalId) - G.Externals.begin()));
-        ImNodes::Link(LinkId(L.ChildIndex, S), From, InPin(L.ChildIndex));
-        ++m_s->VisibleLinks;
-    }
-}
-
-void PkgCanvas::flushPositions(Graph &G, const std::vector<char> &Drawn)
-{
-    json &Ns = m_s->Nodes();
-    for (int I = 0; I < (int)G.Nodes.size() && I < (int)Ns.size(); ++I)
-    {
-        // Only read back a node SUBMITTED THIS FRAME. Two separate disasters otherwise, both from culling:
-        // imnodes has already freed every unsubmitted node by the time this runs (it is called after
-        // EndNodeEditor), so GetNodeGridSpacePos does ObjectPoolFind -> -1 and then indexes Pool[-1] — an
-        // out-of-bounds read whose assert is compiled out in a release build; and a node re-created this frame
-        // at (0,0) would report a "drag" to the origin and persist it.
-        if (I >= (int)Drawn.size() || !Drawn[(size_t)I]) continue;
-        auto Sit = m_s->Seeded.find(G.Nodes[I].Id);
-        if (Sit == m_s->Seeded.end() || Sit->second != I) continue;
-        //No zoom arithmetic at all. imnodes was given world coordinates and returns world coordinates, so a
-        //position can only change because something MOVED the node. The tolerance is the grid-snap floor, not
-        //a noise filter — there is no longer any noise to filter.
-        const ImVec2 P = ImNodes::GetNodeGridSpacePos(I);
-        //A sink that persists whatever it is handed is how one bad frame became permanent: a position written
-        //here goes into GlobalConfig and wins over the package's own POS forever, and a node at -3.4e38 can
-        //never be drawn, selected or dragged back. imnodes' arithmetic runs on a cursor position we supply, so
-        //this is our own output coming back — validate it before it is durable. The bound is absurd rather
-        //than tight (a real graph is tens of thousands of units across, not millions) so it can only ever
-        //catch a value that is already nonsense.
-        if (!std::isfinite(P.x) || !std::isfinite(P.y)
-            || std::abs(P.x) > 1.0e7f || std::abs(P.y) > 1.0e7f)
-        {
-            //Refusing to WRITE it is only half the job: imnodes is still holding the bad value and the node is
-            //still submitted every frame (culling reads our own X/Y), so it would be drawn off at that
-            //coordinate for the rest of the session with the document looking healthy. Dropping the seed makes
-            //drawNode push our position back next frame. Said once per node per distinct bad coordinate, keyed
-            //in the SAME "<id>@<source>@<value>" shape the Build-rejection warning uses — two producers with
-            //two key shapes in one set is how prefix maintenance once covered one and missed the other.
-            if (m_s->WarnedPos.insert(G.Nodes[I].Id + "@the editor@" + std::to_string(P.x) + "," + std::to_string(P.y)).second)
-            {
-                Log(LogLevel::WARN, "PkgCanvas::flushPositions",
-                    "refused an impossible position from the editor for node '"
-                        + PkgGraph::SafeId(G.Nodes[I].Id) + "' - re-seeding it");
-            }
-            m_s->Seeded.erase(G.Nodes[I].Id);
-            continue;
-        }
-        //Size is measured on the same terms and for the same reason: it is only knowable while the node is
-        //submitted, and the minimap needs it for nodes that are not.
-        m_s->NodeDims[G.Nodes[I].Id] = ImNodes::GetNodeDimensions(I);
-        const float Tol = 0.25f;
-        if (std::abs(P.x - G.Nodes[I].X) > Tol || std::abs(P.y - G.Nodes[I].Y) > Tol)
-        {
-            if (m_s->Layout) { SetPos(*m_s->Layout, G.Nodes[I].Id, P.x, P.y); m_s->PosDirty = true; }
-            G.Nodes[I].X = P.x;
-            G.Nodes[I].Y = P.y;
-        }
-    }
-}
-
-// ---- frame ----------------------------------------------------------------
-
-void PkgCanvas::drawToolbar()
-{
-    // ＋ Add ▾ — one dropdown, types grouped (payload / declare / composition), each with its help tooltip.
-    // Replaces the old inline spew of a SmallButton per type, which ran off the toolbar.
-    if (ImGui::Button("+ Add")) ImGui::OpenPopup("##addnode");
-    if (ImGui::BeginPopup("##addnode"))
-    {
-        struct Grp { const char *Title; std::vector<const char *> Types; };
-        static const std::vector<Grp> Groups = {
-            {"Content",     {"ZIP", "DIR", "FILE", "DELTA"}},
-            {"Transforms",  {"EDIT", "REG", "DLL", "ENV"}},
-            {"Facts",       {"VARS", "KEEP"}},
-            {"Entries",     {"EXEC"}},
-            {"Composition", {"NODE", "ANY", "NOT", "empty node"}},
-        };
-        std::string Pick; bool Picked = false;
-        for (const Grp &Gp : Groups)
-        {
-            ImGui::SeparatorText(Gp.Title);
-            for (const char *T : Gp.Types)
-            {
-                const std::string Section = std::string(T) == "empty node" ? std::string() : std::string(T);
-                if (ImGui::Selectable(T)) { Pick = Section; Picked = true; }
-                if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s", TypeHelp(Section));
-            }
-        }
-        if (Picked)
-        {
-            const ImVec2 Origin = ImNodes::EditorContextGetPanning();
-            m_s->Selected = addNode(Pick, 80.0f - Origin.x, 80.0f - Origin.y);
-            ImGui::CloseCurrentPopup();
+            if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s", PkgGraph::TypeHelp(T));
         }
         ImGui::EndPopup();
     }
-    ImGui::SameLine();
-    ImGui::TextDisabled("|");
-    ImGui::SameLine();
-    ImGui::Text("zoom %.0f%%", (double)(m_s->Zoom * 100.0f));
-    if (ImGui::IsItemHovered()) ImGui::SetTooltip("mouse wheel over the canvas");
-    ImGui::SameLine();
-    if (ImGui::SmallButton("reset##zoom")) setZoom(1.0f);
-    ImGui::SameLine();
-    bool Mm = m_s->ShowMiniMap;
-    if (ImGui::Checkbox("minimap", &Mm)) setMiniMap(Mm);
-    if (ImGui::IsItemHovered())
-        ImGui::SetTooltip("An overview of the whole graph, including the nodes off-screen. Click or drag it to move the view.");
-    ImGui::SameLine();
-    ImGui::TextDisabled("%d/%d shown", m_s->VisibleNodes, (int)m_s->Nodes().size());
-
-    // Bring in a node from ANOTHER bundle so there is a chip to drag a wire from. Every package in the library
-    // depends on at least one out-of-bundle node (a runner, MediaStack_MS, asiloader), so without this the
-    // canvas cannot author a real package at all — which is what setKnownIds was always for.
-    ImGui::SameLine();
-    if (ImGui::SmallButton("external...")) ImGui::OpenPopup("##external");
-    if (ImGui::BeginPopup("##external"))
+    const std::vector<std::string> NoHints;
+    const auto Hi = S.Hints.find(V.Handle);
+    std::vector<PkgGraph::NodeRef> Refs;
+    const std::vector<PkgGraph::Action> Acts = Busy ? std::vector<PkgGraph::Action>() :
+        PkgGraph::ActionsFor(D.Node(V.Doc), [&] {
+            if (PkgGraph::ContentType(D.Node(V.Doc)) != "ZIP") return false;
+            for (int I = 0; I < D.Count(); ++I) Refs.push_back({D.Handle(I), &D.Node(I)});
+            return !PkgGraph::DeltaBase(Refs, V.Doc).empty();
+        }(), Hi == S.Hints.end() ? NoHints : Hi->second);
+    if (!Acts.empty())
     {
-        ImGui::SetNextItemWidth(260.0f);
-        ImGui::InputTextWithHint("##extfilter", "filter", &m_s->ExternalFilter);
-        const auto Ids = m_s->KnownIds ? m_s->KnownIds()
-                                        : std::vector<std::pair<std::string, std::string>>();   // {handle, label}
-        std::set<std::string> Mine;
-        for (const auto &N : m_s->Nodes()) Mine.insert(Handle(N));
-        int Shown = 0;
-        for (const auto &[Hnd, Lbl] : Ids)
+        ImGui::SameLine();
+        if (ImGui::Button("actions...")) ImGui::OpenPopup("##actions");
+        if (ImGui::BeginPopup("##actions"))
         {
-            if (Mine.count(Hnd)) continue;                   // already in this bundle: not external
-            // Filter matches the human LABEL or the CID handle, so you can search by name.
-            if (!m_s->ExternalFilter.empty()
-                && Lbl.find(m_s->ExternalFilter) == std::string::npos
-                && Hnd.find(m_s->ExternalFilter) == std::string::npos) continue;
-            if (++Shown > 40) { ImGui::TextDisabled("(narrow the filter)"); break; }
-            // Show the pretty LABEL; "##<handle>" keeps the Selectable id unique without showing the hash.
-            if (ImGui::Selectable((Lbl + "##" + Hnd).c_str())) { offerExternal(Hnd, Lbl); ImGui::CloseCurrentPopup(); }
+            for (const PkgGraph::Action &A : Acts)
+            {
+                //Recorded, not invoked: an action opens dialogs, and a nested Qt event loop must not run inside a frame.
+                if (ImGui::Selectable(A.Label)) S.Pending = {V.Handle, A.Id};
+                if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s", A.Tip);
+            }
+            ImGui::EndPopup();
         }
-        if (!Shown) ImGui::TextDisabled(m_s->KnownIds ? "nothing matches" : "(no catalog available)");
-        ImGui::EndPopup();
     }
-    ImGui::SameLine();
-    ImGui::TextDisabled("   |  drag from \"under\" to \"over\"  -  ctrl-click a wire to detach  -  del removes a node");
+    ImGui::Dummy(ImVec2(0, kPadY * Z - ImGui::GetStyle().ItemSpacing.y));
+    ImGui::Unindent(kPadX * Z);
+
+    //Selection outline and the ports, over the border (the draw list's clip was widened above).
+    const float Hh = ImGui::GetWindowHeight();
+    if (Selected || S.DropTarget == V.Handle)
+        DL->AddRect(ImVec2(WinPos.x - 1.5f, WinPos.y - 1.5f), ImVec2(WinPos.x + Wd + 1.5f, WinPos.y + Hh + 1.5f),
+                    S.DropTarget == V.Handle ? IM_COL32(120, 220, 140, 255) : IM_COL32(255, 196, 90, 255), 8.0f * Z, 0, 2.5f);
+    const ImVec2 In(WinPos.x, WinPos.y + Th * 0.5f), Out(WinPos.x + Wd, WinPos.y + Th * 0.5f);
+    const ImVec2 M = ImGui::GetIO().MousePos;
+    auto Near = [&](ImVec2 P) { return std::hypot(M.x - P.x, M.y - P.y) <= std::max(9.0f, kPortR * Z * 1.6f); };
+    DrawPort(DL, In, std::max(3.5f, kPortR * Z), IM_COL32(150, 190, 255, 255), Near(In));
+    DrawPort(DL, Out, std::max(3.5f, kPortR * Z), V.Unwired ? IM_COL32(150, 150, 160, 255) : IM_COL32(150, 190, 255, 255), Near(Out));
+    DL->PopClipRect();
+
+    S.DrawnRect[V.Handle] = ImVec4(WinPos.x, WinPos.y, WinPos.x + Wd, WinPos.y + Hh);
+    const float WorldH = Hh / Z;
+    //A self-sizing window knows its height only once it has laid its content out: not on the frame it (re)appears,
+    //nor while it is still hidden for measuring or auto-fitting. Measured then, a node is a few pixels tall and the
+    //layout stacks everything on top of everything.
+    const ImGuiWindow *Me0 = ImGui::GetCurrentWindow();
+    const bool Settled = !Me0->Appearing && Me0->HiddenFramesCannotSkipItems <= 0 && Me0->AutoFitFramesY <= 0;
+    ImGui::EndChild();
+    St.Pop();
+
+    //The drawn height, for the layout and the culling. The first measurement corrects the estimate the layout used.
+    if (!Settled) return;
+    auto &Me = S.Measured[V.Handle];
+    if (std::abs(Me - WorldH) > 0.5f)
+    {
+        Me = WorldH;
+        if (!S.MeasuredOnce.count(V.Handle) && !D.Positions().count(V.Handle) && S.M == PkgCanvasState::Mode::Idle && S.AutoFrame)
+        { S.LayoutValid = false; S.FullLayout = true; }
+    }
+    S.MeasuredOnce.insert(V.Handle);
 }
+
+// ---- a node as a box (zoomed out) or another package's node (a chip): drawn, hit-tested by hand ------------------
+
+static void DrawBox(PkgCanvasState &S, ImDrawList *DL, const NodeView &V)
+{
+    const ImVec4 WR = WorldRect(S, V);
+    const ImVec2 A = S.W2S(ImVec2(WR.x, WR.y)), B = S.W2S(ImVec2(WR.z, WR.w));
+    const float Z = S.Z;
+    const bool Sel = S.Sel.count(V.Handle) != 0, Hot = S.HoverNode == V.Handle;
+    if (V.Doc < 0)
+    {
+        //A chip: another package's node. Dashed-looking border, package name above its label.
+        DL->AddRectFilled(A, B, IM_COL32(40, 42, 50, 240), 7.0f * Z);
+        DL->AddRect(A, B, Sel ? IM_COL32(255, 196, 90, 255) : Hot ? IM_COL32(170, 180, 200, 255) : IM_COL32(95, 102, 118, 255),
+                    7.0f * Z, 0, Sel ? 2.5f : 1.2f);
+        //Zoomed out the chip's name is what matters: its own font would be unreadable, so the name alone is drawn at a
+        //readable size (as a box's is), clipped to the chip.
+        DL->PushClipRect(A, B, true);
+        if (S.Z >= kLodZoom)
+        {
+            ImGui::PushFont(nullptr, kFont * 0.8f * Z);
+            const std::string P = PkgForm::FitWidth("\xE2\x86\x97 " + V.Package, (B.x - A.x) - 20.0f * Z);
+            DL->AddText(ImVec2(A.x + 10.0f * Z, A.y + 5.0f * Z), IM_COL32(150, 158, 175, 255), P.c_str());
+            ImGui::PopFont();
+            ImGui::PushFont(GBold, kFont * Z);
+            const std::string T = PkgForm::FitWidth(V.Title, (B.x - A.x) - 20.0f * Z);
+            DL->AddText(ImVec2(A.x + 10.0f * Z, A.y + 21.0f * Z), IM_COL32(230, 233, 240, 255), T.c_str());
+            ImGui::PopFont();
+        }
+        else
+        {
+            const float Fs = std::max(10.0f, std::min(kFont * 2.2f * Z, 22.0f));
+            ImGui::PushFont(GBold, Fs);
+            const std::string T = PkgForm::FitWidth(V.Title, (B.x - A.x) - 8.0f);
+            DL->AddText(ImVec2(A.x + 4.0f, A.y + ((B.y - A.y) - Fs) * 0.5f), IM_COL32(215, 220, 230, 255), T.c_str());
+            ImGui::PopFont();
+        }
+        DL->PopClipRect();
+        DrawPort(DL, ImVec2(B.x, A.y + kChipH * 0.5f * Z), std::max(3.0f, kPortR * Z), IM_COL32(150, 190, 255, 255), false);
+        S.DrawnRect[V.Handle] = ImVec4(A.x, A.y, B.x, B.y);
+        return;
+    }
+    int R, G, Bc;
+    PkgGraph::TypeColour(V.Kind, R, G, Bc);
+    const float Th = kTitleH * Z;
+    DL->AddRectFilled(A, B, IM_COL32(34, 36, 42, 245), 7.0f * Z);
+    DL->AddRectFilled(A, ImVec2(B.x, A.y + Th), Col(R, G, Bc), 7.0f * Z, ImDrawFlags_RoundCornersTop);
+    //Zoomed out the name is what matters: drawn larger than the node's own font would be, over the whole box.
+    const float Fs = std::max(10.0f, std::min(kFont * 2.2f * Z, 26.0f));
+    ImGui::PushFont(GBold, Fs);
+    const std::string T = PkgForm::FitWidth(V.Title, (B.x - A.x) - 12.0f);
+    const float Ty = (B.y - A.y) > Fs * 2.0f ? A.y + std::max(Th, Fs * 1.1f) : A.y + 2.0f;
+    DL->PushClipRect(A, B, true);
+    DL->AddText(ImVec2(A.x + 6.0f, Ty), IM_COL32(235, 238, 245, 255), T.c_str());
+    DL->PopClipRect();
+    ImGui::PopFont();
+    if (Sel || Hot) DL->AddRect(A, B, Sel ? IM_COL32(255, 196, 90, 255) : IM_COL32(170, 180, 200, 200), 7.0f * Z, 0, 2.0f);
+    S.DrawnRect[V.Handle] = ImVec4(A.x, A.y, B.x, B.y);
+}
+
+// ---- wires -------------------------------------------------------------------------------------------------------
+
+struct WireGeom { ImVec2 A, B, C, D; };
+
+static WireGeom WireShape(const PkgCanvasState &S, const NodeView &From, const NodeView &To)
+{
+    const ImVec2 A = PortScreen(S, From, true), D = PortScreen(S, To, false);
+    const float Dx = std::max(std::abs(D.x - A.x) * 0.5f, 60.0f * S.Z);
+    return WireGeom{A, ImVec2(A.x + Dx, A.y), ImVec2(D.x - Dx, D.y), D};
+}
+
+static float WireDistance(const WireGeom &W, ImVec2 P)
+{
+    float Best = FLT_MAX;
+    ImVec2 Prev = W.A;
+    for (int K = 1; K <= 24; ++K)
+    {
+        const ImVec2 Q = Bez(W.A, W.B, W.C, W.D, (float)K / 24.0f);
+        Best = std::min(Best, DistToSegment(P, Prev, Q));
+        Prev = Q;
+    }
+    return Best;
+}
+
+static void DrawWires(PkgCanvasState &S, ImDrawList *DL, bool Hover)
+{
+    S.VisibleWires = 0;
+    S.HoverWireSlot = -1;
+    S.HoverWireChild.clear();
+    const ImVec4 View(S.Canvas.x - 40, S.Canvas.y - 40, S.Canvas.z + 40, S.Canvas.w + 40);
+    const ImVec2 M = ImGui::GetIO().MousePos;
+    //One pass over the wires to find the ones any part of which can be on screen (by their control polygon's box),
+    //then hover and drawing over those alone: a big package has tens of thousands of wires and a handful in view.
+    struct Shown { const WireView *W; WireGeom G; };
+    std::vector<Shown> Vis;
+    for (const WireView &W : S.Wires)
+    {
+        const WireGeom G = WireShape(S, S.Views[(size_t)W.From], S.Views[(size_t)W.To]);
+        const ImVec4 Bb(std::min({G.A.x, G.B.x, G.C.x, G.D.x}), std::min({G.A.y, G.B.y, G.C.y, G.D.y}),
+                        std::max({G.A.x, G.B.x, G.C.x, G.D.x}), std::max({G.A.y, G.B.y, G.C.y, G.D.y}));
+        if (Overlaps(Bb, View)) Vis.push_back({&W, G});
+    }
+    S.VisibleWires = (int)Vis.size();
+    if (Hover)
+    {
+        float BestD = 7.0f;
+        for (const Shown &X : Vis)
+        {
+            const float Dd = WireDistance(X.G, M);
+            if (Dd < BestD) { BestD = Dd; S.HoverWireChild = S.Views[(size_t)X.W->To].Handle; S.HoverWireSlot = X.W->L.Slot; }
+        }
+    }
+    for (const Shown &X : Vis)
+    {
+        const WireView &W = *X.W;
+        const WireGeom &G = X.G;
+        const NodeView &F = S.Views[(size_t)W.From], &T = S.Views[(size_t)W.To];
+        const bool Sel = S.SelWireChild == T.Handle && S.SelWireSlot == W.L.Slot;
+        const bool Hot = S.HoverWireChild == T.Handle && S.HoverWireSlot == W.L.Slot;
+        const bool Lit = Sel || Hot || S.Sel.count(F.Handle) || S.Sel.count(T.Handle);
+        ImU32 C = W.L.Not ? IM_COL32(230, 110, 110, 255) : W.L.Any ? IM_COL32(120, 205, 140, 255) : IM_COL32(110, 160, 255, 255);
+        if (!Lit) C = (C & 0x00FFFFFF) | (170u << 24);
+        if (Sel) C = IM_COL32(255, 196, 90, 255);
+        const float Th = std::max(1.2f, (Lit ? 2.6f : 1.8f) * std::sqrt(S.Z));
+        //Segments by the curve's size ON SCREEN (about one per 18px, 4..40): imgui's default subdivides by its full
+        //length, so a long wire crossing the view — a big package has thousands — cost thousands of segments each.
+        const float Len = std::hypot(G.B.x - G.A.x, G.B.y - G.A.y) + std::hypot(G.C.x - G.B.x, G.C.y - G.B.y) + std::hypot(G.D.x - G.C.x, G.D.y - G.C.y);
+        const int Segs = std::clamp((int)(Len / 18.0f), 4, 40);
+        if (W.L.Any)
+        {
+            //Dashed: a requirement (one of these must be present), not containment.
+            const int Dash = Segs + (Segs % 2);
+            ImVec2 Prev = G.A;
+            for (int K = 1; K <= Dash; ++K)
+            {
+                const ImVec2 Q = Bez(G.A, G.B, G.C, G.D, (float)K / (float)Dash);
+                if (K % 2) DL->AddLine(Prev, Q, C, Th);
+                Prev = Q;
+            }
+        }
+        else DL->AddBezierCubic(G.A, G.B, G.C, G.D, C, Th, Segs);
+        Arrow(DL, G.D, Bez(G.A, G.B, G.C, G.D, 0.93f), std::max(5.0f, 9.0f * S.Z), C);
+        if (W.L.Not)
+        {
+            const ImVec2 Mid = Bez(G.A, G.B, G.C, G.D, 0.5f);
+            const float R = std::max(4.0f, 6.0f * S.Z);
+            DL->AddCircleFilled(Mid, R + 2, IM_COL32(24, 26, 31, 255));
+            DL->AddLine(ImVec2(Mid.x - R * 0.6f, Mid.y - R * 0.6f), ImVec2(Mid.x + R * 0.6f, Mid.y + R * 0.6f), C, 2.0f);
+            DL->AddLine(ImVec2(Mid.x - R * 0.6f, Mid.y + R * 0.6f), ImVec2(Mid.x + R * 0.6f, Mid.y - R * 0.6f), C, 2.0f);
+        }
+    }
+}
+
+// ================================================================================================================
+// The frame
+// ================================================================================================================
 
 void PkgCanvas::frame()
 {
-    if (!m_s->Doc) return;
-    if (!m_s->CacheValid)
-    {
-        m_s->Cache = Build(m_s->Nodes(), m_s->Layout);
-        //Build refuses a declared position no layout could have produced and hands back what it refused. Said
-        //ONCE per node here rather than logged there, because this runs on every cache rebuild — which is
-        //every keystroke — and the same node would otherwise warn per character typed anywhere in the package.
-        for (const PkgGraph::RejectedPosition &R : m_s->Cache.RejectedPositions)
-            //Keyed on the VALUE as well as the node and the source. invalidateGraph is the document-swap path
-            //but it is ALSO every cache invalidation — every keystroke — so clearing the set there (which an
-            //earlier version did, to stop a stale id suppressing a different package's node) put the
-            //per-keystroke flood straight back. With the value in the key the only thing ever suppressed is a
-            //message character-identical to one already printed, which is the thing dedup is for.
-            if (m_s->WarnedPos.insert(R.NodeId + "@" + R.Source + "@" + R.Value).second)
-                Log(LogLevel::WARN, "PkgCanvas",
-                    "node '" + PkgGraph::SafeId(R.NodeId) + "': " + R.Source + " gives " + R.Value
-                        + ", which no layout could have produced - that declaration is ignored");
-        m_s->HasDependent.clear();
-        for (const Link &L : m_s->Cache.Links) if (L.ParentIndex >= 0) m_s->HasDependent.insert(L.ParentIndex);
-        m_s->Facets = PkgGraph::CollectVarFacets(m_s->Nodes());
-        for (const auto &N : m_s->Nodes())
-            if (N.is_object() && !Handle(N).empty() && !StrOf(N, "LABEL").empty()) m_s->RefLabels[Handle(N)] = StrOf(N, "LABEL");
-        m_s->CacheValid = true;
-    }
-    Graph &G = m_s->Cache;
-    //Culling is unconditional now. It used to stand down whenever the minimap was on, because IMNODES' minimap
-    //draws from the nodes SUBMITTED this frame — culling would have reduced the overview to a copy of the
-    //viewport. The minimap below is ours and draws from G.Nodes, so it shows the whole graph no matter what was
-    //submitted, and the two stopped being in tension. (It also stopped costing 1.7 s of a 3.75 s frame on the
-    //2775-node bundle: it is one rectangle per node out of an array we already hold, not a second full render.)
+    PkgCanvasState &S = *m_s;
+    Document &D = *S.Doc;
+    if (S.BuiltRev != D.Revision()) Rebuild(S);
+    if (!S.LayoutValid && S.M == PkgCanvasState::Mode::Idle) { Layout(S); if (S.AutoFrame) S.FramePending = true; }
+    UpdateRects(S);
+    S.DrawnRect.clear();
+    S.Animating = false;
+    ImGuiIO &Io = ImGui::GetIO();
 
-    ImGuiIO &IO = ImGui::GetIO();
     ImGui::SetNextWindowPos(ImVec2(0, 0));
-    ImGui::SetNextWindowSize(IO.DisplaySize);
-    ImGui::Begin("##pkgcanvas", nullptr,
-                 ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoMove
-                     | ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoBringToFrontOnFocus);
+    ImGui::SetNextWindowSize(Io.DisplaySize);
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(0, 0));
+    ImGui::Begin("##pkgcanvas", nullptr, ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoScrollWithMouse
+                                             | ImGuiWindowFlags_NoBringToFrontOnFocus | ImGuiWindowFlags_NoSavedSettings);
+    ImGui::PopStyleVar();
 
-    drawToolbar();
-    ImGui::Separator();
-
-    //---- zoom ------------------------------------------------------------------------------------------
-    //imnodes has no zoom of its own, so it is composed from three things it does expose: the STYLE (node
-    //padding, rounding, border/link thickness, every pin dimension), node GRID positions pushed pre-scaled,
-    //and panning. Scaling only the font and our own field widths — the first attempt — left the boxes, pins
-    //and wires at 1:1 and read as "zoom does nothing".
-    //
-    //Hover is judged HERE, before BeginNodeEditor: afterwards a plain IsWindowHovered() is false while the
-    //cursor is over imnodes' inner child window, so the wheel would never fire.
-    const bool CanvasHovered = ImGui::IsWindowHovered(ImGuiHoveredFlags_ChildWindows
-                                                      | ImGuiHoveredFlags_AllowWhenBlockedByActiveItem);
-    const ImVec2 CanvasOrigin = ImGui::GetCursorScreenPos();
-    //The viewport the canvas occupies on screen. Fixed: zoom changes what is drawn INSIDE it, never its size.
-    const ImVec2 CanvasAvail  = ImGui::GetContentRegionAvail();
-    const ImVec4 CanvasRect(CanvasOrigin.x, CanvasOrigin.y,
-                            CanvasOrigin.x + CanvasAvail.x, CanvasOrigin.y + CanvasAvail.y);
-    m_s->ViewportRect = CanvasRect;
-    //---- zoom easing -----------------------------------------------------------------------------------
-    //Walk toward the target the wheel set, re-pinning the anchor at every step so the point under the cursor
-    //never moves during the animation. Exponential, so it is frame-rate independent and has no overshoot.
-    //An interaction in flight owns the pan. The anchor is re-solved from a point captured at the wheel event,
-    //so re-applying it every eased frame DISCARDED whatever the user panned or dragged in the meantime — a
-    //middle-drag started one frame after a wheel notch ended up exactly where the ease wanted it, with the
-    //drag thrown away. The zoom still finishes; it just stops steering the view while someone else is.
-    const bool Interacting =
-        ImNodes::EditorContextGet().ClickInteraction.Type != ImNodesClickInteractionType_None;
-    if (m_s->Zooming)
-    {
-        const float Dt = std::clamp(ImGui::GetIO().DeltaTime, 0.0f, 0.1f);
-        m_s->Zoom += (m_s->ZoomTarget - m_s->Zoom) * (1.0f - std::exp(-Dt * 18.0f));
-        if (std::abs(m_s->ZoomTarget - m_s->Zoom) < 0.002f) { m_s->Zoom = m_s->ZoomTarget; m_s->Zooming = false; }
-        if (!Interacting)
-            ImNodes::EditorContextResetPanning(ImVec2(m_s->ZoomAnchor.x / m_s->Zoom - m_s->ZoomAnchorWorld.x,
-                                                      m_s->ZoomAnchor.y / m_s->Zoom - m_s->ZoomAnchorWorld.y));
-    }
-    //The recentre setZoom asked for, now that the viewport is known: hold the middle of the view still. A node
-    //at world w is drawn at origin + (pan + w) * zoom, so the world point at the centre under the OLD scale is
-    //Half/Old - Pan, and the pan that puts it back at the centre under the new one is Half/New minus that.
-    //Both scales appear, and that is the whole content of this: using the new scale on both sides cancels to
-    //Pan = Pan, which is what the first version of this did while claiming to recentre.
-    if (m_s->RecentreFromZoom > 0.0f)
-    {
-        const float Old = m_s->RecentreFromZoom;
-        m_s->RecentreFromZoom = 0.0f;
-        const ImVec2 Pan = ImNodes::EditorContextGetPanning();
-        const ImVec2 Half(CanvasAvail.x * 0.5f, CanvasAvail.y * 0.5f);
-        const ImVec2 World(Half.x / Old - Pan.x, Half.y / Old - Pan.y);
-        ImNodes::EditorContextResetPanning(ImVec2(Half.x / m_s->Zoom - World.x,
-                                                  Half.y / m_s->Zoom - World.y));
-    }
-
-    //---- minimap layout (computed BEFORE the editor, drawn after it) -------------------------------------
-    //Ours, not imnodes'. Two things ruled the built-in one out: it draws during EndNodeEditor, so its vertices
-    //land inside the range the view transform scales and the overview goes sliding out of its corner as you
-    //zoom; and it draws from the nodes SUBMITTED this frame, so it cannot coexist with culling. This one is
-    //screen furniture painted after the transform, from G.Nodes, so it is fixed to its corner at every zoom
-    //and shows the whole graph regardless of what was drawn.
-    //
-    //The RECTANGLE is needed here, before the editor runs, because a click on the minimap must not also reach
-    //imnodes — and imnodes consumes the mouse inside EndNodeEditor, long before our widget exists.
-    ImVec4 MiniRect(0, 0, 0, 0);
-    m_s->MiniMapRect = ImVec4(0, 0, 0, 0);
-    //Cleared whether or not the overview draws this frame. Left stale it hands back the LAST minimap frame's
-    //rectangles, indexed by a node index that may now belong to a different node or to none — and a test that
-    //forgot to switch the minimap on would read a previous test's geometry and pass.
-    //
-    //But SIZED only when the overview is on. `assign` was zeroing one ImVec4 per node on every frame of every
-    //canvas, minimap or not — 44 KB of memset per frame on the Minecraft bundle's 2775 nodes, for an array
-    //whose only reader is miniMapNodeBox. clear() keeps the capacity, costs nothing, and is not weaker: the
-    //accessor is bounds-checked and an empty array answers all-zero, which is exactly what its contract
-    //promises for a frame the overview did not draw.
-    if (m_s->ShowMiniMap) m_s->MiniBoxes.assign(m_s->Cache.Nodes.size(), ImVec4(0, 0, 0, 0));
-    else                  m_s->MiniBoxes.clear();
-    ImVec2 MiniWorldMin(0, 0), MiniWorldMax(0, 0);
-    float  MiniScale   = 0.0f;
-    bool   MiniHovered = false;
-    if (m_s->ShowMiniMap && !G.Nodes.empty() && CanvasAvail.x > 32.0f && CanvasAvail.y > 32.0f)
-    {
-        float MinX = 1e30f, MinY = 1e30f, MaxX = -1e30f, MaxY = -1e30f;
-        for (const Node &N : G.Nodes)
+    // ---- toolbar ----------------------------------------------------------------------------------------------
+    ImGui::SetCursorPos(ImVec2(8, 6));
+    ImGui::BeginGroup();
+    if (ImGui::Button("+ Node")) ImGui::OpenPopup("##addnode");
+    if (ImGui::IsItemHovered()) ImGui::SetTooltip("Add a node (or right-click the canvas where it should go)");
+    auto AddMenu = [&](ImVec2 At) {
+        struct Grp { const char *Title; std::vector<const char *> Types; };
+        static const std::vector<Grp> Groups = {
+            {"Content", {"ZIP", "DIR", "FILE", "DELTA"}},
+            {"Transforms", {"EDIT", "REG", "DLL", "ENV"}},
+            {"Facts", {"VARS", "KEEP"}},
+            {"Entries", {"EXEC"}},
+            {"Composition", {"NODE", "ANY", "NOT", "empty"}},
+        };
+        for (const Grp &G : Groups)
         {
-            const ImVec2 D = NodeSize(m_s->NodeDims, N);
-            MinX = std::min(MinX, N.X);         MinY = std::min(MinY, N.Y);
-            MaxX = std::max(MaxX, N.X + D.x);   MaxY = std::max(MaxY, N.Y + D.y);
+            ImGui::SeparatorText(G.Title);
+            for (const char *T : G.Types)
+            {
+                const std::string Type = std::string(T) == "empty" ? std::string() : std::string(T);
+                if (ImGui::Selectable(T))
+                {
+                    //A node made from the menu is ready to fill in: its rows open, its name selected for typing.
+                    const int I = addNode(Type, At.x, At.y);
+                    const std::string Hn = D.Handle(I);
+                    setExpanded(Hn, true);
+                    S.Renaming = Hn;
+                    S.RenameBuf = StrOf(D.Node(I), "LABEL");
+                    S.RenameFocus = true;
+                    ImGui::CloseCurrentPopup();
+                }
+                if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s", PkgGraph::TypeHelp(Type));
+            }
         }
-        MiniWorldMin = ImVec2(MinX, MinY);
-        MiniWorldMax = ImVec2(MaxX, MaxY);
-        const float Pad = 8.0f, Inset = 4.0f;
-        const float BoxW = std::min(CanvasAvail.x - 2 * Pad, std::max(120.0f, CanvasAvail.x * 0.18f));
-        const float BoxH = std::min(CanvasAvail.y - 2 * Pad, std::max(90.0f,  CanvasAvail.y * 0.18f));
-        MiniRect  = ImVec4(CanvasRect.z - Pad - BoxW, CanvasRect.w - Pad - BoxH,
-                           CanvasRect.z - Pad,        CanvasRect.w - Pad);
-        m_s->MiniMapRect = MiniRect;
-        MiniScale = std::min((BoxW - 2 * Inset) / std::max(1.0f, MaxX - MinX),
-                             (BoxH - 2 * Inset) / std::max(1.0f, MaxY - MinY));
-        const ImVec2 M = ImGui::GetIO().MousePos;
-        MiniHovered = CanvasHovered && M.x >= MiniRect.x && M.x <= MiniRect.z
-                                    && M.y >= MiniRect.y && M.y <= MiniRect.w;
-    }
-
-    //---- the editor's view of the mouse ----------------------------------------------------------------
-    //The whole of the input side of zoom. imnodes holds world coordinates, so it must be handed the cursor in
-    //world coordinates too, or every click lands where the node would have been drawn unzoomed.
-    ImGuiIO &ZIO = ImGui::GetIO();
-    EditorIoGuard IoGuard(ZIO);
-    const ImVec2 RealMouse = ZIO.MousePos;
-    const ImVec2 RealDelta = ZIO.MouseDelta;
-    const float  ViewZoom  = m_s->Zoom;
-    //The region of that world space the viewport shows: the viewport divided by the zoom about the canvas
-    //origin. Used three times below — as imnodes' canvas rectangle, as the submission clip, and as the space
-    //the off-canvas sentinel has to be outside of — because all three are the same question.
-    const bool WideClip = ViewZoom < 1.0f;
-    const ImVec2 SubClipMin(CanvasOrigin.x + (CanvasRect.x - CanvasOrigin.x) / ViewZoom,
-                            CanvasOrigin.y + (CanvasRect.y - CanvasOrigin.y) / ViewZoom);
-    const ImVec2 SubClipMax(CanvasOrigin.x + (CanvasRect.z - CanvasOrigin.x) / ViewZoom,
-                            CanvasOrigin.y + (CanvasRect.w - CanvasOrigin.y) / ViewZoom);
-    if (ViewZoom != 1.0f && RealMouse.x > -FLT_MAX)
-        ZIO.MousePos = ImVec2(CanvasOrigin.x + (RealMouse.x - CanvasOrigin.x) / ViewZoom,
-                              CanvasOrigin.y + (RealMouse.y - CanvasOrigin.y) / ViewZoom);
-    //The DELTA has to be scaled as well, and forgetting it made panning wrong by exactly the zoom factor.
-    //imnodes pans with `editor.Panning += io.MouseDelta`, and Panning is in world units while MouseDelta was
-    //measured in screen pixels during NewFrame — rewriting MousePos does not touch it. So at 0.5x the graph
-    //crawled at half the speed of the cursor and at 3x it bolted, and nothing you grabbed stayed under the
-    //pointer. Node dragging is unaffected either way: that reads MousePos absolutely, not the delta.
-    if (ViewZoom != 1.0f) ZIO.MouseDelta = ImVec2(RealDelta.x / ViewZoom, RealDelta.y / ViewZoom);
-    //Over the minimap the editor is shown a cursor parked OFF the canvas, so no new interaction can start
-    //underneath the overview — imnodes resolves hovers and begins drags inside EndNodeEditor, long before our
-    //own widget could claim the click.
-    //
-    //Only while nothing is in flight, and never again with a value like -FLT_MAX. TranslateSelectedNodes
-    //computes a dragged node's origin ABSOLUTELY from this position and is reached whether or not the cursor
-    //is over the minimap, so lying about it mid-drag wrote -3.4e38 straight into the node, into the saved
-    //layout, and into GlobalConfig — a node that can never be drawn, selected or recovered from the UI again.
-    //An interaction already under way must therefore see the truth; only its BEGINNING is suppressed, which is
-    //exactly what imnodes' own IsMiniMapHovered guard does. What actually stops the click is MouseInCanvas()
-    //gating hover resolution, so the sentinel only has to be OUTSIDE the canvas rectangle — it is an ordinary
-    //world coordinate, not an impossible one, chosen finite and near so that a future path reaching the drag
-    //code would displace a node by a visible distance rather than to infinity.
-    if (MiniHovered && !Interacting)
-        ZIO.MousePos = ImVec2(SubClipMin.x - 10000.0f, SubClipMin.y - 10000.0f);
-    m_s->EditorMouse = ZIO.MousePos;
-    m_s->RealMouse   = RealMouse;
-    m_s->ScreenViewportPos  = ImGui::GetMainViewport()->Pos;
-    m_s->ScreenViewportSize = ImGui::GetMainViewport()->Size;
-
-    //imnodes' own grid is drawn INSIDE BeginNodeEditor, before the first vertex the transform can reach, so
-    //it kept a fixed 32 px screen pitch and translated 1:1 with the panning while the content translated Z:1.
-    //The graph slid across its own grid on every pan at any zoom but 1, and the grid offered no scale cue
-    //whatsoever. Ours is drawn a few lines below, as ordinary content, so it simply scales and pans with
-    //everything else.
-    ImNodes::GetStyle().Flags &= ~ImNodesStyleFlags_GridLines;
-    //Auto-panning (dragging a node past the edge) adds speed * dt to the panning, which is in WORLD units, so
-    //on screen it runs Z times too fast. Divided here so the edge scrolls at the same rate at every zoom.
-    ImNodes::GetIO().AutoPanningSpeed = 1000.0f / std::max(0.05f, ViewZoom);
-
-    ImNodes::BeginNodeEditor();
-    //imnodes decides "is the mouse in the canvas" by testing the position we just handed it against the
-    //canvas rectangle it measured in SCREEN space. Those are two different spaces the moment the zoom is not
-    //1, and the result was that only the top-left Z-by-Z fraction of the canvas responded to anything: at 0.47x
-    //roughly four fifths of the visible graph could not be clicked, hovered, dragged, box-selected or panned,
-    //and a node dragged past that invisible edge triggered imnodes' auto-pan and ran away with the view. Tell
-    //it where the canvas is in the space the cursor is actually in and all of that follows.
-    //imnodes' rectangle only while the two spaces actually differ — at 1:1 its own is already right (the
-    //child's content region, inset by the 1px border) — and restored after EndNodeEditor, because a WORLD
-    //rectangle left in a global between frames is a trap for any later caller comparing it to a screen cursor.
-    const ImRect CanvasRectWas = GImNodes->CanvasRectScreenSpace;
-    if (ViewZoom != 1.0f) GImNodes->CanvasRectScreenSpace = ImRect(SubClipMin, SubClipMax);
-
-    //And what "the screen" means while the editor lays out. A popup opened inside a node — every combo is one
-    //— is positioned by imgui from the widget's rect, which in here is WORLD space, against the viewport rect,
-    //which is SCREEN space. At any zoom but 1 those disagree, and imgui then decides there is no room below a
-    //widget that has plenty and flips the dropdown far above it: measured at 0.5x with the node low in the
-    //view, a combo popup opened 245px away from the widget that owns it. Pointing the viewport at the region
-    //the editor is actually laying out in puts that decision back in one space; the transform then maps the
-    //result to where the widget is drawn. Restored immediately after the editor, before anything screen-space
-    //(the minimap) is drawn. Applied at EVERY zoom, 1.0 included: there the region IS the canvas viewport, so
-    //the only effect is that a dropdown near the bottom of the canvas stays inside the canvas instead of
-    //hanging over the toolbar, and skipping it would leave a discontinuity at exactly 1.0 for no reason.
-    //
-    //A popup is placed against this rectangle and PINNED TO ITS CORNER if it does not fit, so the rectangle
-    //has to be at least as big as a dropdown: ~136 world units for a combo's eight items, and a field's own
-    //width. Both caps are in WORLD units — the editor lays out with an unscaled font — which an earlier
-    //version got backwards, demanding 300 SCREEN-equivalent units and so switching the whole repoint off at
-    //3x on an ordinary canvas.
-    //
-    //ENLARGED to the cap rather than standing down. Standing down was a single boolean governing two
-    //independent caps: a narrow-but-tall canvas lost the vertical repoint it did not need to lose, putting
-    //every dropdown back in screen space. Growing the rectangle about the region's centre keeps the
-    //repoint in both axes at every zoom and on every canvas, and there is no branch left to be untested.
-    ImGuiViewport *VPort = ImGui::GetMainViewport();
-    const ImVec2 VWorld(SubClipMax.x - SubClipMin.x, SubClipMax.y - SubClipMin.y);
-    const ImVec2 VMin(kFieldWidth + 80.0f, 200.0f);
-    const ImVec2 VSize(std::max(VWorld.x, VMin.x), std::max(VWorld.y, VMin.y));
-    VPort->Pos  = ImVec2(SubClipMin.x - (VSize.x - VWorld.x) * 0.5f,
-                         SubClipMin.y - (VSize.y - VWorld.y) * 0.5f);
-    VPort->Size = VSize;
-    //WorkPos/WorkSize describe the same viewport minus any menu bars, and leaving them in screen space while
-    //Pos/Size move to world space means GetMainRect() and GetWorkRect() answer in different coordinate
-    //systems — ImGui::Begin clamps against one while FindBestWindowPosForPopup reads the other.
-    VPort->WorkPos  = VPort->Pos;
-    VPort->WorkSize = VPort->Size;
-    m_s->PopupExtent = ImVec4(VPort->Pos.x, VPort->Pos.y, VPort->Size.x, VPort->Size.y);
-    //The editor draws into the scrolling CHILD's draw list, not the parent's. Keep the pointer and the
-    //high-water marks: everything appended between here and EndNodeEditor is the surface to transform.
-    ImDrawList *Surface = ImGui::GetWindowDrawList();
-    const int SurfVtx0 = Surface->VtxBuffer.Size;
-    //---- the submission clip --------------------------------------------------------------------------
-    //imgui culls a widget against the clip rect AT SUBMISSION TIME, and submission happens in UNSCALED
-    //coordinates — the transform runs afterwards. So zoomed out, every node whose unscaled position lies past
-    //the right or bottom edge of the viewport had its FIELDS culled, and the transform then faithfully scaled
-    //the empty box into view: nodes drawn as blank rectangles with a title bar and nothing inside. Seen on the
-    //live canvas at 47%, invisible to every geometry assertion, because the box itself is drawn by imnodes and
-    //measures perfectly correct while its contents are missing.
-    //
-    //The region that MAPS INTO the viewport is the viewport divided by the zoom about the canvas origin, so
-    //that is what submission must be clipped to. ImGui::PushClipRect — the window one, not the draw list's —
-    //also sets window->ClipRect, which is the rectangle the cull test actually reads. Scaling this rectangle
-    //by Z about the origin gives the viewport back exactly, so the transform below needs no special case.
-    //The EXACT rectangle imgui ended up with, read back rather than recomputed. The transform below has to
-    //tell this rect apart from the editor child's own, and comparing two independently-derived floats within
-    //a pixel is a guess: the child's clip is the viewport inset by exactly the 1 px imnodes happens to pad
-    //with, and there is a narrow band of Z where "viewport / Z" lands within a pixel of it and the two swap
-    //identities. Reading the stack back makes the test an identity check.
-    ImVec4 PushedClip(0, 0, 0, 0);
-    if (WideClip)
-    {
-        ImGui::PushClipRect(SubClipMin, SubClipMax, false);
-        IoGuard.Clip = true;
-        PushedClip   = Surface->_ClipRectStack.back();
-    }
-    //NO command high-water mark, and that is not an oversight. imnodes draws through an ImDrawListSplitter
-    //(links under nodes, the click interaction on top) and ChannelsMerge REBUILDS the command buffer from the
-    //split point on EndNodeEditor — so an index captured here names nothing afterwards. Measured: the mark
-    //read 1 while every one of the 9252 emitted elements landed in command 0, which meant the clip-rect pass
-    //below had been walking an empty range and doing precisely nothing. Vertices are NOT reordered by the
-    //merge (only indices and commands are), so the vertex mark above is sound; commands are handled by walking
-    //the whole buffer, which is safe because this is the editor child's OWN draw list.
-
-    //The grid, in the same unscaled space every node is submitted in: lines every GridSpacing world units,
-    //offset by the panning, covering the region that maps into the viewport. Drawn immediately after
-    //BeginNodeEditor, which is imnodes' own base "canvas grid" draw channel, so it stays under every node.
-    {
-        const float  Pitch = ImNodes::GetStyle().GridSpacing;
-        const ImU32  Col   = ImNodes::GetStyle().Colors[ImNodesCol_GridLine];
-        const ImVec2 Pan0  = ImNodes::EditorContextGetPanning();
-        const float  X0    = CanvasOrigin.x + Pan0.x, Y0 = CanvasOrigin.y + Pan0.y;
-        //The grid is scaled by the view transform below (on-screen pitch = Step * ViewZoom), so a FIXED world
-        //Step mapped to sub-pixel spacing when zoomed out — which moiréd — and the old line-count cap made the
-        //density POP in coarse jumps. Instead pick the world Step by DOUBLING from the base pitch until its
-        //on-screen spacing clears a floor (~24 px): density stays in a stable ~24-48 px band at every zoom, and
-        //because each step is a power-of-two multiple of the base the coarser grid is a strict, aligned SUBSET
-        //of the finer one (lines drop out cleanly, nothing shifts).
-        float Step = Pitch;
-        while (Step * ViewZoom < 24.0f) Step *= 2.0f;
-        for (float X = X0 + Step * std::ceil((SubClipMin.x - X0) / Step); X <= SubClipMax.x; X += Step)
-            Surface->AddLine(ImVec2(X, SubClipMin.y), ImVec2(X, SubClipMax.y), Col);
-        for (float Y = Y0 + Step * std::ceil((SubClipMin.y - Y0) / Step); Y <= SubClipMax.y; Y += Step)
-            Surface->AddLine(ImVec2(SubClipMin.x, Y), ImVec2(SubClipMax.x, Y), Col);
-    }
-    //Everything measured from here on is CONTENT. The grid spans the region that maps onto the viewport at
-    //every zoom, so counting it makes the reported bounds a constant the size of the canvas and the vertex
-    //count a large fixed number — which silently turned "the geometry grew with the zoom" into a comparison
-    //of two rounding errors, and would have let a frame that drew no nodes at all pass as healthy.
-    const int ContentVtx0 = Surface->VtxBuffer.Size;
-
-    //---- viewport culling ------------------------------------------------------------------------------
-    //Submitting every node and every wire regardless of where the view is costs what the graph costs, not
-    //what the SCREEN costs, and the library's biggest bundle is 2775 nodes / 39k links: measured at 3.75 s
-    //PER FRAME (0.27 fps) — the editor opened and then could not be used. Drawing only what is near the
-    //viewport makes the cost proportional to what is actually visible.
-    //
-    //Culling is safe precisely because a node that is not drawn is already handled everywhere else: drawNode
-    //seeds imnodes with the position the FIRST time it draws a node, and the position read-back skips any
-    //node it has not seeded at this index. Our own G.Nodes[].X/Y is the authority either way.
-    const ImVec2 Pan    = ImNodes::EditorContextGetPanning();
-    const ImVec2 Canvas = ImGui::GetWindowSize();
-    //One node body plus slack, so a node is drawn slightly before it scrolls in and its wires never pop.
-    //SCALED BY ZOOM, because the margin is a screen-space distance but a node's on-screen SIZE grows with
-    //zoom: at 3x a tall node (a RegEdit with dozens of entries) whose ORIGIN sits above the viewport still
-    //fills the screen, and a fixed margin culls it while the user is looking straight at it.
-    const float MarginX = 700.0f * std::max(1.0f, m_s->Zoom);
-    const float MarginY = 500.0f * std::max(1.0f, m_s->Zoom);
-    auto OnScreen = [&](int I) {
-        //World space, then scaled to screen: a node at world (x,y) is drawn at origin + (pan + world) * zoom.
-        const float X = (G.Nodes[I].X + Pan.x) * m_s->Zoom, Y = (G.Nodes[I].Y + Pan.y) * m_s->Zoom;
-        //Its BOX, not just its origin. A node is as tall as its payload makes it, and testing the origin alone
-        //culls one whose top has scrolled past the edge while the rest of it still fills the screen: measured
-        //on a 12-entry BinaryPatch (2950px tall), the canvas went blank for 2400px of panning with the node
-        //covering the entire viewport, unclickable. The height is already computed for the layout; this is the
-        //other place that needs it.
-        //The TALLER of the estimate and the last measured size: the estimate describes the node folded, and a node
-        //whose layers were opened is drawn taller than that — measured the last time it was on screen.
-        float H = G.Nodes[I].Height > 1.0f ? G.Nodes[I].Height : 200.0f;
-        if (const auto D = m_s->NodeDims.find(G.Nodes[I].Id); D != m_s->NodeDims.end()) H = std::max(H, D->second.y);
-        H *= m_s->Zoom;
-        return X > -MarginX && Y + H > -MarginY && X < Canvas.x + MarginX && Y < Canvas.y + MarginY;
     };
-    //A SELECTED node is never culled. imnodes keeps a culled node's index in SelectedNodeIndices with no
-    //liveness check, so once its pool slot is reused: GetSelectedNodes reports the new occupant's id, and
-    //TranslateSelectedNodes drags it — moving nodes the user never selected and persisting that.
-    //
-    //Read from LAST frame's snapshot, not from imnodes now: NumSelectedNodes/GetSelectedNodes assert
-    //CurrentScope == None (imnodes.cpp), and we are inside BeginNodeEditor here. The assert is compiled out in
-    //this project's default build, which is the only reason calling it here appeared to work — a Debug build
-    //aborted on the editor's first frame. The snapshot is taken after EndNodeEditor below.
-    const std::set<int> &Selected = m_s->SelectedLast;
-    std::vector<char> Drawn((size_t)G.Nodes.size(), 0);
+    if (ImGui::BeginPopup("##addnode"))
+    {
+        const ImVec2 C = S.S2W(ImVec2((S.Canvas.x + S.Canvas.z) * 0.5f - kNodeW * 0.5f * S.Z, (S.Canvas.y + S.Canvas.w) * 0.4f));
+        AddMenu(C);
+        ImGui::EndPopup();
+    }
+    ImGui::SameLine();
+    if (ImGui::Button("+ Library node")) { ImGui::OpenPopup("##offers"); S.OfferFilter.clear(); }
+    if (ImGui::IsItemHovered()) ImGui::SetTooltip("Bring in a node from another package (a runner, a library...) to wire into this one");
+    if (ImGui::BeginPopup("##offers"))
+    {
+        ImGui::SetNextItemWidth(320);
+        if (ImGui::IsWindowAppearing()) ImGui::SetKeyboardFocusHere();
+        ImGui::InputTextWithHint("##offerfilter", "search by name or package", &S.OfferFilter);
+        const std::vector<Offer> All = S.Offers ? S.Offers() : std::vector<Offer>();
+        std::string F = S.OfferFilter;
+        std::transform(F.begin(), F.end(), F.begin(), [](unsigned char C) { return (char)std::tolower(C); });
+        int Shown = 0;
+        ImGui::BeginChild("##offerlist", ImVec2(420, 300));
+        for (const Offer &O : All)
+        {
+            if (S.ViewOf.count(O.Cid) && S.Views[(size_t)S.ViewOf[O.Cid]].Doc >= 0) continue;   // one of ours
+            std::string Hay = O.Label + " " + O.Package + " " + O.Cid;
+            std::transform(Hay.begin(), Hay.end(), Hay.begin(), [](unsigned char C) { return (char)std::tolower(C); });
+            if (!F.empty() && Hay.find(F) == std::string::npos) continue;
+            if (++Shown > 200) { ImGui::TextDisabled("(narrow the search)"); break; }
+            if (ImGui::Selectable((O.Label + "##" + O.Cid).c_str()))
+            {
+                if (std::find(S.Offered.begin(), S.Offered.end(), O.Cid) == S.Offered.end()) S.Offered.push_back(O.Cid);
+                S.ExtCache[O.Cid] = External{O.Label, O.Package, std::string()};
+                S.BuiltRev = 0;
+                Rebuild(S);
+                Layout(S);
+                select(O.Cid, true);
+                emit statusMessage("Drag a wire from its right-hand port into the node that should contain it");
+                ImGui::CloseCurrentPopup();
+            }
+            ImGui::SameLine(300); ImGui::TextDisabled("%s", O.Package.c_str());
+        }
+        if (!Shown) ImGui::TextDisabled(S.Offers ? "nothing matches" : "(no library available)");
+        ImGui::EndChild();
+        ImGui::EndPopup();
+    }
+    ImGui::SameLine(0, 18);
+    ImGui::SetNextItemWidth(230);
+    if (S.SearchFocus) { ImGui::SetKeyboardFocusHere(); S.SearchFocus = false; }
+    const bool Enter = ImGui::InputTextWithHint("##find", "find a node (Ctrl+F)", &S.Search, ImGuiInputTextFlags_EnterReturnsTrue);
+    const bool SearchActive = ImGui::IsItemActive();
+    const ImVec2 SearchBL(ImGui::GetItemRectMin().x, ImGui::GetItemRectMax().y);
+    std::vector<std::string> Matches;
+    if (!S.Search.empty())
+    {
+        std::string F = S.Search;
+        std::transform(F.begin(), F.end(), F.begin(), [](unsigned char C) { return (char)std::tolower(C); });
+        //Best first: the name exactly, then names that start with it, then names (or CIDs) that contain it.
+        std::vector<std::pair<int, std::string>> Ranked;
+        for (const NodeView &V : S.Views)
+        {
+            std::string T = V.Title;
+            std::transform(T.begin(), T.end(), T.begin(), [](unsigned char C) { return (char)std::tolower(C); });
+            const int Rank = T == F ? 0 : T.rfind(F, 0) == 0 ? 1 : T.find(F) != std::string::npos ? 2
+                           : V.Handle.find(S.Search) != std::string::npos ? 3 : -1;
+            if (Rank >= 0) Ranked.push_back({Rank, V.Handle});
+        }
+        std::stable_sort(Ranked.begin(), Ranked.end(), [](const auto &A, const auto &B) { return A.first < B.first; });
+        for (const auto &[R, H] : Ranked) Matches.push_back(H);
+    }
+    if (Enter && !Matches.empty()) { select(Matches.front(), true); S.Search.clear(); }
+    ImGui::SameLine(0, 18);
+    if (ImGui::Button("-")) setZoom(S.Z / 1.25f);
+    ImGui::SameLine(0, 2);
+    if (ImGui::Button((std::to_string((int)std::lround(S.Z * 100.0f)) + "%").c_str())) setZoom(1.0f);
+    if (ImGui::IsItemHovered()) ImGui::SetTooltip("Zoom (mouse wheel). Click for 100%%.");
+    ImGui::SameLine(0, 2);
+    if (ImGui::Button("+")) setZoom(S.Z * 1.25f);
+    ImGui::SameLine();
+    if (ImGui::Button("Fit")) frameAll();
+    if (ImGui::IsItemHovered()) ImGui::SetTooltip("Show the whole package (F frames the selection)");
+    ImGui::SameLine();
+    if (ImGui::Button("Tidy")) tidyLayout();
+    if (ImGui::IsItemHovered()) ImGui::SetTooltip("Forget where nodes were dragged: lay the whole package out again (undoable)");
+    ImGui::SameLine();
+    ImGui::Checkbox("Map", &S.ShowMini);
+    {
+        const std::string Status = std::to_string(D.Count()) + " nodes" + (S.Sel.empty() ? std::string() : " - " + std::to_string(S.Sel.size()) + " selected");
+        const float W = ImGui::CalcTextSize(Status.c_str()).x;
+        ImGui::SameLine(std::max(ImGui::GetCursorPosX() + 20, Io.DisplaySize.x - W - 12));
+        ImGui::AlignTextToFramePadding();
+        ImGui::TextDisabled("%s", Status.c_str());
+    }
+    ImGui::EndGroup();
+    const float Top = ImGui::GetItemRectMax().y + 6.0f;
+    //The search results, as a list under the box.
+    if ((SearchActive || !Matches.empty()) && !S.Search.empty())
+    {
+        ImGui::SetNextWindowPos(SearchBL);
+        ImGui::SetNextWindowSizeConstraints(ImVec2(300, 0), ImVec2(500, 320));
+        ImGui::Begin("##findresults", nullptr, ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoResize
+                                                   | ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_Tooltip);
+        if (Matches.empty()) ImGui::TextDisabled("no node matches");
+        for (size_t K = 0; K < Matches.size() && K < 30; ++K)
+        {
+            const NodeView &V = S.Views[(size_t)S.ViewOf[Matches[K]]];
+            ImGui::TextUnformatted(V.Title.c_str());
+            ImGui::SameLine(); ImGui::TextDisabled("%s", V.Doc < 0 ? V.Package.c_str() : V.Kind.c_str());
+        }
+        if (!Matches.empty()) ImGui::TextDisabled("Enter: go to the first");
+        ImGui::End();
+    }
+
+    // ---- the canvas region ------------------------------------------------------------------------------------
+    S.Canvas = ImVec4(0, Top, Io.DisplaySize.x, Io.DisplaySize.y);
+    if (S.FramePending) frameAll();
+    const ImVec2 R0(S.Canvas.x, S.Canvas.y), R1(S.Canvas.z, S.Canvas.w);
+    ImDrawList *DL = ImGui::GetWindowDrawList();
+    DL->AddRectFilled(R0, R1, IM_COL32(24, 25, 29, 255));
+
+    //Zoom easing: the wheel sets a target; the view walks to it holding the point under the cursor still.
+    if (S.Zooming)
+    {
+        const float Dt = std::clamp(Io.DeltaTime, 0.0f, 0.1f);
+        S.Z += (S.ZTarget - S.Z) * (1.0f - std::exp(-Dt * 18.0f));
+        if (std::abs(S.ZTarget - S.Z) < 0.0015f) { S.Z = S.ZTarget; S.Zooming = false; }
+        S.Cam = ImVec2(S.ZAnchorWorld.x - (S.ZAnchorScreen.x - S.Canvas.x) / S.Z, S.ZAnchorWorld.y - (S.ZAnchorScreen.y - S.Canvas.y) / S.Z);
+        S.Animating = true;
+    }
+
+    //Background: one invisible button under everything; nodes are child windows on top of it and take their own input.
+    ImGui::SetCursorScreenPos(R0);
+    ImGui::SetNextItemAllowOverlap();
+    ImGui::InvisibleButton("##bg", ImVec2(std::max(1.0f, R1.x - R0.x), std::max(1.0f, R1.y - R0.y)),
+                           ImGuiButtonFlags_MouseButtonLeft | ImGuiButtonFlags_MouseButtonRight | ImGuiButtonFlags_MouseButtonMiddle);
+    const bool BgHovered = ImGui::IsItemHovered();
+    const ImGuiID BgId = ImGui::GetItemID();
+    const ImVec2 Mouse = Io.MousePos;
+
+    //Grid: world lines, doubling their spacing as you zoom out so it stays a texture, never a blur.
+    DL->PushClipRect(R0, R1, true);
+    {
+        float Step = 32.0f;
+        while (Step * S.Z < 18.0f) Step *= 2.0f;
+        const ImU32 Minor = IM_COL32(255, 255, 255, 10), Major = IM_COL32(255, 255, 255, 22);
+        const ImVec2 W0 = S.S2W(R0), W1 = S.S2W(R1);
+        for (float X = std::floor(W0.x / Step) * Step; X <= W1.x; X += Step)
+        {
+            const float Sx = S.W2S(ImVec2(X, 0)).x;
+            DL->AddLine(ImVec2(Sx, R0.y), ImVec2(Sx, R1.y), std::fmod(std::abs(X), Step * 4.0f) < 0.5f ? Major : Minor);
+        }
+        for (float Y = std::floor(W0.y / Step) * Step; Y <= W1.y; Y += Step)
+        {
+            const float Sy = S.W2S(ImVec2(0, Y)).y;
+            DL->AddLine(ImVec2(R0.x, Sy), ImVec2(R1.x, Sy), std::fmod(std::abs(Y), Step * 4.0f) < 0.5f ? Major : Minor);
+        }
+    }
+
+    //Hover among boxes and chips (drawn, not windows) is decided here; a node window claims it while drawn.
+    const std::string HoverBefore = S.HoverNode;
+    S.HoverNode.clear();
+    const bool Lod = S.Z < kLodZoom;
+    if (BgHovered)
+        for (auto It = S.ZOrder.rbegin(); It != S.ZOrder.rend(); ++It)
+        {
+            const NodeView &V = S.Views[(size_t)S.ViewOf[*It]];
+            if (!(Lod || V.Doc < 0)) continue;
+            const ImVec4 WR = WorldRect(S, V);
+            const ImVec2 A = S.W2S(ImVec2(WR.x, WR.y)), B = S.W2S(ImVec2(WR.z, WR.w));
+            if (Mouse.x >= A.x && Mouse.x <= B.x && Mouse.y >= A.y && Mouse.y <= B.y) { S.HoverNode = V.Handle; break; }
+        }
+    //Ports: within reach of the cursor, a port wins over whatever it overlaps (it starts a wire).
+    std::string PortHandle; bool PortOut = true;
+    //(The background button being pressed does not count as busy: a port half outside its node is pressed THROUGH it.)
+    if (S.M == PkgCanvasState::Mode::Idle && (!ImGui::IsAnyItemActive() || ImGui::GetActiveID() == BgId))
+    {
+        float Best = std::max(9.0f, kPortR * S.Z * 1.6f);
+        const ImVec2 Mw = S.S2W(Mouse);
+        const float Reach = Best / S.Z;
+        for (const NodeView &V : S.Views)
+        {
+            const ImVec4 &Wr = WorldRect(S, V);
+            if (Mw.x < Wr.x - Reach || Mw.x > Wr.z + Reach || Mw.y < Wr.y - Reach || Mw.y > Wr.w + Reach) continue;   // not near it
+            for (bool Out : {true, false})
+            {
+                if (!Out && V.Doc < 0) continue;         // a chip only offers: it contains nothing here
+                const ImVec2 P = PortScreen(S, V, Out);
+                const float Dd = std::hypot(Mouse.x - P.x, Mouse.y - P.y);
+                if (Dd < Best) { Best = Dd; PortHandle = V.Handle; PortOut = Out; }
+            }
+        }
+            if (!PortHandle.empty()) ImGui::SetTooltip("%s", PortOut ? "Drag into the node that should contain this one"
+                                                                   : "Drag onto the node this one should contain");
+    }
+    S.PortHover = PortHandle;
+
+    DrawWires(S, DL, BgHovered && S.HoverNode.empty() && PortHandle.empty() && S.M == PkgCanvasState::Mode::Idle);
+    if (!S.HoverWireChild.empty() && S.M == PkgCanvasState::Mode::Idle)
+    {
+        const auto Ci = S.ViewOf.find(S.HoverWireChild);
+        if (Ci != S.ViewOf.end())
+            for (const WireView &W : S.Wires)
+                if (W.To == Ci->second && W.L.Slot == S.HoverWireSlot)
+                {
+                    const std::string &Pn = S.Views[(size_t)W.From].Title, &Cn = S.Views[(size_t)W.To].Title;
+                    ImGui::SetTooltip("%s", (Cn + (W.L.Not ? " excludes " : W.L.Any ? " requires " : " contains ") + Pn
+                                             + "\nclick to select - Del removes - right-click for more").c_str());
+                }
+    }
+
+    // ---- nodes -------------------------------------------------------------------------------------------------
+    //Node windows are clipped — drawn AND hit-tested — to the canvas region: imgui clips a child window by its parent's
+    //clip rectangle when it begins, so without this a node scrolled up drew over (and took clicks from) the toolbar.
+    ImGui::PushClipRect(R0, R1, true);
+    std::vector<ImGuiWindow *> NodeWindows;
     int Visible = 0;
-    for (int I = 0; I < (int)G.Nodes.size(); ++I)
-        if (OnScreen(I) || Selected.count(I)) { drawNode(I, G); Drawn[(size_t)I] = 1; ++Visible; }
-    m_s->VisibleNodes = Visible;
-    //Recorded AFTER the node loop and BEFORE anything reads it back: this is the set imnodes will still know
-    //about on the next frame.
+    const ImVec4 ViewW(S.S2W(R0).x - 20, S.S2W(R0).y - 20, S.S2W(R1).x + 20, S.S2W(R1).y + 20);
+    for (const std::string &H : S.ZOrder)
     {
-        std::set<std::string> Now;
-        for (int I = 0; I < (int)G.Nodes.size(); ++I) if (Drawn[(size_t)I]) Now.insert(G.Nodes[I].Id);
-        m_s->DrawnLast.swap(Now);
-    }
-
-    // Out-of-bundle parents: a reference chip, not a box we own — you cannot edit another package from here.
-    std::vector<std::string> Chips = G.Externals;
-    for (const std::string &X : m_s->OfferedExternals)
-        if (std::find(Chips.begin(), Chips.end(), X) == Chips.end()) Chips.push_back(X);
-    for (int E = 0; E < (int)Chips.size(); ++E)
-    {
-        const int Nid = kExternalBase + E;
-        ImNodes::PushColorStyle(ImNodesCol_TitleBar, IM_COL32(58, 58, 64, 255));
-        ImNodes::BeginNode(Nid);
-        ImNodes::BeginNodeTitleBar();
-        ImGui::TextDisabled("external");
-        ImNodes::EndNodeTitleBar();
-        ImNodes::BeginOutputAttribute(OutPin(Nid));
-        // Show the pretty label the picker gave us; otherwise a short form of the CID handle (never the raw hash).
-        const auto Lit = m_s->ExternalLabels.find(Chips[E]);
-        const std::string Disp = (Lit != m_s->ExternalLabels.end() && !Lit->second.empty()) ? Lit->second
-                               : (Chips[E].size() > 14 ? (Chips[E].substr(0, 8) + "…" + Chips[E].substr(Chips[E].size() - 4))
-                                                       : Chips[E]);
-        ImGui::TextUnformatted(Disp.c_str());
-        ImNodes::EndOutputAttribute();
-        ImNodes::EndNode();
-        ImNodes::PopColorStyle();
-    }
-
-    //---- keep links visible independent of node culling (geometric, Minecraft-style frustum cull) --------------
-    //imnodes only draws a link between SUBMITTED pins, so a wire whose endpoint node was culled vanished — even
-    //when the wire itself crosses the viewport (two far-apart nodes both off-screen, the link passing through the
-    //middle). For any link whose SEGMENT crosses the viewport but whose endpoint is culled, submit a minimal
-    //off-screen proxy so the pin exists and imnodes draws the wire (correctly transformed — a hand-drawn line is
-    //not). Cost: one cheap segment/viewport test per link (O(links), the order node culling already is); a proxy
-    //is submitted only for a culled endpoint of a CROSSING link, never for one whose wire misses the view.
-    {
-        const float VX0 = -MarginX, VY0 = -MarginY, VX1 = Canvas.x + MarginX, VY1 = Canvas.y + MarginY;
-        auto Center = [&](int I) {
-            const ImVec2 D = NodeSize(m_s->NodeDims, G.Nodes[I]);
-            return ImVec2((G.Nodes[I].X + D.x * 0.5f + Pan.x) * m_s->Zoom,
-                          (G.Nodes[I].Y + D.y * 0.5f + Pan.y) * m_s->Zoom);
-        };
-        //Liang-Barsky: does the segment A-B touch the viewport rect at all?
-        auto SegHitsView = [&](ImVec2 A, ImVec2 B) {
-            float t0 = 0.0f, t1 = 1.0f; const float dx = B.x - A.x, dy = B.y - A.y;
-            const float p[4] = {-dx, dx, -dy, dy};
-            const float q[4] = {A.x - VX0, VX1 - A.x, A.y - VY0, VY1 - A.y};
-            for (int i = 0; i < 4; ++i) {
-                if (p[i] == 0.0f) { if (q[i] < 0.0f) return false; }
-                else { const float r = q[i] / p[i];
-                       if (p[i] < 0.0f) { if (r > t1) return false; if (r > t0) t0 = r; }
-                       else             { if (r < t0) return false; if (r < t1) t1 = r; } }
-            }
-            return true;
-        };
-        auto SubmitProxy = [&](int I) {
-            if (I < 0 || I >= (int)Drawn.size() || Drawn[(size_t)I]) return;
-            //Sized with the layout estimate so the readback records a sensible dimension (an empty node would
-            //stamp a tiny size into NodeDims and shrink the node in the minimap); it is off-screen so unseen.
-            ImNodes::SetNodeGridSpacePos(I, ImVec2(G.Nodes[I].X, G.Nodes[I].Y));
-            ImNodes::BeginNode(I);
-            ImNodes::BeginInputAttribute(InPin(I)); ImNodes::EndInputAttribute();
-            ImGui::Dummy(NodeSize(m_s->NodeDims, G.Nodes[I]));
-            ImNodes::BeginOutputAttribute(OutPin(I)); ImNodes::EndOutputAttribute();
-            ImNodes::EndNode();
-            Drawn[(size_t)I] = 1;
-        };
-        for (const Link &L : G.Links) {
-            if (L.ChildIndex < 0 || L.ChildIndex >= (int)G.Nodes.size()) continue;
-            const bool ChildDrawn  = Drawn[(size_t)L.ChildIndex];
-            const bool ParentExt   = L.ParentIndex < 0;                       // external chip — always submitted
-            const bool ParentDrawn = ParentExt || (L.ParentIndex < (int)Drawn.size() && Drawn[(size_t)L.ParentIndex]);
-            if ((ChildDrawn && ParentDrawn) || ParentExt) continue;          // already drawable / nothing to proxy
-            if (!SegHitsView(Center(L.ChildIndex), Center(L.ParentIndex))) continue;   // wire misses the view → skip
-            SubmitProxy(L.ChildIndex);
-            SubmitProxy(L.ParentIndex);
+        const int Vi = S.ViewOf[H];
+        const NodeView &V = S.Views[(size_t)Vi];
+        //Culled by its real extent: a tall opened node stays drawn while any of it is on screen.
+        if (!Overlaps(WorldRect(S, V), ViewW) && !(S.Renaming == H)) continue;
+        ++Visible;
+        if (V.Doc < 0 || Lod) DrawBox(S, DL, V);
+        else
+        {
+            ImGui::PushID(Vi);
+            DrawNode(*this, S, Vi, NodeWindows);
+            ImGui::PopID();
+            if (S.BuiltRev != D.Revision()) { Rebuild(S); break; }   // the node's own menu changed the graph
         }
     }
+    S.VisibleNodes = Visible;
+    ImGui::PopClipRect();
+    if (S.HoverNode.empty() && !HoverBefore.empty() && S.M != PkgCanvasState::Mode::Idle) S.HoverNode = HoverBefore;
 
-    syncLinks(G, Drawn);
-    IoGuard.popClip();
-    ImNodes::EndNodeEditor();
-    GImNodes->CanvasRectScreenSpace = CanvasRectWas;
-    //Both pairs, from what was actually saved. Restoring only Pos/Size left WorkPos/WorkSize pointing at the
-    //world region for the whole post-editor section — where the minimap child and the delete-confirmation
-    //modal are submitted, and where ImGui::Begin clamps a window against the work rect while
-    //FindBestWindowPosForPopup reads the main one: two coordinate systems inside one placement path.
-    IoGuard.restoreViewport();
-    ZIO.MousePos   = RealMouse;                     // input goes back to screen space for everything else
-    ZIO.MouseDelta = RealDelta;                     // (the guard repeats this on any exit that skips it)
-    //---- THE VIEW TRANSFORM ------------------------------------------------------------------------
-    //Scale everything the editor just emitted, about the canvas origin. This is the whole of zoom: the
-    //document is untouched and imnodes never hears about it, so "looking at the graph cannot edit it" holds
-    //by construction rather than by a guard.
-    if (Surface)
+    //An empty package says what to do instead of showing nothing.
+    if (S.Views.empty())
     {
-        const float Z = ViewZoom;
-        const ImVec2 O = CanvasOrigin;
-        float MinX = 1e30f, MinY = 1e30f, MaxX = -1e30f, MaxY = -1e30f;
-        for (int V = SurfVtx0; V < Surface->VtxBuffer.Size; ++V)
+        const char *Msg = "This package has no nodes yet.";
+        const char *Sub = "Right-click the canvas (or use + Node) to add one; + Library node brings in another package's.";
+        const ImVec2 M1 = ImGui::CalcTextSize(Msg), M2 = ImGui::CalcTextSize(Sub);
+        const ImVec2 C((R0.x + R1.x) * 0.5f, (R0.y + R1.y) * 0.5f);
+        DL->AddText(ImVec2(C.x - M1.x * 0.5f, C.y - M1.y - 4), IM_COL32(200, 205, 215, 255), Msg);
+        DL->AddText(ImVec2(C.x - M2.x * 0.5f, C.y + 4), IM_COL32(140, 146, 160, 255), Sub);
+    }
+
+    // ---- overlays: the wire being dragged, the box being drawn ----
+    ImDrawList *FG = ImGui::GetForegroundDrawList();
+    FG->PushClipRect(R0, R1, true);
+    S.DropTarget.clear();
+    if (S.M == PkgCanvasState::Mode::Link)
+    {
+        const auto Vi = S.ViewOf.find(S.LinkHandle);
+        if (Vi != S.ViewOf.end())
         {
-            ImDrawVert &Vt = Surface->VtxBuffer[V];
-            if (Z != 1.0f)
+            const ImVec2 A = PortScreen(S, S.Views[(size_t)Vi->second], S.LinkFromOut);
+            const float Dx = std::max(std::abs(Mouse.x - A.x) * 0.5f, 50.0f * S.Z) * (S.LinkFromOut ? 1.0f : -1.0f);
+            FG->AddBezierCubic(A, ImVec2(A.x + Dx, A.y), ImVec2(Mouse.x - Dx, Mouse.y), Mouse, IM_COL32(255, 210, 120, 255), 2.5f);
+            const std::string T = S.HoverNode;
+            if (!T.empty() && T != S.LinkHandle)
             {
-                Vt.pos.x = O.x + (Vt.pos.x - O.x) * Z;
-                Vt.pos.y = O.y + (Vt.pos.y - O.y) * Z;
+                const NodeView &Tv = S.Views[(size_t)S.ViewOf[T]];
+                const bool Valid = S.LinkFromOut ? Tv.Doc >= 0 : true;
+                if (Valid) S.DropTarget = T;
+                if (Valid && Tv.Doc < 0 && !S.LinkFromOut) S.DropTarget = T;
             }
-            //Transform everything, measure only the content. The grid is transformed with the rest — that is
-            //what makes it scale — but it must not be part of what the bounds report.
-            if (V < ContentVtx0) continue;
-            MinX = std::min(MinX, Vt.pos.x); MaxX = std::max(MaxX, Vt.pos.x);
-            MinY = std::min(MinY, Vt.pos.y); MaxY = std::max(MaxY, Vt.pos.y);
-        }
-        m_s->SurfaceBounds = (MaxX >= MinX) ? ImVec4(MinX, MinY, MaxX, MaxY) : ImVec4(0, 0, 0, 0);
-        m_s->SurfaceVertices = Surface->VtxBuffer.Size - ContentVtx0;
-
-        //Clip rects need two DIFFERENT treatments, and treating them alike is what made the canvas unusable
-        //zoomed out. A rect that IS the canvas viewport must stay exactly the viewport — scaling that one
-        //shrank the drawable and pannable area into a corner. A rect INSIDE the content (a field clipping its
-        //own text) is content: it scales, then is intersected with the viewport so nothing escapes.
-        if (Z != 1.0f)
-        {
-            const ImVec4 View = CanvasRect;
-            for (int C = 0; C < Surface->CmdBuffer.Size; ++C)
-            {
-                ImVec4 &R = Surface->CmdBuffer[C].ClipRect;
-                //Three kinds of rectangle reach this loop and each needs a different answer.
-                //
-                //  * The one WE pushed for submission (zoomed out only). It is the viewport divided by the
-                //    zoom, so it looks viewport-like and then some — but it is in PRE-transform space and
-                //    scaling it lands exactly on the viewport, which is the whole point. It must be scaled.
-                //  * The editor child's OWN clip: already the viewport, in POST-transform space, used by
-                //    everything imnodes draws after we pop ours. Left exactly as imgui set it — replacing it
-                //    with our own idea of the viewport shaved the window border off the drawable area, and
-                //    SCALING it would shrink the canvas you can draw and pan in along with the zoom, which is
-                //    the bug this branch exists to prevent.
-                //  * Anything narrower: content clipping its own text. Scaled, then held inside the viewport.
-                const bool IsPushed = WideClip && R.x == PushedClip.x && R.y == PushedClip.y
-                                                 && R.z == PushedClip.z && R.w == PushedClip.w;
-                const bool IsViewport = !IsPushed
-                                     && R.x <= View.x + 1.0f && R.y <= View.y + 1.0f
-                                     && R.z >= View.z - 1.0f && R.w >= View.w - 1.0f;
-                if (IsViewport) continue;
-                const ImVec4 Sc(O.x + (R.x - O.x) * Z, O.y + (R.y - O.y) * Z,
-                                O.x + (R.z - O.x) * Z, O.y + (R.w - O.y) * Z);
-                R = ImVec4(std::max(Sc.x, View.x), std::max(Sc.y, View.y),
-                           std::min(Sc.z, View.z), std::min(Sc.w, View.w));
-                if (R.z < R.x) R.z = R.x;
-                if (R.w < R.y) R.w = R.y;
-            }
-        }
-        //The widest clip rect the canvas ended up drawing through: the interactive surface. Recorded after the
-        //loop above, so it is what was really used and not what imgui emitted before the transform saw it.
-        float Cx0 = 1e30f, Cy0 = 1e30f, Cx1 = -1e30f, Cy1 = -1e30f;
-        for (int C = 0; C < Surface->CmdBuffer.Size; ++C)
-        {
-            //Only commands that actually DRAW. imgui leaves an empty command behind at every clip-stack pop
-            //(EndChild's, here), carrying the enclosing window's rectangle — counting those would report a
-            //surface wider than anything the canvas ever painted through.
-            if (Surface->CmdBuffer[C].ElemCount == 0) continue;
-            const ImVec4 &R = Surface->CmdBuffer[C].ClipRect;
-            Cx0 = std::min(Cx0, R.x); Cy0 = std::min(Cy0, R.y);
-            Cx1 = std::max(Cx1, R.z); Cy1 = std::max(Cy1, R.w);
-        }
-        m_s->SurfaceClip = (Cx1 >= Cx0) ? ImVec4(Cx0, Cy0, Cx1, Cy1) : ImVec4(0, 0, 0, 0);
-
-        //A widget that opens a CHILD WINDOW gets its own draw list, which the loops above never touch.
-        //InputTextMultiline does — every StringList field with more than one line (SUBMOUNTS, ARGS, ENV,
-        //BASE_TARGETS) — so the node body moved and scaled while the text inside it stayed at its 1:1
-        //position, painted over whatever node had moved there. Same transform, whole list: these windows
-        //exist only inside the editor, so every vertex in them is canvas content.
-        ImGuiContext &Ctx = *ImGui::GetCurrentContext();
-        for (int W = 0; W < Ctx.Windows.Size; ++W)
-        {
-            ImGuiWindow *Win = Ctx.Windows[W];
-            if (!Win->Active || Win->DrawList == Surface) continue;
-            bool Inside = false;
-            for (ImGuiWindow *P = Win->ParentWindow; P; P = P->ParentWindow)
-                if (P->DrawList == Surface) { Inside = true; break; }
-            if (!Inside) continue;
-            if (Z == 1.0f) continue;                      // nothing to move, and nothing to clamp either
-            ImDrawList *DL = Win->DrawList;
-            for (int V = 0; V < DL->VtxBuffer.Size; ++V)
-            {
-                ImDrawVert &Vt = DL->VtxBuffer[V];
-                Vt.pos.x = O.x + (Vt.pos.x - O.x) * Z;
-                Vt.pos.y = O.y + (Vt.pos.y - O.y) * Z;
-            }
-            for (int C = 0; C < DL->CmdBuffer.Size; ++C)
-            {
-                ImVec4 &R = DL->CmdBuffer[C].ClipRect;
-                R = ImVec4(O.x + (R.x - O.x) * Z, O.y + (R.y - O.y) * Z,
-                           O.x + (R.z - O.x) * Z, O.y + (R.w - O.y) * Z);
-                R = ImVec4(std::max(R.x, CanvasRect.x), std::max(R.y, CanvasRect.y),
-                           std::min(R.z, CanvasRect.z), std::min(R.w, CanvasRect.w));
-                if (R.z < R.x) R.z = R.x;
-                if (R.w < R.y) R.w = R.y;
-            }
-            //And the rectangle the window is HIT-TESTED by. Moving only the pixels draws the field in the
-            //right place and leaves it clickable in the old one — which is worse than leaving it alone, since
-            //nothing is drawn where it still responds. imgui picks the hovered window in NewFrame, from the
-            //REAL cursor against OuterRectClipped, before frame() runs and therefore beyond the reach of the
-            //cursor hijack; it reads the value left from the previous frame (imgui.cpp documents that lag), so
-            //writing the drawn rectangle here is exactly what the next frame will test against. The item-level
-            //test inside the window compares the hijacked world cursor against world-space item rects and
-            //already agreed; the window was the only thing out of step.
-            Win->OuterRectClipped = ImRect(ImVec2(O.x + (Win->OuterRectClipped.Min.x - O.x) * Z,
-                                                  O.y + (Win->OuterRectClipped.Min.y - O.y) * Z),
-                                           ImVec2(O.x + (Win->OuterRectClipped.Max.x - O.x) * Z,
-                                                  O.y + (Win->OuterRectClipped.Max.y - O.y) * Z));
-
-            //NOT nudged back onto the display, though an earlier version did. Transforming a popup moves it,
-            //and the temptation is to translate it back — but its ITEMS hit-test in the unscaled space imgui
-            //laid them out in, against the world cursor, which is exactly consistent with where the transform
-            //draws them: point at a drawn item and the world cursor lands on its rect. Translating the pixels
-            //and the window rectangle without the item rects breaks that correspondence, and measurably did:
-            //at 3x the dropdown responded in a 13px band 130px below the sliver it was drawn in. The clip
-            //clamp above already keeps a popup inside the canvas; being clipped is the cost, and it is the
-            //cheaper one.
+            ImGui::SetTooltip("%s", S.DropTarget.empty() ? "Drop on a node"
+                                    : (Io.KeyShift ? "requires one of" : Io.KeyAlt ? "excludes" : "contains (Shift: requires, Alt: excludes)"));
         }
     }
-
-    //Wheel = zoom, anchored at the CURSOR so what you point at stays put. No modifier: this is the gesture
-    //people try first, and gating it behind ctrl made the feature invisible. Panning stays on middle-drag.
-    //Not over the minimap — there the wheel belongs to the overview, and zooming the canvas from a click-to-pan
-    //widget is a gesture nobody asked for.
-    if (CanvasHovered && !MiniHovered && ImGui::GetIO().MouseWheel != 0.0f)
+    if (S.M == PkgCanvasState::Mode::Box)
     {
-        //The wheel moves the TARGET; the easing at the top of the frame moves the view. Notches that arrive
-        //while a previous one is still playing compound on the target, so a fast flick still travels the full
-        //distance instead of being swallowed by the animation.
-        const float Nz = std::clamp(m_s->ZoomTarget * std::pow(1.1f, ImGui::GetIO().MouseWheel),
-                                    kMinZoom, kMaxZoom);
-        if (Nz != m_s->ZoomTarget)
-        {
-            //Record the WORLD point under the cursor. A node at world w is drawn at origin + (pan + w) * zoom,
-            //so solving that for pan at any later zoom gives the pan that holds w under the same screen pixel
-            //— which the easing then does once per frame until it arrives.
-            const ImVec2 M = ImGui::GetIO().MousePos;
-            const ImVec2 Rel(M.x - CanvasOrigin.x, M.y - CanvasOrigin.y);
-            const ImVec2 NowPan = ImNodes::EditorContextGetPanning();
-            m_s->ZoomAnchor      = Rel;
-            m_s->ZoomAnchorWorld = ImVec2(Rel.x / m_s->Zoom - NowPan.x, Rel.y / m_s->Zoom - NowPan.y);
-            m_s->ZoomTarget      = Nz;
-            m_s->Zooming         = true;
-        }
+        FG->AddRectFilled(S.PressScreen, Mouse, IM_COL32(120, 170, 255, 40));
+        FG->AddRect(S.PressScreen, Mouse, IM_COL32(120, 170, 255, 200));
     }
+    FG->PopClipRect();
+    DL->PopClipRect();
 
-    //---- the minimap ------------------------------------------------------------------------------------
-    //Drawn AFTER the view transform, into a child of its own so it renders above the editor's child window
-    //(a draw list appended to the parent would end up UNDERNEATH the canvas background). Screen furniture:
-    //its rectangle came from the canvas viewport, never from the zoom, so it holds its corner at 0.2x and 3x
-    //alike — the built-in one rode the transform and slid off the screen.
-    //The viewport as it stands at the point post-editor windows are submitted. Recorded because that is the
-    //only place the restore is observable: imgui's NewFrame recomputes the main viewport every frame, so a
-    //viewport left in world space at the END of frame() is invisible from outside — while WITHIN the frame it
-    //is what ImGui::Begin clamps this child, and the delete-confirmation modal, against.
+    // ---- minimap ---------------------------------------------------------------------------------------------
+    S.MiniRect = ImVec4(0, 0, 0, 0);
+    bool MiniHovered = false;
+    const ImVec4 Wb = S.Views.empty() ? ImVec4() : BoundsOf(S, nullptr);
+    const ImVec2 ViewA = S.S2W(R0), ViewB = S.S2W(R1);
+    const bool AllInView = Wb.x >= ViewA.x && Wb.y >= ViewA.y && Wb.z <= ViewB.x && Wb.w <= ViewB.y;   // nothing to find
+    if (S.ShowMini && !S.Views.empty() && !AllInView && R1.x - R0.x > 400 && R1.y - R0.y > 300)
     {
-        const ImGuiViewport *VPNow = ImGui::GetMainViewport();
-        m_s->PostEditorViewport = ImVec4(VPNow->Pos.x, VPNow->Pos.y, VPNow->Size.x, VPNow->Size.y);
-        m_s->PostEditorWorkRect = ImVec4(VPNow->WorkPos.x, VPNow->WorkPos.y,
-                                         VPNow->WorkSize.x, VPNow->WorkSize.y);
-    }
-    if (MiniScale > 0.0f)
-    {
-        const ImVec2 Size(MiniRect.z - MiniRect.x, MiniRect.w - MiniRect.y);
-        ImGui::SetCursorScreenPos(ImVec2(MiniRect.x, MiniRect.y));
-        ImGui::BeginChild("##minimap", Size, false,
-                          ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse
-                              | ImGuiWindowFlags_NoMove);
-        ImDrawList *DL = ImGui::GetWindowDrawList();
-        const ImVec2 A(MiniRect.x, MiniRect.y), B(MiniRect.z, MiniRect.w);
-        DL->AddRectFilled(A, B, IM_COL32(20, 22, 26, 220), 3.0f);
-        //World -> minimap, centred in the box so a graph whose aspect differs from the box is not stretched.
-        const float SpanX = (MiniWorldMax.x - MiniWorldMin.x) * MiniScale;
-        const float SpanY = (MiniWorldMax.y - MiniWorldMin.y) * MiniScale;
-        const ImVec2 Off(A.x + (Size.x - SpanX) * 0.5f, A.y + (Size.y - SpanY) * 0.5f);
-        auto ToMini = [&](float Wx, float Wy) {
-            return ImVec2(Off.x + (Wx - MiniWorldMin.x) * MiniScale,
-                          Off.y + (Wy - MiniWorldMin.y) * MiniScale);
-        };
-        for (int I = 0; I < (int)G.Nodes.size(); ++I)
+        const float MW = 220, MH = 150;
+        const ImVec2 M0(R1.x - MW - 12, R1.y - MH - 12);
+        S.MiniRect = ImVec4(M0.x, M0.y, M0.x + MW, M0.y + MH);
+        const float Sc = std::min((MW - 12) / std::max(1.0f, Wb.z - Wb.x), (MH - 12) / std::max(1.0f, Wb.w - Wb.y));
+        const ImVec2 Off(M0.x + (MW - (Wb.z - Wb.x) * Sc) * 0.5f, M0.y + (MH - (Wb.w - Wb.y) * Sc) * 0.5f);
+        auto ToMini = [&](ImVec2 W) { return ImVec2(Off.x + (W.x - Wb.x) * Sc, Off.y + (W.y - Wb.y) * Sc); };
+        ImGui::SetCursorScreenPos(M0);
+        ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(0, 0));
+        ImGui::BeginChild("##minimap", ImVec2(MW, MH), ImGuiChildFlags_None, ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse);
+        ImGui::PopStyleVar();
+        NodeWindows.push_back(ImGui::GetCurrentWindow());
+        ImDrawList *MD = ImGui::GetWindowDrawList();
+        MD->AddRectFilled(M0, ImVec2(M0.x + MW, M0.y + MH), IM_COL32(16, 17, 21, 230), 6.0f);
+        for (const NodeView &V : S.Views)
         {
-            const Node &N = G.Nodes[(size_t)I];
-            const ImVec2 D = NodeSize(m_s->NodeDims, N);
-            const ImVec2 P0 = ToMini(N.X, N.Y), P1raw = ToMini(N.X + D.x, N.Y + D.y);
-            //Never smaller than a pixel: at minecraft's 27520x18760 a node is a fraction of one, and a
-            //rectangle that rounds away leaves a blank overview of a graph that is definitely there.
-            const ImVec2 P1(std::max(P1raw.x, P0.x + 1.0f), std::max(P1raw.y, P0.y + 1.0f));
-            const bool Sel = m_s->SelectedLast.count(I) != 0;
-            DL->AddRectFilled(P0, P1, Sel ? IM_COL32(255, 190, 80, 255) : IM_COL32(130, 145, 165, 200));
-            //Bounds-checked. The sizes cannot disagree today (this loop walks the very array MiniBoxes was
-            //sized from), but an unguarded write into a parallel vector is a buffer overrun the moment they
-            //ever do — and the crash is in the renderer, nowhere near the cause.
-            if (I < (int)m_s->MiniBoxes.size()) m_s->MiniBoxes[(size_t)I] = ImVec4(P0.x, P0.y, P1.x, P1.y);
+            const ImVec4 R = WorldRect(S, V);
+            const ImVec2 A = ToMini(ImVec2(R.x, R.y)), B = ToMini(ImVec2(R.z, R.w));
+            int Rc, Gc, Bc;
+            PkgGraph::TypeColour(V.Kind, Rc, Gc, Bc);
+            MD->AddRectFilled(A, ImVec2(std::max(B.x, A.x + 1.5f), std::max(B.y, A.y + 1.5f)),
+                              S.Sel.count(V.Handle) ? IM_COL32(255, 196, 90, 255) : V.Doc < 0 ? IM_COL32(90, 96, 110, 255) : Col(Rc, Gc, Bc, 230));
         }
-        //What the canvas is actually looking at. A node at world w is at origin + (pan + w) * zoom, so the
-        //visible world rectangle is (-pan) to (avail / zoom - pan).
+        const ImVec2 VA = ToMini(S.S2W(R0)), VB = ToMini(S.S2W(R1));
+        MD->AddRect(VA, VB, IM_COL32(255, 255, 255, 200), 0, 0, 1.5f);
+        MD->AddRect(M0, ImVec2(M0.x + MW, M0.y + MH), IM_COL32(80, 88, 104, 255), 6.0f);
+        ImGui::SetCursorScreenPos(M0);
+        ImGui::InvisibleButton("##minidrag", ImVec2(MW, MH));
+        MiniHovered = ImGui::IsItemHovered();
+        if (ImGui::IsItemActive())
         {
-            const ImVec2 ViewPan = ImNodes::EditorContextGetPanning();
-            const ImVec2 V0 = ToMini(-ViewPan.x, -ViewPan.y);
-            const ImVec2 V1 = ToMini(CanvasAvail.x / m_s->Zoom - ViewPan.x,
-                                     CanvasAvail.y / m_s->Zoom - ViewPan.y);
-            DL->AddRect(V0, V1, IM_COL32(255, 255, 255, 200), 0.0f, 0, 1.5f);
+            const ImVec2 W(Wb.x + (Mouse.x - Off.x) / Sc, Wb.y + (Mouse.y - Off.y) / Sc);
+            S.Cam = ImVec2(W.x - (R1.x - R0.x) * 0.5f / S.Z, W.y - (R1.y - R0.y) * 0.5f / S.Z);
+            S.Zooming = false;
         }
-        DL->AddRect(A, B, IM_COL32(90, 100, 115, 255), 3.0f);
-
-        //Click or drag anywhere in the box to centre the view there. The button is the whole child, so the
-        //minimap swallows its own input rather than leaving it to fall through to the canvas.
-        ImGui::SetCursorScreenPos(A);
-        ImGui::InvisibleButton("##minimapdrag", Size);
-        if (ImGui::IsItemActive() && MiniScale > 0.0f)
-        {
-            const ImVec2 M = ImGui::GetIO().MousePos;
-            const ImVec2 W(MiniWorldMin.x + (M.x - Off.x) / MiniScale,
-                           MiniWorldMin.y + (M.y - Off.y) / MiniScale);
-            //Solve pan for "that world point sits at the centre of the viewport".
-            ImNodes::EditorContextResetPanning(ImVec2(CanvasAvail.x * 0.5f / m_s->Zoom - W.x,
-                                                      CanvasAvail.y * 0.5f / m_s->Zoom - W.y));
-            m_s->Zooming = false;   // a deliberate pan wins over a zoom still easing
-        }
+        if (MiniHovered) ImGui::SetTooltip("Click or drag to move the view");
         ImGui::EndChild();
     }
-    //Selection snapshot for the NEXT frame's culling — legal only out here, with the editor scope closed.
-    {
-        std::set<int> Now;
-        const int SelCount = ImNodes::NumSelectedNodes();
-        if (SelCount > 0)
-        {
-            std::vector<int> Sel((size_t)SelCount, 0);
-            ImNodes::GetSelectedNodes(Sel.data());
-            for (int S : Sel) if (S >= 0 && S < (int)G.Nodes.size()) Now.insert(S);
-        }
-        m_s->SelectedLast.swap(Now);
-    }
 
-    // ---- interactions ----
-    int StartAttr = 0, EndAttr = 0;
-    if (ImNodes::IsLinkCreated(&StartAttr, &EndAttr))
+    // ---- input ------------------------------------------------------------------------------------------------
+    ImGuiContext &Ctx = *ImGui::GetCurrentContext();
+    const bool OverCanvas = Mouse.x >= R0.x && Mouse.x < R1.x && Mouse.y >= R0.y && Mouse.y < R1.y;
+    const bool CanvasOwnsHover = OverCanvas && Ctx.HoveredWindow &&
+        (Ctx.HoveredWindow == ImGui::GetCurrentWindow() || std::find(NodeWindows.begin(), NodeWindows.end(), Ctx.HoveredWindow) != NodeWindows.end());
+    //Wheel: zoom about the cursor — over the background or a node, not over a scrolling text box, a popup or the map.
+    if (CanvasOwnsHover && !MiniHovered && Io.MouseWheel != 0.0f && Ctx.OpenPopupStack.Size == 0)
     {
-        const int PNode = PinNode(StartAttr), CNode = PinNode(EndAttr);
-        if (CNode < kExternalBase)
+        const float Nz = std::clamp(S.ZTarget * std::pow(1.15f, Io.MouseWheel), kMinZoom, kMaxZoom);
+        if (Nz != S.ZTarget)
         {
-            if (PNode < kExternalBase) connect(PNode, CNode);
+            S.ZAnchorScreen = Mouse;
+            S.ZAnchorWorld = S.S2W(Mouse);
+            S.ZTarget = Nz;
+            S.Zooming = true;
+        }
+    }
+    //Any gesture on the canvas means the user has the view now: stop re-framing it for them.
+    if (CanvasOwnsHover && (Io.MouseWheel != 0.0f || ImGui::IsMouseClicked(0) || ImGui::IsMouseClicked(1) || ImGui::IsMouseClicked(2)))
+        S.AutoFrame = false;
+    //Starting a gesture.
+    if (S.M == PkgCanvasState::Mode::Idle && CanvasOwnsHover && !MiniHovered)
+    {
+        if (!PortHandle.empty() && ImGui::IsMouseClicked(0))
+        {
+            S.M = PkgCanvasState::Mode::Link;
+            S.LinkHandle = PortHandle;
+            S.LinkFromOut = PortOut;
+            ImGui::SetActiveID(BgId, ImGui::GetCurrentWindow());       // the canvas owns the drag, not a node widget
+        }
+        else if (ImGui::IsMouseClicked(2) || (ImGui::IsMouseClicked(0) && ImGui::IsKeyDown(ImGuiKey_Space)))
+            S.M = PkgCanvasState::Mode::Pan;
+        else if (BgHovered && ImGui::IsMouseClicked(0))
+        {
+            if (!S.HoverNode.empty())
+            {
+                //A box or a chip: select and drag it; double-click a chip to open its package, a box to zoom in on it.
+                const NodeView &V = S.Views[(size_t)S.ViewOf[S.HoverNode]];
+                if (Io.KeyCtrl) { if (!S.Sel.erase(V.Handle)) S.Sel.insert(V.Handle); }
+                else if (!S.Sel.count(V.Handle)) S.Sel = {V.Handle};
+                S.SelWireSlot = -1;
+                if (ImGui::IsMouseDoubleClicked(0))
+                {
+                    if (V.Doc < 0)
+                    {
+                        const auto E = S.ExtCache.find(V.Handle);
+                        if (E != S.ExtCache.end() && !E->second.PackageDir.empty())
+                            emit openPackageRequested(QString::fromStdString(E->second.PackageDir));
+                    }
+                    else select(V.Handle, true);
+                }
+                else { S.M = PkgCanvasState::Mode::Drag; S.DragDelta = ImVec2(0, 0); S.PressScreen = Mouse; }
+            }
+            else if (!S.HoverWireChild.empty())
+            {
+                S.SelWireChild = S.HoverWireChild;
+                S.SelWireSlot = S.HoverWireSlot;
+                S.Sel.clear();
+            }
             else
             {
-                // Dragged from an external chip: record the dependency by ID. The chip is a reference to a node
-                // in another bundle, so there is no index to point at.
-                const int E = PNode - kExternalBase;
-                if (E >= 0 && E < (int)Chips.size()) connectExternal(Chips[E], CNode);
+                if (!Io.KeyCtrl && !Io.KeyShift) { S.Sel.clear(); S.SelWireSlot = -1; }
+                S.M = PkgCanvasState::Mode::Box;
+                S.PressScreen = Mouse;
             }
         }
+        else if (BgHovered && ImGui::IsMouseClicked(1)) { S.RightPressedOnBg = true; S.PressScreen = Mouse; }
     }
-    int DeadLink = 0;
-    if (ImNodes::IsLinkDestroyed(&DeadLink))
+    //Right-drag on the background pans; a right click without a drag opens the menu.
+    if (S.RightPressedOnBg && ImGui::IsMouseDown(1) && ImGui::IsMouseDragging(1, 4.0f)) { S.M = PkgCanvasState::Mode::Pan; S.RightPressedOnBg = false; }
+    if (S.RightPressedOnBg && ImGui::IsMouseReleased(1))
     {
-        const int Child = LinkChild(DeadLink), Slot = LinkSlot(DeadLink);
-        json &Ns = m_s->Nodes();
-        if (Child >= 0 && Child < (int)Ns.size() && PkgGraph::EraseRef(Ns[Child], Slot)) m_s->MarkDirty();
+        S.RightPressedOnBg = false;
+        S.ContextWorld = S.S2W(Mouse);
+        if (!S.HoverWireChild.empty()) { S.SelWireChild = S.HoverWireChild; S.SelWireSlot = S.HoverWireSlot; ImGui::OpenPopup("##wiremenu"); }
+        else if (!S.HoverNode.empty()) { if (!S.Sel.count(S.HoverNode)) S.Sel = {S.HoverNode}; ImGui::OpenPopup("##boxmenu"); }
+        else ImGui::OpenPopup("##canvasmenu");
     }
-
-    int Sel = -1;
-    //Only trust a selection whose node was SUBMITTED THIS FRAME. imnodes frees a culled node's pool slot but
-    //leaves its index in SelectedNodeIndices, and GetSelectedNodes reads Pool[thatIndex].Id — so once another
-    //node reuses the slot, the "selection" silently becomes a node the user never clicked, and every
-    //selection-scoped action (the JSON panel, delete) points at it.
-    if (ImNodes::NumSelectedNodes() == 1)
+    //Gestures in flight.
+    switch (S.M)
     {
-        ImNodes::GetSelectedNodes(&Sel);
-        if (Sel >= 0 && Sel < kExternalBase && Sel < (int)Drawn.size() && Drawn[(size_t)Sel])
-            m_s->Selected = Sel;
-    }
-    // Delete drops the node AND every edge pointing at it, with no undo. Ask once — a mis-keyed Delete on a
-    // shared library node silently unhooks every dependent, which is the failure this whole schema exists to
-    // make visible rather than silent.
-    //...and never while a conversion is in flight on it: the worker finishes against a node that no longer
-    //exists, so it deletes the source it was replacing and drops the replacement on the floor.
-    //BOUNDS-CHECKED. `Selected` survives a reload/invalidate, and nlohmann's non-const operator[](size_type)
-    //FILLS THE ARRAY WITH NULLS up to the index — so a stale selection did not just read garbage, it grew the
-    //document with nulls that SaveNodes would then write to disk, and threw on the read.
-    if (m_s->Selected >= 0 && m_s->Selected < (int)m_s->Nodes().size()
-        && ImGui::IsKeyPressed(ImGuiKey_Delete) && !ImGui::IsAnyItemActive()
-        && !isBusy(Handle(m_s->Nodes()[m_s->Selected])))
-        m_s->ConfirmDelete = m_s->Selected;
-    if (m_s->ConfirmDelete >= 0)
-    {
-        ImGui::OpenPopup("Delete node?");
-        if (ImGui::BeginPopupModal("Delete node?", nullptr, ImGuiWindowFlags_AlwaysAutoResize))
+    case PkgCanvasState::Mode::Pan:
+        S.Cam = ImVec2(S.Cam.x - Io.MouseDelta.x / S.Z, S.Cam.y - Io.MouseDelta.y / S.Z);
+        S.Zooming = false;
+        if (!ImGui::IsMouseDown(0) && !ImGui::IsMouseDown(1) && !ImGui::IsMouseDown(2)) S.M = PkgCanvasState::Mode::Idle;
+        break;
+    case PkgCanvasState::Mode::Drag:
+        if (ImGui::IsMouseDown(0))
         {
-            const int D = m_s->ConfirmDelete;
-            const json &Ns2 = m_s->Nodes();
-            const std::string DId = (D >= 0 && D < (int)Ns2.size()) ? Handle(Ns2[D]) : std::string();
-            int Dependents = 0;
-            for (const Link &L : G.Links) if (L.ParentIndex == D) ++Dependents;
-            ImGui::Text("Delete '%s'?", DId.c_str());
-            if (Dependents > 0)
-                ImGui::TextColored(ImVec4(1.0f, 0.72f, 0.28f, 1.0f),
-                                   "%d node(s) depend on it - those wires are removed too.", Dependents);
-            ImGui::Separator();
-            if (ImGui::Button("Delete")) { removeNode(D); m_s->ConfirmDelete = -1; ImGui::CloseCurrentPopup(); }
-            ImGui::SameLine();
-            if (ImGui::Button("Cancel")) { m_s->ConfirmDelete = -1; ImGui::CloseCurrentPopup(); }
-            ImGui::EndPopup();
+            S.DragDelta = ImVec2((Mouse.x - S.PressScreen.x) / S.Z, (Mouse.y - S.PressScreen.y) / S.Z);
+            //Auto-pan when dragging past the edge.
+            const float Edge = 30.0f, Speed = 900.0f * Io.DeltaTime / S.Z;
+            ImVec2 Pan(0, 0);
+            if (Mouse.x < R0.x + Edge) Pan.x = -Speed; else if (Mouse.x > R1.x - Edge) Pan.x = Speed;
+            if (Mouse.y < R0.y + Edge) Pan.y = -Speed; else if (Mouse.y > R1.y - Edge) Pan.y = Speed;
+            if (Pan.x != 0 || Pan.y != 0) { S.Cam.x += Pan.x; S.Cam.y += Pan.y; S.PressScreen.x -= Pan.x * S.Z; S.PressScreen.y -= Pan.y * S.Z; }
         }
-        else m_s->ConfirmDelete = -1;   // dismissed with ESC / a click outside: do not reopen next frame
+        else
+        {
+            if (std::abs(S.DragDelta.x) > 0.5f || std::abs(S.DragDelta.y) > 0.5f)
+            {
+                const ImVec2 Dd = S.DragDelta;
+                S.M = PkgCanvasState::Mode::Idle;         // positions below are read without the drag applied
+                for (const std::string &H : S.Sel)
+                {
+                    const auto It = S.ViewOf.find(H);
+                    if (It == S.ViewOf.end()) continue;
+                    const ImVec2 P = WorldPos(S, S.Views[(size_t)It->second]);
+                    D.SetPos(H, {std::round(P.x + Dd.x), std::round(P.y + Dd.y)});
+                }
+                D.Commit();
+                emit documentEdited();
+            }
+            S.M = PkgCanvasState::Mode::Idle;
+            S.DragDelta = ImVec2(0, 0);
+        }
+        break;
+    case PkgCanvasState::Mode::Box:
+        if (!ImGui::IsMouseDown(0))
+        {
+            const ImVec2 A = S.S2W(ImVec2(std::min(S.PressScreen.x, Mouse.x), std::min(S.PressScreen.y, Mouse.y)));
+            const ImVec2 B = S.S2W(ImVec2(std::max(S.PressScreen.x, Mouse.x), std::max(S.PressScreen.y, Mouse.y)));
+            if (std::abs(Mouse.x - S.PressScreen.x) > 3 || std::abs(Mouse.y - S.PressScreen.y) > 3)
+                for (const NodeView &V : S.Views)
+                    if (Overlaps(WorldRect(S, V), ImVec4(A.x, A.y, B.x, B.y))) S.Sel.insert(V.Handle);
+            S.M = PkgCanvasState::Mode::Idle;
+        }
+        break;
+    case PkgCanvasState::Mode::Link:
+        if (!ImGui::IsMouseDown(0))
+        {
+            if (!S.DropTarget.empty())
+            {
+                //Out-port → the drop target contains the source; in-port → the source contains the drop target.
+                const std::string Child = S.LinkFromOut ? S.DropTarget : S.LinkHandle;
+                const std::string Parent = S.LinkFromOut ? S.LinkHandle : S.DropTarget;
+                const int Ci = D.IndexOf(Child);
+                const Document::RefKind K = Io.KeyShift ? Document::RefKind::Any : Io.KeyAlt ? Document::RefKind::Not : Document::RefKind::Node;
+                if (Ci >= 0 && D.Link(Ci, Parent, K))
+                {
+                    D.Commit();
+                    S.Offered.erase(std::remove(S.Offered.begin(), S.Offered.end(), Parent), S.Offered.end());
+                    emit documentEdited();
+                }
+                else if (Ci < 0) emit statusMessage("Another package's node cannot be changed here - wire it into one of this package's nodes");
+                else emit statusMessage("Already wired");
+            }
+            S.M = PkgCanvasState::Mode::Idle;
+            S.LinkHandle.clear();
+            ImGui::ClearActiveID();
+        }
+        break;
+    case PkgCanvasState::Mode::Idle:
+        break;
+    }
+    if (ImGui::IsKeyPressed(ImGuiKey_Escape) && S.M != PkgCanvasState::Mode::Idle)
+    { S.M = PkgCanvasState::Mode::Idle; S.LinkHandle.clear(); S.DragDelta = ImVec2(0, 0); ImGui::ClearActiveID(); }
+
+    // ---- menus ------------------------------------------------------------------------------------------------
+    if (ImGui::BeginPopup("##canvasmenu"))
+    {
+        if (ImGui::BeginMenu("Add node here")) { AddMenu(S.ContextWorld); ImGui::EndMenu(); }
+        ImGui::Separator();
+        if (ImGui::MenuItem("Fit the package in view", "F")) frameAll();
+        if (ImGui::MenuItem("Tidy the layout")) tidyLayout();
+        if (ImGui::MenuItem("Select all", "Ctrl+A")) for (const NodeView &V : S.Views) S.Sel.insert(V.Handle);
+        ImGui::EndPopup();
+    }
+    if (ImGui::BeginPopup("##boxmenu"))
+    {
+        const std::string H = S.Sel.size() == 1 ? *S.Sel.begin() : std::string();
+        const auto It = S.ViewOf.find(H);
+        const bool Chip = It != S.ViewOf.end() && S.Views[(size_t)It->second].Doc < 0;
+        if (Chip)
+        {
+            const auto E = S.ExtCache.find(H);
+            if (ImGui::MenuItem("Open its package", nullptr, false, E != S.ExtCache.end() && !E->second.PackageDir.empty()))
+                emit openPackageRequested(QString::fromStdString(E->second.PackageDir));
+            if (ImGui::MenuItem("Copy CID")) ImGui::SetClipboardText(H.c_str());
+            if (std::find(S.Offered.begin(), S.Offered.end(), H) != S.Offered.end() && ImGui::MenuItem("Remove (not wired)")) removeNodes({H});
+        }
+        else
+        {
+            if (ImGui::MenuItem("Zoom to it")) select(H, true);
+            if (ImGui::MenuItem("Delete", "Del")) removeNodes(S.Sel);
+        }
+        ImGui::EndPopup();
+    }
+    if (ImGui::BeginPopup("##wiremenu"))
+    {
+        const int Ci = D.IndexOf(S.SelWireChild);
+        const WireView *W = nullptr;
+        for (const WireView &X : S.Wires) if (S.Views[(size_t)X.To].Handle == S.SelWireChild && X.L.Slot == S.SelWireSlot) W = &X;
+        if (W && Ci >= 0)
+        {
+            const std::string Parent = S.Views[(size_t)W->From].Handle;
+            ImGui::TextDisabled("%s", (S.Views[(size_t)W->To].Title + " -> " + S.Views[(size_t)W->From].Title).c_str());
+            ImGui::Separator();
+            auto Retype = [&](Document::RefKind K) {
+                json N = D.Node(Ci);
+                if (PkgGraph::EraseRef(N, S.SelWireSlot)) { D.Replace(Ci, std::move(N)); D.Link(Ci, Parent, K); D.Commit(); emit documentEdited(); }
+            };
+            if (ImGui::MenuItem("contains it", nullptr, !W->L.Any && !W->L.Not) && (W->L.Any || W->L.Not)) Retype(Document::RefKind::Node);
+            if (ImGui::MenuItem("requires one of (ANY)", nullptr, W->L.Any) && !W->L.Any) Retype(Document::RefKind::Any);
+            if (ImGui::MenuItem("excludes it (NOT)", nullptr, W->L.Not) && !W->L.Not) Retype(Document::RefKind::Not);
+            ImGui::Separator();
+            if (ImGui::MenuItem("Go to the container")) select(S.Views[(size_t)W->To].Handle, true);
+            if (ImGui::MenuItem("Go to the contained")) select(Parent, true);
+            ImGui::Separator();
+            if (ImGui::MenuItem("Remove wire", "Del"))
+            {
+                json N = D.Node(Ci);
+                if (PkgGraph::EraseRef(N, S.SelWireSlot)) { D.Replace(Ci, std::move(N)); D.Commit(); S.SelWireSlot = -1; emit documentEdited(); }
+            }
+        }
+        else ImGui::TextDisabled("(this wire belongs to another package)");
+        ImGui::EndPopup();
     }
 
-    flushPositions(G, Drawn);
+    // ---- keyboard ---------------------------------------------------------------------------------------------
+    const bool Typing = Io.WantTextInput || ImGui::IsAnyItemActive();
+    if (!Typing && ImGui::IsWindowFocused(ImGuiFocusedFlags_RootAndChildWindows))
+    {
+        const bool Ctrl = Io.KeyCtrl;
+        if (Ctrl && ImGui::IsKeyPressed(ImGuiKey_Z)) { if (Io.KeyShift) redo(); else undo(); }
+        else if (Ctrl && ImGui::IsKeyPressed(ImGuiKey_Y)) redo();
+        else if (Ctrl && ImGui::IsKeyPressed(ImGuiKey_S)) emit saveRequested();
+        else if (Ctrl && ImGui::IsKeyPressed(ImGuiKey_F)) S.SearchFocus = true;
+        else if (Ctrl && ImGui::IsKeyPressed(ImGuiKey_A)) for (const NodeView &V : S.Views) S.Sel.insert(V.Handle);
+        else if (Ctrl && ImGui::IsKeyPressed(ImGuiKey_D))
+        {
+            std::set<std::string> New;
+            for (const std::string &H : S.Sel)
+            {
+                const int I = D.IndexOf(H);
+                if (I < 0) continue;
+                json N = D.Node(I);
+                if (N.is_object()) N["LABEL"] = StrOf(N, "LABEL") + " copy";
+                const ImVec2 P = WorldPos(S, S.Views[(size_t)S.ViewOf[H]]);
+                const int J = D.Add(std::move(N));
+                D.SetPos(D.Handle(J), {P.x + 40.0f, P.y + 40.0f});
+                New.insert(D.Handle(J));
+            }
+            if (!New.empty()) { D.Commit(); S.Sel = New; emit documentEdited(); }
+        }
+        else if (Ctrl && (ImGui::IsKeyPressed(ImGuiKey_Equal) || ImGui::IsKeyPressed(ImGuiKey_KeypadAdd))) setZoom(S.Z * 1.25f);
+        else if (Ctrl && (ImGui::IsKeyPressed(ImGuiKey_Minus) || ImGui::IsKeyPressed(ImGuiKey_KeypadSubtract))) setZoom(S.Z / 1.25f);
+        else if (Ctrl && ImGui::IsKeyPressed(ImGuiKey_0)) setZoom(1.0f);
+        else if (ImGui::IsKeyPressed(ImGuiKey_F)) frameSelection();
+        else if (ImGui::IsKeyPressed(ImGuiKey_E) && !S.Sel.empty())
+        {
+            //Open every row of the selected nodes — or, when any is open already, fold them all.
+            bool AnyOpen = false;
+            for (const std::string &H : S.Sel)
+            {
+                const auto It = S.Open.lower_bound(H + "|");
+                if (It != S.Open.end() && It->rfind(H + "|", 0) == 0) AnyOpen = true;
+            }
+            for (const std::string &H : S.Sel) setExpanded(H, !AnyOpen);
+        }
+        else if (ImGui::IsKeyPressed(ImGuiKey_Home)) frameAll();
+        else if (ImGui::IsKeyPressed(ImGuiKey_Escape)) { S.Sel.clear(); S.SelWireSlot = -1; }
+        else if (ImGui::IsKeyPressed(ImGuiKey_Delete) || ImGui::IsKeyPressed(ImGuiKey_Backspace))
+        {
+            if (S.SelWireSlot >= 0)
+            {
+                const int Ci = D.IndexOf(S.SelWireChild);
+                json N = Ci >= 0 ? D.Node(Ci) : json();
+                if (Ci >= 0 && PkgGraph::EraseRef(N, S.SelWireSlot)) { D.Replace(Ci, std::move(N)); D.Commit(); S.SelWireSlot = -1; emit documentEdited(); }
+            }
+            else if (!S.Sel.empty()) removeNodes(S.Sel);
+        }
+    }
     ImGui::End();
+    S.RectsValid = false;                                // positions may have changed below this point
 
-    // Persist on mouse-up rather than per keystroke: one write per gesture, and the JSON view never sees a
-    // half-typed id.
-    // The frame is closed. NOW it is safe to run an action that may open a modal.
-    if (!m_s->Pending.first.empty())
+    // ---- after the frame ------------------------------------------------------------------------------------------
+    //One undo step per gesture: commit when nothing is being typed into or dragged.
+    if (D.Pending() && !ImGui::IsAnyItemActive() && !ImGui::IsMouseDown(0) && S.M == PkgCanvasState::Mode::Idle)
     {
-        const auto P = m_s->Pending;
-        m_s->Pending = {};
-        //ONE dispatch, never both. These actions delete files, so two live wires to the same dispatcher means a
-        //host that wires both runs every conversion twice — the second against a source the first just removed.
-        //The direct handler wins where it is set (that is the explicit opt-in); otherwise the signal.
-        if (m_s->Action) m_s->Action(P.first, P.second);
-        else emit nodeAction(QString::fromStdString(P.first), QString::fromStdString(P.second));
+        D.Commit();
+        emit documentEdited();
     }
-
-    const bool Released = ImGui::IsMouseReleased(ImGuiMouseButton_Left);
-    const bool DocChanged = m_s->Dirty && (Released || !ImGui::IsAnyItemActive());
-    const bool PosOnly     = !DocChanged && m_s->PosDirty && Released;
-    if (DocChanged || PosOnly)
+    const std::string One = selectedHandle();
+    if (One != S.LastSelEmitted) { S.LastSelEmitted = One; emit selectionChanged(QString::fromStdString(One)); }
+    //The frame is closed: now an action may open a dialog (a nested event loop).
+    if (!S.Pending.first.empty())
     {
-        m_s->Dirty = false; m_s->PosDirty = false;
-        //A drag changed no node file — positions are not in them — so a position-only change saves only the
-        //layout where the caller gave us a way to. The full save rewrites every .json in the bundle, which on
-        //the biggest one is 2775 write-and-rename cycles for moving one box.
-        if (PosOnly && m_s->SaveLayoutOnly) m_s->SaveLayoutOnly();
-        else if (m_s->Save)                 m_s->Save();
-        emit documentChanged();
+        const auto P = S.Pending;
+        S.Pending = {};
+        emit nodeAction(QString::fromStdString(P.first), QString::fromStdString(P.second));
     }
 }

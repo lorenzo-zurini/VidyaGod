@@ -1,3135 +1,584 @@
-// The package canvas, driven headlessly: Dear ImGui needs no GPU to lay out and process input, so the whole
-// editing surface — node creation, wiring, payload edits, deletion, position persistence — runs under QTest
-// with a synthetic mouse. This is the thing the old tab-and-form editor could never have: its logic lived
-// inside QWidget constructors, so there was nothing to call.
+// The package canvas, driven headlessly (see canvasharness.h): what a person does with a mouse and a keyboard, and
+// what the package document looks like afterwards. Every test names what it pins and how it was made to fail.
 
-#include "pkgcanvas.h"
+#include "canvasharness.h"
 #include "pkggraph.h"
-#include "commonutils.h"
-#include "pkglayout.h"
-#include "nodelower.h"
-#include "manifestmodel.h"
-
-#include "imgui.h"
-#include "imgui_internal.h"
-#define IMGUI_DEFINE_MATH_OPERATORS
-#include "imnodes.h"
-#include "imnodes_internal.h"   // the colour-modifier stack, which imnodes never clears per frame
+#include "cid.h"
 
 #include <QtTest>
+#include <QDir>
 
-#include <array>
-#include <cstring>
-#include <functional>
-#include <cmath>
 #include <algorithm>
-#include <vector>
-#include <QDirIterator>
-
-#include <fstream>
+#include <cmath>
 
 using json = nlohmann::ordered_json;
+
+namespace {
+
+json Zip(const std::string &Label, const std::string &File) { return json{{"LABEL", Label}, {"LAYERS", json::array({ json{{"ZIP", File}, {"TARGET", "FILES/%GameDir%"}} })}}; }
+json Over(const std::string &Label, std::vector<std::string> Refs)
+{
+    json L = json::array();
+    for (const auto &R : Refs) L.push_back(json{{"NODE", R}});
+    L.push_back(json{{"ENV", {{"A", "1"}}}});
+    return json{{"LABEL", Label}, {"LAYERS", L}};
+}
+
+bool Overlap(const ImVec4 &A, const ImVec4 &B) { return A.x < B.z && B.x < A.z && A.y < B.w && B.y < A.w; }
+
+} // namespace
 
 class PkgCanvasTest : public QObject
 {
     Q_OBJECT
 
+    CanvasHarness H;
+
+    //A small published package: two contents, a game containing both, a mod containing the game and a node of
+    //another package (a chip). Handles are CIDs, as a published package's are.
+    std::string A, B, G, M;
+    const std::string Ext = "bafkreiexternalnodexxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx";
+    void package()
+    {
+        const json Ja = Zip("Base", "a.zip"), Jb = Zip("Music", "b.zip");
+        A = Cid::OfNode(Ja); B = Cid::OfNode(Jb);
+        const json Jg = Over("Game", {A, B});
+        G = Cid::OfNode(Jg);
+        const json Jm = Over("Mod", {G, Ext});
+        M = Cid::OfNode(Jm);
+        H.Doc.Reset({{A, Ja}, {B, Jb}, {G, Jg}, {M, Jm}});
+        H.Canvas->setExternalLookup([this](const std::string &C) {
+            return C == Ext ? PkgCanvas::External{"Core Fonts", "Fonts Library", "/lib/fonts"} : PkgCanvas::External{};
+        });
+        H.frames(4);                                      // layout, measure, re-layout, settle
+    }
+
 private slots:
-    void initTestCase()
-    {
-        ImGui::CreateContext();
-        ImGuiIO &io = ImGui::GetIO();
-        io.IniFilename = nullptr;
-        unsigned char *px = nullptr; int w = 0, h = 0;
-        io.Fonts->GetTexDataAsRGBA32(&px, &w, &h);          // the GL backend normally builds the atlas
-        QVERIFY(io.Fonts->IsBuilt());
-    }
-    void cleanupTestCase() { ImGui::DestroyContext(); }
+    void initTestCase() { CanvasHarness::InitContext(); }
+    void cleanupTestCase() { CanvasHarness::DestroyContext(); }
+    void init() { H.Doc.Reset({}); H.open(); }
+    void cleanup() { H.close(); }
 
-    void init()
+    // A published package opens wired: every reference is a wire (the old editor keyed nodes by a field gen-6 nodes
+    // lack, so none resolved), another package's node is a chip carrying its package and name, and nothing overlaps.
+    // Teeth: drop the external lookup (the chip reads a CID); draw wires only between drawn nodes.
+    void aPackageOpensWiredLabelledAndLaidOut()
     {
-        Doc = json{{"NODES", json::array()}};
-        Layout = json::object();
-        Saves = 0;
-        Canvas = new PkgCanvas(&Doc, [this]{ ++Saves; ++FullSaves; }, nullptr, &Layout,
-                               [this]{ ++Saves; ++LayoutSaves; });
-        Canvas->initContexts();
-    }
-    void cleanup()
-    {
-        Canvas->shutdownContexts();
-        delete Canvas; Canvas = nullptr;
+        package();
+        QCOMPARE(H.Canvas->visibleWires(), 4);            // Game<-Base, Game<-Music, Mod<-Game, Mod<-chip
+        QCOMPARE(H.Canvas->externalCount(), 1);
+        QCOMPARE(H.Canvas->externalLabel(Ext), std::string("Fonts Library: Core Fonts"));
+        std::vector<ImVec4> R;
+        for (const std::string &X : {A, B, G, M, Ext}) { R.push_back(H.rect(X)); QVERIFY2(R.back().z > R.back().x, X.c_str()); }
+        for (size_t I = 0; I < R.size(); ++I)
+            for (size_t J = I + 1; J < R.size(); ++J) QVERIFY2(!Overlap(R[I], R[J]), "two nodes overlap in the default layout");
+        //Contained nodes sit left of what contains them.
+        QVERIFY(R[0].z < R[2].x && R[2].z < R[3].x);
     }
 
-    // A node's contained nodes (its NODE layers), in LAYERS order.
-    static std::vector<std::string> refs(const json &N)
+    void clickingANodeSelectsItAndTheBackgroundClears()
     {
-        std::vector<std::string> Out;
-        if (N.is_object() && N.contains("LAYERS") && N["LAYERS"].is_array())
-            for (const auto &L : N["LAYERS"]) if (L.is_object() && L.contains("NODE") && L["NODE"].is_string()) Out.push_back(L["NODE"].get<std::string>());
-        return Out;
-    }
-    // The first layer of a type in a node — a reference into the document.
-    static json &layer(json &N, const char *T)
-    {
-        for (auto &L : N["LAYERS"]) if (L.is_object() && L.contains(T)) return L;
-        static json None; None = json(); return None;
-    }
-    // A node with these layers (a fixture).
-    static json node(const std::string &Handle, const json &Layers, const json &Extra = json::object())
-    {
-        json N = {{"CID", Handle}, {"LABEL", Handle}, {"LAYERS", Layers}};
-        for (auto It = Extra.begin(); It != Extra.end(); ++It) N[It.key()] = It.value();
-        return N;
+        package();
+        H.Canvas->setZoom(1.0f);
+        H.Canvas->select(G, true);
+        H.frames(3);
+        H.Canvas->select("");
+        H.frames(2);
+        H.click(H.title(G));
+        QCOMPARE(H.Canvas->selectedHandle(), G);
+        H.click(H.empty());
+        QVERIFY(H.Canvas->selection().empty());
     }
 
-    // Adding nodes and wiring them writes a NODE layer into the very document the model persists — there is no
-    // second representation, so "the graph is the package" is a testable claim, not a slogan. The contained node
-    // goes BEFORE the node's own layers: what a node contains lies beneath what it adds.
-    void wiringWritesNodeLayersIntoTheDocument()
+    void clickingABoxSelectsItWhenZoomedOut()
     {
-        const int content = Canvas->addNode("ZIP", 40, 40);
-        const int exec    = Canvas->addNode("EXEC", 400, 40);
-        runFrame();
-
-        QCOMPARE(Canvas->nodeCount(), 2);
-        QVERIFY(Canvas->connect(content, exec));
-        QCOMPARE(refs(Doc["NODES"][exec]).size(), size_t(1));
-        QCOMPARE(refs(Doc["NODES"][exec])[0],                          // wired by the HANDLE (CID), not the cosmetic LABEL
-                 Doc["NODES"][content]["CID"].get<std::string>());
-        QVERIFY(Doc["NODES"][exec]["LAYERS"][0].contains("NODE"));     // beneath the node's own EXEC layer
-        QVERIFY(Doc["NODES"][exec]["LAYERS"][1].contains("EXEC"));
-
-        QVERIFY(!Canvas->connect(content, exec));            // idempotent — no duplicate edge
-        QVERIFY(Canvas->disconnect(content, exec));
-        QCOMPARE(refs(Doc["NODES"][exec]).size(), size_t(0));
-        QCOMPARE(Doc["NODES"][exec]["LAYERS"].size(), size_t(1));      // only its own layer left
+        package();
+        H.Canvas->setZoom(0.25f);
+        H.frames(3);
+        const ImVec4 R = H.rect(G);
+        QVERIFY(R.z > R.x);
+        H.click(ImVec2((R.x + R.z) * 0.5f, (R.y + R.w) * 0.5f));
+        QCOMPARE(H.Canvas->selectedHandle(), G);
     }
 
-    // A fresh node is valid by construction. The old editor created content layers with NO TARGET at all,
-    // which is exactly how Tonic Trouble died as Proton "create process: 2".
-    void newContentNodeIsAnchored()
+    // Dragging a title moves the node (and every selected node) by the drag, as ONE undo step, and only positions
+    // change: the node's bytes (its CID) do not. Teeth: SetPos per frame of the drag (many steps), or no commit.
+    void draggingATitleMovesTheNodeAsOneUndoStep()
     {
-        const int i = Canvas->addNode("ZIP");
-        const json &L0 = Doc["NODES"][i]["LAYERS"][0];
-        QVERIFY(L0.contains("ZIP"));
-        QCOMPARE(L0["TARGET"].get<std::string>(), std::string("FILES/%GameDir%"));
-        QVERIFY(!Doc["NODES"][i]["LABEL"].get<std::string>().empty());
-        // …and every starter layer is one layer of its type — with a placement where one is needed (the file
-        // name or the reference it holds is the author's to fill; validation names it until then).
-        for (const std::string &T : PkgGraph::AllTypes())
+        package();
+        H.Canvas->setZoom(1.0f);
+        H.Canvas->select(G, true);
+        H.frames(3);
+        float X0, Y0, W, Hh;
+        QVERIFY(H.Canvas->worldRect(G, X0, Y0, W, Hh));
+        const json Before = H.Doc.Node(H.Doc.IndexOf(G));
+        const ImVec2 T = H.title(G);
+        H.drag(T, ImVec2(T.x + 120, T.y + 60));
+        float X1, Y1;
+        QVERIFY(H.Canvas->worldRect(G, X1, Y1, W, Hh));
+        QVERIFY2(std::abs((X1 - X0) - 120.0f) < 2.0f && std::abs((Y1 - Y0) - 60.0f) < 2.0f, "the node did not follow the drag");
+        QCOMPARE(H.Doc.Node(H.Doc.IndexOf(G)), Before);
+        QVERIFY(!H.Doc.Dirty());                          // a position is not content: nothing to save
+        H.key(ImGuiKey_Z, true);
+        float X2, Y2;
+        QVERIFY(H.Canvas->worldRect(G, X2, Y2, W, Hh));
+        QVERIFY2(std::abs(X2 - X0) < 0.5f && std::abs(Y2 - Y0) < 0.5f, "one undo did not put it back");
+    }
+
+    // Dragging from a node's right-hand port onto another node makes the other CONTAIN it (a NODE layer, before its
+    // own layers); with Shift held it REQUIRES it instead (ANY). Dropped on empty canvas: nothing. Teeth: swap the
+    // direction of the out-port drop.
+    void draggingFromAPortWiresNodes()
+    {
+        package();
+        H.Canvas->frameAll();
+        H.frames(3);
+        const int Before = (int)H.Doc.Node(H.Doc.IndexOf(M))["LAYERS"].size();
+        H.drag(H.port(B, true), H.title(M));             // Music -> Mod: Mod contains Music
+        bool Contains = false;
+        PkgDoc::ForEachRef(H.Doc.Node(H.Doc.IndexOf(M)), [&](const std::string &R) { if (R == B) Contains = true; });
+        QVERIFY2(Contains, "the drop did not wire the node in");
+        QCOMPARE((int)H.Doc.Node(H.Doc.IndexOf(M))["LAYERS"].size(), Before + 1);
+        QVERIFY(H.Doc.Node(H.Doc.IndexOf(M))["LAYERS"][0].contains("NODE"));
+        //Onto nothing: no change.
+        const json Now = H.Doc.Node(H.Doc.IndexOf(M));
+        H.drag(H.port(A, true), H.empty());
+        QCOMPARE(H.Doc.Node(H.Doc.IndexOf(M)), Now);
+        //Shift: requires one of (ANY).
+        ImGui::GetIO().AddKeyEvent(ImGuiMod_Shift, true);
+        H.drag(H.port(A, true), H.title(M));
+        ImGui::GetIO().AddKeyEvent(ImGuiMod_Shift, false);
+        H.frame();
+        qInfo("M after shift-drop: %s", H.Doc.Node(H.Doc.IndexOf(M)).dump().c_str());
+        bool Any = false;
+        for (const json &L : H.Doc.Node(H.Doc.IndexOf(M))["LAYERS"])
+            if (L.contains("ANY")) for (const json &X : L["ANY"]) if (X == A) Any = true;
+        QVERIFY2(Any, "Shift-drop did not make a requirement");
+    }
+
+    // A wire is selected by clicking it and removed with Delete (its reference leaves the container; undo restores).
+    // Teeth: hit-test wires only at their ends.
+    void aWireIsSelectedByClickingAndDeletedWithDel()
+    {
+        package();
+        H.Canvas->setZoom(1.0f);
+        H.Canvas->select(M, true);
+        H.frames(3);
+        H.Canvas->select("");
+        H.frames(2);
+        //The midpoint of the Mod <- Game wire, where no node is.
+        const ImVec2 P0 = H.port(G, true), P1 = H.port(M, false);
+        const ImVec2 Mid((P0.x + P1.x) * 0.5f, (P0.y + P1.y) * 0.5f);
+        H.click(Mid);
+        H.key(ImGuiKey_Delete);
+        bool Still = false;
+        PkgDoc::ForEachRef(H.Doc.Node(H.Doc.IndexOf(M)), [&](const std::string &R) { if (R == G) Still = true; });
+        QVERIFY2(!Still, "the clicked wire was not deleted");
+        H.key(ImGuiKey_Z, true);
+        Still = false;
+        PkgDoc::ForEachRef(H.Doc.Node(H.Doc.IndexOf(M)), [&](const std::string &R) { if (R == G) Still = true; });
+        QVERIFY(Still);
+    }
+
+    // Delete removes the selected nodes and every wire to them; Ctrl+Z brings them back, wires and all.
+    void deleteRemovesNodesAndUndoBringsThemBack()
+    {
+        package();
+        H.Canvas->select(G, true);
+        H.frames(2);
+        H.frame(H.empty());
+        H.key(ImGuiKey_Delete);
+        QCOMPARE(H.Doc.IndexOf(G), -1);
+        bool Dangling = false;
+        PkgDoc::ForEachRef(H.Doc.Node(H.Doc.IndexOf(M)), [&](const std::string &R) { if (R == G) Dangling = true; });
+        QVERIFY(!Dangling);
+        H.key(ImGuiKey_Z, true);
+        QVERIFY(H.Doc.IndexOf(G) >= 0);
+        bool Back = false;
+        PkgDoc::ForEachRef(H.Doc.Node(H.Doc.IndexOf(M)), [&](const std::string &R) { if (R == G) Back = true; });
+        QVERIFY(Back);
+    }
+
+    // Double-click a title, type, Enter: the node's LABEL, as one undo step. Teeth: commit per keystroke.
+    void doubleClickingATitleRenamesTheNode()
+    {
+        package();
+        H.Canvas->setZoom(1.0f);
+        H.Canvas->select(A, true);
+        H.frames(3);
+        H.doubleClick(H.title(A));
+        H.frames(2);
+        H.key(ImGuiKey_A, true);                          // select what is there
+        H.type("Renamed");
+        H.key(ImGuiKey_Enter);
+        H.frames(2);
+        QCOMPARE(H.Doc.Node(H.Doc.IndexOf(A))["LABEL"].get<std::string>(), std::string("Renamed"));
+        H.key(ImGuiKey_Z, true);
+        QCOMPARE(H.Doc.Node(H.Doc.IndexOf(A))["LABEL"].get<std::string>(), std::string("Base"));
+    }
+
+    // The wheel zooms about the cursor: the world point under it stays under it. Teeth: zoom about the view centre.
+    void theWheelZoomsAboutTheCursor()
+    {
+        package();
+        H.Canvas->setZoom(1.0f);
+        H.frames(2);
+        const ImVec2 P = H.title(G);
+        float Cx0, Cy0;
+        H.Canvas->cameraPos(Cx0, Cy0);
+        const ImVec4 C = H.canvasRect();
+        const ImVec2 W0(Cx0 + (P.x - C.x) / 1.0f, Cy0 + (P.y - C.y) / 1.0f);
+        H.wheel(P, 3.0f);
+        const float Z = H.Canvas->zoom();
+        QVERIFY(Z > 1.3f);
+        float Cx1, Cy1;
+        H.Canvas->cameraPos(Cx1, Cy1);
+        const ImVec2 W1(Cx1 + (P.x - C.x) / Z, Cy1 + (P.y - C.y) / Z);
+        QVERIFY2(std::abs(W1.x - W0.x) < 1.0f && std::abs(W1.y - W0.y) < 1.0f, "the point under the cursor moved");
+    }
+
+    // A middle-drag pans (the whole view follows the cursor); so does a right-drag on the background.
+    void draggingTheBackgroundPans()
+    {
+        package();
+        H.Canvas->setZoom(1.0f);
+        H.frames(2);
+        float X0, Y0, X1, Y1;
+        H.Canvas->cameraPos(X0, Y0);
+        const ImVec2 E = H.empty();
+        H.drag(E, ImVec2(E.x + 100, E.y - 50), 8, 2);
+        H.Canvas->cameraPos(X1, Y1);
+        QVERIFY(std::abs((X0 - X1) - 100.0f) < 1.0f && std::abs((Y0 - Y1) + 50.0f) < 1.0f);
+        H.drag(E, ImVec2(E.x + 40, E.y), 8, 1);
+        float X2, Y2;
+        H.Canvas->cameraPos(X2, Y2);
+        QVERIFY(std::abs((X1 - X2) - 40.0f) < 1.0f);
+        QVERIFY(ImGui::GetCurrentContext()->OpenPopupStack.Size == 0);   // a drag is not a right-click
+    }
+
+    // A wire whose two ends are off screen but which crosses it is drawn; one entirely off screen is not.
+    // Teeth: cull wires with their endpoints.
+    void wiresAreCulledByTheirOwnExtent()
+    {
+        const json Ja = Zip("Left", "l.zip");
+        const std::string La = Cid::OfNode(Ja);
+        const json Jb = Over("Right", {La});
+        const std::string Rb = Cid::OfNode(Jb);
+        H.Doc.Reset({{La, Ja}, {Rb, Jb}});
+        H.Doc.SetPositions({{La, {-20000, 300}}, {Rb, {20000, 300}}});
+        H.frames(2);
+        H.Canvas->setZoom(1.0f);
+        H.Canvas->setCamera(0, 0);
+        H.frames(2);
+        QCOMPARE(H.Canvas->visibleNodes(), 0);
+        QCOMPARE(H.Canvas->visibleWires(), 1);
+        H.Canvas->setCamera(0, 50000);
+        H.frames(2);
+        QCOMPARE(H.Canvas->visibleWires(), 0);
+    }
+
+    // A node opened to be taller than the screen stays drawn while any of it is on screen (culling uses its drawn
+    // size, not the folded estimate). Teeth: cull by the estimate.
+    void aTallOpenNodeStaysDrawnWhileAnyOfItShows()
+    {
+        //ONE layer of a hundred variables: folded it is a few rows, opened a hundred.
+        json Env = json::object();
+        for (int K = 0; K < 100; ++K) Env["K" + std::to_string(K)] = "v";
+        json Big = json{{"LABEL", "Big"}, {"LAYERS", json::array({ json{{"ENV", Env}} })}};
+        const std::string Hb = Cid::OfNode(Big);
+        H.Doc.Reset({{Hb, Big}});
+        H.Doc.SetPositions({{Hb, {0, 0}}});
+        H.frames(2);
+        H.Canvas->setZoom(1.0f);
+        H.Canvas->setCamera(-50, -50);
+        H.frames(2);
+        H.Canvas->setExpanded(Hb, true);
+        H.frames(4);
+        const ImVec4 R = H.rect(Hb);
+        QVERIFY2(R.w - R.y > 1400.0f, qPrintable(QString("the opened node is only %1px tall").arg(R.w - R.y)));
+        H.Canvas->setCamera(-50, 1000);
+        H.frames(2);
+        QCOMPARE(H.Canvas->visibleNodes(), 1);
+    }
+
+    // Drawing never edits: frames with rows opened, zooming and hovering leave the document exactly as it was
+    // (a node whose bytes change on view would change its CID for every peer). Teeth: materialise a field on draw.
+    void renderingNeverChangesTheDocument()
+    {
+        package();
+        const uint64_t Rev = H.Doc.Revision();
+        for (const std::string &X : {A, B, G, M}) H.Canvas->setExpanded(X, true);
+        H.Canvas->setZoom(1.0f);
+        for (float Z : {1.0f, 0.3f, 1.7f}) { H.Canvas->setZoom(Z); H.frames(3); H.frame(H.title(G)); }
+        QCOMPARE(H.Doc.Revision(), Rev);
+        QVERIFY(!H.Doc.Dirty());
+    }
+
+    // Malformed nodes (the editor is the tool you open to repair them) draw as what they are and survive every row
+    // opened. Teeth: draw fields of a non-object entry (a write would throw out of the frame).
+    void malformedNodesDrawAndSurviveOpening()
+    {
+        const json Bad1 = json{{"LABEL", "Two types"}, {"LAYERS", json::array({ json{{"ZIP", "a.zip"}, {"DIR", "d"}} })}};
+        const json Bad2 = json{{"LABEL", "Layers not a list"}, {"LAYERS", "nope"}};
+        const json Bad3 = json{{"LABEL", "Bad fields"}, {"LAYERS", json::array({
+            json{{"EXEC", json::array({ 5, json{{"LABEL", "Play"}, {"ARGS", "not a list"}} })}},
+            json{{"EDIT", "not a list"}, {"TARGET", "FILES/x"}},
+            json{{"REG", json::array({1})}},
+            json{{"VARS", {{"k", 7}}}},
+            json{{"KEEP", "x"}} })}};
+        H.Doc.Reset({{"h1", Bad1}, {"h2", Bad2}, {"h3", Bad3}, {"h4", json::array()}});
+        for (const char *X : {"h1", "h2", "h3", "h4"}) H.Canvas->setExpanded(X, true);
+        H.Canvas->setZoom(1.0f);
+        H.frames(4);
+        H.Canvas->frameAll();
+        H.frames(4);
+        QCOMPARE(H.Doc.Count(), 4);
+        QVERIFY(!H.Doc.Dirty());
+    }
+
+    // Find: type part of a name, Enter — the node is selected and brought into view.
+    void findSelectsAndFramesANode()
+    {
+        package();
+        H.Canvas->setZoom(1.0f);
+        H.Canvas->setCamera(50000, 50000);
+        H.frames(2);
+        H.key(ImGuiKey_F, true);                          // Ctrl+F: the find box
+        H.frames(2);
+        H.type("mod");
+        H.key(ImGuiKey_Enter);
+        H.frames(2);
+        QCOMPARE(H.Canvas->selectedHandle(), M);
+        QVERIFY(H.rect(M).z > H.rect(M).x);               // drawn: it is on screen now
+    }
+
+    // After a save renames nodes, the canvas follows them: the selection, the open rows and the positions stay with
+    // their nodes under the new names. Teeth: skip applyRenames (the selection is lost).
+    void afterASaveTheCanvasFollowsRenamedNodes()
+    {
+        const QString Dir = QDir::tempPath() + "/vg_canvas_rename";
+        QDir(Dir).removeRecursively();
+        QDir().mkpath(Dir);
+        package();
+        H.Canvas->select(A);
+        H.Canvas->setExpanded(A, true);
+        H.frames(2);
+        json N = H.Doc.Node(H.Doc.IndexOf(A));
+        N["LABEL"] = "Base v2";
+        H.Doc.Replace(H.Doc.IndexOf(A), N);
+        H.Doc.Commit();
+        H.frames(2);
+        const PkgDoc::SaveReport R = H.Doc.Save(Dir.toStdString(), "", "");
+        QVERIFY(R.Ok);
+        H.Canvas->applyRenames(H.Doc.TakeRenames());
+        H.frames(2);
+        const std::string NewA = R.Renamed.at(A);
+        QCOMPARE(H.Canvas->selectedHandle(), NewA);
+        QVERIFY(H.rect(NewA).z > H.rect(NewA).x);
+        QVERIFY(H.rect(NewA).w - H.rect(NewA).y > 80.0f);   // still opened
+    }
+
+    // Where two nodes overlap, the one drawn on top is the one that takes the click (imgui hit-tests windows in the
+    // order they were created; the canvas re-orders them to the order they are drawn). Teeth: skip the re-order.
+    void theNodeDrawnOnTopTakesTheClick()
+    {
+        package();
+        H.Canvas->setZoom(1.0f);
+        H.Doc.SetPositions({{A, {0, 0}}, {B, {40, 12}}});   // B overlaps A, created later
+        H.Canvas->setCamera(-40, -40);
+        H.frames(3);
+        const ImVec4 Ra = H.rect(A);
+        H.click(ImVec2(Ra.x + 15, Ra.y + 14));            // A's uncovered edge: brings A to the front
+        QCOMPARE(H.Canvas->selectedHandle(), A);
+        H.frames(2);
+        const ImVec4 Rb = H.rect(B);
+        H.frame(ImVec2(Rb.x + 30, Rb.y + 14));
+        H.click(ImVec2(Rb.x + 30, Rb.y + 14));            // inside both: A is on top now
+        QCOMPARE(H.Canvas->selectedHandle(), A);
+    }
+
+    // Escape cancels a wire being dragged: nothing is wired.
+    void escapeCancelsAWireDrag()
+    {
+        package();
+        H.Canvas->frameAll();
+        H.frames(2);
+        const json Before = H.Doc.Node(H.Doc.IndexOf(M));
+        const ImVec2 P = H.port(B, true), T = H.title(M);
+        H.frame(P);
+        H.press();
+        for (int I = 1; I <= 6; ++I) H.frame(ImVec2(P.x + (T.x - P.x) * I / 6.0f, P.y + (T.y - P.y) * I / 6.0f));
+        H.key(ImGuiKey_Escape);
+        H.release();
+        QCOMPARE(H.Doc.Node(H.Doc.IndexOf(M)), Before);
+    }
+
+    // Right-click on the background, "Add node here", pick a type: a node where the menu was opened.
+    void theCanvasMenuAddsANodeWhereItWasOpened()
+    {
+        package();
+        H.Canvas->setZoom(1.0f);
+        H.frames(2);
+        const ImVec2 E(H.empty().x + 200, H.empty().y - 200);
+        H.click(E, 1);
+        H.frames(2);
+        QVERIFY(ImGui::GetCurrentContext()->OpenPopupStack.Size > 0);
+        const int Before = H.Doc.Count();
+        //Walk the menu down from where it opened until a click adds a node (menu layout is imgui's business).
+        for (int Y = 0; Y < 400 && H.Doc.Count() == Before; Y += 6)
         {
-            const json L = PkgGraph::NewLayer(T);
-            QCOMPARE(PkgGraph::LayerType(L), T);
-            if (T == "ZIP" || T == "DIR" || T == "FILE" || T == "DELTA" || T == "EDIT")
-                QVERIFY2(L.contains("TARGET") && L["TARGET"].get<std::string>().rfind("FILES/", 0) == 0, T.c_str());
+            H.frame(ImVec2(E.x + 20, E.y + 10));
+            if (ImGui::GetCurrentContext()->OpenPopupStack.Size == 0) { H.click(E, 1); H.frames(2); }
+            H.frame(ImVec2(E.x + 20, E.y + 10));          // hover "Add node here" opens its submenu
+            H.frames(3);
+            H.click(ImVec2(E.x + 220, E.y + 10 + (float)Y));
         }
-        for (const char *T : {"EDIT", "REG", "DLL", "ENV", "VARS", "KEEP", "EXEC"})   // complete as they stand
-            QVERIFY2(NodeLower::CheckNode(PkgGraph::NewPayload(T), T).empty(), T);
+        QCOMPARE(H.Doc.Count(), Before + 1);
+        //...ready to fill in: its name is being edited, so typing names it.
+        H.frames(2);
+        H.key(ImGuiKey_A, true);
+        H.type("Setup files");
+        H.key(ImGuiKey_Enter);
+        H.frames(2);
+        QCOMPARE(H.Doc.Node(Before).value("LABEL", std::string()), std::string("Setup files"));
     }
 
-    // Model C: HANDLES (the stored "CID") are unique by construction; a rename sets only the COSMETIC LABEL and
-    // therefore re-points NOTHING — references are handles, unchanged by a rename — and duplicate or empty labels are
-    // allowed (a label is a display name, not a key; RoC/TFT "v1.21b" are legitimate namesakes).
-    void idsAreUniqueAndRenamesRepointChildren()
+    // A node added where another one is lands clear of it (straight below), never on top of it. Teeth: place it
+    // exactly where asked.
+    void aNewNodeNeverLandsOnAnother()
     {
-        const int a = Canvas->addNode("ZIP");
-        const int b = Canvas->addNode("ZIP");
-        const std::string aH = Doc["NODES"][a]["CID"].get<std::string>();   // the wiring HANDLE
-        const std::string bH = Doc["NODES"][b]["CID"].get<std::string>();
-        QVERIFY(aH != bH);                                               // handles are unique by construction
-
-        QVERIFY(Canvas->connect(a, b));                                  // b contains a — via a's HANDLE
-        QCOMPARE(refs(Doc["NODES"][b])[0], aH);
-
-        QVERIFY(Canvas->renameNode(a, "renamed_base"));
-        QCOMPARE(Doc["NODES"][a]["LABEL"].get<std::string>(), std::string("renamed_base"));
-        QCOMPARE(refs(Doc["NODES"][b])[0], aH);  // UNCHANGED — refs are handles, not names
-        QCOMPARE(Doc["NODES"][a]["CID"].get<std::string>(), aH);         // the handle itself never moves on rename
-
-        QVERIFY(Canvas->renameNode(b, "renamed_base"));                  // a duplicate LABEL is allowed (cosmetic)
-        QCOMPARE(Doc["NODES"][b]["LABEL"].get<std::string>(), std::string("renamed_base"));
-        QVERIFY(Doc["NODES"][b]["CID"].get<std::string>() == bH);        // still its own node — handle intact
-        QVERIFY(Canvas->renameNode(a, ""));                             // a blank label is allowed (shows the short CID)
-        QVERIFY(Doc["NODES"][a]["LABEL"].get<std::string>().empty());
-    }
-
-    // A stored position must actually be restored: imnodes has no persisted state of its own, so a node whose
-    // position was never pushed in renders at the origin — and the next mouse-release would write [0,0] over
-    // every node in the bundle. This is the test the old one couldn't be: it renders real frames.
-    void storedPositionsSurviveRendering()
-    {
-        Doc["NODES"] = json::array({
-            node("a", json::array({json{{"ZIP","a.zip"}}})),
-            node("b", json::array({json{{"ZIP","b.zip"}}})),
-        });
-        Layout = json{{"a", json::array({250.0, 140.0})}, {"b", json::array({900.0, 430.0})}};
-        Canvas->invalidateGraph();
-        runFrame();
-        runFrame();                                        // a second frame is where a bad read-back lands
-        QCOMPARE(Layout["a"][0].get<double>(), 250.0);
-        QCOMPARE(Layout["a"][1].get<double>(), 140.0);
-        QCOMPARE(Layout["b"][0].get<double>(), 900.0);
-        QCOMPARE(Layout["b"][1].get<double>(), 430.0);
-    }
-
-    // Deleting a node takes its inbound references with it, so the graph never carries a dangling parent.
-    void deletingANodeDropsReferencesToIt()
-    {
-        const int a = Canvas->addNode("ZIP");
-        const int b = Canvas->addNode("EXEC");
-        QVERIFY(Canvas->connect(a, b));
-        Doc["NODES"][b]["LAYERS"].push_back(json{{"ANY", json::array({Doc["NODES"][a]["CID"], "other"})}});
-        Doc["NODES"][b]["LAYERS"].push_back(json{{"NOT", Doc["NODES"][a]["CID"]}});
-        QVERIFY(Canvas->removeNode(a));
-        QCOMPARE(Canvas->nodeCount(), 1);
-        QCOMPARE(refs(Doc["NODES"][0]).size(), size_t(0));   // b's edge went with it…
-        QCOMPARE(Doc["NODES"][0]["LAYERS"].size(), size_t(2));  // …and its NOT; the ANY keeps its other member
-        QCOMPARE(Doc["NODES"][0]["LAYERS"][1]["ANY"], json::array({"other"}));
-    }
-
-    // Out-of-bundle parents (MediaStack_MS, asiloader…) are reference chips, not boxes we own.
-    void externalParentsBecomeChips()
-    {
-        const int b = Canvas->addNode("EXEC");
-        QVERIFY(Canvas->connectExternal("MediaStack_MS", b));
-        const PkgGraph::Graph g = Canvas->graph();
-        QCOMPARE(g.Externals.size(), size_t(1));
-        QCOMPARE(g.Externals[0], std::string("MediaStack_MS"));
-        QCOMPARE(g.Links.size(), size_t(1));
-        QCOMPARE(g.Links[0].ParentIndex, -1);
-    }
-
-    // Layout round-trips through the SIDECAR, and — the point of the sidecar — never touches the package. A
-    // Meta-CID is minted add-by-reference IN PLACE over the node files, so a position stored in one would make
-    // dragging a box change the package's bytes, and therefore its CID, for every peer.
-    void positionsPersistIntoTheLayoutSidecarNotThePackage()
-    {
-        const int i = Canvas->addNode("ZIP", 123.0f, 456.0f);
-        const std::string id = Doc["NODES"][i]["CID"].get<std::string>();   // the layout sidecar is keyed by the HANDLE
-        QVERIFY(!Doc["NODES"][i].contains("POS"));               // NOT in the package
-        QVERIFY(Layout.contains(id));                            // in the sidecar
-        QCOMPARE(Layout[id][0].get<double>(), 123.0);
-        const PkgGraph::Graph g = Canvas->graph();
-        QVERIFY(g.Nodes[i].HasPos);
-        QCOMPARE(g.Nodes[i].X, 123.0f);
-        QCOMPARE(g.Nodes[i].Y, 456.0f);
-
-        // Dragging a node must not dirty the package at all: a full render pass leaves the node bytes identical.
-        const std::string before = Doc.dump();
-        runFrame(); runFrame();
-        QCOMPARE(Doc.dump(), before);
-
-        // And deleting the node reclaims its layout entry rather than leaving it to be inherited by a
-        // later node that happens to reuse the id.
-        QVERIFY(Canvas->removeNode(i));
-        QVERIFY(!Layout.contains(id));
-    }
-
-    // Un-positioned bundles (every hand-authored package in the library) open laid out by dependency depth
-    // rather than stacked at the origin.
-    void unpositionedNodesAreAutoLaidOut()
-    {
-        // Handles (CID) are what PARENTS reference and the layout keys on; batched content is a VFSLayer/LAYERS node.
-        Doc["NODES"] = json::array({
-            node("base", json::array({json{{"ZIP","a.zip"}}})),
-            node("mid",  json::array({json{{"NODE","base"}}, json{{"ZIP","b.zip"}}})),
-            node("tip",  json::array({json{{"NODE","mid"}}, json{{"EXEC",json::array({json{{"LABEL","Play"},{"HOST","win32"}}})}}})),
-        });
-        const PkgGraph::Graph g = Canvas->graph();
-        QVERIFY(g.Nodes[0].X < g.Nodes[1].X);                 // depth increases left → right
-        QVERIFY(g.Nodes[1].X < g.Nodes[2].X);
-        for (const auto &n : g.Nodes) QVERIFY(!n.HasPos);     // nothing was written to disk by laying out
-    }
-
-    // A key's DEFAULT value is stored under the EMPTY NAME. "Create this key, no values" is a different
-    // thing, and inferring it from the empty name destroyed every default value on any edit — 48 of them live
-    // in LAVFilters carrying the whole DirectShow COM registration, so touching one row there silently broke
-    // every codec. The distinction is a FLAG, and these are the assertions that make reinstating the bug fail.
-    void registryDefaultValuesSurviveAndKeyOnlyRowsStayKeyOnly()
-    {
-        json entry = json{{"HKLM", {{"Classes", {{"CLSID", {{"{abc}", {{"", "LAV Splitter"},
-                                                                      {"Merit", "dword:00600000"}}}}}}}}},
-                          {"HKCU", {{"Software", {{"EmptyKey", json::object()}}}}},
-                          {"NOTE", "a non-hive member survives"}};
-        const std::string before = entry.dump();
-
-        const auto rows = PkgGraph::RegRowsOf(entry);
-        int defaults = 0, keyOnly = 0;
-        for (const auto &r : rows)
+        package();
+        float X = 0, Y = 0, W = 0, Hh = 0;
+        QVERIFY(H.Canvas->worldRect(G, X, Y, W, Hh));
+        const int I = H.Canvas->addNode("ZIP", X + 40, Y + 10);
+        H.frames(4);
+        const std::string New = H.Doc.Handle(I);
+        float Nx = 0, Ny = 0, Nw = 0, Nh = 0;
+        QVERIFY(H.Canvas->worldRect(New, Nx, Ny, Nw, Nh));
+        QCOMPARE(Nx, X + 40);                             // the column asked for
+        for (const std::string &O : {A, B, G, M})
         {
-            if (r.KeyOnly) ++keyOnly;
-            else if (r.Name.empty()) ++defaults;
+            float Ox = 0, Oy = 0, Ow = 0, Oh = 0;
+            QVERIFY(H.Canvas->worldRect(O, Ox, Oy, Ow, Oh));
+            const bool Clear = Nx >= Ox + Ow || Ox >= Nx + Nw || Ny >= Oy + Oh || Oy >= Ny + Nh;
+            QVERIFY2(Clear, ("the new node covers " + O).c_str());
         }
-        QCOMPARE(defaults, 1);                       // the CLSID's default value
-        QCOMPARE(keyOnly, 1);                        // ...and the genuinely empty key, told apart
-
-        json rebuilt = entry;
-        PkgGraph::RegRowsInto(rebuilt, rows);
-        QVERIFY2(rebuilt["HKLM"]["Classes"]["CLSID"]["{abc}"].contains(""),
-                 "the key's DEFAULT value was destroyed");
-        QCOMPARE(rebuilt["HKLM"]["Classes"]["CLSID"]["{abc}"][""].get<std::string>(),
-                 std::string("LAV Splitter"));
-        QVERIFY(rebuilt["HKCU"]["Software"]["EmptyKey"].is_object());
-        QVERIFY(rebuilt["HKCU"]["Software"]["EmptyKey"].empty());        // still key-only
-        // Non-hive members survive...
-        QCOMPARE(rebuilt.value("NOTE", std::string()), std::string("a non-hive member survives"));
-        // ...and the whole entry is byte-identical: a round trip must not churn the package's CID.
-        QCOMPARE(rebuilt.dump(), before);
     }
 
-    // A received node is canonical JSON, keys sorted at every level, so a subkey can come before its key's values
-    // ("1.0" before "3D Card"). Rows are flattened values-first; the rebuild must still give back the same bytes.
-    // Teeth: restore the key order at the top level only and the subkey moves after the values.
-    void registryOrderSurvivesAtEveryLevel()
+    // A chip's "open its package" (double-click) asks the host to open the package that owns the node.
+    void doubleClickingAChipOpensItsPackage()
     {
-        json entry = json::parse(R"({"HKLM":{"Software":{"Game":{"1.0":{"Language":"dword:00000001"},"3D Card":"hex(1):","Zed":"z"}}}})");
-        const std::string before = entry.dump();
-        json rebuilt = entry;
-        PkgGraph::RegRowsInto(rebuilt, PkgGraph::RegRowsOf(entry));
-        QCOMPARE(rebuilt.dump(), before);
+        package();
+        H.Canvas->setZoom(1.0f);
+        H.Canvas->select(Ext, true);
+        H.frames(3);
+        QString Opened;
+        QObject::connect(H.Canvas, &PkgCanvas::openPackageRequested, [&](const QString &D) { Opened = D; });
+        const ImVec4 R = H.rect(Ext);
+        H.doubleClick(ImVec2((R.x + R.z) * 0.5f, (R.y + R.w) * 0.5f));
+        QCOMPARE(Opened, QString("/lib/fonts"));
     }
 
-    // The same, over the REAL library: the shape that actually ships is the one that must round-trip.
-    void everyRegEditInTheLibraryRoundTripsByteIdentically()
+    // Tidy forgets this machine's positions: nodes go back to the layout (one undo step brings the positions back).
+    void tidyReturnsNodesToTheLayout()
     {
-        const QString Root = QDir::homePath() + "/.VidyaGod/LIBRARY";
-        if (!QDir(Root).exists()) QSKIP("no local library to check");
-        int checked = 0, bad = 0;
-        QDirIterator It(Root, {"*.json"}, QDir::Files, QDirIterator::Subdirectories);
-        while (It.hasNext())
+        package();
+        float X0, Y0, W, Hh;
+        QVERIFY(H.Canvas->worldRect(G, X0, Y0, W, Hh));
+        H.Doc.SetPos(G, {X0 + 900, Y0 + 900});
+        H.Doc.Commit();
+        H.frames(2);
+        H.Canvas->tidyLayout();
+        H.frames(2);
+        float X1, Y1;
+        QVERIFY(H.Canvas->worldRect(G, X1, Y1, W, Hh));
+        QVERIFY(std::abs(X1 - X0) < 1.0f && std::abs(Y1 - Y0) < 1.0f);
+        QVERIFY(H.Doc.Positions().empty());
+    }
+
+    // Wiring (or any edit that changes the graph) never moves a node the author has already seen: only new nodes are
+    // laid out. Teeth: re-run the whole layout on every structural change (every node shifts when a wire is added).
+    void editingTheGraphDoesNotRearrangeIt()
+    {
+        package();
+        H.Canvas->frameAll();
+        H.frames(3);
+        std::map<std::string, ImVec2> Before;
+        for (const std::string &X : {A, B, G, M, Ext}) { float x, y, w, h; H.Canvas->worldRect(X, x, y, w, h); Before[X] = ImVec2(x, y); }
+        H.drag(H.port(B, true), H.title(M));              // a new wire
+        H.Canvas->addNode("ZIP", 0, 0);                    // and a new node
+        H.frames(4);
+        for (const std::string &X : {A, B, G, M, Ext})
         {
-            std::ifstream In(It.next().toStdString());
-            json D; if (!In) continue;
-            try { In >> D; } catch (...) { continue; }
-            if (!D.is_object() || !D.contains("LAYERS") || !D["LAYERS"].is_array()) continue;
-            for (auto &L : D["LAYERS"])
-            {
-                if (!L.is_object() || !L.contains("REG") || !L["REG"].is_object()) continue;
-                json After = L["REG"];
-                PkgGraph::RegRowsInto(After, PkgGraph::RegRowsOf(L["REG"]));
-                ++checked;
-                if (After.dump() != L["REG"].dump()) { ++bad;
-                    qWarning("DIFF in %s", D.value("LABEL", std::string()).c_str()); }
-            }
+            float x, y, w, h;
+            H.Canvas->worldRect(X, x, y, w, h);
+            QVERIFY2(std::abs(x - Before[X].x) < 0.5f && std::abs(y - Before[X].y) < 0.5f, "a node moved when the graph was edited");
         }
-        QVERIFY2(checked > 0, "found no RegEdit entries to check");
-        QCOMPARE(bad, 0);
     }
 
-    // The registry is a TREE on disk and flat key paths to a human; the editor round-trips between them.
-    void registryRowsRoundTripThroughTheTree()
+    // Find ranks the exact name first, then names starting with the text, then names containing it: "UserPatch 1.5"
+    // must find "UserPatch 1.5", not "UserPatch 1.5 - Base" listed before it. Teeth: keep document order.
+    void findPrefersTheExactName()
     {
-        json entry = json::object({{"NOTE", "kept"}});
-        PkgGraph::RegRowsInto(entry, {{"HKLM\\Software\\Ubi Soft\\TONICT", "Version", "1.00"},
-                                      {"HKLM\\Software\\Ubi Soft\\TONICT", "Lang",    "en"}});
-        QVERIFY(entry.contains("HKLM"));
-        QCOMPARE(entry["HKLM"]["Software"]["Ubi Soft"]["TONICT"]["Version"].get<std::string>(), std::string("1.00"));
-        QCOMPARE(entry["NOTE"].get<std::string>(), std::string("kept"));    // non-hive members survive the rebuild
-
-        const auto rows = PkgGraph::RegRowsOf(entry);
-        QCOMPARE(rows.size(), size_t(2));
-        QCOMPARE(rows[0].Path, std::string("HKLM\\Software\\Ubi Soft\\TONICT"));
+        const json Base = Zip("Tool 1.5 - Base", "b.zip"), Exact = Zip("Tool 1.5", "t.zip");
+        H.Doc.Reset({{"hb", Base}, {"ht", Exact}});
+        H.frames(3);
+        H.key(ImGuiKey_F, true);
+        H.frames(2);
+        H.type("tool 1.5");
+        H.key(ImGuiKey_Enter);
+        H.frames(2);
+        QCOMPARE(H.Canvas->selectedHandle(), std::string("ht"));
     }
 
-    // Actions are CONTEXTUAL, not a fixed per-type list: the thing you can do depends on what the node is and
-    // where it sits. A zip can become a dir; only a delta can be flattened; "make delta" needs a base to diff
-    // against, which means a Content PARENT.
-    void actionsAreContextual()
+    // A node scrolled partly above the canvas is cut off at the canvas's edge: it neither draws over the toolbar nor
+    // takes its clicks. Teeth: drop the clip around the nodes (the toolbar's button under the node stops working).
+    void aNodeNeverCoversTheToolbar()
     {
-        const int zip = Canvas->addNode("ZIP");
-        auto names = [&](int i, const std::vector<std::string> &hints = {}) {
-            std::vector<std::string> out;
-            for (const auto &a : PkgGraph::ActionsFor(Doc["NODES"][i], Canvas->graph(), i, hints))
-                out.push_back(a.Id);
-            return out;
-        };
-        auto has = [](const std::vector<std::string> &v, const char *x) {
-            return std::find(v.begin(), v.end(), std::string(x)) != v.end();
-        };
+        package();
+        H.Canvas->setZoom(1.0f);
+        const ImVec4 C = H.canvasRect();
+        //Put Game's title just above the canvas's top edge, under the toolbar.
+        float x, y, w, hh;
+        H.Canvas->worldRect(G, x, y, w, hh);
+        H.Canvas->setCamera(x - 20.0f, y + 30.0f);
+        H.frames(3);
+        ImGuiWindow *Win = nullptr;
+        for (ImGuiWindow *W : ImGui::GetCurrentContext()->Windows)
+            if (W->Active && std::string(W->Name).find("##node" + G) != std::string::npos) Win = W;
+        QVERIFY2(Win, "the node was not drawn");
+        QVERIFY2(Win->OuterRectClipped.Min.y >= C.y - 0.5f, "a node reaches over the toolbar");
+    }
 
-        QVERIFY(has(names(zip), "to_dir"));            // it is a zip
-        QVERIFY(!has(names(zip), "flatten"));          // ...so there is nothing to flatten
-        QVERIFY(!has(names(zip), "to_delta"));         // ...and no parent to diff against yet
-        QVERIFY(!has(names(zip), "restore"));          // not known to be DEFLATE
-        QVERIFY(has(names(zip, {"deflate"}), "restore"));   // the host probed the zip: now it is offered
-
-        const int child = Canvas->addNode("ZIP");
-        QVERIFY(Canvas->connect(zip, child));
-        QVERIFY(!has(names(child), "to_delta"));       // the zip beneath names no file yet: nothing to diff against
-        layer(Doc["NODES"][zip], "ZIP")["ZIP"] = "base.zip";
-        layer(Doc["NODES"][child], "ZIP")["ZIP"] = "new.zip";
-        Canvas->invalidateGraph();
-        QVERIFY(has(names(child), "to_delta"));        // it contains a zip at its own target, beneath its own
-
-        // A delta offers exactly one reverse conversion — undelta, the inverse of "-> delta". It is not a zip,
-        // so the zip actions do not apply until it has been undelta'd.
-        layer(Doc["NODES"][child], "ZIP") = json{{"DELTA", "d.vgdelta"}, {"TARGET", "FILES/%GameDir%"}};
-        QVERIFY(has(names(child), "undelta"));
-        QVERIFY(!has(names(child), "to_dir"));         // a delta is not a zip
-        QVERIFY(!has(names(child), "to_delta"));       // it already is one
-        QVERIFY(!has(names(child), "restore"));
-
-        // Capture is available at ANY point along the chain — that is the whole premise.
-        for (const std::string &t : PkgGraph::AllTypes())
+    // Typing into a field is ONE undo step, however many keystrokes: the document commits when the field is let go.
+    // The field is found by effect (click down the opened node until typing lands in the ZIP name), not by pixel.
+    // Teeth: commit every frame (every character becomes a step).
+    void typingInAFieldIsOneUndoStep()
+    {
+        package();
+        H.Canvas->setZoom(1.0f);
+        H.Canvas->select(A, true);
+        H.Canvas->setExpanded(A, true);
+        H.frames(4);
+        const ImVec4 R = H.rect(A);
+        bool Found = false;
+        for (float Y = R.y + 40.0f; Y < R.w - 5.0f && !Found; Y += 6.0f)
         {
-            const int i = Canvas->addNode(t);
-            QVERIFY2(has(names(i), "capture_setup"), t.c_str());
+            H.Canvas->setExpanded(A, true);                // a probe that lands on a fold header toggles it: undo that
+            H.frames(2);
+            H.click(ImVec2(R.z - 60.0f, Y));
+            if (!ImGui::GetIO().WantTextInput) continue;
+            H.key(ImGuiKey_End);
+            H.type("xyz");
+            Found = H.Doc.Node(H.Doc.IndexOf(A))["LAYERS"][0]["ZIP"].get<std::string>() == "a.zipxyz";
+            if (!Found) { H.key(ImGuiKey_Escape); H.click(H.empty()); H.frames(2); while (H.Doc.CanUndo()) H.key(ImGuiKey_Z, true); }
         }
-
-        // A runner (has GUEST) is not a launchable, so it offers no test launch; a tiled entry offers its cover.
-        const int exec = Canvas->addNode("EXEC");
-        QVERIFY(has(names(exec), "test_launch"));
-        QVERIFY(!has(names(exec), "browse_cover"));
-        layer(Doc["NODES"][exec], "EXEC")["EXEC"][0]["TILE"] = json{{"UID", "1"}};
-        QVERIFY(has(names(exec), "browse_cover"));
-        layer(Doc["NODES"][exec], "EXEC")["EXEC"][0]["GUEST"] = json::array({"win32"});
-        QVERIFY(!has(names(exec), "test_launch"));
+        QVERIFY2(Found, "no field of the node took the typing into its ZIP name");
+        H.click(H.empty());                               // let the field go
+        H.frames(2);
+        H.key(ImGuiKey_Z, true);
+        QCOMPARE(H.Doc.Node(H.Doc.IndexOf(A))["LAYERS"][0]["ZIP"].get<std::string>(), std::string("a.zip"));
     }
-
-    // A node running a heavy action is locked and shows progress; ending it always unlocks. A node left locked
-    // forever is the failure mode, so the begin/end pairing is what this pins.
-    void busyStateLocksAndAlwaysClears()
-    {
-        const int i = Canvas->addNode("ZIP");
-        const std::string id = Doc["NODES"][i]["LABEL"].get<std::string>();
-        QVERIFY(!Canvas->isBusy(id));
-
-        Canvas->beginAction(id, "packing zip…", true);
-        QVERIFY(Canvas->isBusy(id));
-        Canvas->setProgress(id, 0.5f, "20 / 40");
-        runFrame();                                    // draws the bar + cancel instead of the buttons
-        QVERIFY(Canvas->isBusy(id));
-
-        Canvas->endAction(id);
-        QVERIFY(!Canvas->isBusy(id));
-        runFrame();
-
-        // Busy state is canvas-local: it must never leak into the document that gets written to disk.
-        QVERIFY(!Doc["NODES"][i].contains("BUSY"));
-        QVERIFY(Doc["NODES"][i].dump().find("packing") == std::string::npos);
-    }
-
-    // Every wire must be drawn, including on a node with SEVERAL parents — which is every real launchable.
-    // syncLinks maps a rendered link back to a PARENTS index; an attempt that counted occurrences per child
-    // silently dropped every wire after the first, so the canvas showed real dependencies as unwired. Drawing
-    // is what exercises it, so this renders frames and then checks the graph the renderer was handed.
-    void multiParentNodesKeepEveryWire()
-    {
-        const int a = Canvas->addNode("ZIP");
-        const int b = Canvas->addNode("ZIP");
-        const int c = Canvas->addNode("REG");
-        const int exec = Canvas->addNode("EXEC");
-        QVERIFY(Canvas->connect(a, exec));
-        QVERIFY(Canvas->connect(b, exec));
-        QVERIFY(Canvas->connect(c, exec));
-        QVERIFY(Canvas->connectExternal("MediaStack_MS", exec));
-        runFrame();
-        runFrame();
-
-        const PkgGraph::Graph g = Canvas->graph();
-        int into = 0;
-        for (const auto &l : g.Links) if (l.ChildIndex == exec) ++into;
-        QCOMPARE(into, 4);                                   // three in-bundle + one external chip
-        QCOMPARE(refs(Doc["NODES"][exec]).size(), size_t(4));
-        // The externals list is what the chips are drawn from; a missing entry means a wire with no source.
-        QCOMPARE(g.Externals.size(), size_t(1));
-    }
-
-    // Model C: every reference to a node is its HANDLE (the stored CID), and a rename touches only the cosmetic
-    // LABEL — so a rename carries nothing and, crucially, BREAKS nothing. NODE/ANY/NOT (all handle refs)
-    // still resolve, and the canvas position (keyed by the handle) does not move — which matters because renameNode
-    // runs per KEYSTROKE, so the old name-keyed scheme made the box jump on the first character typed.
-    void renamingANodeCarriesEveryReferenceToIt()
-    {
-        const int a = Canvas->addNode("ZIP", 300.0f, 400.0f);
-        const int b = Canvas->addNode("EXEC");
-        const std::string handle = Doc["NODES"][a]["CID"].get<std::string>();   // the stable identity
-        QVERIFY(Canvas->connect(a, b));
-        Doc["NODES"][b]["LAYERS"].push_back(json{{"NOT", handle}});   // these reference the HANDLE, as authoring does
-        Doc["NODES"][b]["LAYERS"].push_back(json{{"ANY", json::array({handle})}});
-        QVERIFY(Layout.contains(handle));
-
-        QVERIFY(Canvas->renameNode(a, "renamed"));
-
-        QCOMPARE(Doc["NODES"][a]["LABEL"].get<std::string>(), std::string("renamed"));  // only the label changed
-        QCOMPARE(Doc["NODES"][a]["CID"].get<std::string>(), handle);                    // the handle never moves
-        QCOMPARE(refs(Doc["NODES"][b])[0], handle);                                     // refs still resolve...
-        QCOMPARE(layer(Doc["NODES"][b], "NOT")["NOT"].get<std::string>(), handle);
-        QCOMPARE(layer(Doc["NODES"][b], "ANY")["ANY"][0].get<std::string>(), handle);
-        QVERIFY(Layout.contains(handle));                     // ...and the position stayed put (no per-keystroke jump)
-        QCOMPARE(Layout[handle][0].get<double>(), 300.0);
-    }
-
-    // The link slot must address the REAL PARENTS index, including past entries the graph skips (a null or a
-    // non-string left by a hand-edit). Detaching a wire erases PARENTS[slot], so a slot that drifted by one
-    // would erase a DIFFERENT parent than the one the user pulled off.
-    void linkSlotsAddressTheRealParentsIndex()
-    {
-        const int p1 = Canvas->addNode("ZIP");
-        const int p2 = Canvas->addNode("ZIP");
-        const int c  = Canvas->addNode("EXEC");
-        const std::string a = Doc["NODES"][p1]["CID"].get<std::string>();
-        const std::string b = Doc["NODES"][p2]["CID"].get<std::string>();
-        // A junk reference BETWEEN two real ones (a NODE layer naming nothing), and an ANY whose second member is
-        // b: a running counter over G.Links would put b's ANY member at slot 1, not 2.
-        Doc["NODES"][c]["LAYERS"] = json::array({ json{{"NODE", a}}, json{{"NODE", nullptr}}, json{{"ANY", json::array({"x", b})}} });
-        Canvas->invalidateGraph();
-
-        const PkgGraph::Graph g = Canvas->graph();
-        QCOMPARE(g.Links.size(), size_t(3));                 // the null is skipped as an edge...
-        for (const auto &L : g.Links)
-        {
-            //...but every slot addresses the reference it was drawn from: erasing slot S removes exactly it.
-            json Copy = Doc["NODES"][c];
-            QVERIFY(PkgGraph::EraseRef(Copy, L.Slot));
-            const std::string want = (L.ParentIndex >= 0) ? g.Nodes[L.ParentIndex].Id : L.ExternalId;
-            std::string Gone;
-            for (const std::string &R : {a, std::string("x"), b})
-                if (Copy.dump().find("\"" + R + "\"") == std::string::npos) Gone = R;
-            QCOMPARE(Gone, want);
-        }
-    }
-
-    // Every TYPE renders through the same declared field table — a full frame over one of each must not throw
-    // or crash, which is the cheap proof that no type is missing its editor.
-    void everyTypeDrawsAFrame()
-    {
-        for (const std::string &t : PkgGraph::AllTypes()) Canvas->addNode(t);
-        QCOMPARE(Canvas->nodeCount(), (int)PkgGraph::AllTypes().size());
-        runFrame();
-        runFrame();
-        QVERIFY(Saves >= 1);                                   // edits were persisted through the save hook
-    }
-
-    // Every field the engine reads must be reachable from the editor. The MODE combo offered Cave and Poke
-    // while the table had no PAYLOAD and no VALUE, so choosing either produced a node validation then rejected
-    // with no way to fix it here — and the CAVE patches already in the library rendered as patches with no
-    // body. VARIANT/RECOMMENDED are node-level, so they are the envelope's job, not each type's.
-    void everyEngineReadableFieldIsAuthorable()
-    {
-        auto keys = [](const std::string &type) {
-            std::vector<std::string> out;
-            std::function<void(const PkgGraph::Field &)> walk = [&](const PkgGraph::Field &f) {
-                out.push_back(f.Key);
-                for (const PkgGraph::Field &s : f.Sub) walk(s);   // sections nest (PATCHES → entry → EDITS → edit)
-            };
-            for (const PkgGraph::Field &f : PkgGraph::FieldsFor(type)) walk(f);
-            return out;
-        };
-        auto has = [](const std::vector<std::string> &v, const char *k) {
-            return std::find(v.begin(), v.end(), std::string(k)) != v.end();
-        };
-
-        const auto ed = keys("EDIT");
-        for (const char *k : {"TARGET","MODE","SECTION","KEY","VALUE","OFFSET","ANCHOR","EXPECT","REPLACE","PAYLOAD","CAVE","WHEN"})
-            QVERIFY2(has(ed, k), k);
-        // ...and every MODE the combo offers has the field it needs, or the combo is lying.
-        for (const PkgGraph::Field &f : PkgGraph::FieldsFor("EDIT"))
-            for (const PkgGraph::Field &ss : f.Sub)
-                if (std::string(ss.Key) == "MODE")
-                    for (const auto &o : ss.Options)
-                    {
-                        const std::string m = o.first;
-                        if (m == "Cave")        QVERIFY(has(ed, "PAYLOAD"));
-                        if (m == "Poke")        QVERIFY(has(ed, "VALUE"));
-                        if (m == "Replace")     QVERIFY(has(ed, "REPLACE"));
-                        if (m == "ConfigWrite") QVERIFY(has(ed, "KEY"));
-                    }
-
-        const auto ex = keys("EXEC");
-        for (const char *k : {"LABEL","HOST","GUEST","EXE","ARGS","WORKDIR","CONTENT_ROOT","PREFIX_GENERATE",
-                              "UNIFIED_RUNTIME","GUEST_ROOTS","TILE","UID","PARENTUID","TITLE","COVER","META"})
-            QVERIFY2(has(ex, k), k);
-        for (const char *k : {"NODE","TAKE","TARGET"}) QVERIFY2(has(keys("NODE"), k), k);
-        for (const char *k : {"REG","ARCH"})           QVERIFY2(has(keys("REG"), k), k);
-        for (const char *k : {"ZIP","TARGET","SUBMOUNTS","SOURCE"}) QVERIFY2(has(keys("ZIP"), k), k);
-
-        // Every layer can be gated; the node itself carries no layer field (VARIANT/RECOMMENDED are the envelope's).
-        for (const std::string &t : PkgGraph::AllTypes())
-        {
-            QVERIFY2(has(keys(t), "WHEN"), t.c_str());
-            QVERIFY2(has(keys(t), t.c_str()), (t + " edits its own payload").c_str());
-            for (const char *k : {"VARIANT", "RECOMMENDED", "LAYERS"})
-                QVERIFY2(!has(keys(t), k), (t + "/" + k).c_str());
-        }
-    }
-
-    // THE editor must be able to DISPLAY a node the format refuses — it is the tool you open to fix one, and
-    // NodeLower has diagnostics that say so ("`\"WHEN\": true` is a plausible slip, the field reads like a
-    // boolean"). Every reader here is therefore total: nlohmann's value() throws on a type mismatch, and a
-    // throw out of frame() escapes with ImGui scopes still open, so the NEXT paint segfaults on the half-open
-    // state. Not a crash in a corner — a crash in the repair tool, on the node you opened it to repair.
-    void malformedNodesRenderInsteadOfThrowing()
-    {
-        Doc["NODES"] = json::array({
-            node("a", json::array({json{{"ZIP","a.zip"}, {"WHEN", true}}})),
-            node("b", json::array({json{{"REG", {{"HKCU", {{"S", {{"v","1"}}}}}}}, {"ARCH","32"}}})),
-            node("c", json::array({json{{"EXEC", json::array({json{{"LABEL","Play"}, {"TILE", {{"UID","1"}, {"COVER","cover.png"}}}}})}}})),
-            node("d", 5),
-            node("e", json::array({json{{"ZIP", 7}, {"TARGET", 9}}, json{{"ZIP","a"}, {"DIR","b"}}, 5})),
-            node("f", json::array({json{{"EXEC", json::array({json{{"HOST","win32"}, {"GUEST","yes"}}, 3})}}, json{{"KEEP", 1}},
-                                   json{{"VARS", {{"x", 5}}}}, json{{"ANY", "notalist"}}, json{{"NODE", 7}}}), {{"RECOMMENDED", "yes"}}),
-        });
-        Canvas->invalidateGraph();
-        runFrame();
-        runFrame();                                   // the frame AFTER is where a half-open state lands
-        QCOMPARE(Canvas->nodeCount(), 6);
-
-        // ...and a string-form COVER is a legal shape the widget must EDIT, not just survive: it used to read
-        // as empty (so the box looked unset and inviting) and the first keystroke wrote ["PATH"] into a string.
-        const PkgGraph::Graph g = Canvas->graph();
-        QCOMPARE(g.Nodes.size(), size_t(6));
-        QVERIFY(Doc["NODES"][2]["LAYERS"][0]["EXEC"][0]["TILE"]["COVER"].is_string());
-    }
-
-    // A COVER is {FILE, SOURCE, SIZE} on an entry's TILE; a bare string is shown and edited in place (never
-    // promoted — that would change the package's bytes for a cosmetic edit), and the object's SOURCE survives an
-    // edit of its FILE.
-    void coverEditingHandlesBothFormsAndPreservesWhichever()
-    {
-        const int n = Canvas->addNode("EXEC");
-        const std::string id = Doc["NODES"][n]["CID"].get<std::string>();
-        //No reference into NODES is held across frames: a frame may reshape the array (imnodes seeding, a
-        //popup), and a dangling json& is a segfault, not a failure.
-        auto Cover = [&]() -> json & { return Doc["NODES"][n]["LAYERS"][0]["EXEC"][0]["TILE"]["COVER"]; };
-        Doc["NODES"][n]["LAYERS"][0]["EXEC"][0]["TILE"] = json{{"UID", "1"}};
-        Cover() = "cover.png";
-        Layout[id] = json::array({30.0, 30.0});
-        Canvas->setExpanded(n, true);          // the cover is inside the folded exec entry
-        Canvas->invalidateGraph();
-        runFrame(); runFrame();
-
-        // The string form must be VISIBLE, not read as empty: find the box by effect and check what it holds.
-        ImVec2 box(-1, -1);
-        for (float y = 30.0f; y < 900.0f && box.x < 0; y += 4.0f)
-            for (float x = 40.0f; x < 420.0f; x += 10.0f)
-            {
-                Cover() = "cover.png";
-                Canvas->invalidateGraph(); runFrame(); runFrame();
-                clickAt(ImVec2(x, y));
-                if (!ImGui::IsAnyItemActive()) continue;
-                type("Z");
-                clickAt(ImVec2(1100, 850));
-                runFrame();
-                const json &C = Cover();
-                if (C.is_string() && C.get<std::string>().find("cover.png") != std::string::npos
-                    && C.get<std::string>() != "cover.png") { box = ImVec2(x, y); break; }
-            }
-        QVERIFY2(box.x >= 0, "the string-form cover was not editable (it read as empty)");
-        QVERIFY2(Cover().is_string(), "editing promoted a string COVER to an object");
-
-        // ...and the object form stays an object, its SOURCE kept.
-        Cover() = json{{"FILE", "cover.png"}, {"SOURCE", "bafkreiaaaa"}};
-        Canvas->invalidateGraph(); runFrame(); runFrame();
-        clickAt(box); type("Z"); clickAt(ImVec2(1100, 850)); runFrame();
-        QVERIFY(Cover().is_object());
-        QCOMPARE(Cover()["FILE"].get<std::string>(), std::string("cover.pngZ"));
-        QVERIFY(Cover().contains("SOURCE"));                 // the CID was not dropped
-    }
-
-    // A stale selection must not grow the document. nlohmann's non-const operator[](size_type) FILLS the
-    // array with nulls up to the index, so a Delete keypress against an index left over from a previous
-    // document did not merely read garbage — it appended nulls that SaveNodes would write to disk.
-    void aStaleSelectionCannotGrowTheDocument()
-    {
-        Canvas->addNode("ZIP");
-        Canvas->addNode("ZIP");
-        Canvas->selectNode(1);
-        Doc["NODES"] = json::array({ json{{"LABEL","only"}} });   // document swapped
-        Canvas->invalidateGraph();
-
-        // PRESS Delete with the stale index still set. Without this the test was vacuous: it never exercised
-        // the read it exists to guard, and its own selectNode(7) reset Selected to -1, erasing the setup.
-        auto pressDelete = [&] {
-            ImGuiIO &io = ImGui::GetIO();
-            io.AddKeyEvent(ImGuiKey_Delete, true);
-            runFrame();
-            io.AddKeyEvent(ImGuiKey_Delete, false);
-            runFrame();
-        };
-        pressDelete();
-        QCOMPARE((int)Doc["NODES"].size(), 1);
-        for (const auto &N : Doc["NODES"]) QVERIFY2(!N.is_null(), "the document grew nulls");
-
-        Canvas->selectNode(7);                        // out of range: refused outright
-        pressDelete();
-        QCOMPARE((int)Doc["NODES"].size(), 1);
-        for (const auto &N : Doc["NODES"]) QVERIFY(!N.is_null());
-    }
-
-    // Merely LOOKING at a package must not change it. The field renderers used to materialise their container
-    // ("if (!Node.contains(F.Key)) Node[F.Key] = json::object();") before drawing it, so opening a bundle
-    // stamped empty ENV/META/COVER/EDITS onto every node — which changes the file's bytes, and therefore its
-    // CID, for every peer, from nothing but a render pass.
-    void renderingDoesNotMutateTheDocument()
-    {
-        for (const std::string &t : PkgGraph::AllTypes()) Canvas->addNode(t);
-        const std::string Before = Doc.dump();                 // layout lives in the sidecar, not here
-        runFrame();
-        runFrame();
-        QCOMPARE(Doc.dump(), Before);
-    }
-
-    // The two halves of the same registry clash: a value and a subkey cannot share a name. Rows are flattened
-    // values-first, so the value is written before the subkey path is walked — and the walk used to overwrite
-    // it with an object, dropping it with no diagnostic. Neither side may clobber the other.
-    void registryValueAndSubkeyCollisionsKeepWhatIsThere()
-    {
-        json a = json::object();
-        PkgGraph::RegRowsInto(a, {{"HKLM\\Soft", "Thing", "i-am-a-value"},
-                                  {"HKLM\\Soft\\Thing", "Inner", "i-am-a-subkey"}});
-        QVERIFY(a["HKLM"]["Soft"]["Thing"].is_string());                   // first writer kept
-        QCOMPARE(a["HKLM"]["Soft"]["Thing"].get<std::string>(), std::string("i-am-a-value"));
-
-        json b = json::object();                                           // and the mirror order
-        PkgGraph::RegRowsInto(b, {{"HKLM\\Soft\\Thing", "Inner", "i-am-a-subkey"},
-                                  {"HKLM\\Soft", "Thing", "i-am-a-value"}});
-        QVERIFY(b["HKLM"]["Soft"]["Thing"].is_object());
-        QCOMPARE(b["HKLM"]["Soft"]["Thing"]["Inner"].get<std::string>(), std::string("i-am-a-subkey"));
-    }
-
-    // Typing in a registry row used to commit on EVERY keystroke. The rows are a FLATTENING of the hive tree,
-    // and flattening emits a key's VALUES before its SUBKEYS - so the moment a half-typed path turns a row into
-    // a sibling value of an earlier subkey row, the two SWAP. The cursor stays in row slot 1, which now holds a
-    // different row, and every character after that lands in the wrong place. This drives real clicks and real
-    // keystrokes through ImGui to prove the row you are typing in is the row that changes.
-    void registryRowsDoNotMoveUnderTheCursor()
-    {
-        const int n = Canvas->addNode("REG");
-        // Flattens to exactly two rows, subkey first: [ HKLM\Soft\Sub -> X , HKLM\So -> Y ].
-        auto reset = [&] {
-            Doc["NODES"][n]["LAYERS"][0]["REG"] = json{{"HKLM", json{{"Soft", json{{"Sub", json{{"X", "1"}}}}},
-                                                                    {"So",   json{{"Y", "2"}}}}}};
-            Layout[Doc["NODES"][n]["CID"].get<std::string>()] = json::array({30.0, 30.0});
-            Canvas->setExpanded(n, true);          // the registry rows are inside the folded layer
-            Canvas->invalidateGraph();
-            runFrame(); runFrame();
-        };
-        auto pathOf = [&](const char *name) -> std::string {
-            for (const auto &r : PkgGraph::RegRowsOf(Doc["NODES"][n]["LAYERS"][0]["REG"])) if (r.Name == name) return r.Path;
-            return "<missing>";
-        };
-        reset();
-        QCOMPARE(pathOf("X"), std::string("HKLM\\Soft\\Sub"));
-        QCOMPARE(pathOf("Y"), std::string("HKLM\\So"));
-
-        // Locate the SECOND row's PATH box by EFFECT rather than by hardcoded pixels: click, append, commit,
-        // and see whether Y's key path grew a 'Q'. Layout changes cannot silently retarget this test.
-        ImVec2 box(-1, -1);
-        for (float y = 30.0f; y < 700.0f && box.x < 0; y += 4.0f)
-            for (float x = 40.0f; x < 420.0f; x += 10.0f)
-            {
-                reset();
-                clickAt(ImVec2(x, y));
-                if (!ImGui::IsAnyItemActive()) continue;
-                type("Q");
-                clickAt(ImVec2(1100, 850));                        // finish the edit
-                runFrame();
-                if (pathOf("Y") == "HKLM\\SoQ") { box = ImVec2(x, y); break; }
-            }
-        QVERIFY2(box.x >= 0, "could not find the second registry row's PATH box");
-
-        reset();
-        clickAt(box);
-        QVERIFY(ImGui::IsAnyItemActive());
-        type("ftZ");   // "HKLM\So" -> "...Soft" (the swap point) -> "...SoftZ", one character per frame
-        clickAt(ImVec2(1100, 850));
-        runFrame();
-
-        // Every character went into the row the cursor was in. With the per-keystroke rebuild, the 'Z' landed
-        // on X instead: X became "HKLM\SoftZ" and Y stopped at "HKLM\Soft".
-        QCOMPARE(pathOf("Y"), std::string("HKLM\\SoftZ"));
-        QCOMPARE(pathOf("X"), std::string("HKLM\\Soft\\Sub"));
-    }
-
-    // ---- zoom + viewport culling -----------------------------------------------------------------------
-    // Zoom is a VIEW property built on top of imnodes (which has none of its own): positions are pushed to
-    // imnodes pre-scaled and divided back out on read. The bug that buys is obvious and expensive — a drag
-    // read back at 0.5x without dividing would halve the whole layout and then PERSIST it.
-
-
-    // THE round trip: a node drawn, then culled, then brought back. imnodes DESTROYS any node not submitted
-    // during a frame (ObjectPoolUpdate) and re-creates it at Origin(0,0) when it next appears — so anything
-    // that decides "already seeded, no need to re-place it" hands the read-back a (0,0) that is then written
-    // to the layout and, at publish, stamped into POS. Panning away and back must not move a single node.
-    void aNodeThatScrollsOutAndBackKeepsItsPosition()
-    {
-        //Culling is unconditional now; the minimap is off here only so the overview cannot be what a
-        //measurement picks up.
-        Canvas->setMiniMap(false);
-        Canvas->addNode("ZIP", 300, 200);
-        Canvas->addNode("ZIP", 90000, 90000);   // far away: something to scroll to
-        runFrame();
-        QCOMPARE(Canvas->visibleNodes(), 1);
-
-        // Scroll the first node off-screen by panning to the far node, then come back.
-        ImNodes::EditorContextResetPanning(ImVec2(-89000, -89000));
-        runFrame();
-        runFrame();
-        ImNodes::EditorContextResetPanning(ImVec2(0, 0));
-        runFrame();
-        runFrame();
-
-        const PkgGraph::Graph G = Canvas->graph();
-        QCOMPARE(G.Nodes[0].X, 300.0f);
-        QCOMPARE(G.Nodes[0].Y, 200.0f);
-    }
-
-
-    // A drag must reach the CACHED graph, not just the stored layout — and the observable consequence is
-    // CULLING, which tests the cached coordinate. With a stale cache a node dragged far off-screen stays
-    // "visible" forever (and, symmetrically, one dragged into view never appears). Asserting through
-    // Canvas->graph() cannot see this: that rebuilds from the layout, which SetPos has already updated.
-    void aDraggedPositionReachesTheCacheThatCullingReads()
-    {
-        Canvas->setMiniMap(false);
-        Canvas->addNode("ZIP", 100, 100);
-        Canvas->addNode("ZIP", 300, 100);
-        runFrame();
-        QCOMPARE(Canvas->visibleNodes(), 2);
-
-        ImNodes::SetNodeGridSpacePos(0, ImVec2(90000, 90000));   // as a drag would leave it
-        runFrame();                                              // read-back sees it and updates the cache
-        runFrame();                                              // ...so this frame culls on the NEW position
-        QCOMPARE(Canvas->visibleNodes(), 1);
-    }
-
-    // A SELECTED node is never culled: imnodes keeps a freed node's index in its own selection set with no
-    // liveness check, so a culled-then-reused slot makes TranslateSelectedNodes drag a node the user never
-    // selected — and persist it.
-    void aSelectedNodeIsNeverCulled()
-    {
-        Canvas->setMiniMap(false);
-        Canvas->addNode("ZIP", 40, 40);
-        Canvas->addNode("ZIP", 600, 300);
-        runFrame();
-        QCOMPARE(Canvas->visibleNodes(), 2);
-
-        // Select it while it is still on screen — imnodes cannot select a node it has already destroyed —
-        // and only then move it far away.
-        ImNodes::ClearNodeSelection();
-        ImNodes::SelectNode(1);
-        runFrame();
-        ImNodes::SetNodeGridSpacePos(1, ImVec2(90000, 90000));
-        runFrame();
-        runFrame();
-        QCOMPARE(Canvas->visibleNodes(), 2);   // off-screen, but selected, so still submitted
-    }
-
-
-
-
-    // The save SPLIT. A pure drag must reach the layout-only hook (positions live in no node file, so the full
-    // save rewrites the whole bundle for nothing), and a real document edit must still reach the full one.
-    // Misclassifying the second way is silent loss of a node edit, so both directions are pinned.
-    void aPureDragSavesOnlyTheLayout()
-    {
-        Canvas->setMiniMap(false);
-        Canvas->addNode("ZIP", 100, 100);
-        runFrame();
-        FullSaves = 0; LayoutSaves = 0;
-
-        ImNodes::SetNodeGridSpacePos(0, ImVec2(1500, 900));
-        runFrame();                       // read-back notices the move
-        releaseMouse();                   // the save fires on mouse-up
-        QCOMPARE(LayoutSaves, 1);
-        QCOMPARE(FullSaves, 0);           // no node file was touched
-    }
-
-    void aDocumentEditStillSavesEverything()
-    {
-        Canvas->setMiniMap(false);
-        Canvas->addNode("ZIP", 100, 100);
-        runFrame();
-        FullSaves = 0; LayoutSaves = 0;
-
-        Canvas->renameNode(0, "renamed_node");   // a real document change
-        runFrame();
-        releaseMouse();
-        QCOMPARE(FullSaves, 1);
-        QCOMPARE(LayoutSaves, 0);
-    }
-
-
-    // ...and when both a document edit and a drag are outstanding, the full save must win — choosing the
-    // layout-only hook there would drop the node edit while the canvas still showed it.
-    //
-    // HONEST NOTE ON ITS STRENGTH: this one pins INTENT, not a reachable bug. Mutating `PosOnly` to ignore
-    // DocChanged does not change the outcome, because a document edit commits on the FOLLOWING frame through
-    // the `!IsAnyItemActive()` arm rather than waiting for a release — so the two flags never actually meet at
-    // a commit. The `!DocChanged` term is defensive against that arm changing, and this test is what would
-    // notice if it did.
-    void aDocumentEditCombinedWithADragStillSavesTheDocument()
-    {
-        Canvas->setMiniMap(false);
-        Canvas->addNode("ZIP", 100, 100);
-        runFrame();
-        FullSaves = 0; LayoutSaves = 0;
-
-        // Drag FIRST and let a frame observe it, so PosDirty is genuinely latched...
-        ImNodes::SetNodeGridSpacePos(0, ImVec2(1500, 900));
-        runFrame();
-        // ...then make a document edit before the button comes up, so both flags are live at the commit.
-        // (Editing first would not do, for the reason in the note above rather than the seeding one this
-        // comment used to give: a document edit commits on the FOLLOWING frame, so the frame the rename needs
-        // clears DocChanged before the drag is released, and the release then takes the layout-only path.
-        // Measured: LayoutSaves 1, not 0. renameNode does not drop the seed either — it MOVES the entry to
-        // the new id, which is the whole point of the Move() block in it.)
-        Canvas->renameNode(0, "edited_and_moved");
-        releaseMouse();
-
-        QCOMPARE(FullSaves, 1);       // the node edit reached disk
-        QCOMPARE(LayoutSaves, 0);     // ...and was not swallowed by the positions-only path
-    }
-
-
-
-
-    // Zooming must not move a single stored coordinate — and the values that threaten that are the ones a
-    // WHEEL produces (1.1^n), not the clean 0.5/2.0 an earlier test used, which are exactly representable in
-    // binary and so round-trip for free. Positions are pushed to imnodes multiplied by zoom and read back
-    // divided by it; if that round trip drifts, the drift is written to the layout and, at publish, stamped
-    // into the package's POS — a CID change caused by looking at the graph.
-    void wheelSizedZoomStepsDoNotDriftAnyPosition()
-    {
-        Canvas->setMiniMap(false);
-        Canvas->addNode("ZIP", 137, 449);          // deliberately not round numbers
-        Canvas->addNode("EXEC", 911, 1303);
-        runFrame();
-        const std::string Before = Layout.dump();
-        const int SavesBefore = Saves;
-
-        // Ten notches up, then ten back down — the exact sequence the wheel handler produces.
-        float z = Canvas->zoom();
-        for (int i = 0; i < 10; ++i) { z *= 1.1f; Canvas->setZoom(z); runFrame(); runFrame(); }
-        for (int i = 0; i < 10; ++i) { z /= 1.1f; Canvas->setZoom(z); runFrame(); runFrame(); }
-        Canvas->setZoom(1.0f);
-        runFrame(); runFrame();
-
-        QCOMPARE(Layout.dump(), Before);               // not one coordinate written
-        QCOMPARE(Saves, SavesBefore);                  // and nothing marked dirty, so nothing to persist
-        const PkgGraph::Graph G = Canvas->graph();
-        QCOMPARE(G.Nodes[0].X, 137.0f);
-        QCOMPARE(G.Nodes[0].Y, 449.0f);
-        QCOMPARE(G.Nodes[1].X, 911.0f);
-        QCOMPARE(G.Nodes[1].Y, 1303.0f);
-    }
-
-
-    // THE ACTUAL GESTURE, and worth keeping even though the test above drives the same numbers through
-    // setZoom(). The comment here used to say setZoom() clears the seed map and the wheel path does not; it
-    // no longer does (see setZoom — clearing it stomped in-flight drags and bought nothing once zoom became a
-    // view transform, because imnodes holds WORLD coordinates and a scale change does not invalidate them).
-    // What this still covers that setZoom does not is the handler itself: the wheel assigns through the
-    // easing fields, so a regression that reintroduces a scale into the pushed position, or that recentres
-    // against the wrong "from" zoom, reaches the layout here and not there.
-    void wheelingOverTheCanvasDoesNotMoveAnyPosition()
-    {
-        Canvas->setMiniMap(false);
-        Canvas->addNode("ZIP", 137, 449);
-        Canvas->addNode("EXEC", 911, 1303);
-        runFrame();
-        const std::string Before = Layout.dump();
-        const int SavesBefore = Saves;
-
-        auto wheel = [&](float notches) {
-            ImGuiIO &io = ImGui::GetIO();
-            io.AddMouseWheelEvent(0.0f, notches);
-            runFrame();      // the handler runs after EndNodeEditor
-            runFrame();      // the next frame re-seeds and reads back
-        };
-        for (int i = 0; i < 6; ++i) wheel(+1.0f);
-        for (int i = 0; i < 6; ++i) wheel(-1.0f);
-
-        QCOMPARE(Layout.dump(), Before);
-        QCOMPARE(Saves, SavesBefore);
-        const PkgGraph::Graph G = Canvas->graph();
-        QCOMPARE(G.Nodes[0].X, 137.0f);
-        QCOMPARE(G.Nodes[0].Y, 449.0f);
-        QCOMPARE(G.Nodes[1].X, 911.0f);
-        QCOMPARE(G.Nodes[1].Y, 1303.0f);
-    }
-
-
-    // Zoom is a VIEW TRANSFORM over the emitted geometry: imnodes is handed world coordinates and an unscaled
-    // style, and the vertices it produces are scaled about the canvas origin afterwards. So the thing to
-    // assert is the GEOMETRY, not imnodes' own reported sizes — those stay unscaled on purpose, which is
-    // exactly why the document can no longer be touched by looking at it.
-    // SetVarVisible IS the visibility contract (UI-facet presence). A hidden var carries no UI and resolves from
-    // DEFAULT; making it visible adds a minimal UI (control+label) without clobbering an existing facet. Teeth:
-    // make "hidden" keep UI, or "visible" overwrite an existing UI — each flips an assertion here.
-    // The layer tree's names and folders. A layer's LABEL/SECTION win; without them a WHEN-gated layer is named and
-    // filed by the launcher facet of the variable it tests (a bool as its label, an enum as "label: choice"), and
-    // anything else by its payload. Teeth: drop the facet derivation (titles fall back to "age2.exe (1 ops)").
-    void layerRowsAreNamedByLabelElseByTheirWhenVariable()
-    {
-        const json Doc2 = json::array({ json{{"LAYERS", json::array({ json{{"VARS", {
-            {"wat", {{"DEFAULT", "1"}, {"UI", {{"CONTROL", "bool"}, {"LABEL", "Water animation"}, {"SECTION", "UP/Graphics"}}}}},
-            {"sty", {{"DEFAULT", "c"}, {"UI", {{"CONTROL", "enum"}, {"LABEL", "Bar style"}, {"SECTION", "UP/Interface"},
-                     {"CHOICES", json::array({ json{{"LABEL", "Widescreen"}, {"VALUE", "w"}} })}}}}} }}} })}} });
-        const PkgGraph::VarFacets F = PkgGraph::CollectVarFacets(Doc2);
-        const json Op = json{{"MODE", "Replace"}, {"OFFSET", "0x10"}, {"EXPECT", "7e"}, {"REPLACE", "eb"}};
-        const json N = json{{"LAYERS", json::array({
-            json{{"EDIT", json::array({Op})}, {"TARGET", "FILES/%GameDir%/age2.exe"}, {"WHEN", "%wat%==1"}},
-            json{{"EDIT", json::array({Op})}, {"TARGET", "FILES/%GameDir%/age2.exe"}, {"WHEN", "%sty%==w"}},
-            json{{"EDIT", json::array({Op})}, {"TARGET", "FILES/%GameDir%/age2.exe"}, {"WHEN", "%wat%==1"},
-                 {"LABEL", "Own name"}, {"SECTION", "/Mine//Here/"}},
-            json{{"NODE", "bafyfonts"}, {"TARGET", "FILES/%Windows%/Fonts"}},
-            json{{"ENV", {{"A", "1"}}}} })}};
-        const auto It = PkgGraph::LayerItems(N, F, [](const std::string &R) { return R == "bafyfonts" ? std::string("Core Fonts") : std::string(); });
-        QCOMPARE((int)It.size(), 5);
-        QCOMPARE(It[0].Title, std::string("Water animation"));
-        QCOMPARE(It[0].Section, std::string("UP/Graphics"));
-        QCOMPARE(It[1].Title, std::string("Bar style: Widescreen"));
-        QCOMPARE(It[1].Section, std::string("UP/Interface"));
-        QCOMPARE(It[2].Title, std::string("Own name"));
-        QCOMPARE(It[2].Section, std::string("Mine/Here"));                 // empty segments dropped
-        QCOMPARE(It[0].Summary, std::string("age2.exe (1 ops)"));
-        QCOMPARE(It[3].Title, std::string("Core Fonts -> %Windows%/Fonts"));
-        QCOMPARE(It[4].Section, std::string());
-        QCOMPARE(PkgGraph::TopLevelRows(It), 4);                           // UP, Mine, the NODE, the ENV
-        //An entry is its LABEL, else its COMMENT, else its facts.
-        QCOMPARE(PkgGraph::EntryTitle(Op), std::string("0x10 7e -> eb"));
-        json Commented = Op; Commented["COMMENT"] = "jle -> jmp: always scroll";
-        QCOMPARE(PkgGraph::EntryTitle(Commented), std::string("jle -> jmp: always scroll"));
-        QCOMPARE(PkgGraph::EntrySummary(Commented), std::string("0x10 7e -> eb"));
-    }
-
-    // A node opens FOLDED: UserPatch's 28 byte-patch layers (187 ops) are a handful of section rows, drawn no taller
-    // than the layout reserved. "open all" unfolds everything in one frame; folds belong to their node. Teeth: start
-    // folds open (Was = true) — the folded node is thousands of px and overruns its estimate.
-    void aNodeOpensFoldedAndOpenAllUnfoldsIt()
-    {
-        Canvas->setMiniMap(false);
-        Canvas->setIssues({});
-        const int V = Canvas->addNode("VARS", 40.0f, 40.0f);
-        json Vars = json::object();
-        for (int K = 0; K < 28; ++K)
-            Vars["o" + std::to_string(K)] = json{{"DEFAULT", "1"}, {"UI", {{"CONTROL", "bool"}, {"LABEL", "Option " + std::to_string(K)},
-                                                 {"SECTION", "UserPatch/Group " + std::to_string(K % 4)}}}};
-        Doc["NODES"][V]["LAYERS"] = json::array({ json{{"VARS", Vars}} });
-        const int E = Canvas->addNode("EDIT", 500.0f, 40.0f);
-        json Ls = json::array();
-        for (int K = 0; K < 28; ++K)
-        {
-            json Ops = json::array();
-            for (int O = 0; O < 7; ++O) Ops.push_back(json{{"MODE", "Replace"}, {"OFFSET", "0x" + std::to_string(1000 + O)}, {"EXPECT", "7e"}, {"REPLACE", "eb"}});
-            Ls.push_back(json{{"EDIT", Ops}, {"TARGET", "FILES/C:/g/g.exe"}, {"WHEN", "%o" + std::to_string(K) + "%==1"}});
-        }
-        Doc["NODES"][E]["LAYERS"] = Ls;
-        Canvas->invalidateGraph();
-        runFrame(); runFrame();
-        const float Folded = ImNodes::GetNodeDimensions(E).y, Est = Canvas->graph().Nodes[(size_t)E].Height;
-        QVERIFY2(Folded < 400.0f, qPrintable(QString("folded, 28 layers under one section draw %1px").arg(Folded)));
-        QVERIFY2(Est >= Folded, qPrintable(QString("drawn %1px, estimated %2px - SHORT").arg(Folded).arg(Est)));
-        const float VarsFolded = ImNodes::GetNodeDimensions(V).y;
-        Canvas->setExpanded(E, true);
-        runFrame(); runFrame();
-        const float Open = ImNodes::GetNodeDimensions(E).y;
-        QVERIFY2(Open > 28.0f * 7.0f * 17.0f, qPrintable(QString("open all drew only %1px").arg(Open)));
-        QCOMPARE(ImNodes::GetNodeDimensions(V).y, VarsFolded);             // the other node stays folded
-        Canvas->setExpanded(E, false);
-        runFrame(); runFrame();
-        QCOMPARE(ImNodes::GetNodeDimensions(E).y, Folded);
-    }
-
-    void setVarVisibleTogglesTheUiFacet()
-    {
-        nlohmann::ordered_json V{{"KEY", "tt_width"}, {"DEFAULT", "%ScreenWidth%"}};
-        QVERIFY(!V.contains("UI"));
-        PkgGraph::SetVarVisible(V, true);
-        QVERIFY(V.contains("UI") && V["UI"].is_object());
-        QCOMPARE(V["UI"].value("LABEL", std::string()), std::string("tt_width"));   // defaults label to the key
-        QCOMPARE(V["UI"].value("CONTROL", std::string()), std::string("text"));
-        V["UI"]["LABEL"] = "Width"; V["UI"]["CONTROL"] = "int";                      // author customised it
-        PkgGraph::SetVarVisible(V, true);                                           // idempotent: must NOT clobber
-        QCOMPARE(V["UI"].value("LABEL", std::string()), std::string("Width"));
-        QCOMPARE(V["UI"].value("CONTROL", std::string()), std::string("int"));
-        PkgGraph::SetVarVisible(V, false);                                          // hide → UI gone, DEFAULT kept
-        QVERIFY(!V.contains("UI"));
-        QCOMPARE(V.value("DEFAULT", std::string()), std::string("%ScreenWidth%"));
-    }
-
-    void zoomScalesTheEmittedGeometry()
-    {
-        Canvas->setMiniMap(false);
-        Canvas->addNode("ZIP", 100, 100);
-        Canvas->addNode("EXEC", 700, 400);
-
-        // The SURFACE's own bounds, not the whole draw data: the canvas window's background spans the display
-        // at every zoom, so a bbox over everything is pinned to the window width and cannot shrink.
-        auto surfaceWidth = [&]() {
-            runFrame();
-            float x0 = 0, y0 = 0, x1 = 0, y1 = 0;
-            Canvas->surfaceBounds(x0, y0, x1, y1);
-            return x1 - x0;
-        };
-
-        const float At1 = surfaceWidth();
-        Canvas->setZoom(2.0f);
-        const float At2 = surfaceWidth();
-        Canvas->setZoom(0.5f);
-        const float AtHalf = surfaceWidth();
-
-        QVERIFY2(At2 > At1 * 1.3f,
-                 qPrintable(QString("geometry did not grow with zoom: %1 -> %2").arg(At1).arg(At2)));
-        QVERIFY2(AtHalf < At1,
-                 qPrintable(QString("geometry did not shrink when zoomed out: %1 -> %2").arg(At1).arg(AtHalf)));
-        Canvas->setZoom(1.0f);
-    }
-
-
-    // Input must be inverse-transformed on the way INTO the editor. The view scales the geometry, so without
-    // this a click at 2x lands where the node would have been drawn at 1x — you click a node and select its
-    // neighbour, or nothing. Silent, and the single biggest risk of doing zoom as a surface transform.
-    void theCursorIsInverseTransformedForHitTesting()
-    {
-        Canvas->setMiniMap(false);
-        Canvas->addNode("ZIP", 100, 100);
-        runFrame(ImVec2(900, 600));
-        float ex = 0, ey = 0;
-        Canvas->editorMouse(ex, ey);
-        // At 1:1 the editor sees the cursor exactly where it is.
-        QCOMPARE(ex, 900.0f);
-        QCOMPARE(ey, 600.0f);
-
-        Canvas->setZoom(2.0f);
-        runFrame(ImVec2(900, 600));
-        Canvas->editorMouse(ex, ey);
-        // Zoomed in, the same screen pixel is a point HALF as far from the canvas origin in world space, so
-        // the editor must be handed a cursor pulled back toward that origin — never the raw screen position.
-        QVERIFY2(ex < 900.0f && ey < 600.0f,
-                 qPrintable(QString("cursor not inverse-transformed at 2x: (%1,%2)").arg(ex).arg(ey)));
-
-        Canvas->setZoom(0.5f);
-        runFrame(ImVec2(900, 600));
-        Canvas->editorMouse(ex, ey);
-        QVERIFY2(ex > 900.0f && ey > 600.0f,
-                 qPrintable(QString("cursor not inverse-transformed at 0.5x: (%1,%2)").arg(ex).arg(ey)));
-        Canvas->setZoom(1.0f);
-    }
-
-
-    // THE OUTLIER SWEEP. With zoom as a pure view transform, EVERYTHING imnodes reports must be
-    // zoom-invariant: it is handed world coordinates, a constant style and constant widths, so a node's grid
-    // position and its dimensions cannot depend on the zoom. Anything that does move is an element being
-    // scaled somewhere it should not be — which is precisely how node widths ended up scaling twice and
-    // growing with the SQUARE of the zoom.
-    //
-    // So: measure every node at every zoom, and name whatever drifts.
-    void noElementGeometryDependsOnTheZoom()
-    {
-        Canvas->setMiniMap(false);
-        const char *kinds[] = {"Content", "DeclareExec", "RegEdit", "FileEdit", "CustomVar", "DeclarePersist"};
-        for (int i = 0; i < 6; ++i) Canvas->addNode(kinds[i], 500.0f + i * 60.0f, 300.0f + i * 40.0f);
-        runFrame();
-
-        struct Geo { ImVec2 pos, dim; };
-        auto sample = [&]() {
-            runFrame(); runFrame();
-            //Every node must have been SUBMITTED, or what follows measures the title-bar-only box imnodes
-            //re-creates for a culled one — a uniform, implausible number that reads as "everything resized".
-            //setZoom recentres the view now, so a test that pins geometry across zooms has to keep its nodes
-            //on screen rather than assume the pan never moves.
-            [&]{ QVERIFY2(Canvas->visibleNodes() == Canvas->nodeCount(),
-                          qPrintable(QString("%1 of %2 nodes submitted - a culled node cannot be measured")
-                                         .arg(Canvas->visibleNodes()).arg(Canvas->nodeCount()))); }();
-            std::vector<Geo> g;
-            for (int i = 0; i < Canvas->nodeCount(); ++i)
-                g.push_back({ImNodes::GetNodeGridSpacePos(i), ImNodes::GetNodeDimensions(i)});
-            return g;
-        };
-        const std::vector<Geo> Ref = sample();
-
-        QStringList outliers;
-        for (float z : {0.4f, 0.75f, 1.5f, 2.0f, 3.0f}) {
-            Canvas->setZoom(z);
-            const std::vector<Geo> Now = sample();
-            QCOMPARE(Now.size(), Ref.size());
-            for (size_t i = 0; i < Now.size(); ++i) {
-                const float dx = std::abs(Now[i].pos.x - Ref[i].pos.x), dy = std::abs(Now[i].pos.y - Ref[i].pos.y);
-                const float dw = std::abs(Now[i].dim.x - Ref[i].dim.x), dh = std::abs(Now[i].dim.y - Ref[i].dim.y);
-                //1.5px, not 0.5: imgui rounds some item heights against the window's own scroll origin, which
-                //moves when setZoom recentres, so an identical node measures 0.75px different. What this is
-                //for is a node whose SIZE follows the zoom, which is a factor, not a rounding — the mutation
-                //that put kNodeWidth * Zoom back reports 346 against 340.
-                if (dx > 1.5f || dy > 1.5f)
-                    outliers << QString("node %1 (%2) MOVED at zoom %3: d=(%4,%5)")
-                                   .arg(i).arg(kinds[i % 6]).arg(z).arg(dx).arg(dy);
-                if (dw > 1.5f || dh > 1.5f)
-                    outliers << QString("node %1 (%2) RESIZED at zoom %3: %4x%5 -> %6x%7")
-                                   .arg(i).arg(kinds[i % 6]).arg(z)
-                                   .arg(Ref[i].dim.x).arg(Ref[i].dim.y).arg(Now[i].dim.x).arg(Now[i].dim.y);
-            }
-        }
-        Canvas->setZoom(1.0f);
-        QVERIFY2(outliers.isEmpty(), qPrintable("\n  " + outliers.join("\n  ")));
-    }
-
-    // The user's three zoom complaints, each turned into a measurement of the screen furniture that must NOT
-    // move: "the minimap position goes crazy with the zoom", "the window where you can pan also scales with
-    // the zoom leading to non working controls if you zoom out", and the node elongation (above).
-    //
-    // Everything here is screen space. Zoom is a transform over the CONTENT, so a rectangle that describes the
-    // VIEWPORT — where the canvas is on screen, where its overview sits, how far its clip reaches — must be
-    // byte-identical at 0.2x and at 3x. Any difference IS the bug.
-    void noScreenFurnitureMovesWithTheZoom()
-    {
-        Canvas->setMiniMap(true);
-        for (int i = 0; i < 6; ++i) Canvas->addNode("ZIP", 100.0f + i * 400.0f, 80.0f + i * 250.0f);
-        runFrame(); runFrame();
-
-        auto rects = [&]() {
-            runFrame(); runFrame();
-            ImVec4 Mm, Clip, View;
-            Canvas->miniMapRect(Mm.x, Mm.y, Mm.z, Mm.w);
-            Canvas->surfaceClip(Clip.x, Clip.y, Clip.z, Clip.w);
-            Canvas->canvasViewport(View.x, View.y, View.z, View.w);
-            return std::array<ImVec4, 3>{Mm, Clip, View};
-        };
-        const std::array<ImVec4, 3> Ref = rects();
-        const char *Names[3] = {"minimap", "surface clip", "viewport"};
-        // The minimap must actually be there, or this test passes by measuring nothing.
-        QVERIFY2(Ref[0].z - Ref[0].x > 50.0f, "the minimap was not drawn - nothing to measure");
-        // And the clip the canvas draws through must BE the viewport at 1:1, so a later zoom has something
-        // meaningful to differ from.
-        QVERIFY2(std::abs(Ref[1].z - Ref[2].z) < 1.5f && std::abs(Ref[1].x - Ref[2].x) < 1.5f,
-                 qPrintable(QString("at 1:1 the canvas clip is not the viewport: [%1,%2] vs [%3,%4]")
-                                .arg(Ref[1].x).arg(Ref[1].z).arg(Ref[2].x).arg(Ref[2].z)));
-
-        QStringList outliers;
-        for (float z : {0.2f, 0.4f, 0.75f, 1.5f, 2.0f, 3.0f}) {
-            Canvas->setZoom(z);
-            const std::array<ImVec4, 3> Now = rects();
-            for (int r = 0; r < 3; ++r) {
-                const float d = std::max(std::max(std::abs(Now[r].x - Ref[r].x), std::abs(Now[r].y - Ref[r].y)),
-                                         std::max(std::abs(Now[r].z - Ref[r].z), std::abs(Now[r].w - Ref[r].w)));
-                if (d > 1.5f)
-                    outliers << QString("%1 MOVED at zoom %2 by %3px: [%4,%5,%6,%7] -> [%8,%9,%10,%11]")
-                                   .arg(Names[r]).arg(z).arg(d)
-                                   .arg(Ref[r].x).arg(Ref[r].y).arg(Ref[r].z).arg(Ref[r].w)
-                                   .arg(Now[r].x).arg(Now[r].y).arg(Now[r].z).arg(Now[r].w);
-            }
-        }
-        Canvas->setZoom(1.0f);
-        Canvas->setMiniMap(false);
-        QVERIFY2(outliers.isEmpty(), qPrintable("\n  " + outliers.join("\n  ")));
-    }
-
-    // Found on the LIVE canvas at 47%, and invisible to every geometry assertion before it: nodes to the right
-    // of the viewport rendered as empty boxes with a title bar and nothing inside. imgui culls a widget against
-    // the clip rect at SUBMISSION time, and submission happens in unscaled coordinates — so zoomed out, the
-    // fields of a node whose unscaled position is off-screen are thrown away, and the transform then scales the
-    // hollow box into view. The box is still exactly the right size, which is why sizes and bounds all agreed.
-    //
-    // What it costs is CONTENT, so content is what this counts: zooming out brings more of the graph on screen,
-    // so it must emit MORE vertices, never fewer.
-    void zoomingOutStillDrawsWhatIsInsideTheNodes()
-    {
-        Canvas->setMiniMap(false);
-        // Spread well past the viewport (1400x900) horizontally and vertically, so at 1:1 most of it is off
-        // screen and at 0.3 all of it is on.
-        for (int i = 0; i < 12; ++i) Canvas->addNode("ZIP", 60.0f + i * 520.0f, 40.0f + i * 240.0f);
-        auto verticesAt = [&](float z) {
-            Canvas->setZoom(z);
-            runFrame(); runFrame();
-            return Canvas->surfaceVertices();
-        };
-        const int At1 = verticesAt(1.0f);
-        QVERIFY2(At1 > 0, "nothing was drawn at 1:1");
-
-        QStringList outliers;
-        for (float z : {0.75f, 0.5f, 0.3f}) {
-            const int Now = verticesAt(z);
-            if (Now < At1)
-                outliers << QString("zoom %1 emitted FEWER vertices than 1:1 (%2 < %3) - content was culled "
-                                    "before the transform could bring it on screen").arg(z).arg(Now).arg(At1);
-        }
-        // And the far-out view must show substantially more than the 1:1 one, or "more of the graph is
-        // visible" is not actually true of what got drawn.
-        const int AtFar = verticesAt(0.3f);
-        if (AtFar < At1 * 3 / 2)
-            outliers << QString("zoom 0.3 drew only %1 vertices against %2 at 1:1 - the extra nodes it "
-                                "brought on screen are empty").arg(AtFar).arg(At1);
-        Canvas->setZoom(1.0f);
-        QVERIFY2(outliers.isEmpty(), qPrintable("\n  " + outliers.join("\n  ")));
-    }
-
-    // The minimap is drawn into a child of its OWN, created after the editor's, for one reason: draw order.
-    // A draw list appended to the parent window renders UNDERNEATH imnodes' scrolling region, so the overview
-    // would be painted and then covered by the canvas background — invisible, with nothing in the code to say
-    // why. Assert the ordering imgui actually produced rather than trusting that reasoning.
-    void theMinimapRendersAboveTheCanvas()
-    {
-        Canvas->setMiniMap(true);
-        for (int i = 0; i < 6; ++i) Canvas->addNode("ZIP", 100.0f + i * 300.0f, 80.0f + i * 200.0f);
-        runFrame(); runFrame();
-
-        const ImGuiContext &C = *ImGui::GetCurrentContext();
-        const ImDrawList *MiniDL = nullptr, *EditorDL = nullptr;
-        for (int w = 0; w < C.Windows.Size; ++w) {
-            const ImGuiWindow *W = C.Windows[w];
-            //ACTIVE only. The imgui context outlives a single test, so windows from earlier canvases are
-            //still in the list under the same names — and a stale one's draw list is in no frame at all.
-            if (!W->Name || !W->Active) continue;
-            if (std::strstr(W->Name, "##minimap")) MiniDL = W->DrawList;
-            else if (std::strstr(W->Name, "scrolling_region")) EditorDL = W->DrawList;
-        }
-        QVERIFY2(MiniDL, "no ##minimap window was created");
-        QVERIFY2(EditorDL, "no imnodes scrolling_region window - the canvas did not draw");
-        QVERIFY2(MiniDL != EditorDL, "the minimap shares the canvas draw list - it would be scaled by the view "
-                                     "transform and covered by the canvas background");
-
-        int MiniAt = -1, EditorAt = -1;
-        const ImDrawData *D = ImGui::GetDrawData();
-        QVERIFY2(D, "no draw data");
-        for (int i = 0; i < D->CmdListsCount; ++i) {
-            if (D->CmdLists[i] == MiniDL)   MiniAt = i;
-            if (D->CmdLists[i] == EditorDL) EditorAt = i;
-        }
-        QVERIFY2(MiniAt >= 0 && EditorAt >= 0,
-                 qPrintable(QString("a draw list never reached the frame: minimap %1, canvas %2")
-                                .arg(MiniAt).arg(EditorAt)));
-        QVERIFY2(MiniAt > EditorAt,
-                 qPrintable(QString("the minimap renders UNDER the canvas: list %1 vs %2").arg(MiniAt).arg(EditorAt)));
-        Canvas->setMiniMap(false);
-    }
-
-    // The minimap draws from OUR node array, not from what imnodes was handed — that is the whole reason it can
-    // coexist with viewport culling, and the headline claim of replacing the built-in one.
-    //
-    // Asserting that its RECTANGLE exists proves none of that: the rectangle is computed from the canvas
-    // viewport before anything is drawn, so it is a healthy non-empty box whether the overview painted 107
-    // nodes, one, or none. Demonstrated: with the node-rectangle loop cut to zero iterations the whole suite
-    // stayed green. So count what the overview actually PAINTED, and pin it to the graph rather than to the
-    // viewport: a graph ten times larger draws a busier minimap even when culling submits fewer nodes than the
-    // small one did.
-    void theMinimapDrawsTheWholeGraphWhileCullingHidesMostOfIt()
-    {
-        Canvas->setMiniMap(true);
-        for (int i = 0; i < 6; ++i) Canvas->addNode("ZIP", 100.0f + i * 120.0f, 80.0f + i * 90.0f);
-        runFrame(); runFrame();
-        const int Small = miniMapVertices();
-        const int SmallDrawn = Canvas->visibleNodes();
-        QVERIFY2(Small > 0, "the minimap painted nothing at all");
-
-        // Ten times the nodes, spread far enough that culling submits FEWER than the small graph did.
-        for (int i = 0; i < 60; ++i) Canvas->addNode("ZIP", 4000.0f + i * 2600.0f, 3000.0f + i * 1700.0f);
-        runFrame(); runFrame();
-        const int Big = miniMapVertices();
-        QVERIFY2(Canvas->visibleNodes() <= SmallDrawn,
-                 qPrintable(QString("culling submitted %1 of %2 - not fewer than the 6-node graph's %3, so "
-                                    "this proves nothing about drawing what was NOT submitted")
-                                .arg(Canvas->visibleNodes()).arg(Canvas->nodeCount()).arg(SmallDrawn)));
-        QVERIFY2(Big > Small * 3,
-                 qPrintable(QString("66 nodes drew %1 minimap vertices against %2 for 6 - the overview is not "
-                                    "drawing the nodes culling hid").arg(Big).arg(Small)));
-        Canvas->setMiniMap(false);
-    }
-
-    // Click-to-centre. The entire interactive half of the new overview had no coverage, so the mapping from a
-    // minimap point back to a world point - and the pan that puts it in the middle of the viewport - could be
-    // any function at all and every test would still pass.
-    void clickingTheMinimapCentresTheViewThere()
-    {
-        Canvas->setMiniMap(true);
-        // Two nodes far apart, so the overview spans a wide world and a click at one end is unambiguous.
-        Canvas->addNode("ZIP", 0, 0);
-        Canvas->addNode("ZIP", 6000, 3600);
-        runFrame(); runFrame();
-        float mx0 = 0, my0 = 0, mx1 = 0, my1 = 0;
-        Canvas->miniMapRect(mx0, my0, mx1, my1);
-        QVERIFY2(mx1 - mx0 > 50.0f, "no minimap to click");
-
-        auto screenOf = [&](int n) { return ImNodes::GetNodeScreenSpacePos(n); };
-        float vx0 = 0, vy0 = 0, vx1 = 0, vy1 = 0;
-        Canvas->canvasViewport(vx0, vy0, vx1, vy1);
-        const ImVec2 Centre((vx0 + vx1) * 0.5f, (vy0 + vy1) * 0.5f);
-
-        // Click near the FAR (bottom-right) corner of the overview: the far node must end up near the middle
-        // of the viewport.
-        clickAt(ImVec2(mx1 - 12.0f, my1 - 12.0f));
-        runFrame(); runFrame();
-        const ImVec2 Far = screenOf(1);
-        const float D = std::hypot(Far.x - Centre.x, Far.y - Centre.y);
-        QVERIFY2(D < 420.0f,
-                 qPrintable(QString("clicking the far corner of the overview left the far node %1px from the "
-                                    "viewport centre (node at %2,%3, centre %4,%5)")
-                                .arg(D).arg(Far.x).arg(Far.y).arg(Centre.x).arg(Centre.y)));
-
-        // And the near corner brings the other node back, so it is a MAPPING and not a constant.
-        clickAt(ImVec2(mx0 + 12.0f, my0 + 12.0f));
-        runFrame(); runFrame();
-        const ImVec2 Near = screenOf(0);
-        const float D2 = std::hypot(Near.x - Centre.x, Near.y - Centre.y);
-        QVERIFY2(D2 < 420.0f,
-                 qPrintable(QString("clicking the near corner left the near node %1px from centre").arg(D2)));
-        Canvas->setMiniMap(false);
-    }
-
-    // THE WORST BUG THIS CANVAS HAS HAD, and it was introduced by the minimap's own input guard. The guard
-    // handed imnodes ImVec2(-FLT_MAX,-FLT_MAX) whenever the cursor was over the overview — but
-    // TranslateSelectedNodes computes a dragged node's origin ABSOLUTELY from that position and runs whether or
-    // not the cursor is over the minimap. So dragging a node toward the bottom-right corner, where the minimap
-    // lives, wrote -3.4e38 into the node, into the saved layout and into GlobalConfig: a node that can never be
-    // drawn (it fails every viewport test), never selected, never dragged back, and that survives reload
-    // because a layout entry wins over the package's own POS.
-    //
-    // The drag must therefore SURVIVE crossing the minimap with a sane position, and nothing absurd may ever
-    // reach the layout by any route.
-    void draggingANodeAcrossTheMinimapDoesNotDestroyIt()
-    {
-        Canvas->setMiniMap(true);
-        Canvas->addNode("ZIP", 200, 200);
-        runFrame(); runFrame();
-        float mx0 = 0, my0 = 0, mx1 = 0, my1 = 0;
-        Canvas->miniMapRect(mx0, my0, mx1, my1);
-        QVERIFY2(mx1 - mx0 > 50.0f, "no minimap - this test would cross nothing");
-
-        // Grab the node's title bar and drag into the middle of the minimap.
-        const ImVec2 Grab(ImNodes::GetNodeScreenSpacePos(0).x + 40.0f,
-                          ImNodes::GetNodeScreenSpacePos(0).y + 8.0f);
-        dragFromTo(Grab, ImVec2((mx0 + mx1) * 0.5f, (my0 + my1) * 0.5f));
-
-        // What IMNODES holds, checked first and deliberately. The read-back validates itself before writing to
-        // the layout, so a poisoned position never reaches G.Nodes or the layout at all — which means those
-        // two, on their own, stay green with the original -FLT_MAX guard still in place. The defence in depth
-        // hides the defect from any test that only looks downstream of it. This is the position the bug
-        // actually corrupts.
-        const ImVec2 Held = ImNodes::GetNodeGridSpacePos(0);
-        QVERIFY2(std::isfinite(Held.x) && std::isfinite(Held.y)
-                     && std::abs(Held.x) < 1.0e6f && std::abs(Held.y) < 1.0e6f,
-                 qPrintable(QString("the drag destroyed the position imnodes holds: (%1,%2)")
-                                .arg(double(Held.x)).arg(double(Held.y))));
-
-        const PkgGraph::Graph G = Canvas->graph();
-        QCOMPARE(G.Nodes.size(), size_t(1));
-        QVERIFY2(std::isfinite(G.Nodes[0].X) && std::isfinite(G.Nodes[0].Y)
-                     && std::abs(G.Nodes[0].X) < 1.0e6f && std::abs(G.Nodes[0].Y) < 1.0e6f,
-                 qPrintable(QString("the drag destroyed the node's position: (%1,%2)")
-                                .arg(double(G.Nodes[0].X)).arg(double(G.Nodes[0].Y))));
-        const QString Dump = QString::fromStdString(Layout.dump());
-        QVERIFY2(!Dump.contains("e+3") && !Dump.contains("inf") && !Dump.contains("nan"),
-                 qPrintable("an absurd coordinate reached the saved layout: " + Dump));
-        // WHERE it landed, not merely that it is finite. "Somewhere sane" is far too weak a claim: with the
-        // suppression applied mid-drag the node is parked at the off-canvas sentinel — about (-10040,-10008),
-        // comfortably inside every |v| < 1e6 bound above and comfortably "moved more than 20px" — and the
-        // layout is saved with it. A drag has a destination, so assert the destination: the node's grab point
-        // follows the cursor, so its origin must end within a node's width of where the cursor was released,
-        // in the same world units imnodes holds.
-        float vx0 = 0, vy0 = 0, vx1 = 0, vy1 = 0;
-        Canvas->canvasViewport(vx0, vy0, vx1, vy1);
-        const ImVec2 Pan = ImNodes::EditorContextGetPanning();
-        const ImVec2 Release((mx0 + mx1) * 0.5f, (my0 + my1) * 0.5f);
-        const ImVec2 WantWorld(Release.x - vx0 - Pan.x, Release.y - vy0 - Pan.y);   // zoom is 1 here
-        const float Off = std::hypot(G.Nodes[0].X - WantWorld.x, G.Nodes[0].Y - WantWorld.y);
-        QVERIFY2(Off < 360.0f,
-                 qPrintable(QString("the drag released at world (%1,%2) and the node ended at (%3,%4) - %5 "
-                                    "units away, so it did not follow the cursor")
-                                .arg(WantWorld.x).arg(WantWorld.y)
-                                .arg(double(G.Nodes[0].X)).arg(double(G.Nodes[0].Y)).arg(Off)));
-        // And it must have actually MOVED, or the guard is just refusing to drag at all.
-        QVERIFY2(std::abs(G.Nodes[0].X - 200.0f) > 20.0f || std::abs(G.Nodes[0].Y - 200.0f) > 20.0f,
-                 "the node did not move - the drag never happened, so this proves nothing");
-        Canvas->setMiniMap(false);
-    }
-
-    // Clicking the minimap must not also reach the canvas behind it. The suppression is what makes that true,
-    // and the test above constrains how much suppression is allowed - so pin the other half too, or "fix" the
-    // crash by never suppressing at all and both tests still pass.
-    void clickingTheMinimapDoesNotTouchTheCanvasBehindIt()
-    {
-        Canvas->setMiniMap(true);
-        // A node placed so it sits UNDER the minimap corner at 1:1.
-        Canvas->addNode("ZIP", 1050, 700);
-        runFrame(); runFrame();
-        float mx0 = 0, my0 = 0, mx1 = 0, my1 = 0;
-        Canvas->miniMapRect(mx0, my0, mx1, my1);
-        const PkgGraph::Graph Before = Canvas->graph();
-
-        clickAt(ImVec2((mx0 + mx1) * 0.5f, (my0 + my1) * 0.5f));
-        runFrame();
-        QCOMPARE(ImNodes::NumSelectedNodes(), 0);      // nothing behind the overview was selected
-        const PkgGraph::Graph After = Canvas->graph();
-        QCOMPARE(After.Nodes[0].X, Before.Nodes[0].X);
-        QCOMPARE(After.Nodes[0].Y, Before.Nodes[0].Y);
-        Canvas->setMiniMap(false);
-    }
-
-    // imnodes gates every interaction on "is the mouse in the canvas", testing the position we hand it against
-    // the canvas rectangle it measured in SCREEN space. Those stop being the same space the moment the zoom is
-    // not 1, and the consequence was that only the top-left Z-by-Z fraction of the canvas responded to
-    // anything: at 0.5x a node plainly visible in the lower right could not be clicked.
-    void everyVisibleNodeIsClickableAtEveryZoom()
-    {
-        Canvas->setMiniMap(false);
-        Canvas->addNode("ZIP", 1500, 1000);        // off-screen at 1:1, well on-screen zoomed out
-        QStringList outliers;
-        for (float z : {1.0f, 0.75f, 0.5f, 0.3f}) {
-            Canvas->setZoom(z);
-            runFrame(); runFrame();
-            // Where the node actually IS on screen: world -> editor -> transform.
-            const ImVec2 P = ImNodes::GetNodeScreenSpacePos(0);
-            float ox = 0, oy = 0, dummy = 0;
-            Canvas->canvasViewport(ox, oy, dummy, dummy);
-            const ImVec2 Hit(ox + (P.x + 40.0f - ox) * z, oy + (P.y + 8.0f - oy) * z);
-            float vx0 = 0, vy0 = 0, vx1 = 0, vy1 = 0;
-            Canvas->canvasViewport(vx0, vy0, vx1, vy1);
-            if (Hit.x < vx0 || Hit.x > vx1 || Hit.y < vy0 || Hit.y > vy1) continue;   // genuinely off-screen
-            clickAt(Hit);
-            runFrame();
-            if (ImNodes::NumSelectedNodes() == 0)
-                outliers << QString("zoom %1: the node is drawn at (%2,%3), inside the viewport, and a click "
-                                    "there selected nothing").arg(z).arg(Hit.x).arg(Hit.y);
-            ImNodes::ClearNodeSelection();
-        }
-        Canvas->setZoom(1.0f);
-        QVERIFY2(outliers.isEmpty(), qPrintable("\n  " + outliers.join("\n  ")));
-    }
-
-    // Panning moves the view by `MouseDelta`, which imgui measured in SCREEN pixels, into a pan that is in
-    // WORLD units - so without dividing it by the zoom the graph crawled at half speed at 0.5x and bolted at
-    // 3x, and nothing you grabbed stayed under the pointer. Assert the thing the user feels: the graph moves
-    // the same number of SCREEN pixels as the cursor, whatever the zoom.
-    void panningMovesTheGraphWithTheCursorAtEveryZoom()
-    {
-        Canvas->setMiniMap(false);
-        //Placed so the drag below starts on EMPTY canvas: a middle-drag begun ON a node is a different
-        //gesture, imnodes never reaches BeginCanvasInteraction, and the pan silently measures zero.
-        Canvas->addNode("ZIP", 300, 300);
-        QStringList outliers;
-        for (float z : {1.0f, 0.5f, 2.0f}) {
-            Canvas->setZoom(z);
-            runFrame(); runFrame();
-            //setZoom recentres, so confirm the node is still drawn before measuring where it is.
-            QVERIFY2(Canvas->visibleNodes() == Canvas->nodeCount(), "the node was culled - cannot measure a pan");
-            float ox = 0, oy = 0, d = 0;
-            Canvas->canvasViewport(ox, oy, d, d);
-            auto screenOf = [&]() {
-                const ImVec2 P = ImNodes::GetNodeScreenSpacePos(0);
-                return ImVec2(ox + (P.x - ox) * z, oy + (P.y - oy) * z);
-            };
-            const ImVec2 Before = screenOf();
-            // Middle-drag is the pan gesture; drive it the way imnodes reads it — and start it on EMPTY
-            // canvas. A middle-drag begun ON a node is a different gesture: imnodes never reaches
-            // BeginCanvasInteraction and the pan silently measures zero, which reads exactly like a broken
-            // pan. Derived from where the node actually IS, because setZoom recentres and a fixed point
-            // that was empty at one zoom sits on the node at the next.
-            ImGuiIO &io = ImGui::GetIO();
-            float vx0 = 0, vy0 = 0, vx1 = 0, vy1 = 0;
-            Canvas->canvasViewport(vx0, vy0, vx1, vy1);
-            const ImVec2 From(vx0 + 60.0f, vy1 - 60.0f);
-            const ImVec2 NodeAt = Before;
-            const ImVec2 NodeSz = ImNodes::GetNodeDimensions(0);
-            QVERIFY2(!(From.x >= NodeAt.x && From.x <= NodeAt.x + NodeSz.x * z
-                       && From.y >= NodeAt.y && From.y <= NodeAt.y + NodeSz.y * z),
-                     qPrintable(QString("zoom %1: the drag would start on the node, not on empty canvas")
-                                    .arg(z)));
-            runFrame(From);
-            io.AddMouseButtonEvent(ImGuiMouseButton_Middle, true);
-            runFrame(From);
-            for (int i = 1; i <= 4; ++i) runFrame(ImVec2(From.x + i * 25.0f, From.y));
-            io.AddMouseButtonEvent(ImGuiMouseButton_Middle, false);
-            runFrame(ImVec2(From.x + 100.0f, From.y));
-            const ImVec2 After = screenOf();
-            const float Moved = After.x - Before.x;
-            if (std::abs(Moved - 100.0f) > 12.0f)
-                outliers << QString("zoom %1: a 100px pan moved the graph %2px on screen").arg(z).arg(Moved);
-        }
-        Canvas->setZoom(1.0f);
-        QVERIFY2(outliers.isEmpty(), qPrintable("\n  " + outliers.join("\n  ")));
-    }
-
-    // A widget that opens a CHILD WINDOW gets its own draw list, which the transform over the editor's list
-    // never reaches. InputTextMultiline does — every StringList field with more than one line — so the node
-    // body scaled and moved while the text inside it stayed at its 1:1 position, painted over whatever node
-    // had moved there. Every geometry assertion passed it, because the box was still the right size.
-    void everyNestedFieldScalesWithItsNode()
-    {
-        Canvas->setMiniMap(false);
-        // SUBMOUNTS is a StringList; several lines make it a multiline box, which is what opens the child.
-        const int N = Canvas->addNode("ZIP", 500, 300);
-        Doc["NODES"][N]["LAYERS"][0]["SUBMOUNTS"] = json::array({"a/b:c/d", "e/f:g/h", "i/j:k/l"});
-        Canvas->setExpanded(N, true);          // the nested field is inside the folded layer
-        Canvas->invalidateGraph();
-        runFrame(); runFrame();
-
-        auto nestedBounds = [&]() {
-            const ImGuiContext &C = *ImGui::GetCurrentContext();
-            float x0 = 1e30f, y0 = 1e30f, x1 = -1e30f, y1 = -1e30f;
-            int found = 0;
-            for (int w = 0; w < C.Windows.Size; ++w) {
-                const ImGuiWindow *W = C.Windows[w];
-                const char *SR = W->Name ? std::strstr(W->Name, "scrolling_region") : nullptr;
-                if (!W->Active || !SR || !std::strchr(SR, '/')) continue;   // nested INSIDE the editor child
-                const ImDrawList *D = W->DrawList;
-                if (D->VtxBuffer.Size == 0) continue;
-                ++found;
-                for (int v = 0; v < D->VtxBuffer.Size; ++v) {
-                    x0 = std::min(x0, D->VtxBuffer[v].pos.x); x1 = std::max(x1, D->VtxBuffer[v].pos.x);
-                    y0 = std::min(y0, D->VtxBuffer[v].pos.y); y1 = std::max(y1, D->VtxBuffer[v].pos.y);
-                }
-            }
-            return std::array<float, 5>{(float)found, x0, y0, x1, y1};
-        };
-
-        const std::array<float, 5> At1 = nestedBounds();
-        QVERIFY2(At1[0] > 0.0f, "no nested child window was drawn - this test is measuring nothing");
-        Canvas->setZoom(2.0f);
-        runFrame(); runFrame();
-        //setZoom recentres the view, so the node has to still be submitted for its field to exist at all.
-        QVERIFY2(Canvas->visibleNodes() == Canvas->nodeCount(),
-                 "the node was culled at 2x - nothing to measure");
-        const std::array<float, 5> At2 = nestedBounds();
-        QVERIFY2(At2[0] > 0.0f, "the nested child vanished when zoomed");
-        // Its own extent must have grown with the zoom, like everything else the canvas draws.
-        const float W1 = At1[3] - At1[1], W2 = At2[3] - At2[1];
-        QVERIFY2(W2 > W1 * 1.4f,
-                 qPrintable(QString("a nested field did not scale: %1px wide at 1:1, %2px at 2x - it is being "
-                                    "drawn at its unscaled position on top of the canvas").arg(W1).arg(W2)));
-        Canvas->setZoom(1.0f);
-    }
-
-    // imnodes draws its grid inside BeginNodeEditor, before the first vertex the transform can reach, so it
-    // kept a fixed screen pitch and translated 1:1 while the content translated Z:1 - the graph slid across
-    // its own grid on every pan, and the grid gave no scale cue at all. Ours is drawn as content.
-    void theGridScalesWithTheView()
-    {
-        Canvas->setMiniMap(false);
-        // No nodes on purpose: with an empty graph the only thin, tall quads in the editor's draw list are
-        // grid lines, so the measurement cannot pick up a node border or a glyph and call it the grid.
-        auto pitchAt = [&](float z) {
-            Canvas->setZoom(z);
-            runFrame(); runFrame();
-            const ImDrawList *D = nullptr;
-            const ImGuiContext &C = *ImGui::GetCurrentContext();
-            for (int w = 0; w < C.Windows.Size; ++w)
-                if (C.Windows[w]->Name && C.Windows[w]->Active
-                    && std::strstr(C.Windows[w]->Name, "scrolling_region")
-                    && !std::strstr(C.Windows[w]->Name, "scrolling_region/"))
-                    D = C.Windows[w]->DrawList;
-            if (!D) return 0.0f;
-            // Grid lines are the thin 1px verticals; collect distinct x of 4-vertex quads that are tall.
-            std::vector<float> xs;
-            for (int v = 0; v + 3 < D->VtxBuffer.Size; v += 4) {
-                const float ax = D->VtxBuffer[v].pos.x, bx = D->VtxBuffer[v + 2].pos.x;
-                const float ay = D->VtxBuffer[v].pos.y, by = D->VtxBuffer[v + 2].pos.y;
-                if (std::abs(bx - ax) < 4.0f && (by - ay) > 200.0f) xs.push_back((ax + bx) * 0.5f);
-            }
-            std::sort(xs.begin(), xs.end());
-            float best = 0.0f;
-            for (size_t i = 1; i < xs.size(); ++i) {
-                const float d = xs[i] - xs[i - 1];
-                if (d > 1.0f && (best == 0.0f || d < best)) best = d;
-            }
-            return best;
-        };
-        const float P1 = pitchAt(1.0f);
-        QVERIFY2(P1 > 1.0f, "no grid lines found at 1:1 - the grid is not being drawn");
-        const float P2 = pitchAt(2.0f);
-        QVERIFY2(P2 > P1 * 1.5f,
-                 qPrintable(QString("the grid pitch did not scale: %1px at 1:1, %2px at 2x - the grid is "
-                                    "pinned to the screen while the graph moves over it").arg(P1).arg(P2)));
-        Canvas->setZoom(1.0f);
-    }
-
-    // NodeDims is the one piece of per-node canvas state the delete/rename paths forgot. renameNode runs on
-    // EVERY KEYSTROKE of an id edit, so a missed move leaks one entry per character typed and lets a node
-    // later named back into an old id inherit a stale box size in the overview; removeNode's own comment says
-    // exactly why every other map is maintained there.
-    void theMeasuredSizeCacheFollowsRenamesAndDeletes()
-    {
-        Canvas->setMiniMap(false);
-        Canvas->addNode("ZIP", 100, 100);
-        Canvas->addNode("EXEC", 500, 100);
-        Canvas->addNode("KEEP", 900, 100);
-        runFrame(); runFrame();
-        QCOMPARE(Canvas->cachedNodeSizes(), 3);
-
-        // A typed id arrives one character at a time, which is one rename per character.
-        const std::string Start = Doc["NODES"][0]["LABEL"].get<std::string>();
-        std::string Cur = Start;
-        for (const char *C = "abcdef"; *C; ++C) {
-            const std::string Next = Cur + *C;
-            Canvas->renameNode(0, Next);
-            Cur = Next;
-            runFrame(); runFrame();
-        }
-        QVERIFY2(Canvas->cachedNodeSizes() == 3,
-                 qPrintable(QString("typing a 6-character id left %1 cached sizes for 3 nodes - the rename "
-                                    "path is leaking one per keystroke").arg(Canvas->cachedNodeSizes())));
-
-        Canvas->removeNode(2);
-        runFrame(); runFrame();
-        QVERIFY2(Canvas->cachedNodeSizes() == 2,
-                 qPrintable(QString("a deleted node left its measured size behind (%1 for 2 nodes)")
-                                .arg(Canvas->cachedNodeSizes())));
-    }
-
-    // The zoom ease re-solves the pan from an anchor captured at the wheel event, every frame until it
-    // arrives. Applied unconditionally that DISCARDED whatever the user panned in the meantime: a middle-drag
-    // begun one frame after a notch ended up exactly where the ease wanted it, drag thrown away.
-    void panningDuringAZoomEaseIsNotThrownAway()
-    {
-        Canvas->setMiniMap(false);
-        Canvas->addNode("ZIP", 300, 300);
-        runFrame(); runFrame();
-        const ImVec2 Pan0 = ImNodes::EditorContextGetPanning();
-
-        ImGuiIO &io = ImGui::GetIO();
-        io.AddMouseWheelEvent(0.0f, +1.0f);
-        runFrame(ImVec2(700, 450));                    // the notch: the ease is now in flight
-        QVERIFY2(Canvas->zoom() < 1.1f - 0.001f, "the zoom did not ease, so there is no ease to pan during");
-
-        const ImVec2 From(700, 450);
-        runFrame(From);
-        io.AddMouseButtonEvent(ImGuiMouseButton_Middle, true);
-        runFrame(From);
-        for (int i = 1; i <= 4; ++i) runFrame(ImVec2(From.x + i * 30.0f, From.y));
-        io.AddMouseButtonEvent(ImGuiMouseButton_Middle, false);
-        runFrame(ImVec2(From.x + 120.0f, From.y));
-        const ImVec2 Pan1 = ImNodes::EditorContextGetPanning();
-
-        QVERIFY2(Pan1.x - Pan0.x > 40.0f,
-                 qPrintable(QString("a 120px pan during the zoom ease moved the view %1 units - the ease "
-                                    "overwrote it").arg(Pan1.x - Pan0.x)));
-        Canvas->setZoom(1.0f);
-    }
-
-    // The layout steps vertically by each node's ESTIMATED height, and it has to be an estimate: the layout is
-    // pure and is stamped into POS at publish time, headless, where nothing has ever been rendered. An estimate
-    // that drifts from the renderer is a layout that overlaps again, silently, and no layout-level test can see
-    // it — so this is the one place the two are tied together.
-    //
-    // Short is the dangerous direction (two nodes drawn on top of each other); generous merely wastes space.
-    void theEstimatedNodeHeightMatchesTheDrawnOne()
-    {
-        Canvas->setMiniMap(false);
-        //Issues and hints both add rows to a node — a warning line each, an action button each — so this
-        //states outright that there are none rather than relying on it. They cannot in fact arrive from an
-        //earlier test (the fixture builds a fresh PkgCanvas per test, and both live on it), which is worth
-        //saying because an earlier version of this comment blamed them for a cross-test effect that was really
-        //ImGui's: tree open/closed state lives in the CONTEXT, which does outlive the canvas. Nothing to
-        //restore, therefore — a fresh canvas has neither.
-        Canvas->setIssues({});
-        QStringList outliers;
-
-        // ONE node at a time, at the top-left of the viewport. A node placed off-screen is culled, and
-        // GetNodeDimensions then reports the title-bar-only size of the box imnodes re-created — 35.5px for
-        // everything, which compares as "wildly over-estimated" for every type at once. That is a measurement
-        // artifact, not a finding, and it is exactly the shape of one: a uniform, implausible number.
-        //The estimate reserves the "node options" tree as though it were OPEN, so what must be compared against
-        //is the OPEN height — and that state is NOT ours to set. It lives in ImGui's per-window storage under
-        //an id derived from the node INDEX (imnodes pushes it), the context outlives the per-test canvas, and
-        //SetNextItemOpen(..., Once) does not override a stored value. An earlier attempt to force it with a
-        //fresh NODE_ID was simply inert for that reason, and the SHORT branch — the one this test exists for —
-        //stayed armed or disarmed depending on which tests ran first, silently, by 57px on every node.
-        //
-        //So measure BOTH states and compare against the taller. No guessing, no ordering.
-        auto measure = [&](const char *Type, const json &Payload) {
-            const int N = Canvas->addNode(Type, 100.0f, 100.0f);
-            if (Payload.is_array()) Doc["NODES"][N]["LAYERS"] = Payload;      // the layers under test
-            else for (auto It = Payload.begin(); It != Payload.end(); ++It) Doc["NODES"][N][It.key()] = It.value();
-            //Hints are host facts ("this zip is deflate") that add ACTION BUTTONS, and an id reused from an
-            //earlier test in this suite arrives carrying them — worth 50-odd pixels of extra button rows on
-            //every measurement. Cleared for the node under test so what is measured is the payload.
-            Canvas->setNodeHints(Doc["NODES"][N].value("LABEL", std::string()), {});
-            Canvas->invalidateGraph();
-            runFrame(); runFrame();
-            QVERIFY2(Canvas->visibleNodes() == Canvas->nodeCount(),
-                     qPrintable(QString("%1 of %2 nodes submitted - a culled node cannot be measured")
-                                    .arg(Canvas->visibleNodes()).arg(Canvas->nodeCount())));
-            float Drawn = ImNodes::GetNodeDimensions(N).y;
-            //Toggle the options tree and keep the taller reading. The toggle is a click on the tree's own row,
-            //found by effect: the one click down the node's left edge that changes its height.
-            {
-                float vx0 = 0, vy0 = 0, vx1 = 0, vy1 = 0;
-                Canvas->canvasViewport(vx0, vy0, vx1, vy1);
-                const ImVec2 P = ImNodes::GetNodeScreenSpacePos(N);
-                bool Toggled = false;
-                for (float dy = 40.0f; dy < 140.0f && !Toggled; dy += 4.0f) {
-                    const ImVec2 At(P.x + 24.0f, P.y + dy);
-                    if (At.x < vx0 || At.x > vx1 || At.y < vy0 || At.y > vy1) continue;
-                    clickAt(At);
-                    runFrame(); runFrame();
-                    const float H2 = ImNodes::GetNodeDimensions(N).y;
-                    if (std::abs(H2 - Drawn) > 25.0f) { Drawn = std::max(Drawn, H2); Toggled = true; }
-                }
-                if (!Toggled)
-                    outliers << QString("%1: the node options tree could not be toggled, so only one of its "
-                                        "two heights was measured").arg(Type);
-            }
-            const float Wide  = ImNodes::GetNodeDimensions(N).x;
-            const float Est   = Canvas->graph().Nodes[(size_t)N].Height;
-            const QString Who = QString("%1%2").arg(Type).arg(Payload.empty() ? "" : " (loaded)");
-            //The layout's per-column overlap check rests on a node being narrower than ColumnStep, and nothing
-            //estimates width — so the assumption is measured here, where a real node is actually on screen,
-            //rather than asserted between two compile-time constants.
-            if (Wide >= 430.0f)
-                outliers << QString("%1 is %2px wide, at or past the 430px column step - nodes in adjacent "
-                                    "columns can now collide").arg(Who).arg(Wide);
-            if (Est < Drawn)
-                outliers << QString("%1 is drawn %2px but estimated only %3px - SHORT, so the layout will "
-                                    "overlap it").arg(Who).arg(Drawn).arg(Est);
-            //The slack allowed is deliberately wide, because the estimate deliberately reserves three rows for
-            //a "node options" tree that may or may not be open — ImGui keeps that state in its own per-window
-            //storage, so the SAME node measures 57px taller or shorter here depending only on which tests ran
-            //before this one. A tight bound would make this test pass or fail on test ORDER, which is worse
-            //than useless. What it still catches is the failure that matters: an estimate that is SHORT, and
-            //one that is wrong by a whole payload (the ignored-cap mutation reports 8680 against 2967).
-            //An ABSOLUTE band, not a proportional one, and that distinction is the whole point: a proportional
-            //bound grows with the node, so a per-row or per-entry error hides inside it. What the slack
-            //legitimately covers is FIXED — two reserved warning lines, plus a little for rows the arms round
-            //up. It does NOT need to cover the "node options" tree any more: an earlier version budgeted three
-            //rows for it because the tree's state was whatever previous tests had left, and the measurement
-            //above now takes both states, so that ambiguity is gone and so is the 57px it bought.
-            //
-            //Measured across every shape here (2026-09-14, all 20 of them): 31px on a Group or a RegEdit,
-            //48px on most, 65px worst case on a DeclareExec. 90 leaves a row's rounding over that. It was 120
-            //against a claimed 94px worst case, which no shape in the suite has produced since the estimate
-            //was recalibrated — an unearned 55px of headroom. Note the ASYMMETRY even so: the SHORT arm is
-            //tight to the pixel (kRowPx 19 -> 18 fails), while over-estimating has ~59px of headroom over the
-            //31px baseline, so a single-pixel over-charge on a per-entry constant still needs ~59 entries
-            //before it is caught. Doublings and the real per-entry mistakes are caught; a 1px over-charge on
-            //kSepPx or kBtnPx is not, and that is a deliberate trade against false positives on shapes the
-            //suite does not build.
-            else if (Est - Drawn > 90.0f)
-                outliers << QString("%1 is drawn %2px but estimated %3px - %4px of slack, past the fixed "
-                                    "reservations, so the layout will leave a hole")
-                                .arg(Who).arg(Drawn).arg(Est).arg(Est - Drawn);
-            Canvas->removeNode(N);
-            Canvas->invalidateGraph();
-            runFrame();
-        };
-
-        for (const std::string &T : PkgGraph::AllTypes()) measure(T.c_str(), json::object());
-
-        auto reg = [](const json &Hive) { return json{{"REG", {{"HKLM", Hive}}}, {"ARCH", json::array({"64"})}}; };
-
-        // The payloads that actually make a node tall.
-        json Keys = json::object();
-        for (int r = 0; r < 24; ++r) Keys["Software"]["App"]["v" + std::to_string(r)] = "data";
-        measure("REG", json::array({reg(Keys)}));
-
-        // SEVERAL LAYERS, which is the shape with a per-layer cost: one layer hides an error worth a whole row
-        // each time, and `capture_reg` emits a layer per captured hive and architecture.
-        for (int Count : {10, 45})
-        {
-            json Ls = json::array();
-            for (int e = 0; e < Count; ++e) {
-                json K = json::object();
-                for (int r = 0; r < 4; ++r) K["Software"]["G" + std::to_string(e)]["v" + std::to_string(r)] = "d";
-                Ls.push_back(reg(K));
-            }
-            measure("REG", Ls);
-        }
-
-        // MALFORMED layers, which drawPayload short-circuits to its header and one disabled line — the editor
-        // exists to open broken packages — and a REG whose tree is not an object.
-        measure("REG", json::array({"nope", 7, json::object({{"HKLM", json::object()}}), "also nope",
-                                    json{{"REG", 5}}, json{{"ZIP", "a"}, {"DIR", "b"}}}));
-
-        // And a REALLY tall one. The slack is fixed, so a per-ROW calibration error only becomes visible once
-        // enough rows have accumulated it: shaving 1.5px off the per-row constant is invisible at 24 rows and
-        // 180px short at 120. The codec libraries ship 59-row layers.
-        json ManyKeys = json::object();
-        for (int r = 0; r < 120; ++r) ManyKeys["Software"]["App"]["v" + std::to_string(r)] = "data";
-        measure("REG", json::array({reg(ManyKeys)}));
-
-        auto edit = [](int Ops) {
-            json O = json::array();
-            for (int r = 0; r < Ops; ++r)
-                O.push_back(json{{"MODE", "Replace"}, {"OFFSET", "0x1000"}, {"EXPECT", "90"}, {"REPLACE", "cc"}});
-            return json::array({ json{{"EDIT", O}, {"TARGET", "FILES/C:/g/g.exe"}} });
-        };
-        measure("EDIT", edit(5));
-        // PAST the cap. drawField reads a list capped at 12 entries and prints "... and N more" instead, so the
-        // estimate must stop growing at exactly the same point.
-        measure("EDIT", edit(30));
-
-        // A list longer than the multiline box's own 6-line cap, for the same reason — and a short multi-line one.
-        json Lines = json::array();
-        for (int r = 0; r < 20; ++r) Lines.push_back("a" + std::to_string(r) + ":b");
-        measure("ZIP", json::array({ json{{"ZIP", "a.zip"}, {"SUBMOUNTS", Lines}} }));
-        measure("ZIP", json::array({ json{{"ZIP", "a.zip"}, {"SUBMOUNTS", json::array({"a:b", "c:d", "e:f", "g:h"})}} }));
-
-        // Declarations with their launcher facets: an enum's choices, a secret's pool, an int's range.
-        measure("VARS", json::array({ json{{"VARS", {
-            {"mode", {{"DEFAULT", "a"}, {"UI", {{"CONTROL", "enum"}, {"CHOICES", json::array({"a", "b", "c", "d"})}}}}},
-            {"key",  {{"DEFAULT", ""},  {"UI", {{"CONTROL", "secret"}, {"POOL", json::array({"k1", "k2", "k3", "k4", "k5", "k6", "k7"})}}}}},
-            {"fps",  {{"DEFAULT", "60"}, {"UI", {{"CONTROL", "int"}, {"MIN", 30}, {"MAX", 240}}}}},
-            {"hidden", {{"DEFAULT", "x"}, {"WHEN", "%mode%==a"}}} }}} }));
-
-        // References, a TAKE, a KEEP map, an entry with its tile, an ENV map.
-        measure("NODE", json::array({ json{{"NODE", "a"}},
-                                      json{{"NODE", "b"}, {"TAKE", json::array({"FILES/x/", json::array({"FILES/a.dll", "FILES/b.dll"}), "VARS/v"})},
-                                           {"TARGET", "FILES/lib"}},
-                                      json{{"ANY", json::array({"c", "d"})}}, json{{"NOT", "e"}} }));
-        measure("KEEP", json::array({ json{{"KEEP", {{"FILES/C:/g/saves/", {{"NAME", "Saves"}}}, {"FILES/C:/g/saves/cfg.ini", false},
-                                                     {"REG/HKCU", true}, {"FILES/C:/g/cache/", {{"CLOUD", false}}}}}} }));
-        measure("EXEC", json::array({ json{{"EXEC", json::array({ json{{"LABEL", "Play"}, {"HOST", "win32"}, {"EXE", "C:/g/g.exe"},
-                                          {"ARGS", json::array({"-a", "-b"})},
-                                          {"TILE", {{"UID", "1"}, {"TITLE", "T"}, {"COVER", {{"FILE", "c.png"}}}, {"META", {{"YEAR", "1999"}, {"GENRE", "x"}}}}}} })}} }));
-        measure("ENV", json::array({ json{{"ENV", {{"A", "1"}, {"B", nullptr}, {"C", "3"}}}} }));
-
-        // MALFORMED lists, which drawField short-circuits to one disabled line — the shape that once drew a node
-        // 477px WIDE (past the 430px column step) because the arm printed the whole value on one unwrapped line.
-        auto args = [](const json &A) { return json::array({ json{{"EXEC", json::array({ json{{"LABEL", "Play"}, {"ARGS", A}} })}} }); };
-        measure("EXEC", args(json("not a list")));
-        measure("EXEC", args(json::object({{"looks", "structured"}})));
-        measure("EXEC", args(json(std::string(2000, 'w'))));
-        measure("EXEC", args(json::array({5})));
-        // SEVERAL GOOD ENTRIES AND ONE BAD ONE — the shape that catches the renderer and the estimator drifting
-        // apart (437px drawn against 600px estimated when the element scan lived in drawField only).
-        measure("EXEC", args(json::array({"a", "b", "c", "d", "e", "f", 5})));
-        measure("NODE", json::array({ json{{"NODE", "a"}, {"TAKE", json::array({"FILES/a", 5})}} }));
-        // A container holding a real payload with one bad entry, a huge string, a huge container: the describer
-        // reports SIZE and never serialises (a per-frame dump of a megabyte froze the editor).
-        {
-            json Huge = json::array();
-            for (int r = 0; r < 5000; ++r) Huge.push_back(std::string(200, 'q'));
-            Huge.push_back(7);
-            measure("EXEC", args(Huge));
-            measure("EXEC", args(json(std::string(4 * 1024 * 1024, 'w'))));
-            json HugeObj = json::object();
-            for (int r = 0; r < 5000; ++r) HugeObj[std::to_string(r)] = std::string(200, 'q');
-            measure("EXEC", args(HugeObj));
-        }
-
-        // The malformed-NODES placeholder: a title bar and one disabled line, and the only node whose height
-        // PkgGraph::Build sets without going through the payload arms. Measured here because the layout test
-        // that covers it can only compare it against other estimates, never against what is drawn.
-        {
-            const int N = (int)Doc["NODES"].size();
-            Doc["NODES"].push_back("this entry is not an object");
-            Canvas->invalidateGraph();
-            runFrame(); runFrame();
-            QVERIFY2(Canvas->visibleNodes() == Canvas->nodeCount(), "the placeholder was culled");
-            const float Drawn = ImNodes::GetNodeDimensions(N).y;
-            const float Est   = Canvas->graph().Nodes[(size_t)N].Height;
-            if (Est < Drawn)
-                outliers << QString("the malformed placeholder is drawn %1px but estimated only %2px - SHORT, "
-                                    "so the layout will overlap it").arg(Drawn).arg(Est);
-            else if (Est - Drawn > 20.0f)
-                outliers << QString("the malformed placeholder is drawn %1px but estimated %2px - %3px of "
-                                    "slack. It has no payload and no warnings, so the two should agree "
-                                    "closely").arg(Drawn).arg(Est).arg(Est - Drawn);
-            if (ImNodes::GetNodeDimensions(N).x >= 430.0f)
-                outliers << QString("the malformed placeholder is %1px wide, past the column step")
-                                .arg(ImNodes::GetNodeDimensions(N).x);
-            Doc["NODES"].erase(Doc["NODES"].size() - 1);
-            Canvas->invalidateGraph();
-            runFrame();
-        }
-
-        QVERIFY2(outliers.isEmpty(), qPrintable("\n  " + outliers.join("\n  ")));
-    }
-
-    // Drawing a widget in the right place is half of it. imgui resolves g.HoveredWindow in NewFrame, from the
-    // REAL cursor against last frame's window rectangles — before frame() runs, so the MousePos hijack cannot
-    // reach it — and ItemHoverable then rejects any item whose window is not the hovered one. A multiline field
-    // lives in a child window of its own, so scaling only its VERTICES draws it where it cannot be clicked.
-    void aNestedFieldIsClickableWhereItIsDrawn()
-    {
-        Canvas->setMiniMap(false);
-        const int N = Canvas->addNode("ZIP", 120, 120);
-        Doc["NODES"][N]["LAYERS"][0]["SUBMOUNTS"] = json::array({"a/b:c/d", "e/f:g/h", "i/j:k/l"});
-        Canvas->setExpanded(N, true);          // the nested field is inside the folded layer
-        Canvas->invalidateGraph();
-        //Start from a known scale: the canvas is shared with every earlier test in this suite and a leftover
-        //zoom decides whether the node is on screen at all.
-        Canvas->setZoom(1.0f);
-        runFrame(); runFrame();
-
-        // Where the field's child window is DRAWN, at each zoom: its own draw-list bounds.
-        auto drawnBox = [&]() {
-            const ImGuiContext &C = *ImGui::GetCurrentContext();
-            float x0 = 1e30f, y0 = 1e30f, x1 = -1e30f, y1 = -1e30f;
-            for (int w = 0; w < C.Windows.Size; ++w) {
-                const ImGuiWindow *W = C.Windows[w];
-                const char *SR = W->Name ? std::strstr(W->Name, "scrolling_region") : nullptr;
-                if (!W->Active || !SR || !std::strchr(SR, '/')) continue;
-                const ImDrawList *D = W->DrawList;
-                for (int v = 0; v < D->VtxBuffer.Size; ++v) {
-                    x0 = std::min(x0, D->VtxBuffer[v].pos.x); x1 = std::max(x1, D->VtxBuffer[v].pos.x);
-                    y0 = std::min(y0, D->VtxBuffer[v].pos.y); y1 = std::max(y1, D->VtxBuffer[v].pos.y);
-                }
-            }
-            return ImVec4(x0, y0, x1, y1);
-        };
-
-        QStringList outliers;
-        for (float z : {1.0f, 2.0f, 0.5f}) {
-            Canvas->setZoom(z);
-            runFrame(); runFrame();
-            //Put the node in the middle of the viewport at THIS zoom, so its field is on screen whatever the
-            //recentre did. An off-screen child window is skipped by imgui entirely and draws no vertices,
-            //which looks identical to "the transform lost it".
-            {
-                float cx0 = 0, cy0 = 0, cx1 = 0, cy1 = 0;
-                Canvas->canvasViewport(cx0, cy0, cx1, cy1);
-                const ImVec2 P = ImNodes::GetNodeGridSpacePos(0);
-                const ImVec2 Sz = ImNodes::GetNodeDimensions(0);
-                ImNodes::EditorContextResetPanning(
-                    ImVec2(((cx1 - cx0) * 0.5f) / z - P.x - Sz.x * 0.5f,
-                           ((cy1 - cy0) * 0.5f) / z - P.y - Sz.y * 0.5f));
-                runFrame(); runFrame();
-            }
-            const ImVec4 B = drawnBox();
-            QVERIFY2(Canvas->visibleNodes() == Canvas->nodeCount(),
-                     qPrintable(QString("zoom %1: the node was culled, so its field does not exist").arg(z)));
-            QVERIFY2(B.z > B.x, qPrintable(QString("zoom %1: the nested field drew nothing").arg(z)));
-            const ImVec2 Hit((B.x + B.z) * 0.5f, (B.y + B.w) * 0.5f);
-            // Click in the middle of where it is drawn; the field must take keyboard focus.
-            ImGui::ClearActiveID();
-            clickAt(Hit);
-            runFrame();
-            if (ImGui::GetActiveID() == 0)
-                outliers << QString("zoom %1: the field is drawn at [%2,%3 .. %4,%5] and a click at its centre "
-                                    "(%6,%7) focused nothing")
-                                .arg(z).arg(B.x).arg(B.y).arg(B.z).arg(B.w).arg(Hit.x).arg(Hit.y);
-            ImGui::ClearActiveID();
-        }
-        Canvas->setZoom(1.0f);
-        QVERIFY2(outliers.isEmpty(), qPrintable("\n  " + outliers.join("\n  ")));
-    }
-
-    // setZoom is the toolbar and "reset". Zooming about the canvas ORIGIN means resetting from 3x throws the
-    // view onto a different part of the graph than the one you were looking at — so it holds the middle of the
-    // viewport still. The first attempt used the new scale on both sides of the solve, which cancels to
-    // Pan = Pan: it compiled, ran every frame, and did precisely nothing.
-    void setZoomHoldsTheMiddleOfTheViewStill()
-    {
-        Canvas->setMiniMap(false);
-        Canvas->addNode("ZIP", 1400, 900);
-        runFrame(); runFrame();
-        float vx0 = 0, vy0 = 0, vx1 = 0, vy1 = 0;
-        Canvas->canvasViewport(vx0, vy0, vx1, vy1);
-        const ImVec2 Centre((vx0 + vx1) * 0.5f, (vy0 + vy1) * 0.5f);
-
-        auto onScreen = [&]() {
-            const float Z = Canvas->zoom();
-            const ImVec2 P = ImNodes::GetNodeScreenSpacePos(0);
-            return ImVec2(vx0 + (P.x - vx0) * Z, vy0 + (P.y - vy0) * Z);
-        };
-        // Put the node under the middle of the viewport at 1:1.
-        {
-            const ImVec2 Pan = ImNodes::EditorContextGetPanning();
-            const ImVec2 P = ImNodes::GetNodeScreenSpacePos(0);
-            ImNodes::EditorContextResetPanning(ImVec2(Pan.x + (Centre.x - P.x), Pan.y + (Centre.y - P.y)));
-            runFrame(); runFrame();
-        }
-        const ImVec2 Before = onScreen();
-        QVERIFY2(std::hypot(Before.x - Centre.x, Before.y - Centre.y) < 30.0f,
-                 qPrintable(QString("setup failed: the node is at (%1,%2), not the centre (%3,%4)")
-                                .arg(Before.x).arg(Before.y).arg(Centre.x).arg(Centre.y)));
-
-        QStringList outliers;
-        for (float z : {2.0f, 0.5f, 1.0f}) {
-            Canvas->setZoom(z);
-            runFrame(); runFrame();
-            const ImVec2 Now = onScreen();
-            const float D = std::hypot(Now.x - Centre.x, Now.y - Centre.y);
-            if (D > 40.0f)
-                outliers << QString("zoom %1 moved the centre of the view %2px away (node at %3,%4, centre "
-                                    "%5,%6)").arg(z).arg(D).arg(Now.x).arg(Now.y).arg(Centre.x).arg(Centre.y);
-        }
-        Canvas->setZoom(1.0f);
-        QVERIFY2(outliers.isEmpty(), qPrintable("\n  " + outliers.join("\n  ")));
-    }
-
-    // Culling tested the node's ORIGIN against the viewport. A node is as tall as its payload makes it, so one
-    // whose top has scrolled past the edge while the rest of it still fills the screen was dropped: the canvas
-    // went blank with a node covering the whole viewport, unclickable and un-editable there. The height was
-    // already being computed for the layout; this is the other place that needs it.
-    void aTallNodeIsDrawnWhileAnyOfItIsOnScreen()
-    {
-        Canvas->setMiniMap(false);
-        const int N = Canvas->addNode("EDIT", 0, 0);
-        json Patches = json::array();
-        for (int r = 0; r < 12; ++r)
-            Patches.push_back(json{{"MODE", "Replace"}, {"OFFSET", "0x1000"}, {"EXPECT", "90"}, {"REPLACE", "cc"}});
-        Doc["NODES"][N]["LAYERS"][0] = json{{"EDIT", Patches}, {"TARGET", "FILES/C:/g/g.exe"}};
-        Canvas->setExpanded(N, true);          // tall only when its layer and ops are open
-        Canvas->invalidateGraph();
-        runFrame(); runFrame();
-        //Its DRAWN height: the estimate describes the node folded (a few rows), and culling has to go by the node
-        //as it is on screen — opened, it is far taller than any estimate. Teeth: cull by the estimate alone.
-        const float H = ImNodes::GetNodeDimensions(N).y;
-        QVERIFY2(H > 1500.0f,
-                 qPrintable(QString("the test node is only %1px tall - the -1400 case below needs it to reach "
-                                    "the viewport top from there, so a shorter node would make this test "
-                                    "demand that a genuinely off-screen node be drawn").arg(H)));
-
-        QStringList outliers;
-        // Scroll the node's TOP well above the viewport while its body still covers the screen. Every value is
-        // past MarginY (500 * max(1, zoom)), or the origin test alone would already pass it and the case would
-        // be incapable of failing: -400 was exactly that, and sat here looking like coverage.
-        for (float pan : {-700.0f, -1000.0f, -1400.0f}) {
-            ImNodes::EditorContextResetPanning(ImVec2(0.0f, pan));
-            runFrame(); runFrame();
-            if (Canvas->visibleNodes() != 1)
-                outliers << QString("pan %1: the node spans %2..%3 and the viewport is 0..900, but it was "
-                                    "culled").arg(pan).arg(pan).arg(pan + H);
-        }
-        ImNodes::EditorContextResetPanning(ImVec2(0, 0));
-        QVERIFY2(outliers.isEmpty(), qPrintable("\n  " + outliers.join("\n  ")));
-    }
-
-    // Two setZoom calls before a frame. The pending recentre has to keep the scale it STARTED from — taking
-    // the second call's "from" pairs it with a pan that still belongs to the first call's scale.
-    void twoZoomChangesInOneFrameStillHoldTheCentre()
-    {
-        Canvas->setMiniMap(false);
-        Canvas->addNode("ZIP", 400, 300);
-        Canvas->setZoom(1.0f);
-        runFrame(); runFrame();
-        float vx0 = 0, vy0 = 0, vx1 = 0, vy1 = 0;
-        Canvas->canvasViewport(vx0, vy0, vx1, vy1);
-        const ImVec2 Centre((vx0 + vx1) * 0.5f, (vy0 + vy1) * 0.5f);
-        auto onScreen = [&]() {
-            const float Z = Canvas->zoom();
-            const ImVec2 P = ImNodes::GetNodeScreenSpacePos(0);
-            const ImVec2 D = ImNodes::GetNodeDimensions(0);
-            return ImVec2(vx0 + (P.x + D.x * 0.5f - vx0) * Z, vy0 + (P.y + D.y * 0.5f - vy0) * Z);
-        };
-        // Park the node's middle on the viewport centre.
-        {
-            const ImVec2 Pan = ImNodes::EditorContextGetPanning();
-            const ImVec2 At = onScreen();
-            ImNodes::EditorContextResetPanning(ImVec2(Pan.x + (Centre.x - At.x), Pan.y + (Centre.y - At.y)));
-            runFrame(); runFrame();
-        }
-        QVERIFY2(std::hypot(onScreen().x - Centre.x, onScreen().y - Centre.y) < 20.0f, "setup failed");
-
-        // BOTH calls land before the next frame — the toolbar spinner and a double-click on "reset" do this.
-        Canvas->setZoom(2.0f);
-        Canvas->setZoom(0.5f);
-        runFrame(); runFrame();
-        const ImVec2 Now = onScreen();
-        const float D = std::hypot(Now.x - Centre.x, Now.y - Centre.y);
-        QVERIFY2(D < 40.0f,
-                 qPrintable(QString("two zoom changes in one frame moved the centre %1px (node at %2,%3, "
-                                    "centre %4,%5)").arg(D).arg(Now.x).arg(Now.y).arg(Centre.x).arg(Centre.y)));
-        Canvas->setZoom(1.0f);
-    }
-
-    // A StringList's height comes from the LINES the field renders, and the join that builds that text does not
-    // escape a newline inside an entry — so one array element carrying embedded newlines is a multiline box
-    // that an entry count calls a single-line input. Any package this canvas did not author can contain one.
-    void aListEntryWithNewlinesIsMeasuredByItsLines()
-    {
-        Canvas->setMiniMap(false);
-        Canvas->setIssues({});
-        auto measure = [&](const char *Type, const json &Payload) {
-            const int N = Canvas->addNode(Type, 100.0f, 100.0f);
-            for (auto It = Payload.begin(); It != Payload.end(); ++It) Doc["NODES"][N][It.key()] = It.value();
-            Canvas->setNodeHints(Doc["NODES"][N].value("LABEL", std::string()), {});
-            Canvas->invalidateGraph();
-            runFrame(); runFrame();
-            const float Drawn = ImNodes::GetNodeDimensions(N).y;
-            const float Est   = Canvas->graph().Nodes[(size_t)N].Height;
-            Canvas->removeNode(N);
-            Canvas->invalidateGraph();
-            runFrame();
-            return std::pair<float, float>(Drawn, Est);
-        };
-        const json Multi = json::array({std::string("a\nb\nc\nd\ne\nf\ng")});
-        QStringList outliers;
-        const std::vector<std::pair<const char *, json>> Cases = {
-            {"DeclareExec", json{{"GUEST", Multi}, {"ARGS", Multi}, {"ENV_REMOVE", Multi}}},
-            {"Content",     json{{"SUBMOUNTS", Multi}, {"BASE_TARGETS", Multi}}},
-        };
-        for (const auto &C : Cases) {
-            const auto R = measure(C.first, C.second);
-            if (R.second < R.first)
-                outliers << QString("%1 with newline-bearing list entries is drawn %2px but estimated %3px - "
-                                    "SHORT by %4").arg(C.first).arg(R.first).arg(R.second).arg(R.first - R.second);
-        }
-        QVERIFY2(outliers.isEmpty(), qPrintable("\n  " + outliers.join("\n  ")));
-    }
-
-    // A combo's popup is a window of its own, positioned by imgui from the widget's rect against the SCREEN
-    // viewport — and inside the editor that rect is in world space. The previous review could not drive one
-    // open headlessly and said so, which left the claim that in-node combos work at every zoom resting on
-    // nothing. This drives one: it walks down the node's field column until a popup actually appears, so it
-    // fails loudly if it never manages to open one rather than passing by measuring nothing.
-    void anInNodeComboOpensWhereItWasClicked()
-    {
-        Canvas->setMiniMap(false);
-        Canvas->setExpanded(Canvas->addNode("EDIT", 200, 200), true);         // an EDIT op's MODE is an enum, so the node has a combo
-        Canvas->setZoom(1.0f);
-        runFrame(); runFrame();
-
-        // The popup window imgui makes for a combo.
-        auto comboWindow = [&]() -> const ImGuiWindow * {
-            const ImGuiContext &C = *ImGui::GetCurrentContext();
-            for (int w = 0; w < C.Windows.Size; ++w)
-                if (C.Windows[w]->Name && C.Windows[w]->Active && std::strstr(C.Windows[w]->Name, "##Combo"))
-                    return C.Windows[w];
-            return nullptr;
-        };
-
-        QStringList outliers;
-        //3x included, and at each zoom the node is driven LOW in the viewport. Both matter: a popup opens
-        //BELOW its widget, so only down there does the transform push it past the display edge, and only at a
-        //high zoom is the displacement large. Measured on the version that translated popups back on screen:
-        //at 3x this is where the dropdown ended up responding 130px away from the sliver it drew in, and a
-        //test that stayed at the default position and 2x could not see it.
-        for (float z : {1.0f, 0.5f, 2.0f, 3.0f}) {
-            Canvas->setZoom(z);
-            runFrame(); runFrame();
-            {
-                float ax = 0, ay = 0, bx = 0, by = 0;
-                Canvas->canvasViewport(ax, ay, bx, by);
-                const ImVec2 Gp = ImNodes::GetNodeGridSpacePos(0);
-                const ImVec2 Dm = ImNodes::GetNodeDimensions(0);
-                ImNodes::EditorContextResetPanning(ImVec2(((bx - ax) * 0.35f) / z - Gp.x,
-                                                          ((by - ay) * 0.80f) / z - Gp.y - Dm.y * 0.5f));
-                runFrame(); runFrame();
-            }
-            QVERIFY2(Canvas->visibleNodes() == Canvas->nodeCount(),
-                     qPrintable(QString("zoom %1: the node was culled").arg(z)));
-            float vx0 = 0, vy0 = 0, vx1 = 0, vy1 = 0;
-            Canvas->canvasViewport(vx0, vy0, vx1, vy1);
-            const ImVec2 P = ImNodes::GetNodeScreenSpacePos(0);
-            const ImVec2 D = ImNodes::GetNodeDimensions(0);
-
-            // Walk down the node's value column looking for the combo.
-            ImVec2 Hit(0, 0);
-            const ImGuiWindow *Pop = nullptr;
-            for (float f = 0.15f; f < 0.95f && !Pop; f += 0.02f) {
-                const ImVec2 Try(vx0 + (P.x + D.x * 0.75f - vx0) * z, vy0 + (P.y + D.y * f - vy0) * z);
-                if (Try.x < vx0 || Try.x > vx1 || Try.y < vy0 || Try.y > vy1) continue;
-                clickAt(Try);
-                runFrame();
-                if ((Pop = comboWindow()) != nullptr) Hit = Try;
-                else { ImGui::ClearActiveID(); }
-            }
-            if (!Pop) { outliers << QString("zoom %1: no combo could be opened anywhere down the node").arg(z); continue; }
-
-            // The popup must be AT the thing that was clicked — imgui puts it directly under the widget, so
-            // the click point has to be within a widget's height of its top edge and inside it horizontally.
-            //The invariant that matters is not where the popup's rectangle is, it is that the popup RESPONDS
-            //where it is DRAWN. An earlier version asserted "is it on the display" and drove a fix that
-            //translated the pixels and the window rectangle back on screen while leaving the item rects
-            //behind — measurably making the dropdown respond in a 13px band 130px away from the sliver it
-            //drew in, and the assertion could not see it. So probe it: hover where an entry is painted and
-            //require that imgui reports an item under the cursor.
-            const ImVec2 Min = Pop->OuterRectClipped.Min, Max = Pop->OuterRectClipped.Max;
-            const float DX = std::max(0.0f, std::max(Min.x - Hit.x, Hit.x - Max.x));
-            //Either EDGE may be the one against the widget: imgui flips a popup above the cursor when there is
-            //no room below, which is exactly what it does for a combo near the bottom of the screen — and
-            //driving the node low, which this test now does on purpose, makes that the common case.
-            const float DEdge = std::min(std::abs(Min.y - Hit.y), std::abs(Max.y - Hit.y));
-            //"Within a widget's height": a widget is z times taller at zoom z, so the tolerance scales with it (a
-            //click near a combo's top edge is one frame height from the popup that opens at its bottom edge).
-            const float Tol = std::max(60.0f, ImGui::GetFrameHeight() * z + 8.0f);
-            if (DX > Tol || DEdge > Tol)
-                outliers << QString("zoom %1: clicked at (%2,%3) and the popup opened at [%4,%5 .. %6,%7] - "
-                                    "%8px off horizontally, nearest edge %9px from the click")
-                                .arg(z).arg(Hit.x).arg(Hit.y).arg(Min.x).arg(Min.y).arg(Max.x).arg(Max.y)
-                                .arg(DX).arg(DEdge);
-
-            bool Responded = false;
-            QString Probed;
-            for (float fy = 0.05f; fy < 0.95f && !Responded; fy += 0.05f) {
-                const ImVec2 At((Min.x + Max.x) * 0.5f, Min.y + (Max.y - Min.y) * fy);
-                if (At.x < vx0 || At.x > vx1 || At.y < vy0 || At.y > vy1) continue;
-                runFrame(At); runFrame(At);
-                if (Probed.isEmpty()) Probed = QString("%1,%2").arg(At.x).arg(At.y);
-                if (ImGui::GetCurrentContext()->HoveredId != 0) Responded = true;
-            }
-            if (!Responded)
-                outliers << QString("zoom %1: the popup is drawn at [%2,%3 .. %4,%5] and nothing in it responds "
-                                    "to the cursor anywhere down that band (first probe %6) - it is painted "
-                                    "where it cannot be used").arg(z).arg(Min.x).arg(Min.y).arg(Max.x)
-                                .arg(Max.y).arg(Probed);
-            closeAnyPopup();
-        }
-        closeAnyPopup();
-        Canvas->setZoom(1.0f);
-        QVERIFY2(outliers.isEmpty(), qPrintable("\n  " + outliers.join("\n  ")));
-    }
-
-    // A tooltip raised from inside the editor is placed by imgui from io.MousePos, which in there is the WORLD
-    // cursor. The fix hands the real one back for the duration of the call rather than pinning the window with
-    // SetNextWindowPos — because pinning makes imgui skip both the flip-to-the-other-side placement and the
-    // clamp, so a tip raised near an edge runs off the screen with nothing to pull it back. Both halves are
-    // asserted here: it lands near the real cursor, and it stays on screen at the corner.
-    void anEditorTooltipLandsAtTheCursorAndStaysOnScreen()
-    {
-        Canvas->setMiniMap(false);
-        Canvas->addNode("ZIP", 200, 200);          // Content has action buttons, which carry tooltips
-        Canvas->setZoom(1.0f);
-        //An ACTIVE item swallows hovering everywhere else, and an earlier test in this suite leaves one behind
-        //(the nested-field click test focuses a text box). Without this the search below finds no tooltip
-        //anywhere on the node and reports it as a defect, in the full suite only.
-        ImGui::ClearActiveID();
-        //And the VIEW: panning is canvas state that earlier tests leave wherever they finished, so the node can
-        //start off-screen — at which point the search below skips every point as out of viewport and reports
-        //"no tooltip anywhere", which is indistinguishable from the defect it is looking for.
-        ImNodes::EditorContextResetPanning(ImVec2(0, 0));
-        runFrame(); runFrame();
-        QVERIFY2(Canvas->visibleNodes() == Canvas->nodeCount(), "the node is not on screen to be hovered");
-
-        auto tipWindow = [&]() -> const ImGuiWindow * {
-            const ImGuiContext &C = *ImGui::GetCurrentContext();
-            for (int w = 0; w < C.Windows.Size; ++w)
-                if (C.Windows[w]->Name && C.Windows[w]->Active && std::strstr(C.Windows[w]->Name, "##Tooltip"))
-                    return C.Windows[w];
-            return nullptr;
-        };
-        // Hover along the node's action row until a tooltip actually appears; fail loudly if none ever does.
-        auto raiseTip = [&](float z) -> ImVec2 {
-            float vx0 = 0, vy0 = 0, vx1 = 0, vy1 = 0;
-            Canvas->canvasViewport(vx0, vy0, vx1, vy1);
-            const ImVec2 P = ImNodes::GetNodeScreenSpacePos(0);
-            const ImVec2 D = ImNodes::GetNodeDimensions(0);
-            for (float fy = 0.05f; fy < 1.0f; fy += 0.02f)
-                for (float fx = 0.03f; fx < 0.95f; fx += 0.05f) {
-                    const ImVec2 At(vx0 + (P.x + D.x * fx - vx0) * z, vy0 + (P.y + D.y * fy - vy0) * z);
-                    if (At.x < vx0 || At.x > vx1 || At.y < vy0 || At.y > vy1) continue;
-                    runFrame(At); runFrame(At);
-                    if (tipWindow()) return At;
-                }
-            return ImVec2(-1, -1);
-        };
-
-        // TWO checks, at two different setups, because each hides the other's defect.
-        //
-        // Proximity is checked at 2x with the node CENTRED: there the world cursor is much nearer the canvas
-        // origin than the real one, so a tooltip placed from the wrong one lands hundreds of pixels away and
-        // imgui has no reason to clamp it back. At 1:1 the two cursors are identical and nothing shows.
-        //
-        // Staying on screen is checked at 0.5x with the node driven into the BOTTOM-RIGHT corner: only there
-        // does imgui have to flip the tooltip to the other side of the cursor, which it will only do when the
-        // position is its own to choose. And it must be read from Pos+Size, NOT OuterRectClipped — the latter
-        // is clipped to the display by definition, so it reports a tooltip hanging off the edge as ending
-        // neatly at it, which is exactly how an earlier version of this test passed the mutation.
-        auto panNodeTo = [&](float Z, float FracX, float FracY) {
-            float ax = 0, ay = 0, bx = 0, by = 0;
-            Canvas->canvasViewport(ax, ay, bx, by);
-            const ImVec2 P = ImNodes::GetNodeGridSpacePos(0);
-            const ImVec2 D = ImNodes::GetNodeDimensions(0);
-            ImNodes::EditorContextResetPanning(ImVec2(((bx - ax) * FracX) / Z - P.x - D.x * FracX,
-                                                      ((by - ay) * FracY) / Z - P.y - D.y * FracY));
-            runFrame(); runFrame();
-        };
-
-        Canvas->setZoom(2.0f);
-        runFrame(); runFrame();
-        panNodeTo(2.0f, 0.5f, 0.5f);
-        QVERIFY2(Canvas->visibleNodes() == Canvas->nodeCount(), "the node left the screen at 2x");
-        const ImVec2 At2 = raiseTip(2.0f);
-        QVERIFY2(At2.x >= 0.0f, "no action-button tooltip could be raised at 2x");
-        {
-            const ImGuiWindow *W = tipWindow();
-            const ImRect R(W->Pos, ImVec2(W->Pos.x + W->Size.x, W->Pos.y + W->Size.y));
-            const float Dist = std::max(std::max(R.Min.x - At2.x, At2.x - R.Max.x),
-                                        std::max(R.Min.y - At2.y, At2.y - R.Max.y));
-            QVERIFY2(Dist < 90.0f,
-                     qPrintable(QString("at 2x the tooltip was raised at (%1,%2) and drawn at [%3,%4 .. "
-                                        "%5,%6] - %7px away, so it is following the world cursor")
-                                    .arg(At2.x).arg(At2.y).arg(R.Min.x).arg(R.Min.y)
-                                    .arg(R.Max.x).arg(R.Max.y).arg(Dist)));
-        }
-        closeAnyPopup();
-
-        Canvas->setZoom(0.5f);
-        runFrame(); runFrame();
-        panNodeTo(0.5f, 1.0f, 1.0f);
-        QVERIFY2(Canvas->visibleNodes() == Canvas->nodeCount(), "the node left the screen at 0.5x");
-        const ImVec2 At3 = raiseTip(0.5f);
-        QVERIFY2(At3.x >= 0.0f, "no action-button tooltip could be raised in the corner");
-        {
-            const ImGuiWindow *W = tipWindow();
-            const ImVec2 Disp = ImGui::GetIO().DisplaySize;
-            const ImVec2 Max(W->Pos.x + W->Size.x, W->Pos.y + W->Size.y);
-            QVERIFY2(W->Pos.x >= -1.0f && W->Pos.y >= -1.0f && Max.x <= Disp.x + 1.0f && Max.y <= Disp.y + 1.0f,
-                     qPrintable(QString("the tooltip hangs off the screen: [%1,%2 .. %3,%4] against a %5x%6 "
-                                        "display, cursor at (%7,%8)").arg(W->Pos.x).arg(W->Pos.y)
-                                    .arg(Max.x).arg(Max.y).arg(Disp.x).arg(Disp.y).arg(At3.x).arg(At3.y)));
-        }
-        Canvas->setZoom(1.0f);
-    }
-
-    // The overview falls back to a node's ESTIMATED height for one it has never measured — which after a
-    // document swap is every node, and for a culled one is forever. With a nominal box instead, a graph of
-    // wildly different nodes draws as a grid of identical stubs.
-    void theOverviewShowsRealSizesForNodesItHasNeverMeasured()
-    {
-        Canvas->setMiniMap(true);
-        // TWIN nodes with identical payloads, therefore identical estimated heights — one left where culling
-        // submits it (so the overview uses its MEASURED size) and one far away (so it uses the fallback).
-        //
-        // That pairing is the only thing that can see this. The overview fits itself to the graph's bounds,
-        // and those bounds are computed from the same sizes it draws — so scaling every fallback by a constant
-        // moves the bounds and the boxes together and is invisible to any self-relative check. Measured: a
-        // fallback of Height * 0.4 left an earlier version of this test, which compared the boxes only to each
-        // other, completely green. A measured node and an unmeasured TWIN must get the same box.
-        auto reg = [&](float x, float y, int rows) {
-            const int N = Canvas->addNode("REG", x, y);
-            json K = json::object();
-            for (int r = 0; r < rows; ++r) K["Software"]["v" + std::to_string(r)] = "d";
-            json E = json::object(); E["HKLM"] = K;
-            Doc["NODES"][N]["EDITS"] = json::array({E});
-            return N;
-        };
-        //Close enough that the overview's boxes are TENS of pixels. A box is floored at 1px so a huge graph
-        //does not round every node away (pkgcanvas.cpp), and at an 80,000-unit spread the twins measured 1.9px
-        //— at which point every undersizing collapses onto that floor and the comparison below can only ever
-        //catch OVER-sizing. Spread the graph far enough to cull, no further.
-        const int Near = reg(200.0f, 200.0f, 30);        // on screen
-        const int Far  = reg(2500.0f, 1800.0f, 30);      // past the cull margin, never submitted
-        reg(4000.0f, 2800.0f, 4);                        // a couple more, to give the overview a real spread
-        reg(5200.0f, 3600.0f, 60);
-        Canvas->invalidateGraph();                       // drop every measured size, as a document swap does
-        runFrame(); runFrame();
-
-        const PkgGraph::Graph G = Canvas->graph();
-        QCOMPARE(G.Nodes[(size_t)Near].Height, G.Nodes[(size_t)Far].Height);
-        QVERIFY2(Canvas->visibleNodes() >= 1 && Canvas->visibleNodes() < Canvas->nodeCount(),
-                 qPrintable(QString("%1 of %2 submitted - this needs both a measured node and an unmeasured "
-                                    "one").arg(Canvas->visibleNodes()).arg(Canvas->nodeCount())));
-
-        float nx = 0, ny = 0, nw = 0, nh = 0, fx = 0, fy = 0, fw = 0, fh = 0;
-        Canvas->miniMapNodeBox(Near, nx, ny, nw, nh);
-        Canvas->miniMapNodeBox(Far,  fx, fy, fw, fh);
-        //Both must be clear of the 1px floor, or the comparison below is between two clamped numbers and
-        //means nothing. This is the assertion that makes the layout above load-bearing.
-        QVERIFY2(nh > 4.0f && fh > 1.0f,
-                 qPrintable(QString("the overview's boxes are at or near the 1px floor (%1px measured, %2px "
-                                    "never-measured) - nothing can be compared at that size").arg(nh).arg(fh)));
-        //Scaled by what the overview ACTUALLY used for the near twin — its measured height — not by the
-        //estimate. The two differ by exactly the slack the height arms are tuned against, so comparing the
-        //boxes directly wires a test about the minimap to the height constants: it showed a 10.7% gap at the
-        //correct implementation, which both hid a fallback wrong by up to 13% and turned red on a 1px change
-        //to kRowPx, blaming the minimap for it.
-        const float NearDrawn = ImNodes::GetNodeDimensions(Near).y;
-        QVERIFY2(NearDrawn > 1.0f, "the near twin was not submitted, so its measured height is unavailable");
-        const float Expect = nh * (G.Nodes[(size_t)Far].Height / NearDrawn);
-        QVERIFY2(std::abs(fh - Expect) <= std::max(1.0f, Expect * 0.06f),
-                 qPrintable(QString("the never-measured twin got a %1px box where %2px was due (the measured "
-                                    "twin is %3px for a drawn height of %4, and both nodes estimate %5) - the "
-                                    "overview is not drawing an unmeasured node at the size the layout gave it")
-                                .arg(fh).arg(Expect).arg(nh).arg(NearDrawn).arg(G.Nodes[(size_t)Far].Height)));
-        Canvas->setMiniMap(false);
-    }
-
-    // A corrupt declared position is refused, and the refusal has to be REPORTED — publish otherwise stamps a
-    // computed position over it and changes the package's CID with "stamped POS into N file(s)" as the only
-    // trace. But the graph is rebuilt on every cache invalidation, which is every keystroke, so reporting it
-    // from there emitted one warning per character typed anywhere in the package: measured at 772 bytes a line
-    // (std::to_string(1e300) is 308 digits) and one Diagnostics warning each, per node, per keystroke.
-    void aRefusedPositionIsReportedOnceNotPerKeystroke()
-    {
-        Canvas->setMiniMap(false);
-        const int N = Canvas->addNode("ZIP", 100, 100);
-        Doc["NODES"][N]["POS"] = json::array({5.0e9, 5.0e9});
-        Canvas->addNode("ZIP", 500, 100);          // something else to type into
-        Canvas->invalidateGraph();
-
-        int Warnings = 0;
-        QStringList Lines;
-        //RAII. A QCOMPARE/QVERIFY2 expands to `return`, which would skip a ClearLogCallback() at the end and
-        //leave this process-global slot holding a lambda that captures two of this method's LOCALS — every
-        //later test's warnings then writing into a dead stack frame. The failure path of a test is exactly
-        //when that happens, which is exactly when it must not.
-        struct Sink { ~Sink() { ClearLogCallback(); } } SinkGuard;
-        SetLogCallback([&](LogLevel L, const std::string &, const std::string &M) {
-            if (L == LogLevel::WARN && M.find("no layout could have produced") != std::string::npos)
-            { ++Warnings; Lines << QString::fromStdString(M); }
-        });
-        runFrame(); runFrame();
-        QCOMPARE(Warnings, 1);
-        // Twenty graph rebuilds. NOTE this is invalidateGraph, the document-REPLACEMENT path — not what a
-        // keystroke does (that is MarkDirty, driven below). Both are covered because both rebuild the graph
-        // and both therefore re-run the rejection report.
-        for (int i = 0; i < 20; ++i) { Canvas->invalidateGraph(); runFrame(); }
-        // And twenty keystrokes into the ID BOX of the corrupt node itself, which is the path that actually
-        // happens: renameNode runs per character, ends in MarkDirty, and the graph is rebuilt with a new id —
-        // so a warning keyed by the old one fires again under the new one, naming ids that never existed.
-        std::string Id = Doc["NODES"][N].value("LABEL", std::string());
-        for (int i = 0; i < 20; ++i) { Id += 'x'; Canvas->renameNode(N, Id); runFrame(); }
-        QVERIFY2(Warnings == 1,
-                 qPrintable(QString("twenty rebuilds and a twenty-character rename produced %1 warnings, not 1:\n  %2")
-                                .arg(Warnings).arg(Lines.join("\n  "))));
-        // And the one line has to be usable: it names the node, says which declaration, and does not carry
-        // hundreds of digits of whatever the package happened to contain.
-        QVERIFY2(Lines[0].contains("its own POS"), qPrintable("the warning does not say WHICH declaration: " + Lines[0]));
-        //The bound is what the CODE guarantees, not what this test's short generated id happens to produce:
-        //85 chars of fixed wording + 27 for the longest source name + 99 for SafeId's cap and ellipsis + the
-        //value, which for the out-of-range arm is two %g numbers. A malformed-shape record is longer again.
-        QVERIFY2(Lines[0].size() < 280, qPrintable(QString("the warning is %1 bytes: %2").arg(Lines[0].size()).arg(Lines[0])));
-        // The node is laid out rather than left at the impossible coordinate.
-        const PkgGraph::Graph G = Canvas->graph();
-        QVERIFY2(std::abs(G.Nodes[(size_t)N].X) < 1.0e6f && std::abs(G.Nodes[(size_t)N].Y) < 1.0e6f,
-                 qPrintable(QString("the node kept its impossible position (%1,%2)")
-                                .arg(double(G.Nodes[(size_t)N].X)).arg(double(G.Nodes[(size_t)N].Y))));
-    }
-
-    // A batched entry that is not an OBJECT is malformed content, and this editor is what you open malformed
-    // content WITH. Drawing its fields anyway meant the first write — Node[key] = value on a JSON string —
-    // threw type_error.305 out of paintGL, which has no catch: one click on a dropdown terminated the app.
-    void aMalformedBatchedEntryIsNotDrawnAsFields()
-    {
-        Canvas->setMiniMap(false);
-        const int N = Canvas->addNode("EDIT", 200, 200);
-        Doc["NODES"][N]["EDITS"] = json::array({"oops", 42, json::object({{"MODE", "Replace"}})});
-        Canvas->invalidateGraph();
-        runFrame(); runFrame();
-        QVERIFY2(Canvas->visibleNodes() == Canvas->nodeCount(), "the node was culled");
-        QVERIFY2(Doc["NODES"][N]["EDITS"][0].is_string(), "the string entry was rewritten");
-        // The height estimate agrees with the short form those entries actually draw as.
-        const float Est = Canvas->graph().Nodes[(size_t)N].Height;
-        const float Drawn = ImNodes::GetNodeDimensions(N).y;
-        //The slack is the "node options" block counted as though open (five rows: toggle, variant, recommended,
-        //when, NOT list) — 95px on a node that keeps it closed — plus the short-form entries' own margin.
-        QVERIFY2(Est >= Drawn && Est - Drawn < 160.0f,
-                 qPrintable(QString("a node of malformed entries is drawn %1px and estimated %2px")
-                                .arg(Drawn).arg(Est)));
-    }
-
-    // The crash itself, DRIVEN rather than hoped for. nlohmann's operator[](string) throws type_error.305 on a
-    // value that is not an object, and this editor's purpose is opening packages that are wrong — so every
-    // WRITE path that goes through a key has to refuse rather than throw, because the throw leaves frame() and
-    // paintGL, which has no catch, and terminates the application.
-    //
-    // A previous version of this test clicked blindly down the node and asserted "we are still here", which is
-    // liveness against an event it never triggered: deleting both guards left it passing. These call the write
-    // paths directly, which is the only way to be sure the throw is what is being prevented.
-    void everyFieldWriteRefusesAMalformedValueInsteadOfThrowing()
-    {
-        Canvas->setMiniMap(false);
-        QStringList survived;
-        auto attempt = [&](const char *What, const std::function<void()> &Write) {
-            try { Write(); }
-            catch (const std::exception &E)
-            { survived << QString("%1: threw %2").arg(What).arg(E.what()); }
-        };
-
-        // These call PkgGraph::WriteSubKey — the SAME function the KeyValue and Cover writers in drawField
-        // call, not a copy of the pattern and not a hook on the canvas. Reaching a write through synthetic
-        // clicks lets a test pass by never getting there (an earlier version did exactly that), and a
-        // parallel copy lets the call sites drift; calling the one exported writer does neither.
-        // KeyValue: the "+ add" button and a rename both write Node[key][sub].
-        for (const char *Bad : {"\"oops\"", "5", "[]", "true", "null"}) {
-            const int N = Canvas->addNode("DLL", 200, 200);
-            Doc["NODES"][N]["LAYERS"][0]["DLL"] = json::parse(Bad);
-            Canvas->invalidateGraph(); runFrame();
-            attempt(QString("DLL=%1").arg(Bad).toUtf8().constData(),
-                    [&] { if (PkgGraph::WriteSubKey(Doc["NODES"][N]["LAYERS"][0], "DLL", "k", "v")) Canvas->invalidateGraph(); });
-            Canvas->removeNode(N); Canvas->invalidateGraph(); runFrame();
-        }
-        // Cover: one KEYSTROKE reached Node[key]["FILE"].
-        for (const char *Bad : {"5", "[]", "true"}) {
-            const int N = Canvas->addNode("EXEC", 200, 200);
-            Doc["NODES"][N]["LAYERS"][0]["EXEC"][0]["TILE"]["COVER"] = json::parse(Bad);
-            Canvas->invalidateGraph(); runFrame();
-            attempt(QString("TILE COVER=%1").arg(Bad).toUtf8().constData(),
-                    [&] { if (PkgGraph::WriteSubKey(Doc["NODES"][N]["LAYERS"][0]["EXEC"][0]["TILE"], "COVER", "FILE", "x.png")) Canvas->invalidateGraph(); });
-            Canvas->removeNode(N); Canvas->invalidateGraph(); runFrame();
-        }
-        // A NODES entry that is not an object at all: renameNode and the envelope both write through it.
-        {
-            Doc["NODES"].push_back("not a node");
-            Canvas->invalidateGraph(); runFrame(); runFrame();
-            const int Last = (int)Doc["NODES"].size() - 1;
-            attempt("a NODES entry that is a string", [&] { Canvas->renameNode(Last, "newid"); });
-            attempt("drawing a NODES entry that is a string", [&] { runFrame(); runFrame(); });
-            Doc["NODES"].erase(Doc["NODES"].size() - 1);
-            Canvas->invalidateGraph(); runFrame();
-        }
-        QVERIFY2(survived.isEmpty(),
-                 qPrintable("a malformed package terminated the editor instead of displaying:\n  "
-                            + survived.join("\n  ")));
-    }
-
-    // Refusing to THROW is half of it; the other half is refusing to destroy. The same sweep that taught the
-    // Cover and KeyValue writers to refuse a malformed value left the two list "+ add" buttons replacing it
-    // with an empty array on one click — MarkDirty'd and saved, in the editor you opened to repair the
-    // package. Nothing about the value being wrong makes it disposable.
-    void addingToAMalformedListRefusesInsteadOfDestroyingIt()
-    {
-        Canvas->setMiniMap(false);
-        QStringList lost;
-        auto sweep = [&](const char *Type, const char *Key, const json &Bad) {
-            const int N = Canvas->addNode(Type, 300, 200);
-            Doc["NODES"][N][Key] = Bad;
-            Canvas->invalidateGraph();
-            runFrame(); runFrame();
-            QVERIFY2(Canvas->visibleNodes() == Canvas->nodeCount(), "the node was culled");
-            // Click every row of the node: one of them is the "+ add"/"+ group" button.
-            float vx0 = 0, vy0 = 0, vx1 = 0, vy1 = 0;
-            Canvas->canvasViewport(vx0, vy0, vx1, vy1);
-            const ImVec2 P = ImNodes::GetNodeScreenSpacePos(N);
-            const ImVec2 D = ImNodes::GetNodeDimensions(N);
-            for (float fy = 0.05f; fy < 0.99f; fy += 0.02f)
-                for (float fx : {0.12f, 0.4f, 0.8f}) {
-                    const ImVec2 At(P.x + D.x * fx, P.y + D.y * fy);
-                    if (At.x < vx0 || At.x > vx1 || At.y < vy0 || At.y > vy1) continue;
-                    ImGui::ClearActiveID();
-                    clickAt(At);
-                    runFrame();
-                    //...AND TYPE. A button destroys on the click; a TEXT FIELD destroys on the first
-                    //character, and a click alone only focuses it. The StringList case below is exactly that
-                    //shape — a non-array ARGS rendered as an empty box, and one keystroke turned it into
-                    //["x"] — so a click-only sweep reported it clean. Harmless where nothing is focused.
-                    type("x");
-                }
-            closeAnyPopup();
-            if (Doc["NODES"][N][Key] != Bad)
-                lost << QString("%1 %2: %3 became %4").arg(Type).arg(Key)
-                            .arg(QString::fromStdString(Bad.dump()))
-                            .arg(QString::fromStdString(Doc["NODES"][N][Key].dump()));
-            Canvas->removeNode(N);
-            Canvas->invalidateGraph();
-            runFrame();
-        };
-        sweep("BinaryPatch", "EDITS", json::object({{"HKLM", json::object({{"Software", "x"}})}}));
-        sweep("BinaryPatch", "EDITS", json("a string"));
-        sweep("RegEdit",     "EDITS", json::object({{"HKLM", json::object({{"Software", "x"}})}}));
-        //A StringList whose value is not a list. ListToText yields "" for it, so this used to draw an empty
-        //box that looked unset, and the keystroke above replaced the value. It is now printed and read-only.
-        sweep("DeclareExec", "ARGS",  json("not a list"));
-        sweep("DeclareExec", "ARGS",  json::object({{"looks", "structured"}}));
-        //...and a list of the RIGHT shape holding one entry of the wrong one, which is the likelier case and
-        //the one the container check alone misses. ListToText DROPS a non-string entry, so the box showed
-        //"a" for ["a",5] and nothing at all for [5]; the keystroke then wrote back what was left and the
-        //dropped entry was gone.
-        sweep("DeclareExec", "ARGS",  json::array({5}));
-        sweep("DeclareExec", "ARGS",  json::array({"a", 5}));
-        sweep("DeclareExec", "ARGS",  json::array({"a", json::array({"nested"})}));
-        sweep("DeclareExec", "ARGS",  json::array({"a", nullptr}));
-        sweep("Content",     "SUBMOUNTS", json::array({json::object({{"k", "v"}})}));
-        QVERIFY2(lost.isEmpty(),
-                 qPrintable("a click destroyed a malformed value instead of refusing:\n  " + lost.join("\n  ")));
-    }
-
-    // The popup extent repoint stands down when the region is too short to hold a dropdown, because below
-    // that imgui pins every popup to the extent's corner. Both sides of that comparison are in WORLD units —
-    // an earlier version demanded 300 in both axes and described it as the inverse, which switched the whole
-    // fix off at 3x on an ordinary canvas: the top of the zoom range, where the misplacement is largest.
-    void thePopupExtentFollowsTheEditorAtEveryZoom()
-    {
-        Canvas->setMiniMap(false);
-        Canvas->addNode("ZIP", 300, 300);
-        QStringList outliers;
-        //Several display sizes, including ones small enough that the region alone could not hold a dropdown —
-        //that is the case the code has to handle, and an earlier version of this test skipped it with a
-        //`continue` and then asked the CODE which branch it had taken, which made the assertion a tautology:
-        //deleting the whole guard stayed green. The expectation here is derived from the display and the zoom
-        //only, so the code is never consulted about what it should have done.
-        for (const ImVec2 Disp : {ImVec2(1400, 900), ImVec2(700, 420), ImVec2(600, 1100)})
-        for (float z : {0.5f, 1.0f, 2.0f, 3.0f}) {
-            DisplayOverride = Disp;
-            Canvas->setZoom(z);
-            runFrame(); runFrame();
-            float ax = 0, ay = 0, bx = 0, by = 0;
-            Canvas->canvasViewport(ax, ay, bx, by);
-            const ImVec2 World((bx - ax) / z, (by - ay) / z);
-            //The rectangle a popup is placed against must be the editor's own region, ENLARGED where the
-            //region alone is too small to hold a dropdown — imgui pins a popup that does not fit to the
-            //rectangle's corner, which would put every dropdown in one place regardless of its widget.
-            const float WantW = std::max(World.x, 228.0f + 80.0f), WantH = std::max(World.y, 200.0f);
-            float ex = 0, ey = 0, ew = 0, eh = 0;
-            Canvas->popupExtent(ex, ey, ew, eh);
-            if (std::abs(ew - WantW) > 2.0f || std::abs(eh - WantH) > 2.0f)
-                outliers << QString("display %1x%2 zoom %3: the region is %4x%5 world units so the extent "
-                                    "should be %6x%7, and it is %8x%9")
-                                .arg(Disp.x).arg(Disp.y).arg(z).arg(World.x).arg(World.y)
-                                .arg(WantW).arg(WantH).arg(ew).arg(eh);
-            //And it stays centred on the region, so enlarging it does not also move where popups land.
-            const float WantX = ax - (WantW - World.x) * 0.5f, WantY = ay - (WantH - World.y) * 0.5f;
-            if (std::abs(ex - WantX) > 2.0f || std::abs(ey - WantY) > 2.0f)
-                outliers << QString("display %1x%2 zoom %3: the extent starts at (%4,%5), not (%6,%7)")
-                                .arg(Disp.x).arg(Disp.y).arg(z).arg(ex).arg(ey).arg(WantX).arg(WantY);
-        }
-        DisplayOverride = ImVec2(0, 0);
-        Canvas->setZoom(1.0f);
-        QVERIFY2(outliers.isEmpty(), qPrintable("\n  " + outliers.join("\n  ")));
-    }
-
-    // removeNode's half of the warned-about maintenance. Only the rename path had a test; reverting the
-    // delete path to the pre-fix line left the whole suite green.
-    void deletingANodeForgetsThatItWasWarnedAbout()
-    {
-        Canvas->setMiniMap(false);
-        const int N = Canvas->addNode("ZIP", 100, 100);
-        const std::string Id = Doc["NODES"][N].value("LABEL", std::string());
-        Doc["NODES"][N]["POS"] = json::array({5.0e9, 5.0e9});
-        Canvas->invalidateGraph();
-
-        int Warnings = 0;
-        struct Sink { ~Sink() { ClearLogCallback(); } } SinkGuard;
-        SetLogCallback([&](LogLevel L, const std::string &, const std::string &M) {
-            if (L == LogLevel::WARN && M.find("no layout could have produced") != std::string::npos) ++Warnings;
-        });
-        runFrame(); runFrame();
-        QCOMPARE(Warnings, 1);
-
-        // Delete it, then create a DIFFERENT node that happens to reuse the id with the same bad position —
-        // which is what opening a second package does, since ids are auto-generated from the type name.
-        Canvas->removeNode(N);
-        const int M2 = Canvas->addNode("ZIP", 400, 100);
-        Doc["NODES"][M2]["LABEL"] = Id;
-        Doc["NODES"][M2]["POS"] = json::array({5.0e9, 5.0e9});
-        Canvas->invalidateGraph();
-        runFrame(); runFrame();
-        QVERIFY2(Warnings == 2,
-                 qPrintable(QString("the second node's warning was swallowed by the deleted node's entry "
-                                    "(%1 warnings, expected 2)").arg(Warnings)));
-    }
-
-    // The OTHER producer of a warned-about key. flushPositions refuses an impossible position coming back from
-    // imnodes and must, like the Build-rejection path, say it once per node and not suppress a later node's.
-    // Both producers write into one set, and an earlier round had them writing two different key shapes so the
-    // maintenance covered one and silently ignored the other — reintroducing that is invisible to every other
-    // test in this suite, because nothing else drives this path at all.
-    void anImpossiblePositionFromTheEditorIsReportedOncePerNode()
-    {
-        Canvas->setMiniMap(false);
-        const int A = Canvas->addNode("ZIP", 100, 100);
-        runFrame(); runFrame();
-
-        int Warnings = 0;
-        struct Sink { ~Sink() { ClearLogCallback(); } } SinkGuard;
-        SetLogCallback([&](LogLevel L, const std::string &, const std::string &M) {
-            if (L == LogLevel::WARN && M.find("refused an impossible position") != std::string::npos) ++Warnings;
-        });
-
-        // Reach past the canvas and put an impossible position into imnodes itself — which is exactly what the
-        // guarded minimap drag used to do, and what any future defect in this area would do again.
-        for (int i = 0; i < 6; ++i) {
-            ImNodes::SetNodeGridSpacePos(A, ImVec2(5.0e9f, 5.0e9f));
-            runFrame();
-        }
-        QVERIFY2(Warnings >= 1, "the impossible position was accepted silently");
-        QVERIFY2(Warnings <= 2,
-                 qPrintable(QString("six frames produced %1 warnings - it is firing per frame").arg(Warnings)));
-        // The node keeps a sane position, and nothing absurd reached the layout.
-        const PkgGraph::Graph G = Canvas->graph();
-        QVERIFY2(std::abs(G.Nodes[(size_t)A].X) < 1.0e6f, "the impossible position reached the graph");
-        QVERIFY2(!QString::fromStdString(Layout.dump()).contains("e+09"), "it reached the saved layout");
-
-        // Now a DIFFERENT node reusing the same id must still be able to warn — the failure mode when the two
-        // producers disagree about the key shape is that this one is swallowed.
-        const std::string Id = Doc["NODES"][A].value("LABEL", std::string());
-        Canvas->removeNode(A);
-        const int B = Canvas->addNode("ZIP", 400, 100);
-        Doc["NODES"][B]["LABEL"] = Id;
-        Canvas->invalidateGraph();
-        runFrame(); runFrame();
-        const int Before = Warnings;
-        for (int i = 0; i < 3; ++i) { ImNodes::SetNodeGridSpacePos(B, ImVec2(7.0e9f, 7.0e9f)); runFrame(); }
-        QVERIFY2(Warnings > Before,
-                 "a second node's impossible position was swallowed by the first node's entry");
-    }
-
-    // The malformed-node placeholder returns early, and the two things an early return in drawNode can get
-    // wrong are exactly the two it did get wrong: it sat between the colour PUSHES and their POPS, and it
-    // skipped the position seeding. Neither is visible in anything the canvas draws, so neither was caught.
-    void theMalformedNodePlaceholderBehavesLikeANode()
-    {
-        Canvas->setMiniMap(false);
-        Canvas->addNode("ZIP", 100, 100);
-        Doc["NODES"].push_back("not a node");
-        Canvas->invalidateGraph();
-        runFrame(); runFrame();
-        const int Bad = (int)Doc["NODES"].size() - 1;
-
-        // 1. The colour-style stack must not grow. imnodes never clears it per frame, so three unpopped
-        // pushes per frame is unbounded growth for the life of the process — 180/second on an open canvas —
-        // and it leaves the style permanently holding the placeholder's colours.
-        const int Before = GImNodes->ColorModifierStack.Size;
-        for (int i = 0; i < 10; ++i) runFrame();
-        const int After = GImNodes->ColorModifierStack.Size;
-        QVERIFY2(After == Before,
-                 qPrintable(QString("ten frames grew imnodes' colour stack from %1 to %2 - the placeholder is "
-                                    "pushing styles it never pops").arg(Before).arg(After)));
-
-        // 2. It must sit where the layout put it. Culling submits it by its LAID-OUT position, so a
-        // placeholder drawn at the grid origin instead is a box that vanishes when you pan to where it says
-        // it is, and stacks with every other malformed node on top of whatever lives at (0,0).
-        const PkgGraph::Graph G = Canvas->graph();
-        QVERIFY2(Bad < (int)G.Nodes.size(), "the placeholder is not in the graph");
-        const ImVec2 At = ImNodes::GetNodeGridSpacePos(Bad);
-        QVERIFY2(std::abs(At.x - G.Nodes[(size_t)Bad].X) < 1.0f
-                     && std::abs(At.y - G.Nodes[(size_t)Bad].Y) < 1.0f,
-                 qPrintable(QString("the placeholder is drawn at (%1,%2) but laid out at (%3,%4)")
-                                .arg(At.x).arg(At.y).arg(G.Nodes[(size_t)Bad].X).arg(G.Nodes[(size_t)Bad].Y)));
-        Doc["NODES"].erase(Doc["NODES"].size() - 1);
-        Canvas->invalidateGraph();
-        runFrame();
-    }
-
-    // The canvas borrows imgui's main viewport for the duration of the editor, so that in-node popups place
-    // themselves in the space their widgets are laid out in. Every field of it has to come back: Pos and Size
-    // feed the backend's projection matrix, and WorkPos/WorkSize are what ImGui::Begin clamps a window
-    // against — leaving those two in world space while Pos/Size were screen meant the minimap child and the
-    // delete-confirmation modal were placed against two different coordinate systems at once.
-    void theEditorHandsTheWholeViewportBack()
-    {
-        Canvas->setMiniMap(true);
-        Canvas->addNode("ZIP", 300, 300);
-        QStringList outliers;
-        //Checked at the moment post-editor windows are submitted, NOT after frame() returns: imgui's NewFrame
-        //rebuilds the main viewport every frame, so a viewport left in world space is invisible from outside
-        //while being exactly what the overview and the delete modal get placed against inside.
-        for (float z : {1.0f, 0.5f, 2.0f, 3.0f}) {
-            Canvas->setZoom(z);
-            runFrame(); runFrame();
-            const ImVec2 Disp = ImGui::GetIO().DisplaySize;
-            float x = 0, y = 0, w = 0, h = 0, wx = 0, wy = 0, ww = 0, wh = 0;
-            Canvas->postEditorViewport(x, y, w, h, wx, wy, ww, wh);
-            if (std::abs(w - Disp.x) > 1.0f || std::abs(h - Disp.y) > 1.0f
-                || std::abs(x) > 1.0f || std::abs(y) > 1.0f)
-                outliers << QString("zoom %1: after the editor the viewport is (%2,%3 %4x%5), not the "
-                                    "%6x%7 display").arg(z).arg(x).arg(y).arg(w).arg(h).arg(Disp.x).arg(Disp.y);
-            if (std::abs(ww - Disp.x) > 1.0f || std::abs(wh - Disp.y) > 1.0f
-                || std::abs(wx) > 1.0f || std::abs(wy) > 1.0f)
-                outliers << QString("zoom %1: after the editor the WORK rect is (%2,%3 %4x%5), not the "
-                                    "%6x%7 display - ImGui::Begin clamps the overview and the delete modal "
-                                    "against this while popups read the main rect")
-                                .arg(z).arg(wx).arg(wy).arg(ww).arg(wh).arg(Disp.x).arg(Disp.y);
-        }
-        Canvas->setZoom(1.0f);
-        Canvas->setMiniMap(false);
-        QVERIFY2(outliers.isEmpty(), qPrintable("\n  " + outliers.join("\n  ")));
-    }
-
-    // A RELOAD that changes a node's declared POS must reach the canvas. invalidateGraph is the one path a
-    // document replacement takes — the JSON view's Save, and PackageEditor's LoadNodes — and it did not clear
-    // the seed map, so imnodes kept the position from BEFORE the reload. Two frames later flushPositions read
-    // that stale origin, saw it differ from the freshly-built graph, and wrote it to the layout sidecar as
-    // though the author had dragged the node there: the edit silently reverted AND the old coordinate
-    // persisted into GlobalConfig, where it beats the package's own POS for good.
-    void aReloadedPositionReachesTheCanvasInsteadOfBeingOverwritten()
-    {
-        Canvas->setMiniMap(false);
-        Doc["NODES"] = json::array({json{{"LABEL", "a"}, 
-                                         {"POS", json::array({100.0, 100.0})}}});
-        Canvas->invalidateGraph();
-        runFrame(); runFrame();
-        QCOMPARE(Canvas->graph().Nodes[0].X, 100.0f);
-
-        // The document is replaced under the canvas, exactly as a JSON-view save does.
-        Doc["NODES"][0]["POS"] = json::array({500.0, 400.0});
-        Canvas->invalidateGraph();
-        runFrame(); runFrame();
-        releaseMouse();
-
-        QCOMPARE(Canvas->graph().Nodes[0].X, 500.0f);
-        QCOMPARE(Canvas->graph().Nodes[0].Y, 400.0f);
-        const ImVec2 Held = ImNodes::GetNodeGridSpacePos(0);
-        QVERIFY2(std::abs(Held.x - 500.0f) < 1.0f && std::abs(Held.y - 400.0f) < 1.0f,
-                 qPrintable(QString("imnodes still holds the pre-reload position (%1,%2)")
-                                .arg(double(Held.x)).arg(double(Held.y))));
-        // And nothing was persisted: a reload is not a drag.
-        QVERIFY2(Layout.empty() || !Layout.contains("a"),
-                 qPrintable("the reload was written to the layout sidecar as if it were a drag: "
-                            + QString::fromStdString(Layout.dump())));
-    }
-
-    // The crash class, driven through the UI rather than through the helper. everyFieldWriteRefuses... calls
-    // PkgGraph::WriteSubKey directly, which pins the helper — but the guard the user meets is the CALL, and a
-    // call site can be swapped back to a bare Node[key][sub] with the helper still perfect and every suite
-    // still green. That is the predicate-pinned-instead-of-call-sites trap. So: a malformed value, a real
-    // click, a real keystroke, and the only thing asserted is that the editor is still alive and the value is
-    // untouched — which is exactly what the user gets.
-    void aMalformedFieldSurvivesRealClicksAndKeystrokes()
-    {
-        Canvas->setMiniMap(false);
-        QStringList died;
-
-        //Returns whether the sweep CHANGED the value. Run on a well-formed node that is the positive control:
-        //if a sweep cannot reach the widget that writes, then "the malformed value was not rewritten" is not
-        //evidence of anything, and the mutation that swaps the call site back sails through. Both the KeyValue
-        //"+ add" button and the Cover box have to be demonstrably reachable before the refusal means anything.
-        //`Pick` narrows what "changed" means to the sub-value under test: a TILE's other boxes (UID, TITLE) are
-        //legitimately typed into by the sweep, so only its COVER is compared.
-        using Picker = std::function<json(const json &)>;
-        const Picker Whole = [](const json &V) { return V; };
-        //Key is a JSON pointer into the node: in generation 6 a value lives inside a layer (an entry's TILE, a DLL map).
-        auto drive = [&](const char *Type, const char *Key, const json &Bad, bool Typing, const Picker &Pick = Picker()) {
-            const Picker &Sel = Pick ? Pick : Whole;
-            const int N = Canvas->addNode(Type, 220, 180);
-            const json::json_pointer Ptr(Key);
-            Doc["NODES"][N][Ptr] = Bad;
-            Canvas->setExpanded(N, true);          // the malformed field sits inside a folded layer
-            Canvas->invalidateGraph();
-            ImGui::ClearActiveID();
-            ImNodes::EditorContextResetPanning(ImVec2(0, 0));
-            runFrame(); runFrame();
-            if (Canvas->visibleNodes() != Canvas->nodeCount()) { died << "node culled"; return false; }
-
-            float vx0 = 0, vy0 = 0, vx1 = 0, vy1 = 0;
-            Canvas->canvasViewport(vx0, vy0, vx1, vy1);
-            const ImVec2 P = ImNodes::GetNodeScreenSpacePos(N);
-            const ImVec2 D = ImNodes::GetNodeDimensions(N);
-            const QString Who = QString("%1 %2=%3").arg(Type).arg(Key)
-                                    .arg(QString::fromStdString(Bad.dump()));
-            try {
-                // Every row of the node, both columns: one of them is the widget that writes through Key.
-                //Absolute x offsets, not fractions: a SmallButton sits at the node's content edge and is ~40px
-                //wide, so a fraction of the 346px body steps straight over it. The wider offsets are for the
-                //value column, where the text boxes are.
-                for (float dy = 4.0f; dy < D.y - 2.0f; dy += 3.0f)
-                    for (float dx : {14.0f, 26.0f, 38.0f, 52.0f, 0.45f * D.x, 0.8f * D.x}) {
-                        const ImVec2 At(P.x + dx, P.y + dy);
-                        if (At.x < vx0 || At.x > vx1 || At.y < vy0 || At.y > vy1) continue;
-                        //An item left ACTIVE by an earlier click in this sweep swallows the next press:
-                        //ButtonBehavior only takes it when ActiveId is free, and a text box focused two rows
-                        //up is still holding it. Without this the sweep never presses a single button, and
-                        //"the malformed value was not rewritten" becomes true for the wrong reason.
-                        ImGui::ClearActiveID();
-                        const json Before = Doc["NODES"][N];
-                        clickAt(At);
-                        runFrame();
-                        // A click focused something: type into it. The Cover write happens on the KEYSTROKE,
-                        // with no click needed beyond focusing the box, so a click-only sweep never reaches it.
-                        if (Typing && ImGui::GetActiveID() != 0) { type("z"); runFrame(); }
-                        //A click that removed the value's container (an entry's or a list's own delete) is another
-                        //control doing its job, not a rewrite: put the node back and keep sweeping, or every row
-                        //below it — the Cover box among them — would never be reached.
-                        if (!Doc["NODES"][N].contains(Ptr))
-                        {
-                            ImGui::ClearActiveID();
-                            Doc["NODES"][N] = Before;
-                            Canvas->invalidateGraph();
-                            runFrame(); runFrame();
-                        }
-                    }
-            } catch (const std::exception &E) {
-                died << QString("%1: threw %2").arg(Who).arg(E.what());
-            }
-            closeAnyPopup();
-            ImGui::ClearActiveID();
-            const bool Changed = Sel(Doc["NODES"][N][Ptr]) != Sel(Bad);
-            Canvas->removeNode(N);
-            Canvas->invalidateGraph();
-            runFrame();
-            return Changed;
-        };
-
-        // The positive controls FIRST: a well-formed value of each shape must be changed by the sweep, which
-        // is what proves the sweep reaches the widget that writes through the key.
-        //The cover lives inside the TILE object; the drive keys on the whole TILE (a malformed COVER inside it
-        //must leave the TILE value untouched).
-        auto tileWith = [](const json &Cover) { return json{{"UID", "1"}, {"TITLE", "t"}, {"COVER", Cover}}; };
-        const Picker CoverOf = [](const json &T) { return T.is_object() && T.contains("COVER") ? T["COVER"] : json(); };
-        if (!drive("EXEC", "/LAYERS/0/EXEC/0/TILE", tileWith(json("cover.png")), true, CoverOf))
-            died << "the sweep never reached the Cover box - every Cover result below is vacuous";
-        if (!drive("DLL", "/LAYERS/0/DLL", json::object(), false))
-            died << "the sweep never reached the KeyValue add button - every DLL result below is vacuous";
-
-        // Cover: TILE.COVER.FILE on every keystroke — no click beyond focusing the box.
-        for (const char *Bad : {"5", "[]", "true"})
-            if (drive("EXEC", "/LAYERS/0/EXEC/0/TILE", tileWith(json::parse(Bad)), true, CoverOf))
-                died << QString("TILE COVER=%1: the malformed value was rewritten").arg(Bad);
-        // KeyValue: DLL[""] on the "+ add" button.
-        for (const char *Bad : {"\"oops\"", "5", "[]", "true"})
-            if (drive("DLL", "/LAYERS/0/DLL", json::parse(Bad), false))
-                died << QString("DLL=%1: the malformed value was rewritten").arg(Bad);
-
-        QVERIFY2(died.isEmpty(),
-                 qPrintable("a malformed package did not survive being used:\n  " + died.join("\n  ")));
-    }
-
-    void zoomIsClampedAndDefaultsToUnity()
-    {
-        QCOMPARE(Canvas->zoom(), 1.0f);
-        Canvas->setZoom(1000.0f);
-        QVERIFY(Canvas->zoom() <= 3.0f);
-        Canvas->setZoom(0.0001f);
-        QVERIFY(Canvas->zoom() >= 0.2f);
-        Canvas->setZoom(1.0f);
-        QCOMPARE(Canvas->zoom(), 1.0f);
-    }
-
-    void zoomingDoesNotMoveTheStoredPositions()
-    {
-        Canvas->addNode("ZIP", 400, 300);
-        Canvas->addNode("EXEC", 900, 300);
-        runFrame();
-        const std::string Before = Layout.dump();
-
-        for (float Z : {0.5f, 2.0f, 0.25f, 1.0f})
-        {
-            Canvas->setZoom(Z);
-            runFrame();
-            runFrame();   // a second frame: the read-back runs against what the first pushed
-        }
-        QCOMPARE(Layout.dump(), Before);          // nothing was dragged, only looked at
-        const PkgGraph::Graph G = Canvas->graph();
-        QCOMPARE(G.Nodes[0].X, 400.0f);
-        QCOMPARE(G.Nodes[0].Y, 300.0f);
-        QCOMPARE(G.Nodes[1].X, 900.0f);
-    }
-
-    // Culling is what makes the 2775-node bundle usable (3753 ms -> 15 ms a frame). It must never drop a node
-    // that IS on screen, and a small graph must not be culled at all.
-    void everySmallGraphNodeIsStillDrawn()
-    {
-        //WITH culling on — which it always is now. The minimap is off so nothing it draws can be mistaken
-        //for a node the canvas submitted.
-        //the whole culling block deleted.
-        Canvas->setMiniMap(false);
-        for (int I = 0; I < 6; ++I) Canvas->addNode("ZIP", 60.0f + I * 120.0f, 80.0f);
-        runFrame();
-        QCOMPARE(Canvas->visibleNodes(), 6);
-    }
-
-    void aNodeFarOutsideTheViewportIsCulled()
-    {
-        //Culling is unconditional now; the minimap is off here only so the overview cannot be what a
-        //measurement picks up.
-        Canvas->setMiniMap(false);
-        Canvas->addNode("ZIP", 40, 40);
-        Canvas->addNode("ZIP", 90000, 90000);   // far off-screen at 1.0x
-        runFrame();
-        QCOMPARE(Canvas->nodeCount(), 2);
-        QCOMPARE(Canvas->visibleNodes(), 1);
-    }
-
-    // A wire whose ENDPOINTS are both culled but which CROSSES the viewport must still be drawn — you should see
-    // the link even when neither node it joins is on screen. Teeth: remove the crossing-link proxy pass → the link
-    // is culled with its endpoints and visibleLinks drops to 0.
-    void aLinkCrossingTheViewportIsDrawnThoughBothNodesAreCulled()
-    {
-        Canvas->setMiniMap(false);
-        const int p = Canvas->addNode("ZIP", -90000, -90000);   // far top-left, off-screen
-        const int c = Canvas->addNode("EXEC", 90000, 90000); // far bottom-right, off-screen
-        QVERIFY(Canvas->connect(p, c));                                    // wire by handle
-        Canvas->invalidateGraph();
-        runFrame();
-        QCOMPARE(Canvas->visibleNodes(), 0);   // both nodes are culled...
-        QCOMPARE(Canvas->visibleLinks(), 1);   // ...but the wire between them crosses the view, so it is drawn
-    }
-
-    // The complement — the geometric cull still WORKS: two culled nodes on the same side, whose wire never enters
-    // the viewport, cost nothing to draw. Teeth: make the segment test always-true → this link is drawn (1).
-    void aLinkThatMissesTheViewportIsNotDrawn()
-    {
-        Canvas->setMiniMap(false);
-        const int p = Canvas->addNode("ZIP", 90000, 90000);
-        const int c = Canvas->addNode("EXEC", 95000, 95000);   // both far bottom-right; wire stays off-screen
-        QVERIFY(Canvas->connect(p, c));                                    // wire by handle
-        Canvas->invalidateGraph();
-        runFrame();
-        QCOMPARE(Canvas->visibleNodes(), 0);
-        QCOMPARE(Canvas->visibleLinks(), 0);   // wire misses the viewport → correctly culled
-    }
-
-    // ...and a culled node must not have its position rewritten. imnodes was never told where it goes, so
-    // reading its position back yields the default origin — which is precisely how a layout got zeroed before.
-    void aCulledNodeKeepsItsStoredPosition()
-    {
-        //Culling is unconditional now; the minimap is off here only so the overview cannot be what a
-        //measurement picks up.
-        Canvas->setMiniMap(false);
-        Canvas->addNode("ZIP", 90000, 90000);
-        Canvas->addNode("ZIP", 40, 40);
-        runFrame();
-        runFrame();
-        const PkgGraph::Graph G = Canvas->graph();
-        QCOMPARE(G.Nodes[0].X, 90000.0f);
-        QCOMPARE(G.Nodes[0].Y, 90000.0f);
-    }
-
-
-private:
-    // Press at `from`, move through `steps` intermediate positions to `to`, release. A real drag: imnodes
-    // starts an interaction on the press and updates it from the ABSOLUTE cursor on every frame after, so a
-    // drag that teleports in one frame exercises none of what a mouse actually does.
-    void dragFromTo(ImVec2 from, ImVec2 to, int steps = 6, bool release = true)
-    {
-        ImGuiIO &io = ImGui::GetIO();
-        runFrame(from);
-        io.AddMouseButtonEvent(0, true);
-        runFrame(from);
-        for (int i = 1; i <= steps; ++i)
-            runFrame(ImVec2(from.x + (to.x - from.x) * i / steps, from.y + (to.y - from.y) * i / steps));
-        if (release) { io.AddMouseButtonEvent(0, false); runFrame(to); }
-    }
-
-    // The minimap's own draw list. It is a child window of its own, so what it painted is separable from the
-    // canvas — which is the only way to assert that it painted ANYTHING. Returns nullptr when it was not drawn.
-    const ImDrawList *miniMapDrawList()
-    {
-        const ImGuiContext &C = *ImGui::GetCurrentContext();
-        for (int w = 0; w < C.Windows.Size; ++w) {
-            const ImGuiWindow *W = C.Windows[w];
-            if (W->Name && W->Active && std::strstr(W->Name, "##minimap")) return W->DrawList;
-        }
-        return nullptr;
-    }
-    int miniMapVertices() { const ImDrawList *D = miniMapDrawList(); return D ? D->VtxBuffer.Size : 0; }
-
-    void clickAt(ImVec2 p)
-    {
-        ImGuiIO &io = ImGui::GetIO();
-        runFrame(p);
-        io.AddMouseButtonEvent(0, true);  runFrame(p);
-        io.AddMouseButtonEvent(0, false); runFrame(p);
-    }
-    // Dismiss any open popup (a combo dropdown). Escape is what a person presses, and imgui's own popup
-    // handling is what closes it; ClearActiveID does not. An open popup captures hovering for the whole
-    // context, which outlives the per-test canvas.
-    void closeAnyPopup()
-    {
-        //A click OUTSIDE it, which is what dismisses a combo for a person and what imgui itself listens for.
-        //Escape does not work here: the offscreen harness feeds no keyboard focus to the popup.
-        for (int i = 0; i < 6 && ImGui::GetCurrentContext()->OpenPopupStack.Size > 0; ++i)
-            clickAt(ImVec2(60.0f, 860.0f));
-        runFrame();
-        QVERIFY2(ImGui::GetCurrentContext()->OpenPopupStack.Size == 0,
-                 "a popup refused to close - it would block hovering for every test after this one");
-    }
-
-    // One character per frame: a keystroke is only meaningful once the widget has processed the one before it.
-    void type(const char *s)
-    {
-        ImGuiIO &io = ImGui::GetIO();
-        for (; *s; ++s) { io.AddInputCharacter((unsigned int)(unsigned char)*s); runFrame(LastMouse); }
-    }
-
-    void runFrame(ImVec2 mouse = ImVec2(400, 300))
-    {
-        ImGuiIO &io = ImGui::GetIO();
-        io.DisplaySize = (DisplayOverride.x > 0.0f) ? DisplayOverride : ImVec2(1400, 900);
-        io.DeltaTime = 1.0f / 60.0f;
-        io.AddMousePosEvent(mouse.x, mouse.y);
-        LastMouse = mouse;
-        ImGui::NewFrame();
-        Canvas->frame();
-        ImGui::Render();
-    }
-
-    //A frame with the left button going UP: the canvas only commits a save on release.
-    void releaseMouse()
-    {
-        ImGuiIO &io = ImGui::GetIO();
-        io.AddMouseButtonEvent(ImGuiMouseButton_Left, true);
-        runFrame(LastMouse);
-        io.AddMouseButtonEvent(ImGuiMouseButton_Left, false);
-        runFrame(LastMouse);
-    }
-
-    ImVec2 LastMouse = ImVec2(400, 300);
-    //Lets one test drive a display size other than the harness default, to reach a branch that only exists on
-    //a small canvas. Reset to (0,0) — meaning "use the default" — by whoever sets it.
-    ImVec2 DisplayOverride = ImVec2(0, 0);
-
-private:
-    json Doc;
-    json Layout;
-    PkgCanvas *Canvas = nullptr;
-    int Saves = 0;
-    int FullSaves = 0;
-    int LayoutSaves = 0;
 };
 
 QTEST_MAIN(PkgCanvasTest)

@@ -2,7 +2,6 @@
 
 #include "commonutils.h"   // Log
 
-#include "pkglayout.h"   // PkgLayout::ComputeUnplaced — the shared auto-layout
 #include "fold.h"        // Fold::TypeOf — a layer's one type key
 
 #include <algorithm>
@@ -118,109 +117,48 @@ bool WriteSubKey(json &Node, const char *Key, const std::string &Sub, const json
     return true;
 }
 
-Graph Build(const json &NodesArray, const json *Layout)
+Graph Build(const std::vector<NodeRef> &Nodes)
 {
     Graph G;
-    if (!NodesArray.is_array()) return G;
-
-    std::map<std::string, int> ById;
-    const VarFacets Facets = CollectVarFacets(NodesArray);   // what WHEN-gated layers are grouped by (their height)
-    for (const auto &N : NodesArray)
+    std::map<std::string, int> ByHandle;
+    for (const NodeRef &R : Nodes)
     {
-        //NOT skipped: G.Nodes[i] MUST correspond to NodesArray[i]. The link pass indexes NodesArray by
-        //G.Nodes position, and the canvas writes a node's position back at that index — so one non-object in
-        //the array would shift every wire and every saved position by one. A malformed entry becomes an empty
-        //placeholder node instead, which renders as an obviously-broken box rather than silently skewing the
-        //graph. (LoadNodes does not produce these; a hand-edited file can.)
+        //NOT skipped when malformed: G.Nodes[i] MUST correspond to Nodes[i] (the canvas addresses both by index).
         Node Nd;
         Nd.Index = (int)G.Nodes.size();
-        if (!N.is_object()) { Nd.Height = EstimateHeight(N, &Facets); G.Nodes.push_back(std::move(Nd)); continue; }
-        //TOTAL: the editor renders raw on-disk JSON, deliberately — it is the tool you open to fix a node the
-        //format rejects — so any of these may be the wrong type, and value() throws on a mismatch.
-        auto Str = [&](const char *K, const char *Def) {
-            return (N.contains(K) && N[K].is_string()) ? N[K].get<std::string>() : std::string(Def);
-        };
-        Nd.Id    = Str("CID", "");   // Model C: the canvas handle is the node's stored CID (LABEL is cosmetic only)
-        Nd.Type  = KindOf(N);
-        //The node's first content layer, as the node's Form: the delta-base match (a delta's base must be a zip)
-        //and the colour logic key on it.
-        for (const std::string &T : LayerTypes(N))
-            if (T == "ZIP" || T == "DIR" || T == "FILE" || T == "DELTA")
-            { Nd.Form = T; for (char &C : Nd.Form) C = (char)std::tolower((unsigned char)C); break; }
-        //Position resolves in three steps, weakest first: the node's own POS (the author's published default),
-        //then the caller's Layout override (this machine's own drags, held in GlobalConfig), then — for
-        //whatever is still unplaced — the computed layout below. A node carrying POS therefore opens where the
-        //author put it, and moving it never writes to the package.
-        auto ReadPos = [&](const json &P, const char *Which) {
-            if (!P.is_array() || P.size() != 2 || !P[0].is_number() || !P[1].is_number())
-            {
-                //Recorded like the out-of-range shape below. "POS": ["10","20"] or a three-element POS is just
-                //as much a declaration that will be silently replaced at publish, and the comment below
-                //promises Build hands back what it refused — it has to mean every refusal, not one of them.
-                //NOT P.dump().substr(): dump() serialises the WHOLE value first, and a package fetched from a
-                //content source can carry a megabytes-long array here — allocated on every cache rebuild,
-                //which is every keystroke. Describe the shape instead; the shape is the whole complaint.
-                G.RejectedPositions.push_back(
-                    {Nd.Index, Nd.Id, Which, std::string("a ") + P.type_name()
-                                       + (P.is_array() ? " of " + std::to_string(P.size()) + " element(s)" : "")
-                                       + ", not two numbers"});
-                return false;
-            }
-            const double Px = P[0].get<double>(), Py = P[1].get<double>();
-            //A coordinate no layout could have produced is not a position, it is corruption — and accepting it
-            //here is what made it permanent. The canvas cannot draw a node at 5e9 (it fails every viewport
-            //test), cannot select it, and cannot drag it back; the read-back downstream then refused to write
-            //the value it was handed, re-seeded from this same number, and refused it again every frame.
-            //Rejected at the door instead, which leaves HasPos false so PkgLayout places the node somewhere
-            //the author can actually see and fix it. The bound is absurd rather than tight: real graphs are
-            //tens of thousands of units across, and `get<float>()` on 1e300 quietly yields inf.
-            if (!std::isfinite(Px) || !std::isfinite(Py) || std::abs(Px) > 1.0e7 || std::abs(Py) > 1.0e7)
-            {
-                //RECORDED, not logged. Dropping a declared position silently means the author's layout
-                //disappears, publish re-stamps a computed one over it and the package's Meta-CID changes with
-                //"stamped POS into N file(s)" as the only trace — so it has to be reported. But Build is
-                //called on every cache rebuild, which is every KEYSTROKE, and logging here made one corrupt
-                //node emit a 772-byte warning per character typed anywhere in the package (500 such nodes:
-                //386 KB of stderr and 500 Warnings on the diagnostics tally, per keystroke). Build stays pure
-                //and hands the facts back; the canvas, which already keeps a warned-about set, says it once.
-                //
-                //%g, not std::to_string: the latter prints 1e300 as 308 digits of peer-controlled text.
-                char Buf[64];
-                std::snprintf(Buf, sizeof(Buf), "%g, %g", Px, Py);
-                G.RejectedPositions.push_back({Nd.Index, Nd.Id, Which, Buf});
-                return false;
-            }
-            Nd.X = (float)Px; Nd.Y = (float)Py; Nd.HasPos = true;
-            return true;
-        };
-        if (N.contains("POS")) ReadPos(N["POS"], "its own POS");
-        if (Layout && Layout->is_object() && !Nd.Id.empty() && Layout->contains(Nd.Id))
-            ReadPos((*Layout)[Nd.Id], "this machine's saved layout");
-        Nd.Height = EstimateHeight(N, &Facets);
-        if (!Nd.Id.empty()) ById[Nd.Id] = Nd.Index;
+        Nd.Id = R.Handle;
+        if (R.Json && R.Json->is_object())
+        {
+            Nd.Type = KindOf(*R.Json);
+            //The node's first content layer is its Form: the delta-base match and the content actions key on it.
+            for (const std::string &T : LayerTypes(*R.Json))
+                if (T == "ZIP" || T == "DIR" || T == "FILE" || T == "DELTA")
+                { Nd.Form = T; for (char &C : Nd.Form) C = (char)std::tolower((unsigned char)C); break; }
+        }
+        if (!Nd.Id.empty()) ByHandle[Nd.Id] = Nd.Index;
         G.Nodes.push_back(std::move(Nd));
     }
 
     std::set<std::string> SeenExternal;
-    for (int I = 0; I < (int)G.Nodes.size(); ++I)
+    for (int I = 0; I < (int)Nodes.size(); ++I)
     {
-        const json &N = NodesArray[I];
+        if (!Nodes[(size_t)I].Json) continue;
+        const json &N = *Nodes[(size_t)I].Json;
         if (!N.is_object() || !N.contains("LAYERS") || !N["LAYERS"].is_array()) continue;
         //One wire per REFERENCE, flattened in LAYERS order (EraseRef walks the same order). TOTAL over malformed
-        //layers: the editor renders raw on-disk JSON, and a wrong-shaped reference OCCUPIES a slot but draws no
-        //wire — so a slot always addresses the real reference, and detaching never erases a neighbour.
+        //layers: a wrong-shaped reference OCCUPIES a slot but draws no wire — so a slot always addresses the real
+        //reference, and detaching never erases a neighbour.
         int Slot = -1, LayerIndex = -1;
         auto Wire = [&](const json &Ref, int Member, bool Any, bool Not) {
             ++Slot;
             if (!Ref.is_string() || Ref.get<std::string>().empty()) return;
             const std::string Pid = Ref.get<std::string>();
             Link L; L.ChildIndex = I; L.Slot = Slot; L.Layer = LayerIndex; L.Member = Member; L.Any = Any; L.Not = Not;
-            auto It = ById.find(Pid);
-            if (It != ById.end()) L.ParentIndex = It->second;
+            const auto It = ByHandle.find(Pid);
+            if (It != ByHandle.end()) L.ParentIndex = It->second;
             else
             {
-                //Out-of-bundle ref (a shared library or runner) — a reference chip, not a box we own.
-                L.ExternalId = Pid;
+                L.ExternalId = Pid;                      // another package's node: drawn as a reference chip
                 if (SeenExternal.insert(Pid).second) G.Externals.push_back(Pid);
             }
             G.Links.push_back(std::move(L));
@@ -239,24 +177,8 @@ Graph Build(const json &NodesArray, const json *Layout)
             }
         }
     }
-
-    for (auto &Nd : G.Nodes)                 // only a zip can become a delta
-        Nd.HasDeltaBase = Nd.Form == "zip" && !DeltaBase(NodesArray, Nd.Index).empty();
-
-    //Anything still unplaced gets the computed layout. It lives in PkgLayout because the same function has
-    //to run at publish time to STAMP POS into the nodes — one algorithm, so what an author sees on the canvas
-    //is exactly what a peer opening the published package sees.
-    PkgLayout::ComputeUnplaced(G);
-
+    for (Node &Nd : G.Nodes) Nd.HasDeltaBase = Nd.Form == "zip" && !DeltaBase(Nodes, Nd.Index).empty();
     return G;
-}
-
-bool SetPos(json &Layout, const std::string &NodeId, float X, float Y)
-{
-    if (NodeId.empty()) return false;
-    if (!Layout.is_object()) Layout = json::object();
-    Layout[NodeId] = json::array({X, Y});
-    return true;
 }
 
 // ---- layer vocabulary -----------------------------------------------------
@@ -313,10 +235,10 @@ std::string ContentTarget(const json &Node)
     return I < 0 ? std::string() : StrField(Node["LAYERS"][(size_t)I], "TARGET");
 }
 
-std::string DeltaBase(const json &NodesArray, int Index)
+std::string DeltaBase(const std::vector<NodeRef> &Nodes, int Index)
 {
-    if (!NodesArray.is_array() || Index < 0 || Index >= (int)NodesArray.size()) return {};
-    const json &N = NodesArray[(size_t)Index];
+    if (Index < 0 || Index >= (int)Nodes.size() || !Nodes[(size_t)Index].Json) return {};
+    const json &N = *Nodes[(size_t)Index].Json;
     const int Own = ContentIndex(N);
     if (Own < 0 || ContentName(N).empty()) return {};   // nothing of its own to diff yet
     const std::string Target = ContentTarget(N);
@@ -325,10 +247,10 @@ std::string DeltaBase(const json &NodesArray, int Index)
         const json &L = N["LAYERS"][(size_t)I];
         if (LayerType(L) != "NODE" || L.contains("TAKE") || L.contains("TARGET")) continue;
         const std::string Ref = StrField(L, "NODE");
-        for (const auto &C : NodesArray)
-            if (!Ref.empty() && StrField(C, "CID") == Ref && ContentType(C) == "ZIP" && ContentTarget(C) == Target
-                && !ContentName(C).empty())
-                return ContentName(C);
+        for (const NodeRef &C : Nodes)
+            if (!Ref.empty() && C.Handle == Ref && C.Json && ContentType(*C.Json) == "ZIP" && ContentTarget(*C.Json) == Target
+                && !ContentName(*C.Json).empty())
+                return ContentName(*C.Json);
     }
     return {};
 }
@@ -680,26 +602,7 @@ const std::vector<Field> &FieldsFor(const std::string &Type)
     return It->second;
 }
 
-// ---- drawn height ---------------------------------------------------------
-
-namespace {
-
-//One label-and-widget line, and one plain text line. Two constants rather than one because a node is mostly
-//widget rows with a few text lines, and the difference compounds over the 59-row RegEdits this exists for.
-//Calibrated against ImNodes::GetNodeDimensions in the GUI suite, not guessed.
-constexpr float kRowPx     = 19.0f;   // label + widget + item spacing
-constexpr float kTextPx    = 17.0f;   // a bare text line
-constexpr float kTitlePx   = 34.0f;   // the type title bar
-constexpr float kChromePx  = 26.0f;   // imnodes' own node padding, top and bottom together
-//An ImGui::Separator() costs exactly ItemSpacing.y: SeparatorEx sets thickness_for_layout to 0 for a 1px
-//line, and the style is untouched StyleColorsDark, so this is 4px everywhere with no context dependence.
-//An earlier version charged 6 here and 2 in the RegEdits arm, described that as measured, and was really two
-//compensating errors — the RegEdits total came out right while its decomposition was wrong, and the ObjArray
-//arm over-charged 4px per entry. Splitting the button row out makes both arms say what they mean.
-constexpr float kSepPx     =  4.0f;   // an ImGui::Separator() between batched entries
-constexpr float kBtnPx     = 17.0f;   // a row holding SmallButtons (no frame padding, unlike kRowPx)
-
-} // namespace
+// ---- registry rows ---------------------------------------------------------
 
 //Rows one registry TREE contributes, by exactly the rules FlattenTree walks: a row per non-object value, one
 //"create this key" row for a key with no children at all, then the subkeys. Pinned against the real flattening
@@ -730,13 +633,30 @@ size_t CountRegRows(const json &Entry)
 
 // ---- the layer tree -------------------------------------------------------
 
+namespace {
+void CollectFacetsOf(const json &N, VarFacets &Out);
+}
+
 VarFacets CollectVarFacets(const json &NodesArray)
 {
     VarFacets Out;
     if (!NodesArray.is_array()) return Out;
-    for (const json &N : NodesArray)
+    for (const json &N : NodesArray) CollectFacetsOf(N, Out);
+    return Out;
+}
+
+VarFacets CollectVarFacets(const std::vector<NodeRef> &Nodes)
+{
+    VarFacets Out;
+    for (const NodeRef &R : Nodes) if (R.Json) CollectFacetsOf(*R.Json, Out);
+    return Out;
+}
+
+namespace {
+void CollectFacetsOf(const json &N, VarFacets &Out)
+{
     {
-        if (!N.is_object() || !N.contains("LAYERS") || !N["LAYERS"].is_array()) continue;
+        if (!N.is_object() || !N.contains("LAYERS") || !N["LAYERS"].is_array()) return;
         for (const json &L : N["LAYERS"])
         {
             if (!L.is_object() || !L.contains("VARS") || !L["VARS"].is_object()) continue;
@@ -755,7 +675,7 @@ VarFacets CollectVarFacets(const json &NodesArray)
             }
         }
     }
-    return Out;
+}
 }
 
 namespace {
@@ -965,53 +885,10 @@ std::string VarTitle(const std::string &Key, const json &Decl)
     return L.empty() ? Key : L + " (" + Key + ")";
 }
 
-float EstimateHeight(const json &Node, const VarFacets *Facets)
-{
-    //A NODES entry that is not an object is a PLACEHOLDER, and it draws as one: a title bar and a single
-    //disabled line saying so (see PkgCanvas::drawNode). Falling through to the payload arms below charged it
-    //a full Group's worth of chrome, and leaving Height at its default 0 — which is what Build did, since it
-    //push_backs the placeholder before this is ever called — gave PkgLayout no vertical space for it at all,
-    //so the next node in the column was stacked on top of it.
-    if (!Node.is_object()) return kChromePx + kTitlePx + kTextPx;
-    float Px = kChromePx + kTitlePx;
-    Px += kTextPx;                                   // the "over / under" pin row
-    //The "not wired" note, which drawNode shows on a node with no entries that nothing contains. Counted ALWAYS:
-    //whether a node has dependents is a property of the GRAPH, not of the node, and this is payload-only on
-    //purpose — one text line of slack on a wired node is the cheap direction to be wrong in.
-    Px += kTextPx;
-    Px += kRowPx + kTextPx;                          // the name row, the cid line
-    //"node options" counted as though it were OPEN, always — its tree line and its rows (variant, recommended,
-    //section). Whether it is open is ImGui's per-window state, not the payload's; guessing it closed is unsafe in
-    //the one direction that matters (the node drawn taller than the space reserved).
-    Px += kTextPx + 3.0f * kRowPx;
-    //The folded layer tree: one row per top-level entry (a layer's row carries its SmallButtons), or one line
-    //saying there is nothing / that LAYERS is not a list.
-    if (Node.contains("LAYERS") && Node["LAYERS"].is_array())
-    {
-        static const VarFacets None;
-        const int Rows = TopLevelRows(LayerItems(Node, Facets ? *Facets : None));
-        Px += Rows ? (float)Rows * kBtnPx : kTextPx;
-    }
-    else Px += kTextPx;
-    Px += kBtnPx;                                    // the "+ layer" row drawPayload always draws
-    //The action row: a Separator, then one SmallButton line per wrap. drawActions starts a new line whenever
-    //the next button would pass the node width, and a Content zip with a deflate hint and a zip parent has
-    //five of them — but how many actions a node offers depends on HOST facts (a hint saying this zip is
-    //DEFLATE-compressed), which are not in the payload and not knowable here. One line, and the reserve above
-    //absorbs a second; a node offering three rows of actions can still overflow.
-    Px += kSepPx + kBtnPx;
-    //Room for a couple of the validation warnings the canvas draws ON a node. They are host state rather than
-    //payload — the same node has none at publish time, which is when this number is stamped — and there can be
-    //any number of them, so they cannot be counted properly here. Overrunning the ESTIMATE is not overlap:
-    //PkgLayout pitches by Height + RowGap, so a node has RowGap to spare before it reaches the node beneath it.
-    Px += 2.0f * kTextPx;
-    return Px;
-}
 
 // ---- node actions ---------------------------------------------------------
 
-std::vector<Action> ActionsFor(const json &Node, const Graph &G, int Index,
-                               const std::vector<std::string> &Hints)
+std::vector<Action> ActionsFor(const json &Node, bool HasDeltaBase, const std::vector<std::string> &Hints)
 {
     std::vector<Action> A;
     auto HasHint = [&](const char *H) {
@@ -1019,8 +896,11 @@ std::vector<Action> ActionsFor(const json &Node, const Graph &G, int Index,
     };
     const std::vector<std::string> Types = LayerTypes(Node);
     auto Has = [&](const char *T) { return std::find(Types.begin(), Types.end(), T) != Types.end(); };
-    //Content actions act on the node's first content layer (the one Build exposes as the node's Form).
-    const std::string Form = (Index >= 0 && Index < (int)G.Nodes.size()) ? G.Nodes[(size_t)Index].Form : std::string();
+    //Content actions act on the node's first content layer — its Form.
+    std::string Form;
+    for (const std::string &T : Types)
+        if (T == "ZIP" || T == "DIR" || T == "FILE" || T == "DELTA")
+        { Form = T; for (char &C : Form) C = (char)std::tolower((unsigned char)C); break; }
 
     if (!Form.empty())
     {
@@ -1034,7 +914,7 @@ std::vector<Action> ActionsFor(const json &Node, const Graph &G, int Index,
                 A.push_back({"restore", "! re-store", "This zip is DEFLATE-compressed and cannot mount - re-pack it uncompressed.", true});
             //A delta needs a base: only offered when a node it CONTAINS is itself a zip to diff against. Must
             //match what the action actually requires, or it is a button that lies.
-            if (Index >= 0 && Index < (int)G.Nodes.size() && G.Nodes[(size_t)Index].HasDeltaBase)
+            if (HasDeltaBase)
                 A.push_back({"to_delta", "-> delta", "Store this as a binary delta against the zip beneath it at the same target.", true});
         }
         //The exact inverse of "-> delta": reconstruct the full archive and go back to being a plain zip.

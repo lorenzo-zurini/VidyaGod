@@ -72,22 +72,20 @@ else()
     set(VG_PLATFORM_SRC src/platform/platform_posix.cpp)
 endif()
 
-# Dear ImGui + imnodes — the blueprint canvas for the package editor. Vendored (same copies as AutoStudyCD20,
-# where this stack is already proven). AUTOMOC off: third-party C++ with no Qt in it.
+# Dear ImGui (1.92.9, vendored) — the package editor's canvas; its fonts are embedded from third_party/fonts.
+# AUTOMOC off: third-party C++ with no Qt in it.
 add_library(vg_imgui STATIC
     third_party/imgui/imgui.cpp
     third_party/imgui/imgui_draw.cpp
     third_party/imgui/imgui_tables.cpp
     third_party/imgui/imgui_widgets.cpp
     third_party/imgui/misc/cpp/imgui_stdlib.cpp
-    third_party/imgui/backends/imgui_impl_opengl3.cpp
-    third_party/imnodes/imnodes.cpp)
+    third_party/imgui/backends/imgui_impl_opengl3.cpp)
 set_target_properties(vg_imgui PROPERTIES AUTOMOC OFF AUTOUIC OFF AUTORCC OFF POSITION_INDEPENDENT_CODE ON)
 target_include_directories(vg_imgui PUBLIC
     ${CMAKE_SOURCE_DIR}/third_party/imgui
     ${CMAKE_SOURCE_DIR}/third_party/imgui/backends
-    ${CMAKE_SOURCE_DIR}/third_party/imgui/misc/cpp
-    ${CMAKE_SOURCE_DIR}/third_party/imnodes)
+    ${CMAKE_SOURCE_DIR}/third_party/imgui/misc/cpp)
 target_link_libraries(vg_imgui PUBLIC Qt6::OpenGL)
 
 # Everything except the entry point (main.cpp) + translations. Compiled once into an OBJECT library so both the
@@ -200,6 +198,9 @@ set(SHARED_SOURCES
 
     src/pkggraph.h
     src/pkggraph.cpp
+    src/pkgdoc.cpp
+    src/pkgform.h
+    src/pkgform.cpp
     src/pkglayout.h
     src/pkglayout.cpp
     src/pkgcanvas.h
@@ -382,6 +383,7 @@ add_executable(vg_tests
     tests/test_depcheck.cpp
     tests/test_pkglayout.cpp
     tests/test_vgdelta.cpp
+    tests/test_pkgdoc.cpp
     src/manifestmodel.cpp
     src/fold.cpp
     src/cid.cpp
@@ -395,6 +397,7 @@ add_executable(vg_tests
     src/persistlayer.cpp
     src/pkggraph.cpp
     src/pkglayout.cpp
+    src/pkgdoc.cpp
     src/commonutils.cpp
     src/depcheck.cpp        # Qt-free dependency detection engine (ParseLdconfig/Check)
     ${VG_PLATFORM_SRC}      # Platform::SelfExe (used by depcheck) — POSIX or Win32 impl
@@ -468,6 +471,7 @@ set_tests_properties(cli_variant_needs_a_tile PROPERTIES PASS_REGULAR_EXPRESSION
 
 add_gui_test(test_pkgcanvas)
 add_gui_test(test_canvasperf)
+set_tests_properties(test_canvasperf PROPERTIES RUN_SERIAL TRUE)   # it times frames: alone, or it measures the other suites
 add_gui_test(test_pkgactions)
 add_gui_test(test_packageeditormodel)
 add_gui_test(test_tray)

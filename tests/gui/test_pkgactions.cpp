@@ -11,7 +11,6 @@
 #include "packageeditormodel.h"
 
 #include "imgui.h"
-#include "imnodes.h"
 
 #include <QtTest>
 #include "apppaths.h"
@@ -39,10 +38,7 @@ private slots:
         AppPaths::SetDataRoot(SuiteDataRoot->path().toStdString());
 
         ImGui::CreateContext();
-        ImGuiIO &io = ImGui::GetIO();
-        io.IniFilename = nullptr;
-        unsigned char *px = nullptr; int w = 0, h = 0;
-        io.Fonts->GetTexDataAsRGBA32(&px, &w, &h);
+        ImGui::GetIO().IniFilename = nullptr;
         // zip/unzip are what the conversions shell out to; without them these tests would assert nothing.
         HaveZipTools = !QStandardPaths::findExecutable("zip").isEmpty()
                     && !QStandardPaths::findExecutable("unzip").isEmpty();
@@ -294,14 +290,14 @@ private slots:
     {
         Fixture F(this);
         const int n = F.addRegNode();
-        F.doc()["NODES"][n]["LAYERS"] = json::array();              // nothing to lose
-        F.model->SaveNodes();
+        F.setLayers(n, json::array());             // nothing to lose
+        F.save();
 
         F.pickThisFile(F.writeReg("good.reg"));
         F.act->perform(F.nodeId(n), "import_reg");
         QTest::qWait(100);
 
-        const json &Ls = F.doc()["NODES"][n]["LAYERS"];
+        const json Ls = F.node(n)["LAYERS"];
         QVERIFY2(Ls.is_array() && Ls.size() == 1 && Ls[0].contains("REG"), Ls.dump().c_str());
         QCOMPARE(Ls[0]["ARCH"], json::array({"32", "64"}));
         const std::string Dump = Ls[0]["REG"].dump();
@@ -314,19 +310,19 @@ private slots:
     {
         Fixture F(this);
         const int n = F.addRegNode();
-        F.doc()["NODES"][n]["LAYERS"] = json::parse(R"([{"ZIP":"a.zip"},
-            {"REG":{"HKLM":{"Software":{"Mine":{"Keep":"precious"}}}},"ARCH":["64"]}])");
-        F.model->SaveNodes();
+        F.setLayers(n, json::parse(R"([{"ZIP":"a.zip"},
+            {"REG":{"HKLM":{"Software":{"Mine":{"Keep":"precious"}}}},"ARCH":["64"]}])"));
+        F.save();
 
         F.pickThisFile(F.writeReg("good.reg"));
         F.act->perform(F.nodeId(n), "import_reg");
         QTest::qWait(100);
 
-        const json &L = F.doc()["NODES"][n]["LAYERS"][1];
+        const json L = F.node(n)["LAYERS"][1];
         QCOMPARE(L["ARCH"], json::array({"64"}));
         QCOMPARE(L["REG"]["HKLM"]["Software"]["Mine"]["Keep"], json("precious"));
         QVERIFY2(L["REG"].dump().find("TONICT") != std::string::npos, L.dump().c_str());
-        QCOMPARE((int)F.doc()["NODES"][n]["LAYERS"].size(), 2);   // no second REG layer
+        QCOMPARE((int)F.node(n)["LAYERS"].size(), 2);   // no second REG layer
     }
 
     // A LAYERS that is not a list is the author's own hand-written shape: Import must refuse it, say why, and change
@@ -337,16 +333,16 @@ private slots:
         Fixture F(this);
         const int n = F.addRegNode();
         const json Hand = json::parse(R"({"REG":{"HKLM":{"Software":{"Mine":{"Keep":"precious"}}}}})");
-        F.doc()["NODES"][n]["LAYERS"] = Hand;
-        F.model->SaveNodes();
+        F.setLayers(n, Hand);
+        F.save();
 
         F.pickThisFile(F.writeReg("good.reg"));
         F.act->perform(F.nodeId(n), "import_reg");
         QTest::qWait(100);
 
-        QCOMPARE(F.doc()["NODES"][n]["LAYERS"], Hand);              // in memory...
+        QCOMPARE(F.node(n)["LAYERS"], Hand);              // in memory...
         const json Saved = json::parse(F.read(F.path(F.nodeFile(n))).toStdString());
-        QCOMPARE(Saved["LAYERS"], Hand);                            // ...and on disk
+        QCOMPARE(nlohmann::json(Saved["LAYERS"]), nlohmann::json(Hand));   // canonical on disk: keys sorted                            // ...and on disk
         QVERIFY2(F.notices.join(" ").contains("not a list"), qUtf8Printable(F.notices.join(" ")));
     }
 
@@ -357,16 +353,16 @@ private slots:
         Fixture F(this);
         const int n = F.addRegNode();
         const json Hand = json::parse(R"([{"REG":["a hand-written entry"],"ARCH":["32"]}])");
-        F.doc()["NODES"][n]["LAYERS"] = Hand;
-        F.model->SaveNodes();
+        F.setLayers(n, Hand);
+        F.save();
 
         F.pickThisFile(F.writeReg("good.reg"));
         F.act->perform(F.nodeId(n), "import_reg");
         QTest::qWait(100);
 
-        QCOMPARE(F.doc()["NODES"][n]["LAYERS"], Hand);
+        QCOMPARE(F.node(n)["LAYERS"], Hand);
         const json Saved = json::parse(F.read(F.path(F.nodeFile(n))).toStdString());
-        QCOMPARE(Saved["LAYERS"], Hand);
+        QCOMPARE(nlohmann::json(Saved["LAYERS"]), nlohmann::json(Hand));   // canonical on disk: keys sorted
         QVERIFY2(F.notices.join(" ").contains("not a hive tree"), qUtf8Printable(F.notices.join(" ")));
     }
 
@@ -375,14 +371,14 @@ private slots:
     {
         Fixture F(this);
         const int n = F.addRegNode();
-        F.doc()["NODES"][n]["LAYERS"] = json::parse(R"([{"REG":null,"ARCH":["32","64"]}])");
-        F.model->SaveNodes();
+        F.setLayers(n, json::parse(R"([{"REG":null,"ARCH":["32","64"]}])"));
+        F.save();
 
         F.pickThisFile(F.writeReg("good.reg"));
         F.act->perform(F.nodeId(n), "import_reg");
         QTest::qWait(100);
 
-        const json &L = F.doc()["NODES"][n]["LAYERS"][0];
+        const json L = F.node(n)["LAYERS"][0];
         QVERIFY2(L["REG"].is_object() && L["REG"].dump().find("TONICT") != std::string::npos, L.dump().c_str());
         QCOMPARE(L["ARCH"], json::array({"32", "64"}));
     }
@@ -402,22 +398,26 @@ private slots:
             if (After) Own.push_back(RefLayer); else Own.insert(Own.begin(), RefLayer);
             return json::array({ Base, json{{"CID", "hN"}, {"LABEL", "n"}, {"LAYERS", Own}} });
         };
-        QCOMPARE(PkgGraph::DeltaBase(nodes({{"NODE", "hB"}}, false, "FILES/C:/g"), 1), std::string("base.zip"));
-        QCOMPARE(PkgGraph::DeltaBase(nodes({{"NODE", "hB"}}, true, "FILES/C:/g"), 1), std::string());      // after it
-        QCOMPARE(PkgGraph::DeltaBase(nodes({{"NODE", "hB"}}, false, "FILES/C:/other"), 1), std::string()); // elsewhere
-        QCOMPARE(PkgGraph::DeltaBase(nodes({{"NODE", "hB"}, {"TARGET", "FILES/x"}}, false, "FILES/C:/g"), 1), std::string());
-        QCOMPARE(PkgGraph::DeltaBase(nodes({{"NODE", "hB"}, {"TAKE", json::array({"FILES/a"})}}, false, "FILES/C:/g"), 1), std::string());
-        QCOMPARE(PkgGraph::DeltaBase(nodes({{"ANY", json::array({"hB"})}}, false, "FILES/C:/g"), 1), std::string()); // not contained
+        const auto base = [](const json &Arr) {
+            std::vector<PkgGraph::NodeRef> R;
+            for (const auto &N : Arr) R.push_back({N["CID"].get<std::string>(), &N});
+            return R;
+        };
+        auto db = [&](const json &Arr) { return PkgGraph::DeltaBase(base(Arr), 1); };
+        QCOMPARE(db(nodes({{"NODE", "hB"}}, false, "FILES/C:/g")), std::string("base.zip"));
+        QCOMPARE(db(nodes({{"NODE", "hB"}}, true, "FILES/C:/g")), std::string());      // after it
+        QCOMPARE(db(nodes({{"NODE", "hB"}}, false, "FILES/C:/other")), std::string()); // elsewhere
+        QCOMPARE(db(nodes({{"NODE", "hB"}, {"TARGET", "FILES/x"}}, false, "FILES/C:/g")), std::string());
+        QCOMPARE(db(nodes({{"NODE", "hB"}, {"TAKE", json::array({"FILES/a"})}}, false, "FILES/C:/g")), std::string());
+        QCOMPARE(db(nodes({{"ANY", json::array({"hB"})}}, false, "FILES/C:/g")), std::string()); // not contained
         // The button asks the same question as the action.
-        const json Doc = nodes({{"NODE", "hB"}}, false, "FILES/C:/g");
-        const PkgGraph::Graph G = PkgGraph::Build(Doc);
-        auto offers = [&](const PkgGraph::Graph &Gr, const json &D) {
-            for (const auto &A : PkgGraph::ActionsFor(D[1], Gr, 1, {})) if (std::string(A.Id) == "to_delta") return true;
+        auto offers = [&](const json &D) {
+            const PkgGraph::Graph G = PkgGraph::Build(base(D));
+            for (const auto &A : PkgGraph::ActionsFor(D[1], G.Nodes[1].HasDeltaBase, {})) if (std::string(A.Id) == "to_delta") return true;
             return false;
         };
-        QVERIFY(offers(G, Doc));
-        const json Elsewhere = nodes({{"NODE", "hB"}}, false, "FILES/C:/other");
-        QVERIFY(!offers(PkgGraph::Build(Elsewhere), Elsewhere));
+        QVERIFY(offers(nodes({{"NODE", "hB"}}, false, "FILES/C:/g")));
+        QVERIFY(!offers(nodes({{"NODE", "hB"}}, false, "FILES/C:/other")));
     }
 
     // Undelta turns the content layer back into a ZIP in place: its TARGET stays, the stale SOURCE/SIZE go. The
@@ -428,18 +428,18 @@ private slots:
         Fixture F(this);
         F.makeZip("content.zip", "a.txt", "bytes");
         const int n = F.addContentNode("content.zip");
-        F.doc()["NODES"][n]["LAYERS"] = json::parse(R"([{"ENV":{"A":"1"}},
-            {"ZIP":"content.zip","TARGET":"FILES/C:/g","SOURCE":"bafkreiold","SIZE":5,"WHEN":"%X% == 1"}])");
-        F.model->SaveNodes();
+        F.setLayers(n, json::parse(R"([{"ENV":{"A":"1"}},
+            {"ZIP":"content.zip","TARGET":"FILES/C:/g","SOURCE":"bafkreiold","SIZE":5,"WHEN":"%X% == 1"}])"));
+        F.save();
         F.act->perform(F.nodeId(n), "to_dir");
         QVERIFY(F.waitIdle(F.nodeId(n)));
-        const json &L = F.doc()["NODES"][n]["LAYERS"][1];
+        const json L = F.node(n)["LAYERS"][1];
         QCOMPARE(PkgGraph::LayerType(L), std::string("DIR"));
         QCOMPARE(L["DIR"], json("content"));
         QCOMPARE(L["TARGET"], json("FILES/C:/g"));
         QCOMPARE(L["WHEN"], json("%X% == 1"));
         QVERIFY2(!L.contains("SOURCE") && !L.contains("SIZE"), L.dump().c_str());
-        QCOMPARE(F.doc()["NODES"][n]["LAYERS"][0], json::parse(R"({"ENV":{"A":"1"}})"));   // other layers untouched
+        QCOMPARE(F.node(n)["LAYERS"][0], json::parse(R"({"ENV":{"A":"1"}})"));   // other layers untouched
     }
 
     // A cover belongs to a TILE on an EXEC entry: the picked image lands in that entry's TILE.COVER.FILE (the entry
@@ -449,26 +449,26 @@ private slots:
         Fixture F(this);
         F.write(F.path("cover.png"), "png");
         const int n = F.addRegNode();
-        F.doc()["NODES"][n]["LAYERS"] = json::parse(R"([{"EXEC":[{"LABEL":"Setup","HOST":"win32"},
-            {"LABEL":"Play","HOST":"win32","TILE":{"UID":"1","COVER":{"FILE":"old.png","SOURCE":"bafkreiold"}}}]}])");
-        F.model->SaveNodes();
+        F.setLayers(n, json::parse(R"([{"EXEC":[{"LABEL":"Setup","HOST":"win32"},
+            {"LABEL":"Play","HOST":"win32","TILE":{"UID":"1","COVER":{"FILE":"old.png","SOURCE":"bafkreiold"}}}]}])"));
+        F.save();
         F.pickThisFile(F.path("cover.png"));
         F.act->perform(F.nodeId(n), "browse_cover");
         QTest::qWait(50);
-        const json &E = F.doc()["NODES"][n]["LAYERS"][0]["EXEC"];
+        const json E = F.node(n)["LAYERS"][0]["EXEC"];
         QCOMPARE(E[1]["TILE"]["COVER"], json::parse(R"({"FILE":"cover.png"})"));
         QVERIFY(!E[0].contains("TILE"));
 
-        F.doc()["NODES"][n]["LAYERS"][0]["EXEC"][1]["TILE"]["COVER"] = "old.png";
+        { json N = F.node(n); N["LAYERS"][0]["EXEC"][1]["TILE"]["COVER"] = "old.png"; F.setNode(n, N); }
         F.act->perform(F.nodeId(n), "browse_cover");
         QTest::qWait(50);
-        QCOMPARE(F.doc()["NODES"][n]["LAYERS"][0]["EXEC"][1]["TILE"]["COVER"], json("cover.png"));
+        QCOMPARE(F.node(n)["LAYERS"][0]["EXEC"][1]["TILE"]["COVER"], json("cover.png"));
 
-        F.doc()["NODES"][n]["LAYERS"][0]["EXEC"][1]["TILE"]["COVER"] = 5;
+        { json N = F.node(n); N["LAYERS"][0]["EXEC"][1]["TILE"]["COVER"] = 5; F.setNode(n, N); }
         F.notices.clear();
         F.act->perform(F.nodeId(n), "browse_cover");
         QTest::qWait(50);
-        QCOMPARE(F.doc()["NODES"][n]["LAYERS"][0]["EXEC"][1]["TILE"]["COVER"], json(5));
+        QCOMPARE(F.node(n)["LAYERS"][0]["EXEC"][1]["TILE"]["COVER"], json(5));
         QVERIFY2(F.notices.join(" ").contains("not an object"), qUtf8Printable(F.notices.join(" ")));
     }
 
@@ -484,8 +484,7 @@ private:
             cfg = json{{"Settings", json::object()}};
             model = new PackageEditorModel(&cfg, nullptr, parent);
             model->initPackage(dir->path(), nullptr);
-            canvas = new PkgCanvas(&model->doc(), [this] { model->SaveNodes(); }, parent);
-            canvas->initContexts();
+            canvas = new PkgCanvas(&model->doc(), parent);
             act = new PkgActions(model, canvas, nullptr, parent);
             if (!installHandlers) return;                 // exercise the shipped defaults
             act->setConfirmHandler([confirm](const QString &, const QString &) { return confirm; });
@@ -493,20 +492,23 @@ private:
             // the refusal paths are exactly the ones worth asserting.
             act->setNotifyHandler([this](const QString &T, const QString &B) { notices << (T + ": " + B); });
         }
-        ~Fixture() { canvas->shutdownContexts(); delete dir; }
+        ~Fixture() { delete dir; }
 
-        json &doc() { return model->doc(); }
+        PkgDoc::Document &doc() { return model->doc(); }
         QString path(const QString &rel) const { return dir->path() + "/" + rel; }
-        // perform() resolves a node by its HANDLE (the "CID" field — a draft handle until Publish mints it),
-        // not by the cosmetic LABEL. Hand it the handle.
-        QString nodeId(int i) { return QString::fromStdString(doc()["NODES"][i]["CID"].get<std::string>()); }
-        // The on-disk file, in contrast, is named from the cosmetic LABEL (Model C: filename is pure presentation).
-        QString nodeFile(int i) { return QString::fromStdString(doc()["NODES"][i].value("LABEL", std::string())) + ".json"; }
+        //A node by its INDEX, which a save keeps (the document keeps its order while it renames): its handle now,
+        //its JSON now, and its file (named by its CID once saved).
+        QString nodeId(int i) { return QString::fromStdString(doc().Handle(i)); }
+        QString nodeFile(int i) { return QString::fromStdString(doc().File(i)); }
+        json node(int i) { return doc().Node(i); }
+        void setNode(int i, json N) { doc().Replace(i, std::move(N)); doc().Commit(); }
+        void setLayers(int i, const json &L) { json N = node(i); N["LAYERS"] = L; setNode(i, N); }
+        void save() { QString E; QVERIFY2(model->Save(&E), qUtf8Printable(E)); }
 
         int addRegNode()
         {
-            const int i = canvas->addNode("REG");
-            model->SaveNodes();
+            const int i = canvas->addNode("REG", 0, 0);
+            save();
             return i;
         }
         // Answer the file dialog with a path instead of raising a modal nobody can click.
@@ -524,18 +526,16 @@ private:
 
         int addContentNode(const QString &p)
         {
-            const int i = canvas->addNode("ZIP");              // one ZIP layer: the node's content layer
-            doc()["NODES"][i]["LAYERS"] = json::array({ json{{"ZIP", p.toStdString()}} });
-            model->SaveNodes();
+            const int i = canvas->addNode("ZIP", 0, 0);        // one ZIP layer: the node's content layer
+            setLayers(i, json::array({ json{{"ZIP", p.toStdString()}} }));
+            save();
             return i;
         }
         // The content layer's type and file name, and rewriting them (as a hand edit would).
-        std::string type(int i) { return PkgGraph::ContentType(doc()["NODES"][i]); }
-        std::string name(int i) { return PkgGraph::ContentName(doc()["NODES"][i]); }
-        void setType(int i, const std::string &T)
-        { const std::string N = name(i); doc()["NODES"][i]["LAYERS"] = json::array({ json{{T, N}} }); }
-        void setName(int i, const std::string &N)
-        { const std::string T = type(i); doc()["NODES"][i]["LAYERS"] = json::array({ json{{T, N}} }); }
+        std::string type(int i) { return PkgGraph::ContentType(node(i)); }
+        std::string name(int i) { return PkgGraph::ContentName(node(i)); }
+        void setType(int i, const std::string &T) { const std::string N = name(i); setLayers(i, json::array({ json{{T, N}} })); }
+        void setName(int i, const std::string &N) { const std::string T = type(i); setLayers(i, json::array({ json{{T, N}} })); }
         void write(const QString &p, const QByteArray &b)
         { QDir().mkpath(QFileInfo(p).path()); QFile f(p); QVERIFY2(f.open(QIODevice::WriteOnly), qUtf8Printable(p)); f.write(b); }
         QByteArray read(const QString &p) const { QFile f(p); if (!f.open(QIODevice::ReadOnly)) return {}; return f.readAll(); }

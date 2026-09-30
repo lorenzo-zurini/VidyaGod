@@ -1,19 +1,27 @@
 #include "validationpanel.h"
 #include "packageeditormodel.h"
 
-#include <QTextEdit>
+#include <QLabel>
+#include <QListWidget>
 #include <QVBoxLayout>
 
 ValidationPanel::ValidationPanel(PackageEditorModel * model, QWidget * parent)
     : QGroupBox("Validation", parent), Model(model)
 {
-    QVBoxLayout * Layout = new QVBoxLayout(this);
-    Layout->setContentsMargins(6, 2, 6, 6);
-    View = new QTextEdit(this);
-    View->setReadOnly(true);
-    View->setMaximumHeight(150);
-    Layout->addWidget(View);
-
+    QVBoxLayout * L = new QVBoxLayout(this);
+    L->setContentsMargins(6, 2, 6, 6);
+    Hint = new QLabel(this);
+    Hint->setWordWrap(true);
+    L->addWidget(Hint);
+    List = new QListWidget(this);
+    List->setWordWrap(true);
+    List->setMaximumHeight(170);
+    List->setToolTip("Click a problem to go to its node");
+    L->addWidget(List);
+    connect(List, &QListWidget::itemClicked, this, [this](QListWidgetItem * It) {
+        const QString H = It->data(Qt::UserRole).toString();
+        if (!H.isEmpty()) emit nodeClicked(H);
+    });
     if (Model) connect(Model, &PackageEditorModel::validationChanged, this, &ValidationPanel::refresh);
     refresh();
 }
@@ -21,40 +29,34 @@ ValidationPanel::ValidationPanel(PackageEditorModel * model, QWidget * parent)
 void ValidationPanel::refresh()
 {
     if (!Model) return;
-
-    // Validation is on-demand (the "Check Package Validity" button) — before it's run (or after an edit) the results
-    // are stale, so show a neutral prompt rather than a misleading "✓ OK".
+    List->clear();
     if (!Model->validated())
     {
-        setTitle("Validation  —  not checked");
-        View->setHtml("<span style='color:#888'>Click <b>Check Package Validity</b> to validate the node graph "
-                      "(dangling/cyclic PARENTS, layer paths, runner resolution, cross-layer case collisions).</span>");
-        setStyleSheet(QString());
+        setTitle("Validation - not checked");
+        Hint->setText("<span style='color:#888'>Validate checks references, layer paths, runner resolution and case "
+                      "collisions for the package as it is now, unsaved edits included.</span>");
+        Hint->show();
+        List->hide();
         return;
     }
-
-    const auto & Errors   = Model->validationErrors();
+    const auto & Errors = Model->validationErrors();
     const auto & Warnings = Model->validationWarnings();
-
     if (Errors.empty() && Warnings.empty())
-        setTitle("Validation  —  ✓ OK");
-    else if (Errors.empty())
-        setTitle(QString("Validation  —  %1 warning(s)").arg(Warnings.size()));
-    else
-        setTitle(QString("⚠ Validation  —  %1 error(s), %2 warning(s)").arg(Errors.size()).arg(Warnings.size()));
-
-    QString Html;
-    if (Errors.empty() && Warnings.empty())
-        Html = "<span style='color:#3fae5a'>✓ No problems found.</span>";
-    else
     {
-        for (const auto & E : Errors)
-            Html += "<div style='color:#d9534f'><b>ERROR:</b> " + QString::fromStdString(E).toHtmlEscaped() + "</div>";
-        for (const auto & W : Warnings)
-            Html += "<div style='color:#c9a227'>warning: " + QString::fromStdString(W).toHtmlEscaped() + "</div>";
+        setTitle("Validation - no problems");
+        Hint->setText("<span style='color:#3fae5a'>✓ No problems found.</span>");
+        Hint->show();
+        List->hide();
+        return;
     }
-    View->setHtml(Html);
-    setStyleSheet(Errors.empty() ? QString()
-                                 : "QGroupBox{border:1px solid #d9534f;border-radius:4px;margin-top:6px;}"
-                                   "QGroupBox::title{subcontrol-origin:margin;left:8px;color:#d9534f;}");
+    setTitle(QString("Validation - %1 error(s), %2 warning(s)").arg(Errors.size()).arg(Warnings.size()));
+    Hint->hide();
+    List->show();
+    auto Add = [&](const std::string & M, bool Error) {
+        auto * It = new QListWidgetItem(QString::fromStdString(M), List);
+        It->setForeground(Error ? QColor(0xe0, 0x70, 0x70) : QColor(0xd4, 0xb0, 0x40));
+        It->setData(Qt::UserRole, QString::fromStdString(Model->handleInMessage(M)));
+    };
+    for (const auto & E : Errors) Add(E, true);
+    for (const auto & W : Warnings) Add(W, false);
 }

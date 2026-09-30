@@ -1,6 +1,7 @@
 #include "packagecatalog.h"
 #include "pkglayout.h"
 #include "pkggraph.h"
+#include "pkgdoc.h"
 #include "packagecatalog_p.h"
 #include "nodegraph.h"       // ReadTreeJsonBounded — every library-root walker reads bounded
 #include "fold.h"            // Fold::TypeOf — a layer's one type key
@@ -107,133 +108,6 @@ std::string EditorLayoutKey(const std::filesystem::path &BundleDir)
     return S;
 }
 
-const nlohmann::ordered_json *EditorLayoutFor(const nlohmann::ordered_json &GlobalConfigJSON,
-                                              const std::filesystem::path &BundleDir)
-{
-    const auto SecIt = GlobalConfigJSON.find("EDITORLAYOUT");
-    if (SecIt == GlobalConfigJSON.end() || !SecIt->is_object()) return nullptr;
-    const auto BIt = SecIt->find(EditorLayoutKey(BundleDir));
-    return (BIt != SecIt->end() && BIt->is_object()) ? &*BIt : nullptr;
-}
-
-bool StampNodePositions(const std::string &PackageDir, const nlohmann::ordered_json *LocalOverride,
-                        std::string *Error)
-{
-    namespace fs = std::filesystem;
-    std::error_code Ec;
-    if (!fs::is_directory(PackageDir, Ec)) { if (Error) *Error = "not a directory: " + PackageDir; return false; }
-
-    //One file holds one node or an array of them. Both shapes are collected into a single ordered document,
-    //sorted by relative path so the seed order the layout starts from is a property of the bundle, not of the
-    //order the filesystem happened to hand back.
-    struct Slot { fs::path File; bool Array; size_t Index; };
-    //TOP LEVEL ONLY, matching PackageEditorModel::LoadNodes (QDir::entryList, non-recursive). Walking
-    //subdirectories would lay out a graph the author has never seen: a node-shaped .json below the bundle root
-    //would join the layout, shift every other node's computed coordinates and receive a POS of its own, which
-    //contradicts the one thing this function promises — that publishing bakes the picture on screen.
-    std::vector<fs::path> Files;
-    for (auto It = fs::directory_iterator(PackageDir, Ec); !Ec && It != fs::directory_iterator(); ++It)
-        if (It->is_regular_file(Ec) && It->path().extension() == ".json") Files.push_back(It->path());
-    std::sort(Files.begin(), Files.end());
-
-    std::map<fs::path, nlohmann::ordered_json> Loaded;
-    std::vector<Slot> Slots;
-    nlohmann::ordered_json Nodes = nlohmann::ordered_json::array();
-    for (const fs::path &F : Files)
-    {
-        nlohmann::ordered_json J;
-        //A file we cannot parse (or a hostile oversize/too-deep one — received shares land verbatim bytes in the
-        //tree) is left alone — but SAID, because dropping it silently removes it from the layout graph and moves
-        //every other node, which looks like the algorithm changed.
-        if (!NodeGraph::ReadTreeJsonBounded(F, J))
-        {
-            LogWarn("PackageCatalog::StampNodePositions",
-                    "skipping unparseable/unsafe " + F.filename().string() + " — its nodes are not "
-                    "laid out, and every other node's position is computed without them.");
-            continue;
-        }
-        if (ManifestModel::IsNodeObject(J))
-        { Slots.push_back({F, false, 0}); Nodes.push_back(J); Loaded[F] = std::move(J); }
-        else if (J.is_array())
-        {
-            for (size_t I = 0; I < J.size(); ++I)
-                if (ManifestModel::IsNodeObject(J[I]))
-                { Slots.push_back({F, true, I}); Nodes.push_back(J[I]); }
-            Loaded[F] = std::move(J);
-        }
-    }
-    if (Nodes.empty()) return true;   //nothing to lay out is not a failure
-
-    const PkgGraph::Graph G = PkgGraph::Build(Nodes, LocalOverride);
-    if (G.Nodes.size() != Slots.size()) { if (Error) *Error = "node/slot mismatch while stamping positions"; return false; }
-
-    //A declared position Build refused. Publish is the one place where that matters MOST: the computed
-    //position is about to be written over the author's declaration, the file's bytes change and the package's
-    //Meta-CID with them — and the only line this function prints otherwise is "stamped POS into N file(s)",
-    //which says nothing about why one of them moved. Build records rather than logs (it runs per keystroke in
-    //the editor); this is the other caller, and it has to say so.
-    //Reported AFTER the stamp loop, and worded from what the loop actually WROTE — not from the source label.
-    //Deciding it by substring was wrong in both directions in turn: first "stamping over it" for a rejected
-    //local override that changes nothing, then "ignored" for a node with NO own POS and a bad override, where
-    //the layout supplies a position, the file gains one it never had, and its Meta-CID changes under a line
-    //saying the node keeps what the package declares. The only fact that settles it is whether this node's
-    //file was marked dirty, which is known one loop down.
-    std::set<fs::path> Dirty;
-    //Keyed by INDEX, not by id: a bundle can hold two nodes with the same NODE_ID (or none at all), and every
-    //such node shared one key here — so the line below could say "written over it" about a node whose file was
-    //untouched, purely because a namesake's was.
-    std::set<size_t> Stamped;   // node SLOTS whose file this loop actually rewrote
-    for (size_t I = 0; I < Slots.size(); ++I)
-    {
-        nlohmann::ordered_json Pos = nlohmann::ordered_json::array({ G.Nodes[I].X, G.Nodes[I].Y });
-        nlohmann::ordered_json &Target = Slots[I].Array ? Loaded[Slots[I].File][Slots[I].Index]
-                                                        : Loaded[Slots[I].File];
-        if (Target.contains("POS") && Target["POS"] == Pos) continue;   //already correct: do not touch the bytes
-        Target["POS"] = std::move(Pos);
-        Dirty.insert(Slots[I].File);
-        Stamped.insert(I);
-    }
-
-    for (const PkgGraph::RejectedPosition &R : G.RejectedPositions)
-        Log(LogLevel::WARN, "PackageCatalog::StampNodePositions",
-            "node '" + PkgGraph::SafeId(R.NodeId) + "': " + R.Source + " gives " + R.Value
-                + ", which no layout could have produced - "
-                + (R.Index >= 0 && Stamped.count((size_t)R.Index)
-                       ? "a computed position was written over it, changing this package's bytes"
-                       : "that declaration is ignored; nothing was rewritten"));
-    //Write to a sibling temp and rename. This rewrites EVERY node file of EVERY package in the library
-    //(RemintLibrary calls it per package), and a node .json is the author's only copy: truncating in place
-    //means a crash, a kill or ENOSPC part way through leaves a half-written file where their package was.
-    //rename() within the same directory is atomic, so a node file is either the old one or the new one.
-    for (const fs::path &F : Dirty)
-    {
-        const fs::path Tmp = F.string() + ".vgtmp";
-        {
-            std::ofstream Out(Tmp, std::ios::binary | std::ios::trunc);
-            if (!Out) { if (Error) *Error = "could not write " + Tmp.string(); return false; }
-            //dump(4), NO trailing newline — byte-identical to how SaveNodes and the CID stamper write a node
-            //file. A different format here reflows the file on stamp and back again on the next editor save:
-            //a byte change with zero semantic change, a new Meta-CID, and every peer re-downloading a package
-            //that did not change.
-            Out << Loaded[F].dump(4);
-            Out.flush();
-            //A stream that filled the disk fails HERE, not at open — checked, or the rename below publishes a
-            //truncated file over a good one.
-            if (!Out.good())
-            { std::error_code Rm; fs::remove(Tmp, Rm);
-              if (Error) *Error = "write failed (disk full?) for " + F.string(); return false; }
-        }
-        std::error_code Rn;
-        fs::rename(Tmp, F, Rn);
-        if (Rn)
-        { std::error_code Rm; fs::remove(Tmp, Rm);
-          if (Error) *Error = "could not replace " + F.string() + ": " + Rn.message(); return false; }
-    }
-    if (!Dirty.empty())
-        LogOut("PackageCatalog::StampNodePositions",
-               "stamped POS into " + std::to_string(Dirty.size()) + " file(s) of " + PackageDir);
-    return true;
-}
 
 // Payload byte size of a layer's local content: a plain file's size, or the recursive sum of a directory's
 // regular files. This matches the UnixFS logical size the fetch progress path counts (fetch.go rdr.Size()), so a
@@ -257,131 +131,108 @@ static uint64_t LocalPayloadSize(const std::filesystem::path &P)
     return Ec ? 0 : static_cast<uint64_t>(S);
 }
 
-bool PublishPackage(const std::string &PackageDir, const std::string &DehydratedDestDir, std::string *Error)
+bool SeedNodeContent(nlohmann::ordered_json &Node, const std::filesystem::path &Pkg, SeedReport &R, bool &Changed,
+                     std::string *Error)
 {
+    Changed = false;
+    //A recorded CID that still serves its file is kept (idempotent); a drifted one (the file changed) is re-seeded.
+    auto NeedsSeed = [&](const std::string &Cid, const std::filesystem::path &Local) -> bool {
+        if (Cid.empty()) return true;
+        std::error_code Rc;
+        if (!std::filesystem::exists(Local, Rc)) return false;          // CID-only ref, no local bytes to verify
+        const std::string Verr = IpfsWrapper::VerifyCid(Cid);
+        if (Verr.empty()) return false;
+        LogWarn("PackageCatalog::SeedNodeContent", "content drift: '" + Local.filename().string() + "' recorded CID "
+                + Cid + " no longer serves its bytes (" + Verr + ") - re-seeding from the file");
+        ++R.Repaired;
+        return true;
+    };
+    for (const FileEntry &F : FileEntriesOf(Node))
+    {
+        nlohmann::ordered_json &H = *F.Holder;
+        if (F.Cover && (!H.is_object() || F.File.empty())) { ++R.BadCovers; continue; }   // a cover is {FILE, SOURCE, SIZE}
+        ++R.Walked;
+        const bool Runtime = RuntimeSourced(F.File);
+        const std::filesystem::path Local = Pkg / F.File;
+        std::error_code Sc;
+        if (!F.MaySource)
+        {   // a DIR layer is local content: no peer can fetch it
+            if (!Runtime && std::filesystem::exists(Local, Sc)) R.Unshareable.push_back(Local.string());
+            continue;
+        }
+        const std::string Cid = (H.contains("SOURCE") && H["SOURCE"].is_string()) ? H["SOURCE"].get<std::string>() : std::string();
+        if (!NeedsSeed(Cid, Local))
+        {
+            if (!Cid.empty() && !H.contains("SIZE") && std::filesystem::exists(Local, Sc))
+            { H["SIZE"] = LocalPayloadSize(Local); Changed = true; ++R.SizesStamped; }
+            continue;
+        }
+        if (!std::filesystem::exists(Local, Sc)) { if (!Runtime) R.Unfetchable.push_back(Local.string()); continue; }
+        std::string Err;
+        const std::string NewCid = IpfsWrapper::AddNoCopy(Local.string(), &Err);
+        if (NewCid.empty())
+        {
+            if (F.Cover) { LogWarn("PackageCatalog::SeedNodeContent", "could not seed cover " + Local.string() + " (" + Err + ")"); continue; }
+            if (Error) *Error = "could not seed layer " + Local.string() + " (" + Err + ")";
+            return false;
+        }
+        H["SOURCE"] = NewCid;
+        H["SIZE"] = LocalPayloadSize(Local);
+        Changed = true;
+        ++(F.Cover ? R.Covers : R.Seeded);
+    }
+    return true;
+}
 
+// Share a local package: seed every node's content (SeedNodeContent), then SAVE the package — a generation-6 re-mint,
+// since recording a SOURCE changes a node's bytes and so its name — and optionally export a node-files-only copy.
+bool PublishPackage(const std::string &PackageDir, const std::string &DehydratedDestDir, std::string *Error,
+                    const std::string &LibraryRoot, const std::string &UserDataRoot)
+{
     auto Fail = [&](const std::string &M) -> bool { if (Error) *Error = M; LogErr("PackageCatalog::PublishPackage", M); return false; };
-
     std::error_code Ec;
     const std::filesystem::path Pkg(PackageDir);
     if (!std::filesystem::is_directory(Pkg, Ec)) return Fail("not a package directory: " + PackageDir);
-
     if (!IpfsWrapper::DaemonRunning())
         LogWarn("PackageCatalog::PublishPackage",
-                "IPFS node not online yet — CIDs will be computed but content seeds to peers only once it connects.");
-
-    int Seeded = 0, Walked = 0, Covers = 0, Repaired = 0, SizesStamped = 0;
-    //Publishing is the one operation whose mistakes travel: a fragment skipped here is missing from the CID every
-    //peer then fetches, and it is missing in a way nothing downstream can distinguish from "the author never wrote
-    //that node". So both quiet skips below are counted and reported.
-    int Unparseable = 0, BadCovers = 0;
-    std::vector<std::string> Unfetchable, Unshareable;
-
-    //A recorded CID is taken on FAITH by the mint (skipped as idempotent), the deliverability check (stat-only), and
-    //every peer that fetches it — nothing re-hashes the bytes until bitswap serves them. So a backing file rebuilt in
-    //place (same or larger size — a smaller one os.Stat catches) rides through every re-mint as a stale, un-servable
-    //reference: "published clean", green in the UI, then a peer's download hangs on "data in file did not match".
-    //NeedsSeed closes that: for a layer that already carries a CID, VgVerifyCid reads its whole DAG back through the
-    //filestore (the one path that actually compares bytes to hash) and, on any mismatch, re-seeds from the real bytes
-    //so the published CID is ALWAYS servable. Cost: reading the content at mint — deliberate, mint is rare.
-    auto NeedsSeed = [&](const std::string &Cid, const std::filesystem::path &Local) -> bool {
-        if (Cid.empty()) return true;                                   // never seeded → seed it
-        std::error_code Rc;
-        if (!std::filesystem::exists(Local, Rc)) return false;          // CID-only ref, no local bytes to verify — leave as-is
-        const std::string Verr = IpfsWrapper::VerifyCid(Cid);
-        if (Verr.empty()) return false;                                 // verified: the CID still serves its bytes → keep
-        LogWarn("PackageCatalog::PublishPackage", "content drift: '" + Local.filename().string() + "' recorded CID "
-                + Cid + " no longer serves its bytes (" + Verr + ") — re-seeding from the file");
-        ++Repaired;
-        return true;                                                    // stale → fall through and re-seed
-    };
-
-    //Walk every *.json fragment directly (no assemble/decompose round-trip — preserves each subcomponent's exact
-    //file placement). Content-address VFS layers AND cover assets in place; re-save only mutated fragments.
-    for (const auto &Entry : std::filesystem::directory_iterator(Pkg, Ec))
+                "IPFS node not online yet - CIDs will be computed but content seeds to peers only once it connects.");
+    PkgDoc::Document Doc;
+    for (const std::string &Odd : Doc.Load(Pkg)) LogWarn("PackageCatalog::PublishPackage", Odd);
+    //A file that does not parse may well have been a node: it is absent from what is published, so it is a gap.
+    for (const std::string &F : Doc.Unparseable())
+        LogErr("PackageCatalog::PublishPackage", "SKIPPING unparseable " + F + " - if it was a node, it is ABSENT from the "
+                                                 "published package.");
+    SeedReport R;
+    for (int I = 0; I < Doc.Count(); ++I)
     {
-        if (!Entry.is_regular_file() || Entry.path().extension() != ".json") continue;
-        QFile FragFile(QString::fromStdString(Entry.path().string()));
-        nlohmann::ordered_json Frag;
-        if (JSONOps::LoadJSON(&FragFile, &Frag))                                 // LoadJSON returns true on FAILURE
-        {
-            //A fragment that will not parse was skipped in silence, so a package with one corrupt node published
-            //cleanly, minus that node — and the resulting CID looked healthy to everyone who fetched it.
-            LogErr("PackageCatalog::PublishPackage", "SKIPPING unparseable fragment " + Entry.path().filename().string()
-                       + " — its nodes and layers will be ABSENT from the published package.");
-            ++Unparseable;
-            continue;
-        }
-
-        bool Mutated = false;
-        if (!ManifestModel::IsNodeObject(Frag)) continue;                         // not a node (a manifest, a config)
-        for (const FileEntry &F : FileEntriesOf(Frag))
-        {
-            nlohmann::ordered_json &H = *F.Holder;
-            if (F.Cover && (!H.is_object() || F.File.empty())) { ++BadCovers; continue; }   // a cover is {FILE, SOURCE, SIZE}
-            ++Walked;
-            //Runtime-sourced (a %VAR% resolved at launch): absent BY DESIGN — the predicate gates only the gap
-            //REPORTS below, never the seed: a token-shaped name whose bytes ARE here still ships.
-            const bool Runtime = RuntimeSourced(F.File);
-            const std::filesystem::path Local = Pkg / F.File;
-            std::error_code Sc;
-            if (!F.MaySource)
-            {   // a DIR layer is local content: no peer can fetch it
-                if (!Runtime && std::filesystem::exists(Local, Sc)) Unshareable.push_back(Local.string());
-                continue;
-            }
-            const std::string Cid = (H.contains("SOURCE") && H["SOURCE"].is_string()) ? H["SOURCE"].get<std::string>() : std::string();
-            if (!NeedsSeed(Cid, Local))                                         // has a CID that still verifies — idempotent
-            {
-                //Backfill SIZE if absent (no re-seed): existing packages gain the download-size hint on the next
-                //--remint-library without re-adding bytes. Skips CID-only refs (no local file to measure).
-                if (!Cid.empty() && !H.contains("SIZE") && std::filesystem::exists(Local, Sc))
-                { H["SIZE"] = LocalPayloadSize(Local); Mutated = true; ++SizesStamped; }
-                continue;
-            }
-            if (!std::filesystem::exists(Local, Sc)) { if (!Runtime) Unfetchable.push_back(Local.string()); continue; }
-            std::string Err;
-            const std::string NewCid = IpfsWrapper::AddNoCopy(Local.string(), &Err);
-            if (NewCid.empty())
-            {
-                if (F.Cover) { LogWarn("PackageCatalog::PublishPackage", "could not seed cover " + Local.string() + " (" + Err + ")"); continue; }
-                return Fail("could not seed layer " + Local.string() + " (" + Err + ")");
-            }
-            H["SOURCE"] = NewCid;
-            H["SIZE"] = LocalPayloadSize(Local);
-            Mutated = true;
-            ++(F.Cover ? Covers : Seeded);
-        }
-
-        if (Mutated && !JSONOps::SaveJSON(&Frag, &FragFile))
-            return Fail("could not write annotated manifest fragment: " + Entry.path().string());
+        nlohmann::ordered_json N = Doc.Node(I);
+        bool Changed = false;
+        std::string Err;
+        if (!SeedNodeContent(N, Pkg, R, Changed, &Err)) return Fail(Err);
+        if (Changed) Doc.Replace(I, std::move(N));
     }
-    LogSucc("PackageCatalog::PublishPackage", "Dehydrated " + PackageDir + " (" + std::to_string(Seeded)
-            + " of " + std::to_string(Walked) + " layer(s) + " + std::to_string(Covers) + " cover(s) newly seeded"
-            + (Repaired ? ", " + std::to_string(Repaired) + " re-seeded after DRIFT" : "")
-            + (SizesStamped ? ", " + std::to_string(SizesStamped) + " SIZE backfilled" : "") + ")");
-
-    //A layer with neither a CID nor local content is published as a reference to bytes that exist NOWHERE: the
-    //package resolves, the download reports nothing to fetch, and the game is missing files on the first machine
-    //that is not this one. Name every one — this is the last moment before it becomes someone else's problem.
-    for (const std::string &P : Unfetchable)
-        LogErr("PackageCatalog::PublishPackage", "layer '" + P + "' has no CID and no local file — it will be "
+    const PkgDoc::SaveReport S = Doc.Save(Pkg, LibraryRoot, UserDataRoot);
+    if (!S.Ok) return Fail("could not save the seeded package: " + S.Error);
+    for (const std::string &L : S.Log) LogOut("PackageCatalog::PublishPackage", L);
+    LogSucc("PackageCatalog::PublishPackage", "Seeded " + PackageDir + " (" + std::to_string(R.Seeded)
+            + " of " + std::to_string(R.Walked) + " layer(s) + " + std::to_string(R.Covers) + " cover(s) newly seeded"
+            + (R.Repaired ? ", " + std::to_string(R.Repaired) + " re-seeded after DRIFT" : "")
+            + (R.SizesStamped ? ", " + std::to_string(R.SizesStamped) + " SIZE backfilled" : "")
+            + "; " + std::to_string(S.Written) + " node file(s) written, " + std::to_string(S.Cascaded) + " re-minted elsewhere)");
+    for (const std::string &P : R.Unfetchable)
+        LogErr("PackageCatalog::PublishPackage", "layer '" + P + "' has no CID and no local file - it will be "
                                                  "published as an UNFETCHABLE reference.");
-    for (const std::string &P : Unshareable)
-        LogErr("PackageCatalog::PublishPackage", "DIR layer '" + P + "' is local content — a peer cannot fetch a "
+    for (const std::string &P : R.Unshareable)
+        LogErr("PackageCatalog::PublishPackage", "DIR layer '" + P + "' is local content - a peer cannot fetch a "
                                                  "directory; ship it as a ZIP.");
-    if (BadCovers)
-        LogErr("PackageCatalog::PublishPackage", std::to_string(BadCovers) + " COVER field(s) in " + PackageDir
-                   + " are not {FILE, SOURCE, SIZE} objects — cover art in any other shape is never content-addressed, "
-                     "so the tile ships with no image on every machine but this one.");
-    if (Unparseable || !Unfetchable.empty() || !Unshareable.empty() || BadCovers)
-        LogErr("PackageCatalog::PublishPackage", "PUBLISHED WITH GAPS: " + std::to_string(Unparseable)
-                   + " unparseable fragment(s), " + std::to_string(Unfetchable.size()) + " unfetchable layer(s), "
-                   + std::to_string(Unshareable.size()) + " local-only DIR layer(s), "
-                   + std::to_string(BadCovers) + " unaddressable cover(s) in "
-                   + PackageDir + ". The CID will look healthy and the content will not be there.");
-
-    //Export the dehydrated manifest, if requested — a clean manifest-only copy (no image bytes; covers travel as CIDs).
+    if (R.BadCovers)
+        LogErr("PackageCatalog::PublishPackage", std::to_string(R.BadCovers) + " COVER field(s) in " + PackageDir
+                   + " are not {FILE, SOURCE, SIZE} objects - cover art in any other shape is never content-addressed.");
+    if (!R.Unfetchable.empty() || !R.Unshareable.empty() || R.BadCovers || !Doc.Unparseable().empty())
+        LogErr("PackageCatalog::PublishPackage", "PUBLISHED WITH GAPS: " + std::to_string(Doc.Unparseable().size())
+                   + " unparseable file(s), " + std::to_string(R.Unfetchable.size())
+                   + " unfetchable layer(s), " + std::to_string(R.Unshareable.size()) + " local-only DIR layer(s), "
+                   + std::to_string(R.BadCovers) + " unaddressable cover(s) in " + PackageDir + ".");
     if (!DehydratedDestDir.empty())
     {
         std::filesystem::remove_all(DehydratedDestDir, Ec);

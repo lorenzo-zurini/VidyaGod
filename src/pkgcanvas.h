@@ -1,174 +1,121 @@
 #ifndef PKGCANVAS_H
 #define PKGCANVAS_H
 
+#include "pkgdoc.h"
 #include "pkggraph.h"
 
 #include <QObject>
 #include <QString>
 
 #include <functional>
+#include <map>
 #include <memory>
+#include <set>
 #include <string>
 #include <vector>
 
 struct PkgCanvasState;
+struct ImFont;
 
 // ---------------------------------------------------------------------------
-// PkgCanvas — the blueprint surface for a package bundle: every imgui/imnodes call, with NO GL and NO QWidget
-// in it. The host (PkgCanvasPanel, a QOpenGLWidget) owns the ImGui context and the render backend and calls
-// frame() between ImGui::NewFrame() and ImGui::Render(); a test does the same headlessly with a synthetic
-// mouse. So wiring, node creation, payload editing and deletion are all exercised by tests — which is the one
-// thing the old tab-and-form editor could never be, because its logic lived inside QWidget constructors.
+// PkgCanvas — the package editor's node canvas: every Dear ImGui call of the editor, no GL and no QWidget, so the
+// whole surface runs headless under test.
 //
-// The canvas edits the SAME `{"NODES":[…]}` document the model persists one-file-per-node. There is no second
-// representation: a wire dragged here is a PARENTS entry on disk, and a file changed on disk reappears here on
-// reload. Nothing is captured by index in a callback — immediate mode redraws from the document every frame,
-// so the stale-index problem that forced the old editor to rebuild its entire widget tree cannot arise.
+// Model: a PkgDoc::Document (nodes by handle, positions, undo). The canvas never holds a second copy of the package:
+// it draws the document, and every edit is a Document call.
+//
+// View: a camera (the world point at the canvas's top-left) and a zoom. Zoom is REAL, not a transform of the pixels
+// drawn at 1:1: each node is an ImGui child window placed at its screen position, sized, styled and typeset at the
+// zoomed size (the editor's fonts are vector fonts rasterised at any size), so text stays crisp, clicks land where
+// things are drawn and popups open where they belong at every zoom. Below ~40% nodes are drawn as boxes with their
+// names (level of detail), which is what an overview needs and what keeps a 2775-node package fluid.
+//
+// Wires are drawn beneath the nodes from the positions the canvas knows for EVERY node, so a wire is visible whenever
+// any part of it is on screen, whatever is culled. Other packages' nodes a package names are chips, labelled with
+// their package and name, placed by the same layout as everything else.
 // ---------------------------------------------------------------------------
 class PkgCanvas : public QObject
 {
     Q_OBJECT
 
 public:
-    using SaveFn     = std::function<void()>;                                  // persist the document
-    using KnownIdsFn = std::function<std::vector<std::pair<std::string, std::string>>()>;   // {handle(CID), label} across
-                                                                                          // the catalog (parent picker)
-    using ActionFn   = std::function<void(const std::string &NodeId, const std::string &Action)>;
+    //What the editor knows about a node this package does not own (another package's node, named by CID).
+    struct External { std::string Label, Package, PackageDir; };
+    using ExternalFn = std::function<External(const std::string &Cid)>;
+    //Every node the library offers for wiring in, {cid, label, package} — the "link another package's node" picker.
+    struct Offer { std::string Cid, Label, Package; };
+    using OffersFn = std::function<std::vector<Offer>()>;
 
-    //`layout` is the canvas-position sidecar (NODE_ID -> [x,y]); see PkgGraph::Build. Optional: pass nullptr and
-    //the canvas auto-lays-out every frame and persists nothing, which is what the headless tests want.
-    //`saveLayoutOnly` (optional) is called instead of `save` when the ONLY thing that changed is a node's
-    //position. Positions do not live in the node files, so the full save — which rewrites every .json in the
-    //bundle — is pure waste for a drag: on the 2775-node bundle that was 2775 write+rename cycles for moving
-    //one box. Omit it and a drag falls back to the full save, as before.
-    PkgCanvas(nlohmann::ordered_json *doc, SaveFn save, QObject *parent = nullptr,
-              nlohmann::ordered_json *layout = nullptr, SaveFn saveLayoutOnly = {});
+    explicit PkgCanvas(PkgDoc::Document *doc, QObject *parent = nullptr);
     ~PkgCanvas() override;
 
-    void initContexts();      // right after ImGui::CreateContext()
-    void shutdownContexts();  // right before ImGui::DestroyContext()
+    //Once per ImGui context: the editor's fonts (Noto Sans / Bold / Mono, embedded) and its style.
+    static void InstallFontsAndStyle();
+    static ImFont *BoldFont();
+    static ImFont *MonoFont();
+
     void frame();             // one frame, between NewFrame() and Render()
+    bool wantsFrames() const; // something is animating or being edited: keep rendering (else render on input only)
 
-    void setKnownIds(KnownIdsFn fn);
-    //The document changed behind the canvas's back (a reload, an action's writeback) — drop the cached graph.
-    void invalidateGraph();
+    // ---- host facts -------------------------------------------------------------------------------------------
+    void setExternalLookup(ExternalFn fn);
+    void setOffers(OffersFn fn);
+    void setIssues(const std::map<std::string, std::vector<std::string>> &issuesByHandle);
+    void setNodeHints(const std::string &handle, const std::vector<std::string> &hints);   // host facts ("deflate")
+    void beginAction(const std::string &handle, const QString &what, bool cancellable);
+    void setProgress(const std::string &handle, float fraction, const QString &detail = {});
+    void endAction(const std::string &handle);
+    bool isBusy(const std::string &handle) const;
+    //The document was replaced or reloaded wholesale: forget per-node view state that no longer applies.
+    void documentReset();
+    //Handles renamed by a save (PkgDoc::Document::TakeRenames): folds, sizes, selection follow the nodes.
+    void applyRenames(const std::map<std::string, std::string> &renames);
 
-    //The document content changed underneath the canvas (a live JSON edit) — rebuild the cached graph next frame
-    //but KEEP the selection/positions (unlike invalidateGraph, which is the full document-swap reset).
-    void refreshFromDocument();
-    //NODE_ID of the currently selected node, or "" if none (for the live JSON panel to follow selection).
-    //Per-node problems, keyed by NODE_ID — drawn ON the node that is wrong, not in a separate report.
-    void setIssues(const std::vector<std::pair<std::string, std::string>> &issues);
-    //Node actions the host performs (file dialogs, zip/dir/delta conversion, capture, test launch): the canvas
-    //only renders the buttons and reports the click. It does no IO and knows nothing about the engine.
-    void setActionHandler(ActionFn fn);
-    //Facts the canvas cannot know without touching disk, per NODE_ID — e.g. "deflate" makes the re-store button
-    //appear. The host probes off-thread and pushes them in.
-    void setNodeHints(const std::string &nodeId, const std::vector<std::string> &hints);
+    // ---- selection & navigation ------------------------------------------------------------------------------
+    std::string selectedHandle() const;                   // the one selected node ("" for none or several)
+    std::set<std::string> selection() const;
+    void select(const std::string &handle, bool frame = false);
+    void frameAll();
+    void frameSelection();
+    void tidyLayout();                                    // forget this machine's positions: back to the layout
+    void setExpanded(const std::string &handle, bool open);   // open every row of a node (or fold them all)
 
-    // ---- long-running actions ----------------------------------------------
-    // A node running a heavy action swaps its buttons for a progress bar + Cancel and goes READ-ONLY, so an edit
-    // cannot race a zip that is rewriting the very file the fields describe. This state is canvas-local, keyed by
-    // NODE_ID: it never reaches the document, and it survives the immediate-mode redraw.
-    void beginAction(const std::string &nodeId, const QString &what, bool cancellable);
-    void setProgress(const std::string &nodeId, float fraction, const QString &detail = {});
-    void endAction(const std::string &nodeId);
-    bool isBusy(const std::string &nodeId) const;
-
-    // ---- programmatic access (the host, and the tests) ----------------------
-    int  addNode(const std::string &type, float x = 60.0f, float y = 60.0f);   // returns the new node's index
-    bool removeNode(int index);
-    bool connect(int parentIndex, int childIndex);                             // adds a PARENTS entry
-    //Wire an OUT-OF-BUNDLE parent (a runner, MediaStack_MS, asiloader) by id. Every package in the library
-    //depends on at least one, so a canvas that can only wire within the bundle cannot author a real package.
-    bool connectExternal(const std::string &parentId, int childIndex);
-    //Show a chip for an external id that nothing references yet, so there is something to drag a wire from.
-    void offerExternal(const std::string &parentId, const std::string &label = {});
-    bool disconnect(int parentIndex, int childIndex);
-    //Renames a node and re-points every reference to it. Refuses a name another node already owns.
-    //Returns false if the rename was rejected.
-    bool renameNode(int index, const std::string &newId);
-    int  nodeCount() const;
-    int  indexOf(const std::string &nodeId) const;
-    std::string selectedNodeId() const;
-    PkgGraph::Graph graph() const;
-
-    //Drops the selection everywhere it is held: ours, imnodes' own index set, and the snapshot that
-    //culling reads. Safe with no imnodes context — model-level paths can invalidate the graph before
-    //any canvas has been realised, and calling into imnodes there takes the process down.
-    void clearSelection();
-
-    //View state. Zoom is a VIEW property: it scales what imnodes is told and is divided back out on read, so
-    //the document and the saved layout always hold unscaled coordinates. Exposed so a test can drive it.
+    // ---- view -------------------------------------------------------------------------------------------------
     float zoom() const;
-    void  setZoom(float z);
-    //How many nodes the last frame actually submitted (viewport culling) — the rest were off-screen.
-    int   visibleNodes() const;
-    int   visibleLinks() const;   // links drawn this frame (a crossing wire counts even if both nodes are culled)
-    //Screen-space bounds of the drawn surface from the last frame. Zoom is a view transform over the emitted
-    //geometry, so this is what actually changes when you zoom — imnodes' own reported node sizes and style
-    //stay unscaled by design. Plain floats so this header keeps its zero imgui dependency.
-    //The cursor position handed to the editor this frame — the real cursor inverse-transformed by the view
-    //scale, so hit-testing happens in world space.
-    void editorMouse(float &X, float &Y) const;
-    void surfaceBounds(float &MinX, float &MinY, float &MaxX, float &MaxY) const;
-    //Screen rectangle the minimap occupied last frame. It is furniture pinned to the canvas corner, so the
-    //one thing worth asserting about it is that the zoom does NOT appear in it.
-    void miniMapRect(float &MinX, float &MinY, float &MaxX, float &MaxY) const;
-    //The widest clip rectangle the canvas drew through last frame, and the canvas viewport itself. These are
-    //the interactive surface: if the first shrinks with the zoom, the area you can draw and pan in shrinks
-    //with it, which is what made zooming out leave the controls stranded in a corner.
-    void surfaceClip(float &MinX, float &MinY, float &MaxX, float &MaxY) const;
-    void canvasViewport(float &MinX, float &MinY, float &MaxX, float &MaxY) const;
-    //Vertices the canvas emitted last frame — how much was actually DRAWN, as opposed to how big the boxes are.
-    int  surfaceVertices() const;
-    //How many nodes the canvas is holding a measured size for. One per live node — the minimap needs it for
-    //nodes culling never submitted. Exposed because the failure mode is invisible otherwise: renameNode runs
-    //per keystroke, so a missed move leaks an entry per character and a later node reusing an id inherits it.
-    int  cachedNodeSizes() const;
-    //The rectangle in-node popups were placed against last frame, in the editor's own (world) units. A combo
-    //dropdown is positioned from its widget's rect against this, and the two have to be the same space.
-    void popupExtent(float &X, float &Y, float &W, float &H) const;
-    //The main viewport and its work rect at the moment post-editor windows (the overview, the delete modal)
-    //are submitted. Both have to be back in SCREEN space by then; imgui rebuilds the viewport every NewFrame,
-    //so this is the only point from which the restore is observable at all.
-    void postEditorViewport(float &X, float &Y, float &W, float &H,
-                            float &WX, float &WY, float &WW, float &WH) const;
-    //The rectangle the overview drew for one node THIS FRAME, in screen pixels — all-zero if it drew none
-    //(the overview is off, or the node was not reached). Exposed because
-    //the alternative is guessing which quad in a draw list belongs to which node, and a test that guesses that
-    //answers a different question than the one it asks.
-    void miniMapNodeBox(int index, float &X, float &Y, float &W, float &H) const;
+    void  setZoom(float z);                               // about the centre of the view
+    void  setCamera(float x, float y);                    // the world point at the canvas's top-left
+    void  cameraPos(float &x, float &y) const;
     bool  miniMap() const;
     void  setMiniMap(bool on);
-    void selectNode(int index);
-    //Open every fold in a node (its sections, layers and list entries) on its next frame, or fold it all again.
-    //Everything starts folded; this is the node's "open all" / "fold all".
-    void setExpanded(int index, bool open);
+
+    // ---- document shortcuts (also reachable from the canvas's own menus) --------------------------------------
+    int  addNode(const std::string &layerType, float worldX, float worldY);   // returns its index
+    bool removeNodes(const std::set<std::string> &handles);
+    void undo();
+    void redo();
+
+    // ---- introspection (tests, the host) ---------------------------------------------------------------------
+    //Where things were drawn LAST frame, in screen pixels; false/empty when not drawn.
+    bool nodeRect(const std::string &handle, float &x0, float &y0, float &x1, float &y1) const;
+    bool portPos(const std::string &handle, bool out, float &x, float &y) const;
+    bool canvasRect(float &x0, float &y0, float &x1, float &y1) const;
+    int  visibleNodes() const;                            // nodes drawn last frame (full or as boxes)
+    int  visibleWires() const;                            // wires drawn last frame
+    int  externalCount() const;
+    std::string externalLabel(const std::string &cid) const;   // the text its chip shows
+    //World position and size the canvas uses for a node or external (placed, laid out or measured).
+    bool worldRect(const std::string &handle, float &x, float &y, float &w, float &h) const;
 
 signals:
-    void documentChanged();                       // the canvas mutated the document (already saved)
-    void nodeAction(const QString &nodeId, const QString &action);
-    void cancelRequested(const QString &nodeId);  // Cancel pressed on a running action
+    void selectionChanged(const QString &handle);         // "" when nothing / several are selected
+    void documentEdited();                                // the canvas edited the document (and committed a step)
+    void saveRequested();                                 // ctrl+S
+    void nodeAction(const QString &handle, const QString &action);
+    void cancelRequested(const QString &handle);
+    void openPackageRequested(const QString &packageDir); // an external chip's "open its package"
+    void statusMessage(const QString &text);              // a one-line note for the host's status bar
 
 private:
-    void drawToolbar();
-    void drawNode(int index, PkgGraph::Graph &g);
-    void seedNodePosition(int index, const PkgGraph::Graph &g);
-    void drawEnvelope(nlohmann::ordered_json &node);
-    void drawPayload(nlohmann::ordered_json &node, int index);
-    void drawActions(nlohmann::ordered_json &node, int index, const PkgGraph::Graph &g);
-    void drawField(nlohmann::ordered_json &node, const PkgGraph::Field &f, int index);
-    void drawRegTree(nlohmann::ordered_json &layer, const PkgGraph::Field &f, int index);
-    void drawCustomVarUI(nlohmann::ordered_json &node);
-    bool fold(const std::string &key, const std::string &label);   // a TreeNode whose open state the canvas holds
-    std::string refLabel(const std::string &ref);                   // a node reference's LABEL, if known
-    //`Drawn` marks the nodes submitted THIS frame (viewport culling) — a wire can only be drawn
-    //between two endpoints that exist, so culled nodes take their wires with them.
-    void syncLinks(const PkgGraph::Graph &g, const std::vector<char> &Drawn);
-    //Reads dragged positions back out of imnodes. `Drawn` marks the nodes SUBMITTED THIS FRAME — the only
-    //ones imnodes still has, since it frees the rest at EndNodeEditor.
-    void flushPositions(PkgGraph::Graph &g, const std::vector<char> &Drawn);
     std::unique_ptr<PkgCanvasState> m_s;
 };
 

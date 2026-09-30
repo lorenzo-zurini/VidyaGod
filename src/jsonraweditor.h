@@ -3,17 +3,17 @@
 
 #include <QWidget>
 
+#include <string>
+
 class PackageEditorModel;
-class QComboBox;
-class QTextEdit;
-class QPushButton;
+class QLabel;
+class QPlainTextEdit;
 class QTimer;
 
 // ---------------------------------------------------------------------------
-// JsonRawEditor — the "JSON" tab: pick a node from the combo and edit its raw JSON, then Save Node. Validates the
-// text live (red background + disabled Save on parse error). Reads/writes the working document through the model;
-// re-shows the selected node's JSON whenever the model reports a disk write. (The shell recreates this widget on a
-// structural rebuild, so it always reflects the current node set.)
+// JsonRawEditor — the selected node's JSON, editable. Follows the canvas selection (by handle); valid edits apply to
+// the document live (debounced, one undo step), invalid text is marked and never applied. The node's CID is shown
+// and a save that renames the node keeps it selected.
 // ---------------------------------------------------------------------------
 class JsonRawEditor : public QWidget
 {
@@ -22,22 +22,22 @@ public:
     explicit JsonRawEditor(PackageEditorModel * model, QWidget * parent = nullptr);
 
 public slots:
-    void showNode(const QString & nodeId);   // canvas selected a node → show its JSON (selection-driven)
-    void rebuildCombo();                     // repopulate the node list (structural change), keep the pick
+    void showNode(const QString & handle);   // "" = nothing selected
+    void refresh();                          // the node may have changed: show it (unless it is being typed into)
 
 private slots:
-    void onApplyTimeout(); // debounced live apply: valid edits flow to the node without a Save click
-    void refreshText();    // re-show the selected node's JSON (was PackageEditor::RefreshJSONView)
-    void onTextChanged();  // live JSON validity → style + Save enabled (was JSONQTextEditChanged)
-    void onSavePressed();  // parse + replace the node through the model (was SaveJSONButtonPressed)
+    void onTextChanged();
+    void onApplyTimeout();
 
 private:
     PackageEditorModel * Model = nullptr;
-    QComboBox *          FileCombo = nullptr;
-    QTextEdit *          Text = nullptr;
-    QPushButton *        SaveBtn = nullptr;
-    QTimer *             ApplyTimer = nullptr;   // debounce (~300 ms) so every keystroke doesn't write to disk
-    bool                 ApplyingLocally = false; // guard: our own live apply must not clobber the text being typed
+    std::string          Handle;
+    QLabel *             Title = nullptr;
+    QLabel *             Status = nullptr;
+    QPlainTextEdit *     Text = nullptr;
+    QTimer *             ApplyTimer = nullptr;
+    bool                 Applying = false;   // our own apply must not rewrite the text being typed
+    std::string          Shown;              // the JSON text last shown (to tell "changed elsewhere" from "typed")
 };
 
 #endif // JSONRAWEDITOR_H

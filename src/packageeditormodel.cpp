@@ -1,326 +1,272 @@
 #include "packageeditormodel.h"
+#include "nodelower.h"
+
+#include <QThread>
+#include <QTimer>
 #include "apppaths.h"
 #include "commonutils.h"
 #include "jsonoperations.h"
-#include "registrywrapper.h"
 #include "containerwrapper.h"   // ContainerWrapper + ContainerParams (authoring run) — pulls LaunchResolver etc.
-#include "packagecatalog.h"     // BuildCatalogIndex / PublishPackage
+#include "packagecatalog.h"     // BuildCatalogIndex, LibraryRootDir, EditorLayoutKey
+#include "instancestore.h"
 
 #include <QFile>
 #include <QFileDialog>
-#include <QFileInfo>
 #include <QMessageBox>
 
 #include <algorithm>
-#include <cctype>
+#include <cmath>
 #include <filesystem>
-#include <fstream>
 #include <set>
-#include <string>
-#include <vector>
 
 using json = nlohmann::ordered_json;
+namespace fs = std::filesystem;
 
-//The launchable node to run when authoring `nodeId`: the node itself if launchable, else the first launchable in
-//the index whose resolved closure includes it (so its layers are in the recipe). "" if none.
-static std::string LaunchableForNode(const NodeIndex & Idx, const std::string & nodeId)
+namespace {
+
+//A launchable that runs NodeId: the node itself, or one that contains it.
+std::string LaunchableForNode(const NodeIndex & Idx, const std::string & NodeId)
 {
-    const Node * N = Idx.Find(nodeId);
+    const Node * N = Idx.Find(NodeId);
     if (!N) return "";
-    if (N->IsVariant()) return nodeId;
-    for (const auto & [Id, Node] : Idx.Nodes)
+    if (N->IsVariant()) return NodeId;
+    for (const auto & [Id, Nd] : Idx.Nodes)
     {
-        if (!Node.IsVariant()) continue;
+        if (!Nd.IsVariant()) continue;
         const auto Order = ManifestModel::Closure(Idx, Id);
-        if (std::find(Order.begin(), Order.end(), nodeId) != Order.end()) return Id;
+        if (std::find(Order.begin(), Order.end(), NodeId) != Order.end()) return Id;
     }
     return "";
 }
 
+bool SameDir(const fs::path & A, const fs::path & B)
+{
+    std::error_code Ea, Eb;
+    return fs::weakly_canonical(A, Ea) == fs::weakly_canonical(B, Eb);
+}
+
+//"[749][v1.0] Age of Empires II" → "Age of Empires II": a package's folder name without its bracketed tags.
+std::string PackageName(const fs::path & Dir)
+{
+    std::string N = Dir.filename().string();
+    while (!N.empty() && N[0] == '[')
+    {
+        const size_t E = N.find(']');
+        if (E == std::string::npos) break;
+        N = N.substr(E + 1);
+        while (!N.empty() && N[0] == ' ') N.erase(0, 1);
+    }
+    return N.empty() ? Dir.filename().string() : N;
+}
+
+} // namespace
+
 PackageEditorModel::PackageEditorModel(nlohmann::ordered_json * globalConfig, QWidget * dialogParent, QObject * parent)
     : QObject(parent), GlobalConfigJSON(globalConfig), DialogParent(dialogParent)
 {
-    Doc = json::object({ {"NODES", json::array()} });
 }
 
-PackageEditorModel::~PackageEditorModel() { delete PackageDir; }
+PackageEditorModel::~PackageEditorModel()
+{
+    if (ValThread) { ValThread->wait(); delete ValThread; }   // it holds its own snapshot; only its result is ours
+    delete PackageDir;
+}
 
-// ============================================================================
-// Bundle open + node I/O (one file per node)
-// ============================================================================
+QString PackageEditorModel::packagePath() const { return PackageDir ? PackageDir->path() : QString(); }
 
 void PackageEditorModel::initPackage(const QString & preselectedPath, QWidget * dirPickerParent)
 {
-    QString ChosenPath = preselectedPath.isEmpty()
-        ? QFileDialog::getExistingDirectory(dirPickerParent, "Select bundle directory...")
+    const QString Chosen = preselectedPath.isEmpty()
+        ? QFileDialog::getExistingDirectory(dirPickerParent, "Open a package folder")
         : preselectedPath;
     delete PackageDir;
-    PackageDir = new QDir(ChosenPath);
+    PackageDir = Chosen.isEmpty() ? nullptr : new QDir(Chosen);
     LoadNodes();
-}
-
-QString PackageEditorModel::FileForNode(const nlohmann::ordered_json & Node) const
-{
-    //Model C: the filename is PURE PRESENTATION (nothing keys on it — identity is the CID). Prefer the file the node
-    //was LOADED from (__FILE__) so it stays put: renaming is now just editing the cosmetic LABEL and must NOT re-file
-    //the node. A brand-new node has no __FILE__ → name it from its
-    //LABEL (a readable filename), else its short CID handle, else "untitled".
-    if (Node.is_object() && Node.contains("__FILE__") && Node["__FILE__"].is_string()
-        && !std::string(Node["__FILE__"]).empty())
-        return QString::fromStdString(std::string(Node["__FILE__"]));
-    std::string Id = (Node.is_object() && Node.contains("LABEL") && Node["LABEL"].is_string()) ? Node["LABEL"].get<std::string>() : std::string();
-    if (Id.empty())   // unnamed new node: fall back to a short form of its CID handle
-    {
-        const std::string H = (Node.is_object() && Node.contains("CID") && Node["CID"].is_string()) ? Node["CID"].get<std::string>() : std::string();
-        Id = H.size() > 16 ? H.substr(0, 16) : H;
-    }
-    //A node name becomes a FILENAME here, so a '/' or a ".." would write outside the bundle. Names are authored
-    //freely on the canvas; sanitise rather than trust.
-    for (char &C : Id) if (C == '/' || C == '\\' || C == ':') C = '_';
-    if (Id == "." || Id == "..") Id = "node";
-    if (!Id.empty()) return QString::fromStdString(Id) + ".json";
-    return "untitled_node.json";
 }
 
 void PackageEditorModel::LoadNodes()
 {
-    Doc = json::object({ {"NODES", json::array()} });
-
-    //One node per file: the file IS the node. A JSON file that is not a node (a note, a stray list) is left alone —
-    //never loaded, and never rewritten or swept by SaveNodes.
-    const QStringList Files = PackageDir->entryList(QStringList() << "*.json", QDir::Files, QDir::Name);
-    for (const QString &FileName : Files)
-    {
-        nlohmann::ordered_json J;
-        QFile F(PackageDir->filePath(FileName));
-        if (JSONOps::LoadJSON(&F, &J)) continue;                     // LoadJSON returns true on FAILURE
-        if (!ManifestModel::IsNodeObject(J))
-        {
-            if (J.is_array()) LogWarn("PackageEditorModel", FileName.toStdString() + " is a list, not a node (a file "
-                                      "holds one node) — left as it is.");
-            continue;
-        }
-        J["__FILE__"] = FileName.toStdString();
-        Doc["NODES"].push_back(std::move(J));
-    }
-
-    if (Doc["NODES"].empty())
-        // A fresh empty bundle gets one plain node with a GLOBALLY-unique draft HANDLE ("CID") so the canvas can wire
-        // it; the real CID is minted at Publish. (A hardcoded "draft-1" here would collide with every other fresh
-        // bundle at the library-wide publish and cross-wire them.) LABEL is empty (cosmetic — shows its kind until named).
-        Doc["NODES"].push_back(json::object({ {"CID", MakeDraftHandle()}, {"LABEL", ""}, {"LAYERS", json::array()} }));   // no layers until given some
-
-    Validated = false; emit validationChanged();   // validation is on-demand ("Check Package Validity"); don't auto-run on load
+    if (PackageDir)
+        for (const std::string & Odd : Doc.Load(PackageDir->path().toStdString()))
+            LogWarn("PackageEditorModel", Odd);
+    else Doc.Reset({});
     LoadLayout();
-    LogSucc("PackageEditorModel", "Loaded " + std::to_string(Doc["NODES"].size()) + " node(s).");
+    Validated = false;
+    ExecIndexRev = 0;
+    if (ValThread) ValAgain = true;                       // a check under way is about the package that was here
+    WasDirty = false;
+    emit documentReloaded();
+    emit dirtyChanged(false);
+    emit validationChanged();
+    LogSucc("PackageEditorModel", "Loaded " + std::to_string(Doc.Count()) + " node(s) from " + packagePath().toStdString());
 }
 
-//The canvas layout sidecar.
-//
-//NOT in the node files: a Meta-CID is minted add-by-reference and IN PLACE over those very files, so anything
-//stored there is in the CID and no later stage can strip it — every drag would republish the package. (A
-//node's POS is the exception, and deliberately so: it is written once at PUBLISH, not on every mouse-up.)
-//
-//NOT under USERDATA either, which was the first attempt: a `Persist KEEP %RuntimePath%` node makes
-//<bundle>/USERDATA the writable TOP branch of the union (vfsmount.cpp), so its whole contents appear at the
-//game's runtime root — the layout would ship into the game's own directory, visible to mod loaders and
-//data-file scanners, and durably.
-//
-//NOT a sidecar in the bundle root either, which is what this used to be. It was invisible to publishing (both
-//paths are text-only-JSON), but a bundle is still the wrong home for per-machine state: it travels with the
-//folder whenever the author copies, moves or backs it up, so one person's canvas arrangement rides along into
-//everyone else's copy.
-//
-//So: the tool's own per-user configuration, which is what per-machine state is.
-//The GlobalConfig key for a bundle's local positions. Delegates to PackageCatalog::EditorLayoutKey so the
-//editor (which writes it) and publishing (which reads it) cannot drift: they already did once, and a mismatch
-//is silent — the lookup misses and the author's arrangement is discarded at publish.
-static std::string LayoutKeyFor(const QDir *PackageDir)
+// ---- this machine's layout: GlobalConfig EDITORLAYOUT[<package>] = {handle: [x, y]} ------------------------------
+
+static std::string LayoutKeyFor(const QDir * PackageDir)
 {
     if (!PackageDir) return {};
-    return PackageCatalog::EditorLayoutKey(
-        std::filesystem::path(QDir::cleanPath(PackageDir->absolutePath()).toStdString()));
+    return PackageCatalog::EditorLayoutKey(fs::path(QDir::cleanPath(PackageDir->absolutePath()).toStdString()));
 }
 
 void PackageEditorModel::LoadLayout()
 {
-    //THIS MACHINE's positions only. A node's published default lives in the node itself (POS) and is applied by
-    //PkgGraph::Build; this object is the local override laid on top, so dragging a box is a preference on this
-    //computer and never an edit to the package.
-    Layout = nlohmann::ordered_json::object();
+    SavedLayout.clear();
     const std::string Key = LayoutKeyFor(PackageDir);
     if (Key.empty() || !GlobalConfigJSON) return;
-    const auto SecIt = GlobalConfigJSON->find("EDITORLAYOUT");
-    if (SecIt == GlobalConfigJSON->end() || !SecIt->is_object()) return;
-    const auto BundleIt = SecIt->find(Key);
-    if (BundleIt == SecIt->end() || !BundleIt->is_object()) return;
-    Layout = *BundleIt;
+    const auto Sec = GlobalConfigJSON->find("EDITORLAYOUT");
+    if (Sec == GlobalConfigJSON->end() || !Sec->is_object()) return;
+    const auto B = Sec->find(Key);
+    if (B == Sec->end() || !B->is_object()) return;
+    for (const auto & [H, P] : B->items())
+    {
+        //A coordinate no layout could produce is corruption, not a position: refused, so the node is laid out instead.
+        if (!P.is_array() || P.size() != 2 || !P[0].is_number() || !P[1].is_number()) continue;
+        const double X = P[0].get<double>(), Y = P[1].get<double>();
+        if (!std::isfinite(X) || !std::isfinite(Y) || std::abs(X) > 1e7 || std::abs(Y) > 1e7) continue;
+        SavedLayout[H] = PkgDoc::Pos{(float)X, (float)Y};
+    }
+    Doc.SetPositions(SavedLayout);
 }
 
 void PackageEditorModel::SaveLayout()
 {
     const std::string Key = LayoutKeyFor(PackageDir);
-    if (Key.empty() || !GlobalConfigJSON || !Layout.is_object()) return;
-    //An empty override is not worth a stanza: once every node carries POS, the common case is a bundle nobody
-    //has dragged, and writing "{}" for each would grow GlobalConfig by one entry per bundle ever opened.
-    if (Layout.empty())
-    {
-        auto SecIt = GlobalConfigJSON->find("EDITORLAYOUT");
-        if (SecIt != GlobalConfigJSON->end() && SecIt->is_object()) SecIt->erase(Key);
-        return;
-    }
+    if (Key.empty() || !GlobalConfigJSON) return;
+    const auto & Now = Doc.Positions();
+    bool Same = Now.size() == SavedLayout.size();
+    if (Same)
+        for (const auto & [H, P] : Now)
+        {
+            const auto It = SavedLayout.find(H);
+            if (It == SavedLayout.end() || It->second.X != P.X || It->second.Y != P.Y) { Same = false; break; }
+        }
+    if (Same) return;
+    json L = json::object();
+    for (const auto & [H, P] : Now) L[H] = json::array({P.X, P.Y});
     if (!GlobalConfigJSON->contains("EDITORLAYOUT") || !(*GlobalConfigJSON)["EDITORLAYOUT"].is_object())
-        (*GlobalConfigJSON)["EDITORLAYOUT"] = nlohmann::ordered_json::object();
-    (*GlobalConfigJSON)["EDITORLAYOUT"][Key] = Layout;
-    //...and reach DISK. The sidecar this replaced was written on every mouse-up; GlobalConfig is otherwise
-    //only flushed by MainWindow::closeEvent, so a crash, a kill, or any exit that skips closeEvent would lose
-    //the whole session's arranging — a strictly worse guarantee than the file it replaced.
-    //SaveJSON returns TRUE ON SUCCESS (every other call site reads it that way). Inverted, this logged "could
-    //not flush" after every successful save and said nothing when the write actually failed.
+        (*GlobalConfigJSON)["EDITORLAYOUT"] = json::object();
+    if (L.empty()) (*GlobalConfigJSON)["EDITORLAYOUT"].erase(Key);
+    else (*GlobalConfigJSON)["EDITORLAYOUT"][Key] = std::move(L);
+    SavedLayout = Now;
     QFile Cfg(QString::fromStdString((AppPaths::DataRoot() / "GlobalConfig.JSON").string()));
     if (!JSONOps::SaveJSON(GlobalConfigJSON, &Cfg))
-        LogWarn("PackageEditorModel", "could not flush the canvas layout to GlobalConfig.JSON");
+        LogWarn("PackageEditorModel", "could not write the canvas layout to GlobalConfig.JSON");
 }
 
-void PackageEditorModel::replaceNodeJson(int nodeIndex, nlohmann::ordered_json node)
+// ---- editing and saving ----------------------------------------------------------------------------------------
+
+void PackageEditorModel::noteEdited()
 {
-    if (nodeIndex < 0 || nodeIndex >= (int)Doc["NODES"].size()) return;
-    // Preserve the editor-only provenance tag so a raw-JSON save doesn't re-file the node.
-    if (Doc["NODES"][nodeIndex].contains("__FILE__")) node["__FILE__"] = Doc["NODES"][nodeIndex]["__FILE__"];
-    Doc["NODES"][nodeIndex] = std::move(node);
-    SaveNodes();
-    emit documentReloaded();
+    SaveLayout();
+    if (ValContentRev != Doc.ContentRevision()) validateSoon();   // a move is not an edit worth checking
+    if (Doc.Dirty() != WasDirty) { WasDirty = Doc.Dirty(); emit dirtyChanged(WasDirty); }
 }
 
-void PackageEditorModel::updateNodeLive(int nodeIndex, nlohmann::ordered_json node)
+void PackageEditorModel::replaceNode(const std::string & Handle, json Node)
 {
-    if (nodeIndex < 0 || nodeIndex >= (int)Doc["NODES"].size()) return;
-    if (Doc["NODES"][nodeIndex].contains("__FILE__")) node["__FILE__"] = Doc["NODES"][nodeIndex]["__FILE__"];
-    Doc["NODES"][nodeIndex] = std::move(node);
-    SaveNodes();                 // persist + revalidate (SaveNodes emits savedToDisk + validationChanged)
-    emit nodeContentChanged();   // canvas repaints from the doc; NO documentReloaded → the JSON editor survives
+    const int I = Doc.IndexOf(Handle);
+    if (I < 0) return;
+    Node.erase("CID");                                    // the handle is never part of a node
+    Doc.Replace(I, std::move(Node));
+    Doc.Commit();
+    noteEdited();
+    emit nodeContentChanged();
 }
 
-void PackageEditorModel::SaveNodes()
+bool PackageEditorModel::Save(QString * Error)
 {
-    if (!PackageDir) return;
-    InvalidateExecIndex();   // the bundle's nodes are changing — drop the cached catalog index
-    auto &Nodes = Doc["NODES"];
-
-    //Each node to its own file: the one it was loaded from, else one named from its LABEL (FileForNode). A name
-    //already taken — by another node this save writes, or by a JSON file that is not a node — gets a numbered
-    //sibling instead: a file holds one node, and a note someone keeps in the bundle is never overwritten.
-    std::set<QString> Taken;
-    for (const QString &Existing : PackageDir->entryList(QStringList() << "*.json", QDir::Files))
+    if (!PackageDir) return false;
+    const std::string Lib = GlobalConfigJSON ? PackageCatalog::LibraryRootDir(*GlobalConfigJSON) : std::string();
+    const std::string Users = GlobalConfigJSON ? InstanceStore::Root(*GlobalConfigJSON).string() : std::string();
+    const PkgDoc::SaveReport R = Doc.Save(PackageDir->path().toStdString(), Lib, Users);
+    for (const std::string & L : R.Log) LogOut("PackageEditorModel", L);
+    if (!R.Ok)
     {
-        nlohmann::ordered_json J; QFile F(PackageDir->filePath(Existing));
-        if (JSONOps::LoadJSON(&F, &J) || !ManifestModel::IsNodeObject(J)) Taken.insert(Existing);   // not a node file
+        LogErr("PackageEditorModel", "Save failed: " + R.Error);
+        if (Error) *Error = QString::fromStdString(R.Error);
+        return false;
     }
-    std::set<QString> Written;
-    bool Ok = true;
-    for (auto &N : Nodes)
-    {
-        if (!N.is_object()) continue;
-        QString FileName = FileForNode(N);
-        if (FileName.isEmpty()) continue;
-        if (Taken.count(FileName))
-        {
-            const QString Stem = FileName.chopped(5);   // ".json"
-            for (int K = 2; Taken.count(FileName); ++K) FileName = Stem + "_" + QString::number(K) + ".json";
-        }
-        Taken.insert(FileName);
-        Written.insert(FileName);
-        nlohmann::ordered_json Out = N;
-        Out.erase("__FILE__");
-        N["__FILE__"] = FileName.toStdString();
-        QFile F(PackageDir->filePath(FileName));
-        if (!JSONOps::SaveJSON(&Out, &F)) Ok = false;
-    }
-    if (!Ok)
-    {
-        // Nothing is swept when a write failed: the stale files on disk are now the only copy of whatever did
-        // not get written, so removing them would turn a failed save into data loss.
-        LogErr("PackageEditorModel", "One or more node files failed to save — leaving every existing file in "
-                                     "place. Fix the problem (disk full? read-only bundle?) and save again.");
-        emit savedToDisk(PackageDir->path());
-        Validated = false; emit validationChanged();
-        return;
-    }
-
-    // Only now sweep the files that are genuinely orphaned (a *.json holding nodes no current node claims).
-    for (const QString &Existing : PackageDir->entryList(QStringList() << "*.json", QDir::Files))
-    {
-        if (Written.count(Existing)) continue;
-        nlohmann::ordered_json J; QFile F(PackageDir->filePath(Existing));
-        if (JSONOps::LoadJSON(&F, &J)) continue;
-        if (ManifestModel::IsNodeObject(J)) PackageDir->remove(Existing);
-    }
-
-    emit savedToDisk(PackageDir->path());
-    Validated = false; emit validationChanged();   // edits invalidate the last check; re-run on demand via the button
+    LogSucc("PackageEditorModel", "Saved " + packagePath().toStdString() + ": " + std::to_string(R.Written) + " file(s) written, "
+            + std::to_string(R.Removed) + " replaced" + (R.Cascaded ? ", " + std::to_string(R.Cascaded) + " node(s) in other packages re-minted" : "")
+            + (R.InstancesUpdated ? ", " + std::to_string(R.InstancesUpdated) + " instance(s) updated" : ""));
+    if (R.Cascaded) LibraryCache.reset();                 // other packages changed on disk
+    LastRenames = Doc.TakeRenames();
+    if (!LastRenames.empty()) emit handlesRenamed();
+    SaveLayout();                                         // positions follow their renamed nodes
+    ExecIndexRev = 0;
+    if (ValThread) ValAgain = true;                       // a check under way names the nodes by their old names
+    WasDirty = false;
+    emit dirtyChanged(false);
+    emit savedToDisk(packagePath());
+    return true;
 }
 
-// ============================================================================
-// Validation
-// ============================================================================
+// ---- the library ----------------------------------------------------------------------------------------------
 
-const NodeIndex & PackageEditorModel::ExecIndex() const
+const NodeIndex & PackageEditorModel::LibraryIndex() const
 {
-    if (!ExecIndexValid) { ExecIndexCache = BuildExecIndex(); ExecIndexValid = true; }
-    return ExecIndexCache;
+    if (!LibraryCache)
+    {
+        LibraryCache = std::make_unique<NodeIndex>(GlobalConfigJSON ? PackageCatalog::BuildCatalogIndex(*GlobalConfigJSON) : NodeIndex());
+    }
+    return *LibraryCache;
 }
-
-void PackageEditorModel::Revalidate()
-{
-    ValErrors.clear(); ValWarnings.clear();
-    const NodeIndex & Idx = ExecIndex();
-    // Scope validation to THIS bundle's own nodes + their PARENTS closures, so unrelated packages' legitimate issues
-    // (e.g. another game's cross-layer case collisions) never surface while editing — mirrors LibraryGameCard::play.
-    std::set<std::string> Scope;
-    if (Doc.contains("NODES") && Doc["NODES"].is_array())
-        for (const auto & N : Doc["NODES"])
-        {
-            // Scope keys into the (handle-keyed) index → use the node's CID handle, not its cosmetic LABEL.
-            const std::string Id = (N.contains("CID") && N["CID"].is_string()) ? N["CID"].get<std::string>() : std::string();
-            if (Id.empty()) continue;
-            Scope.insert(Id);
-            for (const std::string & Dep : ManifestModel::Closure(Idx, Id)) Scope.insert(Dep);
-        }
-    ManifestModel::ValidateNodeGraph(Idx, ValErrors, ValWarnings, &Scope);
-    Validated = true;
-    emit validationChanged();
-}
-
-// ============================================================================
-// Catalog queries (PARENTS picker / platform suggestions / exec index)
-// ============================================================================
 
 NodeIndex PackageEditorModel::BuildExecIndex() const
 {
     NodeIndex Idx;
-    if (PackageDir)
-        ManifestModel::ScanBundleNodes(PackageDir->path().toStdString(), Idx);   // this bundle wins (first-seen)
-    // Merge in the rest of the catalog (CID package sources + local bundles); std::map::emplace keeps this bundle's nodes.
-    NodeIndex Cat = PackageCatalog::BuildCatalogIndex(*GlobalConfigJSON);
-    for (auto &[Id, N] : Cat.Nodes) Idx.Nodes.emplace(Id, N);
-    ManifestModel::DeriveFacts(Idx);   // entries, runners and tiles are folded facts
+    const fs::path Pkg = PackageDir ? fs::path(PackageDir->path().toStdString()) : fs::path();
+    for (const auto & [Id, N] : LibraryIndex().Nodes)
+        if (Pkg.empty() || !SameDir(N.BundleDir, Pkg)) Idx.Nodes.emplace(Id, N);   // this package: as edited, below
+    for (int I = 0; I < Doc.Count(); ++I)
+    {
+        Node N;
+        if (!ManifestModel::ParseNode(Doc.Node(I), Pkg / (Doc.Handle(I) + ".json"), Pkg, N)) continue;
+        N.Cid = Doc.Handle(I);
+        //Named by its handle, as everything about this package's nodes is — a draft has no CID for the file name
+        //to give, and a problem the canvas cannot place on its node is one the author does not see.
+        if (!N.LowerError.empty()) N.LowerError = NodeLower::CheckNode(Doc.Node(I), N.Cid, N.NodeId);
+        Idx.Nodes[Doc.Handle(I)] = std::move(N);
+    }
+    ManifestModel::DeriveFacts(Idx);
     return Idx;
 }
 
-std::vector<std::pair<std::string, std::string>> PackageEditorModel::KnownNodeIds()
+std::shared_ptr<const NodeIndex> PackageEditorModel::ExecSnapshot() const
 {
-    const NodeIndex & Idx = ExecIndex();
-    std::vector<std::pair<std::string, std::string>> Out;   // {handle(CID), cosmetic label}
-    for (const auto &[Id, N] : Idx.Nodes)
+    if (!ExecIndexCache || ExecIndexRev != Doc.ContentRevision())
     {
-        // Prefer the pretty display: LABEL (N.NodeId carries it), else the tile title, else a short CID. The picker
-        // sorts + shows this; the handle (Id) is what gets wired.
-        std::string Label = N.NodeId;
-        if (Label.empty()) Label = N.Meta.value("TITLE", std::string());
-        if (Label.empty()) Label = Id.size() > 14 ? (Id.substr(0, 8) + "…" + Id.substr(Id.size() - 4)) : Id;
-        Out.emplace_back(Id, Label);
+        ExecIndexCache = std::make_shared<const NodeIndex>(BuildExecIndex());
+        ExecIndexRev = Doc.ContentRevision();
     }
-    std::sort(Out.begin(), Out.end(), [](const auto &A, const auto &B) { return A.second < B.second; });   // by label
+    return ExecIndexCache;
+}
+
+const NodeIndex & PackageEditorModel::ExecIndex() const { return *ExecSnapshot(); }
+
+PackageEditorModel::External PackageEditorModel::externalInfo(const std::string & Cid) const
+{
+    const Node * N = LibraryIndex().Find(Cid);
+    if (!N) return {};
+    std::string Label = N->NodeId;
+    if (Label.empty()) Label = N->Meta.is_object() ? N->Meta.value("TITLE", std::string()) : std::string();
+    return External{Label, PackageName(N->BundleDir), N->BundleDir.string()};
+}
+
+std::vector<PackageEditorModel::Offer> PackageEditorModel::offers() const
+{
+    std::vector<Offer> Out;
+    const fs::path Pkg = PackageDir ? fs::path(PackageDir->path().toStdString()) : fs::path();
+    for (const auto & [Id, N] : LibraryIndex().Nodes)
+    {
+        if (!Pkg.empty() && SameDir(N.BundleDir, Pkg)) continue;
+        std::string Label = N.NodeId.empty() ? Id.substr(0, 12) : N.NodeId;
+        Out.push_back(Offer{Id, Label, PackageName(N.BundleDir)});
+    }
+    std::sort(Out.begin(), Out.end(), [](const Offer & A, const Offer & B) {
+        return A.Package != B.Package ? A.Package < B.Package : A.Label < B.Label;
+    });
     return Out;
 }
 
@@ -329,20 +275,107 @@ std::vector<std::string> PackageEditorModel::KnownPlatforms()
     const NodeIndex & Idx = ExecIndex();
     std::set<std::string> Seen;
     std::vector<std::string> Out;
-    for (const auto &[Id, N] : Idx.Nodes)
+    for (const auto & [Id, N] : Idx.Nodes)
     {
         (void)Id;
         if (!N.IsRunner()) continue;
-        for (const auto &P : N.GuestPlatform) if (Seen.insert(P).second) Out.push_back(P);
+        for (const auto & P : N.GuestPlatform) if (Seen.insert(P).second) Out.push_back(P);
     }
-    for (const char *Common : {"win32", "win64", "linux64", "snes", "custom"})
+    for (const char * Common : {"win32", "win64", "linux64", "snes", "custom"})
         if (Seen.insert(Common).second) Out.push_back(Common);
     return Out;
 }
 
-// ============================================================================
-// Authoring execute (native node engine)
-// ============================================================================
+// ---- validation ------------------------------------------------------------------------------------------------
+
+void PackageEditorModel::Revalidate()
+{
+    ValResult R = Validate(ExecIndex(), bundleHandles());
+    ValErrors = std::move(R.Errors);
+    ValWarnings = std::move(R.Warnings);
+    Validated = true;
+    emit validationChanged();
+}
+
+//This package's nodes and everything they contain: the graph around them is only read.
+PackageEditorModel::ValResult PackageEditorModel::Validate(const NodeIndex & Idx, const std::vector<std::string> & Handles)
+{
+    ValResult R;
+    std::set<std::string> Scope;
+    for (const std::string & H : Handles)
+    {
+        Scope.insert(H);
+        for (const std::string & Dep : ManifestModel::Closure(Idx, H)) Scope.insert(Dep);
+    }
+    ManifestModel::ValidateNodeGraph(Idx, R.Errors, R.Warnings, &Scope);
+    return R;
+}
+
+void PackageEditorModel::validateSoon()
+{
+    if (!ValTimer)
+    {
+        ValTimer = new QTimer(this);
+        ValTimer->setSingleShot(true);
+        connect(ValTimer, &QTimer::timeout, this, &PackageEditorModel::validateNow);
+    }
+    ValTimer->start(450);                                  // restarts: the check waits for a pause in the edits
+}
+
+void PackageEditorModel::validateNow()
+{
+    if (ValTimer) ValTimer->stop();
+    if (ValThread) { ValAgain = true; return; }            // one at a time; the newest document is checked next
+    if (!PackageDir) return;
+    ValAgain = false;
+    ValContentRev = Doc.ContentRevision();
+    auto Idx = ExecSnapshot();
+    auto Out = std::make_shared<ValResult>();
+    ValOut = Out;
+    ValThread = QThread::create([Idx, Handles = bundleHandles(), Out] { *Out = Validate(*Idx, Handles); });
+    connect(ValThread, &QThread::finished, this, &PackageEditorModel::ValidationDone);
+    ValThread->start(QThread::LowPriority);
+}
+
+void PackageEditorModel::ValidationDone()
+{
+    ValThread->deleteLater();
+    ValThread = nullptr;
+    if (ValAgain || ValContentRev != Doc.ContentRevision()) { validateNow(); return; }   // about an older document
+    ValErrors = std::move(ValOut->Errors);
+    ValWarnings = std::move(ValOut->Warnings);
+    ValOut.reset();
+    Validated = true;
+    emit validationChanged();
+}
+
+std::string PackageEditorModel::handleInMessage(const std::string & M) const
+{
+    //Validation names a node as "node '<id>'" (its handle), sometimes followed by its label in parentheses.
+    const size_t A = M.find("node '");
+    if (A == std::string::npos) return {};
+    const size_t B = M.find('\'', A + 6);
+    if (B == std::string::npos) return {};
+    const std::string Id = M.substr(A + 6, B - (A + 6));
+    return Doc.IndexOf(Id) >= 0 ? Id : std::string();
+}
+
+std::map<std::string, std::vector<std::string>> PackageEditorModel::issuesByHandle() const
+{
+    std::map<std::string, std::vector<std::string>> Out;
+    auto Add = [&](const std::string & M) {
+        const std::string H = handleInMessage(M);
+        if (H.empty()) return;
+        std::string Text = M.substr(M.find('\'', M.find("node '") + 6) + 1);
+        if (Text.rfind(": ", 0) == 0) Text = Text.substr(2);
+        Out[H].push_back(Text);
+    };
+    for (const auto & M : ValErrors) Add(M);
+    for (const auto & M : ValWarnings) Add(M);
+    return Out;
+}
+
+// ---- authoring ------------------------------------------------------------------------------------------------
 
 bool PackageEditorModel::NodeTestable(const std::string & NodeId) const
 {
@@ -351,86 +384,60 @@ bool PackageEditorModel::NodeTestable(const std::string & NodeId) const
 
 void PackageEditorModel::RunInNode(const std::string & NodeId, const std::string & Exe)
 {
-    SaveNodes();
+    //A run is of what is on disk, so the package is saved first (a re-mint: the handle may change).
+    std::string Handle = NodeId;
+    if (Doc.Dirty())
+    {
+        QString Err;
+        if (!Save(&Err)) { QMessageBox::warning(DialogParent, "Run", "Save the package first:\n" + Err); return; }
+        if (const auto It = LastRenames.find(Handle); It != LastRenames.end()) Handle = It->second;
+    }
     NodeIndex Idx = BuildExecIndex();
-    const std::string Launch = LaunchableForNode(Idx, NodeId);
+    const std::string Launch = LaunchableForNode(Idx, Handle);
     if (Launch.empty())
     {
         QMessageBox::warning(DialogParent, "Run",
-            "This node isn't launchable and no launchable node in the bundle includes it.\n"
-            "Add a launchable node (with this one as a parent) to test it.");
+            "This node is not launchable, and no launchable node in the package contains it.\n"
+            "Add a node with an EXEC entry that contains this one to test it.");
         return;
     }
-
     ContainerParams Params(PackageDir->path().toStdString());
     Params.NodeIdx = &Idx;
     Params.LaunchNodeId = Launch;
-    nlohmann::ordered_json Dummy = nlohmann::ordered_json::object();
+    json Dummy = json::object();
     ContainerWrapper Container(*GlobalConfigJSON, Dummy, Params);
-
-    // Resolve the exec (CONTENTPATH → %ContentPath%/%Content%) — same step the real launch path runs (launchthread/
-    // main). Without it ExePathRelative stays empty, so a wine runner's "%GameDir%\%ContentPath%" arg becomes the bare
-    // content dir and wine opens it in its file explorer instead of running the game.
     if (!LaunchResolver::ResolveExecutableDefinition(Dummy, Container.ContainerParams))
-    { QMessageBox::warning(DialogParent, "Run", "Could not resolve the node's exec (CONTENTPATH). Check the log."); return; }
-
+    { QMessageBox::warning(DialogParent, "Run", "Could not resolve the node's entry. Check the log."); return; }
     Container.Cleanup();
     if (!Container.BuildContainerRuntime())
-    { QMessageBox::critical(DialogParent, "Run", "Failed to build the container runtime. Check the log."); Container.Cleanup(); return; }
+    { QMessageBox::critical(DialogParent, "Run", "Failed to build the runtime. Check the log."); Container.Cleanup(); return; }
     if (!Container.Execute(Exe))
-        QMessageBox::warning(DialogParent, "Run", "Process exited with an error. Check the log.");
+        QMessageBox::warning(DialogParent, "Run", "The process exited with an error. Check the log.");
     Container.Cleanup();
-}
-
-
-std::string PackageEditorModel::createNode(nlohmann::ordered_json Payload,
-                                           const std::vector<std::string> & Parents,
-                                           const std::string & IdHint)
-{
-    // Model C: a new node gets a unique, STABLE draft HANDLE (its "CID"); the real CID is minted at Publish. Callers
-    // wire by the RETURNED handle (a NODE layer naming it). IdHint becomes the cosmetic LABEL — a
-    // readable display name, not a key, so it need not be unique.
-    auto HandleExists = [this](const std::string & H) {
-        for (const auto & N : Doc["NODES"]) if (N.contains("CID") && N["CID"].is_string() && N["CID"].get<std::string>() == H) return true;
-        return false;
-    };
-    std::string Handle;
-    do { Handle = MakeDraftHandle(); } while (HandleExists(Handle));   // globally unique — never a per-bundle counter
-
-    //The parents come FIRST, as NODE layers: the new node contains what it was made on, and its own layers (the
-    //payload's) fold over them — a capture applies exactly where it was taken.
-    nlohmann::ordered_json N = nlohmann::ordered_json::object({{"CID", Handle}, {"LABEL", IdHint}});
-    nlohmann::ordered_json Ls = nlohmann::ordered_json::array();
-    for (const std::string & X : Parents) if (!X.empty()) Ls.push_back(nlohmann::ordered_json{{"NODE", X}});
-    for (const auto & [K, V] : Payload.items())
-    {
-        if (K != "LAYERS") { N[K] = V; continue; }
-        if (V.is_array()) for (const auto & L : V) Ls.push_back(L);
-    }
-    N["LAYERS"] = std::move(Ls);
-    Doc["NODES"].push_back(std::move(N));
-    SaveNodes();
-    emit documentReloaded();
-    LogSucc("PackageEditorModel", "Created node '" + (IdHint.empty() ? Handle : IdHint) + "'.");
-    return Handle;
-}
-
-QString PackageEditorModel::packagePath() const
-{
-    return PackageDir ? PackageDir->path() : QString();
 }
 
 std::vector<std::string> PackageEditorModel::bundleNodeIds() const
 {
     std::vector<std::string> Out;
-    if (Doc.contains("NODES") && Doc["NODES"].is_array())
-        for (const auto & N : Doc["NODES"])
-        {
-            const std::string Id = (N.contains("LABEL") && N["LABEL"].is_string()) ? N["LABEL"].get<std::string>() : std::string();
-            if (!Id.empty()) Out.push_back(Id);
-        }
+    for (const auto & [H, L] : Doc.Labels()) if (!L.empty()) Out.push_back(L);
     return Out;
 }
 
-
-
+std::string PackageEditorModel::createNode(json Payload, const std::vector<std::string> & Parents, const std::string & Label)
+{
+    json N = json::object({{"LABEL", Label}});
+    json Ls = json::array();
+    for (const std::string & X : Parents) if (!X.empty()) Ls.push_back(json{{"NODE", X}});
+    for (const auto & [K, V] : Payload.items())
+    {
+        if (K != "LAYERS") { if (K != "CID") N[K] = V; continue; }
+        if (V.is_array()) for (const auto & L : V) Ls.push_back(L);
+    }
+    N["LAYERS"] = std::move(Ls);
+    const int I = Doc.Add(std::move(N));
+    Doc.Commit();
+    noteEdited();
+    emit nodeContentChanged();
+    LogSucc("PackageEditorModel", "Created node '" + (Label.empty() ? Doc.Handle(I) : Label) + "' (unsaved).");
+    return Doc.Handle(I);
+}

@@ -6,6 +6,7 @@
 #include "manifestmodel.h"
 #include "nodegraph.h"        // gigagraph mint / frozen-DAG read-back (--mint)
 #include "packagecatalog.h"
+#include "instancestore.h"
 #include "containerwrapper.h"
 #include "ipfswrapper.h"
 #include "jsonoperations.h"
@@ -387,15 +388,17 @@ int CliModes::RunContentModes(LaunchParameters &LaunchParameters, nlohmann::orde
         return Ok ? 0 : 1;
     }
 
-    //HEADLESS: publish (dehydrate) a local package — seed its layer content over IPFS, record the CIDs into the
-    //manifest fragments in place, and optionally export a manifest-only copy — then exit.
+    //HEADLESS: publish a local package — seed its layer content over IPFS, record the CIDs into its nodes and save it
+    //(a re-mint: the nodes' names change, and so do those of every node, here or elsewhere, that contains them), and
+    //optionally export a manifest-only copy — then exit.
     if (!LaunchParameters.PublishPackageDir.empty())
     {
         const std::string Dir  = LaunchParameters.PublishPackageDir;
         const std::string Dest = LaunchParameters.PublishToDir;
         LogOut("main.cpp", "Publishing package: " + Dir + (Dest.empty() ? "" : (" -> " + Dest)));
         std::string Err;
-        const bool Ok = PackageCatalog::PublishPackage(Dir, Dest, &Err);
+        const bool Ok = PackageCatalog::PublishPackage(Dir, Dest, &Err, PackageCatalog::LibraryRootDir(GlobalConfigJSON),
+                                                       InstanceStore::Root(GlobalConfigJSON).string());
         LogOut("main.cpp", Ok ? "Package published." : ("Package publish failed: " + Err));
         return Ok ? 0 : 1;
     }

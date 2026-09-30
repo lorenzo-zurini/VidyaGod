@@ -8,46 +8,46 @@
 
 class QTimer;
 
-// The GL host for the package canvas: a QOpenGLWidget that owns the Dear ImGui context + OpenGL3 backend,
-// bridges Qt input into ImGui, and asks the canvas to draw itself each frame. Nothing here decides anything —
-// every editing behaviour lives in PkgCanvas, which is testable headlessly. This is only the plumbing that
-// puts it on screen.
+// ---------------------------------------------------------------------------
+// PkgCanvasPanel — hosts the package canvas (Dear ImGui) in a QOpenGLWidget: owns the ImGui context, feeds it Qt's
+// input, and renders ON DEMAND — a frame per input event, and continuously only while something moves (a zoom easing,
+// a drag, a caret blinking, a conversion's progress). An idle editor costs nothing.
+// ---------------------------------------------------------------------------
 class PkgCanvasPanel : public QOpenGLWidget
 {
     Q_OBJECT
-signals:
-    void nodeSelected(const QString &nodeId);   // canvas selection changed (drives the live JSON panel)
-
 public:
-    //`saveLayoutOnly` runs instead of `save` when a frame changed ONLY positions — see PkgCanvas.
-    PkgCanvasPanel(nlohmann::ordered_json *doc, PkgCanvas::SaveFn save, QWidget *parent = nullptr,
-                   nlohmann::ordered_json *layout = nullptr,    // this machine's positions — see PkgGraph::Build
-                   PkgCanvas::SaveFn saveLayoutOnly = {});
+    PkgCanvasPanel(PkgDoc::Document *doc, QWidget *parent = nullptr);
     ~PkgCanvasPanel() override;
 
     PkgCanvas *canvas() const { return m_canvas; }
+    void requestFrame();                            // the document or host state changed: draw it
 
 protected:
     void initializeGL() override;
     void paintGL() override;
 
-    // Qt → ImGui input bridge.
     void mouseMoveEvent(QMouseEvent *e) override;
     void mousePressEvent(QMouseEvent *e) override;
     void mouseReleaseEvent(QMouseEvent *e) override;
+    void mouseDoubleClickEvent(QMouseEvent *e) override;
     void wheelEvent(QWheelEvent *e) override;
     void keyPressEvent(QKeyEvent *e) override;
     void keyReleaseEvent(QKeyEvent *e) override;
+    void leaveEvent(QEvent *e) override;
+    void focusInEvent(QFocusEvent *e) override;
+    void focusOutEvent(QFocusEvent *e) override;
+    bool event(QEvent *e) override;                  // Tab reaches the canvas (not focus navigation)
 
 private:
-    static int LivePanels;   // ImGui's context is global: exactly one canvas may own it
+    static int LivePanels;                           // ImGui's context is global: exactly one canvas may own it
     PkgCanvas *m_canvas;
     bool m_imguiReady = false;
-    bool m_inFrame = false;   // re-entrancy guard: a modal's nested loop still delivers paint events
-    QTimer *m_repaint = nullptr;   // ~60fps so edits are live
+    bool m_inFrame = false;                          // a modal's nested loop still delivers paint events
+    int m_extraFrames = 0;                           // frames still owed after input (imgui settles over two)
+    QTimer *m_tick = nullptr;                        // drives frames while the canvas wants them
     QElapsedTimer m_clock;
     qint64 m_lastNs = 0;
-    QString m_lastSelected;
 };
 
 #endif // PKGCANVASPANEL_H

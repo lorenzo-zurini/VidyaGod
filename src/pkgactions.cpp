@@ -128,7 +128,13 @@ std::filesystem::path ResolveInBundle(const std::filesystem::path & Bundle, cons
 } // namespace
 
 PkgActions::PkgActions(PackageEditorModel * model, PkgCanvas * canvas, QWidget * dialogParent, QObject * parent)
-    : QObject(parent), Model(model), Canvas(canvas), Parent(dialogParent) {}
+    : QObject(parent), Model(model), Canvas(canvas), Parent(dialogParent)
+{
+    //Follow nodes through saves: an action that finishes after a save must find its node under its new name.
+    if (Model) connect(Model, &PackageEditorModel::handlesRenamed, this, [this] {
+        for (const auto & [Old, New] : Model->lastRenames()) Moves[Old] = New;
+    });
+}
 
 PkgActions::~PkgActions() { Alive_->store(false); }   // in-flight workers must stop touching us
 
@@ -186,10 +192,34 @@ bool PkgActions::ask(const QString & Title, const QString & Body)
 
 int PkgActions::indexOf(const std::string & nodeId) const
 {
-    const auto & Ns = Model->doc()["NODES"];
-    for (int I = 0; I < (int)Ns.size(); ++I)
-        if (StrOf(Ns[I], "CID") == nodeId) return I;   // indexOf by the node handle (CID)
-    return -1;
+    return Model->doc().IndexOf(current(nodeId));
+}
+
+//A node's handle NOW: a save renames every node it re-mints, and an action started before it finishes after it.
+std::string PkgActions::current(std::string Handle) const
+{
+    for (int Guard = 0; Guard < 64; ++Guard)
+    {
+        const auto It = Moves.find(Handle);
+        if (It == Moves.end()) break;
+        Handle = It->second;
+    }
+    return Handle;
+}
+
+//One edit to one node: an undo step, the canvas and the JSON panel follow. Persist: the edit describes files this
+//action just changed on disk, so the package is saved with it (the node must never name a file that is gone).
+void PkgActions::commitNode(int I, json N, bool Persist)
+{
+    if (I < 0 || I >= Model->doc().Count()) return;
+    Model->doc().Replace(I, std::move(N));
+    Model->doc().Commit();
+    Model->notifyNodeChanged();
+    if (Persist)
+    {
+        QString Err;
+        if (!Model->Save(&Err)) tell("Save", "The files were converted, but the package could not be saved:\n\n" + Err);
+    }
 }
 
 void PkgActions::perform(const QString & nodeIdQ, const QString & actionQ)
@@ -216,9 +246,19 @@ void PkgActions::perform(const QString & nodeIdQ, const QString & actionQ)
 
 void PkgActions::cancel(const QString & nodeIdQ)
 {
+    //Keyed by the handle the action STARTED under: a save since may have renamed the node.
     const std::string NodeId = nodeIdQ.toStdString();
-    if (auto It = Procs.find(NodeId); It != Procs.end() && It->second) It->second->kill();
-    if (auto It = Aborts.find(NodeId); It != Aborts.end() && It->second) It->second->store(true);
+    for (auto & [K, P] : Procs) if (P && current(K) == NodeId) P->kill();
+    for (auto & [K, A] : Aborts) if (A && current(K) == NodeId) A->store(true);
+}
+
+bool PkgActions::saveFirst(const QString & Title)
+{
+    if (!Model->isDirty()) return true;
+    QString Err;
+    if (Model->Save(&Err)) return true;
+    tell(Title, "The package has to be saved first, and it could not be:\n\n" + Err);
+    return false;
 }
 
 // ---------------------------------------------------------------------------
@@ -244,9 +284,9 @@ void PkgActions::runWithProgress(const std::string & NodeId, const QString & Wha
         if (*Finished) return;                            // output can arrive after completion
         const QByteArray Chunk = P->readAll();
         *Seen += Chunk.count('\n');
-        if (Total > 0) Canvas->setProgress(NodeId, qMin(1.0f, (float)*Seen / (float)Total),
+        if (Total > 0) Canvas->setProgress(current(NodeId), qMin(1.0f, (float)*Seen / (float)Total),
                                            QString("%1 / %2").arg(*Seen).arg(Total));
-        else           Canvas->setProgress(NodeId, -1.0f, QString("%1 files").arg(*Seen));
+        else           Canvas->setProgress(current(NodeId), -1.0f, QString("%1 files").arg(*Seen));
     });
     // A failure to even START (missing zip/unzip, not executable) emits errorOccurred and NEVER finished. The
     // caller's completion handler is where rollback lives, so skipping it left the node locked to a file that
@@ -255,7 +295,7 @@ void PkgActions::runWithProgress(const std::string & NodeId, const QString & Wha
         if (*Finished) return;
         *Finished = true;
         Procs.erase(NodeId);
-        Canvas->endAction(NodeId);                        // paired with beginAction on EVERY path out
+        Canvas->endAction(current(NodeId));                        // paired with beginAction on EVERY path out
         P->deleteLater();
         if (Done) Done(Ok);
     };
@@ -283,7 +323,7 @@ void PkgActions::browsePath(const std::string & NodeId)
     int I = indexOf(NodeId);
     if (I < 0) return;
     const QString Bundle = Model->packageDir() ? Model->packageDir()->path() : QDir::homePath();
-    const std::string Type = [&]{ const std::string T = ContentType(Model->doc()["NODES"][I]); return T.empty() ? std::string("ZIP") : T; }();
+    const std::string Type = [&]{ const std::string T = ContentType(Model->doc().Node(I)); return T.empty() ? std::string("ZIP") : T; }();
 
     const QString Picked = (Type == "DIR")
         ? pick("Pick the folder this layer supplies", Bundle, QString(), true)
@@ -303,10 +343,10 @@ void PkgActions::browsePath(const std::string & NodeId)
     }
     I = indexOf(NodeId);                          // re-resolved after the modal — see the note above
     if (I < 0) { tell("Browse", "That node is no longer in the package."); return; }
-    if (!SetContent(Model->doc()["NODES"][I], Type, Rel.toStdString()))
+    json N = Model->doc().Node(I);
+    if (!SetContent(N, Type, Rel.toStdString()))
     { tell("Browse", "This node's LAYERS is not a list - fix it in the JSON view first."); return; }
-    Model->SaveNodes();
-    Model->requestReload();
+    commitNode(I, std::move(N), false);
 }
 
 void PkgActions::browseCover(const std::string & NodeId)
@@ -321,7 +361,8 @@ void PkgActions::browseCover(const std::string & NodeId)
     if (I < 0) { tell("Browse", "That node is no longer in the package."); return; }
     //A cover belongs to a TILE, and a tile rides an EXEC entry. Anything of the wrong shape on the way is refused,
     //never replaced: the author reaches for this button on nodes they are still fixing.
-    json * E = CoverEntry(Model->doc()["NODES"][I]);
+    json Nc = Model->doc().Node(I);
+    json * E = CoverEntry(Nc);
     if (!E) { tell("Cover", "A cover belongs to a tile on an EXEC entry, and this node has no EXEC entry yet."); return; }
     if (!E->contains("TILE") || (*E)["TILE"].is_null()) (*E)["TILE"] = json::object({{"UID", ""}, {"TITLE", ""}});
     json & T = (*E)["TILE"];
@@ -334,14 +375,14 @@ void PkgActions::browseCover(const std::string & NodeId)
         T["COVER"].erase("SOURCE"); T["COVER"].erase("SIZE");   // they described the old image
     }
     else { tell("Cover", "This tile's COVER is not an object - fix it in the JSON view first."); return; }
-    Model->SaveNodes();
-    Model->requestReload();
+    commitNode(I, std::move(Nc), false);
 }
 
 void PkgActions::convertZipDir(const std::string & NodeId, bool ToZip)
 {
     const int I = indexOf(NodeId);
-    json & N = Model->doc()["NODES"][I];
+    if (I < 0) return;
+    const json N = Model->doc().Node(I);
     const std::string Path = ContentName(N);
     if (Path.empty()) { tell("Nothing to convert", "This node's content layer names no file yet."); return; }
     const std::filesystem::path Bundle = Model->packageDir()->path().toStdString();
@@ -401,8 +442,7 @@ void PkgActions::convertZipDir(const std::string & NodeId, bool ToZip)
             std::filesystem::remove_all(Src, Rc);         // only now is the folder redundant
             const int J = indexOf(NodeId);
             if (J < 0) return;
-            SetContent(Model->doc()["NODES"][J], "ZIP", ZipName);
-            Model->SaveNodes(); Model->requestReload();
+            { json Nj = Model->doc().Node(J); SetContent(Nj, "ZIP", ZipName); commitNode(J, std::move(Nj), true); }
             refreshHints();
         });
     }
@@ -458,8 +498,7 @@ void PkgActions::convertZipDir(const std::string & NodeId, bool ToZip)
             std::filesystem::remove(Src, Rc);
             const int J = indexOf(NodeId);
             if (J < 0) return;
-            SetContent(Model->doc()["NODES"][J], "DIR", DirName);
-            Model->SaveNodes(); Model->requestReload();
+            { json Nj = Model->doc().Node(J); SetContent(Nj, "DIR", DirName); commitNode(J, std::move(Nj), true); }
             refreshHints();
         });
     }
@@ -468,7 +507,8 @@ void PkgActions::convertZipDir(const std::string & NodeId, bool ToZip)
 void PkgActions::reStore(const std::string & NodeId)
 {
     const int I = indexOf(NodeId);
-    const std::string Path = ContentName(Model->doc()["NODES"][I]);
+    if (I < 0) return;
+    const std::string Path = ContentName(Model->doc().Node(I));
     const std::filesystem::path Bundle = Model->packageDir()->path().toStdString();
     const std::filesystem::path Zip = ResolveInBundle(Bundle, Path);
     if (Zip.empty())
@@ -516,7 +556,6 @@ void PkgActions::reStore(const std::string & NodeId)
             }
             std::filesystem::rename(NewZip, Zip, Rc2);    // atomic swap on the same filesystem
             if (Rc2) { tell("Re-store failed", "Could not replace the original zip."); return; }
-            Model->requestReload();
             refreshHints();
         });
     });
@@ -526,14 +565,14 @@ void PkgActions::refreshHints()
 {
     if (!Model->packageDir() || !Canvas) return;
     const std::filesystem::path Bundle = Model->packageDir()->path().toStdString();
-    const json & Ns = Model->doc()["NODES"];
     // Probing a zip's central directory is cheap per file but adds up across a bundle, and it used to run
     // synchronously while building the UI — stalling the editor on big packages. Off-thread, then push in.
     struct Probe { std::string Id; std::string Path; };
     auto Todo = std::make_shared<std::vector<Probe>>();
-    for (const auto & N : Ns)
-        if (ContentType(N) == "ZIP" && !ContentName(N).empty())
-            Todo->push_back({StrOf(N, "CID"), ContentName(N)});   // Probe.Id = handle (Running is keyed by it)
+    const PkgDoc::Document & D = Model->doc();
+    for (int I = 0; I < D.Count(); ++I)
+        if (ContentType(D.Node(I)) == "ZIP" && !ContentName(D.Node(I)).empty())
+            Todo->push_back({D.Handle(I), ContentName(D.Node(I))});
     if (Todo->empty()) return;
     auto Deflated = std::make_shared<std::vector<std::string>>();
     AsyncWork::Run(this,
@@ -547,8 +586,8 @@ void PkgActions::refreshHints()
             }
         },
         [this, Todo, Deflated]() {
-            for (const Probe & P : *Todo) Canvas->setNodeHints(P.Id, {});
-            for (const std::string & Id : *Deflated) Canvas->setNodeHints(Id, {"deflate"});
+            for (const Probe & P : *Todo) Canvas->setNodeHints(current(P.Id), {});
+            for (const std::string & Id : *Deflated) Canvas->setNodeHints(current(Id), {"deflate"});
         });
 }
 
@@ -556,9 +595,11 @@ void PkgActions::refreshHints()
 // DeclareExec: test launch
 // ---------------------------------------------------------------------------
 
-void PkgActions::testLaunch(const std::string & NodeId)
+void PkgActions::testLaunch(const std::string & Handle)
 {
-    Model->SaveNodes();                       // launch what is on disk, not what is half-typed
+    //Launch what is on disk, not what is half-typed: an unsaved package is saved first (a re-mint).
+    if (!saveFirst("Test launch")) return;
+    const std::string NodeId = current(Handle);
     // The real pre-launch dialog, on this one launchable: the runner picker, the optional-module toggles and the
     // CustomVars the player would actually see. Testing through the same door the player uses is the point —
     // a bespoke "run it" path is exactly how an editor drifts from the launcher.
@@ -582,9 +623,11 @@ void PkgActions::testLaunch(const std::string & NodeId)
 // Capture (files / registry / setup) — anchored at THIS node
 // ---------------------------------------------------------------------------
 
-void PkgActions::openCapture(const std::string & NodeId, int Mode)
+void PkgActions::openCapture(const std::string & Handle, int Mode)
 {
-    Model->SaveNodes();
+    //A capture runs on the package as saved: an unsaved package is saved first.
+    if (!saveFirst("Capture")) return;
+    const std::string NodeId = current(Handle);
     // The runtime is built UP TO this node and whatever gets captured becomes a NEW node parented here — which
     // is what "capture at this point in the chain" means structurally. Parented to the editor window, not to a
     // node widget: a capture writes back through the model, which reloads, which would destroy the session.
@@ -603,24 +646,26 @@ void PkgActions::findUsages(const std::string & NodeId)
 {
     const int I = indexOf(NodeId);
     //Every KEY this node's VARS declare — a node may carry many.
-    const std::vector<std::string> Keys = VarKeysOf(Model->doc()["NODES"][I]);
+    if (I < 0) return;
+    const std::vector<std::string> Keys = VarKeysOf(Model->doc().Node(I));
     if (Keys.empty()) { tell("Find usages", "This node declares no variable KEY yet."); return; }
     // A whole-document text scan for %KEY%: a var nothing consumes is dead weight, and two nodes declaring the
     // same KEY is the ambiguity the lint is about.
     QStringList Report;
-    const json & Ns = Model->doc()["NODES"];
+    const PkgDoc::Document & D = Model->doc();
     for (const std::string & Key : Keys)
     {
         const std::string Token = "%" + Key + "%";
         QStringList Users;
-        for (const auto & N : Ns)
+        for (int K = 0; K < D.Count(); ++K)
         {
-            const std::string H = StrOf(N, "CID");       // self-exclude by HANDLE (NodeId is a handle)
-            if (H == NodeId) continue;
+            const json & N = D.Node(K);
+            const std::string H = D.Handle(K);
+            if (K == I) continue;
             const std::string Disp = !StrOf(N, "LABEL").empty() ? StrOf(N, "LABEL") : H;   // show the readable name
             const std::string Dump = N.dump();
             bool SameKey = false;
-            for (const std::string & K : VarKeysOf(N)) if (K == Key) SameKey = true;
+            for (const std::string & Declared : VarKeysOf(N)) if (Declared == Key) SameKey = true;
             if (Dump.find(Token) != std::string::npos) Users << QString::fromStdString(Disp);
             else if (SameKey) Users << QString::fromStdString(Disp) + "  (declares the same KEY)";
         }
@@ -719,7 +764,7 @@ void PkgActions::importReg(const std::string & NodeId)
     //open, and ["NODES"][-1] is an unchecked size_t index.
     const int I = indexOf(NodeId);
     if (I < 0) { tell("Import .reg", "That node is no longer in the package."); return; }
-    json & N = Model->doc()["NODES"][I];
+    json N = Model->doc().Node(I);
     //Into the node's first REG layer (a new one, both views, when it has none). A value of the wrong shape on the
     //way is REFUSED, not replaced: the author reaches for Import precisely when the node is in a state they are
     //trying to repair, and replacing a hand-edited tree would save the loss.
@@ -747,7 +792,7 @@ void PkgActions::importReg(const std::string & NodeId)
     std::vector<PkgGraph::RegRow> Merged = PkgGraph::RegRowsOf(Entry);
     Merged.insert(Merged.end(), Rows.begin(), Rows.end());
     PkgGraph::RegRowsInto(Entry, Merged);
-    Model->SaveNodes(); Model->requestReload();
+    commitNode(I, std::move(N), false);
     tell("Import .reg",
          QString("Imported %1 key/value row(s).").arg((int)Rows.size())
              + (Deletions > 0 ? QString("\n\nSkipped %1 DELETION(s) - write each as null in the JSON view.").arg(Deletions)
@@ -803,8 +848,8 @@ static bool ReconstructTo(const std::filesystem::path & BaseFile, const std::fil
 void PkgActions::undelta(const std::string & NodeId)
 {
     const int I = indexOf(NodeId);
-    const json & Ns = Model->doc()["NODES"];
-    const std::string Path = ContentName(Ns[I]);
+    if (I < 0) return;
+    const std::string Path = ContentName(Model->doc().Node(I));
     if (Path.empty()) { tell("Undelta", "This node's content layer names no file yet."); return; }
 
     // Name the restored archive after the delta, minus the .vgdelta suffix — "delta_from__base.zip.vgdelta"
@@ -832,7 +877,9 @@ void PkgActions::undelta(const std::string & NodeId)
     // Resolve everything the reconstruction needs BEFORE going off-thread. reconstructDelta used to read the
     // model from the worker — for as long as a multi-GB stream takes — so closing the editor freed the
     // document under it, and any edit that grew the NODES array reallocated it mid-read.
-    const std::string BasePath = PkgGraph::DeltaBase(Ns, I);
+    std::vector<PkgGraph::NodeRef> Refs;
+    for (int K = 0; K < Model->doc().Count(); ++K) Refs.push_back({Model->doc().Handle(K), &Model->doc().Node(K)});
+    const std::string BasePath = PkgGraph::DeltaBase(Refs, I);
     if (BasePath.empty())
     { tell("Undelta", "This delta has no base to reconstruct against: a contained node with a zip at its target."); return; }
 
@@ -847,7 +894,7 @@ void PkgActions::undelta(const std::string & NodeId)
         [BaseFile, DeltaFile, Out, Ok, Err]() { *Ok = ReconstructTo(BaseFile, DeltaFile, Out, *Err); },
         [this, NodeId, ZipName, Out, DeltaFile, Ok, Err, Alive]() {
             if (!Alive->load()) return;
-            Canvas->endAction(NodeId);
+            Canvas->endAction(current(NodeId));
             if (!*Ok)
             {
                 tell("Undelta",
@@ -858,8 +905,7 @@ void PkgActions::undelta(const std::string & NodeId)
             std::error_code Rc; std::filesystem::remove(DeltaFile, Rc);
             const int J = indexOf(NodeId);
             if (J < 0) return;
-            SetContent(Model->doc()["NODES"][J], "ZIP", ZipName);
-            Model->SaveNodes(); Model->requestReload();
+            { json Nj = Model->doc().Node(J); SetContent(Nj, "ZIP", ZipName); commitNode(J, std::move(Nj), true); }
             refreshHints();
         });
 }
@@ -867,10 +913,13 @@ void PkgActions::undelta(const std::string & NodeId)
 void PkgActions::makeDelta(const std::string & NodeId)
 {
     const int I = indexOf(NodeId);
-    const json & Ns = Model->doc()["NODES"];
-    const std::string TgtPath = ContentName(Ns[I]);
-    const std::string BasePath = PkgGraph::DeltaBase(Ns, I);
-    if (ContentType(Ns[I]) != "ZIP" || TgtPath.empty() || BasePath.empty())
+    if (I < 0) return;
+    const PkgDoc::Document & D = Model->doc();
+    std::vector<PkgGraph::NodeRef> Refs;
+    for (int K = 0; K < D.Count(); ++K) Refs.push_back({D.Handle(K), &D.Node(K)});
+    const std::string TgtPath = ContentName(D.Node(I));
+    const std::string BasePath = PkgGraph::DeltaBase(Refs, I);
+    if (ContentType(D.Node(I)) != "ZIP" || TgtPath.empty() || BasePath.empty())
     { tell("Make delta", "This node needs a zip, and a node it contains with a zip at the same target to diff against."); return; }
 
     const std::filesystem::path Bundle = Model->packageDir()->path().toStdString();
@@ -956,7 +1005,7 @@ void PkgActions::makeDelta(const std::string & NodeId)
         },
         [this, NodeId, Blob, TgtFile, Ok, ErrText]() {
             Aborts.erase(NodeId);
-            Canvas->endAction(NodeId);
+            Canvas->endAction(current(NodeId));
             if (!*Ok)
             {
                 if (*ErrText != "cancelled")
@@ -967,8 +1016,7 @@ void PkgActions::makeDelta(const std::string & NodeId)
             std::error_code Rc; std::filesystem::remove(TgtFile, Rc);
             const int J = indexOf(NodeId);
             if (J < 0) return;
-            SetContent(Model->doc()["NODES"][J], "DELTA", Blob);   // its base is the zip at the same target, beneath it
-            Model->SaveNodes(); Model->requestReload();
+            { json Nj = Model->doc().Node(J); SetContent(Nj, "DELTA", Blob); commitNode(J, std::move(Nj), true); }   // its base is the zip at the same target, beneath it
         });
 }
 

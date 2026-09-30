@@ -1,20 +1,17 @@
-// Tests for PackageEditorModel — the node-native bundle editor's state/signal hub (the AppModel-style central
-// structure from the PackageEditor de-god). Drives the non-UI surface: node file I/O (LoadNodes/SaveNodes with
-// rename re-filing + orphan cleanup), replaceNodeJson, validation signalling, and the catalog queries. Authoring
-// runs (RunInNode/AnalyzeNodeRegistry) raise modal dialogs + build live containers, so they're out of scope here.
-// Uses a real temp bundle dir and an empty GlobalConfig (no repositories → BuildExecIndex sees only this bundle).
+// PackageEditorModel — the package editor's state: the package as a PkgDoc::Document, saving it (a generation-6
+// re-mint that follows renamed nodes through the library), validating it as edited, this machine's layout for it, and
+// what the rest of the library says about the nodes it names. Authoring runs (RunInNode) raise dialogs and build live
+// containers, so they are out of scope here. A real temp data root holds a small library.
 
 #include <QtTest>
 #include "apppaths.h"
 #include "packageeditor.h"
-
-#include <QTemporaryDir>
-#include <QDir>
-#include <algorithm>
-#include <QFile>
-
 #include "packageeditormodel.h"
-#include "nodefixture.h"
+#include "cid.h"
+
+#include <QDir>
+#include <QSignalSpy>
+#include <QTemporaryDir>
 
 #include <fstream>
 #include <string>
@@ -22,253 +19,225 @@
 using json = nlohmann::ordered_json;
 
 namespace {
-void writeNode(const QString & dir, const QString & file, const json & j)
+std::string Freeze(const QString &Dir, const json &N)
 {
-    std::ofstream f((dir + "/" + file).toStdString());
-    f << j.dump(2);
+    const std::string C = Cid::OfNode(N);
+    std::ofstream((Dir + "/" + QString::fromStdString(C) + ".json").toStdString(), std::ios::binary) << Cid::Canonical(N);
+    return C;
 }
-std::string readFile(const QString & path)
-{
-    std::ifstream f(path.toStdString());
-    return std::string(std::istreambuf_iterator<char>(f), std::istreambuf_iterator<char>());
+json Zip(const std::string &Label, const std::string &File) { return json{{"LABEL", Label}, {"LAYERS", json::array({ json{{"ZIP", File}, {"TARGET", "FILES/game"}} })}}; }
+json Over(const std::string &Label, const std::string &Ref) { return json{{"LABEL", Label}, {"LAYERS", json::array({ json{{"NODE", Ref}}, json{{"ENV", {{"A", "1"}}}} })}}; }
+int NodeFiles(const QString &Dir) { return QDir(Dir).entryList({"baf*.json"}, QDir::Files).size(); }
 }
-}
-
 
 class PackageEditorModelTest : public QObject
 {
     Q_OBJECT
-    json Cfg = json{{"Settings", json::object()}};   // no Repositories → BuildExecIndex sees only the bundle
+    QTemporaryDir *Root = nullptr;
+    json Cfg = json{{"Settings", json::object()}};
+    QString Lib, Pkg, Other;
+    std::string Fonts, Game;
+
+    //A library of two packages: "fonts" (one node) and the package under edit, "game", whose node contains it.
+    void library()
+    {
+        QDir(Lib).removeRecursively();
+        QDir().mkpath(Pkg); QDir().mkpath(Other);
+        Fonts = Freeze(Other, Zip("Core Fonts", "fonts.zip"));
+        Game = Freeze(Pkg, Over("Game", Fonts));
+    }
 
 private slots:
-    //Claim a data root for the WHOLE binary. It is process-global and sticky, and anything reaching
-    //PackageEditorModel::SaveLayout flushes GlobalConfig.JSON to it — so a suite that does not claim one
-    //writes to AppPaths' fallback, i.e. the developer's real ~/.VidyaGod/GlobalConfig.JSON. Running a single
-    //slot by name was enough to replace a 50 KB config with a stub, and report PASS.
+    //Claim a data root for the whole binary: SaveLayout flushes GlobalConfig.JSON to it, and without one that is the
+    //developer's real ~/.VidyaGod.
     void initTestCase()
     {
-        SuiteDataRoot = new QTemporaryDir();
-        QVERIFY(SuiteDataRoot->isValid());
-        AppPaths::SetDataRoot(SuiteDataRoot->path().toStdString());
+        Root = new QTemporaryDir();
+        QVERIFY(Root->isValid());
+        AppPaths::SetDataRoot(Root->path().toStdString());
+        Lib = Root->path() + "/LIBRARY";
+        Pkg = Lib + "/Vendor/[1][v1] Game";
+        Other = Lib + "/Vendor/[2][v1] Fonts";
     }
-    void cleanupTestCase() { delete SuiteDataRoot; SuiteDataRoot = nullptr; }
+    void cleanupTestCase() { delete Root; Root = nullptr; }
 
-    // LoadNodes reads one-file-per-node, tags each with __FILE__, and skips non-node json.
-    void load_nodes_reads_bundle_and_tags_files()
+    // A published package loads named by its files, and another package's node it names is known by the library:
+    // its label and package (what the canvas's chip shows) and every other package's node is on offer for wiring in.
+    void aPackageLoadsAndKnowsTheLibrary()
     {
-        QTemporaryDir dir; QVERIFY(dir.isValid());
-        writeNode(dir.path(), "base.json", json{{"LABEL", "base"}, {"LAYERS", json::array()}});
-        writeNode(dir.path(), "game.json", json{{"LABEL", "game"},
-                                               {"LAYERS", json::array({ json{{"NODE", "base"}} })}});
-        writeNode(dir.path(), "MANIFEST.json", json{{"LEGACY", true}});   // not a node → ignored
-
-        PackageEditorModel m(&Cfg, nullptr);
-        m.initPackage(dir.path(), nullptr);
-
-        QCOMPARE((int)m.doc()["NODES"].size(), 2);
-        for (const auto & n : m.doc()["NODES"])
-            QVERIFY(n.contains("__FILE__") && !std::string(n["__FILE__"]).empty());
+        library();
+        std::ofstream((Pkg + "/notes.json").toStdString()) << R"(["not a node"])";
+        PackageEditorModel M(&Cfg, nullptr);
+        M.initPackage(Pkg, nullptr);
+        QCOMPARE(M.doc().Count(), 1);
+        QCOMPARE(M.doc().Handle(0), Game);
+        QVERIFY(!M.isDirty());
+        const auto E = M.externalInfo(Fonts);
+        QCOMPARE(E.Label, std::string("Core Fonts"));
+        QCOMPARE(E.Package, std::string("Fonts"));        // the folder name without its [tags]
+        bool Offered = false, OwnOffered = false;
+        for (const auto &O : M.offers()) { if (O.Cid == Fonts) Offered = true; if (O.Cid == Game) OwnOffered = true; }
+        QVERIFY(Offered);
+        QVERIFY(!OwnOffered);                               // this package's own nodes are not "another package's"
     }
 
-    // An empty bundle dir yields one placeholder content node so the editor always has something to show.
-    void load_empty_dir_seeds_placeholder_node()
+    // Save re-mints: the edited node gets the CID of its new bytes, the old file goes, the renames are announced
+    // (the canvas and the JSON panel follow them) and the package is clean. Teeth: write back under the old name.
+    void savingAnEditRenamesTheNodeAndSaysSo()
     {
-        QTemporaryDir dir; QVERIFY(dir.isValid());
-        PackageEditorModel m(&Cfg, nullptr);
-        m.initPackage(dir.path(), nullptr);
-        QCOMPARE((int)m.doc()["NODES"].size(), 1);
-        QVERIFY(m.doc()["NODES"][0]["LAYERS"].is_array() && m.doc()["NODES"][0]["LAYERS"].empty());   // no layers yet
-        QVERIFY(!m.doc()["NODES"][0].contains("OVER"));
+        library();
+        PackageEditorModel M(&Cfg, nullptr);
+        M.initPackage(Pkg, nullptr);
+        QSignalSpy Renamed(&M, &PackageEditorModel::handlesRenamed), Saved(&M, &PackageEditorModel::savedToDisk),
+                   Dirty(&M, &PackageEditorModel::dirtyChanged);
+        json N = M.doc().Node(0);
+        N["LABEL"] = "Game v2";
+        M.replaceNode(Game, N);
+        QVERIFY(M.isDirty());
+        QCOMPARE(Dirty.count(), 1);
+        QString Err;
+        QVERIFY2(M.Save(&Err), qPrintable(Err));
+        QVERIFY(!M.isDirty());
+        QCOMPARE(Renamed.count(), 1);
+        QCOMPARE(Saved.count(), 1);
+        const std::string New = M.lastRenames().at(Game);
+        QCOMPARE(M.doc().Handle(0), New);
+        QVERIFY(!QFile::exists(Pkg + "/" + QString::fromStdString(Game) + ".json"));
+        QVERIFY(QFile::exists(Pkg + "/" + QString::fromStdString(New) + ".json"));
+        QCOMPARE(NodeFiles(Pkg), 1);
     }
 
-    // FileForNode prefers <NODE_ID>.json (so a rename re-files), falling back to __FILE__ then untitled.
-    void file_for_node_prefers_node_id()
+    // Validation reads the package AS EDITED: an unsaved edit that breaks a reference is flagged, on the node it is
+    // about (by handle). Teeth: validate what is on disk (the break is invisible until saved).
+    void validationSeesUnsavedEdits()
     {
-        PackageEditorModel m(&Cfg, nullptr);
-        QCOMPARE(m.FileForNode(json{{"LABEL", "wine"}}), QString("wine.json"));
-        QCOMPARE(m.FileForNode(json{{"LABEL", ""}, {"__FILE__", "kept.json"}}), QString("kept.json"));
-        QCOMPARE(m.FileForNode(json{{"LABEL", ""}}), QString("untitled_node.json"));
+        library();
+        PackageEditorModel M(&Cfg, nullptr);
+        M.initPackage(Pkg, nullptr);
+        M.Revalidate();
+        QVERIFY2(M.validationErrors().empty(), M.validationErrors().empty() ? "" : M.validationErrors().front().c_str());
+        json N = M.doc().Node(0);
+        N["LAYERS"][0]["NODE"] = "bafkreinosuchnodeanywherexxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx";
+        N["LAYERS"].push_back(json{{"ZIP", "a.zip"}, {"DIR", "b"}});   // a layer with two types: an error
+        M.replaceNode(Game, N);
+        M.Revalidate();
+        QVERIFY(!M.validationErrors().empty());
+        const auto Issues = M.issuesByHandle();
+        QVERIFY2(Issues.count(Game), "the problem is not attached to its node");
     }
 
-    // Model C: a node's file is pure presentation and is pinned by its __FILE__ provenance — renaming is just
-    // editing the cosmetic LABEL and must NOT re-file the node. SaveNodes rewrites the node in place, keeping its
-    // file, and fires savedToDisk.
-    void save_nodes_rename_keeps_the_file_and_persists_the_label()
+    // Edits are checked in the background, without a call: the verdict arrives on its own. A check that was running
+    // when the package changed is about the package BEFORE the change: it is thrown away and the check runs again.
+    // Teeth: apply a finished check whatever it was about (the broken reference is still reported after the fix).
+    void editsAreCheckedLiveAndNeverByAStaleVerdict()
     {
-        QTemporaryDir dir; QVERIFY(dir.isValid());
-        writeNode(dir.path(), "old.json", json{{"LABEL", "old"}, {"LAYERS", json::array()}});
-
-        PackageEditorModel m(&Cfg, nullptr);
-        m.initPackage(dir.path(), nullptr);
-        QCOMPARE((int)m.doc()["NODES"].size(), 1);
-
-        QSignalSpy saved(&m, &PackageEditorModel::savedToDisk);
-        m.doc()["NODES"][0]["LABEL"] = "renamed";
-        m.SaveNodes();
-
-        QVERIFY(QFile::exists(dir.path() + "/old.json"));       // stays put — the file is provenance, not identity
-        QVERIFY(!QFile::exists(dir.path() + "/renamed.json"));  // a rename does NOT create a new file
-        const json Back = json::parse(readFile(dir.path() + "/old.json"));
-        QCOMPARE(Back.value("LABEL", std::string()), std::string("renamed"));   // the new cosmetic name persisted
-        QVERIFY(saved.count() >= 1);
+        library();
+        PackageEditorModel M(&Cfg, nullptr);
+        M.initPackage(Pkg, nullptr);
+        json N = M.doc().Node(0);
+        N["LAYERS"][0]["NODE"] = "bafkreinosuchnodeanywherexxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx";
+        M.replaceNode(Game, N);
+        QTRY_VERIFY_WITH_TIMEOUT(M.validated() && !M.validationErrors().empty(), 5000);
+        QVERIFY(M.issuesByHandle().count(Game));
+        //A check starts on the broken package; the fix lands before its result is read.
+        M.validateNow();
+        QSignalSpy Verdict(&M, &PackageEditorModel::validationChanged);
+        N["LAYERS"][0]["NODE"] = Fonts;
+        M.replaceNode(Game, N);
+        QVERIFY(Verdict.wait(5000));
+        QVERIFY2(M.validationErrors().empty(), M.validationErrors().empty() ? "" : M.validationErrors().front().c_str());
+        QVERIFY(!M.validating());
     }
 
-    // replaceNodeJson swaps a node's whole body, preserves the __FILE__ tag, persists, and rebuilds.
-    void replace_node_json_preserves_tag_and_reloads()
+    // A capture creates a node CONTAINING the node it was anchored at, as an unsaved draft; saving names it.
+    void aCaptureIsANewNodeContainingItsAnchor()
     {
-        QTemporaryDir dir; QVERIFY(dir.isValid());
-        writeNode(dir.path(), "n.json", json{{"LABEL", "n"}, {"LAYERS", json::array()}});
-
-        PackageEditorModel m(&Cfg, nullptr);
-        m.initPackage(dir.path(), nullptr);
-
-        QSignalSpy reloaded(&m, &PackageEditorModel::documentReloaded);
-        const json swapped = json{{"LABEL", "n"}, {"LAYERS", json::array({
-            json{{"EXEC", json::array({ json{{"LABEL", "Play"}, {"HOST", "win32"}, {"EXE", "C:/g/n.exe"}} })}} })}};
-        m.replaceNodeJson(0, swapped);
-
-        QCOMPARE(m.doc()["NODES"][0]["LAYERS"][0]["EXEC"][0]["EXE"], json("C:/g/n.exe"));
-        QVERIFY(m.doc()["NODES"][0].contains("__FILE__"));   // provenance tag survived the swap
-        QVERIFY(reloaded.count() >= 1);
+        library();
+        PackageEditorModel M(&Cfg, nullptr);
+        M.initPackage(Pkg, nullptr);
+        const std::string H = M.createNode(json{{"LAYERS", json::array({ json{{"DIR", "captured"}} })}}, {Game}, "Captured files");
+        QVERIFY(H.rfind("draft-", 0) == 0);
+        QVERIFY(M.isDirty());
+        const int I = M.doc().IndexOf(H);
+        QCOMPARE(M.doc().Node(I)["LAYERS"][0]["NODE"].get<std::string>(), Game);   // the anchor first
+        QCOMPARE(M.doc().Node(I)["LAYERS"][1]["DIR"].get<std::string>(), std::string("captured"));
+        QCOMPARE(NodeFiles(Pkg), 1);                        // nothing written yet
+        QVERIFY(M.Save());
+        QCOMPARE(NodeFiles(Pkg), 2);
+        QVERIFY(M.lastRenames().count(H));
     }
 
-    // Revalidate emits validationChanged and surfaces a real graph error (VFS layer missing PATH).
-    void revalidate_flags_bad_graph_and_signals()
+    // A problem with a node not saved yet is still about THAT node (by its draft handle), so the canvas marks it.
+    // Teeth: name it the way a library scan does (by label, since a draft has no CID) — the mark has nowhere to go.
+    void aDraftsProblemIsOnTheDraft()
     {
-        QTemporaryDir dir; QVERIFY(dir.isValid());
-        writeNode(dir.path(), "game.json",
-                  json{{"CID", "game"}, {"LABEL", "game"}, 
-                       {"LAYERS", json::array({ json{{"DIR", ""}} })}});   // a content layer naming no file → error
-
-        PackageEditorModel m(&Cfg, nullptr);
-        m.initPackage(dir.path(), nullptr);   // LoadNodes already validated once
-
-        QSignalSpy valspy(&m, &PackageEditorModel::validationChanged);
-        m.Revalidate();
-        QCOMPARE(valspy.count(), 1);
-        QVERIFY(!m.validationErrors().empty());
+        library();
+        PackageEditorModel M(&Cfg, nullptr);
+        M.initPackage(Pkg, nullptr);
+        const std::string H = M.createNode(json{{"LAYERS", json::array({ json{{"ZIP", ""}} })}}, {}, "Setup files");
+        M.Revalidate();
+        QVERIFY(!M.validationErrors().empty());
+        QVERIFY2(M.issuesByHandle().count(H), M.validationErrors().front().c_str());
     }
 
-    // A well-formed graph validates clean (no errors).
-    void revalidate_clean_graph_has_no_errors()
+    // This machine's positions live in GlobalConfig, keyed by node, and follow a save's renames; a corrupt one is
+    // refused on load (the node is laid out instead). Teeth: key by the old handle after a save.
+    void theLayoutFollowsRenamesAndRefusesCorruption()
     {
-        QTemporaryDir dir; QVERIFY(dir.isValid());
-        writeNode(dir.path(), "base.json", json{{"CID", "base"}, {"LABEL", "base"}, {"LAYERS", json::array()}});
-        writeNode(dir.path(), "game.json", json{{"CID", "game"}, {"LABEL", "game"},
-                                               {"LAYERS", json::array({ json{{"NODE", "base"}} })}});
-
-        PackageEditorModel m(&Cfg, nullptr);
-        m.initPackage(dir.path(), nullptr);
-        m.Revalidate();                             // scope keys on the CID handle, so the nodes must carry one
-        QVERIFY(m.validationErrors().empty());
+        library();
+        {
+            PackageEditorModel M(&Cfg, nullptr);
+            M.initPackage(Pkg, nullptr);
+            M.doc().SetPos(Game, {120, 340});
+            M.doc().Commit();
+            M.noteEdited();
+            json N = M.doc().Node(0); N["LABEL"] = "Moved"; M.replaceNode(Game, N);
+            QVERIFY(M.Save());
+        }
+        QVERIFY(Cfg.contains("EDITORLAYOUT"));
+        const json &L = Cfg["EDITORLAYOUT"].begin().value();
+        QCOMPARE((int)L.size(), 1);
+        QVERIFY(!L.contains(Game));                         // the old name is gone...
+        const std::string New = L.begin().key();
+        QVERIFY(QFile::exists(Pkg + "/" + QString::fromStdString(New) + ".json"));   // ...and the key is the node's file
+        //Corrupt the stored position: it is refused.
+        Cfg["EDITORLAYOUT"].begin().value()[New] = json::array({1e300, 5});
+        PackageEditorModel M2(&Cfg, nullptr);
+        M2.initPackage(Pkg, nullptr);
+        QVERIFY(!M2.doc().Positions().count(New));
     }
 
-    // KnownNodeIds lists the bundle's nodes; KnownPlatforms always includes the common targets.
-    // A capture creates a NODE parented at the anchor — that is what "capture at this point in the chain"
-    // means structurally. It must also not collide with an existing id.
-    void create_node_parents_at_the_anchor_and_uniquifies()
+    // A JSON file in the package that is not a node is never loaded, rewritten or swept by a save.
+    void aFileThatIsNotANodeSurvivesASave()
     {
-        QTemporaryDir dir; QVERIFY(dir.isValid());
-        writeNode(dir.path(), "base.json", json{{"CID", "base"}, {"LABEL", "base"}, {"LAYERS", json::array()}});
-
-        PackageEditorModel m(&Cfg, nullptr);
-        m.initPackage(dir.path(), nullptr);
-
-        // Model C: createNode returns a unique draft HANDLE (not the hint); the hint is the cosmetic LABEL, which
-        // need NOT be unique. Callers wire by the returned handle. A node is found by its handle (its "CID").
-        auto byHandle = [&](PackageEditorModel & mm, const std::string & h) {
-            const auto & Ns = mm.doc()["NODES"];
-            for (int i = 0; i < (int)Ns.size(); ++i) if (Ns[i].value("CID", std::string()) == h) return i;
-            return -1;
-        };
-
-        const std::string a = m.createNode(json{{"LAYERS",json::array({json{{"DIR","cap"}}})}}, {"base"}, "cap_files");
-        QVERIFY(!a.empty() && a != "cap_files");           // a draft handle, not the hint
-        const int ai = byHandle(m, a);
-        QVERIFY(ai >= 0);
-        QCOMPARE(m.doc()["NODES"][ai].value("LABEL", std::string()), std::string("cap_files"));   // hint → cosmetic LABEL
-        // The anchor comes FIRST, as a NODE layer, and the payload's layers fold over it.
-        QCOMPARE(m.doc()["NODES"][ai]["LAYERS"], json::parse(R"([{"NODE":"base"},{"DIR":"cap"}])"));
-
-        // A second create with the same hint gets its OWN handle (handles are always unique; labels may repeat).
-        const std::string b = m.createNode(json{{"LAYERS",json::array({json{{"DIR","cap2"}}})}}, {"base"}, "cap_files");
-        QVERIFY(b != a);
-        QVERIFY(byHandle(m, b) >= 0);
-        // Same label, one node per file: the second lands in a numbered sibling, never an array.
-        QVERIFY(QFile::exists(dir.path() + "/cap_files.json") && QFile::exists(dir.path() + "/cap_files_2.json"));
-
-        // And both are on disk, not just in the document.
-        PackageEditorModel m2(&Cfg, nullptr);
-        m2.initPackage(dir.path(), nullptr);
-        QVERIFY(byHandle(m2, a) >= 0);
-        QVERIFY(byHandle(m2, b) >= 0);
+        library();
+        std::ofstream((Pkg + "/notes.json").toStdString()) << R"(["keep", "me"])";
+        PackageEditorModel M(&Cfg, nullptr);
+        M.initPackage(Pkg, nullptr);
+        json N = M.doc().Node(0); N["LABEL"] = "x"; M.replaceNode(Game, N);
+        QVERIFY(M.Save());
+        std::ifstream In((Pkg + "/notes.json").toStdString());
+        json J; In >> J;
+        QCOMPARE(J, json::array({"keep", "me"}));
     }
 
-    // One node per file: a JSON file that is not a node — a list, a note — is never loaded, and a save neither
-    // rewrites nor sweeps it; a new node whose name would land on it gets a numbered sibling instead.
-    void a_file_that_is_not_a_node_survives_a_save()
-    {
-        QTemporaryDir dir; QVERIFY(dir.isValid());
-        writeNode(dir.path(), "pack.json", json::array({ json{{"LABEL", "a"}, {"LAYERS", json::array()}}, json{{"NOTE", "keep me"}} }));
-        writeNode(dir.path(), "notes.json", json{{"NOTE", "mine"}});
-        writeNode(dir.path(), "a.json", json{{"LABEL", "a"}, {"LAYERS", json::array()}});
-        const std::string PackBefore = readFile(dir.path() + "/pack.json"), NotesBefore = readFile(dir.path() + "/notes.json");
-
-        PackageEditorModel m(&Cfg, nullptr);
-        m.initPackage(dir.path(), nullptr);
-        QCOMPARE((int)m.doc()["NODES"].size(), 1);                  // only a.json is a node
-        m.createNode(json{{"LAYERS", json::array()}}, {}, "notes");   // its name is a note's file
-        m.doc()["NODES"][0]["LAYERS"] = json::array({ json{{"ENV", {{"A", "1"}}}} });
-        m.SaveNodes();
-
-        QCOMPARE(readFile(dir.path() + "/pack.json"), PackBefore);
-        QCOMPARE(readFile(dir.path() + "/notes.json"), NotesBefore);
-        QVERIFY(QFile::exists(dir.path() + "/notes_2.json"));
-        QCOMPARE(json::parse(readFile(dir.path() + "/a.json"))["LAYERS"][0]["ENV"]["A"], json("1"));
-    }
-
-    void known_node_ids_and_platforms()
-    {
-        QTemporaryDir dir; QVERIFY(dir.isValid());
-        writeNode(dir.path(), "base.json", json{{"LABEL", "base"}, {"LAYERS", json::array()}});
-
-        PackageEditorModel m(&Cfg, nullptr);
-        m.initPackage(dir.path(), nullptr);
-
-        const auto ids = m.KnownNodeIds();   // {handle(CID), cosmetic label} pairs
-        QVERIFY(std::any_of(ids.begin(), ids.end(), [](const auto &p) { return p.second == "base"; }));
-
-        const auto plats = m.KnownPlatforms();
-        QVERIFY(std::find(plats.begin(), plats.end(), "win32") != plats.end());
-        QVERIFY(std::find(plats.begin(), plats.end(), "linux64") != plats.end());
-    }
-
-    // The blueprint canvas is Dear ImGui, which keeps ONE global context per process: a second editor's canvas
-    // cannot render, and used to show up as a blank/garbage widget with the reason only in the log. OpenFor is
-    // the single door - it raises the editor that is already open instead of building one that cannot work.
+    // The canvas is Dear ImGui, which keeps ONE global context per process: OpenFor is the single door — it raises
+    // (and switches) the editor already open instead of building one that cannot render.
     void onlyOneEditorIsEverOpen()
     {
-        QTemporaryDir dir; QVERIFY(dir.isValid());
-        writeNode(dir.path(), "solo.json", json{{"LABEL", "solo"}, {"LAYERS", json::array()}});
-        json cfg = json{{"Settings", json::object()}};
-
-        bool createdA = false, createdB = false;
-        PackageEditor *a = PackageEditor::OpenFor(&cfg, nullptr, dir.path(), &createdA);
-        QVERIFY(a);
-        QVERIFY(createdA);
-        PackageEditor *b = PackageEditor::OpenFor(&cfg, nullptr, dir.path(), &createdB);
-        QCOMPARE(b, a);                 // the SAME editor, raised
-        QVERIFY(!createdB);             // ...and the caller knows not to wire its signals twice
-
-        delete a;                       // closing it releases the slot
-        bool createdC = false;
-        PackageEditor *c = PackageEditor::OpenFor(&cfg, nullptr, dir.path(), &createdC);
-        QVERIFY(c && createdC);
-        delete c;
+        library();
+        bool CreatedA = false, CreatedB = false;
+        PackageEditor *A = PackageEditor::OpenFor(&Cfg, nullptr, Pkg, &CreatedA);
+        QVERIFY(A && CreatedA);
+        PackageEditor *B = PackageEditor::OpenFor(&Cfg, nullptr, Pkg, &CreatedB);
+        QCOMPARE(B, A);
+        QVERIFY(!CreatedB);
+        delete A;
+        bool CreatedC = false;
+        PackageEditor *C = PackageEditor::OpenFor(&Cfg, nullptr, Pkg, &CreatedC);
+        QVERIFY(C && CreatedC);
+        delete C;
     }
-
-private:
-    QTemporaryDir *SuiteDataRoot = nullptr;
 };
 
 QTEST_MAIN(PackageEditorModelTest)

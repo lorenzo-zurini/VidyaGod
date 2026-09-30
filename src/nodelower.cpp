@@ -365,9 +365,9 @@ std::string CheckLayer(const ordered_json &L)
 
 } // namespace
 
-std::string CheckNode(const nlohmann::ordered_json &J, const std::string &NodeId)
+std::string CheckNode(const nlohmann::ordered_json &J, const std::string &NodeId, const std::string &Label)
 {
-    const std::string Tag = "node '" + NodeId + "'";
+    const std::string Tag = "node '" + NodeId + "'" + (Label.empty() || Label == NodeId ? std::string() : " (" + Label + ")");
     if (!J.is_object()) return Tag + ": not an object";
     static const std::set<std::string> Fields = { "CID", "LABEL", "POS", "COMMENT", "VARIANT", "RECOMMENDED", "SECTION", "LAYERS" };
     for (const auto &[K, V] : J.items())

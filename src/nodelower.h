@@ -26,7 +26,7 @@ namespace NodeLower
 
 //"" when the node is well-formed, else why not (naming the layer). A malformed node is indexed with the reason and
 //never routed through.
-std::string CheckNode(const nlohmann::ordered_json &J, const std::string &NodeId);
+std::string CheckNode(const nlohmann::ordered_json &J, const std::string &NodeId, const std::string &Label = std::string());
 
 //The node's own layers as engine ops (a node that fails CheckNode lowers to nothing). Targets stay as authored
 //(guest coordinates, relative to the node); EXEC, ENV, NODE, ANY, NOT lower to nothing — they are folded facts.
