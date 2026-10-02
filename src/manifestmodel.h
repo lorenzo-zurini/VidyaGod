@@ -89,6 +89,9 @@ struct NodeIndex {
     //The tiles: UID -> the tile (flat, merged across the library: its recommended variant's folded tile, else its first
     //variant's), derived by DeriveFacts. A tile is one presentable game; a node may present several.
     std::map<std::string, nlohmann::ordered_json> Tiles;
+    //A tile a GRAFT presents (its own entry carries the TILE): UID -> that graft. Its card's rows are the variants it
+    //applies onto, each launched with it applied (a mod with its own card: Forgotten Empires over The Conquerors).
+    std::map<std::string, std::string> TileGraft;
     const Node *Find(const std::string &NodeId) const;
     //The tile a UID names (null when no node presents it).
     const nlohmann::ordered_json *Tile(const std::string &Uid) const

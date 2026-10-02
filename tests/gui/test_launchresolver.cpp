@@ -976,6 +976,55 @@ private slots:
         QVERIFY(!std::get<0>(launch("v1", "9")));                                     // a tile the node does not present
     }
 
+    // A graft whose own entry carries a TILE (a mod with its own card: Forgotten Empires over The Conquerors) is a card:
+    // its rows are the versions it applies onto (those containing what its ANY names), and launched from that card a
+    // row runs with the graft applied, as the card's title, by the graft's entry. From the version's own card nothing
+    // changes. Teeth: no card for a graft (ShelfTiles); launch the row without the graft (the version's own entry runs).
+    void a_graft_with_its_own_tile_is_a_card_of_what_it_applies_onto()
+    {
+        NodeIndex idx;
+        const auto entry = [](const char *Exe, const char *Uid, const char *Title) {
+            return json{ {"LABEL", "Play"}, {"HOST", kMachine}, {"EXE", Exe}, {"TILE", {{"UID", Uid}, {"TITLE", Title}}} };
+        };
+        idx.Nodes["tc"] = parse(json{ {"CID", "tc"}, {"LABEL", "tc"}, {"VARIANT", "1.0e"},
+            {"LAYERS", json::array({ json{{"DIR", "tc"}}, json{{"EXEC", json::array({ entry("tc.exe", "13006", "The Conquerors") })}} })} }, "/tmp/vg_bundle");
+        idx.Nodes["tc2"] = parse(json{ {"CID", "tc2"}, {"LABEL", "tc2"}, {"VARIANT", "1.0f"},
+            {"LAYERS", json::array({ json{{"NODE", "tc"}}, json{{"DIR", "tc2"}} })} }, "/tmp/vg_bundle");       // contains tc
+        idx.Nodes["aok"] = parse(json{ {"CID", "aok"}, {"LABEL", "aok"}, {"VARIANT", "2.0a"},
+            {"LAYERS", json::array({ json{{"DIR", "aok"}}, json{{"EXEC", json::array({ entry("aok.exe", "749", "The Age of Kings") })}} })} }, "/tmp/vg_bundle");
+        idx.Nodes["fe"] = parse(json{ {"CID", "fe"}, {"LABEL", "fe"},
+            {"LAYERS", json::array({ json{{"ANY", json::array({"tc"})}}, json{{"DIR", "fe"}},
+                json{{"EXEC", json::array({ entry("fe.exe", "749000001", "Forgotten Empires") })}} })} }, "/tmp/vg_bundle");
+        finish(idx);
+
+        const PackageCatalog::ShelfTile *Card = nullptr;
+        const auto Shelf = PackageCatalog::ShelfTiles(idx);
+        for (const auto &T : Shelf) if (T.Uid == "749000001") Card = &T;
+        QVERIFY2(Card, "the graft's tile is not a card");
+        std::set<std::string> Rows;
+        for (const Node *N : Card->Rows) Rows.insert(N->NodeId);
+        QCOMPARE(Rows, (std::set<std::string>{"tc", "tc2"}));                         // what it applies onto, not aok
+        QCOMPARE(Card->Graft, std::string("fe"));
+
+        const json cfg = json{{"Settings", json::object()}};
+        const auto launch = [&](const char *Node, const char *Face) {
+            ContainerParams cp("/tmp/vg_bundle");
+            cp.NodeIdx = &idx; cp.LaunchNodeId = Node; cp.LaunchFace = Face;
+            json pool = json::object();
+            const bool Ok = LaunchResolver::InitializeFromNode(cp, pool, cfg);
+            const std::string Exe = cp.ComposedExec.is_object() ? cp.ComposedExec.value("CONTENTPATH", std::string()) : std::string();
+            return std::make_tuple(Ok, Exe, cp.PackageName, cp.AppliedGrafts);
+        };
+        const auto [Ok, Exe, Name, Grafts] = launch("tc2", "749000001");
+        QVERIFY(Ok);
+        QVERIFY2(Exe.find("fe.exe") != std::string::npos, Exe.c_str());              // the graft's entry runs
+        QCOMPARE(Name, std::string("Forgotten Empires"));
+        QCOMPARE(Grafts, (std::vector<std::string>{"fe"}));
+        QVERIFY(!std::get<0>(launch("aok", "749000001")));                            // not something it applies onto
+        const auto [OkTc, ExeTc, NameTc, GraftsTc] = launch("tc", "13006");           // the version's own card: unchanged
+        QVERIFY(OkTc && ExeTc.find("tc.exe") != std::string::npos && GraftsTc.empty());
+    }
+
     // No authored native runner → the terminal is the synthesized passthrough sentinel.
     void chain_synthesizes_native_terminal_when_unauthored()
     {

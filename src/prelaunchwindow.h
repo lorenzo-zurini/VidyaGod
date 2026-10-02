@@ -152,6 +152,7 @@ private:
     const NodeIndex*        Index            = nullptr;
     std::vector<std::string> GroupNodeIds;
     std::string              FaceUid;
+    std::string              TileGraft;     // the graft presenting FaceUid ("" for a variant's tile): always applied
     std::string             LaunchNodeId;   // current variant's node id
     std::string             Entrypoint;     // current entry LABEL ("" = the default)
     std::string             BundleDir;      // current variant's bundle dir

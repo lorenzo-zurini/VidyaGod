@@ -1758,6 +1758,35 @@ std::vector<ShelfTile> ShelfTiles(const NodeIndex &Idx)
                     if (S.Uid.empty()) { S.Uid = U; S.Tile = *T; }
                     S.Rows.push_back(&N);
                 }
+    //Tiles grafts present: rows are the variants containing (transitively) a node the graft's ANY names.
+    if (!Idx.TileGraft.empty())
+    {
+        std::map<std::string, std::vector<const std::string *>> ContainedBy;   // node -> the nodes naming it
+        for (const auto &[Id, N] : Idx.Nodes) for (const std::string &R : N.Refs) ContainedBy[R].push_back(&Id);
+        for (const auto &[U, G] : Idx.TileGraft)
+        {
+            const Node *GN = Idx.Find(G);
+            const nlohmann::ordered_json *T = Idx.Tile(U);
+            if (!GN || !T || !GN->Json.contains("LAYERS") || GN->Json["LAYERS"].empty()) continue;
+            const nlohmann::ordered_json &First = GN->Json["LAYERS"][0];
+            std::set<std::string> Seen;
+            std::vector<std::string> Todo;
+            if (First.contains("ANY") && First["ANY"].is_array())
+                for (const auto &A : First["ANY"]) if (A.is_string()) Todo.push_back(A.get<std::string>());
+            ShelfTile &S = ByUid[U];
+            if (S.Uid.empty()) { S.Uid = U; S.Tile = *T; }
+            S.Graft = G;
+            while (!Todo.empty())
+            {
+                const std::string X = Todo.back(); Todo.pop_back();
+                if (!Seen.insert(X).second) continue;
+                if (const Node *V = Idx.Find(X); V && V->IsVariant() && std::find(S.Rows.begin(), S.Rows.end(), V) == S.Rows.end())
+                    S.Rows.push_back(V);
+                if (const auto It = ContainedBy.find(X); It != ContainedBy.end()) for (const std::string *P : It->second) Todo.push_back(*P);
+            }
+            if (S.Rows.empty()) ByUid.erase(U);            // nothing here it applies onto: no card
+        }
+    }
     std::vector<ShelfTile> Out;
     for (auto &[U, S] : ByUid)
     {

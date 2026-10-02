@@ -336,6 +336,10 @@ void DeriveFacts(NodeIndex &Idx)
     };
     Idx.Tiles.clear();
     for (const auto &[Uid, T] : Tiles) Idx.Tiles[Uid] = FlatTile(T);
+    Idx.TileGraft.clear();
+    for (const auto &[K, N] : Idx.Nodes)
+        if (N.IsGraft && N.Variant.empty())
+            for (const std::string &U : N.Faces) Idx.TileGraft.emplace(U, K);
     for (auto &[K, N] : Idx.Nodes)
     {
         if (N.Faces.empty()) continue;

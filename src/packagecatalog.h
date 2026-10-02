@@ -356,10 +356,13 @@ struct ShelfTile
     std::string Uid;
     nlohmann::ordered_json Tile;
     std::vector<const Node*> Rows;
+    std::string Graft;            // the graft presenting this tile ("" for a variant's): every row launches with it
 };
 // The shelf: one entry per tile UID (faces merged by UID across the library). A family nests by PARENTUID — the base
 // game, then its children by depth, then by title — and families order by the base game's title. Under a tile, the
 // variant RECOMMENDED under it comes first, then by VARIANT name. A variant presenting two tiles is a row under each.
+// A tile a graft presents (NodeIndex::TileGraft) is a card too: its rows are the variants the graft applies onto
+// (those containing a node its ANY names), and the card names the graft (ShelfTile::Graft).
 std::vector<ShelfTile> ShelfTiles(const NodeIndex &Idx);
 // The row a tile shows for a variant: the variant (a node with VARIANT) presenting tile Uid whose VARIANT is Variant;
 // with Variant empty, the tile's default row — the variant RECOMMENDED under it, else the first by VARIANT name. ""

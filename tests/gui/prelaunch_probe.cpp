@@ -43,7 +43,7 @@ int main(int argc, char **argv)
     for (const auto &g : Group)
         if (!Index.Find(g)) { std::cerr << "node not found: " << g << "\n"; return 1; }
 
-    PreLaunchWindow W(&Cfg, &Index, Group);
+    PreLaunchWindow W(&Cfg, &Index, Group, qEnvironmentVariable("PRELAUNCH_FACE").toStdString());   // PRELAUNCH_FACE: the card
     //PRELAUNCH_SHOT=<png> [PRELAUNCH_SIZE=WxH]: just the window as it opens (its own size unless given), settled.
     if (qEnvironmentVariableIsSet("PRELAUNCH_SHOT"))
     {

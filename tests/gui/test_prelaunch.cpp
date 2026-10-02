@@ -410,6 +410,47 @@ private slots:
         QVERIFY2(Shown.contains("2.0 - Play") && Shown.contains("2.0 - Editor"), qPrintable(Shown.join(" | ")));
     }
 
+    // On the card a graft presents (a mod with its own card), the graft is the game: applied (its options show) and not
+    // an add-on to tick; on the base game's card it is not offered either — it is played from its own card. Teeth: leave
+    // the card's graft out of the launch; offer a graft that has its own card; offer what the card's graft contains.
+    void aGraftsCardAppliesItAndOffersItNowhere()
+    {
+        NodeIndex idx;
+        const auto entry = [](const char *Exe, const char *Uid) {
+            return json{ {"LABEL", "Play"}, {"HOST", ManifestModel::MachinePlatform()}, {"EXE", Exe}, {"TILE", {{"UID", Uid}, {"TITLE", Uid}}} };
+        };
+        idx.Nodes["tc"] = parse(json{ {"CID", "tc"}, {"LABEL", "tc"}, {"VARIANT", "1.0e"},
+            {"LAYERS", json::array({ json{{"DIR", "tc"}}, json{{"EXEC", json::array({ entry("tc.exe", "53") })}} })} });
+        idx.Nodes["up"] = parse(json{ {"CID", "up"}, {"LABEL", "up"},                     // a patch FE needs, and contains
+            {"LAYERS", json::array({ json{{"ANY", json::array({"tc"})}}, json{{"DIR", "up"}} })} });
+        idx.Nodes["fe"] = parse(json{ {"CID", "fe"}, {"LABEL", "fe"},
+            {"LAYERS", json::array({ json{{"ANY", json::array({"tc"})}}, json{{"NODE", "up"}}, json{{"DIR", "fe"}},
+                json{{"VARS", {{"fe_opt", {{"DEFAULT", "1"}, {"UI", {{"CONTROL", "bool"}, {"LABEL", "FE option"}}}}}}}},
+                json{{"EXEC", json::array({ entry("fe.exe", "53001") })}} })} });
+        ManifestModel::DeriveFacts(idx);
+        json Cfg = json{{"Settings", json::object()}};
+        const auto look = [&](const char *Face, bool &HasOption, bool &Offered, bool &UpOffered) {
+            PreLaunchWindow W(&Cfg, &idx, {"tc"}, Face);
+            QCoreApplication::processEvents();
+            HasOption = Offered = UpOffered = false;
+            for (QWidget *X : W.findChildren<QWidget *>()) if (X->property("CVKey").toString() == "fe_opt") HasOption = true;
+            if (auto *List = W.findChild<QTreeWidget *>("graftList"))
+                for (QTreeWidgetItemIterator It(List); *It; ++It)
+                {
+                    if ((*It)->text(0) == "fe") Offered = true;
+                    if ((*It)->text(0) == "up") UpOffered = true;
+                }
+        };
+        bool Opt = false, Off = false, Up = false;
+        look("53001", Opt, Off, Up);
+        QVERIFY2(Opt, "on its card the graft is not applied");
+        QVERIFY(!Off);
+        QVERIFY2(!Up, "what the card's graft contains is offered as a choice");
+        look("53", Opt, Off, Up);
+        QVERIFY(!Opt && !Off);                                                // the base game: neither applied nor offered
+        QVERIFY(Up);                                                          // but the patch is its add-on there
+    }
+
     // The tabs exist only when they have something in them: a game with no options and no add-ons opens on Advanced.
     // Teeth: always show Options and Add-ons.
     void emptyTabsAreNotShown()

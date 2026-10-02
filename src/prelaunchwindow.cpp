@@ -164,6 +164,9 @@ PreLaunchWindow::PreLaunchWindow(
         "#prelaunch QProgressBar { max-height: 4px; border: none; background: palette(mid); border-radius: 2px; }"
         "#prelaunch QProgressBar::chunk { background: palette(highlight); border-radius: 2px; }");
 
+    //A card a graft presents (a mod with its own card): every row launches with that graft applied.
+    if (Index) if (const auto It = Index->TileGraft.find(this->FaceUid); It != Index->TileGraft.end()) TileGraft = It->second;
+
     // Initial variant = the one RECOMMENDED under this tile, else the first row.
     if (!this->GroupNodeIds.empty()) LaunchNodeId = this->GroupNodeIds.front();
     for (const std::string& Id : this->GroupNodeIds)
@@ -765,6 +768,20 @@ void PreLaunchWindow::RebuildModuleTree()
     //Offered with the ticked ones applied: a graft on a graft appears once the graft it needs is ticked.
     std::vector<std::string> PreTicked;
     std::vector<std::string> Offered = PackageCatalog::OfferedGrafts(*Index, LaunchNodeId, &PreTicked, Saved, FaceUid);
+    //A graft that presents a card of its own is not an add-on: on its card it is the game (always applied), and
+    //elsewhere it is played from that card.
+    const auto HasCard = [&](const std::string& G) {
+        for (const auto& [U, Tg] : Index->TileGraft) if (Tg == G) return true;
+        return false;
+    };
+    Offered.erase(std::remove_if(Offered.begin(), Offered.end(), HasCard), Offered.end());
+    //What the card's graft contains is always there with it (Forgotten Empires brings UserPatch): not a choice.
+    if (!TileGraft.empty())
+    {
+        const std::vector<std::string> In = ManifestModel::Closure(*Index, TileGraft);
+        Offered.erase(std::remove_if(Offered.begin(), Offered.end(), [&](const std::string& G) {
+            return std::find(In.begin(), In.end(), G) != In.end(); }), Offered.end());
+    }
     //Ticked = what the launch applies: a saved graft it would drop (one another ticked graft excludes) shows unticked.
     std::vector<std::string> Ticked = PreTicked;
     if (Saved)
@@ -892,6 +909,8 @@ std::optional<std::vector<std::string>> PreLaunchWindow::SavedGrafts() const
         Saved.emplace();
         for (const auto& G : US["GRAFTS"][Tile]) if (G.is_string()) Saved->push_back(G.get<std::string>());
     }
+    if (Saved && !TileGraft.empty() && std::find(Saved->begin(), Saved->end(), TileGraft) == Saved->end())
+        Saved->insert(Saved->begin(), TileGraft);   // grafts on the card's graft are judged with it in place
     return PackageCatalog::CurrentGraftChoice(*Index, Saved);
 }
 
@@ -955,11 +974,12 @@ void PreLaunchWindow::MoveSelectedGraft(int By)
 std::vector<std::string> PreLaunchWindow::CollectGrafts() const
 {
     std::vector<std::string> Out;
+    if (!TileGraft.empty()) Out.push_back(TileGraft);      // the card's own graft applies first, always
     if (!ModuleTree) return Out;
     std::set<std::string> TickedRows;
     for (QTreeWidgetItem* It : GraftRows(ModuleTree))
         if (It->data(0, Qt::UserRole + 2).toBool()) TickedRows.insert(It->data(0, Qt::UserRole).toString().toStdString());
-    for (const std::string& G : AppliedOrder) if (TickedRows.count(G)) Out.push_back(G);
+    for (const std::string& G : AppliedOrder) if (TickedRows.count(G) && G != TileGraft) Out.push_back(G);
     return Out;
 }
 
@@ -1365,6 +1385,7 @@ void PreLaunchWindow::RefreshGraftEntryRows()
         {
             if (L->Entries.contains(Label)) continue;
             if (E.contains("GUEST") && E["GUEST"].is_array() && !E["GUEST"].empty()) continue;   // a runner entry
+            if (E.contains("TILE")) continue;                                // it presents a card: played from there
             VariantCombo->addItem(QString::fromStdString("run " + Label),
                                   QString::fromStdString(LaunchNodeId + "\x1f" + Label + "\x1fgraft"));
         }
@@ -1557,6 +1578,19 @@ void PreLaunchWindow::FillVariantCombo()
     {
         const Node* N = Index ? Index->Find(Id) : nullptr;
         if (!N) continue;
+        if (!TileGraft.empty())
+        {
+            //A graft's card: each variant it applies onto, run by the graft's entries presenting this card.
+            const Fold::Plan P = Fold::Resolve(ManifestModel::LibraryOf(*Index), Id, {}, {}, { TileGraft });
+            std::vector<std::string> Mine;
+            for (const auto& [Lb, Ep] : P.Exec.items())
+                if (Ep.is_object() && Ep.contains("TILE") && Ep["TILE"].is_object() && Ep["TILE"].value("UID", std::string()) == FaceUid)
+                    Mine.push_back(Lb);
+            const std::string NodeName = !N->Variant.empty() ? N->Variant : (!N->NodeId.empty() ? N->NodeId : Id);
+            for (const std::string& Lb : Mine)
+                Es.push_back({ Id + "\x1f" + Lb, QString::fromStdString(Mine.size() == 1 ? NodeName : NodeName + " - " + Lb), false });
+            continue;
+        }
         //A row is (variant, entry): one per EFFECTIVE entry of this tile (own, else inherited from beneath) — an
         //entry presenting ANOTHER tile belongs to that tile's card; an entry with no tile (a mod loader's) is an
         //extra way to run this one. A single-entry variant reads as its VARIANT name; a multi-entry one names each.
