@@ -1,0 +1,33 @@
+--- a/dlls/win32u/font.c
++++ b/dlls/win32u/font.c
+@@ -6191,6 +6191,30 @@
+     x = pt.x;
+     y = pt.y;
+ 
++    if (dc->dpi_from && dc->dpi_to && dc->dpi_from != dc->dpi_to)
++    {
++        /* A DC of a DPI-scaled window that has no window surface (a Direct3D / OpenGL window: GDI draws straight
++         * to the device) maps logical to raw pixels in lp_to_dp, so every position above is scaled. The font was
++         * realized at its logical size, so the glyphs must be scaled with the positions — else text is drawn small
++         * with stretched spacing (Age of Empires II's edit boxes at 800x600 on a 1080p screen). */
++        ENUMLOGFONTEXDVW scaled;
++        HFONT orig_font = dc->hFont, scaled_font;
++
++        memset( &scaled, 0, sizeof(scaled) );
++        NtGdiExtGetObjectW( orig_font, sizeof(scaled.elfEnumLogfontEx.elfLogFont), &scaled.elfEnumLogfontEx.elfLogFont );
++        scaled.elfEnumLogfontEx.elfLogFont.lfHeight = muldiv( scaled.elfEnumLogfontEx.elfLogFont.lfHeight, dc->dpi_to, dc->dpi_from );
++        scaled.elfEnumLogfontEx.elfLogFont.lfWidth  = muldiv( scaled.elfEnumLogfontEx.elfLogFont.lfWidth,  dc->dpi_to, dc->dpi_from );
++        if ((scaled_font = NtGdiHfontCreate( &scaled, sizeof(scaled), 0, 0, NULL )))
++        {
++            NtGdiSelectFont( hdc, scaled_font );
++            ret = physdev->funcs->pExtTextOut( physdev, x, y, (flags & ~ETO_OPAQUE), &rc,
++                                               str, count, (INT*)deltas );
++            NtGdiSelectFont( hdc, orig_font );
++            NtGdiDeleteObjectApp( scaled_font );
++            goto done;
++        }
++    }
++
+     ret = physdev->funcs->pExtTextOut( physdev, x, y, (flags & ~ETO_OPAQUE), &rc,
+                                        str, count, (INT*)deltas );
+ 
