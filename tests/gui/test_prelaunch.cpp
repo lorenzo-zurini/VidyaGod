@@ -4,7 +4,10 @@
 
 #include <QtTest>
 #include <QCheckBox>
+#include <QLineEdit>
+#include <QComboBox>
 #include <QGroupBox>
+#include <QTabWidget>
 #include <QLabel>
 #include <QPushButton>
 #include <QTreeWidget>
@@ -13,6 +16,7 @@
 #include <set>
 
 #include "apppaths.h"
+#include "instancestore.h"
 #include "manifestmodel.h"
 #include "packagecatalog.h"
 #include "prelaunchwindow.h"
@@ -66,6 +70,10 @@ private slots:
         auto *Down = W.findChild<QPushButton *>("graftDown");
         auto *Note = W.findChild<QLabel *>("graftNote");
         QVERIFY(List && Up && Down && Note);
+        //The add-ons live on their own tab: open it, as the person reordering them has.
+        if (auto *Tabs = W.findChild<QTabWidget *>("prelaunchTabs"))
+            for (int i = 0; i < Tabs->count(); ++i) if (Tabs->widget(i)->isAncestorOf(List)) Tabs->setCurrentIndex(i);
+        QCoreApplication::processEvents();
         const auto rows = [&] {
             std::vector<std::string> R;
             for (int i = 0; i < List->topLevelItemCount(); ++i) R.push_back(List->topLevelItem(i)->text(0).toStdString());
@@ -329,6 +337,99 @@ private slots:
         List->topLevelItem(0)->setCheckState(0, Qt::Checked);
         QCoreApplication::processEvents();
         QCOMPARE(rows(), (std::vector<std::string>{"x+", "y+", "z+"}));
+    }
+
+    // The instance picker: every instance of the game, the last played first; picking one shows ITS option values,
+    // and an add-on ticked then is saved to IT, not to the other. Teeth: read and write the active instance whatever
+    // is picked (the other instance's value shows; the tick lands in the wrong instance.json).
+    void theInstancePickerShowsAndSavesThePickedInstance()
+    {
+        NodeIndex idx;
+        idx.Nodes["game"] = parse(json{ {"CID", "game"}, {"LABEL", "game"}, {"VARIANT", "v1"},
+            {"LAYERS", json::array({ json{{"DIR", "game"}},
+                json{{"VARS", {{"opt", {{"DEFAULT", "d"}, {"UI", {{"CONTROL", "text"}, {"LABEL", "Option"}}}}}}}},
+                json{{"EXEC", json::array({ json{{"LABEL", "Play"}, {"HOST", ManifestModel::MachinePlatform()}, {"EXE", "game.exe"},
+                    {"TILE", {{"UID", "41"}, {"TITLE", "Game"}}}} })}} })} });
+        idx.Nodes["g"] = parse(json{ {"CID", "g"}, {"LABEL", "g"}, {"LAYERS", json::array({ json{{"ANY", json::array({"game"})}}, json{{"DIR", "g"}} })} });
+        ManifestModel::DeriveFacts(idx);
+        json Cfg = json{{"Settings", json::object()}};
+        const std::string Uid = idx.Find("game")->GameKey();
+        QVERIFY(InstanceStore::WriteConfig(Cfg, Uid, "Alpha", json{{"VARIABLES", {{"opt", "alpha"}}}, {"LASTRUN", "2026-09-30T10:00:00Z"}}));
+        QVERIFY(InstanceStore::WriteConfig(Cfg, Uid, "Beta",  json{{"VARIABLES", {{"opt", "beta"}}},  {"LASTRUN", "2026-09-01T10:00:00Z"}}));
+        PreLaunchWindow W(&Cfg, &idx, {"game"});
+        W.show();
+        QCoreApplication::processEvents();
+        auto *Pick = W.findChild<QComboBox *>("instanceCombo");
+        QVERIFY(Pick);
+        QCOMPARE(Pick->count(), 2);
+        QCOMPARE(Pick->currentData().toString(), QString("Alpha"));          // the last played
+        const auto value = [&] {
+            for (QLineEdit *E : W.findChildren<QLineEdit *>()) if (E->property("CVKey").toString() == "opt") return E->text();
+            return QString("<none>");
+        };
+        QCOMPARE(value(), QString("alpha"));
+        Pick->setCurrentIndex(Pick->findData("Beta"));
+        QCoreApplication::processEvents();
+        QCOMPARE(value(), QString("beta"));                                  // Beta's own value
+        auto *List = W.findChild<QTreeWidget *>("graftList");
+        QVERIFY(List);
+        QTreeWidgetItem *G = nullptr;
+        for (QTreeWidgetItemIterator It(List); *It; ++It) if ((*It)->text(0) == "g") G = *It;
+        QVERIFY(G);
+        G->setCheckState(0, Qt::Checked);
+        QCoreApplication::processEvents();
+        const json Beta = InstanceStore::ReadConfig(Cfg, Uid, "Beta"), Alpha = InstanceStore::ReadConfig(Cfg, Uid, "Alpha");
+        QVERIFY2(Beta.contains("GRAFTS") && Beta["GRAFTS"].contains("41") && Beta["GRAFTS"]["41"] == json::array({"g"}), Beta.dump().c_str());
+        QVERIFY2(!Alpha.contains("GRAFTS"), Alpha.dump().c_str());          // the other instance is untouched
+    }
+
+    // A version with one way to run is called by its name alone ("1.0", not "1.0 - Play"); one with several names each
+    // entry. Teeth: append the entry's label to a single-entry version.
+    void aVersionIsCalledByItsName()
+    {
+        NodeIndex idx;
+        const auto Exec = [](std::vector<std::string> Labels) {
+            json E = json::array();
+            for (const std::string &L : Labels)
+                E.push_back(json{{"LABEL", L}, {"HOST", ManifestModel::MachinePlatform()}, {"EXE", L + ".exe"}, {"TILE", {{"UID", "47"}, {"TITLE", "Game"}}}});
+            return E;
+        };
+        idx.Nodes["one"] = parse(json{ {"CID", "one"}, {"LABEL", "one"}, {"VARIANT", "1.0"},
+            {"LAYERS", json::array({ json{{"DIR", "one"}}, json{{"EXEC", Exec({"Play"})}} })} });
+        idx.Nodes["two"] = parse(json{ {"CID", "two"}, {"LABEL", "two"}, {"VARIANT", "2.0"},
+            {"LAYERS", json::array({ json{{"DIR", "two"}}, json{{"EXEC", Exec({"Play", "Editor"})}} })} });
+        ManifestModel::DeriveFacts(idx);
+        json Cfg = json{{"Settings", json::object()}};
+        PreLaunchWindow W(&Cfg, &idx, {"one", "two"}, "47");
+        QComboBox *Versions = nullptr;
+        for (QComboBox *C : W.findChildren<QComboBox *>()) if (C->count() >= 3) Versions = C;
+        QVERIFY(Versions);
+        QStringList Shown;
+        for (int i = 0; i < Versions->count(); ++i) Shown << Versions->itemText(i);
+        QVERIFY2(Shown.contains("1.0"), qPrintable(Shown.join(" | ")));
+        QVERIFY2(Shown.contains("2.0 - Play") && Shown.contains("2.0 - Editor"), qPrintable(Shown.join(" | ")));
+    }
+
+    // The tabs exist only when they have something in them: a game with no options and no add-ons opens on Advanced.
+    // Teeth: always show Options and Add-ons.
+    void emptyTabsAreNotShown()
+    {
+        NodeIndex idx;
+        idx.Nodes["game"] = parse(json{ {"CID", "game"}, {"LABEL", "game"}, {"VARIANT", "v1"},
+            {"LAYERS", json::array({ json{{"DIR", "game"}},
+                json{{"EXEC", json::array({ json{{"LABEL", "Play"}, {"HOST", ManifestModel::MachinePlatform()}, {"EXE", "game.exe"},
+                    {"TILE", {{"UID", "43"}, {"TITLE", "Game"}}}} })}} })} });
+        ManifestModel::DeriveFacts(idx);
+        json Cfg = json{{"Settings", json::object()}};
+        PreLaunchWindow W(&Cfg, &idx, {"game"});
+        W.show();
+        QCoreApplication::processEvents();
+        auto *Tabs = W.findChild<QTabWidget *>("prelaunchTabs");
+        QVERIFY(Tabs);
+        QStringList Shown;
+        for (int i = 0; i < Tabs->count(); ++i) if (Tabs->isTabVisible(i)) Shown << Tabs->tabText(i);
+        QCOMPARE(Shown, (QStringList{"Advanced", "Log"}));
+        QCOMPARE(Tabs->tabText(Tabs->currentIndex()), QString("Advanced"));
     }
 
     // Options are a tree: UI.SECTION paths ('/' nests) build collapsed section rows, each option a row with its label

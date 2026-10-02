@@ -15,6 +15,8 @@
 #include <nlohmann/json.hpp>
 
 #include "prelaunchwindow.h"
+#include <QStyleFactory>
+#include <QTabWidget>
 #include "packagecatalog.h"
 #include "manifestmodel.h"
 #include "jsonoperations.h"
@@ -25,6 +27,9 @@
 int main(int argc, char **argv)
 {
     QApplication app(argc, argv);
+    //The app's own look (main.cpp): Fusion over the desktop palette, DejaVu Sans 10.
+    QApplication::setStyle(QStyleFactory::create("Fusion"));
+    QApplication::setFont(QFont("DejaVu Sans", 10));
     if (argc < 2) { std::cerr << "usage: prelaunch_probe <nodeId> [<nodeId>...]\n"; return 2; }
 
     nlohmann::ordered_json Cfg;
@@ -39,6 +44,27 @@ int main(int argc, char **argv)
         if (!Index.Find(g)) { std::cerr << "node not found: " << g << "\n"; return 1; }
 
     PreLaunchWindow W(&Cfg, &Index, Group);
+    //PRELAUNCH_SHOT=<png> [PRELAUNCH_SIZE=WxH]: just the window as it opens (its own size unless given), settled.
+    if (qEnvironmentVariableIsSet("PRELAUNCH_SHOT"))
+    {
+        W.show();
+        if (qEnvironmentVariableIsSet("PRELAUNCH_SIZE"))
+        {
+            const QStringList WH = qEnvironmentVariable("PRELAUNCH_SIZE").split('x');
+            if (WH.size() == 2) W.resize(WH[0].toInt(), WH[1].toInt());
+        }
+        //PRELAUNCH_TAB=<title prefix>: show that tab; PRELAUNCH_EXPAND=1: open every section of its trees.
+        if (auto *T = W.findChild<QTabWidget*>("prelaunchTabs"); T && qEnvironmentVariableIsSet("PRELAUNCH_TAB"))
+            for (int i = 0; i < T->count(); ++i)
+                if (T->tabText(i).startsWith(qEnvironmentVariable("PRELAUNCH_TAB"))) T->setCurrentIndex(i);
+        if (qEnvironmentVariableIsSet("PRELAUNCH_EXPAND"))
+            for (QTreeWidget *Tr : W.findChildren<QTreeWidget*>()) Tr->expandAll();
+        for (int i = 0; i < 30; ++i) QApplication::processEvents();
+        const QString Shot = qEnvironmentVariable("PRELAUNCH_SHOT");
+        W.grab().save(Shot);
+        std::cout << "screenshot: " << Shot.toStdString() << " (" << W.width() << "x" << W.height() << ")\n";
+        return 0;
+    }
     // Geometry probe: the cover must own the lion's share of the left column (regression: it went comically tiny).
     W.resize(1100, 750);
     W.show();

@@ -19,6 +19,8 @@
 #include <QTreeWidget>
 #include <QTimer>
 #include <QPixmap>
+#include <QTabWidget>
+#include <QToolButton>
 
 #include <set>
 #include <map>
@@ -109,6 +111,23 @@ private:
     void BuildLanPanel(QVBoxLayout * LeftCol);
     void RefreshLanPanel();
 
+    // ----- instances: one config + durable state per instance of the game (InstanceStore) -----
+    // (Re)fills the instance picker (newest-played first) and selects InstanceName.
+    void FillInstances();
+    // Another instance was picked: everything the window shows that the instance holds is re-read from it.
+    void onInstanceChanged();
+    // The instance menu's actions; each refuses (and says why) rather than half-doing.
+    void NewInstance();
+    void DuplicateInstance();
+    void RenameInstance();
+    void DeleteInstance();
+    // "Last played …" / "Never played" under the picker.
+    void RefreshInstanceInfo();
+    // Shows a tab (and keeps a sensible current one) — the Add-ons and Options tabs exist only when there is content.
+    void SetTabShown(QWidget * Page, bool Shown);
+    // The Log tab's title carries the launch's problems at a glance ("Log ⚠ 3").
+    void UpdateLogTabTitle();
+
 private:
     // (Re)fills the variant combo from GroupNodeIds: recommended first, then natural version order (1.9 < 1.10);
     // beyond a dozen entries the combo turns editable with a contains-matching completer (type "1.20" to jump) —
@@ -137,11 +156,24 @@ private:
     std::string             Entrypoint;     // current entry LABEL ("" = the default)
     std::string             BundleDir;      // current variant's bundle dir
     std::string             PackageUID;     // current variant's UID — USERSETTINGS key
+    std::string             InstanceName;   // the instance this window reads, saves and launches
 
     LaunchThread* LaunchWorker = nullptr;
 
     // ----- widgets -----
     QLabel*       CoverLabel        = nullptr;
+    QLabel*       TitleLabel        = nullptr;   // the tile's title, large
+    QLabel*       MetaLabel         = nullptr;   // developer · year · edition
+    QComboBox*    InstanceCombo     = nullptr;
+    QToolButton*  InstanceMenuButton = nullptr;
+    QLabel*       InstanceInfo      = nullptr;   // last played
+    QTabWidget*   Tabs              = nullptr;   // Options | Add-ons | Advanced | Log
+    QWidget*      OptionsPage       = nullptr;
+    QWidget*      AddonsPage        = nullptr;
+    QWidget*      AdvancedPage      = nullptr;
+    QWidget*      LogPage           = nullptr;
+    int           LogErrors         = 0;         // ERR/WARN lines of the current launch, for the Log tab's title
+    int           LogWarnings       = 0;
     QPixmap       CoverPixmap;                  // full-res cover; scaled to fit CoverLabel on resize
     // Async-cover state: ONE coverReady connection for the window's lifetime (see RebuildCover), keyed on
     // the CID we're currently waiting for — variant switches just retarget these instead of re-connecting.
@@ -151,7 +183,7 @@ private:
     nlohmann::ordered_json PendingCoverNode;
     // Runner daisy-chain UI: a stack of per-step combos (innermost→outermost) + a target-platform hint.
     QWidget*      ChainContainer    = nullptr;  // holds the per-step rows
-    QVBoxLayout*  ChainLayout       = nullptr;
+    QHBoxLayout*  ChainLayout       = nullptr;   // the steps, left to right
     QLabel*       ChainHint         = nullptr;  // "→ linux64" validity hint under the chain
     std::vector<QComboBox*>  ChainCombos;       // one per chain step (rebuilt each render)
     std::vector<std::string> CurrentChain;      // the chosen chain (innermost→outermost runner node ids)
@@ -163,9 +195,9 @@ private:
     QCheckBox*    CloseAfterLaunchCheck = nullptr;
     QCheckBox*    DryRunCheck           = nullptr;
     QCheckBox*    PreserveRuntimeCheck  = nullptr;
-    QGroupBox*    CustomVarGroup        = nullptr;
+    QWidget*      CustomVarGroup        = nullptr;   // the options (the tree and its controls live under it)
     QTreeWidget*  OptionsTree           = nullptr;   // options, in collapsible SECTION rows
-    QGroupBox*    ModuleGroup           = nullptr;
+    QWidget*      ModuleGroup           = nullptr;   // the grafts (Add-ons)
     QTreeWidget*  ModuleTree            = nullptr;
     QPushButton*  GraftUp               = nullptr;   // move the selected ticked graft earlier / later in the order
     QPushButton*  GraftDown             = nullptr;
@@ -173,7 +205,7 @@ private:
     QTextEdit*    ConsoleEdit       = nullptr;
     QStringList   ConsolePending;                    // lines buffered between console flushes (see onLogLine)
     QTimer*       ConsoleFlushTimer = nullptr;       // single-shot ~60ms batcher — one document edit per burst
-    QPushButton*  KillButton        = nullptr;
+    QPushButton*  KillButton        = nullptr;   // shown while a launch runs (in Play's place)
     QPushButton*  LaunchButton      = nullptr;
     QPushButton*  CloseButton       = nullptr;
 

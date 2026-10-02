@@ -10,6 +10,7 @@
 #include "jsonoperations.h"
 #include "ipfswrapper.h"     // LanPeers/SetLanExcluded/LanLaunchVars — the Virtual LAN panel
 #include "variantpicker.h"     // NaturalLess — deterministic version-aware variant ordering
+#include "instancestore.h"     // the instance picker
 
 #include <set>
 #include <algorithm>
@@ -35,6 +36,13 @@
 #include <QMessageBox>
 #include <QSignalBlocker>
 #include <QResizeEvent>
+#include <QDesktopServices>
+#include <QInputDialog>
+#include <QMenu>
+#include <QPainter>
+#include <QPainterPath>
+#include <QUrl>
+#include <QDateTime>
 
 namespace {
 //The graft rows of the graft tree, depth-first (section rows carry no key) — the order grafts apply in.
@@ -79,22 +87,39 @@ bool HideEmptySections(QTreeWidgetItem* I)
     return Any;
 }
 
-//A tree sized to its shown rows, so it never scrolls inside the dialog's own scroll area.
-void FitTree(QTreeWidget* T)
+}
+
+namespace {
+//A runner's id as a person reads it: "geproton_11_3" → "Geproton 11.3", "native-passthrough_exec" → "Native". The id
+//stays in the tooltip; the data names runners by their node label, which is an identifier, not a title.
+QString RunnerDisplayName(const std::string& Id)
 {
-    if (!T) return;
-    const int Base = std::max(T->fontMetrics().height() + 8, 22);
-    int H = 2 * T->frameWidth() + 4;
-    for (QTreeWidgetItemIterator It(T); *It; ++It)
-    {
-        bool Shown = !(*It)->isHidden();
-        for (QTreeWidgetItem* P = (*It)->parent(); Shown && P; P = P->parent()) Shown = P->isExpanded() && !P->isHidden();
-        if (!Shown) continue;
-        const QWidget* W = T->columnCount() > 1 ? T->itemWidget(*It, 1) : nullptr;
-        H += std::max(Base, W ? W->sizeHint().height() + 4 : 0);
-    }
-    T->setMinimumHeight(H);
-    T->setMaximumHeight(H);
+    if (Id == LaunchResolver::kNativeTerminalId) return "Native (built-in)";
+    std::string S = Id;
+    if (S.size() > 5 && S.compare(S.size() - 5, 5, "_exec") == 0) S.resize(S.size() - 5);
+    if (S.rfind("native-passthrough", 0) == 0) return "Native";
+    for (size_t I = 1; I + 1 < S.size(); ++I)
+        if (S[I] == '_') S[I] = (std::isdigit((unsigned char)S[I - 1]) && std::isdigit((unsigned char)S[I + 1])) ? '.' : ' ';
+    if (!S.empty()) S[0] = (char)std::toupper((unsigned char)S[0]);
+    return QString::fromStdString(S);
+}
+
+//The cover with rounded corners, at the given width (its height follows its aspect).
+QPixmap RoundedCover(const QPixmap& Src, int Width, qreal Dpr)
+{
+    if (Src.isNull() || Width <= 0) return QPixmap();
+    const QPixmap Scaled = Src.scaledToWidth((int)(Width * Dpr), Qt::SmoothTransformation);
+    QPixmap Out(Scaled.size());
+    Out.fill(Qt::transparent);
+    QPainter P(&Out);
+    P.setRenderHint(QPainter::Antialiasing);
+    QPainterPath Clip;
+    Clip.addRoundedRect(QRectF(QPointF(0, 0), QSizeF(Scaled.size())), 8 * Dpr, 8 * Dpr);
+    P.setClipPath(Clip);
+    P.drawPixmap(0, 0, Scaled);
+    P.end();
+    Out.setDevicePixelRatio(Dpr);
+    return Out;
 }
 }
 
@@ -115,8 +140,29 @@ PreLaunchWindow::PreLaunchWindow(
     , FaceUid(std::move(FaceUid))
 {
     setWindowTitle("Launch");
-    setMinimumSize(800, 600);
+    setMinimumSize(760, 520);
     setAttribute(Qt::WA_DeleteOnClose);
+    setObjectName("prelaunch");
+    //One quiet, consistent look over the desktop palette: secondary text dimmed, cards a shade off the window, the
+    //primary action in the highlight colour. palette() keeps it right in light and dark themes alike.
+    setStyleSheet(
+        "#prelaunch QLabel[role=\"dim\"] { color: palette(placeholder-text); }"
+        "#prelaunch QLabel[role=\"title\"] { font-size: 17pt; font-weight: 600; }"
+        "#prelaunch QLabel[role=\"field\"] { color: palette(placeholder-text); }"
+        "#prelaunch QTabWidget::pane { border: 1px solid palette(mid); border-radius: 6px; top: -1px; background: palette(base); }"
+        "#prelaunch QTabBar::tab { padding: 5px 14px; border: none; margin-right: 2px; color: palette(placeholder-text); }"
+        "#prelaunch QTabBar::tab:selected { color: palette(text); border-bottom: 2px solid palette(highlight); }"
+        "#prelaunch QTreeWidget { border: none; background: transparent; }"
+        "#prelaunch QTreeWidget::item { padding: 3px 0px; }"
+        "#prelaunch QToolButton#instanceMenu::menu-indicator { image: none; width: 0px; }"
+        "#prelaunch QToolButton#instanceMenu { padding: 2px 8px; font-weight: 600; }"
+        "#prelaunch #footer { background: palette(alternate-base); border-top: 1px solid palette(mid); }"
+        "#prelaunch #playButton { background: palette(highlight); color: palette(highlighted-text); font-weight: 600;"
+        "  padding: 7px 26px; border-radius: 5px; border: none; }"
+        "#prelaunch #playButton:disabled { background: palette(mid); color: palette(placeholder-text); }"
+        "#prelaunch #stopButton { background: #c0392b; color: white; font-weight: 600; padding: 7px 26px; border-radius: 5px; border: none; }"
+        "#prelaunch QProgressBar { max-height: 4px; border: none; background: palette(mid); border-radius: 2px; }"
+        "#prelaunch QProgressBar::chunk { background: palette(highlight); border-radius: 2px; }");
 
     // Initial variant = the one RECOMMENDED under this tile, else the first row.
     if (!this->GroupNodeIds.empty()) LaunchNodeId = this->GroupNodeIds.front();
@@ -124,102 +170,196 @@ PreLaunchWindow::PreLaunchWindow(
         if (const Node* N = Index ? Index->Find(Id) : nullptr;
             N && std::find(N->Recommended.begin(), N->Recommended.end(), Face(N)) != N->Recommended.end()) { LaunchNodeId = Id; break; }
     if (const Node* L = CurrentLaunch()) { BundleDir = L->BundleDir.string(); PackageUID = L->GameKey(); }
+    if (!PackageUID.empty()) InstanceName = InstanceStore::ResolveActive(*GlobalConfigJSON, PackageUID);
 
-    // ----- Layout: cover (left) | controls+console (right) -----
-    QHBoxLayout* RootLayout = new QHBoxLayout(this);
-    RootLayout->setContentsMargins(0, 0, 0, 0);
-    RootLayout->setSpacing(0);
+    // ----- Layout: [cover | header + setup + tabs] over a footer (status, actions) -----
+    QVBoxLayout* Outer = new QVBoxLayout(this);
+    Outer->setContentsMargins(0, 0, 0, 0);
+    Outer->setSpacing(0);
+    QWidget*     Body       = new QWidget(this);
+    QHBoxLayout* RootLayout = new QHBoxLayout(Body);
+    RootLayout->setContentsMargins(18, 18, 18, 12);
+    RootLayout->setSpacing(18);
+    Outer->addWidget(Body, 1);
 
-    // LEFT column: the cover (large, centered) with the Virtual LAN panel tucked under it.
-    QWidget*     LeftWidget = new QWidget(this);
+    // LEFT: the cover at a fixed width (its height follows its aspect), the Virtual LAN panel under it.
+    QWidget*     LeftWidget = new QWidget(Body);
     QVBoxLayout* LeftCol    = new QVBoxLayout(LeftWidget);
     LeftCol->setContentsMargins(0, 0, 0, 0);
-    LeftCol->setSpacing(4);
-    RootLayout->addWidget(LeftWidget, 1);
+    LeftCol->setSpacing(12);
+    LeftWidget->setFixedWidth(230);
+    RootLayout->addWidget(LeftWidget, 0);
     CoverLabel = new QLabel(LeftWidget);
     CoverLabel->setObjectName("CoverLabel");
     CoverLabel->installEventFilter(this);   // rescale on the LABEL's own resize (see eventFilter)
-    CoverLabel->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
-    CoverLabel->setMinimumWidth(200);
-    CoverLabel->setAlignment(Qt::AlignCenter);
-    CoverLabel->setContentsMargins(8, 8, 8, 8);
-    LeftCol->addWidget(CoverLabel, 1);
+    CoverLabel->setSizePolicy(QSizePolicy::Fixed, QSizePolicy::Fixed);
+    CoverLabel->setFixedWidth(230);
+    CoverLabel->setAlignment(Qt::AlignTop | Qt::AlignHCenter);
+    LeftCol->addWidget(CoverLabel, 0, Qt::AlignTop);
     BuildLanPanel(LeftCol);
+    LeftCol->addStretch(1);
 
-    QWidget*     RightWidget = new QWidget(this);   // the RIGHT column (pickers/options/console/buttons)
+    // RIGHT: what is launched and how.
+    QWidget*     RightWidget = new QWidget(Body);
     QVBoxLayout* RightLayout = new QVBoxLayout(RightWidget);
     RightLayout->setContentsMargins(0, 0, 0, 0);
-    RootLayout->addWidget(RightWidget, 2);
+    RightLayout->setSpacing(10);
+    RootLayout->addWidget(RightWidget, 1);
+    QWidget* ControlWidget = RightWidget;
 
-    QSplitter* VSplitter = new QSplitter(Qt::Vertical, RightWidget);
-    RightLayout->addWidget(VSplitter, 1);
-
-    QWidget*     ControlWidget = new QWidget(VSplitter);
-    QVBoxLayout* ControlLayout = new QVBoxLayout(ControlWidget);
-    VSplitter->addWidget(ControlWidget);
+    TitleLabel = new QLabel(RightWidget);
+    TitleLabel->setProperty("role", "title");
+    TitleLabel->setWordWrap(true);
+    RightLayout->addWidget(TitleLabel);
+    MetaLabel = new QLabel(RightWidget);
+    MetaLabel->setProperty("role", "dim");
+    RightLayout->addWidget(MetaLabel);
+    RightLayout->addSpacing(4);
 
     QFormLayout* PickerForm = new QFormLayout();
-    ControlLayout->addLayout(PickerForm);
+    PickerForm->setLabelAlignment(Qt::AlignRight | Qt::AlignVCenter);
+    PickerForm->setFormAlignment(Qt::AlignLeft | Qt::AlignTop);
+    PickerForm->setHorizontalSpacing(12);
+    PickerForm->setVerticalSpacing(8);
+    PickerForm->setFieldGrowthPolicy(QFormLayout::ExpandingFieldsGrow);
+    RightLayout->addLayout(PickerForm);
+    auto FieldLabel = [&](const QString& T) { auto* L = new QLabel(T, RightWidget); L->setProperty("role", "field"); return L; };
+
+    // Instance: which config + saves this launch uses; the menu manages them.
+    {
+        QWidget*     Row = new QWidget(RightWidget);
+        QHBoxLayout* RL  = new QHBoxLayout(Row);
+        RL->setContentsMargins(0, 0, 0, 0);
+        RL->setSpacing(6);
+        InstanceCombo = new QComboBox(Row);
+        InstanceCombo->setObjectName("instanceCombo");
+        InstanceCombo->setSizeAdjustPolicy(QComboBox::AdjustToContents);
+        InstanceCombo->setMinimumWidth(180);
+        RL->addWidget(InstanceCombo);
+        InstanceMenuButton = new QToolButton(Row);
+        InstanceMenuButton->setObjectName("instanceMenu");
+        InstanceMenuButton->setText("⋯");
+        InstanceMenuButton->setToolTip("New, duplicate, rename or delete an instance");
+        InstanceMenuButton->setPopupMode(QToolButton::InstantPopup);
+        InstanceMenuButton->setAutoRaise(true);
+        QMenu* M = new QMenu(InstanceMenuButton);
+        M->addAction("New instance…",       this, &PreLaunchWindow::NewInstance);
+        M->addAction("Duplicate…",          this, &PreLaunchWindow::DuplicateInstance);
+        M->addAction("Rename…",             this, &PreLaunchWindow::RenameInstance);
+        M->addSeparator();
+        M->addAction("Open its folder",     this, [this]{
+            QDesktopServices::openUrl(QUrl::fromLocalFile(QString::fromStdString(
+                InstanceStore::InstanceDir(*this->GlobalConfigJSON, PackageUID, InstanceName).string()))); });
+        M->addSeparator();
+        M->addAction("Delete…",             this, &PreLaunchWindow::DeleteInstance);
+        InstanceMenuButton->setMenu(M);
+        RL->addWidget(InstanceMenuButton);
+        InstanceInfo = new QLabel(Row);
+        InstanceInfo->setProperty("role", "dim");
+        RL->addSpacing(6);
+        RL->addWidget(InstanceInfo, 1);
+        PickerForm->addRow(FieldLabel("Instance"), Row);
+        FillInstances();
+        connect(InstanceCombo, &QComboBox::currentIndexChanged, this, &PreLaunchWindow::onInstanceChanged);
+    }
 
     // Variant combo (the group's launchable nodes) — hidden when there's only one.
     VariantCombo = new QComboBox(ControlWidget);
-    PickerForm->addRow("Variant:", VariantCombo);
+    VariantCombo->setSizeAdjustPolicy(QComboBox::AdjustToContents);
+    PickerForm->addRow(FieldLabel("Version"), VariantCombo);
     VariantLabel = PickerForm->labelForField(VariantCombo);
     FillVariantCombo();
     {
         int Sel = VariantCombo->findData(QString::fromStdString(LaunchNodeId));
+        if (Sel < 0) Sel = VariantCombo->findData(QString::fromStdString(LaunchNodeId), Qt::UserRole, Qt::MatchStartsWith);
         if (Sel >= 0) VariantCombo->setCurrentIndex(Sel);
         bool Multi = VariantCombo->count() > 1;
         VariantCombo->setVisible(Multi);
         if (VariantLabel) VariantLabel->setVisible(Multi);
     }
 
-    // Runner daisy-chain — one combo per step (innermost→outermost), rebuilt per variant; plus a target hint.
-    ChainContainer = new QWidget(ControlWidget);
-    ChainLayout    = new QVBoxLayout(ChainContainer);
-    ChainLayout->setContentsMargins(0, 0, 0, 0);
-    ChainLayout->setSpacing(4);
-    PickerForm->addRow("Runners:", ChainContainer);
-    ChainHint = new QLabel(ControlWidget);
-    ChainHint->setStyleSheet("QLabel { color: #9aa0a6; }");
-    PickerForm->addRow(QString(), ChainHint);
-
-    // Scrollable section: module toggles + CustomVar pickers.
-    QScrollArea* CVScrollArea = new QScrollArea(ControlWidget);
-    CVScrollArea->setWidgetResizable(true);
-    CVScrollArea->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
-    CVScrollArea->setFrameShape(QFrame::NoFrame);
-    QWidget*     CVContainer       = new QWidget();
-    QVBoxLayout* CVContainerLayout = new QVBoxLayout(CVContainer);
-    CVContainerLayout->setContentsMargins(8, 6, 8, 6);   // breathing room so the options aren't crammed
-    CVContainerLayout->setSpacing(12);
-    CVScrollArea->setWidget(CVContainer);
-    ControlLayout->addWidget(CVScrollArea, 1);            // stretch: fill the pane (no empty gap below the options)
-
-    ModuleGroup = new QGroupBox("Modules", CVContainer);
-    QVBoxLayout* ModuleLayout = new QVBoxLayout(ModuleGroup);
-    ModuleTree = new QTreeWidget(ModuleGroup);
-    ModuleTree->setObjectName("graftList");
-    ModuleTree->setHeaderHidden(true);
-    ModuleTree->setRootIsDecorated(true);   // grafts sit in collapsible SECTION rows
-    //Single selection: the selected TICKED graft can be moved — the list order is the order grafts apply in.
-    ModuleTree->setSelectionMode(QAbstractItemView::SingleSelection);
-    ModuleLayout->addWidget(ModuleTree);
+    // Runner daisy-chain — one compact combo per step, in a row (innermost→outermost); a hint only when it is broken.
     {
+        QWidget*     Row = new QWidget(ControlWidget);
+        QVBoxLayout* RV  = new QVBoxLayout(Row);
+        RV->setContentsMargins(0, 0, 0, 0);
+        RV->setSpacing(2);
+        ChainContainer = new QWidget(Row);
+        ChainLayout = new QHBoxLayout(ChainContainer);
+        ChainLayout->setContentsMargins(0, 0, 0, 0);
+        ChainLayout->setSpacing(6);
+        RV->addWidget(ChainContainer, 0, Qt::AlignLeft);
+        ChainHint = new QLabel(Row);
+        ChainHint->setStyleSheet("QLabel { color: #e0a040; }");
+        ChainHint->setWordWrap(true);
+        RV->addWidget(ChainHint);
+        PickerForm->addRow(FieldLabel("Runs with"), Row);
+    }
+
+    // ----- Tabs: Options | Add-ons | Advanced | Log -----
+    Tabs = new QTabWidget(RightWidget);
+    Tabs->setObjectName("prelaunchTabs");
+    Tabs->setDocumentMode(false);
+    RightLayout->addWidget(Tabs, 1);
+
+    // Options: a tree of collapsible SECTION rows ("UserPatch/Interface": '/' nests), each option a row with its label
+    // in column 0 and its control in column 1. The tree scrolls itself.
+    OptionsPage = new QWidget();
+    {
+        auto* OL = new QVBoxLayout(OptionsPage);
+        OL->setContentsMargins(6, 6, 6, 6);
+        CustomVarGroup = OptionsPage;
+        OptionsTree = new QTreeWidget(OptionsPage);
+        OptionsTree->setObjectName("optionsTree");
+        OptionsTree->setColumnCount(2);
+        OptionsTree->setHeaderHidden(true);
+        OptionsTree->setRootIsDecorated(true);
+        OptionsTree->setIndentation(16);
+        OptionsTree->setSelectionMode(QAbstractItemView::NoSelection);
+        OptionsTree->setFocusPolicy(Qt::NoFocus);
+        OptionsTree->header()->setSectionResizeMode(0, QHeaderView::Interactive);
+        OptionsTree->header()->setSectionResizeMode(1, QHeaderView::Stretch);
+        OptionsTree->header()->setStretchLastSection(true);
+        OL->addWidget(OptionsTree);
+    }
+    Tabs->addTab(OptionsPage, "Options");
+
+    // Add-ons: the grafts this version offers, in the order they apply (the selected ticked one can be moved).
+    AddonsPage = new QWidget();
+    {
+        ModuleGroup = AddonsPage;
+        auto* ML = new QVBoxLayout(AddonsPage);
+        ML->setContentsMargins(6, 6, 6, 6);
+        ML->setSpacing(6);
+        ModuleTree = new QTreeWidget(AddonsPage);
+        ModuleTree->setObjectName("graftList");
+        ModuleTree->setHeaderHidden(true);
+        ModuleTree->setRootIsDecorated(true);   // grafts sit in collapsible SECTION rows
+        ModuleTree->setIndentation(16);
+        //Single selection: the selected TICKED graft can be moved — the list order is the order grafts apply in.
+        ModuleTree->setSelectionMode(QAbstractItemView::SingleSelection);
+        ML->addWidget(ModuleTree, 1);
         auto* Row = new QHBoxLayout();
-        GraftUp   = new QPushButton("Move up", ModuleGroup);
-        GraftDown = new QPushButton("Move down", ModuleGroup);
-        GraftUp->setToolTip("Apply the selected graft earlier (those below it fold over it).");
-        GraftDown->setToolTip("Apply the selected graft later (it folds over those above it).");
+        Row->setSpacing(6);
+        auto* OrderHint = new QLabel("Ticked add-ons apply top to bottom.", AddonsPage);
+        OrderHint->setObjectName("graftOrderHint");
+        OrderHint->setProperty("role", "dim");
+        Row->addWidget(OrderHint, 1);
+        GraftUp   = new QPushButton("▲ Earlier", AddonsPage);
+        GraftDown = new QPushButton("▼ Later", AddonsPage);
+        GraftUp->setToolTip("Apply the selected add-on earlier (those below it fold over it).");
+        GraftDown->setToolTip("Apply the selected add-on later (it folds over those above it).");
         GraftUp->setObjectName("graftUp");
         GraftDown->setObjectName("graftDown");
-        Row->addWidget(GraftUp); Row->addWidget(GraftDown); Row->addStretch(1);
-        ModuleLayout->addLayout(Row);
-        GraftNote = new QLabel(ModuleGroup);
+        GraftUp->setFlat(true); GraftDown->setFlat(true);
+        Row->addWidget(GraftUp); Row->addWidget(GraftDown);
+        ML->addLayout(Row);
+        GraftNote = new QLabel(AddonsPage);
         GraftNote->setObjectName("graftNote");
         GraftNote->setWordWrap(true);
+        GraftNote->setStyleSheet("QLabel { color: #e0a040; }");
         GraftNote->setVisible(false);
-        ModuleLayout->addWidget(GraftNote);
+        ML->addWidget(GraftNote);
         connect(GraftUp,   &QPushButton::clicked, this, [this]{ MoveSelectedGraft(-1); });
         connect(GraftDown, &QPushButton::clicked, this, [this]{ MoveSelectedGraft(+1); });
         auto Enable = [this]{
@@ -234,12 +374,9 @@ PreLaunchWindow::PreLaunchWindow(
         connect(ModuleTree, &QTreeWidget::itemChanged, this, Enable);
         GraftUp->setEnabled(false); GraftDown->setEnabled(false);
     }
-    ModuleGroup->setVisible(false);
-    CVContainerLayout->addWidget(ModuleGroup);
+    Tabs->addTab(AddonsPage, "Add-ons");
     //A toggle rebuilds the list — deleting the very row whose setData emitted itemChanged, while Qt is still inside it
     //(a use-after-free: ticking a graft's box could crash). Take the row's key and state now, rebuild after it returns.
-    connect(ModuleTree, &QTreeWidget::itemExpanded,  this, [this](QTreeWidgetItem*){ FitTree(ModuleTree); });
-    connect(ModuleTree, &QTreeWidget::itemCollapsed, this, [this](QTreeWidgetItem*){ FitTree(ModuleTree); });
     connect(ModuleTree, &QTreeWidget::itemChanged, this, [this](QTreeWidgetItem* It, int){
         if (!It) return;
         const QString Key = It->data(0, Qt::UserRole).toString();
@@ -248,75 +385,80 @@ PreLaunchWindow::PreLaunchWindow(
         QMetaObject::invokeMethod(this, [this, Key, Checked]{ PropagateModuleToggle(Key, Checked); }, Qt::QueuedConnection);
     });
 
-    CustomVarGroup = new QGroupBox("Options", CVContainer);
+    // Advanced: how this window and the launch behave.
+    AdvancedPage = new QWidget();
     {
-        //Options are a tree: collapsible SECTION rows ("UserPatch/Interface": '/' nests), each option a row with its
-        //label in column 0 and its control in column 1.
-        auto* OL = new QVBoxLayout(CustomVarGroup);
-        OL->setContentsMargins(6, 6, 6, 6);
-        OptionsTree = new QTreeWidget(CustomVarGroup);
-        OptionsTree->setObjectName("optionsTree");
-        OptionsTree->setColumnCount(2);
-        OptionsTree->setHeaderHidden(true);
-        OptionsTree->setRootIsDecorated(true);
-        OptionsTree->setSelectionMode(QAbstractItemView::NoSelection);
-        OptionsTree->setFocusPolicy(Qt::NoFocus);
-        OptionsTree->header()->setSectionResizeMode(0, QHeaderView::ResizeToContents);
-        OptionsTree->header()->setSectionResizeMode(1, QHeaderView::Stretch);
-        OptionsTree->header()->setStretchLastSection(true);
-        OL->addWidget(OptionsTree);
-        connect(OptionsTree, &QTreeWidget::itemExpanded,  this, [this](QTreeWidgetItem*){ FitTree(OptionsTree); });
-        connect(OptionsTree, &QTreeWidget::itemCollapsed, this, [this](QTreeWidgetItem*){ FitTree(OptionsTree); });
+        auto* AL = new QVBoxLayout(AdvancedPage);
+        AL->setContentsMargins(14, 12, 14, 12);
+        AL->setSpacing(8);
+        RememberCheck         = new QCheckBox("Skip this window next time (launch straight away)", AdvancedPage);
+        CloseAfterLaunchCheck = new QCheckBox("Close this window once the game has started",      AdvancedPage);
+        DryRunCheck           = new QCheckBox("Dry run: discard everything the game writes",       AdvancedPage);
+        PreserveRuntimeCheck  = new QCheckBox("Pause after exit to inspect the runtime",           AdvancedPage);
+        DryRunCheck->setToolTip("The run's writable layer is deleted on cleanup: saves and settings from this run are not kept.");
+        PreserveRuntimeCheck->setToolTip("After the game exits, pause with a dialog while this run's runtime (mounts + "
+                                         "files) is still in place so you can inspect it. It's cleaned up (unmounted + "
+                                         "deleted) as soon as you close that dialog — never left dangling.");
+        for (QCheckBox* C : {RememberCheck, CloseAfterLaunchCheck, DryRunCheck, PreserveRuntimeCheck}) AL->addWidget(C);
+        AL->addStretch(1);
     }
-    CustomVarGroup->setVisible(false);
-    CVContainerLayout->addWidget(CustomVarGroup);
+    Tabs->addTab(AdvancedPage, "Advanced");
 
-    RememberCheck         = new QCheckBox("Hide this dialog next time",          CVContainer);
-    CloseAfterLaunchCheck = new QCheckBox("Close window when game starts",       CVContainer);
-    DryRunCheck           = new QCheckBox("Dry test run (delete WRITELAYER on cleanup)", CVContainer);
-    PreserveRuntimeCheck  = new QCheckBox("Inspect runtime after exit (pause before cleanup)", CVContainer);
-    PreserveRuntimeCheck->setToolTip("After the game exits, pause with a dialog while this run's runtime (mounts + "
-                                     "files) is still in place so you can inspect it. It's cleaned up (unmounted + "
-                                     "deleted) as soon as you close that dialog — never left dangling.");
-    CVContainerLayout->addWidget(RememberCheck);
-    CVContainerLayout->addWidget(CloseAfterLaunchCheck);
-    CVContainerLayout->addWidget(DryRunCheck);
-    CVContainerLayout->addWidget(PreserveRuntimeCheck);
-    CVContainerLayout->addStretch();
-
-    ProgressBar = new QProgressBar(ControlWidget);
-    ProgressBar->setRange(0, 100);
-    ProgressBar->setValue(0);
-    ProgressBar->setVisible(false);
-    ControlLayout->addWidget(ProgressBar);
-
-    StatusLabel = new QLabel(ControlWidget);
-    ControlLayout->addWidget(StatusLabel);
-
-    ConsoleEdit = new QTextEdit(VSplitter);
-    ConsoleEdit->setReadOnly(true);
-    QFont MonoFont("Monospace");
-    MonoFont.setStyleHint(QFont::Monospace);
-    MonoFont.setPointSize(9);
-    ConsoleEdit->setFont(MonoFont);
-    ConsoleEdit->setStyleSheet("QTextEdit { background-color: #1a1a1a; color: #e0e0e0; }");
-    //Unbounded before: a long session accumulated every line ever logged, and each append relaid the whole
-    //document. 5000 blocks is ~20 resolves' worth of context — plenty to scroll back through a failure.
-    ConsoleEdit->document()->setMaximumBlockCount(5000);
+    // Log: everything the launch says (the footer carries the latest line).
+    LogPage = new QWidget();
+    {
+        auto* LL = new QVBoxLayout(LogPage);
+        LL->setContentsMargins(0, 0, 0, 0);
+        ConsoleEdit = new QTextEdit(LogPage);
+        ConsoleEdit->setReadOnly(true);
+        ConsoleEdit->setFrameShape(QFrame::NoFrame);
+        ConsoleEdit->setPlaceholderText("Nothing yet: what the launch does appears here.");
+        QFont MonoFont("Monospace");
+        MonoFont.setStyleHint(QFont::Monospace);
+        MonoFont.setPointSize(9);
+        ConsoleEdit->setFont(MonoFont);
+        ConsoleEdit->setStyleSheet("QTextEdit { background-color: #15171a; color: #d8dade; padding: 6px; }");
+        //Unbounded before: a long session accumulated every line ever logged, and each append relaid the whole
+        //document. 5000 blocks is ~20 resolves' worth of context — plenty to scroll back through a failure.
+        ConsoleEdit->document()->setMaximumBlockCount(5000);
+        LL->addWidget(ConsoleEdit);
+    }
+    Tabs->addTab(LogPage, "Log");
     ConsoleFlushTimer = new QTimer(this);
     ConsoleFlushTimer->setSingleShot(true);
     ConsoleFlushTimer->setInterval(60);
     connect(ConsoleFlushTimer, &QTimer::timeout, this, &PreLaunchWindow::flushConsole);
-    VSplitter->addWidget(ConsoleEdit);
-    VSplitter->setStretchFactor(0, 1);
-    VSplitter->setStretchFactor(1, 2);
 
-    // ----- Button row -----
-    QWidget*     BtnWidget = new QWidget(RightWidget);
-    QHBoxLayout* BtnLayout = new QHBoxLayout(BtnWidget);
-    RightLayout->addWidget(BtnWidget);
+    // ----- Footer: status + progress on the left, the actions on the right -----
+    QWidget*     Footer    = new QWidget(this);
+    Footer->setObjectName("footer");
+    Footer->setAttribute(Qt::WA_StyledBackground, true);
+    QHBoxLayout* BtnLayout = new QHBoxLayout(Footer);
+    BtnLayout->setContentsMargins(18, 10, 18, 10);
+    BtnLayout->setSpacing(8);
+    Outer->addWidget(Footer);
+    {
+        QWidget*     StatusBox = new QWidget(Footer);
+        QVBoxLayout* SL        = new QVBoxLayout(StatusBox);
+        SL->setContentsMargins(0, 0, 0, 0);
+        SL->setSpacing(4);
+        StatusLabel = new QLabel(StatusBox);
+        StatusLabel->setProperty("role", "dim");
+        StatusLabel->setTextInteractionFlags(Qt::TextSelectableByMouse);
+        StatusLabel->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Preferred);   // a long line never widens the window
+        SL->addWidget(StatusLabel);
+        ProgressBar = new QProgressBar(StatusBox);
+        ProgressBar->setRange(0, 100);
+        ProgressBar->setValue(0);
+        ProgressBar->setTextVisible(false);
+        ProgressBar->setVisible(false);
+        SL->addWidget(ProgressBar);
+        BtnLayout->addWidget(StatusBox, 1);
+    }
 
-    QPushButton* PackageEditorButton = new QPushButton("Package Editor", BtnWidget);
+    QPushButton* PackageEditorButton = new QPushButton("Edit package", Footer);
+    PackageEditorButton->setFlat(true);
+    PackageEditorButton->setToolTip("Open this package in the package editor");
     BtnLayout->addWidget(PackageEditorButton);
     connect(PackageEditorButton, &QPushButton::clicked, this, [this]()
     {
@@ -325,16 +467,18 @@ PreLaunchWindow::PreLaunchWindow(
                                                        QString::fromStdString(this->BundleDir), &Created);
         if (Editor && Created) connect(Editor, &PackageEditor::packageSaved, &MainWindow::RefreshPackage);
     });
-    BtnLayout->addStretch();
 
-    KillButton = new QPushButton("Kill", BtnWidget);
+    CloseButton = new QPushButton("Close", Footer);
+    BtnLayout->addWidget(CloseButton);
+    KillButton = new QPushButton("■  Stop", Footer);
+    KillButton->setObjectName("stopButton");
     KillButton->setEnabled(false);
+    KillButton->setVisible(false);
     BtnLayout->addWidget(KillButton);
-    LaunchButton = new QPushButton("Launch", BtnWidget);
+    LaunchButton = new QPushButton("▶  Play", Footer);
+    LaunchButton->setObjectName("playButton");
     LaunchButton->setDefault(true);
     BtnLayout->addWidget(LaunchButton);
-    CloseButton = new QPushButton("Close", BtnWidget);
-    BtnLayout->addWidget(CloseButton);
 
     connect(VariantCombo, &QComboBox::currentIndexChanged, this, &PreLaunchWindow::onVariantChanged);
     connect(LaunchButton, &QPushButton::clicked, this, &PreLaunchWindow::onLaunchClicked);
@@ -345,22 +489,19 @@ PreLaunchWindow::PreLaunchWindow(
     RebuildRunnerChain();
     RebuildModuleTree();
     RebuildCustomVarPickers();
+    RefreshInstanceInfo();
+    if (StatusLabel->text().isEmpty()) StatusLabel->setText("Ready");
+    Tabs->setCurrentWidget(Tabs->isTabVisible(Tabs->indexOf(OptionsPage)) ? OptionsPage : AdvancedPage);
 
-    // Open at a size where every section is fully visible — no manual resize or splitter drag needed. The control
-    // pane lives in a scroll area (whose own sizeHint is small), so derive the height it needs from its actual
-    // content and seed the splitter to give the controls that height; the console takes the rest. Capped to the
-    // screen so it never opens off-screen.
-    CVContainer->adjustSize();
-    const int ControlsH = CVContainer->sizeHint().height() + 96;   // + the pickers + status line above the scroll area
-    int W = 980, H = ControlsH + 300 /*usable console*/ + 70 /*buttons + margins*/;
+    // A comfortable default, capped to the screen so it never opens off-screen.
+    int W = 1000, H = 680;
     if (QScreen* Scr = QGuiApplication::primaryScreen())
     {
         const QRect A = Scr->availableGeometry();
         W = std::min(W, A.width()  - 80);
         H = std::min(H, A.height() - 80);
     }
-    resize(std::max(W, 800), std::max(H, 600));
-    VSplitter->setSizes({ControlsH, std::max(200, height() - ControlsH)});
+    resize(std::max(W, 760), std::max(H, 520));
 }
 
 PreLaunchWindow::~PreLaunchWindow()
@@ -391,6 +532,19 @@ void PreLaunchWindow::RebuildCover()
     const nlohmann::ordered_json& Meta = T ? *T : L->Meta;
     const std::string Title = Meta.is_object() ? Meta.value("TITLE", LaunchNodeId) : LaunchNodeId;
     setWindowTitle("Launch " + QString::fromStdString(Title));
+    if (TitleLabel) TitleLabel->setText(QString::fromStdString(Title));
+    if (MetaLabel)
+    {
+        //Developer · year · edition, from the tile's META — whatever of it is there.
+        QStringList Bits;
+        const nlohmann::ordered_json& M = Meta.is_object() && Meta.contains("META") && Meta["META"].is_object() ? Meta["META"] : Meta;
+        auto Str = [&](const char* K) { return M.is_object() && M.contains(K) && M[K].is_string() ? QString::fromStdString(M[K].get<std::string>()) : QString(); };
+        if (const QString D = Str("DEVELOPER"); !D.isEmpty()) Bits << D;
+        if (const QString R = Str("RELEASEDATE"); R.size() >= 4) Bits << R.left(4);
+        if (const QString E = Str("EDITION"); !E.isEmpty() && E != "Original Release") Bits << E;
+        MetaLabel->setText(Bits.join("  ·  "));
+        MetaLabel->setVisible(!Bits.isEmpty());
+    }
 
     CoverLabel->clear();
     CoverPixmap = QPixmap();
@@ -438,10 +592,11 @@ void PreLaunchWindow::RebuildCover()
 // label then centers it vertically (and horizontally) in its column. No-op until the label has a real size.
 void PreLaunchWindow::UpdateCoverScaled()
 {
-    if (!CoverLabel || CoverPixmap.isNull()) return;
-    const QSize Avail = CoverLabel->contentsRect().size();
-    if (Avail.width() <= 1 || Avail.height() <= 1) return;
-    CoverLabel->setPixmap(CoverPixmap.scaled(Avail, Qt::KeepAspectRatio, Qt::SmoothTransformation));
+    if (!CoverLabel) return;
+    if (CoverPixmap.isNull()) { CoverLabel->clear(); CoverLabel->setFixedHeight(0); return; }
+    const QPixmap P = RoundedCover(CoverPixmap, CoverLabel->width(), devicePixelRatioF());
+    CoverLabel->setPixmap(P);
+    CoverLabel->setFixedHeight((int)(P.height() / P.devicePixelRatio()));
 }
 
 void PreLaunchWindow::resizeEvent(QResizeEvent* Event)
@@ -496,6 +651,7 @@ void PreLaunchWindow::RebuildRunnerChain()
     {
         ContainerParams Cp(std::filesystem::path(BundleDir), LaunchNodeId, std::string());
         Cp.NodeIdx = Index; Cp.LaunchNodeId = LaunchNodeId; Cp.Entrypoint = Entrypoint; Cp.PackageUID = PackageUID;
+        Cp.InstanceName = InstanceName;
         Cp.Platform = ChainStepInput(0);
         CurrentChain = LaunchResolver::ResolveChainIds(*Index, *L, Cp, *GlobalConfigJSON);
     }
@@ -519,50 +675,50 @@ void PreLaunchWindow::RenderChainCombos()
     for (int i = 0; i < (int)CurrentChain.size(); ++i)
     {
         const std::string Input = ChainStepInput(i);
-
-        QWidget*     Row    = new QWidget(ChainContainer);
-        QHBoxLayout* RowLay = new QHBoxLayout(Row);
-        RowLay->setContentsMargins(0, 0, 0, 0);
-        RowLay->setSpacing(6);
-        QLabel* Arrow = new QLabel(QString::fromStdString(Input) + " →", Row);
-        Arrow->setMinimumWidth(64);
-        RowLay->addWidget(Arrow);
-
-        QComboBox* Combo = new QComboBox(Row);
+        if (i > 0)
+        {
+            QLabel* Sep = new QLabel("›", ChainContainer);
+            Sep->setProperty("role", "dim");
+            ChainLayout->addWidget(Sep);
+        }
+        QComboBox* Combo = new QComboBox(ChainContainer);
+        Combo->setSizeAdjustPolicy(QComboBox::AdjustToContents);
         {
             QSignalBlocker B(Combo);
             for (const Node* R : PackageCatalog::CandidateRunners(*Index, Input))
-                Combo->addItem(QString::fromStdString(R->NodeId), QString::fromStdString(R->Key()));   // shown by label, keyed by the index key
+            {
+                Combo->addItem(RunnerDisplayName(R->NodeId), QString::fromStdString(R->Key()));   // keyed by the index key
+                Combo->setItemData(Combo->count() - 1, QString::fromStdString(R->NodeId), Qt::ToolTipRole);
+            }
             // The native terminal step also offers the built-in passthrough (used when no native runner is authored).
-            if (Input == Machine)
-                Combo->addItem("native (passthrough)", QString::fromStdString(LaunchResolver::kNativeTerminalId));
+            if (Input == Machine && Combo->findData(QString::fromStdString(LaunchResolver::kNativeTerminalId)) < 0)
+                Combo->addItem("Native (built-in)", QString::fromStdString(LaunchResolver::kNativeTerminalId));
             int Sel = Combo->findData(QString::fromStdString(CurrentChain[i]));
             if (Sel < 0 && Combo->count() > 0)
             {
                 // The resolved id isn't an installed candidate (e.g. synthesized terminal absent here) — show it anyway
                 // so the chain is faithful and selectable.
-                Combo->addItem(QString::fromStdString(CurrentChain[i]), QString::fromStdString(CurrentChain[i]));
+                Combo->addItem(RunnerDisplayName(CurrentChain[i]), QString::fromStdString(CurrentChain[i]));
                 Sel = Combo->count() - 1;
             }
             if (Sel >= 0) Combo->setCurrentIndex(Sel);
         }
+        Combo->setToolTip(QString("Runs %1 programs").arg(QString::fromStdString(Input)));
         const int Step = i;
         connect(Combo, &QComboBox::currentIndexChanged, this, [this, Step](int){ onChainStepChanged(Step); });
-        RowLay->addWidget(Combo, 1);
-        ChainLayout->addWidget(Row);
+        ChainLayout->addWidget(Combo);
         ChainCombos.push_back(Combo);
     }
 
-    // Validity: a chain is runnable when it ends on the machine platform (the native terminal). Drive the hint + gate.
+    // Validity: a chain is runnable when it ends on the machine platform (the native terminal). Say so only when not.
     const bool Reaches = !CurrentChain.empty() && ChainIdIsTerminal(CurrentChain.back());
     if (ChainHint)
     {
         if (CurrentChain.empty())
-            ChainHint->setText(QString("⚠ no chain reaches %1").arg(QString::fromStdString(Machine)));
-        else if (Reaches)
-            ChainHint->setText(QString("→ %1 ✓").arg(QString::fromStdString(Machine)));
-        else
-            ChainHint->setText(QString("⚠ chain does not reach %1").arg(QString::fromStdString(Machine)));
+            ChainHint->setText(QString("⚠ Nothing installed runs this on %1 — download a runner from the Catalog.").arg(QString::fromStdString(Machine)));
+        else if (!Reaches)
+            ChainHint->setText(QString("⚠ This chain does not reach %1.").arg(QString::fromStdString(Machine)));
+        ChainHint->setVisible(!Reaches);
     }
     if (LaunchButton) LaunchButton->setEnabled(Reaches);
     if (StatusLabel)
@@ -601,7 +757,7 @@ void PreLaunchWindow::RebuildModuleTree()
     ModuleTree->clear();
 
     const Node* L = CurrentLaunch();
-    if (!L) { ModuleGroup->setVisible(false); return; }
+    if (!L) { SetTabShown(AddonsPage, false); return; }
 
     //The GRAFTS this row offers (a node whose list begins with ANY naming something the row contains), ticked by the
     //instance's saved graft list — else the ones RECOMMENDED under this tile (a fresh instance).
@@ -656,9 +812,13 @@ void PreLaunchWindow::RebuildModuleTree()
         It->setData(0, Qt::UserRole + 2, std::find(Ticked.begin(), Ticked.end(), G) != Ticked.end());
         It->setData(0, Qt::UserRole + 4, true);
     }
-    ModuleGroup->setVisible(!GraftRows(ModuleTree).empty());
+    SetTabShown(AddonsPage, !GraftRows(ModuleTree).empty());
+    //Ordering means something only with two or more add-ons.
+    const bool Several = GraftRows(ModuleTree).size() > 1;
+    for (QWidget* X : { static_cast<QWidget*>(GraftUp), static_cast<QWidget*>(GraftDown),
+                        static_cast<QWidget*>(AddonsPage->findChild<QLabel*>("graftOrderHint")) })
+        if (X) X->setVisible(Several);
     RefreshModuleLocks();
-    FitTree(ModuleTree);
 }
 
 void PreLaunchWindow::RefreshModuleLocks()
@@ -724,7 +884,7 @@ void PreLaunchWindow::PropagateModuleToggle(const QString& Key, bool Checked)
 //and saving on the sibling dropped the grafts only this tile offers.
 std::optional<std::vector<std::string>> PreLaunchWindow::SavedGrafts() const
 {
-    const auto US = PackageCatalog::GetPackageUserSettings(*GlobalConfigJSON, PackageUID);
+    const auto US = PackageCatalog::GetPackageUserSettings(*GlobalConfigJSON, PackageUID, InstanceName);
     const std::string Tile = Face(CurrentLaunch());
     PackageCatalog::GraftChoice Saved;
     if (US.contains("GRAFTS") && US["GRAFTS"].is_object() && US["GRAFTS"].contains(Tile) && US["GRAFTS"][Tile].is_array())
@@ -737,10 +897,10 @@ std::optional<std::vector<std::string>> PreLaunchWindow::SavedGrafts() const
 
 void PreLaunchWindow::StoreGrafts(const std::vector<std::string>& List)
 {
-    const auto US = PackageCatalog::GetPackageUserSettings(*GlobalConfigJSON, PackageUID);
+    const auto US = PackageCatalog::GetPackageUserSettings(*GlobalConfigJSON, PackageUID, InstanceName);
     nlohmann::ordered_json ByTile = US.contains("GRAFTS") && US["GRAFTS"].is_object() ? US["GRAFTS"] : nlohmann::ordered_json::object();
     ByTile[Face(CurrentLaunch())] = List;
-    PackageCatalog::SetPackageUserSetting(*GlobalConfigJSON, PackageUID, "GRAFTS", ByTile);
+    PackageCatalog::SetPackageUserSetting(*GlobalConfigJSON, PackageUID, "GRAFTS", ByTile, InstanceName);
 }
 
 void PreLaunchWindow::SaveGrafts()
@@ -755,7 +915,7 @@ static std::map<std::string, std::string> CollectVarValues(QObject* Group);   //
 std::pair<std::map<std::string, std::string>, std::map<std::string, std::string>> PreLaunchWindow::GraftJudging() const
 {
     std::map<std::string, std::string> Instance;
-    if (const auto Saved = PackageCatalog::GetPackageVariables(*GlobalConfigJSON, PackageUID); Saved.is_object())
+    if (const auto Saved = PackageCatalog::GetPackageVariables(*GlobalConfigJSON, PackageUID, InstanceName); Saved.is_object())
         for (const auto &[K, V] : Saved.items()) if (V.is_string()) Instance[K] = V.get<std::string>();
     if (CustomVarGroup) for (const auto &[K, V] : CollectVarValues(CustomVarGroup)) Instance[K] = V;
     return { Instance, { {"UID", Face(Index->Find(LaunchNodeId))}, {"PackageUID", PackageUID} } };
@@ -779,13 +939,12 @@ void PreLaunchWindow::MoveSelectedGraft(int By)
     GraftNote->setVisible(false);
     StoreGrafts(Ticked);
     RebuildModuleTree();                 // rows follow the saved order
-    for (QTreeWidgetItem* It : GraftRows(ModuleTree))
-        if (It->data(0, Qt::UserRole).toString().toStdString() == Key)
+    for (QTreeWidgetItem* Row : GraftRows(ModuleTree))
+        if (Row->data(0, Qt::UserRole).toString().toStdString() == Key)
         {
-            for (QTreeWidgetItem* P = It->parent(); P; P = P->parent()) P->setExpanded(true);   // keep it in view
-            ModuleTree->setCurrentItem(It);
+            for (QTreeWidgetItem* P = Row->parent(); P; P = P->parent()) P->setExpanded(true);   // keep it in view
+            ModuleTree->setCurrentItem(Row);
         }
-    FitTree(ModuleTree);
     RebuildCustomVarPickers();
     RefreshGraftEntryRows();             // the entries grafts add follow the order too
 }
@@ -867,7 +1026,7 @@ void PreLaunchWindow::EvaluateVarConditions()
         if (auto* Row = reinterpret_cast<QTreeWidgetItem*>(Cell->property("CVItem").value<quintptr>()))
             Row->setHidden(!(Key.empty() || Active.count(Key) > 0));
     }
-    if (OptionsTree) { HideEmptySections(OptionsTree->invisibleRootItem()); FitTree(OptionsTree); }
+    if (OptionsTree) HideEmptySections(OptionsTree->invisibleRootItem());
 }
 
 void PreLaunchWindow::RebuildCustomVarPickers()
@@ -881,7 +1040,7 @@ void PreLaunchWindow::RebuildCustomVarPickers()
     OptionsTree->clear();
     for (QWidget* W : OldControls) delete W;
     const Node* L = CurrentLaunch();
-    if (!L) { CustomVarGroup->setVisible(false); return; }
+    if (!L) { SetTabShown(OptionsPage, false); return; }
 
     // The knobs are the FOLDED declarations: the row's (with the ticked grafts), then every chain runner's.
     const Fold::Library Lib = ManifestModel::LibraryOf(*Index);
@@ -901,12 +1060,14 @@ void PreLaunchWindow::RebuildCustomVarPickers()
         AddDecls(Fold::Resolve(Lib, Rid), true);
     }
 
-    const nlohmann::ordered_json SavedVars = PackageCatalog::GetPackageVariables(*GlobalConfigJSON, PackageUID);
+    const nlohmann::ordered_json SavedVars = PackageCatalog::GetPackageVariables(*GlobalConfigJSON, PackageUID, InstanceName);
 
     // Sections (UI.SECTION paths; a runner's options under "Runner"), created as their first option appears.
     std::map<std::string, QTreeWidgetItem*> Sections;
 
     bool AnyVisible = false, AnyCond = false;
+    struct PendingRow { std::string Section; QString Label; QWidget* Field; };
+    std::vector<PendingRow> Rows;     // placed once all are known: loose options above the sections
     std::set<std::string> SeenKeys;   // a KEY surfaces once; package nodes walked first so they win on collision
 
     for (const auto& [CVj, IsRunner] : Decls)
@@ -1012,11 +1173,8 @@ void PreLaunchWindow::RebuildCustomVarPickers()
 
             std::string Section = UI.value("SECTION", std::string());
             if (IsRunner) Section = Section.empty() ? std::string("Runner") : "Runner/" + Section;
-            auto* Row = new QTreeWidgetItem(SectionRow(OptionsTree, Sections, Section));
-            Row->setText(0, Label);
-            Row->setFlags(Qt::ItemIsEnabled);
-            OptionsTree->setItemWidget(Row, 1, Field);
-            Field->setProperty("CVItem", QVariant::fromValue<quintptr>(reinterpret_cast<quintptr>(Row)));
+            //A value control keeps a readable width rather than spanning the window; a tick box is as wide as itself.
+            if (!qobject_cast<QCheckBox*>(Field)) Field->setMaximumWidth(340);
             //WHEN gates this row's visibility (and, in the resolver, its value); the control carries it with the row's
             //key. Top-level preferred; UI.WHEN is a UI-era alias.
             std::string When = CV.value("WHEN", std::string());
@@ -1027,12 +1185,38 @@ void PreLaunchWindow::RebuildCustomVarPickers()
                 Field->setProperty("CVRowKey", QString::fromStdString(Key));
                 AnyCond = true;
             }
+            Rows.push_back({ Section, Label, Field });
         }
+    }
+    //Loose options first, then the sections (each in the order its first option appeared).
+    std::stable_sort(Rows.begin(), Rows.end(), [](const PendingRow& A, const PendingRow& B) { return A.Section.empty() && !B.Section.empty(); });
+    for (const PendingRow& R : Rows)
+    {
+        auto* Row = new QTreeWidgetItem(SectionRow(OptionsTree, Sections, R.Section));
+        Row->setText(0, R.Label);
+        Row->setFlags(Qt::ItemIsEnabled);
+        OptionsTree->setItemWidget(Row, 1, R.Field);
+        R.Field->setProperty("CVItem", QVariant::fromValue<quintptr>(reinterpret_cast<quintptr>(Row)));
     }
 
     if (AnyCond) EvaluateVarConditions();                                       // apply initial WHEN visibility
-    FitTree(OptionsTree);
-    CustomVarGroup->setVisible(AnyVisible);
+    SetTabShown(OptionsPage, AnyVisible);
+    //The label column fits the longest label at its depth — measured over every row, open or folded, so opening a
+    //section never truncates what it shows — within reason; the controls take the rest.
+    {
+        const QFontMetrics Fm(OptionsTree->font());
+        QFont Bold = OptionsTree->font(); Bold.setBold(true);
+        const QFontMetrics FmB(Bold);
+        int Need = 0;
+        for (QTreeWidgetItemIterator It(OptionsTree); *It; ++It)
+        {
+            int Depth = 0;
+            for (QTreeWidgetItem* P = (*It)->parent(); P; P = P->parent()) ++Depth;
+            const bool Sec = (*It)->data(0, Qt::UserRole + 10).isValid();
+            Need = std::max(Need, (Depth + 1) * OptionsTree->indentation() + (Sec ? FmB : Fm).horizontalAdvance((*It)->text(0)) + 24);
+        }
+        OptionsTree->setColumnWidth(0, std::clamp(Need, 160, 440));
+    }
 }
 
 void PreLaunchWindow::BuildLanPanel(QVBoxLayout * LeftCol)
@@ -1213,6 +1397,156 @@ void PreLaunchWindow::ReloadAndRebuild()
     onVariantChanged();
 }
 
+// ---- instances ----------------------------------------------------------------------------------------------------
+
+void PreLaunchWindow::FillInstances()
+{
+    if (!InstanceCombo) return;
+    QSignalBlocker B(InstanceCombo);
+    InstanceCombo->clear();
+    std::vector<std::string> Names = PackageUID.empty() ? std::vector<std::string>{}
+                                                        : InstanceStore::List(*GlobalConfigJSON, PackageUID);
+    //A game never played has no instance yet: its default one is created by the first launch.
+    if (std::find(Names.begin(), Names.end(), InstanceName) == Names.end() && !InstanceName.empty()) Names.push_back(InstanceName);
+    for (const std::string& N : Names)
+        InstanceCombo->addItem(N == InstanceStore::DefaultInstance ? QString("Default") : QString::fromStdString(N),
+                               QString::fromStdString(N));
+    InstanceCombo->setCurrentIndex(std::max(0, InstanceCombo->findData(QString::fromStdString(InstanceName))));
+}
+
+void PreLaunchWindow::onInstanceChanged()
+{
+    const std::string Picked = InstanceCombo->currentData().toString().toStdString();
+    if (Picked.empty() || Picked == InstanceName) return;
+    InstanceName = Picked;
+    //Everything the instance holds: its runner chain, its add-ons, its option values.
+    RebuildRunnerChain();
+    RebuildModuleTree();
+    RebuildCustomVarPickers();
+    RefreshGraftEntryRows();
+    RefreshInstanceInfo();
+}
+
+void PreLaunchWindow::RefreshInstanceInfo()
+{
+    if (!InstanceInfo) return;
+    const auto Cfg = PackageUID.empty() ? nlohmann::ordered_json() : InstanceStore::ReadConfig(*GlobalConfigJSON, PackageUID, InstanceName);
+    const QString Last = Cfg.is_object() && Cfg.contains("LASTRUN") && Cfg["LASTRUN"].is_string()
+                       ? QString::fromStdString(Cfg["LASTRUN"].get<std::string>()) : QString();
+    const QDateTime At = QDateTime::fromString(Last, Qt::ISODate);
+    if (!At.isValid()) { InstanceInfo->setText("Never played"); return; }
+    const qint64 Days = At.toLocalTime().date().daysTo(QDate::currentDate());
+    InstanceInfo->setText(Days <= 0 ? "Last played today" : Days == 1 ? "Last played yesterday"
+                          : Days < 30 ? QString("Last played %1 days ago").arg(Days)
+                          : "Last played " + At.toLocalTime().date().toString("d MMM yyyy"));
+    InstanceInfo->setToolTip(At.toLocalTime().toString(Qt::TextDate));
+}
+
+namespace {
+//A name for a new instance, or "" when cancelled; an invalid or taken name is refused and asked again.
+std::string AskInstanceName(QWidget* Parent, const QString& Title, const QString& Suggest,
+                            const nlohmann::ordered_json& Cfg, const std::string& Uid)
+{
+    QString Name = Suggest;
+    for (;;)
+    {
+        bool Ok = false;
+        Name = QInputDialog::getText(Parent, Title, "Name:", QLineEdit::Normal, Name, &Ok).trimmed();
+        if (!Ok || Name.isEmpty()) return {};
+        const std::string N = Name.toStdString();
+        const auto Have = InstanceStore::List(Cfg, Uid);
+        if (!InstanceStore::ValidName(N))
+            QMessageBox::warning(Parent, Title, "An instance name is one folder name: no slashes, up to 64 characters.");
+        else if (std::find(Have.begin(), Have.end(), N) != Have.end())
+            QMessageBox::warning(Parent, Title, "There is already an instance called \"" + Name + "\".");
+        else return N;
+    }
+}
+}
+
+void PreLaunchWindow::NewInstance()
+{
+    const std::string N = AskInstanceName(this, "New instance", "New instance", *GlobalConfigJSON, PackageUID);
+    if (N.empty()) return;
+    std::string Err;
+    if (!InstanceStore::Create(*GlobalConfigJSON, PackageUID, N, &Err)) { QMessageBox::warning(this, "New instance", QString::fromStdString(Err)); return; }
+    InstanceName = N;
+    FillInstances();
+    RebuildRunnerChain(); RebuildModuleTree(); RebuildCustomVarPickers(); RefreshGraftEntryRows(); RefreshInstanceInfo();
+}
+
+void PreLaunchWindow::DuplicateInstance()
+{
+    const QString Shown = InstanceCombo->currentText();
+    const std::string N = AskInstanceName(this, "Duplicate instance", Shown + " copy", *GlobalConfigJSON, PackageUID);
+    if (N.empty()) return;
+    std::string Err;
+    const auto Have = InstanceStore::List(*GlobalConfigJSON, PackageUID);
+    const bool Exists = std::find(Have.begin(), Have.end(), InstanceName) != Have.end();
+    //An instance never launched has nothing on disk to copy: the duplicate starts fresh, like it.
+    if (!(Exists ? InstanceStore::Clone(*GlobalConfigJSON, PackageUID, InstanceName, N, &Err)
+                 : InstanceStore::Create(*GlobalConfigJSON, PackageUID, N, &Err)))
+    { QMessageBox::warning(this, "Duplicate instance", QString::fromStdString(Err)); return; }
+    InstanceName = N;
+    FillInstances();
+    RebuildRunnerChain(); RebuildModuleTree(); RebuildCustomVarPickers(); RefreshGraftEntryRows(); RefreshInstanceInfo();
+}
+
+void PreLaunchWindow::RenameInstance()
+{
+    const std::string N = AskInstanceName(this, "Rename instance", InstanceCombo->currentText(), *GlobalConfigJSON, PackageUID);
+    if (N.empty()) return;
+    std::string Err;
+    const auto Have = InstanceStore::List(*GlobalConfigJSON, PackageUID);
+    const bool Exists = std::find(Have.begin(), Have.end(), InstanceName) != Have.end();
+    if (!(Exists ? InstanceStore::Rename(*GlobalConfigJSON, PackageUID, InstanceName, N, &Err)
+                 : InstanceStore::Create(*GlobalConfigJSON, PackageUID, N, &Err)))
+    { QMessageBox::warning(this, "Rename instance", QString::fromStdString(Err)); return; }
+    InstanceName = N;
+    FillInstances();
+    RefreshInstanceInfo();
+}
+
+void PreLaunchWindow::DeleteInstance()
+{
+    const QString Shown = InstanceCombo->currentText();
+    QMessageBox Ask(QMessageBox::Warning, "Delete instance",
+                    "Delete the instance \"" + Shown + "\"?\n\nIts saves and settings are deleted with it. This cannot be undone.",
+                    QMessageBox::Cancel, this);
+    QPushButton* Del = Ask.addButton("Delete", QMessageBox::DestructiveRole);
+    Ask.setDefaultButton(QMessageBox::Cancel);
+    Ask.exec();
+    if (Ask.clickedButton() != Del) return;
+    const auto Have = InstanceStore::List(*GlobalConfigJSON, PackageUID);
+    if (std::find(Have.begin(), Have.end(), InstanceName) != Have.end())
+    {
+        std::string Err;
+        if (!InstanceStore::Delete(*GlobalConfigJSON, PackageUID, InstanceName, &Err))
+        { QMessageBox::warning(this, "Delete instance", QString::fromStdString(Err)); return; }
+    }
+    InstanceName = InstanceStore::ResolveActive(*GlobalConfigJSON, PackageUID);
+    FillInstances();
+    RebuildRunnerChain(); RebuildModuleTree(); RebuildCustomVarPickers(); RefreshGraftEntryRows(); RefreshInstanceInfo();
+}
+
+// ---- tabs -----------------------------------------------------------------------------------------------------------
+
+void PreLaunchWindow::SetTabShown(QWidget* Page, bool Shown)
+{
+    if (!Tabs || !Page) return;
+    const int I = Tabs->indexOf(Page);
+    if (I < 0 || Tabs->isTabVisible(I) == Shown) return;
+    Tabs->setTabVisible(I, Shown);
+}
+
+void PreLaunchWindow::UpdateLogTabTitle()
+{
+    if (!Tabs || !LogPage) return;
+    const int I = Tabs->indexOf(LogPage);
+    const int N = LogErrors + LogWarnings;
+    Tabs->setTabText(I, N ? QString("Log  ⚠ %1").arg(N) : QString("Log"));
+}
+
 void PreLaunchWindow::FillVariantCombo()
 {
     QSignalBlocker B(VariantCombo);
@@ -1241,8 +1575,8 @@ void PreLaunchWindow::FillVariantCombo()
             const auto& Ep = N->Entries[Labels[I]];
             if (Ep.is_object() && Ep.contains("GUEST") && Ep["GUEST"].is_array() && !Ep["GUEST"].empty()) continue;   // a runner entry
             const std::string EpLabel = Ep.is_object() ? Ep.value("LABEL", std::string()) : std::string();
-            const std::string Shown = (Labels.size() == 1 || EpLabel.empty()) ? (EpLabel.empty() ? NodeName : (NodeName == EpLabel ? EpLabel : NodeName + " - " + EpLabel))
-                                                                                : NodeName + " - " + EpLabel;
+            //One way to run: the version's name says it. Several: each is the version's name and the entry's.
+            const std::string Shown = (Labels.size() == 1 || EpLabel.empty() || EpLabel == NodeName) ? NodeName : NodeName + " - " + EpLabel;
             Es.push_back({ Id + "\x1f" + Labels[I], QString::fromStdString(Shown), Rec && I == 0 });
         }
     }
@@ -1292,26 +1626,28 @@ void PreLaunchWindow::onLaunchClicked()
     // Persist prefs (keyed by the bundle UID, so the engine's GetPackageUserSettings sees them).
     if (!PackageUID.empty())
     {
-        PackageCatalog::MergePackageVariables(*GlobalConfigJSON, PackageUID, PickerVars);
+        PackageCatalog::MergePackageVariables(*GlobalConfigJSON, PackageUID, PickerVars, InstanceName);
         SaveGrafts();
         //Persist the whole resolved chain (RUNNER_CHAIN supersedes the old single PREFERRED_RUNNER). The resolver
         //honours it on the next launch (and the chain UI pre-selects it).
         { nlohmann::ordered_json ChainJson = nlohmann::ordered_json::array();
           for (const std::string& Id : SelectedChain) ChainJson.push_back(Id);
-          PackageCatalog::SetPackageUserSetting(*GlobalConfigJSON, PackageUID, "RUNNER_CHAIN", ChainJson); }
+          PackageCatalog::SetPackageUserSetting(*GlobalConfigJSON, PackageUID, "RUNNER_CHAIN", ChainJson, InstanceName); }
         if (RememberCheck->isChecked())
-            PackageCatalog::SetPackageUserSetting(*GlobalConfigJSON, PackageUID, "SKIP_LAUNCH_DIALOG", true);
+            PackageCatalog::SetPackageUserSetting(*GlobalConfigJSON, PackageUID, "SKIP_LAUNCH_DIALOG", true, InstanceName);
         persistGlobalConfig();
     }
 
     // Disable controls + show progress.
     ChainContainer->setEnabled(false); VariantCombo->setEnabled(false); CustomVarGroup->setEnabled(false);
-    ModuleGroup->setEnabled(false);
-    RememberCheck->setEnabled(false);
-    CloseAfterLaunchCheck->setEnabled(false); DryRunCheck->setEnabled(false); PreserveRuntimeCheck->setEnabled(false);
-    LaunchButton->setEnabled(false); CloseButton->setEnabled(false);
+    ModuleGroup->setEnabled(false); AdvancedPage->setEnabled(false);
+    InstanceCombo->setEnabled(false); InstanceMenuButton->setEnabled(false);
+    LaunchButton->setVisible(false); KillButton->setVisible(true); CloseButton->setEnabled(false);
     ProgressBar->setValue(0); ProgressBar->setVisible(true);
-    StatusLabel->setText("Starting...");
+    StatusLabel->setStyleSheet(QString());
+    StatusLabel->setText("Starting…");
+    LogErrors = LogWarnings = 0;
+    UpdateLogTabTitle();
 
     // Build + start the worker — native node launch via LaunchNodeId.
     LaunchWorker = new LaunchThread();
@@ -1319,6 +1655,7 @@ void PreLaunchWindow::onLaunchClicked()
     LaunchWorker->LaunchNodeId     = LaunchNodeId;
     LaunchWorker->Entrypoint       = Entrypoint;
     LaunchWorker->Face             = FaceUid;
+    LaunchWorker->InstanceName     = InstanceName;
     LaunchWorker->VariableOverrides = PickerVars;
     LaunchWorker->Grafts            = CollectGrafts();
     LaunchWorker->RunnerChain       = SelectedChain;                          // the full daisy-chain (innermost→outermost)
@@ -1345,8 +1682,9 @@ void PreLaunchWindow::onLaunchClicked()
             return;
         }
         StatusLabel->setStyleSheet("color:#e06c75;font-weight:bold;");
-        StatusLabel->setText(QString("⚠ %1 error(s), %2 warning(s) during this launch — see the log")
+        StatusLabel->setText(QString("⚠ %1 error(s), %2 warning(s) during this launch — see the Log tab")
                                  .arg(Errors).arg(Warnings));
+        if (Errors > 0) Tabs->setCurrentWidget(LogPage);
         //Keep the window up even when "close after launch" is set: closing it would throw away the only place
         //the detail is visible.
         if (Errors > 0) CloseAfterLaunchCheck->setChecked(false);
@@ -1368,11 +1706,12 @@ void PreLaunchWindow::onLogLine(int level, QString context, QString message)
     QString color;
     switch (static_cast<LogLevel>(level))
     {
-        case LogLevel::ERR:  color = "#cc0000"; break;
-        case LogLevel::WARN: color = "#cccc00"; break;
-        case LogLevel::SUCC: color = "#00cc00"; break;
+        case LogLevel::ERR:  color = "#e06c75"; ++LogErrors;   break;
+        case LogLevel::WARN: color = "#e5c07b"; ++LogWarnings; break;
+        case LogLevel::SUCC: color = "#98c379"; break;
         default:             color = "";        break;
     }
+    if (static_cast<LogLevel>(level) == LogLevel::ERR || static_cast<LogLevel>(level) == LogLevel::WARN) UpdateLogTabTitle();
     QString Text = context.toHtmlEscaped() + " " + message.toHtmlEscaped();
     ConsolePending.append(color.isEmpty() ? Text : QString("<span style=\"color:%1\">%2</span>").arg(color, Text));
     if (!ConsoleFlushTimer->isActive()) ConsoleFlushTimer->start();
@@ -1403,15 +1742,22 @@ void PreLaunchWindow::onProgressChanged(int value)
 
 void PreLaunchWindow::onLaunchFinished(bool success, QString errorMsg)
 {
-    KillButton->setEnabled(false);
+    KillButton->setEnabled(false); KillButton->setVisible(false);
+    LaunchButton->setVisible(true);
     CloseButton->setEnabled(true);
-    if (success) StatusLabel->setText("Finished.");
-    else { StatusLabel->setText("Error: " + errorMsg); QMessageBox::warning(this, "Launch failed", errorMsg); }
+    if (success) { if (!StatusLabel->text().startsWith("⚠")) StatusLabel->setText("Finished" + (StatusLabel->text().contains("0 warnings") ? QString("  ·  0 warnings") : QString())); }
+    else
+    {
+        StatusLabel->setStyleSheet("color:#e06c75;font-weight:bold;");
+        StatusLabel->setText("Launch failed: " + errorMsg);
+        Tabs->setCurrentWidget(LogPage);
+        QMessageBox::warning(this, "Launch failed", errorMsg);
+    }
 
     ChainContainer->setEnabled(true); VariantCombo->setEnabled(true); CustomVarGroup->setEnabled(true);
-    ModuleGroup->setEnabled(true);
-    RememberCheck->setEnabled(true);
-    CloseAfterLaunchCheck->setEnabled(true); DryRunCheck->setEnabled(true); PreserveRuntimeCheck->setEnabled(true);
+    ModuleGroup->setEnabled(true); AdvancedPage->setEnabled(true);
+    InstanceCombo->setEnabled(true); InstanceMenuButton->setEnabled(true);
     LaunchButton->setEnabled(true);
     ProgressBar->setValue(0); ProgressBar->setVisible(false);
+    RefreshInstanceInfo();   // the launch stamped LASTRUN
 }
