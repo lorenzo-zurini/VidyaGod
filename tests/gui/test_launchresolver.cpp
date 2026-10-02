@@ -1025,6 +1025,57 @@ private slots:
         QVERIFY(OkTc && ExeTc.find("tc.exe") != std::string::npos && GraftsTc.empty());
     }
 
+    // A graft can be a VERSION (it carries VARIANT): a row of its own that runs on a version it applies onto, with it
+    // applied. Two such grafts presenting one tile are that card's rows (Forgotten Empires 2.2 and 2.5); one presenting
+    // no tile is another row of its base's card (a mod build of The Conquerors). Teeth: launch the graft alone (no base:
+    // nothing runs); leave tile-less graft versions off the shelf; accept a base it does not apply onto.
+    void a_graft_can_be_a_version()
+    {
+        NodeIndex idx;
+        const auto entry = [](const char *Exe, const char *Uid, const char *Title) {
+            return json{ {"LABEL", "Play"}, {"HOST", kMachine}, {"EXE", Exe}, {"TILE", {{"UID", Uid}, {"TITLE", Title}}} };
+        };
+        idx.Nodes["tc"] = parse(json{ {"CID", "tc"}, {"LABEL", "tc"}, {"VARIANT", "1.0e"},
+            {"LAYERS", json::array({ json{{"DIR", "tc"}}, json{{"EXEC", json::array({ entry("tc.exe", "13006", "The Conquerors") })}} })} }, "/tmp/vg_bundle");
+        idx.Nodes["aok"] = parse(json{ {"CID", "aok"}, {"LABEL", "aok"}, {"VARIANT", "2.0a"},
+            {"LAYERS", json::array({ json{{"DIR", "aok"}}, json{{"EXEC", json::array({ entry("aok.exe", "749", "The Age of Kings") })}} })} }, "/tmp/vg_bundle");
+        const auto fe = [&](const char *Id, const char *Ver, const char *Exe) {
+            return parse(json{ {"CID", Id}, {"LABEL", Id}, {"VARIANT", Ver},
+                {"LAYERS", json::array({ json{{"ANY", json::array({"tc"})}}, json{{"DIR", Id}},
+                    json{{"EXEC", json::array({ entry(Exe, "749000001", "Forgotten Empires") })}} })} }, "/tmp/vg_bundle");
+        };
+        idx.Nodes["fe22"] = fe("fe22", "2.2", "fe22.exe");
+        idx.Nodes["fe25"] = fe("fe25", "2.5", "fe25.exe");
+        idx.Nodes["mod"] = parse(json{ {"CID", "mod"}, {"LABEL", "mod"}, {"VARIANT", "1.0e + mod"},
+            {"LAYERS", json::array({ json{{"ANY", json::array({"tc"})}}, json{{"DIR", "mod"}} })} }, "/tmp/vg_bundle");
+        finish(idx);
+
+        std::map<std::string, std::set<std::string>> Rows;
+        for (const auto &T : PackageCatalog::ShelfTiles(idx)) for (const Node *N : T.Rows) Rows[T.Uid].insert(N->NodeId);
+        QCOMPARE(Rows["749000001"], (std::set<std::string>{"fe22", "fe25"}));
+        QCOMPARE(Rows["13006"], (std::set<std::string>{"tc", "mod"}));
+        QCOMPARE(PackageCatalog::GraftBases(idx, "fe25"), (std::vector<std::string>{"tc"}));
+
+        const json cfg = json{{"Settings", json::object()}};
+        const auto launch = [&](const char *Node, const char *Face, const char *Base) {
+            ContainerParams cp("/tmp/vg_bundle");
+            cp.NodeIdx = &idx; cp.LaunchNodeId = Node; cp.LaunchFace = Face; cp.GraftBase = Base;
+            json pool = json::object();
+            const bool Ok = LaunchResolver::InitializeFromNode(cp, pool, cfg);
+            const std::string Exe = cp.ComposedExec.is_object() ? cp.ComposedExec.value("CONTENTPATH", std::string()) : std::string();
+            return std::make_tuple(Ok, Exe, cp.PackageName, cp.AppliedGrafts);
+        };
+        const auto [Ok, Exe, Name, Grafts] = launch("fe25", "749000001", "");
+        QVERIFY(Ok);
+        QVERIFY2(Exe.find("fe25.exe") != std::string::npos, Exe.c_str());
+        QCOMPARE(Name, std::string("Forgotten Empires"));
+        QCOMPARE(Grafts, (std::vector<std::string>{"fe25"}));
+        const auto [OkM, ExeM, NameM, GraftsM] = launch("mod", "13006", "");
+        QVERIFY(OkM && ExeM.find("tc.exe") != std::string::npos);                    // the base's entry, with the mod
+        QCOMPARE(GraftsM, (std::vector<std::string>{"mod"}));
+        QVERIFY(!std::get<0>(launch("fe25", "749000001", "aok")));                     // not a base it applies onto
+    }
+
     // No authored native runner → the terminal is the synthesized passthrough sentinel.
     void chain_synthesizes_native_terminal_when_unauthored()
     {

@@ -133,6 +133,9 @@ private:
     // beyond a dozen entries the combo turns editable with a contains-matching completer (type "1.20" to jump) —
     // so a tile with 903 variants is as navigable as one with 3.
     void FillVariantCombo();
+    // Adopt a row (variant combo data "<base>\x1f<entry>[\x1f<kind>[\x1f<graft>]]"): the node launched, its entry, and —
+    // for a graft that is a version — the graft it runs with.
+    void TakeRow(const std::string& Data);
     // Rebuilds the optional-node toggle tree from the current variant's optional ancestors.
     void RebuildModuleTree();
     void RefreshGraftEntryRows();           // the picker rows a ticked graft with an entry adds ("run Forge") for the current variant
@@ -153,6 +156,7 @@ private:
     std::vector<std::string> GroupNodeIds;
     std::string              FaceUid;
     std::string              TileGraft;     // the graft presenting FaceUid ("" for a variant's tile): always applied
+    std::string              RowGraft;      // the chosen row is a graft that is a version: applied (on LaunchNodeId, its base)
     std::string             LaunchNodeId;   // current variant's node id
     std::string             Entrypoint;     // current entry LABEL ("" = the default)
     std::string             BundleDir;      // current variant's bundle dir

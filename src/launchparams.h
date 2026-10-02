@@ -175,6 +175,9 @@ public:
     //The instance's graft list, in order (later = applied later = wins at a conflict). Unset = the grafts offered to
     //this row that are RECOMMENDED under its tile (a fresh instance). PASSED (instance GRAFTS / --graft).
     std::optional<std::vector<std::string>> Grafts;
+    //When the launched row is a GRAFT that is a version (it carries VARIANT): the version it runs on (one of
+    //PackageCatalog::GraftBases). Empty = the first of them.
+    std::string GraftBase;
     //AUTO-RESOLVED (out): the grafts actually applied (Grafts filtered to what this row offers), in order.
     std::vector<std::string> AppliedGrafts;
 

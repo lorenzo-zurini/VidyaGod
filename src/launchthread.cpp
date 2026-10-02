@@ -85,6 +85,7 @@ void LaunchThread::run()
     struct ContainerParams Params(NoPath, std::string(), std::string());
     Params.VariableOverrides = this->VariableOverrides;
     Params.Grafts            = this->Grafts;
+    Params.GraftBase         = this->GraftBase;
     //Engine-injected session facts: the virtual-LAN vars (SELF_VIP / PEER_VIPS / PEER_NAMES / SUBNET / SANDBOX)
     //plus the player's own display name. Lowest priority (see ContainerParams::SessionVars) and seeded early enough
     //to reach EXEARGS / other CustomVar DEFAULTs. LanLaunchVars is empty when the node is down, so SELF_NAME needs a

@@ -138,23 +138,42 @@ bool LaunchResolver::InitializeFromNode(struct ContainerParams &ContainerParams,
     const Node *Launch = Idx.Find(LaunchId);
     if (!Launch) { LogErr("InitializeFromNode", "Launch node not found: " + LaunchId); return false; }
     if (!Launch->LowerError.empty()) { LogErr("InitializeFromNode", Launch->LowerError); return false; }
+    //A graft that is a version (VARIANT) is a row of its own, but it runs ON a version it applies onto, with it
+    //applied: the row names the game (its tile, its family); the base is what is resolved.
+    const Node *Row = Launch;
+    std::string RowGraft;
+    if (Launch->IsGraft)
+    {
+        const std::vector<std::string> Bases = PackageCatalog::GraftBases(Idx, Launch->Key());
+        if (Bases.empty()) { LogErr("InitializeFromNode", "'" + LaunchId + "' is a graft with nothing here it applies onto."); return false; }
+        std::string B = Bases.front();
+        if (!CP.GraftBase.empty())
+        {
+            if (std::find(Bases.begin(), Bases.end(), CP.GraftBase) == Bases.end())
+            { LogErr("InitializeFromNode", "'" + LaunchId + "' does not apply onto '" + CP.GraftBase + "'."); return false; }
+            B = CP.GraftBase;
+        }
+        RowGraft = Launch->Key();
+        Launch = Idx.Find(B);
+    }
     const std::string LaunchKey = Launch->Key();
     const Fold::Library Lib = ManifestModel::LibraryOf(Idx);
 
     //The launched TILE: the one asked for (a card is one tile; a version may present several), else the node's first.
-    const std::string Face = !CP.LaunchFace.empty() ? CP.LaunchFace : Launch->Uid;
+    const std::string Face = !CP.LaunchFace.empty() ? CP.LaunchFace : !Row->Uid.empty() ? Row->Uid : Launch->Uid;
     //A tile a graft presents (a mod with its own card) is launched as a version it applies onto, with it applied.
     const auto CardIt = Idx.TileGraft.find(Face);
     const std::string CardGraft = CardIt == Idx.TileGraft.end() ? std::string() : CardIt->second;
-    if (!CP.LaunchFace.empty() && CardGraft.empty() && std::find(Launch->Faces.begin(), Launch->Faces.end(), Face) == Launch->Faces.end())
+    if (!CP.LaunchFace.empty() && CardGraft.empty() && std::find(Launch->Faces.begin(), Launch->Faces.end(), Face) == Launch->Faces.end()
+        && std::find(Row->Faces.begin(), Row->Faces.end(), Face) == Row->Faces.end())
     { LogErr("InitializeFromNode", "Node '" + LaunchId + "' does not present tile '" + Face + "'."); return false; }
     const nlohmann::ordered_json *FaceTile = Idx.Tile(Face);
-    const nlohmann::ordered_json &FaceMeta = FaceTile ? *FaceTile : Launch->Meta;
+    const nlohmann::ordered_json &FaceMeta = FaceTile ? *FaceTile : !Row->Meta.empty() ? Row->Meta : Launch->Meta;
     CP.subgame_id = LaunchId;  CP.VariantID = CP.Entrypoint.empty() ? "default" : CP.Entrypoint;
-    CP.PackageUID = Launch->PackageUid.empty() ? LaunchId : Launch->PackageUid;
+    CP.PackageUID = !Row->PackageUid.empty() ? Row->PackageUid : Launch->PackageUid.empty() ? LaunchId : Launch->PackageUid;
     CP.PackageName= FaceMeta.is_object() ? FaceMeta.value("TITLE", LaunchId) : LaunchId;
     CP.GameName   = CP.PackageName;
-    CP.PackagePath= AppPaths::PackagePathOverride().empty() ? Launch->BundleDir : AppPaths::PackagePathOverride();  // --package-dir / in-package
+    CP.PackagePath= AppPaths::PackagePathOverride().empty() ? Row->BundleDir : AppPaths::PackagePathOverride();  // --package-dir / in-package
     CP.UMUID      = FaceMeta.is_object() ? FaceMeta.value("UMUID", std::string("0")) : "0";
 
     //Phase 1 reads the instance's values and the built-ins (%UID% = the launched face, %PackageUID% = its family).
@@ -173,14 +192,17 @@ bool LaunchResolver::InitializeFromNode(struct ContainerParams &ContainerParams,
     std::vector<std::string> Dropped;
     //On a graft's card that graft is the game: first, whatever else is chosen.
     PackageCatalog::GraftChoice Chosen = CP.Grafts;
-    if (!CardGraft.empty())
-    {
-        if (!Chosen) Chosen.emplace();
-        if (std::find(Chosen->begin(), Chosen->end(), CardGraft) == Chosen->end()) Chosen->insert(Chosen->begin(), CardGraft);
-    }
+    //...and the row's own graft (a graft that is a version) right after.
+    for (const std::string &Must : { RowGraft, CardGraft })   // inserted at the front in turn: the card's first
+        if (!Must.empty())
+        {
+            if (!Chosen) Chosen.emplace();
+            if (std::find(Chosen->begin(), Chosen->end(), Must) == Chosen->end()) Chosen->insert(Chosen->begin(), Must);
+        }
     CP.AppliedGrafts = PackageCatalog::AppliedGrafts(Idx, LaunchKey, Chosen, Instance, Builtins, &Dropped);
-    if (!CardGraft.empty() && std::find(CP.AppliedGrafts.begin(), CP.AppliedGrafts.end(), CardGraft) == CP.AppliedGrafts.end())
-    { LogErr("InitializeFromNode", "'" + LaunchId + "' is not something tile '" + Face + "' applies onto."); return false; }
+    for (const std::string &Must : { CardGraft, RowGraft })
+        if (!Must.empty() && std::find(CP.AppliedGrafts.begin(), CP.AppliedGrafts.end(), Must) == CP.AppliedGrafts.end())
+        { LogErr("InitializeFromNode", "'" + Must + "' cannot be applied to '" + LaunchKey + "' (tile '" + Face + "')."); return false; }
     for (const std::string &G : Dropped)
         LogWarn("InitializeFromNode", "Graft '" + G + "' is not offered to '" + LaunchId + "' at its position (its ANY does not hold, or it is not installed) — not applied.");
     const Fold::Plan Plan = Fold::Resolve(Lib, LaunchKey, Instance, Builtins, CP.AppliedGrafts);

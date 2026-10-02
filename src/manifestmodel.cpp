@@ -349,6 +349,32 @@ void DeriveFacts(NodeIndex &Idx)
     }
 }
 
+std::vector<std::string> GraftBases(const NodeIndex &Idx, const std::string &Graft)
+{
+    std::vector<std::string> Out;
+    const Node *G = Idx.Find(Graft);
+    if (!G || !G->IsGraft || !G->Json.contains("LAYERS") || G->Json["LAYERS"].empty()) return Out;
+    std::map<std::string, std::vector<const std::string *>> ContainedBy;   // node -> the nodes naming it
+    for (const auto &[Id, N] : Idx.Nodes) for (const std::string &R : N.Refs) ContainedBy[R].push_back(&Id);
+    const nlohmann::ordered_json &First = G->Json["LAYERS"][0];
+    std::set<std::string> Seen;
+    std::vector<std::string> Todo;
+    if (First.contains("ANY") && First["ANY"].is_array())
+        for (const auto &A : First["ANY"]) if (A.is_string()) Todo.push_back(A.get<std::string>());
+    std::vector<const Node *> Bases;
+    while (!Todo.empty())
+    {
+        const std::string X = Todo.back(); Todo.pop_back();
+        if (!Seen.insert(X).second) continue;
+        if (const Node *V = Idx.Find(X); V && V->IsVariant() && !V->IsGraft) Bases.push_back(V);
+        if (const auto It = ContainedBy.find(X); It != ContainedBy.end()) for (const std::string *P : It->second) Todo.push_back(*P);
+    }
+    std::sort(Bases.begin(), Bases.end(), [](const Node *A, const Node *B) {
+        return A->Variant != B->Variant ? A->Variant < B->Variant : A->Key() < B->Key(); });
+    for (const Node *B : Bases) Out.push_back(B->Key());
+    return Out;
+}
+
 std::vector<std::string> Closure(const NodeIndex &Idx, const std::string &Root, std::vector<std::string> *Missing)
 {
     std::vector<std::string> Order;
@@ -885,13 +911,13 @@ void ValidateNodeGraph(const NodeIndex &Idx, std::vector<std::string> &Errors, s
         }
 
         //The node's own facets.
-        if (!N.Variant.empty() && !N.HasExec)
+        if (!N.Variant.empty() && !N.HasExec && !N.IsGraft)   // a graft version runs its base's entries
             Errors.push_back(Tag + ": VARIANT '" + N.Variant + "' has no effective entry to run");
-        if (!N.Variant.empty() && N.HasExec && N.Faces.empty())
+        if (!N.Variant.empty() && N.HasExec && N.Faces.empty() && !N.IsGraft)   // a graft version: under its bases' cards
             Errors.push_back(Tag + ": VARIANT '" + N.Variant + "' presents no tile (no entry in its fold carries a TILE) — it appears under no card");
         for (const std::string &U : N.Recommended)
         {
-            if (!N.Variant.empty() && std::find(N.Faces.begin(), N.Faces.end(), U) == N.Faces.end())
+            if (!N.Variant.empty() && !(N.IsGraft && N.Faces.empty()) && std::find(N.Faces.begin(), N.Faces.end(), U) == N.Faces.end())
                 Errors.push_back(Tag + ": RECOMMENDED names tile '" + U + "', which this variant does not present");
             else if (N.Variant.empty() && !N.IsGraft)
                 Warnings.push_back(Tag + ": RECOMMENDED on a node that is neither a variant nor a graft means nothing");
@@ -903,22 +929,34 @@ void ValidateNodeGraph(const NodeIndex &Idx, std::vector<std::string> &Errors, s
         //Per ROW (a variant; a runner root): resolve it — default options, and every bool option on with every
         //offered graft ticked — and check what the resolution itself can see.
         if (!N.IsVariant() && !N.OwnRunner) continue;
-        std::vector<std::pair<Fold::Vars, std::vector<std::string>>> Configs = { {{}, {}} };
+        //A graft that is a version is checked as it runs: on a version it applies onto, with it applied first.
+        std::string Root = Id;
+        std::vector<std::string> Base0;
+        if (N.IsGraft)
         {
-            const Fold::Plan P0 = Fold::Resolve(Lib, Id);
+            const std::vector<std::string> Bases = GraftBases(Idx, Id);
+            if (Bases.empty()) { Errors.push_back(Tag + ": a graft that is a version, with nothing in this library it applies onto"); continue; }
+            Root = Bases.front();
+            Base0 = { Id };
+        }
+        std::vector<std::pair<Fold::Vars, std::vector<std::string>>> Configs = { {{}, Base0} };
+        {
+            const Fold::Plan P0 = Fold::Resolve(Lib, Root, {}, {}, Base0);
             Fold::Vars AllOn;
             for (const auto &[K, D] : P0.Decls.items())
                 if (D.is_object() && D.contains("UI") && D["UI"].is_object() && D["UI"].value("CONTROL", std::string()) == "bool")
                     AllOn[K] = "1";
             //every offered graft, a graft on a graft included (offered once the graft it needs is applied)
-            const std::vector<std::string> All = Fold::ApplyGrafts(Lib, Grafts, Id, AllOn, {}, N.Uid, nullptr, nullptr, true);
-            if (!AllOn.empty() || !All.empty()) Configs.push_back({ AllOn, All });
+            std::vector<std::string> All = Base0;
+            for (const std::string &G : Fold::ApplyGrafts(Lib, Grafts, Root, AllOn, {}, N.Uid, nullptr, nullptr, true))
+                if (G != Id) All.push_back(G);
+            if (!AllOn.empty() || All.size() > Base0.size()) Configs.push_back({ AllOn, All });
         }
         std::set<std::string> Said;                                     // one report per problem across configs
         auto Once = [&](std::vector<std::string> &Where, const std::string &Msg) { if (Said.insert(Msg).second) Where.push_back(Msg); };
         for (const auto &[Inst, Gs] : Configs)
         {
-            const Fold::Plan P = Fold::Resolve(Lib, Id, Inst, {}, Gs);
+            const Fold::Plan P = Fold::Resolve(Lib, Root, Inst, {}, Gs);
             if (!P.Error.empty()) Once(Errors, Tag + ": " + P.Error);
             for (const auto &[Ev, Cid] : P.Events)
             {
@@ -959,7 +997,7 @@ void ValidateNodeGraph(const NodeIndex &Idx, std::vector<std::string> &Errors, s
             }
         }
         if (!N.IsVariant()) continue;
-        const Fold::Plan P = Fold::Resolve(Lib, Id);
+        const Fold::Plan P = Fold::Resolve(Lib, Root, {}, {}, Base0);
         //Every entry is a way to run the user can pick, so every one is checked.
         for (const auto &[Lbl, E] : N.Entries.items())
         {

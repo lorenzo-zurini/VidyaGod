@@ -26,6 +26,7 @@ public:
     // Fields must be populated before calling start().
     nlohmann::ordered_json GlobalConfigJSON;
     std::string            LaunchNodeId;      // Native node-graph launch: the launchable node to run
+    std::string            GraftBase;         // LaunchNodeId is a graft that is a version: the version it runs on
     std::string            Entrypoint;        // which entry (LABEL; "" = the launched tile's entry)
     std::string            Face;              // the launched tile (its UID; "" = the node's first tile) — %UID%
     std::string            InstanceName;      // Which INSTANCE to launch (config + USERDATA); "" ⇒ the active one

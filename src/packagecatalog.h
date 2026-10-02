@@ -362,12 +362,16 @@ struct ShelfTile
 // game, then its children by depth, then by title — and families order by the base game's title. Under a tile, the
 // variant RECOMMENDED under it comes first, then by VARIANT name. A variant presenting two tiles is a row under each.
 // A tile a graft presents (NodeIndex::TileGraft) is a card too: its rows are the variants the graft applies onto
-// (those containing a node its ANY names), and the card names the graft (ShelfTile::Graft).
+// (GraftBases), and the card names the graft (ShelfTile::Graft). A graft that is a VERSION (it carries VARIANT) is a
+// row: under the tiles its own entries present, else under its bases' tiles; it runs on a base with it applied.
 std::vector<ShelfTile> ShelfTiles(const NodeIndex &Idx);
 // The row a tile shows for a variant: the variant (a node with VARIANT) presenting tile Uid whose VARIANT is Variant;
 // with Variant empty, the tile's default row — the variant RECOMMENDED under it, else the first by VARIANT name. ""
 // when there is none, *Why saying what the tile offers instead.
 std::string RowUnderTile(const NodeIndex &Idx, const std::string &Uid, const std::string &Variant, std::string *Why = nullptr);
+// The versions a graft applies onto: the variants (not grafts themselves) containing, transitively, a node its leading
+// ANY names — what a graft that is a card, or a version, runs on. Recommended-free order: by VARIANT, then key.
+std::vector<std::string> GraftBases(const NodeIndex &Idx, const std::string &Graft);
 // Runner nodes that can serve a launchable on this machine (GUEST ∋ launch host, HOST==machine, executable
 // available), in sorted node-id order — for the prelaunch runner dropdown.
 std::vector<const Node*> RunnerCandidates(const NodeIndex &Idx, const Node &Launch);

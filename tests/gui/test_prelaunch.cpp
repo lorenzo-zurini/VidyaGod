@@ -451,6 +451,53 @@ private slots:
         QVERIFY(Up);                                                          // but the patch is its add-on there
     }
 
+    // Grafts that are versions are rows: the card's version picker names them, the picked one is applied (its option
+    // shows), and none is offered as an add-on. Teeth: rows from a graft version's own resolve (no base: no entry, no
+    // row); offer graft versions as add-ons.
+    void graftVersionsAreRows()
+    {
+        NodeIndex idx;
+        const auto entry = [](const char *Exe, const char *Uid) {
+            return json{ {"LABEL", "Play"}, {"HOST", ManifestModel::MachinePlatform()}, {"EXE", Exe}, {"TILE", {{"UID", Uid}, {"TITLE", Uid}}} };
+        };
+        idx.Nodes["tc"] = parse(json{ {"CID", "tc"}, {"LABEL", "tc"}, {"VARIANT", "1.0e"},
+            {"LAYERS", json::array({ json{{"DIR", "tc"}}, json{{"EXEC", json::array({ entry("tc.exe", "61") })}} })} });
+        const auto fe = [&](const char *Id, const char *Ver) {
+            return parse(json{ {"CID", Id}, {"LABEL", Id}, {"VARIANT", Ver},
+                {"LAYERS", json::array({ json{{"ANY", json::array({"tc"})}}, json{{"DIR", Id}},
+                    json{{"VARS", {{std::string(Id) + "_opt", {{"DEFAULT", "1"}, {"UI", {{"CONTROL", "bool"}, {"LABEL", Id}}}}}}}},
+                    json{{"EXEC", json::array({ entry("fe.exe", "61001") })}} })} });
+        };
+        idx.Nodes["fe22"] = fe("fe22", "2.2");
+        idx.Nodes["fe25"] = fe("fe25", "2.5");
+        ManifestModel::DeriveFacts(idx);
+        json Cfg = json{{"Settings", json::object()}};
+        PreLaunchWindow W(&Cfg, &idx, {"fe22", "fe25"}, "61001");
+        QCoreApplication::processEvents();
+        QComboBox *Versions = nullptr;
+        for (QComboBox *C : W.findChildren<QComboBox *>()) if (C->count() == 2 && C->findText("2.5") >= 0) Versions = C;
+        QVERIFY2(Versions, "the graft versions are not the card's rows");
+        const auto hasOpt = [&](const QString &K) {
+            for (QWidget *X : W.findChildren<QWidget *>()) if (X->property("CVKey").toString() == K) return true;
+            return false;
+        };
+        Versions->setCurrentIndex(Versions->findText("2.5"));
+        QCoreApplication::processEvents();
+        QVERIFY(hasOpt("fe25_opt") && !hasOpt("fe22_opt"));                   // the picked version is applied, only it
+        if (auto *List = W.findChild<QTreeWidget *>("graftList"))
+            for (QTreeWidgetItemIterator It(List); *It; ++It) QVERIFY((*It)->text(0) != "fe22" && (*It)->text(0) != "fe25");
+
+        //A version with no entry of its own (a mod build) runs its base's: it is still a row of the base's card.
+        idx.Nodes["mod"] = parse(json{ {"CID", "mod"}, {"LABEL", "mod"}, {"VARIANT", "1.0e + mod"},
+            {"LAYERS", json::array({ json{{"ANY", json::array({"tc"})}}, json{{"DIR", "mod"}} })} });
+        ManifestModel::DeriveFacts(idx);
+        PreLaunchWindow W2(&Cfg, &idx, {"tc", "mod"}, "61");
+        QComboBox *Rows = nullptr;
+        for (QComboBox *C : W2.findChildren<QComboBox *>()) if (C->findText("1.0e") >= 0) Rows = C;
+        QVERIFY(Rows);
+        QVERIFY2(Rows->findText("1.0e + mod") >= 0, "a version with no entry of its own has no row");
+    }
+
     // The tabs exist only when they have something in them: a game with no options and no add-ons opens on Advanced.
     // Teeth: always show Options and Add-ons.
     void emptyTabsAreNotShown()

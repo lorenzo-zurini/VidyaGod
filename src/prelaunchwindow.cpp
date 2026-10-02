@@ -273,9 +273,11 @@ PreLaunchWindow::PreLaunchWindow(
     VariantLabel = PickerForm->labelForField(VariantCombo);
     FillVariantCombo();
     {
-        int Sel = VariantCombo->findData(QString::fromStdString(LaunchNodeId));
+        //The row named LaunchNodeId (a variant, or a graft that is a version: its rows carry it as their row id).
+        int Sel = VariantCombo->findData(QString::fromStdString(LaunchNodeId), Qt::UserRole + 1);
         if (Sel < 0) Sel = VariantCombo->findData(QString::fromStdString(LaunchNodeId), Qt::UserRole, Qt::MatchStartsWith);
         if (Sel >= 0) VariantCombo->setCurrentIndex(Sel);
+        if (VariantCombo->currentIndex() >= 0) TakeRow(VariantCombo->currentData().toString().toStdString());
         bool Multi = VariantCombo->count() > 1;
         VariantCombo->setVisible(Multi);
         if (VariantLabel) VariantLabel->setVisible(Multi);
@@ -772,13 +774,15 @@ void PreLaunchWindow::RebuildModuleTree()
     //elsewhere it is played from that card.
     const auto HasCard = [&](const std::string& G) {
         for (const auto& [U, Tg] : Index->TileGraft) if (Tg == G) return true;
-        return false;
+        const Node* GN = Index->Find(G);
+        return GN && !GN->Variant.empty();      // a graft that is a version is a row, not an add-on
     };
     Offered.erase(std::remove_if(Offered.begin(), Offered.end(), HasCard), Offered.end());
     //What the card's graft contains is always there with it (Forgotten Empires brings UserPatch): not a choice.
-    if (!TileGraft.empty())
+    for (const std::string& Forced : { TileGraft, RowGraft })
     {
-        const std::vector<std::string> In = ManifestModel::Closure(*Index, TileGraft);
+        if (Forced.empty()) continue;
+        const std::vector<std::string> In = ManifestModel::Closure(*Index, Forced);
         Offered.erase(std::remove_if(Offered.begin(), Offered.end(), [&](const std::string& G) {
             return std::find(In.begin(), In.end(), G) != In.end(); }), Offered.end());
     }
@@ -909,8 +913,9 @@ std::optional<std::vector<std::string>> PreLaunchWindow::SavedGrafts() const
         Saved.emplace();
         for (const auto& G : US["GRAFTS"][Tile]) if (G.is_string()) Saved->push_back(G.get<std::string>());
     }
-    if (Saved && !TileGraft.empty() && std::find(Saved->begin(), Saved->end(), TileGraft) == Saved->end())
-        Saved->insert(Saved->begin(), TileGraft);   // grafts on the card's graft are judged with it in place
+    for (const std::string& Forced : { RowGraft, TileGraft })   // grafts on these are judged with them in place
+        if (Saved && !Forced.empty() && std::find(Saved->begin(), Saved->end(), Forced) == Saved->end())
+            Saved->insert(Saved->begin(), Forced);
     return PackageCatalog::CurrentGraftChoice(*Index, Saved);
 }
 
@@ -975,11 +980,12 @@ std::vector<std::string> PreLaunchWindow::CollectGrafts() const
 {
     std::vector<std::string> Out;
     if (!TileGraft.empty()) Out.push_back(TileGraft);      // the card's own graft applies first, always
+    if (!RowGraft.empty()) Out.push_back(RowGraft);        // then the row's (a graft that is a version)
     if (!ModuleTree) return Out;
     std::set<std::string> TickedRows;
     for (QTreeWidgetItem* It : GraftRows(ModuleTree))
         if (It->data(0, Qt::UserRole + 2).toBool()) TickedRows.insert(It->data(0, Qt::UserRole).toString().toStdString());
-    for (const std::string& G : AppliedOrder) if (TickedRows.count(G) && G != TileGraft) Out.push_back(G);
+    for (const std::string& G : AppliedOrder) if (TickedRows.count(G) && G != TileGraft && G != RowGraft) Out.push_back(G);
     return Out;
 }
 
@@ -1354,18 +1360,13 @@ void PreLaunchWindow::onVariantChanged()
     //Combo data = "<node key>\x1f<entrypoint label>": a variant is (node, entrypoint).
     //Combo data = "<variant key>\x1f<entry label>[\x1f<graft key>]": a row is (variant, entry) — of the variant's own
     //effective entries, or of a ticked graft that carries entries (a mod loader: "run Forge").
-    const std::string Data = VariantCombo->currentData().toString().toStdString();
-    const size_t Sep = Data.find('\x1f');
-    const std::string PrevLaunch = LaunchNodeId;
-    LaunchNodeId = Data.substr(0, Sep);
-    std::string Rest = Sep == std::string::npos ? std::string() : Data.substr(Sep + 1);
-    Entrypoint = Rest.substr(0, Rest.find('\x1f'));
-    if (const Node* L = CurrentLaunch()) { BundleDir = L->BundleDir.string(); PackageUID = L->GameKey(); }
+    const std::string PrevLaunch = LaunchNodeId + "\x1f" + RowGraft;
+    TakeRow(VariantCombo->currentData().toString().toStdString());
     RebuildCover();
     RebuildRunnerChain();
     RebuildModuleTree();
     RebuildCustomVarPickers();
-    if (PrevLaunch != LaunchNodeId) RefreshGraftEntryRows();
+    if (PrevLaunch != LaunchNodeId + "\x1f" + RowGraft) RefreshGraftEntryRows();
 }
 
 void PreLaunchWindow::RefreshGraftEntryRows()
@@ -1375,7 +1376,7 @@ void PreLaunchWindow::RefreshGraftEntryRows()
     QSignalBlocker B(VariantCombo);
     const QString Keep = VariantCombo->currentData().toString();
     for (int i = VariantCombo->count() - 1; i >= 0; --i)
-        if (VariantCombo->itemData(i).toString().count(QChar(0x1f)) >= 2) VariantCombo->removeItem(i);
+        if (VariantCombo->itemData(i).toString().section(QChar(0x1f), 2, 2) == "graft") VariantCombo->removeItem(i);
     const Node* L = CurrentLaunch();
     if (L && Index)
     {
@@ -1568,16 +1569,61 @@ void PreLaunchWindow::UpdateLogTabTitle()
     Tabs->setTabText(I, N ? QString("Log  ⚠ %1").arg(N) : QString("Log"));
 }
 
+void PreLaunchWindow::TakeRow(const std::string& Data)
+{
+    std::vector<std::string> F;
+    for (size_t A = 0;;)
+    {
+        const size_t B = Data.find('\x1f', A);
+        F.push_back(Data.substr(A, B == std::string::npos ? std::string::npos : B - A));
+        if (B == std::string::npos) break;
+        A = B + 1;
+    }
+    LaunchNodeId = F[0];
+    Entrypoint = F.size() > 1 ? F[1] : std::string();
+    RowGraft = F.size() > 3 && F[2] == "row" ? F[3] : std::string();
+    //The row's game: a graft that is a version names it (its tile, its family); else the variant does.
+    const Node* G = RowGraft.empty() ? nullptr : Index->Find(RowGraft);
+    if (const Node* L = CurrentLaunch()) { BundleDir = (G ? G : L)->BundleDir.string(); PackageUID = (G && !G->PackageUid.empty() ? G : L)->GameKey(); }
+}
+
 void PreLaunchWindow::FillVariantCombo()
 {
     QSignalBlocker B(VariantCombo);
     VariantCombo->clear();
-    struct E { std::string Id; QString Lbl; bool Rec; };
+    struct E { std::string Id; QString Lbl; bool Rec; std::string Row = {}; };   // Row: the row's node (a graft version)
     std::vector<E> Es;
     for (const std::string& Id : GroupNodeIds)
     {
         const Node* N = Index ? Index->Find(Id) : nullptr;
         if (!N) continue;
+        if (N->IsGraft)
+        {
+            //A graft that is a version: a row per version it applies onto (named by it, and by its base when it has
+            //several), run by the entries presenting this card with it applied.
+            const std::vector<std::string> Bases = PackageCatalog::GraftBases(*Index, Id);
+            const bool Rec = std::find(N->Recommended.begin(), N->Recommended.end(), Face(N)) != N->Recommended.end();
+            const std::string Name = !N->Variant.empty() ? N->Variant : N->NodeId;
+            for (const std::string& B : Bases)
+            {
+                std::vector<std::string> With;
+                if (!TileGraft.empty()) With.push_back(TileGraft);
+                With.push_back(Id);
+                const Fold::Plan P = Fold::Resolve(ManifestModel::LibraryOf(*Index), B, {}, {}, With);
+                const Node* BN = Index->Find(B);
+                const std::string On = Bases.size() > 1 && BN ? " (on " + (!BN->Variant.empty() ? BN->Variant : BN->NodeId) + ")" : std::string();
+                std::vector<std::string> Mine;
+                for (const auto& [Lb, Ep] : P.Exec.items())
+                {
+                    if (!Ep.is_object() || (Ep.contains("GUEST") && Ep["GUEST"].is_array() && !Ep["GUEST"].empty())) continue;
+                    const bool Here = FaceUid.empty() || (Ep.contains("TILE") && Ep["TILE"].is_object() && Ep["TILE"].value("UID", std::string()) == FaceUid);
+                    if (Here) Mine.push_back(Lb);
+                }
+                for (const std::string& Lb : Mine)
+                    Es.push_back({ B + "\x1f" + Lb + "\x1frow\x1f" + Id, QString::fromStdString(Name + On + (Mine.size() > 1 ? " - " + Lb : std::string())), Rec && Lb == Mine.front(), Id });
+            }
+            continue;
+        }
         if (!TileGraft.empty())
         {
             //A graft's card: each variant it applies onto, run by the graft's entries presenting this card.
@@ -1621,7 +1667,10 @@ void PreLaunchWindow::FillVariantCombo()
         return NaturalLess(Ea.Lbl, Eb.Lbl);
     });
     for (const E& X : Es)
+    {
         VariantCombo->addItem((X.Rec ? QStringLiteral("⭐ ") : QString()) + X.Lbl, QString::fromStdString(X.Id));
+        VariantCombo->setItemData(VariantCombo->count() - 1, QString::fromStdString(X.Row.empty() ? X.Id.substr(0, X.Id.find('\x1f')) : X.Row), Qt::UserRole + 1);
+    }
     // Type-to-find once the list is big: an editable combo with a contains-matching completer over its own model
     // (the popup list view is virtualized by Qt, so the item count itself is a non-issue).
     const bool Big = VariantCombo->count() > 12;
@@ -1686,7 +1735,9 @@ void PreLaunchWindow::onLaunchClicked()
     // Build + start the worker — native node launch via LaunchNodeId.
     LaunchWorker = new LaunchThread();
     LaunchWorker->GlobalConfigJSON = *GlobalConfigJSON;
-    LaunchWorker->LaunchNodeId     = LaunchNodeId;
+    //A graft that is a version is launched as itself, on its base (the engine applies it and names the game by it).
+    LaunchWorker->LaunchNodeId     = RowGraft.empty() ? LaunchNodeId : RowGraft;
+    LaunchWorker->GraftBase        = RowGraft.empty() ? std::string() : LaunchNodeId;
     LaunchWorker->Entrypoint       = Entrypoint;
     LaunchWorker->Face             = FaceUid;
     LaunchWorker->InstanceName     = InstanceName;

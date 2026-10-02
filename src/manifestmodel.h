@@ -74,7 +74,8 @@ struct Node {
     bool Presentable()  const { return Meta.is_object() && !Meta.empty(); }
     bool IsRunner()     const { return HasRunner; }
     bool IsRunnable()   const { return HasExec; }
-    bool IsVariant()    const { return !Variant.empty() && HasExec; }
+    //A version on the shelf: VARIANT and an entry to run — its own, or (a graft that is a version) its base's.
+    bool IsVariant()    const { return !Variant.empty() && (HasExec || IsGraft); }
     bool HasIdentity()  const { return !Uid.empty(); }
     std::string GameKey() const { return PackageUid.empty() ? NodeId : PackageUid; }   // the card this node belongs to
     // The lowered exec block of the entry labelled `Label` ("" ⇒ the default entry). Null json if no such entry.
@@ -103,6 +104,9 @@ namespace Fold { struct Library; struct Plan; }
 namespace ManifestModel {
 
 // ----- node graph -----
+// The versions a graft applies onto: the variants (not grafts themselves) containing, transitively, a node its leading
+// ANY names — what a graft that is a card, or a version, runs on. By VARIANT, then key.
+std::vector<std::string> GraftBases(const NodeIndex &Idx, const std::string &Graft);
 // True iff J is a node object: an object with a LAYERS list. The ONE definition — every scanner uses it.
 bool IsNodeObject(const nlohmann::ordered_json &J);
 // The top-level vocabulary of a node: CID LABEL POS COMMENT VARIANT RECOMMENDED LAYERS.
