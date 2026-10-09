@@ -7,6 +7,7 @@
 #include <QTemporaryDir>
 #include <QScopeGuard>
 
+#include "qtestjson.h"
 #include "packagecatalog.h"
 #include "pkggraph.h"
 #include "packageeditormodel.h"
@@ -497,6 +498,7 @@ private slots:
         QVERIFY2(Plan[1].Dest.find("[802] Warcraft III (bafypkgtwo") != std::string::npos, "the colliding package's dir carries its CID");
     }
 
+private:   // a helper, not a test: moc never sees its json parameters (no metatype for json on Windows)
     // The files of a published folder: name → bytes (fetched like a receiver would, into a throwaway dir).
     // A received package folder as the app lands it: the folder over the listed node files (referenced where they
     // landed, as a fetch leaves them), recorded as friend Alice's share entry {cid, pkg} in library `Lib`.
@@ -514,6 +516,7 @@ private slots:
         QVERIFY2(!F.empty(), Err.c_str());
         Rx["FriendLibraries"]["Alice"][Lib].push_back(json{{"cid", F}, {"pkg", Pkg}});   // an unknown peer files under its id
     }
+private slots:
 
     std::map<std::string, std::string> folderFiles(const std::string & FolderCid)
     {
@@ -530,6 +533,7 @@ private slots:
         return Out;
     }
 
+private:   // a helper, not a test: moc never sees its json parameters (no metatype for json on Windows)
     // Land a friend's share the way the app does: each package folder through the real queue, then complete + check.
     void landShares(const json & Rx, const std::string & Nick, const json & Libs)
     {
@@ -541,6 +545,7 @@ private slots:
         std::string LErr;
         QVERIFY2(PackageCatalog::LandReceivedPackages(Rx, &LErr), LErr.c_str());
     }
+private slots:
 
     // The seeder publishes a library package (a_lib) it does NOT share, and a game package C containing it by CID,
     // received into <Catalog>/Alice - Games/[3] C. Returns a_lib's CID ("" on a fixture failure).
@@ -566,6 +571,7 @@ private slots:
         return LibCid;
     }
 
+private:   // a helper, not a test: moc never sees its json parameters (no metatype for json on Windows)
     // Helper: publish two games in one collection and return the share entries — one per PACKAGE, as
     // PublishLibrary emits them ({cid: <package folder>, pkg, node, title, nodes}).
     json publishTwoGames(const QString & root)
@@ -600,6 +606,7 @@ private slots:
         PackageCatalog::PublishLibrary(seeder, &Err);
         return seeder["Libraries"].contains("VidyaGod") ? seeder["Libraries"]["VidyaGod"] : json::array();
     }
+private slots:
 
     // The cid of the node labelled `Label` inside a package folder (its node files are named by their CIDs).
     std::string cidOfLabel(const std::string & FolderCid, const std::string & Label)

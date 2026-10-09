@@ -9,6 +9,7 @@
 #include <QtTest/QtTest>
 #include <QTemporaryDir>
 
+#include "qtestjson.h"
 #include "vfsmount.h"
 #include "launchparams.h"
 #include "commonutils.h"
@@ -308,6 +309,7 @@ private slots:
 
     // ---- multi-base deltas: the node's bases must survive the trip into the mount plan ----
 
+private:   // a helper, not a test: moc never sees its json parameters (no metatype for json on Windows)
     // Bases in plan order for the delta layer at `Target`.
     std::vector<std::string> BasesOf(const json &Spec, const std::string &Target)
     {
@@ -318,6 +320,7 @@ private slots:
         if (L.contains("baseTargets")) for (const auto &E : L["baseTargets"]) B.push_back(E.get<std::string>());
         return B;
     }
+private slots:
 
     // The format has allowed an ARRAY of bases since the delta layer existed, and the FS stitches them with a
     // ConcatByteSource — but the mount builder only ever read the singular key, so a node declaring three bases

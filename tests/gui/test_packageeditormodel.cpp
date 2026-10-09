@@ -4,6 +4,7 @@
 // containers, so they are out of scope here. A real temp data root holds a small library.
 
 #include <QtTest>
+#include "qtestjson.h"
 #include "apppaths.h"
 #include "packageeditor.h"
 #include "packageeditormodel.h"

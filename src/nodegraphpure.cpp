@@ -68,7 +68,7 @@ bool PathWithin(const std::filesystem::path &Base, const std::filesystem::path &
     std::filesystem::path Q = std::filesystem::weakly_canonical(P, Ec);    if (Ec) Q = P.lexically_normal();
     const std::filesystem::path Rel = Q.lexically_relative(B);
     if (Rel.empty()) return false;                       // unrelated / not under Base
-    return Rel.begin()->native() != "..";                // first COMPONENT ".." ⇒ escapes (a leading-dot NAME like .wine is fine)
+    return *Rel.begin() != "..";                         // first COMPONENT ".." ⇒ escapes (a leading-dot NAME like .wine is fine)
 }
 
 nlohmann::ordered_json FreezeNodeJson(nlohmann::ordered_json Raw,

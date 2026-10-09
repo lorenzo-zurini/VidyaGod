@@ -6,6 +6,7 @@
 // the property that matters most: on FAILURE, nothing is deleted. Confirmation dialogs are injected (the
 // actions ask before destroying anything, and a modal blocks a headless run forever).
 
+#include "qtestjson.h"
 #include "pkgactions.h"
 #include "pkgcanvas.h"
 #include "packageeditormodel.h"

@@ -1,6 +1,7 @@
 // The package canvas, driven headlessly (see canvasharness.h): what a person does with a mouse and a keyboard, and
 // what the package document looks like afterwards. Every test names what it pins and how it was made to fail.
 
+#include "qtestjson.h"
 #include "canvasharness.h"
 #include "pkggraph.h"
 #include "cid.h"
