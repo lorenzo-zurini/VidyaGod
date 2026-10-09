@@ -140,7 +140,9 @@ TEST(persistlayer_pattern_capture_keeps_a_file_it_could_not_seed)
 
 // Names compare ignoring case, as the game's file system does: a game that rewrites player1.hki as PLAYER1.HKI leaves
 // ONE stored copy — the new one — never both (seeded together, they would shadow each other unpredictably), and the
-// seeded name counts as still present. Teeth: compare names case-sensitively (the fresh save is dropped, or both kept).
+// seeded name counts as still present. Which spelling the stored copy keeps is the host's business (NTFS keeps the
+// old one when a file is overwritten), so the test counts copies and reads the content. Teeth: compare names
+// case-sensitively (the fresh save is dropped, or both kept).
 TEST(persistlayer_pattern_capture_matches_names_ignoring_case)
 {
     auto d = PlTmp("pattern_case");
@@ -153,7 +155,9 @@ TEST(persistlayer_pattern_capture_matches_names_ignoring_case)
     CHECK(PersistLayer::SeedPersistFiles(CP));
     WriteFileAt(CP.RuntimePath / "pfx/drive_c/749/PLAYER1.HKI", "new");
     CHECK(PersistLayer::CapturePersistFiles(CP));
-    CHECK(!fs::exists(CP.UserDataPath / "Hotkeys/player1.hki"));
-    CHECK_EQ(ReadFileAt(CP.UserDataPath / "Hotkeys/PLAYER1.HKI"), std::string("new"));
+    std::vector<fs::path> Stored;
+    for (const auto &E : fs::directory_iterator(CP.UserDataPath / "Hotkeys")) Stored.push_back(E.path());
+    CHECK_EQ(Stored.size(), size_t(1));
+    if (Stored.size() == 1) CHECK_EQ(ReadFileAt(Stored[0]), std::string("new"));
     fs::remove_all(d);
 }

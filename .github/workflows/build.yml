@@ -212,7 +212,18 @@ jobs:
         run: |
           export PATH=/mingw64/bin:$PATH
           # The Windows job used to BUILD the tests and never run them — gate on them like Linux does.
-          ctest --test-dir build --output-on-failure
+          # QtTest's own PASS/FAIL lines never reach ctest's captured output on Windows, so a failed Qt suite is rerun
+          # with its log written to a file, and the file is printed: the failure says what failed.
+          ctest --test-dir build --output-on-failure || {
+            while IFS=: read -r _ name; do
+              [ -f "build/$name.exe" ] || continue
+              echo "::group::$name (QtTest log)"
+              (cd build && QT_QPA_PLATFORM=offscreen "./$name.exe" -o "$name.qtest.txt,txt")
+              cat "build/$name.qtest.txt"
+              echo "::endgroup::"
+            done < build/Testing/Temporary/LastTestsFailed.log
+            exit 1
+          }
 
       - name: Package portable distribution (windeployqt)
         run: |

@@ -10,6 +10,14 @@
 #include <QTemporaryDir>
 
 #include "qtestjson.h"
+
+// QVERIFY_THROWS_NO_EXCEPTION arrived in Qt 6.3; CI's Ubuntu 22.04 ships 6.2.
+#define VERIFY_NO_THROW(Expr)                                                                                  \
+    do {                                                                                                       \
+        try { Expr; }                                                                                          \
+        catch (const std::exception &E) { QFAIL((std::string(#Expr " threw: ") + E.what()).c_str()); }       \
+        catch (...) { QFAIL(#Expr " threw"); }                                                                 \
+    } while (0)
 #include "vfsmount.h"
 #include "launchparams.h"
 #include "commonutils.h"
@@ -484,11 +492,11 @@ private slots:
         Complaints C;
         ContainerParams CP = Make();
         CP.RunnerPackagePath = CP.PackagePath;
-        CP.RunnerLayers = json::array({
+        CP.RunnerLayers = {
             ZipLayer("wine.zip", "wine"),
             ZipLayer("dxvk.zip", "dxvk"),
             DeltaLayer("pfx.vgdelta", "prefix", json::array({ "wine", "dxvk", "%NoSuchVariable%" })),
-        });
+        };
         const json Spec = VfsMount::BuildRunnerLayerSpec(CP);
         const auto B = BasesOf(Spec, "prefix");
         QCOMPARE(B.size(), size_t(3));
@@ -507,10 +515,10 @@ private slots:
         RunnerLink Inner;
         Inner.NodeId      = "emu";
         Inner.PackagePath = CP.PackagePath;
-        Inner.Layers      = json::array({
+        Inner.Layers      = {
             ZipLayer("ewine.zip", "wine"),
             DeltaLayer("epfx.vgdelta", "prefix", json::array({ "wine" })),
-        });
+        };
         // The boundary link is the LAST non-native one; a native namespace is an empty ContentRoot with no
         // prefix generation, so giving the outer link a ContentRoot makes BoundaryLinkIndex() == 1 and the
         // inner-runner nesting block run for `emu`.
@@ -662,10 +670,10 @@ private slots:
         Complaints C;
         ContainerParams CP = Make();
         CP.RunnerPackagePath = CP.PackagePath;
-        CP.RunnerLayers = json::array({
+        CP.RunnerLayers = {
             ZipLayer("wine.zip", "wine"),
             DeltaLayer("pfx.vgdelta", "prefix", json::array({ "wine", "dxvk" })),
-        });
+        };
         VfsMount::BuildRunnerLayerSpec(CP);
         QVERIFY2(C.Mentions("dxvk"), "the runner build must run the same check as the content mount");
     }
@@ -751,7 +759,7 @@ private slots:
         CP.RunnerPackagePath = CP.PackagePath;
         json L = ZipLayer("codecs.zip", "%PrefixRoot%/lib");
         L["SUBMOUNTS"] = json::array({ "codecs/ir41_32.dll:%PrefixRoot%/drive_c/windows/syswow64/ir41_32.dll" });
-        CP.RunnerLayers = json::array({ L });
+        CP.RunnerLayers = { L };
 
         const json Spec = VfsMount::BuildRunnerLayerSpec(CP);
         QCOMPARE(Spec["layers"].size(), size_t(1));
@@ -788,9 +796,9 @@ private slots:
     {
         ContainerParams CP = Make();
         CP.CustomVariables["awkward"] = R"(C:\Users\Tom "T" O'Neil\dir)";
-        CP.RunnerLayers = json::array({ json{{"TYPE","VFSZipLayer"},{"PATH","%awkward%/a.zip"},
-                                             {"TARGET","%awkward%/t"},
-                                             {"SUBMOUNTS", json::array({"x:%awkward%/y"})}} });
+        CP.RunnerLayers = { json{{"TYPE","VFSZipLayer"},{"PATH","%awkward%/a.zip"},
+                                 {"TARGET","%awkward%/t"},
+                                 {"SUBMOUNTS", json::array({"x:%awkward%/y"})}} };
         CP.RunnerShipsBuild = true;
         CP.UnifiedRuntime   = false;
         const json Spec = VfsMount::BuildRunnerLayerSpec(CP);
@@ -814,18 +822,18 @@ private slots:
         json Spec;
         Spec["writelayer"] = nullptr;
         Spec["layers"]     = nullptr;
-        QVERIFY_THROWS_NO_EXCEPTION(VfsMount::MaterializePlanPaths(Spec));
-        QVERIFY_THROWS_NO_EXCEPTION(VfsMount::ReportMissingSources(Spec));
-        QVERIFY_THROWS_NO_EXCEPTION(VfsMount::PrepareMount(Spec));
+        VERIFY_NO_THROW(VfsMount::MaterializePlanPaths(Spec));
+        VERIFY_NO_THROW(VfsMount::ReportMissingSources(Spec));
+        VERIFY_NO_THROW(VfsMount::PrepareMount(Spec));
 
         json WithNullLayer;
         WithNullLayer["writelayer"] = nullptr;
         WithNullLayer["layers"] = json::array({ json{{"type", nullptr}, {"target", nullptr},
                                                      {"source", nullptr}, {"rw", nullptr},
                                                      {"runtimeSourced", nullptr}} });
-        QVERIFY_THROWS_NO_EXCEPTION(VfsMount::MaterializePlanPaths(WithNullLayer));
-        QVERIFY_THROWS_NO_EXCEPTION(VfsMount::ReportMissingSources(WithNullLayer));
-        QVERIFY_THROWS_NO_EXCEPTION(VfsMount::PrepareMount(WithNullLayer));
+        VERIFY_NO_THROW(VfsMount::MaterializePlanPaths(WithNullLayer));
+        VERIFY_NO_THROW(VfsMount::ReportMissingSources(WithNullLayer));
+        VERIFY_NO_THROW(VfsMount::PrepareMount(WithNullLayer));
     }
 };
 

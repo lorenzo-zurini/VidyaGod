@@ -169,7 +169,8 @@ private slots:
     void aStalledAttemptRotatesAndBacksOffInsteadOfFailingOrHoldingASlot()
     {
         IpfsWrapper::SetFetchOnceHook([](const std::string &, const std::string &, bool, std::string *e) {
-            if (e) *e = "no providers"; return 1; /* Retryable */ });
+            if (e) *e = "no providers";
+            return 1; /* Retryable */ });
         const std::string C = "CID_ROLL_STALL";
         IpfsWrapper::EnqueueBatch({{C, "/nonexistent/roll_stall.bin", true}});
         QTRY_VERIFY_WITH_TIMEOUT(IpfsWrapper::DebugJobBackingOff(C), 5000);   // rotated to Queued + backing off
@@ -182,7 +183,8 @@ private slots:
     void aTerminalAttemptFailsTheJob()
     {
         IpfsWrapper::SetFetchOnceHook([](const std::string &, const std::string &, bool, std::string *e) {
-            if (e) *e = "malformed CID"; return 2; /* Terminal */ });
+            if (e) *e = "malformed CID";
+            return 2; /* Terminal */ });
         const std::string C = "CID_ROLL_TERMINAL";
         IpfsWrapper::EnqueueBatch({{C, "/nonexistent/roll_term.bin", true}});
         QTRY_COMPARE_WITH_TIMEOUT(IpfsWrapper::DebugJobState(C), 3 /* Failed */, 5000);
@@ -277,7 +279,8 @@ private slots:
     void aBoundedWaitLeavesTheJobRollingInsteadOfFailingIt()
     {
         IpfsWrapper::SetFetchOnceHook([](const std::string &, const std::string &, bool, std::string *e) {
-            if (e) *e = "no providers"; return 1; /* forever Retryable */ });
+            if (e) *e = "no providers";
+            return 1; /* forever Retryable */ });
         const std::string C = "CID_ROLL_BOUNDED";
         auto H = IpfsWrapper::EnqueueBatch({{C, "/nonexistent/roll_bounded.bin", false}});
         std::string Err;
@@ -385,7 +388,8 @@ private slots:
         std::atomic<bool> release{false};
         IpfsWrapper::SetFetchOnceHook([&release](const std::string &, const std::string &, bool, std::string *e) {
             while (!release && !g_stopHook) std::this_thread::sleep_for(std::chrono::milliseconds(10));
-            if (e) *e = "cancelled"; return 1;   // returns Retryable; RunJob must override to Failed on user-cancel
+            if (e) *e = "cancelled";
+            return 1;   // returns Retryable; RunJob must override to Failed on user-cancel
         });
         const std::string C = "CID_USER_CANCEL";
         IpfsWrapper::EnqueueBatch({{C, "/nonexistent/usercancel.bin", false}});
