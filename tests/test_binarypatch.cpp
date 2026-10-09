@@ -316,8 +316,11 @@ TEST(a_binarypatch_path_that_climbs_out_of_the_runtime_is_refused)
                                {"MODE","Poke"},{"OFFSET","0x0"},{"VALUE","ff"}}});
 
     CHECK(!BinaryPatch::ProcessBinaryPatches(CP));       // refused, and reported as a failure
-    std::ifstream In(Outside, std::ios::binary);
-    const std::vector<uint8_t> After((std::istreambuf_iterator<char>(In)), std::istreambuf_iterator<char>());
+    std::vector<uint8_t> After;
+    {   // closed before the cleanup: Windows will not remove a file that is still open
+        std::ifstream In(Outside, std::ios::binary);
+        After.assign(std::istreambuf_iterator<char>(In), std::istreambuf_iterator<char>());
+    }
     CHECK(After == Pristine);                            // and byte-for-byte untouched
     std::filesystem::remove_all(Root);
 }
@@ -342,8 +345,11 @@ TEST(an_absolute_binarypatch_path_already_inside_the_runtime_is_used_as_is)
                                {"MODE","Poke"},{"OFFSET","0x401000"},{"VALUE","ff"}}});
 
     CHECK(BinaryPatch::ProcessBinaryPatches(CP));
-    std::ifstream In(Exe, std::ios::binary);
-    const std::vector<uint8_t> After((std::istreambuf_iterator<char>(In)), std::istreambuf_iterator<char>());
+    std::vector<uint8_t> After;
+    {   // closed before the cleanup: Windows will not remove a file that is still open
+        std::ifstream In(Exe, std::ios::binary);
+        After.assign(std::istreambuf_iterator<char>(In), std::istreambuf_iterator<char>());
+    }
     CHECK(After.size() > 0x400);
     if (After.size() > 0x400) CHECK_EQ((int)After[0x400], 0xff);   // the patch landed
     std::filesystem::remove_all(Root);

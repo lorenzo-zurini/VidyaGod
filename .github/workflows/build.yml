@@ -216,7 +216,8 @@ jobs:
           # with its log written to a file, and the file is printed: the failure says what failed.
           ctest --test-dir build --output-on-failure || {
             while IFS=: read -r _ name; do
-              [ -f "build/$name.exe" ] || continue
+              name=${name%$'\r'}   # CMake writes the list with CRLF on Windows
+              [ -f "build/$name.exe" ] || { echo "no build/$name.exe to rerun"; continue; }
               echo "::group::$name (QtTest log)"
               (cd build && QT_QPA_PLATFORM=offscreen "./$name.exe" -o "$name.qtest.txt,txt")
               cat "build/$name.qtest.txt"
