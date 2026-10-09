@@ -217,10 +217,11 @@ jobs:
           ctest --test-dir build --output-on-failure || {
             while IFS=: read -r _ name; do
               name=${name%$'\r'}   # CMake writes the list with CRLF on Windows
+              case "$name" in test_*) ;; *) continue ;; esac   # Qt suites only: vg_tests prints its own failures
               [ -f "build/$name.exe" ] || { echo "no build/$name.exe to rerun"; continue; }
               echo "::group::$name (QtTest log)"
-              (cd build && QT_QPA_PLATFORM=offscreen "./$name.exe" -o "$name.qtest.txt,txt")
-              cat "build/$name.qtest.txt"
+              (cd build && QT_QPA_PLATFORM=offscreen "./$name.exe" -o "$name.qtest.txt,txt") || true   # it fails: that is why it is here
+              cat "build/$name.qtest.txt" || true
               echo "::endgroup::"
             done < build/Testing/Temporary/LastTestsFailed.log
             exit 1

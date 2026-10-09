@@ -580,7 +580,7 @@ nlohmann::ordered_json LowerPlan(const Fold::Plan &P)
             continue;
         }
         const std::string Path = (I.Payload.find('%') != std::string::npos || I.Dir.empty())
-                               ? I.Payload : (std::filesystem::path(I.Dir) / I.Payload).string();
+                               ? I.Payload : (std::filesystem::path(I.Dir) / I.Payload).generic_string();   // '/' on every host: the plan is data
         const ordered_json &Sub = I.Submounts;
         if (I.View.is_null())
         {
@@ -607,7 +607,7 @@ nlohmann::ordered_json LowerPlan(const Fold::Plan &P)
         for (const auto &[Src, Addr] : Ms)
             Mounts.push_back(Src + ":" + (Addr.size() > 6 ? Addr.substr(6) : std::string()));   // strip "FILES/"
         if (I.Kind == "FILE")
-            Out.push_back(ContentOp("DIR", std::filesystem::path(Path).parent_path().string(), I.Target, ordered_json(), ordered_json(), Mounts));
+            Out.push_back(ContentOp("DIR", std::filesystem::path(Path).parent_path().generic_string(), I.Target, ordered_json(), ordered_json(), Mounts));
         else
             Out.push_back(ContentOp(I.Kind, Path, I.Target, I.Source, I.Size, Mounts));
     }
