@@ -18,19 +18,10 @@ namespace NodeGraph {
 // Untrusted-block guards. A fetched node block's bytes hash to its CID, but the CID is attacker-chosen (pasted),
 // so the CONTENT is untrusted: it can be arbitrarily deep JSON. nlohmann's parser is recursive-descent, so a deeply
 // nested block overflows the stack before any callback can stop it. JsonDepthWithinLimit is a cheap string-aware
-// bracket-depth pre-scan that rejects such a block WITHOUT recursing (JsonDepthWithinLimit, nodegraphpure.cpp —
+// bracket-depth pre-scan that rejects such a block WITHOUT recursing (run by VerifyNodeBytes; nodegraphpure.cpp —
 // shared with GatherWorkingTree, whose scanned files include LANDED received blocks). And a hostile closure can be
 // unbounded, so BuildFrozenIndex caps the node count.
-static constexpr int    kMaxJsonDepth  = 64;
 static constexpr size_t kMaxClosureNodes = 200000;
-
-// Parse a block's bytes only after a depth check (never recurse into hostile JSON). False + empty J on reject/parse error.
-static bool ParseBlockBounded(const std::string &Js, nlohmann::ordered_json &J)
-{
-    if (!JsonDepthWithinLimit(Js, kMaxJsonDepth)) return false;
-    try { J = nlohmann::ordered_json::parse(Js); return true; }
-    catch (const std::exception &) { return false; }
-}
 
 
 NodeIndex BuildFrozenIndex(const std::vector<std::string> &RootCids, std::vector<std::string> *Missing)

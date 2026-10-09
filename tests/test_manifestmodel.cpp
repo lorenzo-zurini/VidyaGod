@@ -521,8 +521,8 @@ TEST(validate_refuses_drive_letters_and_non_canonical_anchors)
     CHECK(!AnyContains(E, "node 'proton'"));                                                   // the map is not a use
 }
 
-// Every anchor in a value is held to its most specific spelling — the second one too ("%GameDir%\\a;%Windows%\\
-// syswow64\\x" names a %SysDir32% place). Teeth: let the anchor's tail run past the next token ([^"]*) and the second
+// Every anchor in a value is held to its most specific spelling — the second one too (in "%GameDir%\\a;%Windows%
+// \\syswow64\\x" it names a %SysDir32% place). Teeth: let the anchor's tail run past the next token ([^"]*) and the second
 // anchor is never looked at.
 TEST(validate_holds_every_anchor_in_a_value_to_its_most_specific_spelling)
 {

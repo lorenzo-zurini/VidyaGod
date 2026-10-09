@@ -3,6 +3,8 @@
 #include "commonutils.h"   // LogWarn
 
 #include <QKeyEvent>
+#include <QOpenGLContext>
+#include <QOpenGLFunctions>
 #include <QMouseEvent>
 #include <QTimer>
 #include <QWheelEvent>
@@ -137,9 +139,10 @@ void PkgCanvasPanel::paintGL()
     ImGui::NewFrame();
     m_canvas->frame();
     ImGui::Render();
-    glViewport(0, 0, (int)(width() * Dpr), (int)(height() * Dpr));
-    glClearColor(0.094f, 0.098f, 0.114f, 1.0f);
-    glClear(GL_COLOR_BUFFER_BIT);
+    QOpenGLFunctions *Gl = context()->functions();   // resolved through Qt: Windows links no opengl32 of its own
+    Gl->glViewport(0, 0, (int)(width() * Dpr), (int)(height() * Dpr));
+    Gl->glClearColor(0.094f, 0.098f, 0.114f, 1.0f);
+    Gl->glClear(GL_COLOR_BUFFER_BIT);
     ImGui_ImplOpenGL3_RenderDrawData(ImGui::GetDrawData());
 
     //Keep drawing while something moves; otherwise a couple more frames (imgui settles hover/popups over two), then idle.
