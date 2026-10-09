@@ -228,11 +228,14 @@ jobs:
           }
 
       - name: Package portable distribution (windeployqt)
+        # Packaged even when a test failed (the job still reports it): a build to try beats none.
+        if: ${{ !cancelled() }}
         run: |
           export PATH=/mingw64/bin:$PATH
           bash tools/windeploy.sh build dist
 
       - name: Build NSIS installer
+        if: ${{ !cancelled() }}
         shell: pwsh
         run: |
           $dist = "$env:GITHUB_WORKSPACE\dist"
@@ -241,12 +244,14 @@ jobs:
           & "C:\Program Files (x86)\NSIS\makensis.exe" "/DDISTDIR=$dist" "/DOUTFILE=$out" "$nsi"
 
       - name: Upload portable dist
+        if: ${{ !cancelled() }}
         uses: actions/upload-artifact@v4
         with:
           name: VidyaGod-Windows-portable
           path: dist/**
 
       - name: Upload Windows installer
+        if: ${{ !cancelled() }}
         uses: actions/upload-artifact@v4
         with:
           name: VidyaGod-Windows-Installer
