@@ -155,6 +155,8 @@ bool LaunchResolver::InitializeFromNode(struct ContainerParams &ContainerParams,
         }
         RowGraft = Launch->Key();
         Launch = Idx.Find(B);
+        if (!Launch) { LogErr("InitializeFromNode", "Base node not found: " + B); return false; }
+        if (!Launch->LowerError.empty()) { LogErr("InitializeFromNode", Launch->LowerError); return false; }
     }
     const std::string LaunchKey = Launch->Key();
     const Fold::Library Lib = ManifestModel::LibraryOf(Idx);
@@ -196,7 +198,13 @@ bool LaunchResolver::InitializeFromNode(struct ContainerParams &ContainerParams,
     for (const std::string &Must : { RowGraft, CardGraft })   // inserted at the front in turn: the card's first
         if (!Must.empty())
         {
-            if (!Chosen) Chosen.emplace();
+            //A fresh instance's list is the tile's RECOMMENDED grafts: the forced one joins it, never replaces it.
+            if (!Chosen)
+            {   //...minus versions and cards: RECOMMENDED on those picks the default row, it is not an add-on
+                Chosen.emplace();
+                for (const std::string &G : PackageCatalog::AppliedGrafts(Idx, LaunchKey, std::nullopt, Instance, Builtins))
+                    if (const Node *Gn = Idx.Find(G); Gn && Gn->Variant.empty() && Gn->Faces.empty()) Chosen->push_back(G);
+            }
             if (std::find(Chosen->begin(), Chosen->end(), Must) == Chosen->end()) Chosen->insert(Chosen->begin(), Must);
         }
     CP.AppliedGrafts = PackageCatalog::AppliedGrafts(Idx, LaunchKey, Chosen, Instance, Builtins, &Dropped);

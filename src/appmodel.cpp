@@ -163,7 +163,7 @@ std::pair<int, int> AppModel::importPackagesFromDir(const QString & Sel)
         ManifestModel::DeriveFacts(BIdx);   // the representative launchable carries (or inherits) its UID/TITLE
         const Node * Rep = nullptr;
         for (const auto & [Id, N] : BIdx.Nodes)
-            if (N.IsVariant() && (!Rep || (N.Presentable() && !Rep->Presentable()))) Rep = &N;
+            if (N.IsVariant() && !N.IsGraft && (!Rep || (N.Presentable() && !Rep->Presentable()))) Rep = &N;
         if (!Rep) { LogWarn("AppModel::importPackagesFromDir", "Skipping " + Path.toStdString() + ": no variant node."); ++Skipped; continue; }
 
         const std::string Uid  = Rep->Uid.empty() ? Rep->NodeId : Rep->Uid;

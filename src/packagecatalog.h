@@ -372,6 +372,9 @@ std::string RowUnderTile(const NodeIndex &Idx, const std::string &Uid, const std
 // The versions a graft applies onto: the variants (not grafts themselves) containing, transitively, a node its leading
 // ANY names — what a graft that is a card, or a version, runs on. Recommended-free order: by VARIANT, then key.
 std::vector<std::string> GraftBases(const NodeIndex &Idx, const std::string &Graft);
+// The version a graft that is a version runs on when nothing picks one (the engine's default): GraftBases' first. ""
+// for a node that is not a graft, or a graft with nothing here it applies onto.
+std::string DefaultGraftBase(const NodeIndex &Idx, const std::string &Graft);
 // Runner nodes that can serve a launchable on this machine (GUEST ∋ launch host, HOST==machine, executable
 // available), in sorted node-id order — for the prelaunch runner dropdown.
 std::vector<const Node*> RunnerCandidates(const NodeIndex &Idx, const Node &Launch);

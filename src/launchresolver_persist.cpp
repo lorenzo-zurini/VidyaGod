@@ -74,8 +74,10 @@ bool LaunchResolver::DerivePersistence(const nlohmann::ordered_json &MANIFESTJSO
     //A durable TARGET must be a single safe path segment (it names a subdir directly under the instance dir). Trailing
     //dots/spaces are STRIPPED: Win32 silently drops them at the filesystem, so "instance.json." or "registry " would
     //otherwise sail past the reserved/dedup guards below yet land on the reserved sibling on disk (Windows port).
-    auto SanSeg = [](const std::string &S){ std::string O; for (unsigned char C : S)
-        O.push_back((std::isalnum(C) || C == '.' || C == '_' || C == '-' || C == ' ') ? static_cast<char>(C) : '_');
+    auto SanSeg = [](const std::string &S){
+        std::string O;
+        for (unsigned char C : S)
+            O.push_back((std::isalnum(C) || C == '.' || C == '_' || C == '-' || C == ' ') ? static_cast<char>(C) : '_');
         while (!O.empty() && (O.back() == '.' || O.back() == ' ')) O.pop_back();
         return (O.empty() || O == "." || O == "..") ? std::string("_") : O; };
 

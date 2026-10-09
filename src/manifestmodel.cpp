@@ -929,34 +929,38 @@ void ValidateNodeGraph(const NodeIndex &Idx, std::vector<std::string> &Errors, s
         //Per ROW (a variant; a runner root): resolve it — default options, and every bool option on with every
         //offered graft ticked — and check what the resolution itself can see.
         if (!N.IsVariant() && !N.OwnRunner) continue;
-        //A graft that is a version is checked as it runs: on a version it applies onto, with it applied first.
-        std::string Root = Id;
+        //A graft that is a version is checked as it runs: on every version it applies onto (each is a row), with it
+        //applied first.
+        std::vector<std::string> Roots = { Id };
         std::vector<std::string> Base0;
         if (N.IsGraft)
         {
-            const std::vector<std::string> Bases = GraftBases(Idx, Id);
-            if (Bases.empty()) { Errors.push_back(Tag + ": a graft that is a version, with nothing in this library it applies onto"); continue; }
-            Root = Bases.front();
+            Roots = GraftBases(Idx, Id);
+            if (Roots.empty()) { Errors.push_back(Tag + ": a graft that is a version, with nothing in this library it applies onto"); continue; }
             Base0 = { Id };
         }
-        std::vector<std::pair<Fold::Vars, std::vector<std::string>>> Configs = { {{}, Base0} };
+        const std::string Root = Roots.front();
+        struct Config { std::string Root; Fold::Vars Inst; std::vector<std::string> Grafts; };
+        std::vector<Config> Configs;
+        for (const std::string &R : Roots)
         {
-            const Fold::Plan P0 = Fold::Resolve(Lib, Root, {}, {}, Base0);
+            Configs.push_back({ R, {}, Base0 });
+            const Fold::Plan P0 = Fold::Resolve(Lib, R, {}, {}, Base0);
             Fold::Vars AllOn;
             for (const auto &[K, D] : P0.Decls.items())
                 if (D.is_object() && D.contains("UI") && D["UI"].is_object() && D["UI"].value("CONTROL", std::string()) == "bool")
                     AllOn[K] = "1";
             //every offered graft, a graft on a graft included (offered once the graft it needs is applied)
             std::vector<std::string> All = Base0;
-            for (const std::string &G : Fold::ApplyGrafts(Lib, Grafts, Root, AllOn, {}, N.Uid, nullptr, nullptr, true))
+            for (const std::string &G : Fold::ApplyGrafts(Lib, Grafts, R, AllOn, {}, N.Uid, nullptr, nullptr, true))
                 if (G != Id) All.push_back(G);
-            if (!AllOn.empty() || All.size() > Base0.size()) Configs.push_back({ AllOn, All });
+            if (!AllOn.empty() || All.size() > Base0.size()) Configs.push_back({ R, AllOn, All });
         }
         std::set<std::string> Said;                                     // one report per problem across configs
         auto Once = [&](std::vector<std::string> &Where, const std::string &Msg) { if (Said.insert(Msg).second) Where.push_back(Msg); };
-        for (const auto &[Inst, Gs] : Configs)
+        for (const auto &[CRoot, Inst, Gs] : Configs)
         {
-            const Fold::Plan P = Fold::Resolve(Lib, Root, Inst, {}, Gs);
+            const Fold::Plan P = Fold::Resolve(Lib, CRoot, Inst, {}, Gs);
             if (!P.Error.empty()) Once(Errors, Tag + ": " + P.Error);
             for (const auto &[Ev, Cid] : P.Events)
             {

@@ -1388,7 +1388,7 @@ void PreLaunchWindow::RefreshGraftEntryRows()
             if (E.contains("GUEST") && E["GUEST"].is_array() && !E["GUEST"].empty()) continue;   // a runner entry
             if (E.contains("TILE")) continue;                                // it presents a card: played from there
             VariantCombo->addItem(QString::fromStdString("run " + Label),
-                                  QString::fromStdString(LaunchNodeId + "\x1f" + Label + "\x1fgraft"));
+                                  QString::fromStdString(LaunchNodeId + "\x1f" + Label + "\x1fgraft" + (RowGraft.empty() ? std::string() : "\x1f" + RowGraft)));
         }
     }
     int Sel = VariantCombo->findData(Keep);
@@ -1412,8 +1412,10 @@ void PreLaunchWindow::ReloadAndRebuild()
     for (const std::string& Id : GroupNodeIds) if (Index && Index->Find(Id)) Live.push_back(Id);
     GroupNodeIds = Live;
     QSignalBlocker B(VariantCombo);
+    const QString Was = VariantCombo->currentData().toString();   // the exact row: a graft version's names its graft
     FillVariantCombo();
-    int Sel = VariantCombo->findData(QString::fromStdString(LaunchNodeId + "\x1f" + Entrypoint));
+    int Sel = Was.isEmpty() ? -1 : VariantCombo->findData(Was);
+    if (Sel < 0) Sel = VariantCombo->findData(QString::fromStdString(LaunchNodeId + "\x1f" + Entrypoint));
     if (Sel < 0) Sel = VariantCombo->findData(QString::fromStdString(LaunchNodeId), Qt::UserRole, Qt::MatchStartsWith);
     VariantCombo->setCurrentIndex(Sel >= 0 ? Sel : 0);
     onVariantChanged();
@@ -1581,7 +1583,7 @@ void PreLaunchWindow::TakeRow(const std::string& Data)
     }
     LaunchNodeId = F[0];
     Entrypoint = F.size() > 1 ? F[1] : std::string();
-    RowGraft = F.size() > 3 && F[2] == "row" ? F[3] : std::string();
+    RowGraft = F.size() > 3 && (F[2] == "row" || F[2] == "graft") ? F[3] : std::string();   // a graft entry's row keeps it
     //The row's game: a graft that is a version names it (its tile, its family); else the variant does.
     const Node* G = RowGraft.empty() ? nullptr : Index->Find(RowGraft);
     if (const Node* L = CurrentLaunch()) { BundleDir = (G ? G : L)->BundleDir.string(); PackageUID = (G && !G->PackageUid.empty() ? G : L)->GameKey(); }
@@ -1604,13 +1606,13 @@ void PreLaunchWindow::FillVariantCombo()
             const std::vector<std::string> Bases = PackageCatalog::GraftBases(*Index, Id);
             const bool Rec = std::find(N->Recommended.begin(), N->Recommended.end(), Face(N)) != N->Recommended.end();
             const std::string Name = !N->Variant.empty() ? N->Variant : N->NodeId;
-            for (const std::string& B : Bases)
+            for (const std::string& Base : Bases)
             {
                 std::vector<std::string> With;
                 if (!TileGraft.empty()) With.push_back(TileGraft);
                 With.push_back(Id);
-                const Fold::Plan P = Fold::Resolve(ManifestModel::LibraryOf(*Index), B, {}, {}, With);
-                const Node* BN = Index->Find(B);
+                const Fold::Plan P = Fold::Resolve(ManifestModel::LibraryOf(*Index), Base, {}, {}, With);
+                const Node* BN = Index->Find(Base);
                 const std::string On = Bases.size() > 1 && BN ? " (on " + (!BN->Variant.empty() ? BN->Variant : BN->NodeId) + ")" : std::string();
                 std::vector<std::string> Mine;
                 for (const auto& [Lb, Ep] : P.Exec.items())
@@ -1620,7 +1622,7 @@ void PreLaunchWindow::FillVariantCombo()
                     if (Here) Mine.push_back(Lb);
                 }
                 for (const std::string& Lb : Mine)
-                    Es.push_back({ B + "\x1f" + Lb + "\x1frow\x1f" + Id, QString::fromStdString(Name + On + (Mine.size() > 1 ? " - " + Lb : std::string())), Rec && Lb == Mine.front(), Id });
+                    Es.push_back({ Base + "\x1f" + Lb + "\x1frow\x1f" + Id, QString::fromStdString(Name + On + (Mine.size() > 1 ? " - " + Lb : std::string())), Rec && Lb == Mine.front(), Id });
             }
             continue;
         }

@@ -213,7 +213,10 @@ void DownloadManager::startDownload(LibraryGameCard *card)
     // The download selection (ticked endpoints ∪ ticked custom variants ∪ checked secondaries) — the unit every
     // async derivation is scoped to. Until the async endpoint derivation lands, fall back to ALL variants: the
     // all-endpoints default IS the variants' union, so semantics don't shift when the rows appear.
-    auto SelectedLaunchIds = [EpChecks, EpReady, CustomPicker, &SecChecks, Variants]() {
+    //A card a graft presents is that graft on whichever versions are picked: it is downloaded with them.
+    const auto CardIt = Model.catalogIndex().TileGraft.find(Key.toStdString());
+    const std::string CardGraft = CardIt == Model.catalogIndex().TileGraft.end() ? std::string() : CardIt->second;
+    auto SelectedLaunchIds = [EpChecks, EpReady, CustomPicker, &SecChecks, Variants, CardGraft]() {
         std::vector<std::string> Sel;
         std::set<std::string> Seen;
         auto Add = [&](const std::string & Id){ if (Seen.insert(Id).second) Sel.push_back(Id); };
@@ -223,6 +226,7 @@ void DownloadManager::startDownload(LibraryGameCard *card)
             for (const std::string & Id : Variants) Add(Id);
         for (const std::string & Id : CustomPicker->checkedIds()) Add(Id);
         for (const auto & [Lid, cb] : SecChecks) if (cb->isChecked()) Add(Lid);
+        if (!Sel.empty() && !CardGraft.empty()) Add(CardGraft);
         return Sel;
     };
 
@@ -348,10 +352,10 @@ void DownloadManager::startDownload(LibraryGameCard *card)
                     for (const std::string & C : Unknown)
                     {
                         if (!Alive->load()) return;
-                        const long long S = IpfsWrapper::CidSize(C);
-                        QMetaObject::invokeMethod(this, [SizeCache, C, S, Alive, Debounce]{
+                        const long long Sz = IpfsWrapper::CidSize(C);
+                        QMetaObject::invokeMethod(this, [SizeCache, C, Sz, Alive, Debounce]{
                             if (!Alive->load()) return;          // dialog closed — its widgets are gone
-                            (*SizeCache)[C] = S;
+                            (*SizeCache)[C] = Sz;
                             Debounce->start();
                         }, Qt::QueuedConnection);
                     }

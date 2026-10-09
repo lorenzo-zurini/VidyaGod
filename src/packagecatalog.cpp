@@ -302,7 +302,7 @@ BundleIdentity ScanBundleIdentity(const std::string &BundleDir)   // decl + Bund
     const Node *Rep = nullptr;                                                    // prefer a presentable launchable
     for (const auto &[NodeId, N] : Idx.Nodes)
     {
-        if (N.IsVariant()) { Id.HasLaunchable = true; if (!Rep || (N.Presentable() && !Rep->Presentable())) Rep = &N; }
+        if (N.IsVariant() && !N.IsGraft) { Id.HasLaunchable = true; if (!Rep || (N.Presentable() && !Rep->Presentable())) Rep = &N; }
         if (N.IsRunner())     Id.HasRunner = true;
     }
     if (!Rep)                                                                     // runner-only / content-only bundle
@@ -486,7 +486,8 @@ static int MirrorIpnsSource(nlohmann::ordered_json &GlobalConfigJSON, const nloh
                 if (IpfsWrapper::FetchDirToPath(Cid, Staging, &FErr).empty())
                 { LogErr("PackageCatalog::SyncPackageSources", "mirror package " + Uid + " (" + Cid + "): " + FErr);
                   std::filesystem::remove_all(Staging, Re);
-                  if (Error && Error->empty()) *Error = FErr; continue; }   // keep the existing copy + entry
+                  if (Error && Error->empty()) *Error = FErr;
+                  continue; }   // keep the existing copy + entry
                 // The staging fetch is the DEHYDRATED meta tree (*.json only). CARRY OVER already-HYDRATED content
                 // (the non-.json layer bytes CollectContentTargets wrote into the bundle) from the old dir so a
                 // metadata-only upstream change doesn't force a multi-GB re-download; a layer whose CID actually
@@ -1732,6 +1733,14 @@ std::string RowUnderTile(const NodeIndex &Idx, const std::string &Uid, const std
 
 std::vector<std::string> GraftBases(const NodeIndex &Idx, const std::string &Graft) { return ManifestModel::GraftBases(Idx, Graft); }
 
+std::string DefaultGraftBase(const NodeIndex &Idx, const std::string &Graft)
+{
+    const Node *G = Idx.Find(Graft);
+    if (!G || !G->IsGraft) return {};
+    const std::vector<std::string> Bases = GraftBases(Idx, G->Key());
+    return Bases.empty() ? std::string() : Bases.front();
+}
+
 std::vector<ShelfTile> ShelfTiles(const NodeIndex &Idx)
 {
     auto Parent = [&](const std::string &Uid) {
@@ -2012,7 +2021,7 @@ std::vector<const Node*> CandidateRunners(const NodeIndex &Idx, const std::strin
 static void ForEachContentLayer(const NodeIndex &Idx, const std::string &LaunchNodeId,
     const GraftChoice &Grafts,
     const std::function<void(const nlohmann::ordered_json&, const std::filesystem::path&, const std::string&)> &Fn,
-    bool WithGrafts = false)
+    bool WithGrafts = false, bool WithBase = true)
 {
     //The launchable's whole closure (options included: a download is whole chains) — and, for the FETCH pool only
     //(WithGrafts), the chosen grafts' closures: a ticked mod's content is part of what the launch mounts. A dehydrate or
@@ -2020,6 +2029,15 @@ static void ForEachContentLayer(const NodeIndex &Idx, const std::string &LaunchN
     const Node *LN = Idx.Find(LaunchNodeId);
     const std::string LaunchKey = LN ? LN->Key() : LaunchNodeId;   // walk by the index key, never by a label that may repeat
     std::vector<std::string> Order = ManifestModel::Closure(Idx, LaunchKey);
+    //A graft that is a version runs on a base it only names through ANY: what it mounts is the base's closure too.
+    //(Not for a dehydrate: the base is a version of its own, with its own card.)
+    if (const std::string Base = WithBase ? DefaultGraftBase(Idx, LaunchKey) : std::string(); !Base.empty())
+    {
+        std::vector<std::string> BaseFirst = ManifestModel::Closure(Idx, Base);
+        std::set<std::string> Seen(BaseFirst.begin(), BaseFirst.end());
+        for (const std::string &Id : Order) if (Seen.insert(Id).second) BaseFirst.push_back(Id);
+        Order = std::move(BaseFirst);
+    }
     if (WithGrafts && LN)
     {
         const std::vector<std::string> Chosen = AppliedGrafts(Idx, LaunchKey, Grafts);
@@ -2175,6 +2193,14 @@ std::unordered_map<std::string, NodeHydration> HydrationMap(const NodeIndex &Idx
         return R;
     };
     for (const auto &[Id, N] : Idx.Nodes) { (void)N; Compute(Id); }
+    //A graft that is a version is installed when the base it runs on is too (bases are never grafts: no chaining).
+    for (const auto &[Id, N] : Idx.Nodes)
+        if (const std::string Base = N.IsGraft ? DefaultGraftBase(Idx, Id) : std::string(); !Base.empty())
+        {
+            const NodeHydration B = Memo[Base];
+            Memo[Id].Hydrated   = Memo[Id].Hydrated && B.Hydrated;
+            Memo[Id].HasContent = Memo[Id].HasContent || B.HasContent;
+        }
     return Memo;
 }
 
@@ -2191,7 +2217,7 @@ int DehydrateNode(const NodeIndex &Idx, const std::string &LaunchNodeId)
         std::error_code Ec;
         if (std::filesystem::exists(Local, Ec) && std::filesystem::is_regular_file(Local, Ec))
         { std::filesystem::remove(Local, Ec); if (!Ec) ++Removed; }
-    });
+    }, false, false);
     for (const std::string &C : Cids) { IpfsWrapper::Unpin(C); IpfsWrapper::DropRef(C); }
     return Removed;
 }
@@ -2325,6 +2351,11 @@ bool CollectRunnerChainTargets(const NodeIndex &Idx, const std::string &LaunchNo
     // not fatal to the game content fetch (the launch itself will report a missing runner).
     const Node *Launch = Idx.Find(LaunchNodeId);
     if (!Launch) return true;
+    if (Launch->IsGraft)
+    {   // a graft runs on what it applies onto: that version's runtime
+        const std::string Base = DefaultGraftBase(Idx, Launch->Key());
+        return Base.empty() || CollectRunnerChainTargets(Idx, Base, GlobalConfigJSON, Out, Error);
+    }
     ContainerParams Cp(Launch->BundleDir, LaunchNodeId, std::string());
     Cp.NodeIdx = &Idx; Cp.LaunchNodeId = LaunchNodeId; Cp.PackageUID = Launch->Uid;   // for the per-package runner pin lookup
     //Every ENTRYPOINT's chain: the entries may run on different platforms (a native and a win32 build), and a

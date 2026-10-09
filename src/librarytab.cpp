@@ -169,6 +169,11 @@ void LibraryTab::buildCards()
             if (H == Hyd.end() || !H->second.Hydrated) AllHydrated = false;
             if (H != Hyd.end() && H->second.HasContent) HasContent = true;
         }
+        if (!Tile.Graft.empty())   // a graft's card: the graft is the game, so it must be installed too
+        {
+            auto H = Hyd.find(Tile.Graft);
+            if (H == Hyd.end() || !H->second.Hydrated) AllHydrated = false;
+        }
         if (!AllHydrated || Ids.empty() || !HasContent)            // skip content-less/malformed (vacuously hydrated)
         {
             if (AllHydrated && !Ids.empty())                      // every row installed, yet nothing of its own on disk

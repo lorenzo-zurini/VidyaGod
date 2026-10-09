@@ -311,7 +311,7 @@ int CliModes::RunAuditPackages(nlohmann::ordered_json &GlobalConfigJSON, const s
 
     //ByPkg groups FINDINGS, so it is empty on a clean run — the summary then read "across 0 package(s)",
     //i.e. exactly like a sweep that audited nothing. Count the bundles actually swept.
-    std::set<std::string> Swept;
+    std::set<std::filesystem::path> Swept;
     for (const auto &L : Launchables) { const Node *N = Index.Find(L); if (N) Swept.insert(N->BundleDir); }
     LogOut("audit", "Audited " + std::to_string(Launchables.size()) + " launchable(s) across "
                     + std::to_string(Swept.size()) + " package(s): "

@@ -13,6 +13,7 @@
 #include "nodefixture.h"
 #include "instancestore.h"
 #include <QTemporaryDir>
+#include <fstream>
 
 using json = nlohmann::ordered_json;
 
@@ -515,7 +516,7 @@ private slots:
             ContainerParams cp("/tmp/vg_bundle");
             cp.NodeIdx = &idx; cp.LaunchNodeId = "game";
             json pool = json::object();
-            LaunchResolver::InitializeFromNode(cp, pool, json{{"Settings", json::object()}});
+            if (!LaunchResolver::InitializeFromNode(cp, pool, json{{"Settings", json::object()}})) return -1;   // -1: did not resolve
             LaunchResolver::DerivePersistence(pool, cp);
             return (int)cp.KeepDirs.size();
         };
@@ -1074,6 +1075,74 @@ private slots:
         QVERIFY(OkM && ExeM.find("tc.exe") != std::string::npos);                    // the base's entry, with the mod
         QCOMPARE(GraftsM, (std::vector<std::string>{"mod"}));
         QVERIFY(!std::get<0>(launch("fe25", "749000001", "aok")));                     // not a base it applies onto
+    }
+
+    // A fresh instance launching a graft version gets the tile's RECOMMENDED add-ons with it (the GUI pre-ticks them; the
+    // CLI and the audit must launch the same game), but never a sibling version: RECOMMENDED on a version picks the
+    // default row, it is not an add-on. Teeth: replace the fresh list with the forced graft alone (no add-on); take the
+    // whole RECOMMENDED list (the sibling version applies too).
+    void a_fresh_graft_version_launch_keeps_recommended_add_ons_only()
+    {
+        NodeIndex idx;
+        const auto entry = [](const char *Exe, const char *Uid, const char *Title) {
+            return json{ {"LABEL", "Play"}, {"HOST", kMachine}, {"EXE", Exe}, {"TILE", {{"UID", Uid}, {"TITLE", Title}}} };
+        };
+        idx.Nodes["tc"] = parse(json{ {"CID", "tc"}, {"LABEL", "tc"}, {"VARIANT", "1.0e"},
+            {"LAYERS", json::array({ json{{"DIR", "tc"}}, json{{"EXEC", json::array({ entry("tc.exe", "13006", "The Conquerors") })}} })} }, "/tmp/vg_bundle");
+        const auto fe = [&](const char *Id, const char *Ver, const char *Exe) {
+            return parse(json{ {"CID", Id}, {"LABEL", Id}, {"VARIANT", Ver}, {"RECOMMENDED", json::array({"749000001"})},
+                {"LAYERS", json::array({ json{{"ANY", json::array({"tc"})}}, json{{"DIR", Id}},
+                    json{{"EXEC", json::array({ entry(Exe, "749000001", "Forgotten Empires") })}} })} }, "/tmp/vg_bundle");
+        };
+        idx.Nodes["fe22"] = fe("fe22", "2.2", "fe22.exe");
+        idx.Nodes["fe25"] = fe("fe25", "2.5", "fe25.exe");
+        idx.Nodes["up"] = parse(json{ {"CID", "up"}, {"LABEL", "up"}, {"RECOMMENDED", json::array({"749000001"})},
+            {"LAYERS", json::array({ json{{"ANY", json::array({"tc"})}}, json{{"DIR", "up"}} })} }, "/tmp/vg_bundle");
+        finish(idx);
+
+        ContainerParams cp("/tmp/vg_bundle");
+        cp.NodeIdx = &idx; cp.LaunchNodeId = "fe25"; cp.LaunchFace = "749000001";
+        json pool = json::object();
+        QVERIFY(LaunchResolver::InitializeFromNode(cp, pool, json{{"Settings", json::object()}}));
+        const std::set<std::string> Applied(cp.AppliedGrafts.begin(), cp.AppliedGrafts.end());
+        QCOMPARE(Applied, (std::set<std::string>{"fe25", "up"}));
+    }
+
+    // What a graft's row puts on disk is what it mounts: a graft that is a version runs on its base, so its content and
+    // its "installed" verdict take in the base's, though the graft names the base only through ANY. Without that, a
+    // friend downloading Forgotten Empires got FE and never The Conquerors, and the card read installed. A dehydrate
+    // still removes the graft's own content only (the base is a version with its own card). Teeth: walk only the
+    // row's closure (content or hydration); walk the base on dehydrate.
+    void a_graft_rows_content_includes_its_base()
+    {
+        QTemporaryDir Dir;
+        QVERIFY(Dir.isValid());
+        const std::string B = Dir.path().toStdString();
+        const auto zip = [](const char *Name, const char *Cid) { return json{ {"ZIP", Name}, {"SOURCE", Cid}, {"TARGET", "FILES/%GameDir%"} }; };
+        const auto entry = [](const char *Exe, const char *Uid, const char *Title) {
+            return json{ {"LABEL", "Play"}, {"HOST", kMachine}, {"EXE", Exe}, {"TILE", {{"UID", Uid}, {"TITLE", Title}}} };
+        };
+        NodeIndex idx;
+        idx.Nodes["tc"] = parse(json{ {"CID", "tc"}, {"LABEL", "tc"}, {"VARIANT", "1.0e"},
+            {"LAYERS", json::array({ zip("tc.zip", "QmTc"), json{{"EXEC", json::array({ entry("tc.exe", "13006", "The Conquerors") })}} })} }, B);
+        idx.Nodes["fe"] = parse(json{ {"CID", "fe"}, {"LABEL", "fe"}, {"VARIANT", "2.2"},
+            {"LAYERS", json::array({ json{{"ANY", json::array({"tc"})}}, zip("fe.zip", "QmFe"),
+                json{{"EXEC", json::array({ entry("fe.exe", "749000001", "Forgotten Empires") })}} })} }, B);
+        finish(idx);
+
+        const std::vector<std::string> Cids = PackageCatalog::NodeContentCids(idx, "fe");
+        QVERIFY2(std::find(Cids.begin(), Cids.end(), "QmTc") != Cids.end(), "the base's content is not part of the graft version's download");
+        QVERIFY(std::find(Cids.begin(), Cids.end(), "QmFe") != Cids.end());
+
+        const auto touch = [&](const char *Name) { std::ofstream(B + "/" + Name) << "x"; };
+        touch("fe.zip");
+        QVERIFY2(!PackageCatalog::HydrationMap(idx).at("fe").Hydrated, "the graft version reads installed with its base's content missing");
+        touch("tc.zip");
+        QVERIFY(PackageCatalog::HydrationMap(idx).at("fe").Hydrated);
+
+        PackageCatalog::DehydrateNode(idx, "fe");
+        QVERIFY2(std::filesystem::exists(B + "/tc.zip"), "removing the graft version deleted its base's content");
+        QVERIFY(!std::filesystem::exists(B + "/fe.zip"));
     }
 
     // No authored native runner → the terminal is the synthesized passthrough sentinel.

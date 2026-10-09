@@ -189,6 +189,14 @@ void CatalogTab::rebuild()
                     AnyFetchable = true;
             }
         }
+        if (!Tile.Graft.empty())   // a graft's card: the graft is the game, so a missing graft is something to download
+            if (auto H = Hyd.find(Tile.Graft); H == Hyd.end() || !H->second.Hydrated)
+            {
+                AnyMissing = true;
+                if (!PackageCatalog::NodeContentCids(Model.catalogIndex(), Tile.Graft).empty()
+                    || PackageCatalog::NodeClosureIncomplete(Model.catalogIndex(), Tile.Graft))
+                    AnyFetchable = true;
+            }
         if (!AnyMissing || !AnyFetchable || Ids.empty()) continue;
         auto * c = new LibraryGameCard(Model.config(), &Model.catalogIndex(), std::move(Ids), Tile.Uid);
         c->InitializeClassVariables();

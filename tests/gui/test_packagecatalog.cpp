@@ -1158,7 +1158,7 @@ private slots:
         QVERIFY2(IpfsWrapper::StartNode((Repo.path() + "/ipfs").toStdString(), &Err), Err.c_str());
         QTemporaryDir SeedRoot; QVERIFY(SeedRoot.isValid());
         const json Items = publishTwoGames(SeedRoot.path());
-        for (const std::string Lib : {std::string("../../escape"), std::string("/tmp/vg_adopt_escape"), std::string("..")})
+        for (const std::string &Lib : {std::string("../../escape"), std::string("/tmp/vg_adopt_escape"), std::string("..")})
         {
             QTemporaryDir RxData; QVERIFY(RxData.isValid());
             json rx = json{{"Settings", {{"Paths", {{"LibraryRoot", (RxData.path() + "/LIBRARY").toStdString()}}}}},

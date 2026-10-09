@@ -304,7 +304,8 @@ int StampNodeCids(const std::filesystem::path &Root,
         Out.flush();
         if (!Out.good())
         { std::error_code Rm; fs::remove(Tmp, Rm);
-          if (Error) *Error = "write failed (disk full?) for " + E.path().string(); CleanupTmps(Pending); return -1; }
+          if (Error) *Error = "write failed (disk full?) for " + E.path().string();
+          CleanupTmps(Pending); return -1; }
         Pending.push_back(Tmp);
     }
 
