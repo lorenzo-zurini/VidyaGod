@@ -38,7 +38,7 @@ jobs:
           sudo apt update
           sudo apt install -y cmake g++ g++-12 gcc-12 build-essential qt6-base-dev qt6-tools-dev qt6-l10n-tools \
             libqt6opengl6-dev libglu1-mesa-dev freeglut3-dev mesa-common-dev fuse3 libfuse3-dev tree \
-            libxkbcommon-dev nlohmann-json3-dev wget pkg-config patchelf \
+            libxkbcommon-dev nlohmann-json3-dev wget pkg-config patchelf bubblewrap \
             zlib1g-dev libbz2-dev liblzma-dev libzstd-dev
           # patchelf: required by linuxdeployqt (it aborts silently without it); pre-installed on the runner
           # image today, but pinned here so the AppImage packaging step never depends on the image contents.

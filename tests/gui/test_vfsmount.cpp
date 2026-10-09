@@ -10,6 +10,9 @@
 #include <QTemporaryDir>
 
 #include "qtestjson.h"
+#ifndef _WIN32
+#include <unistd.h>
+#endif
 
 // QVERIFY_THROWS_NO_EXCEPTION arrived in Qt 6.3; CI's Ubuntu 22.04 ships 6.2.
 #define VERIFY_NO_THROW(Expr)                                                                                  \
@@ -136,6 +139,25 @@ private slots:
         QCOMPARE(Spec["layers"].size(), size_t(1));
         QVERIFY2(Types(Spec)[0] == "dir", "the one VFS layer must survive; the edit layers are not mounts");
     }
+
+#ifndef _WIN32
+    // The mount reports its files as owned by the user running it, for the game's mount and the runner's alike. It
+    // was a fixed 1000: for any other uid the sandbox saw the files as `nobody`'s and the game could not write its
+    // saves. Teeth (needs a uid other than 1000, as on CI): put the fixed 1000 back.
+    void the_mount_is_owned_by_the_user_running_it()
+    {
+        ContainerParams CP = Make();
+        CP.SubComponentsArray = json::array({ DirLayer("content") });
+        const json Game = VfsMount::BuildLayerSpec(CP);
+        QCOMPARE(Game.value("uid", 0u), static_cast<unsigned>(::getuid()));
+        QCOMPARE(Game.value("gid", 0u), static_cast<unsigned>(::getgid()));
+        CP.RunnerPackagePath = CP.PackagePath;
+        CP.RunnerLayers = { DirLayer("runner") };
+        const json Runner = VfsMount::BuildRunnerLayerSpec(CP);
+        QCOMPARE(Runner.value("uid", 0u), static_cast<unsigned>(::getuid()));
+        QCOMPARE(Runner.value("gid", 0u), static_cast<unsigned>(::getgid()));
+    }
+#endif
 
     void subcomponent_order_is_preserved_as_layer_priority()
     {

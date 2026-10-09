@@ -167,7 +167,8 @@ void LaunchThread::run()
     // -----------------------------------------------------------------
     // Step 3: Execute game (blocks until process exits or is killed).
     // -----------------------------------------------------------------
-    LocalWrapper->Execute();
+    //False without a crash: the game was never started (the mandatory sandbox is unavailable) — a failed launch.
+    const bool NotStarted = !LocalWrapper->Execute() && !LocalWrapper->LastCrashed;
 
     //THE VERDICT. Printed for every launch, clean or not — "0 warnings" is information too, and a summary that
     //only appears on failure trains you to ignore its absence. When something did go wrong this is deliberately
@@ -221,6 +222,13 @@ void LaunchThread::run()
         wrapper = nullptr;
     }
     delete LocalWrapper;
+
+    if (NotStarted)
+    {
+        emit launchFinished(false, QStringLiteral("The game was not started.\n\nSee the log for why (for example, the "
+                                                  "sandbox every launch needs is unavailable on this machine)."));
+        return;
+    }
 
     // A deliberate user-kill is not a failure. Otherwise a crash or a non-zero exit code means the game didn't
     // run cleanly — surface it (the runner's output was forwarded live to the terminal/log for details).

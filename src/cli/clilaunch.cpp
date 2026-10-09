@@ -186,7 +186,15 @@ int CliModes::RunNodeLaunch(LaunchParameters &LaunchParameters, nlohmann::ordere
         if (AppPaths::UserDataPathOverride().empty() && !NewContainerWrapper.ContainerParams.PackageUID.empty())
             InstanceStore::TouchLastRun(GlobalConfigJSON, NewContainerWrapper.ContainerParams.PackageUID,
                                         NewContainerWrapper.ContainerParams.InstanceName);
-        NewContainerWrapper.Execute();
+        //False without a crash: the game was never started (the mandatory sandbox is unavailable). That is a failed
+        //launch; it used to exit 0, and the launch matrix read "ran, printed nothing" on a machine without bwrap.
+        const bool Started = NewContainerWrapper.Execute() || NewContainerWrapper.LastCrashed;
+        if (!Started)
+        {
+            LogErr("main.cpp", "The game was not started (see the log above).");
+            Diagnostics::ReportVerdict("Launch of '" + LaunchParameters.LaunchNodeId + "'");
+            return 1;
+        }
         if (NewContainerWrapper.LastCrashed || NewContainerWrapper.LastExitCode != 0)
             LogWarn("main.cpp", "Game did not exit cleanly (code " + std::to_string(NewContainerWrapper.LastExitCode) + ").");
         //Same verdict the GUI prints. The CLI is what tooling and debugging actually use, so leaving it untallied

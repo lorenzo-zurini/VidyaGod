@@ -182,12 +182,23 @@ static void ValidateDeltaBases(const nlohmann::ordered_json &Layers, const char 
     }
 }
 
+//Who the mount reports owning its files: the user running it. A fixed 1000 broke every other uid: inside the
+//sandbox's user namespace an unmapped owner reads as `nobody`, and a KEEP dir (saves) mounted 0775 refused the
+//game's writes (CI's runner is uid 1001). WinFsp takes no owner from the spec.
+static void SetMountOwner(nlohmann::ordered_json &Spec)
+{
+#ifdef _WIN32
+    Spec["uid"] = 1000; Spec["gid"] = 1000;
+#else
+    Spec["uid"] = static_cast<unsigned>(::getuid()); Spec["gid"] = static_cast<unsigned>(::getgid());
+#endif
+}
+
 nlohmann::ordered_json VfsMount::BuildLayerSpec(struct ContainerParams &ContainerParams)
 {
     nlohmann::ordered_json Spec;
     Spec["mountpoint"] = ContainerParams.RuntimePath.string();
-    Spec["uid"] = 1000;
-    Spec["gid"] = 1000;
+    SetMountOwner(Spec);
     Spec["readonly"] = ContainerParams.ReadOnlyVFS;
     if (ContainerParams.ReadOnlyVFS)
         Spec["writelayer"] = nullptr;
@@ -566,7 +577,7 @@ nlohmann::ordered_json VfsMount::BuildRunnerLayerSpec(struct ContainerParams &Co
 {
     nlohmann::ordered_json Spec;
     Spec["mountpoint"] = ContainerParams.RunnerMountPath.string();
-    Spec["uid"] = 1000; Spec["gid"] = 1000;
+    SetMountOwner(Spec);
     Spec["readonly"] = true; Spec["writelayer"] = nullptr;
     nlohmann::ordered_json Layers = nlohmann::ordered_json::array();
     // A runner build may itself be a .vgdelta CHAIN (many Proton versions = base + deltas); MakeVfsSpecLayer handles

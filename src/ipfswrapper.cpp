@@ -761,8 +761,10 @@ std::map<std::string, std::string> LanLaunchVars()
     char *J = nullptr;
     if (VgLanLaunchVars(&J) != 0) { TakeStr(J); return Out; }
     const std::string Js = TakeStr(J);
-    try { for (const auto &[K, V] : nlohmann::json::parse(Js).items()) Out[K] = V.get<std::string>(); }
-    catch (const std::exception &E) { LogWarn("IpfsWrapper::LanLaunchVars", std::string("bad JSON from node: ") + E.what()); }
+    //The parsed value is NAMED: items() refers into it, and a temporary in the range-init outlives the loop only
+    //under C++23's lifetime extension (GCC 16 has it, CI's GCC 12 does not: every value read as freed memory).
+    try { const nlohmann::json Vars = nlohmann::json::parse(Js); for (const auto &[K, V] : Vars.items()) Out[K] = V.get<std::string>(); }
+    catch (const std::exception &E) { LogWarn("IpfsWrapper::LanLaunchVars", std::string("bad JSON from node: ") + E.what() + " in " + Js.substr(0, 300)); }
     return Out;
 }
 

@@ -493,7 +493,9 @@ private:
             // the refusal paths are exactly the ones worth asserting.
             act->setNotifyHandler([this](const QString &T, const QString &B) { notices << (T + ": " + B); });
         }
-        ~Fixture() { delete dir; }
+        //The fixture owns what it made. Parented to the test object alone, they outlived it: a model's queued
+        //validation fired in a LATER test and read the dead `cfg` (a segfault wherever that timing hit, e.g. CI).
+        ~Fixture() { delete act; delete canvas; delete model; delete dir; }
 
         PkgDoc::Document &doc() { return model->doc(); }
         QString path(const QString &rel) const { return dir->path() + "/" + rel; }
