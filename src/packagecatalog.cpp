@@ -1177,7 +1177,7 @@ std::vector<ReceivedFetch> PlanReceivedFetches(const nlohmann::ordered_json &Glo
         // the unqualified one said "installed" for both of two colliding packages, or re-planned the installed one.
         std::error_code Ec;
         if (fs::is_directory(fs::path(LibraryRootDir(GlobalConfigJSON)) / SafeSegment(LibName) / Dest.filename(), Ec)) return;
-        Out.push_back(ReceivedFetch{Cid, (Dest / kPackageFolderDir).string()});
+        Out.push_back(ReceivedFetch{Cid, (Dest / kPackageFolderDir).generic_string()});   // '/' on every host: compared as data
     };
     size_t Total = 0;   // snapshot-wide bound (a hostile friend could send many libs x many items)
     for (const auto &[LibName, Items] : Libs.items())

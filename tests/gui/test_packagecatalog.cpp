@@ -1176,9 +1176,9 @@ private slots:
             const std::filesystem::path Stub = std::filesystem::path(Plan.front().Dest).parent_path();
             std::filesystem::path NewDir;
             const bool Ok = PackageCatalog::AdoptReceivedPackage(rx, Stub, &NewDir, &Err);
-            const std::string Library = std::filesystem::weakly_canonical(RxData.path().toStdString() + "/LIBRARY").string();
+            const std::string Library = std::filesystem::weakly_canonical(RxData.path().toStdString() + "/LIBRARY").generic_string();
             if (Ok)
-                QVERIFY2(std::filesystem::weakly_canonical(NewDir).string().rfind(Library + "/", 0) == 0,
+                QVERIFY2(std::filesystem::weakly_canonical(NewDir).generic_string().rfind(Library + "/", 0) == 0,
                          ("installed outside the library: " + NewDir.string()).c_str());
             QVERIFY2(!std::filesystem::exists("/tmp/vg_adopt_escape"), "a package landed at an absolute library name");
             QVERIFY2(!std::filesystem::exists(RxData.path().toStdString() + "/../escape"), "a package landed above the library");
