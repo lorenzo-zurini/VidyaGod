@@ -1014,6 +1014,26 @@ void ValidateNodeGraph(const NodeIndex &Idx, std::vector<std::string> &Errors, s
                         break;
                     }
             }
+            //A launch option written into a file the user keeps: on a kept address an edit is the package's default,
+            //applied only until the user has a saved copy — so the option works on the first launch and never again.
+            //The option's key has to be taken back (KEEP false) to be re-applied over the user's copy.
+            for (const Fold::Item &I : P.Seq)
+                if (I.Kind == "EDIT" && I.Ops.is_array())
+                    for (const auto &O : I.Ops)
+                    {
+                        const std::string Addr = NodeLower::EditAddress(O, I.Target);
+                        if (!NodeLower::UserOwned(P.Keep, Addr)) continue;
+                        //...whether the option gives the value or picks the op (its WHEN)
+                        std::vector<std::string> Keys = VarSubst::TokenKeys(O.value("VALUE", std::string()));
+                        for (const std::string &K : VarSubst::TokenKeys(O.value("WHEN", std::string()))) Keys.push_back(K);
+                        for (const std::string &K : Keys)
+                            if (P.Decls.contains(K) && P.Decls[K].is_object() && P.Decls[K].contains("UI"))
+                            {
+                                Once(Warnings, Tag + ": launch option '" + K + "' is written to '" + Addr + "', which the user keeps — "
+                                     "it applies only until the first saved copy. Take the address back: KEEP {\"" + Addr + "\": false}");
+                                break;
+                            }
+                    }
         }
         if (!N.IsVariant()) continue;
         const Fold::Plan P = Fold::Resolve(Lib, Root, {}, {}, Base0);

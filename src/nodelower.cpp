@@ -481,6 +481,12 @@ bool UserOwned(const nlohmann::ordered_json &Keep, const std::string &Address)
     return Owned;
 }
 
+std::string EditAddress(const nlohmann::ordered_json &Op, const std::string &Target)
+{
+    const std::string Mode = Str(Op.value("MODE", ordered_json()));
+    return "FILES/" + Target + (Mode == "ConfigWrite" || Mode == "JsonSet" ? "#" + Str(Op.value("KEY", ordered_json())) : std::string());
+}
+
 namespace {
 
 //A content layer seen through one TAKE, as mounts: (the path inside the layer, the FILES address it lands at). Each
@@ -565,8 +571,7 @@ nlohmann::ordered_json LowerPlan(const Fold::Plan &P)
             for (const auto &O : I.Ops)
             {
                 ordered_json L = EditOp(O, I.Target);
-                const std::string Addr = "FILES/" + I.Target
-                                       + (Str(O.value("MODE", ordered_json())) == "ConfigWrite" ? "#" + Str(O.value("KEY", ordered_json())) : std::string());
+                const std::string Addr = EditAddress(O, I.Target);
                 //An EDIT applies to the value beneath it: the composed files, so after the mount. On a user-owned
                 //address it is the package's default — applied while the user has no saved copy of the file.
                 //(A BinaryPatch always runs after the mount.)

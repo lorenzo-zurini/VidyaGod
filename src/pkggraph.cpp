@@ -471,7 +471,8 @@ namespace {
 const std::vector<std::pair<const char *, const char *>> DllOpts    = {{"n,b","native, then builtin"},{"b,n","builtin, then native"},
                                                                        {"n","native only"},{"b","builtin only"},{"d","disabled"}};
 const std::vector<std::pair<const char *, const char *>> ModeOpts   = {{"ConfigWrite","key = value"},{"Overwrite","whole file"},
-                                                                       {"AppendLine","append a line"},{"Replace","bytes: replace"},
+                                                                       {"AppendLine","append a line"},{"JsonSet","JSON: set a key"},
+                                                                       {"Replace","bytes: replace"},
                                                                        {"Poke","bytes: poke"},{"Or","bytes: set bits"},{"Cave","bytes: cave"}};
 
 //Every layer ends with its gate and its note.
@@ -520,8 +521,8 @@ std::vector<Field> MakeFields(const std::string &Type)
             {"EDIT",   "Ops",  FieldKind::ObjArray, "", {}, {
                 {"MODE",    "Mode",    FieldKind::Enum, "", ModeOpts, {}},
                 {"SECTION", "Section", FieldKind::Text, "ConfigWrite: [section] (optional)", {}, {}},
-                {"KEY",     "Key",     FieldKind::Text, "ConfigWrite: the key", {}, {}},
-                {"VALUE",   "Value",   FieldKind::Text, "text value / Poke: the scalar / Or: the bits", {}, {}},
+                {"KEY",     "Key",     FieldKind::Text, "ConfigWrite: the key / JsonSet: /json/pointer", {}, {}},
+                {"VALUE",   "Value",   FieldKind::Text, "text value / JsonSet: JSON (else a string) / Poke: the scalar / Or: the bits", {}, {}},
                 {"OFFSET",  "Offset",  FieldKind::Text, "bytes: 0x... (VA or file offset)", {}, {}},
                 {"ANCHOR",  "Anchor",  FieldKind::Text, "bytes: hex signature, ?? = wildcard (instead of Offset)", {}, {}},
                 {"EXPECT",  "Expect",  FieldKind::Text, "bytes: pristine bytes (the guard)", {}, {}},
@@ -864,6 +865,7 @@ std::string EntrySummary(const json &E)
         const std::string Sec = StrField(E, "SECTION");
         return (Sec.empty() ? "" : "[" + Sec + "] ") + StrField(E, "KEY") + " = " + StrField(E, "VALUE");
     }
+    if (Mode == "JsonSet") return StrField(E, "KEY") + " = " + StrField(E, "VALUE");
     auto Short = [](const std::string &H) { return H.size() > 12 ? H.substr(0, 10) + ".." : H; };
     if (Mode == "Replace") return Site + " " + Short(StrField(E, "EXPECT")) + " -> " + Short(StrField(E, "REPLACE"));
     if (Mode == "Or" || Mode == "Poke") return Site + " " + Mode + " " + Short(StrField(E, "VALUE"));

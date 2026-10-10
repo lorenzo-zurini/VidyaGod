@@ -49,6 +49,10 @@ nlohmann::ordered_json LowerPlan(const Fold::Plan &P);
 //specific KEEP entry covering it decides; nothing covering it ⇒ package-owned.
 bool UserOwned(const nlohmann::ordered_json &Keep, const std::string &Address);
 
+//The address an EDIT op writes (Target: the placed file, FILES namespace stripped): a keyed op (ConfigWrite, JsonSet)
+//writes one key of the file — FILES/<file>#<KEY>; every other op writes the whole file.
+std::string EditAddress(const nlohmann::ordered_json &Op, const std::string &Target);
+
 } // namespace NodeLower
 
 #endif // NODELOWER_H

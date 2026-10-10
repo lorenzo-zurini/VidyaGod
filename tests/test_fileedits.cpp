@@ -180,3 +180,75 @@ TEST(an_absolute_fileedit_path_already_inside_the_base_is_used_as_is)
     CHECK(!std::filesystem::exists(Base / Base.relative_path() / "game" / "x.ini"));
     std::filesystem::remove_all(Root);
 }
+
+// ---- JsonSet ----
+
+// One value set by JSON pointer: the rest of the document and its key order stay; objects missing on the way are made.
+TEST(jsonset_sets_a_value_by_pointer_and_keeps_the_rest)
+{
+    auto dir = TmpDir("js"); auto f = dir / "settings.json";
+    Write(f, "{\"z\": 1, \"video\": {\"fullscreen\": false, \"keep\": \"me\"}, \"a\": [1, 2]}");
+    CHECK(FileEdits::JsonSet("/video/fullscreen", "true", f));
+    CHECK(FileEdits::JsonSet("/video/resolution/width", "1920", f));
+    CHECK(FileEdits::JsonSet("/general/language", "english", f));        // not JSON ⇒ a string
+    CHECK(FileEdits::JsonSet("/general/code", "\"1920\"", f));           // a JSON string stays a string
+    CHECK(FileEdits::JsonSet("/a/1", "5", f));
+    const auto J = nlohmann::ordered_json::parse(ReadAll(f));
+    CHECK(J["video"]["fullscreen"] == true);
+    CHECK(J["video"]["keep"] == "me");
+    CHECK(J["video"]["resolution"]["width"] == 1920);
+    CHECK(J["general"]["language"] == "english");
+    CHECK(J["general"]["code"] == "1920");
+    CHECK(J["a"] == nlohmann::ordered_json::array({1, 5}));
+    CHECK_EQ(J.begin().key(), std::string("z"));                          // key order kept
+    std::filesystem::remove_all(dir);
+}
+
+// The file is made when absent (a game that writes its settings only once something changes).
+TEST(jsonset_creates_the_file)
+{
+    auto dir = TmpDir("jsc"); auto f = dir / "sub" / "settings.json";
+    CHECK(FileEdits::JsonSet("/video/fullscreen", "false", f));
+    CHECK(nlohmann::ordered_json::parse(ReadAll(f)) == nlohmann::ordered_json({{"video", {{"fullscreen", false}}}}));
+    std::filesystem::remove_all(dir);
+}
+
+// A file that is not JSON, or a pointer through a plain value, fails and leaves the file exactly as it was.
+TEST(jsonset_refuses_and_leaves_the_file)
+{
+    auto dir = TmpDir("jsr"); auto f = dir / "settings.json";
+    Write(f, "[general]\nx=1\n");
+    CHECK(!FileEdits::JsonSet("/x", "2", f));
+    CHECK_EQ(ReadAll(f), std::string("[general]\nx=1\n"));
+    Write(f, "{\"a\": 3}");
+    CHECK(!FileEdits::JsonSet("/a/b", "2", f));
+    CHECK_EQ(ReadAll(f), std::string("{\"a\": 3}"));
+    CHECK(!FileEdits::JsonSet("no-slash", "2", f));
+    CHECK_EQ(ReadAll(f), std::string("{\"a\": 3}"));
+    std::filesystem::remove_all(dir);
+}
+
+// Hostile bounds (a package's KEY/VALUE, or the game's own file, is untrusted): an index past an array's end is refused
+// (the library would pad with nulls — /a/4000000000 allocates until the machine runs out of memory); appending at the
+// end or with "-" works. A pointer or a result nested deeper than the writer can recurse is refused, and so is a value
+// that cannot be written (not UTF-8) — in every refusal the file is exactly as it was, never truncated.
+TEST(jsonset_bounds_hostile_pointers_and_values)
+{
+    auto dir = TmpDir("jsb"); auto f = dir / "settings.json";
+    const std::string Orig = "{\"a\": [1, 2]}";
+    Write(f, Orig);
+    CHECK(!FileEdits::JsonSet("/a/5", "9", f));
+    CHECK_EQ(ReadAll(f), Orig);
+    std::string Deep;
+    for (int I = 0; I < 200; ++I) Deep += "/x";
+    CHECK(!FileEdits::JsonSet(Deep, "1", f));
+    CHECK_EQ(ReadAll(f), Orig);
+    CHECK(!FileEdits::JsonSet("/b", std::string(200, '[') + std::string(200, ']'), f));
+    CHECK_EQ(ReadAll(f), Orig);
+    CHECK(!FileEdits::JsonSet("/b", "\xff\xfe", f));
+    CHECK_EQ(ReadAll(f), Orig);
+    CHECK(FileEdits::JsonSet("/a/2", "3", f));
+    CHECK(FileEdits::JsonSet("/a/-", "4", f));
+    CHECK(nlohmann::ordered_json::parse(ReadAll(f))["a"] == nlohmann::ordered_json::array({1, 2, 3, 4}));
+    std::filesystem::remove_all(dir);
+}

@@ -32,6 +32,12 @@ bool PathEscapesBase(const std::filesystem::path &Joined, const std::filesystem:
 //Reads FilePath line by line and replaces any line starting with Key with Key+Value (prefix-matched INI patching).
 [[nodiscard]] bool ConfigWrite(const std::string &Key, const std::string &Value, const std::filesystem::path &FilePath);
 
+//Sets one value in a JSON file. Pointer is a JSON Pointer (RFC 6901: "/video/resolution/width"); Value is JSON text
+//(1920, true, "x", [1,2]) or, when it does not parse as JSON, a plain string. Objects missing on the way are created,
+//and so is the file (absent or empty = {}). Key order is kept; comments are read but not written back. A file that
+//is not JSON, or a pointer that runs through a value that is not an object/array, fails and leaves the file alone.
+[[nodiscard]] bool JsonSet(const std::string &Pointer, const std::string &Value, const std::filesystem::path &FilePath);
+
 //Writes Value as the complete content of FilePath, creating parent dirs if needed.
 [[nodiscard]] bool FileOverwrite(const std::string &Value, const std::filesystem::path &FilePath);
 

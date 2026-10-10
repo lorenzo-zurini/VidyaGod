@@ -3,11 +3,13 @@
 #include "commonutils.h"   // Log*
 #include "varsubst.h"      // %variable% substitution in FileEdit VALUEs (e.g. config_info's %RunnerMount%/%TempPath%)
 
+#include <algorithm>
 #include <filesystem>
 #include <fstream>
 #include <sstream>
 #include <iterator>
 #include <string>
+#include <vector>
 
 //Collects DLLOVERRIDE values from all DllOverride subcomponents into DLLOverrides.
 //The collected strings are later joined and assigned to WINEDLLOVERRIDES in Execute().
@@ -142,6 +144,8 @@ bool FileEdits::ProcessFileEdits(struct ContainerParams &ContainerParams, bool O
         bool EditOk = true;
         if (Mode == "ConfigWrite")
             EditOk = FileEdits::ConfigWrite(Key, Value, FilePath);
+        else if (Mode == "JsonSet")
+            EditOk = FileEdits::JsonSet(Key, Value, FilePath);
         else if (Mode == "Overwrite")
             EditOk = FileEdits::FileOverwrite(Value, FilePath);
         else if (Mode == "AppendLine")
@@ -238,6 +242,104 @@ bool FileEdits::ConfigWrite(const std::string &Key, const std::string &Value, co
                 + " — the file was rewritten unchanged and this setting had no effect. Check the key spelling "
                   "(it is matched as a literal line PREFIX, including any spaces around '=').");
     return true;
+}
+
+namespace {
+
+//How deep a JsonSet may reach and how deep a document it writes: serialising is recursive, so an unbounded depth (a
+//package's pointer or value, or a game's own file) would overflow the stack.
+constexpr size_t MaxJsonDepth = 128;
+
+size_t JsonDepth(const nlohmann::ordered_json &Root)
+{
+    size_t Max = 0;
+    std::vector<std::pair<const nlohmann::ordered_json *, size_t>> Stack = { { &Root, 1 } };
+    while (!Stack.empty())
+    {
+        const auto [J, D] = Stack.back();
+        Stack.pop_back();
+        Max = std::max(Max, D);
+        if (J->is_structured() && D <= MaxJsonDepth)
+            for (const auto &C : *J) Stack.push_back({ &C, D + 1 });
+    }
+    return Max;
+}
+
+}
+
+bool FileEdits::JsonSet(const std::string &Pointer, const std::string &Value, const std::filesystem::path &FilePath)
+{
+    LogOut("FileEdits::JsonSet", "FilePath: " + FilePath.string() + " Pointer: " + Pointer + " Value: " + Value);
+    nlohmann::ordered_json Doc = nlohmann::ordered_json::object();
+    {
+        std::ifstream In(FilePath, std::ios::binary);
+        const std::string Text = In ? std::string(std::istreambuf_iterator<char>(In), std::istreambuf_iterator<char>()) : std::string();
+        if (Text.find_first_not_of(" \t\r\n") != std::string::npos)
+        {
+            Doc = nlohmann::ordered_json::parse(Text, nullptr, /*allow_exceptions=*/false, /*ignore_comments=*/true);
+            if (Doc.is_discarded())
+            {
+                LogErr("FileEdits::JsonSet", FilePath.string() + " is not JSON — left as it is.");
+                return false;
+            }
+        }
+    }
+    nlohmann::ordered_json V = nlohmann::ordered_json::parse(Value, nullptr, /*allow_exceptions=*/false);
+    if (V.is_discarded()) V = Value;
+    std::string Text;
+    try
+    {
+        const nlohmann::ordered_json::json_pointer Ptr(Pointer);
+        if (static_cast<size_t>(std::count(Pointer.begin(), Pointer.end(), '/')) > MaxJsonDepth)
+        {
+            LogErr("FileEdits::JsonSet", "cannot set '" + Pointer.substr(0, 80) + "...' in " + FilePath.string()
+                   + ": the pointer is deeper than " + std::to_string(MaxJsonDepth) + " levels");
+            return false;
+        }
+        //An array is indexed within its bounds (or appended to, at its end or with "-"): an index past the end makes
+        //the library pad the array with nulls, so a package naming /list/4000000000 would allocate until the machine
+        //runs out of memory. Where the path is missing it is created as objects, which costs one level per token.
+        const nlohmann::ordered_json *At = &Doc;
+        for (size_t Pos = 0; At && Pos < Pointer.size();)
+        {
+            const size_t End = std::min(Pointer.find('/', Pos + 1), Pointer.size());
+            std::string Tok = Pointer.substr(Pos + 1, End - Pos - 1);
+            for (size_t K; (K = Tok.find("~1")) != std::string::npos;) Tok.replace(K, 2, "/");
+            for (size_t K; (K = Tok.find("~0")) != std::string::npos;) Tok.replace(K, 2, "~");
+            Pos = End;
+            if (At->is_object()) { At = At->contains(Tok) ? &(*At)[Tok] : nullptr; continue; }
+            if (!At->is_array()) break;   // a scalar on the way: the set below refuses it
+            const bool Index = !Tok.empty() && Tok.size() <= 18 && Tok.find_first_not_of("0123456789") == std::string::npos;
+            if (Tok != "-" && (!Index || std::stoull(Tok) > At->size()))
+            {
+                LogErr("FileEdits::JsonSet", "cannot set '" + Pointer + "' in " + FilePath.string() + ": '" + Tok
+                       + "' is not an index within the array (size " + std::to_string(At->size()) + ")");
+                return false;
+            }
+            At = Tok != "-" && std::stoull(Tok) < At->size() ? &(*At)[std::stoull(Tok)] : nullptr;
+        }
+        Doc[Ptr] = std::move(V);
+        if (JsonDepth(Doc) > MaxJsonDepth)
+        {
+            LogErr("FileEdits::JsonSet", "cannot set '" + Pointer + "' in " + FilePath.string() + ": the result nests deeper than "
+                   + std::to_string(MaxJsonDepth) + " levels");
+            return false;
+        }
+        //Serialised in full before the file is touched: a value that cannot be written (not UTF-8) fails here, and the
+        //file stays as it was.
+        Text = Doc.dump(4) + "\n";
+    }
+    catch (const nlohmann::json::exception &Ex)
+    {
+        LogErr("FileEdits::JsonSet", "cannot set '" + Pointer + "' in " + FilePath.string() + ": " + Ex.what());
+        return false;
+    }
+    std::error_code Ec;
+    std::filesystem::create_directories(FilePath.parent_path(), Ec);
+    std::ofstream Out(FilePath, std::ios::binary | std::ios::trunc);   // binary: LF on every platform
+    if (!Out) { LogErr("FileEdits::JsonSet", "Could not open for writing: " + FilePath.string()); return false; }
+    Out << Text;
+    return static_cast<bool>(Out);
 }
 
 //Writes Value as the complete content of FilePath, creating parent directories if needed.

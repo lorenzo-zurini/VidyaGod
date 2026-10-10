@@ -776,3 +776,41 @@ TEST(scan_names_a_published_node_by_its_file)
     CHECK(Missing.empty());
     CHECK(std::find(Order.begin(), Order.end(), A) != Order.end());
 }
+
+// A launch option written into a file the user keeps. On a kept address an edit is the package's DEFAULT (IF_UNSAVED):
+// once the user has a saved copy it is skipped, so the option works on the first launch only. The validator says so;
+// taking the option's key back (KEEP false) makes it the package's — applied every launch, over the user's copy.
+// Keyed by its JSON pointer, a JsonSet is taken back per key like a ConfigWrite.
+TEST(a_launch_option_in_a_kept_file_must_be_taken_back)
+{
+    const auto Game = [](bool TakeBack) {
+        ordered_json Keep = { {"FILES/%GameDir%/cfg/", true} };
+        if (TakeBack) Keep["FILES/%GameDir%/cfg/settings.json#/video/fullscreen"] = Keep["FILES/%GameDir%/cfg/settings.json#/video/real"] = false;
+        return ordered_json{ {"CID", "g"}, {"LABEL", "g"}, {"VARIANT", "1"}, {"LAYERS", ordered_json::array({
+            {{"EXEC", ordered_json::array({ {{"LABEL", "Play"}, {"HOST", "win32"}, {"EXE", "%GameDir%/g.exe"}, {"TILE", {{"UID", "7"}}}} })}},
+            {{"VARS", {{"fs", {{"DEFAULT", "1"}, {"UI", {{"CONTROL", "bool"}, {"LABEL", "Fullscreen"}}}}}}}},
+            {{"EDIT", ordered_json::array({ {{"MODE", "JsonSet"}, {"KEY", "/video/fullscreen"}, {"VALUE", "%fs:bool%"}},
+                                            {{"MODE", "JsonSet"}, {"KEY", "/video/real"}, {"VALUE", "true"}, {"WHEN", "%fs%==1"}} })},
+             {"TARGET", "FILES/%GameDir%/cfg/settings.json"}},
+            {{"KEEP", Keep}},
+        })} };
+    };
+    for (const bool TakeBack : { false, true })
+    {
+        const ordered_json J = Game(TakeBack);
+        NodeIndex Idx;
+        Add(Idx, J);
+        ManifestModel::DeriveFacts(Idx);
+        std::vector<std::string> W;
+        Validate(Idx, &W);
+        CHECK_EQ(AnyContains(W, "launch option 'fs' is written to 'FILES/%GameDir%/cfg/settings.json#/video/fullscreen'"), !TakeBack);
+        CHECK_EQ(AnyContains(W, "launch option 'fs' is written to 'FILES/%GameDir%/cfg/settings.json#/video/real'"), !TakeBack);   // via its WHEN
+        Fold::Library Lib;
+        Lib.Nodes["g"] = { &J, "/b" };
+        const ordered_json Ops = NodeLower::LowerPlan(Fold::Resolve(Lib, "g"));
+        const ordered_json *Set = nullptr;
+        for (const auto &O : Ops) if (O.value("KEY", std::string()) == "/video/fullscreen") Set = &O;
+        CHECK(Set && Set->value("OVERRIDE", false));
+        CHECK(Set && Set->value("IF_UNSAVED", false) == !TakeBack);
+    }
+}
