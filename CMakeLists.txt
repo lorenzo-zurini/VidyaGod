@@ -212,6 +212,7 @@ set(SHARED_SOURCES
 
     src/packagecatalog.h
     src/packagecatalog.cpp
+    src/builtinrunners.cpp
     src/packagecatalog_publish.cpp
 
     src/registrywrapper.h

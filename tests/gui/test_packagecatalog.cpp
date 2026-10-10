@@ -8,6 +8,7 @@
 #include <QScopeGuard>
 
 #include "qtestjson.h"
+#include "builtinrunners.h"
 #include "packagecatalog.h"
 #include "pkggraph.h"
 #include "packageeditormodel.h"
@@ -496,6 +497,34 @@ private slots:
         QCOMPARE(std::filesystem::path(Plan[0].Dest).filename(), std::filesystem::path(".package"));
         QCOMPARE(std::filesystem::path(Plan[0].Dest).parent_path().filename(), std::filesystem::path("[802] Warcraft III"));
         QVERIFY2(Plan[1].Dest.find("[802] Warcraft III (bafypkgtwo") != std::string::npos, "the colliding package's dir carries its CID");
+    }
+
+    // The Windows runner comes with the app: on a machine that hosts it (a Windows PC) the catalog has it without a
+    // download, and it is the very node published in VidyaGodRunners — a copy on disk is the same node, kept once.
+    // Teeth: add it on any machine (linux64 gets it too); change its bytes (no longer the published CID).
+    void the_windows_runner_comes_with_the_app()
+    {
+        const auto &All = BuiltinRunners::All();
+        QCOMPARE(All.size(), size_t(1));
+        QCOMPARE(Cid::OfBytes(Cid::Canonical(All[0].Node)), std::string("bafkreiaj2f2uth2gehoqdg5czxpvgdibvqrmitkntcsyh4cx2ilprz72ta"));
+
+        std::map<std::string, json> Tree; std::map<std::string, std::filesystem::path> Dirs;
+        BuiltinRunners::AddTo(Tree, Dirs, "/lib", "linux64");
+        QVERIFY2(Tree.empty(), "a Linux machine cannot host it, so it gets none");
+        BuiltinRunners::AddTo(Tree, Dirs, "/lib", "win64");
+        QCOMPARE(Tree.size(), size_t(1));
+
+        // Beside a copy of the same node read from disk (a handle-less file: synthetic key), one node results.
+        Tree["\x01/lib/VidyaGodRunners/windows-native/copy.json#1"] = All[0].Node;
+        Dirs["\x01/lib/VidyaGodRunners/windows-native/copy.json#1"] = "/lib/VidyaGodRunners/windows-native";
+        std::string Err;
+        const NodeIndex Idx = NodeGraph::FreezeToIndex(Tree, Dirs, &Err);
+        QCOMPARE(Idx.Nodes.size(), size_t(1));
+        const Node *R = Idx.Find("bafkreiaj2f2uth2gehoqdg5czxpvgdibvqrmitkntcsyh4cx2ilprz72ta");
+        QVERIFY(R);
+        QVERIFY(R->IsRunner());
+        QCOMPARE(R->HostPlatform, std::string("win64"));
+        QCOMPARE(R->GuestPlatform, (std::vector<std::string>{"win32", "win64"}));
     }
 
 private:   // a helper, not a test: moc never sees its json parameters (no metatype for json on Windows)

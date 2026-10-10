@@ -1,4 +1,5 @@
 #include "packagecatalog.h"
+#include "builtinrunners.h"
 #include "fold.h"   // Fold — a row's grafts are what its resolution offers
 #include "packagecatalog_p.h"
 #include "apppaths.h"
@@ -1650,6 +1651,8 @@ NodeIndex BuildCatalogIndex(const nlohmann::ordered_json &GlobalConfigJSON)
     NodeGraph::GatherWorkingTree(CatalogRootDir(GlobalConfigJSON), Tree, Dirs, /*SkipReserved=*/false, /*TrustStoredCid=*/false);
     for (const auto &D : LocalPackageDirs(GlobalConfigJSON))   // externally-added bundles that live OUTSIDE LIBRARY
         NodeGraph::GatherWorkingTree(D, Tree, Dirs);
+    //Runners every install has (a Windows game on Windows runs as itself): nothing to download for them.
+    BuiltinRunners::AddTo(Tree, Dirs, LibraryRootDir(GlobalConfigJSON), ManifestModel::MachinePlatform());
     std::string Err;
     NodeIndex Idx = NodeGraph::FreezeToIndex(Tree, Dirs, &Err);
     if (Idx.Nodes.empty() && !Tree.empty())

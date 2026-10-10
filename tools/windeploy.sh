@@ -59,4 +59,4 @@ fi
 echo "== done =="
 echo "dist: $(du -sh "$DIST" | cut -f1), $(find "$DIST" -name '*.dll' | wc -l) DLL(s), $(find "$DIST" -name '*.exe' | wc -l) exe(s)"
 echo "NOTE: install WinFsp on the target (required — kernel driver, not bundlable in a portable folder)."
-echo "NOTE: install Sandboxie-Plus for game isolation (optional — launches run unsandboxed without it)."
+echo "NOTE: install Sandboxie-Plus (required — every game runs sandboxed; without it a launch is refused)."

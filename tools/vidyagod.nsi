@@ -7,8 +7,8 @@
 ;   * WinFsp  (REQUIRED — the union filesystem's kernel driver). If a WinFsp MSI is staged at
 ;              <DISTDIR>\prereq\winfsp.msi it is installed silently when WinFsp is absent; otherwise the
 ;              user is pointed at winfsp.dev.
-;   * Sandboxie-Plus (OPTIONAL — host isolation). Only mentioned; a launch degrades to unsandboxed
-;              without it.
+;   * Sandboxie-Plus (REQUIRED — every game runs sandboxed; without it a launch is refused). Not bundled:
+;              the user is told to install it from sandboxie-plus.com.
 ;
 ; Build (on Windows, from the repo root):
 ;   makensis /DDISTDIR=<path-to-dist> /DOUTFILE=<path-to-VidyaGodSetup.exe> tools\vidyagod.nsi
@@ -70,10 +70,9 @@ Section "VidyaGod (required)" SecApp
   WriteRegDWORD HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\VidyaGod" "NoRepair" 1
   WriteUninstaller "$INSTDIR\uninstall.exe"
 
-  ; Sandboxie (game isolation) is an OPTIONAL external dependency — install Sandboxie-Plus separately.
-  ; Informational only; VidyaGod runs unsandboxed if it is absent.
+  ; Sandboxie-Plus is REQUIRED: every game runs sandboxed, and a launch without it is refused. Not bundled.
   IfFileExists "$PROGRAMFILES64\Sandboxie-Plus\Start.exe" sbie_done 0
-    DetailPrint "Note: install Sandboxie-Plus (https://sandboxie-plus.com) to enable game isolation; without it launches run unsandboxed."
+    MessageBox MB_ICONEXCLAMATION "Sandboxie-Plus is required and was not found: games run sandboxed, and without it they will not start. Install it from https://sandboxie-plus.com."
   sbie_done:
 SectionEnd
 
