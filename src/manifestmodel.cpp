@@ -818,6 +818,17 @@ void ValidateNodeGraph(const NodeIndex &Idx, std::vector<std::string> &Errors, s
     std::unordered_set<std::string> CrossLayerSeen;
     const Fold::Library Lib = LibraryOf(Idx);
     const Fold::GraftIndex Grafts = Fold::BuildGraftIndex(Lib);
+    //What a row is checked with "every offered graft": add-ons only. A graft that is a version, or presents a card of
+    //its own, is applied as the row (first), never offered on top of another one — checked as an add-on, it landed
+    //after the add-ons that build on it (Horn of the Abyss's zip over the HD mod's patch of h3hota.exe).
+    Fold::GraftIndex AddOns = Grafts;
+    for (auto &[Member, Gs] : AddOns)
+        Gs.erase(std::remove_if(Gs.begin(), Gs.end(), [&](const std::string &G) {
+            const Node *Gn = Idx.Find(G);
+            if (Gn && !Gn->Variant.empty()) return true;
+            for (const auto &[U, Card] : Idx.TileGraft) if (Card == G) return true;
+            return false;
+        }), Gs.end());
     auto InScope = [&](const std::string &Id) { return !OnlyNodes || OnlyNodes->count(Id); };
 
     auto HasRunnerFor = [&](const std::string &Host) {
@@ -952,8 +963,12 @@ void ValidateNodeGraph(const NodeIndex &Idx, std::vector<std::string> &Errors, s
                     AllOn[K] = "1";
             //every offered graft, a graft on a graft included (offered once the graft it needs is applied)
             std::vector<std::string> All = Base0;
-            for (const std::string &G : Fold::ApplyGrafts(Lib, Grafts, R, AllOn, {}, N.Uid, nullptr, nullptr, true))
-                if (G != Id) All.push_back(G);
+            //...minus what the row already contains (the launch window does not offer those either)
+            std::set<std::string> Contained;
+            for (const std::string &C : Closure(Idx, R)) Contained.insert(C);
+            for (const std::string &B : Base0) for (const std::string &C : Closure(Idx, B)) Contained.insert(C);
+            for (const std::string &G : Fold::ApplyGrafts(Lib, AddOns, R, AllOn, {}, N.Uid, nullptr, nullptr, true))
+                if (G != Id && !Contained.count(G)) All.push_back(G);
             if (!AllOn.empty() || All.size() > Base0.size()) Configs.push_back({ R, AllOn, All });
         }
         std::set<std::string> Said;                                     // one report per problem across configs

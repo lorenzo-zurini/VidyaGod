@@ -437,6 +437,23 @@ TEST(validate_requires_a_variant_to_present_a_tile_it_recommends)
     CHECK(AnyContains(E, "'norun': VARIANT 'z' has no effective entry"));
 }
 
+// A row is checked with its add-ons, never with another row's graft version as one: the version applies first, as the
+// row it is. Here the add-on edits a file the version's DIR provides — fine on the version's own row (the add-on comes
+// after it), and the version is no add-on of the base. Teeth: offer graft versions as add-ons (the add-on sorts before
+// the version and its edit reads as covered).
+TEST(validate_never_checks_a_graft_version_as_an_add_on)
+{
+    NodeIndex Idx;
+    const ordered_json Edit = NF::Layers({ { {"EDIT", ordered_json::array({ {{"MODE", "Overwrite"}, {"VALUE", "x"}} })}, {"TARGET", "FILES/%GameDir%/a.cfg"} } });
+    const ordered_json OnBase = NF::Layers({ { {"ANY", ordered_json::array({"b"})} } });
+    AddChain(Idx, "b", { NF::Merge({ NF::Content("dir", "base", "%GameDir%"), NF::Exec("win32", "g.exe"), NF::Tile("1"), NF::Variant("v1") }) });
+    AddChain(Idx, "ver", { NF::Merge({ OnBase, NF::Content("dir", "d", "%GameDir%"), NF::Variant("v2") }) });
+    AddChain(Idx, "addon", { NF::Merge({ OnBase, Edit }) });
+    ManifestModel::DeriveFacts(Idx);
+    const auto E = Validate(Idx);
+    CHECK(!AnyContains(E, "lies beneath"));
+}
+
 TEST(validate_refuses_an_edit_beneath_what_replaces_its_file)
 {
     // A DIR provides everything under its target: an EDIT beneath it has no effect. Above it, it is fine.
