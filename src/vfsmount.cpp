@@ -15,6 +15,8 @@
 #include <QMessageBox>
 #include <QMetaObject>
 #include <QProcess>
+#include <QProcessEnvironment>
+#include <QFileInfo>
 #include <QString>
 #include <QThread>
 
@@ -539,10 +541,40 @@ bool VfsMount::SpawnVidyagodfs(const nlohmann::ordered_json &Spec, const std::fi
     // WinFsp CREATES the mountpoint itself (a reparse-point dir, or a drive letter) — mounting onto an
     // existing directory fails, so unlike Linux we must NOT pre-create it. And WinFsp's fuse_main BLOCKS
     // serving (no daemonize), so start the helper detached and poll until the mountpoint materializes.
-    QStringList Args{ QString::fromStdString(SpecPath.string()), QString::fromStdString(Mountpoint.string()),
-                      "--watch-pid", QString::fromStdString(WatchPid) };
+    //WinFsp is a system-wide kernel driver; without it the helper cannot load winfsp-x64.dll and dies at once, which
+    //used to surface only as "mount did not appear".
+    const QString WinFspDll = QProcessEnvironment::systemEnvironment().value("ProgramFiles(x86)", "C:/Program Files (x86)")
+                            + "/WinFsp/bin/winfsp-x64.dll";
+    if (!QFileInfo::exists(WinFspDll))
+    {
+        LogErr("VfsMount::SpawnVidyagodfs", "WinFsp is not installed (no " + WinFspDll.toStdString()
+               + "): every game is mounted through it — install it from https://winfsp.dev and launch again.");
+        return false;
+    }
+    //WinFsp refuses a mountpoint that exists, and the wait below reads "it exists" as "it is mounted": a leftover from
+    //a run that died would fail the mount AND read as success. An empty one is removed; anything else is reported.
+    {
+        std::error_code Ec;
+        if (std::filesystem::is_directory(Mountpoint, Ec) && std::filesystem::is_empty(Mountpoint, Ec))
+            std::filesystem::remove(Mountpoint, Ec);
+        if (std::filesystem::exists(Mountpoint, Ec))
+        {
+            LogErr("VfsMount::SpawnVidyagodfs", "the mount folder already exists and is not empty (left by an earlier run?): "
+                   + Mountpoint.string() + " — WinFsp cannot mount over it.");
+            return false;
+        }
+    }
+    //The helper serves detached, so its own output is kept in files beside the spec, and shown when the mount fails.
+    const std::filesystem::path OutLog = SpecPath.parent_path() / (SpecPath.stem().string() + ".out.log");
+    const std::filesystem::path ErrLog = SpecPath.parent_path() / (SpecPath.stem().string() + ".err.log");
+    QProcess Proc;
+    Proc.setProgram(QString::fromStdString(Helper));
+    Proc.setArguments({ QString::fromStdString(SpecPath.string()), QString::fromStdString(Mountpoint.string()),
+                        "--watch-pid", QString::fromStdString(WatchPid) });
+    Proc.setStandardOutputFile(QString::fromStdString(OutLog.string()));
+    Proc.setStandardErrorFile(QString::fromStdString(ErrLog.string()));
     qint64 Pid = 0;
-    if (!QProcess::startDetached(QString::fromStdString(Helper), Args, QString(), &Pid))
+    if (!Proc.startDetached(&Pid))
     { LogErr("VfsMount::SpawnVidyagodfs", "Failed to start " + Helper); return false; }
     if (OutPid) *OutPid = (long long)Pid;
     for (int i = 0; i < 100; ++i)   // ~10s: mountpoint appears once WinFsp has mounted (exists() flips false→true)
@@ -550,7 +582,14 @@ bool VfsMount::SpawnVidyagodfs(const nlohmann::ordered_json &Spec, const std::fi
         if (std::filesystem::exists(Mountpoint)) { LogSucc("VfsMount::SpawnVidyagodfs", "mount live at " + Mountpoint.string()); return true; }
         QThread::msleep(100);
     }
-    LogErr("VfsMount::SpawnVidyagodfs", "vidyagodfs mount did not appear at " + Mountpoint.string());
+    LogErr("VfsMount::SpawnVidyagodfs", "vidyagodfs mount did not appear at " + Mountpoint.string() + " — its output:");
+    for (const auto &F : { ErrLog, OutLog })
+    {
+        std::ifstream In(F);
+        std::string Line; int N = 0;
+        while (std::getline(In, Line) && N < 40) { if (!Line.empty()) { LogErr("vidyagodfs", Line); ++N; } }
+        if (N == 0) LogErr("vidyagodfs", "(nothing in " + F.filename().string() + ")");
+    }
     return false;
 #else
     std::filesystem::create_directories(Mountpoint);   // FUSE mounts onto an existing empty dir
