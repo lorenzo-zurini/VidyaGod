@@ -1013,7 +1013,7 @@ static std::map<std::string, std::string> CollectVarValues(QObject* Group)
 // Which var KEYs are ACTIVE (their WHEN holds) given the current control values. A gated-off var contributes an
 // empty value, so a chain (NETMODE gates ADDR gates X) is resolved to a fixpoint — mirrors the resolver exactly,
 // via the same VarSubst::EvaluateCondition. Rows without a CVWhen are always active.
-static std::set<std::string> ActiveVarKeys(QObject* Group)
+static std::set<std::string> ActiveVarKeys(QObject* Group, const std::map<std::string, std::string>& Fixed)
 {
     // Each gated row's WHEN, by its KEY (the row's label and control both carry them).
     std::map<std::string, std::string> KeyWhen;
@@ -1023,7 +1023,10 @@ static std::set<std::string> ActiveVarKeys(QObject* Group)
         const QString K = Cell->property("CVRowKey").toString();
         if (W.isValid() && !K.isEmpty()) KeyWhen[K.toStdString()] = W.toString().toStdString();
     }
-    std::map<std::string, std::string> Vals = CollectVarValues(Group);
+    //The options' values over the package's fixed facts (vars with no control): a WHEN reading `%h3_game%` used to
+    //see it empty, and Horn of the Abyss's own option hid on its own card.
+    std::map<std::string, std::string> Vals = Fixed;
+    for (const auto& [K, V] : CollectVarValues(Group)) Vals[K] = V;
     std::set<std::string> Active;
     for (const auto& [K, V] : Vals) Active.insert(K);
     for (int Pass = 0; Pass < 8; ++Pass)   // fixpoint: a gated-off var reads as empty for the next round
@@ -1044,7 +1047,7 @@ static std::set<std::string> ActiveVarKeys(QObject* Group)
 
 void PreLaunchWindow::EvaluateVarConditions()
 {
-    const std::set<std::string> Active = ActiveVarKeys(CustomVarGroup);
+    const std::set<std::string> Active = ActiveVarKeys(CustomVarGroup, FixedVarValues);
     for (QWidget* Cell : CustomVarGroup->findChildren<QWidget*>())
     {
         if (!Cell->property("CVWhen").isValid()) continue;                      // a gated row's control carries it
@@ -1064,6 +1067,7 @@ void PreLaunchWindow::RebuildCustomVarPickers()
     for (QTreeWidgetItemIterator It(OptionsTree); *It; ++It)
         if (QWidget* W = OptionsTree->itemWidget(*It, 1)) OldControls.push_back(W);
     OptionsTree->clear();
+    FixedVarValues.clear();
     for (QWidget* W : OldControls) delete W;
     const Node* L = CurrentLaunch();
     if (!L) { SetTabShown(OptionsPage, false); return; }
@@ -1101,8 +1105,12 @@ void PreLaunchWindow::RebuildCustomVarPickers()
         {
             const nlohmann::ordered_json& CV = CVj;
             if (!CV.is_object() || CV.value("TYPE", std::string()) != "CustomVar") continue;
-            if (!CV.contains("UI") || !CV["UI"].is_object()) continue;          // only UI-facet vars are shown
             const std::string Key = CV.value("KEY", std::string());
+            if (!CV.contains("UI") || !CV["UI"].is_object())                  // only UI-facet vars are shown...
+            {   //...but a fixed fact (the game a package is, aoe2_game, h3_game) is what an option's WHEN may read
+                if (!Key.empty() && !FixedVarValues.count(Key)) FixedVarValues[Key] = CV.value("DEFAULT", std::string());
+                continue;
+            }
             if (Key.empty() || SeenKeys.count(Key)) continue;
             const nlohmann::ordered_json& UI = CV["UI"];
             const std::string Control = UI.value("CONTROL", std::string("text"));

@@ -105,6 +105,7 @@ private:
     // Re-evaluates every var row's UI.WHEN condition against the current control values and shows/hides the row.
     // Wired to each control's change signal so dependent options appear/disappear live.
     void EvaluateVarConditions();
+    std::map<std::string, std::string> FixedVarValues;   // the row's vars without a control (facts an option's WHEN may read)
     // Builds the "Virtual LAN" panel under the cover (friends with per-member ticks + live link badges) and starts
     // its 2s poll; RefreshLanPanel reconciles rows against IpfsWrapper::LanPeers(). Ticks edit the GLOBAL roster
     // (Settings.LanExcludedPeers) and apply immediately via SetLanExcluded — mid-game included.

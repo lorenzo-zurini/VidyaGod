@@ -570,6 +570,39 @@ private slots:
         QVERIFY(!Rc->isHidden() && !OnlyA->isHidden());
     }
 
+    // An option's WHEN may read a fact of the package: a var with no control (which game this is). The window judged
+    // WHEN from its controls alone, so the fact read as empty and the option hid even where it applies (Horn of the
+    // Abyss's health-bar option, on its own card). Teeth: evaluate from the controls only (the "hota" row hides).
+    void anOptionsWhenReadsThePackagesFixedFacts()
+    {
+        const auto window = [](const char *Game) {
+            auto idx = std::make_unique<NodeIndex>();
+            idx->Nodes["game"] = parse(json{ {"CID", "game"}, {"LABEL", "game"}, {"VARIANT", "v1"},
+                {"LAYERS", json::array({ json{{"DIR", "game"}},
+                    json{{"VARS", {
+                        {"which", {{"DEFAULT", Game}}},
+                        {"bars", {{"DEFAULT", "1"}, {"WHEN", "%which%==hota"}, {"UI", {{"CONTROL", "bool"}, {"LABEL", "Health bars"}}}}}}}},
+                    json{{"EXEC", json::array({ json{{"LABEL", "Play"}, {"HOST", ManifestModel::MachinePlatform()}, {"EXE", "game.exe"},
+                        {"TILE", {{"UID", "37"}, {"TITLE", "Game"}}}} })}} })} });
+            ManifestModel::DeriveFacts(*idx);
+            return idx;
+        };
+        for (const char *Game : {"hota", "complete"})
+        {
+            auto idx = window(Game);
+            json Cfg = json{{"Settings", json::object()}};
+            PreLaunchWindow W(&Cfg, idx.get(), {"game"});
+            W.show();
+            QCoreApplication::processEvents();
+            auto *T = W.findChild<QTreeWidget *>("optionsTree");
+            QVERIFY(T);
+            QTreeWidgetItem *Bars = nullptr;
+            for (QTreeWidgetItemIterator It(T); *It; ++It) if ((*It)->text(0) == "Health bars") Bars = *It;
+            QVERIFY(Bars);
+            QCOMPARE(Bars->isHidden(), std::string(Game) != "hota");
+        }
+    }
+
     // A graft's SECTION puts it in a collapsed section row of the graft tree; it still ticks, and the tree read depth-
     // first is the order grafts apply in. Teeth: ignore SECTION (the graft sits at the top); read only top-level rows
     // (the sectioned graft is never collected).
