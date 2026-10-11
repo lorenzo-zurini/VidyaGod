@@ -689,12 +689,15 @@ private slots:
         QCOMPARE(A->BundleDir, std::filesystem::path(Lib + "/[1] A"));   // content hydrates beside the folder
         QCOMPARE(A->Key(), ACid);
         QVERIFY2(A->Received, "…marked RECEIVED (it lives under CATALOG): never a graft candidate");
+        const auto under = [](const std::filesystem::path &P, const std::string &Dir) {   // separators differ on Windows
+            return P.lexically_normal().generic_string().rfind(std::filesystem::path(Dir).lexically_normal().generic_string(), 0) == 0;
+        };
         for (const auto & [K, N] : Idx.Nodes)
-            if (N.BundleDir.string().rfind(Catalog, 0) != 0) QVERIFY2(!N.Received, "a LIBRARY node is not Received");
+            if (!under(N.BundleDir, Catalog)) QVERIFY2(!N.Received, "a LIBRARY node is not Received");
         QVERIFY2(!PackageCatalog::NodeClosureIncomplete(Idx, A->Key()), "the whole package landed: the closure is complete");
         int LandedA = 0;
         for (const auto & [K, N] : Idx.Nodes)
-            if (N.Received && N.BundleDir.string().rfind(Lib + "/[1] A", 0) == 0) ++LandedA;
+            if (N.Received && under(N.BundleDir, Lib + "/[1] A")) ++LandedA;
         QCOMPARE(LandedA, 5);                                   // a_exec, a_x, a_tile, a_content, a_base — all Received
 
         // Vacuous-hydration guard: an un-installed received game (content not fetched) reads NOT hydrated —
@@ -868,8 +871,13 @@ private slots:
         node("hU", "user", json::array({ {{"NODE", "hA"}}, {{"ZIP", "u.zip"}} }));
         node("hG", "good", json::array({ {{"ZIP", "g.zip"}} }));
         const NodeIndex Idx = PackageCatalog::BuildCatalogIndex(cfg);
+        //The runners built into the app are in every index (Windows': windows-native); the library's own nodes are
+        //what this is about.
+        std::set<std::string> BuiltIn;
+        for (const auto & [C, N] : PackageCatalog::BuildCatalogIndex(json{{"Settings", {{"Paths", {{"LibraryRoot", (Root.path() + "/EMPTY").toStdString()}}}}}}).Nodes)
+            BuiltIn.insert(C);
         std::set<std::string> Labels;
-        for (const auto & [C, N] : Idx.Nodes) Labels.insert(N.NodeId);
+        for (const auto & [C, N] : Idx.Nodes) if (!BuiltIn.count(C)) Labels.insert(N.NodeId);
         QCOMPARE(Labels, (std::set<std::string>{"good"}));
     }
 
@@ -1117,7 +1125,7 @@ private slots:
         // A download still reading the old index asks for the old place: it lands in the installed package, never
         // re-creating the stub. Teeth: drop the RedirectDestsUnder calls in AdoptReceivedPackage.
         IpfsWrapper::EnqueueBatch({{"CID_LATE_AFTER_ADOPT", (Stub / "late.json").string(), /*Optional=*/true}});
-        QCOMPARE(IpfsWrapper::QueueDestForCid("CID_LATE_AFTER_ADOPT"), (NewDir / "late.json").string());
+        QCOMPARE(std::filesystem::path(IpfsWrapper::QueueDestForCid("CID_LATE_AFTER_ADOPT")), NewDir / "late.json");
         // Another download sharing this package (a runner every game reaches) adopts it again from its older snapshot:
         // already installed — success, the library's copy — not a failure that sinks that whole download.
         std::filesystem::path Again;
@@ -1166,8 +1174,9 @@ private slots:
         QVERIFY2(IpfsWrapper::HasLocal(ACid) && !IpfsWrapper::CidMissing(ACid), "precondition: the landed node is referenced in place");
 
         const fs::path Lib = fs::path(RxData.path().toStdString()) / "LIBRARY" / "Games";
-        fs::create_directories(Lib);
-        fs::permissions(Lib, fs::perms::owner_read | fs::perms::owner_exec);   // the package cannot move in
+        fs::create_directories(Lib.parent_path());
+        { std::ofstream Block(Lib); Block << "a file where the library folder goes"; }   // the package cannot move in
+        //(A FILE, not a read-only folder: on Windows a folder's read-only bit does not stop a move into it.)
         QVERIFY(!PackageCatalog::AdoptReceivedPackage(rx, Stub, nullptr, &Err));
         QVERIFY2(!fs::exists(Lib / "[1] A"), "nothing installed");
         QVERIFY2(fs::exists(Stub / (ACid + ".json")), "the package is still in CATALOG");
@@ -1175,7 +1184,7 @@ private slots:
         NodeIndex Idx = PackageCatalog::BuildCatalogIndex(rx);
         QVERIFY2(PackageCatalog::PackagesToAdopt(Idx, {"a_exec"}, {}, rx).count(Stub), "the next download installs it");
 
-        fs::permissions(Lib, fs::perms::owner_all);
+        fs::remove(Lib);
         fs::path NewDir;
         QVERIFY2(PackageCatalog::AdoptReceivedPackage(rx, Stub, &NewDir, &Err), Err.c_str());
         QCOMPARE(NewDir, Lib / "[1] A");
@@ -1528,6 +1537,10 @@ private slots:
         AppPaths::SetDataRoot(SuiteRoot->path().toStdString());
     }
     void cleanupTestCase() { delete SuiteRoot; SuiteRoot = nullptr; }
+    //After EVERY slot, passed or not: a failing check returns before the slot's own StopNode, and the node it left
+    //running (its repo open, its queue full) became the next slot's — on Windows one failure cascaded into a crash two
+    //slots later, and the temp dirs it held open could not be removed.
+    void cleanup() { IpfsWrapper::DebugResetQueue(); IpfsWrapper::StopNode(); }
 
     // #2: a content-less node is vacuously "hydrated" but has no content — NodeHasContent must distinguish it.
     void node_has_content_vs_contentless()

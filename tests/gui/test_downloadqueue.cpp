@@ -139,6 +139,28 @@ private slots:
         IpfsWrapper::DebugResetQueue();
     }
 
+    // The queue compares paths in ONE form, however a caller spelled them: an install that names the moved folder
+    // lexically_normal()'d, and a download that built the old path by joining, must meet. On Windows the two differ by
+    // separators ("…/CATALOG\\nick" vs "…\\CATALOG\\nick") and the redirect, never matching, let a late download re-create
+    // the stub; here the same mismatch is "./" and "//". Teeth: store and compare the paths as given (DestKey = identity)
+    // and the dests below keep their CATALOG spelling.
+    void aMovedFolderMatchesHoweverThePathIsSpelled()
+    {
+        QTemporaryDir dir; QVERIFY(dir.isValid());
+        const std::string Cat = (dir.path() + "/CATALOG/Alice - Games/[1] A").toStdString();
+        const std::string Lib = (dir.path() + "/LIBRARY/Games/[1] A").toStdString();
+        std::filesystem::create_directories(Lib);
+        IpfsWrapper::RedirectDestsUnder((dir.path() + "/CATALOG/./Alice - Games//[1] A").toStdString(), Lib);
+        IpfsWrapper::EnqueueBatch({{"CID_DQ_SPELT", Cat + "/n.json", /*Optional=*/true}});
+        QCOMPARE(IpfsWrapper::QueueDestForCid("CID_DQ_SPELT"), Lib + "/n.json");
+        QCOMPARE(IpfsWrapper::Redirected(Cat + "//m.json"), Lib + "/m.json");
+        IpfsWrapper::DebugResetQueue();                                      // no moves: the stub's file stays in CATALOG
+        IpfsWrapper::EnqueueBatch({{"CID_DQ_STUB", Cat + "/s.json", /*Optional=*/true}});
+        IpfsWrapper::ForgetDestsUnder((dir.path() + "/CATALOG/Alice - Games/./[1] A/").toStdString());
+        QCOMPARE(IpfsWrapper::QueueDestForCid("CID_DQ_STUB"), std::string());          // forgotten, spelt otherwise
+        IpfsWrapper::DebugResetQueue();
+    }
+
     // A job that fetches in waves holds the network queue in foreground mode across them (background work: one
     // slot), and lets go when it ends; holds nest. Teeth: construct ForegroundHold without VgNetHold and the queue
     // still reads idle inside the hold.

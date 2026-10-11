@@ -82,6 +82,15 @@ void notifyQueued(const std::vector<std::string> & Cids, bool Queued)
     for (const std::string & C : Cids) g_QueueCb(C, Queued);
 }
 
+// The one form the queue keeps and compares a path in: normalised, '/'-separated. Callers hand it paths built every
+// way — "<root>/CATALOG" joined with path::operator/ ("…/CATALOG\\nick - lib" on Windows), lexically_normal()'d
+// (all '\\' there) — and every dest test is a text prefix: in mixed forms a moved package's redirect, or a forgotten
+// stub, never matched on Windows, and a late download re-created the stub beside the installed package.
+std::string DestKey(const std::string &P)
+{
+    return P.empty() ? P : fs::path(P).lexically_normal().generic_string();
+}
+
 bool PathExists(const std::string &P)
 {
     std::error_code Ec;
@@ -306,6 +315,7 @@ BatchHandle EnqueueBatch(const std::vector<FetchTarget> &Targets)
         std::lock_guard<std::mutex> Lk(Q().Mu);
         for (const FetchTarget &T0 : Targets) {
             FetchTarget T = T0;
+            T.LocalPath = DestKey(T.LocalPath);
             // A file under a folder moved since the caller read it lands where the folder is now. Never a FOLDER target:
             // a folder fetch replaces its destination whole, and a received package folder redirected onto the
             // installed package deleted the game.
@@ -507,21 +517,22 @@ static std::string RedirectedLocked(const std::string &Path)
 std::string Redirected(const std::string &Path)
 {
     std::lock_guard<std::mutex> Lk(Q().Mu);
-    return RedirectedLocked(Path);
+    return RedirectedLocked(DestKey(Path));
 }
 
 void RedirectDestsUnder(const std::string &From, const std::string &To)
 {
     auto Slash = [](const std::string &D) { return D.empty() || D.back() == '/' ? D : D + "/"; };
     std::lock_guard<std::mutex> Lk(Q().Mu);
-    Q().Moved[Slash(From)] = Slash(To);
+    Q().Moved[Slash(DestKey(From))] = Slash(DestKey(To));
 }
 
 void DropRedirectsUnder(const std::string &Dir)
 {
     //Only a move whose destination is gone (the installed package deleted): the plan that calls this was read a moment
     //ago, and an install finishing in between registered a move that holds. One stat per move, on a rare call.
-    const std::string Prefix = Dir.empty() || Dir.back() == '/' ? Dir : Dir + "/";
+    const std::string D = DestKey(Dir);
+    const std::string Prefix = D.empty() || D.back() == '/' ? D : D + "/";
     std::lock_guard<std::mutex> Lk(Q().Mu);
     for (auto It = Q().Moved.begin(); It != Q().Moved.end();)
     {
@@ -531,8 +542,9 @@ void DropRedirectsUnder(const std::string &Dir)
     }
 }
 
-void ForgetDestsUnder(const std::string &Dir)
+void ForgetDestsUnder(const std::string &DirIn)
 {
+    const std::string Dir = DestKey(DirIn);
     std::lock_guard<std::mutex> Lk(Q().Mu);
     const std::string Prefix = Dir.empty() || Dir.back() == '/' ? Dir : Dir + "/";
     for (auto &[C, J] : Q().Jobs)
