@@ -1136,6 +1136,17 @@ static std::string SafeSegment(const std::string &In)
                                    || c == ' ' || c == '[' || c == ']' || c == '(' || c == ')') ? c : '_');
     if (O.size() > 120) O.resize(120);
     if (O.find_first_not_of('.') == std::string::npos) O = std::string(O.size() ? O.size() : 1, '_');   // "", ".", ".."
+    //Names Windows cannot hold as given — the same on every platform, so every receiver lands the same name: a trailing
+    //'.' or ' ' is silently dropped there (a folder "nick - .." is created as "nick -", and every path through the
+    //name the plan holds then misses it), and a device name (CON, NUL, COM1, …, with any extension) is no file at all.
+    for (size_t I = O.size(); I > 0 && (O[I - 1] == '.' || O[I - 1] == ' '); --I) O[I - 1] = '_';
+    std::string Stem = O.substr(0, O.find('.'));
+    while (!Stem.empty() && Stem.back() == ' ') Stem.pop_back();
+    for (char &C : Stem) C = static_cast<char>(std::toupper(static_cast<unsigned char>(C)));
+    static const std::set<std::string> Devices = { "CON", "PRN", "AUX", "NUL", "CONIN$", "CONOUT$",
+        "COM1", "COM2", "COM3", "COM4", "COM5", "COM6", "COM7", "COM8", "COM9",
+        "LPT1", "LPT2", "LPT3", "LPT4", "LPT5", "LPT6", "LPT7", "LPT8", "LPT9" };
+    if (Devices.count(Stem)) O = "_" + O;
     return O;
 }
 

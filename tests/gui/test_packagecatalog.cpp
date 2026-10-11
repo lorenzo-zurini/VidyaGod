@@ -732,10 +732,10 @@ private slots:
         const json Evil = json::array({json{{"cid", Items[0].value("cid", std::string())}, {"node", "../../pwn"}, {"pkg", "../../.."}}});
         const auto EvilPlan = PackageCatalog::PlanReceivedFetches(rx, "..", json{{"..", Evil}});
         QVERIFY(!EvilPlan.empty());
-        const std::string RootPrefix = Catalog + "/";
+        const std::string RootPrefix = std::filesystem::weakly_canonical(Catalog).generic_string() + "/";
         for (const auto & T : EvilPlan)
         {
-            const std::string Canon = std::filesystem::weakly_canonical(T.Dest).string();
+            const std::string Canon = std::filesystem::weakly_canonical(T.Dest).generic_string();
             QVERIFY2(Canon.rfind(RootPrefix, 0) == 0, ("hostile dest escaped the CATALOG root: " + Canon).c_str());
         }
 
@@ -1402,6 +1402,26 @@ private slots:
 
         const json BadCid = json::array({ json{{"cid", Long}} });                    // >128 bytes → not a CID → dropped
         QCOMPARE((int)PackageCatalog::PlanReceivedFetches(rx, "A", json{{"L", BadCid}}).size(), 0);
+
+        // Names Windows cannot hold as given: a trailing '.' or ' ' (dropped there, so the folder the plan names never
+        // exists) and device names (no file at all). Planned the same on every platform, so a receiver on either lands
+        // the same name. Teeth: drop SafeSegment's trailing-dot/space or device-name rule.
+        for (const auto & [Lib, Pkg] : std::vector<std::pair<std::string, std::string>>{
+                 {"..", "[1] Game."}, {"Games ", "[2] B "}, {"L", "CON"}, {"L", "nul.txt"}, {"L", "Com1 .x"}})
+        {
+            const json One = json::array({ json{{"cid", "bafyplannerwindowsnamesaaaaaaaaaaaaaaaaaaa"}, {"pkg", Pkg}} });
+            const auto P = PackageCatalog::PlanReceivedFetches(rx, "derAlice", json{{Lib, One}});
+            QCOMPARE((int)P.size(), 1);
+            for (const auto & Part : std::filesystem::path(P[0].Dest.substr(Catalog.size() + 1)))
+            {
+                const std::string N = Part.string();
+                QVERIFY2(N.empty() || (N.back() != '.' && N.back() != ' '), ("ends in '.' or ' ': " + N).c_str());
+                std::string Stem = N.substr(0, N.find('.'));
+                while (!Stem.empty() && Stem.back() == ' ') Stem.pop_back();
+                for (char &C : Stem) C = static_cast<char>(std::toupper(static_cast<unsigned char>(C)));
+                QVERIFY2(Stem != "CON" && Stem != "NUL" && Stem != "COM1", ("a device name: " + N).c_str());
+            }
+        }
 
         json Many = json::array();
         for (int i = 0; i < 20001; ++i) Many.push_back(json{{"cid", "bafycap" + std::to_string(i)}});
