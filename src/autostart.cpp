@@ -9,6 +9,43 @@
 
 #include <cstdlib>
 
+#ifdef _WIN32
+#include <QSettings>
+
+namespace
+{
+// The per-user list of programs Windows starts at login: one value per program, its data the command line.
+const QString RunKey   = "HKEY_CURRENT_USER\\Software\\Microsoft\\Windows\\CurrentVersion\\Run";
+const QString RunValue = "VidyaGod";
+
+// The installed exe, quoted (Program Files has spaces), with --tray so login starts go quiet to the tray.
+QString LaunchCommand()
+{
+    return '"' + QDir::toNativeSeparators(QCoreApplication::applicationFilePath()) + "\" --tray";
+}
+}
+
+namespace AutoStart
+{
+bool IsEnabled()
+{
+    return QSettings(RunKey, QSettings::NativeFormat).contains(RunValue);
+}
+
+bool SetEnabled(bool On, QString * Error)
+{
+    QSettings Run(RunKey, QSettings::NativeFormat);
+    if (On) Run.setValue(RunValue, LaunchCommand());
+    else    Run.remove(RunValue);
+    Run.sync();
+    if (Run.status() != QSettings::NoError)
+    { if (Error) *Error = "could not update the login entry under " + RunKey; return false; }
+    LogOut("AutoStart", std::string(On ? "Added" : "Removed") + " the login entry " + RunKey.toStdString() + "\\VidyaGod");
+    return true;
+}
+}
+
+#else   // ---- Linux: the XDG .desktop autostart entry ----
 namespace
 {
 // ~/.config/autostart/org.vidyagod.VidyaGod.desktop (honors XDG_CONFIG_HOME).
@@ -74,3 +111,4 @@ bool SetEnabled(bool On, QString * Error)
     return true;
 }
 }
+#endif

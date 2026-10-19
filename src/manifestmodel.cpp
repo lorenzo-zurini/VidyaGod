@@ -8,6 +8,7 @@
 #include "vgdelta.h"     // DeltaByteSource — reconstructs a delta chain's zip on the fly
 #include "zipscan.h"     // WalkCentralDir — the member names of a (reconstructed) zip
 #include "hostio.h"      // HostIO::OpenRead / Close — the byte sources' fds
+#include "registrywrapper.h"  // NamesNoKey — a registry KEEP must name a key
 
 #include <atomic>
 #include <thread>
@@ -831,10 +832,21 @@ void ValidateNodeGraph(const NodeIndex &Idx, std::vector<std::string> &Errors, s
         }), Gs.end());
     auto InScope = [&](const std::string &Id) { return !OnlyNodes || OnlyNodes->count(Id); };
 
-    auto HasRunnerFor = [&](const std::string &Host) {
-        for (const auto &[Id, R] : Idx.Nodes)
-            if (R.OwnRunner && R.HostPlatform == Machine)
-                for (const auto &G : R.GuestPlatform) if (G == Host) return true;
+    //A platform is served when a CHAIN of runners reaches this machine (a Windows-only engine for its own platform runs
+    //under proton): the same guest→host edges the resolver's BFS walks (ResolveChainIds).
+    auto HasRunnerFor = [&](const std::string &Host, const std::filesystem::path &Bundle) {
+        std::set<std::string> Seen = { Host };
+        std::deque<std::string> Todo = { Host };
+        while (!Todo.empty())
+        {
+            const std::string P = Todo.front(); Todo.pop_front();
+            for (const auto &[Id, R] : Idx.Nodes)
+            {
+                if (!R.OwnRunner || !ServesPlatform(R, P, Bundle)) continue;
+                if (R.HostPlatform == Machine) return true;
+                if (Seen.insert(R.HostPlatform).second) Todo.push_back(R.HostPlatform);
+            }
+        }
         return false;
     };
     std::set<std::string> KnownTiles;
@@ -1043,7 +1055,7 @@ void ValidateNodeGraph(const NodeIndex &Idx, std::vector<std::string> &Errors, s
             if (E.contains("GUEST") && E["GUEST"].is_array() && !E["GUEST"].empty()) continue;
             const std::string Host = E.value("HOST", std::string());
             if (Host.empty()) { Warnings.push_back(Tag + ": entry '" + Lbl + "' has no HOST platform"); continue; }
-            if (!HasRunnerFor(Host)) Warnings.push_back(Tag + ": no runner serves platform '" + Host + "' on this machine");
+            if (!HasRunnerFor(Host, N.BundleDir)) Warnings.push_back(Tag + ": no runner serves platform '" + Host + "' on this machine");
             //EXE must case-EXACTLY match a real content file: the mount is case-sensitive. Checked where the content
             //is local and the path is plain (a %variable% or a guest drive is placed at launch).
             std::string Cp = E.value("EXE", std::string());
@@ -1069,7 +1081,7 @@ void ValidateNodeGraph(const NodeIndex &Idx, std::vector<std::string> &Errors, s
     //phase 1 resolves — instance values, built-ins, and ungated VARS defaults (§4.1). -----
     static const std::set<std::string> Builtins = []{
         std::set<std::string> B = { "REL", "DefaultPfxDir", "WineFontsDir", "WineLibDir", "WineSys32Dir", "WineSysWow64Dir",
-                                    "SysRegMtime", "UID", "VIDYAGOD_SANDBOX", "VIDYAGOD_SANDBOX_NET", "VIDYAGOD_SELF_VIP",
+                                    "SysRegMtime", "UID", "VIDYAGOD_SANDBOX_NET", "VIDYAGOD_SELF_VIP",
                                     "VIDYAGOD_SELF_NAME", "VIDYAGOD_SUBNET", "VIDYAGOD_PEER_VIPS", "VIDYAGOD_PEER_NAMES",
                                     "VIDYAGOD_LAN_BRIDGE", "VIDYAGOD_LAN_HOSTRELAY" };
         for (const auto &[K, V] : ContainerParams(std::filesystem::path(), std::string(), std::string()).GetVariablesMap())
@@ -1258,14 +1270,21 @@ void ValidateNodeGraph(const NodeIndex &Idx, std::vector<std::string> &Errors, s
         {
             if (LayerType(L) != "DeclarePersist") continue;
             const std::string Path = L.value("PATH", std::string());
-            if (Path.empty())
+            if (L.value("SCOPE", std::string()) == "registry" && RegistryWrapper::NamesNoKey(Path))
+                Errors.push_back(Tag + ": a KEEP of a whole registry hive ('" + Path + "') — only keys persist; name them "
+                                       "(e.g. REG/HKCU/Software/<Vendor>/<Game>)");
+            else if (Path.empty())
                 Warnings.push_back(Tag + ": a KEEP of a whole namespace persists ALL of it — prefer named addresses");
-            if (L.value("SCOPE", std::string()) == "file" && L.contains("TARGET") && L["TARGET"].is_string())
+            if (L.value("SCOPE", std::string()) == "file")
             {
-                const std::string T = ToLowerAscii(L["TARGET"].get<std::string>());
+                //The durable name: NAME if given, else the address's last segment (as DerivePersistence defaults it).
+                std::string Name = L.contains("TARGET") && L["TARGET"].is_string() ? L["TARGET"].get<std::string>() : Path;
+                while (!Name.empty() && (Name.back() == '/' || Name.back() == '\\')) Name.pop_back();
+                if (const auto Slash = Name.find_last_of("/\\"); Slash != std::string::npos) Name = Name.substr(Slash + 1);
+                const std::string T = ToLowerAscii(Name);
                 if (T == "instance.json" || T == "registry" || T == "regkeys")
-                    Warnings.push_back(Tag + ": KEEP NAME '" + L["TARGET"].get<std::string>()
-                                       + "' is RESERVED for the instance's own state — it will be refused at launch");
+                    Warnings.push_back(Tag + ": KEEP NAME '" + Name + "' is RESERVED for the instance's own state — it "
+                                       "will be refused at launch" + (L.contains("TARGET") ? "" : " (give the KEEP a NAME)"));
             }
         }
     }
@@ -1489,6 +1508,12 @@ std::string HostPlatform()    { return "win64"; }
 std::string MachinePlatform() { return "linux64"; }
 std::string HostPlatform()    { return "linux64"; }
 #endif
+
+bool ServesPlatform(const Node &Runner, const std::string &Platform, const std::filesystem::path &LaunchBundleDir)
+{
+    if (std::find(Runner.GuestPlatform.begin(), Runner.GuestPlatform.end(), Platform) == Runner.GuestPlatform.end()) return false;
+    return Platform != kCustomPlatform || (!LaunchBundleDir.empty() && Runner.BundleDir == LaunchBundleDir);
+}
 
 // ----- component lookups -----
 

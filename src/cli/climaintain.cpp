@@ -7,6 +7,7 @@
 #include "commonutils.h"
 #include "manifestmodel.h"
 #include "packagecatalog.h"
+#include "instancestore.h"   // --list-nodes names each game's instances
 #include "containerwrapper.h"
 #include "ipfswrapper.h"
 #include "jsonoperations.h"
@@ -197,8 +198,13 @@ int CliModes::RunMaintenanceModes(LaunchParameters &LaunchParameters, nlohmann::
                 Variants += " " + (N->Variant.empty() ? N->NodeId : N->Variant)
                           + ((Hyd.count(N->Key()) && Hyd.at(N->Key()).Hydrated) ? "[hydrated]" : "[remote]");
             const std::string Parent = T.Tile.value("PARENTUID", std::string());
+            //The game's instances (settings + saves), last played first — the names --instance takes.
+            std::string Instances;
+            if (!T.Rows.empty())
+                for (const std::string &I : InstanceStore::List(GlobalConfigJSON, T.Rows.front()->GameKey()))
+                    Instances += (Instances.empty() ? "; instances: " : ", ") + I;
             LogOut("list-nodes", "  " + T.Tile.value("TITLE", T.Uid) + "  (tile " + T.Uid
-                   + (Parent.empty() ? std::string() : ", in " + Parent) + "):" + Variants);
+                   + (Parent.empty() ? std::string() : ", in " + Parent) + "):" + Variants + Instances);
         }
         return 0;
     }

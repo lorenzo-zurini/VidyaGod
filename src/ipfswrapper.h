@@ -388,7 +388,7 @@ void SetFriendCallback(FriendCallback Callback);
 // ONLY inside a game's sandbox netns (the host stack is never touched).
 // ---------------------------------------------------------------------------
 
-// The custom variables to launch a game onto the friend LAN (VIDYAGOD_SANDBOX, VIDYAGOD_SANDBOX_NET=isolated, SELF_VIP,
+// The custom variables to launch a game onto the friend LAN (VIDYAGOD_SANDBOX_NET=isolated, SELF_VIP,
 // SUBNET, PEER_VIPS, PEER_NAMES), which a Goldberg-style LAN-emulator content node writes into its config so the
 // players find each other over the overlay. Empty if the LAN is unavailable.
 std::map<std::string, std::string> LanLaunchVars();

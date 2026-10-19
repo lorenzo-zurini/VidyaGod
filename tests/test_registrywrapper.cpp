@@ -8,6 +8,18 @@
 
 using nlohmann::ordered_json;
 
+// A registry KEEP must name a key: every spelling of a bare hive root counts as "no key" (refused), any real key doesn't.
+TEST(reg_names_no_key_spots_every_bare_root)
+{
+    for (const char *Root : { "", "HKCU", "hkcu", "HKCU\\", "HKCU\\\\", "\\", "HKEY_CURRENT_USER", "HKEY_CURRENT_USER\\",
+                              "HKLM", "HKEY_LOCAL_MACHINE\\", "HKU", "HKU\\.Default", "HKU\\.DEFAULT\\",
+                              "HKEY_USERS\\.Default", "HKCR", "HKEY_CLASSES_ROOT", "HKCC", "HKEY_CURRENT_CONFIG\\" })
+        CHECK(RegistryWrapper::NamesNoKey(Root));
+    for (const char *Key : { "HKCU\\Software", "HKCU\\\\Software", "HKLM\\Software\\Game", "HKU\\.Default\\Control Panel",
+                             "HKCR\\.txt", "HKCC\\Software" })
+        CHECK(!RegistryWrapper::NamesNoKey(Key));
+}
+
 TEST(reg_ensure_set_get_roundtrip)
 {
     RegistryWrapper RW;

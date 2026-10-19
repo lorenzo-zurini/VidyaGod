@@ -57,7 +57,7 @@ bool PersistLayer::SeedPersistFiles(struct ContainerParams &ContainerParams)
 }
 
 //Captures each single-file persist by copying RuntimePath/<Path> into its durable home UserDataPath/<Target>.
-//Runs during Cleanup BEFORE the runtime is unmounted/wiped, mirroring CapturePersistRegistry.
+//Runs during Cleanup BEFORE the runtime is unmounted/wiped, mirroring CapturePersistRegKeys.
 bool PersistLayer::CapturePersistFiles(struct ContainerParams &ContainerParams)
 {
     std::error_code ec;

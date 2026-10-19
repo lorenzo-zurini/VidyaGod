@@ -29,19 +29,9 @@ static std::string Var(const ContainerParams &CP, const std::string &Key)
     return It == CP.CustomVariables.end() ? std::string() : It->second;
 }
 
-bool Requested(const ContainerParams &CP, bool DefaultOn)
-{
-    // Sandboxing is MANDATORY — always on, for security and parity with the Windows (Sandboxie) path. It is no longer a
-    // toggle: the VIDYAGOD_SANDBOX opt-out and the launcher default are intentionally ignored (an un-sandboxable machine
-    // fails the launch rather than running the game unconfined). VIDYAGOD_SANDBOX_NET (net mode) is a separate knob.
-    (void)CP; (void)DefaultOn;
-    return true;
-}
-
-Options FromParams(const ContainerParams &CP, bool DefaultOn)
+Options FromParams(const ContainerParams &CP)
 {
     Options O;
-    O.Enabled = Requested(CP, DefaultOn);
     O.Net = (Var(CP, "VIDYAGOD_SANDBOX_NET") == "isolated") ? NetMode::Isolated : NetMode::Host;
     return O;
 }
@@ -50,15 +40,14 @@ Options FromParams(const ContainerParams &CP, bool DefaultOn)
 bool Available()
 {
     // Functional probe (not just `which bwrap`): actually create a throwaway sandbox with the SAME namespace + cap
-    // flags the real launch uses, running `true`. Exit 0 ⇒ this machine can sandbox. Runs once; the result is cached
-    // for the process. Silenced — a failure here is expected on un-sandboxable machines and simply disables the
-    // (default-on) sandbox for a normal launch.
+    // flags the real launch uses, running `true`. Exit 0 ⇒ this machine can sandbox. Not cached: a few ms per launch,
+    // and a bwrap installed while the app runs (or after Settings → Dependencies said it was missing) is seen at once.
+    // Silenced — the caller reports what a failure means.
     // `env -u LD_LIBRARY_PATH` mirrors SystemToolEnv (the real launch strips the AppImage's bundled lib path so the
     // system bwrap loads host libs); without it the probe could spuriously fail under an AppImage.
-    static const bool Ok = std::system(
+    return std::system(
         "env -u LD_LIBRARY_PATH bwrap --unshare-user --unshare-pid --cap-add CAP_SYS_ADMIN "
-        "--ro-bind / / --dev-bind /dev /dev --proc /proc -- /bin/true > /dev/null 2>&1") == 0;
-    return Ok;
+        "--ro-bind / / --dev-bind /dev /dev --proc /proc -- true > /dev/null 2>&1") == 0;   // `true` via PATH (no /bin/true on NixOS)
 }
 
 // Resolve this executable's path so the sandbox can re-invoke it as `--sandbox-init` (it's already visible via

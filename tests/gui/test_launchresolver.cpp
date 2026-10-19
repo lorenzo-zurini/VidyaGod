@@ -391,16 +391,17 @@ private slots:
         ContainerParams cp("/tmp/vg_bundle"); cp.Recipe = {"c1"};
         json poolNone = json{{"COMPONENTS", json::array({ json{{"COMPONENTID", "c1"}, {"SUBCOMPONENTS", json::array()}} })}};
         LaunchResolver::DerivePersistence(poolNone, cp);
-        QVERIFY(cp.KeepDirs.empty() && cp.KeepFiles.empty() && cp.KeepRegHives.empty() && cp.KeepRegKeys.empty());
+        QVERIFY(cp.KeepDirs.empty() && cp.KeepFiles.empty() && cp.KeepRegKeys.empty());
 
         // DeclarePersist: SCOPE=file PATH shape decides dir (no extension) vs file (extension); TARGET defaults to
-        // PATH's leaf; CLOUD default true. SCOPE=registry PATH=key → subtree, PATH="" → all hives (authoring).
+        // PATH's leaf; CLOUD default true. SCOPE=registry PATH=key → subtree; PATH="" (a whole registry) is refused.
         ContainerParams cp2("/tmp/vg_bundle"); cp2.Recipe = {"c1"};
         json poolKeep = json{{"COMPONENTS", json::array({ json{{"COMPONENTID", "c1"}, {"SUBCOMPONENTS", json::array({
             json{{"TYPE","DeclarePersist"},{"SCOPE","file"},{"PATH","drive_c/saves"},{"CLOUD",false}},              // dir; TARGET→"saves"; local-only
             json{{"TYPE","DeclarePersist"},{"SCOPE","file"},{"PATH","drive_c/Game/config.ini"},{"TARGET","GameConfig"}}, // file, explicit target
             json{{"TYPE","DeclarePersist"},{"SCOPE","registry"},{"PATH","HKCU\\Software\\id Software\\Quake"}},      // subtree
-            json{{"TYPE","DeclarePersist"},{"SCOPE","registry"},{"PATH",""}} })}} })}};                             // all hives (authoring)
+            json{{"TYPE","DeclarePersist"},{"SCOPE","registry"},{"PATH",""}},                                      // whole registry: refused
+            json{{"TYPE","DeclarePersist"},{"SCOPE","registry"},{"PATH","HKEY_CURRENT_USER"}} })}} })}};            // a bare hive root: refused
         LaunchResolver::DerivePersistence(poolKeep, cp2);
         QCOMPARE((int)cp2.KeepDirs.size(), 1);
         QCOMPARE(cp2.KeepDirs[0].Path, std::string("drive_c/saves"));
@@ -409,8 +410,8 @@ private slots:
         QCOMPARE((int)cp2.KeepFiles.size(), 1);
         QCOMPARE(cp2.KeepFiles[0].Path, std::string("drive_c/Game/config.ini"));
         QCOMPARE(cp2.KeepFiles[0].Target, std::string("GameConfig"));
-        QCOMPARE((int)cp2.KeepRegKeys.size(), 1);
-        QCOMPARE((int)cp2.KeepRegHives.size(), 3);                  // registry PATH "" → all three hives
+        QCOMPARE((int)cp2.KeepRegKeys.size(), 1);                   // the named key only: "" and the bare root added nothing
+        QCOMPARE(cp2.KeepRegKeys[0], std::string("HKCU\\Software\\id Software\\Quake"));
     }
 
     // A pattern names files in one folder: always a file keep, whatever its last segment looks like ("slot*" has no
@@ -431,7 +432,7 @@ private slots:
     // Every file/dir persist lands at UserDataPath/<TARGET>. Two guards keep that namespace safe from SILENT SAVE
     // LOSS: (a) a TARGET colliding with an earlier one is refused (else the second capture clobbers the first, or two
     // dir persists mount the same durable dir RW and corrupt it); (b) a TARGET naming the instance's OWN reserved
-    // state (instance.json / REGISTRY / REGKEYS) is refused (else a persist would seed the launcher's secrets into a
+    // state (instance.json / REGKEYS) is refused (else a persist would seed the launcher's secrets into a
     // game-visible mount, or overwrite the instance config). Both are case-insensitive — durable dirs travel.
     void derive_persistence_refuses_colliding_and_reserved_targets()
     {
@@ -441,7 +442,7 @@ private slots:
             json{{"TYPE","DeclarePersist"},{"SCOPE","file"},{"PATH","mods/save"},{"TARGET","Save"}},          // dup → skip
             json{{"TYPE","DeclarePersist"},{"SCOPE","file"},{"PATH","other/save"},{"TARGET","save"}},         // dup (case) → skip
             json{{"TYPE","DeclarePersist"},{"SCOPE","file"},{"PATH","cfg.ini"},{"TARGET","instance.json"}},   // reserved → skip
-            json{{"TYPE","DeclarePersist"},{"SCOPE","file"},{"PATH","hive"},{"TARGET","REGISTRY"}} })}} })}};  // reserved → skip
+            json{{"TYPE","DeclarePersist"},{"SCOPE","file"},{"PATH","hive"},{"TARGET","RegKeys"}} })}} })}};   // reserved (case) → skip
         LaunchResolver::DerivePersistence(pool, cp);
         // Only the first survives (a dir persist — "game/save" has no extension); the two collisions and the two
         // reserved targets are dropped (loudly), not merged.
@@ -466,7 +467,7 @@ private slots:
             return std::any_of(cp.KeepDirs.begin(), cp.KeepDirs.end(), [&](const PersistTarget &d){ return d.Path == p; }); };
         NodeIndex idx;
         idx.Nodes["proton_keepset"] = contentNode("proton_keepset", json::array({
-            json{{"KEEP", {{"FILES/pfx/drive_c/users", true}, {"REG/HKCU", true}}}} }));
+            json{{"KEEP", {{"FILES/pfx/drive_c/users", true}, {"REG/HKCU/Software/Wine", true}}}} }));
         idx.Nodes["wine"] = runnerNode("wine", {"win32"}, {"proton_keepset"});
         idx.Nodes["game"] = launchNode("game", "win32", {});
         finish(idx);
@@ -479,7 +480,7 @@ private slots:
 
         QVERIFY2(!cp.KeepDirs.empty(), "the runner's keep-set never reached persistence - saves are lost");
         QVERIFY(hasDir(cp, "pfx/drive_c/users"));
-        QVERIFY(!cp.KeepRegHives.empty() || !cp.KeepRegKeys.empty());          // HKCU
+        QVERIFY(!cp.KeepRegKeys.empty());                                       // HKCU\Software\Wine
 
         // ...and in a CHAIN, every runner's keep-set counts, not just the boundary's: an emulator nested
         // under proton has user-state of its own, and taking only the outermost link drops it silently.
@@ -536,24 +537,24 @@ private slots:
         cp.RuntimePath = "/tmp/rt";
         cp.RunnerPersistLayers = json::array({
             json{{"TYPE", "DeclarePersist"}, {"SCOPE", "file"}, {"PATH", "pfx/drive_c/users"}},
-            json{{"TYPE", "DeclarePersist"}, {"SCOPE", "registry"}, {"PATH", "HKCU"}} });
+            json{{"TYPE", "DeclarePersist"}, {"SCOPE", "registry"}, {"PATH", "HKCU\\Software\\Wine"}} });
         json pool = json{{"COMPONENTS", json::array({ json{{"COMPONENTID", "game"}, {"SUBCOMPONENTS", json::array({
             json{{"TYPE", "DeclarePersist"}, {"SCOPE", "file"}, {"PATH", ""}, {"TARGET", "AllData"}} })}} })}};
         LaunchResolver::DerivePersistence(pool, cp);
         QVERIFY(hasDir(cp, ""));                                   // PATH "" ⇒ whole-runtime persist recorded
         QVERIFY(hasDir(cp, "pfx/drive_c/users"));                 // runner's user-profile keep still recorded
         QCOMPARE((int)cp.KeepDirs.size(), 2);
-        QVERIFY(!cp.KeepRegKeys.empty());                          // HKCU ⇒ granular registry keep
+        QVERIFY(!cp.KeepRegKeys.empty());                          // a named key ⇒ granular registry keep
 
-        // Runner keep-set alone (no game persist) → pristine runtime with the runner's user-profile + HKCU kept.
+        // Runner keep-set alone (no game persist) → pristine runtime with the runner's user-profile + its key kept.
         ContainerParams cp2("/tmp/vg_bundle"); cp2.Recipe = {"game"};
         cp2.RunnerPersistLayers = json::array({
             json{{"TYPE", "DeclarePersist"}, {"SCOPE", "file"}, {"PATH", "drive_c/users"}},
-            json{{"TYPE", "DeclarePersist"}, {"SCOPE", "registry"}, {"PATH", "HKCU"}} });
+            json{{"TYPE", "DeclarePersist"}, {"SCOPE", "registry"}, {"PATH", "HKCU\\Software\\Wine"}} });
         json pool2 = json{{"COMPONENTS", json::array({ json{{"COMPONENTID", "game"}, {"SUBCOMPONENTS", json::array()}} })}};
         LaunchResolver::DerivePersistence(pool2, cp2);
         QCOMPARE((int)cp2.KeepDirs.size(), 1);                     // …the user profile
-        QVERIFY(!cp2.KeepRegKeys.empty());                         // …and HKCU
+        QVERIFY(!cp2.KeepRegKeys.empty());                         // …and the key
     }
 
     // ---- Runner daisy-chaining (PickRunnerChain / ResolveChainIds / ResolveRunnerChain) ----
@@ -571,6 +572,29 @@ private slots:
         QCOMPARE((int)ids.size(), 2);
         QCOMPARE(ids[0], std::string("proton"));
         QCOMPARE(ids.back(), std::string("nativerun"));        // native terminal always last
+    }
+
+    // "custom" content is run by its OWN package's engine. A Windows-only engine in the game's package (custom→win64,
+    // then proton) wins over another package's native engine one hop shorter (custom→linux64): that one runs a
+    // different game. Teeth: let ServesPlatform accept any package's "custom" runner and the BFS picks gemrb.
+    void chain_custom_runs_only_the_packages_own_engine()
+    {
+        NodeIndex idx;
+        idx.Nodes["proton"] = chainRunner("proton", {"win64"}, kMachine);
+        idx.Nodes["gemrb"]  = chainRunner("gemrb", {"custom"}, kMachine);                 // another package's engine
+        Node engine = chainRunner("engine", {"custom"}, "win64");
+        engine.BundleDir = "/tmp/vg_bundle";                                              // shipped in the game's package
+        idx.Nodes["engine"] = engine;
+        Node launch = launchNode("game", "custom", {});
+        ContainerParams cp("/tmp/vg_bundle");
+        const json cfg = json{{"Settings", json::object()}};
+        auto ids = LaunchResolver::ResolveChainIds(idx, launch, cp, cfg);
+        QVERIFY((int)ids.size() >= 2);
+        QCOMPARE(ids[0], std::string("engine"));
+        QCOMPARE(ids[1], std::string("proton"));
+        // ...and a pinned chain naming the foreign engine is not honoured: it falls back to the package's own.
+        cp.RunnerChainIds = { "gemrb" };
+        QCOMPARE(LaunchResolver::ResolveChainIds(idx, launch, cp, cfg)[0], std::string("engine"));
     }
 
     // The chain bridges the SELECTED entry's platform, never the node's default view: a node carrying a native entry
@@ -1347,6 +1371,33 @@ private slots:
         QCOMPARE(gt.ContentRel, std::string("__runner_snes9x__/snes9x.exe"));   // boundary's %ContentPath% target
         QCOMPARE((int)gt.TrailingArgs.size(), 1);
         QCOMPARE(gt.TrailingArgs[0], std::string("C:\\game\\roms\\game.smc"));  // ROM, guest-translated (%GameDir% + backslashes)
+    }
+
+    // A Windows engine runner is written with %RunnerMount% (it must run directly on Windows too). Nested under proton,
+    // %RunnerMount% is ITS build folder (__runner_<id>__): "" in the exe path, the folder's guest path in arguments —
+    // never the boundary's host mount.
+    void cross_namespace_runner_mount_is_the_inner_build()
+    {
+        ContainerParams cp("/tmp/vg_bundle"); cp.PackageUID = "766";
+        cp.RunnerMountPath = "/tmp/rt/RUNNER";
+        RunnerLink Proton = mkLink("proton", "linux64", "%RunnerMount%/proton", "pfx/drive_c/%PackageUID%",
+                                   {"waitforexitandrun", "%GameDir%\\%ContentPath%"});
+        Proton.GameDirGuest = "C:\\%PackageUID%";
+        cp.RunnerChain = { mkLink("gok", "win64", "%RunnerMount%/__gok/homeworld.exe", "", {"-data", "%RunnerMount%/x"}),
+                           Proton, mkLink("native", "linux64", "%Content%") };
+        auto gt = LaunchResolver::ComposeGuestTarget(cp);
+        QCOMPARE(gt.ContentRel, std::string("__runner_gok__/__gok/homeworld.exe"));
+        QCOMPARE((int)gt.TrailingArgs.size(), 2);
+        QCOMPARE(gt.TrailingArgs[1], std::string("C:\\766\\__runner_gok__/x"));   // its own folder, as the guest sees it
+        // Two inner links: the inner-most runner's exe is what the next one runs (its %Content%) — its own build folder
+        // too, never the boundary's host mount.
+        cp.RunnerChain = { mkLink("emu", "plat", "%RunnerMount%/emu.exe", "", {"%Content%"}),
+                           mkLink("wrap", "win64", "%RunnerMount%/wrap.exe", "", {"%Content%"}),
+                           Proton, mkLink("native", "linux64", "%Content%") };
+        cp.ExePathRelative = std::filesystem::path("rom.bin");
+        auto two = LaunchResolver::ComposeGuestTarget(cp);
+        QCOMPARE(two.ContentRel, std::string("__runner_wrap__/wrap.exe"));
+        QCOMPARE(two.TrailingArgs[0], std::string("C:\\766\\__runner_emu__\\emu.exe"));
     }
 
     // Every classic chain ([content-runner, native]) has no inner links → ComposeGuestTarget is a no-op.

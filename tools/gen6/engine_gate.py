@@ -44,7 +44,7 @@ def norm_exec(e):
 
 def keep(d):
     return sorted((x.get("path", "").rstrip("/"), x.get("target"), x.get("cloud")) for x in (d.get("KeepDirs") or []) + (d.get("KeepFiles") or [])) \
-        + sorted(d.get("KeepRegKeys") or []) + sorted(d.get("KeepRegHives") or [])
+        + sorted(d.get("KeepRegKeys") or [])
 
 
 def env(d):

@@ -216,6 +216,17 @@ std::string RegistryWrapper::StripRootPrefix(const std::string &FullPath)
     return P;
 }
 
+bool RegistryWrapper::NamesNoKey(const std::string &Path)
+{
+    std::string Rest = StripRootPrefix(Path);
+    //HKCC has no hive of its own here, but a bare one is still a root, not a key named "HKCC".
+    const std::string L = ToLowerAscii(Rest);
+    for (const std::string Cc : {"hkey_current_config", "hkcc"})
+        if (L == Cc || L.rfind(Cc + "\\", 0) == 0) { Rest = Rest.substr(Cc.size()); break; }
+    //Only separators left = no key: GetKey/EnsureKey skip empty segments, so "HKCU\\\\" would address the hive root.
+    return Rest.find_first_not_of('\\') == std::string::npos;
+}
+
 // ============================================================================
 //  Loading / parsing
 // ============================================================================
@@ -518,36 +529,6 @@ bool RegistryWrapper::MergeKeyFrom(const RegistryWrapper &Src, const std::string
     Dst->Explicit     = true;
     Dst->Children.clear();
     for (const auto &C : SrcKey->Children) Dst->Children.push_back(CloneKey(*C));
-    return true;
-}
-
-static void UnionMergeKey(RegistryKey *Dst, const RegistryKey &Src)
-{
-    for (const auto &[N, V] : Src.Values)
-    {
-        bool Found = false;
-        for (auto &[DN, DV] : Dst->Values)
-            if (CIEqual(DN, N)) { DV = V; Found = true; break; }
-        if (!Found) Dst->Values.emplace_back(N, V);
-    }
-    if (!Src.Timestamp.empty())    Dst->Timestamp    = Src.Timestamp;
-    if (!Src.RawMetaLines.empty()) Dst->RawMetaLines = Src.RawMetaLines;
-    if (Src.Explicit) Dst->Explicit = true;
-    for (const auto &C : Src.Children)
-    {
-        RegistryKey *DC = nullptr;
-        for (auto &Own : Dst->Children)
-            if (CIEqual(Own->Name, C->Name)) { DC = Own.get(); break; }
-        if (DC) UnionMergeKey(DC, *C);
-        else    Dst->Children.push_back(CloneKey(*C));
-    }
-}
-
-bool RegistryWrapper::UnionMergeFrom(const RegistryWrapper &Src, const std::string &FullPath)
-{
-    const RegistryKey *SrcKey = const_cast<RegistryWrapper &>(Src).GetKey(FullPath);
-    if (!SrcKey) return false;
-    UnionMergeKey(EnsureKey(FullPath), *SrcKey);
     return true;
 }
 

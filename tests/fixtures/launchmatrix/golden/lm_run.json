@@ -15,7 +15,6 @@
   "CustomVariables": {
     "VIDYAGOD_PEER_NAMES": "<volatile>",
     "VIDYAGOD_PEER_VIPS": "<volatile>",
-    "VIDYAGOD_SANDBOX": "on",
     "VIDYAGOD_SANDBOX_NET": "isolated",
     "VIDYAGOD_SELF_NAME": "<volatile>",
     "VIDYAGOD_SELF_VIP": "<volatile>",
@@ -59,9 +58,8 @@
       "target": "Config"
     }
   ],
-  "KeepRegHives": [],
   "KeepRegKeys": [
-    "HKCU",
+    "HKCU\\Software\\LaunchMatrix",
     "HKLM\\Software\\LaunchMatrix"
   ],
   "LaunchEnv": {
@@ -369,10 +367,8 @@
     "ScreenHeight": "<volatile>",
     "ScreenWidth": "<volatile>",
     "TempPath": "<TMP>/90000000000001/DefaultInstance",
-    "UMUID": "0",
     "VIDYAGOD_PEER_NAMES": "<volatile>",
     "VIDYAGOD_PEER_VIPS": "<volatile>",
-    "VIDYAGOD_SANDBOX": "on",
     "VIDYAGOD_SANDBOX_NET": "isolated",
     "VIDYAGOD_SELF_NAME": "<volatile>",
     "VIDYAGOD_SELF_VIP": "<volatile>",

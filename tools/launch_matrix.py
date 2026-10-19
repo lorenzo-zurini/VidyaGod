@@ -166,6 +166,17 @@ def main():
             elif os.path.exists(os.path.join(data, "IPFS")):
                 failures.append(f"--offline resolve of {node} started the IPFS node (it created {data}/IPFS)")
 
+        #--instance names an EXISTING instance: an unknown one is refused (a typo must not run a fresh, empty instance
+        #and create it on the first save), and the default one a never-played game will get is accepted.
+        if not args.update:
+            node = next(n for n in launchables(bundle) if n not in BLOCKED)
+            for inst, want_ok in (("NoSuchInstance", False), ("DefaultInstance", True)):
+                run = subprocess.run([binary, "--bypass-single-instance-lock", "--offline", "--data-dir", data,
+                                      "--resolve-only", node, "--instance", inst], capture_output=True, text=True, timeout=300)
+                checked += 1
+                if (run.returncode == 0) != want_ok:
+                    failures.append(f"--instance {inst}: exit {run.returncode}, expected {'success' if want_ok else 'a refusal'}")
+
         for node, entry in RUN_CASES:
             name = case_name(node, entry)
             # ---- the RUNTIME case: mount for real, run the probe, golden what it saw ------------------------
@@ -219,6 +230,38 @@ def main():
                                                       f"golden/{name}.runtime.txt", "observed", n=2))
                         failures.append(f"{name} runtime: WHAT THE GAME SEES CHANGED")
                         failures += ["    " + l.rstrip("\n") for l in d[:60]]
+
+        #The sandbox is MANDATORY: on a machine that can't start it, a launch is REFUSED — it exits non-zero, the game
+        #never runs (no probe report), and the failure names the missing sandbox. bwrap is hidden from the run by a PATH
+        #holding everything the real PATH does except bwrap.
+        if not args.update and sys.platform.startswith("linux"):
+            nobwrap = tempfile.mkdtemp(prefix="vg_nobwrap_")
+            for d in os.environ.get("PATH", "").split(os.pathsep):
+                if not os.path.isdir(d): continue
+                for e in os.listdir(d):
+                    if e != "bwrap" and not os.path.lexists(os.path.join(nobwrap, e)):
+                        os.symlink(os.path.join(d, e), os.path.join(nobwrap, e))
+            node, entry = RUN_CASES[0]
+            try:
+                run = subprocess.run([binary, "--bypass-single-instance-lock", "--data-dir", data,
+                                      "--node", node] + entry_args(entry), env={**os.environ, "PATH": nobwrap},
+                                     capture_output=True, text=True, timeout=600)
+                checked += 1
+                if run.returncode == 0:
+                    failures.append(f"no sandbox: {node} launched anyway (exit 0)")
+                elif RUN_BEGIN in run.stdout:
+                    failures.append(f"no sandbox: {node}'s game RAN unsandboxed")
+                elif "bubblewrap" not in run.stdout + run.stderr:   # the refusal is an [ERR] line (stderr)
+                    failures.append(f"no sandbox: the refusal of {node} does not name the missing sandbox")
+                #A refused launch had already MOUNTED its runtime; it must take it down like any other exit.
+                left = [l.split()[1] for l in open("/proc/mounts") if "vidyagodfs" in l and "90000000000001" in l]
+                if left:
+                    failures.append(f"no sandbox: the refused launch left its mount up: {left[0]}")
+                    for m in left: subprocess.run(["fusermount3", "-u", "-z", m])
+            except subprocess.TimeoutExpired:
+                failures.append(f"no sandbox: {node} TIMED OUT instead of being refused")
+            finally:
+                shutil.rmtree(nobwrap, ignore_errors=True)
 
         if args.update:
             #A re-record that could not produce something is a FAILURE, not a quiet partial success. Reporting

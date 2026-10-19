@@ -266,8 +266,9 @@ Add a source CID, download a game, launch it. Author or import your own via the 
 | `--tile <UID> [--variant <name>]` | Launch the row a tile shows: the named variant, else the tile's recommended one. |
 | `--resolve-only <id>` | Resolve the container and dump it to JSON (no launch). |
 | `--var KEY=VALUE` | Override a `CustomVar` for this run. |
+| `--instance <name>` | Run that instance of the game (its own settings and saves). Default: the last played. `--list-nodes` lists them. |
 | `--graft <id>` | Apply a graft (repeat for more; the order given is the order applied). `--no-grafts` applies none. |
-| `--list-nodes` | List the library's game tiles and their variants. |
+| `--list-nodes` | List the library's game tiles, their variants and instances. |
 | `--validate-nodes [scope]` | Validate the whole graph, or one bundle/UID. Static; the pre-publish check. |
 | `--audit-packages` | Resolve **every** launchable and report what would fail at launch. |
 | `--tray` | Start minimized to the system tray. |

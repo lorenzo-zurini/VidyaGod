@@ -1,4 +1,5 @@
 #include "launchresolver.h"
+#include "registrywrapper.h"   // NamesNoKey — a registry KEEP must name a key
 #include "apppaths.h"        // AppPaths::DataRoot — the app data root the launch TEMP hangs off of
 #include "varsubst.h"        // VarSubst::StringVariableSubstitution / RenderValue
 #include "packagecatalog.h"  // GetPackageUserSettings (catalog/user-settings service)
@@ -48,7 +49,6 @@ bool LaunchResolver::DerivePersistence(const nlohmann::ordered_json &MANIFESTJSO
     ContainerParams.KeepDirs.clear();
     ContainerParams.KeepFiles.clear();
     ContainerParams.KeepRegKeys.clear();
-    ContainerParams.KeepRegHives.clear();
 
     const std::map<std::string, std::string> Vars = ContainerParams.GetVariablesMap();
 
@@ -82,13 +82,15 @@ bool LaunchResolver::DerivePersistence(const nlohmann::ordered_json &MANIFESTJSO
         return (O.empty() || O == "." || O == "..") ? std::string("_") : O; };
 
     //Every file/dir persist lands at UserDataPath/<TARGET> — a NAMED sibling of the instance's OWN state
-    //(instance.json + the REGISTRY/REGKEYS stores). Two guards make that namespace safe:
+    //(instance.json + the REGKEYS store). Two guards make that namespace safe:
     //  (a) RESERVED names are refused, so a persist can never seed the launcher's secrets into a game-visible mount
-    //      or overwrite the instance config / registry stores (SanSeg keeps the segment shape but not the identity).
+    //      or overwrite the instance config / registry store (SanSeg keeps the segment shape but not the identity).
     //  (b) DUPLICATE targets are refused (case-insensitively — durable dirs travel to case-insensitive filesystems),
     //      so two persists can never clobber one file at capture or mount the same durable dir RW twice and corrupt it.
-    //Registry keys/hives live under REGISTRY//REGKEYS/ (a disjoint namespace), so only the file/dir targets share one.
+    //Registry keys live under REGKEYS/ (a disjoint namespace), so only the file/dir targets share one.
     std::map<std::string, std::string> UsedFileTargets;   // Target(lower) → the Path that claimed it
+    //"registry" too: whole-hive stores were kept in REGISTRY/ until 2026-10; an instance may still hold one, and a file
+    //persist of that name would mount its old .reg files into the game's path.
     static const std::set<std::string> Reserved = { "instance.json", "registry", "regkeys" };
     auto ClaimFileTarget = [&](const std::string &Target, const std::string &Path) -> bool {
         std::string Low = ToLower(Target);
@@ -106,8 +108,8 @@ bool LaunchResolver::DerivePersistence(const nlohmann::ordered_json &MANIFESTJSO
         return true;
     };
 
-    //Parse one DeclarePersist node. SCOPE=file|registry; PATH = runtime source ("" = the whole runtime / all hives,
-    //an AUTHORING aid that warns); TARGET = durable subdir under UserDataPath (defaults to PATH's last component,
+    //Parse one DeclarePersist node. SCOPE=file|registry; PATH = runtime source ("" = the whole runtime, an AUTHORING aid
+    //that warns; a registry persist must name a key); TARGET = durable subdir under UserDataPath (defaults to PATH's last component,
     //REQUIRED when PATH is empty); CLOUD (default true) is the future Cloud-Saves flag (false = machine-specific).
     auto ParsePersist = [&](const nlohmann::ordered_json &S){
         const std::string Scope = ToLower(S.value("SCOPE", std::string("file")));
@@ -117,9 +119,8 @@ bool LaunchResolver::DerivePersistence(const nlohmann::ordered_json &MANIFESTJSO
         const bool Cloud = S.value("CLOUD", true);
         if (Scope == "registry")
         {
-            if (Path.empty())   // whole-hive registry persist — authoring aid
-            { AddUnique(ContainerParams.KeepRegHives, "user.reg"); AddUnique(ContainerParams.KeepRegHives, "system.reg"); AddUnique(ContainerParams.KeepRegHives, "userdef.reg");
-              LogWarn("DerivePersistence", "  registry persist PATH \"\" (all hives) — AUTHORING AID: persists EVERY hive so you can discover what to keep; narrow to specific keys before shipping."); return; }
+            if (RegistryWrapper::NamesNoKey(Path))   // "" or a bare root (HKCU…) = a whole hive: only named keys persist
+            { LogErr("DerivePersistence", "  registry KEEP '" + Path + "' names no key — only keys persist (e.g. REG/HKCU/Software/<Vendor>/<Game>); skipped."); return; }
             AddUnique(ContainerParams.KeepRegKeys, Path); LogOut("DerivePersistence", "  persist regkey " + Path); return;
         }
         // SCOPE=file
@@ -175,7 +176,6 @@ bool LaunchResolver::DerivePersistence(const nlohmann::ordered_json &MANIFESTJSO
     LogSucc("DerivePersistence",
             "PERSIST: dirs=" + std::to_string(ContainerParams.KeepDirs.size()) +
             " files=" + std::to_string(ContainerParams.KeepFiles.size()) +
-            " hives=" + std::to_string(ContainerParams.KeepRegHives.size()) +
             " regkeys=" + std::to_string(ContainerParams.KeepRegKeys.size()));
     return true;
 }

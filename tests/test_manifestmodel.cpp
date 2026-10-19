@@ -423,6 +423,61 @@ TEST(validate_names_missing_refs_and_cycles)
     CHECK(AnyContains(E, "form a cycle"));
 }
 
+// Registry persistence is per key: a KEEP of the whole registry or of a bare hive root is refused (it would save a hive
+// wholesale, and its restore would shadow every later base edit in it), while a named key is fine.
+TEST(validate_refuses_keeping_the_whole_registry)
+{
+    NodeIndex Idx;
+    Add(Idx, { {"CID", "whole"}, {"LABEL", "whole"}, {"LAYERS", ordered_json::array({ {{"KEEP", {{"REG", true}}}} })} });
+    Add(Idx, { {"CID", "root"}, {"LABEL", "root"}, {"LAYERS", ordered_json::array({ {{"KEEP", {{"REG/HKCU", true}}}} })} });
+    Add(Idx, { {"CID", "key"}, {"LABEL", "key"}, {"LAYERS", ordered_json::array({ {{"KEEP", {{"REG/HKCU/Software/Game", true}}}} })} });
+    ManifestModel::DeriveFacts(Idx);
+    const auto E = Validate(Idx);
+    CHECK(AnyContains(E, "node 'whole': a KEEP of a whole registry hive"));
+    CHECK(AnyContains(E, "node 'root': a KEEP of a whole registry hive"));
+    CHECK(!AnyContains(E, "node 'key': a KEEP of a whole registry hive"));
+}
+
+// A KEEP's durable folder is its NAME, else its address's last segment — a reserved one (the instance's own state) is
+// flagged either way, since the launch would refuse it and that folder's saves would silently stop persisting.
+TEST(validate_flags_a_reserved_keep_name_given_or_defaulted)
+{
+    NodeIndex Idx;
+    Add(Idx, { {"CID", "named"}, {"LABEL", "named"}, {"LAYERS", ordered_json::array({ {{"KEEP", {{"FILES/%GameDir%/save/", {{"NAME", "RegKeys"}}}}}} })} });
+    Add(Idx, { {"CID", "leaf"}, {"LABEL", "leaf"}, {"LAYERS", ordered_json::array({ {{"KEEP", {{"FILES/%GameDir%/Registry/", true}}}} })} });
+    Add(Idx, { {"CID", "fine"}, {"LABEL", "fine"}, {"LAYERS", ordered_json::array({ {{"KEEP", {{"FILES/%GameDir%/Saves/", true}}}} })} });
+    ManifestModel::DeriveFacts(Idx);
+    std::vector<std::string> W;
+    Validate(Idx, &W);
+    CHECK(AnyContains(W, "node 'named': KEEP NAME 'RegKeys' is RESERVED"));
+    CHECK(AnyContains(W, "node 'leaf': KEEP NAME 'Registry' is RESERVED"));
+    CHECK(!AnyContains(W, "node 'fine': KEEP NAME"));
+}
+
+// A platform is served when a CHAIN of runners reaches this machine: a Windows-only engine for its own platform runs
+// under proton on Linux (and directly on Windows). A platform no chain reaches is still named.
+TEST(validate_counts_a_runner_chain_as_serving_a_platform)
+{
+    NodeIndex Idx;
+    AddChain(Idx, "proton", { NF::Runner("linux64", {"win64"}, "%RunnerMount%/proton") });
+    AddChain(Idx, "engine", { NF::Runner("win64", {"enginegame"}, "%RunnerMount%/engine.exe") });
+    auto Game = [&](const char *Id, const char *Host) {
+        Add(Idx, { {"CID", Id}, {"LABEL", Id}, {"VARIANT", "1"}, {"LAYERS", ordered_json::array({
+            {{"EXEC", ordered_json::array({ {{"LABEL", "Play"}, {"HOST", Host}, {"EXE", "%GameDir%/x"}, {"TILE", {{"UID", Id}}}} })}} })} });
+    };
+    Game("chained", "enginegame");
+    Game("stranded", "nowhere");
+    // "custom" is served only by an engine in the game's own package.
+    AddChain(Idx, "theirs", { NF::Runner("linux64", {"custom"}, "%RunnerMount%/gemrb") }, {}, ordered_json::object(), "/other");
+    Game("custom_elsewhere", "custom");
+    ManifestModel::DeriveFacts(Idx);
+    std::vector<std::string> W;
+    Validate(Idx, &W);
+    CHECK(!AnyContains(W, "no runner serves platform 'enginegame'"));
+    CHECK(AnyContains(W, "no runner serves platform 'nowhere'"));
+    CHECK(AnyContains(W, "node 'custom_elsewhere': no runner serves platform 'custom'"));
+}
+
 TEST(validate_requires_a_variant_to_present_a_tile_it_recommends)
 {
     NodeIndex Idx;

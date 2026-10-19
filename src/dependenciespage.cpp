@@ -1,5 +1,8 @@
 #include "dependenciespage.h"
 #include "depcheck.h"
+#include "sandboxlayer.h"
+
+#include <algorithm>
 
 #include <QFrame>
 #include <QGroupBox>
@@ -28,7 +31,7 @@ void DependenciesPage::rebuild()
     if (!Scroll) return;
     if (Scroll->widget()) Scroll->widget()->deleteLater();
 
-    const SystemState St = ProbeSystem();
+    const SystemState St = ProbeSystem(SandboxLayer::Available());
     const Distro D = St.distro;
 
     QWidget * contents = new QWidget(Scroll);
@@ -36,10 +39,17 @@ void DependenciesPage::rebuild()
     Scroll->setWidget(contents);
 
     // ---- intro + summary + re-check ----
+#ifdef _WIN32
     QLabel * intro = new QLabel(
-        "Missing libraries — especially 32-bit ones — are the most common cause of Proton/Wine game crashes. "
-        "A ✓ means it's installed; ✗ means it's missing; ⚠ means the 64-bit library is present but the 32-bit "
-        "(multilib) one is not, which can crash 32-bit games. Install the named package to fix.", contents);
+        "What VidyaGod needs to launch games. A ✓ means it's installed and working; ✗ means it's missing. "
+        "Install the named program to fix.", contents);
+#else
+    QLabel * intro = new QLabel(
+        "Core tools are what VidyaGod needs to launch any game. After those, missing libraries — especially 32-bit "
+        "ones — are the most common cause of Proton/Wine game crashes. A ✓ means it's installed; ✗ means it's "
+        "missing; ⚠ means the 64-bit library is present but the 32-bit (multilib) one is not, which can crash 32-bit "
+        "games. Install the named package to fix.", contents);
+#endif
     intro->setWordWrap(true);
     intro->setStyleSheet("color:#8f98a0;font-size:9pt;");
     v->addWidget(intro);
@@ -71,6 +81,8 @@ void DependenciesPage::rebuild()
     // ---- one group box per category ----
     for (const Category Cat : { Category::Core, Category::Graphics, Category::WineLibs, Category::Audio, Category::Media })
     {
+        if (std::none_of(AllDeps().begin(), AllDeps().end(), [Cat](const DepItem & I){ return I.Cat == Cat; }))
+            continue;   // a category with nothing on this platform (Windows lists only Core)
         QGroupBox * box = new QGroupBox(CategoryLabel(Cat), contents);
         QVBoxLayout * bv = new QVBoxLayout(box);
         bv->setSpacing(4);

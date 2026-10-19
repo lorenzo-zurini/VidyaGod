@@ -1,7 +1,6 @@
 // Tests for SandboxLayer — the MANDATORY bubblewrap wrapper for the launched game. Wrap() is pure argv construction
-// (no bwrap needed), so we assert: the sandbox is always on (no opt-out); the network mode reads from
-// VIDYAGOD_SANDBOX_NET; and the produced argv mounts the host root read-only, unshares the net only when isolated,
-// and ends with `-- <origProgram> <origArgs...>` so the real command is preserved verbatim.
+// (no bwrap needed), so we assert: the network mode reads from VIDYAGOD_SANDBOX_NET; and the produced argv mounts the
+// host root read-only, unshares the net only when isolated, and ends with `-- <origProgram> <origArgs...>` so the real command is preserved verbatim.
 
 #include <QtTest>
 
@@ -22,24 +21,10 @@ class SandboxTest : public QObject
     }
 
 private slots:
-    void mandatory_always_on()
-    {
-        // Sandboxing is MANDATORY (security + parity with the Windows Sandboxie path): Requested is ALWAYS true,
-        // regardless of the now-ignored launcher default or the VIDYAGOD_SANDBOX var. There is no opt-out — an
-        // un-sandboxable machine fails the launch (ContainerWrapper::Execute) rather than running the game unconfined.
-        QVERIFY(SandboxLayer::Requested(params({})));
-        QVERIFY(SandboxLayer::Requested(params({}), /*DefaultOn=*/false));
-        QVERIFY(SandboxLayer::Requested(params({{"VIDYAGOD_SANDBOX", "off"}})));        // opt-out ignored
-        QVERIFY(SandboxLayer::Requested(params({{"VIDYAGOD_SANDBOX", "false"}}), /*DefaultOn=*/false));
-        QVERIFY(SandboxLayer::Requested(params({{"VIDYAGOD_SANDBOX", "on"}}), /*DefaultOn=*/false));
-        // Enabled follows Requested — a launch always builds a sandbox.
-        QVERIFY(SandboxLayer::FromParams(params({{"VIDYAGOD_SANDBOX", "off"}})).Enabled);
-    }
-
     void net_mode_from_var()
     {
-        QCOMPARE(SandboxLayer::FromParams(params({{"VIDYAGOD_SANDBOX", "on"}})).Net == SandboxLayer::NetMode::Host, true);
-        QCOMPARE(SandboxLayer::FromParams(params({{"VIDYAGOD_SANDBOX", "on"}, {"VIDYAGOD_SANDBOX_NET", "isolated"}})).Net
+        QCOMPARE(SandboxLayer::FromParams(params({})).Net == SandboxLayer::NetMode::Host, true);
+        QCOMPARE(SandboxLayer::FromParams(params({{"VIDYAGOD_SANDBOX_NET", "isolated"}})).Net
                      == SandboxLayer::NetMode::Isolated, true);
     }
 
@@ -48,7 +33,7 @@ private slots:
 #ifdef _WIN32
         QSKIP("bwrap argv is the Linux backend; Windows sandboxing is the separate Sandboxie backend (sandboxlayer_win.cpp)");
 #endif
-        SandboxLayer::Options O = SandboxLayer::FromParams(params({{"VIDYAGOD_SANDBOX", "on"}}));
+        SandboxLayer::Options O = SandboxLayer::FromParams(params({}));
         O.Mounts.push_back({"/tmp/spec.json", "/tmp/mnt"});
         O.WorkDir = "/tmp/mnt/game";
         std::string Program = "/opt/game/run.sh";
@@ -83,7 +68,7 @@ private slots:
         QSKIP("bwrap --unshare-net is the Linux backend; Windows sandboxing is the separate Sandboxie backend");
 #endif
         SandboxLayer::Options O = SandboxLayer::FromParams(
-            params({{"VIDYAGOD_SANDBOX", "on"}, {"VIDYAGOD_SANDBOX_NET", "isolated"}}));
+            params({{"VIDYAGOD_SANDBOX_NET", "isolated"}}));
         O.TunName = "vg-abcdef"; O.TunCidr = "10.66.7.2/24"; O.TunSock = "/tmp/t.sock";
         std::string Program = "/bin/true";
         QStringList Args;

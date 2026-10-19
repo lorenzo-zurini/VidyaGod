@@ -108,10 +108,11 @@ void LibraryGameCard::play()
     //every edition's closure here is O(N²) and would stall the Play button. Regular launch assumes packages are valid;
     //a malformed graph fails loudly downstream in resolution/mount, and fixing it is the author's job.
 
-    //Gate: a USABLE runner must exist for the (representative) edition — a PATH runner present on the system or a
-    //hydrated build runner. A compatible-but-not-installed runner does NOT count (you can't launch without it).
+    //Gate: installed runners must carry the (representative) edition to this machine — a PATH runner present on the
+    //system or a hydrated build runner, directly or through a chain (a Windows-only engine under proton). A
+    //compatible-but-not-installed runner does NOT count (you can't launch without it).
     if (const Node * Rep = Index->Find(RepNodeId))
-        if (PackageCatalog::UsableRunners(*Index, *Rep).empty())
+        if (!PackageCatalog::HasUsableChain(*Index, *Rep))
         {
             QMessageBox::warning(nullptr, "Runner unavailable",
                 "No installed runner can launch this game on this machine. "

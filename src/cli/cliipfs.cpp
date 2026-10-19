@@ -64,7 +64,6 @@ static int RunOverlaySandbox(const std::string &UserCmd)
     if (!IpfsWrapper::OverlayServe(Sock, Bridge, HostRelay, &Err)) { LogErr("main.cpp", "overlay serve failed: " + Err); return -1; }
 
     SandboxLayer::Options O;
-    O.Enabled = true;
     O.Net     = SandboxLayer::NetMode::Isolated;
     O.TunName = "vg-lan";
     O.TunCidr = MyVip + "/" + Mask;

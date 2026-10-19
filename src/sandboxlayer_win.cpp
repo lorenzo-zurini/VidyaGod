@@ -59,8 +59,8 @@ static std::string BoxNameFor(const std::string &WorkDir)
 }
 
 // Usable when the install is present AND the Sandboxie service (SbieSvc, which fronts the SbieDrv kernel
-// driver) is running. Mirrors the bwrap functional probe: if the machine can't sandbox, a launch simply
-// degrades to unsandboxed (ContainerWrapper gates Wrap() on Available()).
+// driver) is running. Mirrors the bwrap functional probe: if the machine can't sandbox, the launch is refused
+// (ContainerWrapper::Execute) — there is no unsandboxed fallback.
 bool Available()
 {
     if (SandboxieDir().empty()) return false;

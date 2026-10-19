@@ -176,7 +176,6 @@ bool LaunchResolver::InitializeFromNode(struct ContainerParams &ContainerParams,
     CP.PackageName= FaceMeta.is_object() ? FaceMeta.value("TITLE", LaunchId) : LaunchId;
     CP.GameName   = CP.PackageName;
     CP.PackagePath= AppPaths::PackagePathOverride().empty() ? Row->BundleDir : AppPaths::PackagePathOverride();  // --package-dir / in-package
-    CP.UMUID      = FaceMeta.is_object() ? FaceMeta.value("UMUID", std::string("0")) : "0";
 
     //Phase 1 reads the instance's values and the built-ins (%UID% = the launched face, %PackageUID% = its family).
     Fold::Vars Instance;

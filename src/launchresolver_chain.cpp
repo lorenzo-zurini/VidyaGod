@@ -66,9 +66,7 @@ const Node *LaunchResolver::PickRunnerNode(const NodeIndex &Idx, const Node &Lau
     auto Qualifies = [&](const Node &N) -> bool
     {
         if (!N.IsRunner()) return false;
-        bool Guest = false;
-        for (const auto &G : N.GuestPlatform) if (G == Host) { Guest = true; break; }
-        if (!Guest) return false;
+        if (!ManifestModel::ServesPlatform(N, Host, Launch.BundleDir)) return false;
         if (N.HostPlatform != MachinePlatform()) return false;
         return RunnerWrapper::ExecutableAvailable(N.Exec);
     };
@@ -134,7 +132,7 @@ bool RunnerAvailable(const NodeIndex &Idx, const Node &R)
 //BFS shortest path of bridging runners carrying Start → Goal over the (pre-sorted better-first) runner edges. Empty
 //bridge when Start==Goal (native content). Returns false when Goal is unreachable.
 bool FindBridge(const std::string &Start, const std::string &Goal, const std::vector<const Node *> &Runners,
-                std::vector<std::string> &OutBridge)
+                const std::filesystem::path &LaunchBundleDir, std::vector<std::string> &OutBridge)
 {
     OutBridge.clear();
     if (Start == Goal) return true;                                              // native content: terminal runs it directly
@@ -147,7 +145,7 @@ bool FindBridge(const std::string &Start, const std::string &Goal, const std::ve
         const std::string Cur = Q.front(); Q.pop();
         for (const Node *R : Runners)                                            // better-first → first discovery wins
         {
-            if (!RunnerServes(R, Cur)) continue;
+            if (!ManifestModel::ServesPlatform(*R, Cur, LaunchBundleDir)) continue;   // "custom": the package's own engine only
             const std::string &Next = R->HostPlatform;
             if (Visited.count(Next)) continue;
             Visited.insert(Next);
@@ -261,7 +259,7 @@ std::vector<std::string> LaunchResolver::ResolveChainIds(const NodeIndex &Idx, c
         {
             if (Id == kNativeTerminalId) { Ok = (Cur == Machine); break; }       // synthetic terminal valid only at machine
             const Node *R = Idx.Find(Id);
-            if (!R || !R->IsRunner() || !RunnerAvailable(Idx, *R) || !RunnerServes(R, Cur)) { Ok = false; break; }
+            if (!R || !R->IsRunner() || !RunnerAvailable(Idx, *R) || !ManifestModel::ServesPlatform(*R, Cur, Launch.BundleDir)) { Ok = false; break; }
             Cur = R->HostPlatform;
         }
         if (Ok && Cur == Machine)
@@ -279,7 +277,7 @@ std::vector<std::string> LaunchResolver::ResolveChainIds(const NodeIndex &Idx, c
 
     //2. BFS default: bridge content-platform → machine, then append the native terminal.
     std::vector<std::string> Bridge;
-    if (!FindBridge(Host, Machine, Runners, Bridge)) return {};   // unreachable on this machine
+    if (!FindBridge(Host, Machine, Runners, Launch.BundleDir, Bridge)) return {};   // unreachable on this machine
     const Node *Term = PickNativeTerminal(Runners, Machine);
     Bridge.push_back(Term ? Term->Key() : std::string(kNativeTerminalId));
     return Bridge;
@@ -293,7 +291,7 @@ std::vector<std::string> LaunchResolver::ResolveChainTail(const NodeIndex &Idx, 
     std::vector<const Node *> Runners = AvailableRunnersSorted(Idx, Launch);
 
     std::vector<std::string> Bridge;
-    if (!FindBridge(FromPlatform, Machine, Runners, Bridge)) return {};          // FromPlatform can't reach the machine
+    if (!FindBridge(FromPlatform, Machine, Runners, Launch.BundleDir, Bridge)) return {};          // FromPlatform can't reach the machine
     const Node *Term = PickNativeTerminal(Runners, Machine);
     Bridge.push_back(Term ? Term->Key() : std::string(kNativeTerminalId));
     return Bridge;
@@ -371,10 +369,14 @@ LaunchResolver::GuestTarget LaunchResolver::ComposeGuestTarget(struct ContainerP
     for (int i = 0; i < B; ++i)
     {
         const RunnerLink &L = CP.RunnerChain[i];
-        //This inner runner's own executable, as a CONTENT_ROOT-relative path then a guest path. EXECUTABLE is a
-        //build-relative path for a nestable inner runner (no %RunnerMount% — that mount doesn't exist inside the guest).
+        //This inner runner's own executable, as a CONTENT_ROOT-relative path then a guest path. Its build is mounted
+        //at its own __runner_<id>__ folder, so %RunnerMount% names THAT folder: "" in the build-relative exe path, its
+        //guest path in arguments. (Left to the base map, %RunnerMount% was the BOUNDARY's host mount — a Windows engine
+        //runner written "%RunnerMount%/x.exe", as it must be to run directly on Windows, nested under proton as
+        //"__runner_<id>__/tmp/…/RUNNER/x.exe".)
+        const std::string MountGuest = GuestPath(Template, InnerRunnerMountRel(L.NodeId), CP);
         std::string ExeRel = L.Executable;
-        VarSubst::StringVariableSubstitution(ExeRel, NestBaseVars);
+        { std::map<std::string, std::string> V = NestBaseVars; V["RunnerMount"] = ""; VarSubst::StringVariableSubstitution(ExeRel, V); }
         while (!ExeRel.empty() && (ExeRel.front() == '/' )) ExeRel.erase(ExeRel.begin());
         const std::string ExeRelUnderRoot = InnerRunnerMountRel(L.NodeId) + (ExeRel.empty() ? "" : "/" + ExeRel);
         const std::string ExeGuest = GuestPath(Template, ExeRelUnderRoot, CP);
@@ -386,7 +388,7 @@ LaunchResolver::GuestTarget LaunchResolver::ComposeGuestTarget(struct ContainerP
         {
             //One override map per LINK (the old code rebuilt the whole variables map per ARG).
             std::map<std::string, std::string> V = NestBaseVars;
-            V["Content"] = Target; V["ContentPath"] = Target;
+            V["Content"] = Target; V["ContentPath"] = Target; V["RunnerMount"] = MountGuest;
             for (const std::string &Raw : L.Args)
             { std::string A = Raw; VarSubst::StringVariableSubstitution(A, V); ThisArgs.push_back(A); }
         }
@@ -404,7 +406,7 @@ LaunchResolver::GuestTarget LaunchResolver::ComposeGuestTarget(struct ContainerP
     //the innermost-toward-boundary runner's CONTENT_ROOT-relative exe as ContentRel, and Argv[1..] as trailing args.
     const RunnerLink &Outermost = CP.RunnerChain[B - 1];
     std::string OuterExeRel = Outermost.Executable;
-    { std::map<std::string, std::string> V = CP.GetVariablesMap(); VarSubst::StringVariableSubstitution(OuterExeRel, V); }
+    { std::map<std::string, std::string> V = CP.GetVariablesMap(); V["RunnerMount"] = ""; VarSubst::StringVariableSubstitution(OuterExeRel, V); }
     while (!OuterExeRel.empty() && OuterExeRel.front() == '/') OuterExeRel.erase(OuterExeRel.begin());
     T.ContentRel = InnerRunnerMountRel(Outermost.NodeId) + (OuterExeRel.empty() ? "" : "/" + OuterExeRel);
     for (size_t i = 1; i < Argv.size(); ++i) T.TrailingArgs.push_back(Argv[i]);

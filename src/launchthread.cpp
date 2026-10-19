@@ -1,4 +1,6 @@
 #include "launchthread.h"
+#include "sandboxlayer.h"
+#include "depcheck.h"       // MissingCore — a failed launch names what this machine lacks
 #include "containerwrapper.h"
 #include "instancestore.h"   // TouchLastRun — mark the launched instance as last-played
 #include "apppaths.h"        // UserDataPathOverride — bypass instances in in-package/CLI mode
@@ -27,6 +29,19 @@ void LaunchThread::kill()
 
 // Full container lifecycle executed on the worker thread.
 // Emits progress/status signals at key milestones so the UI can stay in sync.
+//The app checks nothing at startup (Settings → Dependencies is the one place), so a launch that fails is where a missing
+//core tool — the mount helper, FUSE/WinFsp, the sandbox — is first seen. Name it instead of blaming the package.
+//"" when nothing core is missing (the failure is the package's, and the caller says so).
+static QString MissingCoreMessage()
+{
+    const std::vector<std::string> Missing = DepCheck::MissingCore(DepCheck::ProbeSystem(SandboxLayer::Available()));
+    if (Missing.empty()) return QString();
+    QString List;
+    for (const std::string &M : Missing) List += "\n  •  " + QString::fromStdString(M);
+    return QStringLiteral("VidyaGod can't run games on this machine yet. Missing:") + List
+         + QStringLiteral("\n\nSettings → Dependencies shows what to install.");
+}
+
 void LaunchThread::run()
 {
     // -----------------------------------------------------------------
@@ -153,7 +168,9 @@ void LaunchThread::run()
             wrapper = nullptr;
         }
         delete LocalWrapper;
-        emit launchFinished(false, "Failed to build container runtime.\nCheck that all components are defined and their zip files exist.");
+        const QString Missing = MissingCoreMessage();
+        emit launchFinished(false, !Missing.isEmpty() ? Missing
+                                   : "Failed to build container runtime.\nCheck that all components are defined and their zip files exist.");
         return;
     }
 
@@ -225,8 +242,9 @@ void LaunchThread::run()
 
     if (NotStarted)
     {
-        emit launchFinished(false, QStringLiteral("The game was not started.\n\nSee the log for why (for example, the "
-                                                  "sandbox every launch needs is unavailable on this machine)."));
+        //Not started = Execute() refused it before the game ran — on a machine that can't sandbox, say what is missing.
+        const QString Missing = MissingCoreMessage();
+        emit launchFinished(false, !Missing.isEmpty() ? Missing : QStringLiteral("The game was not started.\n\nSee the log for why."));
         return;
     }
 

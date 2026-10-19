@@ -69,36 +69,15 @@ void CheckLayers(const Node &N, const std::string &Pkg, std::vector<Finding> &Ou
             if (Mode.empty())
                 Out.push_back({N.NodeId, Pkg, "fileedit-no-mode", "FileEdit has no MODE — it is skipped entirely.", true});
         }
+        //BinaryPatch: the per-mode rules (site, EXPECT guard, Or takes none, each mode's bytes) are the validator's,
+        //which this audit runs below. What validation doesn't check is where FILE lands: it joins onto the runtime
+        //mount root.
         if (Type == "BinaryPatch")
         {
-            const std::string Mode = L.value("MODE", std::string());
             const std::string File = L.value("FILE", std::string());
-            //An UNGUARDED patch (no EXPECT) writes wherever it lands with no check the bytes are what the author
-            //thinks — a wrong/rebuilt binary is silently corrupted. Content-addressing freezes the base, but the
-            //guard is the cheap insurance that catches a mispointed FILE or a stale offset. Required for all modes.
-            if (!L.contains("EXPECT"))
-                Out.push_back({N.NodeId, Pkg, "binarypatch-no-expect",
-                               "BinaryPatch on '" + File + "' has no EXPECT guard — it will overwrite whatever is at "
-                               "the site with no verification. Add EXPECT (the original bytes).", true});
-            //FILE joins onto the runtime mount root; an absolute path escapes it (same trap as FileEdit).
             if (File.rfind("%RuntimePath%", 0) == 0 || (!File.empty() && File[0] == '/'))
                 Out.push_back({N.NodeId, Pkg, "binarypatch-absolute-file",
                                "FILE '" + File + "' is absolute; author it relative to the mount root.", true});
-            if (Mode != "Replace" && Mode != "Cave" && Mode != "Poke")
-                Out.push_back({N.NodeId, Pkg, "binarypatch-bad-mode",
-                               "BinaryPatch MODE '" + Mode + "' is not Replace/Cave/Poke — the patch is skipped.", true});
-            if (!L.contains("ANCHOR") && !L.contains("OFFSET"))
-                Out.push_back({N.NodeId, Pkg, "binarypatch-no-site",
-                               "BinaryPatch has neither ANCHOR nor OFFSET — nowhere to patch.", true});
-            if (Mode == "Replace" && !L.contains("REPLACE"))
-                Out.push_back({N.NodeId, Pkg, "binarypatch-replace-no-bytes",
-                               "Replace has no REPLACE bytes.", true});
-            if (Mode == "Poke" && !L.contains("VALUE"))
-                Out.push_back({N.NodeId, Pkg, "binarypatch-poke-no-value",
-                               "Poke has no VALUE.", true});
-            if (Mode == "Cave" && !L.contains("PAYLOAD"))
-                Out.push_back({N.NodeId, Pkg, "binarypatch-cave-no-payload",
-                               "Cave has no PAYLOAD (the cave body).", true});
         }
         //A content layer whose local file is missing is a package that cannot launch (and, with no SOURCE, cannot
         //even be fetched). ValidateNodeGraph covers PATH existence; here we only flag the un-fetchable case.
@@ -148,6 +127,7 @@ int CliModes::RunAuditPackages(nlohmann::ordered_json &GlobalConfigJSON, const s
     //the content, which is usually a PARENT (Worms 4's broken edits were on its base node, so a launchable-only
     //scan reported it clean). Checking each node once also avoids re-reporting a shared library node once per
     //dependent — with 903 Minecraft variants that difference is thousands of duplicate lines.
+    std::set<std::string> InScope;
     {
         size_t Checked = 0;
         for (const auto &[Id, Nd] : Index.Nodes)
@@ -157,11 +137,22 @@ int CliModes::RunAuditPackages(nlohmann::ordered_json &GlobalConfigJSON, const s
                 const std::string Dir = std::filesystem::path(Nd.BundleDir).filename().string();
                 if (Id != Scope && Nd.Uid != Scope && Dir != Scope && Dir.find(Scope) == std::string::npos) continue;
             }
+            InScope.insert(Id);
             CheckLayers(Nd, std::filesystem::path(Nd.BundleDir).filename().string(), Findings);
             ++Checked;
         }
         LogOut("audit", "static layer pass: " + std::to_string(Checked) + " node(s) inspected, "
                         + std::to_string(Findings.size()) + " finding(s)");
+    }
+
+    //THE VALIDATOR'S ERRORS are launch failures too (a BinaryPatch with no site or no bytes, a whole-hive KEEP, a
+    //missing ref…). Its rules live in ONE place, ManifestModel; the audit once kept its own copy of the BinaryPatch
+    //ones, which drifted (it predated MODE "Or" and flagged every Or op). Its warnings stay --validate-nodes' business.
+    {
+        std::vector<std::string> VErrors, VWarnings;
+        ManifestModel::ValidateNodeGraph(Index, VErrors, VWarnings, Scope.empty() ? nullptr : &InScope);
+        for (const std::string &E : VErrors) Findings.push_back({std::string(), "(validator)", "validate", E, true});   // E names its node
+        LogOut("audit", "validator pass: " + std::to_string(VErrors.size()) + " error(s)");
     }
 
     //DUPLICATE VARIANT LABELS — two launchables on one tile with the same LABEL render as two identical rows in
@@ -295,7 +286,7 @@ int CliModes::RunAuditPackages(nlohmann::ordered_json &GlobalConfigJSON, const s
         LogOut("audit", "── " + (Pkg.empty() ? std::string("(no package dir)") : Pkg));
         for (const Finding *F : List)
         {
-            const std::string Line = "   [" + F->Kind + "] " + F->Node + ": " + F->Detail;
+            const std::string Line = "   [" + F->Kind + "] " + (F->Node.empty() ? std::string() : F->Node + ": ") + F->Detail;
             if (F->Error) LogErr("audit", Line); else LogWarn("audit", Line);
         }
     }

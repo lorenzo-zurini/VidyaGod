@@ -390,10 +390,15 @@ bool RunnerInstalled(const NodeIndex &Idx, const std::string &RunnerNodeId);
 bool IsEmbeddedRunner(const NodeIndex &Idx, const std::string &RunnerNodeId);
 // Compatible AND installed — the runners a game can actually launch with right now. Sorted by node id.
 std::vector<const Node*> UsableRunners(const NodeIndex &Idx, const Node &Launch);
+
+// Whether installed runners carry Launch's platform to this machine — directly or through a chain (a Windows-only
+// engine under proton). The Play gate: a chain-only game has no UsableRunner yet runs fine.
+bool HasUsableChain(const NodeIndex &Idx, const Node &Launch);
 // Installed runners that can CONSUME InputPlatform (GUEST ∋ InputPlatform), regardless of their HOST — the choices
-// for one step of the runner daisy-chain UI (a chain step's input platform → the runners that bridge it onward).
-// Sorted by node id.
-std::vector<const Node*> CandidateRunners(const NodeIndex &Idx, const std::string &InputPlatform);
+// for one step of the runner daisy-chain UI (a chain step's input platform → the runners that bridge it onward). For
+// "custom", only the engine shipped in the launch's own package (LaunchBundleDir). Sorted by node id.
+std::vector<const Node*> CandidateRunners(const NodeIndex &Idx, const std::string &InputPlatform,
+                                         const std::filesystem::path &LaunchBundleDir);
 // True when every VFS layer in a launchable node's content closure is present locally (its game is installed).
 bool NodeHydrated(const NodeIndex &Idx, const std::string &LaunchNodeId);
 // True iff the node's closure defines at least one VFS content layer — i.e. it's a real, downloadable game and not a

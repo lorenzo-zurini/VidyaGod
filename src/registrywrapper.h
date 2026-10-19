@@ -95,12 +95,6 @@ public:
     //any existing key at that location). Returns false if Src has no such key. Used for per-key
     //persistence: extract a subtree from one hive set and merge it into another.
     [[nodiscard]] bool                 MergeKeyFrom(const RegistryWrapper &Src, const std::string &FullPath);
-    //Recursive UNION merge of Src's subtree at FullPath into *this: source values overwrite same-named
-    //destination values and source children merge recursively — destination-ONLY keys/values are
-    //PRESERVED. (MergeKeyFrom REPLACES the destination subtree; union semantics are what registry
-    //PERSISTENCE needs: the user's saved keys win where they exist, package/base defaults show through
-    //everywhere else.) Accepts a bare root ("HKCU") to merge a whole hive.
-    [[nodiscard]] bool                 UnionMergeFrom(const RegistryWrapper &Src, const std::string &FullPath);
     const RegistryValue *GetValue(const std::string &FullPath, const std::string &Name) const;
     void                 SetValue(const std::string &FullPath, const std::string &Name, const RegistryValue &V);
     [[nodiscard]] bool                 DeleteValue(const std::string &FullPath, const std::string &Name);
@@ -128,6 +122,9 @@ public:
     static HiveRoot    RootForPath(const std::string &FullPath);   // HKLM->Machine, HKCU->User, ...
     static std::string NormalizeRootPrefix(std::string Path);      // HKEY_LOCAL_MACHINE<->HKLM, etc.
     static std::string StripRootPrefix(const std::string &FullPath); // path relative to the hive root
+    //True when a path names no key below its root ("", "HKCU", "HKEY_LOCAL_MACHINE\\", "HKCU\\\\", "HKCC") — a whole hive.
+    //Registry persistence keeps named keys only, so a KEEP like this is refused (validator + DerivePersistence).
+    static bool        NamesNoKey(const std::string &Path);
 
 private:
     std::map<HiveRoot, Hive> Hives;

@@ -9,6 +9,8 @@
 #include "containerwrapper.h"
 #include "ipfswrapper.h"
 #include "jsonoperations.h"
+#include "depcheck.h"       // MissingCore — a launch that never started names what the machine lacks
+#include "sandboxlayer.h"
 
 #include <QDir>
 #include <QFile>
@@ -53,7 +55,6 @@ static nlohmann::ordered_json DumpResolution(struct ContainerParams &CP)   // no
     J["DLLOverrides"]      = CP.DLLOverrides;
     J["KeepDirs"]          = CP.KeepDirs;    // [{path,target,cloud}] — file dir persists ("" path = whole runtime)
     J["KeepFiles"]         = CP.KeepFiles;   // [{path,target,cloud}] — file single-file persists
-    J["KeepRegHives"]      = CP.KeepRegHives;
     J["KeepRegKeys"]       = CP.KeepRegKeys;
     J["CustomVariables"]   = CP.CustomVariables;
     J["RunnerShipsBuild"]  = CP.RunnerShipsBuild;
@@ -121,6 +122,7 @@ int CliModes::RunNodeLaunch(LaunchParameters &LaunchParameters, nlohmann::ordere
         NewContainerParams.VariableOverrides = LaunchParameters.VariableOverrides;
         NewContainerParams.Grafts            = LaunchParameters.Grafts;
         NewContainerParams.Entrypoint        = LaunchParameters.Entrypoint;
+        NewContainerParams.InstanceName      = LaunchParameters.InstanceName;   // "" ⇒ the active (last played) one
         NewContainerParams.LaunchFace        = LaunchParameters.LaunchTile;   // --tile: the row runs as that tile
         //Same engine-injected session facts as the GUI path (see LaunchThread::run): the virtual-LAN vIPs + the
         //player's own display name, so `--node` behaves identically to a GUI launch.
@@ -140,6 +142,30 @@ int CliModes::RunNodeLaunch(LaunchParameters &LaunchParameters, nlohmann::ordere
         if (!NewContainerWrapper.Resolved())
         { LogErr("main.cpp", "Resolving '" + LaunchParameters.LaunchNodeId + "' failed (see above) — aborting.");
           Diagnostics::ReportVerdict("Launch of '" + LaunchParameters.LaunchNodeId + "'"); return 1; }
+        //--instance names an EXISTING instance. A typo would otherwise run a fresh, empty one (no settings, no saves)
+        //and create it on the first save; instances are made in the launch window's menu. A game never played has
+        //none yet, so its DefaultInstance is accepted (it is what a launch without the flag would use).
+        if (!LaunchParameters.InstanceName.empty() && !AppPaths::UserDataPathOverride().empty())
+        {
+            LogErr("main.cpp", "--instance can't be combined with --userdata-dir (or an in-package run): that folder IS the "
+                               "game's userdata, so there are no instances to pick from.");
+            return 1;
+        }
+        if (!LaunchParameters.InstanceName.empty())
+        {
+            const auto Have = InstanceStore::List(GlobalConfigJSON, NewContainerWrapper.ContainerParams.PackageUID);
+            const bool Known = std::find(Have.begin(), Have.end(), LaunchParameters.InstanceName) != Have.end()
+                            || (Have.empty() && LaunchParameters.InstanceName == InstanceStore::DefaultInstance);
+            if (!Known)
+            {
+                std::string List;
+                for (const std::string &I : Have) List += (List.empty() ? "" : ", ") + I;
+                LogErr("main.cpp", "No instance '" + LaunchParameters.InstanceName + "' for this game. "
+                       + (Have.empty() ? std::string("It has none yet; its first launch creates ") + InstanceStore::DefaultInstance + "."
+                                       : "Its instances: " + List + "."));
+                return 1;
+            }
+        }
         if (!LaunchResolver::ResolveExecutableDefinition(MANIFESTJSON, NewContainerWrapper.ContainerParams))
         { LogErr("main.cpp", "ResolveExecutableDefinition failed, aborting.");
           //A failed launch is exactly when the verdict matters most; returning early without one means the runs
@@ -192,6 +218,11 @@ int CliModes::RunNodeLaunch(LaunchParameters &LaunchParameters, nlohmann::ordere
         if (!Started)
         {
             LogErr("main.cpp", "The game was not started (see the log above).");
+            for (const std::string &M : DepCheck::MissingCore(DepCheck::ProbeSystem(SandboxLayer::Available())))
+                LogErr("main.cpp", "  missing: " + M + " (Settings → Dependencies shows what to install)");
+            //The runtime WAS built (mounted): take it down, as the GUI's LaunchThread does on every path. Returning
+            //without this left the game's vidyagodfs mount up after a refused launch.
+            NewContainerWrapper.Cleanup();
             Diagnostics::ReportVerdict("Launch of '" + LaunchParameters.LaunchNodeId + "'");
             return 1;
         }

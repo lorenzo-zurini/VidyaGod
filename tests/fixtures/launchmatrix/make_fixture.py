@@ -314,7 +314,7 @@ def nodes():
         F(G + "/game/saves/"): {"NAME": "Saves"},
         F(G + "/game/config.ini"): {"NAME": "Config"},
         F(G + "/game/shadercache/"): {"NAME": "ShaderCache", "CLOUD": False},
-        "REG/HKCU": True,
+        "REG/HKCU/Software/LaunchMatrix": True,
         "REG/HKLM/Software/LaunchMatrix": True}}])
 
     # ---- TAKE: a library contained selectively and placed. Left-strip: a file lands under its own name, a
@@ -436,7 +436,6 @@ def main():
     # just a path, indexed directly.
     Cfg = {
         "Settings": {
-            "SandboxByDefault": False,
             "LanEnabled": False,
             "IPFS": {"Enabled": False},
         },

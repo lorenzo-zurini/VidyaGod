@@ -9,13 +9,12 @@ struct ContainerParams;
 
 // ---------------------------------------------------------------------------
 // SandboxLayer — wraps the resolved game command in bubblewrap (bwrap) for filesystem isolation and, for multiplayer,
-// network-namespace scoping. This is the launcher's first real sandbox: today the game is spawned as a bare QProcess
-// sharing the whole host (full read/write, host network). bwrap lets us (a) mount the host root read-only so native
-// Linux games can't scribble on the system while keeping the game's runtime + save dir writable, and (b) optionally
-// unshare the network namespace so the multiplayer overlay TUN is scoped to just the game.
+// network-namespace scoping: (a) the host root is mounted read-only so a game can't scribble on the system while its
+// runtime + save dir stay writable, and (b) the network namespace can be unshared so the overlay TUN is scoped to just
+// the game. On Windows the same role is played by a Sandboxie box (sandboxlayer_win.cpp).
 //
-// OPT-IN by design: enabled only when the launch carries a truthy VIDYAGOD_SANDBOX custom variable, so every existing
-// launch is byte-identical unless the sandbox is explicitly requested (the session "play together" flow sets it).
+// MANDATORY: every launch is sandboxed. A machine that can't sandbox (see Available) fails the launch
+// (ContainerWrapper::Execute) rather than running the game unconfined; there is no opt-out.
 // ---------------------------------------------------------------------------
 namespace SandboxLayer {
 
@@ -29,7 +28,6 @@ enum class NetMode { Host, Isolated };
 struct Mount { std::string SpecPath; std::string Mountpoint; };
 
 struct Options {
-    bool                     Enabled = false;
     NetMode                  Net = NetMode::Host;
     std::vector<std::string> WritableBinds;   // host paths bound read-WRITE (TempPath, UserData, home) over the RO root
     std::vector<Mount>       Mounts;          // vidyagodfs specs re-mounted inside the sandbox (game never sees the host mount)
@@ -39,19 +37,14 @@ struct Options {
     bool                     TunBridge = false;           // in-node NAT is up → sandbox-init adds a default route via the TUN
 };
 
-// Whether this launch should be sandboxed. An explicit VIDYAGOD_SANDBOX custom variable (on/off/true/1/…) always wins;
-// otherwise the launcher default DefaultOn applies (Settings.SandboxByDefault, on by default). So sandboxing is on for
-// every launch unless the machine can't run it (see Available) or the user turns it off globally / per-package.
-bool Requested(const ContainerParams &CP, bool DefaultOn = true);
+// Build the base sandbox Options (Net, from VIDYAGOD_SANDBOX_NET) from the launch params; ContainerWrapper fills
+// Mounts/WritableBinds/WorkDir/Tun before calling Wrap.
+Options FromParams(const ContainerParams &CP);
 
-// Build the base sandbox Options (Enabled + Net) from the launch params; ContainerWrapper fills Mounts/WritableBinds/
-// WorkDir/Tun before calling Wrap. DefaultOn is the launcher-wide default when no explicit override is present.
-Options FromParams(const ContainerParams &CP, bool DefaultOn = true);
-
-// True if the sandbox can ACTUALLY run on this machine — a real one-shot probe (spawn a trivial bwrap with the same
-// namespace/cap flags we use), cached. Catches a missing bwrap AND the cases where bwrap exists but the sandbox can't
-// be created (unprivileged user namespaces disabled, AppArmor restriction, no setuid). Gating "on by default" on this
-// makes an un-sandboxable machine degrade to a normal unsandboxed launch instead of failing.
+// True if the sandbox can ACTUALLY run on this machine — a real probe, run on every call so installing the missing
+// piece needs no restart. Linux: spawn a trivial bwrap with the same namespace/cap flags a launch uses, which catches a
+// missing bwrap AND a bwrap that can't create the sandbox (unprivileged user namespaces disabled, AppArmor, no setuid).
+// Windows: Sandboxie-Plus installed and its SbieSvc service running. False = games can't launch here.
 bool Available();
 
 // Prepend a bwrap invocation to (Program, Arguments): on return Program == "bwrap" and Arguments is the full bwrap

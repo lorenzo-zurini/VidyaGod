@@ -1,6 +1,7 @@
 #include "vgtest.h"
 #include "depcheck.h"
 
+#include <algorithm>
 #include <string>
 
 using namespace DepCheck;
@@ -50,7 +51,7 @@ TEST(check_binary_file_vulkan)
     St.VulkanIcd = true;
 
     DepItem Bin; Bin.kind = Kind::Binary; Bin.Token = "fusermount3";
-    DepItem Missing; Missing.kind = Kind::Binary; Missing.Token = "umu-run";
+    DepItem Missing; Missing.kind = Kind::Binary; Missing.Token = "not-a-tool";
     DepItem File; File.kind = Kind::File; File.Token = "vidyagodfs";
     DepItem Vk; Vk.kind = Kind::VulkanDriver;
 
@@ -62,18 +63,71 @@ TEST(check_binary_file_vulkan)
     CHECK(Check(Vk, St)      == Status::Missing);
 }
 
+TEST(check_sandbox_and_winfsp_read_their_probe)
+{
+    SystemState St;
+    DepItem Sb; Sb.kind = Kind::Sandbox;
+    DepItem Fsp; Fsp.kind = Kind::WinFsp;
+    CHECK(Check(Sb, St)  == Status::Missing);
+    CHECK(Check(Fsp, St) == Status::Missing);
+    St.SandboxUsable = true;
+    St.WinFsp = true;
+    CHECK(Check(Sb, St)  == Status::Ok);
+    CHECK(Check(Fsp, St) == Status::Ok);
+}
+
 TEST(alldeps_table_is_sane)
 {
     const auto &Deps = AllDeps();
-    CHECK(Deps.size() > 10);
-    bool HaveVulkanLoader = false, HaveCritical = false;
+    int Sandboxes = 0, Libs = 0;
+    bool HaveMountHelper = false;
     for (const auto &I : Deps)
     {
-        if (I.Id == "vulkan-loader") { HaveVulkanLoader = true; CHECK(!I.Sonames.empty()); }
-        if (I.Critical) HaveCritical = true;
-        // Every Lib item carries at least an Arch package name for both 64 and (unless core) 32-bit.
+        // The sandbox is mandatory, so it is a Core item; umu-run is not used by anything any more.
+        if (I.kind == Kind::Sandbox) { ++Sandboxes; CHECK(I.Cat == Category::Core); }
+        if (I.kind == Kind::Lib) ++Libs;
+        if (I.Id == "vidyagodfs") HaveMountHelper = true;
+        CHECK(I.Token != "umu-run");
+        CHECK(I.Id != "umu-run");
+        // Every item names what to install on its platform's primary target.
+        CHECK(!I.Pkg64.empty());
+#ifndef _WIN32
         if (I.kind == Kind::Lib) CHECK(I.Pkg64.count(Distro::Arch) == 1);
+#endif
     }
-    CHECK(HaveVulkanLoader);
-    CHECK(HaveCritical);
+    CHECK(Sandboxes == 1);
+    CHECK(HaveMountHelper);
+#ifdef _WIN32
+    CHECK(Libs == 0);   // Wine's libraries don't apply on Windows
+    CHECK(std::any_of(Deps.begin(), Deps.end(), [](const DepItem &I){ return I.kind == Kind::WinFsp; }));
+#else
+    CHECK(Libs > 10);
+    CHECK(std::any_of(Deps.begin(), Deps.end(), [](const DepItem &I){ return I.Token == "fusermount3"; }));
+#endif
+}
+
+// A failed launch names what this machine lacks: the Core items only (a missing library crashes some games, it doesn't
+// stop VidyaGod launching them).
+TEST(missing_core_names_core_items_only)
+{
+    SystemState St;
+    St.SandboxUsable = true;
+    St.WinFsp = true;
+    for (const auto &I : AllDeps())
+    {
+        if (I.kind == Kind::Binary) St.Binaries.insert(I.Token);
+        if (I.kind == Kind::File)   St.Files.insert(I.Token);
+    }
+    CHECK(MissingCore(St).empty());                        // every core item present, every library absent
+    St.SandboxUsable = false;
+    const auto M = MissingCore(St);
+    CHECK_EQ(M.size(), (size_t)1);
+    const auto Sb = std::find_if(AllDeps().begin(), AllDeps().end(), [](const DepItem &I){ return I.kind == Kind::Sandbox; });
+    CHECK(Sb != AllDeps().end() && M.front() == Sb->Name);
+}
+
+TEST(probe_takes_the_sandbox_verdict_it_is_given)
+{
+    CHECK(ProbeSystem(true).SandboxUsable);
+    CHECK(!ProbeSystem(false).SandboxUsable);
 }

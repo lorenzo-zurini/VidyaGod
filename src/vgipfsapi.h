@@ -107,7 +107,7 @@ void VgSetFriendCb(VgFriendCb cb);
 // ---- virtual LAN of friends (see VidyaGodIPFS/friendlan.go) ----
 // There is NO session/host. Friends share one implicit virtual LAN (10.66.0.0/16); each peer's vIP is a pure function
 // of its peer ID, so membership + routing come from the accepted-friends set with zero coordination.
-// The launch vars {VIDYAGOD_SANDBOX, VIDYAGOD_SANDBOX_NET=isolated, SELF_VIP, SELF_NAME, SUBNET, PEER_VIPS,
+// The launch vars {VIDYAGOD_SANDBOX_NET=isolated, SELF_VIP, SELF_NAME, SUBNET, PEER_VIPS,
 // PEER_NAMES} for a sandboxed game launch that joins the LAN. PEER_VIPS/PEER_NAMES are positionally parallel and
 // ordered by peer id (deterministic across calls). -1 if the LAN is unavailable.
 int  VgLanLaunchVars(char **outJson);

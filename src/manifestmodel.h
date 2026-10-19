@@ -245,6 +245,13 @@ std::string ResolveLayerSource(const nlohmann::ordered_json &Sub, const std::fil
 
 // ----- platform -----
 std::string MachinePlatform();   // the host platform a runner variant's HOST_PLATFORM must match (e.g. "linux64")
+
+// The platform of content only its OWN package can run: a game's own engine (GemRB, a source port, a recompilation)
+// ships as a runner in the game's package with GUEST ["custom"], and the game's entry says HOST "custom".
+inline constexpr const char *kCustomPlatform = "custom";
+// Whether Runner can run Platform for a launch from LaunchBundleDir: GUEST lists it — and for "custom", the runner is
+// in the launch's own package (another package's engine never runs this one). Every runner match goes through this.
+bool ServesPlatform(const Node &Runner, const std::string &Platform, const std::filesystem::path &LaunchBundleDir);
 std::string HostPlatform();      // the platform token the host runs as (Phase-1 stub: "linux64")
 
 // ----- component lookups -----

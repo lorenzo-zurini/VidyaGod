@@ -68,7 +68,7 @@ public:
 private:
     //(Runner install — ImportRunner/ImportRunnerNode/RunnerNodeImported — moved to RunnerInstall; see runnerinstall.h.)
     //(Wine prefix/registry/DEFAULTDATA + registry-persistence moved to RegistryLayer — see registrylayer.h:
-    //BuildDefaultData/ApplyOverrideRegEdits/Seed+CapturePersistRegistry/CapturePersistRegKeys.
+    //BuildDefaultData/ApplyOverrideRegEdits/CapturePersistRegKeys.
     //File-persistence (Seed/CapturePersistFiles) moved to PersistLayer; FileEdit/DllOverride to FileEdits.)
 
     //(RunCommand moved to procenv.{h,cpp} (free function); TranslateCustomVarValue / StringVariableSubstitution

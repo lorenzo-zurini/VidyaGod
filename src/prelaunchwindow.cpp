@@ -677,6 +677,7 @@ void PreLaunchWindow::RenderChainCombos()
     }
 
     const std::string Machine = ManifestModel::MachinePlatform();
+    const Node* L0 = CurrentLaunch();
     for (int i = 0; i < (int)CurrentChain.size(); ++i)
     {
         const std::string Input = ChainStepInput(i);
@@ -690,7 +691,7 @@ void PreLaunchWindow::RenderChainCombos()
         Combo->setSizeAdjustPolicy(QComboBox::AdjustToContents);
         {
             QSignalBlocker B(Combo);
-            for (const Node* R : PackageCatalog::CandidateRunners(*Index, Input))
+            for (const Node* R : PackageCatalog::CandidateRunners(*Index, Input, L0 ? L0->BundleDir : std::filesystem::path()))
             {
                 Combo->addItem(RunnerDisplayName(R->NodeId), QString::fromStdString(R->Key()));   // keyed by the index key
                 Combo->setItemData(Combo->count() - 1, QString::fromStdString(R->NodeId), Qt::ToolTipRole);

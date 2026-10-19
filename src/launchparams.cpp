@@ -34,7 +34,6 @@ std::map<std::string, std::string> ContainerParams::GetVariablesMap()
     VariablesMap["PackageUID"]   = this->PackageUID;
     VariablesMap["PackageName"]  = this->PackageName;
     VariablesMap["GameName"]     = this->GameName;
-    VariablesMap["UMUID"]        = this->UMUID;
     VariablesMap["ScreenWidth"]  = this->ScreenWidth;
     VariablesMap["ScreenHeight"] = this->ScreenHeight;
     //Structural placement anchor — the prefix dir relative to the VFS root. All inside-prefix placement composes off it.

@@ -20,7 +20,6 @@
 #include <sys/stat.h>      //   … _S_IREAD/_S_IWRITE
 #endif
 #include "sandboxlayer.h"
-#include "depcheck.h"
 #include "a11ynames.h"   // auto-name every control for AT-SPI + findChild
 
 #include <QComboBox>
@@ -154,11 +153,6 @@ int main(int argc, char *argv[])
 
     LogOut("main.cpp", "Running VidyaGod in " + LaunchParameters.CurrentPath.string());
     LogOut("main.cpp", "Headless PackagePath: " + LaunchParameters.HeadlessPackagePath.string());
-
-    //Check if dependencies exist in the system.
-    //Non-fatal: warns but continues so the GUI still opens when VFS is not needed. In GUI mode a dialog
-    //(below, once QApplication exists) lists anything missing with install instructions.
-    const std::vector<std::string> MissingDeps = DepCheck::MissingCritical();
 
     //Auto-detect package-directory mode: if no --package flag was passed, check whether
     //the current working directory itself is a package. This lets users simply cd into a
@@ -334,18 +328,6 @@ int main(int argc, char *argv[])
     //Make every control addressable by name — to assistive technology (AT-SPI) and to the widget tests. Installed
     //BEFORE the main window so each widget is named as it is polished, including ones built later at runtime.
     A11yNames::Install(&Application);
-
-    //Surface any missing dependencies now that we can show a dialog — with concrete install steps.
-    //Non-blocking to the app: the user dismisses it and the library still opens (launching games fails
-    //until the deps are present).
-    if (!MissingDeps.empty())
-    {
-        QString Msg = "VidyaGod needs the following to launch games, but couldn't find them:\n\n";
-        for (const std::string &Dep : MissingDeps) Msg += "•  " + QString::fromStdString(Dep) + "\n";
-        Msg += "\nOpen Settings → Dependencies for the full system check (Vulkan, 32-bit libraries, audio, …) and the "
-               "exact package to install for each. You can still browse your library meanwhile.";
-        QMessageBox::warning(nullptr, "Missing dependencies", Msg);
-    }
 
     //Create and launch MainWindow. Passes GlobalConfigJSON and AppDataDir by pointer so
     //the window can persist changes (add/remove packages, save settings) to disk.
@@ -737,6 +719,10 @@ LaunchParameters ParseCommandLineArguments(int argc, char* argv[])
             auto eq = kv.find('=');
             if (eq != std::string::npos)
                 RuntimeParameters.VariableOverrides[kv.substr(0, eq)] = kv.substr(eq + 1);
+        }
+        else if (arg == "--instance" && i + 1 < argc)
+        {
+            RuntimeParameters.InstanceName = argv[++i];
         }
         else if (arg == "--entrypoint" && i + 1 < argc)
         {

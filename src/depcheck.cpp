@@ -16,6 +16,9 @@ namespace DepCheck
 // ---- distro ----------------------------------------------------------------
 Distro DistroFromOsRelease()
 {
+#ifdef _WIN32
+    return Distro::Windows;
+#endif
     std::ifstream F("/etc/os-release");
     std::string Line;
     auto Val = [](std::string V) {
@@ -41,7 +44,8 @@ Distro DistroFromOsRelease()
 const char *DistroLabel(Distro D)
 {
     switch (D) { case Distro::Arch: return "Arch"; case Distro::Debian: return "Debian/Ubuntu";
-                 case Distro::Fedora: return "Fedora"; case Distro::OpenSUSE: return "openSUSE"; default: return "your distro"; }
+                 case Distro::Fedora: return "Fedora"; case Distro::OpenSUSE: return "openSUSE";
+                 case Distro::Windows: return "Windows"; default: return "your distro"; }
 }
 const char *CategoryLabel(Category C)
 {
@@ -86,6 +90,8 @@ Status Check(const DepItem &Item, const SystemState &St)
     case Kind::Binary:       return St.Binaries.count(Item.Token) ? Status::Ok : Status::Missing;
     case Kind::File:         return St.Files.count(Item.Token)    ? Status::Ok : Status::Missing;
     case Kind::VulkanDriver: return St.VulkanIcd                  ? Status::Ok : Status::Missing;
+    case Kind::Sandbox:      return St.SandboxUsable              ? Status::Ok : Status::Missing;
+    case Kind::WinFsp:       return St.WinFsp                     ? Status::Ok : Status::Missing;
     case Kind::Lib:
     {
         bool B64 = false, B32 = false;
@@ -105,6 +111,7 @@ Status Check(const DepItem &Item, const SystemState &St)
 }
 
 // ---- probe the host --------------------------------------------------------
+#ifndef _WIN32   // ldconfig and the Vulkan ICD dirs exist only on Linux
 static std::string RunLdconfig()
 {
     std::string Out;
@@ -117,6 +124,7 @@ static std::string RunLdconfig()
     }
     return Out;
 }
+#endif
 
 static bool OnPath(const std::string &Name)
 {
@@ -124,14 +132,25 @@ static bool OnPath(const std::string &Name)
     if (!Path) return false;
     std::istringstream Ss(Path);
     std::string Dir;
-    while (std::getline(Ss, Dir, ':'))
+#ifdef _WIN32
+    const char Sep = ';';
+#else
+    const char Sep = ':';
+#endif
+    while (std::getline(Ss, Dir, Sep))
     {
         if (Dir.empty()) continue;
+#ifdef _WIN32
+        std::error_code Ec;
+        if (std::filesystem::is_regular_file(std::filesystem::path(Dir) / Name, Ec)) return true;
+#else
         if (::access((Dir + "/" + Name).c_str(), X_OK) == 0) return true;
+#endif
     }
     return false;
 }
 
+#ifndef _WIN32
 static bool HasAnyVulkanIcd()
 {
     // A Vulkan driver installs an ICD manifest here; without one the loader finds no GPU driver → DXVK/VKD3D crash.
@@ -149,13 +168,30 @@ static bool HasAnyVulkanIcd()
     }
     return false;
 }
+#endif
 
-SystemState ProbeSystem()
+// WinFsp is a system-wide kernel driver; the mount helper loads this DLL (vfsmount.cpp checks the same path).
+static bool HasWinFsp()
+{
+#ifdef _WIN32
+    const char *Pf = ::getenv("ProgramFiles(x86)");
+    std::error_code Ec;
+    return std::filesystem::exists(std::filesystem::path(Pf ? Pf : "C:/Program Files (x86)") / "WinFsp/bin/winfsp-x64.dll", Ec);
+#else
+    return false;
+#endif
+}
+
+SystemState ProbeSystem(bool SandboxUsable)
 {
     SystemState St;
+#ifndef _WIN32
     St.Libs      = ParseLdconfig(RunLdconfig());
     St.VulkanIcd = HasAnyVulkanIcd();
-    St.distro    = DistroFromOsRelease();
+#endif
+    St.WinFsp        = HasWinFsp();
+    St.SandboxUsable = SandboxUsable;
+    St.distro        = DistroFromOsRelease();
 
     // Bundled files sit next to the app binary (resolved via /proc/self/exe — no Qt/QApplication needed).
     const std::filesystem::path Self = Platform::SelfExe();
@@ -167,18 +203,18 @@ SystemState ProbeSystem()
         if (I.kind == Kind::Binary) { if (OnPath(I.Token)) St.Binaries.insert(I.Token); }
         else if (I.kind == Kind::File)
         {
-            if (!BinDir.empty() && std::filesystem::exists(BinDir / I.Token, Ec)) St.Files.insert(I.Token);
+            //Beside the app, else on PATH — where the mount helper is looked for at launch too (vfsmount.cpp).
+            if ((!BinDir.empty() && std::filesystem::exists(BinDir / I.Token, Ec)) || OnPath(I.Token)) St.Files.insert(I.Token);
         }
     }
     return St;
 }
 
-std::vector<std::string> MissingCritical()
+std::vector<std::string> MissingCore(const SystemState &St)
 {
-    const SystemState St = ProbeSystem();
     std::vector<std::string> Out;
     for (const DepItem &I : AllDeps())
-        if (I.Critical && Check(I, St) == Status::Missing) Out.push_back(I.Name);
+        if (I.Cat == Category::Core && Check(I, St) != Status::Ok) Out.push_back(I.Name);
     return Out;
 }
 
@@ -195,29 +231,42 @@ std::string InstallHint(const DepItem &Item, Status St, Distro D)
 // ---- the researched table --------------------------------------------------
 // Library set = the Lutris canonical Wine/Proton dependency list (github.com/lutris/docs WineDependencies.md) +
 // VidyaGod's own tools. Every Lib is probed for 64- AND 32-bit (32-bit is the big crash source for 32-bit games).
+// "Required" in a Purpose means a game cannot launch without it; the libraries only crash the games that use them.
+// Wine/Proton itself is not listed: runners are packages VidyaGod downloads.
 const std::vector<DepItem> &AllDeps()
 {
     static const std::vector<DepItem> Deps = []{
         using D = Distro;
         std::vector<DepItem> V;
-        auto Bin = [&](std::string id, std::string name, std::string tok, std::string purpose, bool crit,
-                       std::map<D,std::string> pkg){
-            V.push_back({std::move(id), std::move(name), std::move(purpose), Category::Core, Kind::Binary, {}, std::move(tok), std::move(pkg), {}, crit}); };
+#ifdef _WIN32
+        // ---- Core (VidyaGod itself). Nothing else: Wine's libraries don't apply on Windows. ----
+        V.push_back({"vidyagodfs","vidyagodfs","VidyaGod's runtime filesystem, shipped beside the app. Required.",
+                     Category::Core, Kind::File, {}, "vidyagodfs.exe",
+                     {{D::Windows,"reinstall VidyaGod (vidyagodfs.exe must sit next to VidyaGod.exe)"}}, {}});
+        V.push_back({"winfsp","WinFsp","The filesystem driver vidyagodfs mounts game runtimes with. Required.",
+                     Category::Core, Kind::WinFsp, {}, "",
+                     {{D::Windows,"WinFsp (winfsp.dev)"}}, {}});
+        V.push_back({"sandbox","Sandboxie-Plus","Every game runs inside a Sandboxie box. Required: without it installed "
+                     "and its service (SbieSvc) running, games don't launch.",
+                     Category::Core, Kind::Sandbox, {}, "",
+                     {{D::Windows,"Sandboxie-Plus (sandboxie-plus.com), then start its service"}}, {}});
+#else
         auto Lib = [&](std::string id, std::string name, Category cat, std::vector<std::string> so, std::string purpose,
                        std::map<D,std::string> p64, std::map<D,std::string> p32){
-            V.push_back({std::move(id), std::move(name), std::move(purpose), cat, Kind::Lib, std::move(so), {}, std::move(p64), std::move(p32), false}); };
+            V.push_back({std::move(id), std::move(name), std::move(purpose), cat, Kind::Lib, std::move(so), {}, std::move(p64), std::move(p32)}); };
 
-        // ---- Core tools (VidyaGod itself) ----
-        Bin("fusermount3", "fusermount3", "fusermount3", "Mounts/unmounts game runtimes (FUSE 3) — required.", true,
-            {{D::Arch,"fuse3"},{D::Debian,"fuse3"},{D::Fedora,"fuse3"},{D::OpenSUSE,"fuse3"}});
-        V.push_back({"vidyagodfs","vidyagodfs","VidyaGod's bundled runtime filesystem — should ship beside the app.",
+        // ---- Core (VidyaGod itself) ----
+        V.push_back({"fusermount3","fusermount3","Mounts and unmounts game runtimes (FUSE 3). Required.",
+                     Category::Core, Kind::Binary, {}, "fusermount3",
+                     {{D::Arch,"fuse3"},{D::Debian,"fuse3"},{D::Fedora,"fuse3"},{D::OpenSUSE,"fuse3"}}, {}});
+        V.push_back({"vidyagodfs","vidyagodfs","VidyaGod's runtime filesystem, shipped beside the app. Required.",
                      Category::Core, Kind::File, {}, "vidyagodfs",
-                     {{D::Arch,"reinstall VidyaGod (must sit next to the binary)"}}, {}, true});
-        Bin("umu-run", "umu-run", "umu-run", "The Wine/Proton game runner (umu-launcher) — required to launch Windows games.", true,
-            {{D::Arch,"umu-launcher (AUR)"},{D::Debian,"umu-launcher (github.com/Open-Wine-Components/umu-launcher)"},
-             {D::Fedora,"umu-launcher"},{D::OpenSUSE,"umu-launcher"}});
-        Bin("bwrap", "bubblewrap (bwrap)", "bwrap", "Sandboxes launches + the friend LAN. Optional — falls back to an unsandboxed launch.", false,
-            {{D::Arch,"bubblewrap"},{D::Debian,"bubblewrap"},{D::Fedora,"bubblewrap"},{D::OpenSUSE,"bubblewrap"}});
+                     {{D::Arch,"reinstall VidyaGod (must sit next to the binary)"}}, {}});
+        V.push_back({"sandbox","bubblewrap (bwrap)","Every game runs inside a bubblewrap sandbox, which also carries the "
+                     "friend LAN. Required: games don't launch without it. Installed but still ✗: the sandbox can't start "
+                     "here — most often unprivileged user namespaces are disabled (or bwrap is setuid).",
+                     Category::Core, Kind::Sandbox, {}, "",
+                     {{D::Arch,"bubblewrap"},{D::Debian,"bubblewrap"},{D::Fedora,"bubblewrap"},{D::OpenSUSE,"bubblewrap"}}, {}});
 
         // ---- Graphics / Vulkan ----
         Lib("vulkan-loader","Vulkan loader (libvulkan)", Category::Graphics, {"libvulkan.so.1"},
@@ -228,7 +277,7 @@ const std::vector<DepItem> &AllDeps()
                      Category::Graphics, Kind::VulkanDriver, {}, "",
                      {{D::Arch,"vulkan-radeon / vulkan-intel / nvidia-utils (+ the lib32- variant)"},
                       {D::Debian,"mesa-vulkan-drivers (+ :i386) or the NVIDIA driver"},
-                      {D::Fedora,"mesa-vulkan-drivers (+ .i686) or the NVIDIA driver"}}, {}, false});
+                      {D::Fedora,"mesa-vulkan-drivers (+ .i686) or the NVIDIA driver"}}, {}});
         Lib("opengl","OpenGL loader (libGL)", Category::Graphics, {"libGL.so.1"},
             "The OpenGL loader — many older/non-Vulkan games need it. Missing 32-bit crashes 32-bit OpenGL games.",
             {{D::Arch,"libglvnd"},{D::Debian,"libgl1"},{D::Fedora,"libglvnd-glx"}},
@@ -314,6 +363,7 @@ const std::vector<DepItem> &AllDeps()
             "OpenAL 3D audio — a very common game audio API; without it many games fail to init sound or crash.",
             {{D::Arch,"openal"},{D::Debian,"libopenal1"},{D::Fedora,"openal-soft"}},
             {{D::Arch,"lib32-openal"},{D::Debian,"libopenal1:i386"},{D::Fedora,"openal-soft.i686"}});
+#endif
 
         return V;
     }();

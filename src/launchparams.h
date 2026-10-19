@@ -90,7 +90,6 @@ public:
 
     //Game specific:
     std::string GameName;                //Title of the selected game
-    std::string UMUID;                   //UMU/Steam App ID used by umu-run for Proton compatibility; "0" if absent
     std::string Platform;                //HOST_PLATFORM of the package (e.g. "win32", "snes", "custom") — matched against runner GUEST_PLATFORM
     std::vector<std::string> Recipe;     //Ordered list of ComponentIDs to apply, from leaf to root (reversed after build)
     nlohmann::ordered_json SubComponentsArray; //Flat, ordered array of all SUBCOMPONENTS across the Recipe's components
@@ -104,8 +103,8 @@ public:
 
     //Runner config (resolved from RUNNERS arrays — package's own + global registry — by GUEST_PLATFORM membership):
     std::string RunnerID;                //RUNNER_ID — selected/pinned runner id (PASSED by picker/CLI, or resolved)
-    std::string RunnerName;              //Human-readable runner name (e.g. "umu-proton")
-    std::string RunnerExecutable;        //EXECUTABLE — binary to exec (e.g. "umu-run", "%RunnerMount%/proton"); %vars% expanded
+    std::string RunnerName;              //Human-readable runner name (e.g. "GE-Proton 11.3")
+    std::string RunnerExecutable;        //EXECUTABLE — binary to exec (e.g. "%RunnerMount%/proton", a bare PATH command); %vars% expanded
     std::string ContentRoot;             //CONTENT_ROOT (resolved) — where game content mounts under RuntimePath ("" = root; "pfx/drive_c/<UID>" = proton)
     std::string PrefixRoot;              //DERIVED from ContentRoot (the part before /drive_c) — where a wine prefix's hives live ("" / "pfx")
     bool PrefixGenerate = false;         //PREFIX_GENERATE — runner needs a one-time generated wine prefix (DEFPREFIX), mounted as base
@@ -138,8 +137,7 @@ public:
     std::vector<PersistTarget> KeepDirs;                            //file dir persists — durable UserDataPath/<Target> unioned RW at runtime <Path> ("" = whole runtime)
     std::vector<PersistTarget> KeepFiles;                           //file single-file persists — seeded/captured by copy: UserDataPath/<Target> <-> runtime <Path>
     std::map<std::string, std::set<std::string>> SeededPatternFiles; //a pattern keep's Path -> the names (lower case) seeded this session: capture drops only these
-    std::vector<std::string> KeepRegKeys;                           //registry key-subtree persists (SCOPE registry, PATH HKCU\..) — partial-hive merge (Wine-only)
-    std::vector<std::string> KeepRegHives;                          //registry whole-hive persist (SCOPE registry, PATH "" — authoring): the three .reg files (Wine-only)
+    std::vector<std::string> KeepRegKeys;                           //registry key-subtree persists (SCOPE registry, PATH HKCU\..) — partial-hive merge (Wine-only); the ONLY registry persistence: a whole hive can't be kept
     nlohmann::ordered_json RunnerPersistLayers = nlohmann::ordered_json::array(); //RESOLVED — every Persist layer in the runner CHAIN's closures (its platform keep-set: where user-state lives), folded into DerivePersistence before the game's. NOT the boundary node's own layers: a node is one layer of one TYPE, so a DeclareExec node cannot also carry a Persist
 
     //Custom variables (from CustomVar subcomponents):

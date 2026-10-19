@@ -1960,9 +1960,7 @@ std::vector<const Node*> RunnerCandidates(const NodeIndex &Idx, const Node &Laun
     for (const auto &[Id, N] : Idx.Nodes)
     {
         if (!N.IsRunner() || N.HostPlatform != MachinePlatform()) continue;
-        bool Guest = false;
-        for (const auto &G : N.GuestPlatform) if (G == Launch.HostPlatform) { Guest = true; break; }
-        if (Guest && RunnerWrapper::ExecutableAvailable(N.Exec)) Out.push_back(&N);
+        if (ServesPlatform(N, Launch.HostPlatform, Launch.BundleDir) && RunnerWrapper::ExecutableAvailable(N.Exec)) Out.push_back(&N);
     }
     return Out;   // std::map iteration = sorted by node id
 }
@@ -1974,7 +1972,7 @@ std::vector<const Node*> CompatibleRunners(const NodeIndex &Idx, const Node &Lau
     {
         (void)Id;
         if (!N.IsRunner() || N.HostPlatform != MachinePlatform()) continue;
-        for (const auto &G : N.GuestPlatform) if (G == Launch.HostPlatform) { Out.push_back(&N); break; }
+        if (ServesPlatform(N, Launch.HostPlatform, Launch.BundleDir)) Out.push_back(&N);
     }
     return Out;   // no executable/install gate — these are runners that COULD run it once installed
 }
@@ -2014,7 +2012,26 @@ std::vector<const Node*> UsableRunners(const NodeIndex &Idx, const Node &Launch)
     return Out;
 }
 
-std::vector<const Node*> CandidateRunners(const NodeIndex &Idx, const std::string &InputPlatform)
+bool HasUsableChain(const NodeIndex &Idx, const Node &Launch)
+{
+    //Installed runners only, walked from the launch's platform toward this machine's (the resolver's BFS edges): a
+    //Windows-only engine counts — it runs under proton.
+    const std::string Machine = MachinePlatform();
+    std::set<std::string> Seen = { Launch.HostPlatform };
+    std::deque<std::string> Todo = { Launch.HostPlatform };
+    while (!Todo.empty())
+    {
+        const std::string P = Todo.front(); Todo.pop_front();
+        if (P == Machine) return true;
+        for (const auto &[Id, N] : Idx.Nodes)
+            if (N.IsRunner() && ServesPlatform(N, P, Launch.BundleDir) && RunnerInstalled(Idx, N.Key())
+                && Seen.insert(N.HostPlatform).second)
+                Todo.push_back(N.HostPlatform);
+    }
+    return false;
+}
+
+std::vector<const Node*> CandidateRunners(const NodeIndex &Idx, const std::string &InputPlatform, const std::filesystem::path &LaunchBundleDir)
 {
     //Installed runners that can consume InputPlatform (GUEST ∋ InputPlatform), regardless of HOST — a chain step's
     //choices. Unlike UsableRunners, HOST may be an intermediate platform (e.g. snes9x: snes→win32). Sorted by node id.
@@ -2023,9 +2040,7 @@ std::vector<const Node*> CandidateRunners(const NodeIndex &Idx, const std::strin
     {
         (void)Id;
         if (!N.IsRunner()) continue;
-        bool Serves = false;
-        for (const auto &G : N.GuestPlatform) if (G == InputPlatform) { Serves = true; break; }
-        if (Serves && RunnerInstalled(Idx, N.Key())) Out.push_back(&N);
+        if (ServesPlatform(N, InputPlatform, LaunchBundleDir) && RunnerInstalled(Idx, N.Key())) Out.push_back(&N);
     }
     return Out;   // std::map iteration = sorted by node id
 }

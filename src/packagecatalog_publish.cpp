@@ -654,7 +654,7 @@ int MirrorDehydrated(const std::string &SrcDir, const std::string &DestDir)
         const std::filesystem::path Rel = std::filesystem::relative(Entry.path(), Src, Ce);
         if (Ce || Rel.empty()) continue;
         // Skip runtime/artifact subtrees. Only TOP-LEVEL package node fragments are manifests; DEFPREFIX (the wine
-        // prefix) and USERDATA (persisted saves + REGISTRY/REGKEYS hive stores) hold per-machine build/runtime state —
+        // prefix) and USERDATA (persisted saves + the REGKEYS store) hold per-machine build/runtime state —
         // some of which happens to be .json (e.g. a generated prefix's winevulkan.json) and would otherwise bloat the
         // Meta-CID and make it non-reproducible across machines.
         bool Runtime = false;

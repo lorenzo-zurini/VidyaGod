@@ -63,7 +63,7 @@ Covered, by type:
   an edit of a KEEP'd file — a package **default**, applied while the user has no saved copy (`IF_UNSAVED`).
 - **`REG`** — both architecture views; a key's **default value** (the empty name) and a key-only entry; a gated layer.
 - **`DLL`** — several load orders, plus an empty one.
-- **`KEEP`** — a dir, a file, a machine-local dir (`CLOUD: false`), a whole hive and a single key.
+- **`KEEP`** — a dir, a file, a machine-local dir (`CLOUD: false`), two registry keys (a whole hive can't be kept).
 - **`EXEC`** — game entries (`Play`, folded with the tile's partial entry) and runner entries (`GUEST`,
   `GUEST_ROOTS`, `CONTENT_ROOT`); `ENV` beneath, on and above the variant (null removes), a two-hop chain.
 - **Tiles** — `TILE` (`UID`, `TITLE`, `META`) on the `Play` entry every variant folds.

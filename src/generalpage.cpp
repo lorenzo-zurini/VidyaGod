@@ -63,7 +63,7 @@ GeneralPage::GeneralPage(AppModel & model, QWidget * parent)
         pl->addWidget(warn);
     }
 
-    // ── Start on login (XDG autostart) — reflects the on-disk entry, not the config. Only offered in Normal run
+    // ── Start on login (XDG autostart / the Windows Run key) — reflects the real entry, not the config. Only offered in Normal run
     // mode (a portable / in-package / custom-path instance shouldn't register a fixed login entry).
     QCheckBox * loginCb = new QCheckBox("Launch at login", this);
     loginCb->setChecked(AutoStart::IsEnabled());
@@ -74,13 +74,9 @@ GeneralPage::GeneralPage(AppModel & model, QWidget * parent)
     {
         loginCb->setEnabled(false);
         loginCb->setChecked(false);
-#ifdef _WIN32
-        loginHint = "Not available on Windows yet — login autostart is not implemented for this platform.";
-#else
         loginHint = AppPaths::GetMode() == AppPaths::Mode::Portable
             ? "Not available in portable mode — a login entry can't point at a portable, movable install."
             : "Not available when VidyaGod is launched with custom paths.";
-#endif
     }
     else
     {
@@ -97,33 +93,6 @@ GeneralPage::GeneralPage(AppModel & model, QWidget * parent)
     loginLbl->setWordWrap(true);
     loginLbl->setStyleSheet("color:#8f98a0;font-size:9pt;margin-left:22px;");
     pl->addWidget(loginLbl);
-
-    // ── Sandboxing (Settings.SandboxByDefault, ON by default) ──
-    QLabel * sbHeading = new QLabel("Sandboxing", this);
-    sbHeading->setStyleSheet("font-weight:bold;margin-top:10px;");
-    pl->addWidget(sbHeading);
-
-    QCheckBox * sandboxCb = new QCheckBox("Run games in a sandbox", this);
-    {
-        auto & S = (*Model.config())["Settings"];
-        // Default ON: only unchecked if the key is explicitly false.
-        const bool val = !(S.contains("SandboxByDefault") && S["SandboxByDefault"].is_boolean()) || bool(S["SandboxByDefault"]);
-        sandboxCb->setChecked(val);
-    }
-    connect(sandboxCb, &QCheckBox::toggled, this, [this](bool on){
-        (*Model.config())["Settings"]["SandboxByDefault"] = on;
-        Model.save();
-    });
-    pl->addWidget(sandboxCb);
-
-    QLabel * sbHint = new QLabel(
-        "Launch each game inside a bubblewrap namespace: the system is mounted read-only (a game can't modify your OS) "
-        "and its runtime filesystem is composed privately for it. Required for the private virtual-LAN multiplayer. "
-        "Systems that can't sandbox (no bubblewrap / user namespaces disabled) fall back to a normal launch "
-        "automatically; you can also override per-game with the VIDYAGOD_SANDBOX variable.", this);
-    sbHint->setWordWrap(true);
-    sbHint->setStyleSheet("color:#8f98a0;font-size:9pt;margin-left:22px;");
-    pl->addWidget(sbHint);
 
     pl->addStretch(1);
 }

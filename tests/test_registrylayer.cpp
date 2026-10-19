@@ -5,8 +5,9 @@
 #include <filesystem>
 #include <fstream>
 
-// P7 fill-in: the RegistryLayer persist seed/capture round-trip had zero coverage (only the low-level
-// RegistryWrapper was tested). Uses real temp dirs + real hive files, mirroring the fileedits tests.
+// RegistryLayer's registry persistence: KEPT KEYS are captured at teardown into the instance's REGKEYS store and merged
+// back into the composed hives (DEFAULTDATA) on the next launch. Real temp dirs + real hive files, like the fileedits
+// tests. (Keys are the only registry persistence: a whole hive can't be kept.)
 
 namespace fs = std::filesystem;
 
@@ -18,155 +19,115 @@ static fs::path RlTmp(const char *tag)
     return d;
 }
 
-static void WriteFileAt(const fs::path &p, const std::string &content)
-{
-    fs::create_directories(p.parent_path());
-    std::ofstream(p, std::ios::binary) << content;
-}
-
 static std::string ReadFileAt(const fs::path &p)
 {
     std::ifstream in(p, std::ios::binary);
     return std::string((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
 }
 
-// Seed: persisted KEEP hives land in the writelayer under the prefix root, shadowing DEFPREFIX.
-TEST(reglayer_seed_copies_kept_hives_under_prefix_root)
-{
-    auto d = RlTmp("seed");
-    ContainerParams CP(d);
-    CP.UserDataPath   = d / "USERDATA";
-    CP.WriteLayerPath = d / "WRITELAYER";
-    CP.PrefixRoot     = "pfx";
-    CP.KeepRegHives   = { "user.reg" };
-    WriteFileAt(CP.UserDataPath / "REGISTRY" / "user.reg", "WINE REGISTRY Version 2\n[Software]\n\"K\"=\"persisted\"\n");
-    CHECK(RegistryLayer::SeedPersistRegistry(CP));
-    CHECK_EQ(ReadFileAt(CP.WriteLayerPath / "pfx" / "user.reg"),
-             std::string("WINE REGISTRY Version 2\n[Software]\n\"K\"=\"persisted\"\n"));
-    fs::remove_all(d);
-}
-
-// Seed with nothing persisted yet: clean no-op success (first launch).
-TEST(reglayer_seed_nothing_persisted_is_ok)
-{
-    auto d = RlTmp("seednone");
-    ContainerParams CP(d);
-    CP.UserDataPath   = d / "USERDATA";
-    CP.WriteLayerPath = d / "WRITELAYER";
-    CP.KeepRegHives   = { "user.reg" };
-    CHECK(RegistryLayer::SeedPersistRegistry(CP));
-    CHECK(!fs::exists(CP.WriteLayerPath / "user.reg"));
-    fs::remove_all(d);
-}
-
-// Capture: the session's runtime hive is copied back into the durable store; round-trips with Seed.
-TEST(reglayer_capture_roundtrips_with_seed)
-{
-    auto d = RlTmp("cap");
-    ContainerParams CP(d);
-    CP.UserDataPath   = d / "USERDATA";
-    CP.WriteLayerPath = d / "WRITELAYER";
-    CP.RuntimePath    = d / "RUNTIME";
-    CP.PrefixRoot     = "";                                   // plain-wine layout: hives at the root
-    CP.KeepRegHives   = { "user.reg" };
-    WriteFileAt(CP.RuntimePath / "user.reg", "WINE REGISTRY Version 2\n[Game]\n\"Save\"=\"42\"\n");
-    CHECK(RegistryLayer::CapturePersistRegistry(CP));
-    CHECK_EQ(ReadFileAt(CP.UserDataPath / "REGISTRY" / "user.reg"),
-             std::string("WINE REGISTRY Version 2\n[Game]\n\"Save\"=\"42\"\n"));
-    // …and the captured store seeds an identical next session.
-    CHECK(RegistryLayer::SeedPersistRegistry(CP));
-    CHECK_EQ(ReadFileAt(CP.WriteLayerPath / "user.reg"),
-             std::string("WINE REGISTRY Version 2\n[Game]\n\"Save\"=\"42\"\n"));
-    fs::remove_all(d);
-}
-
-// Registry persist no-ops gracefully when there's nothing stored yet (never crashes) — PersistAll is gone, so
-// there is no whole-branch shortcut: seed + capture both run their real path and simply find nothing to move.
-TEST(reglayer_registry_persist_graceful_when_empty)
-{
-    auto d = RlTmp("pall");
-    ContainerParams CP(d);
-    CP.UserDataPath   = d / "USERDATA";
-    CP.WriteLayerPath = d / "WRITELAYER";
-    CP.RuntimePath    = d / "RUNTIME";
-    CP.KeepRegHives   = { "user.reg" };
-    CP.KeepRegKeys    = { "HKCU\\Software\\Nothing" };
-    CHECK(RegistryLayer::SeedPersistRegistry(CP));       // no stored hive → nothing seeded, still OK
-    CHECK(RegistryLayer::CapturePersistRegistry(CP));    // no runtime hive → nothing captured, still OK
-    CHECK(RegistryLayer::CapturePersistRegKeys(CP));     // key never created → kept prior, still OK
-    fs::remove_all(d);
-}
-
 #include "registrywrapper.h"
 #include <nlohmann/json.hpp>
 
-// Persisted whole-hive KEEP is UNION-merged over the composed hive: the user's saved value wins per-key,
-// but base RegEdits (e.g. an EULA FIRSTRUN seed) SHOW THROUGH where the user has no value — and the
-// old writelayer whole-file seed (which shadowed all of that) is skipped.
-TEST(reglayer_hive_store_union_merges_over_base_edits)
+// A RegEdit subcomponent: one key and its values, as the launch engine passes base edits around.
+static nlohmann::ordered_json RegEdit(const char *Key, const nlohmann::ordered_json &Values)
 {
-    auto d = RlTmp("union");
+    return {{"TYPE","RegEdit"},{"REGPATH",Key},{"ARCHITECTURE","64"},{"OVERRIDE",false},{"KEYVALUES",Values}};
+}
+
+// Write a hive set (at Dir) holding the given RegEdits — a session's runtime hives, or a durable store.
+static void WriteHives(const fs::path &Dir, const nlohmann::ordered_json &Edits)
+{
+    RegistryWrapper W;
+    CHECK(W.ApplyRegEdits(Edits, false));
+    fs::create_directories(Dir);
+    CHECK(W.SavePrefix(Dir));
+}
+
+static ContainerParams KeyParams(const fs::path &d, const char *PrefixRoot)
+{
     ContainerParams CP(d);
     CP.PrefixGenerate  = true;
     CP.UserDataPath    = d / "USERDATA";
     CP.WriteLayerPath  = d / "WRITELAYER";
     CP.DefaultDataPath = d / "DEFAULTDATA";
     CP.DefPrefixPath   = d / "DEFPREFIX";      // empty — zero-copy prefix model
-    CP.PrefixRoot      = "pfx";
-    CP.KeepRegHives    = { "user.reg" };
-    // base RegEdit: the package seeds FIRSTRUN (the EULA-acceptance marker)
+    CP.RuntimePath     = d / "RUNTIME";
+    CP.PrefixRoot      = PrefixRoot;
+    CP.KeepRegKeys     = { "HKCU\\Software\\Game" };
     CP.SubComponentsArray = nlohmann::ordered_json::array();
-    CP.SubComponentsArray.push_back({{"TYPE","RegEdit"},{"REGPATH","HKCU\\Software\\Seeded\\1.0"},
-                                     {"ARCHITECTURE","64"},{"OVERRIDE",false},{"KEYVALUES",{{"FIRSTRUN",true}}}});
-    // the persisted store: the user's own key, but NO FIRSTRUN (captured from a pre-seed session)
-    {
-        RegistryWrapper W;
-        nlohmann::ordered_json S = nlohmann::ordered_json::array();
-        S.push_back({{"TYPE","RegEdit"},{"REGPATH","HKCU\\Software\\UserOwn"},{"ARCHITECTURE","64"},
-                     {"OVERRIDE",false},{"KEYVALUES",{{"UserPick","7"}}}});
-        CHECK(W.ApplyRegEdits(S, false));
-        fs::create_directories(CP.UserDataPath / "REGISTRY");
-        CHECK(W.SavePrefix(CP.UserDataPath / "REGISTRY"));
-    }
+    return CP;
+}
 
-    CHECK(RegistryLayer::BuildDefaultData(CP));
+// The save round trip: a kept key's session values reach the store at teardown — and ONLY the kept key (the rest of
+// the session's registry is pristine-by-default) — and come back in the next session's composed hive.
+TEST(reglayer_kept_key_roundtrips_through_the_store)
+{
+    auto d = RlTmp("keyrt");
+    ContainerParams CP = KeyParams(d, "pfx");
+    nlohmann::ordered_json Session = nlohmann::ordered_json::array();
+    Session.push_back(RegEdit("HKCU\\Software\\Game", {{"Save","42"}}));
+    Session.push_back(RegEdit("HKCU\\Software\\NotKept", {{"Junk","1"}}));
+    WriteHives(CP.RuntimePath / "pfx", Session);
+
+    CHECK(RegistryLayer::CapturePersistRegKeys(CP));
+    const std::string Store = ReadFileAt(CP.UserDataPath / "REGKEYS" / "user.reg");
+    CHECK(Store.find("\"Save\"=\"42\"") != std::string::npos);
+    CHECK(Store.find("Junk") == std::string::npos);        // not kept → not saved
+
+    CHECK(RegistryLayer::BuildDefaultData(CP));            // next launch
     const std::string Hive = ReadFileAt(CP.DefaultDataPath / "pfx" / "user.reg");
-    CHECK(Hive.find("FIRSTRUN") != std::string::npos);    // base edit SURVIVES the persisted merge
-    CHECK(Hive.find("UserPick") != std::string::npos);    // persisted user state is IN the composed hive
-
-    // and the old whole-file writelayer seed is skipped (it would shadow the composed hive)
-    CHECK(RegistryLayer::SeedPersistRegistry(CP));
-    CHECK(!fs::exists(CP.WriteLayerPath / "pfx" / "user.reg"));
+    CHECK(Hive.find("\"Save\"=\"42\"") != std::string::npos);
     fs::remove_all(d);
 }
 
-// Per-key precedence inside the union: where BOTH sides define the same value, the persisted one wins.
-TEST(reglayer_union_persisted_value_wins_per_key)
+// A later session that never touched the kept key keeps what earlier sessions saved (a key absent from the session
+// is "kept prior", never dropped) — while a session that did change it replaces the saved values.
+TEST(reglayer_store_accumulates_across_sessions)
 {
-    auto d = RlTmp("unionwin");
-    ContainerParams CP(d);
-    CP.PrefixGenerate  = true;
-    CP.UserDataPath    = d / "USERDATA";
-    CP.WriteLayerPath  = d / "WRITELAYER";
-    CP.DefaultDataPath = d / "DEFAULTDATA";
-    CP.DefPrefixPath   = d / "DEFPREFIX";
-    CP.PrefixRoot      = "";
-    CP.KeepRegHives    = { "user.reg" };
-    CP.SubComponentsArray = nlohmann::ordered_json::array();
-    CP.SubComponentsArray.push_back({{"TYPE","RegEdit"},{"REGPATH","HKCU\\Software\\Game"},
-                                     {"ARCHITECTURE","64"},{"OVERRIDE",false},{"KEYVALUES",{{"Lang","english"}}}});
-    {
-        RegistryWrapper W;
-        nlohmann::ordered_json S = nlohmann::ordered_json::array();
-        S.push_back({{"TYPE","RegEdit"},{"REGPATH","HKCU\\Software\\Game"},{"ARCHITECTURE","64"},
-                     {"OVERRIDE",false},{"KEYVALUES",{{"Lang","romana"}}}});
-        CHECK(W.ApplyRegEdits(S, false));
-        fs::create_directories(CP.UserDataPath / "REGISTRY");
-        CHECK(W.SavePrefix(CP.UserDataPath / "REGISTRY"));
-    }
+    auto d = RlTmp("keyacc");
+    ContainerParams CP = KeyParams(d, "");
+    WriteHives(CP.RuntimePath, nlohmann::ordered_json::array({ RegEdit("HKCU\\Software\\Game", {{"Save","1"}}) }));
+    CHECK(RegistryLayer::CapturePersistRegKeys(CP));
+
+    fs::remove_all(CP.RuntimePath);                        // session 2: the key is absent
+    WriteHives(CP.RuntimePath, nlohmann::ordered_json::array({ RegEdit("HKCU\\Software\\Other", {{"X","1"}}) }));
+    CHECK(RegistryLayer::CapturePersistRegKeys(CP));
+    CHECK(ReadFileAt(CP.UserDataPath / "REGKEYS" / "user.reg").find("\"Save\"=\"1\"") != std::string::npos);
+
+    fs::remove_all(CP.RuntimePath);                        // session 3: the user changed it
+    WriteHives(CP.RuntimePath, nlohmann::ordered_json::array({ RegEdit("HKCU\\Software\\Game", {{"Save","2"}}) }));
+    CHECK(RegistryLayer::CapturePersistRegKeys(CP));
+    const std::string Store = ReadFileAt(CP.UserDataPath / "REGKEYS" / "user.reg");
+    CHECK(Store.find("\"Save\"=\"2\"") != std::string::npos);
+    CHECK(Store.find("\"Save\"=\"1\"") == std::string::npos);
+    fs::remove_all(d);
+}
+
+// Inside a kept key the user's saved value wins over the package's base edit; base edits OUTSIDE kept keys (an EULA
+// marker under another key) still apply.
+TEST(reglayer_saved_key_wins_and_other_base_edits_apply)
+{
+    auto d = RlTmp("keywin");
+    ContainerParams CP = KeyParams(d, "");
+    CP.SubComponentsArray.push_back(RegEdit("HKCU\\Software\\Game", {{"Lang","english"}}));
+    CP.SubComponentsArray.push_back(RegEdit("HKCU\\Software\\Seeded\\1.0", {{"FIRSTRUN",true}}));
+    WriteHives(CP.UserDataPath / "REGKEYS", nlohmann::ordered_json::array({ RegEdit("HKCU\\Software\\Game", {{"Lang","romana"}}) }));
+
     CHECK(RegistryLayer::BuildDefaultData(CP));
     const std::string Hive = ReadFileAt(CP.DefaultDataPath / "user.reg");
-    CHECK(Hive.find("romana") != std::string::npos);              // user's choice wins
-    CHECK(Hive.find("\"english\"") == std::string::npos);         // base default overridden
+    CHECK(Hive.find("romana") != std::string::npos);              // the user's choice wins
+    CHECK(Hive.find("\"english\"") == std::string::npos);
+    CHECK(Hive.find("FIRSTRUN") != std::string::npos);            // an unrelated base edit still lands
+    fs::remove_all(d);
+}
+
+// Nothing saved yet (first launch) and a kept key the session never created: clean no-ops, never a crash.
+TEST(reglayer_registry_persist_graceful_when_empty)
+{
+    auto d = RlTmp("keyempty");
+    ContainerParams CP = KeyParams(d, "");
+    CHECK(RegistryLayer::CapturePersistRegKeys(CP));       // no runtime hives at all → nothing captured, still OK
+    CHECK(!fs::exists(CP.UserDataPath / "REGKEYS"));
+    CHECK(RegistryLayer::BuildDefaultData(CP));            // no store, no edits → nothing to materialise
     fs::remove_all(d);
 }

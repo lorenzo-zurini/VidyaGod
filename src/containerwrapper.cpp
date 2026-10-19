@@ -1,23 +1,13 @@
 #include "containerwrapper.h"
 #include "commonutils.h"
 #include "procenv.h"      // RunCommand / SystemToolEnv (fusermount on cleanup + the game launch)
-#include "sandboxlayer.h"    // optional bubblewrap wrap of the launched game (opt-in via VIDYAGOD_SANDBOX)
+#include "sandboxlayer.h"    // the mandatory sandbox around the launched game (bwrap / Sandboxie)
 #include "ipfswrapper.h"     // IpfsWrapper::OverlayServe/OverlayStop (nested-sandbox overlay TUN handoff)
 
 #include <numeric>           // std::accumulate (WINEDLLOVERRIDES join)
 #include <algorithm>         // std::min (session-id truncation for the TUN name)
 #include <cstdlib>           // ::getenv (HOME for the writable bind)
 #include <sys/stat.h>        // ::stat (probe the mounted prefix's system.reg mtime for config_info)
-
-// The launcher-wide "sandbox on by default" setting (Settings.SandboxByDefault, default ON). An explicit
-// VIDYAGOD_SANDBOX custom variable on a launch overrides it; an un-sandboxable machine (SandboxLayer::Available()
-// probe) falls back to a normal unsandboxed launch regardless.
-static bool SandboxDefaultOn(const nlohmann::ordered_json &GC)
-{
-    if (GC.contains("Settings") && GC["Settings"].is_object())
-        return GC["Settings"].value("SandboxByDefault", true);
-    return true;
-}
 
 // The friend LAN is ALWAYS ON (no setting): whenever the node is up and the friend LAN resolves, a launch joins the
 // TRI-PLANE virtual LAN — the game runs in an isolated netns whose only interface is the overlay TUN, and the node
@@ -192,11 +182,8 @@ bool ContainerWrapper::BuildContainerRuntime()
     }
 
     {
-        StepScope Step(8, "Seeding persisted saves (registry + files)");
-        //Seed any persisted whole hives into the ephemeral WRITELAYER so they shadow DEFPREFIX.
-        if (!ContainerParams.KeepRegHives.empty() && !RegistryLayer::SeedPersistRegistry(this->ContainerParams))
-            LogWarn("ContainerWrapper::BuildContainerRuntime", "Persisted registry seed reported failures — saved settings may be missing this session.");
-
+        StepScope Step(8, "Seeding persisted saves");
+        //(Persisted registry keys are not seeded here: BuildDefaultData merged them into the composed hives.)
         //Seed any persisted single files into the WRITELAYER so they shadow their lower layers.
         //No-op when none are declared.
         if (!ContainerParams.KeepFiles.empty() && !PersistLayer::SeedPersistFiles(this->ContainerParams))
@@ -268,9 +255,8 @@ bool ContainerWrapper::BuildContainerRuntime()
     //----- SANDBOX prep: record the mounted spec(s) so the sandbox can RE-mount them inside its own namespace, ON TOP
     //of the host mount (which stays put — the game sees the stacked in-namespace mount; the host mount serves any
     //unsandboxed path and cleanup). The OVERRIDE edits above already landed in the writelayer, which both mounts
-    //share, so the in-sandbox mount is identical. Gated on the real probe so we only prepare this when the machine can
-    //actually sandbox; tooling/authoring/override runs (which never sandbox) simply use the host mount as today. -----
-    if (SandboxLayer::Requested(ContainerParams, SandboxDefaultOn(GlobalConfigJSON)) && SandboxLayer::Available())
+    //share, so the in-sandbox mount is identical. Not gated on the probe: recording paths is harmless, and Execute()
+    //is the one place that probes and refuses a machine that can't sandbox. -----
     {
         StepScope Step(11, "Preparing the sandbox");
         auto Record = [&](const std::filesystem::path &SpecPath, const std::filesystem::path &Mnt){
@@ -505,15 +491,14 @@ bool ContainerWrapper::Execute(const std::string &OverrideExe)
         LogOut("ContainerWrapper::Execute", "WorkDirPath does not exist, falling back to " + FinalWorkDir.string());
     }
 
-    //----- SANDBOX (opt-in VIDYAGOD_SANDBOX): re-invoke ourselves as the nested `--sandbox-init` inside one hermetic
-    //bwrap namespace, which re-mounts the vidyagodfs spec(s) (deferred + host-unmounted in BuildContainerRuntime),
-    //optionally brings up the overlay TUN, then execs the game. RO host root + writable runtime/home; the composed FS
-    //and the virtual LAN live entirely inside the sandbox. Not applied under an OverrideExe. Default OFF → byte-
-    //identical launch. -----
+    //----- SANDBOX (MANDATORY): re-invoke ourselves as the nested `--sandbox-init` inside one hermetic bwrap namespace,
+    //which re-mounts the vidyagodfs spec(s) (deferred + host-unmounted in BuildContainerRuntime), optionally brings up
+    //the overlay TUN, then execs the game. RO host root + writable runtime/home; the composed FS and the virtual LAN
+    //live entirely inside the sandbox. Not applied under an OverrideExe. -----
     bool OverlayServing = false;
     if (!Override)
     {
-        SandboxLayer::Options SbOpts = SandboxLayer::FromParams(ContainerParams, true);   // Enabled is always true (MANDATORY)
+        SandboxLayer::Options SbOpts = SandboxLayer::FromParams(ContainerParams);
         if (!SandboxLayer::Available())
         {
 #ifdef _WIN32
@@ -672,9 +657,6 @@ bool ContainerWrapper::Cleanup()
     //1. Registry + file capture must read RUNTIME/<...> before anything is unmounted (no-op when none declared).
     //A capture failure means the user's session state was NOT saved — say so loudly (still proceed with
     //cleanup: the runtime must come down regardless).
-    if (!ContainerParams.KeepRegHives.empty()
-        && !RegistryLayer::CapturePersistRegistry(this->ContainerParams))
-        LogErr("ContainerWrapper::Cleanup", "Registry persistence capture FAILED — this session's registry changes were not saved.");
     if (!ContainerParams.KeepFiles.empty()
         && !PersistLayer::CapturePersistFiles(this->ContainerParams))
         LogErr("ContainerWrapper::Cleanup", "File persistence capture FAILED — this session's saved files were not stored.");

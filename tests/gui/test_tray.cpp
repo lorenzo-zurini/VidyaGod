@@ -15,6 +15,9 @@
 #include "autostart.h"
 
 #include <QStandardPaths>
+#include <QSettings>
+#include <QScopeGuard>
+#include <QCoreApplication>
 
 using json = nlohmann::ordered_json;
 
@@ -96,15 +99,8 @@ private slots:
     // Run-mode gating: daemon allowed except In-package; autostart only in Normal.
     void mode_gates_daemon_and_autostart()
     {
-        // Autostart is additionally platform-gated OFF on Windows (no registry-Run backend yet), so it is never
-        // supported there regardless of mode; on Linux it follows the run mode (Normal only).
-#ifdef _WIN32
-        const bool AutostartInNormal = false;
-#else
-        const bool AutostartInNormal = true;
-#endif
         AppPaths::SetMode(AppPaths::Mode::Normal);
-        QVERIFY(AppPaths::DaemonSupported());  QCOMPARE(AppPaths::AutostartSupported(), AutostartInNormal);
+        QVERIFY(AppPaths::DaemonSupported());  QVERIFY(AppPaths::AutostartSupported());
         AppPaths::SetMode(AppPaths::Mode::Portable);
         QVERIFY(AppPaths::DaemonSupported());  QVERIFY(!AppPaths::AutostartSupported());
         AppPaths::SetMode(AppPaths::Mode::CliPaths);
@@ -114,12 +110,28 @@ private slots:
         AppPaths::SetMode(AppPaths::Mode::Normal);   // restore for other tests
     }
 
-    // The XDG autostart entry writes + removes, and the launcher carries the quiet --tray flag.
+    // The login entry writes + removes, and the launcher carries the quiet --tray flag. Windows: the real HKCU Run key
+    // (no redirect exists for it), so whatever entry the machine had is put back afterwards.
     void autostart_enable_disable_roundtrip()
     {
 #ifdef _WIN32
-        QSKIP("AutoStart is the XDG .desktop mechanism (Linux); Windows ignores XDG_CONFIG_HOME and has no registry-Run "
-              "implementation yet — a separate Windows-autostart feature, tracked, not a build regression");
+        const QString runKey = "HKEY_CURRENT_USER\\Software\\Microsoft\\Windows\\CurrentVersion\\Run";
+        const QVariant before = QSettings(runKey, QSettings::NativeFormat).value("VidyaGod");
+        //Put the machine's own entry back however this test ends — a failed QVERIFY returns early, and leaving the
+        //developer's login entry deleted, or pointing at test_tray.exe, is not an acceptable side effect.
+        const auto restore = qScopeGuard([&]{
+            QSettings s(runKey, QSettings::NativeFormat);
+            if (before.isValid()) s.setValue("VidyaGod", before); else s.remove("VidyaGod");
+        });
+        QString err;
+        QVERIFY2(AutoStart::SetEnabled(true, &err), qPrintable(err));
+        QVERIFY(AutoStart::IsEnabled());
+        const QString cmd = QSettings(runKey, QSettings::NativeFormat).value("VidyaGod").toString();
+        QVERIFY2(cmd.startsWith('"') && cmd.endsWith("\" --tray"), qPrintable(cmd));   // quoted exe, quiet to the tray
+        QVERIFY(cmd.contains(QDir::toNativeSeparators(QCoreApplication::applicationFilePath())));
+        QVERIFY(AutoStart::SetEnabled(false, &err));
+        QVERIFY(!AutoStart::IsEnabled());
+        return;
 #endif
         QTemporaryDir cfgHome; QVERIFY(cfgHome.isValid());
         qputenv("XDG_CONFIG_HOME", cfgHome.path().toUtf8());
