@@ -236,7 +236,7 @@ private slots:
         QDir().mkpath(R + "/VidyaGodRunners/wine");
         QDir().mkpath(R + "/VidyaGodLibraries/dgvoodoo");
         writeJson(R + "/VidyaGod/[1] Game/game.json",
-                  NodeFixture::Chain("g_exec", {NodeFixture::Merge({NodeFixture::Exec("win32", "g.exe"), NodeFixture::Variant("Play")})}, {"g_tile"}));
+                  NodeFixture::Chain("g_exec", {NodeFixture::Merge({NodeFixture::Exec("win32", "g.exe"), NodeFixture::Variant("Play")})}, {"g_tile", "l_dg"}));
         writeJson(R + "/VidyaGodRunners/wine/wine.json",
                   NodeFixture::Chain("r_wine", {NodeFixture::Runner("linux", {"win32"}, "wine")}));
         writeJson(R + "/VidyaGodLibraries/dgvoodoo/dg.json",
@@ -269,6 +269,14 @@ private slots:
         for (const auto & E : Libs["VidyaGod"]) if (E.value("pkg", std::string()) == "[1] Game") G = &E;
         QVERIFY2(G, "the entry names the seeder's real package dir");
         QCOMPARE(G->value("nodes", 0), 2);
+        // A package records the other packages it contains nodes from, and a share is closed over them: a friend given
+        // VidyaGod also gets the dgVoodoo package [1] Game contains — as its own package, never copied into the game —
+        // and not the runners nothing contains. Teeth: drop "needs", or SharedWith's walk of it, and dgvoodoo is missing.
+        QCOMPARE(G->value("needs", json()), (json::array({ json{{"lib", "VidyaGodLibraries"}, {"pkg", "dgvoodoo"}} })));
+        const json Shared = PackageCatalog::SharedWith(Libs, {"VidyaGod"});
+        QCOMPARE((int)Shared["VidyaGod"].size(), 2);
+        QVERIFY2(Shared.contains("VidyaGodLibraries") && Shared["VidyaGodLibraries"].size() == 1, Shared.dump().c_str());
+        QVERIFY2(!Shared.contains("VidyaGodRunners"), "a package nothing shared contains is not shared");
         const auto Files = folderFiles(G->value("cid", std::string()));
         QCOMPARE((int)Files.size(), 2);                      // tile + exec: every node of the package, only nodes
         std::map<std::string, std::string> Listing;
@@ -319,6 +327,13 @@ private slots:
         QVERIFY2(Err.empty(), Err.c_str());
         QCOMPARE((int)Orphaned.size(), 5);
         QVERIFY2(Gaps.find("[2] Other (1)") != std::string::npos, Gaps.c_str());
+        // A copy of a node another package holds (here dgVoodoo's node, copied into [1] Game the way older builds
+        // did) is named in the verdict and not shared a second time. Teeth: drop the one-home check in PublishLibrary.
+        json DgCopy = NodeFixture::Chain("l_dg", {NodeFixture::Content("zip", "dgvoodoo.zip")}).back();
+        DgCopy.erase("CID");
+        writeJson(R + "/VidyaGod/[1] Game/dg_copy.json", DgCopy);
+        (void)PackageCatalog::PublishLibrary(cfg, &Err, &Gaps);
+        QVERIFY2(Gaps.find("copies of a node another package holds") != std::string::npos, Gaps.c_str());
         IpfsWrapper::StopNode();
     }
 
@@ -576,30 +591,6 @@ private:   // a helper, not a test: moc never sees its json parameters (no metat
     }
 private slots:
 
-    // The seeder publishes a library package (a_lib) it does NOT share, and a game package C containing it by CID,
-    // received into <Catalog>/Alice - Games/[3] C. Returns a_lib's CID ("" on a fixture failure).
-    std::string receiveGameContainingAnUnsharedLib(const QString &SeedRoot, const std::string &Catalog)
-    {
-        if (publishTwoGames(SeedRoot).size() != 2) return {};
-        json seeder = json{{"Settings", {{"Paths", {{"LibraryRoot", SeedRoot.toStdString()}}}}}};
-        QDir().mkpath(SeedRoot + "/VidyaGodLibraries/lib");
-        writeJson(SeedRoot + "/VidyaGodLibraries/lib/lib.json",
-                  NodeFixture::Chain("a_lib", {NodeFixture::ContentCid("zip", "lib.zip", "bafkreihdwdcefgh4dqkjv67uzcmw7ojee6xedzdetojuzjevtenxquvyku")}));
-        std::string E;
-        PackageCatalog::PublishLibrary(seeder, &E);
-        const std::string LibCid = cidOfLabel(seeder["Libraries"]["VidyaGodLibraries"][0].value("cid", std::string()), "a_lib");
-        if (LibCid.empty()) return {};
-        const std::string Pkg = Catalog + "/Alice - Games/[3] C/.package";
-        std::filesystem::create_directories(Pkg);
-        const json Game = json{{"LABEL", "c_exec"}, {"VARIANT", "Play"}, {"LAYERS", json::array({
-            json{{"NODE", LibCid}},
-            json{{"EXEC", json::array({ json{{"LABEL", "Play"}, {"HOST", "win32"}, {"EXE", "c.exe"}, {"TILE", {{"UID", "3"}, {"TITLE", "C"}}}} })}} })}};
-        const std::string Bytes = Cid::Canonical(Game);
-        const std::string GCid = Cid::OfBytes(Bytes);
-        { std::ofstream O(Pkg + "/" + GCid + ".json", std::ios::binary); O << Bytes; }
-        return LibCid;
-    }
-
 private:   // a helper, not a test: moc never sees its json parameters (no metatype for json on Windows)
     // Helper: publish two games in one collection and return the share entries — one per PACKAGE, as
     // PublishLibrary emits them ({cid: <package folder>, pkg, node, title, nodes}).
@@ -853,38 +844,47 @@ private slots:
         QVERIFY2(haveTheirs, "CATALOG node is scanned into the SAME index (drop the CATALOG root → this fails)");
     }
 
-    // One engine (one node, byte-identical) shipped by two packages serves both — a "custom" engine is the package's
-    // own, and both hold it. A friend's stub of it never takes it over: the installed copy is the one it mounts from.
-    // Teeth: index only the first copy (no Node::Copies) and BG2 has no engine; drop the installed-copy preference
-    // and the engine reads as a received stub (CATALOG sorts before LIBRARY); drop the files-here preference and the
-    // engine reads from BG, whose download has not arrived, so it is neither installed nor mountable.
-    void one_engine_in_two_packages_serves_both()
+    // A node has ONE home package. The same node in a second installed package is a copy — the validator names it, and
+    // only its home's engine serves "custom" launches; a friend's catalog stub of an installed package is a view of it,
+    // never a home: the node reads from the installed package. Teeth: drop the Duplicates record (no error), or the
+    // stub-is-a-view swap (the engine reads as a received stub; CATALOG sorts before LIBRARY).
+    void a_node_has_one_home_package()
     {
         QTemporaryDir Root; QVERIFY(Root.isValid());
         json cfg = json{{"Settings", {{"Paths", {{"LibraryRoot", (Root.path() + "/LIBRARY").toStdString()}}}}}};
         const std::filesystem::path Lib = PackageCatalog::LibraryRootDir(cfg), Cat = PackageCatalog::CatalogRootDir(cfg);
-        const json Engine = json{{"LABEL", "engine"}, {"LAYERS", json::array({ json{{"ZIP", "engine.zip"}}, json{{"EXEC", json::array({
+        const json Engine = json{{"LABEL", "engine"}, {"LAYERS", json::array({ json{{"EXEC", json::array({
             json{{"LABEL", "engine"}, {"HOST", ManifestModel::MachinePlatform()}, {"GUEST", json::array({"custom"})},
                  {"EXE", "%RunnerMount%/engine"}} })}} })}};
-        const std::filesystem::path BG = Lib / "VidyaGod/[1] BG", BG2 = Lib / "VidyaGod/[2] BG2",
-                                    Stub = Cat / "Alice - Games/[3] BG3";
-        for (const auto &D : { BG, BG2, Stub / ".package" })
+        const std::filesystem::path BG = Lib / "VidyaGod/[1] BG", Stub = Cat / "Alice - Games/[1] BG";
+        for (const auto &D : { BG, Stub / ".package" })
         {
             std::filesystem::create_directories(D);
             writeJson(QString::fromStdString((D / "engine.json").string()), Engine);
         }
-        { std::ofstream Z(BG2 / "engine.zip"); Z << "the engine"; }                 // of BG's and BG2's, only BG2's has arrived
-        { std::ofstream Z(Stub / "engine.zip"); Z << "the engine"; }                // the stub's too: still not ours
-        const NodeIndex Idx = PackageCatalog::BuildCatalogIndex(cfg);
+        NodeIndex Idx = PackageCatalog::BuildCatalogIndex(cfg);
         const Node *E = nullptr;
         for (const auto &[C, N] : Idx.Nodes) if (N.NodeId == "engine") E = &N;
         QVERIFY(E);
+        QVERIFY2(!E->Received && E->BundleDir == BG, "an installed package beats a friend's stub of it");
+        QVERIFY2(Idx.Duplicates.empty(), "a stub of an installed package is a view, not a second home");
         QVERIFY(ManifestModel::ServesPlatform(*E, "custom", BG));
-        QVERIFY2(ManifestModel::ServesPlatform(*E, "custom", BG2), "the second package's own engine serves it");
-        QVERIFY(!ManifestModel::ServesPlatform(*E, "custom", Lib / "VidyaGod/[4] Other"));
-        QVERIFY2(!E->Received && E->BundleDir != Stub, "an installed copy beats a friend's stub");
-        QVERIFY2(E->BundleDir == BG2, "the copy whose files are here is the one read");
-        QVERIFY(PackageCatalog::RunnerInstalled(Idx, E->Key()));
+        // A second INSTALLED package holding the same node: one home stays, the copy is an error.
+        const std::filesystem::path BG2 = Lib / "VidyaGod/[2] BG2";
+        std::filesystem::create_directories(BG2);
+        writeJson(QString::fromStdString((BG2 / "engine.json").string()), Engine);
+        Idx = PackageCatalog::BuildCatalogIndex(cfg);
+        E = nullptr;
+        for (const auto &[C, N] : Idx.Nodes) if (N.NodeId == "engine") E = &N;
+        QVERIFY(E);
+        QCOMPARE((int)Idx.Duplicates.size(), 1);
+        const std::filesystem::path Other = E->BundleDir == BG ? BG2 : BG;
+        QVERIFY2(!ManifestModel::ServesPlatform(*E, "custom", Other), "a copy's package does not get the engine");
+        std::vector<std::string> Errs, W;
+        ManifestModel::ValidateNodeGraph(Idx, Errs, W);
+        bool Named = false;
+        for (const auto &Err : Errs) if (Err.find("one home package") != std::string::npos) Named = true;
+        QVERIFY2(Named, "the validator names the copy");
     }
 
     // A node that does not freeze (here: a cycle — each needs the other's CID first) is skipped, and so is every node
@@ -913,78 +913,6 @@ private slots:
         std::set<std::string> Labels;
         for (const auto & [C, N] : Idx.Nodes) if (!BuiltIn.count(C)) Labels.insert(N.NodeId);
         QCOMPARE(Labels, (std::set<std::string>{"good"}));
-    }
-
-    // Install on a RECEIVED card whose closure reaches outside its package: the folder brings the package's own nodes,
-    // but a node it contains that lives in ANOTHER package (a library nobody shared) is missing. CompleteClosure
-    // fetches it — a plain FetchTarget through the SAME rolling queue, wave by wave — into the package dir, verified
-    // and CID-named; a fresh scan then resolves real content targets and sizes. Teeth: break the wave loop, the queue
-    // routing, the verification or the frontier discovery and the asserts below fail.
-    void install_completes_a_received_closure_via_the_queue()
-    {
-        std::string Err;
-        QTemporaryDir Repo; QVERIFY(Repo.isValid());
-        QVERIFY2(IpfsWrapper::StartNode((Repo.path() + "/ipfs").toStdString(), &Err), Err.c_str());
-        QTemporaryDir SeedRoot; QVERIFY(SeedRoot.isValid());
-        QTemporaryDir RxData; QVERIFY(RxData.isValid());
-        json rx = json{{"Settings", {{"Paths", {{"LibraryRoot", (RxData.path() + "/LIBRARY").toStdString()}}}}}};
-        const std::string Catalog = PackageCatalog::CatalogRootDir(rx);
-        const std::string LibCid = receiveGameContainingAnUnsharedLib(SeedRoot.path(), Catalog);
-        QVERIFY(!LibCid.empty());
-        NodeIndex Before = PackageCatalog::BuildCatalogIndex(rx);
-        QVERIFY2(PackageCatalog::NodeClosureIncomplete(Before, "c_exec"), "precondition: the library node is missing");
-        const long long Holds = IpfsWrapper::DebugNetHolds();
-        QVERIFY2(PackageCatalog::CompleteClosure(Before, "c_exec", &Err), Err.c_str());
-        // Wave after wave, it holds the network queue's foreground (no gap for provider walks). Teeth: drop its hold.
-        QVERIFY2(IpfsWrapper::DebugNetHolds() > Holds, "CompleteClosure fetched in waves without holding the foreground");
-        const QString PkgDir = QString::fromStdString(Catalog) + "/Alice - Games/[3] C";
-        QVERIFY2(QFile::exists(PkgDir + "/" + QString::fromStdString(LibCid) + ".json"), "the library node landed CID-named in the package dir");
-
-        NodeIndex Fresh = PackageCatalog::BuildCatalogIndex(rx);
-        QVERIFY2(!PackageCatalog::NodeClosureIncomplete(Fresh, "c_exec"), "the closure is complete after the fetch");
-        QVERIFY2(!PackageCatalog::NodeContentCids(Fresh, "c_exec").empty(),
-                 "content targets (and thus sizes) now resolve — the Download button has something to do");
-
-        // Installing the package MOVES its folder into the library; the node CompleteClosure fetched into it is
-        // referenced in place, and that reference must follow it — else it reads as missing and can be served to no
-        // one (678 such on a replication receiver, Minecraft's 645 among them). Teeth: drop the Src→Dest MoveRefs in
-        // AdoptReceivedPackage and the library node reads as missing below.
-        QVERIFY2(IpfsWrapper::HasLocal(LibCid) && !IpfsWrapper::CidMissing(LibCid), "precondition: the fetched node is referenced in place");
-        rx["FriendLibraries"] = json{{"Alice", {{"Games", json::array()}}}};   // the share snapshot that names the library
-        std::filesystem::path Installed;
-        QVERIFY2(PackageCatalog::AdoptReceivedPackage(rx, PkgDir.toStdString(), &Installed, &Err), Err.c_str());
-        QVERIFY2(std::filesystem::exists(Installed / (LibCid + ".json")), "the node moved with its package");
-        QVERIFY2(!IpfsWrapper::CidMissing(LibCid), "the node's reference followed the folder");
-
-        IpfsWrapper::DebugResetQueue();
-        IpfsWrapper::StopNode();
-    }
-
-    // Another download installs the package while this one completes its closure from an older index: the queue lands
-    // the waves where the package is now (its redirect), and the closure reads them there — reading the old CATALOG
-    // path failed verification and the whole download with it. Teeth: read Bundle/<cid>.json without the redirect.
-    void a_closure_completes_into_a_package_installed_meanwhile()
-    {
-        std::string Err;
-        QTemporaryDir Repo; QVERIFY(Repo.isValid());
-        QVERIFY2(IpfsWrapper::StartNode((Repo.path() + "/ipfs").toStdString(), &Err), Err.c_str());
-        QTemporaryDir SeedRoot; QVERIFY(SeedRoot.isValid());
-        QTemporaryDir RxData; QVERIFY(RxData.isValid());
-        json rx = json{{"Settings", {{"Paths", {{"LibraryRoot", (RxData.path() + "/LIBRARY").toStdString()}}}}}};
-        const std::string Catalog = PackageCatalog::CatalogRootDir(rx);
-        const std::string LibCid = receiveGameContainingAnUnsharedLib(SeedRoot.path(), Catalog);
-        QVERIFY(!LibCid.empty());
-        NodeIndex Before = PackageCatalog::BuildCatalogIndex(rx);             // this download's snapshot
-        const std::filesystem::path Src = std::filesystem::path(Catalog) / "Alice - Games" / "[3] C";
-        const std::filesystem::path Dest = std::filesystem::path(RxData.path().toStdString()) / "LIBRARY" / "Games" / "[3] C";
-        std::filesystem::create_directories(Dest.parent_path());
-        std::filesystem::rename(Src, Dest);                                   // the other download's install
-        IpfsWrapper::RedirectDestsUnder(Src.string(), Dest.string());
-        QVERIFY2(PackageCatalog::CompleteClosure(Before, "c_exec", &Err), Err.c_str());
-        QVERIFY2(std::filesystem::exists(Dest / (LibCid + ".json")), "the library node landed in the installed package");
-        QVERIFY2(!std::filesystem::exists(Src), "never re-creating the stub");
-        IpfsWrapper::DebugResetQueue();
-        IpfsWrapper::StopNode();
     }
 
     // A package row shows what the package is SHARED AS: its folder CID — ours from our published rows, a received
@@ -1175,7 +1103,8 @@ private slots:
         const auto Plan2 = PackageCatalog::PlanReceivedFetches(rx, Nick, json{{"Games", Items}});
         QCOMPARE((int)Plan2.size(), 1);
         QVERIFY(Plan2[0].Dest.find("[2] B") != std::string::npos);
-        // A second adopt of a package whose name the library already holds is refused.
+        // A second adopt of a package whose name the library already holds is refused: never merged, never a second
+        // copy of its nodes. Teeth: drop the refusal and the stub's nodes land beside the installed ones.
         std::filesystem::create_directories(Stub / ".package");
         QVERIFY(!PackageCatalog::AdoptReceivedPackage(rx, Stub, nullptr, &Err));
         QVERIFY(Err.find("already exists") != std::string::npos);

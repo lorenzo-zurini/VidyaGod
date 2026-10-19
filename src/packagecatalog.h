@@ -273,6 +273,11 @@ struct RemintEntry { std::string Level, Name, Cid; };
 // and Config["PublishedList"] (the package folders), which it returns (empty on failure, *Error says why). What did
 // not publish whole — nodes that did not freeze, content this machine does not hold (a Pinata-only receiver could
 // never fetch it) — is summed up in *Gaps ("" when everything published). Call OFF the UI thread, node online.
+// What a friend receives for the libraries shared with them: {lib: [share rows]} — every package of those libraries,
+// and every package those need (a row's "needs", transitively), whatever library it is in. A package is shared whole
+// and once; a library a shared game contains arrives as its own package, never copied into the game.
+nlohmann::ordered_json SharedWith(const nlohmann::ordered_json &Libraries, const std::vector<std::string> &SharedLibs);
+
 std::vector<std::string> PublishLibrary(nlohmann::ordered_json &Config, std::string *Error = nullptr,
                                         std::string *Gaps = nullptr);
 
@@ -301,15 +306,12 @@ std::string ReceivedNickLabel(const std::string &PeerID);
 std::vector<ReceivedFetch> PlanReceivedFetches(const nlohmann::ordered_json &GlobalConfigJSON,
                                                const std::string &NickLabel, const nlohmann::ordered_json &Libs);
 
-// Fetch a launchable's missing closure node blocks into its package dir, through the ONE rolling queue (plain
-// FetchTargets, wave by wave), renaming landed files to their NODE_ID. Synchronous — call OFF the GUI thread.
-// After it returns true, a fresh catalog index resolves the full closure (content CIDs, optionals, sizes).
-[[nodiscard]] bool CompleteClosure(const NodeIndex &Idx, const std::string &LaunchId, std::string *Error = nullptr);
 
-// True when a node's PARENTS reference ids missing from the index — a received package whose composition graph is
-// not fetched yet. Such a node always has something to download (hydration fetches the closure) even though
-// NodeContentCids can enumerate nothing from the incomplete graph.
+// True when a node contains (NODE) a node missing from the index: a package it needs has not landed yet, or the
+// friend does not share it. Nothing is ever fetched into the node's own package to fill the gap (a node has one home).
 bool NodeClosureIncomplete(const NodeIndex &Idx, const std::string &Id);
+// The nodes Id contains, at any depth, that are not in the index (sorted, unique). Empty: the closure is complete.
+std::vector<std::string> MissingFromClosure(const NodeIndex &Idx, const std::string &Id);
 
 // Received PACKAGES: a friend's share entry is a package folder (landed as <pkg dir>/.package/). True while any
 // landed folder lists a node block not yet on disk; LandReceivedPackages fetches them through the one rolling queue

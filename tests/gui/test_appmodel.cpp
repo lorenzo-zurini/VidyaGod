@@ -37,6 +37,29 @@ private slots:
         QCOMPARE(spy.count(), 1);
     }
 
+    // What a friend receives is closed over what the shared packages contain: share "Games" and the library package a
+    // game contains comes too, as its own package under its own library (never copied into the game); a package nothing
+    // shared needs stays home; a shared library with nothing published still goes out, empty. Teeth: push only the
+    // explicit libraries (drop the SharedWith closure) and DxWnd is missing; drop the empty entry and "Later" is.
+    void a_friend_receives_the_packages_their_share_contains()
+    {
+        QTemporaryDir d; QVERIFY(d.isValid());
+        QDir appDir(d.path());
+        json cfg = json{{"Settings", json::object()},
+            {"Libraries", {
+                {"Games", json::array({ json{{"cid", "QmWipeout"}, {"pkg", "Wipeout"},
+                                             {"needs", json::array({ json{{"lib", "Libs"}, {"pkg", "DxWnd"}} })}} })},
+                {"Libs",  json::array({ json{{"cid", "QmDxWnd"}, {"pkg", "DxWnd"}, {"needs", json::array()}},
+                                        json{{"cid", "QmUnused"}, {"pkg", "Unused"}, {"needs", json::array()}} })}}},
+            {"Sharing", {{"PeerA", json::array({"Games", "Later"})}}}};
+        AppModel m(&cfg, &appDir);
+        const json S = m.sharedWith("PeerA");
+        QCOMPARE((int)S["Games"].size(), 1);
+        QVERIFY2(S.contains("Libs") && S["Libs"].size() == 1 && S["Libs"][0]["pkg"] == "DxWnd", S.dump().c_str());
+        QVERIFY2(S.contains("Later") && S["Later"].empty(), "an explicitly shared library with nothing published goes out empty");
+        QVERIFY2(m.sharedWith("PeerB").empty(), "nothing is shared with a friend nobody shared with");
+    }
+
     // Upgrading an unknown source must fail through packageSourceFailed and leave no pending plan — so a later
     // applySourceUpgrade cannot act on a stale/rejected plan. Also pins the two-phase contract: planning alone
     // NEVER mutates the config (the CID must still be the old one after a plan attempt).

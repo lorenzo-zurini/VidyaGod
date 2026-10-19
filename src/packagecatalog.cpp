@@ -974,6 +974,35 @@ std::string LibraryOf(const std::filesystem::path &BundleDir, const std::filesys
 // the package dir).
 static constexpr const char *kPackageFolderDir = NodeGraph::kPackageFolderDir;
 
+nlohmann::ordered_json SharedWith(const nlohmann::ordered_json &Libraries, const std::vector<std::string> &SharedLibs)
+{
+    nlohmann::ordered_json Out = nlohmann::ordered_json::object();
+    if (!Libraries.is_object()) return Out;
+    std::set<std::pair<std::string, std::string>> Taken;
+    std::deque<std::pair<std::string, std::string>> Todo;
+    auto Row = [&](const std::string &L, const std::string &P) -> const nlohmann::ordered_json * {
+        if (!Libraries.contains(L) || !Libraries[L].is_array()) return nullptr;
+        for (const auto &E : Libraries[L]) if (E.is_object() && E.value("pkg", std::string()) == P) return &E;
+        return nullptr;
+    };
+    for (const std::string &L : SharedLibs)
+        if (Libraries.contains(L) && Libraries[L].is_array())
+            for (const auto &E : Libraries[L])
+                if (E.is_object() && !E.value("cid", std::string()).empty()) Todo.emplace_back(L, E.value("pkg", std::string()));
+    while (!Todo.empty())
+    {
+        const auto Key = Todo.front(); Todo.pop_front();
+        const nlohmann::ordered_json *E = Row(Key.first, Key.second);
+        if (!E || !Taken.insert(Key).second) continue;
+        if (!Out.contains(Key.first)) Out[Key.first] = nlohmann::ordered_json::array();
+        Out[Key.first].push_back(*E);
+        if (E->contains("needs") && (*E)["needs"].is_array())
+            for (const auto &N : (*E)["needs"])
+                if (N.is_object()) Todo.emplace_back(N.value("lib", std::string()), N.value("pkg", std::string()));
+    }
+    return Out;
+}
+
 std::vector<std::string> PublishLibrary(nlohmann::ordered_json &Config, std::string *Error, std::string *Gaps)
 {
     const std::filesystem::path Root = LibraryRootDir(Config);
@@ -1002,6 +1031,8 @@ std::vector<std::string> PublishLibrary(nlohmann::ordered_json &Config, std::str
     std::map<std::string, std::map<std::string, std::vector<std::string>>> HandlesOf;  // lib → package dir → node handles
     std::vector<std::string> Unfrozen;                  // "<package>/<label>" of nodes Mint skipped
     std::map<std::string, size_t> Unheld;               // package → content CIDs it names that are not held here
+    std::map<std::string, std::string> FirstPkg;        // node cid → the package that listed it first (its home)
+    std::vector<std::string> Copies;                    // "<package>/<label>" of a node already listed by another package
     for (const auto &[Handle, Doc] : Tree)
     {
         const auto CidIt = MR.HandleToCid.find(Handle);
@@ -1017,9 +1048,44 @@ std::vector<std::string> PublishLibrary(nlohmann::ordered_json &Config, std::str
         if (Ec || Seg.empty()) continue;
         const std::string LibName = Seg.size() >= 2 ? Seg[0] : std::string("Library");   // the collection dir
         const std::string Pkg     = Seg.size() >= 2 ? Seg[1] : Seg[0];                    // the bundle dir under it
+        //One home: a node another package already lists is a copy — not shared again from here, and named below.
+        if (const auto [F, Fresh] = FirstPkg.emplace(CidIt->second, LibName + "/" + Pkg); !Fresh && F->second != LibName + "/" + Pkg)
+        {
+            Copies.push_back(Pkg + "/" + Doc.value("LABEL", std::string("?")));
+            continue;
+        }
         ByLibPkg[LibName][Pkg].push_back(CidIt->second);
         HandlesOf[LibName][Pkg].push_back(Handle);
     }
+    //Each node's home package, and from it what each package NEEDS: the other packages its nodes contain. A share is
+    //closed over this (SharedWith): a friend given a game also gets the library packages it contains — never a copy.
+    std::map<std::string, std::pair<std::string, std::string>> HomeOf;                 // node cid → (lib, package)
+    for (const auto &[LibName, Pkgs] : ByLibPkg)
+        for (const auto &[Pkg, Cids] : Pkgs)
+            for (const auto &C : Cids) HomeOf.emplace(C, std::make_pair(LibName, Pkg));
+    // A bounded display title for the receiver's dir segment (NAME_MAX): the dir basename, cut at a UTF-8 boundary. It
+    // is also the package's name in the share entry, so "needs" names packages the same way.
+    auto TitleOf = [](std::string Title) {
+        if (Title.size() > 120)
+        {
+            Title.resize(120);
+            while (!Title.empty() && (static_cast<unsigned char>(Title.back()) & 0xC0) == 0x80) Title.pop_back();
+        }
+        return Title;
+    };
+    auto Needs = [&](const std::string &LibName, const std::string &Pkg) {
+        std::set<std::pair<std::string, std::string>> Out;
+        for (const std::string &H : HandlesOf[LibName][Pkg])
+            for (const std::string &R : ManifestModel::NodeRefs(Tree.at(H)))
+            {
+                const auto C = MR.HandleToCid.find(R);
+                const auto Home = HomeOf.find(C != MR.HandleToCid.end() ? C->second : R);
+                if (Home != HomeOf.end() && Home->second != std::make_pair(LibName, Pkg)) Out.insert(Home->second);
+            }
+        nlohmann::ordered_json J = nlohmann::ordered_json::array();
+        for (const auto &[L, P] : Out) J.push_back({ {"lib", L}, {"pkg", TitleOf(P)} });
+        return J;
+    };
     nlohmann::ordered_json Libs = nlohmann::ordered_json::object();
     nlohmann::ordered_json Flat = nlohmann::ordered_json::array();
     size_t PkgCount = 0;
@@ -1058,15 +1124,10 @@ std::vector<std::string> PublishLibrary(nlohmann::ordered_json &Config, std::str
             }
             const std::string PinCid = IpfsWrapper::MakeDir(Pin, &MErr);
             if (PinCid.empty()) { if (Error) *Error = "pin folder for '" + Pkg + "' not made: " + MErr; return {}; }
-            // A bounded display title for the receiver's dir segment (NAME_MAX): the dir basename, cut at a UTF-8 boundary.
-            std::string Title = Pkg;
-            if (Title.size() > 120)
-            {
-                Title.resize(120);
-                while (!Title.empty() && (static_cast<unsigned char>(Title.back()) & 0xC0) == 0x80) Title.pop_back();
-            }
+            const std::string Title = TitleOf(Pkg);
             Libs[LibName].push_back(nlohmann::ordered_json{{"cid", PCid}, {"pin", PinCid}, {"node", Title}, {"pkg", Title},
-                                                            {"title", Title}, {"nodes", Cids.size()}});
+                                                            {"title", Title}, {"nodes", Cids.size()},
+                                                            {"needs", Needs(LibName, Pkg)}});
             Flat.push_back(PCid);
             ++PkgCount;
         }
@@ -1088,6 +1149,9 @@ std::vector<std::string> PublishLibrary(nlohmann::ordered_json &Config, std::str
     };
     if (!Unfrozen.empty())
         Gap += std::to_string(Unfrozen.size()) + " node(s) did not freeze and were left out (" + List(Unfrozen) + ")";
+    if (!Copies.empty())
+        Gap += (Gap.empty() ? "" : "; ") + std::to_string(Copies.size()) + " node(s) are copies of a node another "
+               "package holds (a node has one home: delete the copy, contain the node by CID): " + List(Copies);
     if (!Unheld.empty())
     {
         std::vector<std::string> P;
@@ -1185,8 +1249,9 @@ std::vector<ReceivedFetch> PlanReceivedFetches(const nlohmann::ordered_json &Glo
         }
         DestCid[Dest.string()] = Cid;   // claimed even when installed: the name the other package gets depends on it
         // A package the library already holds under this library and dir name was INSTALLED (adopted out of
-        // CATALOG) or authored here: it is ours now and is not re-landed as a stub beside itself. Its FINAL name:
-        // the unqualified one said "installed" for both of two colliding packages, or re-planned the installed one.
+        // CATALOG) or authored here: it is ours now and is not re-landed as a stub beside itself (a node has one
+        // home; a stub beside it would hold copies). Its FINAL name: the unqualified one said "installed" for both of
+        // two colliding packages, or re-planned the installed one.
         std::error_code Ec;
         if (fs::is_directory(fs::path(LibraryRootDir(GlobalConfigJSON)) / SafeSegment(LibName) / Dest.filename(), Ec)) return;
         Out.push_back(ReceivedFetch{Cid, (Dest / kPackageFolderDir).generic_string()});   // '/' on every host: compared as data
@@ -1228,13 +1293,6 @@ std::vector<ReceivedFetch> PlanReceivedFetches(const nlohmann::ordered_json &Glo
     return Out;
 }
 
-// CompleteClosure: fetch a launchable's MISSING node blocks (NODE refs reachable from it that the index cannot
-// resolve — a received package that contains another package's node, a library nobody shared) into its OWN package
-// dir, through the ONE rolling queue — each missing CID is a plain FetchTarget {cid, <bundle>/<cid>.json, Verify}, the
-// same path as every other CID in the app. Waves: fetch the frontier, read the landed files (verbatim — verified,
-// never rewritten), discover the next frontier from their NODE refs, repeat until the closure closes.
-// Synchronous (WaitBatch) — call OFF the GUI thread. False + *Error when the closure cannot converge (a dangling
-// ref, an unreachable seeder past the wait bound — the queue keeps retrying in the background either way).
 //Removes a landed node file, and the node's reference to it when that was the reference: a fetched node file is
 //referenced in place, so deleting it without this left an orphaned reference — hundreds per receive, each an
 //"Errored: missing files" row and a re-seeding heal pass. A reference to ANOTHER copy of the block (the same node
@@ -1254,84 +1312,6 @@ static void RemoveLandedNode(const std::filesystem::path &F, const std::string &
             std::string AErr;
             if (IpfsWrapper::AddNoCopy(S.string(), &AErr) == Cid) return;
         }
-}
-
-bool CompleteClosure(const NodeIndex &Idx, const std::string &LaunchId, std::string *Error)
-{
-    namespace fs = std::filesystem;
-    const Node *Root = Idx.Find(LaunchId);
-    if (!Root) { if (Error) *Error = "unknown node " + LaunchId; return false; }
-    if (Root->BundleDir.empty()) { if (Error) *Error = LaunchId + " has no package dir to complete into"; return false; }
-    const IpfsWrapper::ForegroundHold Hold;                             // one wave after another: no gap for walks
-    const fs::path Bundle = Root->BundleDir;
-
-    // Refs of one node: what it contains (NODE layers; ANY/NOT are compared, never fetched). Resolvable via the index
-    // (disk tree) or via a block landed this call.
-    std::map<std::string, nlohmann::ordered_json> LandedDoc;       // cid → parsed block (this call)
-    auto RefsOf = [](const std::vector<std::string> &Ps, std::vector<std::string> &Out) {
-        for (const std::string &P : Ps) if (!P.empty()) Out.push_back(P);
-    };
-
-    // Seed the frontier: BFS the ALREADY-PRESENT part of the closure; every unresolved ref is missing.
-    std::set<std::string> Visited, Missing;
-    std::deque<const Node *> Q{ Root };
-    Visited.insert(Root->Key());
-    while (!Q.empty())
-    {
-        const Node *N = Q.front(); Q.pop_front();
-        std::vector<std::string> Refs;
-        RefsOf(N->Refs, Refs);
-        for (const std::string &R : Refs)
-        {
-            if (!Visited.insert(R).second) continue;
-            if (const Node *C = Idx.Find(R)) Q.push_back(C);
-            else Missing.insert(R);
-        }
-    }
-
-    size_t Total = 0;
-    while (!Missing.empty())
-    {
-        if ((Total += Missing.size()) > 200000)                          // hostile/looping closure — bounded like the freezer
-        { if (Error) *Error = "closure exceeds 200000 nodes"; return false; }
-
-        std::vector<IpfsWrapper::FetchTarget> Batch;
-        std::vector<std::string> Wave(Missing.begin(), Missing.end());
-        for (const std::string &C : Wave)
-            Batch.push_back(IpfsWrapper::FetchTarget{ C, (Bundle / (SafeSegment(C) + ".json")).string(),
-                                                      /*Optional=*/false, /*Dir=*/false, /*Verify=*/true });
-        const auto H = IpfsWrapper::EnqueueBatch(Batch);
-        std::string WErr;
-        if (!IpfsWrapper::WaitBatch(H, 10 * 60 * 1000, &WErr))           // bounded; the queue keeps rolling regardless
-        { if (Error) *Error = "closure fetch did not converge: " + WErr; return false; }
-
-        // Read the landed files, discover the NEXT frontier. A file that fails verification (not the bytes its name
-        // says, not canonical, or carrying a working-tree field) is removed: it never enters the tree.
-        std::set<std::string> Next;
-        for (const std::string &C : Wave)
-        {
-            //Where the queue landed it: another download may have installed the package meanwhile (its redirect).
-            const fs::path F = IpfsWrapper::Redirected((Bundle / (SafeSegment(C) + ".json")).string());
-            nlohmann::ordered_json J;
-            std::string VErr;
-            if (!NodeGraph::VerifyLanded(F, C, &J, &VErr))
-            {
-                RemoveLandedNode(F, C);
-                if (Error) *Error = "closure block " + C + " refused: " + VErr;
-                return false;
-            }
-            std::vector<std::string> Refs;
-            RefsOf(ManifestModel::NodeRefs(J), Refs);
-            for (const std::string &R : Refs)
-            {
-                if (!Visited.insert(R).second) continue;
-                if (!Idx.Find(R) && !LandedDoc.count(R)) Next.insert(R);
-            }
-            LandedDoc[C] = std::move(J);
-        }
-        Missing = std::move(Next);
-    }
-    return true;
 }
 
 std::string ReceivedNickLabel(const std::string &PeerID)
@@ -1597,9 +1577,9 @@ bool LandReceivedPackages(const nlohmann::ordered_json &Config, std::string *Err
 
 int PruneStaleReceived(const NodeIndex &Idx, const nlohmann::ordered_json &Config)
 {
-    // A received package dir holds exactly what its folder lists plus the closure blocks landed for them. A node
-    // file that neither the folder lists nor the closure reaches is an older generation's — a re-published node
-    // under its previous CID, kept because the dir is an install — and it was one of three "v1.30.4" once. Remove it.
+    // A received package's landed folder holds exactly what the folder lists (one home: what it contains from other
+    // packages lives there). Any other node file in it is an older generation's — a re-published node under its
+    // previous CID. Remove it.
     namespace fs = std::filesystem;
     std::error_code Ec;
     int Removed = 0;
@@ -1608,14 +1588,10 @@ int PruneStaleReceived(const NodeIndex &Idx, const nlohmann::ordered_json &Confi
     for (const auto &[Id, N] : Idx.Nodes) if (!N.Received && !N.BundleDir.empty()) Installed.insert(N.BundleDir);
     for (const auto &[Dir, Cids] : Manifests)
     {
-        std::set<std::string> Keep(Cids.begin(), Cids.end());
-        std::deque<std::string> Q(Cids.begin(), Cids.end());
-        while (!Q.empty())
-        {
-            const Node *N = Idx.Find(Q.front()); Q.pop_front();
-            if (!N) continue;
-            for (const std::string &P : N->Refs) if (Keep.insert(P).second) Q.push_back(P);
-        }
+        //A received package holds exactly what its folder lists: a node it contains from another package lives in that
+        //package (one home). A node file beyond the listing is an older generation's, or a copy an older build
+        //fetched into this package to complete a closure.
+        const std::set<std::string> Keep(Cids.begin(), Cids.end());
         // Per FILE, not per index node: the same CID landed in two libraries is ONE index entry, and a landed file is
         // named by its CID (a label-named file is a pre-manifest root: stale by definition).
         for (const auto &F : fs::directory_iterator(Dir, Ec))
@@ -1639,11 +1615,17 @@ int PruneStaleReceived(const NodeIndex &Idx, const nlohmann::ordered_json &Confi
 
 bool NodeClosureIncomplete(const NodeIndex &Idx, const std::string &Id)
 {
-    const Node *N = Idx.Find(Id);
-    if (!N) return false;
-    for (const auto &P : N->Refs)
-        if (!Idx.Find(P)) return true;
-    return false;
+    return !MissingFromClosure(Idx, Id).empty();
+}
+
+std::vector<std::string> MissingFromClosure(const NodeIndex &Idx, const std::string &Id)
+{
+    std::vector<std::string> Missing;
+    if (!Idx.Find(Id)) return Missing;
+    (void)ManifestModel::Closure(Idx, Id, &Missing);                       // every depth, not one hop
+    std::sort(Missing.begin(), Missing.end());
+    Missing.erase(std::unique(Missing.begin(), Missing.end()), Missing.end());
+    return Missing;
 }
 
 // The gigagraph catalog: the on-disk library is the pretty, handle-based working tree (LIBRARY/[uid] Title/…); we
@@ -1682,30 +1664,24 @@ NodeIndex BuildCatalogIndex(const nlohmann::ordered_json &GlobalConfigJSON)
         (void)DEnd;
         return !Cat.empty() && CatEnd == Cat.end();
     };
-    //Of several copies, the one launches read: an installed one before a stub, and of those one whose content files are
-    //here — a node's files live beside it, so a copy whose download has not arrived must not hide one that has (the
-    //same engine shipped by two games, only one of them downloaded yet).
-    auto Holds = [](const Node &N, const std::filesystem::path &Dir) {
-        std::error_code Ec;
-        for (const auto &L : N.Layers)
-        {
-            if (!ManifestModel::IsRunnerBuildLayer(L)) continue;               // real bytes (not a %runtime% dir)
-            std::filesystem::path Local; std::string Cid;
-            ManifestModel::LayerLocator(L, Dir, Local, Cid);
-            if (Local != Dir && !std::filesystem::exists(Local, Ec)) return false;
-        }
-        return true;
-    };
+    //A friend's catalog stub of a package that is installed here is a view of it, not a second home: the node reads
+    //from the installed package. What is left in Duplicates after that is two installed homes — the validator's.
+    for (auto &[Id, D] : Idx.Duplicates)
+    {
+        Node &N = Idx.Nodes.at(Id);
+        if (UnderCatalog(N.BundleDir))
+            if (const auto It = std::find_if(D.begin(), D.end(), [&](const auto &P) { return !UnderCatalog(P); }); It != D.end())
+            {
+                std::swap(N.BundleDir, *It);
+                std::error_code Fe;
+                if (const auto F = N.BundleDir / (Id + ".json"); std::filesystem::exists(F, Fe)) N.File = F;   // its file there too
+            }
+        D.erase(std::remove_if(D.begin(), D.end(), UnderCatalog), D.end());
+    }
+    for (auto It = Idx.Duplicates.begin(); It != Idx.Duplicates.end();) It = It->second.empty() ? Idx.Duplicates.erase(It) : std::next(It);
     for (auto &[Id, N] : Idx.Nodes)
     {
         (void)Id;
-        if (N.Copies.size() > 1)
-        {
-            int Best = -1;
-            for (const auto &[Dir, File] : N.Copies)
-                if (const int Rank = (UnderCatalog(Dir) ? 0 : 2) + (Holds(N, Dir) ? 1 : 0); Rank > Best)
-                { Best = Rank; N.BundleDir = Dir; N.File = File; }
-        }
         N.Received = UnderCatalog(N.BundleDir);
     }
 

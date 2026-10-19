@@ -181,9 +181,8 @@ void CatalogTab::rebuild()
             if (H == Hyd.end() || !H->second.Hydrated)   // only an un-hydrated edition needs its (closure-walked) CIDs checked
             {
                 AnyMissing = true;
-                // Fetchable = it has enumerable content CIDs, OR its composition graph is INCOMPLETE locally (a
-                // received package whose PARENTS haven't been fetched yet): hydration fetches the closure, so there
-                // is always something to download even though nothing can be enumerated from the partial graph.
+                // Fetchable = it has enumerable content CIDs, OR a package it contains has not landed yet (or is not
+                // shared): the card stays, and its download dialog says what it is waiting for.
                 if (!PackageCatalog::NodeContentCids(Model.catalogIndex(), N->NodeId).empty()
                     || PackageCatalog::NodeClosureIncomplete(Model.catalogIndex(), N->Key()))
                     AnyFetchable = true;

@@ -108,6 +108,12 @@ public:
     // re-arm shares after a restart) and after a re-publish (the launchable CIDs may have moved). Without it the two
     // halves split-brain: the UI shows a friend as shared-with, but Go serves them nothing.
     void reRegisterShares();
+    // Push to Go everything Peer receives: the libraries shared with them, closed over what their packages contain
+    // (PackageCatalog::SharedWith). A library the last push sent that the closure no longer holds is unshared.
+    void pushSharesTo(const std::string & Peer);
+    // What Peer receives, {lib: [share rows]}: the libraries shared with them closed over what their packages contain,
+    // plus an explicitly shared library with nothing published yet, EMPTY (an authoritative "nothing here").
+    nlohmann::ordered_json sharedWith(const std::string & Peer) const;
     // Self-healing reconciliation (the sharing handshake is otherwise EDGE-triggered — it fires only when you flip a
     // toggle, so share-before-accept, a toggle made while the peer was offline, and an app restart all left the receiver
     // showing nothing). reconcileReceivedFriend re-enqueues a peer's shared blocks from our PERSISTED snapshot
@@ -181,6 +187,7 @@ signals:
     void contentUnservable(QString cid, QString reason);
 
 private:
+    std::map<std::string, std::set<std::string>> PushedShares;   // peer -> the library names last pushed to them
     // The plan from the last planSourceUpgrade(), awaiting the user's confirmation in applySourceUpgrade().
     std::shared_ptr<PackageCatalog::SourceUpgradePlan> PendingUpgrade;
     nlohmann::ordered_json * Config;
@@ -199,8 +206,6 @@ private:
     bool                           FriendReconcilePending = false;  // debounce: coalesce a burst of landed blocks into one catalog rebuild
     bool                           FriendClosureRunning = false;    // a closure-completion worker is in flight
     bool                           FriendClosureAgain = false;      // blocks landed while it ran → run once more
-    // bumped by dropReceivedStubs: an older pass stops at its next root (shared: the pass may outlive this model)
-    std::shared_ptr<std::atomic<unsigned>> FriendClosureGen = std::make_shared<std::atomic<unsigned>>(0);
     std::set<std::string>          FriendStubsDirtyPeers;           // peers whose stubs were dropped while a pass ran → drop again when it ends
     std::map<std::string, std::set<std::filesystem::path>> DroppedStubDirs;   // peer → the lib dirs last dropped: swept again after the snapshot is gone
 };

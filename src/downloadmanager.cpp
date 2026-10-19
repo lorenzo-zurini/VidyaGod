@@ -439,12 +439,10 @@ void DownloadManager::startDownload(LibraryGameCard *card)
     (*DeriveEndpoints)();
     (*DeriveRunners)();
 
-    // A RECEIVED package opens with an INCOMPLETE closure (only its exec + tile were shared) — nothing below it to
-    // size or enumerate. Complete it NOW, through the same rolling queue (CompleteClosure — the node blocks are
-    // KBs), then swap the snapshot and re-derive everything: real sizes, real optionals, real endpoints, and the
-    // Download button resolves real content targets. No wire change, no size stamping — the graph itself arrives.
+    // A package a variant (or its runner chain) contains has not landed yet, or is not shared with this user: nothing
+    // is ever fetched INTO this package to fill the gap (a node has one home), so the download waits for that package.
+    bool AnyIncomplete = false;
     {
-        bool AnyIncomplete = false;
         const nlohmann::ordered_json CfgForGate = Model.config() ? *Model.config() : nlohmann::ordered_json::object();
         for (const std::string & V : Variants)
         {
@@ -453,42 +451,20 @@ void DownloadManager::startDownload(LibraryGameCard *card)
                 if (PackageCatalog::NodeClosureIncomplete(**Snap, Rid)) { AnyIncomplete = true; break; }
             if (AnyIncomplete) break;
         }
-        if (AnyIncomplete)
-        {
-            const std::shared_ptr<const NodeIndex> S = *Snap;
-            nlohmann::ordered_json ConfigSnap = Model.config() ? *Model.config() : nlohmann::ordered_json::object();
-            std::thread([this, S, Variants, Snap, Alive, DeriveEndpoints, DeriveRunners, Debounce, ConfigSnap = std::move(ConfigSnap)]{
-                const IpfsWrapper::ForegroundHold Hold;
-                for (const std::string & V : Variants)
-                {
-                    std::string CErr;
-                    if (PackageCatalog::NodeClosureIncomplete(*S, V) && !PackageCatalog::CompleteClosure(*S, V, &CErr))
-                        LogWarn("DownloadManager::startDownload", "closure completion for '" + V + "': " + CErr);
-                    // The RUNNER chain (proton/wine) is itself received — complete it too, so CompatibleRunners can
-                    // enumerate it and the runner checkbox appears (else it auto-pools invisibly).
-                    for (const std::string & Rid : PackageCatalog::RunnerChainIds(*S, V, ConfigSnap))
-                        if (PackageCatalog::NodeClosureIncomplete(*S, Rid))
-                        {
-                            std::string RErr;
-                            if (!PackageCatalog::CompleteClosure(*S, Rid, &RErr))
-                                LogWarn("DownloadManager::startDownload", "runner closure '" + Rid + "': " + RErr);
-                        }
-                }
-                QMetaObject::invokeMethod(this, [this, Snap, Alive, DeriveEndpoints, DeriveRunners, Debounce]{
-                    Model.rebuildCatalog();                       // the landed node files are ordinary tree packages
-                    if (!Alive->load()) return;                   // dialog closed meanwhile — catalog is fresh anyway
-                    *Snap = Model.catalogSnapshot();
-                    (*DeriveEndpoints)();
-                    (*DeriveRunners)();                           // proton's node is present now → the choice appears
-                    Debounce->start();                            // sizes + optionals re-derive on the full graph
-                }, Qt::QueuedConnection);
-            }).detach();
-        }
+    }
+    if (AnyIncomplete)
+    {
+        QLabel * Wait = new QLabel("Part of this game is in another package that has not arrived yet, that is not "
+                                   "shared with you, or that you have installed in an older version. The download is "
+                                   "possible once that package is here as the game needs it.", &Dlg);
+        Wait->setWordWrap(true);
+        DL->addWidget(Wait);
     }
 
     QHBoxLayout * BR = new QHBoxLayout(); DL->addLayout(BR); BR->addStretch();
     QPushButton * CancelBtn = new QPushButton("Cancel", &Dlg);
     QPushButton * GoBtn = new QPushButton("Download", &Dlg); GoBtn->setDefault(true);
+    GoBtn->setEnabled(!AnyIncomplete);
     BR->addWidget(CancelBtn); BR->addWidget(GoBtn);
     connect(CancelBtn, &QPushButton::clicked, &Dlg, &QDialog::reject);
     connect(GoBtn,     &QPushButton::clicked, &Dlg, &QDialog::accept);
@@ -544,36 +520,22 @@ void DownloadManager::beginDownload(const QString &Key, const std::vector<std::s
     Workers.push_back({std::thread([this, Done, LaunchIds, RunnerIds, Toggles, Key, Snapshot = std::move(Snapshot), ConfigSnap = std::move(ConfigSnap)]() mutable {
         const IpfsWrapper::ForegroundHold Hold;   // closures, installs, content: one download, no gap for walks
         std::string Err; bool Ok = true;
-        // A RECEIVED package's closure is incomplete (only its exec + tile were shared) — complete it FIRST, through
-        // the same rolling queue (CompleteClosure: each missing node block is a plain FetchTarget into the package
-        // dir), then resolve targets against a FRESH index: the snapshot predates the just-landed blocks.
+        // Everything a download needs is in packages that have landed: a node a package contains comes with its own
+        // package (a node has one home), never fetched into this one. A gap means that package is not here yet.
         std::shared_ptr<const NodeIndex> Idx = std::move(Snapshot);
         {
-            bool Completed = false;
             std::vector<std::string> All = LaunchIds;
             All.insert(All.end(), RunnerIds.begin(), RunnerIds.end());
-            for (const std::string & Lid : All)
-                if (PackageCatalog::NodeClosureIncomplete(*Idx, Lid))
+            for (const std::string & Lid : LaunchIds)
+                for (const std::string & Rid : PackageCatalog::RunnerChainIds(*Idx, Lid, ConfigSnap)) All.push_back(Rid);
+            for (const std::string & Id : All)
+                if (const auto Missing = PackageCatalog::MissingFromClosure(*Idx, Id); !Missing.empty())
                 {
-                    if (!PackageCatalog::CompleteClosure(*Idx, Lid, &Err)) { Ok = false; break; }
-                    Completed = true;
+                    Err = "'" + Id + "' contains " + std::to_string(Missing.size()) + " node(s) from a package that has not "
+                          "arrived (or is not shared with you), e.g. " + Missing.front();
+                    Ok = false;
+                    break;
                 }
-            if (Ok && Completed) { Idx = PackageCatalog::FreshCatalogIndex(ConfigSnap); Completed = false; }
-            // The AUTO-POOLED runtime too: a received game's resolved runner chain (proton/wine) is itself received
-            // — exec + tile only — and CollectRunnerChainTargets can enumerate NOTHING from a headless runner graph
-            // (the game downloaded but its runtime silently didn't). Resolve the chain on the fresh index, complete
-            // each incomplete runner's closure the same way, and re-index once more.
-            if (Ok)
-                for (const std::string & Lid : LaunchIds)
-                    for (const std::string & Rid : PackageCatalog::RunnerChainIds(*Idx, Lid, ConfigSnap))
-                        if (PackageCatalog::NodeClosureIncomplete(*Idx, Rid))
-                        {
-                            std::string CErr;
-                            if (!PackageCatalog::CompleteClosure(*Idx, Rid, &CErr))
-                                LogWarn("DownloadManager::beginDownload", "runner closure '" + Rid + "': " + CErr);
-                            else Completed = true;
-                        }
-            if (Ok && Completed) Idx = PackageCatalog::FreshCatalogIndex(ConfigSnap);
         }
         // INSTALL = ADOPT: a received package (its nodes live under CATALOG) moves into LIBRARY/<lib>/<pkg> before a
         // byte of content is fetched, so the content lands in the library and the package is ours from here on —
@@ -656,7 +618,7 @@ DownloadManager::~DownloadManager()
 {
     //Make every fetch return, then wait for the workers: none may still be running, or inside Qt, once the manager and
     //the application are gone. Cancelling only the CIDs mapped when a download began was not enough — a worker also
-    //fetches closure blocks, received content and runner chains it learns of later, and a retryable job never fails on
+    //fetches content and runner chains it learns of later, and a retryable job never fails on
     //its own: quitting with an unprovidable fetch in flight hung the exit on join() for good, the lock still held.
     //Closing the queue fails everything queued, aborts everything active and fails whatever is enqueued next.
     //A worker's last act posts its result to this manager, which is still whole while it waits here; Qt drops that

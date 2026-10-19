@@ -55,7 +55,7 @@ void CancelDownload(const std::string &Cid);
 void ForgetDestsUnder(const std::string &Dir);
 
 // A folder moved (a received package installed: CATALOG → LIBRARY). Anything enqueued later for a path under From lands
-// under To instead — a download working from an index read before the move (its CompleteClosure, its targets) would
+// under To instead — a download working from an index read before the move (its targets) would
 // otherwise re-create the old folder as a stub beside the installed package, which then fails every later install.
 void RedirectDestsUnder(const std::string &From, const std::string &To);
 // Where a path is now: rewritten under the longest folder moved by RedirectDestsUnder, else unchanged.

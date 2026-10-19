@@ -842,6 +842,13 @@ void ValidateNodeGraph(const NodeIndex &Idx, std::vector<std::string> &Errors, s
         //A malformed node is indexed with the reason and routed through by nothing — a package that quietly does
         //less than it says. Name it.
         if (!N.LowerError.empty()) { Errors.push_back(N.LowerError); continue; }
+        //One home: the same node in a second package is a copy that drifts from its home's files and pins, and makes
+        //"whose engine is this" a guess. It belongs in one package; the others contain it by CID.
+        if (const auto D = Idx.Duplicates.find(Id); D != Idx.Duplicates.end())
+            for (const auto &Other : D->second)
+                Errors.push_back(Tag + (N.NodeId.empty() ? std::string() : " (" + N.NodeId + ")") + " is in package '"
+                                 + N.BundleDir.filename().string() + "' and again in '" + Other.filename().string()
+                                 + "' — a node has one home package; delete the copy and contain the node by CID");
 
         //Refs: a contained node must exist; an ANY member or a NOT may name a node this library lacks (a graft for a
         //version you don't have; an exclusion that cannot happen), but an ANY with no member here is unsatisfiable.
@@ -1489,7 +1496,7 @@ std::string HostPlatform()    { return "linux64"; }
 bool ServesPlatform(const Node &Runner, const std::string &Platform, const std::filesystem::path &LaunchBundleDir)
 {
     if (std::find(Runner.GuestPlatform.begin(), Runner.GuestPlatform.end(), Platform) == Runner.GuestPlatform.end()) return false;
-    return Platform != kCustomPlatform || Runner.InBundle(LaunchBundleDir);
+    return Platform != kCustomPlatform || (!LaunchBundleDir.empty() && Runner.BundleDir == LaunchBundleDir);
 }
 
 // ----- component lookups -----

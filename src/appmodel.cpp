@@ -498,36 +498,55 @@ QStringList AppModel::myLibraryNames() const
     return Out;
 }
 
+nlohmann::ordered_json AppModel::sharedWith(const std::string & Peer) const
+{
+    std::vector<std::string> Explicit;
+    if (Config->contains("Sharing") && (*Config)["Sharing"].contains(Peer) && (*Config)["Sharing"][Peer].is_array())
+        for (const auto & X : (*Config)["Sharing"][Peer]) if (X.is_string()) Explicit.push_back(X.get<std::string>());
+    nlohmann::ordered_json Shared = PackageCatalog::SharedWith(Config->value("Libraries", nlohmann::ordered_json::object()), Explicit);
+    for (const std::string & L : Explicit) if (!Shared.contains(L)) Shared[L] = nlohmann::ordered_json::array();
+    return Shared;
+}
+
+void AppModel::pushSharesTo(const std::string & Peer)
+{
+    const nlohmann::ordered_json Shared = sharedWith(Peer);
+    for (const auto & [L, Items] : Shared.items())
+    {
+        std::string Err;
+        if (!IpfsWrapper::ShareLibrary(Peer, L, Items, &Err))
+            LogWarn("AppModel::pushSharesTo", "share '" + L + "' with " + Peer + " failed: " + Err);
+    }
+    std::set<std::string> &Pushed = PushedShares[Peer];
+    for (const std::string & L : Pushed)
+        if (!Shared.contains(L)) { std::string Err; IpfsWrapper::UnshareLibrary(Peer, L, &Err); }
+    Pushed.clear();
+    for (const auto & [L, Items] : Shared.items()) { (void)Items; Pushed.insert(L); }
+}
+
 void AppModel::shareLibraryWithFriend(const QString & peer, const QString & lib)
 {
     const std::string P = peer.toStdString(), L = lib.toStdString();
-    nlohmann::ordered_json Items = nlohmann::ordered_json::array();   // the library's share entries (from the last publish)
-    if (Config->contains("Libraries") && (*Config)["Libraries"].is_object()
-        && (*Config)["Libraries"].contains(L) && (*Config)["Libraries"][L].is_array())
-        for (const auto & E : (*Config)["Libraries"][L])
-            if (E.is_object() && !E.value("cid", std::string()).empty()) Items.push_back(E);
-    std::string Err;
-    if (!IpfsWrapper::ShareLibrary(P, L, Items, &Err))
-    { LogWarn("AppModel::shareLibraryWithFriend", "share '" + L + "' with " + P + " failed: " + Err); return; }
     auto & Sh = (*Config)["Sharing"][P];
     if (!Sh.is_array()) Sh = nlohmann::ordered_json::array();
     bool Found = false;
     for (const auto & X : Sh) if (X == L) { Found = true; break; }
     if (!Found) Sh.push_back(L);
+    pushSharesTo(P);
     save();
 }
 
 void AppModel::stopSharingWithFriend(const QString & peer, const QString & lib)
 {
     const std::string P = peer.toStdString(), L = lib.toStdString();
-    std::string Err;
-    IpfsWrapper::UnshareLibrary(P, L, &Err);
+    PushedShares[P].insert(L);   // so the push below unshares it even if nothing was ever published for it
     if ((*Config).contains("Sharing") && (*Config)["Sharing"].contains(P) && (*Config)["Sharing"][P].is_array())
     {
         auto & Sh = (*Config)["Sharing"][P];
         for (auto It = Sh.begin(); It != Sh.end(); ++It) if (*It == L) { Sh.erase(It); break; }
         if (Sh.empty()) (*Config)["Sharing"].erase(P);
     }
+    pushSharesTo(P);
     save();
 }
 
@@ -597,27 +616,10 @@ void AppModel::applyFriendLibrarySnapshot(const QString & peer, const QString & 
 void AppModel::reRegisterShares()
 {
     // Go's per-friend share table is in-memory only; config["Sharing"] = {peer:[lib,…]} is the durable record. Replay
-    // it into Go with the current config["Libraries"] CIDs so a restart or a re-publish (which can move launchable CIDs)
-    // keeps the seeder half alive. A share whose library no longer exists pushes an EMPTY set (an authoritative
-    // "nothing here" snapshot for that lib name — harmless; the friend just sees it empty until we re-populate).
+    // it into Go with the current config["Libraries"] CIDs so a restart or a re-publish (which can move package CIDs)
+    // keeps the seeder half alive.
     if (!Config->contains("Sharing") || !(*Config)["Sharing"].is_object()) return;
-    const auto & Libs = (*Config)["Libraries"];
-    for (const auto & [P, Names] : (*Config)["Sharing"].items())
-    {
-        if (!Names.is_array()) continue;
-        for (const auto & N : Names)
-        {
-            if (!N.is_string()) continue;
-            const std::string L = N.get<std::string>();
-            nlohmann::ordered_json Items = nlohmann::ordered_json::array();
-            if (Libs.is_object() && Libs.contains(L) && Libs[L].is_array())
-                for (const auto & E : Libs[L])
-                    if (E.is_object() && !E.value("cid", std::string()).empty()) Items.push_back(E);
-            std::string Err;
-            if (!IpfsWrapper::ShareLibrary(P, L, Items, &Err))
-                LogWarn("AppModel::reRegisterShares", "re-share '" + L + "' with " + P + " failed: " + Err);
-        }
-    }
+    for (const auto & [P, Names] : (*Config)["Sharing"].items()) { (void)Names; pushSharesTo(P); }
 }
 
 bool AppModel::hasFriendLibraries(const QString & peer) const
@@ -729,10 +731,8 @@ void AppModel::dropReceivedStubs(const std::string & P)
     // away or is replaced, the stubs go with it — otherwise every publish they ever made stays on disk beside the
     // current one (three "v1.30.4" of three generations, each indexed, each a card). Plans from the snapshot we hold
     // to name this peer's dirs and CIDs, cancels what we enqueued for them, removes the dirs.
-    // A closure pass in flight walks a SNAPSHOT of the index taken before this drop and would write the old
-    // generation's blocks right back into the dirs removed here. Bump the generation so the pass stops at its next
-    // root, and remember to drop once more when it ends (the root it was on may have landed after the rm).
-    ++*FriendClosureGen;
+    // A landing pass in flight works from a config snapshot taken before this drop and could write the old
+    // generation's files right back into the dirs removed here: remember to drop once more when it ends.
     if (FriendClosureRunning) FriendStubsDirtyPeers.insert(P);
     // The dirs come from the snapshot we hold — or, once that is gone (receive-off / forget erased it), from what
     // this peer's last drop swept: a late block from the pass can still recreate a dir after the record is gone.
@@ -958,47 +958,27 @@ void AppModel::onFriendBlockLanded(const QString & cid, bool /*ok*/)
 
 void AppModel::completeReceivedClosures()
 {
-    // A friend's share is a set of ROOT CIDs; what makes those roots a library is the graph under them. The receiver
-    // lands the whole NODE-BLOCK closure of every received root (blocks only — kilobytes per game, ~10 MB for a
-    // whole library; content stays lazy until install), so it holds the same graph the seeder holds and derives the
-    // same things from it: which launchable is the main of a card and which is an expansion under it, which mod
-    // belongs to which game, what a graft needs. Before this the receiver had the roots plus one hop and could
-    // derive none of that. Re-entrant-safe: blocks landing while a pass runs queue exactly one more pass.
+    // A friend's share is a set of package folders, closed over what they contain. The receiver lands every node file
+    // each folder lists (blocks only — kilobytes per game; content stays lazy until install), so it holds the same
+    // graph the seeder holds and derives the same cards, offers and needs from it. Re-entrant-safe: a share changing
+    // while a pass runs queues exactly one more pass.
     if (FriendClosureRunning) { FriendClosureAgain = true; return; }
-    std::vector<std::string> Roots;
-    for (const auto & [Key, N] : CatalogIndex.Nodes)
-        if (N.Received && !N.BundleDir.empty() && PackageCatalog::NodeClosureIncomplete(CatalogIndex, Key)) Roots.push_back(Key);
-    const bool Packages = PackageCatalog::ReceivedPackagesIncomplete(*Config);   // a landed package folder listing blocks not yet on disk
-    if (Roots.empty() && !Packages) return;
+    //Each package lands whole, in its own folder; a node a package contains comes with ITS package (a share is
+    //closed over what its packages contain), never fetched into the package that needs it.
+    if (!PackageCatalog::ReceivedPackagesIncomplete(*Config))
+    {   // nothing to land: still drop what no landed folder lists (older generations, an older build's copies)
+        if (PackageCatalog::PruneStaleReceived(CatalogIndex, *Config) > 0) { rebuildCatalog(); emit friendCatalogChanged(); }
+        return;
+    }
     FriendClosureRunning = true;
-    if (Packages) LogOut("AppModel::completeReceivedClosures", "landing received package(s)");
-    if (!Roots.empty()) LogOut("AppModel::completeReceivedClosures", "landing the node closure of " + std::to_string(Roots.size()) + " received node(s)");
-    auto Snap = catalogSnapshot();
+    LogOut("AppModel::completeReceivedClosures", "landing received package(s)");
     auto Cfg  = std::make_shared<const nlohmann::ordered_json>(*Config);
-    const unsigned Gen = FriendClosureGen->load();
     AsyncWork::Run(this,   // the pass touches nothing of this model: it can outlive it
-        [Snap, Cfg, Roots, Packages, Gen, CurGen = FriendClosureGen]{
-            const IpfsWrapper::ForegroundHold Hold;   // packages, then closures: one landing, no gap for walks
-            size_t Ok = 0, Done = 0;
-            if (Packages)
-            {   // the packages first: every node block each landed folder lists, into the package's dir
-                std::string PErr;
-                if (!PackageCatalog::LandReceivedPackages(*Cfg, &PErr))
-                    LogWarn("AppModel::completeReceivedClosures", "received package(s): " + PErr);
-            }
-            for (const std::string & R : Roots)
-            {
-                if (CurGen->load() != Gen)
-                {   // the snapshot changed under us: these roots are the OLD generation's — stop, never resurrect them
-                    LogOut("AppModel::completeReceivedClosures", "snapshot changed — stopped after " + std::to_string(Done) + "/" + std::to_string(Roots.size()) + " root(s) of the previous generation");
-                    return;
-                }
-                std::string Err;
-                if (PackageCatalog::CompleteClosure(*Snap, R, &Err)) ++Ok;
-                else LogWarn("AppModel::completeReceivedClosures", "closure of received '" + R + "': " + Err);
-                ++Done;
-            }
-            LogOut("AppModel::completeReceivedClosures", std::to_string(Ok) + "/" + std::to_string(Roots.size()) + " received closure(s) landed");
+        [Cfg]{
+            const IpfsWrapper::ForegroundHold Hold;
+            std::string PErr;
+            if (!PackageCatalog::LandReceivedPackages(*Cfg, &PErr))
+                LogWarn("AppModel::completeReceivedClosures", "received package(s): " + PErr);
         },
         [this]{
             FriendClosureRunning = false;
@@ -1019,9 +999,8 @@ void AppModel::completeReceivedClosures()
             }
             emit friendCatalogChanged();
             if (FriendClosureAgain) { FriendClosureAgain = false; completeReceivedClosures(); }
-            else if (PackageCatalog::ReceivedPackagesIncomplete(*Config)
-                     || [&]{ for (const auto & [K, N] : CatalogIndex.Nodes) if (N.Received && !N.BundleDir.empty() && PackageCatalog::NodeClosureIncomplete(CatalogIndex, K)) return true; return false; }())
-                completeReceivedClosures();   // the packages landed this pass: their closures are the next pass
+            else if (PackageCatalog::ReceivedPackagesIncomplete(*Config))
+                completeReceivedClosures();   // packages still to land (a share that changed meanwhile)
         });
 }
 

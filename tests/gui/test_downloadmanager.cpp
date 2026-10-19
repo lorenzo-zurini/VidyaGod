@@ -17,6 +17,7 @@
 #include "downloadqueue.h"
 #include "nodefixture.h"
 #include "cid.h"
+#include "commonutils.h"
 #include <QElapsedTimer>
 #include <QUuid>
 #include <future>
@@ -95,12 +96,12 @@ private slots:
         IpfsWrapper::StopNode();
     }
 
-    // Quitting while a download waits on a fetch no one can serve must not hang the exit. The worker fetches what it
-    // learns of AFTER the download began — here the node a received game contains, which nobody has — and a retryable
-    // fetch never fails on its own; the destructor cancelled only the CIDs it mapped up front, so join() waited for
-    // ever (the window gone, the process still holding the lock and the repo). Teeth: go back to cancelling only
-    // DownloadCidToUid in ~DownloadManager and the destruction below does not finish.
-    void exit_does_not_wait_on_a_fetch_no_one_can_serve()
+    // A received game that contains a node from a package that has not arrived (or is not shared) is not downloaded:
+    // nothing is ever fetched INTO its package to fill the gap (a node has one home — the node comes with its own
+    // package). The download ends with an error naming the gap, and never asks the network for the missing node — even
+    // when the gap is two levels down (the game contains its own base, which contains the missing library node).
+    // Teeth: drop the worker's closure gate (it "finishes" with nothing) or make it one hop deep, and no error names it.
+    void a_download_never_fetches_a_contained_node_into_the_package()
     {
         std::string Err;
         QTemporaryDir Repo; QVERIFY(Repo.isValid());
@@ -108,12 +109,14 @@ private slots:
         QTemporaryDir RxData; QVERIFY(RxData.isValid());
         json cfg = json{{"Settings", {{"Paths", {{"LibraryRoot", (RxData.path() + "/LIBRARY").toStdString()}}}}},
                         {"FriendLibraries", {{"Alice", {{"Games", json::array()}}}}}};
-        // A node no one can have: the CID of bytes made up now (a fixed test CID may exist somewhere — one did).
-        const std::string Nobody = Cid::OfBytes("vidyagod unserved " + QUuid::createUuid().toString().toStdString());
+        const std::string Missing = Cid::OfBytes("vidyagod missing " + QUuid::createUuid().toString().toStdString());
         const std::string Dir = PackageCatalog::CatalogRootDir(cfg) + "/Alice - Games/[7] G/.package";
         std::filesystem::create_directories(Dir);
+        const json Base = json{{"LABEL", "g_base"}, {"LAYERS", json::array({ json{{"NODE", Missing}} })}};
+        const std::string BBytes = Cid::Canonical(Base), BCid = Cid::OfBytes(BBytes);
+        { std::ofstream O(Dir + "/" + BCid + ".json", std::ios::binary); O << BBytes; }
         const json Game = json{{"LABEL", "g_exec"}, {"VARIANT", "Play"}, {"LAYERS", json::array({
-            json{{"NODE", Nobody}},
+            json{{"NODE", BCid}},
             json{{"EXEC", json::array({json{{"LABEL", "Play"}, {"HOST", "linux64"}, {"EXE", "g"}, {"TILE", {{"UID", "7"}, {"TITLE", "G"}}}}})}}})}};
         const std::string Bytes = Cid::Canonical(Game), GCid = Cid::OfBytes(Bytes);
         { std::ofstream O(Dir + "/" + GCid + ".json", std::ios::binary); O << Bytes; }
@@ -122,13 +125,54 @@ private slots:
         AppModel model(&cfg, &appDir);
         model.rebuildCatalog();
         const Node * G = model.catalogIndex().Find("g_exec");
-        QVERIFY2(G && PackageCatalog::NodeClosureIncomplete(model.catalogIndex(), "g_exec"), "precondition: its closure is incomplete");
+        QVERIFY2(G && PackageCatalog::NodeClosureIncomplete(model.catalogIndex(), "g_exec"), "its closure is incomplete, two levels down");
+        IpfsModel ipfs(model);
+        auto dm = std::make_unique<DownloadManager>(model, ipfs, nullptr);
+        QSignalSpy Finished(dm.get(), &DownloadManager::downloadFinished);
+        Diagnostics::Begin();
+        dm->beginDownload("7", {G->Key()}, {}, {});
+        QTRY_VERIFY_WITH_TIMEOUT(Finished.count() == 1, 30000);
+        bool Named = false;
+        for (const auto & E : Diagnostics::Take().Entries) if (E.Message.find(Missing) != std::string::npos) Named = true;
+        QVERIFY2(Named, "the download failed naming the node that has not arrived");
+        QCOMPARE(IpfsWrapper::DebugJobState(Missing), -1);                   // never asked for
+        QVERIFY(!std::filesystem::exists(Dir + "/" + Missing + ".json"));
+        dm.reset();
+        IpfsWrapper::DebugResetQueue();
+        IpfsWrapper::StopNode();
+    }
+
+    // Quitting while a download waits on a fetch no one can serve must not hang the exit: a retryable fetch never
+    // fails on its own, so the destructor closes the queue before joining the workers. Teeth: drop CloseQueue from
+    // ~DownloadManager and the destruction below does not finish.
+    void exit_does_not_wait_on_a_fetch_no_one_can_serve()
+    {
+        std::string Err;
+        QTemporaryDir Repo; QVERIFY(Repo.isValid());
+        QVERIFY2(IpfsWrapper::StartNode((Repo.path() + "/ipfs").toStdString(), &Err), Err.c_str());
+        QTemporaryDir RxData; QVERIFY(RxData.isValid());
+        json cfg = json{{"Settings", {{"Paths", {{"LibraryRoot", (RxData.path() + "/LIBRARY").toStdString()}}}}},
+                        {"FriendLibraries", {{"Alice", {{"Games", json::array()}}}}}};
+        // Content no one can have: the CID of bytes made up now (a fixed test CID may exist somewhere — one did).
+        const std::string Nobody = Cid::OfBytes("vidyagod unserved " + QUuid::createUuid().toString().toStdString());
+        const std::string Dir = PackageCatalog::CatalogRootDir(cfg) + "/Alice - Games/[7] G/.package";
+        std::filesystem::create_directories(Dir);
+        const json Game = json{{"LABEL", "g_exec"}, {"VARIANT", "Play"}, {"LAYERS", json::array({
+            json{{"ZIP", "g.zip"}, {"SOURCE", Nobody}},
+            json{{"EXEC", json::array({json{{"LABEL", "Play"}, {"HOST", "linux64"}, {"EXE", "g"}, {"TILE", {{"UID", "7"}, {"TITLE", "G"}}}}})}}})}};
+        const std::string Bytes = Cid::Canonical(Game), GCid = Cid::OfBytes(Bytes);
+        { std::ofstream O(Dir + "/" + GCid + ".json", std::ios::binary); O << Bytes; }
+
+        QDir appDir(RxData.path());
+        AppModel model(&cfg, &appDir);
+        model.rebuildCatalog();
+        const Node * G = model.catalogIndex().Find("g_exec");
+        QVERIFY(G);
         IpfsModel ipfs(model);
         auto dm = std::make_unique<DownloadManager>(model, ipfs, nullptr);
         dm->beginDownload("7", {G->Key()}, {}, {});
         QTRY_VERIFY_WITH_TIMEOUT(IpfsWrapper::DebugJobState(Nobody) >= 0, 30000);
 
-        QElapsedTimer T; T.start();
         auto Gone = std::async(std::launch::async, [&]{ dm.reset(); });
         const bool Joined = Gone.wait_for(std::chrono::seconds(20)) == std::future_status::ready;
         if (!Joined) { IpfsWrapper::CloseQueue(); Gone.wait(); }             // let the test process end either way

@@ -67,17 +67,7 @@ struct Node {
     bool OwnTile = false;                    // its OWN list carries an entry with a TILE
 
     std::filesystem::path File;              // source .json path
-    std::filesystem::path BundleDir;         // owning bundle dir — content PATHs resolve here
-    //Every copy of it the index was built from, as (bundle dir, file): one node (one CID) may sit in several package
-    //folders — an engine two games ship, a friend's stub of an installed package. BundleDir/File are one of them.
-    std::vector<std::pair<std::filesystem::path, std::filesystem::path>> Copies;
-    bool InBundle(const std::filesystem::path &Dir) const
-    {
-        if (Dir.empty()) return false;
-        if (BundleDir == Dir) return true;
-        for (const auto &C : Copies) if (C.first == Dir) return true;
-        return false;
-    }
+    std::filesystem::path BundleDir;         // its home package folder — content PATHs resolve here
     bool Received = false;                   // a browse stub gathered from a friend's catalog (not hydrated)
 
     std::string Key() const { return Cid.empty() ? NodeId : Cid; }
@@ -103,6 +93,9 @@ struct NodeIndex {
     //A tile a GRAFT presents (its own entry carries the TILE): UID -> that graft. Its card's rows are the variants it
     //applies onto, each launched with it applied (a mod with its own card: Forgotten Empires over The Conquerors).
     std::map<std::string, std::string> TileGraft;
+    //A node has ONE home package. Other package folders found holding the same node (CID -> those folders) are an
+    //authoring error the validator names: the node belongs in one package, the others contain it by CID.
+    std::map<std::string, std::vector<std::filesystem::path>> Duplicates;
     const Node *Find(const std::string &NodeId) const;
     //The tile a UID names (null when no node presents it).
     const nlohmann::ordered_json *Tile(const std::string &Uid) const
