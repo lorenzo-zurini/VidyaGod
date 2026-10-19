@@ -490,7 +490,6 @@ std::vector<Field> Content(const char *Key, const char *Label, const char *Hint,
     std::vector<Field> F = {
         {Key,         Label,       FieldKind::Text,       Hint, {}, {}},
         {"TARGET",    "Target",    FieldKind::Text,       "FILES/%GameDir%/... - where it lands", {}, {}},
-        {"SUBMOUNTS", "Submounts", FieldKind::StringList, "source/path:dest/path", {}, {}},
     };
     if (Source) F.push_back({"SOURCE", "Source", FieldKind::Text, "CID - stamped by publish", {}, {}});
     return WithGate(std::move(F));

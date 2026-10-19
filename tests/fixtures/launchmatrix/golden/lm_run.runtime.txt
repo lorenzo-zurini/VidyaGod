@@ -71,8 +71,8 @@
 === delta reconstruction
   chain/added.txt:     added by the delta
   deltatarget/masked.txt (opaque delta must hide it): MASKED
-=== submount
-  unpacked/relocated.txt: relocated by a submount
+=== a file taken out of an archive
+  unpacked/relocated.txt: relocated by a TAKE
   carrier/nested/ignored.txt (must be absent): ABSENT
 === take (a library, contained selectively and placed at libs/)
   libs/kept.dll:    taken and renamed

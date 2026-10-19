@@ -12,7 +12,7 @@
 //
 // An instance is one self-contained config + its own durable state for one game, living FLAT at
 //   <root>/USERDATA/<PackageUID>/<InstanceName>/
-//     ├─ instance.json    ← the config blob (ex-GlobalConfig LIBRARY[i].USERSETTINGS: VARIABLES / PREFERRED_RUNNER /
+//     ├─ instance.json    ← the config blob (ex-GlobalConfig LIBRARY[i].USERSETTINGS: VARIABLES /
 //     │                      RUNNER_CHAIN / MODULES / SKIP_LAUNCH_DIALOG, + soft SELECTED_VARIANT + LASTRUN)
 //     ├─ <TARGET>/ …      ← one NAMED durable subdir per DeclarePersist (e.g. Saves/, AllData/; registry keys go in REGKEYS/)
 // UserDataPath (the durable root) IS the instance dir; each persist maps a runtime PATH to <instdir>/<TARGET>.

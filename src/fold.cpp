@@ -541,7 +541,6 @@ static Plan ResolveImpl(const Library &Lib, const std::string &Root, const Vars 
             if (ViewTakes(S.Through)) It.View = ViewJson(S.Through);
             It.Source = L.contains("SOURCE") ? L["SOURCE"] : json();
             It.Size = L.contains("SIZE") ? L["SIZE"] : json();
-            It.Submounts = L.contains("SUBMOUNTS") ? L["SUBMOUNTS"] : json();
             It.Own = NsPath(L.contains("TARGET") ? Str(L["TARGET"]) : std::string("FILES")).second;
             It.Target = Place(It.Own, S.Prefix);
             P.Seq.push_back(std::move(It));
@@ -806,7 +805,7 @@ json PlanToJson(const Plan &P)
         else
         {
             E["payload"] = I.Payload; E["dir"] = I.Dir; E["source"] = I.Source; E["size"] = I.Size;
-            E["submounts"] = I.Submounts; E["view"] = I.View;
+            E["view"] = I.View;
         }
         E["target"] = I.Target; E["from"] = I.From; E["at"] = I.At;
         Seq.push_back(std::move(E));

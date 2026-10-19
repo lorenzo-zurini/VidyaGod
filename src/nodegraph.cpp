@@ -6,6 +6,7 @@
 #include "ipfswrapper.h"     // BlockGet, BlockPut, FetchToPath
 #include "commonutils.h"     // Log*
 
+#include <algorithm>
 #include <deque>
 #include <fstream>
 #include <set>
@@ -115,12 +116,23 @@ NodeIndex FreezeToIndex(const std::map<std::string, nlohmann::ordered_json> &Wor
         // RECEIVED one inside a just-hydrated friend package's closure. They are byte-identical, but their BundleDir
         // differs and launch mounts/seeds from BundleDir — so the LOCAL copy must win regardless of topo order. A
         // received/synthetic-gathered node has a control-byte ('\x01') handle; an authored/local one does not.
+        //Every copy is remembered (Node::Copies): a package-scoped engine serves each package folder that holds it.
         const bool Authored = !Handle.empty() && (unsigned char)Handle[0] >= 0x20;
         const auto Ex = Idx.Nodes.find(Cid);
-        if (Ex == Idx.Nodes.end()) { Idx.Nodes.emplace(Cid, std::move(N)); if (Authored) AuthoredCids.insert(Cid); }
-        else if (Authored && !AuthoredCids.count(Cid))   // replace a received entry with the authored one (once)
+        if (Ex == Idx.Nodes.end())
+        {
+            N.Copies.emplace_back(N.BundleDir, N.File);
+            Idx.Nodes.emplace(Cid, std::move(N));
+            if (Authored) AuthoredCids.insert(Cid);
+            continue;
+        }
+        auto Copies = std::move(Ex->second.Copies);
+        if (std::find(Copies.begin(), Copies.end(), std::make_pair(N.BundleDir, N.File)) == Copies.end())
+            Copies.emplace_back(N.BundleDir, N.File);
+        if (Authored && !AuthoredCids.count(Cid))   // replace a received entry with the authored one (once)
         { Ex->second = std::move(N); AuthoredCids.insert(Cid); }
         // else: keep first-seen (existing authored, or both received)
+        Ex->second.Copies = std::move(Copies);
     }
     if (Skipped) LogWarn("NodeGraph::FreezeToIndex", "skipped " + std::to_string(Skipped)
                          + " node(s) with dangling/bad refs — the rest of the library is intact");

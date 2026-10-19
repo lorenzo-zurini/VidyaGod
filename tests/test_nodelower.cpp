@@ -24,7 +24,7 @@ TEST(lower_content_maps_the_type_key_and_carries_placement)
     for (const auto &K : Kinds)
     {
         const ordered_json L = Lower({ {K[0], "p.bin"}, {"TARGET", "FILES/%GameDir%"}, {"SOURCE", "Qm9"}, {"SIZE", 12},
-                                       {"SUBMOUNTS", ordered_json::array({"a/x.dll:%GameDir%/x.dll"})}, {"WHEN", "%m%==1"} });
+                                       {"WHEN", "%m%==1"} });
         if (L.empty()) { CHECK(!L.empty()); continue; }
         CHECK_EQ(L.size(), (size_t)1);
         CHECK_EQ(L[0]["TYPE"].get<std::string>(), std::string(K[1]));
@@ -33,7 +33,7 @@ TEST(lower_content_maps_the_type_key_and_carries_placement)
         CHECK_EQ(L[0]["SOURCE"]["TYPE"].get<std::string>(), std::string("ipfs"));
         CHECK_EQ(L[0]["SOURCE"]["CID"].get<std::string>(), std::string("Qm9"));
         CHECK_EQ(L[0]["SOURCE"]["SIZE"].get<int>(), 12);
-        CHECK_EQ(L[0]["SUBMOUNTS"][0].get<std::string>(), std::string("a/x.dll:%GameDir%/x.dll"));
+        CHECK(!L[0].contains("SUBMOUNTS"));                                   // only a TAKE submounts (LowerPlan)
         CHECK_EQ(L[0]["WHEN"].get<std::string>(), std::string("%m%==1"));
     }
     //A DIR is a host directory: it lowers with its placement, and has no SOURCE to fetch.
@@ -168,7 +168,8 @@ TEST(check_refuses_type_confused_payloads_instead_of_throwing)
         { {"EXEC", ordered_json::array({ {{"LABEL", "P"}, {"GUEST_ROOTS", {{"%Media%", "E:\\"}}}, {"DRIVES", {{"C:", "pfx/drive_c"}}}} })} },  // E: unmapped
         { {"EXEC", ordered_json::array({ {{"LABEL", "P"}, {"GUEST_ROOTS", {{"%GameDir%", "C:\\g"}}}} })} },                              // no DRIVES
         { {"EXEC", ordered_json::array({ {{"LABEL", "P"}, {"DRIVES", {{"C:", ordered_json::array()}}}} })} },
-        { {"KEEP", {{"FILES/x", "yes"}}} }, { {"ANY", ordered_json::array()} }, { {"ANY", ordered_json::array({1})} }, { {"NOT", 1} },
+        { {"KEEP", {{"FILES/x", "yes"}}} }, { {"KEEP", {{"VARS/x", true}}} }, { {"KEEP", {{"FILESX/x", true}}} },
+        { {"KEEP", {{"REGISTRY/HKCU/x", true}}} }, { {"ANY", ordered_json::array()} }, { {"ANY", ordered_json::array({1})} }, { {"NOT", 1} },
         { {"ZIP", "x"}, {"EXTRA", 1} },
         //two selections landing on one address (the same leaf name, a pair renamed onto a leaf, case aside)
         { {"NODE", "x"}, {"TAKE", ordered_json::array({"FILES/a/d3d8.dll", "FILES/b/D3D8.dll"})} },

@@ -330,7 +330,7 @@ private slots:
         QCOMPARE(L[0].second, std::string("GameDir"));
     }
 
-    // PickRunnerNode honours an explicit RunnerID pin over the first-qualifying default.
+    // A pinned chain is honoured over the first-qualifying default.
     void pick_runner_honours_pin()
     {
         NodeIndex idx;
@@ -340,13 +340,10 @@ private slots:
         const json cfg = json{{"Settings", json::object()}};
 
         ContainerParams cp("/tmp/vg_bundle");
-        const Node * def = LaunchResolver::PickRunnerNode(idx, launch, cp, cfg);
-        QVERIFY(def != nullptr);   // some runner qualifies (map order → wineA)
+        QCOMPARE(LaunchResolver::ResolveChainIds(idx, launch, cp, cfg)[0], std::string("wineA"));   // node-id order
 
-        cp.RunnerID = "wineB";
-        const Node * pinned = LaunchResolver::PickRunnerNode(idx, launch, cp, cfg);
-        QVERIFY(pinned != nullptr);
-        QCOMPARE(pinned->NodeId, std::string("wineB"));
+        cp.RunnerChainIds = { "wineB" };
+        QCOMPARE(LaunchResolver::ResolveChainIds(idx, launch, cp, cfg)[0], std::string("wineB"));
     }
 
     // The default pick prefers a runner RECOMMENDED for this tile over the alphabetically-first one. (A package never
@@ -361,9 +358,7 @@ private slots:
         const json cfg = json{{"Settings", json::object()}};
 
         ContainerParams cp("/tmp/vg_bundle");
-        const Node * def = LaunchResolver::PickRunnerNode(idx, launch, cp, cfg);
-        QVERIFY(def != nullptr);
-        QCOMPARE(def->NodeId, std::string("zzz_wine"));   // recommended beats alphabetical
+        QCOMPARE(LaunchResolver::ResolveChainIds(idx, launch, cp, cfg)[0], std::string("zzz_wine"));   // recommended beats alphabetical
     }
 
     // Between equally-(non-)recommended runners, one shipped in the launch node's own package wins (embedded > global).
@@ -378,9 +373,7 @@ private slots:
         Node launch = launchNode("game", "win32", {}); launch.BundleDir = "/repo/mygame";
         const json cfg = json{{"Settings", json::object()}};
         ContainerParams cp("/tmp/vg_bundle");
-        const Node * def = LaunchResolver::PickRunnerNode(idx, launch, cp, cfg);
-        QVERIFY(def != nullptr);
-        QCOMPARE(def->NodeId, std::string("zzz_wine"));   // package-local beats alphabetical global
+        QCOMPARE(LaunchResolver::ResolveChainIds(idx, launch, cp, cfg)[0], std::string("zzz_wine"));   // package-local beats alphabetical global
     }
 
     // DerivePersistence (unified Persist primitive): pristine by default, KEEP target classification by shape, and a
@@ -595,6 +588,36 @@ private slots:
         // ...and a pinned chain naming the foreign engine is not honoured: it falls back to the package's own.
         cp.RunnerChainIds = { "gemrb" };
         QCOMPARE(LaunchResolver::ResolveChainIds(idx, launch, cp, cfg)[0], std::string("engine"));
+    }
+
+    // Installed runners first: the package's Windows engine under proton (installed) beats its native engine (one hop
+    // shorter, but its build is not downloaded yet) — the chain the Play gate counted is the one that runs. With
+    // nothing installed to carry it, the chain is the one to download, and the gate says so.
+    // Teeth: drop the installed pass (ChainOver over InstalledOf) and the native engine wins; make HasUsableChain
+    // return true and the last check fails.
+    void chain_prefers_installed_runners_and_agrees_with_the_play_gate()
+    {
+        NodeIndex idx;
+        idx.Nodes["linbuild"] = contentNode("linbuild", json::array({ json{{"ZIP", "engine-linux.zip"}} }));
+        idx.Nodes["lin"] = chainRunner("lin", {"custom"}, kMachine, "%RunnerMount%/engine", {"linbuild"});
+        Node win = chainRunner("win", {"custom"}, "win64", "%RunnerMount%/engine.exe");
+        win.BundleDir = "/tmp/vg_bundle";
+        idx.Nodes["win"] = win;
+        idx.Nodes["lin"].BundleDir = "/tmp/vg_bundle";
+        idx.Nodes["proton"] = chainRunner("proton", {"win64"}, kMachine);
+        Node launch = launchNode("game", "custom", {});
+        idx.Nodes["game"] = launch;
+        ContainerParams cp("/tmp/vg_bundle");
+        const json cfg = json{{"Settings", json::object()}};
+        QVERIFY(!PackageCatalog::RunnerInstalled(idx, "lin"));                       // precondition: not downloaded
+        auto ids = LaunchResolver::ResolveChainIds(idx, launch, cp, cfg);
+        QVERIFY((int)ids.size() >= 2);
+        QCOMPARE(ids[0], std::string("win"));
+        QCOMPARE(ids[1], std::string("proton"));
+        QVERIFY(PackageCatalog::HasUsableChain(idx, launch));
+        idx.Nodes.erase("proton");
+        QCOMPARE(LaunchResolver::ResolveChainIds(idx, launch, cp, cfg)[0], std::string("lin"));   // what to download
+        QVERIFY2(!PackageCatalog::HasUsableChain(idx, launch), "nothing installed runs it: Play asks for the runner");
     }
 
     // The chain bridges the SELECTED entry's platform, never the node's default view: a node carrying a native entry
@@ -1398,6 +1421,36 @@ private slots:
         auto two = LaunchResolver::ComposeGuestTarget(cp);
         QCOMPARE(two.ContentRel, std::string("__runner_wrap__/wrap.exe"));
         QCOMPARE(two.TrailingArgs[0], std::string("C:\\766\\__runner_emu__\\emu.exe"));
+    }
+
+    // An inner runner's ENV reaches the process (one process tree): over the boundary's, the innermost winning, its
+    // %RunnerMount% its own build — and under the game's own ENV, which wins over every runner.
+    // Teeth: drop ApplyInnerEnv's loops and HW_Data never arrives; let an outer inner link overwrite and
+    // SHARED reads "wrap"; skip GameSays and the game's GAME_WINS loses.
+    void inner_runner_env_joins_the_process()
+    {
+        ContainerParams cp("/tmp/vg_bundle"); cp.PackageUID = "766";
+        cp.RunnerMountPath = "/tmp/rt/RUNNER";
+        RunnerLink Proton = mkLink("proton", "linux64", "%RunnerMount%/proton", "pfx/drive_c/%PackageUID%",
+                                   {"waitforexitandrun", "%GameDir%\\%ContentPath%"});
+        Proton.GameDirGuest = "C:\\%PackageUID%";
+        RunnerLink Emu = mkLink("emu", "plat", "%RunnerMount%/emu.exe", "", {"%Content%"});
+        Emu.Env = { {"HW_Data", "%RunnerMount%\\data"}, {"SHARED", "emu"}, {"GAME_WINS", "emu"} };
+        Emu.RemoveEnv = { "DROPPED" };
+        RunnerLink Wrap = mkLink("wrap", "win64", "%RunnerMount%/wrap.exe", "", {"%Content%"});
+        Wrap.Env = { {"SHARED", "wrap"}, {"DROPPED", "wrap"}, {"WRAP_ONLY", "1"} };
+        cp.RunnerChain = { Emu, Wrap, Proton, mkLink("native", "linux64", "%Content%") };
+        cp.ExePathRelative = std::filesystem::path("rom.bin");
+        cp.RunnerEnv = { {"DROPPED", "boundary"}, {"GAME_WINS", "game"} };      // the game's merged over the boundary's
+        cp.LaunchEnv = { {"GAME_WINS", "game"} };
+        const auto gt = LaunchResolver::ComposeGuestTarget(cp);
+        LaunchResolver::ApplyInnerEnv(cp, gt);
+        QCOMPARE(cp.RunnerEnv.value("HW_Data", std::string()), std::string("C:\\766\\__runner_emu__\\data"));
+        QCOMPARE(cp.RunnerEnv.value("SHARED", std::string()), std::string("emu"));      // the innermost wins
+        QCOMPARE(cp.RunnerEnv.value("WRAP_ONLY", std::string()), std::string("1"));
+        QCOMPARE(cp.RunnerEnv.value("GAME_WINS", std::string()), std::string("game"));  // the game wins over runners
+        QVERIFY(!cp.RunnerEnv.contains("DROPPED"));                                      // an inner removal beats outer sets
+        QVERIFY(std::find(cp.RunnerRemoveEnv.begin(), cp.RunnerRemoveEnv.end(), "DROPPED") != cp.RunnerRemoveEnv.end());
     }
 
     // Every classic chain ([content-runner, native]) has no inner links → ComposeGuestTarget is a no-op.

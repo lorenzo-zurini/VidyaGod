@@ -853,6 +853,40 @@ private slots:
         QVERIFY2(haveTheirs, "CATALOG node is scanned into the SAME index (drop the CATALOG root → this fails)");
     }
 
+    // One engine (one node, byte-identical) shipped by two packages serves both — a "custom" engine is the package's
+    // own, and both hold it. A friend's stub of it never takes it over: the installed copy is the one it mounts from.
+    // Teeth: index only the first copy (no Node::Copies) and BG2 has no engine; drop the installed-copy preference
+    // and the engine reads as a received stub (CATALOG sorts before LIBRARY); drop the files-here preference and the
+    // engine reads from BG, whose download has not arrived, so it is neither installed nor mountable.
+    void one_engine_in_two_packages_serves_both()
+    {
+        QTemporaryDir Root; QVERIFY(Root.isValid());
+        json cfg = json{{"Settings", {{"Paths", {{"LibraryRoot", (Root.path() + "/LIBRARY").toStdString()}}}}}};
+        const std::filesystem::path Lib = PackageCatalog::LibraryRootDir(cfg), Cat = PackageCatalog::CatalogRootDir(cfg);
+        const json Engine = json{{"LABEL", "engine"}, {"LAYERS", json::array({ json{{"ZIP", "engine.zip"}}, json{{"EXEC", json::array({
+            json{{"LABEL", "engine"}, {"HOST", ManifestModel::MachinePlatform()}, {"GUEST", json::array({"custom"})},
+                 {"EXE", "%RunnerMount%/engine"}} })}} })}};
+        const std::filesystem::path BG = Lib / "VidyaGod/[1] BG", BG2 = Lib / "VidyaGod/[2] BG2",
+                                    Stub = Cat / "Alice - Games/[3] BG3";
+        for (const auto &D : { BG, BG2, Stub / ".package" })
+        {
+            std::filesystem::create_directories(D);
+            writeJson(QString::fromStdString((D / "engine.json").string()), Engine);
+        }
+        { std::ofstream Z(BG2 / "engine.zip"); Z << "the engine"; }                 // of BG's and BG2's, only BG2's has arrived
+        { std::ofstream Z(Stub / "engine.zip"); Z << "the engine"; }                // the stub's too: still not ours
+        const NodeIndex Idx = PackageCatalog::BuildCatalogIndex(cfg);
+        const Node *E = nullptr;
+        for (const auto &[C, N] : Idx.Nodes) if (N.NodeId == "engine") E = &N;
+        QVERIFY(E);
+        QVERIFY(ManifestModel::ServesPlatform(*E, "custom", BG));
+        QVERIFY2(ManifestModel::ServesPlatform(*E, "custom", BG2), "the second package's own engine serves it");
+        QVERIFY(!ManifestModel::ServesPlatform(*E, "custom", Lib / "VidyaGod/[4] Other"));
+        QVERIFY2(!E->Received && E->BundleDir != Stub, "an installed copy beats a friend's stub");
+        QVERIFY2(E->BundleDir == BG2, "the copy whose files are here is the one read");
+        QVERIFY(PackageCatalog::RunnerInstalled(Idx, E->Key()));
+    }
+
     // A node that does not freeze (here: a cycle — each needs the other's CID first) is skipped, and so is every node
     // referencing it: its frozen bytes would carry a working-tree handle nothing holds. The rest of the library stands.
     // Teeth: stop FreezeNodeJson reporting refs to unfrozen tree nodes and a, b and user index with raw handles.
@@ -1675,6 +1709,23 @@ private slots:
         for (const Node * r : runners) { if (r->NodeId == "wine") hasWine = true; if (r->NodeId == "snes9x") hasSnes = true; }
         QVERIFY(hasWine);
         QVERIFY(!hasSnes);   // snes runner doesn't serve win32
+    }
+
+    // A "custom" engine is offered only to its own package: the chain-step choices and the runner list both ask where
+    // the launch lives. Teeth: drop LaunchBundleDir from either call's ServesPlatform and the other package sees it.
+    void a_custom_engine_is_offered_only_to_its_own_package()
+    {
+        NodeIndex idx;
+        Node engine; engine.NodeId = "engine"; engine.HasRunner = true; engine.GuestPlatform = {"custom"};
+        engine.HostPlatform = ManifestModel::MachinePlatform(); engine.BundleDir = "/pkg/a";
+        engine.Exec = json{{"EXECUTABLE", "%RunnerMount%/engine"}};
+        idx.Nodes["engine"] = engine;
+        Node mine; mine.NodeId = "mine"; mine.HasExec = true; mine.HostPlatform = "custom"; mine.BundleDir = "/pkg/a";
+        Node theirs = mine; theirs.NodeId = "theirs"; theirs.BundleDir = "/pkg/b";
+        QCOMPARE((int)PackageCatalog::CandidateRunners(idx, "custom", "/pkg/a").size(), 1);
+        QCOMPARE((int)PackageCatalog::CandidateRunners(idx, "custom", "/pkg/b").size(), 0);
+        QCOMPARE((int)PackageCatalog::CompatibleRunners(idx, mine).size(), 1);
+        QCOMPARE((int)PackageCatalog::CompatibleRunners(idx, theirs).size(), 0);
     }
 
     // A package download pools the game's content layers AND its runner's build layers into ONE fetch batch (so they

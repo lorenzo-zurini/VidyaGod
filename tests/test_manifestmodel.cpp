@@ -470,12 +470,17 @@ TEST(validate_counts_a_runner_chain_as_serving_a_platform)
     // "custom" is served only by an engine in the game's own package.
     AddChain(Idx, "theirs", { NF::Runner("linux64", {"custom"}, "%RunnerMount%/gemrb") }, {}, ordered_json::object(), "/other");
     Game("custom_elsewhere", "custom");
+    // ...and a package's own engine counts, even a Windows one (it runs under proton).
+    AddChain(Idx, "own_engine", { NF::Runner("win64", {"custom"}, "%RunnerMount%/engine.exe") }, {}, ordered_json::object(), "/mine");
+    Add(Idx, { {"CID", "custom_own"}, {"LABEL", "custom_own"}, {"VARIANT", "1"}, {"LAYERS", ordered_json::array({
+        {{"EXEC", ordered_json::array({ {{"LABEL", "Play"}, {"HOST", "custom"}, {"EXE", "%GameDir%/x"}, {"TILE", {{"UID", "custom_own"}}}} })}} })} }, "/mine");
     ManifestModel::DeriveFacts(Idx);
     std::vector<std::string> W;
     Validate(Idx, &W);
     CHECK(!AnyContains(W, "no runner serves platform 'enginegame'"));
     CHECK(AnyContains(W, "no runner serves platform 'nowhere'"));
     CHECK(AnyContains(W, "node 'custom_elsewhere': no runner serves platform 'custom'"));
+    CHECK(!AnyContains(W, "node 'custom_own'"));
 }
 
 TEST(validate_requires_a_variant_to_present_a_tile_it_recommends)
@@ -619,7 +624,6 @@ TEST(validate_places_anchors_at_the_start_of_paths_and_reads_every_value)
     AddChain(Idx, "proton", { R });
     Add(Idx, { {"CID", "g"}, {"LABEL", "g"}, {"LAYERS", ordered_json::array({
         {{"ZIP", "g.zip"}, {"TARGET", "FILES/mods/%GameDir%/x"}},                              // anchor mid-path
-        {{"ZIP", "h.zip"}, {"SUBMOUNTS", ordered_json::array({"a:b/%GameDir%"})}},             // …in a submount
         {{"KEEP", {{"FILES/saves/%GameDir%/", true}}}},                                         // …in a KEEP
         {{"REG", {{"HKLM", {{"Software", {{"G", {{"CD", "E:"}}}}}}}}}},                          // a bare drive value
         {{"EDIT", ordered_json::array({ {{"MODE", "ConfigWrite"}, {"KEY", "/W:"}, {"VALUE", "1"}} })}, {"TARGET", "FILES/%GameDir%/c.cfg"}},  // a key, not a drive
@@ -639,7 +643,6 @@ TEST(validate_places_anchors_at_the_start_of_paths_and_reads_every_value)
     CHECK(!AnyContains(E, "%ProgramFiles32%/b' has"));
     CHECK(AnyContains(E, "path 'mods/%GameDir%' has %GameDir% inside it"));
     CHECK(AnyContains(E, "path 'mods/%GameDir%/x' has %GameDir% inside it"));
-    CHECK(AnyContains(E, "path 'b/%GameDir%' has %GameDir% inside it"));
     CHECK(AnyContains(E, "path 'saves/%GameDir%/' has %GameDir% inside it"));
     CHECK(AnyContains(E, "path 'bin/%GameDir%' has %GameDir% inside it"));
     CHECK(!AnyContains(E, "path '%GameDir%/g.exe'"));

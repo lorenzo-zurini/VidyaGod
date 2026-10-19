@@ -176,10 +176,9 @@ std::pair<int, int> AppModel::importPackagesFromDir(const QString & Sel)
         nlohmann::ordered_json Slim;
         Slim["PACKAGEUID"] = Uid; Slim["PACKAGENAME"] = Name; Slim["PATH"] = Path.toStdString();
 
-        // Per-package config (incl. PREFERRED_RUNNER) now lives in the INSTANCE file, not the LIBRARY entry — this
-        // entry stays package-free. No PREFERRED_RUNNER seed is needed: PickRunnerNode already defaults to the
-        // package-side RECOMMENDED runner (DeclareExec.RUNNER) when nothing is pinned, so a fresh game picks it
-        // automatically, and the user overrides in the prelaunch picker (which persists to the instance).
+        // Per-package config (incl. RUNNER_CHAIN) lives in the INSTANCE file, not the LIBRARY entry — this entry
+        // stays package-free. No runner seed is needed: the chain resolver prefers a runner RECOMMENDED for the tile
+        // when nothing is pinned, and the user overrides in the prelaunch picker (which persists to the instance).
 
         (*Config)["LIBRARY"].push_back(Slim);
         ++Added;

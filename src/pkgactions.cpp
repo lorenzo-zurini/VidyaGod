@@ -42,7 +42,7 @@ using PkgGraph::ContentType;
 using PkgGraph::ContentName;
 using PkgGraph::ContentTarget;
 
-//Point the content layer at new bytes: TYPE now names NAME. Where the layer sits, its TARGET, SUBMOUNTS and WHEN
+//Point the content layer at new bytes: TYPE now names NAME. Where the layer sits, its TARGET and WHEN
 //stay; SOURCE and SIZE described the OLD bytes and go (publish stamps the new ones). A node without a content layer
 //gets one, appended. False (nothing written) when LAYERS is there but not a list — the JSON view's to fix.
 bool SetContent(json & N, const std::string & Type, const std::string & Name)

@@ -68,6 +68,16 @@ struct Node {
 
     std::filesystem::path File;              // source .json path
     std::filesystem::path BundleDir;         // owning bundle dir — content PATHs resolve here
+    //Every copy of it the index was built from, as (bundle dir, file): one node (one CID) may sit in several package
+    //folders — an engine two games ship, a friend's stub of an installed package. BundleDir/File are one of them.
+    std::vector<std::pair<std::filesystem::path, std::filesystem::path>> Copies;
+    bool InBundle(const std::filesystem::path &Dir) const
+    {
+        if (Dir.empty()) return false;
+        if (BundleDir == Dir) return true;
+        for (const auto &C : Copies) if (C.first == Dir) return true;
+        return false;
+    }
     bool Received = false;                   // a browse stub gathered from a friend's catalog (not hydrated)
 
     std::string Key() const { return Cid.empty() ? NodeId : Cid; }
@@ -250,7 +260,8 @@ std::string MachinePlatform();   // the host platform a runner variant's HOST_PL
 // ships as a runner in the game's package with GUEST ["custom"], and the game's entry says HOST "custom".
 inline constexpr const char *kCustomPlatform = "custom";
 // Whether Runner can run Platform for a launch from LaunchBundleDir: GUEST lists it — and for "custom", the runner is
-// in the launch's own package (another package's engine never runs this one). Every runner match goes through this.
+// in the launch's own package (another package's engine never runs this one). Every match against a launch's platform
+// goes through this; the native-terminal checks (HOST==GUEST==machine) compare the machine platform directly.
 bool ServesPlatform(const Node &Runner, const std::string &Platform, const std::filesystem::path &LaunchBundleDir);
 std::string HostPlatform();      // the platform token the host runs as (Phase-1 stub: "linux64")
 

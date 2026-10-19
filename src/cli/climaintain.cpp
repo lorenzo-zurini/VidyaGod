@@ -164,7 +164,7 @@ int CliModes::RunMaintenanceModes(LaunchParameters &LaunchParameters, nlohmann::
                 if (Fold::TypeOf(J["LAYERS"][(size_t)k]) == "ZIP") { Raw = k; break; }
             nlohmann::ordered_json &L0 = J["LAYERS"][(size_t)Raw];
             nlohmann::ordered_json D = { {"DELTA", blob} };
-            for (const char *K : { "TARGET", "SUBMOUNTS", "WHEN", "COMMENT" }) if (L0.contains(K)) D[K] = L0[K];
+            for (const char *K : { "TARGET", "WHEN", "COMMENT" }) if (L0.contains(K)) D[K] = L0[K];
             L0 = std::move(D);
             { std::ofstream o(vs[i].node->File); o << J.dump(4) << "\n"; }
 

@@ -1674,13 +1674,39 @@ NodeIndex BuildCatalogIndex(const nlohmann::ordered_json &GlobalConfigJSON)
     //A node that lives under CATALOG is a RECEIVED stub: a friend's bytes, browsable and downloadable, never a
     //graft candidate (it would mount un-hydrated). Decided by where its file lives — the only fact that
     //distinguishes it, since the frozen index is one flat graph.
+    //A node that is ALSO installed (a friend's stub of a package we have) is ours: it mounts and seeds from our copy.
     const std::filesystem::path Cat = std::filesystem::path(CatalogRootDir(GlobalConfigJSON)).lexically_normal();
+    auto UnderCatalog = [&](const std::filesystem::path &Dir) {
+        const std::filesystem::path D = Dir.lexically_normal();
+        auto [CatEnd, DEnd] = std::mismatch(Cat.begin(), Cat.end(), D.begin(), D.end());
+        (void)DEnd;
+        return !Cat.empty() && CatEnd == Cat.end();
+    };
+    //Of several copies, the one launches read: an installed one before a stub, and of those one whose content files are
+    //here — a node's files live beside it, so a copy whose download has not arrived must not hide one that has (the
+    //same engine shipped by two games, only one of them downloaded yet).
+    auto Holds = [](const Node &N, const std::filesystem::path &Dir) {
+        std::error_code Ec;
+        for (const auto &L : N.Layers)
+        {
+            if (!ManifestModel::IsRunnerBuildLayer(L)) continue;               // real bytes (not a %runtime% dir)
+            std::filesystem::path Local; std::string Cid;
+            ManifestModel::LayerLocator(L, Dir, Local, Cid);
+            if (Local != Dir && !std::filesystem::exists(Local, Ec)) return false;
+        }
+        return true;
+    };
     for (auto &[Id, N] : Idx.Nodes)
     {
         (void)Id;
-        const std::filesystem::path D = N.BundleDir.lexically_normal();
-        auto [CatEnd, DEnd] = std::mismatch(Cat.begin(), Cat.end(), D.begin(), D.end());
-        N.Received = !Cat.empty() && CatEnd == Cat.end();
+        if (N.Copies.size() > 1)
+        {
+            int Best = -1;
+            for (const auto &[Dir, File] : N.Copies)
+                if (const int Rank = (UnderCatalog(Dir) ? 0 : 2) + (Holds(N, Dir) ? 1 : 0); Rank > Best)
+                { Best = Rank; N.BundleDir = Dir; N.File = File; }
+        }
+        N.Received = UnderCatalog(N.BundleDir);
     }
 
     return Idx;
@@ -1952,17 +1978,6 @@ std::vector<std::string> OfferedGrafts(const NodeIndex &Idx, const std::string &
     for (const auto &G : Fold::OfferedGrafts(Lib, Fold::BuildGraftIndex(Lib), P, Face).Offered)
         if (LocalGraft(Idx, G)) Out.push_back(G);
     return Out;
-}
-
-std::vector<const Node*> RunnerCandidates(const NodeIndex &Idx, const Node &Launch)
-{
-    std::vector<const Node*> Out;
-    for (const auto &[Id, N] : Idx.Nodes)
-    {
-        if (!N.IsRunner() || N.HostPlatform != MachinePlatform()) continue;
-        if (ServesPlatform(N, Launch.HostPlatform, Launch.BundleDir) && RunnerWrapper::ExecutableAvailable(N.Exec)) Out.push_back(&N);
-    }
-    return Out;   // std::map iteration = sorted by node id
 }
 
 std::vector<const Node*> CompatibleRunners(const NodeIndex &Idx, const Node &Launch)

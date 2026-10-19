@@ -82,12 +82,17 @@ struct GuestTarget
                                                // (the innermost inner runner's guest exe location); "" when classic
     std::vector<std::string> TrailingArgs;     // guest args appended AFTER the boundary's ARGS (the inner runners' own
                                                // args, e.g. the ROM path) — already guest-translated + %token%-expanded
+    nlohmann::ordered_json   Env = nlohmann::ordered_json::object();   // the inner runners' ENV, expanded (%RunnerMount%
+                                               // = each one's own build), the innermost winning a shared key
+    std::vector<std::string> RemoveEnv;        // the inner runners' REMOVE_ENV
 };
 
 //Compose the cross-namespace guest target for CP (the resolved chain + content). Returns {CrossNamespace:false} when
 //there are no inner links (every classic chain) — callers then run the content directly. Otherwise redirects the
 //boundary runner at the inner runners' guest command (innermost exe + trailing args). Pure; does not mutate CP.
 GuestTarget ComposeGuestTarget(struct ContainerParams &CP);
+//The inner runners' environment joins the boundary's (one process tree): over the boundary's, under the game's own.
+void ApplyInnerEnv(struct ContainerParams &CP, const GuestTarget &T);
 
 //Native node-graph init — populates ContainerParams + the component pool (ComponentPool, out) DIRECTLY from the
 //node graph (ContainerParams.NodeIdx / .LaunchNodeId): runner pick, recipe, paths, custom vars, persistence.
@@ -108,9 +113,6 @@ std::vector<std::pair<std::string, std::string>> AnchorLayouts(struct ContainerP
 nlohmann::ordered_json RunnerOps(const NodeIndex &Idx, const std::string &RunnerId, Fold::Plan *PlanOut = nullptr);
 [[nodiscard]] bool InitializeFromNode(struct ContainerParams &ContainerParams, nlohmann::ordered_json &ComponentPool, const nlohmann::ordered_json &GlobalConfigJSON);
 
-//Picks the best ROLE:"runner" node for a launch node (GUEST ∋ launch host, HOST==machine, executable available),
-//priority: explicit RunnerID pin > USERSETTINGS PREFERRED_RUNNER > first qualifying (node-id order). nullptr if none.
-const Node *PickRunnerNode(const NodeIndex &Idx, const Node &Launch, const struct ContainerParams &CP, const nlohmann::ordered_json &GlobalConfigJSON);
 
 //Derives the session paths (Temp/Runtime/WriteLayer/DefaultData/UserData/Program/DefPrefix + ContentRoot
 //resolution + PrefixRoot + screen geometry) from already-set ContainerParams fields.

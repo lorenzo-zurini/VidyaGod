@@ -1,0 +1,136 @@
+{
+  "ComposedExec": {
+    "CONTENTPATH": "%GameDir%/game/data.txt",
+    "EXEARGS": [],
+    "LABEL": "Play",
+    "PLATFORM": "fixturevm"
+  },
+  "Content": "<TMP>/90000000000001/DefaultInstance/RUNTIME/pfx/drive_c/90000000000001/game/data.txt",
+  "ContentPath": "game/data.txt",
+  "ContentRoot": "pfx/drive_c/90000000000001",
+  "CustomVariables": {
+    "VIDYAGOD_PEER_NAMES": "<volatile>",
+    "VIDYAGOD_PEER_VIPS": "<volatile>",
+    "VIDYAGOD_SANDBOX_NET": "isolated",
+    "VIDYAGOD_SELF_NAME": "<volatile>",
+    "VIDYAGOD_SELF_VIP": "<volatile>",
+    "VIDYAGOD_SUBNET": "<volatile>"
+  },
+  "DLLOverrides": [],
+  "Drives": {
+    "C:": "%PrefixRoot%/drive_c"
+  },
+  "ExeArgs": [],
+  "GameName": "Launch Matrix",
+  "GuestRoots": {
+    "%Documents%": "C:\\users\\player\\Documents",
+    "%GameDir%": "C:\\%PackageUID%"
+  },
+  "KeepDirs": [],
+  "KeepFiles": [],
+  "KeepRegKeys": [],
+  "LaunchEnv": {},
+  "LaunchRemoveEnv": [],
+  "PackageUID": "90000000000001",
+  "Platform": "fixturevm",
+  "PrefixGenerate": false,
+  "PrefixRoot": "pfx",
+  "Recipe": [
+    "lm_nested"
+  ],
+  "RunnerArgs": [
+    "--run"
+  ],
+  "RunnerChain": [
+    {
+      "Executable": "%RunnerMount%/inner/fakerunner.sh",
+      "Guests": [
+        "fixturevm"
+      ],
+      "Host": "fixture32",
+      "Native": true,
+      "NodeId": "bafkreibzsdflcbwhoz7jc4e3rbijij6g2qmyutx6tak5cge5lzrgxqljx4"
+    },
+    {
+      "Executable": "%RunnerMount%/runner/fakerunner.sh",
+      "Guests": [
+        "fixture32"
+      ],
+      "Host": "linux64",
+      "Native": false,
+      "NodeId": "bafkreicnpcx2mu4vdm2x6vnzh3pk3csw4ha2l6bkzvpqmdnrtu53cbyx6a"
+    },
+    {
+      "Executable": "/bin/sh",
+      "Guests": [
+        "linux64"
+      ],
+      "Host": "linux64",
+      "Native": true,
+      "NodeId": "bafkreiclbditqnvr7dfugtxdcouvyqfz6mecord4owyjn2l55ni2mrfcry"
+    }
+  ],
+  "RunnerComponents": [
+    {
+      "COMPONENTID": "lm_runner_prefix",
+      "SUBCOMPONENTS": [
+        {
+          "PATH": "<DATA>/fixture/[90000000000001][v1.0] Launch Matrix/fakerunner.sh",
+          "TARGET": "runner/fakerunner.sh",
+          "TYPE": "VFSFileLayer"
+        }
+      ]
+    }
+  ],
+  "RunnerEnv": {
+    "LM_FROM_VAR": "%lm_text%",
+    "LM_INNER_ENV": "C:\\90000000000001\\__runner_bafkreibzsdflcbwhoz7jc4e3rbijij6g2qmyutx6tak5cge5lzrgxqljx4__",
+    "LM_RUNNER_ENV": "inner-beats-boundary"
+  },
+  "RunnerExecutable": "%RunnerMount%/runner/fakerunner.sh",
+  "RunnerLayers": [
+    {
+      "PATH": "<DATA>/fixture/[90000000000001][v1.0] Launch Matrix/fakerunner.sh",
+      "TARGET": "runner/fakerunner.sh",
+      "TYPE": "VFSFileLayer"
+    }
+  ],
+  "RunnerName": "lm_runner_prefix",
+  "RunnerPersistLayers": [],
+  "RunnerRecipe": [
+    "lm_runner_prefix"
+  ],
+  "RunnerRemoveEnv": [
+    "LM_UNWANTED"
+  ],
+  "RunnerShipsBuild": true,
+  "SubComponentsArray": [
+    {
+      "PATH": "<DATA>/fixture/[90000000000001][v1.0] Launch Matrix/base.zip",
+      "TARGET": "pfx/drive_c/90000000000001",
+      "TYPE": "VFSZipLayer"
+    }
+  ],
+  "UnifiedRuntime": false,
+  "Variables": {
+    "Content": "<TMP>/90000000000001/DefaultInstance/RUNTIME/pfx/drive_c/90000000000001/game/data.txt",
+    "ContentPath": "game/data.txt",
+    "Documents": "C:\\users\\player\\Documents",
+    "GameDir": "C:\\90000000000001",
+    "GameName": "Launch Matrix",
+    "PackageName": "Launch Matrix",
+    "PackageUID": "90000000000001",
+    "PrefixRoot": "pfx",
+    "RunnerMount": "<TMP>/90000000000001/DefaultInstance/RUNNER",
+    "RuntimePath": "<TMP>/90000000000001/DefaultInstance/RUNTIME",
+    "ScreenHeight": "<volatile>",
+    "ScreenWidth": "<volatile>",
+    "TempPath": "<TMP>/90000000000001/DefaultInstance",
+    "VIDYAGOD_PEER_NAMES": "<volatile>",
+    "VIDYAGOD_PEER_VIPS": "<volatile>",
+    "VIDYAGOD_SANDBOX_NET": "isolated",
+    "VIDYAGOD_SELF_NAME": "<volatile>",
+    "VIDYAGOD_SELF_VIP": "<volatile>",
+    "VIDYAGOD_SUBNET": "<volatile>"
+  }
+}

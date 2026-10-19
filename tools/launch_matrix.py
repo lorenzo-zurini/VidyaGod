@@ -231,6 +231,19 @@ def main():
                         failures.append(f"{name} runtime: WHAT THE GAME SEES CHANGED")
                         failures += ["    " + l.rstrip("\n") for l in d[:60]]
 
+        #After a run, what the package KEEPs is in the user's data. A kept DIR is the user's own folder during the run
+        #(the probe's save lands there directly); a kept FILE is captured as the runtime comes down — the edited
+        #config.ini, stored under its NAME. (The CLI used to skip the capture after a run.)
+        if not args.update:
+            checked += 1
+            home = os.path.join(data, "USERDATA", "90000000000001", "DefaultInstance")
+            saved = os.path.join(home, "Saves", "save.txt")
+            if not os.path.isfile(saved) or open(saved).read().strip() != "written by the probe":
+                failures.append("KEEP dir: the probe's game/saves/save.txt is not in USERDATA after the run")
+            config = os.path.join(home, "Config")
+            if not os.path.isfile(config) or "FromVar=hello-beta" not in open(config).read():
+                failures.append("KEEP file not captured: the edited config.ini is not in USERDATA as 'Config' after the run")
+
         #The sandbox is MANDATORY: on a machine that can't start it, a launch is REFUSED — it exits non-zero, the game
         #never runs (no probe report), and the failure names the missing sandbox. bwrap is hidden from the run by a PATH
         #holding everything the real PATH does except bwrap.

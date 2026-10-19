@@ -46,7 +46,6 @@ struct Item
     std::string Payload;         // content: the file name (or a %runtime% dir) — empty for EDIT
     json        Source;          // content: SOURCE (a CID) or null
     json        Size;            // content: SIZE (bytes, stamped at publish) or null
-    json        Submounts;       // content: SUBMOUNTS or null
     json        View;            // content: the [TAKE, TARGET] steps it reaches the root through, innermost first,
                                  // when any of them takes (null = seen whole: Target places it)
     json        Ops;             // EDIT: the ordered ops

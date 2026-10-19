@@ -57,7 +57,7 @@ the one-shot update command are under [Building — details](#building--details)
 ---
 
 > **The format is specified separately.** The node-graph package format is defined, implementation-agnostically, in the
-> **[MetaPackageFormat](MetaPackageFormat)** spec — a submodule of this repo (`MetaPackageFormat/docs/00`–`19`).
+> **[MetaPackageFormat](MetaPackageFormat)** spec — a submodule of this repo (`MetaPackageFormat/docs/00`–`20`).
 > This README documents the *implementation*. **When the code and the spec disagree, the spec is the source of truth.**
 
 ---

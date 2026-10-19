@@ -469,7 +469,7 @@ class Resolver:
             if k in CONTENT:
                 ns, tp = ns_path(L.get("TARGET", "FILES"))
                 item = {"kind": k, "payload": L[k], "dir": s["dir"], "source": L.get("SOURCE"), "size": L.get("SIZE"),
-                        "target": place(tp, prefix), "own": tp, "submounts": L.get("SUBMOUNTS"),
+                        "target": place(tp, prefix), "own": tp,
                         "view": [[t, a] for t, a in view_steps(view)] if view_takes(view) else None,
                         "from": s["from"], "at": s["at"]}
                 seq.append(item)
@@ -594,7 +594,7 @@ def plan_json(plan):
         if it["kind"] == "EDIT":
             e["ops"] = it["ops"]
         else:
-            e.update(payload=it["payload"], dir=it["dir"], source=it["source"], size=it.get("size"), submounts=it["submounts"], view=it["view"])
+            e.update(payload=it["payload"], dir=it["dir"], source=it["source"], size=it.get("size"), view=it["view"])
         e.update({"target": it["target"], "from": it["from"], "at": it["at"]})
         seq.append(e)
     return {"seq": seq,
@@ -766,8 +766,7 @@ def _member_names(seq, j):
 
 def provided(seq, j, vars_=None):
     """The file paths (lower-case, as the mount sees them) content seq[j] provides, or None = "everything under its
-    target" (a DIR, an unreadable file). Mirrors VidyaGodFS: SUBMOUNTS "src:dst" mount only those sub-paths; a FILE
-    lands at <target>/<its name>; otherwise the whole zip at the target."""
+    target" (a DIR, an unreadable file). A FILE lands at <target>/<its name>; otherwise the whole zip at the target."""
     c = seq[j]
     S = (lambda x: subst(x, vars_)) if vars_ else (lambda x: x)
     t = S(c["target"]).lower()
@@ -778,18 +777,7 @@ def provided(seq, j, vars_=None):
     names = _member_names(seq, j)
     if names is None:
         return None
-    if not c.get("submounts"):
-        return {(t + "/" if t else "") + n for n in names}
-    out = set()
-    for sm in c["submounts"]:
-        src, _, dst = S(sm).partition(":")
-        src, dst = src.strip("/").lower(), dst.strip("/").lower()
-        for n in names:
-            if n == src:
-                out.add(dst)
-            elif n.startswith(src + "/"):
-                out.add(dst + n[len(src):])
-    return out
+    return {(t + "/" if t else "") + n for n in names}
 
 
 def covers(seq, j, f, vars_=None):
@@ -937,13 +925,13 @@ def self_test():
     assert not any(e[0] == "any-unmet" for e in R(nodes).resolve("v1")["events"])
     assert ("any-unmet", "m") in R(nodes).resolve("v2")["events"]
     assert ("not-hit", "base") in R(nodes).resolve("v3")["events"]
-    # covering: a FILE lands at <target>/<name>; SUBMOUNTS mount only their sub-paths (listing faked)
+    # covering: a FILE lands at <target>/<name>; a zip's members under its target (listing faked)
     seq = [{"kind": "EDIT", "target": "C:/g/a.cfg"},
            {"kind": "FILE", "payload": "x/a.cfg", "target": "C:/g", "dir": "/d"},
-           {"kind": "ZIP", "payload": "z.zip", "target": "", "dir": "/d", "submounts": ["dx/x.dll:C:/g/x.dll"]}]
+           {"kind": "ZIP", "payload": "z.zip", "target": "C:/g", "dir": "/d"}]
     assert covers(seq, 1, "C:/g/a.cfg") and not covers(seq, 1, "C:/g/b.cfg")
-    _NAMES[("/d/z.zip",)] = {"dx/x.dll", "dx/y.dll", "a.cfg"}
-    assert covers(seq, 2, "C:/g/x.dll") and not covers(seq, 2, "C:/g/a.cfg")
+    _NAMES[("/d/z.zip",)] = {"dx/x.dll", "a.cfg"}
+    assert covers(seq, 2, "C:/g/dx/x.dll") and not covers(seq, 2, "C:/g/x.dll")
     # guest coordinates → a runner's layout
     roots = {"C:": "pfx/drive_c", "%UserProfile%": "pfx/drive_c/users/steamuser"}
     assert to_layout("c:/g/x", roots) == "pfx/drive_c/g/x" and to_layout("%UserProfile%/s", roots) == "pfx/drive_c/users/steamuser/s"

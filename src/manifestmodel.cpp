@@ -674,8 +674,8 @@ std::optional<std::set<std::string>> MemberNames(const std::vector<Fold::Item> &
     return Cache.emplace(Chain, Names).first->second;
 }
 
-// The lower-cased paths content Seq[J] provides as the mount sees them (SUBMOUNTS mount only their sub-paths, a
-// FILE lands at TARGET/<name>), or nullopt = everything under its TARGET (a DIR, an unreadable file).
+// The lower-cased paths content Seq[J] provides as the mount sees them (a FILE lands at TARGET/<name>), or nullopt =
+// everything under its TARGET (a DIR, an unreadable file).
 std::optional<std::set<std::string>> Provided(const std::vector<Fold::Item> &Seq, size_t J,
         std::map<std::vector<std::string>, std::optional<std::set<std::string>>> &Cache)
 {
@@ -687,26 +687,7 @@ std::optional<std::set<std::string>> Provided(const std::vector<Fold::Item> &Seq
     auto Names = MemberNames(Seq, J, Cache);
     if (!Names) return std::nullopt;
     std::set<std::string> Out;
-    if (!C.Submounts.is_array() || C.Submounts.empty())
-    {
-        for (const auto &N : *Names) Out.insert(Pre + N);
-        return Out;
-    }
-    for (const auto &Sm : C.Submounts)
-    {
-        const std::string X = Sm.is_string() ? Sm.get<std::string>() : std::string();
-        const size_t Colon = X.find(':');
-        if (Colon == std::string::npos) continue;
-        std::string Src = ToLowerAscii(X.substr(0, Colon)), Dst = ToLowerAscii(X.substr(Colon + 1));
-        while (!Src.empty() && Src.front() == '/') Src.erase(Src.begin());
-        while (!Src.empty() && Src.back() == '/') Src.pop_back();
-        while (!Dst.empty() && Dst.back() == '/') Dst.pop_back();
-        for (const auto &N : *Names)
-        {
-            if (N == Src) Out.insert(Dst);
-            else if (N.rfind(Src + "/", 0) == 0) Out.insert(Dst + N.substr(Src.size()));
-        }
-    }
+    for (const auto &N : *Names) Out.insert(Pre + N);
     return Out;
 }
 
@@ -1156,10 +1137,6 @@ void ValidateNodeGraph(const NodeIndex &Idx, std::vector<std::string> &Errors, s
         auto Paths = [&](const nlohmann::ordered_json &L, const std::string &Where, std::set<std::string> &Out) {
             auto Addr = [](const std::string &A) { const size_t S = A.find('/'); return S == std::string::npos ? std::string() : A.substr(S + 1); };
             if (L.contains("TARGET") && L["TARGET"].is_string()) PathCheck(Addr(L["TARGET"].get<std::string>()), Where, Out);
-            if (L.contains("SUBMOUNTS") && L["SUBMOUNTS"].is_array())
-                for (const auto &M : L["SUBMOUNTS"])
-                    if (M.is_string()) { const std::string X = M.get<std::string>(); const size_t C = X.find(':');
-                                         if (C != std::string::npos) PathCheck(X.substr(C + 1), Where, Out); }
             //A TAKE pair's destination may carry the source's namespace or not (Fold::Taken adds it): the path is
             //what follows it — "FILES/%SysDir32%/x.dll" and "%SysDir32%/x.dll" name the same place.
             if (L.contains("TAKE") && L["TAKE"].is_array())
@@ -1512,7 +1489,7 @@ std::string HostPlatform()    { return "linux64"; }
 bool ServesPlatform(const Node &Runner, const std::string &Platform, const std::filesystem::path &LaunchBundleDir)
 {
     if (std::find(Runner.GuestPlatform.begin(), Runner.GuestPlatform.end(), Platform) == Runner.GuestPlatform.end()) return false;
-    return Platform != kCustomPlatform || (!LaunchBundleDir.empty() && Runner.BundleDir == LaunchBundleDir);
+    return Platform != kCustomPlatform || Runner.InBundle(LaunchBundleDir);
 }
 
 // ----- component lookups -----

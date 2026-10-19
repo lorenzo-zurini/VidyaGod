@@ -208,6 +208,9 @@ bool LaunchResolver::ResolveExecutableDefinition(const nlohmann::ordered_json &M
             ContainerParams.ExeArgs.push_back(Mode + ":" + Off + ":" + Exp + ":" + Bytes);
         }
     }
+    //A runner nested inside the boundary's guest runs in the same process tree: its ENV joins the launch's, over the
+    //boundary's and under the game's — resolved here, so a --resolve-only plan shows the environment that runs.
+    if (ChainHasInnerLinks(ContainerParams)) ApplyInnerEnv(ContainerParams, ComposeGuestTarget(ContainerParams));
     return true;
 }
 
@@ -327,9 +330,3 @@ bool LaunchResolver::DerivePaths(struct ContainerParams &ContainerParams, const 
            + " | ContentRoot: " + ContainerParams.ContentRoot + " (PrefixRoot: '" + ContainerParams.PrefixRoot + "')");
     return true;
 }
-
-//Picks the best ROLE:"runner" node for a launch node (GUEST ∋ launch host, HOST==machine, executable available).
-//Priority: explicit RunnerID pin > USERSETTINGS PREFERRED_RUNNER > best qualifying default, where "best" ranks
-//RECOMMENDED runners first, then a runner shipped in the launch node's OWN package (embedded > global — a package
-//that carries a runner uses its own copy; runners are global wherever they live, there is no embedded flag), then
-//the lowest node-id for determinism. This keeps the default from being an arbitrary alphabetical accident.

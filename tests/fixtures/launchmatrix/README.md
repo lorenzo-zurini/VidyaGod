@@ -51,7 +51,7 @@ One bundle (generation 6: one node per file, parents are `NODE` layers), these v
 Covered, by type:
 
 - **Content** — `ZIP`, `DIR`, `FILE`, `DELTA`; a patch zip overlapping the base at the same target;
-  `SUBMOUNTS` relocating one file out of an archive; a delta over the nearest content beneath it at its target,
+  one file taken out of an archive by a `TAKE` pair (`lm_c_relocate`); a delta over the nearest content beneath it at its target,
   opaque over the dir beneath that; content present only as a `SOURCE` CID (un-hydrated).
 - **`NODE` + `TAKE`/`TARGET`** — a library contained selectively and placed (`lm_uses_lib`): a file out of a zip,
   renamed; a directory's contents (`FILES/doc/`) landing at the target; a loose `FILE`, renamed; a variable taken,
@@ -112,8 +112,8 @@ that diff is the proof the fix landed.
   mount (the matrix's `config.ini` caught the regression when the pass was dropped).
 - **A `FILE` layer's `TARGET` is the containing DIRECTORY**; the file appears at `TARGET/<its name>`.
   Naming the file in `TARGET` makes a directory of that name.
-- **`SUBMOUNTS` relocate a FILE out of the archive** — they do not mount a nested archive — and declaring any
-  submount REPLACES the layer's whole-archive mount, so only the listed files appear.
+- **A `TAKE` pair relocates a FILE out of an archive** — it does not mount a nested archive — and only what is
+  taken appears: the rest of the archive is never visible.
 - **A `Cave`'s `EXPECT` must be at least 5 bytes** — the site is overwritten with a jmp rel32.
 - **A delta's opacity cannot be tested with a zip below it.** A base zip at the delta's target is folded into
   the chain as a byte input and never becomes a layer, so there is nothing for opacity to mask. It takes a

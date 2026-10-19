@@ -375,9 +375,6 @@ std::vector<std::string> GraftBases(const NodeIndex &Idx, const std::string &Gra
 // The version a graft that is a version runs on when nothing picks one (the engine's default): GraftBases' first. ""
 // for a node that is not a graft, or a graft with nothing here it applies onto.
 std::string DefaultGraftBase(const NodeIndex &Idx, const std::string &Graft);
-// Runner nodes that can serve a launchable on this machine (GUEST ∋ launch host, HOST==machine, executable
-// available), in sorted node-id order — for the prelaunch runner dropdown.
-std::vector<const Node*> RunnerCandidates(const NodeIndex &Idx, const Node &Launch);
 
 // Platform-compatible runners for a launchable on this machine (GUEST ∋ launch host, HOST==machine) WITHOUT any
 // install/executable gate — i.e. runners that COULD run it once installed. Sorted by node id.

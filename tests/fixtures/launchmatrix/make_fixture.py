@@ -57,7 +57,7 @@ echo "  cave region: $(od -An -tx1 -j 1088 -N8 game/patch.exe 2>/dev/null | tr -
 echo "=== delta reconstruction"
 echo "  chain/added.txt:     $(cat deltatarget/chain/added.txt 2>/dev/null || echo MISSING)"
 echo "  deltatarget/masked.txt (opaque delta must hide it): $(cat deltatarget/masked.txt 2>/dev/null || echo MASKED)"
-echo "=== submount"
+echo "=== a file taken out of an archive"
 echo "  unpacked/relocated.txt: $(cat unpacked/relocated.txt 2>/dev/null || echo MISSING)"
 echo "  carrier/nested/ignored.txt (must be absent): $(cat carrier/nested/ignored.txt 2>/dev/null || echo ABSENT)"
 echo "=== take (a library, contained selectively and placed at libs/)"
@@ -123,10 +123,10 @@ def make_content(B):
         "game/patch.exe":     minimal_pe(),
     })
     store_zip(f"{B}/patch.zip", {"game/shared.txt": "from-patch\n", "game/added.txt": "added\n"})
-    # A SUBMOUNT relocates ONE FILE out of the archive to a path of its own — it does not mount a nested
-    # archive. Declaring submounts also REPLACES the layer's whole-archive mount: only the listed files appear.
-    store_zip(f"{B}/carrier.zip", {"nested/relocated.txt": "relocated by a submount\n",
-                                   "nested/ignored.txt":   "not submounted, so never visible\n"})
+    # A TAKE pair relocates ONE FILE out of an archive to a path of its own — it does not mount a nested
+    # archive — and only what is taken appears: the rest of the archive is never visible.
+    store_zip(f"{B}/carrier.zip", {"nested/relocated.txt": "relocated by a TAKE\n",
+                                   "nested/ignored.txt":   "not taken, so never visible\n"})
     # FORM dir and FORM file.
     write(f"{B}/loosedir/note.txt", "loose-dir\n")
     # Mounted UNDER the delta at the same target, to prove the delta is OPAQUE. A base zip cannot show this:
@@ -232,12 +232,22 @@ def nodes():
                    "CONTENT_ROOT": "pfx/drive_c/%PackageUID%", "PREFIX_GENERATE": False,
                    "GUEST_ROOTS": ROOTS, "DRIVES": DRIVES}]}])
 
-    # ---- content: every payload type, every TARGET shape, submounts, deltas -----------------------------
+    # HOST fixture32 / GUEST fixturevm ⇒ a THREE-hop chain whose first link runs INSIDE lm_runner_prefix's guest:
+    # its build mounts at <CONTENT_ROOT>/__runner_<id>__, and its ENV joins the launch's — over the boundary's (the
+    # shared LM_RUNNER_ENV), with %RunnerMount% its own build folder as the guest sees it.
+    add("lm_runner_inner", [
+        {"FILE": "fakerunner.sh", "TARGET": F("inner")},
+        {"ENV": {"LM_INNER_ENV": "%RunnerMount%", "LM_RUNNER_ENV": "inner-beats-boundary"}},
+        {"EXEC": [{"LABEL": "lm_runner_inner", "HOST": "fixture32", "GUEST": ["fixturevm"],
+                   "EXE": "%RunnerMount%/inner/fakerunner.sh", "ARGS": ["%Content%"]}]}])
+
+    # ---- content: every payload type, every TARGET shape, one file taken out of an archive, deltas ------
     base   = add("lm_c_zip_base", [{"ZIP": "base.zip", "TARGET": F(G), "COMMENT": "the base layer"}])
     patch  = add("lm_c_zip_patch", [node(base), {"ZIP": "patch.zip", "TARGET": F(G)}])
-    # SUBMOUNTS: "source/path:dest" strings; declaring them REPLACES the layer's whole-archive mount.
-    subm   = add("lm_c_submount", [node(patch), {"ZIP": "carrier.zip", "TARGET": F(G + "/carrier"),
-                                                 "SUBMOUNTS": [f"nested/relocated.txt:{G}/unpacked/relocated.txt"]}])
+    # One file taken out of an archive and renamed into place: [source, destination] — nothing else of it mounts.
+    add("lm_c_carrier", [{"ZIP": "carrier.zip", "TARGET": F("carrier")}])
+    subm   = add("lm_c_relocate", [node(patch), node("lm_c_carrier", TAKE=[["FILES/carrier/nested/relocated.txt",
+                                                                             "FILES/unpacked/relocated.txt"]], TARGET=F(G))])
     dirl   = add("lm_c_dir", [node(subm), {"DIR": "loosedir", "TARGET": F(G + "/loose")}])
     # A FILE layer's TARGET is the CONTAINING DIRECTORY — the file appears as TARGET/<its name>.
     filel  = add("lm_c_file", [node(dirl), {"FILE": "single.txt", "TARGET": F(G + "/loosefile")}])
@@ -372,6 +382,10 @@ def nodes():
     add("lm_minimal_content", [{"ZIP": "base.zip", "TARGET": F(G)}])
     add("lm_minimal", [node("lm_minimal_content"), node("lm_tile"), play("linux64", G + "/game/data.txt", [])],
         VARIANT="lm_minimal")
+    # (5b) a nested chain [lm_runner_inner, lm_runner_prefix, native] (plan only): the plan's RunnerEnv shows the
+    # inner runner's ENV arriving, over the boundary's.
+    add("lm_nested", [node("lm_minimal_content"), node("lm_tile"), play("fixturevm", G + "/game/data.txt", [])],
+        VARIANT="lm_nested")
     # (6) a BLOCKED variant: a NOT names something it contains — the launch is refused, naming the reason.
     add("lm_blocked", [node("lm_minimal_content"), {"NOT": "lm_minimal_content"}, node("lm_tile"),
                        play("linux64", G + "/game/data.txt", [])],

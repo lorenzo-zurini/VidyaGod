@@ -51,42 +51,6 @@ static bool RecommendedFor(const Node &R, const Node &Launch)
 }
 
 // P6 split: the runner daisy-chain machinery (availability, BFS bridge, links, nesting) — spine in launchresolver.cpp.
-const Node *LaunchResolver::PickRunnerNode(const NodeIndex &Idx, const Node &Launch, const struct ContainerParams &CP,
-                                             const nlohmann::ordered_json &GlobalConfigJSON)
-{
-    std::string Preferred;
-    {
-        auto US = GetPackageUserSettings(GlobalConfigJSON, CP.PackageUID, CP.InstanceName);
-        if (US.contains("PREFERRED_RUNNER") && US["PREFERRED_RUNNER"].is_string())
-            Preferred = std::string(US["PREFERRED_RUNNER"]);
-    }
-    //The platform to bridge and the declared runner are the SELECTED entry's (CP.Entrypoint of CP.EntryNode, else
-    //of the launch node), never the node's default view: the chain serves the entry that runs.
-    const std::string Host = !CP.Platform.empty() ? CP.Platform : Launch.HostFor(CP.Entrypoint);
-    auto Qualifies = [&](const Node &N) -> bool
-    {
-        if (!N.IsRunner()) return false;
-        if (!ManifestModel::ServesPlatform(N, Host, Launch.BundleDir)) return false;
-        if (N.HostPlatform != MachinePlatform()) return false;
-        return RunnerWrapper::ExecutableAvailable(N.Exec);
-    };
-    if (!CP.RunnerID.empty()) { const Node *N = Idx.Find(CP.RunnerID); if (N && Qualifies(*N)) return N; }
-    if (!Preferred.empty())   { const Node *N = Idx.Find(Preferred);   if (N && Qualifies(*N)) return N; }
-    //Default pick — rank by (RECOMMENDED for this tile, package-local, node-id). A package never names a runner; a
-    //runner may say which tiles it is recommended for.
-    auto Local  = [&](const Node &N) { return !Launch.BundleDir.empty() && N.BundleDir == Launch.BundleDir; };
-    auto Better = [&](const Node &A, const Node *B) -> bool
-    {
-        if (!B) return true;
-        if (RecommendedFor(A, Launch) != RecommendedFor(*B, Launch)) return RecommendedFor(A, Launch);
-        if (Local(A) != Local(*B))           return Local(A);        // runner in the launch's own package wins
-        return A.NodeId < B->NodeId;                                 // deterministic last resort
-    };
-    const Node *Best = nullptr;
-    for (const auto &[Id, N] : Idx.Nodes) if (Qualifies(N) && Better(N, Best)) Best = &N;
-    return Best;
-}
-
 //=====================================================================================================================
 //                                          RUNNER DAISY-CHAINING
 //=====================================================================================================================
@@ -230,16 +194,66 @@ static std::vector<const Node *> AvailableRunnersSorted(const NodeIndex &Idx, co
     return Runners;
 }
 
+//The installed runners among them (same order). A launch runs on installed runners when they make a chain, so the
+//chain the resolver picks is the one the Play gate (PackageCatalog::HasUsableChain) found.
+static std::vector<const Node *> InstalledOf(const NodeIndex &Idx, const std::vector<const Node *> &Runners)
+{
+    std::vector<const Node *> Out;
+    for (const Node *R : Runners) if (PackageCatalog::RunnerInstalled(Idx, R->Key())) Out.push_back(R);
+    return Out;
+}
+
+//The chain over one set of runners: a valid pin, else the shortest bridge; then the native terminal — from the set,
+//else any available one (All), else the synthesized passthrough. Empty when the set cannot carry the launch to this
+//machine.
+static std::vector<std::string> ChainOver(const NodeIndex &Idx, const Node &Launch, const std::string &Host,
+                                          const std::vector<std::string> &Pinned, const std::vector<const Node *> &Runners,
+                                          const std::vector<const Node *> &All)
+{
+    const std::string Machine = MachinePlatform();
+    auto Usable = [&](const Node *R) { return std::find(Runners.begin(), Runners.end(), R) != Runners.end(); };
+    auto Terminal = [&]() {
+        const Node *T = PickNativeTerminal(Runners, Machine);
+        if (!T) T = PickNativeTerminal(All, Machine);
+        return T ? T->Key() : std::string(LaunchResolver::kNativeTerminalId);
+    };
+    if (!Pinned.empty())
+    {
+        std::string Cur = Host;
+        bool Ok = true;
+        for (const std::string &Id : Pinned)
+        {
+            if (Id == LaunchResolver::kNativeTerminalId) { Ok = (Cur == Machine); break; }   // synthetic terminal valid only at machine
+            const Node *R = Idx.Find(Id);
+            if (!R || !R->IsRunner() || !Usable(R) || !ManifestModel::ServesPlatform(*R, Cur, Launch.BundleDir)) { Ok = false; break; }
+            Cur = R->HostPlatform;
+        }
+        if (Ok && Cur == Machine)
+        {
+            //Ensure the last link is a native terminal (HOST==GUEST==machine); append one if not.
+            std::vector<std::string> Out = Pinned;
+            const std::string &Last = Out.back();
+            const Node *LastR = (Last == LaunchResolver::kNativeTerminalId) ? nullptr : Idx.Find(Last);
+            const bool LastIsTerminal = (Last == LaunchResolver::kNativeTerminalId) ||
+                (LastR && LastR->HostPlatform == Machine && RunnerServes(LastR, Machine));
+            if (!LastIsTerminal) Out.push_back(Terminal());
+            return Out;
+        }
+    }
+    std::vector<std::string> Bridge;
+    if (!FindBridge(Host, Machine, Runners, Launch.BundleDir, Bridge)) return {};   // unreachable with these runners
+    Bridge.push_back(Terminal());
+    return Bridge;
+}
+
 std::vector<std::string> LaunchResolver::ResolveChainIds(const NodeIndex &Idx, const Node &Launch,
                                                          const struct ContainerParams &CP, const nlohmann::ordered_json &GlobalConfigJSON)
 {
-    const std::string Machine = MachinePlatform();
-
     //Available runners, sorted better-first (RECOMMENDED > package-local > node-id) for deterministic BFS.
-    std::vector<const Node *> Runners = AvailableRunnersSorted(Idx, Launch);
+    const std::vector<const Node *> Runners = AvailableRunnersSorted(Idx, Launch);
 
-    //1. Honor a pinned chain (passed CP.RunnerChainIds, else persisted RUNNER_CHAIN) when it forms a valid path to
-    //   the machine. Append a terminal if the pin didn't include one.
+    //A pinned chain (passed CP.RunnerChainIds, else persisted RUNNER_CHAIN) is honoured when it forms a valid path to
+    //the machine; a terminal is appended if the pin didn't include one.
     std::vector<std::string> Pinned = CP.RunnerChainIds;
     if (Pinned.empty())
     {
@@ -248,53 +262,33 @@ std::vector<std::string> LaunchResolver::ResolveChainIds(const NodeIndex &Idx, c
             for (const auto &X : US["RUNNER_CHAIN"]) if (X.is_string()) Pinned.push_back(std::string(X));
     }
     const std::string Host = !CP.Platform.empty() ? CP.Platform : Launch.HostFor(CP.Entrypoint);
-    //A MULTI-VERSION package selects its runner through the PLATFORM GRAPH (below), not a per-node pin: e.g. each
-    //Minecraft version declares PLATFORM "java_<N>" and the matching java_<N> runner declares GUEST ["java_<N>"], so
-    //FindBridge routes it to exactly that runner — the native cross-platform mechanism, no runner recommendation needed.
-    if (!Pinned.empty())
-    {
-        std::string Cur = Host;
-        bool Ok = true;
-        for (const std::string &Id : Pinned)
-        {
-            if (Id == kNativeTerminalId) { Ok = (Cur == Machine); break; }       // synthetic terminal valid only at machine
-            const Node *R = Idx.Find(Id);
-            if (!R || !R->IsRunner() || !RunnerAvailable(Idx, *R) || !ManifestModel::ServesPlatform(*R, Cur, Launch.BundleDir)) { Ok = false; break; }
-            Cur = R->HostPlatform;
-        }
-        if (Ok && Cur == Machine)
-        {
-            //Ensure the last link is a native terminal (HOST==GUEST==machine); append one if not.
-            const std::string &Last = Pinned.back();
-            const Node *LastR = (Last == kNativeTerminalId) ? nullptr : Idx.Find(Last);
-            const bool LastIsTerminal = (Last == kNativeTerminalId) ||
-                (LastR && LastR->HostPlatform == Machine && RunnerServes(LastR, Machine));
-            if (!LastIsTerminal)
-            { const Node *T = PickNativeTerminal(Runners, Machine); Pinned.push_back(T ? T->Key() : std::string(kNativeTerminalId)); }
-            return Pinned;
-        }
-    }
-
-    //2. BFS default: bridge content-platform → machine, then append the native terminal.
-    std::vector<std::string> Bridge;
-    if (!FindBridge(Host, Machine, Runners, Launch.BundleDir, Bridge)) return {};   // unreachable on this machine
-    const Node *Term = PickNativeTerminal(Runners, Machine);
-    Bridge.push_back(Term ? Term->Key() : std::string(kNativeTerminalId));
-    return Bridge;
+    //A MULTI-VERSION package selects its runner through the PLATFORM GRAPH, not a per-node pin: e.g. each Minecraft
+    //version declares PLATFORM "java_<N>" and the matching java_<N> runner declares GUEST ["java_<N>"], so FindBridge
+    //routes it to exactly that runner — the native cross-platform mechanism, no runner recommendation needed.
+    //Installed runners first: a longer chain of installed runners beats a shorter one that still has to be
+    //downloaded. Only when nothing installed carries it is the chain the one to install (what a download fetches).
+    std::vector<std::string> Out = ChainOver(Idx, Launch, Host, Pinned, InstalledOf(Idx, Runners), Runners);
+    if (Out.empty()) Out = ChainOver(Idx, Launch, Host, Pinned, Runners, Runners);
+    //The pin is the instance's, and an instance may run variants of different platforms: only a pin whose first runner
+    //runs this launch's platform was meant for it.
+    const Node *PinFirst = Pinned.empty() ? nullptr : Idx.Find(Pinned.front());
+    const bool PinMeantHere = PinFirst && PinFirst->IsRunner() && RunnerServes(PinFirst, Host);
+    if (!Pinned.empty() && !PinFirst && Pinned.front() != kNativeTerminalId)
+        LogWarn("LaunchResolver::ResolveChainIds", "the pinned runner chain names '" + Pinned.front()
+                + "', which the library does not have — using the default chain");
+    if (PinMeantHere && !Out.empty() && !std::equal(Pinned.begin(), Pinned.end(), Out.begin(), Out.begin() + std::min(Out.size(), Pinned.size())))
+        LogWarn("LaunchResolver::ResolveChainIds", "the pinned runner chain does not run this launch here (a runner is "
+                "missing, or it is another package's engine) — using the default chain");
+    return Out;
 }
 
 std::vector<std::string> LaunchResolver::ResolveChainTail(const NodeIndex &Idx, const std::string &FromPlatform,
                                                           const Node &Launch, const nlohmann::ordered_json &GlobalConfigJSON)
 {
     (void)GlobalConfigJSON;
-    const std::string Machine = MachinePlatform();
-    std::vector<const Node *> Runners = AvailableRunnersSorted(Idx, Launch);
-
-    std::vector<std::string> Bridge;
-    if (!FindBridge(FromPlatform, Machine, Runners, Launch.BundleDir, Bridge)) return {};          // FromPlatform can't reach the machine
-    const Node *Term = PickNativeTerminal(Runners, Machine);
-    Bridge.push_back(Term ? Term->Key() : std::string(kNativeTerminalId));
-    return Bridge;
+    const std::vector<const Node *> Runners = AvailableRunnersSorted(Idx, Launch);
+    std::vector<std::string> Out = ChainOver(Idx, Launch, FromPlatform, {}, InstalledOf(Idx, Runners), Runners);
+    return Out.empty() ? ChainOver(Idx, Launch, FromPlatform, {}, Runners, Runners) : Out;
 }
 
 std::vector<RunnerLink> LaunchResolver::ResolveRunnerChain(const NodeIndex &Idx, const Node &Launch,
@@ -391,6 +385,22 @@ LaunchResolver::GuestTarget LaunchResolver::ComposeGuestTarget(struct ContainerP
             V["Content"] = Target; V["ContentPath"] = Target; V["RunnerMount"] = MountGuest;
             for (const std::string &Raw : L.Args)
             { std::string A = Raw; VarSubst::StringVariableSubstitution(A, V); ThisArgs.push_back(A); }
+            //Its environment, read the same way. Links run innermost first, so a later (outer) link never
+            //overwrites what an inner one set.
+            for (const auto &[K, Val] : L.Env.items())
+            {
+                if (!Val.is_string())
+                {
+                    LogWarn("LaunchResolver::ComposeGuestTarget", "runner '" + L.NodeId + "' ENV key '" + K + "' is "
+                            + std::string(Val.type_name()) + ", not a string — skipped. Environment values are strings (quote the number).");
+                    continue;
+                }
+                if (T.Env.contains(K) || std::find(T.RemoveEnv.begin(), T.RemoveEnv.end(), K) != T.RemoveEnv.end()) continue;
+                std::string E = Val.get<std::string>(); VarSubst::StringVariableSubstitution(E, V); T.Env[K] = E;
+            }
+            for (const std::string &K : L.RemoveEnv)
+                if (!T.Env.contains(K) && std::find(T.RemoveEnv.begin(), T.RemoveEnv.end(), K) == T.RemoveEnv.end())
+                    T.RemoveEnv.push_back(K);
         }
 
         //Nest: this runner's [exe, its args] runs the previous inner command, so prepend it to the growing argv.
@@ -411,6 +421,25 @@ LaunchResolver::GuestTarget LaunchResolver::ComposeGuestTarget(struct ContainerP
     T.ContentRel = InnerRunnerMountRel(Outermost.NodeId) + (OuterExeRel.empty() ? "" : "/" + OuterExeRel);
     for (size_t i = 1; i < Argv.size(); ++i) T.TrailingArgs.push_back(Argv[i]);
     return T;
+}
+
+void LaunchResolver::ApplyInnerEnv(struct ContainerParams &CP, const GuestTarget &T)
+{
+    //The game's own ENV / REMOVE_ENV were merged into RunnerEnv already, and the game wins over every runner.
+    auto GameSays = [&](const std::string &K) {
+        return (CP.LaunchEnv.is_object() && CP.LaunchEnv.contains(K))
+            || std::find(CP.LaunchRemoveEnv.begin(), CP.LaunchRemoveEnv.end(), K) != CP.LaunchRemoveEnv.end();
+    };
+    if (!CP.RunnerEnv.is_object()) CP.RunnerEnv = nlohmann::ordered_json::object();
+    for (const std::string &K : T.RemoveEnv)
+    {
+        if (GameSays(K)) continue;
+        CP.RunnerEnv.erase(K);
+        if (std::find(CP.RunnerRemoveEnv.begin(), CP.RunnerRemoveEnv.end(), K) == CP.RunnerRemoveEnv.end())
+            CP.RunnerRemoveEnv.push_back(K);
+    }
+    for (const auto &[K, V] : T.Env.items())
+        if (!GameSays(K)) CP.RunnerEnv[K] = V;
 }
 
 //Native node-graph init — populates ContainerParams + the internal component pool DIRECTLY from the node graph.

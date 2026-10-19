@@ -228,6 +228,8 @@ int CliModes::RunNodeLaunch(LaunchParameters &LaunchParameters, nlohmann::ordere
         }
         if (NewContainerWrapper.LastCrashed || NewContainerWrapper.LastExitCode != 0)
             LogWarn("main.cpp", "Game did not exit cleanly (code " + std::to_string(NewContainerWrapper.LastExitCode) + ").");
+        //After the run, as after a refused one: what the package KEEPs is captured, then the runtime comes down.
+        NewContainerWrapper.Cleanup();
         //Same verdict the GUI prints. The CLI is what tooling and debugging actually use, so leaving it untallied
         //would have meant the one path we test with was the one path that could still hide a quiet error.
         Diagnostics::ReportVerdict("Launch of '" + LaunchParameters.LaunchNodeId + "'");

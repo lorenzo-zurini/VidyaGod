@@ -143,8 +143,8 @@ std::string CheckLayer(const ordered_json &L)
     const std::string T = Fold::TypeOf(L);
     if (T.empty()) return "needs exactly one type key (ZIP FILE DELTA DIR NODE EDIT REG VARS ENV DLL EXEC KEEP ANY NOT)";
     static const std::map<std::string, std::set<std::string>> Allowed = {
-        {"ZIP",   {"SOURCE", "SIZE", "TARGET", "SUBMOUNTS"}}, {"FILE",  {"SOURCE", "SIZE", "TARGET", "SUBMOUNTS"}},
-        {"DELTA", {"SOURCE", "SIZE", "TARGET", "SUBMOUNTS"}}, {"DIR",   {"TARGET", "SUBMOUNTS"}},
+        {"ZIP",   {"SOURCE", "SIZE", "TARGET"}}, {"FILE",  {"SOURCE", "SIZE", "TARGET"}},
+        {"DELTA", {"SOURCE", "SIZE", "TARGET"}}, {"DIR",   {"TARGET"}},
         {"NODE",  {"TAKE", "TARGET"}}, {"EDIT", {"TARGET"}}, {"REG", {"ARCH"}},
         {"VARS", {}}, {"ENV", {}}, {"DLL", {}}, {"EXEC", {}}, {"KEEP", {}}, {"ANY", {}}, {"NOT", {}},
     };
@@ -174,7 +174,6 @@ std::string CheckLayer(const ordered_json &L)
         if (const std::string Why = FileNameFault(P.get<std::string>()); !Why.empty()) return T + " " + Why;
         if (L.contains("SOURCE") && !L["SOURCE"].is_string()) return "SOURCE must be a CID (a string)";
         if (L.contains("SIZE") && !L["SIZE"].is_number()) return "SIZE must be a number";
-        if (L.contains("SUBMOUNTS") && !StrArray(L["SUBMOUNTS"])) return "SUBMOUNTS must be a list of \"src:dst\" strings";
     }
     else if (T == "NODE")
     {
@@ -339,8 +338,10 @@ std::string CheckLayer(const ordered_json &L)
         if (!P.is_object()) return "KEEP must be {address: true | false | options}";
         for (const auto &[K, V] : P.items())
         {
-            if (K.rfind("FILES", 0) != 0 && K.rfind("REG", 0) != 0 && K.rfind("VARS", 0) != 0)
-                return "KEEP address '" + K + "' must be in FILES, REG or VARS";
+            //What a package keeps is the user's files and registry. A variable's value is never kept: what a user
+            //picks lives in the instance, so a VARS/ address has nothing to keep.
+            const std::string Ns = K.substr(0, K.find('/'));
+            if (Ns != "FILES" && Ns != "REG") return "KEEP address '" + K + "' must be in FILES or REG";
             if (!V.is_boolean() && !V.is_object()) return "KEEP." + K + " must be true, false or {NAME, CLOUD}";
             //A pattern (* or ?) names files in ONE folder: only a FILES address, only in its last segment.
             if (HasWildcard(K))
@@ -398,7 +399,7 @@ nlohmann::ordered_json LowerNode(const nlohmann::ordered_json &J, const std::str
         ordered_json Ops = ordered_json::array();
         if (VfsType(T))
             Ops.push_back(ContentOp(T, Str(L[T]), FilesPath(L), L.value("SOURCE", ordered_json()),
-                                    L.value("SIZE", ordered_json()), L.value("SUBMOUNTS", ordered_json())));
+                                    L.value("SIZE", ordered_json()), ordered_json()));
         else if (T == "EDIT")
             for (const auto &O : L["EDIT"]) Ops.push_back(EditOp(O, FilesPath(L)));
         else if (T == "REG")
@@ -586,10 +587,9 @@ nlohmann::ordered_json LowerPlan(const Fold::Plan &P)
         }
         const std::string Path = (I.Payload.find('%') != std::string::npos || I.Dir.empty())
                                ? I.Payload : (std::filesystem::path(I.Dir) / I.Payload).generic_string();   // '/' on every host: the plan is data
-        const ordered_json &Sub = I.Submounts;
         if (I.View.is_null())
         {
-            Out.push_back(ContentOp(I.Kind, Path, I.Target, I.Source, I.Size, Sub));
+            Out.push_back(ContentOp(I.Kind, Path, I.Target, I.Source, I.Size, ordered_json()));
             continue;
         }
         //Seen through TAKE: only what is taken mounts, where TAKE puts it — as submounts (the FS's "src:dst" view of
@@ -598,13 +598,6 @@ nlohmann::ordered_json LowerPlan(const Fold::Plan &P)
         const std::string OwnAddr = I.Own.empty() ? std::string("FILES") : "FILES/" + I.Own;
         std::vector<Mount> Ms;
         if (I.Kind == "FILE") Ms.push_back({ Name, OwnAddr + "/" + Name });
-        else if (I.Submounts.is_array() && !I.Submounts.empty())
-            for (const auto &S : I.Submounts)
-            {
-                const std::string X = Str(S);
-                const size_t C = X.find(':');
-                if (C != std::string::npos) Ms.push_back({ X.substr(0, C), "FILES/" + X.substr(C + 1) });
-            }
         else Ms.push_back({ std::string(), OwnAddr });
         Ms = ApplyView(Ms, I.View);
         if (Ms.empty()) continue;                                            // nothing of this layer is taken

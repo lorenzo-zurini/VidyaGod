@@ -76,7 +76,7 @@ private slots:
     void onLaunchFinished(bool success, QString errorMsg);
 
 private:
-    // Saves PREFERRED_RUNNER / SKIP_LAUNCH_DIALOG / VARIABLES / MODULES to GlobalConfigJSON (keyed by the
+    // Saves RUNNER_CHAIN / SKIP_LAUNCH_DIALOG / VARIABLES / MODULES to GlobalConfigJSON (keyed by the
     // bundle UID) and flushes it to ~/.VidyaGod/GlobalConfig.JSON.
     void persistGlobalConfig();
     // The currently-selected launchable node (the chosen variant). nullptr if the group is empty.
