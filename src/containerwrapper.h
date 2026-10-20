@@ -3,6 +3,7 @@
 
 #include <nlohmann/json.hpp>
 #include <filesystem>
+#include <optional>
 #include <string>
 
 #include <QProcess>
@@ -85,6 +86,9 @@ private:
 
     nlohmann::ordered_json GlobalConfigJSON;
     nlohmann::ordered_json MANIFESTJSON;
+
+    //Held from BuildContainerRuntime to the end of Cleanup's unmounts (or the wrapper's end): a game is live.
+    std::optional<VfsMount::RuntimeHold> Live;
 
     //Set to the running QProcess during Execute() so KillGame() can signal it.
     //Null at all other times. Read/written only under ActiveRunMutex.

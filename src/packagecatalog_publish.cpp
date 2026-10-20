@@ -1,4 +1,5 @@
 #include "packagecatalog.h"
+#include "contentfile.h"
 #include "pkglayout.h"
 #include "pkggraph.h"
 #include "pkgdoc.h"
@@ -153,7 +154,8 @@ bool SeedNodeContent(nlohmann::ordered_json &Node, const std::filesystem::path &
         if (F.Cover && (!H.is_object() || F.File.empty())) { ++R.BadCovers; continue; }   // a cover is {FILE, SOURCE, SIZE}
         ++R.Walked;
         const bool Runtime = RuntimeSourced(F.File);
-        const std::filesystem::path Local = Pkg / F.File;
+        const std::string Recorded = (H.is_object() && H.contains("SOURCE") && H["SOURCE"].is_string()) ? H["SOURCE"].get<std::string>() : std::string();
+        const std::filesystem::path Local = ContentFile::Path(Pkg, F.File, Recorded);
         std::error_code Sc;
         if (!F.MaySource)
         {   // a DIR layer is local content: no peer can fetch it
@@ -362,7 +364,7 @@ std::map<std::string, std::string> ManifestTargets(const std::string &Dir, bool 
             if (!H.is_object() || F.File.empty() || RuntimeSourced(F.File)) continue;
             const std::string Cid = (H.contains("SOURCE") && H["SOURCE"].is_string()) ? H["SOURCE"].get<std::string>() : std::string();
             if (Cid.empty()) continue;
-            const fs::path Local = Bundle / F.File;
+            const fs::path Local = ContentFile::Path(Bundle, F.File, Cid);
             //A node names a file of ITS package: an absolute or "../" FILE (a friend's node, landed verbatim) would
             //have seeding read — and pin, and announce — any file on the machine, /dev/zero included (forever).
             if (!NodeGraph::PathWithin(Bundle, Local)) continue;

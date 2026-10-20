@@ -120,6 +120,29 @@ private slots:
         cc->setAssetsRoot(QString());
     }
 
+    // Two versions of a package kept side by side whose tiles both name "cover.png": each cover lives at its bumped
+    // name (ContentFile), and a tile shows ITS version's bytes — promoted from there. Teeth: build the in-bundle path
+    // from the plain name.
+    void a_bumped_cover_resolves_in_its_bundle()
+    {
+        auto * cc = CoverCache::instance();
+        QTemporaryDir assets; QVERIFY(assets.isValid());
+        cc->setAssetsRoot(assets.path());
+        QTemporaryDir pkg; QVERIFY(pkg.isValid());
+        auto Node = [](const std::string &Cid) {
+            return nlohmann::ordered_json{ {"LABEL", "t"}, {"LAYERS", nlohmann::ordered_json::array({ {{"EXEC", nlohmann::ordered_json::array({
+                {{"TILE", {{"UID", "1"}, {"COVER", {{"FILE", "cover.png"}, {"SOURCE", Cid}}}}}} })}} })} };
+        };
+        { std::ofstream((pkg.path() + "/a.json").toStdString()) << Node("CIDA00000001").dump(); }
+        { std::ofstream((pkg.path() + "/b.json").toStdString()) << Node("CIDB00000002").dump(); }
+        { std::ofstream((pkg.path() + "/cover [00000002].png").toStdString()) << "B"; }
+        const QString r = cc->resolve(CoverJson("CIDB00000002"), pkg.path());
+        QCOMPARE(r, QDir::cleanPath(assets.path() + "/CIDB00000002"));
+        QFile f(r); QVERIFY(f.open(QIODevice::ReadOnly));
+        QCOMPARE(f.readAll(), QByteArray("B"));
+        cc->setAssetsRoot(QString());
+    }
+
     // The sweep is the only enqueue path: offline it does nothing at all; online it batches the recorded misses.
     void sweep_batches_misses_online_and_skips_offline()
     {

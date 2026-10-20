@@ -307,6 +307,47 @@ std::vector<ReceivedFetch> PlanReceivedFetches(const nlohmann::ordered_json &Glo
                                                const std::string &NickLabel, const nlohmann::ordered_json &Libs);
 
 
+// ----- versions of an installed package: switching to a friend's version when the user says so -----
+// There is no "newer": two people building one package have equally good versions. A friend's share of a package
+// installed here whose folder differs from the folder this package's node files make (same files, same CID — computed
+// locally) is "<friend> has a different version". Peer/Nick name the friend.
+struct PackageUpdate { std::filesystem::path Dir; std::string Lib, Pkg, Peer, Nick, FolderCid; };
+// Every such version, for the libraries friends share with us. Builds each installed package's folder (MakeDir: local,
+// no network) — call OFF the GUI thread, node up. A package whose node files are not all held here is reported, skipped.
+// A version every node of which is already here (one switched to before, the nodes it dropped kept for games that
+// still contain them) is offered only once something kept may go.
+std::vector<PackageUpdate> AvailableUpdates(const nlohmann::ordered_json &GlobalConfigJSON);
+// A friend's version fetched beside the library (never inside LIBRARY or CATALOG: nothing indexes it), and the plan to
+// switch to it: every node it lists comes in; an installed node it does not list goes — unless another installed
+// package (or the new version itself) still contains it, then it is KEPT. Content files follow the node set: a file
+// of a removed node is deleted, two CIDs sharing a name live at bumped names (ContentFile), bytes already here under
+// another name are moved rather than fetched again.
+struct ContentDelete
+{
+    std::filesystem::path File; std::string Cid;
+    std::vector<std::filesystem::path> Elsewhere;                                 // the CID's files that stay
+};
+struct StagedUpdate
+{
+    PackageUpdate U; std::filesystem::path Stage;
+    std::vector<std::string> Listing, Added, Removed, Kept;
+    std::vector<std::pair<std::filesystem::path, std::filesystem::path>> Moves;   // content: from → to
+    std::vector<ContentDelete> Deletes;
+    unsigned long long DeleteBytes = 0;
+};
+// Fetch U's folder into its own stage (per friend and version) and plan the switch (through the ONE queue; waits —
+// call off the GUI thread). Refused for a package holding never-minted (draft) node files. A stage left by a switch
+// that stopped half-way is resumed as it was planned.
+bool StageUpdate(const nlohmann::ordered_json &GlobalConfigJSON, const PackageUpdate &U, StagedUpdate *Out,
+                 std::string *Error = nullptr);
+// Switch the installed package to the staged version. The plan is made again under the package's lock (the library
+// may have changed while the user read it) and refused if it would now delete a file the user was not shown. Refused
+// while a game runs or a download lands in the package. Saves and kept state are untouched. The plan is journaled in
+// the stage first: staging and applying again after a failure finishes the same switch.
+bool ApplyStagedUpdate(const nlohmann::ordered_json &GlobalConfigJSON, const StagedUpdate &S, std::string *Error = nullptr);
+// Drop a staged version without applying it (its fetch forgotten, its folder unpinned).
+void DiscardStagedUpdate(const StagedUpdate &S);
+
 // True when a node contains (NODE) a node missing from the index: a package it needs has not landed yet, or the
 // friend does not share it. Nothing is ever fetched into the node's own package to fill the gap (a node has one home).
 bool NodeClosureIncomplete(const NodeIndex &Idx, const std::string &Id);

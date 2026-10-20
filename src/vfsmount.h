@@ -59,6 +59,19 @@ bool RunnerShipsMountableBuild(const struct ContainerParams &ContainerParams);
 //Every current mountpoint at or beneath Prefix (from /proc/self/mountinfo), deepest-first (children before parents).
 std::vector<std::string> MountpointsUnder(const std::filesystem::path &Prefix);
 
+//A game runtime this process is building, running or cleaning up — held from the start of the build to the end of
+//the unmounts, on every platform (mountinfo is Linux's alone). Anything that must not change content under a running
+//game (switching a package's version) asks RuntimesLive().
+class RuntimeHold
+{
+public:
+    RuntimeHold();
+    ~RuntimeHold();
+    RuntimeHold(const RuntimeHold &) = delete;
+    RuntimeHold &operator=(const RuntimeHold &) = delete;
+};
+int RuntimesLive();
+
 //Pre-launch hygiene: clears any runtime left under TempPath by a previously crashed/incomplete run — discovers
 //mounts from mountinfo, unmounts deepest-first, then removes TempPath (left in place if any mount refuses to detach).
 void CleanStaleRuntime(const std::filesystem::path &TempPath);

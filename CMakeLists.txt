@@ -195,6 +195,8 @@ set(SHARED_SOURCES
 
     src/nodelower.h
     src/nodelower.cpp
+    src/contentfile.h
+    src/contentfile.cpp
 
     src/pkggraph.h
     src/pkggraph.cpp
@@ -390,6 +392,7 @@ add_executable(vg_tests
     src/cid.cpp
     src/nodegraphpure.cpp   # gigagraph PURE transforms (freeze/topo/gather/landing checks) — no IPFS/Qt
     src/nodelower.cpp
+    src/contentfile.cpp
     src/varsubst.cpp
     src/registrywrapper.cpp
     src/fileedits.cpp

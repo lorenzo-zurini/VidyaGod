@@ -53,6 +53,8 @@ void CancelDownload(const std::string &Cid);
 // called when those files are removed on purpose (a friend's stubs replaced by a new generation), so a job re-run
 // later never materialises a path nobody asked for any more.
 void ForgetDestsUnder(const std::string &Dir);
+// True while a queued or active job still lands a file under Dir (a download into a package in progress).
+bool LandingUnder(const std::string &Dir);
 
 // A folder moved (a received package installed: CATALOG → LIBRARY). Anything enqueued later for a path under From lands
 // under To instead — a download working from an index read before the move (its targets) would

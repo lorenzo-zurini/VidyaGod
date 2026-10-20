@@ -1,4 +1,5 @@
 #include "covercache.h"
+#include "contentfile.h"
 #include "downloadqueue.h"
 #include "ipfswrapper.h"
 
@@ -81,7 +82,8 @@ QString CoverCache::resolve(const nlohmann::ordered_json &Cover, const QString &
     // Only received covers (no local bytes) fall through to the fetch sweep.
     if (!File.isEmpty() && !PackageDir.isEmpty())
     {
-        const QString Bundle = QDir::cleanPath(PackageDir + "/" + File);
+        const QString Bundle = QDir::cleanPath(QString::fromStdString(   // a bumped name when versions share it
+            ContentFile::Path(PackageDir.toStdString(), File.toStdString(), Cid.toStdString()).string()));
         if (Bundle != Local && QFileInfo::exists(Bundle))
         {
             if (!Cid.isEmpty() && !AssetsRoot.isEmpty())     // Local == ASSETS/<cid>: copy the bundle PNG there

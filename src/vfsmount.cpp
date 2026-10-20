@@ -26,6 +26,7 @@
 
 #include <algorithm>
 #include <cstring>
+#include <atomic>
 #include <filesystem>
 #include <fstream>
 #include <set>
@@ -761,6 +762,11 @@ bool VfsMount::CheckCaseConflicts(const std::filesystem::path &DirectoryPath)
 }
 
 //Returns every mountpoint at or under Prefix from /proc/self/mountinfo, deepest-first.
+namespace { std::atomic<int> LiveRuntimes{0}; }
+VfsMount::RuntimeHold::RuntimeHold() { ++LiveRuntimes; }
+VfsMount::RuntimeHold::~RuntimeHold() { --LiveRuntimes; }
+int VfsMount::RuntimesLive() { return LiveRuntimes.load(); }
+
 std::vector<std::string> VfsMount::MountpointsUnder(const std::filesystem::path &Prefix)
 {
     std::vector<std::string> Result;

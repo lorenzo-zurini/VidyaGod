@@ -2,6 +2,7 @@
 #include "manifestmodel.h"
 #include "nodefixture.h"
 #include "nodelower.h"
+#include "contentfile.h"
 #include "fold.h"
 #include "cid.h"
 #include "layerspec.h"   // NormalizeVPath — linked from vgfs_core (the parity test below)
@@ -9,6 +10,7 @@
 #include <zip.h>
 
 #include <algorithm>
+#include <chrono>
 #include <cstring>
 #include <filesystem>
 #include <fstream>
@@ -379,6 +381,61 @@ TEST(lower_plan_mounts_only_what_take_selects_where_it_lands)
     const ordered_json W = NodeLower::LowerPlan(Fold::Resolve(L, "w"));
     CHECK_EQ(W.size(), (size_t)3);
     CHECK(!W[0].contains("SUBMOUNTS") && W[0]["TARGET"] == "%GameDir%/bin");
+}
+
+TEST(a_file_seen_through_take_mounts_its_bumped_name)
+{
+    // Two versions of a library kept side by side in one package: both name "a.dll", so each lives at its bumped name
+    // (ContentFile). A game taking that file renamed must mount the bytes of ITS version — the submount's source is
+    // the file on disk, its address the name the node gives it. Teeth: the plain name as the source mounts nothing
+    // (or the other version's file).
+    namespace fs = std::filesystem;
+    char Tmpl[] = "/tmp/vgbumpXXXXXX";
+    const fs::path D = mkdtemp(Tmpl);
+    const std::string C1 = "bafkreiaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa11111111";
+    const std::string C2 = "bafkreiaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa22222222";
+    const ordered_json V1 = { {"CID", "v1"}, {"LABEL", "v1"}, {"LAYERS", ordered_json::array({ {{"FILE", "a.dll"}, {"SOURCE", C1}} })} };
+    const ordered_json V2 = { {"CID", "v2"}, {"LABEL", "v2"}, {"LAYERS", ordered_json::array({ {{"FILE", "a.dll"}, {"SOURCE", C2}} })} };
+    std::ofstream(D / "v1.json") << V1.dump();
+    std::ofstream(D / "v2.json") << V2.dump();
+    const ordered_json G = { {"CID", "g"}, {"LABEL", "g"}, {"LAYERS", ordered_json::array({
+        {{"NODE", "v2"}, {"TAKE", ordered_json::array({ ordered_json::array({"FILES/a.dll", "FILES/b.dll"}) })}, {"TARGET", "FILES/%GameDir%"}} })} };
+    Fold::Library L;
+    L.Nodes["v1"] = { &V1, D.string() };
+    L.Nodes["v2"] = { &V2, D.string() };
+    L.Nodes["g"] = { &G, D.string() };
+    const ordered_json Ops = NodeLower::LowerPlan(Fold::Resolve(L, "g"));
+    CHECK_EQ(Ops.size(), (size_t)1);
+    CHECK(Ops.size() == 1 && Ops[0]["TYPE"] == "VFSDirLayer" && Ops[0]["PATH"] == D.generic_string());
+    CHECK(Ops.size() == 1 && Ops[0]["SUBMOUNTS"] == ordered_json::array({ "a [22222222].dll:%GameDir%/b.dll" }));
+    std::error_code Ec;
+    fs::remove_all(D, Ec);
+}
+
+TEST(content_names_that_differ_only_in_case_are_one_name)
+{
+    // On Windows "dx.zip" and "DX.zip" are one file: two CIDs claiming them must be bumped apart on every platform,
+    // or one version reads the other's bytes there. And the claims are re-read when a node file changes, not when
+    // content lands beside the nodes (a download into a package must not re-parse its node files). Teeth: compare
+    // names case-sensitively; key the cache on the folder's time alone.
+    namespace fs = std::filesystem;
+    char Tmpl[] = "/tmp/vgcaseXXXXXX";
+    const fs::path D = mkdtemp(Tmpl);
+    const std::string C1 = "bafkreiaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa11111111";
+    const std::string C2 = "bafkreiaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa22222222";
+    std::ofstream(D / "v1.json") << ordered_json({ {"LABEL", "v1"}, {"LAYERS", ordered_json::array({ {{"ZIP", "dx.zip"}, {"SOURCE", C1}} })} }).dump();
+    std::ofstream(D / "v2.json") << ordered_json({ {"LABEL", "v2"}, {"LAYERS", ordered_json::array({ {{"ZIP", "DX.zip"}, {"SOURCE", C2}} })} }).dump();
+    CHECK_EQ(ContentFile::Path(D, "dx.zip", C1), D / "dx [11111111].zip");
+    CHECK_EQ(ContentFile::Path(D, "DX.zip", C2), D / "DX [22222222].zip");
+    const auto First = ContentFile::Claims(D);
+    std::ofstream(D / "dx [11111111].zip") << "bytes";                          // content lands: the folder's time moves
+    fs::last_write_time(D, fs::last_write_time(D) + std::chrono::seconds(5));
+    CHECK(ContentFile::Claims(D) == First);                                    // …the claims are the same, not re-read
+    std::ofstream(D / "v3.json") << ordered_json({ {"LABEL", "v3"}, {"LAYERS", ordered_json::array({ {{"ZIP", "b.zip"}, {"SOURCE", C1}} })} }).dump();
+    fs::last_write_time(D, fs::last_write_time(D) + std::chrono::seconds(10));
+    CHECK(ContentFile::Claims(D) != First && ContentFile::Claims(D)->count("b.zip") == 1);   // a node file: re-read
+    std::error_code Ec;
+    fs::remove_all(D, Ec);
 }
 
 TEST(guest_paths_map_through_a_runners_drives)

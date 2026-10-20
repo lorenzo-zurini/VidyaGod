@@ -1,4 +1,5 @@
 #include "nodelower.h"
+#include "contentfile.h"
 #include "commonutils.h"
 #include "fold.h"
 #include "varsubst.h"
@@ -586,7 +587,9 @@ nlohmann::ordered_json LowerPlan(const Fold::Plan &P)
             continue;
         }
         const std::string Path = (I.Payload.find('%') != std::string::npos || I.Dir.empty())
-                               ? I.Payload : (std::filesystem::path(I.Dir) / I.Payload).generic_string();   // '/' on every host: the plan is data
+                               ? I.Payload
+                               : ContentFile::Path(I.Dir, I.Payload, I.Source.is_string() ? I.Source.get<std::string>() : std::string())
+                                     .generic_string();   // '/' on every host: the plan is data; a bumped name when versions share it
         if (I.View.is_null())
         {
             Out.push_back(ContentOp(I.Kind, Path, I.Target, I.Source, I.Size, ordered_json()));
@@ -597,7 +600,9 @@ nlohmann::ordered_json LowerPlan(const Fold::Plan &P)
         const std::string Name = std::filesystem::path(I.Payload).filename().string();
         const std::string OwnAddr = I.Own.empty() ? std::string("FILES") : "FILES/" + I.Own;
         std::vector<Mount> Ms;
-        if (I.Kind == "FILE") Ms.push_back({ Name, OwnAddr + "/" + Name });
+        //The source is the file as it sits on disk (a bumped name when versions share it); the address keeps the
+        //name the node gives it, which is what TAKE selects and places.
+        if (I.Kind == "FILE") Ms.push_back({ std::filesystem::path(Path).filename().string(), OwnAddr + "/" + Name });
         else Ms.push_back({ std::string(), OwnAddr });
         Ms = ApplyView(Ms, I.View);
         if (Ms.empty()) continue;                                            // nothing of this layer is taken

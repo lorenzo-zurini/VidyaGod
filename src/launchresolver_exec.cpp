@@ -58,6 +58,18 @@ static std::string ContentRootRelative(const std::string &RawPath, const std::st
     return Path;
 }
 
+std::filesystem::path LaunchResolver::SessionRoot()
+{
+    std::error_code TmpEc;
+    std::string TempLeaf = "VidyaGod";
+#ifndef _WIN32
+    TempLeaf += "-" + std::to_string(static_cast<unsigned long>(getuid()));
+#endif
+    std::filesystem::path TempRoot = std::filesystem::temp_directory_path(TmpEc) / TempLeaf;
+    if (TmpEc) TempRoot = std::filesystem::path("/tmp") / TempLeaf;
+    return TempRoot;
+}
+
 bool LaunchResolver::ResolveExecutableDefinition(const nlohmann::ordered_json &MANIFESTJSON, struct ContainerParams &ContainerParams)
 {
     (void)MANIFESTJSON;   // legacy signature slot — the pre-cutover MANIFEST branch is gone (P5)
@@ -277,13 +289,7 @@ bool LaunchResolver::DerivePaths(struct ContainerParams &ContainerParams, const 
     //PER-USER root: the system temp is world-writable and the path is predictable, so a shared "VidyaGod" dir would let
     //two users collide on RUNTIME/WRITELAYER and let a hostile local user pre-create/symlink the mount targets. Keying
     //the root by the real UID makes each user's tree private (POSIX; %TEMP% is already per-user on Windows).
-    std::error_code TmpEc;
-    std::string TempLeaf = "VidyaGod";
-#ifndef _WIN32
-    TempLeaf += "-" + std::to_string(static_cast<unsigned long>(getuid()));
-#endif
-    std::filesystem::path TempRoot = std::filesystem::temp_directory_path(TmpEc) / TempLeaf;
-    if (TmpEc) TempRoot = std::filesystem::path("/tmp") / TempLeaf;
+    const std::filesystem::path TempRoot = LaunchResolver::SessionRoot();
     //ADVERSARY-TODO (MEDIUM-LOW, single-user desktop = out of scope for now): the per-uid leaf closes the accidental
     //cross-user COLLISION, but a hostile local user could still PRE-CREATE `<tmp>/VidyaGod-<uid>` (or a symlink of
     //that name) before first launch. Full close = at the create site, lstat the root: is-a-dir, not-a-symlink,

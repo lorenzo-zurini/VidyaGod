@@ -6,6 +6,8 @@
 #include "packagecatalog.h"
 #include "manifestmodel.h"
 #include "commonutils.h"
+#include "asyncwork.h"
+#include "ipfswrapper.h"
 
 #include <QVBoxLayout>
 #include <QHBoxLayout>
@@ -22,13 +24,16 @@
 #include <nlohmann/json.hpp>
 
 #include <functional>
+#include <memory>
 #include <string>
+#include <QPointer>
 
 PackagesView::PackagesView(AppModel &model, QWidget *parent)
     : QWidget(parent), Model(model)
 {
     buildUi();
     connect(&Model, &AppModel::catalogChanged, this, &PackagesView::rebuildList);
+    connect(&Model, &AppModel::nodeReady, this, &PackagesView::rebuildUpdates);   // versions need the node up
     rebuildList();
 }
 
@@ -39,13 +44,96 @@ void PackagesView::buildUi()
     // (The "Add Local Package" + "Package Editor" actions moved to the Library tab's toolbar — see LibraryTab — so the
     // authoring entry points are discoverable on the main screen instead of buried in this settings subpage.)
 
+    UpdatesBox = new QWidget(this);
+    UpdatesBox->setLayout(new QVBoxLayout());
+    UpdatesBox->layout()->setContentsMargins(0, 0, 0, 0);
+    layout->addWidget(UpdatesBox);
+
     PackagesScrollArea = new QScrollArea(this);
     PackagesScrollArea->setWidgetResizable(true);
     layout->addWidget(PackagesScrollArea);
 }
 
+void PackagesView::rebuildUpdates()
+{
+    //Rebuilt whole each time: a stale row (a switch applied meanwhile) must not linger, and only the LATEST refresh's
+    //result is shown (two in flight would otherwise add two lists).
+    const unsigned Gen = ++UpdatesGeneration;
+    QLayout *L = UpdatesBox->layout();
+    while (QLayoutItem *It = L->takeAt(0)) { if (It->widget()) It->widget()->deleteLater(); delete It; }
+    if (!IpfsWrapper::Available() || !Model.config()) return;
+    auto Cfg = std::make_shared<const nlohmann::ordered_json>(*Model.config());
+    auto Found = std::make_shared<std::vector<PackageCatalog::PackageUpdate>>();
+    QPointer<QWidget> Box = UpdatesBox;
+    AsyncWork::Run(this, [Cfg, Found]{ *Found = PackageCatalog::AvailableUpdates(*Cfg); },
+        [this, Box, Found, Gen]{
+            if (!Box || Gen != UpdatesGeneration || Found->empty()) return;
+            QGroupBox *G = new QGroupBox("Other versions", Box);
+            QGridLayout *Grid = new QGridLayout(G);
+            int Row = 0;
+            for (const auto &U : *Found)
+            {
+                Grid->addWidget(new QLabel(QString::fromStdString(U.Pkg + "  (" + U.Lib + ") — " + U.Nick + " has a different version"), G), Row, 0);
+                QPushButton *B = new QPushButton(QString::fromStdString("Use " + U.Nick + "'s version"), G);
+                B->setToolTip("Switch this package to " + QString::fromStdString(U.Nick) + "'s version of it. A part other "
+                              "installed games contain stays for them; what goes is listed before anything changes.");
+                B->setEnabled(!Switching);
+                connect(B, &QPushButton::clicked, this, [this, U, B]{ offerUpdate(U, B); });
+                Grid->addWidget(B, Row++, 1);
+            }
+            Box->layout()->addWidget(G);
+        });
+}
+
+void PackagesView::offerUpdate(const PackageCatalog::PackageUpdate &U, QPushButton *Button)
+{
+    if (!Model.config() || Switching) return;
+    Switching = true;
+    for (auto *B : UpdatesBox->findChildren<QPushButton *>()) B->setEnabled(false);
+    Button->setText("Fetching " + QString::fromStdString(U.Nick) + "'s version…");
+    auto Cfg = std::make_shared<const nlohmann::ordered_json>(*Model.config());
+    auto S = std::make_shared<PackageCatalog::StagedUpdate>();
+    auto Err = std::make_shared<std::string>();
+    auto Ok = std::make_shared<bool>(false);
+    auto Finish = [this]{ Switching = false; rebuildUpdates(); };
+    AsyncWork::Run(this, [Cfg, U, S, Err, Ok]{ *Ok = PackageCatalog::StageUpdate(*Cfg, U, S.get(), Err.get()); },
+        [this, U, S, Err, Ok, Finish]{
+            if (!*Ok) { QMessageBox::warning(this, "Switch version", QString::fromStdString(*Err)); Finish(); return; }
+            QString Q = QString("Switch %1 to %2's version?\n\n%3 node(s) come in and %4 go.")
+                            .arg(QString::fromStdString(U.Pkg), QString::fromStdString(U.Nick))
+                            .arg(S->Added.size()).arg(S->Removed.size());
+            if (!S->Kept.empty())
+                Q += QString(" %1 node(s) of the current version stay, because other installed games still use them.").arg(S->Kept.size());
+            if (!S->Deletes.empty())
+            {
+                Q += QString("\n\nThese files are deleted (%1 MB); they are needed again only to switch back:")
+                         .arg(S->DeleteBytes / (1024.0 * 1024.0), 0, 'f', 1);
+                for (size_t I = 0; I < S->Deletes.size() && I < 12; ++I)
+                    Q += "\n  " + QString::fromStdString(S->Deletes[I].File.filename().string());
+                if (S->Deletes.size() > 12) Q += QString("\n  … and %1 more").arg(S->Deletes.size() - 12);
+            }
+            Q += "\n\nSaves and the files you keep are not touched. Choices saved for removed versions go back to their "
+                 "defaults. New content downloads the next time it is needed.";
+            if (QMessageBox::question(this, "Switch version", Q) != QMessageBox::Yes)
+            {
+                AsyncWork::Run(this, [S]{ PackageCatalog::DiscardStagedUpdate(*S); }, Finish);
+                return;
+            }
+            auto Done = std::make_shared<bool>(false);
+            auto Now = std::make_shared<const nlohmann::ordered_json>(*Model.config());   // the library as it is now
+            AsyncWork::Run(this, [Now, S, Err, Done]{ *Done = PackageCatalog::ApplyStagedUpdate(*Now, *S, Err.get()); },
+                [this, Err, Done, Finish]{
+                    if (!*Done) QMessageBox::warning(this, "Switch version", QString::fromStdString(*Err));
+                    Switching = false;
+                    Model.rebuildCatalog();                                    // the package's nodes changed → rebuildList
+                    (void)Finish;
+                });
+        });
+}
+
 void PackagesView::rebuildList()
 {
+    rebuildUpdates();
     if (PackagesScrollArea->widget()) PackagesScrollArea->widget()->deleteLater();
     QWidget * w = new QWidget(PackagesScrollArea);
     PackagesScrollArea->setWidget(w);

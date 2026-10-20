@@ -1,4 +1,5 @@
 #include "manifestmodel.h"
+#include "contentfile.h"
 #include "commonutils.h"
 #include "fold.h"        // Fold::Resolve — a node's facts are folded, never inherited by graph distance
 #include "nodelower.h"   // NodeLower — the gen-6 vocabulary check and the lowering to engine ops
@@ -587,7 +588,7 @@ std::string JoinTarget(std::string Target, std::string Rel)
 std::filesystem::path ItemLocal(const Fold::Item &I)
 {
     if (I.Dir.empty() || I.Payload.find('%') != std::string::npos) return {};
-    return std::filesystem::path(I.Dir) / I.Payload;
+    return ContentFile::Path(I.Dir, I.Payload, I.Source.is_string() ? I.Source.get<std::string>() : std::string());
 }
 
 // The case-sensitive set of target-relative file paths a launchable's resolved plan mounts, from LOCALLY-present
@@ -1471,7 +1472,8 @@ void LayerLocator(const nlohmann::ordered_json &Sub, const std::filesystem::path
         if (Src.value("TYPE", std::string("path")) == "ipfs") Cid = Src.value("CID", std::string());
     }
     std::filesystem::path P(PathStr);
-    Local = P.is_absolute() ? P : (PackagePath / P);
+    //A content file of the package: its bumped name when two versions of that name are kept side by side.
+    Local = P.is_absolute() ? P : ContentFile::Path(PackagePath, PathStr, Cid);
 }
 
 std::string ResolveLayerSource(const nlohmann::ordered_json &Sub, const std::filesystem::path &PackagePath)

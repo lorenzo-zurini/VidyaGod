@@ -557,6 +557,19 @@ void ForgetDestsUnder(const std::string &DirIn)
                       J.Dests.end());
 }
 
+bool LandingUnder(const std::string &DirIn)
+{
+    const std::string Dir = DestKey(DirIn);
+    const std::string Prefix = Dir.empty() || Dir.back() == '/' ? Dir : Dir + "/";
+    std::lock_guard<std::mutex> Lk(Q().Mu);
+    for (const auto &[C, J] : Q().Jobs)
+    {
+        if (J.State == Job::Done || J.State == Job::Failed) continue;
+        for (const std::string &D : J.Dests) if (D.compare(0, Prefix.size(), Prefix) == 0) return true;
+    }
+    return false;
+}
+
 void CancelDownload(const std::string &Cid)
 {
     bool WasQueued = false;

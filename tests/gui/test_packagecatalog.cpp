@@ -19,6 +19,11 @@
 #include "ipfswrapper.h"
 #include "nodegraph.h"      // VerifyNodeBytes — what a receiver checks a landed node file with
 #include "cid.h"
+#include "contentfile.h"
+#include "vfsmount.h"
+#include "packagesview.h"
+#include "appmodel.h"
+#include <QPushButton>
 #include "downloadqueue.h"   // EnqueueBatch/WaitBatch — the REAL rolling queue under test
 #include "apppaths.h"
 #include "commonutils.h"
@@ -1108,6 +1113,166 @@ private slots:
         std::filesystem::create_directories(Stub / ".package");
         QVERIFY(!PackageCatalog::AdoptReceivedPackage(rx, Stub, nullptr, &Err));
         QVERIFY(Err.find("already exists") != std::string::npos);
+        IpfsWrapper::DebugResetQueue();
+        IpfsWrapper::StopNode();
+    }
+
+    // Switching an installed package to a friend's version. A library L (node libA, its dx.zip) and a game G that
+    // contains libA are installed. The friend's version of L has libB (a NEW dx.zip under the same name) and libC (the
+    // OLD bytes, renamed extra.zip). Switching L: libA stays (G still contains it), the two dx.zip versions live at
+    // bumped names (the installed bytes move, their reference with them), G stays complete. Then G is switched to the
+    // friend's version (it contains libB) and L to one with libB and libC: now libA goes, and so does its file.
+    // Teeth: drop the containment walk (libA goes, G breaks); drop the bumped-name rule (both versions read one
+    // dx.zip); drop MoveRefs on rename (an orphaned reference); keep Removed nodes/Deletes (they stay); offer the
+    // version already installed, or one already in beside kept nodes; drop Elsewhere on a delete (X1 unreferenced);
+    // apply the confirmed plan unchecked; ignore the journal; drop the versions section from the page (no button).
+    void an_installed_package_switches_to_a_friends_version()
+    {
+        std::string Err;
+        QTemporaryDir Repo; QVERIFY(Repo.isValid());
+        QVERIFY2(IpfsWrapper::StartNode((Repo.path() + "/ipfs").toStdString(), &Err), Err.c_str());
+        QTemporaryDir SeedRoot; QVERIFY(SeedRoot.isValid());
+        const QString R = SeedRoot.path(), Ld = R + "/Libs/[L] DxWnd", Gd = R + "/Games/[1] G";
+        QDir().mkpath(Ld); QDir().mkpath(Gd);
+        writeFile(Ld + "/dx.zip", std::string(3000, '1'));
+        const std::string X1 = IpfsWrapper::AddNoCopy((Ld + "/dx.zip").toStdString(), &Err);
+        QVERIFY2(!X1.empty(), Err.c_str());
+        writeJson(Ld + "/a.json", NodeFixture::Chain("libA", {NodeFixture::ContentCid("zip", "dx.zip", X1)}));
+        writeJson(Gd + "/tile.json", NodeFixture::Chain("g_tile", {NodeFixture::Tile("1", "G")}));
+        writeJson(Gd + "/g.json", NodeFixture::Chain("g_exec", {NodeFixture::Merge({NodeFixture::Exec("win32", "g.exe"), NodeFixture::Variant("Play")})}, {"libA", "g_tile"}));
+        json seeder = json{{"Settings", {{"Paths", {{"LibraryRoot", R.toStdString()}}}}}};
+        auto Publish = [&]{ Err.clear(); const bool Ok = !PackageCatalog::PublishLibrary(seeder, &Err).empty(); if (!Ok) qWarning("publish: %s", Err.c_str());
+                            return json{{"Libs", seeder["Libraries"]["Libs"]}, {"Games", seeder["Libraries"]["Games"]}}; };
+        const json Gen1 = Publish();
+        const std::string LibA = cidOfLabel(Gen1["Libs"][0].value("cid", std::string()), "libA");
+
+        QTemporaryDir RxData; QVERIFY(RxData.isValid());
+        const std::string Peer = "12D3KooWSeederAlice", Nick = "derAlice";
+        json rx = json{{"Settings", {{"Paths", {{"LibraryRoot", (RxData.path() + "/LIBRARY").toStdString()}}}}},
+                       {"FriendLibraries", {{Peer, Gen1}}}};
+        landShares(rx, Nick, Gen1);
+        const std::filesystem::path Cat = PackageCatalog::CatalogRootDir(rx);
+        std::filesystem::path Lib, Game;
+        QVERIFY2(PackageCatalog::AdoptReceivedPackage(rx, Cat / (Nick + " - Libs") / "[L] DxWnd", &Lib, &Err), Err.c_str());
+        QVERIFY2(PackageCatalog::AdoptReceivedPackage(rx, Cat / (Nick + " - Games") / "[1] G", &Game, &Err), Err.c_str());
+        writeFile(QString::fromStdString((Lib / "dx.zip").string()), std::string(3000, '1'));   // hydrated here
+        QCOMPARE(IpfsWrapper::AddNoCopy((Lib / "dx.zip").string(), &Err), X1);
+        QVERIFY2(PackageCatalog::AvailableUpdates(rx).empty(), "the friend's versions are the installed ones");
+
+        // The friend's second version of L: dx.zip is new bytes (libB); the old bytes are extra.zip (libC). G contains libB.
+        QFile::remove(Ld + "/a.json");
+        // (One node plays both machines: the friend rewrites dx.zip in place, so X1 is held from the receiver's copy.)
+        QVERIFY(IpfsWrapper::DropRef(X1));
+        QCOMPARE(IpfsWrapper::AddNoCopy((Lib / "dx.zip").string(), &Err), X1);
+        writeFile(Ld + "/dx.zip", std::string(3000, '2'));
+        const std::string X2 = IpfsWrapper::AddNoCopy((Ld + "/dx.zip").toStdString(), &Err);
+        writeFile(Ld + "/extra.zip", std::string(3000, '1'));                   // X1's bytes, already held here
+        writeJson(Ld + "/b.json", NodeFixture::Chain("libB", {NodeFixture::ContentCid("zip", "dx.zip", X2)}));
+        writeJson(Ld + "/c.json", NodeFixture::Chain("libC", {NodeFixture::ContentCid("zip", "extra.zip", X1)}));
+        writeJson(Gd + "/g.json", NodeFixture::Chain("g_exec", {NodeFixture::Merge({NodeFixture::Exec("win32", "g.exe"), NodeFixture::Variant("Play")})}, {"libB", "g_tile"}));
+        const json Gen2 = Publish();
+        QVERIFY2(Gen2["Libs"][0]["cid"] != Gen1["Libs"][0]["cid"], Gen2.dump().c_str());
+        rx["FriendLibraries"] = json{{Peer, Gen2}};
+        QCOMPARE((int)PackageCatalog::AvailableUpdates(rx).size(), 2);          // both installed packages have another version
+        {   // Settings → Installed Packages offers it, by the friend's name
+            QDir appDir(RxData.path());
+            AppModel model(&rx, &appDir);
+            PackagesView view(model);
+            QPushButton * Offer = nullptr;
+            QTRY_VERIFY_WITH_TIMEOUT([&]{ for (auto * B : view.findChildren<QPushButton *>()) if (B->text() == "Use derAlice's version") Offer = B;
+                                          return Offer != nullptr; }(), 20000);
+        }
+        auto Switch = [&](const std::filesystem::path &Dir, PackageCatalog::StagedUpdate &S) {
+            for (const auto & U : PackageCatalog::AvailableUpdates(rx))
+                if (U.Dir == Dir) return PackageCatalog::StageUpdate(rx, U, &S, &Err) && PackageCatalog::ApplyStagedUpdate(rx, S, &Err);
+            Err = "no other version offered for " + Dir.string();
+            return false;
+        };
+        PackageCatalog::StagedUpdate S1;
+        QVERIFY2(Switch(Lib, S1), Err.c_str());
+        QVERIFY2(std::find(S1.Kept.begin(), S1.Kept.end(), LibA) != S1.Kept.end(), "libA stays: G still contains it");
+        QVERIFY2(std::filesystem::exists(Lib / (LibA + ".json")), "libA's node file stays");
+        const std::filesystem::path Old = Lib / ContentFile::Bumped("dx.zip", X1);
+        QVERIFY2(std::filesystem::exists(Old) && !std::filesystem::exists(Lib / "dx.zip"), "the installed bytes moved to their bumped name");
+        for (const auto & P : IpfsWrapper::OrphanedRefPaths())
+            QVERIFY2(P.find(RxData.path().toStdString()) == std::string::npos, P.c_str());       // the reference followed
+        {
+            const NodeIndex Idx = PackageCatalog::BuildCatalogIndex(rx);
+            QVERIFY2(PackageCatalog::MissingFromClosure(Idx, "g_exec").empty(), "G is still complete");
+            std::filesystem::path Local; std::string C;
+            ManifestModel::LayerLocator(Idx.Find(LibA)->Layers[0], Lib, Local, C);
+            QCOMPARE(Local, Old);                                                  // libA reads its own bytes
+            const std::string LibB = cidOfLabel(Gen2["Libs"][0].value("cid", std::string()), "libB");
+            ManifestModel::LayerLocator(Idx.Find(LibB)->Layers[0], Lib, Local, C);
+            QCOMPARE(Local, Lib / ContentFile::Bumped("dx.zip", X2));             // libB never reads libA's
+        }
+        {   // L is the friend's version now, plus libA kept for G: offered no more (G still is)
+            const auto Offered = PackageCatalog::AvailableUpdates(rx);
+            QCOMPARE((int)Offered.size(), 1);
+            QCOMPARE(Offered[0].Dir, Game);
+        }
+
+        // G switches to the friend's version (it contains libB): libA may go now, so L is offered again.
+        PackageCatalog::StagedUpdate S2, S3;
+        QVERIFY2(Switch(Game, S2), Err.c_str());
+        {
+            const auto Offered = PackageCatalog::AvailableUpdates(rx);
+            QVERIFY2(Offered.size() == 1 && Offered[0].Dir == Lib, "libA is contained by nothing now");
+        }
+        // The friend's next L keeps libC (extra.zip: X1's bytes, hydrated here) — libA's copy of X1 goes, and X1 stays
+        // referenced at extra.zip.
+        writeFile(QString::fromStdString((Lib / "extra.zip").string()), std::string(3000, '1'));
+        rx["FriendLibraries"] = json{{Peer, Publish()}};
+        // (One node plays both machines: X1 is held at the receiver's old copy alone, as it would be there.)
+        QVERIFY(IpfsWrapper::DropRef(X1));
+        QCOMPARE(IpfsWrapper::AddNoCopy(Old.string(), &Err), X1);
+        PackageCatalog::PackageUpdate U3;
+        for (const auto & U : PackageCatalog::AvailableUpdates(rx)) if (U.Dir == Lib) U3 = U;
+        QVERIFY(!U3.FolderCid.empty());
+        QVERIFY2(PackageCatalog::StageUpdate(rx, U3, &S3, &Err), Err.c_str());
+        {   // Never under a running game (held by every launch, on every platform). Teeth: drop the check.
+            const VfsMount::RuntimeHold Running;
+            QVERIFY2(!PackageCatalog::ApplyStagedUpdate(rx, S3, &Err) && Err.find("running") != std::string::npos, Err.c_str());
+            QVERIFY2(std::filesystem::exists(Old), "nothing changed");
+        }
+        {   // Applying plans again: a delete the user was not shown (the library changed meanwhile) is refused.
+            PackageCatalog::StagedUpdate Shown = S3;
+            Shown.Deletes.clear();
+            QVERIFY2(!PackageCatalog::ApplyStagedUpdate(rx, Shown, &Err) && Err.find("changed since") != std::string::npos, Err.c_str());
+            QVERIFY2(std::filesystem::exists(Old), "nothing changed");
+        }
+        {   // A switch that stopped half-way resumes as planned: its journal, in the stage, is staged and applied again.
+            writeFile(QString::fromStdString((Lib / "junk.bin").string()), "half-switched");
+            const std::string Junk = IpfsWrapper::AddNoCopy((Lib / "junk.bin").string(), &Err);
+            json J = {{"listing", S3.Listing}, {"added", S3.Added}, {"removed", S3.Removed}, {"kept", S3.Kept},
+                      {"moves", json::array()}, {"deletes", json::array()}, {"bytes", 0}};
+            for (const auto & [F, T] : S3.Moves) J["moves"].push_back({F.string(), T.string()});
+            for (const auto & D : S3.Deletes)
+            {
+                json E = json::array();
+                for (const auto & P : D.Elsewhere) E.push_back(P.string());
+                J["deletes"].push_back({{"file", D.File.string()}, {"cid", D.Cid}, {"elsewhere", E}});
+            }
+            J["deletes"].push_back({{"file", (Lib / "junk.bin").string()}, {"cid", Junk}, {"elsewhere", json::array()}});
+            writeJson(QString::fromStdString((S3.Stage / "switch.json").string()), J);
+            PackageCatalog::StagedUpdate Resumed;
+            QVERIFY2(PackageCatalog::StageUpdate(rx, U3, &Resumed, &Err), Err.c_str());
+            QCOMPARE(Resumed.Deletes.size(), S3.Deletes.size() + 1);
+            QVERIFY2(PackageCatalog::ApplyStagedUpdate(rx, Resumed, &Err), Err.c_str());
+            QVERIFY2(!std::filesystem::exists(Lib / "junk.bin"), "the journaled plan was applied");
+        }
+        QVERIFY2(std::find(S3.Removed.begin(), S3.Removed.end(), LibA) != S3.Removed.end(), "libA goes: nothing contains it");
+        QVERIFY(!std::filesystem::exists(Lib / (LibA + ".json")));
+        QVERIFY2(!std::filesystem::exists(Old), "its file goes with it");
+        QVERIFY2(IpfsWrapper::HasLocal(X1) && !IpfsWrapper::CidMissing(X1), "X1 is still held: referenced at extra.zip");
+        QVERIFY2(PackageCatalog::AvailableUpdates(rx).empty(), "every installed package is the friend's version now");
+        // A package holding a never-saved (draft) node file is not switched: the switch could not judge the draft.
+        // Teeth: drop the HasDraftNodes refusal.
+        writeFile(Ld + "/z.json", NodeFixture::Chain("libZ", {NodeFixture::Content("zip", "z.zip")}).back().dump());
+        rx["FriendLibraries"] = json{{Peer, Publish()}};
+        writeJson(QString::fromStdString((Lib / "draft.json").string()), json{{"LABEL", "draft"}, {"LAYERS", json::array()}});
+        PackageCatalog::StagedUpdate S4;
+        QVERIFY2(!Switch(Lib, S4) && Err.find("drafts") != std::string::npos, Err.c_str());
         IpfsWrapper::DebugResetQueue();
         IpfsWrapper::StopNode();
     }

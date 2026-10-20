@@ -95,6 +95,7 @@ bool ContainerWrapper::BuildContainerRuntime()
         LogErr("ContainerWrapper::BuildContainerRuntime", "Container initialization failed — refusing to build the runtime.");
         return false;
     }
+    if (!Live) Live.emplace();
 
     //Friend LAN (ALWAYS ON — see the header comment above): merge the LAN launch vars into CustomVariables up front so
     //the sandbox evaluation below sees SANDBOX=on + SANDBOX_NET=isolated (records the mounts, isolates the netns) and
@@ -704,6 +705,7 @@ bool ContainerWrapper::Cleanup()
     for (const std::filesystem::path &UnmountPath : ContainerParams.CleanupUnmountPaths)
         VfsMount::UnmountLazy(UnmountPath.string());
 #endif
+    Live.reset();                                                        // the runtime is down
 
     //4. Save-safety gate: never wipe while a durable mount could still be traversed.
     if (!DurableUnmountOk)

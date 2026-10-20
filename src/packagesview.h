@@ -3,6 +3,10 @@
 
 #include <QWidget>
 
+#include "packagecatalog.h"   // PackageCatalog::PackageUpdate
+
+class QPushButton;
+
 class AppModel;
 class QScrollArea;
 
@@ -23,9 +27,16 @@ public slots:
 
 private:
     void buildUi();
+    // The "Updates" section: installed packages a friend shares in another version, each with "Update from <friend>".
+    // Found off the GUI thread (it builds each package's folder); applying asks first, showing what changes.
+    void rebuildUpdates();
+    void offerUpdate(const PackageCatalog::PackageUpdate &U, QPushButton *Button);
 
     AppModel &Model;
     QScrollArea *PackagesScrollArea = nullptr;
+    QWidget *UpdatesBox = nullptr;
+    unsigned UpdatesGeneration = 0;            // a refresh's result is shown only if no later refresh started
+    bool Switching = false;                    // one switch at a time: every button waits while one runs
 };
 
 #endif // PACKAGESVIEW_H
