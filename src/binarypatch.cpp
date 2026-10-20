@@ -177,8 +177,12 @@ BinaryPatch::Result BinaryPatch::ApplyOne(const nlohmann::ordered_json &Patch, s
 {
     const std::string Mode = Patch.value("MODE", std::string());
 
-    auto pe = ParsePe(Image);
-    if (!pe) { Msg = "target is not a PE image"; return Result::Error; }
+    //A file that is not a PE image (an ELF, a data file) has no image base and no sections: ANCHOR and a raw OFFSET
+    //still name a site, and only a Cave (which needs an executable section and virtual addresses) refuses it.
+    const std::optional<PeInfo> Parsed = ParsePe(Image);
+    const bool IsPe = Parsed.has_value();
+    const PeInfo Flat{0xFFFFFFFFu, {}};       // every OFFSET below the "image base" is a raw file offset
+    const PeInfo *pe = IsPe ? &*Parsed : &Flat;
 
     std::string Err;
     auto siteOpt = ResolveSite(Patch, Image, *pe, Err);
@@ -214,7 +218,7 @@ BinaryPatch::Result BinaryPatch::ApplyOne(const nlohmann::ordered_json &Patch, s
         if (site + bits.size() > Image.size()) { Msg = "patch region runs past end of file"; return Result::Error; }
         bool set = true;
         for (size_t i = 0; i < bits.size(); ++i) if ((Image[site + i] & bits[i]) != bits[i]) set = false;
-        if (set) { Msg = "bits already set at " + VaStr(OffToVa(*pe, site).value_or(0)); return Result::Skipped; }
+        if (set) { Msg = "bits already set at " + (IsPe ? VaStr(OffToVa(*pe, site).value_or(0)) : "offset " + std::to_string(site)); return Result::Skipped; }
         for (size_t i = 0; i < bits.size(); ++i) Image[site + i] |= bits[i];
         Msg = "Or " + std::to_string(bits.size()) + " byte(s)";
         return Result::Applied;
@@ -230,13 +234,16 @@ BinaryPatch::Result BinaryPatch::ApplyOne(const nlohmann::ordered_json &Patch, s
         // Region length: EXPECT length for Replace (NOP-pad a shorter REPLACE), else the written length.
         const size_t region = !expect.empty() ? expect.size() : newBytes.size();
         if (newBytes.size() > region) { Msg = "REPLACE/VALUE is longer than EXPECT region"; return Result::Error; }
+        //The 0x90 pad is an x86 NOP: code only. In a file that is not a PE (an ELF's strings, a data file) it would
+        //write junk bytes, so a REPLACE there must cover its whole EXPECT.
+        if (!IsPe && newBytes.size() < region) { Msg = "REPLACE is shorter than EXPECT in a file that is not a PE image (no NOP padding outside code): give it the full length"; return Result::Error; }
         if (site + region > Image.size()) { Msg = "patch region runs past end of file"; return Result::Error; }
 
         // Idempotency + guard, checked against the EXACT bytes we would write (REPLACE + NOP pad).
         std::vector<uint8_t> want(newBytes);
         want.resize(region, 0x90);
         if (std::equal(want.begin(), want.end(), Image.begin() + site))
-        { Msg = "already patched at " + VaStr(OffToVa(*pe, site).value_or(0)); return Result::Skipped; }
+        { Msg = "already patched at " + (IsPe ? VaStr(OffToVa(*pe, site).value_or(0)) : "offset " + std::to_string(site)); return Result::Skipped; }
         if (!expect.empty() && !std::equal(expect.begin(), expect.end(), Image.begin() + site))
         {
             Msg = "EXPECT mismatch: file has " + ToHex(Image.data() + site, expect.size())
@@ -251,6 +258,7 @@ BinaryPatch::Result BinaryPatch::ApplyOne(const nlohmann::ordered_json &Patch, s
     // ---- Cave: jmp trampoline (generalises woxl_blitqueue_patch.py) ----------------------------------------
     if (Mode == "Cave")
     {
+        if (!IsPe) { Msg = "Cave needs a PE image (an executable section to hold the cave)"; return Result::Error; }
         if (expect.size() < 5) { Msg = "Cave EXPECT must be >=5 bytes (room for a jmp rel32)"; return Result::Error; }
         auto payloadOpt = ParseHex(RenderField("PAYLOAD"));
         if (!payloadOpt) { Msg = "PAYLOAD is not valid hex"; return Result::Error; }

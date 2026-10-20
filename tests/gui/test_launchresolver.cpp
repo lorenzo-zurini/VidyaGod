@@ -310,6 +310,74 @@ private slots:
         QCOMPARE((int)cp.SubComponentsArray.size(), 1);
     }
 
+    // A runner's own edit names its file as a game's does (%GameDir%/…, in guest coordinates). It must be mapped into
+    // the boundary runner's layout like the game's edits: an emulator's first-launch settings file landed at
+    // RUNTIME/C:\<uid>/… instead of the game folder (snes9x, RetroArch 2026-10-20). Teeth: append the runner's edits
+    // unmapped and FILE stays "C:\game/emu/emu.cfg".
+    void a_runners_edit_lands_in_the_game_folder()
+    {
+        NodeIndex idx;
+        idx.Nodes["emu"] = standalone(parse(json{ {"CID", "emu"}, {"LABEL", "emu"}, {"LAYERS", json::array({
+            json{{"EDIT", json::array({ json{{"MODE", "Overwrite"}, {"VALUE", "x"}} })}, {"TARGET", "FILES/%GameDir%/emu/emu.cfg"}},
+            json{{"EXEC", json::array({ json{{"LABEL", "emu"}, {"HOST", ManifestModel::MachinePlatform()}, {"GUEST", {"snes"}},
+                                             {"EXE", "%RunnerMount%/emu"}, {"CONTENT_ROOT", "snes/%PackageUID%"},
+                                             {"DRIVES", {{"C:", "snes"}}}, {"GUEST_ROOTS", {{"%GameDir%", "C:\\%PackageUID%"}}}} })}} })} },
+            "/tmp/vg_runner"));
+        idx.Nodes["game"] = launchNode("game", "snes", {});
+        finish(idx);
+        ContainerParams cp("/tmp/vg_bundle");
+        cp.NodeIdx = &idx; cp.LaunchNodeId = "game";
+        json pool = json::object();
+        QVERIFY(LaunchResolver::InitializeFromNode(cp, pool, json{{"Settings", json::object()}}));
+        std::string file;
+        for (const auto & L : cp.SubComponentsArray)
+            if (L.value("TYPE", std::string()) == "FileEdit") file = L.value("FILE", std::string());
+        QVERIFY2(!file.empty(), cp.SubComponentsArray.dump().c_str());
+        QVERIFY2(file.find("C:") == std::string::npos && file.find("emu/emu.cfg") != std::string::npos, file.c_str());
+        QVERIFY2(file.rfind("snes/", 0) == 0, file.c_str());
+    }
+
+    // A runner's edit on a drive its DRIVES does not lay out is refused, as a game's layer is.
+    void a_runners_edit_on_an_unmapped_drive_is_refused()
+    {
+        NodeIndex idx;
+        idx.Nodes["emu"] = standalone(parse(json{ {"CID", "emu"}, {"LABEL", "emu"}, {"LAYERS", json::array({
+            json{{"EDIT", json::array({ json{{"MODE", "Overwrite"}, {"VALUE", "x"}} })}, {"TARGET", "FILES/E:/emu.cfg"}},
+            json{{"EXEC", json::array({ json{{"LABEL", "emu"}, {"HOST", ManifestModel::MachinePlatform()}, {"GUEST", {"snes"}},
+                                             {"EXE", "%RunnerMount%/emu"}, {"CONTENT_ROOT", "snes/%PackageUID%"},
+                                             {"DRIVES", {{"C:", "snes"}}}, {"GUEST_ROOTS", {{"%GameDir%", "C:\\%PackageUID%"}}}} })}} })} },
+            "/tmp/vg_runner"));
+        idx.Nodes["game"] = launchNode("game", "snes", {});
+        finish(idx);
+        ContainerParams cp("/tmp/vg_bundle");
+        cp.NodeIdx = &idx; cp.LaunchNodeId = "game";
+        json pool = json::object();
+        QVERIFY(!LaunchResolver::InitializeFromNode(cp, pool, json{{"Settings", json::object()}}));
+    }
+
+    // A unified runner's recipe is one of the game's components: its edit is applied once, not again as a runner edit.
+    void a_unified_runners_edit_is_applied_once()
+    {
+        NodeIndex idx;
+        idx.Nodes["emu"] = standalone(parse(json{ {"CID", "emu"}, {"LABEL", "emu"}, {"LAYERS", json::array({
+            json{{"EDIT", json::array({ json{{"MODE", "Overwrite"}, {"VALUE", "x"}} })}, {"TARGET", "FILES/%GameDir%/emu.cfg"}},
+            json{{"EXEC", json::array({ json{{"LABEL", "emu"}, {"HOST", ManifestModel::MachinePlatform()}, {"GUEST", {"snes"}},
+                                             {"EXE", "%RunnerMount%/ge/emu"}, {"UNIFIED_RUNTIME", true}, {"CONTENT_ROOT", "ge"},
+                                             {"DRIVES", {{"C:", "ge"}}}, {"GUEST_ROOTS", {{"%GameDir%", "C:\\"}}}} })}} })} },
+            "/tmp/vg_runner"));
+        idx.Nodes["game"] = launchNode("game", "snes", {});
+        finish(idx);
+        ContainerParams cp("/tmp/vg_bundle");
+        cp.NodeIdx = &idx; cp.LaunchNodeId = "game";
+        json pool = json::object();
+        QVERIFY(LaunchResolver::InitializeFromNode(cp, pool, json{{"Settings", json::object()}}));
+        QVERIFY(cp.UnifiedRuntime);
+        int edits = 0;
+        for (const auto & L : cp.SubComponentsArray)
+            if (L.value("TYPE", std::string()) == "FileEdit") ++edits;
+        QVERIFY2(edits == 1, cp.SubComponentsArray.dump().c_str());
+    }
+
     // A runner-less workbench lays each anchor any runner declares out as a folder of its name: content placed at
     // %GameDir% mounts at GameDir/, not at a literal "%GameDir%" folder.
     void authoring_bare_lays_anchors_out_as_folders()
@@ -374,6 +442,22 @@ private slots:
         const json cfg = json{{"Settings", json::object()}};
         ContainerParams cp("/tmp/vg_bundle");
         QCOMPARE(LaunchResolver::ResolveChainIds(idx, launch, cp, cfg)[0], std::string("zzz_wine"));   // package-local beats alphabetical global
+    }
+
+    // Among otherwise equal runners the specialist wins: a dedicated SNES emulator before a multi-system one that also
+    // lists snes and sorts first by label (ares beside snes9x: the alternative never becomes every console's default).
+    // A recommended generalist still wins. Teeth: drop the guest-count step and "aaa_multi" is picked.
+    void pick_runner_prefers_the_specialist()
+    {
+        NodeIndex idx;
+        idx.Nodes["aaa_multi"] = runnerNode("aaa_multi", {"nes", "snes", "megadrive", "gba"});   // sorts first
+        idx.Nodes["zzz_snes"] = runnerNode("zzz_snes", {"snes"});
+        Node launch = launchNode("game", "snes", {});
+        const json cfg = json{{"Settings", json::object()}};
+        ContainerParams cp("/tmp/vg_bundle");
+        QCOMPARE(LaunchResolver::ResolveChainIds(idx, launch, cp, cfg)[0], std::string("zzz_snes"));
+        idx.Nodes["aaa_multi"].Recommended = {"game"};
+        QCOMPARE(LaunchResolver::ResolveChainIds(idx, launch, cp, cfg)[0], std::string("aaa_multi"));   // recommended first
     }
 
     // DerivePersistence (unified Persist primitive): pristine by default, KEEP target classification by shape, and a

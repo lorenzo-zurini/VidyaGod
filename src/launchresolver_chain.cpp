@@ -62,13 +62,15 @@ static bool RecommendedFor(const Node &R, const Node &Launch)
 namespace {
 
 //Strict-better ordering for the BFS default pick: RECOMMENDED > package-local (runner shipped in the launch's own
-//bundle) > lowest node-id. Runners are pre-sorted better-first so the first edge that discovers a platform is best.
+//bundle) > the specialist (fewer guest platforms: snes9x before a multi-system emulator that also runs SNES) > LABEL.
+//Runners are pre-sorted better-first so the first edge that discovers a platform is best.
 bool RunnerBetterPtr(const Node *A, const Node *B, const Node &Launch)
 {
     if (RecommendedFor(*A, Launch) != RecommendedFor(*B, Launch)) return RecommendedFor(*A, Launch);
     const bool LA = !Launch.BundleDir.empty() && A->BundleDir == Launch.BundleDir;
     const bool LB = !Launch.BundleDir.empty() && B->BundleDir == Launch.BundleDir;
     if (LA != LB) return LA;
+    if (A->GuestPlatform.size() != B->GuestPlatform.size()) return A->GuestPlatform.size() < B->GuestPlatform.size();
     return A->NodeId < B->NodeId;
 }
 
@@ -183,7 +185,7 @@ RunnerLink BuildLink(const NodeIndex &Idx, const std::string &Id)
 
 } // namespace
 
-//Every usable runner on this machine, sorted better-first (RECOMMENDED > package-local > node-id) for
+//Every usable runner on this machine, sorted better-first (RECOMMENDED > package-local > specialist > LABEL) for
 //deterministic BFS — shared by ResolveChainIds and ResolveChainTail (formerly duplicated verbatim).
 static std::vector<const Node *> AvailableRunnersSorted(const NodeIndex &Idx, const Node &Launch)
 {
@@ -249,7 +251,7 @@ static std::vector<std::string> ChainOver(const NodeIndex &Idx, const Node &Laun
 std::vector<std::string> LaunchResolver::ResolveChainIds(const NodeIndex &Idx, const Node &Launch,
                                                          const struct ContainerParams &CP, const nlohmann::ordered_json &GlobalConfigJSON)
 {
-    //Available runners, sorted better-first (RECOMMENDED > package-local > node-id) for deterministic BFS.
+    //Available runners, sorted better-first (RECOMMENDED > package-local > specialist > LABEL) for deterministic BFS.
     const std::vector<const Node *> Runners = AvailableRunnersSorted(Idx, Launch);
 
     //A pinned chain (passed CP.RunnerChainIds, else persisted RUNNER_CHAIN) is honoured when it forms a valid path to

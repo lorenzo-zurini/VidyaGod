@@ -383,7 +383,10 @@ bool LaunchResolver::InitializeFromNode(struct ContainerParams &ContainerParams,
             CP.SubComponentsArray = std::move(PrefixVfs);
         }
     }
-    //The runner's edits, registry and DLL overrides, appended — separate DEFAULTDATA/registry/override passes.
+    //The runner's edits, registry and DLL overrides, appended — separate DEFAULTDATA/registry/override passes. A UNIFIED
+    //runner's recipe is already one of the game's components (above), its edits with it: appended again, each patch
+    //ran twice and the second found its own anchor gone (Unleashed Recompiled, 2026-10-20).
+    if (!CP.UnifiedRuntime)
     {
         const std::map<std::string, std::string> RunnerVars = CP.GetVariablesMap();
         for (const auto &L : RunnerOpsJ)
@@ -391,8 +394,25 @@ bool LaunchResolver::InitializeFromNode(struct ContainerParams &ContainerParams,
             const std::string T = LayerType(L);
             if (T != "FileEdit" && T != "RegEdit" && T != "DllOverride" && T != "BinaryPatch") continue;
             if (L.contains("WHEN") && L["WHEN"].is_string() && !VarSubst::EvaluateCondition(L["WHEN"], RunnerVars)) continue;
-            CP.SubComponentsArray.push_back(L);
+            //A runner's edit names its file the way a game's does (%GameDir%/…, in guest coordinates): its FILE is
+            //substituted and mapped into the layout here, as BuildSubComponentsArray does for the game's — else an
+            //emulator's default settings file landed at RUNTIME/C:\<uid>/… instead of the game folder. Only the FILE:
+            //the rest (VALUEs naming %WineLibDir% and the other variables of a live runner mount) is substituted when
+            //the edit is applied, once they exist.
+            nlohmann::ordered_json E = L;
+            if ((T == "FileEdit" || T == "BinaryPatch") && E.contains("FILE") && E["FILE"].is_string())
+            {
+                E["FILE"] = GuestToLayout(CP, E["FILE"].get<std::string>());   // substitutes, then maps
+            }
+            CP.SubComponentsArray.push_back(std::move(E));
         }
+    }
+    //A runner's edit on a drive its DRIVES does not lay out is refused like a game's (the check above ran before them).
+    if (!CP.UnmappedPlacements.empty())
+    {
+        LogErr("InitializeFromNode", "'" + CP.UnmappedPlacements.front() + "' is placed on drive "
+               + CP.UnmappedPlacements.front().substr(0, 2) + ", which the runner's DRIVES does not lay out");
+        return false;
     }
     DerivePersistence(ComponentPool, CP);
     LogSucc("InitializeFromNode", "Resolved node '" + LaunchId + "' (runner " + CP.RunnerName + ", "

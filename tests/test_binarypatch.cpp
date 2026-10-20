@@ -200,13 +200,54 @@ TEST(bp_cave_fixed_nonzero_errors)
     CHECK(ApplyOne(p, img, NoVars, msg) == Result::Error);
 }
 
-TEST(bp_not_a_pe_errors)
+// An ELF (Unleashed Recompiled's Flatpak build) is patched by ANCHOR and raw OFFSET: a file needs no PE layout for that.
+TEST(a_file_that_is_not_a_pe_is_patched_by_anchor_and_raw_offset)
+{
+    std::vector<uint8_t> elf(64, 0xAB);
+    elf[0] = 0x7F; elf[1] = 'E'; elf[2] = 'L'; elf[3] = 'F';
+    const char lit[] = "/var/data";
+    std::memcpy(elf.data() + 20, lit, sizeof lit);          // with its NUL
+    nlohmann::ordered_json a{{"MODE", "Replace"}, {"ANCHOR", "2f 76 61 72 2f 64 61 74 61 00"},
+                             {"EXPECT", "2f7661722f64617461"}, {"REPLACE", "2e2f2e2f2e2f2e2f2e"}};
+    std::string msg;
+    CHECK(ApplyOne(a, elf, NoVars, msg) == Result::Applied);
+    CHECK(std::memcmp(elf.data() + 20, "././././.", 9) == 0);
+    CHECK_EQ(int(elf[29]), 0);
+    nlohmann::ordered_json o{{"MODE", "Replace"}, {"OFFSET", "0x3c"}, {"EXPECT", "abab"}, {"REPLACE", "0102"}};
+    CHECK(ApplyOne(o, elf, NoVars, msg) == Result::Applied);
+    CHECK_EQ(int(elf[0x3c]), 1);
+    CHECK_EQ(int(elf[0x3d]), 2);
+}
+
+// No NOP padding outside a PE: a shorter REPLACE in an ELF or data file is refused, the file untouched.
+TEST(a_short_replace_in_a_file_that_is_not_a_pe_errors)
+{
+    std::vector<uint8_t> elf(64, 0xAB);
+    elf[0] = 0x7F; elf[1] = 'E'; elf[2] = 'L'; elf[3] = 'F';
+    nlohmann::ordered_json p{{"MODE", "Replace"}, {"OFFSET", "16"}, {"EXPECT", "abab"}, {"REPLACE", "00"}};
+    std::string msg;
+    CHECK(ApplyOne(p, elf, NoVars, msg) == Result::Error);
+    CHECK_EQ(int(elf[16]), 0xAB);
+    CHECK_EQ(int(elf[17]), 0xAB);
+}
+
+TEST(an_offset_past_the_end_of_a_file_that_is_not_a_pe_errors)
 {
     std::vector<uint8_t> junk(64, 0xAB);
     nlohmann::ordered_json p{{"MODE", "Replace"}, {"OFFSET", "0x401000"},
                              {"EXPECT", "ab"}, {"REPLACE", "00"}};
     std::string msg;
     CHECK(ApplyOne(p, junk, NoVars, msg) == Result::Error);
+}
+
+TEST(a_cave_needs_a_pe_image)
+{
+    std::vector<uint8_t> junk(256, 0);
+    junk[16] = 0x8B; junk[17] = 0x44; junk[18] = 0x24; junk[19] = 0x08; junk[20] = 0xC3;
+    nlohmann::ordered_json p{{"MODE", "Cave"}, {"OFFSET", "16"}, {"EXPECT", "8b442408c3"}, {"PAYLOAD", "90"}};
+    std::string msg;
+    CHECK(ApplyOne(p, junk, NoVars, msg) == Result::Error);
+    CHECK(msg.find("PE") != std::string::npos);
 }
 
 // ---- Reproduction proof (gated): the engine must reproduce the hand-made WOXL derivative exes byte-for-byte ---
