@@ -1,6 +1,7 @@
 #include "sandboxlayer.h"
 #include "platform/platform.h"
 
+#include <optional>
 #include <string>
 #include <vector>
 #include <filesystem>
@@ -299,13 +300,17 @@ static void RunCloakWatcher(const std::string &caption, int maxWidth)
     xcb_disconnect(c);
 }
 
-// Grammar:  --sandbox-init  [--mount <spec> <mnt>]…  [--tun <name> <cidr> <sock> <bridge|nobridge>]  [--cloak <caption>|<maxwidth>]  --  <program> [args…]
+// Grammar:  --sandbox-init  [--mount <spec> <mnt>]…  [--tun <name> <cidr> <sock> <bridge|nobridge>]  [--cloak <caption>|<maxwidth>]
+//                          [--env NAME=VALUE | --unenv NAME]…  --  <program> [args…]
+// --env/--unenv are the game's loader variables (SandboxLayer::TakeLoaderEnv): this process started without them,
+// so its own libraries and the vidyagodfs helpers it spawns are the host's; they apply to the game alone.
 int RunSandboxInit(int argc, char **argv)
 {
     std::vector<std::pair<std::string, std::string>> mounts;
     std::string tunName, tunCidr, tunSock, chdirTo, cloakSpec;
     bool tunBridge = false;
     std::vector<std::string> cmd;
+    std::vector<std::pair<std::string, std::optional<std::string>>> gameEnv;   // (name, value); no value = removed
 
     int i = 1;
     for (; i < argc; ++i)
@@ -317,6 +322,13 @@ int RunSandboxInit(int argc, char **argv)
                                                  tunBridge = std::string(argv[i + 4]) == "bridge"; i += 4; }
         else if (a == "--chdir" && i + 1 < argc) { chdirTo = argv[i + 1]; i += 1; }
         else if (a == "--cloak" && i + 1 < argc) { cloakSpec = argv[i + 1]; i += 1; }
+        else if (a == "--env" && i + 1 < argc)
+        {
+            const std::string kv = argv[i + 1]; const size_t eq = kv.find('=');
+            if (eq != std::string::npos && eq > 0) gameEnv.emplace_back(kv.substr(0, eq), kv.substr(eq + 1));
+            i += 1;
+        }
+        else if (a == "--unenv" && i + 1 < argc) { gameEnv.emplace_back(argv[i + 1], std::nullopt); i += 1; }
         else if (a == "--") { ++i; break; }
     }
     for (; i < argc; ++i) cmd.emplace_back(argv[i]);
@@ -346,6 +358,10 @@ int RunSandboxInit(int argc, char **argv)
             _exit(0);
         }
     }
+
+    // The game's own loader variables, now that nothing else this process starts can inherit them.
+    for (const auto &[name, value] : gameEnv)
+        if (value) setenv(name.c_str(), value->c_str(), 1); else unsetenv(name.c_str());
 
     // Become the game.
     std::vector<char *> cargv;

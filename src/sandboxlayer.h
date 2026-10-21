@@ -3,6 +3,7 @@
 
 #include <string>
 #include <vector>
+#include <QProcessEnvironment>
 #include <QStringList>
 
 struct ContainerParams;
@@ -27,6 +28,17 @@ enum class NetMode { Host, Isolated };
 // A vidyagodfs layer-spec the sandbox-init mounts INSIDE the namespace (spec written on the host in phase B).
 struct Mount { std::string SpecPath; std::string Mountpoint; };
 
+// A dynamic-loader variable (LD_LIBRARY_PATH, LD_PRELOAD) as the GAME's environment has it: set to Value, or removed.
+// bwrap's payload is VidyaGod itself (--sandbox-init), so a runner's loader path would also load its bundled libraries
+// into VidyaGod's own Qt/GLib before main() runs (a bundled GLib older than the host's: "undefined symbol" and exit
+// 127). The init starts with VidyaGod's own values and applies these right before it execs the game.
+struct GameEnvVar { std::string Name; bool Set = false; std::string Value; };
+
+// Moves the loader variables (every LD_* name, and GLIBC_TUNABLES) whose value in Run (the game's composed
+// environment) differs from Base (the environment the launcher itself runs with) out of Run: Run gets Base's value
+// back, and the game's value is returned for the init to apply. Pure, so it is testable without a sandbox.
+std::vector<GameEnvVar> TakeLoaderEnv(QProcessEnvironment &Run, const QProcessEnvironment &Base);
+
 struct Options {
     NetMode                  Net = NetMode::Host;
     std::vector<std::string> WritableBinds;   // host paths bound read-WRITE (TempPath, UserData, home) over the RO root
@@ -35,6 +47,7 @@ struct Options {
     std::string              TunName, TunCidr, TunSock;   // overlay TUN (Isolated + a session); empty = none
     std::string              Cloak;                        // "<caption>|<maxwidth>": X-side unmap of a game's ugly startup window (empty = off)
     bool                     TunBridge = false;           // in-node NAT is up → sandbox-init adds a default route via the TUN
+    std::vector<GameEnvVar>  GameEnv;                      // loader variables the init applies to the game only (TakeLoaderEnv)
 };
 
 // Build the base sandbox Options (Net, from VIDYAGOD_SANDBOX_NET) from the launch params; ContainerWrapper fills
@@ -51,6 +64,11 @@ bool Available();
 // argv ending in `-- <origProgram> <origArgs...>`. Pure string construction (no side effects) so it is unit-testable
 // without bwrap installed. The caller gates this on Available().
 void Wrap(const Options &Opts, std::string &Program, QStringList &Arguments);
+
+// What a launch calls: on Linux, takes the game's loader variables out of RunEnv (TakeLoaderEnv against BaseEnv)
+// into Opts.GameEnv for the init to apply, then Wrap. On Windows (no re-invoked init) just Wrap.
+void WrapGame(Options Opts, std::string &Program, QStringList &Arguments, QProcessEnvironment &RunEnv,
+              const QProcessEnvironment &BaseEnv);
 
 // Tear down the sandbox for a launch keyed by its WorkDir (the value passed as Options.WorkDir). On
 // Windows this terminates the Sandboxie box (Start.exe /terminate) so no boxed process lingers after

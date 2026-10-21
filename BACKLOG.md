@@ -117,7 +117,15 @@ cascading, with a `→ linux64` target hint), persisted as USERSETTINGS `RUNNER_
   BOTH machines. Default remote address is `10.10.0.5` (WG) — see [[feedback_build_both_machines]].
 
 ## Pending bugs
-- (none open — #2/#3/#5/#8/#9 + the remove-freeze fixed; see "Done this session")
+- **VidyaGodFS: renaming a kept folder's own root away loses the saves** (found 2026-10-21 by the adversary verify;
+  pre-existing). KEEP at `cfg/sub`, game does `rename cfg/sub → cfg/sub.bak` (a backup-by-rename): `VfsRename` moves
+  the user's whole durable folder into the per-session writelayer, which teardown wipes. Fix: refuse a rename of a kept
+  root, or one leaving a kept layer, with `-EXDEV` (callers fall back to copy + delete). Test it like the other
+  `vgfs_tests` kept-folder cases (`keptOverTwo`).
+- VidyaGodFS kept-folder lows from the same review: a rename onto a dir holding only markers → ENOTEMPTY; a create at
+  a removed kept root's name → EISDIR; partial states when `KeptMarkOpaque`/`HideLower` fail after the host op;
+  `TouchMarker` maps `std::error_code` to errno (a Win32 code on Windows); nested kept folders (most specific in the
+  engine vs highest priority in vidyagodfs); a kept file shadowing a lower directory still shows the directory's files.
 
 ## Built but UNVERIFIED on hardware (resume testing here)
 - **Remove-flow** — managed remove now de-hydrates off-thread (was freezing the GUI: heavy DAG-walk +

@@ -17,8 +17,9 @@ bool SeedPersistFiles(struct ContainerParams &ContainerParams);
 bool CapturePersistFiles(struct ContainerParams &ContainerParams);
 
 //Whether the user has a saved copy of the runtime-relative file RuntimeRel: a kept single file whose durable copy
-//exists, or a file under a kept directory present in its durable home. A package default for a user-owned file
-//(an EDIT lowered with IF_UNSAVED) applies only while there is none.
+//exists, or a file under a kept directory present in its durable home — or deleted there by the game (a vidyagodfs
+//deletion marker). A package default for a user-owned file (an EDIT lowered with IF_UNSAVED) applies only while there
+//is none.
 bool HasSavedCopy(const struct ContainerParams &ContainerParams, const std::string &RuntimeRel);
 }
 

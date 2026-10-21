@@ -153,5 +153,18 @@ bool PersistLayer::HasSavedCopy(const struct ContainerParams &ContainerParams, c
     }
     if (!Best) return false;
     const std::string Rest = BestLen == 0 ? Rel : Rel.substr(BestLen + 1);
-    return std::filesystem::exists(ContainerParams.UserDataPath / Best->Target / Rest, Ec);
+    const std::filesystem::path Root = ContainerParams.UserDataPath / Best->Target;
+    if (std::filesystem::exists(Root / Rest, Ec)) return true;
+    //A file the game deleted inside a kept folder is the user's too: vidyagodfs leaves a `.wh.<name>` marker there
+    //(or `.wh.<ancestor>`, or `.wh..wh..opq` in an ancestor made again) that hides the package's copy for good, so a
+    //package default written beneath it would never be seen.
+    std::filesystem::path Cur = Root;
+    if (std::filesystem::exists(Cur / ".wh..wh..opq", Ec)) return true;
+    for (const auto &Part : std::filesystem::path(Rest))
+    {
+        if (std::filesystem::exists(Cur / (".wh." + Part.string()), Ec)) return true;
+        Cur /= Part;
+        if (Cur != Root / Rest && std::filesystem::exists(Cur / ".wh..wh..opq", Ec)) return true;
+    }
+    return false;
 }

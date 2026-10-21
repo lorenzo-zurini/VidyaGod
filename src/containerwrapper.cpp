@@ -552,7 +552,9 @@ bool ContainerWrapper::Execute(const std::string &OverrideExe)
                 It != ContainerParams.CustomVariables.end() && !It->second.empty())
                 SbOpts.Cloak = It->second;
 
-            SandboxLayer::Wrap(SbOpts, Program, Arguments);
+            //The game's loader variables go to the game alone: bwrap's payload is this binary (--sandbox-init), and a
+            //runner's bundled libraries on its loader path broke our own Qt/GLib before main() (exit 127).
+            SandboxLayer::WrapGame(SbOpts, Program, Arguments, RunProcessEnvironment, SystemToolEnv());
 #ifdef _WIN32
             LogOut("ContainerWrapper::Execute", "Sandbox: Sandboxie box (host FS + registry virtualization; VidyaGod writelayer/saves granted pass-through)");
 #else

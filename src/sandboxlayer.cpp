@@ -36,6 +36,35 @@ Options FromParams(const ContainerParams &CP)
     return O;
 }
 
+std::vector<GameEnvVar> TakeLoaderEnv(QProcessEnvironment &Run, const QProcessEnvironment &Base)
+{
+    std::vector<GameEnvVar> Out;
+    QStringList Names;
+    for (const QString &K : Run.keys() + Base.keys())
+        if ((K.startsWith(QStringLiteral("LD_")) || K == QStringLiteral("GLIBC_TUNABLES")) && !Names.contains(K)) Names << K;
+    Names.sort();
+    for (const QString &Name : Names)
+    {
+        const bool GameSet = Run.contains(Name), BaseSet = Base.contains(Name);
+        const QString GameVal = Run.value(Name);
+        if (GameSet == BaseSet && GameVal == Base.value(Name)) continue;
+        Out.push_back({Name.toStdString(), GameSet, GameVal.toStdString()});
+        if (BaseSet) Run.insert(Name, Base.value(Name)); else Run.remove(Name);
+    }
+    return Out;
+}
+
+void WrapGame(Options Opts, std::string &Program, QStringList &Arguments, QProcessEnvironment &RunEnv,
+              const QProcessEnvironment &BaseEnv)
+{
+#ifndef _WIN32
+    Opts.GameEnv = TakeLoaderEnv(RunEnv, BaseEnv);
+#else
+    (void)RunEnv; (void)BaseEnv;
+#endif
+    Wrap(Opts, Program, Arguments);
+}
+
 #ifndef _WIN32   // ---- Linux bubblewrap backend. The Windows Sandboxie backend is in sandboxlayer_win.cpp ----
 bool Available()
 {
@@ -98,6 +127,9 @@ void Wrap(const Options &Opts, std::string &Program, QStringList &Arguments)
         A << "--chdir" << QString::fromStdString(Opts.WorkDir);
     if (!Opts.Cloak.empty())
         A << "--cloak" << QString::fromStdString(Opts.Cloak);
+    for (const GameEnvVar &E : Opts.GameEnv)
+        if (E.Set) A << "--env" << QString::fromStdString(E.Name + "=" + E.Value);
+        else       A << "--unenv" << QString::fromStdString(E.Name);
     A << "--" << OrigProgram << OrigArgs;
 
     Program   = "bwrap";

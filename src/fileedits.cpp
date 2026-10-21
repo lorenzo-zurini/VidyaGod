@@ -125,7 +125,8 @@ bool FileEdits::ProcessFileEdits(struct ContainerParams &ContainerParams, bool O
         //A package default for a user-owned file: the user's saved copy stands once there is one.
         if (Sub.value("IF_UNSAVED", false) && PersistLayer::HasSavedCopy(ContainerParams, File))
         {
-            LogOut("FileEdits::ProcessFileEdits", "'" + File + "' is the user's (a saved copy exists) — the package default "
+            LogOut("FileEdits::ProcessFileEdits", "'" + File + "' is the user's (saved, or deleted by the game in a kept "
+                   "folder) — the package default "
                    + (Mode.empty() ? std::string("edit") : Mode) + " is not re-applied.");
             continue;
         }

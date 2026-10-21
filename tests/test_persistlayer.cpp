@@ -161,3 +161,24 @@ TEST(persistlayer_pattern_capture_matches_names_ignoring_case)
     if (Stored.size() == 1) CHECK_EQ(ReadFileAt(Stored[0]), std::string("new"));
     fs::remove_all(d);
 }
+
+// A file the game deleted inside a kept folder (a vidyagodfs marker, the file itself absent) is the user's state:
+// a package default (IF_UNSAVED) written beneath it would be hidden by the marker, so it is not applied.
+TEST(persistlayer_a_file_deleted_in_a_kept_folder_counts_as_the_users)
+{
+    auto d = PlTmp("keptdeleted");
+    ContainerParams CP(d);
+    CP.UserDataPath = d / "USERDATA";
+    CP.KeepDirs     = { { "pfx/drive_c/9/saves", "Saves", true } };
+    const fs::path K = CP.UserDataPath / "Saves";
+    fs::create_directories(K / "sub");
+    CHECK(!PersistLayer::HasSavedCopy(CP, "pfx/drive_c/9/saves/prefs.ini"));
+    WriteFileAt(K / ".wh.prefs.ini", "");
+    CHECK(PersistLayer::HasSavedCopy(CP, "pfx/drive_c/9/saves/prefs.ini"));          // deleted by the game
+    WriteFileAt(K / ".wh.old", "");
+    CHECK(PersistLayer::HasSavedCopy(CP, "pfx/drive_c/9/saves/old/a.cfg"));          // under a deleted folder
+    WriteFileAt(K / "sub/.wh..wh..opq", "");
+    CHECK(PersistLayer::HasSavedCopy(CP, "pfx/drive_c/9/saves/sub/b.cfg"));          // under a folder made again
+    CHECK(!PersistLayer::HasSavedCopy(CP, "pfx/drive_c/9/saves/other.ini"));
+    fs::remove_all(d);
+}
