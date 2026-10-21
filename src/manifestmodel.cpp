@@ -791,6 +791,41 @@ void FindCrossLayerCaseCollisions(const Fold::Plan &P,
 
 } // namespace
 
+std::vector<std::string> ShelfWarnings(const NodeIndex &Idx, const std::set<std::string> *OnlyNodes)
+{
+    std::map<std::string, std::vector<const Node *>> Presenters;   // UID -> the nodes with it among their faces
+    for (const auto &[K, N] : Idx.Nodes)
+        for (const std::string &U : N.Faces) Presenters[U].push_back(&N);
+    std::vector<std::string> Out;
+    for (const auto &[U, T] : Idx.Tiles)
+    {
+        const auto &Ps = Presenters[U];
+        if (OnlyNodes && std::none_of(Ps.begin(), Ps.end(), [&](const Node *N) { return OnlyNodes->count(N->NodeId) != 0; }))
+            continue;
+        const Node *Shown = nullptr;   // the node the presentation comes from: recommended variant, else first variant
+        for (const Node *N : Ps)
+        {
+            if (!N->IsVariant()) continue;
+            const bool Rec = std::find(N->Recommended.begin(), N->Recommended.end(), U) != N->Recommended.end();
+            const bool ShownRec = Shown && std::find(Shown->Recommended.begin(), Shown->Recommended.end(), U) != Shown->Recommended.end();
+            if (!Shown || (Rec && !ShownRec) || (Rec == ShownRec && N->Variant + '\x1f' + N->NodeId < Shown->Variant + '\x1f' + Shown->NodeId))
+                Shown = N;
+        }
+        const Node *Where = Shown ? Shown : (Ps.empty() ? nullptr : Ps.front());
+        const std::string Pkg = Where ? std::filesystem::path(Where->BundleDir).filename().string() : std::string("?");
+        const std::string Title = T.contains("TITLE") && T["TITLE"].is_string() ? T["TITLE"].get<std::string>() : std::string();
+        const std::string Name = "tile " + U + (Title.empty() ? std::string() : " '" + Title + "'") + " (" + Pkg + ")";
+        if (!Shown && !Idx.TileGraft.count(U))
+            Out.push_back(Name + ": no VARIANT presents it — the shelf shows a card with nothing to launch. Give the node "
+                          "that presents it VARIANT and RECOMMENDED [\"" + U + "\"].");
+        if (Title.empty())
+            Out.push_back(Name + ": the shelf takes this tile from " + (Shown ? "variant '" + Shown->Variant + "'" : std::string("its presenting node"))
+                          + ", whose folded tile has no TITLE — the card is named by a CID. Put the full tile (TITLE, COVER, "
+                          "META) in a node every variant of the game contains (\"tile at the base\"), keeping only {\"UID\"} on the variants.");
+    }
+    return Out;
+}
+
 void ValidateNodeGraph(const NodeIndex &Idx, std::vector<std::string> &Errors, std::vector<std::string> &Warnings,
                        const std::set<std::string> *OnlyNodes)
 {
@@ -1272,7 +1307,7 @@ void ValidateNodeGraph(const NodeIndex &Idx, std::vector<std::string> &Errors, s
                                        "will be refused at launch" + (L.contains("TARGET") ? "" : " (give the KEEP a NAME)"));
             }
         }
-    }
+    }    for (std::string &W : ShelfWarnings(Idx, OnlyNodes)) Warnings.push_back(std::move(W));
 }
 
 

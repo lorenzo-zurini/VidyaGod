@@ -118,7 +118,9 @@ int CliModes::RunAuditPackages(nlohmann::ordered_json &GlobalConfigJSON, const s
                     + std::to_string(Index.Nodes.size()) + " total"
                     + (Scope.empty() ? std::string() : (" [scope: " + Scope + "]")));
     LogOut("audit", "══════════════════════════════════════════════════════════════════════");
-    if (Launchables.empty())
+    //An empty scope match is a typo. An empty LIBRARY of launchables is not a reason to stop: its packages may be
+    //exactly the ones with no variant (the shelf pass below says so).
+    if (Launchables.empty() && !Scope.empty())
     { LogErr("audit", "scope matched no launchable node."); ClearLogCallback(); return 1; }
 
     std::vector<Finding> Findings;
@@ -153,6 +155,9 @@ int CliModes::RunAuditPackages(nlohmann::ordered_json &GlobalConfigJSON, const s
         ManifestModel::ValidateNodeGraph(Index, VErrors, VWarnings, Scope.empty() ? nullptr : &InScope);
         for (const std::string &E : VErrors) Findings.push_back({std::string(), "(validator)", "validate", E, true});   // E names its node
         LogOut("audit", "validator pass: " + std::to_string(VErrors.size()) + " error(s)");
+        //What the shelf will show is the audit's business too: a card with no row, or named by a CID.
+        for (const std::string &W : ManifestModel::ShelfWarnings(Index, Scope.empty() ? nullptr : &InScope))
+            Findings.push_back({std::string(), "(shelf)", "shelf", W, false});
     }
 
     //DUPLICATE VARIANT LABELS — two launchables on one tile with the same LABEL render as two identical rows in

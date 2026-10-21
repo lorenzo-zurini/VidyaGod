@@ -929,3 +929,71 @@ TEST(a_launch_option_in_a_kept_file_must_be_taken_back)
         CHECK(Set && Set->value("IF_UNSAVED", false) == !TakeBack);
     }
 }
+
+// ---- the shelf: what no single node shows ---------------------------------------------------------------------
+
+static ordered_json PlayEntry(const ordered_json &Tile, bool Runnable = true)
+{
+    ordered_json E = {{"LABEL", "Play"}, {"TILE", Tile}};
+    if (Runnable) { E["HOST"] = "win32"; E["EXE"] = "%GameDir%/g.exe"; }
+    return E;
+}
+
+// A package whose only node carries the tile and the entry but no VARIANT: the card has no row to launch. Found on
+// 2026-10-21 in 29 freshly made packages that launched fine by --node and passed every other check.
+TEST(shelf_reports_a_tile_no_variant_presents)
+{
+    NodeIndex Idx;
+    Add(Idx, {{"CID", "g"}, {"LAYERS", ordered_json::array({ {{"EXEC", ordered_json::array({PlayEntry({{"UID", "7"}, {"TITLE", "Game"}})})}} })}});
+    ManifestModel::DeriveFacts(Idx);
+    const auto W = ManifestModel::ShelfWarnings(Idx);
+    CHECK(AnyContains(W, "tile 7 'Game'") && AnyContains(W, "no VARIANT presents it"));
+    std::vector<std::string> VW; Validate(Idx, &VW);
+    CHECK(AnyContains(VW, "no VARIANT presents it"));          // part of --validate-nodes
+
+    NodeIndex Fixed;
+    Add(Fixed, {{"CID", "g"}, {"VARIANT", "Windows"}, {"RECOMMENDED", ordered_json::array({"7"})},
+                {"LAYERS", ordered_json::array({ {{"EXEC", ordered_json::array({PlayEntry({{"UID", "7"}, {"TITLE", "Game"}})})}} })}});
+    ManifestModel::DeriveFacts(Fixed);
+    CHECK(ManifestModel::ShelfWarnings(Fixed).empty());
+}
+
+// The shelf shows a tile as its RECOMMENDED variant's folded tile. A recommended port carrying only {"UID"}, beside
+// an original whose variant held the title, put a CID on 24 cards (2026-10-21).
+TEST(shelf_reports_a_presentation_without_a_title)
+{
+    const ordered_json Full = {{"UID", "7"}, {"TITLE", "Game"}, {"META", {{"DEVELOPER", "Studio"}}}};
+    NodeIndex Idx;
+    Add(Idx, {{"CID", "orig"}, {"VARIANT", "Original"},
+              {"LAYERS", ordered_json::array({ {{"EXEC", ordered_json::array({PlayEntry(Full)})}} })}});
+    Add(Idx, {{"CID", "port"}, {"VARIANT", "Port"}, {"RECOMMENDED", ordered_json::array({"7"})},
+              {"LAYERS", ordered_json::array({ {{"EXEC", ordered_json::array({PlayEntry({{"UID", "7"}})})}} })}});
+    ManifestModel::DeriveFacts(Idx);
+    const auto W = ManifestModel::ShelfWarnings(Idx);
+    CHECK(AnyContains(W, "tile 7") && AnyContains(W, "variant 'Port'") && AnyContains(W, "no TITLE"));
+
+    // The fix: the tile at the base — one node every variant contains, the variants keeping only {"UID"}.
+    NodeIndex Fixed;
+    Add(Fixed, {{"CID", "tile"}, {"LAYERS", ordered_json::array({ {{"EXEC", ordered_json::array({PlayEntry(Full, false)})}} })}});
+    Add(Fixed, {{"CID", "orig"}, {"VARIANT", "Original"}, {"LAYERS", ordered_json::array({
+                   {{"NODE", "tile"}}, {{"EXEC", ordered_json::array({PlayEntry({{"UID", "7"}})})}} })}});
+    Add(Fixed, {{"CID", "port"}, {"VARIANT", "Port"}, {"RECOMMENDED", ordered_json::array({"7"})}, {"LAYERS", ordered_json::array({
+                   {{"NODE", "tile"}}, {{"EXEC", ordered_json::array({PlayEntry({{"UID", "7"}})})}} })}});
+    ManifestModel::DeriveFacts(Fixed);
+    CHECK(ManifestModel::ShelfWarnings(Fixed).empty());
+    CHECK(Fixed.Tile("7") && Fixed.Tile("7")->value("TITLE", std::string()) == "Game");
+}
+
+// A graft with its own card (a mod that is effectively its own game) has rows without being a variant: the versions
+// it applies onto. It is not reported as rowless.
+TEST(shelf_a_grafts_own_card_is_not_rowless)
+{
+    NodeIndex Idx;
+    Add(Idx, {{"CID", "base"}, {"VARIANT", "1.0"}, {"RECOMMENDED", ordered_json::array({"7"})},
+              {"LAYERS", ordered_json::array({ {{"EXEC", ordered_json::array({PlayEntry({{"UID", "7"}, {"TITLE", "Game"}})})}} })}});
+    Add(Idx, {{"CID", "mod"}, {"LAYERS", ordered_json::array({ {{"ANY", ordered_json::array({"base"})}},
+              {{"EXEC", ordered_json::array({PlayEntry({{"UID", "70"}, {"TITLE", "The Mod"}})})}} })}});
+    ManifestModel::DeriveFacts(Idx);
+    CHECK(Idx.TileGraft.count("70") == 1);
+    CHECK(!AnyContains(ManifestModel::ShelfWarnings(Idx), "tile 70"));
+}
