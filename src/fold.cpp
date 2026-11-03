@@ -49,12 +49,13 @@ std::string Subst(const std::string &S, const Vars &V)
         const size_t B = S.find('%', A + 1);
         if (B == std::string::npos) { Out += S.substr(Pos); break; }
         Out += S.substr(Pos, A - Pos);
+        if (B == A + 1) { Out += "%%"; Pos = B + 1; continue; }   // a literal '%', kept for the final substitution
         const std::string Tok = S.substr(A + 1, B - A - 1);
         const size_t C = Tok.find(':');
         const std::string Key = C == std::string::npos ? Tok : Tok.substr(0, C);
         const std::string Fmt = C == std::string::npos ? std::string() : Tok.substr(C + 1);
         const auto It = V.find(Key);
-        if (It != V.end()) Out += Fmt.empty() ? It->second : VarSubst::RenderToken(It->second, Fmt, V);
+        if (It != V.end()) Out += VarSubst::RenderInsert(It->second, Fmt, V, /*KeepEscapes=*/true);
         else { Out += '%'; Out += Tok; Out += '%'; }
         Pos = B + 1;
     }

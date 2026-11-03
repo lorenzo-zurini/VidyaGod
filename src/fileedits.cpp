@@ -26,7 +26,8 @@ bool FileEdits::ProcessDLLOverrides(struct ContainerParams &ContainerParams)
         // A null DLLOVERRIDE is malformed package data: report it but keep collecting the valid ones —
         // abandoning the loop mid-way used to silently drop every override after the bad entry.
         if (SubComponentJSON.contains("DLLOVERRIDE") && !SubComponentJSON["DLLOVERRIDE"].is_null())
-            ContainerParams.DLLOverrides.push_back(SubComponentJSON["DLLOVERRIDE"]);
+            ContainerParams.DLLOverrides.push_back(SubComponentJSON["DLLOVERRIDE"].is_string()   // written out here (%% → %)
+                ? nlohmann::ordered_json(VarSubst::Unescape(SubComponentJSON["DLLOVERRIDE"].get<std::string>())) : SubComponentJSON["DLLOVERRIDE"]);
         else
         {
             LogErr("FileEdits::ProcessDLLOverrides", "DllOverride with null/missing DLLOVERRIDE — skipped.");
@@ -109,9 +110,11 @@ bool FileEdits::ProcessFileEdits(struct ContainerParams &ContainerParams, bool O
         std::string Mode  = Sub.value("MODE",  std::string());
         std::string File  = Sub.value("FILE",  std::string());
         std::string Value = Sub.value("VALUE", std::string());
-        const std::string Key = Sub.value("KEY", std::string());
+        std::string Key = Sub.value("KEY", std::string());
+        //The one final substitution of what the resolve handed over (it keeps a literal '%' doubled): %% → %.
         VarSubst::StringVariableSubstitution(File,  Vars);
         VarSubst::StringVariableSubstitution(Value, Vars);
+        VarSubst::StringVariableSubstitution(Key,   Vars);
         //An edit path is ALWAYS relative to its pass base (spec ch.15), so a path that is not is re-anchored
         //rather than followed. The overwhelmingly common way to get one is the house style
         //"%PrefixRoot%/drive_c/..." under a runner where PrefixRoot is "" (native), which yields

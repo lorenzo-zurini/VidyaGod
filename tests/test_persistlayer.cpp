@@ -276,6 +276,26 @@ TEST(persistlayer_pattern_keep_never_follows_a_link)
     fs::remove_all(d);
 }
 
+// A FOLDER on the way to a kept file that is a link out of the runtime (a game made it, or a package's archive serves it:
+// "cfg -> /home/user/.ssh") is not read through: capture runs outside the sandbox, and would copy the user's own files
+// into the store, where the next session's game reads them. Teeth: no LinkLeadsOut in the pattern or single-file capture.
+TEST(persistlayer_capture_never_reads_through_a_folder_link_out_of_the_runtime)
+{
+    auto d = PlTmp("dir_link_out");
+    ContainerParams CP(d);
+    CP.UserDataPath = d / "USERDATA";
+    CP.RuntimePath  = d / "RUNTIME";
+    CP.KeepFiles    = { { "game/cfg/id_*", "Keys", true }, { "game/cfg/secret", "Secret", true } };
+    WriteFileAt(d / "home/.ssh/id_rsa", "PRIVATE KEY");
+    WriteFileAt(d / "home/.ssh/secret", "PRIVATE");
+    fs::create_directories(CP.RuntimePath / "game");
+    fs::create_symlink(d / "home/.ssh", CP.RuntimePath / "game/cfg");
+    CHECK(!PersistLayer::CapturePersistFiles(CP));          // said, not silently skipped
+    CHECK(!fs::exists(CP.UserDataPath / "Keys/id_rsa"));
+    CHECK(!fs::exists(CP.UserDataPath / "Secret"));
+    fs::remove_all(d);
+}
+
 // The guard itself: a path climbing out of its root is refused, and so is a folder on the way that is a plain file.
 TEST(persistlayer_prepare_write_path_refuses_escapes)
 {

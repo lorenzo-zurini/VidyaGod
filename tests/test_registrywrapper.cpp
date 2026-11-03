@@ -321,3 +321,19 @@ TEST(reg_root_prefix_selects_the_hive)
     CHECK(RegistryWrapper::RootForPath("HKLM\\Software\\X") == HiveRoot::Machine);
     CHECK(RegistryWrapper::RootForPath("HKCU\\Software\\X") == HiveRoot::User);
 }
+
+
+// A registry value an installer NAMES %%Value%% is authored "%%%%Value%%%%". The resolve's pass keeps the escape
+// (SubstituteRegEdit with KeepEscapes); ApplyRegEdit writes it out once. Teeth: no unescape on apply (the name is
+// %%%%Value%%%%); unescape in the resolve's pass too (the name loses another level: %Value%).
+TEST(reg_a_value_named_with_percents_is_written_once)
+{
+    RegistryWrapper RW;
+    const nlohmann::ordered_json Edit = { {"TYPE", "RegEdit"}, {"REGPATH", "Software\\VG\\Plugins"},
+        {"KEYVALUES", { {"%%%%Value%%%%", "str(100%%)"} }} };
+    const nlohmann::ordered_json Resolved = RegistryWrapper::SubstituteRegEdit(Edit, {}, /*KeepEscapes=*/true);
+    CHECK(RW.ApplyRegEdit(Resolved));
+    const RegistryValue *V = RW.GetValue("Software\\VG\\Plugins", "%%Value%%");
+    CHECK(V != nullptr);
+    CHECK(RW.GetValue("Software\\VG\\Plugins", "%Value%") == nullptr);
+}

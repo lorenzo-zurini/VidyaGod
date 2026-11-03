@@ -19,6 +19,8 @@ namespace VarSubst
 //escapes), package TITLEs are free text, and CustomVar values are typed by the user in the pre-launch dialog.
 //One quote or backslash and the re-parse either throws out of the launch or — worse — is swallowed and the
 //layer is used with its %tokens% intact.
+nlohmann::ordered_json SubstituteJsonValues(const nlohmann::ordered_json &V, bool KeepEscapes,
+                                            const std::map<std::string, std::string> &Vars);
 nlohmann::ordered_json SubstituteJsonValues(const nlohmann::ordered_json &V,
                                             const std::map<std::string, std::string> &Vars);
 
@@ -26,7 +28,20 @@ nlohmann::ordered_json SubstituteJsonValues(const nlohmann::ordered_json &V,
 //format: %KEY:format% looks up KEY, then renders the value via RenderValue(value, format) (see below). A bare
 //%KEY% yields the raw value. An unmatched '%' aborts further substitution (the remainder is preserved); unknown
 //keys are left as %KEY%[:format] and logged. Returns true if at least one replacement was made.
-bool StringVariableSubstitution(std::string &SourceString, const std::map<std::string, std::string> &VariablesMap);
+//"%%" is a literal '%' (spec 08 §8.1): a value the format carries verbatim, such as a registry value NAMED %Value%,
+//written "%%Value%%". A variable's value keeps it doubled (KeepEscapes, while variables resolve against each other); a
+//final substitution writes one '%', in its own text and in the values it inserts. So an escape is undone exactly once:
+//"100%%%%" (meaning 100%%) is not undone again where its variable is inserted.
+bool StringVariableSubstitution(std::string &SourceString, const std::map<std::string, std::string> &VariablesMap,
+                                bool KeepEscapes = false);
+//"%%" → "%": a resolved variable's value as written out. Escape is the reverse: a text (a value read from a game's
+//file, a rendered format) as the format would spell it.
+std::string Unescape(const std::string &S);
+std::string Escape(const std::string &S);
+//What %KEY:format% inserts for Value (a variable's value, escaped): the format applied to the value it stands for
+//(a :map: table looked up by it; its entries are format text), in escaped form when KeepEscapes, written out otherwise.
+std::string RenderInsert(const std::string &Value, const std::string &Format, const std::map<std::string, std::string> &Vars,
+                         bool KeepEscapes);
 
 //The KEYs a string's %KEY% / %KEY:format% tokens name, in order — tokens read exactly as StringVariableSubstitution
 //reads them (pairwise '%', the format after the first ':'); an unmatched trailing '%' names nothing.

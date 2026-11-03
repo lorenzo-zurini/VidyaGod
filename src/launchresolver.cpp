@@ -84,7 +84,8 @@ std::string LaunchResolver::GuestToLayout(struct ContainerParams &CP, const std:
     std::map<std::string, std::string> Vars;                            // built once, only when needed
     auto Variables = [&]() -> const std::map<std::string, std::string> & { if (Vars.empty()) Vars = CP.GetVariablesMap(); return Vars; };
     std::string P = Path;
-    if (P.find('%') != std::string::npos) VarSubst::StringVariableSubstitution(P, Variables());
+    //Kept in the format's spelling: the consumers (the edit pass, the mount) substitute once more and write it out then.
+    if (P.find('%') != std::string::npos) VarSubst::StringVariableSubstitution(P, Variables(), /*KeepEscapes=*/true);
     //A guest path in the runtime itself — an anchor spelled from %RuntimePath%, a native runner's guest being its
     //runtime — is placed where it already is: its path below the runtime. Before the drives: a Windows runtime path
     //starts with a drive letter of the HOST, not of a guest. (Callers may hand the path in already substituted.)
@@ -109,7 +110,7 @@ std::string LaunchResolver::GuestToLayout(struct ContainerParams &CP, const std:
     for (const auto &[D, V] : CP.Drives.items())
     {
         std::string R = V.is_string() ? V.get<std::string>() : std::string();
-        VarSubst::StringVariableSubstitution(R, Variables());
+        VarSubst::StringVariableSubstitution(R, Variables(), /*KeepEscapes=*/true);
         Drives[D] = R;
     }
     std::string Out = Fold::ToLayout(P, Drives);

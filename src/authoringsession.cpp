@@ -1,3 +1,4 @@
+#include "varsubst.h"
 #include "authoringsession.h"
 #include "containerwrapper.h"   // ContainerWrapper + ContainerParams (full definition)
 #include "commonutils.h"        // Log*
@@ -156,7 +157,20 @@ nlohmann::ordered_json AuthoringSession::CaptureRegistryDelta() const
         LogErr("AuthoringSession::RegistryDelta", "could not read the session registry at " + Hives.string()
                    + " — the diff will be EMPTY and any registry changes made while authoring are lost.");
     //What the run wrote is in guest spelling (an installer's C:\Program Files (x86)\…); the node names places by anchor.
-    return LaunchResolver::AnchorRegEdits(Wrapper->ContainerParams, Now.DiffToRegEdits(Baseline));
+    //And it becomes package data, which the format reads for %tokens%: a '%' the program wrote (a REG_EXPAND_SZ's
+    //%SystemRoot%, a value named %Value%) is spelled %%, before the anchors (real tokens) are spelled in.
+    nlohmann::ordered_json Edits = Now.DiffToRegEdits(Baseline);
+    for (auto &E : Edits)
+    {
+        if (!E.is_object()) continue;
+        if (E.contains("REGPATH") && E["REGPATH"].is_string()) E["REGPATH"] = VarSubst::Escape(E["REGPATH"].get<std::string>());
+        if (!E.contains("KEYVALUES") || !E["KEYVALUES"].is_object()) continue;
+        nlohmann::ordered_json KV = nlohmann::ordered_json::object();
+        for (const auto &[K, V] : E["KEYVALUES"].items())
+            KV[VarSubst::Escape(K)] = V.is_string() ? nlohmann::ordered_json(VarSubst::Escape(V.get<std::string>())) : V;
+        E["KEYVALUES"] = KV;
+    }
+    return LaunchResolver::AnchorRegEdits(Wrapper->ContainerParams, Edits);
 }
 
 void AuthoringSession::DropRuntime()

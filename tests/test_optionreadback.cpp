@@ -147,6 +147,10 @@ TEST(readback_adopts_only_what_the_game_changed)
     Changed = OptionReadBack::Adopt(C, {{"res", Got("720")}}, {{"res", "1440"}}, Touched);
     CHECK(Changed == std::vector<std::string>{"res"});
     CHECK_EQ(C["VARIABLES"]["res"].get<std::string>(), std::string("720"));
+    //A '%' the game wrote is stored in the format's spelling (%%), so the launch writes back exactly one.
+    json P = json::object();
+    Changed = OptionReadBack::Adopt(P, {{"rate", Got("50%")}}, {{"rate", "40%"}}, Touched);
+    CHECK_EQ(P["VARIABLES"]["rate"].get<std::string>(), std::string("50%%"));
     //A first sighting that matches the launch's value pins nothing.
     json D = json::object();
     Changed = OptionReadBack::Adopt(D, {{"fps", Got("60")}}, {{"fps", "60"}}, Touched);

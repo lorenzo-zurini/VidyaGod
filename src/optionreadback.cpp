@@ -25,6 +25,7 @@ bool OneToken(const std::string &Value, std::string &Name, std::string &Format, 
     for (size_t I = 0; I < Value.size(); ++I)
     {
         if (Value[I] != '%') continue;
+        if (I + 1 < Value.size() && Value[I + 1] == '%') { ++I; continue; }   // "%%": a literal '%'
         const size_t E = Value.find('%', I + 1);
         if (E == std::string::npos) break;
         const std::string Inner = Value.substr(I + 1, E - I - 1);
@@ -34,8 +35,8 @@ bool OneToken(const std::string &Value, std::string &Name, std::string &Format, 
         if (++Found > 1) return false;
         Name = N;
         Format = Colon == std::string::npos ? std::string() : Inner.substr(Colon + 1);
-        Prefix = Value.substr(0, I);
-        Suffix = Value.substr(E + 1);
+        Prefix = VarSubst::Unescape(Value.substr(0, I));                       // the text as written to the file
+        Suffix = VarSubst::Unescape(Value.substr(E + 1));
         I = E;
     }
     return Found == 1;
@@ -216,7 +217,7 @@ std::vector<OptionReadBack::Site> OptionReadBack::Sites(const ContainerParams &C
         if (!Decl.contains("UI") || !Decl["UI"].is_object() || Decl["UI"].value("CONTROL", std::string()) == "secret"
             || Decl.value("EVAL", false) || Decl.contains("MAP")) continue;
         if (!S.Format.empty() && S.Format != "bool" && S.Format != "winpath" && S.Format.rfind("map:", 0) != 0) continue;
-        S.Key = Sub.value("KEY", std::string());
+        S.Key = VarSubst::Unescape(Sub.value("KEY", std::string()));       // as the edit pass writes it out
         S.File = RuntimeRelative(CP, Sub.value("FILE", std::string()));
         S.IfUnsaved = Sub.value("IF_UNSAVED", false);
         if (!S.File.empty()) Out.push_back(std::move(S));
@@ -271,7 +272,7 @@ std::map<std::string, std::string> OptionReadBack::Current(const ContainerParams
     std::map<std::string, std::string> Out;
     for (const Site &S : Sites(CP))
         if (const auto V = CP.CustomVariables.find(S.Option); V != CP.CustomVariables.end())
-            Out[S.Option] = Canon(V->second, S.Format);
+            Out[S.Option] = Canon(VarSubst::Unescape(V->second), S.Format);
     return Out;
 }
 
@@ -301,7 +302,9 @@ std::vector<std::string> OptionReadBack::Adopt(nlohmann::ordered_json &InstanceC
                                                                               // own change since wins
         if (!Known || Last[K].get<std::string>() != R.Value)
             if (Take || R.DefaultOnly || !Known) { Last[K] = R.Value; Touched = true; }
-        if (Take && (!Vars.contains(K) || Vars[K] != R.Value)) { Vars[K] = R.Value; Changed.push_back(K); Touched = true; }
+        //Stored in the format's spelling: a '%' the game wrote is %% in the instance (read back as one where written).
+        const std::string Spelled = VarSubst::Escape(R.Value);
+        if (Take && (!Vars.contains(K) || Vars[K] != Spelled)) { Vars[K] = Spelled; Changed.push_back(K); Touched = true; }
     }
     return Changed;
 }

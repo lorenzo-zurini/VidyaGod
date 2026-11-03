@@ -1147,7 +1147,9 @@ void PreLaunchWindow::RebuildCustomVarPickers()
 
             std::string Initial = CV.value("DEFAULT", std::string());
             if (SavedVars.contains(Key) && SavedVars[Key].is_string()) Initial = std::string(SavedVars[Key]);
-            { ContainerParams TmpP("", "", ""); VarSubst::StringVariableSubstitution(Initial, TmpP.GetVariablesMap()); }
+            //Kept in the format's spelling (%% stays %%): the value is saved and passed as an override, both read as
+            //format text again — written out here, each launch would strip one more level.
+            { ContainerParams TmpP("", "", ""); VarSubst::StringVariableSubstitution(Initial, TmpP.GetVariablesMap(), /*KeepEscapes=*/true); }
 
             const QString Label = QString::fromStdString(UI.value("LABEL", Key));
             QWidget* Field = nullptr;       // the value control (carries CVKey); null for an uneditable secret pool

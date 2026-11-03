@@ -1,5 +1,6 @@
 #include "persistlayer.h"
 #include "commonutils.h"   // Log*
+#include "fileedits.h"     // LinkLeadsOut — never read through a link out of the runtime
 
 #include <algorithm>
 #include <cctype>
@@ -215,6 +216,14 @@ bool PersistLayer::CapturePersistFiles(struct ContainerParams &ContainerParams)
             const std::filesystem::path Dir = ContainerParams.RuntimePath / Pattern.parent_path();
             const std::filesystem::path Home = ContainerParams.UserDataPath / F.Target;
             if (!std::filesystem::is_directory(Dir, ec)) { ec.clear(); continue; }       //no runtime to read: keep the store
+            //A link on the way leading out of the runtime (one the game made, or one a package's archive serves) would
+            //make this, which runs outside the sandbox, read the user's own files into the store.
+            if (std::string Why; FileEdits::LinkLeadsOut(ContainerParams.RuntimePath, Dir, Why))
+            {
+                LogErr("PersistLayer::CapturePersistFiles", "'" + Printable(F.Path) + "' is not stored: " + Why);
+                Ok = false;
+                continue;
+            }
             bool Clean = true;
             std::set<std::string> Present;
             std::filesystem::directory_iterator E(Dir, ec), End;
@@ -256,6 +265,13 @@ bool PersistLayer::CapturePersistFiles(struct ContainerParams &ContainerParams)
             continue;
         }
         const std::filesystem::path SrcFile = ContainerParams.RuntimePath  / F.Path;   //session result in the mounted union
+        //A folder on the way that is a link out (the file itself being a link is no save: IsPlainFile below).
+        if (std::string Why; FileEdits::LinkLeadsOut(ContainerParams.RuntimePath, SrcFile.parent_path(), Why))
+        {
+            LogErr("PersistLayer::CapturePersistFiles", "'" + Printable(F.Path) + "' is not stored: " + Why);
+            Ok = false;
+            continue;
+        }
         if (!IsPlainFile(SrcFile))                                                      //game never created it, or left a link: not a save
         {
             if (std::error_code Le; std::filesystem::is_symlink(SrcFile, Le))

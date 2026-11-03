@@ -85,7 +85,7 @@ std::map<std::string, std::string> ContainerParams::GetVariablesMap() const
                     LogErr("ContainerParams::GetVariablesMap", "GUEST_ROOTS %" + Key + "% and %" + Dep
                                                              + "% are spelled from each other — left unresolved");
             std::string R = Raw[Key];
-            VarSubst::StringVariableSubstitution(R, VariablesMap);
+            VarSubst::StringVariableSubstitution(R, VariablesMap, /*KeepEscapes=*/true);   // a variable's value: written out where used
             VariablesMap[Key] = R;
             State[Key] = 2;
         };

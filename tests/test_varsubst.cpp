@@ -57,7 +57,7 @@ TEST(subst_unmatched_percent_aborts_preserving_remainder)
 TEST(subst_empty_token_and_empty_value)
 {
     std::map<std::string, std::string> m{{"", "EMPTYKEY"}, {"K", ""}};
-    CHECK_EQ(Sub("%%", m), std::string("EMPTYKEY"));  // %% → key "" → its value
+    CHECK_EQ(Sub("%%", m), std::string("%"));         // %% is a literal '%', never a key "" (no variable is unnamed)
     CHECK_EQ(Sub("a%K%b", m), std::string("ab"));     // known key mapping to empty string
 }
 
@@ -303,4 +303,39 @@ TEST(eval_integer_undefined_results_fail)
     CHECK(VarSubst::EvaluateInteger("-7 % 2", V));                   CHECK_EQ(V, -1LL);
     CHECK(VarSubst::EvaluateInteger("9007199254740993 / 1", V));     CHECK_EQ(V, 9007199254740993LL);
     CHECK(VarSubst::EvaluateInteger(std::string(30, '(') + "1" + std::string(30, ')'), V));  CHECK_EQ(V, 1LL);
+}
+
+// "%%" is a literal '%' (spec 08 §8.1): an installer's registry value NAMED "%%Value%%" is written "%%%%Value%%%%", and
+// a value of a variable can hold one ("100%%" is 100%). A value inserted at the final substitution has its "%%"
+// written as one '%' too; while variables resolve against each other (KeepEscapes) they stay doubled, so "%%PATH%%"
+// never becomes %PATH% for a later pass. Teeth: read "%%" as an empty token (left as "%%", warned); unescape while
+// keeping escapes (a later pass expands %PATH%); no unescape of inserted values ("50%%" written).
+TEST(subst_double_percent_is_a_literal_percent)
+{
+    std::map<std::string, std::string> m{{"PATH", "/usr/bin"}, {"rate", "50%%"}};
+    CHECK_EQ(Sub("%%%%Value%%%%", m), std::string("%%Value%%"));
+    CHECK_EQ(Sub("100%% at %PATH%", m), std::string("100% at /usr/bin"));
+    CHECK_EQ(Sub("rate=%rate%", m), std::string("rate=50%"));
+    std::string Kept = "%%PATH%% and %rate%";
+    VarSubst::StringVariableSubstitution(Kept, m, /*KeepEscapes=*/true);
+    CHECK_EQ(Kept, std::string("%%PATH%% and 50%%"));
+    VarSubst::StringVariableSubstitution(Kept, m, /*KeepEscapes=*/true);       // another pass changes nothing
+    CHECK_EQ(Kept, std::string("%%PATH%% and 50%%"));
+    CHECK_EQ(Sub(Kept, m), std::string("%PATH% and 50%"));
+    CHECK(VarSubst::TokenKeys("%%Value%% %PATH%") == std::vector<std::string>{"PATH"});   // nothing undefined
+}
+
+// A render format applies to what the value stands for, not its escaped spelling: %X:upper% of "a%%b" is A%B, a
+// :map: table is looked up by the value itself, and a WHEN compares the value as written out. Teeth: render the
+// escaped spelling (asciiz writes both '%'); look the table up by "50%%".
+TEST(subst_formats_and_tables_read_what_an_escaped_value_stands_for)
+{
+    std::map<std::string, std::string> m{{"X", "a%%b"}, {"R", "50%%"}, {"T:?", "1"}, {"T:=50%", "half"}};
+    CHECK_EQ(Sub("%X:upper%", m), std::string("A%B"));
+    CHECK_EQ(Sub("%X:ascii%", m), std::string("612562"));
+    CHECK_EQ(Sub("%R:map:T%", m), std::string("half"));
+    std::string Kept = "%X:upper%";
+    VarSubst::StringVariableSubstitution(Kept, m, /*KeepEscapes=*/true);
+    CHECK_EQ(Kept, std::string("A%%B"));                    // still the format's spelling while resolving
+    CHECK(VarSubst::EvaluateCondition("%R% == '50%'", m));
 }

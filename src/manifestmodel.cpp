@@ -1313,8 +1313,41 @@ void ValidateNodeGraph(const NodeIndex &Idx, std::vector<std::string> &Errors, s
                                            Key + "' by default");
                 }
     }
-    const std::regex Tok(R"(%([A-Za-z0-9_]+)(?::[A-Za-z0-9_:]+)?%)");   // %KEY%, %KEY:format% or %KEY:map:TABLE%
-    const std::regex MapTok(R"(%[A-Za-z0-9_]+:map:([A-Za-z0-9_]*)%)");
+    //The %KEY%, %KEY:format% and %KEY:map:TABLE% tokens of every string in a node's layers, read pairwise as substitution
+    //reads them, "%%" being a literal '%' (an installer's registry value named %%Value%% is no variable): each token as
+    //(key, the table a :map: format names, or "" ).
+    const auto NodeTokens = [](const nlohmann::ordered_json &J) {
+        std::vector<std::pair<std::string, std::string>> Out;
+        const auto Ident = [](const std::string &K) {
+            return !K.empty() && std::all_of(K.begin(), K.end(), [](unsigned char C) { return std::isalnum(C) || C == '_'; });
+        };
+        const auto Scan = [&](const std::string &S) {
+            for (size_t P = 0;;)
+            {
+                const size_t A = S.find('%', P);
+                if (A == std::string::npos) break;
+                const size_t B = S.find('%', A + 1);
+                if (B == std::string::npos) break;
+                const std::string T = S.substr(A + 1, B - A - 1);
+                P = B + 1;
+                const std::string K = T.substr(0, T.find(':'));
+                if (!Ident(K)) continue;                                   // "%%", or a '%' that is no token
+                const std::string F = T.size() > K.size() ? T.substr(K.size() + 1) : std::string();
+                //A :map: format names its table (which may be empty: that, too, is a table nothing declares).
+                Out.emplace_back(K, F.rfind("map:", 0) == 0 ? ":" + F.substr(4) : std::string());
+            }
+        };
+        std::vector<const nlohmann::ordered_json *> Stack{ &J };
+        while (!Stack.empty())
+        {
+            const nlohmann::ordered_json *V = Stack.back();
+            Stack.pop_back();
+            if (V->is_string()) Scan(V->get<std::string>());
+            else if (V->is_object()) for (const auto &[K, C] : V->items()) { Scan(K); Stack.push_back(&C); }
+            else if (V->is_array()) for (const auto &C : *V) Stack.push_back(&C);
+        }
+        return Out;
+    };
     std::set<std::string> ReferencedAll;
     for (const auto &[Id, N] : Idx.Nodes)
     {
@@ -1331,9 +1364,8 @@ void ValidateNodeGraph(const NodeIndex &Idx, std::vector<std::string> &Errors, s
             if (L.contains("WHEN") && InScope(Id))
             {
                 const std::string W = L["WHEN"].get<std::string>();
-                for (auto It = std::sregex_iterator(W.begin(), W.end(), Tok); It != std::sregex_iterator(); ++It)
+                for (const auto &[K, Table] : NodeTokens(nlohmann::ordered_json(W)))
                 {
-                    const std::string K = (*It)[1].str();
                     if (!Builtins.count(K) && Declared.count(K) && !DeclaredUngated.count(K))
                         Errors.push_back(Tag + ": a layer WHEN reads %" + K + "%, which is only declared in WHEN-gated "
                                          "layers — a layer condition may only read ungated variables (§4.1)");
@@ -1350,15 +1382,15 @@ void ValidateNodeGraph(const NodeIndex &Idx, std::vector<std::string> &Errors, s
             if (L.contains("EDIT") && L["EDIT"].is_array())
                 for (auto &Op : L["EDIT"]) if (Op.is_object()) Op.erase("COMMENT");
         }
-        const std::string Scan = Live.dump();
         std::set<std::string> Refs;
-        for (auto It = std::sregex_iterator(Scan.begin(), Scan.end(), Tok); It != std::sregex_iterator(); ++It)
-            Refs.insert((*It)[1].str());
-        //A %KEY:map:TABLE% reading a table nothing declares would pass every value through unchanged, silently.
-        for (auto It = std::sregex_iterator(Scan.begin(), Scan.end(), MapTok); It != std::sregex_iterator(); ++It)
-            if (!Tables.count((*It)[1].str()) && InScope(Id))
-                Errors.push_back(Tag + ": " + (*It)[0].str() + " reads the table '" + (*It)[1].str() +
+        for (const auto &[K, Table] : NodeTokens(Live))
+        {
+            Refs.insert(K);
+            //A %KEY:map:TABLE% reading a table nothing declares would pass every value through unchanged, silently.
+            if (!Table.empty() && !Tables.count(Table.substr(1)) && InScope(Id))
+                Errors.push_back(Tag + ": %" + K + ":map:" + Table.substr(1) + "% reads the table '" + Table.substr(1) +
                                  "', but no VARS declares a MAP by that name (typo?)");
+        }
         for (const std::string &R : Refs)
         {
             ReferencedAll.insert(R);
@@ -1604,12 +1636,12 @@ void ForEachVfsLayer(const nlohmann::ordered_json &Components,
 void LayerLocator(const nlohmann::ordered_json &Sub, const std::filesystem::path &PackagePath,
                   std::filesystem::path &Local, std::string &Cid)
 {
-    std::string PathStr = Sub.value("PATH", std::string());
+    std::string PathStr = VarSubst::Unescape(Sub.value("PATH", std::string()));   // a file's name, as written out (%% → %)
     Cid.clear();
     if (Sub.contains("SOURCE") && Sub["SOURCE"].is_object())
     {
         const auto &Src = Sub["SOURCE"];
-        PathStr = Src.value("PATH", PathStr);                                  // SOURCE.PATH overrides the local path
+        PathStr = VarSubst::Unescape(Src.value("PATH", PathStr));             // SOURCE.PATH overrides the local path
         if (Src.value("TYPE", std::string("path")) == "ipfs") Cid = Src.value("CID", std::string());
     }
     std::filesystem::path P(PathStr);

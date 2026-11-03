@@ -218,7 +218,7 @@ bool LaunchResolver::ResolveCustomVariables(const nlohmann::ordered_json &MANIFE
                 Val.clear();                                       // WHEN false → gated off (empty)
             else
             {
-                Val = Sources[Key]; VarSubst::StringVariableSubstitution(Val, Map);
+                Val = Sources[Key]; VarSubst::StringVariableSubstitution(Val, Map, /*KeepEscapes=*/true);
                 //EVAL: once every operand has resolved, the value is the expression's integer (until then the text
                 //stays, and a later pass evaluates it).
                 long long N;
@@ -302,8 +302,8 @@ bool LaunchResolver::BuildSubComponentsArray(const nlohmann::ordered_json &MANIF
             //user typed containing a quote — or any Windows path, where "\U" is an invalid JSON escape —
             //threw parse_error out of the resolve and killed the app at launch.
             nlohmann::ordered_json Sub = Subs[j].value("TYPE", std::string()) == "RegEdit"
-                                       ? RegistryWrapper::SubstituteRegEdit(Subs[j], FrozenVars)
-                                       : VarSubst::SubstituteJsonValues(Subs[j], FrozenVars);
+                                       ? RegistryWrapper::SubstituteRegEdit(Subs[j], FrozenVars, /*KeepEscapes=*/true)
+                                       : VarSubst::SubstituteJsonValues(Subs[j], /*KeepEscapes=*/true, FrozenVars);
             //An edit's VALUE as written, beside the substituted one: what an option's read-back undoes (OptionReadBack).
             if (Sub.value("TYPE", std::string()) == "FileEdit" && Subs[j].contains("VALUE") && Subs[j]["VALUE"].is_string())
                 Sub["VALUE_TEMPLATE"] = Subs[j]["VALUE"];

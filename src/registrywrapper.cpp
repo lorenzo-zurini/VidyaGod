@@ -611,27 +611,27 @@ bool RegistryWrapper::DeleteValue(const std::string &FullPath, const std::string
 //  Manifest <-> value conversion, RegEdit application
 // ============================================================================
 
-ordered_json RegistryWrapper::SubstituteRegEdit(const ordered_json &Edit, const std::map<std::string, std::string> &Vars)
+ordered_json RegistryWrapper::SubstituteRegEdit(const ordered_json &Edit, const std::map<std::string, std::string> &Vars, bool KeepEscapes)
 {
     if (!Edit.is_object() || !Edit.contains("KEYVALUES") || !Edit["KEYVALUES"].is_object())
-        return VarSubst::SubstituteJsonValues(Edit, Vars);
+        return VarSubst::SubstituteJsonValues(Edit, KeepEscapes, Vars);
     ordered_json Rest = Edit;
     Rest.erase("KEYVALUES");
-    ordered_json Out = VarSubst::SubstituteJsonValues(Rest, Vars);
+    ordered_json Out = VarSubst::SubstituteJsonValues(Rest, KeepEscapes, Vars);
     std::map<std::string, std::string> Escaped;                         // built only if a typed string needs it
     ordered_json KV = ordered_json::object();
     for (const auto &[K, V] : Edit["KEYVALUES"].items())
     {
         std::string Name = K;
-        VarSubst::StringVariableSubstitution(Name, Vars);
+        VarSubst::StringVariableSubstitution(Name, Vars, KeepEscapes);
         if (V.is_string() && V.get<std::string>().rfind("str(", 0) == 0)
         {
             if (Escaped.empty()) for (const auto &[Key, Val] : Vars) Escaped[Key] = EscapeValueStr(Val);
             std::string P = V.get<std::string>();
-            VarSubst::StringVariableSubstitution(P, Escaped);
+            VarSubst::StringVariableSubstitution(P, Escaped, KeepEscapes);
             KV[Name] = P;
         }
-        else KV[Name] = VarSubst::SubstituteJsonValues(V, Vars);
+        else KV[Name] = VarSubst::SubstituteJsonValues(V, KeepEscapes, Vars);
     }
     Out["KEYVALUES"] = KV;
     return Out;
@@ -743,13 +743,16 @@ static std::string ArchRedirectRegPath(const std::string &RegPath, const std::st
 
 bool RegistryWrapper::ApplyRegEdit(const ordered_json &Sub)
 {
-    std::string RegPath = Sub.value("REGPATH", std::string());
+    std::string RegPath = VarSubst::Unescape(Sub.value("REGPATH", std::string()));   // written out here (%% → %)
     if (RegPath.empty()) { LogWarn("RegistryWrapper::ApplyRegEdit", "RegEdit with empty REGPATH (skipped)."); return false; }
     RegPath = ArchRedirectRegPath(RegPath, Sub.value("ARCHITECTURE", std::string()));   // 32-bit → under Wow6432Node
     EnsureKey(RegPath); // key-only creation when there are no KEYVALUES
     if (Sub.contains("KEYVALUES") && Sub["KEYVALUES"].is_object())
+        //The resolve keeps a literal '%' doubled (%%) in what it hands over; this is where the registry is written, so
+        //here it becomes one (a value an installer names %Value% is written "%%Value%%").
         for (auto &[K, Val] : Sub["KEYVALUES"].items())
-            SetValue(RegPath, K, ManifestStringToValue(Val));
+            SetValue(RegPath, VarSubst::Unescape(K),
+                     ManifestStringToValue(Val.is_string() ? ordered_json(VarSubst::Unescape(Val.get<std::string>())) : Val));
     //null KEYVALUES is the documented key-only form. Anything else present-but-not-an-object (a string, an
     //array) is malformed authoring that would otherwise be dropped in complete silence — the key gets created
     //and every value the author wrote is quietly discarded.

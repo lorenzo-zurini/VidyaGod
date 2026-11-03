@@ -415,6 +415,25 @@ private slots:
         QVERIFY2(Shown.contains("2.0 - Play") && Shown.contains("2.0 - Editor"), qPrintable(Shown.join(" | ")));
     }
 
+    // An option's value stays in the format's spelling in the window: a DEFAULT "100%%" (100 percent) shows and is
+    // collected as "100%%", so saving it and passing it as an override does not strip an escape per launch.
+    // Teeth: write the DEFAULT out for the control (it holds "100%", and the next resolve reads a lone '%').
+    void anOptionKeepsALiteralPercentEscaped()
+    {
+        NodeIndex idx;
+        idx.Nodes["game"] = parse(json{ {"CID", "game"}, {"LABEL", "game"}, {"VARIANT", "v1"}, {"LAYERS", json::array({ json{{"DIR", "game"}},
+                json{{"VARS", {{"opt", {{"DEFAULT", "100%%"}, {"UI", {{"CONTROL", "text"}, {"LABEL", "Option"}}}}}}}},
+                json{{"EXEC", json::array({ json{{"LABEL", "Play"}, {"HOST", ManifestModel::MachinePlatform()}, {"EXE", "game.exe"},
+                    {"TILE", {{"UID", "43"}, {"TITLE", "Game"}}}} })}} })} });
+        ManifestModel::DeriveFacts(idx);
+        json Cfg = json{{"Settings", json::object()}};
+        PreLaunchWindow W(&Cfg, &idx, {"game"});
+        QCoreApplication::processEvents();
+        QString Got = "<none>";
+        for (QLineEdit *E : W.findChildren<QLineEdit *>()) if (E->property("CVKey").toString() == "opt") Got = E->text();
+        QCOMPARE(Got, QString("100%%"));
+    }
+
     // A launch resolves on the graph its dialog shows (LaunchThread::Index, AppModel's snapshot), not on a re-scan of
     // the library: a node only that graph holds is found, and with no graph the launch refuses. Teeth: re-scan the
     // config in run() (the node is "not found" — the config names no library); ignore a missing graph.

@@ -233,7 +233,7 @@ int CliModes::RunNodeLaunch(LaunchParameters &LaunchParameters, nlohmann::ordere
             Diagnostics::ReportVerdict("Launch of '" + LaunchParameters.LaunchNodeId + "'");
             return 1;
         }
-        if (!NewContainerWrapper.UserKilled && NewContainerWrapper.LastCrashed)   // a non-zero exit is Execute's warning
+        if (!NewContainerWrapper.UserKilled && !ContainerWrapper::Stopping() && NewContainerWrapper.LastCrashed)   // a non-zero exit is Execute's warning; a stop is no crash
             LogWarn("main.cpp", "Game did not exit cleanly (code " + std::to_string(NewContainerWrapper.LastExitCode) + ").");
         //After the run, as after a refused one: what the package KEEPs is captured, then the runtime comes down.
         NewContainerWrapper.Cleanup();

@@ -116,7 +116,7 @@ public:
     //string ("str(2):\"…\"", REG_EXPAND_SZ / REG_MULTI_SZ) is a raw .reg payload whose backslashes are escaped — a token
     //there takes its value ESCAPED, or "C:\\x" would reach wine as "C:\x" (an escape) instead of a path.
     static nlohmann::ordered_json SubstituteRegEdit(const nlohmann::ordered_json &Edit,
-                                                    const std::map<std::string, std::string> &Vars);
+                                                    const std::map<std::string, std::string> &Vars, bool KeepEscapes = false);
     static nlohmann::ordered_json ValueToManifestString(const RegistryValue &V);
 
     //Every key that has its own block or a value, with its full path ("HKLM\\Software\\Foo", decoded segments), parents

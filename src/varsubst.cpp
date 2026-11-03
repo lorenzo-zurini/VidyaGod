@@ -52,7 +52,7 @@ bool TokenizeCond(const std::string &E, const std::map<std::string, std::string>
             if (j == std::string::npos) return false;
             const std::string Key = E.substr(i + 1, j - i - 1);
             const auto It = Vars.find(Key);
-            Out.push_back({CondTok::Val, It != Vars.end() ? It->second : std::string()});
+            Out.push_back({CondTok::Val, It != Vars.end() ? VarSubst::Unescape(It->second) : std::string()});   // compared as written out
             i = j + 1; continue;
         }
         size_t j = i;                                            // bare word literal
@@ -310,15 +310,46 @@ std::vector<std::string> VarSubst::TokenKeys(const std::string &S)
         const size_t End = S.find('%', Start + 1);
         if (End == std::string::npos) break;
         const std::string Token = S.substr(Start + 1, End - Start - 1);
-        Keys.push_back(Token.substr(0, Token.find(':')));
+        if (!Token.empty()) Keys.push_back(Token.substr(0, Token.find(':')));   // "%%" is a literal '%'
         Pos = End + 1;
     }
     return Keys;
 }
 
+std::string VarSubst::Unescape(const std::string &S)
+{
+    if (S.find("%%") == std::string::npos) return S;
+    std::string Out;
+    for (size_t I = 0; I < S.size(); ++I)
+    {
+        Out += S[I];
+        if (S[I] == '%' && I + 1 < S.size() && S[I + 1] == '%') ++I;
+    }
+    return Out;
+}
+
+std::string VarSubst::Escape(const std::string &S)
+{
+    if (S.find('%') == std::string::npos) return S;
+    std::string Out;
+    for (const char C : S) { Out += C; if (C == '%') Out += '%'; }
+    return Out;
+}
+
+std::string VarSubst::RenderInsert(const std::string &Value, const std::string &Format, const std::map<std::string, std::string> &Vars,
+                                   bool KeepEscapes)
+{
+    //A bare token and a table's entry are format text (escaped); any other format renders what the value stands for.
+    const bool Text = Format.empty() || Format.compare(0, 4, "map:") == 0;
+    const std::string R = Format.empty() ? Value : Text ? MapValue(Value, Format.substr(4), Vars) : RenderValue(Unescape(Value), Format);
+    if (KeepEscapes) return Text ? R : Escape(R);
+    return Text ? Unescape(R) : R;
+}
+
 bool VarSubst::StringVariableSubstitution(
     std::string &SourceString,
-    const std::map<std::string, std::string>& VariablesMap)
+    const std::map<std::string, std::string>& VariablesMap,
+    bool KeepEscapes)
 {
     //Trace-gated: this function narrates EVERY %token% it touches, and one launch resolve calls it enough to
     //produce 79% of the resolve's 2036 log lines (measured) — each a string build + a GUI console append. The
@@ -346,6 +377,15 @@ bool VarSubst::StringVariableSubstitution(
         }
 
         size_t end = SourceString.find('%', start + 1);
+
+        //"%%": a literal '%' (kept doubled while variables resolve against each other).
+        if (end == start + 1)
+        {
+            result += SourceString.substr(pos, start - pos);
+            result += KeepEscapes ? "%%" : "%";
+            pos = end + 1;
+            continue;
+        }
 
         //Unmatched opening '%' — stop substitution, preserve remainder.
         if (end == std::string::npos)
@@ -376,7 +416,7 @@ bool VarSubst::StringVariableSubstitution(
         auto it = VariablesMap.find(key);
         if (it != VariablesMap.end())
         {
-            const std::string rendered = format.empty() ? it->second : RenderToken(it->second, format, VariablesMap);
+            const std::string rendered = RenderInsert(it->second, format, VariablesMap, KeepEscapes);
             if (Trace) LogOut("StringVariableSubstitution", "Replacing with: \"" + rendered + "\"");
             result += rendered;
             replaced = true;
@@ -413,18 +453,24 @@ bool VarSubst::StringVariableSubstitution(
 nlohmann::ordered_json VarSubst::SubstituteJsonValues(const nlohmann::ordered_json &V,
                                                       const std::map<std::string, std::string> &Vars)
 {
+    return SubstituteJsonValues(V, false, Vars);
+}
+
+nlohmann::ordered_json VarSubst::SubstituteJsonValues(const nlohmann::ordered_json &V, bool KeepEscapes,
+                                                      const std::map<std::string, std::string> &Vars)
+{
     //Strings are substituted; numbers and bools cannot carry a token and pass through untouched. Object
     //KEYS are substituted too (see below) — a RegEdit's KEYVALUES is keyed by the registry value name.
     if (V.is_string())
     {
         std::string S = V.get<std::string>();
-        VarSubst::StringVariableSubstitution(S, Vars);
+        VarSubst::StringVariableSubstitution(S, Vars, KeepEscapes);
         return S;
     }
     if (V.is_array())
     {
         nlohmann::ordered_json Out = nlohmann::ordered_json::array();
-        for (const auto &E : V) Out.push_back(SubstituteJsonValues(E, Vars));
+        for (const auto &E : V) Out.push_back(SubstituteJsonValues(E, KeepEscapes, Vars));
         return Out;
     }
     if (V.is_object())
@@ -443,7 +489,7 @@ nlohmann::ordered_json VarSubst::SubstituteJsonValues(const nlohmann::ordered_js
             //legitimate authoring. Dropping key substitution would have written the literal token into the
             //registry, silently — a narrowing with no diagnostic, since HasLiveToken only inspects targets.
             std::string Key = K;
-            VarSubst::StringVariableSubstitution(Key, Vars);
+            VarSubst::StringVariableSubstitution(Key, Vars, KeepEscapes);
             //Two source keys can render to the SAME string ("%A%_Port" and "%B%_Port" where A and B hold the
             //same value, or a literal "host_Port" beside "%MODE%_Port" with MODE=host). The second would
             //overwrite the first and one registry value would simply never be written, with no diagnostic
@@ -452,7 +498,7 @@ nlohmann::ordered_json VarSubst::SubstituteJsonValues(const nlohmann::ordered_js
                 LogWarn("VarSubst::SubstituteJsonValues",
                         "key '" + K + "' substitutes to '" + Key + "', which another key in the same object "
                         "already produced — one of them will be lost. Give them distinct names.");
-            Out[Key] = SubstituteJsonValues(E, Vars);
+            Out[Key] = SubstituteJsonValues(E, KeepEscapes, Vars);
         }
         return Out;
     }
@@ -479,7 +525,7 @@ std::string VarSubst::MapValue(const std::string &Value, const std::string &Tabl
         return Value;
     }
     if (On->second != "1") return Value;                                    // the table's WHEN is off
-    if (const auto It = Vars.find(Table + ":=" + Value); It != Vars.end()) return It->second;
+    if (const auto It = Vars.find(Table + ":=" + Unescape(Value)); It != Vars.end()) return It->second;   // keyed by the value itself
     if (const auto It = Vars.find(Table + ":!"); It != Vars.end()) return It->second;
     return Value;
 }

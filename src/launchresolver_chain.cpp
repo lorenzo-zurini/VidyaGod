@@ -448,7 +448,8 @@ LaunchResolver::GuestTarget LaunchResolver::ComposeGuestTarget(struct ContainerP
                     continue;
                 }
                 if (T.Env.contains(K) || std::find(T.RemoveEnv.begin(), T.RemoveEnv.end(), K) != T.RemoveEnv.end()) continue;
-                std::string E = Val.get<std::string>(); VarSubst::StringVariableSubstitution(E, V); T.Env[K] = E;
+                //Kept escaped: Execute substitutes the composed ENV once more, and writes it out then.
+                std::string E = Val.get<std::string>(); VarSubst::StringVariableSubstitution(E, V, /*KeepEscapes=*/true); T.Env[K] = E;
             }
             for (const std::string &K : L.RemoveEnv)
                 if (!T.Env.contains(K) && std::find(T.RemoveEnv.begin(), T.RemoveEnv.end(), K) == T.RemoveEnv.end())

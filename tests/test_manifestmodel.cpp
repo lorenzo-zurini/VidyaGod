@@ -695,6 +695,20 @@ TEST(validate_names_undefined_variables_and_malformed_whens)
     CHECK(AnyContains(E, "malformed WHEN"));
 }
 
+// "%%" is a literal '%': a registry value an installer NAMES %%Value%% (written %%%%Value%%%%) references no variable,
+// while a real token beside literal percents still does. Teeth: scan the node as one text for %NAME% (finds %Value%
+// inside %%Value%%); skip the token after "%%".
+TEST(validate_reads_a_double_percent_as_a_literal_percent)
+{
+    NodeIndex Idx;
+    Add(Idx, { {"CID", "n"}, {"LABEL", "n"}, {"LAYERS", ordered_json::array({
+        {{"REG", {{"HKCU", {{"Software", {{"Plugins", {{"%%%%Value%%%%", "str(100%%)"}, {"%%x", "str(%typo2%)"}}}}}}}}}, {"ARCH", ordered_json::array({"32"})}},
+    })} });
+    const auto E = Validate(Idx);
+    CHECK(!AnyContains(E, "%Value%"));
+    CHECK(AnyContains(E, "undefined variable %typo2%"));
+}
+
 TEST(validate_warns_two_key_options_of_a_section_bound_to_one_key)
 {
     auto Key = [](const char *Def, const char *Section) {

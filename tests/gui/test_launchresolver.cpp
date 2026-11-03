@@ -5,6 +5,7 @@
 #include <QtTest>
 
 #include "launchresolver.h"
+#include "fileedits.h"
 #include "containerwrapper.h"
 #include "vfsmount.h"
 #include "varsubst.h"
@@ -240,6 +241,34 @@ private slots:
         QCOMPARE(ContainerWrapper::LiveCount(), size_t(0));          // a refused launch is no session
         VfsMount::ReleaseSession(Running, Folder);
 #endif
+    }
+
+    // A literal '%' in an edit is unescaped once, on the way through the resolve AND the edit pass: "%%AppData%%" stays
+    // the text the game expands itself, "100%%%%" is written 100%%. Teeth: the resolve's pass writing out (the edit
+    // pass then expands %AppData% and writes 100%); the edit pass keeping escapes (100%%%% written).
+    void a_literal_percent_is_written_once_through_resolve_and_edit()
+    {
+        NodeIndex idx;
+        idx.Nodes["wine"]   = runnerNode("wine", {"win32"}, {"proton"});
+        idx.Nodes["proton"] = contentNode("proton", json::array({ json{{"ZIP", "proton.zip"}} }));
+        idx.Nodes["game"]   = launchNode("game", "win32", {}, json::object(), json::array({
+            json{{"VARS", {{"AppData", {{"DEFAULT", "C:/expanded"}}}}}},
+            json{{"EDIT", json::array({ json{{"MODE", "Overwrite"}, {"VALUE", "path=%%AppData%%\\Saves rate=100%%%%"}} })},
+                  {"TARGET", "FILES/pfx/drive_c/game/game.ini"}},
+            json{{"EDIT", json::array({ json{{"MODE", "Overwrite"}, {"VALUE", "x"}} })},
+                  {"TARGET", "FILES/pfx/drive_c/game/%%AppData%%.cfg"}} }));
+        finish(idx);
+        ContainerParams cp("/tmp/vg_bundle");
+        cp.NodeIdx = &idx; cp.LaunchNodeId = "game";
+        json pool = json::object();
+        QVERIFY(LaunchResolver::InitializeFromNode(cp, pool, json{{"Settings", json::object()}}));
+        QTemporaryDir Rt;
+        cp.RuntimePath = Rt.path().toStdString();
+        QVERIFY(FileEdits::ProcessFileEdits(cp, /*OverridePass=*/true));
+        std::ifstream In(cp.RuntimePath / "pfx/drive_c/game/game.ini");
+        const std::string Got((std::istreambuf_iterator<char>(In)), std::istreambuf_iterator<char>());
+        QCOMPARE(Got, std::string("path=%AppData%\\Saves rate=100%%"));
+        QVERIFY(std::filesystem::exists(cp.RuntimePath / "pfx/drive_c/game/%AppData%.cfg"));   // the name as written
     }
 
     // A launch reads back what the game changed in a file the user keeps: the saved copy's value becomes the option's,
@@ -2207,6 +2236,17 @@ private slots:
           LaunchResolver::ResolveCustomVariables(pool, cp, cfg);
           QCOMPARE(cp.CustomVariables["MYVAR"], std::string("cfg"));
           QCOMPARE(cp.CustomVariables["DERIVED"], std::string("4")); }        // the stale saved "0" is not a setting
+        // "%%" is a literal '%' through the whole resolution, undone once where the value is written: "%%WEATHER%%"
+        // stays the text %WEATHER%, and "100%%%%" (meaning 100%%) is not undone a second time on insertion.
+        // Teeth: no KeepEscapes in the fixpoint (100%%%% writes as 100%).
+        { json esc = json{{"COMPONENTS", json::array({ json{{"COMPONENTID", "c1"}, {"SUBCOMPONENTS", json::array({
+              json{{"TYPE", "CustomVar"}, {"KEY", "WEATHER"}, {"DEFAULT", "1"}},
+              json{{"TYPE", "CustomVar"}, {"KEY", "LIT"}, {"DEFAULT", "%%WEATHER%% is %WEATHER%, 100%%%%"}} })}} })}};
+          ContainerParams cp("/tmp/vg_bundle"); cp.Recipe = {"c1"}; cp.PackageUID = "pkg";
+          LaunchResolver::ResolveCustomVariables(esc, cp, cfg);
+          std::string Out = "%LIT%";
+          VarSubst::StringVariableSubstitution(Out, cp.GetVariablesMap());
+          QCOMPARE(Out, std::string("%WEATHER% is 1, 100%%")); }
         // CLI override wins
         { ContainerParams cp("/tmp/vg_bundle"); cp.Recipe = {"c1"}; cp.PackageUID = "pkg";
           cp.VariableOverrides["MYVAR"] = "ovr";

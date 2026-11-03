@@ -827,14 +827,16 @@ bool ContainerWrapper::Cleanup()
     //What the program wrote in its private home (SandboxLayer::FromParams) is kept nowhere: it goes with TEMP. A save or a
     //setting written there is lost, so each one is a warning naming the file, not a silent success. Said here, before
     //the gate below, so it is said even when TEMP has to be left in place. Not worth a warning: two files every program
-    //makes (the PulseAudio client's cookie, fontconfig's cache, the logs protonfixes writes on every Proton launch) and the GPU driver's shader cache, which lands here
+    //makes (the PulseAudio client's cookie, fontconfig's caches — under ~/.cache/fontconfig or an app's own ~/.cache/<app>/fontconfig —, the logs protonfixes writes on every Proton launch) and the GPU driver's shader cache, which lands here
     //only on a machine whose real home has none yet to carry in (FromParams carries the ones that exist).
     {
         std::vector<std::string> Left = SandboxLayer::HomeLeftovers(SandboxLayer::FromParams(ContainerParams).Home);
         std::erase_if(Left, [](const std::string &P){
             return P == ".config/pulse/cookie" || P.starts_with(".cache/protonfixes/")
                 || P.starts_with(".cache/umu-protonfixes/")
-                || P.starts_with(".cache/fontconfig/") || P.starts_with(".cache/nvidia/")
+                || P.starts_with(".cache/fontconfig/")
+                || (P.starts_with(".cache/") && P.find("/fontconfig/") != std::string::npos)   // an app's own (bbport's Nix fontconfig)
+                || P.starts_with(".cache/nvidia/")
                 || P.starts_with(".cache/mesa_shader_cache") || P.starts_with(".nv/"); });
         if (!Left.empty())
         {
