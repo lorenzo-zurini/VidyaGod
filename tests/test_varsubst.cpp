@@ -22,6 +22,14 @@ TEST(subst_expands_known_tokens)
     CHECK_EQ(Sub("%PackageUID%", m), std::string("abc"));
 }
 
+// A proton runner names its program "%GameDir%\%ContentPath:winpath%": %ContentPath% keeps '/' between folders, and a
+// mixed "C:\12009\D2X-Rebirth/d2x-rebirth.exe" argv0 made PhysFS (DXX-Rebirth) take C:\12009 as the program's folder.
+TEST(subst_winpath_turns_a_relative_content_path_into_one_windows_path)
+{
+    std::map<std::string, std::string> m{{"GameDir", "C:\\12009"}, {"ContentPath", "D2X-Rebirth/d2x-rebirth.exe"}};
+    CHECK_EQ(Sub("%GameDir%\\%ContentPath:winpath%", m), std::string("C:\\12009\\D2X-Rebirth\\d2x-rebirth.exe"));
+}
+
 TEST(subst_returns_whether_replaced)
 {
     std::map<std::string, std::string> m{{"K", "v"}};
@@ -100,6 +108,50 @@ TEST(render_empty_or_unknown_format_unchanged)
 {
     CHECK_EQ(RenderValue("hello", ""),            std::string("hello"));
     CHECK_EQ(RenderValue("x", "unknownformat"),   std::string("x"));
+}
+
+// ---- MAP tables: %KEY:map:TABLE% (spec 08 §8.3) ----
+
+static std::map<std::string, std::string> WithTable(std::map<std::string, std::string> Vars, const std::string &Table,
+                                                    const nlohmann::ordered_json &Decl)
+{
+    for (const auto &[K, V] : VarSubst::TableEntries(Table, Decl)) Vars[K] = V;
+    return Vars;
+}
+
+TEST(map_reads_the_values_entry_exactly)
+{
+    const nlohmann::ordered_json Keys = {{"MAP", {{"keypad 0", "[0]"}, {"enter", "return"}, {"C:\\Games", "D:"}}}};
+    auto V = WithTable({{"k", "keypad 0"}, {"p", "C:\\Games"}, {"w", "w"}}, "unity", Keys);
+    CHECK_EQ(Sub("%k:map:unity%", V), std::string("[0]"));
+    CHECK_EQ(Sub("%p:map:unity%", V), std::string("D:"));            // any string: spaces, colons, backslashes
+    CHECK_EQ(Sub("%w:map:unity%", V), std::string("w"));             // not in the table: unchanged
+    CHECK_EQ(Sub("%k%", V), std::string("keypad 0"));                // the value itself is untouched
+}
+
+TEST(map_else_replaces_what_the_table_lacks)
+{
+    const nlohmann::ordered_json T = {{"MAP", {{"a", "A"}}}, {"ELSE", "none"}};
+    auto V = WithTable({{"x", "a"}, {"y", "b"}}, "t", T);
+    CHECK_EQ(Sub("%x:map:t%", V), std::string("A"));
+    CHECK_EQ(Sub("%y:map:t%", V), std::string("none"));
+}
+
+TEST(map_through_a_table_that_is_off_or_absent_passes_through)
+{
+    const nlohmann::ordered_json T = {{"MAP", {{"a", "A"}}}, {"ELSE", "none"}};
+    auto V = WithTable({{"x", "a"}}, "t", T);
+    V["t:?"] = "";                                                     // the table's WHEN is off
+    CHECK_EQ(Sub("%x:map:t%", V), std::string("a"));
+    CHECK_EQ(Sub("%x:map:nosuch%", V), std::string("a"));
+}
+
+TEST(map_entries_are_named_where_no_variable_can_be)
+{
+    const auto E = VarSubst::TableEntries("t", {{"MAP", {{"a", "A"}}}, {"ELSE", "z"}});
+    CHECK_EQ(E.size(), (size_t)3);
+    for (const auto &[K, Vv] : E) CHECK(K.find(':') != std::string::npos);   // a name holds no ':'
+    CHECK(VarSubst::TableEntries("t", {{"DEFAULT", "1"}}).empty());           // not a table
 }
 
 // ---- WHEN condition evaluator ----

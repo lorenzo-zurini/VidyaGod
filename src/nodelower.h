@@ -49,6 +49,11 @@ nlohmann::ordered_json LowerPlan(const Fold::Plan &P);
 //specific KEEP entry covering it decides; nothing covering it ⇒ package-owned.
 bool UserOwned(const nlohmann::ordered_json &Keep, const std::string &Address);
 
+//Does removing Address (a FILES/… address) reach the user's state: is it owned, inside a kept folder (taken back or
+//not: a kept folder is served live, so a deletion there lands in the user's store), or does a kept address lie under
+//it? A Delete op may touch none of these (spec 06 §6.2). Non-empty: the kept address it meets.
+std::string KeptUnder(const nlohmann::ordered_json &Keep, const std::string &Address);
+
 //The address an EDIT op writes (Target: the placed file, FILES namespace stripped): a keyed op (ConfigWrite, JsonSet)
 //writes one key of the file — FILES/<file>#<KEY>; every other op writes the whole file.
 std::string EditAddress(const nlohmann::ordered_json &Op, const std::string &Target);

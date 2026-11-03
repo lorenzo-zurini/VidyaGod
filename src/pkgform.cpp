@@ -1,10 +1,16 @@
 #include "pkgform.h"
+#include <cstdio>
+#include <cstring>
 
 #include "imgui.h"
 #include "imgui_stdlib.h"
+#include "imguiprobe.h"
 
 #include <algorithm>
 #include <functional>
+#include <map>
+#include <set>
+#include <optional>
 #include <sstream>
 
 using json = nlohmann::ordered_json;
@@ -14,6 +20,49 @@ namespace PkgForm
 {
 
 namespace {
+//An input's ImGui label: hidden ("##"), but its field's name - a driver (and ImGui's own tools) find the "Zip" box by
+//the name shown beside it, not as one of many "##v".
+//An entry just added is typed into at once: the button that adds it names the entry, and the next frame's input
+//for that entry takes the keyboard. Keyed by the map's ImGui ID (a node's layer's field), so one map's request never
+//moves another's focus.
+static std::map<ImGuiID, std::string> &FocusWanted() { static std::map<ImGuiID, std::string> M; return M; }
+static void AskFocus(ImGuiID Map, const std::string &Key) { FocusWanted()[Map] = Key; }
+static bool TakeFocus(ImGuiID Map, const std::string &Key)
+{
+    auto &W = FocusWanted();
+    const auto It = W.find(Map);
+    if (It == W.end() || It->second != Key) return false;
+    W.erase(It);
+    return true;
+}
+
+//ImGui's combo reports no label to the probe: named here, so a driver finds it by its hidden name like any input.
+static bool Combo(const char *Id, const char *Shown)
+{
+    const bool Open = ImGui::BeginCombo(Id, Shown);
+    ImGuiProbe::NameLast(Id);
+    return Open;
+}
+
+template <class Def> std::string FieldId(const Def &F) { return std::string("##") + F.Label; }
+bool RunnerOnly(const char *Key)
+{
+    for (const char *K : {"CONTENT_ROOT", "PREFIX_GENERATE", "UNIFIED_RUNTIME", "GUEST_ROOTS", "DRIVES"})
+        if (!std::strcmp(K, Key)) return true;
+    return false;
+}
+//What an entry's HOST usually is, offered beside the box (any other platform token can still be typed).
+const std::pair<const char *, const char *> HostChoices[] = {
+    {"win32", "win32 - Windows, 32-bit"}, {"win64", "win64 - Windows, 64-bit"}, {"linux64", "linux64 - Linux, native"},
+    {"dos", "dos - DOS"}, {"custom", "custom - this package's own runner"}};
+
+//Where a layer's files go, in words (TARGET's value beside it): the places runners define.
+const std::pair<const char *, const char *> Places[] = {
+    {"FILES/%GameDir%", "the game's folder"}, {"FILES/%Documents%", "Documents"}, {"FILES/%AppData%", "AppData (Roaming)"},
+    {"FILES/%LocalAppData%", "AppData (Local)"}, {"FILES/%UserProfile%", "the user's folder"},
+    {"FILES/%ProgramData%", "ProgramData"}, {"FILES/%ProgramFiles%", "Program Files"},
+    {"FILES/%ProgramFiles32%", "Program Files (x86)"}, {"FILES/%Windows%", "the Windows folder"},
+    {"FILES/%SysDir32%", "System32 (32-bit system DLLs)"}, {"FILES/%SysDir64%", "the 64-bit system folder"}};
 
 //TOTAL readers. The editor loads raw JSON off disk — it is the tool you open to FIX a node the format rejects — so
 //any field may be any type, and nlohmann's value() throws on a mismatch, out of a frame with ImGui scopes open.
@@ -149,10 +198,10 @@ void VarUI(json &Decl, Host &H)
     };
     TextRow("LABEL", "Label", "shown in the dialog");
     TextRow("SECTION", "Section", "dialog tree folder - / nests");
-    static const char *Controls[] = {"text", "bool", "int", "float", "enum", "secret"};
+    static const char *Controls[] = {"text", "bool", "int", "float", "enum", "secret", "key"};
     std::string Ctl = UI.contains("CONTROL") && UI["CONTROL"].is_string() ? UI["CONTROL"].get<std::string>() : std::string("text");
     Label(H, "Control"); ImGui::SetNextItemWidth(H.RightW());
-    if (ImGui::BeginCombo("##ctl", Ctl.c_str()))
+    if (Combo("##ctl", Ctl.c_str()))
     {
         for (const char *C : Controls) if (ImGui::Selectable(C, Ctl == C)) { UI["CONTROL"] = std::string(C); H.Dirty(); }
         ImGui::EndCombo();
@@ -227,9 +276,70 @@ void Field(json &Node, const PkgGraph::Field &F, Host &H, int Layer)
     case FieldKind::Text:
     {
         std::string V = StrOf(Node, F.Key);
-        Label(H, F.Label); ImGui::SetNextItemWidth(H.RightW());
-        if (ImGui::InputTextWithHint("##v", F.Hint, &V)) { Node[F.Key] = V; H.Dirty(); }   // a type key must survive being emptied
+        const bool IsHost = F.Key == std::string("HOST"), IsExe = F.Key == std::string("EXE") && H.Request;
+        const bool IsTarget = F.Key == std::string("TARGET");
+        //HOST offers the usual platforms in a list beside it (an arrow, as a combo has); EXE a "pick" of the programs in
+        //this node's files.
+        const ImGuiStyle &St = ImGui::GetStyle();
+        const float BtnW = IsHost || IsTarget ? ImGui::GetFrameHeight() + St.ItemSpacing.x
+                         : IsExe ? ImGui::CalcTextSize("pick").x + St.FramePadding.x * 2.0f + St.ItemSpacing.x : 0.0f;
+        Label(H, F.Label);
+        ImGui::SetNextItemWidth(BtnW > 0.0f ? Avail(H) - BtnW : H.RightW());
+        if (ImGui::InputTextWithHint(FieldId(F).c_str(), F.Hint, &V))
+        {
+            //Emptied, an optional field is gone (no "COMMENT": "" left behind); a layer's type key stays, empty: it is
+            //what the layer is (a ZIP waiting for its file).
+            static const std::set<std::string> TypeKeys = {"ZIP", "FILE", "DIR", "DELTA", "NODE", "NOT"};
+            if (V.empty() && !TypeKeys.count(F.Key)) Node.erase(F.Key); else Node[F.Key] = V;
+            H.Dirty();
+        }
         if (ImGui::IsItemHovered() && F.Hint[0]) ImGui::SetTooltip("%s", F.Hint);
+        if (IsHost)
+        {
+            ImGui::SameLine();
+            if (ImGui::ArrowButton("##hostchoices", ImGuiDir_Down)) ImGui::OpenPopup("##hostchoices");
+            if (ImGui::IsItemHovered()) ImGui::SetTooltip("Choose the platform");
+            if (ImGui::BeginPopup("##hostchoices"))
+            {
+                for (const auto &C : HostChoices)
+                    if (ImGui::Selectable(C.second, V == C.first)) { Node[F.Key] = C.first; H.Dirty(); }
+                //...and every other platform a runner here plays (an emulated console, ...).
+                bool Sep = false;
+                for (const std::string &P : H.Platforms ? H.Platforms() : std::vector<std::string>())
+                {
+                    if (std::any_of(std::begin(HostChoices), std::end(HostChoices), [&](const auto &C) { return P == C.first; })) continue;
+                    if (!Sep) { ImGui::SeparatorText("runners here also play"); Sep = true; }
+                    if (ImGui::Selectable(P.c_str(), V == P)) { Node[F.Key] = P; H.Dirty(); }
+                }
+                ImGui::EndPopup();
+            }
+        }
+        if (IsTarget)
+        {
+            //The value says it in anchors; the list says it in places (a deeper folder is typed after the anchor).
+            ImGui::SameLine();
+            if (ImGui::ArrowButton("##places", ImGuiDir_Down)) ImGui::OpenPopup("##placelist");
+            if (ImGui::IsItemHovered()) ImGui::SetTooltip("Choose the place these files go");
+            if (ImGui::BeginPopup("##placelist"))
+            {
+                for (const auto &P : Places)
+                    if (ImGui::Selectable((std::string(P.second) + "##" + P.first).c_str(), V == P.first)) { Node[F.Key] = P.first; H.Dirty(); }
+                ImGui::EndPopup();
+            }
+            for (const auto &P : Places)
+                if (V.rfind(P.first, 0) == 0 && (V.size() == std::strlen(P.first) || V[std::strlen(P.first)] == '/'))
+                {
+                    Label(H, "");
+                    ImGui::TextDisabled("%s%s", P.second, V.size() > std::strlen(P.first) ? (" > " + V.substr(std::strlen(P.first) + 1)).c_str() : "");
+                    break;
+                }
+        }
+        if (IsExe)
+        {
+            ImGui::SameLine();
+            if (ImGui::Button("pick##exe")) H.Request("pick_exe:" + H.Entry);
+            if (ImGui::IsItemHovered()) ImGui::SetTooltip("Choose the program from this node's files");
+        }
         break;
     }
     case FieldKind::Enum:
@@ -238,7 +348,7 @@ void Field(json &Node, const PkgGraph::Field &F, Host &H, int Layer)
         const char *Shown = Cur.c_str();
         for (const auto &O : F.Options) if (Cur == O.first) Shown = O.second;
         Label(H, F.Label); ImGui::SetNextItemWidth(H.RightW());
-        if (ImGui::BeginCombo("##v", Shown))
+        if (Combo(FieldId(F).c_str(), Shown))
         {
             for (const auto &O : F.Options)
                 if (ImGui::Selectable(O.second, Cur == O.first)) { Node[F.Key] = O.first; H.Dirty(); }
@@ -279,10 +389,15 @@ void Field(json &Node, const PkgGraph::Field &F, Host &H, int Layer)
             H.Dirty();
         };
         Label(H, F.Label);
-        //A KeepEmpty list is always a box (a blank line is data); others are one line until they hold several.
-        const bool Multi = KeepEmpty || T.find('\n') != std::string::npos;
-        if (!Multi) { ImGui::SetNextItemWidth(H.RightW()); if (ImGui::InputTextWithHint("##v", F.Hint, &T)) Write(T); }
-        else if (ImGui::InputTextMultiline("##v", &T, ImVec2(H.RightW(), BoxHeight(T)))) Write(T);
+        //Always a box, one entry per line: Enter starts the next entry (a one-line input would end the edit instead,
+        //and a list could never get its second entry). Empty, it shows what goes in it.
+        if (ImGui::InputTextMultiline(FieldId(F).c_str(), &T, ImVec2(H.RightW(), BoxHeight(T)))) Write(T);
+        if (T.empty() && !ImGui::IsItemActive() && F.Hint[0])
+        {
+            const ImVec2 Min = ImGui::GetItemRectMin();
+            ImGui::GetWindowDrawList()->AddText(ImVec2(Min.x + ImGui::GetStyle().FramePadding.x, Min.y + ImGui::GetStyle().FramePadding.y),
+                                                ImGui::GetColorU32(ImGuiCol_TextDisabled), F.Hint);
+        }
         if (ImGui::IsItemHovered() && F.Hint[0]) ImGui::SetTooltip("%s\n(one per line)", F.Hint);
         break;
     }
@@ -294,10 +409,12 @@ void Field(json &Node, const PkgGraph::Field &F, Host &H, int Layer)
         const json &Map = Node.contains(F.Key) && Node[F.Key].is_object() ? Node[F.Key] : EmptyObj;
         ImGui::AlignTextToFramePadding();
         ImGui::TextUnformatted(F.Label);
-        std::string DelKey; std::pair<std::string, std::string> Rename;
+        //Optional, not "empty means none": an entry just added has the empty name, and it too is renamed and removed.
+        std::optional<std::string> DelKey; std::optional<std::pair<std::string, std::string>> Rename;
         int Row = 0;
         const float Line = Avail(H) - ImGui::GetFrameHeight() - ImGui::GetStyle().ItemSpacing.x * 2.0f;
         const float KW = Line * 0.42f, VW = Line - KW;
+        const ImGuiID MapId = ImGui::GetID("##kvmap");
         for (const auto &[K, V] : Map.items())
         {
             //Identified by ROW, not by the key being typed (a changing id loses the active item every keystroke),
@@ -305,15 +422,16 @@ void Field(json &Node, const PkgGraph::Field &F, Host &H, int Layer)
             ImGui::PushID(Row++);
             std::string Key = K, Val = V.is_string() ? V.get<std::string>() : V.dump();
             ImGui::SetNextItemWidth(KW);
+            if (TakeFocus(MapId, K)) ImGui::SetKeyboardFocusHere();
             ImGui::InputText("##k", &Key);
-            if (ImGui::IsItemDeactivatedAfterEdit() && Key != K && !Key.empty() && !Map.contains(Key)) Rename = {K, Key};
+            if (ImGui::IsItemDeactivatedAfterEdit() && Key != K && !Key.empty() && !Map.contains(Key)) Rename = std::make_pair(K, Key);
             ImGui::SameLine();
             ImGui::SetNextItemWidth(VW);
             if (!F.Options.empty())
             {
                 const char *Shown = Val.c_str();
                 for (const auto &O : F.Options) if (Val == O.first) Shown = O.second;
-                if (ImGui::BeginCombo("##v", Shown))
+                if (Combo("##v", Shown))
                 {
                     for (const auto &O : F.Options)
                         if (ImGui::Selectable(O.second, Val == O.first)) { Node[F.Key][K] = O.first; H.Dirty(); }
@@ -330,17 +448,18 @@ void Field(json &Node, const PkgGraph::Field &F, Host &H, int Layer)
             if (ImGui::Button("x", ImVec2(ImGui::GetFrameHeight(), 0))) DelKey = K;
             ImGui::PopID();
         }
-        if (!DelKey.empty()) { Node[F.Key].erase(DelKey); H.Dirty(); }   // an emptied ENV/DLL stays: it is the type key
-        if (!Rename.first.empty())
+        if (DelKey) { Node[F.Key].erase(*DelKey); H.Dirty(); }   // an emptied ENV/DLL stays: it is the type key
+        if (Rename)
         {
-            json V = Node[F.Key][Rename.first];
+            json V = Node[F.Key][Rename->first];
             if (WritableObject(Node, F.Key))
             {
-                Node[F.Key].erase(Rename.first);
-                if (WriteSubKey(Node, F.Key, Rename.second, V)) H.Dirty();
+                Node[F.Key].erase(Rename->first);
+                if (WriteSubKey(Node, F.Key, Rename->second, V)) H.Dirty();
             }
         }
-        if (ImGui::Button("+ add") && WriteSubKey(Node, F.Key, "", F.Options.empty() ? "" : F.Options.front().first)) H.Dirty();
+        if (ImGui::Button("+ add") && WriteSubKey(Node, F.Key, "", F.Options.empty() ? "" : F.Options.front().first))
+        { AskFocus(MapId, ""); H.Dirty(); }                // the new entry's name is typed into at once
         break;
     }
     case FieldKind::ObjArray:
@@ -378,10 +497,16 @@ void Field(json &Node, const PkgGraph::Field &F, Host &H, int Layer)
             }
             if (Open)
             {
+                //A game entry (no GUEST) has no use for a runner's fields: they stay out of the way unless set.
+                const bool Runner = Arr[I].contains("GUEST") && Arr[I]["GUEST"].is_array() && !Arr[I]["GUEST"].empty();
                 for (const PkgGraph::Field &S : F.Sub)
                 {
                     //BASE_TARGETS means nothing except on a delta (NodeLower refuses it elsewhere).
                     if (S.Key == std::string("BASE_TARGETS") && StrOf(Arr[I], "FORM") != "delta") continue;
+                    if (F.Key == std::string("EXEC") && !Runner && RunnerOnly(S.Key) && !Arr[I].contains(S.Key)) continue;
+                    if (!PkgGraph::FieldApplies(S, Arr[I])) continue;    // a field this entry's mode does not read
+                    //Which entry a host action is about (the Exe picker writes into this one).
+                    H.Entry = "L" + std::to_string(Layer) + "/" + std::to_string(I);
                     Field(Arr[I], S, H, Layer);
                 }
                 if (F.VarUI) VarUI(Arr[I], H);
@@ -439,8 +564,8 @@ void Field(json &Node, const PkgGraph::Field &F, Host &H, int Layer)
             if (A.empty()) Node.erase(F.Key); else Node[F.Key] = std::move(A);   // no TAKE = the whole node
             H.Dirty();
         };
-        if (T.find('\n') == std::string::npos) { ImGui::SetNextItemWidth(H.RightW()); if (ImGui::InputTextWithHint("##v", F.Hint, &T)) Write(T); }
-        else if (ImGui::InputTextMultiline("##v", &T, ImVec2(H.RightW(), BoxHeight(T)))) Write(T);
+        if (T.find('\n') == std::string::npos) { ImGui::SetNextItemWidth(H.RightW()); if (ImGui::InputTextWithHint(FieldId(F).c_str(), F.Hint, &T)) Write(T); }
+        else if (ImGui::InputTextMultiline(FieldId(F).c_str(), &T, ImVec2(H.RightW(), BoxHeight(T)))) Write(T);
         if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s\n(one per line)", F.Hint);
         break;
     }
@@ -474,7 +599,8 @@ void Field(json &Node, const PkgGraph::Field &F, Host &H, int Layer)
         { ImGui::TextDisabled("(%s is not an object - fix it in the JSON view)", F.Label); break; }
         static json EmptyObj = json::object();           // stays empty: every write goes through Node[F.Key]
         json &Map = Node.contains(F.Key) ? Node[F.Key] : EmptyObj;
-        std::string DelKey; std::pair<std::string, std::string> Rename;
+        //Optional, not "empty means none": an entry just added has the empty name, and it too is renamed and removed.
+        std::optional<std::string> DelKey; std::optional<std::pair<std::string, std::string>> Rename;
         int Row = 0;
         //One folded row per variable, named by its launcher label.
         for (auto &[K, D] : Map.items())
@@ -493,7 +619,7 @@ void Field(json &Node, const PkgGraph::Field &F, Host &H, int Layer)
             std::string Key = K;
             Label(H, "Key"); ImGui::SetNextItemWidth(H.RightW());
             ImGui::InputTextWithHint("##k", "used as %KEY%", &Key);
-            if (ImGui::IsItemDeactivatedAfterEdit() && Key != K && !Key.empty() && !Map.contains(Key)) Rename = {K, Key};
+            if (ImGui::IsItemDeactivatedAfterEdit() && Key != K && !Key.empty() && !Map.contains(Key)) Rename = std::make_pair(K, Key);
             if (!D.is_object()) ImGui::TextDisabled("(malformed declaration - fix it in the JSON view)");
             else
             {
@@ -503,12 +629,12 @@ void Field(json &Node, const PkgGraph::Field &F, Host &H, int Layer)
             ImGui::TreePop();
             ImGui::PopID();
         }
-        if (!DelKey.empty()) { Node[F.Key].erase(DelKey); H.Dirty(); }
-        if (!Rename.first.empty())
+        if (DelKey) { Node[F.Key].erase(*DelKey); H.Dirty(); }
+        if (Rename)
         {
             //Renamed IN PLACE: moving the key to the end would reorder the variables under the author's cursor.
             json Out = json::object();
-            for (auto &[K, D] : Node[F.Key].items()) Out[K == Rename.first ? Rename.second : K] = D;
+            for (auto &[K, D] : Node[F.Key].items()) Out[K == Rename->first ? Rename->second : K] = D;
             Node[F.Key] = std::move(Out);
             H.Dirty();
         }
@@ -528,9 +654,11 @@ void Field(json &Node, const PkgGraph::Field &F, Host &H, int Layer)
         { ImGui::TextDisabled("(%s is not an object - fix it in the JSON view)", F.Label); break; }
         static json EmptyObj = json::object();
         json &Map = Node.contains(F.Key) ? Node[F.Key] : EmptyObj;
-        std::string DelKey; std::pair<std::string, std::string> Rename;
+        //Optional, not "empty means none": an entry just added has the empty name, and it too is renamed and removed.
+        std::optional<std::string> DelKey; std::optional<std::pair<std::string, std::string>> Rename;
         int Row = 0;
         const float Line = Avail(H) - ImGui::GetStyle().ItemSpacing.x * 3.0f - ImGui::GetFrameHeight();
+        const ImGuiID MapId = ImGui::GetID("##keepmap");
         for (auto &[K, E] : Map.items())
         {
             ImGui::PushID(Row++);
@@ -539,12 +667,13 @@ void Field(json &Node, const PkgGraph::Field &F, Host &H, int Layer)
             const bool Back = E.is_boolean() && !E.get<bool>();
             std::string Addr = K;
             ImGui::SetNextItemWidth(Line * 0.68f);
+            if (TakeFocus(MapId, K)) ImGui::SetKeyboardFocusHere();
             ImGui::InputTextWithHint("##a", F.Hint, &Addr);
-            if (ImGui::IsItemDeactivatedAfterEdit() && Addr != K && !Addr.empty() && !Map.contains(Addr)) Rename = {K, Addr};
+            if (ImGui::IsItemDeactivatedAfterEdit() && Addr != K && !Addr.empty() && !Map.contains(Addr)) Rename = std::make_pair(K, Addr);
             if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s", K.c_str());
             ImGui::SameLine();
             ImGui::SetNextItemWidth(Line * 0.32f);
-            if (ImGui::BeginCombo("##m", Back ? "take back" : "keep"))
+            if (Combo("##m", Back ? "take back" : "keep"))
             {
                 if (ImGui::Selectable("keep", !Back) && Back) { Node[F.Key][K] = true; H.Dirty(); }
                 if (ImGui::Selectable("take back", Back) && !Back) { Node[F.Key][K] = false; H.Dirty(); }
@@ -571,11 +700,11 @@ void Field(json &Node, const PkgGraph::Field &F, Host &H, int Layer)
             }
             ImGui::PopID();
         }
-        if (!DelKey.empty()) { Node[F.Key].erase(DelKey); H.Dirty(); }
-        if (!Rename.first.empty())
+        if (DelKey) { Node[F.Key].erase(*DelKey); H.Dirty(); }
+        if (Rename)
         {
             json Out = json::object();
-            for (auto &[K, V] : Node[F.Key].items()) Out[K == Rename.first ? Rename.second : K] = V;
+            for (auto &[K, V] : Node[F.Key].items()) Out[K == Rename->first ? Rename->second : K] = V;
             Node[F.Key] = std::move(Out);
             H.Dirty();
         }
@@ -585,6 +714,7 @@ void Field(json &Node, const PkgGraph::Field &F, Host &H, int Layer)
             std::string K = "FILES/";
             for (int N = 2; Node[F.Key].contains(K); ++N) K = "FILES/new" + std::to_string(N) + "/";
             Node[F.Key][K] = true;
+            AskFocus(MapId, K);                           // typed into at once
             H.Dirty();
         }
         break;
@@ -600,7 +730,7 @@ void Field(json &Node, const PkgGraph::Field &F, Host &H, int Layer)
         Label(H, F.Label);
         const float Btn = ImGui::CalcTextSize("browse").x + ImGui::GetStyle().FramePadding.x * 2.0f;
         ImGui::SetNextItemWidth(Avail(H) - Btn - ImGui::GetStyle().ItemSpacing.x);
-        if (ImGui::InputTextWithHint("##v", "cover image in this bundle", &P))
+        if (ImGui::InputTextWithHint(FieldId(F).c_str(), "cover image in this bundle", &P))
         {
             if (Node.contains(F.Key) && Node[F.Key].is_string()) { Node[F.Key] = P; H.Dirty(); }
             else if (WriteSubKey(Node, F.Key, "FILE", P)) H.Dirty();
@@ -710,6 +840,34 @@ void Body(json &Node, Host &H)
         const std::string Tag = Type + "  ";
         const bool Open = H.Fold("L" + std::to_string(I), Tag + FitWidth(It.Title, Room - ImGui::CalcTextSize(Tag.c_str()).x));
         ImGui::PopStyleColor();
+        const ImVec2 FoldMin = ImGui::GetItemRectMin(), FoldMax = ImGui::GetItemRectMax();
+        if (H.Row) H.Row(I, FoldMin.y, FoldMax.y);
+        //The row is a handle: drag it up or down to reorder, onto another node's row to move it there (Ctrl: copy).
+        if (H.LayerDropped && !H.Node.empty())
+        {
+            if (ImGui::BeginDragDropSource())
+            {
+                LayerPayload P{};
+                std::snprintf(P.Node, sizeof P.Node, "%s", H.Node.c_str());
+                P.Layer = I;
+                ImGui::SetDragDropPayload(kLayerPayload, &P, sizeof P);
+                ImGui::TextUnformatted((Tag + It.Title).c_str());
+                ImGui::TextDisabled("drop on a row - before or after it - in this node or another; Ctrl copies");
+                ImGui::EndDragDropSource();
+            }
+            if (ImGui::BeginDragDropTarget())
+            {
+                const bool After = ImGui::GetIO().MousePos.y > (FoldMin.y + FoldMax.y) * 0.5f;
+                const float Y = After ? FoldMax.y + 1.0f : FoldMin.y - 1.0f;
+                ImGui::GetWindowDrawList()->AddLine(ImVec2(FoldMin.x, Y), ImVec2(FoldMax.x, Y), IM_COL32(255, 196, 90, 255), 3.0f);
+                if (const ImGuiPayload *Pl = ImGui::AcceptDragDropPayload(kLayerPayload, ImGuiDragDropFlags_AcceptNoDrawDefaultRect))
+                {
+                    const auto *P = static_cast<const LayerPayload *>(Pl->Data);
+                    H.LayerDropped(P->Node, P->Layer, After ? I + 1 : I, ImGui::GetIO().KeyCtrl);
+                }
+                ImGui::EndDragDropTarget();
+            }
+        }
         if (ImGui::IsItemHovered())
         {
             std::string Tip = It.Title + "\n" + Type + " layer #" + std::to_string(I + 1) + " of " + std::to_string(Ls.size());
@@ -750,12 +908,19 @@ void Body(json &Node, Host &H)
         }
         ImGui::PopID();
     };
+    //A folded section stands for every layer inside it: their wires plug into its header.
+    std::function<void(int, float, float)> RowsUnder = [&](int G, float Y0, float Y1) {
+        for (const auto &[IsG, K] : Gs[(size_t)G].Kids)
+            if (IsG) RowsUnder(K, Y0, Y1);
+            else if (H.Row) H.Row(Items[(size_t)K].Layer, Y0, Y1);
+    };
     std::function<void(int)> DrawGroup = [&](int G) {
         for (const auto &[IsG, K] : Gs[(size_t)G].Kids)
         {
             if (!IsG) { DrawLayer(Items[(size_t)K]); continue; }
             if (H.Fold("S:" + Gs[(size_t)K].Path, FitWidth(Gs[(size_t)K].Name, Avail(H) - ImGui::GetFrameHeight())))
             { DrawGroup(K); ImGui::TreePop(); }
+            else RowsUnder(K, ImGui::GetItemRectMin().y, ImGui::GetItemRectMax().y);
         }
     };
     if (Ls.empty()) { ImGui::AlignTextToFramePadding(); ImGui::TextDisabled("no layers yet"); }

@@ -28,7 +28,7 @@ void AbsolutizeLayerPaths(nlohmann::ordered_json &L, const std::filesystem::path
 //node's default entry) to MachinePlatform(), ALWAYS terminated
 //by a native runner (HOST==GUEST==machine) — an authored native runner if one is available, else kNativeTerminalId.
 //A pinned chain (CP.RunnerChainIds, else USERSETTINGS RUNNER_CHAIN) is honored when it forms a valid path. Per-step
-//default tie-break: RECOMMENDED > package-local > node-id. Empty if the platform is unreachable (no bridging runner).
+//default tie-break: RECOMMENDED > package-local > specialist > built-in > LABEL > CID. Empty if the platform is unreachable (no bridging runner).
 //Used by the UI / CLI / tests and by ResolveRunnerChain.
 std::vector<std::string> ResolveChainIds(const NodeIndex &Idx, const Node &Launch, const struct ContainerParams &CP,
                                          const nlohmann::ordered_json &GlobalConfigJSON);

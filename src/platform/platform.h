@@ -10,7 +10,9 @@
 // ---------------------------------------------------------------------------
 
 #include <filesystem>
+#include <map>
 #include <string>
+#include <vector>
 
 namespace Platform {
 
@@ -33,6 +35,37 @@ std::filesystem::path SelfExe();
 // held lock with no name attached cost an hour of blind process-hunting during the 2026-09-01 overnight session —
 // "another instance is running" while every pgrep pattern missed the actual holder.
 bool AcquireSingleInstanceLock(const std::string &Key, std::string *Holder = nullptr);
+
+// What a mount-point junction at Path names, as the junction stores it (a WinFsp mount: "\\Device\\Volume{…}\\"), or ""
+// when Path is not one. Reads the junction itself, never what it names, so it answers for one whose volume is gone.
+//   POSIX:   always "" (FUSE mounts are not junctions)
+//   Windows: FSCTL_GET_REPARSE_POINT, IO_REPARSE_TAG_MOUNT_POINT's substitute name; for a drive root ("W:\\"), the
+//            device the letter names (QueryDosDevice: "\\Device\\Volume{…}")
+std::string MountPointTarget(const std::filesystem::path &Path);
+
+// The machine's own profile and system folders, by name: UserProfile, AppData, LocalAppData, Documents, ProgramData,
+// Public, Windows, SysDir32 (the 32-bit system folder: SysWOW64 on a 64-bit Windows), SysDir64, ProgramFiles,
+// ProgramFiles32. A windows-native game reads its anchors as these real paths (its sandbox box holds what the package
+// places there). Read once per process; a folder the system does not report is left out.
+//   POSIX:   empty (no Windows folders)
+//   Windows: SHGetKnownFolderPath
+std::map<std::string, std::string> HostFolders();
+
+// The names HostFolders() can return, on every platform: a validator on Linux knows %HostAppData% & co. as built-in
+// tokens though only Windows sets them.
+inline const std::vector<std::string> &HostFolderNames()
+{
+    static const std::vector<std::string> Names = {"UserProfile", "AppData", "LocalAppData", "Documents", "ProgramData",
+                                                   "Public", "Windows", "SysDir32", "SysDir64", "ProgramFiles", "ProgramFiles32"};
+    return Names;
+}
+
+// A drive letter no volume holds ("Z:", searching Z down to D), other than Except; "" when none is free. Windows mounts
+// a game's runtime at one: a Sandboxie box cannot load a program's DLLs from a volume mounted on a folder (measured:
+// LoadLibrary fails "module not found" inside the box, works outside it and from a drive letter).
+//   POSIX:   "" (FUSE mounts on folders)
+//   Windows: GetLogicalDrives
+std::string FreeDriveLetter(const std::string &Except = std::string());
 
 } // namespace Platform
 

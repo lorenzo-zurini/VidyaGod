@@ -1,6 +1,8 @@
 #include "authoringsessionwindow.h"
 #include "authoringsessionmodel.h"
 #include "deltatree.h"
+#include "packageeditormodel.h"
+#include "pkgdoc.h"
 
 #include <QComboBox>
 #include <QFileDialog>
@@ -10,6 +12,7 @@
 #include <QLabel>
 #include <QLineEdit>
 #include <QMessageBox>
+#include <QProcess>
 #include <QPushButton>
 #include <QTabWidget>
 #include <QVBoxLayout>
@@ -36,7 +39,13 @@ AuthoringSessionWindow::AuthoringSessionWindow(PackageEditorModel * Editor, cons
                                                       : "Capture setup";
     //The title says where in the chain this is anchored: the runtime is built UP TO this node, and whatever is
     //captured becomes a new node parented here.
-    setWindowTitle(QString("%1 at '%2'").arg(Verb).arg(QString::fromStdString(TargetNodeId)));
+    //Named for the node, not its CID; what it waits for (a new package's files) is where the game's folder goes.
+    const int AnchorAt = Editor ? Editor->doc().IndexOf(TargetNodeId) : -1;
+    const nlohmann::ordered_json Anchor = AnchorAt >= 0 ? Editor->doc().Node(AnchorAt) : nlohmann::ordered_json();
+    const QString AnchorName = Anchor.is_object() && Anchor.contains("LABEL") && Anchor["LABEL"].is_string()
+                             ? QString::fromStdString(Anchor["LABEL"].get<std::string>()) : QString::fromStdString(TargetNodeId);
+    WaitTarget = CapturePreview::WaitingTarget(Anchor);
+    setWindowTitle(QString("%1 at '%2'").arg(Verb).arg(AnchorName));
     resize(860, 700);
 
     Model = new AuthoringSessionModel(Editor, TargetNodeId, Mode, this);
@@ -56,9 +65,15 @@ AuthoringSessionWindow::AuthoringSessionWindow(PackageEditorModel * Editor, cons
     RunExeBtn = new QPushButton("Run Windows program…", this);
     BrowseBtn = new QPushButton("Open Explorer", this);
     RegBtn    = new QPushButton("Edit Registry", this);
-    ToolRow->addWidget(RunExeBtn); ToolRow->addWidget(BrowseBtn); ToolRow->addWidget(RegBtn);
+    ArgsEdit  = new QLineEdit(this);
+    ArgsEdit->setPlaceholderText("arguments (optional)");
+    ArgsEdit->setAccessibleName("Arguments");
+    ArgsEdit->setToolTip("Passed to the program 'Run Windows program' runs, after its path - an installer's switches "
+                         "(e.g. /force). Quote an argument holding spaces.");
+    ToolRow->addWidget(RunExeBtn); ToolRow->addWidget(ArgsEdit); ToolRow->addWidget(BrowseBtn); ToolRow->addWidget(RegBtn);
     ToolRow->addWidget(new QLabel("Wine runner:", this));
     RunnerCombo = new QComboBox(this);
+    RunnerCombo->setSizeAdjustPolicy(QComboBox::AdjustToContents);   // a runner is read by its whole name
     RunnerCombo->setToolTip("The wine/proton runner the 'Run Windows program' tool uses. Independent of the package's "
                             "platform — the first Windows run builds the prefix around the current runtime.");
     ToolRow->addWidget(RunnerCombo);
@@ -69,9 +84,10 @@ AuthoringSessionWindow::AuthoringSessionWindow(PackageEditorModel * Editor, cons
 
     // A capture CREATES a node parented at the anchor — there is no target to pick any more. Say where it will
     // land instead, because "captured into thin air" is the thing an author needs to not wonder about.
-    auto * AnchorLabel = new QLabel(
-        QString("Captures become NEW nodes parented at <b>%1</b> — they apply exactly where this session is anchored.")
-            .arg(QString::fromStdString(TargetNodeId)), this);
+    auto * AnchorLabel = new QLabel(WaitTarget.isEmpty()
+        ? QString("Captures become NEW nodes over <b>%1</b> — they apply exactly where this session is anchored.").arg(AnchorName.toHtmlEscaped())
+        : QString("<b>%1</b> is waiting for its files: the folder you capture at %2 becomes them. Other captures "
+                  "(saves, settings, the registry) become new nodes over it.").arg(AnchorName.toHtmlEscaped(), WaitTarget), this);
     AnchorLabel->setWordWrap(true);
     AnchorLabel->setStyleSheet("color:#7ec699;font-size:9pt;");
     Root->addWidget(AnchorLabel);
@@ -93,7 +109,7 @@ AuthoringSessionWindow::AuthoringSessionWindow(PackageEditorModel * Editor, cons
     FLay->addWidget(FilesPreview);
     connect(Tree, &DeltaTree::checkedChanged, this, &AuthoringSessionWindow::updateCapturePreview);
     auto * FForm = new QFormLayout();
-    DestNameEdit = new QLineEdit(QString::fromStdString(TargetNodeId + "_files"), FilesTab);
+    DestNameEdit = new QLineEdit(CapturePreview::CaptureName(Anchor, TargetNodeId), FilesTab);
     FForm->addRow("Captured dir (in bundle)", DestNameEdit);
     TargetEdit = new QLineEdit(FilesTab);
     TargetEdit->setToolTip("Where the captured layer lands, by anchor (%GameDir%, %Documents%/Saves; '' = the root).");
@@ -122,7 +138,7 @@ AuthoringSessionWindow::AuthoringSessionWindow(PackageEditorModel * Editor, cons
     if (Mode == CaptureMode::Files)
     {
         Tabs->removeTab(RegTabIdx);
-        RunExeBtn->setVisible(false); RegBtn->setVisible(false);
+        RunExeBtn->setVisible(false); ArgsEdit->setVisible(false); RegBtn->setVisible(false);
         RunnerCombo->setVisible(false);
         InfoLabel->setText("Add or change files in the window that opens; then check what you added and capture it.");
     }
@@ -130,7 +146,7 @@ AuthoringSessionWindow::AuthoringSessionWindow(PackageEditorModel * Editor, cons
     {
         Tabs->setCurrentIndex(RegTabIdx);
         Tabs->removeTab(0);
-        RunExeBtn->setVisible(false); BrowseBtn->setVisible(false);
+        RunExeBtn->setVisible(false); ArgsEdit->setVisible(false); BrowseBtn->setVisible(false);
         RunnerCombo->setVisible(false);
         InfoLabel->setText("Make your changes in regedit; then Scan, check the keys you want, and capture them.");
     }
@@ -146,7 +162,7 @@ AuthoringSessionWindow::AuthoringSessionWindow(PackageEditorModel * Editor, cons
         if (RunnerCombo->currentText().isEmpty())
         { QMessageBox::information(this, "Run Windows program", "No wine/proton runner is installed to run a Windows program."); return; }
         const QString Exe = QFileDialog::getOpenFileName(this, "Select a Windows program to run in the prefix (installer, editor, …)");
-        if (!Exe.isEmpty()) Model->runWindows(Exe, RunnerCombo->currentText());
+        if (!Exe.isEmpty()) Model->runWindows(Exe, RunnerCombo->currentData().toString(), QProcess::splitCommand(ArgsEdit->text()));
     });
     connect(BrowseBtn, &QPushButton::clicked, this, [this]{ Model->runGuest("explorer.exe"); });
     connect(RegBtn,    &QPushButton::clicked, this, [this]{ Model->runGuest("regedit.exe"); });
@@ -165,6 +181,13 @@ AuthoringSessionWindow::AuthoringSessionWindow(PackageEditorModel * Editor, cons
     });
     connect(EndBtn, &QPushButton::clicked, this, [this]{ close(); });
     const QString AnchorId = QString::fromStdString(TargetNodeId);
+    //After a capture: what was captured is no longer ticked (a second capture starts from nothing), and the name
+    //moves on to one no folder of the package holds (a second capture never lands in the first one's folder).
+    connect(Model, &AuthoringSessionModel::filesCaptured, this, [this, Editor](const QStringList &) {
+        CapturedAny = true;
+        Tree->checkAll(false);
+        DestNameEdit->setText(CapturePreview::FreeName(DestNameEdit->text().trimmed(), Editor ? Editor->packagePath() : QString()));
+    });
     connect(Model, &AuthoringSessionModel::nodeCreated, this, [this, AnchorId](const QString & Id) {
         StatusLabel->setText(QString("Created node '%1' - it is on the canvas, parented at '%2'.")
                                  .arg(Id).arg(AnchorId));
@@ -189,7 +212,7 @@ AuthoringSessionWindow::AuthoringSessionWindow(PackageEditorModel * Editor, cons
                                                                                     const QStringList & Anchors){
         ContentRootStr = Cr;
         AnchorLayout = CapturePreview::ParseAnchors(Anchors);
-        TargetEdit->setText("");
+        TargetEdit->setText(WaitTarget);
         updateCapturePreview();
         // The "Run Windows program" tool is always available (it establishes the prefix on first use); Explorer/regedit
         // + registry capture only make sense once a wine prefix exists.
@@ -204,11 +227,14 @@ AuthoringSessionWindow::AuthoringSessionWindow(PackageEditorModel * Editor, cons
     connect(Model, &AuthoringSessionModel::runnersChanged, this, [this](const QStringList & Runners, const QString & Current){
         const QSignalBlocker B(RunnerCombo);
         RunnerCombo->clear();
-        RunnerCombo->addItems(Runners);
-        RunnerCombo->setCurrentText(Current);
+        for (const QString & R : Runners) RunnerCombo->addItem(R.section('\t', 0, 0), R.section('\t', 1));   // its name; its id
+        if (const int At = RunnerCombo->findData(Current); At >= 0) RunnerCombo->setCurrentIndex(At);
     });
     connect(Model, &AuthoringSessionModel::deltaChanged, this, [this](const QStringList & Paths){
         Tree->setPaths(Paths);
+        //Opened on what the install made; ticked when it is the files the node waits for and nothing is captured yet.
+        const QString Main = DeltaTree::MainFolder(Paths);
+        if (!Main.isEmpty()) Tree->reveal(Main, !WaitTarget.isEmpty() && !CapturedAny);
         StatusLabel->setText(QString("Session live — %1 changed file(s).").arg(Paths.size()));
     });
     connect(Model, &AuthoringSessionModel::registryTreeChanged, this, [this](const QStringList & Paths){
@@ -233,10 +259,19 @@ void AuthoringSessionWindow::updateCapturePreview()
     //A TARGET by anchor lands where this runtime puts that anchor; any other TARGET is under the content root.
     const QString MountBase = CapturePreview::MountBase(TargetEdit->text(), ContentRootStr, AnchorLayout);
     QStringList Lines;
+    if (CapturePreview::CapturesContents(Roots, TargetEdit->text(), WaitTarget, ContentRootStr, AnchorLayout))
+    {
+        const bool Waits = !WaitTarget.isEmpty() && TargetEdit->text().trimmed() == WaitTarget;
+        FilesPreview->setText("The contents of " + Roots.front().section('/', -1)
+                              + (Waits ? " become the files the node waits for, at " : " land at ")
+                              + TargetEdit->text().trimmed() + "  (" + MountBase + ")");
+        return;
+    }
     for (const QString & R : Roots)
     {
         const QString Base = R.section('/', -1);   // the ticked level's name (parents stripped)
         Lines << Base + "  →  " + MountBase + "/" + Base;
     }
-    FilesPreview->setText("Captures at the ticked level (and where each mounts):\n  " + Lines.join("\n  "));
+    FilesPreview->setText(QString("Captures %1 item(s) at the ticked level (and where each mounts):\n  ").arg(Lines.size())
+                          + CapturePreview::PreviewLines(Lines));
 }

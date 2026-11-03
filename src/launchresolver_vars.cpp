@@ -128,6 +128,7 @@ bool LaunchResolver::ResolveCustomVariables(const nlohmann::ordered_json &MANIFE
     std::set<std::string> Secret;                                  // keys whose value must not be logged
     std::map<std::string, std::string> WhenCond;                   // key -> its WHEN condition (gates value to "")
     std::set<std::string> Eval;                                    // keys whose value is an integer expression (EVAL)
+    std::vector<std::string> TableKeys;                            // MAP tables' entries (VarSubst::TableEntries)
     for (const std::string &Key : KeyOrder)
     {
         const nlohmann::ordered_json &CV = Winning[Key];
@@ -139,6 +140,13 @@ bool LaunchResolver::ResolveCustomVariables(const nlohmann::ordered_json &MANIFE
         if (When.empty() && UI.contains("WHEN") && UI["WHEN"].is_string()) When = UI["WHEN"].get<std::string>();
         if (!When.empty()) WhenCond[Key] = When;
         if (CV.contains("EVAL") && CV["EVAL"].is_boolean() && CV["EVAL"].get<bool>()) Eval.insert(Key);   // a non-boolean is ignored, never thrown
+        //A MAP table seeds its entries as variables of their own, gated by the table's WHEN; no setting reaches them.
+        for (const auto &[E, V] : VarSubst::TableEntries(Key, CV))
+        {
+            TableKeys.push_back(E);
+            Sources[E] = V;
+            if (!When.empty()) WhenCond[E] = When;
+        }
         const bool Pooled = UI.value("CONTROL", std::string()) == "secret"
                             && UI.contains("POOL") && UI["POOL"].is_array() && !UI["POOL"].empty();
         if (Pooled) Secret.insert(Key);
@@ -172,6 +180,8 @@ bool LaunchResolver::ResolveCustomVariables(const nlohmann::ordered_json &MANIFE
         }
         else Sources[Key] = ResolveOne(Key, CV.value("DEFAULT", std::string()), CV.contains("UI") && CV["UI"].is_object());
     }
+
+    KeyOrder.insert(KeyOrder.end(), TableKeys.begin(), TableKeys.end());
 
     //Engine-injected session facts (friend LAN vIPs + SELF_NAME) enter here, as if they were declared with
     //that value as their DEFAULT — so ResolveOne gives them the documented precedence for free (a --var/picker
@@ -226,6 +236,7 @@ bool LaunchResolver::ResolveCustomVariables(const nlohmann::ordered_json &MANIFE
                    + ContainerParams.CustomVariables[Key] + "' (an operand empty or unresolved, or out of range)");
     }
     for (const std::string &Key : KeyOrder)
+        if (Key.find(':') == std::string::npos)                    // a table's entries are data, not settings
         LogOut("ResolveCustomVariables", "  " + Key + " = " + (Secret.count(Key) ? std::string("[secret] (set)") : ContainerParams.CustomVariables[Key]));
     LogSucc("ResolveCustomVariables", "Resolved " + std::to_string(ContainerParams.CustomVariables.size()) + " custom variable(s).");
     return true;

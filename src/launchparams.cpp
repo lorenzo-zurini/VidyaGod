@@ -1,4 +1,5 @@
 #include "launchparams.h"
+#include "platform/platform.h"
 #include "commonutils.h"   // LogOut
 #include "varsubst.h"
 
@@ -39,12 +40,22 @@ std::map<std::string, std::string> ContainerParams::GetVariablesMap()
     //Structural placement anchor — the prefix dir relative to the VFS root. All inside-prefix placement composes off it.
     VariablesMap["PrefixRoot"]   = this->PrefixRoot;
     //Host-absolute roots (not composable from mount-relative tokens) — consumed by runner ENV/EXECUTABLE.
-    VariablesMap["RuntimePath"]  = this->RuntimePath.string();   // the VFS mount root as a host path (WINEPREFIX / STEAM_COMPAT_DATA_PATH)
-    VariablesMap["RunnerMount"]  = this->UnifiedRuntime ? this->RuntimePath.string() : this->RunnerMountPath.string();
+    //A drive root (Windows mounts a runtime at one: "W:\\") is spelled without its separator, so "%RuntimePath%\\drive_c"
+    //reads W:\drive_c, not W:\\drive_c.
+    auto Root = [](const std::filesystem::path &P) {
+        std::string S = P.string();
+        if (S.size() == 3 && S[1] == ':' && (S[2] == '\\' || S[2] == '/')) S.pop_back();
+        return S;
+    };
+    VariablesMap["RuntimePath"]  = Root(this->RuntimePath);   // the VFS mount root as a host path (WINEPREFIX / STEAM_COMPAT_DATA_PATH)
+    VariablesMap["RunnerMount"]  = Root(this->UnifiedRuntime ? this->RuntimePath : this->RunnerMountPath);
     VariablesMap["TempPath"]     = this->TempPath.string();
     //Exe locator — the resolved per-variant CONTENTPATH (guest-relative + absolute host path).
     VariablesMap["ContentPath"]  = this->ExePathRelative.string();
     VariablesMap["Content"]      = this->ExePathComplete.string();
+    //The machine's own profile and system folders (Windows only: %HostAppData%, %HostSysDir32%, …): a windows-native
+    //runner spells its profile and system anchors from them, since its game reads those as the real folders.
+    for (const auto &[Name, Path] : Platform::HostFolders()) VariablesMap["Host" + Name] = Path;
     //Custom variables last (may shadow a built-in).
     for (auto &[Key, Value] : this->CustomVariables)
         VariablesMap[Key] = Value;

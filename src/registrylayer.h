@@ -3,6 +3,8 @@
 
 #include "launchparams.h"   // ContainerParams
 
+class RegistryWrapper;
+
 // RegistryLayer — the Wine prefix + registry/DEFAULTDATA + registry-persistence subsystem, lifted out of
 // ContainerWrapper. Free functions over the shared ContainerParams; uses RegistryWrapper for hive I/O.
 namespace RegistryLayer
@@ -20,7 +22,8 @@ bool ApplyOverrideRegEdits(struct ContainerParams &ContainerParams);
 
 //Extracts each persisted registry-subtree from the mounted RuntimePath hives and merges it into the durable store
 //UserDataPath/REGKEYS/*.reg on Cleanup. Must run BEFORE unmount. No-op when no regkey persists are declared.
-bool CapturePersistRegKeys(struct ContainerParams &ContainerParams);
+//Session, when given, is the session's registry instead (a Sandboxie box's, read by BoxLaunch::Harvest).
+bool CapturePersistRegKeys(struct ContainerParams &ContainerParams, const RegistryWrapper *Session = nullptr);
 }
 
 #endif // REGISTRYLAYER_H

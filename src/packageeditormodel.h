@@ -42,11 +42,35 @@ public:
 
     // ---- the package on disk ----------------------------------------------------------------------------------
     void initPackage(const QString & preselectedPath, QWidget * dirPickerParent);   // pick a dir (if none) + load
+    //The game's ID: the [<id>] its folder is named by ("" when the folder carries none).
+    std::string gameId() const;
+    //Change the game's ID to New (digits): its tiles, the tiles nesting under it and RECOMMENDED follow, the package
+    //is saved, its folder renamed ([<old>] -> [<new>]), this machine's layout and its saves (the user data kept under
+    //the old ID) moved with it, and the package reopened there. False with Error (nothing changed) when New is not a
+    //number, another package already has that ID, or the save or the rename fails.
+    bool changeGameId(const std::string & New, QString * Error);
     void LoadNodes();                              // (re)read the package; loses unsaved edits (the caller asks first)
     //Save the document (a re-mint + cascade). False with Error when it cannot be saved (a cycle, a write failure);
     //then nothing on disk changed that the report does not list.
     bool Save(QString * Error = nullptr);
+    //Saving now would leave a package that has nodes on disk with none: every node deleted (a stray key, a slip) -
+    //asked about before it is written.
+    bool saveEmptiesPackage() const;
+    //Files at the top of the package folder that no node names (a layer's ZIP/FILE/DELTA/DIR, a tile's cover) - left
+    //by a removed layer or an unsaved bring-in. Node files and the folder's hidden files are not counted.
+    QStringList unusedFiles() const;
+    //Delete those (the ones still unused); returns how many went.
+    int deleteUnusedFiles();
     bool isDirty() const { return Doc.Dirty(); }
+    //Unsaved work survives a crash: while the package has unsaved changes the editor writes it, now and then, to a
+    //draft beside this machine's layout (<DataRoot>/EDITORDRAFTS/<package key>.json); a save or a discard drops it.
+    bool writeDraft();
+    qint64 draftTime() const;                      // when the draft was written (ms since epoch); 0: none
+    bool restoreDraft(QString * Error = nullptr);  // the document becomes the draft (one undo step), unsaved
+    void dropDraft();
+    //The first-time tour of the editor: shown until it is finished or skipped once on this machine.
+    bool tourSeen() const;
+    void markTourSeen();
     //Handles the last Save renamed (old -> new): the canvas, the JSON panel and a pending run follow their nodes.
     const std::map<std::string, std::string> & lastRenames() const { return LastRenames; }
     //What the last successful save needs the author to know (a deleted node kept, an old file not removed).
@@ -66,6 +90,9 @@ public:
     const std::vector<std::string> & validationErrors()   const { return ValErrors; }
     const std::vector<std::string> & validationWarnings() const { return ValWarnings; }
     bool validated() const { return Validated; }
+    //Tests: a verdict as if a check had found it (the panel's rows, without building a case for each message).
+    void setValidationForTest(std::vector<std::string> E, std::vector<std::string> W)
+    { ValErrors = std::move(E); ValWarnings = std::move(W); Validated = true; emit validationChanged(); }
     //Every message about a node, by that node's handle (the canvas draws them on the node).
     std::map<std::string, std::vector<std::string>> issuesByHandle() const;
     //The handle a validation message is about ("" if none of this package's).
@@ -73,8 +100,9 @@ public:
 
     // ---- the rest of the library --------------------------------------------------------------------------------
     NodeIndex BuildExecIndex() const;              // the library, with this package's nodes AS EDITED
-    struct External { std::string Label, Package, PackageDir; };
+    struct External { std::string Label, Package, PackageDir, Cover; };
     External externalInfo(const std::string & Cid) const;          // another package's node, by CID
+    const Node * libraryNode(const std::string & Cid) const;       // ...as the library holds it (nullptr: unknown)
     struct Offer { std::string Cid, Label, Package; };
     std::vector<Offer> offers() const;             // every node another package offers for wiring in
     std::vector<std::string> KnownPlatforms();
@@ -87,6 +115,9 @@ public:
     //node — one layer of one type — so a capture creates one rather than appending into somebody else's.
     std::string createNode(nlohmann::ordered_json Payload, const std::vector<std::string> & Parents,
                            const std::string & Label);
+    //A captured content layer is what a node still waiting for its files (a content layer with no file, at the same
+    //TARGET) was waiting for: it takes that layer's place. False when the node waits for nothing there.
+    bool fillWaiting(const std::string & Handle, const nlohmann::ordered_json & Layer);
 
 signals:
     void documentReloaded();                       // the whole document was replaced (load, reload)
@@ -101,6 +132,7 @@ public slots:
     void notifyNodeChanged() { noteEdited(); emit nodeContentChanged(); }   // edited from outside the canvas
 
 private:
+    void noteUnusedFiles();
     const NodeIndex & ExecIndex() const;           // BuildExecIndex, cached until the document changes
     const NodeIndex & LibraryIndex() const;        // the library as on disk (the other packages), cached
     void LoadLayout();

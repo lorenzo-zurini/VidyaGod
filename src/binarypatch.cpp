@@ -10,6 +10,7 @@
 #include <cstring>
 #include <filesystem>
 #include <fstream>
+#include <functional>   // boyer_moore_horspool_searcher
 #include <optional>
 #include <sstream>
 
@@ -184,6 +185,44 @@ BinaryPatch::Result BinaryPatch::ApplyOne(const nlohmann::ordered_json &Patch, s
     const PeInfo Flat{0xFFFFFFFFu, {}};       // every OFFSET below the "image base" is a raw file offset
     const PeInfo *pe = IsPe ? &*Parsed : &Flat;
 
+    // ---- ReplaceAll: every occurrence of a pattern -------------------------------------------------------------
+    // A fix that rewrites one header wherever it occurs (a sound archive's thousands of WAV headers): no site, the
+    // EXPECT bytes are the pattern and every match becomes REPLACE, of the same length. Ops run in order, so a later
+    // one may match what an earlier one wrote (as the fix's own tool did). None left but the result there = skipped.
+    if (Mode == "ReplaceAll")
+    {
+        if (Patch.contains("ANCHOR") || Patch.contains("OFFSET")) { Msg = "ReplaceAll takes no ANCHOR or OFFSET (it patches every match of EXPECT)"; return Result::Error; }
+        std::string Rep = Patch.value("REPLACE", std::string());
+        VarSubst::StringVariableSubstitution(Rep, Vars);
+        auto e = ParseHex(Patch.value("EXPECT", std::string()));
+        auto r = ParseHex(Rep);
+        if (!e || e->empty()) { Msg = "EXPECT (the pattern) is not valid hex"; return Result::Error; }
+        if (!r) { Msg = "REPLACE is not valid hex"; return Result::Error; }
+        if (r->size() != e->size()) { Msg = "REPLACE must be as long as EXPECT"; return Result::Error; }
+        if (*r == *e) { Msg = "REPLACE equals EXPECT"; return Result::Error; }
+        auto Matches = [&](const std::vector<uint8_t> &Pat) {
+            std::vector<size_t> At;
+            const std::boyer_moore_horspool_searcher Find(Pat.begin(), Pat.end());
+            for (auto It = Image.begin();;)
+            {
+                It = std::search(It, Image.end(), Find);
+                if (It == Image.end()) return At;
+                At.push_back(size_t(It - Image.begin()));
+                It += std::ptrdiff_t(Pat.size());
+            }
+        };
+        const std::vector<size_t> At = Matches(*e);
+        if (At.empty())
+        {
+            if (!Matches(*r).empty()) { Msg = "already patched (no " + ToHex(e->data(), std::min<size_t>(e->size(), 8)) + ".. left)"; return Result::Skipped; }
+            Msg = "EXPECT matched nothing (wrong or foreign-patched file)";
+            return Result::Error;
+        }
+        for (const size_t A : At) std::copy(r->begin(), r->end(), Image.begin() + std::ptrdiff_t(A));
+        Msg = "ReplaceAll " + std::to_string(At.size()) + " match(es)";
+        return Result::Applied;
+    }
+
     std::string Err;
     auto siteOpt = ResolveSite(Patch, Image, *pe, Err);
     if (!siteOpt) { Msg = Err; return Result::Error; }
@@ -343,6 +382,19 @@ bool BinaryPatch::ProcessBinaryPatches(struct ContainerParams &ContainerParams)
     bool Ok = true;
     size_t Attempted = 0, Applied = 0, Skipped = 0, Failed = 0;
 
+    //One file read once and written once for the run of ops on it, however many there are (a sound fix is nineteen
+    //ops over a 200 MB archive: read and written per op, that was 8 GB at every launch). Ops still apply in order.
+    std::filesystem::path OpenPath;
+    std::vector<uint8_t> Image;
+    size_t Pending = 0;                                  // ops applied to Image, not yet on disk
+    auto Flush = [&]() {
+        if (Pending == 0) return;
+        std::ofstream Out(OpenPath, std::ios::binary | std::ios::trunc);   // COW into the writelayer; the pristine zip is untouched
+        if (Out) Out.write(reinterpret_cast<const char *>(Image.data()), std::streamsize(Image.size()));
+        if (!Out) { LogErr("BinaryPatch::ProcessBinaryPatches", "cannot write '" + OpenPath.string() + "'"); Failed += Pending; Applied -= Pending; Ok = false; }
+        Pending = 0;
+    };
+
     for (auto &Sub : ContainerParams.SubComponentsArray)
     {
         if (Sub.value("TYPE", std::string()) != "BinaryPatch") continue;
@@ -398,12 +450,22 @@ bool BinaryPatch::ProcessBinaryPatches(struct ContainerParams &ContainerParams)
             ++Failed; Ok = false;
             continue;
         }
-
-        std::vector<uint8_t> Image;
+        if (std::string Why; FileEdits::LinkLeadsOut(ContainerParams.RuntimePath, FilePath, Why))
         {
-            std::ifstream In(FilePath, std::ios::binary);
-            if (!In) { LogErr("BinaryPatch::ProcessBinaryPatches", "cannot open '" + FilePath.string() + "'"); ++Failed; Ok = false; continue; }
-            Image.assign(std::istreambuf_iterator<char>(In), std::istreambuf_iterator<char>());
+            LogErr("BinaryPatch::ProcessBinaryPatches", "FILE '" + File + "' is not patched: " + Why
+                   + " — a patch never writes through a link (a game can leave one in a kept folder).");
+            ++Failed; Ok = false;
+            continue;
+        }
+
+        if (FilePath != OpenPath)
+        {
+            Flush();
+            OpenPath.clear(); Image.clear();
+            std::ifstream In(FilePath, std::ios::binary | std::ios::ate);
+            if (In) { Image.resize(size_t(In.tellg())); In.seekg(0); In.read(reinterpret_cast<char *>(Image.data()), std::streamsize(Image.size())); }
+            if (!In) { LogErr("BinaryPatch::ProcessBinaryPatches", "cannot open '" + FilePath.string() + "'"); Image.clear(); ++Failed; Ok = false; continue; }
+            OpenPath = FilePath;
         }
 
         std::string Msg;
@@ -418,13 +480,10 @@ bool BinaryPatch::ProcessBinaryPatches(struct ContainerParams &ContainerParams)
         }
         if (R == Result::Skipped) { ++Skipped; LogOut("BinaryPatch::ProcessBinaryPatches", File + ": " + Msg); continue; }
 
-        // Applied — write it back (COW into the writelayer; the pristine content zip is untouched).
-        std::ofstream Out(FilePath, std::ios::binary | std::ios::trunc);
-        if (!Out) { LogErr("BinaryPatch::ProcessBinaryPatches", "cannot write '" + FilePath.string() + "'"); ++Failed; Ok = false; continue; }
-        Out.write(reinterpret_cast<const char *>(Image.data()), std::streamsize(Image.size()));
-        ++Applied;
+        ++Applied; ++Pending;
         LogOut("BinaryPatch::ProcessBinaryPatches", File + ": " + Msg);
     }
+    Flush();
 
     if (Attempted > 0)
         LogOut("BinaryPatch::ProcessBinaryPatches",

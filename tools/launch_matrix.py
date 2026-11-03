@@ -216,6 +216,11 @@ def main():
                 #last plan's JSON into the runtime golden and exited 0. On any machine where the mount or the
                 #probe cannot run (no FUSE, no user namespaces, CI), re-recording poisoned the committed
                 #artifact and said "recorded".
+                #What the launcher said about the probe's private home at teardown: the file the probe left there
+                #must be named (a lost save is a warning, never silence). Timestamps and colour codes stripped.
+                report.append("=== launcher: the private home at teardown")
+                report += ["  " + re.sub(r"^.*?\] ContainerWrapper::Cleanup ", "", re.sub(r"\x1b\[[0-9;]*m", "", l)).strip()
+                           for l in (run.stdout + run.stderr).splitlines() if "ContainerWrapper::Cleanup Private home:" in l]
                 text = "\n".join(normalise({"r": report}, data)["r"]) + "\n"
                 if args.update:
                     with open(rpath, "w") as F: F.write(text)

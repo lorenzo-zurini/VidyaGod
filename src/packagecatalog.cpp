@@ -34,6 +34,7 @@
 #include <fstream>
 #include <filesystem>
 #include <algorithm>
+#include <cctype>
 #include <vector>
 
 using namespace ManifestModel;   // LayerLocator / IsVfsLayer / ForEachVfsLayer / PackageHydrated / PackageIpfsCids
@@ -249,6 +250,131 @@ bool IsLocalPackagePath(const nlohmann::ordered_json &GlobalConfigJSON, const st
     // package. A catalog tile can never be "Local". ("Local" = a bundle in LIBRARY that isn't from a CID source.)
     if (PathUnder(CatalogRootDir(GlobalConfigJSON), BundleDir)) return false;
     return !PathUnderManagedSource(GlobalConfigJSON, BundleDir);
+}
+
+std::vector<std::string> LibraryNames(const nlohmann::ordered_json &GlobalConfigJSON)
+{
+    std::vector<std::string> Out;
+    std::error_code Ec;
+    for (const auto &E : std::filesystem::directory_iterator(LibraryDir(GlobalConfigJSON), Ec))
+        if (E.is_directory(Ec)) Out.push_back(E.path().filename().string());
+    std::sort(Out.begin(), Out.end());
+    return Out;
+}
+
+std::string FolderTitle(const std::filesystem::path &Dir)
+{
+    std::string N = Dir.filename().string();
+    while (!N.empty() && N[0] == '[')
+    {
+        const size_t E = N.find(']');
+        if (E == std::string::npos) break;
+        N = N.substr(E + 1);
+        while (!N.empty() && N[0] == ' ') N.erase(0, 1);
+    }
+    return N.empty() ? Dir.filename().string() : N;
+}
+
+std::string PackageTitle(const std::filesystem::path &Dir)
+{
+    const std::string Name = Dir.filename().string();
+    const size_t E = Name.find(']');
+    if (Name.empty() || Name[0] != '[' || E == std::string::npos) return FolderTitle(Dir);
+    const std::string Uid = Name.substr(1, E - 1);
+    std::error_code Ec;
+    for (const auto &F : std::filesystem::directory_iterator(Dir, Ec))
+    {
+        if (F.path().extension() != ".json" || !F.is_regular_file(Ec)) continue;
+        std::ifstream In(F.path(), std::ios::binary);
+        const std::string Text((std::istreambuf_iterator<char>(In)), std::istreambuf_iterator<char>());
+        if (Text.find("\"TILE\"") == std::string::npos) continue;         // most nodes carry no tile: not parsed
+        const nlohmann::ordered_json N = nlohmann::ordered_json::parse(Text, nullptr, false);
+        if (!N.is_object() || !N.contains("LAYERS") || !N["LAYERS"].is_array()) continue;
+        for (const auto &L : N["LAYERS"])
+        {
+            if (!L.is_object() || !L.contains("EXEC") || !L["EXEC"].is_array()) continue;
+            for (const auto &En : L["EXEC"])
+            {
+                if (!En.is_object() || !En.contains("TILE") || !En["TILE"].is_object()) continue;
+                const auto &T = En["TILE"];
+                if (T.value("UID", std::string()) == Uid && T.contains("TITLE") && T["TITLE"].is_string()
+                    && !T["TITLE"].get<std::string>().empty())
+                    return T["TITLE"].get<std::string>();
+            }
+        }
+    }
+    return FolderTitle(Dir);
+}
+
+std::vector<AuthoredPackage> AuthoredPackages(const nlohmann::ordered_json &GlobalConfigJSON)
+{
+    std::vector<AuthoredPackage> Out;
+    std::error_code Ec;
+    for (const std::string &L : LibraryNames(GlobalConfigJSON))
+        for (const auto &E : std::filesystem::directory_iterator(std::filesystem::path(LibraryDir(GlobalConfigJSON)) / L, Ec))
+            if (E.is_directory(Ec)) Out.push_back({E.path(), PackageTitle(E.path()), L});
+    for (const auto &D : LocalPackageDirs(GlobalConfigJSON)) Out.push_back({D, PackageTitle(D), std::string()});
+    auto Lower = [](std::string T) { for (char &C : T) C = (char)std::tolower((unsigned char)C); return T; };
+    std::sort(Out.begin(), Out.end(), [&](const AuthoredPackage &A, const AuthoredPackage &B) {
+        const std::string La = Lower(A.Title), Lb = Lower(B.Title);
+        return La != Lb ? La < Lb : A.Dir < B.Dir;
+    });
+    return Out;
+}
+
+namespace
+{
+//A folder name on every system: what Windows refuses becomes " -" for a colon (as in the library's other names)
+//and "_" otherwise; no trailing dots or spaces.
+std::string FolderSafe(const std::string &Title)
+{
+    std::string Safe;
+    for (const char C : Title)
+    {
+        if (C == ':') Safe += " -";
+        else if (std::string("/\\?*\"<>|").find(C) != std::string::npos || (unsigned char)C < 0x20) Safe += '_';
+        else Safe += C;
+    }
+    while (!Safe.empty() && (Safe.back() == ' ' || Safe.back() == '.')) Safe.pop_back();
+    while (!Safe.empty() && Safe.front() == ' ') Safe.erase(Safe.begin());
+    return Safe;
+}
+}
+
+std::filesystem::path CreatePackageFolder(const nlohmann::ordered_json &GlobalConfigJSON, const std::string &Library,
+                                          const std::string &Uid, const std::string &Title, std::string &Err)
+{
+    namespace fs = std::filesystem;
+    const auto Names = LibraryNames(GlobalConfigJSON);
+    if (std::find(Names.begin(), Names.end(), Library) == Names.end()) { Err = "There is no library named \"" + Library + "\"."; return {}; }
+    if (Uid.empty() || !std::all_of(Uid.begin(), Uid.end(), [](unsigned char C) { return std::isdigit(C); }))
+    { Err = "The game ID must be a number (its TheGamesDB ID)."; return {}; }
+    const std::string Safe = FolderSafe(Title);
+    if (Safe.empty()) { Err = "The game needs a title."; return {}; }
+    const std::string Tag = "[" + Uid + "]";
+    std::error_code Ec;
+    for (const auto &L : Names)
+        for (const auto &P : fs::directory_iterator(fs::path(LibraryDir(GlobalConfigJSON)) / L, Ec))
+            if (P.path().filename().string().rfind(Tag, 0) == 0)
+            { Err = "The library already has a package for game " + Uid + ": " + L + "/" + P.path().filename().string(); return {}; }
+    const fs::path Dir = fs::path(LibraryDir(GlobalConfigJSON)) / Library / (Tag + "[v1.0] " + Safe);
+    if (!fs::create_directories(Dir, Ec)) { Err = "Could not create " + Dir.string() + (Ec ? ": " + Ec.message() : std::string()); return {}; }
+    return Dir;
+}
+
+std::filesystem::path CreateLibraryFolder(const nlohmann::ordered_json &GlobalConfigJSON, const std::string &Library,
+                                          const std::string &Name, std::string &Err)
+{
+    namespace fs = std::filesystem;
+    const auto Names = LibraryNames(GlobalConfigJSON);
+    if (std::find(Names.begin(), Names.end(), Library) == Names.end()) { Err = "There is no library named \"" + Library + "\"."; return {}; }
+    const std::string Safe = FolderSafe(Name);
+    if (Safe.empty() || Safe == "." || Safe == "..") { Err = "The library needs a name."; return {}; }
+    const fs::path Dir = fs::path(LibraryDir(GlobalConfigJSON)) / Library / Safe;
+    std::error_code Ec;
+    if (fs::exists(Dir, Ec)) { Err = "The library already has a package named " + Library + "/" + Safe + "."; return {}; }
+    if (!fs::create_directories(Dir, Ec)) { Err = "Could not create " + Dir.string() + (Ec ? ": " + Ec.message() : std::string()); return {}; }
+    return Dir;
 }
 
 std::vector<std::filesystem::path> EditableRoots(const nlohmann::ordered_json &GlobalConfigJSON)
@@ -1825,7 +1951,7 @@ bool ApplyStagedUpdate(const nlohmann::ordered_json &Config, const StagedUpdate 
     const fs::path &Dir = Confirmed.U.Dir;
     const std::string &Pkg = Confirmed.U.Pkg;
     auto Refuse = [&](const std::string &Why) { if (Error) *Error = Why; return false; };
-    if (VfsMount::RuntimesLive() > 0 || !VfsMount::MountpointsUnder(LaunchResolver::SessionRoot()).empty())
+    if (VfsMount::RuntimesLive() > 0 || !VfsMount::LiveMountpointsUnder(LaunchResolver::SessionRoot()).empty())
         return Refuse("a game is running — close it first, then switch " + Pkg);
     if (IpfsWrapper::LandingUnder(Dir.string()))
         return Refuse("a download into " + Pkg + " is in progress — let it finish first");

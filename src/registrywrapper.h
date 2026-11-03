@@ -3,6 +3,7 @@
 
 #include <nlohmann/json.hpp>
 #include <filesystem>
+#include <functional>
 #include <string>
 #include <vector>
 #include <map>
@@ -117,6 +118,13 @@ public:
     static nlohmann::ordered_json SubstituteRegEdit(const nlohmann::ordered_json &Edit,
                                                     const std::map<std::string, std::string> &Vars);
     static nlohmann::ordered_json ValueToManifestString(const RegistryValue &V);
+
+    //Every key that has its own block or a value, with its full path ("HKLM\\Software\\Foo", decoded segments), parents
+    //before children, in insertion order. Used to write the registry out in another format (a Windows .reg file).
+    void ForEachKey(const std::function<void(const std::string &FullPath, const RegistryKey &Key)> &Fn) const;
+    //A plain string (REG_SZ) value, encoded for the hive whatever the text looks like (ManifestStringToValue reads
+    //"dword:…" as a number).
+    static RegistryValue SzValue(const std::string &Str);
 
     //Path/root helpers.
     static HiveRoot    RootForPath(const std::string &FullPath);   // HKLM->Machine, HKCU->User, ...

@@ -26,6 +26,11 @@ JsonRawEditor::JsonRawEditor(PackageEditorModel * model, QWidget * parent)
     L->addWidget(Text, 1);
     Status = new QLabel(this);
     Status->setWordWrap(true);
+    //A parse error quotes what it last read - on single-line JSON one unbreakable run as wide as the text - and a word-
+    //wrapped label is as wide as its longest word: it widened the whole editor window off the screen. These labels
+    //take the width they are given instead.
+    Title->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Preferred);
+    Status->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Preferred);
     L->addWidget(Status);
     ApplyTimer = new QTimer(this);
     ApplyTimer->setSingleShot(true);
@@ -94,7 +99,12 @@ void JsonRawEditor::onTextChanged()
     {
         //Say where, not just that: the parser's own message has the line and column.
         try { const json Probe = json::parse(Data); (void)Probe; }
-        catch (const json::parse_error & E) { Status->setText("<span style='color:#e07070'>" + QString(E.what()).toHtmlEscaped() + "</span>"); }
+        catch (const json::parse_error & E)
+        {
+            QString Why = QString::fromUtf8(E.what());
+            if (Why.size() > 240) Why = Why.left(240) + QChar(0x2026);
+            Status->setText("<span style='color:#e07070'>" + Why.toHtmlEscaped() + "</span>");
+        }
         ApplyTimer->stop();
         return;
     }

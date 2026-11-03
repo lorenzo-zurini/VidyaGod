@@ -86,4 +86,12 @@
   Documents/lm/single.txt: single-file
 === writability (a KEEP dir must be writable, and survive)
   game/saves: writable
+=== home (the program gets a private one; the user's is read-only)
+  HOME: private
+  XDG config/state/cache: in it
+  XDG_DATA_HOME: the package's (its ENV wins)
+  private config: writable
+  the user's home: read-only
 === done
+=== launcher: the private home at teardown
+  Private home: 1 file(s) the program wrote under ~ are not kept (to keep them, point its XDG variable into %RuntimePath% and KEEP that folder): ~/lm-unkept-save.dat

@@ -54,7 +54,7 @@ std::string Subst(const std::string &S, const Vars &V)
         const std::string Key = C == std::string::npos ? Tok : Tok.substr(0, C);
         const std::string Fmt = C == std::string::npos ? std::string() : Tok.substr(C + 1);
         const auto It = V.find(Key);
-        if (It != V.end()) Out += Fmt.empty() ? It->second : VarSubst::RenderValue(It->second, Fmt);
+        if (It != V.end()) Out += Fmt.empty() ? It->second : VarSubst::RenderToken(It->second, Fmt, V);
         else { Out += '%'; Out += Tok; Out += '%'; }
         Pos = B + 1;
     }
@@ -419,6 +419,12 @@ Vars ResolveVars(const json &Decls, const Vars &Builtins, const Vars &Instance)
             std::string W = D.is_object() ? Str(D.value("WHEN", json())) : std::string();
             if (W.empty() && D.is_object() && D.contains("UI") && D["UI"].is_object()) W = Str(D["UI"].value("WHEN", json()));
             if (!W.empty()) Gate[K] = W;
+            for (const auto &[E, V] : VarSubst::TableEntries(K, D))           // a MAP table: its entries, gated with it
+            {
+                if (!Src.count(E)) Keys.push_back(E);
+                Src[E] = V;
+                if (!W.empty()) Gate[E] = W; else Gate.erase(E);
+            }
         }
     for (const auto &[K, V] : Instance) if (!Src.count(K)) { Src[K] = V; Keys.push_back(K); }
     Vars Cur = Src;

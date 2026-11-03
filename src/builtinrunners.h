@@ -18,6 +18,10 @@ struct Runner
 
 const std::vector<Runner> &All();
 
+// True when NodeCid is one of All()'s nodes. A runner that tied with a built-in one on every other count (an earlier
+// windows-native, still on a machine that fetched it, has its label) used to win or lose by the sort's whim.
+bool IsBuiltin(const std::string &NodeCid);
+
 // Adds to a working tree the built-in runners Machine hosts (their entry's HOST). The freeze indexes each by its CID,
 // so a copy already on disk is the same node, kept once. Their bundle dir is their folder under LibraryRoot.
 void AddTo(std::map<std::string, nlohmann::ordered_json> &Tree, std::map<std::string, std::filesystem::path> &Dirs,

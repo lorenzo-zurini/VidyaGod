@@ -3,6 +3,7 @@
 #include "commonutils.h"
 
 #include <filesystem>
+#include <fstream>
 #include <string>
 #include <vector>
 
@@ -233,6 +234,23 @@ TEST(reg_architecture_32_redirects_under_wow6432node)
     CHECK(RW.GetValue("HKLM\\Software\\Acme", "V") == nullptr);       // and NOT also in the 64-bit view
 }
 
+// A 32-bit COM server's CLSID goes where a 32-bit program's COM looks for it: Software\Classes\Wow6432Node (Wine keeps
+// Software\Wow6432Node\Classes as a link there, which shadows a key written under it). Its ProgID is shared.
+TEST(reg_architecture_32_com_class_lands_under_classes_wow6432node)
+{
+    RegistryWrapper RW;
+    ordered_json Subs = ordered_json::array({
+        ordered_json{{"TYPE", "RegEdit"}, {"ARCHITECTURE", "32"}, {"REGPATH", "HKLM\\Software\\Classes\\CLSID\\{45224AFF}\\InprocServer32"},
+                     {"KEYVALUES", {{"", "mscoree.dll"}}}},
+        ordered_json{{"TYPE", "RegEdit"}, {"ARCHITECTURE", "32"}, {"REGPATH", "HKLM\\Software\\Classes\\ScriptServer.ScriptEngine\\CLSID"},
+                     {"KEYVALUES", {{"", "{45224AFF}"}}}}
+    });
+    CHECK(RW.ApplyRegEdits(Subs, /*WantOverride=*/false));
+    CHECK(RW.GetValue("HKLM\\Software\\Classes\\Wow6432Node\\CLSID\\{45224AFF}\\InprocServer32", "") != nullptr);
+    CHECK(RW.GetValue("HKLM\\Software\\Wow6432Node\\Classes\\CLSID\\{45224AFF}\\InprocServer32", "") == nullptr);
+    CHECK(RW.GetValue("HKLM\\Software\\Classes\\ScriptServer.ScriptEngine\\CLSID", "") != nullptr);
+}
+
 // Everything above is in-memory. If the save/load round-trip loses a value, every edit above is moot — this is the
 // step where an edit stops being a data structure and becomes something the game can read.
 TEST(reg_values_survive_a_save_and_reload)
@@ -258,6 +276,42 @@ TEST(reg_values_survive_a_save_and_reload)
     if (M) CHECK_EQ(M->Str, std::string("C:\\Games\\Acme"));
     CHECK(U != nullptr);                                        // the two hives must not collapse into one
     if (U) CHECK_EQ(U->Str, std::string("Lorenzo"));
+    std::filesystem::remove_all(Dir);
+}
+
+// Wine spells a character outside printable ASCII as \x and its UTF-16 unit. A store written here and read back (a
+// kept key every launch) keeps a player's name, whatever its letters: "Böb" once came back "Bë" (one \xHH per UTF-8
+// byte, then a following hex digit read as part of it).
+TEST(reg_non_ascii_strings_survive_a_save_and_reload)
+{
+    const std::filesystem::path Dir = std::filesystem::temp_directory_path() / "vg_reg_unicode";
+    std::filesystem::remove_all(Dir);
+    std::filesystem::create_directories(Dir);
+    const std::vector<std::string> Values = {"B\xc3\xb6" "b", "\xd0\x98\xd0\xb3\xd1\x80\xd0\xbe\xd0\xba" "1", "Jos\xc3\xa9" "2",
+                                             "tab\tab", "emoji \xf0\x9f\x98\x80" "f", "C:\\Users\\B\xc3\xb6" "b\\x"};
+    RegistryWrapper Out;
+    for (size_t I = 0; I < Values.size(); ++I)
+        Out.SetValue("HKCU\\Software\\K\xc3\xa9y", "v" + std::to_string(I), RegistryWrapper::SzValue(Values[I]));
+    CHECK(Out.SavePrefix(Dir));
+    RegistryWrapper In;
+    CHECK(In.LoadPrefix(Dir));
+    for (size_t I = 0; I < Values.size(); ++I)
+    {
+        const RegistryValue *V = In.GetValue("HKCU\\Software\\K\xc3\xa9y", "v" + std::to_string(I));
+        CHECK(V != nullptr);
+        if (V) CHECK_EQ(V->Str, Values[I]);
+    }
+    std::filesystem::remove_all(Dir);
+
+    // What wine itself writes: minimal digits, four before a hex digit, a surrogate pair for one character.
+    std::filesystem::create_directories(Dir);
+    { std::ofstream F(Dir / "user.reg", std::ios::binary);
+      F << "WINE REGISTRY Version 2\n\n[Software\\\\Game] 1\n\"Name\"=\"\\xe9t\\x00e9 \\xd83d\\xde00!\"\n"; }
+    RegistryWrapper W;
+    CHECK(W.LoadPrefix(Dir));
+    const RegistryValue *N = W.GetValue("HKCU\\Software\\Game", "Name");
+    CHECK(N != nullptr);
+    if (N) CHECK_EQ(N->Str, std::string("\xc3\xa9t\xc3\xa9 \xf0\x9f\x98\x80!"));
     std::filesystem::remove_all(Dir);
 }
 

@@ -1,4 +1,7 @@
 #include "containerwrapper.h"
+#include "boxlaunch.h"
+#include "boxprefix.h"   // RemoveTree — a wipe that never follows a link (Windows)
+#include "registrywrapper.h"
 #include "commonutils.h"
 #include "procenv.h"      // RunCommand / SystemToolEnv (fusermount on cleanup + the game launch)
 #include "sandboxlayer.h"    // the mandatory sandbox around the launched game (bwrap / Sandboxie)
@@ -6,7 +9,7 @@
 
 #include <numeric>           // std::accumulate (WINEDLLOVERRIDES join)
 #include <algorithm>         // std::min (session-id truncation for the TUN name)
-#include <cstdlib>           // ::getenv (HOME for the writable bind)
+#include <cstdlib>           // std::getenv (VG_CASE_CHECK)
 #include <sys/stat.h>        // ::stat (probe the mounted prefix's system.reg mtime for config_info)
 
 // The friend LAN is ALWAYS ON (no setting): whenever the node is up and the friend LAN resolves, a launch joins the
@@ -271,6 +274,13 @@ bool ContainerWrapper::BuildContainerRuntime()
         //can be empty — do NOT gate on that); Record() no-ops if the runner spec wasn't written.
         if (ContainerParams.RunnerShipsBuild && !ContainerParams.UnifiedRuntime)
             Record(ContainerParams.TempPath / "vidyagodfs.runner.spec.json", ContainerParams.RunnerMountPath);
+        //Windows: the game's Sandboxie box is its prefix — filled with what the package places outside the game folder,
+        //its registry imported (BoxLaunch). Nothing on Linux.
+        if (!BoxLaunch::Prepare(this->ContainerParams))
+        {
+            LogErr("ContainerWrapper::BuildContainerRuntime", "The game's box could not be prepared (see above) — the game is NOT started.");
+            return false;
+        }
     }
 
     LogSucc("ContainerWrapper::BuildContainerRuntime", "Runtime ready.");
@@ -332,7 +342,7 @@ bool ContainerWrapper::BuildContainerRuntime()
 //
 //WorkDir falls back to RuntimePath (VFS) or PackagePath if the configured path
 //does not exist in the mounted runtime.
-bool ContainerWrapper::Execute(const std::string &OverrideExe)
+bool ContainerWrapper::Execute(const std::string &OverrideExe, const std::vector<std::string> &OverrideArgs)
 {
     LogStep(12, kLaunchSteps, "Starting the game process (wine boot + game init follow in the console)");
     const bool Override = !OverrideExe.empty();
@@ -371,7 +381,7 @@ bool ContainerWrapper::Execute(const std::string &OverrideExe)
     {
         //Native passthrough boundary: exec the content directly (or the OverrideExe for tooling).
         Program = Override ? OverrideExe : ContainerParams.ExePathComplete.string();
-        if (!Override) for (const std::string &A : ContainerParams.ExeArgs) Arguments.append(QString::fromStdString(A));
+        for (const std::string &A : Override ? OverrideArgs : ContainerParams.ExeArgs) Arguments.append(QString::fromStdString(A));
     }
     else
     {
@@ -386,7 +396,7 @@ bool ContainerWrapper::Execute(const std::string &OverrideExe)
         //redirected %ContentPath%), append the inner runners' own guest args (e.g. the ROM path).
         for (const std::string &A : CrossTrailingArgs) Arguments.append(QString::fromStdString(A));
         if (Override) Arguments.append(QString::fromStdString(OverrideExe));
-        else for (const std::string &A : ContainerParams.ExeArgs) Arguments.append(QString::fromStdString(A));
+        for (const std::string &A : Override ? OverrideArgs : ContainerParams.ExeArgs) Arguments.append(QString::fromStdString(A));
     }
 
     //----- NESTING: wrap the base command with each OUTER same-namespace link (native wrappers + the native terminal) -----
@@ -426,6 +436,10 @@ bool ContainerWrapper::Execute(const std::string &OverrideExe)
     //----- ENV: one process tree, so every link's ENV/REMOVE_ENV applies. Boundary (legacy fields) first, then the
     //outer same-namespace wrappers — boundary (innermost, content-proximate) WINS on key conflicts. -----
     QProcessEnvironment RunProcessEnvironment = SystemToolEnv();                 // system runner, not AppImage libs
+    //The sandbox's private home is the BASE environment (SandboxLayer::FromParams): every runner/package ENV below
+    //applies over it, so one that points XDG_CONFIG_HOME into the runtime (to KEEP it) or removes HOME still wins.
+    SandboxLayer::Options SbOpts = SandboxLayer::FromParams(ContainerParams);
+    if (!Override) SandboxLayer::HomeEnv(SbOpts, RunProcessEnvironment);
     //ORDER: outermost first, boundary LAST, so the innermost (content-proximate) declaration wins on a shared
     //key — which is what the rest of the engine promises. It used to run the other way: RunnerEnv went in
     //first and each outer wrapper's Env overwrote it. That merely mis-ordered runner-vs-runner until a
@@ -494,12 +508,12 @@ bool ContainerWrapper::Execute(const std::string &OverrideExe)
 
     //----- SANDBOX (MANDATORY): re-invoke ourselves as the nested `--sandbox-init` inside one hermetic bwrap namespace,
     //which re-mounts the vidyagodfs spec(s) (deferred + host-unmounted in BuildContainerRuntime), optionally brings up
-    //the overlay TUN, then execs the game. RO host root + writable runtime/home; the composed FS and the virtual LAN
-    //live entirely inside the sandbox. Not applied under an OverrideExe. -----
+    //the overlay TUN, then execs the game. RO host root (the real home included) + writable runtime/instance + a private
+    //home (FromParams); the composed FS and the virtual LAN live entirely inside the sandbox. Not applied under an
+    //OverrideExe. -----
     bool OverlayServing = false;
     if (!Override)
     {
-        SandboxLayer::Options SbOpts = SandboxLayer::FromParams(ContainerParams);
         if (!SandboxLayer::Available())
         {
 #ifdef _WIN32
@@ -512,8 +526,6 @@ bool ContainerWrapper::Execute(const std::string &OverrideExe)
         {
             for (const auto &[Spec, Mnt] : ContainerParams.SandboxMounts)
                 SbOpts.Mounts.push_back({Spec, Mnt});
-            SbOpts.WritableBinds = { ContainerParams.TempPath.string(), ContainerParams.UserDataPath.string() };
-            if (const char *H = ::getenv("HOME")) SbOpts.WritableBinds.emplace_back(H);
             SbOpts.WorkDir = ContainerParams.WorkDirPathComplete.string();
 
             //Friend LAN: the LAN vars (SELF_VIP/SUBNET/PEER_*/SANDBOX_NET=isolated) were merged into CustomVariables in
@@ -624,7 +636,9 @@ void ContainerWrapper::KillGame()
         //Kill the launched process tree — taskkill /T reaps children (Start.exe + the game, or the game
         //directly). Then terminate the Sandboxie box so no boxed helper lingers (no-op if unsandboxed).
         QProcess Pr; Pr.start("taskkill", {"/PID", QString::number(Pid), "/T", "/F"}); Pr.waitForFinished(-1);
-        SandboxLayer::TerminateBox(this->ContainerParams.WorkDirPathComplete.string());
+        SandboxLayer::Options Box = SandboxLayer::FromParams(this->ContainerParams);
+        Box.WorkDir = this->ContainerParams.WorkDirPathComplete.string();
+        SandboxLayer::TerminateBox(Box);
 #else
         //Kill the entire process group (wine, wineserver, game children) in one shot.
         //SIGKILL the group first, then the direct process as a fallback. (System tools — strip the
@@ -660,12 +674,48 @@ bool ContainerWrapper::Cleanup()
     //1. Registry + file capture must read RUNTIME/<...> before anything is unmounted (no-op when none declared).
     //A capture failure means the user's session state was NOT saved — say so loudly (still proceed with
     //cleanup: the runtime must come down regardless).
+    //Windows: what the game kept outside its game folder lives in its box: brought back to the runtime first (BoxLaunch).
+    RegistryWrapper BoxSession;
+    bool HaveBoxSession = false;
+    bool Captured = BoxLaunch::Harvest(this->ContainerParams, BoxSession, HaveBoxSession);
     if (!ContainerParams.KeepFiles.empty()
         && !PersistLayer::CapturePersistFiles(this->ContainerParams))
+    {
         LogErr("ContainerWrapper::Cleanup", "File persistence capture FAILED — this session's saved files were not stored.");
+        Captured = false;
+    }
     if (!ContainerParams.KeepRegKeys.empty()
-        && !RegistryLayer::CapturePersistRegKeys(this->ContainerParams))
+        && !RegistryLayer::CapturePersistRegKeys(this->ContainerParams, HaveBoxSession ? &BoxSession : nullptr))
+    {
         LogErr("ContainerWrapper::Cleanup", "Registry-key persistence capture FAILED — this session's key state was not stored.");
+        Captured = false;
+    }
+    //The box is emptied only once what it kept is stored; else it stays, and the next launch saves it first.
+    if (Captured) BoxLaunch::Discard(this->ContainerParams);
+    else if (this->ContainerParams.BoxPrepared)
+        LogErr("ContainerWrapper::Cleanup", "The game's box is kept (" + SandboxLayer::FromParams(this->ContainerParams).BoxRoot
+               + "): it holds what this session kept that was not stored; the next launch stores it first.");
+
+    //What the program wrote in its private home (SandboxLayer::FromParams) is kept nowhere: it goes with TEMP. A save or a
+    //setting written there is lost, so each one is a warning naming the file, not a silent success. Said here, before
+    //the gate below, so it is said even when TEMP has to be left in place. Not worth a warning: two files every program
+    //makes (the PulseAudio client's cookie, fontconfig's cache) and the GPU driver's shader cache, which lands here
+    //only on a machine whose real home has none yet to carry in (FromParams carries the ones that exist).
+    {
+        std::vector<std::string> Left = SandboxLayer::HomeLeftovers(SandboxLayer::FromParams(ContainerParams).Home);
+        std::erase_if(Left, [](const std::string &P){
+            return P == ".config/pulse/cookie" || P.starts_with(".cache/fontconfig/") || P.starts_with(".cache/nvidia/")
+                || P.starts_with(".cache/mesa_shader_cache") || P.starts_with(".nv/"); });
+        if (!Left.empty())
+        {
+            std::string List;
+            for (size_t i = 0; i < Left.size() && i < 12; ++i) List += (i ? ", ~/" : "~/") + Left[i];
+            if (Left.size() > 12) List += ", … (" + std::to_string(Left.size() - 12) + " more)";
+            LogWarn("ContainerWrapper::Cleanup", "Private home: " + std::to_string(Left.size())
+                    + " file(s) the program wrote under ~ are not kept (to keep them, point its XDG variable into "
+                    "%RuntimePath% and KEEP that folder): " + List);
+        }
+    }
 
     //2. Durable-backed mounts: non-lazy + verified, innermost-first (reverse registration order).
     bool DurableUnmountOk = true;
@@ -717,8 +767,15 @@ bool ContainerWrapper::Cleanup()
     }
 
     //RUNTIME/WRITELAYER/DEFPREFIX all live inside TempPath, so this single removal wipes them all.
+#ifdef _WIN32
+    //MinGW's remove_all follows a junction or symlink (its lstat is stat), and the writable layer holds whatever links
+    //the game made: removed as links, never through them.
+    if (std::vector<std::string> Left; !BoxPrefix::RemoveTree(this->ContainerParams.TempPath, Left))
+        LogWarn("ContainerWrapper::Cleanup", "Could not remove TEMP: " + Left.front() + " — may still be mounted.");
+#else
     std::filesystem::remove_all(this->ContainerParams.TempPath, ec);
     if (ec) LogWarn("ContainerWrapper::Cleanup", "Could not remove TEMP: " + ec.message() + " — may still be mounted.");
+#endif
     return true;
 }
 

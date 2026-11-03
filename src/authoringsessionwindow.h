@@ -42,10 +42,13 @@ private:
     QLabel *     InfoLabel    = nullptr;
     QLabel *     FilesPreview = nullptr;   // live capture-level + mount-path preview
     QString      ContentRootStr;           // the runner's content root (for the mount-path preview)
+    bool         CapturedAny = false;      // a capture was made this session (no more pre-ticking)
+    QString      WaitTarget;               // where the anchor waits for its files ("%GameDir%"), "" for nothing
     QMap<QString, QString> AnchorLayout;   // %Anchor% → where this runtime lays it out (for the mount-path preview)
     QComboBox *  RunnerCombo  = nullptr;
     QLineEdit *  TargetEdit   = nullptr;
     QLineEdit *  DestNameEdit = nullptr;
+    QLineEdit *  ArgsEdit     = nullptr;   // what "Run Windows program" passes after the program (an installer's switches)
     QPushButton * RunExeBtn = nullptr;
     QPushButton * BrowseBtn = nullptr;
     QPushButton * RegBtn    = nullptr;

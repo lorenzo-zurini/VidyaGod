@@ -66,6 +66,27 @@ std::vector<std::filesystem::path> LocalPackageDirs(const nlohmann::ordered_json
 //Every tree holding packages this machine authors — LIBRARY and the local packages outside it (never CATALOG: a
 //friend's stubs). A save that renames a node follows it through all of them.
 std::vector<std::filesystem::path> EditableRoots(const nlohmann::ordered_json &GlobalConfigJSON);
+//The libraries this machine keeps packages in: the folders directly under LIBRARY ("VidyaGod", "VidyaGodRunners" ...).
+std::vector<std::string> LibraryNames(const nlohmann::ordered_json &GlobalConfigJSON);
+//"[749][v1.0] Age of Empires II" -> "Age of Empires II": a package's folder name without its bracketed tags.
+std::string FolderTitle(const std::filesystem::path &Dir);
+//A package's title as its shelf shows it: the TITLE of the tile its folder is named for ([<uid>]), read from its
+//nodes - "Baldur's Gate" where the folder had to say "Baldur_s Gate"; the folder's title when no node has it.
+std::string PackageTitle(const std::filesystem::path &Dir);
+//Every package this machine authors, for the editor's Open: each library's package folders and the local packages
+//outside LIBRARY (Library ""), by title.
+struct AuthoredPackage { std::filesystem::path Dir; std::string Title, Library; };
+std::vector<AuthoredPackage> AuthoredPackages(const nlohmann::ordered_json &GlobalConfigJSON);
+//A new, empty package folder "<LIBRARY>/<Library>/[<Uid>][v1.0] <Title>" (the title made safe for a folder name), for
+//the package editor's New package. Refuses (empty path, Err says why) an unknown library, a UID that is not digits,
+//an empty title, or a UID some package in LIBRARY already uses.
+std::filesystem::path CreatePackageFolder(const nlohmann::ordered_json &GlobalConfigJSON, const std::string &Library,
+                                          const std::string &Uid, const std::string &Title, std::string &Err);
+//A new, empty LIBRARY package folder "<LIBRARY>/<Library>/<Name>" (named as a library is: by its name, no game ID -
+//a library has no tile; the games that use it graft it). Refuses an unknown library, an empty name, or a name a
+//folder of that library already has.
+std::filesystem::path CreateLibraryFolder(const nlohmann::ordered_json &GlobalConfigJSON, const std::string &Library,
+                                          const std::string &Name, std::string &Err);
 // Drop LIBRARY entries for local packages whose bundle dir no longer exists (the user moved/deleted it). CID-source
 // entries are never touched (their content may just be un-hydrated). Mutates GlobalConfigJSON; returns count removed.
 int PruneMovedLocalPackages(nlohmann::ordered_json &GlobalConfigJSON);

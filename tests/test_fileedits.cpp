@@ -252,3 +252,25 @@ TEST(jsonset_bounds_hostile_pointers_and_values)
     CHECK(nlohmann::ordered_json::parse(ReadAll(f))["a"] == nlohmann::ordered_json::array({1, 2, 3, 4}));
     std::filesystem::remove_all(dir);
 }
+
+// Delete removes a file, or a folder and everything in it; a link goes as a link (its target stays); nothing there is
+// a failure, not a quiet success. Teeth: make a missing path succeed (the false CHECK fails); follow links (the
+// target file disappears).
+TEST(deletepath_removes_files_folders_and_links_but_not_what_links_name)
+{
+    auto dir = TmpDir("delete");
+    Write(dir / "intro.bik", "x");
+    std::filesystem::create_directories(dir / "videos" / "sub");
+    Write(dir / "videos" / "sub" / "a.bik", "x");
+    Write(dir / "victim.txt", "keep me");
+    std::filesystem::create_symlink(dir / "victim.txt", dir / "link.txt");
+    CHECK(FileEdits::DeletePath(dir / "intro.bik"));
+    CHECK(!std::filesystem::exists(dir / "intro.bik"));
+    CHECK(FileEdits::DeletePath(dir / "videos"));
+    CHECK(!std::filesystem::exists(dir / "videos"));
+    CHECK(FileEdits::DeletePath(dir / "link.txt"));
+    CHECK(!std::filesystem::is_symlink(dir / "link.txt"));
+    CHECK_EQ(ReadAll(dir / "victim.txt"), std::string("keep me"));
+    CHECK(!FileEdits::DeletePath(dir / "nothing-here"));
+    std::filesystem::remove_all(dir);
+}

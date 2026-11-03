@@ -5,6 +5,7 @@
 #include "packagecatalog.h"  // GetPackageUserSettings (catalog/user-settings service)
 #include "runnerwrapper.h"   // RunnerWrapper::ExecutableAvailable / DefPrefixDir
 #include "commonutils.h"     // Log*
+#include "builtinrunners.h"  // BuiltinRunners::IsBuiltin — the tie-break toward the built-in runner
 
 #include <QDir>
 #include <QGuiApplication>
@@ -12,6 +13,7 @@
 #include <QThread>
 
 #include <algorithm>
+#include <cctype>
 #include <filesystem>
 #include <map>
 #include <queue>
@@ -62,8 +64,9 @@ static bool RecommendedFor(const Node &R, const Node &Launch)
 namespace {
 
 //Strict-better ordering for the BFS default pick: RECOMMENDED > package-local (runner shipped in the launch's own
-//bundle) > the specialist (fewer guest platforms: snes9x before a multi-system emulator that also runs SNES) > LABEL.
-//Runners are pre-sorted better-first so the first edge that discovers a platform is best.
+//bundle) > the specialist (fewer guest platforms: snes9x before a multi-system emulator that also runs SNES) > built
+//into VidyaGod > LABEL > CID. Runners are pre-sorted better-first so the first edge that discovers a platform is best.
+//The last two make the order total: a label may repeat, and two runners equal on every count were ordered by whim.
 bool RunnerBetterPtr(const Node *A, const Node *B, const Node &Launch)
 {
     if (RecommendedFor(*A, Launch) != RecommendedFor(*B, Launch)) return RecommendedFor(*A, Launch);
@@ -71,7 +74,10 @@ bool RunnerBetterPtr(const Node *A, const Node *B, const Node &Launch)
     const bool LB = !Launch.BundleDir.empty() && B->BundleDir == Launch.BundleDir;
     if (LA != LB) return LA;
     if (A->GuestPlatform.size() != B->GuestPlatform.size()) return A->GuestPlatform.size() < B->GuestPlatform.size();
-    return A->NodeId < B->NodeId;
+    const bool BA = BuiltinRunners::IsBuiltin(A->Cid), BB = BuiltinRunners::IsBuiltin(B->Cid);
+    if (BA != BB) return BA;
+    if (A->NodeId != B->NodeId) return A->NodeId < B->NodeId;
+    return A->Key() < B->Key();
 }
 
 bool RunnerServes(const Node *R, const std::string &Platform)
@@ -185,7 +191,7 @@ RunnerLink BuildLink(const NodeIndex &Idx, const std::string &Id)
 
 } // namespace
 
-//Every usable runner on this machine, sorted better-first (RECOMMENDED > package-local > specialist > LABEL) for
+//Every usable runner on this machine, sorted better-first (RECOMMENDED > package-local > specialist > built-in > LABEL > CID) for
 //deterministic BFS — shared by ResolveChainIds and ResolveChainTail (formerly duplicated verbatim).
 static std::vector<const Node *> AvailableRunnersSorted(const NodeIndex &Idx, const Node &Launch)
 {
@@ -244,14 +250,18 @@ static std::vector<std::string> ChainOver(const NodeIndex &Idx, const Node &Laun
     }
     std::vector<std::string> Bridge;
     if (!FindBridge(Host, Machine, Runners, Launch.BundleDir, Bridge)) return {};   // unreachable with these runners
-    Bridge.push_back(Terminal());
+    //A bridge whose last runner is itself a terminal here (HOST == GUEST == this machine: windows-native carries win32 to
+    //win64 and runs win64) already ends the chain. Appending the terminal named that runner a second time and nested it
+    //inside itself — every win32 game on Windows got a command "<game>/__runner_<it>__/<the game's exe>".
+    const Node *Last = Bridge.empty() ? nullptr : Idx.Find(Bridge.back());
+    if (!(Last && Last->HostPlatform == Machine && RunnerServes(Last, Machine))) Bridge.push_back(Terminal());
     return Bridge;
 }
 
 std::vector<std::string> LaunchResolver::ResolveChainIds(const NodeIndex &Idx, const Node &Launch,
                                                          const struct ContainerParams &CP, const nlohmann::ordered_json &GlobalConfigJSON)
 {
-    //Available runners, sorted better-first (RECOMMENDED > package-local > specialist > LABEL) for deterministic BFS.
+    //Available runners, sorted better-first (RECOMMENDED > package-local > specialist > built-in > LABEL > CID) for deterministic BFS.
     const std::vector<const Node *> Runners = AvailableRunnersSorted(Idx, Launch);
 
     //A pinned chain (passed CP.RunnerChainIds, else persisted RUNNER_CHAIN) is honoured when it forms a valid path to
@@ -324,7 +334,12 @@ static std::string EffectiveGuestTemplate(const RunnerLink &Boundary)
 {
     if (!Boundary.GuestPathTemplate.empty()) return Boundary.GuestPathTemplate;
     if (Boundary.GameDirGuest.empty()) return std::string();                     // no guest namespace → identity
-    return Boundary.GameDirGuest + "\\%REL%";                                  // → "C:\%PackageUID%\%REL%"
+    //A Windows guest path (a drive, backslashes) joins with '\\'; a native guest's %GameDir%, a runtime path
+    //(%RuntimePath%/…), joins with '/'.
+    const std::string &G = Boundary.GameDirGuest;
+    const bool Windows = G.find('\\') != std::string::npos
+                      || (G.size() >= 2 && std::isalpha(static_cast<unsigned char>(G[0])) && G[1] == ':');
+    return G + (Windows ? "\\%REL%" : "/%REL%");                         // → "C:\%PackageUID%\%REL%"
 }
 
 std::string LaunchResolver::GuestPath(const std::string &Template, const std::string &Rel, struct ContainerParams &CP)

@@ -6,6 +6,9 @@
 #include <QElapsedTimer>
 #include <QOpenGLWidget>
 
+#include <map>
+#include <string>
+
 class QTimer;
 
 // ---------------------------------------------------------------------------
@@ -23,6 +26,11 @@ public:
     PkgCanvas *canvas() const { return m_canvas; }
     void requestFrame();                            // the document or host state changed: draw it
 
+signals:
+    //Files dragged in from the file manager and let go: on a node (its handle), or on the empty canvas ("", and the
+    //world point a new node for them goes).
+    void filesDropped(const QString &handle, const QStringList &paths, float worldX, float worldY);
+
 protected:
     void initializeGL() override;
     void paintGL() override;
@@ -38,6 +46,9 @@ protected:
     void focusInEvent(QFocusEvent *e) override;
     void focusOutEvent(QFocusEvent *e) override;
     bool event(QEvent *e) override;                  // Tab reaches the canvas (not focus navigation)
+    void dragEnterEvent(QDragEnterEvent *e) override;
+    void dragMoveEvent(QDragMoveEvent *e) override;
+    void dropEvent(QDropEvent *e) override;
 
 private:
     static int LivePanels;                           // ImGui's context is global: exactly one canvas may own it
@@ -48,6 +59,9 @@ private:
     QTimer *m_tick = nullptr;                        // drives frames while the canvas wants them
     QElapsedTimer m_clock;
     qint64 m_lastNs = 0;
+    //Images the canvas draws (covers on chips), uploaded once each while the GL context is current.
+    struct Tex { unsigned Id = 0; float W = 0, H = 0; };
+    std::map<std::string, Tex> m_textures;
 };
 
 #endif // PKGCANVASPANEL_H

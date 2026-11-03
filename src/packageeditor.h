@@ -10,6 +10,7 @@ class PackageEditorModel;
 class JsonRawEditor;
 class PkgCanvasPanel;
 class PkgActions;
+class PkgInsight;
 class QAction;
 class QLabel;
 class QSplitter;
@@ -43,6 +44,8 @@ private:
     bool save();
     bool maybeSave(const QString & Why);          // unsaved changes: save / discard / cancel. False = cancelled
     void openPackage(const QString & Dir);
+    void openPackagePicker();
+    void newPackage();
     void validate();
     void fixCase();
     void seedAndShare();
@@ -54,6 +57,10 @@ private:
     PackageEditorModel * Model  = nullptr;
     PkgCanvasPanel *     Canvas = nullptr;
     JsonRawEditor *      Json   = nullptr;
+    PkgInsight *         Insight = nullptr;
+    class QListWidget *  History = nullptr;               // the undo steps, by name: click one to go back there
+    void refreshHistory();
+    void offerDraft();                                    // a draft of unsaved work for the open package: restore it?
     PkgActions *         Actions = nullptr;
     QLabel *             StatusText = nullptr;
     QString              LastVerdict;                 // the validation summary last shown

@@ -47,8 +47,8 @@ public:
     bool BuildContainerRuntime();
 
     //Launches the game via the resolved runner. If OverrideExe is non-empty it is used
-    //instead of the manifest's EXEPATH/ROM. Blocks until the process exits.
-    bool Execute(const std::string &OverrideExe = "");
+    //instead of the manifest's EXEPATH/ROM, followed by OverrideArgs. Blocks until the process exits.
+    bool Execute(const std::string &OverrideExe = "", const std::vector<std::string> &OverrideArgs = {});
 
     //Sends SIGKILL to the game process started by Execute() if it is still running.
     //Safe to call from any thread; no-op if no process is active.

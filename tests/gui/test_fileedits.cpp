@@ -16,6 +16,10 @@
 #include "launchparams.h"
 #include "persistlayer.h"
 
+#ifndef _WIN32
+#include <sys/stat.h>   // mkfifo
+#endif
+
 namespace {
 
 std::string ReadAll(const std::string &Path)
@@ -228,6 +232,138 @@ private slots:
         QCOMPARE(ReadAll(Rt("cfg/p.ini")), std::string("user"));
         QCOMPARE(ReadAll(Rt("game.ini")), std::string("package"));          // the package's file: every launch
     }
+
+    // A kept folder is served live, links included, and the game can leave one there pointing at any file of the
+    // user's (settings.ini -> ~/.bashrc, or a whole folder -> ~). The override pass runs OUTSIDE the sandbox, so an
+    // edit that followed it would write the user's file. A link to nowhere counts too: written through, it would CREATE
+    // the file it names (~/.config/autostart/x.desktop). A link that stays inside the runtime (Proton's
+    // "My Documents" -> "Documents") still takes the edit. Teeth: drop the LinkLeadsOut check (the victims change);
+    // refuse every link on the way (the Proton edit fails).
+    void an_override_edit_never_writes_through_a_link_out_of_the_runtime()
+    {
+        QTemporaryDir Dir;
+        const std::filesystem::path Root = Dir.path().toStdString();
+        ContainerParams CP(Root / "bundle");
+        CP.RuntimePath = Root / "runtime";
+        const std::filesystem::path Victim = Root / "home";
+        std::filesystem::create_directories(Victim);
+        std::filesystem::create_directories(CP.RuntimePath / "saves");
+        std::filesystem::create_directories(CP.RuntimePath / "users/steamuser/Documents");
+        Write((Victim / ".bashrc").string(), "the user's own");
+        std::filesystem::create_symlink(Victim / ".bashrc", CP.RuntimePath / "saves/settings.ini");
+        std::filesystem::create_symlink(Victim, CP.RuntimePath / "saves/sub");
+        std::filesystem::create_symlink(Victim / "autostart.desktop", CP.RuntimePath / "saves/new.ini");
+        std::filesystem::create_symlink("Documents", CP.RuntimePath / "users/steamuser/My Documents");
+        std::filesystem::create_symlink(Victim / "gone", CP.RuntimePath / "saves/gone");
+#ifndef _WIN32
+        QCOMPARE(mkfifo((CP.RuntimePath / "saves/pipe.ini").c_str(), 0600), 0);   // a ConfigWrite would block reading it
+#endif
+        auto Edit = [](const std::string &File, const char *Mode) {
+            return nlohmann::ordered_json{ {"TYPE", "FileEdit"}, {"MODE", Mode}, {"VALUE", "package"}, {"KEY", "a="}, {"FILE", File}, {"OVERRIDE", true} };
+        };
+        CP.SubComponentsArray = nlohmann::ordered_json::array({
+            Edit("saves/settings.ini", "Overwrite"), Edit("saves/sub/x.ini", "Overwrite"), Edit("saves/new.ini", "AppendLine"),
+            Edit("saves/gone/y.ini", "Overwrite"), Edit("saves/pipe.ini", "ConfigWrite"), Edit("users/steamuser/My Documents/game.ini", "Overwrite") });
+        Complaints C;
+        QVERIFY(!FileEdits::ProcessFileEdits(CP, /*OverridePass=*/true));
+        QCOMPARE(ReadAll((Victim / ".bashrc").string()), std::string("the user's own"));
+        QVERIFY(!std::filesystem::exists(Victim / "x.ini"));
+        QVERIFY(!std::filesystem::exists(Victim / "autostart.desktop"));
+        QVERIFY(C.Mentions("never writes through a link"));
+        QVERIFY(C.Mentions("saves/gone is a link that leads nowhere"));
+#ifndef _WIN32
+        QVERIFY(C.Mentions("pipe.ini is not a plain file or folder"));
+#endif
+        QCOMPARE(ReadAll((CP.RuntimePath / "users/steamuser/Documents/game.ini").string()), std::string("package"));
+    }
+    // A Delete runs in the override pass (after the mount, through the union) and never where the user's state lives:
+    // one lowered with KEPT, or one in the base pass, is refused loudly and removes nothing. Teeth: drop the refusal
+    // (Saves/a.sav disappears, the pass reports success).
+    void a_delete_runs_after_the_mount_and_never_on_kept_state()
+    {
+        QTemporaryDir Dir;
+        const std::filesystem::path Root = Dir.path().toStdString();
+        ContainerParams CP(Root / "bundle");
+        CP.RuntimePath = Root / "runtime";
+        std::filesystem::create_directories(CP.RuntimePath / "Saves");
+        std::filesystem::create_directories(CP.RuntimePath / "videos");
+        Write((CP.RuntimePath / "Saves" / "a.sav").string(), "save");
+        Write((CP.RuntimePath / "videos" / "intro.bik").string(), "bik");
+        auto Del = [](const std::string &File) {
+            return nlohmann::ordered_json{ {"TYPE", "FileEdit"}, {"MODE", "Delete"}, {"FILE", File}, {"OVERRIDE", true} }; };
+        nlohmann::ordered_json Kept = Del("Saves/a.sav");
+        Kept["KEPT"] = "FILES/%GameDir%/Saves/";
+        CP.SubComponentsArray = nlohmann::ordered_json::array({ Kept, Del("videos/intro.bik") });
+        QVERIFY(!FileEdits::ProcessFileEdits(CP, /*OverridePass=*/true));
+        QVERIFY(std::filesystem::exists(CP.RuntimePath / "Saves" / "a.sav"));          // the user's: refused
+        QVERIFY(!std::filesystem::exists(CP.RuntimePath / "videos" / "intro.bik"));   // the package's: gone
+
+        nlohmann::ordered_json Base = Del("Saves/a.sav");
+        Base["OVERRIDE"] = false;
+        CP.SubComponentsArray = nlohmann::ordered_json::array({ Base });
+        QVERIFY(!FileEdits::ProcessFileEdits(CP, /*OverridePass=*/false, CP.RuntimePath));
+        QVERIFY(std::filesystem::exists(CP.RuntimePath / "Saves" / "a.sav"));
+    }
+
+    // The launch judges a Delete by the place it RESOLVED to: written as "videos/../Saves", "./Saves/a.sav" or in another
+    // case, it still reaches the kept folder, and nothing there is removed even without a KEPT mark from the lowering.
+    // Teeth: drop KeptPathMet (the saves go).
+    void a_delete_is_judged_by_where_it_resolves_not_how_it_is_written()
+    {
+        QTemporaryDir Dir;
+        const std::filesystem::path Root = Dir.path().toStdString();
+        ContainerParams CP(Root / "bundle");
+        CP.RuntimePath = Root / "runtime";
+        std::filesystem::create_directories(CP.RuntimePath / "Saves");
+        std::filesystem::create_directories(CP.RuntimePath / "videos");
+        Write((CP.RuntimePath / "Saves" / "a.sav").string(), "save");
+        Write((CP.RuntimePath / "opts.ini").string(), "kept file");
+        Write((CP.RuntimePath / "videos" / "intro.bik").string(), "bik");
+        CP.KeepDirs  = { PersistTarget{ "Saves", "Saves" } };
+        CP.KeepFiles = { PersistTarget{ "opts.ini", "Opts" } };
+        auto Del = [](const std::string &File) {
+            return nlohmann::ordered_json{ {"TYPE", "FileEdit"}, {"MODE", "Delete"}, {"FILE", File}, {"OVERRIDE", true} }; };
+        CP.SubComponentsArray = nlohmann::ordered_json::array({ Del("videos/../Saves"), Del("./Saves/a.sav"), Del("SAVES"),
+                                                                 Del("opts.ini"), Del("videos/intro.bik") });
+        QVERIFY(!FileEdits::ProcessFileEdits(CP, /*OverridePass=*/true));
+        QVERIFY(std::filesystem::exists(CP.RuntimePath / "Saves" / "a.sav"));
+        QVERIFY(std::filesystem::exists(CP.RuntimePath / "opts.ini"));
+        QVERIFY(!std::filesystem::exists(CP.RuntimePath / "videos" / "intro.bik"));   // the package's: still removed
+        //A folder holding a kept place is refused too: removing it would reach the saves.
+        CP.SubComponentsArray = nlohmann::ordered_json::array({ Del(".") });
+        QVERIFY(!FileEdits::ProcessFileEdits(CP, /*OverridePass=*/true));
+        QVERIFY(std::filesystem::exists(CP.RuntimePath / "Saves" / "a.sav"));
+    }
+
+    // Two more spellings of kept state: a file a kept PATTERN matches (judged by matching its name, not by comparing
+    // text), and a kept folder reached through a link inside the runtime (Proton's "My Documents" -> "Documents"), which
+    // remove_all would follow into the passthrough. Teeth: compare patterns as text (slot1.SAV goes); compare lexically
+    // only (the linked folder is emptied).
+    void a_delete_never_reaches_a_kept_pattern_or_a_kept_folder_through_a_link()
+    {
+        QTemporaryDir Dir;
+        const std::filesystem::path Root = Dir.path().toStdString();
+        ContainerParams CP(Root / "bundle");
+        CP.RuntimePath = Root / "runtime";
+        const std::filesystem::path Docs = CP.RuntimePath / "users" / "steamuser" / "Documents";
+        std::filesystem::create_directories(Docs / "My Games" / "X");
+        std::filesystem::create_directories(CP.RuntimePath / "slots");
+        std::filesystem::create_directory_symlink("Documents", CP.RuntimePath / "users" / "steamuser" / "My Documents");
+        Write((Docs / "My Games" / "X" / "save.dat").string(), "save");
+        Write((CP.RuntimePath / "slots" / "slot1.SAV").string(), "slot");
+        Write((CP.RuntimePath / "slots" / "readme.txt").string(), "package");
+        CP.KeepDirs  = { PersistTarget{ "users/steamuser/Documents/My Games/X", "X" } };
+        CP.KeepFiles = { PersistTarget{ "slots/*.sav", "Slots" } };
+        auto Del = [](const std::string &File) {
+            return nlohmann::ordered_json{ {"TYPE", "FileEdit"}, {"MODE", "Delete"}, {"FILE", File}, {"OVERRIDE", true} }; };
+        CP.SubComponentsArray = nlohmann::ordered_json::array({ Del("users/steamuser/My Documents/My Games/X"),
+                                                                 Del("slots/../slots/slot1.SAV"), Del("slots/readme.txt") });
+        QVERIFY(!FileEdits::ProcessFileEdits(CP, /*OverridePass=*/true));
+        QVERIFY(std::filesystem::exists(Docs / "My Games" / "X" / "save.dat"));
+        QVERIFY(std::filesystem::exists(CP.RuntimePath / "slots" / "slot1.SAV"));
+        QVERIFY(!std::filesystem::exists(CP.RuntimePath / "slots" / "readme.txt"));   // no pattern match: the package's
+    }
+
 };
 
 QTEST_MAIN(FileEditsTest)

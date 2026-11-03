@@ -38,6 +38,7 @@
 #endif
 #include <filesystem>
 #include <limits>
+#include <tuple>
 #include <set>
 #include <string>
 #include <vector>
@@ -526,7 +527,7 @@ private slots:
     {
         const auto &All = BuiltinRunners::All();
         QCOMPARE(All.size(), size_t(1));
-        QCOMPARE(Cid::OfBytes(Cid::Canonical(All[0].Node)), std::string("bafkreiaj2f2uth2gehoqdg5czxpvgdibvqrmitkntcsyh4cx2ilprz72ta"));
+        QCOMPARE(Cid::OfBytes(Cid::Canonical(All[0].Node)), std::string("bafkreic77imjhq76wb4vb3dgl7tmo7gz42q2somalux3tek2bwut5nnjdi"));
 
         std::map<std::string, json> Tree; std::map<std::string, std::filesystem::path> Dirs;
         BuiltinRunners::AddTo(Tree, Dirs, "/lib", "linux64");
@@ -540,7 +541,7 @@ private slots:
         std::string Err;
         const NodeIndex Idx = NodeGraph::FreezeToIndex(Tree, Dirs, &Err);
         QCOMPARE(Idx.Nodes.size(), size_t(1));
-        const Node *R = Idx.Find("bafkreiaj2f2uth2gehoqdg5czxpvgdibvqrmitkntcsyh4cx2ilprz72ta");
+        const Node *R = Idx.Find("bafkreic77imjhq76wb4vb3dgl7tmo7gz42q2somalux3tek2bwut5nnjdi");
         QVERIFY(R);
         QVERIFY(R->IsRunner());
         QCOMPARE(R->HostPlatform, std::string("win64"));
@@ -1683,6 +1684,9 @@ private slots:
         SuiteRoot = new QTemporaryDir();
         QVERIFY(SuiteRoot->isValid());
         AppPaths::SetDataRoot(SuiteRoot->path().toStdString());
+        //Launch sessions live under the temp dir (LaunchResolver::SessionRoot): this machine's own running games must
+        //not read as "a game is running" to the switch tests.
+        qputenv("TMPDIR", SuiteRoot->path().toUtf8());
     }
     void cleanupTestCase() { delete SuiteRoot; SuiteRoot = nullptr; }
     //After EVERY slot, passed or not: a failing check returns before the slot's own StopNode, and the node it left
@@ -2096,6 +2100,103 @@ private slots:
         QVERIFY(tile != nullptr);
         QCOMPARE(v->GameKey(), std::string("777"));
         QCOMPARE(v->GameKey(), tile->GameKey());
+    }
+
+    // The editor's "New package": a game's folder is "[uid][v1.0] Title" in a library that exists, named so every
+    // system can hold it, and never a second folder for a game the library already has (in ANY library: the UID is the
+    // game's identity). Teeth: drop the duplicate check, the digits check, the library check, or the sanitizer.
+    void a_new_package_gets_one_folder_named_by_its_game()
+    {
+        QTemporaryDir Root; QVERIFY(Root.isValid());
+        const json Cfg = json{{"Settings", {{"Paths", {{"LibraryRoot", Root.path().toStdString()}}}}}};
+        QDir().mkpath(Root.path() + "/VidyaGod");
+        QDir().mkpath(Root.path() + "/Mods/[123][v1.0] Taken");
+        writeFile(Root.path() + "/notes.txt");                  // a file beside the libraries is not one
+        QCOMPARE(PackageCatalog::LibraryNames(Cfg), (std::vector<std::string>{"Mods", "VidyaGod"}));
+
+        std::string Err;
+        const auto Dir = PackageCatalog::CreatePackageFolder(Cfg, "VidyaGod", "9940", "Black & White 2: Gods?", Err);
+        QVERIFY2(!Dir.empty(), Err.c_str());
+        QCOMPARE(Dir.filename().string(), std::string("[9940][v1.0] Black & White 2 - Gods_"));
+        QVERIFY(std::filesystem::is_directory(Dir));
+        QCOMPARE(Dir.parent_path().filename().string(), std::string("VidyaGod"));
+
+        //A UID that prefixes another's is a different game; the same UID in another library is not.
+        QVERIFY2(!PackageCatalog::CreatePackageFolder(Cfg, "VidyaGod", "12", "Twelve", Err).empty(), Err.c_str());
+        Err.clear();
+        QVERIFY(PackageCatalog::CreatePackageFolder(Cfg, "VidyaGod", "123", "Again", Err).empty());
+        QVERIFY2(Err.find("Mods/[123]") != std::string::npos, Err.c_str());
+        QVERIFY(!QDir(Root.path() + "/VidyaGod/[123][v1.0] Again").exists());
+
+        for (const auto & [Lib, Uid, Title] : std::vector<std::tuple<std::string, std::string, std::string>>{
+                 {"NoSuchLibrary", "7", "Game"}, {"..", "7", "Game"}, {"VidyaGod", "", "Game"}, {"VidyaGod", "7a", "Game"},
+                 {"VidyaGod", "../7", "Game"}, {"VidyaGod", "7", " .. "}, {"VidyaGod", "7", ""}})
+        {
+            Err.clear();
+            QVERIFY2(PackageCatalog::CreatePackageFolder(Cfg, Lib, Uid, Title, Err).empty(), (Lib + "|" + Uid + "|" + Title).c_str());
+            QVERIFY(!Err.empty());
+        }
+        QCOMPARE(QDir(Root.path() + "/VidyaGod").entryList(QDir::Dirs | QDir::NoDotAndDotDot).size(), 2);   // nothing else made
+        QVERIFY(!QDir(Root.path() + "/NoSuchLibrary").exists());
+    }
+
+    // A library package (files games graft: a runtime's DLLs) is named by its name, with no game ID, in a library that
+    // exists, and never over a folder that library already has - each refusal saying why. Teeth: tag it like a game;
+    // drop the exists check, the library check, or the empty-name check.
+    void a_new_library_package_gets_a_folder_named_by_its_name()
+    {
+        QTemporaryDir Root; QVERIFY(Root.isValid());
+        const json Cfg = json{{"Settings", {{"Paths", {{"LibraryRoot", Root.path().toStdString()}}}}}};
+        QDir().mkpath(Root.path() + "/VidyaGodLibraries/corefonts");
+        std::string Err;
+        const auto Dir = PackageCatalog::CreateLibraryFolder(Cfg, "VidyaGodLibraries", "mfc42: VC6", Err);
+        QVERIFY2(!Dir.empty(), Err.c_str());
+        QCOMPARE(Dir.filename().string(), std::string("mfc42 - VC6"));
+        QCOMPARE(Dir.parent_path().filename().string(), std::string("VidyaGodLibraries"));
+        QVERIFY(std::filesystem::is_directory(Dir));
+        //Each refusal says why (the folder could not be made either way; the author needs the reason).
+        for (const auto & [Lib, Name, Why] : std::vector<std::tuple<std::string, std::string, std::string>>{
+                 {"VidyaGodLibraries", "corefonts", "already has"}, {"NoSuchLibrary", "x", "no library named"},
+                 {"VidyaGodLibraries", "  ", "needs a name"}, {"VidyaGodLibraries", "..", "needs a name"}})
+        {
+            Err.clear();
+            QVERIFY2(PackageCatalog::CreateLibraryFolder(Cfg, Lib, Name, Err).empty(), (Lib + "|" + Name).c_str());
+            QVERIFY2(Err.find(Why) != std::string::npos, Err.c_str());
+        }
+        QCOMPARE(QDir(Root.path() + "/VidyaGodLibraries").entryList(QDir::Dirs | QDir::NoDotAndDotDot).size(), 2);
+        QVERIFY(!QDir(Root.path() + "/NoSuchLibrary").exists());
+    }
+
+    // The editor's Open lists the packages themselves: every library's package folders by title (the [tags] off),
+    // and the local packages outside LIBRARY, in title order whatever the case; a stray file is not a package.
+    // Teeth: keep the tags; leave out the local packages; sort case-sensitively.
+    void the_editor_opens_packages_by_title()
+    {
+        QTemporaryDir Root, Outside; QVERIFY(Root.isValid() && Outside.isValid());
+        const json Cfg = json{{"Settings", {{"Paths", {{"LibraryRoot", Root.path().toStdString()}}}, {"Repositories", json::array()}}},
+                              {"LIBRARY", json::array({ json{{"PACKAGEUID", "5"}, {"PATH", Outside.path().toStdString()}} })}};
+        QDir().mkpath(Root.path() + "/VidyaGod/[749][v1.0] age of Empires II");
+        QDir().mkpath(Root.path() + "/VidyaGod/[9940][v1.0] Black & White 2");
+        //A title the folder could not hold, from the tile the folder is named for (not another tile of the package).
+        const QString Bg = Root.path() + "/VidyaGod/[2190][v1.0] Baldur_s Gate";
+        QDir().mkpath(Bg);
+        writeFile(Bg + "/a.json", json{{"LAYERS", {{{"EXEC", {{{"LABEL", "Play"}, {"TILE", {{"UID", "99"}, {"TITLE", "Tales of the Sword Coast"}}}}}}}}}}.dump());
+        writeFile(Bg + "/b.json", json{{"LAYERS", {{{"EXEC", {{{"LABEL", "Play"}, {"TILE", {{"UID", "2190"}, {"TITLE", "Baldur's Gate"}}}}}}}}}}.dump());
+        QDir().mkpath(Root.path() + "/Runners/[1][v2] Wine");
+        writeFile(Root.path() + "/VidyaGod/readme.txt");
+        const auto P = PackageCatalog::AuthoredPackages(Cfg);
+        std::vector<std::string> Titles, Libs;
+        for (const auto &A : P) { Titles.push_back(A.Title); Libs.push_back(A.Library); }
+        const std::string Local = PackageCatalog::FolderTitle(Outside.path().toStdString());
+        std::vector<std::string> Want{"age of Empires II", "Baldur's Gate", "Black & White 2", "Wine", Local};
+        auto Lower = [](std::string T) { for (char &C : T) C = (char)std::tolower((unsigned char)C); return T; };
+        std::sort(Want.begin(), Want.end(), [&](const std::string &A, const std::string &B) { return Lower(A) < Lower(B); });
+        QCOMPARE(Titles, Want);
+        for (const auto &A : P)
+            if (A.Title == "Wine") QCOMPARE(A.Library, std::string("Runners"));
+            else if (A.Title == Local) { QCOMPARE(A.Library, std::string()); QCOMPARE(A.Dir, std::filesystem::path(Outside.path().toStdString())); }
+        QCOMPARE(PackageCatalog::FolderTitle("/x/[1][v1] [beta] Odd"), std::string("Odd"));
+        QCOMPARE(PackageCatalog::FolderTitle("/x/[1]"), std::string("[1]"));        // nothing but tags: the name as is
     }
 
     // Startup prune drops a LIBRARY entry for a local bundle whose PATH no longer exists (moved/deleted), keeps the

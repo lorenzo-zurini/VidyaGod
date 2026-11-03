@@ -61,3 +61,8 @@ __pycache__/
 
 # vglobby build output (the shipped copy lives in the package zip)
 tools/vglobby/build/
+
+# local scratch: test runs, handoffs between sessions, experiments
+.scratch/
+# Dear ImGui writes its window layout beside the binary it runs from
+imgui.ini

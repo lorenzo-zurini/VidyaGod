@@ -23,14 +23,17 @@
 #include <sys/ioctl.h>
 #include <net/if.h>
 #include <linux/if_tun.h>
+#include <linux/capability.h>
+#include <sys/prctl.h>
+#include <sys/syscall.h>
 
 // sandboxinit.cpp — the in-sandbox runtime (`VidyaGod --sandbox-init …`), i.e. the single command bwrap runs inside
 // the hermetic namespace. Reuses the existing VidyaGod binary (already visible via --ro-bind / /) so there is no new
 // artifact to ship. Runs BEFORE any Qt. Steps: (1) mount each vidyagodfs layer-spec inside the sandbox's mount
 // namespace (fork the co-located vidyagodfs -f, poll until the mount appears); (2) if overlay args are present,
 // create + address the TUN inside the sandbox's net namespace and hand its fd back to the parent's libp2p forwarder
-// over a bound unix socket (SCM_RIGHTS); (3) execvp the game, becoming it. When the game exits, bwrap tears the
-// namespace down and the mounts + TUN vanish — nothing leaks to the host.
+// over a bound unix socket (SCM_RIGHTS); (3) drop CAP_SYS_ADMIN and execvp the game, becoming it. When the game
+// exits, bwrap tears the namespace down and the mounts + TUN vanish — nothing leaks to the host.
 //
 // Everything here is deliberately low-level + dependency-free (no Qt): it is PID ~1 of a throwaway namespace.
 
@@ -146,6 +149,22 @@ bool BringUpTun(const std::string &name, const std::string &cidr, const std::str
     close(tun);   // the parent now holds a dup via SCM_RIGHTS, which keeps the device alive
     if (!ok) Warn("sending the TUN fd failed");
     return ok;
+}
+
+// CAP_SYS_ADMIN is kept into the sandbox for one job: this init mounting vidyagodfs. bwrap hands it on as an AMBIENT
+// capability, so without this the game inherits it and can `mount -o remount,bind,rw /`, which makes the read-only
+// host root (the user's real home included) writable again. Lowered from every set the game could inherit it through;
+// the bounding set needs CAP_SETPCAP to change, but with no ambient or inheritable copy and a non-root uid (bwrap also
+// sets no_new_privs, so no file capability or setuid bit applies) an exec cannot regain it.
+bool DropMountCapability()
+{
+    if (prctl(PR_CAP_AMBIENT, PR_CAP_AMBIENT_LOWER, CAP_SYS_ADMIN, 0, 0) != 0) return false;
+    __user_cap_header_struct Header{_LINUX_CAPABILITY_VERSION_3, 0};
+    __user_cap_data_struct Data[_LINUX_CAPABILITY_U32S_3]{};
+    if (syscall(SYS_capget, &Header, Data) != 0) return false;
+    const unsigned Word = CAP_TO_INDEX(CAP_SYS_ADMIN), Mask = CAP_TO_MASK(CAP_SYS_ADMIN);
+    Data[Word].effective &= ~Mask; Data[Word].permitted &= ~Mask; Data[Word].inheritable &= ~Mask;
+    return syscall(SYS_capset, &Header, Data) == 0;
 }
 
 } // namespace
@@ -344,6 +363,9 @@ int RunSandboxInit(int argc, char **argv)
     // chdir into the game's working directory (lives under a mount we just created, so it couldn't be set earlier).
     if (!chdirTo.empty() && chdir(chdirTo.c_str()) != 0)
         Warn("chdir to the work dir failed (continuing)");
+
+    // The mounts are done: nothing from here on (the cloak watcher, the game) gets a way to undo the read-only root.
+    if (!DropMountCapability()) { Warn("could not drop CAP_SYS_ADMIN — refusing to run the game with it"); return 126; }
 
     // Window cloak: fork the X-side watcher BEFORE becoming the game. The child lives in this pid namespace,
     // so bwrap's teardown reaps it with everything else; no leak is possible.

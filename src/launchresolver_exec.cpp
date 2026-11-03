@@ -1,4 +1,5 @@
 #include "launchresolver.h"
+#include "platform/platform.h"
 #include "apppaths.h"        // AppPaths::DataRoot — the app data root the launch TEMP hangs off of
 #include "instancestore.h"   // per-instance USERDATA + TEMP keying (ResolveActive / InstanceDir)
 #include "varsubst.h"        // VarSubst::StringVariableSubstitution / RenderValue
@@ -55,7 +56,9 @@ static std::string ContentRootRelative(const std::string &RawPath, const std::st
     if (Path == ContentRoot) return std::string();
     const std::string Prefix = ContentRoot + "/";
     if (Path.rfind(Prefix, 0) == 0) return Path.substr(Prefix.size());
-    return Path;
+    //Outside it (a program installed beside the game, in Program Files): still from the content root, climbing out —
+    //the runner names the program as "<its guest content root>\%ContentPath%".
+    return std::filesystem::path(Path).lexically_relative(ContentRoot).generic_string();
 }
 
 std::filesystem::path LaunchResolver::SessionRoot()
@@ -289,7 +292,8 @@ bool LaunchResolver::DerivePaths(struct ContainerParams &ContainerParams, const 
     //PER-USER root: the system temp is world-writable and the path is predictable, so a shared "VidyaGod" dir would let
     //two users collide on RUNTIME/WRITELAYER and let a hostile local user pre-create/symlink the mount targets. Keying
     //the root by the real UID makes each user's tree private (POSIX; %TEMP% is already per-user on Windows).
-    const std::filesystem::path TempRoot = LaunchResolver::SessionRoot();
+    const std::filesystem::path TempRoot = ContainerParams.TempRootOverride.empty() ? LaunchResolver::SessionRoot()
+                                                                                   : ContainerParams.TempRootOverride;
     //ADVERSARY-TODO (MEDIUM-LOW, single-user desktop = out of scope for now): the per-uid leaf closes the accidental
     //cross-user COLLISION, but a hostile local user could still PRE-CREATE `<tmp>/VidyaGod-<uid>` (or a symlink of
     //that name) before first launch. Full close = at the create site, lstat the root: is-a-dir, not-a-symlink,
@@ -316,6 +320,18 @@ bool LaunchResolver::DerivePaths(struct ContainerParams &ContainerParams, const 
     ContainerParams.UserDataPath    = InstanceStore::InstanceDir(GlobalConfigJSON, ContainerParams.PackageUID, Inst);
     //CLI / in-package overrides (--runtime-dir / --userdata-dir): point these exact paths wherever asked (in-package
     //sets both = the package dir, making the package a self-contained, portable runnable unit — instances bypassed).
+#ifdef _WIN32
+    //Windows mounts the runtime (and a runner's build) at a free drive letter, not a folder in TEMP: a Sandboxie box
+    //cannot load DLLs from a WinFsp volume mounted on a folder (Platform::FreeDriveLetter). %GameDir% reads W:\drive_c\<uid>.
+    if (const std::string L = Platform::FreeDriveLetter(); !L.empty())
+    {
+        ContainerParams.RuntimePath = L + "\\";
+        if (ContainerParams.RunnerShipsBuild && !ContainerParams.UnifiedRuntime)
+            if (const std::string R = Platform::FreeDriveLetter(L); !R.empty()) ContainerParams.RunnerMountPath = R + "\\";
+    }
+    else LogWarn("DerivePaths", "No drive letter is free: the runtime is mounted on a folder, where a game in its box "
+                 "cannot load its own DLLs.");
+#endif
     if (!AppPaths::RuntimePathOverride().empty())  ContainerParams.RuntimePath  = AppPaths::RuntimePathOverride();
     if (!AppPaths::UserDataPathOverride().empty()) ContainerParams.UserDataPath = AppPaths::UserDataPathOverride();
     VarSubst::StringVariableSubstitution(ContainerParams.ContentRoot, ContainerParams.GetVariablesMap());

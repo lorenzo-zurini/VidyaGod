@@ -2,7 +2,10 @@
 
 #include "commonutils.h"   // LogWarn
 
+#include <QDropEvent>
+#include <QImage>
 #include <QKeyEvent>
+#include <QMimeData>
 #include <QOpenGLContext>
 #include <QOpenGLFunctions>
 #include <QMouseEvent>
@@ -11,6 +14,7 @@
 
 #include "imgui.h"
 #include "imgui_impl_opengl3.h"
+#include "imguiprobe.h"
 
 #include <cfloat>
 
@@ -79,6 +83,33 @@ PkgCanvasPanel::PkgCanvasPanel(PkgDoc::Document *doc, QWidget *parent)
 {
     setFocusPolicy(Qt::StrongFocus);
     setMouseTracking(true);
+    setAcceptDrops(true);                             // a game's folder, a zip, a cover dragged in from the file manager
+    m_canvas->setImageLookup([this](const std::string &Path, unsigned long long &Id, float &W, float &H) {
+        auto It = m_textures.find(Path);
+        if (It == m_textures.end())
+        {
+            //Asked from inside paintGL: the context is current. A file that will not load is remembered as such.
+            Tex T;
+            QImage Img(QString::fromStdString(Path));
+            if (!Img.isNull() && context())
+            {
+                Img = Img.scaledToHeight(std::min(Img.height(), 256), Qt::SmoothTransformation).convertToFormat(QImage::Format_RGBA8888);
+                QOpenGLFunctions *Gl = context()->functions();
+                GLuint G = 0;
+                Gl->glGenTextures(1, &G);
+                Gl->glBindTexture(GL_TEXTURE_2D, G);
+                Gl->glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+                Gl->glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+                Gl->glPixelStorei(GL_UNPACK_ROW_LENGTH, 0);
+                Gl->glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, Img.width(), Img.height(), 0, GL_RGBA, GL_UNSIGNED_BYTE, Img.constBits());
+                T = Tex{G, (float)Img.width(), (float)Img.height()};
+            }
+            It = m_textures.emplace(Path, T).first;
+        }
+        if (!It->second.Id) return false;
+        Id = It->second.Id; W = It->second.W; H = It->second.H;
+        return true;
+    });
     m_tick = new QTimer(this);
     m_tick->setSingleShot(true);
     connect(m_tick, &QTimer::timeout, this, [this] { update(); });
@@ -90,6 +121,7 @@ PkgCanvasPanel::~PkgCanvasPanel()
     {
         --LivePanels;
         makeCurrent();
+        for (auto &[P, T] : m_textures) if (T.Id) { GLuint G = T.Id; context()->functions()->glDeleteTextures(1, &G); }
         ImGui_ImplOpenGL3_Shutdown();
         ImGui::DestroyContext();
         doneCurrent();
@@ -136,9 +168,15 @@ void PkgCanvasPanel::paintGL()
     m_lastNs = Now;
 
     ImGui_ImplOpenGL3_NewFrame();
+    ImGuiProbe::BeginFrame(ImGui::GetCurrentContext());
     ImGui::NewFrame();
     m_canvas->frame();
     ImGui::Render();
+    if (ImGuiProbe::Enabled())
+    {
+        const QPoint G = mapToGlobal(QPoint(0, 0));
+        ImGuiProbe::WriteFrame(G.x(), G.y(), width(), height(), Dpr);
+    }
     QOpenGLFunctions *Gl = context()->functions();   // resolved through Qt: Windows links no opengl32 of its own
     Gl->glViewport(0, 0, (int)(width() * Dpr), (int)(height() * Dpr));
     Gl->glClearColor(0.094f, 0.098f, 0.114f, 1.0f);
@@ -241,4 +279,42 @@ bool PkgCanvasPanel::event(QEvent *E)
         if (K->key() == Qt::Key_Tab || K->key() == Qt::Key_Backtab) { keyPressEvent(K); return true; }
     }
     return QOpenGLWidget::event(E);
+}
+
+// ---- files from the file manager ---------------------------------------------------------------------------------
+
+namespace {
+QStringList LocalPaths(const QMimeData *M)
+{
+    QStringList Out;
+    if (M) for (const QUrl &U : M->urls()) if (U.isLocalFile()) Out << U.toLocalFile();
+    return Out;
+}
+}
+
+void PkgCanvasPanel::dragEnterEvent(QDragEnterEvent *E)
+{
+    if (!LocalPaths(E->mimeData()).isEmpty() && m_canvas->packageOpen()) E->acceptProposedAction();
+}
+
+//The node under the cursor lights up as the drop target (the canvas sees the cursor as if hovering).
+void PkgCanvasPanel::dragMoveEvent(QDragMoveEvent *E)
+{
+    if (m_imguiReady) ImGui::GetIO().AddMousePosEvent((float)E->position().x(), (float)E->position().y());
+    m_canvas->setFileDropHover(true);
+    requestFrame();
+    E->acceptProposedAction();
+}
+
+void PkgCanvasPanel::dropEvent(QDropEvent *E)
+{
+    const QStringList Paths = LocalPaths(E->mimeData());
+    m_canvas->setFileDropHover(false);
+    if (Paths.isEmpty()) return;
+    E->acceptProposedAction();
+    const float X = (float)E->position().x(), Y = (float)E->position().y();
+    float Wx = 0, Wy = 0;
+    m_canvas->screenToWorld(X, Y, Wx, Wy);
+    emit filesDropped(QString::fromStdString(m_canvas->nodeAt(X, Y)), Paths, Wx, Wy);
+    requestFrame();
 }

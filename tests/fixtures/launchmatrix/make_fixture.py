@@ -71,6 +71,16 @@ echo "  Documents/lm/single.txt: $(cat ../users/player/Documents/lm/single.txt 2
 echo "=== writability (a KEEP dir must be writable, and survive)"
 mkdir -p game/saves 2>/dev/null && echo "written by the probe" > game/saves/save.txt 2>/dev/null \
   && echo "  game/saves: writable" || echo "  game/saves: NOT writable"
+echo "=== home (the program gets a private one; the user's is read-only)"
+REAL=$(getent passwd "$(id -u)" | cut -d: -f6)
+case "${HOME-}" in "$REAL"|"") echo "  HOME: the user's (LEAK)" ;; */HOME) echo "  HOME: private" ;; *) echo "  HOME: elsewhere" ;; esac
+[ "${XDG_CONFIG_HOME-}" = "${HOME-}/.config" ] && [ "${XDG_STATE_HOME-}" = "${HOME-}/.local/state" ] \
+  && [ "${XDG_CACHE_HOME-}" = "${HOME-}/.cache" ] && echo "  XDG config/state/cache: in it" || echo "  XDG config/state/cache: NOT in it"
+case "${XDG_DATA_HOME-}" in */lm-xdg-data) echo "  XDG_DATA_HOME: the package's (its ENV wins)" ;; *) echo "  XDG_DATA_HOME: NOT the package's" ;; esac
+mkdir -p "${XDG_CONFIG_HOME:-/nonexistent}/lm" 2>/dev/null && echo "  private config: writable" || echo "  private config: NOT writable"
+: > "${HOME:-/nonexistent}/lm-unkept-save.dat" 2>/dev/null   # nothing KEEPs it: the launcher must say so at teardown
+if touch "$REAL/.vg-launch-matrix-probe" 2>/dev/null; then rm -f "$REAL/.vg-launch-matrix-probe"; echo "  the user's home: WRITABLE (LEAK)"
+else echo "  the user's home: read-only"; fi
 echo "=== done"
 """
 
@@ -314,7 +324,7 @@ def nodes():
         {"REG": {"HKCU": {"Software": {"LaunchMatrix": {"": "this is the key's DEFAULT value", "EmptyKey": {}}}}},
          "ARCH": ["64"]},
         {"REG": {"HKLM": {"Software": {"LaunchMatrixConditional": {"Only": "when the flag is on"}}}},
-         "WHEN": "%lm_flag% == 1"}])
+         "ARCH": ["64"], "WHEN": "%lm_flag% == 1"}])
 
     # ---- DLL ---------------------------------------------------------------------------------------------
     dll = add("lm_dll", [node(reg), {"DLL": {"ddraw": "n,b", "dinput8": "n,b", "winmm": "b,n", "broken": ""}}])
@@ -346,8 +356,11 @@ def nodes():
     # layer overrides (LM_OVERRIDDEN) or removes (LM_REMOVED_ABOVE) it.
     # A value naming an anchor reads the guest path (LM_GAMEDIR = C:\\<UID>); a file placed at an anchor lands where
     # the runner's drive lives (%Documents% → <PrefixRoot>/drive_c/users/player/Documents).
+    # XDG_DATA_HOME: a package's own value beats the sandbox's private-home default (it points it into the runtime
+    # to KEEP what lands there).
     grp = add("lm_group", [node(dia), {"ENV": {"LM_FOLDED": "from-below", "LM_OVERRIDDEN": "below",
-                                               "LM_REMOVED_ABOVE": "set-below", "LM_GAMEDIR": "%GameDir%"}},
+                                               "LM_REMOVED_ABOVE": "set-below", "LM_GAMEDIR": "%GameDir%",
+                                               "XDG_DATA_HOME": "%RuntimePath%/lm-xdg-data"}},
                            {"FILE": "single.txt", "TARGET": F("%Documents%/lm")}])
 
     def play(host, exe, args, **kw):

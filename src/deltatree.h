@@ -26,6 +26,11 @@ public:
     QStringList checkedRoots() const;                     // maximal fully-checked nodes (the capture "levels")
     QStringList checkedEntries() const;                   // all checked terminal (entry) nodes
     void        markCaptured(const QStringList & Paths);  // tint these paths (and their subtrees) green
+    //The folder an install made: the deepest one holding most (Share) of the paths - where the tree opens. "" when
+    //no folder holds that many.
+    static QString MainFolder(const QStringList & Paths, QChar Sep = '/', double Share = 0.6);
+    //Open the tree down to Path, scroll to it, and (Check) tick it.
+    void        reveal(const QString & Path, bool Check);
 
 public slots:
     void checkAll(bool On);

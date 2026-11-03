@@ -6,6 +6,7 @@
 
 #include "vgtest.h"
 #include "nodelower.h"
+#include "fold.h"
 #include "manifestmodel.h"
 
 using ordered_json = nlohmann::ordered_json;
@@ -109,6 +110,15 @@ TEST(lower_dll_vars_and_keep)
     CHECK_EQ(K[1]["PATH"].get<std::string>(), std::string("HKCU\\Software\\Game"));
 }
 
+TEST(check_accepts_key_options_holding_a_key_name_unbound_or_computed)
+{
+    for (const char *Def : { "w", "left shift", "keypad 0", "mouse left", "pad a", "pad right trigger", "", "%other_key%" })
+        CHECK(!Refused({ {"VARS", {{"K", {{"DEFAULT", Def}, {"UI", {{"CONTROL", "key"}, {"SECTION", "Input"}}}}}}} }));
+    CHECK(!Refused({ {"VARS", {{"T", {{"MAP", {{"keypad 0", "[0]"}, {"", "none"}}}, {"ELSE", ""}, {"WHEN", "%x%==1"}}}}} }));
+    for (const char *Ctl : { "bool", "int", "float", "text", "enum", "secret", "key" })
+        CHECK(!Refused({ {"VARS", {{"K", {{"UI", {{"CONTROL", Ctl}}}}}}} }));
+}
+
 TEST(lower_facts_and_refs_lower_to_no_op)
 {
     for (const ordered_json &L : { ordered_json{ {"NODE", "x"} }, ordered_json{ {"ANY", ordered_json::array({"x"})} },
@@ -155,8 +165,17 @@ TEST(check_refuses_type_confused_payloads_instead_of_throwing)
         { {"NODE", 5} }, { {"NODE", "x"}, {"TAKE", "FILES"} }, { {"NODE", "x"}, {"TAKE", ordered_json::array({ ordered_json::array({"a"}) })} },
         { {"EDIT", "x"}, {"TARGET", "FILES/f"} }, { {"EDIT", ordered_json::array({ {{"MODE", 1}} })}, {"TARGET", "FILES/f"} },
         { {"REG", "x"} }, { {"REG", ordered_json::object()}, {"ARCH", "32"} }, { {"REG", ordered_json::object()}, {"ARCH", ordered_json::array({"16"})} },
+        { {"REG", ordered_json::object()} }, { {"REG", ordered_json::object()}, {"ARCH", ordered_json::array()} },     // ARCH is mandatory
+        { {"REG", {{"HKLM", {{"Software", {{"Wow6432Node", {{"A", ordered_json::object()}}}}}}}}}, {"ARCH", ordered_json::array({"32"})} },
         { {"VARS", {{"K", "not-an-object"}}} }, { {"VARS", {{"K", {{"DEFAULT", 3}}}}} }, { {"VARS", {{"K", {{"UI", "x"}}}}} },
-        { {"ENV", {{"A", 1}}} }, { {"DLL", ordered_json::array()} },
+        { {"VARS", {{"K", {{"UI", {{"CONTROL", "slider"}}}}}}} },                                   // no such control
+        { {"VARS", {{"K", {{"DEFAULT", "shift"}, {"UI", {{"CONTROL", "key"}}}}}}} },                 // not a key name
+        { {"VARS", {{"T", {{"MAP", "enter=return"}}}}} },                                         // a MAP is an object
+        { {"VARS", {{"T", {{"MAP", {{"enter", 13}}}}}}} },                                         // of strings
+        { {"VARS", {{"T", {{"MAP", {{"a", "A"}}}, {"UI", {{"CONTROL", "text"}}}}}}} },               // a table is no option
+        { {"VARS", {{"T", {{"MAP", {{"a", "A"}}}, {"ELSE", 0}}}}} },
+        { {"VARS", {{"T", {{"DEFAULT", "1"}, {"ELSE", "x"}}}}} },                                  // ELSE belongs to a table
+        { {"ENV", {{"A", 1}}} }, { {"DLL", ordered_json::array()} }, { {"DLL", {{"", "n,b"}}} }, { {"ENV", {{"", "1"}}} },
         { {"EXEC", ordered_json::array({ {{"HOST", "win32"}} })} },                                  // no LABEL
         { {"EXEC", ordered_json::array({ {{"LABEL", "P"}, {"ARGS", ordered_json::array({1})}} })} },
         { {"EXEC", ordered_json::array({ {{"LABEL", "P"}, {"TILE", "x"}} })} },
@@ -208,4 +227,73 @@ TEST(check_refuses_content_and_cover_names_that_leave_the_package)
     CHECK(Refused(Tile({ {"FILE", "/tmp/cover.png"} })));
     CHECK(Refused(Tile({ {"FILE", 5} })));
     CHECK(Refused(Tile({ {"FILE", "c.png"}, {"SOURCE", ordered_json::object()} })));
+}
+
+// A Delete op removes its TARGET and reads nothing else: a VALUE, KEY or byte site on it is a mistake the author meant
+// for another mode, refused rather than silently ignored. Teeth: drop the check (the three refusals pass).
+TEST(delete_op_takes_only_its_target)
+{
+    const auto Del = [](const ordered_json &Op) {
+        return ordered_json{ {"EDIT", ordered_json::array({ Op })}, {"TARGET", "FILES/%GameDir%/videos/intro.bik"} }; };
+    CHECK(!Refused(Del({ {"MODE", "Delete"} })));
+    CHECK(!Refused(Del({ {"MODE", "Delete"}, {"COMMENT", "skip the intro"}, {"WHEN", "%skip%==1"} })));
+    CHECK(Refused(Del({ {"MODE", "Delete"}, {"VALUE", "x"} })));
+    CHECK(Refused(Del({ {"MODE", "Delete"}, {"KEY", "a="} })));
+    CHECK(Refused(Del({ {"MODE", "Delete"}, {"OFFSET", "0x10"} })));
+    const ordered_json L = Lower(Del({ {"MODE", "Delete"} }));
+    CHECK(L.size() == 1 && L[0]["TYPE"] == "FileEdit" && L[0]["FILE"] == "%GameDir%/videos/intro.bik");
+}
+
+// What a Delete may not reach: the user's state. A kept file, anything inside a kept folder (taken back or not: the
+// folder is served live, so the removal would be stored with the saves), a folder holding a kept address, a file a
+// kept pattern matches. Everything else is the package's. Teeth: drop the "folder holding it" clause (deleting
+// %GameDir% passes), or the wildcard branch (the .SAV passes), or the inside clause (the taken-back file passes).
+TEST(kept_under_finds_the_users_state_a_delete_would_reach)
+{
+    const ordered_json Keep = {
+        {"FILES/%GameDir%/Saves/", true}, {"FILES/%GameDir%/Saves/cfg.ini", false}, {"FILES/%GameDir%/profile.dat", true},
+        {"FILES/%Documents%/X/*.sav", true}, {"FILES/%GameDir%/game.ini#Lang=", true}, {"REG/HKCU/Software/X", true} };
+    CHECK(!NodeLower::KeptUnder(Keep, "FILES/%GameDir%/Saves/a.sav").empty());        // inside a kept folder
+    CHECK(!NodeLower::KeptUnder(Keep, "FILES/%GameDir%/Saves/cfg.ini").empty());      // taken back, still in the live folder
+    CHECK(!NodeLower::KeptUnder(Keep, "FILES/%GameDir%").empty());                    // holds a kept folder
+    CHECK(!NodeLower::KeptUnder(Keep, "FILES/%gamedir%/PROFILE.DAT").empty());        // kept file, any case
+    CHECK(!NodeLower::KeptUnder(Keep, "FILES/%Documents%/X/slot1.SAV").empty());      // a kept pattern's match
+    CHECK(!NodeLower::KeptUnder(Keep, "FILES/%Documents%").empty());                  // holds the pattern's folder
+    CHECK(!NodeLower::KeptUnder(Keep, "FILES/%GameDir%/game.ini").empty());           // a kept key lives in the file
+    CHECK(NodeLower::KeptUnder(Keep, "FILES/%GameDir%/videos/intro.bik").empty());
+    CHECK(NodeLower::KeptUnder(Keep, "FILES/%GameDir%/Savesx/a").empty());            // a name boundary, not a prefix
+    CHECK(NodeLower::KeptUnder(Keep, "FILES/%Documents%/X/readme.txt").empty());      // outside the pattern
+}
+
+// LowerPlan carries a Delete that would reach the user's state with the kept address (the launch refuses it), and never
+// lowers a Delete as a package default (IF_UNSAVED). Teeth: drop the KEPT mark (the first op lowers clean).
+TEST(lower_plan_marks_a_delete_that_reaches_kept_state)
+{
+    Fold::Plan P;
+    P.Keep = { {"FILES/%GameDir%/Saves/", true}, {"FILES/%GameDir%/profile.dat", true} };
+    const auto Edit = [](const std::string &Target) {
+        Fold::Item I; I.Kind = "EDIT"; I.Target = Target; I.Ops = ordered_json::array({ {{"MODE", "Delete"}} }); return I; };
+    P.Seq = { Edit("%GameDir%/Saves/a.sav"), Edit("%GameDir%/profile.dat"), Edit("%GameDir%/videos/intro.bik") };
+    const ordered_json L = NodeLower::LowerPlan(P);
+    int Edits = 0;
+    for (const auto &O : L)
+    {
+        if (O.value("TYPE", std::string()) != "FileEdit") continue;
+        ++Edits;
+        CHECK(O.value("OVERRIDE", false));
+        CHECK(!O.contains("IF_UNSAVED"));
+        CHECK_EQ(O.contains("KEPT"), O["FILE"] != "%GameDir%/videos/intro.bik");
+    }
+    CHECK_EQ(Edits, 3);
+}
+
+// The validator's check reads the address as the place it names: "a/../Saves", "./Saves" and "a//b" reach a kept folder
+// too. (The launch judges the resolved path again.) Teeth: drop the normalisation (the three spellings pass).
+TEST(kept_under_sees_through_dot_segments)
+{
+    const ordered_json Keep = { {"FILES/%GameDir%/Saves/", true} };
+    CHECK(!NodeLower::KeptUnder(Keep, "FILES/%GameDir%/videos/../Saves/a.sav").empty());
+    CHECK(!NodeLower::KeptUnder(Keep, "FILES/%GameDir%/./Saves").empty());
+    CHECK(!NodeLower::KeptUnder(Keep, "FILES/%GameDir%//Saves/a.sav").empty());
+    CHECK(NodeLower::KeptUnder(Keep, "FILES/%GameDir%/Saves/../videos/intro.bik").empty());
 }

@@ -61,4 +61,10 @@ bool AcquireSingleInstanceLock(const std::string &Key, std::string *Holder)
     return true;   // Fd intentionally leaked — the kernel releases the lock on process exit/crash
 }
 
+std::string MountPointTarget(const std::filesystem::path &) { return {}; }
+
+std::map<std::string, std::string> HostFolders() { return {}; }
+
+std::string FreeDriveLetter(const std::string &) { return {}; }
+
 } // namespace Platform

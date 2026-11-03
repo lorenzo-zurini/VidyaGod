@@ -10,6 +10,7 @@
 #include "zipscan.h"     // WalkCentralDir — the member names of a (reconstructed) zip
 #include "hostio.h"      // HostIO::OpenRead / Close — the byte sources' fds
 #include "registrywrapper.h"  // NamesNoKey — a registry KEEP must name a key
+#include "platform/platform.h"  // HostFolderNames — %HostAppData% & co., set on Windows only
 
 #include <atomic>
 #include <thread>
@@ -30,6 +31,9 @@
 
 const Node *NodeIndex::Find(const std::string &Key) const
 {
+    // An empty key names no node: a reference not filled in yet (NODE "") would otherwise match the first node whose
+    // working handle or LABEL is empty, and an editor showed an unrelated package's card for it.
+    if (Key.empty()) return nullptr;
     // Primary key = the map key: a node's CID handle. The resolver walks refs by CID, so every internal Find hits
     // this fast path.
     auto It = Nodes.find(Key);
@@ -938,6 +942,22 @@ void ValidateNodeGraph(const NodeIndex &Idx, std::vector<std::string> &Errors, s
         {
             if (LayerType(L) != "BinaryPatch") continue;
             const std::string M = L.value("MODE", std::string());
+            if (M == "ReplaceAll")
+            {
+                if (L.contains("ANCHOR") || L.contains("OFFSET")) Errors.push_back(Tag + ": ReplaceAll takes no ANCHOR or OFFSET (it patches every match of EXPECT).");
+                if (!L.contains("EXPECT")) Errors.push_back(Tag + ": ReplaceAll has no EXPECT (the bytes to find).");
+                if (!L.contains("REPLACE")) Errors.push_back(Tag + ": ReplaceAll has no REPLACE bytes.");
+                else if (L.contains("EXPECT"))
+                {
+                    //Bytes, not text: hex may be spaced ("ba 00 00"). A REPLACE read from a variable ("%fov:map:FOV%") has
+                    //its length only once substituted - the launch checks it then, and reports a mismatch.
+                    auto Hex = [](std::string H) { H.erase(std::remove_if(H.begin(), H.end(), [](unsigned char C) { return std::isspace(C); }), H.end()); return H; };
+                    const std::string R = Hex(L.value("REPLACE", std::string())), E = Hex(L.value("EXPECT", std::string()));
+                    if (R.find('%') == std::string::npos && E.find('%') == std::string::npos && R.size() != E.size())
+                        Errors.push_back(Tag + ": ReplaceAll REPLACE must be as long as EXPECT.");
+                }
+                continue;
+            }
             if (!L.contains("ANCHOR") && !L.contains("OFFSET"))
                 Errors.push_back(Tag + ": binary EDIT op has neither ANCHOR nor OFFSET (no site to patch).");
             if (!L.contains("EXPECT") && M != "Or")
@@ -1013,6 +1033,22 @@ void ValidateNodeGraph(const NodeIndex &Idx, std::vector<std::string> &Errors, s
         {
             const Fold::Plan P = Fold::Resolve(Lib, CRoot, Inst, {}, Gs);
             if (!P.Error.empty()) Once(Errors, Tag + ": " + P.Error);
+            //What the launch keeps is the FOLDED KEEP, across every node it contains: two kept files or folders stored
+            //under one name (a base game's Save/ and its mod's Revision/Save/) - the launch keeps the first, silently.
+            {
+                std::map<std::string, std::string> Stored;   // durable name (lower) -> the address that took it
+                for (const auto &[A, V] : P.Keep.items())
+                {
+                    if (A.rfind("FILES/", 0) != 0 || (V.is_boolean() && !V.get<bool>())) continue;
+                    const std::string Path = A.substr(6);
+                    std::string Name = V.is_object() && V.contains("NAME") && V["NAME"].is_string() ? V["NAME"].get<std::string>() : Path;
+                    while (!Name.empty() && (Name.back() == '/' || Name.back() == '\\')) Name.pop_back();
+                    if (const auto Slash = Name.find_last_of("/\\"); Slash != std::string::npos) Name = Name.substr(Slash + 1);
+                    if (const auto [It, New] = Stored.emplace(ToLowerAscii(Name), Path); !New && It->second != Path)
+                        Once(Errors, Tag + ": KEEP '" + Path + "' is stored as '" + Name + "' like '" + It->second +
+                                     "', which takes the name first - it would not be kept; give it its own NAME");
+                }
+            }
             for (const auto &[Ev, Cid] : P.Events)
             {
                 if (Ev == "cycle")     Once(Errors, Tag + ": resolving it meets a cycle through '" + Cid + "'");
@@ -1058,6 +1094,14 @@ void ValidateNodeGraph(const NodeIndex &Idx, std::vector<std::string> &Errors, s
                     for (const auto &O : I.Ops)
                     {
                         const std::string Addr = NodeLower::EditAddress(O, I.Target);
+                        //A Delete never reaches the user's state: the launch refuses one that would.
+                        if (O.value("MODE", std::string()) == "Delete")
+                        {
+                            if (const std::string K = NodeLower::KeptUnder(P.Keep, Addr); !K.empty())
+                                Once(Errors, Tag + ": the Delete of '" + I.Target + "' (from '" + I.From + "') reaches '" + K
+                                     + "', which the user keeps — a package never deletes the user's state");
+                            continue;
+                        }
                         if (!NodeLower::UserOwned(P.Keep, Addr)) continue;
                         //...whether the option gives the value or picks the op (its WHEN)
                         std::vector<std::string> Keys = VarSubst::TokenKeys(O.value("VALUE", std::string()));
@@ -1080,6 +1124,9 @@ void ValidateNodeGraph(const NodeIndex &Idx, std::vector<std::string> &Errors, s
             const std::string Host = E.value("HOST", std::string());
             if (Host.empty()) { Warnings.push_back(Tag + ": entry '" + Lbl + "' has no HOST platform"); continue; }
             if (!HasRunnerFor(Host, N.BundleDir)) Warnings.push_back(Tag + ": no runner serves platform '" + Host + "' on this machine");
+            //A folder is never a program: the starter Exe ("%GameDir%/") left as it was.
+            if (const std::string X = E.value("EXE", std::string()); !X.empty() && (X.back() == '/' || X.back() == '\\'))
+            { Errors.push_back(Tag + ": entry '" + Lbl + "' runs a folder (EXE '" + X + "') - pick the game's program"); continue; }
             //EXE must case-EXACTLY match a real content file: the mount is case-sensitive. Checked where the content
             //is local and the path is plain (a %variable% or a guest drive is placed at launch).
             std::string Cp = E.value("EXE", std::string());
@@ -1110,9 +1157,11 @@ void ValidateNodeGraph(const NodeIndex &Idx, std::vector<std::string> &Errors, s
                                     "VIDYAGOD_LAN_BRIDGE", "VIDYAGOD_LAN_HOSTRELAY" };
         for (const auto &[K, V] : ContainerParams(std::filesystem::path(), std::string(), std::string()).GetVariablesMap())
             B.insert(K);
+        for (const std::string &N : Platform::HostFolderNames()) B.insert("Host" + N);   // Windows sets them, any host validates
         return B;
     }();
     std::set<std::string> Declared, DeclaredUngated;
+    std::set<std::string> Tables;                      // declarations with a MAP: what %KEY:map:TABLE% may name
     std::map<std::string, std::string> UiDeclared;                       // option KEY -> its declaring node
     //A guest-root anchor a runner declares (GUEST_ROOTS {"%UserProfile%": ...}) is a canonical coordinate the launch
     //maps to where the runner puts it — not a variable, and never a typo.
@@ -1128,6 +1177,9 @@ void ValidateNodeGraph(const NodeIndex &Idx, std::vector<std::string> &Errors, s
                             {
                                 Anchors.insert(A.substr(1, A.size() - 2));
                                 std::string G = ToLowerAscii(To.is_string() ? To.get<std::string>() : std::string());
+                                //A native guest's anchor is a folder of its runtime (%RuntimePath%/n64/…), that runner's
+                                //own layout: nothing a package's spelling is checked against, and no disagreement.
+                                if (G.rfind("%runtimepath%", 0) == 0) continue;
                                 std::replace(G.begin(), G.end(), '\\', '/');
                                 const auto [It, New] = AnchorGuest.emplace(A, G);
                                 if (!New && It->second != G)       // validated against one spelling: say which differ
@@ -1145,7 +1197,14 @@ void ValidateNodeGraph(const NodeIndex &Idx, std::vector<std::string> &Errors, s
         std::function<void(const nlohmann::ordered_json &, const std::string &, std::set<std::string> &)> Scan =
             [&](const nlohmann::ordered_json &J, const std::string &Where, std::set<std::string> &Out) {
                 auto Check = [&](const std::string &S) {
-                    if (std::regex_search(S, Drive)) Out.insert(Where + ": '" + S + "' names a drive — use an anchor (%GameDir%, %SysDir32%, %ProgramData%, …)");
+                    //A whole file's text (an Overwrite seed) is quoted by its offending line alone, not its kilobytes.
+                    if (std::smatch M; std::regex_search(S, M, Drive))
+                    {
+                        const size_t At = (size_t)M.position(0);
+                        const size_t B = S.find_last_of("\r\n", At), E = S.find_first_of("\r\n", At);
+                        const std::string Line = S.substr(B == std::string::npos ? 0 : B + 1, E == std::string::npos ? std::string::npos : E - (B == std::string::npos ? 0 : B + 1));
+                        Out.insert(Where + ": '" + Line + "' names a drive — use an anchor (%GameDir%, %SysDir32%, %ProgramData%, …)");
+                    }
                     for (auto It = std::sregex_iterator(S.begin(), S.end(), Anchored); It != std::sregex_iterator(); ++It)
                     {
                         const std::string A = "%" + (*It)[1].str() + "%";
@@ -1173,9 +1232,12 @@ void ValidateNodeGraph(const NodeIndex &Idx, std::vector<std::string> &Errors, s
         //In a PATH an anchor is where the path starts: "mods/%GameDir%/x" would substitute to "mods/C:\802/x" and mount
         //literally, silently. (A value may embed one anywhere: "RunDll32 %ProgramFiles32%\x.dll".)
         auto PathCheck = [&](const std::string &P, const std::string &Where, std::set<std::string> &Out) {
-            for (const auto &[A, G] : AnchorGuest)
+            for (const std::string &Name : Anchors)                      // every anchor, a native runner's too
+            {
+                const std::string A = "%" + Name + "%";
                 for (size_t At = P.find(A); At != std::string::npos; At = P.find(A, At + 1))
                     if (At > 0) Out.insert(Where + ": path '" + P + "' has " + A + " inside it — an anchor starts a path");
+            }
         };
         auto Paths = [&](const nlohmann::ordered_json &L, const std::string &Where, std::set<std::string> &Out) {
             auto Addr = [](const std::string &A) { const size_t S = A.find('/'); return S == std::string::npos ? std::string() : A.substr(S + 1); };
@@ -1223,9 +1285,29 @@ void ValidateNodeGraph(const NodeIndex &Idx, std::vector<std::string> &Errors, s
                     Declared.insert(K);
                     if (!L.contains("WHEN")) DeclaredUngated.insert(K);
                     if (D.contains("UI")) UiDeclared.emplace(K, Id);
+                    if (D.contains("MAP")) Tables.insert(K);
                 }
     }
-    const std::regex Tok(R"(%([A-Za-z0-9_]+)(?::[A-Za-z0-9]+)?%)");     // %KEY% or %KEY:format%
+    //Two key options of one launch-window SECTION bound to the same key by default: one press, two actions.
+    for (const auto &[Id, N] : Idx.Nodes)
+    {
+        if (!InScope(Id) || !N.LowerError.empty()) continue;
+        std::map<std::pair<std::string, std::string>, std::string> Bound;    // (section, key) → the option holding it
+        for (const auto &L : N.Json["LAYERS"])
+            if (L.contains("VARS"))
+                for (const auto &[K, D] : L["VARS"].items())
+                {
+                    if (!D.contains("UI") || D["UI"].value("CONTROL", std::string()) != "key") continue;
+                    const std::string Key = D.value("DEFAULT", std::string());
+                    if (Key.empty()) continue;
+                    const auto [It, New] = Bound.emplace(std::make_pair(D["UI"].value("SECTION", std::string()), Key), K);
+                    if (!New)
+                        Warnings.push_back("node '" + Id + "': options %" + It->second + "% and %" + K + "% are both bound to '" +
+                                           Key + "' by default");
+                }
+    }
+    const std::regex Tok(R"(%([A-Za-z0-9_]+)(?::[A-Za-z0-9_:]+)?%)");   // %KEY%, %KEY:format% or %KEY:map:TABLE%
+    const std::regex MapTok(R"(%[A-Za-z0-9_]+:map:([A-Za-z0-9_]*)%)");
     std::set<std::string> ReferencedAll;
     for (const auto &[Id, N] : Idx.Nodes)
     {
@@ -1265,11 +1347,22 @@ void ValidateNodeGraph(const NodeIndex &Idx, std::vector<std::string> &Errors, s
         std::set<std::string> Refs;
         for (auto It = std::sregex_iterator(Scan.begin(), Scan.end(), Tok); It != std::sregex_iterator(); ++It)
             Refs.insert((*It)[1].str());
+        //A %KEY:map:TABLE% reading a table nothing declares would pass every value through unchanged, silently.
+        for (auto It = std::sregex_iterator(Scan.begin(), Scan.end(), MapTok); It != std::sregex_iterator(); ++It)
+            if (!Tables.count((*It)[1].str()) && InScope(Id))
+                Errors.push_back(Tag + ": " + (*It)[0].str() + " reads the table '" + (*It)[1].str() +
+                                 "', but no VARS declares a MAP by that name (typo?)");
         for (const std::string &R : Refs)
         {
             ReferencedAll.insert(R);
             if (!Builtins.count(R) && !Declared.count(R) && !Anchors.count(R) && InScope(Id))
-                Errors.push_back(Tag + ": references undefined variable %" + R + "% — no VARS declares it (typo?)");
+            {
+                //With no runner here, no place (%GameDir%, %Documents%...) is defined at all: say that, not "typo?".
+                static const std::set<std::string> Places = {"GameDir", "Documents", "AppData", "LocalAppData", "UserProfile", "ProgramData",
+                                                             "ProgramFiles", "ProgramFiles32", "Windows", "SysDir32", "SysDir64", "SavedGames"};
+                Errors.push_back(Tag + (Anchors.empty() && Places.count(R) ? ": uses %" + R + "%, a place runners define - no runner is installed on this machine yet"
+                                                                         : ": references undefined variable %" + R + "% — no VARS declares it (typo?)"));
+            }
         }
     }
     if (!OnlyNodes)
@@ -1286,6 +1379,7 @@ void ValidateNodeGraph(const NodeIndex &Idx, std::vector<std::string> &Errors, s
     {
         if (!InScope(Id) || !N.LowerError.empty()) continue;
         const std::string Tag = "node '" + Id + "'";
+        std::map<std::string, std::string> Stored;   // durable name (lower) -> the address stored under it
         for (const auto &L : N.Layers)
         {
             if (LayerType(L) != "DeclarePersist") continue;
@@ -1305,6 +1399,11 @@ void ValidateNodeGraph(const NodeIndex &Idx, std::vector<std::string> &Errors, s
                 if (T == "instance.json" || T == "registry" || T == "regkeys")
                     Warnings.push_back(Tag + ": KEEP NAME '" + Name + "' is RESERVED for the instance's own state — it "
                                        "will be refused at launch" + (L.contains("TARGET") ? "" : " (give the KEEP a NAME)"));
+                //Two addresses stored under one name would share (and clobber) one folder: the launch keeps only the
+                //first, so the other's saves silently vanish (a game and its expansion both keeping "Saved Games/").
+                else if (const auto [It, New] = Stored.emplace(T, Path); !New && It->second != Path)
+                    Errors.push_back(Tag + ": KEEP '" + Path + "' is stored as '" + Name + "' like '" + It->second +
+                                     "', which takes the name first - it would not be kept; give it its own NAME");
             }
         }
     }    for (std::string &W : ShelfWarnings(Idx, OnlyNodes)) Warnings.push_back(std::move(W));
@@ -1643,7 +1742,7 @@ static const std::vector<std::string> &ZipAllEntriesRaw(const std::string &Path,
 
 // Component-wise canonicalization across every launchable closure → per-zip {oldEntry -> newEntry}.
 static std::map<std::string, std::map<std::string, std::string>>
-ComputeCaseRenames(const NodeIndex &Idx, std::vector<std::string> &Log)
+ComputeCaseRenames(const NodeIndex &Idx, std::vector<std::string> &Log, const std::string &Scope = std::string())
 {
     std::unordered_map<std::string, std::vector<std::string>> AllCache;
     std::map<std::string, std::map<std::string, std::string>> Renames;   // zipPath -> (old -> new)
@@ -1652,6 +1751,16 @@ ComputeCaseRenames(const NodeIndex &Idx, std::vector<std::string> &Log)
     for (const auto &[LId, LN] : Idx.Nodes)
     {
         if (!LN.IsVariant()) continue;
+        //Scoped to one package: only its own variants can rename its zips (another package's variant reaching them
+        //renames toward that package's layers, which the scope leaves alone anyway). Walking every variant of the
+        //library read every zip it holds - minutes, gigabytes - to fix one package.
+        if (!Scope.empty())
+        {
+            std::error_code Ec;
+            const std::string Dir = std::filesystem::weakly_canonical(LN.BundleDir, Ec).string();
+            const std::string D = Ec ? LN.BundleDir.string() : Dir;
+            if (D != Scope && D.rfind(Scope + "/", 0) != 0) continue;
+        }
         std::map<std::string, std::string> Canon;   // lowercased prefix key -> canonical exact component
 
         const Fold::Plan Plan = Fold::Resolve(Lib, LId);
@@ -1767,9 +1876,9 @@ static bool ApplyZipRenames(const std::string &ZipPath, const std::map<std::stri
 
 int FixCaseConflicts(const NodeIndex &Idx, std::vector<std::string> &Log, const std::filesystem::path *ScopeDir)
 {
-    auto Renames = ComputeCaseRenames(Idx, Log);
     std::string Scope;
     if (ScopeDir) { std::error_code Ec; Scope = std::filesystem::weakly_canonical(*ScopeDir, Ec).string(); if (Ec) Scope = ScopeDir->string(); }
+    auto Renames = ComputeCaseRenames(Idx, Log, Scope);
     int Fixed = 0;
     for (const auto &[ZipPath, M] : Renames)
     {

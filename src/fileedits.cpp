@@ -59,6 +59,31 @@ bool FileEdits::PathEscapesBase(const std::filesystem::path &Joined, const std::
     return *Rel.begin() == "..";
 }
 
+bool FileEdits::LinkLeadsOut(const std::filesystem::path &Base, const std::filesystem::path &Normalised, std::string &Why)
+{
+    namespace fs = std::filesystem;
+    std::error_code Ec;
+    const fs::path B = Base.lexically_normal(), Rel = Normalised.lexically_normal().lexically_relative(B);
+    if (Rel.empty()) { Why = Normalised.string() + " is not under " + B.string(); return true; }
+    fs::path Cur = B, Root;
+    for (const fs::path &Part : Rel)
+    {
+        if (Part == ".") continue;
+        Cur /= Part;
+        const fs::file_type T = fs::symlink_status(Cur, Ec).type();
+        if (T == fs::file_type::not_found) return false;   // nothing below a missing folder exists to follow
+        if (T == fs::file_type::regular || T == fs::file_type::directory) continue;
+        //A FIFO (or socket, device) the game made in a kept folder: opening it would block the launch for good.
+        if (T != fs::file_type::symlink) { Why = Cur.string() + " is not a plain file or folder"; return true; }
+        const fs::path To = fs::canonical(Cur, Ec);
+        if (Ec) { Why = Cur.string() + " is a link that leads nowhere"; return true; }
+        if (Root.empty()) Root = fs::canonical(B, Ec);
+        const fs::path In = To.lexically_relative(Root);
+        if (Ec || In.empty() || *In.begin() == "..") { Why = Cur.string() + " is a link out of " + B.string(); return true; }
+    }
+    return false;
+}
+
 bool FileEdits::ProcessFileEdits(struct ContainerParams &ContainerParams, bool OverridePass,
                                         const std::filesystem::path &BaseDir)
 {
@@ -122,6 +147,17 @@ bool FileEdits::ProcessFileEdits(struct ContainerParams &ContainerParams, bool O
                         "anything reads it. Author it relative to the base.");
         }
 
+        //A Delete removes what the runtime composed beneath it, through the mount: only the override pass has one. And
+        //never where the user's state lives — a removal in a kept folder would be stored with their saves.
+        if (Mode == "Delete" && (!OverridePass || Sub.contains("KEPT")))
+        {
+            LogErr("FileEdits::ProcessFileEdits", "Delete of '" + File + "' refused: "
+                   + (Sub.contains("KEPT") ? "it reaches the user's kept '" + (Sub["KEPT"].is_string() ? Sub["KEPT"].get<std::string>() : Sub["KEPT"].dump()) + "' (a package never deletes the user's state)"
+                                           : std::string("a Delete runs only after the mount (OVERRIDE)")));
+            ++Attempted; ++Failed; Ok = false;
+            continue;
+        }
+
         //A package default for a user-owned file: the user's saved copy stands once there is one.
         if (Sub.value("IF_UNSAVED", false) && PersistLayer::HasSavedCopy(ContainerParams, File))
         {
@@ -140,7 +176,26 @@ bool FileEdits::ProcessFileEdits(struct ContainerParams &ContainerParams, bool O
             ++Attempted; ++Failed; Ok = false;
             continue;
         }
+        if (std::string Why; LinkLeadsOut(BasePath, FilePath, Why))
+        {
+            LogErr("FileEdits::ProcessFileEdits", "FILE '" + File + "' is not written: " + Why
+                   + " — an edit never writes through a link (a game can leave one in a kept folder).");
+            ++Attempted; ++Failed; Ok = false;
+            continue;
+        }
         ++Attempted;
+
+        //A Delete is judged again by the place it RESOLVED to, not the address it was written as: "videos/../Saves",
+        //"./Saves", another anchor naming the same folder or a %variable% segment all reach a kept folder that the
+        //lowering's textual check never saw. Removing through a kept folder's passthrough deletes the user's real files.
+        if (Mode == "Delete")
+            if (std::string Kept = FileEdits::KeptPathMet(ContainerParams, FilePath); !Kept.empty())
+            {
+                LogErr("FileEdits::ProcessFileEdits", "Delete of '" + File + "' refused: it resolves to the user's kept '"
+                       + Kept + "' (a package never deletes the user's state)");
+                ++Failed; Ok = false;
+                continue;
+            }
 
         bool EditOk = true;
         if (Mode == "ConfigWrite")
@@ -151,6 +206,8 @@ bool FileEdits::ProcessFileEdits(struct ContainerParams &ContainerParams, bool O
             EditOk = FileEdits::FileOverwrite(Value, FilePath);
         else if (Mode == "AppendLine")
             EditOk = FileEdits::AppendLine(Value, FilePath);
+        else if (Mode == "Delete")
+            EditOk = FileEdits::DeletePath(FilePath);
         else
         {
             LogWarn("FileEdits::ProcessFileEdits", "Unknown MODE: '" + Mode + "' — skipping.");
@@ -354,6 +411,67 @@ bool FileEdits::FileOverwrite(const std::string &Value, const std::filesystem::p
     std::ofstream Out(FilePath, std::ios::binary | std::ios::out | std::ios::trunc);   // binary: verbatim bytes, no CRLF translation on Windows
     if (!Out) { LogErr("FileEdits::FileOverwrite", "Could not open for writing: " + FilePath.string()); return false; }
     Out << Value;
+    return true;
+}
+
+std::string FileEdits::KeptPathMet(const struct ContainerParams &ContainerParams, const std::filesystem::path &FilePath)
+{
+    namespace fs = std::filesystem;
+    //Compared as normalised, lower-cased generic paths: the runtime may be case-insensitive (Windows), and a kept
+    //address is the user's whatever its case.
+    const auto Norm = [](const fs::path &P) {
+        std::string S = P.lexically_normal().generic_string();
+        while (S.size() > 1 && S.back() == '/') S.pop_back();
+        std::transform(S.begin(), S.end(), S.begin(), [](unsigned char C) { return static_cast<char>(std::tolower(C)); });
+        return S;
+    };
+    //...and as the places they ARE: a link inside the runtime (Proton's "My Documents" -> "Documents") is another
+    //spelling of a kept folder that remove_all would follow. Both sides are resolved through the links that exist.
+    const auto Real = [&](const fs::path &P) { std::error_code Ec; const fs::path C = fs::weakly_canonical(P, Ec); return Ec ? Norm(P) : Norm(C); };
+    const std::string Fl = Norm(FilePath), Fr = Real(FilePath);
+    const auto Meets = [&](const std::string &RuntimeRel) {
+        const fs::path K = ContainerParams.RuntimePath / RuntimeRel;
+        const std::string Leaf = K.filename().string();
+        const bool Pattern = Leaf.find_first_of("*?") != std::string::npos;
+        for (const auto &[F, Kn] : { std::pair{ Fl, Norm(Pattern ? K.parent_path() : K) }, std::pair{ Fr, Real(Pattern ? K.parent_path() : K) } })
+        {
+            if (F == Kn || Kn.rfind(F + "/", 0) == 0) return true;                 // the kept place, or a folder holding it
+            if (!Pattern && F.rfind(Kn + "/", 0) == 0) return true;               // inside a kept folder (or file)
+            //A kept pattern keeps the matching files of ONE folder: a Delete of such a file, or of its folder.
+            if (Pattern)
+            {
+                const size_t S = F.rfind('/');
+                if (S != std::string::npos && F.substr(0, S) == Kn && WildcardMatch(Leaf, F.substr(S + 1))) return true;
+            }
+        }
+        return false;
+    };
+    for (const auto *List : { &ContainerParams.KeepDirs, &ContainerParams.KeepFiles })
+        for (const PersistTarget &T : *List)
+            if (Meets(T.Path)) return T.Path.empty() ? std::string("(the whole runtime)") : T.Path;
+    return std::string();
+}
+
+bool FileEdits::DeletePath(const std::filesystem::path &FilePath)
+{
+    std::error_code Ec;
+    const std::filesystem::file_status St = std::filesystem::symlink_status(FilePath, Ec);
+    if (Ec || St.type() == std::filesystem::file_type::not_found)
+    {
+        //Nothing there: a typo, or a file a layer beneath stopped providing. Either way the package's intent did not
+        //happen, which is what a failed edit means.
+        LogErr("FileEdits::DeletePath", "Nothing to delete at " + FilePath.string());
+        return false;
+    }
+    //Through the mounted union: the file system records the removal in the session's write layer (a whiteout), so
+    //the pristine content beneath is never touched. remove_all removes a link as a link and never follows it.
+    const std::uintmax_t N = std::filesystem::remove_all(FilePath, Ec);
+    if (Ec)
+    {
+        LogErr("FileEdits::DeletePath", "Could not delete " + FilePath.string() + ": " + Ec.message());
+        return false;
+    }
+    LogOut("FileEdits::DeletePath", "Deleted " + FilePath.string() + " (" + std::to_string(N) + " entr" + (N == 1 ? "y" : "ies") + ")");
     return true;
 }
 

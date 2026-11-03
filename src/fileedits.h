@@ -19,6 +19,14 @@ namespace FileEdits
 bool PathEscapesBase(const std::filesystem::path &Joined, const std::filesystem::path &Base,
                      std::filesystem::path &OutNormalised);
 
+//The on-disk half of that check, for a path PathEscapesBase let through: true (Why set) when writing Normalised would
+//follow a link out of Base — a link on the way, the file itself included, that leads nowhere (written through, it
+//would create the file it names) or resolves outside Base; or something on the way that is neither a plain file nor
+//a folder (a FIFO the game made would block the edit's open for good). Kept folders are served live, links included (Proton keeps its user-path links there), and the game
+//can leave one there pointing at any file of the user's; the edit passes run outside the sandbox. A link that stays
+//inside Base (Proton's "My Documents" -> "Documents") is followed as before.
+bool LinkLeadsOut(const std::filesystem::path &Base, const std::filesystem::path &Normalised, std::string &Why);
+
 //Collects DLLOVERRIDE values from all DllOverride subcomponents into ContainerParams.DLLOverrides (later joined
 //into WINEDLLOVERRIDES at launch).
 [[nodiscard]] bool ProcessDLLOverrides(struct ContainerParams &ContainerParams);
@@ -46,6 +54,16 @@ bool PathEscapesBase(const std::filesystem::path &Joined, const std::filesystem:
 //load-order primitive: each enabled node appends in recipe (topological) order, so the resulting config's order
 //(openmw.cfg `content=`, a mod manifest, …) falls out of the node graph automatically.
 [[nodiscard]] bool AppendLine(const std::string &Value, const std::filesystem::path &FilePath);
+//The kept place (a kept folder's or kept file's runtime path) that removing FilePath — a resolved path under the
+//runtime — would reach: the place itself, something inside it, a folder holding it, or a file a kept pattern matches;
+//"" when none. Judged on the resolved path, lexically and through the links that exist in the runtime, so "a/../Saves",
+//another anchor, a %variable% or a link to the folder all name the same place. (On Windows, MinGW's filesystem cannot
+//see links, so a junction there is not resolved.)
+std::string KeptPathMet(const struct ContainerParams &ContainerParams, const std::filesystem::path &FilePath);
+//Removes FilePath (a file, or a folder and everything in it) — through the mounted union, where the file system keeps
+//the removal as a whiteout in the session's write layer and the content beneath stays pristine. A link is removed as a
+//link, never followed. False when nothing is there to remove (a typo, or content that changed beneath it).
+[[nodiscard]] bool DeletePath(const std::filesystem::path &FilePath);
 }
 
 #endif // FILEEDITS_H

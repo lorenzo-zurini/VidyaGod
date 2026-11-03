@@ -39,8 +39,11 @@ class PkgCanvas : public QObject
     Q_OBJECT
 
 public:
+    //A wire's own colour: from the name of the node it leaves and its place among that node's wires (Rank), so
+    //crossing wires - and wires leaving one node - can be told apart.
+    static unsigned int WireColour(const std::string &from, int rank);
     //What the editor knows about a node this package does not own (another package's node, named by CID).
-    struct External { std::string Label, Package, PackageDir; };
+    struct External { std::string Label, Package, PackageDir, Cover; };   // Cover: its tile's image, absolute ("": none)
     using ExternalFn = std::function<External(const std::string &Cid)>;
     //Every node the library offers for wiring in, {cid, label, package} — the "link another package's node" picker.
     struct Offer { std::string Cid, Label, Package; };
@@ -60,12 +63,19 @@ public:
     // ---- host facts -------------------------------------------------------------------------------------------
     void setExternalLookup(ExternalFn fn);
     void setOffers(OffersFn fn);
+    //An image file as a texture the canvas can draw (the host owns the GPU context): false when it cannot be loaded.
+    using ImageFn = std::function<bool(const std::string &path, unsigned long long &texture, float &w, float &h)>;
+    void setImageLookup(ImageFn fn);
+    //The platforms this machine's runners play, offered beside an entry's HOST; asked once, when first needed.
+    void setPlatforms(std::function<std::vector<std::string>()> fn);
     void setIssues(const std::map<std::string, std::vector<std::string>> &issuesByHandle);
     void setNodeHints(const std::string &handle, const std::vector<std::string> &hints);   // host facts ("deflate")
     void beginAction(const std::string &handle, const QString &what, bool cancellable);
     void setProgress(const std::string &handle, float fraction, const QString &detail = {});
     void endAction(const std::string &handle);
     bool isBusy(const std::string &handle) const;
+    //Whether the host has a package open: with none, the empty canvas offers New package / Open package.
+    void setPackageOpen(bool open);
     //The document was replaced or reloaded wholesale: forget per-node view state that no longer applies.
     void documentReset();
     //Handles renamed by a save (PkgDoc::Document::TakeRenames): folds, sizes, selection follow the nodes.
@@ -89,7 +99,12 @@ public:
     void  setMiniMap(bool on);
 
     // ---- document shortcuts (also reachable from the canvas's own menus) --------------------------------------
-    int  addNode(const std::string &layerType, float worldX, float worldY);   // returns its index
+    //Returns its index. A reference type (NODE / ANY / NOT) made while a node is selected refers to that node:
+    //"contain another node" with the base in view means that one, never an empty reference to fill in later.
+    int  addNode(const std::string &layerType, float worldX, float worldY, const std::string &refersTo = std::string());
+    //A layer moved (Copy: copied) from one node to before layer At of another, or within one node; refused (Why says
+    //so) when a reference would make a node contain itself. Not committed: the caller ends the gesture.
+    bool MoveLayer(const std::string &from, int fromLayer, const std::string &to, int at, bool copy, std::string *why = nullptr);
     bool removeNodes(const std::set<std::string> &handles);
     void undo();
     void redo();
@@ -97,10 +112,22 @@ public:
     // ---- introspection (tests, the host) ---------------------------------------------------------------------
     //Where things were drawn LAST frame, in screen pixels; false/empty when not drawn.
     bool nodeRect(const std::string &handle, float &x0, float &y0, float &x1, float &y1) const;
+    //This package's node drawn topmost at a screen point ("" when none): where dropped files go.
+    std::string nodeAt(float x, float y) const;
+    void screenToWorld(float x, float y, float &wx, float &wy) const;
+    bool packageOpen() const;
+    //Files are being dragged over the canvas: the node under the cursor is outlined as where they would land.
+    void setFileDropHover(bool on);
+    //The first-time tour: a few cards over the canvas, Next / Skip; tourFinished() when it is done either way.
+    void startTour();
+    bool touring() const;
+    //Where a reference in layer `layer` of the node plugs in: level with that layer's row (screen pixels).
+    bool rowPos(const std::string &handle, int layer, float &x, float &y) const;
     bool portPos(const std::string &handle, bool out, float &x, float &y) const;
     bool canvasRect(float &x0, float &y0, float &x1, float &y1) const;
     int  visibleNodes() const;                            // nodes drawn last frame (full or as boxes)
     int  visibleWires() const;                            // wires drawn last frame
+    bool coverShown(const std::string &handle) const;     // a chip was drawn with its cover last frame
     int  externalCount() const;
     std::string externalLabel(const std::string &cid) const;   // the text its chip shows
     //World position and size the canvas uses for a node or external (placed, laid out or measured).
@@ -111,9 +138,12 @@ signals:
     void documentEdited();                                // the canvas edited the document (and committed a step)
     void saveRequested();                                 // ctrl+S
     void nodeAction(const QString &handle, const QString &action);
+    void tourFinished();
     void cancelRequested(const QString &handle);
     void openPackageRequested(const QString &packageDir); // an external chip's "open its package"
     void statusMessage(const QString &text);              // a one-line note for the host's status bar
+    void newPackageRequested();                           // the empty canvas's New package... (no package open)
+    void openPackagePickerRequested();                    // its Open package...
 
 private:
     std::unique_ptr<PkgCanvasState> m_s;

@@ -4,6 +4,10 @@
 
 #include <filesystem>
 #include <fstream>
+#ifndef _WIN32
+#include <csignal>
+#include <sys/resource.h>
+#endif
 
 // PersistLayer file seed/capture had ZERO coverage — and the Path/Target split (durable name decoupled from the
 // runtime location) is exactly where a wrong copy DIRECTION silently loses saves. These tests use distinct Path and
@@ -182,3 +186,188 @@ TEST(persistlayer_a_file_deleted_in_a_kept_folder_counts_as_the_users)
     CHECK(!PersistLayer::HasSavedCopy(CP, "pfx/drive_c/9/saves/other.ini"));
     fs::remove_all(d);
 }
+
+// The instance folder and the session's writelayer are, or were, writable by the sandboxed game, which can leave a
+// link where a kept file goes (Config -> ~/.bashrc). The launcher writes there OUTSIDE the sandbox, so a copy that
+// followed the link would put the game's bytes into any file of the user's. Capture replaces the link with the file;
+// the file it named is untouched. Teeth: copy_file onto the link (the victim gets the save).
+TEST(persistlayer_capture_never_writes_through_a_link_in_the_store)
+{
+    auto d = PlTmp("cap_link");
+    ContainerParams CP(d);
+    CP.UserDataPath   = d / "USERDATA";
+    CP.RuntimePath    = d / "RUNTIME";
+    CP.KeepFiles      = { { "pfx/drive_c/game/config.ini", "Config", true },
+                          { "pfx/drive_c/749/player*.hki", "Hotkeys", true } };
+    WriteFileAt(d / "victim/.bashrc", "the user's own\n");
+    fs::create_directories(CP.UserDataPath);
+    fs::create_symlink(d / "victim/.bashrc", CP.UserDataPath / "Config");      // planted by the game
+    fs::create_symlink(d / "victim", CP.UserDataPath / "Hotkeys");             // a whole store folder, too
+    WriteFileAt(CP.RuntimePath / "pfx/drive_c/game/config.ini", "game bytes\n");
+    WriteFileAt(CP.RuntimePath / "pfx/drive_c/749/player1.hki", "hotkeys");
+    CHECK(PersistLayer::CapturePersistFiles(CP));
+    CHECK_EQ(ReadFileAt(d / "victim/.bashrc"), std::string("the user's own\n"));
+    CHECK(!fs::exists(d / "victim/player1.hki"));
+    CHECK(fs::symlink_status(CP.UserDataPath / "Config").type() == fs::file_type::regular);
+    CHECK_EQ(ReadFileAt(CP.UserDataPath / "Config"), std::string("game bytes\n"));
+    CHECK(fs::symlink_status(CP.UserDataPath / "Hotkeys").type() == fs::file_type::directory);
+    CHECK_EQ(ReadFileAt(CP.UserDataPath / "Hotkeys/player1.hki"), std::string("hotkeys"));
+    fs::remove_all(d);
+}
+
+// Seeding writes into the writelayer, which a session left in place can hold the game's links: a folder on the way
+// to the kept file that is a link to the real home must not take the seed there. A link in the store is not read
+// either (it is not a saved file; the store never holds one after a capture), and a link the game left at the kept
+// file's runtime path is not taken for its save. Teeth: create_directories + copy_file through the folder link (the
+// victim folder gets config.ini); read the stored link (the writelayer gets the linked secret); capture the runtime
+// link (the store gets the secret's bytes).
+TEST(persistlayer_seed_and_capture_never_follow_a_link)
+{
+    auto d = PlTmp("seed_link");
+    ContainerParams CP(d);
+    CP.UserDataPath   = d / "USERDATA";
+    CP.WriteLayerPath = d / "WRITELAYER";
+    CP.RuntimePath    = d / "RUNTIME";
+    CP.KeepFiles      = { { "pfx/drive_c/game/config.ini", "Config", true },
+                          { "pfx/drive_c/game/secret.ini", "Secret", true } };
+    fs::create_directories(d / "victim");
+    WriteFileAt(d / "outside/secret", "not the game's");
+    WriteFileAt(CP.UserDataPath / "Config", "saved=1\n");
+    fs::create_symlink(d / "outside/secret", CP.UserDataPath / "Secret");
+    fs::create_directories(CP.WriteLayerPath / "pfx/drive_c");
+    fs::create_symlink(d / "victim", CP.WriteLayerPath / "pfx/drive_c/game");
+    CHECK(!PersistLayer::SeedPersistFiles(CP));                                 // the linked Secret is reported
+    CHECK(!fs::exists(d / "victim/config.ini"));
+    CHECK(fs::symlink_status(CP.WriteLayerPath / "pfx/drive_c/game").type() == fs::file_type::directory);
+    CHECK_EQ(ReadFileAt(CP.WriteLayerPath / "pfx/drive_c/game/config.ini"), std::string("saved=1\n"));
+    CHECK(!fs::exists(CP.WriteLayerPath / "pfx/drive_c/game/secret.ini"));
+
+    fs::create_directories(CP.RuntimePath / "pfx/drive_c/game");
+    fs::remove(CP.UserDataPath / "Secret");
+    fs::create_symlink(d / "outside/secret", CP.RuntimePath / "pfx/drive_c/game/secret.ini");
+    CHECK(PersistLayer::CapturePersistFiles(CP));
+    CHECK(!fs::exists(CP.UserDataPath / "Secret"));
+    fs::remove_all(d);
+}
+
+// The same for a pattern keep: a stored folder that is a link is not seeded from, and a link among the matches the
+// session left is not captured. Teeth: is_directory on the store (follows: the linked secret is seeded); is_regular_file
+// on the runtime entry (follows: the secret lands in the store).
+TEST(persistlayer_pattern_keep_never_follows_a_link)
+{
+    auto d = PlTmp("pattern_link");
+    ContainerParams CP(d);
+    CP.UserDataPath   = d / "USERDATA";
+    CP.WriteLayerPath = d / "WRITELAYER";
+    CP.RuntimePath    = d / "RUNTIME";
+    CP.KeepFiles      = { { "pfx/drive_c/749/player*.hki", "Hotkeys", true } };
+    WriteFileAt(d / "outside/player9.hki", "not the game's");
+    fs::create_directories(CP.UserDataPath);
+    fs::create_symlink(d / "outside", CP.UserDataPath / "Hotkeys");
+    CHECK(PersistLayer::SeedPersistFiles(CP));
+    CHECK(!fs::exists(CP.WriteLayerPath / "pfx/drive_c/749/player9.hki"));
+
+    fs::remove(CP.UserDataPath / "Hotkeys");
+    WriteFileAt(CP.RuntimePath / "pfx/drive_c/749/player1.hki", "one");
+    fs::create_symlink(d / "outside/player9.hki", CP.RuntimePath / "pfx/drive_c/749/player9.hki");
+    CHECK(PersistLayer::CapturePersistFiles(CP));
+    CHECK_EQ(ReadFileAt(CP.UserDataPath / "Hotkeys/player1.hki"), std::string("one"));
+    CHECK(!fs::exists(CP.UserDataPath / "Hotkeys/player9.hki"));
+    fs::remove_all(d);
+}
+
+// The guard itself: a path climbing out of its root is refused, and so is a folder on the way that is a plain file.
+TEST(persistlayer_prepare_write_path_refuses_escapes)
+{
+    auto d = PlTmp("prepare");
+    std::string Why;
+    CHECK(!PersistLayer::PrepareWritePath(d / "root", "../outside.txt", Why));
+    CHECK(!PersistLayer::PrepareWritePath(d / "root", "/etc/passwd", Why));
+    WriteFileAt(d / "root/file", "x");
+    CHECK(!PersistLayer::PrepareWritePath(d / "root", "file/inner.txt", Why));
+    CHECK(PersistLayer::PrepareWritePath(d / "root", "a/b/c.txt", Why));
+    CHECK(fs::is_directory(d / "root/a/b"));
+    fs::remove_all(d);
+}
+
+// The writelayer sits in the session tree the game could write; one left in place (a busy mount) can have been
+// swapped for a link to the real home. Seeding replaces it rather than writing the kept file through it. Teeth: anchor
+// the seed at the writelayer itself (the victim folder gets pfx/.../config.ini).
+TEST(persistlayer_seed_replaces_a_writelayer_that_is_a_link)
+{
+    auto d = PlTmp("wl_link");
+    ContainerParams CP(d);
+    CP.UserDataPath   = d / "USERDATA";
+    CP.WriteLayerPath = d / "TEMP/WRITELAYER";
+    CP.KeepFiles      = { { "pfx/drive_c/game/config.ini", "Config", true } };
+    WriteFileAt(CP.UserDataPath / "Config", "saved=1\n");
+    fs::create_directories(d / "victim");
+    fs::create_directories(d / "TEMP");
+    fs::create_symlink(d / "victim", CP.WriteLayerPath);
+    CHECK(PersistLayer::SeedPersistFiles(CP));
+    CHECK(!fs::exists(d / "victim/pfx"));
+    CHECK(fs::symlink_status(CP.WriteLayerPath).type() == fs::file_type::directory);
+    CHECK_EQ(ReadFileAt(CP.WriteLayerPath / "pfx/drive_c/game/config.ini"), std::string("saved=1\n"));
+    fs::remove_all(d);
+}
+
+// A kept file the game never rewrote comes from a read-only package layer (the overlay shows it r-x). The stored copy
+// and the next session's seeded copy must still be the user's writable file: copying the source's mode made Duke
+// Nukem 3D fail to open its own DUKE3D.CFG ("Permission denied") and the next capture fail to overwrite the store.
+TEST(persistlayer_kept_files_stay_writable_whatever_their_source_mode)
+{
+    auto d = PlTmp("ro");
+    ContainerParams CP(d);
+    CP.UserDataPath   = d / "USERDATA";
+    CP.WriteLayerPath = d / "WRITELAYER";
+    CP.RuntimePath    = d / "RUNTIME";
+    CP.KeepFiles      = { { "game/DUKE3D.CFG", "Duke settings", true } };
+    const fs::path Session = CP.RuntimePath / "game/DUKE3D.CFG";
+    WriteFileAt(Session, "first\n");
+    fs::permissions(Session, fs::perms::owner_read | fs::perms::owner_exec | fs::perms::group_read | fs::perms::others_read,
+                    fs::perm_options::replace);                                           // r-x as the overlay shows it
+    CHECK(PersistLayer::CapturePersistFiles(CP));
+    const auto Writable = [](const fs::path &P) { return (fs::status(P).permissions() & fs::perms::owner_write) != fs::perms::none; };
+    CHECK(Writable(CP.UserDataPath / "Duke settings"));
+    CHECK(PersistLayer::SeedPersistFiles(CP));
+    const fs::path Seeded = CP.WriteLayerPath / "game/DUKE3D.CFG";
+    CHECK(Writable(Seeded));
+    { std::ofstream Out(Seeded, std::ios::binary | std::ios::trunc); CHECK(Out.good()); Out << "changed\n"; }
+    CHECK_EQ(ReadFileAt(Seeded), std::string("changed\n"));
+    // a store copy left read-only (by an earlier build) is overwritten, not refused
+    fs::permissions(CP.UserDataPath / "Duke settings", fs::perms::owner_read, fs::perm_options::replace);
+    fs::permissions(Session, fs::perms::owner_read | fs::perms::owner_write, fs::perm_options::add);
+    WriteFileAt(Session, "second\n");
+    CHECK(PersistLayer::CapturePersistFiles(CP));
+    CHECK_EQ(ReadFileAt(CP.UserDataPath / "Duke settings"), std::string("second\n"));
+    CHECK(Writable(CP.UserDataPath / "Duke settings"));
+    fs::remove_all(d);
+}
+
+#ifndef _WIN32
+// A capture whose copy fails part way (a full disk, a read error on the overlay) keeps the previous save: the copy
+// goes to a temporary file renamed into place only when complete. Copying over the stored file truncated it first,
+// so the failure destroyed the last good save as well. A file-size limit stands in for the full disk.
+TEST(persistlayer_a_failed_capture_keeps_the_previous_save)
+{
+    auto d = PlTmp("partial");
+    ContainerParams CP(d);
+    CP.UserDataPath = d / "USERDATA";
+    CP.RuntimePath  = d / "RUNTIME";
+    CP.KeepFiles    = { { "game/save.dat", "Save", true } };
+    WriteFileAt(CP.UserDataPath / "Save", "the last good save\n");
+    WriteFileAt(CP.RuntimePath / "game/save.dat", std::string(1 << 20, 'x'));          // 1 MiB, past the limit below
+    struct rlimit Old {};
+    getrlimit(RLIMIT_FSIZE, &Old);
+    struct rlimit Small = Old; Small.rlim_cur = 4096;
+    auto *OldHandler = signal(SIGXFSZ, SIG_IGN);                                        // a short write, not a kill
+    setrlimit(RLIMIT_FSIZE, &Small);
+    const bool Ok = PersistLayer::CapturePersistFiles(CP);
+    setrlimit(RLIMIT_FSIZE, &Old);
+    signal(SIGXFSZ, OldHandler);
+    CHECK(!Ok);                                                                          // the failure is reported…
+    CHECK_EQ(ReadFileAt(CP.UserDataPath / "Save"), std::string("the last good save\n")); // …and the old save survives
+    CHECK(!fs::exists(CP.UserDataPath / "Save.vgcopy"));                                 // no half copy left behind
+    fs::remove_all(d);
+}
+#endif

@@ -34,6 +34,15 @@ struct Host
     const PkgGraph::VarFacets *Facets = nullptr;                        // launcher facets: names WHEN-gated layers
     std::function<void()> Dirty;                                        // the node was edited
     std::function<void(const std::string &Action)> Request;             // a host action (browse_cover, …)
+    std::string Entry;                                                  // the entry being drawn ("L<layer>/<i>"), for actions about it
+    std::function<const std::vector<std::string> &()> Platforms;        // what this machine's runners play (HOST's list)
+    //Where each layer's row was drawn this frame (screen y; a layer inside a folded section reports that section's
+    //header): wires plug into the row that holds their reference.
+    std::function<void(int Layer, float Y0, float Y1)> Row;
+    //Layers dragged by their row, within this node or to another: Node is this node's handle; LayerDropped is told
+    //(the dragged layer's node and index, where it lands in THIS node, copy or move) and does it after the frame.
+    std::string Node;
+    std::function<void(const std::string &FromNode, int FromLayer, int At, bool Copy)> LayerDropped;
     //Registry rows being edited, held steady while a field is live (see RegTree), keyed per layer.
     std::map<std::string, std::vector<PkgGraph::RegRow>> *RegBuf = nullptr;
 
@@ -42,6 +51,10 @@ struct Host
     float RightW() const { return -S(PadRight); }
     float PadRight = 9.0f;                                              // units kept clear at the right edge
 };
+
+//A layer being dragged by its row (ImGui drag-and-drop payload "VG_LAYER"): which node, which layer.
+inline constexpr const char *kLayerPayload = "VG_LAYER";
+struct LayerPayload { char Node[192]; int Layer; };
 
 //Properties + layers. `Layer` indexes are stable keys for folds and edit buffers.
 void Body(nlohmann::ordered_json &Node, Host &H);

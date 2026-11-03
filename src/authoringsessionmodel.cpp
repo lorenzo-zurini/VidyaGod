@@ -5,6 +5,7 @@
 #include "packagecatalog.h"    // BuildCatalogIndex
 
 #include <QDir>
+#include <QFileInfo>
 
 #include <map>
 #include <set>
@@ -35,6 +36,144 @@ QMap<QString, QString> CapturePreview::ParseAnchors(const QStringList &Lines)
     return Out;
 }
 
+QStringList CapturePreview::RunnerChoices(const std::vector<std::pair<std::string, std::string>> &IdLabel)
+{
+    //Numbers compare as numbers: 11_7 > 10_34 > 9_27.
+    auto Key = [](const std::string &L) {
+        std::vector<long> Nums; std::string Text;
+        for (size_t I = 0; I < L.size();)
+            if (std::isdigit((unsigned char)L[I])) { size_t E = I; while (E < L.size() && std::isdigit((unsigned char)L[E])) ++E; Nums.push_back(std::stol(L.substr(I, E - I))); I = E; }
+            else Text += L[I++];
+        return std::make_pair(Text, Nums);
+    };
+    std::vector<std::pair<std::string, std::string>> V = IdLabel;
+    std::stable_sort(V.begin(), V.end(), [&](const auto &A, const auto &B) {
+        const auto Ka = Key(A.second.empty() ? A.first : A.second), Kb = Key(B.second.empty() ? B.first : B.second);
+        return Ka.first != Kb.first ? Ka.first < Kb.first : Ka.second > Kb.second;
+    });
+    QStringList Out;
+    for (const auto &[Id, Label] : V) Out << QString::fromStdString((Label.empty() ? Id : Label) + "\t" + Id);
+    return Out;
+}
+
+QString CapturePreview::WaitingTarget(const nlohmann::ordered_json &N)
+{
+    if (!N.is_object() || !N.contains("LAYERS") || !N["LAYERS"].is_array()) return {};
+    for (const auto &L : N["LAYERS"])
+        for (const char *T : {"ZIP", "FILE", "DIR", "DELTA"})
+            if (L.is_object() && L.contains(T) && L[T].is_string() && L[T].get<std::string>().empty())
+            {
+                std::string Tg = L.contains("TARGET") && L["TARGET"].is_string() ? L["TARGET"].get<std::string>() : std::string("FILES");
+                if (Tg.rfind("FILES", 0) == 0) Tg = Tg.substr(5);
+                if (!Tg.empty() && Tg.front() == '/') Tg.erase(0, 1);
+                return QString::fromStdString(Tg);
+            }
+    return {};
+}
+
+QString CapturePreview::CaptureName(const nlohmann::ordered_json &N, const std::string &Id)
+{
+    std::string L = N.is_object() && N.contains("LABEL") && N["LABEL"].is_string() ? N["LABEL"].get<std::string>() : std::string();
+    std::string Safe;
+    for (const char C : L)
+        if (C == ':') Safe += " -";
+        else if (std::string("/\\?*\"<>|").find(C) != std::string::npos || (unsigned char)C < 0x20) Safe += '_';
+        else Safe += C;
+    while (!Safe.empty() && (Safe.back() == '.' || Safe.back() == ' ')) Safe.pop_back();
+    return QString::fromStdString(Safe.empty() ? Id + "_files" : Safe);
+}
+
+QString CapturePreview::PreviewLines(const QStringList &Lines, int MaxLines)
+{
+    if (Lines.size() <= MaxLines) return Lines.join("\n  ");
+    return Lines.mid(0, MaxLines - 1).join("\n  ") + QString("\n  ... and %1 more").arg(Lines.size() - (MaxLines - 1));
+}
+
+QString CapturePreview::FreeName(const QString &Name, const QString &PackageDir)
+{
+    if (PackageDir.isEmpty() || !QFileInfo::exists(PackageDir + "/" + Name)) return Name;
+    for (int N = 2;; ++N)
+        if (const QString Try = Name + " " + QString::number(N); !QFileInfo::exists(PackageDir + "/" + Try)) return Try;
+}
+
+std::string CapturePreview::GuestPathOf(const std::string &Rel)
+{
+    const size_t At = Rel.find("drive_c");
+    if (At == std::string::npos || (At > 0 && Rel[At - 1] != '/')) return {};
+    std::string Rest = Rel.substr(At + 7);
+    if (!Rest.empty() && Rest.front() != '/') return {};
+    std::replace(Rest.begin(), Rest.end(), '/', '\\');
+    return "C:" + (Rest.empty() ? std::string("\\") : Rest);
+}
+
+std::string CapturePreview::AnchorWinpath(const std::string &Target, const std::string &Rel, bool Contents)
+{
+    std::string T = Target;
+    if (T.rfind("FILES/", 0) == 0) T = T.substr(6);
+    if (T.size() < 2 || T.front() != '%') return {};
+    const size_t Close = T.find('%', 1);
+    if (Close == std::string::npos) return {};
+    std::string Out = T.substr(0, Close) + ":winpath%" + T.substr(Close + 1);
+    if (!Contents) Out += "/" + Rel.substr(Rel.find_last_of('/') + 1);
+    std::replace(Out.begin(), Out.end(), '/', '\\');
+    return Out;
+}
+
+std::vector<std::string> CapturePreview::AnchoredGuestsOf(const std::string &Rel, const QMap<QString, QString> &Layouts)
+{
+    std::vector<std::string> Out;
+    for (auto It = Layouts.begin(); It != Layouts.end(); ++It)
+    {
+        const std::string L = It.value().toStdString();
+        if (L.empty() || Rel.compare(0, L.size(), L) != 0 || (Rel.size() > L.size() && Rel[L.size()] != '/')) continue;
+        std::string Rest = Rel.substr(L.size());
+        std::replace(Rest.begin(), Rest.end(), '/', '\\');
+        Out.push_back(It.key().toStdString() + Rest);
+    }
+    return Out;
+}
+
+std::vector<std::pair<std::string, std::string>> CapturePreview::GuestAnchorsFor(const QStringList &Roots, const std::string &Target, bool Contents,
+                                                                                 const QMap<QString, QString> &Layouts)
+{
+    std::vector<std::pair<std::string, std::string>> Out;
+    auto Both = [&](const std::string &Rel, const std::string &Anchor) {
+        Out.push_back({GuestPathOf(Rel), Anchor});
+        for (const std::string &A : AnchoredGuestsOf(Rel, Layouts)) Out.push_back({A, Anchor});
+    };
+    for (const QString &R : Roots)
+    {
+        Both(R.toStdString(), AnchorWinpath(Target, R.toStdString(), Contents));
+        //Captured at its level, a root's parent is stripped: that parent folder (the game's install folder when
+        //the author ticks its parts) IS the target.
+        if (!Contents && R.contains('/'))
+        {
+            const std::string Parent = R.left(R.lastIndexOf('/')).toStdString();
+            Both(Parent, AnchorWinpath(Target, Parent, true));
+        }
+    }
+    return Out;
+}
+
+std::string CapturePreview::Reanchor(std::string V, const std::vector<std::pair<std::string, std::string>> &Map)
+{
+    auto Lower = [](std::string S) { for (char &C : S) C = (char)std::tolower((unsigned char)C); return S; };
+    for (const auto &[Guest, Anchor] : Map)
+    {
+        if (Guest.empty() || Anchor.empty()) continue;
+        const std::string G = Lower(Guest);
+        for (size_t At = 0; (At = Lower(V).find(G, At)) != std::string::npos;)
+        {
+            //Only a whole path component: "C:\Game" is not a prefix of "C:\Games".
+            const size_t End = At + G.size();
+            if (End < V.size() && V[End] != '\\' && V[End] != '/' && V[End] != '"' && V[End] != ';') { At = End; continue; }
+            V.replace(At, G.size(), Anchor);
+            At += Anchor.size();
+        }
+    }
+    return V;
+}
+
 QString CapturePreview::MountBase(QString Target, const QString &ContentRoot, const QMap<QString, QString> &Anchors)
 {
     Target = Target.trimmed();
@@ -42,6 +181,15 @@ QString CapturePreview::MountBase(QString Target, const QString &ContentRoot, co
     const int Close = Target.startsWith('%') ? Target.indexOf('%', 1) : -1;
     if (Close > 0 && Anchors.contains(Target.left(Close + 1))) return Anchors.value(Target.left(Close + 1)) + Target.mid(Close + 1);
     return Target.isEmpty() ? ContentRoot : ContentRoot + "/" + Target;
+}
+
+bool CapturePreview::CapturesContents(const QStringList &Roots, const QString &Target, const QString &WaitTarget,
+                                      const QString &ContentRoot, const QMap<QString, QString> &Anchors)
+{
+    if (Roots.size() != 1 || Target.trimmed().isEmpty()) return false;
+    if (!WaitTarget.isEmpty() && Target.trimmed() == WaitTarget) return true;
+    auto Clean = [](QString P) { while (P.endsWith('/')) P.chop(1); return P; };
+    return Clean(Roots.front()) == Clean(MountBase(Target, ContentRoot, Anchors));
 }
 
 void AuthoringWorker::emitSessionInfo()
@@ -72,11 +220,13 @@ void AuthoringWorker::start(QString configDump, QString bundlePath, QString node
     // The "Run Windows program" tool's choices: every Windows-capable runner usable on this machine (guest covers
     // win32/win64). Independent of the package's platform — you might run a Windows editor on a Linux game's runtime.
     WineRunners.clear();
+    std::vector<std::pair<std::string, std::string>> Choices;
     const std::string Machine = ManifestModel::MachinePlatform();
     for (const auto & [Id, R] : Idx.Nodes)
         if (R.IsRunner() && R.HostPlatform == Machine)
             for (const std::string & G : R.GuestPlatform)
-                if (G == "win32" || G == "win64") { WineRunners << QString::fromStdString(Id); break; }
+                if (G == "win32" || G == "win64") { Choices.push_back({Id, R.NodeId}); break; }
+    WineRunners = CapturePreview::RunnerChoices(Choices);
 
     Session = std::make_unique<AuthoringSession>(Config, QDir(bundlePath));
     if (!Session->Begin(Idx, TargetNodeId, {}))   // BARE: no runner, no platform — just the content overlay
@@ -89,9 +239,11 @@ void AuthoringWorker::start(QString configDump, QString bundlePath, QString node
     emitDeltaList();
 }
 
-void AuthoringWorker::runWindows(QString exe, QString runnerId)
+void AuthoringWorker::runWindows(QString exe, QString runnerId, QStringList args)
 {
-    const bool Ok = Session && Session->RunWindows(exe.toStdString(), runnerId.toStdString());
+    std::vector<std::string> Args;
+    for (const QString & A : args) Args.push_back(A.toStdString());
+    const bool Ok = Session && Session->RunWindows(exe.toStdString(), runnerId.toStdString(), Args);
     emitSessionInfo();   // the runtime may have just become a wine prefix → refresh content-root / wine flag / runner
     emit runFinished(Ok);
     emitDeltaList();
@@ -106,7 +258,7 @@ void AuthoringWorker::runExe(QString exe)
 
 void AuthoringWorker::refreshDelta() { emitDeltaList(); }
 
-void AuthoringWorker::captureFiles(QStringList roots, QString destDirAbs)
+void AuthoringWorker::captureFiles(QStringList roots, QString destDirAbs, bool contents)
 {
     if (!Session) { emit filesCopied(0); return; }
     // Each checked root is captured "at its own level": strip its parent path, so a ticked folder lands as the top of
@@ -116,7 +268,7 @@ void AuthoringWorker::captureFiles(QStringList roots, QString destDirAbs)
     {
         const std::string R = Root.toStdString();
         const auto Slash = R.find_last_of('/');
-        const std::string Strip = (Slash == std::string::npos) ? std::string() : R.substr(0, Slash);
+        const std::string Strip = contents ? R : (Slash == std::string::npos) ? std::string() : R.substr(0, Slash);
         Total += AuthoringSession::CopySelection(Session->WriteLayerPath(), { R }, destDirAbs.toStdString(), Strip);
     }
     emit filesCopied(Total);
@@ -193,10 +345,10 @@ void AuthoringSessionModel::start()
     emit requestStart(Cfg, Editor ? Editor->packagePath() : QString(), QString::fromStdString(TargetNodeId));
 }
 
-void AuthoringSessionModel::runWindows(const QString & Exe, const QString & RunnerId)
+void AuthoringSessionModel::runWindows(const QString & Exe, const QString & RunnerId, const QStringList & Args)
 {
     emit busyChanged(true, "Running in a wine prefix…");
-    emit requestRunWindows(Exe, RunnerId);
+    emit requestRunWindows(Exe, RunnerId, Args);
 }
 
 void AuthoringSessionModel::runGuest(const QString & GuestCmd){ emit busyChanged(true, "Running…");  emit requestRunExe(GuestCmd); }
@@ -207,7 +359,12 @@ void AuthoringSessionModel::captureFiles(const QStringList & Roots, const QStrin
     PendDestName = DestName; PendTarget = Target; PendRoots = Roots;
     const QString DestDirAbs = (Editor ? Editor->packagePath() : QString()) + "/" + DestName;
     emit busyChanged(true, "Capturing files…");
-    emit requestCaptureFiles(Roots, DestDirAbs);
+    //One folder captured where the anchor waits for its files IS that folder: its contents, not it, become them.
+    const int At = Editor ? Editor->doc().IndexOf(TargetNodeId) : -1;
+    const bool Contents = CapturePreview::CapturesContents(Roots, Target, At >= 0 ? CapturePreview::WaitingTarget(Editor->doc().Node(At)) : QString(),
+                                                           ContentRoot, AnchorLayouts);
+    PendContents = Contents;
+    emit requestCaptureFiles(Roots, DestDirAbs, Contents);
 }
 
 void AuthoringSessionModel::scanRegistry()
@@ -245,7 +402,7 @@ void AuthoringSessionModel::captureSelectedRegistry(const QStringList & RegPaths
         if (!KV.is_object() || KV.empty())
         { PkgGraph::RegRow R{Path, "", ""}; R.KeyOnly = true; ByArch[Arch].push_back(std::move(R)); continue; }
         for (const auto & [K, V] : KV.items())
-            ByArch[Arch].push_back({Path, K, V.is_string() ? V.get<std::string>() : V.dump()});
+            ByArch[Arch].push_back({Path, K, CapturePreview::Reanchor(V.is_string() ? V.get<std::string>() : V.dump(), GuestAnchors)});
     }
     //One REG layer per view the keys were captured in.
     nlohmann::ordered_json Layers = nlohmann::ordered_json::array();
@@ -268,6 +425,8 @@ void AuthoringSessionModel::onStarted(bool ok, QString runtimePath, QString cont
 {
     emit busyChanged(false, QString());
     if (!ok) { emit failed("Couldn't mount the authoring runtime — check the log."); return; }
+    AnchorLayouts = CapturePreview::ParseAnchors(anchorLayouts);
+    ContentRoot = contentRoot;
     emit runnersChanged(runners, runnerId);
     emit sessionReady(runtimePath, contentRoot, isWine, anchorLayouts);
 }
@@ -291,6 +450,17 @@ void AuthoringSessionModel::onFilesCopied(int count)
     nlohmann::ordered_json Layer = nlohmann::ordered_json::object({{"DIR", PendDestName.toStdString()}});
     if (!PendTarget.isEmpty())
         Layer["TARGET"] = PendTarget.startsWith("FILES/") ? PendTarget.toStdString() : "FILES/" + PendTarget.toStdString();
+    //Where the captured folders were in the guest is where an installer's registry names them: remembered by anchor.
+    for (auto & G : CapturePreview::GuestAnchorsFor(PendRoots, PendTarget.toStdString(), PendContents, AnchorLayouts)) GuestAnchors.push_back(G);
+    //Longest guest path first: a folder's own anchor wins over its parent's.
+    std::stable_sort(GuestAnchors.begin(), GuestAnchors.end(), [](const auto & A, const auto & B) { return A.first.size() > B.first.size(); });
+    //What the anchor was still waiting for (a new package's files, before its install): they take that place.
+    if (Editor->fillWaiting(TargetNodeId, Layer))
+    {
+        emit filesCaptured(PendRoots);
+        emit captured(QString("Captured %1 file(s) → the files this node was waiting for.").arg(count));
+        return;
+    }
     nlohmann::ordered_json Payload = nlohmann::ordered_json::object({
         {"LAYERS", nlohmann::ordered_json::array({std::move(Layer)})}});
     const std::string NewId = Editor->createNode(Payload, {TargetNodeId}, PendDestName.toStdString() + "_files");

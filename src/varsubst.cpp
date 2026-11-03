@@ -376,7 +376,7 @@ bool VarSubst::StringVariableSubstitution(
         auto it = VariablesMap.find(key);
         if (it != VariablesMap.end())
         {
-            const std::string rendered = format.empty() ? it->second : RenderValue(it->second, format);
+            const std::string rendered = format.empty() ? it->second : RenderToken(it->second, format, VariablesMap);
             if (Trace) LogOut("StringVariableSubstitution", "Replacing with: \"" + rendered + "\"");
             result += rendered;
             replaced = true;
@@ -457,4 +457,35 @@ nlohmann::ordered_json VarSubst::SubstituteJsonValues(const nlohmann::ordered_js
         return Out;
     }
     return V;
+}
+
+std::vector<std::pair<std::string, std::string>> VarSubst::TableEntries(const std::string &Table, const nlohmann::ordered_json &Decl)
+{
+    std::vector<std::pair<std::string, std::string>> Out;
+    if (!Decl.is_object() || !Decl.contains("MAP") || !Decl["MAP"].is_object()) return Out;
+    Out.emplace_back(Table + ":?", "1");
+    for (const auto &[Entry, V] : Decl["MAP"].items())
+        if (V.is_string()) Out.emplace_back(Table + ":=" + Entry, V.get<std::string>());
+    if (Decl.contains("ELSE") && Decl["ELSE"].is_string()) Out.emplace_back(Table + ":!", Decl["ELSE"].get<std::string>());
+    return Out;
+}
+
+std::string VarSubst::MapValue(const std::string &Value, const std::string &Table, const std::map<std::string, std::string> &Vars)
+{
+    const auto On = Vars.find(Table + ":?");
+    if (On == Vars.end())
+    {
+        LogWarn("MapValue", "%…:map:" + Table + "% reads a table no VARS declares — the value '" + Value + "' passes through unchanged.");
+        return Value;
+    }
+    if (On->second != "1") return Value;                                    // the table's WHEN is off
+    if (const auto It = Vars.find(Table + ":=" + Value); It != Vars.end()) return It->second;
+    if (const auto It = Vars.find(Table + ":!"); It != Vars.end()) return It->second;
+    return Value;
+}
+
+std::string VarSubst::RenderToken(const std::string &Value, const std::string &Format, const std::map<std::string, std::string> &Vars)
+{
+    if (Format.compare(0, 4, "map:") == 0) return MapValue(Value, Format.substr(4), Vars);
+    return RenderValue(Value, Format);
 }

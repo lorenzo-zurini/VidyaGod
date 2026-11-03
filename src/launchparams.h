@@ -14,11 +14,18 @@
 
 //True if a raw (pre-substitution) runner ARG references the launch target via a content token. Used to drop the
 //content-bearing args when swapping the target — an OverrideExe (tooling) or the wineboot prefix-init. Shared by
-//the registry layer (RegistryLayer), runner install (RunnerInstall), and the orchestrator (Execute).
+//the registry layer (RegistryLayer), runner install (RunnerInstall), and the orchestrator (Execute). A token with a
+//format (%ContentPath:winpath%) references the content as much as the bare one.
 inline bool ArgReferencesContent(const std::string &RawArg)
 {
-    return RawArg.find("%Content%") != std::string::npos
-        || RawArg.find("%ContentPath%") != std::string::npos;
+    for (const char *Token : { "%Content", "%ContentPath" })
+        for (auto At = RawArg.find(Token); At != std::string::npos; At = RawArg.find(Token, At + 1))
+        {
+            const char After = At + std::char_traits<char>::length(Token) < RawArg.size()
+                ? RawArg[At + std::char_traits<char>::length(Token)] : '\0';
+            if (After == '%' || After == ':') return true;
+        }
+    return false;
 }
 
 //(The RunnerType enum is gone — a runner declares its invocation as data: EXECUTABLE + ARGS with %Content%/
@@ -124,6 +131,10 @@ public:
     std::vector<std::string> Endpoints;                             //RESOLVED — terminal component ids (the selected variant's ENDPOINTS, load order)
     bool ReadOnlyVFS = false;                                       //SET — if true, no writable top layer (spec readonly=true); whole runtime is read-only
     bool UsesVFS = false;                                           //AUTO-DETECTED from SubComponentsArray
+    //AUTHORING — where this session's scratch (mounts, the writable upper an installer fills with the whole game,
+    //the prefix) lives instead of the system temp, which is RAM on Linux: a game run writes little, an installer
+    //run writes gigabytes. Empty = the system temp.
+    std::filesystem::path TempRootOverride;
     bool AuthoringBare = false;                                     //AUTHORING — mount the node's content overlay + writable upper with NO runner/prefix and CONTENT_ROOT="" (a platform-agnostic capture workbench); an empty runtime is valid. InitializeFromNode skips runner resolution; BuildContainerRuntime skips the no-content guard.
 
     //Persistence (derived from the unified Persist primitive {KEEP/DROP} — see DerivePersistence). The four old types
@@ -212,6 +223,7 @@ public:
     //read-only at its own mount; its DEFPREFIX is a one-time read-only per-runner artifact (no launch wineboot).
     bool                                 RunnerShipsBuild = false; //selected runner has a mounted build
     bool                                 UnifiedRuntime   = false; //mount the runner build INTO the game RUNTIME (rare; UNIFIED_RUNTIME)
+    bool                                 BoxPrepared      = false; //Windows: this launch filled its box (BoxLaunch::Prepare) — only then is it harvested and emptied
     std::filesystem::path                RunnerMountPath;          //where the runner build is mounted — exposed as %RunnerMount%
     std::vector<nlohmann::ordered_json>  RunnerLayers;             //the runner's VFSZipLayer subcomponents to mount at RunnerMountPath
     std::filesystem::path ExePathRelative;   //CONTENTPATH — path relative to ProgramPath → %ContentPath% (compose guest paths from this)

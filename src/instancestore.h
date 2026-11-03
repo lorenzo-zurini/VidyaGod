@@ -40,6 +40,11 @@ std::filesystem::path Root(const nlohmann::ordered_json &Cfg);
 std::filesystem::path PackageDir(const nlohmann::ordered_json &Cfg, const std::string &PackageUID);
 // <root>/<PackageUID>/<Instance> — the instance dir; this IS UserDataPath (persist TARGETs are its named subdirs).
 std::filesystem::path InstanceDir(const nlohmann::ordered_json &Cfg, const std::string &PackageUID, const std::string &Instance);
+
+// The folder in an instance dir that holds the instance's Sandboxie box on Windows (BoxPrefix): the game's prefix, which
+// until the launch's teardown stores them is the only copy of what the game kept outside its game folder. In the
+// instance, so it moves with a rename and goes with a delete; a clone leaves it out. Never a kept folder's name.
+inline constexpr const char *kBoxDir = ".vidyagod-box";
 // <root>/<PackageUID>/<Instance>/instance.json — the config, at the instance-dir root (never inside a persist TARGET).
 std::filesystem::path ConfigPath(const nlohmann::ordered_json &Cfg, const std::string &PackageUID, const std::string &Instance);
 

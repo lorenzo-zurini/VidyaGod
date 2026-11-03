@@ -56,6 +56,7 @@ find_package(nlohmann_json REQUIRED)
 find_package(PkgConfig REQUIRED)
 pkg_check_modules(LIBZIP REQUIRED IMPORTED_TARGET libzip)   # node-graph validation reads content zips to case-check CONTENTPATH
 pkg_check_modules(LIBZSTD REQUIRED IMPORTED_TARGET libzstd) # .vgdelta generation/verification (shared with vidyagodfs)
+pkg_check_modules(SDL2 REQUIRED IMPORTED_TARGET sdl2)       # the launch window's press-a-key capture reads gamepad buttons
 # XCB is Linux-only: it backs sandbox-init's X-side window cloak (src/sandboxinit.cpp, itself #ifdef __linux__).
 # There is no xcb on Windows/MinGW, so requiring it unconditionally broke the Windows configure — guard it.
 if(NOT WIN32)
@@ -80,8 +81,12 @@ add_library(vg_imgui STATIC
     third_party/imgui/imgui_tables.cpp
     third_party/imgui/imgui_widgets.cpp
     third_party/imgui/misc/cpp/imgui_stdlib.cpp
-    third_party/imgui/backends/imgui_impl_opengl3.cpp)
+    third_party/imgui/backends/imgui_impl_opengl3.cpp
+    src/imguiprobe.cpp)
 set_target_properties(vg_imgui PROPERTIES AUTOMOC OFF AUTOUIC OFF AUTORCC OFF POSITION_INDEPENDENT_CODE ON)
+# ImGui's test-engine hooks, implemented by src/imguiprobe.cpp: with VG_UI_PROBE set, the editor's canvas writes the
+# items each frame lays out (labels, rectangles) so a driver can click them by name with real input.
+target_compile_definitions(vg_imgui PUBLIC IMGUI_ENABLE_TEST_ENGINE)
 target_include_directories(vg_imgui PUBLIC
     ${CMAKE_SOURCE_DIR}/third_party/imgui
     ${CMAKE_SOURCE_DIR}/third_party/imgui/backends
@@ -121,6 +126,7 @@ set(SHARED_SOURCES
 
     src/jsonraweditor.h
     src/jsonraweditor.cpp
+    src/pkginsight.cpp
 
     src/filesystemoperations.h
     src/filesystemoperations.cpp
@@ -141,6 +147,7 @@ set(SHARED_SOURCES
 
     src/varsubst.h
     src/varsubst.cpp
+    src/keynames.cpp
 
     src/launchresolver.h
     src/launchresolver.cpp
@@ -151,6 +158,10 @@ set(SHARED_SOURCES
 
     src/sandboxlayer.h
     src/sandboxlayer.cpp
+    src/boxlaunch.h
+    src/boxlaunch.cpp      # Windows: Prepare (fill the box, import the registry) and Harvest (keeps back out)
+    src/boxprefix.h
+    src/boxprefix.cpp      # Windows: the Sandboxie box as the game's prefix (plain files + .reg text, tested anywhere)
     src/sandboxlayer_win.cpp   # Windows Sandboxie backend (Available/Wrap); #ifdef _WIN32, empty on Linux
     src/sandboxinit.cpp
 
@@ -225,6 +236,8 @@ set(SHARED_SOURCES
 
     src/prelaunchwindow.h
     src/prelaunchwindow.cpp
+    src/keycapture.h
+    src/keycapture.cpp
 
     src/launchthread.h
     src/launchthread.cpp
@@ -328,7 +341,10 @@ if(NOT WIN32)
 endif()
 target_link_libraries(vidyagod_objs PUBLIC
     Qt6::Widgets Qt6::Network Qt6::OpenGL Qt6::OpenGLWidgets
-    nlohmann_json::nlohmann_json PkgConfig::LIBZIP PkgConfig::LIBZSTD ${VG_XCB_LIB} vgfs_core vg_imgui)
+    nlohmann_json::nlohmann_json PkgConfig::LIBZIP PkgConfig::LIBZSTD PkgConfig::SDL2 ${VG_XCB_LIB} vgfs_core vg_imgui)
+if(WIN32)
+    target_link_libraries(vidyagod_objs PUBLIC shell32 ole32)   # Platform::HostFolders (SHGetKnownFolderPath)
+endif()
 target_include_directories(vidyagod_objs PUBLIC src VidyaGodFS/src)   # src: the cli/ TUs include engine headers bare
 target_compile_options(vidyagod_objs PRIVATE ${VG_WARNINGS} $<$<BOOL:${VIDYAGOD_WERROR}>:-Werror>)
 if(VIDYAGOD_SANITIZE)
@@ -379,6 +395,7 @@ add_executable(vg_tests
     tests/test_nodelower.cpp
     tests/test_varsubst.cpp
     tests/test_registrywrapper.cpp
+    tests/test_boxprefix.cpp
     tests/test_fileedits.cpp
     tests/test_binarypatch.cpp
     tests/test_registrylayer.cpp
@@ -394,7 +411,9 @@ add_executable(vg_tests
     src/nodelower.cpp
     src/contentfile.cpp
     src/varsubst.cpp
+    src/keynames.cpp
     src/registrywrapper.cpp
+    src/boxprefix.cpp
     src/fileedits.cpp
     src/binarypatch.cpp
     src/registrylayer.cpp
@@ -407,6 +426,9 @@ add_executable(vg_tests
     ${VG_PLATFORM_SRC}      # Platform::SelfExe (used by depcheck) — POSIX or Win32 impl
     src/launchparams.cpp)   # ContainerParams::GetVariablesMap — validator's built-in %variable% source of truth
 target_include_directories(vg_tests PRIVATE src tests VidyaGodFS/src)
+if(WIN32)
+    target_link_libraries(vg_tests PRIVATE shell32 ole32)
+endif()
 target_link_libraries(vg_tests PRIVATE nlohmann_json::nlohmann_json PkgConfig::LIBZIP PkgConfig::LIBZSTD vgfs_core)
 target_compile_options(vg_tests PRIVATE ${VG_WARNINGS} $<$<BOOL:${VIDYAGOD_WERROR}>:-Werror>)
 if(VIDYAGOD_SANITIZE)
@@ -441,7 +463,7 @@ if(NOT WIN32)
 endif()
 
 # vg_fold — the generation-6 resolver in batch, gated plan-for-plan against tools/gen6/resolve.py (fold_gate.py).
-add_executable(vg_fold tools/gen6/vg_fold.cpp src/fold.cpp src/cid.cpp src/varsubst.cpp src/commonutils.cpp)
+add_executable(vg_fold tools/gen6/vg_fold.cpp src/fold.cpp src/cid.cpp src/varsubst.cpp src/keynames.cpp src/commonutils.cpp)
 target_include_directories(vg_fold PRIVATE src)
 target_link_libraries(vg_fold PRIVATE nlohmann_json::nlohmann_json)
 target_compile_options(vg_fold PRIVATE ${VG_WARNINGS} $<$<BOOL:${VIDYAGOD_WERROR}>:-Werror>)

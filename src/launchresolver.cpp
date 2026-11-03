@@ -78,20 +78,35 @@ std::string LaunchResolver::GuestToLayout(struct ContainerParams &CP, const std:
     //An anchor resolves to its guest path (C:\802 — the variables map says so: the same spelling a registry value
     //gets); a guest path lands where its drive lives in the runner's layout.
     const bool NoDrives = !CP.Drives.is_object() || CP.Drives.empty();
-    if (NoDrives && Path.find('%') == std::string::npos) return Path;    // nothing to substitute, nothing to map
-    const std::map<std::string, std::string> Vars = CP.GetVariablesMap();
+    std::map<std::string, std::string> Vars;                            // built once, only when needed
+    auto Variables = [&]() -> const std::map<std::string, std::string> & { if (Vars.empty()) Vars = CP.GetVariablesMap(); return Vars; };
     std::string P = Path;
-    if (P.find('%') != std::string::npos) VarSubst::StringVariableSubstitution(P, Vars);
-    if (NoDrives) return P;                                              // no drives: nothing is a guest path to map
+    if (P.find('%') != std::string::npos) VarSubst::StringVariableSubstitution(P, Variables());
+    //A guest path in the runtime itself — an anchor spelled from %RuntimePath%, a native runner's guest being its
+    //runtime — is placed where it already is: its path below the runtime. Before the drives: a Windows runtime path
+    //starts with a drive letter of the HOST, not of a guest. (Callers may hand the path in already substituted.)
+    std::string Root = CP.RuntimePath.string();
+    while (Root.size() > 1 && (Root.back() == '/' || Root.back() == '\\')) Root.pop_back();
+    if (!Root.empty() && P.compare(0, Root.size(), Root) == 0
+        && (P.size() == Root.size() || P[Root.size()] == '/' || P[Root.size()] == '\\'))
+    {
+        std::string Rel = P.substr(Root.size());
+        std::replace(Rel.begin(), Rel.end(), '\\', '/');
+        while (!Rel.empty() && Rel.front() == '/') Rel.erase(Rel.begin());
+        return Rel;
+    }
+    //Outside the runtime, a placement lands nowhere the program sees: a host path (%TempPath%/x — it would mount at
+    //RUNTIME/tmp/…) or a drive no DRIVES lays out (a literal "C:" folder). Recorded, and the launch refuses it.
     const bool Guest = P.size() >= 2 && std::isalpha(static_cast<unsigned char>(P[0])) && P[1] == ':';
-    if (!Guest) return P;
+    if ((!P.empty() && (P[0] == '/' || P[0] == '\\')) || (Guest && NoDrives)) { CP.UnmappedPlacements.push_back(P); return P; }
+    if (!Guest) return P;                                                // a runtime-relative path
     std::replace(P.begin(), P.end(), '\\', '/');                        // a guest path: Windows separators
     for (size_t I; (I = P.find("//")) != std::string::npos;) P.erase(I, 1);   // "E:\\" + "/x" is E:/x
     nlohmann::ordered_json Drives = nlohmann::ordered_json::object();
     for (const auto &[D, V] : CP.Drives.items())
     {
         std::string R = V.is_string() ? V.get<std::string>() : std::string();
-        VarSubst::StringVariableSubstitution(R, Vars);
+        VarSubst::StringVariableSubstitution(R, Variables());
         Drives[D] = R;
     }
     std::string Out = Fold::ToLayout(P, Drives);
@@ -365,8 +380,8 @@ bool LaunchResolver::InitializeFromNode(struct ContainerParams &ContainerParams,
     BuildSubComponentsArray(ComponentPool, CP);
     if (!CP.UnmappedPlacements.empty())
     {
-        LogErr("InitializeFromNode", "'" + CP.UnmappedPlacements.front() + "' is placed on drive "
-               + CP.UnmappedPlacements.front().substr(0, 2) + ", which the runner's DRIVES does not lay out");
+        LogErr("InitializeFromNode", "'" + CP.UnmappedPlacements.front() + "' is placed outside the runtime: on a "
+               "drive the runner's DRIVES does not lay out, or at a host path not below %RuntimePath%");
         return false;
     }
     //A prefix-generating runner assembles the prefix from RUNTIME-SOURCED layers (a %variable% PATH resolved against
@@ -407,14 +422,15 @@ bool LaunchResolver::InitializeFromNode(struct ContainerParams &ContainerParams,
             CP.SubComponentsArray.push_back(std::move(E));
         }
     }
-    //A runner's edit on a drive its DRIVES does not lay out is refused like a game's (the check above ran before them).
+    DerivePersistence(ComponentPool, CP);
+    //A runner's edit or a kept path placed outside the runtime is refused like a game's layer (the check above ran
+    //before them).
     if (!CP.UnmappedPlacements.empty())
     {
-        LogErr("InitializeFromNode", "'" + CP.UnmappedPlacements.front() + "' is placed on drive "
-               + CP.UnmappedPlacements.front().substr(0, 2) + ", which the runner's DRIVES does not lay out");
+        LogErr("InitializeFromNode", "'" + CP.UnmappedPlacements.front() + "' is placed outside the runtime: on a "
+               "drive the runner's DRIVES does not lay out, or at a host path not below %RuntimePath%");
         return false;
     }
-    DerivePersistence(ComponentPool, CP);
     LogSucc("InitializeFromNode", "Resolved node '" + LaunchId + "' (runner " + CP.RunnerName + ", "
             + std::to_string(Plan.Order.size()) + " node(s), " + std::to_string(CP.AppliedGrafts.size()) + " graft(s)).");
     return true;

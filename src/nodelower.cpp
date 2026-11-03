@@ -3,6 +3,7 @@
 #include "commonutils.h"
 #include "fold.h"
 #include "varsubst.h"
+#include "keynames.h"
 
 #include <algorithm>
 #include <cctype>
@@ -44,7 +45,7 @@ const char *VfsType(const std::string &T)
     return nullptr;
 }
 
-bool IsBinaryMode(const std::string &M) { return M == "Replace" || M == "Cave" || M == "Poke" || M == "Or"; }
+bool IsBinaryMode(const std::string &M) { return M == "Replace" || M == "ReplaceAll" || M == "Cave" || M == "Poke" || M == "Or"; }
 
 //One hive tree -> a RegEdit per key path that carries values (or is an empty object: "create this key").
 void EmitRegTree(const std::string &Path, const ordered_json &Tree, const ordered_json &Arch, ordered_json &Out)
@@ -224,16 +225,26 @@ std::string CheckLayer(const ordered_json &L)
                 if (Text.count(K) && !V.is_string()) return "EDIT op field '" + K + "' must be a string";
                 if (!V.is_string() && !V.is_boolean() && !V.is_number()) return "EDIT op field '" + K + "' must be a scalar";
             }
+            //Delete removes the TARGET (a file or a folder) and nothing else: a value or a site would be read by nothing.
+            if (O["MODE"] == "Delete")
+                for (const auto &[K, V] : O.items())
+                    if (K != "MODE" && K != "COMMENT" && K != "WHEN")
+                        return "a Delete op takes no '" + K + "' (it removes its TARGET; only COMMENT and WHEN go with it)";
         }
     }
     else if (T == "REG")
     {
         if (!P.is_object()) return "REG must be a hive tree";
-        if (L.contains("ARCH"))
-        {
-            if (!StrArray(L["ARCH"])) return "ARCH must be a list of \"32\"/\"64\"";
-            for (const auto &A : L["ARCH"]) if (A != "32" && A != "64") return "ARCH must be a list of \"32\"/\"64\"";
-        }
+        //ARCH is mandatory: without it a 32-bit game's HKLM\Software keys land in the 64-bit view and the game never
+        //sees them (Thief 3 hung, RollerCoaster Tycoon 2 asked for its CD, Colin McRae 2005 crashed, 2026-10-26).
+        if (!L.contains("ARCH")) return "REG needs ARCH: the bitness of the program that reads it ([\"32\"] and/or [\"64\"])";
+        if (!StrArray(L["ARCH"]) || L["ARCH"].empty()) return "ARCH must be a list of \"32\"/\"64\"";
+        for (const auto &A : L["ARCH"]) if (A != "32" && A != "64") return "ARCH must be a list of \"32\"/\"64\"";
+        for (const auto &[Hive, Keys] : P.items())
+            if (Keys.is_object())
+                for (const auto &[K, Sub] : Keys.items())
+                    if (Sub.is_object() && Sub.contains("Wow6432Node"))   // ARCH places the 32-bit view; never by hand
+                        return "REG must not name Wow6432Node (ARCH [\"32\"] puts the keys there)";
     }
     else if (T == "VARS")
     {
@@ -246,13 +257,38 @@ std::string CheckLayer(const ordered_json &L)
             if (D.contains("UI") && !D["UI"].is_object()) return "VARS." + K + ".UI must be an object";
             if (D.contains("UI") && D["UI"].contains("SECTION") && !D["UI"]["SECTION"].is_string())
                 return "VARS." + K + ".UI.SECTION must be a path string";
+            if (D.contains("UI") && D["UI"].contains("CONTROL"))
+            {
+                static const std::set<std::string> Controls = {"bool", "int", "float", "text", "enum", "secret", "key"};
+                const auto &C = D["UI"]["CONTROL"];
+                if (!C.is_string() || !Controls.count(C.get<std::string>()))
+                    return "VARS." + K + ".UI.CONTROL must be one of bool, int, float, text, enum, secret, key";
+                //A key option holds a key name (spec 08 §8.3); a computed DEFAULT is checked at launch.
+                const std::string Def = D.value("DEFAULT", std::string());
+                if (C == "key" && Def.find('%') == std::string::npos && !KeyNames::IsValue(Def))
+                    return "VARS." + K + ".DEFAULT '" + Def + "' is not a key name (spec 08 §8.3)";
+            }
             if (D.contains("EVAL") && !D["EVAL"].is_boolean()) return "VARS." + K + ".EVAL must be true or false";
+            //A MAP table (spec 08 §8.3): strings to strings, read through %KEY:map:TABLE%. It is data, never an option.
+            if (D.contains("MAP"))
+            {
+                if (!D["MAP"].is_object()) return "VARS." + K + ".MAP must be {value: mapped value}";
+                for (const auto &[E, V] : D["MAP"].items())
+                    if (!V.is_string()) return "VARS." + K + ".MAP." + E + " must be a string";
+                if (D.contains("UI")) return "VARS." + K + " is a MAP table: a table has no UI";
+            }
+            if (D.contains("ELSE") && (!D["ELSE"].is_string() || !D.contains("MAP")))
+                return "VARS." + K + ".ELSE must be a string, on a MAP table";
         }
     }
     else if (T == "ENV" || T == "DLL")
     {
         if (!P.is_object()) return T + " must be {name: value}";
-        for (const auto &[K, V] : P.items()) if (!V.is_string() && !V.is_null()) return T + "." + K + " must be a string or null";
+        for (const auto &[K, V] : P.items())
+        {
+            if (K.empty()) return T + " has an entry with no name";      // a DLL "" overrides nothing; an ENV "" sets nothing
+            if (!V.is_string() && !V.is_null()) return T + "." + K + " must be a string or null";
+        }
     }
     else if (T == "EXEC")
     {
@@ -281,9 +317,14 @@ std::string CheckLayer(const ordered_json &L)
                 for (const auto &[K, V] : E["GUEST_ROOTS"].items())
                 {
                     if (K.size() < 3 || K.front() != '%' || K.back() != '%') return "GUEST_ROOTS keys are %Anchor%s ('" + K + "' is not)";
-                    //An anchor on a drive the runner does not lay out would land at a literal "E:" folder.
+                    //A guest path is on a drive (C:\x), or spelled from a variable: %RuntimePath% for a guest that IS the
+                    //runtime, another anchor, a VAR. Anything else ("n64/x", "/opt/x") is no place in any guest.
                     const std::string G = V.get<std::string>();
-                    if (G.size() >= 2 && std::isalpha(static_cast<unsigned char>(G[0])) && G[1] == ':')
+                    const bool OnDrive = G.size() >= 2 && std::isalpha(static_cast<unsigned char>(G[0])) && G[1] == ':';
+                    if (!OnDrive && (G.empty() || G.front() != '%'))
+                        return "GUEST_ROOTS " + K + " is '" + G + "' — a guest path is on a drive DRIVES lays out (C:\\…) or starts at %RuntimePath%";
+                    //An anchor on a drive the runner does not lay out would land at a literal "E:" folder.
+                    if (OnDrive)
                     {
                         bool Mapped = false;
                         if (E.contains("DRIVES"))
@@ -483,6 +524,37 @@ bool UserOwned(const nlohmann::ordered_json &Keep, const std::string &Address)
     return Owned;
 }
 
+std::string KeptUnder(const nlohmann::ordered_json &Keep, const std::string &Address)
+{
+    if (!Keep.is_object()) return std::string();
+    //Normalised first ("a/../Saves", "./Saves", "a//b" are the places they name); the launch judges the RESOLVED path
+    //again (FileEdits::KeptPathMet), which also sees a place spelled from another anchor or a variable.
+    std::string A = LowerAscii(std::filesystem::path(Address).lexically_normal().generic_string());
+    while (!A.empty() && A.back() == '/') A.pop_back();
+    for (const auto &[K, V] : Keep.items())
+    {
+        if (V.is_boolean() && !V.get<bool>()) continue;                  // a take-back keeps nothing
+        std::string Kl = LowerAscii(K);
+        while (!Kl.empty() && Kl.back() == '/') Kl.pop_back();
+        Kl = Kl.substr(0, Kl.find('#'));                                  // a kept key lives in its file
+        if (HasWildcard(Kl))
+        {
+            //A pattern keeps matching files in one folder: the Delete meets it on one of those files, or on that
+            //folder or anything holding it.
+            const std::string Dir = Kl.substr(0, Kl.rfind('/'));
+            const size_t S = A.rfind('/');
+            if ((S != std::string::npos && A.substr(0, S) == Dir && WildcardMatch(Kl.substr(Kl.rfind('/') + 1), A.substr(S + 1)))
+                || A == Dir || Dir.rfind(A + "/", 0) == 0)
+                return K;
+            continue;
+        }
+        //The kept address itself, anything inside it (a kept folder is served live, taken back or not), or a folder
+        //holding it.
+        if (A == Kl || A.rfind(Kl + "/", 0) == 0 || Kl.rfind(A + "/", 0) == 0) return K;
+    }
+    return std::string();
+}
+
 std::string EditAddress(const nlohmann::ordered_json &Op, const std::string &Target)
 {
     const std::string Mode = Str(Op.value("MODE", ordered_json()));
@@ -580,7 +652,13 @@ nlohmann::ordered_json LowerPlan(const Fold::Plan &P)
                 if (L["TYPE"] == "FileEdit")
                 {
                     L["OVERRIDE"] = true;
-                    if (UserOwned(P.Keep, Addr)) L["IF_UNSAVED"] = true;
+                    //A Delete never reaches the user's state (a removal in a kept folder would be stored with their
+                    //saves): one that would is carried with the kept address it meets, and the launch refuses it.
+                    if (Str(O.value("MODE", ordered_json())) == "Delete")
+                    {
+                        if (const std::string K = KeptUnder(P.Keep, Addr); !K.empty()) L["KEPT"] = K;
+                    }
+                    else if (UserOwned(P.Keep, Addr)) L["IF_UNSAVED"] = true;
                 }
                 Out.push_back(std::move(L));
             }

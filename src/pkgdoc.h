@@ -43,7 +43,7 @@ json RemapRefs(const json &Node, const std::map<std::string, std::string> &M);
 //"bafkrei…": a CIDv1 raw node name, the only thing a node file may be called in a published package.
 bool LooksLikeCid(const std::string &S);
 
-struct Pos { float X = 0.0f, Y = 0.0f; };
+struct Pos { float X = 0.0f, Y = 0.0f; bool operator==(const Pos &) const = default; };
 
 struct SaveReport
 {
@@ -74,7 +74,7 @@ public:
     // ---- reading ----------------------------------------------------------------------------------------------
     int Count() const { return (int)Entries.size(); }
     const std::string &Handle(int I) const { return Entries[(size_t)I].Handle; }
-    const json &Node(int I) const { return *Entries[(size_t)I].Node; }
+    const json &Node(int I) const { return *Entries.at((size_t)I).Node; }   // a stale index throws, never reads freed memory
     int IndexOf(const std::string &Handle) const;         // -1 if absent
     //The file this node came from ("" for a node made in this session).
     const std::string &File(int I) const { return Entries[(size_t)I].File; }
@@ -90,7 +90,12 @@ public:
     bool Remove(int I);
     //Adds a reference from Child to Parent: a NODE layer (containment), an ANY member or a NOT layer.
     enum class RefKind : std::uint8_t { Node, Any, Not };
-    bool Link(int Child, const std::string &ParentHandle, RefKind Kind);
+    //At >= 0: the reference goes in before layer At (where the wire was dropped); -1: the usual place.
+    bool Link(int Child, const std::string &ParentHandle, RefKind Kind, int At = -1);
+    //Consolidate: node From's layers are appended to node Into, every reference to From in the package now names
+    //Into, and From is removed. Into keeps its own properties (a VARIANT/LABEL/... only From has is taken over).
+    //Refused (Err says why) when From contains Into - Into would contain itself.
+    bool MergeInto(int From, int Into, std::string *Err = nullptr);
 
     // ---- positions (this machine's canvas; part of undo, never part of a node) --------------------------------
     const std::map<std::string, Pos> &Positions() const { return Where; }
@@ -106,6 +111,10 @@ public:
     bool CanRedo() const { return !RedoStack.empty(); }
     bool Undo();
     bool Redo();
+    //Each undo step in words, found by comparing the states around it ("Edited "Demo"", "Added "Saves"", "Moved
+    //nodes"): Done oldest to newest (the last one is what Undo undoes), Undone in the order Redo would bring them back.
+    struct History { std::vector<std::string> Done, Undone; };
+    History Steps() const;
 
     // ---- state ------------------------------------------------------------------------------------------------
     uint64_t Revision() const { return Rev; }            // bumps on every change, positions included

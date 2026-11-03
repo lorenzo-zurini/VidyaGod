@@ -1,7 +1,10 @@
 #include "sandboxlayer.h"
+#include "instancestore.h"   // kBoxDir — where an instance keeps its box
 #include "launchparams.h"
 #include "platform/platform.h"
+#include "commonutils.h"   // LogErr
 
+#include <algorithm>
 #include <cctype>
 #include <cstdlib>
 #include <filesystem>
@@ -9,7 +12,7 @@
 #include <unistd.h>
 
 // See sandboxlayer.h. This builds a conservative, working-first bwrap policy: the host root is mounted READ-ONLY so a
-// native game can't modify the system, while the game's own runtime + the user's home (saves) are re-bound writable,
+// native game can't modify the system, while the game's session tree + its kept folders are re-bound writable,
 // and /dev + /proc + /tmp + the per-user runtime dir (Wayland/X11/PipeWire/Pulse sockets) are passed through so the
 // game still renders and plays audio. Later, more-specific binds override the read-only root (bwrap applies them in
 // order). Network scoping (--unshare-net) is emitted for NetMode::Isolated.
@@ -33,7 +36,91 @@ Options FromParams(const ContainerParams &CP)
 {
     Options O;
     O.Net = (Var(CP, "VIDYAGOD_SANDBOX_NET") == "isolated") ? NetMode::Isolated : NetMode::Host;
+    if (!CP.TempPath.empty()) O.WritableBinds.push_back(CP.TempPath.string());
+    // Of the instance folder, only the kept folders: the in-sandbox vidyagodfs serves each one live at its runtime
+    // path. Kept files and registry keys are copied in and out by this process, outside the sandbox, so the folder
+    // itself (instance.json: VARIABLES, RUNNER_CHAIN) and the stores beside it stay out of the game's reach.
+    // A kept folder that is a link (left by a game when the whole instance folder was bound) is not bound: bwrap refuses
+    // to mount on a link, and the folder it names is not the instance's to open to the game.
+    if (!CP.UserDataPath.empty())
+        for (const PersistTarget &D : CP.KeepDirs)
+        {
+            const std::filesystem::path Kept = CP.UserDataPath / D.Target;
+            std::error_code Ec;
+            if (std::filesystem::symlink_status(Kept, Ec).type() == std::filesystem::file_type::symlink)
+                LogWarn("SandboxLayer::FromParams", "The kept folder " + Kept.string() + " is a link, not a folder — not "
+                        "opened to the game (it sees what the link names, read-only). Replace the link with the folder.");
+            else
+                O.WritableBinds.push_back(Kept.string());
+        }
+#ifdef _WIN32
+    // The box's own root: the game's prefix (BoxPrefix), in the instance (InstanceStore::kBoxDir): until the launch's
+    // teardown stores them it holds the only copy of what the game keeps outside its game folder, so it is kept where a
+    // crash, a TEMP cleanup or Windows' Storage Sense cannot take it; BoxLaunch empties it once stored.
+    if (!CP.UserDataPath.empty()) O.BoxRoot = (CP.UserDataPath / InstanceStore::kBoxDir).string();
+#endif
+#ifndef _WIN32
+    // The private home (see the header). The real one stays out of WritableBinds: the read-only root covers it.
+    const char *H = std::getenv("HOME");
+    O.RealHome = H ? H : "";
+    if (!CP.TempPath.empty())
+    {
+        O.Home = (CP.TempPath / "HOME").string();
+        // The GPU driver's shader caches, where the driver looks for them under the private home's XDG_CACHE_HOME
+        // (NVIDIA: <cache>/nvidia/GLCache, measured on 580; Mesa: <cache>/mesa_shader_cache*) and under HOME (.nv,
+        // NVIDIA's older and its CUDA cache). Wrap binds only the ones the real home has.
+        if (!O.RealHome.empty())
+        {
+            const char *C = std::getenv("XDG_CACHE_HOME");   // a relative one is invalid (XDG spec): ignored
+            const std::filesystem::path RealCache = (C && *C == '/') ? std::filesystem::path(C)
+                                                                     : std::filesystem::path(O.RealHome) / ".cache";
+            const std::filesystem::path Home(O.Home);
+            for (const char *Dir : {"nvidia", "mesa_shader_cache", "mesa_shader_cache_db", "mesa_shader_cache_sf"})
+                O.HomeCaches.emplace_back((RealCache / Dir).string(), (Home / ".cache" / Dir).string());
+            O.HomeCaches.emplace_back((std::filesystem::path(O.RealHome) / ".nv").string(), (Home / ".nv").string());
+        }
+    }
+#endif
     return O;
+}
+
+void HomeEnv(const Options &Opts, QProcessEnvironment &Env)
+{
+    if (Opts.Home.empty()) return;
+    const QString Home = QString::fromStdString(Opts.Home);
+    Env.insert("HOME", Home);
+    Env.insert("XDG_CONFIG_HOME", Home + "/.config");
+    Env.insert("XDG_DATA_HOME",   Home + "/.local/share");
+    Env.insert("XDG_STATE_HOME",  Home + "/.local/state");
+    Env.insert("XDG_CACHE_HOME",  Home + "/.cache");
+    if (!Env.contains("XAUTHORITY") && !Opts.RealHome.empty())
+    {
+        const std::filesystem::path Cookie = std::filesystem::path(Opts.RealHome) / ".Xauthority";
+        std::error_code Ec;
+        if (std::filesystem::exists(Cookie, Ec)) Env.insert("XAUTHORITY", QString::fromStdString(Cookie.string()));
+    }
+}
+
+std::vector<std::string> HomeLeftovers(const std::string &Home, size_t Limit)
+{
+    std::vector<std::string> Out;
+    std::error_code Ec;
+    // symlink_status: the program can replace its home with a link (to /, to the real home); walking that would read
+    // the whole host from the launch thread. The walk below never follows a link either (no follow_directory_symlink).
+    if (Home.empty() || std::filesystem::symlink_status(Home, Ec).type() != std::filesystem::file_type::directory)
+        return Out;
+    size_t Visited = 0;   // every entry counts toward the cap: a tree of empty folders must not make the walk unbounded
+    for (auto It = std::filesystem::recursive_directory_iterator(Home, std::filesystem::directory_options::skip_permission_denied, Ec);
+         !Ec && It != std::filesystem::recursive_directory_iterator() && Visited++ < Limit; It.increment(Ec))
+        if (It->is_symlink(Ec) || !It->is_directory(Ec))
+        {
+            std::string Name = It->path().lexically_relative(Home).generic_string();   // relative() would resolve links
+            for (char &Ch : Name)   // the program chose the names, and they go to the log and the terminal
+                if (static_cast<unsigned char>(Ch) < 0x20 || Ch == 0x7f) Ch = '?';
+            Out.push_back(std::move(Name));
+        }
+    std::sort(Out.begin(), Out.end());
+    return Out;
 }
 
 std::vector<GameEnvVar> TakeLoaderEnv(QProcessEnvironment &Run, const QProcessEnvironment &Base)
@@ -54,10 +141,58 @@ std::vector<GameEnvVar> TakeLoaderEnv(QProcessEnvironment &Run, const QProcessEn
     return Out;
 }
 
+std::vector<QStringList> BoxIniCommands(const std::string &Box, const Options &Opts,
+                                        const std::function<std::string(const std::string &)> &MountTarget)
+{
+    const QString B = QString::fromStdString(Box);
+    auto Win = [](const std::string &P) {
+        QString G = QString::fromStdString(P);
+        G.replace('/', '\\');
+        while (G.size() > 3 && G.endsWith('\\')) G.chop(1);   // "C:\" keeps its separator
+        return G;
+    };
+    //A box with a root of its own is the game's prefix (BoxPrefix): VidyaGod fills it before the game and empties it
+    //after, so Sandboxie must not delete it when its last program ends (that is between the registry import and the
+    //game). Without one, Sandboxie's default root, deleted as before.
+    std::vector<QStringList> Out = { {"set", B, "Enabled", "y"},
+                                     {"set", B, "AutoDelete", Opts.BoxRoot.empty() ? "y" : "n"},
+                                     {"set", B, "FileRootPath", Opts.BoxRoot.empty() ? QString() : Win(Opts.BoxRoot)},
+                                     {"set", B, "DropAdminRights", "y"} };
+    QStringList Grants;
+    auto Grant = [&](const std::string &P) {
+        const QString G = Win(P);
+        if (!G.isEmpty() && !Grants.contains(G, Qt::CaseInsensitive)) Grants << G;
+    };
+    //Only the mounts: the kept folders are reached through them (their passthrough), and a grant on TEMP or the
+    //instance folder would let the game write there behind the mount's back.
+    for (const Mount &M : Opts.Mounts) { Grant(M.Mountpoint); Grant(MountTarget(M.Mountpoint)); }
+    // "set" replaces every value the box had, so a box re-used by the next launch holds this launch's grants only.
+    Out.push_back({"set", B, "OpenFilePath", Grants.isEmpty() ? QString() : Grants.first()});
+    for (int I = 1; I < Grants.size(); ++I) Out.push_back({"append", B, "OpenFilePath", Grants.at(I)});
+    return Out;
+}
+
+QStringList BoxStartArgs(const std::string &Box, const std::string &Program, const QStringList &Arguments)
+{
+    QString P = QString::fromStdString(Program);
+    P.replace('/', '\\');
+    return QStringList{"/box:" + QString::fromStdString(Box), "/silent", "/wait", P} + Arguments;
+}
+
 void WrapGame(Options Opts, std::string &Program, QStringList &Arguments, QProcessEnvironment &RunEnv,
               const QProcessEnvironment &BaseEnv)
 {
 #ifndef _WIN32
+    // The private home exists before the game starts: it is HOME, and some programs only create their folder in an
+    // XDG directory, not the directory itself.
+    if (!Opts.Home.empty())
+        for (const char *Sub : {"", ".config", ".local/share", ".local/state", ".cache"})
+        {
+            std::error_code Ec;
+            std::filesystem::create_directories(std::filesystem::path(Opts.Home) / Sub, Ec);
+            if (Ec) LogErr("SandboxLayer::WrapGame", "could not create the private home (" + Opts.Home + "/" + Sub
+                           + "): " + Ec.message() + " — the game starts without it");
+        }
     Opts.GameEnv = TakeLoaderEnv(RunEnv, BaseEnv);
 #else
     (void)RunEnv; (void)BaseEnv;
@@ -66,6 +201,10 @@ void WrapGame(Options Opts, std::string &Program, QStringList &Arguments, QProce
 }
 
 #ifndef _WIN32   // ---- Linux bubblewrap backend. The Windows Sandboxie backend is in sandboxlayer_win.cpp ----
+void PrepareBox(const Options &) {}
+int RunInBox(const Options &, const std::string &, const QStringList &, int) { return -1; }
+bool EmptyBox(const Options &) { return true; }
+
 bool Available()
 {
     // Functional probe (not just `which bwrap`): actually create a throwaway sandbox with the SAME namespace + cap
@@ -115,6 +254,10 @@ void Wrap(const Options &Opts, std::string &Program, QStringList &Arguments)
 #ifdef __linux__
     bindRW("/run/user/" + std::to_string(static_cast<unsigned>(::getuid()))); // Wayland / PipeWire / Pulse
 #endif
+    // The real GPU shader caches into the private home. After /tmp: the home lives under TempPath, which is under
+    // /tmp, and a later bind of /tmp would cover them.
+    for (const auto &[Real, InHome] : Opts.HomeCaches)
+        if (std::error_code Ec; std::filesystem::is_directory(Real, Ec)) A << "--bind" << QString::fromStdString(Real) << QString::fromStdString(InHome);
 
     // The payload: re-invoke ourselves as the in-sandbox init, which mounts the specs (+ TUN) then execs the game.
     A << "--" << QString::fromStdString(SelfExe()) << "--sandbox-init";
@@ -136,7 +279,7 @@ void Wrap(const Options &Opts, std::string &Program, QStringList &Arguments)
     Arguments = A;
 }
 
-void TerminateBox(const std::string &) {}   // no-op: bwrap dies with the game's process group
+void TerminateBox(const Options &) {}   // no-op: bwrap dies with the game's process group
 #endif // !_WIN32
 
 } // namespace SandboxLayer

@@ -1,6 +1,7 @@
 #include "instancestore.h"
 #include "apppaths.h"
 #include "commonutils.h"
+#include "boxprefix.h"   // RemoveTree — an instance's box may hold links the game made
 
 #include <algorithm>
 #include <atomic>
@@ -201,8 +202,9 @@ bool Delete(const nlohmann::ordered_json &Cfg, const std::string &PackageUID, co
     std::error_code Ec;
     const fs::path Dir = InstanceDir(Cfg, PackageUID, Name);
     if (!fs::exists(Dir, Ec)) return true;                    // already gone
-    fs::remove_all(Dir, Ec);
-    return Ec ? Fail("delete failed: " + Ec.message()) : true;
+    //Never through a link: its box and kept folders hold what the game wrote (on Windows MinGW's remove_all follows one).
+    std::vector<std::string> Left;
+    return BoxPrefix::RemoveTree(Dir, Left) ? true : Fail("delete failed: " + Left.front());
 }
 
 bool Clone(const nlohmann::ordered_json &Cfg, const std::string &PackageUID, const std::string &From, const std::string &To, std::string *Error)
@@ -212,8 +214,16 @@ bool Clone(const nlohmann::ordered_json &Cfg, const std::string &PackageUID, con
     std::error_code Ec;
     if (!fs::exists(InstanceDir(Cfg, PackageUID, From), Ec)) return Fail("no such instance: " + From);
     if (fs::exists(InstanceDir(Cfg, PackageUID, To), Ec))    return Fail("instance already exists: " + To);
-    fs::copy(InstanceDir(Cfg, PackageUID, From), InstanceDir(Cfg, PackageUID, To),
-             fs::copy_options::recursive | fs::copy_options::copy_symlinks, Ec);
+    //Entry by entry, so the box stays behind: what it holds is the source instance's session, not the clone's.
+    const fs::path Src = InstanceDir(Cfg, PackageUID, From), Dst = InstanceDir(Cfg, PackageUID, To);
+    fs::create_directories(Dst, Ec);
+    for (auto It = fs::directory_iterator(Src, Ec); !Ec && It != fs::directory_iterator(); It.increment(Ec))
+        if (It->path().filename() != kBoxDir)
+        {
+            std::error_code Ce;
+            fs::copy(It->path(), Dst / It->path().filename(), fs::copy_options::recursive | fs::copy_options::copy_symlinks, Ce);
+            if (Ce) { Ec = Ce; break; }
+        }
     if (Ec) return Fail("clone failed: " + Ec.message());
     TouchLastRun(Cfg, PackageUID, To);                       // the clone is the freshest → becomes active
     return true;

@@ -366,6 +366,35 @@ TEST(a_binarypatch_path_that_climbs_out_of_the_runtime_is_refused)
     std::filesystem::remove_all(Root);
 }
 
+//And the on-disk half: a patch target inside the runtime that is a link the game left in a kept folder (game.exe ->
+//a file of the user's) is never patched through it. Teeth: drop the LinkLeadsOut check (the outside file changes).
+TEST(a_binarypatch_never_writes_through_a_link_out_of_the_runtime)
+{
+    const std::filesystem::path Root = std::filesystem::temp_directory_path() / "vg_bp_link";
+    std::filesystem::remove_all(Root);
+    const std::filesystem::path Runtime = Root / "RUNTIME";
+    std::filesystem::create_directories(Runtime / "saves");
+    const std::filesystem::path Outside = Root / "outside.exe";
+    const std::vector<uint8_t> Pristine = MinimalPe();
+    { std::ofstream O(Outside, std::ios::binary); O.write((const char *)Pristine.data(), (std::streamsize)Pristine.size()); }
+    std::filesystem::create_symlink(Outside, Runtime / "saves/game.exe");
+
+    ContainerParams CP(Root / "PKG");
+    CP.RuntimePath = Runtime;
+    CP.SubComponentsArray = nlohmann::ordered_json::array({
+        nlohmann::ordered_json{{"TYPE","BinaryPatch"},{"FILE","saves/game.exe"},
+                               {"EDITS", nlohmann::ordered_json::array()},
+                               {"MODE","Poke"},{"OFFSET","0x0"},{"VALUE","ff"}}});
+    CHECK(!BinaryPatch::ProcessBinaryPatches(CP));
+    std::vector<uint8_t> After;
+    {
+        std::ifstream In(Outside, std::ios::binary);
+        After.assign(std::istreambuf_iterator<char>(In), std::istreambuf_iterator<char>());
+    }
+    CHECK(After == Pristine);
+    std::filesystem::remove_all(Root);
+}
+
 //The patch side of the same rule, which was unpinned: an ABSOLUTE FILE already inside the runtime must be
 //used as is. Stripping its leading separator turned "%RuntimePath%/game/x.exe" into
 //"<runtime>/home/.../RUNTIME/game/x.exe", a path that exists nowhere — so the patch silently did not apply.
@@ -418,4 +447,82 @@ TEST(bp_or_sets_bits_and_composes)
     nlohmann::ordered_json g{{"MODE", "Or"}, {"OFFSET", "0x401001"}, {"VALUE", "01"}, {"EXPECT", "00"}};
     CHECK(ApplyOne(g, img, NoVars, msg) == Result::Error);
     CHECK_EQ(int(img[kTextOff + 1]), 0x00);
+}
+
+// ReplaceAll rewrites EVERY match of EXPECT, in a file that is no PE (a sound archive's WAV headers): ops run in order,
+// so a later one matches what an earlier one wrote (the sound fix restores a few short files that way); none left but
+// the result there is the idempotent skip; neither there is the wrong file; it takes no site. Teeth: stop at the
+// first match; treat "already patched" as an error; accept an ANCHOR; accept a REPLACE of another length.
+TEST(bp_replaceall_rewrites_every_match_in_order)
+{
+    std::vector<uint8_t> img = Bytes({0x52, 0xAA, 0xBB, 0x00, 0xAA, 0xBB, 0x01, 0xAA, 0xBB});
+    nlohmann::ordered_json a{{"MODE", "ReplaceAll"}, {"EXPECT", "aabb"}, {"REPLACE", "1122"}};
+    nlohmann::ordered_json b{{"MODE", "ReplaceAll"}, {"EXPECT", "521122"}, {"REPLACE", "52aabb"}};   // matches a's output
+    std::string msg;
+    CHECK(ApplyOne(a, img, NoVars, msg) == Result::Applied);
+    CHECK(img == Bytes({0x52, 0x11, 0x22, 0x00, 0x11, 0x22, 0x01, 0x11, 0x22}));
+    CHECK(ApplyOne(b, img, NoVars, msg) == Result::Applied);
+    CHECK(img == Bytes({0x52, 0xAA, 0xBB, 0x00, 0x11, 0x22, 0x01, 0x11, 0x22}));
+    CHECK(ApplyOne(b, img, NoVars, msg) == Result::Skipped);                  // nothing left, the result is there
+    std::vector<uint8_t> other = Bytes({0x01, 0x02, 0x03});
+    CHECK(ApplyOne(a, other, NoVars, msg) == Result::Error);                 // neither: the wrong file
+    nlohmann::ordered_json sited{{"MODE", "ReplaceAll"}, {"ANCHOR", "aabb"}, {"EXPECT", "aabb"}, {"REPLACE", "1122"}};
+    CHECK(ApplyOne(sited, img, NoVars, msg) == Result::Error);
+    nlohmann::ordered_json longer{{"MODE", "ReplaceAll"}, {"EXPECT", "1122"}, {"REPLACE", "112233"}};
+    CHECK(ApplyOne(longer, img, NoVars, msg) == Result::Error);
+}
+
+// A launch reads each patched file once and writes it once for its run of ops (nineteen ops over a 200 MB archive
+// were read and written nineteen times), while the ops still apply in order and every file gets its own. Teeth: drop
+// the flush at a file change (A's ops lost) or at the end (B's lost); forget to reload on a change (B written into A).
+TEST(bp_ops_on_several_files_apply_in_order_each_to_its_own)
+{
+    const std::filesystem::path Root = std::filesystem::temp_directory_path() / "vg_bp_batch";
+    std::filesystem::remove_all(Root);
+    const std::filesystem::path Runtime = Root / "RUNTIME";
+    std::filesystem::create_directories(Runtime);
+    auto Put = [&](const char *N, std::vector<uint8_t> B) { std::ofstream O(Runtime / N, std::ios::binary); O.write((const char *)B.data(), (std::streamsize)B.size()); };
+    auto Get = [&](const char *N) { std::ifstream In(Runtime / N, std::ios::binary); return std::vector<uint8_t>(std::istreambuf_iterator<char>(In), std::istreambuf_iterator<char>()); };
+    Put("a.afs", Bytes({0xAA, 0x00, 0xAA}));
+    Put("b.afs", Bytes({0xBB, 0x00, 0xBB, 0x00}));
+    auto Op = [](const char *F, const char *E, const char *R) {
+        return nlohmann::ordered_json{{"TYPE","BinaryPatch"},{"FILE",F},{"MODE","ReplaceAll"},{"EXPECT",E},{"REPLACE",R}}; };
+    ContainerParams CP(Root / "PKG");
+    CP.RuntimePath = Runtime;
+    CP.SubComponentsArray = nlohmann::ordered_json::array({Op("a.afs","aa","11"), Op("a.afs","1100","2200"),
+                                                           Op("b.afs","bb","33"), Op("a.afs","22","44")});
+    CHECK(BinaryPatch::ProcessBinaryPatches(CP));
+    CHECK(Get("a.afs") == Bytes({0x44, 0x00, 0x11}));
+    CHECK(Get("b.afs") == Bytes({0x33, 0x00, 0x33, 0x00}));
+    std::filesystem::remove_all(Root);
+}
+
+// A fix that ships as a tool (a batch file running a byte-replacer) becomes ops, and the ops must do exactly what the
+// tool did. Runs only when VG_BP_REPRO_DIR holds ops.json ([{FILE, OPS:[op...]}]), pristine/<FILE> and the tool's
+// output at expected/<FILE>: each file is patched in a scratch runtime and compared byte for byte. Inert in CI.
+TEST(bp_reproduces_a_tools_output)
+{
+    const char *dir = std::getenv("VG_BP_REPRO_DIR");
+    if (!dir) return;   // gated: no fixtures, nothing to prove here
+    const std::filesystem::path D = dir, Runtime = std::filesystem::temp_directory_path() / "vg_bp_repro";
+    std::filesystem::remove_all(Runtime);
+    nlohmann::ordered_json Ops;
+    { std::ifstream In(D / "ops.json"); Ops = nlohmann::ordered_json::parse(In); }
+    ContainerParams CP(Runtime / "PKG");
+    CP.RuntimePath = Runtime;
+    CP.SubComponentsArray = nlohmann::ordered_json::array();
+    for (const auto &F : Ops)
+    {
+        const std::string File = F.value("FILE", std::string());
+        std::filesystem::create_directories((Runtime / File).parent_path());
+        std::filesystem::copy_file(D / "pristine" / File, Runtime / File);
+        for (auto Op : F["OPS"]) { Op["TYPE"] = "BinaryPatch"; Op["FILE"] = File; CP.SubComponentsArray.push_back(Op); }
+    }
+    CHECK(BinaryPatch::ProcessBinaryPatches(CP));
+    for (const auto &F : Ops)
+    {
+        const std::string File = F.value("FILE", std::string());
+        CHECK(ReadFile((Runtime / File).string()) == ReadFile((D / "expected" / File).string()));
+    }
+    std::filesystem::remove_all(Runtime);
 }

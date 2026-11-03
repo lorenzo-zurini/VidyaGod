@@ -63,6 +63,19 @@ bool EvaluateInteger(const std::string &Expr, long long &Out);
 //  ascii / asciiz : the value's ASCII bytes as hex, asciiz appends a NUL — write a C string into a binary (Poke)
 //  "" or unknown format → the value unchanged
 std::string RenderValue(const std::string &Value, const std::string &Format);
+
+//MAP tables (spec 08 §8.3). A declaration with MAP is a table: any exact string → a string, with an optional ELSE.
+//It lives in the one variable namespace under names no variable can have (a name holds no ':'): "T:?" = "1" while
+//the table is on, "T:=<entry>" = that entry's value, "T:!" = its ELSE. Both resolvers seed these like any declaration
+//(the table's WHEN gates them all), so an entry's own %tokens% resolve in the same fixpoint. Empty for a non-table.
+std::vector<std::pair<std::string, std::string>> TableEntries(const std::string &Table, const nlohmann::ordered_json &Decl);
+
+//%KEY:map:TABLE% — Value's entry in TABLE, else TABLE's ELSE, else Value unchanged (also when TABLE is off or
+//declared nowhere: the validator reports the latter).
+std::string MapValue(const std::string &Value, const std::string &Table, const std::map<std::string, std::string> &Vars);
+
+//What a token's format makes of a value: "map:TABLE" reads Vars (MapValue), anything else is RenderValue.
+std::string RenderToken(const std::string &Value, const std::string &Format, const std::map<std::string, std::string> &Vars);
 }
 
 #endif // VARSUBST_H

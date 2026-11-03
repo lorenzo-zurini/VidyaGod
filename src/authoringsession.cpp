@@ -1,7 +1,9 @@
 #include "authoringsession.h"
 #include "containerwrapper.h"   // ContainerWrapper + ContainerParams (full definition)
 #include "commonutils.h"        // Log*
-#include "launchresolver.h"     // AnchorRegEdits / AnchorLayouts — captures and previews speak anchors
+#include "launchresolver.h"
+#include "manifestmodel.h"
+#include "apppaths.h"     // AnchorRegEdits / AnchorLayouts — captures and previews speak anchors
 
 #include <algorithm>
 #include <cstring>
@@ -14,18 +16,43 @@ AuthoringSession::AuthoringSession(const nlohmann::ordered_json &GlobalConfigJSO
 
 AuthoringSession::~AuthoringSession() { End(); }
 
+//A node still waiting for its files (a content layer with no file yet: a new package before its install) is
+//authored as it is without them - the files are what the session is about to make. Only this index copy changes.
+bool AuthoringSession::WithoutWaiting(NodeIndex &Idx, const std::string &Id)
+{
+    const auto It = Idx.Nodes.find(Id);
+    if (It == Idx.Nodes.end() || !It->second.Json.contains("LAYERS") || !It->second.Json["LAYERS"].is_array()) return false;
+    nlohmann::ordered_json J = It->second.Json, Kept = nlohmann::ordered_json::array();
+    for (const auto &L : J["LAYERS"])
+    {
+        bool Waiting = false;
+        for (const char *T : {"ZIP", "FILE", "DIR", "DELTA"})
+            if (L.is_object() && L.contains(T) && L[T].is_string() && L[T].get<std::string>().empty()) Waiting = true;
+        if (!Waiting) Kept.push_back(L);
+    }
+    if (Kept.size() == J["LAYERS"].size()) return false;
+    J["LAYERS"] = std::move(Kept);
+    Node N;
+    if (!ManifestModel::ParseNode(J, It->second.File, It->second.BundleDir, N)) return false;
+    N.Cid = It->second.Cid; N.Handle = It->second.Handle;
+    It->second = std::move(N);
+    ManifestModel::DeriveFacts(Idx);
+    return true;
+}
+
 bool AuthoringSession::Begin(const NodeIndex &SrcIdx, const std::string &TargetNodeId,
                              const std::map<std::string, std::string> &Vars)
 {
     Idx = SrcIdx;                                   // own a copy; Params->NodeIdx points into THIS
     TargetId = TargetNodeId;
+    WithoutWaiting(Idx, TargetId);
     VarOverrides = Vars;
     // Open a BARE, platform-agnostic runtime: the node's content overlay + a writable upper, no runner, no prefix
     // (an empty runtime is fine — a fresh node has no content). Runner-driven tools (RunWindows) rebuild on demand.
     return BuildRuntime({});
 }
 
-bool AuthoringSession::RunWindows(const std::string &Exe, const std::string &RunnerId)
+bool AuthoringSession::RunWindows(const std::string &Exe, const std::string &RunnerId, const std::vector<std::string> &Args)
 {
     // "Run a Windows program in a wine/proton prefix" — a per-invocation tool. (Re)build the runtime under the CHOSEN
     // runner if we're not already there (its DEFPREFIX + CONTENT_ROOT come from the runner; platform is seeded from the
@@ -33,7 +60,7 @@ bool AuthoringSession::RunWindows(const std::string &Exe, const std::string &Run
     if (RunnerId.empty()) { LogErr("AuthoringSession::RunWindows", "No runner chosen."); return false; }
     if (!Wrapper || CurrentRunnerId != RunnerId)
         if (!BuildRuntime({ RunnerId })) return false;
-    return RunExe(Exe);
+    return RunExe(Exe, Args);
 }
 
 bool AuthoringSession::BuildRuntime(const std::vector<std::string> &Chain)
@@ -42,6 +69,8 @@ bool AuthoringSession::BuildRuntime(const std::vector<std::string> &Chain)
     Params = std::make_unique<ContainerParams>(BundleDir.path().toStdString());
     Params->NodeIdx        = &Idx;
     Params->LaunchNodeId   = TargetId;
+    //On disk, not in the system temp (RAM): an installer writes the whole game into this session.
+    Params->TempRootOverride = AppPaths::DataRoot() / "AUTHORING";
     Params->VariableOverrides = VarOverrides;
 
     if (Chain.empty())
@@ -74,7 +103,7 @@ bool AuthoringSession::BuildRuntime(const std::vector<std::string> &Chain)
     if (!Wrapper->BuildContainerRuntime())
     {
         LogErr("AuthoringSession::BuildRuntime", "Failed to build authoring runtime for '" + TargetId + "'.");
-        Wrapper->Cleanup(); Wrapper.reset(); Params.reset();
+        DropRuntime(); Params.reset();
         return false;
     }
 
@@ -108,10 +137,10 @@ std::vector<std::pair<std::string, std::string>> AuthoringSession::AnchorLayouts
     return Wrapper ? LaunchResolver::AnchorLayouts(Wrapper->ContainerParams) : std::vector<std::pair<std::string, std::string>>{};
 }
 
-bool AuthoringSession::RunExe(const std::string &Exe)
+bool AuthoringSession::RunExe(const std::string &Exe, const std::vector<std::string> &Args)
 {
     if (!Wrapper) { LogErr("AuthoringSession::RunExe", "No live session."); return false; }
-    return Wrapper->Execute(Exe);
+    return Wrapper->Execute(Exe, Args);
 }
 
 nlohmann::ordered_json AuthoringSession::CaptureRegistryDelta() const
@@ -129,9 +158,20 @@ nlohmann::ordered_json AuthoringSession::CaptureRegistryDelta() const
     return LaunchResolver::AnchorRegEdits(Wrapper->ContainerParams, Now.DiffToRegEdits(Baseline));
 }
 
+void AuthoringSession::DropRuntime()
+{
+    if (!Wrapper) return;
+    const std::filesystem::path Game = Wrapper->ContainerParams.TempPath.parent_path();
+    Wrapper->Cleanup(); Wrapper.reset();
+    //Cleanup takes the instance's folder; the game's folder over it is ours too, and left behind empty it piles up
+    //in AUTHORING (one per game ever captured). Only when empty: another instance's session may be in it.
+    std::error_code Ec;
+    if (!Game.empty()) std::filesystem::remove(Game, Ec);
+}
+
 void AuthoringSession::End()
 {
-    if (Wrapper) { Wrapper->Cleanup(); Wrapper.reset(); }
+    DropRuntime();
     Params.reset();
     HasBaseline = false;
 }
@@ -148,6 +188,10 @@ bool AuthoringSession::IsChurn(const std::string &Rel)
     if (has("/windows/") || has("/Windows/") || has("/dosdevices/")) return true;
     // Scratch/temp.
     if (has("/Temp/") || has("/temp/")) return true;
+    // The write layer's whiteouts (".wh.<name>" marks <name> deleted, ".wh..wh..opq" an opaque folder): how the
+    // overlay records a deletion, not a file - a patcher that re-cases EULA.RTF to EULA.rtf leaves one beside it.
+    const size_t Slash = Rel.find_last_of('/');
+    if (Rel.compare(Slash == std::string::npos ? 0 : Slash + 1, 4, ".wh.") == 0) return true;
     return false;
 }
 

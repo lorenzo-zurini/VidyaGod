@@ -1,5 +1,6 @@
 #include "packageeditormodel.h"
 #include "nodelower.h"
+#include "contentfile.h"   // Bumped / Claims — the names two CIDs give one file
 
 #include <QThread>
 #include <QTimer>
@@ -7,16 +8,20 @@
 #include "commonutils.h"
 #include "jsonoperations.h"
 #include "containerwrapper.h"   // ContainerWrapper + ContainerParams (authoring run) — pulls LaunchResolver etc.
-#include "packagecatalog.h"     // BuildCatalogIndex, LibraryRootDir, EditorLayoutKey
+#include "packagecatalog.h"
+#include "pkggraph.h"     // BuildCatalogIndex, LibraryRootDir, EditorLayoutKey
 #include "instancestore.h"
 
+#include <QDateTime>
 #include <QFile>
 #include <QFileDialog>
 #include <QMessageBox>
 
 #include <algorithm>
+#include <cctype>
 #include <cmath>
 #include <filesystem>
+#include <fstream>
 #include <set>
 
 using json = nlohmann::ordered_json;
@@ -45,19 +50,7 @@ bool SameDir(const fs::path & A, const fs::path & B)
     return fs::weakly_canonical(A, Ea) == fs::weakly_canonical(B, Eb);
 }
 
-//"[749][v1.0] Age of Empires II" → "Age of Empires II": a package's folder name without its bracketed tags.
-std::string PackageName(const fs::path & Dir)
-{
-    std::string N = Dir.filename().string();
-    while (!N.empty() && N[0] == '[')
-    {
-        const size_t E = N.find(']');
-        if (E == std::string::npos) break;
-        N = N.substr(E + 1);
-        while (!N.empty() && N[0] == ' ') N.erase(0, 1);
-    }
-    return N.empty() ? Dir.filename().string() : N;
-}
+std::string PackageName(const fs::path & Dir) { return PackageCatalog::FolderTitle(Dir); }
 
 } // namespace
 
@@ -74,18 +67,17 @@ PackageEditorModel::~PackageEditorModel()
 
 QString PackageEditorModel::packagePath() const { return PackageDir ? PackageDir->path() : QString(); }
 
-void PackageEditorModel::initPackage(const QString & preselectedPath, QWidget * dirPickerParent)
+void PackageEditorModel::initPackage(const QString & path, QWidget *)
 {
-    const QString Chosen = preselectedPath.isEmpty()
-        ? QFileDialog::getExistingDirectory(dirPickerParent, "Open a package folder")
-        : preselectedPath;
+    //No path: no package - the editor shows its start (New package / Open package), it does not push a picker.
     delete PackageDir;
-    PackageDir = Chosen.isEmpty() ? nullptr : new QDir(Chosen);
+    PackageDir = path.isEmpty() ? nullptr : new QDir(path);
     LoadNodes();
 }
 
 void PackageEditorModel::LoadNodes()
 {
+    LibraryCache.reset();                                 // the package left may have been saved since: read again
     if (PackageDir)
         for (const std::string & Odd : Doc.Load(PackageDir->path().toStdString()))
             LogWarn("PackageEditorModel", Odd);
@@ -107,6 +99,132 @@ static std::string LayoutKeyFor(const QDir * PackageDir)
 {
     if (!PackageDir) return {};
     return PackageCatalog::EditorLayoutKey(fs::path(QDir::cleanPath(PackageDir->absolutePath()).toStdString()));
+}
+
+static fs::path DraftPath(const QDir * PackageDir)
+{
+    const std::string K = LayoutKeyFor(PackageDir);
+    if (K.empty()) return {};
+    std::string Safe = K;
+    for (char & C : Safe) if (!std::isalnum((unsigned char)C) && C != '-' && C != '_') C = '_';
+    return AppPaths::DataRoot() / "EDITORDRAFTS" / (Safe + ".json");
+}
+
+bool PackageEditorModel::writeDraft()
+{
+    const fs::path P = DraftPath(PackageDir);
+    if (P.empty() || !Doc.Dirty()) return false;
+    nlohmann::ordered_json J = {{"PACKAGE", PackageDir->absolutePath().toStdString()}, {"WRITTEN", QDateTime::currentMSecsSinceEpoch()},
+                                {"NODES", nlohmann::ordered_json::array()}, {"POS", nlohmann::ordered_json::object()}};
+    for (int I = 0; I < Doc.Count(); ++I) J["NODES"].push_back({{"HANDLE", Doc.Handle(I)}, {"NODE", Doc.Node(I)}});
+    for (const auto & [H, Ps] : Doc.Positions()) J["POS"][H] = {Ps.X, Ps.Y};
+    std::error_code Ec;
+    fs::create_directories(P.parent_path(), Ec);
+    const fs::path Tmp = P.string() + ".tmp";
+    {
+        std::ofstream O(Tmp, std::ios::binary | std::ios::trunc);
+        if (!O) return false;
+        O << J.dump();
+        if (!O) return false;
+    }
+    fs::rename(Tmp, P, Ec);
+    return !Ec;
+}
+
+qint64 PackageEditorModel::draftTime() const
+{
+    const fs::path P = DraftPath(PackageDir);
+    if (P.empty()) return 0;
+    std::ifstream In(P, std::ios::binary);
+    const auto J = nlohmann::ordered_json::parse(In, nullptr, false);
+    return J.is_object() && J.contains("WRITTEN") && J["WRITTEN"].is_number() ? J["WRITTEN"].get<qint64>() : 0;
+}
+
+bool PackageEditorModel::restoreDraft(QString * Error)
+{
+    const fs::path P = DraftPath(PackageDir);
+    std::ifstream In(P, std::ios::binary);
+    const auto J = nlohmann::ordered_json::parse(In, nullptr, false);
+    if (!J.is_object() || !J.contains("NODES") || !J["NODES"].is_array())
+    { if (Error) *Error = "The draft could not be read."; return false; }
+    std::set<std::string> Kept;
+    for (const auto & E : J["NODES"])
+    {
+        if (!E.is_object() || !E.contains("HANDLE") || !E["HANDLE"].is_string() || !E.contains("NODE")) continue;
+        const std::string H = E["HANDLE"].get<std::string>();
+        Kept.insert(H);
+        const int I = Doc.IndexOf(H);
+        if (I < 0) Doc.Add(E["NODE"], H);
+        else if (Doc.Node(I) != E["NODE"]) Doc.Replace(I, E["NODE"]);
+    }
+    for (int I = Doc.Count() - 1; I >= 0; --I) if (!Kept.count(Doc.Handle(I))) Doc.Remove(I);
+    if (J.contains("POS") && J["POS"].is_object())
+        for (const auto & [H, V] : J["POS"].items())
+            if (V.is_array() && V.size() == 2 && V[0].is_number() && V[1].is_number()) Doc.SetPos(H, {V[0].get<float>(), V[1].get<float>()});
+    Doc.Commit();
+    noteEdited();
+    emit documentReloaded();
+    return true;
+}
+
+void PackageEditorModel::dropDraft()
+{
+    const fs::path P = DraftPath(PackageDir);
+    std::error_code Ec;
+    if (!P.empty()) fs::remove(P, Ec);
+}
+
+std::string PackageEditorModel::gameId() const
+{
+    if (!PackageDir) return {};
+    const std::string N = QDir(PackageDir->absolutePath()).dirName().toStdString();
+    const size_t E = N.find(']');
+    return N.empty() || N[0] != '[' || E == std::string::npos ? std::string() : N.substr(1, E - 1);
+}
+
+bool PackageEditorModel::changeGameId(const std::string & New, QString * Error)
+{
+    auto Fail = [&](const QString & W) { if (Error) *Error = W; return false; };
+    const std::string Old = gameId();
+    if (!PackageDir || Old.empty()) return Fail("This package's folder is not named by a game ID ([<id>] ...).");
+    if (New.empty() || !std::all_of(New.begin(), New.end(), [](unsigned char C) { return std::isdigit(C); }))
+        return Fail("A game ID is a number (its TheGamesDB ID, or its release date as YYYYMMDD and a serial).");
+    if (New == Old) return true;
+    const fs::path Dir = QDir::cleanPath(PackageDir->absolutePath()).toStdString();
+    const std::string Name = Dir.filename().string();
+    const fs::path To = Dir.parent_path() / ("[" + New + "]" + Name.substr(Name.find(']') + 1));
+    std::error_code Ec;
+    if (fs::exists(To, Ec)) return Fail(QString::fromStdString("There is already a package at " + To.string() + "."));
+    for (const auto & E : fs::directory_iterator(Dir.parent_path(), Ec))
+        if (E.path().filename().string().rfind("[" + New + "]", 0) == 0)
+            return Fail(QString::fromStdString("Another package already has the ID " + New + ": " + E.path().filename().string()));
+    //The nodes first, saved where they are: a failed save leaves the folder as it was.
+    for (int I = 0; I < Doc.Count(); ++I)
+    {
+        nlohmann::ordered_json N = Doc.Node(I);
+        if (PkgGraph::ChangeUid(N, Old, New)) Doc.Replace(I, std::move(N));
+    }
+    Doc.Commit();
+    noteEdited();
+    QString E;
+    if (!Save(&E)) return Fail("The package could not be saved:\n\n" + E);
+    fs::rename(Dir, To, Ec);
+    if (Ec) return Fail(QString::fromStdString("The tiles now say " + New + ", but the folder could not be renamed: " + Ec.message()));
+    //This machine's layout follows the folder; so do the saves kept under the old ID, when the new one has none.
+    if (GlobalConfigJSON && GlobalConfigJSON->contains("EDITORLAYOUT") && (*GlobalConfigJSON)["EDITORLAYOUT"].is_object())
+    {
+        auto & L = (*GlobalConfigJSON)["EDITORLAYOUT"];
+        const std::string Ko = PackageCatalog::EditorLayoutKey(Dir), Kn = PackageCatalog::EditorLayoutKey(To);
+        if (L.contains(Ko)) { L[Kn] = L[Ko]; L.erase(Ko); }
+    }
+    if (GlobalConfigJSON)
+    {
+        const fs::path Users = InstanceStore::Root(*GlobalConfigJSON);
+        if (fs::exists(Users / Old, Ec) && !fs::exists(Users / New, Ec)) fs::rename(Users / Old, Users / New, Ec);
+        WriteConfig();
+    }
+    initPackage(QString::fromStdString(To.string()), nullptr);
+    return true;
 }
 
 void PackageEditorModel::LoadLayout()
@@ -152,6 +270,22 @@ void PackageEditorModel::SaveLayout()
     WriteConfig();
 }
 
+bool PackageEditorModel::tourSeen() const
+{
+    if (!GlobalConfigJSON) return true;
+    const json & C = *GlobalConfigJSON;
+    return C.contains("Settings") && C["Settings"].is_object() && C["Settings"].contains("EditorTourSeen")
+        && C["Settings"]["EditorTourSeen"].is_boolean() && C["Settings"]["EditorTourSeen"].get<bool>();
+}
+
+void PackageEditorModel::markTourSeen()
+{
+    if (!GlobalConfigJSON) return;
+    if (!GlobalConfigJSON->contains("Settings") || !(*GlobalConfigJSON)["Settings"].is_object()) (*GlobalConfigJSON)["Settings"] = json::object();
+    (*GlobalConfigJSON)["Settings"]["EditorTourSeen"] = true;
+    WriteConfig();
+}
+
 void PackageEditorModel::WriteConfig()
 {
     QFile Cfg(QString::fromStdString((AppPaths::DataRoot() / "GlobalConfig.JSON").string()));
@@ -177,6 +311,68 @@ void PackageEditorModel::replaceNode(const std::string & Handle, json Node)
     Doc.Commit();
     noteEdited();
     emit nodeContentChanged();
+}
+
+QStringList PackageEditorModel::unusedFiles() const
+{
+    if (!PackageDir) return {};
+    //A file is unused only when NOTHING names it: not the package as edited here, and not its node files as saved (a
+    //discarded edit must not leave a saved node naming a deleted file). And a name two CIDs claim lives at each one's
+    //BUMPED name (ContentFile): those files are named too, by the name and the SOURCE together.
+    std::set<std::string> Named;
+    const auto Top = [](const std::string & N) { return N.substr(0, N.find('/')); };   // its top folder or file
+    std::function<void(const nlohmann::ordered_json &)> Walk = [&](const nlohmann::ordered_json & J) {
+        if (J.is_object())
+            for (const auto & [K, V] : J.items())
+            {
+                if ((K == "ZIP" || K == "FILE" || K == "DELTA" || K == "DIR") && V.is_string() && !V.get<std::string>().empty())
+                {
+                    Named.insert(Top(V.get<std::string>()));
+                    if (J.contains("SOURCE") && J["SOURCE"].is_string() && !J["SOURCE"].get<std::string>().empty())
+                        Named.insert(Top(ContentFile::Bumped(V.get<std::string>(), J["SOURCE"].get<std::string>())));
+                }
+                Walk(V);
+            }
+        else if (J.is_array()) for (const auto & V : J) Walk(V);
+    };
+    for (int I = 0; I < Doc.Count(); ++I) Walk(Doc.Node(I));
+    for (const QFileInfo & F : PackageDir->entryInfoList({"*.json"}, QDir::Files))
+    {
+        std::ifstream In(F.filePath().toStdString(), std::ios::binary);
+        const nlohmann::ordered_json J = nlohmann::ordered_json::parse(In, nullptr, /*allow_exceptions=*/false);
+        if (J.is_object() && J.contains("LAYERS")) Walk(J);
+    }
+    if (const auto C = ContentFile::Claims(PackageDir->path().toStdString()))
+        for (const auto & [Name, Cids] : *C)
+        {
+            Named.insert(Top(Name));
+            for (const std::string & Cid : Cids) Named.insert(Top(ContentFile::Bumped(Name, Cid)));
+        }
+    QStringList Out;
+    for (const QFileInfo & F : PackageDir->entryInfoList(QDir::Files | QDir::Dirs | QDir::NoDotAndDotDot, QDir::Name))
+    {
+        const QString N = F.fileName();
+        if (N.startsWith('.') || (N.startsWith("baf") && N.endsWith(".json")) || N.endsWith(".tmp") || N.contains(".tmp-")) continue;
+        if (!Named.count(N.toStdString())) Out << N;
+    }
+    return Out;
+}
+
+int PackageEditorModel::deleteUnusedFiles()
+{
+    int N = 0;
+    for (const QString & F : unusedFiles())
+    {
+        const QString P = PackageDir->filePath(F);
+        if (QFileInfo(P).isDir() ? QDir(P).removeRecursively() : QFile::remove(P)) ++N;
+    }
+    return N;
+}
+
+bool PackageEditorModel::saveEmptiesPackage() const
+{
+    if (!PackageDir || Doc.Count() > 0) return false;
+    return !PackageDir->entryList({"baf*.json"}, QDir::Files).isEmpty();
 }
 
 bool PackageEditorModel::Save(QString * Error)
@@ -280,13 +476,23 @@ std::shared_ptr<const NodeIndex> PackageEditorModel::ExecSnapshot() const
 
 const NodeIndex & PackageEditorModel::ExecIndex() const { return *ExecSnapshot(); }
 
+const Node * PackageEditorModel::libraryNode(const std::string & Cid) const { return LibraryIndex().Find(Cid); }
+
 PackageEditorModel::External PackageEditorModel::externalInfo(const std::string & Cid) const
 {
     const Node * N = LibraryIndex().Find(Cid);
     if (!N) return {};
     std::string Label = N->NodeId;
     if (Label.empty()) Label = N->Meta.is_object() ? N->Meta.value("TITLE", std::string()) : std::string();
-    return External{Label, PackageName(N->BundleDir), N->BundleDir.string()};
+    //Its tile's cover, when the node presents one (a game's chip shows the game).
+    std::string Cover;
+    if (N->Meta.is_object() && N->Meta.contains("COVER") && N->Meta["COVER"].is_object())
+    {
+        const std::string P = N->Meta["COVER"].value("PATH", std::string());
+        std::error_code Ec;
+        if (!P.empty() && fs::exists(N->BundleDir / P, Ec)) Cover = (N->BundleDir / P).string();
+    }
+    return External{Label, PackageName(N->BundleDir), N->BundleDir.string(), Cover};
 }
 
 std::vector<PackageEditorModel::Offer> PackageEditorModel::offers() const
@@ -323,16 +529,26 @@ std::vector<std::string> PackageEditorModel::KnownPlatforms()
 
 // ---- validation ------------------------------------------------------------------------------------------------
 
+//A file in the package folder no node names (a layer removed since) is left behind by every save; say so.
+void PackageEditorModel::noteUnusedFiles()
+{
+    for (const QString & F : unusedFiles()) ValWarnings.push_back("package file '" + F.toStdString() + "' is used by no node");
+}
+
 void PackageEditorModel::Revalidate()
 {
     ValResult R = Validate(ExecIndex(), bundleHandles());
     ValErrors = std::move(R.Errors);
     ValWarnings = std::move(R.Warnings);
+    noteUnusedFiles();
     Validated = true;
     emit validationChanged();
 }
 
-//This package's nodes and everything they contain: the graph around them is only read.
+//This package's nodes and everything they contain: the graph around them is only read. Some checks look across the
+//whole library (runners disagreeing where %GameDir% is): a message naming a node outside that scope - another
+//package's, a runner's - is nothing this author can act on here, and counted as this package's it sent them looking
+//for marked nodes that do not exist. A node this package contains stays in scope: its problem is this package's too.
 PackageEditorModel::ValResult PackageEditorModel::Validate(const NodeIndex & Idx, const std::vector<std::string> & Handles)
 {
     ValResult R;
@@ -343,6 +559,13 @@ PackageEditorModel::ValResult PackageEditorModel::Validate(const NodeIndex & Idx
         for (const std::string & Dep : ManifestModel::Closure(Idx, H)) Scope.insert(Dep);
     }
     ManifestModel::ValidateNodeGraph(Idx, R.Errors, R.Warnings, &Scope);
+    auto Foreign = [&Scope](const std::string & M) {
+        const size_t A = M.find("node '");
+        if (A == std::string::npos) return false;          // about no node in particular: it stays
+        const size_t B = M.find('\'', A + 6);
+        return B != std::string::npos && !Scope.count(M.substr(A + 6, B - (A + 6)));
+    };
+    for (auto * V : {&R.Errors, &R.Warnings}) V->erase(std::remove_if(V->begin(), V->end(), Foreign), V->end());
     return R;
 }
 
@@ -379,6 +602,7 @@ void PackageEditorModel::ValidationDone()
     if (ValAgain || ValContentRev != Doc.ContentRevision()) { validateNow(); return; }   // about an older document
     ValErrors = std::move(ValOut->Errors);
     ValWarnings = std::move(ValOut->Warnings);
+    noteUnusedFiles();
     ValOut.reset();
     Validated = true;
     emit validationChanged();
@@ -402,6 +626,9 @@ std::map<std::string, std::vector<std::string>> PackageEditorModel::issuesByHand
         const std::string H = handleInMessage(M);
         if (H.empty()) return;
         std::string Text = M.substr(M.find('\'', M.find("node '") + 6) + 1);
+        //On the node itself, the node's name says nothing: " (Label): rest" -> "rest".
+        if (Text.rfind(" (", 0) == 0)
+            if (const size_t E = Text.find("): "); E != std::string::npos) Text = Text.substr(E + 1);
         if (Text.rfind(": ", 0) == 0) Text = Text.substr(2);
         Out[H].push_back(Text);
     };
@@ -456,6 +683,30 @@ std::vector<std::string> PackageEditorModel::bundleNodeIds() const
     std::vector<std::string> Out;
     for (const auto & [H, L] : Doc.Labels()) if (!L.empty()) Out.push_back(L);
     return Out;
+}
+
+bool PackageEditorModel::fillWaiting(const std::string & Handle, const json & Layer)
+{
+    const int I = Doc.IndexOf(Handle);
+    if (I < 0 || !Layer.is_object()) return false;
+    json N = Doc.Node(I);
+    if (!N.is_object() || !N.contains("LAYERS") || !N["LAYERS"].is_array()) return false;
+    auto Target = [](const json & L) { return L.contains("TARGET") && L["TARGET"].is_string() ? L["TARGET"].get<std::string>() : std::string("FILES"); };
+    for (json & L : N["LAYERS"])
+        for (const char * T : {"ZIP", "FILE", "DIR", "DELTA"})
+            if (L.is_object() && L.contains(T) && L[T].is_string() && L[T].get<std::string>().empty() && Target(L) == Target(Layer))
+            {
+                json Filled = Layer;
+                for (const auto & [K, V] : L.items())             // its COMMENT, WHEN ... stay
+                    if (K != T && !Filled.contains(K)) Filled[K] = V;
+                L = std::move(Filled);
+                Doc.Replace(I, std::move(N));
+                Doc.Commit();
+                noteEdited();
+                emit nodeContentChanged();
+                return true;
+            }
+    return false;
 }
 
 std::string PackageEditorModel::createNode(json Payload, const std::vector<std::string> & Parents, const std::string & Label)

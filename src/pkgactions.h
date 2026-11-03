@@ -7,6 +7,7 @@
 #include <QString>
 
 #include <atomic>
+#include <filesystem>
 #include <functional>
 #include <map>
 #include <memory>
@@ -14,6 +15,7 @@
 #include <vector>
 
 class PackageEditorModel;
+namespace PkgDoc { class Document; }
 class PkgCanvas;
 class QProcess;
 class QWidget;
@@ -55,13 +57,24 @@ public:
     using PickFn = std::function<QString(const QString &Title, const QString &Dir, const QString &Filter,
                                          bool WantDir)>;
     void setPickHandler(PickFn fn) { Pick = std::move(fn); }
+    //...and the same for a choice among options (a folder or a zip; which program starts the game): the index chosen,
+    //-1 when the author cancelled.
+    using ChooseFn = std::function<int(const QString &Title, const QString &Text, const QStringList &Options)>;
+    void setChooseHandler(ChooseFn fn) { Choose = std::move(fn); }
     //Point the conversions at different programs. Exists so a test can prove that a tool which cannot run
     //unlocks the node and leaves the source intact — the path that previously skipped the completion handler
     //entirely and left a node locked forever against an already-deleted file.
     void setToolNamesForTest(const QString &zip, const QString &unzip) { ZipTool = zip; UnzipTool = unzip; }
 
+signals:
+    //A finding worth a line in the status bar, not a dialog (what auto-detect set, why a drop was refused).
+    void status(const QString & text);
+
 public slots:
     void perform(const QString & nodeId, const QString & action);
+    //Files dragged in from the file manager onto a node: a folder or a zip becomes a ZIP layer (packed / copied in),
+    //an image the tile's cover, a .reg export a REG layer; anything else is refused, saying so.
+    void dropFiles(const QString & nodeId, const QStringList & paths);
     void cancel(const QString & nodeId);
     //Probe the bundle's zips off-thread and push "deflate" hints, so the ⚠ re-store button appears only where it
     //is actually needed (a STORE zip must not nag).
@@ -73,8 +86,21 @@ private:
     void commitNode(int I, nlohmann::ordered_json N, bool Persist);
     bool saveFirst(const QString & Title);
     void browsePath(const std::string & nodeId);
+    void bringIn(const std::string & nodeId);
+    //Add=true: the files are ADDED (an empty content layer takes them, else a new one); false: the content layer is
+    //repointed (the "bring in files" action on it).
+    void bringInPath(const std::string & nodeId, const QString & picked, bool folder, bool add);
+    //One file for a FILE layer: copied into the package (one already in it is just named), the layer then supplies it.
+    void bringInFile(const std::string & nodeId, const QString & picked, bool add);
+    void coverFrom(const std::string & nodeId, const QString & picked);
+    void importRegFile(const std::string & nodeId, const QString & file);
+    //After files come in: a game entry still without a program gets one, when the files make it clear which.
+    void autoDetect(const std::string & nodeId);
+    void compareWith(const std::string & nodeId, const std::string & other);
+    void pickExe(const std::string & nodeId, const std::string & where);
     void browseCover(const std::string & nodeId);
-    void convertZipDir(const std::string & nodeId, bool ToZip);
+    //The node's content layer, or (Which) its folder layer of that name - a node can have more than one.
+    void convertZipDir(const std::string & nodeId, bool ToZip, const std::string & Which = {});
     void reStore(const std::string & nodeId);
     void testLaunch(const std::string & nodeId);
     void openCapture(const std::string & nodeId, int mode);
@@ -84,12 +110,52 @@ private:
     //`-`-form entries a write-only RegEdit layer cannot represent.
 public:
     static std::vector<PkgGraph::RegRow> ParseRegExport(const QString & text, int * deletions);
+    //What a program runs on, from its name and its first bytes: win32 / win64 (PE machine), dos (MZ alone, .com,
+    //.bat), linux64 / linux32 (ELF class, .sh, .x86_64, .AppImage); "" when it cannot tell.
+    static std::string PlatformOf(const std::string & name, const std::string & head);
+    //What GOG's installer does at install time (its goggame-<id>.script beside the game), as layers: a file it writes
+    //(EDIT Overwrite), its registry values (one REG layer, ARCH = the game's bitness: "32"/"64"), a support file it
+    //copies in (EDIT Overwrite of its text; a binary one as a FILE the caller copies into the package: Copies holds
+    //source -> name), the save folder (KEEP, last). Placeholders become anchors ({app} -> %GameDir%, {userdocs} ->
+    //%Documents% ...). Said is one line per layer's reason; Skipped names what cannot apply here (redistributable
+    //installers, compatibility databases, GOG Galaxy's own keys).
+    struct GogSteps
+    {
+        std::vector<nlohmann::ordered_json> Layers;
+        std::vector<std::pair<std::filesystem::path, std::string>> Copies;
+        std::vector<std::string> Said, Skipped;
+    };
+    static GogSteps GogInstallSteps(const nlohmann::ordered_json & script, const std::filesystem::path & supportDir,
+                                    const std::string & arch);
+    //A Unity game's <Game>_Data/app.info ("<company>\n<product>") -> the KEEP layer for where it saves (its LocalLow
+    //folder, its PlayerPrefs key); null when the text is not that.
+    static nlohmann::ordered_json UnityKeep(const std::string & appInfo);
+    //Which of these programs is the game: the only one left once installers, uninstallers, crash reporters and
+    //redistributables are set aside, or the only one at the top of the game's folder. -1 when it is not clear.
+    static int LikelyProgram(const std::vector<std::string> & anchored);
+    //What the game sees when this node runs: every file its fold provides (zips, folders, single files, in fold order,
+    //later winning), each with the layer it comes from and the ones it covers. Notes says what is not listed (a
+    //patch's rebuilt files, another package's node).
+    struct SeenFile { std::string Path, From; std::vector<std::string> Under; };
+    //Two versions side by side: the layers only one of them folds (by type and name), the files only one of them gives
+    //the game, and the files both give but from different layers.
+    struct VersionDiff { std::vector<std::string> LayersOnlyA, LayersOnlyB, FilesOnlyA, FilesOnlyB, FilesDiffer; };
+    static VersionDiff Compare(const PkgDoc::Document & doc, const std::string & a, const std::string & b, const std::filesystem::path & bundle);
+    //Another package's node, as the library holds it: its JSON, the folder its files resolve in, its name.
+    struct OtherNode { const nlohmann::ordered_json * Node = nullptr; std::filesystem::path Bundle; std::string Label; };
+    using OtherFn = std::function<OtherNode(const std::string & cid)>;
+    //Other: how the walk reaches another package's node a fold contains - its files listed from its own folder, by
+    //its own name; without it such a node is only noted.
+    static std::vector<SeenFile> GameSees(const PkgDoc::Document & doc, const std::string & handle, const std::filesystem::path & bundle,
+                                          std::vector<std::string> * notes = nullptr, const OtherFn & other = {});
 private:
     void makeDelta(const std::string & nodeId);     // diff against a Content parent -> a .vgdelta
     void undelta(const std::string & nodeId);       // the exact inverse: .vgdelta -> a plain zip
 
     //Run a command, streaming its per-file output into the node's progress bar. `Total` is the expected line
     //count (0 ⇒ indeterminate). Calls Done(ok) on the GUI thread; always ends the node's action.
+    //After a folder is brought in: offer GOG's install steps (its goggame-<id>.script) as layers on the node.
+    void gogSteps(const std::string & nodeId, const std::filesystem::path & folder);
     void runWithProgress(const std::string & nodeId, const QString & what, const QString & program,
                          const QStringList & args, const QString & workDir, int total,
                          std::function<void(bool)> done);
@@ -98,7 +164,10 @@ private:
     bool ask(const QString & Title, const QString & Body);
     void tell(const QString & Title, const QString & Body);
     QString pick(const QString & Title, const QString & Dir, const QString & Filter, bool WantDir = false);
+    //Buttons for a few options, a list for many.
+    int choose(const QString & Title, const QString & Text, const QStringList & Options, bool AsList);
     ConfirmFn            Confirm;
+    ChooseFn             Choose;
     NotifyFn             Notify;
     PickFn               Pick;
     QString              ZipTool   = "zip";

@@ -20,6 +20,10 @@
 #include "manifestmodel.h"
 #include "packagecatalog.h"
 #include "prelaunchwindow.h"
+#include "keycapture.h"
+#define SDL_MAIN_HANDLED   // SDL must not rename main() (it does on Windows)
+#include <SDL.h>
+#include <QToolButton>
 
 using json = nlohmann::ordered_json;
 
@@ -568,6 +572,187 @@ private slots:
         qobject_cast<QCheckBox *>(A)->setChecked(true);
         QCoreApplication::processEvents();
         QVERIFY(!Rc->isHidden() && !OnlyA->isHidden());
+    }
+
+    // A `key` option is bound by pressing it: click the button, press a key (or a mouse button) over it. The value is
+    // the neutral key name a WHEN (and the launch) reads; sides of Shift come from the native key; Escape binds
+    // rather than cancels; focus leaving cancels; × unbinds; two options of a section on one key are both marked.
+    // A binding off its default names the default; ↺ puts it back.
+    // Teeth: map Key_Shift without the native keysym (left shift), let Escape cancel, collect no KeyCaptureField
+    // value (the WHEN row stays hidden), skip MarkKeyConflicts, reset to "" — each fails a check below.
+    void aKeyOptionIsBoundByPressingTheKey()
+    {
+        NodeIndex idx;
+        const auto key = [](const char *Def, const char *Label) {
+            return json{{"DEFAULT", Def}, {"UI", {{"CONTROL", "key"}, {"SECTION", "Input"}, {"LABEL", Label}}}};
+        };
+        idx.Nodes["game"] = parse(json{ {"CID", "game"}, {"LABEL", "game"}, {"VARIANT", "v1"},
+            {"LAYERS", json::array({ json{{"DIR", "game"}},
+                json{{"VARS", {
+                    {"fwd", key("w", "Move forward")}, {"jump", key("space", "Jump")}, {"menu", key("escape", "Menu")},
+                    {"only_q", {{"DEFAULT", "x"}, {"WHEN", "%jump%==q"}, {"UI", {{"CONTROL", "text"}, {"LABEL", "Only when jump is Q"}}}}}}}},
+                json{{"EXEC", json::array({ json{{"LABEL", "Play"}, {"HOST", ManifestModel::MachinePlatform()}, {"EXE", "game.exe"},
+                    {"TILE", {{"UID", "38"}, {"TITLE", "Game"}}}} })}} })} });
+        ManifestModel::DeriveFacts(idx);
+        json Cfg = json{{"Settings", json::object()}};
+        PackageCatalog::MergePackageVariables(Cfg, idx.Find("game")->PackageUid, {{"fwd", "e"}});   // the user's own
+        PreLaunchWindow W(&Cfg, &idx, {"game"});
+        W.resize(900, 700);
+        W.show();
+        QCoreApplication::processEvents();
+        auto *T = W.findChild<QTreeWidget *>("optionsTree");
+        QVERIFY(T);
+        for (QTreeWidgetItemIterator It(T); *It; ++It) (*It)->setExpanded(true);
+        QCoreApplication::processEvents();
+        const auto field = [&](const QString &Label) -> KeyCaptureField * {
+            for (auto *F : T->findChildren<KeyCaptureField *>()) if (F->property("CVLabel").toString() == Label) return F;
+            return nullptr;
+        };
+        KeyCaptureField *Fwd = field("Move forward"), *Jump = field("Jump"), *Menu = field("Menu");
+        QVERIFY(Fwd && Jump && Menu);
+        QCOMPARE(Fwd->value(), std::string("e"));                          // the saved binding, its default named
+        QCOMPARE(Fwd->button()->text(), QString("E  (default W)"));
+        QTreeWidgetItem *OnlyQ = nullptr;
+        for (QTreeWidgetItemIterator It(T); *It; ++It) if ((*It)->text(0) == "Only when jump is Q") OnlyQ = *It;
+        QVERIFY(OnlyQ && OnlyQ->isHidden());
+
+        //Click, press I: bound.
+        QTest::mouseClick(Fwd->button(), Qt::LeftButton);
+        QVERIFY(Fwd->capturing());
+        QCOMPARE(Fwd->button()->text(), QString("Press a key…"));
+        QTest::keyClick(Fwd->button(), Qt::Key_I);
+        QVERIFY(!Fwd->capturing());
+        QCOMPARE(Fwd->value(), std::string("i"));
+        QCOMPARE(Fwd->button()->text(), QString("I  (default W)"));      // off its default: the default is named
+        QVERIFY(Fwd->resetButton()->isEnabled());
+        QVERIFY(!Menu->resetButton()->isEnabled());                        // on its default: nothing to reset
+
+        //The bound key is what a WHEN reads.
+        QTest::mouseClick(Jump->button(), Qt::LeftButton);
+        QTest::keyClick(Jump->button(), Qt::Key_Q);
+        QCOMPARE(Jump->value(), std::string("q"));
+        QVERIFY(!OnlyQ->isHidden());
+
+        //Right shift, as X11/Wayland report it (keycode 62, keysym Shift_R).
+        QTest::mouseClick(Menu->button(), Qt::LeftButton);
+        QKeyEvent RShift(QEvent::KeyPress, Qt::Key_Shift, Qt::ShiftModifier, 62, 0xffe2, 0);
+        QCoreApplication::sendEvent(Menu->button(), &RShift);
+        QCOMPARE(Menu->value(), std::string("right shift"));
+
+        //Escape is a key like any other (a game's menu key); keypad keys are their own.
+        QTest::mouseClick(Menu->button(), Qt::LeftButton);
+        QTest::keyClick(Menu->button(), Qt::Key_Escape);
+        QCOMPARE(Menu->value(), std::string("escape"));
+        QTest::mouseClick(Menu->button(), Qt::LeftButton);
+        QTest::keyClick(Menu->button(), Qt::Key_5, Qt::KeypadModifier);
+        QCOMPARE(Menu->value(), std::string("keypad 5"));
+
+        //A mouse button over the capturing button binds it.
+        QTest::mouseClick(Menu->button(), Qt::LeftButton);
+        QTest::mouseClick(Menu->button(), Qt::RightButton);
+        QCOMPARE(Menu->value(), std::string("mouse right"));
+        QVERIFY(!Menu->capturing());
+
+        //Focus leaving cancels and keeps the binding.
+        QTest::mouseClick(Menu->button(), Qt::LeftButton);
+        QVERIFY(Menu->capturing());
+        QFocusEvent Out(QEvent::FocusOut, Qt::OtherFocusReason);
+        QCoreApplication::sendEvent(Menu->button(), &Out);
+        QVERIFY(!Menu->capturing());
+        QCOMPARE(Menu->value(), std::string("mouse right"));
+
+        //Two options of the section on one key: both marked, each naming the other; unbinding one clears both.
+        QTest::mouseClick(Jump->button(), Qt::LeftButton);
+        QTest::keyClick(Jump->button(), Qt::Key_I);
+        QVERIFY2(Fwd->button()->toolTip().contains("Jump"), qPrintable(Fwd->button()->toolTip()));
+        QVERIFY2(Jump->button()->toolTip().contains("Move forward"), qPrintable(Jump->button()->toolTip()));
+        QVERIFY(!Menu->button()->toolTip().contains("Also bound"));
+        QTest::mouseClick(Jump->clearButton(), Qt::LeftButton);
+        QCOMPARE(Jump->value(), std::string(""));
+        QCOMPARE(Jump->button()->text(), QString("(none)  (default Space)"));
+        QVERIFY(!Fwd->button()->toolTip().contains("Also bound"));
+
+        //↺ puts the default back.
+        QTest::mouseClick(Jump->resetButton(), Qt::LeftButton);
+        QCOMPARE(Jump->value(), std::string("space"));
+        QCOMPARE(Jump->button()->text(), QString("Space"));
+        QVERIFY(!Jump->resetButton()->isEnabled());
+    }
+
+    // A gamepad button binds a key option too: SDL's game-controller events, read while the button waits. A button
+    // already held when the capture starts binds nothing (else whatever the player rests a thumb on wins), nor does one
+    // pressed while the window sat idle; a trigger binds past half; once bound, presses no longer reach the option. Driven by an SDL virtual controller.
+    // Sticks bind by direction; an axis already pushed when a capture starts must return to the centre first.
+    // Teeth: skip Begin's flush (the A pressed while idle binds), drop the trigger branch, keep polling after the bind,
+    // forget the held axes (the wiggle binds), name directions by the wrong sign.
+    void aGamepadButtonBindsAKeyOption()
+    {
+        QVERIFY2(SDL_InitSubSystem(SDL_INIT_GAMECONTROLLER) == 0, SDL_GetError());
+        const int Idx = SDL_JoystickAttachVirtual(SDL_JOYSTICK_TYPE_GAMECONTROLLER, 6, 15, 0);
+        QVERIFY2(Idx >= 0, SDL_GetError());
+        char Guid[64];
+        SDL_JoystickGetGUIDString(SDL_JoystickGetDeviceGUID(Idx), Guid, sizeof Guid);
+        QVERIFY(SDL_GameControllerAddMapping((std::string(Guid) + ",VidyaGod test pad,a:b0,b:b1,x:b2,y:b3,back:b4,guide:b5,"
+            "start:b6,leftstick:b7,rightstick:b8,leftshoulder:b9,rightshoulder:b10,dpup:b11,dpdown:b12,dpleft:b13,"
+            "dpright:b14,leftx:a0,lefty:a1,rightx:a2,righty:a3,lefttrigger:a4,righttrigger:a5,").c_str()) >= 0);
+        SDL_Joystick *Pad = SDL_JoystickOpen(Idx);
+        QVERIFY2(Pad, SDL_GetError());
+
+        KeyCaptureField F("w", "w");
+        F.show();
+        SDL_JoystickSetVirtualButton(Pad, 1, SDL_PRESSED);                 // B, held before the capture starts
+        QTest::mouseClick(F.button(), Qt::LeftButton);
+        QVERIFY(F.capturing());
+        QTest::qWait(100);
+        QVERIFY(F.capturing());
+        QCOMPARE(F.value(), std::string("w"));
+        SDL_JoystickSetVirtualButton(Pad, 2, SDL_PRESSED);                 // X, pressed now
+        QTRY_COMPARE(F.value(), std::string("pad x"));
+        QVERIFY(!F.capturing());
+
+        SDL_JoystickSetVirtualButton(Pad, 1, SDL_RELEASED);
+        SDL_JoystickSetVirtualButton(Pad, 2, SDL_RELEASED);
+        QTest::mouseClick(F.button(), Qt::LeftButton);
+        SDL_JoystickSetVirtualAxis(Pad, 5, SDL_JOYSTICK_AXIS_MAX);         // right trigger, fully in
+        QTRY_COMPARE(F.value(), std::string("pad right trigger"));
+
+        SDL_JoystickSetVirtualButton(Pad, 0, SDL_PRESSED);                 // A, after the bind: ignored
+        QTest::qWait(100);
+        QCOMPARE(F.value(), std::string("pad right trigger"));
+
+        //That press is still queued in SDL; the next capture must not take it as its answer.
+        QTest::mouseClick(F.button(), Qt::LeftButton);
+        QTest::qWait(100);
+        QVERIFY(F.capturing());
+        QCOMPARE(F.value(), std::string("pad right trigger"));
+        SDL_JoystickSetVirtualButton(Pad, 3, SDL_PRESSED);                 // Y
+        QTRY_COMPARE(F.value(), std::string("pad y"));
+
+        //A stick direction binds past half (SDL's Y grows downward: negative is up).
+        SDL_JoystickSetVirtualAxis(Pad, 5, 0);                             // the trigger let go
+        QTest::qWait(50);
+        QTest::mouseClick(F.button(), Qt::LeftButton);
+        SDL_JoystickSetVirtualAxis(Pad, 1, SDL_JOYSTICK_AXIS_MIN);         // left stick up
+        QTRY_COMPARE(F.value(), std::string("pad left stick up"));
+
+        //Still held when the next capture starts: its wiggle binds nothing until it comes back to the centre.
+        QTest::mouseClick(F.button(), Qt::LeftButton);
+        SDL_JoystickSetVirtualAxis(Pad, 1, SDL_JOYSTICK_AXIS_MIN + 200);
+        QTest::qWait(100);
+        QVERIFY(F.capturing());
+        SDL_JoystickSetVirtualAxis(Pad, 1, 0);
+        QTest::qWait(50);
+        SDL_JoystickSetVirtualAxis(Pad, 1, SDL_JOYSTICK_AXIS_MAX);         // left stick down
+        QTRY_COMPARE(F.value(), std::string("pad left stick down"));
+        SDL_JoystickSetVirtualAxis(Pad, 1, 0);
+        QTest::qWait(50);
+        QTest::mouseClick(F.button(), Qt::LeftButton);
+        SDL_JoystickSetVirtualAxis(Pad, 2, SDL_JOYSTICK_AXIS_MIN);         // right stick left
+        QTRY_COMPARE(F.value(), std::string("pad right stick left"));
+
+        SDL_JoystickClose(Pad);
+        SDL_JoystickDetachVirtual(Idx);
+        SDL_QuitSubSystem(SDL_INIT_GAMECONTROLLER);
     }
 
     // An option's WHEN may read a fact of the package: a var with no control (which game this is). The window judged

@@ -1,3 +1,5 @@
+#include <QSet>
+#include <cmath>
 #include "deltatree.h"
 
 #include <QBrush>
@@ -13,6 +15,81 @@ DeltaTree::DeltaTree(QWidget * parent) : QTreeWidget(parent)
     setSelectionMode(QAbstractItemView::NoSelection);
     setUniformRowHeights(true);
     connect(this, &QTreeWidget::itemChanged, this, &DeltaTree::onItemChanged);
+}
+
+QString DeltaTree::MainFolder(const QStringList & Paths, QChar Sep, double Share)
+{
+    if (Paths.isEmpty()) return {};
+    //An installer marks the folder it installed to: its uninstaller (unins000.exe) or GOG's goggame-<id>.info sits
+    //right in it. One such folder is the install, whatever its subfolders hold.
+    QSet<QString> Marked;
+    for (const QString & P : Paths)
+    {
+        const QString Leaf = P.section(Sep, -1).toLower();
+        if (P.contains(Sep) && ((Leaf.startsWith("unins") && Leaf.endsWith(".exe")) || (Leaf.startsWith("goggame-") && Leaf.endsWith(".info"))))
+            Marked.insert(P.section(Sep, 0, -2));
+    }
+    if (Marked.size() == 1) return *Marked.begin();
+    //Several (GOG keeps a copy of its info file in ProgramData): the install is the marked one holding the most.
+    if (Marked.size() > 1)
+    {
+        QString Best; int BestN = 0;
+        for (const QString & M : Marked)
+        {
+            int N = 0;
+            for (const QString & P : Paths) if (P.startsWith(M + Sep)) ++N;
+            if (N > BestN) { Best = M; BestN = N; }
+        }
+        return Best;
+    }
+    QHash<QString, int> Under;                            // folder -> paths beneath it
+    for (const QString & P : Paths)
+    {
+        const QStringList Segs = P.split(Sep, Qt::SkipEmptyParts);
+        QString At;
+        for (int I = 0; I + 1 < Segs.size(); ++I) { At += (I ? QString(Sep) : QString()) + Segs[I]; ++Under[At]; }
+    }
+    const int Need = (int)std::ceil(Share * Paths.size());
+    QString Best;
+    int BestDepth = -1, BestN = 0;
+    for (auto It = Under.cbegin(); It != Under.cend(); ++It)
+    {
+        if (It.value() < Need) continue;
+        const int Depth = (int)It.key().count(Sep);
+        if (Depth > BestDepth || (Depth == BestDepth && It.value() > BestN)) { Best = It.key(); BestDepth = Depth; BestN = It.value(); }
+    }
+    //The bulk of a game is often its data folder (Oni's GameDataFolder, GTA's gtadata), its program beside it - in the
+    //folder over it or a sibling (GTA's gtawin). The install is the nearest folder, from the bulk up, holding a
+    //program anywhere beneath; none on the way, the bulk.
+    auto HoldsProgram = [&](const QString & Dir) {
+        for (const QString & P : Paths) if (P.startsWith(Dir + Sep) && P.endsWith(".exe", Qt::CaseInsensitive)) return true;
+        return false;
+    };
+    for (QString At = Best; !At.isEmpty(); At = At.contains(Sep) ? At.section(Sep, 0, -2) : QString())
+        if (HoldsProgram(At)) return At;
+    return Best;
+}
+
+void DeltaTree::reveal(const QString & Path, bool Check)
+{
+    QTreeWidgetItem * At = nullptr;
+    for (const QString & Seg : Path.split(Separator, Qt::SkipEmptyParts))
+    {
+        QTreeWidgetItem * Next = nullptr;
+        const int N = At ? At->childCount() : topLevelItemCount();
+        for (int I = 0; I < N && !Next; ++I)
+        {
+            QTreeWidgetItem * C = At ? At->child(I) : topLevelItem(I);
+            if (C->text(0) == Seg) Next = C;
+        }
+        if (!Next) return;
+        if (At) At->setExpanded(true);
+        At = Next;
+    }
+    if (!At) return;
+    scrollToItem(At, QAbstractItemView::PositionAtTop);
+    setCurrentItem(At);
+    if (Check) At->setCheckState(0, Qt::Checked);         // through onItemChanged: subtree + the preview signal
 }
 
 void DeltaTree::setPaths(const QStringList & Paths)

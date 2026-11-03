@@ -1,8 +1,10 @@
 #include "vfsmount.h"
+#include "boxprefix.h"   // RemoveTree — a wipe that never follows a link (Windows)
 #include <functional>
 #include "platform/platform.h"
 #include "procenv.h"         // SystemToolEnv + RunCommand
 #include "commonutils.h"        // Log*
+#include "persistlayer.h"       // Printable (a link target the game chose, in a log line)
 #include "launchresolver.h"     // BoundaryLinkIndex / InnerRunnerMountRel (cross-namespace inner-runner mounts)
 #include "varsubst.h"           // %variable% substitution in layer TARGETs (e.g. %ContentDir% → next to the exe)
 #include "zipscan.h"            // shared ZIP64 CD walker (STORE check) — from the FS repo via vgfs_core
@@ -22,6 +24,12 @@
 
 #include <fcntl.h>
 #include <unistd.h>
+#ifdef _WIN32
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#include <windows.h>
+#endif
 #include <sys/stat.h>
 
 #include <algorithm>
@@ -187,7 +195,7 @@ static void ValidateDeltaBases(const nlohmann::ordered_json &Layers, const char 
 
 //Who the mount reports owning its files: the user running it. A fixed 1000 broke every other uid: inside the
 //sandbox's user namespace an unmapped owner reads as `nobody`, and a KEEP dir (saves) mounted 0775 refused the
-//game's writes (CI's runner is uid 1001). WinFsp takes no owner from the spec.
+//game's writes (CI's runner is uid 1001). On Windows the helper mounts as the mounting user (uid=-1) whatever the spec says.
 static void SetMountOwner(nlohmann::ordered_json &Spec)
 {
 #ifdef _WIN32
@@ -404,9 +412,10 @@ nlohmann::ordered_json VfsMount::BuildLayerSpec(struct ContainerParams &Containe
 //persist-dir sources). The counterpart to building a plan without side effects — the plan says what it needs, the
 //mount provides it. Named and callable so the two halves can be tested apart: nothing else in the suite can
 //mount, so without this a mount that stopped creating them would break only on real hardware.
-void VfsMount::MaterializePlanPaths(const nlohmann::ordered_json &Spec)
+bool VfsMount::MaterializePlanPaths(const nlohmann::ordered_json &Spec)
 {
     std::error_code Ec;
+    bool Ok = true;
     //`writelayer` is NULL on every read-only plan — the runner build, runner install, a read-only runtime — and
     //nlohmann's value() THROWS on a present-but-wrong-type key rather than returning the default. It only
     //defaults when the key is ABSENT. So this read has to be total, like every other read of a spec field.
@@ -414,17 +423,44 @@ void VfsMount::MaterializePlanPaths(const nlohmann::ordered_json &Spec)
     if (WLIt != Spec.end() && WLIt->is_string())
     {
         const std::string WL = WLIt->get<std::string>();
+        //The game can swap it for a link between sessions (TempPath is open to it, and a busy mount leaves it in
+        //place): the helper would then write the session into whatever the link names.
+        if (!WL.empty() && std::filesystem::is_symlink(WL, Ec))
+        {
+            if (!std::filesystem::remove(WL, Ec) || Ec)
+            {
+                LogErr("VfsMount::MaterializePlanPaths", "The writelayer " + WL + " is a link and could not be removed ("
+                       + (Ec ? Ec.message() : std::string("gone")) + ") — not mounting a session that would write through it.");
+                return false;
+            }
+            LogWarn("VfsMount::MaterializePlanPaths", "The writelayer " + WL + " was a link — replaced by an empty folder.");
+        }
         if (!WL.empty()) std::filesystem::create_directories(WL, Ec);
     }
     const auto LayersIt = Spec.find("layers");
-    if (LayersIt == Spec.end() || !LayersIt->is_array()) return;
+    if (LayersIt == Spec.end() || !LayersIt->is_array()) return Ok;
     for (const auto &L : *LayersIt)
     {
         if (!L.is_object() || !ReadBool(L, "rw")) continue;
         const auto SrcIt = L.find("source");
-        if (ReadStr(L, "type") == "dir" && SrcIt != L.end() && SrcIt->is_string())
-            std::filesystem::create_directories(SrcIt->get<std::string>(), Ec);
+        if (ReadStr(L, "type") != "dir" || SrcIt == L.end() || !SrcIt->is_string()) continue;
+        const std::filesystem::path Src = SrcIt->get<std::string>();
+        //A kept folder (an RW passthrough) that is a link: served as is, every write into the keep, the launcher's own
+        //edits included, would land where it points, and the sandbox cannot open it to the game (bwrap refuses to
+        //mount on a link). A game could leave one when the whole instance folder was open to it; a user may have made
+        //one on purpose (saves in a synced folder). Either way it is not removed: the launch stops and says so.
+        if (std::filesystem::is_symlink(Src, Ec))
+        {
+            const std::filesystem::path To = std::filesystem::read_symlink(Src, Ec);
+            LogErr("VfsMount::MaterializePlanPaths", "The kept folder " + Src.string() + " is a link (to "
+                   + PersistLayer::Printable(To.string()) + "), not a folder — not launching. Kept data is served from "
+                   "the instance folder itself: move what the link points at into a folder of that name.");
+            Ok = false;
+            continue;
+        }
+        std::filesystem::create_directories(Src, Ec);
     }
+    return Ok;
 }
 
 size_t VfsMount::ReportMissingSources(const nlohmann::ordered_json &Spec, bool SkipRuntimeSourced)
@@ -460,10 +496,11 @@ size_t VfsMount::ReportMissingSources(const nlohmann::ordered_json &Spec, bool S
 //are about to appear — a false "N of M layer source(s) do not exist" on the one diagnostic that exists to catch
 //genuinely absent content. Splitting the plan builder from the mount inverted this order once already; as two
 //statements in MountVFS nothing could pin the sequence, because no test can mount.
-void VfsMount::PrepareMount(const nlohmann::ordered_json &Spec)
+bool VfsMount::PrepareMount(const nlohmann::ordered_json &Spec)
 {
-    VfsMount::MaterializePlanPaths(Spec);
+    const bool Ok = VfsMount::MaterializePlanPaths(Spec);
     VfsMount::ReportMissingSources(Spec);
+    return Ok;
 }
 
 bool VfsMount::MountVFS(struct ContainerParams &ContainerParams)
@@ -474,7 +511,7 @@ bool VfsMount::MountVFS(struct ContainerParams &ContainerParams)
     //UserDataPath, DROP shadows under TempPath); creating them is the mount's job, so a plan can be built and
     //inspected — by a test, or by --audit-packages — without writing to the user's data directory.
 
-    VfsMount::PrepareMount(Spec);
+    if (!VfsMount::PrepareMount(Spec)) return false;
 
     //Zip layers are served zero-copy, which requires STORE (uncompressed). Block any compressed
     //archive up front with a re-zip dialog (GUI) / log (headless), before mounting.
@@ -528,7 +565,7 @@ bool VfsMount::SpawnVidyagodfs(const nlohmann::ordered_json &Spec, const std::fi
     //one place that can guarantee a plan's writable paths exist before the helper is handed the spec. Doing it
     //in MountVFS instead left the runner paths to chance and left the call itself unpinnable: no test can FUSE
     //mount, so deleting it broke only real hardware.
-    VfsMount::MaterializePlanPaths(Spec);
+    if (!VfsMount::MaterializePlanPaths(Spec)) return false;
     {
         std::ofstream Out(SpecPath);   // SpecPath lives under TempPath (already created) — safe on both OSes
         if (!Out) { LogErr("VfsMount::SpawnVidyagodfs", "Cannot write spec " + SpecPath.string()); return false; }
@@ -570,7 +607,10 @@ bool VfsMount::SpawnVidyagodfs(const nlohmann::ordered_json &Spec, const std::fi
     const std::filesystem::path ErrLog = SpecPath.parent_path() / (SpecPath.stem().string() + ".err.log");
     QProcess Proc;
     Proc.setProgram(QString::fromStdString(Helper));
-    Proc.setArguments({ QString::fromStdString(SpecPath.string()), QString::fromStdString(Mountpoint.string()),
+    //A drive letter goes to WinFsp as "W:" (its mountpoint syntax), a folder as itself.
+    std::string Where = Mountpoint.string();
+    if (Where.size() == 3 && Where[1] == ':' && (Where[2] == '\\' || Where[2] == '/')) Where.pop_back();
+    Proc.setArguments({ QString::fromStdString(SpecPath.string()), QString::fromStdString(Where),
                         "--watch-pid", QString::fromStdString(WatchPid) });
     Proc.setStandardOutputFile(QString::fromStdString(OutLog.string()));
     Proc.setStandardErrorFile(QString::fromStdString(ErrLog.string()));
@@ -767,6 +807,68 @@ VfsMount::RuntimeHold::RuntimeHold() { ++LiveRuntimes; }
 VfsMount::RuntimeHold::~RuntimeHold() { --LiveRuntimes; }
 int VfsMount::RuntimesLive() { return LiveRuntimes.load(); }
 
+#ifdef _WIN32
+//WinFsp mounts a folder as a mount-point junction to its volume (\Device\Volume{…}) and removes it when the serving
+//process exits. A machine that dies with the mount up keeps the junction, naming a volume that is gone, and every
+//later launch of that game failed ("the mount folder already exists"). True if Path is such a junction.
+static bool IsWinFspJunction(const std::wstring &Path)
+{
+    return Platform::MountPointTarget(Path).rfind("\\Device\\Volume{", 0) == 0;
+}
+
+//A WinFsp junction whose volume is gone: following it finds no path (measured: ERROR_PATH_NOT_FOUND). Any other
+//failure (access denied, a helper too busy to answer) is not taken for death: the mount may be live.
+static bool JunctionDead(const std::wstring &Path)
+{
+    HANDLE H = ::CreateFileW(Path.c_str(), FILE_READ_ATTRIBUTES, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+                             nullptr, OPEN_EXISTING, FILE_FLAG_BACKUP_SEMANTICS, nullptr);   // follows the junction
+    if (H != INVALID_HANDLE_VALUE) { ::CloseHandle(H); return false; }
+    const DWORD E = ::GetLastError();
+    return E == ERROR_PATH_NOT_FOUND || E == ERROR_FILE_NOT_FOUND;
+}
+
+//UTF-16 → UTF-8 that never throws (path::string() does on a lone surrogate, and a game names the folders under TEMP):
+//such a name reads as U+FFFD, no longer names the folder, and so is never removed — the wipe is refused instead.
+static std::string Narrow(const std::wstring &W)
+{
+    const int N = ::WideCharToMultiByte(CP_UTF8, 0, W.data(), static_cast<int>(W.size()), nullptr, 0, nullptr, nullptr);
+    std::string Out(N > 0 ? N : 0, '\0');
+    if (N > 0) ::WideCharToMultiByte(CP_UTF8, 0, W.data(), static_cast<int>(W.size()), Out.data(), N, nullptr, nullptr);
+    return Out;
+}
+
+//Every WinFsp mount junction at or under Prefix, live or left by a dead machine, found without walking into one. (Other
+//junctions are not followed here either, but remove_all would: not this function's guarantee.)
+std::vector<std::string> VfsMount::MountpointsUnder(const std::filesystem::path &Prefix)
+{
+    std::vector<std::string> Result;
+    if (Prefix.empty()) return Result;
+    std::function<void(const std::wstring &)> Walk = [&](const std::wstring &Dir) {
+        if (IsWinFspJunction(Dir)) { Result.push_back(Narrow(Dir)); return; }
+        const DWORD A = ::GetFileAttributesW(Dir.c_str());
+        if (A == INVALID_FILE_ATTRIBUTES || !(A & FILE_ATTRIBUTE_DIRECTORY) || (A & FILE_ATTRIBUTE_REPARSE_POINT)) return;
+        WIN32_FIND_DATAW F;
+        HANDLE H = ::FindFirstFileW((Dir + L"\\*").c_str(), &F);
+        if (H == INVALID_HANDLE_VALUE) return;
+        do {
+            const std::wstring N = F.cFileName;
+            if (N == L"." || N == L".." || !(F.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY)) continue;
+            Walk(Dir + L"\\" + N);
+        } while (::FindNextFileW(H, &F));
+        ::FindClose(H);
+    };
+    Walk(Prefix.wstring());
+    return Result;
+}
+
+std::vector<std::string> VfsMount::LiveMountpointsUnder(const std::filesystem::path &Prefix)
+{
+    std::vector<std::string> Live;
+    for (const std::string &M : MountpointsUnder(Prefix))
+        if (!JunctionDead(std::filesystem::path(M).wstring())) Live.push_back(M);
+    return Live;
+}
+#else
 std::vector<std::string> VfsMount::MountpointsUnder(const std::filesystem::path &Prefix)
 {
     std::vector<std::string> Result;
@@ -815,6 +917,12 @@ std::vector<std::string> VfsMount::MountpointsUnder(const std::filesystem::path 
     return Result;
 }
 
+std::vector<std::string> VfsMount::LiveMountpointsUnder(const std::filesystem::path &Prefix)
+{
+    return MountpointsUnder(Prefix);   // a FUSE mount in mountinfo is live
+}
+#endif
+
 //Clears a previous run's leftovers under TempPath before a new build. See header for the
 //save-safety contract (never wipe while a mount under TempPath is still live).
 void VfsMount::CleanStaleRuntime(const std::filesystem::path &TempPath)
@@ -853,9 +961,15 @@ void VfsMount::CleanStaleRuntime(const std::filesystem::path &TempPath)
 
     if (Exists)
     {
+#ifdef _WIN32
+        //Never through a link the game left in its writable layer (MinGW's remove_all follows junctions).
+        if (std::vector<std::string> Left; !BoxPrefix::RemoveTree(TempPath, Left))
+            LogWarn("VfsMount::CleanStaleRuntime", "Could not remove stale TEMP: " + Left.front());
+#else
         std::error_code Ec;
         std::filesystem::remove_all(TempPath, Ec);
         if (Ec) LogWarn("VfsMount::CleanStaleRuntime", "Could not remove stale TEMP: " + Ec.message());
+#endif
         else if (!StaleMounts.empty() || Exists)
             LogSucc("VfsMount::CleanStaleRuntime", "Stale runtime cleared.");
     }
@@ -881,6 +995,12 @@ void VfsMount::UnmountLazy(const std::string &Mount)
 #ifndef _WIN32
     RunCommand("fusermount3", {"-uz", Mount}, SystemToolEnv());
 #else
-    (void)Mount;
+    //A junction whose volume is gone (its machine died with the mount up) is only a name: removing the folder removes
+    //the junction, never what it named. A live one (its volume answers) belongs to its helper, which unmounts it.
+    const std::wstring W = std::filesystem::path(Mount).wstring();
+    if (!IsWinFspJunction(W) || !JunctionDead(W)) return;
+    if (!::RemoveDirectoryW(W.c_str()))
+        LogWarn("VfsMount::UnmountLazy", "could not remove the dead mount junction " + Mount + " (error "
+                + std::to_string(::GetLastError()) + ")");
 #endif
 }

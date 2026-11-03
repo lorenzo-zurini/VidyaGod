@@ -5,6 +5,7 @@
 #include <QtTest>
 
 #include "launchresolver.h"
+#include "varsubst.h"
 #include "nodelower.h"
 #include "registrywrapper.h"
 #include "packagecatalog.h"
@@ -12,6 +13,8 @@
 #include "manifestmodel.h"
 #include "nodefixture.h"
 #include "instancestore.h"
+#include "builtinrunners.h"
+#include "cid.h"
 #include <QTemporaryDir>
 #include <fstream>
 
@@ -177,6 +180,30 @@ private slots:
         QCOMPARE(cp.CustomVariables["VIDYAGOD_SELF_NAME"],    std::string("PackageChoice")); // declaration wins
     }
 
+    // A session's scratch lives in the system temp (RAM on Linux) unless the caller roots it elsewhere: an authoring
+    // session roots it on disk, since an installer writes the whole game there. Teeth: ignore the override.
+    void a_session_root_override_moves_its_scratch()
+    {
+        NodeIndex idx;
+        idx.Nodes["wine"]   = runnerNode("wine", {"win32"}, {"proton"});
+        idx.Nodes["proton"] = contentNode("proton", json::array({ json{{"ZIP", "proton.zip"}} }));
+        idx.Nodes["game"]   = launchNode("game", "win32", {});
+        finish(idx);
+        const json cfg = json{{"Settings", json::object()}};
+        for (const bool Override : {false, true})
+        {
+            ContainerParams cp("/tmp/vg_bundle");
+            cp.NodeIdx = &idx;
+            cp.LaunchNodeId = "game";
+            if (Override) cp.TempRootOverride = "/srv/disk/AUTHORING";
+            json pool = json::object();
+            QVERIFY(LaunchResolver::InitializeFromNode(cp, pool, cfg));
+            const std::string T = cp.TempPath.string();
+            if (Override) QVERIFY2(T.rfind("/srv/disk/AUTHORING/", 0) == 0, T.c_str());
+            else QVERIFY2(T.rfind(LaunchResolver::SessionRoot().string(), 0) == 0, T.c_str());
+        }
+    }
+
     // InitializeFromNode resolves the whole container from the node graph: runner pick, recipe, content-root.
     void initialize_from_node_resolves_runner_and_recipe()
     {
@@ -215,7 +242,7 @@ private slots:
         NodeIndex idx;
         idx.Nodes["mediastack"] = contentNode("mediastack", json::array({
             json{{"DLL", {{"winegstreamer", ""}}}},
-            json{{"REG", {{"HKLM", {{"Software", {{"Lav", json::object()}}}}}}}},
+            json{{"REG", {{"HKLM", {{"Software", {{"Lav", json::object()}}}}}}}, {"ARCH", json::array({"64"})}},
             json{{"ZIP", "codecs.zip"}, {"TARGET", "FILES/files/lib/gstreamer-1.0"}} }));
         idx.Nodes["wine"] = runnerNode("wine", {"win32"}, {"mediastack"});
         idx.Nodes["game"] = launchNode("game", "win32", {});
@@ -447,6 +474,50 @@ private slots:
     // Among otherwise equal runners the specialist wins: a dedicated SNES emulator before a multi-system one that also
     // lists snes and sorts first by label (ares beside snes9x: the alternative never becomes every console's default).
     // A recommended generalist still wins. Teeth: drop the guest-count step and "aaa_multi" is picked.
+    // A machine that fetched the earlier windows-native (C:\<uid> anchors, published as bafkreiaj2f2uth…) still has it
+    // beside the built-in one: same label, same guests, neither recommended nor package-local. The built-in one wins,
+    // whichever sorts first by CID (the old one does) and whichever the index holds first. Teeth: drop the built-in
+    // step and the old node is picked.
+    void pick_runner_prefers_the_builtin_over_its_old_namesake()
+    {
+        const json Old = json::parse(R"VG({"LABEL":"windows-native_exec","LAYERS":[{"COMMENT":"A Windows game on Windows runs as itself: the game's exe, started from the mounted game folder. The guest's C: is laid out inside the mount (drive_c), the way a Wine prefix lays it out, so every package places its files the same way on both hosts.","EXEC":[{"ARGS":[],"CONTENT_ROOT":"drive_c/%PackageUID%","DRIVES":{"C:":"drive_c"},"EXE":"%Content%","GUEST":["win32","win64"],"GUEST_ROOTS":{"%AppData%":"C:\\users\\steamuser\\AppData\\Roaming","%Documents%":"C:\\users\\steamuser\\Documents","%GameDir%":"C:\\%PackageUID%","%LocalAppData%":"C:\\users\\steamuser\\AppData\\Local","%ProgramData%":"C:\\ProgramData","%ProgramFiles%":"C:\\Program Files","%ProgramFiles32%":"C:\\Program Files (x86)","%SysDir32%":"C:\\windows\\syswow64","%SysDir64%":"C:\\windows\\system32","%UserProfile%":"C:\\users\\steamuser","%Windows%":"C:\\windows"},"HOST":"win64","LABEL":"windows-native_exec"}]}]})VG");
+        const json New = BuiltinRunners::All().at(0).Node;
+        const std::string OldCid = Cid::OfNode(Old), NewCid = Cid::OfNode(New);
+        QVERIFY(OldCid.rfind("bafkreiaj2f2uth", 0) == 0);   // the published bytes
+        QVERIFY(OldCid < NewCid);
+        QVERIFY(BuiltinRunners::IsBuiltin(NewCid) && !BuiltinRunners::IsBuiltin(OldCid));
+
+        auto Indexed = [](json N, const std::string &C) { N["CID"] = C; return standalone(parse(N, "/tmp/vg_runner")); };
+        NodeIndex idx;
+        idx.Nodes[OldCid] = Indexed(Old, OldCid);
+        idx.Nodes[NewCid] = Indexed(New, NewCid);
+        if (kMachine != "win64") idx.Nodes["bridge"] = chainRunner("bridge", {"win64"}, kMachine);   // win64 → this machine
+        finish(idx);
+        Node launch = launchNode("game", "win32", {});
+        ContainerParams cp("/tmp/vg_bundle");
+        const auto ids = LaunchResolver::ResolveChainIds(idx, launch, cp, json{{"Settings", json::object()}});
+        QVERIFY(!ids.empty());
+        QCOMPARE(ids[0], NewCid);
+    }
+
+    // Runners equal on every count and sharing a LABEL (two versions of one runner) are ordered by CID: the pick does not
+    // depend on how the sort treats ties (enough of them that std::sort partitions instead of insertion-sorting).
+    void pick_runner_breaks_a_tie_by_cid()
+    {
+        NodeIndex idx;
+        for (int I = 39; I >= 0; --I)
+        {
+            const std::string Id = std::string("r") + char('0' + I / 10) + char('0' + I % 10);
+            idx.Nodes[Id] = chainRunner(Id, {"snes"}, kMachine, "%RunnerMount%/run", {}, json::array(), "same_exec");
+        }
+        finish(idx);
+        Node launch = launchNode("game", "snes", {});
+        ContainerParams cp("/tmp/vg_bundle");
+        const auto ids = LaunchResolver::ResolveChainIds(idx, launch, cp, json{{"Settings", json::object()}});
+        QVERIFY(!ids.empty());
+        QCOMPARE(ids[0], std::string("r00"));
+    }
+
     void pick_runner_prefers_the_specialist()
     {
         NodeIndex idx;
@@ -504,6 +575,19 @@ private slots:
         QCOMPARE((int)cp.KeepDirs.size(), 0);
         QCOMPARE((int)cp.KeepFiles.size(), 1);
         QCOMPARE(cp.KeepFiles[0].Path, std::string("game/save/slot*"));
+    }
+
+    // A kept place reached through ".." (the Public user's Documents, which no anchor names) is mounted at the place
+    // itself, and one that leaves the runtime is refused. Teeth: keep the ".." spelled out; let it climb out.
+    void derive_persistence_resolves_dotdot_in_a_kept_path()
+    {
+        ContainerParams cp("/tmp/vg_bundle"); cp.Recipe = {"c1"};
+        json pool = json{{"COMPONENTS", json::array({ json{{"COMPONENTID", "c1"}, {"SUBCOMPONENTS", json::array({
+            json{{"TYPE","DeclarePersist"},{"SCOPE","file"},{"PATH","pfx/drive_c/users/steamuser/../Public/Documents/Game/"},{"TARGET","Saves"}},
+            json{{"TYPE","DeclarePersist"},{"SCOPE","file"},{"PATH","pfx/../../outside/"},{"TARGET","Out"}} })}} })}};
+        LaunchResolver::DerivePersistence(pool, cp);
+        QCOMPARE((int)cp.KeepDirs.size(), 1);
+        QCOMPARE(cp.KeepDirs[0].Path, std::string("pfx/drive_c/users/Public/Documents/Game"));
     }
 
     // Every file/dir persist lands at UserDataPath/<TARGET>. Two guards keep that namespace safe from SILENT SAVE
@@ -1317,6 +1401,26 @@ private slots:
         QCOMPARE(ids[0], std::string("nativerun"));
     }
 
+    // A runner that bridges AND is a terminal here (windows-native: win32 and win64, on a win64 host) is the whole chain
+    // for a win32 game, once. Appending the terminal named it a second time, nested inside itself: AoE2's command on
+    // Windows was "<GameDir>/__runner_<windows-native>__/<age2_x1.exe>". Teeth: always append the terminal and the chain
+    // is ["both", "both"].
+    void chain_a_bridge_that_is_the_terminal_ends_the_chain()
+    {
+        NodeIndex idx;
+        idx.Nodes["both"] = chainRunner("both", {"win32", kMachine}, kMachine, "");
+        Node launch = launchNode("game", "win32", {});
+        ContainerParams cp("/tmp/vg_bundle");
+        auto ids = LaunchResolver::ResolveChainIds(idx, launch, cp, json{{"Settings", json::object()}});
+        QCOMPARE(ids, std::vector<std::string>({"both"}));
+        // A bridge that is not a terminal here still gets one.
+        idx.Nodes.erase("both");
+        idx.Nodes["bridge"] = chainRunner("bridge", {"win32"}, kMachine, "");
+        idx.Nodes["nativerun"] = chainRunner("nativerun", {kMachine}, kMachine, "");
+        ids = LaunchResolver::ResolveChainIds(idx, launch, cp, json{{"Settings", json::object()}});
+        QCOMPARE(ids, std::vector<std::string>({"bridge", "nativerun"}));
+    }
+
     // BFS tie-break: a bridge runner RECOMMENDED for this tile beats the alphabetically-first one.
     void chain_bridge_prefers_recommended()
     {
@@ -1419,6 +1523,32 @@ private slots:
           QCOMPARE(cp.CustomVariables["MM"], std::string("98")); }              // 2 | 32 | 64
     }
 
+    // A MAP table at launch: its entries resolve with everything else (an entry may hold a %token%), the bound value
+    // — default or overridden — reads through it at the use site, its ELSE fills what it lacks, and a table whose WHEN
+    // is off passes values through. Teeth: skip TableEntries in the resolver (every lookup passes through).
+    void resolve_custom_var_map_table()
+    {
+        auto cv = [](const std::string& k, const json& more){ json j{{"TYPE","CustomVar"},{"KEY",k}}; j.update(more); return j; };
+        const json pool = json{{"COMPONENTS", json::array({ json{{"COMPONENTID","c1"}, {"SUBCOMPONENTS", json::array({
+            cv("FWD", {{"DEFAULT", "keypad 0"}, {"UI", {{"CONTROL", "key"}}}}),
+            cv("DIR", {{"DEFAULT", "C:/g"}}),
+            cv("KEYS", {{"MAP", {{"keypad 0", "[0]"}, {"home", "%DIR%/h"}}}}),
+            cv("STRICT", {{"MAP", {{"a", "A"}}}, {"ELSE", "none"}}),
+            cv("OFF", {{"MAP", {{"keypad 0", "NO"}}}, {"WHEN", "%DIR%==never"}}),
+            cv("DERIVED", {{"DEFAULT", "%FWD:map:KEYS%"}}) })}} })}};
+        const auto run = [&](const std::string& Fwd) {
+            ContainerParams cp("/tmp/vg_bundle"); cp.Recipe = {"c1"}; cp.PackageUID = "pkg";
+            if (!Fwd.empty()) cp.VariableOverrides["FWD"] = Fwd;
+            LaunchResolver::ResolveCustomVariables(pool, cp, json{{"Settings", json::object()}});
+            std::string S = "%FWD:map:KEYS%|%FWD:map:STRICT%|%FWD:map:OFF%|%DERIVED%";
+            VarSubst::StringVariableSubstitution(S, cp.GetVariablesMap());
+            return S;
+        };
+        QCOMPARE(run(""), std::string("[0]|none|keypad 0|[0]"));
+        QCOMPARE(run("home"), std::string("C:/g/h|none|home|C:/g/h"));
+        QCOMPARE(run("a"), std::string("a|A|a|a"));
+    }
+
     // Absolute scope: a var's hierarchy-final value is visible to every reference, regardless of declaration order
     // (forward references, chains, and post-override values all resolve). Reference cycles terminate safely.
     void resolve_custom_var_absolute_scope()
@@ -1467,7 +1597,7 @@ private slots:
         cp.ExePathRelative = std::filesystem::path("roms/game.smc");
         //proton has NO explicit GUEST_PATH — the guest sees the game's content at its GUEST_ROOTS %GameDir%.
         RunnerLink Proton = mkLink("proton", "linux64", "%RunnerMount%/proton", "pfx/drive_c/%PackageUID%",
-                                   {"waitforexitandrun", "%GameDir%\\%ContentPath%"});
+                                   {"waitforexitandrun", "%GameDir%\\%ContentPath:winpath%"});
         Proton.GameDirGuest = "C:\\%PackageUID%";
         cp.RunnerChain = { mkLink("snes9x", "win32", "snes9x.exe", "", {"%Content%"}), Proton, mkLink("native", "linux64", "%Content%") };
         QCOMPARE(LaunchResolver::BoundaryLinkIndex(cp), 1);          // proton owns the guest fs
@@ -1488,7 +1618,7 @@ private slots:
         ContainerParams cp("/tmp/vg_bundle"); cp.PackageUID = "766";
         cp.RunnerMountPath = "/tmp/rt/RUNNER";
         RunnerLink Proton = mkLink("proton", "linux64", "%RunnerMount%/proton", "pfx/drive_c/%PackageUID%",
-                                   {"waitforexitandrun", "%GameDir%\\%ContentPath%"});
+                                   {"waitforexitandrun", "%GameDir%\\%ContentPath:winpath%"});
         Proton.GameDirGuest = "C:\\%PackageUID%";
         cp.RunnerChain = { mkLink("gok", "win64", "%RunnerMount%/__gok/homeworld.exe", "", {"-data", "%RunnerMount%/x"}),
                            Proton, mkLink("native", "linux64", "%Content%") };
@@ -1516,7 +1646,7 @@ private slots:
         ContainerParams cp("/tmp/vg_bundle"); cp.PackageUID = "766";
         cp.RunnerMountPath = "/tmp/rt/RUNNER";
         RunnerLink Proton = mkLink("proton", "linux64", "%RunnerMount%/proton", "pfx/drive_c/%PackageUID%",
-                                   {"waitforexitandrun", "%GameDir%\\%ContentPath%"});
+                                   {"waitforexitandrun", "%GameDir%\\%ContentPath:winpath%"});
         Proton.GameDirGuest = "C:\\%PackageUID%";
         RunnerLink Emu = mkLink("emu", "plat", "%RunnerMount%/emu.exe", "", {"%Content%"});
         Emu.Env = { {"HW_Data", "%RunnerMount%\\data"}, {"SHARED", "emu"}, {"GAME_WINS", "emu"} };
@@ -1588,6 +1718,213 @@ private slots:
         QCOMPARE(LaunchResolver::GuestToLayout(cp, "runner/own.sh"), std::string("runner/own.sh"));         // not a guest path
         cp.Drives = nlohmann::ordered_json::object();                                                          // no drives:
         QCOMPARE(LaunchResolver::GuestToLayout(cp, "%GameDir%/x"), std::string("C:\\802/x"));               // nothing maps
+    }
+
+    // A native runner's guest IS its runtime: an anchor spelled from %RuntimePath% is, in a value, the host path the
+    // program sees, and a path the launch places lands at its path below the runtime — no drive involved. Teeth: drop
+    // the runtime rule in GuestToLayout and the placement stays an absolute host path; move it after the drives and
+    // the Windows-shaped runtime (a HOST drive letter) is mapped through the guest's C: instead.
+    void a_native_guest_is_its_runtime()
+    {
+        ContainerParams cp("/tmp/vg_bundle"); cp.PackageUID = "802";
+        cp.RuntimePath = "/tmp/rt/RUNTIME";
+        cp.GuestRoots = { {"%GameDir%", "%RuntimePath%/n64/%PackageUID%"} };
+        QCOMPARE(cp.GetVariablesMap().at("GameDir"), std::string("/tmp/rt/RUNTIME/n64/802"));          // a value
+        QCOMPARE(LaunchResolver::GuestToLayout(cp, "%GameDir%/oot.o2r"), std::string("n64/802/oot.o2r")); // a placement
+        QCOMPARE(LaunchResolver::GuestToLayout(cp, "%GameDir%"), std::string("n64/802"));
+        QCOMPARE(LaunchResolver::GuestToLayout(cp, "%RuntimePath%"), std::string(""));                  // the root
+        QVERIFY(cp.UnmappedPlacements.empty());
+        QCOMPARE(LaunchResolver::GuestToLayout(cp, "/tmp/rt/RUNTIMEX/a"), std::string("/tmp/rt/RUNTIMEX/a"));   // not inside:
+        QCOMPARE(cp.UnmappedPlacements, std::vector<std::string>{"/tmp/rt/RUNTIMEX/a"});                        // refused
+        cp.UnmappedPlacements.clear();
+        // A Windows runtime starts with the host's drive letter: it is the runtime, never a guest's C:.
+        cp.RuntimePath = "C:\\vg\\RUNTIME";
+        cp.Drives = { {"C:", "drive_c"} };
+        QCOMPARE(LaunchResolver::GuestToLayout(cp, "%GameDir%/x.cfg"), std::string("n64/802/x.cfg"));
+        QVERIFY(cp.UnmappedPlacements.empty());
+    }
+
+    // windows-native, the runner of every Windows game on a Windows PC, is a native guest: an anchor in a value (an
+    // argument, an edited config line) names the runtime folder where that anchor's files are placed, never the
+    // machine's own C:\<uid>, in backslashes as a Windows program expects; placements land where they always did
+    // (drive_c/…). An inner engine nested under it is handed runtime paths too, its own build folder included.
+    // Teeth: put the fake drive back into the builtin and every value reads C:\….
+    // Windows mounts a runtime at a drive root ("W:\"): %RuntimePath% is spelled without its separator, so
+    // "%RuntimePath%\drive_c" reads W:\drive_c, the path a game stores and compares, not W:\\drive_c. A folder is as it is.
+    void runtime_at_a_drive_root_is_spelled_without_its_separator()
+    {
+        ContainerParams cp("/tmp/vg_bundle");
+        for (const char *Root : {"W:\\", "W:/"})
+        {
+            cp.RuntimePath = Root; cp.UnifiedRuntime = true;
+            const auto V = cp.GetVariablesMap();
+            QCOMPARE(V.at("RuntimePath"), std::string("W:"));
+            QCOMPARE(V.at("RunnerMount"), std::string("W:"));
+        }
+        cp.UnifiedRuntime = false; cp.RunnerMountPath = "V:\\";
+        QCOMPARE(cp.GetVariablesMap().at("RunnerMount"), std::string("V:"));
+        cp.RuntimePath = "/tmp/vg/RUNTIME/";
+        QCOMPARE(cp.GetVariablesMap().at("RuntimePath"), std::filesystem::path("/tmp/vg/RUNTIME/").string());
+    }
+
+    void windows_native_names_the_runtime_on_a_windows_host()
+    {
+        nlohmann::ordered_json Exec;
+        for (const auto & B : BuiltinRunners::All())
+            if (B.Folder == "windows-native") Exec = B.Node["LAYERS"][0]["EXEC"][0];
+        QVERIFY(Exec.contains("GUEST_ROOTS"));
+        // Its box is its prefix (BoxPrefix): C: is laid out at drive_c, the profile and system anchors are the machine's
+        // real folders (Platform::HostFolders, as %Host…% variables: given here, Linux has none).
+        QCOMPARE(Exec["DRIVES"], nlohmann::ordered_json({{"C:", "drive_c"}}));
+        QVERIFY2(NodeLower::CheckNode(BuiltinRunners::All()[0].Node, "windows-native").empty(), "windows-native fails CheckNode");
+        ContainerParams cp("/tmp/vg_bundle"); cp.PackageUID = "802";
+        cp.RuntimePath = "C:\\Users\\me\\VidyaGod\\TEMP\\802\\RUNTIME";
+        cp.GuestRoots = Exec["GUEST_ROOTS"];
+        cp.Drives = Exec["DRIVES"];
+        cp.CustomVariables = {{"HostAppData", "C:\\Users\\me\\AppData\\Roaming"}, {"HostSysDir32", "C:\\Windows\\SysWOW64"},
+                              {"HostDocuments", "C:\\Users\\me\\Documents"}};
+        const auto V = cp.GetVariablesMap();
+        QCOMPARE(V.at("GameDir"), std::string("C:\\Users\\me\\VidyaGod\\TEMP\\802\\RUNTIME\\drive_c\\802"));
+        QCOMPARE(V.at("AppData"), std::string("C:\\Users\\me\\AppData\\Roaming"));   // the real folder: what the game asks Windows for
+        QCOMPARE(LaunchResolver::GuestToLayout(cp, "%GameDir%/data/x.cfg"), std::string("drive_c/802/data/x.cfg"));
+        QCOMPARE(LaunchResolver::GuestToLayout(cp, "%SysDir32%/d3d8.dll"), std::string("drive_c/Windows/SysWOW64/d3d8.dll"));
+        QCOMPARE(LaunchResolver::GuestToLayout(cp, "%Documents%/My Games/x.ini"), std::string("drive_c/Users/me/Documents/My Games/x.ini"));
+        QVERIFY(cp.UnmappedPlacements.empty());
+        // An engine nested under it (a win64 DOSBox twin) runs the content at runtime paths, backslashed.
+        cp.ExePathRelative = std::filesystem::path("GAME.EXE");
+        RunnerLink Native = mkLink("windows-native", "win64", "%Content%", Exec["CONTENT_ROOT"].get<std::string>());
+        Native.GameDirGuest = Exec["GUEST_ROOTS"]["%GameDir%"].get<std::string>();
+        cp.RunnerChain = { mkLink("dosbox", "win64", "%RunnerMount%/dosbox.exe", "", {"-conf", "%RunnerMount%\\dosbox.conf", "%Content%"}), Native };
+        const auto gt = LaunchResolver::ComposeGuestTarget(cp);
+        const std::string Rt = "C:\\Users\\me\\VidyaGod\\TEMP\\802\\RUNTIME\\drive_c\\802";
+        QCOMPARE(gt.ContentRel, std::string("__runner_dosbox__/dosbox.exe"));                     // mounted under CONTENT_ROOT
+        QCOMPARE(gt.TrailingArgs, (std::vector<std::string>{"-conf", Rt + "\\__runner_dosbox__\\dosbox.conf", Rt + "\\GAME.EXE"}));
+        // A runtime at a drive root keeps its separator: C:\ is the runtime, and everything on it is in it.
+        cp.RuntimePath = "C:\\";
+        QCOMPARE(LaunchResolver::GuestToLayout(cp, "%GameDir%/x.cfg"), std::string("drive_c/802/x.cfg"));
+        QVERIFY(cp.UnmappedPlacements.empty());
+    }
+
+    // The same through a whole launch: a native engine without a fake drive places the game's files in its folder,
+    // and %GameDir% in the game's arguments and in its EXE reads the real runtime path — what Linux runners spelled
+    // by hand as %RuntimePath%/n64/%PackageUID%. Teeth: as above.
+    void a_native_runner_places_and_names_the_game_folder_without_a_drive()
+    {
+        NodeIndex idx;
+        idx.Nodes["soh"] = standalone(parse(json{ {"CID", "soh"}, {"LABEL", "soh"}, {"LAYERS", json::array({
+            json{{"EXEC", json::array({ json{{"LABEL", "soh"}, {"HOST", ManifestModel::MachinePlatform()}, {"GUEST", {"n64"}},
+                                             {"EXE", "%RunnerMount%/soh.elf"}, {"CONTENT_ROOT", "n64/%PackageUID%"},
+                                             {"GUEST_ROOTS", {{"%GameDir%", "%RuntimePath%/n64/%PackageUID%"}}}} })}} })} },
+            "/tmp/vg_runner"));
+        idx.Nodes["game"] = launchNode("game", "n64", {},
+            json{{"EXE", "%GameDir%/oot.o2r"}, {"ARGS", json::array({"--home=%GameDir%"})}},
+            json::array({ json{{"DIR", "saves"}, {"TARGET", "FILES/%GameDir%/Save"}},
+                          json{{"KEEP", {{"FILES/%GameDir%/Save/", true}}}} }));
+        finish(idx);
+        ContainerParams cp("/tmp/vg_bundle");
+        cp.NodeIdx = &idx; cp.LaunchNodeId = "game";
+        json pool = json::object();
+        QVERIFY(LaunchResolver::InitializeFromNode(cp, pool, json{{"Settings", json::object()}}));
+        QVERIFY(LaunchResolver::ResolveExecutableDefinition(json::object(), cp));
+        const std::string Home = (cp.RuntimePath / "n64" / "game").string();
+        std::string target;
+        for (const auto & L : cp.SubComponentsArray)
+            if (L.contains("TARGET") && L["TARGET"].is_string() && L["TARGET"].get<std::string>().find("Save") != std::string::npos)
+                target = L["TARGET"].get<std::string>();
+        QCOMPARE(target, std::string("n64/game/Save"));
+        QCOMPARE(cp.ExeArgs, std::vector<std::string>{"--home=" + Home});
+        QCOMPARE(cp.ExePathRelative.string(), std::string("oot.o2r"));
+        QCOMPARE(cp.ExePathComplete.string(), Home + "/oot.o2r");
+        // The kept folder is where the game writes it, below the runtime (saves are kept, not lost).
+        bool kept = false;
+        for (const auto & K : cp.KeepDirs) kept |= K.Path == "n64/game/Save";
+        QVERIFY2(kept, nlohmann::ordered_json(cp.KeepDirs).dump().c_str());
+    }
+
+    // A program installed beside the game, not in it (MTA:SA in Program Files, run on the San Andreas it finds): its
+    // %ContentPath% is still relative to the content root, climbing out of it, so the runner's "C:\<uid>\%ContentPath%"
+    // names it. Measured from the runtime root instead, wine was asked for C:\790\pfx/drive_c/Program Files (x86)/….
+    // Teeth: return the runtime-root path for an exe outside the content root.
+    void a_program_beside_the_game_folder_is_named_from_it()
+    {
+        const json Wine = json{{"GUEST_ROOTS", {{"%GameDir%", "C:\\%PackageUID%"}, {"%ProgramFiles32%", "C:\\Program Files (x86)"}}},
+                               {"DRIVES", {{"C:", "%PrefixRoot%/drive_c"}}}};
+        NodeIndex idx;
+        idx.Nodes["wine"] = runnerNode("wine", {"win32"}, {}, Wine);
+        idx.Nodes["game"] = launchNode("game", "win32", {}, json{{"EXE", "%ProgramFiles32%/Tool 1.0/tool.exe"}},
+                                       json::array({ json{{"DIR", "tool"}, {"TARGET", "FILES/%ProgramFiles32%/Tool 1.0"}} }));
+        finish(idx);
+        ContainerParams cp("/tmp/vg_bundle");
+        cp.NodeIdx = &idx; cp.LaunchNodeId = "game";
+        json pool = json::object();
+        QVERIFY(LaunchResolver::InitializeFromNode(cp, pool, json{{"Settings", json::object()}}));
+        QVERIFY(LaunchResolver::ResolveExecutableDefinition(json::object(), cp));
+        QCOMPARE(cp.ExePathRelative.generic_string(), std::string("../Program Files (x86)/Tool 1.0/tool.exe"));
+        QCOMPARE(cp.ExePathComplete.generic_string(), (cp.RuntimePath / "pfx/drive_c/Program Files (x86)/Tool 1.0/tool.exe").generic_string());
+        QCOMPARE(cp.WorkDirPathComplete.generic_string(), (cp.RuntimePath / "pfx/drive_c/Program Files (x86)/Tool 1.0").generic_string());
+    }
+
+    // A placement outside the runtime lands nowhere the program sees: under a native runner, an anchor spelled from a
+    // host path (%TempPath%/x would mount at RUNTIME/tmp/…) or a literal drive with no DRIVES (a "C:" folder) is
+    // refused, as an unmapped drive is under Wine — for a layer and for a kept path alike. Teeth: drop the
+    // outside-the-runtime branch in GuestToLayout and these launch; check before DerivePersistence only and the
+    // KEEP one launches.
+    void a_native_placement_outside_the_runtime_is_refused()
+    {
+        const auto launch = [](const json &Roots, const json &Layers) {
+            NodeIndex idx;
+            idx.Nodes["emu"] = standalone(parse(json{ {"CID", "emu"}, {"LABEL", "emu"}, {"LAYERS", json::array({
+                json{{"EXEC", json::array({ json{{"LABEL", "emu"}, {"HOST", ManifestModel::MachinePlatform()}, {"GUEST", {"n64"}},
+                                                 {"EXE", "%RunnerMount%/emu"}, {"CONTENT_ROOT", "n64/%PackageUID%"},
+                                                 {"GUEST_ROOTS", Roots}} })}} })} }, "/tmp/vg_runner"));
+            idx.Nodes["game"] = launchNode("game", "n64", {}, json::object(), Layers);
+            finish(idx);
+            ContainerParams cp("/tmp/vg_bundle");
+            cp.NodeIdx = &idx; cp.LaunchNodeId = "game";
+            json pool = json::object();
+            return LaunchResolver::InitializeFromNode(cp, pool, json{{"Settings", json::object()}});
+        };
+        const json Roots = { {"%GameDir%", "%RuntimePath%/n64/%PackageUID%"}, {"%Scratch%", "%TempPath%/scratch"} };
+        QVERIFY2(launch(Roots, json::array({ json{{"DIR", "cfg"}, {"TARGET", "FILES/%GameDir%/cfg"}} })), "an in-runtime layer was refused");
+        QVERIFY2(!launch(Roots, json::array({ json{{"DIR", "cfg"}, {"TARGET", "FILES/%Scratch%/cfg"}} })), "a host-path layer launched");
+        QVERIFY2(!launch(Roots, json::array({ json{{"DIR", "cfg"}, {"TARGET", "FILES/C:/cfg"}} })), "a literal-drive layer launched");
+        QVERIFY2(!launch(Roots, json::array({ json{{"KEEP", {{"FILES/%Scratch%/saves/", true}}}} })), "a host-path keep launched");
+    }
+
+    // A guest path is on a drive the runner lays out or spelled from a variable (%RuntimePath%, another anchor, a VAR).
+    // A bare relative or host-absolute path is no place in any guest: refused. Teeth: drop the check and "n64/x" passes.
+    void a_guest_root_must_be_on_a_drive_or_start_at_a_variable()
+    {
+        const auto check = [](const nlohmann::ordered_json &Roots, const nlohmann::ordered_json &Drives) {
+            nlohmann::ordered_json E = { {"LABEL", "run"}, {"HOST", "linux64"}, {"GUEST", nlohmann::ordered_json::array({"custom"})},
+                                         {"EXE", "%RunnerMount%/x"}, {"GUEST_ROOTS", Roots} };
+            if (!Drives.is_null()) E["DRIVES"] = Drives;
+            return NodeLower::CheckNode({ {"LABEL", "r"}, {"LAYERS", nlohmann::ordered_json::array({ { {"EXEC", nlohmann::ordered_json::array({E})} } })} }, "r");
+        };
+        QVERIFY2(check({ {"%GameDir%", "%RuntimePath%/n64/%PackageUID%"} }, nullptr).empty(), "a runtime guest root was refused");
+        QVERIFY(check({ {"%GameDir%", "C:\\%PackageUID%"} }, { {"C:", "pfx/drive_c"} }).empty());
+        for (const char *Bad : {"n64/%PackageUID%", "/opt/game"})
+        {
+            const std::string Why = check({ {"%GameDir%", Bad} }, nullptr);
+            QVERIFY2(Why.find("starts at %RuntimePath%") != std::string::npos, (std::string(Bad) + ": " + Why).c_str());
+        }
+    }
+
+    // An inner runner nested under a native boundary sees the content at the boundary's runtime %GameDir%, joined with
+    // '/' (a Wine boundary joins with '\'). Teeth: join every template with '\' and the ROM reads "…/n64/game\roms\…".
+    void a_native_boundary_joins_guest_paths_with_slashes()
+    {
+        ContainerParams cp("/tmp/vg_bundle"); cp.PackageUID = "game"; cp.RuntimePath = "/tmp/rt/RUNTIME";
+        cp.ExePathRelative = std::filesystem::path("roms/game.z64");
+        RunnerLink Engine = mkLink("engine", "linux64", "%RunnerMount%/engine", "n64/%PackageUID%", {"%Content%"});
+        Engine.GameDirGuest = "%RuntimePath%/n64/%PackageUID%";
+        cp.RunnerChain = { mkLink("plugin", "linux64", "%RunnerMount%/plugin", "", {"%Content%"}), Engine, mkLink("native", "linux64", "%Content%") };
+        const auto gt = LaunchResolver::ComposeGuestTarget(cp);
+        QCOMPARE(gt.TrailingArgs[0], std::string("/tmp/rt/RUNTIME/n64/game/roms/game.z64"));
+        // The separator follows the spelling, not one variable's name: a root spelled through another variable.
+        cp.CustomVariables["Base"] = "/tmp/rt/RUNTIME";
+        cp.RunnerChain[1].GameDirGuest = "%Base%/n64/%PackageUID%";
+        QCOMPARE(LaunchResolver::ComposeGuestTarget(cp).TrailingArgs[0], std::string("/tmp/rt/RUNTIME/n64/game/roms/game.z64"));
     }
 
     // An anchor may be spelled from another, declared in any order.

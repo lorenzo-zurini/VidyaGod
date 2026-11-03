@@ -87,8 +87,10 @@ Graph Build(const std::vector<NodeRef> &Nodes);
 
 // ---- layer vocabulary -----------------------------------------------------
 
-//Every LAYER TYPE, in palette order (content, references, transforms, facts, entries).
-const std::vector<std::string> &AllTypes();
+//Every LAYER TYPE, grouped as the canvas colours them (content, transforms, facts, entries, composition): what a
+//picker offers, in that order.
+struct TypeGroup { const char *Title; std::vector<std::string> Types; };
+const std::vector<TypeGroup> &TypeGroups();
 //A layer's one type key ("" when it has none or several — a malformed layer).
 std::string LayerType(const nlohmann::ordered_json &Layer);
 //The layer types THIS node carries, in LAYERS order.
@@ -98,6 +100,8 @@ std::vector<std::string> LayerTypes(const nlohmann::ordered_json &Node);
 std::string KindOf(const nlohmann::ordered_json &Node);
 //One line for the palette and the layer tooltip — discoverability in the format, not in a manual.
 const char *TypeHelp(const std::string &Type);
+//What a type is for, in a few plain words: shown beside its keyword wherever one is picked.
+const char *TypeGist(const std::string &Type);
 //Accent colour (r,g,b) by kind — content, transforms, facts, entries and composition read differently at a glance.
 void TypeColour(const std::string &Kind, int &R, int &G, int &B);
 //A node's CONTENT layer — its first ZIP, FILE, DELTA or DIR layer, the one the per-node content actions work on —
@@ -119,12 +123,23 @@ nlohmann::ordered_json NewPayload(const std::string &Type);
 bool AddLayer(nlohmann::ordered_json &Node, const std::string &Type);
 //Move layer I by Delta (-1 up, +1 down) — the order IS the fold order. Returns whether it moved.
 bool MoveLayer(nlohmann::ordered_json &Node, int I, int Delta);
+//Move layer From so it lands before what is now layer At (At = the count: last). Returns whether the order changed.
+bool MoveLayerTo(nlohmann::ordered_json &Node, int From, int At);
+//Take layer From out of Src (or copy it) and put it before Dst's layer At (At = Dst's count: last; clamped). A layer
+//naming Dst itself (a NODE / NOT / ANY member) is refused: a node never contains itself. Returns whether it happened.
+bool MoveLayerAcross(nlohmann::ordered_json &Src, int From, nlohmann::ordered_json &Dst, const std::string &DstHandle,
+                     int At, bool Copy);
 //Erase the reference at flattened ordinal `Slot` (the Link::Slot of its wire): a NODE or NOT layer is removed, an
 //ANY member is removed (an ANY left with none is removed). False if none.
 bool EraseRef(nlohmann::ordered_json &Node, int Slot);
 //Contain `Ref`: a NODE layer, after the node's leading NODE layers (what it contains lies beneath its own layers).
 //No-op if a NODE layer already names it. Returns whether it changed.
 bool AddNodeRef(nlohmann::ordered_json &Node, const std::string &Ref);
+//...or at a chosen place in the fold: a layer of `Type` ("NODE" or "NOT") naming Ref, before layer At (-1: as
+//AddNodeRef places it). No-op if a layer of that type already names it.
+bool InsertRef(nlohmann::ordered_json &Node, const std::string &Type, const std::string &Ref, int At);
+//Whether a layer names Ref (as NODE, NOT or an ANY member).
+bool LayerNames(const nlohmann::ordered_json &Layer, const std::string &Ref);
 //Remove every reference naming `Ref` (NODE layers, ANY members, NOT layers). Returns whether anything changed.
 bool RemoveRefs(nlohmann::ordered_json &Node, const std::string &Ref);
 
@@ -162,7 +177,13 @@ struct Field
     std::vector<std::pair<const char *, const char *>> Options;   // Enum: {stored value, shown label}
     std::vector<Field> Sub;                                       // ObjArray: the per-entry fields
     bool VarUI = false;                                           // ObjArray of CustomVars: draw the UI facet per entry
+    //An ObjArray entry's field that only some MODEs read: the space-separated modes that do ("" = every entry; "-" =
+    //none - an old key the engine ignores, shown only where an entry still carries it). A field an entry carries is
+    //always shown, so nothing in the data is hidden.
+    const char *OnlyModes = "";
 };
+//Whether an ObjArray entry shows this field: its mode reads it, or the entry carries it.
+bool FieldApplies(const Field &F, const nlohmann::ordered_json &Entry);
 
 //The rows to render for ONE layer of a type, in order, drawn against the layer object (WHEN and COMMENT included).
 const std::vector<Field> &FieldsFor(const std::string &Type);
@@ -229,6 +250,57 @@ struct Action
 //"make delta" only when a parent can be its base, "re-store" only when the zip is actually DEFLATE. `Hints` are
 //facts the canvas cannot know without touching disk (e.g. "deflate"), pushed in by the host.
 std::vector<Action> ActionsFor(const nlohmann::ordered_json &Node, bool HasDeltaBase, const std::vector<std::string> &Hints);
+
+//A node in plain words, one line: what it runs and on what, where its files come from, what it contains or rides on,
+//what it changes and keeps ("Version "Original": runs bin/demo.exe on Windows 32-bit; files from demo.zip; keeps
+//saves in Documents"). Label names a referenced node.
+std::string Describe(const nlohmann::ordered_json &Node, const LabelFn &Label = {});
+//Platform tokens in words: win32 -> "Windows 32-bit", dos -> "DOS"...; an unknown token is itself.
+std::string PlatformWords(const std::string &Token);
+
+//A node's fold flattened, in the order it is applied: its layers top to bottom, a contained node's layers in place of
+//the NODE layer naming it (Depth one deeper). Later wins. Find gives a node of this package by handle (null: another
+//package's or missing - shown as one step, not entered).
+struct FoldStep { int Depth = 0; std::string Node, NodeLabel; int Layer = -1; std::string Type, Title; bool Outside = false; };
+std::vector<FoldStep> FoldOrder(const std::string &Root, const std::function<const nlohmann::ordered_json *(const std::string &)> &Find,
+                                const LabelFn &Label = {});
+
+//How a version shows on the shelf: the tile its fold presents (title, UID, cover file) and every version of the package
+//with the one marked recommended.
+struct ShelfCard { std::string Title, Uid, Cover; std::vector<std::pair<std::string, bool>> Versions; };
+ShelfCard CardFor(const std::string &Root, const std::vector<std::string> &PackageNodes,
+                  const std::function<const nlohmann::ordered_json *(const std::string &)> &Find);
+
+//What a new package's first node is, by what the game is: one version ("Original") whose files are waiting (an empty
+//ZIP layer) and whose Play entry carries the tile, on its platform - Windows and Linux are left for the program's own
+//header to say (bringing files in reads it), DOS and a console are known up front.
+enum class Recipe { Windows, Dos, Console, Linux, Library };
+nlohmann::ordered_json RecipeNode(Recipe R, const std::string &Title, const std::string &Uid, const std::string &Platform);
+//Recipes for a package that has a game already: another version of it (contains Base - its files and its entry -
+//with room for its own files and program: a source port, a patch) or a mod riding on it (an ANY on Base: ticked in
+//the pre-launch window, its files waiting).
+nlohmann::ordered_json VersionNode(const std::string &Base, const std::string &BaseLabel);
+nlohmann::ordered_json ModNode(const std::string &Base, const std::string &BaseLabel);
+//A game's ID changed (Old -> New): every tile of it (TILE.UID), every tile nesting under it (TILE.PARENTUID) and every
+//RECOMMENDED naming it, in this node. Returns whether anything changed.
+bool ChangeUid(nlohmann::ordered_json &Node, const std::string &Old, const std::string &New);
+
+//What to offer beside a validation message on a node: a note in place of the warning when the node is only waiting
+//for something the author is about to do (a content layer just added, its files not brought in yet), and a button
+//that does the fix (an action id: one PkgActions performs, "add_layer:<TYPE>", or "open_entry:<row key>" - open the
+//node's unfinished game entry, "L<layer>/EXEC/<i>"). Node, when given, is the node the message is about: an entry it
+//already has is opened to finish, not doubled by a new layer.
+struct Fix { bool Waiting = false; std::string Note, Label, Action; };
+Fix FixFor(const std::string &Message, const nlohmann::ordered_json *Node = nullptr);
+//A KEEP address set apart from another of the same last segment: Node with that address's value given a NAME of its
+//top folder and its last segment ("Expansion Saved Games") - in its own KEEP, else (an address a contained node keeps)
+//in a KEEP layer added over it. False only for a malformed node or address.
+bool NameKeepApart(nlohmann::ordered_json &Node, const std::string &Address);
+
+//What a game's package still needs before it plays, as the ONE next step ("" when nothing is missing): the game's
+//files, then what runs them, then its card, a version on it (only a VARIANT is on the shelf) and the card's cover. Read from the package's own nodes. A runner's
+//package, and one with files but no game entry (a library, a mod's data), are not nagged.
+std::string NextStep(const std::vector<const nlohmann::ordered_json *> &Nodes);
 
 // ---- flattened registry editing -------------------------------------------
 

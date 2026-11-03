@@ -66,6 +66,9 @@ bool LaunchResolver::DerivePersistence(const nlohmann::ordered_json &MANIFESTJSO
     auto NormalizeRel = [](std::string T){
         while (!T.empty() && (T.back() == '/' || T.back() == '\\')) T.pop_back();
         while (!T.empty() && (T.front() == '/' || T.front() == '\\')) T.erase(T.begin());
+        //A place reached through ".." (%UserProfile%/../Public/Documents: no anchor names it) is that place: mounted
+        //with the ".." spelled out, the keep lands beside the folder the game writes to and silently keeps nothing.
+        if (T.find("..") != std::string::npos) T = std::filesystem::path(T).lexically_normal().generic_string();
         return T;
     };
     //The last path component (the durable-name default): "pfx/.../Saved Games/Foo" → "Foo".
@@ -141,6 +144,8 @@ bool LaunchResolver::DerivePersistence(const nlohmann::ordered_json &MANIFESTJSO
         const bool Pattern = HasWildcard(Leaf(Rel));
         if (HasWildcard(Rel) && (!Pattern || HasWildcard(Rel.substr(0, Rel.find_last_of("/\\") == std::string::npos ? 0 : Rel.find_last_of("/\\")))))
         { LogErr("DerivePersistence", "  persist PATH '" + Rel + "': a pattern (* ?) may only be in the last segment — skipped."); return; }
+        if (Rel == ".." || Rel.rfind("../", 0) == 0)
+        { LogErr("DerivePersistence", "  persist PATH '" + Path + "' leaves the runtime — skipped."); return; }
         if (!ClaimFileTarget(Target, Rel)) return;
         if (!Pattern && IsDirTarget(Path)) { ContainerParams.KeepDirs.push_back({ Rel, Target, Cloud });  LogOut("DerivePersistence", "  persist dir  " + Rel + " → " + Target + (Cloud ? "" : " (local-only)")); }
         else                   { ContainerParams.KeepFiles.push_back({ Rel, Target, Cloud }); LogOut("DerivePersistence", "  persist file " + Rel + " → " + Target + (Cloud ? "" : " (local-only)")); }

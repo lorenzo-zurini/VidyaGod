@@ -746,6 +746,33 @@ private slots:
         QVERIFY2(VfsMount::ReportMissingSources(json::object()) == 0, "and the sweep is total too");
     }
 
+    // A kept folder (an RW passthrough source) that is a link is served as is by the helper, so every write into the
+    // keep, the launcher's own edits included, lands where the link points — and it may be the user's own (saves in a
+    // synced folder), so it is never removed: the mount refuses and the link stays. The writelayer is the session's,
+    // and the game could swap it for a link between sessions: that one is replaced. Neither link's target is touched.
+    // Teeth: create_directories over the keep link (true, mount goes ahead); remove the keep link (the user's link is
+    // gone); keep the writelayer link (still a link).
+    void materializing_refuses_a_kept_folder_link_and_replaces_a_writelayer_link()
+    {
+        ContainerParams CP = Make();
+        CP.WriteLayerPath = std::filesystem::path(Root.path().toStdString()) / "LINK_WRITELAYER";
+        CP.KeepDirs = { {"game/linked_keep", "linked_keep", true} };
+        const std::filesystem::path Victim = std::filesystem::path(Root.path().toStdString()) / "victim";
+        std::filesystem::create_directories(Victim);
+        { std::ofstream(Victim / "bashrc") << "the user's own"; }
+        std::filesystem::create_directories(CP.UserDataPath);
+        std::filesystem::create_symlink(Victim, CP.UserDataPath / "linked_keep");
+        std::filesystem::create_symlink(Victim, CP.WriteLayerPath);
+        Complaints C;
+        QVERIFY(!VfsMount::PrepareMount(VfsMount::BuildLayerSpec(CP)));
+        QVERIFY(C.Mentions("linked_keep is a link"));
+        QVERIFY(std::filesystem::is_symlink(CP.UserDataPath / "linked_keep"));
+        QVERIFY(std::filesystem::symlink_status(CP.WriteLayerPath).type() == std::filesystem::file_type::directory);
+        QVERIFY(std::filesystem::exists(Victim / "bashrc"));
+        CP.KeepDirs.clear();
+        QVERIFY(VfsMount::PrepareMount(VfsMount::BuildLayerSpec(CP)));
+    }
+
     // The sweep must run AFTER the mount has created what the plan names, or it reports the RW passthrough
     // sources (KEEP dirs) as missing on every first launch — a false alarm on the one diagnostic that exists to
     // catch genuinely absent content, which is how a real one stops being believed.

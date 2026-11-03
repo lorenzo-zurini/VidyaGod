@@ -68,7 +68,8 @@
     "LM_FROM_VAR": "%lm_derived%",
     "LM_GAMEDIR": "%GameDir%",
     "LM_GRAFT_ENV": "grafted",
-    "LM_OVERRIDDEN": "above"
+    "LM_OVERRIDDEN": "above",
+    "XDG_DATA_HOME": "%RuntimePath%/lm-xdg-data"
   },
   "LaunchRemoveEnv": [
     "LM_SHOULD_BE_GONE",
@@ -108,7 +109,8 @@
     "LM_GAMEDIR": "%GameDir%",
     "LM_GRAFT_ENV": "grafted",
     "LM_OVERRIDDEN": "above",
-    "LM_RUNNER_ONLY": "from-runner"
+    "LM_RUNNER_ONLY": "from-runner",
+    "XDG_DATA_HOME": "%RuntimePath%/lm-xdg-data"
   },
   "RunnerExecutable": "/bin/sh",
   "RunnerLayers": [],
@@ -295,13 +297,6 @@
       "TYPE": "VFSDirLayer"
     },
     {
-      "KEYVALUES": {
-        "Only": "when the flag is on"
-      },
-      "REGPATH": "HKLM\\Software\\LaunchMatrixConditional",
-      "TYPE": "RegEdit"
-    },
-    {
       "ARCHITECTURE": "32",
       "KEYVALUES": {
         "FromVar": "beta",
@@ -327,6 +322,14 @@
         "Value": "plain"
       },
       "REGPATH": "HKLM\\Software\\LaunchMatrix",
+      "TYPE": "RegEdit"
+    },
+    {
+      "ARCHITECTURE": "64",
+      "KEYVALUES": {
+        "Only": "when the flag is on"
+      },
+      "REGPATH": "HKLM\\Software\\LaunchMatrixConditional",
       "TYPE": "RegEdit"
     },
     {

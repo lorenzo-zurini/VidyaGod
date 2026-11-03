@@ -15,6 +15,7 @@
 #endif
 #include <fstream>
 #include <random>
+#include <set>
 #include <sstream>
 
 namespace PkgDoc
@@ -285,32 +286,112 @@ bool Document::Remove(int I)
     return true;
 }
 
-bool Document::Link(int Child, const std::string &Parent, RefKind Kind)
+bool Document::Link(int Child, const std::string &Parent, RefKind Kind, int At)
 {
     if (Child < 0 || Child >= Count() || Parent.empty() || Parent == Handle(Child)) return false;
     json N = Node(Child);
     bool Did = false;
-    if (Kind == RefKind::Node) Did = PkgGraph::AddNodeRef(N, Parent);
+    if (Kind == RefKind::Node) Did = PkgGraph::InsertRef(N, "NODE", Parent, At);
     else
     {
         if (!N.contains("LAYERS") || !N["LAYERS"].is_array()) N["LAYERS"] = json::array();
-        if (Kind == RefKind::Not)
-        {
-            bool Has = false;
-            for (const json &L : N["LAYERS"]) if (L.is_object() && L.contains("NOT") && L["NOT"] == Parent) Has = true;
-            if (!Has) { N["LAYERS"].push_back(json{{"NOT", Parent}}); Did = true; }
-        }
+        if (Kind == RefKind::Not) Did = PkgGraph::InsertRef(N, "NOT", Parent, At);
         else
         {
             json *Any = nullptr;
             for (json &L : N["LAYERS"]) if (L.is_object() && L.contains("ANY") && L["ANY"].is_array()) { Any = &L; break; }
-            if (!Any) { N["LAYERS"].push_back(json{{"ANY", json::array({Parent})}}); Did = true; }
+            if (!Any)
+            {
+                const int Pos = At < 0 ? (int)N["LAYERS"].size() : std::min(At, (int)N["LAYERS"].size());
+                N["LAYERS"].insert(N["LAYERS"].begin() + Pos, json{{"ANY", json::array({Parent})}});
+                Did = true;
+            }
             else if (std::find((*Any)["ANY"].begin(), (*Any)["ANY"].end(), json(Parent)) == (*Any)["ANY"].end())
             { (*Any)["ANY"].push_back(Parent); Did = true; }
         }
     }
     if (Did) Replace(Child, std::move(N));
     return Did;
+}
+
+bool Document::MergeInto(int From, int Into, std::string *Err)
+{
+    auto Fail = [&](const std::string &Why) { if (Err) *Err = Why; return false; };
+    if (From < 0 || Into < 0 || From >= Count() || Into >= Count() || From == Into) return Fail("Pick two different nodes of this package.");
+    const std::string Hf = Handle(From), Hi = Handle(Into);
+    json Src = Node(From), Dst = Node(Into);
+    if (!Src.is_object() || !Dst.is_object()) return Fail("Both nodes must be JSON objects - fix them in the JSON view first.");
+    //From built straight on Into - its FIRST layer is the NODE naming Into, as a capture taken over a version is -
+    //merges into it: that reference is From's "on top of Into", and Into is exactly what it already sits on.
+    const bool Over = Src.contains("LAYERS") && Src["LAYERS"].is_array() && !Src["LAYERS"].empty()
+                   && Src["LAYERS"][0].is_object() && Src["LAYERS"][0].contains("NODE") && Src["LAYERS"][0]["NODE"] == json(Hi);
+    if (Over) Src["LAYERS"].erase(Src["LAYERS"].begin());
+    //From containing Into otherwise, at any depth inside this package, would make Into contain itself.
+    std::set<std::string> Seen;
+    std::vector<std::string> Todo{Hf};
+    while (!Todo.empty())
+    {
+        const std::string H = Todo.back(); Todo.pop_back();
+        if (!Seen.insert(H).second) continue;
+        const int I = IndexOf(H);
+        if (I < 0) continue;
+        const json &N = H == Hf ? Src : Node(I);
+        if (!N.contains("LAYERS") || !N["LAYERS"].is_array()) continue;
+        for (const json &L : N["LAYERS"])
+        {
+            if (PkgGraph::LayerNames(L, Hi)) return Fail("\"" + Labels()[Hf] + "\" contains \"" + Labels()[Hi] + "\" - merging would make it contain itself.");
+            if (L.is_object() && L.contains("NODE") && L["NODE"].is_string()) Todo.push_back(L["NODE"].get<std::string>());
+        }
+    }
+    if (!Dst.contains("LAYERS") || !Dst["LAYERS"].is_array()) Dst["LAYERS"] = json::array();
+    //From's layers follow Into's own, in their order. (Into's references to From go with From: Remove drops them.)
+    //A node both already contain stays contained once: the second NODE would only be "mentioned twice".
+    auto Contains = [&](const json &L) {
+        if (!L.is_object() || !L.contains("NODE")) return false;
+        for (const json &O : Dst["LAYERS"]) if (O.is_object() && O.contains("NODE") && O["NODE"] == L["NODE"]) return true;
+        return false;
+    };
+    if (Src.contains("LAYERS") && Src["LAYERS"].is_array())
+        for (const json &L : Src["LAYERS"]) if (!Contains(L)) Dst["LAYERS"].push_back(L);
+    for (auto It = Src.begin(); It != Src.end(); ++It)
+        if (It.key() != "LAYERS" && !Dst.contains(It.key())) Dst[It.key()] = It.value();
+    Replace(Into, std::move(Dst));
+    //Everything that named From names Into instead (once: a second reference to Into is dropped).
+    for (int I = 0; I < Count(); ++I)
+    {
+        if (I == From || I == Into || !Node(I).is_object() || !Node(I).contains("LAYERS") || !Node(I)["LAYERS"].is_array()) continue;
+        bool Touches = false;
+        for (const json &L : Node(I)["LAYERS"]) if (PkgGraph::LayerNames(L, Hf)) Touches = true;
+        if (!Touches) continue;
+        json N = Node(I), Out = json::array();
+        for (json L : N["LAYERS"])
+        {
+            bool Dup = false;
+            for (const char *K : {"NODE", "NOT"})
+                if (L.is_object() && L.contains(K) && L[K].is_string())
+                {
+                    if (L[K].get<std::string>() == Hf) L[K] = Hi;
+                    //It named both: one reference to Into is enough.
+                    if (L[K] == json(Hi)) for (const json &O : Out) if (O.is_object() && O.contains(K) && O[K] == json(Hi)) Dup = true;
+                }
+            if (Dup) continue;
+            if (L.is_object() && L.contains("ANY") && L["ANY"].is_array())
+            {
+                json Ms = json::array();
+                for (const json &M : L["ANY"])
+                {
+                    const json V = M.is_string() && M.get<std::string>() == Hf ? json(Hi) : M;
+                    if (std::find(Ms.begin(), Ms.end(), V) == Ms.end()) Ms.push_back(V);
+                }
+                L["ANY"] = std::move(Ms);
+            }
+            Out.push_back(std::move(L));
+        }
+        N["LAYERS"] = std::move(Out);
+        Replace(I, std::move(N));
+    }
+    Remove(From);
+    return true;
 }
 
 // ---- positions ----------------------------------------------------------------------------------------------------
@@ -375,6 +456,52 @@ bool Document::Redo()
     RedoStack.pop_back();
     Before = Take();
     return true;
+}
+
+//What changed from one state to the next, in words.
+static std::string StepName(const std::vector<std::pair<std::string, std::shared_ptr<const json>>> &A,
+                            const std::vector<std::pair<std::string, std::shared_ptr<const json>>> &B, bool Moved)
+{
+    auto Label = [](const std::string &H, const json &N) {
+        const std::string L = N.is_object() && N.contains("LABEL") && N["LABEL"].is_string() ? N["LABEL"].get<std::string>() : std::string();
+        return "\"" + (L.empty() ? H.substr(0, 12) : L) + "\"";
+    };
+    std::map<std::string, const json *> Ma, Mb;
+    for (const auto &[H, N] : A) Ma[H] = N.get();
+    for (const auto &[H, N] : B) Mb[H] = N.get();
+    std::vector<std::string> Said;
+    for (const auto &[H, N] : B)
+    {
+        const auto It = Ma.find(H);
+        if (It == Ma.end()) Said.push_back("Added " + Label(H, *N));
+        else if (It->second != N.get() && *It->second != *N) Said.push_back("Edited " + Label(H, *N));
+    }
+    for (const auto &[H, N] : A) if (!Mb.count(H)) Said.push_back("Removed " + Label(H, *N));
+    if (Said.empty()) return Moved ? "Moved nodes" : "Changed";
+    std::string Out = Said[0];
+    if (Said.size() > 1) Out += Said.size() == 2 ? ", " + Said[1] : " and " + std::to_string(Said.size() - 1) + " more";
+    return Out;
+}
+
+Document::History Document::Steps() const
+{
+    using Flat = std::vector<std::pair<std::string, std::shared_ptr<const json>>>;
+    auto F = [](const std::vector<Entry> &E) { Flat Out; for (const Entry &X : E) Out.push_back({X.Handle, X.Node}); return Out; };
+    History H;
+    const Snapshot Now = Take();
+    for (size_t I = 0; I < UndoStack.size(); ++I)
+    {
+        const Snapshot &After = I + 1 < UndoStack.size() ? UndoStack[I + 1] : (Changed ? Before : Now);
+        H.Done.push_back(StepName(F(UndoStack[I].Entries), F(After.Entries), UndoStack[I].Where != After.Where));
+    }
+    if (Changed) H.Done.push_back(StepName(F(Before.Entries), F(Now.Entries), Before.Where != Now.Where));
+    const Snapshot *Prev = &Now;
+    for (auto It = RedoStack.rbegin(); It != RedoStack.rend(); ++It)
+    {
+        H.Undone.push_back(StepName(F(Prev->Entries), F(It->Entries), Prev->Where != It->Where));
+        Prev = &*It;
+    }
+    return H;
 }
 
 std::map<std::string, std::string> Document::TakeRenames()

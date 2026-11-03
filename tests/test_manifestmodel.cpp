@@ -134,6 +134,19 @@ TEST(the_vocabulary_refuses_malformed_nodes_and_keeps_them_indexed)
 
 // ---- the index: closure and derived facts ---------------------------------------------------------------------
 
+// An empty key names no node - a reference not filled in yet (NODE "") - even when a node has no LABEL or working
+// handle (both ""). Teeth: drop the guard (the nameless node is found).
+TEST(an_empty_key_finds_no_node)
+{
+    NodeIndex Idx;
+    Node N;
+    CHECK(ManifestModel::ParseNode(ordered_json::parse(R"({"LAYERS":[{"ZIP":"a.zip"}]})"), "f.json", "/bundle", N));
+    N.Cid = "bafkreinamelessnode";                        // a library node: keyed by its CID, no LABEL, no handle
+    Idx.Nodes[N.Cid] = N;
+    CHECK(Idx.Find("") == nullptr);
+    CHECK(Idx.Find("bafkreinamelessnode") != nullptr);
+}
+
 TEST(closure_follows_node_refs_post_order_and_reports_missing)
 {
     NodeIndex Idx;
@@ -511,6 +524,45 @@ TEST(validate_flags_a_reserved_keep_name_given_or_defaulted)
     CHECK(!AnyContains(W, "node 'fine': KEEP NAME"));
 }
 
+// Two kept folders with the same last segment (a game's and its expansion's "Saved Games/") would be stored as one
+// folder: the launch keeps only the first, so it is an error naming the one it drops first; a NAME on one of them settles it, and the
+// same name differing only in case still collides (instances travel to case-insensitive disks). Teeth: never flag;
+// flag the NAME'd pair; compare with case.
+TEST(validate_refuses_two_keeps_stored_under_one_name)
+{
+    NodeIndex Idx;
+    Add(Idx, { {"CID", "clash"}, {"LABEL", "clash"}, {"LAYERS", ordered_json::array({ {{"KEEP", {
+        {"FILES/%GameDir%/Base/Saved Games/", true}, {"FILES/%GameDir%/Expansion/saved games/", true}}}} })} });
+    Add(Idx, { {"CID", "named"}, {"LABEL", "named"}, {"LAYERS", ordered_json::array({ {{"KEEP", {
+        {"FILES/%GameDir%/Base/Saved Games/", true}, {"FILES/%GameDir%/Expansion/Saved Games/", {{"NAME", "Expansion Saved Games"}}}}}} })} });
+    ManifestModel::DeriveFacts(Idx);
+    const auto E = Validate(Idx);
+    CHECK(AnyContains(E, "node 'clash': KEEP"));
+    CHECK(AnyContains(E, "KEEP '%GameDir%/Expansion/saved games/' is stored as 'saved games' like '%GameDir%/Base/Saved Games/'"));
+    CHECK(!AnyContains(E, "node 'named': KEEP"));
+}
+
+// The launch keeps the FOLDED KEEP: a base game's "Save/" and its mod version's "Revision/Save/" (in different nodes) are
+// stored under one name, and the version's launch keeps only the base's - an error on the version, naming the one it
+// drops; a NAME on the version's own address settles it. Teeth: check nodes one at a time; check the version anyway.
+TEST(validate_refuses_two_keeps_stored_under_one_name_across_nodes)
+{
+    NodeIndex Idx;
+    AddChain(Idx, "base", { NF::Merge({ NF::Content("zip", "g.zip", "%GameDir%"), NF::Tile("7", "Game"),
+                                        NF::Layers({ {{"KEEP", {{"FILES/%GameDir%/Save/", true}}}} }) }) });
+    AddChain(Idx, "mod", { NF::Merge({ NF::Exec("win32", "%GameDir%/g.exe"), NF::Variant("Revision"),
+                                       NF::Layers({ {{"KEEP", {{"FILES/%GameDir%/Revision/Save/", true}}}} }) }) }, { "base" });
+    AddChain(Idx, "named", { NF::Merge({ NF::Exec("win32", "%GameDir%/g.exe"), NF::Variant("Named"),
+                                         NF::Layers({ {{"KEEP", {{"FILES/%GameDir%/Revision/Save/", {{"NAME", "Revision Save"}}}}}} }) }) }, { "base" });
+    ManifestModel::DeriveFacts(Idx);
+    const auto E = Validate(Idx);
+    CHECK(AnyContains(E, "KEEP '%GameDir%/Revision/Save/' is stored as 'Save' like '%GameDir%/Save/'"));
+    CHECK(!AnyContains(E, "Revision Save"));
+    int Hits = 0;
+    for (const auto &M : E) if (M.find("is stored as") != std::string::npos) ++Hits;
+    CHECK(Hits == 1);                                           // the mod version only, not the named one
+}
+
 // A platform is served when a CHAIN of runners reaches this machine: a Windows-only engine for its own platform runs
 // under proton on Linux (and directly on Windows). A platform no chain reaches is still named.
 TEST(validate_counts_a_runner_chain_as_serving_a_platform)
@@ -552,6 +604,19 @@ TEST(validate_requires_a_variant_to_present_a_tile_it_recommends)
     CHECK(AnyContains(E, "'untiled': VARIANT 'x' presents no tile"));
     CHECK(AnyContains(E, "RECOMMENDED names tile '6'"));
     CHECK(AnyContains(E, "'norun': VARIANT 'z' has no effective entry"));
+}
+
+// An entry left with the starter Exe (the game's folder, "%GameDir%/") runs nothing: an error, its own message.
+// Teeth: accept any Exe; check only Exes without a %variable%.
+TEST(validate_refuses_an_entry_that_runs_a_folder)
+{
+    NodeIndex Idx;
+    AddChain(Idx, "starter", { NF::Merge({ NF::Exec("win32", "%GameDir%/"), NF::Tile("5"), NF::Variant("s") }) });
+    AddChain(Idx, "real", { NF::Merge({ NF::Exec("win32", "%GameDir%/g.exe"), NF::Tile("6"), NF::Variant("r") }) });
+    ManifestModel::DeriveFacts(Idx);
+    const auto E = Validate(Idx);
+    CHECK(AnyContains(E, "'starter': entry 'Play' runs a folder (EXE '%GameDir%/')"));
+    CHECK(!AnyContains(E, "'real': entry"));
 }
 
 // A row is checked with its add-ons, never with another row's graft version as one: the version applies first, as the
@@ -615,6 +680,7 @@ TEST(validate_names_undefined_variables_and_malformed_whens)
     NodeIndex Idx;
     Add(Idx, { {"CID", "n"}, {"LABEL", "n"}, {"LAYERS", ordered_json::array({
         {{"ZIP", "%typo_var%.zip"}},
+        {{"ZIP", "%HostAppData%/%HostSysDir32%.zip"}},   // the host's own folders: built-in, though only Windows sets them
         {{"DIR", "d"}, {"WHEN", "%a% === 1"}},
         {{"EDIT", ordered_json::array({ {{"MODE", "Poke"}, {"OFFSET", "0x1"}, {"VALUE", "01"}, {"COMMENT", "keeps '%prose%'"}} })},
          {"TARGET", "FILES/%GameDir%/g.exe"}, {"COMMENT", "%also_prose%"}, {"LABEL", "%label_prose%"}},
@@ -624,7 +690,44 @@ TEST(validate_names_undefined_variables_and_malformed_whens)
     CHECK(!AnyContains(E, "%also_prose%"));
     CHECK(!AnyContains(E, "%label_prose%"));
     CHECK(AnyContains(E, "undefined variable %typo_var%"));
+    CHECK(!AnyContains(E, "%HostAppData%"));
+    CHECK(!AnyContains(E, "%HostSysDir32%"));
     CHECK(AnyContains(E, "malformed WHEN"));
+}
+
+TEST(validate_warns_two_key_options_of_a_section_bound_to_one_key)
+{
+    auto Key = [](const char *Def, const char *Section) {
+        return ordered_json{{"DEFAULT", Def}, {"UI", {{"CONTROL", "key"}, {"SECTION", Section}}}};
+    };
+    NodeIndex Idx;
+    Add(Idx, { {"CID", "n"}, {"LABEL", "n"}, {"LAYERS", ordered_json::array({
+        {{"VARS", {{"fwd", Key("w", "Input")}, {"jump", Key("w", "Input")},           // a clash
+                   {"menu", Key("escape", "Input")}, {"cam", Key("escape", "Camera")},  // same key, other section
+                   {"fwd_alt", Key("", "Input")}, {"back_alt", Key("", "Input")}}}},    // unbound twice is no clash
+        {{"ZIP", "%fwd%%jump%%menu%%cam%%fwd_alt%%back_alt%.zip"}},
+    })} });
+    std::vector<std::string> W;
+    Validate(Idx, &W);
+    CHECK(AnyContains(W, "%fwd% and %jump% are both bound to 'w'"));
+    CHECK(!AnyContains(W, "'escape'"));
+    CHECK(!AnyContains(W, "bound to ''"));
+}
+
+TEST(validate_names_a_map_reading_an_undeclared_table)
+{
+    NodeIndex Idx;
+    Add(Idx, { {"CID", "n"}, {"LABEL", "n"}, {"LAYERS", ordered_json::array({
+        {{"VARS", {{"fwd", {{"DEFAULT", "w"}, {"UI", {{"CONTROL", "key"}}}}},
+                   {"unity_keys", {{"MAP", {{"enter", "return"}}}}}}}},
+        {{"ZIP", "%fwd:map:unity_keys%%fwd:map:unty_keys%.zip"}},
+    })} });
+    std::vector<std::string> W;
+    const auto E = Validate(Idx, &W);
+    CHECK(AnyContains(E, "reads the table 'unty_keys'"));
+    CHECK(!AnyContains(E, "table 'unity_keys'"));
+    CHECK(!AnyContains(E, "undefined variable %fwd%"));                // %fwd:map:…% reads fwd
+    CHECK(!AnyContains(W, "%fwd% has a UI but is referenced nowhere"));
 }
 
 TEST(validate_refuses_drive_letters_and_non_canonical_anchors)
@@ -644,10 +747,14 @@ TEST(validate_refuses_drive_letters_and_non_canonical_anchors)
         {{"FILE", "b.ini"}, {"TARGET", "FILES/%Windows%/win.ini"}},                            // fine: nothing narrower
         {{"FILE", "c.dll"}, {"TARGET", "FILES/%SysDir32%/c.dll"}},                             // fine
         {{"REG", {{"HKLM", {{"Software", {{"G", {{"Path", "%GameDir%\\bin"}}}}}}}}}},            // fine
+        {{"EDIT", ordered_json::array({ {{"MODE", "Overwrite"}, {"VALUE", "[Alias]\r\nHD0=.\\\r\nCD0=F:\\\r\nMODULES=.\\modules\r\n"}} })},
+         {"TARGET", "FILES/%GameDir%/game.ini"}},                                               // a seed file's line
     })} });
     const auto E = Validate(Idx);
     CHECK(AnyContains(E, "'FILES/C:/%PackageUID%' names a drive"));
     CHECK(AnyContains(E, "'E:\\' names a drive"));
+    CHECK(AnyContains(E, "'CD0=F:\\' names a drive"));                                       // the line, not the file
+    CHECK(!AnyContains(E, "MODULES"));
     CHECK(AnyContains(E, "'FILES/%Windows%/syswow64/a.dll' is inside %SysDir32%"));
     CHECK(!AnyContains(E, "win.ini"));
     CHECK(!AnyContains(E, "c.dll"));
@@ -707,6 +814,20 @@ TEST(validate_places_anchors_at_the_start_of_paths_and_reads_every_value)
     CHECK(!AnyContains(E, "'/W:'"));
     CHECK(!AnyContains(E, "RunDll32"));
     CHECK(!AnyContains(E, "installer wrote"));
+    // A native runner's anchor is a folder of its own runtime, not a guest path packages are checked against: no
+    // disagreement. Teeth: drop the %runtimepath% skip in Validate and this warns.
+    ordered_json Nat = NF::Runner("linux64", {"n64"}, "%RunnerMount%/emu");
+    Nat["LAYERS"][0]["EXEC"][0]["GUEST_ROOTS"] = { {"%GameDir%", "%RuntimePath%/n64/%PackageUID%"} };
+    AddChain(Idx, "native", { Nat });
+    std::vector<std::string> NW;
+    Validate(Idx, &NW);
+    CHECK(!AnyContains(NW, "runners disagree where %GameDir% is"));
+    // …and an anchor only native runners declare still starts a path. Teeth: check paths against AnchorGuest only.
+    Nat["LAYERS"][0]["EXEC"][0]["GUEST_ROOTS"]["%SaveDir%"] = "%RuntimePath%/n64/saves";
+    AddChain(Idx, "native", { Nat });
+    Add(Idx, { {"CID", "natpkg"}, {"LABEL", "natpkg"}, {"LAYERS", ordered_json::array({
+        {{"ZIP", "s.zip"}, {"TARGET", "FILES/mods/%SaveDir%/x"}} })} });
+    CHECK(AnyContains(Validate(Idx), "path 'mods/%SaveDir%/x' has %SaveDir% inside it"));
     // Two runners that place an anchor differently: packages are checked against one of them — said out loud.
     ordered_json R2 = NF::Runner("linux64", {"win64"}, "%RunnerMount%/other");
     R2["LAYERS"][0]["EXEC"][0]["GUEST_ROOTS"] = { {"%GameDir%", "D:\\%PackageUID%"} };
@@ -781,6 +902,53 @@ TEST(validate_flags_cross_layer_case_collision_once)
         if (E.find("case conflict across layers") != std::string::npos) ++CaseReports;
     CHECK_EQ(CaseReports, 1);                      // fires, and the shared content reports once, not per launchable
     fs::remove_all(Dir);
+}
+
+// The case fix for one package walks that package's variants only: another package's variant reaching its zips (an
+// add-on in another package over this game) renames toward that package's layers, which the scope leaves alone - and
+// walking every variant of a library read every zip it holds (minutes, gigabytes) to fix one package. The package's
+// own fix still lands, and a zip of another package it contains (B's b1, as an expansion contains its game) is left
+// as it is. Teeth: walk every variant (B's walk logs a conflicting canonicalization of A's zip); drop the scope (B's
+// zip is rewritten too).
+TEST(fix_case_for_one_package_walks_only_its_variants)
+{
+    namespace fs = std::filesystem;
+    const fs::path Root = fs::temp_directory_path() / ("vgtest_casefix_" + std::to_string(::getpid()));
+    fs::remove_all(Root);
+    const fs::path A = Root / "A", B = Root / "B";
+    fs::create_directories(A); fs::create_directories(B);
+    auto Zip = [](const fs::path &P, const char *Entry) {
+        int Err = 0;
+        zip_t *Za = zip_open(P.string().c_str(), ZIP_CREATE | ZIP_TRUNCATE, &Err);
+        zip_int64_t I = zip_file_add(Za, Entry, zip_source_buffer(Za, "x", 1, 0), ZIP_FL_OVERWRITE);
+        zip_set_file_compression(Za, (zip_uint64_t)I, ZIP_CM_STORE, 0);
+        zip_close(Za);
+    };
+    auto Names = [](const fs::path &P) {
+        std::vector<std::string> Out; int Err = 0;
+        zip_t *Za = zip_open(P.string().c_str(), ZIP_RDONLY, &Err);
+        for (zip_int64_t I = 0; Za && I < zip_get_num_entries(Za, 0); ++I) Out.push_back(zip_get_name(Za, (zip_uint64_t)I, 0));
+        if (Za) zip_close(Za);
+        return Out;
+    };
+    Zip(A / "a1.zip", "Data/x.dat");
+    Zip(A / "a2.zip", "DATA/y.dat");
+    Zip(B / "b0.zip", "data/z.dat");
+    Zip(B / "b1.zip", "DaTa/w.dat");
+    NodeIndex Idx;
+    AddChain(Idx, "a1", { NF::Content("zip", "a1.zip") }, {}, ordered_json::object(), A.string());
+    AddChain(Idx, "a2", { NF::Content("zip", "a2.zip") }, {}, ordered_json::object(), A.string());
+    AddChain(Idx, "gameA", { NF::Merge({ NF::Exec("win32", "x.exe"), NF::Variant("a") }) }, { "a1", "a2", "b1" }, ordered_json::object(), A.string());
+    AddChain(Idx, "b0", { NF::Content("zip", "b0.zip") }, {}, ordered_json::object(), B.string());
+    AddChain(Idx, "b1", { NF::Content("zip", "b1.zip") }, {}, ordered_json::object(), B.string());
+    AddChain(Idx, "gameB", { NF::Merge({ NF::Exec("win32", "x.exe"), NF::Variant("b") }) }, { "b0", "a2", "b1" }, ordered_json::object(), B.string());
+    ManifestModel::DeriveFacts(Idx);
+    std::vector<std::string> Log;
+    CHECK_EQ(ManifestModel::FixCaseConflicts(Idx, Log, &A), 1);
+    CHECK(Names(A / "a2.zip") == std::vector<std::string>{"Data/y.dat"});
+    CHECK(Names(B / "b1.zip") == std::vector<std::string>{"DaTa/w.dat"});
+    CHECK(!AnyContains(Log, "conflicting canonicalization"));
+    fs::remove_all(Root);
 }
 
 // ---- helpers shared with the FS and the runner chain ---------------------------------------------------------------
@@ -996,4 +1164,42 @@ TEST(shelf_a_grafts_own_card_is_not_rowless)
     ManifestModel::DeriveFacts(Idx);
     CHECK(Idx.TileGraft.count("70") == 1);
     CHECK(!AnyContains(ManifestModel::ShelfWarnings(Idx), "tile 70"));
+}
+
+// A place (%Documents%, %GameDir%...) used where no runner is installed at all is said to be that - no runner here to
+// define it - not a typo; a real typo is still one. Teeth: call every undefined name a place; keep "typo?" for places.
+TEST(validate_a_place_with_no_runner_is_not_called_a_typo)
+{
+    NodeIndex Idx;
+    Add(Idx, { {"CID", "n"}, {"LABEL", "n"}, {"LAYERS", ordered_json::array({
+        {{"ZIP", "%Documents%/saves.zip"}},
+        {{"ZIP", "%typo_var%.zip"}},
+    })} });
+    const auto E = Validate(Idx);
+    CHECK(AnyContains(E, "%Documents%, a place runners define - no runner is installed"));
+    CHECK(!AnyContains(E, "undefined variable %Documents%"));
+    CHECK(AnyContains(E, "undefined variable %typo_var%"));
+}
+
+// A ReplaceAll op patches every match of EXPECT, so it has no site: the validator does not ask it for one, refuses
+// one, and asks for the pattern and a REPLACE of its length (in bytes; a templated one is the launch's to measure).
+// Teeth: demand an ANCHOR/OFFSET of it; accept a site; accept a REPLACE of another length.
+TEST(validate_replaceall_needs_its_pattern_not_a_site)
+{
+    auto With = [](const ordered_json &Op) {
+        NodeIndex Idx;
+        AddChain(Idx, "g", { NF::Layers({ { {"EDIT", ordered_json::array({Op})}, {"TARGET", "FILES/%GameDir%/data/sd.afs"} } }) });
+        ManifestModel::DeriveFacts(Idx);
+        return Validate(Idx);
+    };
+    const auto Good = With({{"MODE", "ReplaceAll"}, {"EXPECT", "aabb"}, {"REPLACE", "1122"}});
+    CHECK(!AnyContains(Good, "ReplaceAll") && !AnyContains(Good, "no site to patch") && !AnyContains(Good, "alformed"));
+    CHECK(AnyContains(With({{"MODE", "Replace"}, {"EXPECT", "aabb"}, {"REPLACE", "1122"}}), "no site to patch"));   // the node is read
+    CHECK(AnyContains(With({{"MODE", "ReplaceAll"}, {"OFFSET", "0x10"}, {"EXPECT", "aabb"}, {"REPLACE", "1122"}}), "takes no ANCHOR or OFFSET"));
+    CHECK(AnyContains(With({{"MODE", "ReplaceAll"}, {"EXPECT", "aabb"}, {"REPLACE", "112233"}}), "as long as EXPECT"));
+    CHECK(AnyContains(With({{"MODE", "ReplaceAll"}, {"REPLACE", "1122"}}), "no EXPECT"));
+    //Bytes, not text: spaced hex is as long as unspaced; a REPLACE read from a variable is measured once substituted, at
+    //the launch. Teeth: compare the text; measure the token.
+    CHECK(!AnyContains(With({{"MODE", "ReplaceAll"}, {"EXPECT", "aa bb"}, {"REPLACE", "1122"}}), "as long as EXPECT"));
+    CHECK(!AnyContains(With({{"MODE", "ReplaceAll"}, {"EXPECT", "f6680000a0428b"}, {"REPLACE", "f6680000%fov:map:FOV%8b"}}), "as long as EXPECT"));
 }

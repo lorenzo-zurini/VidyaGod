@@ -18,15 +18,17 @@ namespace VfsMount
 nlohmann::ordered_json BuildLayerSpec(struct ContainerParams &ContainerParams);
 
 //Creates the writable paths a built plan NAMES (the write branch + every RW passthrough source). Building a
-//plan has no side effects, so the mount materializes what it asks for.
-void MaterializePlanPaths(const nlohmann::ordered_json &Spec);
+//plan has no side effects, so the mount materializes what it asks for. False (logged) when one cannot be used: a
+//kept folder that is a link (served as is, every write into the keep would land where it points), or a write branch
+//that is a link and cannot be replaced. The mount must not go ahead then.
+bool MaterializePlanPaths(const nlohmann::ordered_json &Spec);
 
 //Readies a built plan for the FS: materialises the paths it names, THEN reports what is still missing. One
 //function because the order is load-bearing — sweeping first flags the very paths the mount is about to
 //create. Pinned by the_missing_source_sweep_does_not_flag_paths_the_mount_creates, which drives
 //PrepareMount rather than the two halves separately. (NOT by the launch matrix: its golden captures the
-//probe's stdout, and this warning is engine log output that never reaches it.)
-void PrepareMount(const nlohmann::ordered_json &Spec);
+//probe's stdout, and this warning is engine log output that never reaches it.) False when MaterializePlanPaths is.
+bool PrepareMount(const nlohmann::ordered_json &Spec);
 
 //Reports (and counts) layers in a built plan whose source does not exist on disk. Such a layer mounts EMPTY
 //and the mount still SUCCEEDS, so the game just quietly misses those files. Asked by the mount, not by the plan
@@ -56,8 +58,12 @@ bool RunnerShipsMountableBuild(const struct ContainerParams &ContainerParams);
 //Walks DirectoryPath recursively and warns (via QMessageBox) if any two paths differ only in case.
 [[nodiscard]] bool CheckCaseConflicts(const std::filesystem::path &DirectoryPath);
 
-//Every current mountpoint at or beneath Prefix (from /proc/self/mountinfo), deepest-first (children before parents).
+//Every current mountpoint at or beneath Prefix, deepest-first (children before parents). Linux: from /proc/self/mountinfo.
+//Windows: every WinFsp mount junction (a folder naming \Device\Volume{…}), live or left by a dead machine.
 std::vector<std::string> MountpointsUnder(const std::filesystem::path &Prefix);
+//The ones of them a game is using now. Linux: all of them. Windows: MountpointsUnder also lists a WinFsp junction a dead
+//machine left behind, which serves nothing and must not read as "a game is running".
+std::vector<std::string> LiveMountpointsUnder(const std::filesystem::path &Prefix);
 
 //A game runtime this process is building, running or cleaning up — held from the start of the build to the end of
 //the unmounts, on every platform (mountinfo is Linux's alone). Anything that must not change content under a running
@@ -81,7 +87,8 @@ void CleanStaleRuntime(const std::filesystem::path &TempPath);
 //wineserver time to release), falling back to a lazy `-uz` detach. Returns true iff the polite unmount
 //succeeded — false means the mount was only lazily detached and a TEMP wipe would be unsafe.
 [[nodiscard]] bool UnmountDurable(const std::string &Mount, int Retries = 5);
-//UnmountLazy: fire-and-forget `-uz` — for ephemeral mounts whose backing store lives under TEMP.
+//UnmountLazy: fire-and-forget `-uz` — for ephemeral mounts whose backing store lives under TEMP. Windows: removes a WinFsp
+//junction whose volume is gone (a live one is its helper's to unmount: left alone).
 void UnmountLazy(const std::string &Mount);
 }
 

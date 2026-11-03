@@ -11,6 +11,8 @@
 #include <algorithm>
 #include <cfloat>
 #include <cmath>
+#include <cstdlib>
+#include <sstream>
 #include <functional>
 
 using json = nlohmann::ordered_json;
@@ -45,6 +47,27 @@ std::string StrOf(const json &N, const char *K)
     return (N.is_object() && N.contains(K) && N[K].is_string()) ? N[K].get<std::string>() : std::string();
 }
 
+//The layer types to pick from, grouped as the canvas colours them, each with what it is for beside it (the keyword
+//alone says nothing to someone new to the format) and its full help on hover. Picked: the type ("" = empty node).
+bool TypePicker(std::string &Picked, bool WithEmpty)
+{
+    const float GistX = ImGui::CalcTextSize("DELTA").x + ImGui::GetStyle().ItemSpacing.x * 3.0f;
+    bool Chose = false;
+    auto Row = [&](const std::string &Type) {
+        if (ImGui::Selectable(Type.empty() ? "empty" : Type.c_str())) { Picked = Type; Chose = true; }
+        if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s", PkgGraph::TypeHelp(Type));
+        ImGui::SameLine(GistX);
+        ImGui::TextDisabled("%s", PkgGraph::TypeGist(Type));
+    };
+    for (const PkgGraph::TypeGroup &G : PkgGraph::TypeGroups())
+    {
+        ImGui::SeparatorText(G.Title);
+        for (const std::string &T : G.Types) Row(T);
+    }
+    if (WithEmpty) Row("");                               // a node with nothing in it yet, under Composition
+    return Chose;
+}
+
 std::string ShortCid(const std::string &C)
 {
     return C.size() > 18 ? C.substr(0, 10) + "\xE2\x80\xA6" + C.substr(C.size() - 5) : C;
@@ -61,6 +84,31 @@ bool HasExec(const json &N)
     if (!N.is_object() || !N.contains("LAYERS") || !N["LAYERS"].is_array()) return false;
     for (const json &L : N["LAYERS"]) if (L.is_object() && L.contains("EXEC")) return true;
     return false;
+}
+
+//A node carrying a game's tile: an EXEC entry with a TILE.
+static bool HasTile(const json &N)
+{
+    if (!HasExec(N)) return false;
+    for (const json &L : N["LAYERS"])
+        if (L.is_object() && L.contains("EXEC") && L["EXEC"].is_array())
+            for (const json &E : L["EXEC"]) if (E.is_object() && E.contains("TILE") && E["TILE"].is_object()) return true;
+    return false;
+}
+
+//Each wire its own colour, so crossing wires can be told apart: the node it leaves picks a starting hue (from its
+//name: stable across saves, which rename by CID), and its wires step from it by the golden ratio in their order -
+//wires leaving one node are always far apart in hue. One saturation and brightness that read on the dark canvas;
+//red is left to exclusions (NOT).
+ImU32 WireHue(const std::string &From, int Rank)
+{
+    uint32_t Hh = 2166136261u;                           // FNV-1a
+    for (const char Ch : From) { Hh ^= (unsigned char)Ch; Hh *= 16777619u; }
+    float Hue = std::fmod((float)(Hh % 1000u) / 1000.0f + 0.618034f * (float)Rank, 1.0f);
+    Hue = 0.08f + Hue * 0.84f;                           // 0.08..0.92: never the exclusion red
+    float R, G, B;
+    ImGui::ColorConvertHSVtoRGB(Hue, 0.55f, 1.0f, R, G, B);
+    return IM_COL32((int)(R * 255), (int)(G * 255), (int)(B * 255), 255);
 }
 
 //Cubic bezier point.
@@ -98,6 +146,10 @@ struct NodeView
     bool Graft = false, Variant = false, Launchable = false, Unwired = false;
     float W = kNodeW;
 };
+
+//A layer's row as drawn last: its layer and its top and bottom, in world units below the node's top. Wires plug into
+//the row holding their reference; a wire being dropped inserts between rows.
+struct RowSpan { int Layer; float Y0, Y1; };
 
 struct WireView
 {
@@ -137,6 +189,9 @@ struct PkgCanvasState
     bool FramePending = true;                            // frame the graph on the first frame
     ImVec4 Canvas{0, 0, 0, 0};                           // last frame's canvas rect (screen)
     bool ShowMini = true;
+    bool PackageOpen = true;                             // false: the host has no package; the empty canvas offers one
+    std::string NextStep;                                // what the package still needs (PkgGraph::NextStep), as of...
+    uint64_t NextStepRev = ~0ull;                        // ...this content revision
     ImVec4 MiniRect{0, 0, 0, 0};
 
     // ---- selection and interaction ----
@@ -149,10 +204,21 @@ struct PkgCanvasState
     std::string DropTarget;                              // the node the dragged wire would land on
     std::string HoverNode, HoverWireChild; int HoverWireSlot = -1;
     std::string PortHover;                               // the node whose port is under the cursor
+    std::set<std::string> LinkBlocked;                   // nodes the dragged wire may not land on (a cycle, itself)
+    int LinkAt = -1;                                     // where in the drop target the reference goes (-1: usual)
+    std::string WireNewFrom; bool WireNewOut = true;     // a wire let go on the empty canvas: the node it came from...
+    ImVec2 WireNewWorld{0, 0};                           // ...and where the new node goes
+    struct LayerDrop { std::string From; int FromLayer = -1; std::string To; int At = 0; bool Copy = false; } Drop;
+    std::pair<std::string, std::string> MergeReq;        // "merge this node into that one", done after the frame
+    std::string RemoveReq;                               // the node menu's "Delete", done after the frame: the node is still being drawn
+    std::map<std::string, std::vector<RowSpan>> Rows;    // each node's layer rows, as drawn last
+    std::string QuickText; ImVec2 QuickWorld{0, 0};      // quick add: what is typed, where the node goes
+    bool FileDropHover = false;                          // files from the file manager are over the canvas
+    int TourStep = -1;                                   // the first-time tour's card on screen (-1: none)
     bool AutoFrame = true;                               // re-frame after the first layouts, until the user moves the view
     bool RightPressedOnBg = false;
     ImVec2 ContextWorld{0, 0};
-    std::string Renaming, RenameBuf;
+    std::string Renaming, RenameBuf, RenameFrom;   // RenameFrom: the LABEL the rename started from
     bool RenameFocus = false;
     std::string Search;
     bool SearchFocus = false;
@@ -169,6 +235,10 @@ struct PkgCanvasState
     // ---- host facts ----
     PkgCanvas::ExternalFn ExternalLookup;
     PkgCanvas::OffersFn Offers;
+    PkgCanvas::ImageFn Image;
+    std::function<std::vector<std::string>()> PlatformsFn;
+    std::vector<std::string> Platforms;
+    bool PlatformsAsked = false;
     std::map<std::string, std::vector<std::string>> Issues, Hints;
     struct Busy { QString What, Detail; float Frac = -1.0f; bool Cancellable = false; };
     std::map<std::string, Busy> Running;
@@ -176,6 +246,7 @@ struct PkgCanvasState
 
     // ---- last frame, for introspection ----
     std::map<std::string, ImVec4> DrawnRect;
+    std::set<std::string> CoversDrawn;                   // chips drawn with their cover this frame
     int VisibleNodes = 0, VisibleWires = 0;
     bool Animating = false;
     std::vector<ImVec4> Rects;                           // this frame's world rect of every view (see WorldRect)
@@ -254,6 +325,8 @@ PkgCanvas::~PkgCanvas() = default;
 
 void PkgCanvas::setExternalLookup(ExternalFn fn) { m_s->ExternalLookup = std::move(fn); m_s->ExtCache.clear(); m_s->BuiltRev = 0; }
 void PkgCanvas::setOffers(OffersFn fn)            { m_s->Offers = std::move(fn); }
+void PkgCanvas::setImageLookup(ImageFn fn) { m_s->Image = std::move(fn); }
+void PkgCanvas::setPlatforms(std::function<std::vector<std::string>()> fn) { m_s->PlatformsFn = std::move(fn); m_s->PlatformsAsked = false; }
 void PkgCanvas::setIssues(const std::map<std::string, std::vector<std::string>> &I) { m_s->Issues = I; RefreshEstimates(*m_s); }
 void PkgCanvas::setNodeHints(const std::string &H, const std::vector<std::string> &Hints) { m_s->Hints[H] = Hints; }
 void PkgCanvas::beginAction(const std::string &H, const QString &What, bool Cancellable)
@@ -267,6 +340,7 @@ void PkgCanvas::setProgress(const std::string &H, float F, const QString &Detail
 }
 void PkgCanvas::endAction(const std::string &H) { m_s->Running.erase(H); RefreshEstimates(*m_s); }
 bool PkgCanvas::isBusy(const std::string &H) const { return m_s->Running.count(H) != 0; }
+void PkgCanvas::setPackageOpen(bool Open) { m_s->PackageOpen = Open; }
 
 void PkgCanvas::documentReset()
 {
@@ -446,6 +520,9 @@ static float ViewHeight(const PkgCanvasState &S, const NodeView &V)
 //tens of thousands of times a frame on a big package.
 static void RefreshEstimates(PkgCanvasState &S)
 {
+    //Views built for an older document (another package was just loaded) index nodes it no longer has; the next
+    //Rebuild measures them again.
+    if (S.BuiltRev != S.Doc->Revision()) return;
     for (NodeView &V : S.Views)
     {
         if (V.Doc < 0) { V.Est = kChipH; continue; }
@@ -538,6 +615,29 @@ static ImVec4 WorldRect(const PkgCanvasState &S, const NodeView &V)
 {
     if (S.RectsValid && V.Index < (int)S.Rects.size()) return S.Rects[(size_t)V.Index];
     return ComputeRect(S, V);
+}
+
+//Where a new node goes: At, or the nearest spot below it (then further right) where a node of this size overlaps no
+//node already drawn - a new node never lands on top of another and hides it.
+static ImVec2 FreeSpot(const PkgCanvasState &S, ImVec2 At, float H = 220.0f)
+{
+    const float Gap = 24.0f;
+    auto Free = [&](ImVec2 P) {
+        const ImVec4 Me(P.x - Gap, P.y - Gap, P.x + kNodeW + Gap, P.y + H + Gap);
+        for (const NodeView &V : S.Views)
+        {
+            const ImVec4 R = WorldRect(S, V);
+            if (Me.x < R.z && R.x < Me.z && Me.y < R.w && R.y < Me.w) return false;
+        }
+        return true;
+    };
+    for (int Col = 0; Col < 8; ++Col)
+        for (int Row = 0; Row < 24; ++Row)
+        {
+            const ImVec2 P(At.x + (float)Col * (kNodeW + Gap * 2.0f), At.y + (float)Row * 40.0f);
+            if (Free(P)) return P;
+        }
+    return At;
 }
 
 static void UpdateRects(PkgCanvasState &S)
@@ -660,9 +760,16 @@ void PkgCanvas::select(const std::string &H, bool Frame)
     }
 }
 
-int PkgCanvas::addNode(const std::string &Type, float X, float Y)
+int PkgCanvas::addNode(const std::string &Type, float X, float Y, const std::string &RefersTo)
 {
     json N = PkgGraph::NewPayload(Type);
+    if (!RefersTo.empty() && m_s->Doc->IndexOf(RefersTo) >= 0 && !N["LAYERS"].empty())
+    {
+        json &L = N["LAYERS"][0];
+        if (L.contains("NODE")) L["NODE"] = RefersTo;
+        else if (L.contains("NOT")) L["NOT"] = RefersTo;
+        else if (L.contains("ANY")) L["ANY"] = json::array({RefersTo});
+    }
     json Out = json::object();
     std::string Base = Type.empty() ? std::string("New node") : "New " + Type;
     Out["LABEL"] = FreeLabel(*m_s->Doc, Base);
@@ -686,6 +793,42 @@ int PkgCanvas::addNode(const std::string &Type, float X, float Y)
     select(m_s->Doc->Handle(I));
     emit documentEdited();
     return I;
+}
+
+static std::set<std::string> Reach(const Document &D, const std::string &From, bool Up);
+
+bool PkgCanvas::MoveLayer(const std::string &From, int FromLayer, const std::string &To, int At, bool Copy, std::string *Why)
+{
+    Document &D = *m_s->Doc;
+    const int Fi = D.IndexOf(From), Ti = D.IndexOf(To);
+    if (Fi < 0 || Ti < 0) return false;
+    json Src = D.Node(Fi);
+    if (!Src.is_object() || !Src.contains("LAYERS") || !Src["LAYERS"].is_array() || FromLayer < 0 || FromLayer >= (int)Src["LAYERS"].size())
+        return false;
+    const json Layer = Src["LAYERS"][(size_t)FromLayer];
+    //A reference may not land where it would make a node contain itself.
+    for (int J = 0; J < D.Count(); ++J)
+        if (PkgGraph::LayerNames(Layer, D.Handle(J)) && (J == Ti || Reach(D, D.Handle(J), false).count(To)))
+        { if (Why) *Why = "Not there: it would make \"" + NodeTitle(D.Node(Ti), To) + "\" contain itself."; return false; }
+    if (Fi == Ti)
+    {
+        if (Copy)
+        {
+            json &Ls = Src["LAYERS"];
+            Ls.insert(Ls.begin() + std::clamp(At, 0, (int)Ls.size()), Layer);
+        }
+        else if (!PkgGraph::MoveLayerTo(Src, FromLayer, At)) return false;
+        D.Replace(Fi, std::move(Src));
+    }
+    else
+    {
+        json Dst = D.Node(Ti);
+        if (!PkgGraph::MoveLayerAcross(Src, FromLayer, Dst, To, At, Copy)) return false;
+        if (!Copy) D.Replace(Fi, std::move(Src));
+        D.Replace(Ti, std::move(Dst));
+    }
+    m_s->RegBuf.clear();                                 // rows renumbered: buffers keyed by layer are stale
+    return true;
 }
 
 bool PkgCanvas::removeNodes(const std::set<std::string> &Handles)
@@ -725,6 +868,75 @@ static ImVec2 PortScreen(const PkgCanvasState &S, const NodeView &V, bool Out)
     return S.W2S(ImVec2(Out ? R.z : R.x, Y));
 }
 
+//Where a reference in layer `Layer` of V plugs in: on V's left edge, level with that layer's row (its title port
+//until the node has been drawn once).
+static ImVec2 RowPort(const PkgCanvasState &S, const NodeView &V, int Layer)
+{
+    ImVec2 P = PortScreen(S, V, false);
+    if (const auto It = S.Rows.find(V.Handle); It != S.Rows.end())
+        for (const RowSpan &R : It->second)
+            if (R.Layer == Layer) { P.y = S.W2S(ImVec2(0, WorldRect(S, V).y + (R.Y0 + R.Y1) * 0.5f)).y; break; }
+    return P;
+}
+
+//Every node a node reaches through its references (NODE, ANY, NOT), within this package; Up: every node that reaches it.
+static std::set<std::string> Reach(const Document &D, const std::string &From, bool Up)
+{
+    std::map<std::string, std::vector<std::string>> Refs;
+    for (int I = 0; I < D.Count(); ++I)
+    {
+        const json &N = D.Node(I);
+        if (!N.is_object() || !N.contains("LAYERS") || !N["LAYERS"].is_array()) continue;
+        for (const json &L : N["LAYERS"])
+            for (int J = 0; J < D.Count(); ++J)
+                if (J != I && PkgGraph::LayerNames(L, D.Handle(J)))
+                {
+                    if (Up) Refs[D.Handle(J)].push_back(D.Handle(I));
+                    else Refs[D.Handle(I)].push_back(D.Handle(J));
+                }
+    }
+    std::set<std::string> Seen;
+    std::vector<std::string> Todo{From};
+    while (!Todo.empty())
+    {
+        const std::string H = Todo.back(); Todo.pop_back();
+        for (const std::string &R : Refs[H]) if (Seen.insert(R).second) Todo.push_back(R);
+    }
+    return Seen;
+}
+
+std::string PkgCanvas::nodeAt(float X, float Y) const
+{
+    for (auto It = m_s->ZOrder.rbegin(); It != m_s->ZOrder.rend(); ++It)
+    {
+        const auto R = m_s->DrawnRect.find(*It);
+        const auto V = m_s->ViewOf.find(*It);
+        if (R == m_s->DrawnRect.end() || V == m_s->ViewOf.end() || m_s->Views[(size_t)V->second].Doc < 0) continue;
+        if (X >= R->second.x && X <= R->second.z && Y >= R->second.y && Y <= R->second.w) return *It;
+    }
+    return {};
+}
+
+void PkgCanvas::screenToWorld(float X, float Y, float &Wx, float &Wy) const
+{
+    const ImVec2 W = m_s->S2W(ImVec2(X, Y));
+    Wx = W.x; Wy = W.y;
+}
+
+bool PkgCanvas::packageOpen() const { return m_s->PackageOpen; }
+void PkgCanvas::setFileDropHover(bool On) { m_s->FileDropHover = On; }
+void PkgCanvas::startTour() { m_s->TourStep = 0; }
+bool PkgCanvas::touring() const { return m_s->TourStep >= 0; }
+
+bool PkgCanvas::rowPos(const std::string &H, int Layer, float &X, float &Y) const
+{
+    const auto It = m_s->ViewOf.find(H);
+    if (It == m_s->ViewOf.end()) return false;
+    const ImVec2 P = RowPort(*m_s, m_s->Views[(size_t)It->second], Layer);
+    X = P.x; Y = P.y;
+    return true;
+}
+
 bool PkgCanvas::portPos(const std::string &H, bool Out, float &X, float &Y) const
 {
     const auto It = m_s->ViewOf.find(H);
@@ -742,6 +954,7 @@ bool PkgCanvas::canvasRect(float &X0, float &Y0, float &X1, float &Y1) const
 
 int PkgCanvas::visibleNodes() const { return m_s->VisibleNodes; }
 int PkgCanvas::visibleWires() const { return m_s->VisibleWires; }
+bool PkgCanvas::coverShown(const std::string &H) const { return m_s->CoversDrawn.count(H) != 0; }
 int PkgCanvas::externalCount() const
 {
     int N = 0;
@@ -863,11 +1076,15 @@ static void DrawNode(PkgCanvas &Self, PkgCanvasState &S, int Vi, std::vector<ImG
     ImGui::SetCursorPos(ImVec2(0, 0));
     //A port under the cursor wins the click (it starts a wire): the title's drag stands down for it.
     if (S.PortHover == V.Handle) ImGui::Dummy(ImVec2(Wd, Th));
-    else ImGui::InvisibleButton("##title", ImVec2(Wd, Th), ImGuiButtonFlags_MouseButtonLeft | ImGuiButtonFlags_MouseButtonRight);
+    else
+    {
+        ImGui::SetNextItemAllowOverlap();                // the Test Play button on it takes its own clicks
+        ImGui::InvisibleButton("##title", ImVec2(Wd, Th), ImGuiButtonFlags_MouseButtonLeft | ImGuiButtonFlags_MouseButtonRight);
+    }
     const bool TitleHovered = ImGui::IsItemHovered();
     if (ImGui::IsItemActivated() && ImGui::IsMouseClicked(0)) { S.M = PkgCanvasState::Mode::Drag; S.DragDelta = ImVec2(0, 0); S.PressScreen = ImGui::GetIO().MousePos; }
     if (TitleHovered && ImGui::IsMouseDoubleClicked(0) && V.Doc >= 0)
-    { S.Renaming = V.Handle; S.RenameBuf = StrOf(D.Node(V.Doc), "LABEL"); S.RenameFocus = true; S.M = PkgCanvasState::Mode::Idle; }
+    { S.Renaming = V.Handle; S.RenameBuf = S.RenameFrom = StrOf(D.Node(V.Doc), "LABEL"); S.RenameFocus = true; S.M = PkgCanvasState::Mode::Idle; }
     if (TitleHovered && S.M == PkgCanvasState::Mode::Idle)
     {
         std::string Tip = V.Title + "\n" + (V.Kind.empty() ? std::string("empty node") : V.Kind + " node") + "   " + V.Handle;
@@ -879,25 +1096,22 @@ static void DrawNode(PkgCanvas &Self, PkgCanvasState &S, int Vi, std::vector<ImG
     }
     if (ImGui::BeginPopupContextItem("##nodemenu"))
     {
-        if (ImGui::MenuItem("Rename", "double-click")) { S.Renaming = V.Handle; S.RenameBuf = StrOf(D.Node(V.Doc), "LABEL"); S.RenameFocus = true; }
+        if (ImGui::MenuItem("Rename", "double-click")) { S.Renaming = V.Handle; S.RenameBuf = S.RenameFrom = StrOf(D.Node(V.Doc), "LABEL"); S.RenameFocus = true; }
         if (ImGui::MenuItem("Open all rows", "E")) Self.setExpanded(V.Handle, true);
         if (ImGui::MenuItem("Fold all rows", "E")) Self.setExpanded(V.Handle, false);
         ImGui::Separator();
         if (ImGui::BeginMenu("Add layer"))
         {
-            for (const std::string &T : PkgGraph::AllTypes())
+            std::string T;
+            if (TypePicker(T, false))
             {
-                if (ImGui::MenuItem(T.c_str()))
+                json N = D.Node(V.Doc);
+                if (PkgGraph::AddLayer(N, T))
                 {
-                    json N = D.Node(V.Doc);
-                    if (PkgGraph::AddLayer(N, T))
-                    {
-                        const int At = (int)N["LAYERS"].size() - 1;
-                        D.Replace(V.Doc, std::move(N));
-                        S.Open.insert(V.Handle + "|L" + std::to_string(At));
-                    }
+                    const int At = (int)N["LAYERS"].size() - 1;
+                    D.Replace(V.Doc, std::move(N));
+                    S.Open.insert(V.Handle + "|L" + std::to_string(At));
                 }
-                if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s", PkgGraph::TypeHelp(T));
             }
             ImGui::EndMenu();
         }
@@ -909,26 +1123,64 @@ static void DrawNode(PkgCanvas &Self, PkgCanvasState &S, int Vi, std::vector<ImG
             D.SetPos(D.Handle(I), {WR.x + 40.0f, WR.y + 40.0f});
             S.Sel = {D.Handle(I)};
         }
+        //Consolidate: this node's layers go into another, which takes its place everywhere.
+        if (ImGui::BeginMenu("Merge into", D.Count() > 1))
+        {
+            for (int I = 0; I < D.Count(); ++I)
+                if (I != V.Doc && ImGui::MenuItem((NodeTitle(D.Node(I), D.Handle(I)) + "##merge" + D.Handle(I)).c_str()))
+                    S.MergeReq = {V.Handle, D.Handle(I)};
+            ImGui::EndMenu();
+        }
+        if (ImGui::IsItemHovered()) ImGui::SetTooltip("Move every layer of this node into another node, which then takes its place in the package");
+        if (ImGui::BeginMenu("Compare with", D.Count() > 1))
+        {
+            for (int I = 0; I < D.Count(); ++I)
+                if (I != V.Doc && ImGui::MenuItem((NodeTitle(D.Node(I), D.Handle(I)) + "##cmp" + D.Handle(I)).c_str()))
+                    S.Pending = {V.Handle, "compare:" + D.Handle(I)};
+            ImGui::EndMenu();
+        }
+        if (ImGui::IsItemHovered()) ImGui::SetTooltip("What differs between this node and another: the layers each folds, the files each gives the game");
         if (ImGui::MenuItem("Copy CID")) ImGui::SetClipboardText(V.Handle.c_str());
         ImGui::Separator();
-        if (ImGui::MenuItem("Delete", "Del")) Self.removeNodes({V.Handle});
+        if (ImGui::MenuItem("Delete", "Del")) S.RemoveReq = V.Handle;
         ImGui::EndPopup();
+    }
+    //Test Play: a version or an entry runs from its title bar, through the same pre-launch window a player uses.
+    float PlayW = 0.0f;
+    if ((V.Variant || V.Launchable) && S.Renaming != V.Handle && !S.Running.count(V.Handle))
+    {
+        const float Bh = Th - 8.0f * Z;
+        PlayW = Bh + 6.0f * Z;
+        ImGui::SetCursorScreenPos(ImVec2(WinPos.x + Wd - PlayW - 8.0f * Z, WinPos.y + 4.0f * Z));
+        ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.0f, 0.0f, 0.0f, 0.28f));
+        ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.30f, 0.75f, 0.45f, 0.9f));
+        if (ImGui::Button("##testplay", ImVec2(Bh + 6.0f * Z, Bh))) S.Pending = {V.Handle, "test_launch"};
+        ImGui::PopStyleColor(2);
+        {   //A play triangle, drawn: the canvas's font has no such glyph.
+            const ImVec2 Mn = ImGui::GetItemRectMin(), Mx = ImGui::GetItemRectMax(), Ct((Mn.x + Mx.x) * 0.5f, (Mn.y + Mx.y) * 0.5f);
+            const float Rr = (Mx.y - Mn.y) * 0.28f;
+            DL->AddTriangleFilled(ImVec2(Ct.x - Rr * 0.8f, Ct.y - Rr), ImVec2(Ct.x - Rr * 0.8f, Ct.y + Rr), ImVec2(Ct.x + Rr, Ct.y), IM_COL32(235, 245, 238, 255));
+        }
+        if (ImGui::IsItemHovered()) ImGui::SetTooltip("Test Play: save the package and open its pre-launch window for this version");
     }
     //Title text: the name in bold, badges right-aligned.
     std::string Badge = V.Graft ? "graft" : V.Variant ? "variant" : V.Launchable ? "entry" : "";
-    float BadgeW = 0.0f;
+    float BadgeW = PlayW;
     ImGui::PushFont(GBold, kFont * Z);
     const float TextY = WinPos.y + (Th - ImGui::GetFontSize()) * 0.5f;
     if (!Badge.empty())
     {
         ImGui::PushFont(nullptr, kFont * 0.8f * Z);
         const ImVec2 BS = ImGui::CalcTextSize(Badge.c_str());
-        BadgeW = BS.x + 12.0f * Z;
-        const ImVec2 B0(WinPos.x + Wd - BadgeW - 14.0f * Z, WinPos.y + (Th - BS.y - 4.0f * Z) * 0.5f);
-        DL->AddRectFilled(B0, ImVec2(B0.x + BadgeW, B0.y + BS.y + 4.0f * Z), IM_COL32(0, 0, 0, 70), 8.0f * Z);
+        const ImVec2 B0(WinPos.x + Wd - PlayW - (BS.x + 12.0f * Z) - 14.0f * Z, WinPos.y + (Th - BS.y - 4.0f * Z) * 0.5f);
+        BadgeW = PlayW + BS.x + 12.0f * Z;
+        DL->AddRectFilled(B0, ImVec2(B0.x + BS.x + 12.0f * Z, B0.y + BS.y + 4.0f * Z), IM_COL32(0, 0, 0, 70), 8.0f * Z);
         DL->AddText(ImVec2(B0.x + 6.0f * Z, B0.y + 2.0f * Z), IM_COL32(235, 238, 245, 230), Badge.c_str());
         ImGui::PopFont();
     }
+    //A name changed elsewhere while its rename box was open (the JSON pane, undo) ends the rename: the box would show
+    //the old name and, once it lost focus, write it back over the new one.
+    if (S.Renaming == V.Handle && V.Doc >= 0 && StrOf(D.Node(V.Doc), "LABEL") != S.RenameFrom) S.Renaming.clear();
     if (S.Renaming == V.Handle)
     {
         ImGui::SetCursorScreenPos(ImVec2(WinPos.x + 12.0f * Z, WinPos.y + (Th - ImGui::GetFrameHeight()) * 0.5f));
@@ -957,17 +1209,72 @@ static void DrawNode(PkgCanvas &Self, PkgCanvasState &S, int Vi, std::vector<ImG
     ImGui::SetCursorPos(ImVec2(0, Th + kPadY * Z));
     ImGui::Indent(kPadX * Z);
     const bool Busy = S.Running.count(V.Handle) != 0;
+    //What the node does, in words, before its rows say it in fields.
+    {
+        const std::string Said = PkgGraph::Describe(D.Node(V.Doc), [&S](const std::string &Ref) {
+            if (const auto It = S.Labels.find(Ref); It != S.Labels.end()) return It->second;
+            if (const auto It = S.ExtCache.find(Ref); It != S.ExtCache.end()) return It->second.Label;
+            return std::string();
+        });
+        ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.66f, 0.70f, 0.78f, 1.0f));
+        ImGui::TextUnformatted(PkgForm::FitWidth(Said, Wd - 2.0f * kPadX * Z).c_str());
+        ImGui::PopStyleColor();
+        if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s", Said.c_str());
+    }
     if (const auto Is = S.Issues.find(V.Handle); Is != S.Issues.end())
-        for (const std::string &M : Is->second)
+        for (size_t Mi = 0; Mi < Is->second.size(); ++Mi)
         {
+            const std::string &M = Is->second[Mi];
+            const PkgGraph::Fix Fx = PkgGraph::FixFor(M, &D.Node(V.Doc));
+            const float BtnW = Fx.Action.empty() ? 0.0f : ImGui::CalcTextSize(Fx.Label.c_str()).x + ImGui::GetStyle().FramePadding.x * 2.0f + ImGui::GetStyle().ItemSpacing.x;
             ImGui::AlignTextToFramePadding();
-            ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1.0f, 0.74f, 0.32f, 1.0f));
-            ImGui::TextUnformatted(PkgForm::FitWidth("\xE2\x9A\xA0 " + M, Wd - 2.0f * kPadX * Z).c_str());
+            //Waiting for a step the author is about to take is not a problem: said calmly, with the step beside it.
+            ImGui::PushStyleColor(ImGuiCol_Text, Fx.Waiting ? ImVec4(0.62f, 0.66f, 0.74f, 1.0f) : ImVec4(1.0f, 0.74f, 0.32f, 1.0f));
+            ImGui::TextUnformatted(PkgForm::FitWidth((Fx.Waiting ? "\xE2\x80\xA6 " + Fx.Note : "! " + M), Wd - 2.0f * kPadX * Z - BtnW).c_str());
             ImGui::PopStyleColor();
             if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s", M.c_str());
+            if (!Fx.Action.empty())
+            {
+                ImGui::SameLine();
+                ImGui::PushID((int)Mi);
+                if (ImGui::SmallButton(Fx.Label.c_str()))
+                {
+                    if (Fx.Action.rfind("add_layer:", 0) == 0)
+                    {
+                        json N = D.Node(V.Doc);
+                        if (PkgGraph::AddLayer(N, Fx.Action.substr(10)))
+                        {
+                            const int At = (int)N["LAYERS"].size() - 1;
+                            D.Replace(V.Doc, std::move(N));
+                            S.Open.insert(V.Handle + "|L" + std::to_string(At));
+                        }
+                    }
+                    else if (Fx.Action.rfind("remove_layer:", 0) == 0)
+                    {
+                        json N = D.Node(V.Doc);
+                        const size_t At = std::strtoul(Fx.Action.c_str() + 13, nullptr, 10);
+                        if (N.contains("LAYERS") && N["LAYERS"].is_array() && At < N["LAYERS"].size())
+                        { N["LAYERS"].erase(At); D.Replace(V.Doc, std::move(N)); }
+                    }
+                    else if (Fx.Action.rfind("keep_name:", 0) == 0)
+                    {
+                        json N = D.Node(V.Doc);
+                        if (PkgGraph::NameKeepApart(N, Fx.Action.substr(10))) D.Replace(V.Doc, std::move(N));
+                    }
+                    else if (Fx.Action.rfind("open_entry:", 0) == 0)
+                    {
+                        const std::string K = Fx.Action.substr(11);
+                        S.Open.insert(V.Handle + "|" + K.substr(0, K.find('/')));   // its layer, then the entry
+                        S.Open.insert(V.Handle + "|" + K);
+                    }
+                    else S.Pending = {V.Handle, Fx.Action};
+                }
+                ImGui::PopID();
+            }
         }
     json Work = D.Node(V.Doc);                            // edited here, handed back only if something changed
     bool Dirty = false;
+    std::vector<RowSpan> MyRows;
     if (Busy) ImGui::BeginDisabled();
     if (Work.is_object())
     {
@@ -991,6 +1298,11 @@ static void DrawNode(PkgCanvas &Self, PkgCanvasState &S, int Vi, std::vector<ImG
             return std::string();
         };
         H.Facets = &S.Facets;
+        H.Platforms = [&S]() -> const std::vector<std::string> & {
+            if (!S.PlatformsAsked && S.PlatformsFn) S.Platforms = S.PlatformsFn();
+            S.PlatformsAsked = true;
+            return S.Platforms;
+        };
         H.Dirty = [&Dirty] { Dirty = true; };
         const std::string Handle = V.Handle;
         H.Request = [&S, Handle](const std::string &A) { S.Pending = {Handle, A}; };
@@ -998,6 +1310,9 @@ static void DrawNode(PkgCanvas &Self, PkgCanvasState &S, int Vi, std::vector<ImG
         const std::string Pre = V.Handle + "|";
         for (auto It = S.RegBuf.lower_bound(Pre); It != S.RegBuf.end() && It->first.rfind(Pre, 0) == 0; ++It) Reg[It->first.substr(Pre.size())] = It->second;
         H.RegBuf = &Reg;
+        H.Node = V.Handle;
+        H.Row = [&MyRows, WinY = WinPos.y, Z](int L, float Y0, float Y1) { MyRows.push_back({L, (Y0 - WinY) / Z, (Y1 - WinY) / Z}); };
+        H.LayerDropped = [&S, Handle](const std::string &From, int FromLayer, int At, bool Copy) { S.Drop = {From, FromLayer, Handle, At, Copy}; };
         PkgForm::Body(Work, H);
         for (auto It = S.RegBuf.lower_bound(Pre); It != S.RegBuf.end() && It->first.rfind(Pre, 0) == 0;) It = S.RegBuf.erase(It);
         for (auto &[K, Rows] : Reg) S.RegBuf[Pre + K] = std::move(Rows);
@@ -1008,6 +1323,25 @@ static void DrawNode(PkgCanvas &Self, PkgCanvasState &S, int Vi, std::vector<ImG
         ImGui::TextDisabled("This node is not a JSON object - fix it in the JSON view.");
     }
     if (Busy) ImGui::EndDisabled();
+    S.Rows[V.Handle] = std::move(MyRows);
+    //While a layer is being dragged, the node's foot takes it as its last layer (a row takes it before or after itself).
+    if (const ImGuiPayload *Pl = ImGui::GetDragDropPayload(); Pl && Pl->IsDataType(PkgForm::kLayerPayload) && !Busy)
+    {
+        const json &Nn = D.Node(V.Doc);
+        const int Count = Nn.is_object() && Nn.contains("LAYERS") && Nn["LAYERS"].is_array() ? (int)Nn["LAYERS"].size() : 0;
+        ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.35f, 0.29f, 0.12f, 0.9f));
+        ImGui::Button("drop here: the last layer##layerfoot", ImVec2(Wd - 2.0f * kPadX * Z, 0));
+        ImGui::PopStyleColor();
+        if (ImGui::BeginDragDropTarget())
+        {
+            if (const ImGuiPayload *P = ImGui::AcceptDragDropPayload(PkgForm::kLayerPayload))
+            {
+                const auto *Lp = static_cast<const PkgForm::LayerPayload *>(P->Data);
+                S.Drop = {Lp->Node, Lp->Layer, V.Handle, Count, ImGui::GetIO().KeyCtrl};
+            }
+            ImGui::EndDragDropTarget();
+        }
+    }
     S.ExpandAll.erase(V.Handle + "|");                   // "open all" unfolds everything in one frame
     if (Dirty && Work.is_object()) D.Replace(V.Doc, std::move(Work));
 
@@ -1023,19 +1357,16 @@ static void DrawNode(PkgCanvas &Self, PkgCanvasState &S, int Vi, std::vector<ImG
     if (ImGui::Button("+ layer")) ImGui::OpenPopup("##addlayer");
     if (ImGui::BeginPopup("##addlayer"))
     {
-        for (const std::string &T : PkgGraph::AllTypes())
+        std::string T;
+        if (TypePicker(T, false))
         {
-            if (ImGui::Selectable(T.c_str()))
+            json N = D.Node(V.Doc);
+            if (PkgGraph::AddLayer(N, T))
             {
-                json N = D.Node(V.Doc);
-                if (PkgGraph::AddLayer(N, T))
-                {
-                    const int At = N.contains("LAYERS") && N["LAYERS"].is_array() ? (int)N["LAYERS"].size() - 1 : 0;
-                    D.Replace(V.Doc, std::move(N));
-                    S.Open.insert(V.Handle + "|L" + std::to_string(At));   // a new layer opens, ready to fill in
-                }
+                const int At = N.contains("LAYERS") && N["LAYERS"].is_array() ? (int)N["LAYERS"].size() - 1 : 0;
+                D.Replace(V.Doc, std::move(N));
+                S.Open.insert(V.Handle + "|L" + std::to_string(At));   // a new layer opens, ready to fill in
             }
-            if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s", PkgGraph::TypeHelp(T));
         }
         ImGui::EndPopup();
     }
@@ -1075,6 +1406,38 @@ static void DrawNode(PkgCanvas &Self, PkgCanvasState &S, int Vi, std::vector<ImG
     const ImVec2 M = ImGui::GetIO().MousePos;
     auto Near = [&](ImVec2 P) { return std::hypot(M.x - P.x, M.y - P.y) <= std::max(9.0f, kPortR * Z * 1.6f); };
     DrawPort(DL, In, std::max(3.5f, kPortR * Z), IM_COL32(150, 190, 255, 255), Near(In));
+    //A socket on every row that holds a reference, in its relation's colour: the wire plugs in exactly there.
+    if (const json &Nn = D.Node(V.Doc); Nn.is_object() && Nn.contains("LAYERS") && Nn["LAYERS"].is_array())
+        for (const RowSpan &Rw : S.Rows[V.Handle])
+        {
+            if (Rw.Layer < 0 || Rw.Layer >= (int)Nn["LAYERS"].size()) continue;
+            const std::string T = PkgGraph::LayerType(Nn["LAYERS"][(size_t)Rw.Layer]);
+            if (T != "NODE" && T != "ANY" && T != "NOT") continue;
+            const ImU32 C = T == "NOT" ? IM_COL32(230, 110, 110, 255) : T == "ANY" ? IM_COL32(120, 205, 140, 255) : IM_COL32(110, 160, 255, 255);
+            const ImVec2 P(WinPos.x, WinPos.y + (Rw.Y0 + Rw.Y1) * 0.5f * Z);
+            const bool Lit = (S.HoverWireChild == V.Handle || S.SelWireChild == V.Handle) && [&] {
+                for (const WireView &W : S.Wires)
+                    if (S.Views[(size_t)W.To].Handle == V.Handle && W.L.Layer == Rw.Layer
+                        && (W.L.Slot == S.HoverWireSlot || W.L.Slot == S.SelWireSlot)) return true;
+                return false;
+            }();
+            DrawPort(DL, P, std::max(2.5f, kPortR * 0.75f * Z), C, Lit);
+            if (Lit) DL->AddRect(ImVec2(WinPos.x + 2.0f, WinPos.y + Rw.Y0 * Z), ImVec2(WinPos.x + Wd - 2.0f, WinPos.y + Rw.Y1 * Z), C, 4.0f * Z, 0, 1.5f);
+        }
+    //Files from the file manager over this node: it is where they would land.
+    if (S.FileDropHover && S.HoverNode == V.Handle)
+    {
+        DL->AddRect(ImVec2(WinPos.x - 1.5f, WinPos.y - 1.5f), ImVec2(WinPos.x + Wd + 1.5f, WinPos.y + Hh + 1.5f), IM_COL32(120, 220, 140, 255), 8.0f * Z, 0, 3.0f);
+        ImGui::SetTooltip("Drop to add: a game's folder or zip (its files), an image (the cover), a .reg export");
+    }
+    //A wire is being dragged: where it cannot go (a cycle, itself) is dimmed; where it can, outlined.
+    if (S.M == PkgCanvasState::Mode::Link && V.Handle != S.LinkHandle)
+    {
+        if (S.LinkBlocked.count(V.Handle))
+            DL->AddRectFilled(WinPos, ImVec2(WinPos.x + Wd, WinPos.y + Hh), IM_COL32(12, 13, 16, 170), 7.0f * Z);
+        else if (S.DropTarget != V.Handle)
+            DL->AddRect(WinPos, ImVec2(WinPos.x + Wd, WinPos.y + Hh), IM_COL32(120, 220, 140, 110), 7.0f * Z, 0, 1.5f);
+    }
     DrawPort(DL, Out, std::max(3.5f, kPortR * Z), V.Unwired ? IM_COL32(150, 150, 160, 255) : IM_COL32(150, 190, 255, 255), Near(Out));
     DL->PopClipRect();
 
@@ -1117,15 +1480,30 @@ static void DrawBox(PkgCanvasState &S, ImDrawList *DL, const NodeView &V)
         //Zoomed out the chip's name is what matters: its own font would be unreadable, so the name alone is drawn at a
         //readable size (as a box's is), clipped to the chip.
         DL->PushClipRect(A, B, true);
+        //The game's cover at the chip's left, when its node presents one: "contains Black & White 2" reads at a glance.
+        float TextX = 10.0f * Z;
+        if (const auto Ec = S.ExtCache.find(V.Handle); Ec != S.ExtCache.end() && !Ec->second.Cover.empty() && S.Image)
+        {
+            unsigned long long Tex = 0;
+            float Iw = 0, Ih = 0;
+            if (S.Image(Ec->second.Cover, Tex, Iw, Ih) && Iw > 0 && Ih > 0)
+            {
+                const float H = (B.y - A.y) - 6.0f * Z, W = H * Iw / Ih;
+                DL->AddImageRounded(ImTextureRef((ImTextureID)Tex), ImVec2(A.x + 3.0f * Z, A.y + 3.0f * Z), ImVec2(A.x + 3.0f * Z + W, A.y + 3.0f * Z + H),
+                                    ImVec2(0, 0), ImVec2(1, 1), IM_COL32_WHITE, 5.0f * Z);
+                TextX = W + 10.0f * Z;
+                S.CoversDrawn.insert(V.Handle);
+            }
+        }
         if (S.Z >= kLodZoom)
         {
             ImGui::PushFont(nullptr, kFont * 0.8f * Z);
-            const std::string P = PkgForm::FitWidth("\xE2\x86\x97 " + V.Package, (B.x - A.x) - 20.0f * Z);
-            DL->AddText(ImVec2(A.x + 10.0f * Z, A.y + 5.0f * Z), IM_COL32(150, 158, 175, 255), P.c_str());
+            const std::string P = PkgForm::FitWidth("\xE2\x86\x97 " + V.Package, (B.x - A.x) - TextX - 10.0f * Z);
+            DL->AddText(ImVec2(A.x + TextX, A.y + 5.0f * Z), IM_COL32(150, 158, 175, 255), P.c_str());
             ImGui::PopFont();
             ImGui::PushFont(GBold, kFont * Z);
-            const std::string T = PkgForm::FitWidth(V.Title, (B.x - A.x) - 20.0f * Z);
-            DL->AddText(ImVec2(A.x + 10.0f * Z, A.y + 21.0f * Z), IM_COL32(230, 233, 240, 255), T.c_str());
+            const std::string T = PkgForm::FitWidth(V.Title, (B.x - A.x) - TextX - 10.0f * Z);
+            DL->AddText(ImVec2(A.x + TextX, A.y + 21.0f * Z), IM_COL32(230, 233, 240, 255), T.c_str());
             ImGui::PopFont();
         }
         else
@@ -1163,9 +1541,9 @@ static void DrawBox(PkgCanvasState &S, ImDrawList *DL, const NodeView &V)
 
 struct WireGeom { ImVec2 A, B, C, D; };
 
-static WireGeom WireShape(const PkgCanvasState &S, const NodeView &From, const NodeView &To)
+static WireGeom WireShape(const PkgCanvasState &S, const NodeView &From, const NodeView &To, int Layer)
 {
-    const ImVec2 A = PortScreen(S, From, true), D = PortScreen(S, To, false);
+    const ImVec2 A = PortScreen(S, From, true), D = RowPort(S, To, Layer);
     const float Dx = std::max(std::abs(D.x - A.x) * 0.5f, 60.0f * S.Z);
     return WireGeom{A, ImVec2(A.x + Dx, A.y), ImVec2(D.x - Dx, D.y), D};
 }
@@ -1196,12 +1574,18 @@ static void DrawWires(PkgCanvasState &S, ImDrawList *DL, bool Hover)
     std::vector<Shown> Vis;
     for (const WireView &W : S.Wires)
     {
-        const WireGeom G = WireShape(S, S.Views[(size_t)W.From], S.Views[(size_t)W.To]);
+        const WireGeom G = WireShape(S, S.Views[(size_t)W.From], S.Views[(size_t)W.To], W.L.Layer);
         const ImVec4 Bb(std::min({G.A.x, G.B.x, G.C.x, G.D.x}), std::min({G.A.y, G.B.y, G.C.y, G.D.y}),
                         std::max({G.A.x, G.B.x, G.C.x, G.D.x}), std::max({G.A.y, G.B.y, G.C.y, G.D.y}));
         if (Overlaps(Bb, View)) Vis.push_back({&W, G});
     }
     S.VisibleWires = (int)Vis.size();
+    //Each wire's place among the wires leaving its node, in the document's order: what spreads their colours.
+    std::map<const WireView *, int> Rank;
+    {
+        std::map<int, int> Seen;
+        for (const WireView &W : S.Wires) Rank[&W] = Seen[W.From]++;
+    }
     if (Hover)
     {
         float BestD = 7.0f;
@@ -1219,7 +1603,7 @@ static void DrawWires(PkgCanvasState &S, ImDrawList *DL, bool Hover)
         const bool Sel = S.SelWireChild == T.Handle && S.SelWireSlot == W.L.Slot;
         const bool Hot = S.HoverWireChild == T.Handle && S.HoverWireSlot == W.L.Slot;
         const bool Lit = Sel || Hot || S.Sel.count(F.Handle) || S.Sel.count(T.Handle);
-        ImU32 C = W.L.Not ? IM_COL32(230, 110, 110, 255) : W.L.Any ? IM_COL32(120, 205, 140, 255) : IM_COL32(110, 160, 255, 255);
+        ImU32 C = W.L.Not ? IM_COL32(230, 110, 110, 255) : WireHue(F.Title, Rank[X.W]);
         if (!Lit) C = (C & 0x00FFFFFF) | (170u << 24);
         if (Sel) C = IM_COL32(255, 196, 90, 255);
         const float Th = std::max(1.2f, (Lit ? 2.6f : 1.8f) * std::sqrt(S.Z));
@@ -1264,11 +1648,15 @@ void PkgCanvas::frame()
     if (!S.LayoutValid && S.M == PkgCanvasState::Mode::Idle) { Layout(S); if (S.AutoFrame) S.FramePending = true; }
     UpdateRects(S);
     S.DrawnRect.clear();
+    S.CoversDrawn.clear();
     S.Animating = false;
     ImGuiIO &Io = ImGui::GetIO();
 
     ImGui::SetNextWindowPos(ImVec2(0, 0));
     ImGui::SetNextWindowSize(Io.DisplaySize);
+    //The canvas pans in world space, never by window scroll: a focused item lower than the panel (a new node's rename
+    //box) made ImGui scroll the window to it, and the toolbar row slid out of view for good.
+    ImGui::SetNextWindowScroll(ImVec2(0, 0));
     ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(0, 0));
     ImGui::Begin("##pkgcanvas", nullptr, ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoScrollWithMouse
                                              | ImGuiWindowFlags_NoBringToFrontOnFocus | ImGuiWindowFlags_NoSavedSettings);
@@ -1280,34 +1668,50 @@ void PkgCanvas::frame()
     if (ImGui::Button("+ Node")) ImGui::OpenPopup("##addnode");
     if (ImGui::IsItemHovered()) ImGui::SetTooltip("Add a node (or right-click the canvas where it should go)");
     auto AddMenu = [&](ImVec2 At) {
-        struct Grp { const char *Title; std::vector<const char *> Types; };
-        static const std::vector<Grp> Groups = {
-            {"Content", {"ZIP", "DIR", "FILE", "DELTA"}},
-            {"Transforms", {"EDIT", "REG", "DLL", "ENV"}},
-            {"Facts", {"VARS", "KEEP"}},
-            {"Entries", {"EXEC"}},
-            {"Composition", {"NODE", "ANY", "NOT", "empty"}},
-        };
-        for (const Grp &G : Groups)
+        std::string Type;
+        //The game a recipe builds on: the selected node of this package, else its first version.
+        std::string Base;
+        if (const std::string Sh = selectedHandle(); !Sh.empty() && D.IndexOf(Sh) >= 0) Base = Sh;
+        for (int I = 0; I < D.Count() && Base.empty(); ++I) if (!StrOf(D.Node(I), "VARIANT").empty()) Base = D.Handle(I);
+        //No version yet: the game's files with its tile at the base (an installer captured, a disc's install) are what
+        //the first version builds on.
+        for (int I = 0; I < D.Count() && Base.empty(); ++I) if (HasTile(D.Node(I))) Base = D.Handle(I);
+        const std::string BaseLabel = Base.empty() ? std::string() : NodeTitle(D.Node(D.IndexOf(Base)), Base);
+        json Recipe;
+        const bool Typed = TypePicker(Type, true);
+        ImGui::SeparatorText("For this game");
+        ImGui::BeginDisabled(Base.empty());
+        if (ImGui::Selectable("another version")) Recipe = PkgGraph::VersionNode(Base, BaseLabel);
+        if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
+            ImGui::SetTooltip("%s", Base.empty() ? "Make the game's first version first" : ("A source port, a patch, a fan update: contains \"" + BaseLabel + "\" and runs its own program").c_str());
+        if (ImGui::Selectable("a mod for it")) Recipe = PkgGraph::ModNode(Base, BaseLabel);
+        if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
+            ImGui::SetTooltip("%s", Base.empty() ? "Make the game's first version first" : ("Rides on \"" + BaseLabel + "\": ticked in the pre-launch window, its files over the game's").c_str());
+        ImGui::EndDisabled();
+        if (!Typed && Recipe.is_null()) return;
+        //A version or a mod goes beside the game it builds on; any new node goes where it hides nothing.
+        if (!Recipe.is_null() && S.ViewOf.count(Base))
         {
-            ImGui::SeparatorText(G.Title);
-            for (const char *T : G.Types)
-            {
-                const std::string Type = std::string(T) == "empty" ? std::string() : std::string(T);
-                if (ImGui::Selectable(T))
-                {
-                    //A node made from the menu is ready to fill in: its rows open, its name selected for typing.
-                    const int I = addNode(Type, At.x, At.y);
-                    const std::string Hn = D.Handle(I);
-                    setExpanded(Hn, true);
-                    S.Renaming = Hn;
-                    S.RenameBuf = StrOf(D.Node(I), "LABEL");
-                    S.RenameFocus = true;
-                    ImGui::CloseCurrentPopup();
-                }
-                if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s", PkgGraph::TypeHelp(Type));
-            }
+            const ImVec4 Br = WorldRect(S, S.Views[(size_t)S.ViewOf[Base]]);
+            At = ImVec2(Br.z + 60.0f, Br.y);
         }
+        At = FreeSpot(S, At);
+        //A node made from the menu is ready to fill in: its rows open, its name selected for typing.
+        int I;
+        if (Recipe.is_null()) I = addNode(Type, At.x, At.y, selectedHandle());
+        else { I = D.Add(std::move(Recipe)); D.SetPos(D.Handle(I), {At.x, At.y}); D.Commit(); emit documentEdited(); }
+        const std::string Hn = D.Handle(I);
+        setExpanded(Hn, true);
+        //It is the node being worked on: selected (the JSON pane follows), and in view - a free spot can be off-screen.
+        S.Sel = {Hn};
+        S.SelWireSlot = -1;
+        const float CW = (S.Canvas.z - S.Canvas.x) / S.Z, CH = (S.Canvas.w - S.Canvas.y) / S.Z;
+        if (At.x < S.Cam.x || At.y < S.Cam.y || At.x + kNodeW > S.Cam.x + CW || At.y + kTitleH * 4 > S.Cam.y + CH)
+            S.Cam = ImVec2(At.x + kNodeW * 0.5f - CW * 0.5f, At.y - CH * 0.25f);
+        S.Renaming = Hn;
+        S.RenameBuf = S.RenameFrom = StrOf(D.Node(I), "LABEL");
+        S.RenameFocus = true;
+        ImGui::CloseCurrentPopup();
     };
     if (ImGui::BeginPopup("##addnode"))
     {
@@ -1338,7 +1742,7 @@ void PkgCanvas::frame()
             if (ImGui::Selectable((O.Label + "##" + O.Cid).c_str()))
             {
                 if (std::find(S.Offered.begin(), S.Offered.end(), O.Cid) == S.Offered.end()) S.Offered.push_back(O.Cid);
-                S.ExtCache[O.Cid] = External{O.Label, O.Package, std::string()};
+                S.ExtCache[O.Cid] = S.ExternalLookup ? S.ExternalLookup(O.Cid) : External{O.Label, O.Package, std::string(), std::string()};
                 S.BuiltRev = 0;
                 Rebuild(S);
                 Layout(S);
@@ -1546,12 +1950,76 @@ void PkgCanvas::frame()
     //An empty package says what to do instead of showing nothing.
     if (S.Views.empty())
     {
-        const char *Msg = "This package has no nodes yet.";
-        const char *Sub = "Right-click the canvas (or use + Node) to add one; + Library node brings in another package's.";
+        const char *Msg = S.PackageOpen ? "This package has no nodes yet." : "No package is open.";
+        const char *Sub = S.PackageOpen ? "Right-click the canvas (or use + Node) to add one; + Library node brings in another package's."
+                                        : "Start a new game's package, or open one from your library.";
         const ImVec2 M1 = ImGui::CalcTextSize(Msg), M2 = ImGui::CalcTextSize(Sub);
         const ImVec2 C((R0.x + R1.x) * 0.5f, (R0.y + R1.y) * 0.5f);
         DL->AddText(ImVec2(C.x - M1.x * 0.5f, C.y - M1.y - 4), IM_COL32(200, 205, 215, 255), Msg);
         DL->AddText(ImVec2(C.x - M2.x * 0.5f, C.y + 4), IM_COL32(140, 146, 160, 255), Sub);
+        if (!S.PackageOpen)
+        {
+            const char *New = "New package...", *Open = "Open package...";
+            const ImGuiStyle &St = ImGui::GetStyle();
+            const float W1 = ImGui::CalcTextSize(New).x + St.FramePadding.x * 2, W2 = ImGui::CalcTextSize(Open).x + St.FramePadding.x * 2;
+            ImGui::SetCursorScreenPos(ImVec2(C.x - (W1 + W2 + St.ItemSpacing.x) * 0.5f, C.y + M2.y + 18));
+            if (ImGui::Button(New)) emit newPackageRequested();
+            ImGui::SameLine();
+            if (ImGui::Button(Open)) emit openPackagePickerRequested();
+        }
+    }
+
+    // ---- the next step a game's package needs, until it has it ----
+    if (S.PackageOpen && D.Count() > 0)
+    {
+        if (S.NextStepRev != D.ContentRevision())
+        {
+            std::vector<const json *> Ns;
+            for (int I = 0; I < D.Count(); ++I) Ns.push_back(&D.Node(I));
+            S.NextStep = PkgGraph::NextStep(Ns);
+            S.NextStepRev = D.ContentRevision();
+        }
+        if (!S.NextStep.empty())
+        {
+            const std::string T = "Next: " + S.NextStep;
+            const ImVec2 Ts = ImGui::CalcTextSize(T.c_str());
+            const ImVec2 P(R0.x + 12.0f, R1.y - Ts.y - 20.0f);
+            DL->AddRectFilled(ImVec2(P.x - 8, P.y - 5), ImVec2(P.x + Ts.x + 8, P.y + Ts.y + 5), IM_COL32(46, 118, 78, 230), 6.0f);
+            DL->AddText(P, IM_COL32(240, 248, 240, 255), T.c_str());
+        }
+    }
+
+    // ---- the first-time tour: one card at a time, in the canvas's middle ----
+    if (S.TourStep >= 0)
+    {
+        static const char *Cards[][2] = {
+            {"A package is one game", "Its files, how it runs, and its card on the shelf - built from nodes. Each node is a stack of layers, applied top to bottom: later wins."},
+            {"Follow the green strip", "At the bottom left the canvas says what the package still needs, one step at a time, until the game is on the shelf."},
+            {"Drop things on nodes", "Drag a game's folder or a zip from your file manager onto a node to bring its files in; drop an image to make it the cover, a .reg export for registry settings."},
+            {"Add anything by typing", "Press / or double-click empty space, type what you want (\"registry\", \"saves\", \"version\"), Enter. Wires plug into the row where a node is contained: drag them between rows to choose where it folds in."},
+            {"Try it", "The \xE2\x96\xB6 on a version runs it through the same pre-launch window players use. The tabs on the right show what the game will see, the fold in order, and the card."}};
+        const int N = (int)(sizeof(Cards) / sizeof(Cards[0]));
+        //High in the canvas: what it talks about (the empty canvas's buttons, the strip at the bottom) stays visible.
+        const ImVec2 C((R0.x + R1.x) * 0.5f, R0.y + (R1.y - R0.y) * 0.08f);
+        ImGui::SetNextWindowPos(C, ImGuiCond_Always, ImVec2(0.5f, 0.0f));
+        ImGui::SetNextWindowSize(ImVec2(440, 0));
+        ImGui::PushStyleColor(ImGuiCol_WindowBg, ImVec4(0.13f, 0.20f, 0.16f, 0.97f));
+        if (ImGui::Begin("##tour", nullptr, ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_AlwaysAutoResize))
+        {
+            ImGui::TextDisabled("%d of %d", S.TourStep + 1, N);
+            ImGui::PushFont(GBold, kFont * 1.2f);
+            ImGui::TextUnformatted(Cards[S.TourStep][0]);
+            ImGui::PopFont();
+            ImGui::PushTextWrapPos(420);
+            ImGui::TextUnformatted(Cards[S.TourStep][1]);
+            ImGui::PopTextWrapPos();
+            ImGui::Spacing();
+            const bool Last = S.TourStep + 1 >= N;
+            if (ImGui::Button(Last ? "Got it" : "Next")) { if (Last) { S.TourStep = -1; emit tourFinished(); } else ++S.TourStep; }
+            if (!Last) { ImGui::SameLine(); if (ImGui::Button("Skip the tour")) { S.TourStep = -1; emit tourFinished(); } }
+        }
+        ImGui::End();
+        ImGui::PopStyleColor();
     }
 
     // ---- overlays: the wire being dragged, the box being drawn ----
@@ -1567,15 +2035,41 @@ void PkgCanvas::frame()
             const float Dx = std::max(std::abs(Mouse.x - A.x) * 0.5f, 50.0f * S.Z) * (S.LinkFromOut ? 1.0f : -1.0f);
             FG->AddBezierCubic(A, ImVec2(A.x + Dx, A.y), ImVec2(Mouse.x - Dx, Mouse.y), Mouse, IM_COL32(255, 210, 120, 255), 2.5f);
             const std::string T = S.HoverNode;
-            if (!T.empty() && T != S.LinkHandle)
+            S.LinkAt = -1;
+            if (!T.empty() && T != S.LinkHandle && !S.LinkBlocked.count(T))
             {
                 const NodeView &Tv = S.Views[(size_t)S.ViewOf[T]];
-                const bool Valid = S.LinkFromOut ? Tv.Doc >= 0 : true;
-                if (Valid) S.DropTarget = T;
-                if (Valid && Tv.Doc < 0 && !S.LinkFromOut) S.DropTarget = T;
+                if (S.LinkFromOut ? Tv.Doc >= 0 : true) S.DropTarget = T;
+                //Dropped INTO a node: the reference goes between the rows the cursor is between, and a line says where.
+                if (!S.DropTarget.empty() && S.LinkFromOut && Tv.Doc >= 0)
+                {
+                    const json &Nn = D.Node(Tv.Doc);
+                    const int Count = Nn.is_object() && Nn.contains("LAYERS") && Nn["LAYERS"].is_array() ? (int)Nn["LAYERS"].size() : 0;
+                    const ImVec4 Wr = WorldRect(S, Tv);
+                    const float Off = S.S2W(Mouse).y - Wr.y;
+                    const auto &Rs = S.Rows[T];
+                    float LineY = -1.0f;
+                    if (!Rs.empty())
+                    {
+                        S.LinkAt = Count;
+                        LineY = Rs.back().Y1;
+                        for (const RowSpan &R : Rs)
+                            if (Off < (R.Y0 + R.Y1) * 0.5f) { S.LinkAt = R.Layer; LineY = R.Y0; break; }
+                        FG->AddLine(S.W2S(ImVec2(Wr.x + 6.0f, Wr.y + LineY)), S.W2S(ImVec2(Wr.z - 6.0f, Wr.y + LineY)),
+                                    IM_COL32(255, 210, 120, 255), 3.0f);
+                    }
+                }
             }
-            ImGui::SetTooltip("%s", S.DropTarget.empty() ? "Drop on a node"
-                                    : (Io.KeyShift ? "requires one of" : Io.KeyAlt ? "excludes" : "contains (Shift: requires, Alt: excludes)"));
+            std::string Tip;
+            if (S.DropTarget.empty())
+                Tip = !S.HoverNode.empty() && S.LinkBlocked.count(S.HoverNode) ? "Not here: a node never contains itself"
+                    : S.HoverNode.empty() ? "Let go here to make a new node for it" : "Drop on a node";
+            else
+            {
+                Tip = Io.KeyShift ? "requires one of" : Io.KeyAlt ? "excludes" : "contains (Shift: requires, Alt: excludes)";
+                if (S.LinkAt >= 0) Tip += "\nas layer " + std::to_string(S.LinkAt + 1) + " - what comes later in a node wins";
+            }
+            ImGui::SetTooltip("%s", Tip.c_str());
         }
     }
     if (S.M == PkgCanvasState::Mode::Box)
@@ -1652,6 +2146,15 @@ void PkgCanvas::frame()
     //Any gesture on the canvas means the user has the view now: stop re-framing it for them.
     if (CanvasOwnsHover && (Io.MouseWheel != 0.0f || ImGui::IsMouseClicked(0) || ImGui::IsMouseClicked(1) || ImGui::IsMouseClicked(2)))
         S.AutoFrame = false;
+    //Quick add: "/" over the canvas, or a double-click on its empty background - type what to add, Enter adds it there.
+    if (S.M == PkgCanvasState::Mode::Idle && CanvasOwnsHover && !MiniHovered && Ctx.OpenPopupStack.Size == 0
+        && ((BgHovered && S.HoverNode.empty() && ImGui::IsMouseDoubleClicked(0))
+            || (!Io.WantTextInput && !ImGui::IsAnyItemActive() && ImGui::IsKeyPressed(ImGuiKey_Slash, false))))
+    {
+        S.QuickText.clear();
+        S.QuickWorld = S.S2W(Mouse);
+        ImGui::OpenPopup("##quickadd");
+    }
     //Starting a gesture.
     if (S.M == PkgCanvasState::Mode::Idle && CanvasOwnsHover && !MiniHovered)
     {
@@ -1660,6 +2163,10 @@ void PkgCanvas::frame()
             S.M = PkgCanvasState::Mode::Link;
             S.LinkHandle = PortHandle;
             S.LinkFromOut = PortOut;
+            //Out: the target will contain this node, so nothing this node contains may be it. In: this node will
+            //contain the target, so nothing containing this node may be it.
+            S.LinkBlocked = Reach(D, PortHandle, !PortOut);
+            S.LinkBlocked.insert(PortHandle);
             ImGui::SetActiveID(BgId, ImGui::GetCurrentWindow());       // the canvas owns the drag, not a node widget
         }
         else if (ImGui::IsMouseClicked(2) || (ImGui::IsMouseClicked(0) && ImGui::IsKeyDown(ImGuiKey_Space)))
@@ -1770,7 +2277,7 @@ void PkgCanvas::frame()
                 const std::string Parent = S.LinkFromOut ? S.LinkHandle : S.DropTarget;
                 const int Ci = D.IndexOf(Child);
                 const Document::RefKind K = Io.KeyShift ? Document::RefKind::Any : Io.KeyAlt ? Document::RefKind::Not : Document::RefKind::Node;
-                if (Ci >= 0 && D.Link(Ci, Parent, K))
+                if (Ci >= 0 && D.Link(Ci, Parent, K, S.LinkFromOut ? S.LinkAt : -1))
                 {
                     D.Commit();
                     S.Offered.erase(std::remove(S.Offered.begin(), S.Offered.end(), Parent), S.Offered.end());
@@ -1778,6 +2285,14 @@ void PkgCanvas::frame()
                 }
                 else if (Ci < 0) emit statusMessage("Another package's node cannot be changed here - wire it into one of this package's nodes");
                 else emit statusMessage("Already wired");
+            }
+            else if (S.HoverNode.empty() && Mouse.x >= S.Canvas.x && Mouse.x <= S.Canvas.z && Mouse.y >= S.Canvas.y && Mouse.y <= S.Canvas.w)
+            {
+                //Let go on the empty canvas: a new node, already wired to where the wire came from.
+                S.WireNewFrom = S.LinkHandle;
+                S.WireNewOut = S.LinkFromOut;
+                S.WireNewWorld = S.S2W(Mouse);
+                ImGui::OpenPopup("##wirenew");
             }
             S.M = PkgCanvasState::Mode::Idle;
             S.LinkHandle.clear();
@@ -1791,6 +2306,100 @@ void PkgCanvas::frame()
     { S.M = PkgCanvasState::Mode::Idle; S.LinkHandle.clear(); S.DragDelta = ImVec2(0, 0); ImGui::ClearActiveID(); }
 
     // ---- menus ------------------------------------------------------------------------------------------------
+    if (ImGui::BeginPopup("##quickadd"))
+    {
+        if (ImGui::IsWindowAppearing()) ImGui::SetKeyboardFocusHere();
+        ImGui::SetNextItemWidth(380);
+        const bool QEnter = ImGui::InputTextWithHint("##quick", "add: a layer type, \"version\", \"mod\" or a library node", &S.QuickText,
+                                                    ImGuiInputTextFlags_EnterReturnsTrue);
+        //Everything that can be added, each with the words it is found by; every typed word must be among them.
+        struct Cand { std::string Shown, Hay, Type, Offer; int Recipe = 0; };
+        std::vector<Cand> All;
+        for (const PkgGraph::TypeGroup &G : PkgGraph::TypeGroups())
+            for (const std::string &T : G.Types)
+                All.push_back({T + "  -  " + PkgGraph::TypeGist(T), T + " " + PkgGraph::TypeGist(T) + " " + G.Title + " layer node", T, {}, 0});
+        All.push_back({"empty node", "empty node nothing", "", {}, 0});
+        std::string Base;
+        if (const std::string Sh = selectedHandle(); !Sh.empty() && D.IndexOf(Sh) >= 0) Base = Sh;
+        for (int I = 0; I < D.Count() && Base.empty(); ++I) if (!StrOf(D.Node(I), "VARIANT").empty()) Base = D.Handle(I);
+        if (!Base.empty())
+        {
+            All.push_back({"another version of this game", "another version source port patch fan update recipe", {}, {}, 1});
+            All.push_back({"a mod for this game", "mod graft recipe addon", {}, {}, 2});
+        }
+        std::string Q = S.QuickText;
+        std::transform(Q.begin(), Q.end(), Q.begin(), [](unsigned char C) { return (char)std::tolower(C); });
+        if (!Q.empty() && S.Offers)                       // the library only once something is typed: it is big
+            for (const Offer &O : S.Offers()) All.push_back({O.Label + "  -  " + O.Package, O.Label + " " + O.Package + " library", {}, O.Cid, 0});
+        std::vector<const Cand *> Hits;
+        for (const Cand &C : All)
+        {
+            std::string Hay = C.Hay;
+            std::transform(Hay.begin(), Hay.end(), Hay.begin(), [](unsigned char Ch) { return (char)std::tolower(Ch); });
+            std::istringstream Words(Q);
+            bool Ok = true;
+            for (std::string W; Words >> W;) if (Hay.find(W) == std::string::npos) Ok = false;
+            if (Ok) Hits.push_back(&C);
+            if (Hits.size() >= 14) break;
+        }
+        const Cand *Pick = QEnter && !Hits.empty() ? Hits.front() : nullptr;
+        for (const Cand *C : Hits) if (ImGui::Selectable((C->Shown + "##q" + C->Type + C->Offer + std::to_string(C->Recipe)).c_str())) Pick = C;
+        if (Hits.empty()) ImGui::TextDisabled("nothing matches");
+        if (Pick)
+        {
+            int I = -1;
+            if (!Pick->Offer.empty())
+            {
+                if (std::find(S.Offered.begin(), S.Offered.end(), Pick->Offer) == S.Offered.end()) S.Offered.push_back(Pick->Offer);
+                S.BuiltRev = 0;
+                select(Pick->Offer, true);
+                emit statusMessage("Drag a wire from its right-hand port into the node that should contain it");
+            }
+            else if (Pick->Recipe)
+            {
+                const std::string Bl = NodeTitle(D.Node(D.IndexOf(Base)), Base);
+                I = D.Add(Pick->Recipe == 1 ? PkgGraph::VersionNode(Base, Bl) : PkgGraph::ModNode(Base, Bl));
+                D.SetPos(D.Handle(I), {S.QuickWorld.x, S.QuickWorld.y});
+                D.Commit();
+                emit documentEdited();
+            }
+            else I = addNode(Pick->Type, S.QuickWorld.x, S.QuickWorld.y, selectedHandle());
+            if (I >= 0)
+            {
+                const std::string Hn = D.Handle(I);
+                setExpanded(Hn, true);
+                S.Sel = {Hn};
+            }
+            ImGui::CloseCurrentPopup();
+        }
+        ImGui::EndPopup();
+    }
+    if (ImGui::BeginPopup("##wirenew"))
+    {
+        const auto Fi = S.ViewOf.find(S.WireNewFrom);
+        const std::string Name = Fi == S.ViewOf.end() ? std::string("it") : "\"" + S.Views[(size_t)Fi->second].Title + "\"";
+        ImGui::TextDisabled("%s", (std::string(S.WireNewOut ? "A new node containing " : "A new node inside ") + Name).c_str());
+        std::string Type;
+        if (Fi != S.ViewOf.end() && TypePicker(Type, true))
+        {
+            //A NODE made from a node's out-port IS the reference: filled with it, not a second layer beside an empty one.
+            const bool Fills = S.WireNewOut && Type == "NODE";
+            const int I = addNode(Type, S.WireNewWorld.x, S.WireNewWorld.y - kTitleH * 0.5f, Fills ? S.WireNewFrom : std::string());
+            const std::string Hn = D.Handle(I);
+            const int From = D.IndexOf(S.WireNewFrom);
+            const bool Ok = Fills || (S.WireNewOut ? D.Link(I, S.WireNewFrom, Document::RefKind::Node) : From >= 0 && D.Link(From, Hn, Document::RefKind::Node));
+            if (Ok) D.Commit();
+            S.Offered.erase(std::remove(S.Offered.begin(), S.Offered.end(), S.WireNewFrom), S.Offered.end());
+            setExpanded(Hn, true);
+            S.Renaming = Hn;
+            S.RenameBuf = S.RenameFrom = StrOf(D.Node(I), "LABEL");
+            S.RenameFocus = true;
+            S.WireNewFrom.clear();
+            emit documentEdited();
+            ImGui::CloseCurrentPopup();
+        }
+        ImGui::EndPopup();
+    }
     if (ImGui::BeginPopup("##canvasmenu"))
     {
         if (ImGui::BeginMenu("Add node here")) { AddMenu(S.ContextWorld); ImGui::EndMenu(); }
@@ -1917,6 +2526,37 @@ void PkgCanvas::frame()
     }
     const std::string One = selectedHandle();
     if (One != S.LastSelEmitted) { S.LastSelEmitted = One; emit selectionChanged(QString::fromStdString(One)); }
+    //A layer dropped on a row or a node's foot: moved there (Ctrl: copied), one undo step.
+    if (!S.Drop.From.empty())
+    {
+        const auto Dp = S.Drop;
+        S.Drop = {};
+        std::string Why;
+        if (MoveLayer(Dp.From, Dp.FromLayer, Dp.To, Dp.At, Dp.Copy, &Why)) { D.Commit(); emit documentEdited(); }
+        else if (!Why.empty()) emit statusMessage(QString::fromStdString(Why));
+    }
+    if (!S.RemoveReq.empty())
+    {
+        const std::string H = S.RemoveReq;
+        S.RemoveReq.clear();
+        removeNodes({H});
+    }
+    if (!S.MergeReq.first.empty())
+    {
+        const auto Mr = S.MergeReq;
+        S.MergeReq = {};
+        std::string Why;
+        const int Into = D.IndexOf(Mr.second);
+        if (D.MergeInto(D.IndexOf(Mr.first), Into, &Why))
+        {
+            D.Commit();
+            S.RegBuf.clear();
+            S.Sel = {Mr.second};
+            setExpanded(Mr.second, true);
+            emit documentEdited();
+        }
+        else emit statusMessage(QString::fromStdString(Why));
+    }
     //The frame is closed: now an action may open a dialog (a nested event loop).
     if (!S.Pending.first.empty())
     {
@@ -1925,3 +2565,5 @@ void PkgCanvas::frame()
         emit nodeAction(QString::fromStdString(P.first), QString::fromStdString(P.second));
     }
 }
+
+unsigned int PkgCanvas::WireColour(const std::string &From, int Rank) { return WireHue(From, Rank); }

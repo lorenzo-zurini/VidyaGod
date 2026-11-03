@@ -40,8 +40,8 @@ bool EndsWithContinuation(const std::string &Line)
     return !Line.empty() && Line.back() == '\\';
 }
 
-//Decode a wine \xHH (1-4 hex digit) escape starting at S[i] (S[i]=='x'); returns the char value and
-//advances i past the hex digits. Only the low byte is kept (sufficient for ASCII key/name matching).
+//Decode a wine \xH..H (1-4 hex digit) escape starting at S[i] (S[i]=='x'); returns the UTF-16 unit and advances i
+//past the hex digits.
 unsigned ReadHexEscape(const std::string &S, size_t &i)
 {
     ++i; // skip 'x'
@@ -55,7 +55,31 @@ unsigned ReadHexEscape(const std::string &S, size_t &i)
     return val;
 }
 
-//Unescape a wine value-string body (between the quotes): \\ -> \, \" -> ", \xHH -> char, \c -> c.
+void PutUtf8(std::string &Out, uint32_t Cp)
+{
+    if (Cp < 0x80) Out.push_back(char(Cp));
+    else if (Cp < 0x800) { Out.push_back(char(0xC0 | (Cp >> 6))); Out.push_back(char(0x80 | (Cp & 0x3F))); }
+    else if (Cp < 0x10000) { Out.push_back(char(0xE0 | (Cp >> 12))); Out.push_back(char(0x80 | ((Cp >> 6) & 0x3F))); Out.push_back(char(0x80 | (Cp & 0x3F))); }
+    else { Out.push_back(char(0xF0 | (Cp >> 18))); Out.push_back(char(0x80 | ((Cp >> 12) & 0x3F))); Out.push_back(char(0x80 | ((Cp >> 6) & 0x3F))); Out.push_back(char(0x80 | (Cp & 0x3F))); }
+}
+
+//A \x escape at S[i] ('\\') as UTF-8: wine spells every character outside printable ASCII as its UTF-16 unit
+//("\x00e9" is é, a pair of surrogate escapes one character). Advances i to the escape's last digit.
+void DecodeHexUnit(const std::string &S, size_t &i, std::string &Out)
+{
+    size_t j = i + 1;
+    uint32_t U = ReadHexEscape(S, j);
+    if (U >= 0xD800 && U < 0xDC00 && j + 1 < S.size() && S[j] == '\\' && S[j + 1] == 'x')
+    {
+        size_t k = j + 1;
+        const uint32_t Lo = ReadHexEscape(S, k);
+        if (Lo >= 0xDC00 && Lo < 0xE000) { U = 0x10000 + ((U - 0xD800) << 10) + (Lo - 0xDC00); j = k; }
+    }
+    PutUtf8(Out, U);
+    i = j - 1;
+}
+
+//Unescape a wine value-string body (between the quotes): \\ -> \, \" -> ", \xH..H -> its character, \c -> c.
 std::string ValueUnescape(const std::string &S)
 {
     std::string Out; Out.reserve(S.size());
@@ -63,57 +87,81 @@ std::string ValueUnescape(const std::string &S)
     {
         if (S[i] == '\\' && i + 1 < S.size())
         {
-            char n = S[i + 1];
-            if (n == 'x') { size_t j = i + 1; unsigned v = ReadHexEscape(S, j); Out.push_back(char(v & 0xff)); i = j - 1; }
-            else { Out.push_back(n); ++i; }
+            if (S[i + 1] == 'x') DecodeHexUnit(S, i, Out);
+            else { Out.push_back(S[i + 1]); ++i; }
         }
         else Out.push_back(S[i]);
     }
     return Out;
 }
 
-//Unescape a key-path segment (\x5c -> backslash, \x5b/\x5d -> [], \xHH -> char). Used only to build
+//Unescape a key-path segment (\x5c -> backslash, \x5b/\x5d -> [], \xH..H -> its character). Used only to build
 //the decoded Name for addressing/diffing; output always re-emits the verbatim RawSegment.
 std::string PathUnescape(const std::string &S)
 {
     std::string Out; Out.reserve(S.size());
     for (size_t i = 0; i < S.size(); ++i)
     {
-        if (S[i] == '\\' && i + 1 < S.size() && S[i + 1] == 'x')
-        { size_t j = i + 1; unsigned v = ReadHexEscape(S, j); Out.push_back(char(v & 0xff)); i = j - 1; }
+        if (S[i] == '\\' && i + 1 < S.size() && S[i + 1] == 'x') DecodeHexUnit(S, i, Out);
         else if (S[i] == '\\' && i + 1 < S.size()) { Out.push_back(S[i + 1]); ++i; }
         else Out.push_back(S[i]);
     }
     return Out;
 }
 
-//Escape a value string / value name for output: \ -> \\, " -> \", control/non-ASCII -> \xHH.
+//S (UTF-8) as code points; a byte that starts no valid sequence stands for itself.
+template <class F> void ForEachCodePoint(const std::string &S, F &&Fn)
+{
+    for (size_t i = 0; i < S.size(); ++i)
+    {
+        const unsigned char C = (unsigned char)S[i];
+        const size_t More = C >= 0xF0 && C < 0xF8 ? 3 : C >= 0xE0 && C < 0xF0 ? 2 : C >= 0xC0 && C < 0xE0 ? 1 : 0;
+        uint32_t Cp = More == 3 ? (C & 0x07u) : More == 2 ? (C & 0x0Fu) : More == 1 ? (C & 0x1Fu) : C;
+        bool Ok = More > 0 && i + More < S.size();
+        for (size_t k = 1; Ok && k <= More; ++k) Ok = ((unsigned char)S[i + k] & 0xC0) == 0x80;
+        if (Ok) { for (size_t k = 1; k <= More; ++k) Cp = (Cp << 6) | ((unsigned char)S[i + k] & 0x3Fu); i += More; }
+        else Cp = C;
+        Fn(Cp);
+    }
+}
+
+//A character as wine's \x escape of its UTF-16 unit(s), always four digits (a following hex digit cannot join it).
+void PutHexUnits(std::string &Out, uint32_t Cp)
+{
+    char buf[16];
+    if (Cp >= 0x10000)
+    {
+        Cp -= 0x10000;
+        std::snprintf(buf, sizeof buf, "\\x%04x", unsigned(0xD800 + (Cp >> 10))); Out += buf;
+        std::snprintf(buf, sizeof buf, "\\x%04x", unsigned(0xDC00 + (Cp & 0x3FF))); Out += buf;
+        return;
+    }
+    std::snprintf(buf, sizeof buf, "\\x%04x", unsigned(Cp)); Out += buf;
+}
+
+//Escape a value string / value name for output: \ -> \\, " -> \", a control or non-ASCII character -> \xHHHH (its
+//UTF-16 unit, as wine spells it).
 std::string EscapeValueStr(const std::string &S)
 {
     std::string Out; Out.reserve(S.size() + 8);
-    char buf[8];
-    for (unsigned char c : S)
-    {
+    ForEachCodePoint(S, [&](uint32_t c) {
         if (c == '\\') Out += "\\\\";
         else if (c == '"') Out += "\\\"";
-        else if (c < 0x20 || c > 0x7e) { std::snprintf(buf, sizeof buf, "\\x%02x", c); Out += buf; }
+        else if (c < 0x20 || c > 0x7e) PutHexUnits(Out, c);
         else Out.push_back(char(c));
-    }
+    });
     return Out;
 }
 
-//Escape a key-path segment for output: \ -> \x5c, [ -> \x5b, ] -> \x5d, control/non-ASCII -> \xHH.
+//Escape a key-path segment for output: \, [, ] and a control or non-ASCII character -> \xHHHH (its UTF-16 unit).
 //(The \\ level separator is emitted by the caller, never by this function.)
 std::string EscapeSegment(const std::string &S)
 {
     std::string Out; Out.reserve(S.size() + 8);
-    char buf[8];
-    for (unsigned char c : S)
-    {
-        if (c == '\\' || c == '[' || c == ']' || c < 0x20 || c > 0x7e)
-        { std::snprintf(buf, sizeof buf, "\\x%02x", c); Out += buf; }
+    ForEachCodePoint(S, [&](uint32_t c) {
+        if (c == '\\' || c == '[' || c == ']' || c < 0x20 || c > 0x7e) PutHexUnits(Out, c);
         else Out.push_back(char(c));
-    }
+    });
     return Out;
 }
 
@@ -609,6 +657,27 @@ RegistryValue RegistryWrapper::ManifestStringToValue(const ordered_json &V)
     RV.Type = RegType::Sz; RV.RawPayload = "\"\""; return RV;
 }
 
+RegistryValue RegistryWrapper::SzValue(const std::string &Str)
+{
+    RegistryValue RV;
+    RV.Dirty = true; RV.Type = RegType::Sz; RV.Str = Str; RV.RawPayload = "\"" + EscapeValueStr(Str) + "\"";
+    return RV;
+}
+
+void RegistryWrapper::ForEachKey(const std::function<void(const std::string &, const RegistryKey &)> &Fn) const
+{
+    std::function<void(const RegistryKey &, const std::string &)> Walk = [&](const RegistryKey &K, const std::string &Path) {
+        if (K.Explicit || !K.Values.empty()) Fn(Path, K);
+        for (const auto &C : K.Children) Walk(*C, Path + "\\" + C->Name);
+    };
+    for (const auto &[Root, H] : Hives)
+    {
+        if (!H.RootKey) continue;
+        const std::string Prefix = Root == HiveRoot::User ? "HKCU" : Root == HiveRoot::UserDefault ? "HKU\\.Default" : "HKLM";
+        for (const auto &C : H.RootKey->Children) Walk(*C, Prefix + "\\" + C->Name);
+    }
+}
+
 ordered_json RegistryWrapper::ValueToManifestString(const RegistryValue &V)
 {
     if (V.Type == RegType::Sz) return V.Str;
@@ -639,6 +708,22 @@ static std::string ArchRedirectRegPath(const std::string &RegPath, const std::st
     //insertion point — and no package authors 32-bit HKCU Classes edits; treating all of HKCU as shared is the
     //faithful default.)
     if (!CIEqual(Segs[0], "HKLM") && !CIEqual(Segs[0], "HKEY_LOCAL_MACHINE")) return RegPath;
+
+    //HKLM\Software\Classes is its own case. Wine's Software\Wow6432Node\Classes is a symbolic link to
+    //Software\Classes\Wow6432Node: a real key written under the link's path is shadowed by the link, so a 32-bit
+    //COM server put there is never found (Caesar IV's .NET script classes: "not registered inproc"). And only some
+    //class subkeys are redirected at all (Windows' "Registry Keys Affected by WOW64"): a ProgID is shared, read from
+    //plain Classes by 32- and 64-bit programs alike.
+    if (Segs.size() > 2 && CIEqual(Segs[1], "Software") && CIEqual(Segs[2], "Classes"))
+    {
+        static const char *const Redirected[] = { "CLSID", "DirectShow", "Interface", "Media Type", "MediaFoundation" };
+        bool Redir = false;
+        if (Segs.size() > 3) for (const char *R : Redirected) if (CIEqual(Segs[3], R)) Redir = true;
+        if (!Redir) return RegPath;
+        std::string Res;
+        for (size_t i = 0; i < Segs.size(); ++i) { if (i) Res += "\\"; Res += Segs[i]; if (i == 2) Res += "\\Wow6432Node"; }
+        return Res;
+    }
 
     std::vector<std::string> Out; bool Inserted = false;
     for (size_t i = 0; i < Segs.size(); ++i)

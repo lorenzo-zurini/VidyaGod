@@ -3,6 +3,7 @@
 
 #include "vgtest.h"
 #include "pkgdoc.h"
+#include "pkggraph.h"
 #include "cid.h"
 
 #include <filesystem>
@@ -506,4 +507,152 @@ TEST(pkgdoc_a_package_that_is_a_root_is_not_its_own_copy)
     CHECK(fs::exists(P / (G + ".json")));
     CHECK_EQ((int)R.Kept.size(), 1);
     CHECK_EQ(R.Cascaded, 0);
+}
+
+// A reference dropped between rows goes in THERE: before layer At, so it folds at that point; a duplicate is not
+// added. Teeth: ignore At (the NODE lands where AddNodeRef puts it); allow a second NOT naming the same node.
+TEST(pkgdoc_a_dropped_wire_goes_in_where_it_was_dropped)
+{
+    PkgDoc::Document Doc;
+    const int A = Doc.Add(json{{"LABEL", "A"}, {"LAYERS", json::array()}});
+    const int X = Doc.Add(json{{"LABEL", "X"}, {"LAYERS", json::array({ json{{"ENV", {{"P", "1"}}}}, json{{"ENV", {{"Q", "2"}}}} })}});
+    CHECK(Doc.Link(X, Doc.Handle(A), PkgDoc::Document::RefKind::Node, 1));
+    CHECK_EQ(Doc.Node(X)["LAYERS"].size(), 3u);
+    CHECK_EQ(Doc.Node(X)["LAYERS"][1]["NODE"].get<std::string>(), Doc.Handle(A));
+    CHECK(!Doc.Link(X, Doc.Handle(A), PkgDoc::Document::RefKind::Node, 0));
+    CHECK(Doc.Link(X, Doc.Handle(A), PkgDoc::Document::RefKind::Not, 3));
+    CHECK(Doc.Node(X)["LAYERS"][3].contains("NOT"));
+    CHECK(!Doc.Link(X, Doc.Handle(A), PkgDoc::Document::RefKind::Not, 0));
+    CHECK(Doc.Link(X, Doc.Handle(A), PkgDoc::Document::RefKind::Any, 0));
+    CHECK(Doc.Node(X)["LAYERS"][0].contains("ANY"));
+}
+
+// Layers move to an exact place: within a node (before what is now layer At) and across nodes (moved or copied); a
+// layer naming the node it would land in is refused. Teeth: forget the shift after removal (lands one too far);
+// always copy; let a node contain itself.
+TEST(pkgdoc_layers_move_within_and_across_nodes)
+{
+    json P = json{{"LAYERS", json::array({ json{{"ENV", {{"a", "1"}}}}, json{{"ENV", {{"b", "1"}}}}, json{{"ENV", {{"c", "1"}}}} })}};
+    CHECK(PkgGraph::MoveLayerTo(P, 0, 2));                 // a before c: b a c
+    CHECK(P["LAYERS"][0]["ENV"].contains("b") && P["LAYERS"][1]["ENV"].contains("a") && P["LAYERS"][2]["ENV"].contains("c"));
+    CHECK(PkgGraph::MoveLayerTo(P, 0, 3));                 // b last: a c b
+    CHECK(P["LAYERS"][2]["ENV"].contains("b"));
+    CHECK(!PkgGraph::MoveLayerTo(P, 1, 1) && !PkgGraph::MoveLayerTo(P, 1, 2) && !PkgGraph::MoveLayerTo(P, 9, 0));
+    json Q = json{{"LAYERS", json::array({ json{{"ENV", {{"z", "1"}}}} })}};
+    CHECK(PkgGraph::MoveLayerAcross(P, 0, Q, "q", 0, false));   // a moves to Q's front
+    CHECK_EQ(P["LAYERS"].size(), 2u);
+    CHECK_EQ(Q["LAYERS"].size(), 2u);
+    CHECK(Q["LAYERS"][0]["ENV"].contains("a"));
+    CHECK(PkgGraph::MoveLayerAcross(P, 0, Q, "q", 99, true));   // c copied to Q's end; P keeps it
+    CHECK_EQ(P["LAYERS"].size(), 2u);
+    CHECK(Q["LAYERS"][2]["ENV"].contains("c"));
+    json R = json{{"LAYERS", json::array({ json{{"NODE", "q"}} })}};
+    CHECK(!PkgGraph::MoveLayerAcross(R, 0, Q, "q", 0, false));  // Q would contain itself
+    CHECK_EQ(R["LAYERS"].size(), 1u);
+    json E = json::object();                                    // a node with no LAYERS yet takes one
+    CHECK(PkgGraph::MoveLayerAcross(P, 0, E, "e", 0, false));
+    CHECK_EQ(E["LAYERS"].size(), 1u);
+}
+
+// Merging consolidates two nodes into one: From's layers follow Into's, everything that named From names Into (once),
+// Into stops naming From, Into keeps its properties and takes over only the ones it lacks, and From is gone. Merging
+// a node into one it contains is refused and changes nothing. Teeth: skip the rewiring (D's NOT is lost with B);
+// overwrite Into's LABEL; keep a second reference to Into; drop the cycle check.
+TEST(pkgdoc_merging_a_node_into_another_consolidates_them)
+{
+    PkgDoc::Document Doc;
+    const int B = Doc.Add(json{{"LABEL", "B"}, {"VARIANT", "Original"}, {"LAYERS", json::array({ json{{"ZIP", "b.zip"}} })}});
+    const std::string Hb = Doc.Handle(B);
+    const int A = Doc.Add(json{{"LABEL", "A"}, {"LAYERS", json::array({ json{{"ENV", {{"x", "1"}}}}, json{{"NODE", Hb}} })}});
+    const std::string Ha = Doc.Handle(A);
+    Doc.Add(json{{"LABEL", "C"}, {"LAYERS", json::array({ json{{"NODE", Hb}}, json{{"NODE", Ha}}, json{{"ANY", json::array({Hb, Ha})}} })}});
+    Doc.Add(json{{"LABEL", "D"}, {"LAYERS", json::array({ json{{"NOT", Hb}} })}});
+    std::string Err;
+    CHECK(!Doc.MergeInto(Doc.IndexOf(Ha), Doc.IndexOf(Hb), &Err));   // A contains B (not as its base): B would contain itself
+    CHECK(Err.find("contain itself") != std::string::npos);
+    CHECK_EQ(Doc.Count(), 4);
+    CHECK(Doc.MergeInto(Doc.IndexOf(Hb), Doc.IndexOf(Ha), &Err));
+    CHECK_EQ(Doc.Count(), 3);
+    CHECK_EQ(Doc.IndexOf(Hb), -1);
+    const json &Na = Doc.Node(Doc.IndexOf(Ha));
+    CHECK_EQ(Na["LABEL"].get<std::string>(), std::string("A"));
+    CHECK_EQ(Na["VARIANT"].get<std::string>(), std::string("Original"));
+    CHECK_EQ(Na["LAYERS"].size(), 2u);                          // its ENV, then B's ZIP; no NODE naming B
+    CHECK(Na["LAYERS"][0].contains("ENV") && Na["LAYERS"][1].contains("ZIP"));
+    int C = -1;
+    for (int I = 0; I < Doc.Count(); ++I) if (Doc.Node(I)["LABEL"] == "C") C = I;
+    const json &Nc = Doc.Node(C);
+    CHECK_EQ(Nc["LAYERS"].size(), 2u);                          // NODE B became NODE A, the second NODE A dropped
+    CHECK_EQ(Nc["LAYERS"][0]["NODE"].get<std::string>(), Ha);
+    CHECK_EQ(Nc["LAYERS"][1]["ANY"], json::array({Ha}));        // ANY [B, A] -> [A]
+    int Dn = -1;
+    for (int I = 0; I < Doc.Count(); ++I) if (Doc.Node(I)["LABEL"] == "D") Dn = I;
+    CHECK_EQ(Doc.Node(Dn)["LAYERS"].size(), 1u);                // D excluded B: it now excludes A
+    CHECK_EQ(Doc.Node(Dn)["LAYERS"][0]["NOT"].get<std::string>(), Ha);
+}
+
+// A capture taken over a version starts with the NODE naming it: merging the capture into that version folds its other
+// layers on top, the reference to the version itself gone - a node is never made to contain itself. Only a FIRST-layer
+// reference counts as "built on it"; one reached through another node is still refused. Teeth: keep the cycle check
+// for the first layer (the merge is refused); copy the NODE over (the version names itself).
+TEST(pkgdoc_merging_a_capture_into_the_version_it_was_taken_over)
+{
+    PkgDoc::Document Doc;
+    const std::string Hv = Doc.Handle(Doc.Add(json{{"LABEL", "Version"}, {"VARIANT", "Original"}, {"LAYERS", json::array({ json{{"ZIP", "g.zip"}} })}}));
+    const std::string Hc = Doc.Handle(Doc.Add(json{{"LABEL", "Capture"}, {"LAYERS", json::array({ json{{"NODE", Hv}}, json{{"DIR", "patch"}}, json{{"REG", json::object()}} })}}));
+    std::string Err;
+    CHECK(Doc.MergeInto(Doc.IndexOf(Hc), Doc.IndexOf(Hv), &Err));
+    CHECK_EQ(Doc.Count(), 1);
+    const json &V = Doc.Node(Doc.IndexOf(Hv));
+    CHECK_EQ(V["LAYERS"].size(), 3u);                           // ZIP g, DIR patch, REG - no NODE naming itself
+    CHECK(V["LAYERS"][0].contains("ZIP") && V["LAYERS"][1].contains("DIR") && V["LAYERS"][2].contains("REG"));
+    //Through another node it is still a cycle.
+    const std::string Hm = Doc.Handle(Doc.Add(json{{"LABEL", "Mid"}, {"LAYERS", json::array({ json{{"NODE", Hv}} })}}));
+    const std::string Ht = Doc.Handle(Doc.Add(json{{"LABEL", "Top"}, {"LAYERS", json::array({ json{{"NODE", Hm}}, json{{"ENV", {{"y", "2"}}}} })}}));
+    CHECK(!Doc.MergeInto(Doc.IndexOf(Ht), Doc.IndexOf(Hv), &Err));
+    CHECK(Err.find("contain itself") != std::string::npos);
+}
+
+// Two captures over the same game each contain it; merging them contains it once, and keeps the rest of From's layers.
+// Teeth: push every layer of From.
+TEST(pkgdoc_merging_two_nodes_that_contain_the_same_one_contains_it_once)
+{
+    PkgDoc::Document Doc;
+    const std::string Hg = Doc.Handle(Doc.Add(json{{"LABEL", "Game"}, {"LAYERS", json::array({ json{{"ZIP", "g.zip"}} })}}));
+    const std::string Hf = Doc.Handle(Doc.Add(json{{"LABEL", "Files"}, {"LAYERS", json::array({ json{{"NODE", Hg}}, json{{"DIR", "f"}} })}}));
+    const std::string Hr = Doc.Handle(Doc.Add(json{{"LABEL", "Reg"},   {"LAYERS", json::array({ json{{"NODE", Hg}}, json{{"REG", json::object()}} })}}));
+    std::string Err;
+    CHECK(Doc.MergeInto(Doc.IndexOf(Hr), Doc.IndexOf(Hf), &Err));
+    const json &N = Doc.Node(Doc.IndexOf(Hf));
+    CHECK_EQ(N["LAYERS"].size(), 3u);                           // NODE Game, DIR f, REG
+    CHECK_EQ(N["LAYERS"][0]["NODE"].get<std::string>(), Hg);
+    CHECK(N["LAYERS"][1].contains("DIR") && N["LAYERS"][2].contains("REG"));
+}
+
+// Each undo step is named by what changed around it - added, edited, removed, moved - and the undone ones are listed
+// in the order Redo brings them back. Teeth: name every step "Changed"; list the undone ones backwards.
+TEST(pkgdoc_undo_steps_are_named_by_what_changed)
+{
+    PkgDoc::Document Doc;
+    const int A = Doc.Add(json{{"LABEL", "Alpha"}, {"LAYERS", json::array()}});
+    Doc.Commit();
+    json N = Doc.Node(A); N["LABEL"] = "Alpha 2"; Doc.Replace(A, N); Doc.Commit();
+    Doc.SetPos(Doc.Handle(A), {5, 5}); Doc.Commit();
+    const int B = Doc.Add(json{{"LABEL", "Beta"}, {"LAYERS", json::array()}});
+    Doc.Commit();
+    Doc.Remove(B); Doc.Commit();
+    auto H = Doc.Steps();
+    CHECK_EQ(H.Done.size(), 5u);
+    CHECK_EQ(H.Done[0], std::string("Added \"Alpha\""));
+    CHECK_EQ(H.Done[1], std::string("Edited \"Alpha 2\""));
+    CHECK_EQ(H.Done[2], std::string("Moved nodes"));
+    CHECK_EQ(H.Done[3], std::string("Added \"Beta\""));
+    CHECK_EQ(H.Done[4], std::string("Removed \"Beta\""));
+    CHECK(H.Undone.empty());
+    Doc.Undo(); Doc.Undo();
+    H = Doc.Steps();
+    CHECK_EQ(H.Done.size(), 3u);
+    CHECK_EQ(H.Undone.size(), 2u);
+    CHECK_EQ(H.Undone[0], std::string("Added \"Beta\""));    // Redo's next
+    CHECK_EQ(H.Undone[1], std::string("Removed \"Beta\""));
 }

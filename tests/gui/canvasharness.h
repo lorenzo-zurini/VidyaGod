@@ -7,6 +7,7 @@
 
 #include "pkgcanvas.h"
 #include "pkgdoc.h"
+#include "imguiprobe.h"
 
 #include "imgui.h"
 #include "imgui_internal.h"
@@ -30,7 +31,13 @@ struct CanvasHarness
     }
     static void DestroyContext() { ImGui::DestroyContext(); }
 
-    void open() { Canvas = new PkgCanvas(&Doc); }
+    //A fresh canvas; ImGui's context outlives it, so a popup a test left open is closed (it would take the next click).
+    void open()
+    {
+        ImGuiContext &G = *ImGui::GetCurrentContext();
+        G.OpenPopupStack.resize(0);
+        Canvas = new PkgCanvas(&Doc);
+    }
     void close() { delete Canvas; Canvas = nullptr; }
 
     //What a renderer backend does with the atlas each frame: create/update requests acknowledged, destroys done.
@@ -52,12 +59,15 @@ struct CanvasHarness
         Io.DisplaySize = Display;
         Io.DeltaTime = 1.0f / 60.0f;
         Io.AddMousePosEvent(Mouse.x, Mouse.y);
+        ImGuiProbe::BeginFrame(ImGui::GetCurrentContext());
         ImGui::NewFrame();
         Canvas->frame();
         ImGui::Render();
         AckTextures();
     }
     void frames(int N) { for (int I = 0; I < N; ++I) frame(); }
+    //Until nothing moves (a pan or a fold settling): a click aims at where a control IS, not where it was.
+    void settle() { frames(2); for (int I = 0; I < 300 && Canvas->wantsFrames(); ++I) frame(); frame(); }
 
     void press(int B = 0) { ImGui::GetIO().AddMouseButtonEvent(B, true); frame(); }
     void release(int B = 0) { ImGui::GetIO().AddMouseButtonEvent(B, false); frame(); }
@@ -86,6 +96,16 @@ struct CanvasHarness
     }
     void type(const std::string &S) { for (char C : S) { ImGui::GetIO().AddInputCharacter((unsigned)(unsigned char)C); frame(); } }
 
+    //Where the control saying Shown was drawn last frame (see ImGuiProbe::FindItem); nothing found: (-1, -1).
+    //Window: only in a window whose name holds it (a node's handle: that node's own "+ layer").
+    static ImVec2 item(const char *Shown, int Nth = 0, const std::string &Window = {})
+    {
+        float X0, Y0, X1, Y1;
+        return ImGuiProbe::FindItem(Shown, X0, Y0, X1, Y1, Nth, Window.empty() ? nullptr : Window.c_str())
+             ? ImVec2((X0 + X1) * 0.5f, (Y0 + Y1) * 0.5f) : ImVec2(-1, -1);
+    }
+    static bool shows(const char *Shown, int Nth = 0) { return item(Shown, Nth).x >= 0; }
+
     //Screen geometry of what the canvas drew last frame.
     ImVec4 rect(const std::string &H) const
     {
@@ -94,6 +114,7 @@ struct CanvasHarness
     }
     ImVec2 title(const std::string &H) const { const ImVec4 R = rect(H); return ImVec2((R.x + R.z) * 0.5f, R.y + 12.0f); }
     ImVec2 port(const std::string &H, bool Out) const { float X = 0, Y = 0; Canvas->portPos(H, Out, X, Y); return ImVec2(X, Y); }
+    ImVec2 row(const std::string &H, int Layer) const { float X = 0, Y = 0; Canvas->rowPos(H, Layer, X, Y); return ImVec2(X, Y); }
     ImVec4 canvasRect() const { float X0 = 0, Y0 = 0, X1 = 0, Y1 = 0; Canvas->canvasRect(X0, Y0, X1, Y1); return ImVec4(X0, Y0, X1, Y1); }
     //An empty point of the canvas background (far from any node): the top-left corner of the canvas region.
     ImVec2 empty() const { const ImVec4 C = canvasRect(); return ImVec2(C.x + 12.0f, C.w - 12.0f); }

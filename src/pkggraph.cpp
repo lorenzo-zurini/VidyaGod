@@ -183,12 +183,16 @@ Graph Build(const std::vector<NodeRef> &Nodes)
 
 // ---- layer vocabulary -----------------------------------------------------
 
-const std::vector<std::string> &AllTypes()
+const std::vector<TypeGroup> &TypeGroups()
 {
-    static const std::vector<std::string> T = {
-        "ZIP", "DIR", "FILE", "DELTA", "NODE", "ANY", "NOT", "EDIT", "REG", "DLL", "ENV", "VARS", "KEEP", "EXEC"
+    static const std::vector<TypeGroup> G = {
+        {"Content", {"ZIP", "DIR", "FILE", "DELTA"}},
+        {"Transforms", {"EDIT", "REG", "DLL", "ENV"}},
+        {"Facts", {"VARS", "KEEP"}},
+        {"Entries", {"EXEC"}},
+        {"Composition", {"NODE", "ANY", "NOT"}},
     };
-    return T;
+    return G;
 }
 
 std::string LayerType(const json &Layer) { return Fold::TypeOf(Layer); }
@@ -287,6 +291,26 @@ const char *TypeHelp(const std::string &Type)
     return "";
 }
 
+const char *TypeGist(const std::string &Type)
+{
+    if (Type == "ZIP")   return "the game's files, from a zip";
+    if (Type == "DIR")   return "a folder of files";
+    if (Type == "FILE")  return "one file";
+    if (Type == "DELTA") return "a patch onto the files beneath";
+    if (Type == "NODE")  return "contain another node";
+    if (Type == "ANY")   return "needs one of these nodes";
+    if (Type == "NOT")   return "never together with a node";
+    if (Type == "EDIT")  return "change a file: a setting, bytes...";
+    if (Type == "REG")   return "registry settings";
+    if (Type == "DLL")   return "native or built-in DLLs";
+    if (Type == "ENV")   return "environment variables";
+    if (Type == "VARS")  return "options the player picks";
+    if (Type == "KEEP")  return "saves and settings to keep";
+    if (Type == "EXEC")  return "what to run, and its tile";
+    if (Type.empty())    return "nothing yet";
+    return "";
+}
+
 void TypeColour(const std::string &Kind, int &R, int &G, int &B)
 {
     // Content = blue, transforms = amber, facts = purple, entries = green, composition = grey.
@@ -349,6 +373,46 @@ bool MoveLayer(json &Node, int I, int Delta)
     return true;
 }
 
+bool MoveLayerTo(json &Node, int From, int At)
+{
+    if (!Node.is_object() || !Node.contains("LAYERS") || !Node["LAYERS"].is_array()) return false;
+    json &Ls = Node["LAYERS"];
+    const int N = (int)Ls.size();
+    if (From < 0 || From >= N) return false;
+    At = std::clamp(At, 0, N);
+    if (At == From || At == From + 1) return false;      // already there
+    json L = Ls[(size_t)From];
+    Ls.erase((size_t)From);
+    if (At > From) --At;                                 // the removal shifted what came after it
+    Ls.insert(Ls.begin() + At, std::move(L));
+    return true;
+}
+
+bool LayerNames(const json &L, const std::string &Ref)
+{
+    if (!L.is_object()) return false;
+    auto Is = [&](const char *K) { return L.contains(K) && L[K].is_string() && L[K].get<std::string>() == Ref; };
+    if (Is("NODE") || Is("NOT")) return true;
+    if (L.contains("ANY") && L["ANY"].is_array())
+        for (const json &M : L["ANY"]) if (M.is_string() && M.get<std::string>() == Ref) return true;
+    return false;
+}
+
+bool MoveLayerAcross(json &Src, int From, json &Dst, const std::string &DstHandle, int At, bool Copy)
+{
+    if (!Src.is_object() || !Dst.is_object() || !Src.contains("LAYERS") || !Src["LAYERS"].is_array()) return false;
+    json &Ls = Src["LAYERS"];
+    if (From < 0 || From >= (int)Ls.size()) return false;
+    if (!DstHandle.empty() && LayerNames(Ls[(size_t)From], DstHandle)) return false;
+    if (!Dst.contains("LAYERS") || Dst["LAYERS"].is_null()) Dst["LAYERS"] = json::array();
+    if (!Dst["LAYERS"].is_array()) return false;
+    json &Ld = Dst["LAYERS"];
+    At = std::clamp(At, 0, (int)Ld.size());
+    Ld.insert(Ld.begin() + At, Ls[(size_t)From]);
+    if (!Copy) Ls.erase((size_t)From);
+    return true;
+}
+
 bool EraseRef(json &Node, int Slot)
 {
     if (!Node.is_object() || !Node.contains("LAYERS") || !Node["LAYERS"].is_array() || Slot < 0) return false;
@@ -387,6 +451,20 @@ bool AddNodeRef(json &Node, const std::string &Ref)
     }
     while (At < Ls.size() && LayerType(Ls[At]) == "NODE") ++At;
     Ls.insert(Ls.begin() + (long)At, json::object({{"NODE", Ref}}));
+    return true;
+}
+
+bool InsertRef(json &Node, const std::string &Type, const std::string &Ref, int At)
+{
+    if (At < 0 && Type == "NODE") return AddNodeRef(Node, Ref);
+    if (!Node.is_object() || Ref.empty() || (Type != "NODE" && Type != "NOT")) return false;
+    if (!Node.contains("LAYERS") || Node["LAYERS"].is_null()) Node["LAYERS"] = json::array();
+    if (!Node["LAYERS"].is_array()) return false;
+    json &Ls = Node["LAYERS"];
+    for (const auto &L : Ls)
+        if (LayerType(L) == Type && L[Type].is_string() && L[Type].get<std::string>() == Ref) return false;
+    At = At < 0 ? (int)Ls.size() : std::min(At, (int)Ls.size());
+    Ls.insert(Ls.begin() + At, json::object({{Type, Ref}}));
     return true;
 }
 
@@ -466,13 +544,23 @@ bool TakeFault(const json *Take)
 
 // ---- payload schema -------------------------------------------------------
 
+bool FieldApplies(const Field &F, const json &Entry)
+{
+    if (!F.OnlyModes || !*F.OnlyModes || (Entry.is_object() && Entry.contains(F.Key))) return true;
+    const std::string Mode = Entry.is_object() && Entry.contains("MODE") && Entry["MODE"].is_string() ? Entry["MODE"].get<std::string>() : std::string();
+    std::istringstream Ss(F.OnlyModes);
+    for (std::string M; Ss >> M;) if (M == Mode) return true;
+    return false;
+}
+
 namespace {
 
 const std::vector<std::pair<const char *, const char *>> DllOpts    = {{"n,b","native, then builtin"},{"b,n","builtin, then native"},
-                                                                       {"n","native only"},{"b","builtin only"},{"d","disabled"}};
+                                                                       {"n","native only"},{"b","builtin only"},{"","disabled"}};
 const std::vector<std::pair<const char *, const char *>> ModeOpts   = {{"ConfigWrite","key = value"},{"Overwrite","whole file"},
                                                                        {"AppendLine","append a line"},{"JsonSet","JSON: set a key"},
-                                                                       {"Replace","bytes: replace"},
+                                                                       {"Delete","remove the file or folder"},
+                                                                       {"Replace","bytes: replace"},{"ReplaceAll","bytes: replace every match"},
                                                                        {"Poke","bytes: poke"},{"Or","bytes: set bits"},{"Cave","bytes: cave"}};
 
 //Every layer ends with its gate and its note.
@@ -516,18 +604,19 @@ std::vector<Field> MakeFields(const std::string &Type)
         //(replace, poke, cave). An earlier table offered Cave and Poke without their PAYLOAD/VALUE, so picking
         //either produced a node validation then rejected with no way to fix it from the editor.
         return WithGate({
-            {"TARGET", "File", FieldKind::Text, "FILES/%GameDir%/... - the file edited", {}, {}},
+            {"TARGET", "File", FieldKind::Text, "FILES/%GameDir%/... - the file edited (Delete: the file or folder removed)", {}, {}},
             {"EDIT",   "Ops",  FieldKind::ObjArray, "", {}, {
                 {"MODE",    "Mode",    FieldKind::Enum, "", ModeOpts, {}},
-                {"SECTION", "Section", FieldKind::Text, "ConfigWrite: [section] (optional)", {}, {}},
-                {"KEY",     "Key",     FieldKind::Text, "ConfigWrite: the key / JsonSet: /json/pointer", {}, {}},
-                {"VALUE",   "Value",   FieldKind::Text, "text value / JsonSet: JSON (else a string) / Poke: the scalar / Or: the bits", {}, {}},
-                {"OFFSET",  "Offset",  FieldKind::Text, "bytes: 0x... (VA or file offset)", {}, {}},
-                {"ANCHOR",  "Anchor",  FieldKind::Text, "bytes: hex signature, ?? = wildcard (instead of Offset)", {}, {}},
-                {"EXPECT",  "Expect",  FieldKind::Text, "bytes: pristine bytes (the guard)", {}, {}},
-                {"REPLACE", "Replace", FieldKind::Text, "Replace: new bytes", {}, {}},
-                {"PAYLOAD", "Payload", FieldKind::Text, "Cave: the cave body (hex)", {}, {}},
-                {"CAVE",    "Cave at", FieldKind::Text, "Cave: 'auto' or a fixed VA", {}, {}},
+                {"SECTION", "Section", FieldKind::Text, "(not read by any mode)", {}, {}, false, "-"},
+                {"KEY",     "Key",     FieldKind::Text, "ConfigWrite: the line's start (Resolution=) / JsonSet: /json/pointer", {}, {}, false, "ConfigWrite JsonSet"},
+                {"VALUE",   "Value",   FieldKind::Text, "text value / JsonSet: JSON (else a string) / Poke: the scalar / Or: the bits", {}, {}, false,
+                 "ConfigWrite Overwrite AppendLine JsonSet Poke Or"},
+                {"OFFSET",  "Offset",  FieldKind::Text, "0x... (VA or file offset) - or give Anchor", {}, {}, false, "Replace Poke Or Cave"},
+                {"ANCHOR",  "Anchor",  FieldKind::Text, "hex signature, ?? = wildcard - instead of Offset", {}, {}, false, "Replace Poke Or Cave"},
+                {"EXPECT",  "Expect",  FieldKind::Text, "the original bytes (the guard; for ReplaceAll, the bytes to find)", {}, {}, false, "Replace ReplaceAll Poke Cave"},
+                {"REPLACE", "Replace", FieldKind::Text, "the new bytes", {}, {}, false, "Replace ReplaceAll"},
+                {"PAYLOAD", "Payload", FieldKind::Text, "the cave's code (hex)", {}, {}, false, "Cave"},
+                {"CAVE",    "Cave at", FieldKind::Text, "'auto' or a fixed VA", {}, {}, false, "Cave"},
                 {"COMMENT", "Comment", FieldKind::Text, "what this op does", {}, {}},
                 {"WHEN",    "When",    FieldKind::Text, "condition - the op is inert when false", {}, {}},
             }},
@@ -867,6 +956,7 @@ std::string EntrySummary(const json &E)
     if (Mode == "JsonSet") return StrField(E, "KEY") + " = " + StrField(E, "VALUE");
     auto Short = [](const std::string &H) { return H.size() > 12 ? H.substr(0, 10) + ".." : H; };
     if (Mode == "Replace") return Site + " " + Short(StrField(E, "EXPECT")) + " -> " + Short(StrField(E, "REPLACE"));
+    if (Mode == "ReplaceAll") return "every " + Short(StrField(E, "EXPECT")) + " -> " + Short(StrField(E, "REPLACE"));
     if (Mode == "Or" || Mode == "Poke") return Site + " " + Mode + " " + Short(StrField(E, "VALUE"));
     if (Mode == "Cave") return Site + " Cave " + std::to_string(StrField(E, "PAYLOAD").size() / 2) + " bytes";
     return Mode;
@@ -889,6 +979,336 @@ std::string VarTitle(const std::string &Key, const json &Decl)
 
 // ---- node actions ---------------------------------------------------------
 
+std::string PlatformWords(const std::string &T)
+{
+    static const std::map<std::string, std::string> W = {
+        {"win32", "Windows 32-bit"}, {"win64", "Windows 64-bit"}, {"linux64", "Linux"}, {"linux32", "Linux 32-bit"}, {"dos", "DOS"},
+        {"snes", "Super Nintendo"}, {"nes", "NES"}, {"n64", "Nintendo 64"}, {"gc", "GameCube"}, {"wii", "Wii"}, {"ps1", "PlayStation"},
+        {"ps2", "PlayStation 2"}, {"psp", "PSP"}, {"gba", "Game Boy Advance"}, {"gb", "Game Boy"}, {"genesis", "Mega Drive"},
+        {"custom", "its own runner"}};
+    const auto It = W.find(T);
+    return It == W.end() ? T : It->second;
+}
+
+std::string Describe(const json &Node, const LabelFn &Label)
+{
+    if (!Node.is_object()) return {};
+    auto Name = [&](const std::string &R) { const std::string L = Label ? Label(R) : std::string(); return "\"" + (L.empty() ? R.substr(0, 12) : L) + "\""; };
+    auto Base = [](const std::string &P) { return P.substr(P.find_last_of('/') + 1); };
+    auto List = [](const std::vector<std::string> &V) {
+        std::string Out;
+        for (size_t I = 0; I < V.size(); ++I) Out += (I ? (I + 1 == V.size() ? " and " : ", ") : "") + V[I];
+        return Out;
+    };
+    std::vector<std::string> Parts, Files, Contains, Rides, Never, Keeps;
+    int Edits = 0, Regs = 0, Dlls = 0, Envs = 0, Vars = 0;
+    if (Node.contains("LAYERS") && Node["LAYERS"].is_array())
+        for (const json &L : Node["LAYERS"])
+        {
+            const std::string T = LayerType(L);
+            if (T == "ZIP" || T == "DIR" || T == "FILE" || T == "DELTA") { const std::string F = StrField(L, T.c_str()); if (!F.empty()) Files.push_back(F); }
+            else if (T == "NODE") Contains.push_back(Name(StrField(L, "NODE")));
+            else if (T == "NOT") Never.push_back(Name(StrField(L, "NOT")));
+            else if (T == "ANY" && L["ANY"].is_array()) for (const json &M : L["ANY"]) { if (M.is_string()) Rides.push_back(Name(M.get<std::string>())); }
+            else if (T == "EDIT") Edits += L["EDIT"].is_array() ? (int)L["EDIT"].size() : 1;
+            else if (T == "REG") ++Regs;
+            else if (T == "DLL") ++Dlls;
+            else if (T == "ENV") ++Envs;
+            else if (T == "VARS") Vars += L["VARS"].is_object() ? (int)L["VARS"].size() : 1;
+            else if (T == "KEEP")
+            {
+                std::string K = StrField(L, "KEEP");
+                for (const char *A : {"%Documents%", "%AppData%", "%LocalAppData%", "%UserProfile%", "%GameDir%"})
+                    if (K.rfind(A, 0) == 0) { K = PlatformWords(std::string(A).substr(1, std::strlen(A) - 2)) + K.substr(std::strlen(A)); break; }
+                if (!K.empty()) Keeps.push_back(K.rfind("GameDir", 0) == 0 ? "the game folder" + K.substr(7) : K);
+            }
+            else if (T == "EXEC" && L["EXEC"].is_array())
+                for (const json &E : L["EXEC"])
+                {
+                    if (!E.is_object()) continue;
+                    const std::string Exe = StrField(E, "EXE"), Host = StrField(E, "HOST");
+                    if (E.contains("GUEST") && E["GUEST"].is_array())
+                    {
+                        std::vector<std::string> G;
+                        for (const json &X : E["GUEST"]) if (X.is_string()) G.push_back(PlatformWords(X.get<std::string>()));
+                        Parts.push_back("plays " + List(G) + " games" + (Host.empty() ? std::string() : " on " + PlatformWords(Host)));
+                    }
+                    else if (!Exe.empty() && Exe.back() != '/')
+                        Parts.push_back("runs " + Base(Exe) + (Host.empty() ? std::string() : " on " + PlatformWords(Host)));
+                    else if (!Host.empty()) Parts.push_back("runs on " + PlatformWords(Host) + " (no program yet)");
+                    if (E.contains("TILE") && E["TILE"].is_object() && !StrField(E["TILE"], "TITLE").empty())
+                        Parts.push_back("shown as \"" + StrField(E["TILE"], "TITLE") + "\"");
+                }
+        }
+    if (Files.size() == 1) Parts.push_back("files from " + Files[0]);
+    else if (Files.size() > 1) Parts.push_back("files from " + std::to_string(Files.size()) + " sources");
+    if (!Contains.empty()) Parts.push_back("contains " + List(Contains));
+    if (!Rides.empty()) Parts.push_back("rides on " + List(Rides));
+    if (!Never.empty()) Parts.push_back("never with " + List(Never));
+    if (Edits) Parts.push_back("changes " + std::to_string(Edits) + (Edits == 1 ? " setting" : " settings"));
+    if (Regs) Parts.push_back("sets registry values");
+    if (Dlls) Parts.push_back("picks DLLs");
+    if (Envs) Parts.push_back("sets environment variables");
+    if (Vars) Parts.push_back("lets the player choose " + std::to_string(Vars) + (Vars == 1 ? " option" : " options"));
+    if (!Keeps.empty()) Parts.push_back("keeps " + List(Keeps) + " across plays");
+    std::string Out;
+    if (const std::string V = StrField(Node, "VARIANT"); !V.empty()) Out = "Version \"" + V + "\": ";
+    for (size_t I = 0; I < Parts.size(); ++I) Out += (I ? "; " : "") + Parts[I];
+    if (Parts.empty()) Out += "nothing yet";
+    if (!Out.empty() && Out[0] >= 'a' && Out[0] <= 'z') Out[0] = (char)(Out[0] - 32);
+    return Out;
+}
+
+std::vector<FoldStep> FoldOrder(const std::string &Root, const std::function<const json *(const std::string &)> &Find, const LabelFn &Label)
+{
+    std::vector<FoldStep> Out;
+    std::set<std::string> OnPath;
+    std::function<void(const std::string &, int)> Walk = [&](const std::string &H, int Depth) {
+        const json *N = Find ? Find(H) : nullptr;
+        const std::string NL = Label ? Label(H) : std::string();
+        if (!N || !N->is_object() || !N->contains("LAYERS") || !(*N)["LAYERS"].is_array()) return;
+        if (!OnPath.insert(H).second) return;           // a cycle: walked once
+        for (int I = 0; I < (int)(*N)["LAYERS"].size(); ++I)
+        {
+            const json &L = (*N)["LAYERS"][(size_t)I];
+            const std::string T = LayerType(L);
+            if (T == "NODE")
+            {
+                const std::string R = StrField(L, "NODE");
+                if (Find && Find(R)) { Walk(R, Depth + 1); continue; }
+                Out.push_back({Depth, H, NL, I, T, Label && !Label(R).empty() ? Label(R) : R, true});
+                continue;
+            }
+            std::string Title = StrField(L, "LABEL");
+            if (Title.empty() && (T == "ZIP" || T == "DIR" || T == "FILE" || T == "DELTA")) Title = StrField(L, T.c_str());
+            if (Title.empty() && T == "EXEC" && L["EXEC"].is_array())
+                for (const json &E : L["EXEC"]) if (const std::string El = StrField(E, "LABEL"); !El.empty()) Title += (Title.empty() ? "" : ", ") + El;
+            if (Title.empty()) Title = TypeGist(T);
+            Out.push_back({Depth, H, NL, I, T, Title, false});
+        }
+        OnPath.erase(H);
+    };
+    Walk(Root, 0);
+    return Out;
+}
+
+ShelfCard CardFor(const std::string &Root, const std::vector<std::string> &PackageNodes, const std::function<const json *(const std::string &)> &Find)
+{
+    ShelfCard C;
+    //The tile the root's fold presents: the first entry carrying one, its own layers before what it contains.
+    std::set<std::string> Seen;
+    std::function<bool(const std::string &)> FindTile = [&](const std::string &H) {
+        const json *N = Find ? Find(H) : nullptr;
+        if (!N || !Seen.insert(H).second || !N->is_object() || !N->contains("LAYERS") || !(*N)["LAYERS"].is_array()) return false;
+        for (const json &L : (*N)["LAYERS"])
+            if (L.is_object() && L.contains("EXEC") && L["EXEC"].is_array())
+                for (const json &E : L["EXEC"])
+                    if (E.is_object() && E.contains("TILE") && E["TILE"].is_object())
+                    {
+                        const json &T = E["TILE"];
+                        C.Title = StrField(T, "TITLE"); C.Uid = StrField(T, "UID");
+                        if (T.contains("COVER")) C.Cover = T["COVER"].is_string() ? T["COVER"].get<std::string>() : StrField(T["COVER"], "FILE");
+                        return true;
+                    }
+        for (const json &L : (*N)["LAYERS"])
+            if (LayerType(L) == "NODE" && FindTile(StrField(L, "NODE"))) return true;
+        return false;
+    };
+    FindTile(Root);
+    std::set<std::string> Recommended;
+    for (const std::string &H : PackageNodes)
+        if (const json *N = Find ? Find(H) : nullptr; N && N->is_object() && N->contains("RECOMMENDED") && (*N)["RECOMMENDED"].is_array())
+            for (const json &U : (*N)["RECOMMENDED"]) if (U == json(C.Uid)) Recommended.insert(H);
+    for (const std::string &H : PackageNodes)
+        if (const json *N = Find ? Find(H) : nullptr; N && !StrField(*N, "VARIANT").empty())
+            C.Versions.push_back({StrField(*N, "VARIANT"), Recommended.count(H) > 0});
+    return C;
+}
+
+json RecipeNode(Recipe R, const std::string &Title, const std::string &Uid, const std::string &Platform)
+{
+    //A library is files games graft (a runtime's DLLs, fonts): waiting for them, with no tile and no place of its
+    //own - the game that grafts it says where they land (TARGET on its NODE layer).
+    if (R == Recipe::Library)
+        return json{{"LABEL", Title}, {"LAYERS", json::array({ json{{"ZIP", ""}} })}};
+    json Play = {{"LABEL", "Play"}};
+    if (R == Recipe::Dos) Play["HOST"] = "dos";
+    else if (R == Recipe::Console && !Platform.empty()) Play["HOST"] = Platform;
+    Play["TILE"] = {{"UID", Uid}, {"TITLE", Title}};
+    return json{{"LABEL", Title}, {"VARIANT", "Original"},
+                {"LAYERS", json::array({ NewLayer("ZIP"),
+                                         json{{"COMMENT", "The game's tile (title, cover, details) on its Play entry: every version of it presents this."},
+                                              {"EXEC", json::array({Play})}} })}};
+}
+
+json VersionNode(const std::string &Base, const std::string &BaseLabel)
+{
+    return json{{"LABEL", BaseLabel.empty() ? std::string("Another version") : BaseLabel + " - another version"}, {"VARIANT", "New version"},
+                {"LAYERS", json::array({ json{{"NODE", Base}}, NewLayer("ZIP"),
+                                         json{{"COMMENT", "Its own program: the Play entry it contains, changed where this version differs."},
+                                              {"EXEC", json::array({ json{{"LABEL", "Play"}} })}} })}};
+}
+
+bool ChangeUid(json &N, const std::string &Old, const std::string &New)
+{
+    if (!N.is_object() || Old.empty() || Old == New) return false;
+    bool Changed = false;
+    if (N.contains("RECOMMENDED") && N["RECOMMENDED"].is_array())
+        for (json &R : N["RECOMMENDED"]) if (R == Old) { R = New; Changed = true; }
+    if (!N.contains("LAYERS") || !N["LAYERS"].is_array()) return Changed;
+    for (json &L : N["LAYERS"])
+    {
+        if (!L.is_object() || !L.contains("EXEC") || !L["EXEC"].is_array()) continue;
+        for (json &E : L["EXEC"])
+        {
+            if (!E.is_object() || !E.contains("TILE") || !E["TILE"].is_object()) continue;
+            for (const char *K : {"UID", "PARENTUID"})
+                if (E["TILE"].contains(K) && E["TILE"][K] == Old) { E["TILE"][K] = New; Changed = true; }
+        }
+    }
+    return Changed;
+}
+
+json ModNode(const std::string &Base, const std::string &BaseLabel)
+{
+    return json{{"LABEL", BaseLabel.empty() ? std::string("A mod") : "A mod for " + BaseLabel},
+                {"LAYERS", json::array({ json{{"ANY", json::array({Base})}}, NewLayer("ZIP") })}};
+}
+
+//The row key of N's game entry still to finish: the first with no HOST or, when Folder, the first whose Exe is a
+//folder. "" when it has none.
+static std::string UnfinishedEntry(const json &N, bool Folder)
+{
+    if (!N.is_object() || !N.contains("LAYERS") || !N["LAYERS"].is_array()) return {};
+    for (size_t L = 0; L < N["LAYERS"].size(); ++L)
+    {
+        const json &Ly = N["LAYERS"][L];
+        if (!Ly.is_object() || !Ly.contains("EXEC") || !Ly["EXEC"].is_array()) continue;
+        for (size_t I = 0; I < Ly["EXEC"].size(); ++I)
+        {
+            const json &E = Ly["EXEC"][I];
+            if (!E.is_object() || E.contains("GUEST")) continue;
+            const std::string X = StrField(E, "EXE");
+            if (Folder ? (!X.empty() && (X.back() == '/' || X.back() == '\\')) : StrField(E, "HOST").empty())
+                return "L" + std::to_string(L) + "/EXEC/" + std::to_string(I);
+        }
+    }
+    return {};
+}
+
+Fix FixFor(const std::string &M, const json *Node)
+{
+    Fix F;
+    if (M.find("needs a file name") != std::string::npos)
+    { F.Waiting = true; F.Note = "waiting for its files"; F.Label = "bring in files..."; F.Action = "bring_in"; }
+    else if (M.find("has no effective entry to run") != std::string::npos)
+    {
+        //An entry with no Host is one the author started: finish it, rather than a new layer folding over it.
+        const std::string K = Node ? UnfinishedEntry(*Node, false) : std::string();
+        if (K.empty()) { F.Label = "+ EXEC layer"; F.Action = "add_layer:EXEC"; }
+        else { F.Label = "choose its Host"; F.Action = "open_entry:" + K; }
+    }
+    else if (M.find("must be a non-empty list of entries") != std::string::npos && M.rfind("layer ", 0) == 0)
+    {
+        //Its last entry removed, a layer that ran something runs nothing: offered gone (its number from the message).
+        F.Label = "remove the empty layer"; F.Action = "remove_layer:" + M.substr(6, M.find_first_not_of("0123456789", 6) - 6);
+    }
+    else if (M.find("is used by no node") != std::string::npos)
+    { F.Label = "delete unused files"; F.Action = "delete_unused"; }
+    else if (M.find("case conflict across layers") != std::string::npos)
+    { F.Label = "fix case"; F.Action = "fix_case"; }
+    else if (const size_t D = M.find("DIR '"); D != std::string::npos && M.find("is an unzipped authoring layer") != std::string::npos)
+    {
+        //Any of the node's folders, not only its first content layer (a patch captured over the game's zip is a second).
+        //The panel says it after the node's name, the node itself without.
+        const size_t B = D + 5, E = M.find("' is an unzipped", B);
+        if (E != std::string::npos) { F.Label = "-> zip"; F.Action = "to_zip:" + M.substr(B, E - B); }
+    }
+    else if (const size_t K = M.find("KEEP '"); K != std::string::npos && M.find("which takes the name first - it would not be kept") != std::string::npos)
+    {
+        //The address the message names first is the one the launch would drop.
+        const size_t B = K + 6, E = M.find('\'', B);
+        if (E != std::string::npos) { F.Label = "name it apart"; F.Action = "keep_name:FILES/" + M.substr(B, E - B); }
+    }
+    else if (M.find("runs a folder") != std::string::npos)
+    {
+        const std::string K = Node ? UnfinishedEntry(*Node, true) : std::string();
+        if (!K.empty()) { F.Label = "pick its program"; F.Action = "open_entry:" + K; }
+    }
+    return F;
+}
+
+bool NameKeepApart(json &Node, const std::string &Address)
+{
+    if (!Node.is_object() || !Node.contains("LAYERS") || !Node["LAYERS"].is_array()) return false;
+    //Its segments under the place (%GameDir%/...): the first and the last name it ("Expansion Saved Games"); one
+    //directly under the place takes the place's name instead.
+    std::vector<std::string> Seg;
+    std::istringstream Ss(Address);
+    for (std::string P; std::getline(Ss, P, '/');) if (!P.empty()) Seg.push_back(P);
+    if (Seg.size() < 3) return false;                     // FILES/<place>/<leaf> at least
+    std::string Top = Seg.size() > 3 ? Seg[2] : Seg[1];
+    Top.erase(std::remove(Top.begin(), Top.end(), '%'), Top.end());
+    const std::string Name = Top + " " + Seg.back();
+    for (json &L : Node["LAYERS"])
+        if (L.is_object() && L.contains("KEEP") && L["KEEP"].is_object() && L["KEEP"].contains(Address))
+        {
+            json &V = L["KEEP"][Address];
+            if (V.is_object()) V["NAME"] = Name; else V = json{{"NAME", Name}};
+            return true;
+        }
+    //Kept by a node it contains (a base game's Save/): a KEEP of its own over it, which folds by address.
+    Node["LAYERS"].push_back(json{{"COMMENT", "Stored apart from another kept folder of the same name."},
+                                  {"KEEP", {{Address, {{"NAME", Name}}}}}});
+    return true;
+}
+
+std::string NextStep(const std::vector<const json *> &Nodes)
+{
+    bool Files = false, Game = false, Runs = false, Tile = false, Variant = false, Waiting = false;
+    //Every tile needs a cover somewhere among the nodes (a variant often carries only the UID of a tile at the base).
+    std::map<std::string, std::string> Uncovered;          // UID -> its title
+    std::set<std::string> Covered;
+    for (const json *N : Nodes)
+    {
+        if (!N || !N->is_object() || !N->contains("LAYERS") || !(*N)["LAYERS"].is_array()) continue;
+        if (!StrField(*N, "VARIANT").empty()) Variant = true;
+        for (const json &L : (*N)["LAYERS"])
+        {
+            if (!L.is_object()) continue;
+            for (const char *T : {"ZIP", "DIR", "FILE", "DELTA", "NODE"})   // its own files, or another node's
+                if (L.contains(T) && L[T].is_string()) (L[T].get<std::string>().empty() ? Waiting : Files) = true;
+            if (!L.contains("EXEC") || !L["EXEC"].is_array()) continue;
+            for (const json &E : L["EXEC"])
+            {
+                if (!E.is_object()) continue;
+                if (E.contains("GUEST")) return {};       // a runner's package: none of this applies
+                Game = true;
+                const std::string Exe = StrField(E, "EXE");
+                if (!StrField(E, "HOST").empty() && !Exe.empty() && Exe.back() != '/') Runs = true;
+                if (!E.contains("TILE") || !E["TILE"].is_object()) continue;
+                Tile = true;
+                const json &T = E["TILE"];
+                const std::string Uid = StrField(T, "UID");
+                if (T.contains("COVER") && ((T["COVER"].is_string() && !T["COVER"].get<std::string>().empty())
+                                            || (T["COVER"].is_object() && !T["COVER"].empty()))) Covered.insert(Uid);
+                else if (std::string &Title = Uncovered[Uid]; Title.empty()) Title = StrField(T, "TITLE");
+            }
+        }
+    }
+    if (!Files) return Waiting ? "add the game's files: \"bring in files...\" on the node - or drop the game's folder onto it"
+                               : "add the game's files: + layer > ZIP, then actions... > bring in files...";
+    if (!Game) return {};
+    if (!Runs) return "say what runs: in the Play entry, choose its Host and pick its Exe";
+    if (!Tile) return "put it on the shelf: + Tile on the Play entry";
+    if (!Variant) return "name this version for the shelf: Properties > Variant (e.g. Original)";
+    for (const auto &[Uid, Title] : Uncovered)
+        if (!Covered.count(Uid))
+            return Covered.empty() ? "give its card a cover: actions... > cover... on the tile's node"
+                                   : "give " + (Title.empty() ? "tile " + Uid : "\"" + Title + "\"") + " a cover too: actions... > cover... on its node";
+    return {};
+}
+
 std::vector<Action> ActionsFor(const json &Node, bool HasDeltaBase, const std::vector<std::string> &Hints)
 {
     std::vector<Action> A;
@@ -903,9 +1323,13 @@ std::vector<Action> ActionsFor(const json &Node, bool HasDeltaBase, const std::v
         if (T == "ZIP" || T == "DIR" || T == "FILE" || T == "DELTA")
         { Form = T; for (char &C : Form) C = (char)std::tolower((unsigned char)C); break; }
 
+    //Files come in on any node: its first ones, a fix or add-on over the ones it has (it asks), a mod's own.
+    A.push_back({"bring_in", "bring in files...", "Pick files anywhere on this computer: a folder is packed into an "
+                 "uncompressed zip in this package (the folder is left as it is), a zip is copied in. On a node that "
+                 "already has files, they go on top as a new layer or replace them - it asks.", true});
     if (!Form.empty())
     {
-        A.push_back({"browse", "browse...", "Pick the file or folder this layer supplies.", false});
+        A.push_back({"browse", "browse...", "Pick the file or folder this layer supplies, from this package's folder.", false});
         if (Form == "dir")
             A.push_back({"to_zip", "-> zip", "Pack this directory as an uncompressed (STORE) zip and delete the folder.", true});
         if (Form == "zip")

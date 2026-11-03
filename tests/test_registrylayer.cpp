@@ -4,6 +4,9 @@
 
 #include <filesystem>
 #include <fstream>
+#ifndef _WIN32
+#include <sys/stat.h>   // mkfifo
+#endif
 
 // RegistryLayer's registry persistence: KEPT KEYS are captured at teardown into the instance's REGKEYS store and merged
 // back into the composed hives (DEFAULTDATA) on the next launch. Real temp dirs + real hive files, like the fileedits
@@ -130,4 +133,80 @@ TEST(reglayer_registry_persist_graceful_when_empty)
     CHECK(!fs::exists(CP.UserDataPath / "REGKEYS"));
     CHECK(RegistryLayer::BuildDefaultData(CP));            // no store, no edits → nothing to materialise
     fs::remove_all(d);
+}
+
+// The registry store sits in the instance folder, which an older build let the sandboxed game write: a hive file
+// there that is a link (user.reg -> ~/.profile) must not have the session's registry written through it, and a store
+// folder that is a link must not either. Capture replaces the links; the files they named are untouched. Teeth: drop
+// the PrepareWriteDir calls (SavePrefix opens user.reg through the link).
+TEST(reglayer_capture_never_writes_through_a_link_in_the_store)
+{
+    auto d = RlTmp("keylink");
+    ContainerParams CP = KeyParams(d, "");
+    WriteHives(CP.RuntimePath, nlohmann::ordered_json::array({ RegEdit("HKCU\\Software\\Game", {{"Save","7"}}) }));
+    fs::create_directories(d / "victim");
+    { std::ofstream(d / "victim/.profile") << "the user's own\n"; }
+    fs::create_directories(CP.UserDataPath / "REGKEYS");
+    fs::create_symlink(d / "victim/.profile", CP.UserDataPath / "REGKEYS" / "user.reg");
+    CHECK(RegistryLayer::CapturePersistRegKeys(CP));
+    CHECK_EQ(ReadFileAt(d / "victim/.profile"), std::string("the user's own\n"));
+    CHECK(fs::symlink_status(CP.UserDataPath / "REGKEYS" / "user.reg").type() == fs::file_type::regular);
+    CHECK(ReadFileAt(CP.UserDataPath / "REGKEYS" / "user.reg").find("\"Save\"=\"7\"") != std::string::npos);
+
+    fs::remove_all(CP.UserDataPath / "REGKEYS");
+    fs::create_symlink(d / "victim", CP.UserDataPath / "REGKEYS");
+    CHECK(RegistryLayer::CapturePersistRegKeys(CP));
+    CHECK(!fs::exists(d / "victim/user.reg"));
+    CHECK(fs::symlink_status(CP.UserDataPath / "REGKEYS").type() == fs::file_type::directory);
+    CHECK(ReadFileAt(CP.UserDataPath / "REGKEYS" / "user.reg").find("\"Save\"=\"7\"") != std::string::npos);
+    fs::remove_all(d);
+}
+
+// The override pass rewrites the runtime hives through the mount, and a prefix kept as a folder is served with its
+// links: a hive the game turned into a link (user.reg -> ~/.profile) is refused, not written through. Teeth: drop
+// the LinkLeadsOut loop (the victim becomes a registry hive).
+TEST(reglayer_override_never_writes_a_hive_through_a_link)
+{
+    auto d = RlTmp("ovlink");
+    ContainerParams CP = KeyParams(d, "");
+    WriteHives(CP.RuntimePath, nlohmann::ordered_json::array({ RegEdit("HKLM\\Software\\Game", {{"A","1"}}) }));
+    fs::create_directories(d / "victim");
+    { std::ofstream(d / "victim/.profile") << "the user's own\n"; }
+    fs::create_symlink(d / "victim/.profile", CP.RuntimePath / "user.reg");
+    auto Over = RegEdit("HKCU\\Software\\Game", {{"B","2"}});
+    Over["OVERRIDE"] = true;
+    CP.SubComponentsArray.push_back(Over);
+    CHECK(!RegistryLayer::ApplyOverrideRegEdits(CP));
+    CHECK_EQ(ReadFileAt(d / "victim/.profile"), std::string("the user's own\n"));
+    fs::remove_all(d);
+}
+
+#ifndef _WIN32
+// A FIFO left in the store (by an older build that let the game write the instance folder) would block the hive
+// reader at teardown for good. It is removed like a link. Teeth: remove only links (Cleanup hangs here).
+TEST(reglayer_capture_clears_a_fifo_from_the_store)
+{
+    auto d = RlTmp("keyfifo");
+    ContainerParams CP = KeyParams(d, "");
+    WriteHives(CP.RuntimePath, nlohmann::ordered_json::array({ RegEdit("HKCU\\Software\\Game", {{"Save","3"}}) }));
+    fs::create_directories(CP.UserDataPath / "REGKEYS");
+    CHECK(mkfifo((CP.UserDataPath / "REGKEYS" / "user.reg").c_str(), 0600) == 0);
+    CHECK(RegistryLayer::CapturePersistRegKeys(CP));
+    CHECK(ReadFileAt(CP.UserDataPath / "REGKEYS" / "user.reg").find("\"Save\"=\"3\"") != std::string::npos);
+    fs::remove_all(d);
+}
+#endif
+
+// A tooling run (an installer, a prefix init) drops the runner args that name the game's program - with or without a
+// format on the token (proton's "%GameDir%\%ContentPath:winpath%"), else the program swapped in becomes an argument of
+// the game folder and Wine opens the folder. Teeth: match the bare tokens only; match any word starting %Content.
+TEST(content_args_are_recognised_with_a_format)
+{
+    CHECK(ArgReferencesContent("%Content%"));
+    CHECK(ArgReferencesContent("%GameDir%\\%ContentPath%"));
+    CHECK(ArgReferencesContent("%GameDir%\\%ContentPath:winpath%"));
+    CHECK(ArgReferencesContent("%Content:winpath%"));
+    CHECK(!ArgReferencesContent("waitforexitandrun"));
+    CHECK(!ArgReferencesContent("%ContentRoot%"));
+    CHECK(!ArgReferencesContent("%GameDir%"));
 }

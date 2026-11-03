@@ -1,15 +1,30 @@
 #include "builtinrunners.h"
+#include "cid.h"
+
+#include <set>
 
 namespace BuiltinRunners {
 
 const std::vector<Runner> &All()
 {
     //windows-native: a win32/win64 game on Windows runs as itself. Before it, no runner hosted win64, so a Windows
-    //game on a Windows PC had no runner chain at all.
+    //game on a Windows PC had no runner chain at all. Its game folder is its runtime's (MetaPackageFormat §10.4); its
+    //profile and system anchors are the machine's real folders (%HostAppData%, …), whose package files its Sandboxie box
+    //holds (BoxPrefix), laid out at drive_c by DRIVES.
     static const std::vector<Runner> R = {
-        { "windows-native", nlohmann::ordered_json::parse(R"VG({"LABEL":"windows-native_exec","LAYERS":[{"COMMENT":"A Windows game on Windows runs as itself: the game's exe, started from the mounted game folder. The guest's C: is laid out inside the mount (drive_c), the way a Wine prefix lays it out, so every package places its files the same way on both hosts.","EXEC":[{"ARGS":[],"CONTENT_ROOT":"drive_c/%PackageUID%","DRIVES":{"C:":"drive_c"},"EXE":"%Content%","GUEST":["win32","win64"],"GUEST_ROOTS":{"%AppData%":"C:\\users\\steamuser\\AppData\\Roaming","%Documents%":"C:\\users\\steamuser\\Documents","%GameDir%":"C:\\%PackageUID%","%LocalAppData%":"C:\\users\\steamuser\\AppData\\Local","%ProgramData%":"C:\\ProgramData","%ProgramFiles%":"C:\\Program Files","%ProgramFiles32%":"C:\\Program Files (x86)","%SysDir32%":"C:\\windows\\syswow64","%SysDir64%":"C:\\windows\\system32","%UserProfile%":"C:\\users\\steamuser","%Windows%":"C:\\windows"},"HOST":"win64","LABEL":"windows-native_exec"}]}]})VG") },
+        { "windows-native", nlohmann::ordered_json::parse(R"VG({"LABEL":"windows-native_exec","LAYERS":[{"COMMENT":"A Windows game on Windows runs as itself, in a Sandboxie box that is its prefix. Its game folder is the mounted runtime's (%GameDir% is <runtime>\\drive_c\\<uid>), served to the box as it is. Its profile and system anchors are the machine's own folders, as the game reads them (%AppData% is the real AppData): what a package places there is laid out at drive_c in the runtime by DRIVES and copied into the box before the game starts, where the boxed game finds it at the real path; what it keeps there is copied back out after.","EXEC":[{"ARGS":[],"CONTENT_ROOT":"drive_c/%PackageUID%","DRIVES":{"C:":"drive_c"},"EXE":"%Content%","GUEST":["win32","win64"],"GUEST_ROOTS":{"%AppData%":"%HostAppData%","%Documents%":"%HostDocuments%","%GameDir%":"%RuntimePath%\\drive_c\\%PackageUID%","%LocalAppData%":"%HostLocalAppData%","%ProgramData%":"%HostProgramData%","%ProgramFiles%":"%HostProgramFiles%","%ProgramFiles32%":"%HostProgramFiles32%","%SysDir32%":"%HostSysDir32%","%SysDir64%":"%HostSysDir64%","%UserProfile%":"%HostUserProfile%","%Windows%":"%HostWindows%"},"HOST":"win64","LABEL":"windows-native_exec"}]}]})VG") },
     };
     return R;
+}
+
+bool IsBuiltin(const std::string &NodeCid)
+{
+    static const std::set<std::string> Cids = [] {
+        std::set<std::string> S;
+        for (const Runner &B : All()) S.insert(Cid::OfNode(B.Node));
+        return S;
+    }();
+    return Cids.count(NodeCid) > 0;
 }
 
 void AddTo(std::map<std::string, nlohmann::ordered_json> &Tree, std::map<std::string, std::filesystem::path> &Dirs,

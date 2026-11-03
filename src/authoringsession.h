@@ -48,11 +48,14 @@ public:
     // workbench; tools (RunWindows / native runs / file drops) act on it. Returns false on mount failure.
     bool Begin(const NodeIndex &Idx, const std::string &TargetNodeId,
                const std::map<std::string, std::string> &VariableOverrides = {});
+    // A node still waiting for its files (a content layer with no file yet) as the session authors it: without the
+    // waiting layer, in Idx only. False when it waits for nothing.
+    static bool WithoutWaiting(NodeIndex &Idx, const std::string &Id);
 
     // Tool: run a Windows program (installer, editor, …) in a wine/proton prefix. (Re)builds the runtime under the
     // CHOSEN runner if needed — its DEFPREFIX + CONTENT_ROOT define the env, the platform is seeded from the runner's
-    // guest, independent of the package — then runs Exe. Unlocks registry capture (PrefixGenerate() becomes true).
-    bool RunWindows(const std::string &Exe, const std::string &RunnerId);
+    // guest, independent of the package — then runs Exe with Args. Unlocks registry capture (PrefixGenerate() becomes true).
+    bool RunWindows(const std::string &Exe, const std::string &RunnerId, const std::vector<std::string> &Args = {});
 
     bool Live() const { return Wrapper != nullptr; }
     bool PrefixGenerate() const;                       // a wine-prefix runtime is live → gates the wine-only tools
@@ -62,9 +65,9 @@ public:
     std::string ContentRoot() const;                   // where the runner roots game content (for TARGET derivation)
     std::vector<std::pair<std::string, std::string>> AnchorLayouts() const;   // each anchor → where it lands in this runtime
 
-    // Runs Exe (a host path, or a guest command like "regedit.exe") against the LIVE mount. Returns false on a
-    // non-zero / crashed exit. The runtime stays mounted.
-    bool RunExe(const std::string &Exe);
+    // Runs Exe (a host path, or a guest command like "regedit.exe") with Args against the LIVE mount. Returns false
+    // on a non-zero / crashed exit. The runtime stays mounted.
+    bool RunExe(const std::string &Exe, const std::vector<std::string> &Args = {});
 
     // baseline-vs-now registry diff → a RegEdit subcomponent array (empty if not a prefix session / no changes).
     nlohmann::ordered_json CaptureRegistryDelta() const;
@@ -90,6 +93,7 @@ public:
     static nlohmann::ordered_json MakeDirLayer(const std::string &DirNameRelToBundle, const std::string &Target);
 
 private:
+    void DropRuntime();                            // unmount + wipe the runtime and its emptied game folder
     // (Re)builds + mounts the runtime: bare (no runner) when Chain is empty, else under the pinned runner (its
     // prefix/content-root + the platform seeded from its guest). Snapshots the registry baseline for wine runtimes.
     bool BuildRuntime(const std::vector<std::string> &Chain);

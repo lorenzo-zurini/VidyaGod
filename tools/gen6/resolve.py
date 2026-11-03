@@ -90,6 +90,27 @@ def render(value, fmt):
     return value
 
 
+def table_entries(table, d):
+    """VarSubst::TableEntries: a MAP table in the one namespace, under names no variable can have (no ':' in a name)."""
+    if not isinstance(d, dict) or not isinstance(d.get("MAP"), dict):
+        return []
+    out = [(table + ":?", "1")]
+    out += [(table + ":=" + e, v) for e, v in d["MAP"].items() if isinstance(v, str)]
+    if isinstance(d.get("ELSE"), str):
+        out.append((table + ":!", d["ELSE"]))
+    return out
+
+
+def render_token(value, fmt, vars_):
+    """VarSubst::RenderToken: map:TABLE → the entry, else the ELSE, else the value; otherwise render()."""
+    if fmt.startswith("map:"):
+        t = fmt[4:]
+        if vars_.get(t + ":?") != "1":
+            return value
+        return vars_.get(t + ":=" + value, vars_.get(t + ":!", value))
+    return render(value, fmt)
+
+
 def subst(s, vars_):
     """VarSubst::StringVariableSubstitution: %KEY% / %KEY:fmt%; unknown tokens stay; an unmatched % ends it."""
     out, pos = [], 0
@@ -103,7 +124,7 @@ def subst(s, vars_):
         out.append(s[pos:a])
         tok = s[a + 1:b]
         key, _, fmt = tok.partition(":")
-        out.append(render(vars_[key], fmt) if key in vars_ else "%" + tok + "%")
+        out.append(render_token(vars_[key], fmt, vars_) if key in vars_ else "%" + tok + "%")
         pos = b + 1
     return "".join(out)
 
@@ -269,6 +290,12 @@ def resolve_vars(decls, builtins, instance):
         w = d.get("WHEN") or (d.get("UI") or {}).get("WHEN")
         if w:
             gate[k] = w
+        for e, v in table_entries(k, d):          # a MAP table: its entries, gated with it
+            src[e] = v
+            if w:
+                gate[e] = w
+            else:
+                gate.pop(e, None)
     for k, v in instance.items():
         src.setdefault(k, v)
     cur = dict(src)
@@ -809,6 +836,18 @@ def fixtures():
                                     "raw": {"DEFAULT": "%red%*2"}}},
                           {"REG": {"HKCU": {"K": {"Mini-map Colors": "%mm:dword%"}}}}])},
          [("v", {}, []), ("v", {"grey": "0", "purple": "1"}, [])]),
+        ("map", {"v": N([{"VARS": {"k": {"DEFAULT": "keypad 0", "UI": {"CONTROL": "key"}}, "dir": {"DEFAULT": "C:/x"},
+                                   "keys": {"MAP": {"keypad 0": "[0]", "enter": "return", "home": "%dir%/h"}},
+                                   "strict": {"MAP": {"a": "A"}, "ELSE": "none"},
+                                   "off": {"MAP": {"keypad 0": "NO"}, "WHEN": "%dir%==never"},
+                                   "bound": {"DEFAULT": "%k:map:keys%"}, "sb": {"DEFAULT": "%k:map:strict%"},
+                                   "ob": {"DEFAULT": "%k:map:off%"}}},
+                         {"REG": {"HKCU": {"K": {"Bind": "%k:map:keys%", "Strict": "%k:map:strict%", "Off": "%k:map:off%"}}}},
+                         # phase 1 resolves the mapped values; these WHENs make them visible in the plan
+                         {"DLL": {"kp0": "n"}, "WHEN": "%bound%==[0]"}, {"DLL": {"plain_w": "n"}, "WHEN": "%bound%==w"},
+                         {"DLL": {"tok": "n"}, "WHEN": "%bound%==C:/x/h"}, {"DLL": {"else": "n"}, "WHEN": "%sb%==none"},
+                         {"DLL": {"strict_a": "n"}, "WHEN": "%sb%==A"}, {"DLL": {"off_leak": "n"}, "WHEN": "%ob%==NO"}])},
+         [("v", {}, []), ("v", {"k": "w"}, []), ("v", {"k": "home"}, []), ("v", {"k": "a"}, [])]),
         ("when", {"opt": N([Z("opt"), {"VARS": {"inner": {"DEFAULT": "%o%x"}}}]),
                   "v": N([{"VARS": {"o": {"DEFAULT": "0"}, "g": {"DEFAULT": "a", "WHEN": "%o%==1"}}},
                           {"NODE": "opt", "WHEN": "%o%==1 && %g%==a"}, Z("v"), {"DLL": {"x": "n"}, "WHEN": "!(%o%==1)"}])},

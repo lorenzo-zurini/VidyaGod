@@ -40,6 +40,7 @@
 #include <QInputDialog>
 #include <QMenu>
 #include <QPainter>
+#include "keycapture.h"
 #include <QPainterPath>
 #include <QUrl>
 #include <QDateTime>
@@ -1000,7 +1001,8 @@ static std::map<std::string, std::string> CollectVarValues(QObject* Group)
         const QString K = W->property("CVKey").toString();
         if (K.isEmpty()) continue;
         std::string V;
-        if (auto* C = qobject_cast<QComboBox*>(W))          V = C->currentData().toString().toStdString();
+        if (auto* Kc = qobject_cast<KeyCaptureField*>(W))   V = Kc->value();
+        else if (auto* C = qobject_cast<QComboBox*>(W))     V = C->currentData().toString().toStdString();
         else if (auto* S = qobject_cast<QSpinBox*>(W))      V = std::to_string(S->value());
         else if (auto* D = qobject_cast<QDoubleSpinBox*>(W))V = QString::number(D->value()).toStdString();
         else if (auto* B = qobject_cast<QCheckBox*>(W))     V = B->isChecked() ? "1" : "0";
@@ -1190,6 +1192,14 @@ void PreLaunchWindow::RebuildCustomVarPickers()
                 Edit->setText(QString::fromStdString(Initial));
                 Field = Edit;
             }
+            else if (Control == "key")
+            {
+                std::string Default = CV.value("DEFAULT", std::string());
+                { ContainerParams TmpP("", "", ""); VarSubst::StringVariableSubstitution(Default, TmpP.GetVariablesMap()); }
+                auto* KeyField = new KeyCaptureField(Initial, Default, CustomVarGroup);
+                connect(KeyField, &KeyCaptureField::changed, this, [this] { EvaluateVarConditions(); MarkKeyConflicts(); });
+                Field = KeyField;
+            }
             else // text
             {
                 QLineEdit* Edit = new QLineEdit(CustomVarGroup);
@@ -1208,6 +1218,8 @@ void PreLaunchWindow::RebuildCustomVarPickers()
 
             std::string Section = UI.value("SECTION", std::string());
             if (IsRunner) Section = Section.empty() ? std::string("Runner") : "Runner/" + Section;
+            Field->setProperty("CVSection", QString::fromStdString(Section));
+            Field->setProperty("CVLabel", Label);
             //A value control keeps a readable width rather than spanning the window; a tick box is as wide as itself.
             if (!qobject_cast<QCheckBox*>(Field)) Field->setMaximumWidth(340);
             //WHEN gates this row's visibility (and, in the resolver, its value); the control carries it with the row's
@@ -1235,6 +1247,7 @@ void PreLaunchWindow::RebuildCustomVarPickers()
     }
 
     if (AnyCond) EvaluateVarConditions();                                       // apply initial WHEN visibility
+    MarkKeyConflicts();
     SetTabShown(OptionsPage, AnyVisible);
     //The label column fits the longest label at its depth — measured over every row, open or folded, so opening a
     //section never truncates what it shows — within reason; the controls take the rest.
@@ -1251,6 +1264,23 @@ void PreLaunchWindow::RebuildCustomVarPickers()
             Need = std::max(Need, (Depth + 1) * OptionsTree->indentation() + (Sec ? FmB : Fm).horizontalAdvance((*It)->text(0)) + 24);
         }
         OptionsTree->setColumnWidth(0, std::clamp(Need, 160, 440));
+    }
+}
+
+// Two key options of one section bound to the same key: one press would do both. Each is marked with the other's label.
+void PreLaunchWindow::MarkKeyConflicts()
+{
+    std::map<std::pair<QString, std::string>, std::vector<KeyCaptureField*>> Bound;    // (section, key) → its fields
+    const auto Fields = OptionsTree->findChildren<KeyCaptureField*>();
+    for (KeyCaptureField* F : Fields)
+        if (!F->value().empty()) Bound[{ F->property("CVSection").toString(), F->value() }].push_back(F);
+    for (KeyCaptureField* F : Fields)
+    {
+        QStringList Others;
+        if (!F->value().empty())
+            for (KeyCaptureField* O : Bound[{ F->property("CVSection").toString(), F->value() }])
+                if (O != F) Others << O->property("CVLabel").toString();
+        F->setConflict(Others.join(", "));
     }
 }
 

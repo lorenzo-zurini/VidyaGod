@@ -2,6 +2,7 @@
 #include "fileedits.h"       // FileEdits::ProcessFileEdits (base FileEdits → DEFAULTDATA)
 #include "registrywrapper.h" // hive load/save/merge
 #include "commonutils.h"     // Log*
+#include "persistlayer.h"    // PrepareWriteDir (the store is never written through a link)
 
 #include <cstdlib>
 #include <filesystem>
@@ -229,6 +230,15 @@ bool RegistryLayer::ApplyOverrideRegEdits(struct ContainerParams &ContainerParam
     LogOut("RegistryLayer::ApplyOverrideRegEdits", "Applying OVERRIDE RegEdits to mounted runtime hives.");
 
     const std::filesystem::path Hives = HiveDir(ContainerParams, ContainerParams.RuntimePath);
+    //The hives are rewritten through the mount by code that follows links, and a prefix kept as a folder is served
+    //live, links included: one the game left at a hive (user.reg -> ~/.profile) would take the registry there.
+    for (const char *Hive : {"system.reg", "user.reg", "userdef.reg"})   // the files RegistryWrapper::SavePrefix writes
+        if (std::string Why; FileEdits::LinkLeadsOut(ContainerParams.RuntimePath, Hives / Hive, Why))
+        {
+            LogErr("RegistryLayer::ApplyOverrideRegEdits", "OVERRIDE RegEdits NOT applied: " + Why
+                       + " — the registry is never written through a link (a game can leave one in a kept folder).");
+            return false;
+        }
     RegistryWrapper RW;
     //The runtime is mounted by now, so this must succeed. If it does not, the edits below are applied to an EMPTY
     //in-memory registry and then saved back over the runtime hives — not a missing edit but a wiped registry.
@@ -255,17 +265,31 @@ bool RegistryLayer::ApplyOverrideRegEdits(struct ContainerParams &ContainerParam
 //durable store UserDataPath/REGKEYS (partial hive files holding only the persisted keys). Runs
 //during Cleanup BEFORE unmount. A key absent from the session (never created) is left as-is in the
 //store rather than dropped. No-op when no regkey persists are declared.
-bool RegistryLayer::CapturePersistRegKeys(struct ContainerParams &ContainerParams)
+bool RegistryLayer::CapturePersistRegKeys(struct ContainerParams &ContainerParams, const RegistryWrapper *BoxSession)
 {
     if (ContainerParams.KeepRegKeys.empty()) return true;
     const std::filesystem::path Store = ContainerParams.UserDataPath / "REGKEYS";
 
-    RegistryWrapper Session;
+    RegistryWrapper Hives;
     //Teardown is the last chance to save what the user changed. A failure here loses the session's registry
     //writes outright, and the only symptom is that the setting they just changed is gone next launch.
-    if (!Session.LoadPrefix(HiveDir(ContainerParams, ContainerParams.RuntimePath)))
+    if (!BoxSession && !Hives.LoadPrefix(HiveDir(ContainerParams, ContainerParams.RuntimePath)))
         LogErr("RegistryLayer::CapturePersistRegKeys", "could not read the session hives at teardown — the registry "
                    "changes made during this session are NOT being persisted.");
+    const RegistryWrapper &Session = BoxSession ? *BoxSession : Hives;
+
+    //The hive files are written by code that follows links, and the store sits in the instance folder, which the
+    //sandboxed game could once write (an older build bound all of it): a link left there would have the game's
+    //registry written to whatever file it names. An existing store is made a plain folder of plain files first.
+    std::error_code Le;
+    const bool StoreExisted = std::filesystem::symlink_status(Store, Le).type() != std::filesystem::file_type::not_found;
+    if (StoreExisted)
+        if (std::string Why; !PersistLayer::PrepareWriteDir(ContainerParams.UserDataPath, "REGKEYS", Why))
+        {
+            LogErr("RegistryLayer::CapturePersistRegKeys", "the durable store is not safe to write (" + Why
+                       + ") — the registry changes made during this session are NOT being persisted.");
+            return false;
+        }
 
     RegistryWrapper Durable;
     if (std::filesystem::exists(Store) && !Durable.LoadPrefix(Store))   // accumulate across sessions
@@ -279,8 +303,11 @@ bool RegistryLayer::CapturePersistRegKeys(struct ContainerParams &ContainerParam
 
     if (Captured > 0)
     {
-        std::error_code ec;
-        std::filesystem::create_directories(Store, ec);
+        if (std::string Why; !StoreExisted && !PersistLayer::PrepareWriteDir(ContainerParams.UserDataPath, "REGKEYS", Why))
+        {
+            LogErr("RegistryLayer::CapturePersistRegKeys", "Cannot create the durable REGKEYS store: " + Why);
+            return false;
+        }
         if (!Durable.SavePrefix(Store))
         {
             LogErr("RegistryLayer::CapturePersistRegKeys", "Failed to write durable REGKEYS store.");

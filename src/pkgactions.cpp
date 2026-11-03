@@ -11,14 +11,26 @@
 #include "commonutils.h"
 
 #include <QDir>
+#include <QImageReader>
 #include <QCoreApplication>
 #include <QFileDialog>
+#include <QFile>
 #include <QFileInfo>
+#include <QInputDialog>
 #include <QMessageBox>
 #include <QProcess>
 #include <QRegularExpression>
 
+#include <algorithm>
+#include <climits>
 #include <cstring>
+#include <sstream>
+#include <iterator>
+#include <cstdio>
+#include <map>
+#include <regex>
+#include <set>
+#include <zip.h>
 #include <filesystem>
 #include <fstream>
 #include <functional>
@@ -45,6 +57,25 @@ using PkgGraph::ContentTarget;
 //Point the content layer at new bytes: TYPE now names NAME. Where the layer sits, its TARGET and WHEN
 //stay; SOURCE and SIZE described the OLD bytes and go (publish stamps the new ones). A node without a content layer
 //gets one, appended. False (nothing written) when LAYERS is there but not a list — the JSON view's to fix.
+//The index of N's layer supplying the folder Dir (its DIR), -1 when none does.
+int DirLayerIndex(const json & N, const std::string & Dir)
+{
+    if (!HasLayers(N)) return -1;
+    for (size_t I = 0; I < N["LAYERS"].size(); ++I)
+        if (StrOf(N["LAYERS"][I], "DIR") == Dir) return (int)I;
+    return -1;
+}
+
+//A folder layer now supplies the zip packed from it: DIR becomes ZIP, the rest of the layer (TARGET, WHEN, ...) kept.
+void DirToZip(json & L, const std::string & Zip)
+{
+    json Out = json::object();
+    for (const auto & [K, V] : L.items())
+        if (K == "DIR") Out["ZIP"] = Zip;
+        else if (K != "SOURCE" && K != "SIZE") Out[K] = V;
+    L = std::move(Out);
+}
+
 bool SetContent(json & N, const std::string & Type, const std::string & Name)
 {
     if (!N.is_object() || (N.contains("LAYERS") && !N["LAYERS"].is_array())) return false;
@@ -61,20 +92,67 @@ bool SetContent(json & N, const std::string & Type, const std::string & Name)
     return true;
 }
 
+//Files ADDED to a node (dropped on it): an empty content layer takes them (a ZIP layer just added, waiting for its
+//files), else a new content layer of that type goes last. Never repoints a layer that already names files.
+bool AddContent(json & N, const std::string & Type, const std::string & Name)
+{
+    if (!N.is_object() || (N.contains("LAYERS") && !N["LAYERS"].is_array())) return false;
+    if (!N.contains("LAYERS")) N["LAYERS"] = json::array();
+    for (json & L : N["LAYERS"])
+    {
+        const std::string T = PkgGraph::LayerType(L);
+        if ((T == "ZIP" || T == "DIR" || T == "FILE" || T == "DELTA") && L[T].is_string() && L[T].get<std::string>().empty())
+        {
+            json M = json::object();
+            for (const auto & [K, V] : L.items()) M[K == T ? Type : K] = K == T ? json(Name) : V;
+            L = std::move(M);
+            return true;
+        }
+    }
+    json L = PkgGraph::NewLayer(Type);
+    L[Type] = Name;
+    N["LAYERS"].push_back(std::move(L));
+    return true;
+}
+
 //The EXEC entry a cover belongs to: the first entry carrying a TILE, else the first entry. Null without one.
-json * CoverEntry(json & N)
+//A tile's identity on an entry: its UID ("" for a tile still being filled in, which is its own).
+static std::string TileUid(const json & E) { return E["TILE"].is_object() ? StrOf(E["TILE"], "UID") : std::string(); }
+
+//The entry of the node's Tile-th distinct tile (entries sharing a UID are one tile: Quake and its mission packs' rows):
+//the first entry carrying it; with none, the first entry.
+json * CoverEntry(json & N, int Tile = 0)
 {
     if (!HasLayers(N)) return nullptr;
     json * First = nullptr;
+    std::set<std::string> Seen;
     for (auto & L : N["LAYERS"])
         if (PkgGraph::LayerType(L) == "EXEC" && L["EXEC"].is_array())
             for (auto & E : L["EXEC"])
             {
                 if (!E.is_object()) continue;
-                if (E.contains("TILE")) return &E;
+                if (E.contains("TILE") && (TileUid(E).empty() || Seen.insert(TileUid(E)).second) && Tile-- == 0) return &E;
                 if (!First) First = &E;
             }
     return First;
+}
+
+//The titles of the distinct tiles a node's EXEC entries carry, in order (a tile's first entry's LABEL when it has no
+//TITLE here).
+QStringList TileTitles(const json & N)
+{
+    QStringList Out;
+    if (!HasLayers(N)) return Out;
+    std::set<std::string> Seen;
+    for (const auto & L : N["LAYERS"])
+        if (PkgGraph::LayerType(L) == "EXEC" && L["EXEC"].is_array())
+            for (const auto & E : L["EXEC"])
+                if (E.is_object() && E.contains("TILE") && (TileUid(E).empty() || Seen.insert(TileUid(E)).second))
+                {
+                    const std::string T = E["TILE"].is_object() ? StrOf(E["TILE"], "TITLE") : std::string();
+                    Out << QString::fromStdString(T.empty() ? StrOf(E, "LABEL") : T);
+                }
+    return Out;
 }
 
 //Every variable KEY the node's VARS layers declare.
@@ -180,6 +258,28 @@ QString PkgActions::pick(const QString & Title, const QString & Dir, const QStri
                    : QFileDialog::getOpenFileName(Parent, Title, Dir, Filter);
 }
 
+int PkgActions::choose(const QString & Title, const QString & Text, const QStringList & Options, bool AsList)
+{
+    if (Choose) return Choose(Title, Text, Options);
+    if (!Parent) { LogWarn("PkgActions", "No way to ask '" + Title.toStdString() + "' — nothing chosen."); return -1; }
+    if (AsList)
+    {
+        bool Ok = false;
+        const QString C = QInputDialog::getItem(Parent, Title, Text, Options, 0, false, &Ok);
+        return Ok ? (int)Options.indexOf(C) : -1;
+    }
+    QMessageBox Box(Parent);
+    Box.setWindowTitle(Title);
+    const qsizetype Br = Text.indexOf("\n\n");          // the question, then what the options mean
+    Box.setText(Br < 0 ? Text : Text.left(Br));
+    if (Br >= 0) Box.setInformativeText(Text.mid(Br + 2));
+    QList<QAbstractButton *> Btns;
+    for (const QString & O : Options) Btns << Box.addButton(O, QMessageBox::AcceptRole);
+    Box.addButton(QMessageBox::Cancel);
+    Box.exec();
+    return (int)Btns.indexOf(Box.clickedButton());
+}
+
 bool PkgActions::ask(const QString & Title, const QString & Body)
 {
     if (Confirm) return Confirm(Title, Body);
@@ -200,6 +300,9 @@ std::string PkgActions::current(std::string Handle) const
 {
     for (int Guard = 0; Guard < 64; ++Guard)
     {
+        //A node of that name now is that node: a save that renamed it away can be followed by another node minted to
+        //the same CID (two empty "a mod for it" nodes are byte-identical), and the old rename must not steal it.
+        if (Model && Model->doc().IndexOf(Handle) >= 0) break;
         const auto It = Moves.find(Handle);
         if (It == Moves.end()) break;
         Handle = It->second;
@@ -229,8 +332,12 @@ void PkgActions::perform(const QString & nodeIdQ, const QString & actionQ)
     if (Canvas->isBusy(NodeId)) return;                   // one heavy action per node at a time
 
     if      (A == "browse")        browsePath(NodeId);
+    else if (A == "bring_in")      bringIn(NodeId);
+    else if (A.rfind("pick_exe:", 0) == 0) pickExe(NodeId, A.substr(9));
+    else if (A.rfind("compare:", 0) == 0) compareWith(NodeId, A.substr(8));
     else if (A == "browse_cover")  browseCover(NodeId);
     else if (A == "to_zip")        convertZipDir(NodeId, /*ToZip=*/true);
+    else if (A.rfind("to_zip:", 0) == 0) convertZipDir(NodeId, /*ToZip=*/true, A.substr(7));
     else if (A == "to_dir")        convertZipDir(NodeId, /*ToZip=*/false);
     else if (A == "restore")       reStore(NodeId);
     else if (A == "test_launch")   testLaunch(NodeId);
@@ -349,20 +456,1119 @@ void PkgActions::browsePath(const std::string & NodeId)
     commitNode(I, std::move(N), false);
 }
 
+//The way game files enter a package: from wherever they are. A folder (an installed or extracted game) is packed into
+//an uncompressed zip in the package - the folder itself is left alone, it is the user's; a zip is copied in (one already
+//in the package is just named). Either way the layer then supplies it.
+static bool NamedByAny(const PkgDoc::Document & D, const std::string & Name);
+
+void PkgActions::bringIn(const std::string & NodeId)
+{
+    if (indexOf(NodeId) < 0 || !Model->packageDir()) return;
+    //A content layer waiting for its files (just added, still empty) takes them without a question; a node whose
+    //files are named already is never repointed unasked.
+    std::string Waiting, Named, NamedType;
+    if (const int I = indexOf(NodeId); I >= 0)
+    {
+        const json & N = Model->doc().Node(I);
+        for (const json & L : HasLayers(N) ? N["LAYERS"] : json::array())
+        {
+            const std::string T = PkgGraph::LayerType(L);
+            if (T != "ZIP" && T != "DIR" && T != "FILE" && T != "DELTA") continue;
+            const std::string V = L[T].is_string() ? L[T].get<std::string>() : std::string();
+            if (V.empty()) { if (Waiting.empty()) Waiting = T; }
+            else if (Named.empty()) { Named = V; NamedType = T; }
+        }
+    }
+    auto AddOrReplace = [&](bool & Add) {
+        if (!Waiting.empty() || Named.empty()) { Add = !Waiting.empty(); return true; }
+        const int A = choose("Bring in files", "This node already has files (" + QString::fromStdString(Named)
+                             + ").\n\nAdd these as a new layer over them, or replace them?", {"Add as a new layer", "Replace its files"}, false);
+        if (A < 0) return false;
+        Add = A == 0;
+        return true;
+    };
+    //A FILE layer supplies one file: that is what is picked, not a folder or a zip.
+    if (Waiting == "FILE" || (Waiting.empty() && NamedType == "FILE"))
+    {
+        const QString Picked = pick("Pick the file", QDir::homePath(), QString());
+        if (Picked.isEmpty()) return;
+        bool Add = false;
+        if (!AddOrReplace(Add)) return;
+        bringInFile(NodeId, Picked, Add);
+        return;
+    }
+    const int Which = choose("Bring in files", "Where are the game's files?\n\n"
+                             "A folder - an installed or extracted game - is packed into an uncompressed zip in this package.\n"
+                             "A zip is copied in as it is.", {"A folder...", "A zip..."}, false);
+    if (Which < 0) return;
+    const bool Folder = Which == 0;
+    const QString Picked = Folder ? pick("Pick the game's folder", QDir::homePath(), QString(), true)
+                                  : pick("Pick the zip", QDir::homePath(), "Zip archives (*.zip)");
+    if (Picked.isEmpty()) return;
+    bool Add = false;
+    if (!AddOrReplace(Add)) return;
+    bringInPath(NodeId, Picked, Folder, Add);
+}
+
+void PkgActions::bringInFile(const std::string & NodeId, const QString & Picked, bool Add)
+{
+    if (indexOf(NodeId) < 0 || !Model->packageDir()) return;
+    const std::filesystem::path Bundle = Model->packageDir()->path().toStdString();
+    const QString Rel = QDir(QString::fromStdString(Bundle.string())).relativeFilePath(Picked);
+    std::string Name = Rel.toStdString();
+    if (Rel.startsWith(".."))
+    {
+        //Copied in under its own name; a name a node already uses is never overwritten - the next free one is taken.
+        const std::filesystem::path Src = Picked.toStdString();
+        Name = Src.filename().string();
+        std::error_code Ec;
+        for (int K = 2; std::filesystem::exists(Bundle / Name, Ec); ++K)
+        {
+            if (!NamedByAny(Model->doc(), Name)) { std::filesystem::remove(Bundle / Name, Ec); break; }
+            Name = Src.stem().string() + "-" + std::to_string(K) + Src.extension().string();
+        }
+        if (!std::filesystem::copy_file(Src, Bundle / Name, Ec) || Ec)
+        { tell("Bring in files", "Could not copy \"" + QString::fromStdString(Src.filename().string()) + "\" into the package."); return; }
+    }
+    const int I = indexOf(NodeId);
+    if (I < 0) return;
+    json N = Model->doc().Node(I);
+    if (!(Add ? AddContent(N, "FILE", Name) : SetContent(N, "FILE", Name))) return;
+    commitNode(I, std::move(N), false);
+    refreshHints();
+}
+
+//A GOG install's goggame-<id><Ext> at the top of Dir, else in its app\ (newer installers keep it there: Unreal
+//Tournament 2004); "" when it is not one.
+static std::filesystem::path GogFile(const std::filesystem::path & Dir, const std::string & Ext)
+{
+    std::error_code Ec;
+    for (const std::filesystem::path & D : {Dir, Dir / "app"})
+        for (const auto & E : std::filesystem::directory_iterator(D, Ec))
+        {
+            const std::string N = E.path().filename().string();
+            if (N.rfind("goggame-", 0) == 0 && E.path().extension() == Ext && E.is_regular_file(Ec)) return E.path();
+        }
+    return {};
+}
+
+//Whether a node of the package names this file of it (a content layer's ZIP/FILE/DIR/DELTA).
+static bool NamedByAny(const PkgDoc::Document & D, const std::string & Name)
+{
+    for (int I = 0; I < D.Count(); ++I)
+    {
+        const json & N = D.Node(I);
+        if (!HasLayers(N)) continue;
+        for (const json & L : N["LAYERS"])
+            for (const char * T : {"ZIP", "FILE", "DIR", "DELTA"})
+                if (L.is_object() && L.contains(T) && L[T].is_string() && L[T].get<std::string>() == Name) return true;
+    }
+    return false;
+}
+
+void PkgActions::bringInPath(const std::string & NodeId, const QString & Picked, bool Folder, bool Add)
+{
+    if (indexOf(NodeId) < 0 || !Model->packageDir()) return;
+    const std::filesystem::path Bundle = Model->packageDir()->path().toStdString();
+    auto Place = [Add](json & N, const std::string & Name) { return Add ? AddContent(N, "ZIP", Name) : SetContent(N, "ZIP", Name); };
+    std::error_code Ec;
+    const std::filesystem::path Src = Picked.toStdString();
+    //A zip already in the package needs no copy.
+    const QString Rel = QDir(QString::fromStdString(Bundle.string())).relativeFilePath(Picked);
+    if (!Folder && !Rel.startsWith(".."))
+    {
+        const int I = indexOf(NodeId);
+        if (I < 0) return;
+        json N = Model->doc().Node(I);
+        Place(N, Rel.toStdString());
+        commitNode(I, std::move(N), false);
+        refreshHints();
+        autoDetect(NodeId);
+        return;
+    }
+    //A folder holding the package would be packed into itself.
+    if (Folder && !QDir(Picked).relativeFilePath(QString::fromStdString(Bundle.string())).startsWith(".."))
+    {
+        tell("Bring in files", "That folder holds this package. Pick the game's own folder.");
+        return;
+    }
+    //Named after what was picked: a folder's own name (a picker may return it with a trailing slash), a zip's file name.
+    const QString Base = Folder ? QDir(QDir::cleanPath(Picked)).dirName() : QFileInfo(Picked).fileName();
+    if (Base.isEmpty() || Base == "." || Base == "..") { tell("Bring in files", "Pick a named folder or zip."); return; }
+    std::string Name = (Folder ? Base + ".zip" : Base).toStdString();
+    //An extracted GOG installer is named for its game, not the folder it was unpacked to ("x", "game"): GOG's own
+    //name for it, "(GOG)" after.
+    const std::filesystem::path GogInfo = Folder ? GogFile(Src, ".info") : std::filesystem::path();
+    if (!GogInfo.empty())
+    {
+        std::ifstream In(GogInfo, std::ios::binary);
+        const json Info = json::parse(In, nullptr, false);
+        std::string Game = Info.is_object() ? StrOf(Info, "name") : std::string();
+        for (const char * Mark : {"\u2122", "\u00ae"})                      // ™ ® - a trademark sign is no part of a file name
+            for (size_t At; (At = Game.find(Mark)) != std::string::npos;) Game.erase(At, std::strlen(Mark));
+        Game.erase(std::remove_if(Game.begin(), Game.end(), [](char C) { return std::strchr("<>:\"/\\|?*", C) != nullptr; }), Game.end());
+        while (!Game.empty() && Game.back() == ' ') Game.pop_back();
+        if (!Game.empty()) Name = Game + " (GOG).zip";
+    }
+    if (std::filesystem::exists(Bundle / Name, Ec))
+    {
+        if (NamedByAny(Model->doc(), Name))
+        {
+            //A node's file keeps its name: these files take the next free one.
+            const std::filesystem::path P(Name);
+            for (int K = 2; std::filesystem::exists(Bundle / Name, Ec); ++K)
+                Name = P.stem().string() + "-" + std::to_string(K) + P.extension().string();
+        }
+        else
+        {
+            //No node's: left by a bring-in that was never saved (a discarded draft) - used as it is, or replaced.
+            const int C = choose("Bring in files", "This package already has \"" + QString::fromStdString(Name) + "\", which no node uses.\n\n"
+                                 "It is likely from an earlier bring-in that was never saved. Use it as it is, or replace it with what you picked.",
+                                 {"Use it", "Replace it"}, false);
+            if (C < 0) return;
+            if (C == 0)
+            {
+                const int I = indexOf(NodeId);
+                if (I < 0) return;
+                json N = Model->doc().Node(I);
+                Place(N, Name);
+                commitNode(I, std::move(N), false);
+                refreshHints();
+                autoDetect(NodeId);
+                return;
+            }
+            std::filesystem::remove(Bundle / Name, Ec);
+            if (Ec) { tell("Bring in files", "Could not replace \"" + QString::fromStdString(Name) + "\"."); return; }
+        }
+    }
+    const std::filesystem::path Dst = Bundle / Name, Tmp = Bundle / (Name + ".bringing.tmp");
+    std::filesystem::remove(Tmp, Ec);
+    auto Finish = [this, NodeId, Name, Dst, Tmp, Place, Folder, Src](bool Ok) {
+        std::error_code Rc;
+        if (!Ok || !std::filesystem::exists(Tmp, Rc) || std::filesystem::file_size(Tmp, Rc) == 0)
+        { std::filesystem::remove(Tmp, Rc); tell("Bring in files", "It did not complete - nothing was added."); return; }
+        std::filesystem::rename(Tmp, Dst, Rc);
+        if (Rc) { std::filesystem::remove(Tmp, Rc); tell("Bring in files", "Could not place it in the package."); return; }
+        const int J = indexOf(NodeId);
+        if (J < 0) return;
+        json Nj = Model->doc().Node(J);
+        Place(Nj, Name);
+        commitNode(J, std::move(Nj), false);
+        refreshHints();
+        autoDetect(NodeId);
+        if (Folder) gogSteps(NodeId, Src);
+    };
+    if (Folder)
+    {
+        int Total = 0;
+        for (auto It = std::filesystem::recursive_directory_iterator(Src, Ec); !Ec && It != std::filesystem::recursive_directory_iterator(); ++It)
+            if (It->is_regular_file(Ec)) ++Total;
+        //-0 = STORE (vidyagodfs reads entries in place and cannot inflate); -X drops extra attributes. An extracted GOG
+        //installer's own folders (its redistributables, support files, slideshow, uninstaller) are not the game.
+        QStringList Args{"-0", "-r", "-X", QString::fromStdString(Tmp.string()), "."};
+        //What GOG's installer puts in the game folder itself is packed in at the top, over the rest, in its order: app\
+        //(GOG Galaxy's icon and web cache aside), then __support\app\ (the program and configs its script sets up, as
+        //Icewind Dale II's IWD2.exe and icewind2.ini) - neither kept as a folder of its own.
+        //Newer installers put everything there, __support\ included (Unreal Tournament 2004).
+        std::vector<std::pair<std::filesystem::path, QString>> Tops;
+        bool TopHasFiles = true;
+        if (!GogInfo.empty())
+        {
+            static const std::set<std::string> Installer = {"__redist", "__support", "tmp", "commonappdata", "app"};
+            Args << "-x" << "__redist/*" << "__support/*" << "tmp/*" << "commonappdata/*";
+            if (std::filesystem::is_directory(Src / "app", Ec)) { Args << "app/*"; Tops.emplace_back(Src / "app", "packing GOG's app files..."); }
+            for (const std::filesystem::path & B : {Src, Src / "app"})
+                if (std::filesystem::is_directory(B / "__support" / "app", Ec)) Tops.emplace_back(B / "__support" / "app", "packing GOG's support files...");
+            //Everything in the installer's own folders: the first pass would pack nothing (zip fails "nothing to do").
+            TopHasFiles = false;
+            for (const auto & E : std::filesystem::directory_iterator(Src, Ec))
+                if (!(E.is_directory(Ec) && Installer.count(E.path().filename().string()))) { TopHasFiles = true; break; }
+        }
+        //Each top folder after the one before it, the last one finishing the bring-in.
+        auto Chain = std::make_shared<std::function<void(size_t, bool)>>();
+        *Chain = [this, NodeId, Tmp, Tops, Finish, Chain](size_t I, bool Ok) {
+            if (!Ok || I >= Tops.size()) { Finish(Ok); *Chain = nullptr; return; }
+            std::error_code Rc;
+            int N = 0;
+            for (auto It = std::filesystem::recursive_directory_iterator(Tops[I].first, Rc); !Rc && It != std::filesystem::recursive_directory_iterator(); ++It)
+            {
+                if (It.depth() == 0 && It->is_directory(Rc) && It->path().filename() == "__support") { It.disable_recursion_pending(); continue; }
+                const std::string Leaf = It->path().filename().string();
+                if (It->is_regular_file(Rc) && Leaf != "webcache.zip" && !(Leaf.rfind("goggame-", 0) == 0 && It->path().extension() == ".ico")) ++N;
+            }
+            //Only GOG Galaxy's icon and web cache there: nothing to pack (zip would fail with "nothing to do").
+            if (N == 0) { (*Chain)(I + 1, true); return; }
+            runWithProgress(NodeId, Tops[I].second, ZipTool,
+                            {"-0", "-r", "-X", QString::fromStdString(Tmp.string()), ".", "-x", "webcache.zip", "goggame-*.ico", "__support/*"},
+                            QString::fromStdString(Tops[I].first.string()), N, [Chain, I](bool Ok2) { (*Chain)(I + 1, Ok2); });
+        };
+        if (!TopHasFiles) { (*Chain)(0, true); return; }
+        runWithProgress(NodeId, "packing zip...", ZipTool, Args, QString::fromStdString(Src.string()), Total,
+                        [Chain](bool Ok) { (*Chain)(0, Ok); });
+        return;
+    }
+    //A compressed zip (most downloads) cannot mount - vidyagodfs reads entries in place: it comes in re-packed STORE,
+    //the picked file left as it is.
+    if (!ManifestModel::ZipFullyStored(Src.string()))
+    {
+        const std::filesystem::path Unpacked = Bundle / (Name + ".unpacking.tmp");
+        std::filesystem::remove_all(Unpacked, Ec);
+        std::filesystem::create_directories(Unpacked, Ec);
+        runWithProgress(NodeId, "unpacking...", UnzipTool, {"-o", QString::fromStdString(Src.string()), "-d", QString::fromStdString(Unpacked.string())},
+                        QString(), 0, [this, NodeId, Unpacked, Tmp, Finish](bool Ok) {
+            std::error_code Rc;
+            if (!Ok) { std::filesystem::remove_all(Unpacked, Rc); Finish(false); return; }
+            int Total = 0;
+            for (auto It = std::filesystem::recursive_directory_iterator(Unpacked, Rc); !Rc && It != std::filesystem::recursive_directory_iterator(); ++It)
+                if (It->is_regular_file(Rc)) ++Total;
+            runWithProgress(NodeId, "re-packing STORE...", ZipTool, {"-0", "-r", "-X", QString::fromStdString(Tmp.string()), "."},
+                            QString::fromStdString(Unpacked.string()), Total, [Unpacked, Finish](bool Ok2) {
+                std::error_code R2;
+                std::filesystem::remove_all(Unpacked, R2);
+                Finish(Ok2);
+            });
+        });
+        return;
+    }
+    Canvas->beginAction(NodeId, "copying zip...", /*cancellable=*/false);
+    auto Ok = std::make_shared<bool>(false);
+    AsyncWork::Run(this, [Src, Tmp, Ok] { std::error_code C; *Ok = std::filesystem::copy_file(Src, Tmp, C) && !C; },
+                   [this, NodeId, Ok, Finish] { Canvas->endAction(current(NodeId)); Finish(*Ok); });
+}
+
+//The programs a node's files hold, written as the anchored paths an EXEC entry names: each ZIP or DIR layer's entries
+//under its TARGET ("FILES/%GameDir%" + "Game/run.exe" -> "%GameDir%/Game/run.exe"), and those of this package's nodes it
+//contains - a variant names its program from the data node beneath it. Where each one lives, to read it: Zip + Entry,
+//or File. A GOG install's goggame-*.info (its primary play task) is collected the same way, as Info.
+struct Program { std::string Anchored; std::filesystem::path Zip; std::string Entry; std::filesystem::path File; };
+static void ProgramsIn(const PkgDoc::Document & D, int I, const std::filesystem::path & Bundle, std::set<int> & Seen,
+                       std::vector<Program> & Out, std::vector<Program> * Info = nullptr)
+{
+    if (I < 0 || !Seen.insert(I).second) return;
+    const json & N = D.Node(I);
+    if (!HasLayers(N)) return;
+    auto Lower = [](std::string Name) { for (char & C : Name) C = (char)std::tolower((unsigned char)C); return Name; };
+    auto IsProgram = [&](const std::string & Name) {
+        const std::string L = Lower(Name);
+        for (const char * E : {".exe", ".bat", ".cmd", ".com", ".sh", ".x86", ".x86_64", ".appimage"})
+        { const size_t Ln = std::strlen(E); if (L.size() > Ln && L.compare(L.size() - Ln, Ln, E) == 0) return true; }
+        return false;
+    };
+    auto IsInfo = [&](const std::string & Name) {
+        const std::string B = Lower(Name.substr(Name.find_last_of('/') + 1));
+        if (B.rfind("goggame-", 0) == 0 && B.size() > 5 && B.compare(B.size() - 5, 5, ".info") == 0) return true;
+        //A Unity game's <Game>_Data/app.info: its company and product, which name where it saves.
+        const std::string L = Lower(Name);
+        return B == "app.info" && L.size() > 14 && L.compare(L.size() - 14, 14, "_data/app.info") == 0;
+    };
+    for (const json & L : N["LAYERS"])
+    {
+        if (!L.is_object()) continue;
+        std::string Anchor = StrOf(L, "TARGET");
+        if (Anchor.rfind("FILES/", 0) == 0) Anchor = Anchor.substr(6);
+        if (Anchor.empty()) Anchor = "%GameDir%";
+        if (L.contains("ZIP") && L["ZIP"].is_string() && !L["ZIP"].get<std::string>().empty())
+        {
+            const std::filesystem::path Zp = Bundle / L["ZIP"].get<std::string>();
+            int Err = 0;
+            if (zip_t * Za = zip_open(Zp.string().c_str(), ZIP_RDONLY, &Err))
+            {
+                for (zip_int64_t E = 0, Num = zip_get_num_entries(Za, 0); E < Num; ++E)
+                    if (const char * Nm = zip_get_name(Za, (zip_uint64_t)E, 0))
+                    {
+                        if (IsProgram(Nm)) Out.push_back({Anchor + "/" + Nm, Zp, Nm, {}});
+                        else if (Info && IsInfo(Nm)) Info->push_back({Anchor + "/" + Nm, Zp, Nm, {}});
+                    }
+                zip_close(Za);
+            }
+        }
+        else if (L.contains("DIR") && L["DIR"].is_string() && !L["DIR"].get<std::string>().empty())
+        {
+            const std::filesystem::path Dir = Bundle / L["DIR"].get<std::string>();
+            std::error_code Ec;
+            for (auto It = std::filesystem::recursive_directory_iterator(Dir, Ec); !Ec && It != std::filesystem::recursive_directory_iterator(); ++It)
+            {
+                if (!It->is_regular_file(Ec)) continue;
+                const std::string Rel = std::filesystem::relative(It->path(), Dir, Ec).generic_string();
+                if (IsProgram(It->path().filename().string())) Out.push_back({Anchor + "/" + Rel, {}, {}, It->path()});
+                else if (Info && IsInfo(Rel)) Info->push_back({Anchor + "/" + Rel, {}, {}, It->path()});
+            }
+        }
+        else if (L.contains("NODE") && L["NODE"].is_string())
+            ProgramsIn(D, D.IndexOf(L["NODE"].get<std::string>()), Bundle, Seen, Out, Info);
+    }
+}
+
+//Up to Max bytes of a program's start (or all of a small file): enough to tell what it runs on.
+//GOG's placeholders -> anchors; "" when the placeholder means nothing here. In a value or a file's text a Windows
+//path is wanted (:winpath); in an address, the plain anchor.
+static std::string GogPath(std::string P, bool Win)
+{
+    static const std::vector<std::pair<std::string, std::string>> Places = {
+        {"{app}", "GameDir"}, {"{userdocs}", "Documents"}, {"{userappdata}", "AppData"},
+        {"{localappdata}", "LocalAppData"}, {"{commonappdata}", "ProgramData"}, {"{userprofile}", "UserProfile"}};
+    //Inno writes a literal "{" as "{{" (a GUID: "{{99797420-...}"): kept aside while the placeholders are read.
+    static const std::string Brace = "\x01";
+    for (size_t At; (At = P.find("{{")) != std::string::npos;) P.replace(At, 2, Brace);
+    for (const auto & [Ph, Anchor] : Places)
+        for (size_t At; (At = P.find(Ph)) != std::string::npos;)
+            P.replace(At, Ph.size(), "%" + Anchor + (Win ? ":winpath" : "") + "%");
+    if (P.find('{') != std::string::npos) return {};
+    for (size_t At; (At = P.find(Brace)) != std::string::npos;) P.replace(At, 1, "{");
+    if (!Win) std::replace(P.begin(), P.end(), '\\', '/');
+    return P;
+}
+
+PkgActions::GogSteps PkgActions::GogInstallSteps(const json & Script, const std::filesystem::path & SupportDir, const std::string & Arch)
+{
+    GogSteps Out;
+    if (!Script.is_object() || !Script.contains("actions") || !Script["actions"].is_array()) return Out;
+    json Reg = json::object(), Keep = json::object();
+    int RegValues = 0;
+    std::vector<std::pair<std::string, json>> Inis;       // an ini file's address -> the ConfigWrites GOG sets in it
+    for (const json & A : Script["actions"])
+    {
+        if (!A.is_object() || !A.contains("install") || !A["install"].is_object()) continue;
+        //For every language, or English: the package is the English install.
+        bool Lang = !A.contains("languages");
+        if (A.contains("languages") && A["languages"].is_array())
+            for (const json & L : A["languages"]) if (L == "*" || L == "en-US") Lang = true;
+        if (!Lang) continue;
+        const json & I = A["install"];
+        const std::string Act = StrOf(I, "action"), Name = StrOf(A, "name");
+        const json Arg = I.contains("arguments") && I["arguments"].is_object() ? I["arguments"] : json::object();
+        auto Skip = [&](const std::string & Why) { Out.Skipped.push_back((Name.empty() ? Act : Name) + " - " + Why); };
+        if (Act == "saveToFile")
+        {
+            const std::string At = GogPath(StrOf(Arg, "filename"), false), Text = GogPath(StrOf(Arg, "text"), true);
+            if (At.empty() || StrOf(Arg, "text").empty()) { Skip("a file outside the places a package knows"); continue; }
+            Out.Layers.push_back(json{{"COMMENT", "GOG's installer writes this file" + (Name.empty() ? std::string() : " (" + Name + ")") + "."},
+                                      {"EDIT", json::array({ json{{"MODE", "Overwrite"}, {"VALUE", Text}} })}, {"TARGET", "FILES/" + At}});
+            Out.Said.push_back("writes " + At.substr(At.find_last_of('/') + 1));
+        }
+        else if (Act == "setRegistry")
+        {
+            std::string Root = StrOf(Arg, "root"), Sub = StrOf(Arg, "subkey");
+            if (Root == "HKEY_LOCAL_MACHINE") Root = "HKLM"; else if (Root == "HKEY_CURRENT_USER") Root = "HKCU";
+            if (Sub.find("GOG.com") != std::string::npos) { Skip("GOG Galaxy's own record of the install"); continue; }
+            if ((Root != "HKLM" && Root != "HKCU") || Sub.empty()) { Skip("a registry root a package does not write"); continue; }
+            std::string Val = StrOf(Arg, "valueData");
+            std::string Type = StrOf(Arg, "valueType");
+            for (char & C : Type) C = (char)std::tolower((unsigned char)C);
+            if (Type == "dword")
+            {
+                //Inno's "$" is hexadecimal.
+                unsigned long N = 0;
+                try { N = Val.rfind('$', 0) == 0 ? std::stoul(Val.substr(1), nullptr, 16) : std::stoul(Val); }
+                catch (const std::exception &) { Skip("a DWORD that is no number (" + Val + ")"); continue; }
+                char B[16]; std::snprintf(B, sizeof B, "dword:%08lx", N); Val = B;
+            }
+            else if (Type == "string") { Val = GogPath(Val, true); if (Val.empty() && !StrOf(Arg, "valueData").empty()) { Skip("a value naming a place a package does not know"); continue; } }
+            else if (Type == "binary")
+            {
+                //GOG writes the bytes as base64 (CD keys); Wine's .reg spells them "hex:e3,00,...".
+                const QByteArray Bytes = QByteArray::fromBase64(QByteArray::fromStdString(Val), QByteArray::AbortOnBase64DecodingErrors);
+                if (Bytes.isEmpty() && !Val.empty()) { Skip("binary data that is not base64"); continue; }
+                Val = "hex:";
+                for (int i = 0; i < Bytes.size(); ++i)
+                {
+                    char B[4]; std::snprintf(B, sizeof B, i ? ",%02x" : "%02x", (unsigned char)Bytes[i]); Val += B;
+                }
+            }
+            //A step with no value only clears the key before the install writes it: a fresh prefix has nothing to clear.
+            else if (Type.empty() && !Arg.contains("valueName")) continue;
+            else { Skip("a registry type it does not translate (" + Type + ")"); continue; }
+            json * K = &Reg[Root];
+            std::string Part;
+            std::istringstream Ss(Sub);
+            while (std::getline(Ss, Part, '\\')) if (!Part.empty()) K = &(*K)[Part];
+            const std::string Vn = StrOf(Arg, "valueName");
+            (*K)[Vn.empty() ? "@" : Vn] = Val;
+            ++RegValues;
+        }
+        else if (Act == "supportData")
+        {
+            const std::string Src = StrOf(Arg, "source"), Dst = GogPath(StrOf(Arg, "target"), false);
+            std::string T = StrOf(Arg, "type");
+            for (char & C : T) C = (char)std::tolower((unsigned char)C);
+            if (T != "file" || Src.rfind("{supportDir}", 0) != 0 || Dst.empty()) { Skip("not a file it can place"); continue; }
+            const std::filesystem::path From = SupportDir / Src.substr(13);
+            std::ifstream In(From, std::ios::binary);
+            const std::string Body((std::istreambuf_iterator<char>(In)), std::istreambuf_iterator<char>());
+            if (!In.good() && Body.empty()) { Skip("its file " + Src + " is not beside the game"); continue; }
+            const std::string Leaf = Dst.substr(Dst.find_last_of('/') + 1), Dir = Dst.substr(0, Dst.find_last_of('/'));
+            if (Body.find('\0') == std::string::npos)
+                Out.Layers.push_back(json{{"COMMENT", "GOG's installer copies this default in (" + Leaf + ")."},
+                                          {"EDIT", json::array({ json{{"MODE", "Overwrite"}, {"VALUE", Body}} })}, {"TARGET", "FILES/" + Dst}});
+            else
+            {
+                Out.Copies.push_back({From, Leaf});
+                Out.Layers.push_back(json{{"COMMENT", "GOG's installer copies this file in."}, {"FILE", Leaf}, {"TARGET", "FILES/" + Dir}});
+            }
+            Out.Said.push_back("puts " + Leaf + " in " + Dir);
+        }
+        else if (Act == "savePath")
+        {
+            std::string P = GogPath(StrOf(Arg, "savePath"), false);
+            if (P.empty()) { Skip("a save folder outside the places a package knows"); continue; }
+            if (P.back() != '/') P += '/';
+            Keep["FILES/" + P] = true;
+            Out.Said.push_back("saves in " + P);
+        }
+        else if (Act == "execute" || Act == "Execute") Skip("runs " + StrOf(Arg, "executable") + " - a package runs no installer");
+        else if (Act == "installSDB") Skip("a Windows compatibility database - Wine applies none");
+        else if (Act == "setIni")
+        {
+            //A line of an ini file: KEY= by its prefix (a ConfigWrite holds no section), the value's places as anchors.
+            const std::string At = GogPath(StrOf(Arg, "filename"), false), Key = StrOf(Arg, "keyName"), Raw = StrOf(Arg, "keyValue");
+            const std::string Val = GogPath(Raw, true);
+            if (At.empty() || Key.empty()) { Skip("an ini file outside the places a package knows"); continue; }
+            if (Val.empty() && !Raw.empty()) { Skip("a value naming a place a package does not know"); continue; }
+            //Another machine's drive (a CD's "G:\") means nothing in a package, and the validator refuses it.
+            static const std::regex Drive(R"((^|[^A-Za-z0-9])[A-Za-z]:[\\/])");
+            if (std::regex_search(Val, Drive)) { Skip("a value naming a drive (" + Raw + ")"); continue; }
+            auto It = std::find_if(Inis.begin(), Inis.end(), [&](const auto & F) { return F.first == At; });
+            if (It == Inis.end()) It = Inis.insert(Inis.end(), {At, json::array()});
+            It->second.push_back(json{{"MODE", "ConfigWrite"}, {"KEY", Key + "="}, {"VALUE", Val}});
+        }
+        else Skip("\"" + Act + "\" is not translated");
+    }
+    for (auto & [At, Ops] : Inis)
+    {
+        const std::string Leaf = At.substr(At.find_last_of('/') + 1);
+        Out.Said.push_back("sets " + std::to_string(Ops.size()) + " line" + (Ops.size() == 1 ? "" : "s") + " of " + Leaf);
+        Out.Layers.push_back(json{{"COMMENT", "What GOG's installer sets in " + Leaf + "."}, {"EDIT", std::move(Ops)}, {"TARGET", "FILES/" + At}});
+    }
+    if (RegValues)
+    {
+        //Before the seeds and the saves: a REG layer is facts, read first.
+        //ARCH is the reading program's bitness; unknown, it is left for the author (the validator asks for it).
+        json L = json{{"COMMENT", "The registry values GOG's installer writes."}, {"REG", Reg}};
+        if (!Arch.empty()) L["ARCH"] = json::array({Arch});
+        Out.Layers.insert(Out.Layers.begin(), std::move(L));
+        Out.Said.insert(Out.Said.begin(), "sets " + std::to_string(RegValues) + " registry value" + (RegValues == 1 ? "" : "s"));
+    }
+    if (!Keep.empty()) Out.Layers.push_back(json{{"COMMENT", "Saves and settings, where GOG's installer says the game keeps them."}, {"KEEP", Keep}});
+    return Out;
+}
+
+//A Unity game's app.info ("<company>\n<product>") -> the KEEP layer for where it saves: its LocalLow folder and its
+//PlayerPrefs key. Null when the text is not that.
+json PkgActions::UnityKeep(const std::string & AppInfo)
+{
+    std::istringstream In(AppInfo);
+    std::string Company, Product;
+    std::getline(In, Company); std::getline(In, Product);
+    for (std::string * S : {&Company, &Product})
+        while (!S->empty() && (S->back() == '\r' || S->back() == ' ')) S->pop_back();
+    if (Company.empty() || Product.empty() || Company.find_first_of("/\\%") != std::string::npos
+        || Product.find_first_of("/\\%") != std::string::npos)
+        return nullptr;
+    return json{{"COMMENT", "The game's saves and settings: a Unity game keeps them under its company and product (" + Company + ", " + Product + ")."},
+                {"KEEP", json{{"FILES/%UserProfile%/AppData/LocalLow/" + Company + "/" + Product + "/", true},
+                              {"REG/HKCU/Software/" + Company + "/" + Product, true}}}};
+}
+
+static std::string ReadHead(const Program & P, size_t Max)
+{
+    std::string Out;
+    if (!P.File.empty())
+    {
+        std::ifstream In(P.File, std::ios::binary);
+        Out.resize(Max);
+        In.read(Out.data(), (std::streamsize)Max);
+        Out.resize((size_t)In.gcount());
+        return Out;
+    }
+    int Err = 0;
+    zip_t * Za = zip_open(P.Zip.string().c_str(), ZIP_RDONLY, &Err);
+    if (!Za) return Out;
+    if (zip_file_t * F = zip_fopen(Za, P.Entry.c_str(), 0))
+    {
+        Out.resize(Max);
+        const zip_int64_t Got = zip_fread(F, Out.data(), Max);
+        Out.resize(Got > 0 ? (size_t)Got : 0);
+        zip_fclose(F);
+    }
+    zip_close(Za);
+    return Out;
+}
+
+std::string PkgActions::PlatformOf(const std::string & Name, const std::string & Head)
+{
+    std::string L = Name;
+    for (char & C : L) C = (char)std::tolower((unsigned char)C);
+    auto Ends = [&](const char * E) { const size_t N = std::strlen(E); return L.size() >= N && L.compare(L.size() - N, N, E) == 0; };
+    if (Head.size() >= 20 && Head.compare(0, 4, "\x7f" "ELF") == 0) return Head[4] == 2 ? "linux64" : "linux32";
+    if (Ends(".sh") || Ends(".x86_64") || Ends(".appimage")) return "linux64";
+    if (Head.size() >= 64 && Head.compare(0, 2, "MZ") == 0)
+    {
+        //The PE header's offset is at 0x3C; past it, "PE\0\0" and the machine (0x14c i386, 0x8664 x64).
+        const uint32_t Off = (uint8_t)Head[0x3C] | ((uint8_t)Head[0x3D] << 8) | ((uint8_t)Head[0x3E] << 16) | ((uint32_t)(uint8_t)Head[0x3F] << 24);
+        if ((size_t)Off + 6 <= Head.size() && Head.compare(Off, 4, std::string("PE\0\0", 4)) == 0)
+        {
+            const uint16_t Machine = (uint8_t)Head[Off + 4] | ((uint8_t)Head[Off + 5] << 8);
+            return Machine == 0x8664 ? "win64" : "win32";
+        }
+        if ((size_t)Off + 2 <= Head.size() && (Head.compare(Off, 2, "NE") == 0 || Head.compare(Off, 2, "LE") == 0)) return "win32";
+        return "dos";                                     // MZ alone: a DOS program
+    }
+    if (Ends(".com") || Ends(".bat")) return "dos";
+    return {};
+}
+
+int PkgActions::LikelyProgram(const std::vector<std::string> & Anchored)
+{
+    //Not the game: installers, uninstallers, crash reporters, redistributables and their setup tools.
+    static const char * Not[] = {"unins", "setup", "install", "crash", "report", "vcredist", "dxsetup", "dotnet", "redist",
+                                 "directx", "config", "patch", "update", "dosbox", "settings", "dos4gw"};
+    std::vector<int> Keep;
+    int Shallowest = INT_MAX;
+    for (int I = 0; I < (int)Anchored.size(); ++I)
+    {
+        std::string B = Anchored[(size_t)I].substr(Anchored[(size_t)I].find_last_of('/') + 1);
+        for (char & C : B) C = (char)std::tolower((unsigned char)C);
+        bool Skip = false;
+        for (const char * W : Not) if (B.find(W) != std::string::npos) Skip = true;
+        if (Skip) continue;
+        Keep.push_back(I);
+    }
+    //A batch file or .com beside real programs launches one of them (GTA's GTA.BAT runs its DOS build): the programs
+    //are the candidates; scripts only when there is nothing else.
+    auto Script = [&](int I) {
+        std::string B = Anchored[(size_t)I];
+        for (char & C : B) C = (char)std::tolower((unsigned char)C);
+        return B.size() > 4 && (B.compare(B.size() - 4, 4, ".bat") == 0 || B.compare(B.size() - 4, 4, ".cmd") == 0 || B.compare(B.size() - 4, 4, ".com") == 0);
+    };
+    if (std::any_of(Keep.begin(), Keep.end(), [&](int I) { return !Script(I); }))
+        Keep.erase(std::remove_if(Keep.begin(), Keep.end(), Script), Keep.end());
+    for (const int I : Keep)
+        Shallowest = std::min(Shallowest, (int)std::count(Anchored[(size_t)I].begin(), Anchored[(size_t)I].end(), '/'));
+    //One left, or one alone at the top of the game's folder: that one. Several there: the author picks.
+    int Found = -1;
+    for (const int I : Keep)
+        if ((int)std::count(Anchored[(size_t)I].begin(), Anchored[(size_t)I].end(), '/') == Shallowest)
+        { if (Found >= 0) return -1; Found = I; }
+    return Found;
+}
+
+std::vector<PkgActions::SeenFile> PkgActions::GameSees(const PkgDoc::Document & D, const std::string & Handle,
+                                                       const std::filesystem::path & Bundle, std::vector<std::string> * Notes,
+                                                       const OtherFn & Other)
+{
+    const auto Labels = D.Labels();
+    std::map<std::string, OtherNode> Others;             // asked once each
+    auto Outside = [&](const std::string & H) -> const OtherNode & {
+        auto It = Others.find(H);
+        if (It == Others.end()) It = Others.emplace(H, Other ? Other(H) : OtherNode{}).first;
+        return It->second;
+    };
+    auto Label = [&](const std::string & H) {
+        const auto It = Labels.find(H);
+        return It != Labels.end() ? It->second : D.IndexOf(H) < 0 ? Outside(H).Label : std::string();
+    };
+    auto Find = [&](const std::string & H) -> const json * { const int I = D.IndexOf(H); return I >= 0 ? &D.Node(I) : Outside(H).Node; };
+    std::map<std::string, SeenFile> Seen;                 // by path, case-folded: a Windows game sees one file per name
+    auto Add = [&](const std::string & Path, const std::string & From) {
+        std::string Key = Path;
+        for (char & C : Key) C = (char)std::tolower((unsigned char)C);
+        auto It = Seen.find(Key);
+        if (It == Seen.end()) { Seen[Key] = SeenFile{Path, From, {}}; return; }
+        It->second.Under.push_back(It->second.From);       // later wins: what was there is now beneath
+        It->second.From = From;
+        It->second.Path = Path;
+    };
+    for (const PkgGraph::FoldStep & St : PkgGraph::FoldOrder(Handle, Find, Label))
+    {
+        if (St.Outside) { if (Notes) Notes->push_back("+ the files of \"" + St.Title + "\" (another package)"); continue; }
+        const json * N = Find(St.Node);
+        if (!N || St.Layer < 0 || St.Layer >= (int)(*N)["LAYERS"].size()) continue;
+        const std::filesystem::path Folder = D.IndexOf(St.Node) >= 0 ? Bundle : Outside(St.Node).Bundle;   // where its files are
+        const json & L = (*N)["LAYERS"][(size_t)St.Layer];
+        std::string Anchor = StrOf(L, "TARGET");
+        if (Anchor.rfind("FILES/", 0) == 0) Anchor = Anchor.substr(6);
+        if (Anchor.empty()) Anchor = "%GameDir%";
+        while (!Anchor.empty() && Anchor.back() == '/') Anchor.pop_back();
+        const std::string Name = StrOf(L, St.Type.c_str());
+        const std::string From = (St.NodeLabel.empty() ? St.Node.substr(0, 12) : St.NodeLabel) + " > " + (Name.empty() ? St.Type : Name);
+        if (Name.empty()) continue;
+        if (St.Type == "ZIP")
+        {
+            int Err = 0;
+            zip_t * Za = zip_open((Folder / Name).string().c_str(), ZIP_RDONLY, &Err);
+            if (!Za) { if (Notes) Notes->push_back(Name + " is not in the package folder"); continue; }
+            for (zip_int64_t E = 0, Num = zip_get_num_entries(Za, 0); E < Num; ++E)
+                if (const char * Nm = zip_get_name(Za, (zip_uint64_t)E, 0); Nm && *Nm && Nm[std::strlen(Nm) - 1] != '/') Add(Anchor + "/" + Nm, From);
+            zip_close(Za);
+        }
+        else if (St.Type == "DIR")
+        {
+            std::error_code Ec;
+            const std::filesystem::path Dir = Folder / Name;
+            for (auto It = std::filesystem::recursive_directory_iterator(Dir, Ec); !Ec && It != std::filesystem::recursive_directory_iterator(); ++It)
+                if (It->is_regular_file(Ec)) Add(Anchor + "/" + std::filesystem::relative(It->path(), Dir, Ec).generic_string(), From);
+        }
+        else if (St.Type == "FILE") Add(Anchor + "/" + std::filesystem::path(Name).filename().generic_string(), From);
+        else if (St.Type == "DELTA" && Notes) Notes->push_back("+ what the patch " + Name + " rebuilds");
+    }
+    std::vector<SeenFile> Out;
+    for (auto & [K, F] : Seen) { (void)K; Out.push_back(std::move(F)); }
+    std::sort(Out.begin(), Out.end(), [](const SeenFile & A, const SeenFile & B) { return A.Path < B.Path; });
+    return Out;
+}
+
+PkgActions::VersionDiff PkgActions::Compare(const PkgDoc::Document & D, const std::string & A, const std::string & B,
+                                            const std::filesystem::path & Bundle)
+{
+    VersionDiff R;
+    const auto Labels = D.Labels();
+    auto Label = [&](const std::string & H) { const auto It = Labels.find(H); return It == Labels.end() ? std::string() : It->second; };
+    auto Find = [&](const std::string & H) -> const json * { const int I = D.IndexOf(H); return I < 0 ? nullptr : &D.Node(I); };
+    //Layers as a multiset of "TYPE name": what one folds that the other does not.
+    std::map<std::string, int> La, Lb;
+    for (const auto & S : PkgGraph::FoldOrder(A, Find, Label)) ++La[S.Type + "  " + S.Title];
+    for (const auto & S : PkgGraph::FoldOrder(B, Find, Label)) ++Lb[S.Type + "  " + S.Title];
+    for (const auto & [K, N] : La) for (int I = Lb.count(K) ? Lb[K] : 0; I < N; ++I) R.LayersOnlyA.push_back(K);
+    for (const auto & [K, N] : Lb) for (int I = La.count(K) ? La[K] : 0; I < N; ++I) R.LayersOnlyB.push_back(K);
+    std::map<std::string, SeenFile> Fa, Fb;
+    auto Key = [](std::string P) { for (char & C : P) C = (char)std::tolower((unsigned char)C); return P; };
+    for (auto & F : GameSees(D, A, Bundle)) Fa[Key(F.Path)] = F;
+    for (auto & F : GameSees(D, B, Bundle)) Fb[Key(F.Path)] = F;
+    for (const auto & [K, F] : Fa)
+    {
+        const auto It = Fb.find(K);
+        if (It == Fb.end()) R.FilesOnlyA.push_back(F.Path);
+        else if (It->second.From != F.From) R.FilesDiffer.push_back(F.Path + "  (" + F.From + "  vs  " + It->second.From + ")");
+    }
+    for (const auto & [K, F] : Fb) if (!Fa.count(K)) R.FilesOnlyB.push_back(F.Path);
+    return R;
+}
+
+void PkgActions::compareWith(const std::string & NodeId, const std::string & Other)
+{
+    const int I = indexOf(NodeId), J = indexOf(Other);
+    if (I < 0 || J < 0 || !Model->packageDir()) return;
+    const PkgDoc::Document & D = Model->doc();
+    const VersionDiff R = Compare(D, D.Handle(I), D.Handle(J), Model->packageDir()->path().toStdString());
+    const auto Labels = D.Labels();
+    const QString Na = QString::fromStdString(Labels.at(D.Handle(I))).toHtmlEscaped(), Nb = QString::fromStdString(Labels.at(D.Handle(J))).toHtmlEscaped();
+    auto Section = [](const QString & Title, const std::vector<std::string> & Items) {
+        if (Items.empty()) return QString();
+        QString H = "<h4>" + Title + " (" + QString::number(Items.size()) + ")</h4><ul>";
+        for (size_t K = 0; K < Items.size() && K < 200; ++K) H += "<li>" + QString::fromStdString(Items[K]).toHtmlEscaped() + "</li>";
+        if (Items.size() > 200) H += "<li>...</li>";
+        return H + "</ul>";
+    };
+    QString Html = Section("Layers only in " + Na, R.LayersOnlyA) + Section("Layers only in " + Nb, R.LayersOnlyB)
+                 + Section("Files only in " + Na, R.FilesOnlyA) + Section("Files only in " + Nb, R.FilesOnlyB)
+                 + Section("Files both give, from different layers", R.FilesDiffer);
+    if (Html.isEmpty()) Html = "<p>They fold the same layers and give the game the same files.</p>";
+    const QString Title = "Compare " + Na + " with " + Nb;
+    if (Notify || !Parent) { tell(Title, Html); return; }
+    QMessageBox Box(QMessageBox::Information, Title, Html, QMessageBox::Close, Parent);
+    Box.setTextFormat(Qt::RichText);
+    Box.exec();
+}
+
+void PkgActions::autoDetect(const std::string & NodeId)
+{
+    if (indexOf(NodeId) < 0 || !Model->packageDir()) return;
+    const PkgDoc::Document & D = Model->doc();
+    //The game entry that still has no program (its Exe empty, or the "%GameDir%/" starter), in the node the files
+    //came into or a version over it: another node's entries are not this file's to fill - the tiles at a package's
+    //base have no program by design, and a runner brought in beside the game is not the game.
+    const int Into = indexOf(NodeId);
+    auto Over = [&D, Into](int I) {
+        std::set<int> Seen;
+        std::vector<int> Todo{I};
+        while (!Todo.empty())
+        {
+            const int K = Todo.back();
+            Todo.pop_back();
+            if (K == Into) return true;
+            if (K < 0 || !Seen.insert(K).second || !HasLayers(D.Node(K))) continue;
+            for (const json & L : D.Node(K)["LAYERS"])
+                if (L.is_object() && L.contains("NODE") && L["NODE"].is_string()) Todo.push_back(D.IndexOf(L["NODE"].get<std::string>()));
+        }
+        return false;
+    };
+    std::vector<int> Order{Into};
+    for (int I = 0; I < D.Count(); ++I) if (I != Into && Over(I)) Order.push_back(I);
+    int Ni = -1, Li = -1, Ei = -1;
+    for (const int I : Order)
+    {
+        if (Ni >= 0) break;
+        const json & N = D.Node(I);
+        if (!HasLayers(N)) continue;
+        for (int L = 0; L < (int)N["LAYERS"].size() && Ni < 0; ++L)
+        {
+            const json & Ly = N["LAYERS"][(size_t)L];
+            if (!Ly.is_object() || !Ly.contains("EXEC") || !Ly["EXEC"].is_array()) continue;
+            for (int E = 0; E < (int)Ly["EXEC"].size(); ++E)
+            {
+                const json & En = Ly["EXEC"][(size_t)E];
+                if (!En.is_object() || En.contains("GUEST")) continue;
+                const std::string Exe = StrOf(En, "EXE");
+                if (Exe.empty() || Exe.back() == '/') { Ni = I; Li = L; Ei = E; break; }
+            }
+        }
+    }
+    if (Ni < 0) return;
+    std::vector<Program> Progs, Infos;
+    std::set<int> Seen;
+    ProgramsIn(D, Ni, Model->packageDir()->path().toStdString(), Seen, Progs, &Infos);
+    if (Progs.empty()) return;
+    std::string Exe, Args, WorkDir, Why;
+    //A GOG install says which program is the game: its primary play task.
+    for (const Program & I : Infos)
+    {
+        const json G = json::parse(ReadHead(I, 1 << 20), nullptr, false);
+        if (!G.is_object() || !G.contains("playTasks") || !G["playTasks"].is_array()) continue;
+        for (const json & T : G["playTasks"])
+        {
+            if (!T.is_object() || !(T.value("isPrimary", false) || StrOf(T, "category") == "game") || StrOf(T, "path").empty()) continue;
+            const std::string Root = I.Anchored.substr(0, I.Anchored.find_last_of('/'));
+            std::string Path = StrOf(T, "path");
+            std::replace(Path.begin(), Path.end(), '\\', '/');
+            Exe = Root + "/" + Path;
+            Args = StrOf(T, "arguments");
+            std::string Wd = StrOf(T, "workingDir");
+            std::replace(Wd.begin(), Wd.end(), '\\', '/');
+            WorkDir = Wd.empty() ? std::string() : Root + "/" + Wd;
+            Why = "its GOG play task";
+            break;
+        }
+        if (!Exe.empty()) break;
+    }
+    const Program * Chosen = nullptr;
+    if (!Exe.empty())
+    {
+        //The play task's path in the file's own case (GOG's TUNIC.exe is Tunic.exe on disk: the mount is
+        //case-sensitive); a task naming no program here is no guide.
+        auto Lower = [](std::string S) { for (char & C : S) C = (char)std::tolower((unsigned char)C); return S; };
+        for (const Program & P : Progs) if (Lower(P.Anchored) == Lower(Exe)) Chosen = &P;
+        if (!Chosen) Exe.clear(), Args.clear(), WorkDir.clear();
+        else
+        {
+            const std::string Dir = Chosen->Anchored.substr(0, Chosen->Anchored.find_last_of('/'));
+            if (Lower(WorkDir) == Lower(Dir)) WorkDir = Dir;
+            Exe = Chosen->Anchored;
+        }
+    }
+    if (Exe.empty())
+    {
+        std::vector<std::string> Names;
+        for (const Program & P : Progs) Names.push_back(P.Anchored);
+        const int K = LikelyProgram(Names);
+        if (K < 0)
+        {
+            emit status(QString("%1 programs in the files - choose the game's: Exe > pick").arg(Progs.size()));
+            return;
+        }
+        Chosen = &Progs[(size_t)K];
+        Exe = Chosen->Anchored;
+        Why = "the only likely program";
+    }
+    json N = D.Node(Ni);
+    json & En = N["LAYERS"][(size_t)Li]["EXEC"][(size_t)Ei];
+    En["EXE"] = Exe;
+    if (StrOf(En, "WORKDIR").empty()) En["WORKDIR"] = WorkDir.empty() ? Exe.substr(0, Exe.find_last_of('/')) : WorkDir;
+    if (!Args.empty() && !En.contains("ARGS"))
+    {
+        json A = json::array();
+        std::istringstream Ss(Args);
+        for (std::string W; Ss >> W;) A.push_back(W);
+        En["ARGS"] = A;
+    }
+    std::string Host = StrOf(En, "HOST");
+    if (Chosen && (Host.empty()))
+    {
+        Host = PlatformOf(Chosen->Anchored, ReadHead(*Chosen, 4096));
+        if (!Host.empty()) En["HOST"] = Host;
+    }
+    //A Unity game saves (and keeps its settings) where its app.info says: offered as a KEEP layer, once.
+    std::string Saves;
+    if (Chosen)
+    {
+        auto Lower = [](std::string S) { for (char & C : S) C = (char)std::tolower((unsigned char)C); return S; };
+        const std::string Stem = Exe.substr(0, Exe.find_last_of('.'));
+        const json Keep = UnityKeep([&]() -> std::string {
+            for (const Program & I : Infos) if (Lower(I.Anchored) == Lower(Stem + "_Data/app.info")) return ReadHead(I, 4096);
+            return {};
+        }());
+        bool Kept = false;
+        for (const json & L : N["LAYERS"]) if (L.is_object() && L.contains("KEEP")) Kept = true;
+        if (!Keep.is_null() && !Kept) { N["LAYERS"].push_back(Keep); Saves = ", its saves kept (a Unity game)"; }
+    }
+    commitNode(Ni, std::move(N), false);
+    emit status(QString::fromStdString("Program set to " + Exe.substr(Exe.find_last_of('/') + 1) + " (" + Why + ")"
+                                       + (Host.empty() ? std::string() : ", runs on " + Host) + Saves));
+}
+
+void PkgActions::gogSteps(const std::string & NodeId, const std::filesystem::path & Folder)
+{
+    const std::filesystem::path Script = GogFile(Folder, ".script");
+    const int I = indexOf(NodeId);
+    if (Script.empty() || I < 0 || !Model->packageDir()) return;
+    std::ifstream In(Script, std::ios::binary);
+    const json S = json::parse(In, nullptr, false);
+    //The registry's bitness is the game's: its entry's platform, now that the program is known.
+    std::string Arch;
+    for (int K = 0; K < Model->doc().Count() && Arch.empty(); ++K)
+    {
+        const json & N = Model->doc().Node(K);
+        if (!HasLayers(N)) continue;
+        for (const json & L : N["LAYERS"])
+            if (L.is_object() && L.contains("EXEC") && L["EXEC"].is_array())
+                for (const json & E : L["EXEC"])
+                {
+                    const std::string H = StrOf(E, "HOST");
+                    if (H == "win32") Arch = "32"; else if (H == "win64") Arch = "64";
+                }
+    }
+    const GogSteps G = GogInstallSteps(S, Script.parent_path() / "__support", Arch);   // beside the script (top or app\)
+    if (G.Layers.empty()) return;
+    QString Text = "GOG's installer also does this when it installs the game:\n\n";
+    for (const std::string & L : G.Said) Text += QString::fromStdString("- " + L + "\n");
+    if (!G.Skipped.empty())
+    {
+        Text += "\nLeft out (it cannot apply here):\n";
+        for (const std::string & L : G.Skipped) Text += QString::fromStdString("- " + L + "\n");
+    }
+    if (choose("GOG's install steps", "Add GOG's install steps to this node?\n\n" + Text, {"Add them", "Not now"}, false) != 0) return;
+    //A binary file it copies in ships in the package; another file of that name already there is never replaced.
+    const std::filesystem::path Bundle = Model->packageDir()->path().toStdString();
+    for (const auto & [From, Name] : G.Copies)
+    {
+        std::error_code Ec;
+        const std::filesystem::path To = Bundle / Name;
+        if (std::filesystem::exists(To, Ec))
+        {
+            std::ifstream A(From, std::ios::binary), B(To, std::ios::binary);
+            const std::string Sa((std::istreambuf_iterator<char>(A)), {}), Sb((std::istreambuf_iterator<char>(B)), {});
+            if (Sa != Sb) { tell("GOG's install steps", "This package already has another \"" + QString::fromStdString(Name) + "\" - nothing was added."); return; }
+        }
+        else if (!std::filesystem::copy_file(From, To, Ec) || Ec)
+        { tell("GOG's install steps", "Could not copy \"" + QString::fromStdString(Name) + "\" into the package - nothing was added."); return; }
+    }
+    const int J = indexOf(NodeId);
+    if (J < 0) return;
+    json N = Model->doc().Node(J);
+    for (const json & L : G.Layers) N["LAYERS"].push_back(L);
+    commitNode(J, std::move(N), false);
+    emit status(QString("GOG's install steps added: %1 layer(s)").arg(G.Layers.size()));
+}
+
+void PkgActions::dropFiles(const QString & NodeIdQ, const QStringList & Paths)
+{
+    const std::string NodeId = NodeIdQ.toStdString();
+    if (indexOf(NodeId) < 0 || Paths.isEmpty()) return;
+    bool Heavy = false;
+    QStringList Refused;
+    for (const QString & P : Paths)
+    {
+        const QFileInfo F(P);
+        const QString Ext = F.suffix().toLower();
+        if (F.isDir() || Ext == "zip")
+        {
+            //One folder or zip at a time per node: each is a long copy with its own progress bar.
+            if (Heavy || Canvas->isBusy(NodeId)) { Refused << F.fileName() + " (one folder or zip at a time)"; continue; }
+            Heavy = true;
+            bringInPath(NodeId, P, F.isDir(), true);
+        }
+        else if (Ext == "png" || Ext == "jpg" || Ext == "jpeg" || Ext == "webp") coverFrom(NodeId, P);
+        else if (Ext == "reg") importRegFile(NodeId, P);
+        else Refused << F.fileName();
+    }
+    if (!Refused.isEmpty())
+        emit status("Not taken: " + Refused.join(", ") + " - drop a game's folder or zip, a cover image or a .reg export");
+}
+
+//The program a GOG install's primary play task names, as one of Found (matched without case: GOG writes TUNIC.exe for
+//Tunic.exe); "" when there is none.
+static std::string GogPlayTask(const std::vector<Program> & Infos, const std::vector<std::string> & Found)
+{
+    auto Lower = [](std::string S) { for (char & C : S) C = (char)std::tolower((unsigned char)C); return S; };
+    for (const Program & I : Infos)
+    {
+        const json G = json::parse(ReadHead(I, 1 << 20), nullptr, false);
+        if (!G.is_object() || !G.contains("playTasks") || !G["playTasks"].is_array()) continue;
+        for (const json & T : G["playTasks"])
+        {
+            if (!T.is_object() || !(T.value("isPrimary", false) || StrOf(T, "category") == "game") || StrOf(T, "path").empty()) continue;
+            std::string Path = StrOf(T, "path");
+            std::replace(Path.begin(), Path.end(), '\\', '/');
+            const std::string Want = Lower(I.Anchored.substr(0, I.Anchored.find_last_of('/')) + "/" + Path);
+            for (const std::string & F : Found) if (Lower(F) == Want) return F;
+        }
+    }
+    return {};
+}
+
+void PkgActions::pickExe(const std::string & NodeId, const std::string & Where)
+{
+    int I = indexOf(NodeId);
+    if (I < 0 || !Model->packageDir()) return;
+    //Where = "L<layer>/<entry>": the EXEC entry the pick is for.
+    int Layer = -1, Entry = -1;
+    if (std::sscanf(Where.c_str(), "L%d/%d", &Layer, &Entry) != 2 || Layer < 0 || Entry < 0) return;
+    std::vector<Program> Progs, Infos;
+    std::set<int> Seen;
+    ProgramsIn(Model->doc(), I, Model->packageDir()->path().toStdString(), Seen, Progs, &Infos);
+    std::vector<std::string> Found;
+    for (const Program & P : Progs) Found.push_back(P.Anchored);
+    //One program at one place, however many layers supply it (a No-CD exe over the game's): listed once.
+    std::sort(Found.begin(), Found.end());
+    Found.erase(std::unique(Found.begin(), Found.end()), Found.end());
+    //The node's OWN programs (its files, not the game it contains): a version's program is among them. Read by
+    //walking this node alone - every other node marked seen.
+    std::vector<Program> OwnProgs, OwnInfos;
+    {
+        std::set<int> Others;
+        for (int K = 0; K < Model->doc().Count(); ++K) if (K != I) Others.insert(K);
+        ProgramsIn(Model->doc(), I, Model->packageDir()->path().toStdString(), Others, OwnProgs, &OwnInfos);
+    }
+    std::vector<std::string> Own;
+    for (const Program & P : OwnProgs) Own.push_back(P.Anchored);
+    std::sort(Own.begin(), Own.end());
+    Own.erase(std::unique(Own.begin(), Own.end()), Own.end());
+    //The likeliest first, preselected: of its own programs, the one its GOG play task names, else the only likely
+    //one, else the one named like the version ("Revision.exe" for "Revision"); then the same over everything.
+    auto Lower = [](std::string S) { for (char & C : S) C = (char)std::tolower((unsigned char)C); return S; };
+    const json & Nn = Model->doc().Node(I);
+    const std::string Names = Lower(StrOf(Nn, "LABEL") + " " + StrOf(Nn, "VARIANT"));
+    auto Named = [&](const std::vector<std::string> & L) -> std::string {
+        for (const std::string & F : L)
+        {
+            std::string B = Lower(F.substr(F.find_last_of('/') + 1));
+            B = B.substr(0, B.find_last_of('.'));
+            if (B.size() >= 3 && Names.find(B) != std::string::npos) return F;
+        }
+        return {};
+    };
+    //An entry for Windows (or not said yet) is for a Windows program when there is one: a disc holding a DOS build
+    //and launcher scripts beside it (GTA's gtados, GTA.BAT) does not make them the likely one.
+    std::string WantHost;
+    {
+        const json & Nd = Model->doc().Node(I);
+        if (HasLayers(Nd) && Layer < (int)Nd["LAYERS"].size() && Nd["LAYERS"][(size_t)Layer].contains("EXEC")
+            && Nd["LAYERS"][(size_t)Layer]["EXEC"].is_array() && Entry < (int)Nd["LAYERS"][(size_t)Layer]["EXEC"].size())
+            WantHost = StrOf(Nd["LAYERS"][(size_t)Layer]["EXEC"][(size_t)Entry], "HOST");
+    }
+    auto WindowsOnes = [&](const std::vector<std::string> & L) {
+        if (!WantHost.empty() && WantHost != "win32" && WantHost != "win64") return L;
+        std::vector<std::string> W;
+        for (const std::string & F : L)
+            for (const Program & P : Progs)
+                if (P.Anchored == F)
+                {
+                    const std::string H = PlatformOf(P.Anchored, ReadHead(P, 4096));
+                    if (H == "win32" || H == "win64") W.push_back(F);
+                    break;
+                }
+        return W.empty() ? L : W;
+    };
+    const std::vector<std::string> OwnW = WindowsOnes(Own), FoundW = WindowsOnes(Found);
+    std::string First = GogPlayTask(OwnInfos, Own);
+    if (First.empty()) { const int K = LikelyProgram(OwnW); if (K >= 0) First = OwnW[(size_t)K]; }
+    if (First.empty()) First = Named(OwnW);
+    if (First.empty() && !OwnW.empty()) First = OwnW.front();
+    if (First.empty()) First = GogPlayTask(Infos, Found);
+    if (First.empty()) { const int K = LikelyProgram(FoundW); if (K >= 0) First = FoundW[(size_t)K]; }
+    //Its own programs first (the likeliest leading), then the rest.
+    std::stable_partition(Found.begin(), Found.end(), [&](const std::string & F) { return std::find(Own.begin(), Own.end(), F) != Own.end(); });
+    if (const auto It = std::find(Found.begin(), Found.end(), First); It != Found.end() && It != Found.begin())
+        std::rotate(Found.begin(), It, It + 1);
+    if (Found.empty())
+    {
+        tell("Pick the program", "This node's files hold no program yet (.exe, .bat, .sh ...).\n\n"
+                                 "Add the game's files first: + layer > ZIP, then actions... > bring in files.");
+        return;
+    }
+    QStringList Items;
+    for (const auto & F : Found) Items << QString::fromStdString(F);
+    const int C = choose("Pick the program", "Which program starts the game?", Items, true);
+    if (C < 0 || C >= Items.size()) return;
+    const QString Chosen = Items[C];
+    I = indexOf(NodeId);                                  // re-resolved after the modal - see browsePath
+    if (I < 0) return;
+    json N = Model->doc().Node(I);
+    if (!HasLayers(N) || Layer >= (int)N["LAYERS"].size() || !N["LAYERS"][Layer].contains("EXEC")) return;
+    json & Ex = N["LAYERS"][Layer]["EXEC"];
+    if (!Ex.is_array() || Entry >= (int)Ex.size() || !Ex[Entry].is_object()) return;
+    Ex[Entry]["EXE"] = Chosen.toStdString();
+    //The Host is the program's own, read from its header as bringing files in does: set when blank, and corrected
+    //when it names the other Windows bitness (left from the program picked before - a 32-bit launcher, say).
+    for (const Program & P : Progs)
+        if (P.Anchored == Chosen.toStdString())
+        {
+            const std::string H = PlatformOf(P.Anchored, ReadHead(P, 4096)), Was = StrOf(Ex[Entry], "HOST");
+            const bool Windows = (Was == "win32" || Was == "win64") && (H == "win32" || H == "win64");
+            if (!H.empty() && (Was.empty() || (Windows && H != Was)))
+            {
+                Ex[Entry]["HOST"] = H;
+                if (!Was.empty()) emit status(QString::fromStdString("Host changed to " + H + ": the program is " + PkgGraph::PlatformWords(H)));
+            }
+        }
+    //A game usually runs from its own folder; a work dir left blank becomes the program's.
+    if (StrOf(Ex[Entry], "WORKDIR").empty())
+    {
+        const std::string P = Chosen.toStdString();
+        Ex[Entry]["WORKDIR"] = P.substr(0, P.find_last_of('/'));
+    }
+    commitNode(I, std::move(N), false);
+}
+
 void PkgActions::browseCover(const std::string & NodeId)
 {
     if (indexOf(NodeId) < 0) return;
     const QString Bundle = Model->packageDir() ? Model->packageDir()->path() : QDir::homePath();
     const QString Picked = pick("Pick the cover image", Bundle, "Images (*.png *.jpg *.jpeg *.webp)");
     if (Picked.isEmpty()) return;
-    const QString Rel = QDir(Bundle).relativeFilePath(Picked);
-    if (Rel.startsWith("..")) { tell("Outside the bundle", "The cover must live in the package folder."); return; }
+    coverFrom(NodeId, Picked);
+}
+
+void PkgActions::coverFrom(const std::string & NodeId, const QString & Picked)
+{
+    //The shelf shows covers at 600x900 (2:3): any other image is stretched or cut there, so it is used only when asked.
+    const QSize Size = QImageReader(Picked).size();
+    if (Size != QSize(600, 900)
+        && !ask("Cover", (Size.isValid() ? QString("This image is %1x%2. Covers on the shelf are 600x900 (2:3), so it will look "
+                                                   "stretched or cut there.").arg(Size.width()).arg(Size.height())
+                                         : QString("This file does not read as an image."))
+                         + "\n\nUse it anyway?"))
+        return;
+    //A node presenting several tiles (a game and its expansion) says which one the image is for.
+    int Tile = 0;
+    if (const int I0 = indexOf(NodeId); I0 >= 0)
+        if (const QStringList Tiles = TileTitles(Model->doc().Node(I0)); Tiles.size() > 1)
+        {
+            Tile = choose("Cover", "Which tile is this the cover of?", Tiles, true);
+            if (Tile < 0) return;
+        }
+    const QString Bundle = Model->packageDir() ? Model->packageDir()->path() : QDir::homePath();
+    QString Rel = QDir(Bundle).relativeFilePath(Picked);
+    //An image from anywhere else (a download) is copied into the package under its own name: a cover ships with it.
+    if (Rel.startsWith(".."))
+    {
+        if (!Model->packageDir()) { tell("Cover", "Save the package first: the cover is copied into its folder."); return; }
+        Rel = QFileInfo(Picked).fileName();
+        const QString Dst = QDir(Bundle).filePath(Rel);
+        QFile A(Picked), B(Dst);
+        if (QFile::exists(Dst))
+        {
+            //The same image already here is used as it is; another image of that name is never replaced.
+            const bool Same = A.open(QIODevice::ReadOnly) && B.open(QIODevice::ReadOnly) && A.readAll() == B.readAll();
+            if (!Same) { tell("Cover", "This package already has another \"" + Rel + "\". Rename one of them first."); return; }
+        }
+        else if (!QFile::copy(Picked, Dst)) { tell("Cover", "Could not copy the image into the package."); return; }
+    }
     const int I = indexOf(NodeId);                // re-resolved after the modal — see browsePath
     if (I < 0) { tell("Browse", "That node is no longer in the package."); return; }
     //A cover belongs to a TILE, and a tile rides an EXEC entry. Anything of the wrong shape on the way is refused,
     //never replaced: the author reaches for this button on nodes they are still fixing.
     json Nc = Model->doc().Node(I);
-    json * E = CoverEntry(Nc);
+    json * E = CoverEntry(Nc, Tile);
     if (!E) { tell("Cover", "A cover belongs to a tile on an EXEC entry, and this node has no EXEC entry yet."); return; }
     if (!E->contains("TILE") || (*E)["TILE"].is_null()) (*E)["TILE"] = json::object({{"UID", ""}, {"TITLE", ""}});
     json & T = (*E)["TILE"];
@@ -378,12 +1584,14 @@ void PkgActions::browseCover(const std::string & NodeId)
     commitNode(I, std::move(Nc), false);
 }
 
-void PkgActions::convertZipDir(const std::string & NodeId, bool ToZip)
+void PkgActions::convertZipDir(const std::string & NodeId, bool ToZip, const std::string & Which)
 {
     const int I = indexOf(NodeId);
     if (I < 0) return;
     const json N = Model->doc().Node(I);
-    const std::string Path = ContentName(N);
+    if (!Which.empty() && DirLayerIndex(N, Which) < 0)
+    { tell("Nothing to convert", "This node has no folder layer \"" + QString::fromStdString(Which) + "\" any more."); return; }
+    const std::string Path = Which.empty() ? ContentName(N) : Which;
     if (Path.empty()) { tell("Nothing to convert", "This node's content layer names no file yet."); return; }
     const std::filesystem::path Bundle = Model->packageDir()->path().toStdString();
     const std::filesystem::path Src = ResolveInBundle(Bundle, Path);
@@ -428,7 +1636,7 @@ void PkgActions::convertZipDir(const std::string & NodeId, bool ToZip)
         // mounts to garbage. -X drops extra attributes so the archive is reproducible.
         runWithProgress(NodeId, "packing zip...", ZipTool, {"-0", "-r", "-X", QString::fromStdString(TmpZip.string()), "."},
                         QString::fromStdString(Src.string()), Total,
-                        [this, NodeId, ZipName, Src, Zip, TmpZip](bool Ok) {
+                        [this, NodeId, ZipName, Src, Zip, TmpZip, Which](bool Ok) {
             std::error_code Rc;
             if (!Ok || !std::filesystem::exists(TmpZip, Rc) || std::filesystem::file_size(TmpZip, Rc) == 0)
             {
@@ -442,7 +1650,12 @@ void PkgActions::convertZipDir(const std::string & NodeId, bool ToZip)
             std::filesystem::remove_all(Src, Rc);         // only now is the folder redundant
             const int J = indexOf(NodeId);
             if (J < 0) return;
-            { json Nj = Model->doc().Node(J); SetContent(Nj, "ZIP", ZipName); commitNode(J, std::move(Nj), true); }
+            {
+                json Nj = Model->doc().Node(J);
+                if (Which.empty()) SetContent(Nj, "ZIP", ZipName);
+                else if (const int K = DirLayerIndex(Nj, Which); K >= 0) DirToZip(Nj["LAYERS"][(size_t)K], ZipName);
+                commitNode(J, std::move(Nj), true);
+            }
             refreshHints();
         });
     }
@@ -739,6 +1952,11 @@ void PkgActions::importReg(const std::string & NodeId)
     const QString File = pick("Import a .reg file", QDir::homePath(),
                               "Registry exports (*.reg);;All files (*)");
     if (File.isEmpty()) return;
+    importRegFile(NodeId, File);
+}
+
+void PkgActions::importRegFile(const std::string & NodeId, const QString & File)
+{
     std::ifstream In(File.toStdString(), std::ios::binary);
     if (!In) { tell("Import .reg", "Could not read that file."); return; }
 

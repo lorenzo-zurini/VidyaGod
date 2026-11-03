@@ -32,6 +32,40 @@ namespace CapturePreview
 QStringList EncodeAnchors(const std::vector<std::pair<std::string, std::string>> &Layouts);
 QMap<QString, QString> ParseAnchors(const QStringList &Lines);
 QString MountBase(QString Target, const QString &ContentRoot, const QMap<QString, QString> &Anchors);
+//Whether one ticked folder is captured as its CONTENTS: it is the folder the TARGET mounts at (the game's folder ticked
+//for TARGET %GameDir%), or the node waits for its files at Target. Otherwise each root lands at its own level, and the
+//game's folder would arrive as a <uid>\ folder inside itself.
+bool CapturesContents(const QStringList &Roots, const QString &Target, const QString &WaitTarget, const QString &ContentRoot,
+                      const QMap<QString, QString> &Anchors);
+//The "Run Windows program" tool's runner choices, as "label\tid" lines, newest version first (geproton_11_7 before
+//geproton_10_34 before geproton_9_27): a person picks a runner by its name, the session by its id.
+QStringList RunnerChoices(const std::vector<std::pair<std::string, std::string>> &IdLabel);
+//Where the setup capture of the game's folder goes: the place the anchor waits for its files ("%GameDir%" from a
+//waiting layer's FILES/%GameDir%), "" when it waits for nothing; and the captured folder named after the node.
+QString WaitingTarget(const nlohmann::ordered_json &Anchor);
+QString CaptureName(const nlohmann::ordered_json &Anchor, const std::string &Id);
+//The preview of a capture of several roots, in at most MaxLines lines: the first ones, then how many more. A long
+//list would push the tree it describes off the window.
+QString PreviewLines(const QStringList &Lines, int MaxLines = 6);
+//A capture's folder name that no folder of the package holds yet: Name, else "Name 2", "Name 3"...
+QString FreeName(const QString &Name, const QString &PackageDir);
+//A captured folder's place in the guest ("pfx/drive_c/GOG Games/X" -> "C:\GOG Games\X"; "" outside drive_c), and
+//the anchor it now has in Windows spelling ("%GameDir%" captured as contents -> "%GameDir:winpath%"; a folder captured
+//at its level under "%Documents%/Saves" -> "%Documents:winpath%\Saves\<its name>").
+std::string GuestPathOf(const std::string &RootRel);
+std::string AnchorWinpath(const std::string &Target, const std::string &RootRel, bool Contents);
+//Every captured folder's guest path in a value, case-insensitively, as its anchor (an installer writes where it
+//installed; the node names the place by anchor).
+std::string Reanchor(std::string Value, const std::vector<std::pair<std::string, std::string>> &GuestToAnchor);
+//A captured folder as the session may already spell it in a registry value, by each anchor of the runtime it lies
+//under ("pfx/drive_c/Program Files (x86)/KONAMI/SH3" with %ProgramFiles32% laid out at "pfx/drive_c/Program Files
+//(x86)" -> "%ProgramFiles32%\KONAMI\SH3"); none under none.
+std::vector<std::string> AnchoredGuestsOf(const std::string &RootRel, const QMap<QString, QString> &Layouts);
+//What a capture names by anchor: each captured root's guest path -> its anchor, and - captured at its level - its
+//stripped parent folder -> the target itself. Each in both spellings: C:\... and, under an anchor of Layouts, the
+//anchored one the session's registry capture already wrote.
+std::vector<std::pair<std::string, std::string>> GuestAnchorsFor(const QStringList &Roots, const std::string &Target, bool Contents,
+                                                                 const QMap<QString, QString> &Layouts = {});
 }
 
 // ---------------------------------------------------------------------------
@@ -46,10 +80,12 @@ class AuthoringWorker : public QObject
     Q_OBJECT
 public slots:
     void start(QString configDump, QString bundlePath, QString nodeId);   // open a BARE runner-less runtime
-    void runWindows(QString exe, QString runnerId);   // wine tool: (re)build under runnerId, then run exe
+    void runWindows(QString exe, QString runnerId, QStringList args);   // wine tool: (re)build under runnerId, then run exe
     void runExe(QString exe);             // guest command on the live (wine) runtime — regedit.exe / explorer.exe
     void refreshDelta();
-    void captureFiles(QStringList roots, QString destDirAbs);   // each root captured at its own level (parent stripped)
+    //Each root captured at its own level (parent stripped) - or, Contents, its contents at the top (the root IS the
+    //folder the anchor waits for, e.g. the installed game folder that becomes %GameDir%).
+    void captureFiles(QStringList roots, QString destDirAbs, bool contents);
     void scanRegistry();                  // baseline-vs-now diff → the changed-key list + the full delta
     void end();
 
@@ -93,7 +129,7 @@ public:
 
 public slots:
     void start();                                       // open the bare runner-less runtime
-    void runWindows(const QString & Exe, const QString & RunnerId);   // the "Run Windows program" tool
+    void runWindows(const QString & Exe, const QString & RunnerId, const QStringList & Args = {});   // the "Run Windows program" tool
     void runGuest(const QString & GuestCmd);            // regedit.exe / explorer.exe (post-wine)
     void refreshDelta();
     void captureFiles(const QStringList & Roots, const QString & DestName, const QString & Target);
@@ -103,10 +139,10 @@ public slots:
 signals:
     // → worker (queued)
     void requestStart(QString configDump, QString bundlePath, QString nodeId);
-    void requestRunWindows(QString exe, QString runnerId);
+    void requestRunWindows(QString exe, QString runnerId, QStringList args);
     void requestRunExe(QString exe);
     void requestRefresh();
-    void requestCaptureFiles(QStringList roots, QString destDirAbs);
+    void requestCaptureFiles(QStringList roots, QString destDirAbs, bool contents);
     void requestScanRegistry();
     void requestEnd();
     // → subwidgets
@@ -137,6 +173,10 @@ private:
     AuthoringWorker *      Worker = nullptr;
     QString                PendDestName, PendTarget;   // file-capture context awaiting the worker result
     QStringList            PendRoots;                                  // the file roots being captured (echoed back on success)
+    bool                   PendContents = false;                       // ...captured as contents (the anchor's waiting files)
+    std::vector<std::pair<std::string, std::string>> GuestAnchors;     // captured folders' guest paths -> their anchors
+    QMap<QString, QString> AnchorLayouts;                              // the runtime's anchors -> where it lays them out
+    QString ContentRoot;                                                // the runtime's content root (pfx/drive_c/<uid>)
     nlohmann::ordered_json LastRegDelta = nlohmann::ordered_json::array();  // the scanned registry diff (filtered on capture)
 };
 
