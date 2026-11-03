@@ -12,6 +12,7 @@
 #include "ipfswrapper.h"
 #include "jsonoperations.h"
 
+#include <QDate>
 #include <QDir>
 #include <QFile>
 
@@ -185,6 +186,32 @@ int CliModes::RunMaintenanceModes(LaunchParameters &LaunchParameters, nlohmann::
     }
 
     //HEADLESS: print the presentable library tiles (grouped launchable nodes) + hydration status.
+    //The golden marker is the user's note on a game, kept in GlobalConfig only (PackageCatalog::SetGolden); a UID no card
+    //of the library carries is refused, so a typo does not mark nothing. A running GUI keeps its own copy of the config:
+    //what it saves next wins.
+    if (!LaunchParameters.GoldenUid.empty())
+    {
+        NodeIndex Index = PackageCatalog::BuildCatalogIndex(GlobalConfigJSON);
+        bool Known = false;
+        for (const auto &T : PackageCatalog::ShelfTiles(Index))
+            for (const Node *N : T.Rows) Known = Known || N->GameKey() == LaunchParameters.GoldenUid;
+        if (!Known)
+        {
+            LogErr("golden", "No game in the library has the package UID " + LaunchParameters.GoldenUid + ".");
+            return 1;
+        }
+        PackageCatalog::SetGolden(GlobalConfigJSON, LaunchParameters.GoldenUid, LaunchParameters.GoldenOn,
+                                  QDate::currentDate().toString(Qt::ISODate).toStdString());
+        QFile Cfg(AppDataDir.filePath("GlobalConfig.JSON"));
+        if (!JSONOps::SaveJSON(&GlobalConfigJSON, &Cfg))
+        {
+            LogErr("golden", "GlobalConfig.JSON could not be written.");
+            return 1;
+        }
+        LogSucc("golden", LaunchParameters.GoldenUid + (LaunchParameters.GoldenOn ? " marked golden." : " unmarked."));
+        return 0;
+    }
+
     if (LaunchParameters.ListNodes)
     {
         NodeIndex Index = PackageCatalog::BuildCatalogIndex(GlobalConfigJSON);
@@ -203,8 +230,11 @@ int CliModes::RunMaintenanceModes(LaunchParameters &LaunchParameters, nlohmann::
             if (!T.Rows.empty())
                 for (const std::string &I : InstanceStore::List(GlobalConfigJSON, T.Rows.front()->GameKey()))
                     Instances += (Instances.empty() ? "; instances: " : ", ") + I;
+            const std::string Golden = T.Rows.empty() ? std::string()
+                                     : PackageCatalog::GoldenSince(GlobalConfigJSON, T.Rows.front()->GameKey());
             LogOut("list-nodes", "  " + T.Tile.value("TITLE", T.Uid) + "  (tile " + T.Uid
-                   + (Parent.empty() ? std::string() : ", in " + Parent) + "):" + Variants + Instances);
+                   + (Parent.empty() ? std::string() : ", in " + Parent) + "):" + Variants + Instances
+                   + (Golden.empty() ? std::string() : "; golden since " + Golden));
         }
         return 0;
     }

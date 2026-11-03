@@ -18,7 +18,7 @@ const std::vector<std::string> &KeyNames::All()
         "comma", "period", "slash",
         "keypad 0", "keypad 1", "keypad 2", "keypad 3", "keypad 4", "keypad 5", "keypad 6", "keypad 7", "keypad 8",
         "keypad 9", "keypad period", "keypad divide", "keypad multiply", "keypad minus", "keypad plus", "keypad enter",
-        "mouse left", "mouse right", "mouse middle", "mouse 4", "mouse 5",
+        "mouse left", "mouse right", "mouse middle", "mouse 4", "mouse 5", "mouse wheel up", "mouse wheel down",
         "pad a", "pad b", "pad x", "pad y", "pad back", "pad guide", "pad start", "pad left stick", "pad right stick",
         "pad left shoulder", "pad right shoulder", "pad left trigger", "pad right trigger",
         "pad left stick up", "pad left stick down", "pad left stick left", "pad left stick right",

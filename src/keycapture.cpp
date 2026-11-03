@@ -12,6 +12,7 @@
 #include <QMouseEvent>
 #include <QPushButton>
 #include <QTimer>
+#include <QWheelEvent>
 #include <QToolButton>
 
 #include <map>
@@ -199,6 +200,11 @@ std::string KeyCapture::NameOf(Qt::MouseButton B)
     }
 }
 
+std::string KeyCapture::NameOfWheel(int DeltaY)
+{
+    return DeltaY > 0 ? "mouse wheel up" : DeltaY < 0 ? "mouse wheel down" : std::string();
+}
+
 KeyCaptureField::KeyCaptureField(const std::string &V, const std::string &Def, QWidget *Parent)
     : QWidget(Parent), Default(KeyNames::IsValue(Def) ? Def : std::string())
 {
@@ -305,6 +311,14 @@ bool KeyCaptureField::eventFilter(QObject *Watched, QEvent *Ev)
         stopCapture();
         setValue(N);
         return true;                                                 // eaten: no click → no new capture
+    }
+    case QEvent::Wheel:                                              // a horizontal tilt alone binds nothing
+    {
+        const std::string N = KeyCapture::NameOfWheel(static_cast<QWheelEvent *>(Ev)->angleDelta().y());
+        if (N.empty()) return true;
+        stopCapture();
+        setValue(N);
+        return true;
     }
     case QEvent::MouseButtonRelease:
     case QEvent::MouseButtonDblClick:

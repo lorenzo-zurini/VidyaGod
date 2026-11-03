@@ -707,6 +707,12 @@ LaunchParameters ParseCommandLineArguments(int argc, char* argv[])
         {
             RuntimeParameters.Offline = true;
         }
+        else if ((arg == "--mark-golden" || arg == "--unmark-golden") && i + 1 < argc)
+        {
+            RuntimeParameters.GoldenOn        = arg == "--mark-golden";
+            RuntimeParameters.GoldenUid       = argv[++i];
+            RuntimeParameters.RunningHeadless = true;
+        }
         else if (arg == "--list-nodes")
         {
             RuntimeParameters.ListNodes       = true;

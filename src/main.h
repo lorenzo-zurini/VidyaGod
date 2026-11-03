@@ -43,6 +43,8 @@ struct LaunchParameters
     std::string ValidateScope;                                           //optional package UID / bundle dir / node id after --validate-nodes: validate only that package + its PARENTS closure (fast pre-publish check), instead of the whole catalog
     bool AuditPackages = false;                                          //--audit-packages: resolve every launchable + static silent-failure checks, then exit
     bool FixCaseConflicts = false;                                       //--fix-case-conflicts: canonicalize cross-layer case-colliding zip entries (unpack/rename/repackage) so patches/add-ons override cleanly, then exit
+    std::string GoldenUid;                                               //--mark-golden / --unmark-golden <PackageUID>: set or clear the library's golden marker (local config only), then exit
+    bool GoldenOn = true;
     bool ListNodes = false;                                              //--list-nodes: print the presentable library tiles (grouped launchable nodes) + hydration status, then exit
     std::vector<std::string> ConvertDeltaChain;                          //--convert-delta-chain <baseNode> <node2> ...: reduce a version chain to a base full zip + per-version .vgdelta layers (byte-verified), then exit
     std::string SeedDir;                                                  //--seed <DIR>: add a folder's published content (LAYER/COVER SOURCE CIDs) to the IPFS node by reference, then exit

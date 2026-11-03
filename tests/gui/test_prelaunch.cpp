@@ -653,6 +653,24 @@ private slots:
         QCOMPARE(Menu->value(), std::string("mouse right"));
         QVERIFY(!Menu->capturing());
 
+        //A turn of the wheel binds by its direction; a horizontal tilt alone keeps waiting.
+        const auto wheel = [&](QPoint Angle) {
+            QWheelEvent Turn(QPointF(5, 5), Menu->button()->mapToGlobal(QPointF(5, 5)), QPoint(), Angle, Qt::NoButton,
+                             Qt::NoModifier, Qt::NoScrollPhase, false);
+            QCoreApplication::sendEvent(Menu->button(), &Turn);
+        };
+        QTest::mouseClick(Menu->button(), Qt::LeftButton);
+        wheel(QPoint(120, 0));
+        QVERIFY(Menu->capturing());
+        wheel(QPoint(0, -120));
+        QCOMPARE(Menu->value(), std::string("mouse wheel down"));
+        QTest::mouseClick(Menu->button(), Qt::LeftButton);
+        wheel(QPoint(0, 120));
+        QCOMPARE(Menu->value(), std::string("mouse wheel up"));
+        QVERIFY(!Menu->capturing());
+        QTest::mouseClick(Menu->button(), Qt::LeftButton);
+        QTest::mouseClick(Menu->button(), Qt::RightButton);
+
         //Focus leaving cancels and keeps the binding.
         QTest::mouseClick(Menu->button(), Qt::LeftButton);
         QVERIFY(Menu->capturing());

@@ -20,6 +20,8 @@ namespace KeyCapture
 std::string NameOf(const QKeyEvent &E);
 //The neutral name of a mouse button ("" for none).
 std::string NameOf(Qt::MouseButton B);
+//The neutral name of a turn of the wheel by DeltaY (QWheelEvent::angleDelta().y(): away from the user is up); "" for none.
+std::string NameOfWheel(int DeltaY);
 //The neutral name of an SDL game-controller button (SDL_GameControllerButton), or of an axis (SDL_GameControllerAxis)
 //pushed to Value: a trigger, or a stick's direction by its sign (SDL's Y grows downward); "" for anything else.
 //A/B/X/Y are positions (the Xbox layout), as SDL reports them.
