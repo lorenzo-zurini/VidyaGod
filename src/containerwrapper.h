@@ -36,7 +36,24 @@ public:
     //GlobalConfigJSON is read-only here — the wrapper copies it into its own member, never writing back to the
     //caller's config — so it's taken by const ref (lets read-only callers like the package editor pass a const config).
     ContainerWrapper(const nlohmann::ordered_json &Passed_GlobalConfigJSON, nlohmann::ordered_json &Passed_MANIFESTJSON, ContainerParams &Passed_ContainerParams);
+    ~ContainerWrapper();
+    ContainerWrapper(const ContainerWrapper &) = delete;
+    ContainerWrapper &operator=(const ContainerWrapper &) = delete;
     struct ContainerParams ContainerParams;
+
+    //The app is told to quit (QuitSignals): every session of this process is ended the way a user's Stop ends it — the
+    //game is killed, and the launch carries on into Cleanup, which stores what the game kept and removes the runtime. A
+    //launch still building stops at its next step instead of starting the game. For the rest of the process no game starts.
+    static void StopAll();
+    static bool Stopping();
+    //Sessions of this process: a wrapper from claiming its session folder (BuildContainerRuntime) to the end of its
+    //Cleanup — a resolve that builds nothing (a refused launch) is none, and neither is one marked NotAGame. WaitNoneLive
+    //blocks until there are none.
+    static size_t LiveCount();
+    static void WaitNoneLive();
+    //The package editor's authoring session: a runtime kept mounted while its window is open, which a quit does not wait
+    //for (it would wait for the user to close the window). Its folder is cleared by the next start's sweep.
+    void SetNotAGame() { NotAGame = true; }
 
     //Whether the constructor's resolve succeeded — false for a blocked, malformed or runnerless row. Nothing is
     //built, dumped or run from a wrapper that did not resolve.
@@ -89,6 +106,14 @@ private:
 
     //Held from BuildContainerRuntime to the end of Cleanup's unmounts (or the wrapper's end): a game is live.
     std::optional<VfsMount::RuntimeHold> Live;
+
+    //The session folder's ownership lock (VfsMount::ClaimSession), held from the build to the end of Cleanup; -1 = none.
+    int SessionLock = -1;
+    //This wrapper claimed its session folder: only then is there anything of its own for Cleanup to store or remove.
+    //A refused launch (the instance already running) must never tear down the folder another launch is using.
+    bool Claimed = false;
+    bool NotAGame = false;
+    void LeaveLive();   // out of the live set (Cleanup's end, the destructor)
 
     //Set to the running QProcess during Execute() so KillGame() can signal it.
     //Null at all other times. Read/written only under ActiveRunMutex.

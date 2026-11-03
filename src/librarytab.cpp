@@ -176,7 +176,9 @@ void LibraryTab::buildCards()
     //One tile per presentable GROUP of launchable nodes. Only HYDRATED groups (every edition's content present
     //locally) appear in the Library; un-hydrated ones live in the Available tab.
     const auto Hyd = PackageCatalog::HydrationMap(Model.catalogIndex());   // O(N+E) once — never per-launchable (deep chains → O(N²))
-    for (const PackageCatalog::ShelfTile & Tile : PackageCatalog::ShelfTiles(Model.catalogIndex()))
+    //The cards and the launch dialogs they open read one snapshot: a later re-index replaces it, and they are rebuilt.
+    const std::shared_ptr<const NodeIndex> Snapshot = Model.catalogSnapshot();
+    for (const PackageCatalog::ShelfTile & Tile : PackageCatalog::ShelfTiles(*Snapshot))
     {
         std::vector<std::string> Ids;
         bool AllHydrated = true, HasContent = false;
@@ -199,7 +201,7 @@ void LibraryTab::buildCards()
                                      + ") — none of its rows has content of its own on disk");
             continue;
         }
-        auto * c = new LibraryGameCard(Model.config(), &Model.catalogIndex(), std::move(Ids), Tile.Uid);
+        auto * c = new LibraryGameCard(Model.config(), Snapshot, std::move(Ids), Tile.Uid);
         c->InitializeClassVariables();
         LibraryGameCards->append(c);
     }

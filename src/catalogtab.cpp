@@ -170,7 +170,9 @@ void CatalogTab::rebuild()
     //One card per un-hydrated presentable group: at least one edition's content is still missing AND fetchable
     //over IPFS. (A fully-hydrated group lives in the Library tab.)
     const auto Hyd = PackageCatalog::HydrationMap(Model.catalogIndex());   // O(N+E) once — never per-launchable (deep chains → O(N²))
-    for (const PackageCatalog::ShelfTile & Tile : PackageCatalog::ShelfTiles(Model.catalogIndex()))
+    //The cards and the launch dialogs they open read one snapshot: a later re-index replaces it, and they are rebuilt.
+    const std::shared_ptr<const NodeIndex> Snapshot = Model.catalogSnapshot();
+    for (const PackageCatalog::ShelfTile & Tile : PackageCatalog::ShelfTiles(*Snapshot))
     {
         std::vector<std::string> Ids;
         bool AnyMissing = false, AnyFetchable = false;
@@ -197,7 +199,7 @@ void CatalogTab::rebuild()
                     AnyFetchable = true;
             }
         if (!AnyMissing || !AnyFetchable || Ids.empty()) continue;
-        auto * c = new LibraryGameCard(Model.config(), &Model.catalogIndex(), std::move(Ids), Tile.Uid);
+        auto * c = new LibraryGameCard(Model.config(), Snapshot, std::move(Ids), Tile.Uid);
         c->InitializeClassVariables();
 
         const bool Busy = ActiveDownloads.contains(c->GameKey);

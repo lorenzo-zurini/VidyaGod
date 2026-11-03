@@ -558,7 +558,7 @@ namespace {
 const std::vector<std::pair<const char *, const char *>> DllOpts    = {{"n,b","native, then builtin"},{"b,n","builtin, then native"},
                                                                        {"n","native only"},{"b","builtin only"},{"","disabled"}};
 const std::vector<std::pair<const char *, const char *>> ModeOpts   = {{"ConfigWrite","key = value"},{"Overwrite","whole file"},
-                                                                       {"AppendLine","append a line"},{"JsonSet","JSON: set a key"},
+                                                                       {"AppendLine","append a line"},{"JsonSet","JSON: set a key"},{"XmlSet","XML: set a value"},
                                                                        {"Delete","remove the file or folder"},
                                                                        {"Replace","bytes: replace"},{"ReplaceAll","bytes: replace every match"},
                                                                        {"Poke","bytes: poke"},{"Or","bytes: set bits"},{"Cave","bytes: cave"}};
@@ -608,9 +608,9 @@ std::vector<Field> MakeFields(const std::string &Type)
             {"EDIT",   "Ops",  FieldKind::ObjArray, "", {}, {
                 {"MODE",    "Mode",    FieldKind::Enum, "", ModeOpts, {}},
                 {"SECTION", "Section", FieldKind::Text, "(not read by any mode)", {}, {}, false, "-"},
-                {"KEY",     "Key",     FieldKind::Text, "ConfigWrite: the line's start (Resolution=) / JsonSet: /json/pointer", {}, {}, false, "ConfigWrite JsonSet"},
+                {"KEY",     "Key",     FieldKind::Text, "ConfigWrite: the line's start (Resolution=) / JsonSet: /json/pointer / XmlSet: /root/el[@k='v']/@attr", {}, {}, false, "ConfigWrite JsonSet XmlSet"},
                 {"VALUE",   "Value",   FieldKind::Text, "text value / JsonSet: JSON (else a string) / Poke: the scalar / Or: the bits", {}, {}, false,
-                 "ConfigWrite Overwrite AppendLine JsonSet Poke Or"},
+                 "ConfigWrite Overwrite AppendLine JsonSet XmlSet Poke Or"},
                 {"OFFSET",  "Offset",  FieldKind::Text, "0x... (VA or file offset) - or give Anchor", {}, {}, false, "Replace Poke Or Cave"},
                 {"ANCHOR",  "Anchor",  FieldKind::Text, "hex signature, ?? = wildcard - instead of Offset", {}, {}, false, "Replace Poke Or Cave"},
                 {"EXPECT",  "Expect",  FieldKind::Text, "the original bytes (the guard; for ReplaceAll, the bytes to find)", {}, {}, false, "Replace ReplaceAll Poke Cave"},
@@ -953,7 +953,7 @@ std::string EntrySummary(const json &E)
         const std::string Sec = StrField(E, "SECTION");
         return (Sec.empty() ? "" : "[" + Sec + "] ") + StrField(E, "KEY") + " = " + StrField(E, "VALUE");
     }
-    if (Mode == "JsonSet") return StrField(E, "KEY") + " = " + StrField(E, "VALUE");
+    if (Mode == "JsonSet" || Mode == "XmlSet") return StrField(E, "KEY") + " = " + StrField(E, "VALUE");
     auto Short = [](const std::string &H) { return H.size() > 12 ? H.substr(0, 10) + ".." : H; };
     if (Mode == "Replace") return Site + " " + Short(StrField(E, "EXPECT")) + " -> " + Short(StrField(E, "REPLACE"));
     if (Mode == "ReplaceAll") return "every " + Short(StrField(E, "EXPECT")) + " -> " + Short(StrField(E, "REPLACE"));
@@ -1232,8 +1232,8 @@ Fix FixFor(const std::string &M, const json *Node)
     }
     else if (M.find("runs a folder") != std::string::npos)
     {
-        const std::string K = Node ? UnfinishedEntry(*Node, true) : std::string();
-        if (!K.empty()) { F.Label = "pick its program"; F.Action = "open_entry:" + K; }
+        const std::string Entry = Node ? UnfinishedEntry(*Node, true) : std::string();
+        if (!Entry.empty()) { F.Label = "pick its program"; F.Action = "open_entry:" + Entry; }
     }
     return F;
 }

@@ -269,6 +269,37 @@ bool PersistLayer::CapturePersistFiles(struct ContainerParams &ContainerParams)
     }
     return Ok;
 }
+std::optional<std::filesystem::path> PersistLayer::SavedCopy(const struct ContainerParams &ContainerParams, const std::string &RuntimeRel)
+{
+    const auto Norm = [](std::string P) {
+        std::replace(P.begin(), P.end(), '\\', '/');
+        while (!P.empty() && P.front() == '/') P.erase(P.begin());
+        while (!P.empty() && P.back() == '/') P.pop_back();
+        return P;
+    };
+    const std::string Rel = Norm(RuntimeRel);
+    std::error_code Ec;
+    const auto File = [&](const std::filesystem::path &P) -> std::optional<std::filesystem::path> {
+        return std::filesystem::is_regular_file(P, Ec) ? std::optional<std::filesystem::path>(P) : std::nullopt;
+    };
+    for (const PersistTarget &F : ContainerParams.KeepFiles)
+    {
+        if (Norm(F.Path) == Rel) return File(ContainerParams.UserDataPath / F.Target);
+        const std::filesystem::path Pattern(Norm(F.Path)), R(Rel);
+        if (HasWildcard(F.Path) && R.parent_path() == Pattern.parent_path() && WildcardMatch(Pattern.filename().string(), R.filename().string()))
+            return File(ContainerParams.UserDataPath / F.Target / R.filename());
+    }
+    const PersistTarget *Best = nullptr;
+    size_t BestLen = 0;
+    for (const PersistTarget &D : ContainerParams.KeepDirs)
+    {
+        const std::string Dp = Norm(D.Path);
+        if ((Dp.empty() || Rel.rfind(Dp + "/", 0) == 0) && (!Best || Dp.size() > BestLen)) { Best = &D; BestLen = Dp.size(); }
+    }
+    if (!Best) return std::nullopt;
+    return File(ContainerParams.UserDataPath / Best->Target / (BestLen == 0 ? Rel : Rel.substr(BestLen + 1)));
+}
+
 bool PersistLayer::HasSavedCopy(const struct ContainerParams &ContainerParams, const std::string &RuntimeRel)
 {
     const auto Norm = [](std::string P) {

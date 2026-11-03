@@ -27,6 +27,17 @@ bool VerboseLogging();
 //this callback with the same level/context/message so UI components can display live logs.
 using LogCallback = std::function<void(LogLevel, const std::string&, const std::string&)>;
 void SetLogCallback(LogCallback callback);
+
+//While one lives on a thread, that thread's log lines go to stderr only: not to the UI sink, not into a launch's
+//Diagnostics tally. For work that only looks ahead (the launch window reading options back through a resolve), whose
+//lines would otherwise land in a game's console and verdict that happens to be running at the same time.
+struct QuietLog
+{
+    QuietLog();
+    ~QuietLog();
+    QuietLog(const QuietLog &) = delete;
+    QuietLog &operator=(const QuietLog &) = delete;
+};
 void ClearLogCallback();
 
 // ---------------------------------------------------------------------------

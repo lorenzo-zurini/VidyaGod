@@ -5,6 +5,8 @@
 #include <QtTest>
 
 #include "launchresolver.h"
+#include "containerwrapper.h"
+#include "vfsmount.h"
 #include "varsubst.h"
 #include "nodelower.h"
 #include "registrywrapper.h"
@@ -204,6 +206,81 @@ private slots:
         }
     }
 
+    // A launch of an instance that is already running is refused before it touches anything, and its Cleanup (every
+    // caller runs one after a failed build) leaves the running launch's session folder alone: that folder holds the live
+    // runtime and, through it, the user's kept files. Teeth: Cleanup without the claim guard removes the folder; the
+    // claim after the stale clear (the clear empties the folder first).
+    void a_refused_second_launch_leaves_the_running_session_alone()
+    {
+#ifdef _WIN32
+        QSKIP("session ownership locks are Linux's");
+#else
+        NodeIndex idx;
+        idx.Nodes["wine"]   = runnerNode("wine", {"win32"}, {"proton"});
+        idx.Nodes["proton"] = contentNode("proton", json::array({ json{{"ZIP", "proton.zip"}} }));
+        idx.Nodes["game"]   = launchNode("game", "win32", {});
+        finish(idx);
+        QTemporaryDir Tmp;
+        ContainerParams cp("/tmp/vg_bundle");
+        cp.NodeIdx = &idx;
+        cp.LaunchNodeId = "game";
+        cp.TempRootOverride = Tmp.path().toStdString();
+        json pool = json::object();
+        ContainerWrapper Second(json{{"Settings", json::object()}}, pool, cp);
+        QVERIFY(Second.Resolved());
+        const std::filesystem::path Folder = Second.ContainerParams.TempPath;
+        int Running = VfsMount::ClaimSession(Folder);                // the first launch, live
+        QVERIFY(Running >= 0);
+        std::filesystem::create_directories(Folder / "WRITELAYER");
+        std::ofstream(Folder / "WRITELAYER" / "save.dat") << "the running game's";
+        QVERIFY(!Second.BuildContainerRuntime());
+        QVERIFY(Second.Cleanup());
+        QVERIFY(std::filesystem::exists(Folder / "WRITELAYER" / "save.dat"));
+        QVERIFY(VfsMount::SessionOwned(Folder));
+        QCOMPARE(ContainerWrapper::LiveCount(), size_t(0));          // a refused launch is no session
+        VfsMount::ReleaseSession(Running, Folder);
+#endif
+    }
+
+    // A launch reads back what the game changed in a file the user keeps: the saved copy's value becomes the option's,
+    // in the instance and in this launch; one the file still holds as last known leaves a change made in the launch
+    // window since alone; a dry resolve (no ReadBackOptions) reads nothing. Teeth: no read-back in InitializeFromNode
+    // (res stays 1920); no re-resolve after adopting (the instance changes, the launch still writes 1920).
+    void a_launch_reads_back_what_the_game_changed()
+    {
+        NodeIndex idx;
+        idx.Nodes["wine"]   = runnerNode("wine", {"win32"}, {"proton"});
+        idx.Nodes["proton"] = contentNode("proton", json::array({ json{{"ZIP", "proton.zip"}} }));
+        const std::string Ini = "FILES/pfx/drive_c/game/settings.ini";
+        idx.Nodes["game"]   = launchNode("game", "win32", {}, json::object(), json::array({
+            json{{"VARS", {{"res", {{"DEFAULT", "1920"}, {"UI", {{"CONTROL", "int"}, {"LABEL", "Resolution"}}}}}}}},
+            json{{"EDIT", json::array({ json{{"MODE", "ConfigWrite"}, {"KEY", "Resolution="}, {"VALUE", "%res%"}} })}, {"TARGET", Ini}},
+            json{{"KEEP", {{Ini, true}, {Ini + "#Resolution=", false}}}} }));
+        finish(idx);
+        QTemporaryDir ud; QVERIFY(ud.isValid());
+        const json cfg = json{{"Settings", {{"Paths", {{"UserDataRoot", ud.path().toStdString()}}}}}};
+        const auto resolve = [&](bool ReadBack) {
+            ContainerParams cp("/tmp/vg_bundle");
+            cp.NodeIdx = &idx; cp.LaunchNodeId = "game"; cp.ReadBackOptions = ReadBack;
+            json pool = json::object();
+            if (!LaunchResolver::InitializeFromNode(cp, pool, cfg)) qFatal("resolve failed");
+            return cp;
+        };
+        const ContainerParams First = resolve(false);
+        QCOMPARE((int)First.KeepFiles.size(), 1);
+        const std::filesystem::path Saved = First.UserDataPath / First.KeepFiles[0].Target;
+        std::filesystem::create_directories(Saved.parent_path());
+        std::ofstream(Saved) << "[Video]\nResolution=2560\n";                 // changed in the game's own menu
+
+        QCOMPARE(resolve(false).CustomVariables.at("res"), std::string("1920"));   // a dry resolve reads nothing
+        QCOMPARE(resolve(true).CustomVariables.at("res"), std::string("2560"));
+        json C = InstanceStore::ReadConfig(cfg, First.PackageUID, First.InstanceName);
+        QCOMPARE(C["VARIABLES"]["res"].get<std::string>(), std::string("2560"));
+        C["VARIABLES"]["res"] = "1280";                                          // then changed in the launch window
+        QVERIFY(InstanceStore::WriteConfig(cfg, First.PackageUID, First.InstanceName, C));
+        QCOMPARE(resolve(true).CustomVariables.at("res"), std::string("1280"));
+    }
+
     // InitializeFromNode resolves the whole container from the node graph: runner pick, recipe, content-root.
     void initialize_from_node_resolves_runner_and_recipe()
     {
@@ -232,6 +309,37 @@ private slots:
         for (const auto & L : cp.SubComponentsArray)
             if (L.value("TYPE", std::string()) == "VFSDirLayer" && L.value("PATH", std::string()).find("/base") != std::string::npos) ++base;
         QCOMPARE(base, 1);
+    }
+
+    // %SteamAppId% is the launched tile's META.STEAMAPPID (a string or a number), else its nearest parent tile's, else "0"
+    // — never the package UID. Teeth: always "0"; the package UID as the fallback; no parent walk; a number dropped.
+    void steam_app_id_comes_from_the_tile_or_its_parent()
+    {
+        NodeIndex idx;
+        idx.Nodes["wine"]   = runnerNode("wine", {"win32"}, {"proton"});
+        idx.Nodes["proton"] = contentNode("proton", json::array({ json{{"ZIP", "proton.zip"}} }));
+        idx.Nodes["base"]   = contentNode("base", json::array({ json{{"DIR", "base"}} }));
+        idx.Nodes["game"]   = launchNode("game", "win32", {"base"},
+                                         json{{"TILE", {{"UID", "game"}, {"TITLE", "Game"}, {"META", {{"STEAMAPPID", "1771300"}}}}}});
+        idx.Nodes["exp"]    = launchNode("exp", "win32", {"base"},
+                                         json{{"TILE", {{"UID", "exp"}, {"PARENTUID", "game"}, {"TITLE", "Expansion"}}}});
+        idx.Nodes["num"]    = launchNode("num", "win32", {"base"},
+                                         json{{"TILE", {{"UID", "num"}, {"TITLE", "Num"}, {"META", {{"STEAMAPPID", 220}}}}}});
+        idx.Nodes["none"]   = launchNode("none", "win32", {"base"});
+        finish(idx);
+        const json cfg = json{{"Settings", json::object()}};
+        const auto appId = [&](const char *Id) {
+            ContainerParams cp("/tmp/vg_bundle");
+            cp.NodeIdx = &idx;
+            cp.LaunchNodeId = Id;
+            json pool = json::object();
+            if (!LaunchResolver::InitializeFromNode(cp, pool, cfg)) return std::string("<resolve failed>");
+            return cp.GetVariablesMap()["SteamAppId"];
+        };
+        QCOMPARE(appId("game"), std::string("1771300"));
+        QCOMPARE(appId("exp"),  std::string("1771300"));     // an expansion runs as its base game
+        QCOMPARE(appId("num"),  std::string("220"));
+        QCOMPARE(appId("none"), std::string("0"));           // not "none", its package UID
     }
 
     // A library pinned by the RUNNER contributes its order-independent layers to the game runtime, exactly as a
@@ -439,6 +547,35 @@ private slots:
 
         cp.RunnerChainIds = { "wineB" };
         QCOMPARE(LaunchResolver::ResolveChainIds(idx, launch, cp, cfg)[0], std::string("wineB"));
+    }
+
+    // The game's entry may recommend a runner by LABEL (RECOMMENDEDRUNNER): a soft pin. It is the default when the
+    // library has it installed; the instance's own pin wins over it; a label the library lacks, or a runner not installed
+    // while another carries the launch, leaves the default chain; with nothing installed it is the one to download.
+    // Teeth: ignore the field (aaa wins); let it beat the instance's pin; let an uninstalled one beat an installed chain.
+    void pick_runner_honours_the_entrys_recommended_runner()
+    {
+        NodeIndex idx;
+        idx.Nodes["aaa"]          = runnerNode("aaa", {"win32"});                       // sorts first
+        idx.Nodes["zzz_proton11"] = runnerNode("zzz_proton11", {"win32"});
+        idx.Nodes["p12build"]     = contentNode("p12build", json::array({ json{{"ZIP", "absent-proton12.zip"}} }));
+        idx.Nodes["zzz_proton12"] = runnerNode("zzz_proton12", {"win32"}, {"p12build"});   // not downloaded
+        const json cfg = json{{"Settings", json::object()}};
+        const auto first = [&](const char *Rec, std::vector<std::string> Pin = {}) {
+            Node launch = launchNode("game", "win32", {}, json{{"RECOMMENDEDRUNNER", Rec}});
+            ContainerParams cp("/tmp/vg_bundle");
+            cp.RunnerChainIds = std::move(Pin);
+            const auto Ids = LaunchResolver::ResolveChainIds(idx, launch, cp, cfg);
+            return Ids.empty() ? std::string() : Ids[0];
+        };
+        QVERIFY(!PackageCatalog::RunnerInstalled(idx, "zzz_proton12"));             // precondition
+        QCOMPARE(first("zzz_proton11"), std::string("zzz_proton11"));
+        QCOMPARE(first("zzz_proton11", {"aaa"}), std::string("aaa"));                 // the instance's pin wins
+        QCOMPARE(first("no_such_runner"), std::string("aaa"));                        // the default chain
+        QCOMPARE(first("zzz_proton12"), std::string("aaa"));                          // installed chains first
+        idx.Nodes.erase("aaa");
+        idx.Nodes.erase("zzz_proton11");
+        QCOMPARE(first("zzz_proton12"), std::string("zzz_proton12"));                 // nothing installed: the one to get
     }
 
     // The default pick prefers a runner RECOMMENDED for this tile over the alphabetically-first one. (A package never

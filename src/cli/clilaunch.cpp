@@ -123,6 +123,7 @@ int CliModes::RunNodeLaunch(LaunchParameters &LaunchParameters, nlohmann::ordere
         NewContainerParams.Grafts            = LaunchParameters.Grafts;
         NewContainerParams.Entrypoint        = LaunchParameters.Entrypoint;
         NewContainerParams.InstanceName      = LaunchParameters.InstanceName;   // "" ⇒ the active (last played) one
+        NewContainerParams.ReadBackOptions   = !LaunchParameters.ResolveOnly;  // what the game changed in its files is read back
         NewContainerParams.LaunchFace        = LaunchParameters.LaunchTile;   // --tile: the row runs as that tile
         //Same engine-injected session facts as the GUI path (see LaunchThread::run): the virtual-LAN vIPs + the
         //player's own display name, so `--node` behaves identically to a GUI launch.
@@ -215,6 +216,12 @@ int CliModes::RunNodeLaunch(LaunchParameters &LaunchParameters, nlohmann::ordere
         //False without a crash: the game was never started (the mandatory sandbox is unavailable). That is a failed
         //launch; it used to exit 0, and the launch matrix read "ran, printed nothing" on a machine without bwrap.
         const bool Started = NewContainerWrapper.Execute() || NewContainerWrapper.LastCrashed;
+        if (!Started && NewContainerWrapper.UserKilled)                 // told to quit before the game started
+        {
+            NewContainerWrapper.Cleanup();
+            Diagnostics::ReportVerdict("Launch of '" + LaunchParameters.LaunchNodeId + "'");
+            return 1;
+        }
         if (!Started)
         {
             LogErr("main.cpp", "The game was not started (see the log above).");
@@ -226,7 +233,7 @@ int CliModes::RunNodeLaunch(LaunchParameters &LaunchParameters, nlohmann::ordere
             Diagnostics::ReportVerdict("Launch of '" + LaunchParameters.LaunchNodeId + "'");
             return 1;
         }
-        if (NewContainerWrapper.LastCrashed || NewContainerWrapper.LastExitCode != 0)
+        if (!NewContainerWrapper.UserKilled && NewContainerWrapper.LastCrashed)   // a non-zero exit is Execute's warning
             LogWarn("main.cpp", "Game did not exit cleanly (code " + std::to_string(NewContainerWrapper.LastExitCode) + ").");
         //After the run, as after a refused one: what the package KEEPs is captured, then the runtime comes down.
         NewContainerWrapper.Cleanup();

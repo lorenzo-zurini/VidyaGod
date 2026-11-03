@@ -14,7 +14,7 @@ ContainerParams::ContainerParams(std::filesystem::path Passed_PackagePath, std::
     LogOut("ContainerParams::ContainerParams", "ContainerParams object created...");
 }
 
-std::map<std::string, std::string> ContainerParams::GetVariablesMap()
+std::map<std::string, std::string> ContainerParams::GetVariablesMap() const
 {
     //MINIMAL variable set (deliberate — see the format spec's variables chapter). Author-facing tokens are ONLY the
     //ones NOT composable from other tokens. Every path INSIDE the runtime/prefix is composed explicitly by the author
@@ -35,6 +35,7 @@ std::map<std::string, std::string> ContainerParams::GetVariablesMap()
     VariablesMap["PackageUID"]   = this->PackageUID;
     VariablesMap["PackageName"]  = this->PackageName;
     VariablesMap["GameName"]     = this->GameName;
+    VariablesMap["SteamAppId"]   = this->SteamAppId;
     VariablesMap["ScreenWidth"]  = this->ScreenWidth;
     VariablesMap["ScreenHeight"] = this->ScreenHeight;
     //Structural placement anchor — the prefix dir relative to the VFS root. All inside-prefix placement composes off it.

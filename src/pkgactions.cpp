@@ -666,8 +666,8 @@ void PkgActions::bringInPath(const std::string & NodeId, const QString & Picked,
         //-0 = STORE (vidyagodfs reads entries in place and cannot inflate); -X drops extra attributes. An extracted GOG
         //installer's own folders (its redistributables, support files, slideshow, uninstaller) are not the game.
         QStringList Args{"-0", "-r", "-X", QString::fromStdString(Tmp.string()), "."};
-        //What GOG's installer puts in the game folder itself is packed in at the top, over the rest, in its order: app\
-        //(GOG Galaxy's icon and web cache aside), then __support\app\ (the program and configs its script sets up, as
+        //What GOG's installer puts in the game folder itself is packed in at the top, over the rest, in its order: app/
+        //(GOG Galaxy's icon and web cache aside), then __support/app/ (the program and configs its script sets up, as
         //Icewind Dale II's IWD2.exe and icewind2.ini) - neither kept as a folder of its own.
         //Newer installers put everything there, __support\ included (Unreal Tournament 2004).
         std::vector<std::pair<std::filesystem::path, QString>> Tops;
@@ -1816,19 +1816,15 @@ void PkgActions::testLaunch(const std::string & Handle)
     // The real pre-launch dialog, on this one launchable: the runner picker, the optional-module toggles and the
     // CustomVars the player would actually see. Testing through the same door the player uses is the point —
     // a bespoke "run it" path is exactly how an editor drifts from the launcher.
-    //PreLaunchWindow is MODELESS and keeps a bare `const NodeIndex *`, so the index must outlive the dialog and
-    //must not be shared with the next one. A `static NodeIndex` reassigned per click did both wrong: opening a
-    //second test launch destroyed every std::map node the FIRST dialog's Node pointers referred to, and the
-    //first dialog silently began describing a different graph. Give each dialog its own index, owned by it.
-    auto Idx = std::make_unique<NodeIndex>(Model->BuildExecIndex());
+    //PreLaunchWindow is MODELESS, so the index must outlive the dialog (and its launch) and must not be shared with the
+    //next one. A `static NodeIndex` reassigned per click did both wrong: opening a second test launch destroyed every
+    //std::map node the FIRST dialog's Node pointers referred to, and the first dialog silently began describing a
+    //different graph. Each dialog gets its own index, which it and its launch keep alive.
+    auto Idx = std::make_shared<const NodeIndex>(Model->BuildExecIndex());
     if (!Idx->Find(NodeId))
     { tell("Test launch", "This node isn't in the catalog index yet — save the package first."); return; }
-    auto * Dlg = new PreLaunchWindow(Model->globalConfig(), Idx.get(), {NodeId}, std::string(), Parent);   // the node's first tile
+    auto * Dlg = new PreLaunchWindow(Model->globalConfig(), Idx, {NodeId}, std::string(), Parent);   // the node's first tile
     Dlg->setAttribute(Qt::WA_DeleteOnClose);
-    //Hand ownership to the dialog: destroyed() fires before ~QObject finishes but after the dialog has stopped
-    //using the index, and WA_DeleteOnClose means that is the only exit.
-    NodeIndex *Raw = Idx.release();
-    QObject::connect(Dlg, &QObject::destroyed, Dlg, [Raw]{ delete Raw; });
     Dlg->show();
 }
 

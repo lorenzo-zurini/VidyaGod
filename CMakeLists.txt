@@ -195,6 +195,12 @@ set(SHARED_SOURCES
     src/containerwrapper.h
     src/containerwrapper.cpp
 
+    src/quitsignals.h
+    src/quitsignals.cpp
+
+    src/optionreadback.h
+    src/optionreadback.cpp
+
     src/manifestmodel.h
     src/manifestmodel.cpp
     src/fold.cpp
@@ -404,6 +410,7 @@ add_executable(vg_tests
     tests/test_pkglayout.cpp
     tests/test_vgdelta.cpp
     tests/test_pkgdoc.cpp
+    tests/test_optionreadback.cpp
     src/manifestmodel.cpp
     src/fold.cpp
     src/cid.cpp
@@ -418,6 +425,7 @@ add_executable(vg_tests
     src/binarypatch.cpp
     src/registrylayer.cpp
     src/persistlayer.cpp
+    src/optionreadback.cpp
     src/pkggraph.cpp
     src/pkglayout.cpp
     src/pkgdoc.cpp

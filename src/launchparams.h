@@ -97,6 +97,12 @@ public:
 
     //Game specific:
     std::string GameName;                //Title of the selected game
+    std::string SteamAppId = "0";        //The launched tile's META.STEAMAPPID (else its parent's), "0" for none: %SteamAppId%
+    bool IgnoreSavedChain = false;       //ResolveChainIds: the default chain, as if the instance had saved none (the launch window's "changed?" test)
+    bool ReadBackOptions = false;        //InitializeFromNode reads the options a game changed back from its saved files (OptionReadBack): a real launch and the launch window, never a dry resolve
+    bool ReadBackReresolve = true;       //...and then resolves for real; false: the look-ahead only (the launch window updating the instance before it shows values)
+    std::map<std::string, std::string> PendingWritten;   //what this launch's option edits wrote (OptionReadBack::Written), noted in the instance once the session's capture stored it
+    std::map<std::string, nlohmann::ordered_json> VarDecls;   //RESOLVED: each variable's winning declaration (ResolveCustomVariables)
     std::string Platform;                //HOST_PLATFORM of the package (e.g. "win32", "snes", "custom") — matched against runner GUEST_PLATFORM
     std::vector<std::string> Recipe;     //Ordered list of ComponentIDs to apply, from leaf to root (reversed after build)
     nlohmann::ordered_json SubComponentsArray; //Flat, ordered array of all SUBCOMPONENTS across the Recipe's components
@@ -254,7 +260,7 @@ public:
 
     //Returns a map of all ContainerParams fields keyed by their %VARIABLE% token names.
     //Used by StringVariableSubstitution to expand tokens in runner ENV, args, and subcomponent paths.
-    std::map<std::string, std::string> GetVariablesMap();
+    std::map<std::string, std::string> GetVariablesMap() const;
 };
 
 #endif // LAUNCHPARAMS_H

@@ -1124,6 +1124,13 @@ void ValidateNodeGraph(const NodeIndex &Idx, std::vector<std::string> &Errors, s
             const std::string Host = E.value("HOST", std::string());
             if (Host.empty()) { Warnings.push_back(Tag + ": entry '" + Lbl + "' has no HOST platform"); continue; }
             if (!HasRunnerFor(Host, N.BundleDir)) Warnings.push_back(Tag + ": no runner serves platform '" + Host + "' on this machine");
+            //Soft: a library without the recommended runner launches on the default chain. Said, so a typo is seen.
+            if (const std::string Rec = E.value("RECOMMENDEDRUNNER", std::string()); !Rec.empty())
+            {
+                bool Have = false;
+                for (const auto &[RK, R] : Idx.Nodes) Have = Have || (R.IsRunner() && R.NodeId == Rec);
+                if (!Have) Warnings.push_back(Tag + ": entry '" + Lbl + "' recommends runner '" + Rec + "', which no runner in this library is (its LABEL)");
+            }
             //A folder is never a program: the starter Exe ("%GameDir%/") left as it was.
             if (const std::string X = E.value("EXE", std::string()); !X.empty() && (X.back() == '/' || X.back() == '\\'))
             { Errors.push_back(Tag + ": entry '" + Lbl + "' runs a folder (EXE '" + X + "') - pick the game's program"); continue; }

@@ -5,6 +5,8 @@
 #include <filesystem>
 #include <fstream>
 #include <string>
+#include <utility>
+#include <vector>
 #include <unistd.h>
 
 namespace {
@@ -273,4 +275,131 @@ TEST(deletepath_removes_files_folders_and_links_but_not_what_links_name)
     CHECK_EQ(ReadAll(dir / "victim.txt"), std::string("keep me"));
     CHECK(!FileEdits::DeletePath(dir / "nothing-here"));
     std::filesystem::remove_all(dir);
+}
+
+// ---- XmlSet ----
+namespace {
+// Kingdom Come: Deliverance II's profile (profiles/default/attributes.xml): one <Attr> per setting, the key bindings as
+// escaped XML inside one attribute, and settings left at their default absent altogether.
+const std::string Kcd2Profile =
+    "<?xml version=\"1.0\" encoding=\"utf-8\"?>\n"
+    "<Attributes>\n"
+    "\t<Attr name=\"g_resolution\" value=\"1920x1080\" />\n"
+    "\t<!-- the game's own comment -->\n"
+    "\t<Attr name=\"keybinds_settings\" value=\"&lt;keybinds&gt;&lt;superaction name=&quot;jump&quot; controller=&quot;keyboard&quot;&gt;"
+    "&lt;control input=&quot;space&quot; slot=&quot;0&quot;/&gt;&lt;/superaction&gt;&lt;/keybinds&gt;\" />\n"
+    "</Attributes>\n";
+const std::string Jump = "/Attributes/Attr[@name='keybinds_settings']/@value!/keybinds/superaction[@name='jump'][@controller='keyboard']/control[@slot='0']/@input";
+std::string Edit(const std::string &Key, const std::string &Value, const std::string &In)
+{
+    std::string Out, Why;
+    if (!FileEdits::XmlEdit(Key, Value, In, Out, Why)) return "<failed: " + Why + ">";
+    return Out;
+}
+std::string Get(const std::string &Key, const std::string &In)
+{
+    std::string Why;
+    const auto V = FileEdits::XmlGet(Key, In, Why);
+    return V ? *V : (Why.empty() ? "<absent>" : "<failed: " + Why + ">");
+}
+}
+
+// An attribute that is there changes in place: every other byte of the file (declaration, comment, quoting, the
+// "/>" spacing) stays. Teeth: rewrite the document instead of splicing; match the wrong <Attr> (no predicate check).
+TEST(xmlset_changes_an_attribute_in_place)
+{
+    std::string Want = Kcd2Profile;
+    Want.replace(Want.find("1920x1080"), 9, "2560x1440");
+    CHECK_EQ(Edit("/Attributes/Attr[@name='g_resolution']/@value", "2560x1440", Kcd2Profile), Want);
+    CHECK_EQ(Get("/Attributes/Attr[@name='g_resolution']/@value", Want), std::string("2560x1440"));
+}
+
+// A setting the game leaves out while it is at its default (KCD2's language) is created: an element with the
+// predicate's attribute and the value, after its parent's last child, indented like it. Teeth: no creation (the op is
+// a no-op, as ConfigWrite was); insert before the root instead of inside it.
+TEST(xmlset_creates_a_missing_element_after_its_siblings)
+{
+    const std::string Out = Edit("/Attributes/Attr[@name='g_language']/@value", "german", Kcd2Profile);
+    std::string Want = Kcd2Profile;
+    Want.insert(Want.find("\n</Attributes>"), "\n\t<Attr name=\"g_language\" value=\"german\" />");
+    CHECK_EQ(Out, Want);
+    CHECK_EQ(Get("/Attributes/Attr[@name='g_language']/@value", Out), std::string("german"));
+    CHECK_EQ(Get("/Attributes/Attr[@name='g_language']/@value", Kcd2Profile), std::string("<absent>"));
+}
+
+// '!' steps into the XML an attribute holds: the key bindings. A binding there is set and read; one the game left out
+// (it saves only those that differ from its defaults) is created inside the inner document; the outer file stays
+// escaped. Teeth: write the inner value unescaped; drop the '!' step (set the outer attribute to the bare value).
+TEST(xmlset_reaches_into_xml_inside_an_attribute)
+{
+    const std::string Out = Edit(Jump, "w", Kcd2Profile);
+    CHECK_EQ(Get(Jump, Out), std::string("w"));
+    CHECK(Out.find("control input=&quot;w&quot; slot=&quot;0&quot;") != std::string::npos);
+    CHECK(Out.find("g_resolution\" value=\"1920x1080\" />\n\t<!-- the game's own comment -->") != std::string::npos);
+    const std::string Crouch = "/Attributes/Attr[@name='keybinds_settings']/@value!/keybinds/superaction[@name='crouch'][@controller='keyboard']/control[@slot='0']/@input";
+    const std::string Out2 = Edit(Crouch, "left ctrl", Out);
+    CHECK_EQ(Get(Crouch, Out2), std::string("left ctrl"));
+    CHECK_EQ(Get(Jump, Out2), std::string("w"));
+    CHECK(Out2.find('<', Out2.find("value=\"&lt;keybinds")) == Out2.find("\n</Attributes>") + 1);   // nothing raw inside
+}
+
+// Element text, an empty parent, an absent file's document, values that need escaping, and a CRLF file's own newlines.
+// Teeth: escape nothing (the & breaks the file); insert with "\n" into a CRLF file.
+TEST(xmlset_sets_text_escapes_and_keeps_newlines)
+{
+    CHECK_EQ(Edit("/cfg/video/width", "1024", "<cfg><video><width>800</width></video></cfg>"),
+             std::string("<cfg><video><width>1024</width></video></cfg>"));
+    CHECK_EQ(Edit("/cfg/video/width", "1024", "<cfg><video/></cfg>"),
+             std::string("<cfg><video>\n\t<width>1024</width>\n</video></cfg>"));
+    CHECK_EQ(Edit("/cfg/video/@mode", "1", ""), std::string("<cfg><video mode=\"1\" /></cfg>\n"));
+    const std::string Esc = Edit("/a/@v", "R&D \"<x>\"", "<a v='1'/>");
+    CHECK_EQ(Esc, std::string("<a v='R&amp;D \"&lt;x&gt;\"'/>"));
+    CHECK_EQ(Get("/a/@v", Esc), std::string("R&D \"<x>\""));
+    CHECK_EQ(Edit("/a/b[@n='2']/@v", "y", "<a>\r\n  <b n=\"1\" v=\"x\"/>\r\n</a>\r\n"),
+             std::string("<a>\r\n  <b n=\"1\" v=\"x\"/>\r\n  <b n=\"2\" v=\"y\" />\r\n</a>\r\n"));
+    CHECK_EQ(Get("/a/b", "<a><b><![CDATA[1 < 2]]></b></a>"), std::string("1 < 2"));
+    //A parent holding only a comment keeps it; the new element goes after it.
+    CHECK_EQ(Edit("/cfg/video/res/@w", "1", "<cfg>\n  <video>\n    <!-- written by the game -->\n  </video>\n</cfg>"),
+             std::string("<cfg>\n  <video>\n    <!-- written by the game -->\n  \t<res w=\"1\" />\n  </video>\n</cfg>"));
+    //An attribute's literal newline reads as a space, as XML says.
+    CHECK_EQ(Get("/a/@v", "<a v=\"x\ny\"/>"), std::string("x y"));
+}
+
+// What it cannot do safely it refuses, and the file is not touched: a file that is not well-formed, a root other than
+// the path's, text set on an element that holds elements, an entity only a DTD defines, a malformed path.
+TEST(xmlset_refuses_what_it_cannot_write_back)
+{
+    for (const auto &[Key, In] : std::vector<std::pair<std::string, std::string>>{
+             {"/a/@v", "<a><b></a>"}, {"/a/@v", "<a><b></c></a>"}, {"/a/@v", "<a/><b/>"}, {"/x/@v", "<a/>"}, {"/a", "<a><b/></a>"},
+             {"/a/@v", "<a v=\"&custom;\"/>"}, {"a/@v", "<a/>"}, {"/a/b[name='1']/@v", "<a/>"}, {"/a/", "<a/>"},
+             {"/a/b", "<a><b><!x></b></a>"}, {"/a/b", "<a><b><!DOCTYPE z></b></a>"},              // no markup as a value
+             {"/a/b[@='1']/@v", "<a/>"}, {"/a/b[@k><evil/><z='1']/@v", "<a/>"}, {"/a/b&x/@v", "<a/>"},  // XML names only
+             {"/a/b[@na me='x']/@v", "<a/>"}, {"/a/@v", "<a v=\"&#xD800;\"/>"}, {"/a/b/@v", "<a>text<!-- note --></a>"}})
+    {
+        std::string Out, Why;
+        CHECK(!FileEdits::XmlEdit(Key, "1", In, Out, Why));
+        CHECK(!Why.empty());
+    }
+    auto Dir = TmpDir("xml");
+    const auto F = Dir / "bad.xml";
+    Write(F, "<a><b></a>");
+    CHECK(!FileEdits::XmlSet("/a/@v", "1", F));
+    CHECK_EQ(ReadAll(F), std::string("<a><b></a>"));
+    std::filesystem::remove_all(Dir);
+}
+
+// The XmlSet MODE reaches XmlSet through ProcessFileEdits (KEY the path, VALUE the value). Teeth: drop the dispatch.
+TEST(xmlset_mode_applies_through_the_edit_pass)
+{
+    const std::filesystem::path Root = TmpDir("xmlmode");
+    const std::filesystem::path Base = Root / "base";
+    std::filesystem::create_directories(Base / "profiles");
+    Write(Base / "profiles" / "attributes.xml", Kcd2Profile);
+    ContainerParams CP(Root / "PKG");
+    CP.SubComponentsArray = nlohmann::ordered_json::array({
+        nlohmann::ordered_json{{"TYPE","FileEdit"},{"FILE","profiles/attributes.xml"},{"MODE","XmlSet"},
+                               {"KEY","/Attributes/Attr[@name='g_language']/@value"},{"VALUE","german"}}});
+    CHECK(FileEdits::ProcessFileEdits(CP, /*OverridePass=*/false, Base));
+    CHECK_EQ(Get("/Attributes/Attr[@name='g_language']/@value", ReadAll(Base / "profiles" / "attributes.xml")), std::string("german"));
+    std::filesystem::remove_all(Root);
 }

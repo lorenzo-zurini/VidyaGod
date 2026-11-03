@@ -100,6 +100,7 @@ bool AuthoringSession::BuildRuntime(const std::vector<std::string> &Chain)
         Wrapper.reset(); Params.reset();
         return false;
     }
+    Wrapper->SetNotAGame();
     if (!Wrapper->BuildContainerRuntime())
     {
         LogErr("AuthoringSession::BuildRuntime", "Failed to build authoring runtime for '" + TargetId + "'.");

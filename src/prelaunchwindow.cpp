@@ -130,13 +130,14 @@ QPixmap RoundedCover(const QPixmap& Src, int Width, qreal Dpr)
 
 PreLaunchWindow::PreLaunchWindow(
     nlohmann::ordered_json*  GlobalConfigJSON,
-    const NodeIndex*         Index,
+    std::shared_ptr<const NodeIndex> Graph,
     std::vector<std::string> GroupNodeIds,
     std::string              FaceUid,
     QWidget*                 parent)
     : QDialog(parent)
     , GlobalConfigJSON(GlobalConfigJSON)
-    , Index(Index)
+    , IndexOwned(std::move(Graph))
+    , Index(IndexOwned.get())
     , GroupNodeIds(std::move(GroupNodeIds))
     , FaceUid(std::move(FaceUid))
 {
@@ -1061,6 +1062,31 @@ void PreLaunchWindow::EvaluateVarConditions()
     if (OptionsTree) HideEmptySections(OptionsTree->invisibleRootItem());
 }
 
+//What the game changed in its own settings since the last launch becomes the instance's value before the controls show
+//it (OptionReadBack, through the launch's own resolve): the window opens on the game's settings, and Launch writes them
+//back unchanged. Nothing is mounted or launched.
+void PreLaunchWindow::ReadBackFromFiles()
+{
+    if (PackageUID.empty() || !Index) return;
+    //Once per row and instance shown: a graft tick or a chain change does not make the game's files say anything new.
+    const std::string Key = InstanceName + "|" + LaunchNodeId + "|" + RowGraft;
+    if (Key == ReadBackDoneFor) return;
+    ReadBackDoneFor = Key;
+    ContainerParams Cp{std::filesystem::path(BundleDir), std::string(), std::string()};
+    Cp.NodeIdx         = Index;
+    Cp.LaunchNodeId    = RowGraft.empty() ? LaunchNodeId : RowGraft;
+    Cp.GraftBase       = RowGraft.empty() ? std::string() : LaunchNodeId;
+    Cp.Entrypoint      = Entrypoint;
+    Cp.LaunchFace      = FaceUid;
+    Cp.InstanceName    = InstanceName;
+    Cp.RunnerChainIds  = CurrentChain;
+    Cp.Grafts          = CollectGrafts();
+    Cp.ReadBackOptions = true;
+    Cp.ReadBackReresolve = false;
+    nlohmann::ordered_json Pool = nlohmann::ordered_json::object();
+    (void)LaunchResolver::InitializeFromNode(Cp, Pool, *GlobalConfigJSON);
+}
+
 void PreLaunchWindow::RebuildCustomVarPickers()
 {
     //clear() frees the rows at once but only deleteLater()s their controls — which still carry CVWhen/CVItem (a
@@ -1074,6 +1100,7 @@ void PreLaunchWindow::RebuildCustomVarPickers()
     for (QWidget* W : OldControls) delete W;
     const Node* L = CurrentLaunch();
     if (!L) { SetTabShown(OptionsPage, false); return; }
+    ReadBackFromFiles();
 
     // The knobs are the FOLDED declarations: the row's (with the ticked grafts), then every chain runner's.
     const Fold::Library Lib = ManifestModel::LibraryOf(*Index);
@@ -1752,11 +1779,21 @@ void PreLaunchWindow::onLaunchClicked()
     {
         PackageCatalog::MergePackageVariables(*GlobalConfigJSON, PackageUID, PickerVars, InstanceName);
         SaveGrafts();
-        //Persist the whole resolved chain (RUNNER_CHAIN supersedes the old single PREFERRED_RUNNER). The resolver
-        //honours it on the next launch (and the chain UI pre-selects it).
+        //The chain is kept (RUNNER_CHAIN, which the resolver honours and the chain UI pre-selects) only when it is not
+        //the default: a saved default is a hard pin, and would hold the instance to today's runners after a better
+        //one is installed or the game starts recommending one (RECOMMENDEDRUNNER).
         { nlohmann::ordered_json ChainJson = nlohmann::ordered_json::array();
           for (const std::string& Id : SelectedChain) ChainJson.push_back(Id);
-          PackageCatalog::SetPackageUserSetting(*GlobalConfigJSON, PackageUID, "RUNNER_CHAIN", ChainJson, InstanceName); }
+          std::vector<std::string> Default;
+          if (const Node* L = CurrentLaunch())
+          {
+              ContainerParams Cp(std::filesystem::path(BundleDir), LaunchNodeId, std::string());
+              Cp.NodeIdx = Index; Cp.LaunchNodeId = LaunchNodeId; Cp.Entrypoint = Entrypoint; Cp.PackageUID = PackageUID;
+              Cp.InstanceName = InstanceName; Cp.Platform = ChainStepInput(0); Cp.IgnoreSavedChain = true;
+              Default = LaunchResolver::ResolveChainIds(*Index, *L, Cp, *GlobalConfigJSON);
+          }
+          PackageCatalog::SetPackageUserSetting(*GlobalConfigJSON, PackageUID, "RUNNER_CHAIN",
+                                                SelectedChain == Default ? nlohmann::ordered_json() : ChainJson, InstanceName); }
         if (RememberCheck->isChecked())
             PackageCatalog::SetPackageUserSetting(*GlobalConfigJSON, PackageUID, "SKIP_LAUNCH_DIALOG", true, InstanceName);
         persistGlobalConfig();
@@ -1776,6 +1813,7 @@ void PreLaunchWindow::onLaunchClicked()
     // Build + start the worker — native node launch via LaunchNodeId.
     LaunchWorker = new LaunchThread();
     LaunchWorker->GlobalConfigJSON = *GlobalConfigJSON;
+    LaunchWorker->Index            = IndexOwned;                              // the graph this dialog shows, not a re-scan
     //A graft that is a version is launched as itself, on its base (the engine applies it and names the game by it).
     LaunchWorker->LaunchNodeId     = RowGraft.empty() ? LaunchNodeId : RowGraft;
     LaunchWorker->GraftBase        = RowGraft.empty() ? std::string() : LaunchNodeId;
@@ -1871,6 +1909,10 @@ void PreLaunchWindow::onLaunchFinished(bool success, QString errorMsg)
     KillButton->setEnabled(false); KillButton->setVisible(false);
     LaunchButton->setVisible(true);
     CloseButton->setEnabled(true);
+    //The game may have changed its settings while it ran: the window (which stays open across the run) shows what its
+    //files say now, so the next Launch does not write the pre-run values back over them.
+    ReadBackDoneFor.clear();
+    RebuildCustomVarPickers();
     if (success) { if (!StatusLabel->text().startsWith("⚠")) StatusLabel->setText("Finished" + (StatusLabel->text().contains("0 warnings") ? QString("  ·  0 warnings") : QString())); }
     else
     {

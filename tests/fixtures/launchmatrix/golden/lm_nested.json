@@ -125,6 +125,7 @@
     "RuntimePath": "<TMP>/90000000000001/DefaultInstance/RUNTIME",
     "ScreenHeight": "<volatile>",
     "ScreenWidth": "<volatile>",
+    "SteamAppId": "0",
     "TempPath": "<TMP>/90000000000001/DefaultInstance",
     "VIDYAGOD_PEER_NAMES": "<volatile>",
     "VIDYAGOD_PEER_VIPS": "<volatile>",

@@ -1,5 +1,14 @@
 #include "containerwrapper.h"
+
+#include <atomic>
+#include <condition_variable>
+#include <mutex>
+#include <set>
 #include "boxlaunch.h"
+#include "platform/platform.h"   // SelfExe — the sandbox payload is this program
+#include "apppaths.h"
+#include "instancestore.h"
+#include "optionreadback.h"   // the options written, noted for the next read-back
 #include "boxprefix.h"   // RemoveTree — a wipe that never follows a link (Windows)
 #include "registrywrapper.h"
 #include "commonutils.h"
@@ -51,12 +60,55 @@ struct StepScope {
 //still referenced unqualified is IsVfsLayer, so bring ManifestModel in.
 using namespace ManifestModel;
 
+namespace
+{
+std::mutex                       g_LiveMtx;
+std::condition_variable          g_LiveCv;
+std::set<ContainerWrapper *>     g_LiveWrappers;
+std::atomic<bool>                g_Stopping{false};
+}
+
+void ContainerWrapper::StopAll()
+{
+    g_Stopping = true;
+    //Held while killing, so no wrapper is destroyed mid-call (its destructor takes the same lock). KillGame takes only
+    //the wrapper's own mutex and waits for nothing that needs this one.
+    std::lock_guard<std::mutex> G(g_LiveMtx);
+    for (ContainerWrapper *W : g_LiveWrappers) W->KillGame();
+}
+
+bool ContainerWrapper::Stopping() { return g_Stopping.load(); }
+
+size_t ContainerWrapper::LiveCount()
+{
+    std::lock_guard<std::mutex> G(g_LiveMtx);
+    return g_LiveWrappers.size();
+}
+
+void ContainerWrapper::WaitNoneLive()
+{
+    std::unique_lock<std::mutex> G(g_LiveMtx);
+    g_LiveCv.wait(G, [] { return g_LiveWrappers.empty(); });
+}
+
 //Stores the JSON references and immediately runs the full initialization pipeline.
 //After construction, ContainerParams is fully populated and ready for BuildContainerRuntime().
 ContainerWrapper::ContainerWrapper(const nlohmann::ordered_json &Passed_GlobalConfigJSON, nlohmann::ordered_json &Passed_MANIFESTJSON, struct ContainerParams &Passed_ContainerParams)
     : ContainerParams(Passed_ContainerParams), GlobalConfigJSON(Passed_GlobalConfigJSON), MANIFESTJSON(Passed_MANIFESTJSON)   // match member declaration order (ContainerParams is declared first)
 {
     InitOk = this->InitializeContainer();
+}
+
+void ContainerWrapper::LeaveLive()
+{
+    std::lock_guard<std::mutex> G(g_LiveMtx);
+    if (g_LiveWrappers.erase(this)) g_LiveCv.notify_all();
+}
+
+ContainerWrapper::~ContainerWrapper()
+{
+    VfsMount::ReleaseSession(SessionLock, ContainerParams.TempPath);
+    LeaveLive();
 }
 
 //ContainerWrapper is now a thin SESSION ORCHESTRATOR: it owns the live config/manifest/ContainerParams and a single
@@ -112,8 +164,32 @@ bool ContainerWrapper::BuildContainerRuntime()
     //Clear any runtime left under TempPath by a previously crashed/incomplete run BEFORE mounting.
     //Stale union/zip/bind mounts and leftover RUNTIME/DEFPREFIX/staging dirs would otherwise corrupt
     //this build (or cause spurious "already mounted"/EEXIST failures).
+    //The session folder is claimed BEFORE anything is cleared or mounted, and one another live launch owns (the same
+    //instance launched twice, from two VidyaGods) is refused: clearing it would unmount the running game's runtime from
+    //under it. A refused launch has nothing of its own, so its Cleanup does nothing (Claimed stays false).
+    {
+        std::lock_guard<std::mutex> G(g_LiveMtx);
+        if (Stopping())
+        {
+            LogErr("ContainerWrapper::BuildContainerRuntime", "VidyaGod is quitting — not starting a game.");
+            return false;
+        }
+        //In the live set from here, under the lock StopAll takes: a quit either sees this launch or refused it above.
+        if (!NotAGame) g_LiveWrappers.insert(this);
+    }
     {
         StepScope Step(3, "Sweeping stale runtime state");
+        SessionLock = VfsMount::ClaimSession(ContainerParams.TempPath);
+        if (SessionLock < -1)
+        {
+            LogErr("ContainerWrapper::BuildContainerRuntime", SessionLock == -2
+                   ? "This instance is already running (" + ContainerParams.TempPath.string() + " belongs to a live launch) — start another instance to play it twice."
+                   : "The session folder " + ContainerParams.TempPath.string() + " cannot be claimed (see the log above).");
+            SessionLock = -1;
+            LeaveLive();
+            return false;
+        }
+        Claimed = true;
         VfsMount::CleanStaleRuntime(ContainerParams.TempPath);
     }
 
@@ -133,6 +209,7 @@ bool ContainerWrapper::BuildContainerRuntime()
             return false;
         }
     }
+    if (Stopping()) { LogOut("ContainerWrapper::BuildContainerRuntime", "VidyaGod is quitting — the build stops here."); return false; }
 
     //AUTO-DETECT whether any subcomponent requires a VFS mount.
     for (auto &Sub : ContainerParams.SubComponentsArray)
@@ -225,6 +302,10 @@ bool ContainerWrapper::BuildContainerRuntime()
         if (!FileEdits::ProcessFileEdits(this->ContainerParams, /*OverridePass=*/true))
             LogErr("ContainerWrapper::BuildContainerRuntime",
                    "OVERRIDE FileEdits FAILED — package settings above were not applied; the game is misconfigured.");
+        //What the options' edits really wrote (read back from the runtime): noted in the instance once Cleanup has
+        //stored what the session keeps, so the next launch's read-back tells a change the game made from it.
+        if (this->ContainerParams.ReadBackOptions && AppPaths::UserDataPathOverride().empty())
+            this->ContainerParams.PendingWritten = OptionReadBack::Written(this->ContainerParams);
         //BinaryPatch (APPLY:prefix) COWs the game exe in the writelayer — the pristine content zip is untouched.
         //Same loud-but-non-fatal contract: an errored patch means the game runs unmodified (no No-CD, crash fix
         //not applied, etc.) while everything else looks fine.
@@ -564,6 +645,15 @@ bool ContainerWrapper::Execute(const std::string &OverrideExe, const std::vector
                 It != ContainerParams.CustomVariables.end() && !It->second.empty())
                 SbOpts.Cloak = It->second;
 
+            //The sandbox's payload is this program, started again by its path. Replaced on disk since it started (a
+            //rebuild, an update), that path is gone ("… (deleted)") and bwrap fails before the game runs: said plainly.
+            if (const std::string Self = Platform::SelfExe().string();
+                Self.size() > 10 && Self.compare(Self.size() - 10, 10, " (deleted)") == 0)
+            {
+                LogErr("ContainerWrapper::Execute", "VidyaGod was updated on disk while running (" + Self
+                       + ") — restart VidyaGod to launch games.");
+                return false;
+            }
             //The game's loader variables go to the game alone: bwrap's payload is this binary (--sandbox-init), and a
             //runner's bundled libraries on its loader path broke our own Qt/GLib before main() (exit 127).
             SandboxLayer::WrapGame(SbOpts, Program, Arguments, RunProcessEnvironment, SystemToolEnv());
@@ -593,7 +683,17 @@ bool ContainerWrapper::Execute(const std::string &OverrideExe, const std::vector
         ActiveRunProcess = &RunProcess;
     }
 
+    //The quit can land between the check below and start(): KillGame then finds a process with no pid yet, so the check
+    //is made again once it runs.
+    if (Stopping())
+    {
+        { QMutexLocker Locker(&ActiveRunMutex); ActiveRunProcess = nullptr; }
+        this->UserKilled = true;
+        LogOut("ContainerWrapper::Execute", "VidyaGod is quitting — the game is not started.");
+        return false;
+    }
     RunProcess.start();
+    if (Stopping()) KillGame();
     RunProcess.waitForFinished(-1);
 
     //Clear the pointer before reading output so KillGame() does not dereference a finished process.
@@ -611,12 +711,20 @@ bool ContainerWrapper::Execute(const std::string &OverrideExe, const std::vector
     {
         this->LastCrashed = true;
         this->LastExitCode = -1;
-        LogErr("ContainerWrapper::Execute", "Process crashed.");
+        //A game ended on purpose (the user's Stop, VidyaGod told to quit) dies by SIGKILL: that is no crash to report.
+        if (this->UserKilled || Stopping()) LogOut("ContainerWrapper::Execute", "The game was stopped.");
+        else LogErr("ContainerWrapper::Execute", "Process crashed.");
         return false;
     }
     this->LastCrashed = false;
     this->LastExitCode = RunProcess.exitCode();
-    LogOut("ContainerWrapper::Execute", "Process exited normally with code " + std::to_string(RunProcess.exitCode()));
+    //A non-zero code is in the launch's verdict: the sandbox failing before the game ran exits 1 too, and "0 warnings"
+    //under it read as a clean run.
+    if (RunProcess.exitCode() != 0 && !this->UserKilled && !Stopping())
+        LogWarn("ContainerWrapper::Execute", "The game (or its sandbox) exited with code " + std::to_string(RunProcess.exitCode())
+                + " — see the lines above.");
+    else
+        LogOut("ContainerWrapper::Execute", "Process exited normally with code " + std::to_string(RunProcess.exitCode()));
     return true;
 }
 
@@ -670,6 +778,14 @@ void ContainerWrapper::KillGame()
 bool ContainerWrapper::Cleanup()
 {
     std::error_code ec;
+    //Nothing of this launch's own exists before it claimed its session folder; the folder at TempPath may be another
+    //live launch's (this one was refused), and tearing it down would delete the running game's runtime and saves.
+    if (!Claimed)
+    {
+        Live.reset();
+        LeaveLive();
+        return true;
+    }
 
     //1. Registry + file capture must read RUNTIME/<...> before anything is unmounted (no-op when none declared).
     //A capture failure means the user's session state was NOT saved — say so loudly (still proceed with
@@ -690,6 +806,18 @@ bool ContainerWrapper::Cleanup()
         LogErr("ContainerWrapper::Cleanup", "Registry-key persistence capture FAILED — this session's key state was not stored.");
         Captured = false;
     }
+    //The options' writes are what the stored files hold now. Only after a capture that stored them: a session that died
+    //before its capture leaves the old copies, and noting the new values would make the next launch read the user's
+    //older saved value as a change the game made.
+    if (Captured && !ContainerParams.PendingWritten.empty())
+    {
+        nlohmann::ordered_json Config = InstanceStore::ReadConfig(GlobalConfigJSON, ContainerParams.PackageUID, ContainerParams.InstanceName);
+        std::string Err;
+        if (OptionReadBack::Commit(Config, ContainerParams.PendingWritten)
+            && !InstanceStore::WriteConfig(GlobalConfigJSON, ContainerParams.PackageUID, ContainerParams.InstanceName, Config, &Err))
+            LogWarn("ContainerWrapper::Cleanup", "could not note the options written (" + Err + ")");
+        ContainerParams.PendingWritten.clear();
+    }
     //The box is emptied only once what it kept is stored; else it stays, and the next launch saves it first.
     if (Captured) BoxLaunch::Discard(this->ContainerParams);
     else if (this->ContainerParams.BoxPrepared)
@@ -699,12 +827,13 @@ bool ContainerWrapper::Cleanup()
     //What the program wrote in its private home (SandboxLayer::FromParams) is kept nowhere: it goes with TEMP. A save or a
     //setting written there is lost, so each one is a warning naming the file, not a silent success. Said here, before
     //the gate below, so it is said even when TEMP has to be left in place. Not worth a warning: two files every program
-    //makes (the PulseAudio client's cookie, fontconfig's cache, the log protonfixes writes on every Proton launch) and the GPU driver's shader cache, which lands here
+    //makes (the PulseAudio client's cookie, fontconfig's cache, the logs protonfixes writes on every Proton launch) and the GPU driver's shader cache, which lands here
     //only on a machine whose real home has none yet to carry in (FromParams carries the ones that exist).
     {
         std::vector<std::string> Left = SandboxLayer::HomeLeftovers(SandboxLayer::FromParams(ContainerParams).Home);
         std::erase_if(Left, [](const std::string &P){
-            return P == ".config/pulse/cookie" || P == ".cache/umu-protonfixes/protonfixes_test.log"
+            return P == ".config/pulse/cookie" || P.starts_with(".cache/protonfixes/")
+                || P.starts_with(".cache/umu-protonfixes/")
                 || P.starts_with(".cache/fontconfig/") || P.starts_with(".cache/nvidia/")
                 || P.starts_with(".cache/mesa_shader_cache") || P.starts_with(".nv/"); });
         if (!Left.empty())
@@ -777,6 +906,9 @@ bool ContainerWrapper::Cleanup()
     std::filesystem::remove_all(this->ContainerParams.TempPath, ec);
     if (ec) LogWarn("ContainerWrapper::Cleanup", "Could not remove TEMP: " + ec.message() + " — may still be mounted.");
 #endif
+    VfsMount::ReleaseSession(SessionLock, ContainerParams.TempPath);
+    Claimed = false;
+    LeaveLive();
     return true;
 }
 

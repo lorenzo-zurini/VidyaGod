@@ -298,8 +298,10 @@ std::string CheckLayer(const ordered_json &L)
         {
             if (!E.is_object() || !E.contains("LABEL") || !E["LABEL"].is_string()) return "every EXEC entry needs a LABEL";
             if (!Labels.insert(E["LABEL"].get<std::string>()).second) return "two EXEC entries share the LABEL '" + E["LABEL"].get<std::string>() + "'";
-            for (const char *F : {"HOST", "EXE", "WORKDIR", "CONTENT_ROOT"})
+            for (const char *F : {"HOST", "EXE", "WORKDIR", "CONTENT_ROOT", "RECOMMENDEDRUNNER"})
                 if (E.contains(F) && !E[F].is_string()) return std::string("EXEC ") + F + " must be a string";
+            if (E.contains("RECOMMENDEDRUNNER") && E.contains("GUEST") && E["GUEST"].is_array() && !E["GUEST"].empty())
+                return "EXEC RECOMMENDEDRUNNER is a game's: a runner entry recommends no runner";
             for (const char *F : {"GUEST", "ARGS"})
                 if (E.contains(F) && !E[F].is_null() && !StrArray(E[F])) return std::string("EXEC ") + F + " must be a list of strings";
             for (const char *F : {"PREFIX_GENERATE", "UNIFIED_RUNTIME"})
@@ -496,7 +498,7 @@ nlohmann::ordered_json LowerEntry(const nlohmann::ordered_json &E)
         L["PLATFORM"] = E.value("HOST", ordered_json(""));
         if (E.contains("EXE")) L["CONTENTPATH"] = E["EXE"];
         if (E.contains("ARGS") && E["ARGS"].is_array()) L["EXEARGS"] = E["ARGS"];
-        for (const char *F : {"WORKDIR", "LABEL"})
+        for (const char *F : {"WORKDIR", "LABEL", "RECOMMENDEDRUNNER"})
             if (E.contains(F)) L[F] = E[F];
     }
     return L;
@@ -558,7 +560,7 @@ std::string KeptUnder(const nlohmann::ordered_json &Keep, const std::string &Add
 std::string EditAddress(const nlohmann::ordered_json &Op, const std::string &Target)
 {
     const std::string Mode = Str(Op.value("MODE", ordered_json()));
-    return "FILES/" + Target + (Mode == "ConfigWrite" || Mode == "JsonSet" ? "#" + Str(Op.value("KEY", ordered_json())) : std::string());
+    return "FILES/" + Target + (Mode == "ConfigWrite" || Mode == "JsonSet" || Mode == "XmlSet" ? "#" + Str(Op.value("KEY", ordered_json())) : std::string());
 }
 
 namespace {

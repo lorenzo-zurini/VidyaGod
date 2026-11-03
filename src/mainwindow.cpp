@@ -3,6 +3,7 @@
 #include "appmodel.h"
 #include "downloadmanager.h"
 #include "traycontroller.h"
+#include "quitsignals.h"
 #include "librarytab.h"
 #include "catalogtab.h"
 #include "settingstab.h"
@@ -78,6 +79,8 @@ MainWindow::MainWindow(nlohmann::ordered_json * gc, QDir * appData, QWidget * pa
         QApplication::setQuitOnLastWindowClosed(false);
     connect(Tray, &TrayController::restoreRequested, this, [this]{ restoreFromTray(); });
     connect(Tray, &TrayController::quitRequested,    this, [this]{ ReallyQuitting = true; close(); });
+    //Told to quit (SIGTERM, a logout) once the games are ended: the tray's Quit, which closing-to-tray cannot cancel.
+    QuitSignals::SetQuitAction([this]{ ReallyQuitting = true; close(); });
 
     BuildStaticUI();
 

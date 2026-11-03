@@ -4,6 +4,8 @@
 #include "varsubst.h"      // %variable% substitution in FileEdit VALUEs (e.g. config_info's %RunnerMount%/%TempPath%)
 
 #include <algorithm>
+#include <cstring>
+#include <optional>
 #include <filesystem>
 #include <fstream>
 #include <sstream>
@@ -202,6 +204,8 @@ bool FileEdits::ProcessFileEdits(struct ContainerParams &ContainerParams, bool O
             EditOk = FileEdits::ConfigWrite(Key, Value, FilePath);
         else if (Mode == "JsonSet")
             EditOk = FileEdits::JsonSet(Key, Value, FilePath);
+        else if (Mode == "XmlSet")
+            EditOk = FileEdits::XmlSet(Key, Value, FilePath);
         else if (Mode == "Overwrite")
             EditOk = FileEdits::FileOverwrite(Value, FilePath);
         else if (Mode == "AppendLine")
@@ -398,6 +402,501 @@ bool FileEdits::JsonSet(const std::string &Pointer, const std::string &Value, co
     if (!Out) { LogErr("FileEdits::JsonSet", "Could not open for writing: " + FilePath.string()); return false; }
     Out << Text;
     return static_cast<bool>(Out);
+}
+
+//===================================================================================================================
+//                                                   XmlSet
+//===================================================================================================================
+//A small, strict reader of the XML a game writes: elements, attributes, text, CDATA, comments, processing instructions
+//and a DOCTYPE, located by byte offset. An edit replaces one span of the original text, so everything else in the file
+//(its layout, its quoting, its comments, its declaration) is kept byte for byte.
+namespace {
+
+struct XAttr { std::string Name; size_t ValStart = 0, ValEnd = 0; char Quote = '"'; };
+struct XElem
+{
+    std::string Name;
+    size_t TagStart = 0;         // '<'
+    size_t AttrsEnd = 0;         // after the name or the last attribute's closing quote
+    size_t TagEnd = 0;           // after the start tag's '>'
+    size_t CloseStart = 0;       // '<' of the end tag (== TagEnd for an empty element)
+    size_t CloseEnd = 0;         // after the end tag's '>' (== TagEnd for an empty element)
+    bool Empty = false;          // <a/>
+    std::vector<XAttr> Attrs;
+    std::vector<size_t> Children;
+};
+struct XDoc { std::vector<XElem> Elems; long Root = -1; };
+
+constexpr size_t MaxXmlDepth = 256;
+
+bool XmlNameChar(char C) { return !(C == ' ' || C == '\t' || C == '\r' || C == '\n' || C == '/' || C == '>' || C == '=' || C == '<' || C == '"' || C == '\''); }
+
+//An XML Name (letters, digits, '_', ':', '-', '.', and any non-ASCII byte; not starting with a digit, '-' or '.'):
+//what a KEY may name, since a created element writes it into the file as it is.
+bool XmlName(const std::string &N)
+{
+    if (N.empty()) return false;
+    const auto Start = [](unsigned char C) { return std::isalpha(C) || C == '_' || C == ':' || C >= 0x80; };
+    if (!Start(static_cast<unsigned char>(N[0]))) return false;
+    return std::all_of(N.begin() + 1, N.end(), [&](char C) {
+        const unsigned char U = static_cast<unsigned char>(C);
+        return Start(U) || std::isdigit(U) || C == '-' || C == '.';
+    });
+}
+
+bool ParseXml(const std::string &T, XDoc &D, std::string &Why)
+{
+    std::vector<size_t> Stack;
+    size_t P = T.rfind("\xEF\xBB\xBF", 0) == 0 ? 3 : 0;
+    const auto skipTo = [&](const char *End) {
+        const size_t E = T.find(End, P);
+        if (E == std::string::npos) return false;
+        P = E + std::strlen(End);
+        return true;
+    };
+    while (P < T.size())
+    {
+        if (T[P] != '<')
+        {
+            const size_t N = T.find('<', P);
+            if (Stack.empty() && T.find_first_not_of(" \t\r\n", P) < std::min(N, T.size())) { Why = "text outside the root element"; return false; }
+            P = N == std::string::npos ? T.size() : N;
+            continue;
+        }
+        if (T.compare(P, 4, "<!--") == 0) { if (!skipTo("-->")) { Why = "an unclosed comment"; return false; } continue; }
+        if (T.compare(P, 9, "<![CDATA[") == 0)
+        {
+            if (Stack.empty()) { Why = "CDATA outside the root element"; return false; }
+            if (!skipTo("]]>")) { Why = "an unclosed CDATA section"; return false; }
+            continue;
+        }
+        if (T.compare(P, 2, "<?") == 0) { if (!skipTo("?>")) { Why = "an unclosed processing instruction"; return false; } continue; }
+        if (T.compare(P, 2, "<!") == 0)                                       // DOCTYPE, its internal subset in [ ]
+        {
+            if (!Stack.empty() || D.Root >= 0) { Why = "a declaration outside the prolog"; return false; }
+            int Br = 0; char Q = 0; size_t I = P + 2;
+            for (; I < T.size(); ++I)
+            {
+                const char C = T[I];
+                if (Q) { if (C == Q) Q = 0; continue; }
+                if (C == '"' || C == '\'') Q = C;
+                else if (C == '[') ++Br;
+                else if (C == ']') --Br;
+                else if (C == '>' && Br <= 0) break;
+            }
+            if (I >= T.size()) { Why = "an unclosed declaration"; return false; }
+            P = I + 1;
+            continue;
+        }
+        if (T.compare(P, 2, "</") == 0)
+        {
+            size_t I = P + 2, S = I;
+            while (I < T.size() && XmlNameChar(T[I])) ++I;
+            const std::string Name = T.substr(S, I - S);
+            while (I < T.size() && (T[I] == ' ' || T[I] == '\t' || T[I] == '\r' || T[I] == '\n')) ++I;
+            if (I >= T.size() || T[I] != '>') { Why = "a malformed end tag"; return false; }
+            if (Stack.empty() || D.Elems[Stack.back()].Name != Name) { Why = "an end tag </" + Name + "> that closes nothing open"; return false; }
+            D.Elems[Stack.back()].CloseStart = P;
+            D.Elems[Stack.back()].CloseEnd = I + 1;
+            Stack.pop_back();
+            P = I + 1;
+            continue;
+        }
+        XElem E;
+        E.TagStart = P;
+        size_t I = P + 1, S = I;
+        while (I < T.size() && XmlNameChar(T[I])) ++I;
+        E.Name = T.substr(S, I - S);
+        if (E.Name.empty()) { Why = "a '<' that starts no tag"; return false; }
+        E.AttrsEnd = I;
+        for (;;)
+        {
+            while (I < T.size() && (T[I] == ' ' || T[I] == '\t' || T[I] == '\r' || T[I] == '\n')) ++I;
+            if (I >= T.size()) { Why = "an unclosed tag <" + E.Name; return false; }
+            if (T.compare(I, 2, "/>") == 0) { E.Empty = true; I += 2; break; }
+            if (T[I] == '>') { ++I; break; }
+            XAttr A;
+            const size_t N0 = I;
+            while (I < T.size() && XmlNameChar(T[I])) ++I;
+            A.Name = T.substr(N0, I - N0);
+            while (I < T.size() && (T[I] == ' ' || T[I] == '\t' || T[I] == '\r' || T[I] == '\n')) ++I;
+            if (A.Name.empty() || I >= T.size() || T[I] != '=') { Why = "a malformed attribute in <" + E.Name; return false; }
+            ++I;
+            while (I < T.size() && (T[I] == ' ' || T[I] == '\t' || T[I] == '\r' || T[I] == '\n')) ++I;
+            if (I >= T.size() || (T[I] != '"' && T[I] != '\'')) { Why = "an unquoted attribute value in <" + E.Name; return false; }
+            A.Quote = T[I];
+            A.ValStart = ++I;
+            const size_t Q = T.find(A.Quote, I);
+            if (Q == std::string::npos || std::find(T.begin() + static_cast<long>(I), T.begin() + static_cast<long>(Q), '<') != T.begin() + static_cast<long>(Q))
+            { Why = "an unclosed attribute value in <" + E.Name; return false; }
+            A.ValEnd = Q;
+            I = Q + 1;
+            E.AttrsEnd = I;
+            E.Attrs.push_back(std::move(A));
+        }
+        E.TagEnd = I;
+        if (E.Empty) E.CloseStart = E.CloseEnd = I;
+        const size_t Id = D.Elems.size();
+        if (Stack.empty())
+        {
+            if (D.Root >= 0) { Why = "more than one root element"; return false; }
+            D.Root = static_cast<long>(Id);
+        }
+        else D.Elems[Stack.back()].Children.push_back(Id);
+        D.Elems.push_back(std::move(E));
+        if (!D.Elems[Id].Empty)
+        {
+            if (Stack.size() >= MaxXmlDepth) { Why = "elements nest deeper than " + std::to_string(MaxXmlDepth) + " levels"; return false; }
+            Stack.push_back(Id);
+        }
+        P = I;
+    }
+    if (!Stack.empty()) { Why = "<" + D.Elems[Stack.back()].Name + "> is never closed"; return false; }
+    return true;
+}
+
+void AppendUtf8(std::string &Out, unsigned long C)
+{
+    if (C < 0x80) Out += static_cast<char>(C);
+    else if (C < 0x800) { Out += static_cast<char>(0xC0 | (C >> 6)); Out += static_cast<char>(0x80 | (C & 0x3F)); }
+    else if (C < 0x10000) { Out += static_cast<char>(0xE0 | (C >> 12)); Out += static_cast<char>(0x80 | ((C >> 6) & 0x3F)); Out += static_cast<char>(0x80 | (C & 0x3F)); }
+    else { Out += static_cast<char>(0xF0 | (C >> 18)); Out += static_cast<char>(0x80 | ((C >> 12) & 0x3F)); Out += static_cast<char>(0x80 | ((C >> 6) & 0x3F)); Out += static_cast<char>(0x80 | (C & 0x3F)); }
+}
+
+//The value an attribute or text holds: the five predefined entities and character references read; any other entity
+//(one a DTD defines) is refused, since writing it back escaped would change what it says. An attribute's literal tab,
+//CR and LF read as spaces, as XML normalises them (a reference to one stays that character).
+bool XmlUnescape(const std::string &In, std::string &Out, bool Attribute = false)
+{
+    Out.clear();
+    for (size_t I = 0; I < In.size(); ++I)
+    {
+        if (In[I] != '&')
+        {
+            if (Attribute && In[I] == '\r' && I + 1 < In.size() && In[I + 1] == '\n') continue;   // CRLF is one LF
+            Out += Attribute && (In[I] == '\t' || In[I] == '\r' || In[I] == '\n') ? ' ' : In[I];
+            continue;
+        }
+        const size_t E = In.find(';', I);
+        if (E == std::string::npos) return false;
+        const std::string N = In.substr(I + 1, E - I - 1);
+        if (N == "lt") Out += '<'; else if (N == "gt") Out += '>'; else if (N == "amp") Out += '&';
+        else if (N == "quot") Out += '"'; else if (N == "apos") Out += '\'';
+        else if (N.size() > 1 && N[0] == '#')
+        {
+            const bool Hex = N[1] == 'x' || N[1] == 'X';
+            const std::string Digits = N.substr(Hex ? 2 : 1);
+            if (Digits.empty() || Digits.size() > 8 || Digits.find_first_not_of(Hex ? "0123456789abcdefABCDEF" : "0123456789") != std::string::npos) return false;
+            const unsigned long C = std::stoul(Digits, nullptr, Hex ? 16 : 10);
+            if (C == 0 || C > 0x10FFFF || (C >= 0xD800 && C <= 0xDFFF)) return false;   // no NUL, no surrogate
+            AppendUtf8(Out, C);
+        }
+        else return false;
+        I = E;
+    }
+    return true;
+}
+
+std::string XmlEscape(const std::string &In, char Quote)   // Quote 0: element text
+{
+    std::string Out;
+    for (const char C : In)
+        switch (C)
+        {
+        case '&': Out += "&amp;"; break;
+        case '<': Out += "&lt;"; break;
+        case '>': Out += "&gt;"; break;
+        case '"': Out += Quote == '"' ? "&quot;" : "\""; break;
+        case '\'': Out += Quote == '\'' ? "&apos;" : "'"; break;
+        case '\n': Out += Quote ? "&#10;" : "\n"; break;
+        case '\r': Out += Quote ? "&#13;" : "\r"; break;
+        case '\t': Out += Quote ? "&#9;" : "\t"; break;
+        default: Out += C;
+        }
+    return Out;
+}
+
+struct XStep { std::string Name; std::vector<std::pair<std::string, std::string>> Where; };
+struct XPath { std::vector<XStep> Steps; std::string Attr; };   // Attr "": the element's text
+
+//"/a/b[@k='v']/@x" — one document's part of a KEY. Steps are separated by '/', outside a predicate's quotes.
+bool ParseXmlPath(const std::string &S, XPath &P, std::string &Why)
+{
+    if (S.empty() || S[0] != '/') { Why = "a path starts with '/'"; return false; }
+    size_t I = 1;
+    while (I <= S.size())
+    {
+        if (I == S.size()) { Why = "the path ends in '/'"; return false; }
+        if (S[I] == '@')
+        {
+            P.Attr = S.substr(I + 1);
+            if (!XmlName(P.Attr)) { Why = "'@" + P.Attr + "' is no attribute name"; return false; }
+            break;
+        }
+        XStep St;
+        const size_t N0 = I;
+        while (I < S.size() && S[I] != '/' && S[I] != '[') ++I;
+        St.Name = S.substr(N0, I - N0);
+        if (!XmlName(St.Name)) { Why = "'" + St.Name + "' is no element name"; return false; }
+        while (I < S.size() && S[I] == '[')
+        {
+            if (S.compare(I, 2, "[@") != 0) { Why = "a predicate is [@name='value']"; return false; }
+            const size_t Eq = S.find('=', I);
+            if (Eq == std::string::npos || Eq + 1 >= S.size() || (S[Eq + 1] != '\'' && S[Eq + 1] != '"')) { Why = "a predicate is [@name='value']"; return false; }
+            const size_t Q = S.find(S[Eq + 1], Eq + 2);
+            if (Q == std::string::npos || Q + 1 >= S.size() || S[Q + 1] != ']') { Why = "a predicate is [@name='value']"; return false; }
+            const std::string Name = S.substr(I + 2, Eq - I - 2);
+            if (!XmlName(Name)) { Why = "'@" + Name + "' in a predicate is no attribute name"; return false; }
+            St.Where.emplace_back(Name, S.substr(Eq + 2, Q - Eq - 2));
+            I = Q + 2;
+        }
+        P.Steps.push_back(std::move(St));
+        if (I == S.size()) break;
+        if (S[I] != '/') { Why = "unexpected '" + std::string(1, S[I]) + "' in the path"; return false; }
+        ++I;
+    }
+    if (P.Steps.empty()) { Why = "the path names no element"; return false; }
+    return true;
+}
+
+//A KEY: one path per document, '!' stepping into the XML an attribute (or text) holds. '!' inside quotes is literal.
+bool SplitXmlKey(const std::string &Key, std::vector<XPath> &Out, std::string &Why)
+{
+    std::vector<std::string> Parts(1);
+    char Q = 0;
+    for (const char C : Key)
+    {
+        if (Q) { if (C == Q) Q = 0; }
+        else if (C == '\'' || C == '"') Q = C;
+        else if (C == '!') { Parts.emplace_back(); continue; }
+        Parts.back() += C;
+    }
+    for (size_t I = 0; I < Parts.size(); ++I)
+    {
+        XPath P;
+        if (!ParseXmlPath(Parts[I], P, Why)) return false;
+        Out.push_back(std::move(P));
+    }
+    return true;
+}
+
+bool Matches(const std::string &T, const XElem &E, const XStep &S)
+{
+    if (E.Name != S.Name) return false;
+    for (const auto &[K, V] : S.Where)
+    {
+        bool Hit = false;
+        for (const XAttr &A : E.Attrs)
+            if (A.Name == K)
+            {
+                std::string Val;
+                Hit = XmlUnescape(T.substr(A.ValStart, A.ValEnd - A.ValStart), Val, true) && Val == V;
+                break;
+            }
+        if (!Hit) return false;
+    }
+    return true;
+}
+
+//The text an element holds (its text and CDATA; "" when empty). False when it holds elements: that is not a value.
+bool ElementText(const std::string &T, const XElem &E, std::string &Out)
+{
+    Out.clear();
+    if (E.Empty) return true;
+    if (!E.Children.empty()) return false;
+    const std::string Raw = T.substr(E.TagEnd, E.CloseStart - E.TagEnd);
+    for (size_t I = 0; I < Raw.size();)
+    {
+        if (Raw.compare(I, 9, "<![CDATA[") == 0) { const size_t C = Raw.find("]]>", I); Out += Raw.substr(I + 9, C - I - 9); I = C + 3; continue; }
+        if (Raw.compare(I, 4, "<!--") == 0) { I = Raw.find("-->", I) + 3; continue; }
+        if (Raw.compare(I, 2, "<?") == 0) { I = Raw.find("?>", I) + 2; continue; }
+        if (Raw[I] == '<') return false;                                   // markup that is no text: not a value
+        const size_t N = std::min(Raw.find('<', I), Raw.size());
+        std::string Part;
+        if (!XmlUnescape(Raw.substr(I, N - I), Part)) return false;
+        Out += Part;
+        I = N;
+    }
+    return true;
+}
+
+//New markup for Steps[From..] holding Leaf (an attribute value, or the innermost element's text), on one line.
+std::string NewMarkup(const XPath &P, size_t From, const std::string &Leaf)
+{
+    std::string Open, Close;
+    for (size_t I = From; I < P.Steps.size(); ++I)
+    {
+        const bool Last = I + 1 == P.Steps.size();
+        std::string Tag = "<" + P.Steps[I].Name;
+        for (const auto &[K, V] : P.Steps[I].Where) Tag += " " + K + "=\"" + XmlEscape(V, '"') + "\"";
+        if (Last && !P.Attr.empty()) { Open += Tag + " " + P.Attr + "=\"" + XmlEscape(Leaf, '"') + "\" />"; break; }
+        Open += Tag + ">";
+        if (Last) Open += XmlEscape(Leaf, 0);
+        Close = "</" + P.Steps[I].Name + ">" + Close;
+    }
+    return Open + Close;
+}
+
+//The indentation of the line the offset At is on (its leading spaces and tabs).
+std::string IndentAt(const std::string &T, size_t At)
+{
+    const size_t L = T.rfind('\n', At == 0 ? 0 : At - 1);
+    const size_t S = L == std::string::npos ? 0 : L + 1;
+    size_t E = S;
+    while (E < T.size() && (T[E] == ' ' || T[E] == '\t')) ++E;
+    return E <= At ? T.substr(S, E - S) : std::string();
+}
+
+//Sets (Leaf non-null) or reads the value Paths[K..] names inside the document T. A set writes Out; a read fills Got.
+bool XmlWalk(const std::string &T, const std::vector<XPath> &Paths, size_t K, const std::string *Leaf, std::string &Out,
+             std::optional<std::string> &Got, std::string &Why, size_t Nest = 0)
+{
+    if (Nest > 16) { Why = "XML nests inside attributes deeper than 16 documents"; return false; }
+    const XPath &P = Paths[K];
+    const bool Inner = K + 1 < Paths.size();
+    //The leaf's new value: for a nested document, the inner document with its own edit applied.
+    const auto LeafFor = [&](const std::string &Current, std::string &V) -> bool {
+        if (!Inner) { V = *Leaf; return true; }
+        std::optional<std::string> Unused;
+        return XmlWalk(Current, Paths, K + 1, Leaf, V, Unused, Why, Nest + 1);
+    };
+    const std::string NL = T.find("\r\n") != std::string::npos ? "\r\n" : "\n";
+    if (T.find_first_not_of(" \t\r\n") == std::string::npos)
+    {
+        if (!Leaf) { Got.reset(); return true; }
+        std::string V;
+        if (!LeafFor(std::string(), V)) return false;
+        Out = NewMarkup(P, 0, V) + NL;
+        return true;
+    }
+    XDoc D;
+    if (!ParseXml(T, D, Why)) return false;
+    if (D.Root < 0) { Why = "no root element"; return false; }
+    size_t Cur = static_cast<size_t>(D.Root);
+    if (!Matches(T, D.Elems[Cur], P.Steps[0]))
+    {
+        Why = "the root element is <" + D.Elems[Cur].Name + ">, not the path's <" + P.Steps[0].Name + ">";
+        return false;
+    }
+    for (size_t S = 1; S < P.Steps.size(); ++S)
+    {
+        long Next = -1;
+        for (const size_t C : D.Elems[Cur].Children) if (Matches(T, D.Elems[C], P.Steps[S])) { Next = static_cast<long>(C); break; }
+        if (Next >= 0) { Cur = static_cast<size_t>(Next); continue; }
+        if (!Leaf) { Got.reset(); return true; }                                 // nothing there: no value
+        //Missing from here on: created inside Cur, after its last child, indented like that child (else one level in).
+        const XElem &Pa = D.Elems[Cur];
+        std::string V;
+        if (!LeafFor(std::string(), V)) return false;
+        const std::string Markup = NewMarkup(P, S, V);
+        if (Pa.Empty)
+        {
+            const std::string Ind = IndentAt(T, Pa.TagStart);
+            Out = T.substr(0, Pa.AttrsEnd) + ">" + NL + Ind + "\t" + Markup + NL + Ind + "</" + Pa.Name + ">" + T.substr(Pa.TagEnd);
+            return true;
+        }
+        if (!Pa.Children.empty())
+        {
+            const XElem &Last = D.Elems[Pa.Children.back()];
+            Out = T.substr(0, Last.CloseEnd) + NL + IndentAt(T, Last.TagStart) + Markup + T.substr(Last.CloseEnd);
+            return true;
+        }
+        const std::string Ind = IndentAt(T, Pa.TagStart);
+        const std::string Inside = T.substr(Pa.TagEnd, Pa.CloseStart - Pa.TagEnd);
+        if (Inside.find_first_not_of(" \t\r\n") == std::string::npos)
+        {
+            Out = T.substr(0, Pa.TagEnd) + NL + Ind + "\t" + Markup + NL + Ind + T.substr(Pa.CloseStart);
+            return true;
+        }
+        //Comments or processing instructions only: kept, the new element after them. Text: an element of mixed
+        //content, which this edit does not write into.
+        std::string Text;
+        if (!ElementText(T, Pa, Text) || Text.find_first_not_of(" \t\r\n") != std::string::npos)
+        { Why = "<" + Pa.Name + "> holds text; an element is not added to it"; return false; }
+        const size_t LineStart = T.rfind('\n', Pa.CloseStart == 0 ? 0 : Pa.CloseStart - 1);
+        const bool OwnLine = LineStart != std::string::npos && T.find_first_not_of(" \t\r", LineStart + 1) == Pa.CloseStart;
+        const size_t Cut = OwnLine && LineStart > 0 && T[LineStart - 1] == '\r' ? LineStart - 1 : LineStart;
+        Out = OwnLine ? T.substr(0, Cut) + NL + Ind + "\t" + Markup + T.substr(Cut)
+                      : T.substr(0, Pa.CloseStart) + Markup + T.substr(Pa.CloseStart);
+        return true;
+    }
+    const XElem &E = D.Elems[Cur];
+    if (!P.Attr.empty())
+    {
+        const XAttr *A = nullptr;
+        for (const XAttr &X : E.Attrs) if (X.Name == P.Attr) { A = &X; break; }
+        std::string Current;
+        if (A && !XmlUnescape(T.substr(A->ValStart, A->ValEnd - A->ValStart), Current, true))
+        { Why = "@" + P.Attr + " holds an entity this edit cannot write back"; return false; }
+        if (!Leaf)
+        {
+            if (!A) { Got.reset(); return true; }
+            if (!Inner) { Got = Current; return true; }
+            std::string Unused;
+            return XmlWalk(Current, Paths, K + 1, nullptr, Unused, Got, Why, Nest + 1);
+        }
+        std::string V;
+        if (!LeafFor(Current, V)) return false;
+        if (A) Out = T.substr(0, A->ValStart) + XmlEscape(V, A->Quote) + T.substr(A->ValEnd);
+        else Out = T.substr(0, E.AttrsEnd) + " " + P.Attr + "=\"" + XmlEscape(V, '"') + "\"" + T.substr(E.AttrsEnd);
+        return true;
+    }
+    std::string Current;
+    if (!ElementText(T, E, Current)) { Why = "<" + E.Name + "> holds elements or an entity this edit cannot write back, not a value"; return false; }
+    if (!Leaf)
+    {
+        if (!Inner) { Got = Current; return true; }
+        std::string Unused;
+        return XmlWalk(Current, Paths, K + 1, nullptr, Unused, Got, Why, Nest + 1);
+    }
+    std::string V;
+    if (!LeafFor(Current, V)) return false;
+    if (E.Empty) Out = T.substr(0, E.AttrsEnd) + ">" + XmlEscape(V, 0) + "</" + E.Name + ">" + T.substr(E.TagEnd);
+    else Out = T.substr(0, E.TagEnd) + XmlEscape(V, 0) + T.substr(E.CloseStart);
+    return true;
+}
+
+} // namespace
+
+bool FileEdits::XmlEdit(const std::string &Key, const std::string &Value, const std::string &In, std::string &Out, std::string &Why)
+{
+    std::vector<XPath> Paths;
+    if (!SplitXmlKey(Key, Paths, Why)) return false;
+    std::optional<std::string> Unused;
+    return XmlWalk(In, Paths, 0, &Value, Out, Unused, Why);
+}
+
+std::optional<std::string> FileEdits::XmlGet(const std::string &Key, const std::string &In, std::string &Why)
+{
+    std::vector<XPath> Paths;
+    if (!SplitXmlKey(Key, Paths, Why)) return std::nullopt;
+    std::optional<std::string> Got;
+    std::string Unused;
+    if (!XmlWalk(In, Paths, 0, nullptr, Unused, Got, Why)) return std::nullopt;
+    return Got;
+}
+
+bool FileEdits::XmlSet(const std::string &Key, const std::string &Value, const std::filesystem::path &FilePath)
+{
+    LogOut("FileEdits::XmlSet", "FilePath: " + FilePath.string() + " Key: " + Key + " Value: " + Value);
+    std::string Text;
+    {
+        std::ifstream In(FilePath, std::ios::binary);
+        if (In) Text.assign(std::istreambuf_iterator<char>(In), std::istreambuf_iterator<char>());
+    }
+    std::string Out, Why;
+    if (!XmlEdit(Key, Value, Text, Out, Why))
+    {
+        LogErr("FileEdits::XmlSet", "cannot set '" + Key + "' in " + FilePath.string() + ": " + Why + " — left as it is.");
+        return false;
+    }
+    if (Out == Text) return true;
+    std::error_code Ec;
+    std::filesystem::create_directories(FilePath.parent_path(), Ec);
+    std::ofstream O(FilePath, std::ios::binary | std::ios::trunc);
+    if (!O) { LogErr("FileEdits::XmlSet", "Could not open for writing: " + FilePath.string()); return false; }
+    O << Out;
+    return static_cast<bool>(O);
 }
 
 //Writes Value as the complete content of FilePath, creating parent directories if needed.

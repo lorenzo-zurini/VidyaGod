@@ -30,6 +30,7 @@
 
 #include "nlohmann/json.hpp"
 #include "manifestmodel.h"  // NodeIndex / Node
+#include <memory>
 #include "commonutils.h"
 #include "launchthread.h"   // LaunchThread (worker)
 
@@ -43,12 +44,19 @@ class PreLaunchWindow : public QDialog
 {
     Q_OBJECT
 public:
+    //Index is the node graph the dialog shows and the launch resolves on — one immutable snapshot, kept alive by the
+    //dialog and by its launch for as long as either runs (AppModel::catalogSnapshot: the library may be re-indexed
+    //meanwhile). The bare-pointer form is for an index the caller keeps alive longer (a test's, the in-package one).
     PreLaunchWindow(
         nlohmann::ordered_json* GlobalConfigJSON,
-        const NodeIndex*        Index,           // shared global node graph (owned by MainWindow)
+        std::shared_ptr<const NodeIndex> Index,
         std::vector<std::string> GroupNodeIds,   // the tile's rows (variant node ids)
         std::string             FaceUid = std::string(),   // the tile (its UID): title, cover, rows' entries, %UID%
         QWidget*                parent = nullptr);
+    PreLaunchWindow(nlohmann::ordered_json* GlobalConfigJSON, const NodeIndex* Index, std::vector<std::string> GroupNodeIds,
+                    std::string FaceUid = std::string(), QWidget* parent = nullptr)
+        : PreLaunchWindow(GlobalConfigJSON, std::shared_ptr<const NodeIndex>(std::shared_ptr<void>(), Index),
+                          std::move(GroupNodeIds), std::move(FaceUid), parent) {}
 
     ~PreLaunchWindow() override;
 
@@ -102,6 +110,8 @@ private:
     // Rebuilds the CustomVar picker section from the current variant's enabled node closure (UI-facet vars only,
     // grouped by UI.GROUP, with controls per UI.CONTROL and constraints).
     void RebuildCustomVarPickers();
+    void ReadBackFromFiles();            // the options the game changed in its files, read back (OptionReadBack)
+    std::string ReadBackDoneFor;         // the instance|row last read back for (once per row and instance shown)
     // Re-evaluates every var row's UI.WHEN condition against the current control values and shows/hides the row.
     // Wired to each control's change signal so dependent options appear/disappear live.
     void EvaluateVarConditions();
@@ -154,7 +164,8 @@ private:
 
     // ----- data -----
     nlohmann::ordered_json* GlobalConfigJSON = nullptr;
-    const NodeIndex*        Index            = nullptr;
+    std::shared_ptr<const NodeIndex> IndexOwned;
+    const NodeIndex*        Index            = nullptr;   // IndexOwned.get()
     std::vector<std::string> GroupNodeIds;
     std::string              FaceUid;
     std::string              TileGraft;     // the graft presenting FaceUid ("" for a variant's tile): always applied

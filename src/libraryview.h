@@ -21,6 +21,7 @@
 
 #include "nlohmann/json.hpp"
 #include "manifestmodel.h"   // NodeIndex / Node
+#include <memory>
 
 // True if the embedded in-process IPFS node can fetch content right NOW (started AND its network stack is up).
 // Otherwise shows the reason (a QMessageBox parented to `parent`) and returns false. There is no external daemon.
@@ -39,14 +40,21 @@ class LibraryGameCard
 {
 public:
     //One card = one tile (a presentable game): FaceUid is its UID, groupNodeIds its rows (RECOMMENDED first).
-    LibraryGameCard(nlohmann::ordered_json * globalConfig, const NodeIndex * index,
+    //index: the snapshot the card reads and its launch dialog resolves on (AppModel::catalogSnapshot), kept alive by
+    //the card; the bare-pointer form is for an index the caller keeps alive longer (the in-package picker, a test).
+    LibraryGameCard(nlohmann::ordered_json * globalConfig, std::shared_ptr<const NodeIndex> index,
                     std::vector<std::string> groupNodeIds, std::string faceUid);
+    LibraryGameCard(nlohmann::ordered_json * globalConfig, const NodeIndex * index,
+                    std::vector<std::string> groupNodeIds, std::string faceUid)
+        : LibraryGameCard(globalConfig, std::shared_ptr<const NodeIndex>(std::shared_ptr<void>(), index),
+                          std::move(groupNodeIds), std::move(faceUid)) {}
 
     void InitializeClassVariables();
     void play();
     void edit();
 
-    const NodeIndex *        Index = nullptr;          // shared global node graph (owned by MainWindow)
+    std::shared_ptr<const NodeIndex> IndexOwned;
+    const NodeIndex *        Index = nullptr;          // IndexOwned.get()
     std::vector<std::string> GroupNodeIds;             // the tile's launchable node ids (editions; RECOMMENDED first)
     std::string              RepNodeId;                // representative node (front of GroupNodeIds): bundle, runner gate
     std::string              FaceUid;                  // the tile this card shows (title/cover/meta, %UID% at launch)

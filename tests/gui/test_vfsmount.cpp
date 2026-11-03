@@ -125,6 +125,59 @@ private slots:
 
     // ---- what gets into the plan at all ----
 
+    // A session folder is live while its launch holds <folder>.lock (beside it: clearing the folder never removes the lock;
+    // the kernel drops it when that process dies, however it dies). The startup sweep clears every folder whose lock
+    // nobody holds, a lock file left without its folder, and the empty package folder; a live one is left alone, and a
+    // claim made while it is held fails. A release removes the lock file. Teeth: SessionOwned always false (the live
+    // folder is swept); Sweep ignoring the lock (same); Sweep skipping a released lock (the dead folder stays); the lock
+    // inside the folder (the live claim's lock is deleted with a clear, and a second claim succeeds); no package removal.
+    void the_startup_sweep_clears_dead_sessions_and_leaves_live_ones()
+    {
+#ifdef _WIN32
+        QSKIP("session ownership locks are Linux's");
+#else
+        QTemporaryDir Tmp;
+        const std::filesystem::path Root = Tmp.path().toStdString();
+        const auto Put = [](const std::filesystem::path &F) {
+            std::filesystem::create_directories(F.parent_path());
+            std::ofstream(F) << "x";
+        };
+        const std::filesystem::path Live = Root / "1" / "DefaultInstance", Dead = Root / "2" / "DefaultInstance",
+                                    Old = Root / "3" / "vgtest", Stray = Root / "4" / "gone";
+        int LiveFd = VfsMount::ClaimSession(Live);
+        QVERIFY(LiveFd >= 0);
+        Put(Live / "WRITELAYER" / "save.dat");
+        QVERIFY(VfsMount::SessionOwned(Live));
+        QCOMPARE(VfsMount::ClaimSession(Live), -2);                  // a second launch of a running instance
+        VfsMount::CleanStaleRuntime(Live);                           // what a refused launch's clear would have done
+        QVERIFY(VfsMount::SessionOwned(Live));                       // the lock is not in the folder
+        QCOMPARE(VfsMount::ClaimSession(Live), -2);
+        Put(Live / "WRITELAYER" / "save.dat");
+        int DeadFd = VfsMount::ClaimSession(Dead);
+        QVERIFY(DeadFd >= 0);
+        Put(Dead / "WRITELAYER" / "save.dat");
+        ::close(DeadFd);                                             // its launch died: the kernel let the lock go
+        QVERIFY(!VfsMount::SessionOwned(Dead));
+        Put(Old / "HOME" / ".bashrc");                               // a session of a build before the lock
+        int StrayFd = VfsMount::ClaimSession(Stray);                 // a launch that died before making its folder
+        ::close(StrayFd);
+
+        QCOMPARE(VfsMount::SweepDeadSessions(Root), 2);
+        QVERIFY(std::filesystem::exists(Live / "WRITELAYER" / "save.dat"));
+        QVERIFY(!std::filesystem::exists(Root / "2"));
+        QVERIFY(!std::filesystem::exists(Root / "3"));
+        QVERIFY(!std::filesystem::exists(Root / "4"));
+        QVERIFY(VfsMount::SessionOwned(Live));                        // the sweep did not take the live lock
+
+        VfsMount::ReleaseSession(LiveFd, Live);
+        QCOMPARE(LiveFd, -1);
+        QVERIFY(!std::filesystem::exists(Root / "1" / "DefaultInstance.lock"));
+        QVERIFY(!VfsMount::SessionOwned(Live));
+        QCOMPARE(VfsMount::SweepDeadSessions(Root), 1);
+        QVERIFY(!std::filesystem::exists(Root / "1"));
+#endif
+    }
+
     void only_vfs_layers_become_mount_layers()
     {
         ContainerParams CP = Make();

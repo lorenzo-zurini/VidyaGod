@@ -40,9 +40,9 @@ bool IpfsFetchReady(QWidget * parent)
 // LibraryGameCard
 // ═════════════════════════════════════════════════════════════════════════════
 
-LibraryGameCard::LibraryGameCard(nlohmann::ordered_json * gc, const NodeIndex * index,
+LibraryGameCard::LibraryGameCard(nlohmann::ordered_json * gc, std::shared_ptr<const NodeIndex> index,
                                  std::vector<std::string> groupNodeIds, std::string faceUid)
-    : Index(index), GroupNodeIds(std::move(groupNodeIds)), FaceUid(std::move(faceUid)), GlobalConfigJSON(gc)
+    : IndexOwned(std::move(index)), Index(IndexOwned.get()), GroupNodeIds(std::move(groupNodeIds)), FaceUid(std::move(faceUid)), GlobalConfigJSON(gc)
 {
     if (!GroupNodeIds.empty()) RepNodeId = GroupNodeIds.front();
 }
@@ -128,7 +128,7 @@ void LibraryGameCard::play()
             skip = bool(US["SKIP_LAUNCH_DIALOG"]);
     }
     bool shift = (QGuiApplication::keyboardModifiers() & Qt::ShiftModifier) != 0;
-    auto * dlg = new PreLaunchWindow(GlobalConfigJSON, Index, GroupNodeIds, FaceUid, nullptr);
+    auto * dlg = new PreLaunchWindow(GlobalConfigJSON, IndexOwned, GroupNodeIds, FaceUid, nullptr);
     dlg->show();
     if (skip && !shift)
         QMetaObject::invokeMethod(dlg, "onLaunchClicked", Qt::QueuedConnection);
@@ -137,7 +137,7 @@ void LibraryGameCard::play()
 void LibraryGameCard::edit()
 {
     if (!Index || GroupNodeIds.empty()) return;
-    (new PreLaunchWindow(GlobalConfigJSON, Index, GroupNodeIds, FaceUid, nullptr))->show();
+    (new PreLaunchWindow(GlobalConfigJSON, IndexOwned, GroupNodeIds, FaceUid, nullptr))->show();
 }
 
 

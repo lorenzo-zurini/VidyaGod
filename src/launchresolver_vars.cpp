@@ -122,6 +122,8 @@ bool LaunchResolver::ResolveCustomVariables(const nlohmann::ordered_json &MANIFE
             for (const auto &S : Comp["SUBCOMPONENTS"]) Collect(S);
     }
 
+    ContainerParams.VarDecls = Winning;
+
     //Each key's RAW source value: priority CLI > USERSETTINGS > winning DEFAULT; a secret+POOL var falls back to a
     //one-time pool seed only when nothing is persisted. Sources are unsubstituted; cross-references resolve in Phase 2.
     std::map<std::string, std::string> Sources;
@@ -302,6 +304,9 @@ bool LaunchResolver::BuildSubComponentsArray(const nlohmann::ordered_json &MANIF
             nlohmann::ordered_json Sub = Subs[j].value("TYPE", std::string()) == "RegEdit"
                                        ? RegistryWrapper::SubstituteRegEdit(Subs[j], FrozenVars)
                                        : VarSubst::SubstituteJsonValues(Subs[j], FrozenVars);
+            //An edit's VALUE as written, beside the substituted one: what an option's read-back undoes (OptionReadBack).
+            if (Sub.value("TYPE", std::string()) == "FileEdit" && Subs[j].contains("VALUE") && Subs[j]["VALUE"].is_string())
+                Sub["VALUE_TEMPLATE"] = Subs[j]["VALUE"];
             //Paths are guest coordinates until here: map them into the boundary runner's layout now that every
             //%variable% (which may itself carry a guest path) has been substituted.
             {

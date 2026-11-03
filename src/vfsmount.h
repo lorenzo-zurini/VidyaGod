@@ -82,6 +82,22 @@ int RuntimesLive();
 //mounts from mountinfo, unmounts deepest-first, then removes TempPath (left in place if any mount refuses to detach).
 void CleanStaleRuntime(const std::filesystem::path &TempPath);
 
+//A session folder's owner: the launch that built it holds an exclusive lock on <TempPath>.lock (beside the folder, so
+//clearing the folder never removes it) from before anything is cleared or mounted to the end of its Cleanup, and the
+//kernel lets it go when that process dies however it dies. So a held lock is a live launch (of this VidyaGod or another,
+//a second data root included: all of them share the session root), and a folder whose lock nobody holds is a dead one.
+//ClaimSession takes the lock: the fd, -2 when another live launch holds it, -3 when no lock can be made there. ReleaseSession removes the lock file and
+//lets it go (Fd becomes -1); a claim checks that the file it locked is still the one at the path, so a release racing it
+//is not a second owner. Windows: no lock (-1), never owned — sessions there are cleared by their instance's next launch.
+bool SessionOwned(const std::filesystem::path &TempPath);
+int  ClaimSession(const std::filesystem::path &TempPath);
+void ReleaseSession(int &Fd, const std::filesystem::path &TempPath);
+//At startup: every session folder under Root (<Root>/<PackageUID>/<instance>) whose owner is gone is cleared as its next
+//launch would clear it (CleanStaleRuntime), with what its writable layer held named in the log (a crash's unsaved
+//writes), and the empty package folders go too. A folder with no lock that is still mounted is from a build before the
+//lock and is left. Returns how many were cleared.
+int SweepDeadSessions(const std::filesystem::path &Root);
+
 //POSIX unmount helpers (no-ops on Windows — WinFsp mounts die with their serving process; see Cleanup):
 //UnmountDurable: up to `Retries` polite `fusermount3 -u` attempts 200ms apart (gives a lingering
 //wineserver time to release), falling back to a lazy `-uz` detach. Returns true iff the polite unmount

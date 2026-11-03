@@ -5,11 +5,14 @@
 #include <QMutex>
 
 #include <map>
+#include <memory>
 #include <optional>
 #include <string>
 #include <vector>
 
 #include "nlohmann/json.hpp"
+
+struct NodeIndex;
 
 class ContainerWrapper;   // pointer member only — full definition needed in launchthread.cpp
 
@@ -25,6 +28,8 @@ class LaunchThread : public QThread
 public:
     // Fields must be populated before calling start().
     nlohmann::ordered_json GlobalConfigJSON;
+    //The node graph to launch from: the snapshot the dialog shows (AppModel::catalogSnapshot), never re-scanned here.
+    std::shared_ptr<const NodeIndex> Index;
     std::string            LaunchNodeId;      // Native node-graph launch: the launchable node to run
     std::string            GraftBase;         // LaunchNodeId is a graft that is a version: the version it runs on
     std::string            Entrypoint;        // which entry (LABEL; "" = the launched tile's entry)

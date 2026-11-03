@@ -10,6 +10,7 @@
 #include "prelaunchwindow.h"
 #include "gamepicker.h"
 #include "containerwrapper.h"
+#include "quitsignals.h"     // a quit signal ends game sessions properly first
 #include "ipfswrapper.h"
 #include "vgipfsapi.h"     // VgSetLogVerbose — the --log flag flips the Go node's verbose trace
 #include <cstdio>          // std::setvbuf for --log stderr (redirect itself is open+dup2)
@@ -262,9 +263,17 @@ int main(int argc, char *argv[])
         return 1;
     }
 
-    //We are the sole instance, so every mount still present under TEMP is a leftover from a crash.
-    //Sweep them all now (the per-launch CleanStaleRuntime only covers the one game about to run).
-    VfsMount::CleanStaleRuntime((AppDataDir.absolutePath() + "/TEMP").toStdString());
+    //A quit signal ends this process's game sessions properly (their Cleanup runs) before it quits.
+    QuitSignals::Install();
+
+    //Every session folder whose launch is gone — killed, crashed, the machine off — is cleared now; the per-launch
+    //CleanStaleRuntime covers only the one instance about to run. Judged by each folder's owner lock, not by this
+    //lock: another data root's VidyaGod shares the session root and may be playing right now. Only by what launches
+    //(the GUI, a headless launch): a command that launches nothing (--cid, --validate-nodes, --resolve-only) changes
+    //nothing here.
+    if (!LaunchParameters.RunningHeadless
+        || ((!LaunchParameters.LaunchNodeId.empty() || !LaunchParameters.LaunchTile.empty()) && !LaunchParameters.ResolveOnly))
+        VfsMount::SweepDeadSessions(LaunchResolver::SessionRoot());
 
     //Initialization of GlobalConfigJSON, the central data structure of the program.
     //All runner definitions, library entries, and user settings live here.

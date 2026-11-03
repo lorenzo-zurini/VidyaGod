@@ -174,7 +174,8 @@
       "MODE": "ConfigWrite",
       "OVERRIDE": true,
       "TYPE": "FileEdit",
-      "VALUE": "1"
+      "VALUE": "1",
+      "VALUE_TEMPLATE": "1"
     },
     {
       "FILE": "/drive_c/90000000000001/game/config.ini",
@@ -183,14 +184,16 @@
       "MODE": "ConfigWrite",
       "OVERRIDE": true,
       "TYPE": "FileEdit",
-      "VALUE": "hello-beta"
+      "VALUE": "hello-beta",
+      "VALUE_TEMPLATE": "%lm_derived%"
     },
     {
       "FILE": "/drive_c/90000000000001/game/written.txt",
       "MODE": "Overwrite",
       "OVERRIDE": true,
       "TYPE": "FileEdit",
-      "VALUE": "overwritten by the matrix\n"
+      "VALUE": "overwritten by the matrix\n",
+      "VALUE_TEMPLATE": "overwritten by the matrix\n"
     },
     {
       "COMMENT": "idempotent by contract",
@@ -199,21 +202,24 @@
       "MODE": "AppendLine",
       "OVERRIDE": true,
       "TYPE": "FileEdit",
-      "VALUE": "; appended once"
+      "VALUE": "; appended once",
+      "VALUE_TEMPLATE": "; appended once"
     },
     {
       "FILE": "relative.txt",
       "MODE": "Overwrite",
       "OVERRIDE": true,
       "TYPE": "FileEdit",
-      "VALUE": "relative target\n"
+      "VALUE": "relative target\n",
+      "VALUE_TEMPLATE": "relative target\n"
     },
     {
       "FILE": "/drive_c/90000000000001/game/conditional.txt",
       "MODE": "Overwrite",
       "OVERRIDE": true,
       "TYPE": "FileEdit",
-      "VALUE": "flag was on\n"
+      "VALUE": "flag was on\n",
+      "VALUE_TEMPLATE": "flag was on\n"
     },
     {
       "COMMENT": "VA replace behind an EXPECT guard",
@@ -351,6 +357,7 @@
     "RuntimePath": "<TMP>/90000000000001/DefaultInstance/RUNTIME",
     "ScreenHeight": "<volatile>",
     "ScreenWidth": "<volatile>",
+    "SteamAppId": "0",
     "TempPath": "<TMP>/90000000000001/DefaultInstance",
     "VIDYAGOD_PEER_NAMES": "<volatile>",
     "VIDYAGOD_PEER_VIPS": "<volatile>",

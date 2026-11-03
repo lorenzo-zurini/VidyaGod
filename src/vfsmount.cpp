@@ -23,6 +23,10 @@
 #include <QThread>
 
 #include <fcntl.h>
+#include <cerrno>
+#ifndef _WIN32
+#include <sys/file.h>   // flock (session ownership)
+#endif
 #include <unistd.h>
 #ifdef _WIN32
 #ifndef WIN32_LEAN_AND_MEAN
@@ -925,6 +929,138 @@ std::vector<std::string> VfsMount::LiveMountpointsUnder(const std::filesystem::p
 
 //Clears a previous run's leftovers under TempPath before a new build. See header for the
 //save-safety contract (never wipe while a mount under TempPath is still live).
+namespace
+{
+std::filesystem::path SessionLockPath(const std::filesystem::path &TempPath)
+{
+    return TempPath.parent_path() / (TempPath.filename().string() + ".lock");
+}
+}
+
+bool VfsMount::SessionOwned(const std::filesystem::path &TempPath)
+{
+#ifdef _WIN32
+    (void)TempPath;
+    return false;
+#else
+    const int Fd = ::open(SessionLockPath(TempPath).c_str(), O_RDONLY | O_CLOEXEC);
+    if (Fd < 0) return false;
+    const bool Held = ::flock(Fd, LOCK_EX | LOCK_NB) != 0 && errno == EWOULDBLOCK;
+    ::close(Fd);
+    return Held;
+#endif
+}
+
+int VfsMount::ClaimSession(const std::filesystem::path &TempPath)
+{
+#ifdef _WIN32
+    (void)TempPath;
+    return -1;
+#else
+    const std::filesystem::path Lock = SessionLockPath(TempPath);
+    std::error_code Ec;
+    std::filesystem::create_directories(Lock.parent_path(), Ec);
+    //A release unlinks the file after this open and before this flock: the lock taken is then on a file no one else
+    //can find. Taken again on the file now at the path, so two launches never both own one folder.
+    for (int Attempt = 0; Attempt < 3; ++Attempt)
+    {
+        //Close-on-exec: the game must not inherit it, or a helper the game leaves running would hold the session "live".
+        const int Fd = ::open(Lock.c_str(), O_RDWR | O_CREAT | O_CLOEXEC, 0600);
+        if (Fd < 0)
+        {
+            LogErr("VfsMount::ClaimSession", "Could not create " + Lock.string() + ": " + std::strerror(errno));
+            return -3;
+        }
+        if (::flock(Fd, LOCK_EX | LOCK_NB) != 0)
+        {
+            const int Err = errno;
+            ::close(Fd);
+            if (Err == EWOULDBLOCK) return -2;
+            LogErr("VfsMount::ClaimSession", "Could not lock " + Lock.string() + ": " + std::strerror(Err));
+            return -3;
+        }
+        struct stat Held {}, Now {};
+        if (::fstat(Fd, &Held) == 0 && ::stat(Lock.c_str(), &Now) == 0 && Held.st_dev == Now.st_dev && Held.st_ino == Now.st_ino)
+            return Fd;
+        ::close(Fd);
+    }
+    LogErr("VfsMount::ClaimSession", "The lock " + Lock.string() + " kept changing under the claim.");
+    return -3;
+#endif
+}
+
+void VfsMount::ReleaseSession(int &Fd, const std::filesystem::path &TempPath)
+{
+#ifndef _WIN32
+    //Unlinked while held, then let go: a claim that opened the old file meanwhile sees it is no longer at the path.
+    if (Fd >= 0) { ::unlink(SessionLockPath(TempPath).c_str()); ::close(Fd); }
+#else
+    (void)TempPath;
+#endif
+    Fd = -1;
+}
+
+int VfsMount::SweepDeadSessions(const std::filesystem::path &Root)
+{
+    int Cleared = 0;
+#ifndef _WIN32
+    std::error_code Ec;
+    if (!std::filesystem::is_directory(Root, Ec)) return 0;
+    std::vector<std::filesystem::path> Packages;
+    for (const auto &P : std::filesystem::directory_iterator(Root, Ec))
+        if (P.is_directory(Ec) && !P.is_symlink(Ec)) Packages.push_back(P.path());
+    for (const std::filesystem::path &Pkg : Packages)
+    {
+        std::set<std::filesystem::path> Sessions;
+        for (const auto &S : std::filesystem::directory_iterator(Pkg, Ec))
+        {
+            if (S.is_symlink(Ec)) continue;
+            if (S.is_directory(Ec)) Sessions.insert(S.path());
+            else if (S.path().extension() == ".lock") Sessions.insert(S.path().parent_path() / S.path().stem());   // a lock whose launch died before its folder
+        }
+        for (const std::filesystem::path &S : Sessions)
+        {
+            const bool HadLock = std::filesystem::exists(SessionLockPath(S), Ec);
+            const bool Existed = std::filesystem::is_directory(S, Ec);
+            //Held while clearing, so a launch of this instance starting meanwhile is refused instead of cleared away.
+            int Fd = ClaimSession(S);
+            if (Fd < -1) continue;                                           // a live launch owns it (or no lock can be made)
+            if (!HadLock && !MountpointsUnder(S).empty())
+            {
+                LogWarn("VfsMount::SweepDeadSessions", "Left in place (no owner lock, still mounted — a launch by an older build?): " + S.string());
+                ReleaseSession(Fd, S);
+                continue;
+            }
+            //What the dead launch's game wrote and nothing stored: gone with the folder, so named here.
+            std::vector<std::string> Unsaved;
+            size_t Count = 0;
+            const std::filesystem::path WL = S / "WRITELAYER";
+            if (std::filesystem::is_directory(WL, Ec))
+                for (auto It = std::filesystem::recursive_directory_iterator(WL, std::filesystem::directory_options::none, Ec);
+                     It != std::filesystem::recursive_directory_iterator(); It.increment(Ec))
+                    if (It->is_regular_file(Ec) && ++Count <= 8) Unsaved.push_back(std::filesystem::relative(It->path(), WL, Ec).generic_string());
+            if (Count)
+            {
+                std::string List;
+                for (const std::string &U : Unsaved) List += (List.empty() ? "" : ", ") + PersistLayer::Printable(U);
+                if (Count > Unsaved.size()) List += ", … (" + std::to_string(Count - Unsaved.size()) + " more)";
+                LogWarn("VfsMount::SweepDeadSessions", "A launch that did not end left " + std::to_string(Count) + " file(s) its game wrote and "
+                        "nothing stored, cleared with it (" + S.string() + "): " + List);
+            }
+            CleanStaleRuntime(S);
+            const bool Gone = !std::filesystem::exists(S, Ec);
+            ReleaseSession(Fd, S);
+            if (Existed && Gone) ++Cleared;
+        }
+        std::filesystem::remove(Pkg, Ec);                                     // only when empty
+    }
+    if (Cleared) LogOut("VfsMount::SweepDeadSessions", "Cleared " + std::to_string(Cleared) + " session(s) left by launches that did not end: " + Root.string());
+#else
+    (void)Root;
+#endif
+    return Cleared;
+}
+
 void VfsMount::CleanStaleRuntime(const std::filesystem::path &TempPath)
 {
     if (TempPath.empty()) return;

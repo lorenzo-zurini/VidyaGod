@@ -43,6 +43,10 @@ void ClearLogCallback()
 //All output goes to stdout so it can be captured alongside QProcess output in one stream.
 //If a LogCallback has been installed via SetLogCallback(), it is also invoked with the
 //raw (unformatted) level/context/message so UI components can display colored log lines.
+static thread_local int g_Quiet = 0;
+QuietLog::QuietLog()  { ++g_Quiet; }
+QuietLog::~QuietLog() { --g_Quiet; }
+
 void Log(LogLevel level, const std::string& context, const std::string& message)
 {
     //Format current wall-clock time as HH:MM:SS for the log prefix.
@@ -71,6 +75,8 @@ void Log(LogLevel level, const std::string& context, const std::string& message)
     //remint prints its CID table), so those verbs stay pipeable — mixing the two made `--cid … | cut` return
     //timestamps instead of a CID.
     std::cerr << timebuf << " " << color << "[" << label << "] " << context << " " << message << reset << std::endl;
+
+    if (g_Quiet) return;                                    // a look-ahead (QuietLog): stderr only
 
     //Tally BEFORE the sink: counting here means no caller can opt out and no callback arrangement can hide a
     //warning. This is the mechanism that makes a quiet per-launch error impossible to miss.

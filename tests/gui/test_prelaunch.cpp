@@ -20,6 +20,7 @@
 #include "manifestmodel.h"
 #include "packagecatalog.h"
 #include "prelaunchwindow.h"
+#include "launchthread.h"
 #include "keycapture.h"
 #define SDL_MAIN_HANDLED   // SDL must not rename main() (it does on Windows)
 #include <SDL.h>
@@ -412,6 +413,33 @@ private slots:
         for (int i = 0; i < Versions->count(); ++i) Shown << Versions->itemText(i);
         QVERIFY2(Shown.contains("1.0"), qPrintable(Shown.join(" | ")));
         QVERIFY2(Shown.contains("2.0 - Play") && Shown.contains("2.0 - Editor"), qPrintable(Shown.join(" | ")));
+    }
+
+    // A launch resolves on the graph its dialog shows (LaunchThread::Index, AppModel's snapshot), not on a re-scan of
+    // the library: a node only that graph holds is found, and with no graph the launch refuses. Teeth: re-scan the
+    // config in run() (the node is "not found" — the config names no library); ignore a missing graph.
+    void aLaunchResolvesOnTheDialogsGraphNotARescan()
+    {
+        auto idx = std::make_shared<NodeIndex>();
+        idx->Nodes["only_here"] = parse(json{ {"CID", "only_here"}, {"LABEL", "only_here"}, {"LAYERS", json::array({ json{{"DIR", "x"}} })} });
+        ManifestModel::DeriveFacts(*idx);
+        const auto run = [&](std::shared_ptr<const NodeIndex> Graph, QStringList &Log, QString &Finished) {
+            LaunchThread T;
+            T.GlobalConfigJSON = json{{"Settings", json::object()}};      // names no library: a re-scan finds nothing
+            T.Index            = std::move(Graph);
+            T.LaunchNodeId     = "only_here";
+            QObject::connect(&T, &LaunchThread::logLine, &T, [&](int, QString C, QString M) { Log << C + "|" + M; }, Qt::DirectConnection);
+            QObject::connect(&T, &LaunchThread::launchFinished, &T, [&](bool, QString E) { Finished = E; }, Qt::DirectConnection);
+            T.start();
+            QVERIFY(T.wait(30000));
+        };
+        QStringList Log; QString Finished;
+        run(idx, Log, Finished);
+        QVERIFY2(!Log.join("\n").contains("Launch node not found"), qPrintable(Log.join("\n")));
+        QVERIFY2(Log.join("\n").contains("only_here"), qPrintable(Log.join("\n")));
+        Log.clear(); Finished.clear();
+        run(nullptr, Log, Finished);
+        QCOMPARE(Finished, QString("No node graph to launch from."));
     }
 
     // On the card a graft presents (a mod with its own card), the graft is the game: applied (its options show) and not

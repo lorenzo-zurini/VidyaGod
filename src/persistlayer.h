@@ -4,6 +4,7 @@
 #include "launchparams.h"   // ContainerParams
 
 #include <filesystem>
+#include <optional>
 #include <string>
 
 // PersistLayer — single-file persist seed/capture (a file DeclarePersist target), lifted out of ContainerWrapper.
@@ -24,6 +25,9 @@ bool CapturePersistFiles(struct ContainerParams &ContainerParams);
 //deletion marker). A package default for a user-owned file (an EDIT lowered with IF_UNSAVED) applies only while there
 //is none.
 bool HasSavedCopy(const struct ContainerParams &ContainerParams, const std::string &RuntimeRel);
+//Where that saved copy is, when it is a file there (not one the game deleted): the kept file's durable copy, or the file
+//in its kept folder's durable home. Read by an option's read-back (OptionReadBack).
+std::optional<std::filesystem::path> SavedCopy(const struct ContainerParams &ContainerParams, const std::string &RuntimeRel);
 
 //Readies Root/RelFile for this process to write as a plain file, never through a link: every folder below Root is
 //made a real folder (created when missing, a link in its place removed and replaced) and a link at RelFile itself is

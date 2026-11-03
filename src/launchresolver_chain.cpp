@@ -267,13 +267,41 @@ std::vector<std::string> LaunchResolver::ResolveChainIds(const NodeIndex &Idx, c
     //A pinned chain (passed CP.RunnerChainIds, else persisted RUNNER_CHAIN) is honoured when it forms a valid path to
     //the machine; a terminal is appended if the pin didn't include one.
     std::vector<std::string> Pinned = CP.RunnerChainIds;
-    if (Pinned.empty())
+    if (Pinned.empty() && !CP.IgnoreSavedChain)
     {
         auto US = GetPackageUserSettings(GlobalConfigJSON, CP.PackageUID, CP.InstanceName);
         if (US.contains("RUNNER_CHAIN") && US["RUNNER_CHAIN"].is_array())
             for (const auto &X : US["RUNNER_CHAIN"]) if (X.is_string()) Pinned.push_back(std::string(X));
     }
     const std::string Host = !CP.Platform.empty() ? CP.Platform : Launch.HostFor(CP.Entrypoint);
+    //Nothing pinned: the entry's RECOMMENDEDRUNNER (a runner LABEL — a version the game needs, as a Proton build with a
+    //working GameInput) is the chain's first runner, a soft pin. Installed chains still come first, so a recommended
+    //runner not installed while another carries the launch is passed over, and one the library lacks changes nothing:
+    //the default chain, as without it.
+    bool Soft = false;
+    if (Pinned.empty())
+    {
+        const nlohmann::ordered_json E = Launch.ExecFor(CP.Entrypoint);
+        const std::string Rec = E.is_object() ? E.value("RECOMMENDEDRUNNER", std::string()) : std::string();
+        if (!Rec.empty())
+        {
+            //An installed runner with the label first (a friend's catalog may hold another node of that label), and a
+            //runner that is not itself this machine's gets the rest of its chain, as a pin through it would.
+            const Node *Pick = nullptr;
+            for (const Node *R : InstalledOf(Idx, Runners)) if (R->NodeId == Rec && RunnerServes(R, Host)) { Pick = R; break; }
+            if (!Pick) for (const Node *R : Runners) if (R->NodeId == Rec && RunnerServes(R, Host)) { Pick = R; break; }
+            if (Pick)
+            {
+                Pinned = {Pick->Key()};
+                if (Pick->HostPlatform != ManifestModel::MachinePlatform())
+                    for (const std::string &T : ResolveChainTail(Idx, Pick->HostPlatform, Launch, GlobalConfigJSON)) Pinned.push_back(T);
+                Soft = true;
+            }
+            if (!Soft)
+                LogOut("LaunchResolver::ResolveChainIds", "the entry recommends runner '" + Rec + "', which the library does not "
+                       "have for platform '" + Host + "' — the default chain");
+        }
+    }
     //A MULTI-VERSION package selects its runner through the PLATFORM GRAPH, not a per-node pin: e.g. each Minecraft
     //version declares PLATFORM "java_<N>" and the matching java_<N> runner declares GUEST ["java_<N>"], so FindBridge
     //routes it to exactly that runner — the native cross-platform mechanism, no runner recommendation needed.
@@ -285,6 +313,13 @@ std::vector<std::string> LaunchResolver::ResolveChainIds(const NodeIndex &Idx, c
     //runs this launch's platform was meant for it.
     const Node *PinFirst = Pinned.empty() ? nullptr : Idx.Find(Pinned.front());
     const bool PinMeantHere = PinFirst && PinFirst->IsRunner() && RunnerServes(PinFirst, Host);
+    if (Soft)
+    {
+        if (!Out.empty() && Out.front() != Pinned.front())
+            LogOut("LaunchResolver::ResolveChainIds", "the recommended runner '" + PinFirst->NodeId + "' is not installed or does "
+                   "not carry the launch here — the default chain");
+        return Out;
+    }
     if (!Pinned.empty() && !PinFirst && Pinned.front() != kNativeTerminalId)
         LogWarn("LaunchResolver::ResolveChainIds", "the pinned runner chain names '" + Pinned.front()
                 + "', which the library does not have — using the default chain");

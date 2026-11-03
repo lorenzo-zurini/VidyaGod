@@ -2,6 +2,7 @@
 #define FILEEDITS_H
 
 #include <filesystem>
+#include <optional>
 #include <string>
 
 #include "launchparams.h"   // ContainerParams
@@ -45,6 +46,20 @@ bool LinkLeadsOut(const std::filesystem::path &Base, const std::filesystem::path
 //and so is the file (absent or empty = {}). Key order is kept; comments are read but not written back. A file that
 //is not JSON, or a pointer that runs through a value that is not an object/array, fails and leaves the file alone.
 [[nodiscard]] bool JsonSet(const std::string &Pointer, const std::string &Value, const std::filesystem::path &FilePath);
+
+//Sets one value in an XML file, keeping every other byte of it. Key is a path of elements from the root, each matched by
+//name and optional attribute predicates, ending in an attribute or naming an element's text:
+//  /Attributes/Attr[@name='g_language']/@value      /config/video/width
+//Missing elements on the way are created (with the predicates' attributes), after their parent's last child; so is the
+//file (absent or empty). '!' steps into the XML an attribute (or text) holds, a document of its own:
+//  /Attributes/Attr[@name='keybinds_settings']/@value!/keybinds/superaction[@name='jump']/control[@slot='0']/@input
+//A file that is not well-formed XML, a root that is not the path's, an element holding elements where text is set, or a
+//value with an entity only a DTD defines fails and leaves the file alone.
+[[nodiscard]] bool XmlSet(const std::string &Key, const std::string &Value, const std::filesystem::path &FilePath);
+//The same on text: In edited into Out (Why says why not). XmlGet reads what Key names: nullopt when it is not there (or
+//on failure, Why set).
+[[nodiscard]] bool XmlEdit(const std::string &Key, const std::string &Value, const std::string &In, std::string &Out, std::string &Why);
+std::optional<std::string> XmlGet(const std::string &Key, const std::string &In, std::string &Why);
 
 //Writes Value as the complete content of FilePath, creating parent dirs if needed.
 [[nodiscard]] bool FileOverwrite(const std::string &Value, const std::filesystem::path &FilePath);

@@ -84,14 +84,25 @@ void LaunchThread::run()
     //Start counting every WARN/ERR this launch produces. A launch prints hundreds of lines, so a warning in the
     //middle is invisible — Worms 4 Mayhem logged one on EVERY launch for months and the only visible symptom was
     //a wrong aspect ratio. The verdict is reported LOUDLY at the end, whatever the outcome.
-    Diagnostics::Begin();
-
     if (this->LaunchNodeId.empty())
     {
         ClearLogCallback();
         emit launchFinished(false, "No launch node specified.");
         return;
     }
+
+    //The node graph is the one the app already holds (the dialog's snapshot of AppModel's index): a launch reads no
+    //other package's files. Re-scanning the whole library here cost every launch the parse of every node, and put a
+    //malformed node of another package into this launch's verdict.
+    if (!this->Index)
+    {
+        ClearLogCallback();
+        emit launchFinished(false, "No node graph to launch from.");
+        return;
+    }
+    LogStep(1, 12, "Reading the library index");
+    const std::shared_ptr<const NodeIndex> Index = this->Index;
+    Diagnostics::Begin();
 
     // -----------------------------------------------------------------
     // Build ContainerParams and ContainerWrapper (native node-graph launch).
@@ -120,17 +131,14 @@ void LaunchThread::run()
     Params.ScreenWidth  = this->ScreenWidth;
     Params.ScreenHeight = this->ScreenHeight;
 
-    //Build the global node index here (worker thread) and point the engine at the launch node. Index is a local
-    //that outlives LocalWrapper (which holds ContainerParams by reference). BuildCatalogIndex = repos + locally-added
-    //packages, so a launch of an externally-added bundle resolves (same source the library lists from).
-    LogStep(1, 12, "Indexing the package catalog");
-    auto Index = std::make_shared<NodeIndex>(PackageCatalog::BuildCatalogIndex(GlobalConfigJSON));
+    //Point the engine at the launch node.
     Params.NodeIdx      = Index.get();
     Params.NodeIdxOwned = Index;         // the wrapper's ContainerParams copy co-owns the index — no dangling
     Params.LaunchNodeId = this->LaunchNodeId;
     Params.Entrypoint   = this->Entrypoint;
     Params.LaunchFace   = this->Face;
     Params.InstanceName = this->InstanceName;   // which instance's config + USERDATA to use ("" ⇒ active)
+    Params.ReadBackOptions = true;              // what the game changed in its files is read back (the dialog did too)
 
     nlohmann::ordered_json UnusedManifest = nlohmann::ordered_json::object();
     ContainerWrapper* LocalWrapper = new ContainerWrapper(GlobalConfigJSON, UnusedManifest, Params);
