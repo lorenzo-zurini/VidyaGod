@@ -1,6 +1,8 @@
 #include "librarytab.h"
+#include <QDate>
+#include <QMenu>
 #include "appmodel.h"          // AppModel — catalog/config + card size
-#include "packagecatalog.h"
+#include "packagecatalog.h"   // GoldenSince / SetGolden (the golden marker) and the rest
 #include "manifestmodel.h"
 #include "packageeditor.h"     // the authoring entry points moved here from Settings
 #include "mainwindow.h"        // MainWindow::RefreshPackage (app-wide "package edited" hook)
@@ -149,6 +151,22 @@ void LibraryTab::buildUi()
         auto & arr = (*Model.config())["Settings"]["LibraryCollapsedSeries"] = nlohmann::ordered_json::array();
         for (const QString & N : LibraryCollapsedSeries) arr.push_back(N.toStdString());
         Model.save();
+    });
+    //A card's menu: the golden marker — this machine's note that the package's golden pass is done. Cosmetic and local
+    //(Settings.GoldenPackages), keyed by the family, so every card of the family shows it.
+    connect(View, &LibraryView::cardMenuRequested, this, [this](LibraryGameCard * card, const QPoint & at){
+        if (!card || card->RepUid.empty()) return;
+        const std::string Since = PackageCatalog::GoldenSince(*Model.config(), card->RepUid);
+        QMenu Menu(this);
+        QAction * Golden = Menu.addAction(Since.empty() ? QStringLiteral("Mark as golden")
+                                                        : QStringLiteral("Golden since %1 — unmark").arg(QString::fromStdString(Since)));
+        Golden->setObjectName("goldenToggle");
+        if (Menu.exec(at) != Golden) return;
+        PackageCatalog::SetGolden(*Model.config(), card->RepUid, Since.empty(), QDate::currentDate().toString(Qt::ISODate).toStdString());
+        Model.save();
+        for (LibraryGameCard * C : *LibraryGameCards)
+            if (C->RepUid == card->RepUid) C->Golden = Since.empty();
+        View->repaintCards();
     });
 }
 

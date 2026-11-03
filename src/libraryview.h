@@ -55,6 +55,7 @@ public:
     QString                  GameTitle;
     std::filesystem::path    PackagePath;              // representative node's bundle dir
     bool                   Local = false;         // a locally-added package (bundle outside any repo) — paints a "LOCAL" badge
+    bool                   Golden = false;        // marked golden on this machine (Settings.GoldenPackages) — paints a "GOLDEN" badge
     bool                   Downloading = false;   // Available tab: an import is in flight (paints a "Downloading…" overlay)
     double                 DownloadPercent = -1.0; // 0..100 aggregate IPFS progress while Downloading; -1 = unknown
     QPixmap                CoverOriginal;
@@ -117,6 +118,7 @@ signals:
     void downloadRequested(LibraryGameCard * card);   // Available tab: a card was clicked to import it
     void cancelRequested(LibraryGameCard * card);      // Available tab: a downloading card was clicked to cancel
     void groupToggled(const QString & name, bool collapsed);   // a section header was collapsed/expanded
+    void cardMenuRequested(LibraryGameCard * card, const QPoint & globalPos);   // Library tab: a card was right-clicked
 
 protected:
     void resizeEvent(QResizeEvent * e) override;

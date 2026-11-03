@@ -54,6 +54,7 @@ void LibraryGameCard::InitializeClassVariables()
 
     PackagePath = Rep->BundleDir;
     Local       = GlobalConfigJSON && PackageCatalog::IsLocalPackagePath(*GlobalConfigJSON, PackagePath);
+    Golden      = GlobalConfigJSON && !PackageCatalog::GoldenSince(*GlobalConfigJSON, Rep->GameKey()).empty();
     GameKey    = QString::fromStdString(FaceUid.empty() ? Rep->GameKey() : FaceUid);
     RepUid      = Rep->GameKey();
 
@@ -470,6 +471,21 @@ void LibraryView::onPaint(QPaintEvent * e)
             p.setFont(TitleFont);
         }
 
+        // "GOLDEN" badge — the user marked this package's golden pass done (a local, cosmetic marker), beside LOCAL.
+        if (card->Golden) {
+            QFont gf = TitleFont; gf.setBold(true);
+            gf.setPointSizeF(qMax(7.0, TitleFont.pointSizeF() - 1.0));
+            p.setFont(gf);
+            const QFontMetrics gfm(gf);
+            const QString gt = QStringLiteral("GOLDEN");
+            int gx = r.left() + 6;
+            if (card->Local) gx += gfm.horizontalAdvance(QStringLiteral("LOCAL")) + 10 + 4;   // after the LOCAL badge
+            const QRect gr(gx, r.top() + 6, gfm.horizontalAdvance(gt) + 10, gfm.height() + 4);
+            p.setPen(Qt::NoPen); p.setBrush(QColor(0, 0, 0, 150)); p.drawRoundedRect(gr, 3, 3);
+            p.setPen(QColor(0xff, 0xc8, 0x3d)); p.drawText(gr, Qt::AlignCenter, gt);
+            p.setFont(TitleFont);
+        }
+
         // In-flight import (Available): darken + a centered "Downloading…" label and a progress bar; no hover.
         if (card->Downloading) {
             p.fillRect(r, QColor(0,0,0,150));
@@ -548,8 +564,17 @@ void LibraryView::onMouseMove(QMouseEvent * e)
 
 void LibraryView::onMousePress(QMouseEvent * e)
 {
-    if (!Cards || e->button() != Qt::LeftButton) return;
+    if (!Cards) return;
     const QPoint pos = e->pos() + QPoint(0, verticalScrollBar()->value());
+    //Right-click on a Library card (not the Catalog's download cards): its menu, which the tab builds.
+    if (e->button() == Qt::RightButton)
+    {
+        if (EmitDownload) return;
+        for (int i = 0; i < Cards->count() && i < Rects.size(); i++)
+            if (Rects[i].contains(pos)) { SelectedIdx = i; emit cardMenuRequested(Cards->at(i), e->globalPosition().toPoint()); return; }
+        return;
+    }
+    if (e->button() != Qt::LeftButton) return;
 
     // Section header → toggle collapse.
     for (int gi = 0; gi < Groups.size() && gi < HeaderRects.size(); gi++) {

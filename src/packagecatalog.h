@@ -159,6 +159,13 @@ SourceUpgradePlan PlanSourceUpgrade(const nlohmann::ordered_json &GlobalConfigJS
 // True if BundleDir is a locally-added package — its path is OUTSIDE every configured package-source dir (used to badge
 // such tiles in the library).
 bool IsLocalPackagePath(const nlohmann::ordered_json &GlobalConfigJSON, const std::filesystem::path &BundleDir);
+// ----- the golden marker -----
+// Whether this machine's user marked a package golden (its golden pass done), keyed by the family's UID
+// (%PackageUID%: the same across re-mints and versions). Purely cosmetic and local: it lives in GlobalConfig
+// Settings.GoldenPackages ({uid: the date it was marked}), never in a package, and nothing but the Library's badge
+// reads it. GoldenSince: that date ("" = not golden). SetGolden marks (Date, YYYY-MM-DD) or clears it; the caller saves.
+std::string GoldenSince(const nlohmann::ordered_json &GlobalConfigJSON, const std::string &PackageUid);
+void SetGolden(nlohmann::ordered_json &GlobalConfigJSON, const std::string &PackageUid, bool On, const std::string &Date);
 
 // ----- publish -----
 // Dehydrate a local bundle for sharing: seed each node LAYER's VFS content + META.COVER over IPFS, record

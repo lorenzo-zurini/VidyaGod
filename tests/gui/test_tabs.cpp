@@ -18,6 +18,11 @@
 #include "ipfssettingspage.h"
 #include "sourcespage.h"
 #include "a11ynames.h"
+#include "libraryview.h"
+#include "manifestmodel.h"
+#include "packagecatalog.h"
+#include "cid.h"
+#include <fstream>
 
 #include <QCheckBox>
 #include <QLineEdit>
@@ -112,6 +117,58 @@ private slots:
         QVERIFY(up->isEnabled());
         QVERIFY(!up->toolTip().isEmpty());
         QCOMPARE(cfg["Settings"]["PackageSources"][0].value("CID", std::string()), std::string("QmOld"));
+    }
+
+    // The golden marker: this machine's note that a package's golden pass is done. It lives in the app config only
+    // (Settings.GoldenPackages, keyed by the family UID), never in the package, and a card shows it as a gold
+    // "GOLDEN" badge. Teeth: drop the card's lookup (Golden stays false); drop the badge (no gold pixels); write it into
+    // a node (the package's files change).
+    void golden_marker_is_local_config_and_paints_a_badge()
+    {
+        json C = json{{"Settings", json::object()}, {"LIBRARY", json::array()}};
+        QCOMPARE(PackageCatalog::GoldenSince(C, "77"), std::string());
+        PackageCatalog::SetGolden(C, "77", true, "2026-11-03");
+        QCOMPARE(PackageCatalog::GoldenSince(C, "77"), std::string("2026-11-03"));
+        QCOMPARE(PackageCatalog::GoldenSince(C, "78"), std::string());
+        //A family of one package presenting tile 77: the marker reaches its card, and the package folder is untouched.
+        QTemporaryDir Lib;
+        const QString Pkg = Lib.path() + "/VidyaGod/[77][v1.0] Gold";
+        QDir().mkpath(Pkg);
+        const json N = json{{"LABEL", "Gold"}, {"VARIANT", "Original"},
+                            {"LAYERS", json::array({ json{{"EXEC", json::array({ json{{"LABEL", "Play"}, {"HOST", "win32"},
+                                {"EXE", "%GameDir%/g.exe"}, {"TILE", json{{"UID", "77"}, {"TITLE", "Gold"}}}} })}} })}};
+        const std::string Id = Cid::OfNode(N);
+        std::ofstream((Pkg + "/" + QString::fromStdString(Id) + ".json").toStdString(), std::ios::binary) << Cid::Canonical(N);
+        const QStringList Before = QDir(Pkg).entryList(QDir::Files);
+        const NodeIndex Idx = ManifestModel::BuildNodeIndex({ (Lib.path() + "/VidyaGod").toStdString() });
+        LibraryGameCard Card(&C, &Idx, { Id }, "77");
+        Card.InitializeClassVariables();
+        QVERIFY(Card.Golden);
+        PackageCatalog::SetGolden(C, "77", false, "");
+        Card.InitializeClassVariables();
+        QVERIFY(!Card.Golden);
+        QVERIFY(!C["Settings"]["GoldenPackages"].contains("77"));
+        PackageCatalog::SetGolden(C, "77", true, "2026-11-03");
+        Card.InitializeClassVariables();
+        QCOMPARE(QDir(Pkg).entryList(QDir::Files), Before);                    // nothing written into the package
+        //The badge: gold text on the card.
+        QList<LibraryGameCard *> Cards = { &Card };
+        LibraryView V;
+        V.resize(420, 640);
+        V.setCards(&Cards);
+        V.show();
+        V.layoutCards(240);
+        QApplication::processEvents();
+        const QImage Img = V.viewport()->grab().toImage();
+        int Gold = 0;
+        for (int y = 0; y < Img.height(); ++y)
+            for (int x = 0; x < Img.width(); ++x)
+            {
+                const QColor P = Img.pixelColor(x, y);
+                Gold += P.red() > 200 && P.green() > 150 && P.green() < 230 && P.blue() < 120;
+            }
+        QVERIFY2(Gold > 10, qPrintable(QString("gold pixels: %1").arg(Gold)));
+        V.setCards(nullptr);
     }
 
     void library_tab_constructs()   { AppModel m(&Cfg, &AppDir); LibraryTab  t(m); QVERIFY(renders(&t)); }

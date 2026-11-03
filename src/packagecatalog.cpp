@@ -252,6 +252,25 @@ bool IsLocalPackagePath(const nlohmann::ordered_json &GlobalConfigJSON, const st
     return !PathUnderManagedSource(GlobalConfigJSON, BundleDir);
 }
 
+std::string GoldenSince(const nlohmann::ordered_json &GlobalConfigJSON, const std::string &PackageUid)
+{
+    if (PackageUid.empty() || !GlobalConfigJSON.contains("Settings") || !GlobalConfigJSON["Settings"].is_object()) return std::string();
+    const auto &S = GlobalConfigJSON["Settings"];
+    if (!S.contains("GoldenPackages") || !S["GoldenPackages"].is_object() || !S["GoldenPackages"].contains(PackageUid)) return std::string();
+    const auto &V = S["GoldenPackages"][PackageUid];
+    return V.is_string() && !V.get<std::string>().empty() ? V.get<std::string>() : std::string("golden");   // a hand-edited non-date still marks it
+}
+
+void SetGolden(nlohmann::ordered_json &GlobalConfigJSON, const std::string &PackageUid, bool On, const std::string &Date)
+{
+    if (PackageUid.empty()) return;
+    if (!GlobalConfigJSON.contains("Settings") || !GlobalConfigJSON["Settings"].is_object()) GlobalConfigJSON["Settings"] = nlohmann::ordered_json::object();
+    auto &S = GlobalConfigJSON["Settings"];
+    if (!S.contains("GoldenPackages") || !S["GoldenPackages"].is_object()) S["GoldenPackages"] = nlohmann::ordered_json::object();
+    if (On) S["GoldenPackages"][PackageUid] = Date;
+    else S["GoldenPackages"].erase(PackageUid);
+}
+
 std::vector<std::string> LibraryNames(const nlohmann::ordered_json &GlobalConfigJSON)
 {
     std::vector<std::string> Out;
