@@ -757,6 +757,73 @@ TEST(validate_reads_a_deltas_bases)
     CHECK(!AnyContains(Validate(Short), "names a base at '%GameDir%/a"));
 }
 
+// A delta rebuilds from the bytes the mount hands it: the archive the mount picks beneath it must be the one it was
+// built over (its header's base size). A patch zip slipped in between becomes the base and the delta fails to
+// mount, which nothing reported until launch. Teeth: each case flips with one archive moved or one size changed.
+TEST(validate_checks_a_delta_against_the_archive_beneath_it)
+{
+    namespace fs = std::filesystem;
+    char Tmpl[] = "/tmp/vgdbaseXXXXXX";
+    const fs::path D = mkdtemp(Tmpl);
+    auto Bytes = [&](const std::string &Name, size_t N) { std::ofstream(D / Name, std::ios::binary) << std::string(N, 'z'); };
+    auto Header = [&](const std::string &Name, uint64_t Target, uint64_t Base) {
+        std::string H = "VGD1";
+        auto Put = [&](uint64_t V, int W) { for (int B = 0; B < W; ++B) H.push_back(char((V >> (8 * B)) & 0xff)); };
+        Put(1, 4); Put(262144, 4); Put(Target, 8); Put(Base, 8);
+        std::ofstream(D / Name, std::ios::binary) << H;
+    };
+    Bytes("base.zip", 100); Bytes("patch.zip", 50); Bytes("a.zip", 30); Bytes("b.zip", 70);
+    Header("over_base.vgdelta", 200, 100);    // built over base.zip
+    Header("over_both.vgdelta", 300, 100);    // built over a.zip + b.zip
+    Header("over_d1.vgdelta", 250, 200);      // built over what over_base rebuilds
+    Header("over_d1_wrong.vgdelta", 250, 201);
+    auto Errors = [&](std::vector<ordered_json> Layers) {
+        Layers.insert(Layers.end(), { NF::Exec("win32", "g.exe"), NF::Tile("1"), NF::Variant("v") });
+        NodeIndex Idx;
+        AddChain(Idx, "v", { NF::Merge(Layers) }, {}, ordered_json::object(), D.string());
+        ManifestModel::DeriveFacts(Idx);
+        return Validate(Idx);
+    };
+    const auto Zip = [](const char *N, const char *T = "%GameDir%") { return NF::Content("zip", N, T); };
+    const auto Delta = [](const char *N) { return NF::Content("delta", N, "%GameDir%"); };
+    const std::string Msg = "the mount would rebuild it from";
+    CHECK(!AnyContains(Errors({ Zip("base.zip"), Delta("over_base.vgdelta") }), Msg));
+    const auto Slipped = Errors({ Zip("base.zip"), Zip("patch.zip"), Delta("over_base.vgdelta") });
+    CHECK(AnyContains(Slipped, "'over_base.vgdelta' was built over 100 bytes, but the mount would rebuild it from 'patch.zip' (50 bytes)"));
+    CHECK(!AnyContains(Errors({ Zip("base.zip"), Delta("over_base.vgdelta"), Zip("patch.zip") }), Msg));   // a patch above is fine
+    //Several bases: their sizes add up, in the order named.
+    auto Both = NF::Content("delta", "over_both.vgdelta", "%GameDir%/out");
+    Both["LAYERS"][0]["BASE_TARGETS"] = ordered_json::array({ "FILES/%GameDir%/a", "FILES/%GameDir%/b" });
+    CHECK(!AnyContains(Errors({ Zip("a.zip", "%GameDir%/a"), Zip("b.zip", "%GameDir%/b"), Both }), Msg));
+    CHECK(AnyContains(Errors({ Zip("a.zip", "%GameDir%/a"), Zip("patch.zip", "%GameDir%/b"), Both }), "from 'a.zip' + 'patch.zip' (80 bytes)"));
+    //A chain: a delta over a delta is built over what the lower one rebuilds (its header's target size).
+    CHECK(!AnyContains(Errors({ Zip("base.zip"), Delta("over_base.vgdelta"), Delta("over_d1.vgdelta") }), Msg));
+    CHECK(AnyContains(Errors({ Zip("base.zip"), Delta("over_base.vgdelta"), Delta("over_d1_wrong.vgdelta") }), "built over 201 bytes"));
+    //A zip stacked over a finished chain is an overlay, not part of the byte view a delta elsewhere reads there.
+    Header("over_game.vgdelta", 300, 200);
+    auto Elsewhere = NF::Content("delta", "over_game.vgdelta", "%GameDir%/out");
+    Elsewhere["LAYERS"][0]["BASE_TARGETS"] = ordered_json::array({ "FILES/%GameDir%" });
+    CHECK(!AnyContains(Errors({ Zip("base.zip"), Delta("over_base.vgdelta"), Zip("patch.zip"), Elsewhere }), Msg));
+    //Another depot beneath a chain at the same target is no part of its base.
+    CHECK(!AnyContains(Errors({ Zip("patch.zip"), Zip("base.zip"), Delta("over_base.vgdelta") }), Msg));
+    //A zip below every chain at a target is its view for a delta elsewhere, even with a chain beginning there later.
+    Header("over_a.vgdelta", 120, 30);
+    auto OverA = NF::Content("delta", "over_a.vgdelta", "%GameDir%");
+    OverA["LAYERS"][0]["BASE_TARGETS"] = ordered_json::array({ "FILES/%GameDir%/a" });
+    Header("elsewhere_wrong.vgdelta", 300, 99);
+    auto Wrong = NF::Content("delta", "elsewhere_wrong.vgdelta", "%GameDir%/out");
+    Wrong["LAYERS"][0]["BASE_TARGETS"] = ordered_json::array({ "FILES/%GameDir%" });
+    const auto Early = Errors({ Zip("a.zip", "%GameDir%/a"), Zip("base.zip"), Wrong, OverA });
+    CHECK(AnyContains(Early, "'elsewhere_wrong.vgdelta' was built over 99 bytes, but the mount would rebuild it from 'base.zip' (100 bytes)"));
+    CHECK(!AnyContains(Early, "'over_a.vgdelta' was built"));
+    //Two depots' chains interleaved: the language delta lands on the main depot's chain and cannot rebuild.
+    CHECK(AnyContains(Errors({ Zip("a.zip", "%GameDir%/a"), Zip("base.zip"), OverA, Delta("over_base.vgdelta") }),
+                      "'over_base.vgdelta' was built over 100 bytes, but the mount would rebuild it from 'over_a.vgdelta' (120 bytes)"));
+    //Not here to read: nothing to compare, nothing said (fetching is hydration's job).
+    CHECK(!AnyContains(Errors({ Zip("base.zip"), Zip("absent.zip"), Delta("over_base.vgdelta") }), Msg));
+    fs::remove_all(D);
+}
+
 TEST(validate_a_layer_when_may_only_read_ungated_variables)
 {
     NodeIndex Idx;

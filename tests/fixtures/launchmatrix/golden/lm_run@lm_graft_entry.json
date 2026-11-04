@@ -188,6 +188,21 @@
       "TYPE": "VFSDeltaLayer"
     },
     {
+      "PATH": "<DATA>/fixture/[90000000000001][v1.0] Launch Matrix/depot_main.zip",
+      "TARGET": "/drive_c/90000000000001/depot",
+      "TYPE": "VFSZipLayer"
+    },
+    {
+      "PATH": "<DATA>/fixture/[90000000000001][v1.0] Launch Matrix/lang_v1.zip",
+      "TARGET": "/drive_c/90000000000001/depot",
+      "TYPE": "VFSZipLayer"
+    },
+    {
+      "PATH": "<DATA>/fixture/[90000000000001][v1.0] Launch Matrix/lang.vgdelta",
+      "TARGET": "/drive_c/90000000000001/depot",
+      "TYPE": "VFSDeltaLayer"
+    },
+    {
       "PATH": "<DATA>/fixture/[90000000000001][v1.0] Launch Matrix/probe.sh",
       "TARGET": "/drive_c/90000000000001/bin",
       "TYPE": "VFSFileLayer"

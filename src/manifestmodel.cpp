@@ -20,6 +20,7 @@
 #include <unordered_map>
 #include <string_view>
 #include <deque>
+#include <cstring>
 #include <fstream>
 #include <functional>
 #include <climits>
@@ -595,6 +596,36 @@ std::filesystem::path ItemLocal(const Fold::Item &I)
     return ContentFile::Path(I.Dir, I.Payload, I.Source.is_string() ? I.Source.get<std::string>() : std::string());
 }
 
+// The bytes a content item's archive view holds, as a delta built over it reads them: a ZIP's file size, a DELTA's
+// rebuilt size (its header). Base = the bytes a DELTA was built over (its header). nullopt: not here to read.
+struct ArchiveBytes { std::optional<uint64_t> View, Base; };
+ArchiveBytes ArchiveSizes(const Fold::Item &I, std::map<std::string, ArchiveBytes> &Cache)
+{
+    const std::filesystem::path Local = ItemLocal(I);
+    if (Local.empty()) return {};
+    if (auto It = Cache.find(Local.string()); It != Cache.end()) return It->second;
+    ArchiveBytes Out;
+    std::error_code Ec;
+    if (I.Kind == "ZIP")
+    {
+        const uint64_t N = std::filesystem::file_size(Local, Ec);
+        if (!Ec) Out.View = N;
+    }
+    else if (I.Kind == "DELTA")
+    {
+        //Header: "VGD1" | u32 version | u32 block | u64 target size | u64 base size (little-endian).
+        std::ifstream F(Local, std::ios::binary);
+        unsigned char H[28] = {};
+        if (F.read(reinterpret_cast<char *>(H), sizeof H) && std::memcmp(H, "VGD1", 4) == 0)
+        {
+            auto U64 = [&](size_t O) { uint64_t V = 0; for (size_t B = 8; B-- > 0;) V = (V << 8) | H[O + B]; return V; };
+            Out.View = U64(12);
+            Out.Base = U64(20);
+        }
+    }
+    return Cache.emplace(Local.string(), Out).first->second;
+}
+
 // The case-sensitive set of target-relative file paths a launchable's resolved plan mounts, from LOCALLY-present
 // content only (zips via libzip, dirs walked). AnyLocal = ≥1 layer read; AllLocal = every content layer was on disk.
 void GatherLaunchContentFiles(const Fold::Plan &P,
@@ -837,6 +868,7 @@ void ValidateNodeGraph(const NodeIndex &Idx, std::vector<std::string> &Errors, s
     std::unordered_map<std::string, std::vector<std::string>> ZipCache;   // local zip path -> its file entries
     std::unordered_map<std::string, std::vector<PreparedEntry>> PrepCache; // (layer path, TARGET) -> prepared case-lint entries
     std::map<std::vector<std::string>, std::optional<std::set<std::string>>> NameCache;   // content chain -> member names
+    std::map<std::string, ArchiveBytes> SizeCache;                                          // archive file -> its sizes
     std::unordered_set<std::string> CrossLayerSeen;
     const Fold::Library Lib = LibraryOf(Idx);
     const Fold::GraftIndex Grafts = Fold::BuildGraftIndex(Lib);
@@ -1116,6 +1148,68 @@ void ValidateNodeGraph(const NodeIndex &Idx, std::vector<std::string> &Errors, s
                         Base = (P.Seq[I].Kind == "ZIP" || P.Seq[I].Kind == "DELTA") && Bare(P.Seq[I].Target) == Bare(B);
                     if (!Base) Once(Errors, Tag + ": DELTA '" + D.Payload + "' names a base at '" + B
                                             + "', but no archive lies beneath it there to rebuild from");
+                }
+            }
+            //A DELTA rebuilds from the bytes the mount hands it, which must be the bytes it was built over (its
+            //header's base size): the mount's own choice of base, re-run here. At each target a CHAIN is a ZIP
+            //and the DELTAs right above it built over that target (or a DELTA based elsewhere, and those built over
+            //it); the view at a target is its latest chain member, or, until a chain begins there, its latest ZIP.
+            //An archive slipped in between (a patch zip over the base it was built on) becomes the base, and the delta
+            //would not mount.
+            {
+                const auto Bare = [](std::string T) {   // as the mount compares: one separator, none trailing
+                    std::replace(T.begin(), T.end(), '\\', '/');
+                    std::string O;
+                    for (char Ch : T) if (Ch != '/' || O.empty() || O.back() != '/') O.push_back(Ch);
+                    while (!O.empty() && O.back() == '/') O.pop_back();
+                    return O;
+                };
+                const auto BuiltOverOwnTarget = [&](const Fold::Item &C) {
+                    return C.Bases.empty() || std::any_of(C.Bases.begin(), C.Bases.end(),
+                                                          [&](const std::string &B) { return Bare(B) == Bare(C.Target); });
+                };
+                std::map<std::string, std::vector<size_t>> ByTarget;
+                for (size_t I = 0; I < P.Seq.size(); ++I)
+                    if (P.Seq[I].Kind == "ZIP" || P.Seq[I].Kind == "DELTA") ByTarget[Bare(P.Seq[I].Target)].push_back(I);
+                std::set<size_t> InChain;
+                for (const auto &[T, Ix] : ByTarget)
+                    for (size_t K = 0; K < Ix.size();)
+                    {
+                        const bool Zip = P.Seq[Ix[K]].Kind == "ZIP";
+                        size_t E = K + 1;
+                        while (E < Ix.size() && P.Seq[Ix[E]].Kind == "DELTA" && BuiltOverOwnTarget(P.Seq[Ix[E]])) ++E;
+                        if (Zip && E == K + 1) { ++K; continue; }
+                        for (size_t M = K; M < E; ++M) InChain.insert(Ix[M]);
+                        K = E;
+                    }
+                std::map<std::string, size_t> View;   // target -> the item whose bytes a delta there is built over
+                std::set<std::string> Begun;          // targets where a chain has begun: a zip stacked there later is an overlay
+                for (size_t J = 0; J < P.Seq.size(); ++J)
+                {
+                    const Fold::Item &C = P.Seq[J];
+                    if (C.Kind != "ZIP" && C.Kind != "DELTA") continue;
+                    if (C.Kind == "DELTA" && C.View.is_null())
+                    {
+                        const std::vector<std::string> At = C.Bases.empty() ? std::vector<std::string>{ C.Target } : C.Bases;
+                        std::optional<uint64_t> Have = 0;
+                        std::string Names;
+                        for (const std::string &B : At)
+                        {
+                            const auto It = View.find(Bare(B));
+                            if (It == View.end() || !P.Seq[It->second].View.is_null()) { Have.reset(); break; }   // checked above / viewed
+                            const std::optional<uint64_t> N = ArchiveSizes(P.Seq[It->second], SizeCache).View;
+                            if (!N) { Have.reset(); break; }
+                            *Have += *N;
+                            Names += std::string(Names.empty() ? "" : " + ") + "'" + P.Seq[It->second].Payload + "'";
+                        }
+                        const std::optional<uint64_t> Want = ArchiveSizes(C, SizeCache).Base;
+                        if (Have && Want && *Have != *Want)
+                            Once(Errors, Tag + ": DELTA '" + C.Payload + "' was built over " + std::to_string(*Want)
+                                 + " bytes, but the mount would rebuild it from " + Names + " (" + std::to_string(*Have)
+                                 + " bytes) — put it directly above the archive it was built on, or build it over that one");
+                    }
+                    if (InChain.count(J)) Begun.insert(Bare(C.Target));
+                    if (InChain.count(J) || !Begun.count(Bare(C.Target))) View[Bare(C.Target)] = J;
                 }
             }
             //Covered edits: an EDIT beneath a layer that replaces its file has no effect — always a mistake.

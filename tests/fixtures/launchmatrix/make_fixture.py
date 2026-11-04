@@ -56,9 +56,12 @@ od -An -tx1 -j 1024 -N40 game/patch.exe 2>/dev/null | tr -s ' ' | sed 's/^ */  /
 echo "  cave region: $(od -An -tx1 -j 1088 -N8 game/patch.exe 2>/dev/null | tr -s ' ')"
 echo "=== delta reconstruction"
 echo "  chain/added.txt:     $(cat deltatarget/chain/added.txt 2>/dev/null || echo MISSING)"
-echo "  deltatarget/masked.txt (opaque delta must hide it): $(cat deltatarget/masked.txt 2>/dev/null || echo MASKED)"
+echo "  deltatarget/masked.txt (beneath the delta, not its base: shows through): $(cat deltatarget/masked.txt 2>/dev/null || echo MASKED)"
 echo "  multi/game/track01.wav (from the second base): $(head -c 22 multi/game/track01.wav 2>/dev/null || echo MISSING) ($(wc -c < multi/game/track01.wav 2>/dev/null || echo 0) bytes)"
-echo "  multi/music/track01.wav (the delta is opaque): $(head -c 22 multi/music/track01.wav 2>/dev/null || echo MASKED)"
+echo "  multi/music/track01.wav (a base, hidden under its delta): $(head -c 22 multi/music/track01.wav 2>/dev/null || echo MASKED)"
+echo "  depot/main/data.pak (another depot beneath the language chain): $(cat depot/main/data.pak 2>/dev/null || echo MASKED)"
+echo "  depot/Localization/english.pak (the language depot, newer build): $(cat depot/Localization/english.pak 2>/dev/null | tail -n 1 || echo MISSING)"
+echo "  depot/Localization/old.pak (dropped by the newer build): $(cat depot/Localization/old.pak 2>/dev/null || echo ABSENT)"
 echo "=== a file taken out of an archive"
 echo "  unpacked/relocated.txt: $(cat unpacked/relocated.txt 2>/dev/null || echo MISSING)"
 echo "  carrier/nested/ignored.txt (must be absent): $(cat carrier/nested/ignored.txt 2>/dev/null || echo ABSENT)"
@@ -144,7 +147,7 @@ def make_content(B):
     # Mounted UNDER the delta at the same target, to prove the delta is OPAQUE. A base zip cannot show this:
     # it is folded into the delta chain as a byte input and never becomes a layer at all, so opacity has
     # nothing to mask. A dir layer is not a byte view, is not folded, and must therefore disappear.
-    write(f"{B}/maskeddir/masked.txt", "must be masked by the opaque delta above\n")
+    write(f"{B}/maskeddir/masked.txt", "beneath a delta that is not built over it: shows through\n")
     write(f"{B}/single.txt", "single-file\n")
     # Grafts (see the node matrix): what a mod mounts above the launchable, what an unticked one must not, what a
     # branch off an ANCESTOR must never contribute, and a library pulled in as substance.
@@ -167,8 +170,8 @@ def make_content(B):
     write(f"{B}/graftentry/game/from_graft_entry.txt", "a graft that is also a way to run\n")
     # FORM delta — REAL ones, generated below by vg_make_delta.
     #
-    # A delta reconstructs a COMPLETE archive and is OPAQUE: it masks everything below it at its own target.
-    # So each delta here gets its own target with a predictable byte view underneath, and its target zip holds
+    # A delta reconstructs a COMPLETE archive of what it replaces and hides its BASE, nothing else beneath it.
+    # Each delta here gets its own target with a predictable byte view underneath, and its target zip holds
     # the whole tree it is meant to produce. (Pointing a delta at a target that already stacks base+patch would
     # base it on the LAST zip there, which is a fine thing to test but a terrible thing to hand-compute.)
     store_zip(f"{B}/delta_target.zip", {
@@ -182,8 +185,13 @@ def make_content(B):
     music = "".join(f"cd music sample {i:05d}\n" for i in range(4000))
     store_zip(f"{B}/music.zip", {"track01.wav": music})
     store_zip(f"{B}/multi_target.zip", {"game/data.txt": "base\n", "game/track01.wav": music})
-    # The synthetic "game" and the synthetic runner binary. probe.sh is mounted at its own sub-target so the
-    # opaque delta above cannot mask it.
+    # Steam depots: one zip per depot, each its own chain, all in the game folder. The language depot's newer build
+    # is a delta over its older one; the main depot beneath it is not its base and must still show.
+    store_zip(f"{B}/depot_main.zip", {"main/data.pak": "main depot\n"})
+    speech = "".join(f"english line {i:05d}\n" for i in range(3000))
+    store_zip(f"{B}/lang_v1.zip", {"Localization/english.pak": speech, "Localization/old.pak": "dropped in v2\n"})
+    store_zip(f"{B}/lang_v2.zip", {"Localization/english.pak": speech + "english build 2\n"})
+    # The synthetic "game" and the synthetic runner binary. probe.sh is mounted at its own sub-target.
     write(f"{B}/probe.sh", PROBE, 0o755)
     #Drops its own flag then runs the content through an interpreter, so the chain does not depend on the
     #mount preserving an executable bit either.
@@ -198,6 +206,8 @@ def make_deltas(B, tool):
     subprocess.run([tool, f"{B}/over_base.vgdelta", f"{B}/delta_target.zip", f"{B}/base.zip"], check=True)
     # multi: base = base.zip ++ music.zip, the order BASE_TARGETS names them in.
     subprocess.run([tool, f"{B}/multi.vgdelta", f"{B}/multi_target.zip", f"{B}/base.zip", f"{B}/music.zip"], check=True)
+    # lang: the language depot's newer build over its older one.
+    subprocess.run([tool, f"{B}/lang.vgdelta", f"{B}/lang_v2.zip", f"{B}/lang_v1.zip"], check=True)
     return True
 
 # ---------------------------------------------------------------------------------------------------------
@@ -272,7 +282,7 @@ def nodes():
     # A FILE layer's TARGET is the CONTAINING DIRECTORY — the file appears as TARGET/<its name>.
     filel  = add("lm_c_file", [node(dirl), {"FILE": "single.txt", "TARGET": F(G + "/loosefile")}])
     # A DELTA reconstructs a COMPLETE archive from the nearest content beneath it at its target (the zip it was
-    # built on) and MASKS everything below: the dir under that zip must disappear (opacity), and a dir is not a
+    # built on) and hides that base only: the dir under that zip is not its base and shows through. A dir is not a
     # byte view, so it sits BENEATH the base (a dir between would be "the nearest content", a refused base).
     masked = add("lm_c_masked_dir", [node(filel), {"DIR": "maskeddir", "TARGET": F(G + "/deltatarget")}])
     dbase  = add("lm_c_delta_base", [node(masked), {"ZIP": "base.zip", "TARGET": F(G + "/deltatarget")}])
@@ -281,8 +291,10 @@ def nodes():
                                      {"ZIP": "music.zip", "TARGET": F(G + "/multi/music")}])
     m1     = add("lm_c_multi_delta", [node(mbase), {"DELTA": "multi.vgdelta", "TARGET": F(G + "/multi"),
                                                     "BASE_TARGETS": [F(G + "/multi"), F(G + "/multi/music")]}])
-    # The probe sits at its own sub-target so the opaque delta cannot mask it.
-    probe  = add("lm_c_probe", [node(m1), {"FILE": "probe.sh", "TARGET": F(G + "/bin")}])
+    dmain  = add("lm_c_depot_main", [node(m1), {"ZIP": "depot_main.zip", "TARGET": F(G + "/depot")}])
+    lang1  = add("lm_c_depot_lang_v1", [node(dmain), {"ZIP": "lang_v1.zip", "TARGET": F(G + "/depot")}])
+    lang2  = add("lm_c_depot_lang_v2", [node(lang1), {"DELTA": "lang.vgdelta", "TARGET": F(G + "/depot")}])
+    probe  = add("lm_c_probe", [node(lang2), {"FILE": "probe.sh", "TARGET": F(G + "/bin")}])
     # Un-hydrated content: present only as a CID (a real, well-formed one whose block is simply never in the local
     # store). The engine REFUSES to launch with missing sources, so this hangs off a SIDE BRANCH — only the
     # plan-level launchables contain it.

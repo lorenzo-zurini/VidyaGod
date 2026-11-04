@@ -25,7 +25,7 @@ namespace NodeFixture
 {
 
 // Merge sections into ONE node object: LAYERS concatenate in order, other fields are set.
-inline nlohmann::ordered_json Merge(std::initializer_list<nlohmann::ordered_json> Sections)
+inline nlohmann::ordered_json Merge(const std::vector<nlohmann::ordered_json> &Sections)
 {
     nlohmann::ordered_json Out = nlohmann::ordered_json::object();
     for (const auto &S : Sections)
