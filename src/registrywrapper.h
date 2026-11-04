@@ -133,6 +133,9 @@ public:
     //True when a path names no key below its root ("", "HKCU", "HKEY_LOCAL_MACHINE\\", "HKCU\\\\", "HKCC") — a whole hive.
     //Registry persistence keeps named keys only, so a KEEP like this is refused (validator + DerivePersistence).
     static bool        NamesNoKey(const std::string &Path);
+    //Where a key named by its natural path (no Wow6432Node) is in the hive for a program of Arch ("32"/"64"): a 32-bit
+    //program's HKLM\Software is under Wow6432Node. RegEdits (ARCHITECTURE) and registry KEEPs (ARCH) both land there.
+    static std::string ArchPath(const std::string &RegPath, const std::string &Arch);
 
 private:
     std::map<HiveRoot, Hive> Hives;

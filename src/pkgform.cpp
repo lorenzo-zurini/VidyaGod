@@ -681,6 +681,27 @@ void Field(json &Node, const PkgGraph::Field &F, Host &H, int Layer)
             }
             ImGui::SameLine();
             if (ImGui::Button("x", ImVec2(ImGui::GetFrameHeight(), 0))) DelKey = K;
+            //A registry key is kept for the bitness of the program that reads it (ARCH): a 32-bit program's
+            //HKLM\Software is a different key, under Wow6432Node.
+            if (!Back && K.rfind("REG/", 0) == 0)
+            {
+                bool B32 = false, B64 = false;
+                if (E.is_object() && E.contains("ARCH") && E["ARCH"].is_array())
+                    for (const auto &A : E["ARCH"]) { if (A == "32") B32 = true; if (A == "64") B64 = true; }
+                const bool Edit32 = ImGui::Checkbox("32-bit", &B32);
+                ImGui::SameLine();
+                const bool Edit64 = ImGui::Checkbox("64-bit", &B64);
+                if (Edit32 || Edit64)
+                {
+                    json O = E.is_object() ? E : json::object();
+                    json Ar = json::array();
+                    if (B32) Ar.push_back("32");
+                    if (B64) Ar.push_back("64");
+                    if (Ar.empty()) O.erase("ARCH"); else O["ARCH"] = Ar;
+                    Node[F.Key][K] = O.empty() ? json(true) : O;
+                    H.Dirty();
+                }
+            }
             if (!Back && E.is_object())
             {
                 std::string Name = StrOf(E, "NAME");
@@ -704,7 +725,18 @@ void Field(json &Node, const PkgGraph::Field &F, Host &H, int Layer)
         if (Rename)
         {
             json Out = json::object();
-            for (auto &[K, V] : Node[F.Key].items()) Out[K == Rename->first ? Rename->second : K] = V;
+            for (auto &[K, V] : Node[F.Key].items())
+            {
+                json W = V;
+                //A bitness belongs to a registry key: an address renamed out of REG drops it (else the row hides it and
+                //the validator refuses it, with only the JSON view left to fix it).
+                if (K == Rename->first && Rename->second.rfind("REG/", 0) != 0 && W.is_object() && W.contains("ARCH"))
+                {
+                    W.erase("ARCH");
+                    if (W.empty()) W = true;
+                }
+                Out[K == Rename->first ? Rename->second : K] = W;
+            }
             Node[F.Key] = std::move(Out);
             H.Dirty();
         }
@@ -733,7 +765,13 @@ void Field(json &Node, const PkgGraph::Field &F, Host &H, int Layer)
         if (ImGui::InputTextWithHint(FieldId(F).c_str(), "cover image in this bundle", &P))
         {
             if (Node.contains(F.Key) && Node[F.Key].is_string()) { Node[F.Key] = P; H.Dirty(); }
-            else if (WriteSubKey(Node, F.Key, "FILE", P)) H.Dirty();
+            else if (WriteSubKey(Node, F.Key, "FILE", P))
+            {
+                //SOURCE and SIZE described the old image (publish stamps the new one's), as with a browsed cover: kept,
+                //friends would fetch the old image by its CID under the new name.
+                if (Node[F.Key].is_object()) { Node[F.Key].erase("SOURCE"); Node[F.Key].erase("SIZE"); }
+                H.Dirty();
+            }
         }
         ImGui::SameLine();
         if (ImGui::Button("browse")) H.Request("browse_cover");

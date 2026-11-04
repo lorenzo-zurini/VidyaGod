@@ -47,6 +47,10 @@
   ./loose/note.txt
   ./loosefile
   ./loosefile/single.txt
+  ./multi
+  ./multi/game
+  ./multi/game/data.txt
+  ./multi/game/track01.wav
   ./shared
   ./shared/diamond.txt
   ./unpacked
@@ -73,6 +77,8 @@
 === delta reconstruction
   chain/added.txt:     added by the delta
   deltatarget/masked.txt (opaque delta must hide it): MASKED
+  multi/game/track01.wav (from the second base): cd music sample 00000 (88000 bytes)
+  multi/music/track01.wav (the delta is opaque): MASKED
 === a file taken out of an archive
   unpacked/relocated.txt: relocated by a TAKE
   carrier/nested/ignored.txt (must be absent): ABSENT

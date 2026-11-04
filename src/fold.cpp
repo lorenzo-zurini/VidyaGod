@@ -206,15 +206,18 @@ std::optional<std::string> MapFiles(const View &V, std::string Addr, const std::
     return Addr;
 }
 
-//EXEC entries fold per field (EXEC/<label>/<field>/…): objects merge, anything else is replaced; null deletes.
-json Merge(const json &A, const json &B)
+//EXEC entries fold per field (EXEC/<label>/<field>/…): objects merge, anything else is replaced; null deletes. A tile's
+//COVER is one image (FILE, SOURCE and SIZE describe the same bytes) and is replaced whole: merged, a new FILE kept the
+//SOURCE of the cover beneath, and the card showed that other image.
+json Merge(const json &A, const json &B, const std::string &Field = std::string())
 {
     if (!A.is_object() || !B.is_object()) return B;
     json Out = A;
     for (const auto &[K, V] : B.items())
     {
         if (V.is_null()) Out.erase(K);
-        else if (V.is_object() && A.contains(K) && A[K].is_object()) Out[K] = Merge(A[K], V);
+        else if (Field == "TILE" && K == "COVER") Out[K] = V;
+        else if (V.is_object() && A.contains(K) && A[K].is_object()) Out[K] = Merge(A[K], V, Field.empty() ? K : Field + "/" + K);
         else Out[K] = V;
     }
     return Out;
@@ -550,6 +553,8 @@ static Plan ResolveImpl(const Library &Lib, const std::string &Root, const Vars 
             It.Size = L.contains("SIZE") ? L["SIZE"] : json();
             It.Own = NsPath(L.contains("TARGET") ? Str(L["TARGET"]) : std::string("FILES")).second;
             It.Target = Place(It.Own, S.Prefix);
+            if (S.Kind == "DELTA" && L.contains("BASE_TARGETS") && L["BASE_TARGETS"].is_array())
+                for (const auto &B : L["BASE_TARGETS"]) It.Bases.push_back(Place(NsPath(Str(B)).second, S.Prefix));
             P.Seq.push_back(std::move(It));
         }
         else if (S.Kind == "EDIT")
@@ -813,6 +818,7 @@ json PlanToJson(const Plan &P)
         {
             E["payload"] = I.Payload; E["dir"] = I.Dir; E["source"] = I.Source; E["size"] = I.Size;
             E["view"] = I.View;
+            if (!I.Bases.empty()) E["bases"] = I.Bases;
         }
         E["target"] = I.Target; E["from"] = I.From; E["at"] = I.At;
         Seq.push_back(std::move(E));

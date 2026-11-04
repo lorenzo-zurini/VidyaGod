@@ -57,6 +57,8 @@ echo "  cave region: $(od -An -tx1 -j 1088 -N8 game/patch.exe 2>/dev/null | tr -
 echo "=== delta reconstruction"
 echo "  chain/added.txt:     $(cat deltatarget/chain/added.txt 2>/dev/null || echo MISSING)"
 echo "  deltatarget/masked.txt (opaque delta must hide it): $(cat deltatarget/masked.txt 2>/dev/null || echo MASKED)"
+echo "  multi/game/track01.wav (from the second base): $(head -c 22 multi/game/track01.wav 2>/dev/null || echo MISSING) ($(wc -c < multi/game/track01.wav 2>/dev/null || echo 0) bytes)"
+echo "  multi/music/track01.wav (the delta is opaque): $(head -c 22 multi/music/track01.wav 2>/dev/null || echo MASKED)"
 echo "=== a file taken out of an archive"
 echo "  unpacked/relocated.txt: $(cat unpacked/relocated.txt 2>/dev/null || echo MISSING)"
 echo "  carrier/nested/ignored.txt (must be absent): $(cat carrier/nested/ignored.txt 2>/dev/null || echo ABSENT)"
@@ -174,6 +176,12 @@ def make_content(B):
         "chain/added.txt":  "added by the delta\n",
         "chain/deep/x.txt": "x\n",
     })
+    # A delta over TWO bases (BASE_TARGETS): a game folder and its CD music folder, rebuilt as one tree with the
+    # music inside (Wild Metal Country's freeware release). The music is large enough that the delta copies it from
+    # the second base instead of carrying it, so a base missing or out of order fails the base size check.
+    music = "".join(f"cd music sample {i:05d}\n" for i in range(4000))
+    store_zip(f"{B}/music.zip", {"track01.wav": music})
+    store_zip(f"{B}/multi_target.zip", {"game/data.txt": "base\n", "game/track01.wav": music})
     # The synthetic "game" and the synthetic runner binary. probe.sh is mounted at its own sub-target so the
     # opaque delta above cannot mask it.
     write(f"{B}/probe.sh", PROBE, 0o755)
@@ -188,6 +196,8 @@ def make_deltas(B, tool):
     import subprocess
     # over_base: base = the nearest content beneath at the delta's own target (base.zip).
     subprocess.run([tool, f"{B}/over_base.vgdelta", f"{B}/delta_target.zip", f"{B}/base.zip"], check=True)
+    # multi: base = base.zip ++ music.zip, the order BASE_TARGETS names them in.
+    subprocess.run([tool, f"{B}/multi.vgdelta", f"{B}/multi_target.zip", f"{B}/base.zip", f"{B}/music.zip"], check=True)
     return True
 
 # ---------------------------------------------------------------------------------------------------------
@@ -267,8 +277,12 @@ def nodes():
     masked = add("lm_c_masked_dir", [node(filel), {"DIR": "maskeddir", "TARGET": F(G + "/deltatarget")}])
     dbase  = add("lm_c_delta_base", [node(masked), {"ZIP": "base.zip", "TARGET": F(G + "/deltatarget")}])
     d1     = add("lm_c_delta", [node(dbase), {"DELTA": "over_base.vgdelta", "TARGET": F(G + "/deltatarget")}])
+    mbase  = add("lm_c_multi_base", [node(d1), {"ZIP": "base.zip", "TARGET": F(G + "/multi")},
+                                     {"ZIP": "music.zip", "TARGET": F(G + "/multi/music")}])
+    m1     = add("lm_c_multi_delta", [node(mbase), {"DELTA": "multi.vgdelta", "TARGET": F(G + "/multi"),
+                                                    "BASE_TARGETS": [F(G + "/multi"), F(G + "/multi/music")]}])
     # The probe sits at its own sub-target so the opaque delta cannot mask it.
-    probe  = add("lm_c_probe", [node(d1), {"FILE": "probe.sh", "TARGET": F(G + "/bin")}])
+    probe  = add("lm_c_probe", [node(m1), {"FILE": "probe.sh", "TARGET": F(G + "/bin")}])
     # Un-hydrated content: present only as a CID (a real, well-formed one whose block is simply never in the local
     # store). The engine REFUSES to launch with missing sources, so this hangs off a SIDE BRANCH — only the
     # plan-level launchables contain it.
@@ -335,7 +349,7 @@ def nodes():
         F(G + "/game/config.ini"): {"NAME": "Config"},
         F(G + "/game/shadercache/"): {"NAME": "ShaderCache", "CLOUD": False},
         "REG/HKCU/Software/LaunchMatrix": True,
-        "REG/HKLM/Software/LaunchMatrix": True}}])
+        "REG/HKLM/Software/LaunchMatrix": {"ARCH": ["32", "64"]}}}])
 
     # ---- TAKE: a library contained selectively and placed. Left-strip: a file lands under its own name, a
     # directory's CONTENTS ("FILES/doc/") land at the target; a pair renames. Facts are taken too: lm_lib_var

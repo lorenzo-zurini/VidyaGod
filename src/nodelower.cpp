@@ -67,10 +67,12 @@ void EmitRegTree(const std::string &Path, const ordered_json &Tree, const ordere
 }
 
 ordered_json ContentOp(const std::string &Kind, const std::string &Payload, const std::string &Target,
-                       const ordered_json &Source, const ordered_json &Size, const ordered_json &Submounts)
+                       const ordered_json &Source, const ordered_json &Size, const ordered_json &Submounts,
+                       const std::vector<std::string> &Bases = {})
 {
     ordered_json L = { {"TYPE", VfsType(Kind)}, {"PATH", Payload} };
     if (!Target.empty()) L["TARGET"] = Target;
+    if (!Bases.empty()) L["BASE_TARGETS"] = Bases;     // the bases concatenated in order (the FS's multi-base delta)
     if (Source.is_string())
     {
         L["SOURCE"] = { {"TYPE", "ipfs"}, {"CID", Source} };
@@ -115,6 +117,21 @@ ordered_json PersistOp(const std::string &Address, const ordered_json &Val)
     return P;
 }
 
+//A KEEP entry's DeclarePersists: a registry key kept for both views is two keys in the hive, one per ARCH.
+std::vector<ordered_json> PersistOps(const std::string &Address, const ordered_json &Val)
+{
+    const ordered_json P = PersistOp(Address, Val);
+    if (P["SCOPE"] != "registry" || !Val.is_object() || !Val.contains("ARCH")) return { P };
+    std::vector<ordered_json> Out;
+    for (const auto &A : Val["ARCH"])
+    {
+        ordered_json O = P;
+        O["ARCHITECTURE"] = A;
+        Out.push_back(std::move(O));
+    }
+    return Out;
+}
+
 // ---- the vocabulary ------------------------------------------------------------------------------------------
 bool StrArray(const ordered_json &V)
 {
@@ -146,7 +163,7 @@ std::string CheckLayer(const ordered_json &L)
     if (T.empty()) return "needs exactly one type key (ZIP FILE DELTA DIR NODE EDIT REG VARS ENV DLL EXEC KEEP ANY NOT)";
     static const std::map<std::string, std::set<std::string>> Allowed = {
         {"ZIP",   {"SOURCE", "SIZE", "TARGET"}}, {"FILE",  {"SOURCE", "SIZE", "TARGET"}},
-        {"DELTA", {"SOURCE", "SIZE", "TARGET"}}, {"DIR",   {"TARGET"}},
+        {"DELTA", {"SOURCE", "SIZE", "TARGET", "BASE_TARGETS"}}, {"DIR",   {"TARGET"}},
         {"NODE",  {"TAKE", "TARGET"}}, {"EDIT", {"TARGET"}}, {"REG", {"ARCH"}},
         {"VARS", {}}, {"ENV", {}}, {"DLL", {}}, {"EXEC", {}}, {"KEEP", {}}, {"ANY", {}}, {"NOT", {}},
     };
@@ -168,6 +185,21 @@ std::string CheckLayer(const ordered_json &L)
         const std::string Tg = Str(L["TARGET"]);
         if (!L["TARGET"].is_string()) return "TARGET must be a string";
         if (T != "NODE" && Tg != "FILES" && Tg.rfind("FILES/", 0) != 0) return T + " TARGET must name a FILES address";
+    }
+    //A delta built over several bases (a game folder and its CD music folder): their contents concatenated, in order.
+    if (L.contains("BASE_TARGETS"))
+    {
+        const auto &B = L["BASE_TARGETS"];
+        if (!StrArray(B) || B.empty()) return "BASE_TARGETS must be a non-empty list of FILES addresses";
+        std::set<std::string> Seen;
+        for (const auto &E : B)
+        {
+            const std::string A = E.get<std::string>();
+            if (A != "FILES" && A.rfind("FILES/", 0) != 0) return "BASE_TARGETS '" + A + "' must name a FILES address";
+            std::string Low = LowerAscii(A);
+            while (Low.size() > 5 && Low.back() == '/') Low.pop_back();
+            if (!Seen.insert(Low).second) return "BASE_TARGETS names '" + A + "' twice";
+        }
     }
     const ordered_json &P = L[T];
     if (VfsType(T))
@@ -367,7 +399,9 @@ std::string CheckLayer(const ordered_json &L)
                 if (Ti.contains("COVER") && !Ti["COVER"].is_object()) return "TILE.COVER must be {FILE, SOURCE, SIZE}";
                 if (Ti.contains("COVER"))
                 {
+                    //A cover folds whole (one image), so it names its file itself.
                     const ordered_json &C = Ti["COVER"];
+                    if (!C.contains("FILE")) return "TILE.COVER needs its FILE (a cover replaces the one beneath it whole)";
                     if (C.contains("FILE") && (!C["FILE"].is_string() || C["FILE"].get<std::string>().empty()))
                         return "TILE.COVER.FILE must be a file name";
                     if (C.contains("FILE"))
@@ -386,7 +420,33 @@ std::string CheckLayer(const ordered_json &L)
             //picks lives in the instance, so a VARS/ address has nothing to keep.
             const std::string Ns = K.substr(0, K.find('/'));
             if (Ns != "FILES" && Ns != "REG") return "KEEP address '" + K + "' must be in FILES or REG";
-            if (!V.is_boolean() && !V.is_object()) return "KEEP." + K + " must be true, false or {NAME, CLOUD}";
+            if (!V.is_boolean() && !V.is_object()) return "KEEP." + K + " must be true, false or {NAME, CLOUD, ARCH}";
+            //ARCH: the bitness of the program that reads the key, as on a REG layer. A 32-bit program's HKLM\Software
+            //is a different key (under Wow6432Node), so a key kept there names its view; without it nothing is kept.
+            if (V.is_object() && V.contains("ARCH"))
+            {
+                const auto &Ar = V["ARCH"];
+                if (Ns != "REG") return "KEEP address '" + K + "': ARCH is for a registry key";
+                if (!StrArray(Ar) || Ar.empty() || Ar.size() > 2) return "KEEP." + K + ".ARCH must be a list of \"32\" and/or \"64\"";
+                for (const auto &A : Ar) if (A != "32" && A != "64") return "KEEP." + K + ".ARCH must be a list of \"32\" and/or \"64\"";
+                if (Ar.size() == 2 && Ar[0] == Ar[1]) return "KEEP." + K + ".ARCH names one bitness twice";
+            }
+            if (Ns == "REG")
+            {
+                //The segments as the key is named (a doubled separator names no extra key, and '\\' separates too).
+                std::vector<std::string> Seg;
+                std::string Cur;
+                for (const char C : (K.size() > 4 ? K.substr(4) : std::string()) + "/")
+                    if (C == '/' || C == '\\') { if (!Cur.empty()) Seg.push_back(LowerAscii(Cur)); Cur.clear(); }
+                    else Cur.push_back(C);
+                //ARCH places the 32-bit view, as on a REG layer; a kept address never names it by hand.
+                for (const std::string &G : Seg)
+                    if (G == "wow6432node") return "KEEP address '" + K + "' must not name Wow6432Node (ARCH [\"32\"] keeps the key there)";
+                if (!(V.is_boolean() && !V.get<bool>()) && !(V.is_object() && V.contains("ARCH"))
+                    && Seg.size() >= 2 && (Seg[0] == "hklm" || Seg[0] == "hkey_local_machine") && Seg[1] == "software")
+                    return "KEEP address '" + K + "' needs ARCH ([\"32\"] for a 32-bit program, as on its REG layer): "
+                           "a 32-bit program's HKLM\\Software is a different key";
+            }
             //A pattern (* or ?) names files in ONE folder: only a FILES address, only in its last segment.
             if (HasWildcard(K))
             {
@@ -442,8 +502,13 @@ nlohmann::ordered_json LowerNode(const nlohmann::ordered_json &J, const std::str
         const std::string T = Fold::TypeOf(L);
         ordered_json Ops = ordered_json::array();
         if (VfsType(T))
+        {
+            std::vector<std::string> Bases;                   // a delta's bases, FILES namespace stripped like its target
+            if (T == "DELTA" && L.contains("BASE_TARGETS"))
+                for (const auto &B : L["BASE_TARGETS"]) Bases.push_back(FilesPath({ {"TARGET", B} }));
             Ops.push_back(ContentOp(T, Str(L[T]), FilesPath(L), L.value("SOURCE", ordered_json()),
-                                    L.value("SIZE", ordered_json()), ordered_json()));
+                                    L.value("SIZE", ordered_json()), ordered_json(), Bases));
+        }
         else if (T == "EDIT")
             for (const auto &O : L["EDIT"]) Ops.push_back(EditOp(O, FilesPath(L)));
         else if (T == "REG")
@@ -468,7 +533,7 @@ nlohmann::ordered_json LowerNode(const nlohmann::ordered_json &J, const std::str
         else if (T == "KEEP")
         {
             for (const auto &[A, V] : L["KEEP"].items())
-                if (!V.is_boolean() || V.get<bool>()) Ops.push_back(PersistOp(A, V));
+                if (!V.is_boolean() || V.get<bool>()) for (auto &O : PersistOps(A, V)) Ops.push_back(std::move(O));
         }
         for (auto &O : Ops)
         {
@@ -672,7 +737,7 @@ nlohmann::ordered_json LowerPlan(const Fold::Plan &P)
                                      .generic_string();   // '/' on every host: the plan is data; a bumped name when versions share it
         if (I.View.is_null())
         {
-            Out.push_back(ContentOp(I.Kind, Path, I.Target, I.Source, I.Size, ordered_json()));
+            Out.push_back(ContentOp(I.Kind, Path, I.Target, I.Source, I.Size, ordered_json(), I.Bases));
             continue;
         }
         //Seen through TAKE: only what is taken mounts, where TAKE puts it — as submounts (the FS's "src:dst" view of
@@ -692,7 +757,7 @@ nlohmann::ordered_json LowerPlan(const Fold::Plan &P)
         if (I.Kind == "FILE")
             Out.push_back(ContentOp("DIR", std::filesystem::path(Path).parent_path().generic_string(), I.Target, ordered_json(), ordered_json(), Mounts));
         else
-            Out.push_back(ContentOp(I.Kind, Path, I.Target, I.Source, I.Size, Mounts));
+            Out.push_back(ContentOp(I.Kind, Path, I.Target, I.Source, I.Size, Mounts, I.Bases));
     }
     //The folded registry, one RegEdit per (architecture, key, ownership) — values in fold order within a key. A value
     //is judged by its own address (REG/<key>/<value>): one the package takes back inside a kept key (UserPatch's
@@ -738,7 +803,7 @@ nlohmann::ordered_json LowerPlan(const Fold::Plan &P)
         Out.push_back(std::move(V));
     }
     for (const auto &[A, V] : P.Keep.items())
-        if (!V.is_boolean() || V.get<bool>()) Out.push_back(PersistOp(A, V));
+        if (!V.is_boolean() || V.get<bool>()) for (auto &O : PersistOps(A, V)) Out.push_back(std::move(O));
     return Out;
 }
 

@@ -124,6 +124,8 @@ bool LaunchResolver::DerivePersistence(const nlohmann::ordered_json &MANIFESTJSO
         {
             if (RegistryWrapper::NamesNoKey(Path))   // "" or a bare root (HKCU…) = a whole hive: only named keys persist
             { LogErr("DerivePersistence", "  registry KEEP '" + Path + "' names no key — only keys persist (e.g. REG/HKCU/Software/<Vendor>/<Game>); skipped."); return; }
+            //The key where the program of that bitness has it (a 32-bit program's HKLM\Software is under Wow6432Node).
+            if (S.contains("ARCHITECTURE")) Path = RegistryWrapper::ArchPath(Path, S.value("ARCHITECTURE", std::string()));
             AddUnique(ContainerParams.KeepRegKeys, Path); LogOut("DerivePersistence", "  persist regkey " + Path); return;
         }
         // SCOPE=file

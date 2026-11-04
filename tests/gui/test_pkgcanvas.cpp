@@ -709,6 +709,73 @@ private slots:
         QVERIFY(!H.shows("New package...") && !H.shows("Open package..."));
     }
 
+    //A cover named by typing is a new image: the old one's SOURCE and SIZE go (publish stamps the new one's), as when
+    //it is browsed. Kept, friends fetched the old image by its CID under the new name.
+    void typingACoverNameDropsTheOldImagesCid()
+    {
+        const json Game = json{{"LABEL", "Game"}, {"LAYERS", json::array({
+            json{{"EXEC", json::array({ json{{"LABEL", "Play"}, {"HOST", "win32"}, {"EXE", "%GameDir%/g.exe"},
+                {"TILE", {{"UID", "1"}, {"TITLE", "G"}, {"COVER", {{"FILE", "a.png"}, {"SOURCE", "QmOld"}, {"SIZE", 5}}}}}} })}} })}};
+        const std::string G = Cid::OfNode(Game);
+        H.Doc.Reset({{G, Game}});
+        H.Display = ImVec2(1400, 2400);
+        auto Restore = qScopeGuard([this] { H.Display = ImVec2(1400, 900); });
+        H.Canvas->setZoom(1.0f);
+        H.frames(4);
+        H.Canvas->setExpanded(G, true);
+        H.settle();
+        const auto Cover = [&] { return H.Doc.Node(H.Doc.IndexOf(G))["LAYERS"][0]["EXEC"][0]["TILE"]["COVER"]; };
+        bool Typing = false;
+        for (int N = 0; N < 4 && !Typing; ++N)
+        {
+            const ImVec2 At = H.item("Cover", N);
+            if (At.x < 0) break;
+            H.click(At);
+            Typing = ImGui::GetIO().WantTextInput;
+        }
+        QVERIFY2(Typing, "the Cover box took no click");
+        H.key(ImGuiKey_End);
+        H.type("x");
+        QCOMPARE(Cover(), json({{"FILE", "a.pngx"}}));
+    }
+
+    //A kept registry key names the bitness of the program that reads it (a 32-bit program's HKLM\Software is under
+    //Wow6432Node): its row offers 32-bit and 64-bit, written as ARCH; a kept folder's row does not. A delta offers its
+    //bases.
+    void aKeptRegistryKeyOffersItsBitnessAndADeltaItsBases()
+    {
+        const json Game = json{{"LABEL", "Game"}, {"LAYERS", json::array({
+            json{{"KEEP", {{"FILES/%GameDir%/Saves/", true}, {"REG/HKLM/Software/Acme/Game", true}}}},
+            json{{"DELTA", "free.vgdelta"}, {"TARGET", "FILES/%GameDir%"}} })}};
+        const std::string G = Cid::OfNode(Game);
+        H.Doc.Reset({{G, Game}});
+        H.Display = ImVec2(1400, 2400);
+        auto Restore = qScopeGuard([this] { H.Display = ImVec2(1400, 900); });
+        H.Canvas->setZoom(1.0f);
+        H.frames(4);
+        H.Canvas->setExpanded(G, true);
+        H.settle();
+        QVERIFY(H.shows("32-bit") && H.shows("64-bit"));
+        QVERIFY(!H.shows("32-bit", 1));                    // the folder's row has none
+        QVERIFY(H.shows("Bases"));
+        const auto Keep = [&] { return H.Doc.Node(H.Doc.IndexOf(G))["LAYERS"][0]["KEEP"]["REG/HKLM/Software/Acme/Game"]; };
+        H.click(H.item("32-bit"));
+        H.frames(2);
+        QCOMPARE(Keep(), json({{"ARCH", {"32"}}}));
+        H.settle();
+        H.click(H.item("64-bit"));
+        H.frames(2);
+        QCOMPARE(Keep(), json({{"ARCH", {"32", "64"}}}));
+        H.settle();
+        H.click(H.item("32-bit"));
+        H.frames(2);
+        QCOMPARE(Keep(), json({{"ARCH", {"64"}}}));
+        H.settle();
+        H.click(H.item("64-bit"));
+        H.frames(2);
+        QCOMPARE(Keep(), json(true));                      // no view left: plain true again
+    }
+
     // A game's EXEC entry shows what a game needs: Host has the usual platforms beside it, Exe a "pick" that asks for
     // the programs of THIS entry (layer and index), and a runner's own fields stay out of the way unless the entry is a
     // runner's (it has a GUEST) or already sets one. Teeth: show runner fields on every entry; request the pick with no

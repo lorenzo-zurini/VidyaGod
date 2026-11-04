@@ -1049,6 +1049,35 @@ void ValidateNodeGraph(const NodeIndex &Idx, std::vector<std::string> &Errors, s
                                      "', which takes the name first - it would not be kept; give it its own NAME");
                 }
             }
+            //A registry key kept for one bitness while the package writes it for another only: the kept view is one the
+            //game never uses, and nothing it changes is kept (a KEEP ["64"] over a REG layer ["32"]).
+            for (const auto &[A, V] : P.Keep.items())
+            {
+                if (A.rfind("REG/", 0) != 0 || !V.is_object() || !V.contains("ARCH") || !V["ARCH"].is_array()) continue;
+                //Both spelled alike: lower case, one '\\' between segments, HKLM for its long name. Only HKLM\Software
+                //is a different key per bitness (HKCU is shared).
+                const auto Spell = [](const std::string &P) {
+                    std::string Out, Cur;
+                    for (const char C : ToLowerAscii(P) + "\\")
+                        if (C == '/' || C == '\\') { if (!Cur.empty()) Out += (Out.empty() ? "" : "\\") + (Out.empty() && Cur == "hkey_local_machine" ? std::string("hklm") : Cur); Cur.clear(); }
+                        else Cur.push_back(C);
+                    return Out;
+                };
+                const std::string Key = Spell(A.substr(4));
+                if (Key.rfind("hklm\\software\\", 0) != 0) continue;
+                const auto Under = [&](const std::string &Path) {
+                    const std::string S = Spell(Path);
+                    return S == Key || S.rfind(Key + "\\", 0) == 0;
+                };
+                std::set<std::string> Written;
+                for (const auto &[K, R] : P.Reg) if (R.Arch.is_string() && Under(R.Path)) Written.insert(R.Arch.get<std::string>());
+                for (const auto &[K, R] : P.RegKeys) if (R.first.is_string() && Under(R.second)) Written.insert(R.first.get<std::string>());
+                bool Meets = Written.empty();
+                for (const auto &Ar : V["ARCH"]) if (Ar.is_string() && Written.count(Ar.get<std::string>())) Meets = true;
+                if (!Meets)
+                    Once(Warnings, Tag + ": KEEP '" + A + "' keeps the key for ARCH " + V["ARCH"].dump() + ", but its REG layers write it "
+                                   "for another bitness only - the view kept is one the game never reads");
+            }
             for (const auto &[Ev, Cid] : P.Events)
             {
                 if (Ev == "cycle")     Once(Errors, Tag + ": resolving it meets a cycle through '" + Cid + "'");
@@ -1069,10 +1098,25 @@ void ValidateNodeGraph(const NodeIndex &Idx, std::vector<std::string> &Errors, s
             {
                 const Fold::Item &D = P.Seq[J];
                 if (D.Kind != "DELTA") continue;
-                bool Base = false;
-                for (size_t I = 0; I < J && !Base; ++I)
-                    Base = P.Seq[I].Kind != "EDIT" && P.Seq[I].Target == D.Target;
-                if (!Base) Once(Errors, Tag + ": DELTA '" + D.Payload + "' has no content beneath it at '" + D.Target + "' to rebuild from");
+                if (D.Bases.empty())
+                {
+                    bool Base = false;
+                    for (size_t I = 0; I < J && !Base; ++I)
+                        Base = P.Seq[I].Kind != "EDIT" && P.Seq[I].Target == D.Target;
+                    if (!Base) Once(Errors, Tag + ": DELTA '" + D.Payload + "' has no content beneath it at '" + D.Target + "' to rebuild from");
+                    continue;
+                }
+                //Several bases: each one an archive (or a delta) lower in the stack at that address, as the mount
+                //requires (vfsmount ValidateDeltaBases); the delta's own target need hold nothing.
+                const auto Bare = [](std::string T) { while (!T.empty() && T.back() == '/') T.pop_back(); return T; };   // as the mount compares
+                for (const std::string &B : D.Bases)
+                {
+                    bool Base = false;
+                    for (size_t I = 0; I < J && !Base; ++I)
+                        Base = (P.Seq[I].Kind == "ZIP" || P.Seq[I].Kind == "DELTA") && Bare(P.Seq[I].Target) == Bare(B);
+                    if (!Base) Once(Errors, Tag + ": DELTA '" + D.Payload + "' names a base at '" + B
+                                            + "', but no archive lies beneath it there to rebuild from");
+                }
             }
             //Covered edits: an EDIT beneath a layer that replaces its file has no effect — always a mistake.
             for (size_t I = 0; I < P.Seq.size(); ++I)

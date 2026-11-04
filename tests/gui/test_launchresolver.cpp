@@ -715,7 +715,10 @@ private slots:
             json{{"TYPE","DeclarePersist"},{"SCOPE","file"},{"PATH","drive_c/Game/config.ini"},{"TARGET","GameConfig"}}, // file, explicit target
             json{{"TYPE","DeclarePersist"},{"SCOPE","registry"},{"PATH","HKCU\\Software\\id Software\\Quake"}},      // subtree
             json{{"TYPE","DeclarePersist"},{"SCOPE","registry"},{"PATH",""}},                                      // whole registry: refused
-            json{{"TYPE","DeclarePersist"},{"SCOPE","registry"},{"PATH","HKEY_CURRENT_USER"}} })}} })}};            // a bare hive root: refused
+            json{{"TYPE","DeclarePersist"},{"SCOPE","registry"},{"PATH","HKEY_CURRENT_USER"}},                     // a bare hive root: refused
+            // a key kept for a 32-bit program is where that program has it (Wow6432Node); for a 64-bit one, as named
+            json{{"TYPE","DeclarePersist"},{"SCOPE","registry"},{"PATH","HKLM\\Software\\EA GAMES\\NFSU2"},{"ARCHITECTURE","32"}},
+            json{{"TYPE","DeclarePersist"},{"SCOPE","registry"},{"PATH","HKLM\\Software\\EA GAMES\\NFSU2"},{"ARCHITECTURE","64"}} })}} })}};
         LaunchResolver::DerivePersistence(poolKeep, cp2);
         QCOMPARE((int)cp2.KeepDirs.size(), 1);
         QCOMPARE(cp2.KeepDirs[0].Path, std::string("drive_c/saves"));
@@ -724,8 +727,10 @@ private slots:
         QCOMPARE((int)cp2.KeepFiles.size(), 1);
         QCOMPARE(cp2.KeepFiles[0].Path, std::string("drive_c/Game/config.ini"));
         QCOMPARE(cp2.KeepFiles[0].Target, std::string("GameConfig"));
-        QCOMPARE((int)cp2.KeepRegKeys.size(), 1);                   // the named key only: "" and the bare root added nothing
+        QCOMPARE((int)cp2.KeepRegKeys.size(), 3);                   // the named keys only: "" and the bare root added nothing
         QCOMPARE(cp2.KeepRegKeys[0], std::string("HKCU\\Software\\id Software\\Quake"));
+        QCOMPARE(cp2.KeepRegKeys[1], std::string("HKLM\\Software\\Wow6432Node\\EA GAMES\\NFSU2"));
+        QCOMPARE(cp2.KeepRegKeys[2], std::string("HKLM\\Software\\EA GAMES\\NFSU2"));
     }
 
     // A pattern names files in one folder: always a file keep, whatever its last segment looks like ("slot*" has no

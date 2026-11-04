@@ -196,6 +196,26 @@ TEST(a_tiles_presentation_is_its_recommended_variants_fold)
     CHECK_EQ(Idx.Nodes.at("b").Meta.value("TITLE", std::string()), std::string("Title B"));
 }
 
+TEST(a_tiles_cover_folds_whole)
+{
+    // The expansion's entry folds over the base game's and gives its own cover file, not yet published (no SOURCE): it
+    // must not keep the base cover's SOURCE, or the card fetches and shows the base game's image. META still merges.
+    NodeIndex Idx;
+    ordered_json Base = NF::Merge({ NF::Tile("749", "AoK", {{"YEAR", "1999"}}), NF::Exec("win32", "empires2.exe"), NF::Variant("aok") });
+    Base["LAYERS"][0]["EXEC"][0]["TILE"]["COVER"] = { {"FILE", "aok.png"}, {"SOURCE", "bafkreiaokcover"}, {"SIZE", 7} };
+    ordered_json Tc = NF::Merge({ NF::Tile("13006", "TC", {{"DEVELOPER", "Ensemble"}}), NF::Variant("tc") });
+    Tc["LAYERS"][0]["EXEC"][0]["TILE"]["COVER"] = { {"FILE", "tc.png"} };
+    AddChain(Idx, "aok", { Base });
+    AddChain(Idx, "tc", { Tc }, { "aok" });
+    ManifestModel::DeriveFacts(Idx);
+    const ordered_json &Cv = Idx.Nodes.at("tc").Meta["COVER"];
+    CHECK_EQ(Cv.value("PATH", std::string()), std::string("tc.png"));
+    CHECK(!Cv.contains("SOURCE"));
+    CHECK_EQ(Idx.Nodes.at("tc").Meta.value("YEAR", std::string()), std::string("1999"));
+    CHECK_EQ(Idx.Nodes.at("tc").Meta.value("DEVELOPER", std::string()), std::string("Ensemble"));
+    CHECK_EQ(Idx.Nodes.at("aok").Meta["COVER"]["SOURCE"].value("CID", std::string()), std::string("bafkreiaokcover"));
+}
+
 TEST(package_uid_is_the_root_of_the_parentuid_chain)
 {
     NodeIndex Idx;
@@ -319,6 +339,39 @@ TEST(lower_plan_places_folds_and_applies_edits_by_ownership)
     int Persists = 0;
     for (const auto &O : Ops) if (O.value("TYPE", std::string()) == "DeclarePersist") ++Persists;
     CHECK_EQ(Persists, 1);                                              // a KEEP false persists nothing
+}
+
+// A delta built over two bases (Wild Metal Country's freeware release over the retail install and its CD music zip):
+// BASE_TARGETS reaches the mount in order, each base placed where the delta's node is placed (a node contained at
+// FILES/sub carries its bases there too). Without BASE_TARGETS the base is the target, as before.
+TEST(a_delta_over_several_bases_lowers_them_in_order)
+{
+    const ordered_json Retail = { {"CID", "r"}, {"LABEL", "r"}, {"LAYERS", ordered_json::array({
+        {{"ZIP", "wmc.zip"}, {"TARGET", "FILES/wmc"}},
+        {{"ZIP", "music.zip"}, {"TARGET", "FILES/wmc/WinEnv"}} })} };
+    const ordered_json Free = { {"CID", "f"}, {"LABEL", "f"}, {"LAYERS", ordered_json::array({
+        {{"NODE", "r"}},
+        {{"DELTA", "free.vgdelta"}, {"TARGET", "FILES/wmc"},
+         {"BASE_TARGETS", ordered_json::array({"FILES/wmc", "FILES/wmc/WinEnv"})}} })} };
+    const ordered_json Plain = { {"CID", "p"}, {"LABEL", "p"}, {"LAYERS", ordered_json::array({
+        {{"NODE", "r"}}, {{"DELTA", "next.vgdelta"}, {"TARGET", "FILES/wmc"}} })} };
+    const ordered_json Placed = { {"CID", "s"}, {"LABEL", "s"}, {"LAYERS", ordered_json::array({
+        {{"NODE", "f"}, {"TARGET", "FILES/sub"}} })} };
+    Fold::Library Lib;
+    Lib.Nodes["r"] = { &Retail, "/r" };
+    Lib.Nodes["f"] = { &Free, "/f" };
+    Lib.Nodes["p"] = { &Plain, "/p" };
+    Lib.Nodes["s"] = { &Placed, "/s" };
+    auto Delta = [&](const std::string &Root) -> ordered_json {
+        for (const auto &O : NodeLower::LowerPlan(Fold::Resolve(Lib, Root)))
+            if (O.value("TYPE", std::string()) == "VFSDeltaLayer") return O;
+        return ordered_json();
+    };
+    const ordered_json D = Delta("f");
+    CHECK((ManifestModel::LayerBaseTargets(D) == std::vector<std::string>{ "wmc", "wmc/WinEnv" }));
+    CHECK(ManifestModel::LayerBaseTargets(Delta("p")).empty());
+    CHECK((ManifestModel::LayerBaseTargets(Delta("s")) == std::vector<std::string>{ "sub/wmc", "sub/wmc/WinEnv" }));
+    CHECK_EQ(Delta("s").value("TARGET", std::string()), std::string("sub/wmc"));
 }
 
 TEST(a_registry_value_taken_back_inside_a_kept_key_is_reapplied)
@@ -659,6 +712,49 @@ TEST(validate_refuses_a_delta_with_nothing_beneath_it)
     ManifestModel::DeriveFacts(Based);
     CHECK(AnyContains(Validate(Idx), "has no content beneath it"));
     CHECK(!AnyContains(Validate(Based), "has no content beneath it"));
+}
+
+// A registry key kept for one bitness while its REG layer writes the other only keeps a view the game never reads.
+TEST(validate_warns_when_a_kept_key_is_kept_in_a_view_nothing_writes)
+{
+    auto Game = [](const char *Hive, const char *Keep, const char *KeepArch) {
+        ordered_json L = NF::Merge({ NF::Exec("win32", "g.exe"), NF::Tile("1", "G"), NF::Variant("v") });
+        L["LAYERS"].push_back({ {"REG", {{Hive, {{"Software", {{"Acme", {{"V", "1"}}}}}}}}}, {"ARCH", ordered_json::array({"32"})} });
+        L["LAYERS"].push_back({ {"KEEP", {{Keep, {{"ARCH", ordered_json::array({KeepArch})}}}}} });
+        return L;
+    };
+    auto Warned = [&](const ordered_json &G) {
+        NodeIndex Idx;
+        AddChain(Idx, "v", { G });
+        ManifestModel::DeriveFacts(Idx);
+        std::vector<std::string> W;
+        CHECK(Validate(Idx, &W).empty());
+        return AnyContains(W, "the view kept is one the game never reads");
+    };
+    CHECK(Warned(Game("HKLM", "REG/HKLM/Software/Acme", "64")));
+    CHECK(Warned(Game("HKLM", "REG/HKEY_LOCAL_MACHINE//software/acme", "64")));   // however the KEEP spells it
+    CHECK(!Warned(Game("HKLM", "REG/HKLM/Software/Acme", "32")));
+    CHECK(!Warned(Game("HKCU", "REG/HKCU/Software/Acme", "64")));                 // HKCU: one key for both
+}
+
+// A delta over several bases needs an archive beneath at EACH (as the mount does), and nothing at its own target.
+TEST(validate_reads_a_deltas_bases)
+{
+    auto Delta = [] {
+        ordered_json D = NF::Content("delta", "d.vgdelta", "%GameDir%/out");
+        D["LAYERS"][0]["BASE_TARGETS"] = ordered_json::array({ "FILES/%GameDir%/a/", "FILES/%GameDir%/b" });   // a trailing '/' names the same place
+        return D;
+    };
+    NodeIndex Good, Short;
+    AddChain(Good, "v", { NF::Merge({ NF::Content("zip", "a.zip", "%GameDir%/a"), NF::Content("zip", "b.zip", "%GameDir%/b"),
+                                      Delta(), NF::Exec("win32", "g.exe"), NF::Tile("1"), NF::Variant("v") }) });
+    AddChain(Short, "v", { NF::Merge({ NF::Content("zip", "a.zip", "%GameDir%/a"), NF::Content("dir", "bdir", "%GameDir%/b"),
+                                       Delta(), NF::Exec("win32", "g.exe"), NF::Tile("1"), NF::Variant("v") }) });
+    ManifestModel::DeriveFacts(Good);
+    ManifestModel::DeriveFacts(Short);
+    CHECK(!AnyContains(Validate(Good), "beneath it"));
+    CHECK(AnyContains(Validate(Short), "names a base at '%GameDir%/b'"));   // a folder is not an archive
+    CHECK(!AnyContains(Validate(Short), "names a base at '%GameDir%/a"));
 }
 
 TEST(validate_a_layer_when_may_only_read_ungated_variables)

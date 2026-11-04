@@ -587,7 +587,13 @@ std::vector<Field> MakeFields(const std::string &Type)
 {
     if (Type == "ZIP")   return Content("ZIP",   "Zip",   "archive in this bundle", true);
     if (Type == "FILE")  return Content("FILE",  "File",  "file in this bundle", true);
-    if (Type == "DELTA") return Content("DELTA", "Delta", ".vgdelta in this bundle", true);
+    if (Type == "DELTA")
+    {
+        std::vector<Field> F = Content("DELTA", "Delta", ".vgdelta in this bundle", true);
+        F.insert(F.begin() + 2, {"BASE_TARGETS", "Bases", FieldKind::StringList,
+                                 "FILES/... - one per line, concatenated in order (default: the target)", {}, {}});
+        return F;
+    }
     if (Type == "DIR")   return Content("DIR",   "Dir",   "folder in this bundle, or %RunnerMount%/...", false);
     if (Type == "NODE")
         return WithGate({

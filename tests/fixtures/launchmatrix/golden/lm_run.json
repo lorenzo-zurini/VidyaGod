@@ -60,6 +60,7 @@
   ],
   "KeepRegKeys": [
     "HKCU\\Software\\LaunchMatrix",
+    "HKLM\\Software\\Wow6432Node\\LaunchMatrix",
     "HKLM\\Software\\LaunchMatrix"
   ],
   "LaunchEnv": {
@@ -167,6 +168,25 @@
     {
       "PATH": "<DATA>/fixture/[90000000000001][v1.0] Launch Matrix/over_base.vgdelta",
       "TARGET": "/drive_c/90000000000001/deltatarget",
+      "TYPE": "VFSDeltaLayer"
+    },
+    {
+      "PATH": "<DATA>/fixture/[90000000000001][v1.0] Launch Matrix/base.zip",
+      "TARGET": "/drive_c/90000000000001/multi",
+      "TYPE": "VFSZipLayer"
+    },
+    {
+      "PATH": "<DATA>/fixture/[90000000000001][v1.0] Launch Matrix/music.zip",
+      "TARGET": "/drive_c/90000000000001/multi/music",
+      "TYPE": "VFSZipLayer"
+    },
+    {
+      "BASE_TARGETS": [
+        "/drive_c/90000000000001/multi",
+        "/drive_c/90000000000001/multi/music"
+      ],
+      "PATH": "<DATA>/fixture/[90000000000001][v1.0] Launch Matrix/multi.vgdelta",
+      "TARGET": "/drive_c/90000000000001/multi",
       "TYPE": "VFSDeltaLayer"
     },
     {

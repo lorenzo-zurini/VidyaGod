@@ -499,6 +499,8 @@ class Resolver:
                         "target": place(tp, prefix), "own": tp,
                         "view": [[t, a] for t, a in view_steps(view)] if view_takes(view) else None,
                         "from": s["from"], "at": s["at"]}
+                if k == "DELTA" and isinstance(L.get("BASE_TARGETS"), list):   # its bases, placed like its target
+                    item["bases"] = [place(ns_path(b)[1], prefix) for b in L["BASE_TARGETS"]]
                 seq.append(item)
             elif k == "EDIT":
                 ns, tp = ns_path(L["TARGET"])
@@ -600,16 +602,20 @@ def view_steps(view):
         view = view[2]
 
 
-def merge(a, b):
-    """EXEC entries fold per field (EXEC/<label>/<field>/…): objects merge, anything else is replaced; null deletes."""
+def merge(a, b, field=""):
+    """EXEC entries fold per field (EXEC/<label>/<field>/…): objects merge, anything else is replaced; null deletes.
+    A tile's COVER is one image (FILE, SOURCE and SIZE describe the same bytes) and is replaced whole."""
     if not isinstance(a, dict) or not isinstance(b, dict):
         return copy.deepcopy(b)
     out = dict(a)
     for k, v in b.items():
         if v is None:
             out.pop(k, None)
+        elif field == "TILE" and k == "COVER":
+            out[k] = copy.deepcopy(v)
         else:
-            out[k] = merge(a.get(k), v) if isinstance(v, dict) and isinstance(a.get(k), dict) else copy.deepcopy(v)
+            out[k] = (merge(a.get(k), v, k if not field else field + "/" + k)
+                      if isinstance(v, dict) and isinstance(a.get(k), dict) else copy.deepcopy(v))
     return out
 
 
@@ -622,6 +628,8 @@ def plan_json(plan):
             e["ops"] = it["ops"]
         else:
             e.update(payload=it["payload"], dir=it["dir"], source=it["source"], size=it.get("size"), view=it["view"])
+            if it.get("bases"):
+                e["bases"] = it["bases"]
         e.update({"target": it["target"], "from": it["from"], "at": it["at"]})
         seq.append(e)
     return {"seq": seq,
@@ -852,6 +860,19 @@ def fixtures():
                   "v": N([{"VARS": {"o": {"DEFAULT": "0"}, "g": {"DEFAULT": "a", "WHEN": "%o%==1"}}},
                           {"NODE": "opt", "WHEN": "%o%==1 && %g%==a"}, Z("v"), {"DLL": {"x": "n"}, "WHEN": "!(%o%==1)"}])},
          [("v", {}, []), ("v", {"o": "1"}, [])]),
+        # a cover folds whole: the variant's new FILE does not keep the base cover's SOURCE; META still merges
+        ("cover-whole", {"base": N([{"EXEC": [{"LABEL": "Play", "HOST": "win32", "EXE": "C:/g/g.exe",
+                                               "TILE": {"UID": "1", "TITLE": "A", "META": {"YEAR": "1999"},
+                                                        "COVER": {"FILE": "a.png", "SOURCE": "QmA", "SIZE": 5}}}]}]),
+                         "v": N([{"NODE": "base"}, {"EXEC": [{"LABEL": "Play", "TILE": {"UID": "2", "META": {"DEV": "x"},
+                                                                                         "COVER": {"FILE": "b.png"}}}]}])},
+         [("v", {}, []), ("base", {}, [])]),
+        # a delta over two bases, seen whole and placed by a containing node
+        ("delta-bases", {"r": N([Z("r", "FILES/g"), Z("m", "FILES/g/music")]),
+                         "f": N([{"NODE": "r"}, {"DELTA": "f.vgdelta", "TARGET": "FILES/g",
+                                                 "BASE_TARGETS": ["FILES/g", "FILES/g/music"]}]),
+                         "s": N([{"NODE": "f", "TARGET": "FILES/sub"}])},
+         [("f", {}, []), ("s", {}, [])]),
         ("placement", {"lib": N([Z("l1", "FILES/sub"), Z("l2", "FILES/C:/abs"), {"NODE": "leaf", "TARGET": "FILES/deep"},
                                  {"EDIT": [{"MODE": "Overwrite", "VALUE": "v"}], "TARGET": "FILES/sub/f.ini"},
                                  {"KEEP": {"FILES/sub/save/": True, "REG/HKCU/S": False}},

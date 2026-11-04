@@ -110,6 +110,36 @@ TEST(lower_dll_vars_and_keep)
     CHECK_EQ(K[1]["PATH"].get<std::string>(), std::string("HKCU\\Software\\Game"));
 }
 
+// A registry key in HKLM\Software is a different key for a 32-bit program (under Wow6432Node), so a KEEP of one names
+// its view (ARCH), one DeclarePersist per view; without ARCH it is refused (NFSU2's settings were never captured: the
+// capture looked in the 64-bit view). HKCU is shared by both, so it needs none. A take-back judges by address alone.
+TEST(a_kept_hklm_key_names_the_programs_bitness)
+{
+    const ordered_json K = Lower({ {"KEEP", {{"REG/HKLM/Software/EA GAMES/NFSU2", {{"ARCH", {"32", "64"}}, {"CLOUD", false}}}}} });
+    CHECK_EQ(K.size(), (size_t)2);
+    CHECK_EQ(K[0]["ARCHITECTURE"].get<std::string>(), std::string("32"));
+    CHECK_EQ(K[1]["ARCHITECTURE"].get<std::string>(), std::string("64"));
+    CHECK_EQ(K[0]["PATH"].get<std::string>(), std::string("HKLM\\Software\\EA GAMES\\NFSU2"));
+    CHECK(!K[0]["CLOUD"].get<bool>());
+
+    CHECK(!Refused({ {"KEEP", {{"REG/HKLM/Software/X", {{"ARCH", {"32"}}}}}} }));
+    CHECK(!Refused({ {"KEEP", {{"REG/HKCU/Software/X", true}}} }));
+    CHECK(!Refused({ {"KEEP", {{"REG/HKCU/Software/X", {{"ARCH", {"32"}}}}}} }));
+    CHECK(!Refused({ {"KEEP", {{"REG/HKLM/Software/X/Volume", false}}} }));
+    CHECK(Refused({ {"KEEP", {{"REG/HKLM/Software/X", true}}} }));
+    CHECK(Refused({ {"KEEP", {{"REG/hkey_local_machine/SOFTWARE/X", {{"CLOUD", false}}}}} }));
+    CHECK(Refused({ {"KEEP", {{"REG/HKLM/Software", true}}} }));
+    CHECK(Refused({ {"KEEP", {{"REG/HKLM/Software/X", {{"ARCH", ordered_json::array()}}}}} }));
+    CHECK(Refused({ {"KEEP", {{"REG/HKLM/Software/X", {{"ARCH", {"86"}}}}}} }));
+    CHECK(Refused({ {"KEEP", {{"REG/HKLM/Software/X", {{"ARCH", "32"}}}}} }));
+    CHECK(Refused({ {"KEEP", {{"REG/HKLM/Software/X", {{"ARCH", {"32", "32"}}}}}} }));
+    CHECK(Refused({ {"KEEP", {{"FILES/%GameDir%/x.cfg", {{"ARCH", {"32"}}}}}} }));
+    CHECK(Refused({ {"KEEP", {{"REG/HKLM//Software/X", true}}} }));            // however the key is spelled
+    CHECK(Refused({ {"KEEP", {{"REG/HKLM\\Software\\X", true}}} }));
+    CHECK(Refused({ {"KEEP", {{"REG/HKLM/Software/Wow6432Node/X", {{"ARCH", {"32"}}}}}} }));   // ARCH places the view
+    CHECK(Refused({ {"KEEP", {{"REG/HKCU/Software/Wow6432Node/X", false}}} }));
+}
+
 TEST(check_accepts_key_options_holding_a_key_name_unbound_or_computed)
 {
     for (const char *Def : { "w", "left shift", "keypad 0", "mouse left", "pad a", "pad right trigger", "", "%other_key%" })
@@ -190,6 +220,12 @@ TEST(check_refuses_type_confused_payloads_instead_of_throwing)
         { {"KEEP", {{"FILES/x", "yes"}}} }, { {"KEEP", {{"VARS/x", true}}} }, { {"KEEP", {{"FILESX/x", true}}} },
         { {"KEEP", {{"REGISTRY/HKCU/x", true}}} }, { {"ANY", ordered_json::array()} }, { {"ANY", ordered_json::array({1})} }, { {"NOT", 1} },
         { {"ZIP", "x"}, {"EXTRA", 1} },
+        //a delta's bases: a non-empty list of distinct FILES addresses, and on a delta only
+        { {"ZIP", "x"}, {"BASE_TARGETS", ordered_json::array({"FILES/a"})} },
+        { {"DELTA", "x"}, {"BASE_TARGETS", ordered_json::array()} },
+        { {"DELTA", "x"}, {"BASE_TARGETS", "FILES/a"} },
+        { {"DELTA", "x"}, {"BASE_TARGETS", ordered_json::array({"REG/HKCU/a"})} },
+        { {"DELTA", "x"}, {"BASE_TARGETS", ordered_json::array({"FILES/a", "FILES/A/"})} },
         //two selections landing on one address (the same leaf name, a pair renamed onto a leaf, case aside)
         { {"NODE", "x"}, {"TAKE", ordered_json::array({"FILES/a/d3d8.dll", "FILES/b/D3D8.dll"})} },
         { {"NODE", "x"}, {"TAKE", ordered_json::array({"FILES/a/x.cfg", ordered_json::array({"FILES/b/y.cfg", "x.cfg"})})} },
@@ -227,6 +263,17 @@ TEST(check_refuses_content_and_cover_names_that_leave_the_package)
     CHECK(Refused(Tile({ {"FILE", "/tmp/cover.png"} })));
     CHECK(Refused(Tile({ {"FILE", 5} })));
     CHECK(Refused(Tile({ {"FILE", "c.png"}, {"SOURCE", ordered_json::object()} })));
+    CHECK(Refused(Tile({ {"SOURCE", "bafkrei"} })));                  // a cover folds whole: it names its own file
+}
+
+TEST(check_accepts_a_delta_over_several_bases)
+{
+    CHECK(!Refused({ {"DELTA", "x.vgdelta"}, {"TARGET", "FILES/%GameDir%"},
+                     {"BASE_TARGETS", ordered_json::array({"FILES/%GameDir%", "FILES/%GameDir%/WinEnv"})} }));
+    CHECK(!Refused({ {"DELTA", "x.vgdelta"}, {"BASE_TARGETS", ordered_json::array({"FILES"})} }));
+    const ordered_json L = Lower({ {"DELTA", "x.vgdelta"}, {"TARGET", "FILES/%GameDir%"},
+                                   {"BASE_TARGETS", ordered_json::array({"FILES/%GameDir%", "FILES"})} });
+    CHECK(L.size() == 1 && L[0]["BASE_TARGETS"] == ordered_json::array({"%GameDir%", ""}));   // as the plan lowers them
 }
 
 // A Delete op removes its TARGET and reads nothing else: a VALUE, KEY or byte site on it is a mistake the author meant

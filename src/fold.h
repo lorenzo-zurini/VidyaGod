@@ -52,6 +52,7 @@ struct Item
     std::string Dir;             // the containing node's bundle dir
     std::string Target;          // the placed target (FILES namespace stripped; guest coordinates)
     std::string Own;             // content: the layer's own target in its node (unplaced) — what TAKE addresses
+    std::vector<std::string> Bases;   // DELTA: BASE_TARGETS, placed like Target (empty: the base is at Target)
     std::string From;            // the node it came from
     int         At = 0;          // its index in that node's LAYERS
 };

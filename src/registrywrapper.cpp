@@ -741,6 +741,11 @@ static std::string ArchRedirectRegPath(const std::string &RegPath, const std::st
     return Res;
 }
 
+std::string RegistryWrapper::ArchPath(const std::string &RegPath, const std::string &Arch)
+{
+    return ArchRedirectRegPath(RegPath, Arch);
+}
+
 bool RegistryWrapper::ApplyRegEdit(const ordered_json &Sub)
 {
     std::string RegPath = VarSubst::Unescape(Sub.value("REGPATH", std::string()));   // written out here (%% → %)
