@@ -570,6 +570,9 @@ void AppModel::requestFriendLibraries(const QString & peer)
 void AppModel::applyFriendLibrarySnapshot(const QString & peer, const QString & libsJson, quint64 seq)
 {
     const std::string P = peer.toStdString();
+    // RECEIVE GATE: a friend pushes its snapshot whenever its shares change, asked or not. Nothing of it is kept — not
+    // the record, not its sequence stamp — until you choose to receive from them; Receive-on asks for a fresh one.
+    if (!isReceivingFrom(peer)) return;
     // SEQ AUTHORITY (last-writer-wins): snapshots ride independent, concurrently-handled streams, so a stale one can be
     // delivered/emitted after a fresher one. Keep only the highest stamp per peer; drop anything older. seq==0
     // (unstamped) always applies. This is where ordering is enforced — a Go-side receive gate can't (its emit is
@@ -718,9 +721,7 @@ void AppModel::setReceivingFrom(const QString & peer, bool on)
     if (on) RF.push_back(P);
     else    for (auto It = RF.begin(); It != RF.end(); ++It) if (*It == P) { RF.erase(It); break; }
     save();
-    if (on) reconcileReceivedFriend(peer);           // enqueue from a snapshot we ALREADY hold (arrived during
-                                                     // handshake, before Receive was on) AND re-request for a fresh
-                                                     // one — a bare re-request is dropped by the seq/identical dedup
+    if (on) reconcileReceivedFriend(peer);           // ask for their snapshot: none is kept before Receive is on
     else    stopReceivingFromFriend(peer);           // drop what we've already materialised
 }
 

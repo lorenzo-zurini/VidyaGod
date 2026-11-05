@@ -248,7 +248,7 @@ private slots:
     {
         QTemporaryDir d; QVERIFY(d.isValid());
         QDir appDir(d.path());
-        json cfg = json{{"Settings", json::object()}};
+        json cfg = json{{"Settings", json::object()}, {"ReceiveFrom", json::array({"12D3KooWSeeder"})}};   // we receive from them
         AppModel m(&cfg, &appDir);
         const QString peer = "12D3KooWSeeder";
         const std::string P = peer.toStdString();
@@ -288,7 +288,7 @@ private slots:
     {
         QTemporaryDir d; QVERIFY(d.isValid());
         QDir appDir(d.path());
-        json cfg = json{{"Settings", json::object()}};
+        json cfg = json{{"Settings", json::object()}, {"ReceiveFrom", json::array({"12D3KooWSeeder"})}};   // we receive from them
         AppModel m(&cfg, &appDir);
         const QString peer = "12D3KooWSeeder";
         const std::string P = peer.toStdString();
@@ -307,11 +307,32 @@ private slots:
         QVERIFY(!std::filesystem::exists(Pkg));
     }
 
-    void friend_snapshot_replaces_wholesale_and_dedups()
+    // A friend pushes its snapshot whenever its shares change, asked or not. Until you choose to receive from them,
+    // nothing of it is kept: no record (which would list their packages, offer their builds as updates, plan fetches)
+    // and no sequence stamp (which would make the fresh snapshot Receive-on asks for look stale). Teeth: drop the
+    // receive gate in applyFriendLibrarySnapshot.
+    void a_snapshot_from_a_friend_you_do_not_receive_from_is_not_kept()
     {
         QTemporaryDir d; QVERIFY(d.isValid());
         QDir appDir(d.path());
         json cfg = json{{"Settings", json::object()}};
+        AppModel m(&cfg, &appDir);
+        const QString peer = "12D3KooWSeeder";
+        const std::string P = peer.toStdString();
+        QSignalSpy changed(&m, &AppModel::friendCatalogChanged);
+        m.applyFriendLibrarySnapshot(peer, R"({"Games":[{"cid":"bafyx","node":"Game"}]})", 10);
+        QVERIFY(!cfg.contains("FriendLibraries") || !cfg["FriendLibraries"].contains(P));
+        QCOMPARE(changed.count(), 0);
+        m.setReceivingFrom(peer, true);
+        m.applyFriendLibrarySnapshot(peer, R"({"Games":[{"cid":"bafyx","node":"Game"}]})", 5);   // the reply to Receive-on
+        QVERIFY(cfg["FriendLibraries"].contains(P));
+    }
+
+    void friend_snapshot_replaces_wholesale_and_dedups()
+    {
+        QTemporaryDir d; QVERIFY(d.isValid());
+        QDir appDir(d.path());
+        json cfg = json{{"Settings", json::object()}, {"ReceiveFrom", json::array({"12D3KooWSeeder"})}};   // we receive from them
         AppModel m(&cfg, &appDir);
         const QString peer = "12D3KooWSeeder";
         QSignalSpy chg(&m, &AppModel::friendCatalogChanged);
@@ -352,7 +373,7 @@ private slots:
     {
         QTemporaryDir d; QVERIFY(d.isValid());
         QDir appDir(d.path());
-        json cfg = json{{"Settings", json::object()}};
+        json cfg = json{{"Settings", json::object()}, {"ReceiveFrom", json::array({"12D3KooWSeeder"})}};   // we receive from them
         AppModel m(&cfg, &appDir);
         const QString peer = "12D3KooWSeeder";
         const std::string P = peer.toStdString();
@@ -391,7 +412,7 @@ private slots:
     {
         QTemporaryDir d; QVERIFY(d.isValid());
         QDir appDir(d.path());
-        json cfg = json{{"Settings", json::object()}};
+        json cfg = json{{"Settings", json::object()}, {"ReceiveFrom", json::array({"12D3KooWSeeder"})}};   // we receive from them
         AppModel m(&cfg, &appDir);
         const QString peer = "12D3KooWSeeder";
         const std::string P = peer.toStdString();
