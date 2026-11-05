@@ -187,7 +187,7 @@ void LibraryTab::buildCards()
             Ids.push_back(N->Key());
             auto H = Hyd.find(N->Key());
             if (H == Hyd.end() || !H->second.Hydrated) AllHydrated = false;
-            if (H != Hyd.end() && H->second.HasContent) HasContent = true;
+            if (H != Hyd.end() && H->second.OnDisk) HasContent = true;   // a file of it is HERE, not only declared
         }
         if (!Tile.Graft.empty())   // a graft's card: the graft is the game, so it must be installed too
         {

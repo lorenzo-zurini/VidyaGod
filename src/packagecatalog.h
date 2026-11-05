@@ -476,7 +476,12 @@ bool NodeHasContent(const NodeIndex &Idx, const std::string &LaunchNodeId);
 // pass over PARENTS (a node's value = its own layers ⊕ its parents'), memoizing per-node and stat-caching per path.
 // Use this instead of calling NodeHydrated/NodeHasContent per-launchable when building library/catalog tiles —
 // otherwise a package with a launchable per version over a deep delta chain is O(N²) (each closure re-walked + re-stat).
-struct NodeHydration { bool Hydrated = true; bool HasContent = false; };
+// Hydrated: nothing to fetch is missing. HasContent: some content layer is DEFINED (a downloadable build). OnDisk: some
+// content file is actually HERE (or supplied at run time) — what an installed game has and a node-only package lacks.
+// HasCid: some content layer names a CID (something to fetch). Incomplete: the closure names a node not in the index
+// (a package not landed yet). Together: what the Catalog offers to download, without a closure walk per edition.
+struct NodeHydration { bool Hydrated = true; bool HasContent = false; bool OnDisk = false; bool HasCid = false;
+                       bool Incomplete = false; };
 std::unordered_map<std::string, NodeHydration> HydrationMap(const NodeIndex &Idx);
 // Inverse of HydrateNode: delete the node closure's local content-layer files (keep manifests + cover) and unpin +
 // drop-ref their CIDs, so the package returns to the Catalog as re-downloadable and the node stops seeding it.

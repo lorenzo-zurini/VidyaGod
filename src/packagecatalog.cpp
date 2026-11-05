@@ -1179,6 +1179,7 @@ std::vector<std::string> PublishLibrary(nlohmann::ordered_json &Config, std::str
     std::map<std::string, std::map<std::string, std::vector<std::string>>> HandlesOf;  // lib → package dir → node handles
     std::vector<std::string> Unfrozen;                  // "<package>/<label>" of nodes Mint skipped
     std::map<std::string, size_t> Unheld;               // package → content CIDs it names that are not held here
+    std::map<std::string, size_t> Unsourced;            // package → content layers that name no CID: no one can fetch them
     std::map<std::string, std::string> FirstPkg;        // node cid → the package that listed it first (its home)
     std::vector<std::string> Copies;                    // "<package>/<label>" of a node already listed by another package
     for (const auto &[Handle, Doc] : Tree)
@@ -1204,6 +1205,14 @@ std::vector<std::string> PublishLibrary(nlohmann::ordered_json &Config, std::str
         }
         ByLibPkg[LibName][Pkg].push_back(CidIt->second);
         HandlesOf[LibName][Pkg].push_back(Handle);
+        //A file a layer names with no SOURCE is shared as a name only: a friend sees the game and can never fetch it.
+        //A %variable% path is placed at launch, a DIR is local by nature (the validator's) — neither is counted here.
+        if (Doc.contains("LAYERS") && Doc["LAYERS"].is_array())
+            for (const auto &L : Doc["LAYERS"])
+                for (const char *K : { "ZIP", "DELTA", "FILE" })
+                    if (L.is_object() && L.contains(K) && L[K].is_string() && !L.contains("SOURCE")
+                        && L[K].get<std::string>().find('%') == std::string::npos)
+                        ++Unsourced[Pkg];
     }
     //Each node's home package, and from it what each package NEEDS: the other packages its nodes contain. A share is
     //closed over this (SharedWith): a friend given a game also gets the library packages it contains — never a copy.
@@ -1306,6 +1315,14 @@ std::vector<std::string> PublishLibrary(nlohmann::ordered_json &Config, std::str
         for (const auto &[Pkg, N] : Unheld) P.push_back(Pkg + " (" + std::to_string(N) + ")");
         Gap += (Gap.empty() ? "" : "; ") + std::to_string(Unheld.size())
                + " package(s) name content this machine does not hold — no one can fetch it from here or from a pin: "
+               + List(P);
+    }
+    if (!Unsourced.empty())
+    {
+        std::vector<std::string> P;
+        for (const auto &[Pkg, N] : Unsourced) P.push_back(Pkg + " (" + std::to_string(N) + ")");
+        Gap += (Gap.empty() ? "" : "; ") + std::to_string(Unsourced.size())
+               + " package(s) have content files that name no SOURCE — a friend sees them and can never fetch them: "
                + List(P);
     }
     if (!Gap.empty()) LogErr("PackageCatalog::PublishLibrary", "published with gaps: " + Gap);
@@ -2719,6 +2736,8 @@ static PathState ResolvePathState(const nlohmann::ordered_json &Layer, const std
 // ONLY when it is FETCHABLE-MISSING: its backing file is absent AND it carries a remote source (CID) to fetch it from.
 // A missing local-only layer (no CID) is not un-hydrated — there is nothing to fetch; it is a broken/incomplete package,
 // which --validate-nodes owns, not the download button. A runtime-sourced %path% has no on-disk file at all.
+// A RECEIVED node is a friend's: a file of it that is not here is not installed, CID or not (a friend's node naming
+// no CID is one nobody can fetch — never one this machine has).
 static bool LayerFetchableMissing(PathState PS, const std::string &Cid)
 {
     return PS == PathState::Missing && !Cid.empty();
@@ -2769,7 +2788,9 @@ std::unordered_map<std::string, NodeHydration> HydrationMap(const NodeIndex &Idx
                 PathState PS;
                 if (Sc != StatCache.end()) PS = Sc->second;
                 else { PS = ResolvePathState(L, Local, Vars); StatCache[Key] = PS; }
-                if (LayerFetchableMissing(PS, Cid)) R.Hydrated = false;
+                if (LayerFetchableMissing(PS, Cid) || (N->Received && PS == PathState::Missing)) R.Hydrated = false;
+                if (PS != PathState::Missing) R.OnDisk = true;
+                if (!Cid.empty()) R.HasCid = true;
             }
         // Fold in the parents' (already-memoized) closure result. A parent MISSING from the index means the closure
         // itself isn't fetched (a received share before install, or a broken ref) — that can never count as hydrated:
@@ -2778,10 +2799,13 @@ std::unordered_map<std::string, NodeHydration> HydrationMap(const NodeIndex &Idx
         if (N)
             for (const std::string &P : N->Refs)
             {
-                if (!Idx.Find(P)) { R.Hydrated = false; continue; }
+                if (!Idx.Find(P)) { R.Hydrated = false; R.Incomplete = true; continue; }
                 const NodeHydration PC = Compute(P);
                 R.Hydrated    = R.Hydrated && PC.Hydrated;
                 R.HasContent  = R.HasContent || PC.HasContent;
+                R.OnDisk      = R.OnDisk || PC.OnDisk;
+                R.HasCid      = R.HasCid || PC.HasCid;
+                R.Incomplete  = R.Incomplete || PC.Incomplete;
             }
         Memo[Id] = R;
         return R;
@@ -2794,6 +2818,9 @@ std::unordered_map<std::string, NodeHydration> HydrationMap(const NodeIndex &Idx
             const NodeHydration B = Memo[Base];
             Memo[Id].Hydrated   = Memo[Id].Hydrated && B.Hydrated;
             Memo[Id].HasContent = Memo[Id].HasContent || B.HasContent;
+            Memo[Id].OnDisk     = Memo[Id].OnDisk || B.OnDisk;
+            Memo[Id].HasCid     = Memo[Id].HasCid || B.HasCid;
+            Memo[Id].Incomplete = Memo[Id].Incomplete || B.Incomplete;
         }
     return Memo;
 }

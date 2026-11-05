@@ -537,6 +537,28 @@ void DownloadManager::beginDownload(const QString &Key, const std::vector<std::s
                     break;
                 }
         }
+        // What it fetches, from an index: the selected launchables' content and each one's runner chain build, and
+        // the runners ticked. Collected twice: first as a dry run over the received index, so a download that cannot
+        // complete (content naming no source) fails BEFORE anything moves; then over the adopted packages' new home.
+        // Moved first, a failed download left a package out of CATALOG and not installed: gone from both tabs.
+        const auto Collect = [&](const NodeIndex &I, std::vector<IpfsWrapper::FetchTarget> &T, bool Warn) {
+            for (const std::string & Lid : LaunchIds)
+            {
+                if (!PackageCatalog::CollectContentTargets(I, Lid, TickedGrafts(Toggles), T, &Err)) return false;
+                //Best-effort by design — a game whose runtime cannot be resolved should still download. But silently
+                //best-effort meant the download finished green and the game then would not launch, with nothing
+                //anywhere connecting the two. Still non-fatal; now at least it is on the record.
+                std::string CErr;
+                if (!PackageCatalog::CollectRunnerChainTargets(I, Lid, ConfigSnap, T, &CErr) && Warn)
+                    LogWarn("DownloadManager::beginDownload", "could not resolve the runner chain for '" + Lid
+                                + "' — its runtime is NOT in this batch, so the download will complete but the game "
+                                  "will not be launchable" + (CErr.empty() ? "" : " (" + CErr + ")"));
+            }
+            for (const std::string & Rid : RunnerIds)
+                if (!RunnerInstall::CollectRunnerNodeTargets(I, Rid, T, &Err)) return false;
+            return true;
+        };
+        if (Ok) { std::vector<IpfsWrapper::FetchTarget> Dry; Ok = Collect(*Idx, Dry, false); }
         // INSTALL = ADOPT: a received package (its nodes live under CATALOG) moves into LIBRARY/<lib>/<pkg> before a
         // byte of content is fetched, so the content lands in the library and the package is ours from here on —
         // launchable, its grafts offered, re-published with our library. Every package the closures reach
@@ -556,20 +578,7 @@ void DownloadManager::beginDownload(const QString &Key, const std::vector<std::s
         // it needs (bounded by MaxConcurrentDownloads). Auto-pooling the resolved chain makes a downloaded game
         // immediately playable regardless of the runner checklist (dedup handles overlap with a ticked runner).
         std::vector<IpfsWrapper::FetchTarget> Targets;
-        if (Ok) for (const std::string & Lid : LaunchIds)
-        {
-            if (!PackageCatalog::CollectContentTargets(*Idx, Lid, TickedGrafts(Toggles), Targets, &Err)) { Ok = false; break; }
-            //Best-effort by design — a game whose runtime cannot be resolved should still download. But silently
-            //best-effort meant the download finished green and the game then would not launch, with nothing
-            //anywhere connecting the two. Still non-fatal; now at least it is on the record.
-            if (!PackageCatalog::CollectRunnerChainTargets(*Idx, Lid, ConfigSnap, Targets, &Err))
-                LogWarn("DownloadManager::beginDownload", "could not resolve the runner chain for '" + Lid
-                            + "' — its runtime is NOT in this batch, so the download will complete but the game "
-                              "will not be launchable" + (Err.empty() ? "" : " (" + Err + ")"));
-        }
-        if (Ok)
-            for (const std::string & Rid : RunnerIds)
-                if (!RunnerInstall::CollectRunnerNodeTargets(*Idx, Rid, Targets, &Err)) { Ok = false; break; }
+        if (Ok) Ok = Collect(*Idx, Targets, true);
         Idx.reset();   // targets collected: the index is not held through the (long) fetch
         if (Ok && !IpfsWrapper::FetchTargetsConcurrent(Targets, &Err)) Ok = false;
         // Builds are now present locally → the runner is ready. Its prefix assembles from the build at launch

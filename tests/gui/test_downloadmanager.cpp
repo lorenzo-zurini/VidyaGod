@@ -96,6 +96,57 @@ private slots:
         IpfsWrapper::StopNode();
     }
 
+    // A received game whose content names no source cannot be downloaded — and nothing moves for it: the package stays
+    // a received stub in CATALOG, still a card, instead of an adopted package with nothing installed, which no tab
+    // shows. Teeth: drop the dry run before the adopt and the dir moves into the library.
+    void a_download_that_cannot_complete_adopts_nothing()
+    {
+        IpfsWrapper::DebugResetQueue();   // the previous test's manager closed the shared queue on its way out
+        std::string Err;
+        QTemporaryDir Repo; QVERIFY(Repo.isValid());
+        QVERIFY2(IpfsWrapper::StartNode((Repo.path() + "/ipfs").toStdString(), &Err), Err.c_str());
+        QTemporaryDir SeedRoot; QVERIFY(SeedRoot.isValid());
+        const QString R = SeedRoot.path();
+        QDir().mkpath(R + "/Games/[1] A");
+        writeJson(R + "/Games/[1] A/tile.json", NodeFixture::Chain("a_tile", {NodeFixture::Tile("1", "A")}));
+        writeJson(R + "/Games/[1] A/content.json",
+                  NodeFixture::Chain("a_content", {NodeFixture::Content("file", "data.bin")}));   // names no SOURCE
+        writeJson(R + "/Games/[1] A/a.json",
+                  NodeFixture::Chain("a_exec", {NodeFixture::Merge({NodeFixture::Exec("linux64", "a.sh"), NodeFixture::Variant("Play")})}, {"a_content", "a_tile"}));
+        json seeder = json{{"Settings", {{"Paths", {{"LibraryRoot", R.toStdString()}}}}}};
+        PackageCatalog::PublishLibrary(seeder, &Err);
+        const json Items = seeder["Libraries"]["Games"];
+        QCOMPARE((int)Items.size(), 1);
+        QTemporaryDir RxData; QVERIFY(RxData.isValid());
+        json cfg = json{{"Settings", {{"Paths", {{"LibraryRoot", (RxData.path() + "/LIBRARY").toStdString()}}}}},
+                        {"FriendLibraries", {{"12D3KooWSeederAlice", {{"Games", Items}}}}}};
+        const std::string Nick = "derAlice";
+        {
+            std::vector<IpfsWrapper::FetchTarget> B;
+            for (const auto & T : PackageCatalog::PlanReceivedFetches(cfg, Nick, json{{"Games", Items}}))
+                B.push_back(IpfsWrapper::FetchTarget{ T.Cid, T.Dest, false, /*Dir=*/true, /*Verify=*/true });
+            std::string WErr;
+            QVERIFY2(IpfsWrapper::WaitBatch(IpfsWrapper::EnqueueBatch(B), 30000, &WErr), WErr.c_str());
+        }
+        QVERIFY2(PackageCatalog::LandReceivedPackages(cfg, &Err), Err.c_str());
+        const std::filesystem::path Stub = std::filesystem::path(PackageCatalog::CatalogRootDir(cfg)) / (Nick + " - Games") / "[1] A";
+        const std::filesystem::path Home = std::filesystem::path(RxData.path().toStdString()) / "LIBRARY" / "Games" / "[1] A";
+        QDir appDir(RxData.path());
+        AppModel model(&cfg, &appDir);
+        model.rebuildCatalog();
+        const Node * A = model.catalogIndex().Find("a_exec");
+        QVERIFY2(A && A->Received, "precondition: the game is a received stub");
+        IpfsModel ipfs(model);
+        DownloadManager dm(model, ipfs, nullptr);
+        QSignalSpy Finished(&dm, &DownloadManager::downloadFinished);
+        dm.beginDownload("1", {A->Key()}, {}, {});
+        QVERIFY(Finished.wait(60000));
+        QVERIFY2(std::filesystem::is_directory(Stub / ".package"), "the received stub stays in CATALOG");
+        QVERIFY2(!std::filesystem::exists(Home), "nothing was adopted into the library");
+        IpfsWrapper::DebugResetQueue();
+        IpfsWrapper::StopNode();
+    }
+
     // A received game that contains a node from a package that has not arrived (or is not shared) is not downloaded:
     // nothing is ever fetched INTO its package to fill the gap (a node has one home — the node comes with its own
     // package). The download ends with an error naming the gap, and never asks the network for the missing node — even

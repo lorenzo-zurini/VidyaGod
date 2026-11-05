@@ -157,7 +157,7 @@ void PackagesView::rebuildList()
     {
         if (!N.IsVariant() || N.BundleDir.empty()) continue;
         const auto It = Hyd.find(NodeId);
-        if (It != Hyd.end() && It->second.HasContent && It->second.Hydrated)
+        if (It != Hyd.end() && It->second.OnDisk && It->second.Hydrated)
             HydratedBundles.insert(Norm(N.BundleDir));
     }
 

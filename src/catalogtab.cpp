@@ -5,6 +5,7 @@
 #include "commonutils.h"
 
 #include <QVBoxLayout>
+#include <chrono>
 #include <QHBoxLayout>
 #include <QLineEdit>
 #include <QPushButton>
@@ -164,6 +165,7 @@ void CatalogTab::onCardSizeChanged(int cardW)
 void CatalogTab::rebuild()
 {
     if (!AvailableView) return;
+    const auto Started = std::chrono::steady_clock::now();
     AvailableVisible.clear();
     qDeleteAll(*AvailableGameCards); AvailableGameCards->clear();
 
@@ -180,23 +182,20 @@ void CatalogTab::rebuild()
         {
             Ids.push_back(N->NodeId);
             auto H = Hyd.find(N->Key());
-            if (H == Hyd.end() || !H->second.Hydrated)   // only an un-hydrated edition needs its (closure-walked) CIDs checked
+            if (H == Hyd.end() || !H->second.Hydrated)
             {
                 AnyMissing = true;
-                // Fetchable = it has enumerable content CIDs, OR a package it contains has not landed yet (or is not
-                // shared): the card stays, and its download dialog says what it is waiting for.
-                if (!PackageCatalog::NodeContentCids(Model.catalogIndex(), N->NodeId).empty()
-                    || PackageCatalog::NodeClosureIncomplete(Model.catalogIndex(), N->Key()))
-                    AnyFetchable = true;
+                // Fetchable = it names content CIDs, OR a package it contains has not landed yet (or is not shared):
+                // the card stays, and its download dialog says what it is waiting for. From the one memoized pass: a
+                // closure walk per edition froze the GUI for minutes on a friend's 903 Minecraft versions.
+                if (H != Hyd.end() && (H->second.HasCid || H->second.Incomplete)) AnyFetchable = true;
             }
         }
         if (!Tile.Graft.empty())   // a graft's card: the graft is the game, so a missing graft is something to download
             if (auto H = Hyd.find(Tile.Graft); H == Hyd.end() || !H->second.Hydrated)
             {
                 AnyMissing = true;
-                if (!PackageCatalog::NodeContentCids(Model.catalogIndex(), Tile.Graft).empty()
-                    || PackageCatalog::NodeClosureIncomplete(Model.catalogIndex(), Tile.Graft))
-                    AnyFetchable = true;
+                if (H != Hyd.end() && (H->second.HasCid || H->second.Incomplete)) AnyFetchable = true;
             }
         if (!AnyMissing || !AnyFetchable || Ids.empty()) continue;
         auto * c = new LibraryGameCard(Model.config(), Snapshot, std::move(Ids), Tile.Uid);
@@ -246,6 +245,9 @@ void CatalogTab::rebuild()
     AvailableView->setCards(AvailableGameCards);
     AvailableView->prescaleCovers(Model.cardPixelWidth());
     applyFilter();
+    LogOut("CatalogTab", "Catalog shows " + std::to_string(AvailableGameCards->size()) + " downloadable game(s) (built in "
+           + std::to_string(std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - Started).count())
+           + " ms).");
 }
 
 //CHEAP — re-filters the existing pool by search, re-sorts + re-groups, and shows it. No card recreation, no

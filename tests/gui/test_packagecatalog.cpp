@@ -245,8 +245,11 @@ private slots:
                   NodeFixture::Chain("g_exec", {NodeFixture::Merge({NodeFixture::Exec("win32", "g.exe"), NodeFixture::Variant("Play")})}, {"g_tile", "l_dg"}));
         writeJson(R + "/VidyaGodRunners/wine/wine.json",
                   NodeFixture::Chain("r_wine", {NodeFixture::Runner("linux", {"win32"}, "wine")}));
+        writeFile(R + "/VidyaGodLibraries/dgvoodoo/dgvoodoo.zip", std::string(1000, 'D'));
+        const std::string DgCid = IpfsWrapper::AddNoCopy((R + "/VidyaGodLibraries/dgvoodoo/dgvoodoo.zip").toStdString(), &Err);
+        QVERIFY2(!DgCid.empty(), Err.c_str());
         writeJson(R + "/VidyaGodLibraries/dgvoodoo/dg.json",
-                  NodeFixture::Chain("l_dg", {NodeFixture::Content("zip", "dgvoodoo.zip")}));
+                  NodeFixture::Chain("l_dg", {NodeFixture::ContentCid("zip", "dgvoodoo.zip", DgCid)}));
         // [2] Other carries content that is really seeded here: its PIN folder must link it.
         writeFile(R + "/VidyaGod/[2] Other/u.zip", std::string(3000, 'U'));
         const std::string UCid = IpfsWrapper::AddNoCopy((R + "/VidyaGod/[2] Other/u.zip").toStdString(), &Err);
@@ -315,6 +318,7 @@ private slots:
         QDir().mkpath(R + "/VidyaGod/[3] Gap");
         writeJson(R + "/VidyaGod/[3] Gap/gap.json", NodeFixture::Chain("gap_exec", {NodeFixture::Merge({
                       NodeFixture::ContentCid("zip", "g.zip", "bafkreihdwdcefgh4dqkjv67uzcmw7ojee6xedzdetojuzjevtenxquvyku"),
+                      NodeFixture::Content("zip", "nosource.zip"),
                       NodeFixture::Exec("win32", "g.exe")})}));
         writeJson(R + "/VidyaGod/[3] Gap/loop.json", json{{"CID", "hLoop"}, {"LABEL", "loop"},
                                                           {"LAYERS", json::array({ {{"NODE", "hLoop"}} })}});
@@ -324,6 +328,10 @@ private slots:
         QVERIFY2(Gaps.find("[3] Gap (1)") != std::string::npos, Gaps.c_str());
         QVERIFY2(Gaps.find("did not freeze") != std::string::npos && Gaps.find("[3] Gap/loop") != std::string::npos, Gaps.c_str());
         QVERIFY2(Gaps.find("[2] Other") == std::string::npos, "held content is not a gap");
+        //A file named with no SOURCE is shared as a name only: a friend sees the game and can never fetch it. Teeth:
+        //count only the CIDs a package names (it publishes "clean" but for the unheld one).
+        const size_t Unsourced = Gaps.find("name no SOURCE");
+        QVERIFY2(Unsourced != std::string::npos && Gaps.find("[3] Gap (1)", Unsourced) != std::string::npos, Gaps.c_str());
         // Content whose file was moved or removed after it was seeded still "has" its block (the reference stays), but
         // nothing can serve it: publishing it into a pin folder recorded a package as pinned that no one could fetch.
         // It is a gap. Teeth: gate the pin folder on HasLocal again and [2] Other publishes "clean".
@@ -335,7 +343,7 @@ private slots:
         QVERIFY2(Gaps.find("[2] Other (1)") != std::string::npos, Gaps.c_str());
         // A copy of a node another package holds (here dgVoodoo's node, copied into [1] Game the way older builds
         // did) is named in the verdict and not shared a second time. Teeth: drop the one-home check in PublishLibrary.
-        json DgCopy = NodeFixture::Chain("l_dg", {NodeFixture::Content("zip", "dgvoodoo.zip")}).back();
+        json DgCopy = NodeFixture::Chain("l_dg", {NodeFixture::ContentCid("zip", "dgvoodoo.zip", DgCid)}).back();
         DgCopy.erase("CID");
         writeJson(R + "/VidyaGod/[1] Game/dg_copy.json", DgCopy);
         (void)PackageCatalog::PublishLibrary(cfg, &Err, &Gaps);
@@ -518,6 +526,43 @@ private slots:
         QCOMPARE(std::filesystem::path(Plan[0].Dest).filename(), std::filesystem::path(".package"));
         QCOMPARE(std::filesystem::path(Plan[0].Dest).parent_path().filename(), std::filesystem::path("[802] Warcraft III"));
         QVERIFY2(Plan[1].Dest.find("[802] Warcraft III (bafypkgtwo") != std::string::npos, "the colliding package's dir carries its CID");
+    }
+
+    // What the Library shows is what is HERE. A friend's node whose file is not here is not installed, whether or not
+    // it names a CID (one that names none is one nobody can fetch, never one this machine has); a package of ours
+    // missing a file it names no CID for is broken, not un-downloaded (validation's), but with no file of its own here
+    // it has nothing to show either (OnDisk) — nor has one with no content at all. Teeth: judge a received node by its
+    // CID alone (it reads installed); take a declared layer for one on disk.
+    void the_library_shows_only_games_with_files_here()
+    {
+        QTemporaryDir Tmp;
+        QVERIFY(Tmp.isValid());
+        const std::filesystem::path D = Tmp.path().toStdString();
+        { std::ofstream(D / "here.zip") << "zip"; }
+        NodeIndex Idx;
+        const auto Add = [&](const std::string &Id, json Layers, bool Received) {
+            Node N;
+            QVERIFY(ManifestModel::ParseNode(json{{"CID", Id}, {"LABEL", Id}, {"LAYERS", Layers}}, D / (Id + ".json"), D, N));
+            N.Received = Received;
+            Idx.Nodes[N.Key()] = N;
+        };
+        Add("friends", json::array({ json{{"ZIP", "gone.zip"}, {"TARGET", "FILES"}} }), true);
+        Add("ours_broken", json::array({ json{{"ZIP", "gone.zip"}, {"TARGET", "FILES"}} }), false);
+        Add("ours", json::array({ json{{"ZIP", "here.zip"}, {"TARGET", "FILES"}} }), false);
+        Add("empty", json::array({ json{{"VARS", json{{"x", json{{"DEFAULT", "1"}}}}}} }), false);
+        Add("sourced", json::array({ json{{"FILE", "game.chd"}, {"SOURCE", "QmVKWrSnH7BJDvPWdQh4qXjCCqtGYAvSC5wCWiJXtCrTAz"}, {"TARGET", "FILES"}} }), true);
+        Add("over_sourced", json::array({ json{{"NODE", "sourced"}} }), true);
+        Add("waiting", json::array({ json{{"NODE", "not_landed_yet"}} }), true);
+        Add("over_waiting", json::array({ json{{"NODE", "waiting"}} }), true);
+        const auto Hyd = PackageCatalog::HydrationMap(Idx);
+        //What the Catalog offers, from the same pass: something to fetch beneath it, or a package still to land.
+        //Teeth: fold neither from what a node contains; mark a missing contained node complete.
+        QVERIFY2(Hyd.at("over_sourced").HasCid && !Hyd.at("friends").HasCid, "a CID beneath it is something to fetch");
+        QVERIFY2(Hyd.at("over_waiting").Incomplete && !Hyd.at("over_sourced").Incomplete, "a contained node not here yet");
+        QVERIFY2(!Hyd.at("friends").Hydrated, "a friend's game with its file not here is not installed");
+        QVERIFY2(Hyd.at("ours_broken").Hydrated && !Hyd.at("ours_broken").OnDisk, "nothing of ours is here to show");
+        QVERIFY2(Hyd.at("ours").Hydrated && Hyd.at("ours").OnDisk, "a file of it is here");
+        QVERIFY2(!Hyd.at("empty").OnDisk && !Hyd.at("empty").HasContent, "no content at all");
     }
 
     // A node is at most 256 KiB (one raw block, §2.3). The index refuses a larger one, and the validator names its FILE
