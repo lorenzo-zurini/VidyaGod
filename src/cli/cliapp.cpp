@@ -7,6 +7,7 @@
 #include "commonutils.h"
 #include "platform/platform.h"
 #include "a11ynames.h"
+#include "eventlog.h"
 
 #include <QApplication>
 #include <QDir>
@@ -638,6 +639,38 @@ int Main(int argc, char **argv, const Hooks &H)
     QDir AppDataDir(DataPath);
     AppDataDir.mkpath(".");
     json Reply;
+    if (S->Name == "events follow")
+    {
+        // Ask the app for what is new, over and over, printing each batch; the app has to be up to have events.
+        json A = Args;
+        const auto Start = std::chrono::steady_clock::now();
+        const long long For = Args.value("for", 0LL);
+        bool First = !A.contains("since");
+        for (;;)
+        {
+            json R;
+            if (!CommandServer::Send(DataPath.toStdString(), "events list", First ? json{{"limit", 1}} : A, R))
+            {
+                std::cerr << ErrSt.Red("error:") << " no app is running on " << DataPath.toStdString() << " — nothing to follow\n";
+                return Unreachable;
+            }
+            if (!R.value("ok", false)) return Report(R, S, G, St, ErrSt);
+            const json &Res = R["result"];
+            if (First) { A["since"] = Res.value("next", 0ULL); A.erase("for"); First = false; }
+            else
+            {
+                if (!Res["events"].empty())
+                {
+                    if (G.Json) for (const auto &E : Res["events"]) std::cout << E.dump() << "\n";
+                    else std::cout << S->Render(Res["events"], St.On);
+                    std::cout.flush();
+                }
+                A["since"] = Res.value("next", A.value("since", 0ULL));
+            }
+            if (For > 0 && std::chrono::steady_clock::now() - Start > std::chrono::seconds(For)) return Done;
+            std::this_thread::sleep_for(std::chrono::milliseconds(250));
+        }
+    }
     if (CommandServer::Send(DataPath.toStdString(), S->Name, Args, Reply)) return Report(Reply, S, G, St, ErrSt);
 
     std::string Holder;
@@ -683,6 +716,9 @@ int Main(int argc, char **argv, const Hooks &H)
     {
         Model = std::make_unique<AppModel>(&Config, &AppDataDir);
         Ctx.Model = Model.get();
+        EventLog::Attach(Model.get(), "AppModel");
+        EventLog::Attach(FriendsManager::instance(), "FriendsManager");
+        EventLog::Attach(IpfsManager::instance(), "IpfsManager");
     }
     QCoreApplication::processEvents();
     Reply = Command::Run(S->Name, Args, Ctx);

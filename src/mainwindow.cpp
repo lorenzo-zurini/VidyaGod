@@ -1,3 +1,4 @@
+#include "eventlog.h"
 #include "mainwindow.h"
 #include "asyncwork.h"
 #include "appmodel.h"
@@ -91,6 +92,14 @@ MainWindow::MainWindow(nlohmann::ordered_json * gc, QDir * appData, QWidget * pa
         for (int i = 0; i < MainWindowTabWidget->count(); ++i)
             if (MainWindowTabWidget->tabText(i).compare(StartTab, Qt::CaseInsensitive) == 0)
             { MainWindowTabWidget->setCurrentIndex(i); break; }
+
+    //Every signal the app's objects emit, recorded for `VidyaGod events` (eventlog.h).
+    EventLog::Attach(Model, "AppModel");
+    EventLog::Attach(IpfsModelPtr, "IpfsModel");
+    EventLog::Attach(DownloadMgr, "DownloadManager");
+    EventLog::Attach(FriendsManager::instance(), "FriendsManager");
+    EventLog::Attach(IpfsManager::instance(), "IpfsManager");
+    EventLog::AttachTree(this);
 }
 
 void MainWindow::BuildStaticUI()

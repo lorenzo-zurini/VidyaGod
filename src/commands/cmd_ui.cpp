@@ -4,6 +4,7 @@
 // no coordinates, no synthetic input: the widgets themselves.
 #include "command.h"
 #include "libraryview.h"
+#include "uifind.h"
 
 #include <QAbstractButton>
 #include <QAbstractItemModel>
@@ -33,7 +34,7 @@
 #include <QTreeWidget>
 #include <sstream>
 
-namespace
+namespace UiFind
 {
 
 using json = nlohmann::ordered_json;
@@ -155,7 +156,7 @@ std::vector<QWidget *> Windows()
 
 // A control by its name: exact objectName or accessible name first, then a unique case-insensitive part of one. An
 // ambiguous name is refused with the candidates — never a guess.
-QWidget *Named(const std::string &Name, const QWidget *Under = nullptr)
+QWidget *Named(const std::string &Name, const QWidget *Under)
 {
     const QString Q = QString::fromStdString(Name);
     std::vector<QWidget *> Exact, Part;
@@ -290,7 +291,9 @@ std::string RenderTree(const json &R, bool Colour)
     return O.str();
 }
 
-} // namespace
+} // namespace UiFind
+
+using namespace UiFind;
 
 VG_COMMANDS
 {
@@ -322,7 +325,7 @@ VG_COMMANDS
         "and rows (and each cell's checkbox), a card grid's cards with their badges, secondaries and sections.",
         { Command::Pos("control", "the control's name (or a unique part of it)") },
         { "ui show 'Library'", "ui show Networking --json" },
-        {}, Command::Needs::Ui, false,
+        { "UiFind::Named", "UiFind::NameOf", "UiFind::StateOf" }, Command::Needs::Ui, false,
         [](Command::Context &, const json &A) { return StateOf(Named(Command::Str(A, "control")), 1, true); }, &RenderTree });
 
     Command::Register({

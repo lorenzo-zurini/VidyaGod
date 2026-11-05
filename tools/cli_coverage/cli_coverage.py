@@ -18,7 +18,8 @@ methods and file-static helpers are not: they are reached only through the count
 import argparse, fnmatch, json, os, re, shlex, subprocess, sys, tempfile
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-KINDS = {}   # qualified name -> "{constructor}" / "{destructor}": what an exclusion may name a whole kind by
+KINDS = {}   # qualified name -> "{constructor}" / "{destructor}" / "{signal}": a whole kind, as a command or an exclusion names it
+SECTION = [""]   # the Qt section the class walk is in (qt_signal / qt_slot / "")
 ROOT = os.path.dirname(os.path.dirname(HERE))
 
 
@@ -44,7 +45,8 @@ def flags(build):
         keep.append(a)
     # libclang needs its own builtin headers (stddef.h & co.): the compiler that built the project is GCC
     res = subprocess.run(["clang", "-print-resource-dir"], capture_output=True, text=True).stdout.strip()
-    return keep + (["-resource-dir", res] if res else []) + ["-D_FILE_OFFSET_BITS=64", "-Wno-everything", "-ferror-limit=0"]
+    return keep + (["-resource-dir", res] if res else []) + ["-D_FILE_OFFSET_BITS=64", "-DQT_ANNOTATE_ACCESS_SPECIFIER(x)=__attribute__((annotate(#x)))",
+                                                    "-Wno-everything", "-ferror-limit=0"]
 
 
 def cpp_functions(build):
@@ -81,7 +83,13 @@ def cpp_functions(build):
                 if ch.kind == K.NAMESPACE: walk(ch, depth + 1)
                 continue
             if ch.kind in (K.NAMESPACE, K.CLASS_DECL, K.STRUCT_DECL, K.CLASS_TEMPLATE):
+                saved = SECTION[0]; SECTION[0] = ""
                 walk(ch, depth + 1)
+                SECTION[0] = saved
+                continue
+            if ch.kind == K.CXX_ACCESS_SPEC_DECL:
+                # Qt's `signals:` / `slots:` carry an annotation (QT_ANNOTATE_ACCESS_SPECIFIER): what follows is one
+                SECTION[0] = next((a.spelling for a in ch.get_children() if a.kind == K.ANNOTATE_ATTR), "")
                 continue
             if ch.kind not in (K.FUNCTION_DECL, K.CXX_METHOD, K.FUNCTION_TEMPLATE, K.CONSTRUCTOR, K.DESTRUCTOR):
                 continue
@@ -95,6 +103,7 @@ def cpp_functions(build):
             if not q: continue
             rel = os.path.relpath(os.path.realpath(loc.name), ROOT)
             found.setdefault(q, "%s:%d" % (rel, ch.location.line))
+            if SECTION[0] == "qt_signal": KINDS[q] = "{signal}"
             if ch.kind == K.CONSTRUCTOR: KINDS[q] = "{constructor}"
             elif ch.kind == K.DESTRUCTOR: KINDS[q] = "{destructor}"
     walk(tu.cursor)
@@ -109,6 +118,30 @@ def go_exports():
         for n, line in enumerate(open(os.path.join(d, f)), 1):
             m = re.match(r"//export (\w+)", line)
             if m: out["VidyaGodIPFS::" + m.group(1)] = "VidyaGodIPFS/%s:%d" % (f, n)
+    return out
+
+
+def go_callers(build):
+    """Which C++ functions call each Go export: an export is driven by whatever command drives its caller."""
+    import clang.cindex as ci
+    K = ci.CursorKind
+    out = {}
+    for src in ("src/ipfswrapper.cpp", "src/main.cpp"):
+        tu = ci.Index.create().parse(os.path.join(ROOT, src), args=flags(build), options=ci.TranslationUnit.PARSE_INCOMPLETE)
+        def walk(c, fn):
+            for ch in c.get_children():
+                f = fn
+                if ch.kind in (K.FUNCTION_DECL, K.CXX_METHOD, K.CONSTRUCTOR) and ch.is_definition() and ch.location.file \
+                        and os.path.realpath(ch.location.file.name) == os.path.realpath(os.path.join(ROOT, src)):
+                    parts, p = [], ch
+                    while p is not None and p.kind != K.TRANSLATION_UNIT:
+                        if p.spelling: parts.append(p.spelling)
+                        p = p.semantic_parent
+                    f = "::".join(reversed(parts))
+                if ch.kind == K.CALL_EXPR and f and re.match(r"Vg[A-Z]", ch.spelling or ""):
+                    out.setdefault("VidyaGodIPFS::" + ch.spelling, set()).add(f)
+                walk(ch, f)
+        walk(tu.cursor, None)
     return out
 
 
@@ -151,9 +184,13 @@ def main():
     if os.path.exists(base_path):
         baseline = {l.split("#")[0].strip() for l in open(base_path) if l.strip() and not l.startswith("#")}
 
+    callers = go_callers(a.build)
     held, uncovered, used_exc = {}, [], set()
     for q in sorted(funcs):
         if q in cov: held[q] = "covered by " + ", ".join(cov[q]); continue
+        if KINDS.get(q) in cov: held[q] = "covered by " + ", ".join(cov[KINDS[q]]); continue
+        by = sorted(f for f in callers.get(q, ()) if f in cov)
+        if by: held[q] = "covered through " + ", ".join(by); continue
         hit = next(((p, w, n) for p, w, n in exc if fnmatch.fnmatchcase(q, p) or KINDS.get(q) == p), None)
         if hit: held[q] = "excluded: " + hit[1]; used_exc.add(hit[2]); continue
         uncovered.append(q)

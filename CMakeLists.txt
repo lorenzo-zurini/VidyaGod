@@ -162,6 +162,12 @@ set(SHARED_SOURCES
     src/commands/cmd_friends.cpp
     src/commands/cmd_catalog.cpp
     src/commands/cmd_ui.cpp
+    src/commands/cmd_events.cpp
+    src/commands/cmd_packages.cpp
+    src/commands/cmdutil.h
+    src/commands/cmdutil.cpp
+    src/eventlog.h
+    src/eventlog.cpp
 
     src/varsubst.h
     src/varsubst.cpp

@@ -29,3 +29,16 @@
 *::eventFilter               # Qt event filter: intercepts the events above for another object
 *::event                     # Qt event dispatcher: forwards to the handlers above
 
+
+# ---- the CLI itself: every command runs through it, so each of these runs on every invocation ----
+Command::*                   # the command registry and argument readers: what every command is declared and parsed with
+CliApp::*                    # the CLI front end (parse, help, render, exit codes): it is what runs a command
+CmdUtil::*                   # helpers the commands share (naming a package, a node, a list): run by the commands that call them
+CommandServer::*             # the live socket: every command sent to a running app passes through it
+
+# ---- what Q_OBJECT expands to: moc's meta-object plumbing, not behaviour of the class ----
+*::metaObject                # Q_OBJECT: Qt's runtime type info
+*::qt_metacall               # Q_OBJECT: moc's dispatcher (signals and slots are counted themselves)
+*::qt_metacast               # Q_OBJECT: Qt's checked cast
+*::qt_create_metaobjectdata  # Q_OBJECT: moc's meta-object builder
+*::tr                        # Q_OBJECT: the translation lookup (no translations ship)
