@@ -8,7 +8,14 @@
 #include <nlohmann/json.hpp>
 #include <QDir>
 
+#include <map>
+#include <memory>
+#include <optional>
+#include <string>
+#include <vector>
+
 struct LaunchParameters;
+class ContainerWrapper;
 
 //The headless CLI mode families, extracted from the former ~1300-line main() (Overhaul P6). Each Run*
 //executes its family's mode when the parsed flags select one and returns the process exit code; -1 means
@@ -34,6 +41,32 @@ int RunMaintenanceModes(LaunchParameters &LP, nlohmann::ordered_json &GlobalConf
 // publish). See cliaudit.cpp for why static validation is not enough.
 int RunAuditPackages(nlohmann::ordered_json &GlobalConfigJSON, const std::string &Scope = {});
 int RunNodeLaunch      (LaunchParameters &LP, nlohmann::ordered_json &GlobalConfigJSON, QDir &AppDataDir);
+//One launch of a node (or of a tile's row): resolve it and — unless ResolveOnly — build its runtime, run it to its
+//exit and take the runtime down; what --node / --tile do, and the `launch` commands. Returns the exit code (0: a
+//clean resolve, or the game's own code; 1: it did not resolve, build or start). Resolution, when given, receives the
+//resolved launch (paths, runner chain, layers, variables, …) once it resolved.
+struct LaunchRequest
+{
+    std::string LaunchNodeId, LaunchTile, LaunchVariant, Entrypoint, InstanceName, RunnerID;
+    std::vector<std::string> RunnerChain;
+    std::optional<std::vector<std::string>> Grafts;
+    std::map<std::string, std::string> VariableOverrides;
+    bool ResolveOnly = false;
+};
+int Launch(const LaunchRequest &Req, nlohmann::ordered_json &GlobalConfigJSON, QDir &AppDataDir,
+           nlohmann::ordered_json *Resolution = nullptr);
+//The first half of a launch: the node found, the wrapper made and the entry resolved (no mount, nothing run). Null
+//with Err when it does not resolve. The rest is the wrapper's: BuildContainerRuntime, Execute, Cleanup.
+struct PreparedLaunch
+{
+    std::shared_ptr<NodeIndex> Index;
+    nlohmann::ordered_json Manifest = nlohmann::ordered_json::object();   // the wrapper holds it by reference
+    std::unique_ptr<ContainerWrapper> W;
+    std::string Name;
+    ~PreparedLaunch();
+};
+std::unique_ptr<PreparedLaunch> PrepareLaunch(const LaunchRequest &Req, nlohmann::ordered_json &GlobalConfigJSON, std::string &Err);
+nlohmann::ordered_json ResolutionOf(PreparedLaunch &P);   // the resolved launch, as --resolve-only writes it
 }
 
 #endif // CLIMODES_H

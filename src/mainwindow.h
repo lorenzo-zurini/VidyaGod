@@ -46,6 +46,8 @@ public:
     DownloadManager * downloads() const { return DownloadMgr; }
     //A Catalog card by its key or (a unique part of) its title — null when none or several match.
     LibraryGameCard * catalogCard(const QString & KeyOrTitle) const;
+    LibraryGameCard * libraryCard(const QString & KeyOrTitle) const;   // the same on the Library tab
+    TrayController * tray() const { return Tray; }
 
 protected:
     void closeEvent(QCloseEvent * e) override;     // close → hide to tray (if enabled), else quit

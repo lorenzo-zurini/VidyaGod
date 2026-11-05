@@ -2,6 +2,7 @@
 // machine's platform facts, the diagnostics tally, a game's instances (its USERDATA folders), and what the host has of
 // what a launch needs.
 #include "command.h"
+#include "appmodel.h"
 #include "apppaths.h"
 #include "commonutils.h"
 #include "depcheck.h"
@@ -76,14 +77,18 @@ VG_COMMANDS
         "for one call with the global --package-dir, --runtime-dir and --userdata-dir.", {}, { "app paths", "app paths --userdata-dir /tmp/u" },
         { "AppPaths::DataRoot", "AppPaths::SetDataRoot", "AppPaths::GetMode", "AppPaths::SetMode", "AppPaths::DaemonSupported",
           "AppPaths::AutostartSupported", "AppPaths::PackagePathOverride", "AppPaths::RuntimePathOverride", "AppPaths::UserDataPathOverride",
-          "AppPaths::SetPackagePathOverride", "AppPaths::SetRuntimePathOverride", "AppPaths::SetUserDataPathOverride", "InstanceStore::Root" },
+          "AppPaths::SetPackagePathOverride", "AppPaths::SetRuntimePathOverride", "AppPaths::SetUserDataPathOverride", "InstanceStore::Root",
+          "AppModel::appDataDir", "AppModel::config" },
         Needs::Config, false,
         [](Command::Context &C, const json &) {
             return json{{"data_root", AppPaths::DataRoot().string()}, {"mode", ModeName(AppPaths::GetMode())},
                         {"may_stay_resident", AppPaths::DaemonSupported()}, {"may_start_on_login", AppPaths::AutostartSupported()},
                         {"userdata_root", InstanceStore::Root(*C.Config).string()},
                         {"package_dir", AppPaths::PackagePathOverride().string()}, {"runtime_dir", AppPaths::RuntimePathOverride().string()},
-                        {"userdata_dir", AppPaths::UserDataPathOverride().string()}};
+                        {"userdata_dir", AppPaths::UserDataPathOverride().string()},
+                        // With the app up: the data dir and config it runs on (the ones this call reached).
+                        {"app_data_dir", C.Model ? C.Model->appDataDir()->absolutePath().toStdString() : std::string()},
+                        {"app_config_is_this", C.Model && C.Model->config() == C.Config}};
         }, {} });
 
     Command::Register({

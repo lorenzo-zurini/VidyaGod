@@ -325,13 +325,13 @@ VG_COMMANDS
         "and rows (and each cell's checkbox), a card grid's cards with their badges, secondaries and sections.",
         { Command::Pos("control", "the control's name (or a unique part of it)") },
         { "ui show 'Library'", "ui show Networking --json" },
-        { "UiFind::Named", "UiFind::NameOf", "UiFind::StateOf" }, Command::Needs::Ui, false,
+        { "UiFind::Named", "UiFind::NameOf", "UiFind::StateOf" , "LibraryView::stateJson" }, Command::Needs::Ui, false,
         [](Command::Context &, const json &A) { return StateOf(Named(Command::Str(A, "control")), 1, true); }, &RenderTree });
 
     Command::Register({
         "ui tab", "switch to a tab", "Make a tab current, exactly as clicking its title does.",
         { Command::Pos("tab", "the tab's title (Library, Catalog, Settings, IPFS, Network)") },
-        { "ui tab Network" }, { "QTabWidget::setCurrentIndex" }, Command::Needs::Ui, false,
+        { "ui tab Network" }, { "QTabWidget::setCurrentIndex" , "IpfsTab::setActive", "NetworkTab::setActive", "SettingsTab::showPage" }, Command::Needs::Ui, false,
         [](Command::Context &, const json &A) {
             const QString T = QString::fromStdString(Command::Str(A, "tab"));
             std::function<QTabWidget *(QWidget *)> Find = [&](QWidget *W) -> QTabWidget * {

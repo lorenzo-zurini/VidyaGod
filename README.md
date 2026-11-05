@@ -275,7 +275,21 @@ windows, offscreen — brought up for the call. Output is a table for people; `-
 codes: 0 done, 1 the command failed, 2 a usage error, 3 the app could not be reached. `ui tree` is the whole state of
 every window; `ui click / check / set / cell / tab / card / press` act on any control by name.
 
-### CLI (headless flags)
+There are 34 groups and 250-odd commands: the catalog and its nodes (`catalog`, `node`, `graph`, `cid`), the format
+engine (`fold`, `vars`, `content`), packages and sharing (`packages`, `sources`, `updates`, `received`, `grafts`,
+`friends`), the network (`ipfs`, `queue`, `transfers`, `downloads`), the package builder (`build`, `editor`, `canvas`,
+`author`), the launch engine (`launch`, `runners`, `registry`, `edits`, `vfs`, `instances`, `deps`), and the app itself
+(`app`, `library`, `ui`, `events`, `keys`, `util`). `VidyaGod commands --json` lists every one with what it drives.
+
+A few things keep state between commands, and so live in the app: a build session (`build open`, until `build close`;
+with the editor open on the package, its own document), an authoring session (`author start` … `author end`), and a
+runtime kept up to look inside (`launch build` … `launch teardown`). Run on its own, a `build` command works on the
+package for that one call (`--save` keeps what it did). A JSON option takes the JSON itself, `@file`, or `-` (stdin).
+`events wait --signal X` waits for what a command started instead of sleeping.
+
+The flags below are the older form of some of these commands; they still work, for the scripts that use them.
+
+### CLI (headless flags, the older form)
 
 **Running and inspecting**
 

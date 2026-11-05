@@ -49,7 +49,7 @@ VG_COMMANDS
                        {"installed", "downloadable", "waiting", "unavailable", "empty"}),
           Command::Opt("search", "only titles containing this") },
         { "catalog shelf", "catalog shelf --state downloadable", "catalog shelf --search 'Age of' --json" },
-        { "PackageCatalog::ShelfTiles", "PackageCatalog::HydrationMap", "AppModel::catalogSnapshot" }, Needs::Model, false,
+        { "PackageCatalog::ShelfTiles", "PackageCatalog::HydrationMap", "AppModel::catalogSnapshot" , "PackageMainCard" }, Needs::Model, false,
         [](Command::Context &C, const json &A) {
             const auto Snap = C.Model->catalogSnapshot();
             const auto Hyd = PackageCatalog::HydrationMap(*Snap);
@@ -102,7 +102,7 @@ VG_COMMANDS
     Command::Register({
         "catalog rebuild", "re-scan the library from disk",
         "Re-index every package folder (LIBRARY and received CATALOG) into the node graph; every tab refreshes from it.", {},
-        { "catalog rebuild" }, { "AppModel::rebuildCatalog", "PackageCatalog::BuildCatalogIndex" }, Needs::Model, false,
+        { "catalog rebuild" }, { "AppModel::rebuildCatalog", "PackageCatalog::BuildCatalogIndex" , "LibraryTab::rebuild", "CatalogTab::rebuild", "RunnersPage::rebuild", "PackagesView::rebuildList", "LibraryView::setCards", "LibraryView::setGroups", "LibraryView::setSeriesGroups", "LibraryView::setEmptyMessage", "LibraryView::refreshVisuals", "LibraryView::repaintCards", "LibraryView::setHoverAction", "AppModel::catalogIndex" }, Needs::Model, false,
         [](Command::Context &C, const json &) {
             C.Model->rebuildCatalog();
             return json{{"nodes", C.Model->catalogIndex().Nodes.size()}, {"tiles", C.Model->catalogIndex().Tiles.size()}};

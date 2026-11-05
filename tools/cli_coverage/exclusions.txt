@@ -70,3 +70,32 @@ HostIO::*                    # the host-file primitives (open, pread, stat, rena
 MountSession::*              # the FUSE / WinFsp mount loop: the vidyagodfs process runs it for a launch's runtime
 VidyagodfsOps                # the FUSE operation table handed to libfuse: each entry is a `Vfs*` operation `vfs …` drives directly
 FdByteSource::*              # a file read through a descriptor: what a mounted zip / delta layer reads through (`vfs zip`, `vfs delta`)
+
+# ---- start-up and the log: run once when the program starts, or on every line ----
+main                         # the program's entry: every command starts here
+ParseCommandLineArguments    # the start-up flags (--data-dir, --tray, --log, the legacy modes): read before anything else runs
+InitializeGlobalConfigJSON   # reads (or makes) the config when the program starts: every command runs it first
+IsRunningInPackageDir        # start-up: whether the program was started inside a package folder (the in-package mode)
+JSONOps::LoadJSON            # reads the config at start-up (every command); its writes are `app save`
+QuitSignals::*               # the SIGINT / SIGTERM handlers installed at start-up: Ctrl-C on any command reaches them
+A11yNames::*                 # gives every control its name at start-up: the names `ui` finds controls by
+Log                          # the log every function writes; `-v` shows it
+Log*                         # the log's levels (LogOut, LogErr, …): every command writes them
+SetLogEcho                   # whether the log is echoed to stderr: `-v` sets it for every command
+VerboseLogging               # the --log / -v state, read by the log
+*LogCallback                 # the hook the app installs to show the log in its window; what it receives is the log itself
+SandboxLayer::IsSandboxInit  # the sandbox's own start inside the box: a launch (`launch run`) re-runs the program as it
+SandboxLayer::RunSandboxInit # the same: runs inside the sandbox when a launch starts the game there
+*::instance                  # a singleton's accessor: every command that uses that service goes through it
+
+# ---- the legacy flags: kept for the scripts that still call them; each is a `group command` now ----
+CliModes::Run*Modes          # the legacy --flag families (--fetch, --seed, --heal, --publish, …): `ipfs`, `packages`, `graph`, … do each
+CliModes::RunNodeLaunch      # the legacy --node / --tile / --resolve-only: the same launch as `launch plan` / `launch run`
+
+# ---- language plumbing ----
+ByteSource::*                # the byte-source interface (pure virtual): its kinds are each covered by `vfs zip` / `vfs delta`
+to_json                      # a JSON conversion: runs wherever that type is written as JSON (`launch plan` writes it)
+
+# ---- custom controls inside windows: `ui show` reads them, `ui click` / `ui set` act on them ----
+KeyCaptureField::*           # the launch window's key-binding field (its buttons are `ui click`, its value `ui show`)
+ValidationPanel::*           # the editor's validation list (its rows are `ui show`; `build validate` gives the same messages)

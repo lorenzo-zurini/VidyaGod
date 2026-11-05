@@ -373,3 +373,9 @@ LibraryGameCard * MainWindow::catalogCard(const QString & KeyOrTitle) const
     LibraryView * V = CatalogTabPtr ? CatalogTabPtr->view() : nullptr;
     return V ? V->cardAt(V->cardIndex(KeyOrTitle)) : nullptr;
 }
+
+LibraryGameCard * MainWindow::libraryCard(const QString & KeyOrTitle) const
+{
+    LibraryView * V = LibraryTabPtr ? LibraryTabPtr->view() : nullptr;
+    return V ? V->cardAt(V->cardIndex(KeyOrTitle)) : nullptr;
+}

@@ -130,7 +130,7 @@ VG_COMMANDS
         { "AuthoringSessionModel::start", "AuthoringSessionModel::mode", "AuthoringWorker::start", "AuthoringSession::Begin",
           "AuthoringSession::WithoutWaiting", "AuthoringSession::Live", "AuthoringSession::RuntimePath", "AuthoringSession::ContentRoot",
           "AuthoringSession::AnchorLayouts", "AuthoringSession::RunnerId", "AuthoringSession::PrefixGenerate", "AuthoringSession::WriteLayerPath",
-          "AuthoringSessionModel::bundleNodeIds" }, Needs::Model, false,
+          "AuthoringSessionModel::bundleNodeIds" , "ContainerWrapper::SetNotAGame" }, Needs::Model, false,
         [](Command::Context &C, const json &A) {
             if (!C.Live) throw std::runtime_error("an authoring session lives in the app: start VidyaGod on this data dir (off-screen is fine), then run this");
             if (The()) throw std::runtime_error("a session is open (" + The()->Package + "): VidyaGod author end");

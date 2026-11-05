@@ -264,7 +264,7 @@ VG_COMMANDS
         { NodeArg(), VarOpt(), BuiltinOpt(), GraftOpt(), Flag("lowered", "also the plan in the engine's ops"),
           Flag("deciding", "also the held/moved mentions that decide a winner (one resolve each)") },
         { "fold plan bafkreiank43ketmdy2jtdcnn5utluobf53avcuubisi3ajtdxrcnmyteka", "fold plan <node> --var aoe2_res=1920x1080 --lowered" },
-        { "Fold::Resolve", "Fold::PlanToJson", "Fold::Unsatisfied", "Fold::DecidingMentions", "ManifestModel::LibraryOf", "NodeLower::LowerPlan" },
+        { "Fold::Resolve", "Fold::PlanToJson", "Fold::Unsatisfied", "Fold::DecidingMentions", "ManifestModel::LibraryOf", "NodeLower::LowerPlan" , "Fold::Library::Find" },
         Needs::Config, false,
         [](Command::Context &C, const json &A) {
             const auto I = Index(C);

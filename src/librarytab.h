@@ -20,6 +20,7 @@ class LibraryTab : public QWidget
 {
     Q_OBJECT
 public:
+    LibraryView * view() const { return View; }   // the card grid (the CLI finds a card by it)
     LibraryTab(AppModel &model, QWidget *parent = nullptr);
     ~LibraryTab() override;
 

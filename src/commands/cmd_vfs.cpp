@@ -181,7 +181,7 @@ VG_COMMANDS
         "--text or --from a host file; --append adds to the end; a file a lower layer serves is copied up first, a "
         "deleted name made again.", { SpecArg(), PathArg(), Opt("text", "the content"), Opt("from", "a host file's content"), Flag("append", "append") },
         { "vfs write spec.json 'drive_c/Games/AoE2/x.ini' --text 'a=1'" },
-        { "VfsCreate", "VfsWrite", "VfsFsync", "VfsTruncate", "CopyUp", "EnsureWriteParent", "RemoveWhiteout", "UnhideLower" }, Needs::Config, false,
+        { "VfsCreate", "VfsWrite", "VfsFsync", "VfsTruncate", "CopyUp", "EnsureWriteParent", "RemoveWhiteout", "UnhideLower" , "VfsState::CopyUpLock" }, Needs::Config, false,
         [](Command::Context &, const json &A) {
             Loaded L = Load(A);
             std::string Data = Command::Str(A, "text", "");

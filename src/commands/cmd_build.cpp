@@ -5,6 +5,7 @@
 // and only `--save` keeps what it did. Nothing is written until a save — and a save is a re-mint (PkgDoc).
 #include "command.h"
 #include "cmdutil.h"
+#include "mainwindow.h"
 #include "packageeditor.h"
 #include "packageeditormodel.h"
 #include "pkgactions.h"
@@ -66,6 +67,8 @@ json Done(Session &S, const json &A, json Out = json::object())
         if (M.saveEmptiesPackage() && !Command::Bool(A, "allow-empty", false))
             throw std::runtime_error("saving now leaves the package with no nodes: add --allow-empty if that is meant");
         if (!M.Save(&Err)) throw std::runtime_error(Err.toStdString());
+        // The editor tells the app itself (its save signal); a session's save is the app's to pick up here.
+        if (std::string(S.Where) == "session") MainWindow::RefreshPackage(M.packagePath());
         Out["saved"] = true;
         Out["renamed"] = M.lastRenames();
         Out["notes"] = M.saveNotes();
@@ -710,7 +713,7 @@ VG_COMMANDS
         "instances) follows. Prints the renames, what was written, and what needs the author. --allow-empty saves a "
         "package left with no nodes.", { PkgArg(), Flag("allow-empty", "even if no node is left") }, { "build save 749" },
         { "PackageEditorModel::Save", "PkgDoc::Document::Save", "PkgDoc::Document::TakeRenames", "PkgDoc::RemapRefs", "PackageEditorModel::saveEmptiesPackage",
-          "PkgCanvas::applyRenames" },
+          "PkgCanvas::applyRenames", "MainWindow::RefreshPackage" },
         Needs::Model, false,
         [](Command::Context &C, const json &A) {
             Session S = Open(C, Command::Str(A, "package"));

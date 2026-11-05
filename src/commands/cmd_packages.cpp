@@ -426,7 +426,7 @@ VG_COMMANDS
         "Add a source to sync packages from — Settings → Sources → Add. With the app up it fetches the tree at once "
         "(events wait --signal packageSourcesChanged); headless, run `sources sync`.",
         { Pos("cid", "the source's folder CID or /ipns/ name"), Pos("name", "a name for it"), Flag("friend", "a friend's source") },
-        { "sources add bafybei… 'Some library'" }, { "AppModel::addPackageSource", "PackageCatalog::AddPackageSource" }, Needs::Config, true,
+        { "sources add bafybei… 'Some library'" }, { "AppModel::addPackageSource", "PackageCatalog::AddPackageSource" , "SourcesPage::rebuild" }, Needs::Config, true,
         [](Command::Context &C, const json &A) {
             const std::string Cid = Command::Str(A, "cid"), Name = Command::Str(A, "name");
             if (C.Model)

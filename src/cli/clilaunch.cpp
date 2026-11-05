@@ -77,21 +77,25 @@ static nlohmann::ordered_json DumpResolution(struct ContainerParams &CP)   // no
 
 #include "vfsmount.h"
 
-int CliModes::RunNodeLaunch(LaunchParameters &LaunchParameters, nlohmann::ordered_json &GlobalConfigJSON, QDir &AppDataDir)
+CliModes::PreparedLaunch::~PreparedLaunch() = default;
+
+std::unique_ptr<CliModes::PreparedLaunch> CliModes::PrepareLaunch(const LaunchRequest &Req, nlohmann::ordered_json &GlobalConfigJSON,
+                                                                std::string &Err)
 {
-    (void)GlobalConfigJSON; (void)AppDataDir;
-    if (!LaunchParameters.LaunchNodeId.empty() || !LaunchParameters.LaunchTile.empty())
+    LaunchRequest LaunchParameters = Req;   // the node is filled in from the tile below
+    auto Out = std::make_unique<PreparedLaunch>();
     {
-        auto Index = std::make_shared<NodeIndex>(PackageCatalog::BuildCatalogIndex(GlobalConfigJSON));   // repos + locally-added packages
+        Out->Index = std::make_shared<NodeIndex>(PackageCatalog::BuildCatalogIndex(GlobalConfigJSON));
+        const auto &Index = Out->Index;   // repos + locally-added packages
         //--tile [--variant]: the row the shelf shows, named the way the shelf names it.
         if (LaunchParameters.LaunchNodeId.empty())
         {
             std::string Why;
             LaunchParameters.LaunchNodeId = PackageCatalog::RowUnderTile(*Index, LaunchParameters.LaunchTile, LaunchParameters.LaunchVariant, &Why);
-            if (LaunchParameters.LaunchNodeId.empty()) { LogErr("main.cpp", Why + " — aborting."); return 1; }
+            if (LaunchParameters.LaunchNodeId.empty()) { Err = Why; LogErr("main.cpp", Why + " — aborting."); return nullptr; }
         }
         else if (!LaunchParameters.LaunchVariant.empty())
-        { LogErr("main.cpp", "--variant picks a row under --tile; with --node the node is the row — aborting."); return 1; }
+        { Err = "--variant picks a row under --tile; with --node the node is the row"; LogErr("main.cpp", Err + " — aborting."); return nullptr; }
         LogOut("main.cpp", "Launching node '" + LaunchParameters.LaunchNodeId + "' from the global node graph.");
         // Identity is the CID, so Find() keys on it. As a CLI CONVENIENCE, accept a cosmetic LABEL too: if the arg is
         // not a CID key, resolve it to the CID of the (first) node whose LABEL matches. Lets a person type
@@ -110,11 +114,9 @@ int CliModes::RunNodeLaunch(LaunchParameters &LaunchParameters, nlohmann::ordere
                 for (const auto &[Cid, N] : Index->Nodes)
                     if (N.NodeId == LaunchParameters.LaunchNodeId) { LookupCid = Cid; break; }
             if (LookupCid.empty())
-            { LogErr("main.cpp", "Node '" + LaunchParameters.LaunchNodeId + "' not found in the catalog (by CID, handle or name), aborting."); return 1; }
+            { Err = "node '" + LaunchParameters.LaunchNodeId + "' not found in the catalog (by CID, handle or name)"; LogErr("main.cpp", Err + ", aborting."); return nullptr; }
         }
 
-        Diagnostics::Begin();   // count every WARN/ERR this launch produces; verdict printed at the end
-        nlohmann::ordered_json MANIFESTJSON = nlohmann::ordered_json::object();   // engine fills this from the node graph
         struct ContainerParams NewContainerParams = ContainerParams(std::filesystem::path(), LookupCid, std::string());
         NewContainerParams.NodeIdx           = Index.get();
         NewContainerParams.NodeIdxOwned      = Index;         // the wrapper's copy co-owns the index
@@ -138,19 +140,20 @@ int CliModes::RunNodeLaunch(LaunchParameters &LaunchParameters, nlohmann::ordere
         //Runner daisy-chain: the explicit --runner chain wins; else the single RunnerID as a 1-step pin (else auto).
         if (!LaunchParameters.RunnerChain.empty())   NewContainerParams.RunnerChainIds = LaunchParameters.RunnerChain;
         else if (!LaunchParameters.RunnerID.empty()) NewContainerParams.RunnerChainIds = { LaunchParameters.RunnerID };
-        class ContainerWrapper NewContainerWrapper = ContainerWrapper(GlobalConfigJSON, MANIFESTJSON, NewContainerParams);
+        Out->W = std::make_unique<ContainerWrapper>(GlobalConfigJSON, Out->Manifest, NewContainerParams);
+        ContainerWrapper &NewContainerWrapper = *Out->W;
         //A row that does not resolve (blocked, malformed, no runner) has nothing to dump or run.
         if (!NewContainerWrapper.Resolved())
-        { LogErr("main.cpp", "Resolving '" + LaunchParameters.LaunchNodeId + "' failed (see above) — aborting.");
-          Diagnostics::ReportVerdict("Launch of '" + LaunchParameters.LaunchNodeId + "'"); return 1; }
+        { Err = "resolving '" + LaunchParameters.LaunchNodeId + "' failed (see the log)"; LogErr("main.cpp", Err + " — aborting."); return nullptr; }
         //--instance names an EXISTING instance. A typo would otherwise run a fresh, empty one (no settings, no saves)
         //and create it on the first save; instances are made in the launch window's menu. A game never played has
         //none yet, so its DefaultInstance is accepted (it is what a launch without the flag would use).
         if (!LaunchParameters.InstanceName.empty() && !AppPaths::UserDataPathOverride().empty())
         {
-            LogErr("main.cpp", "--instance can't be combined with --userdata-dir (or an in-package run): that folder IS the "
-                               "game's userdata, so there are no instances to pick from.");
-            return 1;
+            Err = "--instance can't be combined with --userdata-dir (or an in-package run): that folder IS the "
+                  "game's userdata, so there are no instances to pick from";
+            LogErr("main.cpp", Err);
+            return nullptr;
         }
         if (!LaunchParameters.InstanceName.empty())
         {
@@ -161,28 +164,40 @@ int CliModes::RunNodeLaunch(LaunchParameters &LaunchParameters, nlohmann::ordere
             {
                 std::string List;
                 for (const std::string &I : Have) List += (List.empty() ? "" : ", ") + I;
-                LogErr("main.cpp", "No instance '" + LaunchParameters.InstanceName + "' for this game. "
-                       + (Have.empty() ? std::string("It has none yet; its first launch creates ") + InstanceStore::DefaultInstance + "."
-                                       : "Its instances: " + List + "."));
-                return 1;
+                Err = "no instance '" + LaunchParameters.InstanceName + "' for this game. "
+                      + (Have.empty() ? std::string("It has none yet; its first launch creates ") + InstanceStore::DefaultInstance + "."
+                                      : "Its instances: " + List + ".");
+                LogErr("main.cpp", Err);
+                return nullptr;
             }
         }
-        if (!LaunchResolver::ResolveExecutableDefinition(MANIFESTJSON, NewContainerWrapper.ContainerParams))
-        { LogErr("main.cpp", "ResolveExecutableDefinition failed, aborting.");
-          //A failed launch is exactly when the verdict matters most; returning early without one means the runs
-          //that went wrong are the runs that say nothing.
-          Diagnostics::ReportVerdict("Launch of '" + LaunchParameters.LaunchNodeId + "'"); return 1; }
+        if (!LaunchResolver::ResolveExecutableDefinition(Out->Manifest, NewContainerWrapper.ContainerParams))
+        { Err = "its entry did not resolve (see the log)"; LogErr("main.cpp", "ResolveExecutableDefinition failed, aborting."); return nullptr; }
+        Out->Name = LaunchParameters.LaunchNodeId;
+        return Out;
+    }
+}
+
+nlohmann::ordered_json CliModes::ResolutionOf(PreparedLaunch &P) { return DumpResolution(P.W->ContainerParams); }
+
+int CliModes::Launch(const LaunchRequest &Req, nlohmann::ordered_json &GlobalConfigJSON, QDir &AppDataDir,
+                     nlohmann::ordered_json *Resolution)
+{
+    (void)AppDataDir;
+    const LaunchRequest &LaunchParameters = Req;
+    Diagnostics::Begin();   // count every WARN/ERR this launch produces; verdict printed at the end
+    std::string Err;
+    const std::unique_ptr<PreparedLaunch> P = PrepareLaunch(Req, GlobalConfigJSON, Err);
+    //A failed launch is exactly when the verdict matters most; returning early without one means the runs that went
+    //wrong are the runs that say nothing.
+    if (!P) { Diagnostics::ReportVerdict("Launch of '" + Req.LaunchNodeId + Req.LaunchTile + "'"); return 1; }
+    ContainerWrapper &NewContainerWrapper = *P->W;
+    {
+        if (Resolution) *Resolution = ResolutionOf(*P);
         if (LaunchParameters.ResolveOnly)
         {
-            //Dump the resolved params (no mount, no game) for golden-compare / hang-free verification.
-            //Under the app data dir so ALL VidyaGod-produced data lives in ~/.VidyaGod (a single delete = clean slate).
-            const std::filesystem::path Out = std::filesystem::path(AppDataDir.absolutePath().toStdString())
-                                              / ("vg_resolve_" + LaunchParameters.LaunchNodeId + ".json");
-            std::ofstream OF(Out);
-            OF << DumpResolution(NewContainerWrapper.ContainerParams).dump(2) << std::endl;
-            LogSucc("main.cpp", "Resolved '" + LaunchParameters.LaunchNodeId + "' -> " + Out.string());
-            //Every exit reports. --resolve-only is the cheap way to ask "is this package healthy?", so it is
-            //precisely where a quiet resolve warning should be surfaced rather than scrolled past.
+            //Every exit reports. A resolve is the cheap way to ask "is this package healthy?", so it is precisely
+            //where a quiet resolve warning should be surfaced rather than scrolled past.
             Diagnostics::ReportVerdict("Resolve of '" + LaunchParameters.LaunchNodeId + "'");
             return 0;
         }
@@ -242,6 +257,32 @@ int CliModes::RunNodeLaunch(LaunchParameters &LaunchParameters, nlohmann::ordere
         Diagnostics::ReportVerdict("Launch of '" + LaunchParameters.LaunchNodeId + "'");
         return NewContainerWrapper.LastCrashed ? 1 : NewContainerWrapper.LastExitCode;
     }
+}
 
-    return -1;   // no mode of this family requested
+int CliModes::RunNodeLaunch(LaunchParameters &LP, nlohmann::ordered_json &GlobalConfigJSON, QDir &AppDataDir)
+{
+    if (LP.LaunchNodeId.empty() && LP.LaunchTile.empty()) return -1;   // no mode of this family requested
+    LaunchRequest R;
+    R.LaunchNodeId = LP.LaunchNodeId;
+    R.LaunchTile = LP.LaunchTile;
+    R.LaunchVariant = LP.LaunchVariant;
+    R.Entrypoint = LP.Entrypoint;
+    R.InstanceName = LP.InstanceName;
+    R.RunnerID = LP.RunnerID;
+    R.RunnerChain = LP.RunnerChain;
+    R.Grafts = LP.Grafts;
+    R.VariableOverrides = LP.VariableOverrides;
+    R.ResolveOnly = LP.ResolveOnly;
+    nlohmann::ordered_json Dump;
+    const int Rc = Launch(R, GlobalConfigJSON, AppDataDir, &Dump);
+    if (LP.ResolveOnly && Rc == 0)
+    {
+        //Dump the resolved params (no mount, no game) for golden-compare / hang-free verification. Under the app data
+        //dir so ALL VidyaGod-produced data lives in ~/.VidyaGod (a single delete = clean slate).
+        const fs::path Out = fs::path(AppDataDir.absolutePath().toStdString()) / ("vg_resolve_" + LP.LaunchNodeId + ".json");
+        std::ofstream OF(Out);
+        OF << Dump.dump(2) << std::endl;
+        LogSucc("main.cpp", "Resolved '" + LP.LaunchNodeId + "' -> " + Out.string());
+    }
+    return Rc;
 }
