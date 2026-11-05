@@ -6,6 +6,7 @@
 #include "fold.h"
 #include "cid.h"
 #include "layerspec.h"   // NormalizeVPath — linked from vgfs_core (the parity test below)
+#include "vgdelta.h"     // GenerateDelta — a real delta for the case lint
 
 #include <zip.h>
 
@@ -1087,6 +1088,82 @@ TEST(validate_flags_cross_layer_case_collision_once)
 // own fix still lands, and a zip of another package it contains (B's b1, as an expansion contains its game) is left
 // as it is. Teeth: walk every variant (B's walk logs a conflicting canonicalization of A's zip); drop the scope (B's
 // zip is rewritten too).
+// A Steam build that renamed a file by case only ('LUXOR.exe' -> 'Luxor.exe') is a delta over the older build's zip,
+// which it hides: the old spelling is not in the view, the delta's own is. So a patch above with the new spelling is
+// no conflict, one with the old spelling is (named against the delta), and the fixer neither rewrites the hidden base
+// (the delta would no longer rebuild) nor spells the view after it. Teeth: lint the hidden base; skip the delta's
+// rebuilt names; let the fixer canonicalize from the base, or rewrite a zip some variant's delta is built over.
+TEST(a_delta_hides_its_bases_spelling_from_the_case_checks)
+{
+    namespace fs = std::filesystem;
+    const fs::path D = fs::temp_directory_path() / ("vgtest_deltacase_" + std::to_string(::getpid()));
+    fs::remove_all(D);
+    fs::create_directories(D);
+    auto Zip = [&](const char *Name, std::vector<std::string> Entries) {
+        int Err = 0;
+        zip_t *Za = zip_open((D / Name).string().c_str(), ZIP_CREATE | ZIP_TRUNCATE, &Err);
+        for (const std::string &E : Entries)
+        {
+            zip_int64_t I = zip_file_add(Za, E.c_str(), zip_source_buffer(Za, "x", 1, 0), ZIP_FL_OVERWRITE);
+            zip_set_file_compression(Za, (zip_uint64_t)I, ZIP_CM_STORE, 0);
+            zip_file_set_mtime(Za, (zip_uint64_t)I, 0, 0);
+        }
+        zip_close(Za);
+    };
+    auto Slurp = [&](const char *Name) {
+        std::ifstream F(D / Name, std::ios::binary);
+        return std::string(std::istreambuf_iterator<char>(F), {});
+    };
+    Zip("old.zip", { "LUXOR.exe", "data/a.dat" });
+    Zip("new.zip", { "Luxor.exe", "data/a.dat" });
+    Zip("steamless.zip", { "Luxor.exe" });
+    Zip("other.zip", { "LUXOR.exe" });
+    {
+        const std::string B = Slurp("old.zip"), T = Slurp("new.zip");
+        const auto Delta = vgdelta::GenerateDelta((const uint8_t *)B.data(), B.size(), (const uint8_t *)T.data(), T.size());
+        std::ofstream(D / "new.vgdelta", std::ios::binary).write((const char *)Delta.data(), (std::streamsize)Delta.size());
+    }
+    const auto Z = [](const char *N) { return NF::Content("zip", N, "%GameDir%"); };
+    const auto Dl = NF::Content("delta", "new.vgdelta", "%GameDir%");
+    auto Index = [&](std::vector<std::vector<ordered_json>> Variants) {
+        NodeIndex Idx;
+        int K = 0;
+        for (auto &Layers : Variants)
+        {
+            const std::string V = "v" + std::to_string(++K);
+            Layers.insert(Layers.end(), { NF::Exec("win32", "Luxor.exe"), NF::Tile(std::to_string(K)), NF::Variant(V) });
+            AddChain(Idx, V, { NF::Merge(Layers) }, {}, ordered_json::object(), D.string());
+        }
+        ManifestModel::DeriveFacts(Idx);
+        return Idx;
+    };
+    const std::string Msg = "content case conflict across layers";
+    CHECK(!AnyContains(Validate(Index({ { Z("old.zip"), Dl, Z("steamless.zip") } })), Msg));
+    CHECK(AnyContains(Validate(Index({ { Z("old.zip"), Dl, Z("other.zip") } })),
+                      "file 'Luxor.exe' (new.vgdelta) vs 'LUXOR.exe' (other.zip)"));
+    CHECK(AnyContains(Validate(Index({ { Z("old.zip"), Z("steamless.zip") } })), Msg));   // no delta: a real conflict
+
+    const std::string Old = Slurp("old.zip"), Steamless = Slurp("steamless.zip");
+    std::vector<std::string> Log;
+    CHECK_EQ(ManifestModel::FixCaseConflicts(Index({ { Z("old.zip"), Dl, Z("steamless.zip") } }), Log), 0);
+    CHECK(Slurp("old.zip") == Old);
+    CHECK(Slurp("steamless.zip") == Steamless);
+    //The patch with the old spelling is spelled after the delta, not after the hidden base.
+    CHECK_EQ(ManifestModel::FixCaseConflicts(Index({ { Z("old.zip"), Dl, Z("other.zip") } }), Log), 1);
+    {
+        int Err = 0;
+        zip_t *Za = zip_open((D / "other.zip").string().c_str(), ZIP_RDONLY, &Err);
+        CHECK(Za && std::string(zip_get_name(Za, 0, 0)) == "Luxor.exe");
+        if (Za) zip_close(Za);
+    }
+    //A zip that one variant's delta is built over is left alone even where another variant would rename it.
+    Log.clear();
+    CHECK_EQ(ManifestModel::FixCaseConflicts(Index({ { Z("old.zip"), Dl }, { Z("steamless.zip"), Z("old.zip") } }), Log), 0);
+    CHECK(Slurp("old.zip") == Old);
+    CHECK(AnyContains(Log, "is a delta's base"));
+    fs::remove_all(D);
+}
+
 TEST(fix_case_for_one_package_walks_only_its_variants)
 {
     namespace fs = std::filesystem;
