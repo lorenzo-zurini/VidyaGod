@@ -19,8 +19,8 @@ using json = nlohmann::ordered_json;
 void Save(Command::Context &C);
 // The node graph: the app's own snapshot when it is up, else one scanned from disk for this call.
 std::shared_ptr<const NodeIndex> Index(Command::Context &C);
-// A node by CID, working handle or LABEL — BadArgs when none.
-const Node &NodeOf(const NodeIndex &Idx, const std::string &Id);
+// A node by CID, working handle or LABEL — BadArgs when none (never null).
+const Node *NodeOf(const NodeIndex &Idx, const std::string &Id);
 // A package folder named on the command line: a path, its folder name, its UID ("749" finds "[749][v1.0] …"), or a
 // unique part of its title — in the library, or (with Received) among a friend's received packages too.
 std::filesystem::path PackageDir(Command::Context &C, const std::string &Q, bool Received = true);

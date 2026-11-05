@@ -529,9 +529,3 @@ std::string VarSubst::MapValue(const std::string &Value, const std::string &Tabl
     if (const auto It = Vars.find(Table + ":!"); It != Vars.end()) return It->second;
     return Value;
 }
-
-std::string VarSubst::RenderToken(const std::string &Value, const std::string &Format, const std::map<std::string, std::string> &Vars)
-{
-    if (Format.compare(0, 4, "map:") == 0) return MapValue(Value, Format.substr(4), Vars);
-    return RenderValue(Value, Format);
-}

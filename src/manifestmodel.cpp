@@ -52,12 +52,6 @@ namespace ManifestModel {
 
 // ----- node graph -----
 
-const std::set<std::string> &NodeFields()
-{
-    static const std::set<std::string> F = { "CID", "LABEL", "POS", "COMMENT", "VARIANT", "RECOMMENDED", "SECTION", "LAYERS" };
-    return F;
-}
-
 bool IsNodeObject(const nlohmann::ordered_json &J)
 {
     return J.is_object() && J.contains("LAYERS") && J["LAYERS"].is_array();
@@ -1880,18 +1874,6 @@ std::vector<std::string> LayerBaseTargets(const nlohmann::ordered_json &Sub)
     return Out;
 }
 
-void ForEachVfsLayer(const nlohmann::ordered_json &Components,
-                     const std::function<void(const nlohmann::ordered_json &)> &Fn)
-{
-    if (!Components.is_array()) return;
-    for (const auto &C : Components)
-    {
-        if (!C.is_object() || !C.contains("SUBCOMPONENTS") || !C["SUBCOMPONENTS"].is_array()) continue;
-        for (const auto &S : C["SUBCOMPONENTS"])
-            if (IsVfsLayer(LayerType(S))) Fn(S);
-    }
-}
-
 void LayerLocator(const nlohmann::ordered_json &Sub, const std::filesystem::path &PackagePath,
                   std::filesystem::path &Local, std::string &Cid)
 {
@@ -1921,10 +1903,8 @@ std::string ResolveLayerSource(const nlohmann::ordered_json &Sub, const std::fil
 // through the appended native terminal (win64 games on Windows, linux64 on Linux).
 #ifdef _WIN32
 std::string MachinePlatform() { return "win64"; }
-std::string HostPlatform()    { return "win64"; }
 #else
 std::string MachinePlatform() { return "linux64"; }
-std::string HostPlatform()    { return "linux64"; }
 #endif
 
 bool ServesPlatform(const Node &Runner, const std::string &Platform, const std::filesystem::path &LaunchBundleDir)
@@ -1946,66 +1926,6 @@ int FindComponentIndex(const nlohmann::ordered_json &MANIFESTJSON, const std::st
 }
 
 // ----- manifest-only package predicates -----
-
-std::vector<std::string> PackageIpfsCids(const nlohmann::ordered_json &Manifest)
-{
-    std::vector<std::string> Cids;
-    std::set<std::string> Seen;
-    if (!Manifest.contains("COMPONENTS")) return Cids;
-    ForEachVfsLayer(Manifest["COMPONENTS"], [&](const nlohmann::ordered_json &S){
-        if (!S.contains("SOURCE") || !S["SOURCE"].is_object()) return;
-        const auto &Src = S["SOURCE"];
-        if (Src.value("TYPE", std::string()) != "ipfs") return;
-        const std::string Cid = Src.value("CID", std::string());
-        if (!Cid.empty() && Seen.insert(Cid).second) Cids.push_back(Cid);
-    });
-    return Cids;
-}
-
-std::vector<std::string> PackageCoverCids(const nlohmann::ordered_json &Manifest)
-{
-    std::vector<std::string> Cids;
-    std::set<std::string> Seen;
-    if (!Manifest.contains("GAMES") || !Manifest["GAMES"].is_array()) return Cids;
-    auto Consider = [&](const nlohmann::ordered_json &Holder)
-    {
-        if (!Holder.contains("COVER") || !Holder["COVER"].is_object()) return;
-        const auto &Cv = Holder["COVER"];
-        if (!Cv.contains("SOURCE") || !Cv["SOURCE"].is_object() || Cv["SOURCE"].value("TYPE", std::string()) != "ipfs") return;
-        const std::string Cid = Cv["SOURCE"].value("CID", std::string());
-        if (!Cid.empty() && Seen.insert(Cid).second) Cids.push_back(Cid);
-    };
-    for (const auto &G : Manifest["GAMES"])
-    {
-        if (!G.is_object()) continue;
-        if (G.contains("METADATA") && G["METADATA"].is_object()) Consider(G["METADATA"]);
-        Consider(G);
-    }
-    return Cids;
-}
-
-bool PackageHydrated(const nlohmann::ordered_json &Manifest, const std::string &PackageDir)
-{
-    if (!Manifest.contains("COMPONENTS")) return true;
-    const std::filesystem::path Pkg(PackageDir);
-    bool AllPresent = true;
-    ForEachVfsLayer(Manifest["COMPONENTS"], [&](const nlohmann::ordered_json &S){
-        if (!AllPresent) return;
-        std::filesystem::path Local; std::string Cid;
-        LayerLocator(S, Pkg, Local, Cid);
-        std::error_code Ec;
-        if (!std::filesystem::exists(Local, Ec)) AllPresent = false;            // a layer's content is missing
-    });
-    return AllPresent;
-}
-
-bool PackageHasContent(const nlohmann::ordered_json &Manifest)
-{
-    if (!Manifest.contains("COMPONENTS")) return false;
-    bool Any = false;
-    ForEachVfsLayer(Manifest["COMPONENTS"], [&](const nlohmann::ordered_json &){ Any = true; });
-    return Any;
-}
 
 // ---------------------------------------------------------------------------
 // Case-conflict resolution — the fix for FindCrossLayerCaseCollisions errors.

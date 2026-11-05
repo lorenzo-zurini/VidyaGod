@@ -42,3 +42,5 @@ CommandServer::*             # the live socket: every command sent to a running 
 *::qt_metacast               # Q_OBJECT: Qt's checked cast
 *::qt_create_metaobjectdata  # Q_OBJECT: moc's meta-object builder
 *::tr                        # Q_OBJECT: the translation lookup (no translations ship)
+Platform::AcquireSingleInstanceLock  # the one-app-per-data-dir lock: taken by the app at start and by every command run here (CliApp)
+Diagnostics::Note            # what Log() calls on every line; the tally it builds is `app diagnostics`

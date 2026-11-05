@@ -37,7 +37,7 @@
 #include <cctype>
 #include <vector>
 
-using namespace ManifestModel;   // LayerLocator / IsVfsLayer / ForEachVfsLayer / PackageHydrated / PackageIpfsCids
+using namespace ManifestModel;   // LayerLocator / IsVfsLayer / …
 
 namespace PackageCatalog {
 
@@ -783,16 +783,6 @@ bool AddPackageSource(nlohmann::ordered_json &GlobalConfigJSON, const std::strin
     if (Friend) { Src["FRIEND"] = true; Src["IPNS"] = true; }
     S["PackageSources"].push_back(std::move(Src));
     return true;
-}
-
-int PackageSourceIndexForCID(const nlohmann::ordered_json &GlobalConfigJSON, const std::string &Cid)
-{
-    if (!GlobalConfigJSON.contains("Settings") || !GlobalConfigJSON["Settings"].is_object()) return -1;
-    const auto &S = GlobalConfigJSON["Settings"];
-    if (!S.contains("PackageSources") || !S["PackageSources"].is_array()) return -1;
-    for (int i = 0; i < (int)S["PackageSources"].size(); ++i)
-        if (PackageSourceCID(S["PackageSources"][i]) == Cid) return i;
-    return -1;
 }
 
 namespace {

@@ -472,16 +472,6 @@ bool DropCached(const std::string &Cid)
     return Rc == 0;
 }
 
-bool IpnsPublish(const std::string &Cid, int TtlSeconds, std::string *Error)
-{
-    if (Cid.empty()) { if (Error) *Error = "empty CID"; return false; }
-    char *Err = nullptr;
-    const int Rc = VgIpnsPublish(Cid.c_str(), TtlSeconds, &Err);
-    const std::string ErrS = TakeStr(Err);
-    if (Rc != 0 && Error) *Error = ErrS.empty() ? ("IPNS publish failed for " + Cid) : ErrS;
-    return Rc == 0;
-}
-
 static std::mutex       g_IpnsResolveHookMu;
 static IpnsResolveHook  g_IpnsResolveHook;
 void SetIpnsResolveHook(IpnsResolveHook Hook)

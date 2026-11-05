@@ -639,11 +639,6 @@ std::map<std::string, std::vector<std::string>> PackageEditorModel::issuesByHand
 
 // ---- authoring ------------------------------------------------------------------------------------------------
 
-bool PackageEditorModel::NodeTestable(const std::string & NodeId) const
-{
-    return !LaunchableForNode(ExecIndex(), NodeId).empty();
-}
-
 void PackageEditorModel::RunInNode(const std::string & NodeId, const std::string & Exe)
 {
     //A run is of what is on disk, so the package is saved first (a re-mint: the handle may change).

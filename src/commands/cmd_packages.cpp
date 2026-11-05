@@ -61,12 +61,16 @@ PackageCatalog::GraftChoice Grafts(const json &A)
 
 Command::Arg GameArg() { return Command::Pos("game", "a game's node: its CID, working handle, or LABEL"); }
 
-const nlohmann::ordered_json &Source(Command::Context &C, const std::string &Q)
+// A package source named on the command line (its NAME or CID): its index in Settings.PackageSources.
+size_t SourceIndex(Command::Context &C, const std::string &Q)
 {
     const auto &Srcs = (*C.Config)["Settings"]["PackageSources"];
-    for (const auto &S : Srcs)
+    for (size_t I = 0; I < Srcs.size(); ++I)
+    {
+        const auto &S = Srcs[I];
         if ((S.is_object() && (S.value("NAME", std::string()) == Q || S.value("CID", std::string()) == Q)) || (S.is_string() && S == Q))
-            return S;
+            return I;
+    }
     throw Command::BadArgs("no package source '" + Q + "' (VidyaGod sources list shows them)");
 }
 
@@ -248,7 +252,7 @@ VG_COMMANDS
           "PackageCatalog::CollectRunnerChainTargets" }, Needs::Config, false,
         [](Command::Context &C, const json &A) {
             const auto I = Index(C);
-            const Node &N = NodeOf(*I, Command::Str(A, "game"));
+            const Node &N = *NodeOf(*I, Command::Str(A, "game"));
             std::vector<IpfsWrapper::FetchTarget> T, R;
             std::string Err, RErr;
             const bool Ok = PackageCatalog::CollectContentTargets(*I, N.Key(), Grafts(A), T, &Err);
@@ -271,7 +275,7 @@ VG_COMMANDS
         Needs::Config, true,
         [](Command::Context &C, const json &A) {
             const auto I = Index(C);
-            const Node &N = NodeOf(*I, Command::Str(A, "game"));
+            const Node &N = *NodeOf(*I, Command::Str(A, "game"));
             std::string Err;
             if (!PackageCatalog::HydrateNode(*I, N.Key(), Grafts(A), &Err, C.Config)) throw std::runtime_error(Err);
             return json{{"hydrated", N.Key()}};
@@ -285,7 +289,7 @@ VG_COMMANDS
         Needs::Config, true,
         [](Command::Context &C, const json &A) {
             const auto I = Index(C);
-            return json{{"files_removed", PackageCatalog::DehydrateNode(*I, NodeOf(*I, Command::Str(A, "game")).Key())}};
+            return json{{"files_removed", PackageCatalog::DehydrateNode(*I, NodeOf(*I, Command::Str(A, "game"))->Key())}};
         }, {} });
 
     Command::Register({
@@ -440,16 +444,9 @@ VG_COMMANDS
         "Drop a source: its config entry, its fetched folder and its library entries. --keep-installed keeps packages "
         "you installed from it (as local packages).",
         { Pos("source", "its name or CID"), Flag("keep-installed", "keep what was installed from it") },
-        { "sources remove 'Some library'" }, { "AppModel::removePackageSource", "PackageCatalog::RemovePackageSource",
-                                               "PackageCatalog::PackageSourceIndexForCID" }, Needs::Config, false,
+        { "sources remove 'Some library'" }, { "AppModel::removePackageSource", "PackageCatalog::RemovePackageSource" }, Needs::Config, false,
         [](Command::Context &C, const json &A) {
-            const auto &S = Source(C, Command::Str(A, "source"));
-            int Index = PackageCatalog::PackageSourceIndexForCID(*C.Config, PackageCatalog::PackageSourceCID(S));
-            if (Index < 0)
-            {
-                int I = 0;
-                for (const auto &X : (*C.Config)["Settings"]["PackageSources"]) { if (&X == &S) Index = I; ++I; }
-            }
+            const int Index = static_cast<int>(SourceIndex(C, Command::Str(A, "source")));
             if (C.Model && !Command::Bool(A, "keep-installed", false)) C.Model->removePackageSource(Index);
             else { PackageCatalog::RemovePackageSource(*C.Config, Index, Command::Bool(A, "keep-installed", false)); Save(C); }
             return json{{"removed", Index}};
@@ -474,7 +471,7 @@ VG_COMMANDS
         "Every content CID the packages of a source reference: what serving it means.", { Pos("source", "its name or CID") },
         { "sources content 'Some library'" }, { "PackageCatalog::SourceContentCids" }, Needs::Config, false,
         [](Command::Context &C, const json &A) {
-            const auto Cids = PackageCatalog::SourceContentCids(*C.Config, Source(C, Command::Str(A, "source")));
+            const auto Cids = PackageCatalog::SourceContentCids(*C.Config, (*C.Config)["Settings"]["PackageSources"][SourceIndex(C, Command::Str(A, "source"))]);
             return json(std::vector<std::string>(Cids.begin(), Cids.end()));
         }, {} });
 
@@ -585,7 +582,7 @@ VG_COMMANDS
             if (A.contains("for"))
             {
                 const auto I = Index(C);
-                const auto Set = PackageCatalog::PackagesToAdopt(*I, { NodeOf(*I, Command::Str(A, "for")).Key() }, {}, *C.Config);
+                const auto Set = PackageCatalog::PackagesToAdopt(*I, { NodeOf(*I, Command::Str(A, "for"))->Key() }, {}, *C.Config);
                 return Paths(std::vector<std::filesystem::path>(Set.begin(), Set.end()));
             }
             std::filesystem::path New;
@@ -606,7 +603,7 @@ VG_COMMANDS
           "PackageCatalog::DefaultGraftBase" }, Needs::Config, false,
         [](Command::Context &C, const json &A) {
             const auto I = Index(C);
-            const Node &N = NodeOf(*I, Command::Str(A, "game"));
+            const Node &N = *NodeOf(*I, Command::Str(A, "game"));
             std::vector<std::string> Pre, Dropped;
             const auto Offered = PackageCatalog::OfferedGrafts(*I, N.Key(), &Pre, Grafts(A), Command::Str(A, "tile", ""));
             const auto Choice = PackageCatalog::CurrentGraftChoice(*I, Grafts(A));
@@ -633,7 +630,7 @@ VG_COMMANDS
         { "PackageCatalog::TickGraft", "PackageCatalog::MoveGraft" }, Needs::Config, false,
         [](Command::Context &C, const json &A) {
             const auto I = Index(C);
-            const Node &N = NodeOf(*I, Command::Str(A, "game"));
+            const Node &N = *NodeOf(*I, Command::Str(A, "game"));
             std::vector<std::string> T = List(A, "ticked"), Unticked;
             if (A.contains("graft")) T = PackageCatalog::TickGraft(*I, N.Key(), T, Command::Str(A, "graft"), &Unticked);
             std::string Why;
@@ -665,7 +662,7 @@ VG_COMMANDS
           "PackageCatalog::RunnerChainIds" }, Needs::Config, false,
         [](Command::Context &C, const json &A) {
             const auto I = Index(C);
-            const Node &N = NodeOf(*I, Command::Str(A, "game"));
+            const Node &N = *NodeOf(*I, Command::Str(A, "game"));
             return json{{"compatible", Runners(PackageCatalog::CompatibleRunners(*I, N))}, {"usable", Runners(PackageCatalog::UsableRunners(*I, N))},
                         {"has_chain", PackageCatalog::HasUsableChain(*I, N)}, {"chain", PackageCatalog::RunnerChainIds(*I, N.Key(), *C.Config)}};
         }, {} });
@@ -688,7 +685,7 @@ VG_COMMANDS
         { "runners state geproton_10_34" }, { "PackageCatalog::RunnerInstalled", "PackageCatalog::IsEmbeddedRunner" }, Needs::Config, false,
         [](Command::Context &C, const json &A) {
             const auto I = Index(C);
-            const Node &N = NodeOf(*I, Command::Str(A, "runner"));
+            const Node &N = *NodeOf(*I, Command::Str(A, "runner"));
             return json{{"runner", N.Key()}, {"installed", PackageCatalog::RunnerInstalled(*I, N.Key())},
                         {"embedded", PackageCatalog::IsEmbeddedRunner(*I, N.Key())}};
         }, {} });

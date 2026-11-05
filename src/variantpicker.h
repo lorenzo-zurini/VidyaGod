@@ -47,7 +47,6 @@ public:
 
     std::vector<std::string> checkedIds() const;   // Checkable mode: the ticked ids (model order)
     std::string              currentId()  const;   // Single mode: the selected id ("" if none)
-    void setCurrentId(const std::string & Id);
 
 signals:
     void checkedChanged();   // any tick toggled (Checkable mode)

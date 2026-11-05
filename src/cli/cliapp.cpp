@@ -1,4 +1,5 @@
 #include "cliapp.h"
+#include "apppaths.h"
 #include "command.h"
 #include "commandserver.h"
 #include "appmodel.h"
@@ -55,7 +56,7 @@ struct Style
 
 struct Globals
 {
-    std::string DataDir;
+    std::string DataDir, PackageDir, RuntimeDir, UserDataDir;   // the last three: per-launch path overrides (AppPaths)
     bool Json = false, NoColour = false, Verbose = false, Help = false;
     long long WaitMs = 0;
 };
@@ -75,6 +76,9 @@ bool TakeGlobal(const std::vector<std::string> &A, size_t &I, Globals &G)
     if (W == "-h" || W == "--help") return G.Help = true;
     if (W == "--data-dir") return Value(G.DataDir);
     if (W.rfind("--data-dir=", 0) == 0) { G.DataDir = W.substr(11); return true; }
+    if (W == "--package-dir") return Value(G.PackageDir);
+    if (W == "--runtime-dir") return Value(G.RuntimeDir);
+    if (W == "--userdata-dir") return Value(G.UserDataDir);
     if (W == "--wait" || W.rfind("--wait=", 0) == 0)
     {
         std::string V;
@@ -199,6 +203,7 @@ void PrintRootHelp(const Style &St)
       << "  --json             print the exact result as JSON\n"
       << "  --no-color         plain output (also: NO_COLOR set, or not a terminal)\n"
       << "  --wait <ms>        keep running this long after the call, for what it started\n"
+      << "  --package-dir <d>  a launch's package folder, instead of the node's own (also --runtime-dir, --userdata-dir)\n"
       << "  -v, --verbose      the engine's log on stderr\n"
       << "  -h, --help         help for whatever precedes it\n\n";
     O << "With the app open on the data dir, commands run inside it, on its live state; otherwise in this process.\n";
@@ -494,7 +499,7 @@ void PrintCandidates(const std::vector<std::string> &W)
                 const auto NW = Words(N);
                 if (NW.size() > Before.size() && Join(NW, 0, Before.size()) == Prefix) Offer(NW[Before.size()]);
             }
-        for (const char *X : { "--json", "--no-color", "--data-dir", "--wait", "--verbose", "--help" }) Offer(X);
+        for (const char *X : { "--json", "--no-color", "--data-dir", "--wait", "--package-dir", "--runtime-dir", "--userdata-dir", "--verbose", "--help" }) Offer(X);
     }
     for (const auto &C : Out) std::cout << C << "\n";
 }
@@ -671,7 +676,9 @@ int Main(int argc, char **argv, const Hooks &H)
             std::this_thread::sleep_for(std::chrono::milliseconds(250));
         }
     }
-    if (CommandServer::Send(DataPath.toStdString(), S->Name, Args, Reply)) return Report(Reply, S, G, St, ErrSt);
+    // A path override is this process's: a call carrying one runs here, never in the app (whose launches keep theirs).
+    const bool Overrides = !G.PackageDir.empty() || !G.RuntimeDir.empty() || !G.UserDataDir.empty();
+    if (!Overrides && CommandServer::Send(DataPath.toStdString(), S->Name, Args, Reply)) return Report(Reply, S, G, St, ErrSt);
 
     std::string Holder;
     if (!Platform::AcquireSingleInstanceLock((AppDataDir.absolutePath() + "/vidyagod.lock").toStdString(), &Holder))
@@ -681,6 +688,9 @@ int Main(int argc, char **argv, const Hooks &H)
                   << " but does not answer commands — it predates them. Quit it, or update it.\n";
         return Unreachable;
     }
+    if (!G.PackageDir.empty()) AppPaths::SetPackagePathOverride(G.PackageDir);
+    if (!G.RuntimeDir.empty()) AppPaths::SetRuntimePathOverride(G.RuntimeDir);
+    if (!G.UserDataDir.empty()) AppPaths::SetUserDataPathOverride(G.UserDataDir);
     nlohmann::ordered_json Config;
     if (!H.InitConfig(&Config, &AppDataDir))
     {

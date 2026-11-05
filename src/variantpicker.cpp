@@ -136,13 +136,3 @@ std::string VariantPicker::currentId() const
     if (!Cur.isValid()) return {};
     return Proxy->data(Cur, Qt::UserRole).toString().toStdString();
 }
-
-void VariantPicker::setCurrentId(const std::string & Id)
-{
-    const QString Want = QString::fromStdString(Id);
-    for (int i = 0; i < Proxy->rowCount(); ++i)
-    {
-        const QModelIndex Ix = Proxy->index(i, 0);
-        if (Proxy->data(Ix, Qt::UserRole).toString() == Want) { View->setCurrentIndex(Ix); return; }
-    }
-}

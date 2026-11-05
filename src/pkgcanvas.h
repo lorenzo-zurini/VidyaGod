@@ -54,7 +54,6 @@ public:
 
     //Once per ImGui context: the editor's fonts (Noto Sans / Bold / Mono, embedded) and its style.
     static void InstallFontsAndStyle();
-    static ImFont *BoldFont();
     static ImFont *MonoFont();
 
     void frame();             // one frame, between NewFrame() and Render()
@@ -95,8 +94,6 @@ public:
     void  setZoom(float z);                               // about the centre of the view
     void  setCamera(float x, float y);                    // the world point at the canvas's top-left
     void  cameraPos(float &x, float &y) const;
-    bool  miniMap() const;
-    void  setMiniMap(bool on);
 
     // ---- document shortcuts (also reachable from the canvas's own menus) --------------------------------------
     //Returns its index. A reference type (NODE / ANY / NOT) made while a node is selected refers to that node:

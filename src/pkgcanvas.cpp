@@ -309,7 +309,6 @@ void PkgCanvas::InstallFontsAndStyle()
     C[ImGuiCol_Separator]       = ImVec4(0.300f, 0.320f, 0.370f, 0.60f);
 }
 
-ImFont *PkgCanvas::BoldFont() { return GBold; }
 ImFont *PkgCanvas::MonoFont() { return GMono; }
 
 // ================================================================================================================
@@ -668,8 +667,6 @@ void PkgCanvas::setZoom(float Z)
 
 void PkgCanvas::setCamera(float X, float Y) { m_s->Cam = ImVec2(X, Y); m_s->FramePending = false; m_s->AutoFrame = false; m_s->Zooming = false; }
 void PkgCanvas::cameraPos(float &X, float &Y) const { X = m_s->Cam.x; Y = m_s->Cam.y; }
-bool PkgCanvas::miniMap() const { return m_s->ShowMini; }
-void PkgCanvas::setMiniMap(bool On) { m_s->ShowMini = On; }
 
 static void FrameRect(PkgCanvasState &S, ImVec4 R)
 {

@@ -124,7 +124,6 @@ public:
     CaptureMode mode() const { return Mode; }
     ~AuthoringSessionModel() override;
 
-    QString     targetNode() const { return QString::fromStdString(TargetNodeId); }
     QStringList bundleNodeIds() const;
 
 public slots:

@@ -31,10 +31,3 @@ bool FSOps::CheckPackageValid(QDir * PackageDir)
     LogSucc("FSOperations", "Valid bundle!");
     return true;
 }
-
-//Returns a platform-normalized path by joining Parent and SubDir with the OS separator
-//and collapsing redundant separators and "." / ".." components.
-QString FSOps::SubPath(QString Parent, QString SubDir)
-{
-    return QDir::cleanPath(Parent + QDir::separator() + SubDir);
-}

@@ -272,9 +272,6 @@ std::string ComputeCid(const std::string &Path, std::string *Error = nullptr);
 bool DropCached(const std::string &Cid);
 
 // ----- IPNS: the mutable library-address layer (ipns.go) -----
-// Publish/refresh OUR name (the identity key = friend code) -> /ipfs/<Cid>, with a long EOL; the node re-publishes it
-// before expiry for as long as it stays online. Blocks on the DHT put — call off the UI thread. False on failure.
-bool IpnsPublish(const std::string &Cid, int TtlSeconds = 0, std::string *Error = nullptr);
 // Resolve /ipns/<Name> (a peer ID / friend code, with or without the /ipns/ prefix) to its current CID. DHT first,
 // then the HTTPS-gateway fallback; the record signature is verified against the name, so a forged record is rejected.
 // Returns the bare CID ("" on failure) — the "/ipfs/" prefix is stripped for callers that want a plain CID.

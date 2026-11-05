@@ -89,8 +89,6 @@ std::vector<std::pair<std::string, std::string>> TableEntries(const std::string 
 //declared nowhere: the validator reports the latter).
 std::string MapValue(const std::string &Value, const std::string &Table, const std::map<std::string, std::string> &Vars);
 
-//What a token's format makes of a value: "map:TABLE" reads Vars (MapValue), anything else is RenderValue.
-std::string RenderToken(const std::string &Value, const std::string &Format, const std::map<std::string, std::string> &Vars);
 }
 
 #endif // VARSUBST_H

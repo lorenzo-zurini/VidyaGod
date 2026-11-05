@@ -90,7 +90,6 @@ public:
     void stopSharingWithFriend(const QString & peer, const QString & lib);
     bool isSharingWithFriend(const QString & peer, const QString & lib) const;
     void requestFriendLibraries(const QString & peer);
-    void installFriendGame(const QString & launchableCid) { addGameByCid(launchableCid); }
     // Apply a friend's COMPLETE shared set (a snapshot, {name:[cids]} JSON) to config["FriendLibraries"][peer]: parse +
     // sanitize, then REPLACE that peer's record wholesale (empty ⇒ drop the peer). Persists + emits friendCatalogChanged
     // ONLY when something actually changed. The receiver half of the bilateral protocol — wired to the friend service in

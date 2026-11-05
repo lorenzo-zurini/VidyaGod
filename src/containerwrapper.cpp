@@ -392,7 +392,6 @@ bool ContainerWrapper::BuildContainerRuntime()
 
 
 
-//(PackageIpfsCids / PackageCoverCids moved to ManifestModel — see manifestmodel.h.)
 
 //(ImportPackage / PublishPackage / MirrorDehydrated / IsPackageImported moved to PackageCatalog — see packagecatalog.h.)
 

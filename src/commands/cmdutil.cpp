@@ -23,9 +23,9 @@ std::shared_ptr<const NodeIndex> Index(Command::Context &C)
     return PackageCatalog::FreshCatalogIndex(*C.Config);
 }
 
-const Node &NodeOf(const NodeIndex &Idx, const std::string &Id)
+const Node *NodeOf(const NodeIndex &Idx, const std::string &Id)
 {
-    if (const Node *N = Idx.Find(Id)) return *N;
+    if (const Node *N = Idx.Find(Id)) return N;
     throw Command::BadArgs("no node '" + Id + "' (a CID, a working handle, or a LABEL — VidyaGod catalog shelf lists the games)");
 }
 

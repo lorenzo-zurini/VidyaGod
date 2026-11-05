@@ -114,8 +114,6 @@ bool HasMissingSources(const nlohmann::ordered_json &GlobalConfigJSON);
 // Append a source (dedup on CID) — caller then SyncPackageSources + reindex + persists. Returns false if CID is empty
 // or already present.
 [[nodiscard]] bool AddPackageSource(nlohmann::ordered_json &GlobalConfigJSON, const std::string &Cid, const std::string &Name, bool Friend = false);
-// Index of the PackageSources entry whose CID/name field == Cid, or -1. (Used to drop a friend's /ipns/ source.)
-int PackageSourceIndexForCID(const nlohmann::ordered_json &GlobalConfigJSON, const std::string &Cid);
 // PreserveInstalled (friend sources): never rm a package the user has INSTALLED — convert dirs with hydrated content to
 // local (clear their SOURCE tag, keep files), delete only stub-only packages. Default false = full removal (CID sources).
 void RemovePackageSource(nlohmann::ordered_json &GlobalConfigJSON, int Index, bool PreserveInstalled = false);

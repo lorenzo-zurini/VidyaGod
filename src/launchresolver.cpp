@@ -51,21 +51,6 @@ using namespace PackageCatalog;
 // P6 split: this TU keeps the RESOLUTION SPINE (InitializeFromNode) + the cross-TU layer-path helper.
 // The concerns live in sibling TUs: launchresolver_vars/_persist/_exec/_chain.cpp.
 
-//Absolutize a layer's PATH and SOURCE.PATH against the owning node's BundleDir (in place). Shared by
-//the spine's AbsLayers and the chain TU's BuildLink.
-void LaunchResolver::AbsolutizeLayerPaths(nlohmann::ordered_json &L, const std::filesystem::path &BundleDir)
-{
-    //A DeclarePersist's PATH is a RUNTIME-relative location or a registry key (e.g. "HKCU") — NOT a bundle file.
-    //It must not be joined against the package dir the way a Content layer's payload PATH is (that would turn
-    //"HKCU" into "<bundle>/HKCU" and every persist target into an absolute mess). Its PATH is %var%-substituted
-    //and normalized by DerivePersistence, which is the only consumer.
-    if (L.is_object() && L.value("TYPE", std::string()) == "DeclarePersist") return;
-    if (L.contains("PATH") && L["PATH"].is_string())
-    { std::filesystem::path P = std::string(L["PATH"]); if (!P.is_absolute()) L["PATH"] = (BundleDir / P).string(); }
-    if (L.contains("SOURCE") && L["SOURCE"].is_object() && L["SOURCE"].contains("PATH") && L["SOURCE"]["PATH"].is_string())
-    { std::filesystem::path P = std::string(L["SOURCE"]["PATH"]); if (!P.is_absolute()) L["SOURCE"]["PATH"] = (BundleDir / P).string(); }
-}
-
 //A runner's build, resolved on its own node (§4.5: each runner resolves the same way a game does) and lowered in its
 //own layout (a runner's layers are written in it; GUEST_ROOTS map only a PACKAGE's guest coordinates).
 nlohmann::ordered_json LaunchResolver::RunnerOps(const NodeIndex &Idx, const std::string &RunnerId, Fold::Plan *PlanOut)

@@ -62,10 +62,6 @@ struct Options
 //already reached, so a malformed package still draws.
 void Compute(PkgGraph::Graph &G, const Options &O = {});
 
-//Assigns X/Y only to nodes whose HasPos is false, leaving positioned ones exactly where they are. This is the
-//canvas path: a bundle that carries POS for some nodes and not others opens with the new ones placed sensibly.
-void ComputeUnplaced(PkgGraph::Graph &G, const Options &O = {});
-
 //Number of edge crossings in the current coordinates — the quality measure the ordering pass minimises, exposed
 //so a test can assert the heuristic actually helps rather than trusting that it does.
 long long CountCrossings(const PkgGraph::Graph &G);

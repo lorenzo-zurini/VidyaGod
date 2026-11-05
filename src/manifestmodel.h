@@ -73,10 +73,8 @@ struct Node {
     std::string Key() const { return Cid.empty() ? NodeId : Cid; }
     bool Presentable()  const { return Meta.is_object() && !Meta.empty(); }
     bool IsRunner()     const { return HasRunner; }
-    bool IsRunnable()   const { return HasExec; }
     //A version on the shelf: VARIANT and an entry to run — its own, or (a graft that is a version) its base's.
     bool IsVariant()    const { return !Variant.empty() && (HasExec || IsGraft); }
-    bool HasIdentity()  const { return !Uid.empty(); }
     std::string GameKey() const { return PackageUid.empty() ? NodeId : PackageUid; }   // the card this node belongs to
     // The lowered exec block of the entry labelled `Label` ("" ⇒ the default entry). Null json if no such entry.
     nlohmann::ordered_json ExecFor(const std::string &Label) const;
@@ -117,8 +115,6 @@ namespace ManifestModel {
 std::vector<std::string> GraftBases(const NodeIndex &Idx, const std::string &Graft);
 // True iff J is a node object: an object with a LAYERS list. The ONE definition — every scanner uses it.
 bool IsNodeObject(const nlohmann::ordered_json &J);
-// The top-level vocabulary of a node: CID LABEL POS COMMENT VARIANT RECOMMENDED LAYERS.
-const std::set<std::string> &NodeFields();
 // Every ref a RAW node names, in order: NODE refs (what it contains) and, into *Requires, ANY members + NOT refs.
 std::vector<std::string> NodeRefs(const nlohmann::ordered_json &J, std::vector<std::string> *Requires = nullptr);
 // Rewrite every ref in a RAW node (NODE, ANY members, NOT) through Map. Returns whether anything changed. Shared by
@@ -247,9 +243,6 @@ bool HasLiveToken(const std::string &S);
 nlohmann::ordered_json MakeVfsSpecLayer(const nlohmann::ordered_json &Sub, const std::string &Source,
                                         const std::string &Target,
                                         const std::vector<std::string> &BaseTargets = {});
-// Invokes Fn on every VFS-layer subcomponent across a COMPONENTS array (any json shape is tolerated).
-void ForEachVfsLayer(const nlohmann::ordered_json &Components,
-                     const std::function<void(const nlohmann::ordered_json &Sub)> &Fn);
 // A VFS layer's locators: its expected LOCAL path (PackagePath/PATH, SOURCE.PATH overriding) and its ipfs CID
 // (empty if none). The local path is the content's home; the CID is a remote fallback to fetch it from.
 void LayerLocator(const nlohmann::ordered_json &Sub, const std::filesystem::path &PackagePath,
@@ -267,20 +260,9 @@ inline constexpr const char *kCustomPlatform = "custom";
 // in the launch's own package (another package's engine never runs this one). Every match against a launch's platform
 // goes through this; the native-terminal checks (HOST==GUEST==machine) compare the machine platform directly.
 bool ServesPlatform(const Node &Runner, const std::string &Platform, const std::filesystem::path &LaunchBundleDir);
-std::string HostPlatform();      // the platform token the host runs as (Phase-1 stub: "linux64")
 
 // ----- component lookups -----
 int FindComponentIndex(const nlohmann::ordered_json &MANIFESTJSON, const std::string &ComponentID); // index or -1
-
-// ----- manifest-only package predicates -----
-// Every distinct ipfs CID referenced by the package's content layers (the set an install must fetch).
-std::vector<std::string> PackageIpfsCids(const nlohmann::ordered_json &Manifest);
-// Every distinct cover-art CID (GAMES[].METADATA.COVER / legacy game-level COVER) — drives the IPFS "Assets" group.
-std::vector<std::string> PackageCoverCids(const nlohmann::ordered_json &Manifest);
-// True when every VFS content layer is present locally at its expected path (vacuously true if there are none).
-bool PackageHydrated(const nlohmann::ordered_json &Manifest, const std::string &PackageDir);
-// True iff the manifest declares any VFS content layer (distinguishes a real package from a content-less one).
-bool PackageHasContent(const nlohmann::ordered_json &Manifest);
 
 } // namespace ManifestModel
 
