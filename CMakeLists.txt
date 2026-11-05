@@ -170,6 +170,7 @@ set(SHARED_SOURCES
     src/commands/cmd_build.cpp
     src/commands/cmd_editor.cpp
     src/commands/cmd_author.cpp
+    src/commands/cmd_vfs.cpp
     src/commands/cmdutil.h
     src/commands/cmdutil.cpp
     src/eventlog.h

@@ -64,3 +64,9 @@ ImGuiProbe::WriteFrame       # writes each frame's items to VG_UI_PROBE's file f
 PkgForm::*                   # the node forms' drawing helpers (ImGui), run inside a frame; their fields are `build types --type`, their edits `build set` / `build field`
 *ForTest                     # a test seam: a unit test injects a verdict or a tool with it
 *::operator==                # a value comparison: runs wherever two of them are compared
+
+# ---- the filesystem's host side and its mount loop: what every `vfs` command and every mounted runtime runs on ----
+HostIO::*                    # the host-file primitives (open, pread, stat, rename, …) every filesystem operation is made of: `vfs …` runs them
+MountSession::*              # the FUSE / WinFsp mount loop: the vidyagodfs process runs it for a launch's runtime
+VidyagodfsOps                # the FUSE operation table handed to libfuse: each entry is a `Vfs*` operation `vfs …` drives directly
+FdByteSource::*              # a file read through a descriptor: what a mounted zip / delta layer reads through (`vfs zip`, `vfs delta`)
