@@ -208,19 +208,9 @@ void CatalogTab::rebuild()
         AvailableGameCards->append(c);
     }
 
-    // ── Per-package grouping (Catalog diverges from Library): a bundle with several un-hydrated games shows its
-    // base game as the main tile and the rest as small secondaries beneath it. Base = the game all others build on,
-    // detected from its content-closure node set: the leanest closure is the base (validated as universally correct
-    // across the multi-game bundles; tie-break by representative node id). ──
-    auto ClosureSize = [this](LibraryGameCard * c) -> int {
-        const std::string & Lid = c->RepNodeId;
-        if (Lid.empty()) return 0;
-        int n = 0;
-        for (const std::string & Nid : ManifestModel::Closure(Model.catalogIndex(), Lid)) {
-            if (Model.catalogIndex().Find(Nid)) n++;
-        }
-        return n;
-    };
+    // ── Per-package grouping (Catalog diverges from Library): a package with several un-hydrated games shows its
+    // base game as the main tile and the rest as small secondaries beneath it. The base is the game whose tile UID is
+    // the package's own (PackageMainCard). ──
     // Sibling games group by FAMILY (%PackageUID%: the base game a tile's PARENTUID chain ends at) — not by
     // directory: a received package's games may land per-tile before the seeder's dir name reaches the wire (and a
     // dir is an on-disk accident anyway). A card with no family falls back to its bundle dir.
@@ -236,15 +226,17 @@ void CatalogTab::rebuild()
     for (const std::string & Key : BundleOrder) {
         std::vector<LibraryGameCard*> & games = ByBundle[Key];
         if (games.size() < 2) continue;                                // single-game package → normal full tile
-        std::sort(games.begin(), games.end(), [&](LibraryGameCard * a, LibraryGameCard * b){
-            const int sa = ClosureSize(a), sb = ClosureSize(b);
-            if (sa != sb) return sa < sb;                              // leanest closure = the base game
-            return a->RepNodeId < b->RepNodeId;
-        });
-        LibraryGameCard * Main = games.front();                       // most-base un-hydrated game anchors the package
-        for (size_t i = 1; i < games.size(); i++) {
-            games[i]->IsSecondary = true;
-            Main->Secondaries.push_back(games[i]);
+        std::vector<std::string> Uids;
+        for (LibraryGameCard * c : games) Uids.push_back(c->GameKey.toStdString());
+        const int M = PackageMainCard(Uids, Key);
+        if (M < 0) continue;                                           // its base is not here: nothing to nest under
+        LibraryGameCard * Main = games[(size_t)M];
+        std::vector<LibraryGameCard*> Rest;
+        for (LibraryGameCard * c : games) if (c != Main) Rest.push_back(c);
+        std::sort(Rest.begin(), Rest.end(), [](LibraryGameCard * a, LibraryGameCard * b){ return a->SortTitle < b->SortTitle; });
+        for (LibraryGameCard * c : Rest) {
+            c->IsSecondary = true;
+            Main->Secondaries.push_back(c);
         }
     }
 
@@ -387,4 +379,11 @@ void CatalogTab::openPackageSourcesDialog()
     connect(&Model, &AppModel::packageSourceFailed, dlg, [dlg](const QString & m){ QMessageBox::warning(dlg, "Package source", m); });
 
     dlg->show();
+}
+
+int PackageMainCard(const std::vector<std::string> &CardUids, const std::string &PackageUid)
+{
+    for (size_t I = 0; I < CardUids.size(); ++I)
+        if (!PackageUid.empty() && CardUids[I] == PackageUid) return (int)I;
+    return -1;
 }

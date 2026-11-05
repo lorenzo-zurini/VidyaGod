@@ -173,6 +173,18 @@ private slots:
 
     void library_tab_constructs()   { AppModel m(&Cfg, &AppDir); LibraryTab  t(m); QVERIFY(renders(&t)); }
     void catalog_tab_constructs()   { AppModel m(&Cfg, &AppDir); CatalogTab  t(m); QVERIFY(renders(&t)); }
+
+    // A package's games nest under the one whose tile UID is the package's own: [749] is The Age of Kings, whatever
+    // order its games come in and however lean or deep their closures (a heuristic once put Forgotten Empires on top).
+    // Without that game among them nothing nests, and with no package UID nothing matches. Teeth: return the first
+    // card; nest under any card when the base is missing.
+    void a_package_nests_under_the_game_whose_uid_it_bears()
+    {
+        QCOMPARE(PackageMainCard({ "749000001", "13006", "749" }, "749"), 2);
+        QCOMPARE(PackageMainCard({ "749", "13006" }, "749"), 0);
+        QCOMPARE(PackageMainCard({ "749000001", "13006" }, "749"), -1);
+        QCOMPARE(PackageMainCard({ "", "13006" }, ""), -1);
+    }
     void packages_view_constructs() { AppModel m(&Cfg, &AppDir); PackagesView t(m); QVERIFY(renders(&t)); }
     void settings_tab_constructs()  { AppModel m(&Cfg, &AppDir); SettingsTab t(m); QVERIFY(renders(&t)); }
     void ipfs_tab_constructs()      { AppModel m(&Cfg, &AppDir); IpfsModel im(m); IpfsTab t(im); QVERIFY(renders(&t)); }
