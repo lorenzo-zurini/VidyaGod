@@ -11,6 +11,7 @@ class QTimer;
 class AppModel;
 class DownloadManager;
 class IpfsModel;
+class LibraryGameCard;
 class TrayController;
 class LibraryTab;
 class CatalogTab;
@@ -41,6 +42,10 @@ public:
 
     //The app's model: what the command socket and the CLI drive (Command::Context).
     AppModel * model() const { return Model; }
+    IpfsModel * ipfsModel() const { return IpfsModelPtr; }
+    DownloadManager * downloads() const { return DownloadMgr; }
+    //A Catalog card by its key or (a unique part of) its title — null when none or several match.
+    LibraryGameCard * catalogCard(const QString & KeyOrTitle) const;
 
 protected:
     void closeEvent(QCloseEvent * e) override;     // close → hide to tray (if enabled), else quit

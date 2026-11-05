@@ -195,6 +195,8 @@ std::vector<UnservableRef> UnservableRefs();
 // Human-readable local repo usage — "RepoSize / StorageMax" (e.g. "5.0 GB / 10 GB"), or just the size, "" if
 // unknown.
 std::string RepoSizeHuman();
+// What the store holds: {"fsRefs": filestore references (content served in place), "mainBlocks": blocks in the store}.
+nlohmann::json StoreCounts();
 
 // A locally-pinned (seeded) CID.
 struct PinEntry { std::string Cid; };

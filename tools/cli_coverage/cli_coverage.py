@@ -126,7 +126,7 @@ def go_callers(build):
     import clang.cindex as ci
     K = ci.CursorKind
     out = {}
-    for src in ("src/ipfswrapper.cpp", "src/main.cpp"):
+    for src in ("src/ipfswrapper.cpp", "src/main.cpp", "src/cli/cliapp.cpp"):
         tu = ci.Index.create().parse(os.path.join(ROOT, src), args=flags(build), options=ci.TranslationUnit.PARSE_INCOMPLETE)
         def walk(c, fn):
             for ch in c.get_children():
@@ -138,6 +138,7 @@ def go_callers(build):
                         if p.spelling: parts.append(p.spelling)
                         p = p.semantic_parent
                     f = "::".join(reversed(parts))
+                    if ch.kind == K.CONSTRUCTOR: KINDS.setdefault(f, "{constructor}")   # a private one too (a singleton's)
                 if ch.kind == K.CALL_EXPR and f and re.match(r"Vg[A-Z]", ch.spelling or ""):
                     out.setdefault("VidyaGodIPFS::" + ch.spelling, set()).add(f)
                 walk(ch, f)
@@ -191,6 +192,9 @@ def main():
         if KINDS.get(q) in cov: held[q] = "covered by " + ", ".join(cov[KINDS[q]]); continue
         by = sorted(f for f in callers.get(q, ()) if f in cov)
         if by: held[q] = "covered through " + ", ".join(by); continue
+        # A caller that is the CLI's own machinery (excluded: it runs on every command) drives it on every command.
+        by = sorted(f for f in callers.get(q, ()) if any(fnmatch.fnmatchcase(f, p) or KINDS.get(f) == p for p, w, n in exc))
+        if by: held[q] = "covered through " + ", ".join(by) + " (an excluded caller)"; continue
         hit = next(((p, w, n) for p, w, n in exc if fnmatch.fnmatchcase(q, p) or KINDS.get(q) == p), None)
         if hit: held[q] = "excluded: " + hit[1]; used_exc.add(hit[2]); continue
         uncovered.append(q)

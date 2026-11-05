@@ -5,6 +5,7 @@
 #include "appmodel.h"
 #include "mainwindow.h"
 #include "ipfswrapper.h"
+#include "vgipfsapi.h"
 #include "commonutils.h"
 #include "platform/platform.h"
 #include "a11ynames.h"
@@ -572,6 +573,7 @@ int Main(int argc, char **argv, const Hooks &H)
     St.On = !G.NoColour && !std::getenv("NO_COLOR") && IsTty(1) && !G.Json;
     ErrSt.On = ErrSt.On && !G.NoColour && IsTty(2);
     SetLogEcho(G.Verbose);
+    VgSetLogVerbose(G.Verbose ? 1 : 0);   // and the node's own trace
 
     if (Tokens.empty() || Tokens.front() == "help")
     {

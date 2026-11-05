@@ -64,6 +64,7 @@ int  VgDropCached(const char *cid, char **errOut);// purge a CID's locally-CACHE
 
 int  VgPeerCount(void);                         // M3
 int  VgRepoStat(char **outJson, char **errOut); // M3 — {"RepoSize":n,"StorageMax":n}
+int  VgDebugCounts(char **outJson);                     // {"fsRefs", "mainBlocks"}: what the store holds
 int  VgProviderCount(const char *cid, int timeoutMs); // M3
 int  VgSetSeedLevels(const char *collectionsJson, const char *packagesJson); // record meta-CID levels + start the 3-pass seed announce
 int  VgSeedAnnounced(const char *cid);                // 1 if the pinned CID's DHT announce has completed (seeding), 0 if still queued

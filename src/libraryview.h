@@ -129,6 +129,7 @@ public:
     int cardIndex(const QString & KeyOrTitle) const;
     //What a click on card I does (Enter/Space too): play it (Library), download or cancel it (Catalog).
     void activateCardAt(int I) { activateCard(I); }
+    LibraryGameCard * cardAt(int I) const { return Cards && I >= 0 && I < Cards->count() ? Cards->at(I) : nullptr; }
     //What a right-click on card I does: its context menu (Library).
     void requestCardMenu(int I);
 

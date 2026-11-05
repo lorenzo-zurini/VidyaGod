@@ -339,6 +339,16 @@ std::vector<std::string> OrphanedRefPaths()
     return Result;
 }
 
+nlohmann::json StoreCounts()
+{
+    char *J = nullptr;
+    const int Rc = VgDebugCounts(&J);
+    const std::string Js = TakeStr(J);
+    if (Rc != 0) return nlohmann::json::object();
+    nlohmann::json D = nlohmann::json::parse(Js, nullptr, false);
+    return D.is_object() ? D : nlohmann::json::object();
+}
+
 std::string RepoSizeHuman()
 {
     char *J = nullptr, *Err = nullptr;

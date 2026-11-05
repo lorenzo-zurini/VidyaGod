@@ -166,6 +166,7 @@ set(SHARED_SOURCES
     src/commands/cmd_packages.cpp
     src/commands/cmd_engine.cpp
     src/commands/cmd_app.cpp
+    src/commands/cmd_ipfs.cpp
     src/commands/cmdutil.h
     src/commands/cmdutil.cpp
     src/eventlog.h

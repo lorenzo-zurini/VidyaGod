@@ -65,6 +65,7 @@ private:
     void reapWorkers();
 public:
     int workerCount() const { return (int)Workers.size(); }   // test observability: worker threads not yet joined
+    QStringList activeKeys() const { return QStringList(DownloadingUids.begin(), DownloadingUids.end()); }   // downloads in flight
     QStringList cidsOf(const QString &Key) const { return DownloadUidCids.value(Key); }   // a download's content CIDs
     //The CIDs cancelling Key's download may abort: its own, minus those another in-flight download still needs.
     QStringList cancellableCids(const QString &Key) const;

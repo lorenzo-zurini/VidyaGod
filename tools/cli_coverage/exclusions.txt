@@ -44,3 +44,9 @@ CommandServer::*             # the live socket: every command sent to a running 
 *::tr                        # Q_OBJECT: the translation lookup (no translations ship)
 Platform::AcquireSingleInstanceLock  # the one-app-per-data-dir lock: taken by the app at start and by every command run here (CliApp)
 Diagnostics::Note            # what Log() calls on every line; the tally it builds is `app diagnostics`
+
+# ---- the node's plumbing: what every call into it does, not a thing to do ----
+VidyaGodIPFS::VgFree         # frees each string the node hands back: runs after every call that returns one
+VidyaGodIPFS::VgNet*         # the network-queue slot every fetch holds while it runs (DownloadSlot / ForegroundHold): `ipfs fetch`
+IpfsWrapper::Set*Callback    # installs the app's receiver for the node's events at start (IpfsManager, FriendsManager); what arrives is `events`
+IpfsWrapper::Set*Hook        # a test seam: unit tests put a fake network in place of the node with it

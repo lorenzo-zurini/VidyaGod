@@ -367,3 +367,9 @@ void MainWindow::hideToTray()
     hide();
     if (Tray) { Tray->rememberHidden(true); Tray->notifyHidden(); }
 }
+
+LibraryGameCard * MainWindow::catalogCard(const QString & KeyOrTitle) const
+{
+    LibraryView * V = CatalogTabPtr ? CatalogTabPtr->view() : nullptr;
+    return V ? V->cardAt(V->cardIndex(KeyOrTitle)) : nullptr;
+}
