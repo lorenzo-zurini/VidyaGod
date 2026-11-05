@@ -96,6 +96,11 @@ struct NodeIndex {
     //A node has ONE home package. Other package folders found holding the same node (CID -> those folders) are an
     //authoring error the validator names: the node belongs in one package, the others contain it by CID.
     std::map<std::string, std::vector<std::filesystem::path>> Duplicates;
+    //Node files the index refused (no CID: too large, or containing one that did not freeze). Without this a refused
+    //file is only a "missing node" in its container, with the file sitting right there; the validator names each.
+    //File is the node's file when the scan gathered it handle-less; else empty, and Handle is its stored CID.
+    struct Refused { std::filesystem::path File, BundleDir; std::string Handle, Why; bool TooLarge = false; };
+    std::vector<Refused> RefusedNodes;
     const Node *Find(const std::string &NodeId) const;
     //The tile a UID names (null when no node presents it).
     const nlohmann::ordered_json *Tile(const std::string &Uid) const

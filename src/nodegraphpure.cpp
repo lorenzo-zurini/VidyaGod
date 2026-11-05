@@ -29,7 +29,7 @@ bool JsonDepthWithinLimit(const std::string &S, int MaxDepth)
 bool VerifyNodeBytes(const std::string &Bytes, const std::string &ExpectCid, nlohmann::ordered_json &J, std::string *Error)
 {
     const auto No = [&](const std::string &Why) { if (Error) *Error = Why; return false; };
-    if (Bytes.size() > 256 * 1024) return No("over one 256 KiB block");
+    if (Bytes.size() > Cid::MaxNodeBytes) return No("over the 256 KiB a node may be");
     if (Cid::OfBytes(Bytes) != ExpectCid) return No("its bytes do not hash to " + ExpectCid);
     if (!JsonDepthWithinLimit(Bytes, 64)) return No("nested too deep");
     J = nlohmann::ordered_json::parse(Bytes, nullptr, false);
@@ -51,7 +51,7 @@ bool VerifyLanded(const std::filesystem::path &File, const std::string &ExpectCi
     while (In.read(Buf, sizeof Buf) || In.gcount() > 0)
     {
         Bytes.append(Buf, static_cast<size_t>(In.gcount()));
-        if (Bytes.size() > 256 * 1024) { if (Error) *Error = "over one 256 KiB block"; return false; }
+        if (Bytes.size() > Cid::MaxNodeBytes) { if (Error) *Error = "over the 256 KiB a node may be"; return false; }
     }
     nlohmann::ordered_json J;
     if (!VerifyNodeBytes(Bytes, ExpectCid, J, Error)) return false;

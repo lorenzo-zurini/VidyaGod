@@ -85,6 +85,19 @@ NodeIndex FreezeToIndex(const std::map<std::string, nlohmann::ordered_json> &Wor
     std::map<std::string, std::string> HandleToCid;
     std::set<std::string> AuthoredCids;   // CIDs whose index slot came from a LOCAL (non-synthetic) handle
     int Skipped = 0;
+    //A refused node is recorded where it lives, so validation can name it rather than only its container's dangling
+    //ref. A handle-less node was gathered under "\x01<file>#<n>": that IS its file.
+    const auto Refuse = [&](const std::string &Handle, const std::string &Why, bool TooLarge)
+    {
+        NodeIndex::Refused R;
+        R.Why = Why;
+        R.TooLarge = TooLarge;
+        if (const auto D = Dirs.find(Handle); D != Dirs.end()) R.BundleDir = D->second;
+        if (!Handle.empty() && Handle[0] == '\x01') R.File = Handle.substr(1, Handle.rfind('#') - 1);
+        else R.Handle = Handle;
+        Idx.RefusedNodes.push_back(std::move(R));
+        ++Skipped;
+    };
     for (const std::string &Handle : Order)
     {
         // Freeze (resolve handles→CIDs) and derive the CID: the hash of the canonical bytes, computed here — pure,
@@ -92,19 +105,20 @@ NodeIndex FreezeToIndex(const std::map<std::string, nlohmann::ordered_json> &Wor
         std::string Dangling, Err;
         const nlohmann::ordered_json Frozen = FreezeNodeJson(WorkingTree.at(Handle), HandleToCid, &WorkingTree, &Dangling);
         if (!Dangling.empty()) Err = "it references '" + Dangling + "', which did not freeze";
-        const std::string Cid = Dangling.empty() ? Cid::OfNode(Frozen, &Err) : std::string();
+        const std::string Bytes = Dangling.empty() ? Cid::Canonical(Frozen) : std::string();
+        const std::string Cid = Dangling.empty() ? Cid::OfBytes(Bytes, &Err) : std::string();
         if (Cid.empty())
         {
             // A per-node failure: SKIP this node, never abort the whole index — one bad node must not empty the
-            // library. Its referrers keep a ref to a CID nothing holds, which validation names.
+            // library. Validation names it, and its referrers' ref to a CID nothing holds.
             LogWarn("NodeGraph::FreezeToIndex", "skipping node '" + Handle + "': " + Err);
-            ++Skipped;
+            Refuse(Handle, Err, Bytes.size() > Cid::MaxNodeBytes);
             continue;
         }
         HandleToCid[Handle] = Cid;
 
         Node N;
-        if (!ManifestModel::ParseNode(Frozen, {}, {}, N)) { ++Skipped; continue; }
+        if (!ManifestModel::ParseNode(Frozen, {}, {}, N)) { Refuse(Handle, "it is not a node", false); continue; }
         N.Cid = Cid;
         if (!Handle.empty() && (unsigned char)Handle[0] >= 0x20) N.Handle = Handle;   // the working tree's name for it
         const auto It = Dirs.find(Handle);
@@ -131,7 +145,7 @@ NodeIndex FreezeToIndex(const std::map<std::string, nlohmann::ordered_json> &Wor
         }
     }
     if (Skipped) LogWarn("NodeGraph::FreezeToIndex", "skipped " + std::to_string(Skipped)
-                         + " node(s) with dangling/bad refs — the rest of the library is intact");
+                         + " node(s) the index refused (validation names each) — the rest of the library is intact");
     ManifestModel::DeriveFacts(Idx);
     return Idx;
 }

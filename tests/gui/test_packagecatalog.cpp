@@ -520,6 +520,57 @@ private slots:
         QVERIFY2(Plan[1].Dest.find("[802] Warcraft III (bafypkgtwo") != std::string::npos, "the colliding package's dir carries its CID");
     }
 
+    // A node is at most 256 KiB (one raw block, §2.3). The index refuses a larger one, and the validator names its FILE
+    // with the split that brings it under, not only its container's "missing node", and only in that package's scope.
+    // Teeth: index a node of exactly 256 KiB too (> vs >=); drop the error, its hint, or its scoping.
+    void a_node_over_256_kib_is_named_by_its_file()
+    {
+        json Big = {{"LABEL", "depot"}, {"LAYERS", json::array()}};
+        for (int i = 0; Cid::Canonical(Big).size() <= Cid::MaxNodeBytes; ++i)
+            Big["LAYERS"].push_back(json{{"EDIT", json::array({json{{"MODE", "Delete"}}})},
+                                         {"TARGET", "FILES/Game.app/Contents/Resources/file" + std::to_string(i)}});
+        json Edge = {{"LABEL", "edge"}, {"COMMENT", ""}, {"LAYERS", json::array()}};
+        Edge["COMMENT"] = std::string(Cid::MaxNodeBytes - Cid::Canonical(Edge).size(), 'x');
+        QCOMPARE(Cid::Canonical(Edge).size(), Cid::MaxNodeBytes);
+
+        std::map<std::string, json> Tree; std::map<std::string, std::filesystem::path> Dirs;
+        const auto Put = [&](const std::string &File, const json &N) {
+            const std::string Key = "\x01" + File + "#1";
+            Tree[Key] = N;
+            Dirs[Key] = std::filesystem::path(File).parent_path();
+        };
+        Put("/lib/P/bigdepot.json", Big);
+        Put("/lib/P/top.json", json{{"LABEL", "top"}, {"LAYERS", json::array({json{{"NODE", "bigdepot"}}})}});
+        Put("/lib/P/edge.json", Edge);
+        Put("/lib/Q/other.json", json{{"LABEL", "other"}, {"LAYERS", json::array()}});
+        std::string Err;
+        const NodeIndex Idx = NodeGraph::FreezeToIndex(Tree, Dirs, &Err);
+        QCOMPARE(Idx.Nodes.size(), size_t(3));
+        QVERIFY2(Idx.Find(Cid::OfNode(Edge)), "exactly 256 KiB is one block, and indexed");
+        QCOMPARE(Idx.RefusedNodes.size(), size_t(1));
+        QCOMPARE(Idx.RefusedNodes[0].File, std::filesystem::path("/lib/P/bigdepot.json"));
+
+        const auto Validate = [&](const std::set<std::string> *Scope) {
+            std::vector<std::string> E, W;
+            ManifestModel::ValidateNodeGraph(Idx, E, W, Scope);
+            return E;
+        };
+        const auto Has = [](const std::vector<std::string> &E, const std::string &A, const std::string &B) {
+            return std::any_of(E.begin(), E.end(), [&](const std::string &S) {
+                return S.find(A) != std::string::npos && S.find(B) != std::string::npos; });
+        };
+        const std::vector<std::string> All = Validate(nullptr);
+        QVERIFY2(Has(All, "node file '/lib/P/bigdepot.json' is refused", "over the 256 KiB"), "the file is named");
+        QVERIFY2(Has(All, "bigdepot.json", "put a NODE layer naming it in their place"), "with the split");
+        QVERIFY2(Has(All, "contains missing node 'bigdepot'", "refused"), "its container points at it");
+
+        const std::string Top = Cid::OfNode(Tree.at("\x01/lib/P/top.json#1"));
+        const std::string Other = Cid::OfNode(Tree.at("\x01/lib/Q/other.json#1"));
+        const std::set<std::string> InP = {Top}, InQ = {Other};
+        QVERIFY2(Has(Validate(&InP), "bigdepot.json", "is refused"), "in its own package's scope");
+        QVERIFY2(!Has(Validate(&InQ), "bigdepot.json", "is refused"), "not in another package's");
+    }
+
     // The Windows runner comes with the app: on a machine that hosts it (a Windows PC) the catalog has it without a
     // download, and it is the very node published in VidyaGodRunners — a copy on disk is the same node, kept once.
     // Teeth: add it on any machine (linux64 gets it too); change its bytes (no longer the published CID).

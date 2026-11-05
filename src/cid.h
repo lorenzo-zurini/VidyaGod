@@ -2,6 +2,7 @@
 #define CID_H
 
 #include <nlohmann/json.hpp>
+#include <cstddef>
 #include <string>
 
 // ---------------------------------------------------------------------------
@@ -17,8 +18,10 @@ namespace Cid
 //The canonical bytes of a node (its CID and POS dropped).
 std::string Canonical(const nlohmann::ordered_json &Node);
 
-//The Kubo-parity CID of Bytes as one raw block. "" (with *Error) past 256 KiB — a node that large is a chunked
-//UnixFS file, which this pure function does not build.
+//The most canonical bytes a node may have (§2.3): one raw block. A larger node is refused, never chunked.
+constexpr size_t MaxNodeBytes = 256 * 1024;
+
+//The Kubo-parity CID of Bytes as one raw block. "" (with *Error) past MaxNodeBytes — a node that large is refused.
 std::string OfBytes(const std::string &Bytes, std::string *Error = nullptr);
 
 //Canonical + OfBytes.

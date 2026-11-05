@@ -98,9 +98,9 @@ std::string Canonical(const nlohmann::ordered_json &Node)
 
 std::string OfBytes(const std::string &Bytes, std::string *Error)
 {
-    if (Bytes.size() > 256 * 1024)
+    if (Bytes.size() > MaxNodeBytes)
     {
-        if (Error) *Error = "node is " + std::to_string(Bytes.size()) + " bytes — over one 256 KiB block (a chunked UnixFS file)";
+        if (Error) *Error = "node is " + std::to_string(Bytes.size()) + " bytes — over the 256 KiB a node may be";
         return std::string();
     }
     // CIDv1 (0x01) · raw (0x55) · multihash sha2-256 (0x12, 32 bytes)

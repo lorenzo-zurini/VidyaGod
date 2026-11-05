@@ -885,6 +885,28 @@ void ValidateNodeGraph(const NodeIndex &Idx, std::vector<std::string> &Errors, s
         }), Gs.end());
     auto InScope = [&](const std::string &Id) { return !OnlyNodes || OnlyNodes->count(Id); };
 
+    //A node the index refused has no CID, so nothing can contain it: its container reports a missing node while the
+    //file sits in the package. Name the file, and for one too large the split that brings it under (§2.3). The name
+    //it is contained by is its handle, else its file's (a node file is named by its CID). In scope when a scoped node
+    //shares its package or contains it.
+    std::map<std::string, const NodeIndex::Refused *> RefusedByName;
+    for (const auto &R : Idx.RefusedNodes)
+    {
+        const std::string Name = R.Handle.empty() ? R.File.stem().string() : R.Handle;
+        RefusedByName.emplace(Name, &R);
+        const auto Near = [&](const std::string &Id) {
+            const Node *N = Idx.Find(Id);
+            return N && ((!R.BundleDir.empty() && N->BundleDir == R.BundleDir)
+                         || std::find(N->Refs.begin(), N->Refs.end(), Name) != N->Refs.end());
+        };
+        if (OnlyNodes && std::none_of(OnlyNodes->begin(), OnlyNodes->end(), Near)) continue;
+        Errors.push_back((R.File.empty() ? "node '" + R.Handle + "'" : "node file '" + R.File.string() + "'")
+                         + " is refused: " + R.Why
+                         + (R.TooLarge ? " — move a run of its layers into a node of their own and put a NODE layer "
+                                         "naming it in their place (it expands in place, so nothing changes), or "
+                                         "Delete a whole folder instead of each file in it" : std::string()));
+    }
+
     //A platform is served when a CHAIN of runners reaches this machine (a Windows-only engine for its own platform runs
     //under proton): the same guest→host edges the resolver's BFS walks (ResolveChainIds).
     auto HasRunnerFor = [&](const std::string &Host, const std::filesystem::path &Bundle) {
@@ -925,7 +947,9 @@ void ValidateNodeGraph(const NodeIndex &Idx, std::vector<std::string> &Errors, s
         //Refs: a contained node must exist; an ANY member or a NOT may name a node this library lacks (a graft for a
         //version you don't have; an exclusion that cannot happen), but an ANY with no member here is unsatisfiable.
         for (const std::string &R : N.Refs)
-            if (!Idx.Find(R)) Errors.push_back(Tag + ": contains missing node '" + R + "'");
+            if (!Idx.Find(R))
+                Errors.push_back(Tag + ": contains missing node '" + R + "'"
+                                 + (RefusedByName.count(R) ? " (its file is here but refused — see its error)" : ""));
         for (const auto &L : N.Json["LAYERS"])
         {
             if (L.contains("ANY"))
@@ -1088,9 +1112,9 @@ void ValidateNodeGraph(const NodeIndex &Idx, std::vector<std::string> &Errors, s
                 if (A.rfind("REG/", 0) != 0 || !V.is_object() || !V.contains("ARCH") || !V["ARCH"].is_array()) continue;
                 //Both spelled alike: lower case, one '\\' between segments, HKLM for its long name. Only HKLM\Software
                 //is a different key per bitness (HKCU is shared).
-                const auto Spell = [](const std::string &P) {
+                const auto Spell = [](const std::string &Key) {
                     std::string Out, Cur;
-                    for (const char C : ToLowerAscii(P) + "\\")
+                    for (const char C : ToLowerAscii(Key) + "\\")
                         if (C == '/' || C == '\\') { if (!Cur.empty()) Out += (Out.empty() ? "" : "\\") + (Out.empty() && Cur == "hkey_local_machine" ? std::string("hklm") : Cur); Cur.clear(); }
                         else Cur.push_back(C);
                     return Out;
@@ -1197,9 +1221,9 @@ void ValidateNodeGraph(const NodeIndex &Idx, std::vector<std::string> &Errors, s
                         {
                             const auto It = View.find(Bare(B));
                             if (It == View.end() || !P.Seq[It->second].View.is_null()) { Have.reset(); break; }   // checked above / viewed
-                            const std::optional<uint64_t> N = ArchiveSizes(P.Seq[It->second], SizeCache).View;
-                            if (!N) { Have.reset(); break; }
-                            *Have += *N;
+                            const std::optional<uint64_t> Bytes = ArchiveSizes(P.Seq[It->second], SizeCache).View;
+                            if (!Bytes) { Have.reset(); break; }
+                            *Have += *Bytes;
                             Names += std::string(Names.empty() ? "" : " + ") + "'" + P.Seq[It->second].Payload + "'";
                         }
                         const std::optional<uint64_t> Want = ArchiveSizes(C, SizeCache).Base;
