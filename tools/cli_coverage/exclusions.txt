@@ -50,3 +50,17 @@ VidyaGodIPFS::VgFree         # frees each string the node hands back: runs after
 VidyaGodIPFS::VgNet*         # the network-queue slot every fetch holds while it runs (DownloadSlot / ForegroundHold): `ipfs fetch`
 IpfsWrapper::Set*Callback    # installs the app's receiver for the node's events at start (IpfsManager, FriendsManager); what arrives is `events`
 IpfsWrapper::Set*Hook        # a test seam: unit tests put a fake network in place of the node with it
+*::initializeGL              # Qt's GL setup callback: runs when a GL panel first shows (`editor open`)
+*::paintGL                   # Qt's GL paint callback: draws a frame; what it drew is `canvas items` / `canvas state`
+*::dragMoveEvent             # Qt drag handler: hover while files are dragged over; the drop itself is `canvas action --drop`
+
+# ---- drawing a frame: what was drawn is read with `canvas items` / `canvas state`, never asked for ----
+PkgCanvas::frame             # draws one frame of the canvas (paintGL calls it)
+PkgCanvas::InstallFontsAndStyle  # the canvas's fonts and colours, set once when its GL context starts
+PkgCanvas::MonoFont          # the font a frame draws code in
+PkgCanvas::WireColour        # the colour a frame draws a wire in
+PkgCanvas::setFileDropHover  # the highlight while files are dragged over the canvas (Qt's drag enter / leave)
+ImGuiProbe::WriteFrame       # writes each frame's items to VG_UI_PROBE's file for an outside driver; `canvas items` reads them in-process
+PkgForm::*                   # the node forms' drawing helpers (ImGui), run inside a frame; their fields are `build types --type`, their edits `build set` / `build field`
+*ForTest                     # a test seam: a unit test injects a verdict or a tool with it
+*::operator==                # a value comparison: runs wherever two of them are compared

@@ -1,5 +1,7 @@
 #include "command.h"
 
+#include <set>
+
 #include <cstdio>
 #include <cstdlib>
 
@@ -23,6 +25,11 @@ void Register(Spec S)
 {
     auto &R = Registry();
     if (R.count(S.Name)) throw std::logic_error("command registered twice: " + S.Name);
+    // The CLI's own options are read wherever they appear: a command's option of the same name would never reach it.
+    static const std::set<std::string> Global = { "json", "no-color", "no-colour", "data-dir", "wait", "verbose", "help",
+                                                  "package-dir", "runtime-dir", "userdata-dir" };
+    for (const Arg &A : S.Args)
+        if (!A.Positional && Global.count(A.Name)) throw std::logic_error(S.Name + ": --" + A.Name + " is a global option");
     const std::string Name = S.Name;
     R.emplace(Name, std::move(S));
 }

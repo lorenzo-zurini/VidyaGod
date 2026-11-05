@@ -31,6 +31,11 @@ public:
     static PackageEditor * OpenFor(nlohmann::ordered_json * GlobalConfigJSON, QWidget * parent = nullptr,
                                    const QString & PackagePath = "", bool * Created = nullptr);
     QString bundleDir() const;
+    //The one open editor (null when none) and what it edits: the CLI's `build` and `canvas` commands act on these.
+    static PackageEditor * live() { return Live; }
+    PackageEditorModel * model() const { return Model; }
+    PkgCanvasPanel * canvas() const { return Canvas; }
+    PkgActions * actions() const { return Actions; }
 
 signals:
     void packageSaved(const QString & PackagePath);

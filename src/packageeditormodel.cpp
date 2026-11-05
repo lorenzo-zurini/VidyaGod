@@ -7,15 +7,12 @@
 #include "apppaths.h"
 #include "commonutils.h"
 #include "jsonoperations.h"
-#include "containerwrapper.h"   // ContainerWrapper + ContainerParams (authoring run) — pulls LaunchResolver etc.
 #include "packagecatalog.h"
 #include "pkggraph.h"     // BuildCatalogIndex, LibraryRootDir, EditorLayoutKey
 #include "instancestore.h"
 
 #include <QDateTime>
 #include <QFile>
-#include <QFileDialog>
-#include <QMessageBox>
 
 #include <algorithm>
 #include <cctype>
@@ -28,21 +25,6 @@ using json = nlohmann::ordered_json;
 namespace fs = std::filesystem;
 
 namespace {
-
-//A launchable that runs NodeId: the node itself, or one that contains it.
-std::string LaunchableForNode(const NodeIndex & Idx, const std::string & NodeId)
-{
-    const Node * N = Idx.Find(NodeId);
-    if (!N) return "";
-    if (N->IsVariant()) return NodeId;
-    for (const auto & [Id, Nd] : Idx.Nodes)
-    {
-        if (!Nd.IsVariant()) continue;
-        const auto Order = ManifestModel::Closure(Idx, Id);
-        if (std::find(Order.begin(), Order.end(), NodeId) != Order.end()) return Id;
-    }
-    return "";
-}
 
 bool SameDir(const fs::path & A, const fs::path & B)
 {
@@ -638,40 +620,6 @@ std::map<std::string, std::vector<std::string>> PackageEditorModel::issuesByHand
 }
 
 // ---- authoring ------------------------------------------------------------------------------------------------
-
-void PackageEditorModel::RunInNode(const std::string & NodeId, const std::string & Exe)
-{
-    //A run is of what is on disk, so the package is saved first (a re-mint: the handle may change).
-    std::string Handle = NodeId;
-    if (Doc.Dirty())
-    {
-        QString Err;
-        if (!Save(&Err)) { QMessageBox::warning(DialogParent, "Run", "Save the package first:\n" + Err); return; }
-        if (const auto It = LastRenames.find(Handle); It != LastRenames.end()) Handle = It->second;
-    }
-    NodeIndex Idx = BuildExecIndex();
-    const std::string Launch = LaunchableForNode(Idx, Handle);
-    if (Launch.empty())
-    {
-        QMessageBox::warning(DialogParent, "Run",
-            "This node is not launchable, and no launchable node in the package contains it.\n"
-            "Add a node with an EXEC entry that contains this one to test it.");
-        return;
-    }
-    ContainerParams Params(PackageDir->path().toStdString());
-    Params.NodeIdx = &Idx;
-    Params.LaunchNodeId = Launch;
-    json Dummy = json::object();
-    ContainerWrapper Container(*GlobalConfigJSON, Dummy, Params);
-    if (!LaunchResolver::ResolveExecutableDefinition(Dummy, Container.ContainerParams))
-    { QMessageBox::warning(DialogParent, "Run", "Could not resolve the node's entry. Check the log."); return; }
-    Container.Cleanup();
-    if (!Container.BuildContainerRuntime())
-    { QMessageBox::critical(DialogParent, "Run", "Failed to build the runtime. Check the log."); Container.Cleanup(); return; }
-    if (!Container.Execute(Exe))
-        QMessageBox::warning(DialogParent, "Run", "The process exited with an error. Check the log.");
-    Container.Cleanup();
-}
 
 std::vector<std::string> PackageEditorModel::bundleNodeIds() const
 {

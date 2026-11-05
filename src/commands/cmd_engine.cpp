@@ -48,14 +48,8 @@ std::map<std::string, std::string> Pairs(const json &A, const char *Key)
     return Out;
 }
 
-json JsonArg(const json &A, const char *Key)
-{
-    const json &V = A[Key];
-    if (!V.is_string()) return V;
-    json J = json::parse(V.get<std::string>(), nullptr, false);
-    if (J.is_discarded()) throw Command::BadArgs(std::string(Key) + " is not JSON");
-    return J;
-}
+// A JSON option's value (the CLI parsed it already: text, or @file).
+const json &JsonArg(const json &A, const char *Key) { return A[Key]; }
 
 // A node's JSON as authored: a node file on disk (its first node), or a node of the library.
 json NodeJson(Command::Context &C, const std::string &Q, std::shared_ptr<const NodeIndex> *Keep = nullptr)

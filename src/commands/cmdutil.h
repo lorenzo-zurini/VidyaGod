@@ -7,9 +7,12 @@
 #include "packagecatalog.h"
 
 #include <filesystem>
+#include <map>
 #include <memory>
 #include <string>
 #include <vector>
+
+class PackageEditorModel;
 
 namespace CmdUtil
 {
@@ -26,6 +29,18 @@ const Node *NodeOf(const NodeIndex &Idx, const std::string &Id);
 std::filesystem::path PackageDir(Command::Context &C, const std::string &Q, bool Received = true);
 // "a,b,c" or a JSON array, as a list of strings ("" / absent: none).
 std::vector<std::string> List(const json &Args, const char *Key);
+// ---- build sessions: the package builder's document a command acts on (cmd_build, cmd_author) ----
+// The open editor's model when it has the package open; else the app's session for it (kept until `build close`);
+// else, run on its own, one for this call (Own holds it).
+struct BuildSession
+{
+    std::unique_ptr<PackageEditorModel> Own;
+    PackageEditorModel *M = nullptr;
+    const char *Where = "";   // "editor", "session", "this call"
+};
+BuildSession OpenBuild(Command::Context &C, const std::string &Pkg);
+std::map<std::string, std::unique_ptr<PackageEditorModel>> &BuildSessions();   // package path -> its session
+std::string Canon(const std::filesystem::path &P);
 // A path as the CLI shows it.
 inline std::string P(const std::filesystem::path &X) { return X.string(); }
 }

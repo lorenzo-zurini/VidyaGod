@@ -462,18 +462,18 @@ VG_COMMANDS
         }, {} });
 
     Command::Register({
-        "queue enqueue", "enqueue a batch of targets, and (with --wait) wait for it",
+        "queue enqueue", "enqueue a batch of targets, and (with --until-done) wait for it",
         "Add {cid, to, optional?, dir?, verify?} targets to the queue as one batch — what a download does — and with "
-        "--wait block until every required one is done (--timeout ms).",
-        { Opt("targets", "the targets (JSON array)", Type::Json, true), Flag("wait", "wait for the batch"), Opt("timeout", "(--wait) ms", Type::Int) },
-        { "queue enqueue --targets '[{\"cid\":\"Qm…\",\"to\":\"/tmp/a\"}]' --wait" },
+        "--until-done block until every required one is done (--timeout ms).",
+        { Opt("targets", "the targets (JSON array)", Type::Json, true), Flag("until-done", "wait for the batch"), Opt("timeout", "(--until-done) ms", Type::Int) },
+        { "queue enqueue --targets '[{\"cid\":\"Qm…\",\"to\":\"/tmp/a\"}]' --until-done" },
         { "IpfsWrapper::EnqueueBatch", "IpfsWrapper::WaitBatch" }, Needs::Config, true,
         [](Command::Context &, const json &A) {
             const auto H = IpfsWrapper::EnqueueBatch(TargetsArg(A));
             json Items = json::array();
             for (const auto &[Cid, Opt] : H.Items) Items.push_back({{"cid", Cid}, {"optional", Opt}});
             json Out = {{"batch", Items}};
-            if (Command::Bool(A, "wait", false))
+            if (Command::Bool(A, "until-done", false))
             {
                 std::string Err;
                 const bool Ok = A.contains("timeout") ? IpfsWrapper::WaitBatch(H, static_cast<int>(Command::Int(A, "timeout")), &Err)

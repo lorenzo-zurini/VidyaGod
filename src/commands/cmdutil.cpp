@@ -1,6 +1,8 @@
 #include "cmdutil.h"
 #include "appmodel.h"
 #include "jsonoperations.h"
+#include "packageeditor.h"
+#include "packageeditormodel.h"
 
 #include <QDir>
 #include <QFile>
@@ -76,6 +78,33 @@ std::vector<std::string> List(const json &Args, const char *Key)
     std::stringstream In(V.get<std::string>());
     for (std::string X; std::getline(In, X, ',');) if (!X.empty()) Out.push_back(X);
     return Out;
+}
+
+std::string Canon(const std::filesystem::path &P)
+{
+    std::error_code Ec;
+    return std::filesystem::weakly_canonical(P, Ec).string();
+}
+
+std::map<std::string, std::unique_ptr<PackageEditorModel>> &BuildSessions()
+{
+    static std::map<std::string, std::unique_ptr<PackageEditorModel>> K;   // the app's sessions, across calls
+    return K;
+}
+
+BuildSession OpenBuild(Command::Context &C, const std::string &Pkg)
+{
+    const std::string P = Canon(PackageDir(C, Pkg, false));
+    if (PackageEditor *E = PackageEditor::live(); E && E->model() && Canon(E->bundleDir().toStdString()) == P)
+        return {nullptr, E->model(), "editor"};
+    auto &K = BuildSessions();
+    if (const auto It = K.find(P); It != K.end()) return {nullptr, It->second.get(), "session"};
+    auto M = std::make_unique<PackageEditorModel>(C.Config, nullptr);
+    M->initPackage(QString::fromStdString(P), nullptr);
+    if (C.Live) { PackageEditorModel *Raw = M.get(); K[P] = std::move(M); return {nullptr, Raw, "session"}; }
+    BuildSession S{std::move(M), nullptr, "this call"};
+    S.M = S.Own.get();
+    return S;
 }
 
 } // namespace CmdUtil

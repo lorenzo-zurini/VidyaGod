@@ -1,4 +1,6 @@
 #include "cliapp.h"
+
+#include <fstream>
 #include "apppaths.h"
 #include "command.h"
 #include "commandserver.h"
@@ -252,6 +254,8 @@ void PrintCommandHelp(const Command::Spec &S, const Style &St)
         O << "\n" << St.B("Options:") << "\n";
         for (const auto *A : Opt) Row("--" + A->Name + (A->Kind == Command::Type::Bool ? "" : " " + Placeholder(*A)), *A);
     }
+    if (std::any_of(S.Args.begin(), S.Args.end(), [](const Command::Arg &A) { return A.Kind == Command::Type::Json; }))
+        O << "\n" << St.Dim("A JSON value is given as the JSON itself, as @file (that file's JSON), or as - (read from stdin).") << "\n";
     if (!S.Examples.empty())
     {
         O << "\n" << St.B("Examples:") << "\n";
@@ -287,7 +291,16 @@ json ParseArgs(const Command::Spec &S, const std::vector<std::string> &Rest)
             throw Command::BadArgs(Placeholder(A) + " must be on or off, not '" + V + "'");
         case Command::Type::Json:
         {
-            json J = json::parse(V, nullptr, false);
+            // @path: the JSON is that file's (a node, a list of targets); - is stdin.
+            std::string Text = V;
+            if (V.size() > 1 && V[0] == '@')
+            {
+                std::ifstream In(V.substr(1), std::ios::binary);
+                if (!In) throw Command::BadArgs(Placeholder(A) + ": cannot read " + V.substr(1));
+                Text.assign(std::istreambuf_iterator<char>(In), std::istreambuf_iterator<char>());
+            }
+            else if (V == "-") Text.assign(std::istreambuf_iterator<char>(std::cin), std::istreambuf_iterator<char>());
+            json J = json::parse(Text, nullptr, false);
             if (J.is_discarded()) throw Command::BadArgs(Placeholder(A) + " must be JSON");
             return J;
         }

@@ -30,8 +30,7 @@ struct ContainerParams;
 // End() tears the runtime down. Authoring persistence is fully independent of the package's declared Persist, so a
 // finished package stays pristine.
 //
-// Synchronous (matches the editor's existing RunInNode, which blocks the GUI during a build/run); a wait cursor is
-// the caller's job. The platform-agnostic file capture means the same session serves wine installs and, e.g., an
+// Synchronous: it blocks while it builds and runs; a wait cursor is the caller's job. The platform-agnostic file capture means the same session serves wine installs and, e.g., an
 // emulator's generated config — wine-only affordances are gated on PrefixGenerate().
 // ---------------------------------------------------------------------------
 class AuthoringSession

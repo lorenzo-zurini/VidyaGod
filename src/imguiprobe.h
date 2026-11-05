@@ -4,11 +4,18 @@
 //input - the canvas has no widgets for accessibility to see. Off unless VG_UI_PROBE names the file each frame's items
 //are written to; nothing is recorded or written otherwise.
 
+#include <string>
+
 struct ImGuiContext;
 
 namespace ImGuiProbe
 {
     bool Enabled();
+    //Record from now on (or stop), whatever VG_UI_PROBE says: the CLI's `canvas` commands read the frame in-process.
+    void SetRecording(bool On);
+    //The items of the frame recorded last: {id, label (as shown), name (the full ImGui label), window, rect [x0, y0,
+    //x1, y1] in the canvas's coordinates, status}, in layout order; and that frame's number.
+    std::string FrameJson();
     //Before ImGui::NewFrame(): forget the last frame's items and turn the hooks on.
     void BeginFrame(ImGuiContext * Ctx);
     //What a headless test finds controls by: the Nth item of the frame recorded last whose shown label (the part before "##"; an unlabeled input answers to its

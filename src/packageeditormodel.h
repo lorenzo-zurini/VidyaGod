@@ -108,7 +108,6 @@ public:
     std::vector<std::string> KnownPlatforms();
 
     // ---- authoring ----------------------------------------------------------------------------------------------
-    void RunInNode(const std::string & NodeId, const std::string & Exe = "");
     std::vector<std::string> bundleNodeIds() const;                // this package's node LABELs (target picker)
     //Create a node from a payload containing `Parents` (handles), as a new draft; returns its handle. A capture IS a
     //node — one layer of one type — so a capture creates one rather than appending into somebody else's.
