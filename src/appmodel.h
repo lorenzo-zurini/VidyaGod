@@ -139,6 +139,13 @@ public:
     bool isInVlan(const QString & peer) const;
     void setInVlan(const QString & peer, bool on);
     void acceptPeer(const QString & peer);
+    // The friendship itself, as the Network tab and the CLI act on it: ask a peer, set our nickname, and end a
+    // friendship three ways (decline an incoming request, block, remove) — each forgets both directions of sharing.
+    bool sendFriendRequest(const QString & code, std::string * error = nullptr);
+    bool setNickname(const QString & nick, std::string * error = nullptr);
+    void declineFriend(const QString & peer);
+    void blockFriend(const QString & peer);
+    void removeFriend(const QString & peer);
     bool autoAcceptEnabled() const;
     void setAutoAcceptEnabled(bool on);
     // The "New Peers" defaults row, applied the instant a peer is accepted. key ∈ {receive,presence,vlan}.

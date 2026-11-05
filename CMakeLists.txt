@@ -7,6 +7,13 @@ set(CMAKE_EXPORT_COMPILE_COMMANDS ON CACHE BOOL "" FORCE)
 
 project(VidyaGod)
 
+# `VidyaGod version`: the commit it was configured from (re-run cmake to refresh it).
+execute_process(COMMAND git describe --always --dirty --tags WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
+                OUTPUT_VARIABLE VIDYAGOD_GIT_VERSION OUTPUT_STRIP_TRAILING_WHITESPACE ERROR_QUIET)
+if(NOT VIDYAGOD_GIT_VERSION)
+    set(VIDYAGOD_GIT_VERSION "dev")
+endif()
+
 # An EMPTY build type means gcc gets NO -O flag at all, and that is exactly what both dev machines were running:
 # the entire app at -O0, silently, for months. Measured cost on the real catalog (2862 nodes): a launch resolve
 # 1400ms -> 190ms, --validate-nodes 49.6s -> 14.8s just from turning the optimizer on. CI always passes an explicit
@@ -144,6 +151,17 @@ set(SHARED_SOURCES
     src/cli/climaintain.cpp
     src/cli/cliaudit.cpp
     src/cli/clilaunch.cpp
+
+    # the CLI app: every function and every view of the program by name (standing rule — see src/command.h)
+    src/command.h
+    src/command.cpp
+    src/commandserver.h
+    src/commandserver.cpp
+    src/cli/cliapp.h
+    src/cli/cliapp.cpp
+    src/commands/cmd_friends.cpp
+    src/commands/cmd_catalog.cpp
+    src/commands/cmd_ui.cpp
 
     src/varsubst.h
     src/varsubst.cpp
@@ -353,6 +371,7 @@ if(WIN32)
 endif()
 target_include_directories(vidyagod_objs PUBLIC src VidyaGodFS/src)   # src: the cli/ TUs include engine headers bare
 target_compile_options(vidyagod_objs PRIVATE ${VG_WARNINGS} $<$<BOOL:${VIDYAGOD_WERROR}>:-Werror>)
+target_compile_definitions(vidyagod_objs PRIVATE VIDYAGOD_VERSION="${VIDYAGOD_GIT_VERSION}")
 if(VIDYAGOD_SANITIZE)
     target_compile_options(vidyagod_objs PRIVATE -fsanitize=address,undefined -fno-omit-frame-pointer)
 endif()
@@ -524,6 +543,11 @@ add_gui_test(test_deltatree)
 add_gui_test(test_diagnostics)
 add_gui_test(test_fileedits)
 add_gui_test(test_manifestmodel)
+
+# The standing rule: every function of every module is drivable from the CLI. A function with no command (and no
+# reasoned exclusion) that is not already listed as debt fails the build's tests; paid debt must leave the baseline.
+add_test(NAME cli_coverage COMMAND python3 -I ${CMAKE_SOURCE_DIR}/tools/cli_coverage/cli_coverage.py
+         --binary $<TARGET_FILE:VidyaGod> --build ${CMAKE_BINARY_DIR})
 add_gui_test(test_vfsmount)
 add_gui_test(test_friends)
 add_gui_test(test_sandbox)

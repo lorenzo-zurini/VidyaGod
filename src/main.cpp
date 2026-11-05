@@ -1,6 +1,8 @@
 #include "main.h"
 #include <iostream>
 #include "cli/climodes.h"
+#include "cli/cliapp.h"      // the CLI app: `VidyaGod <group> <command>`
+#include "commandserver.h"   // the running app's command socket
 #include "apppaths.h"
 #include "platform/platform.h"
 #include "commonutils.h"
@@ -78,6 +80,37 @@ protected:
 
 #include <QSurfaceFormat>
 
+//Data dir: normally ~/.VidyaGod, but PORTABLE mode keeps everything beside the app so the whole thing travels on a USB
+//stick. The "app location" the user sees is the AppImage file ($APPIMAGE) when running as one, else the binary's own
+//directory. Portable is enabled by placing either a "portable" marker file or a "VidyaGod_data" directory next to the
+//app. --data-dir (Override) wins over both (testing: a second instance with its own repo + lock beside the main one).
+static QString ResolveDataPath(const std::string &Override, bool *Portable)
+{
+    *Portable = false;
+    if (!Override.empty()) return QString::fromStdString(Override);
+    std::filesystem::path AppLocation;
+    if (const char *AppImagePath = ::getenv("APPIMAGE"))
+        AppLocation = std::filesystem::path(AppImagePath).parent_path();
+    else
+    {
+        std::filesystem::path Self = Platform::SelfExe();
+        if (!Self.empty()) AppLocation = Self.parent_path();
+    }
+    if (!AppLocation.empty())
+    {
+        std::error_code Ec;
+        std::filesystem::path PortableData = AppLocation / "VidyaGod_data";
+        if (std::filesystem::exists(AppLocation / "portable", Ec) ||
+            std::filesystem::exists(AppLocation / "portable.txt", Ec) ||
+            std::filesystem::is_directory(PortableData, Ec))
+        {
+            *Portable = true;
+            return QString::fromStdString(PortableData.string());
+        }
+    }
+    return QDir::homePath() + "/.VidyaGod";
+}
+
 int main(int argc, char *argv[])
 {
     // The package editor hosts Dear ImGui in a QOpenGLWidget; ImGui's shaders need GL 3.2+, and Qt's default
@@ -95,6 +128,24 @@ int main(int argc, char *argv[])
     //PID ~1 of a throwaway namespace, not a normal VidyaGod run.
     if (SandboxLayer::IsSandboxInit(argc, argv))
         return SandboxLayer::RunSandboxInit(argc, argv);
+
+    //THE CLI APP: `VidyaGod <group> <command> …`, `VidyaGod help` — everything the program does and shows, by name
+    //(cliapp.h). It runs the command inside the app when one is up on the data dir (its command socket), else here.
+    if (CliApp::Wants(argc, argv))
+    {
+        CliApp::Hooks H;
+        H.DataDir = [](const std::string &Override) {
+            bool Portable = false;
+            const QString P = ResolveDataPath(Override, &Portable);
+            AppPaths::SetDataRoot(QDir(P).absolutePath().toStdString());
+            AppPaths::SetMode(!Override.empty() ? AppPaths::Mode::CliPaths
+                              : Portable        ? AppPaths::Mode::Portable
+                                                : AppPaths::Mode::Normal);
+            return P;
+        };
+        H.InitConfig = &InitializeGlobalConfigJSON;
+        return CliApp::Main(argc, argv, H);
+    }
 
     //Parse command line arguments and initialize RuntimeParameters struct.
     //Must happen before QApplication so headless runs never touch the display.
@@ -178,37 +229,8 @@ int main(int argc, char *argv[])
         }
     }
 
-    //Data dir: normally ~/.VidyaGod, but PORTABLE mode keeps everything beside the app so the whole
-    //thing travels on a USB stick. The "app location" the user sees is the AppImage file ($APPIMAGE) when
-    //running as one, else the binary's own directory. Portable is enabled by placing either a "portable"
-    //marker file or a "VidyaGod_data" directory next to the app.
-    std::filesystem::path AppLocation;
-    if (const char *AppImagePath = ::getenv("APPIMAGE"))
-        AppLocation = std::filesystem::path(AppImagePath).parent_path();
-    else
-    {
-        std::filesystem::path Self = Platform::SelfExe();
-        if (!Self.empty()) AppLocation = Self.parent_path();
-    }
-
-    QString AppDataPath = QDir::homePath() + "/.VidyaGod";
     bool Portable = false;
-    if (!AppLocation.empty())
-    {
-        std::error_code Ec;
-        std::filesystem::path PortableData = AppLocation / "VidyaGod_data";
-        if (std::filesystem::exists(AppLocation / "portable", Ec) ||
-            std::filesystem::exists(AppLocation / "portable.txt", Ec) ||
-            std::filesystem::is_directory(PortableData, Ec))
-        {
-            AppDataPath = QString::fromStdString(PortableData.string());
-            Portable = true;
-        }
-    }
-
-    //--data-dir override (testing: run a second instance with its own repo + lock alongside the main one).
-    if (!LaunchParameters.DataDir.empty())
-        AppDataPath = QString::fromStdString(LaunchParameters.DataDir);
+    const QString AppDataPath = ResolveDataPath(LaunchParameters.DataDir, &Portable);
 
     //Find and create AppDataDir. mkpath is a no-op if it already exists.
     QDir AppDataDir(AppDataPath);
@@ -374,6 +396,15 @@ int main(int argc, char *argv[])
     }
 
     MainWindow MainWindow(&GlobalConfigJSON, &AppDataDir);
+    //The command socket: `VidyaGod <group> <command>` from any terminal runs here, on this window's live state.
+    Command::Context CmdCtx;
+    CmdCtx.Config = &GlobalConfigJSON;
+    CmdCtx.AppDataDir = &AppDataDir;
+    CmdCtx.Model = MainWindow.model();
+    CmdCtx.Window = &MainWindow;
+    CommandServer Commands(CmdCtx);
+    if (std::string CErr; !Commands.Start(AppDataDir.absolutePath().toStdString(), &CErr))
+        LogWarn("main.cpp", "the command socket is not up (" + CErr + ") — CLI commands cannot reach this window");
     MainWindow.startup(LaunchParameters.StartInTray);   // show(), or come up hidden if --tray / Start-in-tray / remembered
     return Application.exec();
 }

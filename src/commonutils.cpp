@@ -44,6 +44,8 @@ void ClearLogCallback()
 //If a LogCallback has been installed via SetLogCallback(), it is also invoked with the
 //raw (unformatted) level/context/message so UI components can display colored log lines.
 static thread_local int g_Quiet = 0;
+static std::atomic<bool> g_EchoStderr{true};   // the CLI app's default: off — its stdout is the answer, --verbose turns it on
+void SetLogEcho(bool On) { g_EchoStderr = On; }
 QuietLog::QuietLog()  { ++g_Quiet; }
 QuietLog::~QuietLog() { --g_Quiet; }
 
@@ -74,7 +76,7 @@ void Log(LogLevel level, const std::string& context, const std::string& message)
     //LOGS GO TO STDERR. stdout is reserved for machine-readable output (`--cid` prints "<cid>\t<path>", the
     //remint prints its CID table), so those verbs stay pipeable — mixing the two made `--cid … | cut` return
     //timestamps instead of a CID.
-    std::cerr << timebuf << " " << color << "[" << label << "] " << context << " " << message << reset << std::endl;
+    if (g_EchoStderr) std::cerr << timebuf << " " << color << "[" << label << "] " << context << " " << message << reset << std::endl;
 
     if (g_Quiet) return;                                    // a look-ahead (QuietLog): stderr only
 

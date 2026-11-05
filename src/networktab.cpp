@@ -151,7 +151,7 @@ void NetworkTab::addPeerClicked()
     const QString Code = AddEdit->text().trimmed();
     if (Code.isEmpty()) return;
     std::string Err;
-    if (IpfsWrapper::FriendAdd(Code.toStdString(), std::string(), &Err)) AddEdit->clear();
+    if (Model.sendFriendRequest(Code, &Err)) AddEdit->clear();
     else QMessageBox::warning(this, "Add peer", QString::fromStdString(Err.empty() ? "Could not send the request." : Err));
     scheduleRefresh();
 }
@@ -159,7 +159,7 @@ void NetworkTab::addPeerClicked()
 void NetworkTab::setNickClicked()
 {
     std::string Err;
-    if (!IpfsWrapper::SetProfile(NickEdit->text().trimmed().toStdString(), std::string(), &Err))
+    if (!Model.setNickname(NickEdit->text(), &Err))
         QMessageBox::warning(this, "Nickname", QString::fromStdString(Err.empty() ? "Could not set the nickname (is networking on?)." : Err));
     NickEdited = false;
     scheduleRefresh();
@@ -295,7 +295,7 @@ void NetworkTab::refresh()
                         "Remove this friend? You'll stop sharing with each other and their shared games leave your "
                         "catalog. Games you've already installed from them are kept.",
                         QMessageBox::Yes | QMessageBox::No, QMessageBox::No) == QMessageBox::Yes)
-                { IpfsWrapper::FriendRemove(Peer.toStdString()); Model.forgetFriend(Peer); }
+                Model.removeFriend(Peer);
             }
             scheduleRefresh();   // (No → the rebuild restores the checkbox to its accepted state)
         });
@@ -316,13 +316,13 @@ void NetworkTab::refresh()
         auto * M = new QMenu(Menu);
         if (Incoming)
             connect(M->addAction("Decline"), &QAction::triggered, this, [this, Peer]{
-                IpfsWrapper::FriendDecline(Peer.toStdString()); Model.forgetFriend(Peer); scheduleRefresh();
+                Model.declineFriend(Peer); scheduleRefresh();
             });
         connect(M->addAction("Block"), &QAction::triggered, this, [this, Peer]{
-            IpfsWrapper::FriendBlock(Peer.toStdString()); Model.forgetFriend(Peer); scheduleRefresh();
+            Model.blockFriend(Peer); scheduleRefresh();
         });
         connect(M->addAction("Remove"), &QAction::triggered, this, [this, Peer]{
-            IpfsWrapper::FriendRemove(Peer.toStdString()); Model.forgetFriend(Peer); scheduleRefresh();
+            Model.removeFriend(Peer); scheduleRefresh();
         });
         Menu->setMenu(M);
         Table->setCellWidget(Row, ActCol, Menu);

@@ -39,6 +39,9 @@ public:
     //state says so. Called by main() instead of show(), so a tray start never flashes the window.
     void startup(bool forceTray = false);
 
+    //The app's model: what the command socket and the CLI drive (Command::Context).
+    AppModel * model() const { return Model; }
+
 protected:
     void closeEvent(QCloseEvent * e) override;     // close → hide to tray (if enabled), else quit
     void changeEvent(QEvent * e) override;         // minimize → hide to tray (if enabled)

@@ -122,6 +122,16 @@ public:
     //the per-tick download-progress overlay (calling refreshVisuals there re-scales every cover and pegs the CPU).
     void repaintCards();
 
+    //The CLI's view of the grid (`VidyaGod ui show <view>`): every card as shown — its title, tile, badges, the
+    //secondaries nested under it, its section — and the sections. Exactly what is painted, not what the model holds.
+    nlohmann::ordered_json stateJson() const;
+    //The card a CLI names: its tile UID, else its title (exact, then a unique case-insensitive part). -1: none.
+    int cardIndex(const QString & KeyOrTitle) const;
+    //What a click on card I does (Enter/Space too): play it (Library), download or cancel it (Catalog).
+    void activateCardAt(int I) { activateCard(I); }
+    //What a right-click on card I does: its context menu (Library).
+    void requestCardMenu(int I);
+
 signals:
     void downloadRequested(LibraryGameCard * card);   // Available tab: a card was clicked to import it
     void cancelRequested(LibraryGameCard * card);      // Available tab: a downloading card was clicked to cancel

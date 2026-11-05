@@ -27,6 +27,8 @@ bool VerboseLogging();
 //this callback with the same level/context/message so UI components can display live logs.
 using LogCallback = std::function<void(LogLevel, const std::string&, const std::string&)>;
 void SetLogCallback(LogCallback callback);
+//Echo log lines to stderr (default on). The CLI app turns it off unless --verbose: its output is the command's.
+void SetLogEcho(bool On);
 
 //While one lives on a thread, that thread's log lines go to stderr only: not to the UI sink, not into a launch's
 //Diagnostics tally. For work that only looks ahead (the launch window reading options back through a resolve), whose

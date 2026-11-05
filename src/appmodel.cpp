@@ -1112,3 +1112,30 @@ void AppModel::importRunner(const QString & runnerNodeId)
     emit runnerImportRequested(runnerNodeId);
 }
 
+bool AppModel::sendFriendRequest(const QString & code, std::string * error)
+{
+    return IpfsWrapper::FriendAdd(code.trimmed().toStdString(), std::string(), error);
+}
+
+bool AppModel::setNickname(const QString & nick, std::string * error)
+{
+    return IpfsWrapper::SetProfile(nick.trimmed().toStdString(), std::string(), error);
+}
+
+void AppModel::declineFriend(const QString & peer)
+{
+    IpfsWrapper::FriendDecline(peer.toStdString());
+    forgetFriend(peer);
+}
+
+void AppModel::blockFriend(const QString & peer)
+{
+    IpfsWrapper::FriendBlock(peer.toStdString());
+    forgetFriend(peer);
+}
+
+void AppModel::removeFriend(const QString & peer)
+{
+    IpfsWrapper::FriendRemove(peer.toStdString());
+    forgetFriend(peer);
+}

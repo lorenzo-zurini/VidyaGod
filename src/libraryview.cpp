@@ -670,4 +670,53 @@ void LibraryView::activateCard(int i)
     else              Cards->at(i)->play();
 }
 
+nlohmann::ordered_json LibraryView::stateJson() const
+{
+    nlohmann::ordered_json Out = nlohmann::ordered_json::object();
+    const auto CardJson = [](const LibraryGameCard *C) {
+        nlohmann::ordered_json J = {{"title", C->GameTitle.toStdString()}, {"tile", C->FaceUid}, {"family", C->RepUid},
+                                    {"editions", C->GroupNodeIds}, {"local", C->Local}, {"golden", C->Golden},
+                                    {"downloading", C->Downloading}};
+        if (C->Downloading && C->DownloadPercent >= 0) J["percent"] = C->DownloadPercent;
+        if (!C->SeriesName.isEmpty()) J["series"] = C->SeriesName.toStdString();
+        return J;
+    };
+    nlohmann::ordered_json Cards = nlohmann::ordered_json::array();
+    for (int I = 0; this->Cards && I < this->Cards->count(); ++I)
+    {
+        const LibraryGameCard *C = this->Cards->at(I);
+        nlohmann::ordered_json J = CardJson(C);
+        J["shown"] = !Rects.value(I).isNull();   // a card in a collapsed section is in the pool, not painted
+        for (const Group &G : Groups) if (I >= G.first && I <= G.last) J["section"] = G.name.toStdString();
+        if (!C->Secondaries.empty())
+        {
+            J["secondaries"] = nlohmann::ordered_json::array();
+            for (const LibraryGameCard *S : C->Secondaries) J["secondaries"].push_back(CardJson(S));
+        }
+        Cards.push_back(std::move(J));
+    }
+    Out["cards"] = std::move(Cards);
+    nlohmann::ordered_json Sections = nlohmann::ordered_json::array();
+    for (const Group &G : Groups)
+        Sections.push_back({{"name", G.name.toStdString()}, {"cards", G.last - G.first + 1}, {"collapsed", G.collapsed}});
+    Out["sections"] = std::move(Sections);
+    if (!this->Cards || this->Cards->isEmpty()) Out["empty_message"] = EmptyMessage.toStdString();
+    return Out;
+}
 
+int LibraryView::cardIndex(const QString & KeyOrTitle) const
+{
+    if (!Cards) return -1;
+    for (int I = 0; I < Cards->count(); ++I) if (Cards->at(I)->GameKey == KeyOrTitle) return I;
+    for (int I = 0; I < Cards->count(); ++I) if (Cards->at(I)->GameTitle == KeyOrTitle) return I;
+    int Found = -1;
+    for (int I = 0; I < Cards->count(); ++I)
+        if (Cards->at(I)->GameTitle.contains(KeyOrTitle, Qt::CaseInsensitive)) { if (Found >= 0) return -2; Found = I; }
+    return Found;
+}
+
+void LibraryView::requestCardMenu(int I)
+{
+    if (!Cards || I < 0 || I >= Cards->count()) return;
+    emit cardMenuRequested(Cards->at(I), viewport()->mapToGlobal(Rects.value(I).center()));
+}

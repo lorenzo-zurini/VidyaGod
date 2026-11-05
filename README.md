@@ -256,7 +256,26 @@ one works, on both platforms, from nothing. Keep the [Build](#build) block in st
 Add a source CID, download a game, launch it. Author or import your own via the Library toolbar (**Package Editor** /
 **Add Local Package**); locally-added packages are badged **LOCAL** until published.
 
-### CLI (headless)
+### The command line
+
+Everything the app does and shows is a command — git-style, with help at every level:
+
+```sh
+VidyaGod help                                 # the groups
+VidyaGod help friends                         # a group's commands
+VidyaGod friends share LGZ-MacBook VidyaGod   # do something
+VidyaGod ui show Networking                   # see exactly what a view shows (tables, checkboxes, cards)
+VidyaGod catalog shelf --state downloadable --json
+eval "$(VidyaGod completion bash)"            # completion (also zsh, fish)
+```
+
+With the app open on the data dir, a command runs **inside it**, on its live model and windows (the command socket
+beside the data dir's lock); otherwise it runs in its own process, with the model — and, for `ui` commands, the
+windows, offscreen — brought up for the call. Output is a table for people; `--json` gives the exact result. Exit
+codes: 0 done, 1 the command failed, 2 a usage error, 3 the app could not be reached. `ui tree` is the whole state of
+every window; `ui click / check / set / cell / tab / card / press` act on any control by name.
+
+### CLI (headless flags)
 
 **Running and inspecting**
 
@@ -335,5 +354,10 @@ on download.
   Pinning a predicate proves nothing about its call sites; a unit test that sets its own input by hand proves nothing
   about the path that produces that input. Both have shipped silent data loss here behind a green suite.
 - **Every commit is reviewed adversarially before it is pushed** (`.claude/agents/adversary.md`).
+- **Everything is drivable — and visible — from the command line.** Every function of every module is reached by a
+  command (`src/command.h`; commands live in `src/commands/`), by the same code path the GUI takes, never a copy of it.
+  A view's exact state is a command too. `ctest` runs `tools/cli_coverage/cli_coverage.py`: it fails on a function no
+  command covers that is neither excluded with its reason (`exclusions.txt`) nor recorded as debt (`baseline.txt`,
+  which only shrinks). New code ships with its command.
 - Commit straight to `main`. Keep the [MetaPackageFormat](MetaPackageFormat) spec in sync whenever the format
   changes — the spec is normative, this implementation follows it.

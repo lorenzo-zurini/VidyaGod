@@ -1,0 +1,31 @@
+# Functions that cannot meaningfully be a command, each with its reason (tools/cli_coverage/cli_coverage.py).
+# One per line:   <qualified name, an fnmatch pattern, {constructor} or {destructor}>   # <why it is not a command>
+# A pattern that matches nothing fails the check: keep this list exact.
+
+# ---- object lifetime: reached by every command that brings the object up or down ----
+{constructor}                # a constructor: runs when a command brings its object up (the model, the windows, a dialog)
+{destructor}                 # a destructor: runs when its owner goes
+
+# ---- Qt's own callbacks: Qt calls them; what they do is seen with `ui tree` / `ui screenshot`, caused with `ui …` ----
+*::resizeEvent               # Qt resize handler: layout follows the window; seen in `ui tree`
+*::showEvent                 # Qt show handler: runs when `ui tab` / a command shows the widget
+*::hideEvent                 # Qt hide handler: runs when a widget is hidden
+*::closeEvent                # Qt close handler: runs when a window is closed (`ui press`, quitting)
+*::changeEvent               # Qt change handler (minimise, style, language): Qt calls it on a window-state change
+*::keyPressEvent             # Qt key handler: the keys it handles are the actions `ui …` takes directly
+*::keyReleaseEvent           # Qt key handler: as keyPressEvent
+*::mousePressEvent           # Qt mouse handler: the clicks it handles are `ui click` / `ui card` / `ui cell`
+*::mouseReleaseEvent         # Qt mouse handler: as mousePressEvent
+*::mouseDoubleClickEvent     # Qt mouse handler: as mousePressEvent (`ui cell --activate`)
+*::mouseMoveEvent            # Qt hover/drag handler: hover is cosmetic; drags are their own commands
+*::wheelEvent                # Qt wheel handler: scrolling a view changes nothing `ui tree` reports
+*::leaveEvent                # Qt hover handler: cosmetic
+*::focusInEvent              # Qt focus handler: focus follows the actions `ui …` takes
+*::focusOutEvent             # Qt focus handler: as focusInEvent
+*::dragEnterEvent            # Qt drag-and-drop handler: what a drop does is its own command
+*::dropEvent                 # Qt drag-and-drop handler: as dragEnterEvent
+*::viewportEvent             # Qt viewport dispatcher: forwards to the handlers above
+*::scrollContentsBy          # Qt scroll callback: scrolling changes nothing `ui tree` reports
+*::eventFilter               # Qt event filter: intercepts the events above for another object
+*::event                     # Qt event dispatcher: forwards to the handlers above
+
