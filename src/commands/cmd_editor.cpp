@@ -237,7 +237,7 @@ VG_COMMANDS
         "under x,y and the world point there.",
         { Pos("x", "x", Type::Int), Pos("y", "y", Type::Int), Flag("click", "click there"), Flag("right", "a right click"), Flag("double", "a double click"),
           Opt("drag-to", "x,y to drag to"), Flag("move", "only move there"), Opt("wheel", "notches to scroll", Type::Int) },
-        { "canvas mouse 400 300 --click", "canvas mouse 400 300 --drag-to 600 300", "canvas mouse 400 300 --wheel 2" },
+        { "canvas mouse 400 300 --click", "canvas mouse 400 300 --drag-to 600,300", "canvas mouse 400 300 --wheel 2" },
         { "PkgCanvas::nodeAt", "PkgCanvas::screenToWorld" }, Needs::Ui, false,
         [](Command::Context &, const json &A) {
             const QPointF P(static_cast<double>(Command::Int(A, "x")), static_cast<double>(Command::Int(A, "y")));
@@ -245,11 +245,9 @@ VG_COMMANDS
             float Wx = 0, Wy = 0;
             Canvas().screenToWorld(static_cast<float>(P.x()), static_cast<float>(P.y()), Wx, Wy);
             json Out = {{"node", Canvas().nodeAt(static_cast<float>(P.x()), static_cast<float>(P.y()))}, {"world", {Wx, Wy}}};
-            if (A.contains("drag-to"))
+            if (double Qx = 0, Qy = 0; Point(A, "drag-to", Qx, Qy))
             {
-                const auto T = List(A, "drag-to");
-                if (T.size() != 2) throw Command::BadArgs("--drag-to takes x,y");
-                const QPointF Q(std::stod(T[0]), std::stod(T[1]));
+                const QPointF Q(Qx, Qy);
                 Mouse(W, QEvent::MouseMove, P, Qt::NoButton, Qt::NoButton);
                 Settle();
                 Mouse(W, QEvent::MouseButtonPress, P, Qt::LeftButton, Qt::LeftButton);
@@ -318,13 +316,8 @@ VG_COMMANDS
             if (A.contains("select")) Cv.select(Handle(Command::Str(A, "select")), Command::Bool(A, "frame", false));
             if (Command::Bool(A, "frame-all", false)) Cv.frameAll();
             if (Command::Bool(A, "frame-selection", false)) Cv.frameSelection();
-            if (A.contains("zoom")) Cv.setZoom(std::stof(Command::Str(A, "zoom")));
-            if (A.contains("camera"))
-            {
-                const auto P = List(A, "camera");
-                if (P.size() != 2) throw Command::BadArgs("--camera takes x,y");
-                Cv.setCamera(std::stof(P[0]), std::stof(P[1]));
-            }
+            if (A.contains("zoom")) Cv.setZoom(static_cast<float>(Number(Command::Str(A, "zoom"), "--zoom")));
+            if (double X = 0, Y = 0; Point(A, "camera", X, Y)) Cv.setCamera(static_cast<float>(X), static_cast<float>(Y));
             if (A.contains("expand")) Cv.setExpanded(Handle(Command::Str(A, "expand")), true);
             if (A.contains("fold")) Cv.setExpanded(Handle(Command::Str(A, "fold")), false);
             if (Command::Bool(A, "tidy", false)) Cv.tidyLayout();
@@ -349,9 +342,10 @@ VG_COMMANDS
             json Out = json::object();
             if (A.contains("add"))
             {
-                const auto P = List(A, "at");
+                double X = 0, Y = 0;
+                Point(A, "at", X, Y);
                 const std::string Ref = A.contains("ref") ? Handle(Command::Str(A, "ref")) : std::string();
-                Out["added"] = Cv.addNode(Command::Str(A, "add"), P.size() == 2 ? std::stof(P[0]) : 0.f, P.size() == 2 ? std::stof(P[1]) : 0.f, Ref);
+                Out["added"] = Cv.addNode(Command::Str(A, "add"), static_cast<float>(X), static_cast<float>(Y), Ref);
             }
             if (A.contains("carry"))
             {
@@ -359,8 +353,10 @@ VG_COMMANDS
                 const auto Fc = F.rfind(':'), Tc = T.rfind(':');
                 if (Fc == std::string::npos || T.empty()) throw Command::BadArgs("--carry NODE:LAYER --to NODE[:AT]");
                 std::string Why;
-                const bool Ok = Cv.MoveLayer(Handle(F.substr(0, Fc)), std::stoi(F.substr(Fc + 1)), Handle(Tc == std::string::npos ? T : T.substr(0, Tc)),
-                                             Tc == std::string::npos ? -1 : std::stoi(T.substr(Tc + 1)), Command::Bool(A, "copy", false), &Why);
+                const bool Ok = Cv.MoveLayer(Handle(F.substr(0, Fc)), static_cast<int>(Number(F.substr(Fc + 1), "--carry's LAYER")),
+                                             Handle(Tc == std::string::npos ? T : T.substr(0, Tc)),
+                                             Tc == std::string::npos ? -1 : static_cast<int>(Number(T.substr(Tc + 1), "--to's AT")),
+                                             Command::Bool(A, "copy", false), &Why);
                 if (!Ok) throw std::runtime_error(Why);
                 Out["carried"] = true;
             }

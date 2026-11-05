@@ -29,6 +29,10 @@ const Node *NodeOf(const NodeIndex &Idx, const std::string &Id);
 std::filesystem::path PackageDir(Command::Context &C, const std::string &Q, bool Received = true);
 // "a,b,c" or a JSON array, as a list of strings ("" / absent: none).
 std::vector<std::string> List(const json &Args, const char *Key);
+// A number given as text, all of it ("12.5", never "12abc") — BadArgs naming What when it is not one.
+double Number(const std::string &V, const std::string &What);
+// An "x,y" option: false when it is absent, BadArgs when it is not two numbers.
+bool Point(const json &Args, const char *Key, double &X, double &Y);
 // ---- build sessions: the package builder's document a command acts on (cmd_build, cmd_author) ----
 // The open editor's model when it has the package open; else the app's session for it (kept until `build close`);
 // else, run on its own, one for this call (Own holds it).

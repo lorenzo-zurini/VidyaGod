@@ -1,6 +1,8 @@
 #include "command.h"
 
+#include <algorithm>
 #include <set>
+#include <vector>
 
 #include <cstdio>
 #include <cstdlib>
@@ -98,6 +100,32 @@ static const nlohmann::ordered_json &Need(const nlohmann::ordered_json &Args, co
 {
     if (!Args.contains(Key)) throw BadArgs(std::string("missing argument '") + Key + "'");
     return Args[Key];
+}
+
+namespace
+{
+size_t Distance(const std::string &A, const std::string &B)
+{
+    std::vector<size_t> Prev(B.size() + 1), Cur(B.size() + 1);
+    for (size_t J = 0; J <= B.size(); ++J) Prev[J] = J;
+    for (size_t I = 1; I <= A.size(); ++I)
+    {
+        Cur[0] = I;
+        for (size_t J = 1; J <= B.size(); ++J)
+            Cur[J] = std::min({ Prev[J] + 1, Cur[J - 1] + 1, Prev[J - 1] + (A[I - 1] == B[J - 1] ? 0 : 1) });
+        std::swap(Prev, Cur);
+    }
+    return Prev[B.size()];
+}
+}
+
+std::string Nearest(const std::string &W, const std::vector<std::string> &Of)
+{
+    std::string Best;
+    size_t D = std::string::npos;
+    for (const std::string &C : Of)
+        if (const size_t X = Distance(W, C); X < D) { D = X; Best = C; }
+    return D <= std::max<size_t>(2, W.size() / 3) ? Best : std::string();
 }
 
 std::string Str(const nlohmann::ordered_json &Args, const char *Key)

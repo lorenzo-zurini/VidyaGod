@@ -264,7 +264,7 @@ Everything the app does and shows is a command — git-style, with help at every
 VidyaGod help                                 # the groups
 VidyaGod help friends                         # a group's commands
 VidyaGod friends share LGZ-MacBook VidyaGod   # do something
-VidyaGod ui show Networking                   # see exactly what a view shows (tables, checkboxes, cards)
+VidyaGod ui show Peers                        # see exactly what a view shows (tables, checkboxes, cards)
 VidyaGod catalog shelf --state downloadable --json
 eval "$(VidyaGod completion bash)"            # completion (also zsh, fish)
 ```
@@ -273,13 +273,16 @@ With the app open on the data dir, a command runs **inside it**, on its live mod
 beside the data dir's lock); otherwise it runs in its own process, with the model — and, for `ui` commands, the
 windows, offscreen — brought up for the call. Output is a table for people; `--json` gives the exact result. Exit
 codes: 0 done, 1 the command failed, 2 a usage error, 3 the app could not be reached. `ui tree` is the whole state of
-every window; `ui click / check / set / cell / tab / card / press` act on any control by name.
+every window; `ui click / check / set / cell / tab / card / press` act on any control by name. A name two places
+share resolves to the visible one; `Outer/Inner` picks one inside another (`ui click Catalog/Name`, a tab by its
+title). A mistyped command, option or control name gets a "did you mean".
 
 There are 34 groups and 250-odd commands: the catalog and its nodes (`catalog`, `node`, `graph`, `cid`), the format
 engine (`fold`, `vars`, `content`), packages and sharing (`packages`, `sources`, `updates`, `received`, `grafts`,
 `friends`), the network (`ipfs`, `queue`, `transfers`, `downloads`), the package builder (`build`, `editor`, `canvas`,
 `author`), the launch engine (`launch`, `runners`, `registry`, `edits`, `vfs`, `instances`, `deps`), and the app itself
-(`app`, `library`, `ui`, `events`, `keys`, `util`). `VidyaGod commands --json` lists every one with what it drives.
+(`app`, `library`, `ui`, `events`, `keys`, `util`). `VidyaGod commands --json` lists every one with what it drives;
+`VidyaGod commands --check` parses every example in the help (a test runs it).
 
 A few things keep state between commands, and so live in the app: a build session (`build open`, until `build close`;
 with the editor open on the package, its own document), an authoring session (`author start` … `author end`), and a

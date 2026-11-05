@@ -21,6 +21,14 @@ using json = nlohmann::ordered_json;
 using namespace CmdUtil;
 namespace fs = std::filesystem;
 
+// What a launch logged as errors, one a line (the reason a launch or a resolve failed).
+std::string LoggedErrors(const Diagnostics::Report &R)
+{
+    std::string M;
+    for (const auto &E : R.Entries) if (E.Level == LogLevel::ERR) M += "\n  " + E.Context + ": " + E.Message;
+    return M.empty() ? " (VidyaGod -v … shows the log)" : M;
+}
+
 CliModes::LaunchRequest Request(Command::Context &C, const json &A)
 {
     CliModes::LaunchRequest R;
@@ -113,7 +121,8 @@ VG_COMMANDS
             CliModes::LaunchRequest R = Request(C, A);
             R.ResolveOnly = true;
             json Dump;
-            if (CliModes::Launch(R, *C.Config, *C.AppDataDir, &Dump) != 0) throw std::runtime_error("it did not resolve (the log says why)");
+            Diagnostics::Report V;
+            if (CliModes::Launch(R, *C.Config, *C.AppDataDir, &Dump, &V) != 0) throw std::runtime_error("it did not resolve:" + LoggedErrors(V));
             return Dump;
         }, {} });
 
@@ -141,8 +150,11 @@ VG_COMMANDS
         Needs::Config, true,
         [](Command::Context &C, const json &A) {
             if (!Command::Bool(A, "yes", false)) throw Command::BadArgs("this runs the game: add --yes");
-            const int Rc = CliModes::Launch(Request(C, A), *C.Config, *C.AppDataDir);
-            return json{{"exit_code", Rc}};
+            Diagnostics::Report V;
+            const int Rc = CliModes::Launch(Request(C, A), *C.Config, *C.AppDataDir, nullptr, &V);
+            json Errors = json::array();
+            for (const auto &E : V.Entries) if (E.Level == LogLevel::ERR) Errors.push_back(E.Context + ": " + E.Message);
+            return json{{"exit_code", Rc}, {"warnings", V.Warnings}, {"errors", Errors}};
         }, {} });
 
     Command::Register({

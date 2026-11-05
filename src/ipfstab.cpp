@@ -119,6 +119,7 @@ void IpfsTab::buildUi()
 
     // Status strip: Network | Peers | Seeded | ↓ | ↑ | Repo | Disk free.
     IpfsStatusTable = new QTableWidget(1, 7, this);
+    IpfsStatusTable->setAccessibleName("IPFS status");
     IpfsStatusTable->setHorizontalHeaderLabels({"Network", "Peers", "Seeded", "↓ Down", "↑ Up", "Repo", "Disk free"});
     IpfsStatusTable->verticalHeader()->setVisible(false);
     IpfsStatusTable->horizontalHeader()->setSectionResizeMode(QHeaderView::Stretch);
@@ -210,6 +211,7 @@ void IpfsTab::buildUi()
     body->addWidget(buildSidebar());
 
     IpfsPins = new QTreeWidget(this);
+    IpfsPins->setAccessibleName("Transfers");
     IpfsPins->setColumnCount(7);
     IpfsPins->setHeaderLabels({"Name", "Size", "Progress", "Speed", "Status", "Health", "CID"});
     IpfsPins->header()->setSectionResizeMode(QHeaderView::Interactive);

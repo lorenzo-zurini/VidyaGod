@@ -201,6 +201,9 @@ VG_COMMANDS
           "PackageCatalog::MergePackageVariables" }, Needs::Config, false,
         [](Command::Context &C, const json &A) {
             const std::string Uid = Command::Str(A, "uid"), Inst = Command::Str(A, "instance", "");
+            if (!Index(C)->Tile(Uid) && PackageCatalog::GetPackageUserSettings(*C.Config, Uid, Inst).empty()
+                && PackageCatalog::GetPackageVariables(*C.Config, Uid, Inst).empty())
+                throw Command::BadArgs("no game with UID '" + Uid + "' (VidyaGod catalog shelf lists them)");
             if (A.contains("set"))
             {
                 const std::string KV = Command::Str(A, "set");

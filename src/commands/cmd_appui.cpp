@@ -136,15 +136,29 @@ VG_COMMANDS
     Command::Register({
         "app covers", "where a cover image is found (or fetched from), as a card draws it",
         "For a tile's COVER (--cover JSON) in a package folder: the file it names and its CID, and where the cover cache "
-        "finds it now (\"\" while it is being fetched).", { Opt("cover", "the COVER (JSON)", Type::Json, true), Opt("package", "the package folder") },
-        { "app covers --cover '{\"FILE\":\"cover.jpg\",\"SOURCE\":\"Qm…\"}' --package 749" },
-        { "CoverCache::Locate", "CoverCache::resolve", "CoverCache::setAssetsRoot", "CoverCache::setOnlineProbe", "CoverCache::onNetworkOnline" },
+        "finds it now (\"\" while it is being fetched). --decode (in the running app) takes its image as a card does: "
+        "\"decoding\" the first time, as the decode runs off the GUI thread, and its size once it has landed.",
+        { Opt("cover", "the COVER (JSON)", Type::Json, true), Opt("package", "the package folder"), Flag("decode", "take the decoded image") },
+        { "app covers --cover '{\"PATH\":\"cover.jpg\",\"SOURCE\":{\"TYPE\":\"ipfs\",\"CID\":\"Qm…\"}}' --package 749",
+          "app covers --cover '\"cover.png\"' --package 749 --decode" },
+        { "CoverCache::Locate", "CoverCache::resolve", "CoverCache::setAssetsRoot", "CoverCache::setOnlineProbe", "CoverCache::onNetworkOnline",
+          "CoverCache::take", "CoverCache::decodeCount" },
         Needs::Model, false,
         [](Command::Context &C, const json &A) {
             QString File, Cid;
             CoverCache::Locate(A["cover"], File, Cid);
             const QString Dir = A.contains("package") ? QString::fromStdString(PackageDir(C, Command::Str(A, "package")).string()) : QString();
-            return json{{"file", File.toStdString()}, {"cid", Cid.toStdString()}, {"found", CoverCache::instance()->resolve(A["cover"], Dir).toStdString()}};
+            const QString Found = CoverCache::instance()->resolve(A["cover"], Dir);
+            json Out{{"file", File.toStdString()}, {"cid", Cid.toStdString()}, {"found", Found.toStdString()}};
+            if (Command::Bool(A, "decode", false))
+            {
+                if (!C.Window) throw std::runtime_error("--decode needs the running app (an image is made on its GUI thread)");
+                if (Found.isEmpty()) throw std::runtime_error("the cover is not on disk yet");
+                const QPixmap P = CoverCache::instance()->take(Found);
+                Out["image"] = P.isNull() ? json("decoding") : json(std::to_string(P.width()) + "x" + std::to_string(P.height()));
+                Out["decodes"] = CoverCache::instance()->decodeCount();
+            }
+            return Out;
         }, {} });
 
     Command::Register({

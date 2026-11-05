@@ -97,6 +97,9 @@ nlohmann::ordered_json Run(const std::string &Name, const nlohmann::ordered_json
 // Every command as JSON (name, summary, help, args, examples, covers, needs): `VidyaGod commands --json`.
 nlohmann::ordered_json List();
 
+// The one of Of a mistyped W most likely meant (a few edits away), or "": for "did you mean".
+std::string Nearest(const std::string &W, const std::vector<std::string> &Of);
+
 // Argument readers for a command body: missing or mistyped is BadArgs naming it.
 std::string Str(const nlohmann::ordered_json &Args, const char *Key);
 std::string Str(const nlohmann::ordered_json &Args, const char *Key, const std::string &Default);

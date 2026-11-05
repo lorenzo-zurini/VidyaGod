@@ -80,6 +80,26 @@ std::vector<std::string> List(const json &Args, const char *Key)
     return Out;
 }
 
+double Number(const std::string &V, const std::string &What)
+{
+    size_t N = 0;
+    double D = 0;
+    try { D = std::stod(V, &N); } catch (...) { N = 0; }
+    if (V.empty() || N != V.size()) throw Command::BadArgs(What + " takes a number, not '" + V + "'");
+    return D;
+}
+
+bool Point(const json &Args, const char *Key, double &X, double &Y)
+{
+    if (!Args.contains(Key)) return false;
+    const auto P = List(Args, Key);
+    const std::string What = std::string("--") + Key;
+    if (P.size() != 2) throw Command::BadArgs(What + " takes x,y (two numbers, a comma between)");
+    X = Number(P[0], What);
+    Y = Number(P[1], What);
+    return true;
+}
+
 std::string Canon(const std::filesystem::path &P)
 {
     std::error_code Ec;

@@ -35,10 +35,13 @@ GamePicker::GamePicker(nlohmann::ordered_json * config, const NodeIndex * index,
     CoverRefresh = new QTimer(this);
     CoverRefresh->setSingleShot(true);
     CoverRefresh->setInterval(200);
-    connect(CoverRefresh, &QTimer::timeout, this, [this]{ View->refreshVisuals(); });
-    connect(CoverCache::instance(), &CoverCache::coverReady, this, [this](const QString &){
-        if (CoverRefresh && !CoverRefresh->isActive()) CoverRefresh->start();
+    connect(CoverRefresh, &QTimer::timeout, this, [this]{
+        for (LibraryGameCard * c : Cards) if (c->CoverOriginal.isNull()) c->InitializeClassVariables();   // re-take
+        View->refreshVisuals();
     });
+    const auto Soon = [this]{ if (CoverRefresh && !CoverRefresh->isActive()) CoverRefresh->start(); };
+    connect(CoverCache::instance(), &CoverCache::coverReady, this, Soon);
+    connect(CoverCache::instance(), &CoverCache::coverDecoded, this, Soon);
 }
 
 GamePicker::~GamePicker()

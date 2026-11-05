@@ -262,6 +262,39 @@ private slots:
 
         cc->setOnlineProbe([]{ return IpfsWrapper::DaemonRunning(); });   // restore the default for later tests
     }
+
+    // A cover's image is decoded OFF the GUI thread: the first take() is the placeholder (null) and starts the decode,
+    // coverDecoded() fires when it lands, and the next take() hands the image over. Bytes that do not decode never
+    // fire and are not decoded again, so a surface re-taking every blank card never loops on them. Teeth: decode
+    // inline in take() → the first take is not null; drop the Undecodable set → the second take of the broken file
+    // starts a second decode.
+    void covers_decode_off_the_gui_thread()
+    {
+        auto * cc = CoverCache::instance();
+        QTemporaryDir dir; QVERIFY(dir.isValid());
+        const QString Png = dir.path() + "/cover.png", Bad = dir.path() + "/broken.png";
+        QImage Img(60, 90, QImage::Format_RGB32); Img.fill(Qt::red); QVERIFY(Img.save(Png));
+        { std::ofstream(Bad.toStdString()) << "not a png"; }
+
+        QSignalSpy Decoded(cc, &CoverCache::coverDecoded);
+        QVERIFY(cc->take(Png).isNull());                       // the placeholder, decode started
+        QVERIFY(Decoded.wait(5000));
+        const QPixmap P = cc->take(Png);
+        QCOMPARE(P.size(), QSize(60, 90));                     // handed over…
+        QVERIFY(cc->take(Png).isNull());                       // …once: the cache keeps no copy (this starts a new decode)
+        QVERIFY(Decoded.wait(5000));
+        QVERIFY(!cc->take(Png).isNull());                      // drain it
+
+        Decoded.clear();
+        const int Before = cc->decodeCount();
+        QVERIFY(cc->take(Bad).isNull());
+        QTRY_VERIFY_WITH_TIMEOUT(cc->decodeCount() == Before + 1, 2000);
+        QTest::qWait(500);                                     // its decode has failed by now
+        QVERIFY(cc->take(Bad).isNull());
+        QTest::qWait(300);
+        QCOMPARE(cc->decodeCount(), Before + 1);               // not decoded again…
+        QCOMPARE(Decoded.count(), 0);                          // …and it never fired
+    }
 };
 
 QTEST_MAIN(TestCoverCache)

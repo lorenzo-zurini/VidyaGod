@@ -537,6 +537,10 @@ add_test(NAME cli_variant_needs_a_tile
                  $<TARGET_FILE:VidyaGod> --data-dir ${CMAKE_BINARY_DIR}/cli_variant_test_data --offline --variant x)
 set_tests_properties(cli_variant_needs_a_tile PROPERTIES PASS_REGULAR_EXPRESSION "needs --tile" TIMEOUT 30)
 
+# Every example in the command-line help names a command and parses against it (a stale option, a missing argument).
+add_test(NAME cli_examples COMMAND $<TARGET_FILE:VidyaGod> --no-color commands --check)
+set_tests_properties(cli_examples PROPERTIES TIMEOUT 30)
+
 add_gui_test(test_pkgcanvas)
 add_gui_test(test_canvasperf)
 set_tests_properties(test_canvasperf PROPERTIES RUN_SERIAL TRUE)   # it times frames: alone, or it measures the other suites

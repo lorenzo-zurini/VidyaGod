@@ -39,10 +39,36 @@ namespace UiFind
 
 using json = nlohmann::ordered_json;
 
+// A button's or tab's text as it reads on screen: Qt's shortcut marker gone ("&Save" → "Save", "A && B" → "A & B").
+QString Shown(QString T)
+{
+    T.replace("&&", QChar(0x1));
+    T.remove('&');
+    return T.replace(QChar(0x1), '&');
+}
+
+// A tab's page answers to its tab's title ("Library", "Settings").
+QString TabTitle(const QWidget *W)
+{
+    const QWidget *Stack = W->parentWidget();
+    const auto *Tw = Stack ? qobject_cast<const QTabWidget *>(Stack->parentWidget()) : nullptr;
+    const int I = Tw ? Tw->indexOf(const_cast<QWidget *>(W)) : -1;
+    return I >= 0 ? Shown(Tw->tabText(I)) : QString();
+}
+
 std::string NameOf(const QWidget *W)
 {
     if (!W->objectName().isEmpty()) return W->objectName().toStdString();
-    return W->accessibleName().toStdString();
+    if (!W->accessibleName().isEmpty()) return W->accessibleName().toStdString();
+    return TabTitle(W).toStdString();
+}
+
+// W as Outer/Inner: its name under the nearest named control around it — what tells two controls of one name apart.
+std::string QualifiedName(const QWidget *W)
+{
+    for (const QWidget *P = W->parentWidget(); P; P = P->parentWidget())
+        if (const std::string N = NameOf(P); !N.empty() && N.rfind("qt_", 0) != 0) return N + "/" + NameOf(W);
+    return NameOf(W);
 }
 
 json ItemData(const QAbstractItemModel *M, const QModelIndex &I)
@@ -62,9 +88,15 @@ json ViewState(const QAbstractItemView *V)
     json Out = json::object();
     const QAbstractItemModel *M = V->model();
     if (!M) return Out;
-    json Headers = json::array();
-    for (int C = 0; C < M->columnCount(); ++C) Headers.push_back(M->headerData(C, Qt::Horizontal).toString().toStdString());
-    Out["columns"] = Headers;
+    const QHeaderView *H = nullptr;   // a list has no header: its model's "1" is no column title
+    if (const auto *T = qobject_cast<const QTableView *>(V)) H = T->horizontalHeader();
+    else if (const auto *Tr = qobject_cast<const QTreeView *>(V)) H = Tr->header();
+    if (H && !H->isHidden())
+    {
+        json Headers = json::array();
+        for (int C = 0; C < M->columnCount(); ++C) Headers.push_back(M->headerData(C, Qt::Horizontal).toString().toStdString());
+        Out["columns"] = Headers;
+    }
     json Rows = json::array();
     std::function<void(const QModelIndex &, int)> Walk = [&](const QModelIndex &Parent, int Level) {
         for (int R = 0; R < M->rowCount(Parent); ++R)
@@ -96,7 +128,7 @@ json StateOf(const QWidget *W, int Depth, bool VisibleOnly)
     if (!W->toolTip().isEmpty()) J["tooltip"] = W->toolTip().toStdString();
     if (const auto *B = qobject_cast<const QAbstractButton *>(W))
     {
-        J["text"] = B->text().toStdString();
+        J["text"] = Shown(B->text()).toStdString();
         if (B->isCheckable()) J["checked"] = B->isChecked();
     }
     else if (const auto *L = qobject_cast<const QLabel *>(W)) J["text"] = L->text().toStdString();
@@ -127,9 +159,9 @@ json StateOf(const QWidget *W, int Depth, bool VisibleOnly)
     else if (const auto *Tw = qobject_cast<const QTabWidget *>(W))
     {
         json Tabs = json::array();
-        for (int I = 0; I < Tw->count(); ++I) Tabs.push_back(Tw->tabText(I).toStdString());
+        for (int I = 0; I < Tw->count(); ++I) Tabs.push_back(Shown(Tw->tabText(I)).toStdString());
         J["tabs"] = Tabs;
-        J["current"] = Tw->tabText(Tw->currentIndex()).toStdString();
+        J["current"] = Shown(Tw->tabText(Tw->currentIndex())).toStdString();
     }
     else if (const auto *Lv = qobject_cast<const LibraryView *>(W)) J["grid"] = Lv->stateJson();
     if (const auto *V = qobject_cast<const QAbstractItemView *>(W)) { J["view"] = ViewState(V); return J; }   // its viewport is its contents
@@ -154,15 +186,16 @@ std::vector<QWidget *> Windows()
     return Out;
 }
 
-// A control by its name: exact objectName or accessible name first, then a unique case-insensitive part of one. An
-// ambiguous name is refused with the candidates — never a guess.
+// A control by its name: exact objectName, accessible name or tab title first, then a unique case-insensitive part of
+// a name. Two controls of one name resolve to the visible one; an ambiguity left is refused with the candidates, never
+// a guess. "Outer/Inner" is a control inside another (a tab, a group, a dialog), for a name two places share.
 QWidget *Named(const std::string &Name, const QWidget *Under)
 {
     const QString Q = QString::fromStdString(Name);
     std::vector<QWidget *> Exact, Part;
     std::function<void(QWidget *)> Walk = [&](QWidget *W) {
-        const QString O = W->objectName(), A = W->accessibleName();
-        if (O == Q || A == Q) Exact.push_back(W);
+        const QString O = W->objectName(), A = W->accessibleName(), T = TabTitle(W);
+        if (O == Q || A == Q || (!T.isEmpty() && T == Q)) Exact.push_back(W);
         else if ((!O.isEmpty() && O.contains(Q, Qt::CaseInsensitive)) || (!A.isEmpty() && A.contains(Q, Qt::CaseInsensitive)))
             Part.push_back(W);
         for (QObject *C : W->children()) if (auto *Cw = qobject_cast<QWidget *>(C)) Walk(Cw);
@@ -175,12 +208,24 @@ QWidget *Named(const std::string &Name, const QWidget *Under)
         std::vector<QWidget *> &Use = Visible.empty() ? V : Visible;
         if (Use.size() == 1) return Use.front();
         std::string Names;
-        for (size_t I = 0; I < Use.size() && I < 8; ++I) Names += (I ? ", " : "") + NameOf(Use[I]);
+        for (size_t I = 0; I < Use.size() && I < 8; ++I) Names += (I ? ", " : "") + QualifiedName(Use[I]);
         throw Command::BadArgs("'" + Name + "' names " + std::to_string(Use.size()) + " controls: " + Names);
     };
     if (!Exact.empty()) return Pick(Exact);
+    if (const size_t Slash = Name.find('/'); Slash != std::string::npos && Slash > 0 && Slash + 1 < Name.size())
+        return Named(Name.substr(Slash + 1), Named(Name.substr(0, Slash), Under));
     if (!Part.empty()) return Pick(Part);
-    throw Command::BadArgs("no control named '" + Name + "' (VidyaGod ui tree lists them)");
+    std::vector<std::string> All;
+    std::function<void(const QWidget *)> Names = [&](const QWidget *W) {
+        if (const std::string N = NameOf(W); !N.empty() && N.rfind("qt_", 0) != 0) All.push_back(N);
+        if (!W->accessibleName().isEmpty()) All.push_back(W->accessibleName().toStdString());   // what the screen reads
+        for (const QObject *C : W->children()) if (const auto *Cw = qobject_cast<const QWidget *>(C)) Names(Cw);
+    };
+    if (Under) Names(Under);
+    else for (const QWidget *W : QApplication::topLevelWidgets()) Names(W);
+    const std::string Near = Command::Nearest(Name, All);
+    throw Command::BadArgs("no control named '" + Name + "'" + (Near.empty() ? "" : " — did you mean '" + Near + "'?")
+                           + " (VidyaGod ui tree lists them)");
 }
 
 LibraryView *Grid(const std::string &Name)
@@ -242,16 +287,25 @@ void Outline(std::ostringstream &O, const json &N, int Indent, bool Colour)
             for (const auto &C : Cells) Row.push_back(CellText(C));
             Grid.push_back(std::move(Row));
         }
-        std::vector<size_t> W(Head.size(), 0);
+        size_t NCols = Head.size();
+        for (const auto &R : Grid) NCols = std::max(NCols, R.size());
+        std::vector<size_t> W(NCols, 0);
         for (size_t C = 0; C < Head.size(); ++C) W[C] = Head[C].size();
-        for (const auto &R : Grid) for (size_t C = 0; C < R.size() && C < W.size(); ++C) W[C] = std::max(W[C], std::min<size_t>(40, R[C].size()));
+        for (const auto &R : Grid) for (size_t C = 0; C < R.size(); ++C) W[C] = std::max(W[C], std::min<size_t>(40, R[C].size()));
+        bool Flat = true;   // the current row is marked where rows are not nested (its index is then its line)
+        for (const auto &R : V.value("rows", json::array())) Flat = Flat && R.is_array();
+        const long long Current = Flat && V.contains("current") ? V["current"][0].get<long long>() : -1;
         const std::string P2 = Pad + "  ";
-        O << P2;
-        for (size_t C = 0; C < Head.size(); ++C) O << Paint(Head[C], "1", Colour) << std::string(W[C] - Head[C].size() + 2, ' ');
-        O << "\n";
-        for (const auto &R : Grid)
+        if (!Head.empty())
         {
-            O << P2;
+            O << P2 << "  ";
+            for (size_t C = 0; C < Head.size(); ++C) O << Paint(Head[C], "1", Colour) << std::string(W[C] - Head[C].size() + 2, ' ');
+            O << "\n";
+        }
+        for (size_t I = 0; I < Grid.size(); ++I)
+        {
+            const auto &R = Grid[I];
+            O << P2 << (static_cast<long long>(I) == Current ? Paint("▸ ", "36", Colour) : "  ");
             for (size_t C = 0; C < R.size() && C < W.size(); ++C)
             {
                 const std::string T = R[C].size() > 40 ? R[C].substr(0, 39) + "…" : R[C];
@@ -337,7 +391,7 @@ VG_COMMANDS
             std::function<QTabWidget *(QWidget *)> Find = [&](QWidget *W) -> QTabWidget * {
                 if (auto *Tw = qobject_cast<QTabWidget *>(W))
                     for (int I = 0; I < Tw->count(); ++I)
-                        if (Tw->tabText(I).compare(T, Qt::CaseInsensitive) == 0) { Tw->setCurrentIndex(I); return Tw; }
+                        if (Shown(Tw->tabText(I)).compare(T, Qt::CaseInsensitive) == 0) { Tw->setCurrentIndex(I); return Tw; }
                 for (QObject *C : W->children()) if (auto *Cw = qobject_cast<QWidget *>(C)) if (auto *R = Find(Cw)) return R;
                 return nullptr;
             };
@@ -382,12 +436,12 @@ VG_COMMANDS
 
     Command::Register({
         "ui set", "type into a field, pick an item, set a value",
-        "Set a control's value as a person would: the text of a field (then Enter), the item of a combo box (by its "
-        "text), the value of a spin box or slider.",
+        "Set a control's value as a person would: the text of a field (then Enter), the item of a combo box or the row "
+        "of a list (by its text), the value of a spin box or slider.",
         { Command::Pos("control", "the control's name"), Command::Pos("value", "the new value"),
           Command::Flag("enter", "press Enter in a text field afterwards (default on)") },
-        { "ui set 'You Paste a friend' 12D3KooW…", "ui set 'Max simultaneous downloads' 4" },
-        { "QLineEdit::setText", "QComboBox::setCurrentIndex", "QSpinBox::setValue" }, Command::Needs::Ui, false,
+        { "ui set 'Add a peer' 12D3KooW…", "ui set 'Max simultaneous downloads' 4", "ui set 'Settings pages' Network" },
+        { "QLineEdit::setText", "QComboBox::setCurrentIndex", "QSpinBox::setValue", "QAbstractItemView::setCurrentIndex" }, Command::Needs::Ui, false,
         [](Command::Context &, const json &A) {
             QWidget *W = Named(Command::Str(A, "control"));
             const QString V = QString::fromStdString(Command::Str(A, "value"));
@@ -410,6 +464,13 @@ VG_COMMANDS
             else if (auto *S = qobject_cast<QSpinBox *>(W)) S->setValue(V.toInt());
             else if (auto *D = qobject_cast<QDoubleSpinBox *>(W)) D->setValue(V.toDouble());
             else if (auto *Sl = qobject_cast<QSlider *>(W)) Sl->setValue(V.toInt());
+            else if (auto *Lv = qobject_cast<QAbstractItemView *>(W); Lv && Lv->model())   // a list: click its row of that text
+            {
+                const QModelIndexList Hit = Lv->model()->match(Lv->model()->index(0, 0), Qt::DisplayRole, V, 1, Qt::MatchFixedString);
+                if (Hit.isEmpty()) throw Command::BadArgs("'" + NameOf(W) + "' has no row '" + V.toStdString() + "'");
+                Lv->setCurrentIndex(Hit.front());
+                emit Lv->clicked(Hit.front());
+            }
             else throw Command::BadArgs("'" + NameOf(W) + "' takes no value");
             return StateOf(W, 0, false);
         }, {} });
@@ -422,7 +483,7 @@ VG_COMMANDS
           Command::Pos("column", "the column: its number, or its header text"),
           Command::Flag("on", "on (default) or --no-on"),
           Command::Flag("activate", "also activate the cell (a double click)") },
-        { "ui cell Networking LGZ-MacBook Accepted", "ui cell Networking LGZ-MacBook 'Share: VidyaGod' --no-on" },
+        { "ui cell Peers LGZ-MacBook Accepted", "ui cell Peers LGZ-MacBook 'Share: VidyaGod' --no-on" },
         { "QAbstractItemView::indexWidget", "QAbstractItemView::setCurrentIndex" }, Command::Needs::Ui, false,
         [](Command::Context &, const json &A) {
             QWidget *W = Named(Command::Str(A, "table"));
@@ -507,7 +568,7 @@ VG_COMMANDS
                 }
                 json Buttons = json::array();
                 for (QAbstractButton *B : D->findChildren<QAbstractButton *>())
-                    if (B->isVisible() && !B->text().isEmpty()) Buttons.push_back(B->text().toStdString());
+                    if (B->isVisible() && !B->text().isEmpty()) Buttons.push_back(Shown(B->text()).toStdString());
                 J["buttons"] = Buttons;
                 J["state"] = StateOf(D, 1000, true);
                 Out.push_back(std::move(J));
@@ -529,11 +590,11 @@ VG_COMMANDS
                 auto *D = qobject_cast<QDialog *>(W);
                 if (!D || !D->isVisible() || (!Title.isEmpty() && !D->windowTitle().contains(Title, Qt::CaseInsensitive))) continue;
                 for (QAbstractButton *B : D->findChildren<QAbstractButton *>())
-                    if (B->isVisible() && QString(B->text()).remove('&').compare(Want, Qt::CaseInsensitive) == 0)
+                    if (B->isVisible() && Shown(B->text()).compare(Want, Qt::CaseInsensitive) == 0)
                     {
                         // Deferred: a dialog's exec() returns into the command that opened it, not into this one.
                         QTimer::singleShot(0, B, &QAbstractButton::click);
-                        return json{{"dialog", D->windowTitle().toStdString()}, {"pressed", B->text().toStdString()}};
+                        return json{{"dialog", D->windowTitle().toStdString()}, {"pressed", Shown(B->text()).toStdString()}};
                     }
             }
             throw Command::BadArgs("no open dialog has a '" + Want.toStdString() + "' button (ui dialogs lists them)");

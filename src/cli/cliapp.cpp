@@ -101,28 +101,7 @@ bool IsTty(int Fd)
 #endif
 }
 
-size_t Distance(const std::string &A, const std::string &B)
-{
-    std::vector<size_t> Prev(B.size() + 1), Cur(B.size() + 1);
-    for (size_t J = 0; J <= B.size(); ++J) Prev[J] = J;
-    for (size_t I = 1; I <= A.size(); ++I)
-    {
-        Cur[0] = I;
-        for (size_t J = 1; J <= B.size(); ++J)
-            Cur[J] = std::min({ Prev[J] + 1, Cur[J - 1] + 1, Prev[J - 1] + (A[I - 1] == B[J - 1] ? 0 : 1) });
-        std::swap(Prev, Cur);
-    }
-    return Prev[B.size()];
-}
-
-std::string Nearest(const std::string &W, const std::vector<std::string> &Of)
-{
-    std::string Best;
-    size_t D = std::string::npos;
-    for (const std::string &C : Of)
-        if (const size_t X = Distance(W, C); X < D) { D = X; Best = C; }
-    return D <= std::max<size_t>(2, W.size() / 3) ? Best : std::string();
-}
+using Command::Nearest;
 
 std::vector<std::string> Words(const std::string &S)
 {
@@ -186,21 +165,54 @@ void Wrap(std::ostream &Out, const std::string &Text, size_t Indent, size_t Widt
     }
 }
 
+// The root help's first steps: real command lines (the example check parses them too).
+const std::vector<std::pair<std::string, std::string>> &StartWith()
+{
+    static const std::vector<std::pair<std::string, std::string>> L = {
+        { "catalog shelf", "the games here, one line each" },
+        { "launch plan --tile 749", "what launching a game would do, without running it" },
+        { "ui tree", "the open app's windows, every control and its state" },
+    };
+    return L;
+}
+
 void PrintRootHelp(const Style &St)
 {
     std::ostream &O = std::cout;
     O << St.B("VidyaGod") << " " << St.Dim(VIDYAGOD_VERSION) << " — play, package and share games\n\n";
     O << St.B("Usage:") << " VidyaGod <group> <command> [<arguments>…] [--options]\n";
     O << "       VidyaGod                 (no arguments) opens the app\n\n";
-    O << St.B("Groups:") << "\n";
+    // The groups by what they are for; a group not placed here is listed under "More" (so none is ever hidden).
+    static const std::vector<std::pair<const char *, std::vector<std::string>>> Sections = {
+        { "Play",                 { "library", "catalog", "launch", "instances", "runners", "deps", "grafts" } },
+        { "Share",                { "friends", "received", "updates", "sources", "downloads", "transfers", "queue", "ipfs" } },
+        { "Make packages",        { "packages", "build", "editor", "canvas", "author", "edits", "registry", "vfs" } },
+        { "The format",           { "node", "fold", "vars", "graph", "cid", "content" } },
+        { "The app",              { "app", "ui", "events", "keys", "util" } },
+    };
     size_t W = 0;
     for (const std::string &G : GroupNames()) W = std::max(W, G.size());
-    for (const std::string &G : GroupNames())
-    {
+    std::set<std::string> Placed;
+    const auto GroupLine = [&](const std::string &G) {
         const auto It = Command::Groups().find(G);
         O << "  " << St.Cyan(G) << std::string(W - G.size() + 3, ' ')
           << (It == Command::Groups().end() ? std::string() : It->second) << "\n";
+        Placed.insert(G);
+    };
+    for (const auto &[Title, Gs] : Sections)
+    {
+        O << St.B(std::string(Title) + ":") << "\n";
+        for (const std::string &G : Gs) if (GroupNames().count(G)) GroupLine(G);
+        O << "\n";
     }
+    bool More = false;
+    for (const std::string &G : GroupNames())
+        if (!Placed.count(G)) { if (!More) O << St.B("More:") << "\n"; More = true; GroupLine(G); }
+    if (More) O << "\n";
+    O << St.B("Start with:") << "\n";
+    for (const auto &[Line, What] : StartWith())
+        O << "  VidyaGod " << Line << std::string(Line.size() < 30 ? 30 - Line.size() : 1, ' ') << St.Dim(What) << "\n";
+    O << "  VidyaGod commands" << std::string(22, ' ') << St.Dim("every command, one line each (--json: all of their help)") << "\n";
     O << "\n" << St.B("Global options:") << "\n"
       << "  --data-dir <dir>   the data dir to work on (default ~/.VidyaGod, or the portable one)\n"
       << "  --json             print the exact result as JSON\n"
@@ -209,6 +221,7 @@ void PrintRootHelp(const Style &St)
       << "  --package-dir <d>  a launch's package folder, instead of the node's own (also --runtime-dir, --userdata-dir)\n"
       << "  -v, --verbose      the engine's log on stderr\n"
       << "  -h, --help         help for whatever precedes it\n\n";
+    O << "Also: " << St.B("VidyaGod version") << ", " << St.B("VidyaGod completion bash|zsh|fish") << " (tab completion).\n";
     O << "With the app open on the data dir, commands run inside it, on its live state; otherwise in this process.\n";
     O << "Run " << St.B("VidyaGod help <group>") << " for a group's commands, " << St.B("VidyaGod help <group> <command>")
       << " for one.\n";
@@ -268,7 +281,29 @@ void PrintCommandHelp(const Command::Spec &S, const Style &St)
 }
 
 // Positionals in order, --name value / --name=value, --flag / --no-flag; every value typed by its Arg.
-json ParseArgs(const Command::Spec &S, const std::vector<std::string> &Rest)
+// A line split as a shell splits it: words, 'single' and "double" quotes, backslash escapes outside single quotes.
+std::vector<std::string> ShellWords(const std::string &Line)
+{
+    std::vector<std::string> Out;
+    std::string W;
+    bool In = false;
+    char Quote = 0;
+    for (size_t I = 0; I < Line.size(); ++I)
+    {
+        const char C = Line[I];
+        if (Quote == '\'') { if (C == '\'') Quote = 0; else W += C; continue; }
+        if (C == '\\' && I + 1 < Line.size() && Quote != '\'') { W += Line[++I]; In = true; continue; }
+        if (Quote == '"') { if (C == '"') Quote = 0; else W += C; continue; }
+        if (C == '\'' || C == '"') { Quote = C; In = true; continue; }
+        if (C == ' ' || C == '\t') { if (In) Out.push_back(W); W.clear(); In = false; continue; }
+        W += C; In = true;
+    }
+    if (In) Out.push_back(W);
+    return Out;
+}
+
+// ReadInputs false (checking an example): a JSON @file or - is taken as given, nothing is read.
+json ParseArgs(const Command::Spec &S, const std::vector<std::string> &Rest, bool ReadInputs = true)
 {
     json Out = json::object();
     size_t NextPos = 0;
@@ -293,6 +328,7 @@ json ParseArgs(const Command::Spec &S, const std::vector<std::string> &Rest)
         {
             // @path: the JSON is that file's (a node, a list of targets); - is stdin.
             std::string Text = V;
+            if (!ReadInputs && ((V.size() > 1 && V[0] == '@') || V == "-")) return V;
             if (V.size() > 1 && V[0] == '@')
             {
                 std::ifstream In(V.substr(1), std::ios::binary);
@@ -355,12 +391,42 @@ json ParseArgs(const Command::Spec &S, const std::vector<std::string> &Rest)
     return Out;
 }
 
+// Every command's examples, read as the command line reads them: each must name a command and parse against it.
+// Returns the ones that do not, with why.
+json CheckExamples()
+{
+    json Bad = json::array();
+    std::vector<std::pair<std::string, std::string>> Lines;   // (whose, the line)
+    for (const auto &[Name, S] : Command::All())
+        for (const std::string &Ex : S.Examples) Lines.emplace_back(Name, Ex);
+    for (const auto &[Line, What] : StartWith()) Lines.emplace_back("help", Line);
+    for (const auto &[Name, Ex] : Lines)
+    {
+        std::vector<std::string> A = ShellWords(Ex), Tokens;
+        if (!A.empty() && A.front() == "VidyaGod") A.erase(A.begin());
+        Globals G;
+        try
+        {
+            for (size_t I = 0; I < A.size(); ++I)
+                if (!TakeGlobal(A, I, G)) Tokens.push_back(A[I]);
+            const Command::Spec *X = nullptr;
+            size_t Used = 0;
+            for (size_t N = Tokens.size(); N > 0 && !X; --N)
+                if ((X = Command::Find(Join(Tokens, 0, N)))) Used = N;
+            if (!X) throw Command::BadArgs("names no command");
+            ParseArgs(*X, { Tokens.begin() + static_cast<long>(Used), Tokens.end() }, false);
+        }
+        catch (const Command::BadArgs &E) { Bad.push_back({{"command", Name}, {"example", Ex}, {"error", E.what()}}); }
+    }
+    return Bad;
+}
+
 std::string Cell(const json &V)
 {
-    if (V.is_string()) return V.get<std::string>();
+    if (V.is_string()) return V.get<std::string>().empty() ? "—" : V.get<std::string>();   // an empty value, not a gap
     if (V.is_boolean()) return V.get<bool>() ? "yes" : "no";
     if (V.is_null()) return "—";
-    if (V.is_array() && V.empty()) return "—";
+    if ((V.is_array() || V.is_object()) && V.empty()) return "—";
     if (V.is_array() && std::all_of(V.begin(), V.end(), [](const json &X) { return X.is_string() || X.is_number(); }))
     {
         std::string S;
@@ -610,6 +676,14 @@ int Main(int argc, char **argv, const Hooks &H)
     }
     if (Tokens.front() == "commands")
     {
+        if (Tokens.size() > 1 && Tokens[1] == "--check")   // every example in the help parses (a test runs this)
+        {
+            const json Bad = CheckExamples();
+            if (G.Json) std::cout << Bad.dump(2) << "\n";
+            else if (Bad.empty()) std::cout << "every example parses\n";
+            else std::cout << RenderGeneric(Bad, St.On);
+            return Bad.empty() ? Done : Failed;
+        }
         if (G.Json) { std::cout << Command::List().dump(2) << "\n"; return Done; }
         json Rows = json::array();
         for (const auto &[N, S] : Command::All()) Rows.push_back({{"command", N}, {"summary", S.Summary}});

@@ -4,6 +4,7 @@
 #include "manifestmodel.h"
 #include "commonutils.h"
 
+#include <QRegularExpression>
 #include <QVBoxLayout>
 #include <chrono>
 #include <QHBoxLayout>
@@ -110,7 +111,7 @@ void CatalogTab::buildUi()
     tl->addWidget(availSearch);
     auto makeSizeBtn = [&](const QString & lbl, int w) {
         QPushButton * b = new QPushButton(lbl, toolbar);
-        b->setObjectName("sizeBtn");
+        b->setObjectName("size" + lbl);   // sizeLarge, sizeMedium, sizeSmall: one name each
         b->setCheckable(true); b->setChecked(Model.cardPixelWidth() == w);
         b->setStyleSheet(
             "QPushButton{color:#8f98a0;background:transparent;border:none;font-size:9pt;padding:2px 8px;}"
@@ -150,7 +151,7 @@ void CatalogTab::buildUi()
 void CatalogTab::onCardSizeChanged(int cardW)
 {
     const QString want = cardW >= 250 ? "Large" : cardW <= 120 ? "Small" : "Medium";
-    for (auto * b : findChildren<QPushButton*>("sizeBtn")) b->setChecked(b->text() == want);
+    for (auto * b : findChildren<QPushButton*>(QRegularExpression("^size(Large|Medium|Small)$"))) b->setChecked(b->text() == want);
     if (AvailableView) {
         AvailableView->setCards(AvailableGameCards);   // point at the full pool so every cover is re-scaled
         AvailableView->prescaleCovers(Model.cardPixelWidth());

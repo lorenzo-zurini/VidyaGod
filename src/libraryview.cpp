@@ -88,14 +88,15 @@ void LibraryGameCard::InitializeClassVariables()
 
     //Cover — local-first via CoverCache, which handles the dual-form COVER (a filename, or an object
     //{PATH,SOURCE:{ipfs,CID}}): local file if present, else the cached IPFS fetch, else a background fetch that
-    //fires CoverCache::coverReady(cid) so the card reloads. A null CoverOriginal renders the placeholder.
+    //fires CoverCache::coverReady(cid) so the card reloads; the image itself is decoded off the GUI thread and the card
+    //reloads on coverDecoded(). A null CoverOriginal renders the placeholder.
     CoverOriginal = QPixmap();
     CoverCid.clear();
     if (Meta.is_object() && Meta.contains("COVER"))
     {
         const nlohmann::ordered_json & CoverNode = Meta["COVER"];
         const QString Path = CoverCache::instance()->resolve(CoverNode, QString::fromStdString(PackagePath.string()));
-        if (!Path.isEmpty()) CoverOriginal.load(Path);
+        if (!Path.isEmpty()) CoverOriginal = CoverCache::instance()->take(Path);   // null until decoded off-thread
         else { QString f; CoverCache::Locate(CoverNode, f, CoverCid); }   // pending fetch — refresh on coverReady
     }
 }
@@ -229,17 +230,23 @@ void LibraryView::prescaleCovers(int cardW)
     if (!Cards) return;
     const int sW = cardW * 30 / 100;   // overlay thumbnail (matches secW() at this width)
     const int sH = sW * 3 / 2;
+    // A scale is redone only when its source image or its size changed: covers land a few at a time while the library
+    // shows, and rescaling every card on each landing was the GUI thread's whole budget.
+    const auto Scale = [](const QPixmap & From, QPixmap & To, qint64 & ToFrom, int W, int H) {
+        if (From.isNull()) { To = QPixmap(); ToFrom = 0; return; }
+        if (ToFrom == From.cacheKey() && To.size() == QSize(W, H)) return;
+        To = From.scaled(W, H, Qt::IgnoreAspectRatio, Qt::SmoothTransformation);
+        ToFrom = From.cacheKey();
+    };
     auto scaleMain = [&](LibraryGameCard * c) {
-        c->CoverScaled = c->CoverOriginal.isNull() ? QPixmap()
-            : c->CoverOriginal.scaled(cardW, cardH, Qt::IgnoreAspectRatio, Qt::SmoothTransformation);
+        Scale(c->CoverOriginal, c->CoverScaled, c->CoverScaledFrom, cardW, cardH);
         c->ElidedTitle = TitleFM.elidedText(c->GameTitle, Qt::ElideRight, textW);
     };
     for (auto * c : *Cards) {
         scaleMain(c);
         for (auto * sc : c->Secondaries) {                       // a package's secondary games (Catalog) — scale small too
             scaleMain(sc);
-            sc->CoverSmall = sc->CoverOriginal.isNull() ? QPixmap()
-                : sc->CoverOriginal.scaled(sW, sH, Qt::IgnoreAspectRatio, Qt::SmoothTransformation);
+            Scale(sc->CoverOriginal, sc->CoverSmall, sc->CoverSmallFrom, sW, sH);
         }
     }
 }

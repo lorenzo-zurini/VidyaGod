@@ -59,13 +59,24 @@ QString FormLabelFor(QWidget *W)
     return {};
 }
 
+// The layout that holds W itself: its parent's layout, or a row nested inside it.
+QLayout *LayoutHolding(QLayout *L, QWidget *W)
+{
+    if (!L) return nullptr;
+    if (L->indexOf(W) >= 0) return L;
+    for (int i = 0; i < L->count(); ++i)
+        if (QLayout *Inner = L->itemAt(i) ? L->itemAt(i)->layout() : nullptr)
+            if (QLayout *Found = LayoutHolding(Inner, W)) return Found;
+    return nullptr;
+}
+
 // The QLabel immediately preceding this widget in its own layout — the non-form-layout equivalent of the above
-// (rows built with QHBoxLayout: [label][field]).
+// (rows built with QHBoxLayout: [label][field], nested in the parent's layout or not).
 QString PrecedingLabel(QWidget *W)
 {
     QWidget *P = W->parentWidget();
-    if (!P || !P->layout()) return {};
-    QLayout *L = P->layout();
+    QLayout *L = P ? LayoutHolding(P->layout(), W) : nullptr;
+    if (!L) return {};
     int Idx = L->indexOf(W);
     for (int i = Idx - 1; i >= 0; --i)
     {
@@ -74,6 +85,18 @@ QString PrecedingLabel(QWidget *W)
         if (auto *Lbl = qobject_cast<QLabel *>(It->widget())) return Pretty(Lbl->text());
         break;   // the nearest widget is not a label — do not reach further back and invent an association
     }
+    return {};
+}
+
+// The objectName suffix for W's kind of control ("" for a kind that is not named).
+QString KindOf(QWidget *W)
+{
+    if (auto *B = qobject_cast<QAbstractButton *>(W)) return B->isCheckable() ? "Check" : "Btn";
+    if (qobject_cast<QComboBox *>(W)) return "Combo";
+    if (qobject_cast<QLineEdit *>(W) || qobject_cast<QAbstractSpinBox *>(W) || qobject_cast<QTextEdit *>(W)
+        || qobject_cast<QPlainTextEdit *>(W)) return "Field";
+    if (qobject_cast<QGroupBox *>(W)) return "Group";
+    if (qobject_cast<QAbstractItemView *>(W)) return "View";
     return {};
 }
 
@@ -94,13 +117,17 @@ void ApplyToWidget(QWidget *W)
 {
     if (!W) return;
 
-    QString Name;      // human-facing (accessibleName)
-    QString Kind;      // objectName suffix, so a slug collision across types stays distinguishable
+    QString Name;                        // human-facing (accessibleName)
+    const QString Kind = KindOf(W);      // objectName suffix, so a slug collision across types stays distinguishable
 
+    if (!W->accessibleName().isEmpty())   // named in the source: that is the name, for the objectName too
+    {
+        if (W->objectName().isEmpty() && !Kind.isEmpty()) W->setObjectName(Slug(W->accessibleName()) + Kind);
+        return;
+    }
     if (auto *B = qobject_cast<QAbstractButton *>(W))
     {
         Name = Pretty(B->text());
-        Kind = B->isCheckable() ? "Check" : "Btn";
         // Icon-only buttons have no text at all; fall back to their tooltip, which is what a user hovers to read.
         if (Name.isEmpty()) Name = Pretty(B->toolTip());
     }
@@ -112,18 +139,15 @@ void ApplyToWidget(QWidget *W)
         if (Name.isEmpty())
             if (auto *LE = qobject_cast<QLineEdit *>(W)) Name = Pretty(LE->placeholderText());
         if (Name.isEmpty()) Name = Pretty(W->toolTip());
-        Kind = qobject_cast<QComboBox *>(W) ? "Combo" : "Field";
     }
     else if (auto *G = qobject_cast<QGroupBox *>(W))
     {
         Name = Pretty(G->title());
-        Kind = "Group";
     }
     else if (qobject_cast<QAbstractItemView *>(W))
     {
         Name = PrecedingLabel(W);
         if (Name.isEmpty()) Name = Pretty(W->toolTip());
-        Kind = "View";
     }
     else
     {

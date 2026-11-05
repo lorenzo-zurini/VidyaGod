@@ -3,6 +3,7 @@
 
 #include "manifestmodel.h"
 #include "ipfswrapper.h"
+#include "commonutils.h"   // Diagnostics::Report
 #include <vector>
 #include <functional>
 #include <nlohmann/json.hpp>
@@ -53,8 +54,9 @@ struct LaunchRequest
     std::map<std::string, std::string> VariableOverrides;
     bool ResolveOnly = false;
 };
+//Verdict: the warnings and errors the launch logged, for a caller that shows them (they are printed regardless).
 int Launch(const LaunchRequest &Req, nlohmann::ordered_json &GlobalConfigJSON, QDir &AppDataDir,
-           nlohmann::ordered_json *Resolution = nullptr);
+           nlohmann::ordered_json *Resolution = nullptr, Diagnostics::Report *Verdict = nullptr);
 //The first half of a launch: the node found, the wrapper made and the entry resolved (no mount, nothing run). Null
 //with Err when it does not resolve. The rest is the wrapper's: BuildContainerRuntime, Execute, Cleanup.
 struct PreparedLaunch

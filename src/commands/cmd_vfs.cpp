@@ -46,6 +46,14 @@ void Ok(int Rc, const std::string &What)
     if (Rc < 0) throw std::runtime_error(What + ": " + std::strerror(-Rc));
 }
 
+// A file mode as chmod takes it: octal digits ("644", "0755").
+uint32_t Octal(const std::string &V)
+{
+    if (V.empty() || V.size() > 6 || V.find_first_not_of("01234567") != std::string::npos)
+        throw Command::BadArgs("--mode takes an octal mode (644, 0755), not '" + V + "'");
+    return static_cast<uint32_t>(std::stoul(V, nullptr, 8));
+}
+
 json Attr(const VfsAttr &T)
 {
     char Perm[8];
@@ -246,7 +254,7 @@ VG_COMMANDS
             Loaded L = Load(A);
             const std::string P = V(L, A);
             json Out = json::object();
-            if (A.contains("mode")) Ok(VfsChmod(*L.S, P, static_cast<uint32_t>(std::stoul(Command::Str(A, "mode"), nullptr, 8))), "chmod");
+            if (A.contains("mode")) Ok(VfsChmod(*L.S, P, Octal(Command::Str(A, "mode"))), "chmod");
             if (A.contains("mtime")) Ok(VfsUtimens(*L.S, P, Command::Int(A, "mtime"), Command::Int(A, "mtime")), "utimens");
             if (A.contains("size")) Ok(VfsTruncate(*L.S, P, nullptr, static_cast<uint64_t>(Command::Int(A, "size"))), "truncate");
             if (Command::Bool(A, "readlink", false)) { std::string T; Ok(VfsReadlink(*L.S, P, T), "readlink"); Out["target"] = T; }

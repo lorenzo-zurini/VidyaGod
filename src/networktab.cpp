@@ -131,6 +131,7 @@ void NetworkTab::buildUi()
     Root->addWidget(StatusHint);
 
     Table = new QTableWidget(this);
+    Table->setAccessibleName("Peers");
     Table->verticalHeader()->setVisible(false);
     Table->setEditTriggers(QAbstractItemView::NoEditTriggers);
     Table->setSelectionMode(QAbstractItemView::NoSelection);

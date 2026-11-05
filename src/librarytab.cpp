@@ -8,6 +8,7 @@
 #include "mainwindow.h"        // MainWindow::RefreshPackage (app-wide "package edited" hook)
 #include "commonutils.h"       // LogOut — surface the shown-card count (the "empty library" diagnostic)
 
+#include <QRegularExpression>
 #include <QVBoxLayout>
 #include <QHBoxLayout>
 #include <QLineEdit>
@@ -99,7 +100,7 @@ void LibraryTab::buildUi()
     // Size buttons — right side.
     auto makeSizeBtn = [&](const QString & lbl, int w) {
         QPushButton * b = new QPushButton(lbl, toolbar);
-        b->setObjectName("sizeBtn");
+        b->setObjectName("size" + lbl);   // sizeLarge, sizeMedium, sizeSmall: one name each
         b->setCheckable(true); b->setChecked(Model.cardPixelWidth() == w);
         b->setStyleSheet(
             "QPushButton{color:#8f98a0;background:transparent;border:none;font-size:9pt;padding:2px 8px;}"
@@ -284,6 +285,6 @@ void LibraryTab::refreshCovers()
 void LibraryTab::onCardSizeChanged(int cardW)
 {
     const QString want = cardW >= 250 ? "Large" : cardW <= 120 ? "Small" : "Medium";
-    for (auto * b : findChildren<QPushButton*>("sizeBtn")) b->setChecked(b->text() == want);
+    for (auto * b : findChildren<QPushButton*>(QRegularExpression("^size(Large|Medium|Small)$"))) b->setChecked(b->text() == want);
     relayout();
 }

@@ -6,6 +6,7 @@
 #include <QDir>
 #include <QFile>
 #include <QFileInfo>
+#include <QThreadPool>
 #include <QTimer>
 
 #include <filesystem>
@@ -113,6 +114,31 @@ QString CoverCache::resolve(const nlohmann::ordered_json &Cover, const QString &
     return QString();
 }
 
+QPixmap CoverCache::take(const QString &Path)
+{
+    if (auto It = Decoded.find(Path); It != Decoded.end())
+    {
+        QPixmap P = QPixmap::fromImage(std::move(*It));   // a QPixmap is made on the GUI thread only
+        Decoded.erase(It);
+        return P;
+    }
+    if (!Decoding.contains(Path) && !Undecodable.contains(Path))
+    {
+        Decoding.insert(Path);
+        ++Decodes;
+        QThreadPool::globalInstance()->start([this, Path] {
+            QImage Img(Path);
+            QMetaObject::invokeMethod(this, [this, Path, Img = std::move(Img)]() mutable {   // the cache lives for the app
+                Decoding.remove(Path);
+                if (Img.isNull()) { Undecodable.insert(Path); return; }
+                Decoded.insert(Path, std::move(Img));
+                emit coverDecoded();
+            }, Qt::QueuedConnection);
+        });
+    }
+    return QPixmap();
+}
+
 void CoverCache::sweepNow()
 {
     SweepSoon = false;
@@ -141,8 +167,9 @@ void CoverCache::onTransferFinished(const QString & Cid, bool Ok, const QString 
     // and the miss entries clear there; on failure the miss stays recorded and rides the next sweep.
     bool Ours = false;
     for (const QString & C : MissDest) if (C == Cid) { Ours = true; break; }
-    if (Ours && Ok) emit coverReady(Cid);   // on success the file is on disk (resolve() clears the miss); a failure
-                                            // just leaves the miss recorded to ride the next sweep — retry, batched.
+    // On success the file is on disk (resolve() clears the miss) and a cover that did not decode gets another try; a
+    // failure just leaves the miss recorded to ride the next sweep — retry, batched.
+    if (Ours && Ok) { Undecodable.clear(); emit coverReady(Cid); }
 }
 
 void CoverCache::onNetworkOnline()

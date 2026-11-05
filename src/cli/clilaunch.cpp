@@ -181,16 +181,20 @@ std::unique_ptr<CliModes::PreparedLaunch> CliModes::PrepareLaunch(const LaunchRe
 nlohmann::ordered_json CliModes::ResolutionOf(PreparedLaunch &P) { return DumpResolution(P.W->ContainerParams); }
 
 int CliModes::Launch(const LaunchRequest &Req, nlohmann::ordered_json &GlobalConfigJSON, QDir &AppDataDir,
-                     nlohmann::ordered_json *Resolution)
+                     nlohmann::ordered_json *Resolution, Diagnostics::Report *VerdictOut)
 {
     (void)AppDataDir;
     const LaunchRequest &LaunchParameters = Req;
     Diagnostics::Begin();   // count every WARN/ERR this launch produces; verdict printed at the end
+    const auto Verdict = [VerdictOut](const std::string &What) {   // printed, and handed to the caller that asked
+        const Diagnostics::Report R = Diagnostics::ReportVerdict(What);
+        if (VerdictOut) *VerdictOut = R;
+    };
     std::string Err;
     const std::unique_ptr<PreparedLaunch> P = PrepareLaunch(Req, GlobalConfigJSON, Err);
     //A failed launch is exactly when the verdict matters most; returning early without one means the runs that went
     //wrong are the runs that say nothing.
-    if (!P) { Diagnostics::ReportVerdict("Launch of '" + Req.LaunchNodeId + Req.LaunchTile + "'"); return 1; }
+    if (!P) { Verdict("Launch of '" + Req.LaunchNodeId + Req.LaunchTile + "'"); return 1; }
     ContainerWrapper &NewContainerWrapper = *P->W;
     {
         if (Resolution) *Resolution = ResolutionOf(*P);
@@ -198,7 +202,7 @@ int CliModes::Launch(const LaunchRequest &Req, nlohmann::ordered_json &GlobalCon
         {
             //Every exit reports. A resolve is the cheap way to ask "is this package healthy?", so it is precisely
             //where a quiet resolve warning should be surfaced rather than scrolled past.
-            Diagnostics::ReportVerdict("Resolve of '" + LaunchParameters.LaunchNodeId + "'");
+            Verdict("Resolve of '" + LaunchParameters.LaunchNodeId + "'");
             return 0;
         }
         //Persist any secret seeded from its POOL this launch, so the value is stable from here on (the GUI does the
@@ -222,7 +226,7 @@ int CliModes::Launch(const LaunchRequest &Req, nlohmann::ordered_json &GlobalCon
         if (!NewContainerWrapper.BuildContainerRuntime())
         { LogErr("main.cpp", "Failed to build the container runtime for '" + LaunchParameters.LaunchNodeId
                  + "' — aborting launch (check the log above)."); NewContainerWrapper.Cleanup();
-          Diagnostics::ReportVerdict("Launch of '" + LaunchParameters.LaunchNodeId + "'"); return 1; }
+          Verdict("Launch of '" + LaunchParameters.LaunchNodeId + "'"); return 1; }
         // Real launch (runtime built) → mark the instance last-played. Skipped in the --userdata-dir/in-package
         // override mode (instances are bypassed there — don't litter <root>/USERDATA with a DefaultInstance).
         if (AppPaths::UserDataPathOverride().empty() && !NewContainerWrapper.ContainerParams.PackageUID.empty())
@@ -234,7 +238,7 @@ int CliModes::Launch(const LaunchRequest &Req, nlohmann::ordered_json &GlobalCon
         if (!Started && NewContainerWrapper.UserKilled)                 // told to quit before the game started
         {
             NewContainerWrapper.Cleanup();
-            Diagnostics::ReportVerdict("Launch of '" + LaunchParameters.LaunchNodeId + "'");
+            Verdict("Launch of '" + LaunchParameters.LaunchNodeId + "'");
             return 1;
         }
         if (!Started)
@@ -245,7 +249,7 @@ int CliModes::Launch(const LaunchRequest &Req, nlohmann::ordered_json &GlobalCon
             //The runtime WAS built (mounted): take it down, as the GUI's LaunchThread does on every path. Returning
             //without this left the game's vidyagodfs mount up after a refused launch.
             NewContainerWrapper.Cleanup();
-            Diagnostics::ReportVerdict("Launch of '" + LaunchParameters.LaunchNodeId + "'");
+            Verdict("Launch of '" + LaunchParameters.LaunchNodeId + "'");
             return 1;
         }
         if (!NewContainerWrapper.UserKilled && !ContainerWrapper::Stopping() && NewContainerWrapper.LastCrashed)   // a non-zero exit is Execute's warning; a stop is no crash
@@ -254,7 +258,7 @@ int CliModes::Launch(const LaunchRequest &Req, nlohmann::ordered_json &GlobalCon
         NewContainerWrapper.Cleanup();
         //Same verdict the GUI prints. The CLI is what tooling and debugging actually use, so leaving it untallied
         //would have meant the one path we test with was the one path that could still hide a quiet error.
-        Diagnostics::ReportVerdict("Launch of '" + LaunchParameters.LaunchNodeId + "'");
+        Verdict("Launch of '" + LaunchParameters.LaunchNodeId + "'");
         return NewContainerWrapper.LastCrashed ? 1 : NewContainerWrapper.LastExitCode;
     }
 }

@@ -4,6 +4,8 @@
 #include <QObject>
 #include <QString>
 #include <QHash>
+#include <QImage>
+#include <QPixmap>
 #include <QSet>
 #include <functional>
 
@@ -37,6 +39,12 @@ public:
     // a known CID is recorded for the sweep; NOTHING is fetched here.
     QString resolve(const nlohmann::ordered_json &Cover, const QString &PackageDir);
 
+    // The image at a resolved cover Path, decoded OFF the GUI thread: once a decode has finished it is handed over
+    // (the cache keeps no copy); before that this starts it and returns a null pixmap (the placeholder), and
+    // coverDecoded() fires when it lands so surfaces re-take. Decoding a library's covers inline held the window back
+    // by seconds. A file that does not decode stays null until a transfer lands a new one.
+    QPixmap take(const QString &Path);
+
     // Extracts the (filename, cid) locators from a COVER value. Either may be empty.
     static void Locate(const nlohmann::ordered_json &Cover, QString &File, QString &Cid);
 
@@ -55,6 +63,8 @@ public:
 
     // Test observability: how many (cid,dest) misses are currently recorded.
     int missCount() const { return MissDest.size(); }
+    // …and how many cover decodes have been started.
+    int decodeCount() const { return Decodes; }
 
     // Test seam: override the "is the node online?" probe (defaults to IpfsWrapper::DaemonRunning) — the sweep
     // skips while offline (a pre-online enqueue would fail terminally instead of waiting).
@@ -67,6 +77,7 @@ public:
 
 signals:
     void coverReady(QString cid);
+    void coverDecoded();
 
 private:
     explicit CoverCache(QObject * parent = nullptr);
@@ -75,6 +86,10 @@ private:
     QString AssetsRoot;                     // ASSETS dir for content-addressed covers ("" → in-bundle)
     QHash<QString, QString> MissDest;       // dest path → cid, every cover seen missing and not yet landed
     bool SweepSoon = false;                 // a debounced near-term sweep is already scheduled
+    QHash<QString, QImage> Decoded;         // path → decoded image, waiting for its surface to take it
+    QSet<QString> Decoding;                 // paths a pool thread is decoding now
+    QSet<QString> Undecodable;              // paths whose bytes did not decode (retried once a transfer lands)
+    int Decodes = 0;
 };
 
 #endif // COVERCACHE_H

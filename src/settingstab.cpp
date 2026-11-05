@@ -22,6 +22,7 @@ SettingsTab::SettingsTab(AppModel &model, QWidget *parent)
 
     // Left: category sidebar.
     CategoryList = new QListWidget(this);
+    CategoryList->setAccessibleName("Settings pages");
     CategoryList->setFixedWidth(170);
     CategoryList->setFrameShape(QFrame::NoFrame);
     CategoryList->addItem("General");

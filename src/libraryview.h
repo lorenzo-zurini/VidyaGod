@@ -68,6 +68,7 @@ public:
     double                 DownloadPercent = -1.0; // 0..100 aggregate IPFS progress while Downloading; -1 = unknown
     QPixmap                CoverOriginal;
     QPixmap                CoverScaled;
+    qint64                 CoverScaledFrom = 0;   // the cacheKey of the CoverOriginal it was scaled from
     QString                CoverCid;      // cover's ipfs CID while not yet local (drives lazy-load refresh)
     QString                ElidedTitle;   // cached — recomputed only when card width changes
 
@@ -76,6 +77,7 @@ public:
     bool                          IsSecondary = false;
     std::vector<LibraryGameCard*> Secondaries;     // non-owning (all cards live in the AvailableGameCards pool)
     QPixmap                       CoverSmall;       // cover scaled to the small secondary-tile size
+    qint64                        CoverSmallFrom = 0;
 
     // Sort keys — populated in InitializeClassVariables()
     QString                SortTitle;     // title with leading "The " stripped, lowercased
