@@ -403,7 +403,14 @@ json ParseArgs(const Command::Spec &S, const std::vector<std::string> &Rest, boo
                 if (I + 1 >= Rest.size()) throw Command::BadArgs("--" + Key + " needs " + Placeholder(*A));
                 Val = Rest[++I];
             }
-            Out[A->Name] = Typed(*A, Val);
+            //A text option given again is a list of what it was given (--base a --base b): a value may hold any
+            //character — a Steam depot's file name has commas in it.
+            if (A->Kind == Command::Type::String && Out.contains(A->Name))
+            {
+                if (!Out[A->Name].is_array()) Out[A->Name] = json::array({ Out[A->Name] });
+                Out[A->Name].push_back(Typed(*A, Val));
+            }
+            else Out[A->Name] = Typed(*A, Val);
             continue;
         }
         if (NextPos >= Pos.size()) throw Command::BadArgs("unexpected argument '" + W + "'");

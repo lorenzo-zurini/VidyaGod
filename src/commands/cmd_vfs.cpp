@@ -325,7 +325,7 @@ VG_COMMANDS
         "--make: the delta that rebuilds --target from --base (written to --out). --verify: rebuild --target from "
         "--base through the delta and compare every byte. --rebuild: write what the delta over --base rebuilds to "
         "--out. Several --base files are one base, concatenated in order (a delta over several sources).",
-        { Pos("delta", "the .vgdelta"), Opt("base", "the base file(s) (a,b)", Type::String, true), Opt("target", "(--make, --verify) the target file"),
+        { Pos("delta", "the .vgdelta"), Opt("base", "the base file (again for each more: --base a --base b)", Type::String, true), Opt("target", "(--make, --verify) the target file"),
           Opt("out", "(--make, --rebuild) write here"), Flag("make", "make it"), Flag("verify", "verify it"), Flag("rebuild", "rebuild the target"),
           Opt("block", "(--make) block size", Type::Int) },
         { "vfs delta p.vgdelta --make --base a.zip --target b.zip", "vfs delta p.vgdelta --verify --base a.zip --target b.zip" },
@@ -334,7 +334,7 @@ VG_COMMANDS
           "MemByteSource::size" }, Needs::Config, false,
         [](Command::Context &, const json &A) {
             std::vector<std::shared_ptr<ByteSource>> Parts;
-            for (const auto &B : List(A, "base")) Parts.push_back(Map(B));
+            for (const auto &B : PathList(A, "base")) Parts.push_back(Map(B));
             std::shared_ptr<ByteSource> Base = Parts.size() == 1 ? Parts.front() : std::make_shared<ConcatByteSource>(Parts);
             const std::string D = Command::Str(A, "delta");
             if (Command::Bool(A, "make", false))

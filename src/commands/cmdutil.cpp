@@ -2,6 +2,8 @@
 #include <cctype>
 #include "apppaths.h"   // ConfigReadOnly
 #include "cmdutil.h"
+
+#include <filesystem>
 #include "appmodel.h"
 #include "jsonoperations.h"
 #include "packageeditor.h"
@@ -106,6 +108,13 @@ std::vector<std::string> List(const json &Args, const char *Key)
     std::stringstream In(V.get<std::string>());
     for (std::string X; std::getline(In, X, ',');) if (!X.empty()) Out.push_back(X);
     return Out;
+}
+
+std::vector<std::string> PathList(const json &Args, const char *Key)
+{
+    if (Args.contains(Key) && Args[Key].is_string())
+        if (std::error_code Ec; std::filesystem::exists(Args[Key].get<std::string>(), Ec)) return { Args[Key].get<std::string>() };
+    return List(Args, Key);
 }
 
 double Number(const std::string &V, const std::string &What)

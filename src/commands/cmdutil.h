@@ -29,6 +29,9 @@ const Node *NodeOf(const NodeIndex &Idx, const std::string &Id);
 std::filesystem::path PackageDir(Command::Context &C, const std::string &Q, bool Received = true);
 // "a,b,c" or a JSON array, as a list of strings ("" / absent: none).
 std::vector<std::string> List(const json &Args, const char *Key);
+// A list of paths: the option given once per path (--base a --base b), or one value. One value that names a file is
+// that file, commas and all; otherwise a,b,c as List reads it.
+std::vector<std::string> PathList(const json &Args, const char *Key);
 // A number given as text, all of it ("12.5", never "12abc") — BadArgs naming What when it is not one.
 double Number(const std::string &V, const std::string &What);
 // An "x,y" option: false when it is absent, BadArgs when it is not two numbers.
