@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
-"""The C++ resolver (src/fold.cpp, via build/vg_fold) against the reference (resolve.py), plan for plan, on exactly
-the resolves the equivalence gate performs (equivalence.py --record). Also the graft offering per row.
+"""The C++ resolver (src/fold.cpp, via build/vg_fold) against the reference (resolve.py), plan for plan, on a list of
+recorded resolves (one JSON request per line). Also the graft offering per row.
 
 Usage: fold_gate.py <gen6-library> <recorded.jsonl> [--vg-fold build/vg_fold]
        fold_gate.py --fixtures [--vg-fold build/vg_fold]      # the rule fixtures only (ctest fold_fixtures)
