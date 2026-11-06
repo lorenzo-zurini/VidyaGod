@@ -2,6 +2,7 @@
 // Windows 11 (measured on the test VM): profile -> user/current, C:\ProgramData -> user/all, C:\Users\Public ->
 // user/public, any other path -> drive/<letter>. The copies and the .reg text are plain files, tested here on any OS.
 #include "vgtest.h"
+#include "platform/platform.h"
 #include "boxprefix.h"
 #include "registrywrapper.h"
 
@@ -204,12 +205,12 @@ TEST(box_remove_tree_removes_links_never_what_they_name)
     fs::create_directory_symlink(T.P / "outside", T.P / "box/a/junction");
     fs::create_symlink(T.P / "outside/keep.txt", T.P / "box/file-link");
     std::vector<std::string> Errors;
-    CHECK(BoxPrefix::RemoveTree(T.P / "box", Errors));
+    CHECK(Platform::RemoveTree(T.P / "box", Errors));
     CHECK(Errors.empty());
     CHECK(!fs::exists(T.P / "box"));
     CHECK_EQ(Get(T.P / "outside/keep.txt"), std::string("the user's"));
-    CHECK(BoxPrefix::RemoveTree(T.P / "box", Errors));                               // nothing there: nothing to do
-    CHECK(BoxPrefix::IsLink(T.P / "outside") == false);
+    CHECK(Platform::RemoveTree(T.P / "box", Errors));                               // nothing there: nothing to do
+    CHECK(Platform::IsLink(T.P / "outside") == false);
 }
 
 TEST(box_registry_round_trips_through_a_reg_file)

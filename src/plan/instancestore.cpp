@@ -1,7 +1,7 @@
 #include "instancestore.h"
+#include "platform/platform.h"
 #include "apppaths.h"
 #include "commonutils.h"
-#include "boxprefix.h"   // RemoveTree — an instance's box may hold links the game made
 
 #include <algorithm>
 #include <atomic>
@@ -204,7 +204,7 @@ bool Delete(const nlohmann::ordered_json &Cfg, const std::string &PackageUID, co
     if (!fs::exists(Dir, Ec)) return true;                    // already gone
     //Never through a link: its box and kept folders hold what the game wrote (on Windows MinGW's remove_all follows one).
     std::vector<std::string> Left;
-    return BoxPrefix::RemoveTree(Dir, Left) ? true : Fail("delete failed: " + Left.front());
+    return Platform::RemoveTree(Dir, Left) ? true : Fail("delete failed: " + Left.front());
 }
 
 bool Clone(const nlohmann::ordered_json &Cfg, const std::string &PackageUID, const std::string &From, const std::string &To, std::string *Error)

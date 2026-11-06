@@ -74,7 +74,7 @@ void Report(const char *Where, const std::vector<std::string> &Errors, const std
 bool Empty(const SandboxLayer::Options &O, std::vector<std::string> &Errors)
 {
     if (!SandboxLayer::EmptyBox(O)) LogWarn("BoxLaunch", "Sandboxie did not empty the game's box " + O.BoxRoot + "; removing what is left.");
-    return BoxPrefix::RemoveTree(O.BoxRoot, Errors);
+    return Platform::RemoveTree(O.BoxRoot, Errors);
 }
 
 //What Materialise gave the box (its box paths, one per line), kept at the box root, beside what Sandboxie keeps there

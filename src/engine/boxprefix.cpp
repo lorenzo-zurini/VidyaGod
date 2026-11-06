@@ -1,5 +1,6 @@
 #include "boxprefix.h"
 #include "registrywrapper.h"
+#include "platform/platform.h"
 
 #include <algorithm>
 #include <functional>
@@ -114,56 +115,6 @@ bool CopyFile(const std::filesystem::path &From, const std::filesystem::path &To
 
 } // namespace
 
-bool IsLink(const std::filesystem::path &P)
-{
-#ifdef _WIN32
-    const DWORD A = ::GetFileAttributesW(P.wstring().c_str());
-    return A != INVALID_FILE_ATTRIBUTES && (A & FILE_ATTRIBUTE_REPARSE_POINT);
-#else
-    std::error_code Ec;
-    return std::filesystem::is_symlink(std::filesystem::symlink_status(P, Ec));
-#endif
-}
-
-bool RemoveTree(const std::filesystem::path &Root, std::vector<std::string> &Errors)
-{
-    namespace fs = std::filesystem;
-    const size_t Before = Errors.size();
-    auto Remove = [&](const fs::path &P) {
-#ifdef _WIN32
-        //A link as the link: MinGW's remove() reports nothing for a dangling one and leaves it.
-        if (IsLink(P))
-        {
-            const std::wstring W = P.wstring();
-            if (!::RemoveDirectoryW(W.c_str()) && !::DeleteFileW(W.c_str()))
-                Errors.push_back(P.string() + ": a link that cannot be removed (error " + std::to_string(::GetLastError()) + ")");
-            return;
-        }
-#endif
-        std::error_code Ec;
-        if (fs::remove(P, Ec) || !Ec) return;
-        fs::permissions(P, fs::perms::owner_write, fs::perm_options::add, Ec);   // a read-only file a game left
-        Ec.clear();
-        if (!fs::remove(P, Ec) && Ec) Errors.push_back(P.string() + ": " + Ec.message());
-    };
-    std::function<void(const fs::path &)> Empty = [&](const fs::path &D) {
-        std::error_code Ec;
-        std::vector<fs::path> Kids;
-        for (fs::directory_iterator It(D, Ec), End; !Ec && It != End; It.increment(Ec)) Kids.push_back(It->path());
-        if (Ec) { Errors.push_back(D.string() + ": " + Ec.message()); return; }
-        for (const fs::path &K : Kids)
-        {
-            std::error_code Ie;
-            if (!IsLink(K) && fs::is_directory(K, Ie)) Empty(K);
-            Remove(K);   // a link: the link itself, never what it names
-        }
-    };
-    std::error_code Ec;
-    if (!fs::exists(Root, Ec) && !IsLink(Root)) return true;
-    if (!IsLink(Root) && fs::is_directory(Root, Ec)) Empty(Root);
-    Remove(Root);
-    return Errors.size() == Before;
-}
 
 namespace {
 
@@ -176,7 +127,7 @@ bool LinkOnTheWay(const std::filesystem::path &Base, const std::string &Rel)
     for (const auto &Part : R.parent_path())
     {
         At /= Part;
-        if (IsLink(At)) return true;
+        if (Platform::IsLink(At)) return true;
     }
     return false;
 }
@@ -196,7 +147,7 @@ bool FilesBelow(const std::filesystem::path &Root, std::vector<std::string> &Out
         for (fs::directory_iterator It(D, Ec), End; !Ec && It != End; It.increment(Ec))
         {
             const fs::path P = It->path();
-            if (IsLink(P)) continue;
+            if (Platform::IsLink(P)) continue;
             std::error_code Ie;
             if (It->is_directory(Ie))
             {
@@ -326,7 +277,7 @@ bool Materialise(const std::filesystem::path &RuntimePath, const std::string &Co
         const std::string Root = DriveRoot(V);
         std::error_code Ec;
         const fs::path Top = RuntimePath / Root;
-        if (Root.empty() || IsLink(Top) || !fs::is_directory(Top, Ec)) continue;
+        if (Root.empty() || Platform::IsLink(Top) || !fs::is_directory(Top, Ec)) continue;
         std::vector<std::string> Files;
         //Never into the game folder: the game reads it from the mount, and listing it (through the mount) costs a walk
         //of the whole game and can fail on a folder the box never needed.
@@ -353,7 +304,7 @@ bool SyncKeepsBack(const std::filesystem::path &RuntimePath, const std::string &
     auto BoxOf = [&](const std::string &Rel) { return BoxRelForReal(RealForLayout(Rel, Drives), Host); };
     //Into the runtime, never through a link the game made there (it would write wherever the link points).
     auto Put = [&](const fs::path &From, const std::string &RuntimeRel) {
-        if (LinkOnTheWay(RuntimePath, RuntimeRel) || IsLink(RuntimePath / RuntimeRel))
+        if (LinkOnTheWay(RuntimePath, RuntimeRel) || Platform::IsLink(RuntimePath / RuntimeRel))
         { Errors.push_back((RuntimePath / RuntimeRel).string() + ": a link is on its way — not written through"); return; }
         CopyFile(From, RuntimePath / RuntimeRel, Errors);
     };
@@ -363,10 +314,10 @@ bool SyncKeepsBack(const std::filesystem::path &RuntimePath, const std::string &
         std::error_code Ec;
         const bool There = fs::exists(BoxRoot / BoxRel, Ec);
         if (Ec) { Errors.push_back((BoxRoot / BoxRel).string() + ": " + Ec.message() + " — not taken for deleted"); return; }
-        if (There || IsLink(BoxRoot / BoxRel)) return;
+        if (There || Platform::IsLink(BoxRoot / BoxRel)) return;
         const fs::path R = RuntimePath / RuntimeRel;
         if (LinkOnTheWay(RuntimePath, RuntimeRel)) { Errors.push_back(R.string() + ": a link is on its way — not deleted through"); return; }
-        if (!IsLink(R) && !fs::is_regular_file(R, Ec)) return;
+        if (!Platform::IsLink(R) && !fs::is_regular_file(R, Ec)) return;
         if (!fs::remove(R, Ec) && Ec) Errors.push_back(R.string() + " (deleted by the game): " + Ec.message());
     };
     auto Under = [](const std::string &P, const std::string &Dir, std::string &Rest) {
@@ -381,7 +332,7 @@ bool SyncKeepsBack(const std::filesystem::path &RuntimePath, const std::string &
         const std::string B = BoxOf(D.Path);
         std::error_code Ec;
         const fs::path Src = BoxRoot / B;
-        if (B.empty() || IsLink(Src) || !fs::is_directory(Src, Ec)) continue;   // no copy in the box: nothing is touched
+        if (B.empty() || Platform::IsLink(Src) || !fs::is_directory(Src, Ec)) continue;   // no copy in the box: nothing is touched
         std::vector<std::string> Files, Dirs;
         const bool Listed = FilesBelow(Src, Files, Errors, &Dirs);
         for (const std::string &R : Dirs)
@@ -402,16 +353,16 @@ bool SyncKeepsBack(const std::filesystem::path &RuntimePath, const std::string &
         {
             const std::string B = BoxOf(F.Path);
             if (B.empty()) continue;
-            if (!IsLink(BoxRoot / B) && fs::is_regular_file(BoxRoot / B, Ec)) Put(BoxRoot / B, F.Path);
+            if (!Platform::IsLink(BoxRoot / B) && fs::is_regular_file(BoxRoot / B, Ec)) Put(BoxRoot / B, F.Path);
             else if (std::any_of(Placed.begin(), Placed.end(), [&](const std::string &P) { return Lower(P) == Lower(B); }))
                 Gone(B, F.Path);
             continue;
         }
         const std::string Dir = Rel.parent_path().generic_string();
         const std::string B = BoxOf(Dir);
-        if (B.empty() || IsLink(BoxRoot / B) || !fs::is_directory(BoxRoot / B, Ec)) continue;
+        if (B.empty() || Platform::IsLink(BoxRoot / B) || !fs::is_directory(BoxRoot / B, Ec)) continue;
         for (const fs::directory_entry &E : fs::directory_iterator(BoxRoot / B, Ec))
-            if (!IsLink(E.path()) && E.is_regular_file(Ec) && Glob(Leaf, E.path().filename().string()))
+            if (!Platform::IsLink(E.path()) && E.is_regular_file(Ec) && Glob(Leaf, E.path().filename().string()))
                 Put(E.path(), Dir + "/" + E.path().filename().string());
         if (Ec) { Errors.push_back((BoxRoot / B).string() + ": " + Ec.message()); continue; }
         std::string Rest;
@@ -433,19 +384,19 @@ std::vector<std::string> KeptNotInBox(const std::filesystem::path &RuntimePath, 
     auto Check = [&](const std::string &RuntimeRel) {
         std::error_code Ec;
         const fs::path R = RuntimePath / RuntimeRel;
-        if (IsLink(R) || !fs::is_regular_file(R, Ec)) return;                 // nothing of the user's to carry
+        if (Platform::IsLink(R) || !fs::is_regular_file(R, Ec)) return;                 // nothing of the user's to carry
         const std::string B = BoxOf(RuntimeRel);
         if (B.empty()) { Missing.push_back(R.string() + ": no drive lays it out"); return; }
         const fs::path In = BoxRoot / B;
         std::error_code E1, E2;
-        if (IsLink(In) || !fs::is_regular_file(In, E1) || fs::file_size(In, E1) != fs::file_size(R, E2) || E1 || E2)
+        if (Platform::IsLink(In) || !fs::is_regular_file(In, E1) || fs::file_size(In, E1) != fs::file_size(R, E2) || E1 || E2)
             Missing.push_back(R.string() + " -> " + In.string());
     };
     for (const PersistTarget &D : KeepDirs)
     {
         if (D.Path.empty() || !InBox(D.Path, ContentRoot, Drives)) continue;
         std::error_code Ec;
-        if (IsLink(RuntimePath / D.Path) || !fs::is_directory(RuntimePath / D.Path, Ec)) continue;   // nothing kept there yet
+        if (Platform::IsLink(RuntimePath / D.Path) || !fs::is_directory(RuntimePath / D.Path, Ec)) continue;   // nothing kept there yet
         std::vector<std::string> Files, Errors;
         //A kept folder that cannot be listed whole is not known to have reached the box.
         if (!FilesBelow(RuntimePath / D.Path, Files, Errors)) for (const std::string &E : Errors) Missing.push_back(E);

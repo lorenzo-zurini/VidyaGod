@@ -1099,7 +1099,7 @@ void VfsMount::CleanStaleRuntime(const std::filesystem::path &TempPath)
     {
 #ifdef _WIN32
         //Never through a link the game left in its writable layer (MinGW's remove_all follows junctions).
-        if (std::vector<std::string> Left; !BoxPrefix::RemoveTree(TempPath, Left))
+        if (std::vector<std::string> Left; !Platform::RemoveTree(TempPath, Left))
             LogWarn("VfsMount::CleanStaleRuntime", "Could not remove stale TEMP: " + Left.front());
 #else
         std::error_code Ec;

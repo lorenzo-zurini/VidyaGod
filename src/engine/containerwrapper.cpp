@@ -858,7 +858,7 @@ bool ContainerWrapper::Cleanup()
 #ifdef _WIN32
     //MinGW's remove_all follows a junction or symlink (its lstat is stat), and the writable layer holds whatever links
     //the game made: removed as links, never through them.
-    if (std::vector<std::string> Left; !BoxPrefix::RemoveTree(this->ContainerParams.TempPath, Left))
+    if (std::vector<std::string> Left; !Platform::RemoveTree(this->ContainerParams.TempPath, Left))
         LogWarn("ContainerWrapper::Cleanup", "Could not remove TEMP: " + Left.front() + " — may still be mounted.");
 #else
     std::filesystem::remove_all(this->ContainerParams.TempPath, ec);

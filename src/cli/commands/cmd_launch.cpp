@@ -224,7 +224,7 @@ VG_COMMANDS
           "SandboxLayer::HomeEnv", "SandboxLayer::HomeLeftovers", "SandboxLayer::TakeLoaderEnv", "SandboxLayer::PrepareBox", "SandboxLayer::BoxIniCommands",
           "SandboxLayer::BoxStartArgs", "SandboxLayer::RunInBox", "SandboxLayer::TerminateBox", "SandboxLayer::EmptyBox", "BoxLaunch::Prepare",
           "BoxLaunch::Harvest", "BoxLaunch::Discard", "BoxPrefix::Materialise", "BoxPrefix::SyncKeepsBack", "BoxPrefix::InBox", "BoxPrefix::BoxRelForReal",
-          "BoxPrefix::RealForLayout", "BoxPrefix::KeptNotInBox", "BoxPrefix::IsLink", "BoxPrefix::RemoveTree", "LaunchResolver::ProbePrefixLayout",
+          "BoxPrefix::RealForLayout", "BoxPrefix::KeptNotInBox", "Platform::IsLink", "Platform::RemoveTree", "LaunchResolver::ProbePrefixLayout",
           "LaunchResolver::ApplyInnerEnv", "RunnerInstall::RunnerBuildPresent", "RunnerInstall::RunnerNodeImported", "RunnerInstall::CollectRunnerNodeTargets" },
         Needs::Config, true,
         [](Command::Context &C, const json &A) {

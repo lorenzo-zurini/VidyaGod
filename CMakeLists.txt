@@ -121,6 +121,7 @@ set(SHARED_SOURCES
 
     # OS-abstraction seam (host-specific bits). platform_posix.cpp on Linux; platform_win.cpp on Windows.
     src/base/platform/platform.h
+    src/base/platform/platform_fs.cpp
     ${VG_PLATFORM_SRC}
 
     src/ui/libraryview.h
@@ -144,8 +145,8 @@ set(SHARED_SOURCES
     src/editor/jsonraweditor.cpp
     src/editor/pkginsight.cpp
 
-    src/base/filesystemoperations.h
-    src/base/filesystemoperations.cpp
+    src/format/filesystemoperations.h
+    src/format/filesystemoperations.cpp
 
     src/base/jsonoperations.h
     src/base/jsonoperations.cpp
@@ -164,8 +165,8 @@ set(SHARED_SOURCES
     # the CLI app: every function and every view of the program by name (standing rule — see src/cli/command.h)
     src/cli/command.h
     src/cli/command.cpp
-    src/app/commandserver.h
-    src/app/commandserver.cpp
+    src/cli/commandserver.h
+    src/cli/commandserver.cpp
     src/cli/cliapp.h
     src/cli/cliapp.cpp
     src/cli/commands/cmd_friends.cpp
@@ -213,8 +214,8 @@ set(SHARED_SOURCES
     src/engine/fileedits.h
     src/engine/fileedits.cpp
 
-    src/format/binarypatch.h
-    src/format/binarypatch.cpp
+    src/engine/binarypatch.h
+    src/engine/binarypatch.cpp
 
     src/engine/registrylayer.h
     src/engine/registrylayer.cpp
@@ -293,11 +294,11 @@ set(SHARED_SOURCES
     src/engine/authoringsession.h
     src/engine/authoringsession.cpp
 
-    src/app/authoringsessionmodel.h
-    src/app/authoringsessionmodel.cpp
+    src/editor/authoringsessionmodel.h
+    src/editor/authoringsessionmodel.cpp
 
-    src/ui/deltatree.h
-    src/ui/deltatree.cpp
+    src/editor/deltatree.h
+    src/editor/deltatree.cpp
 
     src/editor/authoringsessionwindow.h
     src/editor/authoringsessionwindow.cpp
@@ -319,8 +320,8 @@ set(SHARED_SOURCES
     src/app/appmodel.h
     src/app/appmodel.cpp
 
-    src/app/downloadmanager.h
-    src/app/downloadmanager.cpp
+    src/ui/downloadmanager.h
+    src/ui/downloadmanager.cpp
 
     src/ui/variantpicker.h
     src/ui/variantpicker.cpp
@@ -468,7 +469,7 @@ add_executable(vg_tests
     src/engine/registrywrapper.cpp
     src/engine/boxprefix.cpp
     src/engine/fileedits.cpp
-    src/format/binarypatch.cpp
+    src/engine/binarypatch.cpp
     src/engine/registrylayer.cpp
     src/engine/persistlayer.cpp
     src/plan/optionreadback.cpp
@@ -478,6 +479,7 @@ add_executable(vg_tests
     src/base/commonutils.cpp
     src/engine/depcheck.cpp        # Qt-free dependency detection engine (ParseLdconfig/Check)
     ${VG_PLATFORM_SRC}      # Platform::SelfExe (used by depcheck) — POSIX or Win32 impl
+    src/base/platform/platform_fs.cpp   # Platform::IsLink / RemoveTree (boxprefix)
     src/plan/launchparams.cpp)   # ContainerParams::GetVariablesMap — validator's built-in %variable% source of truth
 target_include_directories(vg_tests PRIVATE ${VG_SRC_DIRS} tests VidyaGodFS/src)
 if(WIN32)

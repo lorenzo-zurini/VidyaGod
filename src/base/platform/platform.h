@@ -23,6 +23,13 @@ namespace Platform {
 //   Windows: GetModuleFileNameW(nullptr, …)
 std::filesystem::path SelfExe();
 
+// Whether P is a link: a symlink, or on Windows any reparse point (a junction too; MinGW's std::filesystem cannot tell).
+bool IsLink(const std::filesystem::path &P);
+
+// Deletes Root and everything below it, removing each link met as the link (never what it names: a game's folder may
+// hold a link to the user's own files). Errors names what stayed; true when nothing did.
+bool RemoveTree(const std::filesystem::path &Root, std::vector<std::string> &Errors);
+
 // Single-instance guard: try to become the sole running instance, keyed by `Key` (a stable
 // per-user string — the app passes its lock-file path). Returns true if acquired (held until the
 // process exits — intentionally never released early, mirroring the lock fd/handle lifetime), false

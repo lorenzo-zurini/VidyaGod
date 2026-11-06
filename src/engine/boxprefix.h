@@ -65,12 +65,6 @@ std::vector<std::string> KeptNotInBox(const std::filesystem::path &RuntimePath, 
                                       const nlohmann::ordered_json &Drives, const std::map<std::string, std::string> &Host,
                                       const std::filesystem::path &BoxRoot, const std::vector<PersistTarget> &KeepDirs,
                                       const std::vector<PersistTarget> &KeepFiles);
-// Whether P is a link: a symlink, or on Windows any reparse point (a junction too; MinGW's std::filesystem cannot tell).
-bool IsLink(const std::filesystem::path &P);
-
-// Deletes Root and everything below it, removing each link met as the link (never what it names). Errors names what
-// stayed; true when nothing did.
-bool RemoveTree(const std::filesystem::path &Root, std::vector<std::string> &Errors);
 
 // The registry as a "Windows Registry Editor Version 5.00" file (UTF-8 text; write it with Utf8ToUtf16Le for reg.exe).
 // HKU\.Default is left out: importing it needs rights a game's box does not have. A string with a line break is
