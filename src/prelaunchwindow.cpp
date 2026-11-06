@@ -666,7 +666,7 @@ void PreLaunchWindow::RebuildRunnerChain()
     const Node* L = CurrentLaunch();
     if (L)
     {
-        ContainerParams Cp(std::filesystem::path(BundleDir), LaunchNodeId, std::string());
+        ContainerParams Cp{std::filesystem::path(BundleDir)};
         Cp.NodeIdx = Index; Cp.LaunchNodeId = LaunchNodeId; Cp.Entrypoint = Entrypoint; Cp.PackageUID = PackageUID;
         Cp.InstanceName = InstanceName;
         Cp.Platform = ChainStepInput(0);
@@ -1083,7 +1083,7 @@ void PreLaunchWindow::ReadBackFromFiles()
     const std::string Key = InstanceName + "|" + LaunchNodeId + "|" + RowGraft;
     if (Key == ReadBackDoneFor) return;
     ReadBackDoneFor = Key;
-    ContainerParams Cp{std::filesystem::path(BundleDir), std::string(), std::string()};
+    ContainerParams Cp{std::filesystem::path(BundleDir)};
     Cp.NodeIdx         = Index;
     Cp.LaunchNodeId    = RowGraft.empty() ? LaunchNodeId : RowGraft;
     Cp.GraftBase       = RowGraft.empty() ? std::string() : LaunchNodeId;
@@ -1094,8 +1094,7 @@ void PreLaunchWindow::ReadBackFromFiles()
     Cp.Grafts          = CollectGrafts();
     Cp.ReadBackOptions = true;
     Cp.ReadBackReresolve = false;
-    nlohmann::ordered_json Pool = nlohmann::ordered_json::object();
-    (void)LaunchResolver::InitializeFromNode(Cp, Pool, *GlobalConfigJSON);
+    (void)LaunchResolver::InitializeFromNode(Cp, *GlobalConfigJSON);
 }
 
 void PreLaunchWindow::RebuildCustomVarPickers()
@@ -1160,7 +1159,7 @@ void PreLaunchWindow::RebuildCustomVarPickers()
             if (SavedVars.contains(Key) && SavedVars[Key].is_string()) Initial = std::string(SavedVars[Key]);
             //Kept in the format's spelling (%% stays %%): the value is saved and passed as an override, both read as
             //format text again — written out here, each launch would strip one more level.
-            { ContainerParams TmpP("", "", ""); VarSubst::StringVariableSubstitution(Initial, TmpP.GetVariablesMap(), /*KeepEscapes=*/true); }
+            { ContainerParams TmpP; VarSubst::StringVariableSubstitution(Initial, TmpP.GetVariablesMap(), /*KeepEscapes=*/true); }
 
             const QString Label = QString::fromStdString(UI.value("LABEL", Key));
             QWidget* Field = nullptr;       // the value control (carries CVKey); null for an uneditable secret pool
@@ -1235,7 +1234,7 @@ void PreLaunchWindow::RebuildCustomVarPickers()
             else if (Control == "key")
             {
                 std::string Default = CV.value("DEFAULT", std::string());
-                { ContainerParams TmpP("", "", ""); VarSubst::StringVariableSubstitution(Default, TmpP.GetVariablesMap()); }
+                { ContainerParams TmpP; VarSubst::StringVariableSubstitution(Default, TmpP.GetVariablesMap()); }
                 auto* KeyField = new KeyCaptureField(Initial, Default, CustomVarGroup);
                 connect(KeyField, &KeyCaptureField::changed, this, [this] { EvaluateVarConditions(); MarkKeyConflicts(); });
                 Field = KeyField;
@@ -1851,7 +1850,7 @@ void PreLaunchWindow::onLaunchClicked()
           std::vector<std::string> Default;
           if (const Node* L = CurrentLaunch())
           {
-              ContainerParams Cp(std::filesystem::path(BundleDir), LaunchNodeId, std::string());
+              ContainerParams Cp{std::filesystem::path(BundleDir)};
               Cp.NodeIdx = Index; Cp.LaunchNodeId = LaunchNodeId; Cp.Entrypoint = Entrypoint; Cp.PackageUID = PackageUID;
               Cp.InstanceName = InstanceName; Cp.Platform = ChainStepInput(0); Cp.IgnoreSavedChain = true;
               Default = LaunchResolver::ResolveChainIds(*Index, *L, Cp, *GlobalConfigJSON);

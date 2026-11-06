@@ -25,7 +25,7 @@
 
 //The pure manifest queries + VFS-layer helpers live in ManifestModel; the catalog/user-settings service in
 //PackageCatalog. Bring both in unqualified so the resolver code (moved verbatim out of ContainerWrapper) reads
-//naturally (FindComponentIndex / GetPackageUserSettings / MachinePlatform / IsVfsLayer / ...).
+//naturally (GetPackageUserSettings / MachinePlatform / IsVfsLayer / ...).
 using namespace ManifestModel;
 using namespace PackageCatalog;
 

@@ -6,13 +6,8 @@
 #include <functional>
 #include <map>
 
-//Minimal constructor — stores only the three PASSED values; everything else is derived later
-//by the LaunchResolver pipeline once the node graph and GlobalConfig are available.
-ContainerParams::ContainerParams(std::filesystem::path Passed_PackagePath, std::string Passed_subgame_id, std::string Passed_component_id)
-    : PackagePath(Passed_PackagePath), subgame_id(Passed_subgame_id), component_id(Passed_component_id)
-{
-    LogOut("ContainerParams::ContainerParams", "ContainerParams object created...");
-}
+//Everything but the package's folder is filled in by the LaunchResolver pipeline from the node graph and the config.
+ContainerParams::ContainerParams(std::filesystem::path Passed_PackagePath) : PackagePath(std::move(Passed_PackagePath)) {}
 
 std::map<std::string, std::string> ContainerParams::GetVariablesMap() const
 {

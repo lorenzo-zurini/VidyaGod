@@ -3282,7 +3282,7 @@ std::vector<std::string> RunnerChainIds(const NodeIndex &Idx, const std::string 
 {
     const Node *Launch = Idx.Find(LaunchNodeId);
     if (!Launch) return {};
-    ContainerParams Cp(Launch->BundleDir, LaunchNodeId, std::string());
+    ContainerParams Cp(Launch->BundleDir);
     Cp.NodeIdx = &Idx; Cp.LaunchNodeId = LaunchNodeId; Cp.PackageUID = Launch->Uid;
     std::vector<std::string> Ids;
     for (const std::string &RunnerId : LaunchResolver::ResolveChainIds(Idx, *Launch, Cp, GlobalConfigJSON))
@@ -3307,7 +3307,7 @@ bool CollectRunnerChainTargets(const NodeIndex &Idx, const std::string &LaunchNo
         const std::string Base = DefaultGraftBase(Idx, Launch->Key());
         return Base.empty() || CollectRunnerChainTargets(Idx, Base, GlobalConfigJSON, Out, Error);
     }
-    ContainerParams Cp(Launch->BundleDir, LaunchNodeId, std::string());
+    ContainerParams Cp(Launch->BundleDir);
     Cp.NodeIdx = &Idx; Cp.LaunchNodeId = LaunchNodeId; Cp.PackageUID = Launch->Uid;   // for the per-package runner pin lookup
     //Every ENTRYPOINT's chain: the entries may run on different platforms (a native and a win32 build), and a
     //hydrated game must be playable through whichever the user picks.

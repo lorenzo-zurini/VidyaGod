@@ -23,7 +23,7 @@
 
 //The pure manifest queries + VFS-layer helpers live in ManifestModel; the catalog/user-settings service in
 //PackageCatalog. Bring both in unqualified so the resolver code (moved verbatim out of ContainerWrapper) reads
-//naturally (FindComponentIndex / GetPackageUserSettings / MachinePlatform / IsVfsLayer / ...).
+//naturally (GetPackageUserSettings / MachinePlatform / IsVfsLayer / ...).
 using namespace ManifestModel;
 using namespace PackageCatalog;
 
@@ -45,7 +45,7 @@ using namespace PackageCatalog;
 //     seed and reported in ContainerParams.PickedSecrets for the caller to persist)
 
 // P6 split: CustomVar resolution + subcomponent assembly (see launchresolver.cpp for the spine).
-bool LaunchResolver::ResolveCustomVariables(const nlohmann::ordered_json &MANIFESTJSON, struct ContainerParams &ContainerParams, const nlohmann::ordered_json &GlobalConfigJSON)
+bool LaunchResolver::ResolveCustomVariables(struct ContainerParams &ContainerParams, const nlohmann::ordered_json &GlobalConfigJSON)
 {
     //ONE snapshot of the package's persisted VARIABLES for the whole resolve. The old code re-ran the
     //O(LIBRARY) settings scan (with a deep USERSETTINGS copy) for EVERY custom-var key.
@@ -98,29 +98,13 @@ bool LaunchResolver::ResolveCustomVariables(const nlohmann::ordered_json &MANIFE
         Winning[Key] = S;                                          // later declaration overwrites (hierarchy)
     };
     //Runner knobs share the same global namespace (a runner exposes %KEY% in its ENV/ARGS; a game can seed them).
-    //Scope to the active runner variant (RunnerRecipe) so an inactive multi-version component's knob can't win.
     //Collected FIRST: the runner's declaration is the least-specific default of the whole composition, so a
     //game-side declaration of the same key must overwrite it ("a game can seed them" — e.g. a runner declares
     //PROTON_DXVK_D3D8=0 as the safe global default and a D3D8 game's package flips it to 1). Collecting the
     //runner last silently made runner defaults unoverridable by packages.
-    if (!ContainerParams.RunnerComponents.empty())
-    {
-        std::set<std::string> RunnerWant(ContainerParams.RunnerRecipe.begin(), ContainerParams.RunnerRecipe.end());
-        for (const auto &Comp : ContainerParams.RunnerComponents)
-        {
-            if (!Comp.is_object() || !Comp.contains("SUBCOMPONENTS") || !Comp["SUBCOMPONENTS"].is_array()) continue;
-            if (!RunnerWant.empty() && !RunnerWant.count(Comp.value("COMPONENTID", std::string()))) continue;
-            for (const auto &S : Comp["SUBCOMPONENTS"]) Collect(S);
-        }
-    }
-    for (const std::string &CompID : ContainerParams.Recipe)
-    {
-        int Idx = FindComponentIndex(MANIFESTJSON, CompID);
-        if (Idx == -1) continue;
-        const auto &Comp = MANIFESTJSON["COMPONENTS"][Idx];
-        if (Comp.contains("SUBCOMPONENTS") && Comp["SUBCOMPONENTS"].is_array())
-            for (const auto &S : Comp["SUBCOMPONENTS"]) Collect(S);
-    }
+    if (ContainerParams.RunnerOps.is_array()) for (const auto &S : ContainerParams.RunnerOps) Collect(S);
+    for (const OpGroup &G : ContainerParams.Stack)
+        if (G.Ops.is_array()) for (const auto &S : G.Ops) Collect(S);
 
     ContainerParams.VarDecls = Winning;
 
@@ -264,19 +248,16 @@ bool LaunchResolver::ResolveCustomVariables(const nlohmann::ordered_json &MANIFE
 //runner contributes a platform keep-set (RunnerPersistLayers: e.g. the user profile + HKCU) so the standard
 //save/config locations survive with no per-game work. PATHs are %VARIABLE%-substituted.
 
-bool LaunchResolver::BuildSubComponentsArray(const nlohmann::ordered_json &MANIFESTJSON, struct ContainerParams &ContainerParams)
+bool LaunchResolver::BuildSubComponentsArray(struct ContainerParams &ContainerParams)
 {
     //Vars are fully resolved before this step (ResolveCustomVariables ran) — ONE map for the whole pass.
     //The old code rebuilt the entire variables map for EVERY subcomponent.
     const std::map<std::string, std::string> FrozenVars = ContainerParams.GetVariablesMap();
-    //Iterate in Recipe order (ancestor-first) so VFS layers are stacked correctly regardless
-    //of how components are ordered in the manifest. For each Recipe entry, find the component
-    //by ID and collect its subcomponents.
-    for (const std::string &RecipeComponentID : ContainerParams.Recipe)
+    //In stacking order (lowest first), so VFS layers stack as the Stack says.
+    for (const OpGroup &G : ContainerParams.Stack)
     {
-        int Idx = FindComponentIndex(MANIFESTJSON, RecipeComponentID);
-        if (Idx == -1) continue;
-        auto &Subs = MANIFESTJSON["COMPONENTS"][Idx]["SUBCOMPONENTS"];
+        if (!G.Ops.is_array()) continue;
+        const auto &Subs = G.Ops;
         for (int j = 0; j < (int)Subs.size(); j++)
         {
             //CustomVar and Persist subcomponents are not VFS/registry ops applied here — CustomVar is resolved by
@@ -285,8 +266,7 @@ bool LaunchResolver::BuildSubComponentsArray(const nlohmann::ordered_json &MANIF
             if (Subs[j].is_object())
             {
                 std::string T = Subs[j].value("TYPE", std::string());
-                if (T == "CustomVar" || T == "DeclarePersist"
-                    || T == "DeclareExec" || T == "DeclareLibraryItem" || T == "DeclareRunner") continue;
+                if (T == "CustomVar" || T == "DeclarePersist") continue;
                 //A WHEN condition gates whether the layer is applied at all: false → the layer is inert (not mounted,
                 //not edited). Evaluated against the resolved var map — the data-driven "this only applies when that".
                 if (Subs[j].contains("WHEN") && Subs[j]["WHEN"].is_string()
@@ -331,20 +311,13 @@ bool LaunchResolver::BuildSubComponentsArray(const nlohmann::ordered_json &MANIF
             }
             ContainerParams.SubComponentsArray.push_back(std::move(Sub));
             if (VerboseLogging())   // per-subcomponent trace — 81 lines per resolve, gated like the rest
-                LogOut("BuildSubComponentsArray", "Added COMPONENT " + RecipeComponentID + " SUBCOMPONENT " + std::to_string(j + 1));
+                LogOut("BuildSubComponentsArray", "Added " + G.Name + " op " + std::to_string(j + 1));
         }
     }
     LogOut("BuildSubComponentsArray", "Completed SubComponentsArray.");
-    //std::cout << ContainerParams.SubComponentsArray.dump(4) << std::endl;
     return true;
 }
 
-//The platform the HOST runs as. Phase-1 stub — only Linux is supported, so this is constant.
-//TO BE REPLACED by real OS/arch detection when VidyaGod runs on other hosts (e.g. Windows).
-
-//(Library path helpers + the catalog/sync/import/publish service moved to PackageCatalog — see packagecatalog.h.
-//The launch-engine code below calls PackageCatalog::BuildCatalogIndex / GetPackageUserSettings unqualified via the
-//using-directive above.)
 
 //(Catalog/RegistryRunners + git plumbing + Sync/Upsert/Reconcile moved to PackageCatalog — see packagecatalog.h.)
 

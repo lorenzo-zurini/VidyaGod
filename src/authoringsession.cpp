@@ -93,7 +93,7 @@ bool AuthoringSession::BuildRuntime(const std::vector<std::string> &Chain)
         CurrentRunnerId = Chain.front();
     }
 
-    Wrapper = std::make_unique<ContainerWrapper>(ConfigCopy, DummyManifest, *Params);   // ctor runs InitializeContainer
+    Wrapper = std::make_unique<ContainerWrapper>(ConfigCopy, *Params);   // ctor runs InitializeContainer
     if (!Params->AuthoringBare && Wrapper->ContainerParams.RunnerChain.empty())
     {
         LogErr("AuthoringSession::BuildRuntime", "No runner resolved for node '" + TargetId

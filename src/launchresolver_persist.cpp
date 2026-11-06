@@ -23,7 +23,7 @@
 
 //The pure manifest queries + VFS-layer helpers live in ManifestModel; the catalog/user-settings service in
 //PackageCatalog. Bring both in unqualified so the resolver code (moved verbatim out of ContainerWrapper) reads
-//naturally (FindComponentIndex / GetPackageUserSettings / MachinePlatform / IsVfsLayer / ...).
+//naturally (GetPackageUserSettings / MachinePlatform / IsVfsLayer / ...).
 using namespace ManifestModel;
 using namespace PackageCatalog;
 
@@ -44,7 +44,7 @@ using namespace PackageCatalog;
 //     seed and reported in ContainerParams.PickedSecrets for the caller to persist)
 
 // P6 split: the unified Persist derivation (KEEP/DROP) — see launchresolver.cpp for the spine.
-bool LaunchResolver::DerivePersistence(const nlohmann::ordered_json &MANIFESTJSON, struct ContainerParams &ContainerParams)
+bool LaunchResolver::DerivePersistence(struct ContainerParams &ContainerParams)
 {
     ContainerParams.KeepDirs.clear();
     ContainerParams.KeepFiles.clear();
@@ -166,19 +166,13 @@ bool LaunchResolver::DerivePersistence(const nlohmann::ordered_json &MANIFESTJSO
         ParsePersist(S);
     };
 
-    LogOut("DerivePersistence", "Resolving Persist policy (runner keep-set + Recipe)...");
+    LogOut("DerivePersistence", "Resolving Persist policy (runner keep-set + the stack)...");
     //Persistence is purely additive (KEEP adds, DROP removes), so scan order is immaterial — the runner's platform
     //keep-set and the game's Persist layers simply union.
     if (ContainerParams.RunnerPersistLayers.is_array())
         for (const auto &S : ContainerParams.RunnerPersistLayers) Scan(S);
-    for (const std::string &CompID : ContainerParams.Recipe)
-    {
-        int Idx = FindComponentIndex(MANIFESTJSON, CompID);
-        if (Idx == -1) continue;
-        const auto &Comp = MANIFESTJSON["COMPONENTS"][Idx];
-        if (!Comp.contains("SUBCOMPONENTS") || !Comp["SUBCOMPONENTS"].is_array()) continue;
-        for (const auto &S : Comp["SUBCOMPONENTS"]) Scan(S);
-    }
+    for (const OpGroup &G : ContainerParams.Stack)
+        if (G.Ops.is_array()) for (const auto &S : G.Ops) Scan(S);
 
     LogSucc("DerivePersistence",
             "PERSIST: dirs=" + std::to_string(ContainerParams.KeepDirs.size()) +
@@ -187,9 +181,6 @@ bool LaunchResolver::DerivePersistence(const nlohmann::ordered_json &MANIFESTJSO
     return true;
 }
 
-//Finds the variant in MANIFESTJSON matching ContainerParams.VariantID
-//under SUBGAMES[ContainerParams.subgame_id].VARIANTS and populates exe/work-dir/args fields.
-//Must be called AFTER BuildSubComponentsArray and BEFORE BuildContainerRuntime.
 // A VFS-anchored CONTENTPATH/WORKDIR (authored the same way as layer TARGETs — e.g.
 // "%PrefixRoot%/drive_c/%PackageUID%/Foo.exe", substituting to "pfx/drive_c/17260/Foo.exe") expressed relative to the
 // runner's content root. The guest-path template ("C:\<uid>\%REL%" for wine, identity for native) and the runner's

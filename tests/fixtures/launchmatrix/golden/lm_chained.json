@@ -69,9 +69,6 @@
   "Platform": "fixture32",
   "PrefixGenerate": false,
   "PrefixRoot": "pfx",
-  "Recipe": [
-    "lm_chained"
-  ],
   "RunnerArgs": [
     "--run"
   ],
@@ -95,18 +92,6 @@
       "NodeId": "bafkreiclbditqnvr7dfugtxdcouvyqfz6mecord4owyjn2l55ni2mrfcry"
     }
   ],
-  "RunnerComponents": [
-    {
-      "COMPONENTID": "lm_runner_prefix",
-      "SUBCOMPONENTS": [
-        {
-          "PATH": "<DATA>/fixture/[90000000000001][v1.0] Launch Matrix/fakerunner.sh",
-          "TARGET": "runner/fakerunner.sh",
-          "TYPE": "VFSFileLayer"
-        }
-      ]
-    }
-  ],
   "RunnerEnv": {
     "LM_EXEC_ENV": "game-wins-over-the-chain",
     "LM_FOLDED": "from-below",
@@ -126,14 +111,21 @@
     }
   ],
   "RunnerName": "lm_runner_prefix",
-  "RunnerPersistLayers": [],
-  "RunnerRecipe": [
-    "lm_runner_prefix"
+  "RunnerOps": [
+    {
+      "PATH": "<DATA>/fixture/[90000000000001][v1.0] Launch Matrix/fakerunner.sh",
+      "TARGET": "runner/fakerunner.sh",
+      "TYPE": "VFSFileLayer"
+    }
   ],
+  "RunnerPersistLayers": [],
   "RunnerRemoveEnv": [
     "LM_UNWANTED"
   ],
   "RunnerShipsBuild": true,
+  "Stack": [
+    "lm_chained"
+  ],
   "SubComponentsArray": [
     {
       "PATH": "<DATA>/fixture/[90000000000001][v1.0] Launch Matrix/base.zip",

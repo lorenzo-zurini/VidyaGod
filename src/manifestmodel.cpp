@@ -1530,7 +1530,7 @@ void ValidateNodeGraph(const NodeIndex &Idx, std::vector<std::string> &Errors, s
                                     "SysRegMtime", "UID", "VIDYAGOD_SANDBOX_NET", "VIDYAGOD_SELF_VIP",
                                     "VIDYAGOD_SELF_NAME", "VIDYAGOD_SUBNET", "VIDYAGOD_PEER_VIPS", "VIDYAGOD_PEER_NAMES",
                                     "VIDYAGOD_LAN_BRIDGE", "VIDYAGOD_LAN_HOSTRELAY" };
-        for (const auto &[K, V] : ContainerParams(std::filesystem::path(), std::string(), std::string()).GetVariablesMap())
+        for (const auto &[K, V] : ContainerParams().GetVariablesMap())
             B.insert(K);
         for (const std::string &N : Platform::HostFolderNames()) B.insert("Host" + N);   // Windows sets them, any host validates
         return B;
@@ -2005,17 +2005,6 @@ bool ServesPlatform(const Node &Runner, const std::string &Platform, const std::
     return Platform != kCustomPlatform || (!LaunchBundleDir.empty() && Runner.BundleDir == LaunchBundleDir);
 }
 
-// ----- component lookups -----
-
-int FindComponentIndex(const nlohmann::ordered_json &MANIFESTJSON, const std::string &ComponentID)
-{
-    if (ComponentID.empty()) return -1;
-    for (int i = 0; i < (int)MANIFESTJSON["COMPONENTS"].size(); i++)
-        if (!MANIFESTJSON["COMPONENTS"][i]["COMPONENTID"].is_null() && MANIFESTJSON["COMPONENTS"][i]["COMPONENTID"] == ComponentID)
-            return i;
-    LogErr("ManifestModel::FindComponentIndex", "Component ID not found: " + ComponentID);
-    return -1;
-}
 
 // ----- manifest-only package predicates -----
 

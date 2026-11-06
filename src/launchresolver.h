@@ -109,7 +109,7 @@ std::vector<std::pair<std::string, std::string>> AnchorLayouts(struct ContainerP
 //A runner's build: its own node resolved (Fold) and lowered in its own layout — the ops a launch mounts at the runner
 //mount (real bytes), assembles into the prefix (%runtime% layers) and applies (edits, registry, DLLs, variables).
 nlohmann::ordered_json RunnerOps(const NodeIndex &Idx, const std::string &RunnerId, Fold::Plan *PlanOut = nullptr);
-[[nodiscard]] bool InitializeFromNode(struct ContainerParams &ContainerParams, nlohmann::ordered_json &ComponentPool, const nlohmann::ordered_json &GlobalConfigJSON);
+[[nodiscard]] bool InitializeFromNode(struct ContainerParams &ContainerParams, const nlohmann::ordered_json &GlobalConfigJSON);
 
 
 //Derives the session paths (Temp/Runtime/WriteLayer/DefaultData/UserData/Program/DefPrefix + ContentRoot
@@ -118,18 +118,18 @@ bool DerivePaths(struct ContainerParams &ContainerParams, const nlohmann::ordere
 
 //Reads the launch node's EXEC (CONTENTPATH/EXEARGS/WORKDIR) into the exec fields. After BuildSubComponentsArray
 //and before BuildContainerRuntime.
-[[nodiscard]] bool ResolveExecutableDefinition(const nlohmann::ordered_json &MANIFESTJSON, struct ContainerParams &ContainerParams);
+[[nodiscard]] bool ResolveExecutableDefinition(struct ContainerParams &ContainerParams);
 
 //Resolves every CustomVar subcomponent in the Recipe (priority: CLI override > USERSETTINGS > DEFAULT). Must run
 //before BuildSubComponentsArray so custom %KEY% tokens are available for substitution.
-bool ResolveCustomVariables(const nlohmann::ordered_json &MANIFESTJSON, struct ContainerParams &ContainerParams, const nlohmann::ordered_json &GlobalConfigJSON);
+bool ResolveCustomVariables(struct ContainerParams &ContainerParams, const nlohmann::ordered_json &GlobalConfigJSON);
 
 //Derives persistence from the unified Persist primitive (MODE/KEEP/DROP) on the runner keep-set + the Recipe.
-bool DerivePersistence(const nlohmann::ordered_json &MANIFESTJSON, struct ContainerParams &ContainerParams);
+bool DerivePersistence(struct ContainerParams &ContainerParams);
 
 //Collects all SUBCOMPONENTS from the Recipe's components into SubComponentsArray (with %VAR% substitution),
 //skipping CustomVar / Persist* (handled by ResolveCustomVariables / DerivePersistence).
-bool BuildSubComponentsArray(const nlohmann::ordered_json &MANIFESTJSON, struct ContainerParams &ContainerParams);
+bool BuildSubComponentsArray(struct ContainerParams &ContainerParams);
 }
 
 #endif // LAUNCHRESOLVER_H

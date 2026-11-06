@@ -35,7 +35,7 @@ class ContainerWrapper
 public:
     //GlobalConfigJSON is read-only here — the wrapper copies it into its own member, never writing back to the
     //caller's config — so it's taken by const ref (lets read-only callers like the package editor pass a const config).
-    ContainerWrapper(const nlohmann::ordered_json &Passed_GlobalConfigJSON, nlohmann::ordered_json &Passed_MANIFESTJSON, ContainerParams &Passed_ContainerParams);
+    ContainerWrapper(const nlohmann::ordered_json &Passed_GlobalConfigJSON, ContainerParams &Passed_ContainerParams);
     ~ContainerWrapper();
     ContainerWrapper(const ContainerWrapper &) = delete;
     ContainerWrapper &operator=(const ContainerWrapper &) = delete;
@@ -102,7 +102,6 @@ private:
     bool InitOk = false;
 
     nlohmann::ordered_json GlobalConfigJSON;
-    nlohmann::ordered_json MANIFESTJSON;
 
     //Held from BuildContainerRuntime to the end of Cleanup's unmounts (or the wrapper's end): a game is live.
     std::optional<VfsMount::RuntimeHold> Live;

@@ -195,7 +195,7 @@ VG_COMMANDS
           "LaunchResolver::AnchorLayouts", "LaunchResolver::AnchorRegEdits", "LaunchResolver::ComposeGuestTarget", "LaunchResolver::GuestPath",
           "LaunchResolver::GuestToLayout", "LaunchResolver::RunnerOps", "LaunchResolver::SessionRoot", "LaunchResolver::InnerRunnerMountRel",
           "RunnerLink::NativeNamespace", "RunnerLink::Passthrough", "BuiltinRunners::All", "BuiltinRunners::AddTo", "BuiltinRunners::IsBuiltin",
-          "RunnerWrapper::DefPrefixDir", "RunnerWrapper::ExecutableAvailable", "OptionReadBack::Sites", "ArgReferencesContent" , "ManifestModel::FindComponentIndex" }, Needs::Config, false,
+          "RunnerWrapper::DefPrefixDir", "RunnerWrapper::ExecutableAvailable", "OptionReadBack::Sites", "ArgReferencesContent" }, Needs::Config, false,
         [](Command::Context &C, const json &A) {
             CliModes::LaunchRequest R = Request(C, A);
             R.ResolveOnly = true;

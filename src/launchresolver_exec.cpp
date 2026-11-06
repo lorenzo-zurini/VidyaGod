@@ -27,7 +27,7 @@
 
 //The pure manifest queries + VFS-layer helpers live in ManifestModel; the catalog/user-settings service in
 //PackageCatalog. Bring both in unqualified so the resolver code (moved verbatim out of ContainerWrapper) reads
-//naturally (FindComponentIndex / GetPackageUserSettings / MachinePlatform / IsVfsLayer / ...).
+//naturally (GetPackageUserSettings / MachinePlatform / IsVfsLayer / ...).
 using namespace ManifestModel;
 using namespace PackageCatalog;
 
@@ -73,22 +73,16 @@ std::filesystem::path LaunchResolver::SessionRoot()
     return TempRoot;
 }
 
-bool LaunchResolver::ResolveExecutableDefinition(const nlohmann::ordered_json &MANIFESTJSON, struct ContainerParams &ContainerParams)
+bool LaunchResolver::ResolveExecutableDefinition(struct ContainerParams &ContainerParams)
 {
-    (void)MANIFESTJSON;   // legacy signature slot — the pre-cutover MANIFEST branch is gone (P5)
-    if (ContainerParams.VariantID.empty())
-    {
-        LogWarn("ResolveExecutableDefinition", "No VariantID set — skipping.");
-        return true;
-    }
     // Source the exec definition from the node graph — every launch is node-native (the pre-cutover
     // MANIFEST/GAMES/VARIANTS branch that used to live here was unreachable: NodeIdx is always set).
     nlohmann::ordered_json Resolved = nlohmann::ordered_json::object();
     if (ContainerParams.ComposedExec.is_object() && !ContainerParams.ComposedExec.empty())
         Resolved = ContainerParams.ComposedExec;          // the selected entrypoint, lowered
-    else if (const Node *L = ContainerParams.NodeIdx->Find(ContainerParams.subgame_id); L && L->Exec.is_object())
+    else if (const Node *L = ContainerParams.NodeIdx->Find(ContainerParams.LaunchNodeId); L && L->Exec.is_object())
         Resolved = L->Exec;                               // empty EXEC = self-contained launchable (e.g. gemrb) — OK
-    LogSucc("ResolveExecutableDefinition", "Resolved exec for: " + ContainerParams.subgame_id);
+    LogSucc("ResolveExecutableDefinition", "Resolved exec for: " + ContainerParams.LaunchNodeId);
     // The variant declares ONE universal target path — CONTENTPATH: the VFS-root-anchored path (authored like layer
     // TARGETs, e.g. "%PrefixRoot%/drive_c/%PackageUID%/Foo.exe") to whatever the runner runs or loads (an exe, a ROM,
     // a data root, or nothing for a self-contained runner). Its absolute host path is that location under the runtime

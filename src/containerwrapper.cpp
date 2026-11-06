@@ -93,8 +93,8 @@ void ContainerWrapper::WaitNoneLive()
 
 //Stores the JSON references and immediately runs the full initialization pipeline.
 //After construction, ContainerParams is fully populated and ready for BuildContainerRuntime().
-ContainerWrapper::ContainerWrapper(const nlohmann::ordered_json &Passed_GlobalConfigJSON, nlohmann::ordered_json &Passed_MANIFESTJSON, struct ContainerParams &Passed_ContainerParams)
-    : ContainerParams(Passed_ContainerParams), GlobalConfigJSON(Passed_GlobalConfigJSON), MANIFESTJSON(Passed_MANIFESTJSON)   // match member declaration order (ContainerParams is declared first)
+ContainerWrapper::ContainerWrapper(const nlohmann::ordered_json &Passed_GlobalConfigJSON, struct ContainerParams &Passed_ContainerParams)
+    : ContainerParams(Passed_ContainerParams), GlobalConfigJSON(Passed_GlobalConfigJSON)   // match member declaration order (ContainerParams is declared first)
 {
     InitOk = this->InitializeContainer();
 }
@@ -128,7 +128,7 @@ bool ContainerWrapper::InitializeContainer()
     //Everything is a node: resolve the whole container from the global node index (InitializeFromNode populates
     //the internal COMPONENTS pool the shared iterators consume). There is no MANIFESTJSON path any more.
     if (this->ContainerParams.NodeIdx && !this->ContainerParams.LaunchNodeId.empty())
-        return LaunchResolver::InitializeFromNode(this->ContainerParams, this->MANIFESTJSON, this->GlobalConfigJSON);
+        return LaunchResolver::InitializeFromNode(this->ContainerParams, this->GlobalConfigJSON);
 
     LogErr("ContainerWrapper::InitializeContainer", "No node graph supplied (NodeIdx/LaunchNodeId unset) — aborting.");
     return false;

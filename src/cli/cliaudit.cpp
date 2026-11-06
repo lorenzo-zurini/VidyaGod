@@ -216,7 +216,7 @@ int CliModes::RunAuditPackages(nlohmann::ordered_json &GlobalConfigJSON, const s
         if (!N) continue;
         const std::string Pkg = std::filesystem::path(N->BundleDir).filename().string();
 
-        ContainerParams CP(N->BundleDir, Id, std::string());
+        ContainerParams CP(N->BundleDir);
         CP.NodeIdx       = &Index;
         CP.LaunchNodeId  = Id;
         //Pin a plausible screen so DerivePaths does not shell out to xrandr once per node (and so a package that
@@ -226,11 +226,10 @@ int CliModes::RunAuditPackages(nlohmann::ordered_json &GlobalConfigJSON, const s
         //The same engine-injected session facts a real launch gets, so a package's use of them resolves here too.
         CP.SessionVars   = { {"VIDYAGOD_SELF_NAME", "Player"} };
 
-        nlohmann::ordered_json Pool = nlohmann::ordered_json::object();
         Captured.clear();
         Capturing = true;
-        const bool Init = LaunchResolver::InitializeFromNode(CP, Pool, GlobalConfigJSON);
-        const bool Exec = Init && LaunchResolver::ResolveExecutableDefinition(nlohmann::ordered_json::object(), CP);
+        const bool Init = LaunchResolver::InitializeFromNode(CP, GlobalConfigJSON);
+        const bool Exec = Init && LaunchResolver::ResolveExecutableDefinition(CP);
         //BUILD THE ACTUAL MOUNT PLANS. Everything the plan builders complain about — a %token% that survived
         //substitution, a delta whose declared byte-base nothing composes — is complained about HERE, by the same
         //code a real launch runs, and lands in Captured like any other engine diagnostic. The alternative, which

@@ -31,7 +31,8 @@ static nlohmann::ordered_json DumpResolution(struct ContainerParams &CP)   // no
     J["PackageUID"]        = CP.PackageUID;
     J["GameName"]          = CP.GameName;
     J["Platform"]          = CP.Platform;
-    J["Recipe"]            = CP.Recipe;
+    J["Stack"]             = nlohmann::ordered_json::array();   // what the launch stacks, lowest first
+    for (const OpGroup &G : CP.Stack) J["Stack"].push_back(G.Name);
     J["RunnerName"]        = CP.RunnerName;
     //Runner daisy-chain (innermost→outermost): each link's node id, host, and exec — the shortest route resolved to
     //run this content on the machine, always ending in the native terminal.
@@ -65,8 +66,7 @@ static nlohmann::ordered_json DumpResolution(struct ContainerParams &CP)   // no
     J["LaunchEnv"]         = CP.LaunchEnv;
     J["LaunchRemoveEnv"]   = CP.LaunchRemoveEnv;
     J["ComposedExec"]      = CP.ComposedExec;
-    J["RunnerRecipe"]      = CP.RunnerRecipe;
-    J["RunnerComponents"]  = CP.RunnerComponents;
+    J["RunnerOps"]         = CP.RunnerOps;
     J["RunnerLayers"]      = CP.RunnerLayers;
     J["RunnerPersistLayers"]= CP.RunnerPersistLayers;
     J["Variables"]         = CP.GetVariablesMap();   // every %KEY% the resolve substituted with (built-ins included)
@@ -117,7 +117,7 @@ std::unique_ptr<CliModes::PreparedLaunch> CliModes::PrepareLaunch(const LaunchRe
             { Err = "node '" + LaunchParameters.LaunchNodeId + "' not found in the catalog (by CID, handle or name)"; LogErr("main.cpp", Err + ", aborting."); return nullptr; }
         }
 
-        struct ContainerParams NewContainerParams = ContainerParams(std::filesystem::path(), LookupCid, std::string());
+        struct ContainerParams NewContainerParams;
         NewContainerParams.NodeIdx           = Index.get();
         NewContainerParams.NodeIdxOwned      = Index;         // the wrapper's copy co-owns the index
         NewContainerParams.LaunchNodeId      = LookupCid;
@@ -135,12 +135,11 @@ std::unique_ptr<CliModes::PreparedLaunch> CliModes::PrepareLaunch(const LaunchRe
             const std::string Nick = IpfsWrapper::GetProfile().Nick;
             NewContainerParams.SessionVars["VIDYAGOD_SELF_NAME"] = Nick.empty() ? std::string("Player") : Nick;
         }
-        NewContainerParams.VariantID         = "default";
         NewContainerParams.RunnerID          = LaunchParameters.RunnerID;
         //Runner daisy-chain: the explicit --runner chain wins; else the single RunnerID as a 1-step pin (else auto).
         if (!LaunchParameters.RunnerChain.empty())   NewContainerParams.RunnerChainIds = LaunchParameters.RunnerChain;
         else if (!LaunchParameters.RunnerID.empty()) NewContainerParams.RunnerChainIds = { LaunchParameters.RunnerID };
-        Out->W = std::make_unique<ContainerWrapper>(GlobalConfigJSON, Out->Manifest, NewContainerParams);
+        Out->W = std::make_unique<ContainerWrapper>(GlobalConfigJSON, NewContainerParams);
         ContainerWrapper &NewContainerWrapper = *Out->W;
         //A row that does not resolve (blocked, malformed, no runner) has nothing to dump or run.
         if (!NewContainerWrapper.Resolved())
@@ -171,7 +170,7 @@ std::unique_ptr<CliModes::PreparedLaunch> CliModes::PrepareLaunch(const LaunchRe
                 return nullptr;
             }
         }
-        if (!LaunchResolver::ResolveExecutableDefinition(Out->Manifest, NewContainerWrapper.ContainerParams))
+        if (!LaunchResolver::ResolveExecutableDefinition(NewContainerWrapper.ContainerParams))
         { Err = "its entry did not resolve (see the log)"; LogErr("main.cpp", "ResolveExecutableDefinition failed, aborting."); return nullptr; }
         Out->Name = LaunchParameters.LaunchNodeId;
         return Out;

@@ -80,9 +80,6 @@
   "Platform": "linux64",
   "PrefixGenerate": false,
   "PrefixRoot": "",
-  "Recipe": [
-    "lm_inherits"
-  ],
   "RunnerArgs": [
     "%Content%"
   ],
@@ -95,12 +92,6 @@
       "Host": "linux64",
       "Native": true,
       "NodeId": "bafkreiclbditqnvr7dfugtxdcouvyqfz6mecord4owyjn2l55ni2mrfcry"
-    }
-  ],
-  "RunnerComponents": [
-    {
-      "COMPONENTID": "lm_runner_native",
-      "SUBCOMPONENTS": []
     }
   ],
   "RunnerEnv": {
@@ -116,16 +107,17 @@
   "RunnerExecutable": "/bin/sh",
   "RunnerLayers": [],
   "RunnerName": "lm_runner_native",
+  "RunnerOps": [],
   "RunnerPersistLayers": [],
-  "RunnerRecipe": [
-    "lm_runner_native"
-  ],
   "RunnerRemoveEnv": [
     "LM_GAME_KEEPS_THIS",
     "LM_SHOULD_BE_GONE",
     "LM_REMOVED_ABOVE"
   ],
   "RunnerShipsBuild": false,
+  "Stack": [
+    "lm_inherits"
+  ],
   "SubComponentsArray": [
     {
       "PATH": "<DATA>/fixture/[90000000000001][v1.0] Launch Matrix/base.zip",

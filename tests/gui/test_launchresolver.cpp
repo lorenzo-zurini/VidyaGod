@@ -79,9 +79,9 @@ Node runnerNode(const std::string & id, const std::vector<std::string> & guests,
     L.push_back({ {"EXEC", json::array({ E })} });
     return standalone(parse(json{ {"CID", id}, {"LABEL", id}, {"LAYERS", L} }, "/tmp/vg_runner"));
 }
-bool recipeHas(const std::vector<std::string> & r, const std::string & needle)
+bool stackHas(const ContainerParams & cp, const std::string & needle)
 {
-    for (const auto & s : r) if (s.find(needle) != std::string::npos) return true;
+    for (const auto & g : cp.Stack) if (g.Name.find(needle) != std::string::npos) return true;
     return false;
 }
 // A runner edge GUEST→HOST for daisy-chain tests. A '%'-bearing or empty EXECUTABLE is always "available"
@@ -128,10 +128,9 @@ private slots:
         ContainerParams cp("/tmp/vg_bundle");
         cp.NodeIdx = &idx; cp.LaunchNodeId = "game";
         cp.SessionVars = { {"VIDYAGOD_JOIN_ADDRESS", "10.66.1.2"}, {"VIDYAGOD_SELF_NAME", "Lorenzo"} };
-        json pool = json::object();
         const json cfg = json{{"Settings", json::object()}};
-        QVERIFY(LaunchResolver::InitializeFromNode(cp, pool, cfg));
-        QVERIFY(LaunchResolver::ResolveExecutableDefinition(json::object(), cp));
+        QVERIFY(LaunchResolver::InitializeFromNode(cp, cfg));
+        QVERIFY(LaunchResolver::ResolveExecutableDefinition(cp));
 
         const std::vector<std::string> Want{"--player", "Lorenzo", "--address=10.66.1.2"};
         QCOMPARE(cp.ExeArgs, Want);
@@ -151,10 +150,9 @@ private slots:
         ContainerParams cp("/tmp/vg_bundle");
         cp.NodeIdx = &idx; cp.LaunchNodeId = "game";
         cp.SessionVars = { {"VIDYAGOD_JOIN_ADDRESS", ""} };
-        json pool = json::object();
         const json cfg = json{{"Settings", json::object()}};
-        QVERIFY(LaunchResolver::InitializeFromNode(cp, pool, cfg));
-        QVERIFY(LaunchResolver::ResolveExecutableDefinition(json::object(), cp));
+        QVERIFY(LaunchResolver::InitializeFromNode(cp, cfg));
+        QVERIFY(LaunchResolver::ResolveExecutableDefinition(cp));
 
         // The bare token drops entirely; the single-token form survives with an empty value.
         const std::vector<std::string> Want{"--address=", "--wait"};
@@ -175,9 +173,8 @@ private slots:
         cp.NodeIdx = &idx; cp.LaunchNodeId = "game";
         cp.SessionVars       = { {"VIDYAGOD_SELF_NAME", "FromLan"}, {"VIDYAGOD_JOIN_ADDRESS", "10.66.9.9"} };
         cp.VariableOverrides = { {"VIDYAGOD_JOIN_ADDRESS", "1.2.3.4"} };
-        json pool = json::object();
         const json cfg = json{{"Settings", json::object()}};
-        QVERIFY(LaunchResolver::InitializeFromNode(cp, pool, cfg));
+        QVERIFY(LaunchResolver::InitializeFromNode(cp, cfg));
 
         QCOMPARE(cp.CustomVariables["VIDYAGOD_JOIN_ADDRESS"], std::string("1.2.3.4"));      // override wins
         QCOMPARE(cp.CustomVariables["VIDYAGOD_SELF_NAME"],    std::string("PackageChoice")); // declaration wins
@@ -199,8 +196,7 @@ private slots:
             cp.NodeIdx = &idx;
             cp.LaunchNodeId = "game";
             if (Override) cp.TempRootOverride = "/srv/disk/AUTHORING";
-            json pool = json::object();
-            QVERIFY(LaunchResolver::InitializeFromNode(cp, pool, cfg));
+            QVERIFY(LaunchResolver::InitializeFromNode(cp, cfg));
             const std::string T = cp.TempPath.string();
             if (Override) QVERIFY2(T.rfind("/srv/disk/AUTHORING/", 0) == 0, T.c_str());
             else QVERIFY2(T.rfind(LaunchResolver::SessionRoot().string(), 0) == 0, T.c_str());
@@ -226,8 +222,7 @@ private slots:
         cp.NodeIdx = &idx;
         cp.LaunchNodeId = "game";
         cp.TempRootOverride = Tmp.path().toStdString();
-        json pool = json::object();
-        ContainerWrapper Second(json{{"Settings", json::object()}}, pool, cp);
+        ContainerWrapper Second(json{{"Settings", json::object()}}, cp);
         QVERIFY(Second.Resolved());
         const std::filesystem::path Folder = Second.ContainerParams.TempPath;
         int Running = VfsMount::ClaimSession(Folder);                // the first launch, live
@@ -260,8 +255,7 @@ private slots:
         finish(idx);
         ContainerParams cp("/tmp/vg_bundle");
         cp.NodeIdx = &idx; cp.LaunchNodeId = "game";
-        json pool = json::object();
-        QVERIFY(LaunchResolver::InitializeFromNode(cp, pool, json{{"Settings", json::object()}}));
+        QVERIFY(LaunchResolver::InitializeFromNode(cp, json{{"Settings", json::object()}}));
         QTemporaryDir Rt;
         cp.RuntimePath = Rt.path().toStdString();
         QVERIFY(FileEdits::ProcessFileEdits(cp, /*OverridePass=*/true));
@@ -291,8 +285,7 @@ private slots:
         const auto resolve = [&](bool ReadBack) {
             ContainerParams cp("/tmp/vg_bundle");
             cp.NodeIdx = &idx; cp.LaunchNodeId = "game"; cp.ReadBackOptions = ReadBack;
-            json pool = json::object();
-            if (!LaunchResolver::InitializeFromNode(cp, pool, cfg)) qFatal("resolve failed");
+            if (!LaunchResolver::InitializeFromNode(cp, cfg)) qFatal("resolve failed");
             return cp;
         };
         const ContainerParams First = resolve(false);
@@ -323,17 +316,16 @@ private slots:
         ContainerParams cp("/tmp/vg_bundle");
         cp.NodeIdx = &idx;
         cp.LaunchNodeId = "game";
-        json pool = json::object();
         const json cfg = json{{"Settings", json::object()}};
 
-        QVERIFY(LaunchResolver::InitializeFromNode(cp, pool, cfg));
+        QVERIFY(LaunchResolver::InitializeFromNode(cp, cfg));
 
         QCOMPARE(cp.RunnerID, std::string("wine"));
         QVERIFY(cp.PrefixGenerate);
         QVERIFY(cp.RunnerShipsBuild);                          // runner has VFS build layers
         QCOMPARE(cp.ContentRoot, std::string("pfx/drive_c/game"));   // %PackageUID% substituted by DerivePaths
-        QVERIFY(recipeHas(cp.Recipe, "game"));                 // the resolved row is the recipe
-        QVERIFY(pool.contains("COMPONENTS") && !pool["COMPONENTS"].empty());
+        QVERIFY(stackHas(cp, "game"));                 // the resolved row is the recipe
+        QVERIFY(!cp.Stack.empty() && !cp.Stack.back().Ops.empty());
         int base = 0;                                          // …and the content it contains is in it, placed
         for (const auto & L : cp.SubComponentsArray)
             if (L.value("TYPE", std::string()) == "VFSDirLayer" && L.value("PATH", std::string()).find("/base") != std::string::npos) ++base;
@@ -361,8 +353,7 @@ private slots:
             ContainerParams cp("/tmp/vg_bundle");
             cp.NodeIdx = &idx;
             cp.LaunchNodeId = Id;
-            json pool = json::object();
-            if (!LaunchResolver::InitializeFromNode(cp, pool, cfg)) return std::string("<resolve failed>");
+            if (!LaunchResolver::InitializeFromNode(cp, cfg)) return std::string("<resolve failed>");
             return cp.GetVariablesMap()["SteamAppId"];
         };
         QCOMPARE(appId("game"), std::string("1771300"));
@@ -387,8 +378,7 @@ private slots:
 
         ContainerParams cp("/tmp/vg_bundle");
         cp.NodeIdx = &idx; cp.LaunchNodeId = "game";
-        json pool = json::object();
-        QVERIFY(LaunchResolver::InitializeFromNode(cp, pool, json{{"Settings", json::object()}}));
+        QVERIFY(LaunchResolver::InitializeFromNode(cp, json{{"Settings", json::object()}}));
 
         int overrides = 0, regedits = 0, prefixVfs = 0;
         for (const auto & L : cp.SubComponentsArray)
@@ -415,8 +405,7 @@ private slots:
         finish(idx);
         ContainerParams cp("/tmp/vg_bundle");
         cp.NodeIdx = &idx; cp.LaunchNodeId = "game";
-        json pool = json::object();
-        QVERIFY(LaunchResolver::InitializeFromNode(cp, pool, json{{"Settings", json::object()}}));
+        QVERIFY(LaunchResolver::InitializeFromNode(cp, json{{"Settings", json::object()}}));
         int n = 0;
         for (const auto & L : cp.SubComponentsArray)
             if (L.value("PATH", std::string()) == "%RunnerMount%/extra") ++n;
@@ -432,9 +421,8 @@ private slots:
         finish(idx);
         ContainerParams cp("/tmp/vg_bundle");
         cp.NodeIdx = &idx; cp.LaunchNodeId = "game";
-        json pool = json::object();
         // No runner serves win32 → resolution FAILS (must not "succeed" into an empty-runner launch).
-        QVERIFY(!LaunchResolver::InitializeFromNode(cp, pool, json{{"Settings", json::object()}}));
+        QVERIFY(!LaunchResolver::InitializeFromNode(cp, json{{"Settings", json::object()}}));
         QVERIFY(cp.RunnerID.empty());
     }
 
@@ -449,14 +437,13 @@ private slots:
         ContainerParams cp("/tmp/vg_bundle");
         cp.NodeIdx = &idx; cp.LaunchNodeId = "fresh";
         cp.AuthoringBare = true;
-        json pool = json::object();
 
-        QVERIFY(LaunchResolver::InitializeFromNode(cp, pool, json{{"Settings", json::object()}}));
+        QVERIFY(LaunchResolver::InitializeFromNode(cp, json{{"Settings", json::object()}}));
         QVERIFY(cp.RunnerChain.empty());                      // no runner resolved
         QVERIFY(cp.RunnerID.empty());
         QVERIFY(cp.ContentRoot.empty());                      // content at the runtime root
         QVERIFY(!cp.PrefixGenerate);                          // no wine prefix
-        QVERIFY(pool.contains("COMPONENTS"));                 // a valid (empty) component pool
+        QCOMPARE((int)cp.Stack.size(), 1);                    // the node alone, no runner beneath it
     }
 
     // A node WITH content but no platform still resolves bare (content overlay, no runner).
@@ -467,10 +454,9 @@ private slots:
         finish(idx);
         ContainerParams cp("/tmp/vg_bundle");
         cp.NodeIdx = &idx; cp.LaunchNodeId = "c"; cp.AuthoringBare = true;
-        json pool = json::object();
-        QVERIFY(LaunchResolver::InitializeFromNode(cp, pool, json{{"Settings", json::object()}}));
+        QVERIFY(LaunchResolver::InitializeFromNode(cp, json{{"Settings", json::object()}}));
         QVERIFY(cp.RunnerChain.empty());
-        QVERIFY(recipeHas(cp.Recipe, "c"));                   // the node's own content layer is in the recipe
+        QVERIFY(stackHas(cp, "c"));                   // the node's own content layer is in the recipe
         QCOMPARE((int)cp.SubComponentsArray.size(), 1);
     }
 
@@ -491,8 +477,7 @@ private slots:
         finish(idx);
         ContainerParams cp("/tmp/vg_bundle");
         cp.NodeIdx = &idx; cp.LaunchNodeId = "game";
-        json pool = json::object();
-        QVERIFY(LaunchResolver::InitializeFromNode(cp, pool, json{{"Settings", json::object()}}));
+        QVERIFY(LaunchResolver::InitializeFromNode(cp, json{{"Settings", json::object()}}));
         std::string file;
         for (const auto & L : cp.SubComponentsArray)
             if (L.value("TYPE", std::string()) == "FileEdit") file = L.value("FILE", std::string());
@@ -515,8 +500,7 @@ private slots:
         finish(idx);
         ContainerParams cp("/tmp/vg_bundle");
         cp.NodeIdx = &idx; cp.LaunchNodeId = "game";
-        json pool = json::object();
-        QVERIFY(!LaunchResolver::InitializeFromNode(cp, pool, json{{"Settings", json::object()}}));
+        QVERIFY(!LaunchResolver::InitializeFromNode(cp, json{{"Settings", json::object()}}));
     }
 
     // A unified runner's recipe is one of the game's components: its edit is applied once, not again as a runner edit.
@@ -533,8 +517,7 @@ private slots:
         finish(idx);
         ContainerParams cp("/tmp/vg_bundle");
         cp.NodeIdx = &idx; cp.LaunchNodeId = "game";
-        json pool = json::object();
-        QVERIFY(LaunchResolver::InitializeFromNode(cp, pool, json{{"Settings", json::object()}}));
+        QVERIFY(LaunchResolver::InitializeFromNode(cp, json{{"Settings", json::object()}}));
         QVERIFY(cp.UnifiedRuntime);
         int edits = 0;
         for (const auto & L : cp.SubComponentsArray)
@@ -553,8 +536,7 @@ private slots:
         finish(idx);
         ContainerParams cp("/tmp/vg_bundle");
         cp.NodeIdx = &idx; cp.LaunchNodeId = "c"; cp.AuthoringBare = true;
-        json pool = json::object();
-        QVERIFY(LaunchResolver::InitializeFromNode(cp, pool, json{{"Settings", json::object()}}));
+        QVERIFY(LaunchResolver::InitializeFromNode(cp, json{{"Settings", json::object()}}));
         QCOMPARE((int)cp.SubComponentsArray.size(), 1);
         QCOMPARE(cp.SubComponentsArray[0]["TARGET"].get<std::string>(), std::string("GameDir/data"));
         const auto L = LaunchResolver::AnchorLayouts(cp);
@@ -702,15 +684,15 @@ private slots:
     void derive_persistence_unified_persist()
     {
         // No DeclarePersist anywhere → pristine, every keep-set empty.
-        ContainerParams cp("/tmp/vg_bundle"); cp.Recipe = {"c1"};
-        json poolNone = json{{"COMPONENTS", json::array({ json{{"COMPONENTID", "c1"}, {"SUBCOMPONENTS", json::array()}} })}};
-        LaunchResolver::DerivePersistence(poolNone, cp);
+        ContainerParams cp("/tmp/vg_bundle");
+        const std::vector<OpGroup> poolNone = { OpGroup{"c1", json::array()} };
+        cp.Stack = poolNone; LaunchResolver::DerivePersistence(cp);
         QVERIFY(cp.KeepDirs.empty() && cp.KeepFiles.empty() && cp.KeepRegKeys.empty());
 
         // DeclarePersist: SCOPE=file PATH shape decides dir (no extension) vs file (extension); TARGET defaults to
         // PATH's leaf; CLOUD default true. SCOPE=registry PATH=key → subtree; PATH="" (a whole registry) is refused.
-        ContainerParams cp2("/tmp/vg_bundle"); cp2.Recipe = {"c1"};
-        json poolKeep = json{{"COMPONENTS", json::array({ json{{"COMPONENTID", "c1"}, {"SUBCOMPONENTS", json::array({
+        ContainerParams cp2("/tmp/vg_bundle");
+        const std::vector<OpGroup> poolKeep = { OpGroup{"c1", json::array({
             json{{"TYPE","DeclarePersist"},{"SCOPE","file"},{"PATH","drive_c/saves"},{"CLOUD",false}},              // dir; TARGET→"saves"; local-only
             json{{"TYPE","DeclarePersist"},{"SCOPE","file"},{"PATH","drive_c/Game/config.ini"},{"TARGET","GameConfig"}}, // file, explicit target
             json{{"TYPE","DeclarePersist"},{"SCOPE","registry"},{"PATH","HKCU\\Software\\id Software\\Quake"}},      // subtree
@@ -718,8 +700,8 @@ private slots:
             json{{"TYPE","DeclarePersist"},{"SCOPE","registry"},{"PATH","HKEY_CURRENT_USER"}},                     // a bare hive root: refused
             // a key kept for a 32-bit program is where that program has it (Wow6432Node); for a 64-bit one, as named
             json{{"TYPE","DeclarePersist"},{"SCOPE","registry"},{"PATH","HKLM\\Software\\EA GAMES\\NFSU2"},{"ARCHITECTURE","32"}},
-            json{{"TYPE","DeclarePersist"},{"SCOPE","registry"},{"PATH","HKLM\\Software\\EA GAMES\\NFSU2"},{"ARCHITECTURE","64"}} })}} })}};
-        LaunchResolver::DerivePersistence(poolKeep, cp2);
+            json{{"TYPE","DeclarePersist"},{"SCOPE","registry"},{"PATH","HKLM\\Software\\EA GAMES\\NFSU2"},{"ARCHITECTURE","64"}} })} };
+        cp2.Stack = poolKeep; LaunchResolver::DerivePersistence(cp2);
         QCOMPARE((int)cp2.KeepDirs.size(), 1);
         QCOMPARE(cp2.KeepDirs[0].Path, std::string("drive_c/saves"));
         QCOMPARE(cp2.KeepDirs[0].Target, std::string("saves"));     // defaulted to the last PATH component
@@ -738,11 +720,11 @@ private slots:
     // and a pattern outside the last segment is refused, loudly. Teeth: classify patterns by shape; accept "save/*/x".
     void derive_persistence_patterns_are_file_keeps()
     {
-        ContainerParams cp("/tmp/vg_bundle"); cp.Recipe = {"c1"};
-        json pool = json{{"COMPONENTS", json::array({ json{{"COMPONENTID", "c1"}, {"SUBCOMPONENTS", json::array({
+        ContainerParams cp("/tmp/vg_bundle");
+        const std::vector<OpGroup> pool = { OpGroup{"c1", json::array({
             json{{"TYPE","DeclarePersist"},{"SCOPE","file"},{"PATH","game/save/slot*"},{"TARGET","Slots"}},
-            json{{"TYPE","DeclarePersist"},{"SCOPE","file"},{"PATH","game/*/profile.dat"},{"TARGET","Profiles"}} })}} })}};
-        LaunchResolver::DerivePersistence(pool, cp);
+            json{{"TYPE","DeclarePersist"},{"SCOPE","file"},{"PATH","game/*/profile.dat"},{"TARGET","Profiles"}} })} };
+        cp.Stack = pool; LaunchResolver::DerivePersistence(cp);
         QCOMPARE((int)cp.KeepDirs.size(), 0);
         QCOMPARE((int)cp.KeepFiles.size(), 1);
         QCOMPARE(cp.KeepFiles[0].Path, std::string("game/save/slot*"));
@@ -752,11 +734,11 @@ private slots:
     // itself, and one that leaves the runtime is refused. Teeth: keep the ".." spelled out; let it climb out.
     void derive_persistence_resolves_dotdot_in_a_kept_path()
     {
-        ContainerParams cp("/tmp/vg_bundle"); cp.Recipe = {"c1"};
-        json pool = json{{"COMPONENTS", json::array({ json{{"COMPONENTID", "c1"}, {"SUBCOMPONENTS", json::array({
+        ContainerParams cp("/tmp/vg_bundle");
+        const std::vector<OpGroup> pool = { OpGroup{"c1", json::array({
             json{{"TYPE","DeclarePersist"},{"SCOPE","file"},{"PATH","pfx/drive_c/users/steamuser/../Public/Documents/Game/"},{"TARGET","Saves"}},
-            json{{"TYPE","DeclarePersist"},{"SCOPE","file"},{"PATH","pfx/../../outside/"},{"TARGET","Out"}} })}} })}};
-        LaunchResolver::DerivePersistence(pool, cp);
+            json{{"TYPE","DeclarePersist"},{"SCOPE","file"},{"PATH","pfx/../../outside/"},{"TARGET","Out"}} })} };
+        cp.Stack = pool; LaunchResolver::DerivePersistence(cp);
         QCOMPARE((int)cp.KeepDirs.size(), 1);
         QCOMPARE(cp.KeepDirs[0].Path, std::string("pfx/drive_c/users/Public/Documents/Game"));
     }
@@ -768,14 +750,14 @@ private slots:
     // game-visible mount, or overwrite the instance config). Both are case-insensitive — durable dirs travel.
     void derive_persistence_refuses_colliding_and_reserved_targets()
     {
-        ContainerParams cp("/tmp/vg_bundle"); cp.Recipe = {"c1"};
-        json pool = json{{"COMPONENTS", json::array({ json{{"COMPONENTID", "c1"}, {"SUBCOMPONENTS", json::array({
+        ContainerParams cp("/tmp/vg_bundle");
+        const std::vector<OpGroup> pool = { OpGroup{"c1", json::array({
             json{{"TYPE","DeclarePersist"},{"SCOPE","file"},{"PATH","game/save"},{"TARGET","Save"}},          // kept
             json{{"TYPE","DeclarePersist"},{"SCOPE","file"},{"PATH","mods/save"},{"TARGET","Save"}},          // dup → skip
             json{{"TYPE","DeclarePersist"},{"SCOPE","file"},{"PATH","other/save"},{"TARGET","save"}},         // dup (case) → skip
             json{{"TYPE","DeclarePersist"},{"SCOPE","file"},{"PATH","cfg.ini"},{"TARGET","instance.json"}},   // reserved → skip
-            json{{"TYPE","DeclarePersist"},{"SCOPE","file"},{"PATH","hive"},{"TARGET","RegKeys"}} })}} })}};   // reserved (case) → skip
-        LaunchResolver::DerivePersistence(pool, cp);
+            json{{"TYPE","DeclarePersist"},{"SCOPE","file"},{"PATH","hive"},{"TARGET","RegKeys"}} })} };   // reserved (case) → skip
+        cp.Stack = pool; LaunchResolver::DerivePersistence(cp);
         // Only the first survives (a dir persist — "game/save" has no extension); the two collisions and the two
         // reserved targets are dropped (loudly), not merged.
         QCOMPARE((int)cp.KeepDirs.size() + (int)cp.KeepFiles.size(), 1);
@@ -806,9 +788,8 @@ private slots:
 
         ContainerParams cp("/tmp/vg_bundle");
         cp.NodeIdx = &idx; cp.LaunchNodeId = "game";
-        json pool = json::object();
-        QVERIFY(LaunchResolver::InitializeFromNode(cp, pool, json{{"Settings", json::object()}}));
-        LaunchResolver::DerivePersistence(pool, cp);
+        QVERIFY(LaunchResolver::InitializeFromNode(cp, json{{"Settings", json::object()}}));
+        LaunchResolver::DerivePersistence(cp);
 
         QVERIFY2(!cp.KeepDirs.empty(), "the runner's keep-set never reached persistence - saves are lost");
         QVERIFY(hasDir(cp, "pfx/drive_c/users"));
@@ -827,9 +808,8 @@ private slots:
 
         ContainerParams cp2("/tmp/vg_bundle");
         cp2.NodeIdx = &ch; cp2.LaunchNodeId = "vgame";
-        json pool2 = json::object();
-        QVERIFY(LaunchResolver::InitializeFromNode(cp2, pool2, json{{"Settings", json::object()}}));
-        LaunchResolver::DerivePersistence(pool2, cp2);
+        QVERIFY(LaunchResolver::InitializeFromNode(cp2, json{{"Settings", json::object()}}));
+        LaunchResolver::DerivePersistence(cp2);
         QVERIFY2(hasDir(cp2, "drive_c/emu_state"), "the INNER runner's keep-set was dropped");
         QVERIFY(hasDir(cp2, "pfx/drive_c/users"));
     }
@@ -848,9 +828,8 @@ private slots:
             finish(idx);
             ContainerParams cp("/tmp/vg_bundle");
             cp.NodeIdx = &idx; cp.LaunchNodeId = "game";
-            json pool = json::object();
-            if (!LaunchResolver::InitializeFromNode(cp, pool, json{{"Settings", json::object()}})) return -1;   // -1: did not resolve
-            LaunchResolver::DerivePersistence(pool, cp);
+            if (!LaunchResolver::InitializeFromNode(cp, json{{"Settings", json::object()}})) return -1;   // -1: did not resolve
+            LaunchResolver::DerivePersistence(cp);
             return (int)cp.KeepDirs.size();
         };
         QCOMPARE(build("1 == 1"), 1);            // true  -> kept
@@ -865,26 +844,26 @@ private slots:
             return std::any_of(c.KeepDirs.begin(), c.KeepDirs.end(),
                                [&](const PersistTarget &t){ return t.Path == p; });
         };
-        ContainerParams cp("/tmp/vg_bundle"); cp.Recipe = {"game"};
+        ContainerParams cp("/tmp/vg_bundle");
         cp.RuntimePath = "/tmp/rt";
         cp.RunnerPersistLayers = json::array({
             json{{"TYPE", "DeclarePersist"}, {"SCOPE", "file"}, {"PATH", "pfx/drive_c/users"}},
             json{{"TYPE", "DeclarePersist"}, {"SCOPE", "registry"}, {"PATH", "HKCU\\Software\\Wine"}} });
-        json pool = json{{"COMPONENTS", json::array({ json{{"COMPONENTID", "game"}, {"SUBCOMPONENTS", json::array({
-            json{{"TYPE", "DeclarePersist"}, {"SCOPE", "file"}, {"PATH", ""}, {"TARGET", "AllData"}} })}} })}};
-        LaunchResolver::DerivePersistence(pool, cp);
+        const std::vector<OpGroup> pool = { OpGroup{"game", json::array({
+            json{{"TYPE", "DeclarePersist"}, {"SCOPE", "file"}, {"PATH", ""}, {"TARGET", "AllData"}} })} };
+        cp.Stack = pool; LaunchResolver::DerivePersistence(cp);
         QVERIFY(hasDir(cp, ""));                                   // PATH "" ⇒ whole-runtime persist recorded
         QVERIFY(hasDir(cp, "pfx/drive_c/users"));                 // runner's user-profile keep still recorded
         QCOMPARE((int)cp.KeepDirs.size(), 2);
         QVERIFY(!cp.KeepRegKeys.empty());                          // a named key ⇒ granular registry keep
 
         // Runner keep-set alone (no game persist) → pristine runtime with the runner's user-profile + its key kept.
-        ContainerParams cp2("/tmp/vg_bundle"); cp2.Recipe = {"game"};
+        ContainerParams cp2("/tmp/vg_bundle");
         cp2.RunnerPersistLayers = json::array({
             json{{"TYPE", "DeclarePersist"}, {"SCOPE", "file"}, {"PATH", "drive_c/users"}},
             json{{"TYPE", "DeclarePersist"}, {"SCOPE", "registry"}, {"PATH", "HKCU\\Software\\Wine"}} });
-        json pool2 = json{{"COMPONENTS", json::array({ json{{"COMPONENTID", "game"}, {"SUBCOMPONENTS", json::array()}} })}};
-        LaunchResolver::DerivePersistence(pool2, cp2);
+        const std::vector<OpGroup> pool2 = { OpGroup{"game", json::array()} };
+        cp2.Stack = pool2; LaunchResolver::DerivePersistence(cp2);
         QCOMPARE((int)cp2.KeepDirs.size(), 1);                     // …the user profile
         QVERIFY(!cp2.KeepRegKeys.empty());                         // …and the key
     }
@@ -1025,9 +1004,8 @@ private slots:
         cp.NodeIdx = &idx; cp.LaunchNodeId = "game";
         cp.Grafts = std::vector<std::string>{ "loader" };
         cp.Entrypoint = "Loader";
-        json pool = json::object();
         const json cfg = json{{"Settings", json::object()}};
-        QVERIFY(LaunchResolver::InitializeFromNode(cp, pool, cfg));
+        QVERIFY(LaunchResolver::InitializeFromNode(cp, cfg));
         QCOMPARE(cp.ComposedExec.value("CONTENTPATH", std::string()), std::string("loader.exe"));   // the graft's entry
         QCOMPARE(cp.LaunchNodeId, std::string("game"));                                              // over the variant's mount
         QVERIFY(cp.AppliedGrafts == std::vector<std::string>{ "loader" });                            // the graft is applied
@@ -1050,9 +1028,8 @@ private slots:
         finish(idx);
         ContainerParams cp("/tmp/vg_bundle");
         cp.NodeIdx = &idx; cp.LaunchNodeId = "game"; cp.Grafts = std::vector<std::string>{ "mod" };
-        json pool = json::object();
         const json cfg = json{{"Settings", json::object()}};
-        QVERIFY(LaunchResolver::InitializeFromNode(cp, pool, cfg));
+        QVERIFY(LaunchResolver::InitializeFromNode(cp, cfg));
         QCOMPARE(cp.LaunchEnv.value("A", std::string()), std::string("game"));   // the game over the library beneath
         QCOMPARE(cp.LaunchEnv.value("C", std::string()), std::string("mod"));    // the graft over the game
         QVERIFY(!cp.LaunchEnv.contains("B"));                                       // removed by the game
@@ -1110,11 +1087,10 @@ private slots:
         ContainerParams cp("/tmp/vg_bundle");
         cp.NodeIdx = &idx; cp.LaunchNodeId = "game"; cp.Grafts = std::vector<std::string>{};   // unticked
         cp.Entrypoint = "Loader";
-        json pool = json::object();
         const json cfg = json{{"Settings", json::object()}};
-        QVERIFY(!LaunchResolver::InitializeFromNode(cp, pool, cfg));
+        QVERIFY(!LaunchResolver::InitializeFromNode(cp, cfg));
         cp.Grafts = std::vector<std::string>{ "elsewhere" };                                  // not offered to this row
-        QVERIFY(!LaunchResolver::InitializeFromNode(cp, pool, cfg));
+        QVERIFY(!LaunchResolver::InitializeFromNode(cp, cfg));
         QVERIFY(cp.AppliedGrafts.empty());
     }
 
@@ -1137,16 +1113,14 @@ private slots:
         {
             ContainerParams cp("/tmp/vg_bundle");
             cp.NodeIdx = &idx; cp.LaunchNodeId = Row;
-            json pool = json::object();
-            QVERIFY2(!LaunchResolver::InitializeFromNode(cp, pool, cfg), Row);
+            QVERIFY2(!LaunchResolver::InitializeFromNode(cp, cfg), Row);
         }
         ContainerParams cp("/tmp/vg_bundle");
         cp.NodeIdx = &idx; cp.LaunchNodeId = "game";
-        json pool = json::object();
-        QVERIFY(LaunchResolver::InitializeFromNode(cp, pool, cfg));
+        QVERIFY(LaunchResolver::InitializeFromNode(cp, cfg));
         QVERIFY(cp.AppliedGrafts == std::vector<std::string>{ "fine" });   // both pre-ticked; the conflicting one does not apply
         cp.Grafts = std::vector<std::string>{ "conflict", "fine" };
-        QVERIFY(LaunchResolver::InitializeFromNode(cp, pool, cfg));
+        QVERIFY(LaunchResolver::InitializeFromNode(cp, cfg));
         QVERIFY(cp.AppliedGrafts == std::vector<std::string>{ "fine" });
     }
 
@@ -1348,8 +1322,7 @@ private slots:
         const auto launch = [&](const char *Node, const char *Face) {
             ContainerParams cp("/tmp/vg_bundle");
             cp.NodeIdx = &idx; cp.LaunchNodeId = Node; cp.LaunchFace = Face;
-            json pool = json::object();
-            const bool Ok = LaunchResolver::InitializeFromNode(cp, pool, cfg);
+            const bool Ok = LaunchResolver::InitializeFromNode(cp, cfg);
             const std::string Exe = cp.ComposedExec.is_object() ? cp.ComposedExec.value("CONTENTPATH", std::string()) : std::string();
             return std::make_tuple(Ok, Exe, cp.PackageName);
         };
@@ -1397,8 +1370,7 @@ private slots:
         const auto launch = [&](const char *Node, const char *Face) {
             ContainerParams cp("/tmp/vg_bundle");
             cp.NodeIdx = &idx; cp.LaunchNodeId = Node; cp.LaunchFace = Face;
-            json pool = json::object();
-            const bool Ok = LaunchResolver::InitializeFromNode(cp, pool, cfg);
+            const bool Ok = LaunchResolver::InitializeFromNode(cp, cfg);
             const std::string Exe = cp.ComposedExec.is_object() ? cp.ComposedExec.value("CONTENTPATH", std::string()) : std::string();
             return std::make_tuple(Ok, Exe, cp.PackageName, cp.AppliedGrafts);
         };
@@ -1447,8 +1419,7 @@ private slots:
         const auto launch = [&](const char *Node, const char *Face, const char *Base) {
             ContainerParams cp("/tmp/vg_bundle");
             cp.NodeIdx = &idx; cp.LaunchNodeId = Node; cp.LaunchFace = Face; cp.GraftBase = Base;
-            json pool = json::object();
-            const bool Ok = LaunchResolver::InitializeFromNode(cp, pool, cfg);
+            const bool Ok = LaunchResolver::InitializeFromNode(cp, cfg);
             const std::string Exe = cp.ComposedExec.is_object() ? cp.ComposedExec.value("CONTENTPATH", std::string()) : std::string();
             return std::make_tuple(Ok, Exe, cp.PackageName, cp.AppliedGrafts);
         };
@@ -1488,8 +1459,7 @@ private slots:
 
         ContainerParams cp("/tmp/vg_bundle");
         cp.NodeIdx = &idx; cp.LaunchNodeId = "fe25"; cp.LaunchFace = "749000001";
-        json pool = json::object();
-        QVERIFY(LaunchResolver::InitializeFromNode(cp, pool, json{{"Settings", json::object()}}));
+        QVERIFY(LaunchResolver::InitializeFromNode(cp, json{{"Settings", json::object()}}));
         const std::set<std::string> Applied(cp.AppliedGrafts.begin(), cp.AppliedGrafts.end());
         QCOMPARE(Applied, (std::set<std::string>{"fe25", "up"}));
     }
@@ -1657,21 +1627,21 @@ private slots:
     // picks from the pool each launch; a CLI override beats the pool; a no-UI var is a plain binding.
     void resolve_custom_var_new_shape()
     {
-        const json pool = json{{"COMPONENTS", json::array({ json{{"COMPONENTID", "c1"}, {"SUBCOMPONENTS", json::array({
+        const std::vector<OpGroup> pool = { OpGroup{"c1", json::array({
             json{{"TYPE", "CustomVar"}, {"KEY", "OPT"},    {"DEFAULT", "7"}, {"UI", {{"CONTROL", "int"}}}},
             json{{"TYPE", "CustomVar"}, {"KEY", "BIND"},   {"DEFAULT", "1"}},
-            json{{"TYPE", "CustomVar"}, {"KEY", "SECRET"}, {"UI", {{"CONTROL", "secret"}, {"POOL", json::array({"A","B","C"})}}}} })}} })}};
+            json{{"TYPE", "CustomVar"}, {"KEY", "SECRET"}, {"UI", {{"CONTROL", "secret"}, {"POOL", json::array({"A","B","C"})}}}} })} };
 
-        { ContainerParams cp("/tmp/vg_bundle"); cp.Recipe = {"c1"}; cp.PackageUID = "pkg";
-          LaunchResolver::ResolveCustomVariables(pool, cp, json{{"Settings", json::object()}});
+        { ContainerParams cp("/tmp/vg_bundle"); cp.PackageUID = "pkg";
+          cp.Stack = pool; LaunchResolver::ResolveCustomVariables(cp, json{{"Settings", json::object()}});
           QCOMPARE(cp.CustomVariables["OPT"],  std::string("7"));   // RAW — NOT dword-encoded at resolution
           QCOMPARE(cp.CustomVariables["BIND"], std::string("1"));   // a no-UI binding
           const std::string s = cp.CustomVariables["SECRET"];
           QVERIFY(s == "A" || s == "B" || s == "C"); }              // picked from the pool
 
-        { ContainerParams cp("/tmp/vg_bundle"); cp.Recipe = {"c1"}; cp.PackageUID = "pkg";
+        { ContainerParams cp("/tmp/vg_bundle"); cp.PackageUID = "pkg";
           cp.VariableOverrides["SECRET"] = "X";                      // CLI/--var beats the pool
-          LaunchResolver::ResolveCustomVariables(pool, cp, json{{"Settings", json::object()}});
+          cp.Stack = pool; LaunchResolver::ResolveCustomVariables(cp, json{{"Settings", json::object()}});
           QCOMPARE(cp.CustomVariables["SECRET"], std::string("X")); }
     }
 
@@ -1682,15 +1652,15 @@ private slots:
     {
         auto cv = [](const std::string& k, const std::string& d){ return json{{"TYPE","CustomVar"},{"KEY",k},{"DEFAULT",d}}; };
         json mm = cv("MM", "%RED%*2 | %PURPLE%*32 | (1-%GREY%)*64"); mm["EVAL"] = true;
-        const json pool = json{{"COMPONENTS", json::array({ json{{"COMPONENTID","c1"}, {"SUBCOMPONENTS", json::array({
-            mm, cv("RED","1"), cv("PURPLE","0"), cv("GREY","1"), cv("RAW","%RED%*2") })}} })}};
-        { ContainerParams cp("/tmp/vg_bundle"); cp.Recipe = {"c1"}; cp.PackageUID = "pkg";
-          LaunchResolver::ResolveCustomVariables(pool, cp, json{{"Settings", json::object()}});
+        const std::vector<OpGroup> pool = { OpGroup{"c1", json::array({
+            mm, cv("RED","1"), cv("PURPLE","0"), cv("GREY","1"), cv("RAW","%RED%*2") })} };
+        { ContainerParams cp("/tmp/vg_bundle"); cp.PackageUID = "pkg";
+          cp.Stack = pool; LaunchResolver::ResolveCustomVariables(cp, json{{"Settings", json::object()}});
           QCOMPARE(cp.CustomVariables["MM"], std::string("2"));
           QCOMPARE(cp.CustomVariables["RAW"], std::string("1*2")); }            // no EVAL: text
-        { ContainerParams cp("/tmp/vg_bundle"); cp.Recipe = {"c1"}; cp.PackageUID = "pkg";
+        { ContainerParams cp("/tmp/vg_bundle"); cp.PackageUID = "pkg";
           cp.VariableOverrides["GREY"] = "0"; cp.VariableOverrides["PURPLE"] = "1";
-          LaunchResolver::ResolveCustomVariables(pool, cp, json{{"Settings", json::object()}});
+          cp.Stack = pool; LaunchResolver::ResolveCustomVariables(cp, json{{"Settings", json::object()}});
           QCOMPARE(cp.CustomVariables["MM"], std::string("98")); }              // 2 | 32 | 64
     }
 
@@ -1700,17 +1670,17 @@ private slots:
     void resolve_custom_var_map_table()
     {
         auto cv = [](const std::string& k, const json& more){ json j{{"TYPE","CustomVar"},{"KEY",k}}; j.update(more); return j; };
-        const json pool = json{{"COMPONENTS", json::array({ json{{"COMPONENTID","c1"}, {"SUBCOMPONENTS", json::array({
+        const std::vector<OpGroup> pool = { OpGroup{"c1", json::array({
             cv("FWD", {{"DEFAULT", "keypad 0"}, {"UI", {{"CONTROL", "key"}}}}),
             cv("DIR", {{"DEFAULT", "C:/g"}}),
             cv("KEYS", {{"MAP", {{"keypad 0", "[0]"}, {"home", "%DIR%/h"}}}}),
             cv("STRICT", {{"MAP", {{"a", "A"}}}, {"ELSE", "none"}}),
             cv("OFF", {{"MAP", {{"keypad 0", "NO"}}}, {"WHEN", "%DIR%==never"}}),
-            cv("DERIVED", {{"DEFAULT", "%FWD:map:KEYS%"}}) })}} })}};
+            cv("DERIVED", {{"DEFAULT", "%FWD:map:KEYS%"}}) })} };
         const auto run = [&](const std::string& Fwd) {
-            ContainerParams cp("/tmp/vg_bundle"); cp.Recipe = {"c1"}; cp.PackageUID = "pkg";
+            ContainerParams cp("/tmp/vg_bundle"); cp.PackageUID = "pkg";
             if (!Fwd.empty()) cp.VariableOverrides["FWD"] = Fwd;
-            LaunchResolver::ResolveCustomVariables(pool, cp, json{{"Settings", json::object()}});
+            cp.Stack = pool; LaunchResolver::ResolveCustomVariables(cp, json{{"Settings", json::object()}});
             std::string S = "%FWD:map:KEYS%|%FWD:map:STRICT%|%FWD:map:OFF%|%DERIVED%";
             VarSubst::StringVariableSubstitution(S, cp.GetVariablesMap());
             return S;
@@ -1727,34 +1697,32 @@ private slots:
         auto cv = [](const std::string& k, const std::string& d){ return json{{"TYPE","CustomVar"},{"KEY",k},{"DEFAULT",d}}; };
 
         // Forward reference: A (declared first) references B (declared later).
-        { json pool = json{{"COMPONENTS", json::array({ json{{"COMPONENTID","c1"}, {"SUBCOMPONENTS", json::array({
-              cv("A","%B%"), cv("B","x") })}} })}};
-          ContainerParams cp("/tmp/vg_bundle"); cp.Recipe = {"c1"}; cp.PackageUID = "pkg";
-          LaunchResolver::ResolveCustomVariables(pool, cp, json{{"Settings", json::object()}});
+        { const std::vector<OpGroup> pool = { OpGroup{"c1", json::array({
+              cv("A","%B%"), cv("B","x") })} };
+          ContainerParams cp("/tmp/vg_bundle"); cp.PackageUID = "pkg";
+          cp.Stack = pool; LaunchResolver::ResolveCustomVariables(cp, json{{"Settings", json::object()}});
           QCOMPARE(cp.CustomVariables["A"], std::string("x")); }
 
         // Chain A->B->C resolves fully.
-        { json pool = json{{"COMPONENTS", json::array({ json{{"COMPONENTID","c1"}, {"SUBCOMPONENTS", json::array({
-              cv("A","%B%"), cv("B","%C%"), cv("C","z") })}} })}};
-          ContainerParams cp("/tmp/vg_bundle"); cp.Recipe = {"c1"}; cp.PackageUID = "pkg";
-          LaunchResolver::ResolveCustomVariables(pool, cp, json{{"Settings", json::object()}});
+        { const std::vector<OpGroup> pool = { OpGroup{"c1", json::array({
+              cv("A","%B%"), cv("B","%C%"), cv("C","z") })} };
+          ContainerParams cp("/tmp/vg_bundle"); cp.PackageUID = "pkg";
+          cp.Stack = pool; LaunchResolver::ResolveCustomVariables(cp, json{{"Settings", json::object()}});
           QCOMPARE(cp.CustomVariables["A"], std::string("z"));
           QCOMPARE(cp.CustomVariables["B"], std::string("z")); }
 
         // Hierarchy override is globally visible: a later component re-declares B; A sees the FINAL B.
-        { json pool = json{{"COMPONENTS", json::array({
-              json{{"COMPONENTID","parent"}, {"SUBCOMPONENTS", json::array({ cv("B","x"), cv("A","%B%") })}},
-              json{{"COMPONENTID","child"},  {"SUBCOMPONENTS", json::array({ cv("B","y") })}} })}};
-          ContainerParams cp("/tmp/vg_bundle"); cp.Recipe = {"parent","child"}; cp.PackageUID = "pkg";
-          LaunchResolver::ResolveCustomVariables(pool, cp, json{{"Settings", json::object()}});
+        { const std::vector<OpGroup> pool = { OpGroup{"parent", json::array({ cv("B","x"), cv("A","%B%") })}, OpGroup{"child", json::array({ cv("B","y") })} };
+          ContainerParams cp("/tmp/vg_bundle"); cp.PackageUID = "pkg";
+          cp.Stack = pool; LaunchResolver::ResolveCustomVariables(cp, json{{"Settings", json::object()}});
           QCOMPARE(cp.CustomVariables["B"], std::string("y"));     // child wins
           QCOMPARE(cp.CustomVariables["A"], std::string("y")); }   // and A sees the final value, not "x"
 
         // A reference cycle terminates (no hang); the residual token is left literal.
-        { json pool = json{{"COMPONENTS", json::array({ json{{"COMPONENTID","c1"}, {"SUBCOMPONENTS", json::array({
-              cv("A","%B%"), cv("B","%A%") })}} })}};
-          ContainerParams cp("/tmp/vg_bundle"); cp.Recipe = {"c1"}; cp.PackageUID = "pkg";
-          LaunchResolver::ResolveCustomVariables(pool, cp, json{{"Settings", json::object()}});
+        { const std::vector<OpGroup> pool = { OpGroup{"c1", json::array({
+              cv("A","%B%"), cv("B","%A%") })} };
+          ContainerParams cp("/tmp/vg_bundle"); cp.PackageUID = "pkg";
+          cp.Stack = pool; LaunchResolver::ResolveCustomVariables(cp, json{{"Settings", json::object()}});
           QVERIFY(cp.CustomVariables["A"].find('%') != std::string::npos); }  // unresolved, but resolution returned
     }
 
@@ -1994,9 +1962,8 @@ private slots:
         finish(idx);
         ContainerParams cp("/tmp/vg_bundle");
         cp.NodeIdx = &idx; cp.LaunchNodeId = "game";
-        json pool = json::object();
-        QVERIFY(LaunchResolver::InitializeFromNode(cp, pool, json{{"Settings", json::object()}}));
-        QVERIFY(LaunchResolver::ResolveExecutableDefinition(json::object(), cp));
+        QVERIFY(LaunchResolver::InitializeFromNode(cp, json{{"Settings", json::object()}}));
+        QVERIFY(LaunchResolver::ResolveExecutableDefinition(cp));
         const std::string Home = (cp.RuntimePath / "n64" / "game").string();
         std::string target;
         for (const auto & L : cp.SubComponentsArray)
@@ -2027,9 +1994,8 @@ private slots:
         finish(idx);
         ContainerParams cp("/tmp/vg_bundle");
         cp.NodeIdx = &idx; cp.LaunchNodeId = "game";
-        json pool = json::object();
-        QVERIFY(LaunchResolver::InitializeFromNode(cp, pool, json{{"Settings", json::object()}}));
-        QVERIFY(LaunchResolver::ResolveExecutableDefinition(json::object(), cp));
+        QVERIFY(LaunchResolver::InitializeFromNode(cp, json{{"Settings", json::object()}}));
+        QVERIFY(LaunchResolver::ResolveExecutableDefinition(cp));
         QCOMPARE(cp.ExePathRelative.generic_string(), std::string("../Program Files (x86)/Tool 1.0/tool.exe"));
         QCOMPARE(cp.ExePathComplete.generic_string(), (cp.RuntimePath / "pfx/drive_c/Program Files (x86)/Tool 1.0/tool.exe").generic_string());
         QCOMPARE(cp.WorkDirPathComplete.generic_string(), (cp.RuntimePath / "pfx/drive_c/Program Files (x86)/Tool 1.0").generic_string());
@@ -2052,8 +2018,7 @@ private slots:
             finish(idx);
             ContainerParams cp("/tmp/vg_bundle");
             cp.NodeIdx = &idx; cp.LaunchNodeId = "game";
-            json pool = json::object();
-            return LaunchResolver::InitializeFromNode(cp, pool, json{{"Settings", json::object()}});
+            return LaunchResolver::InitializeFromNode(cp, json{{"Settings", json::object()}});
         };
         const json Roots = { {"%GameDir%", "%RuntimePath%/n64/%PackageUID%"}, {"%Scratch%", "%TempPath%/scratch"} };
         QVERIFY2(launch(Roots, json::array({ json{{"DIR", "cfg"}, {"TARGET", "FILES/%GameDir%/cfg"}} })), "an in-runtime layer was refused");
@@ -2157,8 +2122,7 @@ private slots:
             finish(idx);
             ContainerParams cp("/tmp/vg_bundle");
             cp.NodeIdx = &idx; cp.LaunchNodeId = "game";
-            json pool = json::object();
-            return LaunchResolver::InitializeFromNode(cp, pool, json{{"Settings", json::object()}});
+            return LaunchResolver::InitializeFromNode(cp, json{{"Settings", json::object()}});
         };
         QVERIFY2(!launch(json::object(), json::array({ Media, json{{"DIR", "music"}, {"TARGET", "FILES/%Media%/music"}} })),
                  "a layer placed on E:, which DRIVES does not lay out, launched");
@@ -2223,39 +2187,39 @@ private slots:
     void resolve_custom_variables_priority()
     {
         json derived = json{{"TYPE", "CustomVar"}, {"KEY", "DERIVED"}, {"DEFAULT", "%WEATHER%*4"}, {"EVAL", true}};
-        json pool = json{{"COMPONENTS", json::array({ json{{"COMPONENTID", "c1"}, {"SUBCOMPONENTS", json::array({
+        const std::vector<OpGroup> pool = { OpGroup{"c1", json::array({
             json{{"TYPE", "CustomVar"}, {"KEY", "MYVAR"}, {"DEFAULT", "def"}, {"UI", {{"CONTROL", "text"}}}},
             json{{"TYPE", "CustomVar"}, {"KEY", "WEATHER"}, {"DEFAULT", "1"}, {"UI", {{"CONTROL", "bool"}}}},
-            derived })}} })}};
+            derived })} };
 
         // temp UserDataRoot isolates every read/write here from the real ~/.VidyaGod (the accessors now hit disk).
         QTemporaryDir ud; QVERIFY(ud.isValid());
         const json cfg = json{{"Settings", {{"Paths", {{"UserDataRoot", ud.path().toStdString()}}}}}};
         // default (no instance config written yet → empty → the CustomVar DEFAULT)
-        { ContainerParams cp("/tmp/vg_bundle"); cp.Recipe = {"c1"}; cp.PackageUID = "pkg";
-          LaunchResolver::ResolveCustomVariables(pool, cp, cfg);
+        { ContainerParams cp("/tmp/vg_bundle"); cp.PackageUID = "pkg";
+          cp.Stack = pool; LaunchResolver::ResolveCustomVariables(cp, cfg);
           QCOMPARE(cp.CustomVariables["MYVAR"], std::string("def")); }
         // user setting (now lives in the INSTANCE file — write it there)
         QVERIFY(InstanceStore::WriteConfig(cfg, "pkg", "DefaultInstance", json{{"VARIABLES", {{"MYVAR", "cfg"}, {"DERIVED", "0"}}}}));
-        { ContainerParams cp("/tmp/vg_bundle"); cp.Recipe = {"c1"}; cp.PackageUID = "pkg";
-          LaunchResolver::ResolveCustomVariables(pool, cp, cfg);
+        { ContainerParams cp("/tmp/vg_bundle"); cp.PackageUID = "pkg";
+          cp.Stack = pool; LaunchResolver::ResolveCustomVariables(cp, cfg);
           QCOMPARE(cp.CustomVariables["MYVAR"], std::string("cfg"));
           QCOMPARE(cp.CustomVariables["DERIVED"], std::string("4")); }        // the stale saved "0" is not a setting
         // "%%" is a literal '%' through the whole resolution, undone once where the value is written: "%%WEATHER%%"
         // stays the text %WEATHER%, and "100%%%%" (meaning 100%%) is not undone a second time on insertion.
         // Teeth: no KeepEscapes in the fixpoint (100%%%% writes as 100%).
-        { json esc = json{{"COMPONENTS", json::array({ json{{"COMPONENTID", "c1"}, {"SUBCOMPONENTS", json::array({
+        { const std::vector<OpGroup> esc = { OpGroup{"c1", json::array({
               json{{"TYPE", "CustomVar"}, {"KEY", "WEATHER"}, {"DEFAULT", "1"}},
-              json{{"TYPE", "CustomVar"}, {"KEY", "LIT"}, {"DEFAULT", "%%WEATHER%% is %WEATHER%, 100%%%%"}} })}} })}};
-          ContainerParams cp("/tmp/vg_bundle"); cp.Recipe = {"c1"}; cp.PackageUID = "pkg";
-          LaunchResolver::ResolveCustomVariables(esc, cp, cfg);
+              json{{"TYPE", "CustomVar"}, {"KEY", "LIT"}, {"DEFAULT", "%%WEATHER%% is %WEATHER%, 100%%%%"}} })} };
+          ContainerParams cp("/tmp/vg_bundle"); cp.PackageUID = "pkg";
+          cp.Stack = esc; LaunchResolver::ResolveCustomVariables(cp, cfg);
           std::string Out = "%LIT%";
           VarSubst::StringVariableSubstitution(Out, cp.GetVariablesMap());
           QCOMPARE(Out, std::string("%WEATHER% is 1, 100%%")); }
         // CLI override wins
-        { ContainerParams cp("/tmp/vg_bundle"); cp.Recipe = {"c1"}; cp.PackageUID = "pkg";
+        { ContainerParams cp("/tmp/vg_bundle"); cp.PackageUID = "pkg";
           cp.VariableOverrides["MYVAR"] = "ovr";
-          LaunchResolver::ResolveCustomVariables(pool, cp, cfg);
+          cp.Stack = pool; LaunchResolver::ResolveCustomVariables(cp, cfg);
           QCOMPARE(cp.CustomVariables["MYVAR"], std::string("ovr")); }
     }
 

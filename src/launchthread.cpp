@@ -107,8 +107,7 @@ void LaunchThread::run()
     // -----------------------------------------------------------------
     // Build ContainerParams and ContainerWrapper (native node-graph launch).
     // -----------------------------------------------------------------
-    std::filesystem::path NoPath;
-    struct ContainerParams Params(NoPath, std::string(), std::string());
+    struct ContainerParams Params;
     Params.VariableOverrides = this->VariableOverrides;
     Params.Grafts            = this->Grafts;
     Params.GraftBase         = this->GraftBase;
@@ -140,8 +139,7 @@ void LaunchThread::run()
     Params.InstanceName = this->InstanceName;   // which instance's config + USERDATA to use ("" ⇒ active)
     Params.ReadBackOptions = true;              // what the game changed in its files is read back (the dialog did too)
 
-    nlohmann::ordered_json UnusedManifest = nlohmann::ordered_json::object();
-    ContainerWrapper* LocalWrapper = new ContainerWrapper(GlobalConfigJSON, UnusedManifest, Params);
+    ContainerWrapper* LocalWrapper = new ContainerWrapper(GlobalConfigJSON, Params);
 
     // Store wrapper pointer so kill() can reach it.
     {
@@ -152,7 +150,7 @@ void LaunchThread::run()
     // -----------------------------------------------------------------
     // Step 1: Resolve executable definition (reads the launch node's EXEC).
     // -----------------------------------------------------------------
-    if (!LaunchResolver::ResolveExecutableDefinition(UnusedManifest, LocalWrapper->ContainerParams))
+    if (!LaunchResolver::ResolveExecutableDefinition(LocalWrapper->ContainerParams))
     {
         ClearLogCallback();
         {
@@ -160,7 +158,7 @@ void LaunchThread::run()
             wrapper = nullptr;
         }
         delete LocalWrapper;
-        emit launchFinished(false, "Could not resolve variant.\nCheck VARIANT_ID and MODULES in the manifest.");
+        emit launchFinished(false, "Could not resolve what to run.\nSee the log for why.");
         return;
     }
 

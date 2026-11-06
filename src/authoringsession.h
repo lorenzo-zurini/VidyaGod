@@ -98,7 +98,6 @@ private:
     bool BuildRuntime(const std::vector<std::string> &Chain);
 
     nlohmann::ordered_json                ConfigCopy;
-    nlohmann::ordered_json                DummyManifest = nlohmann::ordered_json::object();
     NodeIndex                             Idx;             // owned copy (Params->NodeIdx points into this)
     QDir                                  BundleDir;
     std::string                           TargetId;        // the node the session is built around / captures into

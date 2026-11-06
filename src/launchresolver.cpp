@@ -28,7 +28,7 @@
 
 //The pure manifest queries + VFS-layer helpers live in ManifestModel; the catalog/user-settings service in
 //PackageCatalog. Bring both in unqualified so the resolver code (moved verbatim out of ContainerWrapper) reads
-//naturally (FindComponentIndex / GetPackageUserSettings / MachinePlatform / IsVfsLayer / ...).
+//naturally (GetPackageUserSettings / MachinePlatform / IsVfsLayer / ...).
 using namespace ManifestModel;
 using namespace PackageCatalog;
 
@@ -135,7 +135,7 @@ std::vector<std::pair<std::string, std::string>> LaunchResolver::AnchorLayouts(s
 }
 
 namespace LaunchResolver {
-static bool InitializeFromNodeOnce(struct ContainerParams &ContainerParams, nlohmann::ordered_json &ComponentPool, const nlohmann::ordered_json &GlobalConfigJSON);
+static bool InitializeFromNodeOnce(struct ContainerParams &ContainerParams, const nlohmann::ordered_json &GlobalConfigJSON);
 }
 
 //A launch (ReadBackOptions) first takes back what the game changed in its own files (OptionReadBack): a quiet look-ahead
@@ -144,16 +144,15 @@ static bool InitializeFromNodeOnce(struct ContainerParams &ContainerParams, nloh
 //The look-ahead logs nothing into a running launch's console or verdict. Nothing is read while the instance is running:
 //its saved copies are not yet what the session has written. The launch window stops after the look-ahead
 //(ReadBackReresolve off): it only wants the instance updated before it shows the values.
-bool LaunchResolver::InitializeFromNode(struct ContainerParams &ContainerParams, nlohmann::ordered_json &ComponentPool, const nlohmann::ordered_json &GlobalConfigJSON)
+bool LaunchResolver::InitializeFromNode(struct ContainerParams &ContainerParams, const nlohmann::ordered_json &GlobalConfigJSON)
 {
     if (!ContainerParams.ReadBackOptions || !AppPaths::UserDataPathOverride().empty())
-        return InitializeFromNodeOnce(ContainerParams, ComponentPool, GlobalConfigJSON);
+        return InitializeFromNodeOnce(ContainerParams, GlobalConfigJSON);
     const struct ContainerParams Input = ContainerParams;
-    const nlohmann::ordered_json PoolIn = ComponentPool;
     bool Looked = false;
     {
         QuietLog Quiet;
-        Looked = InitializeFromNodeOnce(ContainerParams, ComponentPool, GlobalConfigJSON);
+        Looked = InitializeFromNodeOnce(ContainerParams, GlobalConfigJSON);
     }
     if (Looked && !VfsMount::SessionOwned(ContainerParams.TempPath))
     {
@@ -175,11 +174,10 @@ bool LaunchResolver::InitializeFromNode(struct ContainerParams &ContainerParams,
     }
     if (Looked && !ContainerParams.ReadBackReresolve) return true;
     ContainerParams = Input;
-    ComponentPool = PoolIn;
-    return InitializeFromNodeOnce(ContainerParams, ComponentPool, GlobalConfigJSON);
+    return InitializeFromNodeOnce(ContainerParams, GlobalConfigJSON);
 }
 
-bool LaunchResolver::InitializeFromNodeOnce(struct ContainerParams &ContainerParams, nlohmann::ordered_json &ComponentPool, const nlohmann::ordered_json &GlobalConfigJSON)
+bool LaunchResolver::InitializeFromNodeOnce(struct ContainerParams &ContainerParams, const nlohmann::ordered_json &GlobalConfigJSON)
 {
     auto &CP = ContainerParams;
     const NodeIndex &Idx = *CP.NodeIdx;
@@ -220,7 +218,6 @@ bool LaunchResolver::InitializeFromNodeOnce(struct ContainerParams &ContainerPar
     { LogErr("InitializeFromNode", "Node '" + LaunchId + "' does not present tile '" + Face + "'."); return false; }
     const nlohmann::ordered_json *FaceTile = Idx.Tile(Face);
     const nlohmann::ordered_json &FaceMeta = FaceTile ? *FaceTile : !Row->Meta.empty() ? Row->Meta : Launch->Meta;
-    CP.subgame_id = LaunchId;  CP.VariantID = CP.Entrypoint.empty() ? "default" : CP.Entrypoint;
     CP.PackageUID = !Row->PackageUid.empty() ? Row->PackageUid : Launch->PackageUid.empty() ? LaunchId : Launch->PackageUid;
     CP.PackageName= FaceMeta.is_object() ? FaceMeta.value("TITLE", LaunchId) : LaunchId;
     //The game's Steam app id, which Proton and ProtonFixes key their per-game fixes on: the tile's, else the nearest
@@ -318,8 +315,8 @@ bool LaunchResolver::InitializeFromNodeOnce(struct ContainerParams &ContainerPar
     CP.ComposedExec = Entry ? NodeLower::LowerEntry(*Entry) : nlohmann::ordered_json::object();
     CP.Platform = CP.ComposedExec.value("PLATFORM", Launch->HostPlatform);
 
-    nlohmann::ordered_json Components = nlohmann::ordered_json::array();
-    CP.Recipe.clear();
+    CP.Stack.clear();
+    CP.RunnerOps = nlohmann::ordered_json::array();
     nlohmann::ordered_json GuestRoots;                                   // the boundary runner's guest-coordinate map
     nlohmann::ordered_json RunnerOpsJ = nlohmann::ordered_json::array();  // the boundary runner's build, lowered
 
@@ -387,21 +384,14 @@ bool LaunchResolver::InitializeFromNodeOnce(struct ContainerParams &ContainerPar
     if (RunnerNode)
     {
         RunnerOpsJ = RunnerOps(Idx, RunnerNode->Key());
-        CP.RunnerComponents = nlohmann::ordered_json::array({ { {"COMPONENTID", RunnerNode->NodeId}, {"SUBCOMPONENTS", RunnerOpsJ} } });
-        CP.RunnerRecipe     = { RunnerNode->NodeId };
-        CP.RunnerEndpoints  = CP.UnifiedRuntime ? CP.RunnerRecipe : std::vector<std::string>{};
+        CP.RunnerOps = RunnerOpsJ;
         //UNIFIED: the runner build is mounted in the game RUNTIME, beneath the game (first = lowest priority).
-        if (CP.UnifiedRuntime)
-        {
-            Components.push_back({ {"COMPONENTID", RunnerNode->NodeId + "__runner"}, {"SUBCOMPONENTS", RunnerOpsJ} });
-            CP.Recipe.push_back(RunnerNode->NodeId + "__runner");
-        }
+        if (CP.UnifiedRuntime) CP.Stack.push_back({ RunnerNode->NodeId + "__runner", RunnerOpsJ });
     }
     }   // end !AuthoringBare
 
     //The game: the resolved row, lowered. Its paths stay in guest coordinates until substituted (GuestToLayout).
-    Components.push_back({ {"COMPONENTID", LaunchId}, {"SUBCOMPONENTS", NodeLower::LowerPlan(Plan)} });
-    CP.Recipe.push_back(LaunchId);
+    CP.Stack.push_back({ LaunchId, NodeLower::LowerPlan(Plan) });
 
     //The environment folds per name like everything else (null = removed) — the GAME's, merged over the runner's at exec.
     CP.LaunchEnv = nlohmann::ordered_json::object();
@@ -412,20 +402,13 @@ bool LaunchResolver::InitializeFromNodeOnce(struct ContainerParams &ContainerPar
         else CP.LaunchEnv[K] = V;
     }
 
-    //The internal component pool the generic iterators (BuildSubComponentsArray/ResolveCustomVariables/
-    //DerivePersistence/BuildDefaultData) consume — built from the plan, never authored or read from disk.
-    ComponentPool = nlohmann::ordered_json::object();
-    ComponentPool["PACKAGEUID"]  = CP.PackageUID;
-    ComponentPool["PACKAGENAME"] = CP.PackageName;
-    ComponentPool["COMPONENTS"]  = Components;
-
     DerivePaths(CP, GlobalConfigJSON);
-    ResolveCustomVariables(ComponentPool, CP, GlobalConfigJSON);
+    ResolveCustomVariables(CP, GlobalConfigJSON);
     //A place spelled from a variable ("%X%", X = "E:\\") is known only now — CheckLayer sees literal drives only. A
     //layer placed on a drive DRIVES does not lay out would land in a literal "E:" folder, silently: refused. (An
     //anchor only named in a value or an argument is not placed, and fine.)
     CP.UnmappedPlacements.clear();
-    BuildSubComponentsArray(ComponentPool, CP);
+    BuildSubComponentsArray(CP);
     if (!CP.UnmappedPlacements.empty())
     {
         LogErr("InitializeFromNode", "'" + CP.UnmappedPlacements.front() + "' is placed outside the runtime: on a "
@@ -470,7 +453,7 @@ bool LaunchResolver::InitializeFromNodeOnce(struct ContainerParams &ContainerPar
             CP.SubComponentsArray.push_back(std::move(E));
         }
     }
-    DerivePersistence(ComponentPool, CP);
+    DerivePersistence(CP);
     //A runner's edit or a kept path placed outside the runtime is refused like a game's layer (the check above ran
     //before them).
     if (!CP.UnmappedPlacements.empty())

@@ -22,7 +22,7 @@ class SandboxTest : public QObject
 
     static ContainerParams params(const std::map<std::string, std::string> &Vars)
     {
-        ContainerParams CP(std::filesystem::path("/tmp"), std::string("node"), std::string());
+        ContainerParams CP(std::filesystem::path("/tmp"));
         CP.PackagePath = "/tmp";
         CP.UsesVFS = false;
         CP.CustomVariables = Vars;

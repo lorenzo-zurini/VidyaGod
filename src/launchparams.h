@@ -83,10 +83,17 @@ inline void to_json(nlohmann::ordered_json &J, const PersistTarget &P)
 //  2. The LaunchResolver pipeline (InitializeFromNode/DerivePaths/…) — fills every other field from the node
 //     graph + GlobalConfig.
 //Fields are grouped by concern below; the inline comments note how each is populated.
+//One named group of the engine's ops a launch stacks (ContainerParams::Stack).
+struct OpGroup
+{
+    std::string Name;
+    nlohmann::ordered_json Ops = nlohmann::ordered_json::array();
+};
+
 struct ContainerParams
 {
 public:
-    ContainerParams(std::filesystem::path Passed_PackagePath, std::string Passed_subgame_id = "", std::string Passed_component_id = "");
+    explicit ContainerParams(std::filesystem::path Passed_PackagePath = {});
 
     //Container params:
     //Package-specific:
@@ -104,8 +111,13 @@ public:
     std::map<std::string, std::string> PendingWritten;   //what this launch's option edits wrote (OptionReadBack::Written), noted in the instance once the session's capture stored it
     std::map<std::string, nlohmann::ordered_json> VarDecls;   //RESOLVED: each variable's winning declaration (ResolveCustomVariables)
     std::string Platform;                //HOST_PLATFORM of the package (e.g. "win32", "snes", "custom") — matched against runner GUEST_PLATFORM
-    std::vector<std::string> Recipe;     //Ordered list of ComponentIDs to apply, from leaf to root (reversed after build)
-    nlohmann::ordered_json SubComponentsArray; //Flat, ordered array of all SUBCOMPONENTS across the Recipe's components
+    //What the launch stacks, lowest first, in the engine's ops: the boundary runner's build when it shares the game's
+    //runtime (UNIFIED), then the game's resolved plan. Built by InitializeFromNode. SubComponentsArray is their
+    //WHEN-gated, substituted concatenation; RunnerOps is the boundary runner's own ops (its CustomVars are the
+    //composition's least-specific defaults, whatever the runtime layout).
+    std::vector<OpGroup> Stack;
+    nlohmann::ordered_json RunnerOps = nlohmann::ordered_json::array();
+    nlohmann::ordered_json SubComponentsArray;
 
     //Runner CHAIN (runner daisy-chaining): innermost→outermost resolved runner links. RunnerChain[0] runs the
     //content; the last link is the native terminal VidyaGod execve's. Resolved by PickRunnerChain. A length-1
@@ -126,15 +138,9 @@ public:
     std::vector<std::string> LaunchRemoveEnv; //…and the names it removes
     std::vector<std::string> RunnerRemoveEnv; //REMOVE_ENV — env keys to remove before launch (e.g. LD_LIBRARY_PATH)
     std::vector<std::string> RunnerArgs; //ARGS — the full argument vector (author composes %Content%/guest paths explicitly; no auto-append)
-    std::vector<std::string> RunnerEndpoints; //RESOLVED — the selected runner's ENDPOINTS (its own components), mounted as recipe base
-    nlohmann::ordered_json RunnerComponents = nlohmann::ordered_json::array(); //RESOLVED — COMPONENTS of the selected runner's registry package (empty for an embedded/PATH runner); folded into the component pool
     std::filesystem::path RunnerPackagePath; //RESOLVED — the selected runner package's LIBRARY dir; its build layers + DEFPREFIX hydrate/resolve here
-    std::vector<std::string> RunnerRecipe; //RESOLVED — the selected runner variant's enabled component ids (its MODULES recipe); scopes runner CustomVar resolution to the active variant only
 
     //Flags
-    std::string subgame_id;                                         //PASSED
-    std::string component_id;                                       //PASSED (direct/editor mode — single endpoint)
-    std::vector<std::string> Endpoints;                             //RESOLVED — terminal component ids (the selected variant's ENDPOINTS, load order)
     bool ReadOnlyVFS = false;                                       //SET — if true, no writable top layer (spec readonly=true); whole runtime is read-only
     bool UsesVFS = false;                                           //AUTO-DETECTED from SubComponentsArray
     //AUTHORING — where this session's scratch (mounts, the writable upper an installer fills with the whole game,
@@ -172,8 +178,6 @@ public:
     //still overwrite it in the prelaunch window). Empty once a value is persisted.
     std::map<std::string, std::string> PickedSecrets;
 
-    //Variant resolution:
-    std::string VariantID;                                           //VARIANT_ID — resolved in DecideComponent (RECOMMENDED/first) or set by the caller
 
     //The launch EXEC: the SELECTED entry of the resolved row, lowered (NodeLower::LowerEntry) and mapped into the
     //runner's layout. Set by InitializeFromNode; consumed by ResolveExecutableDefinition.
@@ -222,8 +226,6 @@ public:
     std::filesystem::path ProgramPath;       //RuntimePath / ContentRoot — where the game content sits (WORKDIR default)
     std::filesystem::path DefPrefixPath;     //the wine-prefix artifact dir (TempPath/DEFPREFIX per-launch, or the installed DEFPREFIX/<variant>); mounted whole as the base layer when PrefixGenerate
     std::filesystem::path DefaultDataPath;   //TempPath/DEFAULTDATA — RO layer holding all package-encoded base edits (Reg/File), between the component layers and the WRITELAYER; regenerated each launch
-    std::filesystem::path RunnerRuntimePath; //Resolved runner SOURCE locator (e.g. the Proton build dir) — exposed as %RunnerRuntimePath%
-    nlohmann::ordered_json RunnerSource;     //The selected runner's SOURCE block (if any) — fetched by EnsureSources before launch
 
     //Installed-runner model: the runner ships its own build as VFSZipLayer(s) (e.g. a Proton zip), mounted
     //read-only at its own mount; its DEFPREFIX is a one-time read-only per-runner artifact (no launch wineboot).

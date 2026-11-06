@@ -62,7 +62,6 @@ int Launch(const LaunchRequest &Req, nlohmann::ordered_json &GlobalConfigJSON, Q
 struct PreparedLaunch
 {
     std::shared_ptr<const NodeIndex> Index;
-    nlohmann::ordered_json Manifest = nlohmann::ordered_json::object();   // the wrapper holds it by reference
     std::unique_ptr<ContainerWrapper> W;
     std::string Name;
     ~PreparedLaunch();

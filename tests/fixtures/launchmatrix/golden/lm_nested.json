@@ -35,9 +35,6 @@
   "Platform": "fixturevm",
   "PrefixGenerate": false,
   "PrefixRoot": "pfx",
-  "Recipe": [
-    "lm_nested"
-  ],
   "RunnerArgs": [
     "--run"
   ],
@@ -70,18 +67,6 @@
       "NodeId": "bafkreiclbditqnvr7dfugtxdcouvyqfz6mecord4owyjn2l55ni2mrfcry"
     }
   ],
-  "RunnerComponents": [
-    {
-      "COMPONENTID": "lm_runner_prefix",
-      "SUBCOMPONENTS": [
-        {
-          "PATH": "<DATA>/fixture/[90000000000001][v1.0] Launch Matrix/fakerunner.sh",
-          "TARGET": "runner/fakerunner.sh",
-          "TYPE": "VFSFileLayer"
-        }
-      ]
-    }
-  ],
   "RunnerEnv": {
     "LM_FROM_VAR": "%lm_text%",
     "LM_INNER_ENV": "C:\\90000000000001\\__runner_bafkreibzsdflcbwhoz7jc4e3rbijij6g2qmyutx6tak5cge5lzrgxqljx4__",
@@ -96,14 +81,21 @@
     }
   ],
   "RunnerName": "lm_runner_prefix",
-  "RunnerPersistLayers": [],
-  "RunnerRecipe": [
-    "lm_runner_prefix"
+  "RunnerOps": [
+    {
+      "PATH": "<DATA>/fixture/[90000000000001][v1.0] Launch Matrix/fakerunner.sh",
+      "TARGET": "runner/fakerunner.sh",
+      "TYPE": "VFSFileLayer"
+    }
   ],
+  "RunnerPersistLayers": [],
   "RunnerRemoveEnv": [
     "LM_UNWANTED"
   ],
   "RunnerShipsBuild": true,
+  "Stack": [
+    "lm_nested"
+  ],
   "SubComponentsArray": [
     {
       "PATH": "<DATA>/fixture/[90000000000001][v1.0] Launch Matrix/base.zip",

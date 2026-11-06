@@ -282,9 +282,6 @@ inline constexpr const char *kCustomPlatform = "custom";
 // goes through this; the native-terminal checks (HOST==GUEST==machine) compare the machine platform directly.
 bool ServesPlatform(const Node &Runner, const std::string &Platform, const std::filesystem::path &LaunchBundleDir);
 
-// ----- component lookups -----
-int FindComponentIndex(const nlohmann::ordered_json &MANIFESTJSON, const std::string &ComponentID); // index or -1
-
 } // namespace ManifestModel
 
 #endif // MANIFESTMODEL_H
