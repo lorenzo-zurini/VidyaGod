@@ -19,7 +19,7 @@ using json = nlohmann::ordered_json;
 using PkgDoc::Document;
 
 namespace {
-#include "../third_party/fonts/editor_fonts.inc"
+#include "../../third_party/fonts/editor_fonts.inc"
 
 ImFont *GBold = nullptr;
 ImFont *GMono = nullptr;

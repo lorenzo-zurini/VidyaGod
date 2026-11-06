@@ -15,9 +15,10 @@
 #include <thread>
 #include <vector>
 
+#include "libraryview.h"   // LibraryGameCard: its slots take one, and their metatypes need it whole (P4: a selection, no widget)
+
 class AppModel;
 class IpfsModel;
-class LibraryGameCard;
 class QWidget;
 
 // ---------------------------------------------------------------------------

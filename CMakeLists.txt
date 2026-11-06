@@ -64,7 +64,7 @@ find_package(PkgConfig REQUIRED)
 pkg_check_modules(LIBZIP REQUIRED IMPORTED_TARGET libzip)   # node-graph validation reads content zips to case-check CONTENTPATH
 pkg_check_modules(LIBZSTD REQUIRED IMPORTED_TARGET libzstd) # .vgdelta generation/verification (shared with vidyagodfs)
 pkg_check_modules(SDL2 REQUIRED IMPORTED_TARGET sdl2)       # the launch window's press-a-key capture reads gamepad buttons
-# XCB is Linux-only: it backs sandbox-init's X-side window cloak (src/sandboxinit.cpp, itself #ifdef __linux__).
+# XCB is Linux-only: it backs sandbox-init's X-side window cloak (src/engine/sandboxinit.cpp, itself #ifdef __linux__).
 # There is no xcb on Windows/MinGW, so requiring it unconditionally broke the Windows configure — guard it.
 if(NOT WIN32)
     pkg_check_modules(XCB REQUIRED IMPORTED_TARGET xcb)     # sandbox-init's X-side window cloak (VIDYAGOD_CLOAK)
@@ -75,10 +75,19 @@ set(TS_FILES VidyaGod_en_US.ts)
 
 # Host-OS abstraction seam: POSIX impl on Linux, Win32 impl on Windows (selected here, one or the other).
 if(WIN32)
-    set(VG_PLATFORM_SRC src/platform/platform_win.cpp)
+    set(VG_PLATFORM_SRC src/base/platform/platform_win.cpp)
 else()
-    set(VG_PLATFORM_SRC src/platform/platform_posix.cpp)
+    set(VG_PLATFORM_SRC src/base/platform/platform_posix.cpp)
 endif()
+
+# The source tree is one folder per layer, lowest first: each may include only its own and the ones before it
+# (tools/layers/check_layers.py holds every #include to that; ctest: layers). Every folder is on the include path, so
+# a header is named bare ("packagecatalog.h"); src itself too, for the few named by their folder ("cli/cliapp.h").
+set(VG_LAYERS base format net plan library engine app editor ui cli)
+set(VG_SRC_DIRS ${CMAKE_SOURCE_DIR}/src ${CMAKE_SOURCE_DIR}/src/cli)
+foreach(L ${VG_LAYERS})
+    list(APPEND VG_SRC_DIRS ${CMAKE_SOURCE_DIR}/src/${L})
+endforeach()
 
 # Dear ImGui (1.92.9, vendored) — the package editor's canvas; its fonts are embedded from third_party/fonts.
 # AUTOMOC off: third-party C++ with no Qt in it.
@@ -89,9 +98,9 @@ add_library(vg_imgui STATIC
     third_party/imgui/imgui_widgets.cpp
     third_party/imgui/misc/cpp/imgui_stdlib.cpp
     third_party/imgui/backends/imgui_impl_opengl3.cpp
-    src/imguiprobe.cpp)
+    src/editor/imguiprobe.cpp)
 set_target_properties(vg_imgui PROPERTIES AUTOMOC OFF AUTOUIC OFF AUTORCC OFF POSITION_INDEPENDENT_CODE ON)
-# ImGui's test-engine hooks, implemented by src/imguiprobe.cpp: with VG_UI_PROBE set, the editor's canvas writes the
+# ImGui's test-engine hooks, implemented by src/editor/imguiprobe.cpp: with VG_UI_PROBE set, the editor's canvas writes the
 # items each frame lays out (labels, rectangles) so a driver can click them by name with real input.
 target_compile_definitions(vg_imgui PUBLIC IMGUI_ENABLE_TEST_ENGINE)
 target_include_directories(vg_imgui PUBLIC
@@ -103,46 +112,46 @@ target_link_libraries(vg_imgui PUBLIC Qt6::OpenGL)
 # Everything except the entry point (main.cpp) + translations. Compiled once into an OBJECT library so both the
 # VidyaGod executable and the GUI test exe reuse the same objects.
 set(SHARED_SOURCES
-    src/mainwindow.cpp
+    src/ui/mainwindow.cpp
 
-    src/apppaths.h
-    src/apppaths.cpp
-    src/instancestore.h
-    src/instancestore.cpp
+    src/base/apppaths.h
+    src/base/apppaths.cpp
+    src/plan/instancestore.h
+    src/plan/instancestore.cpp
 
     # OS-abstraction seam (host-specific bits). platform_posix.cpp on Linux; platform_win.cpp on Windows.
-    src/platform/platform.h
+    src/base/platform/platform.h
     ${VG_PLATFORM_SRC}
 
-    src/libraryview.h
-    src/libraryview.cpp
-    src/mainwindow.h
+    src/ui/libraryview.h
+    src/ui/libraryview.cpp
+    src/ui/mainwindow.h
 
-    src/packageeditor.h
-    src/packageeditor.cpp
+    src/editor/packageeditor.h
+    src/editor/packageeditor.cpp
 
-    src/packageeditormodel.h
-    src/packageeditormodel.cpp
-
-
+    src/editor/packageeditormodel.h
+    src/editor/packageeditormodel.cpp
 
 
 
-    src/validationpanel.h
-    src/validationpanel.cpp
 
-    src/jsonraweditor.h
-    src/jsonraweditor.cpp
-    src/pkginsight.cpp
 
-    src/filesystemoperations.h
-    src/filesystemoperations.cpp
+    src/editor/validationpanel.h
+    src/editor/validationpanel.cpp
 
-    src/jsonoperations.h
-    src/jsonoperations.cpp
+    src/editor/jsonraweditor.h
+    src/editor/jsonraweditor.cpp
+    src/editor/pkginsight.cpp
 
-    src/launchparams.h
-    src/launchparams.cpp
+    src/base/filesystemoperations.h
+    src/base/filesystemoperations.cpp
+
+    src/base/jsonoperations.h
+    src/base/jsonoperations.cpp
+
+    src/plan/launchparams.h
+    src/plan/launchparams.cpp
 
     # headless CLI mode families (P6 split of the former giant main())
     src/cli/climodes.h
@@ -152,222 +161,222 @@ set(SHARED_SOURCES
     src/cli/cliaudit.cpp
     src/cli/clilaunch.cpp
 
-    # the CLI app: every function and every view of the program by name (standing rule — see src/command.h)
-    src/command.h
-    src/command.cpp
-    src/commandserver.h
-    src/commandserver.cpp
+    # the CLI app: every function and every view of the program by name (standing rule — see src/cli/command.h)
+    src/cli/command.h
+    src/cli/command.cpp
+    src/app/commandserver.h
+    src/app/commandserver.cpp
     src/cli/cliapp.h
     src/cli/cliapp.cpp
-    src/commands/cmd_friends.cpp
-    src/commands/cmd_catalog.cpp
-    src/commands/cmd_ui.cpp
-    src/commands/cmd_events.cpp
-    src/commands/cmd_packages.cpp
-    src/commands/cmd_engine.cpp
-    src/commands/cmd_app.cpp
-    src/commands/cmd_ipfs.cpp
-    src/commands/cmd_build.cpp
-    src/commands/cmd_editor.cpp
-    src/commands/cmd_author.cpp
-    src/commands/cmd_vfs.cpp
-    src/commands/cmd_launch.cpp
-    src/commands/cmd_appui.cpp
-    src/commands/cmdutil.h
-    src/commands/cmdutil.cpp
-    src/eventlog.h
-    src/eventlog.cpp
+    src/cli/commands/cmd_friends.cpp
+    src/cli/commands/cmd_catalog.cpp
+    src/cli/commands/cmd_ui.cpp
+    src/cli/commands/cmd_events.cpp
+    src/cli/commands/cmd_packages.cpp
+    src/cli/commands/cmd_engine.cpp
+    src/cli/commands/cmd_app.cpp
+    src/cli/commands/cmd_ipfs.cpp
+    src/cli/commands/cmd_build.cpp
+    src/cli/commands/cmd_editor.cpp
+    src/cli/commands/cmd_author.cpp
+    src/cli/commands/cmd_vfs.cpp
+    src/cli/commands/cmd_launch.cpp
+    src/cli/commands/cmd_appui.cpp
+    src/cli/commands/cmdutil.h
+    src/cli/commands/cmdutil.cpp
+    src/base/eventlog.h
+    src/base/eventlog.cpp
 
-    src/varsubst.h
-    src/varsubst.cpp
-    src/keynames.cpp
+    src/format/varsubst.h
+    src/format/varsubst.cpp
+    src/base/keynames.cpp
 
-    src/launchresolver.h
-    src/launchresolver.cpp
-    src/launchresolver_vars.cpp
-    src/launchresolver_persist.cpp
-    src/launchresolver_exec.cpp
-    src/launchresolver_chain.cpp
+    src/plan/launchresolver.h
+    src/plan/launchresolver.cpp
+    src/plan/launchresolver_vars.cpp
+    src/plan/launchresolver_persist.cpp
+    src/plan/launchresolver_exec.cpp
+    src/plan/launchresolver_chain.cpp
 
-    src/sandboxlayer.h
-    src/sandboxlayer.cpp
-    src/boxlaunch.h
-    src/boxlaunch.cpp      # Windows: Prepare (fill the box, import the registry) and Harvest (keeps back out)
-    src/boxprefix.h
-    src/boxprefix.cpp      # Windows: the Sandboxie box as the game's prefix (plain files + .reg text, tested anywhere)
-    src/sandboxlayer_win.cpp   # Windows Sandboxie backend (Available/Wrap); #ifdef _WIN32, empty on Linux
-    src/sandboxinit.cpp
+    src/engine/sandboxlayer.h
+    src/engine/sandboxlayer.cpp
+    src/engine/boxlaunch.h
+    src/engine/boxlaunch.cpp      # Windows: Prepare (fill the box, import the registry) and Harvest (keeps back out)
+    src/engine/boxprefix.h
+    src/engine/boxprefix.cpp      # Windows: the Sandboxie box as the game's prefix (plain files + .reg text, tested anywhere)
+    src/engine/sandboxlayer_win.cpp   # Windows Sandboxie backend (Available/Wrap); #ifdef _WIN32, empty on Linux
+    src/engine/sandboxinit.cpp
 
-    src/networktab.h
-    src/networktab.cpp
+    src/ui/networktab.h
+    src/ui/networktab.cpp
 
-    src/fileedits.h
-    src/fileedits.cpp
+    src/engine/fileedits.h
+    src/engine/fileedits.cpp
 
-    src/binarypatch.h
-    src/binarypatch.cpp
+    src/format/binarypatch.h
+    src/format/binarypatch.cpp
 
-    src/registrylayer.h
-    src/registrylayer.cpp
+    src/engine/registrylayer.h
+    src/engine/registrylayer.cpp
 
-    src/persistlayer.h
-    src/persistlayer.cpp
+    src/engine/persistlayer.h
+    src/engine/persistlayer.cpp
 
-    src/vfsmount.h
-    src/vfsmount.cpp
+    src/engine/vfsmount.h
+    src/engine/vfsmount.cpp
 
-    src/launchsources.h
-    src/launchsources.cpp
+    src/plan/launchsources.h
+    src/plan/launchsources.cpp
 
-    src/runnerinstall.h
-    src/runnerinstall.cpp
+    src/library/runnerinstall.h
+    src/library/runnerinstall.cpp
 
-    src/procenv.h
-    src/procenv.cpp
+    src/base/procenv.h
+    src/base/procenv.cpp
 
-    src/containerwrapper.h
-    src/containerwrapper.cpp
+    src/engine/containerwrapper.h
+    src/engine/containerwrapper.cpp
 
-    src/quitsignals.h
-    src/quitsignals.cpp
+    src/engine/quitsignals.h
+    src/engine/quitsignals.cpp
 
-    src/optionreadback.h
-    src/optionreadback.cpp
+    src/plan/optionreadback.h
+    src/plan/optionreadback.cpp
 
-    src/manifestmodel.h
-    src/manifestmodel.cpp
-    src/fold.cpp
-    src/cid.cpp
+    src/format/manifestmodel.h
+    src/format/manifestmodel.cpp
+    src/format/fold.cpp
+    src/base/cid.cpp
 
-    src/nodegraph.h
-    src/nodegraph.cpp
-    src/nodegraphpure.cpp
+    src/format/nodegraph.h
+    src/format/nodegraph.cpp
+    src/format/nodegraphpure.cpp
 
-    src/nodelower.h
-    src/nodelower.cpp
-    src/contentfile.h
-    src/contentfile.cpp
+    src/format/nodelower.h
+    src/format/nodelower.cpp
+    src/format/contentfile.h
+    src/format/contentfile.cpp
 
-    src/pkggraph.h
-    src/pkggraph.cpp
-    src/pkgdoc.cpp
-    src/pkgform.h
-    src/pkgform.cpp
-    src/pkglayout.h
-    src/pkglayout.cpp
-    src/pkgcanvas.h
-    src/pkgcanvas.cpp
-    src/pkgactions.h
-    src/pkgactions.cpp
-    src/pkgcanvaspanel.h
-    src/pkgcanvaspanel.cpp
+    src/editor/pkggraph.h
+    src/editor/pkggraph.cpp
+    src/editor/pkgdoc.cpp
+    src/editor/pkgform.h
+    src/editor/pkgform.cpp
+    src/editor/pkglayout.h
+    src/editor/pkglayout.cpp
+    src/editor/pkgcanvas.h
+    src/editor/pkgcanvas.cpp
+    src/editor/pkgactions.h
+    src/editor/pkgactions.cpp
+    src/editor/pkgcanvaspanel.h
+    src/editor/pkgcanvaspanel.cpp
 
-    src/packagecatalog.h
-    src/packagecatalog.cpp
-    src/builtinrunners.cpp
-    src/packagecatalog_publish.cpp
+    src/library/packagecatalog.h
+    src/library/packagecatalog.cpp
+    src/plan/builtinrunners.cpp
+    src/library/packagecatalog_publish.cpp
 
-    src/registrywrapper.h
-    src/registrywrapper.cpp
+    src/engine/registrywrapper.h
+    src/engine/registrywrapper.cpp
 
-    src/commonutils.h
-    src/commonutils.cpp
+    src/base/commonutils.h
+    src/base/commonutils.cpp
 
-    src/prelaunchwindow.h
-    src/prelaunchwindow.cpp
-    src/keycapture.h
-    src/keycapture.cpp
+    src/ui/prelaunchwindow.h
+    src/ui/prelaunchwindow.cpp
+    src/ui/keycapture.h
+    src/ui/keycapture.cpp
 
-    src/launchthread.h
-    src/launchthread.cpp
+    src/engine/launchthread.h
+    src/engine/launchthread.cpp
 
-    src/authoringsession.h
-    src/authoringsession.cpp
+    src/engine/authoringsession.h
+    src/engine/authoringsession.cpp
 
-    src/authoringsessionmodel.h
-    src/authoringsessionmodel.cpp
+    src/app/authoringsessionmodel.h
+    src/app/authoringsessionmodel.cpp
 
-    src/deltatree.h
-    src/deltatree.cpp
+    src/ui/deltatree.h
+    src/ui/deltatree.cpp
 
-    src/authoringsessionwindow.h
-    src/authoringsessionwindow.cpp
+    src/editor/authoringsessionwindow.h
+    src/editor/authoringsessionwindow.cpp
 
-    src/ipfswrapper.h
-    src/ipfswrapper.cpp
+    src/net/ipfswrapper.h
+    src/net/ipfswrapper.cpp
 
-    src/downloadqueue.h
-    src/downloadqueue.cpp
+    src/net/downloadqueue.h
+    src/net/downloadqueue.cpp
 
-    src/vgipfsapi.h
+    src/net/vgipfsapi.h
 
-    src/runnerwrapper.h
-    src/runnerwrapper.cpp
+    src/plan/runnerwrapper.h
+    src/plan/runnerwrapper.cpp
 
-    src/covercache.h
-    src/covercache.cpp
+    src/library/covercache.h
+    src/library/covercache.cpp
 
-    src/appmodel.h
-    src/appmodel.cpp
+    src/app/appmodel.h
+    src/app/appmodel.cpp
 
-    src/downloadmanager.h
-    src/downloadmanager.cpp
+    src/app/downloadmanager.h
+    src/app/downloadmanager.cpp
 
-    src/variantpicker.h
-    src/variantpicker.cpp
+    src/ui/variantpicker.h
+    src/ui/variantpicker.cpp
 
-    src/ipfsmodel.h
-    src/ipfsmodel.cpp
+    src/app/ipfsmodel.h
+    src/app/ipfsmodel.cpp
 
-    src/ipfstab.h
-    src/ipfstab.cpp
+    src/ui/ipfstab.h
+    src/ui/ipfstab.cpp
 
-    src/librarytab.h
-    src/librarytab.cpp
+    src/ui/librarytab.h
+    src/ui/librarytab.cpp
 
-    src/gamepicker.h
-    src/gamepicker.cpp
+    src/ui/gamepicker.h
+    src/ui/gamepicker.cpp
 
-    src/catalogtab.h
-    src/catalogtab.cpp
+    src/ui/catalogtab.h
+    src/ui/catalogtab.cpp
 
-    src/packagesview.h
-    src/packagesview.cpp
+    src/ui/packagesview.h
+    src/ui/packagesview.cpp
 
-    src/settingstab.h
-    src/settingstab.cpp
-    src/theme.h
-    src/theme.cpp
-    src/networkpage.cpp
+    src/ui/settingstab.h
+    src/ui/settingstab.cpp
+    src/ui/theme.h
+    src/ui/theme.cpp
+    src/ui/networkpage.cpp
 
-    src/runnerspage.h
-    src/runnerspage.cpp
+    src/ui/runnerspage.h
+    src/ui/runnerspage.cpp
 
-    src/sourcespage.h
-    src/sourcespage.cpp
-    src/a11ynames.h
-    src/a11ynames.cpp
+    src/ui/sourcespage.h
+    src/ui/sourcespage.cpp
+    src/ui/a11ynames.h
+    src/ui/a11ynames.cpp
 
-    src/ipfssettingspage.h
-    src/ipfssettingspage.cpp
+    src/ui/ipfssettingspage.h
+    src/ui/ipfssettingspage.cpp
 
-    src/generalpage.h
-    src/generalpage.cpp
+    src/ui/generalpage.h
+    src/ui/generalpage.cpp
 
-    src/depcheck.h
-    src/depcheck.cpp
+    src/engine/depcheck.h
+    src/engine/depcheck.cpp
 
-    src/dependenciespage.h
-    src/dependenciespage.cpp
+    src/ui/dependenciespage.h
+    src/ui/dependenciespage.cpp
 
-    src/traycontroller.h
-    src/traycontroller.cpp
+    src/ui/traycontroller.h
+    src/ui/traycontroller.cpp
 
-    src/autostart.h
-    src/autostart.cpp
+    src/app/autostart.h
+    src/app/autostart.cpp
 
-    src/pathspage.h
-    src/pathspage.cpp
+    src/ui/pathspage.h
+    src/ui/pathspage.cpp
 )
 
 # Shared object library (AUTOMOC/UIC/RCC are global, so QObject classes here get MOC'd). Linking the Qt/json/zip
@@ -386,14 +395,14 @@ target_link_libraries(vidyagod_objs PUBLIC
 if(WIN32)
     target_link_libraries(vidyagod_objs PUBLIC shell32 ole32)   # Platform::HostFolders (SHGetKnownFolderPath)
 endif()
-target_include_directories(vidyagod_objs PUBLIC src VidyaGodFS/src)   # src: the cli/ TUs include engine headers bare
+target_include_directories(vidyagod_objs PUBLIC ${VG_SRC_DIRS} VidyaGodFS/src)
 target_compile_options(vidyagod_objs PRIVATE ${VG_WARNINGS} $<$<BOOL:${VIDYAGOD_WERROR}>:-Werror>)
 target_compile_definitions(vidyagod_objs PRIVATE VIDYAGOD_VERSION="${VIDYAGOD_GIT_VERSION}")
 if(VIDYAGOD_SANITIZE)
     target_compile_options(vidyagod_objs PRIVATE -fsanitize=address,undefined -fno-omit-frame-pointer)
 endif()
 
-add_executable(VidyaGod src/main.cpp src/main.h resources/vidyagod.qrc translations/${TS_FILES})
+add_executable(VidyaGod src/cli/main.cpp src/cli/main.h resources/vidyagod.qrc translations/${TS_FILES})
 target_link_libraries(VidyaGod PRIVATE vidyagod_objs)
 target_link_libraries(VidyaGod PRIVATE Qt6::Widgets Qt6::Network Qt6::OpenGL Qt6::OpenGLWidgets)
 target_link_libraries(VidyaGod PRIVATE nlohmann_json::nlohmann_json)
@@ -419,7 +428,7 @@ set_target_properties(vidyagodfs PROPERTIES RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BIN
 
 # ---- libvgipfs: the embedded Boxo IPFS node, built from its own repo (git submodule) ----
 # Builds libvgipfs.so (cgo c-shared, needs the Go toolchain) into the build root next to VidyaGod, replacing the
-# external Kubo `ipfs` CLI. It is LINKED + called from src/ipfswrapper.cpp in a later milestone; for now this just
+# external Kubo `ipfs` CLI. It is LINKED + called from src/net/ipfswrapper.cpp in a later milestone; for now this just
 # ensures the node compiles as part of the project. Defines the imported `vgipfs` target.
 add_subdirectory(VidyaGodIPFS)
 
@@ -448,29 +457,29 @@ add_executable(vg_tests
     tests/test_pkgdoc.cpp
     tests/test_optionreadback.cpp
     tests/test_parallel.cpp
-    src/manifestmodel.cpp
-    src/fold.cpp
-    src/cid.cpp
-    src/nodegraphpure.cpp   # gigagraph PURE transforms (freeze/topo/gather/landing checks) — no IPFS/Qt
-    src/nodelower.cpp
-    src/contentfile.cpp
-    src/varsubst.cpp
-    src/keynames.cpp
-    src/registrywrapper.cpp
-    src/boxprefix.cpp
-    src/fileedits.cpp
-    src/binarypatch.cpp
-    src/registrylayer.cpp
-    src/persistlayer.cpp
-    src/optionreadback.cpp
-    src/pkggraph.cpp
-    src/pkglayout.cpp
-    src/pkgdoc.cpp
-    src/commonutils.cpp
-    src/depcheck.cpp        # Qt-free dependency detection engine (ParseLdconfig/Check)
+    src/format/manifestmodel.cpp
+    src/format/fold.cpp
+    src/base/cid.cpp
+    src/format/nodegraphpure.cpp   # gigagraph PURE transforms (freeze/topo/gather/landing checks) — no IPFS/Qt
+    src/format/nodelower.cpp
+    src/format/contentfile.cpp
+    src/format/varsubst.cpp
+    src/base/keynames.cpp
+    src/engine/registrywrapper.cpp
+    src/engine/boxprefix.cpp
+    src/engine/fileedits.cpp
+    src/format/binarypatch.cpp
+    src/engine/registrylayer.cpp
+    src/engine/persistlayer.cpp
+    src/plan/optionreadback.cpp
+    src/editor/pkggraph.cpp
+    src/editor/pkglayout.cpp
+    src/editor/pkgdoc.cpp
+    src/base/commonutils.cpp
+    src/engine/depcheck.cpp        # Qt-free dependency detection engine (ParseLdconfig/Check)
     ${VG_PLATFORM_SRC}      # Platform::SelfExe (used by depcheck) — POSIX or Win32 impl
-    src/launchparams.cpp)   # ContainerParams::GetVariablesMap — validator's built-in %variable% source of truth
-target_include_directories(vg_tests PRIVATE src tests VidyaGodFS/src)
+    src/plan/launchparams.cpp)   # ContainerParams::GetVariablesMap — validator's built-in %variable% source of truth
+target_include_directories(vg_tests PRIVATE ${VG_SRC_DIRS} tests VidyaGodFS/src)
 if(WIN32)
     target_link_libraries(vg_tests PRIVATE shell32 ole32)
 endif()
@@ -493,7 +502,7 @@ function(add_gui_test name)
         vidyagod_objs
         Qt6::Widgets Qt6::Network Qt6::OpenGL Qt6::OpenGLWidgets Qt6::Test
         nlohmann_json::nlohmann_json PkgConfig::LIBZIP vgipfs)
-    target_include_directories(${name} PRIVATE src tests)   # tests/ for nodefixture.h
+    target_include_directories(${name} PRIVATE ${VG_SRC_DIRS} tests)   # tests/ for nodefixture.h
     target_compile_options(${name} PRIVATE ${VG_WARNINGS} $<$<BOOL:${VIDYAGOD_WERROR}>:-Werror>)
     set_target_properties(${name} PROPERTIES BUILD_RPATH "$ORIGIN")
     add_test(NAME ${name} COMMAND ${name})
@@ -512,8 +521,8 @@ if(NOT WIN32)
 endif()
 
 # vg_fold — the generation-6 resolver in batch, gated plan-for-plan against tools/gen6/resolve.py (fold_gate.py).
-add_executable(vg_fold tools/gen6/vg_fold.cpp src/fold.cpp src/cid.cpp src/varsubst.cpp src/keynames.cpp src/commonutils.cpp)
-target_include_directories(vg_fold PRIVATE src)
+add_executable(vg_fold tools/gen6/vg_fold.cpp src/format/fold.cpp src/base/cid.cpp src/format/varsubst.cpp src/base/keynames.cpp src/base/commonutils.cpp)
+target_include_directories(vg_fold PRIVATE ${VG_SRC_DIRS})
 target_link_libraries(vg_fold PRIVATE nlohmann_json::nlohmann_json)
 target_compile_options(vg_fold PRIVATE ${VG_WARNINGS} $<$<BOOL:${VIDYAGOD_WERROR}>:-Werror>)
 set_target_properties(vg_fold PROPERTIES AUTOMOC OFF AUTOUIC OFF AUTORCC OFF)
@@ -607,7 +616,7 @@ target_link_libraries(vg_prelaunch_probe PRIVATE
     vidyagod_objs
     Qt6::Widgets Qt6::Network Qt6::OpenGL Qt6::OpenGLWidgets
     nlohmann_json::nlohmann_json PkgConfig::LIBZIP vgipfs)
-target_include_directories(vg_prelaunch_probe PRIVATE src)
+target_include_directories(vg_prelaunch_probe PRIVATE ${VG_SRC_DIRS})
 target_compile_options(vg_prelaunch_probe PRIVATE ${VG_WARNINGS})
 set_target_properties(vg_prelaunch_probe PROPERTIES BUILD_RPATH "$ORIGIN")
 
@@ -616,6 +625,6 @@ target_link_libraries(vg_screenshots PRIVATE
     vidyagod_objs
     Qt6::Widgets Qt6::Network Qt6::OpenGL Qt6::OpenGLWidgets
     nlohmann_json::nlohmann_json PkgConfig::LIBZIP vgipfs)
-target_include_directories(vg_screenshots PRIVATE src tests)
+target_include_directories(vg_screenshots PRIVATE ${VG_SRC_DIRS} tests)
 target_compile_options(vg_screenshots PRIVATE ${VG_WARNINGS})
 set_target_properties(vg_screenshots PROPERTIES BUILD_RPATH "$ORIGIN")

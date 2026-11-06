@@ -126,7 +126,7 @@ def go_callers(build):
     import clang.cindex as ci
     K = ci.CursorKind
     out = {}
-    for src in ("src/ipfswrapper.cpp", "src/main.cpp", "src/cli/cliapp.cpp"):
+    for src in ("src/net/ipfswrapper.cpp", "src/cli/main.cpp", "src/cli/cliapp.cpp"):
         tu = ci.Index.create().parse(os.path.join(ROOT, src), args=flags(build), options=ci.TranslationUnit.PARSE_INCOMPLETE)
         def walk(c, fn):
             for ch in c.get_children():
