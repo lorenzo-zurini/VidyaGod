@@ -138,11 +138,6 @@ std::vector<std::string> GraftBases(const NodeIndex &Idx, const std::string &Gra
 std::map<std::string, std::vector<std::string>> AllGraftBases(const NodeIndex &Idx);
 // True iff J is a node object: an object with a LAYERS list. The ONE definition — every scanner uses it.
 bool IsNodeObject(const nlohmann::ordered_json &J);
-// Every ref a RAW node names, in order: NODE refs (what it contains) and, into *Requires, ANY members + NOT refs.
-std::vector<std::string> NodeRefs(const nlohmann::ordered_json &J, std::vector<std::string> *Requires = nullptr);
-// Rewrite every ref in a RAW node (NODE, ANY members, NOT) through Map. Returns whether anything changed. Shared by
-// freeze and the CID write-back so they can never disagree on where refs live.
-bool RemapNodeRefs(nlohmann::ordered_json &J, const std::function<std::string(const std::string &)> &Map);
 // Parse a single node object sourced from File in BundleDir. False if it is not a node.
 bool ParseNode(const nlohmann::ordered_json &J, const std::filesystem::path &File,
                const std::filesystem::path &BundleDir, Node &Out);

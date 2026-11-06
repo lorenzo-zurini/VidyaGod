@@ -1,5 +1,6 @@
 #include "nodegraph.h"
 #include "manifestmodel.h"
+#include "noderefs.h"
 #include "parallel.h"
 #include "contentfile.h"
 #include "commonutils.h"
@@ -58,41 +59,6 @@ bool IsNodeObject(const nlohmann::ordered_json &J)
     return J.is_object() && J.contains("LAYERS") && J["LAYERS"].is_array();
 }
 
-std::vector<std::string> NodeRefs(const nlohmann::ordered_json &J, std::vector<std::string> *Requires)
-{
-    std::vector<std::string> Out;
-    if (!IsNodeObject(J)) return Out;
-    for (const auto &L : J["LAYERS"])
-    {
-        if (!L.is_object()) continue;
-        if (L.contains("NODE") && L["NODE"].is_string()) Out.push_back(L["NODE"].get<std::string>());
-        if (!Requires) continue;
-        if (L.contains("ANY") && L["ANY"].is_array())
-            for (const auto &M : L["ANY"]) if (M.is_string()) Requires->push_back(M.get<std::string>());
-        if (L.contains("NOT") && L["NOT"].is_string()) Requires->push_back(L["NOT"].get<std::string>());
-    }
-    return Out;
-}
-
-bool RemapNodeRefs(nlohmann::ordered_json &J, const std::function<std::string(const std::string &)> &Map)
-{
-    if (!IsNodeObject(J)) return false;
-    bool Changed = false;
-    auto One = [&](nlohmann::ordered_json &S) {
-        if (!S.is_string()) return;
-        const std::string New = Map(S.get<std::string>());
-        if (New != S.get<std::string>()) { S = New; Changed = true; }
-    };
-    for (auto &L : J["LAYERS"])
-    {
-        if (!L.is_object()) continue;
-        if (L.contains("NODE")) One(L["NODE"]);
-        if (L.contains("NOT")) One(L["NOT"]);
-        if (L.contains("ANY") && L["ANY"].is_array()) for (auto &M : L["ANY"]) One(M);
-    }
-    return Changed;
-}
-
 //THE boundary where untrusted JSON becomes a Node. It must be TOTAL: a node file arrives from a peer or from an
 //author's typo, and BuildNodeIndex runs at startup — a throw here would keep the app from starting. Everything
 //read below is checked by NodeLower::CheckNode first; a node that fails is indexed with the reason and no layers.
@@ -120,7 +86,7 @@ bool ParseNode(const nlohmann::ordered_json &J, const std::filesystem::path &Fil
     Out.Entries   = nlohmann::ordered_json::object();
     //Named by its KEY (its CID), the label alongside: a message must name exactly one node, and labels repeat.
     Out.LowerError = Out.Cid.empty() ? NodeLower::CheckNode(J, Out.NodeId) : NodeLower::CheckNode(J, Out.Cid, Out.NodeId);
-    Out.Refs = NodeRefs(J, &Out.Requires);
+    Out.Refs = NodeRefs::Contained(J, &Out.Requires);
     if (!Out.LowerError.empty())
     {
         LogWarn("ManifestModel::ParseNode", "Malformed node — " + Out.LowerError + " (" + File.string() + ")");

@@ -3,6 +3,7 @@
 // press its controls with the panel's own input path, and run a node's actions with the answers to their questions
 // given on the command line. And the action helpers the canvas's actions are built on, on their own.
 #include "command.h"
+#include "noderefs.h"
 #include "cmdutil.h"
 #include "eventlog.h"
 #include "imguiprobe.h"
@@ -182,7 +183,7 @@ VG_COMMANDS
                 Nodes.push_back({{"handle", H}, {"label", D.Node(I).value("LABEL", std::string())}, {"screen", Rect(Shown, A0, B0, A1, B1)},
                                  {"world", World ? json{Wx, Wy, Ww, Wh} : json(nullptr)}, {"in", In ? json{Ix, Iy} : json(nullptr)},
                                  {"out", Out ? json{Ox, Oy} : json(nullptr)}, {"rows", Rows}, {"cover", Cv.coverShown(H)}, {"busy", Cv.isBusy(H)}});
-                PkgDoc::ForEachRef(D.Node(I), [&](const std::string &R) { if (D.IndexOf(R) < 0) Ext.insert(R); });
+                NodeRefs::Each(D.Node(I), [&](const std::string &R) { if (D.IndexOf(R) < 0) Ext.insert(R); });
             }
             json Chips = json::object();
             for (const auto &E : Ext) Chips[E] = Cv.externalLabel(E);

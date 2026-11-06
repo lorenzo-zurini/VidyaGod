@@ -26,37 +26,6 @@ namespace fs = std::filesystem;
 
 // ---- references ---------------------------------------------------------------------------------------------------
 
-void ForEachRef(const json &Node, const std::function<void(const std::string &)> &Fn)
-{
-    if (!Node.is_object() || !Node.contains("LAYERS") || !Node["LAYERS"].is_array()) return;
-    for (const json &L : Node["LAYERS"])
-    {
-        if (!L.is_object()) continue;
-        for (const char *K : {"NODE", "NOT"})
-            if (L.contains(K) && L[K].is_string()) Fn(L[K].get<std::string>());
-        if (L.contains("ANY") && L["ANY"].is_array())
-            for (const json &M : L["ANY"]) if (M.is_string()) Fn(M.get<std::string>());
-    }
-}
-
-json RemapRefs(const json &Node, const std::map<std::string, std::string> &M)
-{
-    json Out = Node;
-    if (M.empty() || !Out.is_object() || !Out.contains("LAYERS") || !Out["LAYERS"].is_array()) return Out;
-    auto Swap = [&](json &V) {
-        if (!V.is_string()) return;
-        const auto It = M.find(V.get<std::string>());
-        if (It != M.end()) V = It->second;
-    };
-    for (json &L : Out["LAYERS"])
-    {
-        if (!L.is_object()) continue;
-        for (const char *K : {"NODE", "NOT"}) if (L.contains(K)) Swap(L[K]);
-        if (L.contains("ANY") && L["ANY"].is_array()) for (json &V : L["ANY"]) Swap(V);
-    }
-    return Out;
-}
-
 bool LooksLikeCid(const std::string &S)
 {
     if (S.size() < 50 || S.rfind("bafk", 0) != 0) return false;
@@ -529,8 +498,8 @@ void Document::RenameIn(std::vector<Entry> &E, std::map<std::string, Pos> &W, co
     {
         if (const auto It = M.find(X.Handle); It != M.end()) X.Handle = It->second;
         bool Refers = false;
-        ForEachRef(*X.Node, [&](const std::string &R) { if (M.count(R)) Refers = true; });
-        if (Refers) X.Node = std::make_shared<const json>(RemapRefs(*X.Node, M));
+        NodeRefs::Each(*X.Node, [&](const std::string &R) { if (M.count(R)) Refers = true; });
+        if (Refers) X.Node = std::make_shared<const json>(NodeRefs::Remapped(*X.Node, M));
     }
     std::map<std::string, Pos> NW;
     for (auto &[H, P] : W) { const auto It = M.find(H); NW[It == M.end() ? H : It->second] = P; }
@@ -571,7 +540,7 @@ SaveReport Document::Save(const fs::path &Dir, const std::vector<fs::path> &Root
         for (int I = 0; I < Count(); ++I)
         {
             std::set<int> Deps;
-            ForEachRef(Node(I), [&](const std::string &Ref) { if (const auto It = ByHandle.find(Ref); It != ByHandle.end()) Deps.insert(It->second); });
+            NodeRefs::Each(Node(I), [&](const std::string &Ref) { if (const auto It = ByHandle.find(Ref); It != ByHandle.end()) Deps.insert(It->second); });
             for (int D : Deps) { Users[(size_t)D].push_back(I); ++Missing[(size_t)I]; }
         }
         std::vector<int> Ready;
@@ -641,7 +610,7 @@ SaveReport Document::Save(const fs::path &Dir, const std::vector<fs::path> &Root
     for (size_t K = 0; K < Lib.size(); ++K)
     {
         ByName[Stem(Lib[K].Path)].push_back(K);
-        ForEachRef(Lib[K].Node, [&](const std::string &Ref) { Referrers[Ref].push_back(K); });
+        NodeRefs::Each(Lib[K].Node, [&](const std::string &Ref) { Referrers[Ref].push_back(K); });
     }
     std::set<size_t> LibPending;
     {
@@ -677,14 +646,14 @@ SaveReport Document::Save(const fs::path &Dir, const std::vector<fs::path> &Root
         bool Progress = false;
         auto Waits = [&](const json &N) {
             bool W = false;
-            ForEachRef(N, [&](const std::string &Ref) { if (PendingNames.count(Ref)) W = true; });
+            NodeRefs::Each(N, [&](const std::string &Ref) { if (PendingNames.count(Ref)) W = true; });
             return W;
         };
         for (auto It = DocPending.begin(); It != DocPending.end();)
         {
             const int I = *It;
             if (Waits(Node(I))) { ++It; continue; }
-            const json Out = RemapRefs(Node(I), M);
+            const json Out = NodeRefs::Remapped(Node(I), M);
             std::string Err;
             const std::string C = Cid::OfNode(Out, &Err);
             if (C.empty()) { R.Error = "Node '" + LabelOf(Node(I), Handle(I)) + "' cannot be saved: " + Err; return R; }
@@ -713,7 +682,7 @@ SaveReport Document::Save(const fs::path &Dir, const std::vector<fs::path> &Root
             //in place) is not this save's to rename, and its hash must never redefine the name of a node of ours.
             std::string New = Old;
             if (const auto Copy = M.find(Old); Copy != M.end() && Bytes.count(Copy->second)) New = Copy->second;
-            else if (const json Out = RemapRefs(Lib[K].Node, M); Out != Lib[K].Node)
+            else if (const json Out = NodeRefs::Remapped(Lib[K].Node, M); Out != Lib[K].Node)
             {
                 std::string Err;
                 New = Cid::OfNode(Out, &Err);
@@ -754,7 +723,7 @@ SaveReport Document::Save(const fs::path &Dir, const std::vector<fs::path> &Root
     }
     //What still names a node, once everything is renamed: the library's nodes (as they will be) and the instances.
     std::set<std::string> NamedElsewhere;
-    for (const LibFile &F : Lib) ForEachRef(RemapRefs(F.Node, M), [&](const std::string &Ref) { NamedElsewhere.insert(Ref); });
+    for (const LibFile &F : Lib) NodeRefs::Each(NodeRefs::Remapped(F.Node, M), [&](const std::string &Ref) { NamedElsewhere.insert(Ref); });
     for (Instance &In : Instances)
     {
         json J = In.J;

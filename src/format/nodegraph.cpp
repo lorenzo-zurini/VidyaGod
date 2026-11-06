@@ -1,4 +1,5 @@
 #include "nodegraph.h"
+#include "noderefs.h"
 #include "cid.h"
 #include "commonutils.h"   // LogWarn/LogErr — surface duplicate-handle conflicts (never silent)
 #include "parallel.h"
@@ -85,10 +86,10 @@ nlohmann::ordered_json FreezeNodeJson(nlohmann::ordered_json Raw,
 
     // Remap references (old handle CID → freshly-minted CID) as the cascade climbs. A ref absent from HandleToCid is
     // an already-frozen EXTERNAL dep (a shared library / cross-bundle node referenced by CID) — pass it through.
-    // ONE remapper (ManifestModel::RemapNodeRefs) walks NODE, ANY and NOT refs alike, shared with the CID
+    // ONE remapper (NodeRefs::Remap) walks NODE, ANY and NOT refs alike, shared with the CID
     // write-back so the two can never disagree on where refs live. Every reference stays a plain CID string: there
     // are no links — what VidyaGod follows is decided by the field (NODE, SOURCE, TILE.COVER), not by the encoding.
-    ManifestModel::RemapNodeRefs(Raw, [&](const std::string &Ref) {
+    NodeRefs::Remap(Raw, [&](const std::string &Ref) {
         const auto It = HandleToCid.find(Ref);
         if (It != HandleToCid.end()) return It->second;
         if (Tree && Dangling && Dangling->empty() && Tree->count(Ref)) *Dangling = Ref;   // a tree node that did not freeze
@@ -105,7 +106,7 @@ static std::vector<std::string> IntraTreeDeps(const nlohmann::ordered_json &Node
 {
     std::vector<std::string> Deps;
     std::vector<std::string> Nots;
-    for (const std::string &P : ManifestModel::NodeRefs(Node, &Nots)) if (Tree.count(P)) Deps.push_back(P);
+    for (const std::string &P : NodeRefs::Contained(Node, &Nots)) if (Tree.count(P)) Deps.push_back(P);
     for (const std::string &P : Nots) if (Tree.count(P)) Deps.push_back(P);
     return Deps;
 }

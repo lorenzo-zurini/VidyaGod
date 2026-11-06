@@ -1,4 +1,5 @@
 #include "packagecatalog.h"
+#include "noderefs.h"
 #include "contentfile.h"
 #include "pkgdoc.h"
 #include "packagecatalog_p.h"
@@ -248,7 +249,7 @@ int StampNodeCids(const std::filesystem::path &Root,
         const auto It = HandleToCid.find(N["CID"].get<std::string>());
         if (It != HandleToCid.end() && It->second != N["CID"].get<std::string>()) { N["CID"] = It->second; Ch = true; }
         // Every OVER ref (plain, any-of member, NOT) through the ONE remapper freeze uses.
-        Ch = ManifestModel::RemapNodeRefs(N, [&](const std::string &R) {
+        Ch = NodeRefs::Remap(N, [&](const std::string &R) {
             const auto Rt = HandleToCid.find(R);
             return Rt != HandleToCid.end() ? Rt->second : R;
         }) || Ch;

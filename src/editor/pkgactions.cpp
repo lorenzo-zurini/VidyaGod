@@ -1,4 +1,5 @@
 #include "pkgactions.h"
+#include "noderefs.h"
 
 #include "pkgcanvas.h"
 #include "packageeditormodel.h"
@@ -1198,9 +1199,8 @@ void PkgActions::autoDetect(const std::string & NodeId)
             const int K = Todo.back();
             Todo.pop_back();
             if (K == Into) return true;
-            if (K < 0 || !Seen.insert(K).second || !HasLayers(D.Node(K))) continue;
-            for (const json & L : D.Node(K)["LAYERS"])
-                if (L.is_object() && L.contains("NODE") && L["NODE"].is_string()) Todo.push_back(D.IndexOf(L["NODE"].get<std::string>()));
+            if (K < 0 || !Seen.insert(K).second) continue;
+            for (const std::string & R : NodeRefs::Contained(D.Node(K))) Todo.push_back(D.IndexOf(R));
         }
         return false;
     };

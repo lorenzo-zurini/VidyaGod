@@ -36,10 +36,6 @@ namespace PkgDoc
 {
 using json = nlohmann::ordered_json;
 
-//Visit every node reference a node makes: a NODE or NOT layer's string, each string member of an ANY layer.
-void ForEachRef(const json &Node, const std::function<void(const std::string &)> &Fn);
-//A copy of Node with every reference found in M renamed (refs not in M are kept).
-json RemapRefs(const json &Node, const std::map<std::string, std::string> &M);
 //"bafkrei…": a CIDv1 raw node name, the only thing a node file may be called in a published package.
 bool LooksLikeCid(const std::string &S);
 

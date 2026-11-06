@@ -1,5 +1,6 @@
 // The library as shared: which library a package is in, what a friend receives, and publishing the whole library.
 #include "packagecatalog.h"
+#include "noderefs.h"
 #include "sessions.h"
 #include "nodestore.h"
 #include "contentfile.h"
@@ -176,7 +177,7 @@ std::vector<std::string> PublishLibrary(nlohmann::ordered_json &Config, std::str
     auto Needs = [&](const std::string &LibName, const std::string &Pkg) {
         std::set<std::pair<std::string, std::string>> Out;
         for (const std::string &H : HandlesOf[LibName][Pkg])
-            for (const std::string &R : ManifestModel::NodeRefs(Tree.at(H)))
+            for (const std::string &R : NodeRefs::Contained(Tree.at(H)))
             {
                 const auto C = MR.HandleToCid.find(R);
                 const auto Home = HomeOf.find(C != MR.HandleToCid.end() ? C->second : R);

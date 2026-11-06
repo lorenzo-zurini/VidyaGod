@@ -2,6 +2,7 @@
 // authored, lowered and laid out; a resolve and everything it decides; the %TOKEN% language; a node's identity; the
 // node graph built, frozen and minted; and where a package keeps its content files.
 #include "command.h"
+#include "noderefs.h"
 #include "nodestore.h"
 #include "validate.h"
 #include "cmdutil.h"
@@ -127,13 +128,13 @@ VG_COMMANDS
         "file is read the bounded way every library walker reads one (size cap, nesting depth).",
         { NodeArg(), Opt("max-depth", "the nesting depth allowed (default 64)", Type::Int) },
         { "node check ~/.VidyaGod/LIBRARY/VidyaGod/'[749][v1.0] Age of Empires II'/bafkrei….json", "node check 'Patch 2.0a'" },
-        { "NodeLower::CheckNode", "ManifestModel::IsNodeObject", "ManifestModel::NodeRefs", "ManifestModel::ParseNode", "Cid::Canonical",
+        { "NodeLower::CheckNode", "ManifestModel::IsNodeObject", "NodeRefs::Contained", "ManifestModel::ParseNode", "Cid::Canonical",
           "Cid::OfNode", "NodeGraph::ReadTreeJsonBounded", "NodeGraph::JsonDepthWithinLimit", "NodeGraph::ParseBounded" }, Needs::Config, false,
         [](Command::Context &C, const json &A) {
             const std::string Q = Command::Str(A, "node");
             const json J = NodeJson(C, Q);
             std::vector<std::string> Req;
-            const auto Refs = ManifestModel::NodeRefs(J, &Req);
+            const auto Refs = NodeRefs::Contained(J, &Req);
             std::string Err;
             const std::string Canon = Cid::Canonical(J), Id = Cid::OfNode(J, &Err);
             json Out = {{"node_object", ManifestModel::IsNodeObject(J)}, {"problem", NodeLower::CheckNode(J, Q)}, {"contains", Refs},
@@ -224,7 +225,7 @@ VG_COMMANDS
         "to their CIDs), printing the frozen node and its CID — what a mint stores. --remap rewrites refs only.",
         { NodeArg(), WithSample(Opt("map", "{handle: cid} (JSON)", Type::Json), "{\"draft-1\":\"bafkrei…\"}"), Flag("remap", "only rewrite its refs through the map") },
         { "node freeze 'Patch 2.0a'", "node freeze node.json --map '{\"draft-1\":\"bafkrei…\"}' --remap" },
-        { "NodeGraph::FreezeNodeJson", "ManifestModel::RemapNodeRefs" }, Needs::Config, false,
+        { "NodeGraph::FreezeNodeJson", "NodeRefs::Remap" }, Needs::Config, false,
         [](Command::Context &C, const json &A) {
             std::shared_ptr<const NodeIndex> I;
             json J = NodeJson(C, Command::Str(A, "node"), &I);
@@ -237,7 +238,7 @@ VG_COMMANDS
             }
             if (Command::Bool(A, "remap", false))
             {
-                const bool Changed = ManifestModel::RemapNodeRefs(J, [&](const std::string &R) { const auto It = M.find(R); return It == M.end() ? R : It->second; });
+                const bool Changed = NodeRefs::Remap(J, [&](const std::string &R) { const auto It = M.find(R); return It == M.end() ? R : It->second; });
                 return json{{"changed", Changed}, {"node", J}};
             }
             std::string Dangling;

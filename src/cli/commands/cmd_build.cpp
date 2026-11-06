@@ -129,7 +129,7 @@ json Facts(PackageEditorModel &M, int I)
                 if (const int F = PkgGraph::StringListFault(&V); F >= 0 && V.is_array()) Faults.push_back({{"layer", K}, {"key", Key}, {"bad_item", F}, {"value", PkgGraph::DescribeValue(V)}});
     }
     json Refs = json::array();
-    PkgDoc::ForEachRef(N, [&](const std::string &R) { Refs.push_back({{"ref", R}, {"label", Label(R)}, {"cid", PkgDoc::LooksLikeCid(R)}}); });
+    NodeRefs::Each(N, [&](const std::string &R) { Refs.push_back({{"ref", R}, {"label", Label(R)}, {"cid", PkgDoc::LooksLikeCid(R)}}); });
     return {{"index", I}, {"handle", D.Handle(I)}, {"id", PkgGraph::SafeId(D.Handle(I))}, {"file", D.File(I)}, {"kind", PkgGraph::KindOf(N)},
             {"types", PkgGraph::LayerTypes(N)}, {"describe", PkgGraph::Describe(N, Label)},
             {"content", {{"layer", PkgGraph::ContentIndex(N)}, {"type", PkgGraph::ContentType(N)}, {"name", PkgGraph::ContentName(N)},
@@ -273,7 +273,7 @@ VG_COMMANDS
         "titled, its registry rows, its TAKE selections as text, malformed lists, the references it makes (named), "
         "the actions the canvas offers it, and its validation issues.", { PkgArg(), NodeArg() },
         { "build node 749 'Patch 2.0a'", "build node 749 0 --json" },
-        { "PkgDoc::Document::IndexOf", "PkgDoc::ForEachRef", "PkgDoc::LooksLikeCid", "PkgGraph::SafeId", "PkgGraph::LayerTypes", "PkgGraph::Describe",
+        { "PkgDoc::Document::IndexOf", "NodeRefs::Each", "PkgDoc::LooksLikeCid", "PkgGraph::SafeId", "PkgGraph::LayerTypes", "PkgGraph::Describe",
           "PkgGraph::ContentIndex", "PkgGraph::ContentType", "PkgGraph::ContentName", "PkgGraph::ContentTarget", "PkgGraph::DeltaBase",
           "PkgGraph::CollectVarFacets", "PkgGraph::LayerItems", "PkgGraph::TopLevelRows", "PkgGraph::ActionsFor", "PkgGraph::EntryTitle",
           "PkgGraph::EntrySummary", "PkgGraph::VarTitle", "PkgGraph::RegRowsOf", "PkgGraph::CountRegRows", "PkgGraph::TakeToText",
@@ -713,7 +713,7 @@ VG_COMMANDS
         "Every changed node gets the CID of its bytes; every node that names it (here, in other packages, in "
         "instances) follows. Prints the renames, what was written, and what needs the author. --allow-empty saves a "
         "package left with no nodes.", { PkgArg(), Flag("allow-empty", "even if no node is left") }, { "build save 749" },
-        { "PackageEditorModel::Save", "PkgDoc::Document::Save", "PkgDoc::Document::TakeRenames", "PkgDoc::RemapRefs", "PackageEditorModel::saveEmptiesPackage",
+        { "PackageEditorModel::Save", "PkgDoc::Document::Save", "PkgDoc::Document::TakeRenames", "NodeRefs::Remapped", "PackageEditorModel::saveEmptiesPackage",
           "PkgCanvas::applyRenames", "MainWindow::RefreshPackage" },
         Needs::Model, false,
         [](Command::Context &C, const json &A) {

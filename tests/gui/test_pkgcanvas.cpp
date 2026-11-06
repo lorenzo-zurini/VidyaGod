@@ -2,6 +2,7 @@
 // what the package document looks like afterwards. Every test names what it pins and how it was made to fail.
 
 #include "qtestjson.h"
+#include "noderefs.h"
 #include "canvasharness.h"
 #include "pkggraph.h"
 #include "cid.h"
@@ -151,7 +152,7 @@ private slots:
         const int Before = (int)H.Doc.Node(H.Doc.IndexOf(M))["LAYERS"].size();
         H.drag(H.port(B, true), H.title(M));             // Music -> Mod: Mod contains Music
         bool Contains = false;
-        PkgDoc::ForEachRef(H.Doc.Node(H.Doc.IndexOf(M)), [&](const std::string &R) { if (R == B) Contains = true; });
+        NodeRefs::Each(H.Doc.Node(H.Doc.IndexOf(M)), [&](const std::string &R) { if (R == B) Contains = true; });
         QVERIFY2(Contains, "the drop did not wire the node in");
         QCOMPARE((int)H.Doc.Node(H.Doc.IndexOf(M))["LAYERS"].size(), Before + 1);
         QVERIFY(H.Doc.Node(H.Doc.IndexOf(M))["LAYERS"][0].contains("NODE"));
@@ -191,11 +192,11 @@ private slots:
         H.click(Mid);
         H.key(ImGuiKey_Delete);
         bool Still = false;
-        PkgDoc::ForEachRef(H.Doc.Node(H.Doc.IndexOf(M)), [&](const std::string &R) { if (R == G) Still = true; });
+        NodeRefs::Each(H.Doc.Node(H.Doc.IndexOf(M)), [&](const std::string &R) { if (R == G) Still = true; });
         QVERIFY2(!Still, "the clicked wire was not deleted");
         H.key(ImGuiKey_Z, true);
         Still = false;
-        PkgDoc::ForEachRef(H.Doc.Node(H.Doc.IndexOf(M)), [&](const std::string &R) { if (R == G) Still = true; });
+        NodeRefs::Each(H.Doc.Node(H.Doc.IndexOf(M)), [&](const std::string &R) { if (R == G) Still = true; });
         QVERIFY(Still);
     }
 
@@ -209,12 +210,12 @@ private slots:
         H.key(ImGuiKey_Delete);
         QCOMPARE(H.Doc.IndexOf(G), -1);
         bool Dangling = false;
-        PkgDoc::ForEachRef(H.Doc.Node(H.Doc.IndexOf(M)), [&](const std::string &R) { if (R == G) Dangling = true; });
+        NodeRefs::Each(H.Doc.Node(H.Doc.IndexOf(M)), [&](const std::string &R) { if (R == G) Dangling = true; });
         QVERIFY(!Dangling);
         H.key(ImGuiKey_Z, true);
         QVERIFY(H.Doc.IndexOf(G) >= 0);
         bool Back = false;
-        PkgDoc::ForEachRef(H.Doc.Node(H.Doc.IndexOf(M)), [&](const std::string &R) { if (R == G) Back = true; });
+        NodeRefs::Each(H.Doc.Node(H.Doc.IndexOf(M)), [&](const std::string &R) { if (R == G) Back = true; });
         QVERIFY(Back);
     }
 

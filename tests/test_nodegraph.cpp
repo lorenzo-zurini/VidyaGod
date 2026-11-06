@@ -1,4 +1,5 @@
 #include "vgtest.h"
+#include "noderefs.h"
 #include "nodegraph.h"
 #include "cid.h"
 
@@ -54,14 +55,14 @@ TEST(nodegraph_freeze_strips_pos_and_resolves_every_ref)
     CHECK(F["LABEL"] == "exec");
 }
 
-// The CID write-back and the freeze share ONE remapper (ManifestModel::RemapNodeRefs): a NODE, an ANY member and a
+// The CID write-back and the freeze share ONE remapper (NodeRefs::Remap): a NODE, an ANY member and a
 // NOT all follow a re-minted node to its new CID; an external ref passes through.
 TEST(nodegraph_remap_node_refs_reaches_every_ref_form)
 {
     ordered_json N = {{"LABEL", "n"}, {"LAYERS", ordered_json::array({
         {{"NODE", "a"}}, {{"ANY", ordered_json::array({"b", "ext"})}}, {{"NOT", "c"}}, {{"ZIP", "x.zip"}} })}};
     const std::map<std::string, std::string> Map = {{"a", "A"}, {"b", "B"}, {"c", "C"}};
-    CHECK(ManifestModel::RemapNodeRefs(N, [&](const std::string &R) { auto It = Map.find(R); return It == Map.end() ? R : It->second; }));
+    CHECK(NodeRefs::Remap(N, [&](const std::string &R) { auto It = Map.find(R); return It == Map.end() ? R : It->second; }));
     CHECK(N["LAYERS"][0]["NODE"] == "A");
     CHECK(N["LAYERS"][1]["ANY"][0] == "B");
     CHECK(N["LAYERS"][1]["ANY"][1] == "ext");
@@ -69,9 +70,9 @@ TEST(nodegraph_remap_node_refs_reaches_every_ref_form)
     CHECK(N["LAYERS"][3]["ZIP"] == "x.zip");                      // a payload is not a ref
     // A node with no refs, or not a node at all, is left alone and reports no change.
     ordered_json Bare = {{"LABEL", "x"}, {"LAYERS", ordered_json::array()}};
-    CHECK(!ManifestModel::RemapNodeRefs(Bare, [](const std::string &R) { return R + "!"; }));
+    CHECK(!NodeRefs::Remap(Bare, [](const std::string &R) { return R + "!"; }));
     ordered_json Odd = {{"LABEL", "x"}, {"LAYERS", "notalist"}};
-    CHECK(!ManifestModel::RemapNodeRefs(Odd, [](const std::string &R) { return R + "!"; }));
+    CHECK(!NodeRefs::Remap(Odd, [](const std::string &R) { return R + "!"; }));
 }
 
 TEST(nodegraph_topo_order_is_deps_first)

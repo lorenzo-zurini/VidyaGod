@@ -8,6 +8,63 @@ using json = nlohmann::ordered_json;
 namespace NodeRefs
 {
 
+static bool IsNode(const json &N) { return N.is_object() && N.contains("LAYERS") && N["LAYERS"].is_array(); }
+
+void Each(const json &Node, const std::function<void(const std::string &)> &Fn)
+{
+    if (!IsNode(Node)) return;
+    for (const json &L : Node["LAYERS"])
+    {
+        if (!L.is_object()) continue;
+        for (const char *K : {"NODE", "NOT"})
+            if (L.contains(K) && L[K].is_string()) Fn(L[K].get<std::string>());
+        if (L.contains("ANY") && L["ANY"].is_array())
+            for (const json &M : L["ANY"]) if (M.is_string()) Fn(M.get<std::string>());
+    }
+}
+
+std::vector<std::string> Contained(const json &Node, std::vector<std::string> *Requires)
+{
+    std::vector<std::string> Out;
+    if (!IsNode(Node)) return Out;
+    for (const json &L : Node["LAYERS"])
+    {
+        if (!L.is_object()) continue;
+        if (L.contains("NODE") && L["NODE"].is_string()) Out.push_back(L["NODE"].get<std::string>());
+        if (!Requires) continue;
+        if (L.contains("ANY") && L["ANY"].is_array())
+            for (const json &M : L["ANY"]) if (M.is_string()) Requires->push_back(M.get<std::string>());
+        if (L.contains("NOT") && L["NOT"].is_string()) Requires->push_back(L["NOT"].get<std::string>());
+    }
+    return Out;
+}
+
+bool Remap(json &Node, const std::function<std::string(const std::string &)> &Map)
+{
+    if (!IsNode(Node)) return false;
+    bool Changed = false;
+    const auto One = [&](json &S) {
+        if (!S.is_string()) return;
+        std::string New = Map(S.get<std::string>());
+        if (New != S.get<std::string>()) { S = std::move(New); Changed = true; }
+    };
+    for (json &L : Node["LAYERS"])
+    {
+        if (!L.is_object()) continue;
+        for (const char *K : {"NODE", "NOT"}) if (L.contains(K)) One(L[K]);
+        if (L.contains("ANY") && L["ANY"].is_array()) for (json &M : L["ANY"]) One(M);
+    }
+    return Changed;
+}
+
+json Remapped(const json &Node, const std::map<std::string, std::string> &M)
+{
+    json Out = Node;
+    if (!M.empty())
+        Remap(Out, [&](const std::string &R) { const auto It = M.find(R); return It == M.end() ? R : It->second; });
+    return Out;
+}
+
 bool Add(json &Node, const std::string &Ref)
 {
     if (!Node.is_object() || Ref.empty()) return false;

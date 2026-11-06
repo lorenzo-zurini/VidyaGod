@@ -2,6 +2,7 @@
 // bytes, so an edit renames it, and every node that names it (here and in other packages) is re-minted in turn.
 
 #include "vgtest.h"
+#include "noderefs.h"
 #include "pkgdoc.h"
 #include "pkggraph.h"
 #include "cid.h"
@@ -66,7 +67,7 @@ int Dangling(const fs::path &Root)
             All.push_back(json::parse(Slurp(E.path()), nullptr, false));
         }
     int N = 0;
-    for (const json &J : All) PkgDoc::ForEachRef(J, [&](const std::string &R) { if (!Have.count(R)) ++N; });
+    for (const json &J : All) NodeRefs::Each(J, [&](const std::string &R) { if (!Have.count(R)) ++N; });
     return N;
 }
 
@@ -295,7 +296,7 @@ TEST(pkgdoc_a_removed_node_goes_unless_another_package_contains_it)
     CHECK(Doc.Remove(Doc.IndexOf(A)));
     CHECK(Doc.Remove(Doc.IndexOf(B)));
     bool StillNamed = false;
-    PkgDoc::ForEachRef(Doc.Node(Doc.IndexOf(U)), [&](const std::string &R) { if (R == A) StillNamed = true; });
+    NodeRefs::Each(Doc.Node(Doc.IndexOf(U)), [&](const std::string &R) { if (R == A) StillNamed = true; });
     CHECK(!StillNamed);                                                      // the wire went with it
     const PkgDoc::SaveReport R = Doc.Save(P, Lib, "");
     CHECK(R.Ok);

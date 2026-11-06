@@ -1019,8 +1019,7 @@ Fold::Plan FoldOf(const std::string &Root, const std::function<const json *(cons
         const json *N = Find ? Find(H) : nullptr;
         if (!N || !N->is_object() || (N->contains("LAYERS") && !(*N)["LAYERS"].is_array())) continue;
         Lib.Nodes[H] = { N, Dir ? Dir(H) : std::string() };
-        if (N->contains("LAYERS"))
-            for (const json &L : (*N)["LAYERS"]) if (L.is_object() && L.contains("NODE")) Todo.push_back(StrField(L, "NODE"));
+        for (std::string &R : NodeRefs::Contained(*N)) Todo.push_back(std::move(R));
     }
     try { return Fold::Resolve(Lib, Root); }
     catch (const std::exception &) { return Fold::Plan(); }

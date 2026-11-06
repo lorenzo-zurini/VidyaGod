@@ -1,5 +1,6 @@
 // Versions of an installed package: a friend's newer version found, staged, planned and switched to (journaled).
 #include "packagecatalog.h"
+#include "noderefs.h"
 #include "sessions.h"
 #include "nodestore.h"
 #include "contentfile.h"
@@ -134,12 +135,12 @@ std::vector<std::string> KeptNodes(const NodeIndex &Idx, const std::filesystem::
     for (const auto &[Id, N] : Idx.Nodes)
         if (!N.Received && N.BundleDir.lexically_normal() != Dir.lexically_normal())
             for (const auto &R : N.Refs) Q.push_back(R);
-    for (const std::string &C : Listing) for (const auto &R : ManifestModel::NodeRefs(NodeAt(C))) Q.push_back(R);
+    for (const std::string &C : Listing) for (const auto &R : NodeRefs::Contained(NodeAt(C))) Q.push_back(R);
     while (!Q.empty())
     {
         const std::string C = Q.front(); Q.pop_front();
         if (!Candidates.count(C) || !Kept.insert(C).second) continue;
-        for (const auto &R : ManifestModel::NodeRefs(NodeAt(C))) Q.push_back(R);
+        for (const auto &R : NodeRefs::Contained(NodeAt(C))) Q.push_back(R);
     }
     return { Kept.begin(), Kept.end() };
 }
