@@ -719,22 +719,6 @@ void AppModel::forgetFriend(const QString & peer)
     if (Config->contains("FriendLibraries") && (*Config)["FriendLibraries"].is_object()
         && (*Config)["FriendLibraries"].contains(P))
     { (*Config)["FriendLibraries"].erase(P); Changed = true; }   // drops the peer's packages from future reconciles
-    // Legacy cleanup: drop any old "friend:<peer>:*" PackageSources (retired stub model) — KEEP anything installed.
-    // Done inline (not via stopReceivingFromFriend) so forgetFriend refreshes the UI exactly ONCE, after every erase.
-    if (Config->contains("Settings") && (*Config)["Settings"].is_object()
-        && (*Config)["Settings"].contains("PackageSources") && (*Config)["Settings"]["PackageSources"].is_array())
-    {
-        const std::string Prefix = "friend:" + P + ":";
-        auto & Arr = (*Config)["Settings"]["PackageSources"];
-        for (int i = (int)Arr.size() - 1; i >= 0; --i)
-        {
-            const std::string C = (Arr[i].is_object() && Arr[i].contains("CID") && Arr[i]["CID"].is_string())
-                                  ? Arr[i]["CID"].get<std::string>() : std::string();
-            if (C.rfind(Prefix, 0) != 0) continue;
-            PackageCatalog::RemovePackageSource(*Config, i, /*PreserveInstalled=*/true);
-            Changed = true;
-        }
-    }
     auto EraseFrom = [&](const char * Key, nlohmann::ordered_json & Root) {
         if (Root.contains(Key) && Root[Key].is_array())
             for (auto It = Root[Key].begin(); It != Root[Key].end(); ++It)
@@ -845,22 +829,6 @@ void AppModel::stopReceivingFromFriend(const QString & peer)
         && (*Config)["FriendLibraries"].contains(P))
     { (*Config)["FriendLibraries"].erase(P); Changed = true; }
     FriendLibSeq.erase(P);
-    // Legacy cleanup: drop any old "friend:<peer>:*" PackageSources from the retired stub model — KEEP anything the
-    // user already installed (converted to a local package, files intact).
-    if (Config->contains("Settings") && (*Config)["Settings"].is_object()
-        && (*Config)["Settings"].contains("PackageSources") && (*Config)["Settings"]["PackageSources"].is_array())
-    {
-        const std::string Prefix = "friend:" + P + ":";
-        auto & Arr = (*Config)["Settings"]["PackageSources"];
-        for (int i = (int)Arr.size() - 1; i >= 0; --i)
-        {
-            const std::string C = (Arr[i].is_object() && Arr[i].contains("CID") && Arr[i]["CID"].is_string())
-                                  ? Arr[i]["CID"].get<std::string>() : std::string();
-            if (C.rfind(Prefix, 0) != 0) continue;
-            PackageCatalog::RemovePackageSource(*Config, i, /*PreserveInstalled=*/true);
-            Changed = true;
-        }
-    }
     if (Changed) { save(); rebuildCatalog(); emit friendCatalogChanged(); }
 }
 

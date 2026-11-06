@@ -66,10 +66,6 @@ void SetFetchOnceHook(FetchOnceHook Hook);
 // True when a FetchOnce hook is installed (test mode) — the dir/batch fetch paths bypass their offline-gate then.
 bool FetchOnceHookActive();
 
-// Test seam: override IpnsResolve with a scripted name→CID map (return "" + set Error to simulate a resolve failure).
-// Set to {} to restore the real DHT/gateway path. Lets the subscribe-mirror flow be driven without a live network.
-using IpnsResolveHook = std::function<std::string(const std::string &Name, std::string *Error)>;
-void SetIpnsResolveHook(IpnsResolveHook Hook);
 
 // Recursively materializes a UnixFS DIRECTORY CID (a folder of dehydrated packages) into DestDir — fetches the whole
 // small manifest tree (node JSON + covers, no content bytes) over the network and writes it to disk. Requires the IPFS

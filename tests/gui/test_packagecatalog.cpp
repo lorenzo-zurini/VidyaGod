@@ -63,93 +63,6 @@ class PackageCatalogTest : public QObject
     Q_OBJECT
 private slots:
 
-    // IPNS subscribe: a FRIEND source ({CID:"/ipns/<name>"}) resolves to ONE index doc holding libraries inline, each
-    // with per-package dehydrated CIDs; SyncPackageSources mirrors each package + upserts LIBRARY. The CID-diff must
-    // skip an unchanged package on re-sync and RE-FETCH a changed one. Drives the whole flow through injected hooks
-    // (no live network). Teeth: (a) resolve→"" ⇒ nothing mirrored (the resolve step is load-bearing); (b) a changed
-    // package CID re-fetches while an unchanged one does not (the diff is real).
-    void ipns_source_mirrors_and_diffs()
-    {
-        QTemporaryDir Ud; QVERIFY(Ud.isValid());
-        json Cfg = json{{"Settings", {{"Paths", {{"UserDataRoot", Ud.path().toStdString()}}},
-                                       {"PackageSources", json::array({
-                                           json{{"CID","/ipns/testfriend"},{"NAME","Friend"},{"FRIEND",true}} })}}}};
-
-        // Reset the injected hooks on ANY exit — a QVERIFY/QCOMPARE failure `return`s from the slot, so a manual reset
-        // at the end would leak the hooks into later tests. qScopeGuard fires regardless.
-        auto HookGuard = qScopeGuard([]{ IpfsWrapper::SetIpnsResolveHook({}); IpfsWrapper::SetFetchOnceHook({}); });
-
-        IpfsWrapper::SetIpnsResolveHook([](const std::string & Name, std::string *) {
-            // accept both "testfriend" and "/ipns/testfriend"
-            return (Name == "testfriend" || Name == "/ipns/testfriend") ? std::string("TOPCID_v1") : std::string();
-        });
-
-        // Which package CID the index advertises this run (flip to simulate an update), + a fetch counter per CID.
-        std::string PkgCid = "PKGCID_A";
-        std::map<std::string,int> Fetches;
-        IpfsWrapper::SetFetchOnceHook([&](const std::string & Cid, const std::string & Dest, bool Dir, std::string *Err) -> int {
-            Fetches[Cid]++;
-            if (!Dir)   // a single-file index fetch (top index doc)
-            {
-                json Index = json{{"publisher","testfriend"},{"nick","Friend"},
-                    {"libraries", json::array({ json{{"name","Games"},{"packages", json::array({
-                        json{{"packageUID","pkg1"},{"cid",PkgCid},{"title","Game One"}} })}} })}};
-                writeFile(QString::fromStdString(Dest), Index.dump(2));
-                return 0;
-            }
-            // a package meta-CID: materialize a minimal valid dehydrated bundle (tile + launchable).
-            std::filesystem::create_directories(Dest);
-            const json Exec = json{{"LABEL","Play"},{"HOST","linux64"},{"EXE","run.sh"},{"TILE",{{"UID","pkg1"},{"TITLE","Game One"}}}};
-            const json Node = json{{"CID","pkg1_exec"},{"LABEL","pkg1_exec"},{"VARIANT","Play"},
-                                   {"LAYERS", json::array({ json{{"EXEC", json::array({ Exec })}} })}};
-            writeFile(QString::fromStdString(Dest) + "/pkg1.json", Node.dump(2));
-            (void)Err;
-            return 0;
-        });
-
-        // First sync → the package is mirrored + indexed.
-        const int Indexed = PackageCatalog::SyncPackageSources(Cfg);
-        QCOMPARE(Indexed, 1);
-        QVERIFY(Cfg.contains("LIBRARY") && Cfg["LIBRARY"].is_array() && !Cfg["LIBRARY"].empty());
-        const auto & E = Cfg["LIBRARY"][0];
-        QCOMPARE(E.value("PACKAGEUID", std::string()), std::string("pkg1"));
-        QCOMPARE(E.value("CIDSOURCE",  std::string()), std::string("PKGCID_A"));
-        // The source dir is keyed by the peerID (_friend_<peer>), NOT the attacker-chosen nick — so it can't collide
-        // with your own collections. The mirror entry is SOURCE-tagged so the static upsert never captures it.
-        QVERIFY2(E.value("PATH", std::string()).find("_friend_") != std::string::npos,
-                 "mirrored under the peerID-keyed friend source dir");
-        QVERIFY2(!E.value("SOURCE", std::string()).empty(), "mirror entry must be SOURCE-tagged");
-        const int FetchesA = Fetches["PKGCID_A"];
-        QVERIFY(FetchesA >= 1);
-
-        // Re-sync, SAME package CID → the diff skips the re-fetch (still one launchable indexed).
-        QCOMPARE(PackageCatalog::SyncPackageSources(Cfg), 1);
-        QCOMPARE(Fetches["PKGCID_A"], FetchesA);   // no additional fetch of the unchanged package
-
-        // Simulate hydrated content (a large non-.json layer file the launcher wrote into the bundle) before the update.
-        const QString PkgPath = QString::fromStdString(Cfg["LIBRARY"][0].value("PATH", std::string()));
-        writeFile(PkgPath + "/content.bin", "HYDRATED-GAME-BYTES");
-
-        // Now the friend publishes an update: the index advertises a NEW package CID → re-fetch exactly that one...
-        PkgCid = "PKGCID_B";
-        QCOMPARE(PackageCatalog::SyncPackageSources(Cfg), 1);
-        QVERIFY2(Fetches["PKGCID_B"] >= 1, "a changed package CID must be re-fetched (the update path)");
-        QCOMPARE(Cfg["LIBRARY"][0].value("CIDSOURCE", std::string()), std::string("PKGCID_B"));
-        // ...and the hydrated content survives the swap (a metadata update must NOT force a multi-GB re-download).
-        // Teeth: drop the non-.json carry-over in the swap and this file is gone after the update.
-        QVERIFY2(std::filesystem::exists((PkgPath + "/content.bin").toStdString()),
-                 "hydrated content must be carried across a package update, not discarded");
-
-        // Teeth: a failed resolve mirrors nothing (the resolve step is load-bearing, not incidental).
-        json Cfg2 = json{{"Settings", {{"Paths", {{"UserDataRoot", Ud.path().toStdString()}}},
-                                        {"PackageSources", json::array({
-                                            json{{"CID","/ipns/unknownfriend"},{"FRIEND",true}} })}}}};
-        IpfsWrapper::SetIpnsResolveHook([](const std::string &, std::string * Err) { if (Err) *Err = "no record"; return std::string(); });
-        QCOMPARE(PackageCatalog::SyncPackageSources(Cfg2), 0);
-        QVERIFY(!Cfg2.contains("LIBRARY") || Cfg2["LIBRARY"].empty());
-        // hooks reset by HookGuard on scope exit
-    }
-
     // Mint stamps SOURCE (the CID) and SIZE (payload bytes) beside a content layer's file and a tile COVER, and
     // BACKFILLS SIZE on re-mint for a package that already carries a valid CID but no size, via the idempotent branch
     // (CID unchanged — the branch runs precisely because NeedsSeed's VerifyCid passed, so the bytes were not re-added).
@@ -1692,32 +1605,15 @@ private slots:
         IpfsWrapper::StopNode();
     }
 
-    // Friend-share sources ("friend:<peer>:<lib>") are disk-only: SyncPackageSources / HasMissingSources must skip them
-    // (never IPNS-resolve or fetch). Teeth: without the friend: skip, the source routes to MirrorIpnsSource → the
-    // IpnsResolve hook fires — the QVERIFY(!resolved) fails.
-    void sync_skips_friend_sources()
-    {
-        auto resolved = std::make_shared<bool>(false);
-        IpfsWrapper::SetIpnsResolveHook([resolved](const std::string &, std::string * e){ *resolved = true; if (e) *e = "x"; return std::string(); });
-        json cfg = json{{"Settings", {{"PackageSources", json::array({
-                            json{{"CID", "friend:12D3KooWPeer:Games"}, {"NAME", "Alice \xc2\xb7 Games"}, {"FRIEND", true}, {"IPNS", true}} })}}},
-                        {"LIBRARY", json::array()}};
-        QCOMPARE(PackageCatalog::SyncPackageSources(cfg), 0);
-        QVERIFY2(!*resolved, "a friend: source must NOT be IPNS-resolved / synced");
-        QVERIFY2(!PackageCatalog::HasMissingSources(cfg), "a friend: source is disk-only — never 'missing'");
-        IpfsWrapper::SetIpnsResolveHook({});
-    }
-
-    // DATA-LOSS GUARD 3: removing a friend source with PreserveInstalled must delete a STUB-only package but KEEP a
-    // package the user INSTALLED (a dir with hydrated content) — converting it to a local package (SOURCE cleared,
-    // files intact). Covers every friend-removal path (per-library withdraw, Receive-off, unfriend) since all call
-    // RemovePackageSource(..., PreserveInstalled=true). Teeth: without the branch, remove_all nukes the install.
-    void remove_friend_source_preserves_installed_content()
+    // DATA-LOSS GUARD 3: removing a source with KeepInstalled (`sources remove --keep-installed`) deletes a STUB-only
+    // package but KEEPS a package the user INSTALLED (a dir with hydrated content), files intact, its LIBRARY entry
+    // kept. Teeth: without the branch, remove_all nukes the install.
+    void remove_source_keep_installed_keeps_what_was_installed()
     {
         QTemporaryDir data; QVERIFY(data.isValid());
         AppPaths::SetDataRoot(data.path().toStdString());
         json cfg = json{{"Settings", {{"PackageSources", json::array({
-                            json{{"CID", "friend:peerX:Games"}, {"NAME", "Alice"}, {"FRIEND", true}, {"IPNS", true}} })}}},
+                            json{{"CID", "QmGames"}, {"NAME", "Games"}} })}}},
                         {"LIBRARY", json::array()}};
         const std::string srcDir = PackageCatalog::PackageSourceDir(cfg, cfg["Settings"]["PackageSources"][0]);
         const QString stubDir = QString::fromStdString(srcDir) + "/[1] Stub";
@@ -1727,17 +1623,17 @@ private slots:
         { std::ofstream f((stubDir + "/n.json").toStdString()); f << "{}"; }              // stub-only (metadata)
         { std::ofstream f((instDir + "/n.json").toStdString()); f << "{}"; }              // installed: metadata +
         { std::ofstream f((instDir + "/game.bin").toStdString()); f << "installed"; }     //   hydrated content
-        cfg["LIBRARY"].push_back(json{{"PACKAGEUID", "1"}, {"PATH", stubDir.toStdString()}, {"SOURCE", "friend:peerX:Games"}});
-        cfg["LIBRARY"].push_back(json{{"PACKAGEUID", "2"}, {"PATH", instDir.toStdString()}, {"SOURCE", "friend:peerX:Games"}});
+        cfg["LIBRARY"].push_back(json{{"PACKAGEUID", "1"}, {"PATH", stubDir.toStdString()}, {"CIDSOURCE", "QmGames"}});
+        cfg["LIBRARY"].push_back(json{{"PACKAGEUID", "2"}, {"PATH", instDir.toStdString()}, {"CIDSOURCE", "QmGames"}});
 
-        PackageCatalog::RemovePackageSource(cfg, 0, /*PreserveInstalled=*/true);
+        PackageCatalog::RemovePackageSource(cfg, 0, /*KeepInstalled=*/true);
 
-        QVERIFY2(!QDir(stubDir).exists(), "a stub-only friend package is removed");
+        QVERIFY2(!QDir(stubDir).exists(), "a stub-only package is removed");
         QVERIFY2(QFile::exists(instDir + "/game.bin"), "installed content must be preserved, never rm'd");
         bool keptLocal = false;
         for (auto & e : cfg["LIBRARY"])
             if (e.is_object() && e.value("PATH", std::string()) == instDir.toStdString())
-            { keptLocal = true; QVERIFY2(!e.contains("SOURCE"), "the kept install becomes a local package (SOURCE cleared)"); }
+            keptLocal = true;
         QVERIFY2(keptLocal, "the installed package's LIBRARY entry survives");
         QCOMPARE((int)cfg["Settings"]["PackageSources"].size(), 0);   // the source config entry is gone
     }

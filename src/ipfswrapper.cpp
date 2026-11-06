@@ -482,20 +482,9 @@ bool DropCached(const std::string &Cid)
     return Rc == 0;
 }
 
-static std::mutex       g_IpnsResolveHookMu;
-static IpnsResolveHook  g_IpnsResolveHook;
-void SetIpnsResolveHook(IpnsResolveHook Hook)
-{
-    std::lock_guard<std::mutex> Lk(g_IpnsResolveHookMu);
-    g_IpnsResolveHook = std::move(Hook);
-}
-
 std::string IpnsResolve(const std::string &Name, std::string *Error)
 {
     if (Name.empty()) { if (Error) *Error = "empty IPNS name"; return {}; }
-    { IpnsResolveHook Hook;
-      { std::lock_guard<std::mutex> Lk(g_IpnsResolveHookMu); Hook = g_IpnsResolveHook; }
-      if (Hook) return Hook(Name, Error); }
     char *Out = nullptr, *Err = nullptr;
     const int Rc = VgIpnsResolve(Name.c_str(), &Out, &Err);
     const std::string ErrS = TakeStr(Err);

@@ -156,9 +156,9 @@ static QHash<QString, QString> BuildCidLabels(const NodeIndex & Idx, const nlohm
             if (OutSource)   OutSource->insert(QCid, QString::fromStdString(Name));
         }
 
-    // Per-package META-CIDs. A mirrored (IPNS/friend) package's CIDSOURCE is its own per-package meta-CID — a
-    // text-only JSON tree, NOT a content layer — so none of the loops above named it, and the mirror's metadata
-    // transfers showed as a wall of "(unknown)". Name each from its LIBRARY entry (the friend's published titles).
+    // Per-package META-CIDs. A single-package source's CIDSOURCE is its own per-package meta-CID — a text-only JSON
+    // tree, NOT a content layer — so none of the loops above named it, and its metadata transfers showed as a wall of
+    // "(unknown)". Name each from its LIBRARY entry.
     // Skip a CID already labeled as content/cover/source; also skips a static collection CID shared by many entries
     // (labelling it once as its source name is fine — but a distinct per-package meta-CID gets the package name).
     if (Config.contains("LIBRARY") && Config["LIBRARY"].is_array())

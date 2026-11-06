@@ -114,7 +114,7 @@ int SyncPackageSources(nlohmann::ordered_json &GlobalConfigJSON, std::string *Er
 bool HasMissingSources(const nlohmann::ordered_json &GlobalConfigJSON);
 // Append a source (dedup on CID) — caller then SyncPackageSources + reindex + persists. Returns false if CID is empty
 // or already present.
-[[nodiscard]] bool AddPackageSource(nlohmann::ordered_json &GlobalConfigJSON, const std::string &Cid, const std::string &Name, bool Friend = false);
+[[nodiscard]] bool AddPackageSource(nlohmann::ordered_json &GlobalConfigJSON, const std::string &Cid, const std::string &Name);
 // What a worker did to a config list on its own copy of the config (Before → After), applied to the live list: an entry
 // it removed goes, one it added comes in, one it changed (it went and came under one Key) is replaced where it stands.
 // Entries are matched by value, so two alike, or two of one key, are two. What the live list gained, lost or changed
@@ -125,9 +125,8 @@ void MergeListChange(nlohmann::ordered_json &Live, const nlohmann::ordered_json 
                      std::string (*Key)(const nlohmann::ordered_json &));
 std::string LibraryEntryKey(const nlohmann::ordered_json &Entry);
 std::string SourceKey(const nlohmann::ordered_json &Source);
-// PreserveInstalled (friend sources): never rm a package the user has INSTALLED — convert dirs with hydrated content to
-// local (clear their SOURCE tag, keep files), delete only stub-only packages. Default false = full removal (CID sources).
-void RemovePackageSource(nlohmann::ordered_json &GlobalConfigJSON, int Index, bool PreserveInstalled = false);
+// KeepInstalled: a package installed from it (hydrated content) stays, as a local package; only stub-only packages go.
+void RemovePackageSource(nlohmann::ordered_json &GlobalConfigJSON, int Index, bool KeepInstalled = false);
 
 // ----- upgrading a source to a new collection CID -----
 // Editing a source's CID in config does NOTHING on its own: SyncPackageSources fetches only when the source's
@@ -416,9 +415,6 @@ std::set<std::filesystem::path> PackagesToAdopt(const NodeIndex &Idx, const std:
                                                 const std::vector<std::string> &RunnerIds,
                                                 const nlohmann::ordered_json &GlobalConfigJSON);
 
-// True if a PackageSources entry is an IPNS-name source (a friend / a manually-added /ipns/ address) rather than a
-// content folder CID: an explicit IPNS/FRIEND flag, or a CID field with the /ipns/ prefix.
-bool IsIpnsSource(const nlohmann::ordered_json &Source);
 
 // ----- node-graph catalog (everything-is-a-node) -----
 // Build the global cross-bundle node graph from the configured CID package sources + locally-added bundles — the

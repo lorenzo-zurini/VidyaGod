@@ -424,10 +424,10 @@ VG_COMMANDS
     // ---------------- sources ----------------
     Command::Register({
         "sources list", "the package sources and where each syncs",
-        "Every package source (a folder CID or an IPNS name): its name, CID, kind, its folder here and whether it is "
-        "synced, and whether any source is still missing.", {}, { "sources list" },
+        "Every package source (a folder CID): its name, CID, its folder here and whether it is synced, and whether any "
+        "source is still missing.", {}, { "sources list" },
         { "PackageCatalog::PackageSourceCID", "PackageCatalog::PackageSourceDir", "PackageCatalog::SourceDirSynced",
-          "PackageCatalog::IsIpnsSource", "PackageCatalog::PackageSourceDirs", "PackageCatalog::HasMissingSources" }, Needs::Config, false,
+          "PackageCatalog::PackageSourceDirs", "PackageCatalog::HasMissingSources" }, Needs::Config, false,
         [](Command::Context &C, const json &) {
             json Rows = json::array();
             for (const auto &S : (*C.Config)["Settings"]["PackageSources"])
@@ -435,17 +435,17 @@ VG_COMMANDS
                 const std::string Dir = PackageCatalog::PackageSourceDir(*C.Config, S);
                 std::error_code Ec;
                 Rows.push_back({{"name", S.is_object() ? S.value("NAME", std::string()) : std::string()}, {"cid", PackageCatalog::PackageSourceCID(S)},
-                                {"ipns", PackageCatalog::IsIpnsSource(S)}, {"dir", Dir}, {"synced", PackageCatalog::SourceDirSynced(Dir, Ec)}});
+                                {"dir", Dir}, {"synced", PackageCatalog::SourceDirSynced(Dir, Ec)}});
             }
             return json{{"sources", Rows}, {"synced_dirs", PackageCatalog::PackageSourceDirs(*C.Config)},
                         {"missing", PackageCatalog::HasMissingSources(*C.Config)}};
         }, {} });
 
     Command::Register({
-        "sources add", "add a package source (a folder CID or an IPNS name)",
+        "sources add", "add a package source (a folder CID)",
         "Add a source to sync packages from — Settings → Sources → Add. With the app up it fetches the tree at once "
         "(events wait --signal packageSourcesChanged); headless, run `sources sync`.",
-        { Pos("cid", "the source's folder CID or /ipns/ name"), Pos("name", "a name for it"), Flag("friend", "a friend's source") },
+        { Pos("cid", "the source's folder CID"), Pos("name", "a name for it") },
         { "sources add bafybei… 'Some library'" }, { "AppModel::addPackageSource", "PackageCatalog::AddPackageSource" , "SourcesPage::rebuild" }, Needs::Config, true,
         [](Command::Context &C, const json &A) {
             const std::string Cid = Command::Str(A, "cid"), Name = Command::Str(A, "name");
@@ -454,7 +454,7 @@ VG_COMMANDS
                 if (!C.Model->addPackageSource(QString::fromStdString(Cid), QString::fromStdString(Name))) throw std::runtime_error("empty or already added");
                 return json{{"added", Name}, {"syncing", true}};
             }
-            if (!PackageCatalog::AddPackageSource(*C.Config, Cid, Name, Command::Bool(A, "friend", false))) throw std::runtime_error("empty or already added");
+            if (!PackageCatalog::AddPackageSource(*C.Config, Cid, Name)) throw std::runtime_error("empty or already added");
             Save(C);
             return json{{"added", Name}};
         }, {} });
