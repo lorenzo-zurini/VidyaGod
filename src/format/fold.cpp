@@ -249,6 +249,8 @@ struct Slot
     Chain Inner;               // the containers + this node's own occurrence
     std::string From, Dir, Prefix;
     View Through;
+    int Depth = 0;             // how many NODE layers in
+    std::string Ref;           // NODE (only shown): the node the library does not hold; ANY is shown too
 };
 
 class Expander
@@ -296,17 +298,23 @@ public:
                     Sub = Place(P, Prefix);
                     At = P;
                 }
-                Expand(Str(L["NODE"]), Within(Through, L.contains("TAKE") ? &L["TAKE"] : nullptr, At), Sub, Inner);
+                const std::string Ref = Str(L["NODE"]);
+                const View V = Within(Through, L.contains("TAKE") ? &L["TAKE"] : nullptr, At);
+                if (!ExecOnly && !Lib.Find(Ref)) Slots.push_back({ T, &L, I, Inner, Cid, E->Dir, Prefix, V, Depth, Ref });
+                ++Depth;
+                Expand(Ref, V, Sub, Inner);
+                --Depth;
             }
             else if (T == "ANY")
             {
+                if (!ExecOnly) Slots.push_back({ T, &L, I, Inner, Cid, E->Dir, Prefix, Through, Depth, {} });
                 bool Met = false;
                 for (const auto &M : L["ANY"])
                     for (const auto &O : Order) if (O.second == Str(M)) { Met = true; break; }
                 if (!Met) Events.push_back({ "any-unmet", Cid });
             }
             else if (!ExecOnly || T == "EXEC")
-                Slots.push_back({ T, &L, I, Inner, Cid, E->Dir, Prefix, Through });
+                Slots.push_back({ T, &L, I, Inner, Cid, E->Dir, Prefix, Through, Depth, {} });
         }
     }
 
@@ -315,6 +323,7 @@ public:
     const bool ExecOnly;
     const int Flip;                                                         // the held/move decision to take the other way
     int Decisions = 0;                                                      // held/move decisions taken so far
+    int Depth = 0;                                                          // NODE layers in, while expanding
     std::vector<Slot> Slots;
     std::unordered_map<std::string, Chain> First;
     std::unordered_map<std::string, int> OnPath;                             // nodes being expanded right now (cycle guard)
@@ -397,6 +406,23 @@ void Phase1Walk(const Library &Lib, const std::string &Cid, const View &V, std::
 
 std::string PlaceUnder(const std::string &Path, const std::string &Prefix) { return Place(Path, Prefix); }
 std::optional<std::string> TakeView(const json &Take, const std::string &Addr) { return Taken(Take, Addr); }
+
+std::optional<std::string> ThroughView(const json &View, std::string Addr)
+{
+    if (!View.is_array()) return Addr;
+    for (const auto &St : View)
+    {
+        if (!St.is_array() || St.size() != 2) continue;
+        if (Takes(&St[0]))
+        {
+            const auto A = Taken(St[0], Addr);
+            if (!A) return std::nullopt;
+            Addr = *A;
+        }
+        if (const std::string At = Str(St[1]); !At.empty()) Addr = "FILES/" + Place(NsPath(Addr).second, At);
+    }
+    return Addr;
+}
 
 std::string TypeOf(const json &Layer)
 {
@@ -543,6 +569,8 @@ static Plan ResolveImpl(const Library &Lib, const std::string &Root, const Vars 
     for (const Slot &S : X.Slots)
     {
         const json &L = *S.Layer;
+        if (!ExecOnly) P.Steps.push_back({ S.From, S.At, S.Kind, S.Depth, ViewTakes(S.Through) ? ViewJson(S.Through) : json(), S.Ref });
+        if (S.Kind == "NODE" || S.Kind == "ANY") continue;   // shown only
         if (S.Kind == "NOT") { Nots.push_back(Str(L["NOT"])); continue; }
         if (IsContent(S.Kind))
         {

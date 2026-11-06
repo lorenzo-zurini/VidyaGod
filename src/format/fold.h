@@ -69,6 +69,11 @@ struct Plan
     std::vector<std::pair<std::string, std::string>> Events;            // move/held/cycle/missing/any-unmet/not-hit
     std::map<std::string, std::string> WhenVars;                       // what phase 1 resolved (layer WHEN reads these)
     std::string Error;                                                  // a malformed layer: nothing is launched from it
+    //Every layer the fold applies, in order — each occurrence's (WHEN-true, not moved away), a contained node's where
+    //its NODE layer is (Depth one deeper); View as Item's. A NODE layer naming a node the library does not hold is a
+    //step too (Missing: Ref names it), not entered. What an editor shows as "the fold".
+    struct Step { std::string From; int At = 0; std::string Kind; int Depth = 0; json View; std::string Ref; };
+    std::vector<Step> Steps;
 };
 
 using Vars = std::map<std::string, std::string>;
@@ -108,6 +113,9 @@ std::string ToAnchors(const std::string &Value, const std::map<std::string, std:
 std::string PlaceUnder(const std::string &Path, const std::string &Prefix);
 //What one TAKE keeps of an address, left-stripped and renamed; nullopt = not taken.
 std::optional<std::string> TakeView(const json &Take, const std::string &Addr);
+//A FILES address of an occurrence through its whole view (Item::View: each step's TAKE, then its placement): where the
+//root sees it, or nothing when a TAKE leaves it out.
+std::optional<std::string> ThroughView(const json &View, std::string Addr);
 
 //The layer's one type key, or "" when it has none or several (a malformed layer).
 std::string TypeOf(const json &Layer);

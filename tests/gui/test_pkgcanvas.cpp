@@ -1488,6 +1488,35 @@ private slots:
         QVERIFY(St[3].Outside && St[3].Title == "far");
     }
 
+    // The fold shown is the fold a launch makes (Fold::Resolve): a layer whose WHEN is false at the options' defaults
+    // is not in it, a node reached twice from different lists is folded once (held where it first occurs), and a
+    // contained node's layers say which TAKE they are seen through. Teeth: walk the layers as written (the off layer
+    // listed, lib.zip twice); drop the take.
+    void theFoldShownIsTheFoldALaunchMakes()
+    {
+        std::map<std::string, json> Ns{
+            {"top", json{{"LAYERS", json::array({ json{{"VARS", {{"hd", {{"DEFAULT", "0"}}}}}},
+                                                   json{{"ZIP", "hd.zip"}, {"WHEN", "%hd%==1"}},
+                                                   json{{"ZIP", "sd.zip"}, {"WHEN", "%hd%==0"}},
+                                                   json{{"NODE", "lib"}},
+                                                   json{{"NODE", "mid"}},
+                                                   json{{"NODE", "maps"}, {"TAKE", json::array({"FILES/%GameDir%/maps"})}} })}}},
+            {"mid", json{{"LAYERS", json::array({ json{{"NODE", "lib"}}, json{{"ZIP", "mid.zip"}} })}}},
+            {"maps", json{{"LAYERS", json::array({ json{{"ZIP", "maps.zip"}, {"TARGET", "FILES/%GameDir%"}} })}}},
+            {"lib", json{{"LAYERS", json::array({ json{{"ZIP", "lib.zip"}} })}}}};
+        auto Find = [&](const std::string &H) -> const json * { const auto It = Ns.find(H); return It == Ns.end() ? nullptr : &It->second; };
+        const auto St = PkgGraph::FoldOrder("top", Find);
+        std::vector<std::string> Titles;
+        for (const auto &S : St) Titles.push_back(S.Title);
+        QCOMPARE((int)std::count(Titles.begin(), Titles.end(), std::string("hd.zip")), 0);
+        QCOMPARE((int)std::count(Titles.begin(), Titles.end(), std::string("sd.zip")), 1);
+        QCOMPARE((int)std::count(Titles.begin(), Titles.end(), std::string("lib.zip")), 1);
+        const auto Maps = std::find_if(St.begin(), St.end(), [](const PkgGraph::FoldStep &S) { return S.Title == "maps.zip"; });
+        QVERIFY(Maps != St.end());
+        QCOMPARE(Maps->Depth, 1);
+        QCOMPARE(Maps->Take, std::string("FILES/%GameDir%/maps"));
+    }
+
     // The shelf card a version shows: the tile its fold presents (its own, else a contained node's), and every version
     // of the package with the recommended one marked. Teeth: look only at the node's own layers; mark none recommended.
     void aVersionsShelfCardComesFromItsFold()

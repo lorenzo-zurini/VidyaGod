@@ -1078,39 +1078,51 @@ std::vector<PkgActions::SeenFile> PkgActions::GameSees(const PkgDoc::Document & 
         It->second.From = From;
         It->second.Path = Path;
     };
-    for (const PkgGraph::FoldStep & St : PkgGraph::FoldOrder(Handle, Find, Label))
+    auto Dir = [&](const std::string & H) { return (D.IndexOf(H) >= 0 ? Bundle : Outside(H).Bundle).string(); };
+    //Where the game sees a file of an item: through the item's view (its TAKEs, then their placements), else under
+    //its placed target. A root target is the game's folder.
+    auto Where = [](const Fold::Item & I, const std::string & Entry) -> std::optional<std::string> {
+        std::string P;
+        if (I.View.is_null()) P = I.Target.empty() ? Entry : I.Target + "/" + Entry;
+        else
+        {
+            const auto A = Fold::ThroughView(I.View, "FILES/" + (I.Own.empty() ? Entry : I.Own + "/" + Entry));
+            if (!A) return std::nullopt;
+            P = A->size() > 6 ? A->substr(6) : std::string();
+        }
+        return P.empty() || P[0] == '%' ? (P.empty() ? std::string("%GameDir%") : P) : "%GameDir%/" + P;
+    };
+    const Fold::Plan P = PkgGraph::FoldOf(Handle, Find, Dir);
+    for (const Fold::Item & I : P.Seq)
     {
-        if (St.Outside) { if (Notes) Notes->push_back("+ the files of \"" + St.Title + "\" (another package)"); continue; }
-        const json * N = Find(St.Node);
-        if (!N || St.Layer < 0 || St.Layer >= (int)(*N)["LAYERS"].size()) continue;
-        const std::filesystem::path Folder = D.IndexOf(St.Node) >= 0 ? Bundle : Outside(St.Node).Bundle;   // where its files are
-        const json & L = (*N)["LAYERS"][(size_t)St.Layer];
-        std::string Anchor = StrOf(L, "TARGET");
-        if (Anchor.rfind("FILES/", 0) == 0) Anchor = Anchor.substr(6);
-        if (Anchor.empty()) Anchor = "%GameDir%";
-        while (!Anchor.empty() && Anchor.back() == '/') Anchor.pop_back();
-        const std::string Name = StrOf(L, St.Type.c_str());
-        const std::string From = (St.NodeLabel.empty() ? St.Node.substr(0, 12) : St.NodeLabel) + " > " + (Name.empty() ? St.Type : Name);
-        if (Name.empty()) continue;
-        if (St.Type == "ZIP")
+        if (I.Kind == "EDIT" || I.Payload.empty()) continue;
+        const std::string & Name = I.Payload;
+        const std::string NL = Label(I.From);
+        const std::string From = (NL.empty() ? I.From.substr(0, 12) : NL) + " > " + Name;
+        const std::filesystem::path Folder = I.Dir;
+        const auto Put = [&](const std::string & Entry) { if (const auto S = Where(I, Entry)) Add(*S, From); };
+        if (I.Kind == "ZIP")
         {
             int Err = 0;
             zip_t * Za = zip_open((Folder / Name).string().c_str(), ZIP_RDONLY, &Err);
             if (!Za) { if (Notes) Notes->push_back(Name + " is not in the package folder"); continue; }
             for (zip_int64_t E = 0, Num = zip_get_num_entries(Za, 0); E < Num; ++E)
-                if (const char * Nm = zip_get_name(Za, (zip_uint64_t)E, 0); Nm && *Nm && Nm[std::strlen(Nm) - 1] != '/') Add(Anchor + "/" + Nm, From);
+                if (const char * Nm = zip_get_name(Za, (zip_uint64_t)E, 0); Nm && *Nm && Nm[std::strlen(Nm) - 1] != '/') Put(Nm);
             zip_close(Za);
         }
-        else if (St.Type == "DIR")
+        else if (I.Kind == "DIR")
         {
             std::error_code Ec;
-            const std::filesystem::path Dir = Folder / Name;
-            for (auto It = std::filesystem::recursive_directory_iterator(Dir, Ec); !Ec && It != std::filesystem::recursive_directory_iterator(); ++It)
-                if (It->is_regular_file(Ec)) Add(Anchor + "/" + std::filesystem::relative(It->path(), Dir, Ec).generic_string(), From);
+            const std::filesystem::path Dd = Folder / Name;
+            for (auto It = std::filesystem::recursive_directory_iterator(Dd, Ec); !Ec && It != std::filesystem::recursive_directory_iterator(); ++It)
+                if (It->is_regular_file(Ec)) Put(std::filesystem::relative(It->path(), Dd, Ec).generic_string());
         }
-        else if (St.Type == "FILE") Add(Anchor + "/" + std::filesystem::path(Name).filename().generic_string(), From);
-        else if (St.Type == "DELTA" && Notes) Notes->push_back("+ what the patch " + Name + " rebuilds");
+        else if (I.Kind == "FILE") Put(std::filesystem::path(Name).filename().generic_string());
+        else if (I.Kind == "DELTA" && Notes) Notes->push_back("+ what the patch " + Name + " rebuilds");
     }
+    if (Notes)
+        for (const Fold::Plan::Step & S : P.Steps)
+            if (!S.Ref.empty()) Notes->push_back("+ the files of \"" + (Label(S.Ref).empty() ? S.Ref : Label(S.Ref)) + "\" (another package)");
     std::vector<SeenFile> Out;
     for (auto & [K, F] : Seen) { (void)K; Out.push_back(std::move(F)); }
     std::sort(Out.begin(), Out.end(), [](const SeenFile & A, const SeenFile & B) { return A.Path < B.Path; });

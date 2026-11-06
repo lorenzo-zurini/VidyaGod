@@ -3,6 +3,8 @@
 
 #include <nlohmann/json.hpp>
 
+#include "fold.h"   // Fold::Plan — the fold a launch makes, which the editor's views show
+
 #include <functional>
 #include <map>
 #include <string>
@@ -248,11 +250,16 @@ std::string Describe(const nlohmann::ordered_json &Node, const LabelFn &Label = 
 //Platform tokens in words: win32 -> "Windows 32-bit", dos -> "DOS"...; an unknown token is itself.
 std::string PlatformWords(const std::string &Token);
 
-//A node's fold flattened, in the order it is applied: its layers top to bottom, a contained node's layers in place of
-//the NODE layer naming it (Depth one deeper). Later wins. Find gives a node of this package by handle (null: another
-//package's or missing - shown as one step, not entered).
-//Take: the TAKE of the NODE layer a contained node came in by ("FILES/a, FILES/b"; "" all of it) — a node contained twice
-//with different TAKEs is two occurrences (spec §5.4), and its layers listed twice say which is which.
+//The fold a launch makes of Root (Fold::Resolve, its options at their defaults, no grafts) over the nodes Find reaches:
+//WHEN, a node contained twice, TAKE and placement all as the engine decides. Dir: the folder a node's files are in
+//(the plan's Item::Dir). A draft layer of a shape the engine cannot read gives an empty plan — the validator says which.
+Fold::Plan FoldOf(const std::string &Root, const std::function<const nlohmann::ordered_json *(const std::string &)> &Find,
+                  const std::function<std::string(const std::string &)> &Dir = {});
+
+//That fold flattened, in the order it applies (Fold::Plan::Steps): a contained node's layers in place of the NODE
+//layer naming it (Depth one deeper). Later wins. Find gives a node by handle; one it does not give (another package's,
+//or missing) is one step, Outside, not entered. Take: the TAKEs it is seen through, innermost first ("FILES/a,
+//FILES/b"; "" all of it) — a node contained twice with different TAKEs is two occurrences (spec §5.4).
 struct FoldStep { int Depth = 0; std::string Node, NodeLabel; int Layer = -1; std::string Type, Title; bool Outside = false; std::string Take; };
 std::vector<FoldStep> FoldOrder(const std::string &Root, const std::function<const nlohmann::ordered_json *(const std::string &)> &Find,
                                 const LabelFn &Label = {});

@@ -196,7 +196,7 @@ VG_COMMANDS
           "LaunchResolver::BoundaryLinkIndex", "LaunchResolver::ChainHasInnerLinks", "LaunchResolver::DerivePaths", "Platform::PrimaryScreen", "LaunchResolver::DerivePersistence",
           "LaunchResolver::ResolveCustomVariables", "LaunchResolver::ResolveExecutableDefinition", "LaunchResolver::BuildSubComponentsArray",
           "LaunchResolver::AnchorLayouts", "LaunchResolver::AnchorRegEdits", "LaunchResolver::ComposeGuestTarget", "LaunchResolver::GuestPath",
-          "LaunchResolver::GuestToLayout", "LaunchResolver::RunnerOps", "LaunchResolver::SessionRoot", "LaunchResolver::InnerRunnerMountRel",
+          "LaunchResolver::GuestToLayout", "LaunchResolver::RunnerOps", "Sessions::Root", "LaunchResolver::InnerRunnerMountRel",
           "RunnerLink::NativeNamespace", "RunnerLink::Passthrough", "BuiltinRunners::All", "BuiltinRunners::AddTo", "BuiltinRunners::IsBuiltin",
           "RunnerWrapper::DefPrefixDir", "RunnerWrapper::ExecutableAvailable", "OptionReadBack::Sites", "ArgReferencesContent" }, Needs::Config, false,
         [](Command::Context &C, const json &A) {

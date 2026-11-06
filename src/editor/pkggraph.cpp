@@ -1006,47 +1006,61 @@ std::string Describe(const json &Node, const LabelFn &Label)
     return Out;
 }
 
+Fold::Plan FoldOf(const std::string &Root, const std::function<const json *(const std::string &)> &Find,
+                  const std::function<std::string(const std::string &)> &Dir)
+{
+    Fold::Library Lib;
+    std::vector<std::string> Todo{Root};
+    while (!Todo.empty())
+    {
+        const std::string H = std::move(Todo.back());
+        Todo.pop_back();
+        if (Lib.Nodes.count(H)) continue;
+        const json *N = Find ? Find(H) : nullptr;
+        if (!N || !N->is_object() || (N->contains("LAYERS") && !(*N)["LAYERS"].is_array())) continue;
+        Lib.Nodes[H] = { N, Dir ? Dir(H) : std::string() };
+        if (N->contains("LAYERS"))
+            for (const json &L : (*N)["LAYERS"]) if (L.is_object() && L.contains("NODE")) Todo.push_back(StrField(L, "NODE"));
+    }
+    try { return Fold::Resolve(Lib, Root); }
+    catch (const std::exception &) { return Fold::Plan(); }
+}
+
 std::vector<FoldStep> FoldOrder(const std::string &Root, const std::function<const json *(const std::string &)> &Find, const LabelFn &Label)
 {
     std::vector<FoldStep> Out;
-    std::set<std::string> OnPath;
-    const auto TakeOf = [](const json &L) {
-        if (!L.contains("TAKE")) return std::string();
+    const auto TakeText = [](const json &Take) {
         std::string T;
         const auto Add = [&T](std::string S) {
             std::replace(S.begin(), S.end(), '\n', ',');
             T += (T.empty() ? "" : ", ") + S;
         };
-        if (L["TAKE"].is_string()) Add(L["TAKE"].get<std::string>());
-        else if (L["TAKE"].is_array()) for (const json &X : L["TAKE"]) if (X.is_string()) Add(X.get<std::string>());
+        if (Take.is_string()) Add(Take.get<std::string>());
+        else if (Take.is_array()) for (const json &X : Take) if (X.is_string()) Add(X.get<std::string>());
         return T;
     };
-    std::function<void(const std::string &, int, const std::string &)> Walk = [&](const std::string &H, int Depth, const std::string &Take) {
-        const json *N = Find ? Find(H) : nullptr;
-        const std::string NL = Label ? Label(H) : std::string();
-        if (!N || !N->is_object() || !N->contains("LAYERS") || !(*N)["LAYERS"].is_array()) return;
-        if (!OnPath.insert(H).second) return;           // a cycle: walked once
-        for (int I = 0; I < (int)(*N)["LAYERS"].size(); ++I)
+    for (const Fold::Plan::Step &S : FoldOf(Root, Find).Steps)
+    {
+        std::string Take;
+        if (S.View.is_array())
+            for (const json &V : S.View)
+                if (V.is_array() && !V.empty())
+                    if (const std::string T = TakeText(V[0]); !T.empty()) Take += (Take.empty() ? "" : "; ") + T;
+        const std::string NL = Label ? Label(S.From) : std::string();
+        if (!S.Ref.empty())
         {
-            const json &L = (*N)["LAYERS"][(size_t)I];
-            const std::string T = LayerType(L);
-            if (T == "NODE")
-            {
-                const std::string R = StrField(L, "NODE");
-                if (Find && Find(R)) { Walk(R, Depth + 1, TakeOf(L)); continue; }
-                Out.push_back({Depth, H, NL, I, T, Label && !Label(R).empty() ? Label(R) : R, true, TakeOf(L)});
-                continue;
-            }
-            std::string Title = StrField(L, "LABEL");
-            if (Title.empty() && (T == "ZIP" || T == "DIR" || T == "FILE" || T == "DELTA")) Title = StrField(L, T.c_str());
-            if (Title.empty() && T == "EXEC" && L["EXEC"].is_array())
-                for (const json &E : L["EXEC"]) if (const std::string El = StrField(E, "LABEL"); !El.empty()) Title += (Title.empty() ? "" : ", ") + El;
-            if (Title.empty()) Title = TypeGist(T);
-            Out.push_back({Depth, H, NL, I, T, Title, false, Take});
+            Out.push_back({S.Depth, S.From, NL, S.At, S.Kind, Label && !Label(S.Ref).empty() ? Label(S.Ref) : S.Ref, true, Take});
+            continue;
         }
-        OnPath.erase(H);
-    };
-    Walk(Root, 0, std::string());
+        const json &L = (*Find(S.From))["LAYERS"][(size_t)S.At];
+        const std::string &T = S.Kind;
+        std::string Title = StrField(L, "LABEL");
+        if (Title.empty() && (T == "ZIP" || T == "DIR" || T == "FILE" || T == "DELTA")) Title = StrField(L, T.c_str());
+        if (Title.empty() && T == "EXEC" && L["EXEC"].is_array())
+            for (const json &E : L["EXEC"]) if (const std::string El = StrField(E, "LABEL"); !El.empty()) Title += (Title.empty() ? "" : ", ") + El;
+        if (Title.empty()) Title = TypeGist(T);
+        Out.push_back({S.Depth, S.From, NL, S.At, T, Title, false, Take});
+    }
     return Out;
 }
 

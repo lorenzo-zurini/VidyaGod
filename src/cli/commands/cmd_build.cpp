@@ -856,7 +856,7 @@ VG_COMMANDS
         "build sees", "what the game sees when a node runs: every file, which layer gives it, what it covers",
         "Each file the node's fold provides (in fold order, later winning) with the layer it comes from and the layers "
         "it covers; the notes say what is not listed (a patch's rebuilt files).", { PkgArg(), NodeArg(), Opt("file", "only paths containing this") },
-        { "build sees 749 'Patch 2.0a'", "build sees 749 'Patch 2.0a' --file empires2.exe" }, { "PkgActions::GameSees" }, Needs::Model, false,
+        { "build sees 749 'Patch 2.0a'", "build sees 749 'Patch 2.0a' --file empires2.exe" }, { "PkgActions::GameSees", "PkgGraph::FoldOf", "Fold::ThroughView" }, Needs::Model, false,
         [](Command::Context &C, const json &A) {
             Session S = Open(C, Command::Str(A, "package"));
             const PkgDoc::Document &D = S.M->doc();

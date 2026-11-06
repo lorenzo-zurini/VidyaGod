@@ -1081,6 +1081,31 @@ private slots:
         QVERIFY(Notes.empty());
     }
 
+    // What the game sees is what a launch mounts: a node contained with a TAKE gives only the files it takes, where
+    // the TAKE puts them, and a NODE layer's TARGET places the whole node there. Teeth: read each layer's own TARGET
+    // (the untaken file listed, the placed one at the root).
+    void theGameSeesWhatTheTakesAndPlacementsGive()
+    {
+        if (!HaveZipTools) QSKIP("zip/unzip not installed");
+        Fixture F(this);
+        F.write(F.path("pack/maps/a.map"), "a");
+        F.write(F.path("pack/docs/readme.txt"), "r");
+        F.write(F.path("tools/edit.exe"), "e");
+        const int p = F.addContentNode("");
+        F.setLayers(p, json::array({ json{{"DIR", "pack"}, {"TARGET", "FILES/%GameDir%"}} }));
+        const int t = F.addContentNode("");
+        F.setLayers(t, json::array({ json{{"DIR", "tools"}} }));
+        F.save();
+        const int v = F.addContentNode("");
+        F.setLayers(v, json::array({ json{{"NODE", F.nodeId(p).toStdString()},
+                                          {"TAKE", json::array({ json::array({"FILES/%GameDir%/maps", "FILES/%GameDir%/baseq/maps"}) })}},
+                                     json{{"NODE", F.nodeId(t).toStdString()}, {"TARGET", "FILES/%GameDir%/bin"}} }));
+        F.save();
+        std::set<std::string> Paths;
+        for (const auto &S : PkgActions::GameSees(F.doc(), F.nodeId(v).toStdString(), F.dir->path().toStdString())) Paths.insert(S.Path);
+        QCOMPARE(Paths, (std::set<std::string>{ "%GameDir%/baseq/maps/a.map", "%GameDir%/bin/edit.exe" }));
+    }
+
     // Two versions compared: the layers only one folds, the files only one gives the game, and the files both give
     // from different layers; the menu's action reports them. Teeth: compare layer types only (same-type layers look
     // equal); call every shared file different.
