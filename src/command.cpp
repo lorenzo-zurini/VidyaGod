@@ -69,13 +69,16 @@ bool WorksOffline(const std::string &Name)
 
 bool RunsBeside(const std::string &Name)
 {
-    static const std::set<std::string> Groups = { "vars", "fold", "vfs", "keys" };   // computation over what they are given
+    static const std::set<std::string> Groups = { "vars", "fold", "keys" };   // computation over what they are given
     static const std::set<std::string> One = {
         "util bytes", "util match", "util sort", "cid of", "content claims", "content path", "edits xml-get", "deps check",
         "node check", "node facts", "node layers", "node lower", "node verify", "launch plan", "app paths", "app platform",
         "app is-package", "catalog node", "catalog shelf", "catalog stats", "catalog validate", "registry show", "registry diff",
         "runners candidates", "runners for", "packages list", "packages show", "packages paths", "packages hydrated",
-        "packages installed", "instances list", "sources list", "graph tree", "graph within", "graph shelf", "graph platform" };
+        "packages installed", "sources list", "graph tree", "graph within", "graph shelf", "graph platform",
+        //a spec's view, read (writes land in its writable layers, which can be a game's kept USERDATA folders); a zip
+        //or a delta, and only files the call names (--out)
+        "vfs spec", "vfs ls", "vfs stat", "vfs cat", "vfs df", "vfs zip", "vfs delta" };
     return One.count(Name) || Groups.count(Name.substr(0, Name.find(' ')));
 }
 

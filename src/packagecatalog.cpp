@@ -583,8 +583,15 @@ void MergeListChange(nlohmann::ordered_json &Live, const nlohmann::ordered_json 
         if (It == Live.end()) continue;
         if (Pair[G] >= 0) *It = *Came[Pair[G]]; else Live.erase(It);
     }
+    //A new entry another change already made (two syncs that each add a source's package): kept once, as the latest
+    //change has it.
     for (size_t C = 0; C < Came.size(); ++C)
-        if (!Done[C]) Live.push_back(*Came[C]);
+    {
+        if (Done[C] || std::find(Live.begin(), Live.end(), *Came[C]) != Live.end()) continue;
+        const std::string K = Key(*Came[C]);
+        const auto Same = K.empty() ? Live.end() : std::find_if(Live.begin(), Live.end(), [&](const auto &E) { return Key(E) == K; });
+        if (Same != Live.end()) *Same = *Came[C]; else Live.push_back(*Came[C]);
+    }
 }
 
 bool AddPackageSource(nlohmann::ordered_json &GlobalConfigJSON, const std::string &Cid, const std::string &Name)

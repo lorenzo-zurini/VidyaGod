@@ -141,6 +141,15 @@ private slots:
         json GLive = json::array({ json{{"NAME", "H"}, {"CID", "h"}} });
         PackageCatalog::MergeListChange(GLive, GBefore, GAfter, PackageCatalog::SourceKey);
         QCOMPARE(QString::fromStdString(GLive.dump()), QString::fromStdString(json::array({ json{{"NAME", "H"}, {"CID", "h"}} }).dump()));
+
+        //Two workers that each add the same package (two syncs at once): the second finds it there, and adds no copy.
+        const json Was = json::array({ json{{"PATH", "/old"}} });
+        const json One = json::array({ json{{"PATH", "/old"}}, json{{"PATH", "S1/game"}} });
+        const json Two = json::array({ json{{"PATH", "/old"}}, json{{"PATH", "S1/game"}}, json{{"PATH", "S2/g2"}} });
+        json Lib = Was;
+        PackageCatalog::MergeListChange(Lib, Was, One, PackageCatalog::LibraryEntryKey);
+        PackageCatalog::MergeListChange(Lib, Was, Two, PackageCatalog::LibraryEntryKey);
+        QCOMPARE(QString::fromStdString(Lib.dump()), QString::fromStdString(Two.dump()));
     }
 
     void remove_local_package_drops_reference_keeps_user_files()
