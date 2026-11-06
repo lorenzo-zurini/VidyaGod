@@ -1,7 +1,9 @@
 #include "launchresolver.h"
+#include "instancestore.h"
+#include "installed.h"
+#include "shelf.h"
 #include "apppaths.h"        // AppPaths::DataRoot — the app data root the launch TEMP hangs off of
 #include "varsubst.h"        // VarSubst::StringVariableSubstitution / RenderValue
-#include "packagecatalog.h"  // GetPackageUserSettings (catalog/user-settings service)
 #include "runnerwrapper.h"   // RunnerWrapper::ExecutableAvailable / DefPrefixDir
 #include "commonutils.h"     // Log*
 #include "registrywrapper.h"  // RegistryWrapper::SubstituteRegEdit (typed strings take escaped values)
@@ -21,11 +23,8 @@
 #include <string>
 #include <vector>
 
-//The pure manifest queries + VFS-layer helpers live in ManifestModel; the catalog/user-settings service in
-//PackageCatalog. Bring both in unqualified so the resolver code (moved verbatim out of ContainerWrapper) reads
-//naturally (GetPackageUserSettings / MachinePlatform / IsVfsLayer / ...).
+//The index's queries (MachinePlatform / IsVfsLayer / …) read unqualified.
 using namespace ManifestModel;
-using namespace PackageCatalog;
 
 //Resolves every CustomVar (TYPE:"CustomVar") in the closure into ONE GLOBAL NAMESPACE (ContainerParams.CustomVariables,
 //keyed by the bare token "KEY"). ABSOLUTE SCOPE: a var's final value is visible to every reference — including inside
@@ -49,7 +48,7 @@ bool LaunchResolver::ResolveCustomVariables(struct ContainerParams &ContainerPar
 {
     //ONE snapshot of the package's persisted VARIABLES for the whole resolve. The old code re-ran the
     //O(LIBRARY) settings scan (with a deep USERSETTINGS copy) for EVERY custom-var key.
-    const nlohmann::ordered_json SavedVars = GetPackageVariables(GlobalConfigJSON, ContainerParams.PackageUID, ContainerParams.InstanceName);
+    const nlohmann::ordered_json SavedVars = InstanceStore::Variables(GlobalConfigJSON, ContainerParams.PackageUID, ContainerParams.InstanceName);
 
     //Helper: resolve a single bare KEY/DEFAULT pair through the priority chain. A persisted value counts only for a
     //Settable key — one whose winning declaration has a UI facet, the only vars the prelaunch window shows and saves.

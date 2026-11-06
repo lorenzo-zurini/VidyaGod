@@ -1,4 +1,6 @@
 #include "pkggraph.h"   // AddNodeRef
+#include "installed.h"
+#include "shelf.h"
 #include "validate.h"
 #include "fold.h"   // Fold::TypeOf — a layer's one type key
 #include "cli/climodes.h"
@@ -194,7 +196,7 @@ int CliModes::RunMaintenanceModes(LaunchParameters &LaunchParameters, nlohmann::
     {
         NodeIndex Index = PackageCatalog::BuildCatalogIndex(GlobalConfigJSON);
         bool Known = false;
-        for (const auto &T : PackageCatalog::ShelfTiles(Index))
+        for (const auto &T : Shelf::Tiles(Index))
             for (const Node *N : T.Rows) Known = Known || N->GameKey() == LaunchParameters.GoldenUid;
         if (!Known)
         {
@@ -215,8 +217,8 @@ int CliModes::RunMaintenanceModes(LaunchParameters &LaunchParameters, nlohmann::
     if (LaunchParameters.ListNodes)
     {
         NodeIndex Index = PackageCatalog::BuildCatalogIndex(GlobalConfigJSON);
-        const auto Tiles = PackageCatalog::ShelfTiles(Index);
-        const auto Hyd = PackageCatalog::HydrationMap(Index);   // O(N+E) once, not per-launchable
+        const auto Tiles = Shelf::Tiles(Index);
+        const auto Hyd = Installed::HydrationMap(Index);   // O(N+E) once, not per-launchable
         LogOut("list-nodes", std::to_string(Tiles.size()) + " library tile(s):");
         for (const auto &T : Tiles)
         {

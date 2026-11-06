@@ -11,6 +11,7 @@
 #include <vector>
 
 #include "manifestmodel.h"   // NodeIndex (native node-graph launch source)
+#include "shelf.h"
 
 //True if a raw (pre-substitution) runner ARG references the launch target via a content token. Used to drop the
 //content-bearing args when swapping the target — an OverrideExe (tooling) or the wineboot prefix-init. Shared by
@@ -194,7 +195,7 @@ public:
     //this row that are RECOMMENDED under its tile (a fresh instance). PASSED (instance GRAFTS / --graft).
     std::optional<std::vector<std::string>> Grafts;
     //When the launched row is a GRAFT that is a version (it carries VARIANT): the version it runs on (one of
-    //PackageCatalog::GraftBases). Empty = the first of them.
+    //Shelf::GraftBases). Empty = the first of them.
     std::string GraftBase;
     //AUTO-RESOLVED (out): the grafts actually applied (Grafts filtered to what this row offers), in order.
     std::vector<std::string> AppliedGrafts;

@@ -1,4 +1,5 @@
 #include "cli/climodes.h"
+#include "shelf.h"
 #include "validate.h"
 #include "main.h"
 #include "commonutils.h"
@@ -164,7 +165,7 @@ int CliModes::RunAuditPackages(nlohmann::ordered_json &GlobalConfigJSON, const s
     //the launch window's variant combo, indistinguishable to the user. Found live: an obsolete Wipeout XL lobby
     //node (WOLOBBY.EXE, superseded by vglobby) kept its "Multiplayer (TCP/IP)" label next to the real one, so
     //which multiplayer you got depended on which identical entry you happened to click.
-    for (const auto &Tile : PackageCatalog::ShelfTiles(Index))
+    for (const auto &Tile : Shelf::Tiles(Index))
     {
         std::map<std::string, std::vector<const Node *>> ByLabel;
         for (const Node *N : Tile.Rows)

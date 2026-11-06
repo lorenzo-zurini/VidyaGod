@@ -1,8 +1,10 @@
 #include "launchresolver.h"
+#include "instancestore.h"
+#include "installed.h"
+#include "shelf.h"
 #include "registrywrapper.h"   // NamesNoKey — a registry KEEP must name a key
 #include "apppaths.h"        // AppPaths::DataRoot — the app data root the launch TEMP hangs off of
 #include "varsubst.h"        // VarSubst::StringVariableSubstitution / RenderValue
-#include "packagecatalog.h"  // GetPackageUserSettings (catalog/user-settings service)
 #include "runnerwrapper.h"   // RunnerWrapper::ExecutableAvailable / DefPrefixDir
 #include "commonutils.h"     // Log*
 
@@ -21,11 +23,8 @@
 #include <string>
 #include <vector>
 
-//The pure manifest queries + VFS-layer helpers live in ManifestModel; the catalog/user-settings service in
-//PackageCatalog. Bring both in unqualified so the resolver code (moved verbatim out of ContainerWrapper) reads
-//naturally (GetPackageUserSettings / MachinePlatform / IsVfsLayer / ...).
+//The index's queries (MachinePlatform / IsVfsLayer / …) read unqualified.
 using namespace ManifestModel;
-using namespace PackageCatalog;
 
 //Resolves every CustomVar (TYPE:"CustomVar") in the closure into ONE GLOBAL NAMESPACE (ContainerParams.CustomVariables,
 //keyed by the bare token "KEY"). ABSOLUTE SCOPE: a var's final value is visible to every reference — including inside

@@ -1,4 +1,6 @@
 #include "catalogtab.h"
+#include "installed.h"
+#include "shelf.h"
 #include "appmodel.h"          // AppModel — catalog/config + card size
 #include "covercache.h"        // re-take covers when the cards grow
 #include "packagecatalog.h"
@@ -178,10 +180,10 @@ void CatalogTab::rebuild()
 
     //One card per un-hydrated presentable group: at least one edition's content is still missing AND fetchable
     //over IPFS. (A fully-hydrated group lives in the Library tab.)
-    const auto Hyd = PackageCatalog::HydrationMap(Model.catalogIndex());   // O(N+E) once — never per-launchable (deep chains → O(N²))
+    const auto Hyd = Installed::HydrationMap(Model.catalogIndex());   // O(N+E) once — never per-launchable (deep chains → O(N²))
     //The cards and the launch dialogs they open read one snapshot: a later re-index replaces it, and they are rebuilt.
     const std::shared_ptr<const NodeIndex> Snapshot = Model.catalogSnapshot();
-    for (const PackageCatalog::ShelfTile & Tile : PackageCatalog::ShelfTiles(*Snapshot))
+    for (const Shelf::Tile & Tile : Shelf::Tiles(*Snapshot))
     {
         std::vector<std::string> Ids;
         bool AnyMissing = false, AnyFetchable = false;

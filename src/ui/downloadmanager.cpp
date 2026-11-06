@@ -1,4 +1,6 @@
 #include "downloadmanager.h"
+#include "installed.h"
+#include "shelf.h"
 #include "appmodel.h"          // AppModel — catalog/config + rebuildCatalog()
 #include "ipfsmodel.h"         // IpfsModel — per-CID transfer progress + size (single source of truth)
 #include "libraryview.h"       // LibraryGameCard + IpfsFetchReady()
@@ -43,7 +45,7 @@
 
 //The dialog's graft ticks (graft key → ticked) as a content walk's graft choice: nothing decided yet = the row's
 //pre-ticked grafts; otherwise exactly the ticked ones.
-static PackageCatalog::GraftChoice TickedGrafts(const std::map<std::string, bool> &Ticks)
+static Shelf::GraftChoice TickedGrafts(const std::map<std::string, bool> &Ticks)
 {
     if (Ticks.empty()) return std::nullopt;
     std::vector<std::string> Out;
@@ -259,13 +261,13 @@ void DownloadManager::startDownload(LibraryGameCard *card)
         const Node * BaseGame = Variants.empty() ? nullptr : S->Find(Variants.front());
         std::vector<const Node*> EmbeddedR, GlobalR; bool AnyCompatInstalled = false;
         if (BaseGame)
-            for (const Node * R : PackageCatalog::CompatibleRunners(*S, *BaseGame))
+            for (const Node * R : Installed::CompatibleRunners(*S, *BaseGame))
             {
                 const std::string rid = R->NodeId;
                 const bool Embedded   = (R->BundleDir == BaseGame->BundleDir);
-                const bool Standalone = !PackageCatalog::IsEmbeddedRunner(*S, rid);
+                const bool Standalone = !Installed::IsEmbeddedRunner(*S, rid);
                 if (!Embedded && !Standalone) continue;
-                if (PackageCatalog::RunnerInstalled(*S, rid)) { AnyCompatInstalled = true; continue; }
+                if (Installed::RunnerInstalled(*S, rid)) { AnyCompatInstalled = true; continue; }
                 // A RECEIVED runner has no enumerable build YET (closure incomplete) but is downloadable — only a
                 // complete-closure runner with no content is a PATH runner.
                 if (PackageCatalog::NodeContentCids(*S, rid).empty() && !PackageCatalog::NodeClosureIncomplete(*S, rid)) continue;
@@ -376,7 +378,7 @@ void DownloadManager::startDownload(LibraryGameCard *card)
                 for (const std::string & Lid : SelL)
                 {
                     std::vector<std::string> Pre;
-                    for (const std::string & G : PackageCatalog::OfferedGrafts(*S, Lid, &Pre))
+                    for (const std::string & G : Shelf::OfferedGrafts(*S, Lid, &Pre))
                         if (const Node * Gn = S->Find(G); Gn && Seen.insert(G).second)
                             Found->push_back({ G, Gn->NodeId.empty() ? G.substr(0, 12) : Gn->NodeId,
                                                std::find(Pre.begin(), Pre.end(), G) != Pre.end() });
@@ -555,7 +557,7 @@ void DownloadManager::beginDownload(const QString &Key, const std::vector<std::s
                                   "will not be launchable" + (CErr.empty() ? "" : " (" + CErr + ")"));
             }
             for (const std::string & Rid : RunnerIds)
-                if (!RunnerInstall::CollectRunnerNodeTargets(I, Rid, T, &Err)) return false;
+                if (!PackageCatalog::CollectRunnerNodeTargets(I, Rid, T, &Err)) return false;
             return true;
         };
         if (Ok) { std::vector<IpfsWrapper::FetchTarget> Dry; Ok = Collect(*Idx, Dry, false); }

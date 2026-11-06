@@ -229,8 +229,6 @@ set(SHARED_SOURCES
     src/plan/launchsources.h
     src/plan/launchsources.cpp
 
-    src/library/runnerinstall.h
-    src/library/runnerinstall.cpp
 
     src/base/procenv.h
     src/base/procenv.cpp
@@ -248,6 +246,10 @@ set(SHARED_SOURCES
 
     src/format/manifestmodel.h
     src/plan/validate.h
+    src/plan/shelf.h
+    src/plan/shelf.cpp
+    src/plan/installed.h
+    src/plan/installed.cpp
     src/plan/validate.cpp
     src/format/manifestmodel.cpp
     src/format/fold.cpp

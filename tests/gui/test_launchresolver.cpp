@@ -5,6 +5,8 @@
 #include <QtTest>
 
 #include "launchresolver.h"
+#include "installed.h"
+#include "shelf.h"
 #include "launchsession.h"
 #include "fileedits.h"
 #include "containerwrapper.h"
@@ -580,7 +582,7 @@ private slots:
             const auto Ids = LaunchResolver::ResolveChainIds(idx, launch, cp, cfg);
             return Ids.empty() ? std::string() : Ids[0];
         };
-        QVERIFY(!PackageCatalog::RunnerInstalled(idx, "zzz_proton12"));             // precondition
+        QVERIFY(!Installed::RunnerInstalled(idx, "zzz_proton12"));             // precondition
         QCOMPARE(first("zzz_proton11"), std::string("zzz_proton11"));
         QCOMPARE(first("zzz_proton11", {"aaa"}), std::string("aaa"));                 // the instance's pin wins
         QCOMPARE(first("no_such_runner"), std::string("aaa"));                        // the default chain
@@ -928,15 +930,15 @@ private slots:
         idx.Nodes["game"] = launch;
         ContainerParams cp("/tmp/vg_bundle");
         const json cfg = json{{"Settings", json::object()}};
-        QVERIFY(!PackageCatalog::RunnerInstalled(idx, "lin"));                       // precondition: not downloaded
+        QVERIFY(!Installed::RunnerInstalled(idx, "lin"));                       // precondition: not downloaded
         auto ids = LaunchResolver::ResolveChainIds(idx, launch, cp, cfg);
         QVERIFY((int)ids.size() >= 2);
         QCOMPARE(ids[0], std::string("win"));
         QCOMPARE(ids[1], std::string("proton"));
-        QVERIFY(PackageCatalog::HasUsableChain(idx, launch));
+        QVERIFY(Installed::HasUsableChain(idx, launch));
         idx.Nodes.erase("proton");
         QCOMPARE(LaunchResolver::ResolveChainIds(idx, launch, cp, cfg)[0], std::string("lin"));   // what to download
-        QVERIFY2(!PackageCatalog::HasUsableChain(idx, launch), "nothing installed runs it: Play asks for the runner");
+        QVERIFY2(!Installed::HasUsableChain(idx, launch), "nothing installed runs it: Play asks for the runner");
     }
 
     // The chain bridges the SELECTED entry's platform, never the node's default view: a node carrying a native entry
@@ -1142,16 +1144,16 @@ private slots:
         idx.Nodes["ona"] = graft("ona", "a");                                     // a graft on the graft a
         finish(idx);
         std::vector<std::string> T{ "a", "ona", "b" };
-        QCOMPARE(PackageCatalog::AppliedGrafts(idx, "game", T).size(), size_t(3));
+        QCOMPARE(Shelf::AppliedGrafts(idx, "game", T).size(), size_t(3));
         std::string Why;
-        QVERIFY(!PackageCatalog::MoveGraft(idx, "game", T, 1, -1, &Why));           // ona above a: it would drop
+        QVERIFY(!Shelf::MoveGraft(idx, "game", T, 1, -1, &Why));           // ona above a: it would drop
         QVERIFY2(Why.find("'ona'") != std::string::npos, Why.c_str());
-        QVERIFY(!PackageCatalog::MoveGraft(idx, "game", T, 0, +1));                // a below ona: the same
+        QVERIFY(!Shelf::MoveGraft(idx, "game", T, 0, +1));                // a below ona: the same
         QVERIFY((T == std::vector<std::string>{ "a", "ona", "b" }));                // refused moves change nothing
-        QVERIFY(PackageCatalog::MoveGraft(idx, "game", T, 2, -1));                 // b is independent: it moves
+        QVERIFY(Shelf::MoveGraft(idx, "game", T, 2, -1));                 // b is independent: it moves
         QVERIFY((T == std::vector<std::string>{ "a", "b", "ona" }));
-        QVERIFY(!PackageCatalog::MoveGraft(idx, "game", T, 0, -1));                // nothing above the first
-        QVERIFY(!PackageCatalog::MoveGraft(idx, "game", T, 2, +1));                // nothing below the last
+        QVERIFY(!Shelf::MoveGraft(idx, "game", T, 0, -1));                // nothing above the first
+        QVERIFY(!Shelf::MoveGraft(idx, "game", T, 2, +1));                // nothing below the last
 
         // Two grafts that exclude each other: the first applies, the second not. Swapping them keeps the COUNT (one
         // applies either way) while the one that applied stops — refused by WHICH grafts apply, not how many.
@@ -1164,9 +1166,9 @@ private slots:
         idx.Nodes["y"] = excl("y", "x");
         finish(idx);
         std::vector<std::string> XY{ "x", "y" };
-        QVERIFY((PackageCatalog::AppliedGrafts(idx, "game", XY) == std::vector<std::string>{ "x" }));
+        QVERIFY((Shelf::AppliedGrafts(idx, "game", XY) == std::vector<std::string>{ "x" }));
         std::string WhyX;
-        QVERIFY(!PackageCatalog::MoveGraft(idx, "game", XY, 1, -1, &WhyX));
+        QVERIFY(!Shelf::MoveGraft(idx, "game", XY, 1, -1, &WhyX));
         QVERIFY2(WhyX.find("'x'") != std::string::npos, WhyX.c_str());
         // The tile decides it too: graft p brings q only under tile 7, and onq is a graft on q. Under tile 7 moving onq
         // above p drops it; judged without the tile (the node's own, "game") onq applies in neither order and the drop
@@ -1179,9 +1181,9 @@ private slots:
         finish(idx);
         std::vector<std::string> PQ{ "p", "onq" };
         const std::map<std::string, std::string> Tile7{ {"UID", "7"} };
-        QCOMPARE(PackageCatalog::AppliedGrafts(idx, "game", PQ, {}, Tile7).size(), size_t(2));
-        QCOMPARE(PackageCatalog::AppliedGrafts(idx, "game", PQ).size(), size_t(1));      // not under the node's own tile
-        QVERIFY2(!PackageCatalog::MoveGraft(idx, "game", PQ, 1, -1, nullptr, {}, Tile7), "under tile 7 the move drops onq");
+        QCOMPARE(Shelf::AppliedGrafts(idx, "game", PQ, {}, Tile7).size(), size_t(2));
+        QCOMPARE(Shelf::AppliedGrafts(idx, "game", PQ).size(), size_t(1));      // not under the node's own tile
+        QVERIFY2(!Shelf::MoveGraft(idx, "game", PQ, 1, -1, nullptr, {}, Tile7), "under tile 7 the move drops onq");
     }
 
     // The default graft order keeps related grafts together: a graft follows every offered graft its ANY/NOT names,
@@ -1203,12 +1205,12 @@ private slots:
         idx.Nodes["both"] = graft("both", "Both", json::array({ json{{"NOT", "aok"}}, json{{"NOT", "tc"}} }));
         idx.Nodes["patch"] = graft("patch", "Patch", json::array());
         finish(idx);
-        QCOMPARE(PackageCatalog::OfferedGrafts(idx, "game"), (std::vector<std::string>{ "aok", "tc", "both", "patch" }));
+        QCOMPARE(Shelf::OfferedGrafts(idx, "game"), (std::vector<std::string>{ "aok", "tc", "both", "patch" }));
         // A variant that contains a graft (FE holds UserPatch) is not offered it again. Teeth: offer contained grafts.
         idx.Nodes["mod"] = parse(json{ {"CID", "mod"}, {"LABEL", "mod"}, {"VARIANT", "m"},
             {"LAYERS", json::array({ json{{"NODE", "game"}}, json{{"NODE", "patch"}} })} }, "/tmp/vg_bundle");
         finish(idx);
-        QCOMPARE(PackageCatalog::OfferedGrafts(idx, "mod"), (std::vector<std::string>{ "aok", "tc", "both" }));
+        QCOMPARE(Shelf::OfferedGrafts(idx, "mod"), (std::vector<std::string>{ "aok", "tc", "both" }));
     }
 
     // Ticking a graft in the pre-launch window goes through TickGraft: the graft just ticked wins, so grafts that
@@ -1236,20 +1238,20 @@ private slots:
         finish(idx);
         using V = std::vector<std::string>;
         V Un;
-        QCOMPARE(PackageCatalog::TickGraft(idx, "game", V{ "free", "aok" }, "both", &Un), (V{ "free", "both" }));   // both's NOT
+        QCOMPARE(Shelf::TickGraft(idx, "game", V{ "free", "aok" }, "both", &Un), (V{ "free", "both" }));   // both's NOT
         QCOMPARE(Un, V{ "aok" });
         Un.clear();
-        QCOMPARE(PackageCatalog::TickGraft(idx, "game", V{ "both", "free" }, "aok", &Un), (V{ "free", "aok" }));    // the other side's NOT
+        QCOMPARE(Shelf::TickGraft(idx, "game", V{ "both", "free" }, "aok", &Un), (V{ "free", "aok" }));    // the other side's NOT
         QCOMPARE(Un, V{ "both" });
         Un.clear();
-        QCOMPARE(PackageCatalog::TickGraft(idx, "game", V{ "tc" }, "aok", &Un), (V{ "aok" }));
+        QCOMPARE(Shelf::TickGraft(idx, "game", V{ "tc" }, "aok", &Un), (V{ "aok" }));
         QCOMPARE(Un, V{ "tc" });
         Un.clear();
-        QCOMPARE(PackageCatalog::TickGraft(idx, "game", V{ "aok", "free" }, "ona", &Un), (V{ "aok", "free", "ona" })); // needs aok
+        QCOMPARE(Shelf::TickGraft(idx, "game", V{ "aok", "free" }, "ona", &Un), (V{ "aok", "free", "ona" })); // needs aok
         QVERIFY(Un.empty());
-        QCOMPARE(PackageCatalog::TickGraft(idx, "game", V{ "free", "aok" }, "ona", &Un), (V{ "free", "aok", "ona" })); // ...ticked after free:
+        QCOMPARE(Shelf::TickGraft(idx, "game", V{ "free", "aok" }, "ona", &Un), (V{ "free", "aok", "ona" })); // ...ticked after free:
         QVERIFY(Un.empty());                                                     // ona cannot apply before aok, so free is not to blame
-        QCOMPARE(PackageCatalog::AppliedGrafts(idx, "game", PackageCatalog::TickGraft(idx, "game", V{ "aok", "tc", "both" }, "tc")),
+        QCOMPARE(Shelf::AppliedGrafts(idx, "game", Shelf::TickGraft(idx, "game", V{ "aok", "tc", "both" }, "tc")),
                  (V{ "tc" }));                                                                  // one soundtrack applies
     }
 
@@ -1272,13 +1274,13 @@ private slots:
         idx.Nodes["tft"] = variant("tft", "1.31", json::array({"803"}), json::array({"803"}));
         finish(idx);
         std::string Why;
-        QCOMPARE(PackageCatalog::RowUnderTile(idx, "802", ""), std::string("new"));      // the recommended row
-        QCOMPARE(PackageCatalog::RowUnderTile(idx, "803", ""), std::string("tft"));      // recommended here, not "new"
-        QCOMPARE(PackageCatalog::RowUnderTile(idx, "802", "1.00"), std::string("old"));
-        QCOMPARE(PackageCatalog::RowUnderTile(idx, "803", "1.28"), std::string("new"));  // a row under both tiles
-        QCOMPARE(PackageCatalog::RowUnderTile(idx, "803", "1.00", &Why), std::string());
+        QCOMPARE(Shelf::RowUnderTile(idx, "802", ""), std::string("new"));      // the recommended row
+        QCOMPARE(Shelf::RowUnderTile(idx, "803", ""), std::string("tft"));      // recommended here, not "new"
+        QCOMPARE(Shelf::RowUnderTile(idx, "802", "1.00"), std::string("old"));
+        QCOMPARE(Shelf::RowUnderTile(idx, "803", "1.28"), std::string("new"));  // a row under both tiles
+        QCOMPARE(Shelf::RowUnderTile(idx, "803", "1.00", &Why), std::string());
         QVERIFY2(Why.find("1.28") != std::string::npos && Why.find("1.31") != std::string::npos, Why.c_str());   // it says what there is
-        QCOMPARE(PackageCatalog::RowUnderTile(idx, "999", "", &Why), std::string());
+        QCOMPARE(Shelf::RowUnderTile(idx, "999", "", &Why), std::string());
         QVERIFY2(Why.find("999") != std::string::npos, Why.c_str());
     }
 
@@ -1309,7 +1311,7 @@ private slots:
 
         std::vector<std::string> Order;
         std::map<std::string, std::vector<std::string>> Rows;
-        for (const auto &T : PackageCatalog::ShelfTiles(idx))
+        for (const auto &T : Shelf::Tiles(idx))
         {
             Order.push_back(T.Uid);
             for (const Node *N : T.Rows) Rows[T.Uid].push_back(N->NodeId);
@@ -1358,8 +1360,8 @@ private slots:
                 json{{"EXEC", json::array({ entry("fe.exe", "749000001", "Forgotten Empires") })}} })} }, "/tmp/vg_bundle");
         finish(idx);
 
-        const PackageCatalog::ShelfTile *Card = nullptr;
-        const auto Shelf = PackageCatalog::ShelfTiles(idx);
+        const Shelf::Tile *Card = nullptr;
+        const auto Shelf = Shelf::Tiles(idx);
         for (const auto &T : Shelf) if (T.Uid == "749000001") Card = &T;
         QVERIFY2(Card, "the graft's tile is not a card");
         std::set<std::string> Rows;
@@ -1411,10 +1413,10 @@ private slots:
         finish(idx);
 
         std::map<std::string, std::set<std::string>> Rows;
-        for (const auto &T : PackageCatalog::ShelfTiles(idx)) for (const Node *N : T.Rows) Rows[T.Uid].insert(N->NodeId);
+        for (const auto &T : Shelf::Tiles(idx)) for (const Node *N : T.Rows) Rows[T.Uid].insert(N->NodeId);
         QCOMPARE(Rows["749000001"], (std::set<std::string>{"fe22", "fe25"}));
         QCOMPARE(Rows["13006"], (std::set<std::string>{"tc", "mod"}));
-        QCOMPARE(PackageCatalog::GraftBases(idx, "fe25"), (std::vector<std::string>{"tc"}));
+        QCOMPARE(Shelf::GraftBases(idx, "fe25"), (std::vector<std::string>{"tc"}));
 
         const json cfg = json{{"Settings", json::object()}};
         const auto launch = [&](const char *Node, const char *Face, const char *Base) {
@@ -1493,9 +1495,9 @@ private slots:
 
         const auto touch = [&](const char *Name) { std::ofstream(B + "/" + Name) << "x"; };
         touch("fe.zip");
-        QVERIFY2(!PackageCatalog::HydrationMap(idx).at("fe").Hydrated, "the graft version reads installed with its base's content missing");
+        QVERIFY2(!Installed::HydrationMap(idx).at("fe").Hydrated, "the graft version reads installed with its base's content missing");
         touch("tc.zip");
-        QVERIFY(PackageCatalog::HydrationMap(idx).at("fe").Hydrated);
+        QVERIFY(Installed::HydrationMap(idx).at("fe").Hydrated);
 
         PackageCatalog::DehydrateNode(idx, "fe");
         QVERIFY2(std::filesystem::exists(B + "/tc.zip"), "removing the graft version deleted its base's content");

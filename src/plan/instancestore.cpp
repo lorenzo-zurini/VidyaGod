@@ -239,4 +239,29 @@ void TouchLastRun(const nlohmann::ordered_json &Cfg, const std::string &PackageU
         LogWarn("InstanceStore::TouchLastRun", "could not stamp LASTRUN for " + PackageUID + "/" + Inst + " (" + Err + ")");
 }
 
+void SetSetting(const nlohmann::ordered_json &Cfg, const std::string &PackageUID, const std::string &Key,
+                const nlohmann::ordered_json &Value, const std::string &Instance)
+{
+    nlohmann::ordered_json C = ReadConfig(Cfg, PackageUID, Instance);
+    C[Key] = Value;
+    std::string Err;
+    if (!WriteConfig(Cfg, PackageUID, Instance, C, &Err))
+        LogErr("InstanceStore::SetSetting", "could not keep " + Key + " for " + PackageUID + " (" + Err + ")");
+}
+
+nlohmann::ordered_json Variables(const nlohmann::ordered_json &Cfg, const std::string &PackageUID, const std::string &Instance)
+{
+    const nlohmann::ordered_json C = ReadConfig(Cfg, PackageUID, Instance);
+    return C.contains("VARIABLES") && C["VARIABLES"].is_object() ? C["VARIABLES"] : nlohmann::ordered_json::object();
+}
+
+void MergeVariables(const nlohmann::ordered_json &Cfg, const std::string &PackageUID,
+                    const std::map<std::string, std::string> &NewVars, const std::string &Instance)
+{
+    if (NewVars.empty()) return;
+    nlohmann::ordered_json Vars = Variables(Cfg, PackageUID, Instance);
+    for (const auto &[K, V] : NewVars) Vars[K] = V;
+    SetSetting(Cfg, PackageUID, "VARIABLES", Vars, Instance);
+}
+
 } // namespace InstanceStore

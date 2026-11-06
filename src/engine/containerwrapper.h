@@ -20,7 +20,6 @@
 #include "persistlayer.h"    // PersistLayer — PersistFile seed/capture (moved out of this class)
 #include "vfsmount.h"        // VfsMount — vidyagodfs layer-spec build + mount/unmount (moved out)
 #include "launchsources.h"   // LaunchSources — dependency pre-flight + materialize (moved out)
-#include "runnerinstall.h"   // RunnerInstall — runner build install + DEFPREFIX generation (moved out)
 
 //Thin session orchestrator for a single game launch. It owns the live config/manifest/ContainerParams and drives
 //the lifecycle, delegating every step to the extracted launch-engine units:

@@ -4,6 +4,8 @@
 #include <sstream>
 #include <map>
 #include "cli/cliapp.h"   // RenderGeneric
+#include "installed.h"
+#include "shelf.h"
 #include "validate.h"
 #include "command.h"
 #include "appmodel.h"
@@ -19,7 +21,7 @@ namespace
 
 using json = nlohmann::ordered_json;
 
-json Hydration(const PackageCatalog::NodeHydration &H)
+json Hydration(const Installed::NodeHydration &H)
 {
     return {{"installed", H.Hydrated && H.OnDisk}, {"hydrated", H.Hydrated}, {"on_disk", H.OnDisk}, {"has_content", H.HasContent},
             {"fetchable", H.HasCid}, {"incomplete", H.Incomplete}};
@@ -27,7 +29,7 @@ json Hydration(const PackageCatalog::NodeHydration &H)
 
 // Where a game stands, in one word: installed (playable here), downloadable (not here, can be fetched), waiting (a
 // package it contains has not landed), unavailable (neither), empty (no content at all).
-std::string Standing(const PackageCatalog::NodeHydration &H)
+std::string Standing(const Installed::NodeHydration &H)
 {
     if (!H.HasContent) return "empty";
     if (H.Hydrated && H.OnDisk) return "installed";
@@ -103,13 +105,13 @@ VG_COMMANDS
                        {"installed", "downloadable", "waiting", "unavailable", "empty"}),
           Command::Opt("search", "only titles containing this") },
         { "catalog shelf", "catalog shelf --state downloadable", "catalog shelf --search 'Age of' --json" },
-        { "PackageCatalog::ShelfTiles", "PackageCatalog::HydrationMap", "AppModel::catalogSnapshot" , "PackageMainCard", "ManifestModel::AllGraftBases" }, Needs::Model, false,
+        { "Shelf::Tiles", "Installed::HydrationMap", "Installed::ForEachContentLayer", "AppModel::catalogSnapshot" , "PackageMainCard", "ManifestModel::AllGraftBases" }, Needs::Model, false,
         [](Command::Context &C, const json &A) {
             const auto Snap = C.Model->catalogSnapshot();
-            const auto Hyd = PackageCatalog::HydrationMap(*Snap);
+            const auto Hyd = Installed::HydrationMap(*Snap);
             const std::string Only = Command::Str(A, "state", ""), Search = Command::Str(A, "search", "");
             json Out = json::array();
-            for (const auto &T : PackageCatalog::ShelfTiles(*Snap))
+            for (const auto &T : Shelf::Tiles(*Snap))
             {
                 const std::string Title = T.Tile.value("TITLE", T.Uid);
                 if (!Search.empty() && !QString::fromStdString(Title).contains(QString::fromStdString(Search), Qt::CaseInsensitive)) continue;
@@ -137,11 +139,11 @@ VG_COMMANDS
         "tile, its default entry, its install state — and with --json-node the node as authored.",
         { Command::Pos("node", "a CID, working handle, or LABEL"), Command::Flag("json-node", "include the node as authored") },
         { "catalog node 'Patch 2.0a'", "catalog node 'The Age of Kings' --json-node" },
-        { "NodeIndex::Find", "PackageCatalog::HydrationMap", "PackageCatalog::MissingFromClosure" }, Needs::Model, false,
+        { "NodeIndex::Find", "Installed::HydrationMap", "PackageCatalog::MissingFromClosure" }, Needs::Model, false,
         [](Command::Context &C, const json &A) {
             const auto Snap = C.Model->catalogSnapshot();
             const Node &N = *FindNode(*Snap, Command::Str(A, "node"));
-            const auto Hyd = PackageCatalog::HydrationMap(*Snap);
+            const auto Hyd = Installed::HydrationMap(*Snap);
             json J = {{"cid", N.Cid}, {"label", N.NodeId}, {"variant", N.Variant}, {"package", N.BundleDir.string()},
                       {"received", N.Received}, {"graft", N.IsGraft}, {"runner", N.HasRunner}, {"contains", N.Refs},
                       {"requires", N.Requires}, {"tiles", N.Faces}, {"family", N.PackageUid}, {"recommended", N.Recommended}};

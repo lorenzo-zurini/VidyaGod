@@ -2,6 +2,9 @@
 // functions (packagecatalog.h): what is installed and where, the sources a library syncs from, a friend's packages as
 // received and installed, the optional pieces a game takes, and the runners that carry it.
 #include "nodegraph.h"
+#include "instancestore.h"
+#include "installed.h"
+#include "shelf.h"
 #include "command.h"
 #include "cmdutil.h"
 #include "appmodel.h"
@@ -54,7 +57,7 @@ std::map<std::string, std::string> Vars(const json &A, const char *Key)
     return Out;
 }
 
-PackageCatalog::GraftChoice Grafts(const json &A)
+Shelf::GraftChoice Grafts(const json &A)
 {
     if (!A.contains("grafts")) return std::nullopt;
     return List(A, "grafts");
@@ -212,12 +215,12 @@ VG_COMMANDS
         { Pos("uid", "the game's family UID (its package's)"), Opt("instance", "which instance (default: the most recently played)"),
           Opt("set", "write a setting: KEY=<json>"), Opt("var", "write variables: NAME=VALUE[,NAME=VALUE…]") },
         { "packages settings 749", "packages settings 749 --var aoe2_res=1920x1080", "packages settings 749 --set 'GRAFTS=[]'" },
-        { "PackageCatalog::GetPackageUserSettings", "PackageCatalog::SetPackageUserSetting", "PackageCatalog::GetPackageVariables",
-          "PackageCatalog::MergePackageVariables" }, Needs::Config, false,
+        { "InstanceStore::ReadConfig", "InstanceStore::SetSetting", "InstanceStore::Variables",
+          "InstanceStore::MergeVariables" }, Needs::Config, false,
         [](Command::Context &C, const json &A) {
             const std::string Uid = Command::Str(A, "uid"), Inst = Command::Str(A, "instance", "");
-            if (!Index(C)->Tile(Uid) && PackageCatalog::GetPackageUserSettings(*C.Config, Uid, Inst).empty()
-                && PackageCatalog::GetPackageVariables(*C.Config, Uid, Inst).empty())
+            if (!Index(C)->Tile(Uid) && InstanceStore::ReadConfig(*C.Config, Uid, Inst).empty()
+                && InstanceStore::Variables(*C.Config, Uid, Inst).empty())
                 throw Command::BadArgs("no game with UID '" + Uid + "' (VidyaGod catalog shelf lists them)");
             if (A.contains("set"))
             {
@@ -226,11 +229,11 @@ VG_COMMANDS
                 if (Eq == std::string::npos) throw Command::BadArgs("--set takes KEY=<json>");
                 json V = json::parse(KV.substr(Eq + 1), nullptr, false);
                 if (V.is_discarded()) V = KV.substr(Eq + 1);   // a bare word: a string
-                PackageCatalog::SetPackageUserSetting(*C.Config, Uid, KV.substr(0, Eq), V, Inst);
+                InstanceStore::SetSetting(*C.Config, Uid, KV.substr(0, Eq), V, Inst);
             }
-            if (A.contains("var")) PackageCatalog::MergePackageVariables(*C.Config, Uid, Vars(A, "var"), Inst);
-            return json{{"settings", PackageCatalog::GetPackageUserSettings(*C.Config, Uid, Inst)},
-                        {"variables", PackageCatalog::GetPackageVariables(*C.Config, Uid, Inst)}};
+            if (A.contains("var")) InstanceStore::MergeVariables(*C.Config, Uid, Vars(A, "var"), Inst);
+            return json{{"settings", InstanceStore::ReadConfig(*C.Config, Uid, Inst)},
+                        {"variables", InstanceStore::Variables(*C.Config, Uid, Inst)}};
         }, {} });
 
     Command::Register({
@@ -265,7 +268,7 @@ VG_COMMANDS
         "write, and the runner chain's build targets.",
         { GameArg(), Opt("grafts", "the grafts ticked (a,b,c; default: as saved)") },
         { "packages hydrated 'Patch 2.0a'" },
-        { "PackageCatalog::NodeHydrated", "PackageCatalog::NodeHasContent", "PackageCatalog::NodeClosureIncomplete",
+        { "Installed::NodeHydrated", "Installed::NodeHasContent", "PackageCatalog::NodeClosureIncomplete",
           "PackageCatalog::NodeContentCids", "PackageCatalog::NodeContentSizes", "PackageCatalog::CollectContentTargets",
           "PackageCatalog::CollectRunnerChainTargets" }, Needs::Config, false,
         [](Command::Context &C, const json &A) {
@@ -277,8 +280,8 @@ VG_COMMANDS
             const bool ROk = PackageCatalog::CollectRunnerChainTargets(*I, N.Key(), *C.Config, R, &RErr);
             json Sizes = json::object();
             for (const auto &[Cid, Sz] : PackageCatalog::NodeContentSizes(*I, N.Key(), Grafts(A))) Sizes[Cid] = Sz;
-            return json{{"node", N.Key()}, {"hydrated", PackageCatalog::NodeHydrated(*I, N.Key())},
-                        {"has_content", PackageCatalog::NodeHasContent(*I, N.Key())},
+            return json{{"node", N.Key()}, {"hydrated", Installed::NodeHydrated(*I, N.Key())},
+                        {"has_content", Installed::NodeHasContent(*I, N.Key())},
                         {"incomplete", PackageCatalog::NodeClosureIncomplete(*I, N.Key())},
                         {"content_cids", PackageCatalog::NodeContentCids(*I, N.Key(), Grafts(A))}, {"sizes", Sizes},
                         {"targets", Ok ? Targets(T) : json(Err)}, {"runner_targets", ROk ? Targets(R) : json(RErr)}};
@@ -619,15 +622,15 @@ VG_COMMANDS
         "choice (in order), and what a choice leaves out (an exclusion, a missing base).",
         { GameArg(), Opt("grafts", "a choice to evaluate (a,b,c; default: the author's)"), Opt("tile", "the tile it is offered under") },
         { "grafts offered 'Patch 1.0e (Unofficial)'" },
-        { "PackageCatalog::OfferedGrafts", "PackageCatalog::AppliedGrafts", "PackageCatalog::CurrentGraftChoice", "PackageCatalog::GraftBases",
-          "PackageCatalog::DefaultGraftBase" }, Needs::Config, false,
+        { "Shelf::OfferedGrafts", "Shelf::AppliedGrafts", "Shelf::CurrentGraftChoice", "Shelf::GraftBases",
+          "Shelf::DefaultGraftBase" }, Needs::Config, false,
         [](Command::Context &C, const json &A) {
             const auto I = Index(C);
             const Node &N = *NodeOf(*I, Command::Str(A, "game"));
             std::vector<std::string> Pre, Dropped;
-            const auto Offered = PackageCatalog::OfferedGrafts(*I, N.Key(), &Pre, Grafts(A), Command::Str(A, "tile", ""));
-            const auto Choice = PackageCatalog::CurrentGraftChoice(*I, Grafts(A));
-            const auto Applied = PackageCatalog::AppliedGrafts(*I, N.Key(), Choice ? Choice : PackageCatalog::GraftChoice(Pre), {}, {}, &Dropped);
+            const auto Offered = Shelf::OfferedGrafts(*I, N.Key(), &Pre, Grafts(A), Command::Str(A, "tile", ""));
+            const auto Choice = Shelf::CurrentGraftChoice(*I, Grafts(A));
+            const auto Applied = Shelf::AppliedGrafts(*I, N.Key(), Choice ? Choice : Shelf::GraftChoice(Pre), {}, {}, &Dropped);
             json Rows = json::array();
             for (const auto &G : Offered)
             {
@@ -635,7 +638,7 @@ VG_COMMANDS
                 Rows.push_back({{"graft", Gn && !Gn->NodeId.empty() ? Gn->NodeId : G}, {"cid", G},
                                 {"pre_ticked", std::find(Pre.begin(), Pre.end(), G) != Pre.end()},
                                 {"applied", std::find(Applied.begin(), Applied.end(), G) != Applied.end()},
-                                {"bases", PackageCatalog::GraftBases(*I, G)}, {"default_base", PackageCatalog::DefaultGraftBase(*I, G)}});
+                                {"bases", Shelf::GraftBases(*I, G)}, {"default_base", Shelf::DefaultGraftBase(*I, G)}});
             }
             return json{{"grafts", Rows}, {"applied_order", Applied}, {"left_out", Dropped}};
         }, {} });
@@ -647,14 +650,14 @@ VG_COMMANDS
         { GameArg(), Opt("ticked", "the current choice (a,b,c)", Type::String, true), Opt("graft", "the graft to tick"),
           Opt("from", "the position to move from (0-based)", Type::Int), Opt("move", "places to move by (±)", Type::Int) },
         { "grafts tick 'Patch 1.0e (Unofficial)' --ticked 'UserPatch 1.5' --graft 'Forgotten Empires 2.2'", "grafts tick 'Patch 1.0e (Unofficial)' --ticked 'UserPatch 1.5,Forgotten Empires 2.2' --from 1 --move -1" },
-        { "PackageCatalog::TickGraft", "PackageCatalog::MoveGraft" }, Needs::Config, false,
+        { "Shelf::TickGraft", "Shelf::MoveGraft" }, Needs::Config, false,
         [](Command::Context &C, const json &A) {
             const auto I = Index(C);
             const Node &N = *NodeOf(*I, Command::Str(A, "game"));
             std::vector<std::string> T = List(A, "ticked"), Unticked;
-            if (A.contains("graft")) T = PackageCatalog::TickGraft(*I, N.Key(), T, Command::Str(A, "graft"), &Unticked);
+            if (A.contains("graft")) T = Shelf::TickGraft(*I, N.Key(), T, Command::Str(A, "graft"), &Unticked);
             std::string Why;
-            if (A.contains("move") && !PackageCatalog::MoveGraft(*I, N.Key(), T, static_cast<size_t>(Command::Int(A, "from")),
+            if (A.contains("move") && !Shelf::MoveGraft(*I, N.Key(), T, static_cast<size_t>(Command::Int(A, "from")),
                                                                  static_cast<int>(Command::Int(A, "move")), &Why))
                 throw std::runtime_error(Why);
             return json{{"ticked", T}, {"unticked", Unticked}};
@@ -664,10 +667,10 @@ VG_COMMANDS
         "grafts row", "the row a tile shows for a variant",
         "Which node a tile's row named <variant> is — the variant presenting the tile under that name.",
         { Pos("tile", "the tile UID"), Pos("variant", "the variant's name") }, { "grafts row 749 'Patch 2.0a (No-CD)'" },
-        { "PackageCatalog::RowUnderTile" }, Needs::Config, false,
+        { "Shelf::RowUnderTile" }, Needs::Config, false,
         [](Command::Context &C, const json &A) {
             std::string Why;
-            const std::string R = PackageCatalog::RowUnderTile(*Index(C), Command::Str(A, "tile"), Command::Str(A, "variant"), &Why);
+            const std::string R = Shelf::RowUnderTile(*Index(C), Command::Str(A, "tile"), Command::Str(A, "variant"), &Why);
             if (R.empty()) throw std::runtime_error(Why);
             return json{{"node", R}};
         }, {} });
@@ -678,13 +681,13 @@ VG_COMMANDS
         "For a game's node: the runners compatible with it on this machine (installed or not), those installed and "
         "usable, whether any chain reaches this machine, and the runner chain the launch resolves.",
         { GameArg() }, { "runners for 'Patch 2.0a'" },
-        { "PackageCatalog::CompatibleRunners", "PackageCatalog::UsableRunners", "PackageCatalog::HasUsableChain",
+        { "Installed::CompatibleRunners", "Installed::UsableRunners", "Installed::HasUsableChain",
           "PackageCatalog::RunnerChainIds" }, Needs::Config, false,
         [](Command::Context &C, const json &A) {
             const auto I = Index(C);
             const Node &N = *NodeOf(*I, Command::Str(A, "game"));
-            return json{{"compatible", Runners(PackageCatalog::CompatibleRunners(*I, N))}, {"usable", Runners(PackageCatalog::UsableRunners(*I, N))},
-                        {"has_chain", PackageCatalog::HasUsableChain(*I, N)}, {"chain", PackageCatalog::RunnerChainIds(*I, N.Key(), *C.Config)}};
+            return json{{"compatible", Runners(Installed::CompatibleRunners(*I, N))}, {"usable", Runners(Installed::UsableRunners(*I, N))},
+                        {"has_chain", Installed::HasUsableChain(*I, N)}, {"chain", PackageCatalog::RunnerChainIds(*I, N.Key(), *C.Config)}};
         }, {} });
 
     Command::Register({
@@ -692,22 +695,22 @@ VG_COMMANDS
         "The choices for one step of a runner chain: installed runners whose GUEST takes <platform> (a game's own "
         "\"custom\" engine only from its own package, --package).",
         { Pos("platform", "the input platform (win32, dos, n64, …)"), Opt("package", "the game's package folder (for \"custom\")") },
-        { "runners candidates win32", "runners candidates custom --package 749" }, { "PackageCatalog::CandidateRunners" }, Needs::Config, false,
+        { "runners candidates win32", "runners candidates custom --package 749" }, { "Installed::CandidateRunners" }, Needs::Config, false,
         [](Command::Context &C, const json &A) {
             const std::filesystem::path P = A.contains("package") ? PackageDir(C, Command::Str(A, "package")) : std::filesystem::path();
-            return Runners(PackageCatalog::CandidateRunners(*Index(C), Command::Str(A, "platform"), P));
+            return Runners(Installed::CandidateRunners(*Index(C), Command::Str(A, "platform"), P));
         }, {} });
 
     Command::Register({
         "runners state", "whether a runner is installed here, and whether it ships inside a game",
         "A runner node: installed (its build present and ready), and embedded (bundled inside a game's package rather "
         "than a runner package of its own).", { Pos("runner", "the runner's node (CID or LABEL)") },
-        { "runners state geproton_10_34" }, { "PackageCatalog::RunnerInstalled", "PackageCatalog::IsEmbeddedRunner" }, Needs::Config, false,
+        { "runners state geproton_10_34" }, { "Installed::RunnerInstalled", "Installed::IsEmbeddedRunner" }, Needs::Config, false,
         [](Command::Context &C, const json &A) {
             const auto I = Index(C);
             const Node &N = *NodeOf(*I, Command::Str(A, "runner"));
-            return json{{"runner", N.Key()}, {"installed", PackageCatalog::RunnerInstalled(*I, N.Key())},
-                        {"embedded", PackageCatalog::IsEmbeddedRunner(*I, N.Key())}};
+            return json{{"runner", N.Key()}, {"installed", Installed::RunnerInstalled(*I, N.Key())},
+                        {"embedded", Installed::IsEmbeddedRunner(*I, N.Key())}};
         }, {} });
 
     Command::Register({

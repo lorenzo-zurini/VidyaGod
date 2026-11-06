@@ -1,4 +1,5 @@
 #include "cli/climodes.h"
+#include "shelf.h"
 #include "main.h"
 #include "apppaths.h"
 #include "instancestore.h"   // TouchLastRun on a real CLI launch
@@ -91,7 +92,7 @@ std::unique_ptr<CliModes::PreparedLaunch> CliModes::PrepareLaunch(const LaunchRe
         if (LaunchParameters.LaunchNodeId.empty())
         {
             std::string Why;
-            LaunchParameters.LaunchNodeId = PackageCatalog::RowUnderTile(*Index, LaunchParameters.LaunchTile, LaunchParameters.LaunchVariant, &Why);
+            LaunchParameters.LaunchNodeId = Shelf::RowUnderTile(*Index, LaunchParameters.LaunchTile, LaunchParameters.LaunchVariant, &Why);
             if (LaunchParameters.LaunchNodeId.empty()) { Err = Why; LogErr("main.cpp", Why + " — aborting."); return nullptr; }
         }
         else if (!LaunchParameters.LaunchVariant.empty())
@@ -213,7 +214,7 @@ int CliModes::Launch(const LaunchRequest &Req, nlohmann::ordered_json &GlobalCon
             const std::string &Uid = NewContainerWrapper.ContainerParams.PackageUID;
             // MergePackageVariables now persists to the launched INSTANCE's instance.json (not GlobalConfig) — no
             // GlobalConfig SaveJSON needed (that was a dead write, and its success gated a lying "persisted" log).
-            PackageCatalog::MergePackageVariables(GlobalConfigJSON, Uid, NewContainerWrapper.ContainerParams.PickedSecrets,
+            InstanceStore::MergeVariables(GlobalConfigJSON, Uid, NewContainerWrapper.ContainerParams.PickedSecrets,
                                                   NewContainerWrapper.ContainerParams.InstanceName);
             LogOut("main.cpp", "Persisted " + std::to_string(NewContainerWrapper.ContainerParams.PickedSecrets.size())
                                + " pool-seeded secret(s) for package " + Uid + ".");

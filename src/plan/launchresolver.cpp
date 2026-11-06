@@ -1,7 +1,9 @@
 #include "launchresolver.h"
+#include "instancestore.h"
+#include "installed.h"
+#include "shelf.h"
 #include "apppaths.h"        // AppPaths::DataRoot — the app data root the launch TEMP hangs off of
 #include "varsubst.h"        // VarSubst::StringVariableSubstitution / RenderValue
-#include "packagecatalog.h"  // GetPackageUserSettings (catalog/user-settings service)
 #include "runnerwrapper.h"   // RunnerWrapper::ExecutableAvailable / DefPrefixDir
 #include "commonutils.h"     // Log*
 #include "fold.h"            // Fold::Resolve — the row, resolved
@@ -23,11 +25,8 @@
 #include <string>
 #include <vector>
 
-//The pure manifest queries + VFS-layer helpers live in ManifestModel; the catalog/user-settings service in
-//PackageCatalog. Bring both in unqualified so the resolver code (moved verbatim out of ContainerWrapper) reads
-//naturally (GetPackageUserSettings / MachinePlatform / IsVfsLayer / ...).
+//The index's queries (MachinePlatform / IsVfsLayer / …) read unqualified.
 using namespace ManifestModel;
-using namespace PackageCatalog;
 
 //Resolves every CustomVar (TYPE:"CustomVar") in the closure into ONE GLOBAL NAMESPACE (ContainerParams.CustomVariables,
 //keyed by the bare token "KEY"). ABSOLUTE SCOPE: a var's final value is visible to every reference — including inside
@@ -154,7 +153,7 @@ bool LaunchResolver::InitializeFromNodeOnce(struct ContainerParams &ContainerPar
     std::string RowGraft;
     if (Launch->IsGraft)
     {
-        const std::vector<std::string> Bases = PackageCatalog::GraftBases(Idx, Launch->Key());
+        const std::vector<std::string> Bases = Shelf::GraftBases(Idx, Launch->Key());
         if (Bases.empty()) { LogErr("InitializeFromNode", "'" + LaunchId + "' is a graft with nothing here it applies onto."); return false; }
         std::string B = Bases.front();
         if (!CP.GraftBase.empty())
@@ -203,7 +202,7 @@ bool LaunchResolver::InitializeFromNodeOnce(struct ContainerParams &ContainerPar
     //Phase 1 reads the instance's values and the built-ins (%UID% = the launched face, %PackageUID% = its family).
     Fold::Vars Instance;
     {
-        const nlohmann::ordered_json Saved = GetPackageVariables(GlobalConfigJSON, CP.PackageUID, CP.InstanceName);
+        const nlohmann::ordered_json Saved = InstanceStore::Variables(GlobalConfigJSON, CP.PackageUID, CP.InstanceName);
         if (Saved.is_object()) for (const auto &[K, V] : Saved.items()) if (V.is_string()) Instance[K] = V.get<std::string>();
         for (const auto &[K, V] : CP.VariableOverrides) Instance[K] = V;
     }
@@ -215,7 +214,7 @@ bool LaunchResolver::InitializeFromNodeOnce(struct ContainerParams &ContainerPar
     //graft may need another graft) — else a fresh instance's: the ones RECOMMENDED under this tile.
     std::vector<std::string> Dropped;
     //On a graft's card that graft is the game: first, whatever else is chosen.
-    PackageCatalog::GraftChoice Chosen = CP.Grafts;
+    Shelf::GraftChoice Chosen = CP.Grafts;
     //...and the row's own graft (a graft that is a version) right after.
     for (const std::string &Must : { RowGraft, CardGraft })   // inserted at the front in turn: the card's first
         if (!Must.empty())
@@ -224,12 +223,12 @@ bool LaunchResolver::InitializeFromNodeOnce(struct ContainerParams &ContainerPar
             if (!Chosen)
             {   //...minus versions and cards: RECOMMENDED on those picks the default row, it is not an add-on
                 Chosen.emplace();
-                for (const std::string &G : PackageCatalog::AppliedGrafts(Idx, LaunchKey, std::nullopt, Instance, Builtins))
+                for (const std::string &G : Shelf::AppliedGrafts(Idx, LaunchKey, std::nullopt, Instance, Builtins))
                     if (const Node *Gn = Idx.Find(G); Gn && Gn->Variant.empty() && Gn->Faces.empty()) Chosen->push_back(G);
             }
             if (std::find(Chosen->begin(), Chosen->end(), Must) == Chosen->end()) Chosen->insert(Chosen->begin(), Must);
         }
-    CP.AppliedGrafts = PackageCatalog::AppliedGrafts(Idx, LaunchKey, Chosen, Instance, Builtins, &Dropped);
+    CP.AppliedGrafts = Shelf::AppliedGrafts(Idx, LaunchKey, Chosen, Instance, Builtins, &Dropped);
     for (const std::string &Must : { CardGraft, RowGraft })
         if (!Must.empty() && std::find(CP.AppliedGrafts.begin(), CP.AppliedGrafts.end(), Must) == CP.AppliedGrafts.end())
         { LogErr("InitializeFromNode", "'" + Must + "' cannot be applied to '" + LaunchKey + "' (tile '" + Face + "')."); return false; }

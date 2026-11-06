@@ -1,4 +1,5 @@
 #include "theme.h"
+#include "shelf.h"
 #include "main.h"
 #include <iostream>
 #include "cli/climodes.h"
@@ -387,7 +388,7 @@ int main(int argc, char *argv[])
         NodeIndex PkgIndex;
         ManifestModel::ScanBundleNodes(LaunchParameters.HeadlessPackagePath.string(), PkgIndex);
         ManifestModel::DeriveFacts(PkgIndex);   // entries, runners and tiles are folded facts
-        const auto Groups = PackageCatalog::ShelfTiles(PkgIndex);
+        const auto Groups = Shelf::Tiles(PkgIndex);
         if (Groups.empty())
         {
             QMessageBox::critical(nullptr, "VidyaGod",

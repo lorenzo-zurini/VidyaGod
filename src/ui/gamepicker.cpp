@@ -1,4 +1,5 @@
 #include "gamepicker.h"
+#include "shelf.h"
 #include "libraryview.h"     // LibraryView + LibraryGameCard
 #include "packagecatalog.h"  // ShelfTiles
 #include "covercache.h"      // lazy cover refresh
@@ -56,7 +57,7 @@ void GamePicker::buildCards()
     Cards.clear();
 
     // One card per tile in this bundle.
-    for (const PackageCatalog::ShelfTile & Tile : PackageCatalog::ShelfTiles(*Index))
+    for (const Shelf::Tile & Tile : Shelf::Tiles(*Index))
     {
         std::vector<std::string> Ids;
         Ids.reserve(Tile.Rows.size());

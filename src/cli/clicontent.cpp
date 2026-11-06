@@ -24,7 +24,6 @@
 #include <thread>
 
 namespace fs = std::filesystem;
-#include "runnerinstall.h"
 
 void CliModes::CollectCatalogTargets(const NodeIndex &Idx,
                                      std::vector<IpfsWrapper::FetchTarget> &Out, CatalogTargetStats *Stats,
@@ -41,7 +40,7 @@ void CliModes::CollectCatalogTargets(const NodeIndex &Idx,
             if (OnSourceless) OnSourceless(Id, Err);
         }
         if (N.IsVariant()) ++St.Launchables;   // (its runner chain's builds are catalog nodes → the IsRunner branch)
-        if (N.IsRunner()) { ++St.Runners; (void)RunnerInstall::CollectRunnerNodeTargets(Idx, Id, Out, &Err); }
+        if (N.IsRunner()) { ++St.Runners; (void)PackageCatalog::CollectRunnerNodeTargets(Idx, Id, Out, &Err); }
     }
     if (Stats) *Stats = St;
 }
@@ -365,7 +364,7 @@ int CliModes::RunContentModes(LaunchParameters &LaunchParameters, nlohmann::orde
         NodeIndex Index = PackageCatalog::BuildCatalogIndex(GlobalConfigJSON);   // repos + locally-added packages
         std::string Err;
         std::vector<IpfsWrapper::FetchTarget> Targets;
-        bool Ok = RunnerInstall::CollectRunnerNodeTargets(Index, Id, Targets, &Err)
+        bool Ok = PackageCatalog::CollectRunnerNodeTargets(Index, Id, Targets, &Err)
                && IpfsWrapper::FetchTargetsConcurrent(Targets, &Err);
         LogOut("main.cpp", Ok ? "Runner imported." : ("Runner import failed: " + Err));
         return Ok ? 0 : 1;

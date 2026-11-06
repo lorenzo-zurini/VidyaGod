@@ -1,4 +1,6 @@
 #include "guiformat.h"   // PlainLabel
+#include "installed.h"
+#include "shelf.h"
 #include "prelaunchwindow.h"
 #include "fold.h"   // a row's options and entries are its resolution's
 #include "apppaths.h"
@@ -704,7 +706,7 @@ void PreLaunchWindow::RenderChainCombos()
         Combo->setSizeAdjustPolicy(QComboBox::AdjustToContents);
         {
             QSignalBlocker B(Combo);
-            for (const Node* R : PackageCatalog::CandidateRunners(*Index, Input, L0 ? L0->BundleDir : std::filesystem::path()))
+            for (const Node* R : Installed::CandidateRunners(*Index, Input, L0 ? L0->BundleDir : std::filesystem::path()))
             {
                 Combo->addItem(RunnerDisplayName(R->NodeId), QString::fromStdString(R->Key()));   // keyed by the index key
                 Combo->setItemData(Combo->count() - 1, QString::fromStdString(R->NodeId), Qt::ToolTipRole);
@@ -781,10 +783,10 @@ void PreLaunchWindow::RebuildModuleTree()
 
     //The GRAFTS this row offers (a node whose list begins with ANY naming something the row contains), ticked by the
     //instance's saved graft list — else the ones RECOMMENDED under this tile (a fresh instance).
-    const PackageCatalog::GraftChoice Saved = SavedGrafts();
+    const Shelf::GraftChoice Saved = SavedGrafts();
     //Offered with the ticked ones applied: a graft on a graft appears once the graft it needs is ticked.
     std::vector<std::string> PreTicked;
-    std::vector<std::string> Offered = PackageCatalog::OfferedGrafts(*Index, LaunchNodeId, &PreTicked, Saved, FaceUid);
+    std::vector<std::string> Offered = Shelf::OfferedGrafts(*Index, LaunchNodeId, &PreTicked, Saved, FaceUid);
     //A graft that presents a card of its own is not an add-on: on its card it is the game (always applied), and
     //elsewhere it is played from that card.
     const auto HasCard = [&](const std::string& G) {
@@ -806,7 +808,7 @@ void PreLaunchWindow::RebuildModuleTree()
     if (Saved)
     {
         const auto [Instance, Builtins] = GraftJudging();
-        Ticked = PackageCatalog::AppliedGrafts(*Index, LaunchNodeId, *Saved, Instance, Builtins);
+        Ticked = Shelf::AppliedGrafts(*Index, LaunchNodeId, *Saved, Instance, Builtins);
     }
     Ticked.erase(std::remove_if(Ticked.begin(), Ticked.end(), [&](const std::string& G) {
         return std::find(Offered.begin(), Offered.end(), G) == Offered.end(); }), Ticked.end());
@@ -893,7 +895,7 @@ void PreLaunchWindow::PropagateModuleToggle(const QString& Key, bool Checked)
         std::vector<std::string> Others = CollectGrafts();
         Others.erase(std::remove(Others.begin(), Others.end(), G), Others.end());
         const auto [Instance, Builtins] = GraftJudging();
-        std::vector<std::string> List = PackageCatalog::TickGraft(*Index, LaunchNodeId, Others, G, nullptr, Instance, Builtins);
+        std::vector<std::string> List = Shelf::TickGraft(*Index, LaunchNodeId, Others, G, nullptr, Instance, Builtins);
         //Keep its row where it is: it applies after the ticked rows above it — unless it needs one below (then last).
         List.pop_back();
         size_t Above = 0;
@@ -905,7 +907,7 @@ void PreLaunchWindow::PropagateModuleToggle(const QString& Key, bool Checked)
         }
         std::vector<std::string> InPlace = List;
         InPlace.insert(InPlace.begin() + (long)std::min(Above, InPlace.size()), G);
-        const std::vector<std::string> A = PackageCatalog::AppliedGrafts(*Index, LaunchNodeId, InPlace, Instance, Builtins);
+        const std::vector<std::string> A = Shelf::AppliedGrafts(*Index, LaunchNodeId, InPlace, Instance, Builtins);
         if (std::find(A.begin(), A.end(), G) == A.end()) { InPlace = List; InPlace.push_back(G); }
         StoreGrafts(InPlace);
     }
@@ -920,9 +922,9 @@ void PreLaunchWindow::PropagateModuleToggle(const QString& Key, bool Checked)
 //and saving on the sibling dropped the grafts only this tile offers.
 std::optional<std::vector<std::string>> PreLaunchWindow::SavedGrafts() const
 {
-    const auto US = PackageCatalog::GetPackageUserSettings(*GlobalConfigJSON, PackageUID, InstanceName);
+    const auto US = InstanceStore::ReadConfig(*GlobalConfigJSON, PackageUID, InstanceName);
     const std::string Tile = Face(CurrentLaunch());
-    PackageCatalog::GraftChoice Saved;
+    Shelf::GraftChoice Saved;
     if (US.contains("GRAFTS") && US["GRAFTS"].is_object() && US["GRAFTS"].contains(Tile) && US["GRAFTS"][Tile].is_array())
     {
         Saved.emplace();
@@ -931,15 +933,15 @@ std::optional<std::vector<std::string>> PreLaunchWindow::SavedGrafts() const
     for (const std::string& Forced : { RowGraft, TileGraft })   // grafts on these are judged with them in place
         if (Saved && !Forced.empty() && std::find(Saved->begin(), Saved->end(), Forced) == Saved->end())
             Saved->insert(Saved->begin(), Forced);
-    return PackageCatalog::CurrentGraftChoice(*Index, Saved);
+    return Shelf::CurrentGraftChoice(*Index, Saved);
 }
 
 void PreLaunchWindow::StoreGrafts(const std::vector<std::string>& List)
 {
-    const auto US = PackageCatalog::GetPackageUserSettings(*GlobalConfigJSON, PackageUID, InstanceName);
+    const auto US = InstanceStore::ReadConfig(*GlobalConfigJSON, PackageUID, InstanceName);
     nlohmann::ordered_json ByTile = US.contains("GRAFTS") && US["GRAFTS"].is_object() ? US["GRAFTS"] : nlohmann::ordered_json::object();
     ByTile[Face(CurrentLaunch())] = List;
-    PackageCatalog::SetPackageUserSetting(*GlobalConfigJSON, PackageUID, "GRAFTS", ByTile, InstanceName);
+    InstanceStore::SetSetting(*GlobalConfigJSON, PackageUID, "GRAFTS", ByTile, InstanceName);
 }
 
 void PreLaunchWindow::SaveGrafts()
@@ -954,7 +956,7 @@ static std::map<std::string, std::string> CollectVarValues(QObject* Group);   //
 std::pair<std::map<std::string, std::string>, std::map<std::string, std::string>> PreLaunchWindow::GraftJudging() const
 {
     std::map<std::string, std::string> Instance;
-    if (const auto Saved = PackageCatalog::GetPackageVariables(*GlobalConfigJSON, PackageUID, InstanceName); Saved.is_object())
+    if (const auto Saved = InstanceStore::Variables(*GlobalConfigJSON, PackageUID, InstanceName); Saved.is_object())
         for (const auto &[K, V] : Saved.items()) if (V.is_string()) Instance[K] = V.get<std::string>();
     if (CustomVarGroup) for (const auto &[K, V] : CollectVarValues(CustomVarGroup)) Instance[K] = V;
     return { Instance, { {"UID", Face(Index->Find(LaunchNodeId))}, {"PackageUID", PackageUID} } };
@@ -970,7 +972,7 @@ void PreLaunchWindow::MoveSelectedGraft(int By)
     if (At == Ticked.end()) return;
     std::string Why;
     const auto [Instance, Builtins] = GraftJudging();
-    if (!PackageCatalog::MoveGraft(*Index, LaunchNodeId, Ticked, (size_t)(At - Ticked.begin()), By, &Why, Instance, Builtins))
+    if (!Shelf::MoveGraft(*Index, LaunchNodeId, Ticked, (size_t)(At - Ticked.begin()), By, &Why, Instance, Builtins))
     {
         if (!Why.empty()) { GraftNote->setText(QString::fromStdString("Not moved: " + Why)); GraftNote->setVisible(true); }
         return;
@@ -1129,7 +1131,7 @@ void PreLaunchWindow::RebuildCustomVarPickers()
         AddDecls(Fold::Resolve(Lib, Rid), true);
     }
 
-    const nlohmann::ordered_json SavedVars = PackageCatalog::GetPackageVariables(*GlobalConfigJSON, PackageUID, InstanceName);
+    const nlohmann::ordered_json SavedVars = InstanceStore::Variables(*GlobalConfigJSON, PackageUID, InstanceName);
 
     // Sections (UI.SECTION paths; a runner's options under "Runner"), created as their first option appears.
     std::map<std::string, QTreeWidgetItem*> Sections;
@@ -1732,7 +1734,7 @@ void PreLaunchWindow::FillVariantCombo()
         {
             //A graft that is a version: a row per version it applies onto (named by it, and by its base when it has
             //several), run by the entries presenting this card with it applied.
-            const std::vector<std::string> Bases = PackageCatalog::GraftBases(*Index, Id);
+            const std::vector<std::string> Bases = Shelf::GraftBases(*Index, Id);
             const bool Rec = std::find(N->Recommended.begin(), N->Recommended.end(), Face(N)) != N->Recommended.end();
             const std::string Name = !N->Variant.empty() ? N->Variant : N->NodeId;
             for (const std::string& Base : Bases)
@@ -1839,7 +1841,7 @@ void PreLaunchWindow::onLaunchClicked()
     // Persist prefs (keyed by the bundle UID, so the engine's GetPackageUserSettings sees them).
     if (!PackageUID.empty())
     {
-        PackageCatalog::MergePackageVariables(*GlobalConfigJSON, PackageUID, PickerVars, InstanceName);
+        InstanceStore::MergeVariables(*GlobalConfigJSON, PackageUID, PickerVars, InstanceName);
         SaveGrafts();
         //The chain is kept (RUNNER_CHAIN, which the resolver honours and the chain UI pre-selects) only when it is not
         //the default: a saved default is a hard pin, and would hold the instance to today's runners after a better
@@ -1854,10 +1856,10 @@ void PreLaunchWindow::onLaunchClicked()
               Cp.InstanceName = InstanceName; Cp.Platform = ChainStepInput(0); Cp.IgnoreSavedChain = true;
               Default = LaunchResolver::ResolveChainIds(*Index, *L, Cp, *GlobalConfigJSON);
           }
-          PackageCatalog::SetPackageUserSetting(*GlobalConfigJSON, PackageUID, "RUNNER_CHAIN",
+          InstanceStore::SetSetting(*GlobalConfigJSON, PackageUID, "RUNNER_CHAIN",
                                                 SelectedChain == Default ? nlohmann::ordered_json() : ChainJson, InstanceName); }
         if (RememberCheck->isChecked())
-            PackageCatalog::SetPackageUserSetting(*GlobalConfigJSON, PackageUID, "SKIP_LAUNCH_DIALOG", true, InstanceName);
+            InstanceStore::SetSetting(*GlobalConfigJSON, PackageUID, "SKIP_LAUNCH_DIALOG", true, InstanceName);
         persistGlobalConfig();
     }
 

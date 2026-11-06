@@ -8,6 +8,9 @@
 #include <QScopeGuard>
 
 #include "qtestjson.h"
+#include "instancestore.h"
+#include "installed.h"
+#include "shelf.h"
 #include "builtinrunners.h"
 #include "packagecatalog.h"
 #include "pkggraph.h"
@@ -16,7 +19,6 @@
 #include "validate.h"
 #include "nodefixture.h"
 #include "cli/climodes.h"
-#include "runnerinstall.h"
 #include "ipfswrapper.h"
 #include "nodegraph.h"      // VerifyNodeBytes — what a receiver checks a landed node file with
 #include "cid.h"
@@ -469,7 +471,7 @@ private slots:
         Add("over_sourced", json::array({ json{{"NODE", "sourced"}} }), true);
         Add("waiting", json::array({ json{{"NODE", "not_landed_yet"}} }), true);
         Add("over_waiting", json::array({ json{{"NODE", "waiting"}} }), true);
-        const auto Hyd = PackageCatalog::HydrationMap(Idx);
+        const auto Hyd = Installed::HydrationMap(Idx);
         //What the Catalog offers, from the same pass: something to fetch beneath it, or a package still to land.
         //Teeth: fold neither from what a node contains; mark a missing contained node complete.
         QVERIFY2(Hyd.at("over_sourced").HasCid && !Hyd.at("friends").HasCid, "a CID beneath it is something to fetch");
@@ -708,7 +710,7 @@ private slots:
 
         // Vacuous-hydration guard: an un-installed received game (content not fetched) reads NOT hydrated —
         // that is what routes it to the Catalog tab (downloadable) instead of the Library tab (playable).
-        const auto Hyd = PackageCatalog::HydrationMap(Idx);
+        const auto Hyd = Installed::HydrationMap(Idx);
         const auto Hit = Hyd.find(A->Key());
         QVERIFY2(Hit != Hyd.end() && !Hit->second.Hydrated, "a received, un-installed package must not count as hydrated");
 
@@ -722,7 +724,7 @@ private slots:
         QCOMPARE(A->Meta.value("TITLE", std::string()), std::string("A"));
         std::vector<std::string> Order;
         std::map<std::string, std::vector<std::string>> RowsOf;
-        for (const auto & T : PackageCatalog::ShelfTiles(Idx))
+        for (const auto & T : Shelf::Tiles(Idx))
         {
             Order.push_back(T.Uid);
             for (const Node * N : T.Rows) RowsOf[T.Uid].push_back(N->NodeId);
@@ -1696,9 +1698,9 @@ private slots:
         QDir(dir.path() + "/data").mkpath(".");                 // make 'game' hydrated
 
         NodeIndex idx; ManifestModel::ScanBundleNodes(dir.path().toStdString(), idx); ManifestModel::DeriveFacts(idx);
-        QVERIFY(PackageCatalog::NodeHasContent(idx, "game"));
-        QVERIFY(!PackageCatalog::NodeHasContent(idx, "empty"));  // content-less → hidden from Library/Installed
-        QVERIFY(PackageCatalog::NodeHydrated(idx, "game"));      // data dir present
+        QVERIFY(Installed::NodeHasContent(idx, "game"));
+        QVERIFY(!Installed::NodeHasContent(idx, "empty"));  // content-less → hidden from Library/Installed
+        QVERIFY(Installed::NodeHydrated(idx, "game"));      // data dir present
     }
 
     // NodeHydrated = "everything FETCHABLE has been fetched", NOT "every backing file exists". A missing content layer
@@ -1715,12 +1717,12 @@ private slots:
                   NodeFixture::Chain("localonly", {NodeFixture::Content("file", "solo.bin"), NodeFixture::Exec("win32", "g.exe")}));
 
         NodeIndex idx0; ManifestModel::ScanBundleNodes(dir.path().toStdString(), idx0); ManifestModel::DeriveFacts(idx0);
-        QVERIFY(!PackageCatalog::NodeHydrated(idx0, "remote"));     // CID-backed blob.bin not fetched yet
-        QVERIFY(PackageCatalog::NodeHydrated(idx0, "localonly"));   // no CID → nothing fetchable is missing
+        QVERIFY(!Installed::NodeHydrated(idx0, "remote"));     // CID-backed blob.bin not fetched yet
+        QVERIFY(Installed::NodeHydrated(idx0, "localonly"));   // no CID → nothing fetchable is missing
 
         writeFile(dir.path() + "/blob.bin");                        // the fetch lands the file locally
         NodeIndex idx1; ManifestModel::ScanBundleNodes(dir.path().toStdString(), idx1); ManifestModel::DeriveFacts(idx1);
-        QVERIFY(PackageCatalog::NodeHydrated(idx1, "remote"));      // now fully fetched
+        QVERIFY(Installed::NodeHydrated(idx1, "remote"));      // now fully fetched
     }
 
     // #8/#9: DehydrateNode deletes the content-layer files (keeping the manifest) and reports what it removed.
@@ -1732,7 +1734,7 @@ private slots:
         writeFile(dir.path() + "/blob.bin");
 
         NodeIndex idx; ManifestModel::ScanBundleNodes(dir.path().toStdString(), idx); ManifestModel::DeriveFacts(idx);
-        QVERIFY(PackageCatalog::NodeHydrated(idx, "game"));
+        QVERIFY(Installed::NodeHydrated(idx, "game"));
 
         const int removed = PackageCatalog::DehydrateNode(idx, "game");
         QVERIFY(removed >= 1);
@@ -1746,10 +1748,10 @@ private slots:
     {
         QTemporaryDir ud; QVERIFY(ud.isValid());
         json cfg = json{{"Settings", {{"Paths", {{"UserDataRoot", ud.path().toStdString()}}}}}};
-        PackageCatalog::SetPackageUserSetting(cfg, "pkg1", "PREFERRED_RUNNER", "wine-ge");
-        json us = PackageCatalog::GetPackageUserSettings(cfg, "pkg1");
+        InstanceStore::SetSetting(cfg, "pkg1", "PREFERRED_RUNNER", "wine-ge");
+        json us = InstanceStore::ReadConfig(cfg, "pkg1");
         QCOMPARE(us.value("PREFERRED_RUNNER", std::string()), std::string("wine-ge"));
-        QVERIFY(PackageCatalog::GetPackageUserSettings(cfg, "other").value("PREFERRED_RUNNER", std::string()).empty());
+        QVERIFY(InstanceStore::ReadConfig(cfg, "other").value("PREFERRED_RUNNER", std::string()).empty());
     }
 
     // The pre-download dialog's runner-offer contract (#2): a RECEIVED runner — closure incomplete, no enumerable
@@ -1794,7 +1796,7 @@ private slots:
         snes.Exec = json{{"EXECUTABLE", "%RunnerMount%/snes9x"}};
         idx.Nodes["game"] = launch; idx.Nodes["wine"] = wine; idx.Nodes["snes9x"] = snes;
 
-        auto runners = PackageCatalog::CompatibleRunners(idx, idx.Nodes["game"]);
+        auto runners = Installed::CompatibleRunners(idx, idx.Nodes["game"]);
         bool hasWine = false, hasSnes = false;
         for (const Node * r : runners) { if (r->NodeId == "wine") hasWine = true; if (r->NodeId == "snes9x") hasSnes = true; }
         QVERIFY(hasWine);
@@ -1812,10 +1814,10 @@ private slots:
         idx.Nodes["engine"] = engine;
         Node mine; mine.NodeId = "mine"; mine.HasExec = true; mine.HostPlatform = "custom"; mine.BundleDir = "/pkg/a";
         Node theirs = mine; theirs.NodeId = "theirs"; theirs.BundleDir = "/pkg/b";
-        QCOMPARE((int)PackageCatalog::CandidateRunners(idx, "custom", "/pkg/a").size(), 1);
-        QCOMPARE((int)PackageCatalog::CandidateRunners(idx, "custom", "/pkg/b").size(), 0);
-        QCOMPARE((int)PackageCatalog::CompatibleRunners(idx, mine).size(), 1);
-        QCOMPARE((int)PackageCatalog::CompatibleRunners(idx, theirs).size(), 0);
+        QCOMPARE((int)Installed::CandidateRunners(idx, "custom", "/pkg/a").size(), 1);
+        QCOMPARE((int)Installed::CandidateRunners(idx, "custom", "/pkg/b").size(), 0);
+        QCOMPARE((int)Installed::CompatibleRunners(idx, mine).size(), 1);
+        QCOMPARE((int)Installed::CompatibleRunners(idx, theirs).size(), 0);
     }
 
     // A package download pools the game's content layers AND its runner's build layers into ONE fetch batch (so they
@@ -1839,7 +1841,7 @@ private slots:
 
         std::vector<IpfsWrapper::FetchTarget> targets; std::string err;
         QVERIFY(PackageCatalog::CollectContentTargets(idx, "game", {}, targets, &err));
-        QVERIFY(RunnerInstall::CollectRunnerNodeTargets(idx, "wine", targets, &err));
+        QVERIFY(PackageCatalog::CollectRunnerNodeTargets(idx, "wine", targets, &err));
 
         bool hasGame = false, hasWine = false;
         for (const auto & t : targets) { if (t.Cid == "CID_GAME") hasGame = true; if (t.Cid == "CID_WINE") hasWine = true; }
@@ -1961,7 +1963,7 @@ private slots:
             writeJson(dir + "/content.json",
                       NodeFixture::Chain("content", {NodeFixture::ContentCid("zip", name, "CID_GAME")}));
             NodeIndex idx; ManifestModel::ScanBundleNodes(dir.toStdString(), idx); ManifestModel::DeriveFacts(idx);
-            return PackageCatalog::NodeHydrated(idx, "game");      // file ABSENT + a CID => NOT hydrated
+            return Installed::NodeHydrated(idx, "game");      // file ABSENT + a CID => NOT hydrated
         };
 
         QTemporaryDir plain; QVERIFY(plain.isValid());
@@ -1986,7 +1988,7 @@ private slots:
         writeJson(rt.path() + "/game.json",
                   NodeFixture::Chain("game", {NodeFixture::Tile("g"), NodeFixture::Exec("win32", "g.exe")}, {"pfx"}));
         NodeIndex ridx; ManifestModel::ScanBundleNodes(rt.path().toStdString(), ridx); ManifestModel::DeriveFacts(ridx);
-        QVERIFY(PackageCatalog::NodeHydrated(ridx, "game"));
+        QVERIFY(Installed::NodeHydrated(ridx, "game"));
     }
 
     // THE install gate, against the shape the flat schema actually produces. A prefix-generating runner's
@@ -2013,13 +2015,13 @@ private slots:
 
         NodeIndex idx; ManifestModel::ScanBundleNodes(dir.path().toStdString(), idx); ManifestModel::DeriveFacts(idx);
 
-        QVERIFY(RunnerInstall::RunnerBuildPresent(idx, "wine"));      // the build IS here
-        QVERIFY(PackageCatalog::RunnerInstalled(idx, "wine"));        // ...so the runner is installed
+        QVERIFY(Installed::RunnerBuildPresent(idx, "wine"));      // the build IS here
+        QVERIFY(Installed::RunnerInstalled(idx, "wine"));        // ...so the runner is installed
 
         // ...and it is not something to download, either: a fetch target for a %variable% path would have the
         // download manager forever re-offering an already-hydrated runner.
         std::vector<IpfsWrapper::FetchTarget> targets; std::string err;
-        QVERIFY(RunnerInstall::CollectRunnerNodeTargets(idx, "wine", targets, &err));
+        QVERIFY(PackageCatalog::CollectRunnerNodeTargets(idx, "wine", targets, &err));
         for (const auto & t : targets)
             QVERIFY2(t.LocalPath.find('%') == std::string::npos, t.LocalPath.c_str());
 
@@ -2027,8 +2029,8 @@ private slots:
         // pass just as well against a gate that checks nothing at all.
         QVERIFY(QFile::remove(dir.path() + "/wine.zip"));
         NodeIndex idx2; ManifestModel::ScanBundleNodes(dir.path().toStdString(), idx2); ManifestModel::DeriveFacts(idx2);
-        QVERIFY(!RunnerInstall::RunnerBuildPresent(idx2, "wine"));
-        QVERIFY(!PackageCatalog::RunnerInstalled(idx2, "wine"));
+        QVERIFY(!Installed::RunnerBuildPresent(idx2, "wine"));
+        QVERIFY(!Installed::RunnerInstalled(idx2, "wine"));
 
         // A runner whose build is ON the runner node (folded: ENTRYPOINTS + LAYERS) is a build-shipping runner
         // too: installed iff its zip is here, and its zip is what a fetch collects when it is not.
@@ -2037,11 +2039,11 @@ private slots:
                   NodeFixture::Chain("java", {NodeFixture::Merge({NodeFixture::Runner(ManifestModel::MachinePlatform(), {"java_8"}, "%RunnerMount%/__jre/bin/java"),
                                                                   NodeFixture::Content("zip", "jre.zip")})}));
         NodeIndex idx3; ManifestModel::ScanBundleNodes(d3.path().toStdString(), idx3); ManifestModel::DeriveFacts(idx3);
-        QVERIFY2(!PackageCatalog::RunnerInstalled(idx3, "java"), "build on the runner node, zip absent ⇒ not installed");
-        QVERIFY(!RunnerInstall::RunnerBuildPresent(idx3, "java"));
+        QVERIFY2(!Installed::RunnerInstalled(idx3, "java"), "build on the runner node, zip absent ⇒ not installed");
+        QVERIFY(!Installed::RunnerBuildPresent(idx3, "java"));
         writeFile(d3.path() + "/jre.zip");
         NodeIndex idx4; ManifestModel::ScanBundleNodes(d3.path().toStdString(), idx4); ManifestModel::DeriveFacts(idx4);
-        QVERIFY2(RunnerInstall::RunnerBuildPresent(idx4, "java"), "…and present once the zip is here");
+        QVERIFY2(Installed::RunnerBuildPresent(idx4, "java"), "…and present once the zip is here");
     }
 
     // Full-closure hydrate: CollectRunnerChainTargets auto-resolves the game's runner via the PLATFORM GRAPH (no

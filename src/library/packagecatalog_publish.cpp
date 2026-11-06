@@ -13,7 +13,6 @@
 #include "ipfswrapper.h"
 #include "varsubst.h"
 #include "launchresolver.h"
-#include "runnerinstall.h"
 #include "launchparams.h"
 
 #include <QDir>

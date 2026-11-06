@@ -1,4 +1,5 @@
 #include "libraryview.h"
+#include "installed.h"
 #include "guiformat.h"
 #include "instancestore.h"
 #include "manifestmodel.h"
@@ -171,7 +172,7 @@ void LibraryGameCard::play()
     //system or a hydrated build runner, directly or through a chain (a Windows-only engine under proton). A
     //compatible-but-not-installed runner does NOT count (you can't launch without it).
     if (const Node * Rep = Index->Find(RepNodeId))
-        if (!PackageCatalog::HasUsableChain(*Index, *Rep))
+        if (!Installed::HasUsableChain(*Index, *Rep))
         {
             QMessageBox::warning(nullptr, "Runner unavailable",
                 "No installed runner can launch this game on this machine. "
@@ -181,7 +182,7 @@ void LibraryGameCard::play()
 
     bool skip = false;
     if (!RepUid.empty()) {
-        auto US = PackageCatalog::GetPackageUserSettings(*GlobalConfigJSON, RepUid);
+        auto US = InstanceStore::ReadConfig(*GlobalConfigJSON, RepUid);
         if (US.contains("SKIP_LAUNCH_DIALOG") && US["SKIP_LAUNCH_DIALOG"].is_boolean())
             skip = bool(US["SKIP_LAUNCH_DIALOG"]);
     }

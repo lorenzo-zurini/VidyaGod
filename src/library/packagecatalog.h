@@ -11,7 +11,9 @@
 #include <functional>
 #include <filesystem>
 
-#include "manifestmodel.h"   // Node / NodeIndex (node-graph catalog)
+#include "manifestmodel.h"
+#include "shelf.h"       // GraftChoice
+#include "installed.h"   // Node / NodeIndex (node-graph catalog)
 #include "commonutils.h"     // Diagnostics::Entry — what an index build logged
 #include "ipfswrapper.h"     // IpfsWrapper::FetchTarget (download collection)
 
@@ -24,28 +26,9 @@
 // machinery to generate a DEFPREFIX, so it lives with the code that owns prefix-building.)
 // ---------------------------------------------------------------------------
 namespace PackageCatalog {
-
-//Which grafts a content walk includes: the given list, or (unset) the row's pre-ticked grafts.
-using GraftChoice = std::optional<std::vector<std::string>>;
+using Shelf::GraftChoice;
 
 
-// ----- per-package user settings (now the INSTANCE file — see InstanceStore) -----
-// The blob lives at <root>/USERDATA/<uid>/<instance>/instance.json, NOT GlobalConfig. GlobalConfigJSON is passed
-// ONLY to locate the USERDATA root. Instance="" ⇒ the active (newest-LASTRUN) instance; a READ never creates one,
-// a WRITE creates DefaultInstance if the game has none. The setters no longer mutate GlobalConfigJSON (const ref);
-// they persist to disk immediately.
-nlohmann::ordered_json GetPackageUserSettings(const nlohmann::ordered_json &GlobalConfigJSON, const std::string &PackageUID,
-                                              const std::string &Instance = std::string());
-void SetPackageUserSetting(const nlohmann::ordered_json &GlobalConfigJSON, const std::string &PackageUID,
-                           const std::string &Key, const nlohmann::ordered_json &Value, const std::string &Instance = std::string());
-
-//The package's persisted VARIABLES map (instance.json VARIABLES), or an empty object. THE way to read persisted
-//knob/secret values.
-nlohmann::ordered_json GetPackageVariables(const nlohmann::ordered_json &GlobalConfigJSON, const std::string &PackageUID,
-                                           const std::string &Instance = std::string());
-//Merges NewVars into the instance's persisted VARIABLES and writes it back. The single write path for knob/secrets.
-void MergePackageVariables(const nlohmann::ordered_json &GlobalConfigJSON, const std::string &PackageUID,
-                           const std::map<std::string, std::string> &NewVars, const std::string &Instance = std::string());
 
 // ----- on-disk locations -----
 // The managed library root (hydrated content + disk-space checks): Settings.Paths.LibraryRoot or ~/.VidyaGod/LIBRARY.
@@ -440,69 +423,6 @@ std::shared_ptr<const NodeIndex> CurrentIndex(const nlohmann::ordered_json &Glob
 // ran up to 138 scans at once: 1700 % CPU, and 3 GB of heap glibc then kept. Any caller's config is used (they name
 // the same library).
 std::shared_ptr<const NodeIndex> FreshCatalogIndex(const nlohmann::ordered_json &GlobalConfigJSON);
-// One presentable game on the shelf: a tile (its UID), its presentation (the merged tile), and its rows — the variant
-// nodes whose fold presents it.
-struct ShelfTile
-{
-    std::string Uid;
-    nlohmann::ordered_json Tile;
-    std::vector<const Node*> Rows;
-    std::string Graft;            // the graft presenting this tile ("" for a variant's): every row launches with it
-};
-// The shelf: one entry per tile UID (faces merged by UID across the library). A family nests by PARENTUID — the base
-// game, then its children by depth, then by title — and families order by the base game's title. Under a tile, the
-// variant RECOMMENDED under it comes first, then by VARIANT name. A variant presenting two tiles is a row under each.
-// A tile a graft presents (NodeIndex::TileGraft) is a card too: its rows are the variants the graft applies onto
-// (GraftBases), and the card names the graft (ShelfTile::Graft). A graft that is a VERSION (it carries VARIANT) is a
-// row: under the tiles its own entries present, else under its bases' tiles; it runs on a base with it applied.
-std::vector<ShelfTile> ShelfTiles(const NodeIndex &Idx);
-// The row a tile shows for a variant: the variant (a node with VARIANT) presenting tile Uid whose VARIANT is Variant;
-// with Variant empty, the tile's default row — the variant RECOMMENDED under it, else the first by VARIANT name. ""
-// when there is none, *Why saying what the tile offers instead.
-std::string RowUnderTile(const NodeIndex &Idx, const std::string &Uid, const std::string &Variant, std::string *Why = nullptr);
-// The versions a graft applies onto: the variants (not grafts themselves) containing, transitively, a node its leading
-// ANY names — what a graft that is a card, or a version, runs on. Recommended-free order: by VARIANT, then key.
-std::vector<std::string> GraftBases(const NodeIndex &Idx, const std::string &Graft);
-// The version a graft that is a version runs on when nothing picks one (the engine's default): GraftBases' first. ""
-// for a node that is not a graft, or a graft with nothing here it applies onto.
-std::string DefaultGraftBase(const NodeIndex &Idx, const std::string &Graft);
-
-// Platform-compatible runners for a launchable on this machine (GUEST ∋ launch host, HOST==machine) WITHOUT any
-// install/executable gate — i.e. runners that COULD run it once installed. Sorted by node id.
-std::vector<const Node*> CompatibleRunners(const NodeIndex &Idx, const Node &Launch);
-// A runner is usable now: a PATH runner present on the system, OR a shipped-build runner fully imported
-// (build hydrated + DEFPREFIX). This is the gate for launching.
-bool RunnerInstalled(const NodeIndex &Idx, const std::string &RunnerNodeId);
-// True if the runner is bundled INSIDE a game package (some launchable node shares its BundleDir), as opposed to a
-// standalone runner package (e.g. VidyaGodRunners/ge-proton10-30).
-bool IsEmbeddedRunner(const NodeIndex &Idx, const std::string &RunnerNodeId);
-// Compatible AND installed — the runners a game can actually launch with right now. Sorted by node id.
-std::vector<const Node*> UsableRunners(const NodeIndex &Idx, const Node &Launch);
-
-// Whether installed runners carry Launch's platform to this machine — directly or through a chain (a Windows-only
-// engine under proton). The Play gate: a chain-only game has no UsableRunner yet runs fine.
-bool HasUsableChain(const NodeIndex &Idx, const Node &Launch);
-// Installed runners that can CONSUME InputPlatform (GUEST ∋ InputPlatform), regardless of their HOST — the choices
-// for one step of the runner daisy-chain UI (a chain step's input platform → the runners that bridge it onward). For
-// "custom", only the engine shipped in the launch's own package (LaunchBundleDir). Sorted by node id.
-std::vector<const Node*> CandidateRunners(const NodeIndex &Idx, const std::string &InputPlatform,
-                                         const std::filesystem::path &LaunchBundleDir);
-// True when every VFS layer in a launchable node's content closure is present locally (its game is installed).
-bool NodeHydrated(const NodeIndex &Idx, const std::string &LaunchNodeId);
-// True iff the node's closure defines at least one VFS content layer — i.e. it's a real, downloadable game and not a
-// content-less/malformed node (which is vacuously "hydrated"). Gate Library/Installed-Packages visibility on this.
-bool NodeHasContent(const NodeIndex &Idx, const std::string &LaunchNodeId);
-// Bulk hydration for the WHOLE index in O(N+E): computes {Hydrated, HasContent} for every node via one topological
-// pass over PARENTS (a node's value = its own layers ⊕ its parents'), memoizing per-node and stat-caching per path.
-// Use this instead of calling NodeHydrated/NodeHasContent per-launchable when building library/catalog tiles —
-// otherwise a package with a launchable per version over a deep delta chain is O(N²) (each closure re-walked + re-stat).
-// Hydrated: nothing to fetch is missing. HasContent: some content layer is DEFINED (a downloadable build). OnDisk: some
-// content file is actually HERE (or supplied at run time) — what an installed game has and a node-only package lacks.
-// HasCid: some content layer names a CID (something to fetch). Incomplete: the closure names a node not in the index
-// (a package not landed yet). Together: what the Catalog offers to download, without a closure walk per edition.
-struct NodeHydration { bool Hydrated = true; bool HasContent = false; bool OnDisk = false; bool HasCid = false;
-                       bool Incomplete = false; };
-std::unordered_map<std::string, NodeHydration> HydrationMap(const NodeIndex &Idx);
 // Inverse of HydrateNode: delete the node closure's local content-layer files (keep manifests + cover) and unpin +
 // drop-ref their CIDs, so the package returns to the Catalog as re-downloadable and the node stops seeding it.
 // Returns the number of files removed. Use only for managed (library-root) packages, never local/portable ones.
@@ -519,48 +439,17 @@ std::vector<InstalledPackage> InstalledPackages(const nlohmann::ordered_json &Gl
 //The package folders (of the index) whose identity UID is Uid, or whose folder name begins with "[<Uid>]" — what a
 //package named by its UID means.
 std::vector<std::filesystem::path> PackageDirsWithUid(const NodeIndex &Idx, const std::string &Uid);
+//Gather (without fetching) a runner node's missing build-layer download targets, appending to Out — so one download
+//batch pools a game's content with its runners' builds. False (with *Error) only for a node that is not a runner;
+//"nothing to fetch" is success with Out unchanged.
+bool CollectRunnerNodeTargets(const NodeIndex &Idx, const std::string &RunnerNodeId,
+                              std::vector<IpfsWrapper::FetchTarget> &Out, std::string *Error = nullptr);
 // Every distinct ipfs CID a launchable node's content closure must fetch (its layers' SOURCE CIDs). Drives the
 // Catalog download-progress aggregation. Excludes the runner build; cover CIDs are not included. The whole closure is
 // counted (options included: a download is whole chains); Grafts adds the chosen grafts' content.
 std::vector<std::string> NodeContentCids(const NodeIndex &Idx, const std::string &LaunchNodeId,
                                          const GraftChoice &Grafts = std::nullopt);
 
-// ---- grafts ----
-// The grafts a row applies, in order (Fold::ApplyGrafts over the local grafts): Chosen = the instance's list, each
-// kept when it is offered with those before it applied (the rest go to *Dropped); nullopt = a fresh instance's list,
-// the grafts RECOMMENDED under the row's tile (Builtins' %UID% when given — the launched tile — else the node's first).
-// A received browse stub never applies: it would mount un-hydrated.
-std::vector<std::string> AppliedGrafts(const NodeIndex &Idx, const std::string &LaunchNodeId, const GraftChoice &Chosen,
-                                       const std::map<std::string, std::string> &Instance = {},
-                                       const std::map<std::string, std::string> &Builtins = {},
-                                       std::vector<std::string> *Dropped = nullptr);
-// Move the graft at Ticked[From] one place (By = -1 up, +1 down) in the instance's ordered graft list. The order is
-// the order they apply in, and a graft is only applied when it is offered with those before it applied — so a move
-// after which ANY graft that applied no longer does (a graft on a graft moved above the graft it needs, or one of two
-// grafts that exclude each other swapped in ahead) is REFUSED, *Why naming it; Ticked is changed only on success.
-// Judged as the launch judges it: Instance = the instance's values, Builtins = at least %UID% (the tile) and
-// %PackageUID% (see AppliedGrafts).
-bool MoveGraft(const NodeIndex &Idx, const std::string &LaunchNodeId, std::vector<std::string> &Ticked, size_t From,
-               int By, std::string *Why = nullptr, const std::map<std::string, std::string> &Instance = {},
-               const std::map<std::string, std::string> &Builtins = {});
-// The saved graft list as the current library sees it: a list naming a graft that no longer exists was saved against
-// an older version of the package (every edit re-mints its grafts), so the choice is stale and the tile falls back to
-// its defaults (nullopt: the grafts RECOMMENDED under it). A list whose grafts all exist is the user's choice.
-GraftChoice CurrentGraftChoice(const NodeIndex &Idx, const GraftChoice &Saved);
-// Tick graft G in the instance's ordered graft list: G goes last, and every ticked graft it cannot apply beside is
-// unticked (into *Unticked) — one whose NOT names G, or one G's NOT names. The graft just ticked wins, so grafts that
-// exclude each other behave as a choice of one. Judged in list order with the grafts kept so far in place (G or X may
-// need another ticked graft): X is unticked when adding it is what stops G applying. Instance/Builtins as MoveGraft.
-std::vector<std::string> TickGraft(const NodeIndex &Idx, const std::string &LaunchNodeId, const std::vector<std::string> &Ticked,
-                                   const std::string &G, std::vector<std::string> *Unticked = nullptr,
-                                   const std::map<std::string, std::string> &Instance = {},
-                                   const std::map<std::string, std::string> &Builtins = {});
-// The grafts this row offers with Chosen applied (a graft on a graft is offered once the graft it needs is), in the
-// default order (LABEL, then CID); into *PreTicked, a fresh instance's list (AppliedGrafts with nullopt).
-std::vector<std::string> OfferedGrafts(const NodeIndex &Idx, const std::string &LaunchNodeId,
-                                       std::vector<std::string> *PreTicked = nullptr,
-                                       const GraftChoice &Chosen = std::nullopt,
-                                       const std::string &FaceUid = std::string());   // "" = the node's first tile
 
 // Gather (without fetching) every missing content-layer + cover target for a launchable's closure, appending to Out.
 // Lets a caller pool a game's content with its runners' build layers into ONE concurrent download batch. Returns

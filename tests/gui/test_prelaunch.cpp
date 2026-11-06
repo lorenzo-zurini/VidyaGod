@@ -16,6 +16,7 @@
 #include <set>
 
 #include "apppaths.h"
+#include "shelf.h"
 #include "instancestore.h"
 #include "manifestmodel.h"
 #include "packagecatalog.h"
@@ -89,7 +90,7 @@ private slots:
                 if (List->topLevelItem(i)->text(0) == Label) List->setCurrentItem(List->topLevelItem(i));
         };
         const auto saved = [&] {
-            const json US = PackageCatalog::GetPackageUserSettings(Cfg, idx.Find("game")->PackageUid);
+            const json US = InstanceStore::ReadConfig(Cfg, idx.Find("game")->PackageUid);
             std::vector<std::string> G;
             if (US.contains("GRAFTS") && US["GRAFTS"].contains("7")) for (const auto &X : US["GRAFTS"]["7"]) G.push_back(X.get<std::string>());
             return G;
@@ -270,11 +271,11 @@ private slots:
         tick("both");
         QCOMPARE(ticked(), (std::vector<std::string>{"both"}));
         QCOMPARE(rows(), Order);
-        QCOMPARE(PackageCatalog::AppliedGrafts(idx, "game", std::vector<std::string>{"both"}), (std::vector<std::string>{"both"}));
+        QCOMPARE(Shelf::AppliedGrafts(idx, "game", std::vector<std::string>{"both"}), (std::vector<std::string>{"both"}));
 
         // A list saved before the exclusion was enforced holds all three: the window ticks what the launch applies.
         // Teeth: tick the saved list as saved (all three show ticked).
-        PackageCatalog::SetPackageUserSetting(Cfg, idx.Find("game")->PackageUid, "GRAFTS", json{{"17", json::array({"tc", "aok", "both"})}});
+        InstanceStore::SetSetting(Cfg, idx.Find("game")->PackageUid, "GRAFTS", json{{"17", json::array({"tc", "aok", "both"})}});
         PreLaunchWindow W2(&Cfg, &idx, {"game"});
         W2.show();
         QCoreApplication::processEvents();
@@ -298,15 +299,15 @@ private slots:
             {"LAYERS", json::array({ json{{"ANY", json::array({"game"})}}, json{{"DIR", "ost"}} })} });
         ManifestModel::DeriveFacts(idx);
         json Cfg = json{{"Settings", json::object()}};
-        PackageCatalog::SetPackageUserSetting(Cfg, idx.Find("game")->PackageUid, "GRAFTS", json{{"47", json::array({"ost-before-its-remint"})}});
+        InstanceStore::SetSetting(Cfg, idx.Find("game")->PackageUid, "GRAFTS", json{{"47", json::array({"ost-before-its-remint"})}});
         PreLaunchWindow W(&Cfg, &idx, {"game"});
         W.show();
         QCoreApplication::processEvents();
         auto *List = W.findChild<QTreeWidget *>("graftList");
         QVERIFY(List && List->topLevelItemCount() == 1);
         QCOMPARE(List->topLevelItem(0)->checkState(0), Qt::Checked);
-        QVERIFY((PackageCatalog::CurrentGraftChoice(idx, std::vector<std::string>{"ost"}) == std::vector<std::string>{"ost"}));
-        QVERIFY(!PackageCatalog::CurrentGraftChoice(idx, std::vector<std::string>{"ost", "gone"}));
+        QVERIFY((Shelf::CurrentGraftChoice(idx, std::vector<std::string>{"ost"}) == std::vector<std::string>{"ost"}));
+        QVERIFY(!Shelf::CurrentGraftChoice(idx, std::vector<std::string>{"ost", "gone"}));
     }
 
     // A graft ticked beside others keeps its row: it applies after the ticked rows above it, so the rows' places —
@@ -642,7 +643,7 @@ private slots:
                     {"TILE", {{"UID", "38"}, {"TITLE", "Game"}}}} })}} })} });
         ManifestModel::DeriveFacts(idx);
         json Cfg = json{{"Settings", json::object()}};
-        PackageCatalog::MergePackageVariables(Cfg, idx.Find("game")->PackageUid, {{"fwd", "e"}});   // the user's own
+        InstanceStore::MergeVariables(Cfg, idx.Find("game")->PackageUid, {{"fwd", "e"}});   // the user's own
         PreLaunchWindow W(&Cfg, &idx, {"game"});
         W.resize(900, 700);
         W.show();
@@ -889,7 +890,7 @@ private slots:
         QCOMPARE(Ost->checkState(0), Qt::Checked);                               // recommended, inside its section
         Fix->setCheckState(0, Qt::Checked);
         QCoreApplication::processEvents();
-        const json US = PackageCatalog::GetPackageUserSettings(Cfg, idx.Find("game")->PackageUid);
+        const json US = InstanceStore::ReadConfig(Cfg, idx.Find("game")->PackageUid);
         QVERIFY(US.contains("GRAFTS") && US["GRAFTS"].contains("57"));
         std::vector<std::string> Saved;
         for (const auto &G : US["GRAFTS"]["57"]) Saved.push_back(G.get<std::string>());
@@ -961,7 +962,7 @@ private slots:
             QCoreApplication::processEvents();
         };
         const auto saved = [&] {
-            const json US = PackageCatalog::GetPackageUserSettings(Cfg, idx.Find("game")->PackageUid);
+            const json US = InstanceStore::ReadConfig(Cfg, idx.Find("game")->PackageUid);
             std::vector<std::string> G;
             if (US.contains("GRAFTS") && US["GRAFTS"].contains("77")) for (const auto &X : US["GRAFTS"]["77"]) G.push_back(X.get<std::string>());
             return G;
@@ -971,7 +972,7 @@ private slots:
         tick("Aaa");
         const std::vector<std::string> S = saved();
         QVERIFY2(S.size() == 3, "all three ticked");
-        const auto A = PackageCatalog::AppliedGrafts(idx, "game", S);
+        const auto A = Shelf::AppliedGrafts(idx, "game", S);
         QVERIFY2(std::find(A.begin(), A.end(), "x") != A.end(), "the graft that needs Base is applied, not dropped");
     }
 

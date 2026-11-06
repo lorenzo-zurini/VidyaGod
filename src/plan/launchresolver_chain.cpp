@@ -1,8 +1,10 @@
 #include <sys/stat.h>
 #include "launchresolver.h"
+#include "instancestore.h"
+#include "shelf.h"
+#include "installed.h"
 #include "apppaths.h"        // AppPaths::DataRoot — the app data root the launch TEMP hangs off of
 #include "varsubst.h"        // VarSubst::StringVariableSubstitution / RenderValue
-#include "packagecatalog.h"  // GetPackageUserSettings (catalog/user-settings service)
 #include "runnerwrapper.h"   // RunnerWrapper::ExecutableAvailable / DefPrefixDir
 #include "commonutils.h"     // Log*
 #include "builtinrunners.h"  // BuiltinRunners::IsBuiltin — the tie-break toward the built-in runner
@@ -23,11 +25,8 @@
 #include <string>
 #include <vector>
 
-//The pure manifest queries + VFS-layer helpers live in ManifestModel; the catalog/user-settings service in
-//PackageCatalog. Bring both in unqualified so the resolver code (moved verbatim out of ContainerWrapper) reads
-//naturally (GetPackageUserSettings / MachinePlatform / IsVfsLayer / ...).
+//The index's queries (MachinePlatform / IsVfsLayer / …) read unqualified.
 using namespace ManifestModel;
-using namespace PackageCatalog;
 
 //Resolves every CustomVar (TYPE:"CustomVar") in the closure into ONE GLOBAL NAMESPACE (ContainerParams.CustomVariables,
 //keyed by the bare token "KEY"). ABSOLUTE SCOPE: a var's final value is visible to every reference — including inside
@@ -203,11 +202,11 @@ static std::vector<const Node *> AvailableRunnersSorted(const NodeIndex &Idx, co
 }
 
 //The installed runners among them (same order). A launch runs on installed runners when they make a chain, so the
-//chain the resolver picks is the one the Play gate (PackageCatalog::HasUsableChain) found.
+//chain the resolver picks is the one the Play gate (Installed::HasUsableChain) found.
 static std::vector<const Node *> InstalledOf(const NodeIndex &Idx, const std::vector<const Node *> &Runners)
 {
     std::vector<const Node *> Out;
-    for (const Node *R : Runners) if (PackageCatalog::RunnerInstalled(Idx, R->Key())) Out.push_back(R);
+    for (const Node *R : Runners) if (Installed::RunnerInstalled(Idx, R->Key())) Out.push_back(R);
     return Out;
 }
 
@@ -269,7 +268,7 @@ std::vector<std::string> LaunchResolver::ResolveChainIds(const NodeIndex &Idx, c
     std::vector<std::string> Pinned = CP.RunnerChainIds;
     if (Pinned.empty() && !CP.IgnoreSavedChain)
     {
-        auto US = GetPackageUserSettings(GlobalConfigJSON, CP.PackageUID, CP.InstanceName);
+        auto US = InstanceStore::ReadConfig(GlobalConfigJSON, CP.PackageUID, CP.InstanceName);
         if (US.contains("RUNNER_CHAIN") && US["RUNNER_CHAIN"].is_array())
             for (const auto &X : US["RUNNER_CHAIN"]) if (X.is_string()) Pinned.push_back(std::string(X));
     }

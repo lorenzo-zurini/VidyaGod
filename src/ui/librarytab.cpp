@@ -1,4 +1,6 @@
 #include "librarytab.h"
+#include "installed.h"
+#include "shelf.h"
 #include <QDate>
 #include <QMenu>
 #include "appmodel.h"          // AppModel — catalog/config + card size
@@ -183,10 +185,10 @@ void LibraryTab::buildCards()
     qDeleteAll(*LibraryGameCards); LibraryGameCards->clear();
     //One tile per presentable GROUP of launchable nodes. Only HYDRATED groups (every edition's content present
     //locally) appear in the Library; un-hydrated ones live in the Available tab.
-    const auto Hyd = PackageCatalog::HydrationMap(Model.catalogIndex());   // O(N+E) once — never per-launchable (deep chains → O(N²))
+    const auto Hyd = Installed::HydrationMap(Model.catalogIndex());   // O(N+E) once — never per-launchable (deep chains → O(N²))
     //The cards and the launch dialogs they open read one snapshot: a later re-index replaces it, and they are rebuilt.
     const std::shared_ptr<const NodeIndex> Snapshot = Model.catalogSnapshot();
-    for (const PackageCatalog::ShelfTile & Tile : PackageCatalog::ShelfTiles(*Snapshot))
+    for (const Shelf::Tile & Tile : Shelf::Tiles(*Snapshot))
     {
         std::vector<std::string> Ids;
         bool AllHydrated = true, HasContent = false;

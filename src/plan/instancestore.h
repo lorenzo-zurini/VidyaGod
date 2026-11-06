@@ -1,6 +1,7 @@
 #ifndef INSTANCESTORE_H
 #define INSTANCESTORE_H
 
+#include <map>
 #include <string>
 #include <vector>
 #include <filesystem>
@@ -69,6 +70,14 @@ nlohmann::ordered_json ReadConfig(const nlohmann::ordered_json &Cfg, const std::
 // Atomically write an instance's config blob (creates the dir). Empty Instance ⇒ the active instance.
 bool WriteConfig(const nlohmann::ordered_json &Cfg, const std::string &PackageUID, const std::string &Instance,
                  const nlohmann::ordered_json &Data, std::string *Error = nullptr);
+//One key of the instance's config, written now (a write creates DefaultInstance when the game has none).
+void SetSetting(const nlohmann::ordered_json &Cfg, const std::string &PackageUID, const std::string &Key,
+                const nlohmann::ordered_json &Value, const std::string &Instance = std::string());
+//The instance's saved VARIABLES (an empty object when none): the one way to read what the user chose.
+nlohmann::ordered_json Variables(const nlohmann::ordered_json &Cfg, const std::string &PackageUID, const std::string &Instance = std::string());
+//NewVars merged into the instance's VARIABLES and written: the one write path for options and pool secrets.
+void MergeVariables(const nlohmann::ordered_json &Cfg, const std::string &PackageUID,
+                    const std::map<std::string, std::string> &NewVars, const std::string &Instance = std::string());
 
 // Lifecycle. Names are validated (ValidName); Create/Rename/Clone refuse an existing target; Delete rm-rf's the dir.
 bool Create(const nlohmann::ordered_json &Cfg, const std::string &PackageUID, const std::string &Name, std::string *Error = nullptr);

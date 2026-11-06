@@ -3,6 +3,7 @@
 // stopping it; the mounts sessions left. And the engine's pieces on their own: a wine prefix's registry (read, edit,
 // diff, apply a node's REG edits), and the file edits and binary patches a launch applies, on any folder.
 #include "command.h"
+#include "installed.h"
 #include "cmdutil.h"
 #include "boxprefix.h"
 #include "binarypatch.h"
@@ -225,7 +226,7 @@ VG_COMMANDS
           "SandboxLayer::BoxStartArgs", "SandboxLayer::RunInBox", "SandboxLayer::TerminateBox", "SandboxLayer::EmptyBox", "BoxLaunch::Prepare",
           "BoxLaunch::Harvest", "BoxLaunch::Discard", "BoxPrefix::Materialise", "BoxPrefix::SyncKeepsBack", "BoxPrefix::InBox", "BoxPrefix::BoxRelForReal",
           "BoxPrefix::RealForLayout", "BoxPrefix::KeptNotInBox", "Platform::IsLink", "Platform::RemoveTree", "LaunchResolver::ProbePrefixLayout",
-          "LaunchResolver::ApplyInnerEnv", "RunnerInstall::RunnerBuildPresent", "RunnerInstall::RunnerNodeImported", "RunnerInstall::CollectRunnerNodeTargets" },
+          "LaunchResolver::ApplyInnerEnv", "Installed::RunnerBuildPresent", "Installed::RunnerBuildNodes", "PackageCatalog::CollectRunnerNodeTargets" },
         Needs::Config, true,
         [](Command::Context &C, const json &A) {
             if (!Command::Bool(A, "yes", false)) throw Command::BadArgs("this runs the game: add --yes");

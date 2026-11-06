@@ -1,4 +1,5 @@
 #include "runnerspage.h"
+#include "installed.h"
 #include "appmodel.h"          // AppModel — catalog + importRunner
 #include "libraryview.h"       // IpfsFetchReady()
 #include "packagecatalog.h"
@@ -125,13 +126,13 @@ void RunnersPage::rebuild()
     {
         (void)Id;
         if (!N.IsRunner()) continue;
-        if (PackageCatalog::IsEmbeddedRunner(Idx, N.NodeId) && !PackageCatalog::RunnerInstalled(Idx, N.NodeId)) continue;
+        if (Installed::IsEmbeddedRunner(Idx, N.NodeId) && !Installed::RunnerInstalled(Idx, N.NodeId)) continue;
         Runners.push_back(&N);
     }
     std::sort(Runners.begin(), Runners.end(), [](const Node* A, const Node* B){ return A->NodeId < B->NodeId; });
     // SAME fetch-based hydration model as the Catalog/Library tabs — a runner is no different from a game package:
     // its state is read from HydrationMap (build content fetched?), not a bespoke runner-only predicate. O(N+E) once.
-    const auto Hyd = PackageCatalog::HydrationMap(Idx);
+    const auto Hyd = Installed::HydrationMap(Idx);
     if (Runners.empty())
     {
         auto * None = new QTreeWidgetItem(Table, { "No runners found in your repositories." });
@@ -202,7 +203,7 @@ void RunnersPage::rebuild()
             {
                 (void)Id;
                 if (!N.IsVariant() || N.IsGraft || N.Received) continue;
-                for (const Node * R : PackageCatalog::CompatibleRunners(*Snap, N)) ++(*Count)[R->Key()];
+                for (const Node * R : Installed::CompatibleRunners(*Snap, N)) ++(*Count)[R->Key()];
             }
         },
         [Self, Gen, Count, Rows]{
