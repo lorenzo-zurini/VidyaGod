@@ -1,7 +1,5 @@
 #include "packagecatalog.h"
 #include "contentfile.h"
-#include "pkglayout.h"
-#include "pkggraph.h"
 #include "pkgdoc.h"
 #include "packagecatalog_p.h"
 #include "nodegraph.h"       // ReadTreeJsonBounded — every library-root walker reads bounded

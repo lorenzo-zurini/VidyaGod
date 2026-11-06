@@ -1,4 +1,5 @@
 #include "pkggraph.h"
+#include "noderefs.h"
 
 #include "commonutils.h"   // Log
 
@@ -388,22 +389,12 @@ bool MoveLayerTo(json &Node, int From, int At)
     return true;
 }
 
-bool LayerNames(const json &L, const std::string &Ref)
-{
-    if (!L.is_object()) return false;
-    auto Is = [&](const char *K) { return L.contains(K) && L[K].is_string() && L[K].get<std::string>() == Ref; };
-    if (Is("NODE") || Is("NOT")) return true;
-    if (L.contains("ANY") && L["ANY"].is_array())
-        for (const json &M : L["ANY"]) if (M.is_string() && M.get<std::string>() == Ref) return true;
-    return false;
-}
-
 bool MoveLayerAcross(json &Src, int From, json &Dst, const std::string &DstHandle, int At, bool Copy)
 {
     if (!Src.is_object() || !Dst.is_object() || !Src.contains("LAYERS") || !Src["LAYERS"].is_array()) return false;
     json &Ls = Src["LAYERS"];
     if (From < 0 || From >= (int)Ls.size()) return false;
-    if (!DstHandle.empty() && LayerNames(Ls[(size_t)From], DstHandle)) return false;
+    if (!DstHandle.empty() && NodeRefs::Names(Ls[(size_t)From], DstHandle)) return false;
     if (!Dst.contains("LAYERS") || Dst["LAYERS"].is_null()) Dst["LAYERS"] = json::array();
     if (!Dst["LAYERS"].is_array()) return false;
     json &Ld = Dst["LAYERS"];
@@ -436,61 +427,6 @@ bool EraseRef(json &Node, int Slot)
         }
     }
     return false;
-}
-
-bool AddNodeRef(json &Node, const std::string &Ref)
-{
-    if (!Node.is_object() || Ref.empty()) return false;
-    if (!Node.contains("LAYERS") || Node["LAYERS"].is_null()) Node["LAYERS"] = json::array();
-    if (!Node["LAYERS"].is_array()) return false;
-    json &Ls = Node["LAYERS"];
-    size_t At = 0;
-    for (const auto &L : Ls)
-    {
-        if (LayerType(L) == "NODE" && L["NODE"].is_string() && L["NODE"].get<std::string>() == Ref) return false;
-    }
-    while (At < Ls.size() && LayerType(Ls[At]) == "NODE") ++At;
-    Ls.insert(Ls.begin() + (long)At, json::object({{"NODE", Ref}}));
-    return true;
-}
-
-bool InsertRef(json &Node, const std::string &Type, const std::string &Ref, int At)
-{
-    if (At < 0 && Type == "NODE") return AddNodeRef(Node, Ref);
-    if (!Node.is_object() || Ref.empty() || (Type != "NODE" && Type != "NOT")) return false;
-    if (!Node.contains("LAYERS") || Node["LAYERS"].is_null()) Node["LAYERS"] = json::array();
-    if (!Node["LAYERS"].is_array()) return false;
-    json &Ls = Node["LAYERS"];
-    for (const auto &L : Ls)
-        if (LayerType(L) == Type && L[Type].is_string() && L[Type].get<std::string>() == Ref) return false;
-    At = At < 0 ? (int)Ls.size() : std::min(At, (int)Ls.size());
-    Ls.insert(Ls.begin() + At, json::object({{Type, Ref}}));
-    return true;
-}
-
-bool RemoveRefs(json &Node, const std::string &Ref)
-{
-    if (!Node.is_object() || !Node.contains("LAYERS") || !Node["LAYERS"].is_array()) return false;
-    json Kept = json::array();
-    bool Changed = false;
-    auto Names = [&](const json &V) { return V.is_string() && V.get<std::string>() == Ref; };
-    for (const auto &L : Node["LAYERS"])
-    {
-        const std::string T = LayerType(L);
-        if ((T == "NODE" && Names(L["NODE"])) || (T == "NOT" && Names(L["NOT"]))) { Changed = true; continue; }
-        if (T == "ANY" && L["ANY"].is_array())
-        {
-            json A = json::array();
-            for (const auto &M : L["ANY"]) { if (Names(M)) { Changed = true; continue; } A.push_back(M); }
-            if (A.empty() && !L["ANY"].empty()) continue;
-            json L2 = L; L2["ANY"] = std::move(A);
-            Kept.push_back(std::move(L2));
-            continue;
-        }
-        Kept.push_back(L);
-    }
-    if (Changed) Node["LAYERS"] = std::move(Kept);
-    return Changed;
 }
 
 std::string TakeToText(const json &Take)

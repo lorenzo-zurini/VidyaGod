@@ -3,7 +3,6 @@
 #include "pkgcanvas.h"
 #include "packageeditormodel.h"
 #include "manifestmodel.h"
-#include "prelaunchwindow.h"
 #include "authoringsessionwindow.h"
 #include "asyncwork.h"
 #include "vgdelta.h"
@@ -14,6 +13,7 @@
 #include <QImageReader>
 #include <QCoreApplication>
 #include <QFileDialog>
+#include <QPushButton>
 #include <QFile>
 #include <QFileInfo>
 #include <QInputDialog>
@@ -1823,9 +1823,7 @@ void PkgActions::testLaunch(const std::string & Handle)
     auto Idx = std::make_shared<const NodeIndex>(Model->BuildExecIndex());
     if (!Idx->Find(NodeId))
     { tell("Test launch", "This node isn't in the catalog index yet — save the package first."); return; }
-    auto * Dlg = new PreLaunchWindow(Model->globalConfig(), Idx, {NodeId}, std::string(), Parent);   // the node's first tile
-    Dlg->setAttribute(Qt::WA_DeleteOnClose);
-    Dlg->show();
+    emit testLaunchRequested(Idx, QString::fromStdString(NodeId));
 }
 
 // ---------------------------------------------------------------------------

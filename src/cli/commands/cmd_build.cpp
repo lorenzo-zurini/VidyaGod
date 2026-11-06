@@ -4,6 +4,7 @@
 // close` (so a series of commands is one edit, with undo); run on its own, a command opens the package for that call,
 // and only `--save` keeps what it did. Nothing is written until a save — and a save is a re-mint (PkgDoc).
 #include "command.h"
+#include "noderefs.h"
 #include "cmdutil.h"
 #include "mainwindow.h"
 #include "packageeditor.h"
@@ -464,7 +465,7 @@ VG_COMMANDS
         "--ref drops every reference the node makes to that node; --slot drops the reference in that slot (as the canvas "
         "numbers a node's wires).",
         { PkgArg(), NodeArg(), Opt("ref", "the referenced node (handle, index, LABEL, or a CID)"), Opt("slot", "the wire slot", Type::Int), SaveFlag() },
-        { "build unlink 749 'Patch 2.0a' --ref 'The Conquerors'" }, { "PkgGraph::RemoveRefs", "PkgGraph::EraseRef", "PkgGraph::LayerNames" }, Needs::Model, false,
+        { "build unlink 749 'Patch 2.0a' --ref 'The Conquerors'" }, { "NodeRefs::Remove", "PkgGraph::EraseRef", "NodeRefs::Names" }, Needs::Model, false,
         [](Command::Context &C, const json &A) {
             Session S = Open(C, Command::Str(A, "package"));
             PkgDoc::Document &D = S.M->doc();
@@ -476,8 +477,8 @@ VG_COMMANDS
             {
                 const std::string Q = Command::Str(A, "ref");
                 const std::string R = PkgDoc::LooksLikeCid(Q) && D.IndexOf(Q) < 0 ? Q : D.Handle(Ix(D, Q));
-                for (size_t K = 0; K < N.value("LAYERS", json::array()).size(); ++K) if (PkgGraph::LayerNames(N["LAYERS"][K], R)) Layers.push_back(K);
-                Ok = PkgGraph::RemoveRefs(N, R);
+                for (size_t K = 0; K < N.value("LAYERS", json::array()).size(); ++K) if (NodeRefs::Names(N["LAYERS"][K], R)) Layers.push_back(K);
+                Ok = NodeRefs::Remove(N, R);
             }
             else if (A.contains("slot")) Ok = PkgGraph::EraseRef(N, static_cast<int>(Command::Int(A, "slot")));
             else throw Command::BadArgs("give --ref or --slot");
@@ -510,7 +511,7 @@ VG_COMMANDS
           Opt("by", "places to move by (±)", Type::Int), Opt("to", "the position to move to", Type::Int), Opt("into", "a node to carry it into"),
           Opt("at", "the position there", Type::Int), Flag("copy", "(--into) copy instead of move"), SaveFlag() },
         { "build layer 749 'Patch 2.0a' --add REG", "build layer 749 'Patch 2.0a' --move 3 --by -1", "build layer 749 0 --move 2 --into 'The Conquerors' --copy" },
-        { "PkgGraph::AddLayer", "PkgGraph::InsertRef", "PkgGraph::AddNodeRef", "PkgGraph::MoveLayer", "PkgGraph::MoveLayerTo", "PkgGraph::MoveLayerAcross" },
+        { "PkgGraph::AddLayer", "NodeRefs::Insert", "NodeRefs::Add", "PkgGraph::MoveLayer", "PkgGraph::MoveLayerTo", "PkgGraph::MoveLayerAcross" },
         Needs::Model, false,
         [](Command::Context &C, const json &A) {
             Session S = Open(C, Command::Str(A, "package"));
@@ -525,8 +526,8 @@ VG_COMMANDS
                 {
                     const std::string Q = Command::Str(A, "ref");
                     const std::string R = PkgDoc::LooksLikeCid(Q) && D.IndexOf(Q) < 0 ? Q : D.Handle(Ix(D, Q));
-                    Ok = A.contains("at") ? PkgGraph::InsertRef(N, T, R, static_cast<int>(Command::Int(A, "at"))) : (T == "NODE" ? PkgGraph::AddNodeRef(N, R)
-                                                                                                                  : PkgGraph::InsertRef(N, T, R, -1));
+                    Ok = A.contains("at") ? NodeRefs::Insert(N, T, R, static_cast<int>(Command::Int(A, "at"))) : (T == "NODE" ? NodeRefs::Add(N, R)
+                                                                                                                  : NodeRefs::Insert(N, T, R, -1));
                 }
                 else Ok = PkgGraph::AddLayer(N, T);
                 if (!Ok) throw std::runtime_error("could not add a " + T + " layer here");

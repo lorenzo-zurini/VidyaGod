@@ -1,8 +1,8 @@
 #include "nodegraph.h"
+#include "noderefs.h"
 #include "pkgdoc.h"
 
 #include "cid.h"
-#include "pkggraph.h"        // AddNodeRef / RemoveRefs: where a reference goes in a node's LAYERS
 #include "manifestmodel.h"   // IsNodeObject: which *.json in a package dir is a node
 
 #include <algorithm>
@@ -280,7 +280,7 @@ bool Document::Remove(int I)
     for (Entry &E : Entries)
     {
         json N = *E.Node;
-        if (PkgGraph::RemoveRefs(N, H)) E.Node = std::make_shared<const json>(std::move(N));
+        if (NodeRefs::Remove(N, H)) E.Node = std::make_shared<const json>(std::move(N));
     }
     Where.erase(H);
     Touch(true);
@@ -292,11 +292,11 @@ bool Document::Link(int Child, const std::string &Parent, RefKind Kind, int At)
     if (Child < 0 || Child >= Count() || Parent.empty() || Parent == Handle(Child)) return false;
     json N = Node(Child);
     bool Did = false;
-    if (Kind == RefKind::Node) Did = PkgGraph::InsertRef(N, "NODE", Parent, At);
+    if (Kind == RefKind::Node) Did = NodeRefs::Insert(N, "NODE", Parent, At);
     else
     {
         if (!N.contains("LAYERS") || !N["LAYERS"].is_array()) N["LAYERS"] = json::array();
-        if (Kind == RefKind::Not) Did = PkgGraph::InsertRef(N, "NOT", Parent, At);
+        if (Kind == RefKind::Not) Did = NodeRefs::Insert(N, "NOT", Parent, At);
         else
         {
             json *Any = nullptr;
@@ -340,7 +340,7 @@ bool Document::MergeInto(int From, int Into, std::string *Err)
         if (!N.contains("LAYERS") || !N["LAYERS"].is_array()) continue;
         for (const json &L : N["LAYERS"])
         {
-            if (PkgGraph::LayerNames(L, Hi)) return Fail("\"" + Labels()[Hf] + "\" contains \"" + Labels()[Hi] + "\" - merging would make it contain itself.");
+            if (NodeRefs::Names(L, Hi)) return Fail("\"" + Labels()[Hf] + "\" contains \"" + Labels()[Hi] + "\" - merging would make it contain itself.");
             if (L.is_object() && L.contains("NODE") && L["NODE"].is_string()) Todo.push_back(L["NODE"].get<std::string>());
         }
     }
@@ -362,7 +362,7 @@ bool Document::MergeInto(int From, int Into, std::string *Err)
     {
         if (I == From || I == Into || !Node(I).is_object() || !Node(I).contains("LAYERS") || !Node(I)["LAYERS"].is_array()) continue;
         bool Touches = false;
-        for (const json &L : Node(I)["LAYERS"]) if (PkgGraph::LayerNames(L, Hf)) Touches = true;
+        for (const json &L : Node(I)["LAYERS"]) if (NodeRefs::Names(L, Hf)) Touches = true;
         if (!Touches) continue;
         json N = Node(I), Out = json::array();
         for (json L : N["LAYERS"])

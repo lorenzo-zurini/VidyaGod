@@ -132,16 +132,6 @@ bool MoveLayerAcross(nlohmann::ordered_json &Src, int From, nlohmann::ordered_js
 //Erase the reference at flattened ordinal `Slot` (the Link::Slot of its wire): a NODE or NOT layer is removed, an
 //ANY member is removed (an ANY left with none is removed). False if none.
 bool EraseRef(nlohmann::ordered_json &Node, int Slot);
-//Contain `Ref`: a NODE layer, after the node's leading NODE layers (what it contains lies beneath its own layers).
-//No-op if a NODE layer already names it. Returns whether it changed.
-bool AddNodeRef(nlohmann::ordered_json &Node, const std::string &Ref);
-//...or at a chosen place in the fold: a layer of `Type` ("NODE" or "NOT") naming Ref, before layer At (-1: as
-//AddNodeRef places it). No-op if a layer of that type already names it.
-bool InsertRef(nlohmann::ordered_json &Node, const std::string &Type, const std::string &Ref, int At);
-//Whether a layer names Ref (as NODE, NOT or an ANY member).
-bool LayerNames(const nlohmann::ordered_json &Layer, const std::string &Ref);
-//Remove every reference naming `Ref` (NODE layers, ANY members, NOT layers). Returns whether anything changed.
-bool RemoveRefs(nlohmann::ordered_json &Node, const std::string &Ref);
 
 // ---- payload schema -------------------------------------------------------
 

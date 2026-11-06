@@ -1,6 +1,7 @@
 #include "eventlog.h"
 #include "mainwindow.h"
 #include "packageeditor.h"
+#include "pkgactions.h"
 #include "asyncwork.h"
 #include "appmodel.h"
 #include "downloadmanager.h"
@@ -60,6 +61,11 @@ MainWindow::MainWindow(nlohmann::ordered_json * gc, QDir * appData, QWidget * pa
     PackageEditor::SetOnCreated([this](PackageEditor * Ed) {
         connect(Ed, &PackageEditor::packageSaved, &MainWindow::RefreshPackage);
         connect(Ed, &PackageEditor::publishToLibraryRequested, Model, &AppModel::publishLibraries);
+        connect(Ed->actions(), &PkgActions::testLaunchRequested, Ed, [Ed, this](std::shared_ptr<const NodeIndex> Idx, const QString & Node) {
+            auto * Dlg = new PreLaunchWindow(Model->config(), Idx, {Node.toStdString()}, std::string(), Ed);   // the node's first tile
+            Dlg->setAttribute(Qt::WA_DeleteOnClose);
+            Dlg->show();
+        });
     });
 
     {

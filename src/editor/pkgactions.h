@@ -2,6 +2,7 @@
 #define PKGACTIONS_H
 
 #include "pkggraph.h"
+#include "manifestmodel.h"   // NodeIndex (a test launch hands the launch window its own)
 
 #include <QObject>
 #include <QString>
@@ -69,6 +70,9 @@ public:
 signals:
     //A finding worth a line in the status bar, not a dialog (what auto-detect set, why a drop was refused).
     void status(const QString & text);
+    //Test launch: open the launch window — the player's own door — on this node of this index (its own copy: the
+    //window is modeless and outlives the editor's next save). The app opens it (MainWindow's editor hook).
+    void testLaunchRequested(std::shared_ptr<const NodeIndex> index, const QString & nodeId);
 
 public slots:
     void perform(const QString & nodeId, const QString & action);

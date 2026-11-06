@@ -1,4 +1,5 @@
 #include "pkggraph.h"   // AddNodeRef
+#include "noderefs.h"
 #include "installed.h"
 #include "shelf.h"
 #include "validate.h"
@@ -163,7 +164,7 @@ int CliModes::RunMaintenanceModes(LaunchParameters &LaunchParameters, nlohmann::
             for (int k = 0; k < (int)J["LAYERS"].size(); ++k)
                 if (Fold::TypeOf(J["LAYERS"][(size_t)k]) == "ZIP") { Raw = k; break; }
             if (Raw < 0) { LogErr("convert-delta", "node " + vs[i].node->NodeId + " has no ZIP layer in " + vs[i].node->File.string()); return 1; }
-            PkgGraph::AddNodeRef(J, vs[i - 1].node->Key());
+            NodeRefs::Add(J, vs[i - 1].node->Key());
             for (int k = 0; k < (int)J["LAYERS"].size(); ++k)       // the insert may have shifted it
                 if (Fold::TypeOf(J["LAYERS"][(size_t)k]) == "ZIP") { Raw = k; break; }
             nlohmann::ordered_json &L0 = J["LAYERS"][(size_t)Raw];

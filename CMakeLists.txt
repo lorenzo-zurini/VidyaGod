@@ -258,6 +258,8 @@ set(SHARED_SOURCES
     src/base/cid.cpp
 
     src/format/nodegraph.h
+    src/format/noderefs.h
+    src/format/noderefs.cpp
     src/library/nodestore.h
     src/library/nodestore.cpp
     src/format/nodegraph.cpp
@@ -269,7 +271,7 @@ set(SHARED_SOURCES
 
     src/editor/pkggraph.h
     src/editor/pkggraph.cpp
-    src/editor/pkgdoc.cpp
+    src/library/pkgdoc.cpp
     src/editor/pkgform.h
     src/editor/pkgform.cpp
     src/editor/pkglayout.h
@@ -484,7 +486,8 @@ add_executable(vg_tests
     src/engine/optionreadback.cpp
     src/editor/pkggraph.cpp
     src/editor/pkglayout.cpp
-    src/editor/pkgdoc.cpp
+    src/library/pkgdoc.cpp
+    src/format/noderefs.cpp
     src/base/commonutils.cpp
     src/engine/depcheck.cpp        # Qt-free dependency detection engine (ParseLdconfig/Check)
     ${VG_PLATFORM_SRC}      # Platform::SelfExe (used by depcheck) — POSIX or Win32 impl
@@ -504,6 +507,8 @@ if(VIDYAGOD_SANITIZE)
 endif()
 set_target_properties(vg_tests PROPERTIES AUTOMOC OFF AUTOUIC OFF AUTORCC OFF)
 add_test(NAME vg_tests COMMAND vg_tests)
+# The layering (VG_LAYERS): every #include reaches its own layer or one before it.
+add_test(NAME layers COMMAND python3 -I ${CMAKE_SOURCE_DIR}/tools/layers/check_layers.py --src ${CMAKE_SOURCE_DIR}/src)
 set_tests_properties(vg_tests PROPERTIES ENVIRONMENT "HOME=${CMAKE_BINARY_DIR}/testhome")
 
 # ---- GUI / integration tests (Qt Test) — drive real widgets + models + services in-process, reusing the app

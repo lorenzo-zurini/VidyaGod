@@ -1,4 +1,5 @@
 #include "pkgcanvas.h"
+#include "noderefs.h"
 
 #include "pkgform.h"
 #include "pkglayout.h"
@@ -818,7 +819,7 @@ bool PkgCanvas::MoveLayer(const std::string &From, int FromLayer, const std::str
     const json Layer = Src["LAYERS"][(size_t)FromLayer];
     //A reference may not land where it would make a node contain itself.
     for (int J = 0; J < D.Count(); ++J)
-        if (PkgGraph::LayerNames(Layer, D.Handle(J)) && (J == Ti || Reach(D, D.Handle(J), false).count(To)))
+        if (NodeRefs::Names(Layer, D.Handle(J)) && (J == Ti || Reach(D, D.Handle(J), false).count(To)))
         { if (Why) *Why = "Not there: it would make \"" + NodeTitle(D.Node(Ti), To) + "\" contain itself."; return false; }
     if (Fi == Ti)
     {
@@ -899,7 +900,7 @@ static std::set<std::string> Reach(const Document &D, const std::string &From, b
         if (!N.is_object() || !N.contains("LAYERS") || !N["LAYERS"].is_array()) continue;
         for (const json &L : N["LAYERS"])
             for (int J = 0; J < D.Count(); ++J)
-                if (J != I && PkgGraph::LayerNames(L, D.Handle(J)))
+                if (J != I && NodeRefs::Names(L, D.Handle(J)))
                 {
                     if (Up) Refs[D.Handle(J)].push_back(D.Handle(I));
                     else Refs[D.Handle(I)].push_back(D.Handle(J));
