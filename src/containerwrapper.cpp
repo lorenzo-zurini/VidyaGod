@@ -111,16 +111,13 @@ ContainerWrapper::~ContainerWrapper()
     LeaveLive();
 }
 
-//ContainerWrapper is now a thin SESSION ORCHESTRATOR: it owns the live config/manifest/ContainerParams and a single
+//ContainerWrapper is a SESSION ORCHESTRATOR: it owns the live config/ContainerParams and a single
 //game session's lifecycle (construct → InitializeContainer → BuildContainerRuntime → Execute → Cleanup), delegating
 //every step to the extracted subsystems. The registry is RegistryWrapper, the filesystem is the vidyagodfs binary,
 //and the launch-engine logic lives in LaunchResolver/VfsMount/RegistryLayer/PersistLayer/FileEdits/LaunchSources/
 //RunnerInstall (with the pure %token% engine in VarSubst).
 
-//Runs the initialization steps in the required order:
-//  DecideComponent → DeriveContainerParams → CreateRecipe → ResolveCustomVariables → BuildSubComponentsArray
-//ResolveCustomVariables must precede BuildSubComponentsArray so that custom %KEY% tokens
-//are already in GetVariablesMap() when subcomponent strings are substituted.
+//Resolves the launch: InitializeFromNode (closure, runner chain, variables before the ops that use them, persistence).
 bool ContainerWrapper::InitializeContainer()
 {
     StepScope Step(2, "Resolving the launch (closure, runner chain, variables, persistence)");
@@ -367,46 +364,6 @@ bool ContainerWrapper::BuildContainerRuntime()
     LogSucc("ContainerWrapper::BuildContainerRuntime", "Runtime ready.");
     return true;
 }
-
-//(GetPackageUserSettings / SetPackageUserSetting moved to PackageCatalog — see packagecatalog.h.)
-
-
-
-//(RunCommand — the generic synchronous QProcess runner — moved to procenv.{h,cpp} as a free function.)
-
-
-
-
-
-
-
-//(LayerLocator / ResolveLayerSource moved to ManifestModel — see manifestmodel.h.)
-
-
-
-
-
-
-
-
-
-
-
-
-//(ImportPackage / PublishPackage / MirrorDehydrated / IsPackageImported moved to PackageCatalog — see packagecatalog.h.)
-
-
-
-
-
-
-
-
-
-
-
-
-
 
 //Launches the game using the resolved runner and environment.
 //

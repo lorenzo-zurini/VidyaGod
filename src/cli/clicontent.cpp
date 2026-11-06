@@ -476,9 +476,8 @@ int CliModes::RunContentModes(LaunchParameters &LaunchParameters, nlohmann::orde
         // Launch-readiness: derive the CID-keyed catalog straight from the on-disk working tree (FreezeToIndex, no
         // block writes) with BundleDir wired, and resolve a launchable's closure. This also proves the two freeze
         // paths agree — Mint's DagPut CIDs are keys in the DagCid-built catalog (same canonical encoding → same CID).
-        std::string FErr;
-        NodeIndex Cat = NodeGraph::FreezeToIndex(Tree, Dirs, &FErr);
-        if (Cat.Nodes.empty()) { LogErr("main.cpp", "FreezeToIndex failed: " + FErr); return 1; }
+        NodeIndex Cat = NodeGraph::FreezeToIndex(Tree, Dirs);
+        if (Cat.Nodes.empty()) { LogErr("main.cpp", "FreezeToIndex froze nothing (the log above says why)"); return 1; }
         int WithDir = 0, DirPresent = 0;
         for (const auto &[C, N] : Cat.Nodes)
         {

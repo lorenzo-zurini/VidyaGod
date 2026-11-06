@@ -74,27 +74,8 @@ public:
     //Unmounts all paths in CleanupUnmountPaths (fusermount -uz) and removes RUNTIME and TEMP.
     bool Cleanup();
 
-    //(Per-package user settings + game/component/variant/module lookups moved out: PackageCatalog::Get/Set
-    //PackageUserSetting and ManifestModel::Find*/variants/modules respectively — see those headers.)
-
-    //(Container parameter/recipe/runner/exec/persistence resolution moved to LaunchResolver — see
-    //launchresolver.h. The %token% engine moved to VarSubst. The vidyagodfs mount subsystem (BuildLayerSpec/
-    //MountVFS/SpawnVidyagodfs/MountRunnerBuild/CheckCaseConflicts/MountpointsUnder/CleanStaleRuntime) moved to
-    //VfsMount; dependency pre-flight + materialize (VerifyDependencies/EnsureSources/MaterializeLayers) to
-    //LaunchSources. Catalog/Sync/Publish to PackageCatalog. Runner install lives in RunnerInstall.)
-
 private:
-    //(Runner install — ImportRunner/ImportRunnerNode/RunnerNodeImported — moved to RunnerInstall; see runnerinstall.h.)
-    //(Wine prefix/registry/DEFAULTDATA + registry-persistence moved to RegistryLayer — see registrylayer.h:
-    //BuildDefaultData/ApplyOverrideRegEdits/CapturePersistRegKeys.
-    //File-persistence (Seed/CapturePersistFiles) moved to PersistLayer; FileEdit/DllOverride to FileEdits.)
-
-    //(RunCommand moved to procenv.{h,cpp} (free function); TranslateCustomVarValue / StringVariableSubstitution
-    //— the pure %token% engine — moved to VarSubst; see varsubst.h.)
-
-private:
-    //Runs DecideComponent → DeriveContainerParams → CreateRecipe → BuildSubComponentsArray
-    //in the required order. Called from the constructor.
+    //Resolves the whole launch from the node graph (LaunchResolver::InitializeFromNode). Called from the constructor.
     bool InitializeContainer();
 
     //Result of the ctor's InitializeContainer() run. A failed resolve used to leave a half-populated

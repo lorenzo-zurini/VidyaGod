@@ -229,7 +229,7 @@ VG_COMMANDS
         { Opt("files", "the roots to capture (a,b)"), Opt("name", "(--files) the folder's name"), Opt("target", "(--files) where it mounts (%GameDir%, …)"),
           Opt("keys", "registry keys to capture (a,b)"), Timeout() },
         { "author capture --files 'pfx/drive_c/GOG Games/X' --name X --target %GameDir%", "author capture --keys 'HKLM\\Software\\X'" },
-        { "AuthoringSessionModel::captureFiles", "AuthoringWorker::captureFiles", "AuthoringSession::CopySelection", "AuthoringSession::MakeDirLayer",
+        { "AuthoringSessionModel::captureFiles", "AuthoringWorker::captureFiles", "AuthoringSession::CopySelection",
           "AuthoringSessionModel::captureSelectedRegistry", "PackageEditorModel::fillWaiting" }, Needs::App, false,
         [](Command::Context &, const json &A) {
             Session &S = Live();

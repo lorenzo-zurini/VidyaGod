@@ -1032,7 +1032,7 @@ void AppModel::publishLibraries()
 {
     // Gigagraph publish: freeze the on-disk library into dag-json blocks and STORE them (DagPut → pinned/announced/
     // seedable), then record the shareable list of launchable root CIDs. No IPNS — the list is off-IPFS VidyaGod data.
-    // One at a time: two would write Libraries/PublishedList over each other. Asked again meanwhile, it runs once more
+    // One at a time: two would write Libraries over each other. Asked again meanwhile, it runs once more
     // after, with publishing() true throughout (nothing offers a publish in between).
     if (Publishing) { PublishAgain = true; return; }
     Publishing = true;
@@ -1051,9 +1051,9 @@ void AppModel::runPublish()
             Publishing = PublishAgain;
             if (PublishAgain) { PublishAgain = false; QMetaObject::invokeMethod(this, &AppModel::runPublish, Qt::QueuedConnection); }
             if (Cids->empty()) { emit libraryPublishFailed(QString::fromStdString(*Err)); return; }
-            (*Config)["PublishedList"] = (*Cfg)["PublishedList"];   // adopt the freshly-written flat list…
-            (*Config)["Libraries"]     = (*Cfg)["Libraries"];       // …AND the per-library grouping (drives Share ▾)
-            Config->erase("PublishedManifest");   // the one-pin library block is gone: packages are the pins
+            (*Config)["Libraries"] = (*Cfg)["Libraries"];   // the per-library grouping (drives Share ▾)
+            Config->erase("PublishedList");
+            Config->erase("PublishedManifest");
             save();
             pushSeedLevels();
             reRegisterShares();   // re-push every active share with the fresh CIDs (a re-publish can move them)

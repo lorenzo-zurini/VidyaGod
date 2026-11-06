@@ -78,21 +78,6 @@ static bool RuntimeSourced(const std::string &File) { return VarSubst::RuntimeSo
 
 // ----- import / publish -----
 
-
-
-//---------------------------------------------------------------------------------------------------------
-//StampNodePositions — write the canvas layout into the nodes, so a published package opens laid out on a
-//machine that has never seen it. Called on the way to a CID, because that is the only moment a layout is
-//allowed to change the package's bytes: authoring drags live in GlobalConfig precisely so they do NOT.
-//
-//What gets stamped is the layout AS IT STANDS: `LocalOverride` (this machine's drags) wins over the node's
-//current POS, which wins over the computed default — the same precedence PkgGraph::Build applies on screen, so
-//publishing bakes exactly the picture the author is looking at. The algorithm only ever supplies a position for
-//a node nobody has positioned.
-//
-//Idempotent where nothing moved: an unchanged bundle with no new drags produces identical bytes and mints the
-//same CID, because a node whose POS already equals its resolved position is not rewritten at all.
-//---------------------------------------------------------------------------------------------------------
 std::string EditorLayoutKey(const std::filesystem::path &BundleDir)
 {
     //ABSOLUTE, then normalised, then stripped of a trailing separator. Every step earns its place:

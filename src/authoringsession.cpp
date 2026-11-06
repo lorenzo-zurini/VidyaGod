@@ -267,12 +267,3 @@ int AuthoringSession::CopySelection(const fs::path &SrcRoot, const std::vector<s
     }
     return Count;
 }
-
-nlohmann::ordered_json AuthoringSession::MakeDirLayer(const std::string &DirNameRelToBundle, const std::string &Target)
-{
-    nlohmann::ordered_json L = nlohmann::ordered_json::object();
-    L["TYPE"] = "VFSDirLayer";
-    L["PATH"] = DirNameRelToBundle;
-    if (!Target.empty()) L["TARGET"] = Target;
-    return L;
-}

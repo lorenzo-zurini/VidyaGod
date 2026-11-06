@@ -220,11 +220,9 @@ std::vector<int> TopoLevels(const std::map<std::string, nlohmann::ordered_json> 
     return Level;
 }
 
-bool TopoOrderForMint(const std::map<std::string, nlohmann::ordered_json> &WorkingTree,
-                      std::vector<std::string> &Order, std::string *Error)
+std::vector<std::string> TopoOrderForMint(const std::map<std::string, nlohmann::ordered_json> &WorkingTree)
 {
-    (void)Error;   // no longer fails: a cycle is BROKEN, not fatal (see below)
-    Order.clear();
+    std::vector<std::string> Order;
     std::set<std::string> Visited, OnStack;
     int Broken = 0;
 
@@ -247,7 +245,7 @@ bool TopoOrderForMint(const std::map<std::string, nlohmann::ordered_json> &Worki
     if (Broken)
         LogWarn("NodeGraph::TopoOrderForMint", std::to_string(Broken)
                 + " cycle edge(s) broken — cyclic node(s) will be dropped at freeze; the rest is intact");
-    return true;
+    return Order;
 }
 
 } // namespace NodeGraph

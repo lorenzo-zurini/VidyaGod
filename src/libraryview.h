@@ -108,7 +108,6 @@ class LibraryView : public QAbstractScrollArea
 public:
     explicit LibraryView(QWidget * parent = nullptr);
 
-    struct SeriesGroup { int first, last; QColor color; QString name; };
     //A collapsible section over a CONTIGUOUS card-index range (cards must be pre-sorted so each group is a run).
     //Used by the Available tab to group by repository; empty ⇒ the flat grid (Library tab, unchanged).
     struct Group { QString name; int first, last; bool collapsed; };
@@ -116,7 +115,6 @@ public:
     void setCards(QList<LibraryGameCard *> * cards);
     void prescaleCovers(int cardW);
     void layoutCards(int cardW);
-    void setSeriesGroups(const QVector<SeriesGroup> & groups);
     //Collapsible repo sections (empty clears them → flat layout). Replaces the hover/edit affordances per the
     //action mode set via setHoverAction.
     void setGroups(const QVector<Group> & groups);
@@ -174,7 +172,6 @@ private:
     QList<LibraryGameCard *> * Cards = nullptr;
     QVector<QRect>             Rects;
     QVector<QVector<QRect>>    SecRects;     // SecRects[i] = small secondary-tile rects under card i (Catalog per-package)
-    QVector<SeriesGroup>       SeriesGroups;
     QVector<Group>             Groups;       // collapsible repo sections; empty ⇒ flat grid
     QVector<QRect>             HeaderRects;  // one per Group (content coords); for collapse hit-testing
     QString                    HoverLabel = "▶  Play";   // centered hover-button caption

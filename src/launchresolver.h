@@ -33,8 +33,7 @@ std::vector<std::string> ResolveChainIds(const NodeIndex &Idx, const Node &Launc
 //the user just changed in the prelaunch chain UI. Pure BFS (no pin honoring); Launch is used only for the package-
 //local tie-break. Empty if FromPlatform can't reach the machine. If FromPlatform IS the machine, returns just the
 //native terminal.
-std::vector<std::string> ResolveChainTail(const NodeIndex &Idx, const std::string &FromPlatform, const Node &Launch,
-                                          const nlohmann::ordered_json &GlobalConfigJSON);
+std::vector<std::string> ResolveChainTail(const NodeIndex &Idx, const std::string &FromPlatform, const Node &Launch);
 
 //Builds the full resolved RunnerLink execution chain from ResolveChainIds (synthesizing a passthrough terminal for
 //kNativeTerminalId or a missing node). The authoritative chain consumed by InitializeFromNode / BuildNestedInvocation.

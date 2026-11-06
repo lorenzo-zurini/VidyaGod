@@ -294,7 +294,7 @@ std::vector<std::string> LaunchResolver::ResolveChainIds(const NodeIndex &Idx, c
             {
                 Pinned = {Pick->Key()};
                 if (Pick->HostPlatform != ManifestModel::MachinePlatform())
-                    for (const std::string &T : ResolveChainTail(Idx, Pick->HostPlatform, Launch, GlobalConfigJSON)) Pinned.push_back(T);
+                    for (const std::string &T : ResolveChainTail(Idx, Pick->HostPlatform, Launch)) Pinned.push_back(T);
                 Soft = true;
             }
             if (!Soft)
@@ -329,10 +329,8 @@ std::vector<std::string> LaunchResolver::ResolveChainIds(const NodeIndex &Idx, c
     return Out;
 }
 
-std::vector<std::string> LaunchResolver::ResolveChainTail(const NodeIndex &Idx, const std::string &FromPlatform,
-                                                          const Node &Launch, const nlohmann::ordered_json &GlobalConfigJSON)
+std::vector<std::string> LaunchResolver::ResolveChainTail(const NodeIndex &Idx, const std::string &FromPlatform, const Node &Launch)
 {
-    (void)GlobalConfigJSON;
     const std::vector<const Node *> Runners = AvailableRunnersSorted(Idx, Launch);
     std::vector<std::string> Out = ChainOver(Idx, Launch, FromPlatform, {}, InstalledOf(Idx, Runners), Runners);
     return Out.empty() ? ChainOver(Idx, Launch, FromPlatform, {}, Runners, Runners) : Out;

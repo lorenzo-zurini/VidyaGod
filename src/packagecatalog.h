@@ -178,13 +178,8 @@ void SetGolden(nlohmann::ordered_json &GlobalConfigJSON, const std::string &Pack
 // ----- publish -----
 // Dehydrate a local bundle for sharing: seed each node LAYER's VFS content + META.COVER over IPFS, record
 // SOURCE:{ipfs,CID} into the node files IN PLACE (content kept), and optionally export a node-files-only copy.
-//Does NOT stamp node positions. Stamping is an AUTHORING act and belongs to the paths that have both the
-//author's intent and their drags — the editor's Publish button and RemintLibrary, which call
-//StampNodePositions explicitly first. Doing it in here made every publish path an authoring path: the IPFS
-//tab offers "Publish package CID" for ANY catalog entry, so a bundle fetched from someone else's CID source
-//had POS written into its node files and its bytes stopped matching the CID that served them. It also meant
-//the three call sites that pass no override minted a DIFFERENT CID from the editor's button for the same
-//bundle, because they baked the computed layout where the editor bakes the author's.
+//Never writes canvas positions: a node's bytes (its CID) never carry where it sits on a canvas (POS is stripped by the
+//canonical form; the layout lives in the config's EDITORLAYOUT).
 //Roots/UserDataRoot: where the save's re-mint follows renamed nodes (other packages that contain them, the instances
 //that remember them) — EditableRoots and InstanceStore::Root for a real library; none only for a throwaway folder.
 [[nodiscard]] bool PublishPackage(const std::string &PackageDir, const std::string &DehydratedDestDir,
@@ -306,7 +301,7 @@ struct RemintEntry { std::string Level, Name, Cid; };
 
 // PublishLibrary: freeze every node of the on-disk library into its canonical bytes and STORE them (pinned, announced,
 // seedable), make one UnixFS folder per package (+ its pin folder), and record Config["Libraries"] (the share sheet)
-// and Config["PublishedList"] (the package folders), which it returns (empty on failure, *Error says why). What did
+// and returns the package folders (empty on failure, *Error says why). What did
 // not publish whole — nodes that did not freeze, content this machine does not hold (a Pinata-only receiver could
 // never fetch it) — is summed up in *Gaps ("" when everything published). Call OFF the UI thread, node online.
 // What a friend receives for the libraries shared with them: {lib: [share rows]} — every package of those libraries,

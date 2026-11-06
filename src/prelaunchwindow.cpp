@@ -761,7 +761,7 @@ void PreLaunchWindow::onChainStepChanged(int Step)
         const Node* R = Index ? Index->Find(Chosen) : nullptr;
         const std::string Host = R ? R->HostPlatform : ManifestModel::MachinePlatform();
         const Node* L = CurrentLaunch();
-        std::vector<std::string> Tail = L ? LaunchResolver::ResolveChainTail(*Index, Host, *L, *GlobalConfigJSON)
+        std::vector<std::string> Tail = L ? LaunchResolver::ResolveChainTail(*Index, Host, *L)
                                           : std::vector<std::string>{};
         for (const std::string& Id : Tail) CurrentChain.push_back(Id);
     }

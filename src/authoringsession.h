@@ -88,9 +88,6 @@ public:
     static int CopySelection(const std::filesystem::path &SrcRoot, const std::vector<std::string> &Rels,
                              const std::filesystem::path &DestRoot, const std::string &StripPrefix = "");
 
-    // Builds the VFSDirLayer json for a captured dir: { TYPE:"VFSDirLayer", PATH:<DirNameRelToBundle>, TARGET:<Target> }.
-    static nlohmann::ordered_json MakeDirLayer(const std::string &DirNameRelToBundle, const std::string &Target);
-
 private:
     void DropRuntime();                            // unmount + wipe the runtime and its emptied game folder
     // (Re)builds + mounts the runtime: bare (no runner) when Chain is empty, else under the pinned runner (its

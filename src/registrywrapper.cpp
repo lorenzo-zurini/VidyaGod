@@ -827,11 +827,11 @@ bool ValuesEqual(const RegistryValue &A, const RegistryValue &B)
 //view is recorded via ARCHITECTURE instead).
 std::string StripWow(const std::string &Rel)
 {
-    std::string Out; size_t i = 0;
+    std::string Out;
     std::vector<std::string> segs;
     { std::string cur; for (char c : Rel) { if (c == '\\') { segs.push_back(cur); cur.clear(); } else cur.push_back(c); } segs.push_back(cur); }
     for (const std::string &s : segs) { if (CIEqual(s, "Wow6432Node")) continue; if (!Out.empty()) Out += "\\"; Out += s; }
-    (void)i; return Out;
+    return Out;
 }
 
 //Recursively walk a key subtree, comparing each value against Baseline; collect add/replace deltas

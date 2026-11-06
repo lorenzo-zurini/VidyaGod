@@ -243,18 +243,6 @@ private slots:
         QVERIFY(fs::exists(Dest / "Morrowind/Data Files/Morrowind.esm"));
         QVERIFY(!fs::exists(Dest / "pfx"));   // the prefix path was stripped
     }
-
-    // MakeDirLayer emits the VFSDirLayer shape; TARGET omitted when empty.
-    void make_dir_layer_shape()
-    {
-        const json A = AuthoringSession::MakeDirLayer("morrowind_files", "drive_c/Morrowind");
-        QCOMPARE(A.value("TYPE", std::string()), std::string("VFSDirLayer"));
-        QCOMPARE(A.value("PATH", std::string()), std::string("morrowind_files"));
-        QCOMPARE(A.value("TARGET", std::string()), std::string("drive_c/Morrowind"));
-
-        const json B = AuthoringSession::MakeDirLayer("morrowind_files", "");
-        QVERIFY(!B.contains("TARGET"));
-    }
 };
 
 QTEST_MAIN(AuthoringSessionTest)

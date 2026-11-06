@@ -259,7 +259,6 @@ void LibraryTab::sortAndFilter()
 
     // Series mode → collapsible sections (one per series, ungrouped games under "Other"), computed over the
     // VISIBLE cards. Other modes → flat (no groups, no bands).
-    View->setSeriesGroups({});
     if (CurrentSort == SortMode::Series) {
         QVector<LibraryView::Group> groups;
         const int n = LibraryVisible.count();

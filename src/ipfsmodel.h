@@ -11,7 +11,7 @@
 
 #include <cstdint>
 
-#include "ipfswrapper.h"   // IpfsWrapper::StatInfo / PinEntry
+#include "ipfswrapper.h"   // IpfsWrapper::PinEntry
 
 class AppModel;
 class QTimer;

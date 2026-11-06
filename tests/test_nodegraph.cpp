@@ -86,9 +86,7 @@ TEST(nodegraph_topo_order_is_deps_first)
         {"exec",    {{"LABEL", "exec"}, {"LAYERS", ordered_json::array({
                         {{"NODE", "content"}}, {{"ANY", ordered_json::array({"tile", "lib"})}}, {{"NOT", "rival"}} })}}},
     };
-    std::vector<std::string> Order;
-    std::string Err;
-    CHECK(NodeGraph::TopoOrderForMint(Tree, Order, &Err));
+    const std::vector<std::string> Order = NodeGraph::TopoOrderForMint(Tree);
     CHECK(Order.size() == 5);
     CHECK(IndexOf(Order, "lib")     < IndexOf(Order, "content"));
     CHECK(IndexOf(Order, "content") < IndexOf(Order, "exec"));
@@ -103,8 +101,8 @@ TEST(nodegraph_edit_cascades_new_cids_up_the_chain)
     // Identity is the real one (Cid::OfNode: the canonical bytes' raw CID). Teeth: if FreezeNodeJson stopped
     // resolving handles (or topo stopped being deps-first), a container would keep the OLD child CID.
     auto mint = [&](std::map<std::string, ordered_json> Tree) {
-        std::vector<std::string> Order; std::string Err;
-        CHECK(NodeGraph::TopoOrderForMint(Tree, Order, &Err));
+        std::vector<std::string> Order;
+        Order = NodeGraph::TopoOrderForMint(Tree);
         std::map<std::string, std::string> H2C;
         for (const std::string &H : Order)
             H2C[H] = Cid::OfNode(NodeGraph::FreezeNodeJson(Tree.at(H), H2C));   // deps already in H2C ⇒ refs resolve
@@ -138,9 +136,7 @@ TEST(nodegraph_topo_order_breaks_cycle)
         {"b",    {{"LABEL", "b"}, {"LAYERS", ordered_json::array({ {{"NODE", "a"}} })}}},
         {"good", {{"LABEL", "good"}, {"LAYERS", ordered_json::array()}}},
     };
-    std::vector<std::string> Order;
-    std::string Err;
-    CHECK(NodeGraph::TopoOrderForMint(Tree, Order, &Err));   // cycle is broken, not fatal
+    const std::vector<std::string> Order = NodeGraph::TopoOrderForMint(Tree);   // cycle is broken, not fatal
     CHECK(Order.size() == 3);                                 // all ordered; cyclic ones skip at freeze
     CHECK(IndexOf(Order, "good") >= 0);                       // the acyclic node always survives
 }
@@ -152,9 +148,7 @@ TEST(nodegraph_topo_external_refs_impose_no_order)
         {"only", {{"LABEL", "only"},
                   {"LAYERS", ordered_json::array({ {{"NODE", "some_external_cid"}}, {{"NOT", "another_external_cid"}} })}}},
     };
-    std::vector<std::string> Order;
-    std::string Err;
-    CHECK(NodeGraph::TopoOrderForMint(Tree, Order, &Err));
+    const std::vector<std::string> Order = NodeGraph::TopoOrderForMint(Tree);
     CHECK(Order.size() == 1);
     CHECK(Order[0] == "only");
 }

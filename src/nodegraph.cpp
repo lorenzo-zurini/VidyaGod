@@ -77,10 +77,9 @@ NodeIndex BuildFrozenIndex(const std::vector<std::string> &RootCids, std::vector
 }
 
 NodeIndex FreezeToIndex(const std::map<std::string, nlohmann::ordered_json> &WorkingTree,
-                        const std::map<std::string, std::filesystem::path> &Dirs, std::string *Error)
+                        const std::map<std::string, std::filesystem::path> &Dirs)
 {
-    std::vector<std::string> Order;
-    if (!TopoOrderForMint(WorkingTree, Order, Error)) return NodeIndex{};
+    const std::vector<std::string> Order = TopoOrderForMint(WorkingTree);
 
     NodeIndex Idx;
     std::map<std::string, std::string> HandleToCid;
@@ -264,8 +263,7 @@ std::string HydratePackage(const std::filesystem::path &DestRoot, const std::str
 
 bool Mint(const std::map<std::string, nlohmann::ordered_json> &WorkingTree, MintResult &Out, std::string *Error)
 {
-    std::vector<std::string> Order;
-    if (!TopoOrderForMint(WorkingTree, Order, Error)) return false;   // deps-first; cycle ⇒ refuse
+    const std::vector<std::string> Order = TopoOrderForMint(WorkingTree);   // deps-first; a cycle's edge is broken
 
     int Skipped = 0;
     for (const std::string &Handle : Order)

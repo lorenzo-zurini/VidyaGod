@@ -182,7 +182,7 @@ private slots:
         QCOMPARE((int)Libs["VidyaGod"].size(), 2);          // BOTH packages — nothing is gated
         QCOMPARE((int)Libs["VidyaGodRunners"].size(), 1);
         QCOMPARE((int)Libs["VidyaGodLibraries"].size(), 1);
-        QCOMPARE((int)cfg["PublishedList"].size(), 4);      // one folder per package
+        QCOMPARE((int)Published.size(), 4);                 // one folder per package
         QCOMPARE((int)Published.size(), 4);
         QVERIFY2(!cfg.contains("PublishedManifest"), "no library-level block: a library is a name, never a CID");
 
@@ -502,8 +502,7 @@ private slots:
         Put("/lib/P/top.json", json{{"LABEL", "top"}, {"LAYERS", json::array({json{{"NODE", "bigdepot"}}})}});
         Put("/lib/P/edge.json", Edge);
         Put("/lib/Q/other.json", json{{"LABEL", "other"}, {"LAYERS", json::array()}});
-        std::string Err;
-        const NodeIndex Idx = NodeGraph::FreezeToIndex(Tree, Dirs, &Err);
+        const NodeIndex Idx = NodeGraph::FreezeToIndex(Tree, Dirs);
         QCOMPARE(Idx.Nodes.size(), size_t(3));
         QVERIFY2(Idx.Find(Cid::OfNode(Edge)), "exactly 256 KiB is one block, and indexed");
         QCOMPARE(Idx.RefusedNodes.size(), size_t(1));
@@ -548,8 +547,7 @@ private slots:
         // Beside a copy of the same node read from disk (a handle-less file: synthetic key), one node results.
         Tree["\x01/lib/VidyaGodRunners/windows-native/copy.json#1"] = All[0].Node;
         Dirs["\x01/lib/VidyaGodRunners/windows-native/copy.json#1"] = "/lib/VidyaGodRunners/windows-native";
-        std::string Err;
-        const NodeIndex Idx = NodeGraph::FreezeToIndex(Tree, Dirs, &Err);
+        const NodeIndex Idx = NodeGraph::FreezeToIndex(Tree, Dirs);
         QCOMPARE(Idx.Nodes.size(), size_t(1));
         const Node *R = Idx.Find("bafkreic77imjhq76wb4vb3dgl7tmo7gz42q2somalux3tek2bwut5nnjdi");
         QVERIFY(R);

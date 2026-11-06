@@ -556,14 +556,11 @@ VG_COMMANDS
             std::map<std::string, fs::path> Dirs;
             const fs::path Root = Command::Str(A, "root");
             NodeGraph::GatherWorkingTree(Root, Tree, Dirs, Command::Bool(A, "skip-reserved", false), !Command::Bool(A, "untrusted", false));
-            std::vector<std::string> Order;
-            std::string OErr, FErr;
-            NodeGraph::TopoOrderForMint(Tree, Order, &OErr);
-            const NodeIndex I = NodeGraph::FreezeToIndex(Tree, Dirs, &FErr);
+            const std::vector<std::string> Order = NodeGraph::TopoOrderForMint(Tree);
+            const NodeIndex I = NodeGraph::FreezeToIndex(Tree, Dirs);
             int Scratch = 0;
             for (const auto &[H, D] : Dirs) Scratch += NodeGraph::IsFetchScratchDir(D) ? 1 : 0;
-            return json{{"nodes", Tree.size()}, {"order", Order}, {"order_note", OErr}, {"frozen", I.Nodes.size()}, {"tiles", I.Tiles.size()},
-                        {"freeze_note", FErr}, {"in_scratch_dirs", Scratch}};
+            return json{{"nodes", Tree.size()}, {"order", Order}, {"frozen", I.Nodes.size()}, {"tiles", I.Tiles.size()}, {"in_scratch_dirs", Scratch}};
         }, {} });
 
     Command::Register({

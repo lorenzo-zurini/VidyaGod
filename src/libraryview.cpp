@@ -236,15 +236,8 @@ void LibraryView::setCards(QList<LibraryGameCard *> * cards)
     SelectedIdx  = -1;
     LastCols     = 0;
     CardW        = 0;
-    SeriesGroups.clear();
     Rects.clear();
     if (Cards) Rects.resize(Cards->count());
-}
-
-void LibraryView::setSeriesGroups(const QVector<SeriesGroup> & groups)
-{
-    SeriesGroups = groups;
-    viewport()->update();
 }
 
 void LibraryView::setGroups(const QVector<Group> & groups)
@@ -272,7 +265,7 @@ void LibraryView::setEmptyMessage(const QString & message)
 void LibraryView::refreshVisuals()
 {
     if (CardW > 0) prescaleCovers(CardW); // recompute CoverScaled + ElidedTitle from the (changed) data
-    viewport()->update();                 // repaint in place — Rects/SeriesGroups/CardW are untouched
+    viewport()->update();                 // repaint in place — Rects/CardW are untouched
 }
 
 void LibraryView::repaintCards()
@@ -496,14 +489,6 @@ void LibraryView::onPaint(QPaintEvent * e)
     }
 
     p.translate(0, -scrollY);
-
-    // Series group backgrounds — drawn in content coordinates before cards (flat/Library mode only)
-    for (auto & g : SeriesGroups) {
-        const int topY = Rects[g.first].top()    - MinGap;
-        const int botY = Rects[g.last].bottom()  + MinGap;
-        const QRect bgR(0, topY, viewport()->width(), botY - topY);
-        if (bgR.intersects(cRect)) p.fillRect(bgR, g.color);
-    }
 
     // Collapsible section headers (Available mode) — a band with a chevron + repo name + count.
     for (int gi = 0; gi < Groups.size() && gi < HeaderRects.size(); gi++) {

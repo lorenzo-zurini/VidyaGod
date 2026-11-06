@@ -513,6 +513,7 @@ nlohmann::ordered_json LowerNode(const nlohmann::ordered_json &J, const std::str
             for (const auto &O : L["EDIT"]) Ops.push_back(EditOp(O, FilesPath(L)));
         else if (T == "REG")
         {
+            //No ARCH (a node folded without being checked: CheckLayer requires one) is the key as named.
             const ordered_json Arches = (L.contains("ARCH") && !L["ARCH"].empty()) ? L["ARCH"] : ordered_json::array({ nullptr });
             for (const auto &A : Arches) EmitRegTree(std::string(), L["REG"], A, Ops);
         }

@@ -80,9 +80,8 @@ std::vector<std::filesystem::path> ListTreeFiles(const std::filesystem::path &Ro
 // Deps-first (post-order) freeze order over the working tree: a node is ordered AFTER every intra-tree node it links
 // (every OVER ref, NOT included), because its frozen CID embeds theirs. Refs not in WorkingTree are external (already frozen)
 // and impose no order. A cycle is BROKEN (back edge dropped, warned), not fatal — the cyclic nodes stay in the order
-// but fail to freeze downstream and are skipped, so one bad edge never aborts the whole freeze. Always returns true. Pure.
-bool TopoOrderForMint(const std::map<std::string, nlohmann::ordered_json> &WorkingTree,
-                      std::vector<std::string> &Order, std::string *Error = nullptr);
+// but fail to freeze downstream and are skipped, so one bad edge never aborts the whole freeze. Pure.
+std::vector<std::string> TopoOrderForMint(const std::map<std::string, nlohmann::ordered_json> &WorkingTree);
 // Each ordered node's level: 0 with no intra-tree link to an earlier node, else one more than the highest earlier node
 // it links. Nodes of one level never link each other, so they freeze independently (in parallel) once the levels below
 // are done; a broken cycle edge points to a later node, which always has a higher level. Pure.
@@ -121,7 +120,7 @@ NodeIndex BuildFrozenIndex(const std::vector<std::string> &RootCids, std::vector
 // Runs DeriveIdentity. RESILIENT: a node that can't freeze (dangling ref / bad link) is skipped and cycles are broken —
 // one bad node never empties the index; the rest of the library is intact.
 NodeIndex FreezeToIndex(const std::map<std::string, nlohmann::ordered_json> &WorkingTree,
-                        const std::map<std::string, std::filesystem::path> &Dirs, std::string *Error = nullptr);
+                        const std::map<std::string, std::filesystem::path> &Dirs);
 
 // The result of minting a working tree.
 struct MintResult {

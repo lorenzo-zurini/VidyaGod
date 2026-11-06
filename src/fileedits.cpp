@@ -289,12 +289,8 @@ bool FileEdits::ConfigWrite(const std::string &Key, const std::string &Value, co
         {
             currentLine = Key + Value;
             ++Matched;
-            outFile << currentLine << '\n';
         }
-        else
-        {
-            outFile << currentLine << '\n';
-        }
+        outFile << currentLine << '\n';
     }
 
     outFile.close();

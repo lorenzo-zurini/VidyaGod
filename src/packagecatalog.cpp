@@ -1099,8 +1099,8 @@ std::vector<std::string> PublishLibrary(nlohmann::ordered_json &Config, std::str
     }
     // No library-level block: a library is a NAME that groups packages in the share sheet, never a CID — a CID over
     // the whole library would re-mint on every change to any package, and the package is the unit that changes.
-    Config["Libraries"]     = std::move(Libs);
-    Config["PublishedList"] = std::move(Flat);
+    Config["Libraries"] = std::move(Libs);
+    Config.erase("PublishedList");       // what the share list once was kept as: it is the return value, and Libraries
     Config.erase("PublishedManifest");
     LogSucc("PackageCatalog::PublishLibrary", "published " + std::to_string(MR.HandleToCid.size())
             + " node block(s) in " + std::to_string(PkgCount) + " package folder(s), "
@@ -1135,9 +1135,7 @@ std::vector<std::string> PublishLibrary(nlohmann::ordered_json &Config, std::str
     }
     if (!Gap.empty()) LogErr("PackageCatalog::PublishLibrary", "published with gaps: " + Gap);
     if (Gaps) *Gaps = Gap;
-    std::vector<std::string> Out;
-    for (const auto &C : Config["PublishedList"]) Out.push_back(C.get<std::string>());
-    return Out;   // the share list: one package folder per package
+    return Flat.get<std::vector<std::string>>();   // the share list: one package folder per package
 }
 
 // Bounds for the received-share planner (a friend's snapshot is UNTRUSTED input).
@@ -2252,11 +2250,10 @@ NodeIndex ScanCatalogIndex(const nlohmann::ordered_json &GlobalConfigJSON)
         NodeGraph::GatherWorkingTree(D, Tree, Dirs);
     //Runners every install has (a Windows game on Windows runs as itself): nothing to download for them.
     BuiltinRunners::AddTo(Tree, Dirs, LibraryRootDir(GlobalConfigJSON), ManifestModel::MachinePlatform());
-    std::string Err;
     const auto T1 = Clock::now();
-    NodeIndex Idx = NodeGraph::FreezeToIndex(Tree, Dirs, &Err);
+    NodeIndex Idx = NodeGraph::FreezeToIndex(Tree, Dirs);
     if (Idx.Nodes.empty() && !Tree.empty())
-        LogErr("PackageCatalog::BuildCatalogIndex", "freeze failed (" + std::to_string(Tree.size()) + " node(s)): " + Err);
+        LogErr("PackageCatalog::BuildCatalogIndex", "no node of " + std::to_string(Tree.size()) + " froze (the log above says why)");
     else
         LogOut("PackageCatalog::BuildCatalogIndex", "Indexed " + std::to_string(Idx.Nodes.size())
                + " node(s) by CID from " + LibraryRootDir(GlobalConfigJSON) + " in " + Ms(T0, Clock::now()) + " ms (read "
