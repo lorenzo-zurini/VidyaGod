@@ -1,4 +1,6 @@
 #include "depcheck.h"
+
+#include <algorithm>
 #include "platform/platform.h"
 
 #include <array>
@@ -226,6 +228,24 @@ std::string InstallHint(const DepItem &Item, Status St, Distro D)
     // Fall back to the Arch name (our primary target) so the user at least knows the package.
     It = Table.find(Distro::Arch);
     return It != Table.end() ? It->second : std::string();
+}
+
+std::string InstallCommand(const std::vector<std::string> &Pkgs, Distro D)
+{
+    std::string Base;
+    switch (D)
+    {
+    case Distro::Arch:     Base = "sudo pacman -S --needed"; break;
+    case Distro::Debian:   Base = "sudo apt install"; break;
+    case Distro::Fedora:   Base = "sudo dnf install"; break;
+    case Distro::OpenSUSE: Base = "sudo zypper install"; break;
+    default: return {};
+    }
+    std::vector<std::string> Seen;
+    std::string Out = Base;
+    for (const std::string &P : Pkgs)
+        if (!P.empty() && std::find(Seen.begin(), Seen.end(), P) == Seen.end()) { Seen.push_back(P); Out += " " + P; }
+    return Seen.empty() ? std::string() : Out;
 }
 
 // ---- the researched table --------------------------------------------------

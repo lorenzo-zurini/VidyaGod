@@ -203,7 +203,7 @@ void DownloadManager::startDownload(LibraryGameCard *card)
         QVBoxLayout * BL = new QVBoxLayout(Box);
         for (const auto & [Lid, Title] : Secondaries)
         {
-            QCheckBox * cb = new QCheckBox(Title, Box);
+            QCheckBox * cb = new QCheckBox(PlainLabel(Title), Box);
             cb->setChecked(false);
             SecChecks[Lid] = cb; BL->addWidget(cb);
         }
@@ -277,7 +277,7 @@ void DownloadManager::startDownload(LibraryGameCard *card)
             const int Items = (int)PackageCatalog::NodeContentCids(*S, rid).size();
             const QString Suffix = Items > 0 ? QString("   (%1 file%2)").arg(Items).arg(Items == 1 ? "" : "s")
                                              : QStringLiteral("   (remote)");   // received: enumerates on install
-            QCheckBox * cb = new QCheckBox(QString::fromStdString(R->Label.empty() ? rid : R->Label) + Suffix, RunBox);
+            QCheckBox * cb = new QCheckBox(PlainLabel(QString::fromStdString(R->Label.empty() ? rid : R->Label) + Suffix), RunBox);
             cb->setChecked(true);
             QObject::connect(cb, &QCheckBox::toggled, RunBox, [Debounce](bool){ Debounce->start(); });   // toggle → re-derive size
             RunnerChecks[rid] = cb; RunL->addWidget(cb);
@@ -388,7 +388,7 @@ void DownloadManager::startDownload(LibraryGameCard *card)
                 for (const OptEntry & E : *Found)
                 {
                     if (!OptStates->count(E.Id)) (*OptStates)[E.Id] = E.Default;   // first sight → seed with DEFAULT
-                    QCheckBox * cb = new QCheckBox(QString::fromStdString(E.Label), OptBox);
+                    QCheckBox * cb = new QCheckBox(PlainLabel(QString::fromStdString(E.Label)), OptBox);
                     cb->setChecked((*OptStates)[E.Id]);
                     const std::string Id = E.Id;
                     QObject::connect(cb, &QCheckBox::toggled, OptBox, [Id, OptStates, Debounce](bool On){
@@ -425,7 +425,7 @@ void DownloadManager::startDownload(LibraryGameCard *card)
                     QString Lbl = QString::fromStdString(E.Label);
                     if (E.LaunchableCount > 1)  Lbl += QString("   (%1 versions)").arg(E.LaunchableCount);
                     else if (E.Ids.size() > 1)  Lbl += QString("   (%1 items)").arg(E.Ids.size());
-                    QCheckBox * cb = new QCheckBox(Lbl, EpBox);
+                    QCheckBox * cb = new QCheckBox(PlainLabel(Lbl), EpBox);
                     cb->setChecked(true);
                     EpChecks->push_back({ cb, E.Ids });
                     EpL->addWidget(cb);

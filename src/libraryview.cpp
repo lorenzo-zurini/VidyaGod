@@ -1,4 +1,6 @@
 #include "libraryview.h"
+#include "guiformat.h"
+#include "instancestore.h"
 #include "manifestmodel.h"
 #include "packagecatalog.h"
 #include "covercache.h"
@@ -12,6 +14,11 @@
 #include <QApplication>
 #include <QGuiApplication>
 #include <QScrollBar>
+#include <QToolTip>
+#include <QHelpEvent>
+#include <QLinearGradient>
+#include <QDateTime>
+#include <QLocale>
 #include <QMessageBox>
 #include <QMetaObject>
 
@@ -19,6 +26,13 @@
 // shows the reason and returns false. The node runs in-process — there is no external daemon to install or start.
 bool IpfsFetchReady(QWidget * parent)
 {
+    if (!IpfsWrapper::Available() && qApp->property("vgNetworkingOff").toBool())
+    {
+        QMessageBox::information(parent, "Networking is off",
+            "Downloading needs the network, and networking is off.\n\n"
+            "Turn it on with the banner at the top of the Catalog, or in Settings → IPFS.");
+        return false;
+    }
     if (!IpfsWrapper::Available())
     {
         QMessageBox::warning(parent, "IPFS unavailable",
@@ -45,6 +59,40 @@ LibraryGameCard::LibraryGameCard(nlohmann::ordered_json * gc, std::shared_ptr<co
     : IndexOwned(std::move(index)), Index(IndexOwned.get()), GroupNodeIds(std::move(groupNodeIds)), FaceUid(std::move(faceUid)), GlobalConfigJSON(gc)
 {
     if (!GroupNodeIds.empty()) RepNodeId = GroupNodeIds.front();
+}
+
+QString LibraryGameCard::lastPlayed()
+{
+    if (LastPlayedRead || !GlobalConfigJSON || RepUid.empty()) return LastPlayedCache;
+    LastPlayedRead = true;
+    const auto Names = InstanceStore::List(*GlobalConfigJSON, RepUid);   // newest LASTRUN first
+    if (!Names.empty())
+    {
+        const auto C = InstanceStore::ReadConfig(*GlobalConfigJSON, RepUid, Names.front());
+        if (C.is_object() && C.contains("LASTRUN") && C["LASTRUN"].is_string()) LastPlayedCache = QString::fromStdString(C["LASTRUN"].get<std::string>());
+    }
+    return LastPlayedCache;
+}
+
+QString LibraryGameCard::HoverText()
+{
+    QString T = "<b>" + GameTitle.toHtmlEscaped() + "</b>";
+    QStringList Sub;
+    if (!SeriesName.isEmpty()) Sub << SeriesName.toHtmlEscaped();
+    if (SortDate.size() >= 4 && SortDate != "9999") Sub << SortDate.left(4);
+    if (!Sub.isEmpty()) T += "<br><span style='color:#8f98a0'>" + Sub.join(" · ") + "</span>";
+    QStringList Facts;
+    if (Bytes >= 0) Facts << HumanBytesQ(Bytes);
+    const QString Last = lastPlayed();
+    if (!Last.isEmpty())
+    {
+        const QDateTime At = QDateTime::fromString(Last, Qt::ISODate);
+        Facts << "last played " + (At.isValid() ? QLocale().toString(At.toLocalTime().date(), QLocale::ShortFormat) : Last);
+    }
+    if (!Facts.isEmpty()) T += "<br>" + Facts.join(" · ");
+    if (Golden && GlobalConfigJSON)
+        T += "<br><span style='color:#ffc83d'>Golden since " + QString::fromStdString(PackageCatalog::GoldenSince(*GlobalConfigJSON, Index && Index->Find(RepNodeId) ? Index->Find(RepNodeId)->GameKey() : RepUid)) + "</span>";
+    return T;
 }
 
 void LibraryGameCard::InitializeClassVariables()
@@ -382,8 +430,48 @@ bool LibraryView::viewportEvent(QEvent * e)
     case QEvent::MouseMove:        onMouseMove(static_cast<QMouseEvent *>(e)); return true;
     case QEvent::MouseButtonPress: onMousePress(static_cast<QMouseEvent *>(e)); return true;
     case QEvent::Leave:            onLeave(); return true;
+    case QEvent::ToolTip:          // the hover card: what a card does not print on itself
+    {
+        auto * He = static_cast<QHelpEvent *>(e);
+        const QPoint Pos = He->pos() + QPoint(0, verticalScrollBar()->value());
+        for (int I = 0; Cards && I < Cards->count() && I < Rects.size(); ++I)
+            if (Rects[I].contains(Pos)) { QToolTip::showText(He->globalPos(), Cards->at(I)->HoverText(), viewport(), Rects[I].translated(0, -verticalScrollBar()->value())); return true; }
+        QToolTip::hideText();
+        return true;
+    }
     default: return QAbstractScrollArea::viewportEvent(e);
     }
+}
+
+// A card with no cover: a box of its own colour (from its title, so it is the same every time and two games differ)
+// with its title large and its series and year beneath — a designed card, not a grey hole.
+void LibraryView::paintPlaceholder(QPainter & p, const QRect & r, LibraryGameCard * card)
+{
+    const uint H = qHash(card->GameTitle) % 360;
+    QLinearGradient G(r.topLeft(), r.bottomRight());
+    G.setColorAt(0, QColor::fromHsl(int(H), 90, 96));
+    G.setColorAt(1, QColor::fromHsl(int((H + 40) % 360), 85, 40));
+    p.fillRect(r, G);
+    p.fillRect(r, QColor(0, 0, 0, 40));
+    const QRect In = r.adjusted(r.width() / 10, r.height() / 6, -r.width() / 10, -r.height() / 10);
+    QFont Big = TitleFont;
+    Big.setBold(true);
+    Big.setPointSizeF(std::max(9.0, r.width() / 14.0));
+    p.setFont(Big);
+    p.setPen(QColor(255, 255, 255, 235));
+    p.drawText(In, Qt::AlignHCenter | Qt::AlignTop | Qt::TextWordWrap, card->GameTitle);
+    QStringList Sub;
+    if (!card->SeriesName.isEmpty() && card->SeriesName != card->GameTitle) Sub << card->SeriesName;
+    if (card->SortDate.size() >= 4 && card->SortDate != "9999") Sub << card->SortDate.left(4);
+    if (!Sub.isEmpty())
+    {
+        QFont Small = TitleFont;
+        Small.setPointSizeF(std::max(7.5, r.width() / 22.0));
+        p.setFont(Small);
+        p.setPen(QColor(255, 255, 255, 170));
+        p.drawText(In, Qt::AlignHCenter | Qt::AlignBottom | Qt::TextWordWrap, Sub.join(" · "));
+    }
+    p.setFont(TitleFont);
 }
 
 void LibraryView::onPaint(QPaintEvent * e)
@@ -442,12 +530,7 @@ void LibraryView::onPaint(QPaintEvent * e)
         // Cover — GPU texture path if viewport is QOpenGLWidget
         if (!card->CoverScaled.isNull())
             p.drawPixmap(r, card->CoverScaled);
-        else {
-            p.fillRect(r, QApplication::palette().color(QPalette::Mid));
-            p.setPen(QColor(0x8f, 0x98, 0xa0));
-            p.drawText(r.adjusted(6,6,-6,-6),
-                       Qt::AlignCenter | Qt::TextWordWrap, card->GameTitle);
-        }
+        else paintPlaceholder(p, r, card);
 
         // Secondary covers (Catalog per-package): small thumbnails overlaid along the bottom edge of the main cover,
         // purely aesthetic (the games are pickable from the package's download dialog). Drawn UNDER the Downloading/
@@ -729,6 +812,18 @@ int LibraryView::cardIndex(const QString & KeyOrTitle) const
     for (int I = 0; I < Cards->count(); ++I)
         if (Cards->at(I)->GameTitle.contains(KeyOrTitle, Qt::CaseInsensitive)) { if (Found >= 0) return -2; Found = I; }
     return Found;
+}
+
+QString LibraryView::cardMiss(const QString & KeyOrTitle) const
+{
+    QStringList Hits;
+    for (int I = 0; Cards && I < Cards->count(); ++I)
+        if (Cards->at(I)->GameTitle.contains(KeyOrTitle, Qt::CaseInsensitive))
+            Hits << Cards->at(I)->GameTitle + " [" + Cards->at(I)->GameKey + "]";
+    if (Hits.isEmpty()) return " — no card's title has it";
+    const int N = int(Hits.size());
+    if (N > 10) { Hits = Hits.mid(0, 10); Hits << "…"; }
+    return QString(" — it matches %1 cards (name one by its title or key): %2").arg(N).arg(Hits.join(", "));
 }
 
 void LibraryView::requestCardMenu(int I)

@@ -131,3 +131,13 @@ TEST(probe_takes_the_sandbox_verdict_it_is_given)
     CHECK(ProbeSystem(true).SandboxUsable);
     CHECK(!ProbeSystem(false).SandboxUsable);
 }
+
+// The Dependencies page's "Copy install command": one command for the distro's package manager, each package once;
+// nothing where VidyaGod knows no package manager. Teeth: drop the de-duplication and lib32-a is named twice.
+TEST(install_command_names_each_package_once)
+{
+    CHECK_EQ(InstallCommand({ "lib32-a", "b", "lib32-a" }, Distro::Arch), std::string("sudo pacman -S --needed lib32-a b"));
+    CHECK_EQ(InstallCommand({ "libx" }, Distro::Debian), std::string("sudo apt install libx"));
+    CHECK(InstallCommand({ "libx" }, Distro::Unknown).empty());
+    CHECK(InstallCommand({}, Distro::Arch).empty());
+}

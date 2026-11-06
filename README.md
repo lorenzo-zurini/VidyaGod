@@ -278,8 +278,11 @@ eval "$(VidyaGod completion bash)"            # completion (also zsh, fish)
 With the app open on the data dir, a command runs **inside it**, on its live model and windows (the command socket
 beside the data dir's lock); otherwise it runs in its own process, with the model — and, for `ui` commands, the
 windows, offscreen — brought up for the call. Output is a table for people; `--json` gives the exact result. Exit
-codes: 0 done, 1 the command failed, 2 a usage error, 3 the app could not be reached. `ui tree` is the whole state of
-every window; `ui click / check / set / cell / tab / card / press` act on any control by name. A name two places
+codes: 0 done, 1 the command failed, 2 a usage error, 3 the app could not be reached. A failure says why — the errors
+the call logged follow its message. On a terminal, tables fit its width (a message wraps, a path keeps both ends, a
+CID is shortened `bafkrei…myteka` — any unique part of one, that form included, names a node); piped, every value is
+printed whole. `ui tree` is the whole state of every window; `ui click / check / set / cell / tab / card / press` act
+on any control by name, and an action that opens a dialog or a menu answers at once with it (`ui press` answers it). A name two places
 share resolves to the visible one; `Outer/Inner` picks one inside another (`ui click Catalog/Name`, a tab by its
 title). A mistyped command, option or control name gets a "did you mean".
 
@@ -295,6 +298,11 @@ with the editor open on the package, its own document), an authoring session (`a
 runtime kept up to look inside (`launch build` … `launch teardown`). Run on its own, a `build` command works on the
 package for that one call (`--save` keeps what it did). A JSON option takes the JSON itself, `@file`, or `-` (stdin).
 `events wait --signal X` waits for what a command started instead of sleeping.
+
+Networking off (Settings → Networking) is off for the command line too: a command that needs the network refuses
+(add `--online` to go online for that one call; a launch of what is installed runs offline, as Play does). At a
+terminal, a call that finds another command using the data dir waits for it (`--no-wait`, or a script, fails at once);
+`app paths` and `launch plan` with a path override run beside the app, reading the config, never writing it.
 
 The flags below are the older form of some of these commands; they still work, for the scripts that use them.
 
@@ -382,5 +390,11 @@ on download.
   A view's exact state is a command too. `ctest` runs `tools/cli_coverage/cli_coverage.py`: it fails on a function no
   command covers that is neither excluded with its reason (`exclusions.txt`) nor recorded as debt (`baseline.txt`,
   which only shrinks). New code ships with its command.
+- **Every example in the help runs.** `tools/cli_sweep/cli_sweep.py` (a `ctest` test) runs each one against a fixture
+  library — headless, then through an off-screen app on it — and fails on a crash, a hang, or a raw library error
+  reaching the user. Its fixture (`tools/cli_sweep/fixture.py`, shaped like the Age of Empires II package the examples
+  name) is what the other two tools run on: `cmake --build build --target screenshots` shoots every tab, Settings page
+  and window off-screen beside the previous run's (`build/screenshots/index.html`), and `tools/perf/budgets.py`
+  (`ctest`, warn-only) reports start-up, call latency and idle memory against budgets (`--data-dir` for a real library).
 - Commit straight to `main`. Keep the [MetaPackageFormat](MetaPackageFormat) spec in sync whenever the format
   changes — the spec is normative, this implementation follows it.

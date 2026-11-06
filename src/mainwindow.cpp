@@ -25,6 +25,10 @@
 #include <QTimer>
 #include <QPointer>
 #include <QVBoxLayout>
+#include <QHBoxLayout>
+#include <QFrame>
+#include <QLabel>
+#include <QPushButton>
 #include <QWidget>
 #include <QCloseEvent>
 #include <QEvent>
@@ -118,6 +122,9 @@ void MainWindow::BuildStaticUI()
     MainWindowTabWidget->addTab(SettingsTabPtr, "Settings");
     MainWindowTabWidget->addTab(IpfsTabPtr,     "IPFS");
     MainWindowTabWidget->addTab(NetworkTabPtr,  "Network");
+    //Every tab on the window's own colour: Fusion's tab pane is a lighter shade, and pages that paint nothing of their
+    //own (Settings, Network) showed it — a second palette beside the Library's.
+    for (int I = 0; I < MainWindowTabWidget->count(); ++I) MainWindowTabWidget->widget(I)->setAutoFillBackground(true);
 
     // ── Cross-controller wiring (the only place a signal crosses between two components) ──
 
@@ -279,12 +286,31 @@ void MainWindow::startup(bool forceTray)
 
 void MainWindow::setNetworkTabsEnabled(bool enabled)
 {
+    //The Catalog and IPFS tabs stay open with networking off — what is there (local and received packages, the
+    //node's store) is still worth seeing; a banner on each says it is off and turns it on. What needs the network
+    //says so when asked (IpfsFetchReady reads this property).
     if (!MainWindowTabWidget) return;
-    for (int i = 0; i < MainWindowTabWidget->count(); ++i)
-    {
-        QWidget * W = MainWindowTabWidget->widget(i);
-        if (W == CatalogTabPtr || W == IpfsTabPtr) MainWindowTabWidget->setTabEnabled(i, enabled);
-    }
+    qApp->setProperty("vgNetworkingOff", !enabled);
+    if (OfflineBanners.empty())
+        for (QWidget * Tab : { static_cast<QWidget *>(CatalogTabPtr), static_cast<QWidget *>(IpfsTabPtr) })
+        {
+            auto * Box = Tab ? qobject_cast<QBoxLayout *>(Tab->layout()) : nullptr;
+            if (!Box) continue;
+            auto * Banner = new QFrame(Tab);
+            Banner->setObjectName("OfflineBanner");   // its look: Theme
+            Banner->setAccessibleName("Networking is off");
+            auto * L = new QHBoxLayout(Banner);
+            L->setContentsMargins(12, 6, 8, 6);
+            L->addWidget(new QLabel(Tab == CatalogTabPtr
+                                        ? "Networking is off — what is listed here can be browsed; downloads wait until it is on."
+                                        : "Networking is off — the node is stopped, nothing is seeded or fetched.", Banner), 1);
+            auto * On = new QPushButton("Turn on networking", Banner);
+            connect(On, &QPushButton::clicked, this, [this]{ Model->setNetworkingEnabled(true); });
+            L->addWidget(On);
+            Box->insertWidget(0, Banner);
+            OfflineBanners.push_back(Banner);
+        }
+    for (const auto & B : OfflineBanners) if (B) B->setVisible(!enabled);
 }
 
 void MainWindow::applyNetworkingState(bool enabled)
@@ -375,6 +401,12 @@ LibraryGameCard * MainWindow::catalogCard(const QString & KeyOrTitle) const
 {
     LibraryView * V = CatalogTabPtr ? CatalogTabPtr->view() : nullptr;
     return V ? V->cardAt(V->cardIndex(KeyOrTitle)) : nullptr;
+}
+
+QString MainWindow::cardMiss(bool Catalog, const QString & KeyOrTitle) const
+{
+    LibraryView * V = Catalog ? (CatalogTabPtr ? CatalogTabPtr->view() : nullptr) : (LibraryTabPtr ? LibraryTabPtr->view() : nullptr);
+    return V ? V->cardMiss(KeyOrTitle) : QString();
 }
 
 LibraryGameCard * MainWindow::libraryCard(const QString & KeyOrTitle) const

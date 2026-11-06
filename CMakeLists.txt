@@ -336,6 +336,8 @@ set(SHARED_SOURCES
 
     src/settingstab.h
     src/settingstab.cpp
+    src/theme.h
+    src/theme.cpp
     src/networkpage.cpp
 
     src/runnerspage.h
@@ -540,6 +542,23 @@ set_tests_properties(cli_variant_needs_a_tile PROPERTIES PASS_REGULAR_EXPRESSION
 
 # Every example in the command-line help names a command and parses against it (a stale option, a missing argument).
 add_test(NAME cli_examples COMMAND $<TARGET_FILE:VidyaGod> --no-color commands --check)
+# Every example of every command run against a fixture library — headless, then through an off-screen app on it: no
+# crash, no hang, no raw library error reaching the user (tools/cli_sweep). HOME and the data dir are the test's own.
+# POSIX only (the scripts drive process groups and the fixture's own HOME); the Windows suite runs the rest.
+if(NOT WIN32)
+add_test(NAME cli_sweep COMMAND python3 -I ${CMAKE_SOURCE_DIR}/tools/cli_sweep/cli_sweep.py --vg $<TARGET_FILE:VidyaGod>
+         --work ${CMAKE_BINARY_DIR}/cli_sweep --live --report ${CMAKE_BINARY_DIR}/cli_sweep_report.json)
+set_tests_properties(cli_sweep PROPERTIES TIMEOUT 1200 RUN_SERIAL TRUE)
+# Start-up, call latency and idle memory against budgets, on the fixture — warn-only for now: it prints, never fails
+# (tools/perf/budgets.py; --data-dir runs it on a copy of a real library).
+add_test(NAME perf_budgets COMMAND python3 -I ${CMAKE_SOURCE_DIR}/tools/perf/budgets.py --vg $<TARGET_FILE:VidyaGod>
+         --work ${CMAKE_BINARY_DIR}/perf_budgets)
+set_tests_properties(perf_budgets PROPERTIES TIMEOUT 300 RUN_SERIAL TRUE)
+endif()
+# `cmake --build build --target screenshots`: every tab, Settings page and window shot off-screen into
+# build/screenshots/<date-time>/, with build/screenshots/index.html beside the previous run (tools/screenshots).
+add_custom_target(screenshots COMMAND python3 -I ${CMAKE_SOURCE_DIR}/tools/screenshots/shoot.py --vg $<TARGET_FILE:VidyaGod>
+                  --out ${CMAKE_BINARY_DIR}/screenshots DEPENDS VidyaGod USES_TERMINAL)
 set_tests_properties(cli_examples PROPERTIES TIMEOUT 30)
 
 add_gui_test(test_pkgcanvas)
@@ -573,6 +592,7 @@ add_gui_test(test_friends)
 add_gui_test(test_sandbox)
 add_gui_test(test_variantpicker)
 add_gui_test(test_prelaunch)
+add_gui_test(test_commands)
 # The friends test starts the embedded node to exercise the real C ABI; keep it hermetic (no swarm/DHT). The offline
 # switch must be in the environment at PROCESS START — Go caches its env at init, so a runtime setenv is invisible.
 set_tests_properties(test_friends PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen;VIDYAGOD_IPFS_OFFLINE=1")

@@ -126,7 +126,7 @@ VG_COMMANDS
         "app running (it can be off-screen): a session is a mount, and a command on its own ends with its process.",
         { Pos("package", "the package"), Pos("node", "the node to author on (its handle, index, or LABEL)"),
           Opt("mode", "what to capture", Type::String, false, { "setup", "files", "registry" }), Timeout() },
-        { "author start 749 'Original' --mode setup" },
+        { "author start 749 'The Age of Kings' --mode setup" },
         { "AuthoringSessionModel::start", "AuthoringSessionModel::mode", "AuthoringWorker::start", "AuthoringSession::Begin",
           "AuthoringSession::WithoutWaiting", "AuthoringSession::Live", "AuthoringSession::RuntimePath", "AuthoringSession::ContentRoot",
           "AuthoringSession::AnchorLayouts", "AuthoringSession::RunnerId", "AuthoringSession::PrefixGenerate", "AuthoringSession::WriteLayerPath",
@@ -258,7 +258,7 @@ VG_COMMANDS
         "The window the editor's capture actions open: its file and registry trees, runner choice, capture buttons. "
         "Drive it with `ui` (ui tree shows it).",
         { Pos("package", "the package"), Pos("node", "the node"), Opt("mode", "what to capture", Type::String, false, { "setup", "files", "registry" }) },
-        { "author window 749 'Original' --mode files" },
+        { "author window 749 'The Age of Kings' --mode files" },
         { "DeltaTree::setPaths", "DeltaTree::setSeparator", "DeltaTree::MainFolder", "DeltaTree::markCaptured", "DeltaTree::reveal", "DeltaTree::checkedRoots",
           "DeltaTree::checkedEntries", "DeltaTree::checkAll" }, Needs::App, false,
         [](Command::Context &C, const json &A) {

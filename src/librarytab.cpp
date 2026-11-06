@@ -7,6 +7,8 @@
 #include "manifestmodel.h"
 #include "packageeditor.h"     // the authoring entry points moved here from Settings
 #include "mainwindow.h"        // MainWindow::RefreshPackage (app-wide "package edited" hook)
+#include "asyncwork.h"
+#include "instancestore.h"   // LASTRUN — the Recent sort
 #include "commonutils.h"       // LogOut — surface the shown-card count (the "empty library" diagnostic)
 
 #include <QRegularExpression>
@@ -25,6 +27,7 @@
 #include <nlohmann/json.hpp>
 
 #include <algorithm>
+#include <map>
 #include <string>
 #include <vector>
 
@@ -88,6 +91,12 @@ void LibraryTab::buildUi()
     makeSortBtn("Name",   SortMode::Name);
     makeSortBtn("Date",   SortMode::Date);
     makeSortBtn("Series", SortMode::Series);
+    makeSortBtn("Recent", SortMode::Recent);
+
+    StatusLabel = new QLabel(toolbar);
+    StatusLabel->setAccessibleName("Library status");
+    StatusLabel->setStyleSheet("color:#8f98a0; font-size:9pt; padding-left:12px;");
+    tl->addWidget(StatusLabel);
 
     tl->addStretch();
 
@@ -144,6 +153,7 @@ void LibraryTab::buildUi()
     layout->addWidget(toolbar);
 
     View = new LibraryView(this);
+    View->setAccessibleName("Library games");   // what ui card / ui show call it
     View->setEmptyMessage("No games yet.\n\nGet games from the Catalog tab (add a source in Settings or a friend in Network first),\nor make one: Package Editor → New package.");
     layout->addWidget(View);
 
@@ -236,6 +246,16 @@ void LibraryTab::sortAndFilter()
             return a->SortSeriesKey < b->SortSeriesKey;
         });
         break;
+    case SortMode::Recent:
+        // Most recently played first; games never played after them, by title.
+        // The times are read off the GUI thread (countSizes); until they land, the order is by title, then re-sorted.
+        std::stable_sort(cards.begin(), cards.end(), [](auto * a, auto * b) {
+            const QString & A = a->LastPlayedCache, & B = b->LastPlayedCache;
+            if (A.isEmpty() != B.isEmpty()) return B.isEmpty();
+            if (A != B) return A > B;
+            return a->SortTitle < b->SortTitle;
+        });
+        break;
     }
 
     // Apply the search filter to produce the visible subset the view actually shows.
@@ -277,6 +297,48 @@ void LibraryTab::rebuild()
     buildCards();
     sortAndFilter();   // sorts + filters into LibraryVisible and calls View->setCards()
     relayout();
+    countSizes();
+}
+
+void LibraryTab::countSizes()
+{
+    const int Games = LibraryGameCards->count();
+    StatusLabel->setText(QString("%1 game%2").arg(Games).arg(Games == 1 ? "" : "s"));
+    if (!Model.config()) return;
+    //What the installed packages hold on disk: a walk of every package folder, so off the GUI thread; the cards get
+    //their own size for the hover card. One count at a time: rebuilds while one runs (a download landing) ask for one
+    //more when it ends, never a pile of walks over the whole library.
+    if (Counting) { CountAgain = true; return; }
+    Counting = true;
+    auto Cfg = std::make_shared<const nlohmann::ordered_json>(*Model.config());
+    std::shared_ptr<const NodeIndex> Idx = Model.catalogSnapshot();
+    auto Found = std::make_shared<std::vector<PackageCatalog::InstalledPackage>>();
+    auto Played = std::make_shared<std::map<std::string, QString>>();   // family UID -> its newest LASTRUN
+    for (LibraryGameCard * C : *LibraryGameCards) if (C && !C->RepUid.empty()) (*Played)[C->RepUid];
+    AsyncWork::Run(this, [Cfg, Idx, Found, Played]{
+            *Found = PackageCatalog::InstalledPackages(*Cfg, *Idx);
+            for (auto & [Uid, At] : *Played)
+            {
+                const auto Names = InstanceStore::List(*Cfg, Uid);   // newest LASTRUN first
+                if (Names.empty()) continue;
+                const auto C = InstanceStore::ReadConfig(*Cfg, Uid, Names.front());
+                if (C.is_object() && C.contains("LASTRUN") && C["LASTRUN"].is_string()) At = QString::fromStdString(C["LASTRUN"].get<std::string>());
+            }
+        },
+        [this, Found, Played, Games]{
+            Counting = false;
+            if (CountAgain) { CountAgain = false; countSizes(); return; }   // the cards changed meanwhile: count them
+            for (LibraryGameCard * C : *LibraryGameCards)
+                if (const auto It = Played->find(C->RepUid); C && It != Played->end()) { C->LastPlayedCache = It->second; C->LastPlayedRead = true; }
+            if (CurrentSort == SortMode::Recent) { sortAndFilter(); View->layoutCards(Model.cardPixelWidth()); }
+            std::map<std::string, std::uintmax_t> ByDir;
+            std::uintmax_t Total = 0;
+            for (const auto & P : *Found) { ByDir[P.Dir.lexically_normal().string()] = P.Bytes; Total += P.Bytes; }
+            for (LibraryGameCard * C : *LibraryGameCards)
+                if (const auto It = ByDir.find(C->PackagePath.lexically_normal().string()); It != ByDir.end()) C->Bytes = static_cast<qint64>(It->second);
+            StatusLabel->setText(QString("%1 game%2 · %3 installed").arg(Games).arg(Games == 1 ? "" : "s")
+                                     .arg(QString::fromStdString(HumanBytes(static_cast<long long>(Total)))));
+        });
 }
 
 void LibraryTab::refreshCovers()

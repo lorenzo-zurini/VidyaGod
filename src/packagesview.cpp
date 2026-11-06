@@ -20,6 +20,8 @@
 #include <QFileDialog>
 #include <QMessageBox>
 #include <QDir>
+#include <QDesktopServices>
+#include <QUrl>
 
 #include <nlohmann/json.hpp>
 
@@ -133,57 +135,111 @@ void PackagesView::offerUpdate(const PackageCatalog::PackageUpdate &U, QPushButt
 
 void PackagesView::rebuildList()
 {
+    //What is installed comes from the index (the packages LIBRARY holds are its nodes; the config lists only those added
+    //from outside it): found off the GUI thread — hydration stats every content file, sizes walk every folder — one
+    //scan at a time.
     rebuildUpdates();
-    if (PackagesScrollArea->widget()) PackagesScrollArea->widget()->deleteLater();
-    QWidget * w = new QWidget(PackagesScrollArea);
-    PackagesScrollArea->setWidget(w);
-    QGridLayout * g = new QGridLayout(w); w->setLayout(g);
-    int row = 0;
-    auto & Lib = (*Model.config())["LIBRARY"];
-
-    //Which bundle dirs have a HYDRATED launchable node — computed in ONE pass over the already-built catalog index.
-    //Previously this re-parsed every package's JSON from disk per LIBRARY entry (ScanBundleNodes in the loop), which
-    //was O(packages × nodes) of parsing on the main thread and a real chunk of the launch freeze. The index already
-    //holds every node with its BundleDir, so filter that instead. Paths are lexically normalized so a trailing-slash /
-    //separator difference between a node's BundleDir and the LIBRARY PATH doesn't cause a false miss.
-    const NodeIndex & Idx = Model.catalogIndex();
-    auto Norm = [](const std::filesystem::path & P){ return P.lexically_normal().generic_string(); };
-    // ONE HydrationMap pass (O(N+E), stat-cached) — the per-launchable NodeHasContent+NodeHydrated pair re-derived
-    // CustomVarDefaults over the WHOLE graph and re-walked the closure per node: O(N²) + per-node disk stats ON THE
-    // GUI THREAD, measured as a top contributor to the startup freeze. Same map the Library/Catalog tabs use.
-    const auto Hyd = PackageCatalog::HydrationMap(Idx);
-    std::set<std::string> HydratedBundles;
-    for (const auto & [NodeId, N] : Idx.Nodes)
+    if (Listing) { ListAgain = true; return; }   // a scan is under way: one more when it ends, not a pile of them
+    Listing = true;
+    if (!PackagesScrollArea->widget())
     {
-        if (!N.IsVariant() || N.BundleDir.empty()) continue;
-        const auto It = Hyd.find(NodeId);
-        if (It != Hyd.end() && It->second.OnDisk && It->second.Hydrated)
-            HydratedBundles.insert(Norm(N.BundleDir));
+        QLabel *Wait = new QLabel("Reading the library…", PackagesScrollArea);
+        Wait->setStyleSheet("color:#8f98a0;");
+        PackagesScrollArea->setWidget(Wait);
     }
+    if (!Model.config()) { Listing = false; return; }
+    auto Cfg = std::make_shared<const nlohmann::ordered_json>(*Model.config());
+    std::shared_ptr<const NodeIndex> Idx = Model.catalogSnapshot();
+    auto Found = std::make_shared<std::vector<PackageCatalog::InstalledPackage>>();
+    AsyncWork::Run(this, [Cfg, Idx, Found]{ *Found = PackageCatalog::InstalledPackages(*Cfg, *Idx); },
+        [this, Found]{
+            Listing = false;
+            if (ListAgain) { ListAgain = false; rebuildList(); return; }
+            showList(*Found);
+        });
+}
 
-    for (int i = 0; i < (int)Lib.size(); i++) {
-        //Only HYDRATED packages (content present locally) are listed — synced-but-not-downloaded repo entries
-        //live in the Available tab, not here. Content-less packages (a malformed game with no layers, or a
-        //PATH-only runner) are vacuously hydrated, so require real content to exclude them.
-        const std::string LibPath = Lib[i].value("PATH", std::string());
-        //Only HYDRATED bundles with a launchable node appear here (a runner-only bundle has none).
-        if (LibPath.empty() || !HydratedBundles.count(Norm(LibPath))) continue;   // require REAL content present
-        g->addWidget(new QLabel(QString::fromStdString(Lib[i].value("PACKAGENAME", std::string())),w),row,0);
-        g->addWidget(new QLabel(QString::fromStdString(Lib[i].value("PACKAGEUID", std::string())),w),row,1);
-        QPushButton * rb = new QPushButton("Remove", w);
-        // Key removal by PACKAGEUID, resolved at click time — robust against the array shifting under us.
-        const QString Uid = QString::fromStdString(Lib[i].value("PACKAGEUID", std::string()));
-        connect(rb, &QPushButton::clicked, this, [this, Uid]{ Model.removePackage(Uid); });   // model deletes + rebuilds + emits
-        g->addWidget(rb, row, 2);
+void PackagesView::showList(const std::vector<PackageCatalog::InstalledPackage> &Pkgs)
+{
+    if (PackagesScrollArea->widget()) PackagesScrollArea->widget()->deleteLater();
+    QWidget *w = new QWidget(PackagesScrollArea);
+    w->setObjectName("InstalledPackagesList");
+    QGridLayout *g = new QGridLayout(w);
+    g->setHorizontalSpacing(16);
+    g->setColumnStretch(0, 1);
+    int row = 0;
+    if (Pkgs.empty())
+    {
+        QLabel *none = new QLabel("No installed packages yet - download packages from the Catalog tab or add local packages.", w);
+        none->setStyleSheet("color:#8f98a0;");
+        g->addWidget(none, 0, 0, 1, 4);
+    }
+    else
+    {
+        std::uintmax_t Total = 0;
+        for (const auto &P : Pkgs) Total += P.Bytes;
+        QLabel *Sum = new QLabel(QString("%1 packages · %2").arg(Pkgs.size()).arg(QString::fromStdString(HumanBytes(static_cast<long long>(Total)))), w);
+        Sum->setStyleSheet("color:#8f98a0;");
+        g->addWidget(Sum, row++, 0, 1, 4);
+    }
+    std::string Group = "\x01";   // none yet
+    for (const auto &P : Pkgs)
+    {
+        const std::string Here = P.Local ? std::string("Added locally") : P.Library;
+        if (Here != Group)
+        {
+            Group = Here;
+            QLabel *H = new QLabel(QString::fromStdString(Here), w);
+            H->setStyleSheet("font-weight:600; margin-top:10px;");
+            g->addWidget(H, row++, 0, 1, 4);
+        }
+        //A few versions by name, then how many more (a game can have hundreds: the row would be as wide as all of them).
+        QString Versions, All;
+        for (size_t I = 0; I < P.Variants.size(); ++I)
+        {
+            const QString V = QString::fromStdString(P.Variants[I]);
+            if (I < 4) Versions += (Versions.isEmpty() ? "" : ", ") + V;
+            if (I < 40) All += (All.isEmpty() ? "" : "\n") + V;
+        }
+        if (P.Variants.size() > 4) Versions += QString(" and %1 more").arg(P.Variants.size() - 4);
+        if (P.Variants.size() > 40) All += QString("\n… and %1 more").arg(P.Variants.size() - 40);
+        QLabel *Name = new QLabel(QString("<b>%1</b><br><span style='color:#8f98a0'>%2 · %3</span>")
+                                      .arg(QString::fromStdString(P.Title).toHtmlEscaped(), QString::fromStdString(P.Uid).toHtmlEscaped(),
+                                           Versions.toHtmlEscaped()), w);
+        Name->setToolTip(QString::fromStdString(P.Dir.string()) + (P.Variants.size() > 4 ? "\n\n" + All : QString()));
+        Name->setWordWrap(true);
+        Name->setTextInteractionFlags(Qt::TextSelectableByMouse);
+        g->addWidget(Name, row, 0);
+        QLabel *Size = new QLabel(QString::fromStdString(HumanBytes(static_cast<long long>(P.Bytes))), w);
+        Size->setAlignment(Qt::AlignRight | Qt::AlignVCenter);
+        g->addWidget(Size, row, 1);
+        const QString Dir = QString::fromStdString(P.Dir.string()), Title = QString::fromStdString(P.Title);
+        QPushButton *Open = new QPushButton("Open folder", w);
+        Open->setAccessibleName("Open folder of " + Title);
+        connect(Open, &QPushButton::clicked, this, [Dir]{ QDesktopServices::openUrl(QUrl::fromLocalFile(Dir)); });
+        g->addWidget(Open, row, 2);
+        //Only a package added from outside LIBRARY is removed here — forgotten, its folder untouched. A package of LIBRARY
+        //is not: its content can be shared with others and may have no source (AppModel::removePackage).
+        //A package source's package (under LIBRARY, named by its config entry) keeps the Remove it always had.
+        if (P.Local || P.HasEntry)
+        {
+            const bool Local = P.Local;
+            QPushButton *rb = new QPushButton(Local ? "Forget" : "Remove", w);
+            rb->setAccessibleName((Local ? "Forget " : "Remove ") + Title);
+            rb->setToolTip(Local ? "Stop listing this package; its folder is not touched."
+                                 : "Remove this source package's downloaded content; its nodes stay, to download again.");
+            connect(rb, &QPushButton::clicked, this, [this, Dir, Title, Local]{
+                const QString Q = Local ? QString("Forget %1? Its folder is not touched:\n%2").arg(Title, Dir)
+                                        : QString("Remove %1's downloaded content? Its nodes stay, to download it again.").arg(Title);
+                if (QMessageBox::question(this, Local ? "Forget package" : "Remove package", Q) != QMessageBox::Yes) return;
+                if (const QString Why = Model.removePackage(Dir); !Why.isEmpty()) QMessageBox::warning(this, "Remove package", Why);
+            });
+            g->addWidget(rb, row, 3);
+        }
         row++;
     }
-    if (row == 0)
-    {
-        QLabel * none = new QLabel("No installed packages yet - download packages from the Catalog tab or add local packages.", w);
-        none->setStyleSheet("color:#8f98a0;");
-        g->addWidget(none, 0, 0, 1, 3);
-    }
     g->setRowStretch(g->rowCount(), 1);
+    PackagesScrollArea->setWidget(w);
 }
 
 // (addLocalPackages moved to AppModel::importPackagesFromDir, invoked from the Library tab's toolbar.)

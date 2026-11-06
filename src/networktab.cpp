@@ -68,7 +68,8 @@ void NetworkTab::buildUi()
     CodeRow->addWidget(new QLabel("Friend code:", IdBox));
     CodeValue = new QLabel(IdBox);
     CodeValue->setTextInteractionFlags(Qt::TextSelectableByMouse);
-    CodeValue->setStyleSheet("font-family: monospace;");
+    CodeValue->setStyleSheet("font-family: monospace; font-size: 12pt; font-weight: 600;");   // what a friend needs: easy to read out
+    CodeValue->setAccessibleName("Friend code");
     CodeRow->addWidget(CodeValue, 1);
     CopyButton = new QPushButton("Copy", IdBox);
     connect(CopyButton, &QPushButton::clicked, this, []{
@@ -125,10 +126,17 @@ void NetworkTab::buildUi()
 
     Root->addWidget(IdBox);
 
-    StatusHint = new QLabel(this);
-    StatusHint->setStyleSheet("color: palette(mid);");
-    StatusHint->setWordWrap(true);
-    Root->addWidget(StatusHint);
+    {
+        auto * HintRow = new QHBoxLayout();
+        StatusHint = new QLabel(this);
+        StatusHint->setStyleSheet("color:#8f98a0;");
+        StatusHint->setWordWrap(true);
+        HintRow->addWidget(StatusHint, 1);
+        TurnOnButton = new QPushButton("Turn on networking", this);
+        connect(TurnOnButton, &QPushButton::clicked, this, [this]{ Model.setNetworkingEnabled(true); });
+        HintRow->addWidget(TurnOnButton);
+        Root->addLayout(HintRow);
+    }
 
     Table = new QTableWidget(this);
     Table->setAccessibleName("Peers");
@@ -136,6 +144,17 @@ void NetworkTab::buildUi()
     Table->setEditTriggers(QAbstractItemView::NoEditTriggers);
     Table->setSelectionMode(QAbstractItemView::NoSelection);
     Root->addWidget(Table, 1);
+
+    //With no friend yet, the table is one row of defaults: what to do is said under it.
+    EmptyHint = new QLabel("No friends yet. Send a friend your code (Copy, above) and paste theirs into “Add a peer”; once a "
+                           "request is accepted on both sides, tick what you share with them. The first row is what a new "
+                           "friend gets.", this);
+    EmptyHint->setWordWrap(true);
+    EmptyHint->setStyleSheet("color:#8f98a0; padding: 8px 2px;");
+    EmptyHint->setAccessibleName("No friends yet");
+    Root->addWidget(EmptyHint);
+    Root->addStretch(0);   // the spare height while the table is short (no friend yet): below everything, not inside it
+    IdBox->setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Maximum);
 }
 
 void NetworkTab::setActive(bool on) { if (on) refresh(); }
@@ -215,8 +234,11 @@ void NetworkTab::refresh()
     CopyButton->setEnabled(Online);
     PublishButton->setEnabled(Online);
     StatusHint->setVisible(!Online);
+    TurnOnButton->setVisible(!Online && !Model.networkingEnabled());
     if (!Online)
-        StatusHint->setText("Networking is off. Enable it in the IPFS tab to get your friend code, publish your libraries, and reach friends.");
+        StatusHint->setText(Model.networkingEnabled()
+                                ? "The node is starting — your friend code and publishing are here as soon as it is up."
+                                : "Networking is off: your friend code, publishing your libraries and reaching friends need it.");
     if (!NickEdited)
         NickEdit->setText(QString::fromStdString(IpfsWrapper::GetProfile().Nick));
     { QSignalBlocker Block(AutoAccept); AutoAccept->setChecked(Model.autoAcceptEnabled()); }
@@ -237,10 +259,22 @@ void NetworkTab::refresh()
     Table->clear();
     Table->setColumnCount(Headers.size());
     Table->setHorizontalHeaderLabels(Headers);
-    Table->horizontalHeader()->setSectionResizeMode(0, QHeaderView::Stretch);
-    for (int C = 1; C < Headers.size(); ++C)
+    //Each column as wide as it needs (the peer's name, each checkbox column's header): the rest of the width is the
+    //last column's, not the names' — a name column across the window pushed the checkboxes into a cramped corner.
+    for (int C = 0; C + 1 < Headers.size(); ++C)
         Table->horizontalHeader()->setSectionResizeMode(C, QHeaderView::ResizeToContents);
+    Table->horizontalHeader()->setSectionResizeMode(Headers.size() - 1, QHeaderView::Stretch);
+    Table->horizontalHeader()->setMinimumSectionSize(70);
     Table->setRowCount(1 + (int)Contacts.size());
+    //No friend: the table holds just its defaults row and the hint under it says what to do; it grows with friends.
+    EmptyHint->setVisible(Contacts.empty());
+    if (auto * Root = qobject_cast<QVBoxLayout *>(layout()))
+    {
+        Root->setStretchFactor(Table, Contacts.empty() ? 0 : 1);
+        Root->setStretch(Root->count() - 1, Contacts.empty() ? 1 : 0);
+    }
+    Table->setMaximumHeight(Contacts.empty() ? Table->horizontalHeader()->sizeHint().height() + Table->verticalHeader()->defaultSectionSize() + 6
+                                             : QWIDGETSIZE_MAX);
 
     // A centered checkbox cell. The initial state is set BEFORE connecting, so programmatic rebuilds never fire onToggle.
     auto CheckCell = [this](int Row, int Col, bool Checked, bool Enabled, std::function<void(bool)> OnToggle) {

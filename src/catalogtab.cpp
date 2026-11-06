@@ -135,6 +135,7 @@ void CatalogTab::buildUi()
     v->addWidget(toolbar);
 
     AvailableView = new LibraryView(this);
+    AvailableView->setAccessibleName("Catalog games");
     AvailableView->setHoverAction("⬇  Download", true);
     AvailableView->setEmptyMessage("Nothing to download.\n\nHit “Add CID” above (or add a source in Settings → Sources) to see shared games here.");
     v->addWidget(AvailableView);

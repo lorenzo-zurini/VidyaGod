@@ -12,6 +12,8 @@
 #include "registrywrapper.h"
 #include "vfsmount.h"
 
+#include <cctype>
+#include <set>
 #include <fstream>
 #include <sstream>
 
@@ -36,7 +38,28 @@ CliModes::LaunchRequest Request(Command::Context &C, const json &A)
     if (!Q.empty()) R.LaunchNodeId = NodeOf(*Index(C), Q)->Key();
     R.LaunchTile = Command::Str(A, "tile", "");
     R.LaunchVariant = Command::Str(A, "variant", "");
-    if (R.LaunchNodeId.empty() && R.LaunchTile.empty()) throw Command::BadArgs("give a node, or --tile (and --variant)");
+    //The game, named as a person names it: a tile UID or a game's title (its shelf's default row, or --variant's), else
+    //a node (a LABEL or a CID).
+    if (const std::string G = Command::Str(A, "game", ""); !G.empty())
+    {
+        if (!Q.empty() || !R.LaunchTile.empty()) throw Command::BadArgs("name the game once: as <game>, or with --node / --tile");
+        const auto I = Index(C);
+        std::string Tile;
+        if (I->Tile(G)) Tile = G;
+        else
+        {
+            std::vector<std::string> Hits;
+            for (const auto &[Uid, T] : I->Tiles)
+                if (T.is_object() && T.value("TITLE", std::string()) == G && std::find(Hits.begin(), Hits.end(), Uid) == Hits.end()) Hits.push_back(Uid);
+            if (Hits.size() > 1)
+                throw Command::BadArgs("'" + G + "' is the title of " + std::to_string(Hits.size()) + " games — name one by its UID: " + [&] {
+                    std::string L; for (const auto &H : Hits) L += (L.empty() ? "" : ", ") + H; return L; }());
+            if (Hits.size() == 1) Tile = Hits.front();
+        }
+        if (!Tile.empty()) R.LaunchTile = Tile;
+        else R.LaunchNodeId = NodeOf(*I, G)->Key();
+    }
+    if (R.LaunchNodeId.empty() && R.LaunchTile.empty()) throw Command::BadArgs("name the game (a UID, title, LABEL or CID), or give --node or --tile");
     R.Entrypoint = Command::Str(A, "entry", "");
     R.InstanceName = Command::Str(A, "instance", "");
     R.RunnerChain = List(A, "runners");
@@ -50,9 +73,53 @@ CliModes::LaunchRequest Request(Command::Context &C, const json &A)
     return R;
 }
 
+//"PackageUID" -> "package_uid", "SubComponentsArray" -> "sub_components_array": the command's keys are snake_case
+//like every other command's (the --resolve-only file keeps the dump's own spelling).
+std::string Snake(const std::string &K)
+{
+    std::string Out;
+    for (size_t I = 0; I < K.size(); ++I)
+    {
+        const char C = K[I];
+        const bool Up = std::isupper(static_cast<unsigned char>(C));
+        if (Up && I > 0 && (std::islower(static_cast<unsigned char>(K[I - 1])) || std::isdigit(static_cast<unsigned char>(K[I - 1]))
+                            || (I + 1 < K.size() && std::islower(static_cast<unsigned char>(K[I + 1])) && std::isupper(static_cast<unsigned char>(K[I - 1])))))
+            Out += '_';
+        Out += static_cast<char>(std::tolower(static_cast<unsigned char>(C)));
+    }
+    return Out;
+}
+
+//The plan with the dump's own field names in snake_case — its top level and each runner link. What the fields hold is
+//left as it is: environment variables, option and path variables, guest roots and drives are names of their own, and
+//the layers and entries are in the node's notation.
+json SnakePlan(const json &Dump)
+{
+    if (!Dump.is_object()) return Dump;
+    json Out = json::object();
+    for (const auto &[K, V] : Dump.items())
+    {
+        if (K == "RunnerChain" && V.is_array())
+        {
+            json Links = json::array();
+            for (const auto &L : V)
+            {
+                if (!L.is_object()) { Links.push_back(L); continue; }
+                json S = json::object();
+                for (const auto &[Lk, Lv] : L.items()) S[Snake(Lk)] = Lv;
+                Links.push_back(std::move(S));
+            }
+            Out[Snake(K)] = std::move(Links);
+        }
+        else Out[Snake(K)] = V;
+    }
+    return Out;
+}
+
 std::vector<Command::Arg> LaunchArgs()
 {
-    return { Command::Opt("node", "the node to launch (CID, handle or LABEL)"), Command::Opt("tile", "a tile: its row (with --variant), as the shelf shows it"),
+    return { Command::OptPos("game", "the game: a tile UID, a title, a LABEL or a CID"),
+             Command::Opt("node", "the node to launch (CID, handle or LABEL)"), Command::Opt("tile", "a tile: its row (with --variant), as the shelf shows it"),
              Command::Opt("variant", "(--tile) the row's name"), Command::Opt("entry", "which entry (its LABEL; default the first game entry)"),
              Command::Opt("instance", "which instance (default the last played)"), Command::Opt("runners", "a pinned runner chain, innermost first (a,b)"),
              Command::Opt("grafts", "the grafts to apply, in order (a,b; '' none)"), Command::Opt("var", "option values: NAME=VALUE[,…]") };
@@ -90,6 +157,17 @@ json Value(const RegistryValue &V) { return RegistryWrapper::ValueToManifestStri
 
 } // namespace
 
+namespace {
+//A RegEdit that did not apply says why as a warning (the launch goes on without it); a command applying one fails
+//with that reason.
+std::string RegEditWhy(LogRecorder &Said)
+{
+    std::string Out;
+    for (const auto &E : Said.Take()) Out += "\n  " + E.Message;
+    return Out;
+}
+} // namespace
+
 VG_COMMANDS
 {
     using Command::Type;
@@ -108,7 +186,7 @@ VG_COMMANDS
         "runner's program, arguments and environment, every path (content root, prefix, the program), DLL overrides, "
         "what is kept, the options and every variable, the layers it would mount — what `--resolve-only` writes. The "
         "warnings and errors the resolve logged are counted (app diagnostics).",
-        LaunchArgs(), { "launch plan --node 'Patch 2.0a'", "launch plan --tile 749 --variant 'Patch 2.0a (No-CD)' --var aoe2_res=1920x1080 --json" },
+        LaunchArgs(), { "launch plan 749", "launch plan 'Patch 2.0a'", "launch plan --node 'Patch 2.0a'", "launch plan --tile 749 --variant 'Patch 2.0a (No-CD)' --var aoe2_res=1920x1080 --json" },
         { "CliModes::Launch", "CliModes::PrepareLaunch", "CliModes::ResolutionOf", "ContainerWrapper::Resolved", "ContainerParams::GetVariablesMap",
           "LaunchResolver::InitializeFromNode", "LaunchResolver::ResolveRunnerChain", "LaunchResolver::ResolveChainIds", "LaunchResolver::ResolveChainTail",
           "LaunchResolver::BoundaryLinkIndex", "LaunchResolver::ChainHasInnerLinks", "LaunchResolver::DerivePaths", "LaunchResolver::DerivePersistence",
@@ -123,7 +201,7 @@ VG_COMMANDS
             json Dump;
             Diagnostics::Report V;
             if (CliModes::Launch(R, *C.Config, *C.AppDataDir, &Dump, &V) != 0) throw std::runtime_error("it did not resolve:" + LoggedErrors(V));
-            return Dump;
+            return SnakePlan(Dump);
         }, {} });
 
     Command::Register({
@@ -169,7 +247,7 @@ VG_COMMANDS
             std::string Err;
             auto P = CliModes::PrepareLaunch(Request(C, A), *C.Config, Err);
             if (!P) throw std::runtime_error(Err);
-            if (!P->W->BuildContainerRuntime()) { P->W->Cleanup(); throw std::runtime_error("the runtime did not build (the log says why)"); }
+            if (!P->W->BuildContainerRuntime()) { P->W->Cleanup(); throw std::runtime_error("the runtime did not build"); }
             json Out = CliModes::ResolutionOf(*P);
             Out = {{"runtime", P->W->ContainerParams.RuntimePath.string()}, {"content", Out["Content"]}, {"prefix", Out["PrefixRoot"]}};
             Built() = std::move(P);
@@ -248,9 +326,9 @@ VG_COMMANDS
     Command::Register({
         "registry show", "a wine prefix's registry: a key's values and subkeys, or every key under one",
         "Reads the prefix's hives (system.reg, user.reg, userdef.reg) and shows --key: its values (in the node's "
-        "notation) and subkeys; --all every key under it. --arch 32 shows the key as a 32-bit program sees it.",
+        "notation) and subkeys (a hive's root, HKLM or HKCU: its top-level keys); --all every key under it. --arch 32 shows the key as a 32-bit program sees it.",
         { Pos("prefix", "the prefix folder (holding system.reg)"), Opt("key", "the key (HKLM\\Software\\…)"), Opt("arch", "32 or 64"), Flag("all", "every key under it") },
-        { "registry show ~/x/pfx --key 'HKLM\\Software\\Microsoft\\Microsoft Games'", "registry show ~/x/pfx --key HKCU --all" },
+        { "registry show ~/x/pfx --key HKLM", "registry show ~/x/pfx --key 'HKLM\\Software\\Microsoft\\Microsoft Games'", "registry show ~/x/pfx --key HKCU --all" },
         { "RegistryWrapper::LoadPrefix", "RegistryWrapper::LoadHiveFile", "RegistryWrapper::GetKey", "RegistryWrapper::GetValue", "RegistryWrapper::ForEachKey",
           "RegistryWrapper::ArchPath", "RegistryWrapper::NormalizeRootPrefix", "RegistryWrapper::RootForPath", "RegistryWrapper::StripRootPrefix",
           "RegistryWrapper::NamesNoKey", "RegistryWrapper::ValueToManifestString" }, Needs::Config, false,
@@ -258,8 +336,27 @@ VG_COMMANDS
             RegistryWrapper R = LoadPrefix(Command::Str(A, "prefix"));
             std::string K = RegistryWrapper::NormalizeRootPrefix(Command::Str(A, "key", "HKLM"));
             if (A.contains("arch")) K = RegistryWrapper::ArchPath(K, Command::Str(A, "arch"));
-            if (RegistryWrapper::NamesNoKey(K)) throw Command::BadArgs("'" + K + "' names no key");
-            json Out = {{"key", K}, {"hive", static_cast<int>(RegistryWrapper::RootForPath(K))}, {"in_hive", RegistryWrapper::StripRootPrefix(K)}};
+            static const char *HiveNames[] = { "machine (system.reg)", "user (user.reg)", "default user (userdef.reg)" };
+            const bool Root = RegistryWrapper::NamesNoKey(K);   // a whole hive: HKLM, HKCU
+            while (Root && !K.empty() && K.back() == '\\') K.pop_back();
+            json Out = {{"key", K}, {"hive", HiveNames[static_cast<int>(RegistryWrapper::RootForPath(K))]}};
+            if (!Root) Out["in_hive"] = RegistryWrapper::StripRootPrefix(K);
+            if (Root && !Command::Bool(A, "all", false))
+            {
+                //A hive's top: the keys directly under it (a hive has no values of its own).
+                json Sub = json::array();
+                std::set<std::string> Seen;
+                const HiveRoot Want = RegistryWrapper::RootForPath(K);
+                R.ForEachKey([&](const std::string &P, const RegistryKey &) {
+                    if (RegistryWrapper::RootForPath(P) != Want) return;
+                    const std::string In = RegistryWrapper::StripRootPrefix(P);
+                    const std::string Top = In.substr(0, In.find('\\'));
+                    if (!Top.empty() && Seen.insert(QString::fromStdString(Top).toLower().toStdString()).second) Sub.push_back(Top);
+                });
+                Out["values"] = json::object();
+                Out["subkeys"] = Sub;
+                return Out;
+            }
             if (Command::Bool(A, "all", false))
             {
                 json Keys = json::object();
@@ -277,7 +374,6 @@ VG_COMMANDS
             json V = json::object(), Sub = json::array();
             for (const auto &[N, X] : Key->Values) V[N.empty() ? "@" : N] = Value(X);
             for (const auto &Ch : Key->Children) Sub.push_back(Ch->Name);
-            if (!Key->Values.empty()) Out["first"] = Value(*R.GetValue(K, Key->Values.front().first));
             Out["values"] = V;
             Out["subkeys"] = Sub;
             return Out;
@@ -321,7 +417,7 @@ VG_COMMANDS
         "registry apply", "apply REG edits to a prefix (as a launch does), with %variables% substituted",
         "--edits: the engine's RegEdit list (or one); --var NAME=VALUE substitutes first; --override applies only the "
         "edits marked OVERRIDE (what is re-applied over the user's kept registry). Saved back to the hives.",
-        { Pos("prefix", "the prefix folder"), Opt("edits", "the RegEdit layer(s) (JSON)", Type::Json, true), Opt("var", "NAME=VALUE[,…]"), Flag("override", "only OVERRIDE edits"),
+        { Pos("prefix", "the prefix folder"), WithSample(Opt("edits", "the RegEdit layer(s) (JSON)", Type::Json, true), "{\"REGPATH\":\"HKCU\\\\Software\\\\X\",\"KEYVALUES\":{\"V\":\"1\"}} or a list of them"), Opt("var", "NAME=VALUE[,…]"), Flag("override", "only OVERRIDE edits"),
           Flag("dry-run", "show the substituted edits, change nothing") },
         { "registry apply ~/x/pfx --edits @reg.json --var res=1920x1080" },
         { "RegistryWrapper::ApplyRegEdits", "RegistryWrapper::ApplyRegEdit", "RegistryWrapper::SubstituteRegEdit" }, Needs::Config, false,
@@ -333,8 +429,9 @@ VG_COMMANDS
             if (Command::Bool(A, "dry-run", false)) return E;
             const std::string P = Command::Str(A, "prefix");
             RegistryWrapper R = LoadPrefix(P);
+            LogRecorder Said({ "RegistryWrapper::ApplyRegEdit", "RegistryWrapper::ApplyRegEdits" });
             const bool Ok = E.size() == 1 && !Command::Bool(A, "override", false) ? R.ApplyRegEdit(E[0]) : R.ApplyRegEdits(E, Command::Bool(A, "override", false));
-            if (!Ok) throw std::runtime_error("an edit did not apply (the log says which)");
+            if (!Ok) throw std::runtime_error("an edit did not apply" + RegEditWhy(Said));
             if (!R.SavePrefix(P)) throw std::runtime_error("could not save the hives");
             return json{{"applied", E.size()}};
         }, {} });
@@ -405,7 +502,7 @@ VG_COMMANDS
             else if (A.contains("overwrite")) Ok = FileEdits::FileOverwrite(Command::Str(A, "overwrite"), F);
             else if (Command::Bool(A, "delete", false)) Ok = FileEdits::DeletePath(F);
             else throw Command::BadArgs("give --config, --json-set, --xml, --append, --overwrite or --delete");
-            if (!Ok) throw std::runtime_error("the edit did not apply (the log says why)");
+            if (!Ok) throw std::runtime_error("the edit did not apply");
             return json{{"edited", F.string()}};
         }, {} });
 
@@ -424,7 +521,7 @@ VG_COMMANDS
         "edits patch", "apply a BinaryPatch (Replace, Cave, Poke) to a program file",
         "The patch as the node writes it (--patch JSON), --var values for its tokens; the file is changed in place "
         "unless --dry-run (then only what it would do is said).",
-        { Pos("file", "the program file"), Opt("patch", "the patch (JSON)", Type::Json, true), Opt("var", "NAME=VALUE[,…]"), Flag("dry-run", "change nothing") },
+        { Pos("file", "the program file"), WithSample(Opt("patch", "the patch (JSON)", Type::Json, true), "{\"MODE\":\"Replace\",\"OFFSET\":\"0x1234\",\"EXPECT\":\"74 05\",\"REPLACE\":\"EB 05\"}"), Opt("var", "NAME=VALUE[,…]"), Flag("dry-run", "change nothing") },
         { "edits patch game.exe --patch @nocd.json --dry-run" }, { "BinaryPatch::ApplyOne" }, Needs::Config, false,
         [](Command::Context &, const json &A) {
             const std::string F = Command::Str(A, "file");

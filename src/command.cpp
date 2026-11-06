@@ -1,4 +1,7 @@
 #include "command.h"
+#include "appmodel.h"     // networkingEnabled — a Node command while the node starts
+#include "commonutils.h"   // LogRecorder — what a failing call logged
+#include "ipfswrapper.h"   // Available — a Node command on an app with networking off
 
 #include <algorithm>
 #include <set>
@@ -59,6 +62,15 @@ static const char *NeedsName(Needs N)
     return "?";
 }
 
+bool WorksOffline(const std::string &Name)
+{
+    return Name == "ipfs status" || Name == "launch run" || Name == "launch build";
+}
+
+namespace { bool g_VerboseOutput = false; }
+void SetVerboseOutput(bool On) { g_VerboseOutput = On; }
+bool VerboseOutput() { return g_VerboseOutput; }
+
 nlohmann::ordered_json Run(const std::string &Name, const nlohmann::ordered_json &Args, Context &Ctx)
 {
     const Spec *S = Find(Name);
@@ -66,9 +78,58 @@ nlohmann::ordered_json Run(const std::string &Name, const nlohmann::ordered_json
     if ((S->Requires != Needs::Config && !Ctx.Model) || ((S->Requires == Needs::Ui || S->Requires == Needs::App) && !Ctx.Window))
         return {{"ok", false}, {"error", "'" + Name + "' needs the " + NeedsName(S->Requires) + ", which this run has not brought up"}};
     if (!Args.is_object()) return {{"ok", false}, {"error", "arguments must be a JSON object"}, {"usage", true}};
+    //The running app with networking off has no node: say so at once instead of waiting on it.
+    if (S->Node && Ctx.Live && !IpfsWrapper::Available() && !WorksOffline(Name))
+    {
+        if (Ctx.Model && Ctx.Model->networkingEnabled())   // on, and the node coming up (it starts after the window)
+            return {{"ok", false}, {"error", "'" + Name + "' needs the network, and the app's node is still starting: run it again in a moment"}};
+        return {{"ok", false}, {"error", "'" + Name + "' needs the network, and networking is off in the app: turn it on "
+                                         "(VidyaGod app networking --set on), then run it again"}};
+    }
+    for (const Arg &A : S->Args)   // a JSON value of the wrong shape says what it should be, not what the parser met
+    {
+        if (A.Kind != Type::Json || A.Sample.empty() || !Args.contains(A.Name)) continue;
+        const nlohmann::ordered_json &V = Args[A.Name];
+        const char Want = A.Sample.find(" or ") != std::string::npos ? 0 : A.Sample.front();   // "x or y": either shape
+        if ((Want == '{' && !V.is_object()) || (Want == '[' && !V.is_array()))
+            return {{"ok", false}, {"error", "--" + A.Name + " takes a JSON " + (Want == '{' ? "object" : "array") + ", like "
+                                             + A.Sample + " — this is " + (V.is_object() ? "an object" : V.is_array() ? "an array"
+                                             : V.is_string() ? "a string" : V.is_number() ? "a number" : V.is_boolean() ? "a boolean" : "null")},
+                    {"usage", true}};
+    }
+    //What went wrong is in the error itself: the ERR lines this call logged (an edit that did not apply, a mount
+    //helper's own output) follow the command's message, instead of "the log says why".
+    LogRecorder Said({});
+    const auto Why = [&Said](std::string Msg) {
+        std::vector<std::string> Lines;
+        for (const auto &E : Said.Take())
+            if (E.Level == LogLevel::ERR && std::find(Lines.begin(), Lines.end(), E.Message) == Lines.end() && E.Message != Msg) Lines.push_back(E.Message);
+        const size_t Cap = 12;
+        for (size_t I = 0; I < Lines.size() && I < Cap; ++I) Msg += "\n  " + Lines[I];
+        if (Lines.size() > Cap) Msg += "\n  … and " + std::to_string(Lines.size() - Cap) + " more (-v shows the log)";
+        return Msg;
+    };
     try
     {
         return {{"ok", true}, {"result", S->Run(Ctx, Args)}};
+    }
+    catch (const nlohmann::ordered_json::exception &E)
+    {
+        //The parser's "[json.exception.type_error.302] type must be string, but is number": somewhere inside a JSON
+        //value something has another type than the command reads. Say so, with the samples of what it takes.
+        std::string Msg = E.what();
+        if (const auto Close = Msg.find("] "); Msg.rfind("[json.exception", 0) == 0 && Close != std::string::npos) Msg = Msg.substr(Close + 2);
+        //Only a JSON value the caller gave is the caller's mistake; one read from disk (a corrupt node file) is a failure.
+        std::string Like;
+        bool Given = false;
+        for (const Arg &A : S->Args)
+            if (A.Kind == Type::Json && Args.contains(A.Name))
+            {
+                Given = true;
+                if (!A.Sample.empty()) Like += (Like.empty() ? "" : "; ") + ("--" + A.Name + " like " + A.Sample);
+            }
+        if (!Given) return {{"ok", false}, {"error", Why(E.what())}};
+        return {{"ok", false}, {"error", Why("a value is not what '" + Name + "' reads (" + Msg + ")" + (Like.empty() ? "" : ": " + Like))}, {"usage", true}};
     }
     catch (const BadArgs &E)
     {
@@ -76,7 +137,7 @@ nlohmann::ordered_json Run(const std::string &Name, const nlohmann::ordered_json
     }
     catch (const std::exception &E)
     {
-        return {{"ok", false}, {"error", E.what()}};
+        return {{"ok", false}, {"error", Why(E.what())}};
     }
 }
 
@@ -89,7 +150,7 @@ nlohmann::ordered_json List()
         nlohmann::ordered_json A = nlohmann::ordered_json::array();
         for (const Arg &X : S.Args)
             A.push_back({{"name", X.Name}, {"type", TypeNames[static_cast<int>(X.Kind)]}, {"help", X.Help},
-                         {"positional", X.Positional}, {"required", X.Positional || X.Required}, {"choices", X.Choices}});
+                         {"positional", X.Positional}, {"required", X.Required}, {"choices", X.Choices}});
         Out.push_back({{"name", N}, {"summary", S.Summary}, {"help", S.Help}, {"args", A}, {"examples", S.Examples},
                        {"covers", S.Covers}, {"needs", NeedsName(S.Requires)}, {"node", S.Node}});
     }

@@ -2,6 +2,9 @@
 // tray, start on login), adding and removing packages, the housekeeping it does on its own (healing references,
 // reconciling what friends share), a Library card's Play and Edit, the names keys are bound by, and the small
 // helpers everything else uses.
+#include <filesystem>
+#include <QTextDocument>
+#include <QEventLoop>
 #include "command.h"
 #include "cmdutil.h"
 #include "appmodel.h"
@@ -97,12 +100,41 @@ VG_COMMANDS
         }, {} });
 
     Command::Register({
-        "app remove-package", "remove a package from the Library (its managed files go)", "",
-        { Pos("uid", "the package's UID"), Flag("yes", "yes, remove it") }, { "app remove-package 123456 --yes" }, { "AppModel::removePackage" }, Needs::Model, false,
+        "app remove-package", "remove a package from the Library (its managed files go)",
+        "As Settings → Installed Packages' Remove: a package added from outside LIBRARY is forgotten, its folder untouched; "
+        "a source's package loses its content files (its nodes and cover stay, back in the Catalog). A package of LIBRARY "
+        "itself is not removed from here — its content can be shared with other packages and may have no source.",
+        { Pos("package", "the package's UID or folder"), Flag("yes", "yes, remove it") }, { "app remove-package 123456 --yes" },
+        { "AppModel::removePackage", "PackageCatalog::PackageDirsWithUid" }, Needs::Model, false,
         [](Command::Context &C, const json &A) {
             if (!Command::Bool(A, "yes", false)) throw Command::BadArgs("this removes the package's files: add --yes");
-            Model(C).removePackage(QString::fromStdString(Command::Str(A, "uid")));
-            return json{{"removed", Command::Str(A, "uid")}};
+            const std::string Q = Command::Str(A, "package");
+            std::filesystem::path Dir = Q;
+            if (std::error_code Ec; !std::filesystem::is_directory(Dir, Ec))
+            {
+                const auto Dirs = PackageCatalog::PackageDirsWithUid(*Index(C), Q);
+                if (Dirs.empty()) throw Command::BadArgs("no package has UID '" + Q + "' (VidyaGod packages installed lists them)");
+                if (Dirs.size() > 1)
+                {
+                    std::string L;
+                    for (const auto &D : Dirs) L += "\n  " + D.string();
+                    throw Command::BadArgs("UID '" + Q + "' names " + std::to_string(Dirs.size()) + " packages; name the folder:" + L);
+                }
+                Dir = Dirs.front();
+            }
+            bool Async = false;
+            if (const QString Why = Model(C).removePackage(QString::fromStdString(Dir.string()), &Async); !Why.isEmpty())
+                throw std::runtime_error(Why.toStdString());
+            //A dehydrate runs on a worker: here (no app to keep it going) the call waits for it, or the process would
+            //end in its middle.
+            if (Async && !C.Live)
+            {
+                QEventLoop Wait;
+                QObject::connect(&Model(C), &AppModel::catalogChanged, &Wait, &QEventLoop::quit);
+                Wait.exec();
+                return json{{"removed", Dir.string()}};
+            }
+            return Async ? json{{"removing", Dir.string()}, {"follow", "VidyaGod events wait --signal catalogChanged"}} : json{{"removed", Dir.string()}};
         }, {} });
 
     Command::Register({
@@ -139,7 +171,7 @@ VG_COMMANDS
         "finds it now (\"\" while it is being fetched). --decode (in the running app) takes its image as a card does: "
         "\"decoding\" the first time, as the decode runs off the GUI thread, and its size once it has landed — the size a "
         "card keeps it at (the widest card's, 2:3), not the file's.",
-        { Opt("cover", "the COVER (JSON)", Type::Json, true), Opt("package", "the package folder"), Flag("decode", "take the decoded image") },
+        { WithSample(Opt("cover", "the COVER (JSON)", Type::Json, true), "{\"PATH\":\"cover.jpg\"} or \"cover.png\""), Opt("package", "the package folder"), Flag("decode", "take the decoded image") },
         { "app covers --cover '{\"PATH\":\"cover.jpg\",\"SOURCE\":{\"TYPE\":\"ipfs\",\"CID\":\"Qm…\"}}' --package 749",
           "app covers --cover '\"cover.png\"' --package 749 --decode" },
         { "CoverCache::Locate", "CoverCache::resolve", "CoverCache::setAssetsRoot", "CoverCache::setOnlineProbe", "CoverCache::onNetworkOnline",
@@ -160,6 +192,19 @@ VG_COMMANDS
                 Out["decodes"] = CoverCache::instance()->decodeCount();
             }
             return Out;
+        }, {} });
+
+    Command::Register({
+        "app window", "the main window: bring it forward (from the tray too), or hide it to the tray",
+        "--show is what starting VidyaGod again does while it runs: the window comes back from the tray (or from behind "
+        "others) instead of a second app. --hide puts it in the tray, as closing it does with Close to tray on.",
+        { Flag("show", "bring the window forward"), Flag("hide", "hide it to the tray") }, { "app window --show", "app window" },
+        { "MainWindow::restoreFromTray", "MainWindow::hideToTray" }, Needs::App, false,
+        [](Command::Context &C, const json &A) {
+            if (Command::Bool(A, "show", false) && Command::Bool(A, "hide", false)) throw Command::BadArgs("--show or --hide, not both");
+            if (Command::Bool(A, "show", false)) Win(C).restoreFromTray();
+            if (Command::Bool(A, "hide", false)) Win(C).hideToTray();
+            return json{{"visible", Win(C).isVisible()}, {"minimized", Win(C).isMinimized()}};
         }, {} });
 
     Command::Register({
@@ -211,22 +256,43 @@ VG_COMMANDS
     Command::Register({
         "library play", "a Library card's Play: the launch window for its game",
         "Opens the launch window (versions, options, instances) as clicking the card does; drive it with `ui` and press "
-        "its Play with `ui click`.", { Pos("card", "the card (its key or title)") }, { "library play 'Age of Empires II'" },
+        "its Play with `ui click`.", { Pos("card", "the card (its key or title)") }, { "library play 749", "library play 'Age of Empires II - The Age of Kings'" },
         { "LibraryGameCard::play", "MainWindow::libraryCard", "LibraryTab::view", "PreLaunchWindow::packagePath", "PreLaunchWindow::ReloadAndRebuild",
           "VariantPicker::setEntries", "VariantPicker::currentId", "VariantPicker::checkedIds", "LaunchThread::run" }, Needs::App, false,
         [](Command::Context &C, const json &A) {
             LibraryGameCard *Card = Win(C).libraryCard(QString::fromStdString(Command::Str(A, "card")));
-            if (!Card) throw Command::BadArgs("no single Library card '" + Command::Str(A, "card") + "'");
+            if (!Card) throw Command::BadArgs("no single Library card '" + Command::Str(A, "card") + "'"
+                                              + Win(C).cardMiss(false, QString::fromStdString(Command::Str(A, "card"))).toStdString());
             Card->play();
             return json{{"opened", Card->GameTitle.toStdString()}, {"follow", "VidyaGod ui dialogs"}};
         }, {} });
 
     Command::Register({
-        "library edit", "a Library card's Edit: the package editor on its package", "", { Pos("card", "the card (its key or title)") },
-        { "library edit 'Age of Empires II'" }, { "LibraryGameCard::edit", "LibraryGameCard::InitializeClassVariables" }, Needs::App, false,
+        "library details", "what a Library card's hover card says: series, year, size, last played, golden since",
+        "The facts a card does not print on itself, as hovering it shows them.", { Pos("card", "the card (its key or title)") },
+        { "library details 749" }, { "LibraryGameCard::HoverText", "LibraryGameCard::lastPlayed" }, Needs::App, false,
         [](Command::Context &C, const json &A) {
             LibraryGameCard *Card = Win(C).libraryCard(QString::fromStdString(Command::Str(A, "card")));
-            if (!Card) throw Command::BadArgs("no single Library card '" + Command::Str(A, "card") + "'");
+            if (!Card) throw Command::BadArgs("no single Library card '" + Command::Str(A, "card") + "'"
+                                              + Win(C).cardMiss(false, QString::fromStdString(Command::Str(A, "card"))).toStdString());
+            json Lines = json::array();   // the hover card's lines, as text
+            for (const QString &L : Card->HoverText().split("<br>"))
+            {
+                QTextDocument Doc;
+                Doc.setHtml(L);
+                Lines.push_back(Doc.toPlainText().toStdString());
+            }
+            return json{{"title", Card->GameTitle.toStdString()}, {"last_played", Card->lastPlayed().toStdString()},
+                        {"bytes", Card->Bytes}, {"golden", Card->Golden}, {"hover", Lines}};
+        }, {} });
+
+    Command::Register({
+        "library edit", "a Library card's Edit: the package editor on its package", "", { Pos("card", "the card (its key or title)") },
+        { "library edit 749" }, { "LibraryGameCard::edit", "LibraryGameCard::InitializeClassVariables" }, Needs::App, false,
+        [](Command::Context &C, const json &A) {
+            LibraryGameCard *Card = Win(C).libraryCard(QString::fromStdString(Command::Str(A, "card")));
+            if (!Card) throw Command::BadArgs("no single Library card '" + Command::Str(A, "card") + "'"
+                                              + Win(C).cardMiss(false, QString::fromStdString(Command::Str(A, "card"))).toStdString());
             Card->edit();
             return json{{"editing", Card->GameTitle.toStdString()}};
         }, {} });
@@ -238,18 +304,28 @@ VG_COMMANDS
         "--pad-button N, --pad-axis N±: the name a press of it gets.",
         { Opt("check", "a name"), Opt("key", "a key (Ctrl+A, F1, …)"), Opt("button", "a mouse button"), Opt("wheel", "a wheel step", Type::Int),
           Opt("pad-button", "an SDL pad button", Type::Int), Opt("pad-axis", "an SDL pad axis", Type::Int), Flag("negative", "(--pad-axis) its negative side") },
-        { "keys names", "keys names --key Ctrl+F5", "keys names --pad-button 0" },
+        { "keys names", "keys names --key F5", "keys names --key Ctrl+F5", "keys names --pad-button 0" },
         { "KeyNames::All", "KeyNames::IsValue", "KeyCapture::NameOf", "KeyCapture::NameOfWheel", "KeyCapture::NameOfPadButton", "KeyCapture::NameOfPadAxis" },
         Needs::Config, false,
         [](Command::Context &, const json &A) {
             json Out = json::object();
-            if (A.contains("check")) Out["valid"] = KeyNames::IsValue(Command::Str(A, "check"));
+            //A key option holds one key: the rebinder is press-a-key, and a modifier held with it is not part of the name.
+            const std::string Combo = "a key option holds one key, not a combination (the rebinder records the key a "
+                                      "press of it gives, without Ctrl, Alt, Shift or Meta)";
+            if (A.contains("check"))
+            {
+                const std::string N = Command::Str(A, "check");
+                Out["valid"] = KeyNames::IsValue(N);
+                if (!Out["valid"].get<bool>() && N.find('+') != std::string::npos && N.size() > 1) Out["why"] = Combo;
+            }
             if (A.contains("key"))
             {
                 const QKeySequence S(QString::fromStdString(Command::Str(A, "key")));
                 if (S.isEmpty()) throw Command::BadArgs("not a key");
                 const QKeyEvent E(QEvent::KeyPress, S[0].key(), S[0].keyboardModifiers());
                 Out["key"] = KeyCapture::NameOf(E);
+                if (S[0].keyboardModifiers() & (Qt::ControlModifier | Qt::AltModifier | Qt::ShiftModifier | Qt::MetaModifier))
+                    Out["note"] = Combo + ": " + Command::Str(A, "key") + " is bound as " + Out["key"].get<std::string>();
             }
             if (A.contains("button"))
             {

@@ -26,7 +26,8 @@ GamePicker::GamePicker(nlohmann::ordered_json * config, const NodeIndex * index,
     heading->setStyleSheet("padding:8px;color:#c7d0d8;");
     layout->addWidget(heading);
 
-    View = new LibraryView(this);   // default mode: a card click calls play() (opens the game's PreLaunchWindow)
+    View = new LibraryView(this);
+    View->setAccessibleName("Picker games");   // default mode: a card click calls play() (opens the game's PreLaunchWindow)
     layout->addWidget(View, 1);
 
     buildCards();

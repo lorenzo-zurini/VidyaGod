@@ -25,7 +25,9 @@ namespace {
 QString Slug(const QString &Text)
 {
     QString S = Text;
+    S.remove(QRegularExpression("<[^>]*>"));                    // rich text: its words, not its markup
     S.remove('&');                                              // Qt mnemonic markers
+    S.remove(QRegularExpression("['’]"));                       // "Runner's" → "Runners", not "RunnerS"
     S.replace(QRegularExpression("[^A-Za-z0-9]+"), " ");         // punctuation/ellipses → separators
     QString Out;
     for (const QString &Word : S.split(' ', Qt::SkipEmptyParts))
@@ -38,6 +40,7 @@ QString Slug(const QString &Text)
 QString Pretty(const QString &Text)
 {
     QString S = Text;
+    S.remove(QRegularExpression("<[^>]*>"));                    // rich text: its words
     S.remove('&');
     S.replace(QChar(0x2026), "");                               // …
     while (S.endsWith(':') || S.endsWith(' ') || S.endsWith('.')) S.chop(1);

@@ -506,6 +506,18 @@ std::unordered_map<std::string, NodeHydration> HydrationMap(const NodeIndex &Idx
 // drop-ref their CIDs, so the package returns to the Catalog as re-downloadable and the node stops seeding it.
 // Returns the number of files removed. Use only for managed (library-root) packages, never local/portable ones.
 int DehydrateNode(const NodeIndex &Idx, const std::string &LaunchNodeId);
+//The packages installed here, from the index: every package folder (LIBRARY's, or added locally; never a friend's
+//CATALOG stubs) with a launchable whose content is all on disk — Settings → Installed Packages. Uid and Title are its
+//identity as ScanBundleIdentity tells it (no disk read: the index has the nodes); Variants its shelf rows; Local when
+//it was added from outside LIBRARY; Bytes what its folder holds on disk (with Sizes; a walk of each folder).
+//HasEntry: the config's LIBRARY list names it (a package added from outside, or a package source's) — what Remove takes.
+struct InstalledPackage { std::filesystem::path Dir; std::string Uid, Title, Library; bool Local = false, HasEntry = false;
+                          std::vector<std::string> Variants; std::uintmax_t Bytes = 0; };
+std::vector<InstalledPackage> InstalledPackages(const nlohmann::ordered_json &GlobalConfigJSON, const NodeIndex &Idx,
+                                                bool Sizes = true);
+//The package folders (of the index) whose identity UID is Uid, or whose folder name begins with "[<Uid>]" — what a
+//package named by its UID means.
+std::vector<std::filesystem::path> PackageDirsWithUid(const NodeIndex &Idx, const std::string &Uid);
 // Every distinct ipfs CID a launchable node's content closure must fetch (its layers' SOURCE CIDs). Drives the
 // Catalog download-progress aggregation. Excludes the runner build; cover CIDs are not included. The whole closure is
 // counted (options included: a download is whole chains); Grafts adds the chosen grafts' content.

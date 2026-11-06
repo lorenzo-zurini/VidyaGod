@@ -20,7 +20,9 @@
 #include <QLineEdit>
 #include <QListWidget>
 #include <QMainWindow>
+#include <QMenu>
 #include <QMessageBox>
+#include <QPointer>
 #include <QPixmap>
 #include <QPlainTextEdit>
 #include <QProgressBar>
@@ -60,6 +62,7 @@ std::string NameOf(const QWidget *W)
 {
     if (!W->objectName().isEmpty()) return W->objectName().toStdString();
     if (!W->accessibleName().isEmpty()) return W->accessibleName().toStdString();
+    if (W->isWindow() && !qobject_cast<const QMenu *>(W)) return W->metaObject()->className();   // a window: its kind
     return TabTitle(W).toStdString();
 }
 
@@ -158,9 +161,17 @@ json StateOf(const QWidget *W, int Depth, bool VisibleOnly)
     }
     else if (const auto *Tw = qobject_cast<const QTabWidget *>(W))
     {
-        json Tabs = json::array();
-        for (int I = 0; I < Tw->count(); ++I) Tabs.push_back(Shown(Tw->tabText(I)).toStdString());
+        json Tabs = json::array(), Hidden = json::array(), Off = json::array();
+        for (int I = 0; I < Tw->count(); ++I)
+        {
+            const std::string Title = Shown(Tw->tabText(I)).toStdString();
+            Tabs.push_back(Title);
+            if (!Tw->isTabVisible(I)) Hidden.push_back(Title);
+            else if (!Tw->isTabEnabled(I)) Off.push_back(Title);
+        }
         J["tabs"] = Tabs;
+        if (!Hidden.empty()) J["hidden_tabs"] = Hidden;
+        if (!Off.empty()) J["disabled_tabs"] = Off;
         J["current"] = Shown(Tw->tabText(Tw->currentIndex())).toStdString();
     }
     else if (const auto *Lv = qobject_cast<const LibraryView *>(W)) J["grid"] = Lv->stateJson();
@@ -195,14 +206,21 @@ QWidget *Named(const std::string &Name, const QWidget *Under)
     std::vector<QWidget *> Exact, Part;
     std::function<void(QWidget *)> Walk = [&](QWidget *W) {
         const QString O = W->objectName(), A = W->accessibleName(), T = TabTitle(W);
-        if (O == Q || A == Q || (!T.isEmpty() && T == Q)) Exact.push_back(W);
-        else if ((!O.isEmpty() && O.contains(Q, Qt::CaseInsensitive)) || (!A.isEmpty() && A.contains(Q, Qt::CaseInsensitive)))
+        //A window also answers to its kind (PackageEditor, PreLaunchWindow) and its title ("Age of Empires II").
+        const QString K = W->isWindow() ? QString(W->metaObject()->className()) : QString();
+        const QString Title = W->isWindow() ? W->windowTitle() : QString();
+        if (O == Q || A == Q || (!T.isEmpty() && T == Q) || (!K.isEmpty() && K == Q) || (!Title.isEmpty() && Title == Q)) Exact.push_back(W);
+        else if ((!O.isEmpty() && O.contains(Q, Qt::CaseInsensitive)) || (!A.isEmpty() && A.contains(Q, Qt::CaseInsensitive))
+                 || (!Title.isEmpty() && Title.contains(Q, Qt::CaseInsensitive)))
             Part.push_back(W);
         for (QObject *C : W->children()) if (auto *Cw = qobject_cast<QWidget *>(C)) Walk(Cw);
     };
     if (Under) Walk(const_cast<QWidget *>(Under));
     else for (QWidget *W : QApplication::topLevelWidgets()) Walk(W);
     const auto Pick = [&](std::vector<QWidget *> &V) -> QWidget * {
+        //A window with a parent is both a top-level widget and its parent's child: seen twice, still one control.
+        std::sort(V.begin(), V.end());
+        V.erase(std::unique(V.begin(), V.end()), V.end());
         std::vector<QWidget *> Visible;
         for (QWidget *W : V) if (W->isVisible()) Visible.push_back(W);
         std::vector<QWidget *> &Use = Visible.empty() ? V : Visible;
@@ -228,11 +246,15 @@ QWidget *Named(const std::string &Name, const QWidget *Under)
                            + " (VidyaGod ui tree lists them)");
 }
 
+// A card grid by its name — or by the name of what holds exactly one (the Library tab: its "Library games").
 LibraryView *Grid(const std::string &Name)
 {
-    auto *V = qobject_cast<LibraryView *>(Named(Name));
-    if (!V) throw Command::BadArgs("'" + Name + "' is not a card grid");
-    return V;
+    QWidget *W = Named(Name);
+    if (auto *V = qobject_cast<LibraryView *>(W)) return V;
+    std::vector<LibraryView *> In;
+    for (LibraryView *V : W->findChildren<LibraryView *>()) if (V->isVisible() || W->isHidden()) In.push_back(V);
+    if (In.size() == 1) return In.front();
+    throw Command::BadArgs("'" + Name + "' is not a card grid (they are 'Library games' and 'Catalog games')");
 }
 
 // ---- how a widget state reads for a person: an outline, one control a line, tables and grids drawn in place ----
@@ -245,6 +267,8 @@ std::string CellText(const json &C)
     if (C.is_object() && C.contains("checked") && !C.contains("class"))
         return std::string(C["checked"].get<bool>() ? "[x] " : "[ ] ") + C.value("text", std::string());
     if (C.is_object() && C.contains("checked")) return C["checked"].get<bool>() ? "[x]" : "[ ]";
+    if (C.is_object() && C.contains("current") && C["current"].is_string()) return "▾ " + C["current"].get<std::string>();   // a combo
+    if (C.is_object() && C.contains("value")) return C["value"].dump();
     if (C.is_object() && C.contains("children"))   // a cell widget holding one control (a centred checkbox)
         for (const auto &K : C["children"]) { const std::string T = CellText(K); if (!T.empty()) return T; }
     if (C.is_object() && C.contains("text")) return C["text"].get<std::string>();
@@ -266,7 +290,15 @@ void Outline(std::ostringstream &O, const json &N, int Indent, bool Colour)
     }
     if (N.contains("value")) Line += "  = " + N["value"].dump();
     if (N.contains("current") && N["current"].is_string()) Line += "  ▸ " + N["current"].get<std::string>();
-    if (N.contains("tabs")) { std::string T; for (const auto &X : N["tabs"]) T += (T.empty() ? "" : " · ") + X.get<std::string>(); Line += "  tabs: " + T; }
+    if (N.contains("tabs"))
+    {
+        const auto In = [&N](const char *K, const json &X) { const json L = N.value(K, json::array()); return std::find(L.begin(), L.end(), X) != L.end(); };
+        std::string T;
+        for (const auto &X : N["tabs"])
+            T += (T.empty() ? "" : " · ") + X.get<std::string>()
+                 + (In("hidden_tabs", X) ? Paint(" (hidden)", "2", Colour) : In("disabled_tabs", X) ? Paint(" (disabled)", "2", Colour) : "");
+        Line += "  tabs: " + T;
+    }
     if (N.contains("items")) Line += "  (" + std::to_string(N["items"].size()) + " items)";
     if (N.contains("title")) Line += "  " + N["title"].get<std::string>();
     if (N.contains("placeholder") && N.value("text", std::string()).empty()) Line += "  " + Paint("(" + N["placeholder"].get<std::string>() + ")", "2", Colour);
@@ -285,6 +317,8 @@ void Outline(std::ostringstream &O, const json &N, int Indent, bool Colour)
             const json &Cells = R.is_object() ? R["cells"] : R;
             std::vector<std::string> Row;
             for (const auto &C : Cells) Row.push_back(CellText(C));
+            if (R.is_object() && !Row.empty())   // a tree's nested row: indented under its parent, as drawn
+                Row.front() = std::string(static_cast<size_t>(R.value("level", 0)) * 2, ' ') + Row.front();
             Grid.push_back(std::move(Row));
         }
         size_t NCols = Head.size();
@@ -337,6 +371,85 @@ void Outline(std::ostringstream &O, const json &N, int Indent, bool Colour)
     for (const auto &K : N.value("children", json::array())) Outline(O, K, Indent + 1, Colour);
 }
 
+// " (its items: a, b, c)" — what a combo box offers, for the error naming an item it does not have.
+std::string Items(const QComboBox *C)
+{
+    std::string L;
+    for (int I = 0; I < C->count() && I < 30; ++I) L += (I ? ", " : "") + C->itemText(I).toStdString();
+    if (C->count() > 30) L += ", …";
+    return C->count() ? " (its items: " + L + ")" : " (it has none)";
+}
+
+// A dialog as ui dialogs and an action that opened it report it: title, text, buttons, and its controls' state.
+json DialogJson(QDialog *D)
+{
+    json J = {{"title", D->windowTitle().toStdString()}, {"class", D->metaObject()->className()}, {"modal", D->isModal()}};
+    if (auto *M = qobject_cast<QMessageBox *>(D))
+    {
+        J["text"] = M->text().toStdString();
+        if (!M->informativeText().isEmpty()) J["informative"] = M->informativeText().toStdString();
+        if (!M->detailedText().isEmpty()) J["details"] = M->detailedText().toStdString();
+    }
+    json Buttons = json::array();
+    for (QAbstractButton *B : D->findChildren<QAbstractButton *>())
+        if (B->isVisible() && !B->text().isEmpty()) Buttons.push_back(Shown(B->text()).toStdString());
+    J["buttons"] = Buttons;
+    J["state"] = StateOf(D, 1000, true);
+    return J;
+}
+
+// A popup menu on screen (a card's or a row's context menu): its title and enabled items.
+json MenuJson(QMenu *M)
+{
+    json Items = json::array();
+    for (QAction *A : M->actions())
+        if (!A->isSeparator() && A->isVisible()) Items.push_back(json{{"text", Shown(A->text()).toStdString()}, {"enabled", A->isEnabled()}});
+    return {{"menu", Shown(M->title()).toStdString()}, {"items", Items}};
+}
+
+std::vector<QWidget *> OpenDialogs()
+{
+    std::vector<QWidget *> Out;
+    for (QWidget *W : QApplication::topLevelWidgets())
+        if (W->isVisible() && (qobject_cast<QDialog *>(W) || qobject_cast<QMenu *>(W))) Out.push_back(W);
+    return Out;
+}
+
+// Runs a person's action (a click, a value typed, a card opened) and returns After()'s state — unless the action opens
+// a dialog or a menu that waits for an answer (a confirmation's exec()): then the call is answered at once with what
+// opened (Context::Early), and ui press answers it; the action finishes when the dialog closes. A dialog the action
+// opened without waiting (shown, not exec'd) is listed in the result.
+json Act(Command::Context &Ctx, const std::function<void()> &F, const std::function<json()> &After)
+{
+    const std::vector<QWidget *> Before = OpenDialogs();
+    const auto IsNew = [&Before](QWidget *W) { return std::find(Before.begin(), Before.end(), W) == Before.end(); };
+    const auto Opened = [&] {
+        json Out = json::array();
+        for (QWidget *W : OpenDialogs())
+            if (IsNew(W)) Out.push_back(qobject_cast<QMenu *>(W) ? MenuJson(qobject_cast<QMenu *>(W)) : DialogJson(qobject_cast<QDialog *>(W)));
+        return Out;
+    };
+    QTimer Watch;   // fires inside the dialog's own event loop
+    Watch.setInterval(25);
+    QObject::connect(&Watch, &QTimer::timeout, [&] {
+        const json Now = Opened();
+        if (Now.empty() || !Ctx.Early) return;
+        Watch.stop();
+        Ctx.Early(json{{"opened", Now}, {"waiting", true},
+                       {"note", "the action waits for an answer: VidyaGod ui press <button> gives it"}});
+    });
+    Watch.start();
+    F();
+    Watch.stop();
+    json Out = After();
+    if (const json Left = Opened(); !Left.empty())
+    {
+        if (!Out.is_object()) Out = json{{"state", Out}};
+        Out["opened"] = Left;
+    }
+    return Out;
+}
+
 std::string RenderTree(const json &R, bool Colour)
 {
     std::ostringstream O;
@@ -378,7 +491,7 @@ VG_COMMANDS
         "The exact state of one control, named as ui tree names it: a button's text and check state, a table's columns "
         "and rows (and each cell's checkbox), a card grid's cards with their badges, secondaries and sections.",
         { Command::Pos("control", "the control's name (or a unique part of it)") },
-        { "ui show 'Library'", "ui show Networking --json" },
+        { "ui show 'Library'", "ui show Network --json" },
         { "UiFind::Named", "UiFind::NameOf", "UiFind::StateOf" , "LibraryView::stateJson" }, Command::Needs::Ui, false,
         [](Command::Context &, const json &A) { return StateOf(Named(Command::Str(A, "control")), 1, true); }, &RenderTree });
 
@@ -386,16 +499,18 @@ VG_COMMANDS
         "ui tab", "switch to a tab", "Make a tab current, exactly as clicking its title does.",
         { Command::Pos("tab", "the tab's title (Library, Catalog, Settings, IPFS, Network)") },
         { "ui tab Network" }, { "QTabWidget::setCurrentIndex" , "IpfsTab::setActive", "NetworkTab::setActive", "SettingsTab::showPage" }, Command::Needs::Ui, false,
-        [](Command::Context &, const json &A) {
+        [](Command::Context &Ctx, const json &A) {
             const QString T = QString::fromStdString(Command::Str(A, "tab"));
-            std::function<QTabWidget *(QWidget *)> Find = [&](QWidget *W) -> QTabWidget * {
+            std::function<std::pair<QTabWidget *, int>(QWidget *)> Find = [&](QWidget *W) -> std::pair<QTabWidget *, int> {
                 if (auto *Tw = qobject_cast<QTabWidget *>(W))
                     for (int I = 0; I < Tw->count(); ++I)
-                        if (Shown(Tw->tabText(I)).compare(T, Qt::CaseInsensitive) == 0) { Tw->setCurrentIndex(I); return Tw; }
-                for (QObject *C : W->children()) if (auto *Cw = qobject_cast<QWidget *>(C)) if (auto *R = Find(Cw)) return R;
-                return nullptr;
+                        if (Shown(Tw->tabText(I)).compare(T, Qt::CaseInsensitive) == 0) return { Tw, I };
+                for (QObject *C : W->children()) if (auto *Cw = qobject_cast<QWidget *>(C)) if (auto R = Find(Cw); R.first) return R;
+                return { nullptr, -1 };
             };
-            for (QWidget *W : Windows()) if (Find(W)) return json{{"tab", T.toStdString()}};
+            for (QWidget *W : Windows())
+                if (const auto [Tw, I] = Find(W); Tw)
+                    return Act(Ctx, [Tw = Tw, I = I] { Tw->setCurrentIndex(I); }, [&] { return json{{"tab", T.toStdString()}}; });
             throw Command::BadArgs("no tab '" + T.toStdString() + "'");
         }, {} });
 
@@ -405,13 +520,13 @@ VG_COMMANDS
         "everything connected to it runs exactly as when a person clicks.",
         { Command::Pos("control", "the control's name") },
         { "ui click 'Verify  Publish'", "ui click 'You Send request'" }, { "QAbstractButton::click" }, Command::Needs::Ui, false,
-        [](Command::Context &, const json &A) {
+        [](Command::Context &Ctx, const json &A) {
             QWidget *W = Named(Command::Str(A, "control"));
             auto *B = qobject_cast<QAbstractButton *>(W);
             if (!B) throw Command::BadArgs("'" + NameOf(W) + "' is a " + W->metaObject()->className() + ", not something to click");
             if (!B->isEnabled()) throw std::runtime_error("'" + NameOf(W) + "' is disabled");
-            B->click();
-            return StateOf(B, 0, false);
+            QPointer<QAbstractButton> P(B);
+            return Act(Ctx, [P] { if (P) P->click(); }, [P] { return P ? StateOf(P, 0, false) : json{{"clicked", true}}; });
         }, {} });
 
     Command::Register({
@@ -421,14 +536,15 @@ VG_COMMANDS
           Command::Flag("on", "on (default) or --no-on for off") },
         { "ui check 'Auto-accept peer requests'", "ui check 'Close to tray' --no-on" },
         { "QAbstractButton::setChecked" }, Command::Needs::Ui, false,
-        [](Command::Context &, const json &A) {
+        [](Command::Context &Ctx, const json &A) {
             QWidget *W = Named(Command::Str(A, "control"));
             const bool On = Command::Bool(A, "on", true);
             if (auto *B = qobject_cast<QAbstractButton *>(W); B && B->isCheckable())
             {
                 if (!B->isEnabled()) throw std::runtime_error("'" + NameOf(W) + "' is disabled");
-                if (B->isChecked() != On) B->click();
-                return StateOf(B, 0, false);
+                QPointer<QAbstractButton> P(B);
+                return Act(Ctx, [P, On] { if (P && P->isChecked() != On) P->click(); },
+                           [P] { return P ? StateOf(P, 0, false) : json{{"clicked", true}}; });
             }
             if (auto *G = qobject_cast<QGroupBox *>(W); G && G->isCheckable()) { G->setChecked(On); return StateOf(G, 0, false); }
             throw Command::BadArgs("'" + NameOf(W) + "' cannot be ticked");
@@ -442,37 +558,41 @@ VG_COMMANDS
           Command::Flag("enter", "press Enter in a text field afterwards (default on)") },
         { "ui set 'Add a peer' 12D3KooW…", "ui set 'Max simultaneous downloads' 4", "ui set 'Settings pages' Network" },
         { "QLineEdit::setText", "QComboBox::setCurrentIndex", "QSpinBox::setValue", "QAbstractItemView::setCurrentIndex" }, Command::Needs::Ui, false,
-        [](Command::Context &, const json &A) {
+        [](Command::Context &Ctx, const json &A) {
             QWidget *W = Named(Command::Str(A, "control"));
             const QString V = QString::fromStdString(Command::Str(A, "value"));
             if (!W->isEnabled()) throw std::runtime_error("'" + NameOf(W) + "' is disabled");
+            //What it sets is checked first (an unknown item is an error); then the setting — which may open a dialog —
+            //runs as an action.
+            std::function<void()> Do;
+            QPointer<QWidget> P(W);
+            const bool Enter = Command::Bool(A, "enter", true);
             if (auto *E = qobject_cast<QLineEdit *>(W))
-            {
-                E->setText(V);
-                emit E->textEdited(V);
-                if (Command::Bool(A, "enter", true)) { emit E->returnPressed(); emit E->editingFinished(); }
-            }
-            else if (auto *T = qobject_cast<QPlainTextEdit *>(W)) T->setPlainText(V);
-            else if (auto *Tx = qobject_cast<QTextEdit *>(W)) Tx->setPlainText(V);
+                Do = [E, V, Enter] {
+                    E->setText(V);
+                    emit E->textEdited(V);
+                    if (Enter) { emit E->returnPressed(); emit E->editingFinished(); }
+                };
+            else if (auto *T = qobject_cast<QPlainTextEdit *>(W)) Do = [T, V] { T->setPlainText(V); };
+            else if (auto *Tx = qobject_cast<QTextEdit *>(W)) Do = [Tx, V] { Tx->setPlainText(V); };
             else if (auto *C = qobject_cast<QComboBox *>(W))
             {
                 const int I = C->findText(V, Qt::MatchFixedString);
-                if (I < 0) throw Command::BadArgs("'" + NameOf(W) + "' has no item '" + V.toStdString() + "'");
-                C->setCurrentIndex(I);
-                emit C->activated(I);
+                if (I < 0) throw Command::BadArgs("'" + NameOf(W) + "' has no item '" + V.toStdString() + "'" + Items(C));
+                Do = [C, I] { C->setCurrentIndex(I); emit C->activated(I); };
             }
-            else if (auto *S = qobject_cast<QSpinBox *>(W)) S->setValue(V.toInt());
-            else if (auto *D = qobject_cast<QDoubleSpinBox *>(W)) D->setValue(V.toDouble());
-            else if (auto *Sl = qobject_cast<QSlider *>(W)) Sl->setValue(V.toInt());
+            else if (auto *S = qobject_cast<QSpinBox *>(W)) Do = [S, V] { S->setValue(V.toInt()); };
+            else if (auto *D = qobject_cast<QDoubleSpinBox *>(W)) Do = [D, V] { D->setValue(V.toDouble()); };
+            else if (auto *Sl = qobject_cast<QSlider *>(W)) Do = [Sl, V] { Sl->setValue(V.toInt()); };
             else if (auto *Lv = qobject_cast<QAbstractItemView *>(W); Lv && Lv->model())   // a list: click its row of that text
             {
                 const QModelIndexList Hit = Lv->model()->match(Lv->model()->index(0, 0), Qt::DisplayRole, V, 1, Qt::MatchFixedString);
                 if (Hit.isEmpty()) throw Command::BadArgs("'" + NameOf(W) + "' has no row '" + V.toStdString() + "'");
-                Lv->setCurrentIndex(Hit.front());
-                emit Lv->clicked(Hit.front());
+                const QPersistentModelIndex Row = Hit.front();
+                Do = [Lv, Row] { if (Row.isValid()) { Lv->setCurrentIndex(Row); emit Lv->clicked(Row); } };
             }
             else throw Command::BadArgs("'" + NameOf(W) + "' takes no value");
-            return StateOf(W, 0, false);
+            return Act(Ctx, [P, Do] { if (P) Do(); }, [P] { return P ? StateOf(P, 0, false) : json{{"set", true}}; });
         }, {} });
 
     Command::Register({
@@ -485,7 +605,7 @@ VG_COMMANDS
           Command::Flag("activate", "also activate the cell (a double click)") },
         { "ui cell Peers LGZ-MacBook Accepted", "ui cell Peers LGZ-MacBook 'Share: VidyaGod' --no-on" },
         { "QAbstractItemView::indexWidget", "QAbstractItemView::setCurrentIndex" }, Command::Needs::Ui, false,
-        [](Command::Context &, const json &A) {
+        [](Command::Context &Ctx, const json &A) {
             QWidget *W = Named(Command::Str(A, "table"));
             auto *V = qobject_cast<QAbstractItemView *>(W);
             if (!V || !V->model()) throw Command::BadArgs("'" + NameOf(W) + "' is not a table");
@@ -510,13 +630,15 @@ VG_COMMANDS
             {
                 QAbstractButton *B = qobject_cast<QAbstractButton *>(Cell);
                 if (!B) B = Cell->findChild<QAbstractButton *>();
+                QPointer<QAbstractButton> P(B);
                 if (B && B->isCheckable())
                 {
                     if (!B->isEnabled()) throw std::runtime_error("that cell's checkbox is disabled");
-                    if (B->isChecked() != Command::Bool(A, "on", true)) B->click();
-                    return json{{"row", R}, {"column", C}, {"checked", B->isChecked()}};
+                    const bool On = Command::Bool(A, "on", true);
+                    return Act(Ctx, [P, On] { if (P && P->isChecked() != On) P->click(); },
+                               [P, R, C] { return json{{"row", R}, {"column", C}, {"checked", P && P->isChecked()}}; });
                 }
-                if (B) { B->click(); return json{{"row", R}, {"column", C}, {"clicked", true}}; }
+                if (B) return Act(Ctx, [P] { if (P) P->click(); }, [R, C] { return json{{"row", R}, {"column", C}, {"clicked", true}}; });
             }
             if (M->flags(I) & Qt::ItemIsUserCheckable)
             {
@@ -526,8 +648,10 @@ VG_COMMANDS
             V->setCurrentIndex(I);
             if (Command::Bool(A, "activate", false))
             {
-                emit V->activated(I);
-                emit V->doubleClicked(I);
+                const QPersistentModelIndex At = I;
+                QPointer<QAbstractItemView> Pv(V);
+                return Act(Ctx, [Pv, At] { if (Pv && At.isValid()) { emit Pv->activated(At); emit Pv->doubleClicked(At); } },
+                           [R, C] { return json{{"row", R}, {"column", C}, {"selected", true}, {"activated", true}}; });
             }
             return json{{"row", R}, {"column", C}, {"selected", true}};
         }, {} });
@@ -538,55 +662,57 @@ VG_COMMANDS
         "download in flight) or open its context menu (--menu). The card is named by its tile UID or its title.",
         { Command::Pos("grid", "the grid's name (ui tree shows it)"), Command::Pos("card", "the card's tile UID or title"),
           Command::Flag("menu", "open its context menu instead") },
-        { "ui card LibraryView 'Age of Empires II'", "ui card AvailableView 749 --json" },
+        { "ui card 'Library games' 'Age of Empires II - The Age of Kings'", "ui card 'Catalog games' 749 --json", "ui card Library 749 --menu" },
         { "LibraryView::activateCardAt", "LibraryView::requestCardMenu", "LibraryView::cardIndex" }, Command::Needs::Ui, false,
-        [](Command::Context &, const json &A) {
+        [](Command::Context &Ctx, const json &A) {
             LibraryView *V = Grid(Command::Str(A, "grid"));
             const int I = V->cardIndex(QString::fromStdString(Command::Str(A, "card")));
-            if (I == -2) throw Command::BadArgs("'" + Command::Str(A, "card") + "' matches several cards — use the tile UID");
-            if (I < 0) throw Command::BadArgs("no card '" + Command::Str(A, "card") + "'");
-            if (Command::Bool(A, "menu", false)) V->requestCardMenu(I); else V->activateCardAt(I);
-            return json{{"card", I}};
+            if (I < 0) throw Command::BadArgs("no single card '" + Command::Str(A, "card") + "'"
+                                              + V->cardMiss(QString::fromStdString(Command::Str(A, "card"))).toStdString());
+            QPointer<LibraryView> P(V);
+            const bool Menu = Command::Bool(A, "menu", false);
+            return Act(Ctx, [P, I, Menu] { if (!P) return; if (Menu) P->requestCardMenu(I); else P->activateCardAt(I); },
+                       [I] { return json{{"card", I}}; });
         }, {} });
 
     Command::Register({
         "ui dialogs", "the open dialogs and message boxes, with their text and buttons",
         "Every dialog on screen: its title, its text (a message box's message and details), its buttons — what "
-        "ui press answers.", {}, { "ui dialogs" }, {}, Command::Needs::Ui, false,
+        "ui press answers — and any popup menu with its items.", {}, { "ui dialogs" }, {}, Command::Needs::Ui, false,
         [](Command::Context &, const json &) {
             json Out = json::array();
-            for (QWidget *W : QApplication::topLevelWidgets())
-            {
-                auto *D = qobject_cast<QDialog *>(W);
-                if (!D || !D->isVisible()) continue;
-                json J = {{"title", D->windowTitle().toStdString()}, {"class", D->metaObject()->className()}, {"modal", D->isModal()}};
-                if (auto *M = qobject_cast<QMessageBox *>(D))
-                {
-                    J["text"] = M->text().toStdString();
-                    if (!M->informativeText().isEmpty()) J["informative"] = M->informativeText().toStdString();
-                    if (!M->detailedText().isEmpty()) J["details"] = M->detailedText().toStdString();
-                }
-                json Buttons = json::array();
-                for (QAbstractButton *B : D->findChildren<QAbstractButton *>())
-                    if (B->isVisible() && !B->text().isEmpty()) Buttons.push_back(Shown(B->text()).toStdString());
-                J["buttons"] = Buttons;
-                J["state"] = StateOf(D, 1000, true);
-                Out.push_back(std::move(J));
-            }
+            for (QWidget *W : OpenDialogs())
+                Out.push_back(qobject_cast<QMenu *>(W) ? MenuJson(qobject_cast<QMenu *>(W)) : DialogJson(qobject_cast<QDialog *>(W)));
             return Out;
         }, {} });
 
     Command::Register({
         "ui press", "press a button of the open dialog",
         "Answer the dialog on top (a message box, a confirmation) by its button's text — what a person clicks to "
-        "close it. A dialog opened by a command keeps the app answering, so this reaches it.",
+        "close it — or pick a popup menu's item by its text (Escape closes it). An action that opens a dialog answers at once with it, so "
+        "this reaches it.",
         { Command::Pos("button", "the button's text (OK, Cancel, Yes, …)"),
           Command::Opt("dialog", "the dialog's title, when several are open") },
-        { "ui press OK", "ui press Yes --dialog 'Remove friend'" }, { "QAbstractButton::click" }, Command::Needs::Ui, false,
+        { "ui press OK", "ui press Yes --dialog 'Remove friend'", "ui press Escape" }, { "QAbstractButton::click" }, Command::Needs::Ui, false,
         [](Command::Context &, const json &A) {
             const QString Want = QString::fromStdString(Command::Str(A, "button")), Title = QString::fromStdString(Command::Str(A, "dialog", ""));
             for (QWidget *W : QApplication::topLevelWidgets())
             {
+                if (auto *M = qobject_cast<QMenu *>(W); M && M->isVisible() && Want.compare("Escape", Qt::CaseInsensitive) == 0)
+                {
+                    QPointer<QMenu> Pm(M);
+                    QTimer::singleShot(0, M, [Pm] { if (Pm) Pm->close(); });   // closed, nothing picked
+                    return json{{"menu", Shown(M->title()).toStdString()}, {"pressed", "Escape"}};
+                }
+                if (auto *M = qobject_cast<QMenu *>(W); M && M->isVisible())   // a popup menu: its item of that text
+                    for (QAction *Item : M->actions())
+                        if (!Item->isSeparator() && Item->isEnabled() && Shown(Item->text()).compare(Want, Qt::CaseInsensitive) == 0)
+                        {
+                            QPointer<QMenu> Pm(M);
+                            QPointer<QAction> Pa(Item);
+                            QTimer::singleShot(0, M, [Pm, Pa] { if (Pa) Pa->trigger(); if (Pm) Pm->close(); });
+                            return json{{"menu", Shown(M->title()).toStdString()}, {"pressed", Shown(Item->text()).toStdString()}};
+                        }
                 auto *D = qobject_cast<QDialog *>(W);
                 if (!D || !D->isVisible() || (!Title.isEmpty() && !D->windowTitle().contains(Title, Qt::CaseInsensitive))) continue;
                 for (QAbstractButton *B : D->findChildren<QAbstractButton *>())
@@ -603,8 +729,8 @@ VG_COMMANDS
     Command::Register({
         "ui screenshot", "save a window (or one control) as a PNG",
         "What a control looks like, rendered by the widget itself — offscreen as well as on screen.",
-        { Command::Pos("file", "the PNG to write"), Command::Opt("control", "one control (default: the main window)") },
-        { "ui screenshot /tmp/vg.png", "ui screenshot net.png --control Networking" }, { "QWidget::grab" }, Command::Needs::Ui, false,
+        { Command::Pos("file", "the PNG to write"), Command::Opt("control", "one control or window — by its name, kind or title (default: the main window)") },
+        { "ui screenshot /tmp/vg.png", "ui screenshot net.png --control Network", "ui screenshot editor.png --control PackageEditor" }, { "QWidget::grab" }, Command::Needs::Ui, false,
         [](Command::Context &Ctx, const json &A) {
             QWidget *W = A.contains("control") ? Named(Command::Str(A, "control")) : Ctx.Window;
             const QString F = QString::fromStdString(Command::Str(A, "file"));

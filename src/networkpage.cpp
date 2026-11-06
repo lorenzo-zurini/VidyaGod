@@ -134,9 +134,14 @@ void NetworkPage::runTest()
 
     auto Checks  = std::make_shared<std::vector<IpfsWrapper::NetCheck>>();
     auto Offline = std::make_shared<bool>(false);
+    auto Why     = std::make_shared<std::vector<std::string>>();   // what the test logged as errors, if it found nothing
     AsyncWork::Run(this,
-        [Checks, Offline]{ *Checks = IpfsWrapper::NetworkTest(Offline.get()); },
-        [this, Checks, Offline]{
+        [Checks, Offline, Why]{
+            LogRecorder Said({});
+            *Checks = IpfsWrapper::NetworkTest(Offline.get());
+            for (const auto &E : Said.Take()) if (E.Level == LogLevel::ERR && Why->size() < 6) Why->push_back(E.Message);
+        },
+        [this, Checks, Offline, Why]{
             RunButton->setEnabled(true);
             if (*Offline)
             {
@@ -151,7 +156,11 @@ void NetworkPage::runTest()
                 Warns += C.Status == "warn";
             }
             if (Checks->empty())
-                StatusLabel->setText("The test returned nothing — see the log.");
+            {
+                QString W;
+                for (const auto &L : *Why) W += "\n" + QString::fromStdString(L);
+                StatusLabel->setText("The test returned nothing" + (W.isEmpty() ? QString(".") : ":" + W));
+            }
             else if (Fails)
                 StatusLabel->setText(QString("%1 problem(s), %2 warning(s) — the failing rows say what to unblock.").arg(Fails).arg(Warns));
             else if (Warns)

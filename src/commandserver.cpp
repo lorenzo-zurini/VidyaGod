@@ -85,7 +85,18 @@ void CommandServer::Serve(QLocalSocket *S)
                            });
             return;
         }
-        Answer(S, Command::Run(Name, Args, Ctx));
+        //A ui action that opens a dialog answers from inside that dialog's exec(), with the dialog: the client is told
+        //at once, and the command's own return (once the dialog is answered) is dropped.
+        Command::Context C = Ctx;
+        auto Answered = std::make_shared<bool>(false);
+        QPointer<QLocalSocket> To(S);
+        C.Early = [To, Answered, Answer](const nlohmann::ordered_json &R) {
+            if (*Answered) return;
+            *Answered = true;
+            if (To) Answer(To, {{"ok", true}, {"result", R}});
+        };
+        const nlohmann::ordered_json Reply = Command::Run(Name, Args, C);
+        if (!*Answered && To) Answer(To, Reply);
     });
 }
 

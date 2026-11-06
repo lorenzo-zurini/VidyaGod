@@ -34,6 +34,9 @@ int Main(int argc, char **argv, const Hooks &H);
 
 // The generic rendering of a result for people: an array of objects as a table, an object as aligned fields.
 std::string RenderGeneric(const nlohmann::ordered_json &Result, bool Colour);
+// The width output is laid out for (a terminal's columns; 0: not a terminal — nothing shortened). Set per call from
+// stdout; a test sets it to render as a terminal would.
+void SetOutputWidth(size_t Columns);
 
 } // namespace CliApp
 

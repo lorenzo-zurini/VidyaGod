@@ -29,7 +29,7 @@
 bool IpfsFetchReady(QWidget * parent);
 
 // Card ordering, shared by the Library and Catalog tabs (both render LibraryGameCards in a LibraryView).
-enum class SortMode { Name = 0, Date = 1, Series = 2 };
+enum class SortMode { Name = 0, Date = 1, Series = 2, Recent = 3 };
 
 // ─────────────────────────────────────────────────────────────────────────────
 // LibraryGameCard — plain data class (one tile), NOT a widget. A tile = a GROUP of launchable nodes (the
@@ -72,6 +72,11 @@ public:
     qint64                 CoverScaledFrom = 0;   // the cacheKey of the CoverOriginal it was scaled from
     QString                CoverCid;      // cover's ipfs CID while not yet local (drives lazy-load refresh)
     QString                ElidedTitle;   // cached — recomputed only when card width changes
+    qint64                 Bytes = -1;    // what its package holds on disk, once the Library has counted it (-1: not yet)
+    //When it was last played: the newest LASTRUN of its instances (ISO-8601 UTC; "" never). Read from its instance
+    //files the first time it is asked (the Recent sort, the hover card), then kept for the card's life.
+    QString lastPlayed();
+    QString HoverText();          // the hover card: title, series and year, size, last played, golden since
 
     // Catalog (Available) per-package rendering: a package's MAIN (base) game holds its other un-downloaded games as
     // Secondaries, drawn as small tiles beneath it. Secondary cards are flagged so the top-level grid skips them.
@@ -85,6 +90,8 @@ public:
     QString                SortDate;      // RELEASEDATE string (ISO → lexicographic = chronological)
     QString                SortSeriesKey; // "SeriesName|##|SubseriesName|##" zero-padded
     QString                SeriesName;    // raw series name for grouping (empty if none)
+    QString                LastPlayedCache;
+    bool                   LastPlayedRead = false;
 
     nlohmann::ordered_json * GlobalConfigJSON = nullptr;
 };
@@ -130,6 +137,10 @@ public:
     nlohmann::ordered_json stateJson() const;
     //The card a CLI names: its tile UID, else its title (exact, then a unique case-insensitive part). -1: none.
     int cardIndex(const QString & KeyOrTitle) const;
+    void paintPlaceholder(QPainter & p, const QRect & r, LibraryGameCard * card);   // a cover-less card
+    //Why a name finds no single card: " — it matches 3 cards: Age of Empires II - The Age of Kings [749], …", or
+    //" — no card's title has it". What the error for that name says.
+    QString cardMiss(const QString & KeyOrTitle) const;
     //What a click on card I does (Enter/Space too): play it (Library), download or cancel it (Catalog).
     void activateCardAt(int I) { activateCard(I); }
     LibraryGameCard * cardAt(int I) const { return Cards && I >= 0 && I < Cards->count() ? Cards->at(I) : nullptr; }

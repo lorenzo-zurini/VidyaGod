@@ -1,3 +1,6 @@
+#include <algorithm>
+#include <cctype>
+#include "apppaths.h"   // ConfigReadOnly
 #include "cmdutil.h"
 #include "appmodel.h"
 #include "jsonoperations.h"
@@ -15,6 +18,9 @@ namespace CmdUtil
 void Save(Command::Context &C)
 {
     if (C.Model) { C.Model->save(); return; }
+    if (AppPaths::ConfigReadOnly())
+        throw std::runtime_error("this call runs beside the app (it carries a path override), so it cannot change the "
+                                 "config: run it without the override, or quit the app");
     if (!JSONOps::SaveJSON(C.Config, new QFile(C.AppDataDir->filePath("GlobalConfig.JSON"))))
         throw std::runtime_error("could not save the config");
 }
@@ -29,7 +35,28 @@ std::shared_ptr<const NodeIndex> Index(Command::Context &C)
 const Node *NodeOf(const NodeIndex &Idx, const std::string &Id)
 {
     if (const Node *N = Idx.Find(Id)) return N;
-    throw Command::BadArgs("no node '" + Id + "' (a CID, a working handle, or a LABEL — VidyaGod catalog shelf lists the games)");
+    //A CID as a table shows it ("bafkrei…myteka": its start and end) or any unique start of one — a handle the same.
+    const auto Dots = Id.find("…");
+    const std::string Head = Dots == std::string::npos ? Id : Id.substr(0, Dots);
+    const std::string Tail = Dots == std::string::npos ? std::string() : Id.substr(Dots + std::string("…").size());
+    const auto Is = [&](const std::string &K) {
+        return K.size() > Head.size() + Tail.size() && K.compare(0, Head.size(), Head) == 0
+               && (Tail.empty() || K.compare(K.size() - Tail.size(), Tail.size(), Tail) == 0);
+    };
+    if (Head.size() >= 6 && std::all_of(Head.begin(), Head.end(), [](unsigned char C) { return std::isalnum(C); }))
+    {
+        std::vector<const Node *> Hits;
+        for (const auto &[K, N] : Idx.Nodes)
+            if (Is(K) || (!N.Handle.empty() && Is(N.Handle))) Hits.push_back(&N);
+        if (Hits.size() == 1) return Hits.front();
+        if (Hits.size() > 1)
+        {
+            std::string L;
+            for (size_t I = 0; I < Hits.size() && I < 8; ++I) L += "\n  " + Hits[I]->Key() + "  " + Hits[I]->NodeId;
+            throw Command::BadArgs("'" + Id + "' is the start of " + std::to_string(Hits.size()) + " nodes' CIDs; give more of it:" + L);
+        }
+    }
+    throw Command::BadArgs("no node '" + Id + "' (a CID or any unique part of its start, a working handle, or a LABEL — VidyaGod catalog shelf lists the games)");
 }
 
 std::filesystem::path PackageDir(Command::Context &C, const std::string &Q, bool Received)

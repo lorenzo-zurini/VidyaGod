@@ -2,6 +2,8 @@
 #define MAINWINDOW_H
 
 #include <QMainWindow>
+#include <vector>
+#include <QPointer>
 
 #include "nlohmann/json.hpp"
 
@@ -47,7 +49,10 @@ public:
     //A Catalog card by its key or (a unique part of) its title — null when none or several match.
     LibraryGameCard * catalogCard(const QString & KeyOrTitle) const;
     LibraryGameCard * libraryCard(const QString & KeyOrTitle) const;   // the same on the Library tab
+    QString cardMiss(bool Catalog, const QString & KeyOrTitle) const;   // why no single card is that (LibraryView::cardMiss)
     TrayController * tray() const { return Tray; }
+    void restoreFromTray();                        // un-hide + raise + focus (a second start of the app does it)
+    void hideToTray();                             // hide window, remember the hidden state, hint once
 
 protected:
     void closeEvent(QCloseEvent * e) override;     // close → hide to tray (if enabled), else quit
@@ -55,9 +60,7 @@ protected:
 
 private:
     void BuildStaticUI();
-    void restoreFromTray();                        // un-hide + raise + focus
-    void hideToTray();                             // hide window, remember the hidden state, hint once
-    void setNetworkTabsEnabled(bool enabled);      // grey/un-grey the network-dependent tabs (Catalog, IPFS)
+    void setNetworkTabsEnabled(bool enabled);      // the "networking is off" banner on the Catalog and IPFS tabs
     void applyNetworkingState(bool enabled);       // setNetworkTabsEnabled + start/stop the node (runtime toggle)
     void startNodeAsync();                         // open the IPFS repo off-thread (deferred so startup isn't blocked)
     void onNodeReady();                            // node repo opened → start resuming interrupted downloads
@@ -79,6 +82,7 @@ private:
     bool          NetworkingOn      = false;    // mirrors the runtime networking toggle (gates node-start retries)
     bool          NodeStartPending  = false;    // a StartNode attempt (or scheduled retry) is in flight
     int           NodeRetryDelayMs  = 2000;     // backoff for failed node starts (doubles up to 30s)
+    std::vector<QPointer<QWidget>> OfflineBanners;   // the Catalog and IPFS tabs' "networking is off" banners
 };
 
 #endif // MAINWINDOW_H

@@ -1,3 +1,4 @@
+#include "guiformat.h"   // PlainLabel
 #include "prelaunchwindow.h"
 #include "fold.h"   // a row's options and entries are its resolution's
 #include "apppaths.h"
@@ -11,6 +12,7 @@
 #include "ipfswrapper.h"     // LanPeers/SetLanExcluded/LanLaunchVars — the Virtual LAN panel
 #include "variantpicker.h"     // NaturalLess — deterministic version-aware variant ordering
 #include "instancestore.h"     // the instance picker
+#include "asyncwork.h"        // the size under the cover, counted off the GUI thread
 
 #include <set>
 #include <algorithm>
@@ -44,6 +46,8 @@
 #include <QPainterPath>
 #include <QUrl>
 #include <QDateTime>
+#include <QLocale>
+#include <QPointer>
 
 namespace {
 //The graft rows of the graft tree, depth-first (section rows carry no key) — the order grafts apply in.
@@ -201,6 +205,15 @@ PreLaunchWindow::PreLaunchWindow(
     CoverLabel->setFixedWidth(230);
     CoverLabel->setAlignment(Qt::AlignTop | Qt::AlignHCenter);
     LeftCol->addWidget(CoverLabel, 0, Qt::AlignTop);
+    //Under the cover, the game itself: who made it, how it is played together, what it takes here, when it was last
+    //played — what a card does not say, without a trip to the editor.
+    DetailsLabel = new QLabel(LeftWidget);
+    DetailsLabel->setObjectName("gameDetails");
+    DetailsLabel->setAccessibleName("Game details");
+    DetailsLabel->setWordWrap(true);
+    DetailsLabel->setTextFormat(Qt::RichText);
+    DetailsLabel->setTextInteractionFlags(Qt::TextSelectableByMouse);
+    LeftCol->addWidget(DetailsLabel);
     BuildLanPanel(LeftCol);
     LeftCol->addStretch(1);
 
@@ -463,8 +476,7 @@ PreLaunchWindow::PreLaunchWindow(
         BtnLayout->addWidget(StatusBox, 1);
     }
 
-    QPushButton* PackageEditorButton = new QPushButton("Edit package", Footer);
-    PackageEditorButton->setFlat(true);
+    QPushButton* PackageEditorButton = new QPushButton("Edit package", Footer);   // a button like Close; Play is the one that stands out
     PackageEditorButton->setToolTip("Open this package in the package editor");
     BtnLayout->addWidget(PackageEditorButton);
     connect(PackageEditorButton, &QPushButton::clicked, this, [this]()
@@ -551,6 +563,7 @@ void PreLaunchWindow::RebuildCover()
         if (const QString E = Str("EDITION"); !E.isEmpty() && E != "Original Release") Bits << E;
         MetaLabel->setText(Bits.join("  ·  "));
         MetaLabel->setVisible(!Bits.isEmpty());
+        RefreshDetails(M);
     }
 
     CoverLabel->clear();
@@ -712,6 +725,7 @@ void PreLaunchWindow::RenderChainCombos()
             if (Sel >= 0) Combo->setCurrentIndex(Sel);
         }
         Combo->setToolTip(QString("Runs %1 programs").arg(QString::fromStdString(Input)));
+        Combo->setAccessibleName(i == 0 ? QString("Runner") : i == 1 ? QString("Runner's runner") : QString("Runner %1").arg(i + 1));
         const int Step = i;
         connect(Combo, &QComboBox::currentIndexChanged, this, [this, Step](int){ onChainStepChanged(Step); });
         ChainLayout->addWidget(Combo);
@@ -1313,6 +1327,58 @@ void PreLaunchWindow::MarkKeyConflicts()
     }
 }
 
+void PreLaunchWindow::RefreshDetails(const nlohmann::ordered_json &M)
+{
+    if (!DetailsLabel) return;
+    auto Str = [&](const char* K) { return M.is_object() && M.contains(K) && M[K].is_string() ? QString::fromStdString(M[K].get<std::string>()) : QString(); };
+    QStringList Rows;
+    const auto Row = [&Rows](const QString &K, const QString &V) {
+        if (!V.isEmpty()) Rows << "<tr><td style='color:#8f98a0; padding-right:10px'>" + K + "</td><td>" + V.toHtmlEscaped() + "</td></tr>";
+    };
+    Row("Publisher", Str("PUBLISHER"));
+    Row("Series", Str("SERIES"));
+    QStringList Together;
+    if (Str("LANMULTIPLAYER") == "Yes") Together << "LAN";
+    if (Str("ONLINEMULTIPLAYER") == "Yes") Together << "online";
+    if (Str("DIRECTCONNECT") == "Yes") Together << "direct IP";
+    if (Str("LOCALMULTIPLAYER") == "Yes") Together << "same screen";
+    if (Str("LOCALCOOP") == "Yes" || Str("NETWORKCOOP") == "Yes") Together << "co-op";
+    Row("Multiplayer", Together.join(", "));
+    Row("Versions", VariantCombo && VariantCombo->count() > 1 ? QString::number(VariantCombo->count()) : QString());
+    QString Last;
+    if (!PackageUID.empty())
+    {
+        const auto Cfg = InstanceStore::ReadConfig(*GlobalConfigJSON, PackageUID, InstanceName);
+        if (Cfg.is_object() && Cfg.contains("LASTRUN") && Cfg["LASTRUN"].is_string())
+        {
+            const QDateTime At = QDateTime::fromString(QString::fromStdString(Cfg["LASTRUN"].get<std::string>()), Qt::ISODate);
+            if (At.isValid()) Last = QLocale().toString(At.toLocalTime().date(), QLocale::ShortFormat);
+        }
+    }
+    Row("Last played", Last.isEmpty() ? QString("never") : Last);
+    if (const std::string Since = PackageCatalog::GoldenSince(*GlobalConfigJSON, PackageUID); !Since.empty()) Row("Golden since", QString::fromStdString(Since));
+    DetailsHtml = Rows;
+    DetailsLabel->setText("<table>" + Rows.join("") + "</table>");
+    //Its size: a walk of the package folder, off the GUI thread; added when it lands (if this is still the package).
+    if (BundleDir.empty()) return;
+    const std::string Dir = BundleDir;
+    auto Bytes = std::make_shared<std::uintmax_t>(0);
+    QPointer<PreLaunchWindow> Self(this);
+    AsyncWork::Run(this, [Dir, Bytes]{
+            std::error_code Ec;
+            for (auto It = std::filesystem::recursive_directory_iterator(Dir, std::filesystem::directory_options::skip_permission_denied, Ec);
+                 !Ec && It != std::filesystem::recursive_directory_iterator(); It.increment(Ec))
+                if (std::error_code E2; It->is_regular_file(E2)) *Bytes += It->file_size(E2);
+        },
+        [Self, Dir, Bytes]{
+            if (!Self || Self->BundleDir != Dir || !Self->DetailsLabel) return;
+            QStringList With = Self->DetailsHtml;
+            With.insert(std::min<qsizetype>(With.size(), 3), "<tr><td style='color:#8f98a0; padding-right:10px'>Size</td><td>"
+                                                               + HumanBytesQ(static_cast<long long>(*Bytes)) + "</td></tr>");
+            Self->DetailsLabel->setText("<table>" + With.join("") + "</table>");
+        });
+}
+
 void PreLaunchWindow::BuildLanPanel(QVBoxLayout * LeftCol)
 {
     LanGroup = new QGroupBox("Virtual LAN", this);
@@ -1372,7 +1438,7 @@ void PreLaunchWindow::RefreshLanPanel()
             QHBoxLayout * RL = new QHBoxLayout(Row);
             RL->setContentsMargins(0, 0, 0, 0);
             RL->setSpacing(6);
-            QCheckBox * Cb = new QCheckBox(QString::fromStdString(P.Nick.empty() ? P.Peer.substr(0, 8) : P.Nick), Row);
+            QCheckBox * Cb = new QCheckBox(PlainLabel(QString::fromStdString(P.Nick.empty() ? P.Peer.substr(0, 8) : P.Nick)), Row);
             Cb->setChecked(!Excluded.count(P.Peer));
             const std::string Peer = P.Peer;
             connect(Cb, &QCheckBox::toggled, this, [this, Peer](bool On){

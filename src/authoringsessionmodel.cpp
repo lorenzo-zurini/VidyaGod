@@ -192,6 +192,16 @@ bool CapturePreview::CapturesContents(const QStringList &Roots, const QString &T
     return Clean(Roots.front()) == Clean(MountBase(Target, ContentRoot, Anchors));
 }
 
+//The ERR lines a step logged, one per line (at most a dozen): what its failure message says instead of "see the log".
+QString AuthoringWorker::Errors(LogRecorder &Said)
+{
+    QStringList Lines;
+    for (const auto &E : Said.Take())
+        if (E.Level == LogLevel::ERR && !Lines.contains(QString::fromStdString(E.Message)) && Lines.size() < 12)
+            Lines << QString::fromStdString(E.Message);
+    return Lines.join('\n');
+}
+
 void AuthoringWorker::emitSessionInfo()
 {
     if (!Session) { emit started(false, QString(), QString(), false, QString(), WineRunners); return; }
@@ -229,9 +239,11 @@ void AuthoringWorker::start(QString configDump, QString bundlePath, QString node
     WineRunners = CapturePreview::RunnerChoices(Choices);
 
     Session = std::make_unique<AuthoringSession>(Config, QDir(bundlePath));
+    LogRecorder Said({});   // why a mount failed (the helper's own output): said with the failure, not left in the log
     if (!Session->Begin(Idx, TargetNodeId, {}))   // BARE: no runner, no platform — just the content overlay
     {
         Session.reset();
+        emit why(Errors(Said));
         emit started(false, QString(), QString(), false, QString(), WineRunners);
         return;
     }
@@ -243,7 +255,9 @@ void AuthoringWorker::runWindows(QString exe, QString runnerId, QStringList args
 {
     std::vector<std::string> Args;
     for (const QString & A : args) Args.push_back(A.toStdString());
+    LogRecorder Said({});
     const bool Ok = Session && Session->RunWindows(exe.toStdString(), runnerId.toStdString(), Args);
+    if (!Ok) emit why(Errors(Said));
     emitSessionInfo();   // the runtime may have just become a wine prefix → refresh content-root / wine flag / runner
     emit runFinished(Ok);
     emitDeltaList();
@@ -251,7 +265,9 @@ void AuthoringWorker::runWindows(QString exe, QString runnerId, QStringList args
 
 void AuthoringWorker::runExe(QString exe)
 {
+    LogRecorder Said({});
     const bool Ok = Session && Session->RunExe(exe.toStdString());
+    if (!Ok) emit why(Errors(Said));
     emit runFinished(Ok);
     emitDeltaList();
 }
@@ -311,6 +327,7 @@ AuthoringSessionModel::AuthoringSessionModel(PackageEditorModel * E, std::string
     connect(this, &AuthoringSessionModel::requestScanRegistry, Worker, &AuthoringWorker::scanRegistry);
     connect(this, &AuthoringSessionModel::requestEnd,          Worker, &AuthoringWorker::end);
 
+    connect(Worker, &AuthoringWorker::why,         this, [this](QString W) { LastWhy = W; });   // queued: before started/runFinished
     connect(Worker, &AuthoringWorker::started,     this, &AuthoringSessionModel::onStarted);
     connect(Worker, &AuthoringWorker::delta,       this, &AuthoringSessionModel::onDelta);
     connect(Worker, &AuthoringWorker::runFinished, this, &AuthoringSessionModel::onRunFinished);
@@ -424,7 +441,12 @@ void AuthoringSessionModel::onStarted(bool ok, QString runtimePath, QString cont
                                       QString runnerId, QStringList runners, QStringList anchorLayouts)
 {
     emit busyChanged(false, QString());
-    if (!ok) { emit failed("Couldn't mount the authoring runtime — check the log."); return; }
+    if (!ok)
+    {
+        emit failed("Couldn't mount the authoring runtime" + (LastWhy.isEmpty() ? QString(".") : ":\n" + LastWhy));
+        LastWhy.clear();
+        return;
+    }
     AnchorLayouts = CapturePreview::ParseAnchors(anchorLayouts);
     ContentRoot = contentRoot;
     emit runnersChanged(runners, runnerId);
@@ -436,7 +458,8 @@ void AuthoringSessionModel::onDelta(QStringList paths) { emit busyChanged(false,
 void AuthoringSessionModel::onRunFinished(bool ok)
 {
     emit busyChanged(false, QString());
-    if (!ok) emit captured("The process exited with an error — check the log.");
+    if (!ok) emit captured("The process exited with an error" + (LastWhy.isEmpty() ? QString(".") : ":\n" + LastWhy));
+    LastWhy.clear();
 }
 
 void AuthoringSessionModel::onFilesCopied(int count)

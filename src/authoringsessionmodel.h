@@ -75,6 +75,8 @@ std::vector<std::pair<std::string, std::string>> GuestAnchorsFor(const QStringLi
 // QStringList/int/bool) — the catalog NodeIndex is rebuilt here from the config + bundle path, so no custom
 // metatypes need registering.
 // ---------------------------------------------------------------------------
+class LogRecorder;
+
 class AuthoringWorker : public QObject
 {
     Q_OBJECT
@@ -95,12 +97,14 @@ signals:
                  QStringList anchorLayouts = {});   // "%Anchor%\tlayout path" per anchor of the runtime
     void delta(QStringList paths);
     void runFinished(bool ok);
+    void why(QString errors);             // a step failed: the errors it logged (sent just before its started/runFinished)
     void filesCopied(int count);
     void registryScan(QString deltaJsonDump, QStringList regPaths);
     void ended();
 
 private:
     void emitDeltaList();
+    static QString Errors(LogRecorder &Said);
     void emitSessionInfo();               // (re)broadcast the current runtime's path/content-root/wine-flag + wine runners
     std::unique_ptr<AuthoringSession> Session;
     std::string TargetNodeId;
@@ -165,6 +169,7 @@ private slots:
     void onRegistryScan(QString deltaJsonDump, QStringList regPaths);
 
 private:
+    QString LastWhy;                       // the errors of the worker's last failed step (its why signal)
     PackageEditorModel *   Editor = nullptr;
     std::string            TargetNodeId;               // the anchor: runtime built to here, captures parented here
     CaptureMode            Mode = CaptureMode::Setup;

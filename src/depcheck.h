@@ -77,6 +77,9 @@ const char* CategoryLabel(Category C);
 // The package to install for a not-Ok item on distro D: the 32-bit package when Partial, else the 64-bit/base package.
 // "" when unknown for that distro.
 std::string InstallHint(const DepItem& Item, Status St, Distro D);
+// One command that installs every package of Pkgs with D's package manager ("sudo pacman -S --needed a b"); "" when
+// D has none VidyaGod knows (Windows, an unknown distro) or Pkgs is empty. Repeats are dropped.
+std::string InstallCommand(const std::vector<std::string>& Pkgs, Distro D);
 
 } // namespace DepCheck
 

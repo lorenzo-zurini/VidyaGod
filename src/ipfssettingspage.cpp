@@ -24,7 +24,7 @@ IpfsSettingsPage::IpfsSettingsPage(AppModel & model, QWidget * parent)
     // Master switch — OFF by default. Off = the embedded node is fully down (no swarm, no DHT, no seeding/downloading).
     // Launching already-downloaded games still works (the VFS reads the files by path). AppModel starts/stops the
     // node and greys the Catalog/IPFS tabs in response.
-    QCheckBox * netCb = new QCheckBox("Enable networking (downloads & seeding)", this);
+    QCheckBox * netCb = new QCheckBox("Enable networking (downloads && seeding)", this);
     netCb->setChecked(Model.networkingEnabled());
     connect(netCb, &QCheckBox::toggled, this, [this](bool on){ Model.setNetworkingEnabled(on); });
     pl->addWidget(netCb);
@@ -41,9 +41,11 @@ IpfsSettingsPage::IpfsSettingsPage(AppModel & model, QWidget * parent)
     // packages (a game's content + its runner's build all draw from this one pool).
     QFormLayout * form = new QFormLayout();
     form->setContentsMargins(0, 8, 0, 0);
+    form->setFieldGrowthPolicy(QFormLayout::FieldsStayAtSizeHint);   // a number field as wide as a number
     pl->addLayout(form);
 
     QSpinBox * maxDl = new QSpinBox(this);
+    maxDl->setAccessibleName("Max simultaneous downloads");   // its form label (the derived name came before the row)
     maxDl->setRange(1, 32);
     maxDl->setValue(IpfsWrapper::MaxConcurrentDownloads());
     {

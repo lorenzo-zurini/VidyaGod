@@ -190,7 +190,7 @@ VG_COMMANDS
     Command::Register({
         "ipfs fetch-many", "fetch several targets together through the queue (blocking)",
         "A batch of {cid, to, optional?, dir?, verify?} targets, run concurrently in the queue's slots; fails when a "
-        "required one fails.", { Opt("targets", "the targets (JSON array)", Type::Json, true) },
+        "required one fails.", { WithSample(Opt("targets", "the targets (JSON array)", Type::Json, true), "[{\"cid\":\"Qm…\",\"to\":\"/tmp/a\"}]") },
         { "ipfs fetch-many --targets '[{\"cid\":\"Qm…\",\"to\":\"/tmp/a\"}]'" }, { "IpfsWrapper::FetchTargetsConcurrent" }, Needs::Config, true,
         [](Command::Context &, const json &A) {
             std::string Err;
@@ -248,7 +248,7 @@ VG_COMMANDS
     Command::Register({
         "ipfs mkdir", "build a folder CID from name → CID entries",
         "Make a UnixFS folder of existing CIDs (local: no network). Lists the entries not held whole here.",
-        { Opt("entries", "{name: cid} (JSON)", Type::Json, true) }, { "ipfs mkdir --entries '{\"a.json\":\"bafkrei…\"}'" },
+        { WithSample(Opt("entries", "{name: cid} (JSON)", Type::Json, true), "{\"a.json\":\"bafkrei…\"}") }, { "ipfs mkdir --entries '{\"a.json\":\"bafkrei…\"}'" },
         { "IpfsWrapper::MakeDir" }, Needs::Config, true,
         [](Command::Context &, const json &A) {
             std::map<std::string, std::string> M;
@@ -309,7 +309,7 @@ VG_COMMANDS
     Command::Register({
         "ipfs move-refs", "re-point filestore references from one path to another (a moved file)",
         "After a content file moved on disk, the store's references follow it (no re-hash). Pairs of from → to.",
-        { Opt("moves", "[[from, to], …] (JSON)", Type::Json, true) }, { "ipfs move-refs --moves '[[\"/a/x.zip\",\"/b/x.zip\"]]'" },
+        { WithSample(Opt("moves", "[[from, to], …] (JSON)", Type::Json, true), "[[\"/a/x.zip\",\"/b/x.zip\"]]") }, { "ipfs move-refs --moves '[[\"/a/x.zip\",\"/b/x.zip\"]]'" },
         { "IpfsWrapper::MoveRefs" }, Needs::Config, true,
         [](Command::Context &, const json &A) {
             std::vector<std::pair<std::string, std::string>> M;
@@ -388,7 +388,7 @@ VG_COMMANDS
         "ipfs share", "publish (or withdraw) a library share to one friend at the node",
         "What the share sheet sends: library <lib> with its package items, to one peer — the node-level call under "
         "`friends share`. --unshare withdraws it.",
-        { Pos("peer", "the friend's peer ID"), Pos("library", "the library name"), Opt("items", "the share items (JSON)", Type::Json),
+        { Pos("peer", "the friend's peer ID"), Pos("library", "the library name"), WithSample(Opt("items", "the share items (JSON)", Type::Json), "[]"),
           Flag("unshare", "withdraw the share") },
         { "ipfs share 12D3KooW… VidyaGod --items '[]'", "ipfs share 12D3KooW… VidyaGod --unshare" },
         { "IpfsWrapper::ShareLibrary", "IpfsWrapper::UnshareLibrary" }, Needs::Config, true,
@@ -465,7 +465,7 @@ VG_COMMANDS
         "queue enqueue", "enqueue a batch of targets, and (with --until-done) wait for it",
         "Add {cid, to, optional?, dir?, verify?} targets to the queue as one batch — what a download does — and with "
         "--until-done block until every required one is done (--timeout ms).",
-        { Opt("targets", "the targets (JSON array)", Type::Json, true), Flag("until-done", "wait for the batch"), Opt("timeout", "(--until-done) ms", Type::Int) },
+        { WithSample(Opt("targets", "the targets (JSON array)", Type::Json, true), "[{\"cid\":\"Qm…\",\"to\":\"/tmp/a\"}]"), Flag("until-done", "wait for the batch"), Opt("timeout", "(--until-done) ms", Type::Int) },
         { "queue enqueue --targets '[{\"cid\":\"Qm…\",\"to\":\"/tmp/a\"}]' --until-done" },
         { "IpfsWrapper::EnqueueBatch", "IpfsWrapper::WaitBatch" }, Needs::Config, true,
         [](Command::Context &, const json &A) {
@@ -650,7 +650,7 @@ VG_COMMANDS
         "Follow it with `events wait --signal downloadFinished`.",
         { Opt("games", "game nodes (a,b)"), Opt("runners", "runner nodes (a,b)"), Opt("key", "the card key"), Opt("toggle", "options: k=1,k2=0"),
           Opt("card", "a Catalog card (its title or key): press its Download") },
-        { "downloads start --games bafkreiank43ketmdy2jtdcnn5utluobf53avcuubisi3ajtdxrcnmyteka", "downloads start --card 'Age of Empires II'" },
+        { "downloads start --games bafkreiank43ketmdy2jtdcnn5utluobf53avcuubisi3ajtdxrcnmyteka", "downloads start --card 749" },
         { "DownloadManager::beginDownload", "DownloadManager::startDownload", "IpfsModel::markQueued", "IpfsModel::clearQueued",
           "MainWindow::catalogCard", "CatalogTab::view", "LibraryView::cardAt" , "CatalogTab::markDownloading", "CatalogTab::setDownloadProgress", "CatalogTab::clearDownloading", "IpfsFetchReady" }, Needs::Ui, true,
         [](Command::Context &C, const json &A) {
@@ -658,7 +658,8 @@ VG_COMMANDS
             if (A.contains("card"))
             {
                 LibraryGameCard *Card = W.catalogCard(QString::fromStdString(Command::Str(A, "card")));
-                if (!Card) throw Command::BadArgs("no single Catalog card '" + Command::Str(A, "card") + "'");
+                if (!Card) throw Command::BadArgs("no single Catalog card '" + Command::Str(A, "card") + "'"
+                                                  + W.cardMiss(true, QString::fromStdString(Command::Str(A, "card"))).toStdString());
                 W.downloads()->startDownload(Card);
                 return json{{"started", Command::Str(A, "card")}};
             }
@@ -682,14 +683,15 @@ VG_COMMANDS
         "downloads cancel", "cancel a download (what it alone needs is aborted; shared pieces keep going)",
         "Cancel by card key. With --card, it is the Catalog card's own Cancel (its confirmation included).",
         { Opt("key", "the download's card key"), Opt("card", "a Catalog card: press its Cancel") },
-        { "downloads cancel --key 749", "downloads cancel --card 'Age of Empires II'" },
+        { "downloads cancel --key 749", "downloads cancel --card 749" },
         { "DownloadManager::cancelKey", "DownloadManager::requestCancel" }, Needs::Ui, false,
         [](Command::Context &C, const json &A) {
             MainWindow &W = Win(C);
             if (A.contains("card"))
             {
                 LibraryGameCard *Card = W.catalogCard(QString::fromStdString(Command::Str(A, "card")));
-                if (!Card) throw Command::BadArgs("no single Catalog card '" + Command::Str(A, "card") + "'");
+                if (!Card) throw Command::BadArgs("no single Catalog card '" + Command::Str(A, "card") + "'"
+                                                  + W.cardMiss(true, QString::fromStdString(Command::Str(A, "card"))).toStdString());
                 W.downloads()->requestCancel(Card);
                 return json{{"cancelling", Command::Str(A, "card")}};
             }

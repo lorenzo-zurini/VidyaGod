@@ -335,7 +335,7 @@ VG_COMMANDS
         "moves a layer between nodes (--copy keeps it); --delete NODES removes them; --undo / --redo.",
         { Opt("add", "a layer type"), Opt("at", "(--add) x,y in the world"), Opt("ref", "(--add) the node it names"), Opt("carry", "NODE:LAYER"),
           Opt("to", "(--carry) NODE or NODE:AT"), Flag("copy", "(--carry) copy"), Opt("delete", "nodes (a,b)"), Flag("undo", "undo"), Flag("redo", "redo") },
-        { "canvas edit --add ZIP --at 100,200", "canvas edit --carry 'Patch 2.0a':4 --to 'Original'", "canvas edit --undo" },
+        { "canvas edit --add ZIP --at 100,200", "canvas edit --carry 'Patch 2.0a':4 --to 'The Age of Kings'", "canvas edit --undo" },
         { "PkgCanvas::addNode", "PkgCanvas::MoveLayer", "PkgCanvas::removeNodes", "PkgCanvas::undo", "PkgCanvas::redo" }, Needs::App, false,
         [](Command::Context &, const json &A) {
             PkgCanvas &Cv = Canvas();
@@ -382,8 +382,8 @@ VG_COMMANDS
         "`canvas state` (busy) or `events follow --object PkgActions`.",
         { Pos("node", "the node"), Opt("action", "the action's id"), Flag("yes", "answer confirmations yes"), Opt("pick", "what a file / folder picker returns"),
           Opt("choose", "the option chosen in a choice", Type::Int), Opt("drop", "files to drop on it (a,b)"), Flag("cancel", "cancel its running action") },
-        { "canvas action 'Original' --action bring_in --pick ~/Games/AoE2", "canvas action 'Patch 2.0a' --action undelta --yes",
-          "canvas action 'Original' --drop ~/cover.png" },
+        { "canvas action 'The Age of Kings' --action bring_in --pick ~/Games/AoE2", "canvas action 'Patch 2.0a' --action undelta --yes",
+          "canvas action 'The Age of Kings' --drop ~/cover.png" },
         { "PkgActions::perform", "PkgActions::dropFiles", "PkgActions::cancel", "PkgActions::setConfirmHandler", "PkgActions::setNotifyHandler",
           "PkgActions::setPickHandler", "PkgActions::setChooseHandler", "PackageEditor::actions", "PkgCanvas::beginAction", "PkgCanvas::setProgress",
           "PkgCanvas::endAction" }, Needs::App, false,

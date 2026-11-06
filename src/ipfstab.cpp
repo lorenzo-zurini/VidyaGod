@@ -168,6 +168,12 @@ void IpfsTab::buildUi()
     SeedBtn = new QPushButton("Seed folder…", this);
     SeedBtn->setToolTip("Add a folder's published content to the IPFS node so it seeds (e.g. your master library).");
     connect(SeedBtn, &QPushButton::clicked, this, [this]{
+        if (!IpfsWrapper::Available())
+        {
+            QMessageBox::information(this, "Seed folder", "Seeding needs the node, and it is not running — networking is off. "
+                                                          "Turn it on with the banner above, or in Settings → IPFS.");
+            return;
+        }
         const QString TheVidya = QDir::homePath() + "/The Vidya";
         const QString Def = QDir(TheVidya).exists() ? TheVidya : QDir::homePath();
         const QString Dir = QFileDialog::getExistingDirectory(this, "Seed folder — pick the folder containing your packages", Def);

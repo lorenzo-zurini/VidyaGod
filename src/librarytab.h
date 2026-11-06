@@ -34,6 +34,7 @@ private:
     void buildCards();                 // (re)create the card pool from the catalog (hydrated groups only)
     void sortAndFilter();              // sort the pool + apply the search → LibraryVisible + series groups
     void relayout();                   // prescale covers + layout at the current card width
+    void countSizes();                 // the status line's size and each card's: counted off the GUI thread
 
     AppModel &Model;
     LibraryView *View = nullptr;
@@ -42,6 +43,9 @@ private:
     QString                   LibrarySearch;      // case-insensitive title filter ("" = show all)
     SortMode                  CurrentSort = SortMode::Name;
     QSet<QString>             LibraryCollapsedSeries;  // series names collapsed in Series view (persisted)
+    class QLabel             *StatusLabel = nullptr;   // "297 games · 694 GB"
+    bool                      Counting = false;        // a count is under way: a rebuild meanwhile asks for one more
+    bool                      CountAgain = false;
 };
 
 #endif // LIBRARYTAB_H

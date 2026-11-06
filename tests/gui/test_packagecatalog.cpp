@@ -2702,6 +2702,44 @@ private slots:
         QCOMPARE(Nodes, 1);
     }
 
+    // Settings → Installed Packages lists, from the index, the packages installed here: a LIBRARY package whose content
+    // is on disk — with its UID, title, versions and size — never one whose content is still to download, never a
+    // friend's CATALOG stub. A package is named by its identity UID or by the UID its folder was made under.
+    // Teeth: drop the hydration check and "[2] Remote" (and the stub, never "on disk" here) is listed; drop the
+    // folder-name match and UID 20 names nothing; drop the size walk and Bytes is 0.
+    void installed_packages_come_from_the_index()
+    {
+        QTemporaryDir Data; QVERIFY(Data.isValid());
+        const json Cfg = json{{"Settings", {{"Paths", {{"LibraryRoot", (Data.path() + "/LIBRARY").toStdString()}}}}}};
+        const auto Package = [&](const QString &Dir, const std::string &Id, const std::string &Uid, bool Here, bool Cid) {
+            QDir().mkpath(Dir);
+            writeJson(Dir + "/" + QString::fromStdString(Id) + ".json",
+                      NodeFixture::Chain(Id, {NodeFixture::Tile(Uid, Id + " Game"), NodeFixture::Exec("win32", "g.exe"),
+                                              Cid ? NodeFixture::ContentCid("zip", "game.zip", "bafkreihdwdcefgh4dqkjv67uzcmw7ojee6xedzdetojuzjevtenxquvyku")
+                                                  : NodeFixture::Content("zip", "game.zip")},
+                                         {}, {{"VARIANT", "Edition 1"}}));
+            if (Here) { std::ofstream Z((Dir + "/game.zip").toStdString(), std::ios::binary); Z << std::string(4096, 'z'); }
+        };
+        Package(Data.path() + "/LIBRARY/VidyaGod/[1] Here", "here", "1", true, false);
+        Package(Data.path() + "/LIBRARY/VidyaGod/[2] Remote", "remote", "2", false, true);   // to download: not installed
+        Package(Data.path() + "/LIBRARY/VidyaGod/[20] Renamed", "renamed", "21", true, false); // its tile moved to UID 21
+        Package(Data.path() + "/CATALOG/Friend - VidyaGod/[3] Stub", "stub", "3", true, false);
+
+        const NodeIndex Idx = PackageCatalog::ScanCatalogIndex(Cfg);
+        const auto P = PackageCatalog::InstalledPackages(Cfg, Idx);
+        std::vector<std::string> Uids;
+        for (const auto &X : P) Uids.push_back(X.Uid);
+        QCOMPARE(Uids, (std::vector<std::string>{"1", "21"}));
+        QCOMPARE(P[0].Title, std::string("here Game"));
+        QCOMPARE(P[0].Library, std::string("VidyaGod"));
+        QVERIFY(!P[0].Local);
+        QCOMPARE(P[0].Variants, (std::vector<std::string>{"Edition 1"}));
+        QVERIFY2(P[0].Bytes >= 4096, "its size counts its content");
+        QCOMPARE(PackageCatalog::PackageDirsWithUid(Idx, "20").size(), size_t(1));   // the folder's UID
+        QCOMPARE(PackageCatalog::PackageDirsWithUid(Idx, "21").size(), size_t(1));   // its identity
+        QVERIFY(PackageCatalog::PackageDirsWithUid(Idx, "4").empty());
+    }
+
     // THE INDEX CACHE: a build whose node files are unchanged loads the cached index — identical to a scan, field by
     // field, and saying again what the scan logged — and any edit to a node file (or a corrupt cache) builds afresh.
     // Teeth: drop the files' sizes and times from the cache's inputs and the edited LABEL is never seen; drop the log

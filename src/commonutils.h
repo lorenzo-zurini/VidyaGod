@@ -84,7 +84,7 @@ namespace Diagnostics
 class LogRecorder
 {
 public:
-    explicit LogRecorder(std::set<std::string> Contexts);
+    explicit LogRecorder(std::set<std::string> Contexts);   // empty: every context
     ~LogRecorder();
     LogRecorder(const LogRecorder &) = delete;
     LogRecorder &operator=(const LogRecorder &) = delete;

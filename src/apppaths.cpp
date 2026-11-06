@@ -24,6 +24,10 @@ namespace AppPaths
 {
 void SetDataRoot(const std::string &Path) { RootRef() = std::filesystem::path(Path); }
 
+namespace { bool g_ConfigReadOnly = false; }
+void SetConfigReadOnly(bool On) { g_ConfigReadOnly = On; }
+bool ConfigReadOnly() { return g_ConfigReadOnly; }
+
 bool DataRootSet() { return !RootRef().empty(); }
 
 std::filesystem::path DataRoot()

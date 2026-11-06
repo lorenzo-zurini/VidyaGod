@@ -11,6 +11,9 @@
 #include <QPushButton>
 #include <QScrollArea>
 #include <QVBoxLayout>
+#include <QClipboard>
+#include <QGuiApplication>
+#include <QTimer>
 
 DependenciesPage::DependenciesPage(AppModel & model, QWidget * parent)
     : QWidget(parent)
@@ -77,6 +80,33 @@ void DependenciesPage::rebuild()
     connect(recheck, &QPushButton::clicked, this, [this]{ rebuild(); });
     top->addWidget(recheck);
     v->addLayout(top);
+
+    //Everything missing in one command for this distro's package manager, to copy into a terminal.
+    {
+        std::vector<std::string> Pkgs;
+        for (const DepItem & I : AllDeps())
+            if (const Status S = Check(I, St); S != Status::Ok)
+                if (const std::string H = InstallHint(I, S, D); !H.empty()) Pkgs.push_back(H);
+        if (const std::string Cmd = InstallCommand(Pkgs, D); !Cmd.empty())
+        {
+            QHBoxLayout * row = new QHBoxLayout();
+            QLabel * cmd = new QLabel(QString("<code>%1</code>").arg(QString::fromStdString(Cmd).toHtmlEscaped()), contents);
+            cmd->setTextFormat(Qt::RichText);
+            cmd->setTextInteractionFlags(Qt::TextSelectableByMouse);
+            cmd->setWordWrap(true);
+            cmd->setAccessibleName("Install command");
+            row->addWidget(cmd, 1);
+            QPushButton * copy = new QPushButton("Copy install command", contents);
+            const QString Text = QString::fromStdString(Cmd);
+            connect(copy, &QPushButton::clicked, this, [copy, Text]{
+                QGuiApplication::clipboard()->setText(Text);
+                copy->setText("Copied");
+                QTimer::singleShot(2000, copy, [copy]{ copy->setText("Copy install command"); });
+            });
+            row->addWidget(copy);
+            v->addLayout(row);
+        }
+    }
 
     // ---- one group box per category ----
     for (const Category Cat : { Category::Core, Category::Graphics, Category::WineLibs, Category::Audio, Category::Media })

@@ -120,6 +120,7 @@ private:
     // Builds the "Virtual LAN" panel under the cover (friends with per-member ticks + live link badges) and starts
     // its 2s poll; RefreshLanPanel reconciles rows against IpfsWrapper::LanPeers(). Ticks edit the GLOBAL roster
     // (Settings.LanExcludedPeers) and apply immediately via SetLanExcluded — mid-game included.
+    void RefreshDetails(const nlohmann::ordered_json &Meta);   // the details under the cover, from the tile's META
     void BuildLanPanel(QVBoxLayout * LeftCol);
     void RefreshLanPanel();
 
@@ -182,6 +183,8 @@ private:
     QLabel*       CoverLabel        = nullptr;
     QLabel*       TitleLabel        = nullptr;   // the tile's title, large
     QLabel*       MetaLabel         = nullptr;   // developer · year · edition
+    QLabel*       DetailsLabel      = nullptr;   // under the cover: publisher, multiplayer, size, versions, last played
+    QStringList   DetailsHtml;                   // its rows, so the size can be added when it is counted
     QComboBox*    InstanceCombo     = nullptr;
     QToolButton*  InstanceMenuButton = nullptr;
     QLabel*       InstanceInfo      = nullptr;   // last played

@@ -9,6 +9,7 @@
 #include "manifestmodel.h"
 #include "nodegraph.h"        // gigagraph catalog: GatherWorkingTree / FreezeToIndex
 #include "parallel.h"
+#include <tuple>
 #include "platform/platform.h"   // SelfExe — the program an index cache was built by
 #include <optional>
 #include <mutex>
@@ -2958,6 +2959,81 @@ bool NodeHasContent(const NodeIndex &Idx, const std::string &LaunchNodeId)
     bool Has = false;
     ForEachContentLayer(Idx, LaunchNodeId, {}, [&](const nlohmann::ordered_json&, const std::filesystem::path&, const std::string&){ Has = true; });
     return Has;
+}
+
+namespace {
+//Per package folder of the index: the node ScanBundleIdentity would name it by (a presentable launchable first, then
+//any node with a UID, then the first) and its shelf rows — the same rule, read from the index instead of the disk.
+struct BundleNodes { const Node *Rep = nullptr; bool RepLaunchable = false; std::vector<const Node *> Variants; };
+std::map<std::filesystem::path, BundleNodes> NodesByBundle(const NodeIndex &Idx)
+{
+    std::map<std::filesystem::path, BundleNodes> Out;
+    for (const auto &[K, N] : Idx.Nodes)
+    {
+        if (N.BundleDir.empty() || N.Received) continue;
+        BundleNodes &B = Out[std::filesystem::path(N.BundleDir).lexically_normal()];
+        if (N.IsVariant()) B.Variants.push_back(&N);
+        const bool Launchable = N.IsVariant() && !N.IsGraft;
+        if (Launchable && (!B.RepLaunchable || (N.Presentable() && !B.Rep->Presentable()))) { B.Rep = &N; B.RepLaunchable = true; }
+        else if (!B.RepLaunchable && (!B.Rep || (B.Rep->Uid.empty() && !N.Uid.empty()))) B.Rep = &N;
+    }
+    return Out;
+}
+std::string IdentityUid(const Node &N) { return N.Uid.empty() ? N.NodeId : N.Uid; }
+} // namespace
+
+std::vector<InstalledPackage> InstalledPackages(const nlohmann::ordered_json &GlobalConfigJSON, const NodeIndex &Idx, bool Sizes)
+{
+    std::vector<InstalledPackage> Out;
+    const auto Hyd = HydrationMap(Idx);
+    const std::filesystem::path Root = LibraryRootDir(GlobalConfigJSON);
+    for (const auto &[Dir, B] : NodesByBundle(Idx))   // a friend's CATALOG stubs are not in it (Node::Received)
+    {
+        if (!B.RepLaunchable) continue;
+        bool Installed = false;
+        for (const Node *V : B.Variants)
+        {
+            const auto It = Hyd.find(V->Key());
+            Installed = Installed || (!V->IsGraft && It != Hyd.end() && It->second.OnDisk && It->second.Hydrated);
+        }
+        if (!Installed) continue;
+        InstalledPackage P;
+        P.Dir = Dir;
+        P.Uid = IdentityUid(*B.Rep);
+        P.Title = B.Rep->Meta.is_object() ? B.Rep->Meta.value("TITLE", B.Rep->NodeId) : B.Rep->NodeId;
+        P.Local = Root.empty() || !PathUnder(Root, Dir);
+        if (GlobalConfigJSON.contains("LIBRARY") && GlobalConfigJSON["LIBRARY"].is_array())
+            for (const auto &E : GlobalConfigJSON["LIBRARY"])
+                if (E.is_object() && std::filesystem::path(E.value("PATH", std::string())).lexically_normal() == Dir) { P.HasEntry = true; break; }
+        P.Library = P.Local ? std::string() : LibraryOf(Dir, Root);
+        for (const Node *V : B.Variants) if (!V->IsGraft) P.Variants.push_back(V->Variant);
+        std::sort(P.Variants.begin(), P.Variants.end());
+        P.Variants.erase(std::unique(P.Variants.begin(), P.Variants.end()), P.Variants.end());
+        Out.push_back(std::move(P));
+    }
+    if (Sizes)
+        Parallel::For(Out.size(), [&](std::size_t I) {
+            std::error_code Ec;
+            for (auto It = std::filesystem::recursive_directory_iterator(Out[I].Dir, std::filesystem::directory_options::skip_permission_denied, Ec);
+                 !Ec && It != std::filesystem::recursive_directory_iterator(); It.increment(Ec))
+                if (std::error_code E2; It->is_regular_file(E2)) Out[I].Bytes += It->file_size(E2);
+        });
+    std::sort(Out.begin(), Out.end(), [](const InstalledPackage &A, const InstalledPackage &B) {
+        return std::tie(A.Local, A.Library, A.Title, A.Dir) < std::tie(B.Local, B.Library, B.Title, B.Dir);
+    });
+    return Out;
+}
+
+std::vector<std::filesystem::path> PackageDirsWithUid(const NodeIndex &Idx, const std::string &Uid)
+{
+    std::vector<std::filesystem::path> Out;
+    for (const auto &[Dir, B] : NodesByBundle(Idx))
+    {
+        const std::string F = Dir.filename().string();   // "[7804][v1.0] Age of Mythology": the UID it was made under
+        const bool Folder = F.size() > Uid.size() + 1 && F[0] == '[' && F.compare(1, Uid.size(), Uid) == 0 && F[Uid.size() + 1] == ']';
+        if ((B.Rep && IdentityUid(*B.Rep) == Uid) || Folder) Out.push_back(Dir);
+    }
+    return Out;
 }
 
 std::unordered_map<std::string, NodeHydration> HydrationMap(const NodeIndex &Idx)

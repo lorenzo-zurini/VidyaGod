@@ -43,6 +43,8 @@ private:
     QPushButton *  PublishButton = nullptr;
     QLabel *       PublishStatus = nullptr;
     QLabel *       StatusHint    = nullptr;
+    QPushButton *  TurnOnButton  = nullptr;   // beside StatusHint while networking is off
+    QLabel *       EmptyHint     = nullptr;   // under the table while there is no friend
     QTableWidget * Table         = nullptr;
     bool           NickEdited    = false;
     bool           RefreshQueued = false;

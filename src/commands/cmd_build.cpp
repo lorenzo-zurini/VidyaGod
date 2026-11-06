@@ -194,7 +194,7 @@ VG_COMMANDS
         "build open", "open a package for building (in the app: a session that lasts until `build close`)",
         "Load a package's nodes into a build session — the same document the package editor edits, with its undo "
         "history. With the editor open on the package, its document is used. Prints what was loaded.", { PkgArg() },
-        { "build open 749", "build open 'Some Game'" },
+        { "build open 749", "build open 'Age of Empires II'" },
         { "PackageEditorModel::initPackage", "PackageEditorModel::LoadNodes", "PkgDoc::Document::Load", "PackageEditor::live", "PackageEditor::model",
           "PackageEditor::bundleDir" }, Needs::Model, false,
         [](Command::Context &C, const json &A) {
@@ -318,7 +318,7 @@ VG_COMMANDS
                 json Steps = json::array();
                 for (const auto &F : PkgGraph::FoldOrder(R, Find, Labeller(M)))
                     Steps.push_back({{"depth", F.Depth}, {"node", F.NodeLabel.empty() ? F.Node : F.NodeLabel}, {"layer", F.Layer}, {"type", F.Type},
-                                     {"title", F.Title}, {"elsewhere", F.Outside}});
+                                     {"title", F.Title}, {"elsewhere", F.Outside}, {"takes", F.Take}});
                 std::vector<std::string> Hs;
                 for (int I = 0; I < D.Count(); ++I) Hs.push_back(D.Handle(I));
                 const auto Card = PkgGraph::CardFor(R, Hs, Find);
@@ -337,11 +337,11 @@ VG_COMMANDS
         "dos, console, linux, library) with --title, --uid, --platform; --version-of / --mod-of a node (a new version "
         "of it, or a mod over it); --layer TYPE a node of one empty layer of that type, built on the --on nodes (it "
         "contains them, ahead of its layer). Prints its handle.",
-        { PkgArg(), Opt("from", "the node (JSON)", Type::Json), Opt("recipe", "a new game's first node", Type::String, false, { "windows", "dos", "console", "linux", "library" }),
+        { PkgArg(), WithSample(Opt("from", "the node (JSON)", Type::Json), "{\"LABEL\":\"x\",\"LAYERS\":[]}"), Opt("recipe", "a new game's first node", Type::String, false, { "windows", "dos", "console", "linux", "library" }),
           Opt("title", "(--recipe) the game's title"), Opt("uid", "(--recipe) its UID"), Opt("platform", "(--recipe) its platform"),
           Opt("version-of", "a node: a new version of it"), Opt("mod-of", "a node: a mod over it"), Opt("layer", "a one-layer node of this type"),
           Opt("on", "(--layer) the nodes it is built on: it contains them (a,b)"), Opt("label", "its LABEL"), SaveFlag() },
-        { "build add 749 --layer ZIP --on 'Patch 2.0a' --label 'No-CD'", "build add 749 --version-of 'Original' --save",
+        { "build add 749 --layer ZIP --on 'Patch 2.0a' --label 'No-CD'", "build add 749 --version-of 'Patch 2.0a' --save",
           "build add ~/x/new --recipe windows --title 'Some Game' --uid 123" },
         { "PkgDoc::Document::Add", "PkgGraph::RecipeNode", "PkgGraph::VersionNode", "PkgGraph::ModNode", "PkgGraph::NewLayer", "PkgGraph::NewPayload",
           "PackageEditorModel::createNode", "PackageEditorModel::notifyNodeChanged", "PackageEditorModel::noteEdited", "PkgDoc::Document::Commit" },
@@ -383,7 +383,7 @@ VG_COMMANDS
     Command::Register({
         "build replace", "replace a node's JSON (what the JSON panel does)",
         "The node becomes exactly --with (one undo step). Its handle stays until the save re-mints it.",
-        { PkgArg(), NodeArg(), Opt("with", "the node it becomes (JSON)", Type::Json, true), SaveFlag() },
+        { PkgArg(), NodeArg(), WithSample(Opt("with", "the node it becomes (JSON)", Type::Json, true), "{\"LABEL\":\"x\",\"LAYERS\":[]}"), SaveFlag() },
         { "build replace 749 'Patch 2.0a' --with @node.json" }, { "PackageEditorModel::replaceNode", "PkgDoc::Document::Replace" }, Needs::Model, false,
         [](Command::Context &C, const json &A) {
             Session S = Open(C, Command::Str(A, "package"));
@@ -397,7 +397,7 @@ VG_COMMANDS
         "Write --value (JSON) at a JSON pointer in the node (\"/LAYERS/2/TARGET\", \"/VARIANT\"); --remove deletes it. "
         "With --sub, write Node[<pointer key>][<sub>] the guarded way the editor's forms do (a key that holds no "
         "object is not overwritten).",
-        { PkgArg(), NodeArg(), Pos("pointer", "a JSON pointer (or, with --sub, a top-level key)"), Opt("value", "the value (JSON)", Type::Json),
+        { PkgArg(), NodeArg(), Pos("pointer", "a JSON pointer (or, with --sub, a top-level key)"), WithSample(Opt("value", "the value (JSON)", Type::Json), "\"text\", 3, [..] or {..}"),
           Flag("remove", "remove it"), Opt("sub", "the sub-key to write"), SaveFlag() },
         { "build set 749 'Patch 2.0a' /VARIANT --value '\"Patch 2.0a (No-CD)\"'", "build set 749 0 TILE --sub TITLE --value '\"AoE2\"'" },
         { "PkgDoc::Document::Replace", "PkgGraph::WriteSubKey", "PkgGraph::WritableObject" }, Needs::Model, false,
@@ -429,7 +429,7 @@ VG_COMMANDS
     Command::Register({
         "build remove", "delete a node (and every wire to it)", "The node, every reference to it from the package's nodes, and its position.",
         { PkgArg(), NodeArg(), SaveFlag(), Flag("allow-empty", "(--save) even if the package is left with no nodes") },
-        { "build remove 749 'Old patch'" }, { "PkgDoc::Document::Remove", "PackageEditorModel::saveEmptiesPackage" }, Needs::Model, false,
+        { "build remove 749 'Patch 1.0c'" }, { "PkgDoc::Document::Remove", "PackageEditorModel::saveEmptiesPackage" }, Needs::Model, false,
         [](Command::Context &C, const json &A) {
             Session S = Open(C, Command::Str(A, "package"));
             PkgDoc::Document &D = S.M->doc();
@@ -445,7 +445,7 @@ VG_COMMANDS
         "exclusion; --at the layer to put it before. Parent may be a node of another package (its CID).",
         { PkgArg(), NodeArg("child"), Pos("parent", "a node here (handle, index, LABEL) or another package's CID"), Flag("any", "a requirement (ANY)"),
           Flag("not", "an exclusion (NOT)"), Opt("at", "before this layer", Type::Int), SaveFlag() },
-        { "build link 749 'Patch 2.0a' 'Original'", "build link 749 'Some mod' 'Patch 2.0a' --any" }, { "PkgDoc::Document::Link" }, Needs::Model, false,
+        { "build link 749 'Patch 2.0a' 'The Age of Kings'", "build link 749 'UserPatch 1.5' 'Patch 2.0a' --any" }, { "PkgDoc::Document::Link" }, Needs::Model, false,
         [](Command::Context &C, const json &A) {
             Session S = Open(C, Command::Str(A, "package"));
             PkgDoc::Document &D = S.M->doc();
@@ -464,7 +464,7 @@ VG_COMMANDS
         "--ref drops every reference the node makes to that node; --slot drops the reference in that slot (as the canvas "
         "numbers a node's wires).",
         { PkgArg(), NodeArg(), Opt("ref", "the referenced node (handle, index, LABEL, or a CID)"), Opt("slot", "the wire slot", Type::Int), SaveFlag() },
-        { "build unlink 749 'Patch 2.0a' --ref 'Original'" }, { "PkgGraph::RemoveRefs", "PkgGraph::EraseRef", "PkgGraph::LayerNames" }, Needs::Model, false,
+        { "build unlink 749 'Patch 2.0a' --ref 'The Conquerors'" }, { "PkgGraph::RemoveRefs", "PkgGraph::EraseRef", "PkgGraph::LayerNames" }, Needs::Model, false,
         [](Command::Context &C, const json &A) {
             Session S = Open(C, Command::Str(A, "package"));
             PkgDoc::Document &D = S.M->doc();
@@ -489,7 +489,7 @@ VG_COMMANDS
     Command::Register({
         "build merge", "merge one node into another (its layers appended, its wires re-pointed)",
         "From's layers go to the end of Into, every reference to From now names Into, and From is removed. Refused when "
-        "From contains Into.", { PkgArg(), NodeArg("from"), NodeArg("into"), SaveFlag() }, { "build merge 749 'Fonts' 'Original'" },
+        "From contains Into.", { PkgArg(), NodeArg("from"), NodeArg("into"), SaveFlag() }, { "build merge 749 'Soundtrack' 'The Age of Kings'" },
         { "PkgDoc::Document::MergeInto" }, Needs::Model, false,
         [](Command::Context &C, const json &A) {
             Session S = Open(C, Command::Str(A, "package"));
@@ -509,7 +509,7 @@ VG_COMMANDS
         { PkgArg(), NodeArg(), Opt("add", "a layer type to add"), Opt("ref", "(--add NODE/ANY/NOT) the node it names"), Opt("move", "the layer to move", Type::Int),
           Opt("by", "places to move by (±)", Type::Int), Opt("to", "the position to move to", Type::Int), Opt("into", "a node to carry it into"),
           Opt("at", "the position there", Type::Int), Flag("copy", "(--into) copy instead of move"), SaveFlag() },
-        { "build layer 749 'Patch 2.0a' --add REG", "build layer 749 'Patch 2.0a' --move 3 --by -1", "build layer 749 0 --move 2 --into 'Fonts' --copy" },
+        { "build layer 749 'Patch 2.0a' --add REG", "build layer 749 'Patch 2.0a' --move 3 --by -1", "build layer 749 0 --move 2 --into 'The Conquerors' --copy" },
         { "PkgGraph::AddLayer", "PkgGraph::InsertRef", "PkgGraph::AddNodeRef", "PkgGraph::MoveLayer", "PkgGraph::MoveLayerTo", "PkgGraph::MoveLayerAcross" },
         Needs::Model, false,
         [](Command::Context &C, const json &A) {
@@ -561,7 +561,7 @@ VG_COMMANDS
         "--reg ROWS (JSON [{path, name, value}]) rebuilds a REG layer's hive from rows; --take TEXT sets a NODE layer's "
         "TAKE from one selection per line (\"X => Y\" renames); --vars-visible on|off shows or hides the node's "
         "variables in the launcher; --keep-apart ADDRESS gives a KEEP address its own name.",
-        { PkgArg(), NodeArg(), Opt("layer", "the layer (for --reg, --take)", Type::Int), Opt("reg", "registry rows (JSON)", Type::Json), Opt("take", "the TAKE as text"),
+        { PkgArg(), NodeArg(), Opt("layer", "the layer (for --reg, --take)", Type::Int), WithSample(Opt("reg", "registry rows (JSON)", Type::Json), "[{\"path\":\"HKLM\\\\Software\\\\X\",\"name\":\"V\",\"value\":\"1\"}]"), Opt("take", "the TAKE as text"),
           Opt("vars-visible", "on or off", Type::String, false, { "on", "off" }), Opt("keep-apart", "a KEEP address"), SaveFlag() },
         { "build field 749 'Patch 2.0a' --layer 2 --reg '[{\"path\":\"HKLM\\\\Software\\\\X\",\"name\":\"V\",\"value\":\"1\"}]'",
           "build field 749 'Patch 2.0a' --layer 0 --take 'FILES/a/\nFILES/b => FILES/c'" },
@@ -606,7 +606,7 @@ VG_COMMANDS
         "With --node, rename UID old → new in that node's tiles, nesting and RECOMMENDED. Without, change the game's ID: "
         "every node follows, the package is saved, its folder renamed ([old] → [new]), and its saves and layout move "
         "with it.", { PkgArg(), Pos("new", "the new UID"), Opt("node", "only this node"), Opt("old", "(--node) the UID it replaces") },
-        { "build uid 749 750", "build uid 749 750 --node 'Mod' --old 749" }, { "PackageEditorModel::changeGameId", "PkgGraph::ChangeUid" }, Needs::Model, false,
+        { "build uid 749 750", "build uid 749 750 --node 'UserPatch 1.5' --old 749" }, { "PackageEditorModel::changeGameId", "PkgGraph::ChangeUid" }, Needs::Model, false,
         [](Command::Context &C, const json &A) {
             Session S = Open(C, Command::Str(A, "package"));
             const std::string New = Command::Str(A, "new");
@@ -627,8 +627,8 @@ VG_COMMANDS
     Command::Register({
         "build fill", "put a captured content layer where a node was waiting for its files",
         "A node whose content layer has no file yet (at the same TARGET) takes --layer in that layer's place — what a "
-        "capture does.", { PkgArg(), NodeArg(), Opt("layer", "the content layer (JSON)", Type::Json, true), SaveFlag() },
-        { "build fill 749 'Original' --layer '{\"ZIP\":\"AoE2.zip\",\"TARGET\":\"%GameDir%\"}'" }, { "PackageEditorModel::fillWaiting" }, Needs::Model, false,
+        "capture does.", { PkgArg(), NodeArg(), WithSample(Opt("layer", "the content layer (JSON)", Type::Json, true), "{\"ZIP\":\"AoE2.zip\",\"TARGET\":\"%GameDir%\"}"), SaveFlag() },
+        { "build fill 749 'The Age of Kings' --layer '{\"ZIP\":\"AoE2.zip\",\"TARGET\":\"%GameDir%\"}'" }, { "PackageEditorModel::fillWaiting" }, Needs::Model, false,
         [](Command::Context &C, const json &A) {
             Session S = Open(C, Command::Str(A, "package"));
             const std::string H = S.M->doc().Handle(Ix(S.M->doc(), Command::Str(A, "node")));
@@ -694,7 +694,7 @@ VG_COMMANDS
     Command::Register({
         "build reset", "replace the whole document with these nodes (no files, no history)",
         "The document becomes exactly --nodes ([[handle, node], …] or [node, …]): what loading a package from elsewhere "
-        "does. Clean until edited; a save writes it.", { PkgArg(), Opt("nodes", "the nodes (JSON)", Type::Json, true) },
+        "does. Clean until edited; a save writes it.", { PkgArg(), WithSample(Opt("nodes", "the nodes (JSON)", Type::Json, true), "[{\"LABEL\":\"x\",\"LAYERS\":[]}]") },
         { "build reset ~/x/new --nodes '[]'" }, { "PkgDoc::Document::Reset" }, Needs::Model, false,
         [](Command::Context &C, const json &A) {
             Session S = Open(C, Command::Str(A, "package"));
@@ -824,7 +824,7 @@ VG_COMMANDS
         "build types", "the layer types the builder knows: groups, help, colour, and every field of their forms",
         "Each layer type by group, with its one-line gist, its help, the colour its nodes are drawn in, and (with "
         "--type) the fields its form edits — kind, options, sub-fields, whether each applies to --entry.",
-        { Opt("type", "one type: its form's fields"), Opt("entry", "(--type) an entry (JSON): which fields apply to it", Type::Json),
+        { Opt("type", "one type: its form's fields"), WithSample(Opt("entry", "(--type) an entry (JSON): which fields apply to it", Type::Json), "{\"EXEC\":{\"HOST\":\"win32\"}}"),
           Opt("platform", "a platform token: in words") },
         { "build types", "build types --type EXEC", "build types --platform win32" },
         { "PkgGraph::TypeGroups", "PkgGraph::TypeGist", "PkgGraph::TypeHelp", "PkgGraph::TypeColour", "PkgGraph::FieldsFor", "PkgGraph::FieldApplies",

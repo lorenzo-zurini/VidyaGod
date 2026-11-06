@@ -261,7 +261,9 @@ std::string PlatformWords(const std::string &Token);
 //A node's fold flattened, in the order it is applied: its layers top to bottom, a contained node's layers in place of
 //the NODE layer naming it (Depth one deeper). Later wins. Find gives a node of this package by handle (null: another
 //package's or missing - shown as one step, not entered).
-struct FoldStep { int Depth = 0; std::string Node, NodeLabel; int Layer = -1; std::string Type, Title; bool Outside = false; };
+//Take: the TAKE of the NODE layer a contained node came in by ("FILES/a, FILES/b"; "" all of it) — a node contained twice
+//with different TAKEs is two occurrences (spec §5.4), and its layers listed twice say which is which.
+struct FoldStep { int Depth = 0; std::string Node, NodeLabel; int Layer = -1; std::string Type, Title; bool Outside = false; std::string Take; };
 std::vector<FoldStep> FoldOrder(const std::string &Root, const std::function<const nlohmann::ordered_json *(const std::string &)> &Find,
                                 const LabelFn &Label = {});
 

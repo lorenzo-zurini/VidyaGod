@@ -1,3 +1,4 @@
+#include "theme.h"
 #include "main.h"
 #include <iostream>
 #include "cli/climodes.h"
@@ -271,6 +272,18 @@ int main(int argc, char *argv[])
         LogWarn("main.cpp", "Single-instance lock held, but --bypass-single-instance-lock given — proceeding without the lock.");
     else if (!InstanceLockHeld)
     {
+        //Started again while it runs (a second click on its icon): the running app's window comes forward, and this
+        //one ends — as any single-window app does. Only an app too old to answer gets the "already running" box.
+        if (!LaunchParameters.RunningHeadless)
+        {
+            nlohmann::ordered_json Reply;
+            if (CommandServer::Send(AppDataDir.absolutePath().toStdString(), "app window", {{"show", true}}, Reply, 3000)
+                && Reply.value("ok", false))
+            {
+                LogOut("main.cpp", "VidyaGod is already running: its window was brought forward.");
+                return 0;
+            }
+        }
         LogErr("main.cpp", "Another instance of VidyaGod is already running — aborting."
                                + (LockHolder.empty() ? std::string() : " Held by " + LockHolder));
         if (!LaunchParameters.RunningHeadless)
@@ -347,8 +360,8 @@ int main(int argc, char *argv[])
     //headless code paths above deliberately avoid creating any Qt GUI objects.
     //---------------------------------------------------------------------------------------------------------
     QApplication Application(argc, argv);
-    //Force a consistent Qt style so the UI looks the same regardless of the system theme.
-    Application.setStyle(QStyleFactory::create("Fusion"));
+    //One look, whatever the desktop's theme: Fusion on the app's navy palette, on every surface.
+    Theme::Apply(Application);
 
     //Set a default font to ensure consistent spacing across desktop environments.
     Application.setFont(QFont("DejaVu Sans", 10));
@@ -469,7 +482,7 @@ bool InitializeGlobalConfigJSON(nlohmann::ordered_json * GlobalConfigJSON, QDir 
 
     //Written only when that changed it (or there was none): every command-line call starts here, and rewriting the
     //unchanged file each time raced two calls run at once.
-    if ((!Existed || *GlobalConfigJSON != AsRead) && !JSONOps::SaveJSON(GlobalConfigJSON, &GlobalConfigFile))
+    if ((!Existed || *GlobalConfigJSON != AsRead) && !AppPaths::ConfigReadOnly() && !JSONOps::SaveJSON(GlobalConfigJSON, &GlobalConfigFile))
     {
         LogErr("main.cpp", "GlobalConfig.JSON could not be written.");
         return false;

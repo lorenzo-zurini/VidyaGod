@@ -106,3 +106,11 @@ to_json                      # a JSON conversion: runs wherever that type is wri
 # ---- custom controls inside windows: `ui show` reads them, `ui click` / `ui set` act on them ----
 KeyCaptureField::*           # the launch window's key-binding field (its buttons are `ui click`, its value `ui show`)
 ValidationPanel::*           # the editor's validation list (its rows are `ui show`; `build validate` gives the same messages)
+AppPaths::SetConfigReadOnly  # a call carrying a path override beside the running app: set by the command line itself, every such call
+AppPaths::ConfigReadOnly     # as AppPaths::SetConfigReadOnly: read when the config would be saved
+LibraryView::cardMiss        # the candidates an ambiguous card name gets: every `library play/edit`, `ui card` and `downloads --card` miss says them
+MainWindow::cardMiss         # as LibraryView::cardMiss, for the Library and Catalog tabs
+PlainLabel                   # a label's & shown as one: every checkbox the download dialog and the launch window make from package text
+LibraryView::paintPlaceholder  # a cover-less card's painting: `ui screenshot` shows it (`ui show` gives the cards it paints)
+Theme::Apply                 # the app's palette and shared styles, set at start-up: every `ui screenshot` shows them
+Theme::Capped                # a Settings page's width cap: every Settings page's `ui screenshot` shows it

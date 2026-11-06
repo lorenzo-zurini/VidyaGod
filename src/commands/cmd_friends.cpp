@@ -76,7 +76,7 @@ VG_COMMANDS
     Command::Register({
         "friends nick", "set the nickname friends see",
         "What the Network tab's Nickname field + Save does.", { Command::Pos("name", "the nickname") },
-        { "friends nick LGZ-PC" }, { "AppModel::setNickname", "IpfsWrapper::SetProfile" }, Needs::Model, true,
+        { "friends nick LGZ-MacBook" }, { "AppModel::setNickname", "IpfsWrapper::SetProfile" }, Needs::Model, true,
         [](Command::Context &C, const json &A) {
             std::string Err;
             if (!C.Model->setNickname(QString::fromStdString(Command::Str(A, "name")), &Err))
@@ -234,7 +234,7 @@ VG_COMMANDS
         "friends received", "what a friend shares with you, as you hold it",
         "The snapshot of a friend's shared libraries this machine holds (only while you receive from them): per "
         "library, every package — its folder CID and title.", { Command::Pos("friend", "their nickname, friend code, or the start of it") },
-        { "friends received LGZ-PC", "friends received LGZ-PC --json" },
+        { "friends received LGZ-MacBook", "friends received LGZ-MacBook --json" },
         { "AppModel::hasFriendLibraries" }, Needs::Model, false,
         [](Command::Context &C, const json &A) {
             const std::string P = Peer(Command::Str(A, "friend"));
@@ -250,7 +250,7 @@ VG_COMMANDS
     Command::Register({
         "friends refresh", "ask a friend for what they share now",
         "Re-request a friend's snapshot (and land what it lists), as reconnecting does.", { Command::Pos("friend", "their nickname, friend code, or the start of it") },
-        { "friends refresh LGZ-PC" }, { "AppModel::reconcileReceivedFriend", "AppModel::requestFriendLibraries", "IpfsWrapper::RequestFriendLibraries" },
+        { "friends refresh LGZ-MacBook" }, { "AppModel::reconcileReceivedFriend", "AppModel::requestFriendLibraries", "IpfsWrapper::RequestFriendLibraries" },
         Needs::Model, true,
         [](Command::Context &C, const json &A) {
             const std::string P = Peer(Command::Str(A, "friend"));

@@ -11,8 +11,8 @@ class AppModel;
 class QScrollArea;
 
 // ---------------------------------------------------------------------------
-// PackagesView — the "Installed Packages" Settings page: the +Add Local Package / Package Editor buttons and the
-// list of hydrated library packages (each with a Remove button). Reads the catalog/config through the AppModel,
+// PackagesView — the "Installed Packages" Settings page: the packages installed here (PackageCatalog::InstalledPackages,
+// from the index), by library, each with its size, versions and Open folder (and Forget, for one added from outside). Reads the catalog/config through the AppModel,
 // removes via the model, and rebuilds its list on the model's catalogChanged signal. The Package Editor's save is
 // routed through the app-wide MainWindow::RefreshPackage hook (which rebuilds the catalog + reloads prelaunches).
 // ---------------------------------------------------------------------------
@@ -31,10 +31,12 @@ private:
     // Found off the GUI thread (it builds each package's folder); applying asks first, showing what changes.
     void rebuildUpdates();
     void offerUpdate(const PackageCatalog::PackageUpdate &U, QPushButton *Button);
+    void showList(const std::vector<PackageCatalog::InstalledPackage> &Pkgs);
 
     AppModel &Model;
     QScrollArea *PackagesScrollArea = nullptr;
     QWidget *UpdatesBox = nullptr;
+    bool Listing = false, ListAgain = false;   // one installed-list scan at a time; a change meanwhile asks for one more
     unsigned UpdatesGeneration = 0;            // a refresh's result is shown only if no later refresh started
     bool Switching = false;                    // one switch at a time: every button waits while one runs
 };

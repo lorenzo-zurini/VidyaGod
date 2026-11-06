@@ -201,8 +201,8 @@ VG_COMMANDS
         "instances config", "an instance's config (instance.json), or write it",
         "What an instance keeps beside its saves: settings, variables, LASTRUN, what each option's file last held. "
         "--set writes a whole new config (JSON); --merge merges keys into it; --touch stamps LASTRUN now (makes it active).",
-        { UidArg(), Opt("instance", "which (default: the active one)"), Opt("set", "the new config (JSON)", Type::Json),
-          Opt("merge", "keys to merge in (JSON)", Type::Json), Flag("touch", "stamp LASTRUN = now") },
+        { UidArg(), Opt("instance", "which (default: the active one)"), WithSample(Opt("set", "the new config (JSON)", Type::Json), "{\"VARIABLES\":{},\"LASTRUN\":0}"),
+          WithSample(Opt("merge", "keys to merge in (JSON)", Type::Json), "{\"VARIABLES\":{\"aoe2_res\":\"1920x1080\"}}"), Flag("touch", "stamp LASTRUN = now") },
         { "instances config 749", "instances config 749 --merge '{\"VARIABLES\":{\"aoe2_res\":\"1920x1080\"}}'", "instances config 749 --instance Main --touch" },
         { "InstanceStore::ReadConfig", "InstanceStore::WriteConfig", "InstanceStore::TouchLastRun" }, Needs::Config, false,
         [](Command::Context &C, const json &A) {
@@ -223,23 +223,27 @@ VG_COMMANDS
         "deps check", "what this machine has of what a launch needs",
         "Probe the host (libraries via ldconfig, programs on PATH, files beside the app, the Vulkan driver, the sandbox, "
         "WinFsp) and classify every dependency: ok, partial (the 32-bit half missing), missing — with the package to "
-        "install on this distro. Settings → Dependencies shows the same. --missing lists only what is not ok.",
+        "install on this distro, and the one command that installs them all. Settings → Dependencies shows the same. "
+        "--missing lists only what is not ok.",
         { Flag("missing", "only what is not ok") }, { "deps check", "deps check --missing --json" },
         { "DepCheck::AllDeps", "DepCheck::ProbeSystem", "DepCheck::Check", "DepCheck::MissingCore", "DepCheck::DistroFromOsRelease",
-          "DepCheck::DistroLabel", "DepCheck::CategoryLabel", "DepCheck::InstallHint", "SandboxLayer::Available" }, Needs::Config, false,
+          "DepCheck::DistroLabel", "DepCheck::CategoryLabel", "DepCheck::InstallHint", "DepCheck::InstallCommand", "SandboxLayer::Available" }, Needs::Config, false,
         [](Command::Context &, const json &A) {
             const DepCheck::SystemState St = DepCheck::ProbeSystem(SandboxLayer::Available());
             const DepCheck::Distro D = DepCheck::DistroFromOsRelease();
             json Rows = json::array();
+            std::vector<std::string> Missing;
             for (const auto &I : DepCheck::AllDeps())
             {
                 const DepCheck::Status S = DepCheck::Check(I, St);
+                if (S != DepCheck::Status::Ok) Missing.push_back(DepCheck::InstallHint(I, S, D));
                 if (Command::Bool(A, "missing", false) && S == DepCheck::Status::Ok) continue;
                 Rows.push_back({{"dependency", I.Name}, {"category", DepCheck::CategoryLabel(I.Cat)}, {"status", StatusName(S)},
                                 {"install", S == DepCheck::Status::Ok ? std::string() : DepCheck::InstallHint(I, S, D)}, {"for", I.Purpose}});
             }
             return json{{"distro", DepCheck::DistroLabel(D)}, {"can_launch", DepCheck::MissingCore(St).empty()},
-                        {"missing_core", DepCheck::MissingCore(St)}, {"dependencies", Rows}};
+                        {"missing_core", DepCheck::MissingCore(St)}, {"install_command", DepCheck::InstallCommand(Missing, D)},
+                        {"dependencies", Rows}};
         }, {} });
 
     Command::Register({

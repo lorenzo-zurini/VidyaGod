@@ -61,7 +61,7 @@ LogRecorder::~LogRecorder() { g_Recorder = Outer; }
 
 void LogRecorder::Note(LogLevel Level, const std::string &Context, const std::string &Message)
 {
-    if (Contexts.count(Context)) Kept.push_back({Level, Context, Message});
+    if (Contexts.empty() || Contexts.count(Context)) Kept.push_back({Level, Context, Message});
     if (Outer) Outer->Note(Level, Context, Message);
 }
 

@@ -363,6 +363,12 @@ void PackageEditor::refreshHistory()
         It->setData(Qt::UserRole, I + 1);
     }
     History->setCurrentRow((int)H.Done.size());
+    if (H.Done.empty() && H.Undone.empty())   // an empty list read as broken: say what will be here
+    {
+        auto *Hint = new QListWidgetItem("No changes yet — each edit is listed here; click one to go back to just after it.", History);
+        Hint->setFlags(Qt::NoItemFlags);
+        Hint->setForeground(QColor(140, 140, 150));
+    }
     for (int I = 0; I < (int)H.Undone.size(); ++I)
     {
         auto *It = new QListWidgetItem(QString::fromStdString(H.Undone[(size_t)I]) + "   (undone)", History);

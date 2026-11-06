@@ -25,6 +25,10 @@ std::filesystem::path DataRoot();
 //Whether SetDataRoot ran: the app and the command line always set it; a test or tool that did not must not write into
 //the user's own data dir through the fallback (the index cache is kept only when this is true).
 bool DataRootSet();
+//A call that runs beside the app holding this data dir (one carrying a path override): it reads the config and may
+//not write it, the app's being the one copy that does. Saving it is then refused (CmdUtil::Save, start-up).
+void SetConfigReadOnly(bool On);
+bool ConfigReadOnly();
 
 // The four run modes that decide AppDataDir + which daemon/persistence features are allowed (see the four-run-modes
 // note). Set once in main() alongside the data root.

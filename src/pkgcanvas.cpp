@@ -143,6 +143,7 @@ struct NodeView
     std::string Handle;
     int Doc = -1;                       // >= 0: the document's node; -1: another package's node (a chip)
     std::string Title, Kind, Package;   // Package: the chip's package name
+    std::string Summary;                // zoomed out, under the name: its layers' kinds and its shelf name
     bool Graft = false, Variant = false, Launchable = false, Unwired = false;
     float W = kNodeW;
 };
@@ -462,6 +463,18 @@ static void Rebuild(PkgCanvasState &S)
         V.Variant = !StrOf(D.Node(I), "VARIANT").empty();
         V.Launchable = HasExec(D.Node(I));
         V.Unwired = !Contained.count(I) && !V.Launchable && !V.Graft;
+        {
+            //"ZIP ×2 · REG · EXEC — Patch 2.0a (No-CD)": what a box says when its rows are too small to read.
+            std::vector<std::pair<std::string, int>> Kinds;
+            for (const std::string &T : PkgGraph::LayerTypes(D.Node(I)))
+            {
+                if (T.empty()) continue;
+                auto It = std::find_if(Kinds.begin(), Kinds.end(), [&T](const auto &K) { return K.first == T; });
+                if (It == Kinds.end()) Kinds.push_back({T, 1}); else ++It->second;
+            }
+            for (const auto &[T, N] : Kinds) V.Summary += (V.Summary.empty() ? "" : " \xC2\xB7 ") + T + (N > 1 ? " \xC3\x97" + std::to_string(N) : "");
+            if (const std::string Shelf = StrOf(D.Node(I), "VARIANT"); !Shelf.empty()) V.Summary += " \xE2\x80\x94 " + Shelf;
+        }
         V.Index = (int)S.Views.size();
         S.ViewOf[V.Handle] = V.Index;
         S.Views.push_back(std::move(V));
@@ -1528,8 +1541,16 @@ static void DrawBox(PkgCanvasState &S, ImDrawList *DL, const NodeView &V)
     const float Ty = (B.y - A.y) > Fs * 2.0f ? A.y + std::max(Th, Fs * 1.1f) : A.y + 2.0f;
     DL->PushClipRect(A, B, true);
     DL->AddText(ImVec2(A.x + 6.0f, Ty), IM_COL32(235, 238, 245, 255), T.c_str());
-    DL->PopClipRect();
     ImGui::PopFont();
+    //Under the name, when the box has room for a line more: what the node is made of.
+    if (const float Ss = std::max(9.0f, Fs * 0.62f); !V.Summary.empty() && Ty + Fs * 1.25f + Ss < B.y)
+    {
+        ImGui::PushFont(nullptr, Ss);
+        const std::string Sm = PkgForm::FitWidth(V.Summary, (B.x - A.x) - 12.0f);
+        DL->AddText(ImVec2(A.x + 6.0f, Ty + Fs * 1.25f), IM_COL32(160, 168, 185, 255), Sm.c_str());
+        ImGui::PopFont();
+    }
+    DL->PopClipRect();
     if (Sel || Hot) DL->AddRect(A, B, Sel ? IM_COL32(255, 196, 90, 255) : IM_COL32(170, 180, 200, 200), 7.0f * Z, 0, 2.0f);
     S.DrawnRect[V.Handle] = ImVec4(A.x, A.y, B.x, B.y);
 }
@@ -2081,9 +2102,9 @@ void PkgCanvas::frame()
     S.MiniRect = ImVec4(0, 0, 0, 0);
     bool MiniHovered = false;
     const ImVec4 Wb = S.Views.empty() ? ImVec4() : BoundsOf(S, nullptr);
-    const ImVec2 ViewA = S.S2W(R0), ViewB = S.S2W(R1);
-    const bool AllInView = Wb.x >= ViewA.x && Wb.y >= ViewA.y && Wb.z <= ViewB.x && Wb.w <= ViewB.y;   // nothing to find
-    if (S.ShowMini && !S.Views.empty() && !AllInView && R1.x - R0.x > 400 && R1.y - R0.y > 300)
+    //Ticked, the map shows — with everything in view too (where the view is, in the whole): a ticked "Map" with no map
+    //read as broken.
+    if (S.ShowMini && !S.Views.empty() && R1.x - R0.x > 400 && R1.y - R0.y > 300)
     {
         const float MW = 220, MH = 150;
         const ImVec2 M0(R1.x - MW - 12, R1.y - MH - 12);

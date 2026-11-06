@@ -1,5 +1,9 @@
 // `VidyaGod catalog …` — the node graph the app holds: the shelf of games (each edition's install state, what it would
 // fetch), one node in full, the re-index and the validator. What the Library and Catalog tabs are built from.
+#include <regex>
+#include <sstream>
+#include <map>
+#include "cli/cliapp.h"   // RenderGeneric
 #include "command.h"
 #include "appmodel.h"
 #include "manifestmodel.h"
@@ -36,6 +40,51 @@ const Node *FindNode(const NodeIndex &Idx, const std::string &Id)
     throw Command::BadArgs("no node '" + Id + "' (a CID, a working handle, or a LABEL)");
 }
 
+} // namespace
+
+namespace {
+// A validation's findings for a person: one line per kind of finding. Ten warnings that differ only in the variable
+// they name ("runners disagree where %AppData% is …", "… %Documents% …") are one line with a count and the names;
+// -v (and --json) list each. Errors before warnings.
+std::string RenderFindings(const json &Rows, bool Colour)
+{
+    if (!Rows.is_array()) return CliApp::RenderGeneric(Rows, Colour);
+    if (Rows.empty()) return std::string(Colour ? "\033[32m" : "") + "no problems" + (Colour ? "\033[0m" : "") + "\n";
+    static const std::regex Token("%[A-Za-z0-9_]+%"), Quoted("'[^']*'");
+    struct Kind { std::string Severity, First; std::vector<std::string> Tokens; size_t Count = 0; };
+    std::vector<Kind> Kinds;
+    std::map<std::string, size_t> At;
+    for (const auto &R : Rows)
+    {
+        const std::string Sev = R.value("severity", std::string()), Msg = R.value("message", std::string());
+        const std::string Shape = Sev + "\t" + std::regex_replace(std::regex_replace(Msg, Quoted, "'…'"), Token, "%…%");
+        auto It = At.find(Shape);
+        if (It == At.end() || Command::VerboseOutput()) { It = At.emplace(Shape + (Command::VerboseOutput() ? std::to_string(Kinds.size()) : ""), Kinds.size()).first; Kinds.push_back({Sev, Msg, {}, 0}); }
+        Kind &K = Kinds[It->second];
+        ++K.Count;
+        if (std::smatch M; std::regex_search(Msg, M, Token) && std::find(K.Tokens.begin(), K.Tokens.end(), M.str()) == K.Tokens.end()) K.Tokens.push_back(M.str());
+    }
+    std::stable_sort(Kinds.begin(), Kinds.end(), [](const Kind &A, const Kind &B) { return A.Severity == "error" && B.Severity != "error"; });
+    std::ostringstream O;
+    size_t Errors = 0, Warnings = 0;
+    for (const auto &K : Kinds)
+    {
+        const bool Err = K.Severity == "error";
+        (Err ? Errors : Warnings) += K.Count;
+        const std::string Label = Err ? "error  " : "warning";
+        O << (Colour ? (Err ? "\033[31m" : "\033[33m") : "") << Label << (Colour ? "\033[0m" : "") << "  " << K.First << "\n";
+        if (K.Count > 1)
+        {
+            std::string Names;
+            for (size_t I = 1; I < K.Tokens.size(); ++I) Names += (I > 1 ? ", " : "") + K.Tokens[I];
+            O << "         " << (Colour ? "\033[2m" : "") << "… and " << K.Count - 1 << " more like it"
+              << (Names.empty() ? "" : ", for " + Names) << " (-v lists each)" << (Colour ? "\033[0m" : "") << "\n";
+        }
+    }
+    O << (Colour ? "\033[2m" : "") << Errors << (Errors == 1 ? " error, " : " errors, ") << Warnings << (Warnings == 1 ? " warning" : " warnings")
+      << (Colour ? "\033[0m" : "") << "\n";
+    return O.str();
+}
 } // namespace
 
 VG_COMMANDS
@@ -86,7 +135,7 @@ VG_COMMANDS
         "A node by CID, working handle or LABEL: its identity, package folder, variant, what it contains and requires, its "
         "tile, its default entry, its install state — and with --json-node the node as authored.",
         { Command::Pos("node", "a CID, working handle, or LABEL"), Command::Flag("json-node", "include the node as authored") },
-        { "catalog node bafkreid5cz7cjdoknaoev4p4su2fmoalbjyhvxyjifvtb47zeoco35kywa", "catalog node 'Original (Steam)' --json-node" },
+        { "catalog node 'Patch 2.0a'", "catalog node 'The Age of Kings' --json-node" },
         { "NodeIndex::Find", "PackageCatalog::HydrationMap", "PackageCatalog::MissingFromClosure" }, Needs::Model, false,
         [](Command::Context &C, const json &A) {
             const auto Snap = C.Model->catalogSnapshot();
@@ -236,5 +285,5 @@ VG_COMMANDS
             for (const auto &E : Errors) Out.push_back({{"severity", "error"}, {"message", E}});
             if (!Command::Bool(A, "errors-only", false)) for (const auto &W : Warnings) Out.push_back({{"severity", "warning"}, {"message", W}});
             return Out;
-        }, {}, true });
+        }, &RenderFindings, true });
 }

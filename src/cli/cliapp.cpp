@@ -2,6 +2,7 @@
 
 #include <fstream>
 #include "apppaths.h"
+#include "theme.h"
 #include "command.h"
 #include "commandserver.h"
 #include "appmodel.h"
@@ -17,7 +18,13 @@
 #include <QDir>
 #include <QTimer>
 #include <algorithm>
+#include <numeric>
+#include <iomanip>
+#include <cctype>
 #include <chrono>
+#ifndef _WIN32
+#include <sys/ioctl.h>
+#endif
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
@@ -25,11 +32,14 @@
 #include <memory>
 #include <set>
 #include <sstream>
+#include <condition_variable>
+#include <mutex>
 #include <thread>
 #ifndef _WIN32
 #include <unistd.h>
 #else
 #include <io.h>
+#include <windows.h>   // GetConsoleScreenBufferInfo: the console's width
 #endif
 
 #ifndef VIDYAGOD_VERSION
@@ -61,6 +71,8 @@ struct Globals
 {
     std::string DataDir, PackageDir, RuntimeDir, UserDataDir;   // the last three: per-launch path overrides (AppPaths)
     bool Json = false, NoColour = false, Verbose = false, Help = false;
+    bool Online = false;   // --online: start the node for this call though Settings → Networking is off
+    bool NoWait = false;   // --no-wait: fail at once when another command holds the data dir, instead of waiting
     long long WaitMs = 0;
 };
 
@@ -77,6 +89,8 @@ bool TakeGlobal(const std::vector<std::string> &A, size_t &I, Globals &G)
     if (W == "--no-color" || W == "--no-colour") return G.NoColour = true;
     if (W == "-v" || W == "--verbose") return G.Verbose = true;
     if (W == "-h" || W == "--help") return G.Help = true;
+    if (W == "--online") return G.Online = true;
+    if (W == "--no-wait") return G.NoWait = true;
     if (W == "--data-dir") return Value(G.DataDir);
     if (W.rfind("--data-dir=", 0) == 0) { G.DataDir = W.substr(11); return true; }
     if (W == "--package-dir") return Value(G.PackageDir);
@@ -140,7 +154,7 @@ std::string Placeholder(const Command::Arg &A) { return "<" + A.Name + ">"; }
 std::string UsageLine(const Command::Spec &S, const Style &St)
 {
     std::string U = St.B("VidyaGod " + S.Name);
-    for (const auto &A : S.Args) if (A.Positional) U += " " + Placeholder(A);
+    for (const auto &A : S.Args) if (A.Positional) U += A.Required ? " " + Placeholder(A) : " [" + Placeholder(A) + "]";
     for (const auto &A : S.Args)
         if (!A.Positional)
         {
@@ -218,6 +232,8 @@ void PrintRootHelp(const Style &St)
       << "  --json             print the exact result as JSON\n"
       << "  --no-color         plain output (also: NO_COLOR set, or not a terminal)\n"
       << "  --wait <ms>        keep running this long after the call, for what it started\n"
+      << "  --online           go online for this call though networking is off (Settings → Networking)\n"
+      << "  --no-wait          fail at once if another command is using the data dir (at a terminal it waits for it)\n"
       << "  --package-dir <d>  a launch's package folder, instead of the node's own (also --runtime-dir, --userdata-dir)\n"
       << "  -v, --verbose      the engine's log on stderr\n"
       << "  -h, --help         help for whatever precedes it\n\n";
@@ -258,6 +274,7 @@ void PrintCommandHelp(const Command::Spec &S, const Style &St)
     auto Row = [&](const std::string &Left, const Command::Arg &A) {
         std::string H = A.Help;
         if (!A.Choices.empty()) H += " (one of: " + Join(A.Choices, 0, A.Choices.size(), ", ") + ")";
+        if (!A.Sample.empty()) H += ", like " + A.Sample;
         if (!A.Positional && A.Required) H += " [required]";
         O << "  " << St.Cyan(Left) << std::string(W - Left.size() + 3, ' ') << H << "\n";
     };
@@ -386,7 +403,7 @@ json ParseArgs(const Command::Spec &S, const std::vector<std::string> &Rest, boo
         Out[Pos[NextPos]->Name] = Typed(*Pos[NextPos], W);
         ++NextPos;
     }
-    if (NextPos < Pos.size()) throw Command::BadArgs("missing " + Placeholder(*Pos[NextPos]));
+    if (NextPos < Pos.size() && Pos[NextPos]->Required) throw Command::BadArgs("missing " + Placeholder(*Pos[NextPos]));
     for (const auto &A : S.Args)
         if (!A.Positional && A.Required && !Out.contains(A.Name)) throw Command::BadArgs("missing --" + A.Name);
     return Out;
@@ -422,17 +439,55 @@ json CheckExamples()
     return Bad;
 }
 
-std::string Cell(const json &V)
+// The terminal's width, for output read by a person; 0 when stdout is not a terminal (piped, captured): then
+// nothing is shortened or wrapped — a script reads every value whole.
+size_t g_Width = 0;
+
+size_t TerminalWidth()
 {
-    if (V.is_string()) return V.get<std::string>().empty() ? "—" : V.get<std::string>();   // an empty value, not a gap
+    if (!IsTty(1)) return 0;
+    if (const char *C = std::getenv("COLUMNS")) { const int N = std::atoi(C); if (N > 20) return static_cast<size_t>(N); }
+#ifdef _WIN32
+    CONSOLE_SCREEN_BUFFER_INFO Info;
+    if (GetConsoleScreenBufferInfo(GetStdHandle(STD_OUTPUT_HANDLE), &Info)) return static_cast<size_t>(Info.srWindow.Right - Info.srWindow.Left + 1);
+#else
+    struct winsize Ws {};
+    if (::ioctl(1, TIOCGWINSZ, &Ws) == 0 && Ws.ws_col > 20) return Ws.ws_col;
+#endif
+    return 100;
+}
+
+// A CID as a table on a terminal shows it: "bafkrei…myteka", git-style — a node argument takes any unique part of one,
+// that form included (commands that take a raw CID, ipfs fetch and the like, need it whole). Piped output and --json
+// keep every CID whole.
+bool IsCid(const std::string &S)
+{
+    if (S.size() < 46 || S.size() > 120 || !(S.rfind("Qm", 0) == 0 || S.rfind("baf", 0) == 0)) return false;
+    return std::all_of(S.begin(), S.end(), [](unsigned char C) { return std::isalnum(C); });
+}
+std::string ShortCid(const std::string &S) { return IsCid(S) ? S.substr(0, 7) + "…" + S.substr(S.size() - 6) : S; }
+
+std::string Cell(const json &V, bool Short = false)
+{
+    if (V.is_string())
+    {
+        const std::string &T = V.get_ref<const std::string &>();
+        return T.empty() ? "—" : Short ? ShortCid(T) : T;   // an empty value, not a gap
+    }
     if (V.is_boolean()) return V.get<bool>() ? "yes" : "no";
     if (V.is_null()) return "—";
     if ((V.is_array() || V.is_object()) && V.empty()) return "—";
     if (V.is_array() && std::all_of(V.begin(), V.end(), [](const json &X) { return X.is_string() || X.is_number(); }))
     {
         std::string S;
-        for (const auto &X : V) S += (S.empty() ? "" : ", ") + (X.is_string() ? X.get<std::string>() : X.dump());
+        for (const auto &X : V) S += (S.empty() ? "" : ", ") + (X.is_string() ? (Short ? ShortCid(X.get<std::string>()) : X.get<std::string>()) : Cell(X));
         return S;
+    }
+    if (V.is_number_float())   // geometry and ratios: three places say it, seventeen are noise
+    {
+        std::ostringstream O;
+        O << std::setprecision(4) << V.get<double>();
+        return O.str();
     }
     return V.dump();
 }
@@ -445,20 +500,80 @@ size_t Shown(const std::string &S)
     return N;
 }
 
+// The first Max code points of S (a byte offset into it).
+size_t Prefix(const std::string &S, size_t Max)
+{
+    size_t N = 0, I = 0;
+    for (; I < S.size(); ++I)
+        if ((static_cast<unsigned char>(S[I]) & 0xC0) != 0x80 && N++ == Max) break;
+    return I;
+}
+
 std::string Clip(const std::string &S, size_t Max)
 {
     if (Shown(S) <= Max) return S;
-    std::string Out;
-    size_t N = 0;
-    for (size_t I = 0; I < S.size(); ++I)
+    return S.substr(0, Prefix(S, Max - 1)) + "…";
+}
+
+// A path too long for its column keeps both ends — the folder it is in and its file name: ".../LIBRARY/…/game.zip".
+std::string ClipMiddle(const std::string &S, size_t Max)
+{
+    const size_t N = Shown(S);
+    if (N <= Max || Max < 9) return Clip(S, Max);
+    const size_t Tail = (Max - 1) * 2 / 3, Head = Max - 1 - Tail;
+    size_t From = Prefix(S, N - Tail);
+    return S.substr(0, Prefix(S, Head)) + "…" + S.substr(From);
+}
+
+bool PathLike(const std::string &S) { return S.find('/') != std::string::npos && S.find(' ') == std::string::npos ? true : (S.size() > 1 && (S[0] == '/' || S[0] == '~')); }
+
+// S in lines of at most Max code points, broken at spaces where it can be (a word longer than a line is cut).
+std::vector<std::string> Wrap(const std::string &S, size_t Max)
+{
+    std::vector<std::string> Out;
+    std::string Rest = S;
+    while (Shown(Rest) > Max)
     {
-        if ((static_cast<unsigned char>(S[I]) & 0xC0) != 0x80 && ++N > Max - 1) break;
-        Out += S[I];
+        size_t Cut = Prefix(Rest, Max);
+        const size_t Sp = Rest.rfind(' ', Cut);
+        if (Sp != std::string::npos && Sp > 0 && Shown(Rest.substr(0, Sp)) >= Max / 3) Cut = Sp;
+        Out.push_back(Rest.substr(0, Cut));
+        Rest = Rest.substr(Cut);
+        if (!Rest.empty() && Rest[0] == ' ') Rest.erase(0, 1);
     }
-    return Out + "…";
+    Out.push_back(Rest);
+    return Out;
+}
+
+// A cell's lines in a column of width Max: a path shortened in the middle, any other text wrapped.
+std::vector<std::string> Fit(const std::string &S, size_t Max)
+{
+    if (Max == 0 || Shown(S) <= Max) return { S };
+    if (PathLike(S)) return { ClipMiddle(S, Max) };
+    return Wrap(S, Max);
 }
 
 void Fields(std::ostringstream &O, const json &Obj, const Style &St, size_t Indent);
+void Value(std::ostringstream &O, const json &V, const Style &St, size_t Indent);
+
+// Whether a list of objects reads as a table: its rows mostly share their keys and hold short plain values. A list of
+// unlike objects (a node's layers: a ZIP, a REG, a VARS) is an outline instead — a table of it is mostly "—".
+bool Tabular(const json &Rows)
+{
+    std::vector<std::string> Cols;
+    size_t Filled = 0, Long = 0;
+    for (const auto &R : Rows)
+        for (const auto &[K, V] : R.items())
+        {
+            if (std::find(Cols.begin(), Cols.end(), K) == Cols.end()) Cols.push_back(K);
+            if (!V.is_null() && !(V.is_structured() && V.empty()) && !(V.is_string() && V.get_ref<const std::string &>().empty())) ++Filled;
+            const bool Plain = V.is_array() && std::all_of(V.begin(), V.end(), [](const json &X) { return !X.is_structured(); });
+            if (V.is_structured() && !Plain && Cell(V).size() > 40) ++Long;
+        }
+    if (Cols.empty() || Cols.size() > 12) return false;
+    const size_t Cells = Cols.size() * Rows.size();
+    return Long * 4 <= Rows.size() && Filled * 2 >= Cells;
+}
 
 void Table(std::ostringstream &O, const json &Rows, const Style &St, size_t Indent)
 {
@@ -466,37 +581,100 @@ void Table(std::ostringstream &O, const json &Rows, const Style &St, size_t Inde
     for (const auto &R : Rows)
         for (const auto &[K, V] : R.items())
             if (std::find(Cols.begin(), Cols.end(), K) == Cols.end()) Cols.push_back(K);
+    std::vector<std::vector<std::string>> Text(Rows.size(), std::vector<std::string>(Cols.size()));
+    for (size_t R = 0; R < Rows.size(); ++R)
+        for (size_t C = 0; C < Cols.size(); ++C) Text[R][C] = Cell(Rows[R].value(Cols[C], json()), g_Width != 0);   // short CIDs on a terminal only
+    //A column of text saying in every row what an earlier one says is shown once (a row's title that is also its
+    //summary). Only text, over two rows or more: two flags or counts that agree are two facts, not one.
+    for (size_t C = Cols.size(); C-- > 1;)
+        for (size_t E = 0; E < C; ++E)
+        {
+            bool Same = Rows.size() >= 2;
+            for (size_t R = 0; R < Rows.size() && Same; ++R)
+            {
+                const json &V = Rows[R].value(Cols[C], json());
+                Same = V.is_string() && V.get_ref<const std::string &>().size() > 3 && Text[R][C] == Text[R][E];
+            }
+            if (!Same) continue;
+            Cols.erase(Cols.begin() + static_cast<long>(C));
+            for (auto &Row : Text) Row.erase(Row.begin() + static_cast<long>(C));
+            break;
+        }
     std::vector<size_t> W(Cols.size());
     for (size_t C = 0; C < Cols.size(); ++C)
     {
         W[C] = Shown(Cols[C]);
-        for (const auto &R : Rows) W[C] = std::max(W[C], std::min<size_t>(60, Shown(Cell(R.value(Cols[C], json())))));
+        for (size_t R = 0; R < Rows.size(); ++R) W[C] = std::max(W[C], Shown(Text[R][C]));
+    }
+    //On a terminal the table fits it: the widest columns give way (to no less than 12) and their cells wrap — a
+    //message whole, over lines — or, a path, keep both ends. Piped, every cell is printed whole.
+    if (g_Width)
+    {
+        const size_t Gaps = Indent + (Cols.size() ? 2 * (Cols.size() - 1) : 0);
+        const size_t Avail = g_Width > Gaps + 12 ? g_Width - Gaps : 12;
+        //The widest columns are cut to one width, the largest that fits: no column is starved while another keeps 90.
+        const auto Capped = [&W](size_t Cap) { size_t Sum = 0; for (size_t X : W) Sum += std::min(X, Cap); return Sum; };
+        if (Capped(SIZE_MAX) > Avail)
+        {
+            size_t Lo = 12, Hi = *std::max_element(W.begin(), W.end());
+            while (Lo < Hi) { const size_t Mid = (Lo + Hi + 1) / 2; if (Capped(Mid) <= Avail) Lo = Mid; else Hi = Mid - 1; }
+            for (size_t &X : W) X = std::min(X, Lo);
+        }
     }
     const std::string Pad(Indent, ' ');
-    O << Pad;
-    for (size_t C = 0; C < Cols.size(); ++C) O << St.B(Cols[C]) << (C + 1 < Cols.size() ? std::string(W[C] - Shown(Cols[C]) + 2, ' ') : "");
-    O << "\n";
-    for (const auto &R : Rows)
-    {
-        O << Pad;
-        for (size_t C = 0; C < Cols.size(); ++C)
+    const auto Line = [&](const std::vector<std::vector<std::string>> &Cells, bool Head) {
+        size_t Height = 1;
+        for (const auto &L : Cells) Height = std::max(Height, L.size());
+        for (size_t H = 0; H < Height; ++H)
         {
-            const std::string V = Clip(Cell(R.value(Cols[C], json())), 60);
-            O << V << (C + 1 < Cols.size() ? std::string(W[C] - Shown(V) + 2, ' ') : "");
+            std::string Row = Pad;
+            for (size_t C = 0; C < Cols.size(); ++C)
+            {
+                const std::string V = H < Cells[C].size() ? Cells[C][H] : std::string();
+                const bool Last = C + 1 == Cols.size();
+                Row += Head ? St.B(V) : V;
+                if (!Last) Row += std::string(W[C] > Shown(V) ? W[C] - Shown(V) + 2 : 2, ' ');
+            }
+            while (!Row.empty() && Row.back() == ' ') Row.pop_back();
+            O << Row << "\n";
         }
-        O << "\n";
+    };
+    std::vector<std::vector<std::string>> Head(Cols.size());
+    for (size_t C = 0; C < Cols.size(); ++C) Head[C] = { g_Width ? Clip(Cols[C], W[C]) : Cols[C] };
+    Line(Head, true);
+    for (size_t R = 0; R < Rows.size(); ++R)
+    {
+        std::vector<std::vector<std::string>> Cells(Cols.size());
+        for (size_t C = 0; C < Cols.size(); ++C) Cells[C] = g_Width ? Fit(Text[R][C], W[C]) : std::vector<std::string>{ Text[R][C] };
+        Line(Cells, false);
     }
     O << Pad << St.Dim(std::to_string(Rows.size()) + (Rows.size() == 1 ? " row" : " rows")) << "\n";
 }
 
+// A list of unlike objects: each one an indented block under a "-".
+void Outline(std::ostringstream &O, const json &Items, const Style &St, size_t Indent)
+{
+    for (const auto &X : Items)
+    {
+        std::ostringstream One;
+        Value(One, X, St, Indent + 2);
+        std::string T = One.str();
+        if (T.size() >= Indent + 2) T.replace(Indent, 2, "- ");
+        O << T;
+    }
+}
+
 void Value(std::ostringstream &O, const json &V, const Style &St, size_t Indent)
 {
-    if (V.is_array() && !V.empty() && std::all_of(V.begin(), V.end(), [](const json &X) { return X.is_object(); }))
-        Table(O, V, St, Indent);
+    if (V.is_array() && !V.empty() && std::all_of(V.begin(), V.end(), [](const json &X) { return X.is_object() && !X.empty(); }))
+    {
+        if (Tabular(V)) Table(O, V, St, Indent);
+        else Outline(O, V, St, Indent);
+    }
     else if (V.is_object() && !V.empty())
         Fields(O, V, St, Indent);
     else if (V.is_array() && !V.empty() && std::any_of(V.begin(), V.end(), [](const json &X) { return X.is_structured(); }))
-        for (const auto &X : V) { Value(O, X, St, Indent); }
+        Outline(O, V, St, Indent);
     else if (V.is_array())
     {
         if (V.empty()) { O << std::string(Indent, ' ') << St.Dim("(none)") << "\n"; return; }
@@ -507,17 +685,27 @@ void Value(std::ostringstream &O, const json &V, const Style &St, size_t Indent)
 
 void Fields(std::ostringstream &O, const json &Obj, const Style &St, size_t Indent)
 {
+    //A value nests under its key when it is a block of its own; a short plain list stays on the key's line.
+    const auto Nests = [](const json &V) {
+        return V.is_structured() && !V.empty() && !(V.is_array() && Cell(V).size() < 80 && !V.front().is_structured());
+    };
     size_t W = 0;
-    for (const auto &[K, V] : Obj.items()) if (!V.is_structured() || V.empty()) W = std::max(W, Shown(K));
+    for (const auto &[K, V] : Obj.items()) if (!Nests(V)) W = std::max(W, Shown(K));
     for (const auto &[K, V] : Obj.items())
     {
-        if (V.is_structured() && !V.empty() && !(V.is_array() && Cell(V).size() < 80 && !V.front().is_structured()))
+        if (Nests(V))
         {
             O << std::string(Indent, ' ') << St.B(K) << "\n";
             Value(O, V, St, Indent + 2);
+            continue;
         }
-        else
-            O << std::string(Indent, ' ') << St.B(K) << std::string(W > Shown(K) ? W - Shown(K) + 2 : 2, ' ') << Cell(V) << "\n";
+        //A long value wraps under itself on a terminal (a message is read whole; a path stays one line, to copy).
+        const size_t At = Indent + std::max(W, Shown(K)) + 2;
+        const std::string Text = Cell(V);
+        std::vector<std::string> Lines = { Text };
+        if (g_Width && g_Width > At + 20 && Shown(Text) > g_Width - At && !PathLike(Text)) Lines = Wrap(Text, g_Width - At);
+        O << std::string(Indent, ' ') << St.B(K) << std::string(W > Shown(K) ? W - Shown(K) + 2 : 2, ' ') << Lines[0] << "\n";
+        for (size_t I = 1; I < Lines.size(); ++I) O << std::string(At, ' ') << Lines[I] << "\n";
     }
 }
 
@@ -580,7 +768,7 @@ void PrintCandidates(const std::vector<std::string> &W)
                 const auto NW = Words(N);
                 if (NW.size() > Before.size() && Join(NW, 0, Before.size()) == Prefix) Offer(NW[Before.size()]);
             }
-        for (const char *X : { "--json", "--no-color", "--data-dir", "--wait", "--package-dir", "--runtime-dir", "--userdata-dir", "--verbose", "--help" }) Offer(X);
+        for (const char *X : { "--json", "--no-color", "--data-dir", "--wait", "--package-dir", "--runtime-dir", "--userdata-dir", "--verbose", "--help", "--online", "--no-wait" }) Offer(X);
     }
     for (const auto &C : Out) std::cout << C << "\n";
 }
@@ -592,11 +780,53 @@ void AwaitNode()
         std::this_thread::sleep_for(std::chrono::seconds(1));
 }
 
+// A long call says it is still at work: after a second, one line on stderr — the command and how long it has run —
+// redrawn in place and wiped before anything is printed. Only on a terminal, and never with -v (the log is the
+// progress there).
+class Ticker
+{
+public:
+    void Start(const std::string &What)
+    {
+        if (!IsTty(2) || Running) return;
+        Running = true;
+        Thread = std::thread([this, What] {
+            static const char *Spin[] = { "⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏" };
+            const auto Since = std::chrono::steady_clock::now();
+            std::unique_lock<std::mutex> Lk(Mu);
+            for (int I = 0; !Cv.wait_for(Lk, std::chrono::milliseconds(120), [this] { return !Running; }); ++I)
+            {
+                const auto Secs = std::chrono::duration_cast<std::chrono::seconds>(std::chrono::steady_clock::now() - Since).count();
+                if (Secs < 1) continue;
+                std::cerr << "\r\033[K\033[2m" << Spin[I % 10] << " " << What << " · " << Secs << " s\033[0m" << std::flush;
+                Drawn = true;
+            }
+            if (Drawn) std::cerr << "\r\033[K" << std::flush;
+        });
+    }
+    void Stop()
+    {
+        if (!Running) return;
+        { std::lock_guard<std::mutex> Lk(Mu); Running = false; }
+        Cv.notify_all();
+        if (Thread.joinable()) Thread.join();
+    }
+    ~Ticker() { Stop(); }
+private:
+    std::thread Thread;
+    std::mutex Mu;
+    std::condition_variable Cv;
+    bool Running = false, Drawn = false;
+};
+Ticker g_Ticker;
+
 int Report(const json &Reply, const Command::Spec *S, const Globals &G, const Style &St, const Style &ErrSt)
 {
+    g_Ticker.Stop();
     if (Reply.value("ok", false))
     {
         const json &R = Reply.contains("result") ? Reply["result"] : json();
+        g_Width = G.Json ? 0 : TerminalWidth();
         if (G.Json) std::cout << R.dump(2) << "\n";
         else if (S && S->Render) std::cout << S->Render(R, St.On);
         else std::cout << RenderGeneric(R, St.On);
@@ -610,6 +840,8 @@ int Report(const json &Reply, const Command::Spec *S, const Globals &G, const St
 }
 
 } // namespace
+
+void SetOutputWidth(size_t Columns) { g_Width = Columns; }
 
 std::string RenderGeneric(const nlohmann::ordered_json &Result, bool Colour)
 {
@@ -669,14 +901,30 @@ int Main(int argc, char **argv, const Hooks &H)
     ErrSt.On = ErrSt.On && !G.NoColour && IsTty(2);
     SetLogEcho(G.Verbose);
     SetLogMillis(G.Verbose);
+    Command::SetVerboseOutput(G.Verbose);
     VgSetLogVerbose(G.Verbose ? 1 : 0);   // and the node's own trace
 
+    //With --json, help is the commands' own entries (as `commands --json` lists them): one command's, a group's, all.
+    const auto Entries = [](const std::string &Prefix) {
+        json Out = json::array();
+        for (const auto &E : Command::List())
+            if (Prefix.empty() || E["name"].get<std::string>() == Prefix || E["name"].get<std::string>().rfind(Prefix + " ", 0) == 0) Out.push_back(E);
+        return Out;
+    };
     if (Tokens.empty() || Tokens.front() == "help")
     {
         const std::vector<std::string> T(Tokens.empty() ? Tokens.begin() : Tokens.begin() + 1, Tokens.end());
-        if (T.empty()) { PrintRootHelp(St); return Done; }
-        if (const Command::Spec *S = Command::Find(Join(T, 0, T.size()))) { PrintCommandHelp(*S, St); return Done; }
-        if (GroupNames().count(T.front()) && T.size() == 1) { PrintGroupHelp(T.front(), St); return Done; }
+        if (T.empty()) { if (G.Json) std::cout << Entries("").dump(2) << "\n"; else PrintRootHelp(St); return Done; }
+        if (const Command::Spec *S = Command::Find(Join(T, 0, T.size())))
+        {
+            if (G.Json) std::cout << Entries(S->Name).at(0).dump(2) << "\n"; else PrintCommandHelp(*S, St);
+            return Done;
+        }
+        if (GroupNames().count(T.front()) && T.size() == 1)
+        {
+            if (G.Json) std::cout << Entries(T.front()).dump(2) << "\n"; else PrintGroupHelp(T.front(), St);
+            return Done;
+        }
         std::cerr << ErrSt.Red("error:") << " no help for '" << Join(T, 0, T.size()) << "'\n";
         return Usage;
     }
@@ -737,7 +985,7 @@ int Main(int argc, char **argv, const Hooks &H)
                   << "\nRun " << ErrSt.B("VidyaGod help") << " for everything it can do.\n";
         return Usage;
     }
-    if (G.Help) { PrintCommandHelp(*S, St); return Done; }
+    if (G.Help) { if (G.Json) std::cout << Entries(S->Name).at(0).dump(2) << "\n"; else PrintCommandHelp(*S, St); return Done; }
     json Args;
     try { Args = ParseArgs(*S, { Tokens.begin() + static_cast<long>(Used), Tokens.end() }); }
     catch (const Command::BadArgs &E)
@@ -784,6 +1032,7 @@ int Main(int argc, char **argv, const Hooks &H)
     }
     // A path override is this process's: a call carrying one runs here, never in the app (whose launches keep theirs).
     const bool Overrides = !G.PackageDir.empty() || !G.RuntimeDir.empty() || !G.UserDataDir.empty();
+    if (!G.Verbose) g_Ticker.Start("VidyaGod " + S->Name);
     if (!Overrides && CommandServer::Send(DataPath.toStdString(), S->Name, Args, Reply)) return Report(Reply, S, G, St, ErrSt);
 
     if (S->Requires == Command::Needs::App)   // what only the running app holds: nothing to bring up here
@@ -793,12 +1042,72 @@ int Main(int argc, char **argv, const Hooks &H)
         return Unreachable;
     }
     std::string Holder;
-    if (!Platform::AcquireSingleInstanceLock((AppDataDir.absolutePath() + "/vidyagod.lock").toStdString(), &Holder))
+    const std::string LockFile = (AppDataDir.absolutePath() + "/vidyagod.lock").toStdString();
+    if (!Platform::AcquireSingleInstanceLock(LockFile, &Holder))
     {
-        std::cerr << ErrSt.Red("error:") << " VidyaGod is running on " << DataPath.toStdString()
-                  << (Holder.empty() ? "" : " (" + Holder + ")")
-                  << " but does not answer commands — it predates them. Quit it, or update it.\n";
-        return Unreachable;
+        json Ping;
+        const bool AppAnswers = CommandServer::Send(DataPath.toStdString(), "util bytes", json{{"bytes", 1}}, Ping, 3000);
+        if (Overrides && AppAnswers)
+        {
+            //The app holds the data dir and a path override is this process's alone: a call that only reads (where the
+            //paths are, what a launch would be) runs here beside it, on a config it never writes. Anything that writes
+            //— the disk, a game's saves — needs the app gone: two writers there is what the lock is for.
+            if (S->Name != "app paths" && S->Name != "launch plan")
+            {
+                std::cerr << ErrSt.Red("error:") << " '" << S->Name << "' with a path override runs in a process of its own, "
+                          << "and the app holds " << DataPath.toStdString() << ": quit the app, or run it without the override "
+                          << "(beside the app, only app paths and launch plan take one)\n";
+                return Unreachable;
+            }
+            AppPaths::SetConfigReadOnly(true);
+        }
+        else
+        {
+            //Who holds it: another command-line call (wait for it, as two calls at once would race on the config) or
+            //an app that does not answer (still starting — or from before commands: no use waiting long).
+            const auto IsCommandRun = [](const std::string &Who) {
+                const auto Colon = Who.find(": ");
+                if (Who.empty() || Colon == std::string::npos) return true;   // not known: as a command (wait)
+                const std::vector<std::string> W = Words(Who.substr(Colon + 2));
+                for (size_t I = 1; I < W.size(); ++I)
+                {
+                    if (W[I] == "--data-dir" || W[I] == "--wait" || W[I] == "--package-dir" || W[I] == "--runtime-dir"
+                        || W[I] == "--userdata-dir" || W[I] == "--log") { ++I; continue; }
+                    if (W[I] == "--json" || W[I] == "--no-color" || W[I] == "-v" || W[I] == "--verbose" || W[I] == "--online"
+                        || W[I] == "--no-wait" || W[I] == "--tray" || W[I] == "--offline" || W[I] == "--bypass-single-instance-lock"
+                        || W[I].rfind("--data-dir=", 0) == 0) continue;   // the app's own start options (--tray: autostart)
+                    return true;   // a command, or one of the old flag modes
+                }
+                return false;      // the app itself
+            };
+            const bool ByCommand = IsCommandRun(Holder);
+            const std::string Who = Holder.empty() ? std::string() : " (" + Holder + ")";
+            //Waiting is for a person at a terminal; a script gets the answer at once, as it always did (and can retry).
+            if (G.NoWait || !IsTty(2))
+            {
+                std::cerr << ErrSt.Red("error:") << (ByCommand ? " another VidyaGod command is using " : " VidyaGod is running on ")
+                          << DataPath.toStdString() << Who << (ByCommand ? ": run this one when it ends" : " but does not answer commands")
+                          << "\n";
+                return Unreachable;
+            }
+            g_Ticker.Stop();
+            std::cerr << ErrSt.Dim(std::string("waiting for ") + (ByCommand ? "another VidyaGod command" : "the app") + " on "
+                                   + DataPath.toStdString() + Who + " (--no-wait: fail instead)…") << "\n";
+            const auto Since = std::chrono::steady_clock::now();
+            for (;;)
+            {
+                std::this_thread::sleep_for(std::chrono::milliseconds(200));
+                if (Platform::AcquireSingleInstanceLock(LockFile, &Holder)) break;
+                if (!Overrides && CommandServer::Send(DataPath.toStdString(), S->Name, Args, Reply, -1)) return Report(Reply, S, G, St, ErrSt);
+                if (!ByCommand && std::chrono::steady_clock::now() - Since > std::chrono::seconds(180))
+                {
+                    std::cerr << ErrSt.Red("error:") << " VidyaGod is running on " << DataPath.toStdString() << Who
+                              << " but has not answered commands for 3 minutes — still indexing a large library, or a build "
+                                 "from before commands. Try again, or quit it.\n";
+                    return Unreachable;
+                }
+            }
+        }
     }
     if (!G.PackageDir.empty()) AppPaths::SetPackagePathOverride(G.PackageDir);
     if (!G.RuntimeDir.empty()) AppPaths::SetRuntimePathOverride(G.RuntimeDir);
@@ -809,7 +1118,21 @@ int Main(int argc, char **argv, const Hooks &H)
         std::cerr << ErrSt.Red("error:") << " cannot read the config in " << DataPath.toStdString() << "\n";
         return Unreachable;
     }
-    if (S->Node) { IpfsWrapper::StartNode((AppDataDir.absolutePath() + "/IPFS").toStdString()); AwaitNode(); }
+    if (S->Node)
+    {
+        //Networking off (Settings → Networking) means off here too: nothing goes online unless this call says so.
+        //The node's status is what it is — off — without starting it.
+        const auto &Ipfs = Config["Settings"]["IPFS"];
+        const bool Networking = Ipfs.is_object() && Ipfs.value("Enabled", false);
+        if (!Networking && !G.Online && !Command::WorksOffline(S->Name))
+        {
+            std::cerr << ErrSt.Red("error:") << " '" << S->Name << "' needs the network, and networking is off on "
+                      << DataPath.toStdString() << ": add --online to go online for this call, or turn it on (VidyaGod app networking --set on)\n";
+            return Unreachable;
+        }
+        //Networking off: a command that works without the node (a launch of what is installed) runs without it.
+        if (Networking || G.Online) { IpfsWrapper::StartNode((AppDataDir.absolutePath() + "/IPFS").toStdString()); AwaitNode(); }
+    }
     Command::Context Ctx;
     Ctx.Config = &Config;
     Ctx.AppDataDir = &AppDataDir;
@@ -824,6 +1147,7 @@ int Main(int argc, char **argv, const Hooks &H)
     char Name[] = "VidyaGod";
     char *Argv[] = { Name, nullptr };
     QApplication App(Argc, Argv);
+    Theme::Apply(App);          // the app's look: a screenshot here is what the running app shows
     A11yNames::Install(&App);   // the names ui commands address controls by — the same the running app gives them
     std::unique_ptr<MainWindow> Window;
     std::unique_ptr<AppModel> Model;
@@ -843,6 +1167,15 @@ int Main(int argc, char **argv, const Hooks &H)
         EventLog::Attach(IpfsManager::instance(), "IpfsManager");
     }
     QCoreApplication::processEvents();
+    //An action that opens a dialog: nothing here will answer it, so the dialog is the result and the call ends.
+    Ctx.Early = [&](const json &R) {
+        const int Rc = Report({{"ok", true}, {"result", R}}, S, G, St, ErrSt);
+        //From inside the dialog's event loop: no unwinding (the windows and the action are still on the stack) — the
+        //node's store is closed first if it is open, then the process ends.
+        if (IpfsWrapper::Available()) IpfsWrapper::StopNode();
+        std::fflush(nullptr);
+        std::_Exit(Rc);
+    };
     Reply = Command::Run(S->Name, Args, Ctx);
     if (G.WaitMs > 0)
     {

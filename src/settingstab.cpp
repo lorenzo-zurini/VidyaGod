@@ -8,11 +8,13 @@
 #include "ipfssettingspage.h"
 #include "networkpage.h"
 #include "pathspage.h"
+#include "theme.h"
 
 #include <QListWidget>
 #include <QStackedWidget>
 #include <QHBoxLayout>
 #include <QFrame>
+#include <QStyle>
 
 SettingsTab::SettingsTab(AppModel &model, QWidget *parent)
     : QWidget(parent), Model(model)
@@ -22,17 +24,24 @@ SettingsTab::SettingsTab(AppModel &model, QWidget *parent)
 
     // Left: category sidebar.
     CategoryList = new QListWidget(this);
+    CategoryList->setObjectName("SettingsSidebar");   // its look: Theme
     CategoryList->setAccessibleName("Settings pages");
-    CategoryList->setFixedWidth(170);
+    CategoryList->setFixedWidth(200);
     CategoryList->setFrameShape(QFrame::NoFrame);
-    CategoryList->addItem("General");
-    CategoryList->addItem("Dependencies");
-    CategoryList->addItem("Installed Packages");
-    CategoryList->addItem("Runners");
-    CategoryList->addItem("Sources");
-    CategoryList->addItem("IPFS");
-    CategoryList->addItem("Network");
-    CategoryList->addItem("Storage & Paths");
+    CategoryList->setIconSize(QSize(16, 16));
+    const auto Add = [this](QStyle::StandardPixmap Icon, const char *Name) {
+        auto *It = new QListWidgetItem(style()->standardIcon(Icon), Name);
+        It->setSizeHint(QSize(0, 32));   // one row height, icon or not
+        CategoryList->addItem(It);
+    };
+    Add(QStyle::SP_FileDialogDetailedView, "General");
+    Add(QStyle::SP_MessageBoxWarning, "Dependencies");
+    Add(QStyle::SP_DriveHDIcon, "Installed Packages");
+    Add(QStyle::SP_DesktopIcon, "Runners");
+    Add(QStyle::SP_DirLinkIcon, "Sources");
+    Add(QStyle::SP_DriveNetIcon, "IPFS");
+    Add(QStyle::SP_ComputerIcon, "Network");
+    Add(QStyle::SP_DirIcon, "Storage & Paths");
     outer->addWidget(CategoryList);
 
     // Right: stacked, self-contained page widgets (each talks to the model directly). Built LAZILY on first visit —
@@ -73,7 +82,7 @@ void SettingsTab::showPage(int row)
     if (row < 0 || row >= (int)PageFactories.size()) return;
     if (!Pages[row])
     {
-        Pages[row] = PageFactories[row]();
+        Pages[row] = Theme::Capped(PageFactories[row]());   // content no wider than a page reads well
         QWidget * placeholder = Stack->widget(row);       // pointer to the slot's placeholder
         Stack->insertWidget(row, Pages[row]);             // real page takes index `row`; placeholder shifts to row+1
         Stack->removeWidget(placeholder);                 // remove by pointer — leaves index `row` intact

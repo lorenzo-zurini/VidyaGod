@@ -49,6 +49,10 @@ struct Context
     bool Live = false;                    // running inside the user's GUI (not a headless bring-up)
     //The index snapshot a Background command reads (taken on the app's thread before it runs off it); else empty.
     std::shared_ptr<const NodeIndex> Snapshot;
+    //Answers the call now with this result, though the command has not returned: an action that opened a dialog
+    //(whose exec() holds the command until someone answers it) reports the dialog at once. Its eventual return is then
+    //dropped. Unset where nothing can be answered early.
+    std::function<void(const nlohmann::ordered_json &Result)> Early;
 };
 
 // One argument. A positional one is given in order (`share <peer> <library>`); the rest are --options (a Bool one is
@@ -61,19 +65,35 @@ struct Arg
     bool Positional = false;
     bool Required = true;                 // positionals are always required; an option is optional unless said
     std::vector<std::string> Choices;     // the values a String may take (empty: any)
+    //A Json one: a one-line sample of what it takes, shown in its help. Its first character says the shape the value
+    //must have ('{' an object, '[' an array; anything else: any), checked before the command runs.
+    std::string Sample;
 };
+
+// A Json option's sample (see Arg::Sample): Opt("patch", "the patch", Type::Json, true) | Sample("{\"MODE\": …}").
+inline Arg WithSample(Arg A, std::string S) { A.Sample = std::move(S); return A; }
 
 // The three kinds, spelled at the registration: Pos("peer", "…"), Opt("depth", "…", Type::Int), Flag("all", "…").
 inline Arg Pos(std::string Name, std::string Help, Type K = Type::String, std::vector<std::string> Choices = {})
-{ return Arg{std::move(Name), K, std::move(Help), true, true, std::move(Choices)}; }
+{ return Arg{std::move(Name), K, std::move(Help), true, true, std::move(Choices), {}}; }
 inline Arg Opt(std::string Name, std::string Help, Type K = Type::String, bool Required = false, std::vector<std::string> Choices = {})
-{ return Arg{std::move(Name), K, std::move(Help), false, Required, std::move(Choices)}; }
+{ return Arg{std::move(Name), K, std::move(Help), false, Required, std::move(Choices), {}}; }
+// A positional that may be left out (only after the required ones): `launch plan [<game>]`.
+inline Arg OptPos(std::string Name, std::string Help)
+{ return Arg{std::move(Name), Type::String, std::move(Help), true, false, {}, {}}; }
 inline Arg Flag(std::string Name, std::string Help)
-{ return Arg{std::move(Name), Type::Bool, std::move(Help), false, false, {}}; }
+{ return Arg{std::move(Name), Type::Bool, std::move(Help), false, false, {}, {}}; }
 
 using Fn = std::function<nlohmann::ordered_json(Context &, const nlohmann::ordered_json &Args)>;
 // How a result reads for a person (default: Render::Generic). Colour already decided by the caller.
 using Renderer = std::function<std::string(const nlohmann::ordered_json &Result, bool Colour)>;
+// A Node command that also works with no node (networking off): what it needs the network for is only a fallback —
+// a launch fetches sources only when some are missing, as Play does offline; the node's status reports "off".
+bool WorksOffline(const std::string &Name);
+
+// -v on the command line: a renderer that sums up (repeated warnings, one line per kind) lists everything instead.
+void SetVerboseOutput(bool On);
+bool VerboseOutput();
 
 struct Spec
 {

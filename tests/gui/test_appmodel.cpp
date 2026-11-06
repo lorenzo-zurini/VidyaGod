@@ -104,6 +104,35 @@ private slots:
         QVERIFY(spy.count() >= 1);                                  // catalog rebuilt
     }
 
+    // A package of LIBRARY that the config's LIBRARY list does not name (every package since the node cutover) is not
+    // removed: its dehydrate would walk into other packages' shared content and delete files no source can bring back.
+    // Teeth: drop the refusal and the package's content goes (the dehydrate deletes game.zip).
+    void remove_refuses_a_library_package_the_config_does_not_name()
+    {
+        QTemporaryDir d; QVERIFY(d.isValid());
+        QDir appDir(d.path());
+        const QString Pkg = d.path() + "/LIBRARY/VidyaGod/[1] Game";
+        QDir().mkpath(Pkg);
+        { std::ofstream f((Pkg + "/game.zip").toStdString()); f << "content"; }
+        NodeFixture::WriteNodes((Pkg + "/game.json").toStdString(), NodeFixture::Chain("game", {NodeFixture::Tile("1", "Game"),
+            NodeFixture::Exec("win32", "g.exe"), NodeFixture::Content("zip", "game.zip")}, {}, {{"VARIANT", "Edition 1"}}));
+        json cfg = json{{"Settings", {{"Paths", {{"LibraryRoot", (d.path() + "/LIBRARY").toStdString()}}}}}, {"LIBRARY", json::array()}};
+        AppModel m(&cfg, &appDir);
+        QSignalSpy Built(&m, &AppModel::catalogChanged);
+        m.rebuildCatalog();
+        if (Built.isEmpty()) QVERIFY(Built.wait(20000));
+        QVERIFY2(m.catalogIndex().Find("game"), "the package is in the index (so a dehydrate would find it)");
+        bool Async = true;
+        const QString Why = m.removePackage(Pkg, &Async);
+        QVERIFY2(!Why.isEmpty(), "refused, saying why");
+        QVERIFY(!Async);
+        QTest::qWait(1500);   // a dehydrate would run on a worker
+        QVERIFY2(QFile::exists(Pkg + "/game.zip"), "its content is untouched");
+        QVERIFY(!m.removePackage("1").isEmpty());   // by its UID too
+        QTest::qWait(300);
+        QVERIFY(QFile::exists(Pkg + "/game.zip"));
+    }
+
     void remove_unknown_package_is_noop()
     {
         QTemporaryDir d; QVERIFY(d.isValid());

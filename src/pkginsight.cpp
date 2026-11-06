@@ -180,8 +180,11 @@ void PkgInsight::recompute()
         int N = 0;
         for (const PkgGraph::FoldStep &St : PkgGraph::FoldOrder(H, Find, Label))
         {
-            auto *It = new QTreeWidgetItem(Fold, {QString::number(++N), QString(St.Depth * 4, ' ') + QString::fromStdString(St.Type + "  " + St.Title),
-                                                  QString::fromStdString(St.Outside ? "another package" : St.NodeLabel)});
+            //A node contained twice with different TAKEs (two occurrences) says which files each one takes.
+            QString In = QString::fromStdString(St.Outside ? "another package" : St.NodeLabel);
+            if (!St.Take.empty()) In += "  ·  takes " + QString::fromStdString(St.Take.size() > 60 ? St.Take.substr(0, 59) + "…" : St.Take);
+            auto *It = new QTreeWidgetItem(Fold, {QString::number(++N), QString(St.Depth * 4, ' ') + QString::fromStdString(St.Type + "  " + St.Title), In});
+            if (!St.Take.empty()) It->setToolTip(2, QString::fromStdString(St.Take));
             It->setForeground(1, TypeQColor(St.Type));
         }
         if (!N) new QTreeWidgetItem(Fold, {"", "no layers yet"});

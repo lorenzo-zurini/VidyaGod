@@ -4,10 +4,12 @@
 #include <QWidget>
 
 class AppModel;
+class QVBoxLayout;
 
 // ---------------------------------------------------------------------------
-// PathsPage — the Settings "Storage & Paths" page: the temporary/runtime root, the library folder, and the
-// (read-only) app-data directory. Reads/writes Settings.Paths through the AppModel.
+// PathsPage — the Settings "Storage & Paths" page: the library folder and the (read-only) app-data directory
+// (Settings.Paths through the AppModel), what each part of the data dir takes on disk with the space left, and the
+// clean-ups that lose nothing (left-over sessions, the index cache).
 // ---------------------------------------------------------------------------
 class PathsPage : public QWidget
 {
@@ -16,6 +18,9 @@ public:
     PathsPage(AppModel &model, QWidget *parent = nullptr);
 
 private:
+    void buildSpace(QVBoxLayout *pl);
+    void buildCleanUp(QVBoxLayout *pl);
+
     AppModel &Model;
 };
 

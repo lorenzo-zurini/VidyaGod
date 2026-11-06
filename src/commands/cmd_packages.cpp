@@ -136,6 +136,20 @@ VG_COMMANDS
         }, {} });
 
     Command::Register({
+        "packages installed", "the packages installed here, with their size and versions",
+        "What Settings → Installed Packages lists: every package of LIBRARY (or added from outside it) with a launchable "
+        "whose content is all on disk — its UID, title, library, versions, folder and size.",
+        { Flag("no-sizes", "skip walking the folders for their sizes") }, { "packages installed", "packages installed --json" },
+        { "PackageCatalog::InstalledPackages" }, Needs::Config, false,
+        [](Command::Context &C, const json &A) {
+            json Out = json::array();
+            for (const auto &P : PackageCatalog::InstalledPackages(*C.Config, *Index(C), !Command::Bool(A, "no-sizes", false)))
+                Out.push_back({{"uid", P.Uid}, {"title", P.Title}, {"library", P.Local ? "(added locally)" : P.Library}, {"removable", P.Local || P.HasEntry},
+                               {"versions", P.Variants}, {"bytes", P.Bytes}, {"dir", P.Dir.string()}});
+            return Out;
+        }, {} });
+
+    Command::Register({
         "packages show", "one package folder: its identity, title, library, state, CIDs",
         "What a package folder is: its UID and name (from its nodes), title, library, whether it is a package source's "
         "or added locally, holds content, its folder CID (as shared) and pin folder, its editor-layout key, and the "
@@ -249,7 +263,7 @@ VG_COMMANDS
         "contains not landed yet; and the content CIDs (with their sizes) a download would fetch, the targets it would "
         "write, and the runner chain's build targets.",
         { GameArg(), Opt("grafts", "the grafts ticked (a,b,c; default: as saved)") },
-        { "packages hydrated bafkreid5cz7cjdoknaoev4p4su2fmoalbjyhvxyjifvtb47zeoco35kywa" },
+        { "packages hydrated 'Patch 2.0a'" },
         { "PackageCatalog::NodeHydrated", "PackageCatalog::NodeHasContent", "PackageCatalog::NodeClosureIncomplete",
           "PackageCatalog::NodeContentCids", "PackageCatalog::NodeContentSizes", "PackageCatalog::CollectContentTargets",
           "PackageCatalog::CollectRunnerChainTargets" }, Needs::Config, false,
@@ -274,7 +288,7 @@ VG_COMMANDS
         "Fetch every missing content file of a game's closure (and its cover) where its nodes say — the engine's "
         "download, blocking until done. The Catalog's Download goes through the app's download manager instead "
         "(VidyaGod downloads start).", { GameArg(), Opt("grafts", "the grafts to fetch too (a,b,c)") },
-        { "packages hydrate bafkreid5cz7cjdoknaoev4p4su2fmoalbjyhvxyjifvtb47zeoco35kywa" }, { "PackageCatalog::HydrateNode" },
+        { "packages hydrate 'Patch 2.0a'" }, { "PackageCatalog::HydrateNode" },
         Needs::Config, true,
         [](Command::Context &C, const json &A) {
             const auto I = Index(C);
@@ -288,7 +302,7 @@ VG_COMMANDS
         "packages dehydrate", "delete a game's downloaded content (keep its nodes)",
         "Remove the content files of a game's closure from disk and stop seeding them — it goes back to the Catalog as "
         "downloadable. Its node files and cover stay.", { GameArg() },
-        { "packages dehydrate bafkreid5cz7cjdoknaoev4p4su2fmoalbjyhvxyjifvtb47zeoco35kywa" }, { "PackageCatalog::DehydrateNode" },
+        { "packages dehydrate 'Patch 2.0a'" }, { "PackageCatalog::DehydrateNode" },
         Needs::Config, true,
         [](Command::Context &C, const json &A) {
             const auto I = Index(C);
@@ -300,7 +314,7 @@ VG_COMMANDS
         "Share a package of yours: add every content file to IPFS (recording its SOURCE and SIZE), save its nodes "
         "(re-minted: recording a SOURCE changes a node's bytes and so its CID), and with --export write a copy of its "
         "node files alone there.", { Pos("package", "a folder path, its name, its UID, or part of its title"), Opt("export", "a folder for the node-files-only copy") },
-        { "packages publish 'Some Game'", "packages publish 749 --export /tmp/aoe2-nodes" },
+        { "packages publish 749", "packages publish 749 --export /tmp/aoe2-nodes" },
         { "PackageCatalog::PublishPackage", "PackageCatalog::SeedNodeContent", "PackageCatalog::StampNodeCids" }, Needs::Config, true,
         [](Command::Context &C, const json &A) {
             const auto D = PackageDir(C, Command::Str(A, "package"), false);
@@ -393,7 +407,7 @@ VG_COMMANDS
         "packages stamp-cids", "write minted CIDs back into a working tree",
         "Rename each node file in a tree to the CID a mint gave it and re-point its references — the write-back after a "
         "publish. --map is a JSON object {handle: cid}.",
-        { Pos("root", "the tree"), Opt("map", "{handle: cid} as JSON", Type::Json, true) }, { "packages stamp-cids ~/.VidyaGod/LIBRARY --map '{}'" },
+        { Pos("root", "the tree"), WithSample(Opt("map", "{handle: cid} as JSON", Type::Json, true), "{\"draft-1\":\"bafkrei…\"}") }, { "packages stamp-cids ~/.VidyaGod/LIBRARY --map '{}'" },
         { "PackageCatalog::StampNodeCids" }, Needs::Config, false,
         [](Command::Context &, const json &A) {
             std::map<std::string, std::string> M;
@@ -579,7 +593,7 @@ VG_COMMANDS
         "What a download does first: move a friend's package folder out of CATALOG into LIBRARY/<library>/<package>, "
         "where it is an ordinary package of yours. --for lists every package a game's download would adopt instead.",
         { Opt("package", "the received package folder"), Opt("for", "a game's node: list what its download adopts") },
-        { "received adopt --for bafkreid5cz7cjdoknaoev4p4su2fmoalbjyhvxyjifvtb47zeoco35kywa", "received adopt --package 'Age of Empires II'" },
+        { "received adopt --for 'Patch 2.0a'", "received adopt --package 'Age of Empires II'" },
         { "PackageCatalog::PackagesToAdopt", "PackageCatalog::AdoptReceivedPackage" }, Needs::Config, false,
         [](Command::Context &C, const json &A) {
             if (A.contains("for"))
@@ -601,7 +615,7 @@ VG_COMMANDS
         "Every graft offered on a game (mods, fixes, a soundtrack): the author's pre-ticked ones, the ones applied for a "
         "choice (in order), and what a choice leaves out (an exclusion, a missing base).",
         { GameArg(), Opt("grafts", "a choice to evaluate (a,b,c; default: the author's)"), Opt("tile", "the tile it is offered under") },
-        { "grafts offered bafkreid5cz7cjdoknaoev4p4su2fmoalbjyhvxyjifvtb47zeoco35kywa" },
+        { "grafts offered 'Patch 1.0e (Unofficial)'" },
         { "PackageCatalog::OfferedGrafts", "PackageCatalog::AppliedGrafts", "PackageCatalog::CurrentGraftChoice", "PackageCatalog::GraftBases",
           "PackageCatalog::DefaultGraftBase" }, Needs::Config, false,
         [](Command::Context &C, const json &A) {
@@ -629,7 +643,7 @@ VG_COMMANDS
         "ticked graft at position --from by N places (load order). Prints the new choice; `packages settings` saves it.",
         { GameArg(), Opt("ticked", "the current choice (a,b,c)", Type::String, true), Opt("graft", "the graft to tick"),
           Opt("from", "the position to move from (0-based)", Type::Int), Opt("move", "places to move by (±)", Type::Int) },
-        { "grafts tick <game> --ticked a,b --graft c", "grafts tick <game> --ticked a,b,c --from 2 --move -1" },
+        { "grafts tick 'Patch 1.0e (Unofficial)' --ticked 'UserPatch 1.5' --graft 'Forgotten Empires 2.2'", "grafts tick 'Patch 1.0e (Unofficial)' --ticked 'UserPatch 1.5,Forgotten Empires 2.2' --from 1 --move -1" },
         { "PackageCatalog::TickGraft", "PackageCatalog::MoveGraft" }, Needs::Config, false,
         [](Command::Context &C, const json &A) {
             const auto I = Index(C);
@@ -660,7 +674,7 @@ VG_COMMANDS
         "runners for", "the runners that can carry a game here, and the chain it would use",
         "For a game's node: the runners compatible with it on this machine (installed or not), those installed and "
         "usable, whether any chain reaches this machine, and the runner chain the launch resolves.",
-        { GameArg() }, { "runners for bafkreid5cz7cjdoknaoev4p4su2fmoalbjyhvxyjifvtb47zeoco35kywa" },
+        { GameArg() }, { "runners for 'Patch 2.0a'" },
         { "PackageCatalog::CompatibleRunners", "PackageCatalog::UsableRunners", "PackageCatalog::HasUsableChain",
           "PackageCatalog::RunnerChainIds" }, Needs::Config, false,
         [](Command::Context &C, const json &A) {

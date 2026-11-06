@@ -20,6 +20,7 @@ JsonRawEditor::JsonRawEditor(PackageEditorModel * model, QWidget * parent)
     Title->setWordWrap(true);
     L->addWidget(Title);
     Text = new QPlainTextEdit(this);
+    Text->setAccessibleName("Node JSON");   // not the label above it, which changes with the selection
     Text->setFont(QFontDatabase::systemFont(QFontDatabase::FixedFont));
     Text->setLineWrapMode(QPlainTextEdit::NoWrap);
     Text->setTabStopDistance(4 * Text->fontMetrics().horizontalAdvance(' '));

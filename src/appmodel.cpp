@@ -235,18 +235,38 @@ void AppModel::setNetworkingEnabled(bool on)
     emit networkingChanged(on);
 }
 
-void AppModel::removePackage(const QString & uid)
+QString AppModel::removePackage(const QString & which, bool * Async)
 {
-    const std::string Uid = uid.toStdString();
-    auto & Lib = (*Config)["LIBRARY"];
-    int idx = -1;
-    for (int k = 0; k < int(Lib.size()); ++k)
-        if (Lib[k].value("PACKAGEUID", std::string()) == Uid) { idx = k; break; }
-    if (idx < 0) return;
-
-    const std::string Path    = Lib[idx].value("PATH", std::string());
-    const std::string LibRoot = PackageCatalog::LibraryRootDir(*Config);
+    if (Async) *Async = false;
+    //A package folder, or the UID of exactly one (Installed Packages passes its folder). The packages LIBRARY holds are
+    //found through the index: the config's LIBRARY list names only those added from outside it.
     std::error_code Ec;
+    std::string Path = which.toStdString();
+    auto & Lib = (*Config)["LIBRARY"];
+    if (!std::filesystem::is_directory(Path, Ec))
+    {
+        auto Dirs = PackageCatalog::PackageDirsWithUid(*Catalog, Path);
+        //A package added from outside LIBRARY is also known by the UID its entry records (its folder may hold no node
+        //the index read — moved, or never valid).
+        if (Dirs.empty())
+            for (const auto & E : Lib.is_array() ? Lib : nlohmann::ordered_json::array())
+                if (E.is_object() && E.value("PACKAGEUID", std::string()) == Path && !E.value("PATH", std::string()).empty())
+                    Dirs.emplace_back(E.value("PATH", std::string()));
+        if (Dirs.size() != 1)
+        {
+            const QString Why = Dirs.empty() ? "no package is '" + which + "'"
+                                             : QString("'%1' names %2 packages; name its folder").arg(which).arg(Dirs.size());
+            LogWarn("AppModel::removePackage", Why.toStdString());
+            return Why;
+        }
+        Path = Dirs.front().string();
+    }
+    int idx = -1;
+    const std::string Want = std::filesystem::weakly_canonical(Path, Ec).string();
+    for (int k = 0; Lib.is_array() && k < int(Lib.size()); ++k)
+        if (Lib[k].is_object() && std::filesystem::weakly_canonical(Lib[k].value("PATH", std::string()), Ec).string() == Want) { idx = k; break; }
+
+    const std::string LibRoot = PackageCatalog::LibraryRootDir(*Config);
     bool Managed = false;
     if (!Path.empty() && !LibRoot.empty())
     {
@@ -255,6 +275,17 @@ void AppModel::removePackage(const QString & uid)
         Managed = (P.rfind(R + "/", 0) == 0);   // strictly under the library root → a managed (repo-cloned) package
     }
 
+    //A package of LIBRARY that its config entry does not name (every package since the node cutover: the entries are
+    //for sources and for packages added from outside) is not removed here. Its content's dehydrate walks the whole
+    //closure — another package's shared files (a DirectPlay several games use) and content that has no source to
+    //download again would go with it. Only what this has always removed is removed.
+    if (Managed && idx < 0)
+    {
+        const QString Why = "a package of the library is not removed from here: its content can be shared with other "
+                            "packages, and what has no source cannot be downloaded again";
+        LogWarn("AppModel::removePackage", Why.toStdString() + " (" + Path + ")");
+        return Why;
+    }
     if (Managed)
     {
         // De-HYDRATE the managed package: delete its content + unpin/drop-ref its CIDs, but KEEP the manifests + cover
@@ -272,19 +303,22 @@ void AppModel::removePackage(const QString & uid)
             if (N.IsVariant() &&
                 std::filesystem::weakly_canonical(N.BundleDir, Ec).string() == CanonPath)
                 ToDehydrate.push_back(NodeId);
-        if (ToDehydrate.empty()) return;   // nothing hydrated under this bundle
+        if (ToDehydrate.empty()) return "nothing of it is installed here";
         std::shared_ptr<const NodeIndex> Idx = Catalog;            // the worker reads the index as it is now (immutable)
         AsyncWork::Run(this,
             [Idx, ToDehydrate = std::move(ToDehydrate)]{ for (const std::string & NodeId : ToDehydrate) PackageCatalog::DehydrateNode(*Idx, NodeId); },
             [this]{ rebuildCatalog(); });  // emits catalogChanged
-        return;   // config unchanged (manifest kept); the worker rebuilds the catalog when the content is gone
+        if (Async) *Async = true;
+        return {};   // config unchanged (manifest kept); the worker rebuilds the catalog when the content is gone
     }
 
     // Local/portable package added from outside the library → only drop the reference; never touch the user's files.
     // This is cheap (no IPFS work), so it stays synchronous.
+    if (idx < 0) return "no package is '" + which + "'";
     Lib.erase(idx);
     save();
     rebuildCatalog();
+    return {};
 }
 
 // ── Sources: re-index every configured CID package source, fetching any not-yet-present one (needs the node online;

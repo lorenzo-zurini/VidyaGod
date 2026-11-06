@@ -101,7 +101,7 @@ VG_COMMANDS
         "The folded facts of one node (its own resolve with defaults): its key, whether it is a runner, a version on the "
         "shelf, presentable, the card it belongs to, every entry (lowered as the engine runs it, and the host it runs "
         "on), and the tile each of its faces shows.", { NodeArg(), Opt("entry", "one entry's lowered exec (its LABEL)") },
-        { "node facts bafkreiank43ketmdy2jtdcnn5utluobf53avcuubisi3ajtdxrcnmyteka", "node facts <node> --entry 'Map Editor'" },
+        { "node facts bafkreiank43ketmdy2jtdcnn5utluobf53avcuubisi3ajtdxrcnmyteka", "node facts 'Patch 2.0a' --entry Play" },
         { "Node::Key", "Node::Presentable", "Node::IsRunner", "Node::IsVariant", "Node::GameKey", "Node::ExecFor", "Node::HostFor",
           "Node::EntrypointLabels", "NodeIndex::Tile" }, Needs::Config, false,
         [](Command::Context &C, const json &A) {
@@ -124,7 +124,7 @@ VG_COMMANDS
         "refs (what it contains, and what it requires: ANY members and NOT refs), its canonical bytes' size and CID. A "
         "file is read the bounded way every library walker reads one (size cap, nesting depth).",
         { NodeArg(), Opt("max-depth", "the nesting depth allowed (default 64)", Type::Int) },
-        { "node check ~/.VidyaGod/LIBRARY/VidyaGod/'[749][v1.0] Age of Empires II'/bafkrei….json", "node check 'Original (Steam)'" },
+        { "node check ~/.VidyaGod/LIBRARY/VidyaGod/'[749][v1.0] Age of Empires II'/bafkrei….json", "node check 'Patch 2.0a'" },
         { "NodeLower::CheckNode", "ManifestModel::IsNodeObject", "ManifestModel::NodeRefs", "ManifestModel::ParseNode", "Cid::Canonical",
           "Cid::OfNode", "NodeGraph::ReadTreeJsonBounded", "NodeGraph::JsonDepthWithinLimit" }, Needs::Config, false,
         [](Command::Context &C, const json &A) {
@@ -150,7 +150,7 @@ VG_COMMANDS
         "node lower", "a node's own layers, and one entry, in the engine's vocabulary",
         "The node's OWN layers as the engine's ops (VFSZipLayer, FileEdit, RegEdit, CustomVar, …) where they land "
         "relative to the node, and with --entry the EXEC entry of that LABEL as the exec block the engine runs.",
-        { NodeArg(), Opt("entry", "an EXEC entry's LABEL ('' for the first)") }, { "node lower <node>", "node lower <node> --entry ''" },
+        { NodeArg(), Opt("entry", "an EXEC entry's LABEL ('' for the first)") }, { "node lower 'Patch 2.0a'", "node lower 'Patch 2.0a' --entry Play" },
         { "NodeLower::LowerNode", "NodeLower::LowerEntry" }, Needs::Config, false,
         [](Command::Context &C, const json &A) {
             const std::string Q = Command::Str(A, "node");
@@ -159,8 +159,14 @@ VG_COMMANDS
             if (A.contains("entry"))
             {
                 const std::string L = Command::Str(A, "entry");
+                //EXEC is a list of entries (each named by its LABEL); an object of them (keyed by name) is read too.
                 for (const auto &Layer : J.value("LAYERS", json::array()))
-                    if (Layer.is_object() && Layer.contains("EXEC") && Layer["EXEC"].is_object())
+                    if (Layer.is_object() && Layer.contains("EXEC") && Layer["EXEC"].is_array())
+                    {
+                        for (const auto &E : Layer["EXEC"])
+                            if (E.is_object() && (L.empty() || E.value("LABEL", std::string()) == L)) { Out["exec"] = NodeLower::LowerEntry(E); return Out; }
+                    }
+                    else if (Layer.is_object() && Layer.contains("EXEC") && Layer["EXEC"].is_object())
                         for (const auto &[K, E] : Layer["EXEC"].items())
                             if (L.empty() || K == L || (E.is_object() && E.value("LABEL", std::string()) == L)) { Out["exec"] = NodeLower::LowerEntry(E); return Out; }
                 throw Command::BadArgs("no EXEC entry '" + L + "' in the node");
@@ -214,8 +220,8 @@ VG_COMMANDS
         "node freeze", "a node as it would freeze: handle and POS gone, refs as CIDs",
         "Freeze one node's raw JSON against a handle→CID map (--map, a JSON object; default: the library's own handles "
         "to their CIDs), printing the frozen node and its CID — what a mint stores. --remap rewrites refs only.",
-        { NodeArg(), Opt("map", "{handle: cid} (JSON)", Type::Json), Flag("remap", "only rewrite its refs through the map") },
-        { "node freeze 'Original (Steam)'", "node freeze node.json --map '{\"draft-1\":\"bafkrei…\"}' --remap" },
+        { NodeArg(), WithSample(Opt("map", "{handle: cid} (JSON)", Type::Json), "{\"draft-1\":\"bafkrei…\"}"), Flag("remap", "only rewrite its refs through the map") },
+        { "node freeze 'Patch 2.0a'", "node freeze node.json --map '{\"draft-1\":\"bafkrei…\"}' --remap" },
         { "NodeGraph::FreezeNodeJson", "ManifestModel::RemapNodeRefs" }, Needs::Config, false,
         [](Command::Context &C, const json &A) {
             std::shared_ptr<const NodeIndex> I;
@@ -263,7 +269,7 @@ VG_COMMANDS
         "the engine ops a launch would apply; --deciding the mentions whose position chose a winner.",
         { NodeArg(), VarOpt(), BuiltinOpt(), GraftOpt(), Flag("lowered", "also the plan in the engine's ops"),
           Flag("deciding", "also the held/moved mentions that decide a winner (one resolve each)") },
-        { "fold plan bafkreiank43ketmdy2jtdcnn5utluobf53avcuubisi3ajtdxrcnmyteka", "fold plan <node> --var aoe2_res=1920x1080 --lowered" },
+        { "fold plan bafkreiank43ketmdy2jtdcnn5utluobf53avcuubisi3ajtdxrcnmyteka", "fold plan 'Patch 2.0a' --var aoe2_skip_intro=1 --lowered" },
         { "Fold::Resolve", "Fold::PlanToJson", "Fold::Unsatisfied", "Fold::DecidingMentions", "ManifestModel::LibraryOf", "NodeLower::LowerPlan" , "Fold::Library::Find" },
         Needs::Config, false,
         [](Command::Context &C, const json &A) {
@@ -287,7 +293,7 @@ VG_COMMANDS
     Command::Register({
         "fold entries", "the entries a node's resolve folds (the EXEC fold alone)",
         "The same expansion as a full resolve, folding only EXEC: what the index derives a node's entries, runner and "
-        "tiles from.", { NodeArg() }, { "fold entries <node>" }, { "Fold::ResolveEntries" }, Needs::Config, false,
+        "tiles from.", { NodeArg() }, { "fold entries 'Patch 2.0a'" }, { "Fold::ResolveEntries" }, Needs::Config, false,
         [](Command::Context &C, const json &A) {
             const auto I = Index(C);
             const Fold::Plan P = Fold::ResolveEntries(ManifestModel::LibraryOf(*I), NodeOf(*I, Command::Str(A, "node"))->Key());
@@ -298,7 +304,7 @@ VG_COMMANDS
         "fold vars", "the variables a launch would have: each declaration's value",
         "Resolve a node, then settle its folded declarations the way a launch does: the instance's value, else the "
         "DEFAULT, gated by WHEN, substituted against the built-ins and each other until stable.",
-        { NodeArg(), VarOpt(), BuiltinOpt(), GraftOpt() }, { "fold vars <node>", "fold vars <node> --var widescreen=1" },
+        { NodeArg(), VarOpt(), BuiltinOpt(), GraftOpt() }, { "fold vars 'Patch 2.0a'", "fold vars 'Patch 2.0a' --var aoe2_skip_intro=1" },
         { "Fold::ResolveVars" }, Needs::Config, false,
         [](Command::Context &C, const json &A) {
             const auto I = Index(C);
@@ -314,7 +320,7 @@ VG_COMMANDS
         "ones, or with --every every offered one) and those dropped.",
         { NodeArg(), Opt("tile", "the tile the row is under (default: its first face)"), GraftOpt(), Flag("every", "a fresh instance takes every offered graft"),
           VarOpt() },
-        { "fold grafts <node>", "fold grafts <node> --grafts a,b --tile 749" },
+        { "fold grafts 'Patch 1.0e (Unofficial)'", "fold grafts 'Patch 1.0e (Unofficial)' --grafts 'UserPatch 1.5' --tile 749" },
         { "Fold::BuildGraftIndex", "Fold::OfferedGrafts", "Fold::ApplyGrafts" }, Needs::Config, false,
         [](Command::Context &C, const json &A) {
             const auto I = Index(C);
@@ -336,9 +342,9 @@ VG_COMMANDS
         "One of Fold's path rules on a string: --drives maps a guest path into a runner's layout (its DRIVES); "
         "--anchors re-spells a value a run wrote by its most specific anchor; --under places a relative path under a "
         "NODE layer's TARGET; --take applies one TAKE to an address (nothing: not taken).",
-        { Pos("path", "the path, value or address"), Opt("drives", "{\"C:\": \"%PrefixRoot%/drive_c\", …} (JSON)", Type::Json),
-          Opt("anchors", "{\"%ProgramFiles32%\": \"C:\\\\Program Files (x86)\", …} (JSON)", Type::Json), Opt("under", "a TARGET prefix"),
-          Opt("take", "a TAKE (JSON)", Type::Json) },
+        { Pos("path", "the path, value or address"), WithSample(Opt("drives", "{\"C:\": \"%PrefixRoot%/drive_c\", …} (JSON)", Type::Json), "{\"C:\":\"%PrefixRoot%/drive_c\"}"),
+          WithSample(Opt("anchors", "{\"%ProgramFiles32%\": \"C:\\\\Program Files (x86)\", …} (JSON)", Type::Json), "{\"%ProgramFiles32%\":\"C:\\\\Program Files (x86)\"}"), Opt("under", "a TARGET prefix"),
+          WithSample(Opt("take", "a TAKE (JSON)", Type::Json), "\"FILES/a\" or [\"FILES/a\",\"FILES/z\"]") },
         { "fold path 'C:/Games/x.exe' --drives '{\"C:\":\"%PrefixRoot%/drive_c\"}'", "fold path 'data/x.dat' --under 'C:/Games/AoE2'",
           "fold path 'FILES/a/b.txt' --take '[\"FILES/a\", \"FILES/z\"]'" },
         { "Fold::ToLayout", "Fold::ToAnchors", "Fold::PlaceUnder", "Fold::TakeView" }, Needs::Config, false,
@@ -362,8 +368,8 @@ VG_COMMANDS
         "fold keep", "whether an address is the user's under a node's KEEP fold",
         "Resolve a node and ask its KEEP fold about an address (FILES/… or REG/…, guest coordinates): owned by the user, "
         "and the kept address a deletion there would reach. With --op, the address an EDIT op writes at --target.",
-        { NodeArg(), Pos("address", "the address (FILES/<path> or REG/<key>)"), Opt("op", "an EDIT op (JSON)", Type::Json), VarOpt() },
-        { "fold keep <node> 'FILES/C:/Games/AoE2/SAVEGAME'", "fold keep <node> 'C:/Games/x.ini' --op '{\"ConfigWrite\":{\"KEY\":\"w\"}}'" },
+        { NodeArg(), Pos("address", "the address (FILES/<path> or REG/<key>)"), WithSample(Opt("op", "an EDIT op (JSON)", Type::Json), "{\"ConfigWrite\":{\"KEY\":\"w\"}}"), VarOpt() },
+        { "fold keep 'Patch 2.0a' 'FILES/C:/Games/AoE2/SAVEGAME'", "fold keep 'Patch 2.0a' 'C:/Games/x.ini' --op '{\"ConfigWrite\":{\"KEY\":\"w\"}}'" },
         { "NodeLower::UserOwned", "NodeLower::KeptUnder", "NodeLower::EditAddress", "Fold::TypeOf" }, Needs::Config, false,
         [](Command::Context &C, const json &A) {
             const auto I = Index(C);
@@ -463,8 +469,8 @@ VG_COMMANDS
         "vars table", "a MAP table's entries as the variable namespace holds them",
         "A declaration with MAP (from a node's folded declarations, or --decl JSON) as the names it seeds: T:? (on), "
         "T:=<entry> (each value), T:! (its ELSE).",
-        { Pos("table", "the declaration's name"), Opt("node", "a node whose resolve declares it"), Opt("decl", "the declaration (JSON)", Type::Json) },
-        { "vars table res --node <node>", "vars table res --decl '{\"MAP\":{\"4\":\"1920x1080\"},\"ELSE\":\"800x600\"}'" },
+        { Pos("table", "the declaration's name"), Opt("node", "a node whose resolve declares it"), WithSample(Opt("decl", "the declaration (JSON)", Type::Json), "{\"MAP\":{\"4\":\"1920x1080\"},\"ELSE\":\"800x600\"}") },
+        { "vars table aoe2_skip_intro --node 'Patch 2.0a'", "vars table res --decl '{\"MAP\":{\"4\":\"1920x1080\"},\"ELSE\":\"800x600\"}'" },
         { "VarSubst::TableEntries" }, Needs::Config, false,
         [](Command::Context &C, const json &A) {
             const std::string T = Command::Str(A, "table");
@@ -488,7 +494,7 @@ VG_COMMANDS
         "What the format names bytes by: CIDv1, raw, sha2-256, base32 — for a node file's bytes, a node's canonical "
         "bytes (--node: the file parsed as a node, or a node of the library), and the raw SHA-256.",
         { Pos("file", "a file (or, with --node, a node)"), Flag("node", "the CID of its canonical node bytes") },
-        { "cid of x.json", "cid of 'Original (Steam)' --node" }, { "Cid::OfBytes", "Cid::Sha256", "Cid::OfNode", "Cid::Canonical" }, Needs::Config, false,
+        { "cid of x.json", "cid of 'Patch 2.0a' --node" }, { "Cid::OfBytes", "Cid::Sha256", "Cid::OfNode", "Cid::Canonical" }, Needs::Config, false,
         [](Command::Context &C, const json &A) {
             std::string Err;
             const std::string Q = Command::Str(A, "file");
@@ -620,7 +626,7 @@ VG_COMMANDS
         "with --tile, that tile's download units (what each Download row fetches, and how many versions it carries); "
         "with --graft, the versions a graft applies onto.",
         { Opt("tile", "a tile UID: its download units"), Opt("graft", "a graft: the versions it applies onto") },
-        { "graph shelf", "graph shelf --tile 749", "graph shelf --graft <graft>" },
+        { "graph shelf", "graph shelf --tile 749", "graph shelf --graft 'UserPatch 1.5'" },
         { "ManifestModel::ShelfWarnings", "ManifestModel::TileEndpoints", "ManifestModel::GraftBases" }, Needs::Config, false,
         [](Command::Context &C, const json &A) {
             const auto I = Index(C);
