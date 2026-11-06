@@ -45,14 +45,14 @@ int Sessions::RuntimesLive() { return LiveRuntimes.load(); }
 //WinFsp mounts a folder as a mount-point junction to its volume (\Device\Volume{…}) and removes it when the serving
 //process exits. A machine that dies with the mount up keeps the junction, naming a volume that is gone, and every
 //later launch of that game failed ("the mount folder already exists"). True if Path is such a junction.
-static bool IsWinFspJunction(const std::wstring &Path)
+bool Sessions::IsWinFspJunction(const std::wstring &Path)
 {
     return Platform::MountPointTarget(Path).rfind("\\Device\\Volume{", 0) == 0;
 }
 
 //A WinFsp junction whose volume is gone: following it finds no path (measured: ERROR_PATH_NOT_FOUND). Any other
 //failure (access denied, a helper too busy to answer) is not taken for death: the mount may be live.
-static bool JunctionDead(const std::wstring &Path)
+bool Sessions::JunctionDead(const std::wstring &Path)
 {
     HANDLE H = ::CreateFileW(Path.c_str(), FILE_READ_ATTRIBUTES, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
                              nullptr, OPEN_EXISTING, FILE_FLAG_BACKUP_SEMANTICS, nullptr);   // follows the junction

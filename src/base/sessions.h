@@ -45,6 +45,13 @@ std::filesystem::path LockPath(const std::filesystem::path &TempPath);
 int  ClaimSession(const std::filesystem::path &TempPath);
 void ReleaseSession(int &Fd, const std::filesystem::path &TempPath);
 
+#ifdef _WIN32
+//WinFsp mounts a folder as a mount-point junction to its volume; one a dead machine left behind names a volume that is
+//gone (JunctionDead) and serves nothing.
+bool IsWinFspJunction(const std::wstring &Path);
+bool JunctionDead(const std::wstring &Path);
+#endif
+
 } // namespace Sessions
 
 #endif // SESSIONS_H

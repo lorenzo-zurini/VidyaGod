@@ -941,7 +941,7 @@ void VfsMount::UnmountLazy(const std::string &Mount)
     //A junction whose volume is gone (its machine died with the mount up) is only a name: removing the folder removes
     //the junction, never what it named. A live one (its volume answers) belongs to its helper, which unmounts it.
     const std::wstring W = std::filesystem::path(Mount).wstring();
-    if (!IsWinFspJunction(W) || !JunctionDead(W)) return;
+    if (!Sessions::IsWinFspJunction(W) || !Sessions::JunctionDead(W)) return;
     if (!::RemoveDirectoryW(W.c_str()))
         LogWarn("VfsMount::UnmountLazy", "could not remove the dead mount junction " + Mount + " (error "
                 + std::to_string(::GetLastError()) + ")");
