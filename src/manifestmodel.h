@@ -223,14 +223,6 @@ bool IsVfsLayer(const std::string &Type);
 //coincidence impossible, so the property is stated directly here and applied wherever build content is counted.
 bool IsRuntimeSourcedLayer(const nlohmann::ordered_json &Sub);
 
-//The %Name% tokens in a path: a matched pair of '%' around a non-empty identifier ([A-Za-z_][A-Za-z0-9_]*)
-//containing no path separator. This is the tokenizer for the "is this path runtime-sourced?" question, and
-//every asker of THAT question must use it. It is deliberately stricter than VarSubst's substitution scanner,
-//which also accepts the "%KEY:format%" render syntax — a path is never rendered, so a ':' there is a filename. Exposed because IsRuntimeSourcedLayer is
-//not the only question asked of a templated path — "which variables would this need?" is another — and a
-//SECOND hand-rolled scanner is how the two answers drifted: one classified "100%25%20done.zip" as real
-//content while the other called it a runtime mount, so a fetchable-missing layer reported as hydrated.
-std::vector<std::string> PathVariableTokens(const std::string &P);
 
 //A VFS layer's local path string, exactly as IsRuntimeSourcedLayer reads it (SOURCE.PATH overrides PATH).
 std::string LayerPathString(const nlohmann::ordered_json &Sub);

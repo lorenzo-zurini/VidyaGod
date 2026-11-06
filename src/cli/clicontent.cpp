@@ -294,8 +294,7 @@ int CliModes::RunContentModes(LaunchParameters &LaunchParameters, nlohmann::orde
         if (!PackageCatalog::ApplySourceUpgrade(GlobalConfigJSON, Plan, LaunchParameters.ForceOp, &Err))
         { LogErr("main.cpp", "upgrade-source failed: " + Err); return 1; }
         PackageCatalog::SyncPackageSources(GlobalConfigJSON);
-        QFile CfgFile(AppDataDir.filePath("GlobalConfig.JSON"));
-        if (!JSONOps::SaveJSON(&GlobalConfigJSON, &CfgFile))
+        if (!JSONOps::SaveConfig(GlobalConfigJSON, AppDataDir.absolutePath().toStdString()))
         { LogErr("main.cpp", "upgrade applied but saving GlobalConfig.JSON failed"); return 1; }
         LogSucc("main.cpp", "Upgraded '" + Plan.Name + "' to " + Plan.NewCid);
         return 0;

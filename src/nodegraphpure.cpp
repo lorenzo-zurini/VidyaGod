@@ -110,6 +110,12 @@ static std::vector<std::string> IntraTreeDeps(const nlohmann::ordered_json &Node
     return Deps;
 }
 
+nlohmann::ordered_json ParseBounded(const std::string &Bytes)
+{
+    if (!JsonDepthWithinLimit(Bytes, 64)) return nlohmann::ordered_json(nlohmann::ordered_json::value_t::discarded);
+    return nlohmann::ordered_json::parse(Bytes, nullptr, false);
+}
+
 bool ReadTreeJsonBounded(const std::filesystem::path &File, nlohmann::ordered_json &J)
 {
     std::error_code Ec;

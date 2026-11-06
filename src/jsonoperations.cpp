@@ -1,4 +1,5 @@
 #include "jsonoperations.h"
+#include "apppaths.h"
 
 #include <QSaveFile>
 #include "commonutils.h"
@@ -55,6 +56,19 @@ bool JSONOps::LoadJSON(QFile * JSONFile, nlohmann::ordered_json * JSONDocument)
 //CustomVar — and every node .json in a bundle, and it used to truncate in place. A crash, a kill or ENOSPC part
 //way through left the user with a half-written config or a half-written package and no second copy. QSaveFile
 //writes a sibling temp and renames on commit, so the file on disk is always either the old one or the new one.
+bool JSONOps::SaveConfig(const nlohmann::ordered_json &Config, const std::filesystem::path &DataDir)
+{
+    const std::filesystem::path File = DataDir / "GlobalConfig.JSON";
+    if (AppPaths::ConfigReadOnly())
+    {
+        LogWarn("JSONOperations", "not saving " + File.string() + ": this call runs beside the app that holds it (read-only)");
+        return false;
+    }
+    nlohmann::ordered_json Copy = Config;
+    QFile F(QString::fromStdString(File.string()));
+    return SaveJSON(&Copy, &F);
+}
+
 bool JSONOps::SaveJSON(nlohmann::ordered_json * JSONDocument, QFile * JSONFile)
 {
     QSaveFile Out(JSONFile->fileName());

@@ -1,3 +1,4 @@
+#include "nodegraph.h"
 #include "manifestmodel.h"
 #include "parallel.h"
 #include "contentfile.h"
@@ -270,12 +271,9 @@ void ScanBundleNodes(const std::filesystem::path &BundleDir, NodeIndex &Idx)
     for (const auto &Entry : std::filesystem::directory_iterator(BundleDir, Ec))
     {
         if (!Entry.is_regular_file(Ec) || Entry.path().extension() != ".json") continue;
-        std::ifstream In(Entry.path(), std::ios::binary);
-        if (!In) continue;
         nlohmann::ordered_json J;
-        try { In >> J; }
-        catch (const std::exception &E)
-        { LogWarn("ManifestModel::ScanBundleNodes", "Skipping unparseable " + Entry.path().string() + ": " + E.what()); continue; }
+        if (!NodeGraph::ReadTreeJsonBounded(Entry.path(), J))
+        { LogWarn("ManifestModel::ScanBundleNodes", "Skipping unparseable " + Entry.path().string()); continue; }
         Node N;
         if (!ParseNode(J, Entry.path(), BundleDir, N)) continue;         // not a node
         // Key by the node's HANDLE — its stored CID. A node with no stored CID (a never-minted draft) gets a
@@ -675,7 +673,7 @@ std::string JoinTarget(std::string Target, std::string Rel)
 // A resolved content item's local file: its bundle dir + payload (a %runtime% payload has none).
 std::filesystem::path ItemLocal(const Fold::Item &I)
 {
-    if (I.Dir.empty() || I.Payload.find('%') != std::string::npos) return {};
+    if (I.Dir.empty() || VarSubst::RuntimeSourced(I.Payload)) return {};
     return ContentFile::Path(I.Dir, I.Payload, I.Source.is_string() ? I.Source.get<std::string>() : std::string());
 }
 
@@ -1861,33 +1859,10 @@ std::string LayerPathString(const nlohmann::ordered_json &Sub)
     return P;
 }
 
-std::vector<std::string> PathVariableTokens(const std::string &P)
-{
-    //A %variable% is a MATCHED PAIR around an IDENTIFIER, not merely the presence of a '%'. A filename may
-    //legitimately contain one (URL-escaped names are common in scraped content: "100%25%20done.zip" has a
-    //matched pair around "25"), and treating that as a variable silently excluded a real file from hydration,
-    //verification AND a runner's build.
-    std::vector<std::string> Out;
-    for (size_t I = P.find('%'); I != std::string::npos; I = P.find('%', I + 1))
-    {
-        const size_t Close = P.find('%', I + 1);
-        if (Close == std::string::npos) break;
-        if (Close > I + 1 && P.find('/', I) > Close)
-        {
-            const std::string Tok = P.substr(I + 1, Close - I - 1);
-            if ((std::isalpha((unsigned char)Tok[0]) || Tok[0] == '_')
-                && std::all_of(Tok.begin(), Tok.end(),
-                               [](unsigned char C) { return std::isalnum(C) || C == '_'; }))
-                Out.push_back(Tok);
-        }
-        I = Close;
-    }
-    return Out;
-}
 
 bool IsRuntimeSourcedLayer(const nlohmann::ordered_json &Sub)
 {
-    return !PathVariableTokens(LayerPathString(Sub)).empty();
+    return VarSubst::RuntimeSourced(LayerPathString(Sub));
 }
 
 bool IsRunnerBuildLayer(const nlohmann::ordered_json &Sub)

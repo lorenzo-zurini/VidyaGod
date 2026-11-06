@@ -117,7 +117,7 @@ VG_COMMANDS
         "Opens (or raises) the editor and loads the package — what Library → Edit package does. `build` commands then "
         "act on the editor's own document, and `canvas` commands on what it shows.",
         { Pos("package", "a folder path, its name, its UID, or part of its title") }, { "editor open 749" },
-        { "PackageEditor::OpenFor", "PkgCanvas::setExternalLookup", "PkgCanvas::setOffers", "PkgCanvas::setPlatforms", "PkgCanvas::setImageLookup",
+        { "PackageEditor::OpenFor", "PackageEditor::SetOnCreated", "PkgCanvas::setExternalLookup", "PkgCanvas::setOffers", "PkgCanvas::setPlatforms", "PkgCanvas::setImageLookup",
           "PkgCanvas::setPackageOpen", "PkgCanvas::documentReset", "PkgCanvas::setIssues", "PkgActions::refreshHints", "PkgCanvas::setNodeHints",
           "JsonRawEditor::refresh", "PkgInsight::refresh" }, Needs::App, false,
         [](Command::Context &C, const json &A) {

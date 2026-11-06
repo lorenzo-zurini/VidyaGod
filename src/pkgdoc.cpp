@@ -1,3 +1,4 @@
+#include "nodegraph.h"
 #include "pkgdoc.h"
 
 #include "cid.h"
@@ -127,7 +128,7 @@ bool GatherLibrary(const fs::path &Root, const fs::path &Skip, std::vector<LibFi
         if (fs::weakly_canonical(P.parent_path(), E2) == SkipCanon) continue;   // the package being saved is a root
         std::string Bytes;
         if (!ReadFile(P, Bytes)) { Err = "cannot read " + P.string(); return false; }
-        json J = json::parse(Bytes, nullptr, /*allow_exceptions=*/false);
+        json J = NodeGraph::ParseBounded(Bytes);
         if (J.is_discarded() || !ManifestModel::IsNodeObject(J)) continue;
         Out.push_back({P, std::move(J)});
     }
@@ -170,7 +171,7 @@ std::vector<std::string> Document::Load(const fs::path &Dir)
     {
         std::string Bytes;
         if (!ReadFile(P, Bytes)) { Odd.push_back(P.filename().string() + ": cannot be read"); continue; }
-        json J = json::parse(Bytes, nullptr, false);
+        json J = NodeGraph::ParseBounded(Bytes);
         if (J.is_discarded())
         {
             BadJson.push_back(P.filename().string());
@@ -625,7 +626,7 @@ SaveReport Document::Save(const fs::path &Dir, const std::vector<fs::path> &Root
                     if (!Inst->is_directory(Probe) || !fs::exists(Cfg, Probe)) continue;
                     std::string B;
                     if (!ReadFile(Cfg, B)) { R.Error = "Nothing was saved: cannot read " + Cfg.string(); return R; }
-                    json J = json::parse(B, nullptr, false);
+                    json J = NodeGraph::ParseBounded(B);
                     if (!J.is_discarded()) Instances.push_back({Cfg, std::move(J)});
                 }
                 if (Ec) break;

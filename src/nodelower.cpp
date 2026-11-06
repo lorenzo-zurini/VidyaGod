@@ -731,7 +731,7 @@ nlohmann::ordered_json LowerPlan(const Fold::Plan &P)
             }
             continue;
         }
-        const std::string Path = (I.Payload.find('%') != std::string::npos || I.Dir.empty())
+        const std::string Path = (VarSubst::RuntimeSourced(I.Payload) || I.Dir.empty())
                                ? I.Payload
                                : ContentFile::Path(I.Dir, I.Payload, I.Source.is_string() ? I.Source.get<std::string>() : std::string())
                                      .generic_string();   // '/' on every host: the plan is data; a bumped name when versions share it

@@ -1,5 +1,6 @@
 #include "eventlog.h"
 #include "mainwindow.h"
+#include "packageeditor.h"
 #include "asyncwork.h"
 #include "appmodel.h"
 #include "downloadmanager.h"
@@ -52,6 +53,12 @@ MainWindow::MainWindow(nlohmann::ordered_json * gc, QDir * appData, QWidget * pa
     setMinimumSize(640, 480);
 
     Model = new AppModel(gc, appData, this);   // owns config + catalog + persisted UI state (card size, etc.)
+    //Every package editor, wherever it opens: a save refreshes what shows the package, and Publish republishes the
+    //library off the GUI thread (AppModel owns the re-mint and its persistence; the editor only asks).
+    PackageEditor::SetOnCreated([this](PackageEditor * Ed) {
+        connect(Ed, &PackageEditor::packageSaved, &MainWindow::RefreshPackage);
+        connect(Ed, &PackageEditor::publishToLibraryRequested, Model, &AppModel::publishLibraries);
+    });
 
     {
         QRect screen = QGuiApplication::primaryScreen()->geometry();

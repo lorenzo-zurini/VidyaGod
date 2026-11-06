@@ -48,6 +48,7 @@ protected:
     bool event(QEvent *e) override;                  // Tab reaches the canvas (not focus navigation)
     void dragEnterEvent(QDragEnterEvent *e) override;
     void dragMoveEvent(QDragMoveEvent *e) override;
+    void dragLeaveEvent(QDragLeaveEvent *e) override;   // files dragged back out: the drop target goes dark
     void dropEvent(QDropEvent *e) override;
 
 private:

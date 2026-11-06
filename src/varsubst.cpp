@@ -528,4 +528,29 @@ std::string VarSubst::MapValue(const std::string &Value, const std::string &Tabl
     if (const auto It = Vars.find(Table + ":=" + Unescape(Value)); It != Vars.end()) return It->second;   // keyed by the value itself
     if (const auto It = Vars.find(Table + ":!"); It != Vars.end()) return It->second;
     return Value;
+
+}
+
+std::vector<std::string> VarSubst::PathTokens(const std::string &P)
+{
+    //A %variable% is a MATCHED PAIR around an IDENTIFIER, not merely the presence of a '%'. A filename may
+    //legitimately contain one (URL-escaped names are common in scraped content: "100%25%20done.zip" has a
+    //matched pair around "25"), and treating that as a variable silently excluded a real file from hydration,
+    //verification AND a runner's build.
+    std::vector<std::string> Out;
+    for (size_t I = P.find('%'); I != std::string::npos; I = P.find('%', I + 1))
+    {
+        const size_t Close = P.find('%', I + 1);
+        if (Close == std::string::npos) break;
+        if (Close > I + 1 && P.find('/', I) > Close)
+        {
+            const std::string Tok = P.substr(I + 1, Close - I - 1);
+            if ((std::isalpha((unsigned char)Tok[0]) || Tok[0] == '_')
+                && std::all_of(Tok.begin(), Tok.end(),
+                               [](unsigned char C) { return std::isalnum(C) || C == '_'; }))
+                Out.push_back(Tok);
+        }
+        I = Close;
+    }
+    return Out;
 }

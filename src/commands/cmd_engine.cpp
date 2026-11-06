@@ -126,7 +126,7 @@ VG_COMMANDS
         { NodeArg(), Opt("max-depth", "the nesting depth allowed (default 64)", Type::Int) },
         { "node check ~/.VidyaGod/LIBRARY/VidyaGod/'[749][v1.0] Age of Empires II'/bafkrei….json", "node check 'Patch 2.0a'" },
         { "NodeLower::CheckNode", "ManifestModel::IsNodeObject", "ManifestModel::NodeRefs", "ManifestModel::ParseNode", "Cid::Canonical",
-          "Cid::OfNode", "NodeGraph::ReadTreeJsonBounded", "NodeGraph::JsonDepthWithinLimit" }, Needs::Config, false,
+          "Cid::OfNode", "NodeGraph::ReadTreeJsonBounded", "NodeGraph::JsonDepthWithinLimit", "NodeGraph::ParseBounded" }, Needs::Config, false,
         [](Command::Context &C, const json &A) {
             const std::string Q = Command::Str(A, "node");
             const json J = NodeJson(C, Q);
@@ -182,7 +182,7 @@ VG_COMMANDS
         "CIDs claim it) and its CID; whether a zip is all STOREd; and the mount-spec entry the engine builds from it.",
         { NodeArg() }, { "node layers bafkreiank43ketmdy2jtdcnn5utluobf53avcuubisi3ajtdxrcnmyteka" },
         { "ManifestModel::LayerType", "ManifestModel::IsVfsLayer", "ManifestModel::VfsSpecType", "ManifestModel::IsRuntimeSourcedLayer",
-          "ManifestModel::IsRunnerBuildLayer", "ManifestModel::LayerPathString", "ManifestModel::PathVariableTokens",
+          "ManifestModel::IsRunnerBuildLayer", "ManifestModel::LayerPathString", "VarSubst::PathTokens", "VarSubst::RuntimeSourced",
           "ManifestModel::NormalizeTargetPath", "ManifestModel::LayerBaseTargets", "ManifestModel::LayerLocator",
           "ManifestModel::ResolveLayerSource", "ManifestModel::ZipFullyStored", "ManifestModel::MakeVfsSpecLayer",
           "ManifestModel::HasLiveToken", "ContentFile::Path" }, Needs::Config, false,
@@ -202,7 +202,7 @@ VG_COMMANDS
                     const std::string P = ManifestModel::LayerPathString(L), Tgt = ManifestModel::NormalizeTargetPath(L.value("TARGET", std::string()));
                     std::string FirstCompressed;
                     const bool Stored = T != "VFSZipLayer" || ManifestModel::ZipFullyStored(Local.string(), &FirstCompressed);
-                    R.update({{"spec", ManifestModel::VfsSpecType(T)}, {"path", P}, {"variables", ManifestModel::PathVariableTokens(P)},
+                    R.update({{"spec", ManifestModel::VfsSpecType(T)}, {"path", P}, {"variables", VarSubst::PathTokens(P)},
                               {"runtime", ManifestModel::IsRuntimeSourcedLayer(L)}, {"runner_build", ManifestModel::IsRunnerBuildLayer(L)},
                               {"target", Tgt}, {"bases", ManifestModel::LayerBaseTargets(L)}, {"cid", Cid}, {"local", Local.string()},
                               {"resolved", ManifestModel::ResolveLayerSource(L, N.BundleDir)},

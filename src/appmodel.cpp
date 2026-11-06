@@ -120,7 +120,7 @@ AppModel::AppModel(nlohmann::ordered_json * config, QDir * appDataDir, QObject *
 
 bool AppModel::save()
 {
-    return JSONOps::SaveJSON(Config, new QFile(AppDataDir->filePath("GlobalConfig.JSON")));
+    return JSONOps::SaveConfig(*Config, AppDataDir->absolutePath().toStdString());
 }
 
 void AppModel::rebuildCatalog()
@@ -348,6 +348,7 @@ void AppModel::pushSeedLevels()
 void AppModel::syncSources()
 {
     auto Cfg = std::make_shared<nlohmann::ordered_json>(*Config);
+    auto Before = std::make_shared<const nlohmann::ordered_json>(Config->value("LIBRARY", nlohmann::ordered_json::array()));
     // Snapshot LIBRARY before the sync mutates it, so we can tell whether anything actually changed. On the common
     // launch (sources already present + unchanged) SyncPackageSources is a no-op, so we must NOT rebuild the catalog:
     // the ctor already built it, and a redundant BuildCatalogIndex here — posted to the MAIN thread while the IPFS
@@ -364,10 +365,10 @@ void AppModel::syncSources()
             *Changed = Cfg->value("LIBRARY", nlohmann::ordered_json::array()) != OrigLib;
             if (*Changed) *NewIndex = PackageCatalog::BuildCatalogIndex(*Cfg, NewInputs.get(), NewSaid.get());   // heavy scan OFF the main thread
         },
-        [this, Cfg, Changed, NewIndex, NewInputs, NewSaid]{
+        [this, Cfg, Before, Changed, NewIndex, NewInputs, NewSaid]{
             if (*Changed)
             {
-                (*Config)["LIBRARY"] = (*Cfg)["LIBRARY"];
+                PackageCatalog::MergeListChange((*Config)["LIBRARY"], *Before, (*Cfg)["LIBRARY"], PackageCatalog::LibraryEntryKey);
                 save();
                 setCatalog(std::move(*NewIndex), std::move(*NewInputs), std::move(*NewSaid));   // cheap swap on the main thread (build already done)
                 emit catalogChanged();
@@ -493,11 +494,12 @@ bool AppModel::addPackageSource(const QString & cid, const QString & name)
     emit packageSourcesChanged();   // INSTANT feedback: the source appears in the list/IPFS tab now (as pending); the
                                     // off-thread fetch below re-emits when its manifests + catalog have landed.
     auto Cfg = std::make_shared<nlohmann::ordered_json>(*Config);
+    auto Before = std::make_shared<const nlohmann::ordered_json>(Config->value("LIBRARY", nlohmann::ordered_json::array()));
     auto Err = std::make_shared<std::string>();
     AsyncWork::Run(this,
         [Cfg, Err]{ PackageCatalog::SyncPackageSources(*Cfg, Err.get()); },
-        [this, Cfg, Err]{
-            (*Config)["LIBRARY"] = (*Cfg)["LIBRARY"];
+        [this, Cfg, Before, Err]{
+            PackageCatalog::MergeListChange((*Config)["LIBRARY"], *Before, (*Cfg)["LIBRARY"], PackageCatalog::LibraryEntryKey);
             save();
             rebuildCatalog();
             emit packageSourcesChanged();
@@ -637,9 +639,8 @@ void AppModel::applyFriendLibrarySnapshot(const QString & peer, const QString & 
         if (It != FriendLibSeq.end() && seq <= It->second) return;   // reordered straggler / duplicate → ignore
     }
     nlohmann::ordered_json Libs;                        // {name:[{cid,node,uid,title,…},…]} — parse + sanitize the snapshot
-    try { Libs = nlohmann::ordered_json::parse(libsJson.toStdString()); }
-    catch (const std::exception & Ex)
-    { LogWarn("AppModel::friendLibrary", "bad snapshot from " + P + ": " + Ex.what()); return; }
+    Libs = NodeGraph::ParseBounded(libsJson.toStdString());   // a friend's bytes: never parsed past the depth guard
+    if (Libs.is_discarded()) { LogWarn("AppModel::friendLibrary", "bad snapshot from " + P + ": not JSON, or nested too deep"); return; }
     if (!Libs.is_object()) return;                      // malformed → ignore, keep what we have
     if (seq != 0) FriendLibSeq[P] = seq;                // payload is well-formed → advance the high-water mark
     nlohmann::ordered_json Clean = nlohmann::ordered_json::object();
@@ -1063,6 +1064,9 @@ void AppModel::publishLibraries()
 {
     // Gigagraph publish: freeze the on-disk library into dag-json blocks and STORE them (DagPut → pinned/announced/
     // seedable), then record the shareable list of launchable root CIDs. No IPNS — the list is off-IPFS VidyaGod data.
+    // One at a time: two would write Libraries/PublishedList over each other.
+    if (Publishing) { PublishAgain = true; return; }
+    Publishing = true;
     auto Cfg  = std::make_shared<nlohmann::ordered_json>(*Config);
     auto Cids = std::make_shared<std::vector<std::string>>();
     auto Err  = std::make_shared<std::string>();
@@ -1070,6 +1074,8 @@ void AppModel::publishLibraries()
     AsyncWork::Run(this,
         [Cfg, Cids, Err, Gaps]{ *Cids = PackageCatalog::PublishLibrary(*Cfg, Err.get(), Gaps.get()); },
         [this, Cfg, Cids, Err, Gaps]{
+            Publishing = false;
+            if (PublishAgain) { PublishAgain = false; QMetaObject::invokeMethod(this, &AppModel::publishLibraries, Qt::QueuedConnection); }
             if (Cids->empty()) { emit libraryPublishFailed(QString::fromStdString(*Err)); return; }
             (*Config)["PublishedList"] = (*Cfg)["PublishedList"];   // adopt the freshly-written flat list…
             (*Config)["Libraries"]     = (*Cfg)["Libraries"];       // …AND the per-library grouping (drives Share ▾)
@@ -1128,6 +1134,7 @@ void AppModel::applySourceUpgrade(bool force)
     if (!PendingUpgrade || !PendingUpgrade->Valid) { emit packageSourceFailed("No planned upgrade to apply."); return; }
     // Applying moves files and re-seeds — off-thread. Work on a copy, then swap the two keys the upgrade owns.
     auto Cfg   = std::make_shared<nlohmann::ordered_json>(*Config);
+    auto Before = std::make_shared<const nlohmann::ordered_json>(*Config);
     auto Plan  = PendingUpgrade;
     auto Err   = std::make_shared<std::string>();
     auto Ok    = std::make_shared<bool>(false);
@@ -1141,7 +1148,7 @@ void AppModel::applySourceUpgrade(bool force)
             PackageCatalog::SyncPackageSources(*Cfg);
             *Index = PackageCatalog::BuildCatalogIndex(*Cfg, Inputs.get(), Said.get());   // heavy scan stays off the main thread
         },
-        [this, Cfg, Err, Ok, Index, Inputs, Said]{
+        [this, Cfg, Before, Err, Ok, Index, Inputs, Said]{
             PendingUpgrade.reset();
             if (!*Ok)
             {
@@ -1149,8 +1156,16 @@ void AppModel::applySourceUpgrade(bool force)
                     Err->empty() ? std::string("the upgrade could not be applied") : *Err));
                 return;
             }
-            (*Config)["LIBRARY"] = (*Cfg)["LIBRARY"];
-            (*Config)["Settings"]["PackageSources"] = (*Cfg)["Settings"]["PackageSources"];
+            const nlohmann::ordered_json None = nlohmann::ordered_json::array();
+            auto List = [&None](const nlohmann::ordered_json &C, const char *K, const char *Sub) -> const nlohmann::ordered_json & {
+                const nlohmann::ordered_json *P = &C;
+                for (const char *Part : { K, Sub }) { if (!Part) break; if (!P->is_object() || !P->contains(Part)) return None; P = &(*P)[Part]; }
+                return *P;
+            };
+            PackageCatalog::MergeListChange((*Config)["LIBRARY"], List(*Before, "LIBRARY", nullptr), List(*Cfg, "LIBRARY", nullptr),
+                                            PackageCatalog::LibraryEntryKey);
+            PackageCatalog::MergeListChange((*Config)["Settings"]["PackageSources"], List(*Before, "Settings", "PackageSources"),
+                                            List(*Cfg, "Settings", "PackageSources"), PackageCatalog::SourceKey);
             save();
             setCatalog(std::move(*Index), std::move(*Inputs), std::move(*Said));
             emit catalogChanged();

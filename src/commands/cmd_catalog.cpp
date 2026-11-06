@@ -284,6 +284,7 @@ VG_COMMANDS
             json Out = json::array();
             for (const auto &E : Errors) Out.push_back({{"severity", "error"}, {"message", E}});
             if (!Command::Bool(A, "errors-only", false)) for (const auto &W : Warnings) Out.push_back({{"severity", "warning"}, {"message", W}});
+            if (!Errors.empty()) throw Command::CheckFailed(Out, std::to_string(Errors.size()) + " error(s)");
             return Out;
         }, &RenderFindings, true });
 }

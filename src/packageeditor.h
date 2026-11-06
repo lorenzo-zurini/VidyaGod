@@ -1,6 +1,7 @@
 #ifndef PACKAGEEDITOR_H
 #define PACKAGEEDITOR_H
 
+#include <functional>
 #include <QDialog>
 #include <QString>
 
@@ -33,6 +34,9 @@ public:
     QString bundleDir() const;
     //The one open editor (null when none) and what it edits: the CLI's `build` and `canvas` commands act on these.
     static PackageEditor * live() { return Live; }
+    //What the host does with every editor OpenFor makes — wherever it is opened from (the library, a launch window, a
+    //command): the app installs it once (MainWindow), so no opener can wire an editor differently.
+    static void SetOnCreated(std::function<void(PackageEditor *)> Hook) { OnCreated = std::move(Hook); }
     PackageEditorModel * model() const { return Model; }
     PkgCanvasPanel * canvas() const { return Canvas; }
     PkgActions * actions() const { return Actions; }
@@ -58,6 +62,7 @@ private:
     void status(const QString & Text, int Ms = 5000);
 
     static PackageEditor * Live;                  // the one open editor, or null
+    static inline std::function<void(PackageEditor *)> OnCreated;
 
     PackageEditorModel * Model  = nullptr;
     PkgCanvasPanel *     Canvas = nullptr;

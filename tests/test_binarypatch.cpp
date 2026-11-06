@@ -190,6 +190,18 @@ TEST(bp_cave_expect_too_short_errors)
     CHECK(ApplyOne(p, img, NoVars, msg) == Result::Error);
 }
 
+// A cave given as a file offset outside every section (here, zeroes in the PE headers) has no address to jump to.
+// Teeth: dereference the empty lookup (as it did) and the patch is "applied" with a jump to a garbage address.
+TEST(bp_cave_outside_every_section_errors)
+{
+    auto img = MakePe(Bytes({0xB8, 0x01, 0x00, 0x00, 0x00, 0xC3}));
+    nlohmann::ordered_json p{{"MODE", "Cave"}, {"OFFSET", "0x401000"},
+                             {"EXPECT", "b801000000c3"}, {"PAYLOAD", "9090"}, {"CAVE", "0x300"}};
+    std::string msg;
+    CHECK(ApplyOne(p, img, NoVars, msg) == Result::Error);
+    CHECK(msg.find("outside every section") != std::string::npos);
+}
+
 TEST(bp_cave_fixed_nonzero_errors)
 {
     // Point CAVE at the site itself (non-zero) → refuses to clobber real code.

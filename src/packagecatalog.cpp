@@ -312,7 +312,7 @@ std::string PackageTitle(const std::filesystem::path &Dir)
         std::ifstream In(F.path(), std::ios::binary);
         const std::string Text((std::istreambuf_iterator<char>(In)), std::istreambuf_iterator<char>());
         if (Text.find("\"TILE\"") == std::string::npos) continue;         // most nodes carry no tile: not parsed
-        const nlohmann::ordered_json N = nlohmann::ordered_json::parse(Text, nullptr, false);
+        const nlohmann::ordered_json N = NodeGraph::ParseBounded(Text);
         if (!N.is_object() || !N.contains("LAYERS") || !N["LAYERS"].is_array()) continue;
         for (const auto &L : N["LAYERS"])
         {
@@ -768,6 +768,42 @@ int SyncPackageSources(nlohmann::ordered_json &GlobalConfigJSON, std::string *Er
                + std::to_string(Packages) + " package(s), " + std::to_string(Games) + " launchable).");
     }
     return Indexed;
+}
+
+std::string LibraryEntryKey(const nlohmann::ordered_json &Entry)
+{
+    return Entry.is_object() ? Entry.value("PATH", std::string()) : std::string();
+}
+
+std::string SourceKey(const nlohmann::ordered_json &Source)
+{
+    if (Source.is_object() && Source.contains("NAME") && Source["NAME"].is_string() && !Source["NAME"].get<std::string>().empty())
+        return "name:" + Source["NAME"].get<std::string>();
+    return "cid:" + PackageSourceCID(Source);
+}
+
+void MergeListChange(nlohmann::ordered_json &Live, const nlohmann::ordered_json &Before, const nlohmann::ordered_json &After,
+                     std::string (*Key)(const nlohmann::ordered_json &))
+{
+    if (!Live.is_array()) Live = nlohmann::ordered_json::array();
+    std::map<std::string, const nlohmann::ordered_json *> Was, Is;
+    if (Before.is_array()) for (const auto &E : Before) if (const std::string K = Key(E); !K.empty()) Was.emplace(K, &E);
+    if (After.is_array())  for (const auto &E : After)  if (const std::string K = Key(E); !K.empty()) Is.emplace(K, &E);
+    auto At = [&](const std::string &K) {
+        for (auto It = Live.begin(); It != Live.end(); ++It) if (Key(*It) == K) return It;
+        return Live.end();
+    };
+    for (const auto &[K, E] : Was)
+        if (!Is.count(K)) if (auto It = At(K); It != Live.end()) Live.erase(It);
+    if (After.is_array())
+        for (const auto &E : After)
+        {
+            const std::string K = Key(E);
+            if (K.empty()) continue;
+            const auto W = Was.find(K);
+            if (W != Was.end() && *W->second == E) continue;   // the worker left it as it was
+            if (auto It = At(K); It != Live.end()) *It = E; else Live.push_back(E);
+        }
 }
 
 bool AddPackageSource(nlohmann::ordered_json &GlobalConfigJSON, const std::string &Cid, const std::string &Name, bool Friend)
@@ -1691,7 +1727,7 @@ bool HasDraftNodes(const std::filesystem::path &Dir)
     for (const auto &F : std::filesystem::directory_iterator(Dir, Ec))
     {
         if (!F.is_regular_file(Ec) || F.path().extension() != ".json" || F.path().stem().string().rfind("baf", 0) == 0) continue;
-        if (ManifestModel::IsNodeObject(nlohmann::ordered_json::parse(std::ifstream(F.path()), nullptr, false))) return true;
+        if (nlohmann::ordered_json J; NodeGraph::ReadTreeJsonBounded(F.path(), J) && ManifestModel::IsNodeObject(J)) return true;
     }
     return false;
 }
@@ -1736,7 +1772,8 @@ std::mutex &PackageLock(const std::filesystem::path &Dir)
 }
 nlohmann::ordered_json NodeFileJson(const std::filesystem::path &P)
 {
-    return nlohmann::ordered_json::parse(std::ifstream(P), nullptr, false);
+    nlohmann::ordered_json J;
+    return NodeGraph::ReadTreeJsonBounded(P, J) ? J : nlohmann::ordered_json(nlohmann::ordered_json::value_t::discarded);
 }
 //The installed nodes of Dir, among Candidates, that something still contains once Dir lists Listing: every other
 //installed package, and the listed version itself (a version that contains the one before it). Containment only —
@@ -2920,7 +2957,7 @@ enum class PathState : std::uint8_t { Runtime, Present, Missing };
 static PathState ResolvePathState(const nlohmann::ordered_json &Layer, const std::filesystem::path &Local,
                                   const std::map<std::string, std::string> &Vars)
 {
-    const std::vector<std::string> Tokens = ManifestModel::PathVariableTokens(ManifestModel::LayerPathString(Layer));
+    const std::vector<std::string> Tokens = VarSubst::PathTokens(ManifestModel::LayerPathString(Layer));
     for (const std::string &T : Tokens) if (!Vars.count(T)) return PathState::Runtime;
 
     std::string S = Local.string();

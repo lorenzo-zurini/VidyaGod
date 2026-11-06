@@ -51,7 +51,9 @@ QString ValidationPanel::named(const std::string & M) const
 QString ValidationPanel::labelOf(const QString & Handle) const
 {
     const int I = Model ? Model->doc().IndexOf(Handle.toStdString()) : -1;
-    return I < 0 ? QString() : QString::fromStdString(Model->doc().Node(I).value("LABEL", std::string()));
+    if (I < 0) return QString();
+    const auto & N = Model->doc().Node(I);   // a malformed node is what validation reports on: never assume its shape
+    return N.is_object() && N.contains("LABEL") && N["LABEL"].is_string() ? QString::fromStdString(N["LABEL"].get<std::string>()) : QString();
 }
 
 void ValidationPanel::refresh()

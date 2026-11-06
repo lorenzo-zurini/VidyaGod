@@ -1021,13 +1021,18 @@ std::string Describe(const json &Node, const LabelFn &Label)
             else if (T == "DLL") ++Dlls;
             else if (T == "ENV") ++Envs;
             else if (T == "VARS") Vars += L["VARS"].is_object() ? (int)L["VARS"].size() : 1;
-            else if (T == "KEEP")
-            {
-                std::string K = StrField(L, "KEEP");
-                for (const char *A : {"%Documents%", "%AppData%", "%LocalAppData%", "%UserProfile%", "%GameDir%"})
-                    if (K.rfind(A, 0) == 0) { K = PlatformWords(std::string(A).substr(1, std::strlen(A) - 2)) + K.substr(std::strlen(A)); break; }
-                if (!K.empty()) Keeps.push_back(K.rfind("GameDir", 0) == 0 ? "the game folder" + K.substr(7) : K);
-            }
+            else if (T == "KEEP" && L["KEEP"].is_object())
+                for (const auto &[Addr, V] : L["KEEP"].items())   // {"FILES/%Documents%/x": true, "REG/HKCU/…": {…}}
+                {
+                    if (V.is_boolean() && !V.get<bool>()) continue;   // KEEP false takes a key back: nothing kept
+                    const bool Reg = Addr.rfind("REG/", 0) == 0;
+                    std::string K = Addr.substr(Addr.find('/') == std::string::npos ? 0 : Addr.find('/') + 1);
+                    if (!K.empty() && K.back() == '/') K.pop_back();
+                    for (const char *A : {"%Documents%", "%AppData%", "%LocalAppData%", "%UserProfile%", "%GameDir%"})
+                        if (K.rfind(A, 0) == 0) { K = PlatformWords(std::string(A).substr(1, std::strlen(A) - 2)) + K.substr(std::strlen(A)); break; }
+                    if (K.empty()) continue;
+                    Keeps.push_back(Reg ? "the registry key " + K : K.rfind("GameDir", 0) == 0 ? "the game folder" + K.substr(7) : K);
+                }
             else if (T == "EXEC" && L["EXEC"].is_array())
                 for (const json &E : L["EXEC"])
                 {

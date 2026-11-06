@@ -334,6 +334,23 @@ TEST(lower_plan_marks_a_delete_that_reaches_kept_state)
     CHECK_EQ(Edits, 3);
 }
 
+// A content file whose name holds a '%' that names no variable ("100%25.zip", a URL-escaped download) is the
+// package's file, joined to its folder like any other; a %variable% payload is the runtime's and stays as written.
+// Teeth: ask find('%') (as the lowering did) and the escaped file loses its folder.
+TEST(lower_plan_joins_a_percent_named_file_to_its_folder)
+{
+    Fold::Plan P;
+    const auto Zip = [](const std::string &Payload) {
+        Fold::Item I; I.Kind = "ZIP"; I.Payload = Payload; I.Dir = "/lib/pkg"; I.Target = "%GameDir%"; return I; };
+    P.Seq = { Zip("100%25.zip"), Zip("%RunnerBuild%/base.zip") };
+    const ordered_json L = NodeLower::LowerPlan(P);
+    std::vector<std::string> Paths;
+    for (const auto &O : L) if (O.contains("PATH")) Paths.push_back(O["PATH"].get<std::string>());
+    CHECK_EQ(Paths.size(), (size_t)2);
+    CHECK_EQ(Paths[0], std::string("/lib/pkg/100%25.zip"));
+    CHECK_EQ(Paths[1], std::string("%RunnerBuild%/base.zip"));
+}
+
 // The validator's check reads the address as the place it names: "a/../Saves", "./Saves" and "a//b" reach a kept folder
 // too. (The launch judges the resolved path again.) Teeth: drop the normalisation (the three spellings pass).
 TEST(kept_under_sees_through_dot_segments)

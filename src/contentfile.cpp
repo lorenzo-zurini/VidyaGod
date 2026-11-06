@@ -1,4 +1,6 @@
 #include "contentfile.h"
+#include "nodegraph.h"
+#include "varsubst.h"
 
 #include <nlohmann/json.hpp>
 
@@ -51,7 +53,8 @@ void ClaimsOfNode(const nlohmann::ordered_json &J, ClaimMap &Out)
 ClaimMap ClaimsOfFiles(const std::vector<std::filesystem::path> &NodeFiles)
 {
     ClaimMap Out;
-    for (const auto &F : NodeFiles) ClaimsOfNode(nlohmann::ordered_json::parse(std::ifstream(F), nullptr, false), Out);
+    for (const auto &F : NodeFiles)
+        if (nlohmann::ordered_json J; NodeGraph::ReadTreeJsonBounded(F, J)) ClaimsOfNode(J, Out);
     return Out;
 }
 
@@ -104,7 +107,7 @@ std::filesystem::path PathUnder(const std::filesystem::path &Dir, const std::str
                                 const ClaimMap &Claims)
 {
     const std::filesystem::path P(Name);
-    if (Cid.empty() || Name.empty() || P.is_absolute() || Name.find('%') != std::string::npos) return Dir / P;
+    if (Cid.empty() || Name.empty() || P.is_absolute() || VarSubst::RuntimeSourced(Name)) return Dir / P;
     const auto It = Claims.find(Name);
     return (It != Claims.end() && It->second.size() > 1) ? Dir / Bumped(Name, Cid) : Dir / P;
 }
@@ -112,7 +115,7 @@ std::filesystem::path PathUnder(const std::filesystem::path &Dir, const std::str
 std::filesystem::path Path(const std::filesystem::path &Dir, const std::string &Name, const std::string &Cid)
 {
     const std::filesystem::path P(Name);
-    if (Cid.empty() || Name.empty() || P.is_absolute() || Name.find('%') != std::string::npos) return Dir / P;
+    if (Cid.empty() || Name.empty() || P.is_absolute() || VarSubst::RuntimeSourced(Name)) return Dir / P;
     return PathUnder(Dir, Name, Cid, *Claims(Dir));
 }
 

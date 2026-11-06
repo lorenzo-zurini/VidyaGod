@@ -1458,12 +1458,13 @@ private slots:
     {
         const json N = json{{"VARIANT", "Original"}, {"LAYERS", json::array({
             json{{"ZIP", "demo.zip"}}, json{{"NODE", "base"}}, json{{"ANY", json::array({"game"})}},
-            json{{"EDIT", json::array({ json::object(), json::object() })}}, json{{"KEEP", "%Documents%/Demo"}},
+            json{{"EDIT", json::array({ json::object(), json::object() })}}, json{{"KEEP", {{"FILES/%Documents%/Demo/", true}, {"FILES/%GameDir%/cfg.ini", false}}}},
             json{{"EXEC", json::array({ json{{"LABEL", "Play"}, {"HOST", "win32"}, {"EXE", "%GameDir%/bin/demo.exe"}} })}} })}};
         const std::string D = PkgGraph::Describe(N, [](const std::string &R) { return R == "base" ? std::string("Core Files") : std::string("The Game"); });
         for (const char *Want : {"Version \"Original\"", "runs demo.exe on Windows 32-bit", "files from demo.zip", "contains \"Core Files\"",
                                  "rides on \"The Game\"", "changes 2 settings", "keeps Documents/Demo"})
             QVERIFY2(D.find(Want) != std::string::npos, (D + "  <- missing: " + Want).c_str());
+        QVERIFY2(D.find("cfg.ini") == std::string::npos, (D + "  <- a key taken back (KEEP false) is not kept").c_str());
         QCOMPARE(PkgGraph::Describe(json{{"LAYERS", json::array()}}), std::string("Nothing yet"));
         const json R = json{{"LAYERS", json::array({ json{{"EXEC", json::array({ json{{"HOST", "linux64"}, {"GUEST", json::array({"snes"})}} })}} })}};
         QCOMPARE(PkgGraph::Describe(R), std::string("Plays Super Nintendo games on Linux"));

@@ -2097,13 +2097,14 @@ void PkgActions::undelta(const std::string & NodeId)
     if (BasePath.empty())
     { tell("Undelta", "This delta has no base to reconstruct against: a contained node with a zip at its target."); return; }
 
-    Canvas->beginAction(NodeId, "reconstructing...", /*cancellable=*/false);   // a stream with no interrupt point
-    auto Ok  = std::make_shared<bool>(false);
-    auto Err = std::make_shared<std::string>();
-    auto Alive = Alive_;
     const std::filesystem::path BaseFile = ResolveInBundle(Bundle, BasePath);
     if (BaseFile.empty())
     { tell("Unsafe path", "The base layer's file does not point inside the package folder."); return; }
+    Canvas->beginAction(NodeId, "reconstructing...", /*cancellable=*/false);   // a stream with no interrupt point (and every
+                                                                              // return after this one ends the action)
+    auto Ok  = std::make_shared<bool>(false);
+    auto Err = std::make_shared<std::string>();
+    auto Alive = Alive_;
     AsyncWork::Run(this,
         [BaseFile, DeltaFile, Out, Ok, Err]() { *Ok = ReconstructTo(BaseFile, DeltaFile, Out, *Err); },
         [this, NodeId, ZipName, Out, DeltaFile, Ok, Err, Alive]() {

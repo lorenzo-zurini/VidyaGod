@@ -202,8 +202,7 @@ int CliModes::RunMaintenanceModes(LaunchParameters &LaunchParameters, nlohmann::
         }
         PackageCatalog::SetGolden(GlobalConfigJSON, LaunchParameters.GoldenUid, LaunchParameters.GoldenOn,
                                   QDate::currentDate().toString(Qt::ISODate).toStdString());
-        QFile Cfg(AppDataDir.filePath("GlobalConfig.JSON"));
-        if (!JSONOps::SaveJSON(&GlobalConfigJSON, &Cfg))
+        if (!JSONOps::SaveConfig(GlobalConfigJSON, AppDataDir.absolutePath().toStdString()))
         {
             LogErr("golden", "GlobalConfig.JSON could not be written.");
             return 1;

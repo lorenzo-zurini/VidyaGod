@@ -5,6 +5,7 @@
 #include <QVBoxLayout>
 #include <QFormLayout>
 #include <QCheckBox>
+#include <QSignalBlocker>
 #include <QLabel>
 #include <QSpinBox>
 
@@ -27,6 +28,8 @@ IpfsSettingsPage::IpfsSettingsPage(AppModel & model, QWidget * parent)
     QCheckBox * netCb = new QCheckBox("Enable networking (downloads && seeding)", this);
     netCb->setChecked(Model.networkingEnabled());
     connect(netCb, &QCheckBox::toggled, this, [this](bool on){ Model.setNetworkingEnabled(on); });
+    //Turned on or off elsewhere (a tab's banner, a command): the box follows, without toggling it back.
+    connect(&Model, &AppModel::networkingChanged, netCb, [netCb](bool on){ const QSignalBlocker B(netCb); netCb->setChecked(on); });
     pl->addWidget(netCb);
 
     QLabel * netHint = new QLabel(

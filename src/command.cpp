@@ -135,6 +135,10 @@ nlohmann::ordered_json Run(const std::string &Name, const nlohmann::ordered_json
     {
         return {{"ok", false}, {"error", E.what()}, {"usage", true}};
     }
+    catch (const CheckFailed &E)
+    {
+        return {{"ok", false}, {"error", E.what()}, {"result", E.Result}};
+    }
     catch (const std::exception &E)
     {
         return {{"ok", false}, {"error", Why(E.what())}};

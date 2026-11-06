@@ -570,6 +570,35 @@ private slots:
         QVERIFY(C && CreatedC);
         delete C;
     }
+
+    // Every editor the door makes is handed to the host's hook once — the library's, a launch window's and a command's
+    // alike — and raising the open one is not a new editor. Teeth: wire per opener (as the three did) and the hook
+    // never runs.
+    void everyEditorGoesThroughTheHostsHook()
+    {
+        library();
+        int Hooked = 0;
+        PackageEditor::SetOnCreated([&Hooked](PackageEditor *) { ++Hooked; });
+        PackageEditor *A = PackageEditor::OpenFor(&Cfg, nullptr, Pkg);
+        PackageEditor::OpenFor(&Cfg, nullptr, Pkg);
+        QCOMPARE(Hooked, 1);
+        delete A;
+        PackageEditor::SetOnCreated({});
+    }
+
+    // A node the panel names may be the malformed one it reports: a LABEL that is not text is no name, never a throw.
+    // Teeth: read the LABEL as text and naming the message throws.
+    void aMalformedLabelNamesNothing()
+    {
+        library();
+        PackageEditorModel M(&Cfg, nullptr);
+        M.initPackage(Pkg, nullptr);
+        json N = M.doc().Node(0);
+        N["LABEL"] = 5;
+        M.replaceNode(Game, N);
+        ValidationPanel P(&M);
+        QCOMPARE(P.named("node '" + Game + "': x"), QString("node '" + QString::fromStdString(Game) + "': x"));
+    }
 };
 
 QTEST_MAIN(PackageEditorModelTest)

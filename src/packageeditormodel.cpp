@@ -1,3 +1,4 @@
+#include "nodegraph.h"
 #include "packageeditormodel.h"
 #include "nodelower.h"
 #include "contentfile.h"   // Bumped / Claims — the names two CIDs give one file
@@ -270,8 +271,7 @@ void PackageEditorModel::markTourSeen()
 
 void PackageEditorModel::WriteConfig()
 {
-    QFile Cfg(QString::fromStdString((AppPaths::DataRoot() / "GlobalConfig.JSON").string()));
-    if (!JSONOps::SaveJSON(GlobalConfigJSON, &Cfg))
+    if (!JSONOps::SaveConfig(*GlobalConfigJSON, AppPaths::DataRoot()))
         LogWarn("PackageEditorModel", "could not write the canvas layout to GlobalConfig.JSON");
 }
 
@@ -320,9 +320,8 @@ QStringList PackageEditorModel::unusedFiles() const
     for (int I = 0; I < Doc.Count(); ++I) Walk(Doc.Node(I));
     for (const QFileInfo & F : PackageDir->entryInfoList({"*.json"}, QDir::Files))
     {
-        std::ifstream In(F.filePath().toStdString(), std::ios::binary);
-        const nlohmann::ordered_json J = nlohmann::ordered_json::parse(In, nullptr, /*allow_exceptions=*/false);
-        if (J.is_object() && J.contains("LAYERS")) Walk(J);
+        nlohmann::ordered_json J;
+        if (NodeGraph::ReadTreeJsonBounded(F.filePath().toStdString(), J) && J.is_object() && J.contains("LAYERS")) Walk(J);
     }
     if (const auto C = ContentFile::Claims(PackageDir->path().toStdString()))
         for (const auto & [Name, Cids] : *C)

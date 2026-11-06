@@ -73,7 +73,7 @@ std::vector<std::string> NodeContentCids(const nlohmann::ordered_json &Node)
 
 //A runtime-sourced payload (a %variable% that resolves to a live mount at launch) has no package file, by design.
 //THE predicate (a matched pair around an identifier) — a URL-escaped name like "100%25%20done.zip" is a real file.
-static bool RuntimeSourced(const std::string &File) { return !ManifestModel::PathVariableTokens(File).empty(); }
+static bool RuntimeSourced(const std::string &File) { return VarSubst::RuntimeSourced(File); }
 
 
 // ----- import / publish -----

@@ -73,6 +73,9 @@ struct Globals
     bool Json = false, NoColour = false, Verbose = false, Help = false;
     bool Online = false;   // --online: start the node for this call though Settings → Networking is off
     bool NoWait = false;   // --no-wait: fail at once when another command holds the data dir, instead of waiting
+    bool Offline = false;  // --offline: no node for this call, though Settings → Networking is on
+    bool Beside = false;   // --bypass-single-instance-lock: run in this process beside whatever holds the data dir, on a
+                           // config it never writes (no lock taken, nothing sent to the app)
     long long WaitMs = 0;
 };
 
@@ -91,6 +94,8 @@ bool TakeGlobal(const std::vector<std::string> &A, size_t &I, Globals &G)
     if (W == "-h" || W == "--help") return G.Help = true;
     if (W == "--online") return G.Online = true;
     if (W == "--no-wait") return G.NoWait = true;
+    if (W == "--offline") return G.Offline = true;
+    if (W == "--bypass-single-instance-lock") return G.Beside = true;
     if (W == "--data-dir") return Value(G.DataDir);
     if (W.rfind("--data-dir=", 0) == 0) { G.DataDir = W.substr(11); return true; }
     if (W == "--package-dir") return Value(G.PackageDir);
@@ -234,6 +239,8 @@ void PrintRootHelp(const Style &St)
       << "  --wait <ms>        keep running this long after the call, for what it started\n"
       << "  --online           go online for this call though networking is off (Settings → Networking)\n"
       << "  --no-wait          fail at once if another command is using the data dir (at a terminal it waits for it)\n"
+      << "  --offline          no network for this call, though networking is on\n"
+      << "  --bypass-single-instance-lock  run here, beside the app or a command on the data dir, never writing the config\n"
       << "  --package-dir <d>  a launch's package folder, instead of the node's own (also --runtime-dir, --userdata-dir)\n"
       << "  -v, --verbose      the engine's log on stderr\n"
       << "  -h, --help         help for whatever precedes it\n\n";
@@ -768,7 +775,7 @@ void PrintCandidates(const std::vector<std::string> &W)
                 const auto NW = Words(N);
                 if (NW.size() > Before.size() && Join(NW, 0, Before.size()) == Prefix) Offer(NW[Before.size()]);
             }
-        for (const char *X : { "--json", "--no-color", "--data-dir", "--wait", "--package-dir", "--runtime-dir", "--userdata-dir", "--verbose", "--help", "--online", "--no-wait" }) Offer(X);
+        for (const char *X : { "--json", "--no-color", "--data-dir", "--wait", "--package-dir", "--runtime-dir", "--userdata-dir", "--verbose", "--help", "--online", "--no-wait", "--offline", "--bypass-single-instance-lock" }) Offer(X);
     }
     for (const auto &C : Out) std::cout << C << "\n";
 }
@@ -831,6 +838,15 @@ int Report(const json &Reply, const Command::Spec *S, const Globals &G, const St
         else if (S && S->Render) std::cout << S->Render(R, St.On);
         else std::cout << RenderGeneric(R, St.On);
         return Done;
+    }
+    if (Reply.contains("result"))   // a check that did not pass: what it found, then that it failed
+    {
+        const json &R = Reply["result"];
+        g_Width = G.Json ? 0 : TerminalWidth();
+        if (G.Json) std::cout << R.dump(2) << "\n";
+        else if (S && S->Render) std::cout << S->Render(R, St.On);
+        else std::cout << RenderGeneric(R, St.On);
+        std::cout.flush();
     }
     std::cerr << ErrSt.Red("error:") << " " << Reply.value("error", std::string("failed")) << "\n";
     if (Reply.value("usage", false) && S)
@@ -1033,7 +1049,7 @@ int Main(int argc, char **argv, const Hooks &H)
     // A path override is this process's: a call carrying one runs here, never in the app (whose launches keep theirs).
     const bool Overrides = !G.PackageDir.empty() || !G.RuntimeDir.empty() || !G.UserDataDir.empty();
     if (!G.Verbose) g_Ticker.Start("VidyaGod " + S->Name);
-    if (!Overrides && CommandServer::Send(DataPath.toStdString(), S->Name, Args, Reply)) return Report(Reply, S, G, St, ErrSt);
+    if (!Overrides && !G.Beside && CommandServer::Send(DataPath.toStdString(), S->Name, Args, Reply)) return Report(Reply, S, G, St, ErrSt);
 
     if (S->Requires == Command::Needs::App)   // what only the running app holds: nothing to bring up here
     {
@@ -1043,7 +1059,8 @@ int Main(int argc, char **argv, const Hooks &H)
     }
     std::string Holder;
     const std::string LockFile = (AppDataDir.absolutePath() + "/vidyagod.lock").toStdString();
-    if (!Platform::AcquireSingleInstanceLock(LockFile, &Holder))
+    if (G.Beside) AppPaths::SetConfigReadOnly(true);
+    else if (!Platform::AcquireSingleInstanceLock(LockFile, &Holder))
     {
         json Ping;
         const bool AppAnswers = CommandServer::Send(DataPath.toStdString(), "util bytes", json{{"bytes", 1}}, Ping, 3000);
@@ -1122,16 +1139,21 @@ int Main(int argc, char **argv, const Hooks &H)
     {
         //Networking off (Settings → Networking) means off here too: nothing goes online unless this call says so.
         //The node's status is what it is — off — without starting it.
+        //Beside the app, the node's store is the app's: this process never opens it. --offline: not for this call.
         const auto &Ipfs = Config["Settings"]["IPFS"];
         const bool Networking = Ipfs.is_object() && Ipfs.value("Enabled", false);
-        if (!Networking && !G.Online && !Command::WorksOffline(S->Name))
+        const bool Up = !G.Offline && !G.Beside && (Networking || G.Online);
+        if (!Up && !Command::WorksOffline(S->Name))
         {
-            std::cerr << ErrSt.Red("error:") << " '" << S->Name << "' needs the network, and networking is off on "
-                      << DataPath.toStdString() << ": add --online to go online for this call, or turn it on (VidyaGod app networking --set on)\n";
+            std::cerr << ErrSt.Red("error:") << " '" << S->Name << "' needs the network, and "
+                      << (G.Beside ? "a call run beside the app (--bypass-single-instance-lock) never opens the node the app holds: run it without that, in the app"
+                          : G.Offline ? "this call is --offline"
+                          : "networking is off on " + DataPath.toStdString() + ": add --online to go online for this call, or turn it on (VidyaGod app networking --set on)")
+                      << "\n";
             return Unreachable;
         }
         //Networking off: a command that works without the node (a launch of what is installed) runs without it.
-        if (Networking || G.Online) { IpfsWrapper::StartNode((AppDataDir.absolutePath() + "/IPFS").toStdString()); AwaitNode(); }
+        if (Up) { IpfsWrapper::StartNode((AppDataDir.absolutePath() + "/IPFS").toStdString()); AwaitNode(); }
     }
     Command::Context Ctx;
     Ctx.Config = &Config;

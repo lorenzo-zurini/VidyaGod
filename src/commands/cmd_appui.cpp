@@ -92,8 +92,10 @@ VG_COMMANDS
         }, {} });
 
     Command::Register({
-        "app import-runner", "install a runner (its build, through the download queue)", "", { Pos("runner", "the runner's node") },
-        { "app import-runner geproton_10_34" }, { "AppModel::importRunner" }, Needs::Model, true,
+        "app import-runner", "install a runner (its build, through the download queue)",
+        "The app's download pump fetches it (resume, progress, cancel, as a game's download): the app must be up on the "
+        "data dir.", { Pos("runner", "the runner's node") },
+        { "app import-runner geproton_10_34" }, { "AppModel::importRunner" }, Needs::App, true,
         [](Command::Context &C, const json &A) {
             Model(C).importRunner(QString::fromStdString(NodeOf(*Index(C), Command::Str(A, "runner"))->Key()));
             return json{{"started", true}, {"follow", "VidyaGod events follow --signal download"}};
@@ -138,7 +140,7 @@ VG_COMMANDS
         }, {} });
 
     Command::Register({
-        "app save", "write the app's config to disk now", "", {}, { "app save" }, { "AppModel::save", "JSONOps::SaveJSON" }, Needs::Model, false,
+        "app save", "write the app's config to disk now", "", {}, { "app save" }, { "AppModel::save", "JSONOps::SaveConfig", "JSONOps::SaveJSON" }, Needs::Model, false,
         [](Command::Context &C, const json &) { Model(C).save(); return json{{"saved", true}}; }, {} });
 
     Command::Register({

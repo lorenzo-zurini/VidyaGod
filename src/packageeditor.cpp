@@ -294,6 +294,7 @@ PackageEditor * PackageEditor::OpenFor(nlohmann::ordered_json * GlobalConfigJSON
     Ed->setAttribute(Qt::WA_DeleteOnClose);
     Live = Ed;
     if (Created) *Created = true;
+    if (OnCreated) OnCreated(Ed);
     Ed->show();
     return Ed;
 }

@@ -104,11 +104,24 @@ def sweep(cmds, live, out):
 
 def start_app(): return FX.start_app(f'{WORK}/app.log')
 
+# A command after the app's own start options is a command: it was read as an old flag mode, the words after it dropped,
+# and the GUI opened on the data dir (an hour-long "hang" in a script). Each line must answer as the command does.
+ROUTED = [['--bypass-single-instance-lock', 'help', 'vfs'], ['--offline', 'help', 'vfs'],
+          ['--bypass-single-instance-lock', 'commands']]
+def routing():
+    bad = []
+    for argv in ROUTED:
+        rc, so, se = run([a.vg, '--data-dir', DATA] + argv, FIX, 20)
+        ok = rc == 0 and ('VidyaGod vfs' in so or argv[-1] == 'commands' and 'launch run' in so)
+        print(f"{'ok' if ok else 'FAULT':>5} {str(rc):>4}          routing  {' '.join(argv)}", flush=True)
+        if not ok: bad.append({'mode': 'routing', 'fault': 'not answered as a command', 'line': ' '.join(argv), 'stderr': se[-1500:]})
+    return bad
+
 def main():
     fixtures()
     cmds = json.loads(subprocess.run([a.vg, 'commands', '--json'], capture_output=True, text=True, env=ENV).stdout)
     out = []
-    bad = sweep(cmds, False, out)
+    bad = routing() + sweep(cmds, False, out)
     if a.live:
         restore()
         app = start_app()

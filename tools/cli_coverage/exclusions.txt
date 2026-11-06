@@ -53,6 +53,7 @@ IpfsWrapper::Set*Hook        # a test seam: unit tests put a fake network in pla
 *::initializeGL              # Qt's GL setup callback: runs when a GL panel first shows (`editor open`)
 *::paintGL                   # Qt's GL paint callback: draws a frame; what it drew is `canvas items` / `canvas state`
 *::dragMoveEvent             # Qt drag handler: hover while files are dragged over; the drop itself is `canvas action --drop`
+*::dragLeaveEvent            # Qt drag handler: files dragged back out clear the hover dragMoveEvent set
 
 # ---- drawing a frame: what was drawn is read with `canvas items` / `canvas state`, never asked for ----
 PkgCanvas::frame             # draws one frame of the canvas (paintGL calls it)

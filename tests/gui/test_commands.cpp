@@ -32,6 +32,8 @@ private slots:
         Command::Register({ "test shape", "a test command taking JSON", "", {
             Command::WithSample(Command::Opt("v", "an object", Command::Type::Json), "{\"x\":\"text\"}") }, {}, {}, Command::Needs::Config, false,
             [](Command::Context &, const json &A) { return json{{"x", A["v"]["x"].get<std::string>()}}; }, {} });
+        Command::Register({ "test check", "a test command whose check does not pass", "", {}, {}, {}, Command::Needs::Config, false,
+            [](Command::Context &, const json &) -> json { throw Command::CheckFailed(json{{"checked", 3}, {"bad", 1}}, "1 of 3 is broken"); }, {} });
         Command::Register({ "test fails", "a test command that logs why it fails", "", {}, {}, {}, Command::Needs::Config, false,
             [](Command::Context &, const json &) -> json {
                 LogErr("Test", "the helper said: no such mount");
@@ -104,6 +106,17 @@ private slots:
         Command::Context C;
         const json R = Command::Run("test fails", json::object(), C);
         QCOMPARE(R["error"].get<std::string>(), std::string("it did not mount\n  the helper said: no such mount"));
+    }
+
+    // A check that did not pass fails the call and still answers with what it found. Teeth: let CheckFailed fall to the
+    // generic catch and the rows are gone, only the message left.
+    void a_failed_check_fails_and_keeps_its_rows()
+    {
+        Command::Context C;
+        const json R = Command::Run("test check", json::object(), C);
+        QVERIFY(!R.value("ok", true));
+        QCOMPARE(R["error"].get<std::string>(), std::string("1 of 3 is broken"));
+        QCOMPARE(R["result"].dump(), json({{"checked", 3}, {"bad", 1}}).dump());
     }
 
     // Teeth: drop the prefix match in NodeOf and the short form (as tables print it) names nothing.

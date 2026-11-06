@@ -59,6 +59,9 @@ bool JsonDepthWithinLimit(const std::string &S, int MaxDepth);
 // non-throwing parse. False on oversize/too-deep/unparseable. EVERY walker of the library root must use this —
 // received shares land hostile bytes there verbatim, and one unguarded recursive parse is a crash.
 bool ReadTreeJsonBounded(const std::filesystem::path &File, nlohmann::ordered_json &J);
+// The same for bytes already in hand (a file read for its text first, a friend's message): depth pre-scanned, then a
+// non-throwing parse. Discarded (is_discarded()) when too deep or not JSON.
+nlohmann::ordered_json ParseBounded(const std::string &Bytes);
 
 // TrustStoredCid: whether a node's stored "CID" field may be used as its handle. TRUE for the user's OWN roots
 // (LIBRARY, externally-added local bundles) — those files are authored/installed under our control. FALSE for the

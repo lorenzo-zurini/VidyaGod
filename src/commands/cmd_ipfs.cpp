@@ -275,8 +275,10 @@ VG_COMMANDS
                         {"size", IpfsWrapper::CidSizeLocal(C)}, {"file_size", IpfsWrapper::CidFileSizeLocal(C)},
                         {"serves", IpfsWrapper::CidServeStatus(C)}, {"announced", IpfsWrapper::SeedAnnounced(C)}};
             if (Command::Bool(A, "network", false)) Out["network_size"] = IpfsWrapper::CidSize(C);
-            if (Command::Bool(A, "verify", false)) Out["verified"] = IpfsWrapper::VerifyCid(C);
+            std::string Unverified;
+            if (Command::Bool(A, "verify", false)) { Unverified = IpfsWrapper::VerifyCid(C); Out["verified"] = Unverified.empty() ? json(true) : json(Unverified); }
             if (Command::Bool(A, "providers", false)) Out["providers"] = IpfsWrapper::ProviderCount(C);
+            if (!Unverified.empty()) throw Command::CheckFailed(Out, "it does not serve: " + Unverified);
             return Out;
         }, {} });
 
@@ -338,6 +340,10 @@ VG_COMMANDS
                 bool Offline = false;
                 Out["network"] = Checks(IpfsWrapper::NetworkTest(&Offline));
                 Out["node_offline"] = Offline;
+                size_t NetFails = 0;
+                for (const auto &Ch : Out["network"]) NetFails += Ch.value("status", std::string()) == "fail";
+                if (Offline) throw Command::CheckFailed(Out, "the node is offline: nothing to test");
+                if (NetFails) throw Command::CheckFailed(Out, std::to_string(NetFails) + " network check(s) failed: the rows say what to unblock");
             }
             return Out;
         }, {} });

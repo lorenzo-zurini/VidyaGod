@@ -350,8 +350,12 @@ BinaryPatch::Result BinaryPatch::ApplyOne(const nlohmann::ordered_json &Patch, s
             { Msg = "CAVE at the given address is not free (non-zero)"; return Result::Error; }
         }
 
-        const uint32_t siteVa = *OffToVa(*pe, site);
-        const uint32_t caveVa = *OffToVa(*pe, caveOff);
+        //Both ends of the jumps need an address: a site or cave given as a file offset outside every section (in the
+        //headers, in overlay data past the last section) has none.
+        const std::optional<uint32_t> SiteVa = OffToVa(*pe, site), CaveVa = OffToVa(*pe, caveOff);
+        if (!SiteVa) { Msg = "the cave site is outside every section"; return Result::Error; }
+        if (!CaveVa) { Msg = "CAVE is outside every section"; return Result::Error; }
+        const uint32_t siteVa = *SiteVa, caveVa = *CaveVa;
 
         // Build the cave body: PAYLOAD, then the displaced original bytes, then jmp back to just past the stub.
         std::vector<uint8_t> cave = payload;

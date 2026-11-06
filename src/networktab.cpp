@@ -44,12 +44,12 @@ NetworkTab::NetworkTab(AppModel & model, QWidget * parent) : QWidget(parent), Mo
     connect(&Model, &AppModel::nodeReady,            this, [this]{ scheduleRefresh(); });   // node came up async — friend code + Publish are live now
 
     connect(&Model, &AppModel::libraryPublished, this, [this](const QString & addr, const QString & top, const QString & note){
-        if (PublishButton) PublishButton->setEnabled(true);
+        if (PublishButton) PublishButton->setEnabled(!Model.publishing());
         if (PublishStatus) PublishStatus->setText("Published " + addr + " — " + top + (note.isEmpty() ? QString() : "\nNot published whole: " + note));
         scheduleRefresh();   // a publish can add libraries (e.g. VidyaGodRunners) → rebuild the matrix so the new Share column shows
     });
     connect(&Model, &AppModel::libraryPublishFailed, this, [this](const QString & m){
-        if (PublishButton) PublishButton->setEnabled(true);
+        if (PublishButton) PublishButton->setEnabled(!Model.publishing());
         if (PublishStatus) PublishStatus->setText("Publish failed: " + m);
     });
 
@@ -232,7 +232,7 @@ void NetworkTab::refresh()
     const bool Online = IpfsWrapper::Available() && !Code.empty();
     CodeValue->setText(Online ? QString::fromStdString(Code) : QStringLiteral("— (networking off)"));
     CopyButton->setEnabled(Online);
-    PublishButton->setEnabled(Online);
+    PublishButton->setEnabled(Online && !Model.publishing());   // a refresh mid-publish never offers a second one
     StatusHint->setVisible(!Online);
     TurnOnButton->setVisible(!Online && !Model.networkingEnabled());
     if (!Online)

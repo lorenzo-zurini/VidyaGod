@@ -115,6 +115,14 @@ bool HasMissingSources(const nlohmann::ordered_json &GlobalConfigJSON);
 // Append a source (dedup on CID) — caller then SyncPackageSources + reindex + persists. Returns false if CID is empty
 // or already present.
 [[nodiscard]] bool AddPackageSource(nlohmann::ordered_json &GlobalConfigJSON, const std::string &Cid, const std::string &Name, bool Friend = false);
+// What a worker did to a config list on its own copy of the config (Before → After), applied to the live list: an entry
+// it removed goes, one it added comes in, one it changed is replaced where it stands. Entries are the same entry when
+// Key names them alike. What the live list gained or lost while the worker ran stays — assigning the worker's copy
+// back would undo it. LibraryEntryKey: a LIBRARY entry's PATH; SourceKey: a package source's NAME, else its CID.
+void MergeListChange(nlohmann::ordered_json &Live, const nlohmann::ordered_json &Before, const nlohmann::ordered_json &After,
+                     std::string (*Key)(const nlohmann::ordered_json &));
+std::string LibraryEntryKey(const nlohmann::ordered_json &Entry);
+std::string SourceKey(const nlohmann::ordered_json &Source);
 // PreserveInstalled (friend sources): never rm a package the user has INSTALLED — convert dirs with hydrated content to
 // local (clear their SOURCE tag, keep files), delete only stub-only packages. Default false = full removal (CID sources).
 void RemovePackageSource(nlohmann::ordered_json &GlobalConfigJSON, int Index, bool PreserveInstalled = false);

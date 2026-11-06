@@ -1318,6 +1318,26 @@ TEST(scan_names_a_published_node_by_its_file)
     CHECK(std::find(Order.begin(), Order.end(), A) != Order.end());
 }
 
+// A node file nested a million deep (what a hostile share can land in a package folder) is skipped, and the scan goes
+// on: the rest of the package is indexed. Teeth: parse it unguarded (as the scan did) and the recursion through the
+// parsed value overflows the stack.
+TEST(scan_skips_a_node_nested_too_deep)
+{
+    namespace fs = std::filesystem;
+    const fs::path D = fs::temp_directory_path() / "vg_scan_deep";
+    fs::remove_all(D); fs::create_directories(D);
+    const ordered_json Good{{"LABEL", "Game"}, {"LAYERS", ordered_json::array({ {{"ZIP", "a.zip"}} })}};
+    std::ofstream(D / (Cid::OfNode(Good) + ".json"), std::ios::binary) << Cid::Canonical(Good);
+    {
+        std::ofstream Deep(D / "deep.json", std::ios::binary);
+        Deep << "{\"LABEL\":\"x\",\"LAYERS\":[{\"VARS\":{\"A\":" << std::string(1000000, '[') << std::string(1000000, ']') << "}}]}";
+    }
+    NodeIndex Idx;
+    ManifestModel::ScanBundleNodes(D, Idx);
+    CHECK_EQ(Idx.Nodes.size(), (size_t)1);
+    fs::remove_all(D);
+}
+
 // A launch option written into a file the user keeps. On a kept address an edit is the package's DEFAULT (IF_UNSAVED):
 // once the user has a saved copy it is skipped, so the option works on the first launch only. The validator says so;
 // taking the option's key back (KEEP false) makes it the package's — applied every launch, over the user's copy.

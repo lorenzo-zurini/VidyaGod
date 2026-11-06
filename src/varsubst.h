@@ -24,6 +24,18 @@ nlohmann::ordered_json SubstituteJsonValues(const nlohmann::ordered_json &V, boo
 nlohmann::ordered_json SubstituteJsonValues(const nlohmann::ordered_json &V,
                                             const std::map<std::string, std::string> &Vars);
 
+//The %Name% tokens in a path: a matched pair of '%' around a non-empty identifier ([A-Za-z_][A-Za-z0-9_]*)
+//containing no path separator. This is the tokenizer for the "is this path runtime-sourced?" question, and
+//every asker of THAT question must use it. It is deliberately stricter than VarSubst's substitution scanner,
+//which also accepts the "%KEY:format%" render syntax — a path is never rendered, so a ':' there is a filename. Exposed because ManifestModel::IsRuntimeSourcedLayer is
+//not the only question asked of a templated path — "which variables would this need?" is another — and a
+//SECOND hand-rolled scanner is how the two answers drifted: one classified "100%25%20done.zip" as real
+//content while the other called it a runtime mount, so a fetchable-missing layer reported as hydrated.
+std::vector<std::string> PathTokens(const std::string &P);
+//Runtime-sourced: a path naming at least one %variable% (by PathTokens' rule) — what the runtime supplies, not a file
+//of the package. The one answer to "does this payload live in the package folder?".
+inline bool RuntimeSourced(const std::string &P) { return !PathTokens(P).empty(); }
+
 //Replaces all %KEY% tokens in SourceString with values from VariablesMap. A token MAY carry a use-site render
 //format: %KEY:format% looks up KEY, then renders the value via RenderValue(value, format) (see below). A bare
 //%KEY% yields the raw value. An unmatched '%' aborts further substitution (the remainder is preserved); unknown

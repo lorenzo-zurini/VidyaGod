@@ -306,6 +306,12 @@ void PkgCanvasPanel::dragMoveEvent(QDragMoveEvent *E)
     E->acceptProposedAction();
 }
 
+void PkgCanvasPanel::dragLeaveEvent(QDragLeaveEvent *)
+{
+    m_canvas->setFileDropHover(false);
+    requestFrame();
+}
+
 void PkgCanvasPanel::dropEvent(QDropEvent *E)
 {
     const QStringList Paths = LocalPaths(E->mimeData());

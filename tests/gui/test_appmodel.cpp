@@ -84,6 +84,41 @@ private slots:
         QCOMPARE(cfg["Settings"]["PackageSources"][0].value("CID", std::string()), std::string("QmOld"));
     }
 
+    // A source sync works on a copy of the config; what it changes comes back as a change, never as its copy: an
+    // import made while it ran is still there after, and what the sync itself added is too. Teeth: assign the copy's
+    // LIBRARY back (as the completions did) and the import made meanwhile is gone.
+    void a_change_made_while_a_source_syncs_is_kept()
+    {
+        QTemporaryDir d; QVERIFY(d.isValid());
+        QDir appDir(d.path());
+        const std::string Old = d.filePath("old").toStdString(), Imported = d.filePath("imported").toStdString();
+        std::filesystem::create_directories(Old);
+        std::filesystem::create_directories(Imported);
+        json cfg = json{{"Settings", json::object()}, {"LIBRARY", json::array({ json{{"PATH", Old}, {"PACKAGEUID", "1"}} })}};
+        AppModel m(&cfg, &appDir);
+        QSignalSpy changed(&m, &AppModel::packageSourcesChanged);
+        QVERIFY(m.addPackageSource("QmNotThere", "Somewhere"));
+        cfg["LIBRARY"].push_back(json{{"PATH", Imported}, {"PACKAGEUID", "2"}});          // an import, while the sync runs
+        QTRY_VERIFY_WITH_TIMEOUT(changed.count() >= 2, 20000);                                // the sync's completion
+        bool HasOld = false, HasImported = false;
+        for (const auto &E : cfg["LIBRARY"]) { HasOld |= E["PATH"] == Old; HasImported |= E["PATH"] == Imported; }
+        QVERIFY2(HasOld && HasImported, cfg["LIBRARY"].dump().c_str());
+    }
+
+    // The merge itself: what the worker removed goes, what it added comes, what it changed is replaced in place, and
+    // what the live list gained meanwhile stays.
+    void a_worker_change_merges_into_the_live_list()
+    {
+        const json Before = json::array({ json{{"PATH", "a"}, {"V", 1}}, json{{"PATH", "b"}, {"V", 1}}, json{{"PATH", "c"}, {"V", 1}} });
+        const json After  = json::array({ json{{"PATH", "a"}, {"V", 2}}, json{{"PATH", "c"}, {"V", 1}}, json{{"PATH", "d"}, {"V", 1}} });
+        json Live = json::array({ json{{"PATH", "a"}, {"V", 1}}, json{{"PATH", "b"}, {"V", 1}}, json{{"PATH", "c"}, {"V", 1}},
+                                  json{{"PATH", "mine"}, {"V", 1}} });
+        PackageCatalog::MergeListChange(Live, Before, After, PackageCatalog::LibraryEntryKey);
+        const json Want = json::array({ json{{"PATH", "a"}, {"V", 2}}, json{{"PATH", "c"}, {"V", 1}}, json{{"PATH", "mine"}, {"V", 1}},
+                                        json{{"PATH", "d"}, {"V", 1}} });
+        QCOMPARE(QString::fromStdString(Live.dump()), QString::fromStdString(Want.dump()));
+    }
+
     void remove_local_package_drops_reference_keeps_user_files()
     {
         QTemporaryDir d; QVERIFY(d.isValid());

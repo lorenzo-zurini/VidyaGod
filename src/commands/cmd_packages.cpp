@@ -1,6 +1,7 @@
 // `VidyaGod packages …`, `sources …`, `updates …`, `received …`, `grafts …`, `runners …` — the package catalog's
 // functions (packagecatalog.h): what is installed and where, the sources a library syncs from, a friend's packages as
 // received and installed, the optional pieces a game takes, and the runners that carry it.
+#include "nodegraph.h"
 #include "command.h"
 #include "cmdutil.h"
 #include "appmodel.h"
@@ -167,8 +168,8 @@ VG_COMMANDS
             for (const auto &E : std::filesystem::directory_iterator(D))
                 if (E.path().extension() == ".json")
                 {
-                    const json N = json::parse(std::ifstream(E.path()), nullptr, false);
-                    if (N.is_object()) for (const auto &X : PackageCatalog::NodeContentCids(N)) Cids.push_back(X);
+                    json N;
+                    if (NodeGraph::ReadTreeJsonBounded(E.path(), N) && N.is_object()) for (const auto &X : PackageCatalog::NodeContentCids(N)) Cids.push_back(X);
                 }
             json Seeds = json::object();
             for (const auto &[Path, Cid] : PackageCatalog::SeedTargets(D.string())) Seeds[Path] = Cid;
@@ -329,7 +330,7 @@ VG_COMMANDS
         "share sheet — the Network tab's Verify & Publish. What did not publish whole (nodes that did not freeze, "
         "content not held here, content naming no SOURCE) is listed as gaps. With the app up, it runs in the app "
         "(follow it: events wait --signal libraryPublished).", {}, { "packages publish-all" },
-        { "AppModel::publishLibraries", "PackageCatalog::PublishLibrary", "PackageCatalog::SharedWith" }, Needs::Config, true,
+        { "AppModel::publishLibraries", "AppModel::publishing", "PackageCatalog::PublishLibrary", "PackageCatalog::SharedWith" }, Needs::Config, true,
         [](Command::Context &C, const json &) {
             if (C.Model) { C.Model->publishLibraries(); return json{{"started", true}, {"follow", "VidyaGod events wait --signal libraryPublished"}}; }
             std::string Err, Gaps;
@@ -399,8 +400,10 @@ VG_COMMANDS
             O.Deep = Command::Bool(A, "deep", false);
             O.PruneUnreferenced = Command::Bool(A, "prune-unreferenced", false);
             const auto R = PackageCatalog::HealSourceContent(*C.Config, O);
-            return json{{"ok", R.Ok()}, {"repointed", R.Repointed}, {"stale_repaired", R.StaleRepaired}, {"pruned_unservable", R.PrunedUnservable},
-                        {"pruned_unreferenced", R.PrunedUnreferenced}, {"verified", R.Verified}, {"drift", R.Drift}, {"unrepaired", R.Unrepaired}};
+            const json Out{{"ok", R.Ok()}, {"repointed", R.Repointed}, {"stale_repaired", R.StaleRepaired}, {"pruned_unservable", R.PrunedUnservable},
+                           {"pruned_unreferenced", R.PrunedUnreferenced}, {"verified", R.Verified}, {"drift", R.Drift}, {"unrepaired", R.Unrepaired}};
+            if (!R.Ok()) throw Command::CheckFailed(Out, "some references could not be repaired");
+            return Out;
         }, {} });
 
     Command::Register({
@@ -473,7 +476,7 @@ VG_COMMANDS
         "sources sync", "fetch every source not yet here and index it",
         "Sync the package sources: fetch what is missing, index each — what start-up does. With the app up, it syncs "
         "in the app (events wait --signal packageSourcesChanged).", {}, { "sources sync" },
-        { "AppModel::syncSources", "PackageCatalog::SyncPackageSources" }, Needs::Config, true,
+        { "AppModel::syncSources", "PackageCatalog::SyncPackageSources", "PackageCatalog::MergeListChange", "PackageCatalog::LibraryEntryKey", "PackageCatalog::SourceKey" }, Needs::Config, true,
         [](Command::Context &C, const json &) {
             if (C.Model) { C.Model->syncSources(); return json{{"started", true}}; }
             std::string Err;

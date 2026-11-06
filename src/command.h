@@ -114,6 +114,14 @@ struct Spec
 
 // An argument error: the caller's mistake, reported with the command's usage (exit 2), never a crash.
 struct BadArgs : std::runtime_error { using std::runtime_error::runtime_error; };
+// A check that did not pass (a verify, a validation, a heal that left something broken): the call fails (exit 1) and
+// its result — what was checked, what was wrong — is still its answer, printed before the error. A script gates on the
+// exit; a person reads the rows.
+struct CheckFailed : std::runtime_error
+{
+    nlohmann::ordered_json Result;
+    CheckFailed(nlohmann::ordered_json R, const std::string &Why) : std::runtime_error(Why), Result(std::move(R)) {}
+};
 
 void Register(Spec S);
 void RegisterGroup(const std::string &Name, const std::string &Summary);

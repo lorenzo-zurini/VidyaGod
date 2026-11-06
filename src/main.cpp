@@ -482,7 +482,7 @@ bool InitializeGlobalConfigJSON(nlohmann::ordered_json * GlobalConfigJSON, QDir 
 
     //Written only when that changed it (or there was none): every command-line call starts here, and rewriting the
     //unchanged file each time raced two calls run at once.
-    if ((!Existed || *GlobalConfigJSON != AsRead) && !AppPaths::ConfigReadOnly() && !JSONOps::SaveJSON(GlobalConfigJSON, &GlobalConfigFile))
+    if ((!Existed || *GlobalConfigJSON != AsRead) && !AppPaths::ConfigReadOnly() && !JSONOps::SaveConfig(*GlobalConfigJSON, AppDataDir->absolutePath().toStdString()))
     {
         LogErr("main.cpp", "GlobalConfig.JSON could not be written.");
         return false;

@@ -21,7 +21,7 @@ void Save(Command::Context &C)
     if (AppPaths::ConfigReadOnly())
         throw std::runtime_error("this call runs beside the app (it carries a path override), so it cannot change the "
                                  "config: run it without the override, or quit the app");
-    if (!JSONOps::SaveJSON(C.Config, new QFile(C.AppDataDir->filePath("GlobalConfig.JSON"))))
+    if (!JSONOps::SaveConfig(*C.Config, C.AppDataDir->absolutePath().toStdString()))
         throw std::runtime_error("could not save the config");
 }
 

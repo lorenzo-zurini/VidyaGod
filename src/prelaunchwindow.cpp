@@ -481,10 +481,7 @@ PreLaunchWindow::PreLaunchWindow(
     BtnLayout->addWidget(PackageEditorButton);
     connect(PackageEditorButton, &QPushButton::clicked, this, [this]()
     {
-        bool Created = false;
-        PackageEditor* Editor = PackageEditor::OpenFor(this->GlobalConfigJSON, this,
-                                                       QString::fromStdString(this->BundleDir), &Created);
-        if (Editor && Created) connect(Editor, &PackageEditor::packageSaved, &MainWindow::RefreshPackage);
+        PackageEditor::OpenFor(this->GlobalConfigJSON, this, QString::fromStdString(this->BundleDir));
     });
 
     CloseButton = new QPushButton("Close", Footer);
@@ -1825,8 +1822,7 @@ void PreLaunchWindow::FillVariantCombo()
 
 void PreLaunchWindow::persistGlobalConfig()
 {
-    QDir AppDataDir(QString::fromStdString(AppPaths::DataRoot().string()));
-    JSONOps::SaveJSON(GlobalConfigJSON, new QFile(AppDataDir.filePath("GlobalConfig.JSON")));
+    JSONOps::SaveConfig(*GlobalConfigJSON, AppPaths::DataRoot());
 }
 
 void PreLaunchWindow::onLaunchClicked()

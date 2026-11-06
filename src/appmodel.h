@@ -79,6 +79,7 @@ public:
     // Publish side (Sharing tab): freeze your library into content-addressed blocks and seed them, and record the
     // shareable launchable-CID list. Runs off-thread; emits libraryPublished / libraryPublishFailed.
     void publishLibraries();
+    bool publishing() const { return Publishing; }    // a publish is in flight (one at a time: a second runs after it)
     // Consumer side (gigagraph sharing): add a game by a launchable CID (a friend's / pasted). Fetches its whole
     // closure into the pretty on-disk checkout (NodeGraph::HydratePackage) off-thread, then rebuilds the catalog so
     // it appears in the Library. Emits gameAdded / gameAddFailed.
@@ -216,6 +217,8 @@ private:
     bool                           FriendReconcilePending = false;  // debounce: coalesce a burst of landed blocks into one catalog rebuild
     bool                           FriendClosureRunning = false;    // a closure-completion worker is in flight
     bool                           FriendClosureAgain = false;      // blocks landed while it ran → run once more
+    bool                           Publishing = false;              // publishLibraries in flight
+    bool                           PublishAgain = false;            // asked again while it ran → once more after
     std::set<std::string>          FriendStubsDirtyPeers;           // peers whose stubs were dropped while a pass ran → drop again when it ends
     std::map<std::string, std::set<std::filesystem::path>> DroppedStubDirs;   // peer → the lib dirs last dropped: swept again after the snapshot is gone
 };

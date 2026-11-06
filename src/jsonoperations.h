@@ -11,6 +11,8 @@
 
 #include "nlohmann/json.hpp"
 
+#include <filesystem>
+
 //Static utility class for loading and saving JSON files using nlohmann::ordered_json.
 //Using ordered_json preserves key insertion order, which matters for registry patches
 //and other structured data that must be written back to disk in a predictable order.
@@ -27,6 +29,11 @@ public:
     //Serializes JSONDocument to disk at JSONFile with 4-space indentation.
     //Returns true on success, false if the file cannot be opened for writing.
     static bool SaveJSON(nlohmann::ordered_json * JSONDocument, QFile * JSONFile);
+
+    //The one way the app's config (DataDir/GlobalConfig.JSON) is written. Refused — false, nothing written — while the
+    //config is read-only (a call run beside the app that holds the data dir: AppPaths::SetConfigReadOnly), so no
+    //second process ever writes the file the app keeps in memory and saves over.
+    static bool SaveConfig(const nlohmann::ordered_json &Config, const std::filesystem::path &DataDir);
 };
 
 #endif // JSONOPERATIONS_H
