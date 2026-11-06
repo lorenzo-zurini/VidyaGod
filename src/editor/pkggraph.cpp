@@ -1067,26 +1067,18 @@ std::vector<FoldStep> FoldOrder(const std::string &Root, const std::function<con
 ShelfCard CardFor(const std::string &Root, const std::vector<std::string> &PackageNodes, const std::function<const json *(const std::string &)> &Find)
 {
     ShelfCard C;
-    //The tile the root's fold presents: the first entry carrying one, its own layers before what it contains.
-    std::set<std::string> Seen;
-    std::function<bool(const std::string &)> FindTile = [&](const std::string &H) {
-        const json *N = Find ? Find(H) : nullptr;
-        if (!N || !Seen.insert(H).second || !N->is_object() || !N->contains("LAYERS") || !(*N)["LAYERS"].is_array()) return false;
-        for (const json &L : (*N)["LAYERS"])
-            if (L.is_object() && L.contains("EXEC") && L["EXEC"].is_array())
-                for (const json &E : L["EXEC"])
-                    if (E.is_object() && E.contains("TILE") && E["TILE"].is_object())
-                    {
-                        const json &T = E["TILE"];
-                        C.Title = StrField(T, "TITLE"); C.Uid = StrField(T, "UID");
-                        if (T.contains("COVER")) C.Cover = T["COVER"].is_string() ? T["COVER"].get<std::string>() : StrField(T["COVER"], "FILE");
-                        return true;
-                    }
-        for (const json &L : (*N)["LAYERS"])
-            if (LayerType(L) == "NODE" && FindTile(StrField(L, "NODE"))) return true;
-        return false;
-    };
-    FindTile(Root);
+    //The tile the root's fold presents: its first folded entry carrying one (not a runner's) — what the shelf derives
+    //the node's UID from (ManifestModel::DeriveFacts), its fields merged across the layers that set them.
+    for (const auto &[L, E] : FoldOf(Root, Find).Exec.items())
+    {
+        (void)L;
+        if (!E.is_object() || (E.contains("GUEST") && E["GUEST"].is_array() && !E["GUEST"].empty())) continue;
+        if (!E.contains("TILE") || !E["TILE"].is_object() || !E["TILE"].contains("UID")) continue;
+        const json &T = E["TILE"];
+        C.Title = StrField(T, "TITLE"); C.Uid = StrField(T, "UID");
+        if (T.contains("COVER")) C.Cover = T["COVER"].is_string() ? T["COVER"].get<std::string>() : StrField(T["COVER"], "FILE");
+        break;
+    }
     std::set<std::string> Recommended;
     for (const std::string &H : PackageNodes)
         if (const json *N = Find ? Find(H) : nullptr; N && N->is_object() && N->contains("RECOMMENDED") && (*N)["RECOMMENDED"].is_array())

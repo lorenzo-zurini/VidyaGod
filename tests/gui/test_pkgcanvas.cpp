@@ -1535,6 +1535,22 @@ private slots:
         QVERIFY(PortRec && !OrigRec);
     }
 
+    // The card's tile is the folded one, as the shelf takes it: a version that renames the tile it contains shows
+    // the new title on the contained UID. Teeth: take the first layer naming a tile, unmerged (no UID, or the old
+    // title).
+    void aVersionsCardShowsItsFoldedTile()
+    {
+        const json Play = json{{"LABEL", "Play"}, {"TILE", {{"UID", "9"}, {"TITLE", "Nine"}}}};
+        std::map<std::string, json> Ns{
+            {"orig", json{{"VARIANT", "Original"}, {"LAYERS", json::array({ json{{"EXEC", json::array({ Play })}} })}}},
+            {"hd", json{{"VARIANT", "HD"}, {"LAYERS", json::array({ json{{"NODE", "orig"}},
+                json{{"EXEC", json::array({ json{{"LABEL", "Play"}, {"TILE", {{"TITLE", "Nine HD"}}}} })}} })}}}};
+        auto Find = [&](const std::string &H) -> const json * { const auto It = Ns.find(H); return It == Ns.end() ? nullptr : &It->second; };
+        const auto C = PkgGraph::CardFor("hd", {"orig", "hd"}, Find);
+        QCOMPARE(C.Uid, std::string("9"));
+        QCOMPARE(C.Title, std::string("Nine HD"));
+    }
+
     // A version (or an entry) has Test Play on its title bar: it asks for the test launch, and does not start a drag
     // of the node. A node that cannot run has none. Teeth: no button; the title's drag takes the click.
     void aVersionHasTestPlayOnItsTitle()

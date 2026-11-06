@@ -264,8 +264,8 @@ struct FoldStep { int Depth = 0; std::string Node, NodeLabel; int Layer = -1; st
 std::vector<FoldStep> FoldOrder(const std::string &Root, const std::function<const nlohmann::ordered_json *(const std::string &)> &Find,
                                 const LabelFn &Label = {});
 
-//How a version shows on the shelf: the tile its fold presents (title, UID, cover file) and every version of the package
-//with the one marked recommended.
+//How a version shows on the shelf: the tile its fold presents (title, UID, cover file — its first folded entry with a
+//tile, as the shelf takes it) and every version of the package with the one marked recommended.
 struct ShelfCard { std::string Title, Uid, Cover; std::vector<std::pair<std::string, bool>> Versions; };
 ShelfCard CardFor(const std::string &Root, const std::vector<std::string> &PackageNodes,
                   const std::function<const nlohmann::ordered_json *(const std::string &)> &Find);
