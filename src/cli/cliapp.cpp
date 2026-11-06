@@ -274,7 +274,8 @@ void PrintCommandHelp(const Command::Spec &S, const Style &St)
         O << "\n" << St.B("Examples:") << "\n";
         for (const auto &E : S.Examples) O << "  " << St.Dim("$") << " VidyaGod " << E << "\n";
     }
-    O << "\n" << St.Dim("Runs against: ") << (S.Requires == Command::Needs::Ui ? "the app's windows"
+    O << "\n" << St.Dim("Runs against: ") << (S.Requires == Command::Needs::App ? "the running app (start VidyaGod on the data dir first)"
+                                              : S.Requires == Command::Needs::Ui ? "the app's windows"
                                               : S.Requires == Command::Needs::Model ? "the app's model" : "the config")
       << (S.Node ? St.Dim(" · needs the IPFS node") : "") << "\n";
     if (!S.Covers.empty()) O << St.Dim("Drives: " + Join(S.Covers, 0, S.Covers.size(), ", ")) << "\n";
@@ -632,6 +633,21 @@ bool Wants(int argc, char **argv)
     return false;
 }
 
+namespace
+{
+// An in-process call's last step: its result is printed and everything it wrote is on disk, so the process ends here,
+// without freeing an index of hundreds of thousands of values one by one (a fifth of a short call) — as the app's own
+// Quit does. Not while the IPFS node is open: its store is closed by the exit hook, on the normal way out.
+int Finish(int Rc)
+{
+    if (IpfsWrapper::Available()) return Rc;
+    std::fflush(nullptr);
+    std::cout.flush();
+    std::cerr.flush();
+    std::_Exit(Rc);
+}
+} // namespace
+
 int Main(int argc, char **argv, const Hooks &H)
 {
     Globals G;
@@ -652,6 +668,7 @@ int Main(int argc, char **argv, const Hooks &H)
     St.On = !G.NoColour && !std::getenv("NO_COLOR") && IsTty(1) && !G.Json;
     ErrSt.On = ErrSt.On && !G.NoColour && IsTty(2);
     SetLogEcho(G.Verbose);
+    SetLogMillis(G.Verbose);
     VgSetLogVerbose(G.Verbose ? 1 : 0);   // and the node's own trace
 
     if (Tokens.empty() || Tokens.front() == "help")
@@ -769,6 +786,12 @@ int Main(int argc, char **argv, const Hooks &H)
     const bool Overrides = !G.PackageDir.empty() || !G.RuntimeDir.empty() || !G.UserDataDir.empty();
     if (!Overrides && CommandServer::Send(DataPath.toStdString(), S->Name, Args, Reply)) return Report(Reply, S, G, St, ErrSt);
 
+    if (S->Requires == Command::Needs::App)   // what only the running app holds: nothing to bring up here
+    {
+        std::cerr << ErrSt.Red("error:") << " '" << S->Name << "' acts on the running app, and none is up on "
+                  << DataPath.toStdString() << ": start VidyaGod on this data dir (off-screen is fine), then run it\n";
+        return Unreachable;
+    }
     std::string Holder;
     if (!Platform::AcquireSingleInstanceLock((AppDataDir.absolutePath() + "/vidyagod.lock").toStdString(), &Holder))
     {
@@ -793,7 +816,7 @@ int Main(int argc, char **argv, const Hooks &H)
     if (S->Requires == Command::Needs::Config)
     {
         Reply = Command::Run(S->Name, Args, Ctx);
-        return Report(Reply, S, G, St, ErrSt);
+        return Finish(Report(Reply, S, G, St, ErrSt));
     }
     // The model (and, for UI commands, the windows) of the app, brought up offscreen for this call.
     if (qEnvironmentVariableIsEmpty("QT_QPA_PLATFORM")) qputenv("QT_QPA_PLATFORM", "offscreen");
@@ -827,7 +850,7 @@ int Main(int argc, char **argv, const Hooks &H)
         QApplication::exec();
     }
     QCoreApplication::processEvents();
-    return Report(Reply, S, G, St, ErrSt);
+    return Finish(Report(Reply, S, G, St, ErrSt));
 }
 
 } // namespace CliApp

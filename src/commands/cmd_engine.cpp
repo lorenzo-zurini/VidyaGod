@@ -184,7 +184,7 @@ VG_COMMANDS
             const auto I = Index(C);
             const Node &N = *NodeOf(*I, Command::Str(A, "node"));
             json Out = json::array();
-            for (const auto &L : N.Layers)
+            for (const auto &L : N.LoweredLayers())
             {
                 const std::string T = ManifestModel::LayerType(L);
                 json R = {{"type", T}, {"vfs", ManifestModel::IsVfsLayer(T)}};

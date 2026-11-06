@@ -805,7 +805,7 @@ void PreLaunchWindow::RebuildModuleTree()
     //depth-first is the order the launch applies them (CollectGrafts).
     const auto SectionOf = [&](const std::string& G) {
         const Node* N = Index->Find(G);
-        return N && N->Json.contains("SECTION") && N->Json["SECTION"].is_string() ? N->Json["SECTION"].get<std::string>() : std::string();
+        return N && N->Json->contains("SECTION") && (*N->Json)["SECTION"].is_string() ? (*N->Json)["SECTION"].get<std::string>() : std::string();
     };
     std::vector<std::string> SectionOrder;
     std::map<std::string, std::vector<std::string>> BySection;

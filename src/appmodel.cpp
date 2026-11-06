@@ -1,5 +1,8 @@
 #include "appmodel.h"
 #include "covercache.h"
+#include "platform/platform.h"   // ReleaseFreedMemory
+
+#include <algorithm>
 #include "asyncwork.h"   // guarded detached workers (P7: replaces raw std::thread(...).detach() with `this` captures)
 #include "packagecatalog.h"
 #include "nodegraph.h"   // HydratePackage — add a game by launchable CID (gigagraph sharing consumer)
@@ -31,6 +34,13 @@
 #include <utility>
 #include <vector>
 
+// The size covers are kept at: the largest card (Large, or a wider width set by hand), 2:3 as every card is drawn.
+static QSize CoverDisplaySize(int CardWidth)
+{
+    const int W = std::max(250, CardWidth);
+    return QSize(W, W * 3 / 2);
+}
+
 AppModel::AppModel(nlohmann::ordered_json * config, QDir * appDataDir, QObject * parent)
     : QObject(parent), Config(config), AppDataDir(appDataDir)
 {
@@ -44,13 +54,18 @@ AppModel::AppModel(nlohmann::ordered_json * config, QDir * appDataDir, QObject *
     // Content-addressed cover store: covers with a SOURCE.CID resolve + fetch to ASSETS/<cid>, shared across the
     // CATALOG stub, the LIBRARY install, and any package referencing the same cover — no per-bundle duplication.
     CoverCache::instance()->setAssetsRoot(QString::fromStdString(PackageCatalog::AssetsRootDir(*Config)));
+    CoverCache::instance()->setDisplaySize(CoverDisplaySize(CardPixelWidth));
 
     // Drop LIBRARY records for locally-added bundles the user has since moved/deleted (their PATH is gone), so the
     // library doesn't list dead tiles. Repo packages are untouched (their content may just be un-hydrated).
     if (PackageCatalog::PruneMovedLocalPackages(*Config) > 0) save();
 
-    CatalogIndex = PackageCatalog::BuildCatalogIndex(*Config);   // node-native catalog source
-    CatalogShared.reset();
+    {
+        std::string Inputs;
+        std::vector<Diagnostics::Entry> Said;
+        NodeIndex Idx = PackageCatalog::BuildCatalogIndex(*Config, &Inputs, &Said);   // node-native catalog source
+        setCatalog(std::move(Idx), std::move(Inputs), std::move(Said));
+    }
 
     // A friend sent us their COMPLETE shared set (a snapshot, per the bilateral protocol — pushed on any share change
     // and on our explicit requestFriendLibraries). We REPLACE our record for that peer wholesale: this is the only way
@@ -110,8 +125,12 @@ bool AppModel::save()
 
 void AppModel::rebuildCatalog()
 {
-    CatalogIndex = PackageCatalog::BuildCatalogIndex(*Config);   // re-scan the node graph from disk
-    CatalogShared.reset();
+    {
+        std::string Inputs;
+        std::vector<Diagnostics::Entry> Said;
+        NodeIndex Idx = PackageCatalog::BuildCatalogIndex(*Config, &Inputs, &Said);   // re-scan the node graph from disk
+        setCatalog(std::move(Idx), std::move(Inputs), std::move(Said));
+    }
 
     // Covers ride the ONE rolling queue, no bespoke trigger: walk every tile's cover and enqueue any that isn't
     // already in ASSETS as an ordinary (optional, verified) fetch. Uniform for LOCAL tiles (the fetch resolves from
@@ -123,7 +142,7 @@ void AppModel::rebuildCatalog()
         {
             std::vector<IpfsWrapper::FetchTarget> Covers;
             std::set<std::string> Seen;
-            for (const auto & [Key, N] : CatalogIndex.Nodes)
+            for (const auto & [Key, N] : Catalog->Nodes)
             {
                 if (!(N.Meta.is_object() && N.Meta.contains("COVER") && N.Meta["COVER"].is_object())) continue;
                 const auto & Cv = N.Meta["COVER"];
@@ -193,6 +212,7 @@ void AppModel::setCardPixelWidth(int w)
     CardPixelWidth = w;
     (*Config)["Settings"]["CardPixelWidth"] = w;
     save();
+    CoverCache::instance()->setDisplaySize(CoverDisplaySize(w));
     emit cardSizeChanged(w);
 }
 
@@ -248,12 +268,12 @@ void AppModel::removePackage(const QString & uid)
         // it; the GUI owns the live one), do the work on a thread, then rebuild on the GUI thread when it lands.
         const std::string CanonPath = std::filesystem::weakly_canonical(std::filesystem::path(Path), Ec).string();
         std::vector<std::string> ToDehydrate;
-        for (const auto & [NodeId, N] : CatalogIndex.Nodes)
+        for (const auto & [NodeId, N] : Catalog->Nodes)
             if (N.IsVariant() &&
                 std::filesystem::weakly_canonical(N.BundleDir, Ec).string() == CanonPath)
                 ToDehydrate.push_back(NodeId);
         if (ToDehydrate.empty()) return;   // nothing hydrated under this bundle
-        auto Idx = std::make_shared<NodeIndex>(CatalogIndex);      // private copy for the worker (mirrors importRunner)
+        std::shared_ptr<const NodeIndex> Idx = Catalog;            // the worker reads the index as it is now (immutable)
         AsyncWork::Run(this,
             [Idx, ToDehydrate = std::move(ToDehydrate)]{ for (const std::string & NodeId : ToDehydrate) PackageCatalog::DehydrateNode(*Idx, NodeId); },
             [this]{ rebuildCatalog(); });  // emits catalogChanged
@@ -286,7 +306,7 @@ void AppModel::pushSeedLevels()
                     if (R.is_object())
                         for (const char * K : { "cid", "pin" })   // the share folder, then the pin folder
                             if (R.contains(K) && R[K].is_string() && !R[K].get<std::string>().empty()) Roots.push_back(R[K].get<std::string>());
-    for (const auto & [Cid, N] : CatalogIndex.Nodes)
+    for (const auto & [Cid, N] : Catalog->Nodes)
         if (!N.Received && !N.Cid.empty()) Nodes.push_back(Cid);
     IpfsWrapper::SetSeedLevels(Roots, Nodes);
 }
@@ -301,20 +321,21 @@ void AppModel::syncSources()
     // (first run / a source CID bump), the worker builds the new index and the completion only swaps it in.
     auto Changed  = std::make_shared<bool>(false);
     auto NewIndex = std::make_shared<NodeIndex>();
+    auto NewInputs = std::make_shared<std::string>();
+    auto NewSaid = std::make_shared<std::vector<Diagnostics::Entry>>();
     AsyncWork::Run(this,
-        [Cfg, Changed, NewIndex]{
+        [Cfg, Changed, NewIndex, NewInputs, NewSaid]{
             const nlohmann::ordered_json OrigLib = Cfg->value("LIBRARY", nlohmann::ordered_json::array());
             PackageCatalog::SyncPackageSources(*Cfg);   // fetch-if-missing + index CID package sources (no-op offline once fetched)
             *Changed = Cfg->value("LIBRARY", nlohmann::ordered_json::array()) != OrigLib;
-            if (*Changed) *NewIndex = PackageCatalog::BuildCatalogIndex(*Cfg);   // heavy scan OFF the main thread
+            if (*Changed) *NewIndex = PackageCatalog::BuildCatalogIndex(*Cfg, NewInputs.get(), NewSaid.get());   // heavy scan OFF the main thread
         },
-        [this, Cfg, Changed, NewIndex]{
+        [this, Cfg, Changed, NewIndex, NewInputs, NewSaid]{
             if (*Changed)
             {
                 (*Config)["LIBRARY"] = (*Cfg)["LIBRARY"];
                 save();
-                CatalogIndex = std::move(*NewIndex);   // cheap swap on the main thread (build already done)
-                CatalogShared.reset();
+                setCatalog(std::move(*NewIndex), std::move(*NewInputs), std::move(*NewSaid));   // cheap swap on the main thread (build already done)
                 emit catalogChanged();
                 emit packageSourcesChanged();
             }
@@ -348,12 +369,11 @@ void AppModel::pushLanRoster()
     IpfsWrapper::SetLanExcluded(Ex);
 }
 
-std::shared_ptr<const NodeIndex> AppModel::catalogSnapshot() const
+void AppModel::setCatalog(NodeIndex Idx, std::string Inputs, std::vector<Diagnostics::Entry> Said)
 {
-    if (auto S = CatalogShared.lock()) return S;                       // shared while anyone holds it, never cached
-    auto S = std::make_shared<const NodeIndex>(CatalogIndex);           // past the last user (a 17 MB copy)
-    CatalogShared = S;
-    return S;
+    Catalog = std::make_shared<const NodeIndex>(std::move(Idx));
+    PackageCatalog::PublishAppIndex(Catalog, std::move(Inputs), std::move(Said));
+    std::thread([] { Platform::ReleaseFreedMemory(); }).detach();   // the replaced index back to the system, off this thread
 }
 
 void AppModel::healOrphansIfAny()
@@ -968,7 +988,7 @@ void AppModel::completeReceivedClosures()
     //closed over what its packages contain), never fetched into the package that needs it.
     if (!PackageCatalog::ReceivedPackagesIncomplete(*Config))
     {   // nothing to land: still drop what no landed folder lists (older generations, an older build's copies)
-        if (PackageCatalog::PruneStaleReceived(CatalogIndex, *Config) > 0) { rebuildCatalog(); emit friendCatalogChanged(); }
+        if (PackageCatalog::PruneStaleReceived(*Catalog, *Config) > 0) { rebuildCatalog(); emit friendCatalogChanged(); }
         return;
     }
     FriendClosureRunning = true;
@@ -993,7 +1013,7 @@ void AppModel::completeReceivedClosures()
                 reconcileReceivedLibraries();    // the CURRENT generation's roots, into the now-clean dirs
             }
             rebuildCatalog();           // the landed closure blocks are ordinary tree nodes, marked Received by the scan
-            if (const int Pruned = PackageCatalog::PruneStaleReceived(CatalogIndex, *Config); Pruned > 0)
+            if (const int Pruned = PackageCatalog::PruneStaleReceived(*Catalog, *Config); Pruned > 0)
             {   // older generations' node files in kept (installed) dirs — gone now that the current ones landed
                 LogOut("AppModel::completeReceivedClosures", "pruned " + std::to_string(Pruned) + " stale received node file(s)");
                 rebuildCatalog();
@@ -1078,14 +1098,16 @@ void AppModel::applySourceUpgrade(bool force)
     auto Err   = std::make_shared<std::string>();
     auto Ok    = std::make_shared<bool>(false);
     auto Index = std::make_shared<NodeIndex>();
+    auto Inputs = std::make_shared<std::string>();
+    auto Said = std::make_shared<std::vector<Diagnostics::Entry>>();
     AsyncWork::Run(this,
-        [Cfg, Plan, Err, Ok, Index, force]{
+        [Cfg, Plan, Err, Ok, Index, Inputs, Said, force]{
             *Ok = PackageCatalog::ApplySourceUpgrade(*Cfg, *Plan, force, Err.get());
             if (!*Ok) return;
             PackageCatalog::SyncPackageSources(*Cfg);
-            *Index = PackageCatalog::BuildCatalogIndex(*Cfg);   // heavy scan stays off the main thread
+            *Index = PackageCatalog::BuildCatalogIndex(*Cfg, Inputs.get(), Said.get());   // heavy scan stays off the main thread
         },
-        [this, Cfg, Err, Ok, Index]{
+        [this, Cfg, Err, Ok, Index, Inputs, Said]{
             PendingUpgrade.reset();
             if (!*Ok)
             {
@@ -1096,8 +1118,7 @@ void AppModel::applySourceUpgrade(bool force)
             (*Config)["LIBRARY"] = (*Cfg)["LIBRARY"];
             (*Config)["Settings"]["PackageSources"] = (*Cfg)["Settings"]["PackageSources"];
             save();
-            CatalogIndex = std::move(*Index);
-            CatalogShared.reset();
+            setCatalog(std::move(*Index), std::move(*Inputs), std::move(*Said));
             emit catalogChanged();
             emit packageSourcesChanged();
         });

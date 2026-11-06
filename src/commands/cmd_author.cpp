@@ -130,7 +130,7 @@ VG_COMMANDS
         { "AuthoringSessionModel::start", "AuthoringSessionModel::mode", "AuthoringWorker::start", "AuthoringSession::Begin",
           "AuthoringSession::WithoutWaiting", "AuthoringSession::Live", "AuthoringSession::RuntimePath", "AuthoringSession::ContentRoot",
           "AuthoringSession::AnchorLayouts", "AuthoringSession::RunnerId", "AuthoringSession::PrefixGenerate", "AuthoringSession::WriteLayerPath",
-          "AuthoringSessionModel::bundleNodeIds" , "ContainerWrapper::SetNotAGame" }, Needs::Model, false,
+          "AuthoringSessionModel::bundleNodeIds" , "ContainerWrapper::SetNotAGame" }, Needs::App, false,
         [](Command::Context &C, const json &A) {
             if (!C.Live) throw std::runtime_error("an authoring session lives in the app: start VidyaGod on this data dir (off-screen is fine), then run this");
             if (The()) throw std::runtime_error("a session is open (" + The()->Package + "): VidyaGod author end");
@@ -169,7 +169,7 @@ VG_COMMANDS
 
     Command::Register({
         "author state", "the session: its runtime, the runner, anchors, what changed, what was captured", "",
-        {}, { "author state" }, {}, Needs::Model, false, [](Command::Context &, const json &) { return State(Live()); }, {} });
+        {}, { "author state" }, {}, Needs::App, false, [](Command::Context &, const json &) { return State(Live()); }, {} });
 
     Command::Register({
         "author run-windows", "run a Windows program (an installer, a setup tool) in the session, under a runner",
@@ -177,7 +177,7 @@ VG_COMMANDS
         "and runs the program with --args. Waits until it exits (--timeout). Off-screen and silent as every run here.",
         { Pos("exe", "the program (a host path)"), Opt("runner", "the runner's id", Type::String, true), Opt("args", "its arguments (a,b)"), Timeout() },
         { "author run-windows ~/Downloads/setup.exe --runner geproton_10_34 --args /S" },
-        { "AuthoringSessionModel::runWindows", "AuthoringWorker::runWindows", "AuthoringSession::RunWindows" }, Needs::Model, false,
+        { "AuthoringSessionModel::runWindows", "AuthoringWorker::runWindows", "AuthoringSession::RunWindows" }, Needs::App, false,
         [](Command::Context &, const json &A) {
             Session &S = Live();
             const long long From = S.Events;
@@ -191,7 +191,7 @@ VG_COMMANDS
         "author run", "run a tool in the session's guest (regedit.exe, explorer.exe, a program inside it)",
         "Runs a guest command against the live mount (after a Windows program set the prefix up). Waits until it exits.",
         { Pos("command", "the guest command"), Timeout() }, { "author run regedit.exe" },
-        { "AuthoringSessionModel::runGuest", "AuthoringWorker::runExe", "AuthoringSession::RunExe" }, Needs::Model, false,
+        { "AuthoringSessionModel::runGuest", "AuthoringWorker::runExe", "AuthoringSession::RunExe" }, Needs::App, false,
         [](Command::Context &, const json &A) {
             Session &S = Live();
             const long long From = S.Events;
@@ -206,7 +206,7 @@ VG_COMMANDS
         { Flag("registry", "the changed registry keys"), Opt("under", "only files under this folder"), Timeout() },
         { "author changes", "author changes --registry" },
         { "AuthoringSessionModel::refreshDelta", "AuthoringWorker::refreshDelta", "AuthoringSession::EnumerateDelta", "AuthoringSession::IsChurn",
-          "AuthoringSessionModel::scanRegistry", "AuthoringWorker::scanRegistry", "AuthoringSession::CaptureRegistryDelta" }, Needs::Model, false,
+          "AuthoringSessionModel::scanRegistry", "AuthoringWorker::scanRegistry", "AuthoringSession::CaptureRegistryDelta" }, Needs::App, false,
         [](Command::Context &, const json &A) {
             Session &S = Live();
             const long long From = S.Events;
@@ -230,7 +230,7 @@ VG_COMMANDS
           Opt("keys", "registry keys to capture (a,b)"), Timeout() },
         { "author capture --files 'pfx/drive_c/GOG Games/X' --name X --target %GameDir%", "author capture --keys 'HKLM\\Software\\X'" },
         { "AuthoringSessionModel::captureFiles", "AuthoringWorker::captureFiles", "AuthoringSession::CopySelection", "AuthoringSession::MakeDirLayer",
-          "AuthoringSessionModel::captureSelectedRegistry", "PackageEditorModel::fillWaiting" }, Needs::Model, false,
+          "AuthoringSessionModel::captureSelectedRegistry", "PackageEditorModel::fillWaiting" }, Needs::App, false,
         [](Command::Context &, const json &A) {
             Session &S = Live();
             const long long From = S.Events;
@@ -243,7 +243,7 @@ VG_COMMANDS
 
     Command::Register({
         "author end", "end the session: the runtime is unmounted (captures already made stay in the package)", "",
-        { Timeout() }, { "author end" }, { "AuthoringWorker::end", "AuthoringSession::End" }, Needs::Model, false,
+        { Timeout() }, { "author end" }, { "AuthoringWorker::end", "AuthoringSession::End" }, Needs::App, false,
         [](Command::Context &, const json &A) {
             Session &S = Live();
             json Out = State(S);
@@ -260,7 +260,7 @@ VG_COMMANDS
         { Pos("package", "the package"), Pos("node", "the node"), Opt("mode", "what to capture", Type::String, false, { "setup", "files", "registry" }) },
         { "author window 749 'Original' --mode files" },
         { "DeltaTree::setPaths", "DeltaTree::setSeparator", "DeltaTree::MainFolder", "DeltaTree::markCaptured", "DeltaTree::reveal", "DeltaTree::checkedRoots",
-          "DeltaTree::checkedEntries", "DeltaTree::checkAll" }, Needs::Ui, false,
+          "DeltaTree::checkedEntries", "DeltaTree::checkAll" }, Needs::App, false,
         [](Command::Context &C, const json &A) {
             PackageEditor *Ed = PackageEditor::live();
             const fs::path P = PackageDir(C, Command::Str(A, "package"), false);

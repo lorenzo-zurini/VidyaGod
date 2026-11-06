@@ -75,13 +75,14 @@ VG_COMMANDS
         "Where this run keeps its data, how it was started (normal, portable, in-package, cli-paths — which decides "
         "whether it may stay resident or start on login), the USERDATA root, and the overrides a launch honours: set "
         "for one call with the global --package-dir, --runtime-dir and --userdata-dir.", {}, { "app paths", "app paths --userdata-dir /tmp/u" },
-        { "AppPaths::DataRoot", "AppPaths::SetDataRoot", "AppPaths::GetMode", "AppPaths::SetMode", "AppPaths::DaemonSupported",
+        { "AppPaths::DataRoot", "AppPaths::DataRootSet", "AppPaths::SetDataRoot", "AppPaths::GetMode", "AppPaths::SetMode", "AppPaths::DaemonSupported",
           "AppPaths::AutostartSupported", "AppPaths::PackagePathOverride", "AppPaths::RuntimePathOverride", "AppPaths::UserDataPathOverride",
           "AppPaths::SetPackagePathOverride", "AppPaths::SetRuntimePathOverride", "AppPaths::SetUserDataPathOverride", "InstanceStore::Root",
           "AppModel::appDataDir", "AppModel::config" },
         Needs::Config, false,
         [](Command::Context &C, const json &) {
-            return json{{"data_root", AppPaths::DataRoot().string()}, {"mode", ModeName(AppPaths::GetMode())},
+            return json{{"data_root", AppPaths::DataRoot().string()}, {"data_root_set", AppPaths::DataRootSet()},
+                        {"mode", ModeName(AppPaths::GetMode())},
                         {"may_stay_resident", AppPaths::DaemonSupported()}, {"may_start_on_login", AppPaths::AutostartSupported()},
                         {"userdata_root", InstanceStore::Root(*C.Config).string()},
                         {"package_dir", AppPaths::PackagePathOverride().string()}, {"runtime_dir", AppPaths::RuntimePathOverride().string()},

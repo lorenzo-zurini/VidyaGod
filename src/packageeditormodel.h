@@ -160,7 +160,7 @@ private:
     //Immutable once built, so a background check can keep the one it started on while the canvas moves on.
     mutable std::shared_ptr<const NodeIndex> ExecIndexCache;
     mutable uint64_t         ExecIndexRev = 0;         // the ContentRevision it was built at (0 = stale)
-    mutable std::unique_ptr<NodeIndex> LibraryCache;
+    mutable std::shared_ptr<const NodeIndex> LibraryCache;   // the app's index while it is current (CurrentIndex)
 };
 
 #endif // PACKAGEEDITORMODEL_H

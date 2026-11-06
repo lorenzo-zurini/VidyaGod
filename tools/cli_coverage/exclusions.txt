@@ -82,6 +82,13 @@ A11yNames::*                 # gives every control its name at start-up: the nam
 Log                          # the log every function writes; `-v` shows it
 Log*                         # the log's levels (LogOut, LogErr, …): every command writes them
 SetLogEcho                   # whether the log is echoed to stderr: `-v` sets it for every command
+SetLogMillis                 # millisecond timestamps in the log: `-v` sets it for every command
+Parallel::For                # the thread pool the index build and hydration run on: every command that builds or reads them
+Parallel::Threads            # the thread pool's width: as Parallel::For
+CoverCache::decoding         # whether a cover decode is in flight: the cards ask it while `app covers --decode` runs
+Parallel::ForWith            # the thread pool with a state per thread: the validator's per-package checks (`catalog validate`)
+Parallel::Run                # the run both of them share
+SharedJson::operator*        # reading a node's JSON (operator* and, by the pattern, operator->): every command that reads a node
 VerboseLogging               # the --log / -v state, read by the log
 *LogCallback                 # the hook the app installs to show the log in its window; what it receives is the log itself
 SandboxLayer::IsSandboxInit  # the sandbox's own start inside the box: a launch (`launch run`) re-runs the program as it

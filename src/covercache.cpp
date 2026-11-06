@@ -126,10 +126,13 @@ QPixmap CoverCache::take(const QString &Path)
     {
         Decoding.insert(Path);
         ++Decodes;
-        QThreadPool::globalInstance()->start([this, Path] {
+        QThreadPool::globalInstance()->start([this, Path, Max = DisplayMax, Gen = DisplayGen] {
             QImage Img(Path);
-            QMetaObject::invokeMethod(this, [this, Path, Img = std::move(Img)]() mutable {   // the cache lives for the app
+            if (!Img.isNull() && Max.isValid() && (Img.width() > Max.width() || Img.height() > Max.height()))
+                Img = Img.scaled(Max, Qt::IgnoreAspectRatio, Qt::SmoothTransformation);   // as a card draws it
+            QMetaObject::invokeMethod(this, [this, Path, Gen, Img = std::move(Img)]() mutable {   // the cache lives for the app
                 Decoding.remove(Path);
+                if (Gen != DisplayGen) { emit coverDecoded(); return; }   // decoded for smaller cards: surfaces take it again
                 if (Img.isNull()) { Undecodable.insert(Path); return; }
                 Decoded.insert(Path, std::move(Img));
                 emit coverDecoded();
@@ -137,6 +140,16 @@ QPixmap CoverCache::take(const QString &Path)
         });
     }
     return QPixmap();
+}
+
+void CoverCache::setDisplaySize(QSize Max)
+{
+    const bool Grew = DisplayMax.isValid() && (Max.width() > DisplayMax.width() || Max.height() > DisplayMax.height());
+    DisplayMax = Max;
+    if (!Grew) return;
+    ++DisplayGen;
+    Decoded.clear();   // decoded for smaller cards
+    emit coversTooSmall();
 }
 
 void CoverCache::sweepNow()

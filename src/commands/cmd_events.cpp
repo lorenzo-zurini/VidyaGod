@@ -62,7 +62,7 @@ VG_COMMANDS
           Command::Opt("object", "only from objects whose name contains this"),
           Command::Opt("timeout", "give up after this many seconds (default 60)", Type::Int) },
         { "events wait --signal catalogChanged", "events wait --signal friendLibrary --timeout 120" },
-        { "EventLog::Since" }, Needs::Model, false,
+        { "EventLog::Since" }, Needs::App, false,
         [](Command::Context &, const json &A) {
             const std::uint64_t From = EventLog::Latest();
             const std::string Sig = Command::Str(A, "signal"), Obj = Command::Str(A, "object", "");
@@ -88,7 +88,7 @@ VG_COMMANDS
           Command::Opt("for", "stop after this many seconds", Type::Int),
           Command::Opt("since", "start after this sequence number (default: now)", Type::Int) },
         { "events follow", "events follow --signal download", "events follow --object FriendsManager --for 30" },
-        { "EventLog::Since" }, Needs::Model, false,
+        { "EventLog::Since" }, Needs::App, false,
         // The CLI calls this over and over with "since": each call returns what is new (CliApp's follow loop).
         [](Command::Context &, const json &A) {
             return json{{"events", EventLog::Since(static_cast<std::uint64_t>(Command::Int(A, "since", 0)), Command::Str(A, "object", ""),
@@ -103,7 +103,7 @@ VG_COMMANDS
         { Command::Pos("control", "the window or control (its name, as ui tree shows it)"),
           Command::Flag("only", "just that object, not what is inside it") },
         { "events attach PreLaunchWindow", "events attach PackageEditor" },
-        { "EventLog::Attach", "EventLog::AttachTree" }, Needs::Ui, false,
+        { "EventLog::Attach", "EventLog::AttachTree" }, Needs::App, false,
         [](Command::Context &, const json &A) {
             QWidget *W = UiFind::Named(Command::Str(A, "control"));
             if (Command::Bool(A, "only", false)) EventLog::Attach(W); else EventLog::AttachTree(W);

@@ -55,7 +55,7 @@ const Spec *Find(const std::string &Name)
 
 static const char *NeedsName(Needs N)
 {
-    switch (N) { case Needs::Config: return "config"; case Needs::Model: return "model"; case Needs::Ui: return "ui"; }
+    switch (N) { case Needs::Config: return "config"; case Needs::Model: return "model"; case Needs::Ui: return "ui"; case Needs::App: return "app"; }
     return "?";
 }
 
@@ -63,7 +63,7 @@ nlohmann::ordered_json Run(const std::string &Name, const nlohmann::ordered_json
 {
     const Spec *S = Find(Name);
     if (!S) return {{"ok", false}, {"error", "no command '" + Name + "' ('VidyaGod help' lists them)"}, {"usage", true}};
-    if ((S->Requires != Needs::Config && !Ctx.Model) || (S->Requires == Needs::Ui && !Ctx.Window))
+    if ((S->Requires != Needs::Config && !Ctx.Model) || ((S->Requires == Needs::Ui || S->Requires == Needs::App) && !Ctx.Window))
         return {{"ok", false}, {"error", "'" + Name + "' needs the " + NeedsName(S->Requires) + ", which this run has not brought up"}};
     if (!Args.is_object()) return {{"ok", false}, {"error", "arguments must be a JSON object"}, {"usage", true}};
     try

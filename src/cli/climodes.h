@@ -61,7 +61,7 @@ int Launch(const LaunchRequest &Req, nlohmann::ordered_json &GlobalConfigJSON, Q
 //with Err when it does not resolve. The rest is the wrapper's: BuildContainerRuntime, Execute, Cleanup.
 struct PreparedLaunch
 {
-    std::shared_ptr<NodeIndex> Index;
+    std::shared_ptr<const NodeIndex> Index;
     nlohmann::ordered_json Manifest = nlohmann::ordered_json::object();   // the wrapper holds it by reference
     std::unique_ptr<ContainerWrapper> W;
     std::string Name;

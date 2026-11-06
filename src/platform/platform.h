@@ -36,6 +36,20 @@ std::filesystem::path SelfExe();
 // "another instance is running" while every pgrep pattern missed the actual holder.
 bool AcquireSingleInstanceLock(const std::string &Key, std::string *Holder = nullptr);
 
+// Hand the memory freed so far back to the system. A long-running app that builds an index, or runs a validation, frees
+// hundreds of MB the allocator would otherwise keep (and the window's RSS would show) for the rest of the session.
+//   POSIX:   malloc_trim(0) where the C library is glibc; nothing elsewhere.
+//   Windows: HeapCompact on the process heap.
+void ReleaseFreedMemory();
+
+// What tells one state of a file from another without reading it, as text ("" when it cannot be stat'd): what the
+// index cache compares each node file by. A rewrite of the same size within one tick of the clock, or one that kept
+// its modification time (cp -a, rsync, unzip), still shows.
+//   POSIX:   size, modification and change times (ns), inode — the change time cannot be set back.
+//   Windows: size, last-write and creation times (100 ns).
+// *Modified (if given) receives the modification time in seconds since the epoch (0 when it cannot be stat'd).
+std::string FileStamp(const std::filesystem::path &P, long long *Modified = nullptr);
+
 // What a mount-point junction at Path names, as the junction stores it (a WinFsp mount: "\\Device\\Volume{…}\\"), or ""
 // when Path is not one. Reads the junction itself, never what it names, so it answers for one whose volume is gone.
 //   POSIX:   always "" (FUSE mounts are not junctions)

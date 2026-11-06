@@ -1,5 +1,6 @@
 #include "catalogtab.h"
 #include "appmodel.h"          // AppModel — catalog/config + card size
+#include "covercache.h"        // re-take covers when the cards grow
 #include "packagecatalog.h"
 #include "manifestmodel.h"
 #include "commonutils.h"
@@ -31,6 +32,10 @@ CatalogTab::CatalogTab(AppModel &model, QWidget *parent)
     connect(&Model, &AppModel::catalogChanged,  this, &CatalogTab::rebuild);
     connect(&Model, &AppModel::coversReady,     this, &CatalogTab::refreshCovers);
     connect(&Model, &AppModel::cardSizeChanged, this, &CatalogTab::onCardSizeChanged);
+    connect(CoverCache::instance(), &CoverCache::coversTooSmall, this, [this] {   // wider cards: decode the covers again
+        for (LibraryGameCard * Card : *AvailableGameCards) if (Card && !Card->CoverOriginal.isNull()) Card->CoverStale = true;
+        refreshCovers();
+    });
 }
 
 // Download-state hooks (driven by DownloadManager signals) — paint download state onto this tab's cards and track
@@ -60,7 +65,7 @@ void CatalogTab::refreshCovers()
 {
     bool Any = false;
     for (LibraryGameCard * Card : *AvailableGameCards)
-        if (Card && Card->CoverOriginal.isNull()) { Card->InitializeClassVariables(); Any = true; }
+        if (Card && (Card->CoverOriginal.isNull() || Card->CoverStale)) { Card->InitializeClassVariables(); Any = true; }
     if (Any && AvailableView) AvailableView->refreshVisuals();
 }
 

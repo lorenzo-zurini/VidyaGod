@@ -84,8 +84,8 @@ static QHash<QString, QString> BuildCidLabels(const NodeIndex & Idx, const nlohm
             if (OutSource)   OutSource->insert(QCid, Src.isEmpty() ? QStringLiteral("Other") : Src);
         }
 
-        if (N.Layers.is_array())
-            for (const auto & L : N.Layers)
+        if (N.ContentLayers.is_array())
+            for (const auto & L : N.ContentLayers)
             {
                 if (!ManifestModel::IsVfsLayer(L.value("TYPE", std::string()))) continue;
                 if (!L.contains("SOURCE") || !L["SOURCE"].is_object() || L["SOURCE"].value("TYPE", std::string()) != "ipfs") continue;

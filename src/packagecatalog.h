@@ -12,6 +12,7 @@
 #include <filesystem>
 
 #include "manifestmodel.h"   // Node / NodeIndex (node-graph catalog)
+#include "commonutils.h"     // Diagnostics::Entry — what an index build logged
 #include "ipfswrapper.h"     // IpfsWrapper::FetchTarget (download collection)
 
 // ---------------------------------------------------------------------------
@@ -411,8 +412,28 @@ bool IsIpnsSource(const nlohmann::ordered_json &Source);
 
 // ----- node-graph catalog (everything-is-a-node) -----
 // Build the global cross-bundle node graph from the configured CID package sources + locally-added bundles — the
-// node-native catalog source.
-NodeIndex BuildCatalogIndex(const nlohmann::ordered_json &GlobalConfigJSON);
+// node-native catalog source. Loaded from the on-disk index cache when no node file changed since it was written.
+// *Inputs (if given) receives what it was built from: the files and their stamps (see CurrentIndex); *Said what the
+// build logged as warnings and errors (the scan's, or the ones a cache hit logs again).
+NodeIndex BuildCatalogIndex(const nlohmann::ordered_json &GlobalConfigJSON, std::string *Inputs = nullptr,
+                            std::vector<Diagnostics::Entry> *Said = nullptr);
+// The same, always from the files — never the cache (what the cache is checked against). BuildCatalogIndex is what to
+// call.
+NodeIndex ScanCatalogIndex(const nlohmann::ordered_json &GlobalConfigJSON);
+// The on-disk index cache (<data dir>/CACHE/index.cbor): whether it is there, how big, and whether it matches the
+// library as it is now (every node file unchanged, this program); and its removal.
+struct IndexCacheState { std::string Path; bool Exists = false, Current = false; std::uintmax_t Bytes = 0; std::size_t Files = 0; };
+IndexCacheState IndexCacheStatus(const nlohmann::ordered_json &GlobalConfigJSON);
+// The cached index itself when it matches the library now (what `catalog cache --check` compares), else nothing.
+std::optional<NodeIndex> ReadIndexCache(const nlohmann::ordered_json &GlobalConfigJSON);
+bool ClearIndexCache();
+// The index the running app holds: AppModel publishes each one it makes, with what BuildCatalogIndex gave it.
+void PublishAppIndex(std::shared_ptr<const NodeIndex> Idx, std::string Inputs, std::vector<Diagnostics::Entry> Said);
+// The node index as the library is on disk now, for code that has only the config (a launch prepared from the command
+// line, the package editor's library, an authoring session): the app's own when it is up and no node file changed
+// since it built it — a stat of each file, no read — else a build. One index in the app instead of one per reader.
+// Either way it logs what building that index logged, as a build of its own would (a launch's verdict counts them).
+std::shared_ptr<const NodeIndex> CurrentIndex(const nlohmann::ordered_json &GlobalConfigJSON);
 // A catalog index built AFTER the call began, shared: callers waiting at once get one scan between them. Every download
 // rebuilt the whole index itself (≈8 s, ≈17 MB) after landing closures and after installing — 46 resumed downloads
 // ran up to 138 scans at once: 1700 % CPU, and 3 GB of heap glibc then kept. Any caller's config is used (they name

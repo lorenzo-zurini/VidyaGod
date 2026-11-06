@@ -4,6 +4,10 @@
 #include "appmodel.h"
 #include "manifestmodel.h"
 #include "packagecatalog.h"
+#include "cmdutil.h"
+
+#include <chrono>
+#include <fstream>
 
 namespace
 {
@@ -49,7 +53,7 @@ VG_COMMANDS
                        {"installed", "downloadable", "waiting", "unavailable", "empty"}),
           Command::Opt("search", "only titles containing this") },
         { "catalog shelf", "catalog shelf --state downloadable", "catalog shelf --search 'Age of' --json" },
-        { "PackageCatalog::ShelfTiles", "PackageCatalog::HydrationMap", "AppModel::catalogSnapshot" , "PackageMainCard" }, Needs::Model, false,
+        { "PackageCatalog::ShelfTiles", "PackageCatalog::HydrationMap", "AppModel::catalogSnapshot" , "PackageMainCard", "ManifestModel::AllGraftBases" }, Needs::Model, false,
         [](Command::Context &C, const json &A) {
             const auto Snap = C.Model->catalogSnapshot();
             const auto Hyd = PackageCatalog::HydrationMap(*Snap);
@@ -95,17 +99,116 @@ VG_COMMANDS
             if (!N.LowerError.empty()) J["error"] = N.LowerError;
             if (const auto H = Hyd.find(N.Key()); H != Hyd.end()) { J["state"] = Standing(H->second); J["hydration"] = Hydration(H->second); }
             if (const auto M = PackageCatalog::MissingFromClosure(*Snap, N.Key()); !M.empty()) J["missing"] = M;
-            if (Command::Bool(A, "json-node", false)) J["node"] = N.Json;
+            if (Command::Bool(A, "json-node", false)) J["node"] = *N.Json;
             return J;
         }, {} });
 
     Command::Register({
         "catalog rebuild", "re-scan the library from disk",
         "Re-index every package folder (LIBRARY and received CATALOG) into the node graph; every tab refreshes from it.", {},
-        { "catalog rebuild" }, { "AppModel::rebuildCatalog", "PackageCatalog::BuildCatalogIndex" , "LibraryTab::rebuild", "CatalogTab::rebuild", "RunnersPage::rebuild", "PackagesView::rebuildList", "LibraryView::setCards", "LibraryView::setGroups", "LibraryView::setSeriesGroups", "LibraryView::setEmptyMessage", "LibraryView::refreshVisuals", "LibraryView::repaintCards", "LibraryView::setHoverAction", "AppModel::catalogIndex" }, Needs::Model, false,
+        { "catalog rebuild" }, { "AppModel::rebuildCatalog", "PackageCatalog::BuildCatalogIndex", "PackageCatalog::PublishAppIndex", "Platform::ReleaseFreedMemory", "LibraryTab::rebuild", "CatalogTab::rebuild", "RunnersPage::rebuild", "PackagesView::rebuildList", "LibraryView::setCards", "LibraryView::setGroups", "LibraryView::setSeriesGroups", "LibraryView::setEmptyMessage", "LibraryView::refreshVisuals", "LibraryView::repaintCards", "LibraryView::setHoverAction", "AppModel::catalogIndex" }, Needs::Model, false,
         [](Command::Context &C, const json &) {
             C.Model->rebuildCatalog();
             return json{{"nodes", C.Model->catalogIndex().Nodes.size()}, {"tiles", C.Model->catalogIndex().Tiles.size()}};
+        }, {} });
+
+    Command::Register({
+        "catalog cache", "the on-disk index cache: whether it matches the library now; check it, or clear it",
+        "Every index build is kept at <data dir>/CACHE/index.cbor with what it was built from (every node file's size and "
+        "time, this program); a build whose inputs are unchanged loads it instead of reading the files. --check builds the "
+        "index from the files and compares it with the cached one, node by node and field by field (it writes nothing); "
+        "--clear deletes the cache (the next build makes it again).",
+        { Command::Flag("check", "compare the cached index with one built from the files"), Command::Flag("clear", "delete the cache") },
+        { "catalog cache", "catalog cache --check", "catalog cache --clear" },
+        { "PackageCatalog::IndexCacheStatus", "PackageCatalog::ClearIndexCache", "Platform::FileStamp", "PackageCatalog::ScanCatalogIndex",
+          "PackageCatalog::CurrentIndex", "PackageCatalog::ReadIndexCache", "ManifestModel::NodeToJson", "ManifestModel::NodeFromJson", "ManifestModel::IndexTablesToJson",
+          "ManifestModel::IndexTablesFromJson", "NodeGraph::ListTreeFiles", "NodeGraph::TopoLevels", "Node::LoweredLayers" },
+        Needs::Config, false,
+        [](Command::Context &C, const json &A) {
+            json Out = json::object();
+            if (Command::Bool(A, "clear", false)) Out["cleared"] = PackageCatalog::ClearIndexCache();
+            const auto St = PackageCatalog::IndexCacheStatus(*C.Config);
+            Out["path"] = St.Path; Out["exists"] = St.Exists; Out["bytes"] = St.Bytes; Out["current"] = St.Current; Out["files"] = St.Files;
+            if (Command::Bool(A, "check", false))
+            {
+                if (!St.Current) throw std::runtime_error("the cache does not match the library now: nothing to check (the next build writes it)");
+                const std::optional<NodeIndex> CachedIdx = PackageCatalog::ReadIndexCache(*C.Config);   // the file itself
+                if (!CachedIdx) throw std::runtime_error("the cache could not be read");
+                const NodeIndex *Cached = &*CachedIdx;
+                const NodeIndex Fresh = PackageCatalog::ScanCatalogIndex(*C.Config);
+                json Differ = json::array();
+                for (const auto &[Id, N] : Fresh.Nodes)
+                {
+                    const Node *M = Cached->Find(Id);
+                    if (!M) { Differ.push_back({{"node", Id}, {"why", "missing from the cache"}}); continue; }
+                    const json F = ManifestModel::NodeToJson(N), G = ManifestModel::NodeToJson(*M);
+                    if (F != G)
+                        for (const auto &[K, V] : F.items())
+                            if (V != G[K]) { Differ.push_back({{"node", Id}, {"why", "field " + K + " differs"}}); break; }
+                    if (*N.Json != *M->Json || N.LoweredLayers() != M->LoweredLayers()) Differ.push_back({{"node", Id}, {"why", "lowered layers differ"}});
+                }
+                if (Cached->Nodes.size() != Fresh.Nodes.size()) Differ.push_back({{"why", "node counts differ"}});
+                if (ManifestModel::IndexTablesToJson(*Cached) != ManifestModel::IndexTablesToJson(Fresh)) Differ.push_back({{"why", "tiles, duplicates or refused differ"}});
+                Out["checked"] = Fresh.Nodes.size();
+                Out["differences"] = Differ;
+                if (!Differ.empty()) throw std::runtime_error(std::to_string(Differ.size()) + " difference(s) between the cache and the files: "
+                                                              + Differ.front().dump() + " (catalog cache --clear rebuilds it)");
+            }
+            return Out;
+        }, {} });
+
+    Command::Register({
+        "catalog stats", "what the node index holds and weighs: nodes, tiles, and the JSON each part of a node keeps",
+        "Counts, and per part of a node (its JSON, its content layers, entries, default entry, tile) the size of that "
+        "part written out as JSON, summed over the library — what the index keeps in memory, roughly in proportion — and "
+        "what its other lowered layers would weigh (made on demand, not kept). --build also times a build from the files (never the cache); "
+        "--dump writes every node, field by field, so two builds of one library compare with diff.",
+        { Command::Flag("build", "time a build from the files (never the cache)"), Command::Opt("dump", "write every node, field by field, to this file") },
+        { "catalog stats", "catalog stats --build --json", "catalog stats --dump index.jsonl" },
+        { "PackageCatalog::BuildCatalogIndex", "PackageCatalog::ScanCatalogIndex" }, Needs::Model, false,
+        [](Command::Context &C, const json &A) {
+            const auto Snap = C.Model->catalogSnapshot();
+            json Out = {{"nodes", Snap->Nodes.size()}, {"tiles", Snap->Tiles.size()}, {"refused", Snap->RefusedNodes.size()}};
+            size_t Js = 0, La = 0, Co = 0, En = 0, Ex = 0, Me = 0, Ti = 0, Re = 0;
+            for (const auto &[Id, N] : Snap->Nodes)
+            {
+                (void)Id;
+                Js += N.Json->dump().size(); La += N.LoweredLayers().dump().size(); Co += N.ContentLayers.dump().size();
+                En += N.Entries.dump().size();
+                Ex += N.Exec.dump().size(); Me += N.Meta.dump().size(); Re += N.Refs.size() + N.Requires.size();
+            }
+            for (const auto &[U, T] : Snap->Tiles) { (void)U; Ti += T.dump().size(); }
+            Out["json_bytes"] = {{"node", Js}, {"content_layers", Co}, {"entries", En}, {"exec", Ex}, {"meta", Me}, {"tiles", Ti},
+                                 {"lowered_layers_on_demand", La}};
+            Out["refs"] = Re;
+            if (A.contains("dump"))   // one line per node (by key), then the tables: two builds of one library compare with diff
+            {
+                std::ofstream F(Command::Str(A, "dump"), std::ios::binary);
+                if (!F) throw std::runtime_error("cannot write " + Command::Str(A, "dump"));
+                for (const auto &[Id, N] : Snap->Nodes)
+                    F << json{{"key", Id}, {"cid", N.Cid}, {"handle", N.Handle}, {"label", N.NodeId}, {"lower_error", N.LowerError},
+                              {"variant", N.Variant}, {"recommended", N.Recommended}, {"json", *N.Json}, {"layers", N.LoweredLayers()},
+                              {"refs", N.Refs}, {"requires", N.Requires}, {"graft", N.IsGraft}, {"entries", N.Entries},
+                              {"has_exec", N.HasExec}, {"has_runner", N.HasRunner}, {"own_runner", N.OwnRunner}, {"entry", N.Label},
+                              {"host", N.HostPlatform}, {"guest", N.GuestPlatform}, {"exec", N.Exec}, {"faces", N.Faces}, {"uid", N.Uid},
+                              {"package_uid", N.PackageUid}, {"meta", N.Meta}, {"own_tile", N.OwnTile}, {"file", N.File.string()},
+                              {"bundle", N.BundleDir.string()}, {"received", N.Received}}.dump() << "\n";
+                F << json{{"tiles", Snap->Tiles}}.dump() << "\n" << json{{"tile_graft", Snap->TileGraft}}.dump() << "\n";
+                json Dup = json::object();
+                for (const auto &[Id, Ps] : Snap->Duplicates) for (const auto &P : Ps) Dup[Id].push_back(P.string());
+                F << json{{"duplicates", Dup}}.dump() << "\n";
+                for (const auto &R : Snap->RefusedNodes)
+                    F << json{{"refused", R.Handle}, {"file", R.File.string()}, {"bundle", R.BundleDir.string()}, {"why", R.Why}, {"too_large", R.TooLarge}}.dump() << "\n";
+                Out["dumped"] = Command::Str(A, "dump");
+            }
+            if (Command::Bool(A, "build", false))
+            {
+                const auto T0 = std::chrono::steady_clock::now();
+                const NodeIndex Fresh = PackageCatalog::ScanCatalogIndex(*C.Config);   // from the files, never the cache
+                Out["build_ms"] = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - T0).count();
+                Out["built_nodes"] = Fresh.Nodes.size();
+            }
+            return Out;
         }, {} });
 
     Command::Register({
@@ -116,7 +219,8 @@ VG_COMMANDS
         { "catalog validate", "catalog validate --scope 749", "catalog validate --errors-only --json" },
         { "ManifestModel::ValidateNodeGraph", "ManifestModel::Closure" }, Needs::Model, false,
         [](Command::Context &C, const json &A) {
-            const NodeIndex &Idx = C.Model->catalogIndex();
+            const auto Snap = CmdUtil::Index(C);
+            const NodeIndex &Idx = *Snap;
             std::set<std::string> Scope;
             if (A.contains("scope"))
             {
@@ -132,5 +236,5 @@ VG_COMMANDS
             for (const auto &E : Errors) Out.push_back({{"severity", "error"}, {"message", E}});
             if (!Command::Bool(A, "errors-only", false)) for (const auto &W : Warnings) Out.push_back({{"severity", "warning"}, {"message", W}});
             return Out;
-        }, {} });
+        }, {}, true });
 }

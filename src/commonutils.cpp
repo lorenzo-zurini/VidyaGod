@@ -4,6 +4,7 @@
 #include <cstdlib>
 #include <cstdint>
 
+#include <algorithm>
 #include <atomic>
 #include <chrono>
 #include <mutex>
@@ -24,6 +25,9 @@ bool VerboseLogging()
     static const bool On = []{ const char *V = std::getenv("VG_VERBOSE"); return V && *V == '1'; }();
     return On;
 }
+
+static std::atomic<bool> g_LogMillis{ false };
+void SetLogMillis(bool On) { g_LogMillis = On; }
 
 void SetLogCallback(LogCallback callback)
 {
@@ -49,13 +53,50 @@ void SetLogEcho(bool On) { g_EchoStderr = On; }
 QuietLog::QuietLog()  { ++g_Quiet; }
 QuietLog::~QuietLog() { --g_Quiet; }
 
+static thread_local LogRecorder *g_Recorder = nullptr;   // the innermost recorder on this thread
+static thread_local LogBuffer *g_Buffer = nullptr;       // the innermost buffer on this thread
+
+LogRecorder::LogRecorder(std::set<std::string> C) : Contexts(std::move(C)), Outer(g_Recorder) { g_Recorder = this; }
+LogRecorder::~LogRecorder() { g_Recorder = Outer; }
+
+void LogRecorder::Note(LogLevel Level, const std::string &Context, const std::string &Message)
+{
+    if (Contexts.count(Context)) Kept.push_back({Level, Context, Message});
+    if (Outer) Outer->Note(Level, Context, Message);
+}
+
+std::vector<Diagnostics::Entry> LogRecorder::Take() { return std::move(Kept); }
+
+LogBuffer::LogBuffer() : Outer(g_Buffer) { g_Buffer = this; }
+LogBuffer::~LogBuffer() { g_Buffer = Outer; }
+void LogBuffer::Keep(LogLevel Level, const std::string &Context, const std::string &Message) { Lines.push_back({Level, Context, Message}); }
+std::vector<Diagnostics::Entry> LogBuffer::Take() { return std::move(Lines); }
+
+void LogReplay(const std::vector<Diagnostics::Entry> &Lines)
+{
+    for (const auto &E : Lines) Log(E.Level, E.Context, E.Message);
+}
+
 void Log(LogLevel level, const std::string& context, const std::string& message)
 {
-    //Format current wall-clock time as HH:MM:SS for the log prefix.
-    std::time_t t = std::time(nullptr);
-    std::tm* tm = std::localtime(&t);
-    char timebuf[9];
-    std::strftime(timebuf, sizeof(timebuf), "%H:%M:%S", tm);
+    if (g_Buffer) { g_Buffer->Keep(level, context, message); return; }   // a parallel loop's item: logged in order later
+
+    //Format current wall-clock time as HH:MM:SS for the log prefix (and the milliseconds of the same instant).
+    const auto Now = std::chrono::system_clock::now();
+    std::time_t t = std::chrono::system_clock::to_time_t(Now);
+    std::tm tm{};
+#ifdef _WIN32
+    localtime_s(&tm, &t);                                   // the reentrant forms: lines are logged from worker threads
+#else
+    localtime_r(&t, &tm);
+#endif
+    char timebuf[16];
+    std::strftime(timebuf, sizeof(timebuf), "%H:%M:%S", &tm);
+    if (g_LogMillis)   // the CLI's -v: where the time goes, to the millisecond
+    {
+        const auto Ms = std::chrono::duration_cast<std::chrono::milliseconds>(Now.time_since_epoch()).count() % 1000;
+        std::snprintf(timebuf + 8, sizeof(timebuf) - 8, ".%03d", static_cast<int>(Ms));
+    }
 
     //ANSI color codes: reset to default, then pick the severity color.
     const char* reset = "\033[0m";
@@ -76,9 +117,12 @@ void Log(LogLevel level, const std::string& context, const std::string& message)
     //LOGS GO TO STDERR. stdout is reserved for machine-readable output (`--cid` prints "<cid>\t<path>", the
     //remint prints its CID table), so those verbs stay pipeable — mixing the two made `--cid … | cut` return
     //timestamps instead of a CID.
-    if (g_EchoStderr) std::cerr << timebuf << " " << color << "[" << label << "] " << context << " " << message << reset << std::endl;
+    if (g_EchoStderr)   // one write per line, so lines from two threads never interleave mid-line
+        std::cerr << (std::string(timebuf) + " " + color + "[" + label + "] " + context + " " + message + reset + "\n") << std::flush;
 
     if (g_Quiet) return;                                    // a look-ahead (QuietLog): stderr only
+
+    if (g_Recorder && (level == LogLevel::WARN || level == LogLevel::ERR)) g_Recorder->Note(level, context, message);
 
     //Tally BEFORE the sink: counting here means no caller can opt out and no callback arrangement can hide a
     //warning. This is the mechanism that makes a quiet per-launch error impossible to miss.

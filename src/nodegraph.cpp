@@ -5,6 +5,7 @@
 #include <unordered_map>
 #include "ipfswrapper.h"     // BlockGet, BlockPut, FetchToPath
 #include "commonutils.h"     // Log*
+#include "parallel.h"
 
 #include <algorithm>
 #include <deque>
@@ -98,27 +99,49 @@ NodeIndex FreezeToIndex(const std::map<std::string, nlohmann::ordered_json> &Wor
         Idx.RefusedNodes.push_back(std::move(R));
         ++Skipped;
     };
-    for (const std::string &Handle : Order)
+    // Freeze (resolve handles→CIDs), derive the CID — the hash of the canonical bytes, computed here: pure, local, the
+    // same on every machine (Cid::OfNode) — and parse, level by level: a level's nodes link only lower levels, so they
+    // run on every core at once against the CIDs the levels below settled. The outcomes are then taken in Order, one
+    // by one, exactly as a sequential pass would.
+    struct Frozen { std::string Cid, Err; bool TooLarge = false, Parsed = false; Node N; };
+    std::vector<Frozen> Out(Order.size());
+    const std::vector<int> Level = TopoLevels(WorkingTree, Order);
+    std::vector<std::vector<std::size_t>> ByLevel;
+    for (std::size_t I = 0; I < Order.size(); ++I)
     {
-        // Freeze (resolve handles→CIDs) and derive the CID: the hash of the canonical bytes, computed here — pure,
-        // local, the same on every machine (Cid::OfNode).
-        std::string Dangling, Err;
-        const nlohmann::ordered_json Frozen = FreezeNodeJson(WorkingTree.at(Handle), HandleToCid, &WorkingTree, &Dangling);
-        if (!Dangling.empty()) Err = "it references '" + Dangling + "', which did not freeze";
-        const std::string Bytes = Dangling.empty() ? Cid::Canonical(Frozen) : std::string();
-        const std::string Cid = Dangling.empty() ? Cid::OfBytes(Bytes, &Err) : std::string();
+        if (ByLevel.size() <= static_cast<std::size_t>(Level[I])) ByLevel.resize(static_cast<std::size_t>(Level[I]) + 1);
+        ByLevel[static_cast<std::size_t>(Level[I])].push_back(I);
+    }
+    for (const auto &Items : ByLevel)
+    {
+        Parallel::For(Items.size(), [&](std::size_t K) {
+            Frozen &F = Out[Items[K]];
+            const std::string &Handle = Order[Items[K]];
+            std::string Dangling;
+            const nlohmann::ordered_json J = FreezeNodeJson(WorkingTree.at(Handle), HandleToCid, &WorkingTree, &Dangling);
+            if (!Dangling.empty()) { F.Err = "it references '" + Dangling + "', which did not freeze"; return; }
+            const std::string Bytes = Cid::Canonical(J);
+            F.Cid = Cid::OfBytes(Bytes, &F.Err);
+            F.TooLarge = Bytes.size() > Cid::MaxNodeBytes;
+            if (!F.Cid.empty()) F.Parsed = ManifestModel::ParseNode(J, {}, {}, F.N);
+        });
+        for (const std::size_t I : Items) if (!Out[I].Cid.empty()) HandleToCid[Order[I]] = Out[I].Cid;
+    }
+    for (std::size_t I = 0; I < Order.size(); ++I)
+    {
+        const std::string &Handle = Order[I];
+        Frozen &F = Out[I];
+        const std::string &Cid = F.Cid;
         if (Cid.empty())
         {
             // A per-node failure: SKIP this node, never abort the whole index — one bad node must not empty the
             // library. Validation names it, and its referrers' ref to a CID nothing holds.
-            LogWarn("NodeGraph::FreezeToIndex", "skipping node '" + Handle + "': " + Err);
-            Refuse(Handle, Err, Bytes.size() > Cid::MaxNodeBytes);
+            LogWarn("NodeGraph::FreezeToIndex", "skipping node '" + Handle + "': " + F.Err);
+            Refuse(Handle, F.Err, F.TooLarge);
             continue;
         }
-        HandleToCid[Handle] = Cid;
-
-        Node N;
-        if (!ManifestModel::ParseNode(Frozen, {}, {}, N)) { Refuse(Handle, "it is not a node", false); continue; }
+        if (!F.Parsed) { Refuse(Handle, "it is not a node", false); continue; }
+        Node N = std::move(F.N);
         N.Cid = Cid;
         if (!Handle.empty() && (unsigned char)Handle[0] >= 0x20) N.Handle = Handle;   // the working tree's name for it
         const auto It = Dirs.find(Handle);
@@ -197,10 +220,10 @@ std::string HydratePackage(const std::filesystem::path &DestRoot, const std::str
         { std::ofstream Out(Dir / (C + ".json"), std::ios::binary); Out << Js; }
         ++Files;
 
-        // Content leaves: fetch each VFS layer's SOURCE.CID to its local PATH (BundleDir = Dir). Iterate N.Layers
-        // directly with IsVfsLayer — the same shape HydrationMap uses (the flat lowered layers, not a COMPONENTS array).
-        if (N.Layers.is_array())
-            for (const auto &L : N.Layers)
+        // Content leaves: fetch each VFS layer's SOURCE.CID to its local PATH (BundleDir = Dir). Iterate N.ContentLayers
+        // with IsVfsLayer — the same shape HydrationMap uses (the flat lowered layers, not a COMPONENTS array).
+        if (N.ContentLayers.is_array())
+            for (const auto &L : N.ContentLayers)
             {
                 if (!L.is_object() || !ManifestModel::IsVfsLayer(ManifestModel::LayerType(L))) continue;
                 fs::path Local; std::string Cid;

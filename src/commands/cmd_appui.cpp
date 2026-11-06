@@ -64,7 +64,7 @@ VG_COMMANDS
     Command::Register({
         "app card-size", "the Library and Catalog cards' width in pixels, or set it", "",
         { Opt("set", "the width", Type::Int) }, { "app card-size", "app card-size --set 220" },
-        { "AppModel::cardPixelWidth", "AppModel::setCardPixelWidth", "LibraryTab::onCardSizeChanged", "CatalogTab::onCardSizeChanged",
+        { "AppModel::cardPixelWidth", "AppModel::setCardPixelWidth", "CoverCache::setDisplaySize", "LibraryTab::onCardSizeChanged", "CatalogTab::onCardSizeChanged",
           "LibraryView::layoutCards", "LibraryView::prescaleCovers" }, Needs::Model, false,
         [](Command::Context &C, const json &A) {
             if (A.contains("set")) Model(C).setCardPixelWidth(static_cast<int>(Command::Int(A, "set")));
@@ -137,7 +137,8 @@ VG_COMMANDS
         "app covers", "where a cover image is found (or fetched from), as a card draws it",
         "For a tile's COVER (--cover JSON) in a package folder: the file it names and its CID, and where the cover cache "
         "finds it now (\"\" while it is being fetched). --decode (in the running app) takes its image as a card does: "
-        "\"decoding\" the first time, as the decode runs off the GUI thread, and its size once it has landed.",
+        "\"decoding\" the first time, as the decode runs off the GUI thread, and its size once it has landed — the size a "
+        "card keeps it at (the widest card's, 2:3), not the file's.",
         { Opt("cover", "the COVER (JSON)", Type::Json, true), Opt("package", "the package folder"), Flag("decode", "take the decoded image") },
         { "app covers --cover '{\"PATH\":\"cover.jpg\",\"SOURCE\":{\"TYPE\":\"ipfs\",\"CID\":\"Qm…\"}}' --package 749",
           "app covers --cover '\"cover.png\"' --package 749 --decode" },
@@ -212,7 +213,7 @@ VG_COMMANDS
         "Opens the launch window (versions, options, instances) as clicking the card does; drive it with `ui` and press "
         "its Play with `ui click`.", { Pos("card", "the card (its key or title)") }, { "library play 'Age of Empires II'" },
         { "LibraryGameCard::play", "MainWindow::libraryCard", "LibraryTab::view", "PreLaunchWindow::packagePath", "PreLaunchWindow::ReloadAndRebuild",
-          "VariantPicker::setEntries", "VariantPicker::currentId", "VariantPicker::checkedIds", "LaunchThread::run" }, Needs::Ui, false,
+          "VariantPicker::setEntries", "VariantPicker::currentId", "VariantPicker::checkedIds", "LaunchThread::run" }, Needs::App, false,
         [](Command::Context &C, const json &A) {
             LibraryGameCard *Card = Win(C).libraryCard(QString::fromStdString(Command::Str(A, "card")));
             if (!Card) throw Command::BadArgs("no single Library card '" + Command::Str(A, "card") + "'");
@@ -222,7 +223,7 @@ VG_COMMANDS
 
     Command::Register({
         "library edit", "a Library card's Edit: the package editor on its package", "", { Pos("card", "the card (its key or title)") },
-        { "library edit 'Age of Empires II'" }, { "LibraryGameCard::edit", "LibraryGameCard::InitializeClassVariables" }, Needs::Ui, false,
+        { "library edit 'Age of Empires II'" }, { "LibraryGameCard::edit", "LibraryGameCard::InitializeClassVariables" }, Needs::App, false,
         [](Command::Context &C, const json &A) {
             LibraryGameCard *Card = Win(C).libraryCard(QString::fromStdString(Command::Str(A, "card")));
             if (!Card) throw Command::BadArgs("no single Library card '" + Command::Str(A, "card") + "'");

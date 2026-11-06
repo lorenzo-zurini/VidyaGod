@@ -445,6 +445,7 @@ add_executable(vg_tests
     tests/test_vgdelta.cpp
     tests/test_pkgdoc.cpp
     tests/test_optionreadback.cpp
+    tests/test_parallel.cpp
     src/manifestmodel.cpp
     src/fold.cpp
     src/cid.cpp

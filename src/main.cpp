@@ -458,15 +458,18 @@ bool InitializeGlobalConfigJSON(nlohmann::ordered_json * GlobalConfigJSON, QDir 
     }
     if (!Existed) LogOut("main.cpp", "Config file not detected. Creating defaults...");
 
+    const nlohmann::ordered_json AsRead = *GlobalConfigJSON;
     EnsureGlobalConfigDefaults(*GlobalConfigJSON);
 
     //Index the configured CID package sources: any already-fetched source dir (under LIBRARY) is scanned into the
     //un-hydrated LIBRARY index here. The FETCH of a not-yet-present source (e.g. the default runners on a first run)
     //needs the IPFS node online, so it happens later once networking is up (MainWindow::onNodeReady → syncSources, or
-    //a headless mode that started the node). Mutates the config → always persist afterwards.
+    //a headless mode that started the node). It may change the config.
     PackageCatalog::SyncPackageSources(*GlobalConfigJSON);
 
-    if (!JSONOps::SaveJSON(GlobalConfigJSON, &GlobalConfigFile))
+    //Written only when that changed it (or there was none): every command-line call starts here, and rewriting the
+    //unchanged file each time raced two calls run at once.
+    if ((!Existed || *GlobalConfigJSON != AsRead) && !JSONOps::SaveJSON(GlobalConfigJSON, &GlobalConfigFile))
     {
         LogErr("main.cpp", "GlobalConfig.JSON could not be written.");
         return false;

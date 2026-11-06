@@ -91,7 +91,7 @@ bool RunnerShipsBuild(const NodeIndex &Idx, const Node &R)
 {
     for (const std::string &Id : ManifestModel::Closure(Idx, R.Key()))
         if (const Node *N = Idx.Find(Id))
-            for (const auto &L : N->Layers)
+            for (const auto &L : N->ContentLayers)
                 if (ManifestModel::IsRunnerBuildLayer(L)) return true;
     return false;
 }

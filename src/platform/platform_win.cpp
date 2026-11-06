@@ -18,6 +18,23 @@
 
 namespace Platform {
 
+std::string FileStamp(const std::filesystem::path &P, long long *Modified)
+{
+    WIN32_FILE_ATTRIBUTE_DATA A {};
+    if (Modified) *Modified = 0;
+    if (!GetFileAttributesExW(P.wstring().c_str(), GetFileExInfoStandard, &A)) return {};
+    const auto U64 = [](DWORD Hi, DWORD Lo) { return (static_cast<unsigned long long>(Hi) << 32) | Lo; };
+    //FILETIME counts 100 ns from 1601; the Unix epoch is 11644473600 s later.
+    if (Modified) *Modified = static_cast<long long>(U64(A.ftLastWriteTime.dwHighDateTime, A.ftLastWriteTime.dwLowDateTime) / 10000000ULL) - 11644473600LL;
+    return std::to_string(U64(A.nFileSizeHigh, A.nFileSizeLow)) + ' ' + std::to_string(U64(A.ftLastWriteTime.dwHighDateTime, A.ftLastWriteTime.dwLowDateTime))
+           + ' ' + std::to_string(U64(A.ftCreationTime.dwHighDateTime, A.ftCreationTime.dwLowDateTime));
+}
+
+void ReleaseFreedMemory()
+{
+    HeapCompact(GetProcessHeap(), 0);
+}
+
 std::filesystem::path SelfExe()
 {
     wchar_t buf[MAX_PATH];

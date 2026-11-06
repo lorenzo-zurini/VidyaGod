@@ -2,6 +2,7 @@
 #include <QDate>
 #include <QMenu>
 #include "appmodel.h"          // AppModel — catalog/config + card size
+#include "covercache.h"        // re-take covers when the cards grow
 #include "packagecatalog.h"   // GoldenSince / SetGolden (the golden marker) and the rest
 #include "manifestmodel.h"
 #include "packageeditor.h"     // the authoring entry points moved here from Settings
@@ -37,6 +38,10 @@ LibraryTab::LibraryTab(AppModel &model, QWidget *parent)
     connect(&Model, &AppModel::catalogChanged, this, &LibraryTab::rebuild);
     connect(&Model, &AppModel::coversReady,    this, &LibraryTab::refreshCovers);
     connect(&Model, &AppModel::cardSizeChanged, this, &LibraryTab::onCardSizeChanged);
+    connect(CoverCache::instance(), &CoverCache::coversTooSmall, this, [this] {   // wider cards: decode the covers again
+        for (LibraryGameCard * Card : *LibraryGameCards) if (Card && !Card->CoverOriginal.isNull()) Card->CoverStale = true;
+        refreshCovers();
+    });
     rebuild();
 }
 
@@ -278,7 +283,7 @@ void LibraryTab::refreshCovers()
 {
     bool Any = false;
     for (LibraryGameCard * Card : *LibraryGameCards)
-        if (Card && Card->CoverOriginal.isNull()) { Card->InitializeClassVariables(); Any = true; }
+        if (Card && (Card->CoverOriginal.isNull() || Card->CoverStale)) { Card->InitializeClassVariables(); Any = true; }
     if (Any && View) View->refreshVisuals();
 }
 

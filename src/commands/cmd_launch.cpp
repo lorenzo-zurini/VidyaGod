@@ -162,7 +162,7 @@ VG_COMMANDS
         "Resolves and builds the runtime as a launch does — mounted, prefix made, edits applied — without running the "
         "game; prints where it is. In the app only (a mount outlives no process): `launch teardown` captures what is "
         "kept and takes it down.", LaunchArgs(), { "launch build --node 'Patch 2.0a'" },
-        { "ContainerWrapper::BuildContainerRuntime" }, Needs::Model, true,
+        { "ContainerWrapper::BuildContainerRuntime" }, Needs::App, true,
         [](Command::Context &C, const json &A) {
             if (!C.Live) throw std::runtime_error("a built runtime lives in the app: start VidyaGod on this data dir (off-screen is fine), then run this");
             if (Built()) throw std::runtime_error("a runtime is up (" + Built()->Name + "): VidyaGod launch teardown");
@@ -178,7 +178,7 @@ VG_COMMANDS
 
     Command::Register({
         "launch teardown", "take down the runtime `launch build` kept up (what it keeps is captured first)", "",
-        {}, { "launch teardown" }, {}, Needs::Model, false,
+        {}, { "launch teardown" }, {}, Needs::App, false,
         [](Command::Context &, const json &) {
             if (!Built()) return json{{"torn_down", false}, {"why", "no runtime is up"}};
             Built()->W->Cleanup();

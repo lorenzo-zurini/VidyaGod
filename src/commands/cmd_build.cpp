@@ -307,7 +307,7 @@ VG_COMMANDS
             const auto Find = [&](const std::string &H) -> const json * {
                 if (const int I = D.IndexOf(H); I >= 0) return &D.Node(I);
                 const Node *N = M.libraryNode(H);
-                return N ? &N->Json : nullptr;
+                return N ? &*N->Json : nullptr;
             };
             std::vector<const json *> All;
             for (int I = 0; I < D.Count(); ++I) All.push_back(&D.Node(I));
@@ -862,7 +862,7 @@ VG_COMMANDS
             std::vector<std::string> Notes;
             const auto Other = [&S](const std::string &Cid) {
                 PkgActions::OtherNode O;
-                if (const Node *N = S.M->libraryNode(Cid)) { O.Node = &N->Json; O.Bundle = N->BundleDir; O.Label = N->NodeId; }
+                if (const Node *N = S.M->libraryNode(Cid)) { O.Node = &*N->Json; O.Bundle = N->BundleDir; O.Label = N->NodeId; }
                 return O;
             };
             const std::string Only = Command::Str(A, "file", "");

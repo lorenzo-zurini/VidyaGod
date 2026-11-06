@@ -213,8 +213,8 @@ void AuthoringWorker::start(QString configDump, QString bundlePath, QString node
     // BuildExecIndex, so nothing but Qt value types crosses the thread boundary.
     NodeIndex Idx;
     ManifestModel::ScanBundleNodes(bundlePath.toStdString(), Idx);              // this bundle wins (first-seen)
-    NodeIndex Cat = PackageCatalog::BuildCatalogIndex(Config);                  // CID package sources + local bundles
-    for (auto & [Id, N] : Cat.Nodes) Idx.Nodes.emplace(Id, N);
+    const auto Cat = PackageCatalog::CurrentIndex(Config);                      // CID package sources + local bundles
+    for (const auto & [Id, N] : Cat->Nodes) Idx.Nodes.emplace(Id, N);
     ManifestModel::DeriveFacts(Idx);   // entries, runners and tiles are folded facts
 
     // The "Run Windows program" tool's choices: every Windows-capable runner usable on this machine (guest covers

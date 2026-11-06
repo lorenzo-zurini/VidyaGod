@@ -1,7 +1,9 @@
 #include "nodegraph.h"
 #include "cid.h"
 #include "commonutils.h"   // LogWarn/LogErr — surface duplicate-handle conflicts (never silent)
+#include "parallel.h"
 
+#include <algorithm>
 #include <deque>
 #include <fstream>
 #include <functional>
@@ -121,14 +123,12 @@ bool ReadTreeJsonBounded(const std::filesystem::path &File, nlohmann::ordered_js
     return !J.is_discarded();
 }
 
-void GatherWorkingTree(const std::filesystem::path &Root,
-                       std::map<std::string, nlohmann::ordered_json> &Tree,
-                       std::map<std::string, std::filesystem::path> &Dirs,
-                       bool SkipReserved, bool TrustStoredCid)
+std::vector<std::filesystem::path> ListTreeFiles(const std::filesystem::path &Root, bool SkipReserved)
 {
     namespace fs = std::filesystem;
     std::error_code Ec;
-    if (!fs::is_directory(Root, Ec)) return;
+    std::vector<fs::path> Files;
+    if (!fs::is_directory(Root, Ec)) return Files;
     // error_code iteration with explicit increment: the range-for's operator++ THROWS (a permission-denied subdir
     // mid-walk would terminate the GUI thread). skip_permission_denied + increment(Ec) walks defensively.
     fs::recursive_directory_iterator It(Root, fs::directory_options::skip_permission_denied, Ec), End;
@@ -141,14 +141,34 @@ void GatherWorkingTree(const std::filesystem::path &Root,
         { It.disable_recursion_pending(); continue; }
         if (E.is_directory(Ec) && IsFetchScratchDir(E.path())) { It.disable_recursion_pending(); continue; }
         if (!E.is_regular_file(Ec) || E.path().extension() != ".json") continue;
-        // UNTRUSTED bytes can now live in the tree (a received share's block, landed verbatim by the fetch queue), so
-        // the scan gets the same guards every fetched block gets — size cap + depth pre-scan BEFORE the recursive
-        // parse/normalize, or a hostile deep block becomes a stack overflow that crashes EVERY startup scan.
         Ec.clear();
-        nlohmann::ordered_json J;
-        if (!ReadTreeJsonBounded(E.path(), J)) continue;
-        const nlohmann::ordered_json &N = J;          // a file is ONE node: the file is the node's block
-        if (!ManifestModel::IsNodeObject(N)) continue;
+        Files.push_back(E.path());
+    }
+    return Files;
+}
+
+void GatherWorkingTree(const std::filesystem::path &Root,
+                       std::map<std::string, nlohmann::ordered_json> &Tree,
+                       std::map<std::string, std::filesystem::path> &Dirs,
+                       bool SkipReserved, bool TrustStoredCid)
+{
+    namespace fs = std::filesystem;
+    // 1. The walk, in its order (first-seen decides below): every .json file the scan reads.
+    const std::vector<fs::path> Files = ListTreeFiles(Root, SkipReserved);
+    // 2. Read and parse them on every core (each file is independent). UNTRUSTED bytes can live in the tree (a
+    // received share's block, landed verbatim by the fetch queue), so the scan gets the same guards every fetched
+    // block gets — size cap + depth pre-scan BEFORE the recursive parse, or a hostile deep block becomes a stack
+    // overflow that crashes EVERY startup scan.
+    std::vector<nlohmann::ordered_json> Parsed(Files.size());
+    std::vector<char> Ok(Files.size(), 0);
+    Parallel::For(Files.size(), [&](std::size_t I) {
+        Ok[I] = ReadTreeJsonBounded(Files[I], Parsed[I]) && ManifestModel::IsNodeObject(Parsed[I]);
+    });
+    // 3. Into the tree, in walk order.
+    for (std::size_t F = 0; F < Files.size(); ++F)
+    {
+        if (!Ok[F]) continue;
+        const nlohmann::ordered_json &N = Parsed[F];  // a file is ONE node: the file is the node's block
         // From an UNTRUSTED root (received CATALOG stubs), the stored "CID" is attacker-controlled — ignore it so
         // the node is synthetic-keyed (browse-only, never a resolvable handle). An honest stub has none anyway.
         std::string Handle = (TrustStoredCid && N.contains("CID") && N["CID"].is_string()) ? N["CID"].get<std::string>() : std::string();
@@ -160,7 +180,7 @@ void GatherWorkingTree(const std::filesystem::path &Root,
         // but under a unique SYNTHETIC per-file key so it is never referenceable as a parent and never collides.
         const std::string Id = !Handle.empty()
                                    ? Handle
-                                   : (std::string("\x01") + E.path().string() + "#1");
+                                   : (std::string("\x01") + Files[F].string() + "#1");
         std::string Key = Id;
         const auto Prev = Tree.find(Key);
         if (Prev != Tree.end())
@@ -172,15 +192,26 @@ void GatherWorkingTree(const std::filesystem::path &Root,
             // later-scanned received one (a received block can never shadow a local handle by order, and received
             // nodes are browse-only, never minted). The loser is NOT dropped (that would vanish a real node) —
             // re-key it under a unique SYNTHETIC key so it still gathers/indexes by its own CID at freeze.
-            LogWarn("NodeGraph::GatherWorkingTree", "duplicate node handle '" + Id + "' (" + E.path().string()
+            LogWarn("NodeGraph::GatherWorkingTree", "duplicate node handle '" + Id + "' (" + Files[F].string()
                     + ") — stale-or-forged stored CID; first-seen keeps the handle, this one indexes on its own CID");
-            Key = std::string("\x01") + E.path().string() + "#1";   // unique → never dropped
+            Key = std::string("\x01") + Files[F].string() + "#1";   // unique → never dropped
             if (Tree.count(Key)) continue;     // same file re-scanned (overlapping roots) → truly identical slot
         }
-        Tree[Key] = N;
-        const std::filesystem::path Parent = E.path().parent_path();
+        Tree[Key] = std::move(Parsed[F]);
+        const std::filesystem::path Parent = Files[F].parent_path();
         Dirs[Key] = Parent.filename() == kPackageFolderDir ? Parent.parent_path() : Parent;   // a landed package folder
     }
+}
+
+std::vector<int> TopoLevels(const std::map<std::string, nlohmann::ordered_json> &WorkingTree, const std::vector<std::string> &Order)
+{
+    std::map<std::string, std::size_t> Pos;
+    for (std::size_t I = 0; I < Order.size(); ++I) Pos.emplace(Order[I], I);
+    std::vector<int> Level(Order.size(), 0);
+    for (std::size_t I = 0; I < Order.size(); ++I)
+        for (const std::string &Dep : IntraTreeDeps(WorkingTree.at(Order[I]), WorkingTree))
+            if (const auto It = Pos.find(Dep); It != Pos.end() && It->second < I) Level[I] = std::max(Level[I], Level[It->second] + 1);
+    return Level;
 }
 
 bool TopoOrderForMint(const std::map<std::string, nlohmann::ordered_json> &WorkingTree,

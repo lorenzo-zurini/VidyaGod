@@ -142,6 +142,12 @@ cross-bundle index keyed by `NODE_ID`; `LinkGames` groups launchable *variants* 
 by the `PARENTS` edge (no `GAME` string). `LaunchResolver::InitializeFromNode` resolves a launch node's closure,
 composes its exec/metadata field-by-field along the chain, and populates a `ContainerParams`.
 
+The index is built on every core and kept in `<data dir>/CACHE/index.cbor` with what it was built from (this program,
+and every node file's size, times and inode): a build whose inputs are unchanged loads it in a fraction of a second
+instead of reading thousands of files. Inside the app there is one index, shared by everything that reads one
+(`PackageCatalog::CurrentIndex`). `VidyaGod catalog cache` shows the cache, `--check` compares it with a scan,
+`--clear` drops it.
+
 `src/nodelower.{h,cpp}` is the schema front-end and the only place the on-disk format meets the engine: it expands one
 flat node into the ordered layer sequence the executor consumes. It is **total** — a malformed or type-confused payload
 becomes a named refusal, never an exception, because a node file is untrusted input (it arrives from a peer) and the

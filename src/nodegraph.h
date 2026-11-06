@@ -70,6 +70,9 @@ void GatherWorkingTree(const std::filesystem::path &Root,
                        std::map<std::string, nlohmann::ordered_json> &Tree,
                        std::map<std::string, std::filesystem::path> &Dirs,
                        bool SkipReserved = false, bool TrustStoredCid = true);
+// The node files a GatherWorkingTree of Root reads, in the order it reads them (the same skips: fetch scratch dirs,
+// and "_friend_*" when SkipReserved). What the index cache stats to know nothing changed.
+std::vector<std::filesystem::path> ListTreeFiles(const std::filesystem::path &Root, bool SkipReserved = false);
 
 // Deps-first (post-order) freeze order over the working tree: a node is ordered AFTER every intra-tree node it links
 // (every OVER ref, NOT included), because its frozen CID embeds theirs. Refs not in WorkingTree are external (already frozen)
@@ -77,6 +80,10 @@ void GatherWorkingTree(const std::filesystem::path &Root,
 // but fail to freeze downstream and are skipped, so one bad edge never aborts the whole freeze. Always returns true. Pure.
 bool TopoOrderForMint(const std::map<std::string, nlohmann::ordered_json> &WorkingTree,
                       std::vector<std::string> &Order, std::string *Error = nullptr);
+// Each ordered node's level: 0 with no intra-tree link to an earlier node, else one more than the highest earlier node
+// it links. Nodes of one level never link each other, so they freeze independently (in parallel) once the levels below
+// are done; a broken cycle edge points to a later node, which always has a higher level. Pure.
+std::vector<int> TopoLevels(const std::map<std::string, nlohmann::ordered_json> &WorkingTree, const std::vector<std::string> &Order);
 
 // ---- landing untrusted node bytes (nodegraph.cpp) ----
 

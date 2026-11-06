@@ -22,6 +22,9 @@ void SetDataRoot(const std::string &Path);
 
 //The app data root. Falls back to ~/.VidyaGod if SetDataRoot was never called (headless tooling / safety net).
 std::filesystem::path DataRoot();
+//Whether SetDataRoot ran: the app and the command line always set it; a test or tool that did not must not write into
+//the user's own data dir through the fallback (the index cache is kept only when this is true).
+bool DataRootSet();
 
 // The four run modes that decide AppDataDir + which daemon/persistence features are allowed (see the four-run-modes
 // note). Set once in main() alongside the data root.

@@ -1,11 +1,16 @@
 #include "commandserver.h"
 #include "commonutils.h"
+#include "appmodel.h"     // catalogSnapshot — the index a Background command reads
+#include "asyncwork.h"
+#include "platform/platform.h"   // ReleaseFreedMemory — after a long command
 
 #include <QCryptographicHash>
 #include <QDir>
+#include <QPointer>
 #include <QLocalServer>
 #include <QLocalSocket>
 #include <filesystem>
+#include <thread>
 
 CommandServer::CommandServer(Command::Context C, QObject *Parent) : QObject(Parent), Ctx(C) { Ctx.Live = true; }
 
@@ -53,14 +58,34 @@ void CommandServer::Serve(QLocalSocket *S)
         const qsizetype Nl = Buffer->indexOf('\n');
         if (Nl < 0) return;
         const nlohmann::ordered_json Req = nlohmann::ordered_json::parse(Buffer->left(Nl).toStdString(), nullptr, false);
-        nlohmann::ordered_json Reply;
+        const auto Answer = [](QLocalSocket *To, const nlohmann::ordered_json &Reply) {
+            To->write(QByteArray::fromStdString(Reply.dump() + "\n"));
+            To->flush();
+            To->disconnectFromServer();
+        };
         if (Req.is_discarded() || !Req.is_object() || !Req.contains("name") || !Req["name"].is_string())
-            Reply = {{"ok", false}, {"error", "a request is one JSON line: {\"name\": …, \"args\": {…}}"}, {"usage", true}};
-        else
-            Reply = Command::Run(Req["name"].get<std::string>(), Req.value("args", nlohmann::ordered_json::object()), Ctx);
-        S->write(QByteArray::fromStdString(Reply.dump() + "\n"));
-        S->flush();
-        S->disconnectFromServer();
+        {
+            Answer(S, {{"ok", false}, {"error", "a request is one JSON line: {\"name\": …, \"args\": {…}}"}, {"usage", true}});
+            return;
+        }
+        const std::string Name = Req["name"].get<std::string>();
+        const nlohmann::ordered_json Args = Req.value("args", nlohmann::ordered_json::object());
+        const Command::Spec *Spec = Command::Find(Name);
+        if (Spec && Spec->Background && Ctx.Model)
+        {
+            //Off this thread, on the index as it is now: the window keeps painting and other commands keep answering.
+            auto Bg = std::make_shared<Command::Context>(Ctx);
+            Bg->Snapshot = Ctx.Model->catalogSnapshot();
+            auto Reply = std::make_shared<nlohmann::ordered_json>();
+            QPointer<QLocalSocket> To(S);
+            AsyncWork::Run(this, [Bg, Reply, Name, Args] { *Reply = Command::Run(Name, Args, *Bg); },
+                           [To, Reply, Answer] {
+                               if (To) Answer(To, *Reply);
+                               std::thread([] { Platform::ReleaseFreedMemory(); }).detach();   // off the GUI thread
+                           });
+            return;
+        }
+        Answer(S, Command::Run(Name, Args, Ctx));
     });
 }
 

@@ -45,8 +45,7 @@ struct Finding
 //Static checks for authoring that silently does nothing. Each of these has actually shipped.
 void CheckLayers(const Node &N, const std::string &Pkg, std::vector<Finding> &Out)
 {
-    if (!N.Layers.is_array()) return;
-    for (const auto &L : N.Layers)
+    for (const auto &L : N.LoweredLayers())
     {
         if (!L.is_object()) continue;
         const std::string Type = L.value("TYPE", std::string());

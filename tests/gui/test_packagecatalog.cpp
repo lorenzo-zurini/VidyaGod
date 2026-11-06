@@ -32,6 +32,7 @@
 #include <fstream>
 #include <set>
 #include <atomic>
+#include <chrono>
 #include <thread>
 #ifndef Q_OS_WIN
 #include <unistd.h>
@@ -1297,10 +1298,10 @@ private slots:
             const NodeIndex Idx = PackageCatalog::BuildCatalogIndex(rx);
             QVERIFY2(PackageCatalog::MissingFromClosure(Idx, "g_exec").empty(), "G is still complete");
             std::filesystem::path Local; std::string C;
-            ManifestModel::LayerLocator(Idx.Find(LibA)->Layers[0], Lib, Local, C);
+            ManifestModel::LayerLocator(Idx.Find(LibA)->LoweredLayers()[0], Lib, Local, C);
             QCOMPARE(Local, Old);                                                  // libA reads its own bytes
             const std::string LibB = cidOfLabel(Gen2["Libs"][0].value("cid", std::string()), "libB");
-            ManifestModel::LayerLocator(Idx.Find(LibB)->Layers[0], Lib, Local, C);
+            ManifestModel::LayerLocator(Idx.Find(LibB)->LoweredLayers()[0], Lib, Local, C);
             QCOMPARE(Local, Lib / ContentFile::Bumped("dx.zip", X2));             // libB never reads libA's
         }
         {   // L is the friend's version now, plus libA kept for G: offered no more (G still is)
@@ -1965,9 +1966,9 @@ private slots:
         // The vocabulary refuses an escaping name outright (such a node is malformed, and never resolves) — so the
         // walker's own guard is reached only by a node whose lowered layers were built another way: forge one.
         Node &G = idx.Nodes.begin()->second;
-        G.Layers.push_back(json{{"TYPE", "VFSZipLayer"}, {"PATH", "/tmp/vg_escape_target.zip"},
+        G.ContentLayers.push_back(json{{"TYPE", "VFSZipLayer"}, {"PATH", "/tmp/vg_escape_target.zip"},
                                 {"SOURCE", {{"TYPE", "ipfs"}, {"CID", "CID_ESCAPE"}}}});
-        G.Layers.push_back(json{{"TYPE", "VFSZipLayer"}, {"PATH", "../outside.zip"},
+        G.ContentLayers.push_back(json{{"TYPE", "VFSZipLayer"}, {"PATH", "../outside.zip"},
                                 {"SOURCE", {{"TYPE", "ipfs"}, {"CID", "CID_DOTDOT"}}}});
         std::vector<IpfsWrapper::FetchTarget> targets; std::string err;
         QVERIFY(PackageCatalog::CollectContentTargets(idx, "game", {}, targets, &err));
@@ -2699,6 +2700,117 @@ private slots:
             QVERIFY2(!J.contains("POS"), "PublishPackage stamped a layout into a node");
         }
         QCOMPARE(Nodes, 1);
+    }
+
+    // THE INDEX CACHE: a build whose node files are unchanged loads the cached index — identical to a scan, field by
+    // field, and saying again what the scan logged — and any edit to a node file (or a corrupt cache) builds afresh.
+    // Teeth: drop the files' sizes and times from the cache's inputs and the edited LABEL is never seen; drop the log
+    // replay and the malformed node's warning goes quiet on a hit; drop a field from NodeFromJson and the compare fails.
+    void the_index_cache_is_exact_and_notices_every_edit()
+    {
+        QTemporaryDir Data; QVERIFY(Data.isValid());
+        const std::string Saved = AppPaths::DataRootSet() ? AppPaths::DataRoot().string() : std::string();   // "" = unset
+        const auto Restore = qScopeGuard([&] { AppPaths::SetDataRoot(Saved); });
+        AppPaths::SetDataRoot(Data.path().toStdString());
+        const json Cfg = json{{"Settings", {{"Paths", {{"LibraryRoot", (Data.path() + "/LIBRARY").toStdString()}}}}}};
+        const QString Pkg = Data.path() + "/LIBRARY/VidyaGod/[1] Game";
+        QDir().mkpath(Pkg);
+        writeJson(Pkg + "/tile.json", NodeFixture::Chain("tile", {NodeFixture::Tile("1", "Game")}));
+        writeJson(Pkg + "/game.json", NodeFixture::Chain("game", {NodeFixture::Exec("win32", "g.exe")}, {"tile"},
+                                                         {{"VARIANT", "Edition 1"}, {"RECOMMENDED", json::array({"1"})}}));
+        writeJson(Pkg + "/bad.json", json{{"LABEL", "bad"}, {"LAYERS", json::array({ json{{"ZIP", "a.zip"}, {"FILE", "b"}} })}});
+        //Node files written just now are too fresh to cache (a rewrite within the same clock tick could look the same):
+        //a build over them scans and keeps nothing. Teeth: drop the freshness guard and a cache appears here.
+        QVERIFY(!PackageCatalog::BuildCatalogIndex(Cfg).Nodes.empty());
+        QVERIFY2(!PackageCatalog::IndexCacheStatus(Cfg).Exists, "a build over node files written this second is not kept");
+        //Age them past it, as any library is by the time it is opened again.
+        const auto Age = [&] {
+            for (const auto &E : std::filesystem::directory_iterator(Pkg.toStdString()))
+                std::filesystem::last_write_time(E.path(), std::filesystem::file_time_type::clock::now() - std::chrono::minutes(1));
+        };
+        Age();
+
+        const auto Same = [](const NodeIndex &A, const NodeIndex &B) {
+            if (A.Nodes.size() != B.Nodes.size()) return false;
+            for (const auto &[K, N] : A.Nodes)
+            {
+                const Node *M = B.Find(K);
+                if (!M || ManifestModel::NodeToJson(N) != ManifestModel::NodeToJson(*M) || N.LoweredLayers() != M->LoweredLayers()) return false;
+            }
+            return ManifestModel::IndexTablesToJson(A) == ManifestModel::IndexTablesToJson(B);
+        };
+        const auto WarnsMalformed = [](const Diagnostics::Report &R) {
+            for (const auto &E : R.Entries) if (E.Context == "ManifestModel::ParseNode") return true;
+            return false;
+        };
+
+        Diagnostics::Begin();
+        const NodeIndex Fresh = PackageCatalog::BuildCatalogIndex(Cfg);
+        QVERIFY2(WarnsMalformed(Diagnostics::Take()), "the scan warns about the malformed node");
+        QVERIFY(PackageCatalog::IndexCacheStatus(Cfg).Exists);
+        QVERIFY(PackageCatalog::IndexCacheStatus(Cfg).Current);
+
+        Diagnostics::Begin();
+        const NodeIndex Cached = PackageCatalog::BuildCatalogIndex(Cfg);
+        QVERIFY2(WarnsMalformed(Diagnostics::Take()), "a cache hit says again what the scan said");
+        QVERIFY2(Same(Fresh, Cached), "the cached index is the scanned one, field by field");
+        QVERIFY(Same(PackageCatalog::ScanCatalogIndex(Cfg), Cached));
+
+        // An edit that keeps the size and puts the modification time back (cp -a, rsync, unzip, a clock too coarse to
+        // tell): still seen — the change time cannot be set back. Teeth: stamp files by size and mtime only and the
+        // cache serves the old LABEL.
+        {
+            const std::filesystem::path Game = (Pkg + "/game.json").toStdString();
+            const auto Then = std::filesystem::last_write_time(Game);
+            const auto Size = std::filesystem::file_size(Game);
+            json J; { std::ifstream In(Game); In >> J; }
+            QCOMPARE(J["LABEL"].get<std::string>(), std::string("game"));
+            J["LABEL"] = "gamf";                                   // same length: the file keeps its size
+            writeJson(Pkg + "/game.json", J);
+            QCOMPARE(std::filesystem::file_size(Game), Size);
+            std::filesystem::last_write_time(Game, Then);
+            QVERIFY2(!PackageCatalog::IndexCacheStatus(Cfg).Current, "a same-size edit with its time put back is still an edit");
+            bool Seen = false;
+            for (const auto &[K, N] : PackageCatalog::BuildCatalogIndex(Cfg).Nodes) Seen = Seen || N.NodeId == "gamf";
+            QVERIFY(Seen);
+        }
+
+        // An edit: another LABEL (and another size, so the check cannot hinge on the clock's resolution alone).
+        writeJson(Pkg + "/game.json", NodeFixture::Chain("game renamed", {NodeFixture::Exec("win32", "g.exe")}, {"tile"},
+                                                         {{"VARIANT", "Edition 1"}, {"RECOMMENDED", json::array({"1"})}}));
+        Age();
+        QVERIFY(!PackageCatalog::IndexCacheStatus(Cfg).Current);
+        const NodeIndex Edited = PackageCatalog::BuildCatalogIndex(Cfg);
+        bool Renamed = false;
+        for (const auto &[K, N] : Edited.Nodes) Renamed = Renamed || N.NodeId == "game renamed";
+        QVERIFY2(Renamed, "an edited node file is read again, never served from the cache");
+
+        // A corrupt cache is built over, never trusted.
+        { std::ofstream F((Data.path() + "/CACHE/index.cbor").toStdString(), std::ios::trunc); F << "not an index"; }
+        QVERIFY(Same(PackageCatalog::BuildCatalogIndex(Cfg), Edited));
+        QVERIFY(PackageCatalog::IndexCacheStatus(Cfg).Current);
+    }
+
+    // A check that throws (a path the filesystem refuses: a 300-character file name) ends the validation with that
+    // error, as one pass over the nodes always did — never a terminate from a worker thread taking the app down. Two
+    // packages, so the packages run on two threads. Teeth: drop the catch in Parallel::Run and the test binary aborts.
+    void a_throwing_check_is_an_error_not_a_crash()
+    {
+        QTemporaryDir Lib; QVERIFY(Lib.isValid());
+        const QString A = Lib.path() + "/VidyaGod/[1] One", B = Lib.path() + "/VidyaGod/[2] Two";
+        QDir().mkpath(A); QDir().mkpath(B);
+        writeJson(A + "/one.json", NodeFixture::Chain("one", {NodeFixture::Tile("1", "One"), NodeFixture::Exec("win32", "a.exe")}, {}, {{"VARIANT", "v"}}));
+        writeJson(B + "/two.json", NodeFixture::Chain("two", {NodeFixture::Tile("2", "Two"), NodeFixture::Exec("win32", "b.exe"),
+                                                              NodeFixture::Content("zip", std::string(300, 'z') + ".zip")}, {}, {{"VARIANT", "v"}}));
+        NodeIndex Idx;
+        ManifestModel::ScanBundleNodes(A.toStdString(), Idx);
+        ManifestModel::ScanBundleNodes(B.toStdString(), Idx);
+        ManifestModel::DeriveFacts(Idx);
+        std::vector<std::string> Errors, Warnings;
+        bool Threw = false;
+        try { ManifestModel::ValidateNodeGraph(Idx, Errors, Warnings); }
+        catch (const std::exception &) { Threw = true; }
+        QVERIFY2(Threw, "the filesystem's refusal reaches the caller as an error");
     }
 
 private:

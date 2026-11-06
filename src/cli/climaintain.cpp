@@ -110,13 +110,13 @@ int CliModes::RunMaintenanceModes(LaunchParameters &LaunchParameters, nlohmann::
             const Node *n = Index.Find(id);
             if (!n) { LogErr("convert-delta", "node not found: " + id); return 1; }
             V v; v.node = n;
-            for (int k = 0; k < (int)n->Layers.size(); ++k)
-                if (n->Layers[k].value("TYPE", std::string()) == "VFSZipLayer") { v.layerIdx = k; break; }
+            for (int k = 0; k < (int)n->ContentLayers.size(); ++k)
+                if (n->ContentLayers[k].value("TYPE", std::string()) == "VFSZipLayer") { v.layerIdx = k; break; }
             if (v.layerIdx < 0) { LogErr("convert-delta", "no VFSZipLayer in " + id); return 1; }
             fs::path local; std::string cid;
-            ManifestModel::LayerLocator(n->Layers[v.layerIdx], n->BundleDir, local, cid);
+            ManifestModel::LayerLocator(n->ContentLayers[v.layerIdx], n->BundleDir, local, cid);
             v.zipPath = local.string();
-            v.target  = n->Layers[v.layerIdx].value("TARGET", std::string());
+            v.target  = n->ContentLayers[v.layerIdx].value("TARGET", std::string());
             if (!fs::exists(v.zipPath)) { LogErr("convert-delta", "missing zip for " + id + ": " + v.zipPath); return 1; }
             vs.push_back(std::move(v));
         }

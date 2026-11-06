@@ -5,6 +5,7 @@
 #include <string>
 #include <vector>
 #include <map>
+#include <memory>
 #include <set>
 #include <functional>
 #include <filesystem>
@@ -26,6 +27,21 @@
 // inherited by graph distance. A node whose list begins with ANY is a graft.
 // ---------------------------------------------------------------------------
 
+//A node's JSON as authored, shared by every copy of the node: read-only once parsed, so copying a Node (the editor's
+//working index, an authoring session's) costs a pointer instead of the whole tree. Reads as a const JSON value.
+class SharedJson
+{
+public:
+    SharedJson() = default;
+    SharedJson(nlohmann::ordered_json J) : P(std::make_shared<const nlohmann::ordered_json>(std::move(J))) {}
+    const nlohmann::ordered_json &operator*() const { return P ? *P : Null(); }
+    const nlohmann::ordered_json *operator->() const { return &**this; }
+    operator const nlohmann::ordered_json &() const { return **this; }
+private:
+    static const nlohmann::ordered_json &Null() { static const nlohmann::ordered_json N; return N; }
+    std::shared_ptr<const nlohmann::ordered_json> P;
+};
+
 //One node, parsed from a node .json file.
 struct Node {
     std::string Cid;                         // the node's identity: the CID of its canonical bytes (or, in a working-tree
@@ -40,11 +56,16 @@ struct Node {
     std::string Variant;                     // VARIANT — non-empty ⇒ on the shelf under this name
     std::vector<std::string> Recommended;    // RECOMMENDED — tile UIDs: the default row under them (a variant), or
                                              // pre-ticked under them (a graft)
-    nlohmann::ordered_json Json;             // the node as authored — what Fold resolves
-    //The node's OWN layers lowered to the engine's vocabulary (VFSZipLayer/FileEdit/RegEdit/CustomVar/…), where
-    //they land relative to this node. For content bookkeeping (what files and CIDs a node carries), never for a
-    //launch: a launch lowers the resolved plan, where TAKE and TARGET have placed everything.
-    nlohmann::ordered_json Layers;
+    SharedJson Json;                         // the node as authored — what Fold resolves
+    //The node's OWN content layers (VFSZipLayer/VFSDeltaLayer/…) lowered to the engine's vocabulary, where they land
+    //relative to this node: what files and CIDs it carries. Kept for every node — hydration, fetch and seeding read
+    //them constantly. The rest of its lowered layers (edits, registry, variables…) is LoweredLayers(), made on demand:
+    //held for every node of a library it was most of the index's memory, and only checks read it.
+    nlohmann::ordered_json ContentLayers;
+    std::vector<std::pair<std::string, std::string>> VarDefaults;   // its own CustomVars: KEY -> DEFAULT
+    //Every one of its own layers lowered (an array; empty for a malformed node). Never for a launch: a launch lowers
+    //the resolved plan, where TAKE and TARGET have placed everything.
+    nlohmann::ordered_json LoweredLayers() const;
     std::vector<std::string> Refs;           // NODE refs, in order — what it contains (followed, fetched)
     std::vector<std::string> Requires;       // ANY members and NOT refs — compared, never followed
     bool IsGraft = false;                    // its list begins with ANY
@@ -113,6 +134,8 @@ namespace ManifestModel {
 // The versions a graft applies onto: the variants (not grafts themselves) containing, transitively, a node its leading
 // ANY names — what a graft that is a card, or a version, runs on. By VARIANT, then key.
 std::vector<std::string> GraftBases(const NodeIndex &Idx, const std::string &Graft);
+//GraftBases of every graft in the index at once (one pass over the containment, not one per graft): graft -> bases.
+std::map<std::string, std::vector<std::string>> AllGraftBases(const NodeIndex &Idx);
 // True iff J is a node object: an object with a LAYERS list. The ONE definition — every scanner uses it.
 bool IsNodeObject(const nlohmann::ordered_json &J);
 // Every ref a RAW node names, in order: NODE refs (what it contains) and, into *Requires, ANY members + NOT refs.
@@ -123,6 +146,12 @@ bool RemapNodeRefs(nlohmann::ordered_json &J, const std::function<std::string(co
 // Parse a single node object sourced from File in BundleDir. False if it is not a node.
 bool ParseNode(const nlohmann::ordered_json &J, const std::filesystem::path &File,
                const std::filesystem::path &BundleDir, Node &Out);
+// A node, and an index, as one JSON value and back — every field: what the on-disk index cache keeps and
+// `catalog stats --dump` writes. A field added to Node or NodeIndex goes in both, or a cached index lacks it.
+nlohmann::ordered_json NodeToJson(const Node &N);
+Node NodeFromJson(nlohmann::ordered_json J);
+nlohmann::ordered_json IndexTablesToJson(const NodeIndex &Idx);   // everything but the nodes
+void IndexTablesFromJson(const nlohmann::ordered_json &J, NodeIndex &Idx);
 // Scan one bundle dir (non-recursive) for *.json node files, adding them to Idx. Duplicate handles are reported
 // and the first-seen wins. Run DeriveFacts after assembling an index by hand.
 void ScanBundleNodes(const std::filesystem::path &BundleDir, NodeIndex &Idx);

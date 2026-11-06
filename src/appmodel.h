@@ -35,12 +35,11 @@ public:
 
     // ── Shared state (views read directly; the model owns the lifetime) ──
     nlohmann::ordered_json * config()       const { return Config; }
-    NodeIndex &              catalogIndex()        { return CatalogIndex; }
-    const NodeIndex &        catalogIndex()  const { return CatalogIndex; }
-    // The index as one immutable copy a worker thread may read while CatalogIndex is reassigned under it: made once per
-    // rebuild, shared by every download (each worker copied the whole index, twice: 46 resumed downloads held ~90
-    // copies, 1.6 GB). GUI thread.
-    std::shared_ptr<const NodeIndex> catalogSnapshot() const;
+    const NodeIndex &        catalogIndex()  const { return *Catalog; }
+    // The index itself, immutable and shared: a worker thread keeps reading it while a rebuild replaces it. One per
+    // rebuild for everyone — each download worker once copied the whole index, twice (46 resumed downloads held ~90
+    // copies, 1.6 GB), and every snapshot was another copy. GUI thread.
+    std::shared_ptr<const NodeIndex> catalogSnapshot() const { return Catalog; }
     QDir *                   appDataDir()    const { return AppDataDir; }
     int                      cardPixelWidth() const { return CardPixelWidth; }
 
@@ -198,8 +197,10 @@ private:
     std::shared_ptr<PackageCatalog::SourceUpgradePlan> PendingUpgrade;
     nlohmann::ordered_json * Config;
     QDir *                   AppDataDir;
-    NodeIndex                CatalogIndex;
-    mutable std::weak_ptr<const NodeIndex> CatalogShared;     // catalogSnapshot's copy while in use; reset on reassignment
+    std::shared_ptr<const NodeIndex> Catalog = std::make_shared<const NodeIndex>();
+    // Make Idx the index (built from Inputs — BuildCatalogIndex's): it is what the app shows, and what code holding only
+    // the config reads (PackageCatalog::CurrentIndex) while no node file has changed since.
+    void setCatalog(NodeIndex Idx, std::string Inputs, std::vector<Diagnostics::Entry> Said);
     int                      CardPixelWidth = 185;
     QTimer *                 OrphanHealTimer = nullptr;   // periodic background orphan check (tab-independent)
     bool                     SyncRetryPending = false;    // a re-sync is scheduled for a source that failed to fetch

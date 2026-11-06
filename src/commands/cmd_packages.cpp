@@ -694,9 +694,10 @@ VG_COMMANDS
         }, {} });
 
     Command::Register({
-        "catalog fresh", "scan the library from disk into a new index (the app's untouched)",
-        "Build a node index straight from disk — what a download or a check works from — and report its size, without "
-        "replacing the app's.", {}, { "catalog fresh" }, { "PackageCatalog::FreshCatalogIndex", "PackageCatalog::BuildCatalogIndex" },
+        "catalog fresh", "build a new index of the library as it is on disk (the app's untouched)",
+        "Build a node index of the library as it is on disk now — what a download or a check works from — and report its "
+        "size, without replacing the app's. When no node file changed since the index cache was written, the build is "
+        "that cache (the same index); `catalog cache --check` compares the two.", {}, { "catalog fresh" }, { "PackageCatalog::FreshCatalogIndex", "PackageCatalog::BuildCatalogIndex" },
         Needs::Config, false,
         [](Command::Context &C, const json &) {
             const auto I = PackageCatalog::FreshCatalogIndex(*C.Config);

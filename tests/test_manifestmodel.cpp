@@ -74,14 +74,18 @@ TEST(parse_reads_a_gen6_node)
     CHECK(N.Requires == std::vector<std::string>{"rival"});           // …ANY/NOT are only compared
     CHECK(!N.IsGraft);
     CHECK(N.OwnTile);
-    //Its own layers lowered to the engine's vocabulary: content (TARGET without the FILES namespace), edit ops.
-    CHECK_EQ(N.Layers.size(), (size_t)2);
-    CHECK_EQ(N.Layers[0]["TYPE"].get<std::string>(), std::string("VFSZipLayer"));
-    CHECK_EQ(N.Layers[0]["TARGET"].get<std::string>(), std::string("%GameDir%"));
-    CHECK_EQ(N.Layers[0]["SOURCE"]["CID"].get<std::string>(), std::string("Qm1"));
-    CHECK_EQ(N.Layers[0]["SOURCE"]["SIZE"].get<int>(), 5);
-    CHECK_EQ(N.Layers[1]["TYPE"].get<std::string>(), std::string("BinaryPatch"));
-    CHECK_EQ(N.Layers[1]["FILE"].get<std::string>(), std::string("%GameDir%/g.exe"));
+    //Its own layers lowered to the engine's vocabulary: content (TARGET without the FILES namespace), edit ops; the
+    //content ones kept on the node.
+    const nlohmann::ordered_json Lowered = N.LoweredLayers();
+    CHECK_EQ(N.ContentLayers.size(), (size_t)1);
+    CHECK_EQ(N.ContentLayers[0].dump(), Lowered[0].dump());
+    CHECK_EQ(Lowered.size(), (size_t)2);
+    CHECK_EQ(Lowered[0]["TYPE"].get<std::string>(), std::string("VFSZipLayer"));
+    CHECK_EQ(Lowered[0]["TARGET"].get<std::string>(), std::string("%GameDir%"));
+    CHECK_EQ(Lowered[0]["SOURCE"]["CID"].get<std::string>(), std::string("Qm1"));
+    CHECK_EQ(Lowered[0]["SOURCE"]["SIZE"].get<int>(), 5);
+    CHECK_EQ(Lowered[1]["TYPE"].get<std::string>(), std::string("BinaryPatch"));
+    CHECK_EQ(Lowered[1]["FILE"].get<std::string>(), std::string("%GameDir%/g.exe"));
 }
 
 TEST(a_graft_is_a_node_whose_list_begins_with_any)
@@ -102,7 +106,7 @@ TEST(a_layer_label_and_section_are_presentation_only)
     CHECK(ManifestModel::ParseNode({{"LABEL", "n"}, {"LAYERS", ordered_json::array({ {{"ENV", {{"A", "1"}}},
           {"LABEL", "Font hinting"}, {"SECTION", "Compatibility/Fonts"}, {"COMMENT", "why"}} })}}, "f", "/b", Named));
     CHECK(Named.LowerError.empty());
-    CHECK_EQ(Named.Layers.dump(), Bare.Layers.dump());
+    CHECK_EQ(Named.LoweredLayers().dump(), Bare.LoweredLayers().dump());
 }
 
 TEST(the_vocabulary_refuses_malformed_nodes_and_keeps_them_indexed)
@@ -126,7 +130,7 @@ TEST(the_vocabulary_refuses_malformed_nodes_and_keeps_them_indexed)
         Node N;
         CHECK(ManifestModel::ParseNode(J, "f.json", "/b", N));        // still a node: indexed so validation can name it
         CHECK(!N.LowerError.empty());
-        CHECK(N.Layers.empty());                                      // …and it lowers to nothing
+        CHECK(N.LoweredLayers().empty() && N.ContentLayers.empty());                                      // …and it lowers to nothing
     }
     NodeIndex Idx;
     Add(Idx, Bad[0]);

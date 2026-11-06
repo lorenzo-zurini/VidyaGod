@@ -6,10 +6,12 @@
 #include <functional>
 #include <map>
 #include <stdexcept>
+#include <memory>
 #include <string>
 #include <vector>
 
 class AppModel;
+struct NodeIndex;
 class QDir;
 class QWidget;
 
@@ -32,7 +34,10 @@ class QWidget;
 namespace Command
 {
 
-enum class Needs : std::uint8_t { Config, Model, Ui };   // what a command runs against (Ui implies the model)
+// What a command runs against: the config, the model, the windows (Ui implies the model) — brought up for a call run on
+// its own — or App: what only the running app holds (its editor, an authoring session, its live events, a runtime it
+// keeps up). An App command run with no app up says so at once instead of bringing up windows that cannot have it.
+enum class Needs : std::uint8_t { Config, Model, Ui, App };
 enum class Type : std::uint8_t { String, Bool, Int, Json };
 
 struct Context
@@ -42,6 +47,8 @@ struct Context
     AppModel *Model = nullptr;            // set for Needs::Model and Needs::Ui
     QWidget *Window = nullptr;            // the main window, for Needs::Ui
     bool Live = false;                    // running inside the user's GUI (not a headless bring-up)
+    //The index snapshot a Background command reads (taken on the app's thread before it runs off it); else empty.
+    std::shared_ptr<const NodeIndex> Snapshot;
 };
 
 // One argument. A positional one is given in order (`share <peer> <library>`); the rest are --options (a Bool one is
@@ -80,6 +87,9 @@ struct Spec
     bool Node = false;                    // needs the IPFS node up (started for a headless run)
     Fn Run;
     Renderer Render;                      // empty: the generic table/fields rendering
+    //In the running app, run it on a worker thread, so a long one leaves the window (and other commands) answering:
+    //for a command that reads nothing but its arguments and the index snapshot (CmdUtil::Index) it is handed.
+    bool Background = false;
 };
 
 // An argument error: the caller's mistake, reported with the command's usage (exit 2), never a crash.

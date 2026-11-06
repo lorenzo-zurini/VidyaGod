@@ -123,7 +123,7 @@ void PkgInsight::recompute()
         const Node *N = Model->libraryNode(C);
         if (!N) return PkgActions::OtherNode{};
         const auto X = Model->externalInfo(C);
-        return PkgActions::OtherNode{&N->Json, N->BundleDir, X.Label.empty() ? C.substr(0, 12) : X.Label + "  (" + X.Package + ")"};
+        return PkgActions::OtherNode{&*N->Json, N->BundleDir, X.Label.empty() ? C.substr(0, 12) : X.Label + "  (" + X.Package + ")"};
     };
     auto Label = [&](const std::string &R) {
         const auto It = Labels.find(R);

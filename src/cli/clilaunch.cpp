@@ -85,7 +85,7 @@ std::unique_ptr<CliModes::PreparedLaunch> CliModes::PrepareLaunch(const LaunchRe
     LaunchRequest LaunchParameters = Req;   // the node is filled in from the tile below
     auto Out = std::make_unique<PreparedLaunch>();
     {
-        Out->Index = std::make_shared<NodeIndex>(PackageCatalog::BuildCatalogIndex(GlobalConfigJSON));
+        Out->Index = PackageCatalog::CurrentIndex(GlobalConfigJSON);   // the app's own while no node file changed
         const auto &Index = Out->Index;   // repos + locally-added packages
         //--tile [--variant]: the row the shelf shows, named the way the shelf names it.
         if (LaunchParameters.LaunchNodeId.empty())

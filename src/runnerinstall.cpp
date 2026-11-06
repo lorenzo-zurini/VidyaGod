@@ -17,7 +17,7 @@ std::vector<const Node *> RunnerBuildNodes(const NodeIndex &Idx, const std::stri
 {
     std::vector<const Node *> Out;
     for (const std::string &Id : ManifestModel::Closure(Idx, RunnerNodeId))
-        if (const Node *C = Idx.Find(Id); C && C->Layers.is_array() && !C->Layers.empty()) Out.push_back(C);
+        if (const Node *C = Idx.Find(Id); C && !C->ContentLayers.empty()) Out.push_back(C);
     return Out;
 }
 
@@ -30,7 +30,7 @@ bool RunnerInstall::CollectRunnerNodeTargets(const NodeIndex &Idx, const std::st
     if (!R || !R->IsRunner()) { if (Error) *Error = "not a runner node: " + RunnerNodeId; return false; }
     std::error_code Ec;
     for (const Node *C : RunnerBuildNodes(Idx, RunnerNodeId))
-        for (const auto &L : C->Layers)
+        for (const auto &L : C->ContentLayers)
         {
             if (!ManifestModel::IsRunnerBuildLayer(L)) continue;                   // NOT IsVfsLayer — see the helper
             std::filesystem::path Local; std::string Cid;
@@ -50,7 +50,7 @@ bool RunnerInstall::RunnerBuildPresent(const NodeIndex &Idx, const std::string &
     //Every build VFS layer hydrated locally (the runner's content closure). A runner that ships no build is "present".
     std::error_code Ec;
     for (const Node *C : RunnerBuildNodes(Idx, RunnerNodeId))
-        for (const auto &L : C->Layers)
+        for (const auto &L : C->ContentLayers)
         {
             //NOT IsVfsLayer: a prefix-assembly layer ("%DefaultPfxDir%") resolves to <bundle>/%DefaultPfxDir%,
             //which never exists on disk, so counting it here reported EVERY proton runner as not installed.

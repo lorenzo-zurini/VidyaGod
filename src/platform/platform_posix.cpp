@@ -1,5 +1,9 @@
 // POSIX implementation of the Platform OS-abstraction seam (Linux). The Windows build compiles
 // platform_win.cpp instead (selected in CMakeLists).
+#if defined(__linux__)
+#include <sys/stat.h>
+#include <malloc.h>   // malloc_trim (glibc)
+#endif
 #include "platform.h"
 
 #include <system_error>
@@ -11,6 +15,23 @@
 #include <unistd.h>
 
 namespace Platform {
+
+std::string FileStamp(const std::filesystem::path &P, long long *Modified)
+{
+    struct stat St {};
+    if (Modified) *Modified = 0;
+    if (::stat(P.c_str(), &St) != 0) return {};
+    if (Modified) *Modified = static_cast<long long>(St.st_mtim.tv_sec);
+    return std::to_string(St.st_size) + ' ' + std::to_string(St.st_mtim.tv_sec) + '.' + std::to_string(St.st_mtim.tv_nsec) + ' '
+           + std::to_string(St.st_ctim.tv_sec) + '.' + std::to_string(St.st_ctim.tv_nsec) + ' ' + std::to_string(St.st_ino);
+}
+
+void ReleaseFreedMemory()
+{
+#ifdef __GLIBC__
+    malloc_trim(0);
+#endif
+}
 
 std::filesystem::path SelfExe()
 {

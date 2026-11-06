@@ -24,6 +24,8 @@ namespace AppPaths
 {
 void SetDataRoot(const std::string &Path) { RootRef() = std::filesystem::path(Path); }
 
+bool DataRootSet() { return !RootRef().empty(); }
+
 std::filesystem::path DataRoot()
 {
     if (!RootRef().empty()) return RootRef();

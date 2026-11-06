@@ -108,8 +108,8 @@ private slots:
         ManifestModel::DeriveFacts(Idx);
         QVERIFY(AuthoringSession::WithoutWaiting(Idx, "w"));
         QVERIFY2(Idx.Nodes["w"].LowerError.empty(), Idx.Nodes["w"].LowerError.c_str());
-        QCOMPARE((int)Idx.Nodes["w"].Json["LAYERS"].size(), 2);
-        QCOMPARE(Idx.Nodes["w"].Json["LAYERS"][0]["ZIP"], json("base.zip"));
+        QCOMPARE((int)(*Idx.Nodes["w"].Json)["LAYERS"].size(), 2);
+        QCOMPARE((*Idx.Nodes["w"].Json)["LAYERS"][0]["ZIP"], json("base.zip"));
         QCOMPARE(Idx.Nodes["w"].Cid, std::string("w"));
         QVERIFY(!AuthoringSession::WithoutWaiting(Idx, "o"));
     }

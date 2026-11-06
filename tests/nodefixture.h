@@ -148,10 +148,11 @@ inline void Wire(struct Node &N, const std::vector<std::string> &Refs)
     N.Refs = Refs;
     nlohmann::ordered_json L = nlohmann::ordered_json::array();
     for (const std::string &R : Refs) L.push_back({ {"NODE", R} });
-    if (N.Json.is_object() && N.Json.contains("LAYERS"))
-        for (const auto &X : N.Json["LAYERS"]) if (!X.contains("NODE")) L.push_back(X);
-    if (!N.Json.is_object()) N.Json = nlohmann::ordered_json::object();
-    N.Json["LAYERS"] = std::move(L);
+    nlohmann::ordered_json J = N.Json->is_object() ? *N.Json : nlohmann::ordered_json::object();
+    if (J.contains("LAYERS"))
+        for (const auto &X : J["LAYERS"]) if (!X.contains("NODE")) L.push_back(X);
+    J["LAYERS"] = std::move(L);
+    N.Json = std::move(J);   // a node's JSON is shared and read-only: replaced whole
 }
 
 // Write fixture JSON to Path. A node file holds ONE node (the file is the node's block), so a Chain's array is

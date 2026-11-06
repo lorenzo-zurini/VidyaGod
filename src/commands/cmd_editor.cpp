@@ -119,7 +119,7 @@ VG_COMMANDS
         { Pos("package", "a folder path, its name, its UID, or part of its title") }, { "editor open 749" },
         { "PackageEditor::OpenFor", "PkgCanvas::setExternalLookup", "PkgCanvas::setOffers", "PkgCanvas::setPlatforms", "PkgCanvas::setImageLookup",
           "PkgCanvas::setPackageOpen", "PkgCanvas::documentReset", "PkgCanvas::setIssues", "PkgActions::refreshHints", "PkgCanvas::setNodeHints",
-          "JsonRawEditor::refresh", "PkgInsight::refresh" }, Needs::Ui, false,
+          "JsonRawEditor::refresh", "PkgInsight::refresh" }, Needs::App, false,
         [](Command::Context &C, const json &A) {
             const fs::path P = PackageDir(C, Command::Str(A, "package"), false);
             bool Created = false;
@@ -134,7 +134,7 @@ VG_COMMANDS
     Command::Register({
         "editor close", "close the package editor (unsaved edits: --discard to drop them)",
         "Closes the editor window. With unsaved edits it would ask; --discard drops them first.", { Flag("discard", "drop unsaved edits") },
-        { "editor close", "editor close --discard" }, { "PackageEditor::reject" }, Needs::Ui, false,
+        { "editor close", "editor close --discard" }, { "PackageEditor::reject" }, Needs::App, false,
         [](Command::Context &, const json &A) {
             PackageEditor &E = Editor();
             if (E.model()->isDirty())
@@ -156,7 +156,7 @@ VG_COMMANDS
           "PkgCanvas::visibleNodes", "PkgCanvas::visibleWires", "PkgCanvas::externalCount", "PkgCanvas::externalLabel", "PkgCanvas::touring",
           "PkgCanvas::packageOpen", "PkgCanvas::wantsFrames", "PkgCanvas::nodeRect", "PkgCanvas::worldRect", "PkgCanvas::portPos",
           "PkgCanvas::rowPos", "PkgCanvas::coverShown", "PkgCanvas::isBusy", "PackageEditor::canvas", "PkgCanvasPanel::canvas",
-          "PkgCanvasPanel::requestFrame" }, Needs::Ui, false,
+          "PkgCanvasPanel::requestFrame" }, Needs::App, false,
         [](Command::Context &, const json &) {
             Settle();
             PkgCanvas &Cv = Canvas();
@@ -199,7 +199,7 @@ VG_COMMANDS
         "label as shown, the window it is in, and its rectangle in the canvas's coordinates. Filter with --label / "
         "--window (a part of the name).", { Opt("label", "only items whose label contains this"), Opt("window", "only in windows whose name contains this") },
         { "canvas items", "canvas items --label Save", "canvas items --window Patch --json" },
-        { "ImGuiProbe::FrameJson", "ImGuiProbe::SetRecording", "ImGuiProbe::Enabled", "ImGuiProbe::BeginFrame" }, Needs::Ui, false,
+        { "ImGuiProbe::FrameJson", "ImGuiProbe::SetRecording", "ImGuiProbe::Enabled", "ImGuiProbe::BeginFrame" }, Needs::App, false,
         [](Command::Context &, const json &A) {
             Settle();
             json F = json::parse(ImGuiProbe::FrameJson());
@@ -219,7 +219,7 @@ VG_COMMANDS
         { Pos("label", "the label as shown"), Opt("nth", "which of several (0-based)", Type::Int), Opt("window", "the window (a part of its name)"),
           Flag("right", "a right click"), Flag("double", "a double click") },
         { "canvas press 'bring in files...'", "canvas press 'Patch 2.0a' --double", "canvas press OK --window Confirm" },
-        { "ImGuiProbe::FindItem", "ImGuiProbe::NameLast" }, Needs::Ui, false,
+        { "ImGuiProbe::FindItem", "ImGuiProbe::NameLast" }, Needs::App, false,
         [](Command::Context &, const json &A) {
             Settle();
             float X0 = 0, Y0 = 0, X1 = 0, Y1 = 0;
@@ -238,7 +238,7 @@ VG_COMMANDS
         { Pos("x", "x", Type::Int), Pos("y", "y", Type::Int), Flag("click", "click there"), Flag("right", "a right click"), Flag("double", "a double click"),
           Opt("drag-to", "x,y to drag to"), Flag("move", "only move there"), Opt("wheel", "notches to scroll", Type::Int) },
         { "canvas mouse 400 300 --click", "canvas mouse 400 300 --drag-to 600,300", "canvas mouse 400 300 --wheel 2" },
-        { "PkgCanvas::nodeAt", "PkgCanvas::screenToWorld" }, Needs::Ui, false,
+        { "PkgCanvas::nodeAt", "PkgCanvas::screenToWorld" }, Needs::App, false,
         [](Command::Context &, const json &A) {
             const QPointF P(static_cast<double>(Command::Int(A, "x")), static_cast<double>(Command::Int(A, "y")));
             QWidget *W = Editor().canvas();
@@ -273,7 +273,7 @@ VG_COMMANDS
         "canvas keys", "keys or text into the canvas (shortcuts, typing into a field it shows)",
         "--keys sends key presses (\"Ctrl+Z\", \"Delete\", \"Return\", several comma-separated); --text types text into "
         "the focused field.", { Opt("keys", "key sequences (a,b)"), Opt("text", "text to type") },
-        { "canvas keys --keys Ctrl+A,Delete", "canvas keys --text 'Patch 2.0b'" }, {}, Needs::Ui, false,
+        { "canvas keys --keys Ctrl+A,Delete", "canvas keys --text 'Patch 2.0b'" }, {}, Needs::App, false,
         [](Command::Context &, const json &A) {
             QWidget *W = Editor().canvas();
             W->setFocus();
@@ -310,7 +310,7 @@ VG_COMMANDS
         { "canvas view --select 'Patch 2.0a' --frame", "canvas view --frame-all", "canvas view --zoom 0.5" },
         { "PkgCanvas::select", "PkgCanvas::frameAll", "PkgCanvas::frameSelection", "PkgCanvas::setZoom", "PkgCanvas::setCamera",
           "PkgCanvas::setExpanded", "PkgCanvas::tidyLayout", "PkgCanvas::startTour", "JsonRawEditor::showNode", "PkgInsight::showNode" },
-        Needs::Ui, false,
+        Needs::App, false,
         [](Command::Context &, const json &A) {
             PkgCanvas &Cv = Canvas();
             if (A.contains("select")) Cv.select(Handle(Command::Str(A, "select")), Command::Bool(A, "frame", false));
@@ -336,7 +336,7 @@ VG_COMMANDS
         { Opt("add", "a layer type"), Opt("at", "(--add) x,y in the world"), Opt("ref", "(--add) the node it names"), Opt("carry", "NODE:LAYER"),
           Opt("to", "(--carry) NODE or NODE:AT"), Flag("copy", "(--carry) copy"), Opt("delete", "nodes (a,b)"), Flag("undo", "undo"), Flag("redo", "redo") },
         { "canvas edit --add ZIP --at 100,200", "canvas edit --carry 'Patch 2.0a':4 --to 'Original'", "canvas edit --undo" },
-        { "PkgCanvas::addNode", "PkgCanvas::MoveLayer", "PkgCanvas::removeNodes", "PkgCanvas::undo", "PkgCanvas::redo" }, Needs::Ui, false,
+        { "PkgCanvas::addNode", "PkgCanvas::MoveLayer", "PkgCanvas::removeNodes", "PkgCanvas::undo", "PkgCanvas::redo" }, Needs::App, false,
         [](Command::Context &, const json &A) {
             PkgCanvas &Cv = Canvas();
             json Out = json::object();
@@ -386,7 +386,7 @@ VG_COMMANDS
           "canvas action 'Original' --drop ~/cover.png" },
         { "PkgActions::perform", "PkgActions::dropFiles", "PkgActions::cancel", "PkgActions::setConfirmHandler", "PkgActions::setNotifyHandler",
           "PkgActions::setPickHandler", "PkgActions::setChooseHandler", "PackageEditor::actions", "PkgCanvas::beginAction", "PkgCanvas::setProgress",
-          "PkgCanvas::endAction" }, Needs::Ui, false,
+          "PkgCanvas::endAction" }, Needs::App, false,
         [](Command::Context &, const json &A) {
             PackageEditor &E = Editor();
             PkgActions &Act = *E.actions();

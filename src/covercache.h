@@ -6,6 +6,7 @@
 #include <QHash>
 #include <QImage>
 #include <QPixmap>
+#include <QSize>
 #include <QSet>
 #include <functional>
 
@@ -44,6 +45,12 @@ public:
     // coverDecoded() fires when it lands so surfaces re-take. Decoding a library's covers inline held the window back
     // by seconds. A file that does not decode stays null until a transfer lands a new one.
     QPixmap take(const QString &Path);
+    // The largest size a cover is drawn at (the widest card): a decoded cover is kept at no more than this, since
+    // cards draw it stretched to their own size anyway — a library's 600×900 originals were most of the app's memory.
+    // Growing it drops the decoded covers taken so far' reason to stay: surfaces re-take them (coverDecoded fires).
+    void setDisplaySize(QSize Max);
+    // Whether a decode of Path is under way (so a null take() means "soon", not "never").
+    bool decoding(const QString &Path) const { return Decoding.contains(Path); }
 
     // Extracts the (filename, cid) locators from a COVER value. Either may be empty.
     static void Locate(const nlohmann::ordered_json &Cover, QString &File, QString &Cid);
@@ -78,6 +85,7 @@ public:
 signals:
     void coverReady(QString cid);
     void coverDecoded();
+    void coversTooSmall();   // the display size grew past what covers were decoded at: drop them and take again
 
 private:
     explicit CoverCache(QObject * parent = nullptr);
@@ -89,6 +97,8 @@ private:
     QHash<QString, QImage> Decoded;         // path → decoded image, waiting for its surface to take it
     QSet<QString> Decoding;                 // paths a pool thread is decoding now
     QSet<QString> Undecodable;              // paths whose bytes did not decode (retried once a transfer lands)
+    QSize DisplayMax;                       // the size decoded covers are kept at, at most (invalid: as decoded)
+    int DisplayGen = 0;                     // bumped when DisplayMax grows: a decode begun before is dropped on landing
     int Decodes = 0;
 };
 

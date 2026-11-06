@@ -21,6 +21,7 @@ void Save(Command::Context &C)
 
 std::shared_ptr<const NodeIndex> Index(Command::Context &C)
 {
+    if (C.Snapshot) return C.Snapshot;   // a Background command: the snapshot taken for it on the app's thread
     if (C.Model) return C.Model->catalogSnapshot();
     return PackageCatalog::FreshCatalogIndex(*C.Config);
 }

@@ -1,6 +1,8 @@
 #ifndef COMMONUTILS_H
 #define COMMONUTILS_H
 
+#include <set>
+#include <mutex>
 #include <string>
 #include <vector>
 #include <iostream>
@@ -29,6 +31,8 @@ using LogCallback = std::function<void(LogLevel, const std::string&, const std::
 void SetLogCallback(LogCallback callback);
 //Echo log lines to stderr (default on). The CLI app turns it off unless --verbose: its output is the command's.
 void SetLogEcho(bool On);
+//Timestamps to the millisecond (default: to the second). The CLI's -v turns it on.
+void SetLogMillis(bool On);
 
 //While one lives on a thread, that thread's log lines go to stderr only: not to the UI sink, not into a launch's
 //Diagnostics tally. For work that only looks ahead (the launch window reading options back through a resolve), whose
@@ -73,6 +77,42 @@ namespace Diagnostics
     //at all until this existed. Returns the report so the caller can also surface it in a UI.
     Report ReportVerdict(const std::string &What);
 }
+
+//While one lives on a thread, the WARN and ERR lines that thread logs under any of its contexts are also kept for
+//Take(). For a result computed once and then reused (the index cache): reusing it says again what computing it said.
+//A parallel loop's workers count as the thread that runs the loop: their lines are logged there (see LogBuffer).
+class LogRecorder
+{
+public:
+    explicit LogRecorder(std::set<std::string> Contexts);
+    ~LogRecorder();
+    LogRecorder(const LogRecorder &) = delete;
+    LogRecorder &operator=(const LogRecorder &) = delete;
+    std::vector<Diagnostics::Entry> Take();
+    void Note(LogLevel Level, const std::string &Context, const std::string &Message);   // called by Log()
+private:
+    std::set<std::string> Contexts;
+    std::vector<Diagnostics::Entry> Kept;
+    LogRecorder *Outer = nullptr;
+};
+
+//While one lives on a thread, every line that thread logs is kept instead of logged; LogReplay logs them later, as
+//they were. A parallel loop gives each item one, then replays them in item order on its own thread: what the workers
+//say comes out in the order a single pass would have said it, counted and recorded there.
+class LogBuffer
+{
+public:
+    LogBuffer();
+    ~LogBuffer();
+    LogBuffer(const LogBuffer &) = delete;
+    LogBuffer &operator=(const LogBuffer &) = delete;
+    std::vector<Diagnostics::Entry> Take();
+    void Keep(LogLevel Level, const std::string &Context, const std::string &Message);   // called by Log()
+private:
+    std::vector<Diagnostics::Entry> Lines;
+    LogBuffer *Outer = nullptr;
+};
+void LogReplay(const std::vector<Diagnostics::Entry> &Lines);
 
 //Convenience wrappers so callers don't have to specify the enum each time.
 //All four delegate directly to Log() with no extra overhead.

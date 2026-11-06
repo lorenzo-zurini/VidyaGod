@@ -22,7 +22,7 @@ AuthoringSession::~AuthoringSession() { End(); }
 bool AuthoringSession::WithoutWaiting(NodeIndex &Idx, const std::string &Id)
 {
     const auto It = Idx.Nodes.find(Id);
-    if (It == Idx.Nodes.end() || !It->second.Json.contains("LAYERS") || !It->second.Json["LAYERS"].is_array()) return false;
+    if (It == Idx.Nodes.end() || !It->second.Json->contains("LAYERS") || !(*It->second.Json)["LAYERS"].is_array()) return false;
     nlohmann::ordered_json J = It->second.Json, Kept = nlohmann::ordered_json::array();
     for (const auto &L : J["LAYERS"])
     {

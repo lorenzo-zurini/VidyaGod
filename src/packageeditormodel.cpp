@@ -421,7 +421,7 @@ const NodeIndex & PackageEditorModel::LibraryIndex() const
 {
     if (!LibraryCache)
     {
-        LibraryCache = std::make_unique<NodeIndex>(GlobalConfigJSON ? PackageCatalog::BuildCatalogIndex(*GlobalConfigJSON) : NodeIndex());
+        LibraryCache = GlobalConfigJSON ? PackageCatalog::CurrentIndex(*GlobalConfigJSON) : std::make_shared<const NodeIndex>();
     }
     return *LibraryCache;
 }

@@ -8,6 +8,8 @@
 #include "instancestore.h"
 #include "manifestmodel.h"
 #include "nodegraph.h"        // gigagraph catalog: GatherWorkingTree / FreezeToIndex
+#include "parallel.h"
+#include "platform/platform.h"   // SelfExe — the program an index cache was built by
 #include <optional>
 #include <mutex>
 #include "commonutils.h"
@@ -21,6 +23,7 @@
 #include "runnerinstall.h"      // CollectRunnerNodeTargets — a runner node's build download targets
 #include "launchparams.h"       // ContainerParams (minimal, for the chain resolve)
 
+#include <QCoreApplication>
 #include <QDir>
 #include <QFile>
 #include <QStringList>
@@ -34,6 +37,7 @@
 #include <fstream>
 #include <filesystem>
 #include <algorithm>
+#include <chrono>
 #include <cctype>
 #include <vector>
 
@@ -2214,8 +2218,214 @@ std::vector<std::string> MissingFromClosure(const NodeIndex &Idx, const std::str
 // CID, NODE_ID demotes to a label, cross-package edges resolve to CIDs, and every node carries its on-disk BundleDir
 // so launch mounts local content. No on-disk rewrite (git model: working tree is truth, CID index is derived on load;
 // DagPut only happens when publishing).
-NodeIndex BuildCatalogIndex(const nlohmann::ordered_json &GlobalConfigJSON)
+#ifndef VIDYAGOD_VERSION
+#define VIDYAGOD_VERSION ""
+#endif
+
+// ---- the index cache ----
+// The last full index built for a data dir, kept beside it with what it was built from: this program, the machine,
+// the roots in scan order, and every node file in them with its size and modification time. A build whose inputs are
+// the same loads it — one file instead of thousands, and none of the freeze and fold — and says again what the build
+// that made it logged. Any difference (a node edited, added, removed; another binary) builds afresh and replaces it.
+namespace
 {
+namespace fs = std::filesystem;
+
+const std::set<std::string> kIndexLogContexts = {
+    "NodeGraph::GatherWorkingTree", "NodeGraph::ReadTreeJsonBounded", "NodeGraph::TopoOrderForMint",
+    "NodeGraph::FreezeToIndex", "ManifestModel::ParseNode", "PackageCatalog::BuildCatalogIndex" };
+
+fs::path IndexCachePath() { return AppPaths::DataRoot() / "CACHE" / "index.cbor"; }
+
+std::string IndexInputs(const nlohmann::ordered_json &Config, long long *Newest = nullptr)
+{
+    //The program: an AppImage's own file (its mounted binary sits at a new /tmp path every run), else the binary.
+    const char *AppImage = std::getenv("APPIMAGE");
+    const fs::path Exe = AppImage && *AppImage ? fs::path(AppImage) : Platform::SelfExe();
+    std::string S = std::string("vgindex 2 ") + VIDYAGOD_VERSION + "\n" + Exe.string() + '\t' + Platform::FileStamp(Exe) + '\n'
+                    + ManifestModel::MachinePlatform() + '\n';
+    std::vector<fs::path> Roots = { LibraryRootDir(Config), CatalogRootDir(Config) };
+    for (const auto &D : LocalPackageDirs(Config)) Roots.push_back(D);
+    for (const fs::path &Root : Roots)
+    {
+        S += "root\t" + Root.string() + '\n';
+        const std::vector<fs::path> Files = NodeGraph::ListTreeFiles(Root);
+        std::vector<std::string> Lines(Files.size());
+        std::vector<long long> Times(Files.size(), 0);
+        Parallel::For(Files.size(), [&](std::size_t I) { Lines[I] = Files[I].string() + '\t' + Platform::FileStamp(Files[I], &Times[I]) + '\n'; });
+        for (const auto &L : Lines) S += L;
+        if (Newest) for (const long long T : Times) *Newest = std::max(*Newest, T);
+    }
+    return S;
+}
+
+std::optional<NodeIndex> LoadIndexCache(const std::string &Inputs, std::vector<Diagnostics::Entry> &Said)
+{
+    if (!AppPaths::DataRootSet()) return std::nullopt;   // no data dir of its own: no cache (see SaveIndexCache)
+    try
+    {
+        std::ifstream In(IndexCachePath(), std::ios::binary | std::ios::ate);
+        if (!In) return std::nullopt;
+        std::vector<std::uint8_t> Bytes(static_cast<std::size_t>(In.tellg()));
+        In.seekg(0);
+        if (!In.read(reinterpret_cast<char *>(Bytes.data()), static_cast<std::streamsize>(Bytes.size()))) return std::nullopt;
+        nlohmann::ordered_json H = nlohmann::ordered_json::from_cbor(Bytes, true, false);
+        if (H.is_discarded() || !H.is_object() || H.value("inputs", std::string()) != Inputs) return std::nullopt;
+        NodeIndex Idx;
+        auto &Blobs = H.at("nodes");
+        std::vector<std::pair<std::string, Node>> Nodes(Blobs.size());
+        Parallel::For(Blobs.size(), [&](std::size_t I) {
+            nlohmann::ordered_json J = nlohmann::ordered_json::from_cbor(Blobs[I].get_binary(), true, true);
+            Nodes[I].first = J.at("key").get<std::string>();
+            Nodes[I].second = ManifestModel::NodeFromJson(std::move(J));
+        });
+        for (auto &[K, N] : Nodes) Idx.Nodes.emplace_hint(Idx.Nodes.end(), std::move(K), std::move(N));
+        ManifestModel::IndexTablesFromJson(H.at("tables"), Idx);
+        Said.clear();
+        for (const auto &E : H.at("log")) Said.push_back({static_cast<LogLevel>(E.at(0).get<int>()), E.at(1).get<std::string>(), E.at(2).get<std::string>()});
+        LogReplay(Said);   // what the build that made it said, said again
+        return Idx;
+    }
+    catch (const std::exception &) { return std::nullopt; }   // a cache of another shape, or damaged: built afresh, then replaced
+}
+
+void SaveIndexCache(const std::string &Inputs, const NodeIndex &Idx, const std::vector<Diagnostics::Entry> &Said)
+{
+    if (!AppPaths::DataRootSet()) return;   // a test or tool that set no data dir never writes into ~/.VidyaGod
+    std::vector<const std::pair<const std::string, Node> *> Items;
+    for (const auto &KV : Idx.Nodes) Items.push_back(&KV);
+    std::vector<nlohmann::ordered_json> Blobs(Items.size());
+    Parallel::For(Items.size(), [&](std::size_t I) {
+        Blobs[I] = nlohmann::ordered_json::binary(nlohmann::ordered_json::to_cbor(ManifestModel::NodeToJson(Items[I]->second)));
+    });
+    nlohmann::ordered_json Log = nlohmann::ordered_json::array();
+    for (const auto &E : Said) Log.push_back(nlohmann::ordered_json::array({static_cast<int>(E.Level), E.Context, E.Message}));
+    nlohmann::ordered_json H = {{"inputs", Inputs}, {"tables", ManifestModel::IndexTablesToJson(Idx)}, {"log", Log}};
+    H["nodes"] = std::move(Blobs);
+    const std::vector<std::uint8_t> Bytes = nlohmann::ordered_json::to_cbor(H);
+    //One writer at a time in this process, each into a temp of its own (another process has another pid), renamed
+    //over the cache whole: a reader sees the old cache or the new one, never part of one.
+    static std::mutex SaveMu;
+    std::lock_guard<std::mutex> Lk(SaveMu);
+    std::error_code Ec;
+    const fs::path Path = IndexCachePath();
+    fs::create_directories(Path.parent_path(), Ec);
+    //A temp a process left when it died mid-write (an hour old: no live writer takes that long) is removed.
+    for (fs::directory_iterator It(Path.parent_path(), Ec), End; !Ec && It != End; It.increment(Ec))
+        if (It->path().filename().string().rfind(Path.filename().string() + ".tmp", 0) == 0
+            && fs::last_write_time(It->path(), Ec) < fs::file_time_type::clock::now() - std::chrono::hours(1))
+            fs::remove(It->path(), Ec);
+    Ec.clear();
+    const fs::path Tmp = Path.string() + ".tmp" + std::to_string(QCoreApplication::applicationPid());
+    {
+        std::ofstream Out(Tmp, std::ios::binary | std::ios::trunc);
+        if (!Out) return;
+        Out.write(reinterpret_cast<const char *>(Bytes.data()), static_cast<std::streamsize>(Bytes.size()));
+        if (!Out) { Out.close(); fs::remove(Tmp, Ec); return; }
+    }
+    fs::rename(Tmp, Path, Ec);
+    if (Ec) fs::remove(Tmp, Ec);
+}
+
+} // namespace
+
+NodeIndex BuildCatalogIndex(const nlohmann::ordered_json &GlobalConfigJSON, std::string *InputsOut, std::vector<Diagnostics::Entry> *SaidOut)
+{
+    const auto T0 = std::chrono::steady_clock::now();
+    long long Newest = 0;
+    const std::string Inputs = IndexInputs(GlobalConfigJSON, &Newest);
+    if (InputsOut) *InputsOut = Inputs;
+    std::vector<Diagnostics::Entry> Replayed;
+    if (std::optional<NodeIndex> Cached = LoadIndexCache(Inputs, Replayed))
+    {
+        if (SaidOut) *SaidOut = std::move(Replayed);
+        LogOut("PackageCatalog::BuildCatalogIndex", "Indexed " + std::to_string(Cached->Nodes.size()) + " node(s) from "
+               + LibraryRootDir(GlobalConfigJSON) + " in " + std::to_string(std::chrono::duration_cast<std::chrono::milliseconds>(
+                     std::chrono::steady_clock::now() - T0).count()) + " ms (the cached index: no node file changed)");
+        return std::move(*Cached);
+    }
+    LogRecorder Said(kIndexLogContexts);
+    NodeIndex Idx = ScanCatalogIndex(GlobalConfigJSON);
+    std::vector<Diagnostics::Entry> Lines = Said.Take();
+    //A node file written in the last few seconds could be written again within the same tick of its drive's clock
+    //(two seconds on FAT) at the same size, and look unchanged: such a build is not kept (git's "racy" files).
+    const long long Now = std::chrono::duration_cast<std::chrono::seconds>(std::chrono::system_clock::now().time_since_epoch()).count();
+    if (Newest < Now - 3) SaveIndexCache(Inputs, Idx, Lines);
+    if (SaidOut) *SaidOut = std::move(Lines);
+    return Idx;
+}
+
+namespace
+{
+std::mutex g_AppIndexMu;
+std::shared_ptr<const NodeIndex> g_AppIndex;
+std::string g_AppIndexInputs;
+std::vector<Diagnostics::Entry> g_AppIndexSaid;
+}
+
+IndexCacheState IndexCacheStatus(const nlohmann::ordered_json &GlobalConfigJSON)
+{
+    IndexCacheState St;
+    const fs::path P = IndexCachePath();
+    St.Path = P.string();
+    std::error_code Ec;
+    St.Exists = fs::exists(P, Ec);
+    if (St.Exists) St.Bytes = fs::file_size(P, Ec);
+    const std::string Inputs = IndexInputs(GlobalConfigJSON);
+    St.Files = static_cast<std::size_t>(std::count(Inputs.begin(), Inputs.end(), '\n'));
+    if (std::ifstream In(P, std::ios::binary | std::ios::ate); St.Exists && In)   // gone meanwhile: not current
+    {
+        const std::streamoff Size = In.tellg();
+        std::vector<std::uint8_t> Bytes(Size > 0 ? static_cast<std::size_t>(Size) : 0);
+        In.seekg(0);
+        if (In.read(reinterpret_cast<char *>(Bytes.data()), static_cast<std::streamsize>(Bytes.size())))
+        {
+            const nlohmann::ordered_json H = nlohmann::ordered_json::from_cbor(Bytes, true, false);
+            St.Current = !H.is_discarded() && H.is_object() && H.value("inputs", std::string()) == Inputs;
+        }
+    }
+    return St;
+}
+
+std::optional<NodeIndex> ReadIndexCache(const nlohmann::ordered_json &GlobalConfigJSON)
+{
+    std::vector<Diagnostics::Entry> Said;
+    LogBuffer Quiet;   // a read for comparison: what its build said is not said again here
+    std::optional<NodeIndex> Idx = LoadIndexCache(IndexInputs(GlobalConfigJSON), Said);
+    (void)Quiet.Take();
+    return Idx;
+}
+
+bool ClearIndexCache()
+{
+    std::error_code Ec;
+    fs::remove(IndexCachePath(), Ec);
+    return !Ec;
+}
+
+void PublishAppIndex(std::shared_ptr<const NodeIndex> Idx, std::string Inputs, std::vector<Diagnostics::Entry> Said)
+{
+    std::lock_guard<std::mutex> Lk(g_AppIndexMu);
+    g_AppIndex = std::move(Idx);
+    g_AppIndexInputs = std::move(Inputs);
+    g_AppIndexSaid = std::move(Said);
+}
+
+std::shared_ptr<const NodeIndex> CurrentIndex(const nlohmann::ordered_json &GlobalConfigJSON)
+{
+    std::shared_ptr<const NodeIndex> App;
+    std::string AppInputs;
+    std::vector<Diagnostics::Entry> AppSaid;
+    { std::lock_guard<std::mutex> Lk(g_AppIndexMu); App = g_AppIndex; AppInputs = g_AppIndexInputs; AppSaid = g_AppIndexSaid; }
+    if (App && IndexInputs(GlobalConfigJSON) == AppInputs) { LogReplay(AppSaid); return App; }
+    return std::make_shared<const NodeIndex>(BuildCatalogIndex(GlobalConfigJSON));
+}
+
+NodeIndex ScanCatalogIndex(const nlohmann::ordered_json &GlobalConfigJSON)
+{
+    using Clock = std::chrono::steady_clock;
+    const auto Ms = [](Clock::time_point A, Clock::time_point B) { return std::to_string(std::chrono::duration_cast<std::chrono::milliseconds>(B - A).count()); };
+    const auto T0 = Clock::now();
     std::map<std::string, nlohmann::ordered_json> Tree;
     std::map<std::string, std::filesystem::path>  Dirs;
     NodeGraph::GatherWorkingTree(LibraryRootDir(GlobalConfigJSON), Tree, Dirs);   // OUR nodes: stored CID handle trusted
@@ -2228,12 +2438,14 @@ NodeIndex BuildCatalogIndex(const nlohmann::ordered_json &GlobalConfigJSON)
     //Runners every install has (a Windows game on Windows runs as itself): nothing to download for them.
     BuiltinRunners::AddTo(Tree, Dirs, LibraryRootDir(GlobalConfigJSON), ManifestModel::MachinePlatform());
     std::string Err;
+    const auto T1 = Clock::now();
     NodeIndex Idx = NodeGraph::FreezeToIndex(Tree, Dirs, &Err);
     if (Idx.Nodes.empty() && !Tree.empty())
         LogErr("PackageCatalog::BuildCatalogIndex", "freeze failed (" + std::to_string(Tree.size()) + " node(s)): " + Err);
     else
         LogOut("PackageCatalog::BuildCatalogIndex", "Indexed " + std::to_string(Idx.Nodes.size())
-               + " node(s) by CID from " + LibraryRootDir(GlobalConfigJSON));
+               + " node(s) by CID from " + LibraryRootDir(GlobalConfigJSON) + " in " + Ms(T0, Clock::now()) + " ms (read "
+               + Ms(T0, T1) + ", freeze and facts " + Ms(T1, Clock::now()) + ")");
     //A node that lives under CATALOG is a RECEIVED stub: a friend's bytes, browsable and downloadable, never a
     //graft candidate (it would mount un-hydrated). Decided by where its file lives — the only fact that
     //distinguishes it, since the frozen index is one flat graph.
@@ -2558,7 +2770,7 @@ bool RunnerInstalled(const NodeIndex &Idx, const std::string &RunnerNodeId)
     bool ShipsBuild = false;
     for (const std::string &Id : ManifestModel::Closure(Idx, R->Key()))
         if (const Node *N = Idx.Find(Id))
-            for (const auto &L : N->Layers) if (ManifestModel::IsRunnerBuildLayer(L)) { ShipsBuild = true; break; }
+            for (const auto &L : N->ContentLayers) if (ManifestModel::IsRunnerBuildLayer(L)) { ShipsBuild = true; break; }
     if (ShipsBuild)
         return RunnerInstall::RunnerNodeImported(Idx, RunnerNodeId);
     return RunnerWrapper::ExecutableAvailable(R->Exec);
@@ -2651,8 +2863,8 @@ static void ForEachContentLayer(const NodeIndex &Idx, const std::string &LaunchN
     for (const std::string &Id : Order)
     {
         const Node *N = Idx.Find(Id);
-        if (!N || !N->Layers.is_array()) continue;
-        for (const auto &L : N->Layers)
+        if (!N || !N->ContentLayers.is_array()) continue;
+        for (const auto &L : N->ContentLayers)
         {
             if (!IsVfsLayer(LayerType(L))) continue;
             std::filesystem::path Local; std::string Cid;
@@ -2681,13 +2893,7 @@ static std::map<std::string, std::string> CustomVarDefaults(const NodeIndex &Idx
     for (const auto &[Id, N] : Idx.Nodes)
     {
         (void)Id;
-        if (!N.Layers.is_array()) continue;
-        for (const auto &L : N.Layers)
-            if (L.is_object() && L.value("TYPE", std::string()) == "CustomVar")
-            {
-                const std::string Key = L.value("KEY", std::string());
-                if (!Key.empty()) Vars[Key] = L.value("DEFAULT", std::string());
-            }
+        for (const auto &[Key, Default] : N.VarDefaults) Vars[Key] = Default;
     }
     return Vars;
 }
@@ -2757,8 +2963,30 @@ bool NodeHasContent(const NodeIndex &Idx, const std::string &LaunchNodeId)
 std::unordered_map<std::string, NodeHydration> HydrationMap(const NodeIndex &Idx)
 {
     std::unordered_map<std::string, NodeHydration> Memo;
-    std::unordered_map<std::string, PathState> StatCache;            // raw local path -> resolved path state (stat'd once)
     const std::map<std::string, std::string> Vars = CustomVarDefaults(Idx);   // resolve %dgv_zip% etc. before stat'ing
+    //Every content file's state first, each stat'd once and all of them at once (a library is thousands of files on
+    //what may be a busy disk); keyed by the local path and the layer's PATH text, which together decide the answer.
+    const auto StatKey = [](const nlohmann::ordered_json &L, const std::filesystem::path &Local) {
+        return Local.string() + '\x1f' + LayerPathString(L);
+    };
+    std::unordered_map<std::string, PathState> StatCache;
+    {
+        std::vector<std::pair<const nlohmann::ordered_json *, std::filesystem::path>> Todo;
+        for (const auto &[Id, N] : Idx.Nodes)
+        {
+            (void)Id;
+            for (const auto &L : N.ContentLayers)
+            {
+                if (!L.is_object() || !IsVfsLayer(LayerType(L))) continue;
+                std::filesystem::path Local; std::string Cid;
+                LayerLocator(L, N.BundleDir, Local, Cid);
+                if (StatCache.emplace(StatKey(L, Local), PathState::Missing).second) Todo.emplace_back(&L, std::move(Local));
+            }
+        }
+        std::vector<PathState> States(Todo.size());
+        Parallel::For(Todo.size(), [&](std::size_t I) { States[I] = ResolvePathState(*Todo[I].first, Todo[I].second, Vars); });
+        for (std::size_t I = 0; I < Todo.size(); ++I) StatCache[StatKey(*Todo[I].first, Todo[I].second)] = States[I];
+    }
     std::function<NodeHydration(const std::string &)> Compute = [&](const std::string &Id) -> NodeHydration {
         auto It = Memo.find(Id);
         if (It != Memo.end()) return It->second;
@@ -2766,18 +2994,17 @@ std::unordered_map<std::string, NodeHydration> HydrationMap(const NodeIndex &Idx
         NodeHydration R;                                             // {Hydrated=true, HasContent=false}
         const Node *N = Idx.Find(Id);
         // Own content layers.
-        if (N && N->Layers.is_array())
-            for (const auto &L : N->Layers)
+        if (N && N->ContentLayers.is_array())
+            for (const auto &L : N->ContentLayers)
             {
                 if (!L.is_object() || !IsVfsLayer(LayerType(L))) continue;
                 R.HasContent = true;
                 std::filesystem::path Local; std::string Cid;
                 LayerLocator(L, N->BundleDir, Local, Cid);
-                const std::string Key = Local.string();
-                auto Sc = StatCache.find(Key);
-                PathState PS;
-                if (Sc != StatCache.end()) PS = Sc->second;
-                else { PS = ResolvePathState(L, Local, Vars); StatCache[Key] = PS; }
+                //Stat'd above — unless the path came out otherwise this time (a node file landed meanwhile, claiming the
+                //same content name): then stat it now, as every lookup once did.
+                const auto Sc = StatCache.find(StatKey(L, Local));
+                const PathState PS = Sc != StatCache.end() ? Sc->second : ResolvePathState(L, Local, Vars);
                 if (LayerFetchableMissing(PS, Cid) || (N->Received && PS == PathState::Missing)) R.Hydrated = false;
                 if (PS != PathState::Missing) R.OnDisk = true;
                 if (!Cid.empty()) R.HasCid = true;
@@ -2802,8 +3029,8 @@ std::unordered_map<std::string, NodeHydration> HydrationMap(const NodeIndex &Idx
     };
     for (const auto &[Id, N] : Idx.Nodes) { (void)N; Compute(Id); }
     //A graft that is a version is installed when the base it runs on is too (bases are never grafts: no chaining).
-    for (const auto &[Id, N] : Idx.Nodes)
-        if (const std::string Base = N.IsGraft ? DefaultGraftBase(Idx, Id) : std::string(); !Base.empty())
+    for (const auto &[Id, Bases] : ManifestModel::AllGraftBases(Idx))
+        if (const std::string Base = Bases.empty() ? std::string() : Bases.front(); !Base.empty())
         {
             const NodeHydration B = Memo[Base];
             Memo[Id].Hydrated   = Memo[Id].Hydrated && B.Hydrated;

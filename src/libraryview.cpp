@@ -90,13 +90,22 @@ void LibraryGameCard::InitializeClassVariables()
     //{PATH,SOURCE:{ipfs,CID}}): local file if present, else the cached IPFS fetch, else a background fetch that
     //fires CoverCache::coverReady(cid) so the card reloads; the image itself is decoded off the GUI thread and the card
     //reloads on coverDecoded(). A null CoverOriginal renders the placeholder.
-    CoverOriginal = QPixmap();
+    if (!CoverStale) CoverOriginal = QPixmap();   // a stale cover stays up until its replacement is decoded
     CoverCid.clear();
+    const bool HasCover = Meta.is_object() && Meta.contains("COVER");
+    if (CoverStale && (!HasCover || CoverCache::instance()->resolve(Meta["COVER"], QString::fromStdString(PackagePath.string())).isEmpty()))
+    { CoverOriginal = QPixmap(); CoverStale = false; }   // its cover no longer resolves: the placeholder, not the old one
     if (Meta.is_object() && Meta.contains("COVER"))
     {
         const nlohmann::ordered_json & CoverNode = Meta["COVER"];
         const QString Path = CoverCache::instance()->resolve(CoverNode, QString::fromStdString(PackagePath.string()));
-        if (!Path.isEmpty()) CoverOriginal = CoverCache::instance()->take(Path);   // null until decoded off-thread
+        if (!Path.isEmpty())
+        {
+            //Null until decoded off-thread; a stale cover stays up meanwhile — but not when no decode is coming (the file
+            //does not decode): then the placeholder, as for any cover that cannot be shown.
+            if (QPixmap P = CoverCache::instance()->take(Path); !P.isNull() || !CoverStale || !CoverCache::instance()->decoding(Path))
+            { CoverOriginal = P; CoverStale = false; }
+        }
         else { QString f; CoverCache::Locate(CoverNode, f, CoverCid); }   // pending fetch — refresh on coverReady
     }
 }

@@ -67,6 +67,7 @@ public:
     bool                   Downloading = false;   // Available tab: an import is in flight (paints a "Downloading…" overlay)
     double                 DownloadPercent = -1.0; // 0..100 aggregate IPFS progress while Downloading; -1 = unknown
     QPixmap                CoverOriginal;
+    bool                   CoverStale = false;    // CoverOriginal is for smaller cards: shown until the bigger one lands
     QPixmap                CoverScaled;
     qint64                 CoverScaledFrom = 0;   // the cacheKey of the CoverOriginal it was scaled from
     QString                CoverCid;      // cover's ipfs CID while not yet local (drives lazy-load refresh)
