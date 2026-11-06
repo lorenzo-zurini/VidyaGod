@@ -9,6 +9,7 @@
 #include "cli/climodes.h"
 #include "containerwrapper.h"
 #include "fileedits.h"
+#include "launchresolver.h"
 #include "registrywrapper.h"
 #include "vfsmount.h"
 
@@ -272,12 +273,18 @@ VG_COMMANDS
         { "ContainerWrapper::LiveCount", "ContainerWrapper::Stopping", "VfsMount::RuntimesLive", "VfsMount::MountpointsUnder", "VfsMount::LiveMountpointsUnder",
           "VfsMount::SessionOwned", "VfsMount::SweepDeadSessions", "VfsMount::CleanStaleRuntime" }, Needs::Config, false,
         [](Command::Context &C, const json &A) {
-            const fs::path Root = C.AppDataDir->absolutePath().toStdString();
-            if (Command::Bool(A, "sweep", false)) { VfsMount::SweepDeadSessions(Root); VfsMount::CleanStaleRuntime(Root); }
-            json Mounts = json::array();
-            for (const auto &M : VfsMount::MountpointsUnder(Root)) Mounts.push_back({{"mount", M}, {"owned", VfsMount::SessionOwned(M)}});
+            //Sessions live under the session root, never the data dir: a sweep of the data dir would take each package
+            //folder and USERDATA entry for a dead session and remove it. Mounts are listed under both.
+            const fs::path Sessions = LaunchResolver::SessionRoot(), Data = C.AppDataDir->absolutePath().toStdString();
+            if (Command::Bool(A, "sweep", false)) VfsMount::SweepDeadSessions(Sessions);
+            json Mounts = json::array(), Live = json::array();
+            for (const fs::path &Root : { Sessions, Data })
+            {
+                for (const auto &M : VfsMount::MountpointsUnder(Root)) Mounts.push_back({{"mount", M}, {"owned", VfsMount::SessionOwned(M)}});
+                for (const auto &M : VfsMount::LiveMountpointsUnder(Root)) Live.push_back(M);
+            }
             return json{{"games", ContainerWrapper::LiveCount()}, {"stopping", ContainerWrapper::Stopping()}, {"runtimes_live", VfsMount::RuntimesLive()},
-                        {"mounts", Mounts}, {"live_mounts", VfsMount::LiveMountpointsUnder(Root)}};
+                        {"mounts", Mounts}, {"live_mounts", Live}};
         }, {} });
 
     Command::Register({

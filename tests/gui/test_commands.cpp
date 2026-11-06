@@ -9,12 +9,15 @@
 #include <QTemporaryDir>
 #include <QTimer>
 #include <QVBoxLayout>
+#include <filesystem>
+#include <fstream>
 
 #include "appmodel.h"
 #include "cli/cliapp.h"
 #include "command.h"
 #include "commands/cmdutil.h"
 #include "commonutils.h"
+#include "launchresolver.h"
 #include "manifestmodel.h"
 
 using json = nlohmann::ordered_json;
@@ -137,6 +140,31 @@ private slots:
                                           {{"VARS", {{"a", 1}}}}, {{"NODE", "x"}}, {{"EXEC", json::array({ {{"LABEL", "Play"}} })}} });
         const std::string O = CliApp::RenderGeneric(Layers, false);
         QVERIFY2(O.find("- ZIP") != std::string::npos && O.find(" rows") == std::string::npos, O.c_str());
+    }
+
+    // Teeth: sweep the data dir (as `launch running --sweep` once did) and the package folder and the save are removed
+    // as a dead session's leftovers, and the session left under the session root stays.
+    void a_sweep_clears_dead_sessions_and_never_the_data_dir()
+    {
+        QTemporaryDir D, T; QVERIFY(D.isValid() && T.isValid());
+        qputenv("TMPDIR", T.path().toUtf8());
+        const std::filesystem::path Data = D.path().toStdString(), Sessions = LaunchResolver::SessionRoot();
+        QVERIFY(Sessions.string().rfind(T.path().toStdString(), 0) == 0);
+        std::filesystem::create_directories(Data / "LIBRARY" / "[749][v1.0] Age of Empires II");
+        std::filesystem::create_directories(Data / "USERDATA" / "749" / "default");
+        std::ofstream(Data / "USERDATA" / "749" / "default" / "save.dat") << "a save";
+        std::filesystem::create_directories(Sessions / "749" / "default" / "WRITELAYER");   // a launch that died
+        QDir Dir(D.path());
+        json Cfg = json{{"Settings", json::object()}};
+        Command::Context C;
+        C.Config = &Cfg;
+        C.AppDataDir = &Dir;
+        const json R = Command::Run("launch running", {{"sweep", true}}, C);
+        qunsetenv("TMPDIR");
+        QVERIFY2(R.value("ok", false), R.dump().c_str());
+        QVERIFY(std::filesystem::exists(Data / "USERDATA" / "749" / "default" / "save.dat"));
+        QVERIFY(std::filesystem::is_directory(Data / "LIBRARY" / "[749][v1.0] Age of Empires II"));
+        QVERIFY2(!std::filesystem::exists(Sessions / "749" / "default"), "the dead session is cleared");
     }
 };
 
