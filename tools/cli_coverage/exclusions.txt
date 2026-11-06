@@ -115,3 +115,11 @@ PlainLabel                   # a label's & shown as one: every checkbox the down
 LibraryView::paintPlaceholder  # a cover-less card's painting: `ui screenshot` shows it (`ui show` gives the cards it paints)
 Theme::Apply                 # the app's palette and shared styles, set at start-up: every `ui screenshot` shows them
 Theme::Capped                # a Settings page's width cap: every Settings page's `ui screenshot` shows it
+
+# ---- the catalog's own helpers, shared by its files (packagecatalog_p.h): reached through the commands they serve ----
+PackageCatalog::LibraryDir             # the library root: every sources / packages / catalog command resolves through it
+PackageCatalog::PathUnder              # a lexical containment test inside the catalog's path checks
+PackageCatalog::PathUnderManagedSource # "is this a source's package": `packages installed` (removable), Remove
+PackageCatalog::SafeSegment            # a received name as one path segment: `received plan`, `updates apply`
+PackageCatalog::RemoveLandedNode       # a landed node file removed: `received prune`, `updates apply`
+PackageCatalog::FolderNodes            # a received folder's node list: `received land`, `updates list`

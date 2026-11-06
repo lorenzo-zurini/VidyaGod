@@ -285,9 +285,15 @@ set(SHARED_SOURCES
     src/editor/pkgcanvaspanel.cpp
 
     src/library/packagecatalog.h
-    src/library/packagecatalog.cpp
+    src/library/catalog_layout.cpp
+    src/library/catalog_sources.cpp
+    src/library/catalog_library.cpp
+    src/library/catalog_received.cpp
+    src/library/catalog_versions.cpp
+    src/library/catalog_index.cpp
+    src/library/catalog_content.cpp
     src/plan/builtinrunners.cpp
-    src/library/packagecatalog_publish.cpp
+    src/library/catalog_publish.cpp
 
     src/format/registrywrapper.h
     src/format/registrywrapper.cpp
