@@ -90,6 +90,10 @@ using Renderer = std::function<std::string(const nlohmann::ordered_json &Result,
 // A Node command that also works with no node (networking off): what it needs the network for is only a fallback —
 // a launch fetches sources only when some are missing, as Play does offline; the node's status reports "off".
 bool WorksOffline(const std::string &Name);
+// What may run beside the app that holds the data dir (--bypass-single-instance-lock, or a launch's path override): a
+// command that changes nothing the app keeps — the config, the library, USERDATA, the node's store — and reads only
+// what is on disk. Everything else needs the data dir to itself, or runs in the app.
+bool RunsBeside(const std::string &Name);
 
 // -v on the command line: a renderer that sums up (repeated warnings, one line per kind) lists everything instead.
 void SetVerboseOutput(bool On);

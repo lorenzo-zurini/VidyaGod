@@ -141,7 +141,7 @@ VG_COMMANDS
 
     Command::Register({
         "app save", "write the app's config to disk now", "", {}, { "app save" }, { "AppModel::save", "JSONOps::SaveConfig", "JSONOps::SaveJSON" }, Needs::Model, false,
-        [](Command::Context &C, const json &) { Model(C).save(); return json{{"saved", true}}; }, {} });
+        [](Command::Context &C, const json &) { Save(C); return json{{"saved", true}}; }, {} });
 
     Command::Register({
         "app housekeeping", "what the app does on its own, now: heal references, reconcile friends' shares, push node settings",

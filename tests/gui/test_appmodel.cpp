@@ -85,8 +85,8 @@ private slots:
     }
 
     // A source sync works on a copy of the config; what it changes comes back as a change, never as its copy: an
-    // import made while it ran is still there after, and what the sync itself added is too. Teeth: assign the copy's
-    // LIBRARY back (as the completions did) and the import made meanwhile is gone.
+    // import made while it ran is still there after, and the package the sync itself added is too. Teeth: assign the
+    // copy's LIBRARY back (as the completions did) and the import made meanwhile is gone.
     void a_change_made_while_a_source_syncs_is_kept()
     {
         QTemporaryDir d; QVERIFY(d.isValid());
@@ -94,19 +94,27 @@ private slots:
         const std::string Old = d.filePath("old").toStdString(), Imported = d.filePath("imported").toStdString();
         std::filesystem::create_directories(Old);
         std::filesystem::create_directories(Imported);
-        json cfg = json{{"Settings", json::object()}, {"LIBRARY", json::array({ json{{"PATH", Old}, {"PACKAGEUID", "1"}} })}};
+        json cfg = json{{"Settings", {{"Paths", {{"LibraryRoot", d.filePath("LIBRARY").toStdString()}}}}},
+                        {"LIBRARY", json::array({ json{{"PATH", Old}, {"PACKAGEUID", "1"}} })}};
+        //The source is already on disk (as after its first fetch): the sync reads it and adds its package to LIBRARY.
+        const json Src = json{{"CID", "QmLocal"}, {"NAME", "Local"}};
+        const std::string SrcDir = PackageCatalog::PackageSourceDir(cfg, Src);
+        std::filesystem::create_directories(SrcDir);
+        std::ofstream(SrcDir + "/game.json") << R"({"LABEL":"Synced","LAYERS":[{"ENV":{"A":"1"}}]})";
         AppModel m(&cfg, &appDir);
         QSignalSpy changed(&m, &AppModel::packageSourcesChanged);
-        QVERIFY(m.addPackageSource("QmNotThere", "Somewhere"));
+        QVERIFY(m.addPackageSource("QmLocal", "Local"));
         cfg["LIBRARY"].push_back(json{{"PATH", Imported}, {"PACKAGEUID", "2"}});          // an import, while the sync runs
         QTRY_VERIFY_WITH_TIMEOUT(changed.count() >= 2, 20000);                                // the sync's completion
-        bool HasOld = false, HasImported = false;
-        for (const auto &E : cfg["LIBRARY"]) { HasOld |= E["PATH"] == Old; HasImported |= E["PATH"] == Imported; }
-        QVERIFY2(HasOld && HasImported, cfg["LIBRARY"].dump().c_str());
+        bool HasOld = false, HasImported = false, HasSynced = false;
+        for (const auto &E : cfg["LIBRARY"])
+        { HasOld |= E["PATH"] == Old; HasImported |= E["PATH"] == Imported; HasSynced |= E["PATH"] == SrcDir; }
+        QVERIFY2(HasOld && HasImported && HasSynced, cfg["LIBRARY"].dump().c_str());
     }
 
     // The merge itself: what the worker removed goes, what it added comes, what it changed is replaced in place, and
-    // what the live list gained meanwhile stays.
+    // what the live list gained or lost meanwhile stays. Teeth: match by key alone (the first version) and the second
+    // "Lib" overwrites the first; push a changed entry that is no longer live and the removed G comes back.
     void a_worker_change_merges_into_the_live_list()
     {
         const json Before = json::array({ json{{"PATH", "a"}, {"V", 1}}, json{{"PATH", "b"}, {"V", 1}}, json{{"PATH", "c"}, {"V", 1}} });
@@ -117,6 +125,22 @@ private slots:
         const json Want = json::array({ json{{"PATH", "a"}, {"V", 2}}, json{{"PATH", "c"}, {"V", 1}}, json{{"PATH", "mine"}, {"V", 1}},
                                         json{{"PATH", "d"}, {"V", 1}} });
         QCOMPARE(QString::fromStdString(Live.dump()), QString::fromStdString(Want.dump()));
+
+        //Two sources of one name are two: upgrading "Games" touches only Games (keyed by name, matched by value).
+        const json SBefore = json::array({ json{{"NAME", "Games"}, {"CID", "old"}}, json{{"NAME", "Lib"}, {"CID", "/ipns/A"}},
+                                           json{{"NAME", "Lib"}, {"CID", "/ipns/B"}} });
+        json SAfter = SBefore;
+        SAfter[0]["CID"] = "new";
+        json SLive = SBefore;
+        PackageCatalog::MergeListChange(SLive, SBefore, SAfter, PackageCatalog::SourceKey);
+        QCOMPARE(QString::fromStdString(SLive.dump()), QString::fromStdString(SAfter.dump()));
+
+        //An entry removed while the worker changed it stays removed: the live removal wins.
+        const json GBefore = json::array({ json{{"NAME", "G"}, {"CID", "a"}}, json{{"NAME", "H"}, {"CID", "h"}} });
+        const json GAfter  = json::array({ json{{"NAME", "G"}, {"CID", "new"}}, json{{"NAME", "H"}, {"CID", "h"}} });
+        json GLive = json::array({ json{{"NAME", "H"}, {"CID", "h"}} });
+        PackageCatalog::MergeListChange(GLive, GBefore, GAfter, PackageCatalog::SourceKey);
+        QCOMPARE(QString::fromStdString(GLive.dump()), QString::fromStdString(json::array({ json{{"NAME", "H"}, {"CID", "h"}} }).dump()));
     }
 
     void remove_local_package_drops_reference_keeps_user_files()

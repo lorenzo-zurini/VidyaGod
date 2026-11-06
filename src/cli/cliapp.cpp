@@ -1058,6 +1058,15 @@ int Main(int argc, char **argv, const Hooks &H)
     if (!G.Verbose) g_Ticker.Start("VidyaGod " + S->Name);
     if (!Overrides && !G.Beside && CommandServer::Send(DataPath.toStdString(), S->Name, Args, Reply)) return Report(Reply, S, G, St, ErrSt);
 
+    //Beside whatever holds the data dir, only what changes nothing it keeps: a half-done change there (a source's
+    //folder gone, the config still naming it) is worse than none.
+    if (G.Beside && !Command::RunsBeside(S->Name))
+    {
+        std::cerr << ErrSt.Red("error:") << " '" << S->Name << "' changes the data dir (or needs the app or the node), so it "
+                  << "does not run beside them (--bypass-single-instance-lock): run it without that flag — in the app, "
+                  << "if one is up on " << DataPath.toStdString() << "\n";
+        return Unreachable;
+    }
     if (S->Requires == Command::Needs::App)   // what only the running app holds: nothing to bring up here
     {
         std::cerr << ErrSt.Red("error:") << " '" << S->Name << "' acts on the running app, and none is up on "

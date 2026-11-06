@@ -45,6 +45,8 @@
 // MainWindow — composition root (creates the model + tabs, wires the cross-controller signals).
 // ═════════════════════════════════════════════════════════════════════════════
 
+MainWindow::~MainWindow() { PackageEditor::SetOnCreated({}); }
+
 MainWindow::MainWindow(nlohmann::ordered_json * gc, QDir * appData, QWidget * parent)
     : QMainWindow(parent)
 {

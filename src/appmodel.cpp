@@ -1064,9 +1064,15 @@ void AppModel::publishLibraries()
 {
     // Gigagraph publish: freeze the on-disk library into dag-json blocks and STORE them (DagPut → pinned/announced/
     // seedable), then record the shareable list of launchable root CIDs. No IPNS — the list is off-IPFS VidyaGod data.
-    // One at a time: two would write Libraries/PublishedList over each other.
+    // One at a time: two would write Libraries/PublishedList over each other. Asked again meanwhile, it runs once more
+    // after, with publishing() true throughout (nothing offers a publish in between).
     if (Publishing) { PublishAgain = true; return; }
     Publishing = true;
+    runPublish();
+}
+
+void AppModel::runPublish()
+{
     auto Cfg  = std::make_shared<nlohmann::ordered_json>(*Config);
     auto Cids = std::make_shared<std::vector<std::string>>();
     auto Err  = std::make_shared<std::string>();
@@ -1074,8 +1080,8 @@ void AppModel::publishLibraries()
     AsyncWork::Run(this,
         [Cfg, Cids, Err, Gaps]{ *Cids = PackageCatalog::PublishLibrary(*Cfg, Err.get(), Gaps.get()); },
         [this, Cfg, Cids, Err, Gaps]{
-            Publishing = false;
-            if (PublishAgain) { PublishAgain = false; QMetaObject::invokeMethod(this, &AppModel::publishLibraries, Qt::QueuedConnection); }
+            Publishing = PublishAgain;
+            if (PublishAgain) { PublishAgain = false; QMetaObject::invokeMethod(this, &AppModel::runPublish, Qt::QueuedConnection); }
             if (Cids->empty()) { emit libraryPublishFailed(QString::fromStdString(*Err)); return; }
             (*Config)["PublishedList"] = (*Cfg)["PublishedList"];   // adopt the freshly-written flat list…
             (*Config)["Libraries"]     = (*Cfg)["Libraries"];       // …AND the per-library grouping (drives Share ▾)

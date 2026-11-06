@@ -116,9 +116,11 @@ bool HasMissingSources(const nlohmann::ordered_json &GlobalConfigJSON);
 // or already present.
 [[nodiscard]] bool AddPackageSource(nlohmann::ordered_json &GlobalConfigJSON, const std::string &Cid, const std::string &Name, bool Friend = false);
 // What a worker did to a config list on its own copy of the config (Before → After), applied to the live list: an entry
-// it removed goes, one it added comes in, one it changed is replaced where it stands. Entries are the same entry when
-// Key names them alike. What the live list gained or lost while the worker ran stays — assigning the worker's copy
-// back would undo it. LibraryEntryKey: a LIBRARY entry's PATH; SourceKey: a package source's NAME, else its CID.
+// it removed goes, one it added comes in, one it changed (it went and came under one Key) is replaced where it stands.
+// Entries are matched by value, so two alike, or two of one key, are two. What the live list gained, lost or changed
+// while the worker ran stays — an entry the worker changed that is no longer live as it saw it is left as it is now.
+// Assigning the worker's copy back would undo all of that. LibraryEntryKey: a LIBRARY entry's PATH; SourceKey: a
+// package source's NAME, else its CID.
 void MergeListChange(nlohmann::ordered_json &Live, const nlohmann::ordered_json &Before, const nlohmann::ordered_json &After,
                      std::string (*Key)(const nlohmann::ordered_json &));
 std::string LibraryEntryKey(const nlohmann::ordered_json &Entry);

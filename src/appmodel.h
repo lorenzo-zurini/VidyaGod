@@ -217,6 +217,7 @@ private:
     bool                           FriendReconcilePending = false;  // debounce: coalesce a burst of landed blocks into one catalog rebuild
     bool                           FriendClosureRunning = false;    // a closure-completion worker is in flight
     bool                           FriendClosureAgain = false;      // blocks landed while it ran → run once more
+    void runPublish();                                              // publishLibraries' one pass
     bool                           Publishing = false;              // publishLibraries in flight
     bool                           PublishAgain = false;            // asked again while it ran → once more after
     std::set<std::string>          FriendStubsDirtyPeers;           // peers whose stubs were dropped while a pass ran → drop again when it ends

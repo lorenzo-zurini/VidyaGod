@@ -32,6 +32,7 @@ class MainWindow : public QMainWindow
     Q_OBJECT
 public:
     MainWindow(nlohmann::ordered_json * GlobalConfigJSON, QDir * AppDataDir, QWidget * parent = nullptr);
+    ~MainWindow() override;   // lets go of the editor hook it installed (it holds this window and its model)
 
     //Reacts to a package being saved in the editor: rebuilds the catalog (every tab refreshes via the model) and
     //reloads any open prelaunch dialog for that package. Static + self-locating so any editor (wherever opened) can

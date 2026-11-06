@@ -108,8 +108,18 @@ def start_app(): return FX.start_app(f'{WORK}/app.log')
 # and the GUI opened on the data dir (an hour-long "hang" in a script). Each line must answer as the command does.
 ROUTED = [['--bypass-single-instance-lock', 'help', 'vfs'], ['--offline', 'help', 'vfs'],
           ['--bypass-single-instance-lock', 'commands']]
+# Beside the app (--bypass-single-instance-lock) a command that changes the data dir is refused before it does anything:
+# a source's folder removed while the config still names it is worse than nothing done.
+REFUSED_BESIDE = [['app', 'card-size', '--set', '333'], ['sources', 'remove', 'Fixture'], ['app', 'save']]
 def routing():
     bad = []
+    for argv in REFUSED_BESIDE:
+        cfg = open(f'{DATA}/GlobalConfig.JSON').read() if os.path.exists(f'{DATA}/GlobalConfig.JSON') else ''
+        rc, so, se = run([a.vg, '--data-dir', DATA, '--bypass-single-instance-lock'] + argv, FIX, 20)
+        after = open(f'{DATA}/GlobalConfig.JSON').read() if os.path.exists(f'{DATA}/GlobalConfig.JSON') else ''
+        ok = rc not in (0, None) and 'does not run beside' in se and cfg == after
+        print(f"{'ok' if ok else 'FAULT':>5} {str(rc):>4}          beside   {' '.join(argv)}", flush=True)
+        if not ok: bad.append({'mode': 'beside', 'fault': 'a change ran beside the data dir\'s holder', 'line': ' '.join(argv), 'stderr': se[-1500:]})
     for argv in ROUTED:
         rc, so, se = run([a.vg, '--data-dir', DATA] + argv, FIX, 20)
         ok = rc == 0 and ('VidyaGod vfs' in so or argv[-1] == 'commands' and 'launch run' in so)

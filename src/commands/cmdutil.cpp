@@ -19,10 +19,10 @@ namespace CmdUtil
 
 void Save(Command::Context &C)
 {
-    if (C.Model) { C.Model->save(); return; }
     if (AppPaths::ConfigReadOnly())
-        throw std::runtime_error("this call runs beside the app (it carries a path override), so it cannot change the "
-                                 "config: run it without the override, or quit the app");
+        throw std::runtime_error("this call runs beside the app that holds the data dir, so it cannot change the config: "
+                                 "run it in the app (without --bypass-single-instance-lock or a path override), or quit the app");
+    if (C.Model) { if (!C.Model->save()) throw std::runtime_error("could not save the config"); return; }
     if (!JSONOps::SaveConfig(*C.Config, C.AppDataDir->absolutePath().toStdString()))
         throw std::runtime_error("could not save the config");
 }

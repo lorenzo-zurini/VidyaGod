@@ -786,24 +786,35 @@ void MergeListChange(nlohmann::ordered_json &Live, const nlohmann::ordered_json 
                      std::string (*Key)(const nlohmann::ordered_json &))
 {
     if (!Live.is_array()) Live = nlohmann::ordered_json::array();
-    std::map<std::string, const nlohmann::ordered_json *> Was, Is;
-    if (Before.is_array()) for (const auto &E : Before) if (const std::string K = Key(E); !K.empty()) Was.emplace(K, &E);
-    if (After.is_array())  for (const auto &E : After)  if (const std::string K = Key(E); !K.empty()) Is.emplace(K, &E);
-    auto At = [&](const std::string &K) {
-        for (auto It = Live.begin(); It != Live.end(); ++It) if (Key(*It) == K) return It;
-        return Live.end();
+    const auto Items = [](const nlohmann::ordered_json &L) {
+        std::vector<const nlohmann::ordered_json *> V;
+        if (L.is_array()) for (const auto &E : L) V.push_back(&E);
+        return V;
     };
-    for (const auto &[K, E] : Was)
-        if (!Is.count(K)) if (auto It = At(K); It != Live.end()) Live.erase(It);
-    if (After.is_array())
-        for (const auto &E : After)
-        {
-            const std::string K = Key(E);
-            if (K.empty()) continue;
-            const auto W = Was.find(K);
-            if (W != Was.end() && *W->second == E) continue;   // the worker left it as it was
-            if (auto It = At(K); It != Live.end()) *It = E; else Live.push_back(E);
-        }
+    //What the worker took out and put in, entry by entry and by value (a list may hold two alike, or two of one key).
+    std::vector<const nlohmann::ordered_json *> Gone = Items(Before), Came = Items(After);
+    for (auto C = Came.begin(); C != Came.end();)
+    {
+        const auto G = std::find_if(Gone.begin(), Gone.end(), [&](const auto *X) { return *X == **C; });
+        if (G != Gone.end()) { Gone.erase(G); C = Came.erase(C); } else ++C;
+    }
+    //A changed entry is one that went and one that came under one key: it is replaced where it stands.
+    std::vector<int> Pair(Gone.size(), -1);
+    std::vector<bool> Taken(Came.size(), false);
+    for (size_t G = 0; G < Gone.size(); ++G)
+        for (size_t C = 0; C < Came.size(); ++C)
+            if (!Taken[C] && !Key(*Gone[G]).empty() && Key(*Gone[G]) == Key(*Came[C])) { Pair[G] = (int)C; Taken[C] = true; break; }
+    std::vector<bool> Done(Came.size(), false);
+    for (size_t G = 0; G < Gone.size(); ++G)
+    {
+        const auto It = std::find(Live.begin(), Live.end(), *Gone[G]);
+        if (Pair[G] >= 0) Done[Pair[G]] = true;
+        //Not in the live list as the worker saw it: removed or changed meanwhile — that change stands.
+        if (It == Live.end()) continue;
+        if (Pair[G] >= 0) *It = *Came[Pair[G]]; else Live.erase(It);
+    }
+    for (size_t C = 0; C < Came.size(); ++C)
+        if (!Done[C]) Live.push_back(*Came[C]);
 }
 
 bool AddPackageSource(nlohmann::ordered_json &GlobalConfigJSON, const std::string &Cid, const std::string &Name, bool Friend)
