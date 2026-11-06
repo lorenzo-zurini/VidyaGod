@@ -11,6 +11,7 @@
 #include <vector>
 
 #include "manifestmodel.h"
+#include "validate.h"
 #include "fold.h"
 
 using nlohmann::ordered_json;
@@ -182,7 +183,7 @@ private slots:
         ManifestModel::DeriveFacts(Idx);
 
         std::vector<std::string> Errors, Warnings;
-        ManifestModel::ValidateNodeGraph(Idx, Errors, Warnings);
+        Validate::Nodes(Idx, Errors, Warnings);
         QVERIFY2(Errors.empty(), qPrintable(QString("unexpected errors: %1")
                  .arg(Errors.empty() ? QString() : QString::fromStdString(Errors.front()))));
     }
@@ -194,7 +195,7 @@ private slots:
         ManifestModel::DeriveFacts(Idx);
 
         std::vector<std::string> Errors, Warnings;
-        ManifestModel::ValidateNodeGraph(Idx, Errors, Warnings);
+        Validate::Nodes(Idx, Errors, Warnings);
         bool Mentions = false;
         for (const auto &E : Errors) if (E.find("ghost") != std::string::npos) Mentions = true;
         for (const auto &W : Warnings) if (W.find("ghost") != std::string::npos) Mentions = true;
@@ -210,7 +211,7 @@ private slots:
         ManifestModel::DeriveFacts(Idx);
 
         std::vector<std::string> Errors, Warnings;
-        ManifestModel::ValidateNodeGraph(Idx, Errors, Warnings);
+        Validate::Nodes(Idx, Errors, Warnings);
         QVERIFY2(!Errors.empty() || !Warnings.empty(), "a containment cycle must not validate silently");
     }
 
@@ -229,7 +230,7 @@ private slots:
         ManifestModel::DeriveFacts(Idx);
 
         std::vector<std::string> Errors, Warnings;
-        ManifestModel::ValidateNodeGraph(Idx, Errors, Warnings);
+        Validate::Nodes(Idx, Errors, Warnings);
         for (const auto &E : Errors)
             QVERIFY2(E.find("VIDYAGOD_SELF_NAME") == std::string::npos,
                      "engine-injected session tokens must not be reported as undefined");
@@ -237,7 +238,7 @@ private slots:
         Add(Idx, WithEdit("game2", "%DEFINITELY_NOT_A_REAL_TOKEN%"));
         ManifestModel::DeriveFacts(Idx);
         std::vector<std::string> Errors2, Warnings2;
-        ManifestModel::ValidateNodeGraph(Idx, Errors2, Warnings2);
+        Validate::Nodes(Idx, Errors2, Warnings2);
         bool Flagged = false;
         for (const auto &E : Errors2)   if (E.find("DEFINITELY_NOT_A_REAL_TOKEN") != std::string::npos) Flagged = true;
         for (const auto &W : Warnings2) if (W.find("DEFINITELY_NOT_A_REAL_TOKEN") != std::string::npos) Flagged = true;
@@ -254,12 +255,12 @@ private slots:
         ManifestModel::DeriveFacts(Idx);
 
         std::vector<std::string> AllE, AllW;
-        ManifestModel::ValidateNodeGraph(Idx, AllE, AllW);
+        Validate::Nodes(Idx, AllE, AllW);
         QVERIFY(!AllE.empty() || !AllW.empty());
 
         std::set<std::string> OnlyGood{"good"};
         std::vector<std::string> E, W;
-        ManifestModel::ValidateNodeGraph(Idx, E, W, &OnlyGood);
+        Validate::Nodes(Idx, E, W, &OnlyGood);
         for (const auto &X : E) QVERIFY2(X.find("ghost") == std::string::npos,
                                          "scoping to a healthy node must not report another node's problem");
     }

@@ -2,6 +2,7 @@
 // authored, lowered and laid out; a resolve and everything it decides; the %TOKEN% language; a node's identity; the
 // node graph built, frozen and minted; and where a package keeps its content files.
 #include "command.h"
+#include "validate.h"
 #include "cmdutil.h"
 #include "cid.h"
 #include "contentfile.h"
@@ -624,10 +625,10 @@ VG_COMMANDS
         "with --graft, the versions a graft applies onto.",
         { Opt("tile", "a tile UID: its download units"), Opt("graft", "a graft: the versions it applies onto") },
         { "graph shelf", "graph shelf --tile 749", "graph shelf --graft 'UserPatch 1.5'" },
-        { "ManifestModel::ShelfWarnings", "ManifestModel::TileEndpoints", "ManifestModel::GraftBases" }, Needs::Config, false,
+        { "Validate::Shelf", "ManifestModel::TileEndpoints", "ManifestModel::GraftBases" }, Needs::Config, false,
         [](Command::Context &C, const json &A) {
             const auto I = Index(C);
-            json Out = {{"warnings", ManifestModel::ShelfWarnings(*I)}};
+            json Out = {{"warnings", Validate::Shelf(*I)}};
             if (A.contains("tile"))
             {
                 const std::string U = Command::Str(A, "tile");
@@ -647,12 +648,12 @@ VG_COMMANDS
         "Rewrite (unpack → rename → repack STORE) the higher layers' zips so their entries take the base layer's case — "
         "the case-conflict errors the validator reports. --scope limits the rewrites to one folder.",
         { Opt("scope", "only rewrite zips under this folder") }, { "graph fix-case --scope ~/.VidyaGod/LIBRARY/VidyaGod/'[749][v1.0] Age of Empires II'" },
-        { "ManifestModel::FixCaseConflicts" }, Needs::Config, false,
+        { "Validate::FixCaseConflicts" }, Needs::Config, false,
         [](Command::Context &C, const json &A) {
             const auto I = Index(C);
             std::vector<std::string> Log;
             const fs::path S = Command::Str(A, "scope", "");
-            const int N = ManifestModel::FixCaseConflicts(*I, Log, A.contains("scope") ? &S : nullptr);
+            const int N = Validate::FixCaseConflicts(*I, Log, A.contains("scope") ? &S : nullptr);
             return json{{"rewritten", N}, {"log", Log}};
         }, {} });
 

@@ -6,9 +6,6 @@
 #include "commonutils.h"     // Log*
 #include "fold.h"            // Fold::Resolve — the row, resolved
 #include "nodelower.h"       // NodeLower::LowerPlan / LowerEntry — the plan as engine ops
-#include "optionreadback.h"  // what the game changed in its files, read back before a launch
-#include "instancestore.h"   // the instance's config the values read back go to
-#include "vfsmount.h"        // SessionOwned — no read-back while the instance runs
 
 #include <QDir>
 #include <QGuiApplication>
@@ -138,42 +135,8 @@ namespace LaunchResolver {
 static bool InitializeFromNodeOnce(struct ContainerParams &ContainerParams, const nlohmann::ordered_json &GlobalConfigJSON);
 }
 
-//A launch (ReadBackOptions) first takes back what the game changed in its own files (OptionReadBack): a quiet look-ahead
-//resolve says where the options are written and where the user's saved copies are, the values the files hold become
-//the instance's (Adopt), and the launch is then resolved for real from its input, on them (a value can gate a layer).
-//The look-ahead logs nothing into a running launch's console or verdict. Nothing is read while the instance is running:
-//its saved copies are not yet what the session has written. The launch window stops after the look-ahead
-//(ReadBackReresolve off): it only wants the instance updated before it shows the values.
 bool LaunchResolver::InitializeFromNode(struct ContainerParams &ContainerParams, const nlohmann::ordered_json &GlobalConfigJSON)
 {
-    if (!ContainerParams.ReadBackOptions || !AppPaths::UserDataPathOverride().empty())
-        return InitializeFromNodeOnce(ContainerParams, GlobalConfigJSON);
-    const struct ContainerParams Input = ContainerParams;
-    bool Looked = false;
-    {
-        QuietLog Quiet;
-        Looked = InitializeFromNodeOnce(ContainerParams, GlobalConfigJSON);
-    }
-    if (Looked && !VfsMount::SessionOwned(ContainerParams.TempPath))
-    {
-        const auto Found = OptionReadBack::Read(ContainerParams);
-        nlohmann::ordered_json Config = Found.empty() ? nlohmann::ordered_json()
-                                      : InstanceStore::ReadConfig(GlobalConfigJSON, ContainerParams.PackageUID, ContainerParams.InstanceName);
-        bool Touched = false;
-        const std::vector<std::string> Changed = Found.empty() ? std::vector<std::string>()
-                                               : OptionReadBack::Adopt(Config, Found, OptionReadBack::Current(ContainerParams), Touched);
-        std::string Err;
-        if (Touched && !InstanceStore::WriteConfig(GlobalConfigJSON, ContainerParams.PackageUID, ContainerParams.InstanceName, Config, &Err))
-            LogErr("InitializeFromNode", "could not store the options read back from the game's files (" + Err + ")");
-        else if (!Changed.empty())
-        {
-            std::string List;
-            for (const std::string &K : Changed) List += (List.empty() ? "" : ", ") + K + " = " + Config["VARIABLES"][K].dump();
-            LogOut("InitializeFromNode", "Changed in the game since the last launch, read back from its files: " + List);
-        }
-    }
-    if (Looked && !ContainerParams.ReadBackReresolve) return true;
-    ContainerParams = Input;
     return InitializeFromNodeOnce(ContainerParams, GlobalConfigJSON);
 }
 

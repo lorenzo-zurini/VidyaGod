@@ -1,4 +1,5 @@
 #include "packageeditor.h"
+#include "validate.h"
 #include "packageeditormodel.h"
 #include "pkgcanvaspanel.h"
 #include "pkgactions.h"
@@ -578,7 +579,7 @@ void PackageEditor::fixCase()
     std::vector<std::string> Log;
     const std::filesystem::path Scope = bundleDir().toStdString();
     QGuiApplication::setOverrideCursor(Qt::WaitCursor);
-    const int Fixed = ManifestModel::FixCaseConflicts(Model->BuildExecIndex(), Log, &Scope);
+    const int Fixed = Validate::FixCaseConflicts(Model->BuildExecIndex(), Log, &Scope);
     QGuiApplication::restoreOverrideCursor();
     validate();
     if (Fixed == 0) { QMessageBox::information(this, "Fix case collisions", "No cross-layer case collisions in this package."); return; }

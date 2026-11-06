@@ -1,4 +1,5 @@
 #include "pkggraph.h"   // AddNodeRef
+#include "validate.h"
 #include "fold.h"   // Fold::TypeOf — a layer's one type key
 #include "cli/climodes.h"
 #include "main.h"
@@ -67,7 +68,7 @@ int CliModes::RunMaintenanceModes(LaunchParameters &LaunchParameters, nlohmann::
             if (Scope.empty()) { LogErr("validate-nodes", "scope '" + S + "' matched no package/node."); return 1; }
         }
 
-        ManifestModel::ValidateNodeGraph(Index, Errors, Warnings, Scope.empty() ? nullptr : &Scope);
+        Validate::Nodes(Index, Errors, Warnings, Scope.empty() ? nullptr : &Scope);
         for (const auto &W : Warnings) LogWarn("validate-nodes", W);
         for (const auto &E : Errors)   LogErr ("validate-nodes", E);
         const std::string Extent = Scope.empty() ? (std::to_string(Index.Nodes.size()) + " node(s)")
@@ -83,7 +84,7 @@ int CliModes::RunMaintenanceModes(LaunchParameters &LaunchParameters, nlohmann::
     {
         NodeIndex Index = PackageCatalog::BuildCatalogIndex(GlobalConfigJSON);
         std::vector<std::string> Log;
-        const int Fixed = ManifestModel::FixCaseConflicts(Index, Log);
+        const int Fixed = Validate::FixCaseConflicts(Index, Log);
         for (const auto &Line : Log) LogOut("fix-case-conflicts", Line);
         LogSucc("fix-case-conflicts", "Rewrote " + std::to_string(Fixed) + " zip(s). Re-run --validate-nodes to confirm.");
         return 0;

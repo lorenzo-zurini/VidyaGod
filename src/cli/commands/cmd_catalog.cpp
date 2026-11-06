@@ -4,6 +4,7 @@
 #include <sstream>
 #include <map>
 #include "cli/cliapp.h"   // RenderGeneric
+#include "validate.h"
 #include "command.h"
 #include "appmodel.h"
 #include "manifestmodel.h"
@@ -266,7 +267,7 @@ VG_COMMANDS
         "library, or the package, UID or node given.",
         { Command::Opt("scope", "a package UID, package folder name, or node id"), Command::Flag("errors-only", "leave the warnings out") },
         { "catalog validate", "catalog validate --scope 749", "catalog validate --errors-only --json" },
-        { "ManifestModel::ValidateNodeGraph", "ManifestModel::Closure" }, Needs::Model, false,
+        { "Validate::Nodes", "ManifestModel::Closure" }, Needs::Model, false,
         [](Command::Context &C, const json &A) {
             const auto Snap = CmdUtil::Index(C);
             const NodeIndex &Idx = *Snap;
@@ -280,7 +281,7 @@ VG_COMMANDS
                 if (Scope.empty()) throw Command::BadArgs("scope '" + S + "' matched no package or node");
             }
             std::vector<std::string> Errors, Warnings;
-            ManifestModel::ValidateNodeGraph(Idx, Errors, Warnings, Scope.empty() ? nullptr : &Scope);
+            Validate::Nodes(Idx, Errors, Warnings, Scope.empty() ? nullptr : &Scope);
             json Out = json::array();
             for (const auto &E : Errors) Out.push_back({{"severity", "error"}, {"message", E}});
             if (!Command::Bool(A, "errors-only", false)) for (const auto &W : Warnings) Out.push_back({{"severity", "warning"}, {"message", W}});

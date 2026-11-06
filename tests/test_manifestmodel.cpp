@@ -1,4 +1,5 @@
 #include "vgtest.h"
+#include "validate.h"
 #include "manifestmodel.h"
 #include "nodefixture.h"
 #include "nodelower.h"
@@ -43,10 +44,10 @@ static bool AnyContains(const std::vector<std::string> &V, const std::string &Ne
     for (const auto &S : V) if (S.find(Needle) != std::string::npos) return true;
     return false;
 }
-static std::vector<std::string> Validate(const NodeIndex &Idx, std::vector<std::string> *Warnings = nullptr)
+static std::vector<std::string> Errors(const NodeIndex &Idx, std::vector<std::string> *Warnings = nullptr)
 {
     std::vector<std::string> E, W;
-    ManifestModel::ValidateNodeGraph(Idx, E, W);
+    Validate::Nodes(Idx, E, W);
     if (Warnings) *Warnings = W;
     return E;
 }
@@ -134,7 +135,7 @@ TEST(the_vocabulary_refuses_malformed_nodes_and_keeps_them_indexed)
     }
     NodeIndex Idx;
     Add(Idx, Bad[0]);
-    CHECK(AnyContains(Validate(Idx), "exactly one type key"));
+    CHECK(AnyContains(Errors(Idx), "exactly one type key"));
 }
 
 // ---- the index: closure and derived facts ---------------------------------------------------------------------
@@ -546,7 +547,7 @@ TEST(validate_names_missing_refs_and_cycles)
     Add(Idx, { {"CID", "p"}, {"LABEL", "p"}, {"LAYERS", ordered_json::array({ {{"NODE", "q"}} })} });
     Add(Idx, { {"CID", "q"}, {"LABEL", "q"}, {"LAYERS", ordered_json::array({ {{"NODE", "p"}} })} });
     ManifestModel::DeriveFacts(Idx);
-    const auto E = Validate(Idx);
+    const auto E = Errors(Idx);
     CHECK(AnyContains(E, "contains missing node 'nowhere'"));
     CHECK(AnyContains(E, "form a cycle"));
 }
@@ -560,7 +561,7 @@ TEST(validate_refuses_keeping_the_whole_registry)
     Add(Idx, { {"CID", "root"}, {"LABEL", "root"}, {"LAYERS", ordered_json::array({ {{"KEEP", {{"REG/HKCU", true}}}} })} });
     Add(Idx, { {"CID", "key"}, {"LABEL", "key"}, {"LAYERS", ordered_json::array({ {{"KEEP", {{"REG/HKCU/Software/Game", true}}}} })} });
     ManifestModel::DeriveFacts(Idx);
-    const auto E = Validate(Idx);
+    const auto E = Errors(Idx);
     CHECK(AnyContains(E, "node 'whole': a KEEP of a whole registry hive"));
     CHECK(AnyContains(E, "node 'root': a KEEP of a whole registry hive"));
     CHECK(!AnyContains(E, "node 'key': a KEEP of a whole registry hive"));
@@ -576,7 +577,7 @@ TEST(validate_flags_a_reserved_keep_name_given_or_defaulted)
     Add(Idx, { {"CID", "fine"}, {"LABEL", "fine"}, {"LAYERS", ordered_json::array({ {{"KEEP", {{"FILES/%GameDir%/Saves/", true}}}} })} });
     ManifestModel::DeriveFacts(Idx);
     std::vector<std::string> W;
-    Validate(Idx, &W);
+    Errors(Idx, &W);
     CHECK(AnyContains(W, "node 'named': KEEP NAME 'RegKeys' is RESERVED"));
     CHECK(AnyContains(W, "node 'leaf': KEEP NAME 'Registry' is RESERVED"));
     CHECK(!AnyContains(W, "node 'fine': KEEP NAME"));
@@ -594,7 +595,7 @@ TEST(validate_refuses_two_keeps_stored_under_one_name)
     Add(Idx, { {"CID", "named"}, {"LABEL", "named"}, {"LAYERS", ordered_json::array({ {{"KEEP", {
         {"FILES/%GameDir%/Base/Saved Games/", true}, {"FILES/%GameDir%/Expansion/Saved Games/", {{"NAME", "Expansion Saved Games"}}}}}} })} });
     ManifestModel::DeriveFacts(Idx);
-    const auto E = Validate(Idx);
+    const auto E = Errors(Idx);
     CHECK(AnyContains(E, "node 'clash': KEEP"));
     CHECK(AnyContains(E, "KEEP '%GameDir%/Expansion/saved games/' is stored as 'saved games' like '%GameDir%/Base/Saved Games/'"));
     CHECK(!AnyContains(E, "node 'named': KEEP"));
@@ -613,7 +614,7 @@ TEST(validate_refuses_two_keeps_stored_under_one_name_across_nodes)
     AddChain(Idx, "named", { NF::Merge({ NF::Exec("win32", "%GameDir%/g.exe"), NF::Variant("Named"),
                                          NF::Layers({ {{"KEEP", {{"FILES/%GameDir%/Revision/Save/", {{"NAME", "Revision Save"}}}}}} }) }) }, { "base" });
     ManifestModel::DeriveFacts(Idx);
-    const auto E = Validate(Idx);
+    const auto E = Errors(Idx);
     CHECK(AnyContains(E, "KEEP '%GameDir%/Revision/Save/' is stored as 'Save' like '%GameDir%/Save/'"));
     CHECK(!AnyContains(E, "Revision Save"));
     int Hits = 0;
@@ -643,7 +644,7 @@ TEST(validate_counts_a_runner_chain_as_serving_a_platform)
         {{"EXEC", ordered_json::array({ {{"LABEL", "Play"}, {"HOST", "custom"}, {"EXE", "%GameDir%/x"}, {"TILE", {{"UID", "custom_own"}}}} })}} })} }, "/mine");
     ManifestModel::DeriveFacts(Idx);
     std::vector<std::string> W;
-    Validate(Idx, &W);
+    Errors(Idx, &W);
     CHECK(!AnyContains(W, "no runner serves platform 'enginegame'"));
     CHECK(AnyContains(W, "no runner serves platform 'nowhere'"));
     CHECK(AnyContains(W, "node 'custom_elsewhere': no runner serves platform 'custom'"));
@@ -658,7 +659,7 @@ TEST(validate_requires_a_variant_to_present_a_tile_it_recommends)
              { {"RECOMMENDED", ordered_json::array({"6"})} });
     AddChain(Idx, "norun", { NF::Merge({ NF::Tile("5"), NF::Variant("z") }) });
     ManifestModel::DeriveFacts(Idx);
-    const auto E = Validate(Idx);
+    const auto E = Errors(Idx);
     CHECK(AnyContains(E, "'untiled': VARIANT 'x' presents no tile"));
     CHECK(AnyContains(E, "RECOMMENDED names tile '6'"));
     CHECK(AnyContains(E, "'norun': VARIANT 'z' has no effective entry"));
@@ -672,7 +673,7 @@ TEST(validate_refuses_an_entry_that_runs_a_folder)
     AddChain(Idx, "starter", { NF::Merge({ NF::Exec("win32", "%GameDir%/"), NF::Tile("5"), NF::Variant("s") }) });
     AddChain(Idx, "real", { NF::Merge({ NF::Exec("win32", "%GameDir%/g.exe"), NF::Tile("6"), NF::Variant("r") }) });
     ManifestModel::DeriveFacts(Idx);
-    const auto E = Validate(Idx);
+    const auto E = Errors(Idx);
     CHECK(AnyContains(E, "'starter': entry 'Play' runs a folder (EXE '%GameDir%/')"));
     CHECK(!AnyContains(E, "'real': entry"));
 }
@@ -690,7 +691,7 @@ TEST(validate_never_checks_a_graft_version_as_an_add_on)
     AddChain(Idx, "ver", { NF::Merge({ OnBase, NF::Content("dir", "d", "%GameDir%"), NF::Variant("v2") }) });
     AddChain(Idx, "addon", { NF::Merge({ OnBase, Edit }) });
     ManifestModel::DeriveFacts(Idx);
-    const auto E = Validate(Idx);
+    const auto E = Errors(Idx);
     CHECK(!AnyContains(E, "lies beneath"));
 }
 
@@ -703,8 +704,8 @@ TEST(validate_refuses_an_edit_beneath_what_replaces_its_file)
     AddChain(Fine, "v", { NF::Merge({ NF::Content("dir", "d", "%GameDir%"), Edit, NF::Exec("win32", "g.exe"), NF::Tile("1"), NF::Variant("v") }) });
     ManifestModel::DeriveFacts(Covered);
     ManifestModel::DeriveFacts(Fine);
-    CHECK(AnyContains(Validate(Covered), "lies beneath"));
-    CHECK(!AnyContains(Validate(Fine), "lies beneath"));
+    CHECK(AnyContains(Errors(Covered), "lies beneath"));
+    CHECK(!AnyContains(Errors(Fine), "lies beneath"));
 }
 
 TEST(validate_refuses_a_delta_with_nothing_beneath_it)
@@ -715,8 +716,8 @@ TEST(validate_refuses_a_delta_with_nothing_beneath_it)
                                        NF::Exec("win32", "g.exe"), NF::Tile("1"), NF::Variant("v") }) });
     ManifestModel::DeriveFacts(Idx);
     ManifestModel::DeriveFacts(Based);
-    CHECK(AnyContains(Validate(Idx), "has no content beneath it"));
-    CHECK(!AnyContains(Validate(Based), "has no content beneath it"));
+    CHECK(AnyContains(Errors(Idx), "has no content beneath it"));
+    CHECK(!AnyContains(Errors(Based), "has no content beneath it"));
 }
 
 // A registry key kept for one bitness while its REG layer writes the other only keeps a view the game never reads.
@@ -733,7 +734,7 @@ TEST(validate_warns_when_a_kept_key_is_kept_in_a_view_nothing_writes)
         AddChain(Idx, "v", { G });
         ManifestModel::DeriveFacts(Idx);
         std::vector<std::string> W;
-        CHECK(Validate(Idx, &W).empty());
+        CHECK(Errors(Idx, &W).empty());
         return AnyContains(W, "the view kept is one the game never reads");
     };
     CHECK(Warned(Game("HKLM", "REG/HKLM/Software/Acme", "64")));
@@ -757,9 +758,9 @@ TEST(validate_reads_a_deltas_bases)
                                        Delta(), NF::Exec("win32", "g.exe"), NF::Tile("1"), NF::Variant("v") }) });
     ManifestModel::DeriveFacts(Good);
     ManifestModel::DeriveFacts(Short);
-    CHECK(!AnyContains(Validate(Good), "beneath it"));
-    CHECK(AnyContains(Validate(Short), "names a base at '%GameDir%/b'"));   // a folder is not an archive
-    CHECK(!AnyContains(Validate(Short), "names a base at '%GameDir%/a"));
+    CHECK(!AnyContains(Errors(Good), "beneath it"));
+    CHECK(AnyContains(Errors(Short), "names a base at '%GameDir%/b'"));   // a folder is not an archive
+    CHECK(!AnyContains(Errors(Short), "names a base at '%GameDir%/a"));
 }
 
 // A delta rebuilds from the bytes the mount hands it: the archive the mount picks beneath it must be the one it was
@@ -787,7 +788,7 @@ TEST(validate_checks_a_delta_against_the_archive_beneath_it)
         NodeIndex Idx;
         AddChain(Idx, "v", { NF::Merge(Layers) }, {}, ordered_json::object(), D.string());
         ManifestModel::DeriveFacts(Idx);
-        return Validate(Idx);
+        return ::Errors(Idx);
     };
     const auto Zip = [](const char *N, const char *T = "%GameDir%") { return NF::Content("zip", N, T); };
     const auto Delta = [](const char *N) { return NF::Content("delta", N, "%GameDir%"); };
@@ -838,7 +839,7 @@ TEST(validate_a_layer_when_may_only_read_ungated_variables)
         {{"ZIP", "x.zip"}, {"WHEN", "%mode%==a"}},                                    // reads it → phase-1 violation
         {{"ZIP", "y.zip"}, {"WHEN", "%other%==1"}},                                   // fine
     })} });
-    const auto E = Validate(Idx);
+    const auto E = Errors(Idx);
     CHECK(AnyContains(E, "reads %mode%"));
     CHECK(!AnyContains(E, "reads %other%"));
 }
@@ -853,7 +854,7 @@ TEST(validate_names_undefined_variables_and_malformed_whens)
         {{"EDIT", ordered_json::array({ {{"MODE", "Poke"}, {"OFFSET", "0x1"}, {"VALUE", "01"}, {"COMMENT", "keeps '%prose%'"}} })},
          {"TARGET", "FILES/%GameDir%/g.exe"}, {"COMMENT", "%also_prose%"}, {"LABEL", "%label_prose%"}},
     })} });
-    const auto E = Validate(Idx);
+    const auto E = Errors(Idx);
     CHECK(!AnyContains(E, "%prose%"));                                  // a COMMENT is prose, not a reference
     CHECK(!AnyContains(E, "%also_prose%"));
     CHECK(!AnyContains(E, "%label_prose%"));
@@ -872,7 +873,7 @@ TEST(validate_reads_a_double_percent_as_a_literal_percent)
     Add(Idx, { {"CID", "n"}, {"LABEL", "n"}, {"LAYERS", ordered_json::array({
         {{"REG", {{"HKCU", {{"Software", {{"Plugins", {{"%%%%Value%%%%", "str(100%%)"}, {"%%x", "str(%typo2%)"}}}}}}}}}, {"ARCH", ordered_json::array({"32"})}},
     })} });
-    const auto E = Validate(Idx);
+    const auto E = Errors(Idx);
     CHECK(!AnyContains(E, "%Value%"));
     CHECK(AnyContains(E, "undefined variable %typo2%"));
 }
@@ -890,7 +891,7 @@ TEST(validate_warns_two_key_options_of_a_section_bound_to_one_key)
         {{"ZIP", "%fwd%%jump%%menu%%cam%%fwd_alt%%back_alt%.zip"}},
     })} });
     std::vector<std::string> W;
-    Validate(Idx, &W);
+    Errors(Idx, &W);
     CHECK(AnyContains(W, "%fwd% and %jump% are both bound to 'w'"));
     CHECK(!AnyContains(W, "'escape'"));
     CHECK(!AnyContains(W, "bound to ''"));
@@ -905,7 +906,7 @@ TEST(validate_names_a_map_reading_an_undeclared_table)
         {{"ZIP", "%fwd:map:unity_keys%%fwd:map:unty_keys%.zip"}},
     })} });
     std::vector<std::string> W;
-    const auto E = Validate(Idx, &W);
+    const auto E = Errors(Idx, &W);
     CHECK(AnyContains(E, "reads the table 'unty_keys'"));
     CHECK(!AnyContains(E, "table 'unity_keys'"));
     CHECK(!AnyContains(E, "undefined variable %fwd%"));                // %fwd:map:…% reads fwd
@@ -932,7 +933,7 @@ TEST(validate_refuses_drive_letters_and_non_canonical_anchors)
         {{"EDIT", ordered_json::array({ {{"MODE", "Overwrite"}, {"VALUE", "[Alias]\r\nHD0=.\\\r\nCD0=F:\\\r\nMODULES=.\\modules\r\n"}} })},
          {"TARGET", "FILES/%GameDir%/game.ini"}},                                               // a seed file's line
     })} });
-    const auto E = Validate(Idx);
+    const auto E = Errors(Idx);
     CHECK(AnyContains(E, "'FILES/C:/%PackageUID%' names a drive"));
     CHECK(AnyContains(E, "'E:\\' names a drive"));
     CHECK(AnyContains(E, "'CD0=F:\\' names a drive"));                                       // the line, not the file
@@ -958,7 +959,7 @@ TEST(validate_holds_every_anchor_in_a_value_to_its_most_specific_spelling)
     Add(Idx, { {"CID", "g"}, {"LABEL", "g"}, {"LAYERS", ordered_json::array({
         {{"REG", {{"HKLM", {{"Software", {{"G", {{"Paths", "%GameDir%\\a;%Windows%\\syswow64\\x.dll"}}}}}}}}}},
     })} });
-    CHECK(AnyContains(Validate(Idx), "is inside %SysDir32%"));
+    CHECK(AnyContains(Errors(Idx), "is inside %SysDir32%"));
 }
 
 TEST(validate_places_anchors_at_the_start_of_paths_and_reads_every_value)
@@ -983,7 +984,7 @@ TEST(validate_places_anchors_at_the_start_of_paths_and_reads_every_value)
                                                           ordered_json::array({"FILES/c/", "FILES/mods/%GameDir%"}) })}},
     })} });
     Add(Idx, { {"CID", "lib"}, {"LABEL", "lib"}, {"LAYERS", ordered_json::array({ {{"ZIP", "l.zip"}} })} });
-    const auto E = Validate(Idx);
+    const auto E = Errors(Idx);
     CHECK(!AnyContains(E, "path 'FILES/%GameDir%/a'"));
     CHECK(!AnyContains(E, "path '%GameDir%/a'"));
     CHECK(!AnyContains(E, "%ProgramFiles32%/b' has"));
@@ -1002,21 +1003,21 @@ TEST(validate_places_anchors_at_the_start_of_paths_and_reads_every_value)
     Nat["LAYERS"][0]["EXEC"][0]["GUEST_ROOTS"] = { {"%GameDir%", "%RuntimePath%/n64/%PackageUID%"} };
     AddChain(Idx, "native", { Nat });
     std::vector<std::string> NW;
-    Validate(Idx, &NW);
+    Errors(Idx, &NW);
     CHECK(!AnyContains(NW, "runners disagree where %GameDir% is"));
     // …and an anchor only native runners declare still starts a path. Teeth: check paths against AnchorGuest only.
     Nat["LAYERS"][0]["EXEC"][0]["GUEST_ROOTS"]["%SaveDir%"] = "%RuntimePath%/n64/saves";
     AddChain(Idx, "native", { Nat });
     Add(Idx, { {"CID", "natpkg"}, {"LABEL", "natpkg"}, {"LAYERS", ordered_json::array({
         {{"ZIP", "s.zip"}, {"TARGET", "FILES/mods/%SaveDir%/x"}} })} });
-    CHECK(AnyContains(Validate(Idx), "path 'mods/%SaveDir%/x' has %SaveDir% inside it"));
+    CHECK(AnyContains(Errors(Idx), "path 'mods/%SaveDir%/x' has %SaveDir% inside it"));
     // Two runners that place an anchor differently: packages are checked against one of them — said out loud.
     ordered_json R2 = NF::Runner("linux64", {"win64"}, "%RunnerMount%/other");
     R2["LAYERS"][0]["EXEC"][0]["GUEST_ROOTS"] = { {"%GameDir%", "D:\\%PackageUID%"} };
     R2["LAYERS"][0]["EXEC"][0]["DRIVES"] = { {"D:", "%PrefixRoot%/drive_d"} };
     AddChain(Idx, "other", { R2 });
     std::vector<std::string> W;
-    Validate(Idx, &W);
+    Errors(Idx, &W);
     CHECK(AnyContains(W, "runners disagree where %GameDir% is"));
 }
 
@@ -1043,12 +1044,12 @@ TEST(validate_flags_compressed_zip_layer)
     {
         NodeIndex Idx;
         AddChain(Idx, "z", { NF::Content("zip", "c.zip") }, {}, ordered_json::object(), Dir.string());
-        CHECK(AnyContains(Validate(Idx), "STORE"));
+        CHECK(AnyContains(Errors(Idx), "STORE"));
     }
     {
         NodeIndex Idx;
         AddChain(Idx, "z", { NF::Content("zip", "s.zip") }, {}, ordered_json::object(), Dir.string());
-        CHECK(!AnyContains(Validate(Idx), "STORE"));
+        CHECK(!AnyContains(Errors(Idx), "STORE"));
     }
     std::error_code Ec; fs::remove_all(Dir, Ec);
 }
@@ -1058,7 +1059,7 @@ TEST(validate_warns_unzipped_dir_layer)
     NodeIndex Idx;
     AddChain(Idx, "d", { NF::Content("dir", "payload") });
     std::vector<std::string> W;
-    const auto E = Validate(Idx, &W);
+    const auto E = Errors(Idx, &W);
     CHECK(AnyContains(W, "unzipped authoring layer"));
     CHECK(!AnyContains(E, "unzipped"));
 }
@@ -1080,7 +1081,7 @@ TEST(validate_flags_cross_layer_case_collision_once)
              ordered_json::object(), Dir.string());
     ManifestModel::DeriveFacts(Idx);
     int CaseReports = 0;
-    for (const std::string &E : Validate(Idx))
+    for (const std::string &E : Errors(Idx))
         if (E.find("case conflict across layers") != std::string::npos) ++CaseReports;
     CHECK_EQ(CaseReports, 1);                      // fires, and the shared content reports once, not per launchable
     fs::remove_all(Dir);
@@ -1142,18 +1143,18 @@ TEST(a_delta_hides_its_bases_spelling_from_the_case_checks)
         return Idx;
     };
     const std::string Msg = "content case conflict across layers";
-    CHECK(!AnyContains(Validate(Index({ { Z("old.zip"), Dl, Z("steamless.zip") } })), Msg));
-    CHECK(AnyContains(Validate(Index({ { Z("old.zip"), Dl, Z("other.zip") } })),
+    CHECK(!AnyContains(Errors(Index({ { Z("old.zip"), Dl, Z("steamless.zip") } })), Msg));
+    CHECK(AnyContains(Errors(Index({ { Z("old.zip"), Dl, Z("other.zip") } })),
                       "file 'Luxor.exe' (new.vgdelta) vs 'LUXOR.exe' (other.zip)"));
-    CHECK(AnyContains(Validate(Index({ { Z("old.zip"), Z("steamless.zip") } })), Msg));   // no delta: a real conflict
+    CHECK(AnyContains(Errors(Index({ { Z("old.zip"), Z("steamless.zip") } })), Msg));   // no delta: a real conflict
 
     const std::string Old = Slurp("old.zip"), Steamless = Slurp("steamless.zip");
     std::vector<std::string> Log;
-    CHECK_EQ(ManifestModel::FixCaseConflicts(Index({ { Z("old.zip"), Dl, Z("steamless.zip") } }), Log), 0);
+    CHECK_EQ(Validate::FixCaseConflicts(Index({ { Z("old.zip"), Dl, Z("steamless.zip") } }), Log), 0);
     CHECK(Slurp("old.zip") == Old);
     CHECK(Slurp("steamless.zip") == Steamless);
     //The patch with the old spelling is spelled after the delta, not after the hidden base.
-    CHECK_EQ(ManifestModel::FixCaseConflicts(Index({ { Z("old.zip"), Dl, Z("other.zip") } }), Log), 1);
+    CHECK_EQ(Validate::FixCaseConflicts(Index({ { Z("old.zip"), Dl, Z("other.zip") } }), Log), 1);
     {
         int Err = 0;
         zip_t *Za = zip_open((D / "other.zip").string().c_str(), ZIP_RDONLY, &Err);
@@ -1162,7 +1163,7 @@ TEST(a_delta_hides_its_bases_spelling_from_the_case_checks)
     }
     //A zip that one variant's delta is built over is left alone even where another variant would rename it.
     Log.clear();
-    CHECK_EQ(ManifestModel::FixCaseConflicts(Index({ { Z("old.zip"), Dl }, { Z("steamless.zip"), Z("old.zip") } }), Log), 0);
+    CHECK_EQ(Validate::FixCaseConflicts(Index({ { Z("old.zip"), Dl }, { Z("steamless.zip"), Z("old.zip") } }), Log), 0);
     CHECK(Slurp("old.zip") == Old);
     CHECK(AnyContains(Log, "is a delta's base"));
     fs::remove_all(D);
@@ -1202,7 +1203,7 @@ TEST(fix_case_for_one_package_walks_only_its_variants)
     AddChain(Idx, "gameB", { NF::Merge({ NF::Exec("win32", "x.exe"), NF::Variant("b") }) }, { "b0", "a2", "b1" }, ordered_json::object(), B.string());
     ManifestModel::DeriveFacts(Idx);
     std::vector<std::string> Log;
-    CHECK_EQ(ManifestModel::FixCaseConflicts(Idx, Log, &A), 1);
+    CHECK_EQ(Validate::FixCaseConflicts(Idx, Log, &A), 1);
     CHECK(Names(A / "a2.zip") == std::vector<std::string>{"Data/y.dat"});
     CHECK(Names(B / "b1.zip") == std::vector<std::string>{"DaTa/w.dat"});
     CHECK(!AnyContains(Log, "conflicting canonicalization"));
@@ -1363,7 +1364,7 @@ TEST(a_launch_option_in_a_kept_file_must_be_taken_back)
         Add(Idx, J);
         ManifestModel::DeriveFacts(Idx);
         std::vector<std::string> W;
-        Validate(Idx, &W);
+        Errors(Idx, &W);
         CHECK_EQ(AnyContains(W, "launch option 'fs' is written to 'FILES/%GameDir%/cfg/settings.json#/video/fullscreen'"), !TakeBack);
         CHECK_EQ(AnyContains(W, "launch option 'fs' is written to 'FILES/%GameDir%/cfg/settings.json#/video/real'"), !TakeBack);   // via its WHEN
         Fold::Library Lib;
@@ -1392,16 +1393,16 @@ TEST(shelf_reports_a_tile_no_variant_presents)
     NodeIndex Idx;
     Add(Idx, {{"CID", "g"}, {"LAYERS", ordered_json::array({ {{"EXEC", ordered_json::array({PlayEntry({{"UID", "7"}, {"TITLE", "Game"}})})}} })}});
     ManifestModel::DeriveFacts(Idx);
-    const auto W = ManifestModel::ShelfWarnings(Idx);
+    const auto W = Validate::Shelf(Idx);
     CHECK(AnyContains(W, "tile 7 'Game'") && AnyContains(W, "no VARIANT presents it"));
-    std::vector<std::string> VW; Validate(Idx, &VW);
+    std::vector<std::string> VW; Errors(Idx, &VW);
     CHECK(AnyContains(VW, "no VARIANT presents it"));          // part of --validate-nodes
 
     NodeIndex Fixed;
     Add(Fixed, {{"CID", "g"}, {"VARIANT", "Windows"}, {"RECOMMENDED", ordered_json::array({"7"})},
                 {"LAYERS", ordered_json::array({ {{"EXEC", ordered_json::array({PlayEntry({{"UID", "7"}, {"TITLE", "Game"}})})}} })}});
     ManifestModel::DeriveFacts(Fixed);
-    CHECK(ManifestModel::ShelfWarnings(Fixed).empty());
+    CHECK(Validate::Shelf(Fixed).empty());
 }
 
 // The shelf shows a tile as its RECOMMENDED variant's folded tile. A recommended port carrying only {"UID"}, beside
@@ -1415,7 +1416,7 @@ TEST(shelf_reports_a_presentation_without_a_title)
     Add(Idx, {{"CID", "port"}, {"VARIANT", "Port"}, {"RECOMMENDED", ordered_json::array({"7"})},
               {"LAYERS", ordered_json::array({ {{"EXEC", ordered_json::array({PlayEntry({{"UID", "7"}})})}} })}});
     ManifestModel::DeriveFacts(Idx);
-    const auto W = ManifestModel::ShelfWarnings(Idx);
+    const auto W = Validate::Shelf(Idx);
     CHECK(AnyContains(W, "tile 7") && AnyContains(W, "variant 'Port'") && AnyContains(W, "no TITLE"));
 
     // The fix: the tile at the base — one node every variant contains, the variants keeping only {"UID"}.
@@ -1426,7 +1427,7 @@ TEST(shelf_reports_a_presentation_without_a_title)
     Add(Fixed, {{"CID", "port"}, {"VARIANT", "Port"}, {"RECOMMENDED", ordered_json::array({"7"})}, {"LAYERS", ordered_json::array({
                    {{"NODE", "tile"}}, {{"EXEC", ordered_json::array({PlayEntry({{"UID", "7"}})})}} })}});
     ManifestModel::DeriveFacts(Fixed);
-    CHECK(ManifestModel::ShelfWarnings(Fixed).empty());
+    CHECK(Validate::Shelf(Fixed).empty());
     CHECK(Fixed.Tile("7") && Fixed.Tile("7")->value("TITLE", std::string()) == "Game");
 }
 
@@ -1441,7 +1442,7 @@ TEST(shelf_a_grafts_own_card_is_not_rowless)
               {{"EXEC", ordered_json::array({PlayEntry({{"UID", "70"}, {"TITLE", "The Mod"}})})}} })}});
     ManifestModel::DeriveFacts(Idx);
     CHECK(Idx.TileGraft.count("70") == 1);
-    CHECK(!AnyContains(ManifestModel::ShelfWarnings(Idx), "tile 70"));
+    CHECK(!AnyContains(Validate::Shelf(Idx), "tile 70"));
 }
 
 // A place (%Documents%, %GameDir%...) used where no runner is installed at all is said to be that - no runner here to
@@ -1453,7 +1454,7 @@ TEST(validate_a_place_with_no_runner_is_not_called_a_typo)
         {{"ZIP", "%Documents%/saves.zip"}},
         {{"ZIP", "%typo_var%.zip"}},
     })} });
-    const auto E = Validate(Idx);
+    const auto E = Errors(Idx);
     CHECK(AnyContains(E, "%Documents%, a place runners define - no runner is installed"));
     CHECK(!AnyContains(E, "undefined variable %Documents%"));
     CHECK(AnyContains(E, "undefined variable %typo_var%"));
@@ -1468,7 +1469,7 @@ TEST(validate_replaceall_needs_its_pattern_not_a_site)
         NodeIndex Idx;
         AddChain(Idx, "g", { NF::Layers({ { {"EDIT", ordered_json::array({Op})}, {"TARGET", "FILES/%GameDir%/data/sd.afs"} } }) });
         ManifestModel::DeriveFacts(Idx);
-        return Validate(Idx);
+        return Errors(Idx);
     };
     const auto Good = With({{"MODE", "ReplaceAll"}, {"EXPECT", "aabb"}, {"REPLACE", "1122"}});
     CHECK(!AnyContains(Good, "ReplaceAll") && !AnyContains(Good, "no site to patch") && !AnyContains(Good, "alformed"));

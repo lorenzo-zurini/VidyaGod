@@ -1,4 +1,5 @@
 #include "cli/climodes.h"
+#include "validate.h"
 #include "main.h"
 #include "commonutils.h"
 #include "manifestmodel.h"
@@ -151,11 +152,11 @@ int CliModes::RunAuditPackages(nlohmann::ordered_json &GlobalConfigJSON, const s
     //ones, which drifted (it predated MODE "Or" and flagged every Or op). Its warnings stay --validate-nodes' business.
     {
         std::vector<std::string> VErrors, VWarnings;
-        ManifestModel::ValidateNodeGraph(Index, VErrors, VWarnings, Scope.empty() ? nullptr : &InScope);
+        Validate::Nodes(Index, VErrors, VWarnings, Scope.empty() ? nullptr : &InScope);
         for (const std::string &E : VErrors) Findings.push_back({std::string(), "(validator)", "validate", E, true});   // E names its node
         LogOut("audit", "validator pass: " + std::to_string(VErrors.size()) + " error(s)");
         //What the shelf will show is the audit's business too: a card with no row, or named by a CID.
-        for (const std::string &W : ManifestModel::ShelfWarnings(Index, Scope.empty() ? nullptr : &InScope))
+        for (const std::string &W : Validate::Shelf(Index, Scope.empty() ? nullptr : &InScope))
             Findings.push_back({std::string(), "(shelf)", "shelf", W, false});
     }
 

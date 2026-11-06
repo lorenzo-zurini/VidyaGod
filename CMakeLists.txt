@@ -241,10 +241,14 @@ set(SHARED_SOURCES
     src/engine/quitsignals.h
     src/engine/quitsignals.cpp
 
-    src/plan/optionreadback.h
-    src/plan/optionreadback.cpp
+    src/engine/optionreadback.h
+    src/engine/launchsession.h
+    src/engine/launchsession.cpp
+    src/engine/optionreadback.cpp
 
     src/format/manifestmodel.h
+    src/plan/validate.h
+    src/plan/validate.cpp
     src/format/manifestmodel.cpp
     src/format/fold.cpp
     src/base/cid.cpp
@@ -277,8 +281,8 @@ set(SHARED_SOURCES
     src/plan/builtinrunners.cpp
     src/library/packagecatalog_publish.cpp
 
-    src/engine/registrywrapper.h
-    src/engine/registrywrapper.cpp
+    src/format/registrywrapper.h
+    src/format/registrywrapper.cpp
 
     src/base/commonutils.h
     src/base/commonutils.cpp
@@ -466,13 +470,13 @@ add_executable(vg_tests
     src/format/contentfile.cpp
     src/format/varsubst.cpp
     src/base/keynames.cpp
-    src/engine/registrywrapper.cpp
+    src/format/registrywrapper.cpp
     src/engine/boxprefix.cpp
     src/engine/fileedits.cpp
     src/engine/binarypatch.cpp
     src/engine/registrylayer.cpp
     src/engine/persistlayer.cpp
-    src/plan/optionreadback.cpp
+    src/engine/optionreadback.cpp
     src/editor/pkggraph.cpp
     src/editor/pkglayout.cpp
     src/editor/pkgdoc.cpp
@@ -480,6 +484,7 @@ add_executable(vg_tests
     src/engine/depcheck.cpp        # Qt-free dependency detection engine (ParseLdconfig/Check)
     ${VG_PLATFORM_SRC}      # Platform::SelfExe (used by depcheck) — POSIX or Win32 impl
     src/base/platform/platform_fs.cpp   # Platform::IsLink / RemoveTree (boxprefix)
+    src/plan/validate.cpp
     src/plan/launchparams.cpp)   # ContainerParams::GetVariablesMap — validator's built-in %variable% source of truth
 target_include_directories(vg_tests PRIVATE ${VG_SRC_DIRS} tests VidyaGodFS/src)
 if(WIN32)

@@ -1,4 +1,5 @@
 #include "cli/climodes.h"
+#include "validate.h"
 #include "main.h"
 #include "apppaths.h"
 #include "platform/platform.h"
@@ -467,7 +468,7 @@ int CliModes::RunContentModes(LaunchParameters &LaunchParameters, nlohmann::orde
         std::vector<std::string> Missing;
         NodeIndex Frozen = NodeGraph::BuildFrozenIndex(MR.Launchables, &Missing);
         std::vector<std::string> ValErrs, ValWarns;
-        ManifestModel::ValidateNodeGraph(Frozen, ValErrs, ValWarns);
+        Validate::Nodes(Frozen, ValErrs, ValWarns);
         LogOut("main.cpp", "frozen read-back: " + std::to_string(Frozen.Nodes.size()) + " node(s), "
                + std::to_string(Missing.size()) + " unresolved block(s), "
                + std::to_string(ValErrs.size()) + " validate error(s) (runner-absent expected)");

@@ -1,4 +1,5 @@
 #include "nodegraph.h"
+#include "validate.h"
 #include "packageeditormodel.h"
 #include "nodelower.h"
 #include "contentfile.h"   // Bumped / Claims — the names two CIDs give one file
@@ -539,7 +540,7 @@ PackageEditorModel::ValResult PackageEditorModel::Validate(const NodeIndex & Idx
         Scope.insert(H);
         for (const std::string & Dep : ManifestModel::Closure(Idx, H)) Scope.insert(Dep);
     }
-    ManifestModel::ValidateNodeGraph(Idx, R.Errors, R.Warnings, &Scope);
+    Validate::Nodes(Idx, R.Errors, R.Warnings, &Scope);
     auto Foreign = [&Scope](const std::string & M) {
         const size_t A = M.find("node '");
         if (A == std::string::npos) return false;          // about no node in particular: it stays

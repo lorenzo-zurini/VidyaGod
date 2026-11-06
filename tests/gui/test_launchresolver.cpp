@@ -5,6 +5,7 @@
 #include <QtTest>
 
 #include "launchresolver.h"
+#include "launchsession.h"
 #include "fileedits.h"
 #include "containerwrapper.h"
 #include "vfsmount.h"
@@ -267,7 +268,7 @@ private slots:
 
     // A launch reads back what the game changed in a file the user keeps: the saved copy's value becomes the option's,
     // in the instance and in this launch; one the file still holds as last known leaves a change made in the launch
-    // window since alone; a dry resolve (no ReadBackOptions) reads nothing. Teeth: no read-back in InitializeFromNode
+    // window since alone; a dry resolve (InitializeFromNode) reads nothing. Teeth: no read-back in ResolveTakingBack
     // (res stays 1920); no re-resolve after adopting (the instance changes, the launch still writes 1920).
     void a_launch_reads_back_what_the_game_changed()
     {
@@ -284,8 +285,8 @@ private slots:
         const json cfg = json{{"Settings", {{"Paths", {{"UserDataRoot", ud.path().toStdString()}}}}}};
         const auto resolve = [&](bool ReadBack) {
             ContainerParams cp("/tmp/vg_bundle");
-            cp.NodeIdx = &idx; cp.LaunchNodeId = "game"; cp.ReadBackOptions = ReadBack;
-            if (!LaunchResolver::InitializeFromNode(cp, cfg)) qFatal("resolve failed");
+            cp.NodeIdx = &idx; cp.LaunchNodeId = "game";
+            if (!(ReadBack ? LaunchSession::ResolveTakingBack(cp, cfg) : LaunchResolver::InitializeFromNode(cp, cfg))) qFatal("resolve failed");
             return cp;
         };
         const ContainerParams First = resolve(false);

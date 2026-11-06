@@ -7,6 +7,7 @@
 #include "covercache.h"
 #include "packagecatalog.h"
 #include "containerwrapper.h"   // StringVariableSubstitution / ContainerParams (CustomVar preview substitution)
+#include "launchsession.h"     // ResolveTakingBack — what the game changed, read back before the values show
 #include "launchresolver.h"     // ResolveChainIds / ResolveChainTail / kNativeTerminalId (runner daisy-chain UI)
 #include "jsonoperations.h"
 #include "ipfswrapper.h"     // LanPeers/SetLanExcluded/LanLaunchVars — the Virtual LAN panel
@@ -1092,9 +1093,7 @@ void PreLaunchWindow::ReadBackFromFiles()
     Cp.InstanceName    = InstanceName;
     Cp.RunnerChainIds  = CurrentChain;
     Cp.Grafts          = CollectGrafts();
-    Cp.ReadBackOptions = true;
-    Cp.ReadBackReresolve = false;
-    (void)LaunchResolver::InitializeFromNode(Cp, *GlobalConfigJSON);
+    (void)LaunchSession::ResolveTakingBack(Cp, *GlobalConfigJSON, /*Reresolve=*/false);
 }
 
 void PreLaunchWindow::RebuildCustomVarPickers()

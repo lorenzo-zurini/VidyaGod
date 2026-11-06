@@ -13,6 +13,7 @@
 #include "pkggraph.h"
 #include "packageeditormodel.h"
 #include "manifestmodel.h"
+#include "validate.h"
 #include "nodefixture.h"
 #include "cli/climodes.h"
 #include "runnerinstall.h"
@@ -510,7 +511,7 @@ private slots:
 
         const auto Validate = [&](const std::set<std::string> *Scope) {
             std::vector<std::string> E, W;
-            ManifestModel::ValidateNodeGraph(Idx, E, W, Scope);
+            Validate::Nodes(Idx, E, W, Scope);
             return E;
         };
         const auto Has = [](const std::vector<std::string> &E, const std::string &A, const std::string &B) {
@@ -895,7 +896,7 @@ private slots:
         const std::filesystem::path Other = E->BundleDir == BG ? BG2 : BG;
         QVERIFY2(!ManifestModel::ServesPlatform(*E, "custom", Other), "a copy's package does not get the engine");
         std::vector<std::string> Errs, W;
-        ManifestModel::ValidateNodeGraph(Idx, Errs, W);
+        Validate::Nodes(Idx, Errs, W);
         bool Named = false;
         for (const auto &Err : Errs) if (Err.find("one home package") != std::string::npos) Named = true;
         QVERIFY2(Named, "the validator names the copy");
@@ -2740,7 +2741,7 @@ private slots:
         ManifestModel::DeriveFacts(Idx);
         std::vector<std::string> Errors, Warnings;
         bool Threw = false;
-        try { ManifestModel::ValidateNodeGraph(Idx, Errors, Warnings); }
+        try { Validate::Nodes(Idx, Errors, Warnings); }
         catch (const std::exception &) { Threw = true; }
         QVERIFY2(Threw, "the filesystem's refusal reaches the caller as an error");
     }

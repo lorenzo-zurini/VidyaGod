@@ -1,4 +1,5 @@
 #include "containerwrapper.h"
+#include "launchsession.h"
 
 #include <atomic>
 #include <condition_variable>
@@ -125,7 +126,8 @@ bool ContainerWrapper::InitializeContainer()
     //Everything is a node: resolve the whole container from the global node index (InitializeFromNode populates
     //the internal COMPONENTS pool the shared iterators consume). There is no MANIFESTJSON path any more.
     if (this->ContainerParams.NodeIdx && !this->ContainerParams.LaunchNodeId.empty())
-        return LaunchResolver::InitializeFromNode(this->ContainerParams, this->GlobalConfigJSON);
+        return this->ContainerParams.ReadBackOptions ? LaunchSession::ResolveTakingBack(this->ContainerParams, this->GlobalConfigJSON)
+                                                     : LaunchResolver::InitializeFromNode(this->ContainerParams, this->GlobalConfigJSON);
 
     LogErr("ContainerWrapper::InitializeContainer", "No node graph supplied (NodeIdx/LaunchNodeId unset) — aborting.");
     return false;

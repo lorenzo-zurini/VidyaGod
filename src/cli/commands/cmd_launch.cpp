@@ -189,7 +189,7 @@ VG_COMMANDS
         "warnings and errors the resolve logged are counted (app diagnostics).",
         LaunchArgs(), { "launch plan 749", "launch plan 'Patch 2.0a'", "launch plan --node 'Patch 2.0a'", "launch plan --tile 749 --variant 'Patch 2.0a (No-CD)' --var aoe2_res=1920x1080 --json" },
         { "CliModes::Launch", "CliModes::PrepareLaunch", "CliModes::ResolutionOf", "ContainerWrapper::Resolved", "ContainerParams::GetVariablesMap",
-          "LaunchResolver::InitializeFromNode", "LaunchResolver::ResolveRunnerChain", "LaunchResolver::ResolveChainIds", "LaunchResolver::ResolveChainTail",
+          "LaunchResolver::InitializeFromNode", "LaunchSession::ResolveTakingBack", "LaunchResolver::ResolveRunnerChain", "LaunchResolver::ResolveChainIds", "LaunchResolver::ResolveChainTail",
           "LaunchResolver::BoundaryLinkIndex", "LaunchResolver::ChainHasInnerLinks", "LaunchResolver::DerivePaths", "LaunchResolver::DerivePersistence",
           "LaunchResolver::ResolveCustomVariables", "LaunchResolver::ResolveExecutableDefinition", "LaunchResolver::BuildSubComponentsArray",
           "LaunchResolver::AnchorLayouts", "LaunchResolver::AnchorRegEdits", "LaunchResolver::ComposeGuestTarget", "LaunchResolver::GuestPath",
