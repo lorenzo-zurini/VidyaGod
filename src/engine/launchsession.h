@@ -7,8 +7,10 @@
 
 #include <nlohmann/json.hpp>
 
+#include <atomic>
 #include <map>
 #include <memory>
+#include <mutex>
 #include <optional>
 #include <string>
 #include <vector>
@@ -57,21 +59,25 @@ public:
     Session(const Session &) = delete;
     Session &operator=(const Session &) = delete;
 
-    //The plan: the row resolved (what the game changed in its files read back first, unless !ReadBack), its entry,
-    //and a secret drawn from its pool kept in the instance so the next launch draws the same. False: *Why says why.
+    //The plan: the row resolved (what the game changed in its files read back first, unless !ReadBack) and its entry.
+    //Nothing is written: a plan is pure. False: *Why says why.
     bool Resolve(std::string *Why = nullptr);
-    //The runtime: mounted, prefix made, edits applied; the instance marked last played (not for a dry run or a path
-    //override). False: taken down again, *Why naming what core tool is missing when that is the reason.
-    bool Build(std::string *Why = nullptr);
+    //The runtime: mounted, prefix made, edits applied. Played (a launch, not `launch build`'s look inside) and not a
+    //dry run: a secret drawn from its pool is kept in the instance so the next launch draws the same, and the instance
+    //is marked last played (not with a path override). False: taken down again, *Why naming what core tool is missing
+    //when that is the reason; a stop asked meanwhile ends it here.
+    bool Build(std::string *Why = nullptr, bool Played = true);
     Outcome Run();
-    //What the package keeps, captured; the runtime taken down (a dry run's writable layer too). Once; again is a no-op.
-    void Cleanup();
+    //What the package keeps, captured; the runtime taken down (a dry run's writable layer too, once this launch built
+    //it — never one a running session of the instance holds). Once; again is a no-op. False: the capture failed.
+    bool Cleanup();
     //Every warning and error the launch logged, printed as the verdict for What ("Launch of 'x'") and returned. Taken
     //after Cleanup, so a capture that failed is in it.
     Diagnostics::Report Verdict(const std::string &What);
 
     ContainerWrapper *Wrapper() const { return W.get(); }   // null before Resolve
-    void Stop();                                            // from any thread: the game is told to stop
+    //From any thread: the game is told to stop — before it starts too (the build ends, the game is not started).
+    void Stop();
 
     //What a missing core tool (the mount helper, FUSE/WinFsp, the sandbox) keeps from running games here, "" for none.
     static std::string MissingCore();
@@ -80,7 +86,9 @@ private:
     nlohmann::ordered_json Config;
     Request Req;
     std::unique_ptr<LogRecorder> Said;   // this launch's warnings and errors, on its thread
-    std::unique_ptr<ContainerWrapper> W;
+    std::unique_ptr<ContainerWrapper> W;   // set once on the launch's thread, under Live (Stop reads it from another)
+    std::mutex Live;
+    std::atomic<bool> StopAsked{false};
     bool Built = false, Down = false;
 };
 

@@ -778,11 +778,12 @@ bool VfsMount::CheckCaseConflicts(const std::filesystem::path &DirectoryPath)
 
     if(!NoConflict)
     {
-        std::ostringstream oss;
-        std::for_each(CaseConflictList.begin(), CaseConflictList.end(),[&oss](const std::string& s){ oss << s << '\n'; });
-        std::cerr << "CASE CONFLICTS:\n" << oss.str() << std::endl;
-        LogWarn("VfsMount::CheckCaseConflicts", "files differing only in case are in the runtime (listed above): a Windows "
-                "game is case-insensitive, so Wine may open the wrong one; the game still launches");
+        std::string List;
+        size_t Shown = 0;
+        for (const std::string &P : CaseConflictList) { if (++Shown > 20) break; List += "\n  " + P; }
+        if (CaseConflictList.size() > 20) List += "\n  … and " + std::to_string(CaseConflictList.size() - 20) + " more";
+        LogWarn("VfsMount::CheckCaseConflicts", "files differing only in case are in the runtime: a Windows game is "
+                "case-insensitive, so Wine may open the wrong one; the game still launches. Lowercased:" + List);
         return false;
     }
     return true;

@@ -644,15 +644,15 @@ bool ContainerWrapper::Execute(const std::string &OverrideExe, const std::vector
 
     //The quit can land between the check below and start(): KillGame then finds a process with no pid yet, so the check
     //is made again once it runs.
-    if (Stopping())
+    if (Stopping() || KillAsked)
     {
         { QMutexLocker Locker(&ActiveRunMutex); ActiveRunProcess = nullptr; }
         this->UserKilled = true;
-        LogOut("ContainerWrapper::Execute", "VidyaGod is quitting — the game is not started.");
+        LogOut("ContainerWrapper::Execute", KillAsked ? "Stopped — the game is not started." : "VidyaGod is quitting — the game is not started.");
         return false;
     }
     RunProcess.start();
-    if (Stopping()) KillGame();
+    if (Stopping() || KillAsked) KillGame();
     RunProcess.waitForFinished(-1);
 
     //Clear the pointer before reading output so KillGame() does not dereference a finished process.
@@ -691,6 +691,7 @@ bool ContainerWrapper::Execute(const std::string &OverrideExe, const std::vector
 //Called from the UI thread while Execute() blocks on the worker thread.
 void ContainerWrapper::KillGame()
 {
+    KillAsked = true;
     QMutexLocker Locker(&ActiveRunMutex);
     if (!ActiveRunProcess) return;
     this->UserKilled = true;                 // a deliberate kill — not a launch failure to report

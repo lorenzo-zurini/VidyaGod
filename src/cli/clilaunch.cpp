@@ -174,14 +174,20 @@ int CliModes::Launch(const LaunchRequest &Req, nlohmann::ordered_json &GlobalCon
     (void)AppDataDir;
     const std::string Name = Req.LaunchNodeId + Req.LaunchTile;
     std::string Err;
-    const std::unique_ptr<PreparedLaunch> P = PrepareLaunch(Req, GlobalConfigJSON, Err);
-    //A failed launch is exactly when the verdict matters most; returning early without one means the runs that went
-    //wrong are the runs that say nothing. (No session: what the lookup said is the log's.)
-    if (!P)
+    std::unique_ptr<PreparedLaunch> P;
     {
-        const Diagnostics::Report R = Diagnostics::PrintVerdict("Launch of '" + Name + "'", Diagnostics::Summarize({ {LogLevel::ERR, "main.cpp", Err} }));
-        if (VerdictOut) *VerdictOut = R;
-        return 1;
+        //A failed launch is exactly when the verdict matters most; returning early without one means the runs that
+        //went wrong are the runs that say nothing. What the lookup and the resolve said is it (the session went with
+        //the failure).
+        LogRecorder Said({});
+        P = PrepareLaunch(Req, GlobalConfigJSON, Err);
+        if (!P)
+        {
+            const Diagnostics::Report R = Diagnostics::PrintVerdict((Req.ResolveOnly ? "Resolve of '" : "Launch of '") + Name + "'",
+                                                                    Diagnostics::Summarize(Said.Take()));
+            if (VerdictOut) *VerdictOut = R;
+            return 1;
+        }
     }
     LaunchSession::Session &S = *P->S;
     //Every exit reports — a resolve too: it is the cheap way to ask "is this package healthy?", so it is precisely

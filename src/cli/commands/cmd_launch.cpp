@@ -251,7 +251,7 @@ VG_COMMANDS
             std::string Err;
             auto P = CliModes::PrepareLaunch(Request(C, A), *C.Config, Err);
             if (!P) throw std::runtime_error(Err);
-            if (!P->S->Build(&Err)) throw std::runtime_error(Err);
+            if (!P->S->Build(&Err, false)) throw std::runtime_error(Err);   // a look inside: not played
             json Out = CliModes::ResolutionOf(*P);
             Out = {{"runtime", P->S->Wrapper()->ContainerParams.RuntimePath.string()}, {"content", Out["Content"]}, {"prefix", Out["PrefixRoot"]}};
             Built() = std::move(P);
@@ -263,8 +263,9 @@ VG_COMMANDS
         {}, { "launch teardown" }, {}, Needs::App, false,
         [](Command::Context &, const json &) {
             if (!Built()) return json{{"torn_down", false}, {"why", "no runtime is up"}};
-            Built()->S->Cleanup();
+            const bool Kept = Built()->S->Cleanup();
             Built().reset();
+            if (!Kept) throw std::runtime_error("the runtime came down, but what the package keeps was not all captured (see the errors)");
             return json{{"torn_down", true}};
         }, {} });
 

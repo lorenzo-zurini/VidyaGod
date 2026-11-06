@@ -69,8 +69,8 @@ public:
     //instead of the manifest's EXEPATH/ROM, followed by OverrideArgs. Blocks until the process exits.
     bool Execute(const std::string &OverrideExe = "", const std::vector<std::string> &OverrideArgs = {});
 
-    //Sends SIGKILL to the game process started by Execute() if it is still running.
-    //Safe to call from any thread; no-op if no process is active.
+    //Sends SIGKILL to the game process started by Execute() if it is still running. Safe to call from any thread; asked
+    //before Execute starts it, the game is not started.
     void KillGame();
 
     //Unmounts all paths in CleanupUnmountPaths (fusermount -uz) and removes RUNTIME and TEMP.
@@ -109,5 +109,7 @@ public:
     std::atomic<int>  LastExitCode{0};
     std::atomic<bool> LastCrashed{false};
     std::atomic<bool> UserKilled{false};
+private:
+    std::atomic<bool> KillAsked{false};   // KillGame was called: Execute starts nothing, or kills what it just started
 };
 #endif // CONTAINERWRAPPER_H

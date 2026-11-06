@@ -90,23 +90,17 @@ bool Session::Resolve(std::string *Why)
         const std::string Nick = IpfsWrapper::GetProfile().Nick;
         P.SessionVars["VIDYAGOD_SELF_NAME"] = Nick.empty() ? std::string("Player") : Nick;
     }
-    W = std::make_unique<ContainerWrapper>(Config, P);
+    auto Made = std::make_unique<ContainerWrapper>(Config, P);
+    { std::lock_guard<std::mutex> G(Live); W = std::move(Made); }
     if (!W->Resolved()) return No("resolving '" + Req.NodeId + "' failed (see the log)");
     if (!LaunchResolver::ResolveExecutableDefinition(W->ContainerParams)) return No("its entry did not resolve (see the log)");
-    //A secret drawn from its POOL this launch is kept, so the value is stable from here on: whatever the game wrote
-    //into its prefix with it still matches next time.
-    const ContainerParams &CP = W->ContainerParams;
-    if (!CP.PickedSecrets.empty() && !CP.PackageUID.empty())
-    {
-        InstanceStore::MergeVariables(Config, CP.PackageUID, CP.PickedSecrets, CP.InstanceName);
-        LogOut("LaunchSession", "Kept " + std::to_string(CP.PickedSecrets.size()) + " pool-seeded secret(s) for " + CP.PackageUID + ".");
-    }
     return true;
 }
 
-bool Session::Build(std::string *Why)
+bool Session::Build(std::string *Why, bool Played)
 {
     if (!W) { if (Why) *Why = "nothing resolved to build"; return false; }
+    if (StopAsked) { if (Why) *Why = "stopped before the runtime was built"; LogOut("LaunchSession", "Stopped: the runtime is not built."); return false; }
     LogRecorder BuildSaid({});   // what the build says (and still the launch's: it records on through to Said)
     if (!W->BuildContainerRuntime())
     {
@@ -120,10 +114,18 @@ bool Session::Build(std::string *Why)
         return false;
     }
     Built = true;
-    //A real launch: the instance becomes the active, last-played one — after the build, so a failed build does not
-    //take "active". Not for a dry run, nor with a path override (the instance store is bypassed there).
-    if (!Req.DryRun && AppPaths::UserDataPathOverride().empty() && !W->ContainerParams.PackageUID.empty())
-        InstanceStore::TouchLastRun(Config, W->ContainerParams.PackageUID, W->ContainerParams.InstanceName);
+    if (!Played || Req.DryRun) return true;
+    //A secret drawn from its POOL this launch is kept, so the value is stable from here on: whatever the game wrote
+    //into its prefix with it still matches next time. After the build, as "active" below: a failed build keeps nothing.
+    const ContainerParams &CP = W->ContainerParams;
+    if (!CP.PickedSecrets.empty() && !CP.PackageUID.empty())
+    {
+        InstanceStore::MergeVariables(Config, CP.PackageUID, CP.PickedSecrets, CP.InstanceName);
+        LogOut("LaunchSession", "Kept " + std::to_string(CP.PickedSecrets.size()) + " pool-seeded secret(s) for " + CP.PackageUID + ".");
+    }
+    //The instance becomes the active, last-played one. Not with a path override (the instance store is bypassed there).
+    if (AppPaths::UserDataPathOverride().empty() && !CP.PackageUID.empty())
+        InstanceStore::TouchLastRun(Config, CP.PackageUID, CP.InstanceName);
     return true;
 }
 
@@ -131,6 +133,7 @@ Outcome Session::Run()
 {
     Outcome O;
     if (!W || !Built) return O;
+    if (StopAsked) { O.Stopped = true; LogOut("LaunchSession", "Stopped: the game is not started."); return O; }
     const bool Ran = W->Execute();
     O.Crashed  = W->LastCrashed;
     O.Stopped  = W->UserKilled;
@@ -149,16 +152,19 @@ Outcome Session::Run()
 
 void Session::Stop()
 {
-    if (ContainerWrapper *Live = W.get()) Live->KillGame();
+    StopAsked = true;   // read before the build and before the game starts
+    std::lock_guard<std::mutex> G(Live);
+    if (W) W->KillGame();
 }
 
-void Session::Cleanup()
+bool Session::Cleanup()
 {
-    if (!W || Down) return;
+    if (!W || Down) return true;
     Down = true;
     const std::filesystem::path WriteLayer = W->ContainerParams.WriteLayerPath;
-    W->Cleanup();   // what the package keeps is captured first, then the runtime comes down
-    if (Req.DryRun && !WriteLayer.empty())
+    const bool Kept = W->Cleanup();   // what the package keeps is captured first, then the runtime comes down
+    //Only a layer this launch built: a refused build (the instance already running) left the running session's alone.
+    if (Req.DryRun && Built && !WriteLayer.empty())
     {
         //Normally gone with the runtime already; this covers a runtime kept for inspection.
         std::error_code Ec;
@@ -166,6 +172,7 @@ void Session::Cleanup()
         if (Ec) LogWarn("LaunchSession", "Dry run: could not remove WRITELAYER: " + Ec.message());
         else    LogSucc("LaunchSession", "Dry run: WRITELAYER deleted.");
     }
+    return Kept;
 }
 
 Diagnostics::Report Session::Verdict(const std::string &What)
