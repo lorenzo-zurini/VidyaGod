@@ -1,4 +1,5 @@
 #include "cli/climodes.h"
+#include "nodestore.h"
 #include "validate.h"
 #include "main.h"
 #include "apppaths.h"
@@ -455,9 +456,9 @@ int CliModes::RunContentModes(LaunchParameters &LaunchParameters, nlohmann::orde
         LogOut("main.cpp", "gathered " + std::to_string(Tree.size()) + " node(s)");
 
         // Freeze deps-first.
-        NodeGraph::MintResult MR;
+        NodeStore::MintResult MR;
         std::string Err;
-        if (!NodeGraph::Mint(Tree, MR, &Err)) { LogErr("main.cpp", "mint failed: " + Err); return 1; }
+        if (!NodeStore::Mint(Tree, MR, &Err)) { LogErr("main.cpp", "mint failed: " + Err); return 1; }
         LogSucc("main.cpp", "minted " + std::to_string(MR.HandleToCid.size()) + " node(s), "
                 + std::to_string(MR.Launchables.size()) + " launchable(s)");
         for (const auto &Cid : MR.Launchables) std::cout << Cid << "\n";   // machine-readable: the list entries
@@ -465,7 +466,7 @@ int CliModes::RunContentModes(LaunchParameters &LaunchParameters, nlohmann::orde
         // Verify: re-read the frozen DAG from the launchable roots. No unresolved blocks == a coherent, self-contained
         // closure. (ValidateNodeGraph errors about a missing runner are EXPECTED here — runners are minted separately.)
         std::vector<std::string> Missing;
-        NodeIndex Frozen = NodeGraph::BuildFrozenIndex(MR.Launchables, &Missing);
+        NodeIndex Frozen = NodeStore::BuildFrozenIndex(MR.Launchables, &Missing);
         std::vector<std::string> ValErrs, ValWarns;
         Validate::Nodes(Frozen, ValErrs, ValWarns);
         LogOut("main.cpp", "frozen read-back: " + std::to_string(Frozen.Nodes.size()) + " node(s), "
@@ -513,7 +514,7 @@ int CliModes::RunContentModes(LaunchParameters &LaunchParameters, nlohmann::orde
                                ? PackageCatalog::LibraryRootDir(GlobalConfigJSON) : LaunchParameters.HydrateDest;
         LogOut("main.cpp", "Hydrating " + LaunchParameters.HydrateCid + " -> " + Dest);
         std::string Err;
-        const std::string Dir = NodeGraph::HydratePackage(Dest, LaunchParameters.HydrateCid, &Err);
+        const std::string Dir = NodeStore::HydratePackage(Dest, LaunchParameters.HydrateCid, &Err);
         if (Dir.empty()) { LogErr("main.cpp", "hydrate failed: " + Err); return 1; }
         LogSucc("main.cpp", "Hydrated to " + Dir);
         std::cout << Dir << "\n";

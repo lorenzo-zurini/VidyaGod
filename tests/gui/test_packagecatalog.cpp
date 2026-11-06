@@ -8,6 +8,7 @@
 #include <QScopeGuard>
 
 #include "qtestjson.h"
+#include "sessions.h"
 #include "instancestore.h"
 #include "installed.h"
 #include "shelf.h"
@@ -1243,7 +1244,7 @@ private slots:
         QVERIFY(!U3.FolderCid.empty());
         QVERIFY2(PackageCatalog::StageUpdate(rx, U3, &S3, &Err), Err.c_str());
         {   // Never under a running game (held by every launch, on every platform). Teeth: drop the check.
-            const VfsMount::RuntimeHold Running;
+            const Sessions::RuntimeHold Running;
             QVERIFY2(!PackageCatalog::ApplyStagedUpdate(rx, S3, &Err) && Err.find("running") != std::string::npos, Err.c_str());
             QVERIFY2(std::filesystem::exists(Old), "nothing changed");
         }

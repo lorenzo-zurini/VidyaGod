@@ -1,4 +1,5 @@
 #include "theme.h"
+#include "sessions.h"
 #include "shelf.h"
 #include "main.h"
 #include <iostream>
@@ -309,7 +310,7 @@ int main(int argc, char *argv[])
     //nothing here.
     if (!LaunchParameters.RunningHeadless
         || ((!LaunchParameters.LaunchNodeId.empty() || !LaunchParameters.LaunchTile.empty()) && !LaunchParameters.ResolveOnly))
-        VfsMount::SweepDeadSessions(LaunchResolver::SessionRoot());
+        VfsMount::SweepDeadSessions(Sessions::Root());
 
     //Initialization of GlobalConfigJSON, the central data structure of the program.
     //All runner definitions, library entries, and user settings live here.

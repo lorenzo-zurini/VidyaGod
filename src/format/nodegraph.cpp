@@ -1,80 +1,253 @@
 #include "nodegraph.h"
-#include "cid.h"   // a node's identity: the CID of its canonical bytes
-
-#include <mutex>
-#include <unordered_map>
-#include "ipfswrapper.h"     // BlockGet, BlockPut, FetchToPath
-#include "commonutils.h"     // Log*
+#include "cid.h"
+#include "commonutils.h"   // LogWarn/LogErr — surface duplicate-handle conflicts (never silent)
 #include "parallel.h"
 
 #include <algorithm>
 #include <deque>
 #include <fstream>
+#include <functional>
 #include <set>
 
-// nodegraph.cpp — the gigagraph's I/O orchestration (calls the embedded node). The pure transforms it relies on
-// (NormalizeLinks / FreezeNodeJson / TopoOrderForMint) live in nodegraphpure.cpp. See nodegraph.h.
+// nodegraphpure.cpp — the gigagraph's PURE transforms: no IPFS, no Qt, no disk. Split out from nodegraph.cpp so they
+// can be unit-tested with teeth (tests/test_nodegraph.cpp) without linking the embedded node. See nodegraph.h.
 
 namespace NodeGraph {
 
-// Untrusted-block guards. A fetched node block's bytes hash to its CID, but the CID is attacker-chosen (pasted),
-// so the CONTENT is untrusted: it can be arbitrarily deep JSON. nlohmann's parser is recursive-descent, so a deeply
-// nested block overflows the stack before any callback can stop it. JsonDepthWithinLimit is a cheap string-aware
-// bracket-depth pre-scan that rejects such a block WITHOUT recursing (run by VerifyNodeBytes; nodegraphpure.cpp —
-// shared with GatherWorkingTree, whose scanned files include LANDED received blocks). And a hostile closure can be
-// unbounded, so BuildFrozenIndex caps the node count.
-static constexpr size_t kMaxClosureNodes = 200000;
-
-
-NodeIndex BuildFrozenIndex(const std::vector<std::string> &RootCids, std::vector<std::string> *Missing)
+bool JsonDepthWithinLimit(const std::string &S, int MaxDepth)
 {
-    NodeIndex Idx;
-    std::set<std::string> Seen;
-    std::deque<std::string> Q(RootCids.begin(), RootCids.end());
-    while (!Q.empty())
+    int Depth = 0;
+    bool InStr = false, Esc = false;
+    for (const char C : S)
     {
-        const std::string C = Q.front();
-        Q.pop_front();
-        if (C.empty() || !Seen.insert(C).second) continue;   // a shared node is reached many times — fetch once
-        if (Idx.Nodes.size() >= kMaxClosureNodes)            // a hostile/looping closure must not run unbounded
-        {
-            LogErr("NodeGraph::BuildFrozenIndex", "closure exceeds " + std::to_string(kMaxClosureNodes)
-                   + " nodes — stopping (root " + (RootCids.empty() ? "" : RootCids.front()) + ")");
-            break;
-        }
-
-        std::string Err;
-        const std::string Js = IpfsWrapper::BlockGet(C, &Err);
-        if (Js.empty())
-        {
-            LogWarn("NodeGraph::BuildFrozenIndex", "cannot fetch node block " + C + ": " + Err);
-            if (Missing) Missing->push_back(C);
-            continue;
-        }
-        nlohmann::ordered_json J;
-        if (!VerifyNodeBytes(Js, C, J, &Err))   // untrusted bytes: depth-checked, canonical, hashing to C
-        {
-            LogWarn("NodeGraph::BuildFrozenIndex", "node block " + C + " refused: " + Err);
-            if (Missing) Missing->push_back(C);
-            continue;
-        }
-
-        Node N;
-        if (!ManifestModel::ParseNode(J, {}, {}, N))   // not a node object
-        {
-            LogWarn("NodeGraph::BuildFrozenIndex", "block " + C + " is not a node");
-            continue;
-        }
-        N.Cid = C;                                     // identity = the block's own CID
-        auto [It, Ins] = Idx.Nodes.emplace(C, std::move(N));
-        (void)Ins;                                     // Seen already guaranteed uniqueness
-        // What it contains (NODE layers). ANY/NOT are compared, never fetched; SOURCE/COVER are content CIDs
-        // fetched lazily at hydrate — never enqueued here.
-        for (const std::string &P : It->second.Refs) Q.push_back(P);
+        if (InStr) { if (Esc) Esc = false; else if (C == '\\') Esc = true; else if (C == '"') InStr = false; continue; }
+        if (C == '"') InStr = true;
+        else if (C == '{' || C == '[') { if (++Depth > MaxDepth) return false; }
+        else if (C == '}' || C == ']') --Depth;
     }
-    ManifestModel::DeriveFacts(Idx);
-    return Idx;
+    return true;
 }
+
+bool VerifyNodeBytes(const std::string &Bytes, const std::string &ExpectCid, nlohmann::ordered_json &J, std::string *Error)
+{
+    const auto No = [&](const std::string &Why) { if (Error) *Error = Why; return false; };
+    if (Bytes.size() > Cid::MaxNodeBytes) return No("over the 256 KiB a node may be");
+    if (Cid::OfBytes(Bytes) != ExpectCid) return No("its bytes do not hash to " + ExpectCid);
+    if (!JsonDepthWithinLimit(Bytes, 64)) return No("nested too deep");
+    J = nlohmann::ordered_json::parse(Bytes, nullptr, false);
+    if (J.is_discarded() || !J.is_object()) return No("not a JSON object");
+    if (!ManifestModel::IsNodeObject(J)) return No("not a node");
+    //An honest node's bytes are canonical — and canonical bytes never carry its own handle ("CID") or canvas
+    //coordinates ("POS"): the canonical form strips both, so bytes holding either fail here too. A handle in received
+    //bytes would hijack a local node's name once the package is installed — refused, not repaired.
+    if (Cid::Canonical(J) != Bytes) return No("not in canonical form (or carries a working-tree field: CID, POS)");
+    return true;
+}
+
+bool VerifyLanded(const std::filesystem::path &File, const std::string &ExpectCid, nlohmann::ordered_json *Out, std::string *Error)
+{
+    std::ifstream In(File, std::ios::binary);
+    if (!In) { if (Error) *Error = "not on disk"; return false; }
+    std::string Bytes;
+    char Buf[65536];
+    while (In.read(Buf, sizeof Buf) || In.gcount() > 0)
+    {
+        Bytes.append(Buf, static_cast<size_t>(In.gcount()));
+        if (Bytes.size() > Cid::MaxNodeBytes) { if (Error) *Error = "over the 256 KiB a node may be"; return false; }
+    }
+    nlohmann::ordered_json J;
+    if (!VerifyNodeBytes(Bytes, ExpectCid, J, Error)) return false;
+    if (Out) *Out = std::move(J);
+    return true;
+}
+
+// True iff P resolves within Base (no `..` escape, not an absolute path elsewhere). Guards hydrate against a hostile
+// content PATH / SOURCE.PATH writing outside the checkout dir. Works on not-yet-existent paths (weakly_canonical).
+bool PathWithin(const std::filesystem::path &Base, const std::filesystem::path &P)
+{
+    std::error_code Ec;
+    std::filesystem::path B = std::filesystem::weakly_canonical(Base, Ec); if (Ec) B = Base.lexically_normal();
+    std::filesystem::path Q = std::filesystem::weakly_canonical(P, Ec);    if (Ec) Q = P.lexically_normal();
+    const std::filesystem::path Rel = Q.lexically_relative(B);
+    if (Rel.empty()) return false;                       // unrelated / not under Base
+    return *Rel.begin() != "..";                         // first COMPONENT ".." ⇒ escapes (a leading-dot NAME like .wine is fine)
+}
+
+nlohmann::ordered_json FreezeNodeJson(nlohmann::ordered_json Raw,
+                                      const std::map<std::string, std::string> &HandleToCid,
+                                      const std::map<std::string, nlohmann::ordered_json> *Tree,
+                                      std::string *Dangling)
+{
+    Raw.erase("POS");   // blueprint-canvas coordinates — non-semantic; never part of identity
+    Raw.erase("CID");   // the node's OWN last-minted CID: a working-tree handle only (the block is ADDRESSED by its
+                        // CID, so storing it inside would be circular). Stripped like POS → identity stays purely
+                        // the hash of {TYPE, refs→CIDs, LABEL, payload}; the stored CID is never shipped.
+
+    // Remap references (old handle CID → freshly-minted CID) as the cascade climbs. A ref absent from HandleToCid is
+    // an already-frozen EXTERNAL dep (a shared library / cross-bundle node referenced by CID) — pass it through.
+    // ONE remapper (ManifestModel::RemapNodeRefs) walks NODE, ANY and NOT refs alike, shared with the CID
+    // write-back so the two can never disagree on where refs live. Every reference stays a plain CID string: there
+    // are no links — what VidyaGod follows is decided by the field (NODE, SOURCE, TILE.COVER), not by the encoding.
+    ManifestModel::RemapNodeRefs(Raw, [&](const std::string &Ref) {
+        const auto It = HandleToCid.find(Ref);
+        if (It != HandleToCid.end()) return It->second;
+        if (Tree && Dangling && Dangling->empty() && Tree->count(Ref)) *Dangling = Ref;   // a tree node that did not freeze
+        return Ref;
+    });
+    return Raw;
+}
+
+// The intra-tree node refs a node depends on (must be frozen first): every OVER ref — plain, any-of member AND
+// NOT (a NOT names a CID too, so the excluded node's fresh CID must exist before this node freezes) — that names
+// a node in the working tree. Refs outside the tree are external (already frozen) and impose no order.
+static std::vector<std::string> IntraTreeDeps(const nlohmann::ordered_json &Node,
+                                              const std::map<std::string, nlohmann::ordered_json> &Tree)
+{
+    std::vector<std::string> Deps;
+    std::vector<std::string> Nots;
+    for (const std::string &P : ManifestModel::NodeRefs(Node, &Nots)) if (Tree.count(P)) Deps.push_back(P);
+    for (const std::string &P : Nots) if (Tree.count(P)) Deps.push_back(P);
+    return Deps;
+}
+
+nlohmann::ordered_json ParseBounded(const std::string &Bytes)
+{
+    if (!JsonDepthWithinLimit(Bytes, 64)) return nlohmann::ordered_json(nlohmann::ordered_json::value_t::discarded);
+    return nlohmann::ordered_json::parse(Bytes, nullptr, false);
+}
+
+bool ReadTreeJsonBounded(const std::filesystem::path &File, nlohmann::ordered_json &J)
+{
+    std::error_code Ec;
+    const auto Sz = std::filesystem::file_size(File, Ec);
+    if (Ec || Sz > (8u << 20)) return false;
+    std::ifstream In(File, std::ios::binary);
+    if (!In) return false;
+    std::string Bytes((std::istreambuf_iterator<char>(In)), std::istreambuf_iterator<char>());
+    if (!JsonDepthWithinLimit(Bytes, 64)) { LogWarn("NodeGraph::ReadTreeJsonBounded", "skipping too-deep JSON " + File.string()); return false; }
+    J = nlohmann::ordered_json::parse(Bytes, nullptr, false);
+    return !J.is_discarded();
+}
+
+std::vector<std::filesystem::path> ListTreeFiles(const std::filesystem::path &Root, bool SkipReserved)
+{
+    namespace fs = std::filesystem;
+    std::error_code Ec;
+    std::vector<fs::path> Files;
+    if (!fs::is_directory(Root, Ec)) return Files;
+    // error_code iteration with explicit increment: the range-for's operator++ THROWS (a permission-denied subdir
+    // mid-walk would terminate the GUI thread). skip_permission_denied + increment(Ec) walks defensively.
+    fs::recursive_directory_iterator It(Root, fs::directory_options::skip_permission_denied, Ec), End;
+    for (; !Ec && It != End; It.increment(Ec))
+    {
+        const auto &E = *It;
+        // Reserved received-stub dirs ("_friend_*"): never descend when SkipReserved (PublishLibrary must not mint a
+        // friend's stub, and a hostile stub NODE_ID must not shadow our handle by winning first-seen).
+        if (SkipReserved && E.is_directory(Ec) && E.path().filename().string().rfind("_friend_", 0) == 0)
+        { It.disable_recursion_pending(); continue; }
+        if (E.is_directory(Ec) && IsFetchScratchDir(E.path())) { It.disable_recursion_pending(); continue; }
+        if (!E.is_regular_file(Ec) || E.path().extension() != ".json") continue;
+        Ec.clear();
+        Files.push_back(E.path());
+    }
+    return Files;
+}
+
+void GatherWorkingTree(const std::filesystem::path &Root,
+                       std::map<std::string, nlohmann::ordered_json> &Tree,
+                       std::map<std::string, std::filesystem::path> &Dirs,
+                       bool SkipReserved, bool TrustStoredCid)
+{
+    namespace fs = std::filesystem;
+    // 1. The walk, in its order (first-seen decides below): every .json file the scan reads.
+    const std::vector<fs::path> Files = ListTreeFiles(Root, SkipReserved);
+    // 2. Read and parse them on every core (each file is independent). UNTRUSTED bytes can live in the tree (a
+    // received share's block, landed verbatim by the fetch queue), so the scan gets the same guards every fetched
+    // block gets — size cap + depth pre-scan BEFORE the recursive parse, or a hostile deep block becomes a stack
+    // overflow that crashes EVERY startup scan.
+    std::vector<nlohmann::ordered_json> Parsed(Files.size());
+    std::vector<char> Ok(Files.size(), 0);
+    Parallel::For(Files.size(), [&](std::size_t I) {
+        Ok[I] = ReadTreeJsonBounded(Files[I], Parsed[I]) && ManifestModel::IsNodeObject(Parsed[I]);
+    });
+    // 3. Into the tree, in walk order.
+    for (std::size_t F = 0; F < Files.size(); ++F)
+    {
+        if (!Ok[F]) continue;
+        const nlohmann::ordered_json &N = Parsed[F];  // a file is ONE node: the file is the node's block
+        // From an UNTRUSTED root (received CATALOG stubs), the stored "CID" is attacker-controlled — ignore it so
+        // the node is synthetic-keyed (browse-only, never a resolvable handle). An honest stub has none anyway.
+        std::string Handle = (TrustStoredCid && N.contains("CID") && N["CID"].is_string()) ? N["CID"].get<std::string>() : std::string();
+        // A real CID handle is base32/base58 — no control bytes. Reject a handle carrying any (< 0x20) as
+        // handle-less (→ synthetic key): the synthetic key is control-byte-prefixed, so a hostile working-tree
+        // "CID":"<path>#N" could otherwise forge exactly that key and evict a local node.
+        for (unsigned char c : Handle) if (c < 0x20) { Handle.clear(); break; }
+        // A node with no stored CID (a never-minted local draft, or a malformed file) still gathers/freezes/indexes,
+        // but under a unique SYNTHETIC per-file key so it is never referenceable as a parent and never collides.
+        const std::string Id = !Handle.empty()
+                                   ? Handle
+                                   : (std::string("\x01") + Files[F].string() + "#1");
+        std::string Key = Id;
+        const auto Prev = Tree.find(Key);
+        if (Prev != Tree.end())
+        {
+            if (Prev->second == N) continue;   // identical → same node; keep one (the multi-seeder normal)
+            // Same CID handle, DIFFERENT content: a CID is a content hash, so this only happens when a node's
+            // stored "CID" is STALE (edited, not yet re-minted) or FORGED (a received block claiming a local CID).
+            // Keep FIRST-SEEN — BuildCatalogIndex scans LIBRARY before CATALOG, so a local node always wins over a
+            // later-scanned received one (a received block can never shadow a local handle by order, and received
+            // nodes are browse-only, never minted). The loser is NOT dropped (that would vanish a real node) —
+            // re-key it under a unique SYNTHETIC key so it still gathers/indexes by its own CID at freeze.
+            LogWarn("NodeGraph::GatherWorkingTree", "duplicate node handle '" + Id + "' (" + Files[F].string()
+                    + ") — stale-or-forged stored CID; first-seen keeps the handle, this one indexes on its own CID");
+            Key = std::string("\x01") + Files[F].string() + "#1";   // unique → never dropped
+            if (Tree.count(Key)) continue;     // same file re-scanned (overlapping roots) → truly identical slot
+        }
+        Tree[Key] = std::move(Parsed[F]);
+        const std::filesystem::path Parent = Files[F].parent_path();
+        Dirs[Key] = Parent.filename() == kPackageFolderDir ? Parent.parent_path() : Parent;   // a landed package folder
+    }
+}
+
+std::vector<int> TopoLevels(const std::map<std::string, nlohmann::ordered_json> &WorkingTree, const std::vector<std::string> &Order)
+{
+    std::map<std::string, std::size_t> Pos;
+    for (std::size_t I = 0; I < Order.size(); ++I) Pos.emplace(Order[I], I);
+    std::vector<int> Level(Order.size(), 0);
+    for (std::size_t I = 0; I < Order.size(); ++I)
+        for (const std::string &Dep : IntraTreeDeps(WorkingTree.at(Order[I]), WorkingTree))
+            if (const auto It = Pos.find(Dep); It != Pos.end() && It->second < I) Level[I] = std::max(Level[I], Level[It->second] + 1);
+    return Level;
+}
+
+std::vector<std::string> TopoOrderForMint(const std::map<std::string, nlohmann::ordered_json> &WorkingTree)
+{
+    std::vector<std::string> Order;
+    std::set<std::string> Visited, OnStack;
+    int Broken = 0;
+
+    // A content-addressed cycle (A→B→A) is unfreezable — each node's CID needs the other's first — so it must NOT
+    // abort the whole order (that empties the entire library on one self-referential typo). Instead BREAK the back
+    // edge: the cyclic nodes still enter the order but fail at freeze (each references a node that has not frozen —
+    // FreezeNodeJson reports it) and are SKIPPED per-node, while every acyclic package orders and freezes normally.
+    std::function<void(const std::string &)> Visit = [&](const std::string &Handle) {
+        if (Visited.count(Handle)) return;
+        if (OnStack.count(Handle)) { ++Broken; return; }   // back edge → break the cycle, don't recurse
+        OnStack.insert(Handle);
+        for (const std::string &Dep : IntraTreeDeps(WorkingTree.at(Handle), WorkingTree))
+            Visit(Dep);
+        OnStack.erase(Handle);
+        Visited.insert(Handle);
+        Order.push_back(Handle);   // post-order ⇒ deps before dependents
+    };
+
+    for (const auto &[Handle, Doc] : WorkingTree) { (void)Doc; Visit(Handle); }
+    if (Broken)
+        LogWarn("NodeGraph::TopoOrderForMint", std::to_string(Broken)
+                + " cycle edge(s) broken — cyclic node(s) will be dropped at freeze; the rest is intact");
+    return Order;
+}
+
 
 NodeIndex FreezeToIndex(const std::map<std::string, nlohmann::ordered_json> &WorkingTree,
                         const std::map<std::string, std::filesystem::path> &Dirs)
@@ -172,130 +345,5 @@ NodeIndex FreezeToIndex(const std::map<std::string, nlohmann::ordered_json> &Wor
     return Idx;
 }
 
-// A single safe path segment: no separators, no leading dots (so a hostile TITLE can't escape DestRoot).
-static std::string SanitizeSegment(std::string S)
-{
-    for (char &C : S) if (C == '/' || C == '\\' || C == '\0') C = '_';
-    while (!S.empty() && (S.front() == '.' || S.front() == ' ')) S.erase(S.begin());
-    if (S.empty()) S = "package";
-    return S;
-}
-
-std::string HydratePackage(const std::filesystem::path &DestRoot, const std::string &LaunchableCid, std::string *Error)
-{
-    namespace fs = std::filesystem;
-    std::vector<std::string> Missing;
-    NodeIndex Idx = BuildFrozenIndex({LaunchableCid}, &Missing);
-    if (!Missing.empty())
-    { if (Error) *Error = "cannot fetch node block(s), first: " + Missing.front(); return {}; }
-    const Node *Launch = Idx.Find(LaunchableCid);
-    if (!Launch)
-    { if (Error) *Error = "launchable " + LaunchableCid + " not a node after fetch"; return {}; }
-
-    // Bundle dir name from the tile: "[uid] title" (the pretty layout) — the tile its entries fold (DeriveFacts ran
-    // inside BuildFrozenIndex).
-    std::string Uid   = Launch->Uid.empty() ? Launch->NodeId : Launch->Uid;
-    std::string Title = Launch->Meta.is_object() ? Launch->Meta.value("TITLE", Launch->NodeId) : Launch->NodeId;
-    const fs::path Dir    = DestRoot / SanitizeSegment("[" + Uid + "] " + Title);
-    const fs::path Marker = Dir / ".vg-hydrating";   // present ⇒ an INCOMPLETE hydrate WE own → resumable, not foreign
-    std::error_code Ec;
-    if (fs::exists(Dir, Ec) && !fs::is_empty(Dir, Ec) && !fs::exists(Marker, Ec))
-    {   // non-empty AND no marker ⇒ an authored / already-hydrated / name-collision dir — never clobber it
-        if (Error) *Error = "already exists: " + Dir.string() + " — remove it first to re-download";
-        return {};
-    }
-    fs::create_directories(Dir, Ec);
-    if (Ec) { if (Error) *Error = "cannot create " + Dir.string() + ": " + Ec.message(); return {}; }
-    { std::ofstream M(Marker); }   // claim the dir as ours so a failed run can be RETRIED (resumes into it), not bricked
-
-    // Write each closure node VERBATIM as <cid>.json (the block IS the file; BuildFrozenIndex verified it) + fetch
-    // its content leaves to their PATHs.
-    int Files = 0, Fetched = 0, FetchFailed = 0;
-    for (const auto &[C, N] : Idx.Nodes)
-    {
-        std::string Err;
-        const std::string Js = IpfsWrapper::BlockGet(C, &Err);
-        if (Js.empty()) { if (Error) *Error = "re-fetch " + C + ": " + Err; return {}; }
-        { std::ofstream Out(Dir / (C + ".json"), std::ios::binary); Out << Js; }
-        ++Files;
-
-        // Content leaves: fetch each VFS layer's SOURCE.CID to its local PATH (BundleDir = Dir). Iterate N.ContentLayers
-        // with IsVfsLayer — the same shape HydrationMap uses (the flat lowered layers, not a COMPONENTS array).
-        if (N.ContentLayers.is_array())
-            for (const auto &L : N.ContentLayers)
-            {
-                if (!L.is_object() || !ManifestModel::IsVfsLayer(ManifestModel::LayerType(L))) continue;
-                fs::path Local; std::string Cid;
-                ManifestModel::LayerLocator(L, Dir, Local, Cid);
-                if (Cid.empty() || Local.empty()) continue;
-                if (!PathWithin(Dir, Local))   // hostile PATH / SOURCE.PATH ("../.." or absolute) must not escape the bundle
-                {
-                    LogWarn("NodeGraph::HydratePackage", "refusing out-of-bundle content path " + Local.string());
-                    ++FetchFailed;
-                    continue;
-                }
-                std::error_code Fe;
-                if (fs::exists(Local, Fe)) continue;                    // already materialized
-                std::error_code Pe; fs::create_directories(Local.parent_path(), Pe);
-                std::string FErr;
-                if (IpfsWrapper::FetchToPath(Cid, Local.string(), &FErr).empty())
-                {
-                    LogWarn("NodeGraph::HydratePackage", "content " + Cid + " -> " + Local.string() + " FAILED: " + FErr);
-                    ++FetchFailed;
-                }
-                else ++Fetched;
-            }
-    }
-    if (FetchFailed)   // an incomplete download is NOT a success — the game would not launch
-    {
-        // Marker LEFT in place: a later --hydrate/Add-game with the same CID resumes into this dir (the per-file
-        // "already materialized" skip keeps what did land) instead of hitting the clobber refusal. One transient
-        // blip never bricks the download.
-        if (Error) *Error = std::to_string(FetchFailed) + " content file(s) could not be fetched into " + Dir.string()
-                          + " — incomplete; re-run to resume";
-        return {};
-    }
-    fs::remove(Marker, Ec);   // complete → the dir is now a normal checkout (a future re-hydrate refuses to clobber it)
-    LogSucc("NodeGraph::HydratePackage", "hydrated " + Title + " -> " + Dir.string() + " ("
-            + std::to_string(Files) + " node(s), " + std::to_string(Fetched) + " content file(s) fetched)");
-    return Dir.string();
-}
-
-bool Mint(const std::map<std::string, nlohmann::ordered_json> &WorkingTree, MintResult &Out, std::string *Error)
-{
-    const std::vector<std::string> Order = TopoOrderForMint(WorkingTree);   // deps-first; a cycle's edge is broken
-
-    int Skipped = 0;
-    for (const std::string &Handle : Order)
-    {
-        const nlohmann::ordered_json &Raw = WorkingTree.at(Handle);
-        std::string Dangling, Err;
-        const std::string Bytes = Cid::Canonical(FreezeNodeJson(Raw, Out.HandleToCid, &WorkingTree, &Dangling));
-        if (!Dangling.empty()) Err = "it references '" + Dangling + "', which did not freeze";
-        const std::string Want = Dangling.empty() ? Cid::OfBytes(Bytes, &Err) : std::string();
-        const std::string Cid = Want.empty() ? std::string() : IpfsWrapper::BlockPut(Bytes, &Err);
-        if (!Cid.empty() && Cid != Want)
-        {   // the node stored something else than the app computes: every reference to it would dangle
-            if (Error) *Error = "node '" + Handle + "' stored as " + Cid + " but its bytes hash to " + Want;
-            return false;
-        }
-        if (Cid.empty())
-        {
-            // Dangling ref / bad link on one node — skip it (and its dependents will skip too), never abort the whole
-            // publish. Mirrors FreezeToIndex: degrade per-node, not all-or-nothing.
-            LogWarn("NodeGraph::Mint", "skipping node '" + Handle + "' (dangling ref / bad link): " + Err);
-            ++Skipped;
-            continue;
-        }
-        Out.HandleToCid[Handle] = Cid;
-
-        // A playable list root: a variant (on the shelf). This is the LAUNCH axis (launch/CLI).
-        if (Raw.contains("VARIANT")) Out.Launchables.push_back(Cid);
-    }
-    if (Skipped) LogWarn("NodeGraph::Mint", "skipped " + std::to_string(Skipped) + " node(s) with dangling/bad refs");
-    LogSucc("NodeGraph::Mint", "froze " + std::to_string(Out.HandleToCid.size()) + " node(s), "
-            + std::to_string(Out.Launchables.size()) + " launchable(s)");
-    return true;
-}
 
 } // namespace NodeGraph

@@ -11,6 +11,7 @@
 #include <QMutexLocker>
 
 #include "manifestmodel.h"   // NodeIndex (ContainerParams.NodeIdx) + pure manifest queries
+#include "sessions.h"
 #include "launchparams.h"    // ContainerParams — the shared resolved-session struct (moved out of this class)
 #include "varsubst.h"        // VarSubst — the %token% / custom-var encoding engine (moved out of this class)
 #include "launchresolver.h"  // LaunchResolver — param/recipe/runner/exec/persistence resolution (moved out)
@@ -84,9 +85,9 @@ private:
     nlohmann::ordered_json GlobalConfigJSON;
 
     //Held from BuildContainerRuntime to the end of Cleanup's unmounts (or the wrapper's end): a game is live.
-    std::optional<VfsMount::RuntimeHold> Live;
+    std::optional<Sessions::RuntimeHold> Live;
 
-    //The session folder's ownership lock (VfsMount::ClaimSession), held from the build to the end of Cleanup; -1 = none.
+    //The session folder's ownership lock (Sessions::ClaimSession), held from the build to the end of Cleanup; -1 = none.
     int SessionLock = -1;
     //This wrapper claimed its session folder: only then is there anything of its own for Cleanup to store or remove.
     //A refused launch (the instance already running) must never tear down the folder another launch is using.

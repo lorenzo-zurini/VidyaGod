@@ -1,4 +1,5 @@
 #include "pathspage.h"
+#include "sessions.h"
 #include "apppaths.h"          // AppPaths::DataRoot — default TEMP/LIBRARY display roots
 #include "appmodel.h"          // AppModel — config + appDataDir + save
 #include "asyncwork.h"
@@ -128,7 +129,7 @@ void PathsPage::buildSpace(QVBoxLayout * pl)
         { "IPFS store", Data / "IPFS" },
         { "Covers", PackageCatalog::AssetsRootDir(Cfg) },
         { "Caches", Data / "CACHE" },
-        { "Game sessions (running or left over)", LaunchResolver::SessionRoot() },
+        { "Game sessions (running or left over)", Sessions::Root() },
     };
     auto Sizes = std::make_shared<std::vector<std::uintmax_t>>(Parts.size(), 0);
     auto Free = std::make_shared<std::filesystem::space_info>();
@@ -224,7 +225,7 @@ void PathsPage::buildCleanUp(QVBoxLayout * pl)
     Action("Clear left-over sessions", "Game sessions whose game is no longer running (a crash, a power cut) — what VidyaGod "
                                        "clears at start-up anyway. A running game's session is never touched.",
            []{
-               const int N = VfsMount::SweepDeadSessions(LaunchResolver::SessionRoot());
+               const int N = VfsMount::SweepDeadSessions(Sessions::Root());
                return N == 0 ? QString("Nothing was left over.") : QString("Cleared %1 left-over session%2.").arg(N).arg(N == 1 ? "" : "s");
            });
     Action("Clear the index cache", "The library's index, kept so VidyaGod starts fast — made again on the next start.",

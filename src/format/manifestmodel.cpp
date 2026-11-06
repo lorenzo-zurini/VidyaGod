@@ -6,7 +6,6 @@
 #include "fold.h"        // Fold::Resolve — a node's facts are folded, never inherited by graph distance
 #include "nodelower.h"   // NodeLower — the gen-6 vocabulary check and the lowering to engine ops
 #include "varsubst.h"    // VarSubst::ConditionParses — WHEN syntax lint
-#include "launchparams.h"   // ContainerParams::GetVariablesMap — the single source of truth for built-in %variables%
 #include "bytesource.h"  // FdByteSource — a delta chain's zip listing (covered-edit check)
 #include "vgdelta.h"     // DeltaByteSource — reconstructs a delta chain's zip on the fly
 #include "zipscan.h"     // WalkCentralDir — the member names of a (reconstructed) zip

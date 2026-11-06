@@ -1,5 +1,6 @@
 #include "packagecatalog.h"
-#include "vfsmount.h"
+#include "sessions.h"
+#include "nodestore.h"
 #include "contentfile.h"
 #include "builtinrunners.h"
 #include "fold.h"   // Fold — a row's grafts are what its resolution offers
@@ -954,8 +955,8 @@ std::vector<std::string> PublishLibrary(nlohmann::ordered_json &Config, std::str
     std::map<std::string, std::filesystem::path>  Dirs;
     NodeGraph::GatherWorkingTree(Root, Tree, Dirs, /*SkipReserved=*/true);   // never mint a received friend stub
     if (Tree.empty()) { if (Error) *Error = "no packages to publish under " + Root.string(); return {}; }
-    NodeGraph::MintResult MR;
-    if (!NodeGraph::Mint(Tree, MR, Error)) return {};   // BlockPut every node → pinned + announced + seedable
+    NodeStore::MintResult MR;
+    if (!NodeStore::Mint(Tree, MR, Error)) return {};   // BlockPut every node → pinned + announced + seedable
 
     // Re-stabilise the on-disk tree at the freshly-minted identities: stamp each node's new CID + remap its refs.
     // Non-fatal — the blocks are already stored; a failed write-back only leaves the on-disk handles stale (freeze
@@ -1782,7 +1783,7 @@ bool ApplyStagedUpdate(const nlohmann::ordered_json &Config, const StagedUpdate 
     const fs::path &Dir = Confirmed.U.Dir;
     const std::string &Pkg = Confirmed.U.Pkg;
     auto Refuse = [&](const std::string &Why) { if (Error) *Error = Why; return false; };
-    if (VfsMount::RuntimesLive() > 0 || !VfsMount::LiveMountpointsUnder(LaunchResolver::SessionRoot()).empty())
+    if (Sessions::RuntimesLive() > 0 || !Sessions::LiveMountpointsUnder(Sessions::Root()).empty())
         return Refuse("a game is running — close it first, then switch " + Pkg);
     if (IpfsWrapper::LandingUnder(Dir.string()))
         return Refuse("a download into " + Pkg + " is in progress — let it finish first");

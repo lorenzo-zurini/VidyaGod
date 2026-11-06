@@ -1,4 +1,5 @@
 #include "launchsession.h"
+#include "sessions.h"
 #include "apppaths.h"
 #include "commonutils.h"     // QuietLog, Log*
 #include "instancestore.h"   // the instance's config the values read back go to
@@ -15,7 +16,7 @@ bool LaunchSession::ResolveTakingBack(ContainerParams &CP, const nlohmann::order
         QuietLog Quiet;
         Looked = LaunchResolver::InitializeFromNode(CP, Config);
     }
-    if (Looked && !VfsMount::SessionOwned(CP.TempPath))
+    if (Looked && !Sessions::SessionOwned(CP.TempPath))
     {
         const auto Found = OptionReadBack::Read(CP);
         nlohmann::ordered_json Instance = Found.empty() ? nlohmann::ordered_json()

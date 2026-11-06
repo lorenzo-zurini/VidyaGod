@@ -10,6 +10,7 @@
 #include <QTemporaryDir>
 
 #include "qtestjson.h"
+#include "sessions.h"
 #ifndef _WIN32
 #include <unistd.h>
 #endif
@@ -144,22 +145,22 @@ private slots:
         };
         const std::filesystem::path Live = Root / "1" / "DefaultInstance", Dead = Root / "2" / "DefaultInstance",
                                     Old = Root / "3" / "vgtest", Stray = Root / "4" / "gone";
-        int LiveFd = VfsMount::ClaimSession(Live);
+        int LiveFd = Sessions::ClaimSession(Live);
         QVERIFY(LiveFd >= 0);
         Put(Live / "WRITELAYER" / "save.dat");
-        QVERIFY(VfsMount::SessionOwned(Live));
-        QCOMPARE(VfsMount::ClaimSession(Live), -2);                  // a second launch of a running instance
+        QVERIFY(Sessions::SessionOwned(Live));
+        QCOMPARE(Sessions::ClaimSession(Live), -2);                  // a second launch of a running instance
         VfsMount::CleanStaleRuntime(Live);                           // what a refused launch's clear would have done
-        QVERIFY(VfsMount::SessionOwned(Live));                       // the lock is not in the folder
-        QCOMPARE(VfsMount::ClaimSession(Live), -2);
+        QVERIFY(Sessions::SessionOwned(Live));                       // the lock is not in the folder
+        QCOMPARE(Sessions::ClaimSession(Live), -2);
         Put(Live / "WRITELAYER" / "save.dat");
-        int DeadFd = VfsMount::ClaimSession(Dead);
+        int DeadFd = Sessions::ClaimSession(Dead);
         QVERIFY(DeadFd >= 0);
         Put(Dead / "WRITELAYER" / "save.dat");
         ::close(DeadFd);                                             // its launch died: the kernel let the lock go
-        QVERIFY(!VfsMount::SessionOwned(Dead));
+        QVERIFY(!Sessions::SessionOwned(Dead));
         Put(Old / "HOME" / ".bashrc");                               // a session of a build before the lock
-        int StrayFd = VfsMount::ClaimSession(Stray);                 // a launch that died before making its folder
+        int StrayFd = Sessions::ClaimSession(Stray);                 // a launch that died before making its folder
         ::close(StrayFd);
 
         QCOMPARE(VfsMount::SweepDeadSessions(Root), 2);
@@ -167,12 +168,12 @@ private slots:
         QVERIFY(!std::filesystem::exists(Root / "2"));
         QVERIFY(!std::filesystem::exists(Root / "3"));
         QVERIFY(!std::filesystem::exists(Root / "4"));
-        QVERIFY(VfsMount::SessionOwned(Live));                        // the sweep did not take the live lock
+        QVERIFY(Sessions::SessionOwned(Live));                        // the sweep did not take the live lock
 
-        VfsMount::ReleaseSession(LiveFd, Live);
+        Sessions::ReleaseSession(LiveFd, Live);
         QCOMPARE(LiveFd, -1);
         QVERIFY(!std::filesystem::exists(Root / "1" / "DefaultInstance.lock"));
-        QVERIFY(!VfsMount::SessionOwned(Live));
+        QVERIFY(!Sessions::SessionOwned(Live));
         QCOMPARE(VfsMount::SweepDeadSessions(Root), 1);
         QVERIFY(!std::filesystem::exists(Root / "1"));
 #endif

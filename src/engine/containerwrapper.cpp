@@ -1,4 +1,5 @@
 #include "containerwrapper.h"
+#include "sessions.h"
 #include "launchsession.h"
 
 #include <atomic>
@@ -108,7 +109,7 @@ void ContainerWrapper::LeaveLive()
 
 ContainerWrapper::~ContainerWrapper()
 {
-    VfsMount::ReleaseSession(SessionLock, ContainerParams.TempPath);
+    Sessions::ReleaseSession(SessionLock, ContainerParams.TempPath);
     LeaveLive();
 }
 
@@ -178,7 +179,7 @@ bool ContainerWrapper::BuildContainerRuntime()
     }
     {
         StepScope Step(3, "Sweeping stale runtime state");
-        SessionLock = VfsMount::ClaimSession(ContainerParams.TempPath);
+        SessionLock = Sessions::ClaimSession(ContainerParams.TempPath);
         if (SessionLock < -1)
         {
             LogErr("ContainerWrapper::BuildContainerRuntime", SessionLock == -2
@@ -866,7 +867,7 @@ bool ContainerWrapper::Cleanup()
     std::filesystem::remove_all(this->ContainerParams.TempPath, ec);
     if (ec) LogWarn("ContainerWrapper::Cleanup", "Could not remove TEMP: " + ec.message() + " — may still be mounted.");
 #endif
-    VfsMount::ReleaseSession(SessionLock, ContainerParams.TempPath);
+    Sessions::ReleaseSession(SessionLock, ContainerParams.TempPath);
     Claimed = false;
     LeaveLive();
     return true;

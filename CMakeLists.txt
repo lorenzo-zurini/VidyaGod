@@ -115,6 +115,8 @@ set(SHARED_SOURCES
     src/ui/mainwindow.cpp
 
     src/base/apppaths.h
+    src/base/sessions.h
+    src/base/sessions.cpp
     src/base/apppaths.cpp
     src/plan/instancestore.h
     src/plan/instancestore.cpp
@@ -256,8 +258,9 @@ set(SHARED_SOURCES
     src/base/cid.cpp
 
     src/format/nodegraph.h
+    src/library/nodestore.h
+    src/library/nodestore.cpp
     src/format/nodegraph.cpp
-    src/format/nodegraphpure.cpp
 
     src/format/nodelower.h
     src/format/nodelower.cpp
@@ -467,7 +470,7 @@ add_executable(vg_tests
     src/format/manifestmodel.cpp
     src/format/fold.cpp
     src/base/cid.cpp
-    src/format/nodegraphpure.cpp   # gigagraph PURE transforms (freeze/topo/gather/landing checks) — no IPFS/Qt
+    src/format/nodegraph.cpp   # the gigagraph's PURE transforms (freeze/topo/gather/landing checks) — no IPFS/Qt
     src/format/nodelower.cpp
     src/format/contentfile.cpp
     src/format/varsubst.cpp

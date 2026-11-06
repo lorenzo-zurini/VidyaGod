@@ -2,6 +2,7 @@
 // authored, lowered and laid out; a resolve and everything it decides; the %TOKEN% language; a node's identity; the
 // node graph built, frozen and minted; and where a package keeps its content files.
 #include "command.h"
+#include "nodestore.h"
 #include "validate.h"
 #include "cmdutil.h"
 #include "cid.h"
@@ -568,14 +569,14 @@ VG_COMMANDS
         "graph mint", "mint a working tree into blocks (stored, pinned, announced)",
         "Freeze and store every node under a root, deps first: each handle's CID, and the playable roots. Blocks only "
         "— node files on disk are not rewritten (`packages stamp-cids` writes the CIDs back).",
-        { Pos("root", "the folder") }, { "graph mint ~/x/'[123][v1.0] Some Game'" }, { "NodeGraph::Mint" }, Needs::Config, true,
+        { Pos("root", "the folder") }, { "graph mint ~/x/'[123][v1.0] Some Game'" }, { "NodeStore::Mint" }, Needs::Config, true,
         [](Command::Context &, const json &A) {
             std::map<std::string, json> Tree;
             std::map<std::string, fs::path> Dirs;
             NodeGraph::GatherWorkingTree(Command::Str(A, "root"), Tree, Dirs);
-            NodeGraph::MintResult R;
+            NodeStore::MintResult R;
             std::string Err;
-            if (!NodeGraph::Mint(Tree, R, &Err)) throw std::runtime_error(Err);
+            if (!NodeStore::Mint(Tree, R, &Err)) throw std::runtime_error(Err);
             return json{{"minted", R.HandleToCid}, {"launchables", R.Launchables}};
         }, {} });
 
@@ -584,10 +585,10 @@ VG_COMMANDS
         "Fetch each block from the given root CIDs, following what each node contains (never a NOT, never content), "
         "and report the index it builds and the blocks that could not be fetched or are not nodes.",
         { Pos("cids", "root CIDs, comma-separated"), Flag("each", "one row per node") }, { "graph frozen bafkrei…,bafkrei…" },
-        { "NodeGraph::BuildFrozenIndex" }, Needs::Config, true,
+        { "NodeStore::BuildFrozenIndex" }, Needs::Config, true,
         [](Command::Context &, const json &A) {
             std::vector<std::string> Missing;
-            const NodeIndex I = NodeGraph::BuildFrozenIndex(List(A, "cids"), &Missing);
+            const NodeIndex I = NodeStore::BuildFrozenIndex(List(A, "cids"), &Missing);
             json Out = {{"nodes", I.Nodes.size()}, {"tiles", I.Tiles.size()}, {"missing", Missing}};
             if (Command::Bool(A, "each", false))
             {
@@ -603,10 +604,10 @@ VG_COMMANDS
         "Fetch a launchable node's DAG and content into \"[uid] title\" under a folder: its node files written readable "
         "(they re-freeze to the same CIDs) and every content file at its PATH — a game from a bare CID.",
         { Pos("cid", "the launchable's CID"), Pos("dest", "the folder to land it in") }, { "graph checkout bafkrei… ~/Storage/tmp/co" },
-        { "NodeGraph::HydratePackage" }, Needs::Config, true,
+        { "NodeStore::HydratePackage" }, Needs::Config, true,
         [](Command::Context &, const json &A) {
             std::string Err;
-            const std::string D = NodeGraph::HydratePackage(Command::Str(A, "dest"), Command::Str(A, "cid"), &Err);
+            const std::string D = NodeStore::HydratePackage(Command::Str(A, "dest"), Command::Str(A, "cid"), &Err);
             if (D.empty()) throw std::runtime_error(Err);
             return json{{"landed", D}};
         }, {} });

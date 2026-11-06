@@ -1,4 +1,5 @@
 #include "appmodel.h"
+#include "nodestore.h"
 #include "covercache.h"
 #include "platform/platform.h"   // ReleaseFreedMemory
 
@@ -537,7 +538,7 @@ void AppModel::addGameByCid(const QString & launchableCid)
     auto Dir = std::make_shared<std::string>();
     auto Err = std::make_shared<std::string>();
     AsyncWork::Run(this,
-        [Dest, Cid, Dir, Err]{ *Dir = NodeGraph::HydratePackage(Dest, Cid, Err.get()); },
+        [Dest, Cid, Dir, Err]{ *Dir = NodeStore::HydratePackage(Dest, Cid, Err.get()); },
         [this, Dir, Err]{
             if (Dir->empty()) { emit gameAddFailed(QString::fromStdString(*Err)); return; }
             rebuildCatalog();     // the new checkout is on-disk → it appears in the Library

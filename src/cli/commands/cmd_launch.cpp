@@ -3,6 +3,7 @@
 // stopping it; the mounts sessions left. And the engine's pieces on their own: a wine prefix's registry (read, edit,
 // diff, apply a node's REG edits), and the file edits and binary patches a launch applies, on any folder.
 #include "command.h"
+#include "sessions.h"
 #include "installed.h"
 #include "cmdutil.h"
 #include "boxprefix.h"
@@ -216,8 +217,8 @@ VG_COMMANDS
         { "ContainerWrapper::BuildContainerRuntime", "ContainerWrapper::Execute", "ContainerWrapper::Cleanup", "LaunchSources::EnsureSources",
           "LaunchSources::MaterializeLayers", "LaunchSources::VerifyDependencies", "VfsMount::MountVFS", "VfsMount::PrepareMount", "VfsMount::BuildLayerSpec",
           "VfsMount::BuildRunnerLayerSpec", "VfsMount::MountRunnerBuild", "VfsMount::RunnerShipsMountableBuild", "VfsMount::SpawnVidyagodfs",
-          "VfsMount::MaterializePlanPaths", "VfsMount::ReportMissingSources", "VfsMount::CheckCaseConflicts", "VfsMount::ClaimSession",
-          "VfsMount::ReleaseSession", "VfsMount::UnmountDurable", "VfsMount::UnmountLazy", "PersistLayer::SeedPersistFiles", "PersistLayer::CapturePersistFiles",
+          "VfsMount::MaterializePlanPaths", "VfsMount::ReportMissingSources", "VfsMount::CheckCaseConflicts", "Sessions::ClaimSession",
+          "Sessions::ReleaseSession", "VfsMount::UnmountDurable", "VfsMount::UnmountLazy", "PersistLayer::SeedPersistFiles", "PersistLayer::CapturePersistFiles",
           "PersistLayer::PrepareWriteDir", "PersistLayer::PrepareWritePath", "PersistLayer::HasSavedCopy", "PersistLayer::SavedCopy", "PersistLayer::Printable",
           "RegistryLayer::BuildDefaultData", "RegistryLayer::ApplyOverrideRegEdits", "RegistryLayer::CapturePersistRegKeys", "FileEdits::ProcessFileEdits",
           "FileEdits::ProcessDLLOverrides", "FileEdits::KeptPathMet", "BinaryPatch::ProcessBinaryPatches", "OptionReadBack::Read", "OptionReadBack::Current",
@@ -271,20 +272,20 @@ VG_COMMANDS
         "Games running now, whether a stop is under way, runtimes still mounted, and every mount under the app's data "
         "folders (live, or left by a session that died) with the session that owns it. --sweep takes down what dead "
         "sessions left and removes stale runtimes.", { Flag("sweep", "clean up after dead sessions") }, { "launch running", "launch running --sweep" },
-        { "ContainerWrapper::LiveCount", "ContainerWrapper::Stopping", "VfsMount::RuntimesLive", "VfsMount::MountpointsUnder", "VfsMount::LiveMountpointsUnder",
-          "VfsMount::SessionOwned", "VfsMount::SweepDeadSessions", "VfsMount::CleanStaleRuntime" }, Needs::Config, false,
+        { "ContainerWrapper::LiveCount", "ContainerWrapper::Stopping", "Sessions::RuntimesLive", "Sessions::MountpointsUnder", "Sessions::LiveMountpointsUnder",
+          "Sessions::SessionOwned", "Sessions::Root", "Sessions::LockPath", "VfsMount::SweepDeadSessions", "VfsMount::CleanStaleRuntime" }, Needs::Config, false,
         [](Command::Context &C, const json &A) {
             //Sessions live under the session root, never the data dir: a sweep of the data dir would take each package
             //folder and USERDATA entry for a dead session and remove it. Mounts are listed under both.
-            const fs::path Sessions = LaunchResolver::SessionRoot(), Data = C.AppDataDir->absolutePath().toStdString();
+            const fs::path Sessions = Sessions::Root(), Data = C.AppDataDir->absolutePath().toStdString();
             if (Command::Bool(A, "sweep", false)) VfsMount::SweepDeadSessions(Sessions);
             json Mounts = json::array(), Live = json::array();
             for (const fs::path &Root : { Sessions, Data })
             {
-                for (const auto &M : VfsMount::MountpointsUnder(Root)) Mounts.push_back({{"mount", M}, {"owned", VfsMount::SessionOwned(M)}});
-                for (const auto &M : VfsMount::LiveMountpointsUnder(Root)) Live.push_back(M);
+                for (const auto &M : Sessions::MountpointsUnder(Root)) Mounts.push_back({{"mount", M}, {"owned", Sessions::SessionOwned(M)}});
+                for (const auto &M : Sessions::LiveMountpointsUnder(Root)) Live.push_back(M);
             }
-            return json{{"games", ContainerWrapper::LiveCount()}, {"stopping", ContainerWrapper::Stopping()}, {"runtimes_live", VfsMount::RuntimesLive()},
+            return json{{"games", ContainerWrapper::LiveCount()}, {"stopping", ContainerWrapper::Stopping()}, {"runtimes_live", Sessions::RuntimesLive()},
                         {"mounts", Mounts}, {"live_mounts", Live}};
         }, {} });
 

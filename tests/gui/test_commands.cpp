@@ -13,6 +13,7 @@
 #include <fstream>
 
 #include "appmodel.h"
+#include "sessions.h"
 #include "cli/cliapp.h"
 #include "command.h"
 #include "commands/cmdutil.h"
@@ -161,7 +162,7 @@ private slots:
     {
         QTemporaryDir D, T; QVERIFY(D.isValid() && T.isValid());
         qputenv("TMPDIR", T.path().toUtf8());
-        const std::filesystem::path Data = D.path().toStdString(), Sessions = LaunchResolver::SessionRoot();
+        const std::filesystem::path Data = D.path().toStdString(), Sessions = Sessions::Root();
         QVERIFY(Sessions.string().rfind(T.path().toStdString(), 0) == 0);
         std::filesystem::create_directories(Data / "LIBRARY" / "[749][v1.0] Age of Empires II");
         std::filesystem::create_directories(Data / "USERDATA" / "749" / "default");

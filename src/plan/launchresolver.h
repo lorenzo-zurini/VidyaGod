@@ -86,8 +86,6 @@ struct GuestTarget
 //there are no inner links (every classic chain) — callers then run the content directly. Otherwise redirects the
 //boundary runner at the inner runners' guest command (innermost exe + trailing args). Pure; does not mutate CP.
 GuestTarget ComposeGuestTarget(struct ContainerParams &CP);
-//Where every launch's session scratch lives (<tmp>/VidyaGod-<uid>): a runtime mounted under it is a game running.
-std::filesystem::path SessionRoot();
 //The inner runners' environment joins the boundary's (one process tree): over the boundary's, under the game's own.
 void ApplyInnerEnv(struct ContainerParams &CP, const GuestTarget &T);
 

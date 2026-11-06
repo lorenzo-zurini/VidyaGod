@@ -81,7 +81,7 @@ public:
     void publishLibraries();
     bool publishing() const { return Publishing; }    // a publish is in flight (one at a time: a second runs after it)
     // Consumer side (gigagraph sharing): add a game by a launchable CID (a friend's / pasted). Fetches its whole
-    // closure into the pretty on-disk checkout (NodeGraph::HydratePackage) off-thread, then rebuilds the catalog so
+    // closure into the pretty on-disk checkout (NodeStore::HydratePackage) off-thread, then rebuilds the catalog so
     // it appears in the Library. Emits gameAdded / gameAddFailed.
     void addGameByCid(const QString & launchableCid);
 
