@@ -55,9 +55,16 @@ QuietLog::~QuietLog() { --g_Quiet; }
 
 static thread_local LogRecorder *g_Recorder = nullptr;   // the innermost recorder on this thread
 static thread_local LogBuffer *g_Buffer = nullptr;       // the innermost buffer on this thread
+static thread_local LogSink *g_Sink = nullptr;           // the innermost sink on this thread
 
 LogRecorder::LogRecorder(std::set<std::string> C) : Contexts(std::move(C)), Outer(g_Recorder) { g_Recorder = this; }
-LogRecorder::~LogRecorder() { g_Recorder = Outer; }
+//Out of the chain whatever order they end in: a launch kept across commands (`launch build`) outlives the command's own
+//recorder it was made inside, and the one made after it must not be left pointing at it.
+LogRecorder::~LogRecorder()
+{
+    if (g_Recorder == this) { g_Recorder = Outer; return; }
+    for (LogRecorder *R = g_Recorder; R; R = R->Outer) if (R->Outer == this) { R->Outer = Outer; return; }
+}
 
 void LogRecorder::Note(LogLevel Level, const std::string &Context, const std::string &Message)
 {
@@ -67,6 +74,13 @@ void LogRecorder::Note(LogLevel Level, const std::string &Context, const std::st
 
 std::vector<Diagnostics::Entry> LogRecorder::Take() { return std::move(Kept); }
 
+LogSink::LogSink(LogCallback L, StepFn S) : Line(std::move(L)), Step(std::move(S)), Outer(g_Sink) { g_Sink = this; }
+LogSink::~LogSink()
+{
+    if (g_Sink == this) { g_Sink = Outer; return; }
+    for (LogSink *S = g_Sink; S; S = S->Outer) if (S->Outer == this) { S->Outer = Outer; return; }
+}
+LogSink *CurrentLogSink() { return g_Sink; }
 LogBuffer::LogBuffer() : Outer(g_Buffer) { g_Buffer = this; }
 LogBuffer::~LogBuffer() { g_Buffer = Outer; }
 void LogBuffer::Keep(LogLevel Level, const std::string &Context, const std::string &Message) { Lines.push_back({Level, Context, Message}); }
@@ -128,6 +142,7 @@ void Log(LogLevel level, const std::string& context, const std::string& message)
     //warning. This is the mechanism that makes a quiet per-launch error impossible to miss.
     Diagnostics::Note(level, context, message);
 
+    if (g_Sink) g_Sink->Note(level, context, message);   // this thread's own (a launch's console)
     //Forward to the optional UI callback with the raw (uncolored) values.
     LogCallback Sink;
     { std::lock_guard<std::mutex> G(g_LogCallbackMtx); Sink = g_LogCallback; }
@@ -194,9 +209,23 @@ bool Collecting()
     return g_DiagOn;
 }
 
-Report ReportVerdict(const std::string &What)
+Report ReportVerdict(const std::string &What) { return PrintVerdict(What, Take()); }
+
+Report Summarize(const std::vector<Entry> &Lines)
 {
-    const Report R = Take();
+    Report R;
+    std::set<std::string> Seen;
+    for (const Entry &E : Lines)
+    {
+        if (E.Level != LogLevel::WARN && E.Level != LogLevel::ERR) continue;
+        (E.Level == LogLevel::ERR ? R.Errors : R.Warnings)++;
+        if (Seen.insert(E.Context + '\x1f' + E.Message).second && R.Entries.size() < kDiagCap) R.Entries.push_back(E);
+    }
+    return R;
+}
+
+Report PrintVerdict(const std::string &What, Report R)
+{
     //Printed for EVERY run, clean or not. A summary that only appears on failure trains you to ignore its
     //absence; "0 warnings" is a claim, and one worth making explicitly.
     LogOut("LaunchDiagnostics", "══════════════════════════════════════════════════════════════");

@@ -76,6 +76,10 @@ namespace Diagnostics
     //so the GUI and the CLI say the same thing — the CLI is what tooling and debugging use, and it had no tally
     //at all until this existed. Returns the report so the caller can also surface it in a UI.
     Report ReportVerdict(const std::string &What);
+    //The same for lines kept elsewhere (a launch's own LogRecorder): counted, deduplicated, capped as the tally is…
+    Report Summarize(const std::vector<Entry> &Lines);
+    //…and printed as the verdict for What. Returns R.
+    Report PrintVerdict(const std::string &What, Report R);
 }
 
 //While one lives on a thread, the WARN and ERR lines that thread logs under any of its contexts are also kept for
@@ -114,6 +118,27 @@ private:
 };
 void LogReplay(const std::vector<Diagnostics::Entry> &Lines);
 
+//While one lives on a thread, every line that thread logs also goes to Line (a launch's console), and every step it
+//announces (LogStep) to Step. Scoped to the thread, so two launches at once each see their own; nested, the innermost
+//one gets them. A parallel loop's workers count as the thread that runs the loop (LogBuffer replays there).
+class LogSink
+{
+public:
+    using StepFn = std::function<void(int K, int N, const std::string &Label)>;
+    explicit LogSink(LogCallback Line, StepFn Step = {});
+    ~LogSink();
+    LogSink(const LogSink &) = delete;
+    LogSink &operator=(const LogSink &) = delete;
+    void Note(LogLevel Level, const std::string &Context, const std::string &Message) { if (Line) Line(Level, Context, Message); }
+    void Stepped(int K, int N, const std::string &Label) { if (Step) Step(K, N, Label); }
+private:
+    LogCallback Line;
+    StepFn Step;
+    LogSink *Outer = nullptr;
+};
+//The innermost LogSink on this thread, or null.
+LogSink *CurrentLogSink();
+
 //Convenience wrappers so callers don't have to specify the enum each time.
 //All four delegate directly to Log() with no extra overhead.
 inline void LogOut (const std::string& ctx, const std::string& msg) { Log(LogLevel::OUT,  ctx, msg); }
@@ -131,12 +156,12 @@ std::string HumanBytes(long long Bytes);
 bool WildcardMatch(const std::string &Pattern, const std::string &Name);
 inline bool HasWildcard(const std::string &S) { return S.find_first_of("*?") != std::string::npos; }
 
-//Structured launch-step marker: context "LaunchStep", message "<k>/<n> <label>". This is a CONTRACT, not
-//log phrasing: the prelaunch progress bar/status parse exactly this shape (LaunchThread), so the engine
-//announces every phase through here — never by ad-hoc log-line heuristics.
+//A launch's phase: logged ("LaunchStep", "<k>/<n> <label>") and handed to this thread's LogSink as a step — what the
+//launch window's progress bar and status show.
 inline void LogStep(int K, int N, const std::string &Label)
 {
     Log(LogLevel::OUT, "LaunchStep", std::to_string(K) + "/" + std::to_string(N) + " " + Label);
+    if (LogSink *S = CurrentLogSink()) S->Stepped(K, N, Label);
 }
 
 #endif // COMMONUTILS_H

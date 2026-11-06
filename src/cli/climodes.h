@@ -21,6 +21,8 @@ class ContainerWrapper;
 //The headless CLI mode families, extracted from the former ~1300-line main() (Overhaul P6). Each Run*
 //executes its family's mode when the parsed flags select one and returns the process exit code; -1 means
 //"no mode of mine was requested" and main() falls through to the next family / the GUI.
+namespace LaunchSession { class Session; }
+
 namespace CliModes {
 int RunIpfsModes       (LaunchParameters &LP, nlohmann::ordered_json &GlobalConfigJSON, QDir &AppDataDir);
 int RunContentModes    (LaunchParameters &LP, nlohmann::ordered_json &GlobalConfigJSON, QDir &AppDataDir);
@@ -57,12 +59,12 @@ struct LaunchRequest
 //Verdict: the warnings and errors the launch logged, for a caller that shows them (they are printed regardless).
 int Launch(const LaunchRequest &Req, nlohmann::ordered_json &GlobalConfigJSON, QDir &AppDataDir,
            nlohmann::ordered_json *Resolution = nullptr, Diagnostics::Report *Verdict = nullptr);
-//The first half of a launch: the node found, the wrapper made and the entry resolved (no mount, nothing run). Null
-//with Err when it does not resolve. The rest is the wrapper's: BuildContainerRuntime, Execute, Cleanup.
+//The first half of a launch: the node found and its session resolved (no mount, nothing run). Null with Err when it
+//does not resolve. The rest is the session's: Build, Run, Cleanup, Verdict.
 struct PreparedLaunch
 {
     std::shared_ptr<const NodeIndex> Index;
-    std::unique_ptr<ContainerWrapper> W;
+    std::unique_ptr<LaunchSession::Session> S;
     std::string Name;
     ~PreparedLaunch();
 };

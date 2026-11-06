@@ -10,8 +10,6 @@
 #include "commonutils.h"     // Log*
 
 #include <QDir>
-#include <QGuiApplication>
-#include <QScreen>
 #include <QThread>
 
 #include <algorithm>
@@ -225,7 +223,7 @@ bool LaunchResolver::DerivePaths(struct ContainerParams &ContainerParams, const 
         //The fallback must still be a REAL resolution: packages pass these straight to the game (Worms 3D's
         //EXEARGS are "/W %ScreenWidth% /H %ScreenHeight% /FS"), and a game handed 0x0 asks for a 0x0 display
         //mode, gets a null device back and dereferences it — that looked exactly like a broken game.
-        //Order: explicit --var override > the Qt screen > the X/Wayland display > a sane default.
+        //Order: explicit --var override > the screen (Platform::PrimaryScreen) > a sane default.
         auto Override = [&](const char *Key) {
             auto It = ContainerParams.VariableOverrides.find(Key);
             return It == ContainerParams.VariableOverrides.end() ? std::string() : It->second;
@@ -233,31 +231,8 @@ bool LaunchResolver::DerivePaths(struct ContainerParams &ContainerParams, const 
         ContainerParams.ScreenWidth  = Override("ScreenWidth");
         ContainerParams.ScreenHeight = Override("ScreenHeight");
 
-        if (ContainerParams.ScreenWidth.empty() && qApp && QThread::currentThread() == qApp->thread())
-            if (QScreen * Scr = QGuiApplication::primaryScreen())
-            {
-                ContainerParams.ScreenWidth  = std::to_string(Scr->geometry().width());
-                ContainerParams.ScreenHeight = std::to_string(Scr->geometry().height());
-            }
         if (ContainerParams.ScreenWidth.empty())
-        {
-            //Ask the display server directly — cheap, and it is what the game would have seen anyway.
-            if (const char *Disp = ::getenv("DISPLAY"); Disp && *Disp)
-                if (FILE *P = ::popen("xrandr --current 2>/dev/null | awk '/\\*/{print $1; exit}'", "r"))
-                {
-                    char Buf[64] = {0};
-                    if (std::fgets(Buf, sizeof(Buf), P))
-                    {
-                        std::string Mode(Buf);
-                        if (const size_t X = Mode.find('x'); X != std::string::npos)
-                        {
-                            ContainerParams.ScreenWidth  = Mode.substr(0, X);
-                            ContainerParams.ScreenHeight = Mode.substr(X + 1, Mode.find_first_not_of("0123456789", X + 1) - X - 1);
-                        }
-                    }
-                    ::pclose(P);
-                }
-        }
+            Platform::PrimaryScreen(ContainerParams.ScreenWidth, ContainerParams.ScreenHeight);
         if (ContainerParams.ScreenWidth.empty() || ContainerParams.ScreenHeight.empty()
             || ContainerParams.ScreenWidth == "0" || ContainerParams.ScreenHeight == "0")
         {

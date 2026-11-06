@@ -9,10 +9,6 @@
 #include "fold.h"            // Fold::Resolve — the row, resolved
 #include "nodelower.h"       // NodeLower::LowerPlan / LowerEntry — the plan as engine ops
 
-#include <QDir>
-#include <QGuiApplication>
-#include <QScreen>
-#include <QThread>
 
 #include <algorithm>
 #include <cctype>

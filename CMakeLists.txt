@@ -124,6 +124,7 @@ set(SHARED_SOURCES
     # OS-abstraction seam (host-specific bits). platform_posix.cpp on Linux; platform_win.cpp on Windows.
     src/base/platform/platform.h
     src/base/platform/platform_fs.cpp
+    src/base/platform/platform_screen.cpp
     ${VG_PLATFORM_SRC}
 
     src/ui/libraryview.h
@@ -299,8 +300,8 @@ set(SHARED_SOURCES
     src/ui/keycapture.h
     src/ui/keycapture.cpp
 
-    src/engine/launchthread.h
-    src/engine/launchthread.cpp
+    src/ui/launchthread.h
+    src/ui/launchthread.cpp
 
     src/engine/authoringsession.h
     src/engine/authoringsession.cpp

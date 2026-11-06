@@ -10,6 +10,7 @@
 #include "binarypatch.h"
 #include "cli/climodes.h"
 #include "containerwrapper.h"
+#include "launchsession.h"
 #include "fileedits.h"
 #include "launchresolver.h"
 #include "registrywrapper.h"
@@ -190,9 +191,9 @@ VG_COMMANDS
         "what is kept, the options and every variable, the layers it would mount — what `--resolve-only` writes. The "
         "warnings and errors the resolve logged are counted (app diagnostics).",
         LaunchArgs(), { "launch plan 749", "launch plan 'Patch 2.0a'", "launch plan --node 'Patch 2.0a'", "launch plan --tile 749 --variant 'Patch 2.0a (No-CD)' --var aoe2_res=1920x1080 --json" },
-        { "CliModes::Launch", "CliModes::PrepareLaunch", "CliModes::ResolutionOf", "ContainerWrapper::Resolved", "ContainerParams::GetVariablesMap",
+        { "CliModes::Launch", "CliModes::PrepareLaunch", "LaunchSession::Session::Resolve", "LaunchSession::Session::Build", "LaunchSession::Session::Run", "LaunchSession::Session::Cleanup", "LaunchSession::Session::Verdict", "LaunchSession::Session::Wrapper", "LaunchSession::Session::MissingCore", "Diagnostics::Summarize", "Diagnostics::PrintVerdict", "CurrentLogSink", "CliModes::ResolutionOf", "ContainerWrapper::Resolved", "ContainerParams::GetVariablesMap",
           "LaunchResolver::InitializeFromNode", "LaunchSession::ResolveTakingBack", "LaunchResolver::ResolveRunnerChain", "LaunchResolver::ResolveChainIds", "LaunchResolver::ResolveChainTail",
-          "LaunchResolver::BoundaryLinkIndex", "LaunchResolver::ChainHasInnerLinks", "LaunchResolver::DerivePaths", "LaunchResolver::DerivePersistence",
+          "LaunchResolver::BoundaryLinkIndex", "LaunchResolver::ChainHasInnerLinks", "LaunchResolver::DerivePaths", "Platform::PrimaryScreen", "LaunchResolver::DerivePersistence",
           "LaunchResolver::ResolveCustomVariables", "LaunchResolver::ResolveExecutableDefinition", "LaunchResolver::BuildSubComponentsArray",
           "LaunchResolver::AnchorLayouts", "LaunchResolver::AnchorRegEdits", "LaunchResolver::ComposeGuestTarget", "LaunchResolver::GuestPath",
           "LaunchResolver::GuestToLayout", "LaunchResolver::RunnerOps", "LaunchResolver::SessionRoot", "LaunchResolver::InnerRunnerMountRel",
@@ -250,9 +251,9 @@ VG_COMMANDS
             std::string Err;
             auto P = CliModes::PrepareLaunch(Request(C, A), *C.Config, Err);
             if (!P) throw std::runtime_error(Err);
-            if (!P->W->BuildContainerRuntime()) { P->W->Cleanup(); throw std::runtime_error("the runtime did not build"); }
+            if (!P->S->Build(&Err)) throw std::runtime_error(Err);
             json Out = CliModes::ResolutionOf(*P);
-            Out = {{"runtime", P->W->ContainerParams.RuntimePath.string()}, {"content", Out["Content"]}, {"prefix", Out["PrefixRoot"]}};
+            Out = {{"runtime", P->S->Wrapper()->ContainerParams.RuntimePath.string()}, {"content", Out["Content"]}, {"prefix", Out["PrefixRoot"]}};
             Built() = std::move(P);
             return Out;
         }, {} });
@@ -262,7 +263,7 @@ VG_COMMANDS
         {}, { "launch teardown" }, {}, Needs::App, false,
         [](Command::Context &, const json &) {
             if (!Built()) return json{{"torn_down", false}, {"why", "no runtime is up"}};
-            Built()->W->Cleanup();
+            Built()->S->Cleanup();
             Built().reset();
             return json{{"torn_down", true}};
         }, {} });
@@ -293,7 +294,7 @@ VG_COMMANDS
         "launch stop", "stop every running game (what each keeps is still captured)",
         "What quitting the app does to its games: each is told to stop; waits until none is live.",
         {}, { "launch stop" },
-        { "ContainerWrapper::StopAll", "ContainerWrapper::KillGame", "ContainerWrapper::WaitNoneLive", "LaunchThread::kill" }, Needs::Config, false,
+        { "ContainerWrapper::StopAll", "ContainerWrapper::KillGame", "ContainerWrapper::WaitNoneLive", "LaunchThread::kill", "LaunchSession::Session::Stop" }, Needs::Config, false,
         [](Command::Context &, const json &) {
             ContainerWrapper::StopAll();
             ContainerWrapper::WaitNoneLive();

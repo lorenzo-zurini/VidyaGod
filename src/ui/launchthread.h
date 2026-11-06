@@ -13,14 +13,11 @@
 #include "nlohmann/json.hpp"
 
 struct NodeIndex;
-
-class ContainerWrapper;   // pointer member only — full definition needed in launchthread.cpp
+namespace LaunchSession { class Session; }
 
 // ---------------------------------------------------------------------------
-// LaunchThread
-// Runs the full container lifecycle (InitializeContainer → BuildContainerRuntime → Execute → Cleanup) on a
-// worker thread so the UI stays responsive. Fields must be populated before start(); progress/status/log/
-// finished are reported via signals (queued to the GUI thread).
+// LaunchThread — the launch window's launch: a LaunchSession run on a worker thread so the UI stays responsive, its
+// console, steps and verdict reported through signals (queued to the GUI thread). Fields are set before start().
 // ---------------------------------------------------------------------------
 class LaunchThread : public QThread
 {
@@ -35,7 +32,6 @@ public:
     std::string            Entrypoint;        // which entry (LABEL; "" = the launched tile's entry)
     std::string            Face;              // the launched tile (its UID; "" = the node's first tile) — %UID%
     std::string            InstanceName;      // Which INSTANCE to launch (config + USERDATA); "" ⇒ the active one
-    std::string                        RunnerID;          // RUNNER_ID chosen in the picker (legacy single-runner; = chain front)
     std::vector<std::string>           RunnerChain;       // Runner daisy-chain (innermost→outermost node ids); empty = auto-resolve
     std::map<std::string, std::string> VariableOverrides; // CustomVar values from picker / variant FORCEVARS seeds
     std::optional<std::vector<std::string>> Grafts;   // the instance's graft list, in order (unset = the row's pre-ticked)
@@ -68,8 +64,8 @@ protected:
     void run() override;
 
 private:
-    ContainerWrapper* wrapper = nullptr;
-    QMutex            wrapperMutex;
+    LaunchSession::Session *Live = nullptr;   // the session while it runs (kill() reaches it from the GUI thread)
+    QMutex                  LiveMutex;
 };
 
 #endif // LAUNCHTHREAD_H

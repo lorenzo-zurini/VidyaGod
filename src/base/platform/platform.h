@@ -23,6 +23,10 @@ namespace Platform {
 //   Windows: GetModuleFileNameW(nullptr, …)
 std::filesystem::path SelfExe();
 
+// The primary screen's size in pixels, as text ("1920", "1080"): the GUI's screen when asked on its thread, else the
+// display server's current mode (X: xrandr). Left empty when there is no display to ask (a headless run).
+void PrimaryScreen(std::string &Width, std::string &Height);
+
 // Whether P is a link: a symlink, or on Windows any reparse point (a junction too; MinGW's std::filesystem cannot tell).
 bool IsLink(const std::filesystem::path &P);
 

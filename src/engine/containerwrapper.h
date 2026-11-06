@@ -12,6 +12,8 @@
 
 #include "manifestmodel.h"   // NodeIndex (ContainerParams.NodeIdx) + pure manifest queries
 #include "sessions.h"
+#include <atomic>
+
 #include "launchparams.h"    // ContainerParams — the shared resolved-session struct (moved out of this class)
 #include "varsubst.h"        // VarSubst — the %token% / custom-var encoding engine (moved out of this class)
 #include "launchresolver.h"  // LaunchResolver — param/recipe/runner/exec/persistence resolution (moved out)
@@ -101,10 +103,11 @@ private:
     QMutex    ActiveRunMutex;
 
 public:
-    //Run outcome, set by Execute() and readable by the caller (LaunchThread) to surface failures: the child's
-    //exit code, whether it crashed, and whether the user asked to kill it (KillGame) — a kill isn't a failure.
-    int  LastExitCode = 0;
-    bool LastCrashed  = false;
-    bool UserKilled   = false;
+    //Run outcome, set by Execute() and readable by the caller (the launch session) to surface failures: the child's
+    //exit code, whether it crashed, and whether the user asked to kill it (KillGame, from another thread: a kill isn't
+    //a failure). Atomic: Execute writes them while a Stop on the GUI thread writes UserKilled.
+    std::atomic<int>  LastExitCode{0};
+    std::atomic<bool> LastCrashed{false};
+    std::atomic<bool> UserKilled{false};
 };
 #endif // CONTAINERWRAPPER_H

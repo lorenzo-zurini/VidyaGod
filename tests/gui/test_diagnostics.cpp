@@ -10,6 +10,11 @@
 #include <vector>
 
 #include "commonutils.h"
+#include "launchsession.h"
+
+#include <set>
+
+using json = nlohmann::ordered_json;
 
 class DiagnosticsTest : public QObject
 {
@@ -205,6 +210,49 @@ private slots:
         for (auto &T : Ts) T.join();
         const auto R = Diagnostics::Take();
         QCOMPARE(R.Errors, size_t(Threads * Each));
+    }
+
+    // A launch's verdict is its own: what its thread logged, never what another launch (another thread) logged
+    // meanwhile. Teeth: take the verdict from the process-wide tally and the other thread's warning is in it.
+    void a_launch_verdict_counts_only_its_own_thread()
+    {
+        LaunchSession::Session S(json{{"Settings", json::object()}}, LaunchSession::Request{});
+        LogWarn("mine", "a warning of this launch");
+        std::thread([]{ LogWarn("theirs", "another launch's warning"); }).join();
+        const auto V = S.Verdict("Launch of 'x'");
+        QCOMPARE(V.Warnings, size_t(1));
+        QCOMPARE(QString::fromStdString(V.Entries.at(0).Context), QString("mine"));
+    }
+
+    // A launch's steps reach its own sink (the launch window's progress), the innermost one, and only on its thread.
+    // Teeth: drop the sink call from LogStep and nothing arrives; make the sink process-wide and the other thread's does.
+    void steps_reach_the_sink_on_their_own_thread()
+    {
+        std::vector<std::string> Got, Outer;
+        LogSink Out([](LogLevel, const std::string &, const std::string &) {}, [&](int, int, const std::string &L) { Outer.push_back(L); });
+        {
+            LogSink In([](LogLevel, const std::string &, const std::string &) {}, [&](int K, int N, const std::string &L) { Got.push_back(std::to_string(K) + "/" + std::to_string(N) + " " + L); });
+            LogStep(3, 12, "Mounting");
+            std::thread([]{ LogStep(4, 12, "elsewhere"); }).join();
+        }
+        LogStep(5, 12, "Running");
+        QCOMPARE(Got, std::vector<std::string>({ "3/12 Mounting" }));
+        QCOMPARE(Outer, std::vector<std::string>({ "Running" }));
+    }
+
+    // A recorder may end before one made inside it (a launch kept across commands outlives the command it was made
+    // in): the inner one keeps recording, and nothing points at the one gone. Teeth: restore the outer pointer
+    // blindly on destruction (LIFO only) and the inner one dangles — the ASan build reports it, and here the
+    // recorder made last stops seeing lines.
+    void a_recorder_may_end_before_one_made_inside_it()
+    {
+        auto Outer = std::make_unique<LogRecorder>(std::set<std::string>{});
+        auto Inner = std::make_unique<LogRecorder>(std::set<std::string>{});
+        Outer.reset();
+        LogWarn("x", "after the outer one ended");
+        QCOMPARE(Inner->Take().size(), size_t(1));
+        Inner.reset();
+        LogWarn("x", "after both ended");   // nothing records it, and nothing is touched
     }
 };
 

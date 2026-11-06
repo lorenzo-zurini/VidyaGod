@@ -1887,7 +1887,6 @@ void PreLaunchWindow::onLaunchClicked()
     LaunchWorker->VariableOverrides = PickerVars;
     LaunchWorker->Grafts            = CollectGrafts();
     LaunchWorker->RunnerChain       = SelectedChain;                          // the full daisy-chain (innermost→outermost)
-    LaunchWorker->RunnerID          = SelectedChain.empty() ? std::string() : SelectedChain.front();  // back-compat
     LaunchWorker->DryRun            = DryRunCheck->isChecked();
     LaunchWorker->PreserveRuntime   = PreserveRuntimeCheck->isChecked();
     if (QScreen* Scr = QGuiApplication::primaryScreen())

@@ -8,10 +8,6 @@
 #include "runnerwrapper.h"   // RunnerWrapper::ExecutableAvailable / DefPrefixDir
 #include "commonutils.h"     // Log*
 
-#include <QDir>
-#include <QGuiApplication>
-#include <QScreen>
-#include <QThread>
 
 #include <algorithm>
 #include <filesystem>

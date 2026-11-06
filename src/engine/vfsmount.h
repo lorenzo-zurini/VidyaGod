@@ -55,7 +55,7 @@ nlohmann::ordered_json BuildRunnerLayerSpec(struct ContainerParams &ContainerPar
 bool RunnerShipsMountableBuild(const struct ContainerParams &ContainerParams);
 [[nodiscard]] bool MountRunnerBuild(struct ContainerParams &ContainerParams);
 
-//Walks DirectoryPath recursively and warns (via QMessageBox) if any two paths differ only in case.
+//Walks DirectoryPath recursively and warns (in the log) if any two paths differ only in case.
 [[nodiscard]] bool CheckCaseConflicts(const std::filesystem::path &DirectoryPath);
 
 //Pre-launch hygiene: clears any runtime left under TempPath by a previously crashed/incomplete run — discovers

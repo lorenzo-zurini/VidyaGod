@@ -8,6 +8,7 @@
 #include "manifestmodel.h"
 #include "packagecatalog.h"
 #include "containerwrapper.h"
+#include "launchsession.h"
 #include "ipfswrapper.h"
 #include "jsonoperations.h"
 #include "depcheck.h"       // MissingCore — a launch that never started names what the machine lacks
@@ -118,33 +119,6 @@ std::unique_ptr<CliModes::PreparedLaunch> CliModes::PrepareLaunch(const LaunchRe
             { Err = "node '" + LaunchParameters.LaunchNodeId + "' not found in the catalog (by CID, handle or name)"; LogErr("main.cpp", Err + ", aborting."); return nullptr; }
         }
 
-        struct ContainerParams NewContainerParams;
-        NewContainerParams.NodeIdx           = Index.get();
-        NewContainerParams.NodeIdxOwned      = Index;         // the wrapper's copy co-owns the index
-        NewContainerParams.LaunchNodeId      = LookupCid;
-        NewContainerParams.VariableOverrides = LaunchParameters.VariableOverrides;
-        NewContainerParams.Grafts            = LaunchParameters.Grafts;
-        NewContainerParams.Entrypoint        = LaunchParameters.Entrypoint;
-        NewContainerParams.InstanceName      = LaunchParameters.InstanceName;   // "" ⇒ the active (last played) one
-        NewContainerParams.ReadBackOptions   = !LaunchParameters.ResolveOnly;  // what the game changed in its files is read back
-        NewContainerParams.LaunchFace        = LaunchParameters.LaunchTile;   // --tile: the row runs as that tile
-        //Same engine-injected session facts as the GUI path (see LaunchThread::run): the virtual-LAN vIPs + the
-        //player's own display name, so `--node` behaves identically to a GUI launch.
-        NewContainerParams.SessionVars = IpfsWrapper::LanLaunchVars();
-        if (NewContainerParams.SessionVars["VIDYAGOD_SELF_NAME"].empty())
-        {
-            const std::string Nick = IpfsWrapper::GetProfile().Nick;
-            NewContainerParams.SessionVars["VIDYAGOD_SELF_NAME"] = Nick.empty() ? std::string("Player") : Nick;
-        }
-        NewContainerParams.RunnerID          = LaunchParameters.RunnerID;
-        //Runner daisy-chain: the explicit --runner chain wins; else the single RunnerID as a 1-step pin (else auto).
-        if (!LaunchParameters.RunnerChain.empty())   NewContainerParams.RunnerChainIds = LaunchParameters.RunnerChain;
-        else if (!LaunchParameters.RunnerID.empty()) NewContainerParams.RunnerChainIds = { LaunchParameters.RunnerID };
-        Out->W = std::make_unique<ContainerWrapper>(GlobalConfigJSON, NewContainerParams);
-        ContainerWrapper &NewContainerWrapper = *Out->W;
-        //A row that does not resolve (blocked, malformed, no runner) has nothing to dump or run.
-        if (!NewContainerWrapper.Resolved())
-        { Err = "resolving '" + LaunchParameters.LaunchNodeId + "' failed (see the log)"; LogErr("main.cpp", Err + " — aborting."); return nullptr; }
         //--instance names an EXISTING instance. A typo would otherwise run a fresh, empty one (no settings, no saves)
         //and create it on the first save; instances are made in the launch window's menu. A game never played has
         //none yet, so its DefaultInstance is accepted (it is what a launch without the flag would use).
@@ -155,9 +129,25 @@ std::unique_ptr<CliModes::PreparedLaunch> CliModes::PrepareLaunch(const LaunchRe
             LogErr("main.cpp", Err);
             return nullptr;
         }
+        LaunchSession::Request R;
+        R.Index = Index;
+        R.NodeId = LookupCid;
+        R.Entrypoint = LaunchParameters.Entrypoint;
+        R.Face = LaunchParameters.LaunchTile;   // --tile: the row runs as that tile
+        R.InstanceName = LaunchParameters.InstanceName;
+        R.Grafts = LaunchParameters.Grafts;
+        R.VariableOverrides = LaunchParameters.VariableOverrides;
+        //Runner daisy-chain: the explicit --runner chain wins; else the single RunnerID as a 1-step pin (else auto).
+        R.RunnerChain = !LaunchParameters.RunnerChain.empty() ? LaunchParameters.RunnerChain
+                      : !LaunchParameters.RunnerID.empty()   ? std::vector<std::string>{ LaunchParameters.RunnerID } : std::vector<std::string>{};
+        R.ReadBack = !LaunchParameters.ResolveOnly;   // a launch reads back what the game changed in its files
+        Out->S = std::make_unique<LaunchSession::Session>(GlobalConfigJSON, std::move(R));
+        //A row that does not resolve (blocked, malformed, no runner) has nothing to dump or run.
+        if (!Out->S->Resolve(&Err)) { LogErr("main.cpp", "'" + LaunchParameters.LaunchNodeId + "': " + Err + " — aborting."); return nullptr; }
+        const ContainerParams &CP = Out->S->Wrapper()->ContainerParams;
         if (!LaunchParameters.InstanceName.empty())
         {
-            const auto Have = InstanceStore::List(GlobalConfigJSON, NewContainerWrapper.ContainerParams.PackageUID);
+            const auto Have = InstanceStore::List(GlobalConfigJSON, CP.PackageUID);
             const bool Known = std::find(Have.begin(), Have.end(), LaunchParameters.InstanceName) != Have.end()
                             || (Have.empty() && LaunchParameters.InstanceName == InstanceStore::DefaultInstance);
             if (!Known)
@@ -171,96 +161,43 @@ std::unique_ptr<CliModes::PreparedLaunch> CliModes::PrepareLaunch(const LaunchRe
                 return nullptr;
             }
         }
-        if (!LaunchResolver::ResolveExecutableDefinition(NewContainerWrapper.ContainerParams))
-        { Err = "its entry did not resolve (see the log)"; LogErr("main.cpp", "ResolveExecutableDefinition failed, aborting."); return nullptr; }
         Out->Name = LaunchParameters.LaunchNodeId;
         return Out;
     }
 }
 
-nlohmann::ordered_json CliModes::ResolutionOf(PreparedLaunch &P) { return DumpResolution(P.W->ContainerParams); }
+nlohmann::ordered_json CliModes::ResolutionOf(PreparedLaunch &P) { return DumpResolution(P.S->Wrapper()->ContainerParams); }
 
 int CliModes::Launch(const LaunchRequest &Req, nlohmann::ordered_json &GlobalConfigJSON, QDir &AppDataDir,
                      nlohmann::ordered_json *Resolution, Diagnostics::Report *VerdictOut)
 {
     (void)AppDataDir;
-    const LaunchRequest &LaunchParameters = Req;
-    Diagnostics::Begin();   // count every WARN/ERR this launch produces; verdict printed at the end
-    const auto Verdict = [VerdictOut](const std::string &What) {   // printed, and handed to the caller that asked
-        const Diagnostics::Report R = Diagnostics::ReportVerdict(What);
-        if (VerdictOut) *VerdictOut = R;
-    };
+    const std::string Name = Req.LaunchNodeId + Req.LaunchTile;
     std::string Err;
     const std::unique_ptr<PreparedLaunch> P = PrepareLaunch(Req, GlobalConfigJSON, Err);
     //A failed launch is exactly when the verdict matters most; returning early without one means the runs that went
-    //wrong are the runs that say nothing.
-    if (!P) { Verdict("Launch of '" + Req.LaunchNodeId + Req.LaunchTile + "'"); return 1; }
-    ContainerWrapper &NewContainerWrapper = *P->W;
+    //wrong are the runs that say nothing. (No session: what the lookup said is the log's.)
+    if (!P)
     {
-        if (Resolution) *Resolution = ResolutionOf(*P);
-        if (LaunchParameters.ResolveOnly)
-        {
-            //Every exit reports. A resolve is the cheap way to ask "is this package healthy?", so it is precisely
-            //where a quiet resolve warning should be surfaced rather than scrolled past.
-            Verdict("Resolve of '" + LaunchParameters.LaunchNodeId + "'");
-            return 0;
-        }
-        //Persist any secret seeded from its POOL this launch, so the value is stable from here on (the GUI does the
-        //same through the prelaunch picker). Without this a CLI launch would redraw a different key every time and
-        //whatever the game wrote into its prefix from the previous one would no longer match.
-        if (!NewContainerWrapper.ContainerParams.PickedSecrets.empty()
-            && !NewContainerWrapper.ContainerParams.PackageUID.empty())
-        {
-            const std::string &Uid = NewContainerWrapper.ContainerParams.PackageUID;
-            // MergePackageVariables now persists to the launched INSTANCE's instance.json (not GlobalConfig) — no
-            // GlobalConfig SaveJSON needed (that was a dead write, and its success gated a lying "persisted" log).
-            InstanceStore::MergeVariables(GlobalConfigJSON, Uid, NewContainerWrapper.ContainerParams.PickedSecrets,
-                                                  NewContainerWrapper.ContainerParams.InstanceName);
-            LogOut("main.cpp", "Persisted " + std::to_string(NewContainerWrapper.ContainerParams.PickedSecrets.size())
-                               + " pool-seeded secret(s) for package " + Uid + ".");
-        }
-
-        //Bail if the runtime couldn't be built (no compatible runner, unmountable/compressed layers, missing
-        //dependencies, …). Without this the engine would proceed to Execute() an empty/garbage command and report
-        //a misleading clean exit (code 0) for a launch that never actually ran.
-        if (!NewContainerWrapper.BuildContainerRuntime())
-        { LogErr("main.cpp", "Failed to build the container runtime for '" + LaunchParameters.LaunchNodeId
-                 + "' — aborting launch (check the log above)."); NewContainerWrapper.Cleanup();
-          Verdict("Launch of '" + LaunchParameters.LaunchNodeId + "'"); return 1; }
-        // Real launch (runtime built) → mark the instance last-played. Skipped in the --userdata-dir/in-package
-        // override mode (instances are bypassed there — don't litter <root>/USERDATA with a DefaultInstance).
-        if (AppPaths::UserDataPathOverride().empty() && !NewContainerWrapper.ContainerParams.PackageUID.empty())
-            InstanceStore::TouchLastRun(GlobalConfigJSON, NewContainerWrapper.ContainerParams.PackageUID,
-                                        NewContainerWrapper.ContainerParams.InstanceName);
-        //False without a crash: the game was never started (the mandatory sandbox is unavailable). That is a failed
-        //launch; it used to exit 0, and the launch matrix read "ran, printed nothing" on a machine without bwrap.
-        const bool Started = NewContainerWrapper.Execute() || NewContainerWrapper.LastCrashed;
-        if (!Started && NewContainerWrapper.UserKilled)                 // told to quit before the game started
-        {
-            NewContainerWrapper.Cleanup();
-            Verdict("Launch of '" + LaunchParameters.LaunchNodeId + "'");
-            return 1;
-        }
-        if (!Started)
-        {
-            LogErr("main.cpp", "The game was not started (see the log above).");
-            for (const std::string &M : DepCheck::MissingCore(DepCheck::ProbeSystem(SandboxLayer::Available())))
-                LogErr("main.cpp", "  missing: " + M + " (Settings → Dependencies shows what to install)");
-            //The runtime WAS built (mounted): take it down, as the GUI's LaunchThread does on every path. Returning
-            //without this left the game's vidyagodfs mount up after a refused launch.
-            NewContainerWrapper.Cleanup();
-            Verdict("Launch of '" + LaunchParameters.LaunchNodeId + "'");
-            return 1;
-        }
-        if (!NewContainerWrapper.UserKilled && !ContainerWrapper::Stopping() && NewContainerWrapper.LastCrashed)   // a non-zero exit is Execute's warning; a stop is no crash
-            LogWarn("main.cpp", "Game did not exit cleanly (code " + std::to_string(NewContainerWrapper.LastExitCode) + ").");
-        //After the run, as after a refused one: what the package KEEPs is captured, then the runtime comes down.
-        NewContainerWrapper.Cleanup();
-        //Same verdict the GUI prints. The CLI is what tooling and debugging actually use, so leaving it untallied
-        //would have meant the one path we test with was the one path that could still hide a quiet error.
-        Verdict("Launch of '" + LaunchParameters.LaunchNodeId + "'");
-        return NewContainerWrapper.LastCrashed ? 1 : NewContainerWrapper.LastExitCode;
+        const Diagnostics::Report R = Diagnostics::PrintVerdict("Launch of '" + Name + "'", Diagnostics::Summarize({ {LogLevel::ERR, "main.cpp", Err} }));
+        if (VerdictOut) *VerdictOut = R;
+        return 1;
     }
+    LaunchSession::Session &S = *P->S;
+    //Every exit reports — a resolve too: it is the cheap way to ask "is this package healthy?", so it is precisely
+    //where a quiet resolve warning should be surfaced rather than scrolled past.
+    const auto Done = [&](const std::string &What, int Rc) {
+        S.Cleanup();
+        const Diagnostics::Report R = S.Verdict(What + " of '" + Name + "'");
+        if (VerdictOut) *VerdictOut = R;
+        return Rc;
+    };
+    if (Resolution) *Resolution = ResolutionOf(*P);
+    if (Req.ResolveOnly) return Done("Resolve", 0);
+    if (!S.Build(&Err)) { LogErr("main.cpp", "'" + Name + "': " + Err + " — aborting launch."); return Done("Launch", 1); }
+    const LaunchSession::Outcome O = S.Run();
+    if (!O.Started) return Done("Launch", 1);   // refused before it started, or told to quit first
+    return Done("Launch", O.Crashed ? 1 : O.ExitCode);
 }
 
 int CliModes::RunNodeLaunch(LaunchParameters &LP, nlohmann::ordered_json &GlobalConfigJSON, QDir &AppDataDir)

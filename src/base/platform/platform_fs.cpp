@@ -1,4 +1,4 @@
-// The host's file system, link-aware, on every OS (platform_fs.cpp).
+// The host's file system, link-aware, on every OS.
 #include "platform/platform.h"
 
 #include <functional>
@@ -9,6 +9,7 @@
 #endif
 
 namespace Platform {
+
 
 bool IsLink(const std::filesystem::path &P)
 {

@@ -14,8 +14,7 @@
 #include <fstream>              // prefix-recipe read + marker seeding (zero-copy prefix assembly)
 #include <sstream>
 
-#include <QApplication>
-#include <QMessageBox>
+#include <QCoreApplication>
 #include <QMetaObject>
 #include <QProcess>
 #include <QProcessEnvironment>
@@ -528,18 +527,10 @@ bool VfsMount::MountVFS(struct ContainerParams &ContainerParams)
         std::string Bad = ZipFirstCompressedEntry(Src);
         if (Bad.empty()) continue;
 
-        LogErr("VfsMount::MountVFS", "Compressed zip layer (not STORE): " + Src + " — entry '" + Bad + "'");
-        if (qApp)
-        {
-            QString T = "Compressed zip layer — re-zip as STORE";
-            QString M = QString::fromStdString(
-                "This package contains a COMPRESSED zip layer, which is no longer supported.\n\n"
-                + Src + "\n\nfirst compressed entry:  " + Bad + "\n\n"
-                "VidyaGod serves zip layers zero-copy, which requires STORED (uncompressed) archives. "
-                "Re-create the archive with STORE:\n\n    zip -0 -r <archive.zip> <files>\n\n"
-                "or run tools/store-zips.sh on your library to convert everything at once.");
-            QMetaObject::invokeMethod(qApp, [T, M]() { QMessageBox::critical(nullptr, T, M); }, Qt::QueuedConnection);
-        }
+        //Said once, whole: a launch that fails to build shows its first error (the launch window's message).
+        LogErr("VfsMount::MountVFS", "a zip layer is compressed (" + Src + ", first compressed entry '" + Bad + "'): zip layers are "
+               "served as they are on disk, so they must be STORED — re-zip it with `zip -0 -r`, or run tools/store-zips.sh "
+               "over the library");
         return false;
     }
 
@@ -752,7 +743,7 @@ bool VfsMount::MountRunnerBuild(struct ContainerParams &ContainerParams)
 //Walks DirectoryPath recursively, lowercasing every path and checking for duplicates.
 //Collisions mean two files differ only in case — problematic under Wine because its
 //filesystem emulation may resolve to the wrong file depending on access order.
-//Reports all conflicts via a QMessageBox warning and returns false if any are found.
+//Logs every conflict and returns false if any are found (the launch goes on).
 bool VfsMount::CheckCaseConflicts(const std::filesystem::path &DirectoryPath)
 {
     std::unordered_set<std::string> FilePathList;
@@ -790,17 +781,8 @@ bool VfsMount::CheckCaseConflicts(const std::filesystem::path &DirectoryPath)
         std::ostringstream oss;
         std::for_each(CaseConflictList.begin(), CaseConflictList.end(),[&oss](const std::string& s){ oss << s << '\n'; });
         std::cerr << "CASE CONFLICTS:\n" << oss.str() << std::endl;
-        LogWarn("VfsMount::CheckCaseConflicts", "Case conflicts detected in the runtime (see above).");
-        //This runs on the launch worker thread; a QWidget dialog must be created on the GUI thread.
-        //Marshal it there (and skip entirely when headless — no QApplication). It's only a warning;
-        //the launch is not aborted (caller ignores the return).
-        if (qApp)
-        {
-            QString Msg = "Files differing only in case were found in the runtime — Windows games are\n"
-                          "case-insensitive, so Wine may open the wrong one. The game will still launch.\n\n"
-                          + QString::fromStdString(oss.str());
-            QMetaObject::invokeMethod(qApp, [Msg]() { QMessageBox::warning(nullptr, "Case conflicts", Msg); }, Qt::QueuedConnection);
-        }
+        LogWarn("VfsMount::CheckCaseConflicts", "files differing only in case are in the runtime (listed above): a Windows "
+                "game is case-insensitive, so Wine may open the wrong one; the game still launches");
         return false;
     }
     return true;

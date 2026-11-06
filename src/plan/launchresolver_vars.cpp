@@ -8,10 +8,6 @@
 #include "commonutils.h"     // Log*
 #include "registrywrapper.h"  // RegistryWrapper::SubstituteRegEdit (typed strings take escaped values)
 
-#include <QDir>
-#include <QGuiApplication>
-#include <QScreen>
-#include <QThread>
 
 #include <algorithm>
 #include <filesystem>

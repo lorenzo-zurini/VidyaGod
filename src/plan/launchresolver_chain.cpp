@@ -9,10 +9,6 @@
 #include "commonutils.h"     // Log*
 #include "builtinrunners.h"  // BuiltinRunners::IsBuiltin — the tie-break toward the built-in runner
 
-#include <QDir>
-#include <QGuiApplication>
-#include <QScreen>
-#include <QThread>
 
 #include <algorithm>
 #include <cctype>
