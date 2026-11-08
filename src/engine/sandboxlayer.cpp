@@ -32,6 +32,14 @@ static std::string Var(const ContainerParams &CP, const std::string &Key)
     return It == CP.CustomVariables.end() ? std::string() : It->second;
 }
 
+Options ForLaunch(const ContainerParams &CP)
+{
+    Options O = FromParams(CP);
+    for (const auto &[Spec, Mnt] : CP.SandboxMounts) O.Mounts.push_back({Spec, Mnt});
+    O.WorkDir = CP.WorkDirPathComplete.string();
+    return O;
+}
+
 Options FromParams(const ContainerParams &CP)
 {
     Options O;

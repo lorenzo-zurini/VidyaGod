@@ -223,7 +223,7 @@ VG_COMMANDS
           "PersistLayer::PrepareWriteDir", "PersistLayer::PrepareWritePath", "PersistLayer::HasSavedCopy", "PersistLayer::SavedCopy", "PersistLayer::Printable",
           "RegistryLayer::BuildDefaultData", "RegistryLayer::ApplyOverrideRegEdits", "RegistryLayer::CapturePersistRegKeys", "FileEdits::ProcessFileEdits",
           "FileEdits::ProcessDLLOverrides", "FileEdits::KeptPathMet", "BinaryPatch::ProcessBinaryPatches", "OptionReadBack::Read", "OptionReadBack::Current",
-          "OptionReadBack::Adopt", "OptionReadBack::Written", "OptionReadBack::Commit", "SandboxLayer::Wrap", "SandboxLayer::WrapGame", "SandboxLayer::FromParams",
+          "OptionReadBack::Adopt", "OptionReadBack::Written", "OptionReadBack::Commit", "SandboxLayer::Wrap", "SandboxLayer::WrapGame", "SandboxLayer::FromParams", "SandboxLayer::ForLaunch",
           "SandboxLayer::HomeEnv", "SandboxLayer::HomeLeftovers", "SandboxLayer::TakeLoaderEnv", "SandboxLayer::PrepareBox", "SandboxLayer::BoxIniCommands",
           "SandboxLayer::BoxStartArgs", "SandboxLayer::RunInBox", "SandboxLayer::TerminateBox", "SandboxLayer::EmptyBox", "BoxLaunch::Prepare",
           "BoxLaunch::Harvest", "BoxLaunch::Discard", "BoxPrefix::Materialise", "BoxPrefix::SyncKeepsBack", "BoxPrefix::InBox", "BoxPrefix::BoxRelForReal",

@@ -70,6 +70,22 @@ class SandboxTest : public QObject
 private slots:
     // A runner's LD_LIBRARY_PATH (its bundled libraries) must not reach VidyaGod's own --sandbox-init: the bundled
     // GLib of an Ubuntu 22.04 build broke our Qt before main() ("undefined symbol", exit 127) on Raze and ECWolf.
+    // The one builder of a launch's sandbox options carries what FromParams gives plus the mounts the build recorded
+    // and the working folder — the game's sandbox, its kill and its box are the same one. Teeth: leave the mounts or
+    // the working folder out.
+    void the_launchs_sandbox_has_its_mounts_and_working_folder()
+    {
+        ContainerParams CP;
+        CP.TempPath = "/tmp/vg-session";
+        CP.WorkDirPathComplete = "/tmp/vg-session/RUNTIME/game";
+        CP.SandboxMounts = { {"/tmp/vg-session/game.spec", "/tmp/vg-session/RUNTIME"} };
+        const SandboxLayer::Options O = SandboxLayer::ForLaunch(CP);
+        QCOMPARE(O.WorkDir, std::string("/tmp/vg-session/RUNTIME/game"));
+        QCOMPARE((int)O.Mounts.size(), 1);
+        QCOMPARE(O.Mounts[0].SpecPath, std::string("/tmp/vg-session/game.spec"));
+        QVERIFY(std::find(O.WritableBinds.begin(), O.WritableBinds.end(), std::string("/tmp/vg-session")) != O.WritableBinds.end());
+    }
+
     void the_games_loader_path_is_taken_out_of_the_inits_environment()
     {
         QProcessEnvironment Run = env({{"LD_LIBRARY_PATH", "/runner/lib"}, {"HOME", "/home/u"}});

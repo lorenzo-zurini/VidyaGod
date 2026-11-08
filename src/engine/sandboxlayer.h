@@ -69,6 +69,10 @@ struct Options {
 // thing carried over from the real home is the GPU driver's shader cache (HomeCaches): it is the driver's, not the
 // game's, and losing it would recompile every shader on every launch.
 Options FromParams(const ContainerParams &CP);
+// The options a launch's sandbox runs with — the one builder Execute, the kill, the box's setup and its teardown
+// share: FromParams, the mounts BuildContainerRuntime recorded for the sandbox (SandboxMounts), the working folder
+// (the box's name comes from it, so every step reaches the box the game runs in).
+Options ForLaunch(const ContainerParams &CP);
 
 // Point the launch environment at Opts.Home: HOME and the XDG base directories, plus XAUTHORITY at the real
 // ~/.Xauthority when the session names no other (Xlib would otherwise look for the cookie in the private home and the

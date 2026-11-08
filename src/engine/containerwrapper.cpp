@@ -390,7 +390,7 @@ bool ContainerWrapper::Execute(const std::string &OverrideExe, const std::vector
     //sandbox's private home (SandboxLayer::FromParams): every runner/package ENV applies over it, so one that points
     //XDG_CONFIG_HOME into the runtime (to KEEP it) or removes HOME still wins.
     QProcessEnvironment Base = SystemToolEnv();
-    SandboxLayer::Options SbOpts = SandboxLayer::FromParams(ContainerParams);
+    SandboxLayer::Options SbOpts = SandboxLayer::ForLaunch(ContainerParams);
     if (!Override) SandboxLayer::HomeEnv(SbOpts, Base);
     LaunchCommand Cmd = LaunchCommand::Compose(ContainerParams, std::move(Base), OverrideExe, OverrideArgs);
     std::string Program = std::move(Cmd.Program);
@@ -427,10 +427,6 @@ bool ContainerWrapper::Execute(const std::string &OverrideExe, const std::vector
             return false;
         }
         {
-            for (const auto &[Spec, Mnt] : ContainerParams.SandboxMounts)
-                SbOpts.Mounts.push_back({Spec, Mnt});
-            SbOpts.WorkDir = ContainerParams.WorkDirPathComplete.string();
-
             //Friend LAN: the LAN vars (SELF_VIP/SUBNET/PEER_*/SANDBOX_NET=isolated) were merged into CustomVariables in
             //BuildContainerRuntime when Settings.LanEnabled. Bring up the overlay TUN INSIDE the sandbox's own netns
             //(the host stack is never touched): listen on a bound unix socket for the TUN fd the sandbox-init hands
@@ -567,9 +563,7 @@ void ContainerWrapper::KillGame()
         //Kill the launched process tree — taskkill /T reaps children (Start.exe + the game, or the game
         //directly). Then terminate the Sandboxie box so no boxed helper lingers (no-op if unsandboxed).
         QProcess Pr; Pr.start("taskkill", {"/PID", QString::number(Pid), "/T", "/F"}); Pr.waitForFinished(-1);
-        SandboxLayer::Options Box = SandboxLayer::FromParams(this->ContainerParams);
-        Box.WorkDir = this->ContainerParams.WorkDirPathComplete.string();
-        SandboxLayer::TerminateBox(Box);
+        SandboxLayer::TerminateBox(SandboxLayer::ForLaunch(this->ContainerParams));
 #else
         //Kill the entire process group (wine, wineserver, game children) in one shot.
         //SIGKILL the group first, then the direct process as a fallback. (System tools — strip the

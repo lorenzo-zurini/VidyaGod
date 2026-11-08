@@ -32,16 +32,6 @@ namespace {
 
 namespace fs = std::filesystem;
 
-//The launch's sandbox options as Execute builds them (FromParams, the recorded mounts, the working folder): the box's
-//name comes from the working folder, so every step reaches the box the game runs in.
-SandboxLayer::Options BoxOptions(const struct ContainerParams &CP)
-{
-    SandboxLayer::Options O = SandboxLayer::FromParams(CP);
-    for (const auto &[Spec, Mnt] : CP.SandboxMounts) O.Mounts.push_back({Spec, Mnt});
-    O.WorkDir = CP.WorkDirPathComplete.string();
-    return O;
-}
-
 //The runner's DRIVES with their %variables% resolved, as GuestToLayout lays guest paths out.
 nlohmann::ordered_json ResolvedDrives(struct ContainerParams &CP)
 {
@@ -158,7 +148,7 @@ bool TakeKeeps(struct ContainerParams &CP, const SandboxLayer::Options &O, const
 bool Prepare(struct ContainerParams &CP)
 {
     CP.BoxPrepared = false;
-    const SandboxLayer::Options O = BoxOptions(CP);
+    const SandboxLayer::Options O = SandboxLayer::ForLaunch(CP);
     if (O.BoxRoot.empty()) return true;
     SandboxLayer::PrepareBox(O);
     SandboxLayer::TerminateBox(O);   // nothing from an earlier launch still runs in it, holding its files
@@ -287,7 +277,7 @@ bool Harvest(struct ContainerParams &CP, RegistryWrapper &Session, bool &HaveSes
     //Only the box this launch prepared: a box left by another (a crash) is saved by the next Prepare, with its runtime
     //mounted — a teardown before or without one (a launch that failed to build) must not take or empty it.
     if (!CP.BoxPrepared) return true;
-    const SandboxLayer::Options O = BoxOptions(CP);
+    const SandboxLayer::Options O = SandboxLayer::ForLaunch(CP);
     std::vector<std::string> Placed;
     if (!ReadPlaced(O, Placed)) { LogErr("BoxLaunch::Harvest", "the game's box lost its list " + PlacedFile(O).string()); return false; }
     HaveSession = true;
@@ -297,7 +287,7 @@ bool Harvest(struct ContainerParams &CP, RegistryWrapper &Session, bool &HaveSes
 void Discard(struct ContainerParams &CP)
 {
     if (!CP.BoxPrepared) return;
-    const SandboxLayer::Options O = BoxOptions(CP);
+    const SandboxLayer::Options O = SandboxLayer::ForLaunch(CP);
     SandboxLayer::TerminateBox(O);
     std::error_code Ec;
     fs::remove(PlacedFile(O), Ec);   // first: a box half emptied is no longer taken for an unfinished session
