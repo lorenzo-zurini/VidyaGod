@@ -19,7 +19,6 @@
 #include "sandboxlayer.h"    // the mandatory sandbox around the launched game (bwrap / Sandboxie)
 #include "ipfswrapper.h"     // IpfsWrapper::OverlayServe/OverlayStop (nested-sandbox overlay TUN handoff)
 
-#include <numeric>           // std::accumulate (WINEDLLOVERRIDES join)
 #include <algorithm>         // std::min (session-id truncation for the TUN name)
 #include <cstdlib>           // std::getenv (VG_CASE_CHECK)
 #include <sys/stat.h>        // ::stat (probe the mounted prefix's system.reg mtime for config_info)

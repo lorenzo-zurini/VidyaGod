@@ -112,6 +112,95 @@ private slots:
         const LaunchCommand C = LaunchCommand::Compose(CP, Base);
         QVERIFY(C.Env.value("WINEDLLOVERRIDES") == "d3d11=n;dxgi=n;dxgi=b");
     }
+
+    // Every %token% in the runner's EXECUTABLE and ARGS, and in a wrapper's EXECUTABLE, is substituted from the
+    // launch's variables. Teeth: drop a substitution.
+    void launch_command_substitutes_the_variables()
+    {
+        ContainerParams CP = Game();
+        CP.CustomVariables["RUNNERS"] = "/opt/r";
+        CP.CustomVariables["MODE"] = "waitforexitandrun";
+        CP.CustomVariables["SCOPE"] = "/usr/bin/gamescope";
+        CP.RunnerExecutable = "%RUNNERS%/proton";
+        CP.RunnerArgs = { "%MODE%" };
+        CP.RunnerChain = { Link("proton", "%RUNNERS%/proton", {}, true), Link("scope", "%SCOPE%", { "-f" }, false) };
+        const LaunchCommand C = LaunchCommand::Compose(CP, QProcessEnvironment());
+        QVERIFY(C.Program == "/usr/bin/gamescope");
+        QVERIFY(C.Arguments == Q({ "-f", "/opt/r/proton", "waitforexitandrun", "-windowed" }));
+    }
+
+    // Two wrappers nest outermost-out (the last link wraps everything inside it); their env applies outermost first, so
+    // the inner one's wins; a wrapper's REMOVE_ENV takes its key out. Teeth: reverse the env order; ignore the removal.
+    void launch_command_two_wrappers_nest_and_the_inner_env_wins()
+    {
+        ContainerParams CP = Game();
+        CP.RunnerExecutable = "/r/proton";
+        RunnerLink In = Link("mango", "mangohud", {}, false);
+        In.Env = { {"K", "inner"} };
+        RunnerLink Out = Link("scope", "gamescope", { "-f" }, false);
+        Out.Env = { {"K", "outer"} };
+        Out.RemoveEnv = { "DROP" };
+        CP.RunnerChain = { Link("proton", "/r/proton", {}, true), In, Out };
+        QProcessEnvironment Base;
+        Base.insert("DROP", "x");
+        const LaunchCommand C = LaunchCommand::Compose(CP, Base);
+        QVERIFY(C.Program == "gamescope");
+        QVERIFY(C.Arguments == Q({ "-f", "mangohud", "/r/proton", "-windowed" }));
+        QVERIFY(C.Env.value("K") == "inner");
+        QVERIFY(!C.Env.contains("DROP"));
+    }
+
+    // An override (tooling) runs bare: no wrapper is applied. Teeth: wrap under an override.
+    void launch_command_override_skips_the_wrappers()
+    {
+        ContainerParams CP = Game();
+        CP.RunnerExecutable = "/r/proton";
+        CP.RunnerArgs = { "run" };
+        CP.RunnerChain = { Link("proton", "/r/proton", { "run" }, true), Link("scope", "gamescope", {}, false) };
+        const LaunchCommand C = LaunchCommand::Compose(CP, QProcessEnvironment(), "tool.exe");
+        QVERIFY(C.Program == "/r/proton");
+        QVERIFY(C.Wrappers.empty());
+    }
+
+    // A cross-namespace chain (a native emulator under proton): the boundary's %ContentPath% names the inner runner's
+    // exe in its own mount, and the inner runner's args (the ROM) follow the boundary's. Teeth: keep the content as the
+    // target; drop the trailing args.
+    void launch_command_a_cross_namespace_chain_runs_the_inner_runner()
+    {
+        ContainerParams CP = Game();
+        CP.ExePathRelative = "roms/game.sfc";
+        CP.ExeArgs.clear();
+        CP.RunnerExecutable = "/r/proton";
+        CP.RunnerArgs = { "run", "%ContentPath%" };
+        RunnerLink Snes = Link("snes", "snes9x.exe", { "%Content%" }, false);
+        CP.RunnerChain = { Snes, Link("proton", "/r/proton", { "run", "%ContentPath%" }, true) };
+        const LaunchCommand C = LaunchCommand::Compose(CP, QProcessEnvironment());
+        QVERIFY(C.Program == "/r/proton");
+        QVERIFY(C.Arguments.size() == 3);
+        QVERIFY(C.Arguments[1].contains("snes") && C.Arguments[1].contains("snes9x.exe"));
+        QVERIFY(C.Arguments[2].contains("game.sfc"));
+    }
+
+    // The operator's WINEDLLOVERRIDES is the host's: one a package ENV sets is not passed off as theirs (the package's
+    // DLL list replaces it), and a runner's REMOVE_ENV does not take theirs away. A runner with no prefix gets none.
+    // Teeth: read it after the layers; drop the prefix gate.
+    void launch_command_the_operators_dll_overrides_are_the_hosts()
+    {
+        ContainerParams CP = Game();
+        CP.RunnerExecutable = "/r/proton";
+        CP.PrefixGenerate = true;
+        CP.DLLOverrides = { "d3d9=n" };
+        CP.RunnerEnv = { {"WINEDLLOVERRIDES", "dinput8=n,b"} };
+        QVERIFY(LaunchCommand::Compose(CP, QProcessEnvironment()).Env.value("WINEDLLOVERRIDES") == "d3d9=n");
+        CP.RunnerEnv = nlohmann::ordered_json::object();
+        CP.RunnerRemoveEnv = { "WINEDLLOVERRIDES" };
+        QProcessEnvironment Host;
+        Host.insert("WINEDLLOVERRIDES", "dxgi=b");
+        QVERIFY(LaunchCommand::Compose(CP, Host).Env.value("WINEDLLOVERRIDES") == "d3d9=n;dxgi=b");
+        CP.PrefixGenerate = false;
+        CP.RunnerRemoveEnv.clear();
+        QVERIFY(!LaunchCommand::Compose(CP, QProcessEnvironment()).Env.contains("WINEDLLOVERRIDES"));
+    }
 };
 
 QTEST_MAIN(LaunchCommandTest)

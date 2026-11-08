@@ -10,6 +10,9 @@ LaunchCommand LaunchCommand::Compose(ContainerParams CP, QProcessEnvironment Bas
 {
     LaunchCommand Out;
     const bool Override = !OverrideExe.empty();
+    //An operator's own WINEDLLOVERRIDES is the host's, read before any layer: a package's ENV setting it, or a runner's
+    //REMOVE_ENV dropping it, must not pass for (or take away) the human's.
+    const QString External = Base.value("WINEDLLOVERRIDES");
     auto Subst = [&](std::string S){ VarSubst::StringVariableSubstitution(S, CP.GetVariablesMap()); return S; };
 
     //----- CROSS-NAMESPACE NESTING: when an inner runner runs inside the boundary's guest fs (e.g. a win32 emulator
@@ -145,7 +148,6 @@ LaunchCommand LaunchCommand::Compose(ContainerParams CP, QProcessEnvironment Bas
     if (CP.PrefixGenerate && !CP.DLLOverrides.empty())
     {
         QString Composed = QString::fromStdString(std::accumulate(CP.DLLOverrides.begin(), CP.DLLOverrides.end(), std::string{}, [](const std::string &a, const std::string &b){ return a.empty() ? b : a + ";" + b; }));
-        const QString External = RunProcessEnvironment.value("WINEDLLOVERRIDES");   // an operator's, from the host env
         if (!External.isEmpty())
         {
             LogOut("LaunchCommand::Compose", "WINEDLLOVERRIDES from the environment merged ahead of the package's: " + External.toStdString());
