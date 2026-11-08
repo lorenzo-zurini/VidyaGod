@@ -2066,11 +2066,30 @@ private slots:
         NodeIndex idx; ManifestModel::ScanBundleNodes(dir.path().toStdString(), idx); ManifestModel::DeriveFacts(idx);
 
         json cfg = json::object();                                 // no runner pin → default platform-graph resolve
-        std::vector<IpfsWrapper::FetchTarget> targets; std::string err;
-        QVERIFY(PackageCatalog::CollectRunnerChainTargets(idx, "game", cfg, targets, &err));
+        std::vector<IpfsWrapper::FetchTarget> targets;
+        PackageCatalog::CollectRunnerChainTargets(idx, "game", cfg, targets);
         bool hasWine = false;
         for (const auto & t : targets) { if (t.Cid == "CID_WINE") hasWine = true; }
         QVERIFY(hasWine);                       // runner build auto-pooled purely from the game's resolved chain
+    }
+
+    // The runner chain a download pools, adopts and gates on is every entry's, not the default's alone: a game with a
+    // native Play and a Windows entry needs the Windows one's runner too, or that entry cannot launch once downloaded.
+    // Teeth: resolve the default entry only.
+    void runner_chain_is_every_entrys()
+    {
+        QTemporaryDir dir; QVERIFY(dir.isValid());
+        writeJson(dir.path() + "/game.json",
+                  NodeFixture::Chain("game", {NodeFixture::Tile("g"), NodeFixture::Exec(ManifestModel::MachinePlatform(), "g"),
+                                              NodeFixture::Exec("win32", "g.exe", "Windows")}));
+        writeJson(dir.path() + "/wine.json",
+                  NodeFixture::Chain("wine", {NodeFixture::Runner(ManifestModel::MachinePlatform(), {"win32"}, "x")},
+                                     {"winebuild"}));
+        writeJson(dir.path() + "/winebuild.json",
+                  NodeFixture::Chain("winebuild", {NodeFixture::ContentCid("zip", "wine.zip", "CID_WINE")}));
+        NodeIndex idx; ManifestModel::ScanBundleNodes(dir.path().toStdString(), idx); ManifestModel::DeriveFacts(idx);
+        const auto Chain = PackageCatalog::RunnerChainIds(idx, "game", json::object());
+        QVERIFY(std::find(Chain.begin(), Chain.end(), "wine") != Chain.end());
     }
 
     // A locally-added bundle (a LIBRARY entry whose PATH is OUTSIDE any repo dir) must be indexed by the catalog —

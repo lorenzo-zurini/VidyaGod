@@ -276,30 +276,30 @@ VG_COMMANDS
             const auto I = Index(C);
             const Node &N = *NodeOf(*I, Command::Str(A, "game"));
             std::vector<IpfsWrapper::FetchTarget> T, R;
-            std::string Err, RErr;
+            std::string Err;
             const bool Ok = PackageCatalog::CollectContentTargets(*I, N.Key(), Grafts(A), T, &Err);
-            const bool ROk = PackageCatalog::CollectRunnerChainTargets(*I, N.Key(), *C.Config, R, &RErr);
+            PackageCatalog::CollectRunnerChainTargets(*I, N.Key(), *C.Config, R);
             json Sizes = json::object();
             for (const auto &[Cid, Sz] : PackageCatalog::NodeContentSizes(*I, N.Key(), Grafts(A))) Sizes[Cid] = Sz;
             return json{{"node", N.Key()}, {"hydrated", Installed::NodeHydrated(*I, N.Key())},
                         {"has_content", Installed::NodeHasContent(*I, N.Key())},
                         {"incomplete", PackageCatalog::NodeClosureIncomplete(*I, N.Key())},
                         {"content_cids", PackageCatalog::NodeContentCids(*I, N.Key(), Grafts(A))}, {"sizes", Sizes},
-                        {"targets", Ok ? Targets(T) : json(Err)}, {"runner_targets", ROk ? Targets(R) : json(RErr)}};
+                        {"targets", Ok ? Targets(T) : json(Err)}, {"runner_targets", Targets(R)}};
         }, {} });
 
     Command::Register({
         "packages hydrate", "download a game's content in place (blocking)",
-        "Fetch every missing content file of a game's closure (and its cover) where its nodes say — the engine's "
-        "download, blocking until done. The Catalog's Download goes through the app's download manager instead "
-        "(VidyaGod downloads start).", { GameArg(), Opt("grafts", "the grafts to fetch too (a,b,c)") },
-        { "packages hydrate 'Patch 2.0a'" }, { "PackageCatalog::HydrateNode" },
+        "Fetch every missing content file of a game's closure (its cover, its runner chain's build) where its nodes say "
+        "— the one download the Catalog's Download also runs (received packages it reaches are adopted first), "
+        "blocking until done.", { GameArg(), Opt("grafts", "the grafts to fetch too (a,b,c)") },
+        { "packages hydrate 'Patch 2.0a'" }, { "PackageCatalog::Download" },
         Needs::Config, true,
         [](Command::Context &C, const json &A) {
             const auto I = Index(C);
             const Node &N = *NodeOf(*I, Command::Str(A, "game"));
             std::string Err;
-            if (!PackageCatalog::HydrateNode(*I, N.Key(), Grafts(A), &Err, C.Config)) throw std::runtime_error(Err);
+            if (!PackageCatalog::Download(I, { N.Key() }, {}, Grafts(A), *C.Config, &Err)) throw std::runtime_error(Err);
             return json{{"hydrated", N.Key()}};
         }, {} });
 

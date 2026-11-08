@@ -144,7 +144,7 @@ std::vector<std::filesystem::path> PackageDirsWithUid(const NodeIndex &Idx, cons
 
 int DehydrateNode(const NodeIndex &Idx, const std::string &LaunchNodeId)
 {
-    // Inverse of HydrateNode: delete the node closure's local content-layer files (keeping the manifests + cover, so
+    // Inverse of Download: delete the node closure's local content-layer files (keeping the manifests + cover, so
     // the package returns to the Catalog as re-downloadable) and unpin + drop the references for their CIDs (so the
     // node stops "seeding" content that's no longer on disk). Cover art (META.COVER) is left in place — it's tiny,
     // git-tracked, and needed to render the catalog tile.
@@ -269,69 +269,93 @@ std::vector<std::string> RunnerChainIds(const NodeIndex &Idx, const std::string 
 {
     const Node *Launch = Idx.Find(LaunchNodeId);
     if (!Launch) return {};
-    ContainerParams Cp(Launch->BundleDir);
-    Cp.NodeIdx = &Idx; Cp.LaunchNodeId = LaunchNodeId; Cp.PackageUID = Launch->Uid;
-    std::vector<std::string> Ids;
-    for (const std::string &RunnerId : LaunchResolver::ResolveChainIds(Idx, *Launch, Cp, GlobalConfigJSON))
-        if (RunnerId != LaunchResolver::kNativeTerminalId) Ids.push_back(RunnerId);
-    return Ids;
-}
-
-bool CollectRunnerChainTargets(const NodeIndex &Idx, const std::string &LaunchNodeId,
-                               const nlohmann::ordered_json &GlobalConfigJSON,
-                               std::vector<IpfsWrapper::FetchTarget> &Out, std::string *Error)
-{
-    // A downloaded game is only PLAYABLE once its runtime is present too — so a full-closure hydrate pools the resolved
-    // runner CHAIN's build content (e.g. a Minecraft version's java_<major> JRE, or a wine game's Proton build) into the
-    // same fetch batch. The game's own PARENTS closure (dgVoodoo/jlib_*/DirectPlay content nodes) is already covered by
-    // CollectContentTargets — only the runner, which the closure walk skips (IsRunner), is added here. A native /
-    // build-less runner (kNativeTerminalId, a PATH runner) contributes nothing. Best-effort: an unresolvable chain is
-    // not fatal to the game content fetch (the launch itself will report a missing runner).
-    const Node *Launch = Idx.Find(LaunchNodeId);
-    if (!Launch) return true;
     if (Launch->IsGraft)
     {   // a graft runs on what it applies onto: that version's runtime
         const std::string Base = DefaultGraftBase(Idx, Launch->Key());
-        return Base.empty() || CollectRunnerChainTargets(Idx, Base, GlobalConfigJSON, Out, Error);
+        return Base.empty() || Base == LaunchNodeId ? std::vector<std::string>{} : RunnerChainIds(Idx, Base, GlobalConfigJSON);
     }
     ContainerParams Cp(Launch->BundleDir);
     Cp.NodeIdx = &Idx; Cp.LaunchNodeId = LaunchNodeId; Cp.PackageUID = Launch->Uid;   // for the per-package runner pin lookup
     //Every ENTRYPOINT's chain: the entries may run on different platforms (a native and a win32 build), and a
-    //hydrated game must be playable through whichever the user picks.
-    std::set<std::string> Pooled;
+    //downloaded game must be playable through whichever the user picks.
+    std::vector<std::string> Ids;
+    std::set<std::string> Seen;
     std::vector<std::string> Labels = Launch->EntrypointLabels();
     if (Labels.empty()) Labels.push_back(std::string());
     for (const std::string &Label : Labels)
     {
         Cp.Entrypoint = Label;
         for (const std::string &RunnerId : LaunchResolver::ResolveChainIds(Idx, *Launch, Cp, GlobalConfigJSON))
-        {
-            if (RunnerId == LaunchResolver::kNativeTerminalId || !Pooled.insert(RunnerId).second) continue;
-            std::string E;
-            if (!CollectRunnerNodeTargets(Idx, RunnerId, Out, &E))
-                LogWarn("PackageCatalog::CollectRunnerChainTargets", "runner '" + RunnerId + "': " + E);
-        }
+            if (RunnerId != LaunchResolver::kNativeTerminalId && Seen.insert(RunnerId).second) Ids.push_back(RunnerId);
     }
-    (void)Error;
-    return true;
+    return Ids;
 }
 
-bool HydrateNode(const NodeIndex &Idx, const std::string &LaunchNodeId, const GraftChoice &Grafts,
-                 std::string *Error, const nlohmann::ordered_json *GlobalConfigJSON)
+void CollectRunnerChainTargets(const NodeIndex &Idx, const std::string &LaunchNodeId,
+                               const nlohmann::ordered_json &GlobalConfigJSON, std::vector<IpfsWrapper::FetchTarget> &Out)
 {
+    // A downloaded game is only PLAYABLE once its runtime is present too — so a download pools the resolved runner
+    // CHAIN's build content (e.g. a Minecraft version's java_<major> JRE, or a wine game's Proton build) into the same
+    // fetch batch. The game's own closure is CollectContentTargets'; only the runners, which that walk skips, are added
+    // here. A native / build-less runner contributes nothing; one whose build cannot be collected is on the record.
+    for (const std::string &RunnerId : RunnerChainIds(Idx, LaunchNodeId, GlobalConfigJSON))
+    {
+        std::string E;
+        if (!CollectRunnerNodeTargets(Idx, RunnerId, Out, &E))
+            LogWarn("PackageCatalog::CollectRunnerChainTargets", "runner '" + RunnerId + "': " + E);
+    }
+}
+
+bool Download(std::shared_ptr<const NodeIndex> Idx, const std::vector<std::string> &LaunchIds,
+              const std::vector<std::string> &RunnerIds, const GraftChoice &Grafts,
+              nlohmann::ordered_json Config, std::string *Error)
+{
+    const IpfsWrapper::ForegroundHold Hold;   // closures, installs, content: one download, no gap for walks
+    std::string Err;
+    const auto Fail = [&](std::string Why) { if (Error) *Error = std::move(Why); return false; };
+    // Everything a download needs is in packages that have landed: a node a package contains comes with its own
+    // package (a node has one home), never fetched into this one. A gap means that package is not here yet.
+    {
+        std::vector<std::string> All = LaunchIds;
+        All.insert(All.end(), RunnerIds.begin(), RunnerIds.end());
+        for (const std::string &Lid : LaunchIds)
+            for (const std::string &Rid : RunnerChainIds(*Idx, Lid, Config)) All.push_back(Rid);
+        for (const std::string &Id : All)
+            if (const auto Missing = MissingFromClosure(*Idx, Id); !Missing.empty())
+                return Fail("'" + Id + "' contains " + std::to_string(Missing.size()) + " node(s) from a package that has "
+                            "not arrived (or is not shared with you), e.g. " + Missing.front());
+    }
+    // What it fetches, from an index: the selected launchables' content and each one's runner chain build, and the
+    // runners asked for. Collected twice: first as a dry run over the received index, so a download that cannot
+    // complete (content naming no source) fails BEFORE anything moves; then over the adopted packages' new home.
+    // Moved first, a failed download left a package out of CATALOG and not installed: gone from both tabs.
+    const auto Collect = [&](const NodeIndex &I, std::vector<IpfsWrapper::FetchTarget> &T) {
+        for (const std::string &Lid : LaunchIds)
+        {
+            if (!CollectContentTargets(I, Lid, Grafts, T, &Err)) return false;
+            CollectRunnerChainTargets(I, Lid, Config, T);
+        }
+        for (const std::string &Rid : RunnerIds)
+            if (!CollectRunnerNodeTargets(I, Rid, T, &Err)) return false;
+        return true;
+    };
+    if (std::vector<IpfsWrapper::FetchTarget> Dry; !Collect(*Idx, Dry)) return Fail(Err);
+    // INSTALL = ADOPT: a received package (its nodes live under CATALOG) moves into LIBRARY/<lib>/<pkg> before a byte
+    // of content is fetched, so the content lands in the library and the package is ours from here on — launchable,
+    // its grafts offered, re-published with our library. Every package the closures reach: adopt, then re-index once.
+    const std::set<std::filesystem::path> Adopt = PackagesToAdopt(*Idx, LaunchIds, RunnerIds, Config);
+    for (const std::filesystem::path &D : Adopt)
+        if (std::string AErr; !AdoptReceivedPackage(Config, D, nullptr, &AErr)) return Fail(AErr);
+    if (!Adopt.empty()) Idx = FreshCatalogIndex(Config);
+    // Pool EVERY fetch into ONE concurrent batch, so a game downloads TOGETHER with the runtime it needs (bounded by
+    // MaxConcurrentDownloads; dedup handles a runner both resolved and asked for).
     std::vector<IpfsWrapper::FetchTarget> Targets;
-    if (!CollectContentTargets(Idx, LaunchNodeId, Grafts, Targets, Error)) return false;
-    // Full-closure: also pool the resolved runner chain's build so the game is immediately launchable (identity = the
-    // node's Declare* layers; a game hydrate pulls the whole runtime, no separate "install the runner" step).
-    //Discarding this told the caller the hydrate SUCCEEDED with the runner build silently absent from the batch:
-    //the package downloads, reports done, and then cannot launch — and the download UI has nothing left to say.
-    if (GlobalConfigJSON && !CollectRunnerChainTargets(Idx, LaunchNodeId, *GlobalConfigJSON, Targets, Error))
-        LogErr("PackageCatalog::HydrateNode", "could not resolve the runner chain for '" + LaunchNodeId
-                   + "' — its runtime will NOT be fetched, so the package will download but not launch"
-                   + (Error && !Error->empty() ? " (" + *Error + ")" : ""));
-    if (!IpfsWrapper::FetchTargetsConcurrent(Targets, Error))
-    { LogErr("PackageCatalog::HydrateNode", "hydrate failed for '" + LaunchNodeId + "'"); return false; }
-    LogSucc("PackageCatalog::HydrateNode", "Hydrated node '" + LaunchNodeId + "' (" + std::to_string(Targets.size()) + " file(s)).");
+    if (!Collect(*Idx, Targets)) return Fail(Err);
+    Idx.reset();   // targets collected: the index is not held through the (long) fetch
+    if (!IpfsWrapper::FetchTargetsConcurrent(Targets, &Err)) return Fail(Err);
+    // Builds are now present locally → the runner is ready: its prefix assembles from the build at launch, so
+    // fetching the build IS the install.
+    LogSucc("PackageCatalog::Download", "Downloaded " + std::to_string(Targets.size()) + " file(s).");
     return true;
 }
 

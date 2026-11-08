@@ -423,7 +423,7 @@ std::shared_ptr<const NodeIndex> CurrentIndex(const nlohmann::ordered_json &Glob
 // ran up to 138 scans at once: 1700 % CPU, and 3 GB of heap glibc then kept. Any caller's config is used (they name
 // the same library).
 std::shared_ptr<const NodeIndex> FreshCatalogIndex(const nlohmann::ordered_json &GlobalConfigJSON);
-// Inverse of HydrateNode: delete the node closure's local content-layer files (keep manifests + cover) and unpin +
+// Inverse of Download: delete the node closure's local content-layer files (keep manifests + cover) and unpin +
 // drop-ref their CIDs, so the package returns to the Catalog as re-downloadable and the node stops seeding it.
 // Returns the number of files removed. Use only for managed (library-root) packages, never local/portable ones.
 int DehydrateNode(const NodeIndex &Idx, const std::string &LaunchNodeId);
@@ -460,28 +460,28 @@ std::vector<std::string> NodeContentCids(const NodeIndex &Idx, const std::string
 std::map<std::string, long long> NodeContentSizes(const NodeIndex &Idx, const std::string &LaunchNodeId,
                                                   const GraftChoice &Grafts = std::nullopt);
 
-// The launchable's RESOLVED runner-chain node ids (native terminal excluded) — what CollectRunnerChainTargets pools;
-// exposed so an installer can COMPLETE a received runner's closure before collecting its build.
+// The launchable's RESOLVED runner-chain node ids (native terminal excluded), over EVERY entrypoint (a native and a
+// win32 build each run on their own chain), a graft's being the version's it applies onto. The ONE resolve behind what
+// a download pools, what it adopts and what its gates check.
 std::vector<std::string> RunnerChainIds(const NodeIndex &Idx, const std::string &LaunchNodeId,
                                         const nlohmann::ordered_json &GlobalConfigJSON);
 
 [[nodiscard]] bool CollectContentTargets(const NodeIndex &Idx, const std::string &LaunchNodeId,
                            const GraftChoice &Grafts,
                            std::vector<IpfsWrapper::FetchTarget> &Out, std::string *Error = nullptr);
-// Gather (without fetching) the build download targets of the launchable's RESOLVED runner CHAIN, appending to Out —
-// so a full-closure hydrate pulls the game's runtime (JRE / Proton build) alongside its content. The game's own PARENTS
-// closure (library content nodes) is already covered by CollectContentTargets; this adds only the runner (which the
-// closure walk skips). Best-effort — an unresolvable chain is not fatal.
-[[nodiscard]] bool CollectRunnerChainTargets(const NodeIndex &Idx, const std::string &LaunchNodeId,
-                               const nlohmann::ordered_json &GlobalConfigJSON,
-                               std::vector<IpfsWrapper::FetchTarget> &Out, std::string *Error = nullptr);
-// Fetch (IPFS) every missing VFS layer in a launchable node's content closure + its cover, in place at each node's
-// bundle PATH, concurrently (bounded by MaxConcurrentDownloads). Worker-thread (blocks). False (with *Error) on a
-// failed required fetch. (= CollectContentTargets + IpfsWrapper::FetchTargetsConcurrent.) When GlobalConfigJSON is
-// given, ALSO pools the resolved runner chain's build (CollectRunnerChainTargets) so the game is immediately playable.
-[[nodiscard]] bool HydrateNode(const NodeIndex &Idx, const std::string &LaunchNodeId,
-                 const GraftChoice &Grafts = std::nullopt, std::string *Error = nullptr,
-                 const nlohmann::ordered_json *GlobalConfigJSON = nullptr);
+// Gather (without fetching) the build download targets of the launchable's runner chain (RunnerChainIds), appending
+// to Out — so a download pulls the game's runtime (JRE / Proton build) alongside its content. Best-effort: a runner
+// whose build cannot be collected is warned about, and the game content still downloads.
+void CollectRunnerChainTargets(const NodeIndex &Idx, const std::string &LaunchNodeId,
+                               const nlohmann::ordered_json &GlobalConfigJSON, std::vector<IpfsWrapper::FetchTarget> &Out);
+// The ONE download: the selected launchables (their content, the grafts ticked, each one's runner chain build) and the
+// runners asked for, fetched in one concurrent batch. Refused first when a closure reaches a package that has not landed,
+// or content names no source; then every received package the closures reach is adopted into the library (in Config,
+// a copy) and the index rebuilt before a byte moves. Worker thread (blocks). The Catalog's download, `packages
+// hydrate` and --fetch all come here. False with *Error on any failure.
+[[nodiscard]] bool Download(std::shared_ptr<const NodeIndex> Idx, const std::vector<std::string> &LaunchIds,
+                            const std::vector<std::string> &RunnerIds, const GraftChoice &Grafts,
+                            nlohmann::ordered_json Config, std::string *Error = nullptr);
 
 } // namespace PackageCatalog
 
