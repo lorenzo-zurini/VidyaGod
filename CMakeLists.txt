@@ -282,6 +282,8 @@ set(SHARED_SOURCES
     src/editor/pkgcanvas.cpp
     src/editor/pkgactions.h
     src/editor/pkgactions.cpp
+    src/editor/pkgactions_probes.cpp
+    src/editor/pkgactions_views.cpp
     src/editor/pkgcanvaspanel.h
     src/editor/pkgcanvaspanel.cpp
 

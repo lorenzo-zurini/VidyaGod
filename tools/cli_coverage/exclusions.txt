@@ -127,3 +127,5 @@ vgdelta::GenerateDelta                 # the in-memory form of GenerateDeltaToFi
 PreLaunchUi::GraftRows                 # private to PreLaunchWindow's files (prelaunchwindow_p.h): reached through its counted functions
 PreLaunchUi::SectionRow                # private to PreLaunchWindow's files (prelaunchwindow_p.h): reached through its counted functions
 PreLaunchUi::CollectVarValues          # private to PreLaunchWindow's files (prelaunchwindow_p.h): reached through its counted functions
+PkgActionsUi::StrOf                    # private to PkgActions' files (pkgactions_p.h): reached through its counted functions
+PkgActionsUi::HasLayers                # private to PkgActions' files (pkgactions_p.h): reached through its counted functions
