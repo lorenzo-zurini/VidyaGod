@@ -429,21 +429,11 @@ void IpfsModel::unpinMany(const QStringList & cids)
     refreshNow();
 }
 
-void IpfsModel::addSource(const QString & cid, const QString & name)
+bool IpfsModel::addSource(const QString & cid, const QString & name)
 {
-    auto & Cfg = *Model.config();
-    auto & Sources = Cfg["Settings"]["PackageSources"];
-    if (!Sources.is_array()) Sources = nlohmann::ordered_json::array();
-    for (const auto & S : Sources)
-    {
-        const std::string Have = S.is_object() ? S.value("CID", std::string())
-                               : (S.is_string() ? std::string(S) : std::string());
-        if (Have == cid.toStdString()) return;   // already configured
-    }
-    Sources.push_back({ {"NAME", name.toStdString()}, {"CID", cid.toStdString()} });
-    Model.save();
-    Model.syncSources();   // fetch + index it now (no-op per-CID once hydrated)
+    if (!Model.addPackageSource(cid, name)) return false;   // the one path: dedup, persist, fetch + index, signals
     refresh();
+    return true;
 }
 
 void IpfsModel::markQueued(const QString & cid)

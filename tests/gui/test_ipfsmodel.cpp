@@ -157,6 +157,23 @@ private slots:
         IpfsWrapper::StopNode();
     }
 
+    // The IPFS tab adds a source through the model's one path: a duplicate is refused (and said), a new one is kept and
+    // the Sources page is told. Teeth: the tab's own copy — its own dedup and write, and no packageSourcesChanged.
+    void a_source_added_here_is_the_models()
+    {
+        QTemporaryDir d; QVERIFY(d.isValid());
+        QDir Dir(d.path());
+        json cfg = json{{"Settings", {{"Paths", {{"LibraryRoot", (d.path() + "/LIBRARY").toStdString()}}},
+                                      {"PackageSources", json::array({ json{{"CID", "bafyexisting"}, {"NAME", "x"}} })}}},
+                        {"LIBRARY", json::array()}};
+        AppModel m(&cfg, &Dir); IpfsModel im(m);
+        QSignalSpy Told(&m, &AppModel::packageSourcesChanged);
+        QVERIFY(!im.addSource("bafyexisting", "again"));
+        QVERIFY(im.addSource("bafynewsource", "new"));
+        QCOMPARE((int)cfg["Settings"]["PackageSources"].size(), 2);
+        QVERIFY(Told.count() >= 1);
+    }
+
     void mark_queued_sets_state_and_signals()
     {
         AppModel m(&Cfg, &AppDir); IpfsModel im(m);

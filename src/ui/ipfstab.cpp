@@ -161,7 +161,8 @@ void IpfsTab::buildUi()
         const QString Name = QInputDialog::getText(this, "Add source", "Name for this source:",
                                                    QLineEdit::Normal, Cid.left(12), &ok).trimmed();
         if (!ok) return;
-        Model.addSource(Cid, Name.isEmpty() ? Cid.left(12) : Name);
+        if (!Model.addSource(Cid, Name.isEmpty() ? Cid.left(12) : Name))
+            QMessageBox::information(this, "Add source", "That CID is already one of your sources.");
     });
     toolbar->addWidget(addSrcBtn);
 

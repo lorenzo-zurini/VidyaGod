@@ -12,6 +12,8 @@
 
 #include "nlohmann/json.hpp"
 
+struct NodeIndex;
+
 // ---------------------------------------------------------------------------
 // CoverCache — resolves a package's cover art to a loadable image path. PAINT NEVER FETCHES.
 //
@@ -39,6 +41,10 @@ public:
     // Pure lookup: a loadable image path for Cover (string or {PATH,SOURCE}), or "" (paint it blank). A miss with
     // a known CID is recorded for the sweep; NOTHING is fetched here.
     QString resolve(const nlohmann::ordered_json &Cover, const QString &PackageDir);
+    // Every tile of an index whose cover is on disk nowhere here (neither ASSETS/<cid> nor its bundle) is recorded as
+    // a miss, as resolve() records one, so the next sweep fetches it before anyone scrolls to it — the ONE way covers
+    // are fetched (a rebuild calls it). Offline, the misses wait for the network instead of failing.
+    void prefetch(const NodeIndex &Idx);
 
     // The image at a resolved cover Path, decoded OFF the GUI thread: once a decode has finished it is handed over
     // (the cache keeps no copy); before that this starts it and returns a null pixmap (the placeholder), and

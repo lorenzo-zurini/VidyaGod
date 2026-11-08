@@ -11,6 +11,7 @@
 //     re-sweep enqueues nothing).
 
 #include "covercache.h"
+#include "manifestmodel.h"
 #include "downloadqueue.h"
 #include "ipfswrapper.h"
 
@@ -165,6 +166,33 @@ private slots:
             // cover-specific bound — frees the slot when a dead cover stalls. Teeth: drop the PrioritizeDownload → false.
             QVERIFY2(IpfsWrapper::DebugJobPrioritized("CID_COVER_SWEEP"), "a swept cover must be bumped to the front");
         }
+    }
+
+    // A rebuild's prefetch: every tile whose cover is here nowhere (not in ASSETS, not in its bundle) rides the next
+    // sweep, before anyone scrolls to it — into an ASSETS store not made yet, too (its first fetch makes it). A cover
+    // whose bytes sit in its bundle is not fetched (painting promotes it). Teeth: drop ASSETS misses as ghosts while
+    // the store does not exist; fetch the bundled one too.
+    void a_rebuilds_prefetch_rides_the_sweep()
+    {
+        auto * cc = CoverCache::instance();
+        QTemporaryDir d; QVERIFY(d.isValid());
+        cc->setAssetsRoot(d.path() + "/ASSETS");                 // not made yet
+        QDir().mkpath(d.path() + "/received");
+        QDir().mkpath(d.path() + "/bundled");
+        { std::ofstream f((d.path() + "/bundled/cover.png").toStdString()); f << "png"; }
+        NodeIndex Idx;
+        Node R; R.BundleDir = (d.path() + "/received").toStdString(); R.Meta = { {"COVER", CoverJson("CID_PF_RECEIVED")} };
+        Node B; B.BundleDir = (d.path() + "/bundled").toStdString();  B.Meta = { {"COVER", CoverJson("CID_PF_BUNDLED")} };
+        Idx.Nodes["r"] = R; Idx.Nodes["b"] = B;
+        cc->setOnlineProbe([]{ return true; });
+        cc->prefetch(Idx);
+        {
+            QueueSpy Spy;
+            cc->sweepNow();
+            QVERIFY(Spy.Saw("CID_PF_RECEIVED"));
+            QVERIFY(!Spy.Saw("CID_PF_BUNDLED"));
+        }
+        cc->setAssetsRoot(QString());
     }
 
     // Completion: a finished cover fires coverReady so surfaces re-resolve; foreign CIDs are ignored.

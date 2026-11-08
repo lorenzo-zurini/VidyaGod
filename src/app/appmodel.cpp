@@ -94,33 +94,8 @@ void AppModel::rebuildCatalog()
         setCatalog(std::move(Idx), std::move(Inputs), std::move(Said));
     }
 
-    // Covers ride the ONE rolling queue, no bespoke trigger: walk every tile's cover and enqueue any that isn't
-    // already in ASSETS as an ordinary (optional, verified) fetch. Uniform for LOCAL tiles (the fetch resolves from
-    // our own seeded block → copied into ASSETS) and RECEIVED tiles (fetched from the friend/gateway). EnqueueBatch
-    // de-dupes + no-ops an already-present dest, so this is cheap to call on every rebuild.
-    {
-        const QString AssetsRoot = QString::fromStdString(PackageCatalog::AssetsRootDir(*Config));
-        if (!AssetsRoot.isEmpty())
-        {
-            std::vector<IpfsWrapper::FetchTarget> Covers;
-            std::set<std::string> Seen;
-            for (const auto & [Key, N] : Catalog->Nodes)
-            {
-                if (!(N.Meta.is_object() && N.Meta.contains("COVER") && N.Meta["COVER"].is_object())) continue;
-                const auto & Cv = N.Meta["COVER"];
-                if (!(Cv.contains("SOURCE") && Cv["SOURCE"].is_object()
-                      && Cv["SOURCE"].value("TYPE", std::string()) == "ipfs")) continue;
-                const std::string Cid = Cv["SOURCE"].value("CID", std::string());
-                if (Cid.empty() || !Seen.insert(Cid).second) continue;
-                std::string Safe;                                   // ASSETS/<cid> — same shape as CoverCache::coverPath
-                for (char c : Cid) Safe.push_back((std::isalnum((unsigned char)c) || c == '-' || c == '_' || c == '.') ? c : '_');
-                const QString Dest = QDir::cleanPath(AssetsRoot + "/" + QString::fromStdString(Safe));
-                if (QFileInfo::exists(Dest)) continue;              // already in the shared store
-                Covers.push_back({ Cid, Dest.toStdString(), /*Optional=*/true, /*Dir=*/false, /*Verify=*/true });
-            }
-            if (!Covers.empty()) IpfsWrapper::EnqueueBatch(Covers);
-        }
-    }
+    // Covers: every tile's cover not on disk here is fetched by the cover cache's own sweep (one pipeline).
+    CoverCache::instance()->prefetch(*Catalog);
     emit catalogChanged();
 }
 

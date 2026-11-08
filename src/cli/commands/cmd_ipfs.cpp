@@ -627,7 +627,8 @@ VG_COMMANDS
             {
                 const auto P = List(A, "add-source");
                 if (P.size() != 2) throw Command::BadArgs("--add-source takes CID,NAME");
-                M.addSource(QString::fromStdString(P[0]), QString::fromStdString(P[1]));
+                if (!M.addSource(QString::fromStdString(P[0]), QString::fromStdString(P[1])))
+                    throw Command::BadArgs("'" + P[0] + "' is empty, or already a source");
             }
             if (A.contains("active")) M.setActive(Command::Str(A, "active") == "on");
             if (Command::Bool(A, "refresh", false)) M.refreshNow();

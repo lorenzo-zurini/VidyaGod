@@ -93,7 +93,9 @@ public slots:
     // full read of the selected content, so it is explicit and never automatic. Off-thread; single-flight.
     void forceRecheck(const QStringList & cids);
     void unpinMany(const QStringList & cids);       // stop seeding a batch, then one refresh
-    void addSource(const QString & cid, const QString & name);   // append a package source CID + kick a sync
+    //A package source by CID, through AppModel::addPackageSource (persisted, fetched and indexed off-thread). False:
+    //empty, or already a source.
+    bool addSource(const QString & cid, const QString & name);
 
 signals:
     void cidChanged(const QString & cid);    // one CID's state changed → upsert its row

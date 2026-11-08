@@ -154,7 +154,7 @@ VG_COMMANDS
         { "app housekeeping --heal", "app housekeeping --reconcile --push" },
         { "AppModel::healOrphansIfAny", "FriendSharing::reconcileReceivedLibraries", "FriendSharing::enqueueReceivedShares", "FriendSharing::applyFriendLibrarySnapshot",
           "FriendSharing::onFriendBlockLanded", "FriendSharing::reRegisterShares", "AppModel::pushSeedLevels", "FriendSharing::pushLanRoster", "FriendSharing::pushPresenceDeny",
-          "CoverCache::instance", "CoverCache::sweepNow", "CoverCache::missCount", "CoverCache::onTransferFinished", "AppModel::notifyCoversReady",
+          "CoverCache::instance", "CoverCache::sweepNow", "CoverCache::prefetch", "CoverCache::missCount", "CoverCache::onTransferFinished", "AppModel::notifyCoversReady",
           "LibraryTab::refreshCovers", "CatalogTab::refreshCovers" , "AsyncWork::Run", "AsyncWork::Job::Live", "AsyncWork::Job::Post" }, Needs::Model, true,
         [](Command::Context &C, const json &A) {
             AppModel &M = Model(C);

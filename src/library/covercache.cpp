@@ -1,4 +1,5 @@
 #include "covercache.h"
+#include "manifestmodel.h"   // NodeIndex — prefetch walks its tiles
 #include "contentfile.h"
 #include "downloadqueue.h"
 #include "ipfswrapper.h"
@@ -114,6 +115,33 @@ QString CoverCache::resolve(const nlohmann::ordered_json &Cover, const QString &
     return QString();
 }
 
+void CoverCache::prefetch(const NodeIndex &Idx)
+{
+    if (AssetsRoot.isEmpty()) return;
+    bool Added = false;
+    for (const auto &[Key, N] : Idx.Nodes)
+    {
+        (void)Key;
+        if (!N.Meta.is_object() || !N.Meta.contains("COVER")) continue;
+        QString File, Cid;
+        Locate(N.Meta["COVER"], File, Cid);
+        if (Cid.isEmpty()) continue;
+        const QString PackageDir = QString::fromStdString(N.BundleDir.string());
+        const QString Local = coverPath(File, Cid, PackageDir);
+        if (MissDest.contains(Local) || QFileInfo::exists(Local)) continue;
+        if (!File.isEmpty() && !PackageDir.isEmpty()
+            && QFileInfo::exists(QString::fromStdString(ContentFile::Path(PackageDir.toStdString(), File.toStdString(), Cid.toStdString()).string())))
+            continue;                                   // its bytes are in its bundle: resolve() promotes them when painted
+        MissDest.insert(Local, Cid);
+        Added = true;
+    }
+    if (Added && !SweepSoon)
+    {
+        SweepSoon = true;
+        QTimer::singleShot(SweepDebounceMs, this, &CoverCache::sweepNow);
+    }
+}
+
 QPixmap CoverCache::take(const QString &Path)
 {
     if (auto It = Decoded.find(Path); It != Decoded.end())
@@ -161,7 +189,9 @@ void CoverCache::sweepNow()
     for (auto It = MissDest.begin(); It != MissDest.end(); )
     {
         if (QFileInfo::exists(It.key())) { It = MissDest.erase(It); continue; }   // landed since recorded
-        if (!QFileInfo(It.key()).dir().exists()) { It = MissDest.erase(It); continue; } // package deleted → ghost miss
+        //A bundle path whose folder is gone: the package was deleted → a ghost miss. ASSETS is the store itself, made by
+        //its first fetch.
+        if (!It.key().startsWith(QDir::cleanPath(AssetsRoot) + "/") && !QFileInfo(It.key()).dir().exists()) { It = MissDest.erase(It); continue; }
         Batch.push_back({ It.value().toStdString(), It.key().toStdString(), /*Optional=*/true });
         ++It;
     }
