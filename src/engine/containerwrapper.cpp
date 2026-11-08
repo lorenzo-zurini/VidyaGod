@@ -769,6 +769,7 @@ bool ContainerWrapper::Cleanup()
     //The options' writes are what the stored files hold now. Only after a capture that stored them: a session that died
     //before its capture leaves the old copies, and noting the new values would make the next launch read the user's
     //older saved value as a change the game made.
+    CapturedAll = Captured;
     if (Captured && !ContainerParams.PendingWritten.empty())
     {
         nlohmann::ordered_json Config = InstanceStore::ReadConfig(GlobalConfigJSON, ContainerParams.PackageUID, ContainerParams.InstanceName);

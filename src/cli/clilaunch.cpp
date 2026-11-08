@@ -82,12 +82,12 @@ static nlohmann::ordered_json DumpResolution(struct ContainerParams &CP)   // no
 CliModes::PreparedLaunch::~PreparedLaunch() = default;
 
 std::unique_ptr<CliModes::PreparedLaunch> CliModes::PrepareLaunch(const LaunchRequest &Req, nlohmann::ordered_json &GlobalConfigJSON,
-                                                                std::string &Err)
+                                                                std::string &Err, std::shared_ptr<const NodeIndex> Loaded)
 {
     LaunchRequest LaunchParameters = Req;   // the node is filled in from the tile below
     auto Out = std::make_unique<PreparedLaunch>();
     {
-        Out->Index = PackageCatalog::CurrentIndex(GlobalConfigJSON);   // the app's own while no node file changed
+        Out->Index = Loaded ? std::move(Loaded) : PackageCatalog::CurrentIndex(GlobalConfigJSON);   // the app's own while no node file changed
         const auto &Index = Out->Index;   // repos + locally-added packages
         //--tile [--variant]: the row the shelf shows, named the way the shelf names it.
         if (LaunchParameters.LaunchNodeId.empty())
@@ -179,8 +179,10 @@ int CliModes::Launch(const LaunchRequest &Req, nlohmann::ordered_json &GlobalCon
         //A failed launch is exactly when the verdict matters most; returning early without one means the runs that
         //went wrong are the runs that say nothing. What the lookup and the resolve said is it (the session went with
         //the failure).
+        //The catalog loads first, outside it: another package's malformed node is not this launch's verdict.
+        std::shared_ptr<const NodeIndex> Index = PackageCatalog::CurrentIndex(GlobalConfigJSON);
         LogRecorder Said({});
-        P = PrepareLaunch(Req, GlobalConfigJSON, Err);
+        P = PrepareLaunch(Req, GlobalConfigJSON, Err, std::move(Index));
         if (!P)
         {
             const Diagnostics::Report R = Diagnostics::PrintVerdict((Req.ResolveOnly ? "Resolve of '" : "Launch of '") + Name + "'",
@@ -200,7 +202,12 @@ int CliModes::Launch(const LaunchRequest &Req, nlohmann::ordered_json &GlobalCon
     };
     if (Resolution) *Resolution = ResolutionOf(*P);
     if (Req.ResolveOnly) return Done("Resolve", 0);
-    if (!S.Build(&Err)) { LogErr("main.cpp", "'" + Name + "': " + Err + " — aborting launch."); return Done("Launch", 1); }
+    if (!S.Build(&Err))
+    {
+        if (S.Stopped()) return Done("Launch", 1);   // told to stop first: not started, as a stop before Run (no error)
+        LogErr("main.cpp", "'" + Name + "': " + Err + " — aborting launch.");
+        return Done("Launch", 1);
+    }
     const LaunchSession::Outcome O = S.Run();
     if (!O.Started) return Done("Launch", 1);   // refused before it started, or told to quit first
     return Done("Launch", O.Crashed ? 1 : O.ExitCode);

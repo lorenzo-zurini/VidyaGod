@@ -67,6 +67,7 @@ void LaunchThread::run()
     if (!S.Resolve(&Why)) return Finish(false, "Could not resolve what to run: " + QString::fromStdString(Why) + "\n\nSee the log for why.");
     if (!S.Build(&Why))
     {
+        if (S.Stopped()) return Finish(true, "");   // a deliberate stop is not a failure
         const QString Missing = MissingCoreMessage();
         return Finish(false, !Missing.isEmpty() ? Missing : "The runtime did not build: " + QString::fromStdString(Why) + "\n\nSee the log for the rest.");
     }

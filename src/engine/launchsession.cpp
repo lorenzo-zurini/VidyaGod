@@ -114,7 +114,7 @@ bool Session::Build(std::string *Why, bool Played)
         return false;
     }
     Built = true;
-    if (!Played || Req.DryRun) return true;
+    if (!Played || Req.DryRun || StopAsked) return true;   // stopped meanwhile: the game will not start
     //A secret drawn from its POOL this launch is kept, so the value is stable from here on: whatever the game wrote
     //into its prefix with it still matches next time. After the build, as "active" below: a failed build keeps nothing.
     const ContainerParams &CP = W->ContainerParams;
@@ -133,7 +133,6 @@ Outcome Session::Run()
 {
     Outcome O;
     if (!W || !Built) return O;
-    if (StopAsked) { O.Stopped = true; LogOut("LaunchSession", "Stopped: the game is not started."); return O; }
     const bool Ran = W->Execute();
     O.Crashed  = W->LastCrashed;
     O.Stopped  = W->UserKilled;
@@ -162,7 +161,8 @@ bool Session::Cleanup()
     if (!W || Down) return true;
     Down = true;
     const std::filesystem::path WriteLayer = W->ContainerParams.WriteLayerPath;
-    const bool Kept = W->Cleanup();   // what the package keeps is captured first, then the runtime comes down
+    W->Cleanup();   // what the package keeps is captured first, then the runtime comes down
+    const bool Kept = W->CapturedAll;
     //Only a layer this launch built: a refused build (the instance already running) left the running session's alone.
     if (Req.DryRun && Built && !WriteLayer.empty())
     {

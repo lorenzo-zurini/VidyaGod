@@ -60,7 +60,7 @@ struct LaunchRequest
 int Launch(const LaunchRequest &Req, nlohmann::ordered_json &GlobalConfigJSON, QDir &AppDataDir,
            nlohmann::ordered_json *Resolution = nullptr, Diagnostics::Report *Verdict = nullptr);
 //The first half of a launch: the node found and its session resolved (no mount, nothing run). Null with Err when it
-//does not resolve. The rest is the session's: Build, Run, Cleanup, Verdict.
+//does not resolve. The rest is the session's: Build, Run, Cleanup, Verdict. Index: the catalog, when loaded already.
 struct PreparedLaunch
 {
     std::shared_ptr<const NodeIndex> Index;
@@ -68,7 +68,8 @@ struct PreparedLaunch
     std::string Name;
     ~PreparedLaunch();
 };
-std::unique_ptr<PreparedLaunch> PrepareLaunch(const LaunchRequest &Req, nlohmann::ordered_json &GlobalConfigJSON, std::string &Err);
+std::unique_ptr<PreparedLaunch> PrepareLaunch(const LaunchRequest &Req, nlohmann::ordered_json &GlobalConfigJSON, std::string &Err,
+                                              std::shared_ptr<const NodeIndex> Index = nullptr);
 nlohmann::ordered_json ResolutionOf(PreparedLaunch &P);   // the resolved launch, as --resolve-only writes it
 }
 

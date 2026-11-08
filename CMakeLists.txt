@@ -516,7 +516,7 @@ set_target_properties(vg_tests PROPERTIES AUTOMOC OFF AUTOUIC OFF AUTORCC OFF)
 add_test(NAME vg_tests COMMAND vg_tests)
 # The layering (VG_LAYERS): every #include reaches its own layer or one before it.
 add_test(NAME layers COMMAND python3 -I ${CMAKE_SOURCE_DIR}/tools/layers/check_layers.py --src ${CMAKE_SOURCE_DIR}/src)
-set_tests_properties(vg_tests PROPERTIES ENVIRONMENT "HOME=${CMAKE_BINARY_DIR}/testhome")
+set_tests_properties(vg_tests PROPERTIES ENVIRONMENT "HOME=${CMAKE_BINARY_DIR}/testhome;TMPDIR=${CMAKE_BINARY_DIR}/testtmp")
 
 # ---- GUI / integration tests (Qt Test) — drive real widgets + models + services in-process, reusing the app
 # objects via vidyagod_objs, headless under the offscreen QPA platform. One exe per subsystem (add_gui_test).
@@ -530,11 +530,11 @@ function(add_gui_test name)
     target_compile_options(${name} PRIVATE ${VG_WARNINGS} $<$<BOOL:${VIDYAGOD_WERROR}>:-Werror>)
     set_target_properties(${name} PROPERTIES BUILD_RPATH "$ORIGIN")
     add_test(NAME ${name} COMMAND ${name})
-    #HOME is the test's own: a test that forgets to point a root at its temp dir lands in build/testhome, never in the
-    #user's ~/.VidyaGod (AppPaths::DataRoot() defaults to $HOME/.VidyaGod).
-    set_tests_properties(${name} PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen;HOME=${CMAKE_BINARY_DIR}/testhome")
+    #HOME and TMPDIR are the test's own: a test that forgets to point a root at its temp dir lands in build/testhome,
+    #never in the user's ~/.VidyaGod (AppPaths::DataRoot() defaults to $HOME/.VidyaGod), nor the app's session root.
+    set_tests_properties(${name} PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen;HOME=${CMAKE_BINARY_DIR}/testhome;TMPDIR=${CMAKE_BINARY_DIR}/testtmp")
 endfunction()
-file(MAKE_DIRECTORY ${CMAKE_BINARY_DIR}/testhome)
+file(MAKE_DIRECTORY ${CMAKE_BINARY_DIR}/testhome ${CMAKE_BINARY_DIR}/testtmp)
 
 # The launch-matrix fixture needs REAL deltas (a stub proves the plan, never the reconstruction), so it gets a
 # tiny generator built against the same vgdelta the mount uses. POSIX only: the harness mounts and launches.
@@ -633,7 +633,7 @@ add_gui_test(test_prelaunch)
 add_gui_test(test_commands)
 # The friends test starts the embedded node to exercise the real C ABI; keep it hermetic (no swarm/DHT). The offline
 # switch must be in the environment at PROCESS START — Go caches its env at init, so a runtime setenv is invisible.
-set_tests_properties(test_friends PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen;VIDYAGOD_IPFS_OFFLINE=1;HOME=${CMAKE_BINARY_DIR}/testhome")
+set_tests_properties(test_friends PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen;VIDYAGOD_IPFS_OFFLINE=1;HOME=${CMAKE_BINARY_DIR}/testhome;TMPDIR=${CMAKE_BINARY_DIR}/testtmp")
 
 # ---- Offscreen screenshot tool (manual): renders real widgets to PNG via QWidget::grab(). Not a ctest.
 add_executable(vg_prelaunch_probe EXCLUDE_FROM_ALL tests/gui/prelaunch_probe.cpp)

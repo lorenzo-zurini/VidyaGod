@@ -78,6 +78,7 @@ public:
     ContainerWrapper *Wrapper() const { return W.get(); }   // null before Resolve
     //From any thread: the game is told to stop — before it starts too (the build ends, the game is not started).
     void Stop();
+    bool Stopped() const { return StopAsked; }              // a stop was asked: a launch it ended is not a failure
 
     //What a missing core tool (the mount helper, FUSE/WinFsp, the sandbox) keeps from running games here, "" for none.
     static std::string MissingCore();

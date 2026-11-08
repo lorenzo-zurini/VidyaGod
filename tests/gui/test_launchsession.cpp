@@ -26,12 +26,18 @@ class LaunchSessionTest : public QObject
     json Cfg;
 
     //One game: a folder and a Play entry on this machine — and, with Secret, a key drawn from a pool.
-    std::shared_ptr<NodeIndex> Game(bool Secret = false)
+    std::shared_ptr<NodeIndex> Game(bool Secret = false, bool Keeps = false)
     {
+        //The program: a script that writes the file a KEEP layer keeps.
+        const std::filesystem::path Dir = (Data.path() + "/bundle/game").toStdString();
+        std::filesystem::create_directories(Dir);
+        { std::ofstream G(Dir / "game"); G << "#!/bin/sh\necho kept > \"$(dirname \"$0\")/save.dat\"\nexit 0\n"; }
+        std::filesystem::permissions(Dir / "game", std::filesystem::perms::owner_all);
         auto Idx = std::make_shared<NodeIndex>();
         const json E = { {"LABEL", "Play"}, {"HOST", ManifestModel::MachinePlatform()}, {"EXE", "game"},
                          {"TILE", {{"UID", "lsgame"}, {"TITLE", "lsgame"}}} };
         json Layers = json::array({ json{{"DIR", "game"}}, json{{"EXEC", json::array({ E })}} });
+        if (Keeps) Layers.push_back(json{{"KEEP", {{"FILES/save.dat", true}}}});
         if (Secret)
             Layers.insert(Layers.begin(), json{{"VARS", {{"cdkey", {{"DEFAULT", ""},
                 {"UI", {{"CONTROL", "secret"}, {"LABEL", "CD key"}, {"POOL", json::array({"AAAA-1111", "BBBB-2222"})}}}}}}}});
@@ -42,10 +48,10 @@ class LaunchSessionTest : public QObject
         ManifestModel::DeriveFacts(*Idx);
         return Idx;
     }
-    LaunchSession::Request Req(bool Secret = false)
+    LaunchSession::Request Req(bool Secret = false, bool Keeps = false)
     {
         LaunchSession::Request R;
-        R.Index = Game(Secret);
+        R.Index = Game(Secret, Keeps);
         R.NodeId = "lsgame";
         R.ReadBack = false;
         return R;
@@ -56,6 +62,8 @@ private slots:
     {
         QVERIFY(Data.isValid());
         AppPaths::SetDataRoot(Data.path().toStdString());   // never the real data dir
+        qputenv("TMPDIR", (Data.path() + "/tmp").toUtf8());     // nor the app's real session root
+        QDir().mkpath(Data.path() + "/tmp");
         Cfg = json{{"Settings", {{"Paths", {{"UserDataRoot", (Data.path() + "/USERDATA").toStdString()}}}}}};
     }
 
@@ -112,6 +120,72 @@ private slots:
         QVERIFY(Why.find("stopped") != std::string::npos);
         const LaunchSession::Outcome O = S.Run();
         QVERIFY(!O.Started);
+    }
+
+    // A launch keeps the secret it drew from the pool (the next one draws the same: what the game wrote with it still
+    // matches); `launch build`'s look inside does not, nor makes the instance. Teeth: keep it in neither; in both.
+    void a_launch_keeps_its_pool_secret_and_a_look_inside_does_not()
+    {
+        std::string Uid;
+        {
+            LaunchSession::Session S(Cfg, Req(true));
+            std::string Why;
+            QVERIFY2(S.Resolve(&Why), Why.c_str());
+            QVERIFY2(S.Build(&Why, false), Why.c_str());
+            Uid = S.Wrapper()->ContainerParams.PackageUID;
+            QVERIFY(S.Cleanup());
+        }
+        QVERIFY(InstanceStore::List(Cfg, Uid).empty());
+        std::string Drawn, Inst;
+        {
+            LaunchSession::Session S(Cfg, Req(true));
+            std::string Why;
+            QVERIFY2(S.Resolve(&Why), Why.c_str());
+            QVERIFY2(S.Build(&Why), Why.c_str());
+            Drawn = S.Wrapper()->ContainerParams.PickedSecrets.begin()->second;
+            Inst = S.Wrapper()->ContainerParams.InstanceName;
+            S.Cleanup();
+        }
+        const json I = InstanceStore::ReadConfig(Cfg, Uid, Inst);
+        QVERIFY(I.contains("VARIABLES") && I["VARIABLES"].contains("cdkey"));
+        QCOMPARE(I["VARIABLES"]["cdkey"].get<std::string>(), Drawn);
+    }
+
+    // A stop that lands between the build and the start: the game is not started, and it is a stop, not a failure —
+    // asked of the session, or of the wrapper itself (the race KillGame used to lose: no process yet, nothing killed).
+    // Teeth: drop the session's check before Run; drop the wrapper's latch in Execute.
+    void a_stop_between_the_build_and_the_start_starts_nothing()
+    {
+        for (const bool OnWrapper : {false, true})
+        {
+            LaunchSession::Session S(Cfg, Req());
+            std::string Why;
+            QVERIFY2(S.Resolve(&Why), Why.c_str());
+            QVERIFY2(S.Build(&Why, false), Why.c_str());
+            if (OnWrapper) S.Wrapper()->KillGame(); else S.Stop();
+            const LaunchSession::Outcome O = S.Run();
+            QVERIFY(!O.Started);
+            QVERIFY(O.Stopped);
+            QVERIFY(!std::filesystem::exists(S.Wrapper()->ContainerParams.TempPath / "WRITELAYER" / "save.dat"));
+        }
+    }
+
+    // A capture that fails fails the cleanup (and so `launch teardown`): the game wrote a kept file, and the instance's
+    // folder cannot be made. Teeth: report the wrapper's own Cleanup (true while no mount is stuck).
+    void a_failed_capture_fails_the_cleanup()
+    {
+        const QString Ro = Data.path() + "/ro";
+        QDir().mkpath(Ro);
+        const json Locked = json{{"Settings", {{"Paths", {{"UserDataRoot", (Ro + "/USERDATA").toStdString()}}}}}};
+        LaunchSession::Session S(Locked, Req(false, true));
+        std::string Why;
+        QVERIFY2(S.Resolve(&Why), Why.c_str());
+        QVERIFY2(S.Build(&Why, false), Why.c_str());
+        { std::ofstream(S.Wrapper()->ContainerParams.RuntimePath / "save.dat") << "kept"; }   // what the game would write
+        QFile::setPermissions(Ro, QFileDevice::ReadOwner | QFileDevice::ExeOwner);
+        const bool Kept = S.Cleanup();
+        QFile::setPermissions(Ro, QFileDevice::ReadOwner | QFileDevice::WriteOwner | QFileDevice::ExeOwner);
+        QVERIFY(!Kept);
     }
 };
 

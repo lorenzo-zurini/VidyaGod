@@ -109,6 +109,7 @@ public:
     std::atomic<int>  LastExitCode{0};
     std::atomic<bool> LastCrashed{false};
     std::atomic<bool> UserKilled{false};
+    bool CapturedAll = true;   // Cleanup: what the package keeps was all captured (false: a capture failed)
 private:
     std::atomic<bool> KillAsked{false};   // KillGame was called: Execute starts nothing, or kills what it just started
 };
