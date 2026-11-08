@@ -265,7 +265,7 @@ std::vector<PackageUpdate> AvailableUpdates(const nlohmann::ordered_json &Config
     std::vector<PackageUpdate> Out;
     if (!Config.contains("FriendLibraries") || !Config["FriendLibraries"].is_object()) return Out;
     const fs::path LibRoot = LibraryRootDir(Config);
-    std::optional<NodeIndex> Idx;                                     // built only when a version's nodes are all here
+    std::shared_ptr<const NodeIndex> Idx;   // the library's index: read only when a version's nodes are all here
     std::error_code Ec;
     for (const auto &[Peer, Libs] : Config["FriendLibraries"].items())
     {
@@ -298,7 +298,7 @@ std::vector<PackageUpdate> AvailableUpdates(const nlohmann::ordered_json &Config
                     {
                         std::set<std::string> Beyond = Here;
                         for (const std::string &C : *Listing) Beyond.erase(C);
-                        if (!Idx) Idx = BuildCatalogIndex(Config);
+                        if (!Idx) Idx = CurrentIndex(Config);
                         if (KeptNodes(*Idx, Dir, *Listing, Beyond, [&](const std::string &C) { return NodeFileJson(Dir / (C + ".json")); })
                                 .size() == Beyond.size())
                             continue;
@@ -354,7 +354,7 @@ bool StageUpdate(const nlohmann::ordered_json &Config, const PackageUpdate &U, S
     }
     S.Listing = *Listing;
     std::sort(S.Listing.begin(), S.Listing.end());
-    PlanSwitch(BuildCatalogIndex(Config), S);
+    PlanSwitch(*CurrentIndex(Config), S);
     if (Out) *Out = std::move(S);
     return true;
 }
@@ -381,7 +381,7 @@ bool ApplyStagedUpdate(const nlohmann::ordered_json &Config, const StagedUpdate 
     {
         //Planned again, under the lock: the library may have changed while the user read the plan. It may delete
         //only what the user was shown.
-        PlanSwitch(BuildCatalogIndex(Config), S);
+        PlanSwitch(*CurrentIndex(Config), S);
         std::set<fs::path> Shown;
         for (const auto &D : Confirmed.Deletes) Shown.insert(D.File);
         for (const auto &D : S.Deletes)
