@@ -66,12 +66,7 @@ QString LibraryGameCard::lastPlayed()
 {
     if (LastPlayedRead || !GlobalConfigJSON || RepUid.empty()) return LastPlayedCache;
     LastPlayedRead = true;
-    const auto Names = InstanceStore::List(*GlobalConfigJSON, RepUid);   // newest LASTRUN first
-    if (!Names.empty())
-    {
-        const auto C = InstanceStore::ReadConfig(*GlobalConfigJSON, RepUid, Names.front());
-        if (C.is_object() && C.contains("LASTRUN") && C["LASTRUN"].is_string()) LastPlayedCache = QString::fromStdString(C["LASTRUN"].get<std::string>());
-    }
+    LastPlayedCache = QString::fromStdString(InstanceStore::LastRun(*GlobalConfigJSON, RepUid));
     return LastPlayedCache;
 }
 
@@ -85,11 +80,7 @@ QString LibraryGameCard::HoverText()
     QStringList Facts;
     if (Bytes >= 0) Facts << HumanBytesQ(Bytes);
     const QString Last = lastPlayed();
-    if (!Last.isEmpty())
-    {
-        const QDateTime At = QDateTime::fromString(Last, Qt::ISODate);
-        Facts << "last played " + (At.isValid() ? QLocale().toString(At.toLocalTime().date(), QLocale::ShortFormat) : Last);
-    }
+    if (const QString When = PlayedWhen(Last); !When.isEmpty()) Facts << "last played " + When;
     if (!Facts.isEmpty()) T += "<br>" + Facts.join(" · ");
     if (Golden && GlobalConfigJSON)
         T += "<br><span style='color:#ffc83d'>Golden since " + QString::fromStdString(PackageCatalog::GoldenSince(*GlobalConfigJSON, Index && Index->Find(RepNodeId) ? Index->Find(RepNodeId)->GameKey() : RepUid)) + "</span>";

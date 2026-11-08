@@ -3,6 +3,7 @@
 // Driven entirely through a temp Settings.Paths.UserDataRoot — no AppPaths, no node.
 
 #include "instancestore.h"
+#include "guiformat.h"   // PlayedWhen
 
 #include <QtTest>
 #include <QTemporaryDir>
@@ -34,6 +35,25 @@ private slots:
         QCOMPARE((int)L.size(), 3);
         QCOMPARE(QString::fromStdString(L.front()), QString("new"));   // newest first
         QCOMPARE(QString::fromStdString(L.back()),  QString("old"));   // oldest last
+    }
+
+    // When a game was last played: its newest instance's LASTRUN, or the one named; nothing for a game never played —
+    // and said one way everywhere (today / yesterday / days ago / the date). Teeth: read the oldest instance.
+    void last_run_is_the_newest_instances_and_said_one_way()
+    {
+        QTemporaryDir T; QVERIFY(T.isValid());
+        const json C = cfg(T.path());
+        QCOMPARE(QString::fromStdString(InstanceStore::LastRun(C, "G")), QString());
+        QVERIFY(InstanceStore::WriteConfig(C, "G", "a", json{{"LASTRUN", "2024-01-01T00:00:00Z"}}));
+        QVERIFY(InstanceStore::WriteConfig(C, "G", "b", json{{"LASTRUN", "2025-06-01T00:00:00Z"}}));
+        QCOMPARE(QString::fromStdString(InstanceStore::LastRun(C, "G")), QString("2025-06-01T00:00:00Z"));
+        QCOMPARE(QString::fromStdString(InstanceStore::LastRun(C, "G", "a")), QString("2024-01-01T00:00:00Z"));
+        const QDateTime Now = QDateTime::currentDateTime();
+        QCOMPARE(PlayedWhen(Now.toUTC().toString(Qt::ISODate)), QString("today"));
+        QCOMPARE(PlayedWhen(Now.addDays(-1).toUTC().toString(Qt::ISODate)), QString("yesterday"));
+        QCOMPARE(PlayedWhen(Now.addDays(-5).toUTC().toString(Qt::ISODate)), QString("5 days ago"));
+        QCOMPARE(PlayedWhen("2024-03-03T12:00:00Z"), QString("3 Mar 2024"));
+        QCOMPARE(PlayedWhen(""), QString());
     }
 
     // A game with no instances yet: Active auto-creates DefaultInstance and it exists on disk with a LASTRUN.

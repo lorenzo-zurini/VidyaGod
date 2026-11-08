@@ -229,6 +229,20 @@ bool Clone(const nlohmann::ordered_json &Cfg, const std::string &PackageUID, con
     return true;
 }
 
+std::string LastRun(const nlohmann::ordered_json &Cfg, const std::string &PackageUID, const std::string &Instance)
+{
+    if (PackageUID.empty()) return std::string();
+    std::string Inst = Instance;
+    if (Inst.empty())
+    {
+        const auto Names = List(Cfg, PackageUID);   // newest LASTRUN first
+        if (Names.empty()) return std::string();
+        Inst = Names.front();
+    }
+    const auto C = ReadConfig(Cfg, PackageUID, Inst);
+    return C.is_object() && C.contains("LASTRUN") && C["LASTRUN"].is_string() ? C["LASTRUN"].get<std::string>() : std::string();
+}
+
 void TouchLastRun(const nlohmann::ordered_json &Cfg, const std::string &PackageUID, const std::string &Instance)
 {
     const std::string Inst = Instance.empty() ? Active(Cfg, PackageUID) : Instance;

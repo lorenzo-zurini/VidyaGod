@@ -1342,16 +1342,7 @@ void PreLaunchWindow::RefreshDetails(const nlohmann::ordered_json &M)
     if (Str("LOCALCOOP") == "Yes" || Str("NETWORKCOOP") == "Yes") Together << "co-op";
     Row("Multiplayer", Together.join(", "));
     Row("Versions", VariantCombo && VariantCombo->count() > 1 ? QString::number(VariantCombo->count()) : QString());
-    QString Last;
-    if (!PackageUID.empty())
-    {
-        const auto Cfg = InstanceStore::ReadConfig(*GlobalConfigJSON, PackageUID, InstanceName);
-        if (Cfg.is_object() && Cfg.contains("LASTRUN") && Cfg["LASTRUN"].is_string())
-        {
-            const QDateTime At = QDateTime::fromString(QString::fromStdString(Cfg["LASTRUN"].get<std::string>()), Qt::ISODate);
-            if (At.isValid()) Last = QLocale().toString(At.toLocalTime().date(), QLocale::ShortFormat);
-        }
-    }
+    const QString Last = PlayedWhen(QString::fromStdString(InstanceStore::LastRun(*GlobalConfigJSON, PackageUID, InstanceName)));
     Row("Last played", Last.isEmpty() ? QString("never") : Last);
     if (const std::string Since = PackageCatalog::GoldenSince(*GlobalConfigJSON, PackageUID); !Since.empty()) Row("Golden since", QString::fromStdString(Since));
     DetailsHtml = Rows;
@@ -1600,16 +1591,11 @@ void PreLaunchWindow::onInstanceChanged()
 void PreLaunchWindow::RefreshInstanceInfo()
 {
     if (!InstanceInfo) return;
-    const auto Cfg = PackageUID.empty() ? nlohmann::ordered_json() : InstanceStore::ReadConfig(*GlobalConfigJSON, PackageUID, InstanceName);
-    const QString Last = Cfg.is_object() && Cfg.contains("LASTRUN") && Cfg["LASTRUN"].is_string()
-                       ? QString::fromStdString(Cfg["LASTRUN"].get<std::string>()) : QString();
-    const QDateTime At = QDateTime::fromString(Last, Qt::ISODate);
-    if (!At.isValid()) { InstanceInfo->setText("Never played"); return; }
-    const qint64 Days = At.toLocalTime().date().daysTo(QDate::currentDate());
-    InstanceInfo->setText(Days <= 0 ? "Last played today" : Days == 1 ? "Last played yesterday"
-                          : Days < 30 ? QString("Last played %1 days ago").arg(Days)
-                          : "Last played " + At.toLocalTime().date().toString("d MMM yyyy"));
-    InstanceInfo->setToolTip(At.toLocalTime().toString(Qt::TextDate));
+    const QString Last = QString::fromStdString(InstanceStore::LastRun(*GlobalConfigJSON, PackageUID, InstanceName));
+    const QString When = PlayedWhen(Last);
+    if (When.isEmpty()) { InstanceInfo->setText("Never played"); return; }
+    InstanceInfo->setText("Last played " + When);
+    InstanceInfo->setToolTip(QDateTime::fromString(Last, Qt::ISODate).toLocalTime().toString(Qt::TextDate));
 }
 
 namespace {

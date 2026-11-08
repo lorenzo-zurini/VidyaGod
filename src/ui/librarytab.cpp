@@ -310,13 +310,7 @@ void LibraryTab::countSizes()
     for (LibraryGameCard * C : *LibraryGameCards) if (C && !C->RepUid.empty()) (*Played)[C->RepUid];
     AsyncWork::Run(this, [Cfg, Idx, Found, Played]{
             *Found = PackageCatalog::InstalledPackages(*Cfg, *Idx);
-            for (auto & [Uid, At] : *Played)
-            {
-                const auto Names = InstanceStore::List(*Cfg, Uid);   // newest LASTRUN first
-                if (Names.empty()) continue;
-                const auto C = InstanceStore::ReadConfig(*Cfg, Uid, Names.front());
-                if (C.is_object() && C.contains("LASTRUN") && C["LASTRUN"].is_string()) At = QString::fromStdString(C["LASTRUN"].get<std::string>());
-            }
+            for (auto & [Uid, At] : *Played) At = QString::fromStdString(InstanceStore::LastRun(*Cfg, Uid));
         },
         [this, Found, Played, Games]{
             Counting = false;

@@ -273,7 +273,7 @@ VG_COMMANDS
     Command::Register({
         "library details", "what a Library card's hover card says: series, year, size, last played, golden since",
         "The facts a card does not print on itself, as hovering it shows them.", { Pos("card", "the card (its key or title)") },
-        { "library details 749" }, { "LibraryGameCard::HoverText", "LibraryGameCard::lastPlayed" }, Needs::App, false,
+        { "library details 749" }, { "LibraryGameCard::HoverText", "LibraryGameCard::lastPlayed", "InstanceStore::LastRun", "PlayedWhen" }, Needs::App, false,
         [](Command::Context &C, const json &A) {
             LibraryGameCard *Card = Win(C).libraryCard(QString::fromStdString(Command::Str(A, "card")));
             if (!Card) throw Command::BadArgs("no single Library card '" + Command::Str(A, "card") + "'"

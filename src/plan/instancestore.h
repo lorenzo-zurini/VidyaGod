@@ -87,6 +87,9 @@ bool Clone (const nlohmann::ordered_json &Cfg, const std::string &PackageUID, co
 
 // Stamp LASTRUN = now (UTC ISO-8601) on an instance's config — call when a launch actually fires. Empty ⇒ active.
 void TouchLastRun(const nlohmann::ordered_json &Cfg, const std::string &PackageUID, const std::string &Instance = std::string());
+// When the game was last played: that instance's LASTRUN, or with none named its newest instance's (ISO-8601 UTC; ""
+// = never).
+std::string LastRun(const nlohmann::ordered_json &Cfg, const std::string &PackageUID, const std::string &Instance = std::string());
 
 // A filesystem-safe, single-segment instance name: non-empty, not "."/"..", no '/'/'\\', no control chars, ≤64 chars.
 bool ValidName(const std::string &Name);
