@@ -185,7 +185,7 @@ void LibraryTab::buildCards()
     qDeleteAll(*LibraryGameCards); LibraryGameCards->clear();
     //One tile per presentable GROUP of launchable nodes. Only HYDRATED groups (every edition's content present
     //locally) appear in the Library; un-hydrated ones live in the Available tab.
-    const auto Hyd = Installed::HydrationMap(Model.catalogIndex());   // O(N+E) once — never per-launchable (deep chains → O(N²))
+    const auto Hyd = Model.hydration();   // once per rebuild, shared with the other views — never per-launchable
     //The cards and the launch dialogs they open read one snapshot: a later re-index replaces it, and they are rebuilt.
     const std::shared_ptr<const NodeIndex> Snapshot = Model.catalogSnapshot();
     for (const Shelf::Tile & Tile : Shelf::Tiles(*Snapshot))

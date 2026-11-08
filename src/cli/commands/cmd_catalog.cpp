@@ -158,7 +158,7 @@ VG_COMMANDS
     Command::Register({
         "catalog rebuild", "re-scan the library from disk",
         "Re-index every package folder (LIBRARY and received CATALOG) into the node graph; every tab refreshes from it.", {},
-        { "catalog rebuild" }, { "AppModel::rebuildCatalog", "PackageCatalog::BuildCatalogIndex", "PackageCatalog::PublishAppIndex", "Platform::ReleaseFreedMemory", "LibraryTab::rebuild", "CatalogTab::rebuild", "RunnersPage::rebuild", "PackagesView::rebuildList", "LibraryView::setCards", "LibraryView::setGroups", "LibraryView::setEmptyMessage", "LibraryView::refreshVisuals", "LibraryView::repaintCards", "LibraryView::setHoverAction", "AppModel::catalogIndex" }, Needs::Model, false,
+        { "catalog rebuild" }, { "AppModel::rebuildCatalog", "PackageCatalog::BuildCatalogIndex", "PackageCatalog::PublishAppIndex", "Platform::ReleaseFreedMemory", "LibraryTab::rebuild", "CatalogTab::rebuild", "RunnersPage::rebuild", "PackagesView::rebuildList", "LibraryView::setCards", "LibraryView::setGroups", "LibraryView::setEmptyMessage", "LibraryView::refreshVisuals", "LibraryView::repaintCards", "LibraryView::setHoverAction", "AppModel::catalogIndex", "AppModel::hydration" }, Needs::Model, false,
         [](Command::Context &C, const json &) {
             C.Model->rebuildCatalog();
             return json{{"nodes", C.Model->catalogIndex().Nodes.size()}, {"tiles", C.Model->catalogIndex().Tiles.size()}};

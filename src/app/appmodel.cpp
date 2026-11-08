@@ -354,9 +354,16 @@ void AppModel::syncSources()
         });
 }
 
+const std::unordered_map<std::string, Installed::NodeHydration> & AppModel::hydration() const
+{
+    if (!Hydration) Hydration = Installed::HydrationMap(*Catalog);
+    return *Hydration;
+}
+
 void AppModel::setCatalog(NodeIndex Idx, std::string Inputs, std::vector<Diagnostics::Entry> Said)
 {
     Catalog = std::make_shared<const NodeIndex>(std::move(Idx));
+    Hydration.reset();
     PackageCatalog::PublishAppIndex(Catalog, std::move(Inputs), std::move(Said));
     std::thread([] { Platform::ReleaseFreedMemory(); }).detach();   // the replaced index back to the system, off this thread
 }

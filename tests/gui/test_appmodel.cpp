@@ -173,6 +173,29 @@ private slots:
         QVERIFY(spy.count() >= 1);                                  // catalog rebuilt
     }
 
+    // What of the catalog is on disk is worked out once per rebuild and shared by the views — and a rebuild works it
+    // out again: content that landed shows as installed after the rebuild that follows. Teeth: keep the map across
+    // rebuilds.
+    void hydration_is_the_rebuilds()
+    {
+        QTemporaryDir d; QVERIFY(d.isValid());
+        QDir appDir(d.path());
+        const QString Pkg = d.path() + "/LIBRARY/VidyaGod/[1] Game";
+        QDir().mkpath(Pkg);
+        NodeFixture::WriteNodes((Pkg + "/game.json").toStdString(), NodeFixture::Chain("game", {NodeFixture::Tile("1", "Game"),
+            NodeFixture::Exec("win32", "g.exe"), NodeFixture::ContentCid("zip", "game.zip", "bafkreigamezip")}, {}, {{"VARIANT", "Edition 1"}}));
+        json cfg = json{{"Settings", {{"Paths", {{"LibraryRoot", (d.path() + "/LIBRARY").toStdString()}}}}}, {"LIBRARY", json::array()}};
+        AppModel m(&cfg, &appDir);
+        m.rebuildCatalog();
+        QVERIFY(m.catalogIndex().Find("game"));
+        const std::string Key = m.catalogIndex().Find("game")->Key();
+        QVERIFY(m.hydration().count(Key));
+        QVERIFY(!m.hydration().at(Key).Hydrated);                 // its zip is not here yet
+        { std::ofstream f((Pkg + "/game.zip").toStdString()); f << "content"; }
+        m.rebuildCatalog();                                       // a download's end
+        QVERIFY(m.hydration().at(m.catalogIndex().Find("game")->Key()).Hydrated);
+    }
+
     // A package of LIBRARY that the config's LIBRARY list does not name (every package since the node cutover) is not
     // removed: its dehydrate would walk into other packages' shared content and delete files no source can bring back.
     // Teeth: drop the refusal and the package's content goes (the dehydrate deletes game.zip).

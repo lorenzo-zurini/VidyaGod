@@ -131,8 +131,8 @@ void RunnersPage::rebuild()
     }
     std::sort(Runners.begin(), Runners.end(), [](const Node* A, const Node* B){ return A->NodeId < B->NodeId; });
     // SAME fetch-based hydration model as the Catalog/Library tabs — a runner is no different from a game package:
-    // its state is read from HydrationMap (build content fetched?), not a bespoke runner-only predicate. O(N+E) once.
-    const auto Hyd = Installed::HydrationMap(Idx);
+    // its state is read from the hydration map (build content fetched?), not a bespoke runner-only predicate.
+    const auto Hyd = Model.hydration();   // once per rebuild, shared with the Library and the Catalog
     if (Runners.empty())
     {
         auto * None = new QTreeWidgetItem(Table, { "No runners found in your repositories." });

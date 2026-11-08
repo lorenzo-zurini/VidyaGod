@@ -11,10 +11,14 @@
 #include <map>
 #include <string>
 #include <memory>
+#include <optional>
 
 #include "nlohmann/json.hpp"
 #include "manifestmodel.h"   // NodeIndex
 #include "packagecatalog.h"  // SourceUpgradePlan (pending source-CID upgrade)
+#include "installed.h"       // Installed::NodeHydration
+
+#include <unordered_map>
 
 class FriendSharing;
 class QDir;
@@ -41,6 +45,9 @@ public:
     // rebuild for everyone — each download worker once copied the whole index, twice (46 resumed downloads held ~90
     // copies, 1.6 GB), and every snapshot was another copy. GUI thread.
     std::shared_ptr<const NodeIndex> catalogSnapshot() const { return Catalog; }
+    // What of the catalog is on disk (Installed::HydrationMap — a stat of every content file), worked out once per
+    // rebuild: the Library, the Catalog and the Runners page all redraw on the same catalogChanged. GUI thread.
+    const std::unordered_map<std::string, Installed::NodeHydration> & hydration() const;
     QDir *                   appDataDir()    const { return AppDataDir; }
     FriendSharing &          friends()       const { return *Friends; }   // the friend protocol (friendsharing.h)
     int                      cardPixelWidth() const { return CardPixelWidth; }
@@ -124,6 +131,7 @@ private:
     QDir *                   AppDataDir;
     FriendSharing *          Friends = nullptr;   // child QObject, made in the ctor
     std::shared_ptr<const NodeIndex> Catalog = std::make_shared<const NodeIndex>();
+    mutable std::optional<std::unordered_map<std::string, Installed::NodeHydration>> Hydration;   // of Catalog; reset with it
     // Make Idx the index (built from Inputs — BuildCatalogIndex's): it is what the app shows, and what code holding only
     // the config reads (PackageCatalog::CurrentIndex) while no node file has changed since.
     void setCatalog(NodeIndex Idx, std::string Inputs, std::vector<Diagnostics::Entry> Said);
