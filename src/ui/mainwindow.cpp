@@ -6,6 +6,7 @@
 #include "appmodel.h"
 #include "friendsharing.h"
 #include "downloadmanager.h"
+#include "downloaddialog.h"   // a card's Download and Cancel
 #include "traycontroller.h"
 #include "quitsignals.h"
 #include "librarytab.h"
@@ -91,7 +92,7 @@ MainWindow::MainWindow(nlohmann::ordered_json * gc, QDir * appData, QWidget * pa
 
     IpfsModelPtr = new IpfsModel(*Model, this);              // owns transfer state; single IpfsManager consumer
     connect(Model, &AppModel::ipfsHealthChanged, IpfsModelPtr, &IpfsModel::refreshNow);   // orphan heal ran → re-poll health/red→green
-    DownloadMgr  = new DownloadManager(*Model, *IpfsModelPtr, this, this);   // dialog parent = this; lifetime = this
+    DownloadMgr  = new DownloadManager(*Model, *IpfsModelPtr, this);   // lifetime = this
 
     // Daemon/foreground-hybrid tray. When a tray is available the app no longer quits on the last window closing —
     // closing/minimizing hide to the tray (keeping the node seeding); the tray "Quit" is the real exit path.
@@ -151,8 +152,8 @@ void MainWindow::BuildStaticUI()
     });
 
     // Catalog card clicks → the download controller.
-    connect(CatalogTabPtr, &CatalogTab::downloadRequested, DownloadMgr, &DownloadManager::startDownload);
-    connect(CatalogTabPtr, &CatalogTab::cancelRequested,   DownloadMgr, &DownloadManager::requestCancel);
+    connect(CatalogTabPtr, &CatalogTab::downloadRequested, this, [this](LibraryGameCard *C) { StartCardDownload(*DownloadMgr, *Model, C, this); });
+    connect(CatalogTabPtr, &CatalogTab::cancelRequested,   this, [this](LibraryGameCard *C) { CancelCardDownload(*DownloadMgr, C, this); });
 
     // Settings → Runners "Import" → the SAME download pump, fed a runner-only group (no launchables, one runner build).
     // A runner install is not a special flow — just this batch with runner-build targets, so it inherits persistence/

@@ -339,8 +339,9 @@ set(SHARED_SOURCES
     src/app/appmodel.cpp
     src/app/friendsharing.cpp
 
-    src/ui/downloadmanager.h
-    src/ui/downloadmanager.cpp
+    src/app/downloadmanager.h
+    src/app/downloadmanager.cpp
+    src/ui/downloaddialog.cpp
 
     src/ui/variantpicker.h
     src/ui/variantpicker.cpp

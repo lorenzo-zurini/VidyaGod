@@ -15,32 +15,39 @@
 #include <thread>
 #include <vector>
 
-#include "libraryview.h"   // LibraryGameCard: its slots take one, and their metatypes need it whole (P4: a selection, no widget)
+#include "shelf.h"   // Shelf::GraftChoice
+
+
+//The optional content's ticks as a content walk's graft choice: nothing decided yet = the row's pre-ticked grafts;
+//otherwise exactly the ticked ones.
+inline Shelf::GraftChoice TickedGrafts(const std::map<std::string, bool> &Ticks)
+{
+    if (Ticks.empty()) return std::nullopt;
+    std::vector<std::string> Out;
+    for (const auto &[K, On] : Ticks) if (On) Out.push_back(K);
+    return Out;
+}
 
 class AppModel;
 class IpfsModel;
-class QWidget;
 
 // ---------------------------------------------------------------------------
-// DownloadManager — owns the Catalog download lifecycle (the per-package download dialog, the hydrate/runner-import
-// worker, and the in-flight bookkeeping). It reads catalog/config through the AppModel and, on completion, asks the
-// model to rebuild the catalog. It NEVER references the other views: it reports transfer/progress state purely via
-// signals (the IPFS tab + Catalog cards connect to them). A QWidget is held solely to parent the modal dialog.
+// DownloadManager — the download service: the hydrate/runner-import worker, the in-flight bookkeeping (what each
+// download needs, its size-weighted progress, cancels), and resume after a restart. It reads catalog/config through
+// the AppModel and, on completion, asks the model to rebuild the catalog. No widget: it reports purely via signals
+// (the IPFS tab + Catalog cards connect to them); a card's Download and Cancel — the dialog, the question — are the
+// UI's (downloaddialog.h), and end here with a decided selection or key.
 // ---------------------------------------------------------------------------
 class DownloadManager : public QObject
 {
     Q_OBJECT
 public:
-    DownloadManager(AppModel & model, IpfsModel & ipfs, QWidget * dialogParent, QObject * parent = nullptr);
+    DownloadManager(AppModel & model, IpfsModel & ipfs, QObject * parent = nullptr);
     //Cancels the downloads in flight and JOINS their workers: a worker must never outlive the manager it posts back to
     //(nor the application — a thread still inside Qt while the app tears down crashes its cleanup).
     ~DownloadManager() override;
 
 public slots:
-    // The per-package download dialog + worker.
-    void startDownload(LibraryGameCard * card);
-    // Confirm + abort the in-flight download for a card's package.
-    void requestCancel(LibraryGameCard * card);
     // Re-launch any downloads that a previous run left interrupted (crash/close) — call once at startup when online.
     void resumeAll();
 
@@ -50,6 +57,7 @@ public:
     // runner install is not special — it is just this pump with runner-build targets in the batch.
     void beginDownload(const QString & key, const std::vector<std::string> & launchIds,
                        const std::vector<std::string> & runnerIds, const std::map<std::string, bool> & toggles);
+    bool downloading(const QString & key) const { return DownloadingUids.contains(key); }   // in flight
 
 signals:
     void transfersChanged();                       // the transfer set changed — refresh the IPFS tab
@@ -70,7 +78,7 @@ public:
     QStringList cidsOf(const QString &Key) const { return DownloadUidCids.value(Key); }   // a download's content CIDs
     //The CIDs cancelling Key's download may abort: its own, minus those another in-flight download still needs.
     QStringList cancellableCids(const QString &Key) const;
-    //Cancel Key's download (requestCancel, after the user confirms): abort what is its own alone, and remember it.
+    //Cancel Key's download (a card's Cancel, once the user confirms): abort what is its own alone, and remember it.
     void cancelKey(const QString &Key);
     //What a cancelled download's end may purge from the cache: the CIDs its cancel aborted whose fetch did not finish
     //and that no other in-flight download needs — never a finished file, never another card's content.
@@ -84,7 +92,6 @@ private:
 
     AppModel & Model;
     IpfsModel & Ipfs;                            // source of truth for per-CID transfer progress + size
-    QWidget *  DialogParent;
 
     QSet<QString>               DownloadingUids;   // PACKAGEUIDs with an import in flight (survives rebuilds)
     QSet<QString>               CancellingUids;    // PACKAGEUIDs the user cancelled (suppresses the failure dialog)

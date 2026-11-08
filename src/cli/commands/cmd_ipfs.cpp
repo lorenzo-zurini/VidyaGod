@@ -4,6 +4,7 @@
 #include "command.h"
 #include "cmdutil.h"
 #include "downloadmanager.h"
+#include "downloaddialog.h"
 #include "downloadqueue.h"
 #include "ipfsmodel.h"
 #include "ipfswrapper.h"
@@ -657,7 +658,7 @@ VG_COMMANDS
         { Opt("games", "game nodes (a,b)"), Opt("runners", "runner nodes (a,b)"), Opt("key", "the card key"), Opt("toggle", "options: k=1,k2=0"),
           Opt("card", "a Catalog card (its title or key): press its Download") },
         { "downloads start --games bafkreiank43ketmdy2jtdcnn5utluobf53avcuubisi3ajtdxrcnmyteka", "downloads start --card 749" },
-        { "DownloadManager::beginDownload", "DownloadManager::startDownload", "IpfsModel::markQueued", "IpfsModel::clearQueued",
+        { "DownloadManager::beginDownload", "StartCardDownload", "AskDownload", "TickedGrafts", "DownloadManager::downloading", "IpfsModel::markQueued", "IpfsModel::clearQueued",
           "MainWindow::catalogCard", "CatalogTab::view", "LibraryView::cardAt" , "CatalogTab::markDownloading", "CatalogTab::setDownloadProgress", "CatalogTab::clearDownloading", "IpfsFetchReady" }, Needs::Ui, true,
         [](Command::Context &C, const json &A) {
             MainWindow &W = Win(C);
@@ -666,7 +667,7 @@ VG_COMMANDS
                 LibraryGameCard *Card = W.catalogCard(QString::fromStdString(Command::Str(A, "card")));
                 if (!Card) throw Command::BadArgs("no single Catalog card '" + Command::Str(A, "card") + "'"
                                                   + W.cardMiss(true, QString::fromStdString(Command::Str(A, "card"))).toStdString());
-                W.downloads()->startDownload(Card);
+                StartCardDownload(*W.downloads(), *C.Model, Card, &W);
                 return json{{"started", Command::Str(A, "card")}};
             }
             const auto I = Index(C);
@@ -690,7 +691,7 @@ VG_COMMANDS
         "Cancel by card key. With --card, it is the Catalog card's own Cancel (its confirmation included).",
         { Opt("key", "the download's card key"), Opt("card", "a Catalog card: press its Cancel") },
         { "downloads cancel --key 749", "downloads cancel --card 749" },
-        { "DownloadManager::cancelKey", "DownloadManager::requestCancel" }, Needs::Ui, false,
+        { "DownloadManager::cancelKey", "CancelCardDownload" }, Needs::Ui, false,
         [](Command::Context &C, const json &A) {
             MainWindow &W = Win(C);
             if (A.contains("card"))
@@ -698,7 +699,7 @@ VG_COMMANDS
                 LibraryGameCard *Card = W.catalogCard(QString::fromStdString(Command::Str(A, "card")));
                 if (!Card) throw Command::BadArgs("no single Catalog card '" + Command::Str(A, "card") + "'"
                                                   + W.cardMiss(true, QString::fromStdString(Command::Str(A, "card"))).toStdString());
-                W.downloads()->requestCancel(Card);
+                CancelCardDownload(*W.downloads(), Card, &W);
                 return json{{"cancelling", Command::Str(A, "card")}};
             }
             W.downloads()->cancelKey(QString::fromStdString(Command::Str(A, "key")));
