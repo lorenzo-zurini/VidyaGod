@@ -240,7 +240,7 @@ VG_COMMANDS
 
     Command::Register({
         "app startup", "show the main window as start-up does (or bring it up in the tray)", "",
-        { Flag("tray", "start in the tray") }, { "app startup" }, { "MainWindow::startup", "MainWindow::model" }, Needs::Ui, false,
+        { Flag("tray", "start in the tray") }, { "app startup" }, { "MainWindow::startup", "MainWindow::model", "NodeService::start" }, Needs::Ui, false,
         [](Command::Context &C, const json &A) {
             Win(C).startup(Command::Bool(A, "tray", false));
             return json{{"visible", Win(C).isVisible()}, {"model", Win(C).model() == C.Model}};

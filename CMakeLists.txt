@@ -339,6 +339,7 @@ set(SHARED_SOURCES
     src/app/appmodel.h
     src/app/appmodel.cpp
     src/app/friendsharing.cpp
+    src/app/nodeservice.cpp
 
     src/app/downloadmanager.h
     src/app/downloadmanager.cpp

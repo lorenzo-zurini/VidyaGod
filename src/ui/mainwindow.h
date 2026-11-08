@@ -61,13 +61,11 @@ protected:
 
 private:
     void BuildStaticUI();
-    void applyNetworkingState(bool enabled);       // start/stop the node (runtime toggle); the tabs' banners follow by themselves
-    void startNodeAsync();                         // open the IPFS repo off-thread (deferred so startup isn't blocked)
-    void onNodeReady();                            // node repo opened → start resuming interrupted downloads
 
     AppModel        * Model       = nullptr;   // owns config + catalog + persisted UI state; the signal hub
     IpfsModel       * IpfsModelPtr = nullptr;   // download/IPFS runtime state (single transfer-event consumer)
     DownloadManager * DownloadMgr = nullptr;   // owns the Catalog download lifecycle
+    class NodeService *Node = nullptr;   // the IPFS node's start, retry, stop and the work its readiness unblocks
     TrayController  * Tray        = nullptr;    // tray icon + close/minimize/start-in-tray behavior
     bool              ReallyQuitting = false;   // set by the tray "Quit" path so closeEvent quits instead of hiding
 
@@ -78,10 +76,6 @@ private:
     IpfsTab     * IpfsTabPtr       = nullptr;
     NetworkTab  * NetworkTabPtr    = nullptr;
     QTimer      * CoverRefreshTimer = nullptr;  // debounces lazy cover-ready bursts into one model notification
-    QTimer      * ResumeTimer       = nullptr;  // polls for the node's network coming up, then resumes downloads once
-    bool          NetworkingOn      = false;    // mirrors the runtime networking toggle (gates node-start retries)
-    bool          NodeStartPending  = false;    // a StartNode attempt (or scheduled retry) is in flight
-    int           NodeRetryDelayMs  = 2000;     // backoff for failed node starts (doubles up to 30s)
 };
 
 #endif // MAINWINDOW_H
