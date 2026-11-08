@@ -26,6 +26,7 @@ class CatalogTab : public QWidget
     Q_OBJECT
 public:
     CatalogTab(AppModel &model, QWidget *parent = nullptr);
+    ~CatalogTab() override;   // the card pool is the tab's
     LibraryView * view() const { return AvailableView; }   // the card grid (the CLI finds a card by it)
 
 public slots:

@@ -63,7 +63,10 @@ public:
     //The owning bundle dir of the current variant — used by MainWindow::RefreshPackage to target this dialog.
     const std::string & packagePath() const { return BundleDir; }
     //Rebuilds the variant combo + runner + module/CustomVar pickers (e.g. after the package was edited).
-    void ReloadAndRebuild();
+    //The package changed on disk: rebuild everything from Fresh (the library's new index; null = the one shown). An edit
+    //re-mints a node — its CID changes, its working-tree handle does not — so each edition and the chosen row follow
+    //their node into it by handle.
+    void ReloadAndRebuild(std::shared_ptr<const NodeIndex> Fresh = nullptr);
 
 protected:
     //Rescale the cover to fit its column on every resize, keeping aspect ratio + vertical centering.

@@ -1536,9 +1536,24 @@ void PreLaunchWindow::RefreshGraftEntryRows()
     if (Vanished) onVariantChanged();
 }
 
-void PreLaunchWindow::ReloadAndRebuild()
+void PreLaunchWindow::ReloadAndRebuild(std::shared_ptr<const NodeIndex> Fresh)
 {
-    // Drop editions that no longer exist (e.g. after an edit) and rebuild everything from the (shared) index.
+    if (Fresh && Fresh != IndexOwned)
+    {
+        const auto Follow = [&](const std::string &Id) -> std::string {
+            if (Id.empty() || Fresh->Find(Id)) return Id;
+            const Node *Old = Index ? Index->Find(Id) : nullptr;
+            const std::string H = Old && !Old->Handle.empty() ? Old->Handle : Id;
+            for (const auto &[K, N] : Fresh->Nodes) if (N.Handle == H || K == H) return K;
+            return Id;   // gone: dropped below
+        };
+        for (std::string &Id : GroupNodeIds) Id = Follow(Id);
+        LaunchNodeId = Follow(LaunchNodeId);
+        RowGraft = Follow(RowGraft);
+        IndexOwned = std::move(Fresh);
+        Index = IndexOwned.get();
+    }
+    // Drop editions that no longer exist (e.g. after an edit) and rebuild everything from the index.
     std::vector<std::string> Live;
     for (const std::string& Id : GroupNodeIds) if (Index && Index->Find(Id)) Live.push_back(Id);
     GroupNodeIds = Live;
@@ -1874,7 +1889,9 @@ void PreLaunchWindow::onLaunchClicked()
     LogErrors = LogWarnings = 0;
     UpdateLogTabTitle();
 
-    // Build + start the worker — native node launch via LaunchNodeId.
+    // Build + start the worker — native node launch via LaunchNodeId. The last launch's has finished (Launch is shown
+    // only then): it goes, rather than one more thread object per launch for the dialog's life.
+    if (LaunchWorker) { LaunchWorker->wait(); delete LaunchWorker; }
     LaunchWorker = new LaunchThread();
     LaunchWorker->GlobalConfigJSON = *GlobalConfigJSON;
     LaunchWorker->Index            = IndexOwned;                              // the graph this dialog shows, not a re-scan

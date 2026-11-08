@@ -42,6 +42,12 @@ CatalogTab::CatalogTab(AppModel &model, QWidget *parent)
 
 // Download-state hooks (driven by DownloadManager signals) — paint download state onto this tab's cards and track
 // the in-flight set so a rebuild() can restore the overlay without querying anyone.
+CatalogTab::~CatalogTab()
+{
+    qDeleteAll(*AvailableGameCards);
+    delete AvailableGameCards;
+}
+
 void CatalogTab::markDownloading(const QString &groupKey)
 {
     ActiveDownloads[groupKey] = 0.0;

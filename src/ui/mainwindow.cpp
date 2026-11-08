@@ -227,12 +227,12 @@ void MainWindow::RefreshPackage(const QString & PackagePath)
     }
 
     QTimer::singleShot(0, [Mw, Dialogs]() {
-        // Rebuild the catalog through the live MainWindow's model (every tab refreshes via catalogChanged; the
-        // CatalogIndex address is stable, so dialogs borrowing it stay valid).
+        // Rebuild the catalog through the live MainWindow's model (every tab refreshes via catalogChanged).
         if (Mw && Mw->Model) Mw->Model->rebuildCatalog();
-        // Reload any still-open prelaunch dialog(s) for this bundle.
+        // Reload any still-open prelaunch dialog(s) for this bundle, onto the index just built: theirs is the old one.
+        const std::shared_ptr<const NodeIndex> Fresh = Mw && Mw->Model ? Mw->Model->catalogSnapshot() : nullptr;
         for (const QPointer<PreLaunchWindow> & PL : Dialogs)
-            if (PL) PL->ReloadAndRebuild();
+            if (PL) PL->ReloadAndRebuild(Fresh);
     });
 }
 

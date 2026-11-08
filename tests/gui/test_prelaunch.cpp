@@ -435,6 +435,36 @@ private slots:
         QCOMPARE(Got, QString("100%%"));
     }
 
+    // An open launch dialog follows its package when it is edited: an edit re-mints the node (a new CID, the same
+    // working-tree handle), and the dialog, reloaded onto the library's new index, shows the edited edition — not the
+    // index it opened on, which no longer has it. Teeth: reload from the dialog's own index; follow by CID alone.
+    void an_open_dialog_follows_its_edited_package()
+    {
+        const auto game = [](const char *Cid, const char *Variant) {
+            Node N = parse(json{ {"CID", Cid}, {"LABEL", "game"}, {"VARIANT", Variant},
+                {"LAYERS", json::array({ json{{"EXEC", json::array({ json{{"LABEL", "Play"},
+                    {"HOST", ManifestModel::MachinePlatform()}, {"EXE", "game.exe"}, {"TILE", {{"UID", "7"}, {"TITLE", "Game"}}}} })}} })} });
+            N.Handle = "gamehandle";
+            return N;
+        };
+        auto Before = std::make_shared<NodeIndex>();
+        Before->Nodes["bafkreioldgame"] = game("bafkreioldgame", "Original");
+        ManifestModel::DeriveFacts(*Before);
+        auto After = std::make_shared<NodeIndex>();
+        After->Nodes["bafkreinewgame"] = game("bafkreinewgame", "Original (edited)");
+        ManifestModel::DeriveFacts(*After);
+        json Cfg = json{{"Settings", json::object()}};
+        PreLaunchWindow W(&Cfg, std::shared_ptr<const NodeIndex>(Before), {"bafkreioldgame"}, "7");
+        const auto Shows = [&](const QString &Text) {
+            for (QComboBox *C : W.findChildren<QComboBox *>())
+                for (int i = 0; i < C->count(); ++i) if (C->itemText(i).contains(Text)) return true;
+            return false;
+        };
+        QVERIFY(Shows("Original"));
+        W.ReloadAndRebuild(After);
+        QVERIFY(Shows("(edited)"));
+    }
+
     // A launch resolves on the graph its dialog shows (LaunchThread::Index, AppModel's snapshot), not on a re-scan of
     // the library: a node only that graph holds is found, and with no graph the launch refuses. Teeth: re-scan the
     // config in run() (the node is "not found" — the config names no library); ignore a missing graph.
