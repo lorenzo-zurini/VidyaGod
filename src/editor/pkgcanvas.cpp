@@ -1659,83 +1659,72 @@ static void DrawWires(PkgCanvasState &S, ImDrawList *DL, bool Hover)
 // The frame
 // ================================================================================================================
 
-void PkgCanvas::frame()
+//The "+ Node" menu (the toolbar's, and the canvas's right-click "Add node here"): a type, or a recipe for this game
+//(another version, a mod), placed at At — or beside the game it builds on — where it hides nothing, then opened to fill in.
+void PkgCanvas::addMenu(ImVec2 At)
 {
     PkgCanvasState &S = *m_s;
     Document &D = *S.Doc;
-    if (S.BuiltRev != D.Revision()) Rebuild(S);
-    if (!S.LayoutValid && S.M == PkgCanvasState::Mode::Idle) { Layout(S); if (S.AutoFrame) S.FramePending = true; }
-    UpdateRects(S);
-    S.DrawnRect.clear();
-    S.CoversDrawn.clear();
-    S.Animating = false;
+    std::string Type;
+    //The game a recipe builds on: the selected node of this package, else its first version.
+    std::string Base;
+    if (const std::string Sh = selectedHandle(); !Sh.empty() && D.IndexOf(Sh) >= 0) Base = Sh;
+    for (int I = 0; I < D.Count() && Base.empty(); ++I) if (!StrOf(D.Node(I), "VARIANT").empty()) Base = D.Handle(I);
+    //No version yet: the game's files with its tile at the base (an installer captured, a disc's install) are what
+    //the first version builds on.
+    for (int I = 0; I < D.Count() && Base.empty(); ++I) if (HasTile(D.Node(I))) Base = D.Handle(I);
+    const std::string BaseLabel = Base.empty() ? std::string() : NodeTitle(D.Node(D.IndexOf(Base)), Base);
+    json Recipe;
+    const bool Typed = TypePicker(Type, true);
+    ImGui::SeparatorText("For this game");
+    ImGui::BeginDisabled(Base.empty());
+    if (ImGui::Selectable("another version")) Recipe = PkgGraph::VersionNode(Base, BaseLabel);
+    if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
+        ImGui::SetTooltip("%s", Base.empty() ? "Make the game's first version first" : ("A source port, a patch, a fan update: contains \"" + BaseLabel + "\" and runs its own program").c_str());
+    if (ImGui::Selectable("a mod for it")) Recipe = PkgGraph::ModNode(Base, BaseLabel);
+    if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
+        ImGui::SetTooltip("%s", Base.empty() ? "Make the game's first version first" : ("Rides on \"" + BaseLabel + "\": ticked in the pre-launch window, its files over the game's").c_str());
+    ImGui::EndDisabled();
+    if (!Typed && Recipe.is_null()) return;
+    //A version or a mod goes beside the game it builds on; any new node goes where it hides nothing.
+    if (!Recipe.is_null() && S.ViewOf.count(Base))
+    {
+        const ImVec4 Br = WorldRect(S, S.Views[(size_t)S.ViewOf[Base]]);
+        At = ImVec2(Br.z + 60.0f, Br.y);
+    }
+    At = FreeSpot(S, At);
+    //A node made from the menu is ready to fill in: its rows open, its name selected for typing.
+    int I;
+    if (Recipe.is_null()) I = addNode(Type, At.x, At.y, selectedHandle());
+    else { I = D.Add(std::move(Recipe)); D.SetPos(D.Handle(I), {At.x, At.y}); D.Commit(); emit documentEdited(); }
+    const std::string Hn = D.Handle(I);
+    setExpanded(Hn, true);
+    //It is the node being worked on: selected (the JSON pane follows), and in view - a free spot can be off-screen.
+    S.Sel = {Hn};
+    S.SelWireSlot = -1;
+    const float CW = (S.Canvas.z - S.Canvas.x) / S.Z, CH = (S.Canvas.w - S.Canvas.y) / S.Z;
+    if (At.x < S.Cam.x || At.y < S.Cam.y || At.x + kNodeW > S.Cam.x + CW || At.y + kTitleH * 4 > S.Cam.y + CH)
+        S.Cam = ImVec2(At.x + kNodeW * 0.5f - CW * 0.5f, At.y - CH * 0.25f);
+    S.Renaming = Hn;
+    S.RenameBuf = S.RenameFrom = StrOf(D.Node(I), "LABEL");
+    S.RenameFocus = true;
+    ImGui::CloseCurrentPopup();
+}
+
+//The toolbar row and its search results. Returns where the canvas starts (its top, in screen space).
+float PkgCanvas::drawToolbar()
+{
+    PkgCanvasState &S = *m_s;
+    Document &D = *S.Doc;
     ImGuiIO &Io = ImGui::GetIO();
-
-    ImGui::SetNextWindowPos(ImVec2(0, 0));
-    ImGui::SetNextWindowSize(Io.DisplaySize);
-    //The canvas pans in world space, never by window scroll: a focused item lower than the panel (a new node's rename
-    //box) made ImGui scroll the window to it, and the toolbar row slid out of view for good.
-    ImGui::SetNextWindowScroll(ImVec2(0, 0));
-    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(0, 0));
-    ImGui::Begin("##pkgcanvas", nullptr, ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoScrollWithMouse
-                                             | ImGuiWindowFlags_NoBringToFrontOnFocus | ImGuiWindowFlags_NoSavedSettings);
-    ImGui::PopStyleVar();
-
-    // ---- toolbar ----------------------------------------------------------------------------------------------
     ImGui::SetCursorPos(ImVec2(8, 6));
     ImGui::BeginGroup();
     if (ImGui::Button("+ Node")) ImGui::OpenPopup("##addnode");
     if (ImGui::IsItemHovered()) ImGui::SetTooltip("Add a node (or right-click the canvas where it should go)");
-    auto AddMenu = [&](ImVec2 At) {
-        std::string Type;
-        //The game a recipe builds on: the selected node of this package, else its first version.
-        std::string Base;
-        if (const std::string Sh = selectedHandle(); !Sh.empty() && D.IndexOf(Sh) >= 0) Base = Sh;
-        for (int I = 0; I < D.Count() && Base.empty(); ++I) if (!StrOf(D.Node(I), "VARIANT").empty()) Base = D.Handle(I);
-        //No version yet: the game's files with its tile at the base (an installer captured, a disc's install) are what
-        //the first version builds on.
-        for (int I = 0; I < D.Count() && Base.empty(); ++I) if (HasTile(D.Node(I))) Base = D.Handle(I);
-        const std::string BaseLabel = Base.empty() ? std::string() : NodeTitle(D.Node(D.IndexOf(Base)), Base);
-        json Recipe;
-        const bool Typed = TypePicker(Type, true);
-        ImGui::SeparatorText("For this game");
-        ImGui::BeginDisabled(Base.empty());
-        if (ImGui::Selectable("another version")) Recipe = PkgGraph::VersionNode(Base, BaseLabel);
-        if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
-            ImGui::SetTooltip("%s", Base.empty() ? "Make the game's first version first" : ("A source port, a patch, a fan update: contains \"" + BaseLabel + "\" and runs its own program").c_str());
-        if (ImGui::Selectable("a mod for it")) Recipe = PkgGraph::ModNode(Base, BaseLabel);
-        if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
-            ImGui::SetTooltip("%s", Base.empty() ? "Make the game's first version first" : ("Rides on \"" + BaseLabel + "\": ticked in the pre-launch window, its files over the game's").c_str());
-        ImGui::EndDisabled();
-        if (!Typed && Recipe.is_null()) return;
-        //A version or a mod goes beside the game it builds on; any new node goes where it hides nothing.
-        if (!Recipe.is_null() && S.ViewOf.count(Base))
-        {
-            const ImVec4 Br = WorldRect(S, S.Views[(size_t)S.ViewOf[Base]]);
-            At = ImVec2(Br.z + 60.0f, Br.y);
-        }
-        At = FreeSpot(S, At);
-        //A node made from the menu is ready to fill in: its rows open, its name selected for typing.
-        int I;
-        if (Recipe.is_null()) I = addNode(Type, At.x, At.y, selectedHandle());
-        else { I = D.Add(std::move(Recipe)); D.SetPos(D.Handle(I), {At.x, At.y}); D.Commit(); emit documentEdited(); }
-        const std::string Hn = D.Handle(I);
-        setExpanded(Hn, true);
-        //It is the node being worked on: selected (the JSON pane follows), and in view - a free spot can be off-screen.
-        S.Sel = {Hn};
-        S.SelWireSlot = -1;
-        const float CW = (S.Canvas.z - S.Canvas.x) / S.Z, CH = (S.Canvas.w - S.Canvas.y) / S.Z;
-        if (At.x < S.Cam.x || At.y < S.Cam.y || At.x + kNodeW > S.Cam.x + CW || At.y + kTitleH * 4 > S.Cam.y + CH)
-            S.Cam = ImVec2(At.x + kNodeW * 0.5f - CW * 0.5f, At.y - CH * 0.25f);
-        S.Renaming = Hn;
-        S.RenameBuf = S.RenameFrom = StrOf(D.Node(I), "LABEL");
-        S.RenameFocus = true;
-        ImGui::CloseCurrentPopup();
-    };
     if (ImGui::BeginPopup("##addnode"))
     {
         const ImVec2 C = S.S2W(ImVec2((S.Canvas.x + S.Canvas.z) * 0.5f - kNodeW * 0.5f * S.Z, (S.Canvas.y + S.Canvas.w) * 0.4f));
-        AddMenu(C);
+        addMenu(C);
         ImGui::EndPopup();
     }
     ImGui::SameLine();
@@ -1823,7 +1812,7 @@ void PkgCanvas::frame()
         ImGui::TextDisabled("%s", Status.c_str());
     }
     ImGui::EndGroup();
-    const float Top = ImGui::GetItemRectMax().y + 6.0f;
+    const float Top = ImGui::GetItemRectMax().y + 6.0f;   // where the canvas starts
     //The search results, as a list under the box.
     if ((SearchActive || !Matches.empty()) && !S.Search.empty())
     {
@@ -1841,6 +1830,84 @@ void PkgCanvas::frame()
         if (!Matches.empty()) ImGui::TextDisabled("Enter: go to the first");
         ImGui::End();
     }
+    return Top;
+}
+
+//The minimap in the canvas's corner (R0-R1, screen space): every node, where the view is, click or drag to move the
+//view. Its window joins NodeWindows (input over it is not the canvas's). True while the mouse is over it.
+bool PkgCanvas::drawMinimap(ImVec2 R0, ImVec2 R1, ImVec2 Mouse, std::vector<ImGuiWindow *> &NodeWindows)
+{
+    PkgCanvasState &S = *m_s;
+    S.MiniRect = ImVec4(0, 0, 0, 0);
+    bool MiniHovered = false;
+    const ImVec4 Wb = S.Views.empty() ? ImVec4() : BoundsOf(S, nullptr);
+    //Ticked, the map shows — with everything in view too (where the view is, in the whole): a ticked "Map" with no map
+    //read as broken.
+    if (S.ShowMini && !S.Views.empty() && R1.x - R0.x > 400 && R1.y - R0.y > 300)
+    {
+        const float MW = 220, MH = 150;
+        const ImVec2 M0(R1.x - MW - 12, R1.y - MH - 12);
+        S.MiniRect = ImVec4(M0.x, M0.y, M0.x + MW, M0.y + MH);
+        const float Sc = std::min((MW - 12) / std::max(1.0f, Wb.z - Wb.x), (MH - 12) / std::max(1.0f, Wb.w - Wb.y));
+        const ImVec2 Off(M0.x + (MW - (Wb.z - Wb.x) * Sc) * 0.5f, M0.y + (MH - (Wb.w - Wb.y) * Sc) * 0.5f);
+        auto ToMini = [&](ImVec2 W) { return ImVec2(Off.x + (W.x - Wb.x) * Sc, Off.y + (W.y - Wb.y) * Sc); };
+        ImGui::SetCursorScreenPos(M0);
+        ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(0, 0));
+        ImGui::BeginChild("##minimap", ImVec2(MW, MH), ImGuiChildFlags_None, ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse);
+        ImGui::PopStyleVar();
+        NodeWindows.push_back(ImGui::GetCurrentWindow());
+        ImDrawList *MD = ImGui::GetWindowDrawList();
+        MD->AddRectFilled(M0, ImVec2(M0.x + MW, M0.y + MH), IM_COL32(16, 17, 21, 230), 6.0f);
+        for (const NodeView &V : S.Views)
+        {
+            const ImVec4 R = WorldRect(S, V);
+            const ImVec2 A = ToMini(ImVec2(R.x, R.y)), B = ToMini(ImVec2(R.z, R.w));
+            int Rc, Gc, Bc;
+            PkgGraph::TypeColour(V.Kind, Rc, Gc, Bc);
+            MD->AddRectFilled(A, ImVec2(std::max(B.x, A.x + 1.5f), std::max(B.y, A.y + 1.5f)),
+                              S.Sel.count(V.Handle) ? IM_COL32(255, 196, 90, 255) : V.Doc < 0 ? IM_COL32(90, 96, 110, 255) : Col(Rc, Gc, Bc, 230));
+        }
+        const ImVec2 VA = ToMini(S.S2W(R0)), VB = ToMini(S.S2W(R1));
+        MD->AddRect(VA, VB, IM_COL32(255, 255, 255, 200), 0, 0, 1.5f);
+        MD->AddRect(M0, ImVec2(M0.x + MW, M0.y + MH), IM_COL32(80, 88, 104, 255), 6.0f);
+        ImGui::SetCursorScreenPos(M0);
+        ImGui::InvisibleButton("##minidrag", ImVec2(MW, MH));
+        MiniHovered = ImGui::IsItemHovered();
+        if (ImGui::IsItemActive())
+        {
+            const ImVec2 W(Wb.x + (Mouse.x - Off.x) / Sc, Wb.y + (Mouse.y - Off.y) / Sc);
+            S.Cam = ImVec2(W.x - (R1.x - R0.x) * 0.5f / S.Z, W.y - (R1.y - R0.y) * 0.5f / S.Z);
+            S.Zooming = false;
+        }
+        if (MiniHovered) ImGui::SetTooltip("Click or drag to move the view");
+        ImGui::EndChild();
+    }
+    return MiniHovered;
+}
+
+void PkgCanvas::frame()
+{
+    PkgCanvasState &S = *m_s;
+    Document &D = *S.Doc;
+    if (S.BuiltRev != D.Revision()) Rebuild(S);
+    if (!S.LayoutValid && S.M == PkgCanvasState::Mode::Idle) { Layout(S); if (S.AutoFrame) S.FramePending = true; }
+    UpdateRects(S);
+    S.DrawnRect.clear();
+    S.CoversDrawn.clear();
+    S.Animating = false;
+    ImGuiIO &Io = ImGui::GetIO();
+
+    ImGui::SetNextWindowPos(ImVec2(0, 0));
+    ImGui::SetNextWindowSize(Io.DisplaySize);
+    //The canvas pans in world space, never by window scroll: a focused item lower than the panel (a new node's rename
+    //box) made ImGui scroll the window to it, and the toolbar row slid out of view for good.
+    ImGui::SetNextWindowScroll(ImVec2(0, 0));
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(0, 0));
+    ImGui::Begin("##pkgcanvas", nullptr, ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoScrollWithMouse
+                                             | ImGuiWindowFlags_NoBringToFrontOnFocus | ImGuiWindowFlags_NoSavedSettings);
+    ImGui::PopStyleVar();
+
+    const float Top = drawToolbar();
 
     // ---- the canvas region ------------------------------------------------------------------------------------
     S.Canvas = ImVec4(0, Top, Io.DisplaySize.x, Io.DisplaySize.y);
@@ -2099,51 +2166,7 @@ void PkgCanvas::frame()
     FG->PopClipRect();
     DL->PopClipRect();
 
-    // ---- minimap ---------------------------------------------------------------------------------------------
-    S.MiniRect = ImVec4(0, 0, 0, 0);
-    bool MiniHovered = false;
-    const ImVec4 Wb = S.Views.empty() ? ImVec4() : BoundsOf(S, nullptr);
-    //Ticked, the map shows — with everything in view too (where the view is, in the whole): a ticked "Map" with no map
-    //read as broken.
-    if (S.ShowMini && !S.Views.empty() && R1.x - R0.x > 400 && R1.y - R0.y > 300)
-    {
-        const float MW = 220, MH = 150;
-        const ImVec2 M0(R1.x - MW - 12, R1.y - MH - 12);
-        S.MiniRect = ImVec4(M0.x, M0.y, M0.x + MW, M0.y + MH);
-        const float Sc = std::min((MW - 12) / std::max(1.0f, Wb.z - Wb.x), (MH - 12) / std::max(1.0f, Wb.w - Wb.y));
-        const ImVec2 Off(M0.x + (MW - (Wb.z - Wb.x) * Sc) * 0.5f, M0.y + (MH - (Wb.w - Wb.y) * Sc) * 0.5f);
-        auto ToMini = [&](ImVec2 W) { return ImVec2(Off.x + (W.x - Wb.x) * Sc, Off.y + (W.y - Wb.y) * Sc); };
-        ImGui::SetCursorScreenPos(M0);
-        ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(0, 0));
-        ImGui::BeginChild("##minimap", ImVec2(MW, MH), ImGuiChildFlags_None, ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse);
-        ImGui::PopStyleVar();
-        NodeWindows.push_back(ImGui::GetCurrentWindow());
-        ImDrawList *MD = ImGui::GetWindowDrawList();
-        MD->AddRectFilled(M0, ImVec2(M0.x + MW, M0.y + MH), IM_COL32(16, 17, 21, 230), 6.0f);
-        for (const NodeView &V : S.Views)
-        {
-            const ImVec4 R = WorldRect(S, V);
-            const ImVec2 A = ToMini(ImVec2(R.x, R.y)), B = ToMini(ImVec2(R.z, R.w));
-            int Rc, Gc, Bc;
-            PkgGraph::TypeColour(V.Kind, Rc, Gc, Bc);
-            MD->AddRectFilled(A, ImVec2(std::max(B.x, A.x + 1.5f), std::max(B.y, A.y + 1.5f)),
-                              S.Sel.count(V.Handle) ? IM_COL32(255, 196, 90, 255) : V.Doc < 0 ? IM_COL32(90, 96, 110, 255) : Col(Rc, Gc, Bc, 230));
-        }
-        const ImVec2 VA = ToMini(S.S2W(R0)), VB = ToMini(S.S2W(R1));
-        MD->AddRect(VA, VB, IM_COL32(255, 255, 255, 200), 0, 0, 1.5f);
-        MD->AddRect(M0, ImVec2(M0.x + MW, M0.y + MH), IM_COL32(80, 88, 104, 255), 6.0f);
-        ImGui::SetCursorScreenPos(M0);
-        ImGui::InvisibleButton("##minidrag", ImVec2(MW, MH));
-        MiniHovered = ImGui::IsItemHovered();
-        if (ImGui::IsItemActive())
-        {
-            const ImVec2 W(Wb.x + (Mouse.x - Off.x) / Sc, Wb.y + (Mouse.y - Off.y) / Sc);
-            S.Cam = ImVec2(W.x - (R1.x - R0.x) * 0.5f / S.Z, W.y - (R1.y - R0.y) * 0.5f / S.Z);
-            S.Zooming = false;
-        }
-        if (MiniHovered) ImGui::SetTooltip("Click or drag to move the view");
-        ImGui::EndChild();
-    }
+    const bool MiniHovered = drawMinimap(R0, R1, Mouse, NodeWindows);
 
     // ---- input ------------------------------------------------------------------------------------------------
     ImGuiContext &Ctx = *ImGui::GetCurrentContext();
@@ -2421,7 +2444,7 @@ void PkgCanvas::frame()
     }
     if (ImGui::BeginPopup("##canvasmenu"))
     {
-        if (ImGui::BeginMenu("Add node here")) { AddMenu(S.ContextWorld); ImGui::EndMenu(); }
+        if (ImGui::BeginMenu("Add node here")) { addMenu(S.ContextWorld); ImGui::EndMenu(); }
         ImGui::Separator();
         if (ImGui::MenuItem("Fit the package in view", "F")) frameAll();
         if (ImGui::MenuItem("Tidy the layout")) tidyLayout();

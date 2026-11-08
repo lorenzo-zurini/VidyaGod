@@ -14,6 +14,9 @@
 #include <string>
 #include <vector>
 
+struct ImGuiWindow;
+struct ImVec2;
+
 struct PkgCanvasState;
 struct ImFont;
 
@@ -143,6 +146,10 @@ signals:
     void openPackagePickerRequested();                    // its Open package...
 
 private:
+    // frame()'s parts
+    void addMenu(ImVec2 At);
+    float drawToolbar();
+    bool drawMinimap(ImVec2 R0, ImVec2 R1, ImVec2 Mouse, std::vector<ImGuiWindow *> &NodeWindows);
     std::unique_ptr<PkgCanvasState> m_s;
 };
 
