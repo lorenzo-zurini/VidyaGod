@@ -238,6 +238,7 @@ set(SHARED_SOURCES
 
     src/engine/containerwrapper.h
     src/engine/containerwrapper.cpp
+    src/engine/launchcommand.cpp
 
     src/engine/quitsignals.h
     src/engine/quitsignals.cpp
@@ -621,6 +622,7 @@ add_gui_test(test_deltatree)
 add_gui_test(test_diagnostics)
 add_gui_test(test_launchsession)
 add_gui_test(test_asyncwork)
+add_gui_test(test_launchcommand)
 add_gui_test(test_fileedits)
 add_gui_test(test_manifestmodel)
 

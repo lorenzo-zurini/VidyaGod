@@ -15,6 +15,7 @@
 #include "registrywrapper.h"
 #include "commonutils.h"
 #include "procenv.h"      // RunCommand / SystemToolEnv (fusermount on cleanup + the game launch)
+#include "launchcommand.h"   // the command and environment, composed
 #include "sandboxlayer.h"    // the mandatory sandbox around the launched game (bwrap / Sandboxie)
 #include "ipfswrapper.h"     // IpfsWrapper::OverlayServe/OverlayStop (nested-sandbox overlay TUN handoff)
 
@@ -386,156 +387,19 @@ bool ContainerWrapper::Execute(const std::string &OverrideExe, const std::vector
 {
     LogStep(12, kLaunchSteps, "Starting the game process (wine boot + game init follow in the console)");
     const bool Override = !OverrideExe.empty();
-    auto Subst = [&](std::string S){ VarSubst::StringVariableSubstitution(S, ContainerParams.GetVariablesMap()); return S; };
-
-    //----- CROSS-NAMESPACE NESTING: when an inner runner runs inside the boundary's guest fs (e.g. a win32 emulator
-    //under proton), redirect the boundary's content target at the inner runners' guest command. ComposeGuestTarget
-    //returns {CrossNamespace:false} for every classic chain, so this whole block is a no-op there. The inner runners'
-    //own args (the ROM, etc.) are appended after the boundary's ARGS. Not applied under an OverrideExe (tooling). -----
-    std::vector<std::string> CrossTrailingArgs;
-    if (!Override)
-    {
-        LaunchResolver::GuestTarget GT = LaunchResolver::ComposeGuestTarget(ContainerParams);
-        if (GT.CrossNamespace)
-        {
-            //Point the boundary's %ContentPath%/%Content% at the inner runner's guest exe (its ARGS template composes
-            //the guest path from these), and carry the inner args to append after the boundary's ARGS.
-            ContainerParams.ExePathRelative = std::filesystem::path(GT.ContentRel);
-            ContainerParams.ExePathComplete = ContainerParams.ProgramPath / GT.ContentRel;
-            CrossTrailingArgs = GT.TrailingArgs;
-            LogOut("ContainerWrapper::Execute", "Cross-namespace target: " + GT.ContentRel
-                   + " (+" + std::to_string(CrossTrailingArgs.size()) + " inner arg(s))");
-        }
-    }
-
-    //----- BASE command: the BOUNDARY runner runs the content (runner daisy-chaining) -----
-    //The legacy single-runner fields are the boundary runner's view (the link that owns the FUSE mount / prefix —
-    //proton for a win32 game, or the native terminal for native content). An EMPTY RunnerExecutable = native
-    //passthrough: run the content's own executable (%Content%) directly. Otherwise the runner's EXECUTABLE + ARGS ARE
-    //the command (author composes the guest path into ARGS, e.g. proton's ["waitforexitandrun","%GameDir%\\..."]).
-    VarSubst::StringVariableSubstitution(ContainerParams.RunnerExecutable, ContainerParams.GetVariablesMap());
-    const bool NativeBoundary = ContainerParams.RunnerExecutable.empty();
-    std::string Program;
-    QStringList Arguments;
-    if (NativeBoundary)
-    {
-        //Native passthrough boundary: exec the content directly (or the OverrideExe for tooling).
-        Program = Override ? OverrideExe : ContainerParams.ExePathComplete.string();
-        for (const std::string &A : Override ? OverrideArgs : ContainerParams.ExeArgs) Arguments.append(QString::fromStdString(A));
-    }
-    else
-    {
-        Program = ContainerParams.RunnerExecutable;
-        //For an OverrideExe (tooling/install), drop the content-bearing ARGS and append the override after the verb.
-        for (const std::string &Raw : ContainerParams.RunnerArgs)
-        {
-            if (Override && ArgReferencesContent(Raw)) continue;
-            Arguments.append(QString::fromStdString(Subst(Raw)));
-        }
-        //Cross-namespace: after the boundary's ARGS (which now reference the inner runner's guest exe via the
-        //redirected %ContentPath%), append the inner runners' own guest args (e.g. the ROM path).
-        for (const std::string &A : CrossTrailingArgs) Arguments.append(QString::fromStdString(A));
-        if (Override) Arguments.append(QString::fromStdString(OverrideExe));
-        for (const std::string &A : Override ? OverrideArgs : ContainerParams.ExeArgs) Arguments.append(QString::fromStdString(A));
-    }
-
-    //----- NESTING: wrap the base command with each OUTER same-namespace link (native wrappers + the native terminal) -----
-    //chain = innermost(content)→outermost(machine). The boundary is the last cross-namespace link (or the first link for
-    //a native chain); links AFTER it run IN THE HOST NAMESPACE and simply wrap the inner argv (`wrapper <args> <innercmd>`).
-    //An empty-EXECUTABLE link is a passthrough terminal (forwards unchanged). Cross-namespace nesting (an inner emulator
-    //inside this runner's guest fs) is Phase C — skipped here with a warning. Wrappers are not applied under OverrideExe.
-    int BoundaryIdx = 0;
-    for (int i = 0; i < (int)ContainerParams.RunnerChain.size(); ++i)
-        if (!ContainerParams.RunnerChain[i].NativeNamespace()) BoundaryIdx = i;
-    std::vector<const RunnerLink*> OuterWrappers;
-    if (!Override)
-        for (int i = BoundaryIdx + 1; i < (int)ContainerParams.RunnerChain.size(); ++i)
-        {
-            const RunnerLink &L = ContainerParams.RunnerChain[i];
-            if (!L.NativeNamespace())
-            { LogWarn("ContainerWrapper::Execute", "Cross-namespace wrapper '" + L.NodeId + "' not yet supported (Phase C) — skipped."); continue; }
-            //A native terminal whose EXECUTABLE is empty or runs %Content% is a passthrough — as an OUTER wrapper it
-            //forwards the inner argv unchanged (the inner command IS its content). Only a real wrapper TOOL (e.g.
-            //gamescope/mangohud, EXECUTABLE=a program) actually wraps. This keeps the appended native terminal a no-op
-            //for the common [proton, native] chain (byte-identical to a direct proton launch).
-            if (L.Executable.empty() || ArgReferencesContent(L.Executable)) continue;
-            QStringList Wrapped;
-            for (const std::string &Raw : L.Args) Wrapped.append(QString::fromStdString(Subst(Raw)));
-            Wrapped.append(QString::fromStdString(Program));                     // inner program ...
-            Wrapped.append(Arguments);                                          // ... then its args
-            Program   = Subst(L.Executable);
-            Arguments = Wrapped;
-            OuterWrappers.push_back(&L);
-            LogOut("ContainerWrapper::Execute", "Chain wrap: " + L.NodeId + " (" + Program + ")");
-        }
-
+    //The process starts from the system's environment (system runner, not AppImage libs) and, under a launch, the
+    //sandbox's private home (SandboxLayer::FromParams): every runner/package ENV applies over it, so one that points
+    //XDG_CONFIG_HOME into the runtime (to KEEP it) or removes HOME still wins.
+    QProcessEnvironment Base = SystemToolEnv();
+    SandboxLayer::Options SbOpts = SandboxLayer::FromParams(ContainerParams);
+    if (!Override) SandboxLayer::HomeEnv(SbOpts, Base);
+    LaunchCommand Cmd = LaunchCommand::Compose(ContainerParams, std::move(Base), OverrideExe, OverrideArgs);
+    std::string Program = std::move(Cmd.Program);
+    QStringList Arguments = std::move(Cmd.Arguments);
+    QProcessEnvironment RunProcessEnvironment = std::move(Cmd.Env);
     LogOut("ContainerWrapper::Execute", "Command: " + Program);
     if (!OverrideExe.empty()) LogOut("ContainerWrapper::Execute", "OverrideExe: " + OverrideExe);
     LogOut("ContainerWrapper::Execute", "WorkDirPath: " + ContainerParams.WorkDirPathComplete.string());
-
-    //----- ENV: one process tree, so every link's ENV/REMOVE_ENV applies. Boundary (legacy fields) first, then the
-    //outer same-namespace wrappers — boundary (innermost, content-proximate) WINS on key conflicts. -----
-    QProcessEnvironment RunProcessEnvironment = SystemToolEnv();                 // system runner, not AppImage libs
-    //The sandbox's private home is the BASE environment (SandboxLayer::FromParams): every runner/package ENV below
-    //applies over it, so one that points XDG_CONFIG_HOME into the runtime (to KEEP it) or removes HOME still wins.
-    SandboxLayer::Options SbOpts = SandboxLayer::FromParams(ContainerParams);
-    if (!Override) SandboxLayer::HomeEnv(SbOpts, RunProcessEnvironment);
-    //ORDER: outermost first, boundary LAST, so the innermost (content-proximate) declaration wins on a shared
-    //key — which is what the rest of the engine promises. It used to run the other way: RunnerEnv went in
-    //first and each outer wrapper's Env overwrote it. That merely mis-ordered runner-vs-runner until a
-    //launchable's own ENV started being merged into RunnerEnv, at which point a chained outer link could
-    //silently beat the GAME's environment, contradicting "the more specific one is the game's".
-    for (auto It = OuterWrappers.rbegin(); It != OuterWrappers.rend(); ++It)
-    {
-        const RunnerLink *L = *It;
-        for (const std::string &Key : L->RemoveEnv) RunProcessEnvironment.remove(QString::fromStdString(Key));
-        for (auto &[Key, Value] : L->Env.items())
-        {
-            if (!Value.is_string())
-            {
-                LogWarn("ContainerWrapper::Execute",
-                        "chained-runner ENV key '" + Key + "' is " + std::string(Value.type_name())
-                        + ", not a string — skipped. Environment values are strings (quote the number).");
-                continue;
-            }
-            RunProcessEnvironment.insert(QString::fromStdString(Key), QString::fromStdString(Subst(Value.get<std::string>())));
-        }
-    }
-    //The boundary's removals and env go last: closest to the content, so highest priority.
-    for (const std::string &Key : ContainerParams.RunnerRemoveEnv)
-        RunProcessEnvironment.remove(QString::fromStdString(Key));
-    for (auto &[Key, Value] : ContainerParams.RunnerEnv.items())
-    {
-        //get<std::string>() THROWS on a non-string, uncaught, at the last step of a launch. A runner ENV comes
-        //from a package file like any other field, so this is an authoring mistake, not an invariant.
-        if (!Value.is_string())
-        {
-            LogWarn("ContainerWrapper::Execute",
-                    "runner ENV key '" + Key + "' is " + std::string(Value.type_name()) + ", not a string — "
-                    "skipped. Environment values are strings (quote the number).");
-            continue;
-        }
-        RunProcessEnvironment.insert(QString::fromStdString(Key), QString::fromStdString(Subst(Value.get<std::string>())));
-    }
-
-    // WINEDLLOVERRIDES — only meaningful for runners that have a wine prefix. MERGED with any value already in
-    // the environment rather than replacing it: this line silently clobbered an operator's debugging override
-    // (WINEDLLOVERRIDES="d3d11,dxgi=b" to force wined3d on a GPU whose Vulkan is too old for DXVK) and cost an
-    // hour of "why does my env var do nothing" during the 2026-09-01 laptop triage. External entries go LAST —
-    // measured empirically in the same triage: with a dll named in both lists, wine honored the LATER entry
-    // (external-first left the package's d3d11=n winning while dxgi flipped) — so last place is what makes a
-    // human's override beat the package's.
-    if (ContainerParams.PrefixGenerate && !ContainerParams.DLLOverrides.empty())
-    {
-        QString Composed = QString::fromStdString(std::accumulate(ContainerParams.DLLOverrides.begin(), ContainerParams.DLLOverrides.end(), std::string{}, [](const std::string &a, const std::string &b){ return a.empty() ? b : a + ";" + b; }));
-        const QString External = qEnvironmentVariable("WINEDLLOVERRIDES");
-        if (!External.isEmpty())
-        {
-            LogOut("ContainerWrapper::Execute", "WINEDLLOVERRIDES from the environment merged ahead of the package's: " + External.toStdString());
-            Composed = (Composed.isEmpty() ? QString() : Composed + ";") + External;
-        }
-        RunProcessEnvironment.insert("WINEDLLOVERRIDES", Composed);
-    }
 
     //If the configured working directory doesn't exist in the mounted runtime, fall back
     //gracefully: prefer the RuntimePath (VFS root) if VFS was used, otherwise PackagePath.

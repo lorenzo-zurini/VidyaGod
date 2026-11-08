@@ -215,7 +215,7 @@ VG_COMMANDS
         "captured and the runtime comes down. Blocks until the game exits; prints its exit code. On the machine's own "
         "display and speakers — off-screen testing is the caller's to arrange.",
         With(LaunchArgs(), { Flag("yes", "yes, run it") }), { "launch run --node 'Patch 2.0a' --yes" },
-        { "ContainerWrapper::BuildContainerRuntime", "ContainerWrapper::Execute", "ContainerWrapper::Cleanup", "LaunchSources::EnsureSources",
+        { "ContainerWrapper::BuildContainerRuntime", "ContainerWrapper::Execute", "LaunchCommand::Compose", "ContainerWrapper::Cleanup", "LaunchSources::EnsureSources",
           "LaunchSources::MaterializeLayers", "LaunchSources::VerifyDependencies", "VfsMount::MountVFS", "VfsMount::PrepareMount", "VfsMount::BuildLayerSpec",
           "VfsMount::BuildRunnerLayerSpec", "VfsMount::MountRunnerBuild", "VfsMount::RunnerShipsMountableBuild", "VfsMount::SpawnVidyagodfs",
           "VfsMount::MaterializePlanPaths", "VfsMount::ReportMissingSources", "VfsMount::CheckCaseConflicts", "Sessions::ClaimSession",
