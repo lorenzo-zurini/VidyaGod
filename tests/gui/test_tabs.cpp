@@ -19,6 +19,7 @@
 #include "sourcespage.h"
 #include "a11ynames.h"
 #include "libraryview.h"
+#include "cardtoolbar.h"
 #include "manifestmodel.h"
 #include "packagecatalog.h"
 #include "cid.h"
@@ -169,6 +170,26 @@ private slots:
             }
         QVERIFY2(Gold > 10, qPrintable(QString("gold pixels: %1").arg(Gold)));
         V.setCards(nullptr);
+    }
+
+    // A section header collapses its section and expands it again — the grid tells the tab, and the tab keeps the set
+    // across restarts (Settings[key]). Teeth: toggle without telling; forget the set.
+    void a_grids_section_toggles_and_is_remembered()
+    {
+        LibraryView V;
+        QList<LibraryGameCard *> None;
+        V.setCards(&None);
+        V.setGroups({ { "Local", 0, -1, false } });
+        QSignalSpy Told(&V, &LibraryView::groupToggled);
+        QVERIFY(V.toggleSection("Local"));
+        QVERIFY(!V.toggleSection("Nowhere"));
+        QCOMPARE(Told.count(), 1);
+        QCOMPARE(Told.at(0).at(1).toBool(), true);
+        QVERIFY(V.toggleSection("Local"));
+        QCOMPARE(Told.at(1).at(1).toBool(), false);
+        AppModel m(&Cfg, &AppDir);
+        SaveCollapsed(m, "TestCollapsed", QSet<QString>{ "Local", "Steam" });
+        QCOMPARE(LoadCollapsed(m, "TestCollapsed"), (QSet<QString>{ "Local", "Steam" }));
     }
 
     void library_tab_constructs()   { AppModel m(&Cfg, &AppDir); LibraryTab  t(m); QVERIFY(renders(&t)); }

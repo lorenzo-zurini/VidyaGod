@@ -68,7 +68,7 @@ VG_COMMANDS
     Command::Register({
         "app card-size", "the Library and Catalog cards' width in pixels, or set it", "",
         { Opt("set", "the width", Type::Int) }, { "app card-size", "app card-size --set 220" },
-        { "AppModel::cardPixelWidth", "AppModel::setCardPixelWidth", "CoverCache::setDisplaySize", "LibraryTab::onCardSizeChanged", "CatalogTab::onCardSizeChanged",
+        { "AppModel::cardPixelWidth", "AppModel::setCardPixelWidth", "CoverCache::setDisplaySize", "LibraryTab::onCardSizeChanged", "CatalogTab::onCardSizeChanged", "SyncSizeButtons",
           "LibraryView::layoutCards", "LibraryView::prescaleCovers" }, Needs::Model, false,
         [](Command::Context &C, const json &A) {
             if (A.contains("set")) Model(C).setCardPixelWidth(static_cast<int>(Command::Int(A, "set")));

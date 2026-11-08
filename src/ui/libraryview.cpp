@@ -653,15 +653,8 @@ void LibraryView::onMousePress(QMouseEvent * e)
     if (e->button() != Qt::LeftButton) return;
 
     // Section header → toggle collapse.
-    for (int gi = 0; gi < Groups.size() && gi < HeaderRects.size(); gi++) {
-        if (!HeaderRects[gi].contains(pos)) continue;
-        Groups[gi].collapsed = !Groups[gi].collapsed;
-        emit groupToggled(Groups[gi].name, Groups[gi].collapsed);
-        LastCols = -1;                 // force relayout (section heights changed)
-        layoutCards(CardW);
-        viewport()->update();
-        return;
-    }
+    for (int gi = 0; gi < Groups.size() && gi < HeaderRects.size(); gi++)
+        if (HeaderRects[gi].contains(pos)) { toggleSection(Groups[gi].name); return; }
 
     const int count = Cards->count();
     for (int i = 0; i < count; i++) {
@@ -801,6 +794,21 @@ QString LibraryView::cardMiss(const QString & KeyOrTitle) const
     const int N = int(Hits.size());
     if (N > 10) { Hits = Hits.mid(0, 10); Hits << "…"; }
     return QString(" — it matches %1 cards (name one by its title or key): %2").arg(N).arg(Hits.join(", "));
+}
+
+bool LibraryView::toggleSection(const QString & Name)
+{
+    for (Group & G : Groups)
+    {
+        if (G.name != Name) continue;
+        G.collapsed = !G.collapsed;
+        emit groupToggled(G.name, G.collapsed);
+        LastCols = -1;                 // force relayout (section heights changed)
+        layoutCards(CardW);
+        viewport()->update();
+        return true;
+    }
+    return false;
 }
 
 void LibraryView::requestCardMenu(int I)

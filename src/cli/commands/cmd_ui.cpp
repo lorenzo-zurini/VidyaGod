@@ -492,7 +492,7 @@ VG_COMMANDS
         "and rows (and each cell's checkbox), a card grid's cards with their badges, secondaries and sections.",
         { Command::Pos("control", "the control's name (or a unique part of it)") },
         { "ui show 'Library'", "ui show Network --json" },
-        { "UiFind::Named", "UiFind::NameOf", "UiFind::StateOf" , "LibraryView::stateJson" }, Command::Needs::Ui, false,
+        { "UiFind::Named", "UiFind::NameOf", "UiFind::StateOf" , "LibraryView::stateJson", "MakeCardToolbar", "LoadCollapsed" }, Command::Needs::Ui, false,
         [](Command::Context &, const json &A) { return StateOf(Named(Command::Str(A, "control")), 1, true); }, &RenderTree });
 
     Command::Register({
@@ -673,6 +673,20 @@ VG_COMMANDS
             const bool Menu = Command::Bool(A, "menu", false);
             return Act(Ctx, [P, I, Menu] { if (!P) return; if (Menu) P->requestCardMenu(I); else P->activateCardAt(I); },
                        [I] { return json{{"card", I}}; });
+        }, {} });
+
+    Command::Register({
+        "ui section", "collapse a card grid's section, or expand it",
+        "What a click on a section header of a card grid does (a Library series, a Catalog source): it collapses, or "
+        "expands again, and the tab remembers it across restarts.",
+        { Command::Pos("grid", "the grid's name (ui tree shows it)"), Command::Pos("section", "the section's name (ui show lists them)") },
+        { "ui section 'Catalog games' Local" },
+        { "LibraryView::toggleSection", "SaveCollapsed" }, Command::Needs::Ui, false,
+        [](Command::Context &, const json &A) {
+            LibraryView *V = Grid(Command::Str(A, "grid"));
+            const QString Name = QString::fromStdString(Command::Str(A, "section"));
+            if (!V->toggleSection(Name)) throw Command::BadArgs("no section '" + Name.toStdString() + "' in that grid (ui show lists them)");
+            return json{{"toggled", Name.toStdString()}};
         }, {} });
 
     Command::Register({

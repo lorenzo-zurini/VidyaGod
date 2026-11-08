@@ -144,6 +144,8 @@ public:
     LibraryGameCard * cardAt(int I) const { return Cards && I >= 0 && I < Cards->count() ? Cards->at(I) : nullptr; }
     //What a right-click on card I does: its context menu (Library).
     void requestCardMenu(int I);
+    //What a click on a section's header does: collapse it, or expand it (groupToggled tells the tab). False: no such section.
+    bool toggleSection(const QString & Name);
 
 signals:
     void downloadRequested(LibraryGameCard * card);   // Available tab: a card was clicked to import it

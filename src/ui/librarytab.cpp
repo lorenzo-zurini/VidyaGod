@@ -1,4 +1,5 @@
 #include "librarytab.h"
+#include "cardtoolbar.h"
 #include "installed.h"
 #include "shelf.h"
 #include <QDate>
@@ -62,74 +63,26 @@ void LibraryTab::buildUi()
     layout->setContentsMargins(0,0,0,0);
     layout->setSpacing(0);
 
-    // Size + sort + search toolbar.
-    QWidget * toolbar = new QWidget(this);
-    QHBoxLayout * tl = new QHBoxLayout(toolbar);
-    tl->setContentsMargins(8,4,8,4);
-
-    // Sort buttons — left side.
-    const QString sortBtnStyle =
-        "QPushButton{background:transparent;border:none;font-size:9pt;padding:2px 8px;}"
-        "QPushButton:checked{border-bottom:2px solid palette(highlight);font-weight:bold;}"
-        "QPushButton:hover{color:palette(highlighted-text);}";
-
-    QButtonGroup * sortGroup = new QButtonGroup(toolbar);
-    sortGroup->setExclusive(true);
-    auto makeSortBtn = [&](const QString & lbl, SortMode mode) {
-        QPushButton * b = new QPushButton(lbl, toolbar);
-        b->setCheckable(true);
-        b->setChecked(CurrentSort == mode);
-        b->setStyleSheet(sortBtnStyle);
-        sortGroup->addButton(b);
-        connect(b, &QPushButton::toggled, this, [this, mode](bool checked){
-            if (!checked) return;
-            CurrentSort = mode;
+    // Sort + status + search + size: the toolbar both card tabs share; this tab's authoring buttons follow.
+    const CardToolbar Bar = MakeCardToolbar(this, Model,
+        { {"Name", SortMode::Name}, {"Date", SortMode::Date}, {"Series", SortMode::Series}, {"Recent", SortMode::Recent} },
+        CurrentSort,
+        [this](SortMode Mode) {
+            CurrentSort = Mode;
             (*Model.config())["Settings"]["SortMode"] = static_cast<int>(CurrentSort);
             Model.save();
             sortAndFilter(); View->layoutCards(Model.cardPixelWidth());   // cheap: re-sort + re-filter (covers already scaled)
-        });
-        tl->addWidget(b);
-    };
-    makeSortBtn("Name",   SortMode::Name);
-    makeSortBtn("Date",   SortMode::Date);
-    makeSortBtn("Series", SortMode::Series);
-    makeSortBtn("Recent", SortMode::Recent);
-
-    StatusLabel = new QLabel(toolbar);
-    StatusLabel->setAccessibleName("Library status");
-    StatusLabel->setStyleSheet("color:#8f98a0; font-size:9pt; padding-left:12px;");
-    tl->addWidget(StatusLabel);
-
-    tl->addStretch();
-
-    // Search filter (by title).
-    QLineEdit * searchEdit = new QLineEdit(toolbar);
-    searchEdit->setPlaceholderText("Search…");
-    searchEdit->setClearButtonEnabled(true);
-    searchEdit->setFixedWidth(180);
-    connect(searchEdit, &QLineEdit::textChanged, this, [this](const QString & t){
-        LibrarySearch = t.trimmed();
-        sortAndFilter(); View->layoutCards(Model.cardPixelWidth());   // cheap: re-filter (covers already scaled)
-    });
-    tl->addWidget(searchEdit);
-
-    // Size buttons — right side.
-    auto makeSizeBtn = [&](const QString & lbl, int w) {
-        QPushButton * b = new QPushButton(lbl, toolbar);
-        b->setObjectName("size" + lbl);   // sizeLarge, sizeMedium, sizeSmall: one name each
-        b->setCheckable(true); b->setChecked(Model.cardPixelWidth() == w);
-        b->setStyleSheet(
-            "QPushButton{color:#8f98a0;background:transparent;border:none;font-size:9pt;padding:2px 8px;}"
-            "QPushButton:checked{color:#c6d4df;border-bottom:2px solid #4a90d9;}"
-            "QPushButton:hover{color:#c6d4df;}");
-        connect(b, &QPushButton::clicked, this, [this,w](){ Model.setCardPixelWidth(w); });   // → cardSizeChanged → onCardSizeChanged
-        tl->addWidget(b);
-    };
-    makeSizeBtn("Large",250); makeSizeBtn("Medium",185); makeSizeBtn("Small",120);
+        },
+        [this](const QString &Text) {
+            LibrarySearch = Text;
+            sortAndFilter(); View->layoutCards(Model.cardPixelWidth());   // cheap: re-filter (covers already scaled)
+        },
+        "Library status");
+    QWidget * toolbar = Bar.Bar;
+    QHBoxLayout * tl = Bar.Row;
+    StatusLabel = Bar.Status;
 
     // Authoring entry points — moved here from Settings → Installed Packages so they're discoverable on the main screen.
-    auto * sep = new QFrame(toolbar); sep->setFrameShape(QFrame::VLine); sep->setStyleSheet("color:#3a4048;");
-    tl->addWidget(sep);
     QPushButton * edBtn  = new QPushButton("Package Editor", toolbar);
     QPushButton * addBtn = new QPushButton("Add Local Package", toolbar);
     tl->addWidget(edBtn); tl->addWidget(addBtn);   // "Add CID" now lives on the Catalog tab
@@ -152,15 +105,10 @@ void LibraryTab::buildUi()
     layout->addWidget(View);
 
     // Persisted collapse state for the Series-view sections.
-    if ((*Model.config())["Settings"].contains("LibraryCollapsedSeries")
-        && (*Model.config())["Settings"]["LibraryCollapsedSeries"].is_array())
-        for (const auto & N : (*Model.config())["Settings"]["LibraryCollapsedSeries"])
-            if (N.is_string()) LibraryCollapsedSeries.insert(QString::fromStdString(std::string(N)));
+    LibraryCollapsedSeries = LoadCollapsed(Model, "LibraryCollapsedSeries");
     connect(View, &LibraryView::groupToggled, this, [this](const QString & name, bool collapsed){
         if (collapsed) LibraryCollapsedSeries.insert(name); else LibraryCollapsedSeries.remove(name);
-        auto & arr = (*Model.config())["Settings"]["LibraryCollapsedSeries"] = nlohmann::ordered_json::array();
-        for (const QString & N : LibraryCollapsedSeries) arr.push_back(N.toStdString());
-        Model.save();
+        SaveCollapsed(Model, "LibraryCollapsedSeries", LibraryCollapsedSeries);
     });
     //A card's menu: the golden marker — this machine's note that the package's golden pass is done. Cosmetic and local
     //(Settings.GoldenPackages), keyed by the family, so every card of the family shows it.
@@ -338,7 +286,6 @@ void LibraryTab::refreshCovers()
 
 void LibraryTab::onCardSizeChanged(int cardW)
 {
-    const QString want = cardW >= 250 ? "Large" : cardW <= 120 ? "Small" : "Medium";
-    for (auto * b : findChildren<QPushButton*>(QRegularExpression("^size(Large|Medium|Small)$"))) b->setChecked(b->text() == want);
+    SyncSizeButtons(this, cardW);
     relayout();
 }

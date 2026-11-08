@@ -1,4 +1,5 @@
 #include "catalogtab.h"
+#include "cardtoolbar.h"
 #include "installed.h"
 #include "shelf.h"
 #include "appmodel.h"          // AppModel — catalog/config + card size
@@ -80,63 +81,19 @@ void CatalogTab::refreshCovers()
 void CatalogTab::buildUi()
 {
     // Load persisted collapse state for repo sections.
-    AvailableCollapsedRepos.clear();
-    if ((*Model.config())["Settings"].contains("AvailableCollapsedRepos")
-        && (*Model.config())["Settings"]["AvailableCollapsedRepos"].is_array())
-        for (const auto & R : (*Model.config())["Settings"]["AvailableCollapsedRepos"])
-            if (R.is_string()) AvailableCollapsedRepos.insert(QString::fromStdString(std::string(R)));
+    AvailableCollapsedRepos = LoadCollapsed(Model, "AvailableCollapsedRepos");
 
     QVBoxLayout * v = new QVBoxLayout(this);
     v->setContentsMargins(0,0,0,0); v->setSpacing(0);
 
-    // Toolbar — mirrors the Library tab: Name/Date/Series sort (within each repo) + size picker.
-    QWidget * toolbar = new QWidget(this);
-    QHBoxLayout * tl = new QHBoxLayout(toolbar);
-    tl->setContentsMargins(8,4,8,4);
-
-    const QString sortBtnStyle =
-        "QPushButton{background:transparent;border:none;font-size:9pt;padding:2px 8px;}"
-        "QPushButton:checked{border-bottom:2px solid palette(highlight);font-weight:bold;}"
-        "QPushButton:hover{color:palette(highlighted-text);}";
-    QButtonGroup * sortGroup = new QButtonGroup(toolbar);
-    sortGroup->setExclusive(true);
-    auto makeSortBtn = [&](const QString & lbl, SortMode mode) {
-        QPushButton * b = new QPushButton(lbl, toolbar);
-        b->setCheckable(true); b->setChecked(AvailableSort == mode);
-        b->setStyleSheet(sortBtnStyle);
-        sortGroup->addButton(b);
-        connect(b, &QPushButton::toggled, this, [this, mode](bool checked){
-            if (!checked) return;
-            AvailableSort = mode; applyFilter();   // cheap: re-sort the existing pool (no restat)
-        });
-        tl->addWidget(b);
-    };
-    makeSortBtn("Name", SortMode::Name); makeSortBtn("Date", SortMode::Date); makeSortBtn("Series", SortMode::Series);
-    tl->addStretch();
-    QLineEdit * availSearch = new QLineEdit(toolbar);
-    availSearch->setPlaceholderText("Search…");
-    availSearch->setClearButtonEnabled(true);
-    availSearch->setFixedWidth(180);
-    connect(availSearch, &QLineEdit::textChanged, this, [this](const QString & t){
-        AvailableSearch = t.trimmed();
-        applyFilter();                             // cheap: re-filter the existing pool (no restat)
-    });
-    tl->addWidget(availSearch);
-    auto makeSizeBtn = [&](const QString & lbl, int w) {
-        QPushButton * b = new QPushButton(lbl, toolbar);
-        b->setObjectName("size" + lbl);   // sizeLarge, sizeMedium, sizeSmall: one name each
-        b->setCheckable(true); b->setChecked(Model.cardPixelWidth() == w);
-        b->setStyleSheet(
-            "QPushButton{color:#8f98a0;background:transparent;border:none;font-size:9pt;padding:2px 8px;}"
-            "QPushButton:checked{color:#c6d4df;border-bottom:2px solid #4a90d9;}"
-            "QPushButton:hover{color:#c6d4df;}");
-        connect(b, &QPushButton::clicked, this, [this,w](){ Model.setCardPixelWidth(w); });   // → cardSizeChanged → onCardSizeChanged
-        tl->addWidget(b);
-    };
-    makeSizeBtn("Large",250); makeSizeBtn("Medium",185); makeSizeBtn("Small",120);
+    // Sort (within each repo) + search + size: the toolbar both card tabs share; then this tab's own button.
+    const CardToolbar Bar = MakeCardToolbar(this, Model,
+        { {"Name", SortMode::Name}, {"Date", SortMode::Date}, {"Series", SortMode::Series} }, AvailableSort,
+        [this](SortMode Mode) { AvailableSort = Mode; applyFilter(); },        // cheap: re-sort the existing pool (no restat)
+        [this](const QString &Text) { AvailableSearch = Text; applyFilter(); });   // cheap: re-filter the pool (no restat)
+    QWidget * toolbar = Bar.Bar;
+    QHBoxLayout * tl = Bar.Row;
     // Add a package source by its IPFS folder CID — its games drop straight into this catalog.
-    QFrame * cidSep = new QFrame(toolbar); cidSep->setFrameShape(QFrame::VLine); cidSep->setStyleSheet("color:#3a4048;");
-    tl->addWidget(cidSep);
     QPushButton * cidBtn = new QPushButton("Add CID", toolbar);
     connect(cidBtn, &QPushButton::clicked, this, [this]{ openPackageSourcesDialog(); });
     tl->addWidget(cidBtn);
@@ -153,9 +110,7 @@ void CatalogTab::buildUi()
     connect(AvailableView, &LibraryView::cancelRequested,   this, &CatalogTab::cancelRequested);
     connect(AvailableView, &LibraryView::groupToggled, this, [this](const QString & name, bool collapsed){
         if (collapsed) AvailableCollapsedRepos.insert(name); else AvailableCollapsedRepos.remove(name);
-        auto & arr = (*Model.config())["Settings"]["AvailableCollapsedRepos"] = nlohmann::ordered_json::array();
-        for (const QString & R : AvailableCollapsedRepos) arr.push_back(R.toStdString());
-        Model.save();
+        SaveCollapsed(Model, "AvailableCollapsedRepos", AvailableCollapsedRepos);
     });
 
     rebuild();
@@ -164,8 +119,7 @@ void CatalogTab::buildUi()
 // Model card-size changed (from either tab's size buttons) — re-check the matching button and re-scale + relayout.
 void CatalogTab::onCardSizeChanged(int cardW)
 {
-    const QString want = cardW >= 250 ? "Large" : cardW <= 120 ? "Small" : "Medium";
-    for (auto * b : findChildren<QPushButton*>(QRegularExpression("^size(Large|Medium|Small)$"))) b->setChecked(b->text() == want);
+    SyncSizeButtons(this, cardW);
     if (AvailableView) {
         AvailableView->setCards(AvailableGameCards);   // point at the full pool so every cover is re-scaled
         AvailableView->prescaleCovers(Model.cardPixelWidth());
