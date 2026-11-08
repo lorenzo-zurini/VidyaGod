@@ -246,15 +246,6 @@ VG_COMMANDS
             return json{{"visible", Win(C).isVisible()}, {"model", Win(C).model() == C.Model}};
         }, {} });
 
-    Command::Register({
-        "friends stop-receiving", "stop receiving a friend's libraries (their stubs go, installs stay)", "",
-        { Pos("friend", "the friend's peer ID") }, { "friends stop-receiving 12D3KooW…" },
-        { "FriendSharing::stopReceivingFromFriend", "FriendSharing::dropReceivedStubs" }, Needs::Model, false,
-        [](Command::Context &C, const json &A) {
-            Model(C).friends().stopReceivingFromFriend(QString::fromStdString(Command::Str(A, "friend")));
-            return json{{"stopped", Command::Str(A, "friend")}};
-        }, {} });
-
     // ---------------- library ----------------
     Command::Register({
         "library play", "a Library card's Play: the launch window for its game",
