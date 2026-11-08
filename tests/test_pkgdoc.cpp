@@ -180,6 +180,24 @@ TEST(pkgdoc_a_save_follows_renames_through_the_library_and_instances)
     CHECK_EQ(R.InstancesUpdated, 1);
 }
 
+// A folder fetch lands into "<dest>.tmp" and renames it into place when complete: the half-landed node files in it are
+// its fetch's, and a save that renames a node they name leaves them alone. Teeth: walk into the scratch dir (its
+// copy is re-minted under the fetch).
+TEST(pkgdoc_a_fetchs_scratch_dir_is_never_rewritten)
+{
+    const fs::path Lib = Fresh("scratch");
+    const fs::path Fonts = Lib / "fonts", Landing = Lib / "game.tmp";
+    for (const fs::path &P : {Fonts, Landing}) fs::create_directories(P);
+    const std::string F = Freeze(Fonts, Zip("Fonts", "f.zip"));
+    const std::string G = Freeze(Landing, Over("Game", F));
+    PkgDoc::Document Doc;
+    Doc.Load(Fonts);
+    json N = Doc.Node(0); N["LAYERS"][0]["ZIP"] = "f2.zip"; Doc.Replace(0, N);
+    CHECK(Doc.Save(Fonts, Lib, "").Ok);
+    CHECK(fs::exists(Landing / (G + ".json")));
+    CHECK_EQ((int)Files(Landing).size(), 1);
+}
+
 // A diamond: a node contains the edited node directly AND through another node that changes too. It is re-minted
 // only once that other node has its new name, so no file is left naming a removed one. Teeth: re-mint each referrer
 // as soon as it is reached (the library is read in path order, so "a/top" comes before "b/middle").

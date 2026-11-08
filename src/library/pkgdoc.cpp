@@ -89,7 +89,10 @@ bool GatherLibrary(const fs::path &Root, const fs::path &Skip, std::vector<LibFi
         std::error_code E2;
         if (It->is_directory(E2))
         {
-            if (P.filename().string().rfind("_friend_", 0) == 0 || fs::weakly_canonical(P, E2) == SkipCanon)
+            //A friend's landed copy is never ours, and a fetch's scratch dir ("<dest>.tmp") is half-landed files its fetch
+            //is still writing: neither is rewritten by a save.
+            if (P.filename().string().rfind("_friend_", 0) == 0 || NodeGraph::IsFetchScratchDir(P)
+                || fs::weakly_canonical(P, E2) == SkipCanon)
                 It.disable_recursion_pending();
             continue;
         }
