@@ -31,7 +31,7 @@ class PackageEditorModel : public QObject
 {
     Q_OBJECT
 public:
-    PackageEditorModel(nlohmann::ordered_json * globalConfig, QWidget * dialogParent, QObject * parent = nullptr);
+    explicit PackageEditorModel(nlohmann::ordered_json * globalConfig, QObject * parent = nullptr);
     ~PackageEditorModel() override;
 
     PkgDoc::Document &             doc()                 { return Doc; }
@@ -41,7 +41,7 @@ public:
     nlohmann::ordered_json *       globalConfig() const  { return GlobalConfigJSON; }
 
     // ---- the package on disk ----------------------------------------------------------------------------------
-    void initPackage(const QString & preselectedPath, QWidget * dirPickerParent);   // pick a dir (if none) + load
+    void initPackage(const QString & path);   // the package at path ("": none — the editor's start) + load
     //The game's ID: the [<id>] its folder is named by ("" when the folder carries none).
     std::string gameId() const;
     //Change the game's ID to New (digits): its tiles, the tiles nesting under it and RECOMMENDED follow, the package
@@ -142,7 +142,6 @@ private:
     std::vector<std::string> SaveNotes;
     QDir *                   PackageDir = nullptr;
     nlohmann::ordered_json * GlobalConfigJSON = nullptr;
-    QWidget *                DialogParent = nullptr;
     struct ValResult { std::vector<std::string> Errors, Warnings; };
     static ValResult Validate(const NodeIndex & Idx, const std::vector<std::string> & Handles);
     std::shared_ptr<const NodeIndex> ExecSnapshot() const;

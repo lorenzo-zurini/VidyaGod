@@ -78,7 +78,7 @@ private slots:
         library();
         std::ofstream((Pkg + "/notes.json").toStdString()) << R"(["not a node"])";
         PackageEditorModel M(&Cfg, nullptr);
-        M.initPackage(Pkg, nullptr);
+        M.initPackage(Pkg);
         QCOMPARE(M.doc().Count(), 1);
         QCOMPARE(M.doc().Handle(0), Game);
         QVERIFY(!M.isDirty());
@@ -94,7 +94,7 @@ private slots:
         const QString Third = Lib + "/Vendor/[3][v1] Mod";
         QDir().mkpath(Third);
         const std::string Mod = Freeze(Third, Zip("A Mod", "mod.zip"));
-        M.initPackage(Pkg, nullptr);
+        M.initPackage(Pkg);
         bool ModOffered = false;
         for (const auto &O : M.offers()) if (O.Cid == Mod) ModOffered = true;
         QVERIFY(ModOffered);
@@ -107,7 +107,7 @@ private slots:
     {
         library();
         PackageEditorModel M(&Cfg, nullptr);
-        M.initPackage(Pkg, nullptr);
+        M.initPackage(Pkg);
         QSignalSpy Renamed(&M, &PackageEditorModel::handlesRenamed), Saved(&M, &PackageEditorModel::savedToDisk),
                    Dirty(&M, &PackageEditorModel::dirtyChanged);
         json N = M.doc().Node(0);
@@ -133,7 +133,7 @@ private slots:
     {
         library();
         PackageEditorModel M(&Cfg, nullptr);
-        M.initPackage(Pkg, nullptr);
+        M.initPackage(Pkg);
         M.Revalidate();
         QVERIFY2(M.validationErrors().empty(), M.validationErrors().empty() ? "" : M.validationErrors().front().c_str());
         json N = M.doc().Node(0);
@@ -153,7 +153,7 @@ private slots:
     {
         library();
         PackageEditorModel M(&Cfg, nullptr);
-        M.initPackage(Pkg, nullptr);
+        M.initPackage(Pkg);
         json N = M.doc().Node(0);
         N["LAYERS"].push_back(json{{"ZIP", ""}, {"TARGET", "FILES/game"}});
         N["LABEL"] = "S.T.A.L.K.E.R.: Game (GOG)";               // a title with a colon and parentheses in it
@@ -187,7 +187,7 @@ private slots:
         QCOMPARE(PkgGraph::FixFor("content case conflict across layers: file 'A.exe' (a.zip) vs 'a.exe' (b.zip)").Action, std::string("fix_case"));
         library();
         PackageEditorModel M(&Cfg, nullptr);
-        M.initPackage(Pkg, nullptr);
+        M.initPackage(Pkg);
         M.Revalidate();
         ValidationPanel P(&M);
         QListWidget *L = P.findChild<QListWidget *>();
@@ -220,7 +220,7 @@ private slots:
         const QString Users = QString::fromStdString(InstanceStore::Root(Cfg2).string());
         QDir().mkpath(Users + "/201801010001/DefaultInstance");
         PackageEditorModel M(&Cfg2, nullptr);
-        M.initPackage(P, nullptr);
+        M.initPackage(P);
         QCOMPARE(M.gameId(), std::string("201801010001"));
         QString E;
         QVERIFY(!M.changeGameId("55492", &E));                    // taken
@@ -245,13 +245,13 @@ private slots:
     {
         library();
         PackageEditorModel M(&Cfg, nullptr);
-        M.initPackage(Pkg, nullptr);
+        M.initPackage(Pkg);
         QVERIFY(!M.saveEmptiesPackage());
         M.doc().Remove(0);
         QVERIFY(M.saveEmptiesPackage());
         QTemporaryDir Empty; QVERIFY(Empty.isValid());
         PackageEditorModel N(&Cfg, nullptr);
-        N.initPackage(Empty.path(), nullptr);
+        N.initPackage(Empty.path());
         QVERIFY(!N.saveEmptiesPackage());
     }
 
@@ -263,7 +263,7 @@ private slots:
         QFile Z(Pkg + "/old layer.zip"); QVERIFY(Z.open(QIODevice::WriteOnly)); Z.close();
         QFile C(Pkg + "/cover.png"); QVERIFY(C.open(QIODevice::WriteOnly)); C.close();
         PackageEditorModel M(&Cfg, nullptr);
-        M.initPackage(Pkg, nullptr);
+        M.initPackage(Pkg);
         json N = M.doc().Node(0);
         N["LAYERS"].push_back(json::parse(R"({"EXEC":[{"LABEL":"Play","TILE":{"UID":"1","COVER":{"FILE":"cover.png"}}}]})"));
         M.replaceNode(Game, N);
@@ -290,7 +290,7 @@ private slots:
         const std::string Lc = Freeze(Pkg, L);
         for (const char *F : {"/lib [12345678].zip", "/saved.zip"}) { QFile Z(Pkg + F); QVERIFY(Z.open(QIODevice::WriteOnly)); Z.close(); }
         PackageEditorModel M(&Cfg, nullptr);
-        M.initPackage(Pkg, nullptr);
+        M.initPackage(Pkg);
         json Edited = L;
         Edited["LAYERS"].erase(1);                        // unsaved: no node in the editor names saved.zip any more
         M.replaceNode(Lc, Edited);
@@ -305,7 +305,7 @@ private slots:
     {
         library();
         PackageEditorModel M(&Cfg, nullptr);
-        M.initPackage(Pkg, nullptr);
+        M.initPackage(Pkg);
         json N = M.doc().Node(0);
         N["LAYERS"].push_back(json{{"ZIP", ""}, {"TARGET", "FILES/%GameDir%"}, {"COMMENT", "the game"}});
         M.replaceNode(Game, N);
@@ -323,7 +323,7 @@ private slots:
     {
         library();
         PackageEditorModel M(&Cfg, nullptr);
-        M.initPackage(Pkg, nullptr);
+        M.initPackage(Pkg);
         json N = M.doc().Node(0);
         N["LAYERS"][0]["NODE"] = "bafkreinosuchnodeanywherexxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx";
         M.replaceNode(Game, N);
@@ -356,7 +356,7 @@ private slots:
         Freeze(Runners, Runner("Runner A", "c:/a"));
         const std::string RunnerB = Freeze(Runners, Runner("Runner B", "c:/b"));
         PackageEditorModel M(&Cfg, nullptr);
-        M.initPackage(Pkg, nullptr);
+        M.initPackage(Pkg);
         M.Revalidate();
         auto Mentions = [](const std::vector<std::string> &V, const std::string &What) {
             return std::any_of(V.begin(), V.end(), [&](const std::string &S) { return S.find(What) != std::string::npos; });
@@ -370,7 +370,7 @@ private slots:
         QDir().mkpath(Other);
         const std::string BrokenId = Freeze(Other, Over("Core Fonts", "bafkreinosuchnodeanywherexxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"));
         PackageEditorModel M2(&Cfg, nullptr);              // the library as it is now
-        M2.initPackage(Pkg, nullptr);
+        M2.initPackage(Pkg);
         json G = M2.doc().Node(0);
         G["LAYERS"][0]["NODE"] = BrokenId;
         M2.replaceNode(Game, G);
@@ -389,7 +389,7 @@ private slots:
     {
         library();
         PackageEditorModel M(&Cfg, nullptr);
-        M.initPackage(Pkg, nullptr);
+        M.initPackage(Pkg);
         QTabWidget Tabs;
         Tabs.addTab(new QWidget, "JSON");
         PkgInsight In(&M, &Tabs);
@@ -416,7 +416,7 @@ private slots:
         library();
         {
             PackageEditorModel M(&Cfg, nullptr);
-            M.initPackage(Pkg, nullptr);
+            M.initPackage(Pkg);
             M.dropDraft();
             QVERIFY(!M.writeDraft());                       // nothing unsaved: no draft
             QCOMPARE(M.draftTime(), 0);
@@ -426,7 +426,7 @@ private slots:
             QVERIFY(M.draftTime() > 0);
         }                                                   // the editor goes away unsaved
         PackageEditorModel M(&Cfg, nullptr);
-        M.initPackage(Pkg, nullptr);
+        M.initPackage(Pkg);
         QCOMPARE(M.doc().Count(), 1);                       // the files on disk: as before
         QVERIFY(M.draftTime() > 0);
         QVERIFY(M.restoreDraft());
@@ -441,7 +441,7 @@ private slots:
         M.doc().Commit();
         QVERIFY(M.writeDraft());
         PackageEditorModel M2(&Cfg, nullptr);
-        M2.initPackage(Pkg, nullptr);
+        M2.initPackage(Pkg);
         M2.createNode(json{{"LAYERS", json::array()}}, {}, "Stray");
         QVERIFY(M2.restoreDraft());
         QCOMPARE(M2.doc().Count(), 1);
@@ -468,7 +468,7 @@ private slots:
     {
         library();
         PackageEditorModel M(&Cfg, nullptr);
-        M.initPackage(Pkg, nullptr);
+        M.initPackage(Pkg);
         const std::string H = M.createNode(json{{"LAYERS", json::array({ json{{"DIR", "captured"}} })}}, {Game}, "Captured files");
         QVERIFY(H.rfind("draft-", 0) == 0);
         QVERIFY(M.isDirty());
@@ -487,7 +487,7 @@ private slots:
     {
         library();
         PackageEditorModel M(&Cfg, nullptr);
-        M.initPackage(Pkg, nullptr);
+        M.initPackage(Pkg);
         const std::string H = M.createNode(json{{"LAYERS", json::array({ json{{"ZIP", ""}} })}}, {}, "Setup files");
         M.Revalidate();
         QVERIFY(!M.validationErrors().empty());
@@ -501,7 +501,7 @@ private slots:
         library();
         {
             PackageEditorModel M(&Cfg, nullptr);
-            M.initPackage(Pkg, nullptr);
+            M.initPackage(Pkg);
             M.doc().SetPos(Game, {120, 340});
             M.doc().Commit();
             M.noteEdited();
@@ -517,7 +517,7 @@ private slots:
         //Corrupt the stored position: it is refused.
         Cfg["EDITORLAYOUT"].begin().value()[New] = json::array({1e300, 5});
         PackageEditorModel M2(&Cfg, nullptr);
-        M2.initPackage(Pkg, nullptr);
+        M2.initPackage(Pkg);
         QVERIFY(!M2.doc().Positions().count(New));
     }
 
@@ -530,7 +530,7 @@ private slots:
         QDir().mkpath(Stub);
         const std::string C = Freeze(Stub, Zip("Theirs", "t.zip"));
         PackageEditorModel M(&Cfg, nullptr);
-        M.initPackage(Stub, nullptr);
+        M.initPackage(Stub);
         json N = M.doc().Node(0); N["LABEL"] = "mine"; M.replaceNode(C, N);
         QString Err;
         QVERIFY(!M.Save(&Err));
@@ -545,7 +545,7 @@ private slots:
         library();
         std::ofstream((Pkg + "/notes.json").toStdString()) << R"(["keep", "me"])";
         PackageEditorModel M(&Cfg, nullptr);
-        M.initPackage(Pkg, nullptr);
+        M.initPackage(Pkg);
         json N = M.doc().Node(0); N["LABEL"] = "x"; M.replaceNode(Game, N);
         QVERIFY(M.Save());
         std::ifstream In((Pkg + "/notes.json").toStdString());
@@ -592,7 +592,7 @@ private slots:
     {
         library();
         PackageEditorModel M(&Cfg, nullptr);
-        M.initPackage(Pkg, nullptr);
+        M.initPackage(Pkg);
         json N = M.doc().Node(0);
         N["LABEL"] = 5;
         M.replaceNode(Game, N);

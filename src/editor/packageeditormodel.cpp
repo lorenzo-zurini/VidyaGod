@@ -38,8 +38,8 @@ std::string PackageName(const fs::path & Dir) { return PackageCatalog::FolderTit
 
 } // namespace
 
-PackageEditorModel::PackageEditorModel(nlohmann::ordered_json * globalConfig, QWidget * dialogParent, QObject * parent)
-    : QObject(parent), GlobalConfigJSON(globalConfig), DialogParent(dialogParent)
+PackageEditorModel::PackageEditorModel(nlohmann::ordered_json * globalConfig, QObject * parent)
+    : QObject(parent), GlobalConfigJSON(globalConfig)
 {
 }
 
@@ -51,7 +51,7 @@ PackageEditorModel::~PackageEditorModel()
 
 QString PackageEditorModel::packagePath() const { return PackageDir ? PackageDir->path() : QString(); }
 
-void PackageEditorModel::initPackage(const QString & path, QWidget *)
+void PackageEditorModel::initPackage(const QString & path)
 {
     //No path: no package - the editor shows its start (New package / Open package), it does not push a picker.
     delete PackageDir;
@@ -207,7 +207,7 @@ bool PackageEditorModel::changeGameId(const std::string & New, QString * Error)
         if (fs::exists(Users / Old, Ec) && !fs::exists(Users / New, Ec)) fs::rename(Users / Old, Users / New, Ec);
         WriteConfig();
     }
-    initPackage(QString::fromStdString(To.string()), nullptr);
+    initPackage(QString::fromStdString(To.string()));
     return true;
 }
 

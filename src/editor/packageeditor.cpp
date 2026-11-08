@@ -45,7 +45,7 @@ PackageEditor * PackageEditor::Live = nullptr;
 PackageEditor::PackageEditor(nlohmann::ordered_json * GlobalConfigJSON, QWidget * parent, const QString & PreselectedPath)
     : QDialog(parent)
 {
-    Model = new PackageEditorModel(GlobalConfigJSON, this, this);
+    Model = new PackageEditorModel(GlobalConfigJSON, this);
     if (!Live) Live = this;
     else LogErr("PackageEditor", "A second package editor was constructed; its canvas cannot render. Open it through PackageEditor::OpenFor().");
     setWindowFlags(Qt::Window);
@@ -258,7 +258,7 @@ PackageEditor::PackageEditor(nlohmann::ordered_json * GlobalConfigJSON, QWidget 
     connect(DraftTimer, &QTimer::timeout, this, [this] { if (Model->isDirty()) Model->writeDraft(); });
     DraftTimer->start(10000);
 
-    Model->initPackage(PreselectedPath, this);
+    Model->initPackage(PreselectedPath);
     Canvas->canvas()->setPackageOpen(!bundleDir().isEmpty());
     updateTitle();
     UpdateUndo();
@@ -411,7 +411,7 @@ void PackageEditor::openPackage(const QString & Dir)
 {
     if (QDir(Dir) == QDir(bundleDir())) return;
     if (!maybeSave("opening another package")) return;
-    Model->initPackage(Dir, this);
+    Model->initPackage(Dir);
     QTimer::singleShot(0, this, [this] { offerDraft(); refreshHistory(); });
     QTimer::singleShot(0, this, [this] { validate(); });
 }
@@ -544,7 +544,7 @@ void PackageEditor::newPackage()
     });
     Ready();
     if (Dlg.exec() != QDialog::Accepted) return;
-    Model->initPackage(QString::fromStdString(Dir.string()), this);
+    Model->initPackage(QString::fromStdString(Dir.string()));
     //Its first version, carrying the game's tile: a game is on the shelf as its versions (VARIANT), and another version
     //later contains this one (its files, its entry and its tile) and changes what differs.
     const std::string T = Title->text().trimmed().toStdString(), U = IsLibrary() ? std::string() : Uid->text().toStdString();

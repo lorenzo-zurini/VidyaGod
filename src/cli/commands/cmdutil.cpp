@@ -157,7 +157,7 @@ BuildSession OpenBuild(Command::Context &C, const std::string &Pkg)
     auto &K = BuildSessions();
     if (const auto It = K.find(P); It != K.end()) return {nullptr, It->second.get(), "session"};
     auto M = std::make_unique<PackageEditorModel>(C.Config, nullptr);
-    M->initPackage(QString::fromStdString(P), nullptr);
+    M->initPackage(QString::fromStdString(P));
     if (C.Live) { PackageEditorModel *Raw = M.get(); K[P] = std::move(M); return {nullptr, Raw, "session"}; }
     BuildSession S{std::move(M), nullptr, "this call"};
     S.M = S.Own.get();

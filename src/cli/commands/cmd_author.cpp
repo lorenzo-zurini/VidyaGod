@@ -331,7 +331,7 @@ VG_COMMANDS
                 if (A.contains("node"))
                 {
                     PackageEditorModel E(C.Config, nullptr);
-                    E.initPackage(QString::fromStdString(P.string()), nullptr);
+                    E.initPackage(QString::fromStdString(P.string()));
                     const int I = E.doc().IndexOf(Command::Str(A, "node"));
                     if (I < 0) throw Command::BadArgs("no such node (its handle)");
                     Out["waits_at"] = CapturePreview::WaitingTarget(E.doc().Node(I)).toStdString();

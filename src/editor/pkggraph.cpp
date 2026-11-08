@@ -178,7 +178,6 @@ Graph Build(const std::vector<NodeRef> &Nodes)
             }
         }
     }
-    for (Node &Nd : G.Nodes) Nd.HasDeltaBase = Nd.Form == "zip" && !DeltaBase(Nodes, Nd.Index).empty();
     return G;
 }
 

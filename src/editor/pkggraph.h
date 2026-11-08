@@ -45,7 +45,6 @@ struct Node
     std::string Type;           // the node's KIND: its first layer type that is not a reference, "" when plain
     std::string Form;           // its first content layer's type, lower case ("zip"/"dir"/"file"/"delta"; "" without
                                 // content) — what a delta can be based on
-    bool        HasDeltaBase = false;   // a zip whose DeltaBase exists: "-> delta" is offered
     float       X = 0, Y = 0;   // canvas position: node POS, then this machine's override, then computed
     bool        HasPos = false; // false → nothing declared one, so PkgLayout placed it
     //Estimated DRAWN height, in the same units as X/Y. A node's box is as tall as its payload makes it — a

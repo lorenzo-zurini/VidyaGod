@@ -447,8 +447,8 @@ private slots:
         QCOMPARE(db(nodes({{"ANY", json::array({"hB"})}}, false, "FILES/C:/g")), std::string()); // not contained
         // The button asks the same question as the action.
         auto offers = [&](const json &D) {
-            const PkgGraph::Graph G = PkgGraph::Build(base(D));
-            for (const auto &A : PkgGraph::ActionsFor(D[1], G.Nodes[1].HasDeltaBase, {})) if (std::string(A.Id) == "to_delta") return true;
+            const bool HasBase = PkgGraph::ContentType(D[1]) == "ZIP" && !PkgGraph::DeltaBase(base(D), 1).empty();   // as the canvas asks
+            for (const auto &A : PkgGraph::ActionsFor(D[1], HasBase, {})) if (std::string(A.Id) == "to_delta") return true;
             return false;
         };
         QVERIFY(offers(nodes({{"NODE", "hB"}}, false, "FILES/C:/g")));
@@ -1501,8 +1501,8 @@ private:
         {
             dir = under.isEmpty() ? new QTemporaryDir() : new QTemporaryDir(under + "/pkg-XXXXXX");
             cfg = json{{"Settings", json::object()}};
-            model = new PackageEditorModel(&cfg, nullptr, parent);
-            model->initPackage(dir->path(), nullptr);
+            model = new PackageEditorModel(&cfg, parent);
+            model->initPackage(dir->path());
             canvas = new PkgCanvas(&model->doc(), parent);
             act = new PkgActions(model, canvas, nullptr, parent);
             if (!installHandlers) return;                 // exercise the shipped defaults
