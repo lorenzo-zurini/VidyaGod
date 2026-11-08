@@ -124,3 +124,6 @@ PackageCatalog::SafeSegment            # a received name as one path segment: `r
 PackageCatalog::RemoveLandedNode       # a landed node file removed: `received prune`, `updates apply`
 PackageCatalog::FolderNodes            # a received folder's node list: `received land`, `updates list`
 vgdelta::GenerateDelta                 # the in-memory form of GenerateDeltaToFile (`vfs delta --make`): tests, fixtures
+PreLaunchUi::GraftRows                 # private to PreLaunchWindow's files (prelaunchwindow_p.h): reached through its counted functions
+PreLaunchUi::SectionRow                # private to PreLaunchWindow's files (prelaunchwindow_p.h): reached through its counted functions
+PreLaunchUi::CollectVarValues          # private to PreLaunchWindow's files (prelaunchwindow_p.h): reached through its counted functions
