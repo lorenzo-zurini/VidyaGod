@@ -172,6 +172,7 @@ set(SHARED_SOURCES
     src/cli/commandserver.cpp
     src/cli/cliapp.h
     src/cli/cliapp.cpp
+    src/cli/clirender.cpp
     src/cli/commands/cmd_friends.cpp
     src/cli/commands/cmd_catalog.cpp
     src/cli/commands/cmd_ui.cpp
