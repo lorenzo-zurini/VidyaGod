@@ -844,11 +844,8 @@ LaunchParameters ParseCommandLineArguments(int argc, char* argv[])
         }
         else if (arg == "--runner" && i + 1 < argc)
         {
-            //Repeatable: each --runner appends one link to the daisy-chain (innermost→outermost). The first one also
-            //sets RunnerID for back-compat (single-runner pin).
-            std::string R = argv[++i];
-            if (RuntimeParameters.RunnerID.empty()) RuntimeParameters.RunnerID = R;
-            RuntimeParameters.RunnerChain.push_back(std::move(R));
+            //Repeatable: each --runner appends one link to the daisy-chain (innermost→outermost).
+            RuntimeParameters.RunnerChain.push_back(argv[++i]);
         }
     }
     return RuntimeParameters;

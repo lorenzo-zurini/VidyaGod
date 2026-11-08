@@ -75,8 +75,6 @@ struct LaunchParameters
     std::optional<std::vector<std::string>> Grafts;                      //--graft KEY (repeatable, in order) / --no-grafts: the grafts to apply; unset = the row's pre-ticked ones
     std::string InstanceName;                                             //--instance NAME: which of the game's instances to run (its settings + saves); default the last played
     std::string Entrypoint;                                               //--entrypoint LABEL: which entry of the row's folded EXEC to run (default: the first game entry; a graft's entry is one of them)
-    std::string VariantID;                                                //Variant override from --variant (selects which variant to build)
-    std::string RunnerID;                                                 //Runner override from --runner (RUNNER_ID; = chain front, back-compat)
     std::vector<std::string> RunnerChain;                                 //Runner daisy-chain from repeated --runner (innermost→outermost); empty = auto-resolve
     std::string ImportRunnerId;                                          //--import-runner: install this runner (fetch build + build DEFPREFIX) then exit
     std::string ImportPackageUid;                                        //--import-package: install this catalog game (fetch IPFS content + add to LIBRARY) then exit

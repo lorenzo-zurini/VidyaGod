@@ -50,7 +50,7 @@ int RunNodeLaunch      (LaunchParameters &LP, nlohmann::ordered_json &GlobalConf
 //resolved launch (paths, runner chain, layers, variables, …) once it resolved.
 struct LaunchRequest
 {
-    std::string LaunchNodeId, LaunchTile, LaunchVariant, Entrypoint, InstanceName, RunnerID;
+    std::string LaunchNodeId, LaunchTile, LaunchVariant, Entrypoint, InstanceName;
     std::vector<std::string> RunnerChain;
     std::optional<std::vector<std::string>> Grafts;
     std::map<std::string, std::string> VariableOverrides;

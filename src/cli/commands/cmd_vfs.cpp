@@ -384,8 +384,6 @@ VG_COMMANDS
                 }
                 Out["out"] = Command::Str(A, "out");
             }
-            const auto Mem = std::make_shared<MemByteSource>(std::vector<uint8_t>{1, 2, 3});
-            Out["self_test"] = Mem->size() == 3;
             return Out;
         }, {} });
 }

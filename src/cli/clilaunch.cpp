@@ -137,9 +137,7 @@ std::unique_ptr<CliModes::PreparedLaunch> CliModes::PrepareLaunch(const LaunchRe
         R.InstanceName = LaunchParameters.InstanceName;
         R.Grafts = LaunchParameters.Grafts;
         R.VariableOverrides = LaunchParameters.VariableOverrides;
-        //Runner daisy-chain: the explicit --runner chain wins; else the single RunnerID as a 1-step pin (else auto).
-        R.RunnerChain = !LaunchParameters.RunnerChain.empty() ? LaunchParameters.RunnerChain
-                      : !LaunchParameters.RunnerID.empty()   ? std::vector<std::string>{ LaunchParameters.RunnerID } : std::vector<std::string>{};
+        R.RunnerChain = LaunchParameters.RunnerChain;   // --runner, innermost first (empty: the instance's / default)
         R.ReadBack = !LaunchParameters.ResolveOnly;   // a launch reads back what the game changed in its files
         Out->S = std::make_unique<LaunchSession::Session>(GlobalConfigJSON, std::move(R));
         //A row that does not resolve (blocked, malformed, no runner) has nothing to dump or run.
@@ -222,7 +220,6 @@ int CliModes::RunNodeLaunch(LaunchParameters &LP, nlohmann::ordered_json &Global
     R.LaunchVariant = LP.LaunchVariant;
     R.Entrypoint = LP.Entrypoint;
     R.InstanceName = LP.InstanceName;
-    R.RunnerID = LP.RunnerID;
     R.RunnerChain = LP.RunnerChain;
     R.Grafts = LP.Grafts;
     R.VariableOverrides = LP.VariableOverrides;
