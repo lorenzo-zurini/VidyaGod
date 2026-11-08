@@ -1,4 +1,5 @@
 #include "packagesview.h"
+#include "guiformat.h"   // HumanBytesQ
 #include "appmodel.h"          // AppModel — catalog/config + removePackage
 #include "mainwindow.h"        // MainWindow::RefreshPackage (app-wide "package edited" hook)
 #include "packageeditor.h"
@@ -108,8 +109,7 @@ void PackagesView::offerUpdate(const PackageCatalog::PackageUpdate &U, QPushButt
                 Q += QString(" %1 node(s) of the current version stay, because other installed games still use them.").arg(S->Kept.size());
             if (!S->Deletes.empty())
             {
-                Q += QString("\n\nThese files are deleted (%1 MB); they are needed again only to switch back:")
-                         .arg(S->DeleteBytes / (1024.0 * 1024.0), 0, 'f', 1);
+                Q += "\n\nThese files are deleted (" + HumanBytesQ((long long)S->DeleteBytes) + "); they are needed again only to switch back:";
                 for (size_t I = 0; I < S->Deletes.size() && I < 12; ++I)
                     Q += "\n  " + QString::fromStdString(S->Deletes[I].File.filename().string());
                 if (S->Deletes.size() > 12) Q += QString("\n  … and %1 more").arg(S->Deletes.size() - 12);

@@ -156,7 +156,7 @@ private:
     void RebuildModuleTree();
     void RefreshGraftEntryRows();           // the picker rows a ticked graft with an entry adds ("run Forge") for the current variant
     void PropagateModuleToggle(const QString& Key, bool Checked);   // a graft row ticked/unticked (queued)
-    void RefreshModuleLocks();
+    void SyncGraftChecks();
     // Collects the toggle states into a node-id -> enabled map (passed to the engine as ModuleStates).
     std::vector<std::string> CollectGrafts() const;
     std::vector<std::string> AppliedOrder;            // the ticked grafts in the order they apply (see CollectGrafts)

@@ -745,11 +745,7 @@ void IpfsTab::showContextMenu(const QPoint & pos)
                            this, [this, Sel, N]{
                 qlonglong Bytes = 0;
                 for (const QString & c : Sel) { const auto St = Model.state(c); if (St.size > 0) Bytes += St.size; }
-                // Scale the unit: a sub-megabyte selection rendered as "~0 MB to read", which reads like a bug.
-                QString Size;
-                if (Bytes >= 1073741824LL) Size = QString(" (~%1 GB to read)").arg(double(Bytes) / 1073741824.0, 0, 'f', 1);
-                else if (Bytes >= 1048576LL) Size = QString(" (~%1 MB to read)").arg(Bytes / 1048576);
-                else if (Bytes > 0)          Size = QString(" (~%1 KB to read)").arg(Bytes / 1024);
+                const QString Size = Bytes > 0 ? " (~" + HumanBytesQ(Bytes) + " to read)" : QString();
                 if (QMessageBox::question(this, "Force recheck",
                         QString("Re-read %1 item%2 from disk and verify every block against its CID%3?\n\n"
                                 "This is the only check that catches content edited in place at the same size. "

@@ -848,7 +848,6 @@ void PreLaunchWindow::RebuildModuleTree()
         It->setText(0, QString::fromStdString(N->NodeId.empty() ? N->Key().substr(0, 12) : N->NodeId));
         It->setData(0, Qt::UserRole,     QString::fromStdString(N->Key()));
         It->setData(0, Qt::UserRole + 2, std::find(Ticked.begin(), Ticked.end(), G) != Ticked.end());
-        It->setData(0, Qt::UserRole + 4, true);
     }
     SetTabShown(AddonsPage, !GraftRows(ModuleTree).empty());
     //Ordering means something only with two or more add-ons.
@@ -856,20 +855,18 @@ void PreLaunchWindow::RebuildModuleTree()
     for (QWidget* X : { static_cast<QWidget*>(GraftUp), static_cast<QWidget*>(GraftDown),
                         static_cast<QWidget*>(AddonsPage->findChild<QLabel*>("graftOrderHint")) })
         if (X) X->setVisible(Several);
-    RefreshModuleLocks();
+    SyncGraftChecks();
 }
 
-void PreLaunchWindow::RefreshModuleLocks()
+//Every row's check follows what is ticked (UserRole+2). Every row is tickable: what a graft needs is ticked with it.
+void PreLaunchWindow::SyncGraftChecks()
 {
     if (!ModuleTree) return;
     QSignalBlocker B(ModuleTree);
     for (QTreeWidgetItem* It : GraftRows(ModuleTree))
     {
-        bool Desired = It->data(0, Qt::UserRole + 2).toBool();
-        const bool Tickable = !It->data(0, Qt::UserRole + 4).isValid() || It->data(0, Qt::UserRole + 4).toBool();
-        It->setFlags(Tickable ? (Qt::ItemIsEnabled | Qt::ItemIsUserCheckable) : Qt::ItemIsUserCheckable);
-        It->setCheckState(0, Desired ? Qt::Checked : Qt::Unchecked);
-        It->setData(0, Qt::UserRole + 3, !Tickable);   // locked while its requirements are unselected
+        It->setFlags(Qt::ItemIsEnabled | Qt::ItemIsUserCheckable);
+        It->setCheckState(0, It->data(0, Qt::UserRole + 2).toBool() ? Qt::Checked : Qt::Unchecked);
     }
 }
 
@@ -882,7 +879,6 @@ void PreLaunchWindow::PropagateModuleToggle(const QString& Key, bool Checked)
     //The toggle arrives queued, and a rebuild can come between: judge the row as it is NOW, and a row already recorded
     //in that state is a duplicate or stale event (one emitted from a row since rebuilt) — acting on it would untick a
     //graft the user just ticked.
-    (void)Checked;
     const bool Now = Item->checkState(0) == Qt::Checked;
     if (Now == Item->data(0, Qt::UserRole + 2).toBool()) return;
     Checked = Now;

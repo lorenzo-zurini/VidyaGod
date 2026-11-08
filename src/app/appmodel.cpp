@@ -531,7 +531,7 @@ void AppModel::planSourceUpgrade(const QString & name, const QString & cid)
                 return;
             }
             PendingUpgrade = Plan;
-            auto Gb = [](long long B) { return QString::number(double(B) / 1e9, 'f', 2) + " GB"; };
+            auto Gb = [](long long B) { return QString::fromStdString(HumanBytes(B)); };
             const bool Unrelated = Plan->SharedPackages == 0 && Plan->OldPackages > 0;
             QString S = QString("%1\n    %2\n→ %3\n\n"
                                 "Packages: %4 → %5 (%6 shared)\n"
