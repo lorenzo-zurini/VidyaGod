@@ -8,6 +8,7 @@
 #include "command.h"
 #include "cmdutil.h"
 #include "appmodel.h"
+#include "friendsharing.h"
 #include "packagecatalog.h"
 #include "packagecatalog_p.h"
 #include "manifestmodel.h"
@@ -580,9 +581,9 @@ VG_COMMANDS
         "received land", "land every received package's node files now",
         "Fetch each package folder friends share with you (node files only — content stays lazy until install). With "
         "the app up it lands in the app.", {}, { "received land" },
-        { "PackageCatalog::LandReceivedPackages", "AppModel::completeReceivedClosures" }, Needs::Config, true,
+        { "PackageCatalog::LandReceivedPackages", "FriendSharing::completeReceivedClosures" }, Needs::Config, true,
         [](Command::Context &C, const json &) {
-            if (C.Model) { C.Model->completeReceivedClosures(); return json{{"started", true}}; }
+            if (C.Model) { C.Model->friends().completeReceivedClosures(); return json{{"started", true}}; }
             std::string Err;
             if (!PackageCatalog::LandReceivedPackages(*C.Config, &Err)) throw std::runtime_error(Err);
             return json{{"landed", true}};

@@ -8,6 +8,7 @@
 #include "command.h"
 #include "cmdutil.h"
 #include "appmodel.h"
+#include "friendsharing.h"
 #include "autostart.h"
 #include "commonutils.h"
 #include "covercache.h"
@@ -151,17 +152,17 @@ VG_COMMANDS
         { Flag("heal", "heal orphaned references"), Flag("reconcile", "reconcile friends' shares"), Flag("reshare", "re-register shares"),
           Flag("push", "push node settings"), Flag("covers", "sweep missing covers") },
         { "app housekeeping --heal", "app housekeeping --reconcile --push" },
-        { "AppModel::healOrphansIfAny", "AppModel::reconcileReceivedLibraries", "AppModel::enqueueReceivedShares", "AppModel::applyFriendLibrarySnapshot",
-          "AppModel::onFriendBlockLanded", "AppModel::reRegisterShares", "AppModel::pushSeedLevels", "AppModel::pushLanRoster", "AppModel::pushPresenceDeny",
+        { "AppModel::healOrphansIfAny", "FriendSharing::reconcileReceivedLibraries", "FriendSharing::enqueueReceivedShares", "FriendSharing::applyFriendLibrarySnapshot",
+          "FriendSharing::onFriendBlockLanded", "FriendSharing::reRegisterShares", "AppModel::pushSeedLevels", "FriendSharing::pushLanRoster", "FriendSharing::pushPresenceDeny",
           "CoverCache::instance", "CoverCache::sweepNow", "CoverCache::missCount", "CoverCache::onTransferFinished", "AppModel::notifyCoversReady",
-          "LibraryTab::refreshCovers", "CatalogTab::refreshCovers" , "AsyncWork::Run" }, Needs::Model, true,
+          "LibraryTab::refreshCovers", "CatalogTab::refreshCovers" , "AsyncWork::Run", "AsyncWork::Job::Live", "AsyncWork::Job::Post" }, Needs::Model, true,
         [](Command::Context &C, const json &A) {
             AppModel &M = Model(C);
             json Out = json::object();
             if (Command::Bool(A, "heal", false)) { M.healOrphansIfAny(); Out["healing"] = true; }
-            if (Command::Bool(A, "reconcile", false)) { M.reconcileReceivedLibraries(); Out["reconciling"] = true; }
-            if (Command::Bool(A, "reshare", false)) { M.reRegisterShares(); Out["reshared"] = true; }
-            if (Command::Bool(A, "push", false)) { M.pushSeedLevels(); M.pushLanRoster(); M.pushPresenceDeny(); Out["pushed"] = true; }
+            if (Command::Bool(A, "reconcile", false)) { M.friends().reconcileReceivedLibraries(); Out["reconciling"] = true; }
+            if (Command::Bool(A, "reshare", false)) { M.friends().reRegisterShares(); Out["reshared"] = true; }
+            if (Command::Bool(A, "push", false)) { M.pushSeedLevels(); M.friends().pushLanRoster(); M.friends().pushPresenceDeny(); Out["pushed"] = true; }
             if (Command::Bool(A, "covers", false)) { CoverCache::instance()->sweepNow(); Out["covers_missing"] = CoverCache::instance()->missCount(); }
             if (Out.empty()) throw Command::BadArgs("give --heal, --reconcile, --reshare, --push or --covers");
             return Out;
@@ -248,9 +249,9 @@ VG_COMMANDS
     Command::Register({
         "friends stop-receiving", "stop receiving a friend's libraries (their stubs go, installs stay)", "",
         { Pos("friend", "the friend's peer ID") }, { "friends stop-receiving 12D3KooW…" },
-        { "AppModel::stopReceivingFromFriend", "AppModel::dropReceivedStubs" }, Needs::Model, false,
+        { "FriendSharing::stopReceivingFromFriend", "FriendSharing::dropReceivedStubs" }, Needs::Model, false,
         [](Command::Context &C, const json &A) {
-            Model(C).stopReceivingFromFriend(QString::fromStdString(Command::Str(A, "friend")));
+            Model(C).friends().stopReceivingFromFriend(QString::fromStdString(Command::Str(A, "friend")));
             return json{{"stopped", Command::Str(A, "friend")}};
         }, {} });
 

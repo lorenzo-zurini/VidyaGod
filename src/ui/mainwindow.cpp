@@ -4,6 +4,7 @@
 #include "pkgactions.h"
 #include "asyncwork.h"
 #include "appmodel.h"
+#include "friendsharing.h"
 #include "downloadmanager.h"
 #include "traycontroller.h"
 #include "quitsignals.h"
@@ -389,12 +390,12 @@ void MainWindow::onNodeReady()
     // toggles a share again. Also refresh what friends share WITH us so the friend catalog is current after a restart.
     if (Model)
     {
-        Model->pushPresenceDeny();   // apply the per-peer presence-hide roster now the friend service is live
-        Model->reRegisterShares();
+        Model->friends().pushPresenceDeny();   // apply the per-peer presence-hide roster now the friend service is live
+        Model->friends().reRegisterShares();
         // Materialise every receiving-from peer's browsable stubs from our PERSISTED snapshot (so the catalog is
         // populated at startup without waiting for a fresh snapshot) AND re-request in case their shares changed. This
         // is what makes a restart show a friend's library again — applyFriendLibrarySnapshot only fires on a NEW snapshot.
-        Model->reconcileReceivedLibraries();
+        Model->friends().reconcileReceivedLibraries();
     }
 }
 

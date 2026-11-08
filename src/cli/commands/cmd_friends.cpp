@@ -3,6 +3,7 @@
 // AppModel / IpfsWrapper function the tab calls.
 #include "command.h"
 #include "appmodel.h"
+#include "friendsharing.h"
 #include "ipfswrapper.h"
 
 #include <algorithm>
@@ -40,11 +41,11 @@ json ContactJson(const IpfsWrapper::Contact &C, AppModel *M)
     {
         const QString P = QString::fromStdString(C.PeerID);
         json Shared = json::array();
-        for (const QString &L : M->myLibraryNames()) if (M->isSharingWithFriend(P, L)) Shared.push_back(L.toStdString());
+        for (const QString &L : M->friends().myLibraryNames()) if (M->friends().isSharingWithFriend(P, L)) Shared.push_back(L.toStdString());
         J["sharing"] = Shared;
-        J["receiving"] = M->isReceivingFrom(P);
-        J["presence"] = M->isPresenceSharedWith(P);
-        J["vlan"] = M->isInVlan(P);
+        J["receiving"] = M->friends().isReceivingFrom(P);
+        J["presence"] = M->friends().isPresenceSharedWith(P);
+        J["vlan"] = M->friends().isInVlan(P);
     }
     if (C.LastSeen > 0) J["last_seen_ms"] = C.LastSeen;
     return J;
@@ -76,10 +77,10 @@ VG_COMMANDS
     Command::Register({
         "friends nick", "set the nickname friends see",
         "What the Network tab's Nickname field + Save does.", { Command::Pos("name", "the nickname") },
-        { "friends nick LGZ-MacBook" }, { "AppModel::setNickname", "IpfsWrapper::SetProfile" }, Needs::Model, true,
+        { "friends nick LGZ-MacBook" }, { "FriendSharing::setNickname", "IpfsWrapper::SetProfile" }, Needs::Model, true,
         [](Command::Context &C, const json &A) {
             std::string Err;
-            if (!C.Model->setNickname(QString::fromStdString(Command::Str(A, "name")), &Err))
+            if (!C.Model->friends().setNickname(QString::fromStdString(Command::Str(A, "name")), &Err))
                 throw std::runtime_error(Fail("could not set the nickname", Err));
             return json{{"nickname", IpfsWrapper::GetProfile().Nick}};
         }, {} });
@@ -90,8 +91,8 @@ VG_COMMANDS
         "libraries you share with it, and whether you receive from it, show it your presence, and have it in your "
         "virtual LAN.", { Command::Opt("state", "only contacts in this state", Type::String, false, {"accepted", "incoming", "pending", "blocked"}) },
         { "friends list", "friends list --state incoming", "friends list --json" },
-        { "IpfsWrapper::FriendList", "AppModel::myLibraryNames", "AppModel::isSharingWithFriend", "AppModel::isReceivingFrom",
-          "AppModel::isPresenceSharedWith", "AppModel::isInVlan" }, Needs::Model, true,
+        { "IpfsWrapper::FriendList", "FriendSharing::myLibraryNames", "FriendSharing::isSharingWithFriend", "FriendSharing::isReceivingFrom",
+          "FriendSharing::isPresenceSharedWith", "FriendSharing::isInVlan" }, Needs::Model, true,
         [](Command::Context &C, const json &A) {
             const std::string Only = Command::Str(A, "state", "");
             auto All = IpfsWrapper::FriendList();
@@ -106,11 +107,11 @@ VG_COMMANDS
         "Ask a peer to be friends, by their friend code — the Network tab's \"Send request\".",
         { Command::Pos("code", "their friend code (12D3KooW…)") },
         { "friends add 12D3KooWQs9BMz6DtSWeFM6x98vjspCTVFSwTKwGmGDwjjgjXtuA" },
-        { "AppModel::sendFriendRequest", "IpfsWrapper::FriendAdd" }, Needs::Model, true,
+        { "FriendSharing::sendFriendRequest", "IpfsWrapper::FriendAdd" }, Needs::Model, true,
         [](Command::Context &C, const json &A) {
             std::string Err;
             const std::string Code = Command::Str(A, "code");
-            if (!C.Model->sendFriendRequest(QString::fromStdString(Code), &Err)) throw std::runtime_error(Fail("could not send the request", Err));
+            if (!C.Model->friends().sendFriendRequest(QString::fromStdString(Code), &Err)) throw std::runtime_error(Fail("could not send the request", Err));
             return json{{"requested", Code}};
         }, {} });
 
@@ -119,18 +120,18 @@ VG_COMMANDS
         "Accept an incoming request (ticking its Accepted box): the friend is added, and the New-peer defaults applied "
         "to them (what you share with them, receive, presence, vLAN).",
         { Command::Pos("friend", "their nickname, friend code, or the start of it") },
-        { "friends accept LGZ-MacBook" }, { "AppModel::acceptPeer", "AppModel::applyNewPeerDefaults" }, Needs::Model, true,
+        { "friends accept LGZ-MacBook" }, { "FriendSharing::acceptPeer", "FriendSharing::applyNewPeerDefaults" }, Needs::Model, true,
         [](Command::Context &C, const json &A) {
             const std::string P = Peer(Command::Str(A, "friend"));
-            C.Model->acceptPeer(QString::fromStdString(P));
+            C.Model->friends().acceptPeer(QString::fromStdString(P));
             for (const auto &K : IpfsWrapper::FriendList()) if (K.PeerID == P) return ContactJson(K, C.Model);
             return json{{"peer", P}};
         }, {} });
 
-    for (const auto &[Verb, Summary, Fn] : std::vector<std::tuple<const char *, const char *, void (AppModel::*)(const QString &)>>{
-             { "decline", "decline a friend request", &AppModel::declineFriend },
-             { "block", "block a peer (drops all their traffic)", &AppModel::blockFriend },
-             { "remove", "remove a friend (both directions of sharing end)", &AppModel::removeFriend } })
+    for (const auto &[Verb, Summary, Fn] : std::vector<std::tuple<const char *, const char *, void (FriendSharing::*)(const QString &)>>{
+             { "decline", "decline a friend request", &FriendSharing::declineFriend },
+             { "block", "block a peer (drops all their traffic)", &FriendSharing::blockFriend },
+             { "remove", "remove a friend (both directions of sharing end)", &FriendSharing::removeFriend } })
     {
         const std::string V = Verb;
         Command::Register({
@@ -139,12 +140,12 @@ VG_COMMANDS
             "installed from them are kept. The Network tab's ⋮ menu.",
             { Command::Pos("friend", "their nickname, friend code, or the start of it") },
             { "friends " + V + " LGZ-MacBook" },
-            { std::string("AppModel::") + (V == "decline" ? "declineFriend" : V == "block" ? "blockFriend" : "removeFriend"),
-              "AppModel::forgetFriend", std::string("IpfsWrapper::Friend") + (V == "decline" ? "Decline" : V == "block" ? "Block" : "Remove") },
+            { std::string("FriendSharing::") + (V == "decline" ? "declineFriend" : V == "block" ? "blockFriend" : "removeFriend"),
+              "FriendSharing::forgetFriend", std::string("IpfsWrapper::Friend") + (V == "decline" ? "Decline" : V == "block" ? "Block" : "Remove") },
             Needs::Model, true,
             [Fn = Fn, V](Command::Context &C, const json &A) {
                 const std::string P = Peer(Command::Str(A, "friend"));
-                (C.Model->*Fn)(QString::fromStdString(P));
+                (C.Model->friends().*Fn)(QString::fromStdString(P));
                 return json{{V == "decline" ? "declined" : V == "block" ? "blocked" : "removed", P}};
             }, {} });
     }
@@ -156,26 +157,26 @@ VG_COMMANDS
         { Command::Pos("friend", "their nickname, friend code, or the start of it"), Command::Pos("library", "one of your libraries (VidyaGod, VidyaGodLibraries, VidyaGodRunners, …)"),
           Command::Flag("off", "stop sharing it instead") },
         { "friends share LGZ-MacBook VidyaGod", "friends share LGZ-MacBook VidyaGodRunners --off" },
-        { "AppModel::shareLibraryWithFriend", "AppModel::stopSharingWithFriend", "AppModel::pushSharesTo", "AppModel::sharedWith" },
+        { "FriendSharing::shareLibraryWithFriend", "FriendSharing::stopSharingWithFriend", "FriendSharing::pushSharesTo", "FriendSharing::sharedWith" },
         Needs::Model, true,
         [](Command::Context &C, const json &A) {
             const QString P = QString::fromStdString(Peer(Command::Str(A, "friend")));
             const QString L = QString::fromStdString(Command::Str(A, "library"));
-            if (!C.Model->myLibraryNames().contains(L))
-                throw Command::BadArgs("you have no library '" + L.toStdString() + "' (" + C.Model->myLibraryNames().join(", ").toStdString() + ")");
-            if (Command::Bool(A, "off", false)) C.Model->stopSharingWithFriend(P, L); else C.Model->shareLibraryWithFriend(P, L);
-            json Shared = C.Model->sharedWith(P.toStdString());
+            if (!C.Model->friends().myLibraryNames().contains(L))
+                throw Command::BadArgs("you have no library '" + L.toStdString() + "' (" + C.Model->friends().myLibraryNames().join(", ").toStdString() + ")");
+            if (Command::Bool(A, "off", false)) C.Model->friends().stopSharingWithFriend(P, L); else C.Model->friends().shareLibraryWithFriend(P, L);
+            json Shared = C.Model->friends().sharedWith(P.toStdString());
             json Out = json::object();
             for (const auto &[Lib, Items] : Shared.items()) Out[Lib] = Items.size();
-            return json{{"friend", P.toStdString()}, {"library", L.toStdString()}, {"shared", C.Model->isSharingWithFriend(P, L)},
+            return json{{"friend", P.toStdString()}, {"library", L.toStdString()}, {"shared", C.Model->friends().isSharingWithFriend(P, L)},
                         {"packages_shared", Out}};
         }, {} });
 
     for (const auto &[Verb, What, Set, Get, SetName, GetName] :
-         std::vector<std::tuple<const char *, const char *, void (AppModel::*)(const QString &, bool), bool (AppModel::*)(const QString &) const, const char *, const char *>>{
-             { "receive", "receive a friend's shared libraries (or stop: --off)", &AppModel::setReceivingFrom, &AppModel::isReceivingFrom, "setReceivingFrom", "isReceivingFrom" },
-             { "presence", "show a friend you are online (or hide it: --off)", &AppModel::setPresenceSharedWith, &AppModel::isPresenceSharedWith, "setPresenceSharedWith", "isPresenceSharedWith" },
-             { "vlan", "put a friend in your virtual LAN (or take them out: --off)", &AppModel::setInVlan, &AppModel::isInVlan, "setInVlan", "isInVlan" } })
+         std::vector<std::tuple<const char *, const char *, void (FriendSharing::*)(const QString &, bool), bool (FriendSharing::*)(const QString &) const, const char *, const char *>>{
+             { "receive", "receive a friend's shared libraries (or stop: --off)", &FriendSharing::setReceivingFrom, &FriendSharing::isReceivingFrom, "setReceivingFrom", "isReceivingFrom" },
+             { "presence", "show a friend you are online (or hide it: --off)", &FriendSharing::setPresenceSharedWith, &FriendSharing::isPresenceSharedWith, "setPresenceSharedWith", "isPresenceSharedWith" },
+             { "vlan", "put a friend in your virtual LAN (or take them out: --off)", &FriendSharing::setInVlan, &FriendSharing::isInVlan, "setInVlan", "isInVlan" } })
     {
         const std::string V = Verb;
         Command::Register({
@@ -185,11 +186,11 @@ VG_COMMANDS
                                        "what they share, turning it off drops what was received (installed games stay)." : "."),
             { Command::Pos("friend", "their nickname, friend code, or the start of it"), Command::Flag("off", "turn it off instead") },
             { "friends " + V + " LGZ-MacBook", "friends " + V + " LGZ-MacBook --off" },
-            { std::string("AppModel::") + SetName, std::string("AppModel::") + GetName }, Needs::Model, true,
+            { std::string("FriendSharing::") + SetName, std::string("FriendSharing::") + GetName }, Needs::Model, true,
             [Set = Set, Get = Get, V](Command::Context &C, const json &A) {
                 const QString P = QString::fromStdString(Peer(Command::Str(A, "friend")));
-                (C.Model->*Set)(P, !Command::Bool(A, "off", false));
-                return json{{"friend", P.toStdString()}, {V, (C.Model->*Get)(P)}};
+                (C.Model->friends().*Set)(P, !Command::Bool(A, "off", false));
+                return json{{"friend", P.toStdString()}, {V, (C.Model->friends().*Get)(P)}};
             }, {} });
     }
 
@@ -198,10 +199,10 @@ VG_COMMANDS
         "The Network tab's \"Auto-accept peer requests (server mode)\": with it on, a request is accepted the moment it "
         "arrives, with the New-peer defaults.", { Command::Pos("state", "on or off", Type::String, {"on", "off"}) },
         { "friends auto-accept on", "friends auto-accept off" },
-        { "AppModel::setAutoAcceptEnabled", "AppModel::autoAcceptEnabled" }, Needs::Model, false,
+        { "FriendSharing::setAutoAcceptEnabled", "FriendSharing::autoAcceptEnabled" }, Needs::Model, false,
         [](Command::Context &C, const json &A) {
-            C.Model->setAutoAcceptEnabled(Command::Str(A, "state") == "on");
-            return json{{"auto_accept", C.Model->autoAcceptEnabled()}};
+            C.Model->friends().setAutoAcceptEnabled(Command::Str(A, "state") == "on");
+            return json{{"auto_accept", C.Model->friends().autoAcceptEnabled()}};
         }, {} });
 
     Command::Register({
@@ -212,7 +213,7 @@ VG_COMMANDS
         { Command::Opt("set", "the setting to change: receive, presence, vlan or share:<library>"),
           Command::Opt("state", "on or off (with --set)", Type::String, false, {"on", "off"}) },
         { "friends defaults", "friends defaults --set share:VidyaGod --state on", "friends defaults --set receive --state off" },
-        { "AppModel::newPeerDefault", "AppModel::setNewPeerDefault", "AppModel::newPeerShareDefaults", "AppModel::setNewPeerShareDefault" },
+        { "FriendSharing::newPeerDefault", "FriendSharing::setNewPeerDefault", "FriendSharing::newPeerShareDefaults", "FriendSharing::setNewPeerShareDefault" },
         Needs::Model, false,
         [](Command::Context &C, const json &A) {
             if (A.contains("set"))
@@ -220,14 +221,14 @@ VG_COMMANDS
                 const std::string K = Command::Str(A, "set");
                 if (!A.contains("state")) throw Command::BadArgs("--set needs --state on|off");
                 const bool On = Command::Str(A, "state") == "on";
-                if (K.rfind("share:", 0) == 0) C.Model->setNewPeerShareDefault(QString::fromStdString(K.substr(6)), On);
-                else if (K == "receive" || K == "presence" || K == "vlan") C.Model->setNewPeerDefault(QString::fromStdString(K), On);
+                if (K.rfind("share:", 0) == 0) C.Model->friends().setNewPeerShareDefault(QString::fromStdString(K.substr(6)), On);
+                else if (K == "receive" || K == "presence" || K == "vlan") C.Model->friends().setNewPeerDefault(QString::fromStdString(K), On);
                 else throw Command::BadArgs("no default '" + K + "' (receive, presence, vlan, share:<library>)");
             }
             json Share = json::array();
-            for (const QString &L : C.Model->newPeerShareDefaults()) Share.push_back(L.toStdString());
-            return json{{"share", Share}, {"receive", C.Model->newPeerDefault("receive")},
-                        {"presence", C.Model->newPeerDefault("presence")}, {"vlan", C.Model->newPeerDefault("vlan")}};
+            for (const QString &L : C.Model->friends().newPeerShareDefaults()) Share.push_back(L.toStdString());
+            return json{{"share", Share}, {"receive", C.Model->friends().newPeerDefault("receive")},
+                        {"presence", C.Model->friends().newPeerDefault("presence")}, {"vlan", C.Model->friends().newPeerDefault("vlan")}};
         }, {} });
 
     Command::Register({
@@ -235,7 +236,7 @@ VG_COMMANDS
         "The snapshot of a friend's shared libraries this machine holds (only while you receive from them): per "
         "library, every package — its folder CID and title.", { Command::Pos("friend", "their nickname, friend code, or the start of it") },
         { "friends received LGZ-MacBook", "friends received LGZ-MacBook --json" },
-        { "AppModel::hasFriendLibraries" }, Needs::Model, false,
+        { "FriendSharing::hasFriendLibraries" }, Needs::Model, false,
         [](Command::Context &C, const json &A) {
             const std::string P = Peer(Command::Str(A, "friend"));
             const json &Fl = C.Config->value("FriendLibraries", json::object());
@@ -250,11 +251,11 @@ VG_COMMANDS
     Command::Register({
         "friends refresh", "ask a friend for what they share now",
         "Re-request a friend's snapshot (and land what it lists), as reconnecting does.", { Command::Pos("friend", "their nickname, friend code, or the start of it") },
-        { "friends refresh LGZ-MacBook" }, { "AppModel::reconcileReceivedFriend", "AppModel::requestFriendLibraries", "IpfsWrapper::RequestFriendLibraries" },
+        { "friends refresh LGZ-MacBook" }, { "FriendSharing::reconcileReceivedFriend", "FriendSharing::requestFriendLibraries", "IpfsWrapper::RequestFriendLibraries" },
         Needs::Model, true,
         [](Command::Context &C, const json &A) {
             const std::string P = Peer(Command::Str(A, "friend"));
-            C.Model->reconcileReceivedFriend(QString::fromStdString(P));
+            C.Model->friends().reconcileReceivedFriend(QString::fromStdString(P));
             return json{{"asked", P}};
         }, {} });
 

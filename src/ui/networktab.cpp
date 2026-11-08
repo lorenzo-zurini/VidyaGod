@@ -1,5 +1,6 @@
 #include "networktab.h"
 #include "appmodel.h"
+#include "friendsharing.h"
 #include "ipfswrapper.h"
 
 #include <QVBoxLayout>
@@ -39,7 +40,7 @@ NetworkTab::NetworkTab(AppModel & model, QWidget * parent) : QWidget(parent), Mo
     connect(FM, &FriendsManager::friendPresence, this, [this]{ scheduleRefresh(); });
     connect(FM, &FriendsManager::friendProfile,  this, [this]{ scheduleRefresh(); });
     connect(FM, &FriendsManager::friendRemoved,  this, [this]{ scheduleRefresh(); });
-    connect(&Model, &AppModel::friendCatalogChanged, this, [this]{ scheduleRefresh(); });
+    connect(&Model.friends(), &FriendSharing::friendCatalogChanged, this, [this]{ scheduleRefresh(); });
     connect(&Model, &AppModel::networkingChanged,    this, [this]{ scheduleRefresh(); });
     connect(&Model, &AppModel::nodeReady,            this, [this]{ scheduleRefresh(); });   // node came up async — friend code + Publish are live now
 
@@ -107,7 +108,7 @@ void NetworkTab::buildUi()
     connect(PublishButton, &QPushButton::clicked, this, &NetworkTab::publishClicked);
     PubRow->addWidget(PublishButton);
     AutoAccept = new QCheckBox("Auto-accept peer requests (server mode)", IdBox);
-    connect(AutoAccept, &QCheckBox::toggled, this, [this](bool on){ Model.setAutoAcceptEnabled(on); });
+    connect(AutoAccept, &QCheckBox::toggled, this, [this](bool on){ Model.friends().setAutoAcceptEnabled(on); });
     PubRow->addWidget(AutoAccept);
     auto * Backup = new QPushButton("Back up identity…", IdBox);
     connect(Backup, &QPushButton::clicked, this, &NetworkTab::backupIdentityClicked);
@@ -171,7 +172,7 @@ void NetworkTab::addPeerClicked()
     const QString Code = AddEdit->text().trimmed();
     if (Code.isEmpty()) return;
     std::string Err;
-    if (Model.sendFriendRequest(Code, &Err)) AddEdit->clear();
+    if (Model.friends().sendFriendRequest(Code, &Err)) AddEdit->clear();
     else QMessageBox::warning(this, "Add peer", QString::fromStdString(Err.empty() ? "Could not send the request." : Err));
     scheduleRefresh();
 }
@@ -179,7 +180,7 @@ void NetworkTab::addPeerClicked()
 void NetworkTab::setNickClicked()
 {
     std::string Err;
-    if (!Model.setNickname(NickEdit->text(), &Err))
+    if (!Model.friends().setNickname(NickEdit->text(), &Err))
         QMessageBox::warning(this, "Nickname", QString::fromStdString(Err.empty() ? "Could not set the nickname (is networking on?)." : Err));
     NickEdited = false;
     scheduleRefresh();
@@ -241,9 +242,9 @@ void NetworkTab::refresh()
                                 : "Networking is off: your friend code, publishing your libraries and reaching friends need it.");
     if (!NickEdited)
         NickEdit->setText(QString::fromStdString(IpfsWrapper::GetProfile().Nick));
-    { QSignalBlocker Block(AutoAccept); AutoAccept->setChecked(Model.autoAcceptEnabled()); }
+    { QSignalBlocker Block(AutoAccept); AutoAccept->setChecked(Model.friends().autoAcceptEnabled()); }
 
-    const QStringList Libs = Model.myLibraryNames();
+    const QStringList Libs = Model.friends().myLibraryNames();
     const std::vector<IpfsWrapper::Contact> Contacts = IpfsWrapper::FriendList();
 
     const int NLibs   = Libs.size();
@@ -295,12 +296,12 @@ void NetworkTab::refresh()
     for (int i = 0; i < NLibs; ++i)
     {
         const QString & Lib = Libs[i];
-        CheckCell(0, 2 + i, Model.newPeerShareDefaults().contains(Lib), true,
-                  [this, Lib](bool on){ Model.setNewPeerShareDefault(Lib, on); });
+        CheckCell(0, 2 + i, Model.friends().newPeerShareDefaults().contains(Lib), true,
+                  [this, Lib](bool on){ Model.friends().setNewPeerShareDefault(Lib, on); });
     }
-    CheckCell(0, RecvCol, Model.newPeerDefault("receive"),  true, [this](bool on){ Model.setNewPeerDefault("receive",  on); });
-    CheckCell(0, VlanCol, Model.newPeerDefault("vlan"),     true, [this](bool on){ Model.setNewPeerDefault("vlan",     on); });
-    CheckCell(0, PresCol, Model.newPeerDefault("presence"), true, [this](bool on){ Model.setNewPeerDefault("presence", on); });
+    CheckCell(0, RecvCol, Model.friends().newPeerDefault("receive"),  true, [this](bool on){ Model.friends().setNewPeerDefault("receive",  on); });
+    CheckCell(0, VlanCol, Model.friends().newPeerDefault("vlan"),     true, [this](bool on){ Model.friends().setNewPeerDefault("vlan",     on); });
+    CheckCell(0, PresCol, Model.friends().newPeerDefault("presence"), true, [this](bool on){ Model.friends().setNewPeerDefault("presence", on); });
 
     // Contact rows.
     for (int i = 0; i < (int)Contacts.size(); ++i)
@@ -323,14 +324,14 @@ void NetworkTab::refresh()
         // Accepted: checked=accepted/pending; a pending row is checked-but-disabled (awaiting them). Checking an
         // incoming request accepts + applies the New-peer defaults; unchecking an accepted friend removes them.
         CheckCell(Row, 1, Accepted || Pending, Accepted || Incoming, [this, Peer, Accepted](bool on){
-            if (on) Model.acceptPeer(Peer);
+            if (on) Model.friends().acceptPeer(Peer);
             else if (Accepted)   // un-checking an accepted friend REMOVES them (destructive) → confirm the misclick
             {
                 if (QMessageBox::question(this, "Remove friend",
                         "Remove this friend? You'll stop sharing with each other and their shared games leave your "
                         "catalog. Games you've already installed from them are kept.",
                         QMessageBox::Yes | QMessageBox::No, QMessageBox::No) == QMessageBox::Yes)
-                Model.removeFriend(Peer);
+                Model.friends().removeFriend(Peer);
             }
             scheduleRefresh();   // (No → the rebuild restores the checkbox to its accepted state)
         });
@@ -338,26 +339,26 @@ void NetworkTab::refresh()
         for (int j = 0; j < NLibs; ++j)
         {
             const QString & Lib = Libs[j];
-            CheckCell(Row, 2 + j, Model.isSharingWithFriend(Peer, Lib), Accepted, [this, Peer, Lib](bool on){
-                if (on) Model.shareLibraryWithFriend(Peer, Lib); else Model.stopSharingWithFriend(Peer, Lib);
+            CheckCell(Row, 2 + j, Model.friends().isSharingWithFriend(Peer, Lib), Accepted, [this, Peer, Lib](bool on){
+                if (on) Model.friends().shareLibraryWithFriend(Peer, Lib); else Model.friends().stopSharingWithFriend(Peer, Lib);
             });
         }
-        CheckCell(Row, RecvCol, Model.isReceivingFrom(Peer),        Accepted, [this, Peer](bool on){ Model.setReceivingFrom(Peer, on); });
-        CheckCell(Row, VlanCol, Model.isInVlan(Peer),               Accepted, [this, Peer](bool on){ Model.setInVlan(Peer, on); });
-        CheckCell(Row, PresCol, Model.isPresenceSharedWith(Peer),   Accepted, [this, Peer](bool on){ Model.setPresenceSharedWith(Peer, on); });
+        CheckCell(Row, RecvCol, Model.friends().isReceivingFrom(Peer),        Accepted, [this, Peer](bool on){ Model.friends().setReceivingFrom(Peer, on); });
+        CheckCell(Row, VlanCol, Model.friends().isInVlan(Peer),               Accepted, [this, Peer](bool on){ Model.friends().setInVlan(Peer, on); });
+        CheckCell(Row, PresCol, Model.friends().isPresenceSharedWith(Peer),   Accepted, [this, Peer](bool on){ Model.friends().setPresenceSharedWith(Peer, on); });
 
         // Per-row ⋮ menu: Decline (incoming) / Block / Remove.
         auto * Menu = new QPushButton("⋮", Table);
         auto * M = new QMenu(Menu);
         if (Incoming)
             connect(M->addAction("Decline"), &QAction::triggered, this, [this, Peer]{
-                Model.declineFriend(Peer); scheduleRefresh();
+                Model.friends().declineFriend(Peer); scheduleRefresh();
             });
         connect(M->addAction("Block"), &QAction::triggered, this, [this, Peer]{
-            Model.blockFriend(Peer); scheduleRefresh();
+            Model.friends().blockFriend(Peer); scheduleRefresh();
         });
         connect(M->addAction("Remove"), &QAction::triggered, this, [this, Peer]{
-            Model.removeFriend(Peer); scheduleRefresh();
+            Model.friends().removeFriend(Peer); scheduleRefresh();
         });
         Menu->setMenu(M);
         Table->setCellWidget(Row, ActCol, Menu);

@@ -78,7 +78,7 @@ VG_COMMANDS
         { "AppPaths::DataRoot", "AppPaths::DataRootSet", "AppPaths::SetDataRoot", "AppPaths::GetMode", "AppPaths::SetMode", "AppPaths::DaemonSupported",
           "AppPaths::AutostartSupported", "AppPaths::PackagePathOverride", "AppPaths::RuntimePathOverride", "AppPaths::UserDataPathOverride",
           "AppPaths::SetPackagePathOverride", "AppPaths::SetRuntimePathOverride", "AppPaths::SetUserDataPathOverride", "InstanceStore::Root",
-          "AppModel::appDataDir", "AppModel::config" },
+          "AppModel::appDataDir", "AppModel::config", "AppModel::friends" },
         Needs::Config, false,
         [](Command::Context &C, const json &) {
             return json{{"data_root", AppPaths::DataRoot().string()}, {"data_root_set", AppPaths::DataRootSet()},
