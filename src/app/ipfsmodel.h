@@ -31,7 +31,6 @@ class IpfsModel : public QObject
     Q_OBJECT
 public:
     explicit IpfsModel(AppModel & model, QObject * parent = nullptr);
-    ~IpfsModel() override;   // flips Alive → detached workers skip their invokeMethod-back (no use-after-free on teardown)
 
     // Presentation-free per-CID state (the view maps phase → colours/status text).
     struct CidState {
@@ -146,14 +145,12 @@ private:
     QTimer * StallTimer   = nullptr;
     bool     Active         = false;
     bool     RefreshInFlight = false;
-    std::atomic<bool> SweepInFlight { false };   // one deliverability sweep at a time — but it never blocks refreshes
+    //One deliverability sweep at a time — but it never blocks refreshes. Shared with the sweep's worker, which may
+    //outlive the model (it clears this when it ends).
+    std::shared_ptr<std::atomic<bool>> SweepInFlight = std::make_shared<std::atomic<bool>>(false);
     bool     HealthInFlight  = false;
     bool     RecheckInFlight = false;   // force-recheck reads whole files — never run two at once
 
-    // Lifetime guard for the detached refresh/health/size/seed worker threads: they capture a COPY of this shared_ptr
-    // and must check it (before touching `this` via QMetaObject::invokeMethod) because a worker can still be blocked in
-    // a network call (CidSize / ProviderCount, seconds each) after the model is destroyed. The dtor flips it to false.
-    std::shared_ptr<std::atomic<bool>> Alive = std::make_shared<std::atomic<bool>>(true);
 };
 
 #endif // IPFSMODEL_H

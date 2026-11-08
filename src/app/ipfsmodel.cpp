@@ -1,6 +1,7 @@
 #include "ipfsmodel.h"
 #include "appmodel.h"
 #include "packagecatalog.h"
+#include "asyncwork.h"   // every worker: guarded, posting through the GUI thread
 #include "manifestmodel.h"
 #include "downloadqueue.h"   // IpfsWrapper::CancelDownload / PrioritizeDownload
 #include "asyncwork.h"       // guarded off-thread publish
@@ -277,13 +278,6 @@ IpfsModel::IpfsModel(AppModel & model, QObject * parent)
     StallTimer->start();
 }
 
-IpfsModel::~IpfsModel()
-{
-    // Detached refresh/health/size/seed workers may still be blocked in a network call; flip the guard so they skip
-    // their invokeMethod-back instead of dereferencing this destroyed object.
-    Alive->store(false);
-}
-
 void IpfsModel::setActive(bool on)
 {
     Active = on;
@@ -392,16 +386,16 @@ void IpfsModel::forceRecheck(const QStringList & cids)
     if (RecheckInFlight || cids.isEmpty()) return;
     RecheckInFlight = true;
     auto Todo = std::make_shared<QStringList>(cids);
-    std::thread([this, Todo, A = Alive]{
+    AsyncWork::Run(this, [this, Todo](const AsyncWork::Job &J) {
         int Failed = 0, Done = 0;
         for (const QString & cid : *Todo)
         {
-            if (!A->load()) return;                       // model destroyed mid-read (these are long) → stop
+            if (!J.Live()) return;                       // model destroyed mid-read (these are long) → stop
             const std::string Why = IpfsWrapper::VerifyCid(cid.toStdString());
             ++Done;
             const int D = Done, T = (int)Todo->size();
             if (!Why.empty()) ++Failed;
-            QMetaObject::invokeMethod(this, [this, cid, Why, D, T]{
+            J.Post([this, cid, Why, D, T]{
                 if (Cids.contains(cid))
                 {
                     CidState & s = Cids[cid];
@@ -411,15 +405,15 @@ void IpfsModel::forceRecheck(const QStringList & cids)
                     emit cidChanged(cid);
                 }
                 emit recheckProgress(D, T);
-            }, Qt::QueuedConnection);
+            });
         }
         const int F = Failed, C = (int)Todo->size();
-        if (!A->load()) return;
-        QMetaObject::invokeMethod(this, [this, F, C]{
+        if (!J.Live()) return;
+        J.Post([this, F, C]{
             RecheckInFlight = false;
             emit recheckFinished(C, F);
-        }, Qt::QueuedConnection);
-    }).detach();
+        });
+    });
 }
 
 void IpfsModel::recheckHealth(const QStringList & cids)
@@ -502,14 +496,14 @@ void IpfsModel::ensureSize(const QString & cid)
     //That filled a home router's connection table (VidyaGodIPFS doh.go). A row gets its size when its bytes land.
     if (SizeInFlight.contains(cid)) return;
     SizeInFlight.insert(cid);
-    std::thread([this, cid, A = Alive]{
+    AsyncWork::Run(this, [this, cid](const AsyncWork::Job &J) {
         const long long S = IpfsWrapper::CidSizeLocal(cid.toStdString());
-        if (!A->load()) return;   // model destroyed while the stat ran → don't touch `this`
-        QMetaObject::invokeMethod(this, [this, cid, S]{
+        if (!J.Live()) return;   // model destroyed while the stat ran → don't touch `this`
+        J.Post([this, cid, S]{
             SizeInFlight.remove(cid);
             if (S >= 0 && Cids.contains(cid)) { Cids[cid].size = S; emit cidChanged(cid); }
-        }, Qt::QueuedConnection);
-    }).detach();
+        });
+    });
 }
 
 void IpfsModel::refresh()
@@ -531,7 +525,7 @@ void IpfsModel::refresh()
     for (auto it = SeedVerdict.constBegin(); it != SeedVerdict.constEnd(); ++it) Verified.insert(it.key());
     const std::string LibRoot = PackageCatalog::LibraryRootDir(*Model.config());
 
-    std::thread([this, HaveSize, Verified, LibRoot, A = Alive]{
+    AsyncWork::Run(this, [this, HaveSize, Verified, LibRoot, Sweeping = SweepInFlight](const AsyncWork::Job &J) {
         NodeStatus St;
         St.available = true;
         St.daemon    = IpfsWrapper::DaemonRunning();
@@ -546,12 +540,12 @@ void IpfsModel::refresh()
         {
             const bool Avail = St.available, Daemon = St.daemon; const int Peers = St.peers;
             const double Down = St.downBps, Up = St.upBps;
-            if (A->load())
-                QMetaObject::invokeMethod(this, [this, Avail, Daemon, Peers, Down, Up]{
+            if (J.Live())
+                J.Post([this, Avail, Daemon, Peers, Down, Up]{
                     Status.available = Avail; Status.daemon = Daemon; Status.peers = Peers;
                     Status.downBps = Down;    Status.upBps = Up;
                     emit nodeStatusChanged();
-                }, Qt::QueuedConnection);
+                });
         }
         const std::vector<IpfsWrapper::PinEntry> Pins = IpfsWrapper::Pins();
         St.pinCount = (int)Pins.size();
@@ -579,25 +573,25 @@ void IpfsModel::refresh()
         // every block of every unverified pin through leveldb (a full library at startup = minutes of grinding —
         // measured live: cidServeStatus dominated the profile while the tab sat "dead" waiting for this one post).
         // Rows must never wait on verdicts; verdicts stream in afterwards, chunk by chunk.
-        if (!A->load()) return;   // model destroyed mid-refresh → don't post back to `this`
-        QMetaObject::invokeMethod(this, [this, St, Pins, Sizes, Uploading, Announced]{
+        if (!J.Live()) return;   // model destroyed mid-refresh → don't post back to `this`
+        J.Post([this, St, Pins, Sizes, Uploading, Announced]{
             RefreshInFlight = false;   // the SNAPSHOT cycle ends here — refreshes must keep flowing (live peers/
                                        // status/rows) while the sweep grinds; holding the flag through a minutes-
                                        // long sweep froze the monitor at its very first reading ("0 peers").
             LastAnnounced = Announced;
             applySnapshot(St, Pins, Sizes, Uploading, {});
-        }, Qt::QueuedConnection);
+        });
 
         // Deliverability: walk ONLY pins we have not verified yet (startup → all once; steady state → none; a serve
         // failure invalidates entries so they re-verify here). Chunked: every ~64 pins the verdicts land on the UI
         // (rows flip from "verifying" as the sweep progresses) instead of one post after the whole library.
         // Its OWN guard: sweeps never overlap, but they never block refreshes either.
-        if (SweepInFlight.exchange(true)) return;
+        if (Sweeping->exchange(true)) return;
         QHash<QString, QString> Verdicts;
-        auto Post = [this, A](QHash<QString, QString> & V, bool Final){
-            if ((V.isEmpty() && !Final) || !A->load()) return;
+        auto Post = [this, J, Sweeping](QHash<QString, QString> & V, bool Final){
+            if ((V.isEmpty() && !Final) || !J.Live()) return;
             QHash<QString, QString> Out; Out.swap(V);
-            QMetaObject::invokeMethod(this, [this, Out, Final]{
+            J.Post([this, Out, Final]{
                 for (auto it = Out.constBegin(); it != Out.constEnd(); ++it)
                 {
                     SeedVerdict[it.key()] = it.value();
@@ -607,17 +601,17 @@ void IpfsModel::refresh()
                     if (Row != Cids.end() && !it.value().isEmpty() && Row->phase == CidState::Seeded)
                     { Row->phase = CidState::Errored; Row->error = it.value(); emit cidChanged(it.key()); }
                 }
-            }, Qt::QueuedConnection);
-            if (Final) SweepInFlight.store(false);
+            });
+            if (Final) Sweeping->store(false);
         };
         for (const auto & P : Pins) {
-            if (!A->load()) { SweepInFlight.store(false); return; }   // app closing — abandon the sweep silently
+            if (!J.Live()) { Sweeping->store(false); return; }   // app closing — abandon the sweep silently
             const QString C = QString::fromStdString(P.Cid);
             if (!Verified.contains(C)) Verdicts[C] = QString::fromStdString(IpfsWrapper::CidServeStatus(P.Cid));
             if (Verdicts.size() >= 64) Post(Verdicts, false);
         }
         Post(Verdicts, true);
-    }).detach();
+    });
 }
 
 void IpfsModel::applySnapshot(const NodeStatus & status,
@@ -769,9 +763,9 @@ void IpfsModel::gatherHealth()
     auto Next      = std::make_shared<std::atomic<int>>(0);
     auto Remaining = std::make_shared<std::atomic<int>>(Workers);
     for (int w = 0; w < Workers; ++w)
-        std::thread([this, Todo, Next, Remaining, A = Alive]{
+        AsyncWork::Run(this, [this, Todo, Next, Remaining](const AsyncWork::Job &J) {
             for (;;) {
-                if (!A->load()) return;   // model destroyed mid-scan → stop (each ProviderCount can block for seconds)
+                if (!J.Live()) return;   // model destroyed mid-scan → stop (each ProviderCount can block for seconds)
                 const int i = Next->fetch_add(1);
                 if (i >= Todo->size()) break;
                 const QString cid = Todo->at(i);
@@ -781,33 +775,33 @@ void IpfsModel::gatherHealth()
                 //sweeping every row made the IPFS tab the node's biggest traffic source — part of what filled a
                 //router's connection table (VidyaGodIPFS netgate.go). The column shows local health (missing files).
                 const int N = -1;
-                if (!A->load()) return;
+                if (!J.Live()) return;
                 // Broken ref → repair (single-flight). Post to the model's thread so healOrphansIfAny touches
                 // AppModel main-thread state (KnownUnhealable) on the right thread, and only while the model is alive.
                 const bool Broken = (M == 1);
-                QMetaObject::invokeMethod(this, [this, cid, N, M, Broken]{
+                J.Post([this, cid, N, M, Broken]{
                     if (Cids.contains(cid)) { Cids[cid].providers = N; Cids[cid].missing = M; emit cidChanged(cid); }
                     if (Broken) Model.healOrphansIfAny();
-                }, Qt::QueuedConnection);
+                });
             }
-            if (Remaining->fetch_sub(1) == 1 && A->load())
-                QMetaObject::invokeMethod(this, [this]{ HealthInFlight = false; }, Qt::QueuedConnection);
-        }).detach();
+            if (Remaining->fetch_sub(1) == 1 && J.Live())
+                J.Post([this]{ HealthInFlight = false; });
+        });
 }
 
 void IpfsModel::seedFolder(const QString & dir)
 {
-    std::thread([this, dir, A = Alive]{
+    AsyncWork::Run(this, [this, dir](const AsyncWork::Job &J) {
         int Mismatched = 0;
         const int Seeded = PackageCatalog::SeedDirectory(dir.toStdString(),
-            [this, A](int done, int total, const std::string &){
-                if (A->load())
-                    QMetaObject::invokeMethod(this, [this, done, total]{ emit seedProgress(done, total); }, Qt::QueuedConnection);
+            [this, J](int done, int total, const std::string &){
+                if (J.Live())
+                    J.Post([this, done, total]{ emit seedProgress(done, total); });
             }, &Mismatched);
-        if (!A->load()) return;   // model destroyed during the (potentially long) seed → don't post back
-        QMetaObject::invokeMethod(this, [this, Seeded, Mismatched]{
+        if (!J.Live()) return;   // model destroyed during the (potentially long) seed → don't post back
+        J.Post([this, Seeded, Mismatched]{
             emit seedFinished(Seeded, Mismatched);
             refresh();
-        }, Qt::QueuedConnection);
-    }).detach();
+        });
+    });
 }

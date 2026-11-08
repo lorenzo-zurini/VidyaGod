@@ -350,12 +350,13 @@ void DownloadManager::startDownload(LibraryGameCard *card)
                 if (Unknown.empty()) return;
                 // Probe the new CIDs' sizes in the background; each result lands in the cache and nudges the
                 // debounce, so the label refreshes shortly after data arrives. Alive-guarded — the dialog may close.
-                std::thread([this, Unknown, SizeCache, Alive, Debounce]{
+                //Posted to qApp, not to the manager: the alive check runs there, on the GUI thread (asyncwork.h).
+                std::thread([Unknown, SizeCache, Alive, Debounce]{
                     for (const std::string & C : Unknown)
                     {
                         if (!Alive->load()) return;
                         const long long Sz = IpfsWrapper::CidSize(C);
-                        QMetaObject::invokeMethod(this, [SizeCache, C, Sz, Alive, Debounce]{
+                        QMetaObject::invokeMethod(qApp, [SizeCache, C, Sz, Alive, Debounce]{
                             if (!Alive->load()) return;          // dialog closed — its widgets are gone
                             (*SizeCache)[C] = Sz;
                             Debounce->start();

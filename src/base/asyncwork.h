@@ -28,16 +28,35 @@
 //while the only users were quick jobs; a package conversion runs for MINUTES on an editor the user can close.
 namespace AsyncWork {
 
-inline void Run(QObject *Ctx, std::function<void()> Work, std::function<void()> Done = {})
+//What a worker gets to report along the way (progress, rows as they land): Post queues F onto the GUI thread, run
+//there only while Ctx lives — the completion's own guard; Live says whether Ctx still does, so a long job stops
+//early. The work itself never touches Ctx: whatever reaches it goes through Post.
+class Job
+{
+public:
+    explicit Job(std::shared_ptr<std::atomic<bool>> A) : Alive(std::move(A)) {}
+    bool Live() const { return Alive->load(); }
+    void Post(std::function<void()> F) const
+    {
+        QMetaObject::invokeMethod(qApp, [A = Alive, F = std::move(F)]() { if (A->load()) F(); }, Qt::QueuedConnection);
+    }
+private:
+    std::shared_ptr<std::atomic<bool>> Alive;
+};
+
+inline void Run(QObject *Ctx, std::function<void(const Job &)> Work, std::function<void()> Done = {})
 {
     auto Alive = std::make_shared<std::atomic<bool>>(true);
     QObject::connect(Ctx, &QObject::destroyed, Ctx, [Alive]() { Alive->store(false); }, Qt::DirectConnection);
-    std::thread([Alive, W = std::move(Work), D = std::move(Done)]() mutable {
-        W();
-        if (D)
-            QMetaObject::invokeMethod(qApp, [Alive, D2 = std::move(D)]() { if (Alive->load()) D2(); },
-                                      Qt::QueuedConnection);
+    std::thread([J = Job(Alive), W = std::move(Work), D = std::move(Done)]() mutable {
+        W(J);
+        if (D) J.Post(std::move(D));
     }).detach();
+}
+
+inline void Run(QObject *Ctx, std::function<void()> Work, std::function<void()> Done = {})
+{
+    Run(Ctx, std::function<void(const Job &)>([W = std::move(Work)](const Job &) { W(); }), std::move(Done));
 }
 
 } // namespace AsyncWork

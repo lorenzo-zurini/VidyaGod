@@ -618,6 +618,7 @@ add_gui_test(test_authoringsession)
 add_gui_test(test_deltatree)
 add_gui_test(test_diagnostics)
 add_gui_test(test_launchsession)
+add_gui_test(test_asyncwork)
 add_gui_test(test_fileedits)
 add_gui_test(test_manifestmodel)
 
