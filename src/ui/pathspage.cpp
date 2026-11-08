@@ -1,4 +1,5 @@
 #include "pathspage.h"
+#include "theme.h"   // the named colours
 #include "sessions.h"
 #include "apppaths.h"          // AppPaths::DataRoot — default TEMP/LIBRARY display roots
 #include "appmodel.h"          // AppModel — config + appDataDir + save
@@ -86,7 +87,7 @@ PathsPage::PathsPage(AppModel &model, QWidget *parent)
     form->addRow("App data directory:", appDataLbl);
 
     QLabel * note = new QLabel("Path changes apply to future launches.", this);
-    note->setStyleSheet("color:#8f98a0;font-size:9pt;");
+    note->setStyleSheet("color:" + Theme::Dim + ";font-size:9pt;");
     pl->addWidget(note);
 
     buildSpace(pl);
@@ -142,7 +143,7 @@ void PathsPage::buildSpace(QVBoxLayout * pl)
         Size->setAlignment(Qt::AlignRight | Qt::AlignVCenter);
         Grid->addWidget(Size, Row, 1);
         auto * Where = new QLabel(QString::fromStdString(Path.string()), this);
-        Where->setStyleSheet("color:#8f98a0; font-size:9pt;");
+        Where->setStyleSheet("color:" + Theme::Dim + "; font-size:9pt;");
         Where->setTextInteractionFlags(Qt::TextSelectableByMouse);
         Grid->addWidget(Where, Row, 2);
         auto * Open = new QPushButton("Open", this);
@@ -155,7 +156,7 @@ void PathsPage::buildSpace(QVBoxLayout * pl)
     }
     Grid->setColumnStretch(2, 1);
     auto * FreeLabel = new QLabel(this);
-    FreeLabel->setStyleSheet("color:#8f98a0;");
+    FreeLabel->setStyleSheet("color:" + Theme::Dim + ";");
     FreeLabel->setAccessibleName("Free space");
     pl->addWidget(FreeLabel);
     std::vector<std::filesystem::path> Paths;
@@ -210,7 +211,7 @@ void PathsPage::buildCleanUp(QVBoxLayout * pl)
         auto * B = new QPushButton(Button, this);
         auto * L = new QLabel(What, this);
         L->setWordWrap(true);
-        L->setStyleSheet("color:#8f98a0;");
+        L->setStyleSheet("color:" + Theme::Dim + ";");
         Row->addWidget(B);
         Row->addWidget(L, 1);
         pl->addLayout(Row);
@@ -232,6 +233,6 @@ void PathsPage::buildCleanUp(QVBoxLayout * pl)
            []{ return PackageCatalog::ClearIndexCache() ? QString("Cleared; the next start indexes the library afresh.") : QString("There was no cache."); });
     auto * Hint = new QLabel("A package's files that none of its nodes use: open it in the Package Editor and validate it.", this);
     Hint->setWordWrap(true);
-    Hint->setStyleSheet("color:#8f98a0; font-size:9pt; margin-top:6px;");
+    Hint->setStyleSheet("color:" + Theme::Dim + "; font-size:9pt; margin-top:6px;");
     pl->addWidget(Hint);
 }

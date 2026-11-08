@@ -1,5 +1,6 @@
 #include "guiformat.h"   // PlainLabel
 #include "installed.h"
+#include "theme.h"   // the named colours
 #include "shelf.h"
 #include "prelaunchwindow.h"
 #include "fold.h"   // a row's options and entries are its resolution's
@@ -1326,7 +1327,7 @@ void PreLaunchWindow::RefreshDetails(const nlohmann::ordered_json &M)
     auto Str = [&](const char* K) { return M.is_object() && M.contains(K) && M[K].is_string() ? QString::fromStdString(M[K].get<std::string>()) : QString(); };
     QStringList Rows;
     const auto Row = [&Rows](const QString &K, const QString &V) {
-        if (!V.isEmpty()) Rows << "<tr><td style='color:#8f98a0; padding-right:10px'>" + K + "</td><td>" + V.toHtmlEscaped() + "</td></tr>";
+        if (!V.isEmpty()) Rows << "<tr><td style='color:" + Theme::Dim + "; padding-right:10px'>" + K + "</td><td>" + V.toHtmlEscaped() + "</td></tr>";
     };
     Row("Publisher", Str("PUBLISHER"));
     Row("Series", Str("SERIES"));
@@ -1357,7 +1358,7 @@ void PreLaunchWindow::RefreshDetails(const nlohmann::ordered_json &M)
         [Self, Dir, Bytes]{
             if (!Self || Self->BundleDir != Dir || !Self->DetailsLabel) return;
             QStringList With = Self->DetailsHtml;
-            With.insert(std::min<qsizetype>(With.size(), 3), "<tr><td style='color:#8f98a0; padding-right:10px'>Size</td><td>"
+            With.insert(std::min<qsizetype>(With.size(), 3), "<tr><td style='color:" + Theme::Dim + "; padding-right:10px'>Size</td><td>"
                                                                + HumanBytesQ(static_cast<long long>(*Bytes)) + "</td></tr>");
             Self->DetailsLabel->setText("<table>" + With.join("") + "</table>");
         });
@@ -1370,7 +1371,7 @@ void PreLaunchWindow::BuildLanPanel(QVBoxLayout * LeftCol)
     GL->setContentsMargins(10, 6, 10, 8);
     GL->setSpacing(4);
     LanStatus = new QLabel(LanGroup);
-    LanStatus->setStyleSheet("color:#8f98a0;font-size:9pt;");
+    LanStatus->setStyleSheet("color:" + Theme::Dim + ";font-size:9pt;");
     GL->addWidget(LanStatus);
     LanRows = new QVBoxLayout();
     LanRows->setSpacing(2);
@@ -1457,8 +1458,8 @@ void PreLaunchWindow::RefreshLanPanel()
             Badge->setStyleSheet("font-size:9pt;color:#6dbf6d;");
         }
         else if (P.Link == "relayed") { Badge->setText("● relayed");    Badge->setStyleSheet("font-size:9pt;color:#c9a227;"); }
-        else if (P.Link == "connecting") { Badge->setText("○ connecting…"); Badge->setStyleSheet("font-size:9pt;color:#8f98a0;"); }
-        else                          { Badge->setText("○ offline");    Badge->setStyleSheet("font-size:9pt;color:#8f98a0;"); }
+        else if (P.Link == "connecting") { Badge->setText("○ connecting…"); Badge->setStyleSheet("font-size:9pt;color:" + Theme::Dim + ";"); }
+        else                          { Badge->setText("○ offline");    Badge->setStyleSheet("font-size:9pt;color:" + Theme::Dim + ";"); }
     }
     for (auto It = LanRowByPeer.begin(); It != LanRowByPeer.end();)
     {

@@ -1,4 +1,5 @@
 #include "networkpage.h"
+#include "theme.h"   // the named colours
 #include "appmodel.h"
 #include "asyncwork.h"
 #include "ipfswrapper.h"
@@ -21,7 +22,7 @@ static void FillStatusRow(QTreeWidgetItem *It, const std::string &Status, const 
     It->setText(0, Down ? "✗" : Warn ? "⚠" : Off ? "–" : "✓");
     It->setForeground(0, Down ? QBrush(QColor("#cc4444"))
                      : Warn ? QBrush(QColor("#ccaa00"))
-                     : Off  ? QBrush(QColor("#8f98a0")) : QBrush(QColor("#44aa44")));
+                     : Off  ? QBrush(QColor(Theme::Dim)) : QBrush(QColor("#44aa44")));
     It->setText(1, QString::fromStdString(Name));
     It->setText(2, QString::fromStdString(Detail));
     It->setToolTip(2, QString::fromStdString(Detail));

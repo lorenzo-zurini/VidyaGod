@@ -1,4 +1,5 @@
 #include "packagesview.h"
+#include "theme.h"   // the named colours
 #include "guiformat.h"   // HumanBytesQ
 #include "appmodel.h"          // AppModel — catalog/config + removePackage
 #include "mainwindow.h"        // MainWindow::RefreshPackage (app-wide "package edited" hook)
@@ -144,7 +145,7 @@ void PackagesView::rebuildList()
     if (!PackagesScrollArea->widget())
     {
         QLabel *Wait = new QLabel("Reading the library…", PackagesScrollArea);
-        Wait->setStyleSheet("color:#8f98a0;");
+        Wait->setStyleSheet("color:" + Theme::Dim + ";");
         PackagesScrollArea->setWidget(Wait);
     }
     if (!Model.config()) { Listing = false; return; }
@@ -171,7 +172,7 @@ void PackagesView::showList(const std::vector<PackageCatalog::InstalledPackage> 
     if (Pkgs.empty())
     {
         QLabel *none = new QLabel("No installed packages yet - download packages from the Catalog tab or add local packages.", w);
-        none->setStyleSheet("color:#8f98a0;");
+        none->setStyleSheet("color:" + Theme::Dim + ";");
         g->addWidget(none, 0, 0, 1, 4);
     }
     else
@@ -179,7 +180,7 @@ void PackagesView::showList(const std::vector<PackageCatalog::InstalledPackage> 
         std::uintmax_t Total = 0;
         for (const auto &P : Pkgs) Total += P.Bytes;
         QLabel *Sum = new QLabel(QString("%1 packages · %2").arg(Pkgs.size()).arg(QString::fromStdString(HumanBytes(static_cast<long long>(Total)))), w);
-        Sum->setStyleSheet("color:#8f98a0;");
+        Sum->setStyleSheet("color:" + Theme::Dim + ";");
         g->addWidget(Sum, row++, 0, 1, 4);
     }
     std::string Group = "\x01";   // none yet
@@ -203,7 +204,7 @@ void PackagesView::showList(const std::vector<PackageCatalog::InstalledPackage> 
         }
         if (P.Variants.size() > 4) Versions += QString(" and %1 more").arg(P.Variants.size() - 4);
         if (P.Variants.size() > 40) All += QString("\n… and %1 more").arg(P.Variants.size() - 40);
-        QLabel *Name = new QLabel(QString("<b>%1</b><br><span style='color:#8f98a0'>%2 · %3</span>")
+        QLabel *Name = new QLabel(QString("<b>%1</b><br><span style='color:" + Theme::Dim + "'>%2 · %3</span>")
                                       .arg(QString::fromStdString(P.Title).toHtmlEscaped(), QString::fromStdString(P.Uid).toHtmlEscaped(),
                                            Versions.toHtmlEscaped()), w);
         Name->setToolTip(QString::fromStdString(P.Dir.string()) + (P.Variants.size() > 4 ? "\n\n" + All : QString()));

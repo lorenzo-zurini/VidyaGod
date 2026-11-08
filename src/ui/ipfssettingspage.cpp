@@ -1,4 +1,5 @@
 #include "ipfssettingspage.h"
+#include "theme.h"   // the named colours
 #include "appmodel.h"
 #include "ipfswrapper.h"
 
@@ -37,7 +38,7 @@ IpfsSettingsPage::IpfsSettingsPage(AppModel & model, QWidget * parent)
         "Catalog is disabled. Games you've already downloaded still launch (their files are read locally). Turn "
         "this on to fetch new games and seed your library to other players.", this);
     netHint->setWordWrap(true);
-    netHint->setStyleSheet("color:#8f98a0;font-size:9pt;margin-left:22px;");
+    netHint->setStyleSheet("color:" + Theme::Dim + ";font-size:9pt;margin-left:22px;");
     pl->addWidget(netHint);
 
     // Max simultaneous downloads — Settings.MaxConcurrentDownloads. Caps how many files fetch at once across ALL
@@ -66,7 +67,7 @@ IpfsSettingsPage::IpfsSettingsPage(AppModel & model, QWidget * parent)
     QLabel * dlNote = new QLabel("Files download in parallel up to this limit; a stalled one keeps retrying in the "
                                  "background without blocking the others.", this);
     dlNote->setWordWrap(true);
-    dlNote->setStyleSheet("color:#8f98a0;font-size:9pt;");
+    dlNote->setStyleSheet("color:" + Theme::Dim + ";font-size:9pt;");
     pl->addWidget(dlNote);
 
     // Friend LAN — always on (no toggle): every game launch joins the virtual LAN of accepted friends, and the
@@ -82,7 +83,7 @@ IpfsSettingsPage::IpfsSettingsPage(AppModel & model, QWidget * parent)
         "real-LAN access, including seeing sessions on your physical network, through VidyaGod's own in-process "
         "gateway — no external tools, no configuration. Always on.", this);
     lanHint->setWordWrap(true);
-    lanHint->setStyleSheet("color:#8f98a0;font-size:9pt;margin-left:22px;");
+    lanHint->setStyleSheet("color:" + Theme::Dim + ";font-size:9pt;margin-left:22px;");
     pl->addWidget(lanHint);
     pl->addStretch(1);
 }

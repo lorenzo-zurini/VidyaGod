@@ -1,4 +1,5 @@
 #include "generalpage.h"
+#include "theme.h"   // the named colours
 #include "appmodel.h"
 #include "apppaths.h"
 #include "autostart.h"
@@ -41,7 +42,7 @@ GeneralPage::GeneralPage(AppModel & model, QWidget * parent)
         {
             QLabel * h = new QLabel(Hint, this);
             h->setWordWrap(true);
-            h->setStyleSheet("color:#8f98a0;font-size:9pt;margin-left:22px;");
+            h->setStyleSheet("color:" + Theme::Dim + ";font-size:9pt;margin-left:22px;");
             pl->addWidget(h);
         }
         return cb;
@@ -91,7 +92,7 @@ GeneralPage::GeneralPage(AppModel & model, QWidget * parent)
     }
     QLabel * loginLbl = new QLabel(loginHint, this);
     loginLbl->setWordWrap(true);
-    loginLbl->setStyleSheet("color:#8f98a0;font-size:9pt;margin-left:22px;");
+    loginLbl->setStyleSheet("color:" + Theme::Dim + ";font-size:9pt;margin-left:22px;");
     pl->addWidget(loginLbl);
 
     pl->addStretch(1);

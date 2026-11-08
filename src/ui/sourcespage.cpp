@@ -1,4 +1,5 @@
 #include "sourcespage.h"
+#include "theme.h"   // the named colours
 #include "appmodel.h"          // AppModel — config + sync/add/remove package source
 
 #include <QVBoxLayout>
@@ -70,7 +71,7 @@ void SourcesPage::rebuild()
         "mints a new one, use Upgrade… on the source: unchanged content is kept rather than re-downloaded, and the "
         "old version stays seeded. Adding/upgrading needs IPFS networking enabled.", contents);
     intro->setWordWrap(true);
-    intro->setStyleSheet("color:#8f98a0;font-size:9pt;");
+    intro->setStyleSheet("color:" + Theme::Dim + ";font-size:9pt;");
     v->addWidget(intro);
 
     // No manual "Sync now" — adding a source already fetches it, and the node re-syncs on startup
@@ -83,7 +84,7 @@ void SourcesPage::rebuild()
     if (S["PackageSources"].empty())
     {
         QLabel * none = new QLabel("No sources configured.", contents);
-        none->setStyleSheet("color:#8f98a0;");
+        none->setStyleSheet("color:" + Theme::Dim + ";");
         v->addWidget(none);
     }
     for (int i = 0; i < int(S["PackageSources"].size()); ++i)
@@ -95,7 +96,7 @@ void SourcesPage::rebuild()
 
         QGroupBox * card = new QGroupBox(QString::fromStdString(Name), contents);
         QHBoxLayout * row = new QHBoxLayout(card); card->setLayout(row);
-        QLabel * cidLbl = new QLabel("<span style='color:#8f98a0;'>" + QString::fromStdString(Cid).toHtmlEscaped() + "</span>", card);
+        QLabel * cidLbl = new QLabel("<span style='color:" + Theme::Dim + ";'>" + QString::fromStdString(Cid).toHtmlEscaped() + "</span>", card);
         cidLbl->setTextInteractionFlags(Qt::TextSelectableByMouse);
         row->addWidget(cidLbl, 1);
 

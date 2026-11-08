@@ -1,4 +1,5 @@
 #include "libraryview.h"
+#include "theme.h"   // the named colours
 #include "installed.h"
 #include "guiformat.h"
 #include "instancestore.h"
@@ -76,7 +77,7 @@ QString LibraryGameCard::HoverText()
     QStringList Sub;
     if (!SeriesName.isEmpty()) Sub << SeriesName.toHtmlEscaped();
     if (SortDate.size() >= 4 && SortDate != "9999") Sub << SortDate.left(4);
-    if (!Sub.isEmpty()) T += "<br><span style='color:#8f98a0'>" + Sub.join(" · ") + "</span>";
+    if (!Sub.isEmpty()) T += "<br><span style='color:" + Theme::Dim + "'>" + Sub.join(" · ") + "</span>";
     QStringList Facts;
     if (Bytes >= 0) Facts << HumanBytesQ(Bytes);
     const QString Last = lastPlayed();
@@ -474,7 +475,7 @@ void LibraryView::onPaint(QPaintEvent * e)
     // Empty state: centered first-run hint, no cards to draw.
     if (Cards->isEmpty() && !EmptyMessage.isEmpty())
     {
-        p.setPen(QColor(0x8f, 0x98, 0xa0));
+        p.setPen(QColor(Theme::Dim));
         p.drawText(viewport()->rect().adjusted(40, 0, -40, 0),
                    Qt::AlignCenter | Qt::TextWordWrap, EmptyMessage);
         return;
@@ -520,7 +521,7 @@ void LibraryView::onPaint(QPaintEvent * e)
                 p.fillRect(sr.adjusted(-1,-1,1,1), QColor(0,0,0,120));     // subtle shadow/separation
                 if (!sc->CoverSmall.isNull()) p.drawPixmap(sr, sc->CoverSmall);
                 else { p.fillRect(sr, QApplication::palette().color(QPalette::Mid));
-                       p.setPen(QColor(0x8f,0x98,0xa0)); p.drawText(sr.adjusted(2,2,-2,-2), Qt::AlignCenter|Qt::TextWordWrap, sc->GameTitle); }
+                       p.setPen(QColor(Theme::Dim)); p.drawText(sr.adjusted(2,2,-2,-2), Qt::AlignCenter|Qt::TextWordWrap, sc->GameTitle); }
                 p.setPen(QColor(255,255,255,90)); p.setBrush(Qt::NoBrush); p.drawRect(sr.adjusted(0,0,-1,-1));  // thin border
             }
             // "+N" badge when there are more secondaries than overlay slots.
@@ -587,7 +588,7 @@ void LibraryView::onPaint(QPaintEvent * e)
         // Keyboard focus ring (drawn whether or not hovered).
         if (i == SelectedIdx) {
             p.setBrush(Qt::NoBrush);
-            QPen ring(QColor(0x4a,0x90,0xd9), 3); p.setPen(ring);
+            QPen ring(QColor(Theme::Accent), 3); p.setPen(ring);
             p.drawRoundedRect(r.adjusted(1,1,-2,-2), 4, 4);
         }
 

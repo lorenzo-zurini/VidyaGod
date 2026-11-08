@@ -1,4 +1,5 @@
 #include "downloaddialog.h"
+#include "theme.h"   // the named colours
 #include "appmodel.h"
 #include "downloadmanager.h"
 #include "asyncwork.h"         // AsyncWork::Run — closure walks off the GUI thread, guarded by the dialog's lifetime
@@ -65,7 +66,7 @@ std::optional<DownloadSelection> AskDownload(AppModel &Model, const LibraryGameC
     QGroupBox *   EpBox = new QGroupBox("Content", &Dlg);
     QVBoxLayout * EpL   = new QVBoxLayout(EpBox);
     QLabel *      EpPending = new QLabel("Deriving content…", EpBox);
-    EpPending->setStyleSheet("color:#8f98a0;");
+    EpPending->setStyleSheet("color:" + Theme::Dim + ";");
     EpL->addWidget(EpPending);
     DL->addWidget(EpBox);
     // One row may carry SEVERAL variant ids (the "Everything else" fold) — ticked = download all their closures.
@@ -186,14 +187,14 @@ std::optional<DownloadSelection> AskDownload(AppModel &Model, const LibraryGameC
             QObject::connect(cb, &QCheckBox::toggled, RunBox, [Debounce](bool){ Debounce->start(); });   // toggle → re-derive size
             RunnerChecks[rid] = cb; RunL->addWidget(cb);
         };
-        if (!EmbeddedR.empty()) { QLabel * h = new QLabel("Embedded", RunBox); h->setStyleSheet("color:#8f98a0; font-weight:bold;"); RunL->addWidget(h); for (const Node * R : EmbeddedR) addRunner(R); }
-        if (ShowGlobal)         { QLabel * h = new QLabel("Global", RunBox);   h->setStyleSheet("color:#8f98a0; font-weight:bold;"); RunL->addWidget(h); for (const Node * R : GlobalR)   addRunner(R); }
+        if (!EmbeddedR.empty()) { QLabel * h = new QLabel("Embedded", RunBox); h->setStyleSheet("color:" + Theme::Dim + "; font-weight:bold;"); RunL->addWidget(h); for (const Node * R : EmbeddedR) addRunner(R); }
+        if (ShowGlobal)         { QLabel * h = new QLabel("Global", RunBox);   h->setStyleSheet("color:" + Theme::Dim + "; font-weight:bold;"); RunL->addWidget(h); for (const Node * R : GlobalR)   addRunner(R); }
         RunBox->setVisible(!EmbeddedR.empty() || ShowGlobal);
     };
 
     // ── Disk-space display: free space at the library + the (async-derived) size of the current selection ──
     QLabel * SizeLabel = new QLabel("Free space: …", &Dlg);
-    SizeLabel->setStyleSheet("color:#8f98a0;");
+    SizeLabel->setStyleSheet("color:" + Theme::Dim + ";");
     DL->addWidget(SizeLabel);
     std::error_code DiskEc;
     const auto DiskSp = std::filesystem::space(PackageCatalog::LibraryRootDir(*Model.config()), DiskEc);
@@ -247,8 +248,8 @@ std::optional<DownloadSelection> AskDownload(AppModel &Model, const LibraryGameC
                 SizeLabel->setText(QString("Free space: %1      Download: %2%3")
                     .arg(FreeBytes < 0 ? QStringLiteral("?") : HumanBytesQ(FreeBytes))
                     .arg(HumanBytesQ(Sum)).arg(AllKnown ? "" : " (estimating…)"));
-                SizeLabel->setStyleSheet((FreeBytes >= 0 && Sum > FreeBytes) ? "color:#c0726a; font-weight:bold;"
-                                                                             : "color:#8f98a0;");
+                SizeLabel->setStyleSheet((FreeBytes >= 0 && Sum > FreeBytes) ? "color:" + Theme::Bad + "; font-weight:bold;"
+                                                                             : "color:" + Theme::Dim + ";");
                 if (Unknown.empty()) return;
                 // Probe the new CIDs' sizes in the background; each result lands in the cache and nudges the
                 // debounce, so the label refreshes shortly after data arrives. Alive-guarded — the dialog may close.

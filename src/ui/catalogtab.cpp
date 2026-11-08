@@ -1,4 +1,5 @@
 #include "catalogtab.h"
+#include "theme.h"   // the named colours
 #include "cardtoolbar.h"
 #include "installed.h"
 #include "shelf.h"
@@ -299,7 +300,7 @@ void CatalogTab::openPackageSourcesDialog()
         "A package source is an IPFS folder CID of dehydrated packages (node manifests only — covers and content "
         "stream in on demand). Adding one fetches the manifests and lists its games in this catalog, downloadable on "
         "demand. Requires IPFS networking to be on."), dlg);
-    info->setWordWrap(true); info->setStyleSheet("color:#8f98a0;font-size:9pt;");
+    info->setWordWrap(true); info->setStyleSheet("color:" + Theme::Dim + ";font-size:9pt;");
     root->addWidget(info);
 
     auto * listHost = new QWidget(dlg);

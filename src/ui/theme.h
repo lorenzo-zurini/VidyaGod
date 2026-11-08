@@ -1,6 +1,8 @@
 #ifndef THEME_H
 #define THEME_H
 
+#include "palette.h"   // Theme::Dim, … — the named colours
+
 class QApplication;
 class QWidget;
 

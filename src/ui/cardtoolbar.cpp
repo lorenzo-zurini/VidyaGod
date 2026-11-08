@@ -1,4 +1,5 @@
 #include "cardtoolbar.h"
+#include "theme.h"   // the named colours
 #include "appmodel.h"
 
 #include <QButtonGroup>
@@ -38,7 +39,7 @@ CardToolbar MakeCardToolbar(QWidget *Owner, AppModel &Model, const std::vector<s
     {
         T.Status = new QLabel(T.Bar);
         T.Status->setAccessibleName(StatusName);
-        T.Status->setStyleSheet("color:#8f98a0; font-size:9pt; padding-left:12px;");
+        T.Status->setStyleSheet("color:" + Theme::Dim + "; font-size:9pt; padding-left:12px;");
         T.Row->addWidget(T.Status);
     }
     T.Row->addStretch();
@@ -57,9 +58,9 @@ CardToolbar MakeCardToolbar(QWidget *Owner, AppModel &Model, const std::vector<s
         B->setCheckable(true);
         B->setChecked(Model.cardPixelWidth() == Width);
         B->setStyleSheet(
-            "QPushButton{color:#8f98a0;background:transparent;border:none;font-size:9pt;padding:2px 8px;}"
-            "QPushButton:checked{color:#c6d4df;border-bottom:2px solid #4a90d9;}"
-            "QPushButton:hover{color:#c6d4df;}");
+            "QPushButton{color:" + Theme::Dim + ";background:transparent;border:none;font-size:9pt;padding:2px 8px;}"
+            "QPushButton:checked{color:" + Theme::Text + ";border-bottom:2px solid " + Theme::Accent + ";}"
+            "QPushButton:hover{color:" + Theme::Text + ";}");
         QObject::connect(B, &QPushButton::clicked, Owner, [&Model, W = Width] { Model.setCardPixelWidth(W); });   // → cardSizeChanged
         T.Row->addWidget(B);
     }

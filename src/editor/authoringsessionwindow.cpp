@@ -1,4 +1,5 @@
 #include "authoringsessionwindow.h"
+#include "palette.h"   // the named colours
 #include "authoringsessionmodel.h"
 #include "deltatree.h"
 #include "packageeditormodel.h"
@@ -56,7 +57,7 @@ AuthoringSessionWindow::AuthoringSessionWindow(PackageEditorModel * Editor, cons
     StatusLabel->setStyleSheet("font-weight:bold;");
     InfoLabel = new QLabel(this);
     InfoLabel->setWordWrap(true);
-    InfoLabel->setStyleSheet("color:#8f98a0;font-size:9pt;");
+    InfoLabel->setStyleSheet("color:" + Theme::Dim + ";font-size:9pt;");
     Root->addWidget(StatusLabel);
     Root->addWidget(InfoLabel);
 

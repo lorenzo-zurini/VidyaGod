@@ -1,4 +1,5 @@
 #include "dependenciespage.h"
+#include "theme.h"   // the named colours
 #include "depcheck.h"
 #include "sandboxlayer.h"
 
@@ -54,7 +55,7 @@ void DependenciesPage::rebuild()
         "games. Install the named package to fix.", contents);
 #endif
     intro->setWordWrap(true);
-    intro->setStyleSheet("color:#8f98a0;font-size:9pt;");
+    intro->setStyleSheet("color:" + Theme::Dim + ";font-size:9pt;");
     v->addWidget(intro);
 
     int Missing = 0, Partial = 0;
@@ -68,13 +69,13 @@ void DependenciesPage::rebuild()
     QHBoxLayout * top = new QHBoxLayout();
     QLabel * summary = new QLabel(contents);
     if (Missing == 0 && Partial == 0)
-        summary->setText("<span style='color:#5fb55f;font-weight:bold;'>✓ All dependencies satisfied.</span>");
+        summary->setText("<span style='color:" + Theme::Ok + ";font-weight:bold;'>✓ All dependencies satisfied.</span>");
     else
-        summary->setText(QString("<span style='color:#c6a15f;font-weight:bold;'>⚠ %1 missing, %2 partial (32-bit) "
+        summary->setText(QString("<span style='color:" + Theme::Warn + ";font-weight:bold;'>⚠ %1 missing, %2 partial (32-bit) "
                                  "— games may crash.</span>").arg(Missing).arg(Partial));
     top->addWidget(summary, 1);
     QLabel * distro = new QLabel(QString("detected: %1").arg(DistroLabel(D)), contents);
-    distro->setStyleSheet("color:#8f98a0;font-size:9pt;");
+    distro->setStyleSheet("color:" + Theme::Dim + ";font-size:9pt;");
     top->addWidget(distro);
     QPushButton * recheck = new QPushButton("Re-check", contents);
     connect(recheck, &QPushButton::clicked, this, [this]{ rebuild(); });
@@ -125,9 +126,9 @@ void DependenciesPage::rebuild()
             QHBoxLayout * row = new QHBoxLayout();
             QLabel * glyph = new QLabel(box);
             glyph->setFixedWidth(16);
-            if      (S == Status::Ok)      glyph->setText("<span style='color:#5fb55f;font-weight:bold;'>✓</span>");
-            else if (S == Status::Partial) glyph->setText("<span style='color:#c6a15f;font-weight:bold;'>⚠</span>");
-            else                           glyph->setText("<span style='color:#c0726a;font-weight:bold;'>✗</span>");
+            if      (S == Status::Ok)      glyph->setText("<span style='color:" + Theme::Ok + ";font-weight:bold;'>✓</span>");
+            else if (S == Status::Partial) glyph->setText("<span style='color:" + Theme::Warn + ";font-weight:bold;'>⚠</span>");
+            else                           glyph->setText("<span style='color:" + Theme::Bad + ";font-weight:bold;'>✗</span>");
             row->addWidget(glyph);
 
             QLabel * name = new QLabel(QString::fromStdString(I.Name), box);
@@ -136,7 +137,7 @@ void DependenciesPage::rebuild()
 
             QLabel * purpose = new QLabel(QString::fromStdString(I.Purpose), box);
             purpose->setWordWrap(true);
-            purpose->setStyleSheet("color:#8f98a0;font-size:9pt;");
+            purpose->setStyleSheet("color:" + Theme::Dim + ";font-size:9pt;");
             row->addWidget(purpose, 1);
 
             if (S != Status::Ok)
@@ -146,7 +147,7 @@ void DependenciesPage::rebuild()
                 {
                     QLabel * fix = new QLabel(QString("install <code>%1</code>").arg(QString::fromStdString(Hint)), box);
                     fix->setTextFormat(Qt::RichText);
-                    fix->setStyleSheet(S == Status::Partial ? "color:#c6a15f;" : "color:#c0726a;");
+                    fix->setStyleSheet(S == Status::Partial ? "color:" + Theme::Warn + ";" : "color:" + Theme::Bad + ";");
                     row->addWidget(fix);
                 }
             }

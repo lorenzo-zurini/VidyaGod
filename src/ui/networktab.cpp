@@ -1,4 +1,5 @@
 #include "networktab.h"
+#include "theme.h"   // the named colours
 #include "appmodel.h"
 #include "friendsharing.h"
 #include "ipfswrapper.h"
@@ -130,7 +131,7 @@ void NetworkTab::buildUi()
     {
         auto * HintRow = new QHBoxLayout();
         StatusHint = new QLabel(this);
-        StatusHint->setStyleSheet("color:#8f98a0;");
+        StatusHint->setStyleSheet("color:" + Theme::Dim + ";");
         StatusHint->setWordWrap(true);
         HintRow->addWidget(StatusHint, 1);
         TurnOnButton = new QPushButton("Turn on networking", this);
@@ -151,7 +152,7 @@ void NetworkTab::buildUi()
                            "request is accepted on both sides, tick what you share with them. The first row is what a new "
                            "friend gets.", this);
     EmptyHint->setWordWrap(true);
-    EmptyHint->setStyleSheet("color:#8f98a0; padding: 8px 2px;");
+    EmptyHint->setStyleSheet("color:" + Theme::Dim + "; padding: 8px 2px;");
     EmptyHint->setAccessibleName("No friends yet");
     Root->addWidget(EmptyHint);
     Root->addStretch(0);   // the spare height while the table is short (no friend yet): below everything, not inside it

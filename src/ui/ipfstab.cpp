@@ -1,4 +1,5 @@
 #include "ipfstab.h"
+#include "theme.h"   // the named colours
 #include "ipfsmodel.h"
 
 #include <QVBoxLayout>
@@ -79,12 +80,12 @@ public:
 // Renders a CID's network availability ("health") as coloured text.
 static std::pair<QString, QColor> IpfsHealthText(int Providers, int Missing)
 {
-    if (Missing == 1)    return { QStringLiteral("Errored: missing files"), QColor("#c0726a") };
-    if (Providers <= -2) return { QStringLiteral("…"),               QColor("#8f98a0") };
-    if (Providers == -1) return { QStringLiteral("—"),               QColor("#8f98a0") };
-    if (Providers == 0)  return { QStringLiteral("✗ 0"),             QColor("#c0726a") };
+    if (Missing == 1)    return { QStringLiteral("Errored: missing files"), QColor(Theme::Bad) };
+    if (Providers <= -2) return { QStringLiteral("…"),               QColor(Theme::Dim) };
+    if (Providers == -1) return { QStringLiteral("—"),               QColor(Theme::Dim) };
+    if (Providers == 0)  return { QStringLiteral("✗ 0"),             QColor(Theme::Bad) };
     if (Providers == 1)  return { QStringLiteral("● 1"),             QColor("#d6a23e") };
-    return { QString("● %1").arg(Providers),                         QColor("#5fb55f") };
+    return { QString("● %1").arg(Providers),                         QColor(Theme::Ok) };
 }
 
 static const QString CatAssetsName  = QStringLiteral("Assets");
@@ -129,7 +130,7 @@ void IpfsTab::buildUi()
     IpfsStatusTable->setFocusPolicy(Qt::NoFocus);
     IpfsStatusTable->setShowGrid(false);
     IpfsStatusTable->setStyleSheet("QTableWidget{background:#20252b;border:1px solid #2c333b;border-radius:4px;}"
-                                   "QHeaderView::section{background:transparent;color:#8f98a0;border:none;"
+                                   "QHeaderView::section{background:transparent;color:" + Theme::Dim + ";border:none;"
                                    "padding:3px 4px;font-size:8pt;}");
     for (int c = 0; c < 7; ++c) {
         QTableWidgetItem * it = new QTableWidgetItem(QStringLiteral("—"));
@@ -140,7 +141,7 @@ void IpfsTab::buildUi()
                                     + IpfsStatusTable->verticalHeader()->defaultSectionSize() + 4);
 
     IpfsHintLabel = new QLabel("IPFS node is off — enable networking in Settings → IPFS to download and seed.", this);
-    IpfsHintLabel->setStyleSheet("color:#8f98a0;font-size:9pt;");
+    IpfsHintLabel->setStyleSheet("color:" + Theme::Dim + ";font-size:9pt;");
     IpfsHintLabel->hide();
 
     // Toolbar: search + global actions (per-row actions live in the tree's context menu).
@@ -275,7 +276,7 @@ QWidget * IpfsTab::buildSidebar()
         "QListWidget::item:selected{background:#2f3944;color:#e6eef5;}";
     auto sectionLabel = [side](const QString & text){
         QLabel * l = new QLabel(text, side);
-        l->setStyleSheet("color:#8f98a0;font-size:8pt;font-weight:bold;padding-left:2px;");
+        l->setStyleSheet("color:" + Theme::Dim + ";font-size:8pt;font-weight:bold;padding-left:2px;");
         return l;
     };
 
@@ -377,7 +378,7 @@ QTreeWidgetItem * IpfsTab::ensureGroup(const QString & cid)
             srcGrp = new FastSortItem(cat);
             srcGrp->setText(0, Src);
             QFont sf = srcGrp->font(0); sf.setBold(true); srcGrp->setFont(0, sf);
-            srcGrp->setForeground(0, QColor("#c6d4df"));
+            srcGrp->setForeground(0, QColor(Theme::Text));
             srcGrp->setFlags(srcGrp->flags() & ~Qt::ItemIsSelectable);
             srcGrp->setExpanded(true);
             IpfsPinSourceGroups.insert(SrcKey, srcGrp);
@@ -439,7 +440,7 @@ void IpfsTab::paintGroupCid(QTreeWidgetItem * grp, const QString & pkg)
 {
     const QString Cid = Model.packageCid(pkg);
     grp->setText(6, Cid);
-    grp->setForeground(6, QColor("#8f98a0"));
+    grp->setForeground(6, QColor(Theme::Dim));
     grp->setToolTip(6, Cid.isEmpty() ? QString()
         : QString("Package CID — the folder \"%1\" is shared as.").arg(pkg));
 }
@@ -466,7 +467,7 @@ void IpfsTab::renderLeaf(const QString & cid)
     // Progress bar value + colour code.
     const bool MissingFiles = (st.phase == P::Seeded && st.missing == 1);
     const int Bar = (st.phase == P::Seeded) ? 100 : (st.pct >= 0 ? (int)std::lround(st.pct) : -1);
-    int Role = StSeeded; QString Status; QColor Fg("#c6d4df");
+    int Role = StSeeded; QString Status; QColor Fg(Theme::Text);
     switch (st.phase)
     {
     case P::Pending:     Role = StQueued;
@@ -474,7 +475,7 @@ void IpfsTab::renderLeaf(const QString & cid)
                          // actively downloading. Say what is true: queued when online, waiting when offline.
                          Status = IpfsWrapper::DaemonRunning() ? QStringLiteral("Queued — waiting to sync")
                                                               : QStringLiteral("Not fetched — will sync when online");
-                         Fg = QColor("#8f98a0"); break;
+                         Fg = QColor(Theme::Dim); break;
     case P::Queued:      Role = StQueued;      Status = QStringLiteral("Queued"); break;
     // Before the first byte arrives (pct < 0) the wait is provider discovery — DHT walk, relay dial, holepunch —
     // not a transfer; say so instead of showing a frozen "Fetching…" bar (a source sync can sit here for minutes).
@@ -489,7 +490,7 @@ void IpfsTab::renderLeaf(const QString & cid)
     case P::Stalled:     Role = StStalled;     Status = !st.activity.isEmpty() ? st.activity
                                                                                : QStringLiteral("Stalled — waiting for peers…"); break;
     case P::Errored: {
-        Role = StErrored; Fg = QColor("#c0726a");
+        Role = StErrored; Fg = QColor(Theme::Bad);
         const QString Tail = st.error.section('\n', -1).trimmed();
         Status = (Tail == "missing files") ? QStringLiteral("Errored: missing files")
                : st.error.isEmpty()        ? QStringLiteral("Failed")
@@ -499,13 +500,13 @@ void IpfsTab::renderLeaf(const QString & cid)
     case P::Seeded:
         if (MissingFiles)
         {
-            Role = StErrored; Status = QStringLiteral("Errored: missing files"); Fg = QColor("#c0726a");
+            Role = StErrored; Status = QStringLiteral("Errored: missing files"); Fg = QColor(Theme::Bad);
             leaf->setToolTip(4, QStringLiteral("The seeded content's backing file is gone from disk — "
                                                "it can no longer be served to peers."));
         }
         else if (st.uploading)
         {
-            Role = StSeeded; Status = QStringLiteral("⬆ Uploading"); Fg = QColor("#4a90d9");
+            Role = StSeeded; Status = QStringLiteral("⬆ Uploading"); Fg = QColor(Theme::Accent);
         }
         else if (!st.announced)
         {
@@ -516,7 +517,7 @@ void IpfsTab::renderLeaf(const QString & cid)
         }
         else
         {
-            Role = StSeeded; Status = QStringLiteral("Seeding"); Fg = QColor("#5fb55f");
+            Role = StSeeded; Status = QStringLiteral("Seeding"); Fg = QColor(Theme::Ok);
         }
         break;
     }
@@ -830,7 +831,7 @@ void IpfsTab::paintStatus()
     {
         IpfsHintLabel->show();
         IpfsStatusTable->item(0, 0)->setText(QStringLiteral("off"));
-        IpfsStatusTable->item(0, 0)->setForeground(QColor("#c0726a"));
+        IpfsStatusTable->item(0, 0)->setForeground(QColor(Theme::Bad));
         for (int c = 1; c < IpfsStatusTable->columnCount(); ++c) IpfsStatusTable->item(0, c)->setText(QStringLiteral("—"));
         return;
     }
@@ -839,14 +840,14 @@ void IpfsTab::paintStatus()
     auto Set = [this](int col, const QString & text, const QColor & fg = QColor()){
         QTableWidgetItem * it = IpfsStatusTable->item(0, col);
         it->setText(text);
-        it->setForeground(fg.isValid() ? fg : QColor("#c6d4df"));
+        it->setForeground(fg.isValid() ? fg : QColor(Theme::Text));
     };
     Set(0, S.daemon ? QStringLiteral("● connected") : QStringLiteral("● connecting…"),
-           S.daemon ? QColor("#5fb55f") : QColor("#d6a23e"));
+           S.daemon ? QColor(Theme::Ok) : QColor("#d6a23e"));
     Set(1, S.daemon ? QString::number(S.peers) : QStringLiteral("—"));
     Set(2, QString("%1 · %2").arg(S.pinCount).arg(HumanBytesQ(S.totalSize)));
-    Set(3, Rate(S.downBps), S.downBps >= 1.0 ? QColor("#5fb55f") : QColor("#8f98a0"));
-    Set(4, Rate(S.upBps),   S.upBps   >= 1.0 ? QColor("#4a90d9") : QColor("#8f98a0"));
+    Set(3, Rate(S.downBps), S.downBps >= 1.0 ? QColor(Theme::Ok) : QColor(Theme::Dim));
+    Set(4, Rate(S.upBps),   S.upBps   >= 1.0 ? QColor(Theme::Accent) : QColor(Theme::Dim));
     Set(5, S.repo.isEmpty() ? QStringLiteral("—") : S.repo);
     Set(6, S.diskFree < 0 ? QStringLiteral("—") : QString("%1 free").arg(HumanBytesQ(S.diskFree)));
 }

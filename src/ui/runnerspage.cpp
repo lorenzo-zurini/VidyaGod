@@ -1,4 +1,5 @@
 #include "runnerspage.h"
+#include "theme.h"   // the named colours
 #include "installed.h"
 #include "appmodel.h"          // AppModel — catalog + importRunner
 #include "libraryview.h"       // IpfsFetchReady()
@@ -64,7 +65,7 @@ RunnersPage::RunnersPage(AppModel &model, QWidget *parent)
         "Runners are packages from your repositories. A runner that ships its own build (e.g. Proton over "
         "IPFS) must be downloaded before games can use it.", this);
     intro->setWordWrap(true);
-    intro->setStyleSheet("color:#8f98a0;font-size:9pt;");
+    intro->setStyleSheet("color:" + Theme::Dim + ";font-size:9pt;");
     pl->addWidget(intro);
     Search = new QLineEdit(this);
     Search->setPlaceholderText("Search runners (name, family, platform)…");
@@ -136,7 +137,7 @@ void RunnersPage::rebuild()
     if (Runners.empty())
     {
         auto * None = new QTreeWidgetItem(Table, { "No runners found in your repositories." });
-        None->setForeground(0, QColor(0x8f, 0x98, 0xa0));
+        None->setForeground(0, QColor(Theme::Dim));
         return;
     }
     std::map<QString, QTreeWidgetItem *> Families;
@@ -165,10 +166,10 @@ void RunnersPage::rebuild()
         // Catalog. Build not yet fetched → offer Download (the same download pump). A runner with no downloadable build
         // is a system/built-in runner.
         QString Status; QColor Colour;
-        if (!HasContent && Avail)   { Status = "built-in";                 Colour = QColor(0x8f, 0x98, 0xa0); }
-        else if (!HasContent)       { Status = "not available on system";  Colour = QColor(0xc0, 0x72, 0x6a); }
-        else if (Hydrated)          { Status = "Ready";                    Colour = QColor(0x5f, 0xb5, 0x5f); }
-        else                        { Status = "Not downloaded";           Colour = QColor(0xc0, 0x72, 0x6a); }
+        if (!HasContent && Avail)   { Status = "built-in";                 Colour = QColor(Theme::Dim); }
+        else if (!HasContent)       { Status = "not available on system";  Colour = QColor(Theme::Bad); }
+        else if (Hydrated)          { Status = "Ready";                    Colour = QColor(Theme::Ok); }
+        else                        { Status = "Not downloaded";           Colour = QColor(Theme::Bad); }
         auto * Row = new QTreeWidgetItem(Fam, { Name, Runs, Status, "…" });
         Row->setData(0, Qt::UserRole, QString::fromStdString(rid));   // its id: searchable, and its tooltip
         Row->setToolTip(0, QString::fromStdString(rid));
@@ -184,7 +185,7 @@ void RunnersPage::rebuild()
                 if (!IpfsFetchReady(this)) return;              // need the embedded node online to fetch
                 btn->setEnabled(false); btn->setText("Downloading…");
                 Row->setText(2, "Downloading… (see IPFS tab)");
-                Row->setForeground(2, QColor(0xc6, 0xa1, 0x5f));
+                Row->setForeground(2, QColor(Theme::Warn));
                 Model.importRunner(QString::fromStdString(rid));   // → download pump; catalogChanged rebuilds this page
             });
             Table->setItemWidget(Row, 4, btn);
