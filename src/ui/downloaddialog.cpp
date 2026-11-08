@@ -389,7 +389,7 @@ std::optional<DownloadSelection> AskDownload(AppModel &Model, const LibraryGameC
 void StartCardDownload(DownloadManager &Downloads, AppModel &Model, LibraryGameCard *Card, QWidget *Parent)
 {
     if (!Card) return;
-    if (!IpfsFetchReady(Parent)) return;
+    if (!IpfsFetchReady(Parent, Model)) return;
     const QString Key = Card->GameKey;
     if (Key.isEmpty() || Downloads.downloading(Key)) return;       // already in flight
     if (const auto Sel = AskDownload(Model, *Card, Parent)) Downloads.beginDownload(Key, Sel->LaunchIds, Sel->RunnerIds, Sel->Toggles);

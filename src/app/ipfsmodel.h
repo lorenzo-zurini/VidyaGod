@@ -96,6 +96,7 @@ public slots:
     //A package source by CID, through AppModel::addPackageSource (persisted, fetched and indexed off-thread). False:
     //empty, or already a source.
     bool addSource(const QString & cid, const QString & name);
+    AppModel & app() const { return Model; }   // the model this one shows the node of
 
 signals:
     void cidChanged(const QString & cid);    // one CID's state changed → upsert its row

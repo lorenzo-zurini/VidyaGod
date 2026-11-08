@@ -614,7 +614,7 @@ VG_COMMANDS
           Opt("seed", "a folder"), Opt("add-source", "CID,NAME"), Flag("refresh", "re-gather now"), Opt("active", "on or off", Type::String, false, { "on", "off" }) },
         { "transfers act --cancel Qm…", "transfers act --force-recheck Qm…,Qm…", "transfers act --refresh" },
         { "IpfsModel::cancel", "IpfsModel::prioritize", "IpfsModel::recheckHealth", "IpfsModel::forceRecheck", "IpfsModel::unpinMany",
-          "IpfsModel::seedFolder", "IpfsModel::addSource", "IpfsModel::refreshNow", "IpfsModel::setActive" }, Needs::Ui, false,
+          "IpfsModel::seedFolder", "IpfsModel::addSource", "IpfsModel::app", "IpfsModel::refreshNow", "IpfsModel::setActive" }, Needs::Ui, false,
         [](Command::Context &C, const json &A) {
             IpfsModel &M = *Win(C).ipfsModel();
             for (const QString &X : Cids(A, "cancel")) M.cancel(X);

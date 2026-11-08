@@ -202,7 +202,6 @@ void MainWindow::BuildStaticUI()
 
     // Networking is opt-in (Settings → IPFS). Grey the network-dependent tabs until it's on, and react to the toggle
     // (start/stop the node, re-enable/disable the tabs).
-    setNetworkTabsEnabled(Model->networkingEnabled());
     connect(Model, &AppModel::networkingChanged, this, [this](bool on){ applyNetworkingState(on); });
 }
 
@@ -301,38 +300,8 @@ void MainWindow::startup(bool forceTray)
         QTimer::singleShot(0, this, [this]{ startNodeAsync(); });
 }
 
-void MainWindow::setNetworkTabsEnabled(bool enabled)
-{
-    //The Catalog and IPFS tabs stay open with networking off — what is there (local and received packages, the
-    //node's store) is still worth seeing; a banner on each says it is off and turns it on. What needs the network
-    //says so when asked (IpfsFetchReady reads this property).
-    if (!MainWindowTabWidget) return;
-    qApp->setProperty("vgNetworkingOff", !enabled);
-    if (OfflineBanners.empty())
-        for (QWidget * Tab : { static_cast<QWidget *>(CatalogTabPtr), static_cast<QWidget *>(IpfsTabPtr) })
-        {
-            auto * Box = Tab ? qobject_cast<QBoxLayout *>(Tab->layout()) : nullptr;
-            if (!Box) continue;
-            auto * Banner = new QFrame(Tab);
-            Banner->setObjectName("OfflineBanner");   // its look: Theme
-            Banner->setAccessibleName("Networking is off");
-            auto * L = new QHBoxLayout(Banner);
-            L->setContentsMargins(12, 6, 8, 6);
-            L->addWidget(new QLabel(Tab == CatalogTabPtr
-                                        ? "Networking is off — what is listed here can be browsed; downloads wait until it is on."
-                                        : "Networking is off — the node is stopped, nothing is seeded or fetched.", Banner), 1);
-            auto * On = new QPushButton("Turn on networking", Banner);
-            connect(On, &QPushButton::clicked, this, [this]{ Model->setNetworkingEnabled(true); });
-            L->addWidget(On);
-            Box->insertWidget(0, Banner);
-            OfflineBanners.push_back(Banner);
-        }
-    for (const auto & B : OfflineBanners) if (B) B->setVisible(!enabled);
-}
-
 void MainWindow::applyNetworkingState(bool enabled)
 {
-    setNetworkTabsEnabled(enabled);
     NetworkingOn = enabled;
     if (enabled)
     {

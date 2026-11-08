@@ -1,6 +1,7 @@
 #include "catalogtab.h"
 #include "theme.h"   // the named colours
 #include "cardtoolbar.h"
+#include "offlinebanner.h"
 #include "installed.h"
 #include "shelf.h"
 #include "appmodel.h"          // AppModel — catalog/config + card size
@@ -86,6 +87,7 @@ void CatalogTab::buildUi()
 
     QVBoxLayout * v = new QVBoxLayout(this);
     v->setContentsMargins(0,0,0,0); v->setSpacing(0);
+    v->addWidget(new OfflineBanner(Model, "Networking is off — what is listed here can be browsed; downloads wait until it is on.", this));
 
     // Sort (within each repo) + search + size: the toolbar both card tabs share; then this tab's own button.
     const CardToolbar Bar = MakeCardToolbar(this, Model,

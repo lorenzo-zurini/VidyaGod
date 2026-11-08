@@ -26,7 +26,8 @@
 // True if the embedded in-process IPFS node can fetch content right NOW (started AND its network stack is up).
 // Otherwise shows the reason (a QMessageBox parented to `parent`) and returns false. There is no external daemon.
 // Lives here because the card grid's play()/download paths are its primary callers; MainWindow uses it too.
-bool IpfsFetchReady(QWidget * parent);
+class AppModel;
+bool IpfsFetchReady(QWidget * parent, const AppModel & Model);
 
 // Card ordering, shared by the Library and Catalog tabs (both render LibraryGameCards in a LibraryView).
 enum class SortMode { Name = 0, Date = 1, Series = 2, Recent = 3 };

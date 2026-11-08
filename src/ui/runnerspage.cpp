@@ -182,7 +182,7 @@ void RunnersPage::rebuild()
             QPushButton * btn = new QPushButton("Download", Table);
             btn->setAccessibleName("Download " + Name);
             connect(btn, &QPushButton::clicked, this, [this, rid, btn, Row]{
-                if (!IpfsFetchReady(this)) return;              // need the embedded node online to fetch
+                if (!IpfsFetchReady(this, Model)) return;              // need the embedded node online to fetch
                 btn->setEnabled(false); btn->setText("Downloading…");
                 Row->setText(2, "Downloading… (see IPFS tab)");
                 Row->setForeground(2, QColor(Theme::Warn));

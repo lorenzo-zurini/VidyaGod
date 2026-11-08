@@ -20,6 +20,8 @@
 #include "a11ynames.h"
 #include "libraryview.h"
 #include "cardtoolbar.h"
+#include "offlinebanner.h"
+#include <QPushButton>
 #include "manifestmodel.h"
 #include "packagecatalog.h"
 #include "cid.h"
@@ -190,6 +192,27 @@ private slots:
         AppModel m(&Cfg, &AppDir);
         SaveCollapsed(m, "TestCollapsed", QSet<QString>{ "Local", "Steam" });
         QCOMPARE(LoadCollapsed(m, "TestCollapsed"), (QSet<QString>{ "Local", "Steam" }));
+    }
+
+    // A tab that needs the network shows the networking-off banner while networking is off — the banner follows the
+    // model by itself, and its button turns networking on. Teeth: show it once and never again; a dead button.
+    void the_offline_banner_follows_networking()
+    {
+        AppModel m(&Cfg, &AppDir);
+        m.setNetworkingEnabled(false);
+        QWidget Host;
+        OfflineBanner B(m, "off", &Host);
+        Host.show();
+        QCoreApplication::processEvents();
+        QVERIFY(B.isVisible());
+        auto *On = B.findChild<QPushButton *>();
+        QVERIFY(On);
+        On->click();
+        QVERIFY(m.networkingEnabled());
+        QVERIFY(!B.isVisible());
+        m.setNetworkingEnabled(false);
+        QVERIFY(B.isVisible());
+        m.setNetworkingEnabled(false);   // the test's own config: leave it as it found it
     }
 
     void library_tab_constructs()   { AppModel m(&Cfg, &AppDir); LibraryTab  t(m); QVERIFY(renders(&t)); }

@@ -362,6 +362,7 @@ set(SHARED_SOURCES
     src/ui/catalogtab.h
     src/ui/catalogtab.cpp
     src/ui/cardtoolbar.cpp
+    src/ui/offlinebanner.cpp
 
     src/ui/packagesview.h
     src/ui/packagesview.cpp

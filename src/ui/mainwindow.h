@@ -61,8 +61,7 @@ protected:
 
 private:
     void BuildStaticUI();
-    void setNetworkTabsEnabled(bool enabled);      // the "networking is off" banner on the Catalog and IPFS tabs
-    void applyNetworkingState(bool enabled);       // setNetworkTabsEnabled + start/stop the node (runtime toggle)
+    void applyNetworkingState(bool enabled);       // start/stop the node (runtime toggle); the tabs' banners follow by themselves
     void startNodeAsync();                         // open the IPFS repo off-thread (deferred so startup isn't blocked)
     void onNodeReady();                            // node repo opened → start resuming interrupted downloads
 
@@ -83,7 +82,6 @@ private:
     bool          NetworkingOn      = false;    // mirrors the runtime networking toggle (gates node-start retries)
     bool          NodeStartPending  = false;    // a StartNode attempt (or scheduled retry) is in flight
     int           NodeRetryDelayMs  = 2000;     // backoff for failed node starts (doubles up to 30s)
-    std::vector<QPointer<QWidget>> OfflineBanners;   // the Catalog and IPFS tabs' "networking is off" banners
 };
 
 #endif // MAINWINDOW_H

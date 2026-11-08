@@ -1,4 +1,6 @@
 #include "ipfstab.h"
+#include "offlinebanner.h"
+#include "appmodel.h"
 #include "theme.h"   // the named colours
 #include "ipfsmodel.h"
 
@@ -117,6 +119,7 @@ void IpfsTab::buildUi()
 {
     QVBoxLayout * v = new QVBoxLayout(this);
     v->setContentsMargins(12,12,12,12);
+    v->addWidget(new OfflineBanner(Model.app(), "Networking is off — the node is stopped, nothing is seeded or fetched.", this));
 
     // Status strip: Network | Peers | Seeded | ↓ | ↑ | Repo | Disk free.
     IpfsStatusTable = new QTableWidget(1, 7, this);
@@ -140,7 +143,8 @@ void IpfsTab::buildUi()
     IpfsStatusTable->setFixedHeight(IpfsStatusTable->horizontalHeader()->sizeHint().height()
                                     + IpfsStatusTable->verticalHeader()->defaultSectionSize() + 4);
 
-    IpfsHintLabel = new QLabel("IPFS node is off — enable networking in Settings → IPFS to download and seed.", this);
+    //Networking off is the banner's to say; this is the other case: networking on, the node not up (starting, or failed).
+    IpfsHintLabel = new QLabel("The IPFS node is not running yet — it starts by itself; the log says why if it does not.", this);
     IpfsHintLabel->setStyleSheet("color:" + Theme::Dim + ";font-size:9pt;");
     IpfsHintLabel->hide();
 
@@ -829,7 +833,7 @@ void IpfsTab::paintStatus()
     const IpfsModel::NodeStatus & S = Model.nodeStatus();
     if (!S.available)
     {
-        IpfsHintLabel->show();
+        IpfsHintLabel->setVisible(Model.app().networkingEnabled());
         IpfsStatusTable->item(0, 0)->setText(QStringLiteral("off"));
         IpfsStatusTable->item(0, 0)->setForeground(QColor(Theme::Bad));
         for (int c = 1; c < IpfsStatusTable->columnCount(); ++c) IpfsStatusTable->item(0, c)->setText(QStringLiteral("—"));

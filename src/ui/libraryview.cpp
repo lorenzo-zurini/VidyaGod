@@ -1,4 +1,5 @@
 #include "libraryview.h"
+#include "appmodel.h"   // networkingEnabled — what IpfsFetchReady says
 #include "theme.h"   // the named colours
 #include "installed.h"
 #include "guiformat.h"
@@ -26,9 +27,9 @@
 
 // True if the embedded IPFS node can fetch content right NOW (started AND its network stack is up). Otherwise
 // shows the reason and returns false. The node runs in-process — there is no external daemon to install or start.
-bool IpfsFetchReady(QWidget * parent)
+bool IpfsFetchReady(QWidget * parent, const AppModel & Model)
 {
-    if (!IpfsWrapper::Available() && qApp->property("vgNetworkingOff").toBool())
+    if (!IpfsWrapper::Available() && !Model.networkingEnabled())
     {
         QMessageBox::information(parent, "Networking is off",
             "Downloading needs the network, and networking is off.\n\n"
