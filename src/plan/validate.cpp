@@ -431,6 +431,7 @@ void FindCrossLayerCaseCollisions(const Fold::Plan &P,
     std::set<size_t> Hidden;
     for (const auto &[J, B] : Bases) Hidden.insert(B.begin(), B.end());
     std::deque<std::string> Labels;                              // stable storage — Seen holds pointers into it
+    std::deque<PreparedEntry> Taken;                             // a TAKE-seen item's entries, where its view puts them
     for (size_t J = 0; J < P.Seq.size(); ++J)
     {
         const Fold::Item &I = P.Seq[J];
@@ -443,8 +444,21 @@ void FindCrossLayerCaseCollisions(const Fold::Plan &P,
         const bool IsDir = std::filesystem::is_directory(Local, Ec);
         std::function<const std::vector<std::string> *()> Rebuilt;
         if (I.Kind == "DELTA") Rebuilt = [&] { return DeltaNames(P, J, Bases, Listed); };
-        for (const PreparedEntry &E : LayerEntriesPrepared(Local.string(), IsDir, I.Target, ZipCache, PrepCache, Rebuilt))
-            Consider(E, Lbl);
+        if (I.View.is_null())
+        {
+            for (const PreparedEntry &E : LayerEntriesPrepared(Local.string(), IsDir, I.Target, ZipCache, PrepCache, Rebuilt))
+                Consider(E, Lbl);
+            continue;
+        }
+        //Seen through TAKE (a library node mounting one file of its zip): only what its takes let through reaches the
+        //view, where they put it — as the mount does (Fold::ThroughView). The rest of the layer is not there to collide.
+        for (const PreparedEntry &E : LayerEntriesPrepared(Local.string(), IsDir, I.Own, ZipCache, PrepCache, Rebuilt))
+            if (const auto A = Fold::ThroughView(I.View, "FILES/" + E.Exact))
+            {
+                std::string Exact = A->size() > 6 ? A->substr(6) : std::string();
+                std::string Lower = ToLowerAscii(Exact);
+                Consider(Taken.emplace_back(PreparedEntry{std::move(Exact), std::move(Lower)}), Lbl);
+            }
     }
 }
 

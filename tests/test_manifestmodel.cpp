@@ -1087,6 +1087,37 @@ TEST(validate_flags_cross_layer_case_collision_once)
     fs::remove_all(Dir);
 }
 
+// A layer seen through a TAKE reaches the merged view only with what its takes let through: a library node that mounts
+// one file of its folder (SecuROMLoader's version.dll) brings no README.txt to collide with the game's readme.txt —
+// and what it does take still collides as itself. Teeth: list the whole layer at its target (the readme conflicts).
+TEST(validate_a_taken_layer_collides_only_with_what_it_takes)
+{
+    namespace fs = std::filesystem;
+    fs::path Dir = fs::temp_directory_path() / ("vgtest_casetake_" + std::to_string(::getpid()));
+    fs::remove_all(Dir);
+    fs::create_directories(Dir / "game");
+    fs::create_directories(Dir / "loader");
+    { std::ofstream F(Dir / "game" / "readme.txt");    F << "a"; }
+    { std::ofstream F(Dir / "game" / "Version.DLL");   F << "a"; }
+    { std::ofstream F(Dir / "loader" / "README.txt");  F << "b"; }
+    { std::ofstream F(Dir / "loader" / "version.dll"); F << "b"; }
+    NodeIndex Idx;
+    AddChain(Idx, "loader", { NF::Content("dir", "loader") }, {}, ordered_json::object(), Dir.string());
+    ordered_json Take = ordered_json::object();
+    Take["LAYERS"] = ordered_json::array({ { {"NODE", "loader"}, {"TAKE", ordered_json::array({ "FILES/version.dll" })} } });
+    AddChain(Idx, "game", { NF::Content("dir", "game"), Take,
+                            NF::Merge({ NF::Tile("cG", "G"), NF::Exec("win32", "game.exe"), NF::Variant("g") }) }, {},
+             ordered_json::object(), Dir.string());
+    ManifestModel::DeriveFacts(Idx);
+    std::vector<std::string> Case;
+    for (const std::string &E : Errors(Idx))
+        if (E.find("case conflict across layers") != std::string::npos) Case.push_back(E);
+    CHECK_EQ(Case.size(), (size_t)1);                                     // version.dll, which it takes
+    CHECK(!Case.empty() && Case[0].find("ersion") != std::string::npos);
+    CHECK(Case.empty() || Case[0].find("eadme") == std::string::npos);   // not the readme it leaves out
+    fs::remove_all(Dir);
+}
+
 // The case fix for one package walks that package's variants only: another package's variant reaching its zips (an
 // add-on in another package over this game) renames toward that package's layers, which the scope leaves alone - and
 // walking every variant of a library read every zip it holds (minutes, gigabytes) to fix one package. The package's
