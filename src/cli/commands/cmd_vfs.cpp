@@ -329,35 +329,42 @@ VG_COMMANDS
           Opt("out", "(--make, --rebuild) write here"), Flag("make", "make it"), Flag("verify", "verify it"), Flag("rebuild", "rebuild the target"),
           Opt("block", "(--make) block size", Type::Int) },
         { "vfs delta p.vgdelta --make --base a.zip --target b.zip", "vfs delta p.vgdelta --verify --base a.zip --target b.zip" },
-        { "vgdelta::GenerateDelta", "vgdelta::VerifyDelta", "vgdelta::DeltaByteSource::Create", "vgdelta::DeltaByteSource::pread",
+        { "vgdelta::GenerateDeltaToFile", "vgdelta::VerifyDelta", "vgdelta::DeltaByteSource::Create", "vgdelta::DeltaByteSource::pread",
           "vgdelta::DeltaByteSource::size", "vgdelta::Fnv1a64", "ConcatByteSource::pread", "ConcatByteSource::size", "MemByteSource::pread",
           "MemByteSource::size" }, Needs::Config, false,
         [](Command::Context &, const json &A) {
+            std::vector<std::shared_ptr<MmapByteSource>> Maps;
             std::vector<std::shared_ptr<ByteSource>> Parts;
-            for (const auto &B : PathList(A, "base")) Parts.push_back(Map(B));
+            for (const auto &B : PathList(A, "base")) { Maps.push_back(Map(B)); Parts.push_back(Maps.back()); }
             std::shared_ptr<ByteSource> Base = Parts.size() == 1 ? Parts.front() : std::make_shared<ConcatByteSource>(Parts);
             const std::string D = Command::Str(A, "delta");
             if (Command::Bool(A, "make", false))
             {
-                std::vector<uint8_t> B(Base->size());
-                if (!Base->preadAll(B.data(), B.size(), 0)) throw std::runtime_error("cannot read the base");
+                //The matcher wants the base as one flat range: one base file is its mapping; several are joined in
+                //memory (they are one base, concatenated). The delta streams to the file, never resident.
+                std::vector<uint8_t> Joined;
+                const uint8_t *B = Maps.size() == 1 ? Maps.front()->p : nullptr;
+                if (!B)
+                {
+                    Joined.resize(Base->size());
+                    if (!Base->preadAll(Joined.data(), Joined.size(), 0)) throw std::runtime_error("cannot read the base");
+                    B = Joined.data();
+                }
                 auto T = Map(Command::Str(A, "target"));
-                std::vector<uint8_t> Tb(T->size());
-                T->preadAll(Tb.data(), Tb.size(), 0);
-                const auto Out = vgdelta::GenerateDelta(B.data(), B.size(), Tb.data(), Tb.size(),
-                                                        static_cast<uint32_t>(Command::Int(A, "block", vgdelta::DEFAULT_BLOCK)));
-                if (Out.empty()) throw std::runtime_error("the delta could not be made");
-                std::ofstream(D, std::ios::binary).write(reinterpret_cast<const char *>(Out.data()), static_cast<std::streamsize>(Out.size()));
-                return json{{"delta", D}, {"bytes", Out.size()}, {"target_bytes", Tb.size()}, {"fnv1a64", vgdelta::Fnv1a64(Out.data(), Out.size())}};
+                std::string Err;
+                if (!vgdelta::GenerateDeltaToFile(B, Base->size(), T->p, T->n, D, Err,
+                                                  static_cast<uint32_t>(Command::Int(A, "block", vgdelta::DEFAULT_BLOCK)),
+                                                  std::filesystem::absolute(D).parent_path().string()))   // scratch beside it, not a tmpfs
+                    throw std::runtime_error("the delta could not be made: " + Err);
+                auto Made = Map(D);
+                return json{{"delta", D}, {"bytes", Made->n}, {"target_bytes", T->n}, {"fnv1a64", vgdelta::Fnv1a64(Made->p, Made->n)}};
             }
             auto Dm = Map(D);
             if (Command::Bool(A, "verify", false))
             {
-                std::vector<uint8_t> Bytes(Dm->size());
-                Dm->preadAll(Bytes.data(), Bytes.size(), 0);
                 auto T = Map(Command::Str(A, "target"));
                 std::string Err;
-                const bool Good = vgdelta::VerifyDelta(Bytes, Base, *T, Err);
+                const bool Good = vgdelta::VerifyDelta(std::shared_ptr<ByteSource>(Dm), Base, *T, Err);
                 return json{{"verified", Good}, {"why", Err}};
             }
             std::string Err;

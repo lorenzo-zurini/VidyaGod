@@ -1,10 +1,18 @@
 #include "vgtest.h"
 #include "vgdelta.h"      // VidyaGodFS/src — the shared .vgdelta format (generate + apply)
 
+#include <atomic>
+#include <chrono>
+#include <cstdio>
 #include <cstring>
+#include <filesystem>
+#include <fstream>
+#include <iterator>
 #include <memory>
 #include <random>
+#include <thread>
 #include <vector>
+#include <unistd.h>
 
 using vgdelta::GenerateDelta;
 using vgdelta::DeltaByteSource;
@@ -260,3 +268,96 @@ TEST(vgdelta_rejects_wrong_base)
     auto shortb = Rand(rng, 29000);
     CHECK(DeltaByteSource::Create(std::make_shared<MemByteSource>(d), Mem(shortb), e, false) == nullptr);
 }
+
+namespace {
+std::vector<uint8_t> FastRand(std::mt19937_64 &rng, size_t n) {
+    std::vector<uint8_t> v(n);
+    for (size_t i = 0; i + 8 <= n; i += 8) { const uint64_t x = rng(); std::memcpy(v.data() + i, &x, 8); }
+    return v;
+}
+std::vector<uint8_t> Slurp(const std::filesystem::path &p) {
+    std::ifstream in(p, std::ios::binary);
+    return std::vector<uint8_t>((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+}
+long RssAnonKb() {
+    std::ifstream f("/proc/self/status");
+    std::string k;
+    while (f >> k) { if (k == "RssAnon:") { long v = 0; f >> v; return v; } std::string rest; std::getline(f, rest); }
+    return -1;
+}
+// A fresh scratch folder under the (test's own) temp dir.
+std::filesystem::path ScratchDir(const char *name) {
+    const auto d = std::filesystem::temp_directory_path() / (std::string(name) + "_" + std::to_string(::getpid()));
+    std::filesystem::remove_all(d);
+    std::filesystem::create_directories(d);
+    return d;
+}
+}
+
+// Streamed to a file, the delta is the same bytes the in-memory one is; it verifies read back through a ByteSource;
+// nothing of the scratch is left, after a success or a cancel. Teeth: leave a scratch file.
+TEST(vgdelta_to_file_is_the_delta_and_leaves_nothing_behind)
+{
+    std::mt19937_64 rng(11);
+    auto base = FastRand(rng, 1 << 21);
+    auto tgt = base;
+    const auto add = FastRand(rng, 300000);
+    tgt.insert(tgt.begin() + 500000, add.begin(), add.end());
+    tgt[1500000] ^= 0x5a;
+    const auto dir = ScratchDir("vgd_tofile");
+    const auto out = dir / "d.vgdelta";
+    std::string err;
+    CHECK(vgdelta::GenerateDeltaToFile(base.data(), base.size(), tgt.data(), tgt.size(), out.string(), err,
+                                       vgdelta::DEFAULT_BLOCK, dir.string()));
+    CHECK(Slurp(out) == GenerateDelta(base.data(), base.size(), tgt.data(), tgt.size()));
+    auto written = std::make_shared<MmapByteSource>();
+    CHECK(written->Map(out.string()));
+    MemByteSource target(tgt);
+    std::string verr;
+    CHECK(vgdelta::VerifyDelta(std::shared_ptr<ByteSource>(written), Mem(base), target, verr));
+    size_t left = 0;
+    for (const auto &e : std::filesystem::directory_iterator(dir)) left += e.path() != out;
+    CHECK(left == 0);
+
+    const auto cancelled = dir / "c.vgdelta";
+    CHECK(!vgdelta::GenerateDeltaToFile(base.data(), base.size(), tgt.data(), tgt.size(), cancelled.string(), err,
+                                        vgdelta::DEFAULT_BLOCK, dir.string(), [](int s, uint64_t, uint64_t) { return s == 0; }));
+    CHECK(err == "cancelled");
+    CHECK(!std::filesystem::exists(cancelled));
+    left = 0;
+    for (const auto &e : std::filesystem::directory_iterator(dir)) left += e.path() != out;
+    CHECK(left == 0);
+    std::filesystem::remove_all(dir);
+}
+
+#ifdef __linux__   // RssAnon is Linux's
+// The encoder's memory is its base index plus O(block), whatever the new content: 32 MB of it never becomes
+// resident (the literals, the compressed region and the delta all stream through files). This bound is what keeps
+// a 64 GB build with gigabytes of new content from OOM-killing the desktop. Teeth: hold the delta (or its ADD region)
+// in memory.
+TEST(vgdelta_memory_is_the_index_plus_a_block)
+{
+    std::mt19937_64 rng(12);
+    auto base = FastRand(rng, 8 << 20);
+    auto tgt = base;
+    const auto add = FastRand(rng, 32 << 20);
+    tgt.insert(tgt.begin() + (4 << 20), add.begin(), add.end());
+    const auto dir = ScratchDir("vgd_mem");
+    std::atomic<bool> done{false};
+    std::atomic<long> peak{0};
+    const long before = RssAnonKb();
+    std::thread sampler([&] {
+        while (!done) { const long a = RssAnonKb(); if (a > peak) peak = a; std::this_thread::sleep_for(std::chrono::milliseconds(5)); }
+    });
+    std::string err;
+    const bool ok = vgdelta::GenerateDeltaToFile(base.data(), base.size(), tgt.data(), tgt.size(), (dir / "d").string(), err,
+                                                 vgdelta::DEFAULT_BLOCK, dir.string());
+    done = true;
+    sampler.join();
+    CHECK(ok);
+    const long grewMb = (peak - before) / 1024;
+    std::printf("  vgdelta: peak anon growth %ld MB over a 32 MB new-content delta\n", grewMb);
+    CHECK(before > 0 && grewMb < 16);
+    std::filesystem::remove_all(dir);
+}
+#endif

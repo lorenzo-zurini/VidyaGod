@@ -2187,9 +2187,14 @@ void PkgActions::makeDelta(const std::string & NodeId)
             auto Tgt  = std::make_shared<MmapByteSource>();
             if (!Base->Map(BaseFile.string()) || !Tgt->Map(TgtFile.string())) { *ErrText = "could not map the archives"; return; }
 
-            std::vector<uint8_t> Delta = vgdelta::GenerateDelta(
-                Base->p, Base->n, Tgt->p, Tgt->n, vgdelta::DEFAULT_BLOCK, Bundle.string(),
-                [Cv, NodeId, Abort, Alive](int Stage, uint64_t Done, uint64_t Total) {
+            // Streamed into a part file beside the blob (never resident: a big jump is gigabytes), verified from
+            // there, and only then named — a failed or cancelled one leaves nothing behind.
+            const std::filesystem::path BlobPath = Bundle / Blob, Part = Bundle / (Blob + ".part");
+            std::error_code Rc;
+            std::string Gerr;
+            if (!vgdelta::GenerateDeltaToFile(Base->p, Base->n, Tgt->p, Tgt->n, Part.string(), Gerr, vgdelta::DEFAULT_BLOCK,
+                    Bundle.string(),
+                    [Cv, NodeId, Abort, Alive](int Stage, uint64_t Done, uint64_t Total) {
                     // AsyncWork guards the COMPLETION, not the work. This callback runs on the worker thread
                     // for minutes on a multi-GB archive; closing the editor destroys PkgActions underneath it,
                     // and invokeMethod would then touch freed memory. The shared flag is cleared in ~PkgActions.
@@ -2200,32 +2205,26 @@ void PkgActions::makeDelta(const std::string & NodeId)
                     PostProgress(Cv, Alive, NodeId, Stage == 0 ? F * 0.5f : 0.5f + F * 0.2f,
                                  Stage == 0 ? "scanning" : "compressing");
                     return true;
-                });
-            if (Delta.empty()) { *ErrText = Abort->load() ? "cancelled" : "delta generation failed"; return; }
+                }))
+            { *ErrText = Abort->load() ? "cancelled" : "delta generation failed: " + Gerr; return; }
 
             // Byte-verify through the SAME routine the tests use before deleting anything — a delta that
             // reconstructs the wrong bytes is indistinguishable from a good one until someone tries to play.
             std::string Verr;
-            if (!vgdelta::VerifyDelta(Delta, Base, *Tgt, Verr,
+            auto Written = std::make_shared<MmapByteSource>();
+            const bool Mapped = Written->Map(Part.string());
+            if (!Mapped || !vgdelta::VerifyDelta(std::shared_ptr<ByteSource>(Written), Base, *Tgt, Verr,
                     [Cv, NodeId, Abort, Alive](int, uint64_t Done, uint64_t Total) {
                         if (!Alive->load() || Abort->load()) return false;
                         const float F = Total ? (float)Done / (float)Total : 0.0f;
                         PostProgress(Cv, Alive, NodeId, 0.7f + F * 0.3f, "verifying");
                         return true;
                     }))
-            { *ErrText = Abort->load() ? "cancelled" : ("verify failed: " + Verr); return; }
-
-            const std::filesystem::path BlobPath = Bundle / Blob;
-            {
-                std::ofstream O(BlobPath, std::ios::binary);
-                O.write((const char *)Delta.data(), (std::streamsize)Delta.size());
-                O.close();                                   // flush BEFORE judging: a buffered ENOSPC on the
-                if (!O.good())                               // final chunk left good() true until the close
-                { *ErrText = "could not write the delta blob"; std::error_code Rc; std::filesystem::remove(BlobPath, Rc); return; }
-            }
-            std::error_code Sc;
-            if (std::filesystem::file_size(BlobPath, Sc) != Delta.size())
-            { *ErrText = "the delta blob is the wrong size on disk"; std::filesystem::remove(BlobPath, Sc); return; }
+            { *ErrText = Abort->load() ? "cancelled" : !Mapped ? std::string("could not read the delta back") : ("verify failed: " + Verr);
+              Written.reset(); std::filesystem::remove(Part, Rc); return; }
+            Written.reset();
+            std::filesystem::rename(Part, BlobPath, Rc);
+            if (Rc) { *ErrText = "could not name the delta blob: " + Rc.message(); std::filesystem::remove(Part, Rc); return; }
             *Ok = true;
         },
         [this, NodeId, Blob, TgtFile, Ok, ErrText]() {

@@ -123,3 +123,4 @@ PackageCatalog::PathUnderManagedSource # "is this a source's package": `packages
 PackageCatalog::SafeSegment            # a received name as one path segment: `received plan`, `updates apply`
 PackageCatalog::RemoveLandedNode       # a landed node file removed: `received prune`, `updates apply`
 PackageCatalog::FolderNodes            # a received folder's node list: `received land`, `updates list`
+vgdelta::GenerateDelta                 # the in-memory form of GenerateDeltaToFile (`vfs delta --make`): tests, fixtures

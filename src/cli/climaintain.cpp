@@ -143,18 +143,25 @@ int CliModes::RunMaintenanceModes(LaunchParameters &LaunchParameters, nlohmann::
             LogOut("convert-delta", "diff " + vs[i].node->NodeId + " against " + vs[i - 1].node->NodeId + " ...");
             // Spill scratch next to the archives, NOT in the system temp dir — /tmp is a tmpfs on most desktops,
             // so spilling several GB there would just move the memory pressure instead of relieving it.
-            std::vector<uint8_t> delta = vgdelta::GenerateDelta(base->p, base->n, tgt->p, tgt->n,
-                                                                vgdelta::DEFAULT_BLOCK,
-                                                                vs[i].node->BundleDir.string());
+            // Streamed into a part file beside the archive (never resident: a big jump is gigabytes), verified from
+            // there, and only then named.
+            const std::string blob = "delta_from__" + vs[i - 1].node->NodeId + ".vgdelta";
+            const std::filesystem::path out = vs[i].node->BundleDir / blob, part = vs[i].node->BundleDir / (blob + ".part");
+            std::error_code rc;
+            if (std::string Gerr; !vgdelta::GenerateDeltaToFile(base->p, base->n, tgt->p, tgt->n, part.string(), Gerr,
+                                                               vgdelta::DEFAULT_BLOCK, vs[i].node->BundleDir.string()))
+            { LogErr("convert-delta", "delta generation failed (" + Gerr + ") — aborting, nothing changed"); return 1; }
 
             // byte-verify via the shared vgdelta::VerifyDelta (same routine the tests use — no drift).
-            if (std::string Verr; !vgdelta::VerifyDelta(delta, base, *tgt, Verr))
-            { LogErr("convert-delta", "VERIFY FAILED (" + Verr + ") — aborting, nothing changed"); return 1; }
-
-            // write the delta blob + rewrite the node JSON (reparent + swap the zip layer for a delta layer).
-            std::string blob = "delta_from__" + vs[i - 1].node->NodeId + ".vgdelta";
-            { std::ofstream o(vs[i].node->BundleDir / blob, std::ios::binary); o.write((const char *)delta.data(), (std::streamsize)delta.size()); }
-            after += delta.size();
+            {
+                auto written = std::make_shared<MmapByteSource>();
+                std::string Verr = "could not read the delta back";
+                if (!written->Map(part.string()) || !vgdelta::VerifyDelta(std::shared_ptr<ByteSource>(written), base, *tgt, Verr))
+                { written.reset(); std::filesystem::remove(part, rc); LogErr("convert-delta", "VERIFY FAILED (" + Verr + ") — aborting, nothing changed"); return 1; }
+            }
+            std::filesystem::rename(part, out, rc);
+            if (rc) { std::filesystem::remove(part, rc); LogErr("convert-delta", "could not name " + out.string()); return 1; }
+            after += std::filesystem::file_size(out, rc);
 
             // The node file holds ONE node: contain the version before it, then swap its zip layer for the delta
             // (rebuilt from the nearest content beneath at the same target — the previous version's zip).
@@ -174,7 +181,7 @@ int CliModes::RunMaintenanceModes(LaunchParameters &LaunchParameters, nlohmann::
             { std::ofstream o(vs[i].node->File); o << J.dump(4) << "\n"; }
 
             toDelete.push_back(vs[i].zipPath);
-            LogSucc("convert-delta", "  " + vs[i].node->NodeId + " ✓ verified  (" + std::to_string(delta.size() >> 20) + " MB delta)");
+            LogSucc("convert-delta", "  " + vs[i].node->NodeId + " ✓ verified  (" + std::to_string(std::filesystem::file_size(out, rc) >> 20) + " MB delta)");
         }
 
         // The old full zips are now redundant (byte-verified recoverable from base + deltas), but deletion is
