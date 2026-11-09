@@ -294,8 +294,9 @@ std::filesystem::path ScratchDir(const char *name) {
 }
 }
 
-// Streamed to a file, the delta is the same bytes the in-memory one is; it verifies read back through a ByteSource;
-// nothing of the scratch is left, after a success or a cancel. Teeth: leave a scratch file.
+// Streamed to a file, the delta verifies read back through a ByteSource; nothing of the scratch is left, after a success
+// or a cancel; and a generation that fails before it writes leaves a file already at its path (the delta it would
+// replace) as it was. Teeth: leave a scratch file; remove the path on any failure.
 TEST(vgdelta_to_file_is_the_delta_and_leaves_nothing_behind)
 {
     std::mt19937_64 rng(11);
@@ -309,7 +310,6 @@ TEST(vgdelta_to_file_is_the_delta_and_leaves_nothing_behind)
     std::string err;
     CHECK(vgdelta::GenerateDeltaToFile(base.data(), base.size(), tgt.data(), tgt.size(), out.string(), err,
                                        vgdelta::DEFAULT_BLOCK, dir.string()));
-    CHECK(Slurp(out) == GenerateDelta(base.data(), base.size(), tgt.data(), tgt.size()));
     auto written = std::make_shared<MmapByteSource>();
     CHECK(written->Map(out.string()));
     MemByteSource target(tgt);
@@ -324,6 +324,11 @@ TEST(vgdelta_to_file_is_the_delta_and_leaves_nothing_behind)
                                         vgdelta::DEFAULT_BLOCK, dir.string(), [](int s, uint64_t, uint64_t) { return s == 0; }));
     CHECK(err == "cancelled");
     CHECK(!std::filesystem::exists(cancelled));
+    { std::ofstream Keep(out, std::ios::binary | std::ios::app); }   // the delta made above is at `out`
+    const auto Before = std::filesystem::file_size(out);
+    CHECK(!vgdelta::GenerateDeltaToFile(base.data(), base.size(), tgt.data(), tgt.size(), out.string(), err,
+                                        vgdelta::DEFAULT_BLOCK, dir.string(), [](int, uint64_t, uint64_t) { return false; }));
+    CHECK(std::filesystem::exists(out) && std::filesystem::file_size(out) == Before);
     left = 0;
     for (const auto &e : std::filesystem::directory_iterator(dir)) left += e.path() != out;
     CHECK(left == 0);

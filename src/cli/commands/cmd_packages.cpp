@@ -300,6 +300,7 @@ VG_COMMANDS
             const Node &N = *NodeOf(*I, Command::Str(A, "game"));
             std::string Err;
             if (!PackageCatalog::Download(I, { N.Key() }, {}, Grafts(A), *C.Config, &Err)) throw std::runtime_error(Err);
+            if (C.Model) C.Model->rebuildCatalog();   // in the app: what it adopted leaves the Catalog for the Library
             return json{{"hydrated", N.Key()}};
         }, {} });
 

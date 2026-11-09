@@ -460,16 +460,17 @@ std::vector<std::string> NodeContentCids(const NodeIndex &Idx, const std::string
 std::map<std::string, long long> NodeContentSizes(const NodeIndex &Idx, const std::string &LaunchNodeId,
                                                   const GraftChoice &Grafts = std::nullopt);
 
-// The launchable's RESOLVED runner-chain node ids (native terminal excluded), over EVERY entrypoint (a native and a
-// win32 build each run on their own chain), a graft's being the version's it applies onto. The ONE resolve behind what
-// a download pools, what it adopts and what its gates check.
+// The launchable's RESOLVED runner-chain node ids (native terminal excluded), a graft's being the version's it applies
+// onto: the default entry's chain — what the launch runs on, and what a download gates and adopts by — or, with
+// EveryEntry, every entry's merged (a native and a win32 build each run on their own chain): what a download fetches,
+// best-effort, so whichever entry is picked can run.
 std::vector<std::string> RunnerChainIds(const NodeIndex &Idx, const std::string &LaunchNodeId,
-                                        const nlohmann::ordered_json &GlobalConfigJSON);
+                                        const nlohmann::ordered_json &GlobalConfigJSON, bool EveryEntry = false);
 
 [[nodiscard]] bool CollectContentTargets(const NodeIndex &Idx, const std::string &LaunchNodeId,
                            const GraftChoice &Grafts,
                            std::vector<IpfsWrapper::FetchTarget> &Out, std::string *Error = nullptr);
-// Gather (without fetching) the build download targets of the launchable's runner chain (RunnerChainIds), appending
+// Gather (without fetching) the build download targets of every entry's runner chain (RunnerChainIds), appending
 // to Out — so a download pulls the game's runtime (JRE / Proton build) alongside its content. Best-effort: a runner
 // whose build cannot be collected is warned about, and the game content still downloads.
 void CollectRunnerChainTargets(const NodeIndex &Idx, const std::string &LaunchNodeId,

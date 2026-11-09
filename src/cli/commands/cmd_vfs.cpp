@@ -351,11 +351,19 @@ VG_COMMANDS
                     B = Joined.data();
                 }
                 auto T = Map(Command::Str(A, "target"));
+                std::error_code Ec;
+                for (const std::string &In : PathList(A, "base"))
+                    if (std::filesystem::equivalent(In, D, Ec)) throw Command::BadArgs("the delta would overwrite its base '" + In + "'");
+                if (std::filesystem::equivalent(Command::Str(A, "target"), D, Ec)) throw Command::BadArgs("the delta would overwrite its target");
+                //Made beside it, then named: a make that fails leaves a delta already there as it was.
+                const std::string Making = D + ".making";
                 std::string Err;
-                if (!vgdelta::GenerateDeltaToFile(B, Base->size(), T->p, T->n, D, Err,
+                if (!vgdelta::GenerateDeltaToFile(B, Base->size(), T->p, T->n, Making, Err,
                                                   static_cast<uint32_t>(Command::Int(A, "block", vgdelta::DEFAULT_BLOCK)),
                                                   std::filesystem::absolute(D).parent_path().string()))   // scratch beside it, not a tmpfs
                     throw std::runtime_error("the delta could not be made: " + Err);
+                std::filesystem::rename(Making, D, Ec);
+                if (Ec) { std::filesystem::remove(Making, Ec); throw std::runtime_error("could not name " + D); }
                 auto Made = Map(D);
                 return json{{"delta", D}, {"bytes", Made->n}, {"target_bytes", T->n}, {"fnv1a64", vgdelta::Fnv1a64(Made->p, Made->n)}};
             }

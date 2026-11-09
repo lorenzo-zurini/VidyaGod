@@ -143,10 +143,10 @@ int CliModes::RunMaintenanceModes(LaunchParameters &LaunchParameters, nlohmann::
             LogOut("convert-delta", "diff " + vs[i].node->NodeId + " against " + vs[i - 1].node->NodeId + " ...");
             // Spill scratch next to the archives, NOT in the system temp dir — /tmp is a tmpfs on most desktops,
             // so spilling several GB there would just move the memory pressure instead of relieving it.
-            // Streamed into a part file beside the archive (never resident: a big jump is gigabytes), verified from
-            // there, and only then named.
+            // Streamed into a ".making" file beside the archive (never resident: a big jump is gigabytes; not ".part",
+            // a fetch's crash marker), verified from there, and only then named.
             const std::string blob = "delta_from__" + vs[i - 1].node->NodeId + ".vgdelta";
-            const std::filesystem::path out = vs[i].node->BundleDir / blob, part = vs[i].node->BundleDir / (blob + ".part");
+            const std::filesystem::path out = vs[i].node->BundleDir / blob, part = vs[i].node->BundleDir / (blob + ".making");
             std::error_code rc;
             if (std::string Gerr; !vgdelta::GenerateDeltaToFile(base->p, base->n, tgt->p, tgt->n, part.string(), Gerr,
                                                                vgdelta::DEFAULT_BLOCK, vs[i].node->BundleDir.string()))

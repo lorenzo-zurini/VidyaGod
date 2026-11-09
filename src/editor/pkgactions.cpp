@@ -1798,9 +1798,10 @@ void PkgActions::makeDelta(const std::string & NodeId)
             auto Tgt  = std::make_shared<MmapByteSource>();
             if (!Base->Map(BaseFile.string()) || !Tgt->Map(TgtFile.string())) { *ErrText = "could not map the archives"; return; }
 
-            // Streamed into a part file beside the blob (never resident: a big jump is gigabytes), verified from
-            // there, and only then named — a failed or cancelled one leaves nothing behind.
-            const std::filesystem::path BlobPath = Bundle / Blob, Part = Bundle / (Blob + ".part");
+            // Streamed into a ".making" file beside the blob (never resident: a big jump is gigabytes; not ".part",
+            // a fetch's crash marker), verified from there, and only then named: a failed or cancelled one leaves
+            // nothing behind.
+            const std::filesystem::path BlobPath = Bundle / Blob, Part = Bundle / (Blob + ".making");
             std::error_code Rc;
             std::string Gerr;
             if (!vgdelta::GenerateDeltaToFile(Base->p, Base->n, Tgt->p, Tgt->n, Part.string(), Gerr, vgdelta::DEFAULT_BLOCK,

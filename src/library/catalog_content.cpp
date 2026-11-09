@@ -265,23 +265,23 @@ std::set<std::filesystem::path> PackagesToAdopt(const NodeIndex &Idx, const std:
 }
 
 std::vector<std::string> RunnerChainIds(const NodeIndex &Idx, const std::string &LaunchNodeId,
-                                        const nlohmann::ordered_json &GlobalConfigJSON)
+                                        const nlohmann::ordered_json &GlobalConfigJSON, bool EveryEntry)
 {
     const Node *Launch = Idx.Find(LaunchNodeId);
     if (!Launch) return {};
     if (Launch->IsGraft)
     {   // a graft runs on what it applies onto: that version's runtime
         const std::string Base = DefaultGraftBase(Idx, Launch->Key());
-        return Base.empty() || Base == LaunchNodeId ? std::vector<std::string>{} : RunnerChainIds(Idx, Base, GlobalConfigJSON);
+        return Base.empty() || Base == LaunchNodeId ? std::vector<std::string>{} : RunnerChainIds(Idx, Base, GlobalConfigJSON, EveryEntry);
     }
     ContainerParams Cp(Launch->BundleDir);
     Cp.NodeIdx = &Idx; Cp.LaunchNodeId = LaunchNodeId; Cp.PackageUID = Launch->Uid;   // for the per-package runner pin lookup
-    //Every ENTRYPOINT's chain: the entries may run on different platforms (a native and a win32 build), and a
-    //downloaded game must be playable through whichever the user picks.
+    //With EveryEntry, every ENTRYPOINT's chain: the entries may run on different platforms (a native and a win32
+    //build), and a downloaded game must be playable through whichever the user picks.
     std::vector<std::string> Ids;
     std::set<std::string> Seen;
-    std::vector<std::string> Labels = Launch->EntrypointLabels();
-    if (Labels.empty()) Labels.push_back(std::string());
+    std::vector<std::string> Labels = EveryEntry ? Launch->EntrypointLabels() : std::vector<std::string>();
+    if (Labels.empty()) Labels.push_back(std::string());   // "": the default entry
     for (const std::string &Label : Labels)
     {
         Cp.Entrypoint = Label;
@@ -298,7 +298,7 @@ void CollectRunnerChainTargets(const NodeIndex &Idx, const std::string &LaunchNo
     // CHAIN's build content (e.g. a Minecraft version's java_<major> JRE, or a wine game's Proton build) into the same
     // fetch batch. The game's own closure is CollectContentTargets'; only the runners, which that walk skips, are added
     // here. A native / build-less runner contributes nothing; one whose build cannot be collected is on the record.
-    for (const std::string &RunnerId : RunnerChainIds(Idx, LaunchNodeId, GlobalConfigJSON))
+    for (const std::string &RunnerId : RunnerChainIds(Idx, LaunchNodeId, GlobalConfigJSON, /*EveryEntry=*/true))
     {
         std::string E;
         if (!CollectRunnerNodeTargets(Idx, RunnerId, Out, &E))

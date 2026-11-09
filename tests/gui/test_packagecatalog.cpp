@@ -2073,9 +2073,10 @@ private slots:
         QVERIFY(hasWine);                       // runner build auto-pooled purely from the game's resolved chain
     }
 
-    // The runner chain a download pools, adopts and gates on is every entry's, not the default's alone: a game with a
-    // native Play and a Windows entry needs the Windows one's runner too, or that entry cannot launch once downloaded.
-    // Teeth: resolve the default entry only.
+    // A download pools every entry's runner, not the default's alone: a game with a native Play and a Windows entry
+    // needs the Windows one's runner too, or that entry cannot launch once downloaded — but it gates (and adopts) by
+    // the launch's own chain, so an alternative entry's unshared runner never blocks the game. Teeth: resolve the
+    // default entry only for the fetch; every entry for the gate.
     void runner_chain_is_every_entrys()
     {
         QTemporaryDir dir; QVERIFY(dir.isValid());
@@ -2088,8 +2089,11 @@ private slots:
         writeJson(dir.path() + "/winebuild.json",
                   NodeFixture::Chain("winebuild", {NodeFixture::ContentCid("zip", "wine.zip", "CID_WINE")}));
         NodeIndex idx; ManifestModel::ScanBundleNodes(dir.path().toStdString(), idx); ManifestModel::DeriveFacts(idx);
-        const auto Chain = PackageCatalog::RunnerChainIds(idx, "game", json::object());
-        QVERIFY(std::find(Chain.begin(), Chain.end(), "wine") != Chain.end());
+        const auto Every = PackageCatalog::RunnerChainIds(idx, "game", json::object(), true);
+        QVERIFY(std::find(Every.begin(), Every.end(), "wine") != Every.end());
+        //What the download gates on is the launch's own chain: Play runs natively, so nothing blocks on wine.
+        const auto Launch = PackageCatalog::RunnerChainIds(idx, "game", json::object());
+        QVERIFY(std::find(Launch.begin(), Launch.end(), "wine") == Launch.end());
     }
 
     // A locally-added bundle (a LIBRARY entry whose PATH is OUTSIDE any repo dir) must be indexed by the catalog —
