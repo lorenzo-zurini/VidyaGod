@@ -1,9 +1,11 @@
 #!/usr/bin/env python3
 """Read-only random access to a .vgdelta chain (VidyaGodFS/src/vgdelta.h layout), enough to list the files of the
-zip a delta chain reconstructs. Header 44 B: "VGD1" u32 ver u32 block u64 target u64 base u64 hash u32 nseg u32 nblk;
+zip a delta reconstructs. Header 44 B: "VGD1" u32 ver u32 block u64 target u64 base u64 hash u32 nseg u32 nblk;
 then (u64 clen, u64 ulen, zstd 17-B segment records), (u64 clen, u64 ulen, zstd 16-B block records), ADD frames.
 
-    names = zip_names_of(["base.zip", "d1.vgdelta", "d2.vgdelta"])   # lower-cased member names of the top
+A source is a zip's path, or (delta path, (base, base, …)) — a delta over its named bases, concatenated in order:
+
+    names = zip_names_of(("d2.vgdelta", (("d1.vgdelta", ("base.zip",)),)))   # lower-cased member names of d2's zip
 """
 import bisect, io, struct, zipfile
 import zstandard
@@ -18,6 +20,22 @@ class FileSource:
     def read(self, off, n):
         self.f.seek(off)
         return self.f.read(n)
+
+
+class ConcatSource:
+    def __init__(self, parts):
+        self.parts, self.size = parts, sum(p.size for p in parts)
+
+    def read(self, off, n):
+        out, at = bytearray(), 0
+        for p in self.parts:
+            if n <= 0:
+                break
+            if off < at + p.size:
+                got = p.read(off - at, min(n, at + p.size - off))
+                out += got; off += len(got); n -= len(got)
+            at += p.size
+        return bytes(out)
 
 
 class DeltaSource:
@@ -99,20 +117,23 @@ class Reader(io.RawIOBase):
         return len(data)
 
 
-def source_of(chain):
-    """chain: [zip, delta, delta, ...] bottom → top."""
-    src = FileSource(chain[0])
-    for p in chain[1:]:
-        src = DeltaSource(p, src)
-    return src
+def source_of(src):
+    """A zip's path, or (delta path, (base sources…))."""
+    if isinstance(src, str):
+        return FileSource(src)
+    bases = [source_of(b) for b in src[1]]
+    return DeltaSource(src[0], bases[0] if len(bases) == 1 else ConcatSource(bases))
 
 
-def zip_names_of(chain):
-    with zipfile.ZipFile(io.BufferedReader(Reader(source_of(chain)))) as z:
+def zip_names_of(src):
+    with zipfile.ZipFile(io.BufferedReader(Reader(source_of(src)))) as z:
         return {n.rstrip("/").lower() for n in z.namelist()}
 
 
 if __name__ == "__main__":
     import sys
-    names = sorted(zip_names_of(sys.argv[1:]))
+    src = sys.argv[1]                                  # a zip, then each delta over the one before
+    for d in sys.argv[2:]:
+        src = (d, (src,))
+    names = sorted(zip_names_of(src))
     print(len(names)); print("\n".join(names[:20]))

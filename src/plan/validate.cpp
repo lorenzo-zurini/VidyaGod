@@ -12,10 +12,7 @@
 #include "nodelower.h"   // NodeLower — the gen-6 vocabulary check and the lowering to engine ops
 #include "varsubst.h"    // VarSubst::ConditionParses — WHEN syntax lint
 #include "launchparams.h"   // ContainerParams::GetVariablesMap — the single source of truth for built-in %variables%
-#include "bytesource.h"  // FdByteSource — a delta chain's zip listing (covered-edit check)
-#include "vgdelta.h"     // DeltaByteSource — reconstructs a delta chain's zip on the fly
-#include "zipscan.h"     // WalkCentralDir — the member names of a (reconstructed) zip
-#include "hostio.h"      // HostIO::OpenRead / Close — the byte sources' fds
+#include "launchtree.h"  // LaunchTree — a launchable's files as VidyaGodFS reads them: bases, hiding, case
 #include "registrywrapper.h"  // NamesNoKey — a registry KEEP must name a key
 #include "platform/platform.h"  // HostFolderNames — %HostAppData% & co., set on Windows only
 
@@ -150,315 +147,92 @@ void GatherLaunchContentFiles(const Fold::Plan &P,
 }
 
 // ----- what a content layer REPLACES (the covered-edit check, §1.5; mirrors tools/gen6/resolve.py provided()) -----
-// The lower-cased member names of the zip content item Seq[J] mounts: a ZIP's own, a DELTA's = the zip its chain
-// reconstructs (its base = the content beneath at the same TARGET, down to the zip). nullopt when unknowable.
-std::optional<std::set<std::string>> MemberNames(const std::vector<Fold::Item> &Seq, size_t J,
-        std::map<std::vector<std::string>, std::optional<std::set<std::string>>> &Cache)
+// What the validator reads of a launchable's files: its tree as VidyaGodFS makes it (LaunchTree), the archives' member
+// names (shared across a package's launchables: a chain is listed once), and those names lower-cased, once per archive.
+struct TreeNames
 {
-    const Fold::Item &C = Seq[J];
-    std::vector<std::string> Chain = { ItemLocal(C).string() };
-    if (Chain[0].empty()) return std::nullopt;
-    if (C.Kind == "DELTA")
+    ArchiveNames Names;
+    std::map<const std::vector<std::string> *, std::set<std::string>> Lower;
+    std::map<std::string, std::vector<std::string>> Dirs;   // a dir layer's source -> its files, relative
+
+    const std::set<std::string> *LowerOf(const LaunchTree &L, size_t Layer)
     {
-        bool Based = false;
-        for (size_t I = J; I-- > 0;)
-        {
-            const Fold::Item &B = Seq[I];
-            if (B.Kind == "EDIT" || B.Target != C.Target) continue;
-            if ((B.Kind != "ZIP" && B.Kind != "DELTA") || ItemLocal(B).empty()) return std::nullopt;
-            Chain.insert(Chain.begin(), ItemLocal(B).string());
-            if (B.Kind == "ZIP") { Based = true; break; }
-        }
-        if (!Based) return std::nullopt;
+        const std::vector<std::string> *E = Names.Of(L, Layer, false);
+        if (!E) return nullptr;
+        auto [It, New] = Lower.try_emplace(E);
+        if (New) for (const auto &N : *E) It->second.insert(ToLowerAscii(N));
+        return &It->second;
     }
-    if (auto It = Cache.find(Chain); It != Cache.end()) return It->second;
-    std::optional<std::set<std::string>> Names;
-    auto Open = [](const std::string &P) -> std::shared_ptr<ByteSource> {
-        const HostIO::Fd Fd = HostIO::Open(P, 0 /*O_RDONLY*/);
-        if (Fd < 0) return nullptr;
-        HostIO::Stat St;
-        if (HostIO::Fstat(Fd, St) != 0) { HostIO::Close(Fd); return nullptr; }
-        return std::make_shared<FdByteSource>(Fd, St.size, /*owns=*/true);
-    };
-    std::shared_ptr<ByteSource> Src = Open(Chain[0]);
-    for (size_t I = 1; Src && I < Chain.size(); ++I)
+    const std::vector<std::string> *DirFiles(const std::string &Dir)
     {
-        std::shared_ptr<ByteSource> D = Open(Chain[I]);
-        std::string Err;
-        Src = D ? vgdelta::DeltaByteSource::Create(D, Src, Err) : nullptr;
+        if (const auto It = Dirs.find(Dir); It != Dirs.end()) return &It->second;
+        std::error_code Ec;
+        if (!std::filesystem::is_directory(Dir, Ec)) return nullptr;
+        std::vector<std::string> Out;
+        for (auto W = std::filesystem::recursive_directory_iterator(Dir, Ec);
+             !Ec && W != std::filesystem::recursive_directory_iterator(); W.increment(Ec))
+            if (W->is_regular_file(Ec)) Out.push_back(std::filesystem::relative(W->path(), Dir, Ec).generic_string());
+        return &Dirs.emplace(Dir, std::move(Out)).first->second;
     }
-    if (Src)
+    //A layer's contents for the FS's case queries: an archive's member names (Folders: as the zip holds them, folder
+    //entries kept), a dir's files; a FILE layer the FS places itself.
+    EntriesFn Entries(const LaunchTree &L, bool Folders)
     {
-        std::set<std::string> S;
-        const bool Ok = zipscan::WalkCentralDir(*Src, [&](const std::string &Name, uint16_t, uint64_t) {
-            std::string N = Name;
-            std::replace(N.begin(), N.end(), '\\', '/');
-            while (!N.empty() && N.back() == '/') N.pop_back();
-            S.insert(ToLowerAscii(N));
-            return true;
-        });
-        if (Ok) Names = std::move(S);
+        return [this, &L, Folders](size_t I) -> const std::vector<std::string> * {
+            const LayerSpec &X = L.S.layers[I];
+            if (X.type == ::LayerType::Dir) return DirFiles(X.source);
+            return Names.Of(L, I, Folders);
+        };
     }
-    return Cache.emplace(Chain, Names).first->second;
-}
+};
 
 // The lower-cased paths content Seq[J] provides as the mount sees them (a FILE lands at TARGET/<name>), or nullopt =
-// everything under its TARGET (a DIR, an unreadable file).
-std::optional<std::set<std::string>> Provided(const std::vector<Fold::Item> &Seq, size_t J,
-        std::map<std::vector<std::string>, std::optional<std::set<std::string>>> &Cache)
+// everything under its TARGET (a DIR, an archive not readable here).
+std::optional<std::set<std::string>> Provided(const Fold::Plan &P, const LaunchTree &L, size_t J, TreeNames &Tn)
 {
-    const Fold::Item &C = Seq[J];
+    const Fold::Item &C = P.Seq[J];
     const std::string T = ToLowerAscii(C.Target);
     const std::string Pre = T.empty() ? std::string() : T + "/";
     if (C.Kind == "DIR" || C.Dir.empty()) return std::nullopt;
     if (C.Kind == "FILE") return std::set<std::string>{ Pre + ToLowerAscii(std::filesystem::path(C.Payload).filename().string()) };
-    auto Names = MemberNames(Seq, J, Cache);
+    const auto It = L.LayerOf.find(J);
+    const std::set<std::string> *Names = It == L.LayerOf.end() ? nullptr : Tn.LowerOf(L, It->second);
     if (!Names) return std::nullopt;
     std::set<std::string> Out;
     for (const auto &N : *Names) Out.insert(Pre + N);
     return Out;
 }
 
-bool Covers(const std::vector<Fold::Item> &Seq, size_t J, const std::string &File,
-            std::map<std::vector<std::string>, std::optional<std::set<std::string>>> &Cache)
+bool Covers(const Fold::Plan &P, const LaunchTree &L, size_t J, const std::string &File, TreeNames &Tn)
 {
     const std::string F = ToLowerAscii(File);
-    const auto P = Provided(Seq, J, Cache);
-    if (!P)
+    const auto Pv = Provided(P, L, J, Tn);
+    if (!Pv)
     {
-        const std::string T = ToLowerAscii(Seq[J].Target);
+        const std::string T = ToLowerAscii(P.Seq[J].Target);
         return F == T || F.rfind(T + "/", 0) == 0 || T.empty();
     }
-    return P->count(F) != 0;
+    return Pv->count(F) != 0;
 }
 
-// One layer's contribution to the merged content view, fully prepared for the case lint: the joined
-// content-root-relative path plus its lowered form. Cached per (local path, TARGET) because this is where
-// --validate-nodes actually spent its time: 903 Minecraft variants share a handful of layer files, and the lint
-// re-ran JoinTarget + ToLowerAscii over every entry of every shared layer once PER LAUNCHABLE — 87% of a 49-second
-// validate by perf, all of it recomputing strings that never change within a run. Dir layers additionally re-walked
-// the filesystem per launchable; the walk is now taken once too.
-// The mount's choice of base for each DELTA in a plan (VidyaGodFS overlay): the items whose bytes it is rebuilt from,
-// one per base address, in order — and so the items it hides. At each target a CHAIN is a ZIP and the DELTAs right
-// above it built over that target (or a DELTA based elsewhere, and those built over it); the view at a target is its
-// latest chain member, or, until a chain begins there, its latest ZIP. An address with no archive beneath gives none.
-std::map<size_t, std::vector<size_t>> DeltaBaseItems(const Fold::Plan &P)
+std::string FileName(const std::string &Path) { return std::filesystem::path(Path).filename().string(); }
+
+// Reports case collisions across DIFFERENT layers in a launchable's merged content view, as VidyaGodFS places and hides
+// them (CaseConflicts): two layers contributing paths that differ only in case (e.g. base ships 'MAPS/foo', a patch
+// ships 'maps/foo'). On the case-sensitive mount both exist, so a lookup can resolve to the wrong file → crashes /
+// missing data. Collisions WITHIN one archive are the upstream game's own content and are ignored. GlobalSeen dedups
+// across launchables sharing content.
+void FindCrossLayerCaseCollisions(const LaunchTree &L, TreeNames &Tn, std::vector<std::string> &Out,
+                                  std::unordered_set<std::string> &GlobalSeen, std::vector<std::string> *KeysOut)
 {
-    const auto Bare = [](std::string T) {   // as the mount compares: one separator, none trailing
-        std::replace(T.begin(), T.end(), '\\', '/');
-        std::string O;
-        for (char Ch : T) if (Ch != '/' || O.empty() || O.back() != '/') O.push_back(Ch);
-        while (!O.empty() && O.back() == '/') O.pop_back();
-        return O;
-    };
-    const auto BuiltOverOwnTarget = [&](const Fold::Item &C) {
-        return C.Bases.empty() || std::any_of(C.Bases.begin(), C.Bases.end(),
-                                              [&](const std::string &B) { return Bare(B) == Bare(C.Target); });
-    };
-    std::map<std::string, std::vector<size_t>> ByTarget;
-    for (size_t I = 0; I < P.Seq.size(); ++I)
-        if (P.Seq[I].Kind == "ZIP" || P.Seq[I].Kind == "DELTA") ByTarget[Bare(P.Seq[I].Target)].push_back(I);
-    std::set<size_t> InChain;
-    for (const auto &[T, Ix] : ByTarget)
-        for (size_t K = 0; K < Ix.size();)
-        {
-            const bool Zip = P.Seq[Ix[K]].Kind == "ZIP";
-            size_t E = K + 1;
-            while (E < Ix.size() && P.Seq[Ix[E]].Kind == "DELTA" && BuiltOverOwnTarget(P.Seq[Ix[E]])) ++E;
-            if (Zip && E == K + 1) { ++K; continue; }
-            for (size_t M = K; M < E; ++M) InChain.insert(Ix[M]);
-            K = E;
-        }
-    std::map<size_t, std::vector<size_t>> Out;
-    std::map<std::string, size_t> View;   // target -> the item whose bytes a delta there is built over
-    std::set<std::string> Begun;          // targets where a chain has begun: a zip stacked there later is an overlay
-    for (size_t J = 0; J < P.Seq.size(); ++J)
+    for (const CaseConflict &C : CaseConflicts(L.S, L.T, Tn.Entries(L, false)))
     {
-        const Fold::Item &C = P.Seq[J];
-        if (C.Kind != "ZIP" && C.Kind != "DELTA") continue;
-        if (C.Kind == "DELTA")
-        {
-            auto &B = Out[J];
-            for (const std::string &At : C.Bases.empty() ? std::vector<std::string>{ C.Target } : C.Bases)
-                if (const auto It = View.find(Bare(At)); It != View.end()) B.push_back(It->second);
-        }
-        if (InChain.count(J)) Begun.insert(Bare(C.Target));
-        if (InChain.count(J) || !Begun.count(Bare(C.Target))) View[Bare(C.Target)] = J;
-    }
-    return Out;
-}
-
-std::shared_ptr<ByteSource> OpenBytes(const std::string &Path)
-{
-    const HostIO::Fd Fd = HostIO::Open(Path, 0 /*O_RDONLY*/);
-    if (Fd < 0) return nullptr;
-    HostIO::Stat St;
-    if (HostIO::Fstat(Fd, St) != 0) { HostIO::Close(Fd); return nullptr; }
-    return std::make_shared<FdByteSource>(Fd, St.size, /*owns=*/true);
-}
-
-// A delta's rebuilt zip's member names (raw, '\\' as '/', folders ending in '/'), by the delta's file.
-using DeltaListing = std::map<std::string, std::vector<std::string>>;
-
-// The zip bytes content item Seq[J] mounts: a ZIP's file, a DELTA rebuilt over its bases' bytes (DeltaBaseItems),
-// back to back. Null when a file is not here, or a base is not a whole archive. Every delta it rebuilds on the way is
-// listed into Listed: a chain is then built once for its deepest member, not once per member (each of Minecraft's
-// 903 versions rebuilt the whole chain beneath it).
-std::shared_ptr<ByteSource> ItemBytes(const Fold::Plan &P, size_t J, const std::map<size_t, std::vector<size_t>> &Bases,
-                                      DeltaListing &Listed)
-{
-    const Fold::Item &C = P.Seq[J];
-    const std::filesystem::path Local = ItemLocal(C);
-    if (Local.empty() || !C.View.is_null()) return nullptr;
-    if (C.Kind == "ZIP") return OpenBytes(Local.string());
-    if (C.Kind != "DELTA") return nullptr;
-    const auto It = Bases.find(J);
-    const size_t Want = C.Bases.empty() ? 1 : C.Bases.size();
-    if (It == Bases.end() || It->second.size() != Want) return nullptr;
-    std::vector<std::shared_ptr<ByteSource>> From;
-    for (size_t B : It->second)
-    {
-        auto S = ItemBytes(P, B, Bases, Listed);
-        if (!S) return nullptr;
-        From.push_back(std::move(S));
-    }
-    std::shared_ptr<ByteSource> D = OpenBytes(Local.string());
-    if (!D) return nullptr;
-    std::string Err;
-    std::shared_ptr<ByteSource> Out =
-        vgdelta::DeltaByteSource::Create(D, From.size() == 1 ? From[0] : std::make_shared<ConcatByteSource>(From), Err);
-    if (Out && !Listed.count(Local.string()))
-    {
-        std::vector<std::string> Names;
-        if (zipscan::WalkCentralDir(*Out, [&](const std::string &Name, uint16_t, uint64_t) {
-                std::string N = Name;
-                std::replace(N.begin(), N.end(), '\\', '/');
-                Names.push_back(std::move(N));
-                return true;
-            }))
-            Listed.emplace(Local.string(), std::move(Names));
-    }
-    return Out;
-}
-
-// A delta's member names (DeltaListing), rebuilt only when no deeper member of its chain listed it already. Null when
-// it cannot be rebuilt here.
-const std::vector<std::string> *DeltaNames(const Fold::Plan &P, size_t J, const std::map<size_t, std::vector<size_t>> &Bases,
-                                           DeltaListing &Listed)
-{
-    const std::string Path = ItemLocal(P.Seq[J]).string();
-    if (auto It = Listed.find(Path); It != Listed.end()) return &It->second;
-    ItemBytes(P, J, Bases, Listed);
-    const auto It = Listed.find(Path);
-    return It == Listed.end() ? nullptr : &It->second;
-}
-
-struct PreparedEntry { std::string Exact, Lower; };
-const std::vector<PreparedEntry> &LayerEntriesPrepared(const std::string &LocalPath, bool IsDir, const std::string &Target,
-        std::unordered_map<std::string, std::vector<std::string>> &ZipCache,
-        std::unordered_map<std::string, std::vector<PreparedEntry>> &PrepCache,
-        const std::function<const std::vector<std::string> *()> &Rebuilt = {})
-{
-    const std::string Key = LocalPath + '\x1f' + Target;
-    auto It = PrepCache.find(Key);
-    if (It != PrepCache.end()) return It->second;
-    std::vector<PreparedEntry> Out;
-    auto Add = [&](std::string Rel) {
-        std::string Exact = JoinTarget(Target, std::move(Rel));
-        std::string Lower = ToLowerAscii(Exact);
-        Out.push_back({std::move(Exact), std::move(Lower)});
-    };
-    std::error_code Ec;
-    if (IsDir)
-        for (auto W = std::filesystem::recursive_directory_iterator(LocalPath, Ec);
-             !Ec && W != std::filesystem::recursive_directory_iterator(); W.increment(Ec))
-        { if (W->is_regular_file(Ec)) Add(std::filesystem::relative(W->path(), LocalPath, Ec).generic_string()); }
-    else if (Rebuilt)
-    {
-        //A delta: the zip its chain rebuilds, listed as ZipEntriesCached lists a zip (folder entries left out).
-        if (const std::vector<std::string> *Names = Rebuilt())
-            for (const std::string &N : *Names)
-                if (!N.empty() && N.back() != '/') Add(N);
-    }
-    else
-        for (const std::string &Entry : ZipEntriesCached(LocalPath, ZipCache))
-            Add(Entry);
-    return PrepCache.emplace(Key, std::move(Out)).first->second;
-}
-
-// Path components of a slash path.
-std::vector<std::string> SplitPath(const std::string &S)
-{
-    std::vector<std::string> V; size_t P = 0, Q;
-    while ((Q = S.find('/', P)) != std::string::npos) { V.push_back(S.substr(P, Q - P)); P = Q + 1; }
-    V.push_back(S.substr(P));
-    return V;
-}
-
-// Reports case collisions across DIFFERENT layers in a launchable's merged content view: two layers contributing
-// paths that differ only in case (e.g. base ships 'MAPS/foo', a patch ships 'maps/foo'). On the case-sensitive mount
-// both exist, so a lookup can resolve to the wrong file → crashes / missing data. Collisions WITHIN one layer are the
-// upstream game's own content and are deliberately ignored. GlobalSeen dedups across launchables sharing content.
-void FindCrossLayerCaseCollisions(const Fold::Plan &P,
-        std::unordered_map<std::string, std::vector<std::string>> &ZipCache,
-        std::unordered_map<std::string, std::vector<PreparedEntry>> &PrepCache, DeltaListing &Listed,
-        std::vector<std::string> &Out, std::unordered_set<std::string> &GlobalSeen, std::vector<std::string> *KeysOut)
-{
-    std::unordered_map<std::string_view, std::pair<std::string_view, const std::string *>> Seen;  // lowered -> (exact, label)
-    std::unordered_set<std::string> LocalReported;
-
-    auto Consider = [&](const PreparedEntry &E, const std::string &Lbl)
-    {
-        auto It = Seen.find(std::string_view(E.Lower));
-        if (It == Seen.end()) { Seen.emplace(std::string_view(E.Lower), std::make_pair(std::string_view(E.Exact), &Lbl)); return; }
-        const std::string Prev(It->second.first), PrevLbl = *It->second.second, F = E.Exact;
-        if (Prev == F || PrevLbl == Lbl) return;
-        const std::vector<std::string> A = SplitPath(Prev), B = SplitPath(F);
-        size_t i = 0; while (i < A.size() && i < B.size() && A[i] == B[i]) ++i;
-        if (i >= A.size() || i >= B.size()) return;
-        std::string Key; for (size_t k = 0; k <= i; ++k) { if (k) Key += '/'; Key += ToLowerAscii(A[k]); }
-        if (!LocalReported.insert(Key).second) return;
-        const std::string Seen1 = Key + "|" + ToLowerAscii(PrevLbl) + "|" + ToLowerAscii(Lbl);
-        if (!GlobalSeen.insert(Seen1).second) return;
+        const std::string A = FileName(L.S.layers[C.first].source), B = FileName(L.S.layers[C.second].source);
+        const std::string Seen1 = C.key + "|" + ToLowerAscii(A) + "|" + ToLowerAscii(B);
+        if (!GlobalSeen.insert(Seen1).second) continue;
         if (KeysOut) KeysOut->push_back(Seen1);   // the caller de-duplicates across nodes by it
-        const bool IsDir = (i + 1 < A.size()) || (i + 1 < B.size());
-        Out.push_back(std::string("content case conflict across layers: ") + (IsDir ? "directory '" : "file '")
-                      + A[i] + "' (" + PrevLbl + ") vs '" + B[i] + "' (" + Lbl + ") — collide in the merged view");
-    };
-
-    //What a delta rebuilds from is not in the view (a delta hides only its bases): its names are the rebuilt zip's.
-    const std::map<size_t, std::vector<size_t>> Bases = DeltaBaseItems(P);
-    std::set<size_t> Hidden;
-    for (const auto &[J, B] : Bases) Hidden.insert(B.begin(), B.end());
-    std::deque<std::string> Labels;                              // stable storage — Seen holds pointers into it
-    std::deque<PreparedEntry> Taken;                             // a TAKE-seen item's entries, where its view puts them
-    for (size_t J = 0; J < P.Seq.size(); ++J)
-    {
-        const Fold::Item &I = P.Seq[J];
-        if (I.Kind == "EDIT" || Hidden.count(J)) continue;
-        const std::filesystem::path Local = ItemLocal(I);
-        if (Local.empty()) continue;
-        std::error_code Ec;
-        if (!std::filesystem::exists(Local, Ec)) continue;
-        const std::string &Lbl = Labels.emplace_back(Local.filename().string());
-        const bool IsDir = std::filesystem::is_directory(Local, Ec);
-        std::function<const std::vector<std::string> *()> Rebuilt;
-        if (I.Kind == "DELTA") Rebuilt = [&] { return DeltaNames(P, J, Bases, Listed); };
-        if (I.View.is_null())
-        {
-            for (const PreparedEntry &E : LayerEntriesPrepared(Local.string(), IsDir, I.Target, ZipCache, PrepCache, Rebuilt))
-                Consider(E, Lbl);
-            continue;
-        }
-        //Seen through TAKE (a library node mounting one file of its zip): only what its takes let through reaches the
-        //view, where they put it — as the mount does (Fold::ThroughView). The rest of the layer is not there to collide.
-        for (const PreparedEntry &E : LayerEntriesPrepared(Local.string(), IsDir, I.Own, ZipCache, PrepCache, Rebuilt))
-            if (const auto A = Fold::ThroughView(I.View, "FILES/" + E.Exact))
-            {
-                std::string Exact = A->size() > 6 ? A->substr(6) : std::string();
-                std::string Lower = ToLowerAscii(Exact);
-                Consider(Taken.emplace_back(PreparedEntry{std::move(Exact), std::move(Lower)}), Lbl);
-            }
+        Out.push_back(std::string("content case conflict across layers: ") + (C.dir ? "directory '" : "file '")
+                      + C.firstName + "' (" + A + ") vs '" + C.secondName + "' (" + B + ") — collide in the merged view");
     }
 }
 
@@ -567,10 +341,8 @@ void Nodes(const NodeIndex &Idx, std::vector<std::string> &Errors, std::vector<s
     struct Worker
     {
         std::unordered_map<std::string, std::vector<std::string>> ZipCache;   // local zip path -> its file entries
-        std::unordered_map<std::string, std::vector<PreparedEntry>> PrepCache; // (layer path, TARGET) -> prepared case-lint entries
-        std::map<std::vector<std::string>, std::optional<std::set<std::string>>> NameCache;   // content chain -> member names
+        TreeNames Tree;                                                                          // archive names, lower-cased; dir files
         std::map<std::string, ArchiveBytes> SizeCache;                                          // archive file -> its sizes
-        DeltaListing Listed;                                                                     // delta file -> its rebuilt zip's names
         std::unordered_set<std::string> CycleDone;   // a node proven acyclic never participates in a cycle (O(N+E) overall)
     };
     struct NodeOut { std::vector<std::string> Errors, Warnings, Collisions, CollisionKeys; std::unordered_set<std::string> CollisionSeen; };
@@ -632,7 +404,7 @@ void Nodes(const NodeIndex &Idx, std::vector<std::string> &Errors, std::vector<s
         //%runtime% path is an authoring intermediary that cannot be published.
         for (const auto &L : N.ContentLayers)
         {
-            const std::string LType = LayerType(L);
+            const std::string LType = ManifestModel::LayerType(L);
             if (!IsVfsLayer(LType)) continue;
             if (LType == "VFSDirLayer" && !IsRuntimeSourcedLayer(L))
                 Res.Warnings.push_back(Tag + ": DIR '" + L.value("PATH", std::string())
@@ -649,7 +421,7 @@ void Nodes(const NodeIndex &Idx, std::vector<std::string> &Errors, std::vector<s
         //Binary EDIT ops: a malformed one does nothing, or patches blindly.
         for (const auto &L : N.LoweredLayers())
         {
-            if (LayerType(L) != "BinaryPatch") continue;
+            if (ManifestModel::LayerType(L) != "BinaryPatch") continue;
             const std::string M = L.value("MODE", std::string());
             if (M == "ReplaceAll")
             {
@@ -802,65 +574,38 @@ void Nodes(const NodeIndex &Idx, std::vector<std::string> &Errors, std::vector<s
                      + " is mentioned twice and " + (Ev == "held"
                      ? std::string("its FIRST mention counts — folding it at the later one would change what wins")
                      : std::string("its LATER mention in the same list counts — folding it at the first would change what wins")));
-            //A DELTA needs its base beneath: content at its target, lower in the stack.
-            for (size_t J = 0; J < P.Seq.size(); ++J)
+            //A DELTA names its bases by CID (chapter 04 §4.1): VidyaGodFS's reading of this launch says which cannot
+            //rebuild (a file it names is not in it), and the bytes of the files it names must be what its header says it
+            //was built over.
+            const LaunchTree Lt = LaunchTree::Of(P);
+            for (const std::string &Why : Lt.T.problems)
+                Once(Res.Errors, Tag + ": " + Why + " — contain the node that holds the file it names");
+            for (size_t D = 0; D < Lt.S.layers.size(); ++D)
             {
-                const Fold::Item &D = P.Seq[J];
-                if (D.Kind != "DELTA") continue;
-                if (D.Bases.empty())
-                {
-                    bool Base = false;
-                    for (size_t I = 0; I < J && !Base; ++I)
-                        Base = P.Seq[I].Kind != "EDIT" && P.Seq[I].Target == D.Target;
-                    if (!Base) Once(Res.Errors, Tag + ": DELTA '" + D.Payload + "' has no content beneath it at '" + D.Target + "' to rebuild from");
-                    continue;
-                }
-                //Several bases: each one an archive (or a delta) lower in the stack at that address, as the mount
-                //requires (vfsmount ValidateDeltaBases); the delta's own target need hold nothing.
-                const auto Bare = [](std::string T) { while (!T.empty() && T.back() == '/') T.pop_back(); return T; };   // as the mount compares
-                for (const std::string &B : D.Bases)
-                {
-                    bool Base = false;
-                    for (size_t I = 0; I < J && !Base; ++I)
-                        Base = (P.Seq[I].Kind == "ZIP" || P.Seq[I].Kind == "DELTA") && Bare(P.Seq[I].Target) == Bare(B);
-                    if (!Base) Once(Res.Errors, Tag + ": DELTA '" + D.Payload + "' names a base at '" + B
-                                            + "', but no archive lies beneath it there to rebuild from");
-                }
-            }
-            //A DELTA rebuilds from the bytes the mount hands it, which must be the bytes it was built over (its
-            //header's base size): the mount's own choice of base (DeltaBaseItems), re-run here. An archive slipped in between (a patch zip over the base it was built on) becomes the base, and the delta
-            //would not mount.
-            for (const auto &[J, B] : DeltaBaseItems(P))
-            {
-                const Fold::Item &C = P.Seq[J];
-                if (!C.View.is_null()) continue;   // TAKE'd: its bytes are a view, checked above
-                const size_t Want = C.Bases.empty() ? 1 : C.Bases.size();
-                std::optional<uint64_t> Have;
+                if (Lt.S.layers[D].type != ::LayerType::Delta || Lt.T.broken[D]) continue;
+                const Fold::Item &C = P.Seq[Lt.ItemOf[D]];
+                std::optional<uint64_t> Have = 0;
                 std::string Names;
-                if (B.size() == Want)
+                for (size_t B : Lt.T.bases[D])
                 {
-                    Have = 0;
-                    for (size_t It : B)
-                    {
-                        if (!P.Seq[It].View.is_null()) { Have.reset(); break; }   // viewed
-                        const std::optional<uint64_t> Bytes = ArchiveSizes(P.Seq[It], Wk.SizeCache).View;
-                        if (!Bytes) { Have.reset(); break; }
-                        *Have += *Bytes;
-                        Names += std::string(Names.empty() ? "" : " + ") + "'" + P.Seq[It].Payload + "'";
-                    }
+                    const Fold::Item &Bi = P.Seq[Lt.ItemOf[B]];
+                    const std::optional<uint64_t> Bytes = ArchiveSizes(Bi, Wk.SizeCache).View;
+                    if (!Bytes) { Have.reset(); break; }
+                    *Have += *Bytes;
+                    Names += std::string(Names.empty() ? "" : " + ") + "'" + Bi.Payload + "'";
                 }
                 const std::optional<uint64_t> Built = ArchiveSizes(C, Wk.SizeCache).Base;
                 if (Have && Built && *Have != *Built)
                     Once(Res.Errors, Tag + ": DELTA '" + C.Payload + "' was built over " + std::to_string(*Built)
-                         + " bytes, but the mount would rebuild it from " + Names + " (" + std::to_string(*Have)
-                         + " bytes) — put it directly above the archive it was built on, or build it over that one");
+                         + " bytes, but the bases it names are " + Names + " (" + std::to_string(*Have)
+                         + " bytes) — name the files it was built over, in the order it joined them");
             }
             //Covered edits: an EDIT beneath a layer that replaces its file has no effect — always a mistake.
             for (size_t I = 0; I < P.Seq.size(); ++I)
             {
                 if (P.Seq[I].Kind != "EDIT") continue;
                 for (size_t J = I + 1; J < P.Seq.size(); ++J)
-                    if (P.Seq[J].Kind != "EDIT" && Covers(P.Seq, J, P.Seq[I].Target, Wk.NameCache))
+                    if (P.Seq[J].Kind != "EDIT" && Covers(P, Lt, J, P.Seq[I].Target, Wk.Tree))
                     {
                         Once(Res.Errors, Tag + ": the EDIT of '" + P.Seq[I].Target + "' (from '" + P.Seq[I].From + "') lies beneath '"
                              + P.Seq[J].Payload + "', which replaces that file — move the EDIT above it");
@@ -933,7 +678,7 @@ void Nodes(const NodeIndex &Idx, std::vector<std::string> &Errors, std::vector<s
             else if (AllLocal)
                 Res.Warnings.push_back(Tag + ": EXE '" + Cp + "' is not in the package content");
         }
-        FindCrossLayerCaseCollisions(P, Wk.ZipCache, Wk.PrepCache, Wk.Listed, Res.Collisions, Res.CollisionSeen, &Res.CollisionKeys);
+        FindCrossLayerCaseCollisions(LaunchTree::Of(P), Wk.Tree, Res.Collisions, Res.CollisionSeen, &Res.CollisionKeys);
     };
     Parallel::ForWith<Worker>(Packages.size(), [&](Worker &Wk, std::size_t K) {
         for (const std::size_t I : *Packages[K]) CheckNode(Wk, Items[I]->first, Items[I]->second, Outs[I]);
@@ -1214,7 +959,7 @@ void Nodes(const NodeIndex &Idx, std::vector<std::string> &Errors, std::vector<s
         std::map<std::string, std::string> Stored;   // durable name (lower) -> the address stored under it
         for (const auto &L : N.LoweredLayers())
         {
-            if (LayerType(L) != "DeclarePersist") continue;
+            if (ManifestModel::LayerType(L) != "DeclarePersist") continue;
             const std::string Path = L.value("PATH", std::string());
             if (L.value("SCOPE", std::string()) == "registry" && RegistryWrapper::NamesNoKey(Path))
                 Errors.push_back(Tag + ": a KEEP of a whole registry hive ('" + Path + "') — only keys persist; name them "
@@ -1269,11 +1014,14 @@ static const std::vector<std::string> &ZipAllEntriesRaw(const std::string &Path,
 static std::map<std::string, std::map<std::string, std::string>>
 ComputeCaseRenames(const NodeIndex &Idx, std::vector<std::string> &Log, const std::string &Scope = std::string())
 {
-    std::unordered_map<std::string, std::vector<std::string>> AllCache;
     std::map<std::string, std::map<std::string, std::string>> Renames;   // zipPath -> (old -> new)
-    std::set<std::string> DeltaBases;   // zips a delta is rebuilt from: their bytes must stay as they are
-    DeltaListing Listed;
-
+    //A file some delta in the library names is a base: its bytes must stay as they are, or the delta rebuilds garbage
+    //(and its SOURCE would lie). Every delta, not only this scope's: a base is named from anywhere.
+    std::set<std::string> Named;
+    for (const auto &[Id, N] : Idx.Nodes)
+        for (const auto &L : N.LoweredLayers())
+            for (const std::string &C : ManifestModel::LayerBaseSources(L)) Named.insert(C);
+    TreeNames Tn;
     const Fold::Library Lib = LibraryOf(Idx);
     for (const auto &[LId, LN] : Idx.Nodes)
     {
@@ -1288,90 +1036,39 @@ ComputeCaseRenames(const NodeIndex &Idx, std::vector<std::string> &Log, const st
             const std::string D = Ec ? LN.BundleDir.string() : Dir;
             if (D != Scope && D.rfind(Scope + "/", 0) != 0) continue;
         }
-        std::map<std::string, std::string> Canon;   // lowercased prefix key -> canonical exact component
-
-        const Fold::Plan Plan = Fold::Resolve(Lib, LId);
+        //The tree as the mount makes it spells each folder and name its lowest layer's way; a later layer spelling one
+        //otherwise is renamed toward it, through the mount that put it there. A delta cannot be renamed, only rebuilt;
+        //a folder of loose files is left alone.
+        const LaunchTree L = LaunchTree::Of(Fold::Resolve(Lib, LId));
+        const EntriesFn Archives = [&](size_t I) -> const std::vector<std::string> * {
+            return L.S.layers[I].type == ::LayerType::Dir ? nullptr : Tn.Names.Of(L, I, true);
+        };
+        for (const auto &[I, M] : CaseRenames(L.S, L.T, Archives))
         {
-            //What a delta rebuilds from is not in the view (a delta hides only its bases), and is never rewritten;
-            //a delta's names are its rebuilt zip's, and spell the view like any layer's — but cannot be renamed.
-            const std::map<size_t, std::vector<size_t>> Bases = DeltaBaseItems(Plan);
-            std::set<size_t> Hidden;
-            for (const auto &[J, B] : Bases)
-                for (size_t H : B)
-                {
-                    Hidden.insert(H);
-                    if (const std::filesystem::path L = ItemLocal(Plan.Seq[H]); !L.empty()) DeltaBases.insert(L.string());
-                }
-            for (size_t J = 0; J < Plan.Seq.size(); ++J)
+            const LayerSpec &X = L.S.layers[I];
+            if (X.type == ::LayerType::Delta)
             {
-                const Fold::Item &I = Plan.Seq[J];
-                if (I.Kind == "EDIT" || Hidden.count(J)) continue;
-                const std::filesystem::path Local = ItemLocal(I);
-                std::error_code Ec;
-                if (Local.empty() || !std::filesystem::exists(Local, Ec)
-                    || std::filesystem::is_directory(Local, Ec)) continue;   // only rewrite ZIPs (skip dir layers)
-                const std::string Target  = I.Target;
-                const std::string ZipPath = Local.string();
-                const bool IsDelta = I.Kind == "DELTA";
-                static const std::vector<std::string> None;
-                const std::vector<std::string> *Rebuilt = IsDelta ? DeltaNames(Plan, J, Bases, Listed) : nullptr;
-
-                for (std::string Entry : IsDelta ? (Rebuilt ? *Rebuilt : None) : ZipAllEntriesRaw(ZipPath, AllCache))
-                {
-                    // Explicit directory entries flow through the SAME component canonicalization (their
-                    // trailing '/' stripped for the walk, restored on the rename target) — that is what
-                    // retargets a stale-case dir husk onto its canonical spelling instead of leaving it behind.
-                    const bool IsDir = !Entry.empty() && Entry.back() == '/';
-                    if (IsDir) Entry.pop_back();
-                    if (Entry.empty()) continue;
-                    const std::string Full = JoinTarget(Target, Entry);
-                    std::vector<std::string> Comp = SplitPath(Full);
-                    std::string Prefix, NewFull;
-                    bool Changed = false;
-                    for (size_t k = 0; k < Comp.size(); ++k)
-                    {
-                        const std::string Key = Prefix.empty() ? ToLowerAscii(Comp[k]) : (Prefix + "/" + ToLowerAscii(Comp[k]));
-                        auto It = Canon.find(Key);
-                        std::string CanonC;
-                        if (It == Canon.end()) { Canon.emplace(Key, Comp[k]); CanonC = Comp[k]; }
-                        else CanonC = It->second;
-                        if (CanonC != Comp[k]) Changed = true;
-                        if (k) NewFull += '/';
-                        NewFull += CanonC;
-                        Prefix = Key;
-                    }
-                    if (!Changed) continue;
-                    std::string NewEntry = NewFull;
-                    if (!Target.empty())
-                    {
-                        const std::string Pfx = Target + "/";
-                        if (NewFull.rfind(Pfx, 0) != 0) continue;   // defensive: Target case must be stable
-                        NewEntry = NewFull.substr(Pfx.size());
-                    }
-                    if (IsDir) { Entry += '/'; NewEntry += '/'; }   // match the zip's dir-entry spelling
-                    if (IsDelta)
-                    {
-                        Log.push_back("case-fix: '" + Entry + "' inside the delta " + ZipPath
-                                      + " is spelled unlike the layers beneath it — a delta cannot be renamed; rebuild it (skipped)");
-                        continue;
-                    }
-                    auto &M = Renames[ZipPath];
-                    auto Ex = M.find(Entry);
-                    if (Ex != M.end() && Ex->second != NewEntry)
-                        Log.push_back("case-fix: conflicting canonicalization of '" + Entry + "' in " + ZipPath + " (skipped)");
-                    else
-                        M[Entry] = NewEntry;
-                }
+                for (const auto &[Entry, To] : M)
+                    Log.push_back("case-fix: '" + Entry + "' inside the delta " + X.source
+                                  + " is spelled unlike the layers beneath it — a delta cannot be renamed; rebuild it (skipped)");
+                continue;
+            }
+            if (!X.cid.empty() && Named.count(X.cid))
+            {
+                Log.push_back("case-fix: " + X.source + " is a delta's base — rewriting it would break the delta (skipped)");
+                continue;
+            }
+            auto &Z = Renames[X.source];
+            for (const auto &[Entry, To] : M)
+            {
+                const auto Ex = Z.find(Entry);
+                if (Ex != Z.end() && Ex->second != To)
+                    Log.push_back("case-fix: conflicting canonicalization of '" + Entry + "' in " + X.source + " (skipped)");
+                else
+                    Z[Entry] = To;
             }
         }
     }
-    for (auto It = Renames.begin(); It != Renames.end();)
-        if (DeltaBases.count(It->first))
-        {
-            Log.push_back("case-fix: " + It->first + " is a delta's base — rewriting it would break the delta (skipped)");
-            It = Renames.erase(It);
-        }
-        else ++It;
     return Renames;
 }
 

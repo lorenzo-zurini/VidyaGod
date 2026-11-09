@@ -257,6 +257,7 @@ set(SHARED_SOURCES
     src/plan/installed.cpp
     src/plan/validate.cpp
     src/format/manifestmodel.cpp
+    src/format/launchtree.cpp
     src/format/fold.cpp
     src/base/cid.cpp
 
@@ -491,6 +492,7 @@ add_executable(vg_tests
     tests/test_optionreadback.cpp
     tests/test_parallel.cpp
     src/format/manifestmodel.cpp
+    src/format/launchtree.cpp
     src/format/fold.cpp
     src/base/cid.cpp
     src/format/nodegraph.cpp   # the gigagraph's PURE transforms (freeze/topo/gather/landing checks) — no IPFS/Qt
@@ -600,6 +602,10 @@ if(NOT WIN32)
 add_test(NAME cli_sweep COMMAND python3 -I ${CMAKE_SOURCE_DIR}/tools/cli_sweep/cli_sweep.py --vg $<TARGET_FILE:VidyaGod>
          --work ${CMAKE_BINARY_DIR}/cli_sweep --live --report ${CMAKE_BINARY_DIR}/cli_sweep_report.json)
 set_tests_properties(cli_sweep PROPERTIES TIMEOUT 1200 RUN_SERIAL TRUE)
+# --convert-delta-chain end to end: each delta names its base by CID, the chain resolves whole and validates.
+add_test(NAME convert_delta_chain COMMAND python3 -I ${CMAKE_SOURCE_DIR}/tests/e2e/convert_delta_chain.py
+         --vg $<TARGET_FILE:VidyaGod> --work ${CMAKE_BINARY_DIR}/testtmp/convert_delta)
+set_tests_properties(convert_delta_chain PROPERTIES TIMEOUT 600)
 # Start-up, call latency and idle memory against budgets, on the fixture — warn-only for now: it prints, never fails
 # (tools/perf/budgets.py; --data-dir runs it on a copy of a real library).
 add_test(NAME perf_budgets COMMAND python3 -I ${CMAKE_SOURCE_DIR}/tools/perf/budgets.py --vg $<TARGET_FILE:VidyaGod>

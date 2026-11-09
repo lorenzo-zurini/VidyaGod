@@ -255,9 +255,9 @@ TEST(tile_endpoints_chain_collapses_to_tip)
 {
     // v1 ← v2 ← v3 (each contains the previous and adds content): one download row, the tip, dominating all three.
     NodeIndex Idx;
-    AddChain(Idx, "v1", { NF::Merge({ NF::Content("zip", "1.zip"), NF::Exec("win32", "g"), NF::Tile("1"), NF::Variant("1") }) });
-    AddChain(Idx, "v2", { NF::Merge({ NF::Content("delta", "2.vgdelta"), NF::Variant("2") }) }, { "v1" });
-    AddChain(Idx, "v3", { NF::Merge({ NF::Content("delta", "3.vgdelta"), NF::Variant("3") }) }, { "v2" });
+    AddChain(Idx, "v1", { NF::Merge({ NF::ContentCid("zip", "1.zip", "Qm1"), NF::Exec("win32", "g"), NF::Tile("1"), NF::Variant("1") }) });
+    AddChain(Idx, "v2", { NF::Merge({ NF::DeltaOver("2.vgdelta", { "Qm1" }, {}, "Qm2"), NF::Variant("2") }) }, { "v1" });
+    AddChain(Idx, "v3", { NF::Merge({ NF::DeltaOver("3.vgdelta", { "Qm2" }), NF::Variant("3") }) }, { "v2" });
     ManifestModel::DeriveFacts(Idx);
     const auto Rows = ManifestModel::TileEndpoints(Idx, { "v1", "v2", "v3" });
     CHECK_EQ(Rows.size(), (size_t)1);
@@ -348,36 +348,48 @@ TEST(lower_plan_places_folds_and_applies_edits_by_ownership)
 }
 
 // A delta built over two bases (Wild Metal Country's freeware release over the retail install and its CD music zip):
-// BASE_TARGETS reaches the mount in order, each base placed where the delta's node is placed (a node contained at
-// FILES/sub carries its bases there too). Without BASE_TARGETS the base is the target, as before.
+// BASE_SOURCES reaches the mount as written, in order, wherever the delta's node is placed. And a base no TAKE shows
+// still reaches the mount, for its bytes only — and only that: a file nothing shows and no delta reads has no op, and
+// one shown already is not mounted again. Teeth: drop the bases; drop a base nothing shows; emit every unshown file.
 TEST(a_delta_over_several_bases_lowers_them_in_order)
 {
     const ordered_json Retail = { {"CID", "r"}, {"LABEL", "r"}, {"LAYERS", ordered_json::array({
-        {{"ZIP", "wmc.zip"}, {"TARGET", "FILES/wmc"}},
-        {{"ZIP", "music.zip"}, {"TARGET", "FILES/wmc/WinEnv"}} })} };
+        {{"ZIP", "wmc.zip"}, {"SOURCE", "QmW"}, {"TARGET", "FILES/wmc"}},
+        {{"ZIP", "music.zip"}, {"SOURCE", "QmM"}, {"TARGET", "FILES/wmc/WinEnv"}},
+        {{"ZIP", "docs.zip"}, {"SOURCE", "QmDocs"}, {"TARGET", "FILES/docs"}} })} };
     const ordered_json Free = { {"CID", "f"}, {"LABEL", "f"}, {"LAYERS", ordered_json::array({
         {{"NODE", "r"}},
-        {{"DELTA", "free.vgdelta"}, {"TARGET", "FILES/wmc"},
-         {"BASE_TARGETS", ordered_json::array({"FILES/wmc", "FILES/wmc/WinEnv"})}} })} };
-    const ordered_json Plain = { {"CID", "p"}, {"LABEL", "p"}, {"LAYERS", ordered_json::array({
-        {{"NODE", "r"}}, {{"DELTA", "next.vgdelta"}, {"TARGET", "FILES/wmc"}} })} };
+        {{"DELTA", "free.vgdelta"}, {"TARGET", "FILES/wmc"}, {"BASE_SOURCES", ordered_json::array({"QmW", "QmM"})}} })} };
     const ordered_json Placed = { {"CID", "s"}, {"LABEL", "s"}, {"LAYERS", ordered_json::array({
         {{"NODE", "f"}, {"TARGET", "FILES/sub"}} })} };
+    const ordered_json Taken = { {"CID", "t"}, {"LABEL", "t"}, {"LAYERS", ordered_json::array({
+        {{"NODE", "f"}, {"TAKE", ordered_json::array({ ordered_json::array({"FILES/wmc/bin", "bin"}) })}} })} };
+    //Retail contained twice: first through a TAKE that hides its game and music, then whole (inside Free) — the delta
+    //reads the copies shown, and no unshown copy is mounted for bytes.
+    const ordered_json Twice = { {"CID", "u"}, {"LABEL", "u"}, {"LAYERS", ordered_json::array({
+        {{"NODE", "r"}, {"TAKE", ordered_json::array({ "FILES/docs" })}}, {{"NODE", "f"}} })} };
     Fold::Library Lib;
     Lib.Nodes["r"] = { &Retail, "/r" };
     Lib.Nodes["f"] = { &Free, "/f" };
-    Lib.Nodes["p"] = { &Plain, "/p" };
     Lib.Nodes["s"] = { &Placed, "/s" };
+    Lib.Nodes["t"] = { &Taken, "/t" };
+    Lib.Nodes["u"] = { &Twice, "/u" };
+    auto Ops = [&](const std::string &Root) { return NodeLower::LowerPlan(Fold::Resolve(Lib, Root)); };
     auto Delta = [&](const std::string &Root) -> ordered_json {
-        for (const auto &O : NodeLower::LowerPlan(Fold::Resolve(Lib, Root)))
+        for (const auto &O : Ops(Root))
             if (O.value("TYPE", std::string()) == "VFSDeltaLayer") return O;
         return ordered_json();
     };
-    const ordered_json D = Delta("f");
-    CHECK((ManifestModel::LayerBaseTargets(D) == std::vector<std::string>{ "wmc", "wmc/WinEnv" }));
-    CHECK(ManifestModel::LayerBaseTargets(Delta("p")).empty());
-    CHECK((ManifestModel::LayerBaseTargets(Delta("s")) == std::vector<std::string>{ "sub/wmc", "sub/wmc/WinEnv" }));
+    CHECK((ManifestModel::LayerBaseSources(Delta("f")) == std::vector<std::string>{ "QmW", "QmM" }));
+    CHECK((ManifestModel::LayerBaseSources(Delta("s")) == std::vector<std::string>{ "QmW", "QmM" }));
     CHECK_EQ(Delta("s").value("TARGET", std::string()), std::string("sub/wmc"));
+    std::vector<std::string> BytesOnly, Mounted;
+    for (const auto &O : Ops("t"))
+        if (O.contains("PATH")) (O.value("BYTES_ONLY", false) ? BytesOnly : Mounted).push_back(std::filesystem::path(O.value("PATH", std::string())).filename().string());
+    CHECK((BytesOnly == std::vector<std::string>{ "music.zip" }));     // none of it is taken, and the delta reads it
+    CHECK(std::find(Mounted.begin(), Mounted.end(), "docs.zip") == Mounted.end());   // nothing takes or reads it: no op at all
+    CHECK(std::find(Mounted.begin(), Mounted.end(), "wmc.zip") != Mounted.end());    // shown (its bin): mounted once, not again for bytes
+    for (const auto &O : Ops("u")) CHECK(!O.value("BYTES_ONLY", false));
 }
 
 TEST(a_registry_value_taken_back_inside_a_kept_key_is_reapplied)
@@ -708,16 +720,27 @@ TEST(validate_refuses_an_edit_beneath_what_replaces_its_file)
     CHECK(!AnyContains(Errors(Fine), "lies beneath"));
 }
 
-TEST(validate_refuses_a_delta_with_nothing_beneath_it)
+// A delta names its bases by CID: each must be a file this launch holds — anywhere in it (a file's bytes do not depend
+// on where it is placed), but in it: not absent, not gated off. Teeth: accept a base nothing carries; refuse one above.
+TEST(validate_refuses_a_delta_whose_base_is_not_in_its_launch)
 {
-    NodeIndex Idx, Based;
-    AddChain(Idx, "v", { NF::Merge({ NF::Content("delta", "d.vgdelta", "%GameDir%"), NF::Exec("win32", "g.exe"), NF::Tile("1"), NF::Variant("v") }) });
-    AddChain(Based, "v", { NF::Merge({ NF::Content("zip", "b.zip", "%GameDir%"), NF::Content("delta", "d.vgdelta", "%GameDir%"),
-                                       NF::Exec("win32", "g.exe"), NF::Tile("1"), NF::Variant("v") }) });
-    ManifestModel::DeriveFacts(Idx);
-    ManifestModel::DeriveFacts(Based);
-    CHECK(AnyContains(Errors(Idx), "has no content beneath it"));
-    CHECK(!AnyContains(Errors(Based), "has no content beneath it"));
+    auto Errs = [](std::vector<ordered_json> L) {
+        NodeIndex Idx;
+        L.insert(L.end(), { NF::Exec("win32", "g.exe"), NF::Tile("1"), NF::Variant("v") });
+        AddChain(Idx, "v", { NF::Merge(L) });
+        ManifestModel::DeriveFacts(Idx);
+        return Errors(Idx);
+    };
+    const auto Base = NF::ContentCid("zip", "b.zip", "QmB", "%GameDir%");
+    auto Gated = Base;
+    Gated["LAYERS"][0]["WHEN"] = "%nope%==1";
+    const auto D = NF::DeltaOver("d.vgdelta", { "QmB" }, "%GameDir%");
+    const std::string Msg = "it names QmB, which no zip or delta here carries";
+    CHECK(AnyContains(Errs({ D }), Msg));
+    CHECK(AnyContains(Errs({ Gated, D }), Msg));                       // gated off: not in this launch
+    CHECK(!AnyContains(Errs({ Base, D }), Msg));
+    CHECK(!AnyContains(Errs({ D, Base }), Msg));                       // above it: its bytes are the same
+    CHECK(!AnyContains(Errs({ Base, NF::Content("zip", "p.zip", "%GameDir%"), D }), Msg));   // a patch between is no base
 }
 
 // A registry key kept for one bitness while its REG layer writes the other only keeps a view the game never reads.
@@ -743,30 +766,27 @@ TEST(validate_warns_when_a_kept_key_is_kept_in_a_view_nothing_writes)
     CHECK(!Warned(Game("HKCU", "REG/HKCU/Software/Acme", "64")));                 // HKCU: one key for both
 }
 
-// A delta over several bases needs an archive beneath at EACH (as the mount does), and nothing at its own target.
+// A delta over several bases needs each one beneath it, an archive (a folder is not one), and nothing at its own target.
 TEST(validate_reads_a_deltas_bases)
 {
-    auto Delta = [] {
-        ordered_json D = NF::Content("delta", "d.vgdelta", "%GameDir%/out");
-        D["LAYERS"][0]["BASE_TARGETS"] = ordered_json::array({ "FILES/%GameDir%/a/", "FILES/%GameDir%/b" });   // a trailing '/' names the same place
-        return D;
-    };
+    const auto Delta = NF::DeltaOver("d.vgdelta", { "QmA", "QmB" }, "%GameDir%/out");
     NodeIndex Good, Short;
-    AddChain(Good, "v", { NF::Merge({ NF::Content("zip", "a.zip", "%GameDir%/a"), NF::Content("zip", "b.zip", "%GameDir%/b"),
-                                      Delta(), NF::Exec("win32", "g.exe"), NF::Tile("1"), NF::Variant("v") }) });
-    AddChain(Short, "v", { NF::Merge({ NF::Content("zip", "a.zip", "%GameDir%/a"), NF::Content("dir", "bdir", "%GameDir%/b"),
-                                       Delta(), NF::Exec("win32", "g.exe"), NF::Tile("1"), NF::Variant("v") }) });
+    AddChain(Good, "v", { NF::Merge({ NF::ContentCid("zip", "a.zip", "QmA", "%GameDir%/a"), NF::ContentCid("zip", "b.zip", "QmB", "%GameDir%/b"),
+                                      Delta, NF::Exec("win32", "g.exe"), NF::Tile("1"), NF::Variant("v") }) });
+    AddChain(Short, "v", { NF::Merge({ NF::ContentCid("zip", "a.zip", "QmA", "%GameDir%/a"), NF::Content("dir", "bdir", "%GameDir%/b"),
+                                       Delta, NF::Exec("win32", "g.exe"), NF::Tile("1"), NF::Variant("v") }) });
     ManifestModel::DeriveFacts(Good);
     ManifestModel::DeriveFacts(Short);
     CHECK(!AnyContains(Errors(Good), "beneath it"));
-    CHECK(AnyContains(Errors(Short), "names a base at '%GameDir%/b'"));   // a folder is not an archive
-    CHECK(!AnyContains(Errors(Short), "names a base at '%GameDir%/a"));
+    CHECK(AnyContains(Errors(Short), "it names QmB, which no zip or delta here carries"));   // a folder is not an archive
+    CHECK(!AnyContains(Errors(Short), "QmA"));
 }
 
-// A delta rebuilds from the bytes the mount hands it: the archive the mount picks beneath it must be the one it was
-// built over (its header's base size). A patch zip slipped in between becomes the base and the delta fails to
-// mount, which nothing reported until launch. Teeth: each case flips with one archive moved or one size changed.
-TEST(validate_checks_a_delta_against_the_archive_beneath_it)
+// A delta rebuilds from the bytes of the bases it names, which must be the bytes it was built over (its header's base
+// size): a base named wrongly — or in the wrong order of sizes — fails to mount, which nothing reported until launch.
+// Where the bases lie no longer matters: a patch between a base and its delta is no part of it. Teeth: each case flips
+// with one name or one size changed.
+TEST(validate_checks_a_delta_against_the_bases_it_names)
 {
     namespace fs = std::filesystem;
     char Tmpl[] = "/tmp/vgdbaseXXXXXX";
@@ -783,6 +803,7 @@ TEST(validate_checks_a_delta_against_the_archive_beneath_it)
     Header("over_both.vgdelta", 300, 100);    // built over a.zip + b.zip
     Header("over_d1.vgdelta", 250, 200);      // built over what over_base rebuilds
     Header("over_d1_wrong.vgdelta", 250, 201);
+    Header("over_a.vgdelta", 120, 30);        // a language depot's delta over a.zip
     auto Errors = [&](std::vector<ordered_json> Layers) {
         Layers.insert(Layers.end(), { NF::Exec("win32", "g.exe"), NF::Tile("1"), NF::Variant("v") });
         NodeIndex Idx;
@@ -790,43 +811,27 @@ TEST(validate_checks_a_delta_against_the_archive_beneath_it)
         ManifestModel::DeriveFacts(Idx);
         return ::Errors(Idx);
     };
-    const auto Zip = [](const char *N, const char *T = "%GameDir%") { return NF::Content("zip", N, T); };
-    const auto Delta = [](const char *N) { return NF::Content("delta", N, "%GameDir%"); };
-    const std::string Msg = "the mount would rebuild it from";
-    CHECK(!AnyContains(Errors({ Zip("base.zip"), Delta("over_base.vgdelta") }), Msg));
-    const auto Slipped = Errors({ Zip("base.zip"), Zip("patch.zip"), Delta("over_base.vgdelta") });
-    CHECK(AnyContains(Slipped, "'over_base.vgdelta' was built over 100 bytes, but the mount would rebuild it from 'patch.zip' (50 bytes)"));
-    CHECK(!AnyContains(Errors({ Zip("base.zip"), Delta("over_base.vgdelta"), Zip("patch.zip") }), Msg));   // a patch above is fine
+    const auto Zip = [](const char *N, const char *Cid, const char *T = "%GameDir%") { return NF::ContentCid("zip", N, Cid, T); };
+    const auto Over = [](const char *N, std::vector<std::string> Bases, const char *Cid = "") {
+        return NF::DeltaOver(N, std::move(Bases), "%GameDir%", Cid);
+    };
+    const std::string Msg = "the bases it names are";
+    CHECK(!AnyContains(Errors({ Zip("base.zip", "QmBase"), Over("over_base.vgdelta", { "QmBase" }) }), Msg));
+    CHECK(AnyContains(Errors({ Zip("base.zip", "QmBase"), Zip("patch.zip", "QmPatch"), Over("over_base.vgdelta", { "QmPatch" }) }),
+                      "'over_base.vgdelta' was built over 100 bytes, but the bases it names are 'patch.zip' (50 bytes)"));
+    CHECK(!AnyContains(Errors({ Zip("base.zip", "QmBase"), Zip("patch.zip", "QmPatch"), Over("over_base.vgdelta", { "QmBase" }) }), Msg));
     //Several bases: their sizes add up, in the order named.
-    auto Both = NF::Content("delta", "over_both.vgdelta", "%GameDir%/out");
-    Both["LAYERS"][0]["BASE_TARGETS"] = ordered_json::array({ "FILES/%GameDir%/a", "FILES/%GameDir%/b" });
-    CHECK(!AnyContains(Errors({ Zip("a.zip", "%GameDir%/a"), Zip("b.zip", "%GameDir%/b"), Both }), Msg));
-    CHECK(AnyContains(Errors({ Zip("a.zip", "%GameDir%/a"), Zip("patch.zip", "%GameDir%/b"), Both }), "from 'a.zip' + 'patch.zip' (80 bytes)"));
+    CHECK(!AnyContains(Errors({ Zip("a.zip", "QmA", "%GameDir%/a"), Zip("b.zip", "QmB", "%GameDir%/b"), Over("over_both.vgdelta", { "QmA", "QmB" }) }), Msg));
+    CHECK(AnyContains(Errors({ Zip("a.zip", "QmA", "%GameDir%/a"), Zip("patch.zip", "QmP", "%GameDir%/b"), Over("over_both.vgdelta", { "QmA", "QmP" }) }),
+                      "are 'a.zip' + 'patch.zip' (80 bytes)"));
     //A chain: a delta over a delta is built over what the lower one rebuilds (its header's target size).
-    CHECK(!AnyContains(Errors({ Zip("base.zip"), Delta("over_base.vgdelta"), Delta("over_d1.vgdelta") }), Msg));
-    CHECK(AnyContains(Errors({ Zip("base.zip"), Delta("over_base.vgdelta"), Delta("over_d1_wrong.vgdelta") }), "built over 201 bytes"));
-    //A zip stacked over a finished chain is an overlay, not part of the byte view a delta elsewhere reads there.
-    Header("over_game.vgdelta", 300, 200);
-    auto Elsewhere = NF::Content("delta", "over_game.vgdelta", "%GameDir%/out");
-    Elsewhere["LAYERS"][0]["BASE_TARGETS"] = ordered_json::array({ "FILES/%GameDir%" });
-    CHECK(!AnyContains(Errors({ Zip("base.zip"), Delta("over_base.vgdelta"), Zip("patch.zip"), Elsewhere }), Msg));
-    //Another depot beneath a chain at the same target is no part of its base.
-    CHECK(!AnyContains(Errors({ Zip("patch.zip"), Zip("base.zip"), Delta("over_base.vgdelta") }), Msg));
-    //A zip below every chain at a target is its view for a delta elsewhere, even with a chain beginning there later.
-    Header("over_a.vgdelta", 120, 30);
-    auto OverA = NF::Content("delta", "over_a.vgdelta", "%GameDir%");
-    OverA["LAYERS"][0]["BASE_TARGETS"] = ordered_json::array({ "FILES/%GameDir%/a" });
-    Header("elsewhere_wrong.vgdelta", 300, 99);
-    auto Wrong = NF::Content("delta", "elsewhere_wrong.vgdelta", "%GameDir%/out");
-    Wrong["LAYERS"][0]["BASE_TARGETS"] = ordered_json::array({ "FILES/%GameDir%" });
-    const auto Early = Errors({ Zip("a.zip", "%GameDir%/a"), Zip("base.zip"), Wrong, OverA });
-    CHECK(AnyContains(Early, "'elsewhere_wrong.vgdelta' was built over 99 bytes, but the mount would rebuild it from 'base.zip' (100 bytes)"));
-    CHECK(!AnyContains(Early, "'over_a.vgdelta' was built"));
-    //Two depots' chains interleaved: the language delta lands on the main depot's chain and cannot rebuild.
-    CHECK(AnyContains(Errors({ Zip("a.zip", "%GameDir%/a"), Zip("base.zip"), OverA, Delta("over_base.vgdelta") }),
-                      "'over_base.vgdelta' was built over 100 bytes, but the mount would rebuild it from 'over_a.vgdelta' (120 bytes)"));
+    CHECK(!AnyContains(Errors({ Zip("base.zip", "QmBase"), Over("over_base.vgdelta", { "QmBase" }, "QmD1"), Over("over_d1.vgdelta", { "QmD1" }) }), Msg));
+    CHECK(AnyContains(Errors({ Zip("base.zip", "QmBase"), Over("over_base.vgdelta", { "QmBase" }, "QmD1"), Over("over_d1_wrong.vgdelta", { "QmD1" }) }),
+                      "built over 201 bytes"));
+    //Two depots' chains interleaved at one target: each delta reads what it names.
+    CHECK(!AnyContains(Errors({ Zip("a.zip", "QmA"), Zip("base.zip", "QmBase"), Over("over_a.vgdelta", { "QmA" }), Over("over_base.vgdelta", { "QmBase" }) }), Msg));
     //Not here to read: nothing to compare, nothing said (fetching is hydration's job).
-    CHECK(!AnyContains(Errors({ Zip("base.zip"), Zip("absent.zip"), Delta("over_base.vgdelta") }), Msg));
+    CHECK(!AnyContains(Errors({ Zip("base.zip", "QmBase"), Zip("absent.zip", "QmAbs"), Over("over_base.vgdelta", { "QmAbs" }) }), Msg));
     fs::remove_all(D);
 }
 
@@ -1159,8 +1164,9 @@ TEST(a_delta_hides_its_bases_spelling_from_the_case_checks)
         const auto Delta = vgdelta::GenerateDelta((const uint8_t *)B.data(), B.size(), (const uint8_t *)T.data(), T.size());
         std::ofstream(D / "new.vgdelta", std::ios::binary).write((const char *)Delta.data(), (std::streamsize)Delta.size());
     }
-    const auto Z = [](const char *N) { return NF::Content("zip", N, "%GameDir%"); };
-    const auto Dl = NF::Content("delta", "new.vgdelta", "%GameDir%");
+    const auto Z = [](const char *N) { return std::string(N) == "old.zip" ? NF::ContentCid("zip", N, "QmOld", "%GameDir%")
+                                                                          : NF::Content("zip", N, "%GameDir%"); };
+    const auto Dl = NF::DeltaOver("new.vgdelta", { "QmOld" }, "%GameDir%");
     auto Index = [&](std::vector<std::vector<ordered_json>> Variants) {
         NodeIndex Idx;
         int K = 0;
@@ -1178,6 +1184,11 @@ TEST(a_delta_hides_its_bases_spelling_from_the_case_checks)
     CHECK(AnyContains(Errors(Index({ { Z("old.zip"), Dl, Z("other.zip") } })),
                       "file 'Luxor.exe' (new.vgdelta) vs 'LUXOR.exe' (other.zip)"));
     CHECK(AnyContains(Errors(Index({ { Z("old.zip"), Z("steamless.zip") } })), Msg));   // no delta: a real conflict
+    //A base OUTSIDE its delta's target is only a source of bytes and stays in the view (a macOS build rebuilt over the
+    //Windows one): its names still meet the layers beside it. Teeth: hide every base wherever it lies.
+    CHECK(AnyContains(Errors(Index({ { NF::ContentCid("zip", "old.zip", "QmOld", "%GameDir%/win"),
+                                       NF::DeltaOver("new.vgdelta", { "QmOld" }, "%GameDir%/mac"),
+                                       NF::Content("zip", "steamless.zip", "%GameDir%/win") } })), Msg));
 
     const std::string Old = Slurp("old.zip"), Steamless = Slurp("steamless.zip");
     std::vector<std::string> Log;

@@ -1,4 +1,6 @@
 #include "nodelower.h"
+
+#include <optional>
 #include "contentfile.h"
 #include "commonutils.h"
 #include "fold.h"
@@ -68,11 +70,11 @@ void EmitRegTree(const std::string &Path, const ordered_json &Tree, const ordere
 
 ordered_json ContentOp(const std::string &Kind, const std::string &Payload, const std::string &Target,
                        const ordered_json &Source, const ordered_json &Size, const ordered_json &Submounts,
-                       const std::vector<std::string> &Bases = {})
+                       const ordered_json &BaseSources = ordered_json())
 {
     ordered_json L = { {"TYPE", VfsType(Kind)}, {"PATH", Payload} };
     if (!Target.empty()) L["TARGET"] = Target;
-    if (!Bases.empty()) L["BASE_TARGETS"] = Bases;     // the bases concatenated in order (the FS's multi-base delta)
+    if (BaseSources.is_array()) L["BASE_SOURCES"] = BaseSources;   // a delta's bases, by SOURCE CID, in order
     if (Source.is_string())
     {
         L["SOURCE"] = { {"TYPE", "ipfs"}, {"CID", Source} };
@@ -163,7 +165,7 @@ std::string CheckLayer(const ordered_json &L)
     if (T.empty()) return "needs exactly one type key (ZIP FILE DELTA DIR NODE EDIT REG VARS ENV DLL EXEC KEEP ANY NOT)";
     static const std::map<std::string, std::set<std::string>> Allowed = {
         {"ZIP",   {"SOURCE", "SIZE", "TARGET"}}, {"FILE",  {"SOURCE", "SIZE", "TARGET"}},
-        {"DELTA", {"SOURCE", "SIZE", "TARGET", "BASE_TARGETS"}}, {"DIR",   {"TARGET"}},
+        {"DELTA", {"SOURCE", "SIZE", "TARGET", "BASE_SOURCES"}}, {"DIR",   {"TARGET"}},
         {"NODE",  {"TAKE", "TARGET"}}, {"EDIT", {"TARGET"}}, {"REG", {"ARCH"}},
         {"VARS", {}}, {"ENV", {}}, {"DLL", {}}, {"EXEC", {}}, {"KEEP", {}}, {"ANY", {}}, {"NOT", {}},
     };
@@ -186,19 +188,19 @@ std::string CheckLayer(const ordered_json &L)
         if (!L["TARGET"].is_string()) return "TARGET must be a string";
         if (T != "NODE" && Tg != "FILES" && Tg.rfind("FILES/", 0) != 0) return T + " TARGET must name a FILES address";
     }
-    //A delta built over several bases (a game folder and its CD music folder): their contents concatenated, in order.
-    if (L.contains("BASE_TARGETS"))
+    //A delta names what it was built over: the SOURCE CIDs of the layers whose bytes, concatenated in order, are its
+    //base. Required — there is no implicit base — and a CID named twice is a concatenation nobody built.
+    if (T == "DELTA")
     {
-        const auto &B = L["BASE_TARGETS"];
-        if (!StrArray(B) || B.empty()) return "BASE_TARGETS must be a non-empty list of FILES addresses";
+        if (!L.contains("BASE_SOURCES")) return "DELTA needs BASE_SOURCES: the SOURCE CIDs of the layers it was built over";
+        const auto &B = L["BASE_SOURCES"];
+        if (!StrArray(B) || B.empty()) return "BASE_SOURCES must be a non-empty list of CIDs";
         std::set<std::string> Seen;
         for (const auto &E : B)
         {
-            const std::string A = E.get<std::string>();
-            if (A != "FILES" && A.rfind("FILES/", 0) != 0) return "BASE_TARGETS '" + A + "' must name a FILES address";
-            std::string Low = LowerAscii(A);
-            while (Low.size() > 5 && Low.back() == '/') Low.pop_back();
-            if (!Seen.insert(Low).second) return "BASE_TARGETS names '" + A + "' twice";
+            const std::string C = E.get<std::string>();
+            if (C.empty()) return "BASE_SOURCES has an empty CID";
+            if (!Seen.insert(C).second) return "BASE_SOURCES names '" + C + "' twice";
         }
     }
     const ordered_json &P = L[T];
@@ -503,11 +505,8 @@ nlohmann::ordered_json LowerNode(const nlohmann::ordered_json &J, const std::str
         ordered_json Ops = ordered_json::array();
         if (VfsType(T))
         {
-            std::vector<std::string> Bases;                   // a delta's bases, FILES namespace stripped like its target
-            if (T == "DELTA" && L.contains("BASE_TARGETS"))
-                for (const auto &B : L["BASE_TARGETS"]) Bases.push_back(FilesPath({ {"TARGET", B} }));
             Ops.push_back(ContentOp(T, Str(L[T]), FilesPath(L), L.value("SOURCE", ordered_json()),
-                                    L.value("SIZE", ordered_json()), ordered_json(), Bases));
+                                    L.value("SIZE", ordered_json()), ordered_json(), L.value("BASE_SOURCES", ordered_json())));
         }
         else if (T == "EDIT")
             for (const auto &O : L["EDIT"]) Ops.push_back(EditOp(O, FilesPath(L)));
@@ -687,6 +686,86 @@ std::vector<Mount> ApplyView(std::vector<Mount> Ms, const ordered_json &View)
 
 } // namespace
 
+std::vector<std::pair<size_t, nlohmann::ordered_json>> ContentOps(const Fold::Plan &P)
+{
+    std::vector<std::pair<size_t, ordered_json>> Out;
+    const auto Cid = [](const Fold::Item &I) { return I.Source.is_string() ? I.Source.get<std::string>() : std::string(); };
+    const auto Archive = [](const Fold::Item &I) { return I.Kind == "ZIP" || I.Kind == "DELTA"; };
+    //Where each content item mounts: whole at its target, or (seen through a TAKE) the submounts its takes leave —
+    //none when nothing of it is taken.
+    struct Shape { std::string Path; std::optional<ordered_json> Mounts; bool Shown = true; };
+    std::vector<Shape> Sh(P.Seq.size());
+    for (size_t J = 0; J < P.Seq.size(); ++J)
+    {
+        const Fold::Item &I = P.Seq[J];
+        if (I.Kind == "EDIT") continue;
+        Sh[J].Path = (VarSubst::RuntimeSourced(I.Payload) || I.Dir.empty())
+                   ? I.Payload
+                   : ContentFile::Path(I.Dir, I.Payload, Cid(I)).generic_string();   // '/' on every host: the plan is
+                                                                                    // data; a bumped name when versions share it
+        if (I.View.is_null()) continue;
+        //Seen through TAKE: only what is taken mounts, where TAKE puts it — as submounts (the FS's "src:dst" view of
+        //a source). A FILE is its bundle directory with the one file submounted, so a TAKE can rename it too.
+        const std::string Name = std::filesystem::path(I.Payload).filename().string();
+        const std::string OwnAddr = I.Own.empty() ? std::string("FILES") : "FILES/" + I.Own;
+        std::vector<Mount> Ms;
+        //The source is the file as it sits on disk (a bumped name when versions share it); the address keeps the
+        //name the node gives it, which is what TAKE selects and places.
+        if (I.Kind == "FILE") Ms.push_back({ std::filesystem::path(Sh[J].Path).filename().string(), OwnAddr + "/" + Name });
+        else Ms.push_back({ std::string(), OwnAddr });
+        Ms = ApplyView(Ms, I.View);
+        Sh[J].Shown = !Ms.empty();
+        ordered_json Mounts = ordered_json::array();
+        for (const auto &[Src, Addr] : Ms)
+            Mounts.push_back(Src + ":" + (Addr.size() > 6 ? Addr.substr(6) : std::string()));   // strip "FILES/"
+        Sh[J].Mounts = std::move(Mounts);
+    }
+    //A file a delta in this launch reads is mounted even when no TAKE shows it — for its bytes only, once, unless it
+    //is shown somewhere already (one CID is one file). Only a zip or a delta has bytes a delta can read.
+    std::set<std::string> Have;
+    for (size_t J = 0; J < P.Seq.size(); ++J) if (Archive(P.Seq[J]) && Sh[J].Shown && !Cid(P.Seq[J]).empty()) Have.insert(Cid(P.Seq[J]));
+    std::vector<bool> BytesOnly(P.Seq.size(), false);
+    std::vector<std::string> Want;
+    for (size_t J = 0; J < P.Seq.size(); ++J)
+        if (P.Seq[J].Kind == "DELTA" && Sh[J].Shown && P.Seq[J].BaseSources.is_array())
+            for (const auto &C : P.Seq[J].BaseSources) if (C.is_string()) Want.push_back(C.get<std::string>());
+    while (!Want.empty())
+    {
+        const std::string C = Want.back();
+        Want.pop_back();
+        if (!Have.insert(C).second) continue;
+        for (size_t J = 0; J < P.Seq.size(); ++J)
+            if (Archive(P.Seq[J]) && Cid(P.Seq[J]) == C)
+            {
+                BytesOnly[J] = true;
+                if (P.Seq[J].Kind == "DELTA" && P.Seq[J].BaseSources.is_array())
+                    for (const auto &B : P.Seq[J].BaseSources) if (B.is_string()) Want.push_back(B.get<std::string>());
+                break;
+            }
+    }
+    for (size_t J = 0; J < P.Seq.size(); ++J)
+    {
+        const Fold::Item &I = P.Seq[J];
+        if (I.Kind == "EDIT") continue;
+        if (!Sh[J].Shown)
+        {
+            if (!BytesOnly[J]) continue;                                      // nothing of it is taken, nothing reads it
+            ordered_json L = ContentOp(I.Kind, Sh[J].Path, I.Target, I.Source, I.Size, ordered_json(), I.BaseSources);
+            L["BYTES_ONLY"] = true;
+            Out.emplace_back(J, std::move(L));
+            continue;
+        }
+        if (!Sh[J].Mounts)
+            Out.emplace_back(J, ContentOp(I.Kind, Sh[J].Path, I.Target, I.Source, I.Size, ordered_json(), I.BaseSources));
+        else if (I.Kind == "FILE")
+            Out.emplace_back(J, ContentOp("DIR", std::filesystem::path(Sh[J].Path).parent_path().generic_string(), I.Target,
+                                          ordered_json(), ordered_json(), *Sh[J].Mounts));
+        else
+            Out.emplace_back(J, ContentOp(I.Kind, Sh[J].Path, I.Target, I.Source, I.Size, *Sh[J].Mounts, I.BaseSources));
+    }
+    return Out;
+}
+
 nlohmann::ordered_json LowerPlan(const Fold::Plan &P)
 {
     ordered_json Out = ordered_json::array();
@@ -706,8 +785,11 @@ nlohmann::ordered_json LowerPlan(const Fold::Plan &P)
         return Inside && !UserOwned(P.Keep, Address);
     };
 
-    for (const Fold::Item &I : P.Seq)
+    std::map<size_t, ordered_json> Content;           // a content item's op, by its place in the sequence
+    for (auto &[J, Op] : ContentOps(P)) Content.emplace(J, std::move(Op));
+    for (size_t J = 0; J < P.Seq.size(); ++J)
     {
+        const Fold::Item &I = P.Seq[J];
         if (I.Kind == "EDIT")
         {
             for (const auto &O : I.Ops)
@@ -732,33 +814,7 @@ nlohmann::ordered_json LowerPlan(const Fold::Plan &P)
             }
             continue;
         }
-        const std::string Path = (VarSubst::RuntimeSourced(I.Payload) || I.Dir.empty())
-                               ? I.Payload
-                               : ContentFile::Path(I.Dir, I.Payload, I.Source.is_string() ? I.Source.get<std::string>() : std::string())
-                                     .generic_string();   // '/' on every host: the plan is data; a bumped name when versions share it
-        if (I.View.is_null())
-        {
-            Out.push_back(ContentOp(I.Kind, Path, I.Target, I.Source, I.Size, ordered_json(), I.Bases));
-            continue;
-        }
-        //Seen through TAKE: only what is taken mounts, where TAKE puts it — as submounts (the FS's "src:dst" view of
-        //a source). A FILE is its bundle directory with the one file submounted, so a TAKE can rename it too.
-        const std::string Name = std::filesystem::path(I.Payload).filename().string();
-        const std::string OwnAddr = I.Own.empty() ? std::string("FILES") : "FILES/" + I.Own;
-        std::vector<Mount> Ms;
-        //The source is the file as it sits on disk (a bumped name when versions share it); the address keeps the
-        //name the node gives it, which is what TAKE selects and places.
-        if (I.Kind == "FILE") Ms.push_back({ std::filesystem::path(Path).filename().string(), OwnAddr + "/" + Name });
-        else Ms.push_back({ std::string(), OwnAddr });
-        Ms = ApplyView(Ms, I.View);
-        if (Ms.empty()) continue;                                            // nothing of this layer is taken
-        ordered_json Mounts = ordered_json::array();
-        for (const auto &[Src, Addr] : Ms)
-            Mounts.push_back(Src + ":" + (Addr.size() > 6 ? Addr.substr(6) : std::string()));   // strip "FILES/"
-        if (I.Kind == "FILE")
-            Out.push_back(ContentOp("DIR", std::filesystem::path(Path).parent_path().generic_string(), I.Target, ordered_json(), ordered_json(), Mounts));
-        else
-            Out.push_back(ContentOp(I.Kind, Path, I.Target, I.Source, I.Size, Mounts, I.Bases));
+        if (const auto It = Content.find(J); It != Content.end()) Out.push_back(std::move(It->second));
     }
     //The folded registry, one RegEdit per (architecture, key, ownership) — values in fold order within a key. A value
     //is judged by its own address (REG/<key>/<value>): one the package takes back inside a kept key (UserPatch's

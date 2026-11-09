@@ -86,9 +86,8 @@ std::string ListToText(const json &Arr)
     return T;
 }
 
-//One line per entry, trimmed. KeepEmpty: a blank line is an entry (a delta's BASE_TARGETS: "" is the mount root),
-//including the last one; wholly empty text is no entries.
-json TextToList(const std::string &T, bool KeepEmpty)
+//One line per entry, trimmed; a blank line is typing noise.
+json TextToList(const std::string &T)
 {
     json Arr = json::array();
     std::string Line;
@@ -97,8 +96,7 @@ json TextToList(const std::string &T, bool KeepEmpty)
         if (I == T.size() || T[I] == '\n')
         {
             const size_t B = Line.find_first_not_of(" \t\r"), E = Line.find_last_not_of(" \t\r");
-            if (B != std::string::npos)   Arr.push_back(Line.substr(B, E - B + 1));
-            else if (KeepEmpty && !T.empty()) Arr.push_back(std::string());
+            if (B != std::string::npos) Arr.push_back(Line.substr(B, E - B + 1));
             Line.clear();
         }
         else Line += T[I];
@@ -364,9 +362,7 @@ void Field(json &Node, const PkgGraph::Field &F, Host &H, int Layer)
         break;
     }
     case FieldKind::StringList:
-    case FieldKind::StringListKeepEmpty:
     {
-        const bool KeepEmpty = (F.Kind == FieldKind::StringListKeepEmpty);
         //A value of the WRONG SHAPE is shown, never edited: the list round trip drops non-string entries, so the
         //first keystroke would destroy them — in the tool opened to repair them.
         const json *Val = (Node.is_object() && Node.contains(F.Key)) ? &Node[F.Key] : nullptr;
@@ -384,7 +380,7 @@ void Field(json &Node, const PkgGraph::Field &F, Host &H, int Layer)
         }
         std::string T = ListToText(Val ? *Val : json::array());
         auto Write = [&](const std::string &Text) {
-            json A = TextToList(Text, KeepEmpty);
+            json A = TextToList(Text);
             if (A.empty()) Node.erase(F.Key); else Node[F.Key] = std::move(A);   // an emptied list omits the key
             H.Dirty();
         };
@@ -501,8 +497,8 @@ void Field(json &Node, const PkgGraph::Field &F, Host &H, int Layer)
                 const bool Runner = Arr[I].contains("GUEST") && Arr[I]["GUEST"].is_array() && !Arr[I]["GUEST"].empty();
                 for (const PkgGraph::Field &S : F.Sub)
                 {
-                    //BASE_TARGETS means nothing except on a delta (NodeLower refuses it elsewhere).
-                    if (S.Key == std::string("BASE_TARGETS") && StrOf(Arr[I], "FORM") != "delta") continue;
+                    //BASE_SOURCES means nothing except on a delta (NodeLower refuses it elsewhere).
+                    if (S.Key == std::string("BASE_SOURCES") && StrOf(Arr[I], "FORM") != "delta") continue;
                     if (F.Key == std::string("EXEC") && !Runner && RunnerOnly(S.Key) && !Arr[I].contains(S.Key)) continue;
                     if (!PkgGraph::FieldApplies(S, Arr[I])) continue;    // a field this entry's mode does not read
                     //Which entry a host action is about (the Exe picker writes into this one).

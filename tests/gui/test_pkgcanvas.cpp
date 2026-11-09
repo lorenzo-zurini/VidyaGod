@@ -747,7 +747,7 @@ private slots:
     {
         const json Game = json{{"LABEL", "Game"}, {"LAYERS", json::array({
             json{{"KEEP", {{"FILES/%GameDir%/Saves/", true}, {"REG/HKLM/Software/Acme/Game", true}}}},
-            json{{"DELTA", "free.vgdelta"}, {"TARGET", "FILES/%GameDir%"}} })}};
+            json{{"DELTA", "free.vgdelta"}, {"TARGET", "FILES/%GameDir%"}, {"BASE_SOURCES", json::array({ "QmBase" })}} })}};
         const std::string G = Cid::OfNode(Game);
         H.Doc.Reset({{G, Game}});
         H.Display = ImVec2(1400, 2400);

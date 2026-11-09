@@ -111,11 +111,14 @@ int ContentIndex(const nlohmann::ordered_json &Node);
 std::string ContentType(const nlohmann::ordered_json &Node);
 std::string ContentName(const nlohmann::ordered_json &Node);
 std::string ContentTarget(const nlohmann::ordered_json &Node);
-//The file a node's content can be diffed against, "" when there is none. In the fold a delta's base is the nearest
-//content at its own target, so it is a node this one contains EARLIER in its LAYERS — whole (no TAKE, no TARGET:
-//either moves or narrows what lands) — whose content layer is a ZIP at the SAME target. Nearest first. The "-> delta"
-//button (ActionsFor) and the action itself both ask this, so the button never offers what the action refuses.
-std::string DeltaBase(const std::vector<NodeRef> &Nodes, int Index);
+//The node whose zip a node's content can be diffed against (an index into Nodes), -1 when there is none: a node this
+//one contains EARLIER in its LAYERS — whole (no TAKE, no TARGET: either moves or narrows what lands) — whose content
+//layer is a ZIP at the SAME target. Nearest first. The "-> delta" button (ActionsFor) and the action itself both ask
+//this, so the button never offers what the action refuses. The delta then NAMES it (BASE_SOURCES), by its CID.
+int DeltaBase(const std::vector<NodeRef> &Nodes, int Index);
+//The nodes holding the zips a delta node's BASE_SOURCES names, in order (indices into Nodes) — what "undelta" rebuilds
+//it over. Empty when the node's content is not a delta, or any base it names is not a plain zip among Nodes.
+std::vector<int> DeltaBaseZips(const std::vector<NodeRef> &Nodes, int Index);
 //A starter layer of a type (valid by construction: required keys present).
 nlohmann::ordered_json NewLayer(const std::string &Type);
 //A fresh node carrying ONE starter layer ("" ⇒ a node with no layers yet).
@@ -142,12 +145,6 @@ enum class FieldKind
     Enum,        // a string with a fixed option list
     Check,       // a bool
     StringList,  // an array of strings, one per line; blank lines are typing noise and are dropped
-    // ...except here: an array of strings where an EMPTY entry is MEANINGFUL, so a blank line is data, not noise.
-    // A delta's BASE_TARGETS is the only such field: "" is the mount root, a perfectly ordinary base. Under the
-    // plain StringList writer that entry could not be typed (blank line dropped → list empty → key erased) and,
-    // worse, an existing ["", "dxvk"] lost its first element the moment anyone touched the box — turning a
-    // two-base delta into a one-base one, which is a base of the wrong SIZE and a layer the mount silently skips.
-    StringListKeepEmpty,
     KeyValue,    // an object of string→string (a null value is shown as a removal)
     ObjArray,    // an array of objects, each described by `Sub`
     RegTree,     // a REG layer's hive tree, edited as flattened key paths

@@ -102,7 +102,8 @@ json Facts(PackageEditorModel &M, int I)
     for (const auto &L : Li) Items.push_back({{"layer", L.Layer}, {"type", L.Type}, {"title", L.Title}, {"section", L.Section}, {"summary", L.Summary}});
     std::vector<std::string> Hints;
     if (const auto Is = M.issuesByHandle(); Is.count(D.Handle(I))) Hints = Is.at(D.Handle(I));
-    const std::string Base = PkgGraph::DeltaBase(Docs, I);
+    const int BaseNode = PkgGraph::DeltaBase(Docs, I);
+    const std::string Base = BaseNode < 0 ? std::string() : PkgGraph::ContentName(D.Node(BaseNode));
     json Acts = json::array();
     for (const auto &Ac : PkgGraph::ActionsFor(N, !Base.empty(), Hints)) Acts.push_back({{"id", Ac.Id}, {"label", Ac.Label}, {"tip", Ac.Tip}, {"long", Ac.Heavy}});
     json Entries = json::array(), Vars = json::object(), Reg = json::array(), Takes = json::array(), Faults = json::array();
@@ -133,7 +134,10 @@ json Facts(PackageEditorModel &M, int I)
     return {{"index", I}, {"handle", D.Handle(I)}, {"id", PkgGraph::SafeId(D.Handle(I))}, {"file", D.File(I)}, {"kind", PkgGraph::KindOf(N)},
             {"types", PkgGraph::LayerTypes(N)}, {"describe", PkgGraph::Describe(N, Label)},
             {"content", {{"layer", PkgGraph::ContentIndex(N)}, {"type", PkgGraph::ContentType(N)}, {"name", PkgGraph::ContentName(N)},
-                         {"target", PkgGraph::ContentTarget(N)}, {"delta_base", Base}}},
+                         {"target", PkgGraph::ContentTarget(N)}, {"delta_base", Base}, {"delta_bases", [&] {
+                             json Z = json::array();
+                             for (int B : PkgGraph::DeltaBaseZips(Docs, I)) Z.push_back(PkgGraph::ContentName(D.Node(B)));
+                             return Z; }()}}},
             {"rows", Items}, {"top_level_rows", PkgGraph::TopLevelRows(Li)}, {"actions", Acts}, {"entries", Entries}, {"variables", Vars},
             {"registry", Reg}, {"takes", Takes}, {"faults", Faults}, {"refs", Refs}, {"issues", Hints}, {"node", N}};
 }
@@ -146,7 +150,6 @@ const char *KindName(PkgGraph::FieldKind K)
     case PkgGraph::FieldKind::Enum: return "enum";
     case PkgGraph::FieldKind::Check: return "check";
     case PkgGraph::FieldKind::StringList: return "lines";
-    case PkgGraph::FieldKind::StringListKeepEmpty: return "lines (blank kept)";
     case PkgGraph::FieldKind::KeyValue: return "key=value";
     case PkgGraph::FieldKind::ObjArray: return "entries";
     case PkgGraph::FieldKind::RegTree: return "registry";
@@ -274,7 +277,7 @@ VG_COMMANDS
         "the actions the canvas offers it, and its validation issues.", { PkgArg(), NodeArg() },
         { "build node 749 'Patch 2.0a'", "build node 749 0 --json" },
         { "PkgDoc::Document::IndexOf", "NodeRefs::Each", "PkgDoc::LooksLikeCid", "PkgGraph::SafeId", "PkgGraph::LayerTypes", "PkgGraph::Describe",
-          "PkgGraph::ContentIndex", "PkgGraph::ContentType", "PkgGraph::ContentName", "PkgGraph::ContentTarget", "PkgGraph::DeltaBase",
+          "PkgGraph::ContentIndex", "PkgGraph::ContentType", "PkgGraph::ContentName", "PkgGraph::ContentTarget", "PkgGraph::DeltaBase", "PkgGraph::DeltaBaseZips",
           "PkgGraph::CollectVarFacets", "PkgGraph::LayerItems", "PkgGraph::TopLevelRows", "PkgGraph::ActionsFor", "PkgGraph::EntryTitle",
           "PkgGraph::EntrySummary", "PkgGraph::VarTitle", "PkgGraph::RegRowsOf", "PkgGraph::CountRegRows", "PkgGraph::TakeToText",
           "PkgGraph::TakeFault", "PkgGraph::StringListFault", "PkgGraph::DescribeValue", "PackageEditorModel::issuesByHandle",

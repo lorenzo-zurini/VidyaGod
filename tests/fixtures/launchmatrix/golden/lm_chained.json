@@ -162,28 +162,43 @@
     },
     {
       "PATH": "<DATA>/fixture/[90000000000001][v1.0] Launch Matrix/base.zip",
+      "SOURCE": {
+        "CID": "bafkreidmt6slryaa4kqf4si4zooll4cey253f37sok2oerqwyxxgskgw7i",
+        "TYPE": "ipfs"
+      },
       "TARGET": "pfx/drive_c/90000000000001/deltatarget",
       "TYPE": "VFSZipLayer"
     },
     {
+      "BASE_SOURCES": [
+        "bafkreidmt6slryaa4kqf4si4zooll4cey253f37sok2oerqwyxxgskgw7i"
+      ],
       "PATH": "<DATA>/fixture/[90000000000001][v1.0] Launch Matrix/over_base.vgdelta",
       "TARGET": "pfx/drive_c/90000000000001/deltatarget",
       "TYPE": "VFSDeltaLayer"
     },
     {
       "PATH": "<DATA>/fixture/[90000000000001][v1.0] Launch Matrix/base.zip",
+      "SOURCE": {
+        "CID": "bafkreidmt6slryaa4kqf4si4zooll4cey253f37sok2oerqwyxxgskgw7i",
+        "TYPE": "ipfs"
+      },
       "TARGET": "pfx/drive_c/90000000000001/multi",
       "TYPE": "VFSZipLayer"
     },
     {
       "PATH": "<DATA>/fixture/[90000000000001][v1.0] Launch Matrix/music.zip",
+      "SOURCE": {
+        "CID": "bafkreiemulw7uf6n6cziiu2nerz6n3dea54tqzlu3z5gneacfsftyonhzi",
+        "TYPE": "ipfs"
+      },
       "TARGET": "pfx/drive_c/90000000000001/multi/music",
       "TYPE": "VFSZipLayer"
     },
     {
-      "BASE_TARGETS": [
-        "pfx/drive_c/90000000000001/multi",
-        "pfx/drive_c/90000000000001/multi/music"
+      "BASE_SOURCES": [
+        "bafkreidmt6slryaa4kqf4si4zooll4cey253f37sok2oerqwyxxgskgw7i",
+        "bafkreiemulw7uf6n6cziiu2nerz6n3dea54tqzlu3z5gneacfsftyonhzi"
       ],
       "PATH": "<DATA>/fixture/[90000000000001][v1.0] Launch Matrix/multi.vgdelta",
       "TARGET": "pfx/drive_c/90000000000001/multi",
@@ -196,10 +211,17 @@
     },
     {
       "PATH": "<DATA>/fixture/[90000000000001][v1.0] Launch Matrix/lang_v1.zip",
+      "SOURCE": {
+        "CID": "bafkreicc7n7crmibum5mwejhxrgmh6jlbrj4pgdwp5tfzitfxw7bylphpq",
+        "TYPE": "ipfs"
+      },
       "TARGET": "pfx/drive_c/90000000000001/depot",
       "TYPE": "VFSZipLayer"
     },
     {
+      "BASE_SOURCES": [
+        "bafkreicc7n7crmibum5mwejhxrgmh6jlbrj4pgdwp5tfzitfxw7bylphpq"
+      ],
       "PATH": "<DATA>/fixture/[90000000000001][v1.0] Launch Matrix/lang.vgdelta",
       "TARGET": "pfx/drive_c/90000000000001/depot",
       "TYPE": "VFSDeltaLayer"

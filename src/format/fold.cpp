@@ -581,8 +581,7 @@ static Plan ResolveImpl(const Library &Lib, const std::string &Root, const Vars 
             It.Size = L.contains("SIZE") ? L["SIZE"] : json();
             It.Own = NsPath(L.contains("TARGET") ? Str(L["TARGET"]) : std::string("FILES")).second;
             It.Target = Place(It.Own, S.Prefix);
-            if (S.Kind == "DELTA" && L.contains("BASE_TARGETS") && L["BASE_TARGETS"].is_array())
-                for (const auto &B : L["BASE_TARGETS"]) It.Bases.push_back(Place(NsPath(Str(B)).second, S.Prefix));
+            if (S.Kind == "DELTA" && L.contains("BASE_SOURCES")) It.BaseSources = L["BASE_SOURCES"];
             P.Seq.push_back(std::move(It));
         }
         else if (S.Kind == "EDIT")
@@ -846,7 +845,7 @@ json PlanToJson(const Plan &P)
         {
             E["payload"] = I.Payload; E["dir"] = I.Dir; E["source"] = I.Source; E["size"] = I.Size;
             E["view"] = I.View;
-            if (!I.Bases.empty()) E["bases"] = I.Bases;
+            if (!I.BaseSources.is_null()) E["base_sources"] = I.BaseSources;
         }
         E["target"] = I.Target; E["from"] = I.From; E["at"] = I.At;
         Seq.push_back(std::move(E));

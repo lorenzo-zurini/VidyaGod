@@ -499,8 +499,8 @@ class Resolver:
                         "target": place(tp, prefix), "own": tp,
                         "view": [[t, a] for t, a in view_steps(view)] if view_takes(view) else None,
                         "from": s["from"], "at": s["at"]}
-                if k == "DELTA" and isinstance(L.get("BASE_TARGETS"), list):   # its bases, placed like its target
-                    item["bases"] = [place(ns_path(b)[1], prefix) for b in L["BASE_TARGETS"]]
+                if k == "DELTA" and "BASE_SOURCES" in L:                     # its bases, by SOURCE CID, in order
+                    item["base_sources"] = L["BASE_SOURCES"]
                 seq.append(item)
             elif k == "EDIT":
                 ns, tp = ns_path(L["TARGET"])
@@ -628,8 +628,8 @@ def plan_json(plan):
             e["ops"] = it["ops"]
         else:
             e.update(payload=it["payload"], dir=it["dir"], source=it["source"], size=it.get("size"), view=it["view"])
-            if it.get("bases"):
-                e["bases"] = it["bases"]
+            if "base_sources" in it:
+                e["base_sources"] = it["base_sources"]
         e.update({"target": it["target"], "from": it["from"], "at": it["at"]})
         seq.append(e)
     return {"seq": seq,
@@ -767,33 +767,50 @@ def shelf(nodes, builtins=None):
 _NAMES = {}
 
 
+def base_indices(seq, j):
+    """Which items the delta seq[j] is rebuilt from (chapter 04 §4.1): for each CID its BASE_SOURCES names, in order, an
+    item carrying that SOURCE — any, anywhere in the fold (one CID is one file); None where none does."""
+    out = []
+    for c in seq[j].get("base_sources") or []:
+        out.append(next((i for i, b in enumerate(seq) if b["kind"] in ("ZIP", "DELTA") and b.get("source") == c), None))
+    return out
+
+
+def _chain(seq, j):
+    """The files whose bytes seq[j] mounts, as nested lists: a ZIP's file; a DELTA's [file, [base chains…]]. None when a
+    base it names is not beneath it, or a file is not here."""
+    c = seq[j]
+    if c["kind"] not in ("ZIP", "DELTA") or not c.get("dir"):
+        return None
+    f = os.path.join(c["dir"], c["payload"])
+    if c["kind"] == "ZIP":
+        return f
+    bases = []
+    for i in base_indices(seq, j):
+        b = None if i is None else _chain(seq, i)
+        if b is None:
+            return None
+        bases.append(b)
+    return (f, tuple(bases)) if bases else None
+
+
 def _member_names(seq, j):
-    """Lower-cased members of the zip seq[j] mounts (a DELTA: the zip its chain reconstructs — its base is the
-    content beneath at the same target, down to the zip). None when unreadable."""
+    """Lower-cased members of the zip seq[j] mounts (a DELTA: the zip it rebuilds over the bases it names). None when
+    unreadable."""
     import zipfile
     c = seq[j]
-    chain = [os.path.join(c["dir"], c["payload"])]
-    if c["kind"] == "DELTA":
-        for i in range(j - 1, -1, -1):
-            b = seq[i]
-            if b["kind"] == "EDIT" or b["target"] != c["target"]:
-                continue
-            if b["kind"] not in ("ZIP", "DELTA") or not b.get("dir"):
-                return None
-            chain.insert(0, os.path.join(b["dir"], b["payload"]))
-            if b["kind"] == "ZIP":
-                break
-        else:
-            return None
-    key = tuple(chain)
+    chain = _chain(seq, j)
+    if chain is None:
+        return None
+    key = chain
     if key not in _NAMES:
         try:
             if c["kind"] == "ZIP":
-                with zipfile.ZipFile(chain[0]) as z:
+                with zipfile.ZipFile(chain) as z:
                     _NAMES[key] = {n.rstrip("/").lower() for n in z.namelist()}
             else:
                 from vgdelta import zip_names_of
-                _NAMES[key] = zip_names_of(list(chain))
+                _NAMES[key] = zip_names_of(chain)
         except Exception:
             _NAMES[key] = None
     return _NAMES[key]
@@ -868,9 +885,9 @@ def fixtures():
                                                                                          "COVER": {"FILE": "b.png"}}}]}])},
          [("v", {}, []), ("base", {}, [])]),
         # a delta over two bases, seen whole and placed by a containing node
-        ("delta-bases", {"r": N([Z("r", "FILES/g"), Z("m", "FILES/g/music")]),
+        ("delta-bases", {"r": N([dict(Z("r", "FILES/g"), SOURCE="Qmr"), dict(Z("m", "FILES/g/music"), SOURCE="Qmm")]),
                          "f": N([{"NODE": "r"}, {"DELTA": "f.vgdelta", "TARGET": "FILES/g",
-                                                 "BASE_TARGETS": ["FILES/g", "FILES/g/music"]}]),
+                                                 "BASE_SOURCES": ["Qmr", "Qmm"]}]),
                          "s": N([{"NODE": "f", "TARGET": "FILES/sub"}])},
          [("f", {}, []), ("s", {}, [])]),
         ("placement", {"lib": N([Z("l1", "FILES/sub"), Z("l2", "FILES/C:/abs"), {"NODE": "leaf", "TARGET": "FILES/deep"},

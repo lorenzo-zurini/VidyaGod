@@ -215,28 +215,20 @@ std::string LayerType(const nlohmann::ordered_json &Sub);
 // the two must agree so target strings match the FS's per-target base map (a parity test pins that; the FS side
 // additionally never sees backslashes, its inputs being zip entry names). Was inlined ×3 across the engine.
 std::string NormalizeTargetPath(std::string P);
-// The ONE answer to "which key holds this delta's byte-bases, and in what order?". A delta may be based on the
-// CONCATENATION of several composed views (a wine build ‖ a DXVK build ‖ the previous prefix), so the answer is
-// always a LIST, under ONE key: `BASE_TARGETS`. There is no singular spelling anywhere in the format — two
-// spellings for one idea is how the plural came to be emitted, documented and never read by the mounter.
-// Returns the DECLARED strings, unresolved and unsubstituted — each caller applies its own target resolution.
-// Empty for a non-delta layer, and for a delta with no declared base (whose base is implicitly the composed view
-// at its own TARGET). Every question of this shape asked separately per call site has broken separately; this one
-// is asked once. Order is load-bearing: it must match what generation concatenated.
-std::vector<std::string> LayerBaseTargets(const nlohmann::ordered_json &Sub);
+// A delta's bases as it names them: the SOURCE CIDs of BASE_SOURCES, in order — from a lowered layer (TYPE
+// "VFSDeltaLayer") or a raw LAYERS entry (FORM "delta"). Empty for any other layer, and for a malformed list (logged:
+// a list missing an entry would be a base of the wrong bytes). Order is load-bearing: it is what generation concatenated.
+std::vector<std::string> LayerBaseSources(const nlohmann::ordered_json &Sub);
 // True when a string still holds an unresolved %TOKEN% after substitution. The single definition of "surviving
 // token" — the mount builders and --audit-packages must agree, or one reports a launch broken that the other
 // calls clean.
 bool HasLiveToken(const std::string &S);
-// Build one vidyagodfs spec-layer object from a package VFS layer, with caller-resolved Source/Target (and, for a
-// delta, its resolved byte-BASES in order). Null json if `Sub` is not a VFS layer. Centralizes the entry skeleton so
-// mount builders never drift.
-//
-// A delta's bases go on the wire as ONE key, `baseTargets`, however many there are — an empty string is a real
-// target (the VFS root), so a singular key could not distinguish "based at the root" from "no base declared".
+// Build one vidyagodfs spec-layer object from a package VFS layer, with caller-resolved Source/Target. Null json if
+// `Sub` is not a VFS layer. Centralizes the entry skeleton so mount builders never drift. A zip or delta carries its
+// own CID ("cid") and a delta the CIDs of its bases ("bases"): the FS finds each file and decides what it hides
+// (VidyaGodFS treeplan.h). A base no TAKE shows is "bytesOnly".
 nlohmann::ordered_json MakeVfsSpecLayer(const nlohmann::ordered_json &Sub, const std::string &Source,
-                                        const std::string &Target,
-                                        const std::vector<std::string> &BaseTargets = {});
+                                        const std::string &Target);
 // A VFS layer's locators: its expected LOCAL path (PackagePath/PATH, SOURCE.PATH overriding) and its ipfs CID
 // (empty if none). The local path is the content's home; the CID is a remote fallback to fetch it from.
 void LayerLocator(const nlohmann::ordered_json &Sub, const std::filesystem::path &PackagePath,

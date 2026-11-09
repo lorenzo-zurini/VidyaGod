@@ -1388,7 +1388,7 @@ static void DrawNode(PkgCanvas &Self, PkgCanvasState &S, int Vi, std::vector<ImG
         PkgGraph::ActionsFor(D.Node(V.Doc), [&] {
             if (PkgGraph::ContentType(D.Node(V.Doc)) != "ZIP") return false;
             for (int I = 0; I < D.Count(); ++I) Refs.push_back({D.Handle(I), &D.Node(I)});
-            return !PkgGraph::DeltaBase(Refs, V.Doc).empty();
+            return PkgGraph::DeltaBase(Refs, V.Doc) >= 0;
         }(), Hi == S.Hints.end() ? NoHints : Hi->second);
     if (!Acts.empty())
     {

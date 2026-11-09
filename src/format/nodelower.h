@@ -2,6 +2,9 @@
 #define NODELOWER_H
 
 #include <nlohmann/json.hpp>
+
+#include <utility>
+#include <vector>
 #include <functional>
 #include <string>
 
@@ -44,6 +47,11 @@ nlohmann::ordered_json LowerEntry(const nlohmann::ordered_json &Entry);
 //whose address lies inside a user-owned (KEEP) subtree but is taken back by a more specific KEEP false is marked
 //OVERRIDE: it is re-applied after the user's state is restored — the package owns it.
 nlohmann::ordered_json LowerPlan(const Fold::Plan &P);
+//LowerPlan's content ops alone, each with its item's place in P.Seq: an item mounts whole at its target, through the
+//submounts a TAKE leaves, or — no TAKE showing it, but a delta in this launch reading it — for its bytes only
+//(BYTES_ONLY), once per file. An item nothing shows and nothing reads has none. The launch's mount spec and the
+//validator's are built from these, so the two describe one tree.
+std::vector<std::pair<size_t, nlohmann::ordered_json>> ContentOps(const Fold::Plan &P);
 
 //Is Address (a FILES/… or REG/… address, guest coordinates) owned by the user under this KEEP fold? The most
 //specific KEEP entry covering it decides; nothing covering it ⇒ package-owned.

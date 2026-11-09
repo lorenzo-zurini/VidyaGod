@@ -9,6 +9,7 @@
 #include "cid.h"
 #include "contentfile.h"
 #include "fold.h"
+#include "launchtree.h"
 #include "manifestmodel.h"
 #include "nodegraph.h"
 #include "nodelower.h"
@@ -181,12 +182,12 @@ VG_COMMANDS
         "node layers", "every content layer of a node: how it mounts, where its bytes are",
         "For each of a node's own lowered layers: its type, whether it is mounted content (and as which spec kind), a "
         "runtime path (a %variable% it resolves at launch) or part of a runner's build; its path, the variables in it, "
-        "its target normalised, its delta bases; where its bytes live here (the package's file name, bumped when two "
+        "its target normalised, the CIDs of its delta bases; where its bytes live here (the package's file name, bumped when two "
         "CIDs claim it) and its CID; whether a zip is all STOREd; and the mount-spec entry the engine builds from it.",
         { NodeArg() }, { "node layers bafkreiank43ketmdy2jtdcnn5utluobf53avcuubisi3ajtdxrcnmyteka" },
         { "ManifestModel::LayerType", "ManifestModel::IsVfsLayer", "ManifestModel::VfsSpecType", "ManifestModel::IsRuntimeSourcedLayer",
           "ManifestModel::IsRunnerBuildLayer", "ManifestModel::LayerPathString", "VarSubst::PathTokens", "VarSubst::RuntimeSourced",
-          "ManifestModel::NormalizeTargetPath", "ManifestModel::LayerBaseTargets", "ManifestModel::LayerLocator",
+          "ManifestModel::NormalizeTargetPath", "ManifestModel::LayerBaseSources", "ManifestModel::LayerLocator",
           "ManifestModel::ResolveLayerSource", "ManifestModel::ZipFullyStored", "ManifestModel::MakeVfsSpecLayer",
           "ManifestModel::HasLiveToken", "ContentFile::Path" }, Needs::Config, false,
         [](Command::Context &C, const json &A) {
@@ -207,11 +208,11 @@ VG_COMMANDS
                     const bool Stored = T != "VFSZipLayer" || ManifestModel::ZipFullyStored(Local.string(), &FirstCompressed);
                     R.update({{"spec", ManifestModel::VfsSpecType(T)}, {"path", P}, {"variables", VarSubst::PathTokens(P)},
                               {"runtime", ManifestModel::IsRuntimeSourcedLayer(L)}, {"runner_build", ManifestModel::IsRunnerBuildLayer(L)},
-                              {"target", Tgt}, {"bases", ManifestModel::LayerBaseTargets(L)}, {"cid", Cid}, {"local", Local.string()},
+                              {"target", Tgt}, {"base_sources", ManifestModel::LayerBaseSources(L)}, {"cid", Cid}, {"local", Local.string()},
                               {"resolved", ManifestModel::ResolveLayerSource(L, N.BundleDir)},
                               {"file", ContentFile::Path(N.BundleDir, P, Cid).string()}, {"stored", Stored},
                               {"live_token", ManifestModel::HasLiveToken(P)},
-                              {"mount", ManifestModel::MakeVfsSpecLayer(L, Local.string(), Tgt, ManifestModel::LayerBaseTargets(L))}});
+                              {"mount", ManifestModel::MakeVfsSpecLayer(L, Local.string(), Tgt)}});
                     if (!FirstCompressed.empty()) R["first_compressed"] = FirstCompressed;
                 }
                 Out.push_back(R);
@@ -301,6 +302,50 @@ VG_COMMANDS
             const auto I = Index(C);
             const Fold::Plan P = Fold::ResolveEntries(ManifestModel::LibraryOf(*I), NodeOf(*I, Command::Str(A, "node"))->Key());
             return json{{"exec", P.Exec}, {"order", P.Order}, {"error", P.Error}};
+        }, {} });
+
+    Command::Register({
+        "fold bases", "each delta a node's launch mounts and the files its bases are",
+        "For every delta a node's launch mounts, as VidyaGodFS reads it: the CIDs its BASE_SOURCES names, in order, and "
+        "the file each one is (any layer carrying that CID: its file, node, target) or null where none does — then the "
+        "delta cannot rebuild, and the launch mounts without it (its problem says why). --names rebuilds each delta here "
+        "(its bases' files must be present) and counts what its archive holds: null where it does not rebuild.",
+        { NodeArg(), VarOpt(), GraftOpt(), Flag("names", "rebuild each delta and count its archive's entries") },
+        { "fold bases 'BioShock Infinite - Steam (English)'", "fold bases 'BioShock Infinite - Steam (English)' --names" },
+        { "LaunchTree::Of", "NodeLower::ContentOps", "ArchiveNames::Of" }, Needs::Config, false,
+        [](Command::Context &C, const json &A) {
+            const auto I = Index(C);
+            const Fold::Plan P = Fold::Resolve(ManifestModel::LibraryOf(*I), NodeOf(*I, Command::Str(A, "node"))->Key(), Pairs(A, "var"),
+                                               {}, List(A, "grafts"));
+            const LaunchTree L = LaunchTree::Of(P);
+            const bool Count = Command::Bool(A, "names", false);
+            ArchiveNames Names;
+            json Out = json::array();
+            for (size_t D = 0; D < L.S.layers.size(); ++D)
+            {
+                const LayerSpec &X = L.S.layers[D];
+                if (X.type != ::LayerType::Delta) continue;
+                const Fold::Item &It = P.Seq[L.ItemOf[D]];
+                json Bases = json::array();
+                for (const std::string &Cid : X.bases)
+                {
+                    const auto B = std::find_if(L.T.bases[D].begin(), L.T.bases[D].end(), [&](size_t K) { return L.S.layers[K].cid == Cid; });
+                    if (B == L.T.bases[D].end()) { Bases.push_back(nullptr); continue; }
+                    const Fold::Item &Bi = P.Seq[L.ItemOf[*B]];
+                    Bases.push_back({{"cid", Cid}, {"kind", Bi.Kind}, {"file", Bi.Payload}, {"node", Bi.From}, {"target", Bi.Target}});
+                }
+                json Row = {{"at", L.ItemOf[D]}, {"file", It.Payload}, {"node", It.From}, {"target", It.Target},
+                            {"base_sources", X.bases}, {"bases", Bases}, {"rebuilds", !L.T.broken[D]}};
+                if (Count)
+                {
+                    const std::vector<std::string> *E = Names.Of(L, D, true);
+                    Row["entries"] = E ? json(E->size()) : json();
+                }
+                Out.push_back(std::move(Row));
+            }
+            json Problems = json::array();
+            for (const std::string &Why : L.T.problems) Problems.push_back(Why);
+            return json{{"deltas", Out}, {"problems", Problems}};
         }, {} });
 
     Command::Register({

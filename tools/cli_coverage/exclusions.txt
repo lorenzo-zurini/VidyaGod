@@ -129,3 +129,4 @@ PreLaunchUi::SectionRow                # private to PreLaunchWindow's files (pre
 PreLaunchUi::CollectVarValues          # private to PreLaunchWindow's files (prelaunchwindow_p.h): reached through its counted functions
 PkgActionsUi::StrOf                    # private to PkgActions' files (pkgactions_p.h): reached through its counted functions
 PkgActionsUi::HasLayers                # private to PkgActions' files (pkgactions_p.h): reached through its counted functions
+LayerBytes::Held   # a test probe: how many layers' bytes a chain holds at once (the release rule's teeth)

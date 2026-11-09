@@ -1,5 +1,6 @@
 #include "pkggraph.h"   // AddNodeRef
 #include "noderefs.h"
+#include "cid.h"      // a rewritten node's new name, for the version that contains it
 #include "installed.h"
 #include "shelf.h"
 #include "validate.h"
@@ -113,6 +114,10 @@ int CliModes::RunMaintenanceModes(LaunchParameters &LaunchParameters, nlohmann::
         {
             const Node *n = Index.Find(id);
             if (!n) { LogErr("convert-delta", "node not found: " + id); return 1; }
+            //It rewrites node files: a node without one of its own (a package's working tree names its nodes by handle,
+            //in one document) is the editor's to convert ("-> delta").
+            if (n->File.empty() || !fs::exists(n->File))
+            { LogErr("convert-delta", "node " + id + " has no node file of its own here — convert it in the package editor (-> delta)"); return 1; }
             V v; v.node = n;
             for (int k = 0; k < (int)n->ContentLayers.size(); ++k)
                 if (n->ContentLayers[k].value("TYPE", std::string()) == "VFSZipLayer") { v.layerIdx = k; break; }
@@ -128,18 +133,46 @@ int CliModes::RunMaintenanceModes(LaunchParameters &LaunchParameters, nlohmann::
         uint64_t before = 0; for (auto &v : vs) before += fs::file_size(v.zipPath);
         uint64_t after  = fs::file_size(vs[0].zipPath);   // the base full zip stays
 
-        // Pass 1: generate + byte-verify every delta against the ORIGINAL prior zip (all still present), write
-        // the .vgdelta and rewrite the node JSON. Deletion of the redundant full zips is deferred to pass 2.
-        std::vector<std::string> toDelete;
         for (size_t i = 1; i < vs.size(); ++i)
             if (vs[i].target != vs[i - 1].target)
-            { LogErr("convert-delta", "a delta rebuilds the content beneath it at ITS target, and " + vs[i - 1].node->NodeId
-                     + " mounts at '" + vs[i - 1].target + "', not '" + vs[i].target + "' — nothing changed"); return 1; }
+            { LogErr("convert-delta", vs[i].node->NodeId + " would contain " + vs[i - 1].node->NodeId + ", which mounts at '"
+                     + vs[i - 1].target + "', not '" + vs[i].target + "': its files would show beside the newer version's — nothing changed"); return 1; }
+        //Each delta names its base by CID: the first version's zip (its SOURCE, or its CID computed and stamped on it),
+        //then each version's own delta — the layer that rebuilds the bytes the next one is diffed over.
+        nlohmann::ordered_json J0; { std::ifstream in(vs[0].node->File); in >> J0; }
+        int Z0 = -1;
+        for (int k = 0; k < (int)J0["LAYERS"].size() && Z0 < 0; ++k) if (Fold::TypeOf(J0["LAYERS"][(size_t)k]) == "ZIP") Z0 = k;
+        if (Z0 < 0) { LogErr("convert-delta", "node " + vs[0].node->NodeId + " has no ZIP layer in " + vs[0].node->File.string()); return 1; }
+        const bool Stamp = !(J0["LAYERS"][(size_t)Z0].contains("SOURCE") && J0["LAYERS"][(size_t)Z0]["SOURCE"].is_string());
+        //Rewriting a node renames it: one outside the chain that contains a version rewritten here would be left naming
+        //a node that is gone. Refused before anything is written (the editor re-mints a package whole: convert there).
+        {
+            std::set<std::string> Rewritten;
+            if (Stamp) Rewritten.insert(vs[0].node->Key());
+            for (size_t i = 1; i < vs.size(); ++i) Rewritten.insert(vs[i].node->Key());
+            std::set<std::string> Chain;
+            for (const auto &v : vs) Chain.insert(v.node->Key());
+            for (const auto &[K, N] : Index.Nodes)
+                if (!Chain.count(K))
+                    for (const std::string &R : N.Refs)
+                        if (Rewritten.count(R))
+                        { LogErr("convert-delta", "node " + (N.NodeId.empty() ? K : N.NodeId) + " contains " + R + ", which this would rewrite "
+                                 "and so rename — convert the chain in the package editor (-> delta) — nothing changed"); return 1; }
+        }
+        // Pass 1: generate + byte-verify every delta against the ORIGINAL prior zip (all still present) and name it.
+        // Nothing is written to a node until every one has succeeded; a failure removes the deltas made so far.
+        std::string Cerr;
+        const std::string FirstCid = Stamp ? IpfsWrapper::ComputeCid(vs[0].zipPath, &Cerr)
+                                           : J0["LAYERS"][(size_t)Z0]["SOURCE"].get<std::string>();
+        if (FirstCid.empty()) { LogErr("convert-delta", "could not compute the CID of " + vs[0].zipPath + " (" + Cerr + ") — nothing changed"); return 1; }
+        struct Made { std::filesystem::path Out; std::string Blob, Cid; };
+        std::vector<Made> made;
+        const auto Undo = [&] { std::error_code ec; for (const Made &m : made) std::filesystem::remove(m.Out, ec); };
         for (size_t i = 1; i < vs.size(); ++i)
         {
             auto base = std::make_shared<MapSrc>();
             auto tgt  = std::make_shared<MapSrc>();
-            if (!base->Map(vs[i - 1].zipPath) || !tgt->Map(vs[i].zipPath)) { LogErr("convert-delta", "mmap failed"); return 1; }
+            if (!base->Map(vs[i - 1].zipPath) || !tgt->Map(vs[i].zipPath)) { Undo(); LogErr("convert-delta", "mmap failed — nothing changed"); return 1; }
             LogOut("convert-delta", "diff " + vs[i].node->NodeId + " against " + vs[i - 1].node->NodeId + " ...");
             // Spill scratch next to the archives, NOT in the system temp dir — /tmp is a tmpfs on most desktops,
             // so spilling several GB there would just move the memory pressure instead of relieving it.
@@ -150,38 +183,54 @@ int CliModes::RunMaintenanceModes(LaunchParameters &LaunchParameters, nlohmann::
             std::error_code rc;
             if (std::string Gerr; !vgdelta::GenerateDeltaToFile(base->p, base->n, tgt->p, tgt->n, part.string(), Gerr,
                                                                vgdelta::DEFAULT_BLOCK, vs[i].node->BundleDir.string()))
-            { LogErr("convert-delta", "delta generation failed (" + Gerr + ") — aborting, nothing changed"); return 1; }
+            { Undo(); LogErr("convert-delta", "delta generation failed (" + Gerr + ") — aborting, nothing changed"); return 1; }
 
             // byte-verify via the shared vgdelta::VerifyDelta (same routine the tests use — no drift).
             {
                 auto written = std::make_shared<MmapByteSource>();
                 std::string Verr = "could not read the delta back";
                 if (!written->Map(part.string()) || !vgdelta::VerifyDelta(std::shared_ptr<ByteSource>(written), base, *tgt, Verr))
-                { written.reset(); std::filesystem::remove(part, rc); LogErr("convert-delta", "VERIFY FAILED (" + Verr + ") — aborting, nothing changed"); return 1; }
+                { written.reset(); std::filesystem::remove(part, rc); Undo(); LogErr("convert-delta", "VERIFY FAILED (" + Verr + ") — aborting, nothing changed"); return 1; }
             }
             std::filesystem::rename(part, out, rc);
-            if (rc) { std::filesystem::remove(part, rc); LogErr("convert-delta", "could not name " + out.string()); return 1; }
+            if (rc) { std::filesystem::remove(part, rc); Undo(); LogErr("convert-delta", "could not name " + out.string() + " — nothing changed"); return 1; }
+            const std::string blobCid = IpfsWrapper::ComputeCid(out.string(), &Cerr);
+            made.push_back({ out, blob, blobCid });
+            if (blobCid.empty()) { Undo(); LogErr("convert-delta", "could not compute the CID of " + out.string() + " (" + Cerr + ") — nothing changed"); return 1; }
             after += std::filesystem::file_size(out, rc);
+            LogSucc("convert-delta", "  " + vs[i].node->NodeId + " ✓ verified  (" + std::to_string(std::filesystem::file_size(out, rc) >> 20) + " MB delta)");
+        }
 
-            // The node file holds ONE node: contain the version before it, then swap its zip layer for the delta
-            // (rebuilt from the nearest content beneath at the same target — the previous version's zip).
+        // Pass 2: the nodes. The first version carries the CID it is named by; each newer one contains the version before
+        // it (as it is now: a rewrite renames a node) and swaps its zip for the delta naming that version's layer.
+        std::string prevCid = FirstCid, prevKey = vs[0].node->Key();
+        if (Stamp)
+        {
+            J0["LAYERS"][(size_t)Z0]["SOURCE"] = FirstCid;
+            std::ofstream o(vs[0].node->File); o << J0.dump(4) << "\n";
+            prevKey = Cid::OfNode(J0);
+        }
+        std::vector<std::string> toDelete;
+        for (size_t i = 1; i < vs.size(); ++i)
+        {
             nlohmann::ordered_json J; { std::ifstream in(vs[i].node->File); in >> J; }
-            if (!ManifestModel::IsNodeObject(J)) { LogErr("convert-delta", "not a node: " + vs[i].node->File.string()); return 1; }
             int Raw = -1;
-            for (int k = 0; k < (int)J["LAYERS"].size(); ++k)
-                if (Fold::TypeOf(J["LAYERS"][(size_t)k]) == "ZIP") { Raw = k; break; }
+            if (ManifestModel::IsNodeObject(J))
+                for (int k = 0; k < (int)J["LAYERS"].size() && Raw < 0; ++k) if (Fold::TypeOf(J["LAYERS"][(size_t)k]) == "ZIP") Raw = k;
             if (Raw < 0) { LogErr("convert-delta", "node " + vs[i].node->NodeId + " has no ZIP layer in " + vs[i].node->File.string()); return 1; }
-            NodeRefs::Add(J, vs[i - 1].node->Key());
-            for (int k = 0; k < (int)J["LAYERS"].size(); ++k)       // the insert may have shifted it
-                if (Fold::TypeOf(J["LAYERS"][(size_t)k]) == "ZIP") { Raw = k; break; }
+            NodeRefs::Add(J, prevKey);
+            Raw = -1;
+            for (int k = 0; k < (int)J["LAYERS"].size() && Raw < 0; ++k)        // the insert may have shifted it
+                if (Fold::TypeOf(J["LAYERS"][(size_t)k]) == "ZIP") Raw = k;
             nlohmann::ordered_json &L0 = J["LAYERS"][(size_t)Raw];
-            nlohmann::ordered_json D = { {"DELTA", blob} };
+            nlohmann::ordered_json D = { {"DELTA", made[i - 1].Blob}, {"SOURCE", made[i - 1].Cid},
+                                         {"BASE_SOURCES", nlohmann::ordered_json::array({ prevCid })} };
             for (const char *K : { "TARGET", "WHEN", "COMMENT" }) if (L0.contains(K)) D[K] = L0[K];
             L0 = std::move(D);
             { std::ofstream o(vs[i].node->File); o << J.dump(4) << "\n"; }
-
+            prevCid = made[i - 1].Cid;
+            prevKey = Cid::OfNode(J);
             toDelete.push_back(vs[i].zipPath);
-            LogSucc("convert-delta", "  " + vs[i].node->NodeId + " ✓ verified  (" + std::to_string(std::filesystem::file_size(out, rc) >> 20) + " MB delta)");
         }
 
         // The old full zips are now redundant (byte-verified recoverable from base + deltas), but deletion is

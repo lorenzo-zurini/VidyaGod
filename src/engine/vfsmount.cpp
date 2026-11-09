@@ -7,6 +7,7 @@
 #include "commonutils.h"        // Log*
 #include "persistlayer.h"       // Printable (a link target the game chose, in a log line)
 #include "launchresolver.h"     // BoundaryLinkIndex / InnerRunnerMountRel (cross-namespace inner-runner mounts)
+#include "treeplan.h"          // PlanTree — what the FS will make of a plan (from the FS repo via vgfs_core)
 #include "varsubst.h"           // %variable% substitution in layer TARGETs (e.g. %ContentDir% → next to the exe)
 #include "zipscan.h"            // shared ZIP64 CD walker (STORE check) — from the FS repo via vgfs_core
 #include "hostio.h"             // HostIO::Open/Fstat for the ByteSource over a plain zip file
@@ -89,24 +90,10 @@ static std::string ZipFirstCompressedEntry(const std::string &Path)
 //dirs), the persisted directories as durable RW passthrough layers (each UserDataPath/<Target> unioned at its
 //runtime <Path>), and the always-ephemeral writable top branch (WRITELAYER). Array order is union priority
 //(lowest first).
-//Every DECLARED delta base must name a target that an EARLIER layer of THIS plan composes bytes at. When it
-//does not, vidyagodfs prints one line to its own stderr and SKIPS the layer — so the mount succeeds, the game
-//starts, and that content is simply absent. This runs on the assembled plan (not on the node list) because the
-//answer depends on ORDER and on layer TYPE, and it logs through the engine so a real launch says it too; the
-//audit gets it by capturing the same line rather than by re-deriving the plan and disagreeing about it.
-//
-//Only zip and delta layers compose a byte view (overlay.cpp keeps `baseByTarget` inside that branch): a dir or
-//file layer mounts perfectly well and is still not a base, so accepting one here would pass exactly the plans
-//the FS refuses.
-//
-//WHAT THIS DOES NOT CATCH, stated so it is not mistaken for more: it asks whether SOME composed view exists at
-//the target by the time the delta is built, not WHICH one. At a target carrying a delta chain, a base named by
-//a delta that sits mid-chain resolves to that chain's partial view; whether generation diffed against the
-//partial or the finished tree is not knowable from the plan, so it is not guessed at here — a wrong guess would
-//fail the delta's own size check at mount, loudly, which is the better place for it.
+//The assembled plan is checked through the FS's own reading of it (CheckPlan) before it is handed over.
 //WHOLE-LAYER %variable% substitution for the mount builders whose layer lists never pass through the resolver
-//(the runner build, the inner-runner chain). It replaces a FIELD WHITELIST that substituted TARGET and
-//BASE_TARGETS but not PATH or SUBMOUNTS — so a library package parented to a RUNNER (every one of the 26
+//(the runner build, the inner-runner chain). It replaces a FIELD WHITELIST that substituted TARGET but
+//not PATH or SUBMOUNTS — so a library package parented to a RUNNER (every one of the 26
 //submount-using nodes carries a %var% in its destination) would mount under a directory literally named
 //"%dxwnd_dir%", in silence. Whitelists rot; walking the whole object cannot miss a field added later.
 //
@@ -142,59 +129,30 @@ static nlohmann::ordered_json SubstituteLayerJson(const nlohmann::ordered_json &
     return VarSubst::SubstituteJsonValues(Sub, Vars);
 }
 
-static void ValidateDeltaBases(const nlohmann::ordered_json &Layers, const char *Ctx)
+//What the FS will make of this plan, said through the engine before it mounts — so a launch reports it, and the audit
+//captures the same line rather than re-deriving the plan and disagreeing about it. The FS decides (PlanTree): a delta
+//whose bases name no file of this plan cannot rebuild, and it mounts without it.
+static void CheckPlan(const nlohmann::ordered_json &Spec, const char *Ctx)
 {
-    std::set<std::string> ByteViews;
-    for (const auto &L : Layers)
+    for (const auto &L : Spec["layers"])
     {
-        const std::string Type   = ReadStr(L, "type");
-        const std::string Target = ReadStr(L, "target");
-
-        //SUBMOUNTS relocate a subtree to another runtime path, and every submount-using node in the library
-        //carries a %var% in its destination. A token surviving there is the same silent disaster as one in
-        //TARGET — the files mount under a directory literally named "%dxwnd_dir%" — and nothing checked it.
-        //Checked for EVERY layer type, before the zip/delta filter below: dir and file layers submount too.
+        //SUBMOUNTS relocate a subtree to another runtime path, and every submount-using node in the library carries a
+        //%var% in its destination. A token surviving there is the same silent disaster as one in TARGET — the files
+        //mount under a directory literally named "%dxwnd_dir%".
         if (L.contains("submounts") && L["submounts"].is_array())
             for (const auto &M : L["submounts"])
                 if (M.is_string() && ManifestModel::HasLiveToken(M.get<std::string>()))
                     LogErr(Ctx, "Layer '" + (ReadStr(L, "source").empty() ? std::string("?") : ReadStr(L, "source")) + "': SUBMOUNT '"
                                     + M.get<std::string>() + "' still contains a %token% after substitution — "
                                       "those files will mount at that LITERAL path and be invisible.");
-
-        if (Type != "zip" && Type != "delta") continue;
-
-        bool Resolved = true;
-        if (Type == "delta")
-        {
-            //A delta with NO declared base is based on the composed view at its OWN target — the ordinary chain,
-            //and what every delta in the library actually is. Checking only the DECLARED case covered ~none of
-            //them. It is decidable here for the same reason the declared case is: this runs on the ASSEMBLED
-            //plan, which already holds every layer of every node in the closure, so "does anything compose bytes
-            //below me" is simply a question about the layers already walked.
-            std::vector<std::string> Bases;
-            if (L.contains("baseTargets") && L["baseTargets"].is_array())
-                for (const auto &B : L["baseTargets"]) { if (B.is_string()) Bases.push_back(B.get<std::string>()); }
-            const bool Declared = !Bases.empty();
-            if (!Declared) Bases.push_back(Target);
-
-            for (const std::string &B : Bases)
-            {
-                if (ByteViews.count(B)) continue;
-                Resolved = false;
-                LogErr(Ctx, "Delta layer '" + (ReadStr(L, "source").empty() ? std::string("?") : ReadStr(L, "source")) + "' (target '" + Target + "') "
-                                + (Declared ? "declares a byte-base at '" + B + "'"
-                                            : "has no layer below it at its own target '" + B + "'")
-                                + ", but no earlier layer in this plan composes bytes there (only zip/delta layers "
-                                  "do). The mount will SKIP this layer and its content will be missing from the "
-                                  "runtime.");
-            }
-        }
-
-        //A delta the FS will SKIP composes no view either — overlay.cpp registers the target only after
-        //DeltaByteSource::Create succeeds. Pretending otherwise lets the NEXT delta based on this target pass a
-        //check it will fail at mount: one error logged, two layers silently lost.
-        if (Resolved) ByteViews.insert(Target);
     }
+    ::Spec S;
+    std::string Err;
+    nlohmann::ordered_json Read = Spec;
+    if (ReadStr(Read, "mountpoint").empty()) Read["mountpoint"] = "/";   // where it mounts is not the plan's question
+    if (!ParseSpecText(Read.dump(), S, Err)) { LogErr(Ctx, "The mount plan is malformed (" + Err + ") — the FS will refuse it."); return; }
+    for (const std::string &Why : PlanTree(S).problems)
+        LogErr(Ctx, "The " + Why + ". The mount LEAVES IT OUT and its content will be missing from the runtime.");
 }
 
 //Who the mount reports owning its files: the user running it. A fixed 1000 broke every other uid: inside the
@@ -279,8 +237,6 @@ nlohmann::ordered_json VfsMount::BuildLayerSpec(struct ContainerParams &Containe
         if (!Sub.contains(Key) || !Sub[Key].is_string()) return Base;
         return ResolveOneTarget(Base, Sub[Key].get<std::string>(), Sub, Key);
     };
-    // The mount TARGET is the common case; a cross-target VFSDeltaLayer also carries BASE_TARGETS (the targets of its
-    // byte-base zip), resolved identically so the two strings match the FS's per-target base map.
     auto ResolveTarget = [&](const std::string &Base, const nlohmann::ordered_json &Sub) { return ResolveTargetKey(Base, Sub, "TARGET"); };
     // A layer's SOURCE is %variable%-substituted too (like TARGET): after substitution an ABSOLUTE path is used as-is
     // (LayerLocator), so a node can source from a RUNTIME path — e.g. a prefix-assembly VFSDirLayer with
@@ -294,13 +250,6 @@ nlohmann::ordered_json VfsMount::BuildLayerSpec(struct ContainerParams &Containe
         return ResolveLayerSource(S, PkgPath);
     };
 
-    //A delta's byte-BASES, resolved in order, through the SAME substitution and diagnostics as any other target.
-    //Which key holds them is ManifestModel::LayerBaseTargets' business (asked once, there). Reading only the
-    //singular here is what left the arrayable format silently half-wired: the node said three bases, the mount got
-    //none, the FS skipped the layer and the game launched with that content absent.
-    //NOTHING is dropped: a base that resolves to "" is the VFS ROOT, a perfectly real target, and silently
-    //discarding it would turn a 2-base delta into a 1-base one — a differently-sized base, a reconstruction that
-    //fails its size check, and a skipped layer.
     auto SubstituteLayer = [&](const nlohmann::ordered_json &Sub) { return SubstituteLayerJson(Sub, Vars); };
 
     //Check-only twins for callers that have ALREADY substituted (the inner-runner chain). Same diagnostic,
@@ -320,26 +269,11 @@ nlohmann::ordered_json VfsMount::BuildLayerSpec(struct ContainerParams &Containe
     auto ResolveTargetPresubstituted = [&](const std::string &Base, const nlohmann::ordered_json &Sub) {
         return CheckOneTarget(Base, ReadStr(Sub, "TARGET"), Sub, "TARGET");
     };
-    auto ResolveBasesPresubstituted = [&](const std::string &Base, const nlohmann::ordered_json &Sub) {
-        std::vector<std::string> Out;
-        for (const std::string &Raw : ManifestModel::LayerBaseTargets(Sub))
-            Out.push_back(CheckOneTarget(Base, Raw, Sub, "BASE_TARGETS"));
-        return Out;
-    };
-
-    auto ResolveBases = [&](const std::string &Base, const nlohmann::ordered_json &Sub) {
-        std::vector<std::string> Out;
-        for (const std::string &Raw : ManifestModel::LayerBaseTargets(Sub))
-            Out.push_back(ResolveOneTarget(Base, Raw, Sub, "BASE_TARGETS"));
-        return Out;
-    };
-
     for (auto &Sub : ContainerParams.SubComponentsArray)
     {
         if (!IsVfsLayer(Sub.value("TYPE", std::string()))) continue;
         Layers.push_back(MakeVfsSpecLayer(Sub, ResolveSource(Sub, ContainerParams.PackagePath),
-                                          ResolveTarget(std::string(), Sub),
-                                          ResolveBases(std::string(), Sub)));   // VFS-root-relative target
+                                          ResolveTarget(std::string(), Sub)));   // VFS-root-relative target
     }
 
     //CROSS-NAMESPACE NESTING: an INNER chain runner (e.g. a win32 emulator under proton) runs inside the boundary's
@@ -363,8 +297,7 @@ nlohmann::ordered_json VfsMount::BuildLayerSpec(struct ContainerParams &Containe
                 //stated contract, and the tests feed it raw layers.)
                 const nlohmann::ordered_json Sub = SubstituteLayer(Raw);
                 Layers.push_back(MakeVfsSpecLayer(Sub, ResolveLayerSource(Sub, L.PackagePath),
-                                                  ResolveTargetPresubstituted(Base, Sub),
-                                                  ResolveBasesPresubstituted(Base, Sub)));
+                                                  ResolveTargetPresubstituted(Base, Sub)));
             }
         }
 
@@ -398,7 +331,7 @@ nlohmann::ordered_json VfsMount::BuildLayerSpec(struct ContainerParams &Containe
     //emit 56 errors of pure context artifact — which is how a diagnostic stops being read.
 
     Spec["layers"] = Layers;
-    ValidateDeltaBases(Layers, "VfsMount::BuildLayerSpec");
+    CheckPlan(Spec, "VfsMount::BuildLayerSpec");
     return Spec;
 }
 
@@ -658,7 +591,7 @@ nlohmann::ordered_json VfsMount::BuildRunnerLayerSpec(struct ContainerParams &Co
     nlohmann::ordered_json Layers = nlohmann::ordered_json::array();
     // A runner build may itself be a .vgdelta CHAIN (many Proton versions = base + deltas); MakeVfsSpecLayer handles
     // VFSDeltaLayer so pinning a specific version reconstructs it (its base zip precedes it — closure order is
-    // parents-first). TARGET/BASE_TARGETS are bare (beside the runner-mount root — no per-link base prefix here) and
+    // parents-first). TARGETs are bare (beside the runner-mount root — no per-link base prefix here) and
     // %VAR%-substituted from the closure, so a SHARED library node (e.g. a dedup'd dxvk pinned by many proton versions)
     // can place itself per-referrer via TARGET:"%DXVK_TARGET%" — the composing runner defines DXVK_TARGET.
     const std::map<std::string, std::string> Vars = ContainerParams.GetVariablesMap();
@@ -688,13 +621,8 @@ nlohmann::ordered_json VfsMount::BuildRunnerLayerSpec(struct ContainerParams &Co
     {
         if (!IsVfsLayer(ReadStr(RawSub, "TYPE"))) continue;
         const nlohmann::ordered_json Sub = SubstituteLayerJson(RawSub, Vars);
-        //Which key holds the bases is asked ONCE, in ManifestModel::LayerBaseTargets — this builder differs from
-        //the content mount only in how a target string is substituted, never in what it reads or what it keeps.
-        std::vector<std::string> BaseTargets;
-        for (const std::string &Raw : ManifestModel::LayerBaseTargets(Sub))
-            BaseTargets.push_back(CheckTarget(Raw, Sub, "BASE_TARGETS"));
         Layers.push_back(MakeVfsSpecLayer(Sub, ResolveLayerSource(Sub, ContainerParams.RunnerPackagePath),
-                                          CheckTarget(ReadStr(Sub, "TARGET"), Sub, "TARGET"), BaseTargets));
+                                          CheckTarget(ReadStr(Sub, "TARGET"), Sub, "TARGET")));
     }
     // NB: GE-Proton's protonfixes hack forces PROTON_DLL_COPY='*' (COPY every builtin DLL into the prefix, ~650 MB,
     // instead of symlinking). It is neutralized by the `proton-settings` content node, which every runner PARENTs:
@@ -703,7 +631,7 @@ nlohmann::ordered_json VfsMount::BuildRunnerLayerSpec(struct ContainerParams &Co
     // restores proton's default DLL_COPY list, so builtins SYMLINK into the RO wine mount. Pure node data; no engine
     // special-case (the loop above already mounted it like any other runner-build VFS layer).
     Spec["layers"] = Layers;
-    ValidateDeltaBases(Layers, "VfsMount::BuildRunnerLayerSpec");
+    CheckPlan(Spec, "VfsMount::BuildRunnerLayerSpec");
     return Spec;
 }
 

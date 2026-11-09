@@ -8,6 +8,7 @@
 
 #include "qtestjson.h"
 #include "pkgactions.h"
+#include "ipfswrapper.h"
 #include "manifestmodel.h"
 #include "pkgcanvas.h"
 #include "packageeditormodel.h"
@@ -422,9 +423,9 @@ private slots:
     // make delta / cover — generation 6 shapes
     // ------------------------------------------------------------------------------------------------
 
-    // A delta's base is the nearest content at its own target, so "-> delta" is offered — and the action runs — only
-    // for a zip whose node contains, EARLIER in its LAYERS and whole, a node with a zip at the SAME target. A base at
-    // another target, placed elsewhere or narrowed by a TAKE, or contained AFTER the content, could never be paired.
+    // "-> delta" is offered — and the action runs — only for a zip whose node contains, EARLIER in its LAYERS and whole,
+    // a node with a zip at the SAME target: the version it is a newer version of. A base at another target, placed
+    // elsewhere or narrowed by a TAKE, or contained AFTER the content, is not the version before it.
     void aDeltaBaseIsTheZipBeneathAtTheSameTarget()
     {
         const auto nodes = [](const json &RefLayer, bool After, const char *BaseTarget) {
@@ -439,20 +440,60 @@ private slots:
             return R;
         };
         auto db = [&](const json &Arr) { return PkgGraph::DeltaBase(base(Arr), 1); };
-        QCOMPARE(db(nodes({{"NODE", "hB"}}, false, "FILES/C:/g")), std::string("base.zip"));
-        QCOMPARE(db(nodes({{"NODE", "hB"}}, true, "FILES/C:/g")), std::string());      // after it
-        QCOMPARE(db(nodes({{"NODE", "hB"}}, false, "FILES/C:/other")), std::string()); // elsewhere
-        QCOMPARE(db(nodes({{"NODE", "hB"}, {"TARGET", "FILES/x"}}, false, "FILES/C:/g")), std::string());
-        QCOMPARE(db(nodes({{"NODE", "hB"}, {"TAKE", json::array({"FILES/a"})}}, false, "FILES/C:/g")), std::string());
-        QCOMPARE(db(nodes({{"ANY", json::array({"hB"})}}, false, "FILES/C:/g")), std::string()); // not contained
+        QCOMPARE(db(nodes({{"NODE", "hB"}}, false, "FILES/C:/g")), 0);
+        QCOMPARE(db(nodes({{"NODE", "hB"}}, true, "FILES/C:/g")), -1);       // after it
+        QCOMPARE(db(nodes({{"NODE", "hB"}}, false, "FILES/C:/other")), -1);  // elsewhere
+        QCOMPARE(db(nodes({{"NODE", "hB"}, {"TARGET", "FILES/x"}}, false, "FILES/C:/g")), -1);
+        QCOMPARE(db(nodes({{"NODE", "hB"}, {"TAKE", json::array({"FILES/a"})}}, false, "FILES/C:/g")), -1);
+        QCOMPARE(db(nodes({{"ANY", json::array({"hB"})}}, false, "FILES/C:/g")), -1);  // not contained
         // The button asks the same question as the action.
         auto offers = [&](const json &D) {
-            const bool HasBase = PkgGraph::ContentType(D[1]) == "ZIP" && !PkgGraph::DeltaBase(base(D), 1).empty();   // as the canvas asks
+            const bool HasBase = PkgGraph::ContentType(D[1]) == "ZIP" && PkgGraph::DeltaBase(base(D), 1) >= 0;   // as the canvas asks
             for (const auto &A : PkgGraph::ActionsFor(D[1], HasBase, {})) if (std::string(A.Id) == "to_delta") return true;
             return false;
         };
         QVERIFY(offers(nodes({{"NODE", "hB"}}, false, "FILES/C:/g")));
         QVERIFY(!offers(nodes({{"NODE", "hB"}}, false, "FILES/C:/other")));
+    }
+
+    // "-> delta" names the base it diffed against by CID (BASE_SOURCES): the base's SOURCE, computed and stamped on the
+    // base when it had none (an unpublished zip). Undelta rebuilds over exactly what is named and leaves a plain zip
+    // carrying no bases. Teeth: name nothing; leave the base without the CID it is named by; rebuild over another zip.
+    void aDeltaNamesItsBaseByCidAndUndeltaReadsIt()
+    {
+        if (!HaveZipTools) QSKIP("zip/unzip not installed");
+        Fixture F(this);
+        QByteArray Body(6000, 'g');
+        for (int K = 0; K < Body.size(); ++K) Body[K] = char('a' + (K * 7) % 26);
+        F.makeZip("v1.zip", "game.bin", Body);
+        F.makeZip("v2.zip", "game.bin", Body + "VERSION-TWO");
+        F.makeZip("decoy.zip", "other.bin", Body + "DECOY");
+        const QByteArray V2 = F.read(F.path("v2.zip"));
+        const int d = F.addContentNode("decoy.zip");
+        const int b = F.addContentNode("v1.zip");
+        const int n = F.addContentNode("v2.zip");
+        F.setLayers(n, json::array({ json{{"NODE", F.nodeId(d).toStdString()}}, json{{"NODE", F.nodeId(b).toStdString()}},
+                                     json{{"ZIP", "v2.zip"}} }));
+        F.save();
+        const std::string Want = IpfsWrapper::ComputeCid(F.path("v1.zip").toStdString());
+        QVERIFY(!Want.empty());
+
+        F.act->perform(F.nodeId(n), "to_delta");
+        QVERIFY(F.waitIdle(F.nodeId(n), 60000));
+        QVERIFY2(F.notices.isEmpty(), qUtf8Printable(F.notices.join("\n")));
+        const json D = F.node(n)["LAYERS"][(size_t)PkgGraph::ContentIndex(F.node(n))];
+        QCOMPARE(PkgGraph::LayerType(D), std::string("DELTA"));
+        QCOMPARE(D.value("BASE_SOURCES", json()), json::array({ Want }));
+        QCOMPARE(F.node(b)["LAYERS"][0].value("SOURCE", json()), json(Want));
+        QVERIFY(!F.node(d)["LAYERS"][0].contains("SOURCE"));          // only the base is named
+
+        F.act->perform(F.nodeId(n), "undelta");
+        QVERIFY(F.waitIdle(F.nodeId(n), 60000));
+        QVERIFY2(F.notices.isEmpty(), qUtf8Printable(F.notices.join("\n")));
+        const json Z = F.node(n)["LAYERS"][(size_t)PkgGraph::ContentIndex(F.node(n))];
+        QCOMPARE(PkgGraph::LayerType(Z), std::string("ZIP"));
+        QVERIFY2(!Z.contains("BASE_SOURCES"), Z.dump().c_str());
+        QVERIFY(F.read(F.path(QString::fromStdString(Z["ZIP"].get<std::string>()))) == V2);
     }
 
     // Undelta turns the content layer back into a ZIP in place: its TARGET stays, the stale SOURCE/SIZE go. The

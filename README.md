@@ -337,7 +337,7 @@ The flags below are the older form of some of these commands; they still work, f
 | `--fetch <cid>` / `--fetch-dir <cid> <dir>` | Fetch a CID (used to verify a mint round-trips). |
 | `--download-all` | Sync every package source, then materialize EVERY node's content + every runner build through the real download batch — a full mirror / pre-seed. Exits non-zero if a source never synced. |
 | `--verify-cid` / `--pin-ls` / `--unpin` / `--drop-ref` / `--heal` | Content-store inspection and repair. |
-| `--convert-delta-chain <dir>` | Convert a chain of full archives into `.vgdelta` layers. |
+| `--convert-delta-chain <node> <newer>…` | Turn each newer version of a chain of full archives into a `.vgdelta` over the version before it, naming that version's layer as its base by CID. |
 | `--fix-case-conflicts` | Canonicalise cross-layer case collisions to the base layer's case. |
 
 **Paths & networking**

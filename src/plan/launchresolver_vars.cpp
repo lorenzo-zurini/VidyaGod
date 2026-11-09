@@ -289,10 +289,6 @@ bool LaunchResolver::BuildSubComponentsArray(struct ContainerParams &ContainerPa
                 if (IsVfsLayer(T))
                 {
                     if (Sub.contains("TARGET") && Sub["TARGET"].is_string()) Sub["TARGET"] = GuestToLayout(ContainerParams, Sub["TARGET"]);
-                    //A delta's bases are places in the same layout as its target (the FS finds them by those names).
-                    if (Sub.contains("BASE_TARGETS") && Sub["BASE_TARGETS"].is_array())
-                        for (auto &B : Sub["BASE_TARGETS"])
-                            if (B.is_string()) B = GuestToLayout(ContainerParams, B.get<std::string>());
                     if (Sub.contains("SUBMOUNTS") && Sub["SUBMOUNTS"].is_array())
                         for (auto &Sm : Sub["SUBMOUNTS"])
                         {

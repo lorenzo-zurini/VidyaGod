@@ -24,8 +24,9 @@ TEST(lower_content_maps_the_type_key_and_carries_placement)
     const char *Kinds[][2] = { {"ZIP", "VFSZipLayer"}, {"DELTA", "VFSDeltaLayer"}, {"FILE", "VFSFileLayer"} };
     for (const auto &K : Kinds)
     {
-        const ordered_json L = Lower({ {K[0], "p.bin"}, {"TARGET", "FILES/%GameDir%"}, {"SOURCE", "Qm9"}, {"SIZE", 12},
-                                       {"WHEN", "%m%==1"} });
+        ordered_json In = { {K[0], "p.bin"}, {"TARGET", "FILES/%GameDir%"}, {"SOURCE", "Qm9"}, {"SIZE", 12}, {"WHEN", "%m%==1"} };
+        if (std::string(K[0]) == "DELTA") In["BASE_SOURCES"] = ordered_json::array({ "Qm8" });
+        const ordered_json L = Lower(In);
         if (L.empty()) { CHECK(!L.empty()); continue; }
         CHECK_EQ(L.size(), (size_t)1);
         CHECK_EQ(L[0]["TYPE"].get<std::string>(), std::string(K[1]));
@@ -220,12 +221,15 @@ TEST(check_refuses_type_confused_payloads_instead_of_throwing)
         { {"KEEP", {{"FILES/x", "yes"}}} }, { {"KEEP", {{"VARS/x", true}}} }, { {"KEEP", {{"FILESX/x", true}}} },
         { {"KEEP", {{"REGISTRY/HKCU/x", true}}} }, { {"ANY", ordered_json::array()} }, { {"ANY", ordered_json::array({1})} }, { {"NOT", 1} },
         { {"ZIP", "x"}, {"EXTRA", 1} },
-        //a delta's bases: a non-empty list of distinct FILES addresses, and on a delta only
-        { {"ZIP", "x"}, {"BASE_TARGETS", ordered_json::array({"FILES/a"})} },
-        { {"DELTA", "x"}, {"BASE_TARGETS", ordered_json::array()} },
-        { {"DELTA", "x"}, {"BASE_TARGETS", "FILES/a"} },
-        { {"DELTA", "x"}, {"BASE_TARGETS", ordered_json::array({"REG/HKCU/a"})} },
-        { {"DELTA", "x"}, {"BASE_TARGETS", ordered_json::array({"FILES/a", "FILES/A/"})} },
+        //a delta's bases: REQUIRED, a non-empty list of distinct CIDs, and on a delta only
+        { {"DELTA", "x"} },
+        { {"ZIP", "x"}, {"BASE_SOURCES", ordered_json::array({"Qm1"})} },
+        { {"DELTA", "x"}, {"BASE_SOURCES", ordered_json::array()} },
+        { {"DELTA", "x"}, {"BASE_SOURCES", "Qm1"} },
+        { {"DELTA", "x"}, {"BASE_SOURCES", ordered_json::array({1})} },
+        { {"DELTA", "x"}, {"BASE_SOURCES", ordered_json::array({""})} },
+        { {"DELTA", "x"}, {"BASE_SOURCES", ordered_json::array({"Qm1", "Qm1"})} },
+        { {"DELTA", "x"}, {"BASE_TARGETS", ordered_json::array({"FILES/a"})} },
         //two selections landing on one address (the same leaf name, a pair renamed onto a leaf, case aside)
         { {"NODE", "x"}, {"TAKE", ordered_json::array({"FILES/a/d3d8.dll", "FILES/b/D3D8.dll"})} },
         { {"NODE", "x"}, {"TAKE", ordered_json::array({"FILES/a/x.cfg", ordered_json::array({"FILES/b/y.cfg", "x.cfg"})})} },
@@ -268,12 +272,10 @@ TEST(check_refuses_content_and_cover_names_that_leave_the_package)
 
 TEST(check_accepts_a_delta_over_several_bases)
 {
-    CHECK(!Refused({ {"DELTA", "x.vgdelta"}, {"TARGET", "FILES/%GameDir%"},
-                     {"BASE_TARGETS", ordered_json::array({"FILES/%GameDir%", "FILES/%GameDir%/WinEnv"})} }));
-    CHECK(!Refused({ {"DELTA", "x.vgdelta"}, {"BASE_TARGETS", ordered_json::array({"FILES"})} }));
-    const ordered_json L = Lower({ {"DELTA", "x.vgdelta"}, {"TARGET", "FILES/%GameDir%"},
-                                   {"BASE_TARGETS", ordered_json::array({"FILES/%GameDir%", "FILES"})} });
-    CHECK(L.size() == 1 && L[0]["BASE_TARGETS"] == ordered_json::array({"%GameDir%", ""}));   // as the plan lowers them
+    CHECK(!Refused({ {"DELTA", "x.vgdelta"}, {"TARGET", "FILES/%GameDir%"}, {"BASE_SOURCES", ordered_json::array({"Qm1", "Qm2"})} }));
+    CHECK(!Refused({ {"DELTA", "x.vgdelta"}, {"BASE_SOURCES", ordered_json::array({"Qm1"})} }));
+    const ordered_json L = Lower({ {"DELTA", "x.vgdelta"}, {"TARGET", "FILES/%GameDir%"}, {"BASE_SOURCES", ordered_json::array({"Qm2", "Qm1"})} });
+    CHECK(L.size() == 1 && L[0]["BASE_SOURCES"] == ordered_json::array({"Qm2", "Qm1"}));   // as written, in order
 }
 
 // A Delete op removes its TARGET and reads nothing else: a VALUE, KEY or byte site on it is a mistake the author meant

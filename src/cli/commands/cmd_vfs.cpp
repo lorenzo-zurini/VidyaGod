@@ -7,6 +7,7 @@
 #include "cmdutil.h"
 #include "bytesource.h"
 #include "layerspec.h"
+#include "treeplan.h"
 #include "overlay.h"
 #include "vfsops.h"
 #include "vgdelta.h"
@@ -104,9 +105,107 @@ VG_COMMANDS
             static const char *T[] = { "dir", "zip", "file", "delta" };
             json Ls = json::array();
             for (const auto &X : L.Sp.layers)
-                Ls.push_back({{"type", T[static_cast<int>(X.type)]}, {"source", X.source}, {"target", X.target}, {"bases", X.baseTargets}});
+                Ls.push_back({{"type", T[static_cast<int>(X.type)]}, {"source", X.source}, {"target", X.target}, {"bases", X.bases},
+                              {"bytes_only", X.bytesOnly}});
             return json{{"mountpoint", L.Sp.mountpoint}, {"writable", L.Sp.writelayer}, {"read_only", L.Sp.readOnly},
                         {"case_insensitive", L.Sp.caseInsensitive}, {"layers", Ls}};
+        }, {} });
+
+    //A spec's layers' contents for the case queries: an archive's member names (a delta's rebuilt archive's), a dir's
+    //files. Folders: folder entries kept, as the zip holds them.
+    struct Contents
+    {
+        const Spec &Sp;
+        const TreePlan &P;
+        bool Folders;
+        LayerBytes Bytes;
+        std::map<size_t, std::vector<std::string>> Got;
+        Contents(const Spec &S, const TreePlan &T, bool F) : Sp(S), P(T), Folders(F), Bytes(S, T, std::vector<bool>(S.layers.size(), true)) {}
+        const std::vector<std::string> *operator()(size_t I)
+        {
+            if (const auto It = Got.find(I); It != Got.end()) return &It->second;
+            const LayerSpec &X = Sp.layers[I];
+            std::vector<std::string> Out;
+            std::error_code Ec;
+            if (X.type == LayerType::Dir)
+            {
+                if (!std::filesystem::is_directory(X.source, Ec)) return nullptr;
+                for (auto W = std::filesystem::recursive_directory_iterator(X.source, Ec);
+                     !Ec && W != std::filesystem::recursive_directory_iterator(); W.increment(Ec))
+                    if (W->is_regular_file(Ec)) Out.push_back(std::filesystem::relative(W->path(), X.source, Ec).generic_string());
+            }
+            else if (X.type == LayerType::Zip || X.type == LayerType::Delta)
+            {
+                const auto Src = Bytes.Get(I);
+                if (!Src || !zipscan::WalkCentralDir(*Src, [&](const std::string &N, uint16_t, uint64_t) {
+                        if (Folders || (!N.empty() && N.back() != '/')) Out.push_back(N);
+                        return true; }))
+                    return nullptr;
+            }
+            else return nullptr;
+            return &Got.emplace(I, std::move(Out)).first->second;
+        }
+    };
+
+    Command::Register({
+        "vfs tree", "what a spec's layers make of the tree: where each appears, each delta's bases, what it hides",
+        "VidyaGodFS's plan of the merged tree, read from the spec alone (the plan the mount, the launch's check and the "
+        "validator share): each layer's places (its submounts, or its target; none when bytes-only), the layers each "
+        "delta's base CIDs name, where a delta hides a layer and whether that is everywhere it appears, and the deltas "
+        "that cannot rebuild, with why. --read builds every zip's and delta's bytes too, as the mount would, and says "
+        "which deltas did not rebuild.",
+        { SpecArg(), Flag("read", "build each layer's bytes (rebuild every delta)") }, { "vfs tree spec.json", "vfs tree spec.json --read" },
+        { "ParseSpecText", "PlanTree", "Within", "LayerBytes::Get", "LayerBytes::Failed" }, Needs::Config, false,
+        [](Command::Context &, const json &A) {
+            std::ifstream In(Command::Str(A, "spec"), std::ios::binary);
+            if (!In) throw Command::BadArgs("cannot read the spec");
+            std::stringstream Text; Text << In.rdbuf();
+            Spec Sp; std::string Err;
+            if (!ParseSpecText(Text.str(), Sp, Err)) throw Command::BadArgs("the spec: " + Err);
+            const TreePlan P = PlanTree(Sp);
+            std::vector<bool> Rebuilt(Sp.layers.size(), true);
+            if (Command::Bool(A, "read", false))
+            {
+                LayerBytes B(Sp, P, std::vector<bool>(Sp.layers.size(), false));
+                for (size_t I = 0; I < Sp.layers.size(); ++I) { B.Get(I); Rebuilt[I] = !B.Failed(I); }
+            }
+            json Ls = json::array();
+            for (size_t I = 0; I < Sp.layers.size(); ++I)
+            {
+                json Places = json::array();
+                for (const auto &[Sub, Place] : P.mounts[I]) Places.push_back({{"from", Sub}, {"at", Place}});
+                json Bases = json::array();
+                for (size_t B : P.bases[I]) Bases.push_back(B);
+                const bool Everywhere = std::all_of(P.mounts[I].begin(), P.mounts[I].end(), [&](const auto &M) {
+                    return std::any_of(P.maskedUnder[I].begin(), P.maskedUnder[I].end(), [&](const std::string &U) { return Within(M.second, U); }); });
+                json L = {{"layer", I}, {"source", Sp.layers[I].source}, {"cid", Sp.layers[I].cid}, {"places", Places},
+                          {"hidden_under", P.maskedUnder[I]}, {"hidden_whole", P.whole[I]}, {"hidden_everywhere", !P.mounts[I].empty() && Everywhere}};
+                if (Sp.layers[I].type == LayerType::Delta)
+                    L.update({{"bases", Bases}, {"rebuilds", !P.broken[I] && Rebuilt[I]}});
+                Ls.push_back(std::move(L));
+            }
+            return json{{"layers", Ls}, {"problems", P.problems}};
+        }, {} });
+
+    Command::Register({
+        "vfs case", "names in a spec's tree that differ only in case, and the renames that would make them one",
+        "Two layers putting names that differ only in case into the merged tree, each where the mount places it and "
+        "unhidden (a file mounted twice, or names inside one archive, are not conflicts) — and, per layer, the entries "
+        "a rename to the tree's first spelling of each folder and name would rewrite (what --fix-case-conflicts writes).",
+        { SpecArg() }, { "vfs case spec.json" }, { "CaseConflicts", "CaseRenames" }, Needs::Config, false,
+        [](Command::Context &, const json &A) {
+            Spec Sp; std::string Err;
+            if (!ParseSpec(Command::Str(A, "spec"), Sp, Err)) throw Command::BadArgs("the spec: " + Err);
+            const TreePlan P = PlanTree(Sp);
+            Contents Files(Sp, P, false), All(Sp, P, true);
+            json Cs = json::array();
+            for (const CaseConflict &C : CaseConflicts(Sp, P, [&](size_t I) { return Files(I); }))
+                Cs.push_back({{"key", C.key}, {"folder", C.dir}, {"first", {{"layer", C.first}, {"name", C.firstName}, {"source", Sp.layers[C.first].source}}},
+                              {"second", {{"layer", C.second}, {"name", C.secondName}, {"source", Sp.layers[C.second].source}}}});
+            json Rs = json::array();
+            for (const auto &[I, M] : CaseRenames(Sp, P, [&](size_t K) { return All(K); }))
+                for (const auto &[From, To] : M) Rs.push_back({{"layer", I}, {"source", Sp.layers[I].source}, {"entry", From}, {"to", To}});
+            return json{{"conflicts", Cs}, {"renames", Rs}};
         }, {} });
 
     Command::Register({

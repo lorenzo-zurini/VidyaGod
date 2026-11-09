@@ -6,6 +6,7 @@
 #include "manifestmodel.h"
 #include "authoringsessionwindow.h"
 #include "asyncwork.h"
+#include "ipfswrapper.h"   // ComputeCid — a delta names its base by CID
 #include "vgdelta.h"
 #include "bytesource.h"
 #include "commonutils.h"
@@ -82,7 +83,7 @@ bool SetContent(json & N, const std::string & Type, const std::string & Name)
     const json & Old = N["LAYERS"][(size_t)I];
     const std::string OldType = PkgGraph::LayerType(Old);
     for (const auto & [K, V] : Old.items())
-        if (K != OldType && K != "SOURCE" && K != "SIZE") L[K] = V;
+        if (K != OldType && K != "SOURCE" && K != "SIZE" && K != "BASE_SOURCES") L[K] = V;   // the old file's, not the new one's
     N["LAYERS"][(size_t)I] = std::move(L);
     return true;
 }
@@ -1644,16 +1645,23 @@ void PkgActions::importRegFile(const std::string & NodeId, const QString & File)
 //Reconstruct a delta's content into a real archive. PURE PATHS IN, no model, no canvas, no `this` — it runs
 //on a worker thread for as long as a multi-GB stream takes, and anything it touched from the GUI side could be
 //freed or reallocated underneath it.
-static bool ReconstructTo(const std::filesystem::path & BaseFile, const std::filesystem::path & DeltaFile,
+static bool ReconstructTo(const std::vector<std::filesystem::path> & BaseFiles, const std::filesystem::path & DeltaFile,
                           const std::filesystem::path & Out, std::string & Err)
 {
     std::error_code Ec;
-    if (!std::filesystem::exists(BaseFile, Ec)) { Err = "the base archive is not present locally"; return false; }
     if (!std::filesystem::exists(DeltaFile, Ec)) { Err = "the delta blob is not present locally"; return false; }
-
-    auto Base  = std::make_shared<MmapByteSource>();
+    //The base is the bases' bytes concatenated, in the order the delta names them.
+    std::vector<std::shared_ptr<ByteSource>> Parts;
+    for (const auto & F : BaseFiles)
+    {
+        if (!std::filesystem::exists(F, Ec)) { Err = "the base archive " + F.filename().string() + " is not present locally"; return false; }
+        auto M = std::make_shared<MmapByteSource>();
+        if (!M->Map(F.string())) { Err = "could not map the archives"; return false; }
+        Parts.push_back(std::move(M));
+    }
+    std::shared_ptr<ByteSource> Base = Parts.size() == 1 ? Parts.front() : std::make_shared<ConcatByteSource>(Parts);
     auto Delta = std::make_shared<MmapByteSource>();
-    if (!Base->Map(BaseFile.string()) || !Delta->Map(DeltaFile.string())) { Err = "could not map the archives"; return false; }
+    if (!Delta->Map(DeltaFile.string())) { Err = "could not map the archives"; return false; }
 
     // verifyBase=true: this is an AUTHORING conversion that DELETES the only copy. A delta composed over the
     // wrong base yields a plausible archive full of garbage whose first symptom is the game not starting.
@@ -1714,20 +1722,24 @@ void PkgActions::undelta(const std::string & NodeId)
     // document under it, and any edit that grew the NODES array reallocated it mid-read.
     std::vector<PkgGraph::NodeRef> Refs;
     for (int K = 0; K < Model->doc().Count(); ++K) Refs.push_back({Model->doc().Handle(K), &Model->doc().Node(K)});
-    const std::string BasePath = PkgGraph::DeltaBase(Refs, I);
-    if (BasePath.empty())
-    { tell("Undelta", "This delta has no base to reconstruct against: a contained node with a zip at its target."); return; }
+    const std::vector<int> BaseNodes = PkgGraph::DeltaBaseZips(Refs, I);
+    if (BaseNodes.empty())
+    { tell("Undelta", "This delta's bases are not all plain zips in this package (BASE_SOURCES names them by CID)."); return; }
 
-    const std::filesystem::path BaseFile = ResolveInBundle(Bundle, BasePath);
-    if (BaseFile.empty())
-    { tell("Unsafe path", "The base layer's file does not point inside the package folder."); return; }
+    std::vector<std::filesystem::path> BaseFiles;
+    for (int B : BaseNodes)
+    {
+        BaseFiles.push_back(ResolveInBundle(Bundle, ContentName(*Refs[(size_t)B].Json)));
+        if (BaseFiles.back().empty())
+        { tell("Unsafe path", "A base layer's file does not point inside the package folder."); return; }
+    }
     Canvas->beginAction(NodeId, "reconstructing...", /*cancellable=*/false);   // a stream with no interrupt point (and every
                                                                               // return after this one ends the action)
     auto Ok  = std::make_shared<bool>(false);
     auto Err = std::make_shared<std::string>();
     auto Alive = Alive_;
     AsyncWork::Run(this,
-        [BaseFile, DeltaFile, Out, Ok, Err]() { *Ok = ReconstructTo(BaseFile, DeltaFile, Out, *Err); },
+        [BaseFiles, DeltaFile, Out, Ok, Err]() { *Ok = ReconstructTo(BaseFiles, DeltaFile, Out, *Err); },
         [this, NodeId, ZipName, Out, DeltaFile, Ok, Err, Alive]() {
             if (!Alive->load()) return;
             Canvas->endAction(current(NodeId));
@@ -1754,7 +1766,12 @@ void PkgActions::makeDelta(const std::string & NodeId)
     std::vector<PkgGraph::NodeRef> Refs;
     for (int K = 0; K < D.Count(); ++K) Refs.push_back({D.Handle(K), &D.Node(K)});
     const std::string TgtPath = ContentName(D.Node(I));
-    const std::string BasePath = PkgGraph::DeltaBase(Refs, I);
+    const int BaseNode = PkgGraph::DeltaBase(Refs, I);
+    const std::string BasePath = BaseNode < 0 ? std::string() : ContentName(D.Node(BaseNode));
+    const std::string BaseHandle = BaseNode < 0 ? std::string() : D.Handle(BaseNode);
+    //The delta names its base by CID: the base's SOURCE, or — not yet published — its CID computed now and stamped on it.
+    const std::string KnownCid = BaseNode < 0 ? std::string()
+        : StrOf(D.Node(BaseNode)["LAYERS"][(size_t)PkgGraph::ContentIndex(D.Node(BaseNode))], "SOURCE");
     if (ContentType(D.Node(I)) != "ZIP" || TgtPath.empty() || BasePath.empty())
     { tell("Make delta", "This node needs a zip, and a node it contains with a zip at the same target to diff against."); return; }
 
@@ -1784,13 +1801,21 @@ void PkgActions::makeDelta(const std::string & NodeId)
 
     auto Ok      = std::make_shared<bool>(false);
     auto ErrText = std::make_shared<std::string>();
+    auto BaseCid = std::make_shared<std::string>(KnownCid);
     auto Alive   = Alive_;
     //Hoisted BEFORE the worker starts. Reading this->Canvas inside the worker body — which is where the
     //progress callbacks are constructed, minutes in — is the same use-after-free the qApp post exists to
     //close, merely moved from invokeMethod's target to a member read.
     PkgCanvas * const Cv = Canvas;
     AsyncWork::Run(this,
-        [Cv, NodeId, BaseFile, TgtFile, Bundle, Blob, Abort, Ok, ErrText, Alive]() {
+        [Cv, NodeId, BaseFile, TgtFile, Bundle, Blob, Abort, Ok, ErrText, BaseCid, Alive]() {
+            if (BaseCid->empty())
+            {
+                PostProgress(Cv, Alive, NodeId, 0.0f, "naming the base");
+                std::string Cerr;
+                *BaseCid = IpfsWrapper::ComputeCid(BaseFile.string(), &Cerr);
+                if (BaseCid->empty()) { *ErrText = "could not compute the base's CID: " + Cerr; return; }
+            }
             // Archives are MAPPED, not read: a chain step holds base and target open at once, and eager reads
             // OOM-killed a 32GB desktop. Scratch spills beside the archives, never /tmp (a tmpfs on most
             // desktops, which would just move the memory pressure).
@@ -1839,7 +1864,7 @@ void PkgActions::makeDelta(const std::string & NodeId)
             if (Rc) { *ErrText = "could not name the delta blob: " + Rc.message(); std::filesystem::remove(Part, Rc); return; }
             *Ok = true;
         },
-        [this, NodeId, Blob, TgtFile, Ok, ErrText]() {
+        [this, NodeId, Blob, TgtFile, TgtPath, BasePath, KnownCid, Ok, ErrText, BaseCid, BaseHandle, Stamp = KnownCid.empty()]() {
             Aborts.erase(NodeId);
             Canvas->endAction(current(NodeId));
             if (!*Ok)
@@ -1849,10 +1874,33 @@ void PkgActions::makeDelta(const std::string & NodeId)
                                          "Nothing was changed - " + QString::fromStdString(*ErrText) + ".");
                 return;
             }
-            std::error_code Rc; std::filesystem::remove(TgtFile, Rc);
+            //The two nodes as the delta was made from them: an edit while it was made (another zip on either) and
+            //the delta would name, or rebuild into, files the nodes no longer hold. Then the new delta goes, and the
+            //zip stays.
             const int J = indexOf(NodeId);
-            if (J < 0) return;
-            { json Nj = Model->doc().Node(J); SetContent(Nj, "DELTA", Blob); commitNode(J, std::move(Nj), true); }   // its base is the zip at the same target, beneath it
+            const int B = indexOf(BaseHandle);
+            const auto Holds = [&](int K, const std::string &File) { return K >= 0 && ContentName(Model->doc().Node(K)) == File; };
+            const bool Same = Holds(J, TgtPath) && Holds(B, BasePath)
+                && (Stamp || StrOf(Model->doc().Node(B)["LAYERS"][(size_t)PkgGraph::ContentIndex(Model->doc().Node(B))], "SOURCE") == KnownCid);
+            std::error_code Rc;
+            if (!Same)
+            {
+                std::filesystem::remove(Model->packageDir()->path().toStdString() + "/" + Blob, Rc);
+                tell("Make delta", "Nothing was changed - the layers changed while the delta was made.");
+                return;
+            }
+            std::filesystem::remove(TgtFile, Rc);
+            //One undo step: the delta naming its base, and the base carrying the CID it is named by.
+            if (Stamp && B >= 0)
+            {
+                json Bj = Model->doc().Node(B);
+                Bj["LAYERS"][(size_t)PkgGraph::ContentIndex(Bj)]["SOURCE"] = *BaseCid;
+                Model->doc().Replace(B, std::move(Bj));
+            }
+            json Nj = Model->doc().Node(J);
+            SetContent(Nj, "DELTA", Blob);
+            Nj["LAYERS"][(size_t)PkgGraph::ContentIndex(Nj)]["BASE_SOURCES"] = json::array({ *BaseCid });
+            commitNode(J, std::move(Nj), true);
         });
 }
 

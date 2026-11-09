@@ -239,24 +239,43 @@ std::string ContentTarget(const json &Node)
     return I < 0 ? std::string() : StrField(Node["LAYERS"][(size_t)I], "TARGET");
 }
 
-std::string DeltaBase(const std::vector<NodeRef> &Nodes, int Index)
+int DeltaBase(const std::vector<NodeRef> &Nodes, int Index)
 {
-    if (Index < 0 || Index >= (int)Nodes.size() || !Nodes[(size_t)Index].Json) return {};
+    if (Index < 0 || Index >= (int)Nodes.size() || !Nodes[(size_t)Index].Json) return -1;
     const json &N = *Nodes[(size_t)Index].Json;
     const int Own = ContentIndex(N);
-    if (Own < 0 || ContentName(N).empty()) return {};   // nothing of its own to diff yet
+    if (Own < 0 || ContentName(N).empty()) return -1;   // nothing of its own to diff yet
     const std::string Target = ContentTarget(N);
     for (int I = Own - 1; I >= 0; --I)
     {
         const json &L = N["LAYERS"][(size_t)I];
         if (LayerType(L) != "NODE" || L.contains("TAKE") || L.contains("TARGET")) continue;
         const std::string Ref = StrField(L, "NODE");
-        for (const NodeRef &C : Nodes)
-            if (!Ref.empty() && C.Handle == Ref && C.Json && ContentType(*C.Json) == "ZIP" && ContentTarget(*C.Json) == Target
-                && !ContentName(*C.Json).empty())
-                return ContentName(*C.Json);
+        for (size_t C = 0; C < Nodes.size(); ++C)
+            if (!Ref.empty() && Nodes[C].Handle == Ref && Nodes[C].Json && ContentType(*Nodes[C].Json) == "ZIP"
+                && ContentTarget(*Nodes[C].Json) == Target && !ContentName(*Nodes[C].Json).empty())
+                return (int)C;
     }
-    return {};
+    return -1;
+}
+
+std::vector<int> DeltaBaseZips(const std::vector<NodeRef> &Nodes, int Index)
+{
+    if (Index < 0 || Index >= (int)Nodes.size() || !Nodes[(size_t)Index].Json || ContentType(*Nodes[(size_t)Index].Json) != "DELTA") return {};
+    const json &L = (*Nodes[(size_t)Index].Json)["LAYERS"][(size_t)ContentIndex(*Nodes[(size_t)Index].Json)];
+    if (!L.contains("BASE_SOURCES") || !L["BASE_SOURCES"].is_array() || L["BASE_SOURCES"].empty()) return {};
+    std::vector<int> Out;
+    for (const json &Cid : L["BASE_SOURCES"])
+    {
+        int Found = -1;
+        for (size_t C = 0; C < Nodes.size() && Found < 0; ++C)
+            if (Nodes[C].Json && ContentType(*Nodes[C].Json) == "ZIP" && Cid.is_string()
+                && StrField((*Nodes[C].Json)["LAYERS"][(size_t)ContentIndex(*Nodes[C].Json)], "SOURCE") == Cid.get<std::string>())
+                Found = (int)C;
+        if (Found < 0) return {};
+        Out.push_back(Found);
+    }
+    return Out;
 }
 
 std::string KindOf(const json &Node)
@@ -276,7 +295,7 @@ const char *TypeHelp(const std::string &Type)
     if (Type == "ZIP")   return "An archive mounted at TARGET (STORE zips only - they are mounted, never unpacked).";
     if (Type == "DIR")   return "A folder mounted at TARGET - local content, or a %RunnerMount%/... path at launch.";
     if (Type == "FILE")  return "One file mounted INTO the TARGET directory under its own name.";
-    if (Type == "DELTA") return "A binary delta rebuilding an archive from the nearest content beneath it at TARGET.";
+    if (Type == "DELTA") return "A binary delta rebuilding an archive from the layers beneath it that BASE_SOURCES names by CID.";
     if (Type == "NODE")  return "Contain another node here: its layers fold in at this position. TAKE selects/renames, TARGET places.";
     if (Type == "ANY")   return "A requirement: one of these nodes must be present. First in the list = a graft onto them.";
     if (Type == "NOT")   return "An exclusion: this node must NOT be present - the row is blocked if it is.";
@@ -296,7 +315,7 @@ const char *TypeGist(const std::string &Type)
     if (Type == "ZIP")   return "the game's files, from a zip";
     if (Type == "DIR")   return "a folder of files";
     if (Type == "FILE")  return "one file";
-    if (Type == "DELTA") return "a patch onto the files beneath";
+    if (Type == "DELTA") return "a patch onto the files it names";
     if (Type == "NODE")  return "contain another node";
     if (Type == "ANY")   return "needs one of these nodes";
     if (Type == "NOT")   return "never together with a node";
@@ -525,8 +544,8 @@ std::vector<Field> MakeFields(const std::string &Type)
     if (Type == "DELTA")
     {
         std::vector<Field> F = Content("DELTA", "Delta", ".vgdelta in this bundle", true);
-        F.insert(F.begin() + 2, {"BASE_TARGETS", "Bases", FieldKind::StringList,
-                                 "FILES/... - one per line, concatenated in order (default: the target)", {}, {}});
+        F.insert(F.begin() + 2, {"BASE_SOURCES", "Bases", FieldKind::StringList,
+                                 "the SOURCE CIDs it was built over - one per line, concatenated in order", {}, {}});
         return F;
     }
     if (Type == "DIR")   return Content("DIR",   "Dir",   "folder in this bundle, or %RunnerMount%/...", false);

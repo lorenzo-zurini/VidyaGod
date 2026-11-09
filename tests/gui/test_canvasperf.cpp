@@ -28,7 +28,8 @@ class CanvasPerfTest : public QObject
                 const int Src = (I * 7 + K * 13) % std::max(1, Chain);
                 if (Src < I - 1) L.push_back(json{{"NODE", "n" + std::to_string(Src)}});
             }
-            L.push_back(json{{"DELTA", "d" + std::to_string(I) + ".vgdelta"}, {"TARGET", "FILES/client"}});
+            L.push_back(json{{"DELTA", "d" + std::to_string(I) + ".vgdelta"}, {"TARGET", "FILES/client"},
+                             {"BASE_SOURCES", json::array({ "Qm" + std::to_string(I) })}});
             Out.push_back({"n" + std::to_string(I), json{{"LABEL", "version " + std::to_string(I)}, {"LAYERS", L}}});
         }
         return Out;

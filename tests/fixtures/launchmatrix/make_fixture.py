@@ -12,7 +12,7 @@ diff against tests/fixtures/launchmatrix/golden/.
 ADDING A FEATURE: add it to the matrix here, re-run the harness with --update, and commit the golden diff. The
 diff IS the review — it shows exactly what the new feature changed about every plan it touches.
 """
-import json, os, shutil, stat, sys, zipfile
+import base64, hashlib, json, os, shutil, stat, sys, zipfile
 
 FIXED_DATE = (2020, 1, 1, 0, 0, 0)     # pinned so a regenerated zip is byte-identical
 
@@ -172,14 +172,13 @@ def make_content(B):
     #
     # A delta reconstructs a COMPLETE archive of what it replaces and hides its BASE, nothing else beneath it.
     # Each delta here gets its own target with a predictable byte view underneath, and its target zip holds
-    # the whole tree it is meant to produce. (Pointing a delta at a target that already stacks base+patch would
-    # base it on the LAST zip there, which is a fine thing to test but a terrible thing to hand-compute.)
+    # the whole tree it is meant to produce.
     store_zip(f"{B}/delta_target.zip", {
         "chain/data.txt":   "base\n",
         "chain/added.txt":  "added by the delta\n",
         "chain/deep/x.txt": "x\n",
     })
-    # A delta over TWO bases (BASE_TARGETS): a game folder and its CD music folder, rebuilt as one tree with the
+    # A delta over TWO bases (BASE_SOURCES): a game folder and its CD music folder, rebuilt as one tree with the
     # music inside (Wild Metal Country's freeware release). The music is large enough that the delta copies it from
     # the second base instead of carrying it, so a base missing or out of order fails the base size check.
     music = "".join(f"cd music sample {i:05d}\n" for i in range(4000))
@@ -202,9 +201,9 @@ def make_deltas(B, tool):
     if not tool or not os.path.isfile(tool):
         return False
     import subprocess
-    # over_base: base = the nearest content beneath at the delta's own target (base.zip).
+    # over_base: base = base.zip, which it names.
     subprocess.run([tool, f"{B}/over_base.vgdelta", f"{B}/delta_target.zip", f"{B}/base.zip"], check=True)
-    # multi: base = base.zip ++ music.zip, the order BASE_TARGETS names them in.
+    # multi: base = base.zip ++ music.zip, the order BASE_SOURCES names them in.
     subprocess.run([tool, f"{B}/multi.vgdelta", f"{B}/multi_target.zip", f"{B}/base.zip", f"{B}/music.zip"], check=True)
     # lang: the language depot's newer build over its older one.
     subprocess.run([tool, f"{B}/lang.vgdelta", f"{B}/lang_v2.zip", f"{B}/lang_v1.zip"], check=True)
@@ -225,7 +224,15 @@ def F(path=""):
     """A FILES address."""
     return "FILES/" + path if path else "FILES"
 
-def nodes():
+def cid(path):
+    """A content file's CID as the importer names it: one 256 KiB chunk or less is one raw leaf, CIDv1 raw sha2-256 —
+    what a delta names its base by (every fixture file is that small)."""
+    with open(path, "rb") as f:
+        data = f.read()
+    assert len(data) <= 256 * 1024, path
+    return "b" + base64.b32encode(bytes([0x01, 0x55, 0x12, 0x20]) + hashlib.sha256(data).digest()).decode().lower().rstrip("=")
+
+def nodes(B):
     N = []
     def add(label, layers, **fields):
         # The readable LABEL doubles as the working-tree handle (the stored "CID"), so NODE layers stay legible;
@@ -281,19 +288,20 @@ def nodes():
     dirl   = add("lm_c_dir", [node(subm), {"DIR": "loosedir", "TARGET": F(G + "/loose")}])
     # A FILE layer's TARGET is the CONTAINING DIRECTORY — the file appears as TARGET/<its name>.
     filel  = add("lm_c_file", [node(dirl), {"FILE": "single.txt", "TARGET": F(G + "/loosefile")}])
-    # A DELTA reconstructs a COMPLETE archive from the nearest content beneath it at its target (the zip it was
-    # built on) and hides that base only: the dir under that zip is not its base and shows through. A dir is not a
-    # byte view, so it sits BENEATH the base (a dir between would be "the nearest content", a refused base).
+    # A DELTA reconstructs a COMPLETE archive from the layers it names by CID (BASE_SOURCES) and hides them inside its
+    # target only: the dir under the zip is not its base and shows through.
     masked = add("lm_c_masked_dir", [node(filel), {"DIR": "maskeddir", "TARGET": F(G + "/deltatarget")}])
-    dbase  = add("lm_c_delta_base", [node(masked), {"ZIP": "base.zip", "TARGET": F(G + "/deltatarget")}])
-    d1     = add("lm_c_delta", [node(dbase), {"DELTA": "over_base.vgdelta", "TARGET": F(G + "/deltatarget")}])
-    mbase  = add("lm_c_multi_base", [node(d1), {"ZIP": "base.zip", "TARGET": F(G + "/multi")},
-                                     {"ZIP": "music.zip", "TARGET": F(G + "/multi/music")}])
+    dbase  = add("lm_c_delta_base", [node(masked), {"ZIP": "base.zip", "SOURCE": cid(f"{B}/base.zip"), "TARGET": F(G + "/deltatarget")}])
+    d1     = add("lm_c_delta", [node(dbase), {"DELTA": "over_base.vgdelta", "TARGET": F(G + "/deltatarget"),
+                                              "BASE_SOURCES": [cid(f"{B}/base.zip")]}])
+    mbase  = add("lm_c_multi_base", [node(d1), {"ZIP": "base.zip", "SOURCE": cid(f"{B}/base.zip"), "TARGET": F(G + "/multi")},
+                                     {"ZIP": "music.zip", "SOURCE": cid(f"{B}/music.zip"), "TARGET": F(G + "/multi/music")}])
     m1     = add("lm_c_multi_delta", [node(mbase), {"DELTA": "multi.vgdelta", "TARGET": F(G + "/multi"),
-                                                    "BASE_TARGETS": [F(G + "/multi"), F(G + "/multi/music")]}])
+                                                    "BASE_SOURCES": [cid(f"{B}/base.zip"), cid(f"{B}/music.zip")]}])
     dmain  = add("lm_c_depot_main", [node(m1), {"ZIP": "depot_main.zip", "TARGET": F(G + "/depot")}])
-    lang1  = add("lm_c_depot_lang_v1", [node(dmain), {"ZIP": "lang_v1.zip", "TARGET": F(G + "/depot")}])
-    lang2  = add("lm_c_depot_lang_v2", [node(lang1), {"DELTA": "lang.vgdelta", "TARGET": F(G + "/depot")}])
+    lang1  = add("lm_c_depot_lang_v1", [node(dmain), {"ZIP": "lang_v1.zip", "SOURCE": cid(f"{B}/lang_v1.zip"), "TARGET": F(G + "/depot")}])
+    lang2  = add("lm_c_depot_lang_v2", [node(lang1), {"DELTA": "lang.vgdelta", "TARGET": F(G + "/depot"),
+                                                      "BASE_SOURCES": [cid(f"{B}/lang_v1.zip")]}])
     probe  = add("lm_c_probe", [node(lang2), {"FILE": "probe.sh", "TARGET": F(G + "/bin")}])
     # Un-hydrated content: present only as a CID (a real, well-formed one whose block is simply never in the local
     # store). The engine REFUSES to launch with missing sources, so this hangs off a SIDE BRANCH — only the
@@ -476,7 +484,7 @@ def main():
         print(f"make_fixture: {tool} missing — build vg_make_delta; the fixture needs REAL deltas",
               file=sys.stderr)
         return 3
-    for n in nodes():                              # one node per file: the file IS the node's block
+    for n in nodes(Bundle):                              # one node per file: the file IS the node's block
         with open(f"{Bundle}/{n['LABEL']}.json", "w") as Out:
             json.dump(n, Out, indent=2)
             Out.write("\n")

@@ -90,6 +90,16 @@ inline nlohmann::ordered_json Content(const char *Form, const std::string &Path,
     return { {"LAYERS", nlohmann::ordered_json::array({ std::move(Layer) })} };
 }
 
+// A delta over the layers whose SOURCE CIDs it names, in order (BASE_SOURCES); Cid its own SOURCE, when a delta names it.
+inline nlohmann::ordered_json DeltaOver(const std::string &Path, std::vector<std::string> Bases, const std::string &Target = {},
+                                        const std::string &Cid = {})
+{
+    nlohmann::ordered_json L = Content("delta", Path, Target);
+    L["LAYERS"][0]["BASE_SOURCES"] = std::move(Bases);
+    if (!Cid.empty()) L["LAYERS"][0]["SOURCE"] = Cid;
+    return L;
+}
+
 // Content whose bytes come from a backend rather than the bundle dir (missing locally ⇒ fetchable, not broken).
 inline nlohmann::ordered_json ContentCid(const char *Form, const std::string &Path, const std::string &Cid,
                                          const std::string &Target = {})
