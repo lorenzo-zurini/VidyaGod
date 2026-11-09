@@ -154,6 +154,7 @@ struct TreeNames
     ArchiveNames Names;
     std::map<const std::vector<std::string> *, std::set<std::string>> Lower;
     std::map<std::string, std::vector<std::string>> Dirs;   // a dir layer's source -> its files, relative
+    PreparedNames Prepared;                                  // their tree paths, lower-cased, per mount (one per package)
 
     const std::set<std::string> *LowerOf(const LaunchTree &L, size_t Layer)
     {
@@ -225,7 +226,7 @@ std::string FileName(const std::string &Path) { return std::filesystem::path(Pat
 void FindCrossLayerCaseCollisions(const LaunchTree &L, TreeNames &Tn, std::vector<std::string> &Out,
                                   std::unordered_set<std::string> &GlobalSeen, std::vector<std::string> *KeysOut)
 {
-    for (const CaseConflict &C : CaseConflicts(L.S, L.T, Tn.Entries(L, false)))
+    for (const CaseConflict &C : CaseConflicts(L.S, L.T, Tn.Entries(L, false), &Tn.Prepared))
     {
         const std::string A = FileName(L.S.layers[C.first].source), B = FileName(L.S.layers[C.second].source);
         const std::string Seen1 = C.key + "|" + ToLowerAscii(A) + "|" + ToLowerAscii(B);
@@ -510,6 +511,7 @@ void Nodes(const NodeIndex &Idx, std::vector<std::string> &Errors, std::vector<s
         }
         std::set<std::string> Said;                                     // one report per problem across configs
         auto Once = [&](std::vector<std::string> &Where, const std::string &Msg) { if (Said.insert(Msg).second) Where.push_back(Msg); };
+        std::optional<LaunchTree> DefaultTree;                         // the first config is the default plan: its tree, kept
         for (const auto &[CRoot, Inst, Gs] : Configs)
         {
             const Fold::Plan P = Fold::Resolve(Lib, CRoot, Inst, {}, Gs);
@@ -578,6 +580,7 @@ void Nodes(const NodeIndex &Idx, std::vector<std::string> &Errors, std::vector<s
             //rebuild (a file it names is not in it), and the bytes of the files it names must be what its header says it
             //was built over.
             const LaunchTree Lt = LaunchTree::Of(P);
+            if (!DefaultTree) DefaultTree = Lt;
             for (const std::string &Why : Lt.T.problems)
                 Once(Res.Errors, Tag + ": " + Why + " — contain the node that holds the file it names");
             for (size_t D = 0; D < Lt.S.layers.size(); ++D)
@@ -678,7 +681,7 @@ void Nodes(const NodeIndex &Idx, std::vector<std::string> &Errors, std::vector<s
             else if (AllLocal)
                 Res.Warnings.push_back(Tag + ": EXE '" + Cp + "' is not in the package content");
         }
-        FindCrossLayerCaseCollisions(LaunchTree::Of(P), Wk.Tree, Res.Collisions, Res.CollisionSeen, &Res.CollisionKeys);
+        FindCrossLayerCaseCollisions(DefaultTree ? *DefaultTree : LaunchTree::Of(P), Wk.Tree, Res.Collisions, Res.CollisionSeen, &Res.CollisionKeys);
     };
     Parallel::ForWith<Worker>(Packages.size(), [&](Worker &Wk, std::size_t K) {
         for (const std::size_t I : *Packages[K]) CheckNode(Wk, Items[I]->first, Items[I]->second, Outs[I]);
