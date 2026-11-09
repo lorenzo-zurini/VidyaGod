@@ -9,6 +9,7 @@
 #include "cid.h"
 #include "contentfile.h"
 #include "fold.h"
+#include "ipfswrapper.h"   // ComputeCid — a content file's CID, as publishing records it
 #include "launchtree.h"
 #include "manifestmodel.h"
 #include "nodegraph.h"
@@ -538,14 +539,25 @@ VG_COMMANDS
 
     // ---------------- cid ----------------
     Command::Register({
-        "cid of", "the CID of a file's bytes as one raw block, and its SHA-256",
+        "cid of", "the CID of a file's bytes as one raw block, and its SHA-256 — or of a content file, as publishing names it",
         "What the format names bytes by: CIDv1, raw, sha2-256, base32 — for a node file's bytes, a node's canonical "
-        "bytes (--node: the file parsed as a node, or a node of the library), and the raw SHA-256.",
-        { Pos("file", "a file (or, with --node, a node)"), Flag("node", "the CID of its canonical node bytes") },
-        { "cid of x.json", "cid of 'Patch 2.0a' --node" }, { "Cid::OfBytes", "Cid::Sha256", "Cid::OfNode", "Cid::Canonical" }, Needs::Config, false,
+        "bytes (--node: the file parsed as a node, or a node of the library), and the raw SHA-256. --content: a content "
+        "file's CID as publishing records it in a layer's SOURCE (and a delta's BASE_SOURCES names it by) — the importer's "
+        "256 KiB chunks, raw leaves, a dag-pb root; a file of one chunk is its raw leaf. Nothing is added, no node started.",
+        { Pos("file", "a file (or, with --node, a node)"), Flag("node", "the CID of its canonical node bytes"),
+          Flag("content", "a content file's CID, as its layer's SOURCE records it") },
+        { "cid of x.json", "cid of 'Patch 2.0a' --node", "cid of game.zip --content" },
+        { "Cid::OfBytes", "Cid::Sha256", "Cid::OfNode", "Cid::Canonical", "IpfsWrapper::ComputeCid" }, Needs::Config, false,
         [](Command::Context &C, const json &A) {
             std::string Err;
             const std::string Q = Command::Str(A, "file");
+            if (Command::Bool(A, "content", false))
+            {
+                const std::string Id = IpfsWrapper::ComputeCid(Q, &Err);
+                if (Id.empty()) throw std::runtime_error(Err);
+                std::error_code Ec;
+                return json{{"cid", Id}, {"bytes", std::filesystem::file_size(Q, Ec)}};
+            }
             if (Command::Bool(A, "node", false))
             {
                 const json J = NodeJson(C, Q);

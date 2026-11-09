@@ -78,7 +78,7 @@ bool RunsBeside(const std::string &Name)
         "packages installed", "sources list", "graph tree", "graph within", "graph shelf", "graph platform",
         //a spec's view, read (writes land in its writable layers, which can be a game's kept USERDATA folders); a zip
         //or a delta, and only files the call names (--out)
-        "vfs spec", "vfs ls", "vfs stat", "vfs cat", "vfs df", "vfs zip", "vfs delta" };
+        "vfs spec", "vfs ls", "vfs stat", "vfs cat", "vfs df", "vfs zip", "vfs delta", "vfs tree", "vfs case" };
     return One.count(Name) || Groups.count(Name.substr(0, Name.find(' ')));
 }
 
