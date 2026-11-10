@@ -606,6 +606,10 @@ set_tests_properties(cli_sweep PROPERTIES TIMEOUT 1200 RUN_SERIAL TRUE)
 add_test(NAME convert_delta_chain COMMAND python3 -I ${CMAKE_SOURCE_DIR}/tests/e2e/convert_delta_chain.py
          --vg $<TARGET_FILE:VidyaGod> --work ${CMAKE_BINARY_DIR}/testtmp/convert_delta)
 set_tests_properties(convert_delta_chain PROPERTIES TIMEOUT 600)
+# A window run beside the app (--bypass-single-instance-lock) leaves the lock free: the app still starts on that data dir.
+add_test(NAME bypass_lock COMMAND python3 -I ${CMAKE_SOURCE_DIR}/tests/e2e/bypass_lock.py
+         --vg $<TARGET_FILE:VidyaGod> --work ${CMAKE_BINARY_DIR}/testtmp/bypass_lock)
+set_tests_properties(bypass_lock PROPERTIES TIMEOUT 300)
 # Start-up, call latency and idle memory against budgets, on the fixture — warn-only for now: it prints, never fails
 # (tools/perf/budgets.py; --data-dir runs it on a copy of a real library).
 add_test(NAME perf_budgets COMMAND python3 -I ${CMAKE_SOURCE_DIR}/tools/perf/budgets.py --vg $<TARGET_FILE:VidyaGod>

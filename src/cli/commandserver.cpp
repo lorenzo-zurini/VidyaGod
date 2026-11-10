@@ -34,7 +34,7 @@ std::string CommandServer::SocketName(const std::string &AppDataDir)
 bool CommandServer::Start(const std::string &AppDataDir, std::string *Error)
 {
     const QString Name = QString::fromStdString(SocketName(AppDataDir));
-    QLocalServer::removeServer(Name);   // we hold the data dir's lock: a socket file there is a dead run's
+    QLocalServer::removeServer(Name);   // we hold the data dir's lock (a socket file there is a dead run's, or a run beside the app's, which the app takes over), or nothing answered at it
     Server = new QLocalServer(this);
     Server->setSocketOptions(QLocalServer::UserAccessOption);   // this user only: the socket drives the whole app
     if (!Server->listen(Name))

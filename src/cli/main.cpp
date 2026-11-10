@@ -6,6 +6,7 @@
 #include "cli/climodes.h"
 #include "cli/cliapp.h"      // the CLI app: `VidyaGod <group> <command>`
 #include "commandserver.h"   // the running app's command socket
+#include <QLocalSocket>
 #include "apppaths.h"
 #include "platform/platform.h"
 #include "commonutils.h"
@@ -268,10 +269,13 @@ int main(int argc, char *argv[])
         if (std::string(argv[i]) == "--bypass-single-instance-lock" || std::string(argv[i]) == "--cid")
             BypassInstanceLock = true;
 
+    //A run beside the app never takes the lock, even when it is free: it would keep the app itself from starting
+    //while it runs (a harness's off-screen window, a sweep) — the app is the one the lock is for.
     std::string LockHolder;
-    bool InstanceLockHeld = Platform::AcquireSingleInstanceLock((AppDataDir.absolutePath() + "/vidyagod.lock").toStdString(), &LockHolder);
-    if (!InstanceLockHeld && BypassInstanceLock)
-        LogWarn("main.cpp", "Single-instance lock held, but --bypass-single-instance-lock given — proceeding without the lock.");
+    const bool InstanceLockHeld = !BypassInstanceLock
+        && Platform::AcquireSingleInstanceLock((AppDataDir.absolutePath() + "/vidyagod.lock").toStdString(), &LockHolder);
+    if (BypassInstanceLock)
+        LogOut("main.cpp", "--bypass-single-instance-lock: running beside whatever holds the data dir, without its lock.");
     else if (!InstanceLockHeld)
     {
         //Started again while it runs (a second click on its icon): the running app's window comes forward, and this
@@ -410,7 +414,7 @@ int main(int argc, char *argv[])
         return Application.exec();
     }
 
-    MainWindow MainWindow(&GlobalConfigJSON, &AppDataDir);
+    MainWindow MainWindow(&GlobalConfigJSON, &AppDataDir, nullptr, true);   // the app's start: from the last index kept
     //The command socket: `VidyaGod <group> <command>` from any terminal runs here, on this window's live state.
     Command::Context CmdCtx;
     CmdCtx.Config = &GlobalConfigJSON;
@@ -418,7 +422,20 @@ int main(int argc, char *argv[])
     CmdCtx.Model = MainWindow.model();
     CmdCtx.Window = &MainWindow;
     CommandServer Commands(CmdCtx);
-    if (std::string CErr; !Commands.Start(AppDataDir.absolutePath().toStdString(), &CErr))
+    //Beside the app (no lock), this window answers commands only while nothing else on the data dir listens: the app's
+    //socket stays the app's (busy or not — the connection is taken before its loop runs), and an app started later
+    //takes the socket over.
+    bool Listened = false;
+    if (!InstanceLockHeld)
+    {
+        QLocalSocket Listener;
+        Listener.connectToServer(QString::fromStdString(CommandServer::SocketName(AppDataDir.absolutePath().toStdString())));
+        Listened = Listener.waitForConnected(1000);
+        Listener.abort();
+    }
+    if (Listened)
+        LogOut("main.cpp", "the command socket stays with the instance already answering on this data dir");
+    else if (std::string CErr; !Commands.Start(AppDataDir.absolutePath().toStdString(), &CErr))
         LogWarn("main.cpp", "the command socket is not up (" + CErr + ") — CLI commands cannot reach this window");
     MainWindow.startup(LaunchParameters.StartInTray);   // show(), or come up hidden if --tray / Start-in-tray / remembered
     return Application.exec();
