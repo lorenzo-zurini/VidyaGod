@@ -46,7 +46,8 @@
       ],
       "Host": "linux64",
       "Native": true,
-      "NodeId": "bafkreiclbditqnvr7dfugtxdcouvyqfz6mecord4owyjn2l55ni2mrfcry"
+      "NodeId": "bafkreiclbditqnvr7dfugtxdcouvyqfz6mecord4owyjn2l55ni2mrfcry",
+      "WorkDir": ""
     }
   ],
   "RunnerEnv": {
@@ -100,5 +101,6 @@
     "VIDYAGOD_SELF_NAME": "<volatile>",
     "VIDYAGOD_SELF_VIP": "<volatile>",
     "VIDYAGOD_SUBNET": "<volatile>"
-  }
+  },
+  "WorkDir": "<TMP>/90000000000001/DefaultInstance/RUNTIME/drive_c/90000000000001/game"
 }

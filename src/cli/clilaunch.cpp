@@ -42,7 +42,7 @@ static nlohmann::ordered_json DumpResolution(struct ContainerParams &CP)   // no
         nlohmann::ordered_json Chain = nlohmann::ordered_json::array();
         for (const RunnerLink &L : CP.RunnerChain)
             Chain.push_back({{"NodeId", L.NodeId}, {"Host", L.HostPlatform}, {"Guests", L.GuestPlatform},
-                             {"Executable", L.Executable}, {"Native", L.NativeNamespace()}});
+                             {"Executable", L.Executable}, {"WorkDir", L.WorkDir}, {"Native", L.NativeNamespace()}});
         J["RunnerChain"] = Chain;
     }
     J["RunnerExecutable"]  = CP.RunnerExecutable;
@@ -54,6 +54,7 @@ static nlohmann::ordered_json DumpResolution(struct ContainerParams &CP)   // no
     J["PrefixGenerate"]    = CP.PrefixGenerate;
     J["ContentPath"]       = CP.ExePathRelative.string();
     J["Content"]           = CP.ExePathComplete.string();
+    J["WorkDir"]           = CP.WorkDirPathComplete.string();   // where it starts: the game's WORKDIR, its runner's, or its EXE's folder
     J["ExeArgs"]           = CP.ExeArgs;
     J["DLLOverrides"]      = CP.DLLOverrides;
     J["KeepDirs"]          = CP.KeepDirs;    // [{path,target,cloud}] — file dir persists ("" path = whole runtime)

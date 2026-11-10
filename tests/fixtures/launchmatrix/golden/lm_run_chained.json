@@ -86,7 +86,8 @@
       ],
       "Host": "linux64",
       "Native": false,
-      "NodeId": "bafkreicnpcx2mu4vdm2x6vnzh3pk3csw4ha2l6bkzvpqmdnrtu53cbyx6a"
+      "NodeId": "bafkreicnpcx2mu4vdm2x6vnzh3pk3csw4ha2l6bkzvpqmdnrtu53cbyx6a",
+      "WorkDir": ""
     },
     {
       "Executable": "/bin/sh",
@@ -95,7 +96,8 @@
       ],
       "Host": "linux64",
       "Native": true,
-      "NodeId": "bafkreiclbditqnvr7dfugtxdcouvyqfz6mecord4owyjn2l55ni2mrfcry"
+      "NodeId": "bafkreiclbditqnvr7dfugtxdcouvyqfz6mecord4owyjn2l55ni2mrfcry",
+      "WorkDir": ""
     }
   ],
   "RunnerEnv": {
@@ -433,5 +435,6 @@
     "lm_lib_var": "from-the-library",
     "lm_mode": "beta",
     "lm_text": "hello"
-  }
+  },
+  "WorkDir": "<TMP>/90000000000001/DefaultInstance/RUNTIME/pfx/drive_c/90000000000001"
 }
