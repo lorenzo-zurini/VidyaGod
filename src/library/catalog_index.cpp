@@ -63,12 +63,19 @@ const std::set<std::string> kIndexLogContexts = {
 
 fs::path IndexCachePath() { return AppPaths::DataRoot() / "CACHE" / "index.cbor"; }
 
+//The start of an index's inputs: the shape of the cache, then the version that wrote it. The last index
+//(LastCatalogIndex) is read whatever version wrote it — shown until the check, which sees the program changed,
+//replaces it — but never one of another shape.
+const std::string kIndexShape = "vgindex 2 ";
+std::string IndexFormat() { return kIndexShape + VIDYAGOD_VERSION + "\n"; }
+const std::string kHydrationShape = "vghydration 1";
+
 std::string IndexInputs(const nlohmann::ordered_json &Config, long long *Newest = nullptr)
 {
     //The program: an AppImage's own file (its mounted binary sits at a new /tmp path every run), else the binary.
     const char *AppImage = std::getenv("APPIMAGE");
     const fs::path Exe = AppImage && *AppImage ? fs::path(AppImage) : Platform::SelfExe();
-    std::string S = std::string("vgindex 2 ") + VIDYAGOD_VERSION + "\n" + Exe.string() + '\t' + Platform::FileStamp(Exe) + '\n'
+    std::string S = IndexFormat() + Exe.string() + '\t' + Platform::FileStamp(Exe) + '\n'
                     + ManifestModel::MachinePlatform() + '\n';
     std::vector<fs::path> Roots = { LibraryRootDir(Config), CatalogRootDir(Config) };
     for (const auto &D : LocalPackageDirs(Config)) Roots.push_back(D);
@@ -85,7 +92,8 @@ std::string IndexInputs(const nlohmann::ordered_json &Config, long long *Newest 
     return S;
 }
 
-std::optional<NodeIndex> LoadIndexCache(const std::string &Inputs, std::vector<Diagnostics::Entry> &Said)
+//Want: the inputs it must have been built from; null takes whatever it was built from (of this format), into *Had.
+std::optional<NodeIndex> LoadIndexCache(const std::string *Want, std::vector<Diagnostics::Entry> &Said, std::string *Had = nullptr)
 {
     if (!AppPaths::DataRootSet()) return std::nullopt;   // no data dir of its own: no cache (see SaveIndexCache)
     try
@@ -96,7 +104,10 @@ std::optional<NodeIndex> LoadIndexCache(const std::string &Inputs, std::vector<D
         In.seekg(0);
         if (!In.read(reinterpret_cast<char *>(Bytes.data()), static_cast<std::streamsize>(Bytes.size()))) return std::nullopt;
         nlohmann::ordered_json H = nlohmann::ordered_json::from_cbor(Bytes, true, false);
-        if (H.is_discarded() || !H.is_object() || H.value("inputs", std::string()) != Inputs) return std::nullopt;
+        if (H.is_discarded() || !H.is_object()) return std::nullopt;
+        const std::string Inputs = H.value("inputs", std::string());
+        if (Want ? Inputs != *Want : Inputs.rfind(kIndexShape, 0) != 0) return std::nullopt;
+        if (Had) *Had = Inputs;
         NodeIndex Idx;
         auto &Blobs = H.at("nodes");
         std::vector<std::pair<std::string, Node>> Nodes(Blobs.size());
@@ -155,14 +166,14 @@ void SaveIndexCache(const std::string &Inputs, const NodeIndex &Idx, const std::
 
 } // namespace
 
-NodeIndex BuildCatalogIndex(const nlohmann::ordered_json &GlobalConfigJSON, std::string *InputsOut, std::vector<Diagnostics::Entry> *SaidOut)
+namespace
 {
-    const auto T0 = std::chrono::steady_clock::now();
-    long long Newest = 0;
-    const std::string Inputs = IndexInputs(GlobalConfigJSON, &Newest);
-    if (InputsOut) *InputsOut = Inputs;
+//BuildCatalogIndex once its inputs are known (Newest: the latest node file's time among them).
+NodeIndex BuildFrom(const nlohmann::ordered_json &GlobalConfigJSON, const std::string &Inputs, long long Newest,
+                    std::chrono::steady_clock::time_point T0, std::vector<Diagnostics::Entry> *SaidOut)
+{
     std::vector<Diagnostics::Entry> Replayed;
-    if (std::optional<NodeIndex> Cached = LoadIndexCache(Inputs, Replayed))
+    if (std::optional<NodeIndex> Cached = LoadIndexCache(&Inputs, Replayed))
     {
         if (SaidOut) *SaidOut = std::move(Replayed);
         LogOut("PackageCatalog::BuildCatalogIndex", "Indexed " + std::to_string(Cached->Nodes.size()) + " node(s) from "
@@ -179,6 +190,84 @@ NodeIndex BuildCatalogIndex(const nlohmann::ordered_json &GlobalConfigJSON, std:
     if (Newest < Now - 3) SaveIndexCache(Inputs, Idx, Lines);
     if (SaidOut) *SaidOut = std::move(Lines);
     return Idx;
+}
+
+fs::path HydrationCachePath() { return AppPaths::DataRoot() / "CACHE" / "hydration.cbor"; }
+} // namespace
+
+NodeIndex BuildCatalogIndex(const nlohmann::ordered_json &GlobalConfigJSON, std::string *InputsOut, std::vector<Diagnostics::Entry> *SaidOut)
+{
+    const auto T0 = std::chrono::steady_clock::now();
+    long long Newest = 0;
+    const std::string Inputs = IndexInputs(GlobalConfigJSON, &Newest);
+    if (InputsOut) *InputsOut = Inputs;
+    return BuildFrom(GlobalConfigJSON, Inputs, Newest, T0, SaidOut);
+}
+
+std::optional<NodeIndex> LastCatalogIndex(std::string *Inputs, std::vector<Diagnostics::Entry> *SaidOut)
+{
+    const auto T0 = std::chrono::steady_clock::now();
+    std::vector<Diagnostics::Entry> Replayed;
+    std::optional<NodeIndex> Idx = LoadIndexCache(nullptr, Replayed, Inputs);
+    if (!Idx) return std::nullopt;
+    if (SaidOut) *SaidOut = std::move(Replayed);
+    LogOut("PackageCatalog::LastCatalogIndex", "Loaded the last index (" + std::to_string(Idx->Nodes.size()) + " node(s)) in "
+           + std::to_string(std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - T0).count())
+           + " ms; the library is checked against it next");
+    return Idx;
+}
+
+std::optional<NodeIndex> RefreshCatalogIndex(const nlohmann::ordered_json &GlobalConfigJSON, const std::string &Have,
+                                             std::string *InputsOut, std::vector<Diagnostics::Entry> *SaidOut)
+{
+    const auto T0 = std::chrono::steady_clock::now();
+    long long Newest = 0;
+    const std::string Inputs = IndexInputs(GlobalConfigJSON, &Newest);
+    if (InputsOut) *InputsOut = Inputs;
+    if (Inputs == Have) return std::nullopt;
+    return BuildFrom(GlobalConfigJSON, Inputs, Newest, T0, SaidOut);
+}
+
+std::optional<std::unordered_map<std::string, NodeHydration>> LastHydration()
+{
+    if (!AppPaths::DataRootSet()) return std::nullopt;
+    try
+    {
+        std::ifstream In(HydrationCachePath(), std::ios::binary | std::ios::ate);
+        if (!In) return std::nullopt;
+        std::vector<std::uint8_t> Bytes(static_cast<std::size_t>(In.tellg()));
+        In.seekg(0);
+        if (!In.read(reinterpret_cast<char *>(Bytes.data()), static_cast<std::streamsize>(Bytes.size()))) return std::nullopt;
+        const nlohmann::ordered_json H = nlohmann::ordered_json::from_cbor(Bytes, true, false);
+        if (H.is_discarded() || !H.is_object() || H.value("format", std::string()) != kHydrationShape) return std::nullopt;
+        std::unordered_map<std::string, NodeHydration> Out;
+        for (const auto &[Key, V] : H.at("nodes").items())
+            Out[Key] = NodeHydration{ V.at(0).get<bool>(), V.at(1).get<bool>(), V.at(2).get<bool>(), V.at(3).get<bool>(), V.at(4).get<bool>() };
+        return Out;
+    }
+    catch (const std::exception &) { return std::nullopt; }
+}
+
+void SaveLastHydration(const std::unordered_map<std::string, NodeHydration> &Hyd)
+{
+    if (!AppPaths::DataRootSet()) return;   // a test or tool that set no data dir never writes into ~/.VidyaGod
+    nlohmann::ordered_json Nodes = nlohmann::ordered_json::object();
+    for (const auto &[Key, H] : Hyd) Nodes[Key] = { H.Hydrated, H.HasContent, H.OnDisk, H.HasCid, H.Incomplete };
+    const std::vector<std::uint8_t> Bytes = nlohmann::ordered_json::to_cbor(nlohmann::ordered_json{{"format", kHydrationShape}, {"nodes", std::move(Nodes)}});
+    static std::mutex SaveMu;
+    std::lock_guard<std::mutex> Lk(SaveMu);
+    std::error_code Ec;
+    const fs::path Path = HydrationCachePath();
+    fs::create_directories(Path.parent_path(), Ec);
+    const fs::path Tmp = Path.string() + ".tmp" + std::to_string(QCoreApplication::applicationPid());
+    {
+        std::ofstream Out(Tmp, std::ios::binary | std::ios::trunc);
+        if (!Out) return;
+        Out.write(reinterpret_cast<const char *>(Bytes.data()), static_cast<std::streamsize>(Bytes.size()));
+        if (!Out) { Out.close(); fs::remove(Tmp, Ec); return; }
+    }
+    fs::rename(Tmp, Path, Ec);
+    if (Ec) fs::remove(Tmp, Ec);
 }
 
 namespace
@@ -217,16 +306,18 @@ std::optional<NodeIndex> ReadIndexCache(const nlohmann::ordered_json &GlobalConf
 {
     std::vector<Diagnostics::Entry> Said;
     LogBuffer Quiet;   // a read for comparison: what its build said is not said again here
-    std::optional<NodeIndex> Idx = LoadIndexCache(IndexInputs(GlobalConfigJSON), Said);
+    const std::string Inputs = IndexInputs(GlobalConfigJSON);
+    std::optional<NodeIndex> Idx = LoadIndexCache(&Inputs, Said);
     (void)Quiet.Take();
     return Idx;
 }
 
 bool ClearIndexCache()
 {
-    std::error_code Ec;
+    std::error_code Ec, Hc;
     fs::remove(IndexCachePath(), Ec);
-    return !Ec;
+    fs::remove(HydrationCachePath(), Hc);
+    return !Ec && !Hc;
 }
 
 void PublishAppIndex(std::shared_ptr<const NodeIndex> Idx, std::string Inputs, std::vector<Diagnostics::Entry> Said)

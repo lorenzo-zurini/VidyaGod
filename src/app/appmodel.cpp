@@ -43,7 +43,7 @@ static QSize CoverDisplaySize(int CardWidth)
     return QSize(W, W * 3 / 2);
 }
 
-AppModel::AppModel(nlohmann::ordered_json * config, QDir * appDataDir, QObject * parent)
+AppModel::AppModel(nlohmann::ordered_json * config, QDir * appDataDir, QObject * parent, bool FromLastIndex)
     : QObject(parent), Config(config), AppDataDir(appDataDir)
 {
     // Apply persisted startup settings the model owns.
@@ -63,10 +63,25 @@ AppModel::AppModel(nlohmann::ordered_json * config, QDir * appDataDir, QObject *
     if (PackageCatalog::PruneMovedLocalPackages(*Config) > 0) save();
 
     {
+        //The index and the hydration the last run kept, at once — a busy library disk took minutes to walk, every
+        //node file stat'd, on the GUI thread before the window showed — then the disk is checked against them off
+        //it. Only with no index kept (the first run, another version) is the library read here and now.
         std::string Inputs;
         std::vector<Diagnostics::Entry> Said;
-        NodeIndex Idx = PackageCatalog::BuildCatalogIndex(*Config, &Inputs, &Said);   // node-native catalog source
-        setCatalog(std::move(Idx), std::move(Inputs), std::move(Said));
+        std::optional<NodeIndex> Last;
+        if (FromLastIndex) Last = PackageCatalog::LastCatalogIndex(&Inputs, &Said);
+        if (Last)
+        {
+            std::optional<HydrationMap> Hyd = PackageCatalog::LastHydration();
+            setCatalog(std::move(*Last), std::move(Inputs), std::move(Said),
+                       Hyd ? std::make_shared<const HydrationMap>(std::move(*Hyd)) : nullptr);
+            refreshFromDisk();
+        }
+        else
+        {
+            NodeIndex Idx = PackageCatalog::BuildCatalogIndex(*Config, &Inputs, &Said);   // node-native catalog source
+            setCatalog(std::move(Idx), std::move(Inputs), std::move(Said));
+        }
     }
 
     Friends = new FriendSharing(*this);   // the friend protocol: shares, received libraries, per-peer toggles
@@ -295,19 +310,22 @@ void AppModel::syncSources()
     auto NewIndex = std::make_shared<NodeIndex>();
     auto NewInputs = std::make_shared<std::string>();
     auto NewSaid = std::make_shared<std::vector<Diagnostics::Entry>>();
+    auto NewHyd = std::make_shared<std::shared_ptr<const HydrationMap>>();
     AsyncWork::Run(this,
-        [Cfg, Changed, NewIndex, NewInputs, NewSaid]{
+        [Cfg, Changed, NewIndex, NewInputs, NewSaid, NewHyd]{
             const nlohmann::ordered_json OrigLib = Cfg->value("LIBRARY", nlohmann::ordered_json::array());
             PackageCatalog::SyncPackageSources(*Cfg);   // fetch-if-missing + index CID package sources (no-op offline once fetched)
             *Changed = Cfg->value("LIBRARY", nlohmann::ordered_json::array()) != OrigLib;
-            if (*Changed) *NewIndex = PackageCatalog::BuildCatalogIndex(*Cfg, NewInputs.get(), NewSaid.get());   // heavy scan OFF the main thread
+            if (!*Changed) return;
+            *NewIndex = PackageCatalog::BuildCatalogIndex(*Cfg, NewInputs.get(), NewSaid.get());   // heavy scan OFF the main thread
+            *NewHyd = std::make_shared<const HydrationMap>(Installed::HydrationMap(*NewIndex));   // and its stat of every content file
         },
-        [this, Cfg, Before, Changed, NewIndex, NewInputs, NewSaid]{
+        [this, Cfg, Before, Changed, NewIndex, NewInputs, NewSaid, NewHyd]{
             if (*Changed)
             {
                 PackageCatalog::MergeListChange((*Config)["LIBRARY"], *Before, (*Cfg)["LIBRARY"], PackageCatalog::LibraryEntryKey);
                 save();
-                setCatalog(std::move(*NewIndex), std::move(*NewInputs), std::move(*NewSaid));   // cheap swap on the main thread (build already done)
+                setCatalog(std::move(*NewIndex), std::move(*NewInputs), std::move(*NewSaid), *NewHyd);   // cheap swap on the main thread (build already done)
                 emit catalogChanged();
                 emit packageSourcesChanged();
             }
@@ -331,16 +349,65 @@ void AppModel::syncSources()
 
 const std::unordered_map<std::string, Installed::NodeHydration> & AppModel::hydration() const
 {
-    if (!Hydration) Hydration = Installed::HydrationMap(*Catalog);
+    if (!Hydration)
+    {
+        Hydration = std::make_shared<const HydrationMap>(Installed::HydrationMap(*Catalog));
+        std::thread([H = Hydration] { PackageCatalog::SaveLastHydration(*H); }).detach();   // what the next start shows
+    }
     return *Hydration;
 }
 
-void AppModel::setCatalog(NodeIndex Idx, std::string Inputs, std::vector<Diagnostics::Entry> Said)
+void AppModel::setCatalog(NodeIndex Idx, std::string Inputs, std::vector<Diagnostics::Entry> Said,
+                          std::shared_ptr<const HydrationMap> Hyd)
 {
     Catalog = std::make_shared<const NodeIndex>(std::move(Idx));
-    Hydration.reset();
+    Hydration = std::move(Hyd);
+    CatalogInputs = Inputs;
+    ++CatalogGen;
     PackageCatalog::PublishAppIndex(Catalog, std::move(Inputs), std::move(Said));
     std::thread([] { Platform::ReleaseFreedMemory(); }).detach();   // the replaced index back to the system, off this thread
+}
+
+void AppModel::refreshFromDisk()
+{
+    auto Cfg = std::make_shared<const nlohmann::ordered_json>(*Config);
+    auto Old = Catalog;
+    auto Index = std::make_shared<std::optional<NodeIndex>>();
+    auto Inputs = std::make_shared<std::string>();
+    auto Said = std::make_shared<std::vector<Diagnostics::Entry>>();
+    auto Hyd = std::make_shared<std::shared_ptr<const HydrationMap>>();
+    AsyncWork::Run(this,
+        [Cfg, Old, Have = CatalogInputs, Index, Inputs, Said, Hyd]{
+            *Index = PackageCatalog::RefreshCatalogIndex(*Cfg, Have, Inputs.get(), Said.get());   // nothing: unchanged
+            *Hyd = std::make_shared<const HydrationMap>(Installed::HydrationMap(*Index ? **Index : *Old));
+            PackageCatalog::SaveLastHydration(**Hyd);
+        },
+        [this, Gen = CatalogGen, Index, Inputs, Said, Hyd]{
+            if (Gen != CatalogGen) { emit diskChecked(false); return; }   // swapped since by a build begun later: newer than this
+            if (*Index)
+            {
+                setCatalog(std::move(**Index), std::move(*Inputs), std::move(*Said), *Hyd);
+                emit catalogChanged();
+                emit diskChecked(true);
+                return;
+            }
+            const auto Same = [](const HydrationMap &A, const HydrationMap &B) {
+                if (A.size() != B.size()) return false;
+                for (const auto &[Key, H] : A)
+                {
+                    const auto It = B.find(Key);
+                    if (It == B.end()) return false;
+                    const auto &O = It->second;
+                    if (H.Hydrated != O.Hydrated || H.HasContent != O.HasContent || H.OnDisk != O.OnDisk || H.HasCid != O.HasCid
+                        || H.Incomplete != O.Incomplete) return false;
+                }
+                return true;
+            };
+            const bool Changed = !Hydration || !Same(*Hydration, **Hyd);
+            Hydration = *Hyd;
+            if (Changed) emit catalogChanged();
+            emit diskChecked(Changed);
+        });
 }
 
 void AppModel::healOrphansIfAny()
@@ -565,14 +632,16 @@ void AppModel::applySourceUpgrade(bool force)
     auto Index = std::make_shared<NodeIndex>();
     auto Inputs = std::make_shared<std::string>();
     auto Said = std::make_shared<std::vector<Diagnostics::Entry>>();
+    auto Hyd = std::make_shared<std::shared_ptr<const HydrationMap>>();
     AsyncWork::Run(this,
-        [Cfg, Plan, Err, Ok, Index, Inputs, Said, force]{
+        [Cfg, Plan, Err, Ok, Index, Inputs, Said, Hyd, force]{
             *Ok = PackageCatalog::ApplySourceUpgrade(*Cfg, *Plan, force, Err.get());
             if (!*Ok) return;
             PackageCatalog::SyncPackageSources(*Cfg);
             *Index = PackageCatalog::BuildCatalogIndex(*Cfg, Inputs.get(), Said.get());   // heavy scan stays off the main thread
+            *Hyd = std::make_shared<const HydrationMap>(Installed::HydrationMap(*Index));
         },
-        [this, Cfg, Before, Err, Ok, Index, Inputs, Said]{
+        [this, Cfg, Before, Err, Ok, Index, Inputs, Said, Hyd]{
             PendingUpgrade.reset();
             if (!*Ok)
             {
@@ -591,7 +660,7 @@ void AppModel::applySourceUpgrade(bool force)
             PackageCatalog::MergeListChange((*Config)["Settings"]["PackageSources"], List(*Before, "Settings", "PackageSources"),
                                             List(*Cfg, "Settings", "PackageSources"), PackageCatalog::SourceKey);
             save();
-            setCatalog(std::move(*Index), std::move(*Inputs), std::move(*Said));
+            setCatalog(std::move(*Index), std::move(*Inputs), std::move(*Said), *Hyd);
             emit catalogChanged();
             emit packageSourcesChanged();
         });

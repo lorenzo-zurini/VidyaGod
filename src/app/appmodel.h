@@ -36,7 +36,9 @@ class AppModel : public QObject
 {
     Q_OBJECT
 public:
-    AppModel(nlohmann::ordered_json * config, QDir * appDataDir, QObject * parent = nullptr);
+    // FromLastIndex: start from the index and hydration the last run kept, and check them against the disk off the GUI
+    // thread (refreshFromDisk) — the app's start. Otherwise the library is read here, as it is now (a command's model).
+    AppModel(nlohmann::ordered_json * config, QDir * appDataDir, QObject * parent = nullptr, bool FromLastIndex = false);
 
     // ── Shared state (views read directly; the model owns the lifetime) ──
     nlohmann::ordered_json * config()       const { return Config; }
@@ -55,6 +57,9 @@ public:
     // ── Mutators (perform the change, persist, then emit so every view reacts) ──
     bool save();                                       // write GlobalConfigJSON to disk
     void rebuildCatalog();                             // re-scan CatalogIndex from disk → emit catalogChanged()
+    // Check the index and what of it is on disk against the library, off the GUI thread (what the app's start does):
+    // what changed is swapped in, with catalogChanged; diskChecked says when it is done.
+    void refreshFromDisk();
     // Import every valid package bundle found under Dir (recursively) into the LIBRARY (skipping duplicates / non-
     // launchable bundles); saves + rebuilds when any were added. Returns {added, skipped}. GUI-free (the caller owns
     // the file dialog + result message).
@@ -102,6 +107,7 @@ public:
 
 signals:
     void catalogChanged();          // CatalogIndex rebuilt — Library/Catalog/Packages/IPFS refresh
+    void diskChecked(bool changed); // refreshFromDisk done: whether the index or its hydration changed
     void cardSizeChanged(int w);    // card pixel width changed — Library/Catalog relayout
     void coversReady();             // lazy cover load(s) landed — repaint visible cards
     void packageSourcesChanged();   // a CID package source was added/removed/synced — refresh the Sources page + catalog
@@ -131,10 +137,16 @@ private:
     QDir *                   AppDataDir;
     FriendSharing *          Friends = nullptr;   // child QObject, made in the ctor
     std::shared_ptr<const NodeIndex> Catalog = std::make_shared<const NodeIndex>();
-    mutable std::optional<std::unordered_map<std::string, Installed::NodeHydration>> Hydration;   // of Catalog; reset with it
+    using HydrationMap = std::unordered_map<std::string, Installed::NodeHydration>;
+    mutable std::shared_ptr<const HydrationMap> Hydration;   // of Catalog (null: worked out when first asked)
+    std::string              CatalogInputs;                  // what Catalog was built from (BuildCatalogIndex's Inputs)
+    unsigned                 CatalogGen = 0;                 // one more per setCatalog: a check begun before is stale
     // Make Idx the index (built from Inputs — BuildCatalogIndex's): it is what the app shows, and what code holding only
-    // the config reads (PackageCatalog::CurrentIndex) while no node file has changed since.
-    void setCatalog(NodeIndex Idx, std::string Inputs, std::vector<Diagnostics::Entry> Said);
+    // the config reads (PackageCatalog::CurrentIndex) while no node file has changed since. Hyd: its hydration, when a
+    // worker already worked it out.
+    void setCatalog(NodeIndex Idx, std::string Inputs, std::vector<Diagnostics::Entry> Said,
+                    std::shared_ptr<const HydrationMap> Hyd = nullptr);
+
     int                      CardPixelWidth = 185;
     QTimer *                 OrphanHealTimer = nullptr;   // periodic background orphan check (tab-independent)
     bool                     SyncRetryPending = false;    // a re-sync is scheduled for a source that failed to fetch

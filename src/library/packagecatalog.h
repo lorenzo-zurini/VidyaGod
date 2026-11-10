@@ -401,6 +401,16 @@ std::set<std::filesystem::path> PackagesToAdopt(const NodeIndex &Idx, const std:
 // build logged as warnings and errors (the scan's, or the ones a cache hit logs again).
 NodeIndex BuildCatalogIndex(const nlohmann::ordered_json &GlobalConfigJSON, std::string *Inputs = nullptr,
                             std::vector<Diagnostics::Entry> *Said = nullptr);
+// The index the cache last kept, whatever changed in the library since (Inputs: what it was built from) — for a start
+// that shows it at once and checks it after, whichever version wrote it: nothing when there is none of this shape.
+std::optional<NodeIndex> LastCatalogIndex(std::string *Inputs = nullptr, std::vector<Diagnostics::Entry> *Said = nullptr);
+// BuildCatalogIndex, unless the library is still what Have (an index's Inputs) says: then nothing, and no read.
+std::optional<NodeIndex> RefreshCatalogIndex(const nlohmann::ordered_json &GlobalConfigJSON, const std::string &Have,
+                                             std::string *Inputs = nullptr, std::vector<Diagnostics::Entry> *Said = nullptr);
+// What of the library was on disk when it was last worked out (Installed::HydrationMap), kept beside the index cache
+// (<data dir>/CACHE/hydration.cbor) so a start can show the Library before stat'ing every content file again.
+std::optional<std::unordered_map<std::string, Installed::NodeHydration>> LastHydration();
+void SaveLastHydration(const std::unordered_map<std::string, Installed::NodeHydration> &Hydration);
 // The same, always from the files — never the cache (what the cache is checked against). BuildCatalogIndex is what to
 // call.
 NodeIndex ScanCatalogIndex(const nlohmann::ordered_json &GlobalConfigJSON);
@@ -410,7 +420,7 @@ struct IndexCacheState { std::string Path; bool Exists = false, Current = false;
 IndexCacheState IndexCacheStatus(const nlohmann::ordered_json &GlobalConfigJSON);
 // The cached index itself when it matches the library now (what `catalog cache --check` compares), else nothing.
 std::optional<NodeIndex> ReadIndexCache(const nlohmann::ordered_json &GlobalConfigJSON);
-bool ClearIndexCache();
+bool ClearIndexCache();   // the index cache, and the hydration kept beside it
 // The index the running app holds: AppModel publishes each one it makes, with what BuildCatalogIndex gave it.
 void PublishAppIndex(std::shared_ptr<const NodeIndex> Idx, std::string Inputs, std::vector<Diagnostics::Entry> Said);
 // The node index as the library is on disk now, for code that has only the config (a launch prepared from the command

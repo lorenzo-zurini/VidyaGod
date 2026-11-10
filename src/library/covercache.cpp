@@ -155,7 +155,11 @@ QPixmap CoverCache::take(const QString &Path)
         Decoding.insert(Path);
         ++Decodes;
         QThreadPool::globalInstance()->start([this, Path, Max = DisplayMax, Gen = DisplayGen] {
-            QImage Img(Path);
+            //The bytes first, then the decode: Qt probes the image format under one lock for the whole process, and a
+            //probe that read the file itself held it for as long as a busy disk took — while the GUI thread, making
+            //any icon, waited on it (most of a minute at startup).
+            QImage Img;
+            if (QFile F(Path); F.open(QIODevice::ReadOnly)) Img = QImage::fromData(F.readAll());
             if (!Img.isNull() && Max.isValid() && (Img.width() > Max.width() || Img.height() > Max.height()))
                 Img = Img.scaled(Max, Qt::IgnoreAspectRatio, Qt::SmoothTransformation);   // as a card draws it
             QMetaObject::invokeMethod(this, [this, Path, Gen, Img = std::move(Img)]() mutable {   // the cache lives for the app

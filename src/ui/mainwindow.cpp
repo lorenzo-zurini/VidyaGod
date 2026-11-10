@@ -51,14 +51,14 @@
 
 MainWindow::~MainWindow() { PackageEditor::SetOnCreated({}); }
 
-MainWindow::MainWindow(nlohmann::ordered_json * gc, QDir * appData, QWidget * parent)
+MainWindow::MainWindow(nlohmann::ordered_json * gc, QDir * appData, QWidget * parent, bool FromLastIndex)
     : QMainWindow(parent)
 {
     setWindowTitle("Vidya God");
     setWindowIcon(QIcon(":/vidyagod.png"));
     setMinimumSize(640, 480);
 
-    Model = new AppModel(gc, appData, this);   // owns config + catalog + persisted UI state (card size, etc.)
+    Model = new AppModel(gc, appData, this, FromLastIndex);   // owns config + catalog + persisted UI state (card size, etc.)
     //Every package editor, wherever it opens: a save refreshes what shows the package, and Publish republishes the
     //library off the GUI thread (AppModel owns the re-mint and its persistence; the editor only asks).
     PackageEditor::SetOnCreated([this](PackageEditor * Ed) {

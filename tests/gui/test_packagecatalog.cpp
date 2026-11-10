@@ -2750,6 +2750,63 @@ private slots:
         QVERIFY(PackageCatalog::IndexCacheStatus(Cfg).Current);
     }
 
+    // THE LAST INDEX: the app's window starts from the index the last run kept, whatever changed since, and from what of
+    // it was on disk then — no walk of the library on the GUI thread before it shows — and a check off that thread then
+    // swaps in what changed. A command's model reads the library as it is. Teeth: LastCatalogIndex asking for current
+    // inputs serves the renamed node at once; refreshFromDisk not swapping never shows it; the hydration not loaded
+    // from its cache shows no sentinel; FromLastIndex ignored makes the command's model stale.
+    void the_app_starts_from_the_last_index_and_checks_the_disk_after()
+    {
+        QTemporaryDir Data; QVERIFY(Data.isValid());
+        const std::string Saved = AppPaths::DataRootSet() ? AppPaths::DataRoot().string() : std::string();   // "" = unset
+        const auto Restore = qScopeGuard([&] { AppPaths::SetDataRoot(Saved); });
+        AppPaths::SetDataRoot(Data.path().toStdString());
+        json Config = json{{"Settings", {{"Paths", {{"LibraryRoot", (Data.path() + "/LIBRARY").toStdString()}}}}}};
+        QDir Dir(Data.path());
+        const QString Pkg = Data.path() + "/LIBRARY/VidyaGod/[1] Game";
+        QDir().mkpath(Pkg);
+        const auto Write = [&](const std::string &Label) {
+            writeJson(Pkg + "/tile.json", NodeFixture::Chain("tile", {NodeFixture::Tile("1", "Game")}));
+            writeJson(Pkg + "/game.json", NodeFixture::Chain(Label, {NodeFixture::Exec("win32", "g.exe")}, {"tile"},
+                                                             {{"VARIANT", "Edition 1"}, {"RECOMMENDED", json::array({"1"})}}));
+            for (const auto &E : std::filesystem::directory_iterator(Pkg.toStdString()))   // past the cache's freshness guard
+                std::filesystem::last_write_time(E.path(), std::filesystem::file_time_type::clock::now() - std::chrono::minutes(1));
+        };
+        const auto Has = [](const AppModel &M, const std::string &Label) {
+            for (const auto &[K, N] : M.catalogIndex().Nodes) if (N.NodeId == Label) return true;
+            return false;
+        };
+        Write("game");
+        QVERIFY(!PackageCatalog::BuildCatalogIndex(Config).Nodes.empty());   // the index a run keeps
+        QVERIFY(PackageCatalog::IndexCacheStatus(Config).Current);
+        QVERIFY(!PackageCatalog::LastHydration());
+
+        Write("game renamed");
+        //What was on disk, as the last run kept it — with a node no index has, so where the start's hydration came from shows.
+        PackageCatalog::SaveLastHydration({{"sentinel", Installed::NodeHydration{}}});
+        AppModel App(&Config, &Dir, nullptr, true);
+        QVERIFY2(Has(App, "game") && !Has(App, "game renamed"), "the start shows the last index, not a walk of the library");
+        QVERIFY2(App.hydration().count("sentinel"), "and what was on disk then, not a stat of every content file");
+        QSignalSpy Checked(&App, &AppModel::diskChecked);
+        QVERIFY(Checked.wait(30000));
+        QCOMPARE(Checked.first().at(0).toBool(), true);
+        QVERIFY2(Has(App, "game renamed") && !Has(App, "game"), "the check swaps in the library as it is");
+        QVERIFY(!App.hydration().count("sentinel"));
+        QVERIFY(App.hydration().count(App.catalogIndex().Nodes.begin()->first));
+        const auto Kept = PackageCatalog::LastHydration();
+        QVERIFY2(Kept && Kept->size() == App.hydration().size() && !Kept->count("sentinel"), "the check keeps what it found for the next start");
+
+        //A check with nothing changed changes nothing.
+        Checked.clear();
+        App.refreshFromDisk();
+        QVERIFY(Checked.wait(30000));
+        QCOMPARE(Checked.first().at(0).toBool(), false);
+
+        Write("game again");
+        AppModel Command(&Config, &Dir);
+        QVERIFY2(Has(Command, "game again"), "a command's model reads the library as it is now");
+    }
+
     // A check that throws (a path the filesystem refuses: a 300-character file name) ends the validation with that
     // error, as one pass over the nodes always did — never a terminate from a worker thread taking the app down. Two
     // packages, so the packages run on two threads. Teeth: drop the catch in Parallel::Run and the test binary aborts.

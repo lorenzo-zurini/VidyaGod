@@ -12,6 +12,8 @@
 #include "manifestmodel.h"
 #include "packagecatalog.h"
 #include "cmdutil.h"
+#include "commonutils.h"   // LogBuffer
+#include <QEventLoop>
 
 #include <chrono>
 #include <fstream>
@@ -165,22 +167,55 @@ VG_COMMANDS
         }, {} });
 
     Command::Register({
+        "catalog check", "check the app's index, and what of it is on disk, against the library — as the app's start does",
+        "The app starts from the index and the hydration the last run kept, then checks them off the GUI thread: the index "
+        "is rebuilt if a node file changed (or the program), what is on disk is stat'd again, and what changed is swapped in "
+        "(every tab refreshes). In the running app it begins the check and returns (follow it with events wait --signal "
+        "diskChecked); here it waits for it.",
+        {}, { "catalog check" },
+        { "AppModel::refreshFromDisk", "PackageCatalog::RefreshCatalogIndex", "PackageCatalog::SaveLastHydration" }, Needs::Model, false,
+        [](Command::Context &C, const json &) {
+            if (C.Live)
+            {
+                C.Model->refreshFromDisk();
+                return json{{"checking", true}, {"follow", "VidyaGod events wait --signal diskChecked"}};
+            }
+            bool Changed = false;
+            QEventLoop Wait;
+            QObject::connect(C.Model, &AppModel::diskChecked, &Wait, [&](bool Ch) { Changed = Ch; Wait.quit(); });
+            C.Model->refreshFromDisk();
+            Wait.exec();
+            return json{{"changed", Changed}, {"nodes", C.Model->catalogIndex().Nodes.size()}};
+        }, {} });
+
+    Command::Register({
         "catalog cache", "the on-disk index cache: whether it matches the library now; check it, or clear it",
         "Every index build is kept at <data dir>/CACHE/index.cbor with what it was built from (every node file's size and "
         "time, this program); a build whose inputs are unchanged loads it instead of reading the files. --check builds the "
         "index from the files and compares it with the cached one, node by node and field by field (it writes nothing); "
-        "--clear deletes the cache (the next build makes it again).",
+        "--clear deletes the cache (the next build makes it again). The app starts from the last index kept, whatever "
+        "changed since (last: its nodes), and from what of it was on disk then (hydration: its nodes, kept at "
+        "CACHE/hydration.cbor), and checks both against the disk after (catalog check).",
         { Command::Flag("check", "compare the cached index with one built from the files"), Command::Flag("clear", "delete the cache") },
         { "catalog cache", "catalog cache --check", "catalog cache --clear" },
         { "PackageCatalog::IndexCacheStatus", "PackageCatalog::ClearIndexCache", "Platform::FileStamp", "PackageCatalog::ScanCatalogIndex",
           "PackageCatalog::CurrentIndex", "PackageCatalog::ReadIndexCache", "ManifestModel::NodeToJson", "ManifestModel::NodeFromJson", "ManifestModel::IndexTablesToJson",
-          "ManifestModel::IndexTablesFromJson", "NodeGraph::ListTreeFiles", "NodeGraph::TopoLevels", "Node::LoweredLayers" },
+          "ManifestModel::IndexTablesFromJson", "NodeGraph::ListTreeFiles", "NodeGraph::TopoLevels", "Node::LoweredLayers",
+          "PackageCatalog::LastCatalogIndex", "PackageCatalog::LastHydration" },
         Needs::Config, false,
         [](Command::Context &C, const json &A) {
             json Out = json::object();
             if (Command::Bool(A, "clear", false)) Out["cleared"] = PackageCatalog::ClearIndexCache();
             const auto St = PackageCatalog::IndexCacheStatus(*C.Config);
             Out["path"] = St.Path; Out["exists"] = St.Exists; Out["bytes"] = St.Bytes; Out["current"] = St.Current; Out["files"] = St.Files;
+            {
+                LogBuffer Quiet;   // what the build that made it said is not said again here
+                const std::optional<NodeIndex> Last = PackageCatalog::LastCatalogIndex();
+                (void)Quiet.Take();
+                Out["last"] = Last ? json(Last->Nodes.size()) : json(nullptr);
+            }
+            const auto Hyd = PackageCatalog::LastHydration();
+            Out["hydration"] = Hyd ? json(Hyd->size()) : json(nullptr);
             if (Command::Bool(A, "check", false))
             {
                 if (!St.Current) throw std::runtime_error("the cache does not match the library now: nothing to check (the next build writes it)");

@@ -31,7 +31,8 @@ class MainWindow : public QMainWindow
 {
     Q_OBJECT
 public:
-    MainWindow(nlohmann::ordered_json * GlobalConfigJSON, QDir * AppDataDir, QWidget * parent = nullptr);
+    // FromLastIndex: the app's own start — its model starts from the last index kept (AppModel).
+    MainWindow(nlohmann::ordered_json * GlobalConfigJSON, QDir * AppDataDir, QWidget * parent = nullptr, bool FromLastIndex = false);
     ~MainWindow() override;   // lets go of the editor hook it installed (it holds this window and its model)
 
     //Reacts to a package being saved in the editor: rebuilds the catalog (every tab refreshes via the model) and
