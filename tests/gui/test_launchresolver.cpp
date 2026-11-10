@@ -2005,6 +2005,52 @@ private slots:
         QCOMPARE(cp.WorkDirPathComplete.generic_string(), (cp.RuntimePath / "pfx/drive_c/Program Files (x86)/Tool 1.0").generic_string());
     }
 
+    // A runner may name where the program it is starts (an emulator whose portable layout is its own folder: Supermodel
+    // reads Assets/ and writes NVRAM/ beside itself), used when the game names none; the game's WORKDIR wins; and a
+    // runner that names none leaves the default (the game EXE's folder). Teeth: ignore the runner's WORKDIR; let it win
+    // over the game's; rebase a %RunnerMount% path into the runtime.
+    void a_runners_workdir_applies_when_the_game_names_none()
+    {
+        const auto launch = [&](const json &RunnerExtra, const json &GameExtra) {
+            NodeIndex idx;
+            idx.Nodes["emubuild"] = standalone(parse(json{ {"CID", "emubuild"}, {"LABEL", "emubuild"},
+                {"LAYERS", json::array({ json{{"ZIP", "emu.zip"}, {"TARGET", "FILES/__emu"}} })} }, "/tmp/vg_runner"));
+            json Native = { {"CONTENT_ROOT", ""}, {"PREFIX_GENERATE", false}, {"EXE", "%RunnerMount%/__emu/emu"},
+                            {"ARGS", json::array({ "%Content%" })} };
+            for (const auto &[K, V] : RunnerExtra.items()) Native[K] = V;
+            idx.Nodes["emu"] = runnerNode("emu", {"model3"}, {"emubuild"}, Native);
+            idx.Nodes["game"] = launchNode("game", "model3", {}, GameExtra);
+            finish(idx);
+            ContainerParams cp("/tmp/vg_bundle");
+            cp.NodeIdx = &idx; cp.LaunchNodeId = "game";
+            const bool Ok = LaunchResolver::InitializeFromNode(cp, json{{"Settings", json::object()}})
+                         && LaunchResolver::ResolveExecutableDefinition(cp);
+            return std::make_pair(Ok, cp);
+        };
+        {
+            const auto [Ok, cp] = launch(json{{"WORKDIR", "%RunnerMount%/__emu"}}, json::object());
+            QVERIFY(Ok);
+            QVERIFY(!cp.RunnerMountPath.empty());
+            QCOMPARE(cp.WorkDirPathComplete.generic_string(), (cp.RunnerMountPath / "__emu").generic_string());
+        }
+        {
+            const auto [Ok, cp] = launch(json{{"WORKDIR", "%RunnerMount%/__emu"}}, json{{"WORKDIR", "%GameDir%"}});
+            QVERIFY(Ok);
+            QVERIFY2(cp.WorkDirPathComplete.generic_string().find("__emu") == std::string::npos, cp.WorkDirPathComplete.string().c_str());
+        }
+        {
+            const auto [Ok, cp] = launch(json::object(), json::object());
+            QVERIFY(Ok);
+            QCOMPARE(cp.WorkDirPathComplete.generic_string(), cp.ExePathComplete.parent_path().generic_string());
+        }
+        {   // a place in the runtime, like a game's
+            const auto [Ok, cp] = launch(json{{"WORKDIR", "%GameDir%/System"}}, json::object());
+            QVERIFY(Ok);
+            QVERIFY2(cp.WorkDirPathComplete.generic_string().rfind(cp.RuntimePath.generic_string(), 0) == 0
+                     && cp.WorkDirPathComplete.filename() == "System", cp.WorkDirPathComplete.string().c_str());
+        }
+    }
+
     // A placement outside the runtime lands nowhere the program sees: under a native runner, an anchor spelled from a
     // host path (%TempPath%/x would mount at RUNTIME/tmp/…) or a literal drive with no DRIVES (a "C:" folder) is
     // refused, as an unmapped drive is under Wine — for a layer and for a kept path alike. Teeth: drop the

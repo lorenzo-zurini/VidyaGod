@@ -157,6 +157,7 @@ RunnerLink BuildLink(const NodeIndex &Idx, const std::string &Id)
     const nlohmann::ordered_json E = R->Exec.is_object() ? R->Exec : nlohmann::ordered_json::object();
     L.NodeId = R->Key(); L.Name = R->NodeId; L.PackagePath = R->BundleDir;   // the link is keyed by the INDEX key: a label may repeat (a received stub beside a local runner)
     L.Executable = E.value("EXECUTABLE", std::string());
+    L.WorkDir = E.value("WORKDIR", std::string());
     if (E.contains("ARGS") && E["ARGS"].is_array())             for (const auto &X : E["ARGS"])       L.Args.push_back(std::string(X));
     //The link's environment and build are its OWN resolve (the runner node and everything it contains), the same
     //fold as a game's.

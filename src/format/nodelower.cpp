@@ -555,7 +555,7 @@ nlohmann::ordered_json LowerEntry(const nlohmann::ordered_json &E)
         L["GUEST"] = E["GUEST"];
         L["EXECUTABLE"] = E.value("EXE", ordered_json(""));
         L["ARGS"] = E.contains("ARGS") && E["ARGS"].is_array() ? E["ARGS"] : ordered_json::array();
-        for (const char *F : {"CONTENT_ROOT", "PREFIX_GENERATE", "UNIFIED_RUNTIME", "GUEST_ROOTS", "DRIVES", "LABEL"})
+        for (const char *F : {"CONTENT_ROOT", "PREFIX_GENERATE", "UNIFIED_RUNTIME", "GUEST_ROOTS", "DRIVES", "WORKDIR", "LABEL"})
             if (E.contains(F)) L[F] = E[F];
     }
     else

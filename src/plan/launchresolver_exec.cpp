@@ -127,17 +127,40 @@ bool LaunchResolver::ResolveExecutableDefinition(struct ContainerParams &Contain
 
     LogOut("ResolveExecutableDefinition", "ContentPath: " + ContainerParams.ExePathRelative.string());
     LogOut("ResolveExecutableDefinition", "Content: " + ContainerParams.ExePathComplete.string());
-    auto &WorkDirVal = Resolved["WORKDIR"];
-    if (!WorkDirVal.is_null() && WorkDirVal.is_string() && !std::string(WorkDirVal).empty())
+    //The working directory: the game entry's WORKDIR; else its runner's (the link that runs the content), which a
+    //runner sets when the program it is must start in its own folder (an emulator with a portable layout); else the
+    //directory of the game's EXE. The game wins, as it does over the runner's environment.
+    std::string WorkDirSet;
+    if (const auto &W = Resolved["WORKDIR"]; W.is_string() && !W.get<std::string>().empty()) WorkDirSet = W.get<std::string>();
+    else if (!ContainerParams.RunnerChain.empty()) WorkDirSet = ContainerParams.RunnerChain.front().WorkDir;
+    if (!WorkDirSet.empty())
     {
-        std::string WorkDirStr = std::string(WorkDirVal);
+        std::string WorkDirStr = WorkDirSet;
         VarSubst::StringVariableSubstitution(WorkDirStr, ExecVars);
-        WorkDirStr = GuestToLayout(ContainerParams, WorkDirStr);
-        for (char &c : WorkDirStr) if (c == '\\') c = '/';
-        while (!WorkDirStr.empty() && WorkDirStr.front() == '/') WorkDirStr.erase(WorkDirStr.begin());
-        while (!WorkDirStr.empty() && WorkDirStr.back()  == '/') WorkDirStr.pop_back();
-        ContainerParams.WorkDirPathRelative = std::filesystem::path(ContentRootRelative(WorkDirStr, ContainerParams.ContentRoot));
-        ContainerParams.WorkDirPathComplete = ContainerParams.RuntimePath / WorkDirStr;
+        //A host path inside the runner's own build (%RunnerMount%/…: mounted beside the runtime, or the runtime itself
+        //when the runner's build is unified into it) is where it is; anything else is a place in the runtime, in guest
+        //coordinates.
+        const std::filesystem::path Host = std::filesystem::path(WorkDirStr).lexically_normal();
+        const auto Inside = [&](const std::filesystem::path &Root) {
+            return !Root.empty() && Host.lexically_relative(Root.lexically_normal()).native().rfind("..", 0) != 0;
+        };
+        if (Host.is_absolute() && (Inside(ContainerParams.RunnerMountPath) || Inside(ContainerParams.RuntimePath)))
+        {
+            ContainerParams.WorkDirPathRelative = Inside(ContainerParams.RuntimePath)
+                ? std::filesystem::path(ContentRootRelative(Host.lexically_relative(ContainerParams.RuntimePath.lexically_normal()).generic_string(),
+                                                            ContainerParams.ContentRoot))
+                : std::filesystem::path();
+            ContainerParams.WorkDirPathComplete = Host;
+        }
+        else
+        {
+            WorkDirStr = GuestToLayout(ContainerParams, WorkDirStr);
+            for (char &c : WorkDirStr) if (c == '\\') c = '/';
+            while (!WorkDirStr.empty() && WorkDirStr.front() == '/') WorkDirStr.erase(WorkDirStr.begin());
+            while (!WorkDirStr.empty() && WorkDirStr.back()  == '/') WorkDirStr.pop_back();
+            ContainerParams.WorkDirPathRelative = std::filesystem::path(ContentRootRelative(WorkDirStr, ContainerParams.ContentRoot));
+            ContainerParams.WorkDirPathComplete = ContainerParams.RuntimePath / WorkDirStr;
+        }
     }
     else if (!ContainerParams.ExePathRelative.empty())
     {

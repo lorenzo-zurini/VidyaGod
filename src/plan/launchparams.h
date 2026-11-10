@@ -45,6 +45,7 @@ struct RunnerLink
     std::filesystem::path PackagePath;           // runner bundle dir (build layers + DEFPREFIX live here)
     std::string Executable;                      // EXEC.EXECUTABLE ("" = native passthrough: forward the inner command)
     std::vector<std::string> Args;               // EXEC.ARGS (raw, pre-substitution; %Content%/%ContentPath% = the inner target)
+    std::string WorkDir;                         // EXEC.WORKDIR — where a game it runs starts, when the game names none
     nlohmann::ordered_json Env = nlohmann::ordered_json::object();   // EXEC.ENV
     std::vector<std::string> RemoveEnv;          // EXEC.REMOVE_ENV
     std::string ContentRoot;                     // EXEC.CONTENT_ROOT (non-empty ⇒ namespace boundary, e.g. wine drive_c)
