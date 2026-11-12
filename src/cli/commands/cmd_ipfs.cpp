@@ -202,14 +202,21 @@ VG_COMMANDS
     Command::Register({
         "ipfs add", "add a file to the node in place (no copy), or just compute its CID",
         "Serve a file from where it is (filestore: no copy into the store), returning its CID; --meta adds a node "
-        "file the way package folders are (raw leaves); --only-hash computes the CID without adding anything.",
-        { Pos("path", "the file"), Flag("meta", "a node / metadata file"), Flag("only-hash", "compute the CID only") },
-        { "ipfs add ~/x/game.zip", "ipfs add ~/x/game.zip --only-hash" },
-        { "IpfsWrapper::AddNoCopy", "IpfsWrapper::AddNoCopyMeta", "IpfsWrapper::ComputeCid" }, Needs::Config, true,
+        "file the way package folders are (raw leaves); --only-hash computes the CID without adding anything; --as adds it "
+        "only when it is that CID (what seeding a library does: read once, wrong bytes never added).",
+        { Pos("path", "the file"), Flag("meta", "a node / metadata file"), Flag("only-hash", "compute the CID only"),
+          WithSample(Opt("as", "add it only when it is this CID"), "QmQERknUMpAyepiUavR9smoKE9CbxtAVoRxViYbSYFYZVx") },
+        { "ipfs add ~/x/game.zip", "ipfs add ~/x/game.zip --only-hash", "ipfs add ~/x/game.zip --as Qm…" },
+        { "IpfsWrapper::AddNoCopy", "IpfsWrapper::AddNoCopyMeta", "IpfsWrapper::ComputeCid", "IpfsWrapper::AddNoCopyIf" }, Needs::Config, true,
         [](Command::Context &, const json &A) {
             const std::string P = Command::Str(A, "path");
             std::string Err;
             if (Command::Bool(A, "only-hash", false)) return json{{"cid", Must(IpfsWrapper::ComputeCid(P, &Err), Err)}, {"added", false}};
+            if (const std::string As = Command::Str(A, "as"); !As.empty())
+            {
+                const std::string Is = Must(IpfsWrapper::AddNoCopyIf(P, As, &Err), Err);
+                return json{{"cid", Is}, {"added", Is == As}};
+            }
             const std::string Cid = Command::Bool(A, "meta", false) ? IpfsWrapper::AddNoCopyMeta(P, &Err) : IpfsWrapper::AddNoCopy(P, &Err);
             return json{{"cid", Must(Cid, Err)}, {"added", true}};
         }, {} });

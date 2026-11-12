@@ -78,6 +78,12 @@ std::string FetchDirToPath(const std::string &Cid, const std::string &DestDir, s
 // publishing dehydrates a package: each layer's local content is added → its CID is recorded in the manifest.
 // Works offline (content enters the local repo); peers receive it once the node is online.
 std::string AddNoCopy(const std::string &Path, std::string *Error = nullptr);
+// Seeds a file the same way, but only when it IS Want — the CID its node records — reading it once: returns the CID the
+// file is ("" on failure, with *Error set), and when that is not Want nothing of it is referenced, pinned or announced.
+// What seeding a library's content uses: ComputeCid to check, then AddNoCopy, read every file twice (three times, with
+// AddNoCopy's own pin walk). Background: its reads are at the idle IO class (Linux), served after everyone else's — a
+// pass reading gigabytes never slows a game loading.
+std::string AddNoCopyIf(const std::string &Path, const std::string &Want, std::string *Error = nullptr, bool Background = false);
 // Seed a TEXT-ONLY Meta-CID directly from a package dir/collection: references the *.json manifests in place (no
 // staging mirror), skipping content + DEFPREFIX/USERDATA. Same CID as adding a JSON-only mirror of the tree.
 std::string AddNoCopyMeta(const std::string &Path, std::string *Error = nullptr);

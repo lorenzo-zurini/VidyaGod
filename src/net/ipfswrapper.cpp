@@ -168,6 +168,17 @@ std::string AddNoCopy(const std::string &PathStr, std::string *Error)
     return CidS;
 }
 
+std::string AddNoCopyIf(const std::string &PathStr, const std::string &Want, std::string *Error, bool Background)
+{
+    if (PathStr.empty() || Want.empty()) { if (Error) *Error = PathStr.empty() ? "empty path" : "no CID to add it as"; return std::string(); }
+    char *Cid = nullptr, *Err = nullptr;
+    const int Rc = VgAddNoCopyIf(PathStr.c_str(), Want.c_str(), Background ? 1 : 0, &Cid, &Err);
+    const std::string CidS = TakeStr(Cid);
+    const std::string ErrS = TakeStr(Err);
+    if (Rc != 0) { if (Error) *Error = ErrS.empty() ? ("add failed: " + PathStr) : ErrS; return std::string(); }
+    return CidS;
+}
+
 std::string AddNoCopyMeta(const std::string &PathStr, std::string *Error)
 {
     if (PathStr.empty()) { if (Error) *Error = "empty path"; return std::string(); }

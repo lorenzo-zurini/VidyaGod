@@ -21,6 +21,7 @@ int  VgStarted(void);   // 1 if the node repo is open
 int  VgOnline(void);    // 1 if the node's network stack is up (joined the swarm/DHT)
 
 int  VgAddNoCopy(const char *path, char **outCid, char **errOut);   // seed a file by reference (filestore --nocopy)
+int  VgAddNoCopyIf(const char *path, const char *want, int background, char **outCid, char **errOut);   // seed it only when it is want; read once
 int  VgAddNoCopyMeta(const char *path, char **outCid, char **errOut); // seed a TEXT-ONLY Meta-CID in place (*.json only, no staging)
 int  VgFetchOnce(const char *cid, const char *dest, int isDir, char **errOut); // ONE attempt; rc 0=Done 1=Retryable 2=Terminal
 // The one network queue (netq.go): a fetch job's slot (blocks; release the handle once), and its size.

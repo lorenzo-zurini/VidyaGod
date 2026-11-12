@@ -13,11 +13,13 @@
 #include "varsubst.h"
 #include "launchresolver.h"
 #include "launchparams.h"
+#include "platform/platform.h"   // FileStamp
 
 #include <QDir>
 #include <QFile>
 #include <cstdint>
 #include <map>
+#include <mutex>
 #include <set>
 #include <fstream>
 #include <filesystem>
@@ -421,10 +423,9 @@ int SeedDirectory(const std::string &Dir,
                 LogOut("PackageCatalog::SeedDirectory", "re-pointing orphaned reference " + Cid + " -> " + Path);
             if (Has) IpfsWrapper::DropRef(Cid);                       // clear the stale/old reference so the re-add isn't deduped
             std::string Err;
-            //Not held: its bytes are checked before anything is added — a file that is not its recorded CID must not
-            //be pinned and announced under whatever it does hash to.
-            const std::string Is = Has ? Cid : IpfsWrapper::ComputeCid(Path, &Err);
-            const std::string Got = Is == Cid ? IpfsWrapper::AddNoCopy(Path, &Err) : Is;
+            //Added only as its recorded CID, in the one read that checks it: a file that is not its recorded CID must
+            //not be pinned and announced under whatever it does hash to.
+            const std::string Got = IpfsWrapper::AddNoCopyIf(Path, Cid, &Err);
             // A re-add that yields the SAME CID is a genuine self-heal: the reference was stale, the bytes are the
             // ones we published, and we can serve it again. A DIFFERENT CID is NOT a heal — the file no longer is
             // what we published, and silently accepting it would republish under a new CID while quietly orphaning
@@ -459,31 +460,130 @@ std::vector<std::string> SeedRoots(const nlohmann::ordered_json &GlobalConfigJSO
     return Roots;
 }
 
+namespace
+{
+//Files whose bytes were found not to be the CID their node records, as they were then (Platform::FileStamp): every
+//start's seed pass hashed them again, a gigabyte each, to find the same thing. Kept in CACHE/seedmismatch.json;
+//a file that changes since, or a node that comes to record another CID, is read again.
+struct Mismatch { std::string Stamp, Recorded, Actual; };
+const char *const kMismatchShape = "vgseedmismatch 1";
+std::mutex g_MismatchMu;
+
+std::filesystem::path MismatchPath() { return AppPaths::DataRoot() / "CACHE" / "seedmismatch.json"; }
+
+std::map<std::string, Mismatch> LoadMismatches()
+{
+    std::lock_guard<std::mutex> Lk(g_MismatchMu);
+    std::map<std::string, Mismatch> Out;
+    if (!AppPaths::DataRootSet()) return Out;
+    try
+    {
+        std::ifstream In(MismatchPath());
+        if (!In) return Out;
+        const nlohmann::json J = nlohmann::json::parse(In, nullptr, false);
+        if (!J.is_object() || J.value("format", std::string()) != kMismatchShape) return Out;
+        for (const auto &[Path, V] : J.at("files").items())
+            Out[Path] = Mismatch{ V.at(0).get<std::string>(), V.at(1).get<std::string>(), V.at(2).get<std::string>() };
+    }
+    catch (const std::exception &) { Out.clear(); }
+    return Out;
+}
+
+void SaveMismatches(const std::map<std::string, Mismatch> &M)
+{
+    if (!AppPaths::DataRootSet()) return;   // a test or tool that set no data dir never writes into ~/.VidyaGod
+    std::lock_guard<std::mutex> Lk(g_MismatchMu);
+    nlohmann::json Files = nlohmann::json::object();
+    for (const auto &[Path, X] : M) Files[Path] = { X.Stamp, X.Recorded, X.Actual };
+    namespace fs = std::filesystem;
+    std::error_code Ec;
+    const fs::path Path = MismatchPath();
+    fs::create_directories(Path.parent_path(), Ec);
+    const fs::path Tmp = Path.string() + ".tmp";
+    {
+        std::ofstream Out(Tmp, std::ios::trunc);
+        if (!Out) return;
+        Out << nlohmann::json{{"format", kMismatchShape}, {"files", std::move(Files)}}.dump();
+        if (!Out) { Out.close(); fs::remove(Tmp, Ec); return; }
+    }
+    fs::rename(Tmp, Path, Ec);
+    if (Ec) fs::remove(Tmp, Ec);
+}
+
+//Still pinned, and announced, over a file that is gone — and Path, the library's copy, is not those bytes: nothing here
+//can serve it, so it stops being offered (what the start's heal did, before the seed pass replaced it). Only a GONE
+//file: content whose file is there but incomplete may be a download in progress, writing into it.
+void DropIfDead(const std::string &Cid, const std::string &Path)
+{
+    if (!IpfsWrapper::HasLocal(Cid) || !IpfsWrapper::CidMissing(Cid)) return;
+    LogWarn("PackageCatalog::SeedUnheld", "dropped " + Cid + ": its file is gone and " + Path + " is not it");
+    IpfsWrapper::DropRef(Cid);
+}
+} // namespace
+
 int SeedUnheld(const std::string &Dir, std::vector<SeedFailure> *Failures)
 {
+    namespace fs = std::filesystem;
     //A friend's download of a game containing a library this machine never held stalled on it: the seeder answered
     //"block not found" for DirectShow, LAVFilters, DirectPlay and DxWnd on the replication, and only a pinning
     //gateway saved the download.
-    int Added = 0;
+    //
+    //It reads gigabytes in the background, so its reads yield to everyone else's (a game loading, the user's copy),
+    //and it holds the smallest files first: one disc image at the front no longer kept every small file unheld for the
+    //twenty minutes it takes, every start — the app was closed sooner, and the next start began it again.
+    struct Todo { std::string Path, Cid; std::uintmax_t Size; };
+    std::vector<Todo> Unheld;
+    std::map<std::string, Mismatch> Known = LoadMismatches();
+    bool KnownChanged = false;
     for (const auto &[Path, Cid] : SeedTargets(Dir))
     {
         if (!IpfsWrapper::Available()) break;                           // no node (adding needs no network, just a node)
+        std::error_code Ec;
+        const std::uintmax_t Size = fs::file_size(Path, Ec);
         //Whole, not merely "has": that seeder HELD each zip's root block — and served it, and announced it — with none
-        //of the leaves.
+        //of the leaves. Whole also asks the files its references point into (wherever they are: this path or another
+        //copy) are there and not cut short.
         if (IpfsWrapper::HeldWhole(Cid)) continue;
-        std::string Err;
-        const std::string Is = IpfsWrapper::ComputeCid(Path, &Err);
-        if (Is != Cid)
+        if (const auto K = Known.find(Path); K != Known.end() && K->second.Recorded == Cid && K->second.Stamp == Platform::FileStamp(Path))
         {
-            if (Failures) Failures->push_back({ Path, Cid, Is });
-            LogWarn("PackageCatalog::SeedUnheld", "not added — " + Path + (Is.empty() ? (" could not be read: " + Err) : (" is " + Is + ", its node records " + Cid)));
-            continue;
+            if (Failures) Failures->push_back({ Path, Cid, K->second.Actual });
+            DropIfDead(Cid, Path);                                      // its other copy may have gone since
+            continue;                                                   // the same bytes found wrong before: not read again
         }
-        const std::string Got = IpfsWrapper::AddNoCopy(Path, &Err);
-        if (Got == Cid) { ++Added; continue; }
-        if (Failures) Failures->push_back({ Path, Cid, Got });           // changed since it was checked, or not added
-        LogWarn("PackageCatalog::SeedUnheld", "could not add " + Path + (Got.empty() ? (": " + Err) : (" — it is now " + Got)));
+        Unheld.push_back({ Path, Cid, Ec ? 0 : Size });
     }
+    std::stable_sort(Unheld.begin(), Unheld.end(), [](const Todo &A, const Todo &B) { return A.Size < B.Size; });
+    if (!Unheld.empty())
+    {
+        std::uintmax_t Total = 0;
+        for (const Todo &T : Unheld) Total += T.Size;
+        LogOut("PackageCatalog::SeedUnheld", std::to_string(Unheld.size()) + " content file(s) named here are not held whole: "
+               + HumanBytes(static_cast<long long>(Total)) + " to read, smallest first, under " + Dir);
+    }
+
+    int Added = 0;
+    for (const Todo &T : Unheld)
+    {
+        if (!IpfsWrapper::Available()) break;
+        const std::string Stamp = Platform::FileStamp(T.Path);
+        std::string Err;
+        const std::string Got = IpfsWrapper::AddNoCopyIf(T.Path, T.Cid, &Err, true);   // checked as it is read: wrong bytes are never added
+        if (Got == T.Cid) { ++Added; KnownChanged |= Known.erase(T.Path) > 0; continue; }
+        if (Failures) Failures->push_back({ T.Path, T.Cid, Got });
+        LogWarn("PackageCatalog::SeedUnheld", "not added — " + T.Path + (Got.empty() ? (" could not be read: " + Err) : (" is " + Got + ", its node records " + T.Cid)));
+        if (!Got.empty()) DropIfDead(T.Cid, T.Path);
+        //Remembered only when what was read is what is there: a file written to while it was read is read again. Saved
+        //at once: an app closed before the pass ends (it reads for many minutes) keeps what it found.
+        if (!Got.empty() && !Stamp.empty() && Platform::FileStamp(T.Path) == Stamp) { Known[T.Path] = Mismatch{ Stamp, T.Cid, Got }; SaveMismatches(Known); }
+    }
+    //Entries for files gone go too.
+    for (auto It = Known.begin(); It != Known.end(); )
+    {
+        std::error_code Ec;
+        if (fs::exists(It->first, Ec)) ++It;
+        else { It = Known.erase(It); KnownChanged = true; }
+    }
+    if (KnownChanged) SaveMismatches(Known);
     if (Added) LogSucc("PackageCatalog::SeedUnheld", "added " + std::to_string(Added) + " content file(s) this node named but did not hold, under " + Dir);
     return Added;
 }

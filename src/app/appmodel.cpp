@@ -439,7 +439,10 @@ void AppModel::healOrphansIfAny()
                 It = OrphanSet.count(*It) ? std::next(It) : Unhealable->erase(It);
             std::vector<std::string> Fresh;
             for (const std::string & P : Orphans) if (!Unhealable->count(P)) Fresh.push_back(P);
-            if (!Fresh.empty())
+            // The start's seed pass (below) re-points them itself: a reference whose file is gone is not held whole, so
+            // it is added again from wherever the library holds that file now. Healing first walked every file's DAG
+            // a second time, every start, for the same orphans (the ones nothing can re-point stay orphaned).
+            if (!Fresh.empty() && !SeedUnheldNow)
             {
                 LogOut("AppModel::healOrphansIfAny", std::to_string(Fresh.size()) + " orphaned reference(s) detected — re-pointing");
                 // The loop below IS the heal: an additive SeedDirectory per source dir re-points orphaned refs and
@@ -461,6 +464,7 @@ void AppModel::healOrphansIfAny()
                 *Healed = true;
             }
             if (SeedUnheldNow)
+            {
                 for (const std::string &Dir : PackageCatalog::SeedRoots(*Cfg))
                 {
                     std::vector<PackageCatalog::SeedFailure> Bad;
@@ -470,6 +474,12 @@ void AppModel::healOrphansIfAny()
                             ? "content could not be read or added (" + F.Path + ")"
                             : "content does not match its recorded CID (" + F.Path + ")");
                 }
+                // What was orphaned before the pass and still is is content truly gone: the later sweeps skip it until
+                // something changes. One orphaned DURING the pass (it reads for many minutes) is the next sweep's.
+                if (!Fresh.empty()) *Healed = true;
+                Unhealable->clear();
+                for (const std::string &P : IpfsWrapper::OrphanedRefPaths()) if (OrphanSet.count(P)) Unhealable->insert(P);
+            }
             *SeedDone = IpfsWrapper::Available();                   // stopped early: the next heal runs it again
             InFlight->store(false);
         },

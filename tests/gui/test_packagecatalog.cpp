@@ -21,6 +21,7 @@
 #include "nodefixture.h"
 #include "cli/climodes.h"
 #include "ipfswrapper.h"
+#include "platform/platform.h"
 #include "nodegraph.h"      // VerifyNodeBytes — what a receiver checks a landed node file with
 #include "cid.h"
 #include "contentfile.h"
@@ -396,6 +397,108 @@ private slots:
         std::vector<PackageCatalog::SeedFailure> Stopped;
         QCOMPARE(PackageCatalog::SeedUnheld(R, &Stopped), 0);
         QVERIFY2(Stopped.empty(), "a stopped node read and reported files");
+    }
+
+    // The start's seed pass reads each file once — checked as it is added, no ComputeCid first, no pin walking every
+    // leaf back — the smallest first, and a file found not to be its recorded CID is not read again until it changes.
+    // Teeth: check with ComputeCid before adding (or pin by walking) and the pass reads the good file more than once;
+    // drop the sort and the big file is tried first; drop the remembered mismatches and the second pass reads both
+    // wrong files again.
+    void a_seed_pass_reads_each_file_once_smallest_first_and_wrong_ones_not_again()
+    {
+#ifndef __linux__
+        QSKIP("counts reads through /proc/self/io");
+#endif
+        const auto ReadSoFar = [] {
+            std::ifstream In("/proc/self/io");
+            for (std::string L; std::getline(In, L); )
+                if (L.rfind("rchar: ", 0) == 0) return std::stoll(L.substr(7));
+            return -1LL;
+        };
+        QTemporaryDir data; QVERIFY(data.isValid());
+        const std::string Saved = AppPaths::DataRootSet() ? AppPaths::DataRoot().string() : std::string();
+        const auto Restore = qScopeGuard([&] { AppPaths::SetDataRoot(Saved); IpfsWrapper::StopNode(); });
+        AppPaths::SetDataRoot(data.path().toStdString());
+        std::string Err;
+        QVERIFY2(IpfsWrapper::StartNode((data.path() + "/ipfs").toStdString(), &Err), Err.c_str());
+        const std::string R = data.path().toStdString() + "/LIBRARY";
+        const std::string Pkg = R + "/VidyaGod/[9] Discs";
+        std::filesystem::create_directories(Pkg);
+        const auto write = [](const std::string &P, std::size_t Size, char Fill) {
+            std::ofstream O(P, std::ios::binary);
+            O << QUuid::createUuid().toString().toStdString() << std::string(Size, Fill);
+        };
+        write(Pkg + "/a big disc.iso", 6 << 20, 'b');      // first by name, last by size
+        write(Pkg + "/b small.zip", 100000, 's');
+        write(Pkg + "/c good.zip", 8 << 20, 'g');
+        const std::string Good = IpfsWrapper::ComputeCid(Pkg + "/c good.zip", &Err);
+        QVERIFY2(!Good.empty(), Err.c_str());
+        const std::string BigWas = Cid::OfBytes("the disc as it was published " + QUuid::createUuid().toString().toStdString());
+        const std::string SmallWas = Cid::OfBytes("the zip as it was published " + QUuid::createUuid().toString().toStdString());
+        writeJson(QString::fromStdString(Pkg + "/discs.json"), NodeFixture::Chain("discs", {NodeFixture::Merge({
+            NodeFixture::ContentCid("zip", "a big disc.iso", BigWas), NodeFixture::ContentCid("zip", "b small.zip", SmallWas),
+            NodeFixture::ContentCid("zip", "c good.zip", Good)})}));
+        const long long Bytes = (6 << 20) + 100000 + (8 << 20);
+
+        std::vector<PackageCatalog::SeedFailure> Bad;
+        long long Before = ReadSoFar();
+        QCOMPARE(PackageCatalog::SeedUnheld(R, &Bad), 1);
+        const long long First = ReadSoFar() - Before;
+        QVERIFY2(IpfsWrapper::HeldWhole(Good), "the good file is held whole");
+        QVERIFY2(First < Bytes * 3 / 2, ("the pass read " + std::to_string(First >> 20) + " MiB of "
+                                         + std::to_string(Bytes >> 20) + " MiB of files: a file was read more than once").c_str());
+        QCOMPARE((int)Bad.size(), 2);
+        QCOMPARE(Bad[0].RecordedCid, SmallWas);                                 // smallest first
+        QCOMPARE(Bad[1].RecordedCid, BigWas);
+        const std::string BigIs = Bad[1].ActualCid;
+        QVERIFY2(!BigIs.empty() && !IpfsWrapper::HasLocal(BigIs), "the wrong bytes are answered, never added");
+
+        Bad.clear();
+        Before = ReadSoFar();
+        QCOMPARE(PackageCatalog::SeedUnheld(R, &Bad), 0);
+        const long long Second = ReadSoFar() - Before;
+        QVERIFY2(Second < (1 << 20), ("the next pass read " + std::to_string(Second >> 10) + " KiB: the wrong files were read again").c_str());
+        const auto Found = [&](const std::string &Recorded) {
+            const auto F = std::find_if(Bad.begin(), Bad.end(), [&](const PackageCatalog::SeedFailure &X) { return X.RecordedCid == Recorded; });
+            return F == Bad.end() ? std::string("(not reported)") : F->ActualCid;
+        };
+        QCOMPARE((int)Bad.size(), 2);                                           // still reported, as found
+        QCOMPARE(Found(BigWas), BigIs);
+
+        write(Pkg + "/a big disc.iso", 6 << 20, 'B');                           // changed since: read again
+        Bad.clear();
+        Before = ReadSoFar();
+        PackageCatalog::SeedUnheld(R, &Bad);
+        QVERIFY2(ReadSoFar() - Before >= (6 << 20), "a wrong file that changed since is read again");
+        QCOMPARE((int)Bad.size(), 2);
+        QVERIFY(Found(BigWas) != BigIs && Found(BigWas) != "(not reported)");
+
+        // Held only through a file since deleted, and the library's copy is other bytes: nothing can serve it, so it is
+        // no longer pinned and offered (the start's heal dropped it, before this pass replaced it). Teeth: keep the pin
+        // after the mismatch and the dead content stays held and announced.
+        const std::string Elsewhere = data.path().toStdString() + "/gone.zip", Kept = data.path().toStdString() + "/kept.zip";
+        write(Kept, 300000, 'o');
+        std::filesystem::copy_file(Kept, Elsewhere);
+        const std::string Dead = IpfsWrapper::AddNoCopy(Elsewhere, &Err);
+        QVERIFY2(!Dead.empty(), Err.c_str());
+        std::filesystem::remove(Elsewhere);
+        write(Pkg + "/d other.zip", 300000, 'x');
+        writeJson(QString::fromStdString(Pkg + "/dead.json"), NodeFixture::Chain("dead", {NodeFixture::Merge({
+            NodeFixture::ContentCid("zip", "d other.zip", Dead)})}));
+        QVERIFY2(IpfsWrapper::HasLocal(Dead) && IpfsWrapper::CidMissing(Dead), "precondition: held over a gone file");
+        Bad.clear();
+        PackageCatalog::SeedUnheld(R, &Bad);
+        QVERIFY2(!IpfsWrapper::HasLocal(Dead), "content held only over a gone file, with no copy that is it, stays pinned");
+        // And when the library's copy is already known not to be it (not read again): the same. Teeth: drop only after a
+        // fresh read and the content held again through a copy since deleted stays pinned.
+        std::filesystem::copy_file(Kept, Elsewhere);
+        QCOMPARE(IpfsWrapper::AddNoCopy(Elsewhere, &Err), Dead);   // same bytes: the same CID
+        std::filesystem::remove(Elsewhere);
+        Bad.clear();
+        Before = ReadSoFar();
+        PackageCatalog::SeedUnheld(R, &Bad);
+        QVERIFY2(ReadSoFar() - Before < (1 << 20), "the known-wrong copy was read again");
+        QVERIFY2(!IpfsWrapper::HasLocal(Dead), "content held only over a gone file, known to have no copy here, stays pinned");
     }
 
     // A fresh index is built after the call began (a node written just before is in it), and callers asking at once
