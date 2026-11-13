@@ -26,6 +26,7 @@
 #include "launchparams.h"
 #include "commonutils.h"
 #include "launchresolver.h"
+#include "launchsources.h"
 #include "manifestmodel.h"
 
 using json = nlohmann::ordered_json;
@@ -502,6 +503,29 @@ private slots:
         QCOMPARE(LaunchResolver::BoundaryLinkIndex(CP), 1);
         const std::string Base = LaunchResolver::InnerRunnerMountRel("emu");
         QCOMPARE(BasesOf(Spec, Base + "/prefix"), (std::vector<std::string>{ "QmE" }));
+    }
+
+    // The sources check before a mount finds every layer where it is — all of them looked up at once, a busy disk's one
+    // sweep — and blocks the launch for a runner build or a layer that is missing with no source to fetch it from; a
+    // missing layer with a SOURCE is fetched later, not blocked. Teeth: answer from the batch for a path it did not
+    // look up, or take every looked-up file as present (a missing runner build passes).
+    void the_sources_check_finds_each_layer_where_it_is()
+    {
+        ContainerParams CP = Make();
+        CP.RunnerPackagePath = CP.PackagePath / "runner";
+        CP.RunnerLayers = { ZipLayer("runner/wine.zip", "wine"), ZipLayer("runner/dxvk.zip", "dxvk") };
+        CP.SubComponentsArray = json::array({ ZipLayer("game.zip", "game"), DirLayer("loose", "game") });
+        for (auto &L : CP.RunnerLayers) L["PATH"] = std::filesystem::path(L["PATH"].get<std::string>()).filename().string();
+        QVERIFY(LaunchSources::EnsureSources(CP));
+
+        std::filesystem::remove(CP.RunnerPackagePath / "dxvk.zip");
+        QVERIFY2(!LaunchSources::EnsureSources(CP), "a runner build that is not there blocks the launch");
+        ZipLayer("runner/dxvk.zip", "dxvk");
+
+        CP.SubComponentsArray.push_back(json{{"TYPE", "VFSZipLayer"}, {"PATH", "patch.zip"}, {"SOURCE", {{"TYPE", "ipfs"}, {"CID", "QmPatch"}}}});
+        QVERIFY2(LaunchSources::EnsureSources(CP), "a layer with a source is fetched, not blocked");
+        CP.SubComponentsArray.push_back(json{{"TYPE", "VFSZipLayer"}, {"PATH", "gone.zip"}});
+        QVERIFY2(!LaunchSources::EnsureSources(CP), "a layer neither here nor fetchable blocks the launch");
     }
 
     // Building a plan must not touch the filesystem: the audit builds 960 of them, and a plan that creates

@@ -2,8 +2,10 @@
 #include "ipfswrapper.h"     // IpfsWrapper (backend fetch/has-local)
 #include "commonutils.h"     // Log*
 #include "launchresolver.h"  // BoundaryLinkIndex (cross-namespace inner-chain runner builds)
+#include "parallel.h"        // Parallel::For (the layers' presence, asked at once)
 
 #include <filesystem>
+#include <map>
 #include <set>
 #include <string>
 #include <vector>
@@ -49,9 +51,41 @@ std::vector<std::string> LaunchSources::VerifyDependencies(const struct Containe
 //is RUNTIME-sourced: it resolves to a live mount path at BuildLayerSpec time, not to package content on disk. So it
 //has nothing to hydrate or fetch — the source/materialize passes must skip it.
 
+namespace
+{
+//Whether each layer file is there, asked all at once. On a busy disk the lookup of a file not looked at lately waits
+//its turn in the queue: one after another, a runner's few dozen layers took half a minute; asked together, one sweep.
+std::map<std::filesystem::path, bool> PresentAll(const std::vector<std::filesystem::path> &Paths)
+{
+    std::vector<char> Here(Paths.size(), 0);
+    Parallel::For(Paths.size(), [&](std::size_t I) { std::error_code Ec; Here[I] = std::filesystem::exists(Paths[I], Ec); });
+    std::map<std::filesystem::path, bool> Out;
+    for (std::size_t I = 0; I < Paths.size(); ++I) Out.emplace(Paths[I], Here[I] != 0);
+    return Out;
+}
+} // namespace
+
 bool LaunchSources::EnsureSources(struct ContainerParams &ContainerParams)
 {
     bool Ok = true;
+    std::vector<std::filesystem::path> Paths;
+    for (const auto &Sub : ContainerParams.RunnerLayers)
+        if (IsVfsLayer(Sub.value("TYPE", std::string())))
+        { std::filesystem::path Local; std::string Cid; LayerLocator(Sub, ContainerParams.RunnerPackagePath, Local, Cid); Paths.push_back(Local); }
+    if (const int Boundary = LaunchResolver::BoundaryLinkIndex(ContainerParams); Boundary > 0)
+        for (int i = 0; i < Boundary; ++i)
+            for (const auto &Sub : ContainerParams.RunnerChain[i].Layers)
+                if (IsVfsLayer(Sub.value("TYPE", std::string())))
+                { std::filesystem::path Local; std::string Cid; LayerLocator(Sub, ContainerParams.RunnerChain[i].PackagePath, Local, Cid); Paths.push_back(Local); }
+    for (const auto &Sub : ContainerParams.SubComponentsArray)
+        if (IsVfsLayer(Sub.value("TYPE", std::string())) && !ManifestModel::IsRuntimeSourcedLayer(Sub))
+        { std::filesystem::path Local; std::string Cid; LayerLocator(Sub, ContainerParams.PackagePath, Local, Cid); Paths.push_back(Local); }
+    const std::map<std::filesystem::path, bool> Present = PresentAll(Paths);
+    const auto Exists = [&](const std::filesystem::path &P) {
+        const auto It = Present.find(P);
+        std::error_code Ec;
+        return It != Present.end() ? It->second : std::filesystem::exists(P, Ec);
+    };
     //Runner build layers must be hydrated locally in the runner's library dir (ImportRunner fetches them ahead
     //of time — "import the runner"). Missing → the runner isn't installed; block the launch.
     for (const auto &Sub : ContainerParams.RunnerLayers)
@@ -61,7 +95,7 @@ bool LaunchSources::EnsureSources(struct ContainerParams &ContainerParams)
         std::filesystem::path Local; std::string Cid;
         LayerLocator(Sub, ContainerParams.RunnerPackagePath, Local, Cid);
         std::error_code Ec;
-        if (std::filesystem::exists(Local, Ec))
+        if (Exists(Local))
         {
             //IPFS fetch (FetchToPath) drops the executable bit, so a loose runner binary (e.g. a bundled
             //AppImage as a VFSFileLayer) lands as 0644 and can't be exec'd once mounted. Zip/Dir layers keep
@@ -87,8 +121,7 @@ bool LaunchSources::EnsureSources(struct ContainerParams &ContainerParams)
                 if (!IsVfsLayer(Sub.value("TYPE", std::string()))) continue;
                 std::filesystem::path Local; std::string Cid;
                 LayerLocator(Sub, Link.PackagePath, Local, Cid);
-                std::error_code Ec;
-                if (std::filesystem::exists(Local, Ec)) continue;
+                if (Exists(Local)) continue;
                 Ok = false;
                 LogErr("LaunchSources::EnsureSources", "Inner runner '" + Link.NodeId + "' not imported: missing build " + Local.string());
             }
@@ -103,8 +136,7 @@ bool LaunchSources::EnsureSources(struct ContainerParams &ContainerParams)
                                                                                  // content — resolved at mount time.
         std::filesystem::path Local; std::string Cid;
         LayerLocator(Sub, ContainerParams.PackagePath, Local, Cid);
-        std::error_code Ec;
-        if (std::filesystem::exists(Local, Ec) || !Cid.empty()) continue;        // present, or a backend can provide it
+        if (Exists(Local) || !Cid.empty()) continue;        // present, or a backend can provide it
         Ok = false;
         LogErr("LaunchSources::EnsureSources", "Missing layer content (no local file, no source): " + Local.string());
     }

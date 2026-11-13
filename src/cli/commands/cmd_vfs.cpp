@@ -259,7 +259,7 @@ VG_COMMANDS
         "vfs cat", "read a file of the filesystem (to stdout, or --out a file)", "",
         { SpecArg(), PathArg(), Opt("out", "write it here"), Opt("bytes", "at most this many", Type::Int), Opt("offset", "from here", Type::Int) },
         { "vfs cat spec.json 'drive_c/Games/AoE2/language.ini'", "vfs cat spec.json 'x/y.bin' --out /tmp/y.bin" },
-        { "VfsOpen", "VfsRead", "VfsRelease" }, Needs::Config, false,
+        { "VfsOpen", "VfsRead", "VfsRelease", "vgdelta::DeltaByteSource::scattered", "ConcatByteSource::scattered" }, Needs::Config, false,
         [](Command::Context &, const json &A) {
             Loaded L = Load(A);
             OpenFile *F = nullptr;
@@ -377,7 +377,7 @@ VG_COMMANDS
         "entry (a zip the filesystem cannot mount), and with --entry that entry's bytes (--out a file; a link resolved "
         "within the archive).", { Pos("zip", "the zip file"), Opt("entry", "read this entry"), Opt("out", "(--entry) write it here"), Flag("offsets", "each entry's data offset") },
         { "vfs zip game.zip", "vfs zip game.zip --entry data/readme.txt" },
-        { "BuildZipIndex", "OpenZipEntry", "ReadZipEntry", "ResolveZipSymlink", "zipscan::WalkCentralDir", "zipscan::CentralDirOffsets",
+        { "BuildZipIndex", "OpenZipEntry", "ReadZipEntry", "ResolveZipSymlink", "ZipDataOffset", "zipscan::WalkCentralDir", "zipscan::CentralDirOffsets",
           "zipscan::FirstCompressedEntry", "zipscan::LocalDataOffset", "zipscan::Rd16", "zipscan::Rd32", "zipscan::Rd64",
           "MmapByteSource::Map", "MmapByteSource::pread", "MmapByteSource::size", "ByteSource::preadAll" }, Needs::Config, false,
         [](Command::Context &, const json &A) {
@@ -405,11 +405,16 @@ VG_COMMANDS
                 return Out;
             }
             json Es = json::array();
-            const auto Offs = Command::Bool(A, "offsets", false) ? zipscan::CentralDirOffsets(*M) : std::unordered_map<std::string, uint64_t>();
+            const bool Offsets = Command::Bool(A, "offsets", false);
+            const auto Headers = Offsets ? zipscan::CentralDirOffsets(*M) : std::unordered_map<std::string, uint64_t>();
             for (const auto &[Name, E] : Ix->byName)
             {
                 json R = {{"name", E.name}, {"size", E.size}, {"dir", E.isDir}, {"link", E.symlink}, {"stored", E.stored}};
-                if (const auto It = Offs.find(E.name); It != Offs.end()) R["data_at"] = zipscan::LocalDataOffset(*M, It->second);
+                //A stored entry's as the filesystem learns it at its first open; a compressed one's from its header.
+                const auto It = Headers.find(E.name);
+                const uint64_t At = !Offsets ? UINT64_MAX : E.stored ? ZipDataOffset(*Ix, E)
+                                  : It != Headers.end() ? zipscan::LocalDataOffset(*M, It->second) : UINT64_MAX;
+                if (At != UINT64_MAX) R["data_at"] = At;
                 Es.push_back(R);
             }
             int Walked = 0;
@@ -429,7 +434,8 @@ VG_COMMANDS
           Opt("block", "(--make) block size", Type::Int) },
         { "vfs delta p.vgdelta --make --base a.zip --target b.zip", "vfs delta p.vgdelta --verify --base a.zip --target b.zip" },
         { "vgdelta::GenerateDeltaToFile", "vgdelta::VerifyDelta", "vgdelta::DeltaByteSource::Create", "vgdelta::DeltaByteSource::pread",
-          "vgdelta::DeltaByteSource::size", "vgdelta::Fnv1a64", "ConcatByteSource::pread", "ConcatByteSource::size", "MemByteSource::pread",
+          "vgdelta::DeltaByteSource::size", "vgdelta::DeltaByteSource::prefetch", "vgdelta::CachedBlockBytes", "vgdelta::CachedBlockBudget", "vgdelta::Fnv1a64",
+          "ConcatByteSource::pread", "ConcatByteSource::prefetch", "ConcatByteSource::size", "MemByteSource::pread",
           "MemByteSource::size" }, Needs::Config, false,
         [](Command::Context &, const json &A) {
             std::vector<std::shared_ptr<MmapByteSource>> Maps;
@@ -490,6 +496,8 @@ VG_COMMANDS
                     Off += static_cast<uint64_t>(N);
                 }
                 Out["out"] = Command::Str(A, "out");
+                Out["cached_block_bytes"] = vgdelta::CachedBlockBytes();   // its decompressed blocks, while the view lives
+                Out["cached_block_budget"] = vgdelta::CachedBlockBudget();
             }
             return Out;
         }, {} });
