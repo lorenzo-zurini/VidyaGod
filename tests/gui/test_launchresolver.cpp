@@ -184,6 +184,23 @@ private slots:
         QCOMPARE(cp.CustomVariables["VIDYAGOD_SELF_NAME"],    std::string("PackageChoice")); // declaration wins
     }
 
+    // A --var for a variable no node declares still sets it: the engine reads its own switches (the friend LAN's
+    // gateway, VIDYAGOD_LAN_BRIDGE=off) from the launch's variables. Teeth: drop an undeclared override (the switch is
+    // never seen and the gateway stays on).
+    void an_override_sets_an_engine_switch_no_node_declares()
+    {
+        NodeIndex idx;
+        idx.Nodes["wine"] = runnerNode("wine", {"win32"});
+        idx.Nodes["game"] = launchNode("game", "win32", {});
+        finish(idx);
+        ContainerParams cp("/tmp/vg_bundle");
+        cp.NodeIdx = &idx; cp.LaunchNodeId = "game";
+        cp.VariableOverrides = { {"VIDYAGOD_LAN_BRIDGE", "off"} };
+        const json cfg = json{{"Settings", json::object()}};
+        QVERIFY(LaunchResolver::InitializeFromNode(cp, cfg));
+        QCOMPARE(cp.CustomVariables["VIDYAGOD_LAN_BRIDGE"], std::string("off"));
+    }
+
     // A session's scratch lives in the system temp (RAM on Linux) unless the caller roots it elsewhere: an authoring
     // session roots it on disk, since an installer writes the whole game there. Teeth: ignore the override.
     void a_session_root_override_moves_its_scratch()

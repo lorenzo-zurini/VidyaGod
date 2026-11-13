@@ -179,6 +179,11 @@ bool LaunchResolver::ResolveCustomVariables(struct ContainerParams &ContainerPar
         KeyOrder.push_back(Key);
         Sources[Key] = ResolveOne(Key, Value, true);             // documented: a persisted setting still wins
     }
+    //A --var (or picker) value names a variable of this launch even when no node declares it: the engine's own
+    //switches (VIDYAGOD_LAN_BRIDGE=off, VIDYAGOD_LAN_HOSTRELAY=off) are read from this same table, and an undeclared
+    //key used to be dropped here — the switch silently stayed on.
+    for (const auto &[Key, Value] : ContainerParams.VariableOverrides)
+        if (!Sources.count(Key)) { KeyOrder.push_back(Key); Sources[Key] = Value; }
 
     //Phase 2 — fixpoint. Seed raw, then substitute every source against (built-ins + all vars) until a full pass
     //changes nothing. A snapshot per pass (Jacobi iteration) makes resolution order-independent; the cap bounds
