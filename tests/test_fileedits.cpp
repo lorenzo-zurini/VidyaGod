@@ -388,6 +388,85 @@ TEST(xmlset_refuses_what_it_cannot_write_back)
     std::filesystem::remove_all(Dir);
 }
 
+namespace {
+// Age of Mythology's profile (Users/Default.prf): UTF-16 LE with a byte-order mark. Written here by hand, one unit per
+// character; the name holds an é (one unit) and an emoji (a surrogate pair), so both kinds come back as they were.
+const std::string AomName = "D\xC3\xA9" "fault\xF0\x9F\x98\x80";   // "Default" with é, then U+1F600
+std::string Utf16(const std::string &Ascii, bool Le)
+{
+    std::string Out = Le ? "\xFF\xFE" : "\xFE\xFF";
+    const auto Unit = [&](unsigned char Hi, unsigned char Lo) { Out += static_cast<char>(Le ? Lo : Hi); Out += static_cast<char>(Le ? Hi : Lo); };
+    for (size_t I = 0; I < Ascii.size(); ++I)
+        if (Ascii.compare(I, AomName.size(), AomName) == 0)
+        {
+            for (char C : std::string("D")) Unit(0, static_cast<unsigned char>(C));
+            Unit(0x00, 0xE9);
+            for (char C : std::string("fault")) Unit(0, static_cast<unsigned char>(C));
+            Unit(0xD8, 0x3D); Unit(0xDE, 0x00);
+            I += AomName.size() - 1;
+        }
+        else Unit(0, static_cast<unsigned char>(Ascii[I]));
+    return Out;
+}
+std::string AomProfile(const std::string &Res)
+{
+    return "<?xml version=\"1.0\" encoding=\"UTF-16\"?>\r\n\r\n<playerprofile>\r\n\t<profilename>" + AomName
+         + "</profilename>\r\n\t<profileguid>{00000000-0000-4000-8000-000000000000}</profileguid>\r\n\t<resolution>" + Res
+         + "</resolution>\r\n\t<displaybitdepth>32</displaybitdepth>\r\n</playerprofile>\r\n";
+}
+}
+
+// A UTF-16 file (either byte order, by its mark) is edited in its own encoding: the value changes and every other byte
+// stays, the é and the surrogate pair included; reading it gives UTF-8. Teeth: write the edit back as UTF-8; read
+// without decoding (the root is not found); swap the byte order on the way back.
+TEST(xmlset_edits_a_utf16_file_in_its_own_encoding)
+{
+    for (const bool Le : {true, false})
+    {
+        const std::string In = Utf16(AomProfile("1280"), Le);
+        CHECK_EQ(Edit("/playerprofile/resolution", "1920", In), Utf16(AomProfile("1920"), Le));
+        CHECK_EQ(Get("/playerprofile/resolution", In), std::string("1280"));
+        CHECK_EQ(Get("/playerprofile/profilename", In), AomName);
+        //A missing element is created in the file's encoding too.
+        const std::string Added = Edit("/playerprofile/windowmode", "1", In);
+        CHECK(Added.rfind(Le ? "\xFF\xFE" : "\xFE\xFF", 0) == 0);
+        CHECK_EQ(Get("/playerprofile/windowmode", Added), std::string("1"));
+        CHECK_EQ(Get("/playerprofile/resolution", Added), std::string("1280"));
+    }
+    auto Dir = TmpDir("xml16");
+    const auto F = Dir / "Default.prf";
+    Write(F, Utf16(AomProfile("1280"), true));
+    CHECK(FileEdits::XmlSet("/playerprofile/resolution", "2560", F));
+    CHECK_EQ(ReadAll(F), Utf16(AomProfile("2560"), true));
+    std::filesystem::remove_all(Dir);
+}
+
+// What does not turn back into its own bytes is refused, and the file is left as it was: an odd length, a lone
+// surrogate, a UTF-32 file, a value that is not UTF-8 text. Teeth: decode leniently (drop the odd byte, pass the lone
+// surrogate through) or encode a bad value byte by byte.
+TEST(xmlset_refuses_a_utf16_file_it_cannot_write_back)
+{
+    const std::string Good = Utf16(AomProfile("1280"), true);
+    std::string LoneHigh = Good;
+    LoneHigh.replace(LoneHigh.find(std::string("\xDE", 1)) - 1, 2, std::string("A\0", 2));   // the emoji's low half gone
+    for (const std::string &In : {Good + "x", LoneHigh, std::string("\xFF\xFE\0\0<\0\0\0", 8)})
+    {
+        std::string Out, Why;
+        CHECK(!FileEdits::XmlEdit("/playerprofile/resolution", "1920", In, Out, Why));
+        CHECK(!Why.empty());
+        CHECK(!FileEdits::XmlGet("/playerprofile/resolution", In, Why));
+    }
+    std::string Out, Why;
+    CHECK(!FileEdits::XmlEdit("/playerprofile/resolution", "19\xFF" "20", Good, Out, Why));
+    CHECK(Why.find("UTF-8") != std::string::npos);
+    auto Dir = TmpDir("xml16bad");
+    const auto F = Dir / "Default.prf";
+    Write(F, Good + "x");
+    CHECK(!FileEdits::XmlSet("/playerprofile/resolution", "1920", F));
+    CHECK_EQ(ReadAll(F), Good + "x");
+    std::filesystem::remove_all(Dir);
+}
+
 // The XmlSet MODE reaches XmlSet through ProcessFileEdits (KEY the path, VALUE the value). Teeth: drop the dispatch.
 TEST(xmlset_mode_applies_through_the_edit_pass)
 {

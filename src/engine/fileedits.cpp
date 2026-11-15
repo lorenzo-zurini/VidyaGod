@@ -855,23 +855,110 @@ bool XmlWalk(const std::string &T, const std::vector<XPath> &Paths, size_t K, co
     return true;
 }
 
+//A file a game writes in UTF-16 (Age of Mythology's profiles: FF FE, then <?xml … encoding="UTF-16"?>) is edited as
+//UTF-8 and written back in its own byte order, with its byte-order mark. Strict both ways, so that every byte the edit
+//does not change comes back as it was: an odd length, an unpaired surrogate or text that is not UTF-8 fails the op.
+enum class XEnc { Utf8, Utf16Le, Utf16Be };
+
+bool FromUtf16(const std::string &In, bool Le, std::string &Out)
+{
+    if (In.size() % 2) return false;
+    const auto Unit = [&](size_t At) {
+        const auto B0 = static_cast<unsigned char>(In[At]), B1 = static_cast<unsigned char>(In[At + 1]);
+        return static_cast<uint32_t>(Le ? B0 | (B1 << 8) : (B0 << 8) | B1);
+    };
+    Out.clear();
+    for (size_t I = 0; I < In.size(); I += 2)
+    {
+        uint32_t Cp = Unit(I);
+        if (Cp >= 0xDC00 && Cp < 0xE000) return false;
+        if (Cp >= 0xD800 && Cp < 0xDC00)
+        {
+            if (I + 3 >= In.size()) return false;
+            const uint32_t Lo = Unit(I + 2);
+            if (Lo < 0xDC00 || Lo >= 0xE000) return false;
+            Cp = 0x10000 + ((Cp - 0xD800) << 10) + (Lo - 0xDC00);
+            I += 2;
+        }
+        if (Cp < 0x80) Out += static_cast<char>(Cp);
+        else if (Cp < 0x800) { Out += static_cast<char>(0xC0 | (Cp >> 6)); Out += static_cast<char>(0x80 | (Cp & 0x3F)); }
+        else if (Cp < 0x10000) { Out += static_cast<char>(0xE0 | (Cp >> 12)); Out += static_cast<char>(0x80 | ((Cp >> 6) & 0x3F)); Out += static_cast<char>(0x80 | (Cp & 0x3F)); }
+        else { Out += static_cast<char>(0xF0 | (Cp >> 18)); Out += static_cast<char>(0x80 | ((Cp >> 12) & 0x3F)); Out += static_cast<char>(0x80 | ((Cp >> 6) & 0x3F)); Out += static_cast<char>(0x80 | (Cp & 0x3F)); }
+    }
+    return true;
+}
+
+bool ToUtf16(const std::string &In, bool Le, std::string &Out)
+{
+    const auto Put = [&](uint32_t U) {
+        const char Hi = static_cast<char>(U >> 8), Lo = static_cast<char>(U & 0xFF);
+        Out += Le ? Lo : Hi; Out += Le ? Hi : Lo;
+    };
+    Out.clear();
+    for (size_t I = 0; I < In.size();)
+    {
+        const auto C = static_cast<unsigned char>(In[I]);
+        const size_t More = C < 0x80 ? 0 : C >= 0xC2 && C < 0xE0 ? 1 : C >= 0xE0 && C < 0xF0 ? 2 : C >= 0xF0 && C < 0xF5 ? 3 : 4;
+        if (More == 4 || I + More >= In.size()) return false;
+        uint32_t Cp = More == 0 ? C : More == 1 ? C & 0x1F : More == 2 ? C & 0x0F : C & 0x07;
+        for (size_t K = 1; K <= More; ++K)
+        {
+            const auto N = static_cast<unsigned char>(In[I + K]);
+            if ((N & 0xC0) != 0x80) return false;
+            Cp = (Cp << 6) | (N & 0x3F);
+        }
+        if ((More == 2 && (Cp < 0x800 || (Cp >= 0xD800 && Cp < 0xE000))) || (More == 3 && (Cp < 0x10000 || Cp > 0x10FFFF))) return false;
+        if (Cp < 0x10000) Put(Cp);
+        else { Put(0xD800 + ((Cp - 0x10000) >> 10)); Put(0xDC00 + ((Cp - 0x10000) & 0x3FF)); }
+        I += More + 1;
+    }
+    return true;
+}
+
+//The text of In as UTF-8, and the encoding it came in (by its byte-order mark).
+bool XmlDecode(const std::string &In, XEnc &E, std::string &Text, std::string &Why)
+{
+    E = XEnc::Utf8;
+    const bool Le = In.rfind("\xFF\xFE", 0) == 0, Be = In.rfind("\xFE\xFF", 0) == 0;
+    if (!Le && !Be) { Text = In; return true; }
+    if (Le && In.size() >= 4 && In[2] == '\0' && In[3] == '\0') { Why = "a UTF-32 file, which this edit does not read"; return false; }
+    if (!FromUtf16(In.substr(2), Le, Text)) { Why = "a UTF-16 file that is not valid UTF-16"; return false; }
+    E = Le ? XEnc::Utf16Le : XEnc::Utf16Be;
+    return true;
+}
+
+bool XmlEncode(const std::string &Text, XEnc E, std::string &Out, std::string &Why)
+{
+    if (E == XEnc::Utf8) { Out = Text; return true; }
+    std::string Body;
+    if (!ToUtf16(Text, E == XEnc::Utf16Le, Body)) { Why = "the value is not UTF-8 text, so it cannot be written into a UTF-16 file"; return false; }
+    Out = (E == XEnc::Utf16Le ? "\xFF\xFE" : "\xFE\xFF") + Body;
+    return true;
+}
+
 } // namespace
 
 bool FileEdits::XmlEdit(const std::string &Key, const std::string &Value, const std::string &In, std::string &Out, std::string &Why)
 {
     std::vector<XPath> Paths;
     if (!SplitXmlKey(Key, Paths, Why)) return false;
+    XEnc E;
+    std::string Text, Edited;
+    if (!XmlDecode(In, E, Text, Why)) return false;
     std::optional<std::string> Unused;
-    return XmlWalk(In, Paths, 0, &Value, Out, Unused, Why);
+    return XmlWalk(Text, Paths, 0, &Value, Edited, Unused, Why) && XmlEncode(Edited, E, Out, Why);
 }
 
 std::optional<std::string> FileEdits::XmlGet(const std::string &Key, const std::string &In, std::string &Why)
 {
     std::vector<XPath> Paths;
     if (!SplitXmlKey(Key, Paths, Why)) return std::nullopt;
+    XEnc E;
+    std::string Text;
+    if (!XmlDecode(In, E, Text, Why)) return std::nullopt;
     std::optional<std::string> Got;
     std::string Unused;
-    if (!XmlWalk(In, Paths, 0, nullptr, Unused, Got, Why)) return std::nullopt;
+    if (!XmlWalk(Text, Paths, 0, nullptr, Unused, Got, Why)) return std::nullopt;
     return Got;
 }
 
