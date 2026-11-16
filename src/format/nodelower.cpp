@@ -259,6 +259,14 @@ std::string CheckLayer(const ordered_json &L)
                 if (Text.count(K) && !V.is_string()) return "EDIT op field '" + K + "' must be a string";
                 if (!V.is_string() && !V.is_boolean() && !V.is_number()) return "EDIT op field '" + K + "' must be a scalar";
             }
+            //IF_EXISTS: a text op that skips a file the game has not made yet, instead of creating it (or failing). A
+            //binary op patches a file the package provides, so there it would be read by nothing.
+            if (O.contains("IF_EXISTS"))
+            {
+                if (!O["IF_EXISTS"].is_boolean()) return "EDIT op field 'IF_EXISTS' must be true or false";
+                if (O["IF_EXISTS"] == true && IsBinaryMode(Str(O["MODE"])))
+                    return "IF_EXISTS goes on a text op (a binary op patches a file the package provides)";
+            }
             //Delete removes the TARGET (a file or a folder) and nothing else: a value or a site would be read by nothing.
             if (O["MODE"] == "Delete")
                 for (const auto &[K, V] : O.items())

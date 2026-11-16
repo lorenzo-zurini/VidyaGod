@@ -577,6 +577,8 @@ std::vector<Field> MakeFields(const std::string &Type)
                 {"REPLACE", "Replace", FieldKind::Text, "the new bytes", {}, {}, false, "Replace ReplaceAll"},
                 {"PAYLOAD", "Payload", FieldKind::Text, "the cave's code (hex)", {}, {}, false, "Cave"},
                 {"CAVE",    "Cave at", FieldKind::Text, "'auto' or a fixed VA", {}, {}, false, "Cave"},
+                {"IF_EXISTS", "Only if it exists", FieldKind::Check, "skip the op while the file is absent - never create it", {}, {}, false,
+                 "ConfigWrite Overwrite AppendLine JsonSet XmlSet"},
                 {"COMMENT", "Comment", FieldKind::Text, "what this op does", {}, {}},
                 {"WHEN",    "When",    FieldKind::Text, "condition - the op is inert when false", {}, {}},
             }},

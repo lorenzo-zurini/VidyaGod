@@ -293,6 +293,22 @@ TEST(delete_op_takes_only_its_target)
     CHECK(L.size() == 1 && L[0]["TYPE"] == "FileEdit" && L[0]["FILE"] == "%GameDir%/videos/intro.bik");
 }
 
+// IF_EXISTS is a text op's: a boolean, carried to the engine op as written. On a binary op it would be read by nothing
+// (the package provides the file it patches), so true there is refused; false is inert anywhere (an unticked editor
+// box). Teeth: drop the boolean check (the string passes); drop the binary check (the Poke passes).
+TEST(if_exists_is_a_text_ops_boolean)
+{
+    const auto Ed = [](const ordered_json &Op) {
+        return ordered_json{ {"EDIT", ordered_json::array({ Op })}, {"TARGET", "FILES/%GameDir%/Users/Default.prf"} }; };
+    const ordered_json Xml = { {"MODE", "XmlSet"}, {"KEY", "/playerprofile/resolution"}, {"VALUE", "%xres%"}, {"IF_EXISTS", true} };
+    CHECK(!Refused(Ed(Xml)));
+    CHECK(Refused(Ed({ {"MODE", "XmlSet"}, {"KEY", "/a"}, {"VALUE", "1"}, {"IF_EXISTS", "true"} })));
+    CHECK(Refused(Ed({ {"MODE", "Poke"}, {"OFFSET", "0x10"}, {"VALUE", "1"}, {"IF_EXISTS", true} })));
+    CHECK(!Refused(Ed({ {"MODE", "Poke"}, {"OFFSET", "0x10"}, {"VALUE", "1"}, {"IF_EXISTS", false} })));
+    const ordered_json L = Lower(Ed(Xml));
+    CHECK(L.size() == 1 && L[0]["TYPE"] == "FileEdit" && L[0].value("IF_EXISTS", false));
+}
+
 // What a Delete may not reach: the user's state. A kept file, anything inside a kept folder (taken back or not: the
 // folder is served live, so the removal would be stored with the saves), a folder holding a kept address, a file a
 // kept pattern matches. Everything else is the package's. Teeth: drop the "folder holding it" clause (deleting

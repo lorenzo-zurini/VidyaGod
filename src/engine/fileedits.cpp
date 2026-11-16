@@ -188,6 +188,15 @@ bool FileEdits::ProcessFileEdits(struct ContainerParams &ContainerParams, bool O
             ++Attempted; ++Failed; Ok = false;
             continue;
         }
+        //IF_EXISTS: the file is the game's to make (a profile written on its first run). Until it does, the edit is
+        //skipped: never a stub the game would then read as its own, never a failure.
+        if (const auto If = Sub.find("IF_EXISTS"); If != Sub.end() && *If == true)
+            if (std::error_code Ec; !std::filesystem::exists(FilePath, Ec))
+            {
+                LogOut("FileEdits::ProcessFileEdits", "'" + File + "' does not exist yet — the IF_EXISTS "
+                       + (Mode.empty() ? std::string("edit") : Mode) + " is skipped.");
+                continue;
+            }
         ++Attempted;
 
         //A Delete is judged again by the place it RESOLVED to, not the address it was written as: "videos/../Saves",

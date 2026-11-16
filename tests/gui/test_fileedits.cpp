@@ -233,6 +233,43 @@ private slots:
         QCOMPARE(ReadAll(Rt("game.ini")), std::string("package"));          // the package's file: every launch
     }
 
+    // IF_EXISTS: a file the game makes on its first run (Age of Mythology's Users/Default.prf) is edited once it is
+    // there, and until then left absent — every mode that would create it (XmlSet's stub document, JsonSet's {},
+    // Overwrite, AppendLine) does not, and a ConfigWrite does not fail. Skipped is not failed: the pass stays clean,
+    // with nothing to complain about. Without the flag the XmlSet makes the stub (the control: the flag is what
+    // stops it). Teeth: drop the skip (four files appear and the ConfigWrite fails); skip whatever the flag says
+    // (the existing file and the control are not edited).
+    void an_if_exists_edit_skips_a_file_the_game_has_not_made()
+    {
+        QTemporaryDir Dir;
+        const std::filesystem::path Root = Dir.path().toStdString();
+        ContainerParams CP(Root / "bundle");
+        CP.RuntimePath = Root / "runtime";
+        std::filesystem::create_directories(CP.RuntimePath / "Users");
+        const auto Rt = [&](const char *F) { return (CP.RuntimePath / F).string(); };
+        Write(Rt("Users/Here.prf"), "<playerprofile><resolution>800</resolution></playerprofile>");
+        auto Edit = [](const std::string &File, const char *Mode, const char *Key, bool IfExists) {
+            nlohmann::ordered_json E = { {"TYPE", "FileEdit"}, {"MODE", Mode}, {"KEY", Key}, {"VALUE", "1280"}, {"FILE", File}, {"OVERRIDE", true} };
+            if (IfExists) E["IF_EXISTS"] = true;
+            return E;
+        };
+        CP.SubComponentsArray = nlohmann::ordered_json::array({
+            Edit("Users/Default.prf", "XmlSet", "/playerprofile/resolution", true),
+            Edit("Users/p.json", "JsonSet", "/res", true),
+            Edit("Users/p.cfg", "ConfigWrite", "xres ", true),
+            Edit("Users/p.txt", "Overwrite", "", true),
+            Edit("Users/p.lst", "AppendLine", "", true),
+            Edit("Users/Here.prf", "XmlSet", "/playerprofile/resolution", true),
+            Edit("Users/Stub.prf", "XmlSet", "/playerprofile/resolution", false) });
+        Complaints C;
+        QVERIFY(FileEdits::ProcessFileEdits(CP, /*OverridePass=*/true));
+        QVERIFY2(C.Lines.empty(), C.Lines.empty() ? "" : C.Lines.front().c_str());
+        for (const char *F : {"Users/Default.prf", "Users/p.json", "Users/p.cfg", "Users/p.txt", "Users/p.lst"})
+            QVERIFY2(!std::filesystem::exists(Rt(F)), F);
+        QCOMPARE(ReadAll(Rt("Users/Here.prf")), std::string("<playerprofile><resolution>1280</resolution></playerprofile>"));
+        QVERIFY(ReadAll(Rt("Users/Stub.prf")).find("<resolution>1280</resolution>") != std::string::npos);
+    }
+
     // A kept folder is served live, links included, and the game can leave one there pointing at any file of the
     // user's (settings.ini -> ~/.bashrc, or a whole folder -> ~). The override pass runs OUTSIDE the sandbox, so an
     // edit that followed it would write the user's file. A link to nowhere counts too: written through, it would CREATE
