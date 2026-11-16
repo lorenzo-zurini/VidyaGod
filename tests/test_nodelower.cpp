@@ -8,6 +8,7 @@
 #include "nodelower.h"
 #include "fold.h"
 #include "manifestmodel.h"
+#include "keynames.h"
 
 using ordered_json = nlohmann::ordered_json;
 
@@ -148,6 +149,34 @@ TEST(check_accepts_key_options_holding_a_key_name_unbound_or_computed)
     CHECK(!Refused({ {"VARS", {{"T", {{"MAP", {{"keypad 0", "[0]"}, {"", "none"}}}, {"ELSE", ""}, {"WHEN", "%x%==1"}}}}} }));
     for (const char *Ctl : { "bool", "int", "float", "text", "enum", "secret", "key" })
         CHECK(!Refused({ {"VARS", {{"K", {{"UI", {{"CONTROL", Ctl}}}}}}} }));
+}
+
+// A key held with modifiers is one name: "ctrl+alt+shift+meta+<key>", modifiers side-less, in that order, each once,
+// on a keyboard key or a mouse button. A pad's button and a modifier's own key take none; a modifier pressed alone keeps
+// its side. Combine spells what the capture saw; a DEFAULT may be a combination. Teeth: accept modifiers in any order
+// ("shift+ctrl+a" passes); accept a pad name after modifiers; Combine in bit order other than ctrl, alt, shift, meta.
+TEST(a_key_held_with_modifiers_is_one_name)
+{
+    for (const char *V : { "shift+1", "ctrl+a", "alt+b", "ctrl+shift+f", "ctrl+alt+shift+meta+f9", "shift+keypad plus",
+                           "ctrl+mouse left", "alt+mouse wheel up", "meta+page down" })
+    {
+        CHECK(KeyNames::IsValue(V));
+        CHECK(!Refused({ {"VARS", {{"K", {{"DEFAULT", V}, {"UI", {{"CONTROL", "key"}, {"SECTION", "Input"}}}}}}} }));
+    }
+    for (const char *V : { "shift+ctrl+a", "ctrl+ctrl+a", "control+a", "ctrl+", "+a", "ctrl+pad a", "shift+left ctrl",
+                           "ctrl+shift", "ctrl+bogus", "Shift+1", "ctrl-a", "shift+1+2" })
+    {
+        CHECK(!KeyNames::IsValue(V));
+        CHECK(Refused({ {"VARS", {{"K", {{"DEFAULT", V}, {"UI", {{"CONTROL", "key"}, {"SECTION", "Input"}}}}}}} }));
+    }
+    using namespace KeyNames;
+    CHECK_EQ(Combine(Shift | Ctrl, "f"), std::string("ctrl+shift+f"));
+    CHECK_EQ(Combine(Meta | Shift | Alt | Ctrl, "f9"), std::string("ctrl+alt+shift+meta+f9"));
+    CHECK_EQ(Combine(Alt, "mouse right"), std::string("alt+mouse right"));
+    CHECK_EQ(Combine(0, "a"), std::string("a"));
+    CHECK_EQ(Combine(Shift, "pad a"), std::string("pad a"));                    // a pad's button takes no modifier
+    CHECK_EQ(Combine(Shift | Ctrl, "left shift"), std::string("left shift"));   // nor does a modifier's own key
+    CHECK(IsModifier("right meta") && !IsModifier("menu"));
 }
 
 TEST(lower_facts_and_refs_lower_to_no_op)

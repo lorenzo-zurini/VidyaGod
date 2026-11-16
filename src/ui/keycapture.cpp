@@ -87,6 +87,12 @@ private:
 };
 }
 
+unsigned KeyCapture::ModsOf(Qt::KeyboardModifiers M)
+{
+    return (M & Qt::ControlModifier ? KeyNames::Ctrl : 0u) | (M & Qt::AltModifier ? KeyNames::Alt : 0u)
+         | (M & Qt::ShiftModifier ? KeyNames::Shift : 0u) | (M & Qt::MetaModifier ? KeyNames::Meta : 0u);
+}
+
 std::string KeyCapture::NameOfPadButton(int B)
 {
     static const std::map<int, const char *> Names = {
@@ -255,6 +261,7 @@ void KeyCaptureField::setConflict(const QString &With)
 void KeyCaptureField::startCapture()
 {
     Capturing = true;
+    HeldMods.clear();
     Button->setFocus(Qt::OtherFocusReason);
     Gamepads::Get().Begin();
     PadPoll->start();
@@ -271,12 +278,11 @@ void KeyCaptureField::stopCapture()
 void KeyCaptureField::refresh()
 {
     if (Capturing) { Button->setText("Press a key…"); Button->setStyleSheet({}); Button->setToolTip({}); return; }
-    const auto Name = [](const std::string &K) {
-        QString S = QString::fromStdString(K);
-        if (S.isEmpty()) return QString("(none)");
-        if (S.size() == 1) return S.toUpper();
-        S[0] = S[0].toUpper();
-        return S;
+    const auto Name = [](const std::string &K) {           // "ctrl+a" → "Ctrl+A"
+        if (K.empty()) return QString("(none)");
+        QStringList Parts = QString::fromStdString(K).split('+');
+        for (QString &S : Parts) S = S.size() == 1 ? S.toUpper() : S.left(1).toUpper() + S.mid(1);
+        return Parts.join('+');
     };
     Button->setText(Value == Default ? Name(Value)
                                      : Name(Value) + "  (default " + (Default.empty() ? QString("none") : Name(Default)) + ")");
@@ -294,9 +300,24 @@ bool KeyCaptureField::eventFilter(QObject *Watched, QEvent *Ev)
     {
     case QEvent::KeyPress:
     {
-        //Every key binds — Escape and Tab too: a game's menu key is often Escape. Focus leaving cancels instead.
-        const std::string N = KeyCapture::NameOf(*static_cast<QKeyEvent *>(Ev));
+        //Every key binds — Escape and Tab too: a game's menu key is often Escape. Focus leaving cancels instead. A
+        //modifier waits: the key pressed while it is held binds the combination ("shift+1"), and the modifier released
+        //with nothing pressed binds by itself.
+        const auto *K = static_cast<QKeyEvent *>(Ev);
+        if (K->isAutoRepeat()) return true;
+        const std::string N = KeyCapture::NameOf(*K);
         if (N.empty()) return true;                                  // a key no option can hold: keep waiting
+        if (KeyNames::IsModifier(N)) { HeldMods.insert(N); return true; }
+        stopCapture();
+        setValue(KeyNames::Combine(KeyCapture::ModsOf(K->modifiers()), N));
+        return true;
+    }
+    case QEvent::KeyRelease:
+    {
+        const auto *K = static_cast<QKeyEvent *>(Ev);
+        if (K->isAutoRepeat()) return true;
+        const std::string N = KeyCapture::NameOf(*K);
+        if (!HeldMods.count(N)) return true;                         // held before the capture began: not this one's
         stopCapture();
         setValue(N);
         return true;
@@ -306,18 +327,20 @@ bool KeyCaptureField::eventFilter(QObject *Watched, QEvent *Ev)
         return true;
     case QEvent::MouseButtonPress:
     {
-        const std::string N = KeyCapture::NameOf(static_cast<QMouseEvent *>(Ev)->button());
+        const auto *M = static_cast<QMouseEvent *>(Ev);
+        const std::string N = KeyCapture::NameOf(M->button());
         if (N.empty()) return true;
         stopCapture();
-        setValue(N);
+        setValue(KeyNames::Combine(KeyCapture::ModsOf(M->modifiers()), N));
         return true;                                                 // eaten: no click → no new capture
     }
     case QEvent::Wheel:                                              // a horizontal tilt alone binds nothing
     {
-        const std::string N = KeyCapture::NameOfWheel(static_cast<QWheelEvent *>(Ev)->angleDelta().y());
+        const auto *W = static_cast<QWheelEvent *>(Ev);
+        const std::string N = KeyCapture::NameOfWheel(W->angleDelta().y());
         if (N.empty()) return true;
         stopCapture();
-        setValue(N);
+        setValue(KeyNames::Combine(KeyCapture::ModsOf(W->modifiers()), N));
         return true;
     }
     case QEvent::MouseButtonRelease:

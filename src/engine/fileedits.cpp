@@ -624,10 +624,13 @@ std::string XmlEscape(const std::string &In, char Quote)   // Quote 0: element t
     return Out;
 }
 
-struct XStep { std::string Name; std::vector<std::pair<std::string, std::string>> Where; };
+//A predicate: [@name='v'] an attribute's value, [name='v'] a child element's text (Age of Mythology's <keymapdata> are
+//told apart only by their children: <name>Select Group 1</name>, <actiontype>0</actiontype>).
+struct XPred { std::string Name, Value; bool Child = false; };
+struct XStep { std::string Name; std::vector<XPred> Where; };
 struct XPath { std::vector<XStep> Steps; std::string Attr; };   // Attr "": the element's text
 
-//"/a/b[@k='v']/@x" — one document's part of a KEY. Steps are separated by '/', outside a predicate's quotes.
+//"/a/b[@k='v'][c='w']/@x" — one document's part of a KEY. Steps are separated by '/', outside a predicate's quotes.
 bool ParseXmlPath(const std::string &S, XPath &P, std::string &Why)
 {
     if (S.empty() || S[0] != '/') { Why = "a path starts with '/'"; return false; }
@@ -648,14 +651,17 @@ bool ParseXmlPath(const std::string &S, XPath &P, std::string &Why)
         if (!XmlName(St.Name)) { Why = "'" + St.Name + "' is no element name"; return false; }
         while (I < S.size() && S[I] == '[')
         {
-            if (S.compare(I, 2, "[@") != 0) { Why = "a predicate is [@name='value']"; return false; }
+            static const char *Form = "a predicate is [@attribute='value'] or [child='text']";
+            const bool Child = S.compare(I, 2, "[@") != 0;
+            const size_t N1 = I + (Child ? 1 : 2);
             const size_t Eq = S.find('=', I);
-            if (Eq == std::string::npos || Eq + 1 >= S.size() || (S[Eq + 1] != '\'' && S[Eq + 1] != '"')) { Why = "a predicate is [@name='value']"; return false; }
+            if (Eq == std::string::npos || Eq + 1 >= S.size() || (S[Eq + 1] != '\'' && S[Eq + 1] != '"')) { Why = Form; return false; }
             const size_t Q = S.find(S[Eq + 1], Eq + 2);
-            if (Q == std::string::npos || Q + 1 >= S.size() || S[Q + 1] != ']') { Why = "a predicate is [@name='value']"; return false; }
-            const std::string Name = S.substr(I + 2, Eq - I - 2);
-            if (!XmlName(Name)) { Why = "'@" + Name + "' in a predicate is no attribute name"; return false; }
-            St.Where.emplace_back(Name, S.substr(Eq + 2, Q - Eq - 2));
+            if (Q == std::string::npos || Q + 1 >= S.size() || S[Q + 1] != ']') { Why = Form; return false; }
+            const std::string Name = S.substr(N1, Eq - N1);
+            if (!XmlName(Name))
+            { Why = "'" + std::string(Child ? "" : "@") + Name + "' in a predicate is no " + (Child ? "element" : "attribute") + " name"; return false; }
+            St.Where.push_back(XPred{ Name, S.substr(Eq + 2, Q - Eq - 2), Child });
             I = Q + 2;
         }
         P.Steps.push_back(std::move(St));
@@ -664,6 +670,10 @@ bool ParseXmlPath(const std::string &S, XPath &P, std::string &Why)
         ++I;
     }
     if (P.Steps.empty()) { Why = "the path names no element"; return false; }
+    //An element told apart by its children holds elements: it has no text of its own to set.
+    if (P.Attr.empty())
+        for (const XPred &W : P.Steps.back().Where)
+            if (W.Child) { Why = "<" + P.Steps.back().Name + "> holds the [" + W.Name + "] child, so it has no text to set: name a child or an attribute"; return false; }
     return true;
 }
 
@@ -688,19 +698,29 @@ bool SplitXmlKey(const std::string &Key, std::vector<XPath> &Out, std::string &W
     return true;
 }
 
-bool Matches(const std::string &T, const XElem &E, const XStep &S)
+bool ElementText(const std::string &T, const XElem &E, std::string &Out);
+
+//A child predicate holds when ANY child of that name has that text (XPath's comparison of a node-set to a string).
+bool Matches(const std::string &T, const XDoc &D, const XElem &E, const XStep &S)
 {
     if (E.Name != S.Name) return false;
-    for (const auto &[K, V] : S.Where)
+    for (const XPred &W : S.Where)
     {
         bool Hit = false;
-        for (const XAttr &A : E.Attrs)
-            if (A.Name == K)
+        if (W.Child)
+            for (const size_t C : E.Children)
             {
                 std::string Val;
-                Hit = XmlUnescape(T.substr(A.ValStart, A.ValEnd - A.ValStart), Val, true) && Val == V;
-                break;
+                if (D.Elems[C].Name == W.Name && ElementText(T, D.Elems[C], Val) && Val == W.Value) { Hit = true; break; }
             }
+        else
+            for (const XAttr &A : E.Attrs)
+                if (A.Name == W.Name)
+                {
+                    std::string Val;
+                    Hit = XmlUnescape(T.substr(A.ValStart, A.ValEnd - A.ValStart), Val, true) && Val == W.Value;
+                    break;
+                }
         if (!Hit) return false;
     }
     return true;
@@ -735,10 +755,17 @@ std::string NewMarkup(const XPath &P, size_t From, const std::string &Leaf)
     for (size_t I = From; I < P.Steps.size(); ++I)
     {
         const bool Last = I + 1 == P.Steps.size();
-        std::string Tag = "<" + P.Steps[I].Name;
-        for (const auto &[K, V] : P.Steps[I].Where) Tag += " " + K + "=\"" + XmlEscape(V, '"') + "\"";
-        if (Last && !P.Attr.empty()) { Open += Tag + " " + P.Attr + "=\"" + XmlEscape(Leaf, '"') + "\" />"; break; }
-        Open += Tag + ">";
+        std::string Tag = "<" + P.Steps[I].Name, Kids;
+        for (const XPred &W : P.Steps[I].Where)
+            if (W.Child) Kids += "<" + W.Name + ">" + XmlEscape(W.Value, 0) + "</" + W.Name + ">";   // in predicate order
+            else Tag += " " + W.Name + "=\"" + XmlEscape(W.Value, '"') + "\"";
+        if (Last && !P.Attr.empty())
+        {
+            Tag += " " + P.Attr + "=\"" + XmlEscape(Leaf, '"') + "\"";
+            Open += Kids.empty() ? Tag + " />" : Tag + ">" + Kids + "</" + P.Steps[I].Name + ">";
+            break;
+        }
+        Open += Tag + ">" + Kids;
         if (Last) Open += XmlEscape(Leaf, 0);
         Close = "</" + P.Steps[I].Name + ">" + Close;
     }
@@ -781,7 +808,7 @@ bool XmlWalk(const std::string &T, const std::vector<XPath> &Paths, size_t K, co
     if (!ParseXml(T, D, Why)) return false;
     if (D.Root < 0) { Why = "no root element"; return false; }
     size_t Cur = static_cast<size_t>(D.Root);
-    if (!Matches(T, D.Elems[Cur], P.Steps[0]))
+    if (!Matches(T, D, D.Elems[Cur], P.Steps[0]))
     {
         Why = "the root element is <" + D.Elems[Cur].Name + ">, not the path's <" + P.Steps[0].Name + ">";
         return false;
@@ -789,7 +816,7 @@ bool XmlWalk(const std::string &T, const std::vector<XPath> &Paths, size_t K, co
     for (size_t S = 1; S < P.Steps.size(); ++S)
     {
         long Next = -1;
-        for (const size_t C : D.Elems[Cur].Children) if (Matches(T, D.Elems[C], P.Steps[S])) { Next = static_cast<long>(C); break; }
+        for (const size_t C : D.Elems[Cur].Children) if (Matches(T, D, D.Elems[C], P.Steps[S])) { Next = static_cast<long>(C); break; }
         if (Next >= 0) { Cur = static_cast<size_t>(Next); continue; }
         if (!Leaf) { Got.reset(); return true; }                                 // nothing there: no value
         //Missing from here on: created inside Cur, after its last child, indented like that child (else one level in).
@@ -805,8 +832,11 @@ bool XmlWalk(const std::string &T, const std::vector<XPath> &Paths, size_t K, co
         }
         if (!Pa.Children.empty())
         {
+            //On a line of its own when the last child is (an element written on one line stays on one line).
             const XElem &Last = D.Elems[Pa.Children.back()];
-            Out = T.substr(0, Last.CloseEnd) + NL + IndentAt(T, Last.TagStart) + Markup + T.substr(Last.CloseEnd);
+            const size_t Ls = Last.TagStart == 0 ? std::string::npos : T.rfind('\n', Last.TagStart - 1);
+            const bool OwnLine = Ls != std::string::npos && T.find_first_not_of(" \t", Ls + 1) == Last.TagStart;
+            Out = T.substr(0, Last.CloseEnd) + (OwnLine ? NL + IndentAt(T, Last.TagStart) : std::string()) + Markup + T.substr(Last.CloseEnd);
             return true;
         }
         const std::string Ind = IndentAt(T, Pa.TagStart);

@@ -304,6 +304,46 @@ std::string Get(const std::string &Key, const std::string &In)
 }
 }
 
+// Age of Mythology's rebinds: <keymapdata> elements told apart only by their children's text. [name='…'] picks the one
+// whose <name> child holds that text; two predicates must both hold, so the "add" pair's event changes and the "drop"
+// pair's stays. A missing pair is created holding its predicate children in predicate order, and a second op on the
+// same predicates (its groupname) finds it instead of making another. Child and @attribute predicates mix; a predicate's
+// text is compared unescaped and written escaped. A path ending on an element told apart by its children has no text
+// to set: refused. Teeth: drop the child branch of Matches (the pair is not found: a second one is created); create
+// without the predicate children (the groupname op makes a second pair); a child predicate parsed as an attribute.
+TEST(xmlset_tells_elements_apart_by_their_childrens_text)
+{
+    const std::string Prf =
+        "<playerprofile>\r\n"
+        "\t<resolution>1280</resolution>\r\n"
+        "\t<keymapdata>\r\n\t\t<name>Select Group 1</name>\r\n\t\t<event>1</event>\r\n\t\t<groupname>Selection</groupname>\r\n\t\t<actiontype>1</actiontype>\r\n\t</keymapdata>\r\n"
+        "\t<keymapdata>\r\n\t\t<name>Select Group 1</name>\r\n\t\t<event>f12</event>\r\n\t\t<groupname>Selection</groupname>\r\n\t\t<actiontype>0</actiontype>\r\n\t</keymapdata>\r\n"
+        "</playerprofile>\r\n";
+    const std::string Add1 = "/playerprofile/keymapdata[name='Select Group 1'][actiontype='0']";
+    std::string Want = Prf;
+    Want.replace(Want.find("f12"), 3, "f11");
+    const std::string Out = Edit(Add1 + "/event", "f11", Prf);
+    CHECK_EQ(Out, Want);
+    CHECK_EQ(Get(Add1 + "/event", Out), std::string("f11"));
+    CHECK_EQ(Get("/playerprofile/keymapdata[name='Select Group 1'][actiontype='1']/event", Out), std::string("1"));
+    CHECK_EQ(Get("/playerprofile/keymapdata[name='Select Group 1'][actiontype='2']/event", Out), std::string("<absent>"));
+
+    const std::string Add2 = "/playerprofile/keymapdata[name='Select Group 2'][actiontype='0']";
+    const std::string Made = Edit(Add2 + "/groupname", "Selection", Edit(Add2 + "/event", "f10", Prf));
+    std::string Want2 = Prf;
+    Want2.insert(Want2.rfind("\r\n</playerprofile>"), "\r\n\t<keymapdata><name>Select Group 2</name><actiontype>0</actiontype>"
+                 "<event>f10</event><groupname>Selection</groupname></keymapdata>");
+    CHECK_EQ(Made, Want2);
+    CHECK_EQ(Get(Add2 + "/event", Made), std::string("f10"));
+
+    CHECK_EQ(Edit("/r/e[@k='1'][c='A & B']/@v", "x", "<r>\n</r>\n"), std::string("<r>\n\t<e k=\"1\" v=\"x\"><c>A &amp; B</c></e>\n</r>\n"));
+    CHECK_EQ(Get("/r/e[@k='1'][c='A & B']/@v", "<r><e k=\"1\" v=\"y\"><c>A &amp; B</c></e></r>"), std::string("y"));
+    CHECK_EQ(Get("/r/e[c='A & B']/@v", "<r><e v=\"y\" c=\"A &amp; B\"/></r>"), std::string("<absent>"));   // an attribute is no child
+    CHECK(Edit(Add1, "x", Prf).rfind("<failed:", 0) == 0);                                                 // no text to set
+    CHECK(Edit("/r/e[c='1']", "x", "<r/>").rfind("<failed:", 0) == 0);                                    // nor to create
+    CHECK(Edit("/playerprofile/keymapdata[name=Select]/event", "x", Prf).rfind("<failed:", 0) == 0);      // unquoted
+}
+
 // An attribute that is there changes in place: every other byte of the file (declaration, comment, quoting, the
 // "/>" spacing) stays. Teeth: rewrite the document instead of splicing; match the wrong <Attr> (no predicate check).
 TEST(xmlset_changes_an_attribute_in_place)
@@ -371,7 +411,7 @@ TEST(xmlset_refuses_what_it_cannot_write_back)
 {
     for (const auto &[Key, In] : std::vector<std::pair<std::string, std::string>>{
              {"/a/@v", "<a><b></a>"}, {"/a/@v", "<a><b></c></a>"}, {"/a/@v", "<a/><b/>"}, {"/x/@v", "<a/>"}, {"/a", "<a><b/></a>"},
-             {"/a/@v", "<a v=\"&custom;\"/>"}, {"a/@v", "<a/>"}, {"/a/b[name='1']/@v", "<a/>"}, {"/a/", "<a/>"},
+             {"/a/@v", "<a v=\"&custom;\"/>"}, {"a/@v", "<a/>"}, {"/a/b[1]/@v", "<a/>"}, {"/a/", "<a/>"},
              {"/a/b", "<a><b><!x></b></a>"}, {"/a/b", "<a><b><!DOCTYPE z></b></a>"},              // no markup as a value
              {"/a/b[@='1']/@v", "<a/>"}, {"/a/b[@k><evil/><z='1']/@v", "<a/>"}, {"/a/b&x/@v", "<a/>"},  // XML names only
              {"/a/b[@na me='x']/@v", "<a/>"}, {"/a/@v", "<a v=\"&#xD800;\"/>"}, {"/a/b/@v", "<a>text<!-- note --></a>"}})

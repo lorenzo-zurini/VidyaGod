@@ -711,10 +711,13 @@ private slots:
         QCOMPARE(Jump->value(), std::string("q"));
         QVERIFY(!OnlyQ->isHidden());
 
-        //Right shift, as X11/Wayland report it (keycode 62, keysym Shift_R).
+        //Right shift, as X11/Wayland report it (keycode 62, keysym Shift_R): a modifier binds once released alone.
         QTest::mouseClick(Menu->button(), Qt::LeftButton);
         QKeyEvent RShift(QEvent::KeyPress, Qt::Key_Shift, Qt::ShiftModifier, 62, 0xffe2, 0);
         QCoreApplication::sendEvent(Menu->button(), &RShift);
+        QVERIFY(Menu->capturing());
+        QKeyEvent RShiftUp(QEvent::KeyRelease, Qt::Key_Shift, Qt::NoModifier, 62, 0xffe2, 0);
+        QCoreApplication::sendEvent(Menu->button(), &RShiftUp);
         QCOMPARE(Menu->value(), std::string("right shift"));
 
         //Escape is a key like any other (a game's menu key); keypad keys are their own.
@@ -773,6 +776,48 @@ private slots:
         QCOMPARE(Jump->value(), std::string("space"));
         QCOMPARE(Jump->button()->text(), QString("Space"));
         QVERIFY(!Jump->resetButton()->isEnabled());
+    }
+
+    // A key pressed while modifiers are held binds the combination ("shift+1": Shift+1 arrives as '!' with Shift held;
+    // "ctrl+alt+a"), shown "Ctrl+Alt+A". The modifier presses before it bind nothing. A mouse button and the wheel take
+    // modifiers too. A modifier released with nothing else pressed binds by itself, with its side; one released that was
+    // held before the capture began binds nothing (the Ctrl of a Ctrl+click elsewhere). Teeth: bind a modifier on its
+    // press (Shift alone binds before the 1); drop the modifiers from the key (the "1" binds); bind any modifier's release
+    // (the stale Ctrl binds); drop them from the mouse (the "mouse left" binds).
+    void aKeyHeldWithModifiersBindsTheCombination()
+    {
+        KeyCaptureField F("w", "w");
+        F.show();
+        const auto send = [&](QEvent::Type T, int Key, Qt::KeyboardModifiers M, quint32 Sym = 0) {
+            QKeyEvent E(T, Key, M, 0, Sym, 0);
+            QCoreApplication::sendEvent(F.button(), &E);
+        };
+        QTest::mouseClick(F.button(), Qt::LeftButton);
+        send(QEvent::KeyPress, Qt::Key_Shift, Qt::ShiftModifier, 0xffe1);
+        QVERIFY(F.capturing());
+        send(QEvent::KeyPress, Qt::Key_Exclam, Qt::ShiftModifier);
+        QCOMPARE(F.value(), std::string("shift+1"));
+        QVERIFY(!F.capturing());
+        send(QEvent::KeyRelease, Qt::Key_Shift, Qt::NoModifier, 0xffe1);    // after the bind: nothing
+        QCOMPARE(F.value(), std::string("shift+1"));
+
+        QTest::mouseClick(F.button(), Qt::LeftButton);
+        send(QEvent::KeyPress, Qt::Key_Control, Qt::ControlModifier, 0xffe3);
+        send(QEvent::KeyPress, Qt::Key_Alt, Qt::ControlModifier | Qt::AltModifier, 0xffe9);
+        send(QEvent::KeyPress, Qt::Key_A, Qt::ControlModifier | Qt::AltModifier);
+        QCOMPARE(F.value(), std::string("ctrl+alt+a"));
+        QCOMPARE(F.button()->text(), QString("Ctrl+Alt+A  (default W)"));
+
+        QTest::mouseClick(F.button(), Qt::LeftButton);
+        QTest::mouseClick(F.button(), Qt::LeftButton, Qt::ShiftModifier);
+        QCOMPARE(F.value(), std::string("shift+mouse left"));
+
+        QTest::mouseClick(F.button(), Qt::LeftButton);
+        send(QEvent::KeyRelease, Qt::Key_Control, Qt::NoModifier, 0xffe3);  // held since before: binds nothing
+        QVERIFY(F.capturing());
+        send(QEvent::KeyPress, Qt::Key_Control, Qt::ControlModifier, 0xffe4);
+        send(QEvent::KeyRelease, Qt::Key_Control, Qt::NoModifier, 0xffe4);
+        QCOMPARE(F.value(), std::string("right ctrl"));
     }
 
     // A gamepad button binds a key option too: SDL's game-controller events, read while the button waits. A button

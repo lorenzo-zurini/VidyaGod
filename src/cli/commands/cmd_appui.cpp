@@ -295,31 +295,31 @@ VG_COMMANDS
     Command::Register({
         "keys names", "every name a key option can hold, and what a key, button, wheel or pad control is called",
         "--check NAME says whether a key option can hold it; --key SEQ, --button left|right|middle, --wheel ±N, "
-        "--pad-button N, --pad-axis N±: the name a press of it gets.",
+        "--pad-button N, --pad-axis N±: the name a press of it gets. A key held with modifiers is one name, "
+        "ctrl+alt+shift+meta+<key> in that order (a lone modifier keeps its side: left shift).",
         { Opt("check", "a name"), Opt("key", "a key (Ctrl+A, F1, …)"), Opt("button", "a mouse button"), Opt("wheel", "a wheel step", Type::Int),
           Opt("pad-button", "an SDL pad button", Type::Int), Opt("pad-axis", "an SDL pad axis", Type::Int), Flag("negative", "(--pad-axis) its negative side") },
-        { "keys names", "keys names --key F5", "keys names --key Ctrl+F5", "keys names --pad-button 0" },
-        { "KeyNames::All", "KeyNames::IsValue", "KeyCapture::NameOf", "KeyCapture::NameOfWheel", "KeyCapture::NameOfPadButton", "KeyCapture::NameOfPadAxis" },
+        { "keys names", "keys names --key F5", "keys names --key Ctrl+F5", "keys names --check ctrl+shift+a", "keys names --pad-button 0" },
+        { "KeyNames::All", "KeyNames::IsValue", "KeyNames::Combine", "KeyNames::IsModifier", "KeyCapture::NameOf", "KeyCapture::ModsOf",
+          "KeyCapture::NameOfWheel", "KeyCapture::NameOfPadButton", "KeyCapture::NameOfPadAxis" },
         Needs::Config, false,
         [](Command::Context &, const json &A) {
             json Out = json::object();
-            //A key option holds one key: the rebinder is press-a-key, and a modifier held with it is not part of the name.
-            const std::string Combo = "a key option holds one key, not a combination (the rebinder records the key a "
-                                      "press of it gives, without Ctrl, Alt, Shift or Meta)";
             if (A.contains("check"))
             {
                 const std::string N = Command::Str(A, "check");
                 Out["valid"] = KeyNames::IsValue(N);
-                if (!Out["valid"].get<bool>() && N.find('+') != std::string::npos && N.size() > 1) Out["why"] = Combo;
+                if (!Out["valid"].get<bool>() && N.find('+') != std::string::npos && N.size() > 1)
+                    Out["why"] = "a combination is ctrl+alt+shift+meta+<key>: side-less modifiers, each once, in that order, "
+                                 "then one key that is no modifier and no pad control";
             }
             if (A.contains("key"))
             {
                 const QKeySequence S(QString::fromStdString(Command::Str(A, "key")));
                 if (S.isEmpty()) throw Command::BadArgs("not a key");
                 const QKeyEvent E(QEvent::KeyPress, S[0].key(), S[0].keyboardModifiers());
-                Out["key"] = KeyCapture::NameOf(E);
-                if (S[0].keyboardModifiers() & (Qt::ControlModifier | Qt::AltModifier | Qt::ShiftModifier | Qt::MetaModifier))
-                    Out["note"] = Combo + ": " + Command::Str(A, "key") + " is bound as " + Out["key"].get<std::string>();
+                const std::string K = KeyCapture::NameOf(E);
+                Out["key"] = KeyNames::IsModifier(K) ? K : KeyNames::Combine(KeyCapture::ModsOf(S[0].keyboardModifiers()), K);
             }
             if (A.contains("button"))
             {

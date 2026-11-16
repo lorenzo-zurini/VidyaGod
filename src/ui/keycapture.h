@@ -3,6 +3,7 @@
 
 #include <QWidget>
 
+#include <set>
 #include <string>
 
 class QKeyEvent;
@@ -22,6 +23,8 @@ std::string NameOf(const QKeyEvent &E);
 std::string NameOf(Qt::MouseButton B);
 //The neutral name of a turn of the wheel by DeltaY (QWheelEvent::angleDelta().y(): away from the user is up); "" for none.
 std::string NameOfWheel(int DeltaY);
+//The modifiers an event says are held, as KeyNames::Mod bits (KeyNames::Combine spells them).
+unsigned ModsOf(Qt::KeyboardModifiers M);
 //The neutral name of an SDL game-controller button (SDL_GameControllerButton), or of an axis (SDL_GameControllerAxis)
 //pushed to Value: a trigger, or a stick's direction by its sign (SDL's Y grows downward); "" for anything else.
 //A/B/X/Y are positions (the Xbox layout), as SDL reports them.
@@ -61,6 +64,7 @@ private:
     QToolButton *Clear = nullptr;
     QToolButton *Reset = nullptr;
     QTimer *PadPoll = nullptr;     // while capturing: reads the gamepads' new presses
+    std::set<std::string> HeldMods; // modifiers pressed during this capture: one released alone binds by itself
 };
 
 #endif // KEYCAPTURE_H

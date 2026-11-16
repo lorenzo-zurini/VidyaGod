@@ -29,8 +29,53 @@ const std::vector<std::string> &KeyNames::All()
     return Names;
 }
 
+namespace
+{
+const char *const ModNames[] = { "ctrl", "alt", "shift", "meta" };   // the order a combination spells them
+
+//A name a modifier may be held with: a keyboard key or a mouse button, not a modifier and not a pad's.
+bool Combinable(const std::string &Key)
+{
+    static const std::set<std::string> Known(KeyNames::All().begin(), KeyNames::All().end());
+    return Known.count(Key) && Key.rfind("pad ", 0) != 0 && !KeyNames::IsModifier(Key);
+}
+}
+
+bool KeyNames::IsModifier(const std::string &Key)
+{
+    static const std::set<std::string> Mods = { "left shift", "right shift", "left ctrl", "right ctrl",
+                                                "left alt", "right alt", "left meta", "right meta" };
+    return Mods.count(Key) > 0;
+}
+
+std::string KeyNames::Combine(unsigned Mods, const std::string &Key)
+{
+    if (!Combinable(Key)) return Key;
+    std::string Out;
+    for (unsigned I = 0; I < 4; ++I)
+        if (Mods & (1u << I)) Out += std::string(ModNames[I]) + "+";
+    return Out + Key;
+}
+
 bool KeyNames::IsValue(const std::string &Value)
 {
     static const std::set<std::string> Known(All().begin(), All().end());
-    return Value.empty() || Known.count(Value);
+    if (Value.empty() || Known.count(Value)) return true;
+    //A combination: modifiers in their order, each once, then a key that takes them. No name holds a '+'.
+    size_t At = 0;
+    unsigned Next = 0;
+    bool Any = false;
+    for (;;)
+    {
+        const size_t Plus = Value.find('+', At);
+        if (Plus == std::string::npos) break;
+        const std::string M = Value.substr(At, Plus - At);
+        unsigned I = Next;
+        while (I < 4 && M != ModNames[I]) ++I;
+        if (I == 4) return false;                                  // not a modifier, or out of order, or twice
+        Next = I + 1;
+        Any = true;
+        At = Plus + 1;
+    }
+    return Any && Combinable(Value.substr(At));
 }
