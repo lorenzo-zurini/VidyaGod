@@ -480,15 +480,17 @@ VG_COMMANDS
     Command::Register({
         "edits apply", "apply one file edit to a file, as a launch does: a setting, a JSON or XML value, a line, the whole file, a deletion",
         "--config START replaces the line that starts with START (\"Width=\") by START + --value; --json-set POINTER sets "
-        "a JSON value; --xml PATH an XML element or attribute (to --value); --append LINE adds a line once; --overwrite "
-        "TEXT replaces the file; --delete removes it. --base checks the file stays inside that folder (a link leading out is refused).",
+        "a JSON value; --xml PATH an XML element or attribute (to --value); --append LINE adds a line once; --line-flag LINE "
+        "makes LINE there (--value 1) or gone (--value 0); --overwrite TEXT replaces the file; --delete removes it. --base checks the file stays inside that folder (a link leading out is refused).",
         { Pos("file", "the file"), Opt("config", "the line's start (Width=)"), Opt("json-set", "a JSON pointer"), Opt("xml", "an XPath (/Config/Video/@w)"),
-          Opt("value", "(--config, --json-set, --xml) the value"), Opt("append", "a line"),
+          Opt("value", "(--config, --json-set, --xml) the value; (--line-flag) 1 or 0"), Opt("append", "a line"),
+          Opt("line-flag", "a line whose presence is the setting"),
           Opt("overwrite", "the new text"), Flag("delete", "delete it"), Opt("base", "the folder it must stay in") },
         { "edits apply game.ini --config 'Width=' --value 1920", "edits apply settings.json --json-set /video/width --value 1920",
-          "edits apply cfg.xml --xml '/Config/Video/@w' --value 1920" },
-        { "FileEdits::ConfigWrite", "FileEdits::JsonSet", "FileEdits::XmlSet", "FileEdits::XmlEdit", "FileEdits::AppendLine", "FileEdits::FileOverwrite",
-          "FileEdits::DeletePath", "FileEdits::PathEscapesBase", "FileEdits::LinkLeadsOut" }, Needs::Config, false,
+          "edits apply cfg.xml --xml '/Config/Video/@w' --value 1920",
+          "edits apply persistent.cfg --line-flag +EasyDragMilitary --value 1" },
+        { "FileEdits::ConfigWrite", "FileEdits::JsonSet", "FileEdits::XmlSet", "FileEdits::XmlEdit", "FileEdits::AppendLine", "FileEdits::LineFlag", "FileEdits::LineFlagEdit",
+          "FileEdits::FileOverwrite", "FileEdits::DeletePath", "FileEdits::PathEscapesBase", "FileEdits::LinkLeadsOut" }, Needs::Config, false,
         [](Command::Context &, const json &A) {
             const fs::path F = Command::Str(A, "file");
             if (A.contains("base"))
@@ -510,11 +512,27 @@ VG_COMMANDS
                 Ok = FileEdits::XmlSet(K, V, F);
             }
             else if (A.contains("append")) Ok = FileEdits::AppendLine(Command::Str(A, "append"), F);
+            else if (A.contains("line-flag"))
+            {
+                const auto [K, V] = KV("line-flag");
+                std::string Out, Why;
+                if (!FileEdits::LineFlagEdit(K, V, std::string(), Out, Why)) throw Command::BadArgs(Why);
+                Ok = FileEdits::LineFlag(K, V, F);
+            }
             else if (A.contains("overwrite")) Ok = FileEdits::FileOverwrite(Command::Str(A, "overwrite"), F);
             else if (Command::Bool(A, "delete", false)) Ok = FileEdits::DeletePath(F);
-            else throw Command::BadArgs("give --config, --json-set, --xml, --append, --overwrite or --delete");
+            else throw Command::BadArgs("give --config, --json-set, --xml, --append, --line-flag, --overwrite or --delete");
             if (!Ok) throw std::runtime_error("the edit did not apply");
             return json{{"edited", F.string()}};
+        }, {} });
+
+    Command::Register({
+        "edits line-has", "whether a file holds a line (how a LineFlag option reads its value back: 1 there, 0 gone)",
+        "Lines compare with surrounding whitespace trimmed, case kept.",
+        { Pos("file", "the file"), Pos("line", "the line") }, { "edits line-has persistent.cfg +EasyDragMilitary" },
+        { "FileEdits::LineHas" }, Needs::Config, false,
+        [](Command::Context &, const json &A) {
+            return json{{"value", FileEdits::LineHas(Command::Str(A, "line"), Slurp(Command::Str(A, "file"))) ? "1" : "0"}};
         }, {} });
 
     Command::Register({

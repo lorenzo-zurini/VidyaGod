@@ -338,6 +338,25 @@ TEST(if_exists_is_a_text_ops_boolean)
     CHECK(L.size() == 1 && L[0]["TYPE"] == "FileEdit" && L[0].value("IF_EXISTS", false));
 }
 
+// A LineFlag names its line (one, non-blank) and has a VALUE that is 1, 0 or an option; its address is keyed like a
+// ConfigWrite's, so KEEP can take that one line back. Teeth: drop the KEY check (blank and two-line keys pass), the
+// VALUE check ("on" passes), the missing-VALUE check, or the keyed address.
+TEST(a_line_flag_names_one_line_and_a_one_or_zero)
+{
+    const auto Ed = [](const ordered_json &Op) {
+        return ordered_json{ {"EDIT", ordered_json::array({ Op })}, {"TARGET", "FILES/%Documents%/startup/persistent.cfg"} }; };
+    const ordered_json Ok = { {"MODE", "LineFlag"}, {"KEY", "+EasyDragMilitary"}, {"VALUE", "%aom_easydrag%"}, {"IF_EXISTS", true} };
+    CHECK(!Refused(Ed(Ok)));
+    CHECK(!Refused(Ed({ {"MODE", "LineFlag"}, {"KEY", "+X"}, {"VALUE", "0"} })));
+    CHECK(Refused(Ed({ {"MODE", "LineFlag"}, {"KEY", " "}, {"VALUE", "1"} })));
+    CHECK(Refused(Ed({ {"MODE", "LineFlag"}, {"VALUE", "1"} })));
+    CHECK(Refused(Ed({ {"MODE", "LineFlag"}, {"KEY", "+X\n+Y"}, {"VALUE", "1"} })));
+    CHECK(Refused(Ed({ {"MODE", "LineFlag"}, {"KEY", "+X"}, {"VALUE", "on"} })));
+    CHECK(Refused(Ed({ {"MODE", "LineFlag"}, {"KEY", "+X"} })));
+    CHECK_EQ(NodeLower::EditAddress(Ok, "%Documents%/startup/persistent.cfg"),
+             std::string("FILES/%Documents%/startup/persistent.cfg#+EasyDragMilitary"));
+}
+
 // What a Delete may not reach: the user's state. A kept file, anything inside a kept folder (taken back or not: the
 // folder is served live, so the removal would be stored with the saves), a folder holding a kept address, a file a
 // kept pattern matches. Everything else is the package's. Teeth: drop the "folder holding it" clause (deleting

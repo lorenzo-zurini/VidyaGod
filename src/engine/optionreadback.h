@@ -17,7 +17,7 @@ struct ContainerParams;
 //
 // An option reads back when it is written by a keyed edit (ConfigWrite, JsonSet, XmlSet) whose VALUE is the option
 // once, with literal text around it, in a format that can be undone (none, bool, winpath, or map:TABLE with distinct,
-// literal entries and no WHEN); a value read must also be one the option can hold (an enum's choice, a key name, a
+// literal entries and no WHEN), or by a LineFlag whose VALUE is the option alone (its line there reads 1, gone 0); a value read must also be one the option can hold (an enum's choice, a key name, a
 // number within MIN/MAX, text matching PATTERN). A hidden variable (no UI), a secret, an EVAL and anything else stay
 // one-way. A per-launch override is not touched: it wins as before.
 namespace OptionReadBack

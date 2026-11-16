@@ -184,6 +184,12 @@ bool AtSite(const OptionReadBack::Site &S, const std::string &Text, std::optiona
         }
         catch (const json::exception &) { return false; }
     }
+    if (S.Mode == "LineFlag")
+    {
+        if (Text.find_first_not_of(" \t\r\n") == std::string::npos) return false;   // empty: a save cut short, not a removal
+        Out = std::vector<std::string>{ FileEdits::LineHas(S.Key, Text) ? "1" : "0" };
+        return true;
+    }
     if (S.Mode == "XmlSet")
     {
         if (Text.find_first_not_of(" \t\r\n") == std::string::npos) return false;   // empty: a save cut short, not a removal
@@ -206,10 +212,12 @@ std::vector<OptionReadBack::Site> OptionReadBack::Sites(const ContainerParams &C
         if (!Sub.is_object() || Sub.value("TYPE", std::string()) != "FileEdit" || !Sub.value("OVERRIDE", false)) continue;
         Site S;
         S.Mode = Sub.value("MODE", std::string());
-        if (S.Mode != "ConfigWrite" && S.Mode != "JsonSet" && S.Mode != "XmlSet") continue;
+        if (S.Mode != "ConfigWrite" && S.Mode != "JsonSet" && S.Mode != "XmlSet" && S.Mode != "LineFlag") continue;
         //The VALUE as the package wrote it (the resolve substitutes VALUE; it keeps the original as VALUE_TEMPLATE).
         const std::string Template = Sub.value("VALUE_TEMPLATE", Sub.value("VALUE", std::string()));
         if (!OneToken(Template, S.Option, S.Format, S.Prefix, S.Suffix)) continue;
+        //A LineFlag's VALUE is the option itself, plain: its file holds no text of it, only the line's presence (1/0).
+        if (S.Mode == "LineFlag" && !(S.Format.empty() && S.Prefix.empty() && S.Suffix.empty())) continue;
         const auto D = CP.VarDecls.find(S.Option);
         if (D == CP.VarDecls.end() || !D->second.is_object()) continue;
         const json &Decl = D->second;

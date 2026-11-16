@@ -183,3 +183,29 @@ TEST(readback_notes_only_what_was_written)
     CHECK_EQ(C["LAST_IN_FILE"]["res"].get<std::string>(), std::string("1280"));
     CHECK(!OptionReadBack::Commit(C, W));                // nothing new
 }
+
+// A LineFlag option reads back by its line's presence: there is 1, gone is 0 (the game removes it when unticked), an
+// empty file nothing (a save cut short). Its VALUE must be the option alone: with a format ("%drag2:winpath%") the
+// line's 1/0 is no rendering of the option, so it is no site. Teeth: read absence as nothing (the unticked 0 is lost);
+// read an empty file as 0; take the formatted op as a site (winpath undoes "1" to "1", and "drag2" reads it).
+TEST(readback_reads_a_line_flag_by_its_presence)
+{
+    Fixture F;
+    F.CP.VarDecls["drag"]  = json{ {"TYPE", "CustomVar"}, {"DEFAULT", "0"}, {"UI", {{"CONTROL", "bool"}}} };
+    F.CP.VarDecls["drag2"] = F.CP.VarDecls["drag"];
+    F.CP.SubComponentsArray = json::array({ Fixture::Op("LineFlag", "game/settings.ini", "+EasyDragMilitary", "%drag%"),
+                                            Fixture::Op("LineFlag", "game/settings.ini", "+EasyDragMilitary", "%drag2:winpath%") });
+    F.Put("settings.ini", "+showFPS\r\n +EasyDragMilitary\r\n");
+    auto R = OptionReadBack::Read(F.CP);
+    CHECK(At(R, "drag") == std::optional<std::string>("1"));
+    CHECK(!R.count("drag2"));
+    F.Put("settings.ini", "+showFPS\r\n+EasyDragMilitaryX\r\n");
+    CHECK(At(OptionReadBack::Read(F.CP), "drag") == std::optional<std::string>("0"));
+    F.Put("settings.ini", " \r\n");
+    CHECK(!OptionReadBack::Read(F.CP).count("drag"));
+    F.CP.CustomVariables["drag"] = "1";
+    fs::create_directories(F.CP.RuntimePath / "game");
+    std::ofstream(F.CP.RuntimePath / "game" / "settings.ini") << "+EasyDragMilitary\n";
+    const auto W = OptionReadBack::Written(F.CP);
+    CHECK(W.count("drag") && W.at("drag") == "1");
+}

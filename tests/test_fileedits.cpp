@@ -522,3 +522,62 @@ TEST(xmlset_mode_applies_through_the_edit_pass)
     CHECK_EQ(Get("/Attributes/Attr[@name='g_language']/@value", ReadAll(Base / "profiles" / "attributes.xml")), std::string("german"));
     std::filesystem::remove_all(Root);
 }
+
+// LineFlag: a line whose presence is the setting (AoM The Titans' "+EasyDragMilitary"). 1 adds it once, in the file's
+// own line ending and never fused onto an unterminated last line; 0 removes every copy and nothing else. Lines are
+// equal after trimming, case kept — never a prefix match. Teeth: prefix matching (removes "+EasyDragMilitaryX"); no
+// trim (the indented copy stays); LF into a CRLF file; no separator; appending twice; accepting "true".
+TEST(lineflag_makes_its_line_there_or_gone)
+{
+    const std::string K = "+EasyDragMilitary";
+    std::string Out, Why;
+    CHECK(FileEdits::LineFlagEdit(K, "0", "a=1\r\n+EasyDragMilitary\r\n+EasyDragMilitaryX\r\n  +EasyDragMilitary \r\n+easydragmilitary\r\nb=2", Out, Why));
+    CHECK_EQ(Out, std::string("a=1\r\n+EasyDragMilitaryX\r\n+easydragmilitary\r\nb=2"));
+    CHECK(FileEdits::LineFlagEdit(K, "0", "a=1\n+EasyDragMilitary", Out, Why));
+    CHECK_EQ(Out, std::string("a=1\n"));
+    CHECK(FileEdits::LineFlagEdit(K, "1", "a=1\r\nb=2\r\n", Out, Why));
+    CHECK_EQ(Out, std::string("a=1\r\nb=2\r\n+EasyDragMilitary\r\n"));
+    CHECK(FileEdits::LineFlagEdit(K, "1", "a=1", Out, Why));
+    CHECK_EQ(Out, std::string("a=1\n+EasyDragMilitary\n"));
+    CHECK(FileEdits::LineFlagEdit(K, "1", "", Out, Why));
+    CHECK_EQ(Out, std::string("+EasyDragMilitary\n"));
+    CHECK(FileEdits::LineFlagEdit(K, "1", "a=1\n\t+EasyDragMilitary\n", Out, Why));
+    CHECK_EQ(Out, std::string("a=1\n\t+EasyDragMilitary\n"));                     // there already, as the game wrote it
+    CHECK(FileEdits::LineHas(K, "x\r\n +EasyDragMilitary\r\n") && !FileEdits::LineHas(K, "+EasyDragMilitaryX\n+easydragmilitary"));
+    for (const char *V : {"true", "", "2", " 1"})
+    {
+        Why.clear();
+        CHECK(!FileEdits::LineFlagEdit(K, V, "a\n", Out, Why) && !Why.empty());
+    }
+    CHECK(!FileEdits::LineFlagEdit("  ", "1", "a\n", Out, Why));
+    CHECK(!FileEdits::LineFlagEdit("a\nb", "1", "a\n", Out, Why));
+}
+
+// Through the edit pass: IF_EXISTS skips a file the game has not made (no stub), 0 on a missing file writes nothing, 1
+// creates it, and a refused VALUE fails the pass with the file untouched. Teeth: create the file for a 0 (the stub
+// appears); write before refusing (the file changes).
+TEST(lineflag_mode_applies_through_the_edit_pass)
+{
+    const std::filesystem::path Base = TmpDir("lineflag");
+    ContainerParams CP(Base / "PKG");
+    const auto Op = [](const char *File, const char *Value, bool IfExists) {
+        nlohmann::ordered_json O = {{"TYPE","FileEdit"},{"FILE",File},{"MODE","LineFlag"},{"KEY","+EasyDragMilitary"},{"VALUE",Value}};
+        if (IfExists) O["IF_EXISTS"] = true;
+        return O; };
+    CP.SubComponentsArray = nlohmann::ordered_json::array({ Op("startup/persistent.cfg", "1", true), Op("zero.cfg", "0", false) });
+    CHECK(FileEdits::ProcessFileEdits(CP, false, Base));
+    CHECK(!std::filesystem::exists(Base / "startup" / "persistent.cfg"));
+    CHECK(!std::filesystem::exists(Base / "zero.cfg"));
+    std::filesystem::create_directories(Base / "startup");
+    Write(Base / "startup" / "persistent.cfg", "+showFPS\r\n");
+    CHECK(FileEdits::ProcessFileEdits(CP, false, Base));
+    CHECK_EQ(ReadAll(Base / "startup" / "persistent.cfg"), std::string("+showFPS\r\n+EasyDragMilitary\r\n"));
+    CP.SubComponentsArray = nlohmann::ordered_json::array({ Op("startup/persistent.cfg", "on", false), Op("new.cfg", "1", false) });
+    CHECK(!FileEdits::ProcessFileEdits(CP, false, Base));
+    CHECK_EQ(ReadAll(Base / "startup" / "persistent.cfg"), std::string("+showFPS\r\n+EasyDragMilitary\r\n"));
+    CHECK_EQ(ReadAll(Base / "new.cfg"), std::string("+EasyDragMilitary\n"));
+    CP.SubComponentsArray = nlohmann::ordered_json::array({ Op("startup/persistent.cfg", "0", true) });
+    CHECK(FileEdits::ProcessFileEdits(CP, false, Base));
+    CHECK_EQ(ReadAll(Base / "startup" / "persistent.cfg"), std::string("+showFPS\r\n"));
+    std::filesystem::remove_all(Base);
+}

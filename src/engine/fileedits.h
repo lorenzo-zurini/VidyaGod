@@ -69,6 +69,14 @@ std::optional<std::string> XmlGet(const std::string &Key, const std::string &In,
 //load-order primitive: each enabled node appends in recipe (topological) order, so the resulting config's order
 //(openmw.cfg `content=`, a mod manifest, …) falls out of the node graph automatically.
 [[nodiscard]] bool AppendLine(const std::string &Value, const std::filesystem::path &FilePath);
+//LineFlag: a line whose presence IS the setting (AoM The Titans' "+EasyDragMilitary" in persistent.cfg). VALUE "1"
+//makes a line equal to Key present (appended, in the file's own line ending, when there is none), "0" removes every
+//line equal to it; anything else is refused (Why set). Lines compare with surrounding whitespace and CR trimmed, case
+//kept. Out is In when nothing changes. LineHas is the read-back: whether a line equal to Key is there.
+[[nodiscard]] bool LineFlagEdit(const std::string &Key, const std::string &Value, const std::string &In, std::string &Out, std::string &Why);
+bool LineHas(const std::string &Key, const std::string &Text);
+//The file form. A missing file with "0" holds no such line, so nothing is written (no stub); "1" creates it.
+[[nodiscard]] bool LineFlag(const std::string &Key, const std::string &Value, const std::filesystem::path &FilePath);
 //The kept place (a kept folder's or kept file's runtime path) that removing FilePath — a resolved path under the
 //runtime — would reach: the place itself, something inside it, a folder holding it, or a file a kept pattern matches;
 //"" when none. Judged on the resolved path, lexically and through the links that exist in the runtime, so "a/../Saves",

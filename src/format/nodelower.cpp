@@ -267,6 +267,17 @@ std::string CheckLayer(const ordered_json &L)
                 if (O["IF_EXISTS"] == true && IsBinaryMode(Str(O["MODE"])))
                     return "IF_EXISTS goes on a text op (a binary op patches a file the package provides)";
             }
+            //LineFlag: the line KEY is there when VALUE is 1 and gone when it is 0 — its presence is the setting.
+            if (O["MODE"] == "LineFlag")
+            {
+                const std::string K = O.contains("KEY") ? Str(O["KEY"]) : std::string();
+                if (K.find_first_not_of(" \t\r") == std::string::npos || K.find('\n') != std::string::npos)
+                    return "a LineFlag op needs a KEY: the one line whose presence is the setting";
+                //No VALUE reads as "", which is neither: one rule refuses a missing and a wrong literal VALUE alike.
+                if (const std::string V = O.contains("VALUE") ? Str(O["VALUE"]) : std::string();
+                    V.find('%') == std::string::npos && V != "1" && V != "0")
+                    return "a LineFlag VALUE is 1 (the line is there) or 0 (it is not), not '" + V + "'";
+            }
             //Delete removes the TARGET (a file or a folder) and nothing else: a value or a site would be read by nothing.
             if (O["MODE"] == "Delete")
                 for (const auto &[K, V] : O.items())
@@ -633,7 +644,7 @@ std::string KeptUnder(const nlohmann::ordered_json &Keep, const std::string &Add
 std::string EditAddress(const nlohmann::ordered_json &Op, const std::string &Target)
 {
     const std::string Mode = Str(Op.value("MODE", ordered_json()));
-    return "FILES/" + Target + (Mode == "ConfigWrite" || Mode == "JsonSet" || Mode == "XmlSet" ? "#" + Str(Op.value("KEY", ordered_json())) : std::string());
+    return "FILES/" + Target + (Mode == "ConfigWrite" || Mode == "JsonSet" || Mode == "XmlSet" || Mode == "LineFlag" ? "#" + Str(Op.value("KEY", ordered_json())) : std::string());
 }
 
 namespace {

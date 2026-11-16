@@ -222,6 +222,8 @@ bool FileEdits::ProcessFileEdits(struct ContainerParams &ContainerParams, bool O
             EditOk = FileEdits::FileOverwrite(Value, FilePath);
         else if (Mode == "AppendLine")
             EditOk = FileEdits::AppendLine(Value, FilePath);
+        else if (Mode == "LineFlag")
+            EditOk = FileEdits::LineFlag(Key, Value, FilePath);
         else if (Mode == "Delete")
             EditOk = FileEdits::DeletePath(FilePath);
         else
@@ -1096,6 +1098,80 @@ bool FileEdits::DeletePath(const std::filesystem::path &FilePath)
         return false;
     }
     LogOut("FileEdits::DeletePath", "Deleted " + FilePath.string() + " (" + std::to_string(N) + " entr" + (N == 1 ? "y" : "ies") + ")");
+    return true;
+}
+
+namespace {
+std::string TrimLine(const std::string &S)
+{
+    const size_t B = S.find_first_not_of(" \t\r\f\v");
+    if (B == std::string::npos) return std::string();
+    return S.substr(B, S.find_last_not_of(" \t\r\f\v") - B + 1);
+}
+}
+
+bool FileEdits::LineHas(const std::string &Key, const std::string &Text)
+{
+    const std::string K = TrimLine(Key);
+    for (size_t P = 0; P < Text.size();)
+    {
+        const size_t E = std::min(Text.find('\n', P), Text.size());
+        if (TrimLine(Text.substr(P, E - P)) == K) return true;
+        P = E + 1;
+    }
+    return false;
+}
+
+bool FileEdits::LineFlagEdit(const std::string &Key, const std::string &Value, const std::string &In, std::string &Out, std::string &Why)
+{
+    const std::string K = TrimLine(Key);
+    if (K.empty() || K.find('\n') != std::string::npos) { Why = "a LineFlag KEY is one non-empty line"; return false; }
+    if (Value != "1" && Value != "0")
+    {
+        Why = "a LineFlag VALUE is 1 (the line is there) or 0 (it is not), not '" + Value + "'";
+        return false;
+    }
+    if (Value == "1")
+    {
+        Out = In;
+        if (LineHas(K, In)) return true;
+        const std::string NL = In.find("\r\n") != std::string::npos ? "\r\n" : "\n";   // the file's own line ending
+        if (!Out.empty() && Out.back() != '\n') Out += NL;                                 // never fused onto the last line
+        Out += K + NL;
+        return true;
+    }
+    Out.clear();
+    for (size_t P = 0; P < In.size();)
+    {
+        const size_t E = In.find('\n', P);
+        const size_t End = E == std::string::npos ? In.size() : E + 1;                     // the line with its ending
+        if (TrimLine(In.substr(P, (E == std::string::npos ? In.size() : E) - P)) != K) Out.append(In, P, End - P);
+        P = End;
+    }
+    return true;
+}
+
+bool FileEdits::LineFlag(const std::string &Key, const std::string &Value, const std::filesystem::path &FilePath)
+{
+    std::error_code Ec;
+    const bool Exists = std::filesystem::exists(FilePath, Ec);
+    std::string In, Out, Why;
+    if (Exists)
+    {
+        std::ifstream F(FilePath, std::ios::binary);
+        if (!F) { LogErr("FileEdits::LineFlag", "Could not open file for reading: " + FilePath.string()); return false; }
+        In.assign(std::istreambuf_iterator<char>(F), std::istreambuf_iterator<char>());
+    }
+    if (!FileEdits::LineFlagEdit(Key, Value, In, Out, Why)) { LogErr("FileEdits::LineFlag", Why + " (" + FilePath.string() + ")"); return false; }
+    if (Out == In && (Exists || Value == "0"))
+    {
+        LogOut("FileEdits::LineFlag", "'" + Key + "' already " + (Value == "1" ? "present in " : "absent from ") + FilePath.string());
+        return true;
+    }
+    std::filesystem::create_directories(FilePath.parent_path(), Ec);
+    std::ofstream F(FilePath, std::ios::binary | std::ios::trunc);
+    if (!F || !(F << Out) || !F.flush()) { LogErr("FileEdits::LineFlag", "Could not write " + FilePath.string()); return false; }
+    LogOut("FileEdits::LineFlag", "'" + Key + "' " + (Value == "1" ? "added to " : "removed from ") + FilePath.string());
     return true;
 }
 

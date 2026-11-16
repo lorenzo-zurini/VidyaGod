@@ -512,7 +512,7 @@ namespace {
 const std::vector<std::pair<const char *, const char *>> DllOpts    = {{"n,b","native, then builtin"},{"b,n","builtin, then native"},
                                                                        {"n","native only"},{"b","builtin only"},{"","disabled"}};
 const std::vector<std::pair<const char *, const char *>> ModeOpts   = {{"ConfigWrite","key = value"},{"Overwrite","whole file"},
-                                                                       {"AppendLine","append a line"},{"JsonSet","JSON: set a key"},{"XmlSet","XML: set a value"},
+                                                                       {"AppendLine","append a line"},{"LineFlag","a line there or not (1/0)"},{"JsonSet","JSON: set a key"},{"XmlSet","XML: set a value"},
                                                                        {"Delete","remove the file or folder"},
                                                                        {"Replace","bytes: replace"},{"ReplaceAll","bytes: replace every match"},
                                                                        {"Poke","bytes: poke"},{"Or","bytes: set bits"},{"Cave","bytes: cave"}};
@@ -568,9 +568,9 @@ std::vector<Field> MakeFields(const std::string &Type)
             {"EDIT",   "Ops",  FieldKind::ObjArray, "", {}, {
                 {"MODE",    "Mode",    FieldKind::Enum, "", ModeOpts, {}},
                 {"SECTION", "Section", FieldKind::Text, "(not read by any mode)", {}, {}, false, "-"},
-                {"KEY",     "Key",     FieldKind::Text, "ConfigWrite: the line's start (Resolution=) / JsonSet: /json/pointer / XmlSet: /root/el[@k='v']/@attr", {}, {}, false, "ConfigWrite JsonSet XmlSet"},
-                {"VALUE",   "Value",   FieldKind::Text, "text value / JsonSet: JSON (else a string) / Poke: the scalar / Or: the bits", {}, {}, false,
-                 "ConfigWrite Overwrite AppendLine JsonSet XmlSet Poke Or"},
+                {"KEY",     "Key",     FieldKind::Text, "ConfigWrite: the line's start (Resolution=) / JsonSet: /json/pointer / XmlSet: /root/el[@k='v']/@attr / LineFlag: the whole line", {}, {}, false, "ConfigWrite JsonSet XmlSet LineFlag"},
+                {"VALUE",   "Value",   FieldKind::Text, "text value / JsonSet: JSON (else a string) / Poke: the scalar / Or: the bits / LineFlag: 1 or 0", {}, {}, false,
+                 "ConfigWrite Overwrite AppendLine LineFlag JsonSet XmlSet Poke Or"},
                 {"OFFSET",  "Offset",  FieldKind::Text, "0x... (VA or file offset) - or give Anchor", {}, {}, false, "Replace Poke Or Cave"},
                 {"ANCHOR",  "Anchor",  FieldKind::Text, "hex signature, ?? = wildcard - instead of Offset", {}, {}, false, "Replace Poke Or Cave"},
                 {"EXPECT",  "Expect",  FieldKind::Text, "the original bytes (the guard; for ReplaceAll, the bytes to find)", {}, {}, false, "Replace ReplaceAll Poke Cave"},
@@ -578,7 +578,7 @@ std::vector<Field> MakeFields(const std::string &Type)
                 {"PAYLOAD", "Payload", FieldKind::Text, "the cave's code (hex)", {}, {}, false, "Cave"},
                 {"CAVE",    "Cave at", FieldKind::Text, "'auto' or a fixed VA", {}, {}, false, "Cave"},
                 {"IF_EXISTS", "Only if it exists", FieldKind::Check, "skip the op while the file is absent - never create it", {}, {}, false,
-                 "ConfigWrite Overwrite AppendLine JsonSet XmlSet"},
+                 "ConfigWrite Overwrite AppendLine LineFlag JsonSet XmlSet"},
                 {"COMMENT", "Comment", FieldKind::Text, "what this op does", {}, {}},
                 {"WHEN",    "When",    FieldKind::Text, "condition - the op is inert when false", {}, {}},
             }},
@@ -916,6 +916,7 @@ std::string EntrySummary(const json &E)
         return (Sec.empty() ? "" : "[" + Sec + "] ") + StrField(E, "KEY") + " = " + StrField(E, "VALUE");
     }
     if (Mode == "JsonSet" || Mode == "XmlSet") return StrField(E, "KEY") + " = " + StrField(E, "VALUE");
+    if (Mode == "LineFlag") return StrField(E, "KEY") + " there if " + StrField(E, "VALUE");
     auto Short = [](const std::string &H) { return H.size() > 12 ? H.substr(0, 10) + ".." : H; };
     if (Mode == "Replace") return Site + " " + Short(StrField(E, "EXPECT")) + " -> " + Short(StrField(E, "REPLACE"));
     if (Mode == "ReplaceAll") return "every " + Short(StrField(E, "EXPECT")) + " -> " + Short(StrField(E, "REPLACE"));
