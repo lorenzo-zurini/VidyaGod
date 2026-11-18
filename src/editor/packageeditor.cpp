@@ -620,10 +620,10 @@ void PackageEditor::seedAndShare()
     const bool OwnLibrary = Cfg && PackageCatalog::IsPackageSourcePath(*Cfg, Pkg);
     const bool CanPublish = isSignalConnected(QMetaMethod::fromSignal(&PackageEditor::publishToLibraryRequested));
     if (OwnLibrary && CanPublish &&
-        QMessageBox::question(this, "Seed & share", Summary + "\n\nPublish your library now, so friends see the update?",
+        QMessageBox::question(this, "Seed & share", Summary + "\n\nPublish this package now, so friends see the update?",
                               QMessageBox::Yes | QMessageBox::No, QMessageBox::Yes) == QMessageBox::Yes)
     {
-        emit publishToLibraryRequested();
+        emit publishToLibraryRequested(QString::fromStdString(Pkg.string()));
         status("Publishing in the background - the Sharing tab shows the result", 8000);
     }
     else QMessageBox::information(this, "Seed & share", Summary);

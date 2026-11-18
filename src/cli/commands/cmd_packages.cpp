@@ -316,21 +316,34 @@ VG_COMMANDS
         }, {} });
 
     Command::Register({
-        "packages publish", "publish one package: seed its content, re-mint, optionally export it",
+        "packages publish", "publish one package: seed its content, re-mint, record its share row, optionally export it",
         "Share a package of yours: add every content file to IPFS (recording its SOURCE and SIZE), save its nodes "
-        "(re-minted: recording a SOURCE changes a node's bytes and so its CID), and with --export write a copy of its "
-        "node files alone there.", { Pos("package", "a folder path, its name, its UID, or part of its title"), Opt("export", "a folder for the node-files-only copy") },
+        "(re-minted: recording a SOURCE changes a node's bytes and so its CID), then publish it into the share sheet: "
+        "its nodes and those of the packages it contains are stored, its folder and pin folder made, and its row "
+        "merged into Libraries (every other package's row untouched; a contained package's row is redone only when it "
+        "is stale). With the app up, that last step runs in the app (follow it: events wait --signal libraryPublished). "
+        "With --export, a copy of its node files alone is written there.", { Pos("package", "a folder path, its name, its UID, or part of its title"), Opt("export", "a folder for the node-files-only copy") },
         { "packages publish 749", "packages publish 749 --export /tmp/aoe2-nodes" },
-        { "PackageCatalog::PublishPackage", "PackageCatalog::SeedNodeContent", "PackageCatalog::StampNodeCids" }, Needs::Config, true,
+        { "PackageCatalog::PublishPackage", "PackageCatalog::SeedNodeContent", "PackageCatalog::StampNodeCids",
+          "PackageCatalog::PublishPackages", "AppModel::publishPackage" }, Needs::Config, true,
         [](Command::Context &C, const json &A) {
             const auto D = PackageDir(C, Command::Str(A, "package"), false);
             std::string Err;
             if (!PackageCatalog::PublishPackage(D.string(), Command::Str(A, "export", ""), &Err)) throw std::runtime_error(Err);
-            return json{{"published", D.string()}};
+            if (C.Model)
+            {
+                C.Model->publishPackage(QString::fromStdString(D.string()));
+                return json{{"published", D.string()}, {"share", "started"}, {"follow", "VidyaGod events wait --signal libraryPublished"}};
+            }
+            std::string Gaps;
+            const auto Out = PackageCatalog::PublishPackages(*C.Config, { D }, &Err, &Gaps);
+            if (Out.empty()) throw std::runtime_error(Err);
+            Save(C);
+            return json{{"published", D.string()}, {"packages", Out.size()}, {"gaps", Gaps}};
         }, {} });
 
     Command::Register({
-        "packages publish-all", "publish the whole library (Verify & Publish)",
+        "packages publish-all", "republish the whole library (Verify & Publish)",
         "Freeze every node of the library, store it, make one folder per package (and its pin folder), and record the "
         "share sheet — the Network tab's Verify & Publish. What did not publish whole (nodes that did not freeze, "
         "content not held here, content naming no SOURCE) is listed as gaps. With the app up, it runs in the app "

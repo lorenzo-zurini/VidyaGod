@@ -43,7 +43,7 @@ public:
 
 signals:
     void packageSaved(const QString & PackagePath);
-    void publishToLibraryRequested();
+    void publishToLibraryRequested(const QString & packageDir);   // this package (and what it contains), not the library
 
 protected:
     void closeEvent(QCloseEvent * E) override;

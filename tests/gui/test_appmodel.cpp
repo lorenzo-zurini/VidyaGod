@@ -13,6 +13,7 @@
 #include <filesystem>
 #include "apppaths.h"
 #include "nodefixture.h"
+#include "ipfswrapper.h"
 
 #include <fstream>
 
@@ -22,6 +23,45 @@ class AppModelTest : public QObject
 {
     Q_OBJECT
 private slots:
+    // The package editor's Publish publishes its package alone; one asked for while a publish runs goes in the next
+    // pass (never lost, never two at once), and each pass merges only its own package's row. Republish-all still
+    // replaces Libraries whole (a deleted package's row goes). Teeth: lose what was asked meanwhile (one signal, B
+    // missing); run every pass over the whole library (the first pass reports 2 packages); merge on republish-all
+    // (the gone row stays).
+    void a_package_publish_merges_and_one_asked_meanwhile_runs_after()
+    {
+        QTemporaryDir d; QVERIFY(d.isValid());
+        QDir appDir(d.path());
+        std::string Err;
+        QVERIFY2(IpfsWrapper::StartNode((d.path() + "/ipfs").toStdString(), &Err), Err.c_str());
+        const std::string Lib = d.path().toStdString() + "/LIB";
+        for (const char *P : {"[1] A", "[2] B"})
+        {
+            std::filesystem::create_directories(Lib + "/VidyaGod/" + P);
+            NodeFixture::WriteNodes(Lib + "/VidyaGod/" + P + "/n.json",
+                                    NodeFixture::Chain(std::string("h") + P[1], {NodeFixture::Exec("win32", std::string(P) + ".exe")}));
+        }
+        json cfg = json{{"Settings", {{"Paths", {{"LibraryRoot", Lib}}}}}};
+        {
+            AppModel m(&cfg, &appDir);
+            QSignalSpy Done(&m, &AppModel::libraryPublished), Failed(&m, &AppModel::libraryPublishFailed);
+            m.publishPackage(QString::fromStdString(Lib + "/VidyaGod/[1] A"));
+            QVERIFY(m.publishing());
+            m.publishPackage(QString::fromStdString(Lib + "/VidyaGod/[2] B"));   // asked meanwhile
+            QTRY_COMPARE_WITH_TIMEOUT(Done.count() + Failed.count(), 2, 120000);
+            QCOMPARE(Failed.count(), 0);
+            QVERIFY(!m.publishing());
+            QCOMPARE(Done.at(0).at(1).toString(), QString("1 package(s)"));
+            QCOMPARE((int)cfg["Libraries"]["VidyaGod"].size(), 2);
+            cfg["Libraries"]["VidyaGod"].push_back(json{{"pkg", "[9] Gone"}, {"cid", "bafygone"}});
+            m.publishLibraries();
+            QTRY_COMPARE_WITH_TIMEOUT(Done.count() + Failed.count(), 3, 120000);
+            QCOMPARE(Failed.count(), 0);
+            QCOMPARE((int)cfg["Libraries"]["VidyaGod"].size(), 2);
+        }
+        IpfsWrapper::StopNode();
+    }
+
     void set_card_pixel_width_persists_and_signals()
     {
         QTemporaryDir d; QVERIFY(d.isValid());

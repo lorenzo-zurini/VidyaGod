@@ -561,7 +561,19 @@ void AppModel::publishLibraries()
     // seedable), then record the shareable list of launchable root CIDs. No IPNS — the list is off-IPFS VidyaGod data.
     // One at a time: two would write Libraries over each other. Asked again meanwhile, it runs once more
     // after, with publishing() true throughout (nothing offers a publish in between).
-    if (Publishing) { PublishAgain = true; return; }
+    PendingAll = true;
+    kickPublish();
+}
+
+void AppModel::publishPackage(const QString & packageDir)
+{
+    PendingPkgs.insert(packageDir.toStdString());
+    kickPublish();
+}
+
+void AppModel::kickPublish()
+{
+    if (Publishing) return;   // the pass in flight starts another for what was asked meanwhile
     Publishing = true;
     runPublish();
 }
@@ -572,11 +584,18 @@ void AppModel::runPublish()
     auto Cids = std::make_shared<std::vector<std::string>>();
     auto Err  = std::make_shared<std::string>();
     auto Gaps = std::make_shared<std::string>();
+    //What this pass publishes: everything when asked (it covers any package asked for too), else the packages asked for.
+    const bool All = PendingAll;
+    const std::vector<std::filesystem::path> Dirs(PendingPkgs.begin(), PendingPkgs.end());
+    PendingAll = false;
+    PendingPkgs.clear();
     AsyncWork::Run(this,
-        [Cfg, Cids, Err, Gaps]{ *Cids = PackageCatalog::PublishLibrary(*Cfg, Err.get(), Gaps.get()); },
+        [Cfg, Cids, Err, Gaps, All, Dirs]{
+            *Cids = All ? PackageCatalog::PublishLibrary(*Cfg, Err.get(), Gaps.get())
+                        : PackageCatalog::PublishPackages(*Cfg, Dirs, Err.get(), Gaps.get()); },
         [this, Cfg, Cids, Err, Gaps]{
-            Publishing = PublishAgain;
-            if (PublishAgain) { PublishAgain = false; QMetaObject::invokeMethod(this, &AppModel::runPublish, Qt::QueuedConnection); }
+            Publishing = PendingAll || !PendingPkgs.empty();
+            if (Publishing) QMetaObject::invokeMethod(this, &AppModel::runPublish, Qt::QueuedConnection);
             if (Cids->empty()) { emit libraryPublishFailed(QString::fromStdString(*Err)); return; }
             (*Config)["Libraries"] = (*Cfg)["Libraries"];   // the per-library grouping (drives Share ▾)
             Config->erase("PublishedList");

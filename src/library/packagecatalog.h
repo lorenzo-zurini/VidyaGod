@@ -294,6 +294,11 @@ nlohmann::ordered_json SharedWith(const nlohmann::ordered_json &Libraries, const
 
 std::vector<std::string> PublishLibrary(nlohmann::ordered_json &Config, std::string *Error = nullptr,
                                         std::string *Gaps = nullptr);
+//PublishLibrary for some packages only (their folders under the library root): their nodes and those of every package
+//they contain are minted; the named packages are rebuilt, a contained one only when its record is stale; their rows are
+//merged into Config["Libraries"] in place and every other row is left untouched. Returns their package folders.
+std::vector<std::string> PublishPackages(nlohmann::ordered_json &Config, const std::vector<std::filesystem::path> &PackageDirs,
+                                         std::string *Error = nullptr, std::string *Gaps = nullptr);
 
 // Receiver: turn a friend's share snapshot into plain rolling-queue fetch targets whose destinations are the FINAL
 // working-tree paths — LIBRARY/<nick> - <lib>/[uid] <title>/<node>.json — straight from the snapshot's routing

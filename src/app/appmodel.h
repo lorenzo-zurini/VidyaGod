@@ -92,6 +92,9 @@ public:
     // Publish side (Sharing tab): freeze your library into content-addressed blocks and seed them, and record the
     // shareable launchable-CID list. Runs off-thread; emits libraryPublished / libraryPublishFailed.
     void publishLibraries();
+    // One package (its folder under the library root): it and the packages it contains are minted, and its share row is
+    // merged into Libraries in place — the package editor's Publish. Queued behind a publish in flight, like the above.
+    void publishPackage(const QString & packageDir);
     bool publishing() const { return Publishing; }    // a publish is in flight (one at a time: a second runs after it)
     // Consumer side (gigagraph sharing): add a game by a launchable CID (a friend's / pasted). Fetches its whole
     // closure into the pretty on-disk checkout (NodeStore::HydratePackage) off-thread, then rebuilds the catalog so
@@ -156,7 +159,9 @@ private:
     std::set<std::string>    KnownUnhealable;             // orphaned paths a heal couldn't fix (content truly gone) → don't re-loop
     void runPublish();                                              // publishLibraries' one pass
     bool                           Publishing = false;              // publishLibraries in flight
-    bool                           PublishAgain = false;            // asked again while it ran → once more after
+    bool                           PendingAll = false;              // a whole-library publish is asked for
+    std::set<std::string>          PendingPkgs;                     // packages asked for (one publish takes them all)
+    void kickPublish();                                             // starts a pass unless one is in flight
 };
 
 #endif // APPMODEL_H

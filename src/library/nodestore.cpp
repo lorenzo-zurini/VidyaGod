@@ -190,6 +190,7 @@ bool Mint(const std::map<std::string, nlohmann::ordered_json> &WorkingTree, Mint
             // Dangling ref / bad link on one node — skip it (and its dependents will skip too), never abort the whole
             // publish. Mirrors FreezeToIndex: degrade per-node, not all-or-nothing.
             LogWarn("NodeStore::Mint", "skipping node '" + Handle + "' (dangling ref / bad link): " + Err);
+            Out.Skipped[Handle] = Err.empty() ? std::string("it could not be stored") : Err;
             ++Skipped;
             continue;
         }

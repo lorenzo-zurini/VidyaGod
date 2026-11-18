@@ -95,15 +95,89 @@ nlohmann::ordered_json SharedWith(const nlohmann::ordered_json &Libraries, const
     return Out;
 }
 
-std::vector<std::string> PublishLibrary(nlohmann::ordered_json &Config, std::string *Error, std::string *Gaps)
+namespace {
+
+using PkgKey = std::pair<std::string, std::string>;   // (library, package dir)
+
+//A folder's package under the library root: (its collection, its bundle dir); a folder directly under the root is in
+//"Library". Nothing for the root itself or a folder outside it.
+std::optional<PkgKey> PackageKeyOf(const std::filesystem::path &Dir, const std::filesystem::path &Root)
+{
+    std::error_code Ec;
+    const std::filesystem::path Rel = std::filesystem::relative(Dir, Root, Ec);
+    std::vector<std::string> Seg;
+    for (const auto &Part : Rel) if (Part != "." && !Part.empty()) Seg.push_back(Part.string());
+    if (Ec || Seg.empty() || Seg[0] == "..") return std::nullopt;
+    return Seg.size() >= 2 ? PkgKey{Seg[0], Seg[1]} : PkgKey{"Library", Seg[0]};
+}
+
+//The share row of a package in Libraries[Lib] (by its name), or nullptr.
+const nlohmann::ordered_json *RowOf(const nlohmann::ordered_json &Config, const std::string &Lib, const std::string &Pkg)
+{
+    if (!Config.contains("Libraries") || !Config["Libraries"].is_object() || !Config["Libraries"].contains(Lib)
+        || !Config["Libraries"][Lib].is_array()) return nullptr;
+    for (const auto &R : Config["Libraries"][Lib]) if (R.is_object() && R.value("pkg", std::string()) == Pkg) return &R;
+    return nullptr;
+}
+
+//Puts Row in Libraries[Lib] in place of the row with its package name, or after the others.
+void MergeRow(nlohmann::ordered_json &Libraries, const std::string &Lib, nlohmann::ordered_json Row)
+{
+    if (!Libraries.contains(Lib) || !Libraries[Lib].is_array()) Libraries[Lib] = nlohmann::ordered_json::array();
+    for (auto &R : Libraries[Lib])
+        if (R.is_object() && R.value("pkg", std::string()) == Row.value("pkg", std::string())) { R = std::move(Row); return; }
+    Libraries[Lib].push_back(std::move(Row));
+}
+
+//The publish itself. Only == nullptr: every package, and Libraries is replaced whole (a deleted package leaves it).
+//Otherwise those packages AND every package they contain, transitively (a node freezes only once what it names has):
+//their nodes alone are minted; each named package is rebuilt (folder, pin, content check, needs), a contained one only
+//when its record is stale (its folder CID moved, or it has no record or pin), and their rows are merged into Libraries
+//in place — every other package's row is left as it was. A node that is a copy of one in a package outside the
+//selection is not seen as a copy here (only the whole publish sees every package).
+std::vector<std::string> Publish(nlohmann::ordered_json &Config, const std::vector<std::filesystem::path> *Only,
+                                 std::string *Error, std::string *Gaps)
 {
     const std::filesystem::path Root = LibraryRootDir(Config);
     std::map<std::string, nlohmann::ordered_json> Tree;
     std::map<std::string, std::filesystem::path>  Dirs;
     NodeGraph::GatherWorkingTree(Root, Tree, Dirs, /*SkipReserved=*/true);   // never mint a received friend stub
     if (Tree.empty()) { if (Error) *Error = "no packages to publish under " + Root.string(); return {}; }
+
+    std::map<std::string, PkgKey> KeyOf;                                     // node handle → its package
+    for (const auto &[Handle, D] : Dirs)
+        if (const auto K = PackageKeyOf(D, Root)) KeyOf.emplace(Handle, *K);
+    std::set<PkgKey> Targets, Sel;
+    std::map<std::string, nlohmann::ordered_json> Sub;
+    if (Only)
+    {
+        for (const auto &D : *Only)
+            if (const auto K = PackageKeyOf(std::filesystem::absolute(D), std::filesystem::absolute(Root))) Targets.insert(*K);
+            else { if (Error) *Error = "'" + D.string() + "' is not a package under " + Root.string(); return {}; }
+        Sel = Targets;
+        for (bool Grew = true; Grew;)                                        // close over what the selection contains
+        {
+            Grew = false;
+            for (const auto &[Handle, Doc] : Tree)
+            {
+                const auto K = KeyOf.find(Handle);
+                if (K == KeyOf.end() || !Sel.count(K->second)) continue;
+                std::vector<std::string> Nots;
+                std::vector<std::string> Refs = NodeRefs::Contained(Doc, &Nots);
+                Refs.insert(Refs.end(), Nots.begin(), Nots.end());
+                for (const std::string &R : Refs)
+                    if (const auto RK = KeyOf.find(R); RK != KeyOf.end() && Sel.insert(RK->second).second) Grew = true;
+            }
+        }
+        for (const auto &[Handle, Doc] : Tree)
+            if (const auto K = KeyOf.find(Handle); K != KeyOf.end() && Sel.count(K->second)) Sub.emplace(Handle, Doc);
+        for (const PkgKey &T : Targets)
+            if (std::none_of(Sub.begin(), Sub.end(), [&](const auto &E) { return KeyOf.at(E.first) == T; }))
+            { if (Error) *Error = "no nodes in package '" + T.second + "' (library '" + T.first + "')"; return {}; }
+    }
+    const std::map<std::string, nlohmann::ordered_json> &MintTree = Only ? Sub : Tree;
     NodeStore::MintResult MR;
-    if (!NodeStore::Mint(Tree, MR, Error)) return {};   // BlockPut every node → pinned + announced + seedable
+    if (!NodeStore::Mint(MintTree, MR, Error)) return {};   // BlockPut every node → pinned + announced + seedable
 
     // Re-stabilise the on-disk tree at the freshly-minted identities: stamp each node's new CID + remap its refs.
     // Non-fatal — the blocks are already stored; a failed write-back only leaves the on-disk handles stale (freeze
@@ -126,21 +200,20 @@ std::vector<std::string> PublishLibrary(nlohmann::ordered_json &Config, std::str
     std::map<std::string, size_t> Unsourced;            // package → content layers that name no CID: no one can fetch them
     std::map<std::string, std::string> FirstPkg;        // node cid → the package that listed it first (its home)
     std::vector<std::string> Copies;                    // "<package>/<label>" of a node already listed by another package
-    for (const auto &[Handle, Doc] : Tree)
+    for (const auto &[Handle, Doc] : MintTree)
     {
         const auto CidIt = MR.HandleToCid.find(Handle);
         if (CidIt == MR.HandleToCid.end())             // node was skipped (dangling/bad) — not shareable
         {
-            Unfrozen.push_back(Dirs[Handle].filename().string() + "/" + Doc.value("LABEL", std::string("?")));
+            const auto Why = MR.Skipped.find(Handle);
+            Unfrozen.push_back(Dirs[Handle].filename().string() + "/" + Doc.value("LABEL", std::string("?"))
+                               + (Why == MR.Skipped.end() ? std::string() : ": " + Why->second));
             continue;
         }
-        std::error_code Ec;
-        const std::filesystem::path Rel = std::filesystem::relative(Dirs[Handle], Root, Ec);
-        std::vector<std::string> Seg;
-        for (const auto &Part : Rel) if (Part != "." && !Part.empty()) Seg.push_back(Part.string());
-        if (Ec || Seg.empty()) continue;
-        const std::string LibName = Seg.size() >= 2 ? Seg[0] : std::string("Library");   // the collection dir
-        const std::string Pkg     = Seg.size() >= 2 ? Seg[1] : Seg[0];                    // the bundle dir under it
+        const auto Key = KeyOf.find(Handle);
+        if (Key == KeyOf.end()) continue;
+        const std::string &LibName = Key->second.first;    // the collection dir
+        const std::string &Pkg     = Key->second.second;   // the bundle dir under it
         //One home: a node another package already lists is a copy — not shared again from here, and named below.
         if (const auto [F, Fresh] = FirstPkg.emplace(CidIt->second, LibName + "/" + Pkg); !Fresh && F->second != LibName + "/" + Pkg)
         {
@@ -201,6 +274,16 @@ std::vector<std::string> PublishLibrary(nlohmann::ordered_json &Config, std::str
             std::string MErr;
             const std::string PCid = IpfsWrapper::MakeDir(Entries, &MErr);
             if (PCid.empty()) { if (Error) *Error = "package folder for '" + Pkg + "' not made: " + MErr; return {}; }
+            //A package the selection only contains keeps its record while that record is current.
+            if (Only && !Targets.count(PkgKey{LibName, Pkg}))
+                if (const nlohmann::ordered_json *Was = RowOf(Config, LibName, TitleOf(Pkg));
+                    Was && Was->value("cid", std::string()) == PCid && !Was->value("pin", std::string()).empty())
+                {
+                    Libs[LibName].push_back(*Was);
+                    Flat.push_back(PCid);
+                    ++PkgCount;
+                    continue;
+                }
             // The PIN folder: the package folder + the package's own content, linked — what a pinning service pins,
             // so it holds the package whole (references inside a node are plain CIDs: nothing follows them). A
             // library the package contains is its own package with its own pin: no byte is billed twice.
@@ -235,12 +318,20 @@ std::vector<std::string> PublishLibrary(nlohmann::ordered_json &Config, std::str
     }
     // No library-level block: a library is a NAME that groups packages in the share sheet, never a CID — a CID over
     // the whole library would re-mint on every change to any package, and the package is the unit that changes.
-    Config["Libraries"] = std::move(Libs);
+    if (!Only) Config["Libraries"] = std::move(Libs);
+    else
+    {   // merged in place: the published packages' rows replace their own, every other row stays as it was
+        if (!Config.contains("Libraries") || !Config["Libraries"].is_object()) Config["Libraries"] = nlohmann::ordered_json::object();
+        for (auto &[LibName, Rows] : Libs.items())
+            for (auto &R : Rows) MergeRow(Config["Libraries"], LibName, std::move(R));
+    }
     Config.erase("PublishedList");       // what the share list once was kept as: it is the return value, and Libraries
     Config.erase("PublishedManifest");
     LogSucc("PackageCatalog::PublishLibrary", "published " + std::to_string(MR.HandleToCid.size())
             + " node block(s) in " + std::to_string(PkgCount) + " package folder(s), "
-            + std::to_string(Config["Libraries"].size()) + " library(ies)");
+            + std::to_string(Config["Libraries"].size()) + " library(ies)"
+            + (Only ? " (" + std::to_string(Targets.size()) + " package(s) named, " + std::to_string(Sel.size() - Targets.size())
+                      + " contained)" : std::string()));
     // The verdict names what did not publish whole: a partial publish must never read as a clean one.
     std::string Gap;
     const auto List = [](const std::vector<std::string> &V) {
@@ -273,5 +364,20 @@ std::vector<std::string> PublishLibrary(nlohmann::ordered_json &Config, std::str
     if (Gaps) *Gaps = Gap;
     return Flat.get<std::vector<std::string>>();   // the share list: one package folder per package
 }
+
+} // namespace
+
+std::vector<std::string> PublishLibrary(nlohmann::ordered_json &Config, std::string *Error, std::string *Gaps)
+{
+    return Publish(Config, nullptr, Error, Gaps);
+}
+
+std::vector<std::string> PublishPackages(nlohmann::ordered_json &Config, const std::vector<std::filesystem::path> &PackageDirs,
+                                         std::string *Error, std::string *Gaps)
+{
+    if (PackageDirs.empty()) { if (Error) *Error = "no package named"; return {}; }
+    return Publish(Config, &PackageDirs, Error, Gaps);
+}
+
 
 } // namespace PackageCatalog

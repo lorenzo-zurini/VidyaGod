@@ -246,6 +246,8 @@ private slots:
         QCOMPARE((int)WithGap.size(), 5);                   // a gap is named, never a reason to publish nothing
         QVERIFY2(Gaps.find("[3] Gap (1)") != std::string::npos, Gaps.c_str());
         QVERIFY2(Gaps.find("did not freeze") != std::string::npos && Gaps.find("[3] Gap/loop") != std::string::npos, Gaps.c_str());
+        //...with why: a node left out says what stopped it. Teeth: drop Mint's Skipped record and the reason is gone.
+        QVERIFY2(Gaps.find("[3] Gap/loop: it references 'hLoop'") != std::string::npos, Gaps.c_str());
         QVERIFY2(Gaps.find("[2] Other") == std::string::npos, "held content is not a gap");
         //A file named with no SOURCE is shared as a name only: a friend sees the game and can never fetch it. Teeth:
         //count only the CIDs a package names (it publishes "clean" but for the unheld one).
@@ -267,6 +269,83 @@ private slots:
         writeJson(R + "/VidyaGod/[1] Game/dg_copy.json", DgCopy);
         (void)PackageCatalog::PublishLibrary(cfg, &Err, &Gaps);
         QVERIFY2(Gaps.find("copies of a node another package holds") != std::string::npos, Gaps.c_str());
+        IpfsWrapper::StopNode();
+    }
+
+    // Publishing ONE package (the package editor's Publish, `packages publish`) mints it and what it contains and merges
+    // its row into Libraries in place: another package's row is never touched, even a stale one; a contained package's
+    // row is redone when stale and kept as it was when not; a folder that is no package is refused with Libraries
+    // untouched, alone or beside a real one. Teeth: replace Libraries wholesale (the runner's row goes); select only the named package (the edited
+    // dgVoodoo row stays stale and the game cannot freeze against it); rebuild every contained row (the marker goes);
+    // skip the stale check (the edited dgVoodoo row keeps its old folder).
+    void publishing_one_package_merges_its_row_in_place()
+    {
+        std::string Err;
+        QTemporaryDir Repo; QVERIFY(Repo.isValid());
+        QVERIFY2(IpfsWrapper::StartNode((Repo.path() + "/ipfs").toStdString(), &Err), Err.c_str());
+        QTemporaryDir Root; QVERIFY(Root.isValid());
+        const QString R = Root.path();
+        QDir().mkpath(R + "/VidyaGod/[1] Game");
+        QDir().mkpath(R + "/VidyaGod/[2] Other");
+        QDir().mkpath(R + "/VidyaGodRunners/wine");
+        QDir().mkpath(R + "/VidyaGodLibraries/dgvoodoo");
+        writeJson(R + "/VidyaGod/[1] Game/game.json",
+                  NodeFixture::Chain("g_exec", {NodeFixture::Merge({NodeFixture::Exec("win32", "g.exe"), NodeFixture::Variant("Play")})}, {"l_dg"}));
+        writeJson(R + "/VidyaGod/[2] Other/u.json", NodeFixture::Chain("u_exec", {NodeFixture::Exec("win32", "u.exe")}));
+        writeJson(R + "/VidyaGodRunners/wine/wine.json", NodeFixture::Chain("r_wine", {NodeFixture::Runner("linux", {"win32"}, "wine")}));
+        writeJson(R + "/VidyaGodLibraries/dgvoodoo/dg.json", NodeFixture::Chain("l_dg", {NodeFixture::Exec("win32", "dg.exe")}));
+        json cfg = json{{"Settings", {{"Paths", {{"LibraryRoot", R.toStdString()}}}}}};
+        std::string Gaps;
+        QCOMPARE((int)PackageCatalog::PublishLibrary(cfg, &Err, &Gaps).size(), 4);
+        const auto RowIn = [&](const char *Lib, const char *Pkg) {
+            for (const auto &E : cfg["Libraries"][Lib]) if (E.value("pkg", std::string()) == Pkg) return E;
+            return json(); };
+        //An edit to a node, as the editor's save leaves it on disk (its handle kept, its bytes changed).
+        const auto Edit = [](const QString &File, const char *Note) {
+            std::ifstream In(File.toStdString());
+            json J = json::parse(In);
+            In.close();
+            for (auto &N : (J.is_array() ? J : (J = json::array({J})))) N["COMMENT"] = Note;
+            NodeFixture::WriteNodes(File.toStdString(), J);
+        };
+
+        //1. Only the named package: [2] Other is redone, the edited (stale) runner and the game are left alone.
+        const json Wine0 = RowIn("VidyaGodRunners", "wine"), Game0 = RowIn("VidyaGod", "[1] Game"), Other0 = RowIn("VidyaGod", "[2] Other");
+        Edit(R + "/VidyaGod/[2] Other/u.json", "v2");
+        Edit(R + "/VidyaGodRunners/wine/wine.json", "v2");
+        const auto One = PackageCatalog::PublishPackages(cfg, { (R + "/VidyaGod/[2] Other").toStdString() }, &Err, &Gaps);
+        QVERIFY2(One.size() == 1, Err.c_str());
+        QVERIFY(RowIn("VidyaGod", "[2] Other")["cid"] != Other0["cid"]);
+        QCOMPARE(RowIn("VidyaGodRunners", "wine"), Wine0);
+        QCOMPARE(RowIn("VidyaGod", "[1] Game"), Game0);
+        QCOMPARE((int)cfg["Libraries"]["VidyaGod"].size(), 2);
+
+        //2. A contained package that is stale is redone with the game that contains it.
+        const json Dg0 = RowIn("VidyaGodLibraries", "dgvoodoo");
+        Edit(R + "/VidyaGodLibraries/dgvoodoo/dg.json", "v2");
+        const auto Two = PackageCatalog::PublishPackages(cfg, { (R + "/VidyaGod/[1] Game").toStdString() }, &Err, &Gaps);
+        QVERIFY2(Two.size() == 2 && Gaps.empty(), (Err + Gaps).c_str());
+        const json Dg1 = RowIn("VidyaGodLibraries", "dgvoodoo");
+        QVERIFY(Dg1["cid"] != Dg0["cid"]);
+        QVERIFY(RowIn("VidyaGod", "[1] Game")["cid"] != Game0["cid"]);   // it names dgVoodoo's new node
+        QCOMPARE(RowIn("VidyaGodRunners", "wine"), Wine0);
+
+        //3. A contained package that is current keeps its row as it was (no content re-check, no rebuild).
+        for (auto &E : cfg["Libraries"]["VidyaGodLibraries"]) if (E.value("pkg", std::string()) == "dgvoodoo") E["kept"] = true;
+        QCOMPARE((int)PackageCatalog::PublishPackages(cfg, { (R + "/VidyaGod/[1] Game").toStdString() }, &Err, &Gaps).size(), 2);
+        QVERIFY2(RowIn("VidyaGodLibraries", "dgvoodoo").value("kept", false), "a current contained row was rebuilt");
+
+        //4. A folder that is no package under the root is refused, and Libraries is untouched.
+        const json Before = cfg["Libraries"];
+        QVERIFY(PackageCatalog::PublishPackages(cfg, { Repo.path().toStdString() }, &Err, &Gaps).empty() && !Err.empty());
+        Err.clear();
+        QVERIFY(PackageCatalog::PublishPackages(cfg, { (R + "/VidyaGod/[9] None").toStdString() }, &Err, &Gaps).empty() && !Err.empty());
+        //...also beside a real one: a package named and not there is never skipped silently while the rest publishes.
+        Err.clear();
+        QVERIFY(PackageCatalog::PublishPackages(cfg, { (R + "/VidyaGod/[2] Other").toStdString(), (R + "/VidyaGod/[9] None").toStdString() },
+                                                &Err, &Gaps).empty());
+        QVERIFY2(Err.find("[9] None") != std::string::npos, Err.c_str());
+        QCOMPARE(cfg["Libraries"], Before);
         IpfsWrapper::StopNode();
     }
 

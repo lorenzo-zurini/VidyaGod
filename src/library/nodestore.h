@@ -28,6 +28,7 @@ struct MintResult {
     std::vector<std::string>           Launchables;  // LAUNCH axis: nodes with an entrypoint that has NO GUEST (a
                                                      // game's playable variants; GUEST entrypoints are runners) —
                                                      // used for launch/CLI semantics, NOT the share list
+    std::map<std::string, std::string> Skipped;      // a node that did not freeze → why (a publish's verdict names it)
 };
 
 // Hydrate a launchable's closure from IPFS into the pretty on-disk checkout under DestRoot: fetch the frozen DAG
