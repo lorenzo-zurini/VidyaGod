@@ -346,6 +346,22 @@ private slots:
                                                 &Err, &Gaps).empty());
         QVERIFY2(Err.find("[9] None") != std::string::npos, Err.c_str());
         QCOMPARE(cfg["Libraries"], Before);
+
+        //5. Node files as a package lands them hold no handle: the game names dgVoodoo's node by its CID, and that CID
+        //still finds dgVoodoo's package — it is published with the game and the game's row needs it.
+        for (const char *F : { "/VidyaGod/[1] Game/game.json", "/VidyaGod/[2] Other/u.json", "/VidyaGodRunners/wine/wine.json",
+                               "/VidyaGodLibraries/dgvoodoo/dg.json" })
+        {
+            std::ifstream In((R + F).toStdString());
+            json J = json::parse(In);
+            In.close();
+            for (auto &N : (J.is_array() ? J : (J = json::array({J})))) N.erase("CID");
+            NodeFixture::WriteNodes((R + F).toStdString(), J);
+        }
+        cfg["Libraries"]["VidyaGod"] = json::array();     // no row yet: the game's row is the one this publish writes
+        const auto Five = PackageCatalog::PublishPackages(cfg, { (R + "/VidyaGod/[1] Game").toStdString() }, &Err, &Gaps);
+        QVERIFY2(Five.size() == 2, (Err + Gaps).c_str());
+        QCOMPARE(RowIn("VidyaGod", "[1] Game")["needs"], json::array({ json{{"lib", "VidyaGodLibraries"}, {"pkg", "dgvoodoo"}} }));
         IpfsWrapper::StopNode();
     }
 

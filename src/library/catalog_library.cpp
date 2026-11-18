@@ -155,6 +155,15 @@ std::vector<std::string> Publish(nlohmann::ordered_json &Config, const std::vect
             if (const auto K = PackageKeyOf(std::filesystem::absolute(D), std::filesystem::absolute(Root))) Targets.insert(*K);
             else { if (Error) *Error = "'" + D.string() + "' is not a package under " + Root.string(); return {}; }
         Sel = Targets;
+        //A reference names a working-tree handle (a stored "CID" not yet re-minted) or, as a landed package's node
+        //files all do, a node's CID: its file holds no handle, so only the CID the tree freezes to finds its package.
+        const NodeIndex Frozen = NodeGraph::FreezeToIndex(Tree, Dirs);
+        const auto PkgOfRef = [&](const std::string &R) -> std::optional<PkgKey> {
+            if (const auto K = KeyOf.find(R); K != KeyOf.end()) return K->second;
+            if (const auto N = Frozen.Nodes.find(R); N != Frozen.Nodes.end() && !N->second.BundleDir.empty())
+                return PackageKeyOf(N->second.BundleDir, Root);
+            return std::nullopt;
+        };
         for (bool Grew = true; Grew;)                                        // close over what the selection contains
         {
             Grew = false;
@@ -166,7 +175,7 @@ std::vector<std::string> Publish(nlohmann::ordered_json &Config, const std::vect
                 std::vector<std::string> Refs = NodeRefs::Contained(Doc, &Nots);
                 Refs.insert(Refs.end(), Nots.begin(), Nots.end());
                 for (const std::string &R : Refs)
-                    if (const auto RK = KeyOf.find(R); RK != KeyOf.end() && Sel.insert(RK->second).second) Grew = true;
+                    if (const auto RK = PkgOfRef(R); RK && Sel.insert(*RK).second) Grew = true;
             }
         }
         for (const auto &[Handle, Doc] : Tree)
