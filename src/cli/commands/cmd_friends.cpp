@@ -285,7 +285,7 @@ VG_COMMANDS
     Command::Register({
         "friends stop-receiving", "stop receiving a friend's libraries (their stubs go, installs stay)", "",
         { Command::Pos("friend", "the friend's peer ID") }, { "friends stop-receiving 12D3KooW…" },
-        { "FriendSharing::stopReceivingFromFriend", "FriendSharing::dropReceivedStubs" }, Command::Needs::Model, false,
+        { "FriendSharing::stopReceivingFromFriend", "FriendSharing::dropReceivedStubs", "FriendSharing::sharedStubFiles" }, Command::Needs::Model, false,
         [](Command::Context &C, const json &A) {
             C.Model->friends().stopReceivingFromFriend(QString::fromStdString(Command::Str(A, "friend")));
             return json{{"stopped", Command::Str(A, "friend")}};

@@ -267,6 +267,17 @@ bool FetchOnceHookActive()
     return static_cast<bool>(g_FetchOnceHook);
 }
 
+void ClearStaleDest(const std::string &Dest, const std::string &Cid)
+{
+    if (!QFileInfo::exists(QString::fromStdString(Dest))) return;
+    std::string CErr;
+    const std::string Have = ComputeCid(Dest, &CErr);
+    if (Have.empty() || Have == Cid) return;                           // unhashed (the node down), or the node asked for
+    std::error_code Ec;
+    std::filesystem::remove(Dest, Ec);
+    if (CidMissing(Have)) DropRef(Have);
+}
+
 int FetchOnce(const std::string &Cid, const std::string &Dest, bool Dir, std::string *Error, bool Verify)
 {
     // Copy the hook under the lock, invoke it OUTSIDE — a detached worker must never read the std::function while a
@@ -284,6 +295,8 @@ int FetchOnce(const std::string &Cid, const std::string &Dest, bool Dir, std::st
     if (!Dir && !Verify && QFileInfo::exists(QString::fromStdString(Dest))
         && !QFileInfo::exists(QString::fromStdString(Dest + ".part")))
         return 0;
+    //The node takes a dest that is there for done when it holds the CID asked for: a Verify dest is checked first.
+    if (!Dir && Verify && !QFileInfo::exists(QString::fromStdString(Dest + ".part"))) ClearStaleDest(Dest, Cid);
 
     FetchDbg("FetchOnce ENTER cid=" + Cid + " dest=" + Dest + (Dir ? " [dir]" : ""));
     char *Err = nullptr;

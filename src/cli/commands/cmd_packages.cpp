@@ -11,6 +11,8 @@
 #include "friendsharing.h"
 #include "packagecatalog.h"
 #include "packagecatalog_p.h"
+#include "nodefiles.h"
+#include "ipfswrapper.h"
 #include "manifestmodel.h"
 
 #include <QString>
@@ -81,13 +83,13 @@ size_t SourceIndex(Command::Context &C, const std::string &Q)
 
 json Update(const PackageCatalog::PackageUpdate &U)
 {
-    return {{"package", U.Pkg}, {"library", U.Lib}, {"from", U.Nick.empty() ? U.Peer : U.Nick}, {"folder", U.FolderCid}, {"dir", U.Dir.string()}};
+    return {{"package", U.Pkg}, {"library", U.Lib}, {"from", U.Nick.empty() ? U.Peer : U.Nick}, {"version", U.Version}, {"nodes", U.Listing.size()}, {"dir", U.Dir.string()}};
 }
 
 PackageCatalog::PackageUpdate FindUpdate(Command::Context &C, const std::string &Q)
 {
     for (const auto &U : PackageCatalog::AvailableUpdates(*C.Config))
-        if (U.Pkg == Q || U.FolderCid == Q || QString::fromStdString(U.Pkg).contains(QString::fromStdString(Q), Qt::CaseInsensitive)) return U;
+        if (U.Pkg == Q || U.Version == Q || QString::fromStdString(U.Pkg).contains(QString::fromStdString(Q), Qt::CaseInsensitive)) return U;
     throw Command::BadArgs("no update for '" + Q + "' (VidyaGod updates list shows them)");
 }
 
@@ -157,12 +159,12 @@ VG_COMMANDS
     Command::Register({
         "packages show", "one package folder: its identity, title, library, state, CIDs",
         "What a package folder is: its UID and name (from its nodes), title, library, whether it is a package source's "
-        "or added locally, holds content, its folder CID (as shared) and pin folder, its editor-layout key, and the "
+        "or added locally, holds content, its pin folder, its editor-layout key, and the "
         "content CIDs its nodes name.", { Pos("package", "a folder path, its name, its UID, or part of its title") },
         { "packages show 749", "packages show 'Age of Empires II' --json" },
         { "PackageCatalog::ScanBundleIdentity", "PackageCatalog::PackageTitle", "PackageCatalog::FolderTitle", "PackageCatalog::LibraryOf",
           "PackageCatalog::IsLocalPackagePath", "PackageCatalog::IsPackageSourcePath", "PackageCatalog::PackageSourceNameForPath",
-          "PackageCatalog::DirHasContent", "PackageCatalog::PackageFolderCid", "PackageCatalog::EditorLayoutKey",
+          "PackageCatalog::DirHasContent", "PackageCatalog::PackagePin", "PackageCatalog::EditorLayoutKey",
           "PackageCatalog::SeedTargets", "PackageCatalog::ManifestTargets", "PackageCatalog::NodeContentCids" },
         Needs::Config, false,
         [](Command::Context &C, const json &A) {
@@ -185,7 +187,7 @@ VG_COMMANDS
                         {"launchable", Id.HasLaunchable}, {"runner", Id.HasRunner},
                         {"local", PackageCatalog::IsLocalPackagePath(*C.Config, D)}, {"from_source", PackageCatalog::IsPackageSourcePath(*C.Config, D)},
                         {"source", PackageCatalog::PackageSourceNameForPath(*C.Config, D)}, {"has_content", PackageCatalog::DirHasContent(D.string())},
-                        {"folder_cid", PackageCatalog::PackageFolderCid(*C.Config, D)}, {"pin_cid", PackageCatalog::PackageFolderCid(*C.Config, D, "pin")},
+                        {"pin_cid", PackageCatalog::PackagePin(*C.Config, D)},
                         {"layout_key", PackageCatalog::EditorLayoutKey(D)}, {"content_cids", Cids},
                         {"seed_targets", Seeds}, {"manifest_targets", Man}};
         }, {} });
@@ -316,12 +318,13 @@ VG_COMMANDS
         }, {} });
 
     Command::Register({
-        "packages publish", "publish one package: seed its content, re-mint, record its share row, optionally export it",
+        "packages publish", "publish one package: seed its content, re-mint, record its share sheet entries, optionally export it",
         "Share a package of yours: add every content file to IPFS (recording its SOURCE and SIZE), save its nodes "
         "(re-minted: recording a SOURCE changes a node's bytes and so its CID), then publish it into the share sheet: "
-        "its nodes and those of the packages it contains are stored, its folder and pin folder made, and its row "
-        "merged into Libraries (every other package's row untouched; a contained package's row is redone only when it "
-        "is stale). With the app up, that last step runs in the app (follow it: events wait --signal libraryPublished). "
+        "its nodes and those of the packages it contains are stored, their files named by their labels, their pin "
+        "folders made, and their entries put in place of their own (every other package's untouched; a contained "
+        "package is redone only when it is stale). With the app up, that last step runs in the app (follow it: events "
+        "wait --signal libraryPublished). "
         "With --export, a copy of its node files alone is written there.", { Pos("package", "a folder path, its name, its UID, or part of its title"), Opt("export", "a folder for the node-files-only copy") },
         { "packages publish 749", "packages publish 749 --export /tmp/aoe2-nodes" },
         { "PackageCatalog::PublishPackage", "PackageCatalog::SeedNodeContent", "PackageCatalog::StampNodeCids",
@@ -343,9 +346,85 @@ VG_COMMANDS
         }, {} });
 
     Command::Register({
+        "packages sheet", "the share sheet: each published node and where it lives",
+        "What publishing recorded and friends are given: node CID → <library>/<package>/<file>. With a package, its "
+        "entries only; with --cid, where that node lives (ours, or a friend's sheet); with --friend, what that friend "
+        "shares with us; with --wire, the entries as they travel ({library: [{cid, pkg, node}]}).",
+        { Opt("package", "<library>/<package>"), Opt("cid", "a node CID"), Opt("friend", "a friend's peer ID"), Flag("wire", "as it travels") },
+        { "packages sheet --package 'VidyaGodLibraries/xinput'", "packages sheet --cid bafkrei…", "packages sheet --friend 12D3KooW… --wire" },
+        { "PackageCatalog::SheetEntries", "PackageCatalog::SheetPath", "PackageCatalog::WireEntries", "PackageCatalog::Wire" }, Needs::Config, false,
+        [](Command::Context &C, const json &A) {
+            if (const std::string Cid = Command::Str(A, "cid", ""); !Cid.empty())
+                return json{{"cid", Cid}, {"path", PackageCatalog::SheetPath(*C.Config, Cid)}};
+            const std::string Pkg = Command::Str(A, "package", ""), Friend = Command::Str(A, "friend", "");
+            const json Friends = C.Config->value("FriendLibraries", json::object());
+            const auto All = Friend.empty() ? PackageCatalog::SheetEntries(C.Config->value("ShareSheet", json::object()))
+                                            : PackageCatalog::WireEntries(Friends.value(Friend, json::object()));
+            std::vector<PackageCatalog::SheetEntry> Some;
+            for (const auto &E : All) if (Pkg.empty() || E.Lib + "/" + E.Pkg == Pkg) Some.push_back(E);
+            if (Command::Bool(A, "wire", false)) return PackageCatalog::Wire(Some);
+            json Out = json::object();
+            for (const auto &E : Some) Out[E.Cid] = E.Lib + "/" + E.Pkg + "/" + E.File;
+            return Out;
+        }, {} });
+
+    Command::Register({
+        "packages node-files", "a package folder's node files, and the names they take",
+        "Each node file in a package folder by its node's CID: its file, whether it is the node's canonical form "
+        "(frozen) or a draft, and the name the rule gives it (its label made a safe name, bumped with its CID's tail when "
+        "names clash; MetaPackageFormat chapter 02 §2.5). With --apply, the frozen files are renamed to it (publishing "
+        "does this too).", { Pos("package", "a folder path, its name, its UID, or part of its title"), Flag("apply", "rename them") },
+        { "packages node-files 749", "packages node-files 'VidyaGodLibraries/xinput' --apply" },
+        { "NodeFiles::In", "NodeFiles::Names", "NodeFiles::Normalize", "NodeFiles::ParkedName", "NodeFiles::SafeName", "ContentFile::ClaimsOfNode" }, Needs::Config, true,
+        [](Command::Context &C, const json &A) {
+            const auto D = PackageDir(C, Command::Str(A, "package"));
+            json Moved = json::array();
+            std::string Err;
+            if (Command::Bool(A, "apply", false))
+            {
+                std::vector<std::pair<std::filesystem::path, std::filesystem::path>> M;
+                const bool Ok = NodeFiles::Normalize(D, &M, &Err);
+                std::vector<std::pair<std::string, std::string>> Refs;
+                for (const auto &[F, T] : M) { Refs.push_back({F.string(), T.string()}); Moved.push_back({F.filename().string(), T.filename().string()}); }
+                std::string MErr;
+                if (!Refs.empty() && IpfsWrapper::MoveRefs(Refs, &MErr) < 0) Err += (Err.empty() ? "" : "; ") + MErr;
+                if (!Ok && Err.empty()) Err = "not every file could be renamed";
+            }
+            const auto Files = NodeFiles::In(D);
+            std::map<std::string, nlohmann::ordered_json> Package;
+            for (const auto &[Cid, F] : Files) Package.emplace(Cid, F.Node);
+            const auto Names = NodeFiles::Names(Package);
+            json Out = json::object();
+            for (const auto &[Cid, F] : Files)
+                Out[Cid] = {{"file", F.Path.filename().string()}, {"frozen", F.Frozen}, {"name", Names.at(Cid)},
+                            {"label", NodeFiles::SafeName(F.Node.value("LABEL", std::string()))}};
+            return json{{"dir", D.string()}, {"nodes", Out}, {"renamed", Moved}, {"error", Err}};
+        }, {} });
+
+    Command::Register({
+        "packages pins", "the pin folders a pinning service needs for some packages",
+        "Each named package's pin folder (its node files and its content) and those of every package it contains, "
+        "transitively — what to pin so the packages are whole on a pinning service. Packages are <library>/<package>.",
+        { Pos("packages", "<library>/<package>, comma-separated") },
+        { "packages pins 'VidyaGod/[749][v1.0] Age of Empires II'" },
+        { "PackageCatalog::PackagesContained", "PackageCatalog::NodeContains", "PackageCatalog::CurrentIndex" }, Needs::Config, false,
+        [](Command::Context &C, const json &A) {
+            std::vector<std::string> Named;
+            const QStringList Parts = QString::fromStdString(Command::Str(A, "packages")).split(',', Qt::SkipEmptyParts);
+            for (const QString &P : Parts) Named.push_back(P.trimmed().toStdString());
+            const std::shared_ptr<const NodeIndex> Idx = C.Model ? C.Model->catalogSnapshot() : PackageCatalog::CurrentIndex(*C.Config);
+            const json Pins = C.Config->value("Pins", json::object());
+            json Out = json::array();
+            for (const std::string &K : PackageCatalog::PackagesContained(C.Config->value("ShareSheet", json::object()), Named,
+                     [&](const std::string &Cid) { return PackageCatalog::NodeContains(*Idx, Cid); }))
+                Out.push_back({{"package", K}, {"pin", Pins.value(K, std::string())}});
+            return Out;
+        }, {} });
+
+    Command::Register({
         "packages publish-all", "republish the whole library (Verify & Publish)",
-        "Freeze every node of the library, store it, make one folder per package (and its pin folder), and record the "
-        "share sheet — the Network tab's Verify & Publish. What did not publish whole (nodes that did not freeze, "
+        "Freeze every node of the library, store it, name every node file by its label, make each package's pin folder, "
+        "and record the share sheet — the Network tab's Verify & Publish. What did not publish whole (nodes that did not freeze, "
         "content not held here, content naming no SOURCE) is listed as gaps. With the app up, it runs in the app "
         "(follow it: events wait --signal libraryPublished).", {}, { "packages publish-all" },
         { "AppModel::publishLibraries", "AppModel::publishing", "PackageCatalog::PublishLibrary", "PackageCatalog::SharedWith" }, Needs::Config, true,
@@ -356,8 +435,9 @@ VG_COMMANDS
             if (Out.empty()) throw std::runtime_error(Err);
             Save(C);
             json Shared = json::object();
-            for (const auto &[Lib, Rows] : (*C.Config)["Libraries"].items()) Shared[Lib] = Rows.size();
-            return json{{"packages", Out.size()}, {"libraries", Shared}, {"gaps", Gaps}};
+            for (const auto &E : PackageCatalog::SheetEntries((*C.Config)["ShareSheet"]))
+                Shared[E.Lib] = Shared.value(E.Lib, 0) + 1;
+            return json{{"packages", Out.size()}, {"nodes", Shared}, {"gaps", Gaps}};
         }, {} });
 
     Command::Register({
@@ -577,7 +657,7 @@ VG_COMMANDS
         "The folders a friend's share snapshot lands into (CATALOG/<nick> - <library>/<package>) and the fetch each is, "
         "and whether any received package is still incomplete.", { Pos("friend", "the friend's peer id (VidyaGod friends list)") },
         { "received plan 12D3KooW9z4dCR2LVkuc4xb4zTrss5AR9N5WcAAYdJSDat1VCfAR" },
-        { "PackageCatalog::PlanReceivedFetches", "PackageCatalog::ReceivedFetchTargets", "PackageCatalog::ReceivedNickLabel",
+        { "PackageCatalog::PlanReceivedFetches", "PackageCatalog::ReceivedFolderNames", "PackageCatalog::ReceivedFetchTargets", "PackageCatalog::ReceivedNickLabel",
           "PackageCatalog::ReceivedPackagesIncomplete" }, Needs::Config, false,
         [](Command::Context &C, const json &A) {
             const std::string P = Command::Str(A, "friend");

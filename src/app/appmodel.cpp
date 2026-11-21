@@ -278,20 +278,16 @@ QString AppModel::removePackage(const QString & which, bool * Async)
 //    the worker never mutates the live GlobalConfigJSON the GUI may be reading/writing. The model outlives every view,
 //    so capturing `this` is safe. Called on node-ready (bootstrap of the default runners source) and "Sync now". ──
 
-// Give the node what to announce FIRST, tracked, ahead of the batched content queue: the published package folders
-// (the share record — what a friend fetches) and pin folders (what a pinning service looks up), then every node block
+// Give the node what to announce FIRST, tracked, ahead of the batched content queue: the pin folders (what a pinning
+// service looks up), then every node block
 // of our own tree. Everything else pinned is content, announced after in the batched queue. Called on node-ready +
 // after every publish; idempotent on the node side.
 void AppModel::pushSeedLevels()
 {
     std::vector<std::string> Roots, Nodes;
-    if (Config->contains("Libraries") && (*Config)["Libraries"].is_object())
-        for (const auto & [Lib, Rows] : (*Config)["Libraries"].items())
-            if (Rows.is_array())
-                for (const auto & R : Rows)
-                    if (R.is_object())
-                        for (const char * K : { "cid", "pin" })   // the share folder, then the pin folder
-                            if (R.contains(K) && R[K].is_string() && !R[K].get<std::string>().empty()) Roots.push_back(R[K].get<std::string>());
+    if (Config->contains("Pins") && (*Config)["Pins"].is_object())
+        for (const auto & [Pkg, Pin] : (*Config)["Pins"].items())   // what a pinning service looks up
+            if (Pin.is_string() && !Pin.get<std::string>().empty()) Roots.push_back(Pin.get<std::string>());
     for (const auto & [Cid, N] : Catalog->Nodes)
         if (!N.Received && !N.Cid.empty()) Nodes.push_back(Cid);
     IpfsWrapper::SetSeedLevels(Roots, Nodes);
@@ -597,9 +593,8 @@ void AppModel::runPublish()
             Publishing = PendingAll || !PendingPkgs.empty();
             if (Publishing) QMetaObject::invokeMethod(this, &AppModel::runPublish, Qt::QueuedConnection);
             if (Cids->empty()) { emit libraryPublishFailed(QString::fromStdString(*Err)); return; }
-            (*Config)["Libraries"] = (*Cfg)["Libraries"];   // the per-library grouping (drives Share ▾)
-            Config->erase("PublishedList");
-            Config->erase("PublishedManifest");
+            (*Config)["ShareSheet"] = (*Cfg)["ShareSheet"];   // what friends are given (drives Share ▾)
+            (*Config)["Pins"] = (*Cfg)["Pins"];
             save();
             pushSeedLevels();
             Friends->reRegisterShares();   // re-push every active share with the fresh CIDs (a re-publish can move them)

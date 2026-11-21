@@ -1,3 +1,4 @@
+#include "nodefiles.h"
 #include "nodestore.h"
 #include "nodegraph.h"
 #include "cid.h"   // a node's identity: the CID of its canonical bytes
@@ -114,15 +115,18 @@ std::string HydratePackage(const std::filesystem::path &DestRoot, const std::str
     if (Ec) { if (Error) *Error = "cannot create " + Dir.string() + ": " + Ec.message(); return {}; }
     { std::ofstream M(Marker); }   // claim the dir as ours so a failed run can be RETRIED (resumes into it), not bricked
 
-    // Write each closure node VERBATIM as <cid>.json (the block IS the file; BuildFrozenIndex verified it) + fetch
-    // its content leaves to their PATHs.
+    // Write each closure node VERBATIM, named by its label (the block IS the file; BuildFrozenIndex verified it) +
+    // fetch its content leaves to their PATHs.
     int Files = 0, Fetched = 0, FetchFailed = 0;
+    std::map<std::string, nlohmann::ordered_json> Package;
+    for (const auto &[C, N] : Idx.Nodes) Package.emplace(C, N.Json);
+    const std::map<std::string, std::string> Names = NodeFiles::Names(Package);
     for (const auto &[C, N] : Idx.Nodes)
     {
         std::string Err;
         const std::string Js = IpfsWrapper::BlockGet(C, &Err);
         if (Js.empty()) { if (Error) *Error = "re-fetch " + C + ": " + Err; return {}; }
-        { std::ofstream Out(Dir / (C + ".json"), std::ios::binary); Out << Js; }
+        { std::ofstream Out(Dir / Names.at(C), std::ios::binary); Out << Js; }
         ++Files;
 
         // Content leaves: fetch each VFS layer's SOURCE.CID to its local PATH (BundleDir = Dir). Iterate N.ContentLayers

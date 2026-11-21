@@ -1,6 +1,8 @@
 #ifndef CONTENTFILE_H
 #define CONTENTFILE_H
 
+#include <nlohmann/json.hpp>
+
 #include <filesystem>
 #include <map>
 #include <memory>
@@ -29,6 +31,9 @@ struct NameLess { bool operator()(const std::string &A, const std::string &B) co
 //re-read when its node files change (content landing beside them does not).
 using ClaimMap = std::map<std::string, std::set<std::string>, NameLess>;
 std::shared_ptr<const ClaimMap> Claims(const std::filesystem::path &Dir);
+
+//One node's claims, added to Out.
+void ClaimsOfNode(const nlohmann::ordered_json &Node, ClaimMap &Out);
 
 //The same over explicit node files (a package as it would be after a change).
 ClaimMap ClaimsOfFiles(const std::vector<std::filesystem::path> &NodeFiles);

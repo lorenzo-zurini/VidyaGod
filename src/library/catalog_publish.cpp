@@ -334,9 +334,7 @@ std::map<std::string, std::string> ManifestTargets(const std::string &Dir, bool 
 
         nlohmann::ordered_json J;
         if (!NodeGraph::ReadTreeJsonBounded(It->path(), J)) continue;   // bounded: hostile bytes live in the tree now
-        //A node in a landed package folder (<pkg>/.package/) has its content beside the folder, in the package dir.
-        fs::path Bundle = It->path().parent_path();
-        if (Bundle.filename() == NodeGraph::kPackageFolderDir) Bundle = Bundle.parent_path();
+        const fs::path Bundle = It->path().parent_path();
 
         //Every file-backed entry recorded with a CID (a content layer's SOURCE, a cover's SOURCE). ExistingOnly is
         //what SEEDING wants (you cannot reference bytes you do not have). An UPGRADE diff wants the recorded targets
@@ -675,16 +673,11 @@ HealReport HealSourceContent(const nlohmann::ordered_json &GlobalConfigJSON, con
                 if (!Cid.empty()) Referenced.insert(Cid);
             }
     }
-    // The published packages: each row's share folder (manifest + node files) and pin folder (+ its content), both
-    // pinned recursively — dropping one unshares the package from every friend or every pinning service.
-    if (GlobalConfigJSON.contains("Libraries") && GlobalConfigJSON["Libraries"].is_object())
-        for (const auto &[Lib, Rows] : GlobalConfigJSON["Libraries"].items())
-            if (Rows.is_array())
-                for (const auto &Row : Rows)
-                    if (Row.is_object())
-                        for (const char *K : { "cid", "pin" })
-                            if (Row.contains(K) && Row[K].is_string() && !Row[K].get<std::string>().empty())
-                                Referenced.insert(Row[K].get<std::string>());
+    // The published packages' pin folders (their node files + their content), pinned recursively — dropping one
+    // unpins the package from every pinning service.
+    if (GlobalConfigJSON.contains("Pins") && GlobalConfigJSON["Pins"].is_object())
+        for (const auto &[Pkg, Pin] : GlobalConfigJSON["Pins"].items())
+            if (Pin.is_string() && !Pin.get<std::string>().empty()) Referenced.insert(Pin.get<std::string>());
 
     // Prune: a pin that is UNREFERENCED by any source AND UNSERVABLE (a backing file is gone) is the leftover of a
     // superseded publish — a deleted .meta staging mirror, a replaced delta, a re-published package. The re-point pass

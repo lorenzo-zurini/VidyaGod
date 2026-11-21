@@ -439,14 +439,14 @@ QTreeWidgetItem * IpfsTab::ensurePackageRow(const QString & cid)
     return grp;
 }
 
-// The package's folder CID — what it is shared as — lives on the package group row (CID column).
+// Our package's pin folder — what a pinning service is given — lives on the package group row (CID column).
 void IpfsTab::paintGroupCid(QTreeWidgetItem * grp, const QString & pkg)
 {
-    const QString Cid = Model.packageCid(pkg);
+    const QString Cid = Model.packagePin(pkg);
     grp->setText(6, Cid);
     grp->setForeground(6, QColor(Theme::Dim));
     grp->setToolTip(6, Cid.isEmpty() ? QString()
-        : QString("Package CID — the folder \"%1\" is shared as.").arg(pkg));
+        : QString("Pin folder — \"%1\" with its content, what a pinning service is given.").arg(pkg));
 }
 
 // Paint one CID's columns from the model's CidState (creating its leaf if needed). A seeded pin whose backing files
@@ -773,9 +773,9 @@ void IpfsTab::showContextMenu(const QPoint & pos)
     else if (isPkg(Clicked))
     {
         const QString Pkg = Clicked->text(0);
-        const QString PkgCid = Model.packageCid(Pkg);
+        const QString PkgCid = Model.packagePin(Pkg);
         if (!PkgCid.isEmpty())
-            menu.addAction("Copy package CID", this, [PkgCid]{ QApplication::clipboard()->setText(PkgCid); });
+            menu.addAction("Copy pin folder CID", this, [PkgCid]{ QApplication::clipboard()->setText(PkgCid); });
         if (!menu.isEmpty()) menu.addSeparator();
         menu.addAction(Clicked->isExpanded() ? "Collapse" : "Expand",
                        this, [Clicked]{ Clicked->setExpanded(!Clicked->isExpanded()); });

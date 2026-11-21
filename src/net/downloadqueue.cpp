@@ -32,14 +32,16 @@ struct Job {
     bool                     Optional = true;   // required if ANY requester is required (AND of requesters' Optional)
     bool                     Dir      = false;  // directory (meta) CID
     bool                     Verify   = false;  // any requester asked for refresh semantics (dest verified in Go)
+    std::set<std::string>    Keep;              // dests never replaced (redirected into an installed package): filled if missing
     enum State : std::uint8_t { Queued, Active, Done, Failed } State = Queued;
     int                      Priority = 0;       // higher dispatches sooner; Prioritize bumps it above all queued
     long long                Seq = 0;            // insertion order — tiebreak within a priority (FIFO)
     int                      Attempts = 0;       // completed attempts — drives the retry backoff
     SteadyTP                 ReadyAt;            // not eligible to (re)dispatch until now >= ReadyAt (rotation backoff)
     std::string              Error;
-    // Dests dropped by ForgetDestsUnder while this job was ACTIVE: {dest, the dir being dropped}. The worker holds its
-    // own copy of Dests, so it may land into them after the caller removed the dir; RunJob removes them again.
+    // Dests taken from this job while it was ACTIVE (dropped by ForgetDestsUnder / ForgetDest, or claimed by another
+    // CID): {dest, the dir being dropped — the dest itself when only the file goes}. The worker holds its own copy of
+    // Dests, so it may land into them after that; RunJob undoes it.
     std::vector<std::pair<std::string, std::string>> Forgotten;
 };
 
@@ -104,7 +106,13 @@ bool PathExists(const std::string &P)
 static void ClaimDest(const std::string &Cid, const std::string &Dest)
 {
     for (auto &[C, J] : Q().Jobs)
-        if (C != Cid) J.Dests.erase(std::remove(J.Dests.begin(), J.Dests.end(), Dest), J.Dests.end());
+    {
+        if (C == Cid) continue;
+        const auto It = std::remove(J.Dests.begin(), J.Dests.end(), Dest);
+        if (It == J.Dests.end()) continue;
+        J.Dests.erase(It, J.Dests.end());
+        if (J.State == Job::Active) J.Forgotten.emplace_back(Dest, Dest);   // its worker may still land it: undone after
+    }
 }
 
 // Add Dest to Job.Dests if not already present (keeps Dests a small deduped set).
@@ -113,10 +121,11 @@ void AddDest(Job &J, const std::string &Dest)
     if (std::find(J.Dests.begin(), J.Dests.end(), Dest) == J.Dests.end()) J.Dests.push_back(Dest);
 }
 
-// The first destination already on disk (a fetched job always has one), or "" if none exist yet.
+// The first destination already on disk that holds this job's node, or "" if none exist yet. Never a kept dest (an
+// installed package's own file): it is there whatever CID the job asked for.
 std::string FirstExisting(const Job &J)
 {
-    for (const std::string &D : J.Dests) if (PathExists(D)) return D;
+    for (const std::string &D : J.Dests) if (!J.Keep.count(D) && PathExists(D)) return D;
     return std::string();
 }
 
@@ -196,23 +205,31 @@ bool EarliestReadyAt(SteadyTP &Out)
 
 // Perform one job's fetch (off the dispatcher, holding a DownloadSlot). Fetches the CID to the first missing dest,
 // then materializes into the others, and records the terminal state.
-void RunJob(const std::string &Cid, std::vector<std::string> Dests, bool Dir, bool Verify)
+void RunJob(const std::string &Cid, std::vector<std::string> Dests, bool Dir, bool Verify, const std::set<std::string> &Keep)
 {
     // Primary = a destination that still needs the node to run. Prefer one that is MISSING; but a dest that EXISTS
     // WITH a `<dest>.part` marker is a crashed finalize that must be repaired (referenced/pinned), so it also needs
-    // the fetch — pick it over a plain-existing dest so the repair is not skipped. Fall back to the first.
-    std::string Primary = Dests.empty() ? std::string() : Dests.front();
+    // the fetch — pick it over a plain-existing dest so the repair is not skipped. Else the first dest that is not
+    // kept: a kept dest (an installed package's own file) that is there holds whatever node it holds, and every other
+    // dest would be copied from it. Fall back to the first.
+    std::string Primary;
     for (const std::string &D : Dests) if (!PathExists(D) || PathExists(D + ".part")) { Primary = D; break; }
+    if (Primary.empty()) for (const std::string &D : Dests) if (!Keep.count(D)) { Primary = D; break; }
+    if (Primary.empty() && !Dests.empty()) Primary = Dests.front();
 
     std::string Err;
-    const int Rc = FetchOnce(Cid, Primary, Dir, &Err, Verify);   // 0=Done 1=Retryable 2=Terminal — ONE attempt
+    const int Rc = FetchOnce(Cid, Primary, Dir, &Err, Verify && !Keep.count(Primary));   // 0=Done 1=Retryable 2=Terminal — ONE attempt
     bool MatFail = false;
     if (Rc == 0)
         for (const std::string &D : Dests)
             // Every dest, or fail. A Verify job's dests are REUSABLE paths (a node file: same path, new CID on
             // re-publish), so an EXISTING non-primary dest can hold a stale version — overwrite it from the
             // just-verified Primary (Materialize's copy fallback overwrites); presence proves nothing there.
-            if (D != Primary && (Verify || !PathExists(D)) && !Materialize(Primary, D, &Err)) MatFail = true;
+            if (D != Primary && ((Verify && !Keep.count(D)) || !PathExists(D)))
+            {
+                if (Verify && !Keep.count(D)) ClearStaleDest(D, Cid);   // another node's file there: it goes, reference and all
+                if (!Materialize(Primary, D, &Err)) MatFail = true;
+            }
 
     {
         std::lock_guard<std::mutex> Lk(Q().Mu);
@@ -223,10 +240,20 @@ void RunJob(const std::string &Cid, std::vector<std::string> Dests, bool Dir, bo
             Job &J = It->second;
             // A dir dropped mid-fetch (an adopted or withdrawn package stub) must stay dropped: undo what this attempt
             // landed there — the dest, then every directory above it the fetch re-created, up to the dropped dir.
-            // Under Mu, so a re-enqueue that claims the dest again (it is back in J.Dests) is never undone.
+            // Under Mu, so a re-enqueue that claims the dest again (it is back in J.Dests) is never undone. A dest
+            // another CID's job holds now is that job's: never removed here; a finished one runs again (this attempt
+            // may have written over its file, and its fetch hash-checks the dest).
             for (const auto &[D, Root] : std::exchange(J.Forgotten, {}))
             {
                 if (std::find(J.Dests.begin(), J.Dests.end(), D) != J.Dests.end()) continue;
+                Job *Owner = nullptr;
+                for (auto &[OC, O] : Q().Jobs)
+                    if (OC != Cid && std::find(O.Dests.begin(), O.Dests.end(), D) != O.Dests.end()) { Owner = &O; break; }
+                if (Owner)
+                {
+                    if (Owner->State == Job::Done) { Owner->State = Job::Queued; Owner->Seq = ++Q().Seq; Owner->ReadyAt = {}; }
+                    continue;
+                }
                 std::error_code Ec;
                 std::filesystem::remove_all(D, Ec);
                 const std::filesystem::path R = std::filesystem::path(Root).lexically_normal();
@@ -283,11 +310,12 @@ void DispatcherLoop()
         const bool Dir = J->Dir;
         const bool Verify = J->Verify;
         std::vector<std::string> Dests = J->Dests;
+        std::set<std::string> Keep = J->Keep;
         Lk.unlock();
 
         // Hand the slot to a detached worker; loop back to fill the next slot (up to MaxConcurrentDownloads workers).
-        std::thread([Cid, Dests = std::move(Dests), Dir, Verify, Slot = std::move(Slot)]() mutable {
-            RunJob(Cid, Dests, Dir, Verify);
+        std::thread([Cid, Dests = std::move(Dests), Dir, Verify, Keep = std::move(Keep), Slot = std::move(Slot)]() mutable {
+            RunJob(Cid, Dests, Dir, Verify, Keep);
         }).detach();
     }
 }
@@ -308,7 +336,7 @@ BatchHandle EnqueueBatch(const std::vector<FetchTarget> &Targets)
     BatchHandle Handle;
     bool Woke = false;
     std::vector<std::string> NewlyQueued;
-    struct Pending { std::string Cid, Src, Dest; };
+    struct Pending { std::string Cid, Src, Dest; bool Verify = false; };
     std::vector<Pending> Late;   // Done-join materializes, performed OUTSIDE the lock (a copy can be a large file,
                                  // and EnqueueBatch runs on the GUI thread via the cover sweep)
     {
@@ -319,7 +347,16 @@ BatchHandle EnqueueBatch(const std::vector<FetchTarget> &Targets)
             // A file under a folder moved since the caller read it lands where the folder is now. Never a FOLDER target:
             // a folder fetch replaces its destination whole, and a received package folder redirected onto the
             // installed package deleted the game.
-            if (!T.Dir) T.LocalPath = RedirectedLocked(T.LocalPath);
+            //Redirected into an installed package: a node file there is the package's own, changed only by a version
+            //switch. The fetch lands it when missing and never replaces it.
+            bool Keep = false;
+            if (!T.Dir)
+            {
+                const std::string Was = T.LocalPath;
+                T.LocalPath = RedirectedLocked(T.LocalPath);
+                Keep = T.LocalPath != Was;
+                if (Keep) T.Verify = false;
+            }
             Handle.Items.emplace_back(T.Cid, T.Optional);
             if (Q().Closed) {                                 // shutting down: the request fails at once, never waits
                 Job &J = Q().Jobs[T.Cid];
@@ -332,6 +369,7 @@ BatchHandle EnqueueBatch(const std::vector<FetchTarget> &Targets)
             auto It = Q().Jobs.find(T.Cid);
             if (It != Q().Jobs.end()) {
                 Job &J = It->second;
+                if (Keep) J.Keep.insert(T.LocalPath);
                 J.Optional = J.Optional && T.Optional;   // required if any requester is required
                 J.Verify   = J.Verify || T.Verify;
                 switch (J.State) {
@@ -348,7 +386,7 @@ BatchHandle EnqueueBatch(const std::vector<FetchTarget> &Targets)
                             && std::find(J.Dests.begin(), J.Dests.end(), T.LocalPath) != J.Dests.end()) break;
                         if (!T.Verify && PathExists(T.LocalPath)) { AddDest(J, T.LocalPath); break; }   // already there
                         const std::string Src = FirstExisting(J);
-                        if (!Src.empty()) { AddDest(J, T.LocalPath); Late.push_back({T.Cid, Src, T.LocalPath}); }
+                        if (!Src.empty()) { AddDest(J, T.LocalPath); Late.push_back({T.Cid, Src, T.LocalPath, T.Verify && !Keep}); }
                         else { J.State = Job::Queued; J.Seq = ++Q().Seq; AddDest(J, T.LocalPath); Woke = true; NewlyQueued.push_back(T.Cid); }
                         break;
                     }
@@ -372,6 +410,7 @@ BatchHandle EnqueueBatch(const std::vector<FetchTarget> &Targets)
             NewJob.Optional = T.Optional;
             NewJob.Dir = T.Dir;
             NewJob.Verify = T.Verify;
+            if (Keep) NewJob.Keep.insert(T.LocalPath);
             // A Verify target ALWAYS goes to the Go fetch (it hash-verifies the dest and overwrites a stale file):
             // for a reused dest neither presence nor a local block proves the file holds THIS cid.
             if (!T.Verify && PathExists(T.LocalPath) && IpfsWrapper::HasLocal(T.Cid)) { NewJob.State = Job::Done; }
@@ -387,6 +426,7 @@ BatchHandle EnqueueBatch(const std::vector<FetchTarget> &Targets)
     // unwritable dest can fail a batch whose own dest is fine — per-dest completion state is the real fix, tracked.)
     for (const Pending &P : Late) {
         std::string MErr;
+        if (P.Verify) ClearStaleDest(P.Dest, P.Cid);                      // another node's file there: it goes first
         if (!Materialize(P.Src, P.Dest, &MErr)) {
             std::lock_guard<std::mutex> Lk(Q().Mu);
             auto It = Q().Jobs.find(P.Cid);
@@ -555,6 +595,20 @@ void ForgetDestsUnder(const std::string &DirIn)
                                          return true;
                                      }),
                       J.Dests.end());
+}
+
+void ForgetDest(const std::string &Cid, const std::string &DestIn)
+{
+    const std::string Dest = DestKey(DestIn);
+    std::lock_guard<std::mutex> Lk(Q().Mu);
+    const auto It = Q().Jobs.find(Cid);
+    if (It == Q().Jobs.end()) return;
+    Job &J = It->second;
+    const auto From = std::remove(J.Dests.begin(), J.Dests.end(), Dest);
+    if (From == J.Dests.end()) return;
+    J.Dests.erase(From, J.Dests.end());
+    J.Keep.erase(Dest);
+    if (J.State == Job::Active) J.Forgotten.emplace_back(Dest, Dest);   // RunJob undoes a late landing of the file
 }
 
 bool LandingUnder(const std::string &DirIn)

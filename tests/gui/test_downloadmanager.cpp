@@ -52,8 +52,8 @@ private slots:
                   NodeFixture::Chain("a_exec", {NodeFixture::Merge({NodeFixture::Exec("linux64", "a.sh"), NodeFixture::Variant("Play")})}, {"a_content", "a_tile"}));
         json seeder = json{{"Settings", {{"Paths", {{"LibraryRoot", R.toStdString()}}}}}};
         PackageCatalog::PublishLibrary(seeder, &Err);
-        const json Items = seeder["Libraries"]["Games"];
-        QCOMPARE((int)Items.size(), 1);
+        const json Items = PackageCatalog::Wire(PackageCatalog::SheetEntries(seeder["ShareSheet"]))["Games"];
+        QCOMPARE((int)Items.size(), 3);                     // the package's three nodes
 
         // The receiver: the package received (its folder landed: every node file), nothing installed.
         QTemporaryDir RxData; QVERIFY(RxData.isValid());
@@ -63,14 +63,14 @@ private slots:
         {
             std::vector<IpfsWrapper::FetchTarget> B;
             for (const auto & T : PackageCatalog::PlanReceivedFetches(cfg, Nick, json{{"Games", Items}}))
-                B.push_back(IpfsWrapper::FetchTarget{ T.Cid, T.Dest, false, /*Dir=*/true, /*Verify=*/true });
+                B.push_back(IpfsWrapper::FetchTarget{ T.Cid, T.Dest, false, /*Dir=*/false, /*Verify=*/true });
             std::string WErr;
             QVERIFY2(IpfsWrapper::WaitBatch(IpfsWrapper::EnqueueBatch(B), 30000, &WErr), WErr.c_str());
         }
         QVERIFY2(PackageCatalog::LandReceivedPackages(cfg, &Err), Err.c_str());
         const std::filesystem::path Stub = std::filesystem::path(PackageCatalog::CatalogRootDir(cfg)) / (Nick + " - Games") / "[1] A";
         const std::filesystem::path Home = std::filesystem::path(RxData.path().toStdString()) / "LIBRARY" / "Games" / "[1] A";
-        QVERIFY(std::filesystem::is_directory(Stub / ".package"));
+        QVERIFY(std::filesystem::is_regular_file(Stub / "a_exec.json"));
 
         QDir appDir(RxData.path());
         AppModel model(&cfg, &appDir);
@@ -85,7 +85,6 @@ private slots:
         QTRY_VERIFY_WITH_TIMEOUT(std::filesystem::exists(Home / "a.json") || std::filesystem::exists(Home / "tile.json")
                                  || std::filesystem::is_directory(Home), 60000);
         QVERIFY2(!std::filesystem::exists(Stub), "the received stub dir is gone from CATALOG");
-        QVERIFY2(!std::filesystem::exists(Home / ".package"), "the landed folder was a receive artifact");
         // From here on the package is ours: not Received, its bundle dir in the library.
         const NodeIndex Fresh = PackageCatalog::BuildCatalogIndex(cfg);
         const Node * A2 = Fresh.Find("a_exec");
@@ -115,8 +114,8 @@ private slots:
                   NodeFixture::Chain("a_exec", {NodeFixture::Merge({NodeFixture::Exec("linux64", "a.sh"), NodeFixture::Variant("Play")})}, {"a_content", "a_tile"}));
         json seeder = json{{"Settings", {{"Paths", {{"LibraryRoot", R.toStdString()}}}}}};
         PackageCatalog::PublishLibrary(seeder, &Err);
-        const json Items = seeder["Libraries"]["Games"];
-        QCOMPARE((int)Items.size(), 1);
+        const json Items = PackageCatalog::Wire(PackageCatalog::SheetEntries(seeder["ShareSheet"]))["Games"];
+        QCOMPARE((int)Items.size(), 3);                     // the package's three nodes
         QTemporaryDir RxData; QVERIFY(RxData.isValid());
         json cfg = json{{"Settings", {{"Paths", {{"LibraryRoot", (RxData.path() + "/LIBRARY").toStdString()}}}}},
                         {"FriendLibraries", {{"12D3KooWSeederAlice", {{"Games", Items}}}}}};
@@ -124,7 +123,7 @@ private slots:
         {
             std::vector<IpfsWrapper::FetchTarget> B;
             for (const auto & T : PackageCatalog::PlanReceivedFetches(cfg, Nick, json{{"Games", Items}}))
-                B.push_back(IpfsWrapper::FetchTarget{ T.Cid, T.Dest, false, /*Dir=*/true, /*Verify=*/true });
+                B.push_back(IpfsWrapper::FetchTarget{ T.Cid, T.Dest, false, /*Dir=*/false, /*Verify=*/true });
             std::string WErr;
             QVERIFY2(IpfsWrapper::WaitBatch(IpfsWrapper::EnqueueBatch(B), 30000, &WErr), WErr.c_str());
         }
@@ -141,7 +140,7 @@ private slots:
         QSignalSpy Finished(&dm, &DownloadManager::downloadFinished);
         dm.beginDownload("1", {A->Key()}, {}, {});
         QVERIFY(Finished.wait(60000));
-        QVERIFY2(std::filesystem::is_directory(Stub / ".package"), "the received stub stays in CATALOG");
+        QVERIFY2(std::filesystem::is_regular_file(Stub / "a_exec.json"), "the received stub stays in CATALOG");
         QVERIFY2(!std::filesystem::exists(Home), "nothing was adopted into the library");
         IpfsWrapper::DebugResetQueue();
         IpfsWrapper::StopNode();
@@ -161,7 +160,7 @@ private slots:
         json cfg = json{{"Settings", {{"Paths", {{"LibraryRoot", (RxData.path() + "/LIBRARY").toStdString()}}}}},
                         {"FriendLibraries", {{"Alice", {{"Games", json::array()}}}}}};
         const std::string Missing = Cid::OfBytes("vidyagod missing " + QUuid::createUuid().toString().toStdString());
-        const std::string Dir = PackageCatalog::CatalogRootDir(cfg) + "/Alice - Games/[7] G/.package";
+        const std::string Dir = PackageCatalog::CatalogRootDir(cfg) + "/Alice - Games/[7] G";
         std::filesystem::create_directories(Dir);
         const json Base = json{{"LABEL", "g_base"}, {"LAYERS", json::array({ json{{"NODE", Missing}} })}};
         const std::string BBytes = Cid::Canonical(Base), BCid = Cid::OfBytes(BBytes);
@@ -170,7 +169,7 @@ private slots:
             json{{"NODE", BCid}},
             json{{"EXEC", json::array({json{{"LABEL", "Play"}, {"HOST", "linux64"}, {"EXE", "g"}, {"TILE", {{"UID", "7"}, {"TITLE", "G"}}}}})}}})}};
         const std::string Bytes = Cid::Canonical(Game), GCid = Cid::OfBytes(Bytes);
-        { std::ofstream O(Dir + "/" + GCid + ".json", std::ios::binary); O << Bytes; }
+        { std::ofstream O(Dir + "/g_exec.json", std::ios::binary); O << Bytes; }
 
         QDir appDir(RxData.path());
         AppModel model(&cfg, &appDir);
@@ -206,13 +205,13 @@ private slots:
                         {"FriendLibraries", {{"Alice", {{"Games", json::array()}}}}}};
         // Content no one can have: the CID of bytes made up now (a fixed test CID may exist somewhere — one did).
         const std::string Nobody = Cid::OfBytes("vidyagod unserved " + QUuid::createUuid().toString().toStdString());
-        const std::string Dir = PackageCatalog::CatalogRootDir(cfg) + "/Alice - Games/[7] G/.package";
+        const std::string Dir = PackageCatalog::CatalogRootDir(cfg) + "/Alice - Games/[7] G";
         std::filesystem::create_directories(Dir);
         const json Game = json{{"LABEL", "g_exec"}, {"VARIANT", "Play"}, {"LAYERS", json::array({
             json{{"ZIP", "g.zip"}, {"SOURCE", Nobody}},
             json{{"EXEC", json::array({json{{"LABEL", "Play"}, {"HOST", "linux64"}, {"EXE", "g"}, {"TILE", {{"UID", "7"}, {"TITLE", "G"}}}}})}}})}};
         const std::string Bytes = Cid::Canonical(Game), GCid = Cid::OfBytes(Bytes);
-        { std::ofstream O(Dir + "/" + GCid + ".json", std::ios::binary); O << Bytes; }
+        { std::ofstream O(Dir + "/g_exec.json", std::ios::binary); O << Bytes; }
 
         QDir appDir(RxData.path());
         AppModel model(&cfg, &appDir);

@@ -26,7 +26,6 @@ bool NameLess::operator()(const std::string &A, const std::string &B) const
     });
 }
 
-namespace {
 void ClaimsOfNode(const nlohmann::ordered_json &J, ClaimMap &Out)
 {
     if (!J.is_object() || !J.contains("LAYERS") || !J["LAYERS"].is_array()) return;
@@ -48,7 +47,6 @@ void ClaimsOfNode(const nlohmann::ordered_json &J, ClaimMap &Out)
                 }
     }
 }
-} // namespace
 
 ClaimMap ClaimsOfFiles(const std::vector<std::filesystem::path> &NodeFiles)
 {

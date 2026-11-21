@@ -53,6 +53,9 @@ void CancelDownload(const std::string &Cid);
 // called when those files are removed on purpose (a friend's stubs replaced by a new generation), so a job re-run
 // later never materialises a path nobody asked for any more.
 void ForgetDestsUnder(const std::string &Dir);
+// Forget one dest of one CID's job: that file is no longer this node's (a friend's package changed it, or dropped it),
+// so a job that runs later never lands it; one landing now is undone when it ends.
+void ForgetDest(const std::string &Cid, const std::string &Dest);
 // True while a queued or active job still lands a file under Dir (a download into a package in progress).
 bool LandingUnder(const std::string &Dir);
 

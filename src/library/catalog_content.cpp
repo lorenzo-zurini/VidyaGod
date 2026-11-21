@@ -322,8 +322,11 @@ bool Download(std::shared_ptr<const NodeIndex> Idx, const std::vector<std::strin
             for (const std::string &Rid : RunnerChainIds(*Idx, Lid, Config)) All.push_back(Rid);
         for (const std::string &Id : All)
             if (const auto Missing = MissingFromClosure(*Idx, Id); !Missing.empty())
+            {
+                const std::string Where = SheetPath(Config, Missing.front());   // a friend's sheet names where it lives
                 return Fail("'" + Id + "' contains " + std::to_string(Missing.size()) + " node(s) from a package that has "
-                            "not arrived (or is not shared with you), e.g. " + Missing.front());
+                            "not arrived (or is not shared with you), e.g. " + (Where.empty() ? Missing.front() : Where));
+            }
     }
     // What it fetches, from an index: the selected launchables' content and each one's runner chain build, and the
     // runners asked for. Collected twice: first as a dry run over the received index, so a download that cannot

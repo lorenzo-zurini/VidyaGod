@@ -7,6 +7,9 @@
 #include <fstream>
 #include <mutex>
 #include <thread>
+#ifndef _WIN32
+#include <unistd.h>
+#endif
 
 #include "downloadqueue.h"
 #include "ipfswrapper.h"
@@ -258,6 +261,76 @@ private slots:
                                                                  {"CID_OLD_GEN", Y, false, false, true}}), 5000));
         QCOMPARE(Read(Y), std::string("CID_OLD_GEN"));
         QCOMPARE(Read(X), std::string("CID_NEW_GEN"));          // the old cid's job did NOT rewrite X
+    }
+
+    // A path claimed by a new CID while the old CID's fetch is in flight: the old worker still lands it (it holds its
+    // own copy of the dests), over the new node's file. The path is the new node's: the late landing is undone by
+    // running the new node's finished job again. Teeth: stop ClaimDest recording an active job's dest (the old bytes
+    // stay); remove the late file instead of re-running the owner (the path ends empty); skip the re-run (old bytes).
+    void aPathClaimedWhileTheOldFetchRunsEndsWithTheNewNode()
+    {
+        QTemporaryDir dir; QVERIFY(dir.isValid());
+        const std::string X = (dir.path() + "/Vanilla.json").toStdString();
+        std::atomic<bool> Started{false}, Release{false};
+        g_stopHook = false;
+        IpfsWrapper::SetFetchOnceHook([&](const std::string &cid, const std::string &dest, bool, std::string *) {
+            if (cid == "CID_CLAIM_OLD") { Started = true; while (!Release && !g_stopHook) std::this_thread::sleep_for(std::chrono::milliseconds(5)); }
+            std::ofstream(dest, std::ios::trunc) << cid; return 0; });
+        auto Read = [](const std::string &P) { std::ifstream I(P); std::string S; std::getline(I, S); return S; };
+        auto Old = IpfsWrapper::EnqueueBatch({{"CID_CLAIM_OLD", X, false, false, true}});
+        QTRY_VERIFY_WITH_TIMEOUT(Started.load(), 5000);
+        QVERIFY(IpfsWrapper::WaitBatch(IpfsWrapper::EnqueueBatch({{"CID_CLAIM_NEW", X, false, false, true}}), 5000));
+        QCOMPARE(Read(X), std::string("CID_CLAIM_NEW"));
+        Release = true;
+        IpfsWrapper::WaitBatch(Old, 5000);
+        QTRY_COMPARE_WITH_TIMEOUT(Read(X), std::string("CID_CLAIM_NEW"), 5000);
+        QTRY_COMPARE_WITH_TIMEOUT(IpfsWrapper::DebugJobState("CID_CLAIM_NEW"), 2 /* Done */, 5000);
+        QCOMPARE(Read(X), std::string("CID_CLAIM_NEW"));
+    }
+
+    // One file forgotten from a fetch in flight (a friend's package no longer names it there): the worker's late
+    // landing of it is undone, and nothing else — its folder and the fetch's other dest stay. Teeth: stop ForgetDest
+    // recording an active job's dest (the file stays).
+    void aFileForgottenWhileItsFetchRunsIsUndone()
+    {
+        QTemporaryDir dir; QVERIFY(dir.isValid());
+        const std::string Pkg = (dir.path() + "/Game").toStdString();
+        std::filesystem::create_directories(Pkg);
+        const std::string A = Pkg + "/a.json", B = Pkg + "/b.json";
+        std::atomic<bool> Started{false}, Release{false};
+        g_stopHook = false;
+        IpfsWrapper::SetFetchOnceHook([&](const std::string &cid, const std::string &dest, bool, std::string *) {
+            Started = true;
+            while (!Release && !g_stopHook) std::this_thread::sleep_for(std::chrono::milliseconds(5));
+            std::ofstream(dest, std::ios::trunc) << cid; return 0; });
+        auto H = IpfsWrapper::EnqueueBatch({{"CID_FORGET_ONE", A, false}, {"CID_FORGET_ONE", B, false}});
+        QTRY_VERIFY_WITH_TIMEOUT(Started.load(), 5000);
+        IpfsWrapper::ForgetDest("CID_FORGET_ONE", B);
+        Release = true;
+        IpfsWrapper::WaitBatch(H, 5000);
+        QTRY_COMPARE_WITH_TIMEOUT(IpfsWrapper::DebugJobState("CID_FORGET_ONE"), 2 /* Done */, 5000);
+        std::error_code Ec;
+        QVERIFY(std::filesystem::exists(A, Ec));
+        QVERIFY2(!std::filesystem::exists(B, Ec), "a forgotten file landed late and stayed");
+        QVERIFY(std::filesystem::is_directory(Pkg, Ec));
+    }
+
+    // A dest that cannot be hashed (unreadable) is not known to hold another node: it is never removed as stale. (The
+    // node going down made the hash empty, and a correct node file was deleted.) Teeth: treat an empty hash as stale.
+    void anUnhashableDestIsNeverRemovedAsStale()
+    {
+#ifndef _WIN32
+        if (::geteuid() == 0) QSKIP("root reads every file");
+        QTemporaryDir dir; QVERIFY(dir.isValid());
+        const std::string F = (dir.path() + "/a.json").toStdString();
+        { std::ofstream(F) << "{}"; }
+        std::filesystem::permissions(F, std::filesystem::perms::none);
+        IpfsWrapper::ClearStaleDest(F, "bafkreihdwdcefgh4dqkjv67uzcmw7ojee6xedzdetojuzjevtenxquvyku");
+        std::error_code Ec;
+        const bool Kept = std::filesystem::exists(F, Ec);
+        std::filesystem::permissions(F, std::filesystem::perms::owner_all, Ec);
+        QVERIFY2(Kept, "an unreadable dest was removed as stale");
+#endif
     }
 
     // Forgetting a directory's dests: after a friend's stubs were removed on purpose, a later run of a job that

@@ -6,6 +6,10 @@ that references an old CID is rewritten (and re-minted) in turn, until nothing c
 
 edits.py defines EDITS = {old_cid: fn(node) -> None (mutates)} and optionally NEW = [(package_dir, node_dict)].
 Without --apply: prints what would change (old -> new CIDs, referrers) and writes nothing.
+
+A node's CID is the CID of its canonical bytes, whatever its file is called (MetaPackageFormat chapter 02 §2.5: node
+files are named by their labels). A re-minted node is rewritten where it is; a new one is named by its label
+(bumped with its CID's tail when the name is taken). Publishing names every node file by the rule.
 """
 import json, os, sys, importlib.util
 sys.path.insert(0, os.path.expanduser("~/Code/VidyaGod/tools/gen6"))
@@ -16,23 +20,57 @@ apply = "--apply" in sys.argv
 spec = importlib.util.spec_from_file_location("edits", edits_path)
 E = importlib.util.module_from_spec(spec); spec.loader.exec_module(E)
 
+DEVICES = {"CON", "PRN", "AUX", "NUL", "CONIN$", "CONOUT$"} | {f"COM{i}" for i in range(1, 10)} | {f"LPT{i}" for i in range(1, 10)}
+
+def safe_name(s):
+    """NodeFiles::SafeName: a label as one file name — the same bytes on every machine."""
+    o = bytearray(c if (chr(c).isascii() and chr(c).isalnum()) or chr(c) in "_-. []()" else ord("_") for c in s.encode("utf-8"))[:120]
+    o = o.decode("ascii")
+    if o.strip(".") == "": o = "_" * max(len(o), 1)
+    i = len(o)
+    while i > 0 and o[i - 1] in ". ":
+        i -= 1
+    o = o[:i] + "_" * (len(o) - i)
+    if o.split(".")[0].rstrip(" ").upper() in DEVICES: o = "_" + o
+    return o
+
 nodes = {}   # cid -> [path, node]
 for d, dirs, fs in os.walk(lib):
     dirs[:] = [x for x in dirs if not x.startswith("_friend_")]
     for f in fs:
-        if f.endswith(".json") and f.startswith("baf"):
-            p = os.path.join(d, f)
-            b = open(p, "rb").read()
+        if not f.endswith(".json"):
+            continue
+        p = os.path.join(d, f)
+        b = open(p, "rb").read()
+        try:
             n = json.loads(b)
-            c = f[:-5]
-            assert cid_of(b) == c, f"{p} does not hash to its name"
-            if c in nodes: nodes[c][0].append(p)      # a dependency's node copied into several package folders
-            else: nodes[c] = [[p], n]
+        except ValueError:
+            continue
+        if not isinstance(n, dict) or not isinstance(n.get("LAYERS"), list):
+            continue                                  # not a node (a content file that happens to be JSON)
+        if "CID" in n:
+            print(f"SKIP draft (a CID handle): {p}"); continue
+        assert b == canonical(n), f"{p} is not its node's canonical form"
+        c = cid_of(b)
+        if c in nodes: nodes[c][0].append(p)          # the same node in several package folders
+        else: nodes[c] = [[p], n]
+
+planned = set()   # paths this run writes: two new nodes of one label never share a file
+
+def new_path(pkg_dir, n, c):
+    name = safe_name(n.get("LABEL") or "node") + ".json"
+    p = os.path.join(pkg_dir, name)
+    taken = p.lower() in planned or (os.path.exists(p) and cid_of(open(p, "rb").read()) != c)
+    if taken:
+        p = os.path.join(pkg_dir, name[:-5] + " [" + c[-8:] + "].json")   # publishing names every claimant by the rule
+    assert p.lower() not in planned, f"{p} is planned twice"
+    planned.add(p.lower())
+    return p
 
 new_nodes = []
 for pkg, n in getattr(E, "NEW", []):
     c = cid_of(canonical(n))
-    new_nodes.append((os.path.join(lib, pkg, c + ".json"), n, c))
+    new_nodes.append((new_path(os.path.join(lib, pkg), n, c), n, c))
     print(f"NEW  {c}  {n.get('LABEL')}  in {pkg}")
 
 def remap_refs(o, m):
@@ -72,7 +110,7 @@ for c, (ps, n) in nodes.items():
     nc = final[c]
     if nc != c:
         for p in ps:
-            writes.append((os.path.join(os.path.dirname(p), nc + ".json"), canonical(n))); removes.append(p)
+            writes.append((p, canonical(n)))          # rewritten where it is: its file is named by its label
             print(f"MINT {c[:24]} -> {nc[:24]}  {n.get('LABEL','')[:60]}  [{os.path.relpath(os.path.dirname(p), lib)}]")
 for p, n, c in new_nodes:
     writes.append((p, canonical(n)))

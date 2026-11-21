@@ -172,7 +172,7 @@ VG_COMMANDS
         { CidArg(), Pos("dest", "where it lands"), Flag("dir", "a folder CID"), Flag("once", "one attempt, outside the queue"),
           Flag("verify", "(--once) re-check bytes already at dest"), Opt("timeout", "give up after this many ms (file, queued)", Type::Int) },
         { "ipfs fetch Qm… ~/Storage/tmp/x.zip", "ipfs fetch bafybei… ~/Storage/tmp/pkg --dir" },
-        { "IpfsWrapper::FetchToPath", "IpfsWrapper::FetchDirToPath", "IpfsWrapper::FetchOnce", "IpfsWrapper::FetchOnceHookActive" }, Needs::Config, true,
+        { "IpfsWrapper::FetchToPath", "IpfsWrapper::FetchDirToPath", "IpfsWrapper::FetchOnce", "IpfsWrapper::ClearStaleDest", "IpfsWrapper::FetchOnceHookActive" }, Needs::Config, true,
         [](Command::Context &, const json &A) {
             const std::string Cid = Command::Str(A, "cid"), Dest = Command::Str(A, "dest");
             const bool Dir = Command::Bool(A, "dir", false);
@@ -532,16 +532,18 @@ VG_COMMANDS
         "queue landing", "fetches landing under a folder, and moving them",
         "Whether any queued or active fetch lands under <dir>; where a path is now after a folder moved (--path); "
         "--move-to re-points every destination under <dir> to the new folder (a package was moved); --forget drops "
-        "those destinations; --drop-redirects forgets the moves recorded under <dir>.",
+        "those destinations; --forget-file <cid> drops <dir> (a file) from that CID's fetch; --drop-redirects forgets the moves recorded under <dir>.",
         { Pos("dir", "the folder"), Opt("path", "a path: where it is now"), Opt("move-to", "re-point destinations under dir here"),
-          Flag("forget", "forget destinations under dir"), Flag("drop-redirects", "forget the moves under dir") },
+          Flag("forget", "forget destinations under dir"),
+          Opt("forget-file", "a CID: forget dir, a file, as its destination"), Flag("drop-redirects", "forget the moves under dir") },
         { "queue landing ~/.VidyaGod/LIBRARY/VidyaGod/x", "queue landing ~/a --move-to ~/b" },
         { "IpfsWrapper::LandingUnder", "IpfsWrapper::Redirected", "IpfsWrapper::RedirectDestsUnder", "IpfsWrapper::ForgetDestsUnder",
-          "IpfsWrapper::DropRedirectsUnder" }, Needs::Config, false,
+          "IpfsWrapper::ForgetDest", "IpfsWrapper::DropRedirectsUnder" }, Needs::Config, false,
         [](Command::Context &, const json &A) {
             const std::string D = Command::Str(A, "dir");
             if (A.contains("move-to")) IpfsWrapper::RedirectDestsUnder(D, Command::Str(A, "move-to"));
             if (Command::Bool(A, "forget", false)) IpfsWrapper::ForgetDestsUnder(D);
+            if (A.contains("forget-file")) IpfsWrapper::ForgetDest(Command::Str(A, "forget-file"), D);
             if (Command::Bool(A, "drop-redirects", false)) IpfsWrapper::DropRedirectsUnder(D);
             json Out = {{"landing", IpfsWrapper::LandingUnder(D)}};
             if (A.contains("path")) Out["now_at"] = IpfsWrapper::Redirected(Command::Str(A, "path"));
@@ -601,14 +603,14 @@ VG_COMMANDS
         }, {} });
 
     Command::Register({
-        "transfers package", "a package's folder in the IPFS tab, and its folder CID",
-        "Where the tab's package row points, and the folder CID others add to receive exactly that package.",
+        "transfers package", "a package's folder in the IPFS tab, and its pin folder",
+        "Where the tab's package row points, and its pin folder: what a pinning service is given to hold that package.",
         { Pos("package", "the package name as the tab shows it") }, { "transfers package 'Age of Empires II'" },
-        { "IpfsModel::packageDir", "IpfsModel::packageCid" }, Needs::Ui, false,
+        { "IpfsModel::packageDir", "IpfsModel::packagePin" }, Needs::Ui, false,
         [](Command::Context &C, const json &A) {
             IpfsModel &M = *Win(C).ipfsModel();
             const QString P = QString::fromStdString(Command::Str(A, "package"));
-            return json{{"dir", M.packageDir(P).toStdString()}, {"cid", M.packageCid(P).toStdString()}};
+            return json{{"dir", M.packageDir(P).toStdString()}, {"pin", M.packagePin(P).toStdString()}};
         }, {} });
 
     Command::Register({

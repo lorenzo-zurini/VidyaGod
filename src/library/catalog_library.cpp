@@ -4,6 +4,7 @@
 #include "sessions.h"
 #include "nodestore.h"
 #include "contentfile.h"
+#include "nodefiles.h"
 #include "builtinrunners.h"
 #include "fold.h"   // Fold — a row's grafts are what its resolution offers
 #include "packagecatalog_p.h"
@@ -66,35 +67,6 @@ std::string LibraryOf(const std::filesystem::path &BundleDir, const std::filesys
 }
 
 
-nlohmann::ordered_json SharedWith(const nlohmann::ordered_json &Libraries, const std::vector<std::string> &SharedLibs)
-{
-    nlohmann::ordered_json Out = nlohmann::ordered_json::object();
-    if (!Libraries.is_object()) return Out;
-    std::set<std::pair<std::string, std::string>> Taken;
-    std::deque<std::pair<std::string, std::string>> Todo;
-    auto Row = [&](const std::string &L, const std::string &P) -> const nlohmann::ordered_json * {
-        if (!Libraries.contains(L) || !Libraries[L].is_array()) return nullptr;
-        for (const auto &E : Libraries[L]) if (E.is_object() && E.value("pkg", std::string()) == P) return &E;
-        return nullptr;
-    };
-    for (const std::string &L : SharedLibs)
-        if (Libraries.contains(L) && Libraries[L].is_array())
-            for (const auto &E : Libraries[L])
-                if (E.is_object() && !E.value("cid", std::string()).empty()) Todo.emplace_back(L, E.value("pkg", std::string()));
-    while (!Todo.empty())
-    {
-        const auto Key = Todo.front(); Todo.pop_front();
-        const nlohmann::ordered_json *E = Row(Key.first, Key.second);
-        if (!E || !Taken.insert(Key).second) continue;
-        if (!Out.contains(Key.first)) Out[Key.first] = nlohmann::ordered_json::array();
-        Out[Key.first].push_back(*E);
-        if (E->contains("needs") && (*E)["needs"].is_array())
-            for (const auto &N : (*E)["needs"])
-                if (N.is_object()) Todo.emplace_back(N.value("lib", std::string()), N.value("pkg", std::string()));
-    }
-    return Out;
-}
-
 namespace {
 
 using PkgKey = std::pair<std::string, std::string>;   // (library, package dir)
@@ -109,24 +81,6 @@ std::optional<PkgKey> PackageKeyOf(const std::filesystem::path &Dir, const std::
     for (const auto &Part : Rel) if (Part != "." && !Part.empty()) Seg.push_back(Part.string());
     if (Ec || Seg.empty() || Seg[0] == "..") return std::nullopt;
     return Seg.size() >= 2 ? PkgKey{Seg[0], Seg[1]} : PkgKey{"Library", Seg[0]};
-}
-
-//The share row of a package in Libraries[Lib] (by its name), or nullptr.
-const nlohmann::ordered_json *RowOf(const nlohmann::ordered_json &Config, const std::string &Lib, const std::string &Pkg)
-{
-    if (!Config.contains("Libraries") || !Config["Libraries"].is_object() || !Config["Libraries"].contains(Lib)
-        || !Config["Libraries"][Lib].is_array()) return nullptr;
-    for (const auto &R : Config["Libraries"][Lib]) if (R.is_object() && R.value("pkg", std::string()) == Pkg) return &R;
-    return nullptr;
-}
-
-//Puts Row in Libraries[Lib] in place of the row with its package name, or after the others.
-void MergeRow(nlohmann::ordered_json &Libraries, const std::string &Lib, nlohmann::ordered_json Row)
-{
-    if (!Libraries.contains(Lib) || !Libraries[Lib].is_array()) Libraries[Lib] = nlohmann::ordered_json::array();
-    for (auto &R : Libraries[Lib])
-        if (R.is_object() && R.value("pkg", std::string()) == Row.value("pkg", std::string())) { R = std::move(Row); return; }
-    Libraries[Lib].push_back(std::move(Row));
 }
 
 //The publish itself. Only == nullptr: every package, and Libraries is replaced whole (a deleted package leaves it).
@@ -240,64 +194,62 @@ std::vector<std::string> Publish(nlohmann::ordered_json &Config, const std::vect
                         && L[K].get<std::string>().find('%') == std::string::npos)
                         ++Unsourced[Pkg];
     }
-    //Each node's home package, and from it what each package NEEDS: the other packages its nodes contain. A share is
-    //closed over this (SharedWith): a friend given a game also gets the library packages it contains — never a copy.
-    std::map<std::string, std::pair<std::string, std::string>> HomeOf;                 // node cid → (lib, package)
-    for (const auto &[LibName, Pkgs] : ByLibPkg)
-        for (const auto &[Pkg, Cids] : Pkgs)
-            for (const auto &C : Cids) HomeOf.emplace(C, std::make_pair(LibName, Pkg));
-    // A bounded display title for the receiver's dir segment (NAME_MAX): the dir basename, cut at a UTF-8 boundary. It
-    // is also the package's name in the share entry, so "needs" names packages the same way.
-    auto TitleOf = [](std::string Title) {
-        if (Title.size() > 120)
-        {
-            Title.resize(120);
-            while (!Title.empty() && (static_cast<unsigned char>(Title.back()) & 0xC0) == 0x80) Title.pop_back();
-        }
-        return Title;
-    };
-    auto Needs = [&](const std::string &LibName, const std::string &Pkg) {
-        std::set<std::pair<std::string, std::string>> Out;
-        for (const std::string &H : HandlesOf[LibName][Pkg])
-            for (const std::string &R : NodeRefs::Contained(Tree.at(H)))
-            {
-                const auto C = MR.HandleToCid.find(R);
-                const auto Home = HomeOf.find(C != MR.HandleToCid.end() ? C->second : R);
-                if (Home != HomeOf.end() && Home->second != std::make_pair(LibName, Pkg)) Out.insert(Home->second);
-            }
-        nlohmann::ordered_json J = nlohmann::ordered_json::array();
-        for (const auto &[L, P] : Out) J.push_back({ {"lib", L}, {"pkg", TitleOf(P)} });
-        return J;
-    };
-    nlohmann::ordered_json Libs = nlohmann::ordered_json::object();
-    nlohmann::ordered_json Flat = nlohmann::ordered_json::array();
-    size_t PkgCount = 0;
+    //The share sheet: each published node's path, its file named by the rule among its package's nodes (chapter 02
+    //§2.5). A package the selection only contains keeps its entries and pin while they are current.
+    std::map<PkgKey, std::map<std::string, std::string>> Was;                         // package → cid → file
+    if (Config.contains("ShareSheet") && Config["ShareSheet"].is_object())
+        for (const SheetEntry &E : SheetEntries(Config["ShareSheet"])) Was[{E.Lib, E.Pkg}][E.Cid] = E.File;
+    const nlohmann::ordered_json PinsWas = Config.contains("Pins") && Config["Pins"].is_object() ? Config["Pins"] : nlohmann::ordered_json::object();
+    std::map<std::string, std::string> Sheet;                                          // cid → path, of what is published
+    std::map<std::string, std::string> Pins;                                           // "lib/pkg" → its pin folder
+    std::vector<std::string> Published;
+    size_t Renamed = 0;
     for (auto &[LibName, Pkgs] : ByLibPkg)
     {
         for (auto &[Pkg, Cids] : Pkgs)
         {
             std::sort(Cids.begin(), Cids.end());
             Cids.erase(std::unique(Cids.begin(), Cids.end()), Cids.end());
+            const std::vector<std::string> &Handles = HandlesOf[LibName][Pkg];
+            std::map<std::string, nlohmann::ordered_json> Frozen;
+            for (const std::string &H : Handles) Frozen.emplace(MR.HandleToCid.at(H), NodeGraph::FreezeNodeJson(Tree.at(H), MR.HandleToCid));
+            const std::map<std::string, std::string> Files = NodeFiles::Names(Frozen);
+            const std::string Key = LibName + "/" + Pkg;
+            auto Record = [&](const std::string &Pin) {
+                for (const auto &[C, F] : Files) Sheet[C] = Key + "/" + F;
+                Pins[Key] = Pin;
+                Published.push_back(Key);
+            };
+            if (Only && !Targets.count(PkgKey{LibName, Pkg}))
+                if (const auto W = Was.find(PkgKey{LibName, Pkg});
+                    W != Was.end() && W->second == Files && PinsWas.contains(Key) && PinsWas[Key].is_string())
+                { Record(PinsWas[Key].get<std::string>()); continue; }
+            //The frozen node files on disk take their names, and what refers to them follows (a received node's
+            //file is referenced in place).
+            std::vector<std::pair<std::filesystem::path, std::filesystem::path>> Moved;
+            std::string NErr;
+            if (!NodeFiles::Normalize(Dirs.at(Handles.front()), &Moved, &NErr))
+                LogWarn("PackageCatalog::PublishLibrary", "package '" + Pkg + "': " + NErr);
+            if (!Moved.empty())
+            {
+                std::vector<std::pair<std::string, std::string>> Refs;
+                for (const auto &[From, To] : Moved) Refs.push_back({ From.string(), To.string() });
+                std::string MErr;
+                if (IpfsWrapper::MoveRefs(Refs, &MErr) < 0)
+                    LogWarn("PackageCatalog::PublishLibrary", "package '" + Pkg + "': renamed its node files, but their "
+                            "references did not follow: " + MErr);
+                Renamed += Moved.size();
+            }
+            // The PIN folder: the package's node files under their names + its own content, linked — what a pinning
+            // service pins, so it holds the package whole (references inside a node are plain CIDs: nothing follows
+            // them). A library the package contains is its own package with its own pin: no byte is billed twice.
             std::map<std::string, std::string> Entries;
-            for (const auto &C : Cids) Entries[C + ".json"] = C;
+            for (const auto &[C, F] : Files) Entries[F] = C;
             std::string MErr;
             const std::string PCid = IpfsWrapper::MakeDir(Entries, &MErr);
             if (PCid.empty()) { if (Error) *Error = "package folder for '" + Pkg + "' not made: " + MErr; return {}; }
-            //A package the selection only contains keeps its record while that record is current.
-            if (Only && !Targets.count(PkgKey{LibName, Pkg}))
-                if (const nlohmann::ordered_json *Was = RowOf(Config, LibName, TitleOf(Pkg));
-                    Was && Was->value("cid", std::string()) == PCid && !Was->value("pin", std::string()).empty())
-                {
-                    Libs[LibName].push_back(*Was);
-                    Flat.push_back(PCid);
-                    ++PkgCount;
-                    continue;
-                }
-            // The PIN folder: the package folder + the package's own content, linked — what a pinning service pins,
-            // so it holds the package whole (references inside a node are plain CIDs: nothing follows them). A
-            // library the package contains is its own package with its own pin: no byte is billed twice.
             std::map<std::string, std::string> Content;
-            for (const std::string &H : HandlesOf[LibName][Pkg])
+            for (const std::string &H : Handles)
                 for (const std::string &C : NodeContentCids(Tree.at(H))) Content[C] = C;
             std::map<std::string, std::string> Pin{ {"package", PCid} };
             if (!Content.empty())
@@ -317,28 +269,26 @@ std::vector<std::string> Publish(nlohmann::ordered_json &Config, const std::vect
             }
             const std::string PinCid = IpfsWrapper::MakeDir(Pin, &MErr);
             if (PinCid.empty()) { if (Error) *Error = "pin folder for '" + Pkg + "' not made: " + MErr; return {}; }
-            const std::string Title = TitleOf(Pkg);
-            Libs[LibName].push_back(nlohmann::ordered_json{{"cid", PCid}, {"pin", PinCid}, {"node", Title}, {"pkg", Title},
-                                                            {"title", Title}, {"nodes", Cids.size()},
-                                                            {"needs", Needs(LibName, Pkg)}});
-            Flat.push_back(PCid);
-            ++PkgCount;
+            Record(PinCid);
         }
     }
-    // No library-level block: a library is a NAME that groups packages in the share sheet, never a CID — a CID over
-    // the whole library would re-mint on every change to any package, and the package is the unit that changes.
-    if (!Only) Config["Libraries"] = std::move(Libs);
-    else
-    {   // merged in place: the published packages' rows replace their own, every other row stays as it was
-        if (!Config.contains("Libraries") || !Config["Libraries"].is_object()) Config["Libraries"] = nlohmann::ordered_json::object();
-        for (auto &[LibName, Rows] : Libs.items())
-            for (auto &R : Rows) MergeRow(Config["Libraries"], LibName, std::move(R));
+    //Recorded: the whole sheet, or the published packages' entries in place of their own (every other entry stays).
+    if (Only)
+    {
+        std::set<std::string> Keys(Published.begin(), Published.end());
+        for (const auto &[K, Files] : Was)
+            if (!Keys.count(K.first + "/" + K.second))
+                for (const auto &[C, F] : Files) Sheet.emplace(C, K.first + "/" + K.second + "/" + F);
+        for (const auto &[K, V] : PinsWas.items()) if (V.is_string()) Pins.emplace(K, V.get<std::string>());
     }
-    Config.erase("PublishedList");       // what the share list once was kept as: it is the return value, and Libraries
-    Config.erase("PublishedManifest");
+    Config["ShareSheet"] = nlohmann::ordered_json::object();
+    for (const auto &[C, P] : Sheet) Config["ShareSheet"][C] = P;
+    Config["Pins"] = nlohmann::ordered_json::object();
+    for (const auto &[K, P] : Pins) Config["Pins"][K] = P;
     LogSucc("PackageCatalog::PublishLibrary", "published " + std::to_string(MR.HandleToCid.size())
-            + " node block(s) in " + std::to_string(PkgCount) + " package folder(s), "
-            + std::to_string(Config["Libraries"].size()) + " library(ies)"
+            + " node block(s) in " + std::to_string(Published.size()) + " package(s), "
+            + std::to_string(Config["ShareSheet"].size()) + " entries in the share sheet, "
+            + std::to_string(Renamed) + " node file(s) renamed"
             + (Only ? " (" + std::to_string(Targets.size()) + " package(s) named, " + std::to_string(Sel.size() - Targets.size())
                       + " contained)" : std::string()));
     // The verdict names what did not publish whole: a partial publish must never read as a clean one.
@@ -371,10 +321,113 @@ std::vector<std::string> Publish(nlohmann::ordered_json &Config, const std::vect
     }
     if (!Gap.empty()) LogErr("PackageCatalog::PublishLibrary", "published with gaps: " + Gap);
     if (Gaps) *Gaps = Gap;
-    return Flat.get<std::vector<std::string>>();   // the share list: one package folder per package
+    return Published;
 }
 
 } // namespace
+
+std::vector<SheetEntry> SheetEntries(const nlohmann::ordered_json &Sheet)
+{
+    std::vector<SheetEntry> Out;
+    if (!Sheet.is_object()) return Out;
+    for (const auto &[Cid, P] : Sheet.items())
+    {
+        if (!P.is_string()) continue;
+        const std::string S = P.get<std::string>();
+        const size_t A = S.find('/'), B = S.rfind('/');
+        if (Cid.empty() || A == std::string::npos || A == B || S.find('/', A + 1) != B || A == 0 || B == A + 1 || B + 1 == S.size())
+            continue;
+        Out.push_back({ Cid, S.substr(0, A), S.substr(A + 1, B - A - 1), S.substr(B + 1) });
+    }
+    return Out;
+}
+
+std::vector<SheetEntry> WireEntries(const nlohmann::ordered_json &Libs)
+{
+    std::vector<SheetEntry> Out;
+    if (!Libs.is_object()) return Out;
+    for (const auto &[Lib, Items] : Libs.items())
+        if (Items.is_array())
+            for (const auto &It : Items)
+            {
+                if (!It.is_object()) continue;
+                SheetEntry E{ It.value("cid", std::string()), Lib, It.value("pkg", std::string()), It.value("node", std::string()) };
+                if (!E.Cid.empty() && !E.Lib.empty() && !E.Pkg.empty() && !E.File.empty()) Out.push_back(std::move(E));
+            }
+    return Out;
+}
+
+nlohmann::ordered_json Wire(const std::vector<SheetEntry> &Entries)
+{
+    std::map<std::string, std::map<std::pair<std::string, std::string>, std::string>> By;   // lib → (pkg, file) → cid
+    for (const SheetEntry &E : Entries) By[E.Lib][{ E.Pkg, E.File }] = E.Cid;
+    nlohmann::ordered_json Out = nlohmann::ordered_json::object();
+    for (const auto &[Lib, Items] : By)
+    {
+        nlohmann::ordered_json A = nlohmann::ordered_json::array();
+        for (const auto &[PF, Cid] : Items) A.push_back({ {"cid", Cid}, {"pkg", PF.first}, {"node", PF.second} });
+        Out[Lib] = std::move(A);
+    }
+    return Out;
+}
+
+std::string SheetPath(const nlohmann::ordered_json &GlobalConfigJSON, const std::string &Cid)
+{
+    if (GlobalConfigJSON.contains("ShareSheet") && GlobalConfigJSON["ShareSheet"].is_object()
+        && GlobalConfigJSON["ShareSheet"].contains(Cid) && GlobalConfigJSON["ShareSheet"][Cid].is_string())
+        return GlobalConfigJSON["ShareSheet"][Cid].get<std::string>();
+    if (GlobalConfigJSON.contains("FriendLibraries") && GlobalConfigJSON["FriendLibraries"].is_object())
+        for (const auto &[Peer, Libs] : GlobalConfigJSON["FriendLibraries"].items())
+            for (const SheetEntry &E : WireEntries(Libs))
+                if (E.Cid == Cid) return E.Lib + "/" + E.Pkg + "/" + E.File;
+    return {};
+}
+
+std::vector<std::string> NodeContains(const NodeIndex &Idx, const std::string &Cid)
+{
+    if (const Node *N = Idx.Find(Cid); N && N->Key() == Cid) return N->Refs;
+    if (!IpfsWrapper::HasLocal(Cid)) return {};                         // never fetched to be read: a sheet is ours
+    const nlohmann::ordered_json J = NodeGraph::ParseBounded(IpfsWrapper::BlockGet(Cid));
+    return ManifestModel::IsNodeObject(J) ? NodeRefs::Contained(J) : std::vector<std::string>();
+}
+
+std::vector<std::string> PackagesContained(const nlohmann::ordered_json &Sheet, const std::vector<std::string> &Packages,
+                                           const std::function<std::vector<std::string>(const std::string &)> &Contains)
+{
+    std::map<std::string, std::string> PkgOf;                                          // cid → "lib/pkg"
+    std::map<std::string, std::vector<std::string>> CidsOf;                            // "lib/pkg" → its cids
+    for (const SheetEntry &E : SheetEntries(Sheet))
+    {
+        PkgOf.emplace(E.Cid, E.Lib + "/" + E.Pkg);
+        CidsOf[E.Lib + "/" + E.Pkg].push_back(E.Cid);
+    }
+    std::set<std::string> Taken;
+    std::deque<std::string> Todo(Packages.begin(), Packages.end());
+    while (!Todo.empty())
+    {
+        const std::string K = Todo.front();
+        Todo.pop_front();
+        if (!CidsOf.count(K) || !Taken.insert(K).second) continue;
+        for (const std::string &C : CidsOf[K])
+            for (const std::string &R : Contains(C))
+                if (const auto P = PkgOf.find(R); P != PkgOf.end()) Todo.push_back(P->second);
+    }
+    return { Taken.begin(), Taken.end() };
+}
+
+nlohmann::ordered_json SharedWith(const nlohmann::ordered_json &Sheet, const std::vector<std::string> &SharedLibs,
+                                  const std::function<std::vector<std::string>(const std::string &)> &Contains)
+{
+    const std::vector<SheetEntry> All = SheetEntries(Sheet);
+    std::vector<std::string> Start;
+    for (const SheetEntry &E : All)
+        if (std::find(SharedLibs.begin(), SharedLibs.end(), E.Lib) != SharedLibs.end()) Start.push_back(E.Lib + "/" + E.Pkg);
+    const std::vector<std::string> Pkgs = PackagesContained(Sheet, Start, Contains);
+    const std::set<std::string> Taken(Pkgs.begin(), Pkgs.end());
+    std::vector<SheetEntry> Out;
+    for (const SheetEntry &E : All) if (Taken.count(E.Lib + "/" + E.Pkg)) Out.push_back(E);
+    return Wire(Out);
+}
 
 std::vector<std::string> PublishLibrary(nlohmann::ordered_json &Config, std::string *Error, std::string *Gaps)
 {

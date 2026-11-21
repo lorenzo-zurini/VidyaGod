@@ -58,6 +58,10 @@ std::string FetchToPath(const std::string &Cid, const std::string &DestPath, std
 // Verify = refresh semantics for a REUSABLE dest (node files): skip the local "already materialized" shortcut and
 // let the node hash-verify the dest against the CID (overwriting a stale file). Default keeps the fast path.
 int FetchOnce(const std::string &Cid, const std::string &Dest, bool Dir, std::string *Error = nullptr, bool Verify = false);
+//A Verify dest is a reusable path (a node file: the same name, another node): when it holds another CID's bytes, they go
+//— and their reference, when it was to this file — so the CID asked for lands there. A file that cannot be hashed (the
+//node down) is left as it is.
+void ClearStaleDest(const std::string &Dest, const std::string &Cid);
 
 // Test seam: override FetchOnce with a scripted outcome (return 0/1/2, optionally sleeping/blocking to simulate a
 // slow or stalled attempt). Set to {} to restore the real node-backed path. Production never touches this.

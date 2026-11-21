@@ -272,6 +272,8 @@ set(SHARED_SOURCES
     src/format/nodelower.cpp
     src/format/contentfile.h
     src/format/contentfile.cpp
+    src/format/nodefiles.h
+    src/format/nodefiles.cpp
 
     src/editor/pkggraph.h
     src/editor/pkggraph.cpp
@@ -489,6 +491,7 @@ add_executable(vg_tests
     tests/test_pkglayout.cpp
     tests/test_vgdelta.cpp
     tests/test_pkgdoc.cpp
+    tests/test_nodefiles.cpp
     tests/test_optionreadback.cpp
     tests/test_parallel.cpp
     src/format/manifestmodel.cpp
@@ -498,6 +501,7 @@ add_executable(vg_tests
     src/format/nodegraph.cpp   # the gigagraph's PURE transforms (freeze/topo/gather/landing checks) — no IPFS/Qt
     src/format/nodelower.cpp
     src/format/contentfile.cpp
+    src/format/nodefiles.cpp
     src/format/varsubst.cpp
     src/base/keynames.cpp
     src/format/registrywrapper.cpp

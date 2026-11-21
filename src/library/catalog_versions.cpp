@@ -4,6 +4,7 @@
 #include "sessions.h"
 #include "nodestore.h"
 #include "contentfile.h"
+#include "nodefiles.h"
 #include "builtinrunners.h"
 #include "fold.h"   // Fold — a row's grafts are what its resolution offers
 #include "packagecatalog_p.h"
@@ -30,6 +31,7 @@
 #include <QFile>
 #include <QStringList>
 #include <cstdint>
+#include <cstdio>
 #include <map>
 #include <mutex>
 #include <condition_variable>
@@ -59,54 +61,38 @@ namespace {
 std::vector<std::string> PackageNodeCids(const std::filesystem::path &Dir)
 {
     std::vector<std::string> Out;
-    std::error_code Ec;
-    for (const auto &F : std::filesystem::directory_iterator(Dir, Ec))
-    {
-        const std::string Stem = F.path().stem().string();
-        if (F.is_regular_file(Ec) && F.path().extension() == ".json" && Stem.rfind("baf", 0) == 0) Out.push_back(Stem);
-    }
-    std::sort(Out.begin(), Out.end());
-    return Out;
+    for (const auto &[C, F] : NodeFiles::In(Dir)) Out.push_back(C);
+    return Out;                                                        // sorted: a map's keys
 }
-//A node file not named by its CID: a never-minted draft. A switch cannot judge it, so it is refused.
+//A node file that is not its canonical form (a handle, a canvas position, other bytes): a draft never saved. A switch
+//cannot judge it, so it is refused.
 bool HasDraftNodes(const std::filesystem::path &Dir)
 {
-    std::error_code Ec;
-    for (const auto &F : std::filesystem::directory_iterator(Dir, Ec))
-    {
-        if (!F.is_regular_file(Ec) || F.path().extension() != ".json" || F.path().stem().string().rfind("baf", 0) == 0) continue;
-        if (nlohmann::ordered_json J; NodeGraph::ReadTreeJsonBounded(F.path(), J) && ManifestModel::IsNodeObject(J)) return true;
-    }
+    for (const auto &[C, F] : NodeFiles::In(Dir)) if (!F.Frozen) return true;
     return false;
 }
-std::string LocalFolderCid(const std::filesystem::path &Dir)
+//The file of node C in Dir, or none.
+std::filesystem::path NodeFileIn(const std::filesystem::path &Dir, const std::string &C)
 {
-    static std::mutex Mu;
-    static std::map<std::string, std::string> Cache;                   // the listing → its folder (a folder never changes)
-    const std::vector<std::string> Cids = PackageNodeCids(Dir);
-    if (Cids.empty()) return {};
-    std::string Key;
-    for (const auto &C : Cids) Key += C + "\n";
-    {
-        std::lock_guard<std::mutex> L(Mu);
-        if (auto It = Cache.find(Key); It != Cache.end()) return It->second;
-    }
-    std::map<std::string, std::string> Entries;
-    for (const auto &C : Cids) Entries[C + ".json"] = C;
-    std::string Err;
-    const std::string Cid = IpfsWrapper::MakeDir(Entries, &Err);
-    if (Cid.empty()) return {};
-    std::lock_guard<std::mutex> L(Mu);
-    if (Cache.size() > 2000) Cache.clear();
-    Cache[Key] = Cid;
-    return Cid;
+    const auto Fs = NodeFiles::In(Dir);
+    const auto It = Fs.find(C);
+    return It == Fs.end() ? std::filesystem::path() : It->second.Path;
+}
+//A version's name: the last 12 hex digits of the FNV-1a hash of its node CIDs, sorted — the same listing, the same name.
+std::string VersionId(const std::map<std::string, std::string> &Listing)
+{
+    uint64_t H = 1469598103934665603ull;
+    for (const auto &[C, F] : Listing) { for (unsigned char X : C) { H ^= X; H *= 1099511628211ull; } H ^= '\n'; H *= 1099511628211ull; }
+    char Buf[17];
+    std::snprintf(Buf, sizeof Buf, "%016llx", static_cast<unsigned long long>(H));
+    return std::string(Buf + 4);
 }
 std::string Tail(const std::string &S, size_t N) { return S.size() > N ? S.substr(S.size() - N) : S; }
 std::filesystem::path UpdateStage(const nlohmann::ordered_json &Config, const PackageUpdate &U)
 {
     //Per friend and version: two friends' versions of one package never share a stage.
-    return std::filesystem::path(LibraryRootDir(Config)).parent_path() / "UPDATING" / SafeSegment(U.Lib) / SafeSegment(U.Pkg)
-           / SafeSegment(Tail(U.Peer, 8) + "-" + Tail(U.FolderCid, 12));
+    return std::filesystem::path(LibraryRootDir(Config)).parent_path() / "UPDATING" / NodeFiles::SafeName(U.Lib) / NodeFiles::SafeName(U.Pkg)
+           / NodeFiles::SafeName(Tail(U.Peer, 8) + "-" + U.Version);
 }
 //One switch of a package at a time (staging, applying, discarding).
 std::mutex &PackageLock(const std::filesystem::path &Dir)
@@ -151,10 +137,13 @@ void PlanSwitch(const NodeIndex &Idx, StagedUpdate &S)
     namespace fs = std::filesystem;
     std::error_code Ec;
     const fs::path &Dir = S.U.Dir;
+    const std::map<std::string, NodeFiles::File> Here = NodeFiles::In(Dir);
     auto FileOf = [&](const std::string &C) {
-        return fs::exists(Dir / (C + ".json"), Ec) ? Dir / (C + ".json") : S.Stage / (C + ".json");
+        const auto It = Here.find(C);
+        return It != Here.end() ? It->second.Path : S.Stage / (C + ".json");   // a staged node is named by its CID
     };
-    const std::vector<std::string> Home = PackageNodeCids(Dir);
+    std::vector<std::string> Home;
+    for (const auto &[C, F] : Here) Home.push_back(C);
     std::vector<std::string> Candidates;
     S.Added.clear(); S.Removed.clear(); S.Moves.clear(); S.Deletes.clear(); S.DeleteBytes = 0;
     std::set_difference(S.Listing.begin(), S.Listing.end(), Home.begin(), Home.end(), std::back_inserter(S.Added));
@@ -167,7 +156,7 @@ void PlanSwitch(const NodeIndex &Idx, StagedUpdate &S)
     //deleted — unless its CID is still wanted under another name and that file is not here yet: then it moves there.
     std::vector<fs::path> AfterFiles;
     for (const std::string &C : S.Listing) AfterFiles.push_back(FileOf(C));
-    for (const std::string &C : S.Kept) AfterFiles.push_back(Dir / (C + ".json"));
+    for (const std::string &C : S.Kept) AfterFiles.push_back(FileOf(C));
     const ContentFile::ClaimMap Before = *ContentFile::Claims(Dir), After = ContentFile::ClaimsOfFiles(AfterFiles);
     std::set<fs::path> Targets;
     std::map<std::string, std::vector<fs::path>> WantedAt, AfterAt;   // CID → its after-paths (not present yet / all)
@@ -254,9 +243,6 @@ bool LoadJournal(StagedUpdate &S)
         }
     return !S.Listing.empty();
 }
-//The friend's version a package was last switched to while it kept nodes beyond it: its folder stays pinned, so the
-//listing is readable here and that version is known to be in (not offered again).
-std::filesystem::path HeldVersionFile(const StagedUpdate &S) { return S.Stage.parent_path() / "held"; }
 } // namespace
 
 std::vector<PackageUpdate> AvailableUpdates(const nlohmann::ordered_json &Config)
@@ -269,43 +255,34 @@ std::vector<PackageUpdate> AvailableUpdates(const nlohmann::ordered_json &Config
     std::error_code Ec;
     for (const auto &[Peer, Libs] : Config["FriendLibraries"].items())
     {
-        if (!Libs.is_object()) continue;
         const std::string Nick = ReceivedNickLabel(Peer);
-        for (const auto &[Lib, Rows] : Libs.items())
+        std::map<std::pair<std::string, std::string>, std::map<std::string, std::string>> Versions;   // (lib, pkg) → cid → file
+        for (const SheetEntry &E : WireEntries(Libs)) Versions[{ E.Lib, E.Pkg }][E.Cid] = E.File;
+        const auto Folders = ReceivedFolderNames(Libs);                 // where each would have landed, and been installed
+        for (const auto &[LP, Listing] : Versions)
         {
-            if (!Rows.is_array()) continue;
-            for (const auto &R : Rows)
+            const fs::path Dir = LibRoot / NodeFiles::SafeName(LP.first) / Folders.at(LP);
+            if (!fs::is_directory(Dir, Ec)) continue;
+            const std::vector<std::string> Home = PackageNodeCids(Dir);
+            const std::set<std::string> Here(Home.begin(), Home.end());
+            std::set<std::string> Theirs;
+            for (const auto &[C, F] : Listing) Theirs.insert(C);
+            if (Theirs == Here) continue;                                // this version: no index read (the test below says the same)
+            //A version whose every node is here already (switched to before) is this package plus nodes kept for other
+            //games: offered again only once one of those may go.
+            if (std::includes(Here.begin(), Here.end(), Theirs.begin(), Theirs.end()))
             {
-                if (!R.is_object()) continue;
-                const std::string Folder = R.value("cid", std::string()), Pkg = SafeSegment(R.value("pkg", std::string()));
-                const fs::path Dir = LibRoot / SafeSegment(Lib) / Pkg;
-                if (Folder.empty() || Folder.size() > 128 || !fs::is_directory(Dir, Ec)) continue;
-                const std::string Mine = LocalFolderCid(Dir);
-                if (Mine.empty())
-                {
-                    LogWarn("PackageCatalog::AvailableUpdates", "package '" + Pkg + "': its node files are not all held here — "
-                            "versions shared by friends cannot be compared until it is published or re-seeded");
+                std::set<std::string> Beyond;
+                std::set_difference(Here.begin(), Here.end(), Theirs.begin(), Theirs.end(), std::inserter(Beyond, Beyond.end()));
+                if (!Idx) Idx = CurrentIndex(Config);
+                const std::vector<std::string> L(Theirs.begin(), Theirs.end());
+                const auto Files = NodeFiles::In(Dir);
+                if (KeptNodes(*Idx, Dir, L, Beyond, [&](const std::string &C) {
+                        const auto It = Files.find(C);
+                        return It == Files.end() ? nlohmann::ordered_json() : It->second.Node; }).size() == Beyond.size())
                     continue;
-                }
-                if (Mine == Folder) continue;
-                //A version whose listing is held here (switched to before) and whose every node is here already is
-                //this package plus nodes kept for other games: offered again only once one of those may go.
-                if (const auto Listing = FolderNodes(Folder, nullptr))
-                {
-                    const std::vector<std::string> Home = PackageNodeCids(Dir);
-                    const std::set<std::string> Here(Home.begin(), Home.end());
-                    if (std::all_of(Listing->begin(), Listing->end(), [&](const std::string &C) { return Here.count(C) > 0; }))
-                    {
-                        std::set<std::string> Beyond = Here;
-                        for (const std::string &C : *Listing) Beyond.erase(C);
-                        if (!Idx) Idx = CurrentIndex(Config);
-                        if (KeptNodes(*Idx, Dir, *Listing, Beyond, [&](const std::string &C) { return NodeFileJson(Dir / (C + ".json")); })
-                                .size() == Beyond.size())
-                            continue;
-                    }
-                }
-                Out.push_back(PackageUpdate{ Dir, Lib, Pkg, Peer, Nick, Folder });
             }
+            Out.push_back(PackageUpdate{ Dir, LP.first, Folders.at(LP), Peer, Nick, VersionId(Listing), Listing });
         }
     }
     return Out;
@@ -333,27 +310,27 @@ bool StageUpdate(const nlohmann::ordered_json &Config, const PackageUpdate &U, S
     std::string WErr;
     auto Fail = [&](const std::string &Why) {
         IpfsWrapper::ForgetDestsUnder(S.Stage.string());            // a fetch that lands later lands nowhere
+        for (const auto &[C, F] : U.Listing) RemoveLandedNode(S.Stage / (C + ".json"), C);   // nobody here wants them
         std::error_code Rc;
         fs::remove_all(S.Stage, Rc);
-        IpfsWrapper::Unpin(U.FolderCid);                              // the fetch's pin: nobody here wants it
         if (Error) *Error = Why;
         return false;
     };
-    if (!IpfsWrapper::WaitBatch(IpfsWrapper::EnqueueBatch({ IpfsWrapper::FetchTarget{ U.FolderCid, S.Stage.string(),
-                                /*Optional=*/false, /*Dir=*/true, /*Verify=*/true } }), 10 * 60 * 1000, &WErr))
+    if (U.Listing.empty()) return Fail(U.Nick + "'s version of " + U.Pkg + " lists no nodes");
+    //The version's node files, named by their CIDs in the stage: they take their names in the package when it switches.
+    std::vector<IpfsWrapper::FetchTarget> Batch;
+    for (const auto &[C, F] : U.Listing)
+        Batch.push_back(IpfsWrapper::FetchTarget{ C, (S.Stage / (C + ".json")).string(), /*Optional=*/false, /*Dir=*/false, /*Verify=*/true });
+    fs::create_directories(S.Stage, Ec);
+    if (!IpfsWrapper::WaitBatch(IpfsWrapper::EnqueueBatch(Batch), 10 * 60 * 1000, &WErr))
         return Fail("fetching " + U.Nick + "'s version of " + U.Pkg + ": " + WErr);
-    std::string LErr;
-    const auto Listing = FolderNodes(U.FolderCid, &LErr);
-    if (!Listing || Listing->empty())
-        return Fail(U.Nick + "'s version of " + U.Pkg + " lists no nodes" + (LErr.empty() ? "" : ": " + LErr));
-    for (const std::string &C : *Listing)
+    for (const auto &[C, F] : U.Listing)
     {
         std::string VErr;
         if (!NodeGraph::VerifyLanded(S.Stage / (C + ".json"), C, nullptr, &VErr))
-            return Fail(U.Nick + "'s version of " + U.Pkg + ": node " + C + " refused: " + VErr);
+            return Fail(U.Nick + "'s version of " + U.Pkg + ": node " + F + " refused: " + VErr);
+        S.Listing.push_back(C);
     }
-    S.Listing = *Listing;
-    std::sort(S.Listing.begin(), S.Listing.end());
     PlanSwitch(*CurrentIndex(Config), S);
     if (Out) *Out = std::move(S);
     return true;
@@ -374,9 +351,12 @@ bool ApplyStagedUpdate(const nlohmann::ordered_json &Config, const StagedUpdate 
     StagedUpdate S = Confirmed;
     const bool Resuming = LoadJournal(S);
     //Nothing is touched unless every node of the version is here (staged, or moved in by an earlier attempt).
-    for (const std::string &C : S.Listing)
-        if (!fs::exists(S.Stage / (C + ".json"), Ec) && !fs::exists(Dir / (C + ".json"), Ec))
-            return Refuse("the staged version of " + Pkg + " is incomplete (node " + C + "): fetch it again");
+    {
+        const auto Here = NodeFiles::In(Dir);
+        for (const std::string &C : S.Listing)
+            if (!fs::exists(S.Stage / (C + ".json"), Ec) && !Here.count(C))
+                return Refuse("the staged version of " + Pkg + " is incomplete (node " + C + "): fetch it again");
+    }
     if (!Resuming)
     {
         //Planned again, under the lock: the library may have changed while the user read the plan. It may delete
@@ -425,39 +405,39 @@ bool ApplyStagedUpdate(const nlohmann::ordered_json &Config, const StagedUpdate 
         RemoveLandedNode(D.File, D.Cid, D.Elsewhere);
         if (fs::exists(D.File, Ec)) LogWarn("PackageCatalog::ApplyStagedUpdate", "could not delete " + D.File.string());
     }
-    //3. The version's node files move in (a staged file is a plain file: the folder fetch holds its blocks), each then
-    //   referenced where it now lives, so the package serves and re-shares it.
-    for (const std::string &C : S.Listing)
+    //3. The version's node files move in (each referenced where it now lives, so the package serves and re-shares it),
+    //4. the nodes nothing contains any more go, and 5. every node file takes its name among the package's new nodes.
     {
-        const fs::path From = S.Stage / (C + ".json"), To = Dir / (C + ".json");
-        std::error_code Rc;
-        if (fs::exists(To, Rc)) continue;
-        fs::rename(From, To, Rc);
-        if (Rc) { Rc.clear(); fs::copy_file(From, To, Rc); }
-        if (Rc) return Refuse("cannot move " + From.string() + " into " + Dir.string() + ": " + Rc.message() + " (switch again to finish)");
-        std::string AErr;
-        if (IpfsWrapper::AddNoCopy(To.string(), &AErr) != C)
-            LogWarn("PackageCatalog::ApplyStagedUpdate", "node " + C + " is in place but not referenced there: " + AErr);
+        const auto Here = NodeFiles::In(Dir);
+        std::vector<std::pair<std::string, std::string>> Followed;
+        for (const std::string &C : S.Listing)
+        {
+            if (Here.count(C)) continue;
+            const fs::path From = S.Stage / (C + ".json"), To = Dir / (C + ".json");
+            std::error_code Rc;
+            fs::rename(From, To, Rc);
+            if (Rc) { Rc.clear(); fs::copy_file(From, To, Rc); }
+            if (Rc) return Refuse("cannot move " + From.string() + " into " + Dir.string() + ": " + Rc.message() + " (switch again to finish)");
+            Followed.push_back({ From.string(), To.string() });
+        }
+        std::string MErr;
+        if (!Followed.empty() && IpfsWrapper::MoveRefs(Followed, &MErr) < 0)
+            LogWarn("PackageCatalog::ApplyStagedUpdate", "the version's nodes are in place but not referenced there: " + MErr);
+        for (const std::string &C : S.Removed)
+            if (const auto It = Here.find(C); It != Here.end())
+            {
+                RemoveLandedNode(It->second.Path, C);
+                if (fs::exists(It->second.Path, Ec))
+                    LogWarn("PackageCatalog::ApplyStagedUpdate", "could not remove node " + It->second.Path.string());
+            }
+        std::vector<std::pair<fs::path, fs::path>> Named;
+        std::string NErr;
+        if (!NodeFiles::Normalize(Dir, &Named, &NErr)) LogWarn("PackageCatalog::ApplyStagedUpdate", Pkg + ": " + NErr);
+        std::vector<std::pair<std::string, std::string>> Refs;
+        for (const auto &[F, T] : Named) Refs.push_back({ F.string(), T.string() });
+        if (!Refs.empty() && IpfsWrapper::MoveRefs(Refs, &MErr) < 0)
+            LogWarn("PackageCatalog::ApplyStagedUpdate", "renamed " + Pkg + "'s node files, but their references did not follow: " + MErr);
     }
-    //4. The nodes nothing contains any more.
-    for (const std::string &C : S.Removed)
-    {
-        RemoveLandedNode(Dir / (C + ".json"), C);
-        if (fs::exists(Dir / (C + ".json"), Ec))
-            LogWarn("PackageCatalog::ApplyStagedUpdate", "could not remove node " + C + " from " + Dir.string());
-    }
-    //The stage's pin goes — unless nodes were kept beyond the version: then its folder stays held (one per package),
-    //so the version is known to be in and not offered again.
-    const fs::path Held = HeldVersionFile(S);
-    std::string Before;
-    std::getline(std::ifstream(Held), Before);
-    if (!Before.empty() && Before != S.U.FolderCid) IpfsWrapper::Unpin(Before);
-    if (S.Kept.empty())
-    {
-        IpfsWrapper::Unpin(S.U.FolderCid);
-        fs::remove(Held, Ec);
-    }
-    else std::ofstream(Held, std::ios::trunc) << S.U.FolderCid << "\n";
     fs::remove_all(S.Stage, Ec);
     LogOut("PackageCatalog::ApplyStagedUpdate", "switched '" + Pkg + "' to " + S.U.Nick + "'s version: "
            + std::to_string(S.Added.size()) + " node(s) in, " + std::to_string(S.Removed.size()) + " out, "
@@ -469,38 +449,20 @@ void DiscardStagedUpdate(const StagedUpdate &S)
 {
     std::lock_guard<std::mutex> Lk(PackageLock(S.U.Dir));
     IpfsWrapper::ForgetDestsUnder(S.Stage.string());
+    for (const auto &[C, F] : S.U.Listing) RemoveLandedNode(S.Stage / (C + ".json"), C);   // nobody here wants them
     std::error_code Ec;
-    std::filesystem::remove_all(S.Stage, Ec);                             // plain files: the folder's pin holds its blocks
-    std::string Held;
-    std::getline(std::ifstream(HeldVersionFile(S)), Held);
-    if (Held != S.U.FolderCid) IpfsWrapper::Unpin(S.U.FolderCid);         // …and nobody here wants it
+    std::filesystem::remove_all(S.Stage, Ec);
 }
 
-std::string PackageFolderCid(const nlohmann::ordered_json &Config, const std::filesystem::path &PkgDir, const std::string &Field)
+std::string PackagePin(const nlohmann::ordered_json &Config, const std::filesystem::path &PkgDir)
 {
-    const std::string Pkg = PkgDir.filename().string(), Parent = PkgDir.parent_path().filename().string();
-    auto find = [&](const nlohmann::ordered_json &Libs, auto &&LibMatches) -> std::string {
-        if (!Libs.is_object()) return {};
-        for (const auto &[L, Rows] : Libs.items())
-        {
-            if (!Rows.is_array() || !LibMatches(L)) continue;
-            for (const auto &R : Rows)
-                if (R.is_object() && SafeSegment(R.value("pkg", std::string())) == Pkg && !R.value(Field, std::string()).empty())
-                    return R.value(Field, std::string());
-        }
+    //Keyed as publishing keys it: "<library>/<package>", and a package directly under the library root is in "Library".
+    std::error_code Ec;
+    const bool AtRoot = std::filesystem::equivalent(PkgDir.parent_path(), LibraryRootDir(Config), Ec) && !Ec;
+    const std::string Key = (AtRoot ? std::string("Library") : PkgDir.parent_path().filename().string()) + "/" + PkgDir.filename().string();
+    if (!Config.contains("Pins") || !Config["Pins"].is_object() || !Config["Pins"].contains(Key) || !Config["Pins"][Key].is_string())
         return {};
-    };
-    if (Config.contains("Libraries"))
-        if (std::string C = find(Config["Libraries"], [&](const std::string &L) { return SafeSegment(L) == Parent; }); !C.empty())
-            return C;
-    if (Config.contains("FriendLibraries") && Config["FriendLibraries"].is_object())
-        for (const auto &[Peer, Libs] : Config["FriendLibraries"].items())
-            if (std::string C = find(Libs, [&](const std::string &L) {
-                    const std::string S = SafeSegment(L);
-                    return S == Parent || (Parent.size() > S.size() + 3 && Parent.compare(Parent.size() - S.size() - 3, std::string::npos, " - " + S) == 0);
-                }); !C.empty())
-                return C;
-    return {};
+    return Config["Pins"][Key].get<std::string>();
 }
 
 } // namespace PackageCatalog

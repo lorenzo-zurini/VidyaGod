@@ -141,7 +141,7 @@ private:
     struct Snapshot { std::vector<Entry> Entries; std::map<std::string, Pos> Where; uint64_t ContentRev = 0; };
 
     std::vector<Entry> Entries;
-    std::set<std::string> LoadedFiles;                   // node files this package had on disk at the last Load/Save
+    std::map<std::string, std::string> LoadedFiles;      // node file -> its handle: what this package had on disk at the last Load/Save
     std::vector<std::string> BadJson;
     std::map<std::string, Pos> Where;
     std::vector<Snapshot> UndoStack, RedoStack;

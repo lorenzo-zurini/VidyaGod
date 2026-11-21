@@ -75,7 +75,7 @@ public:
     // ── Package-level CIDs (first-class): the meta-CID of ONE package folder, between a file's content CID and a
     // whole source's library meta-CID. Others add it in Settings → Sources to receive exactly that package. ──
     QString packageDir(const QString & pkg) const { return PkgDirs.value(pkg); }
-    QString packageCid(const QString & pkg) const;   // the package's folder CID (published or received), empty if neither
+    QString packagePin(const QString & pkg) const;   // our package's pin folder (what a pinning service pins), empty if none
 
 public slots:
     void setActive(bool on);                 // tab shown/hidden → start/stop the periodic refresh

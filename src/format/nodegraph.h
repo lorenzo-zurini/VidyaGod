@@ -17,9 +17,6 @@
 // unit-tested). The blocks to and from the node (BuildFrozenIndex / HydratePackage / Mint) are NodeStore's.
 namespace NodeGraph {
 
-// A received package folder lands in <package dir>/.package/ — a dir its fetch owns whole (a re-publish replaces it).
-// The nodes in it belong to the package dir itself: their bundle (where content hydrates) is the parent.
-inline constexpr const char *kPackageFolderDir = ".package";
 
 // A fetch's SCRATCH dir: a folder fetch materializes into "<dest>.tmp" and renames it into place when complete. Its
 // half-landed node files are not a package — indexing them made the closure pass land blocks INTO the scratch dir

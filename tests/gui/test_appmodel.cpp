@@ -8,12 +8,14 @@
 #include <QFile>
 
 #include "appmodel.h"
+#include "cid.h"
 #include "friendsharing.h"
 #include "packagecatalog.h"
 #include <filesystem>
 #include "apppaths.h"
 #include "nodefixture.h"
 #include "ipfswrapper.h"
+#include "downloadqueue.h"
 
 #include <fstream>
 
@@ -24,10 +26,10 @@ class AppModelTest : public QObject
     Q_OBJECT
 private slots:
     // The package editor's Publish publishes its package alone; one asked for while a publish runs goes in the next
-    // pass (never lost, never two at once), and each pass merges only its own package's row. Republish-all still
-    // replaces Libraries whole (a deleted package's row goes). Teeth: lose what was asked meanwhile (one signal, B
-    // missing); run every pass over the whole library (the first pass reports 2 packages); merge on republish-all
-    // (the gone row stays).
+    // pass (never lost, never two at once), and each pass puts only its own package's entries in the share sheet.
+    // Republish-all still replaces the sheet whole (a deleted package's entry goes). Teeth: lose what was asked
+    // meanwhile (one signal, B missing); run every pass over the whole library (the first pass reports 2 packages);
+    // merge on republish-all (the gone entry stays).
     void a_package_publish_merges_and_one_asked_meanwhile_runs_after()
     {
         QTemporaryDir d; QVERIFY(d.isValid());
@@ -52,12 +54,13 @@ private slots:
             QCOMPARE(Failed.count(), 0);
             QVERIFY(!m.publishing());
             QCOMPARE(Done.at(0).at(1).toString(), QString("1 package(s)"));
-            QCOMPARE((int)cfg["Libraries"]["VidyaGod"].size(), 2);
-            cfg["Libraries"]["VidyaGod"].push_back(json{{"pkg", "[9] Gone"}, {"cid", "bafygone"}});
+            QCOMPARE((int)cfg["ShareSheet"].size(), 2);
+            QCOMPARE((int)cfg["Pins"].size(), 2);
+            cfg["ShareSheet"]["bafkreigone"] = "VidyaGod/[9] Gone/gone.json";
             m.publishLibraries();
             QTRY_COMPARE_WITH_TIMEOUT(Done.count() + Failed.count(), 3, 120000);
             QCOMPARE(Failed.count(), 0);
-            QCOMPARE((int)cfg["Libraries"]["VidyaGod"].size(), 2);
+            QCOMPARE((int)cfg["ShareSheet"].size(), 2);
         }
         IpfsWrapper::StopNode();
     }
@@ -80,25 +83,49 @@ private slots:
 
     // What a friend receives is closed over what the shared packages contain: share "Games" and the library package a
     // game contains comes too, as its own package under its own library (never copied into the game); a package nothing
-    // shared needs stays home; a shared library with nothing published still goes out, empty. Teeth: push only the
+    // shared contains stays home; a shared library with nothing published still goes out, empty. Teeth: push only the
     // explicit libraries (drop the SharedWith closure) and DxWnd is missing; drop the empty entry and "Later" is.
     void a_friend_receives_the_packages_their_share_contains()
     {
         QTemporaryDir d; QVERIFY(d.isValid());
         QDir appDir(d.path());
-        json cfg = json{{"Settings", json::object()},
-            {"Libraries", {
-                {"Games", json::array({ json{{"cid", "QmWipeout"}, {"pkg", "Wipeout"},
-                                             {"needs", json::array({ json{{"lib", "Libs"}, {"pkg", "DxWnd"}} })}} })},
-                {"Libs",  json::array({ json{{"cid", "QmDxWnd"}, {"pkg", "DxWnd"}, {"needs", json::array()}},
-                                        json{{"cid", "QmUnused"}, {"pkg", "Unused"}, {"needs", json::array()}} })}}},
+        const std::string Lib = d.path().toStdString() + "/LIB";
+        auto put = [&](const std::string &Pkg, const json &N) {               // a published node, as it lies on disk
+            std::filesystem::create_directories(Lib + "/" + Pkg);
+            std::ofstream(Lib + "/" + Pkg + "/" + N.value("LABEL", std::string()) + ".json", std::ios::binary) << Cid::Canonical(N);
+            return Cid::OfNode(N);
+        };
+        const json Dx = json{{"LABEL", "dxwnd"}, {"LAYERS", json::array({ json{{"DIR", "d"}} })}};
+        const json Unused = json{{"LABEL", "unused"}, {"LAYERS", json::array({ json{{"DIR", "u"}} })}};
+        const std::string DxC = put("Libs/DxWnd", Dx), UC = put("Libs/Unused", Unused);
+        const json Game = json{{"LABEL", "wipeout"}, {"LAYERS", json::array({ json{{"NODE", DxC}}, json{{"DIR", "w"}} })}};
+        const std::string GC = put("Games/Wipeout", Game);
+        json cfg = json{{"Settings", {{"Paths", {{"LibraryRoot", Lib}}}}},
+            {"ShareSheet", {{GC, "Games/Wipeout/wipeout.json"}, {DxC, "Libs/DxWnd/dxwnd.json"}, {UC, "Libs/Unused/unused.json"}}},
             {"Sharing", {{"PeerA", json::array({"Games", "Later"})}}}};
         AppModel m(&cfg, &appDir);
+        m.rebuildCatalog();
         const json S = m.friends().sharedWith("PeerA");
         QCOMPARE((int)S["Games"].size(), 1);
         QVERIFY2(S.contains("Libs") && S["Libs"].size() == 1 && S["Libs"][0]["pkg"] == "DxWnd", S.dump().c_str());
+        QCOMPARE(S["Libs"][0].value("node", std::string()), std::string("dxwnd.json"));
         QVERIFY2(S.contains("Later") && S["Later"].empty(), "an explicitly shared library with nothing published goes out empty");
         QVERIFY2(m.friends().sharedWith("PeerB").empty(), "nothing is shared with a friend nobody shared with");
+        // The game edited since it was published (saved, not published yet): the index has moved on, and the sheet still
+        // names what was published. What it contains is read from its published block, held here. Teeth: read the
+        // index alone (DxWnd drops out of the share).
+        std::string Err;
+        QVERIFY2(IpfsWrapper::StartNode((d.path() + "/ipfs").toStdString(), &Err), Err.c_str());
+        QCOMPARE(IpfsWrapper::BlockPut(Cid::Canonical(Game), &Err), GC);         // what publishing stored
+        json Edited = Game;
+        Edited["COMMENT"] = "edited, not published";
+        std::filesystem::remove(Lib + "/Games/Wipeout/wipeout.json");
+        put("Games/Wipeout", Edited);
+        m.rebuildCatalog();
+        QVERIFY2(!m.catalogIndex().Find(GC) || m.catalogIndex().Find(GC)->Key() != GC, "precondition: the index has moved on");
+        const json S2 = m.friends().sharedWith("PeerA");
+        QVERIFY2(S2.contains("Libs") && S2["Libs"].size() == 1 && S2["Libs"][0]["pkg"] == "DxWnd", S2.dump().c_str());
+        IpfsWrapper::StopNode();
     }
 
     // Upgrading an unknown source must fail through packageSourceFailed and leave no pending plan — so a later
@@ -413,15 +440,23 @@ private slots:
         AppModel m(&cfg, &appDir);
         const QString peer = "12D3KooWSeeder";
         const std::string P = peer.toStdString();
-        m.friends().applyFriendLibrarySnapshot(peer, R"({"Games":[{"cid":"bafyold","node":"Old Game"}]})");
+        //Real nodes: a fetch the snapshot started may be at the stub's file meanwhile, and it keeps the node it asks for.
+        const json Old = json{{"LABEL", "old"}, {"LAYERS", json::array({ json{{"DIR", "o"}} })}};
+        const json New = json{{"LABEL", "old"}, {"LAYERS", json::array({ json{{"DIR", "n"}} })}};
+        const std::string OB = Cid::Canonical(Old), NB = Cid::Canonical(New);
+        const auto snap = [](const std::string &C, const std::string &Pkg = "Old Game") {
+            return QString::fromStdString(json{{"Games", json::array({ json{{"cid", C}, {"pkg", Pkg}, {"node", "old.json"}} })}}.dump()); };
+        m.friends().applyFriendLibrarySnapshot(peer, snap(Cid::OfBytes(OB)));
         const auto Plan = PackageCatalog::PlanReceivedFetches(cfg, P.substr(P.size() - 8), cfg["FriendLibraries"][P]);
         QVERIFY(!Plan.empty());
         const std::filesystem::path LibDir = std::filesystem::path(Plan.front().Dest).parent_path().parent_path();
-        std::filesystem::create_directories(Plan.front().Dest);                     // a landed package folder: node files only
-        { std::ofstream S(std::filesystem::path(Plan.front().Dest) / "n.json"); S << "{}"; }
+        const auto land = [&](const std::string &Bytes) {                         // a landed node file: the package holds node files only
+            std::filesystem::create_directories(std::filesystem::path(Plan.front().Dest).parent_path());
+            std::ofstream S(Plan.front().Dest, std::ios::binary); S << Bytes; };
+        land(OB);
         QVERIFY(std::filesystem::exists(Plan.front().Dest));
         // identical snapshot → stubs stay
-        m.friends().applyFriendLibrarySnapshot(peer, R"({"Games":[{"cid":"bafyold","node":"Old Game"}]})");
+        m.friends().applyFriendLibrarySnapshot(peer, snap(Cid::OfBytes(OB)));
         QVERIFY(std::filesystem::exists(Plan.front().Dest));
         // an INSTALLED received package lives in the same tree (its content was fetched beside its stubs): it stays,
         // whatever the snapshot says — only pure-stub package dirs go
@@ -429,17 +464,61 @@ private slots:
         std::filesystem::create_directories(Installed);
         { std::ofstream S(Installed / "game.json"); S << "{}"; }
         { std::ofstream S(Installed / "game.zip"); S << "bytes"; }
-        // a re-publish: the same library, a new root CID → the old generation's stubs are gone
-        m.friends().applyFriendLibrarySnapshot(peer, R"({"Games":[{"cid":"bafynew","node":"Old Game"}]})");
+        // a re-publish that changes the package's node: the package is still shared, so its folder stays (only what
+        // changed lands again; the prune drops what its entries no longer name). Teeth: drop every stub on a change.
+        m.friends().applyFriendLibrarySnapshot(peer, snap(Cid::OfBytes(NB)));
+        QVERIFY(std::filesystem::is_directory(std::filesystem::path(Plan.front().Dest).parent_path()));
+        // a snapshot that no longer names the package: its stubs are gone
+        m.friends().applyFriendLibrarySnapshot(peer, snap(Cid::OfBytes(NB), "Other Game"));
         QVERIFY(!std::filesystem::exists(Plan.front().Dest));
         QVERIFY(!std::filesystem::exists(std::filesystem::path(Plan.front().Dest).parent_path()));
         QVERIFY(std::filesystem::exists(Installed / "game.zip"));
         QVERIFY(cfg["FriendLibraries"][P].contains("Games"));
         // an EMPTY snapshot is what a restarting seeder pushes before its library loads: a transient, nothing is dropped
-        { std::filesystem::create_directories(Plan.front().Dest); std::ofstream S(std::filesystem::path(Plan.front().Dest) / "n.json"); S << "{}"; }
+        m.friends().applyFriendLibrarySnapshot(peer, snap(Cid::OfBytes(NB)));
+        land(NB);
         m.friends().applyFriendLibrarySnapshot(peer, R"({})");
         QVERIFY(std::filesystem::exists(Plan.front().Dest));
         QVERIFY(std::filesystem::exists(Installed / "game.zip"));
+    }
+
+    // A changed snapshot keeps the package folders it still names, and with them the fetches already queued there —
+    // but not for a file it no longer names: that path is no node's now, and a fetch still holding it would land it
+    // after the prune. Here the node moved to another package (so its fetch is still wanted, elsewhere). Teeth: drop
+    // the ForgetDest of a kept folder's stale file in dropReceivedStubs (the old path stays the fetch's first dest);
+    // forget every file of a kept folder (b's fetch loses its path).
+    void a_changed_snapshot_forgets_the_files_it_no_longer_names()
+    {
+        QTemporaryDir d; QVERIFY(d.isValid());
+        QDir appDir(d.path());
+        json cfg = json{{"Settings", json::object()}, {"ReceiveFrom", json::array({"12D3KooWSeeder"})}};
+        AppModel m(&cfg, &appDir);
+        const QString peer = "12D3KooWSeeder";
+        const std::string P = peer.toStdString();
+        const json A = json{{"LABEL", "a"}, {"LAYERS", json::array({ json{{"DIR", "a"}} })}};
+        const json B = json{{"LABEL", "b"}, {"LAYERS", json::array({ json{{"DIR", "b"}} })}};
+        const std::string CA = Cid::OfNode(A), CB = Cid::OfNode(B);
+        IpfsWrapper::DebugResetQueue();
+        IpfsWrapper::SetFetchOnceHook([](const std::string &, const std::string &, bool, std::string *E) {
+            if (E) { *E = "no providers"; } return 1; });                           // every fetch waits: retryable
+        const auto item = [](const std::string &C, const std::string &Pkg, const std::string &File) {
+            return json{{"cid", C}, {"pkg", Pkg}, {"node", File}}; };
+        m.friends().applyFriendLibrarySnapshot(peer, QString::fromStdString(json{{"Games", json::array({
+            item(CA, "Game", "a.json"), item(CB, "Game", "b.json") })}}.dump()));
+        const auto Plan = PackageCatalog::PlanReceivedFetches(cfg, P.substr(P.size() - 8), cfg["FriendLibraries"][P]);
+        std::string OldA, OldB;
+        for (const auto &T : Plan) (T.Cid == CA ? OldA : OldB) = T.Dest;
+        QVERIFY(!OldA.empty() && !OldB.empty());
+        IpfsWrapper::EnqueueBatch({ IpfsWrapper::FetchTarget{ CA, OldA, false, false, /*Verify=*/true },
+                                    IpfsWrapper::FetchTarget{ CB, OldB, false, false, /*Verify=*/true } });
+        QCOMPARE(IpfsWrapper::QueueDestForCid(CA), OldA);
+        //Node a moves to another package; Game is still shared (b), so its folder stays.
+        m.friends().applyFriendLibrarySnapshot(peer, QString::fromStdString(json{{"Games", json::array({
+            item(CA, "Other", "a.json"), item(CB, "Game", "b.json") })}}.dump()));
+        QVERIFY(IpfsWrapper::QueueDestForCid(CA) != OldA);
+        QCOMPARE(IpfsWrapper::QueueDestForCid(CB), OldB);                     // b is still planned there: its fetch stands
+        IpfsWrapper::SetFetchOnceHook(nullptr);
+        IpfsWrapper::DebugResetQueue();
     }
 
     // Receive-off erases the peer's snapshot record, but a closure pass in flight can still land one late block into
@@ -453,17 +532,17 @@ private slots:
         AppModel m(&cfg, &appDir);
         const QString peer = "12D3KooWSeeder";
         const std::string P = peer.toStdString();
-        m.friends().applyFriendLibrarySnapshot(peer, R"({"Games":[{"cid":"bafyold","node":"Old Game"}]})");
+        m.friends().applyFriendLibrarySnapshot(peer, R"({"Games":[{"cid":"bafyold","pkg":"Old Game","node":"old.json"}]})");
         const auto Plan = PackageCatalog::PlanReceivedFetches(cfg, P.substr(P.size() - 8), cfg["FriendLibraries"][P]);
         QVERIFY(!Plan.empty());
         const std::filesystem::path Pkg = std::filesystem::path(Plan.front().Dest).parent_path();
-        std::filesystem::create_directories(Plan.front().Dest);
-        { std::ofstream S(std::filesystem::path(Plan.front().Dest) / "n.json"); S << "{}"; }
+        std::filesystem::create_directories(Pkg);
+        { std::ofstream S(Plan.front().Dest); S << "{}"; }
         m.friends().stopReceivingFromFriend(peer);                                     // record erased, stubs swept
         QVERIFY(!std::filesystem::exists(Pkg));
         QVERIFY(!cfg["FriendLibraries"].contains(P));
-        std::filesystem::create_directories(Plan.front().Dest);              // a late block from the in-flight pass
-        { std::ofstream S(std::filesystem::path(Plan.front().Dest) / "n.json"); S << "{}"; }
+        std::filesystem::create_directories(Pkg);                            // a late block from the in-flight pass
+        { std::ofstream S(Plan.front().Dest); S << "{}"; }
         m.friends().stopReceivingFromFriend(peer);                                     // the re-drop path with NO record
         QVERIFY(!std::filesystem::exists(Pkg));
     }
@@ -481,11 +560,11 @@ private slots:
         const QString peer = "12D3KooWSeeder";
         const std::string P = peer.toStdString();
         QSignalSpy changed(&m.friends(), &FriendSharing::friendCatalogChanged);
-        m.friends().applyFriendLibrarySnapshot(peer, R"({"Games":[{"cid":"bafyx","node":"Game"}]})", 10);
+        m.friends().applyFriendLibrarySnapshot(peer, R"({"Games":[{"cid":"bafyx","pkg":"Game","node":"game.json"}]})", 10);
         QVERIFY(!cfg.contains("FriendLibraries") || !cfg["FriendLibraries"].contains(P));
         QCOMPARE(changed.count(), 0);
         m.friends().setReceivingFrom(peer, true);
-        m.friends().applyFriendLibrarySnapshot(peer, R"({"Games":[{"cid":"bafyx","node":"Game"}]})", 5);   // the reply to Receive-on
+        m.friends().applyFriendLibrarySnapshot(peer, R"({"Games":[{"cid":"bafyx","pkg":"Game","node":"game.json"}]})", 5);   // the reply to Receive-on
         QVERIFY(cfg["FriendLibraries"].contains(P));
     }
 

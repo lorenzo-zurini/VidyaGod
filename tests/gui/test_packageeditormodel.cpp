@@ -8,6 +8,7 @@
 #include "apppaths.h"
 #include "packageeditor.h"
 #include "packageeditormodel.h"
+#include "nodefiles.h"
 #include "cid.h"
 #include "pkginsight.h"
 #include "validationpanel.h"
@@ -37,7 +38,8 @@ std::string Freeze(const QString &Dir, const json &N)
 }
 json Zip(const std::string &Label, const std::string &File) { return json{{"LABEL", Label}, {"LAYERS", json::array({ json{{"ZIP", File}, {"TARGET", "FILES/game"}} })}}; }
 json Over(const std::string &Label, const std::string &Ref) { return json{{"LABEL", Label}, {"LAYERS", json::array({ json{{"NODE", Ref}}, json{{"ENV", {{"A", "1"}}}} })}}; }
-int NodeFiles(const QString &Dir) { return QDir(Dir).entryList({"baf*.json"}, QDir::Files).size(); }
+int CountNodes(const QString &Dir) { return (int)NodeFiles::In(Dir.toStdString()).size(); }
+bool HoldsNode(const QString &Dir, const std::string &Cid) { return NodeFiles::In(Dir.toStdString()).count(Cid) > 0; }
 }
 
 class PackageEditorModelTest : public QObject
@@ -122,9 +124,10 @@ private slots:
         QCOMPARE(Saved.count(), 1);
         const std::string New = M.lastRenames().at(Game);
         QCOMPARE(M.doc().Handle(0), New);
-        QVERIFY(!QFile::exists(Pkg + "/" + QString::fromStdString(Game) + ".json"));
-        QVERIFY(QFile::exists(Pkg + "/" + QString::fromStdString(New) + ".json"));
-        QCOMPARE(NodeFiles(Pkg), 1);
+        QVERIFY(!HoldsNode(Pkg, Game));
+        QVERIFY(HoldsNode(Pkg, New));
+        QVERIFY(QFile::exists(Pkg + "/Game v2.json"));                      // named by its label
+        QCOMPARE(CountNodes(Pkg), 1);
     }
 
     // Validation reads the package AS EDITED: an unsaved edit that breaks a reference is flagged, on the node it is
@@ -475,9 +478,9 @@ private slots:
         const int I = M.doc().IndexOf(H);
         QCOMPARE(M.doc().Node(I)["LAYERS"][0]["NODE"].get<std::string>(), Game);   // the anchor first
         QCOMPARE(M.doc().Node(I)["LAYERS"][1]["DIR"].get<std::string>(), std::string("captured"));
-        QCOMPARE(NodeFiles(Pkg), 1);                        // nothing written yet
+        QCOMPARE(CountNodes(Pkg), 1);                        // nothing written yet
         QVERIFY(M.Save());
-        QCOMPARE(NodeFiles(Pkg), 2);
+        QCOMPARE(CountNodes(Pkg), 2);
         QVERIFY(M.lastRenames().count(H));
     }
 
@@ -513,7 +516,7 @@ private slots:
         QCOMPARE((int)L.size(), 1);
         QVERIFY(!L.contains(Game));                         // the old name is gone...
         const std::string New = L.begin().key();
-        QVERIFY(QFile::exists(Pkg + "/" + QString::fromStdString(New) + ".json"));   // ...and the key is the node's file
+        QVERIFY(HoldsNode(Pkg, New));                       // ...and the key is the node's CID
         //Corrupt the stored position: it is refused.
         Cfg["EDITORLAYOUT"].begin().value()[New] = json::array({1e300, 5});
         PackageEditorModel M2(&Cfg, nullptr);
@@ -536,7 +539,7 @@ private slots:
         QVERIFY(!M.Save(&Err));
         QVERIFY(Err.contains("friend"));
         QVERIFY(QFile::exists(Stub + "/" + QString::fromStdString(C) + ".json"));
-        QCOMPARE(NodeFiles(Stub), 1);
+        QCOMPARE(CountNodes(Stub), 1);
     }
 
     // A JSON file in the package that is not a node is never loaded, rewritten or swept by a save.

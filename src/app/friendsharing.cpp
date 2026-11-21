@@ -1,3 +1,4 @@
+#include <set>
 #include "friendsharing.h"
 #include "appmodel.h"
 #include "asyncwork.h"
@@ -75,9 +76,11 @@ void FriendSharing::pushLanRoster()
 }
 QStringList FriendSharing::myLibraryNames() const
 {
+    std::set<std::string> Names;
+    for (const auto & E : PackageCatalog::SheetEntries(Model.config()->value("ShareSheet", nlohmann::ordered_json::object())))
+        Names.insert(E.Lib);
     QStringList Out;
-    if (Model.config()->contains("Libraries") && (*Model.config())["Libraries"].is_object())
-        for (const auto & [Name, _] : (*Model.config())["Libraries"].items()) Out << QString::fromStdString(Name);
+    for (const std::string & N : Names) Out << QString::fromStdString(N);
     return Out;
 }
 
@@ -86,7 +89,9 @@ nlohmann::ordered_json FriendSharing::sharedWith(const std::string & Peer) const
     std::vector<std::string> Explicit;
     if (Model.config()->contains("Sharing") && (*Model.config())["Sharing"].contains(Peer) && (*Model.config())["Sharing"][Peer].is_array())
         for (const auto & X : (*Model.config())["Sharing"][Peer]) if (X.is_string()) Explicit.push_back(X.get<std::string>());
-    nlohmann::ordered_json Shared = PackageCatalog::SharedWith(Model.config()->value("Libraries", nlohmann::ordered_json::object()), Explicit);
+    const std::shared_ptr<const NodeIndex> Idx = Model.catalogSnapshot();
+    nlohmann::ordered_json Shared = PackageCatalog::SharedWith(Model.config()->value("ShareSheet", nlohmann::ordered_json::object()), Explicit,
+        [&](const std::string & Cid) { return PackageCatalog::NodeContains(*Idx, Cid); });
     for (const std::string & L : Explicit) if (!Shared.contains(L)) Shared[L] = nlohmann::ordered_json::array();
     return Shared;
 }
@@ -190,7 +195,14 @@ void FriendSharing::applyFriendLibrarySnapshot(const QString & peer, const QStri
     else
     {
         if (Had && FL[P] == Clean) return;              // identical snapshot → no-op (no disk/UI churn)
-        if (Had) dropReceivedStubs(P);                  // a CHANGED snapshot replaces the last one's stubs, never joins them
+        if (Had)
+        {   // a CHANGED snapshot: the packages it no longer names go; the ones it still names stay, and only what changed
+            // in them lands again (the prune drops what their entries no longer name)
+            std::map<std::string, std::string> Keep;
+            for (const auto & T : PackageCatalog::PlanReceivedFetches(*Model.config(), PackageCatalog::ReceivedNickLabel(P), Clean))
+                Keep[T.Dest] = T.Cid;
+            dropReceivedStubs(P, Keep);
+        }
         FL[P] = std::move(Clean);
     }
     Model.save();
@@ -201,7 +213,7 @@ void FriendSharing::applyFriendLibrarySnapshot(const QString & peer, const QStri
 void FriendSharing::reRegisterShares()
 {
     // Go's per-friend share table is in-memory only; config["Sharing"] = {peer:[lib,…]} is the durable record. Replay
-    // it into Go with the current config["Libraries"] CIDs so a restart or a re-publish (which can move package CIDs)
+    // it into Go with the current share sheet so a restart or a re-publish (which moves node CIDs)
     // keeps the seeder half alive.
     if (!Model.config()->contains("Sharing") || !(*Model.config())["Sharing"].is_object()) return;
     for (const auto & [P, Names] : (*Model.config())["Sharing"].items()) { (void)Names; pushSharesTo(P); }
@@ -291,8 +303,20 @@ void FriendSharing::setReceivingFrom(const QString & peer, bool on)
     else    stopReceivingFromFriend(peer);           // drop what we've already materialised
 }
 
-void FriendSharing::dropReceivedStubs(const std::string & P)
+std::map<std::string, std::string> FriendSharing::sharedStubFiles(const std::string & P) const
 {
+    std::map<std::string, std::string> Out;
+    const nlohmann::ordered_json & C = *Model.config();
+    if (C.contains("FriendLibraries") && C["FriendLibraries"].is_object() && C["FriendLibraries"].contains(P))
+        for (const auto & T : PackageCatalog::PlanReceivedFetches(C, PackageCatalog::ReceivedNickLabel(P), C["FriendLibraries"][P]))
+            Out[T.Dest] = T.Cid;
+    return Out;
+}
+
+void FriendSharing::dropReceivedStubs(const std::string & P, const std::map<std::string, std::string> & KeepFiles)
+{
+    std::set<std::filesystem::path> Keep;              // the package dirs the snapshot still names
+    for (const auto & [F, C] : KeepFiles) Keep.insert(std::filesystem::path(F).parent_path());
     // A friend's received library is a SNAPSHOT: the roots they share now, and the node closure under them. It lives
     // in CATALOG/<Nick> - <Lib>/ as browse stubs (blocks only; installs are in LIBRARY). Whenever that snapshot goes
     // away or is replaced, the stubs go with it — otherwise every publish they ever made stays on disk beside the
@@ -311,6 +335,13 @@ void FriendSharing::dropReceivedStubs(const std::string & P)
                                                                   (*Model.config())["FriendLibraries"][P]))
         {
             LibDirs.insert(std::filesystem::path(T.Dest).parent_path().parent_path());   // …/<Nick> - <Lib>
+            if (Keep.count(std::filesystem::path(T.Dest).parent_path()))
+            {   // still shared: its fetches stand — but a file planned for another node now (a new version of it), or
+                // for none, is this node's no more, and its fetch never lands there
+                const auto It = KeepFiles.find(T.Dest);
+                if (It == KeepFiles.end() || It->second != T.Cid) IpfsWrapper::ForgetDest(T.Cid, T.Dest);
+                continue;
+            }
             if (!FriendBrowseCids.erase(T.Cid)) continue;   // only cancel what WE enqueued for this browse flow
             IpfsWrapper::CancelDownload(T.Cid);
         }
@@ -331,6 +362,7 @@ void FriendSharing::dropReceivedStubs(const std::string & P)
         for (const auto & E : std::filesystem::directory_iterator(D, Ec))
         {
             if (!E.is_directory(Ec)) { std::filesystem::remove(E.path(), Ec); continue; }
+            if (Keep.count(E.path())) { Kept = true; continue; }                                          // still shared
             if (PackageCatalog::DirHasContent(E.path().string())) { Kept = true; ++KeptN; continue; }   // an install — never
             IpfsWrapper::ForgetDestsUnder(E.path().string());   // the queue must not re-materialise these paths later
             std::filesystem::remove_all(E.path(), Ec); ++Removed;
@@ -471,13 +503,12 @@ void FriendSharing::setNewPeerShareDefault(const QString & lib, bool on)
 
 void FriendSharing::enqueueReceivedShares(const QString & peer)
 {
-    // Receiver = ONE step, zero special machinery: each shared PACKAGE FOLDER becomes a plain folder FetchTarget whose
-    // dest is its final dir — CATALOG/<Nick> - <Lib>/<pkg>/.package/ — computed from the snapshot's routing metadata
-    // (PackageCatalog::PlanReceivedFetches). The ONE rolling queue lands every node file verbatim and pins it like any
-    // file; from there the ordinary catalog scan / hydration / install / re-publish handle it (a received library
-    // re-publishes to identical CIDs — the multi-seeder design). Re-runs on node-ready, presence-online and snapshot
-    // apply; a satisfied target is skipped, so repeats converge to a no-op. A re-publish (a NEW folder, same dest)
-    // re-enqueues naturally: the new folder isn't local yet.
+    // Receiver = ONE step, zero special machinery: each entry of the friend's share sheet becomes a plain file
+    // FetchTarget whose dest is its final path — CATALOG/<Nick> - <Lib>/<pkg>/<file> (PackageCatalog::PlanReceivedFetches).
+    // The ONE rolling queue lands every node file verbatim and pins it like any file; from there the ordinary catalog
+    // scan / hydration / install / re-publish handle it (a received library re-publishes to identical CIDs — the
+    // multi-seeder design). Re-runs on node-ready, presence-online and snapshot apply; a satisfied target is skipped, so
+    // repeats converge to a no-op. A re-publish (new CIDs) re-enqueues naturally: the new nodes aren't local yet.
     if (!isReceivingFrom(peer)) return;
     const std::string P = peer.toStdString();
     if (!Model.config()->contains("FriendLibraries") || !(*Model.config())["FriendLibraries"].is_object()
@@ -509,15 +540,15 @@ void FriendSharing::onFriendBlockLanded(const QString & cid, bool /*ok*/)
 
 void FriendSharing::completeReceivedClosures()
 {
-    // A friend's share is a set of package folders, closed over what they contain. The receiver lands every node file
-    // each folder lists (blocks only — kilobytes per game; content stays lazy until install), so it holds the same
+    // A friend's share is their share sheet's entries, closed over what they contain. The receiver lands every node
+    // file an entry names (blocks only — kilobytes per game; content stays lazy until install), so it holds the same
     // graph the seeder holds and derives the same cards, offers and needs from it. Re-entrant-safe: a share changing
     // while a pass runs queues exactly one more pass.
     if (FriendClosureRunning) { FriendClosureAgain = true; return; }
     //Each package lands whole, in its own folder; a node a package contains comes with ITS package (a share is
     //closed over what its packages contain), never fetched into the package that needs it.
     if (!PackageCatalog::ReceivedPackagesIncomplete(*Model.config()))
-    {   // nothing to land: still drop what no landed folder lists (older generations, an older build's copies)
+    {   // nothing to land: still drop what no entry names (older generations)
         if (PackageCatalog::PruneStaleReceived(*Model.catalogSnapshot(), *Model.config()) > 0) { Model.rebuildCatalog(); emit friendCatalogChanged(); }
         return;
     }
@@ -538,7 +569,7 @@ void FriendSharing::completeReceivedClosures()
                 // stubs again (a stopped peer's dirs are remembered, so this works after its record is gone), re-enqueue
                 const std::set<std::string> Peers = std::move(FriendStubsDirtyPeers);
                 FriendStubsDirtyPeers.clear();
-                for (const std::string & P : Peers) dropReceivedStubs(P);
+                for (const std::string & P : Peers) dropReceivedStubs(P, sharedStubFiles(P));
                 FriendStubsDirtyPeers.clear();   // the drops above ran with no pass in flight: nothing new to remember
                 reconcileReceivedLibraries();    // the CURRENT generation's roots, into the now-clean dirs
             }

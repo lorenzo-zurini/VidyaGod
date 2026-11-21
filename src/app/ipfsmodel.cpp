@@ -135,10 +135,9 @@ static QHash<QString, QString> BuildCidLabels(const NodeIndex & Idx, const nlohm
             if (OutCategory) OutCategory->insert(QCid, CatContent);
             if (OutSource)   OutSource->insert(QCid, Src.isEmpty() ? QStringLiteral("Other") : Src);
         };
-        const std::string Share = PackageCatalog::PackageFolderCid(Config, Dir);
-        name(Share, It.key() + " (package)");
-        if (OutPackageLevel && !Share.empty()) OutPackageLevel->insert(QString::fromStdString(Share));
-        name(PackageCatalog::PackageFolderCid(Config, Dir, "pin"), It.key() + " — pin folder");
+        const std::string Pin = PackageCatalog::PackagePin(Config, Dir);
+        name(Pin, It.key() + " — pin folder");
+        if (OutPackageLevel && !Pin.empty()) OutPackageLevel->insert(QString::fromStdString(Pin));
     }
 
     if (Config.contains("Settings") && Config["Settings"].is_object()
@@ -374,11 +373,11 @@ void IpfsModel::rebuildLabels()
 void IpfsModel::cancel(const QString & cid)      { IpfsWrapper::CancelDownload(cid.toStdString()); }
 void IpfsModel::prioritize(const QString & cid)  { IpfsWrapper::PrioritizeDownload(cid.toStdString()); }
 
-QString IpfsModel::packageCid(const QString & pkg) const
+QString IpfsModel::packagePin(const QString & pkg) const
 {
     const QString Dir = PkgDirs.value(pkg);
     if (Dir.isEmpty()) return {};
-    return QString::fromStdString(PackageCatalog::PackageFolderCid(*Model.config(), Dir.toStdString()));
+    return QString::fromStdString(PackageCatalog::PackagePin(*Model.config(), Dir.toStdString()));
 }
 
 void IpfsModel::forceRecheck(const QStringList & cids)

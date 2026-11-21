@@ -1,9 +1,11 @@
-// What friends share, received: planning and landing a share's package folders, adopting them into the library,
+// What friends share, received: planning and landing a share's node files, adopting them into the library,
 // pruning what a newer share replaced, and whether a received closure is complete.
 #include "packagecatalog.h"
 #include "sessions.h"
 #include "nodestore.h"
 #include "contentfile.h"
+#include "nodefiles.h"
+#include "cid.h"
 #include "builtinrunners.h"
 #include "fold.h"   // Fold — a row's grafts are what its resolution offers
 #include "packagecatalog_p.h"
@@ -30,6 +32,7 @@
 #include <QFile>
 #include <QStringList>
 #include <cstdint>
+#include <cstdio>
 #include <map>
 #include <mutex>
 #include <condition_variable>
@@ -47,12 +50,9 @@ using namespace ManifestModel;   // LayerLocator / IsVfsLayer / …
 
 namespace PackageCatalog {
 
-// Where a received package folder lands inside its package dir (NodeGraph::kPackageFolderDir — its nodes' bundle is
-// the package dir).
-static constexpr const char *kPackageFolderDir = NodeGraph::kPackageFolderDir;
 // Bounds for the received-share planner (a friend's snapshot is UNTRUSTED input).
-static constexpr size_t kMaxFriendRootsPerLib = 20000;    // cap a hostile/huge per-library item set (Go caps at 100k)
-static constexpr size_t kMaxFriendRootsTotal  = 100000;   // snapshot-wide cap across all of one peer's libraries
+static constexpr size_t kMaxFriendRootsPerLib = 100000;   // node entries per library (Go caps a library at 100k too)
+static constexpr size_t kMaxFriendRootsTotal  = 100000;   // node entries across all of one peer's libraries
 using namespace Shelf;       // the library walks rows and grafts as the plan sees them
 using namespace Installed;
 
@@ -75,38 +75,53 @@ bool DirHasContent(const std::string &Dir)
     return Ec ? true : false;   // couldn't fully inspect (permission/IO) → assume content; never rm what we can't read
 }
 
-// One path segment from UNTRUSTED input (a friend's snapshot: a library name, a package dir, a CID): plain filename
-// characters only — no separator, no traversal — capped under NAME_MAX (a within-bounds snapshot must still yield
-// satisfiable dests, or the queue retries an ENAMETOOLONG mkdir forever), never empty and never "." or "..".
-std::string SafeSegment(const std::string &In)
-{
-    std::string O;
-    for (char c : In) O.push_back((std::isalnum((unsigned char)c) || c == '_' || c == '-' || c == '.'
-                                   || c == ' ' || c == '[' || c == ']' || c == '(' || c == ')') ? c : '_');
-    if (O.size() > 120) O.resize(120);
-    if (O.find_first_not_of('.') == std::string::npos) O = std::string(O.size() ? O.size() : 1, '_');   // "", ".", ".."
-    //Names Windows cannot hold as given — the same on every platform, so every receiver lands the same name: a trailing
-    //'.' or ' ' is silently dropped there (a folder "nick - .." is created as "nick -", and every path through the
-    //name the plan holds then misses it), and a device name (CON, NUL, COM1, …, with any extension) is no file at all.
-    for (size_t I = O.size(); I > 0 && (O[I - 1] == '.' || O[I - 1] == ' '); --I) O[I - 1] = '_';
-    std::string Stem = O.substr(0, O.find('.'));
-    while (!Stem.empty() && Stem.back() == ' ') Stem.pop_back();
-    for (char &C : Stem) C = static_cast<char>(std::toupper(static_cast<unsigned char>(C)));
-    static const std::set<std::string> Devices = { "CON", "PRN", "AUX", "NUL", "CONIN$", "CONOUT$",
-        "COM1", "COM2", "COM3", "COM4", "COM5", "COM6", "COM7", "COM8", "COM9",
-        "LPT1", "LPT2", "LPT3", "LPT4", "LPT5", "LPT6", "LPT7", "LPT8", "LPT9" };
-    if (Devices.count(Stem)) O = "_" + O;
-    return O;
-}
-
 std::vector<IpfsWrapper::FetchTarget> ReceivedFetchTargets(const std::vector<ReceivedFetch> &Plan)
 {
     std::vector<IpfsWrapper::FetchTarget> Out;
     Out.reserve(Plan.size());
+    std::set<std::string> Dirs;
     for (const ReceivedFetch &T : Plan)
     {
-        IpfsWrapper::DropRedirectsUnder(std::filesystem::path(T.Dest).parent_path().string());
-        Out.push_back(IpfsWrapper::FetchTarget{ T.Cid, T.Dest, /*Optional=*/true, /*Dir=*/true, /*Verify=*/true });
+        if (const std::string D = std::filesystem::path(T.Dest).parent_path().string(); Dirs.insert(D).second)
+            IpfsWrapper::DropRedirectsUnder(D);
+        Out.push_back(IpfsWrapper::FetchTarget{ T.Cid, T.Dest, /*Optional=*/true, /*Dir=*/false, /*Verify=*/true });
+    }
+    return Out;
+}
+
+namespace {
+//The last 8 hex digits of the 64-bit FNV-1a hash of S: what tells apart two of a friend's packages whose names make
+//one folder name (chapter 15 §15.5).
+std::string Fnv8(const std::string &S)
+{
+    uint64_t H = 1469598103934665603ull;
+    for (unsigned char C : S) { H ^= C; H *= 1099511628211ull; }
+    char Buf[17];
+    std::snprintf(Buf, sizeof Buf, "%016llx", static_cast<unsigned long long>(H));
+    return std::string(Buf + 8);
+}
+bool PlainCid(const std::string &C)
+{
+    return !C.empty() && C.size() <= 128 && std::all_of(C.begin(), C.end(), [](unsigned char c) { return std::isalnum(c); });
+}
+} // namespace
+
+std::map<std::pair<std::string, std::string>, std::string> ReceivedFolderNames(const nlohmann::ordered_json &Libs)
+{
+    // A friend's package names, made folder names: names that clash (compared without case, as a case-insensitive file
+    // system compares them) are EACH told apart by their name's hash — never one plain and one qualified, which would
+    // make the name depend on the order the friend's packages arrive in.
+    std::map<std::string, std::set<std::string>> Pkgs;                                     // lib → its package names
+    for (const SheetEntry &E : WireEntries(Libs)) Pkgs[E.Lib].insert(E.Pkg);
+    std::map<std::pair<std::string, std::string>, std::string> Out;
+    for (const auto &[Lib, Names] : Pkgs)
+    {
+        std::map<std::string, std::vector<std::string>, ContentFile::NameLess> ByFolder;
+        for (const std::string &P : Names) ByFolder[NodeFiles::SafeName(P)].push_back(P);
+        for (const auto &[Folder, Claim] : ByFolder)
+            for (const std::string &P : Claim)
+                Out[{ Lib, P }] = Claim.size() == 1 ? NodeFiles::SafeName(P)
+                                                    : NodeFiles::SafeName(NodeFiles::SafeName(P).substr(0, 108) + " (" + Fnv8(P) + ")");
     }
     return Out;
 }
@@ -115,65 +130,60 @@ std::vector<ReceivedFetch> PlanReceivedFetches(const nlohmann::ordered_json &Glo
                                                const std::string &NickLabel, const nlohmann::ordered_json &Libs)
 {
     namespace fs = std::filesystem;
-    // UNTRUSTED input (a friend's snapshot): every path segment goes through SafeSegment — a plain filename, no
-    // separators, never "", "." or ".." (a collision-qualified "X (<cid>)" keeps its parentheses, so adopting it and
-    // re-planning agree on the name).
+    // UNTRUSTED input (a friend's snapshot = their share sheet's entries): every path segment goes through
+    // NodeFiles::SafeName — a plain filename, no separators, never "", "." or "..". The sheet is the allow-list: one
+    // file per entry, at that entry's path, holding that entry's CID (the fetch verifies the bytes).
     std::vector<ReceivedFetch> Out;
-    if (!Libs.is_object()) return Out;
     const fs::path Root = fs::path(CatalogRootDir(GlobalConfigJSON));   // received stubs live in CATALOG, not LIBRARY
-    std::map<std::string, std::string> DestCid;   // dest → the CID that claimed it (the same CID twice = one target)
-    auto Add = [&](const std::string &Cid, fs::path Dest, const std::string &LibName) {
-        if (Cid.empty() || Cid.size() > 128) return;
-        // Two packages sharing a dir name map to the same dir: the second gets a CID-qualified name instead of being
-        // silently dropped.
-        if (auto It = DestCid.find(Dest.string()); It != DestCid.end())
-        {
-            if (It->second == Cid) return;
-            Dest = Dest.parent_path() / (Dest.filename().string() + " (" + Cid.substr(0, 12) + ")");
-            if (DestCid.count(Dest.string())) return;
-        }
-        DestCid[Dest.string()] = Cid;   // claimed even when installed: the name the other package gets depends on it
-        // A package the library already holds under this library and dir name was INSTALLED (adopted out of
-        // CATALOG) or authored here: it is ours now and is not re-landed as a stub beside itself (a node has one
-        // home; a stub beside it would hold copies). Its FINAL name: the unqualified one said "installed" for both of
-        // two colliding packages, or re-planned the installed one.
-        std::error_code Ec;
-        if (fs::is_directory(fs::path(LibraryRootDir(GlobalConfigJSON)) / SafeSegment(LibName) / Dest.filename(), Ec)) return;
-        Out.push_back(ReceivedFetch{Cid, (Dest / kPackageFolderDir).generic_string()});   // '/' on every host: compared as data
-    };
-    size_t Total = 0;   // snapshot-wide bound (a hostile friend could send many libs x many items)
-    for (const auto &[LibName, Items] : Libs.items())
+    const fs::path LibRoot = fs::path(LibraryRootDir(GlobalConfigJSON));
+    const auto Folders = ReceivedFolderNames(Libs);
+    std::map<std::pair<std::string, std::string>, std::vector<SheetEntry>> ByPkg;        // (lib, pkg) → its entries
+    for (SheetEntry &E : WireEntries(Libs))
+        if (PlainCid(E.Cid)) ByPkg[{ E.Lib, E.Pkg }].push_back(std::move(E));
+    std::map<std::string, size_t> PerLib;
+    size_t Total = 0;
+    std::set<fs::path> Dirs;
+    for (auto &[LP, Entries] : ByPkg)
     {
-        if (!Items.is_array()) continue;
-        const fs::path LibDir = Root / SafeSegment(NickLabel + " - " + LibName);
-        size_t PerLib = 0;
-        for (const auto &It : Items)
+        // Bounds count node entries, and take a package whole or not at all: a package cut short would read complete.
+        if (Total + Entries.size() > kMaxFriendRootsTotal || PerLib[LP.first] + Entries.size() > kMaxFriendRootsPerLib)
         {
-            if (Total >= kMaxFriendRootsTotal)
-            {
-                LogWarn("PackageCatalog::PlanReceivedFetches", "snapshot exceeds "
-                        + std::to_string(kMaxFriendRootsTotal) + " total items — ignoring the rest");
-                return Out;
-            }
-            if (++PerLib > kMaxFriendRootsPerLib)
-            {
-                LogWarn("PackageCatalog::PlanReceivedFetches", "library '" + LibName + "' exceeds "
-                        + std::to_string(kMaxFriendRootsPerLib) + " items — capping");
-                break;
-            }
-            ++Total;
-            if (!It.is_object()) continue;
-            const std::string Cid = It.value("cid", std::string());
-            if (Cid.empty()) continue;
-            // One entry = one PACKAGE FOLDER: it lands as <pkg dir>/.package/ — every node file verbatim — a dir
-            // the fetch owns whole (a re-publish replaces it), while the package's
-            // content hydrates beside it into <pkg dir>/. The seeder's real dir name keeps a multi-game package ONE
-            // dir; a snapshot without it falls back to the CID.
-            std::string PkgSeg = It.value("pkg", std::string());
-            if (PkgSeg.empty()) PkgSeg = It.value("node", std::string());
-            if (PkgSeg.empty()) PkgSeg = Cid.substr(0, 12);
-            Add(Cid, LibDir / SafeSegment(PkgSeg), LibName);
+            LogWarn("PackageCatalog::PlanReceivedFetches", "package '" + LP.second + "' of library '" + LP.first
+                    + "' is past the " + std::to_string(kMaxFriendRootsTotal) + "-entry bound — left out");
+            continue;
         }
+        Total += Entries.size();
+        PerLib[LP.first] += Entries.size();
+        const fs::path Pkg = Root / NodeFiles::SafeName(NickLabel + " - " + LP.first) / Folders.at(LP);
+        if (!Dirs.insert(Pkg).second) continue;                       // a qualified name that is another's plain one
+        // A package the library already holds under this library and folder name was INSTALLED (adopted out of
+        // CATALOG) or authored here: it is ours now and is not re-landed as a stub beside itself (a node has one home;
+        // a stub beside it would hold copies).
+        std::error_code Ec;
+        if (fs::is_directory(LibRoot / NodeFiles::SafeName(LP.first) / Pkg.filename(), Ec)) continue;
+        // Its files: names that clash (without case) are each bumped by their CID — the same CID twice is one file.
+        std::map<std::string, std::map<std::string, std::string>, ContentFile::NameLess> ByName;   // name → CID → its own spelling
+        for (const SheetEntry &E : Entries)
+        {
+            std::string Name = NodeFiles::SafeName(E.File);
+            if (fs::path(Name).extension() != ".json") Name += ".json";  // a node file, whatever the friend named it
+            ByName[Name].emplace(E.Cid, Name);
+        }
+        //One file, one CID: a bumped name another entry has as its own (a friend who named a file that way) is
+        //planned once — whichever comes first — never two fetches racing for one file.
+        std::set<std::string, ContentFile::NameLess> Planned;
+        for (const auto &[Name, Cids] : ByName)
+            for (const auto &[C, Own] : Cids)
+            {
+                const std::string File = Cids.size() == 1 ? Own : ContentFile::Bumped(Own, C);
+                if (!Planned.insert(File).second)
+                {
+                    LogWarn("PackageCatalog::PlanReceivedFetches", "'" + File + "' of package '" + LP.second
+                            + "' is named by two entries — " + C + " left out");
+                    continue;
+                }
+                Out.push_back(ReceivedFetch{ C, (Pkg / File).generic_string() });
+            }
     }
     return Out;
 }
@@ -205,86 +215,19 @@ std::string ReceivedNickLabel(const std::string &PeerID)
     return PeerID.size() > 8 ? PeerID.substr(PeerID.size() - 8) : PeerID;   // never an empty dir prefix
 }
 
-// Where each friend's share entries landed: the planner's own routing, replayed (landed folder dir → folder CID). Exact
-// per friend — two friends sharing the same library and package name land in different dirs, and each dir is judged
-// against its own friend's folder, never the other's.
-static std::map<std::filesystem::path, std::string> LandedFolders(const nlohmann::ordered_json &Config)
+// What each received package holds: every friend's plan replayed (package dir → file → CID). Exact per friend — two
+// friends sharing the same library and package name land in different dirs, and each dir is judged against its own
+// friend's entries, never the other's.
+static std::map<std::filesystem::path, std::map<std::filesystem::path, std::string>> ReceivedPackages(const nlohmann::ordered_json &Config)
 {
-    std::map<std::filesystem::path, std::string> Out;
+    std::map<std::filesystem::path, std::map<std::filesystem::path, std::string>> Out;
     if (!Config.contains("FriendLibraries") || !Config["FriendLibraries"].is_object()) return Out;
     for (const auto &[Peer, Libs] : Config["FriendLibraries"].items())
         for (const ReceivedFetch &T : PlanReceivedFetches(Config, ReceivedNickLabel(Peer), Libs))
-            Out[std::filesystem::path(T.Dest)] = T.Cid;
-    return Out;
-}
-
-// A folder's node files — its listing's "<cid>.json" entries — read once per folder CID: a folder never changes (its
-// CID is its content), and the receiver asks on every catalog pass. Empty optional: the folder is not held here.
-std::optional<std::vector<std::string>> FolderNodes(const std::string &FolderCid, std::string *Error)
-{
-    static std::mutex Mu;
-    static std::map<std::string, std::vector<std::string>> Cache;
-    {
-        std::lock_guard<std::mutex> L(Mu);
-        if (auto It = Cache.find(FolderCid); It != Cache.end()) return It->second;
-    }
-    std::map<std::string, std::string> Entries;
-    if (!IpfsWrapper::DirEntries(FolderCid, Entries, Error)) return std::nullopt;
-    std::vector<std::string> Cids;
-    for (const auto &[Name, C] : Entries)
-    {
-        if (C.empty() || C.size() > 128 || Name != C + ".json") continue;   // a node file is named by its CID
-        bool Plain = true;
-        for (unsigned char ch : C) if (!std::isalnum(ch)) { Plain = false; break; }   // a CID is base32/58: a path is not
-        if (Plain) Cids.push_back(C);
-    }
-    std::lock_guard<std::mutex> L(Mu);
-    if (Cache.size() > 20000) Cache.clear();
-    Cache[FolderCid] = Cids;
-    return Cids;
-}
-
-// Says once per dir and reason why a landed package is not completed or pruned — silence here was a package quietly
-// frozen. Informational: a folder not held yet is the normal moment after a friend re-publishes (every package's
-// folder changes at once), not a fault. Keyed without the folder CID, so re-mints neither repeat it nor grow the set.
-static void ReportUnjudged(const std::filesystem::path &Folder, const std::string &Why, const std::string &Detail)
-{
-    static std::mutex Mu;
-    static std::set<std::string> Said;
-    std::lock_guard<std::mutex> L(Mu);
-    if (Said.insert(Folder.string() + "\n" + Why).second)
-        LogOut("PackageCatalog::ReceivedPackageFolders", "received package " + Folder.parent_path().filename().string()
-               + ": " + Why + Detail + " — not completed or pruned until it is");
-}
-
-// The received package folders on disk: every CATALOG/<nick - lib>/<pkg>/.package/ a friend's share entry landed
-// (LandedFolders). Returns the folder dir → the node CIDs its folder lists: its own listing, read from blocks held here
-// (the folder root lands first) — the share entry names the folder, nothing inside it repeats the list. A dir no
-// current share entry routes to, or whose folder is not held, is left out, and said so.
-static std::map<std::filesystem::path, std::vector<std::string>> ReceivedPackageFolders(const nlohmann::ordered_json &Config)
-{
-    namespace fs = std::filesystem;
-    std::map<fs::path, std::vector<std::string>> Out;
-    std::error_code Ec;
-    const fs::path Root = fs::path(CatalogRootDir(Config));
-    if (!fs::is_directory(Root, Ec)) return Out;
-    const auto Landed = LandedFolders(Config);
-    for (const auto &Lib : fs::directory_iterator(Root, Ec))
-    {
-        if (!Lib.is_directory(Ec)) continue;
-        for (const auto &Pkg : fs::directory_iterator(Lib.path(), Ec))
         {
-            if (!Pkg.is_directory(Ec)) continue;
-            const fs::path Folder = Pkg.path() / kPackageFolderDir;
-            if (!fs::is_directory(Folder, Ec)) continue;
-            const auto It = Landed.find(Folder);
-            if (It == Landed.end()) { ReportUnjudged(Folder, "no share entry routes here now", ""); continue; }
-            std::string Err;
-            auto Cids = FolderNodes(It->second, &Err);
-            if (!Cids) { ReportUnjudged(Folder, "its folder is not held yet", " (" + It->second + ": " + Err + ")"); continue; }
-            Out[Folder] = std::move(*Cids);
+            const std::filesystem::path F(T.Dest);
+            Out[F.parent_path()][F] = T.Cid;
         }
-    }
     return Out;
 }
 
@@ -298,7 +241,7 @@ static std::string ReceivedLibraryName(const nlohmann::ordered_json &Config, con
         const std::string Nick = ReceivedNickLabel(P);
         if (!Libs.is_object()) continue;
         for (const auto &[L, Items] : Libs.items())
-            if (SafeSegment(Nick + " - " + L) == LibDirName) return L;
+            if (NodeFiles::SafeName(Nick + " - " + L) == LibDirName) return L;
     }
     return {};
 }
@@ -324,10 +267,9 @@ bool AdoptReceivedPackage(const nlohmann::ordered_json &Config, const std::files
     if (Lib.empty()) { if (Error) *Error = "no share snapshot names " + Src.parent_path().filename().string(); return false; }
     //The library NAME is the friend's (their snapshot): one sanitised segment, and the destination must lie inside
     //the library whatever it held — an absolute or ".." name would otherwise plant the package anywhere writable.
-    const fs::path Dest = fs::path(LibraryRootDir(Config)) / SafeSegment(Lib) / SafeSegment(Src.filename().string());
+    const fs::path Dest = fs::path(LibraryRootDir(Config)) / NodeFiles::SafeName(Lib) / NodeFiles::SafeName(Src.filename().string());
     if (!NodeGraph::PathWithin(LibraryRootDir(Config), Dest))
     { if (Error) *Error = "refused: " + Dest.string() + " is outside the library"; return false; }
-    const fs::path Folder = Src / kPackageFolderDir;
     if (!fs::is_directory(Src, Ec))
     {
         if (fs::is_directory(Dest, Ec)) { if (NewDir) *NewDir = Dest; return true; }   // installed meanwhile
@@ -335,27 +277,13 @@ bool AdoptReceivedPackage(const nlohmann::ordered_json &Config, const std::files
         return false;
     }
     if (fs::exists(Dest, Ec)) { if (Error) *Error = "a package named '" + Src.filename().string() + "' already exists in library '" + Lib + "'"; return false; }
-    // The landed folder was the receive artifact: its node files move up into the package dir (an installed package is
-    // an ordinary bundle). A name already there is the same node (files are CID-named). The
-    // folder goes only once every file is out and its references point at the new place.
-    if (fs::is_directory(Folder, Ec))
-    {
-        for (const auto &F : fs::directory_iterator(Folder, Ec))
-        {
-            if (!F.is_regular_file(Ec)) continue;
-            std::error_code Rc;
-            if (!fs::exists(Src / F.path().filename(), Rc)) fs::rename(F.path(), Src / F.path().filename(), Rc);
-            if (Rc) { if (Error) *Error = "cannot move " + F.path().string() + " into its package: " + Rc.message(); return false; }
-        }
-        fs::remove_all(Folder, Ec);
-    }
     //Every file fetched into the package is referenced in place, and the references move to the installed place BEFORE
-    //the package does, in one scan: the landed folder's (its files moved up) and the package dir's. The move is
+    //the package does. The move is
     //idempotent and never looks at the files, so a failure or crash anywhere up to the rename leaves a stub still
     //Received in CATALOG, which the next download adopts again. Moved after the rename, a failure left an installed
     //package (never adopted again) whose files read as missing, unservable for good.
     std::string MErr;
-    if (IpfsWrapper::MoveRefs({{Folder.string(), Dest.string()}, {Src.string(), Dest.string()}}, &MErr) < 0)
+    if (IpfsWrapper::MoveRefs({{Src.string(), Dest.string()}}, &MErr) < 0)
     { if (Error) *Error = "cannot re-point the references of " + Src.string() + " to " + Dest.string() + ": " + MErr; return false; }
     auto Refuse = [&](const std::string &Why) {                            // the package stays where its files are
         std::string BErr;
@@ -364,7 +292,7 @@ bool AdoptReceivedPackage(const nlohmann::ordered_json &Config, const std::files
         if (Error) *Error = Why;
         return false;
     };
-    IpfsWrapper::ForgetDestsUnder(Folder.string());   // the queue must never re-land the folder into the old stub
+    IpfsWrapper::ForgetDestsUnder(Src.string());      // the queue must never re-land a file into the old stub
     fs::create_directories(Dest.parent_path(), Ec);
     fs::rename(Src, Dest, Ec);
     if (Ec)
@@ -379,9 +307,8 @@ bool AdoptReceivedPackage(const nlohmann::ordered_json &Config, const std::files
         }
         fs::remove_all(Src, Ec);
     }
-    // A later request for the old paths lands in the installed package (landed folder: files moved up); registered
-    // before the queue forgets them, so no request in between re-materialises the stub.
-    IpfsWrapper::RedirectDestsUnder(Folder.string(), Dest.string());
+    // A later request for the old paths lands in the installed package; registered before the queue forgets them, so
+    // no request in between re-materialises the stub.
     IpfsWrapper::RedirectDestsUnder(Src.string(), Dest.string());
     IpfsWrapper::ForgetDestsUnder(Src.string());
     if (fs::is_empty(Src.parent_path(), Ec)) fs::remove(Src.parent_path(), Ec);
@@ -392,40 +319,53 @@ bool AdoptReceivedPackage(const nlohmann::ordered_json &Config, const std::files
 bool ReceivedPackagesIncomplete(const nlohmann::ordered_json &Config)
 {
     std::error_code Ec;
-    for (const auto &[Dir, Cids] : ReceivedPackageFolders(Config))
-        for (const std::string &C : Cids)
-            if (!std::filesystem::exists(Dir / (C + ".json"), Ec)) return true;
+    for (const auto &[Dir, Files] : ReceivedPackages(Config))
+        for (const auto &[F, C] : Files)
+            if (!std::filesystem::exists(F, Ec)) return true;
     return false;
 }
 
 bool LandReceivedPackages(const nlohmann::ordered_json &Config, std::string *Error)
 {
     const IpfsWrapper::ForegroundHold Hold;                             // package after package: no gap for walks
-    // A package folder lands whole (the queue fetched it); this completes and checks it: a node file its folder
-    // lists but the landing did not bring is fetched on its own, and every named file is verified — one that is not
-    // the bytes its name says (or not a canonical node) is removed and the package reported, never repaired.
+    // Completes and checks each received package against its entries: a missing file is fetched, and every file is
+    // verified — one that is not the bytes its entry says (or not a canonical node) is removed and the package
+    // reported, never repaired.
     namespace fs = std::filesystem;
     std::error_code Ec;
     bool Ok = true;
-    for (const auto &[Dir, Cids] : ReceivedPackageFolders(Config))
+    for (const auto &[Dir, Files] : ReceivedPackages(Config))
     {
+        //A file there holding another node (the entry's previous generation, under the same name) goes first: the
+        //fetch takes a file that is there for done when the node it asks for is held here.
+        for (const auto &[F, C] : Files)
+            if (fs::exists(F, Ec) && !NodeGraph::VerifyLanded(F, C, nullptr, nullptr))
+            {
+                std::ifstream In(F, std::ios::binary);
+                const std::string Old = Cid::OfBytes(std::string((std::istreambuf_iterator<char>(In)), std::istreambuf_iterator<char>()));
+                In.close();
+                RemoveLandedNode(F, Old);
+            }
         std::vector<IpfsWrapper::FetchTarget> Batch;
-        for (const std::string &C : Cids)
-            if (!fs::exists(Dir / (C + ".json"), Ec))
-                Batch.push_back(IpfsWrapper::FetchTarget{ C, (Dir / (C + ".json")).string(), /*Optional=*/false, /*Dir=*/false, /*Verify=*/true });
+        for (const auto &[F, C] : Files)
+        {
+            if (fs::exists(F, Ec)) continue;
+            Batch.push_back(IpfsWrapper::FetchTarget{ C, F.string(), /*Optional=*/false, /*Dir=*/false, /*Verify=*/true });
+        }
         if (!Batch.empty())
         {
             std::string WErr;
             if (!IpfsWrapper::WaitBatch(IpfsWrapper::EnqueueBatch(Batch), 10 * 60 * 1000, &WErr))
             { if (Error) *Error = "package " + Dir.filename().string() + ": " + WErr; Ok = false; continue; }
         }
-        for (const std::string &C : Cids)
+        for (const auto &[F, C] : Files)
         {
             std::string VErr;
-            if (NodeGraph::VerifyLanded(Dir / (C + ".json"), C, nullptr, &VErr)) continue;
-            RemoveLandedNode(Dir / (C + ".json"), C);
-            if (Error) *Error = "package " + Dir.filename().string() + ": node " + C.substr(0, 16) + "… " + VErr;
-            LogWarn("PackageCatalog::LandReceivedPackages", "package '" + Dir.filename().string() + "': node " + C + " refused: " + VErr);
+            if (NodeGraph::VerifyLanded(F, C, nullptr, &VErr)) continue;
+            RemoveLandedNode(F, C);
+            if (Error) *Error = "package " + Dir.filename().string() + ": node " + F.filename().string() + " " + VErr;
+            LogWarn("PackageCatalog::LandReceivedPackages", "package '" + Dir.filename().string() + "': node " + F.filename().string()
+                    + " (" + C + ") refused: " + VErr);
             Ok = false;
         }
     }
@@ -434,37 +374,24 @@ bool LandReceivedPackages(const nlohmann::ordered_json &Config, std::string *Err
 
 int PruneStaleReceived(const NodeIndex &Idx, const nlohmann::ordered_json &Config)
 {
-    // A received package's landed folder holds exactly what the folder lists (one home: what it contains from other
-    // packages lives there). Any other node file in it is an older generation's — a re-published node under its
-    // previous CID. Remove it.
+    // A received package holds exactly what its entries name (one home: what it contains from other packages lives
+    // there). Any other node file in it is an older generation's — a re-published node under its previous CID. Remove it.
     namespace fs = std::filesystem;
     std::error_code Ec;
     int Removed = 0;
-    const auto Manifests = ReceivedPackageFolders(Config);                 // one read, not one per stale file
-    std::set<fs::path> Installed;                                            // installed packages hold CID-named nodes too
-    for (const auto &[Id, N] : Idx.Nodes) if (!N.Received && !N.BundleDir.empty()) Installed.insert(N.BundleDir);
-    for (const auto &[Dir, Cids] : Manifests)
+    const auto Packages = ReceivedPackages(Config);                        // one read, not one per stale file
+    std::map<std::string, std::vector<fs::path>> Where;                    // cid → every path an entry gives it
+    for (const auto &[Dir, Files] : Packages) for (const auto &[F, C] : Files) Where[C].push_back(F);
+    for (const auto &[Dir, Files] : Packages)
     {
-        //A received package holds exactly what its folder lists: a node it contains from another package lives in that
-        //package (one home). A node file beyond the listing is an older generation's, or a copy an older build
-        //fetched into this package to complete a closure.
-        const std::set<std::string> Keep(Cids.begin(), Cids.end());
-        // Per FILE, not per index node: the same CID landed in two libraries is ONE index entry, and a landed file is
-        // named by its CID (a label-named file is a pre-manifest root: stale by definition).
-        for (const auto &F : fs::directory_iterator(Dir, Ec))
+        if (!fs::is_directory(Dir, Ec)) continue;
+        for (const auto &[Cid, F] : NodeFiles::In(Dir))
         {
-            const std::string Name = F.path().filename().string();
-            if (!F.is_regular_file(Ec) || F.path().extension() != ".json") continue;
-            if (Keep.count(F.path().stem().string())) continue;
-            if (!std::all_of(Name.begin(), Name.end() - 5, [](unsigned char c) { return std::isalnum(c); })) continue;   // not a node file
-            const std::string Cid = F.path().stem().string();
-            std::vector<fs::path> Elsewhere;                         // the same node's other landed copies
-            for (const auto &[Other, OtherCids] : Manifests)
-                if (Other != Dir) { Elsewhere.push_back(Other / (Cid + ".json")); Elsewhere.push_back(Other.parent_path() / (Cid + ".json")); }
-            for (const fs::path &P : Installed) Elsewhere.push_back(P / (Cid + ".json"));
+            if (Files.count(F.Path)) continue;
+            std::vector<fs::path> Elsewhere = Where[Cid];                  // the same node's other landed copies
             if (const Node *N = Idx.Find(Cid); N && !N->File.empty()) Elsewhere.push_back(N->File);
-            RemoveLandedNode(F.path(), Cid, Elsewhere);
-            if (!fs::exists(F.path(), Ec)) ++Removed;
+            RemoveLandedNode(F.Path, Cid, Elsewhere);
+            if (!fs::exists(F.Path, Ec)) ++Removed;
         }
     }
     return Removed;

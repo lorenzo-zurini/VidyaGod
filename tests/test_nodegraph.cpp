@@ -192,11 +192,11 @@ TEST(nodegraph_scan_rejects_hostile_deep_json_without_crashing)
 TEST(nodegraph_scan_skips_a_folder_fetch_still_landing)
 {
     // A folder fetch materializes into "<dest>.tmp" and renames it into place: its half-landed node files are not a
-    // package (indexed, the closure pass wrote INTO the scratch dir and collided with the fetch). The landed folder is
-    // one, its nodes' bundle the package dir.
+    // package (indexed, the closure pass wrote INTO the scratch dir and collided with the fetch). A node file's bundle
+    // is the folder it is in.
     ScanDir D;
-    D.Write("Lib/[1] G/.package.tmp/half.json", ordered_json{{"CID", "cidHalf"}, {"LABEL", "h"}, {"LAYERS", ordered_json::array()}}.dump());
-    D.Write("Lib/[1] G/.package/done.json", ordered_json{{"CID", "cidDone"}, {"LABEL", "d"}, {"LAYERS", ordered_json::array()}}.dump());
+    D.Write("Lib/[1] G.tmp/half.json", ordered_json{{"CID", "cidHalf"}, {"LABEL", "h"}, {"LAYERS", ordered_json::array()}}.dump());
+    D.Write("Lib/[1] G/done.json", ordered_json{{"CID", "cidDone"}, {"LABEL", "d"}, {"LAYERS", ordered_json::array()}}.dump());
     std::map<std::string, ordered_json> Tree;
     std::map<std::string, std::filesystem::path> Dirs;
     NodeGraph::GatherWorkingTree(D.P, Tree, Dirs);

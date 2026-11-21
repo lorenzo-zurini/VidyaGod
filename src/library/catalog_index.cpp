@@ -3,6 +3,7 @@
 #include "sessions.h"
 #include "nodestore.h"
 #include "contentfile.h"
+#include "nodefiles.h"
 #include "builtinrunners.h"
 #include "fold.h"   // Fold — a row's grafts are what its resolution offers
 #include "packagecatalog_p.h"
@@ -382,8 +383,7 @@ NodeIndex ScanCatalogIndex(const nlohmann::ordered_json &GlobalConfigJSON)
             if (const auto It = std::find_if(D.begin(), D.end(), [&](const auto &P) { return !UnderCatalog(P); }); It != D.end())
             {
                 std::swap(N.BundleDir, *It);
-                std::error_code Fe;
-                if (const auto F = N.BundleDir / (Id + ".json"); std::filesystem::exists(F, Fe)) N.File = F;   // its file there too
+                if (const auto Fs = NodeFiles::In(N.BundleDir); Fs.count(Id)) N.File = Fs.at(Id).Path;   // its file there too
             }
         D.erase(std::remove_if(D.begin(), D.end(), UnderCatalog), D.end());
     }

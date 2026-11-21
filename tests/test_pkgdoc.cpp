@@ -4,6 +4,7 @@
 #include "vgtest.h"
 #include "noderefs.h"
 #include "pkgdoc.h"
+#include "nodefiles.h"
 #include "pkggraph.h"
 #include "cid.h"
 
@@ -35,24 +36,20 @@ std::string Freeze(const fs::path &Dir, const json &N)
 
 std::string Slurp(const fs::path &P) { std::ifstream I(P, std::ios::binary); std::ostringstream S; S << I.rdbuf(); return S.str(); }
 
-//Every node file in Dir is canonical bytes named by their own CID — the invariant a save must leave behind.
+//Every node file in Dir is its node's canonical bytes — the invariant a save must leave behind.
 bool AllFrozen(const fs::path &Dir)
 {
-    for (const auto &E : fs::directory_iterator(Dir))
-    {
-        if (E.path().extension() != ".json" || !PkgDoc::LooksLikeCid(E.path().stem().string())) continue;
-        const std::string B = Slurp(E.path());
-        if (Cid::OfBytes(B) != E.path().stem().string()) return false;
-    }
+    for (const auto &[C, F] : NodeFiles::In(Dir)) if (!F.Frozen) return false;
     return true;
 }
 
-int CountCidFiles(const fs::path &Dir)
+//The node files in Dir: how many nodes, whether one holds node C, and its file.
+int CountCidFiles(const fs::path &Dir) { return (int)NodeFiles::In(Dir).size(); }
+bool Has(const fs::path &Dir, const std::string &C) { return NodeFiles::In(Dir).count(C) > 0; }
+fs::path FileOf(const fs::path &Dir, const std::string &C)
 {
-    int N = 0;
-    for (const auto &E : fs::directory_iterator(Dir))
-        if (E.path().extension() == ".json" && PkgDoc::LooksLikeCid(E.path().stem().string())) ++N;
-    return N;
+    const auto In = NodeFiles::In(Dir);
+    return In.count(C) ? In.at(C).Path : Dir / (C + ".json");
 }
 
 //References in every node file under Root that name no file under Root.
@@ -61,11 +58,12 @@ int Dangling(const fs::path &Root)
     std::set<std::string> Have;
     std::vector<json> All;
     for (const auto &E : fs::recursive_directory_iterator(Root))
-        if (E.path().extension() == ".json" && PkgDoc::LooksLikeCid(E.path().stem().string()))
-        {
-            Have.insert(E.path().stem().string());
-            All.push_back(json::parse(Slurp(E.path()), nullptr, false));
-        }
+        if (E.is_directory())
+            for (const auto &[C, F] : NodeFiles::In(E.path()))
+            {
+                Have.insert(C);
+                All.push_back(F.Node);
+            }
     int N = 0;
     for (const json &J : All) NodeRefs::Each(J, [&](const std::string &R) { if (!Have.count(R)) ++N; });
     return N;
@@ -123,8 +121,8 @@ TEST(pkgdoc_saving_an_edit_re_mints_it_and_its_referrers)
     CHECK(!Doc.Dirty());
     CHECK(R.Renamed.count(A));
     CHECK(R.Renamed.count(C));                                               // the container re-minted too
-    CHECK(!fs::exists(D / (A + ".json")));
-    CHECK(!fs::exists(D / (C + ".json")));
+    CHECK(!Has(D, A));
+    CHECK(!Has(D, C));
     CHECK_EQ(CountCidFiles(D), 2);
     CHECK(AllFrozen(D));
     const int Ci = Doc.IndexOf(R.Renamed.at(C));
@@ -166,13 +164,13 @@ TEST(pkgdoc_a_save_follows_renames_through_the_library_and_instances)
     auto NewName = [&](const std::string &Old) { const auto It = R.Renamed.find(Old); return It == R.Renamed.end() ? std::string("missing") : It->second; };
     const std::string F2 = NewName(F), G2 = NewName(G), M2 = NewName(M);
     CHECK(G2 != "missing" && M2 != "missing");                               // the referrers were re-minted
-    CHECK(fs::exists(Mod / (F2 + ".json")));                                 // the copy, renamed
-    CHECK(!fs::exists(Mod / (F + ".json")));
-    CHECK(fs::exists(Game / (G2 + ".json")) && !fs::exists(Game / (G + ".json")));
-    CHECK(fs::exists(Mod / (M2 + ".json")) && !fs::exists(Mod / (M + ".json")));
-    CHECK(fs::exists(Friend / (Fr + ".json")));                              // untouched
+    CHECK(Has(Mod, F2));                                 // the copy, renamed
+    CHECK(!Has(Mod, F));
+    CHECK(Has(Game, G2) && !Has(Game, G));
+    CHECK(Has(Mod, M2) && !Has(Mod, M));
+    CHECK(Has(Friend, Fr));                              // untouched
     CHECK(AllFrozen(Fonts) && AllFrozen(Game) && AllFrozen(Mod));
-    const json GameNode = json::parse(Slurp(Game / (G2 + ".json")), nullptr, false);
+    const json GameNode = json::parse(Slurp(FileOf(Game, G2)), nullptr, false);
     CHECK(GameNode.is_object() && GameNode["LAYERS"][0]["NODE"] == F2);
     const json Inst = json::parse(Slurp(Users / "749" / "DefaultInstance" / "instance.json"), nullptr, false);
     CHECK_EQ(Inst["GRAFTS"]["802"][0].get<std::string>(), M2);
@@ -194,7 +192,7 @@ TEST(pkgdoc_a_fetchs_scratch_dir_is_never_rewritten)
     Doc.Load(Fonts);
     json N = Doc.Node(0); N["LAYERS"][0]["ZIP"] = "f2.zip"; Doc.Replace(0, N);
     CHECK(Doc.Save(Fonts, Lib, "").Ok);
-    CHECK(fs::exists(Landing / (G + ".json")));
+    CHECK(Has(Landing, G));
     CHECK_EQ((int)Files(Landing).size(), 1);
 }
 
@@ -219,7 +217,7 @@ TEST(pkgdoc_a_diamond_in_the_library_is_re_minted_in_order)
     CHECK(R.Ok);
     CHECK(R.Renamed.count(Mid) && R.Renamed.count(T));
     const std::string T2 = R.Renamed.count(T) ? R.Renamed.at(T) : "", Mid2 = R.Renamed.count(Mid) ? R.Renamed.at(Mid) : "";
-    const json TopNode = json::parse(Slurp(A / (T2 + ".json")), nullptr, false);
+    const json TopNode = json::parse(Slurp(FileOf(A, T2)), nullptr, false);
     CHECK(TopNode.is_object());
     if (TopNode.is_object())
     {
@@ -318,8 +316,8 @@ TEST(pkgdoc_a_removed_node_goes_unless_another_package_contains_it)
     CHECK(!StillNamed);                                                      // the wire went with it
     const PkgDoc::SaveReport R = Doc.Save(P, Lib, "");
     CHECK(R.Ok);
-    CHECK(!fs::exists(P / (A + ".json")));
-    CHECK(fs::exists(P / (B + ".json")));
+    CHECK(!Has(P, A));
+    CHECK(Has(P, B));
     bool Said = false;
     for (const std::string &L : R.Log) if (L.find("kept") != std::string::npos) Said = true;
     CHECK(Said);
@@ -379,7 +377,7 @@ TEST(pkgdoc_an_unreadable_package_stops_the_save)
     fs::permissions(O, fs::perms::owner_all);
     if (!Locked) return;                                  // running as root: the folder cannot be made unreadable
     CHECK(!R.Ok);
-    CHECK(fs::exists(P / (X + ".json")));
+    CHECK(Has(P, X));
     CHECK_EQ((int)Files(P).size(), 1);
     CHECK_EQ(Dangling(Lib), 0);
 }
@@ -420,7 +418,7 @@ TEST(pkgdoc_a_file_a_save_ends_up_with_is_never_removed)
     Doc.Replace(Doc.IndexOf(Y), Zip("n", "z.zip"));
     Doc.Replace(Doc.IndexOf(X), Jy);
     CHECK(Doc.Save(P, Lib, "").Ok);
-    CHECK(fs::exists(O / (Y + ".json")));
+    CHECK(Has(O, Y));
     CHECK_EQ(Dangling(O), 0);                             // the other package stands on its own
 }
 
@@ -450,7 +448,7 @@ TEST(pkgdoc_a_deleted_node_goes_unless_it_is_the_last_copy_something_names)
     Doc2.Remove(0);
     const PkgDoc::SaveReport R = Doc2.Save(P2, "", Users);
     CHECK(R.Ok);
-    CHECK(fs::exists(P2 / (G + ".json")));
+    CHECK(Has(P2, G));
     CHECK_EQ((int)R.Kept.size(), 1);
 }
 
@@ -478,7 +476,7 @@ TEST(pkgdoc_a_misnamed_copy_elsewhere_never_renames_a_node_here)
     const std::string X = Freeze(A, Zip("x", "x.zip"));
     Freeze(A, Over("p", X));
     std::ofstream(B / (X + ".json"), std::ios::binary) << Cid::Canonical(Zip("x", "edited-in-place.zip"));
-    const std::string TheirBytes = Slurp(B / (X + ".json"));
+    const std::string TheirBytes = Slurp(FileOf(B, X));
     PkgDoc::Document Doc;
     Doc.Load(A);
     const int P = Doc.IndexOf(X) == 0 ? 1 : 0;
@@ -486,13 +484,15 @@ TEST(pkgdoc_a_misnamed_copy_elsewhere_never_renames_a_node_here)
     const PkgDoc::SaveReport R = Doc.Save(A, Lib, "");
     CHECK(R.Ok);
     CHECK(Doc.IndexOf(X) >= 0);                           // the node here keeps its name
-    CHECK_EQ(Slurp(B / (X + ".json")), TheirBytes);       // theirs is untouched
+    CHECK_EQ(Slurp(FileOf(B, X)), TheirBytes);       // theirs is untouched
     CHECK_EQ(R.Cascaded, 0);
     CHECK(AllFrozen(A));
     CHECK_EQ(Dangling(A), 0);
 }
 
-// A save with no edits changes nothing anywhere — not even a misnamed file elsewhere that names a node here.
+// A save with no edits changes no node anywhere, and nothing in another package — not even a file there, oddly named,
+// that names a node here. (The package's own files take their label names: chapter 02 §2.5.) Teeth: re-mint an
+// unchanged node, or touch another package's files.
 TEST(pkgdoc_a_save_without_edits_writes_nothing_anywhere)
 {
     const fs::path Lib = Fresh("noop"), A = Lib / "a", B = Lib / "b";
@@ -500,13 +500,19 @@ TEST(pkgdoc_a_save_without_edits_writes_nothing_anywhere)
     const std::string X = Freeze(A, Zip("x", "x.zip"));
     const std::string Bogus = "bafkreiaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
     std::ofstream(B / (Bogus + ".json"), std::ios::binary) << Cid::Canonical(Over("theirs", X));
+    const std::string Theirs = Slurp(B / (Bogus + ".json"));
     PkgDoc::Document Doc;
     Doc.Load(A);
     const PkgDoc::SaveReport R = Doc.Save(A, Lib, "");
     CHECK(R.Ok);
-    CHECK_EQ(R.Written, 0);
-    CHECK_EQ(R.Removed, 0);
-    CHECK(fs::exists(B / (Bogus + ".json")));
+    CHECK(R.Renamed.empty());
+    CHECK_EQ(R.Cascaded, 0);
+    CHECK_EQ(Slurp(B / (Bogus + ".json")), Theirs);
+    CHECK(Has(A, X) && fs::exists(A / "x.json"));
+    const PkgDoc::SaveReport Again = Doc.Save(A, Lib, "");   // and once named, a save writes nothing at all
+    CHECK(Again.Ok);
+    CHECK_EQ(Again.Written, 0);
+    CHECK_EQ(Again.Removed, 0);
 }
 
 // A package added from outside the library is itself one of the roots a save walks: its own files are never taken
@@ -523,7 +529,7 @@ TEST(pkgdoc_a_package_that_is_a_root_is_not_its_own_copy)
     Doc.Remove(0);
     const PkgDoc::SaveReport R = Doc.Save(P, std::vector<fs::path>{Lib, P}, Users);
     CHECK(R.Ok);
-    CHECK(fs::exists(P / (G + ".json")));
+    CHECK(Has(P, G));
     CHECK_EQ((int)R.Kept.size(), 1);
     CHECK_EQ(R.Cascaded, 0);
 }
@@ -674,4 +680,47 @@ TEST(pkgdoc_undo_steps_are_named_by_what_changed)
     CHECK_EQ(H.Undone.size(), 2u);
     CHECK_EQ(H.Undone[0], std::string("Added \"Beta\""));    // Redo's next
     CHECK_EQ(H.Undone[1], std::string("Removed \"Beta\""));
+}
+
+// A node deleted here that something still names is kept, and takes its name among the package's nodes too: its old
+// file may be the very name a saved node now takes, and is moved, never written over. Teeth: leave kept nodes at their
+// old names (the saved node overwrites the kept one).
+TEST(pkgdoc_a_kept_node_is_moved_out_of_a_saved_nodes_name)
+{
+    const fs::path Lib = Fresh("kept_name"), P = Lib / "p", O = Lib / "o";
+    for (const fs::path &D : {P, O}) fs::create_directories(D);
+    const json K = Zip("k", "k.zip");
+    const std::string KC = Cid::OfNode(K);
+    std::ofstream(P / "g.json", std::ios::binary) << Cid::Canonical(K);   // the kept node, under the name "g" will take
+    Freeze(O, Over("uses k", KC));                                         // another package still contains it
+    const std::string G = Freeze(P, Zip("g0", "g.zip"));
+    PkgDoc::Document Doc;
+    Doc.Load(P);
+    Doc.Remove(Doc.IndexOf(KC));
+    json N = Doc.Node(Doc.IndexOf(G)); N["LABEL"] = "g"; Doc.Replace(Doc.IndexOf(G), N);
+    const PkgDoc::SaveReport R = Doc.Save(P, Lib, "");
+    CHECK(R.Ok);
+    CHECK_EQ((int)R.Kept.size(), 1);
+    CHECK(Has(P, KC));                                                     // the kept node is still here…
+    CHECK(fs::exists(P / "k.json"));                                       // …under its own name
+    CHECK(Has(P, R.Renamed.at(G)) && fs::exists(P / "g.json"));
+    CHECK_EQ(Dangling(Lib), 0);
+}
+
+// A file in the package folder that is no node of it (not valid JSON — left alone at Load —, or JSON that is no node)
+// is never written over by a node taking that name: the node takes its bumped name. Teeth: write to the label's name
+// without looking (the broken file is gone).
+TEST(pkgdoc_a_save_never_writes_over_a_file_it_did_not_load)
+{
+    const fs::path P = Fresh("taken_name");
+    const std::string G = Freeze(P, Zip("g0", "g.zip"));
+    std::ofstream(P / "Foo.json") << "{ broken json";                      // a hand edit gone wrong
+    PkgDoc::Document Doc;
+    Doc.Load(P);
+    json N = Doc.Node(Doc.IndexOf(G)); N["LABEL"] = "Foo"; Doc.Replace(Doc.IndexOf(G), N);
+    const PkgDoc::SaveReport R = Doc.Save(P, "", "");
+    CHECK(R.Ok);
+    CHECK_EQ(Slurp(P / "Foo.json"), std::string("{ broken json"));
+    const std::string New = R.Renamed.at(G);
+    CHECK(fs::exists(P / ("Foo [" + New.substr(New.size() - 8) + "].json")));
 }

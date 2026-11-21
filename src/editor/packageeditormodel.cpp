@@ -1,3 +1,4 @@
+#include "nodefiles.h"
 #include "nodegraph.h"
 #include "validate.h"
 #include "packageeditormodel.h"
@@ -330,11 +331,12 @@ QStringList PackageEditorModel::unusedFiles() const
             Named.insert(Top(Name));
             for (const std::string & Cid : Cids) Named.insert(Top(ContentFile::Bumped(Name, Cid)));
         }
+    for (const auto & [C, F] : NodeFiles::In(PackageDir->path().toStdString())) Named.insert(F.Path.filename().string());   // node files
     QStringList Out;
     for (const QFileInfo & F : PackageDir->entryInfoList(QDir::Files | QDir::Dirs | QDir::NoDotAndDotDot, QDir::Name))
     {
         const QString N = F.fileName();
-        if (N.startsWith('.') || (N.startsWith("baf") && N.endsWith(".json")) || N.endsWith(".tmp") || N.contains(".tmp-")) continue;
+        if (N.startsWith('.') || N.endsWith(".tmp") || N.contains(".tmp-")) continue;
         if (!Named.count(N.toStdString())) Out << N;
     }
     return Out;
@@ -435,7 +437,7 @@ NodeIndex PackageEditorModel::BuildExecIndex() const
     for (int I = 0; I < Doc.Count(); ++I)
     {
         Node N;
-        if (!ManifestModel::ParseNode(Doc.Node(I), Pkg / (Doc.Handle(I) + ".json"), Pkg, N)) continue;
+        if (!ManifestModel::ParseNode(Doc.Node(I), Pkg / (Doc.File(I).empty() ? Doc.Handle(I) + ".json" : Doc.File(I)), Pkg, N)) continue;
         N.Cid = Doc.Handle(I);
         //Named by its handle, as everything about this package's nodes is — a draft has no CID for the file name
         //to give, and a problem the canvas cannot place on its node is one the author does not see.

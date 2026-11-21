@@ -22,9 +22,11 @@
 #include "cli/climodes.h"
 #include "ipfswrapper.h"
 #include "platform/platform.h"
-#include "nodegraph.h"      // VerifyNodeBytes — what a receiver checks a landed node file with
+#include "nodegraph.h"
+#include "noderefs.h"      // VerifyNodeBytes — what a receiver checks a landed node file with
 #include "cid.h"
 #include "contentfile.h"
+#include "nodefiles.h"
 #include "vfsmount.h"
 #include "packagesview.h"
 #include "appmodel.h"
@@ -94,8 +96,8 @@ private slots:
         Tile["LAYERS"][0]["EXEC"][0]["TILE"]["COVER"] = json{{"FILE", "cover.png"}};
         writeJson(Pkg.path() + "/tile.json", NodeFixture::Chain("tile", {Tile}));
 
-        //Publishing re-mints (a node's file is named by the CID of its bytes, and recording a SOURCE changes them), so
-        //a node is found by its LABEL, not by the name it was written under.
+        //Publishing re-mints (recording a SOURCE changes a node's bytes) and names each node file by its label, so a node
+        //is found by its LABEL, not by the name it was written under.
         auto FileOf = [&](const QString & label) -> QString {
             for (const QString &F : QDir(Pkg.path()).entryList({"*.json"}, QDir::Files))
             {
@@ -132,22 +134,23 @@ private slots:
         QVERIFY2(PackageCatalog::PublishPackage(Pkg.path().toStdString(), "", &Err), Err.c_str());
         QCOMPARE((qulonglong)Layer("game").value("SIZE", (qulonglong)0), (qulonglong)4096);   // backfilled
         QCOMPARE(Layer("game").value("SOURCE", std::string()), Cid);                          // same bytes → same CID
-        //And every node file is canonical bytes named by their CID: publishing re-minted, it did not edit in place.
+        //And every node file is canonical bytes named by its label: publishing re-minted, it did not edit in place.
+        QCOMPARE(QDir(Pkg.path()).entryList({"*.json"}, QDir::Files), (QStringList{ "data.json", "game.json", "tile.json" }));
         for (const QString &F : QDir(Pkg.path()).entryList({"*.json"}, QDir::Files))
         {
             std::ifstream in((Pkg.path() + "/" + F).toStdString(), std::ios::binary);
             const std::string B((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
-            QCOMPARE(QString::fromStdString(Cid::OfBytes(B)) + ".json", F);
+            QCOMPARE(Cid::OfBytes(B), Cid::OfNode(json::parse(B)));
         }
 
         IpfsWrapper::StopNode();
     }
 
-    // Sharing is per PACKAGE: every bundle dir publishes as ONE UnixFS folder — its node files (<cid>.json, the
-    // canonical bytes, each hashing to its name) and nothing else — grouped by collection dir. There is no per-node
-    // flag — a runner package, a library package and a plain game all share alike. Teeth: gate on any node field and a
-    // package drops; leave a node out of the folder and the listing/file counts fail; mint a library-level
-    // block and the PublishedManifest assert fails; publish handle-bearing bytes and VerifyLanded refuses them.
+    // Sharing is per PACKAGE: every node of every bundle dir is an entry of the share sheet — its CID → where it lives,
+    // <library>/<package>/<file named by its label> — and every package gets a pin folder of its node files and its
+    // content. There is no per-node flag — a runner package, a library package and a plain game all share alike.
+    // Teeth: gate on any node field and a package drops; mint a library-level block and the PublishedManifest assert
+    // fails; publish handle-bearing bytes and VerifyNodeBytes refuses them.
     void publish_shares_every_package_as_one_folder()
     {
         std::string Err;
@@ -182,53 +185,46 @@ private slots:
         const std::vector<std::string> Published = PackageCatalog::PublishLibrary(cfg, &Err, &Gaps);
         QVERIFY2(Gaps.empty(), Gaps.c_str());                 // everything held, everything froze: a clean verdict
 
-        QVERIFY2(cfg.contains("Libraries") && cfg["Libraries"].is_object(), "PublishLibrary writes config[\"Libraries\"]");
-        const auto & Libs = cfg["Libraries"];
-        QCOMPARE((int)Libs["VidyaGod"].size(), 2);          // BOTH packages — nothing is gated
-        QCOMPARE((int)Libs["VidyaGodRunners"].size(), 1);
-        QCOMPARE((int)Libs["VidyaGodLibraries"].size(), 1);
-        QCOMPARE((int)Published.size(), 4);                 // one folder per package
-        QCOMPARE((int)Published.size(), 4);
+        QVERIFY2(cfg.contains("ShareSheet") && cfg["ShareSheet"].is_object(), "PublishLibrary writes the share sheet");
+        QVERIFY2(!cfg.contains("Libraries"), "no package rows: a package is its entries");
+        const json & Sheet = cfg["ShareSheet"];
+        std::map<std::string, int> PerLib;
+        for (const auto & E : PackageCatalog::SheetEntries(Sheet)) ++PerLib[E.Lib];
+        QCOMPARE(PerLib["VidyaGod"], 3);                      // BOTH packages' nodes — nothing is gated
+        QCOMPARE(PerLib["VidyaGodRunners"], 1);
+        QCOMPARE(PerLib["VidyaGodLibraries"], 1);
+        QCOMPARE((int)Published.size(), 4);                 // four packages
         QVERIFY2(!cfg.contains("PublishedManifest"), "no library-level block: a library is a name, never a CID");
 
-        // The package folder: every node file of the package, verbatim, and nothing else — the folder's own listing is
-        // its node list (the name travels in the share entry). Teeth: put any other file (a manifest) in the folder.
-        const json * G = nullptr;
-        for (const auto & E : Libs["VidyaGod"]) if (E.value("pkg", std::string()) == "[1] Game") G = &E;
-        QVERIFY2(G, "the entry names the seeder's real package dir");
-        QCOMPARE(G->value("nodes", 0), 2);
-        // A package records the other packages it contains nodes from, and a share is closed over them: a friend given
-        // VidyaGod also gets the dgVoodoo package [1] Game contains — as its own package, never copied into the game —
-        // and not the runners nothing contains. Teeth: drop "needs", or SharedWith's walk of it, and dgvoodoo is missing.
-        QCOMPARE(G->value("needs", json()), (json::array({ json{{"lib", "VidyaGodLibraries"}, {"pkg", "dgvoodoo"}} })));
-        const json Shared = PackageCatalog::SharedWith(Libs, {"VidyaGod"});
-        QCOMPARE((int)Shared["VidyaGod"].size(), 2);
-        QVERIFY2(Shared.contains("VidyaGodLibraries") && Shared["VidyaGodLibraries"].size() == 1, Shared.dump().c_str());
-        QVERIFY2(!Shared.contains("VidyaGodRunners"), "a package nothing shared contains is not shared");
-        const auto Files = folderFiles(G->value("cid", std::string()));
-        QCOMPARE((int)Files.size(), 2);                      // tile + exec: every node of the package, only nodes
-        std::map<std::string, std::string> Listing;
-        QVERIFY2(IpfsWrapper::DirEntries(G->value("cid", std::string()), Listing, &Err), Err.c_str());
-        QCOMPARE((int)Listing.size(), 2);
-        for (const auto & [Name, C] : Listing)
+        // Every entry names its node by where it lives, its file named by its label (chapter 02 §2.5), and the bytes
+        // it was published as are that CID. Teeth: name the file by the CID, or record the folder instead of the node.
+        const std::string GExec = cidAt(cfg, "VidyaGod/[1] Game/g_exec.json"), GTile = cidAt(cfg, "VidyaGod/[1] Game/g_tile.json");
+        QVERIFY2(!GExec.empty() && !GTile.empty(), Sheet.dump().c_str());
+        for (const auto & [C, P] : Sheet.items())
         {
-            QCOMPARE(Name, C + ".json");                     // a node file is named by its CID
-            QVERIFY2(Files.count(Name), "the listing names the folder's files");
             json J;
             std::string VErr;
-            QVERIFY2(NodeGraph::VerifyNodeBytes(Files.at(Name), C, J, &VErr), VErr.c_str());   // canonical, handle-free, its own CID
+            QVERIFY2(NodeGraph::VerifyNodeBytes(IpfsWrapper::BlockGet(C, &Err), C, J, &VErr), VErr.c_str());   // canonical, handle-free, its own CID
         }
-        // The PIN folder (what a pinning service pins): the package folder, and the package's own content beside it —
-        // none for [1] Game (no content), [2] Other's zip for it.
+        // A share is closed over what its nodes contain: a friend given VidyaGod also gets the dgVoodoo package
+        // [1] Game contains — as its own package, never copied into the game — and not the runners nothing contains.
+        // Teeth: drop SharedWith's walk of the contained nodes, and dgvoodoo is missing.
+        const json Shared = PackageCatalog::SharedWith(Sheet, {"VidyaGod"}, containsOf);
+        QCOMPARE((int)Shared["VidyaGod"].size(), 3);
+        QVERIFY2(Shared.contains("VidyaGodLibraries") && Shared["VidyaGodLibraries"].size() == 1, Shared.dump().c_str());
+        QVERIFY2(!Shared.contains("VidyaGodRunners"), "a package nothing shared contains is not shared");
+        QCOMPARE(Shared["VidyaGodLibraries"][0].value("node", std::string()), std::string("l_dg.json"));
+        // The PIN folder (what a pinning service pins): the package's node files under their names, and the package's
+        // own content beside them — none for [1] Game (no content), [2] Other's zip for it.
         QTemporaryDir PinDir;
         std::string FErr;
-        QVERIFY2(!IpfsWrapper::FetchDirToPath(G->value("pin", std::string()), (PinDir.path() + "/g").toStdString(), &FErr).empty(), FErr.c_str());
-        QCOMPARE((int)QDir(PinDir.path() + "/g/package").entryList(QDir::Files).size(), 2);   // the package folder, linked
+        const std::string GPin = cfg["Pins"].value("VidyaGod/[1] Game", std::string());
+        QVERIFY2(!IpfsWrapper::FetchDirToPath(GPin, (PinDir.path() + "/g").toStdString(), &FErr).empty(), FErr.c_str());
+        QCOMPARE(QDir(PinDir.path() + "/g/package").entryList(QDir::Files), (QStringList{ "g_exec.json", "g_tile.json" }));
         QVERIFY2(!QDir(PinDir.path() + "/g/content").exists(), "no content: no content folder");
-        const json * U = nullptr;
-        for (const auto & E : Libs["VidyaGod"]) if (E.value("pkg", std::string()) == "[2] Other") U = &E;
-        QVERIFY(U && U->value("pin", std::string()) != U->value("cid", std::string()));
-        QVERIFY2(!IpfsWrapper::FetchDirToPath(U->value("pin", std::string()), (PinDir.path() + "/u").toStdString(), &FErr).empty(), FErr.c_str());
+        const std::string UPin = cfg["Pins"].value("VidyaGod/[2] Other", std::string());
+        QVERIFY(!UPin.empty() && UPin != GPin);
+        QVERIFY2(!IpfsWrapper::FetchDirToPath(UPin, (PinDir.path() + "/u").toStdString(), &FErr).empty(), FErr.c_str());
         QCOMPARE(QFileInfo(PinDir.path() + "/u/content/" + QString::fromStdString(UCid)).size(), (qint64)3000);   // the content, linked
         QCOMPARE((int)QDir(PinDir.path() + "/u/package").entryList(QDir::Files).size(), 1);   // [2] Other's one node
 
@@ -272,12 +268,41 @@ private slots:
         IpfsWrapper::StopNode();
     }
 
-    // Publishing ONE package (the package editor's Publish, `packages publish`) mints it and what it contains and merges
-    // its row into Libraries in place: another package's row is never touched, even a stale one; a contained package's
-    // row is redone when stale and kept as it was when not; a folder that is no package is refused with Libraries
-    // untouched, alone or beside a real one. Teeth: replace Libraries wholesale (the runner's row goes); select only the named package (the edited
-    // dgVoodoo row stays stale and the game cannot freeze against it); rebuild every contained row (the marker goes);
-    // skip the stale check (the edited dgVoodoo row keeps its old folder).
+    // Publishing names a package's frozen node files by their labels (chapter 02 §2.5): a file named by its CID, as a
+    // script or an older build wrote it, takes its label's name, and what refers to it in place follows. Two nodes of
+    // one label are both bumped. Teeth: drop the Normalize in Publish (the CID names stay); drop its MoveRefs (the
+    // node's reference dies with the old name).
+    void publish_names_frozen_node_files_by_their_labels()
+    {
+        std::string Err;
+        QTemporaryDir Repo; QVERIFY(Repo.isValid());
+        QVERIFY2(IpfsWrapper::StartNode((Repo.path() + "/ipfs").toStdString(), &Err), Err.c_str());
+        QTemporaryDir Root; QVERIFY(Root.isValid());
+        const std::string Pkg = Root.path().toStdString() + "/VidyaGod/[1] G";
+        std::filesystem::create_directories(Pkg);
+        const json A = json{{"LABEL", "Game 1.0"}, {"LAYERS", json::array({ json{{"DIR", "a"}} })}};
+        const json B = json{{"LABEL", "Mod"}, {"LAYERS", json::array({ json{{"DIR", "b"}} })}};
+        const json C = json{{"LABEL", "Mod"}, {"LAYERS", json::array({ json{{"DIR", "c"}} })}};
+        for (const json &N : {A, B, C})
+            std::ofstream(Pkg + "/" + Cid::OfNode(N) + ".json", std::ios::binary) << Cid::Canonical(N);
+        QCOMPARE(IpfsWrapper::AddNoCopy(Pkg + "/" + Cid::OfNode(A) + ".json", &Err), Cid::OfNode(A));   // referenced in place
+        json cfg = json{{"Settings", {{"Paths", {{"LibraryRoot", Root.path().toStdString()}}}}}};
+        QCOMPARE((int)PackageCatalog::PublishLibrary(cfg, &Err).size(), 1);
+        const QStringList Files = QDir(QString::fromStdString(Pkg)).entryList({"*.json"}, QDir::Files);
+        const std::string BT = Cid::OfNode(B).substr(Cid::OfNode(B).size() - 8), CT = Cid::OfNode(C).substr(Cid::OfNode(C).size() - 8);
+        QCOMPARE(Files, (QStringList{ "Game 1.0.json", QString::fromStdString("Mod [" + BT + "].json"), QString::fromStdString("Mod [" + CT + "].json") }));
+        QVERIFY2(!IpfsWrapper::CidMissing(Cid::OfNode(A)), "the node's reference followed its file");
+        QCOMPARE(cidAt(cfg, "VidyaGod/[1] G/Game 1.0.json"), Cid::OfNode(A));
+        IpfsWrapper::StopNode();
+    }
+
+    // Publishing ONE package (the package editor's Publish, `packages publish`) mints it and what it contains and puts
+    // its entries into the share sheet in place of its own: another package's entries are never touched, even stale
+    // ones; a contained package's are redone when stale and kept as they were (with their pin) when not; a folder that
+    // is no package is refused with the sheet untouched, alone or beside a real one. Teeth: replace the sheet
+    // wholesale (the runner's entry goes); select only the named package (the edited dgVoodoo entry stays stale and
+    // the game cannot freeze against it); rebuild every contained package (the marker pin goes); skip the stale check
+    // (the edited dgVoodoo entry keeps its old CID).
     void publishing_one_package_merges_its_row_in_place()
     {
         std::string Err;
@@ -297,9 +322,12 @@ private slots:
         json cfg = json{{"Settings", {{"Paths", {{"LibraryRoot", R.toStdString()}}}}}};
         std::string Gaps;
         QCOMPARE((int)PackageCatalog::PublishLibrary(cfg, &Err, &Gaps).size(), 4);
+        //A package's entries in the sheet ({cid: path}) and its pin.
         const auto RowIn = [&](const char *Lib, const char *Pkg) {
-            for (const auto &E : cfg["Libraries"][Lib]) if (E.value("pkg", std::string()) == Pkg) return E;
-            return json(); };
+            const std::string Key = std::string(Lib) + "/" + Pkg + "/";
+            json E = json::object();
+            for (const auto &[C, P] : cfg["ShareSheet"].items()) if (P.get<std::string>().rfind(Key, 0) == 0) E[C] = P;
+            return json{{"entries", E}, {"pin", cfg["Pins"].value(std::string(Lib) + "/" + Pkg, std::string())}}; };
         //An edit to a node, as the editor's save leaves it on disk (its handle kept, its bytes changed).
         const auto Edit = [](const QString &File, const char *Note) {
             std::ifstream In(File.toStdString());
@@ -315,10 +343,10 @@ private slots:
         Edit(R + "/VidyaGodRunners/wine/wine.json", "v2");
         const auto One = PackageCatalog::PublishPackages(cfg, { (R + "/VidyaGod/[2] Other").toStdString() }, &Err, &Gaps);
         QVERIFY2(One.size() == 1, Err.c_str());
-        QVERIFY(RowIn("VidyaGod", "[2] Other")["cid"] != Other0["cid"]);
+        QVERIFY(RowIn("VidyaGod", "[2] Other")["entries"] != Other0["entries"]);
         QCOMPARE(RowIn("VidyaGodRunners", "wine"), Wine0);
         QCOMPARE(RowIn("VidyaGod", "[1] Game"), Game0);
-        QCOMPARE((int)cfg["Libraries"]["VidyaGod"].size(), 2);
+        QCOMPARE((int)cfg["ShareSheet"].size(), 4);         // the old [2] Other entry is replaced, not kept beside it
 
         //2. A contained package that is stale is redone with the game that contains it.
         const json Dg0 = RowIn("VidyaGodLibraries", "dgvoodoo");
@@ -326,17 +354,17 @@ private slots:
         const auto Two = PackageCatalog::PublishPackages(cfg, { (R + "/VidyaGod/[1] Game").toStdString() }, &Err, &Gaps);
         QVERIFY2(Two.size() == 2 && Gaps.empty(), (Err + Gaps).c_str());
         const json Dg1 = RowIn("VidyaGodLibraries", "dgvoodoo");
-        QVERIFY(Dg1["cid"] != Dg0["cid"]);
-        QVERIFY(RowIn("VidyaGod", "[1] Game")["cid"] != Game0["cid"]);   // it names dgVoodoo's new node
+        QVERIFY(Dg1["entries"] != Dg0["entries"]);
+        QVERIFY(RowIn("VidyaGod", "[1] Game")["entries"] != Game0["entries"]);   // it names dgVoodoo's new node
         QCOMPARE(RowIn("VidyaGodRunners", "wine"), Wine0);
 
-        //3. A contained package that is current keeps its row as it was (no content re-check, no rebuild).
-        for (auto &E : cfg["Libraries"]["VidyaGodLibraries"]) if (E.value("pkg", std::string()) == "dgvoodoo") E["kept"] = true;
+        //3. A contained package that is current keeps its entries and pin as they were (no content re-check, no rebuild).
+        cfg["Pins"]["VidyaGodLibraries/dgvoodoo"] = "kept";
         QCOMPARE((int)PackageCatalog::PublishPackages(cfg, { (R + "/VidyaGod/[1] Game").toStdString() }, &Err, &Gaps).size(), 2);
-        QVERIFY2(RowIn("VidyaGodLibraries", "dgvoodoo").value("kept", false), "a current contained row was rebuilt");
+        QVERIFY2(RowIn("VidyaGodLibraries", "dgvoodoo")["pin"] == "kept", "a current contained package was rebuilt");
 
-        //4. A folder that is no package under the root is refused, and Libraries is untouched.
-        const json Before = cfg["Libraries"];
+        //4. A folder that is no package under the root is refused, and the sheet is untouched.
+        const json Before = cfg["ShareSheet"], PinsBefore = cfg["Pins"];
         QVERIFY(PackageCatalog::PublishPackages(cfg, { Repo.path().toStdString() }, &Err, &Gaps).empty() && !Err.empty());
         Err.clear();
         QVERIFY(PackageCatalog::PublishPackages(cfg, { (R + "/VidyaGod/[9] None").toStdString() }, &Err, &Gaps).empty() && !Err.empty());
@@ -345,10 +373,11 @@ private slots:
         QVERIFY(PackageCatalog::PublishPackages(cfg, { (R + "/VidyaGod/[2] Other").toStdString(), (R + "/VidyaGod/[9] None").toStdString() },
                                                 &Err, &Gaps).empty());
         QVERIFY2(Err.find("[9] None") != std::string::npos, Err.c_str());
-        QCOMPARE(cfg["Libraries"], Before);
+        QCOMPARE(cfg["ShareSheet"], Before);
+        QCOMPARE(cfg["Pins"], PinsBefore);
 
         //5. Node files as a package lands them hold no handle: the game names dgVoodoo's node by its CID, and that CID
-        //still finds dgVoodoo's package — it is published with the game and the game's row needs it.
+        //still finds dgVoodoo's package — it is published with the game. Teeth: look references up by handle only.
         for (const char *F : { "/VidyaGod/[1] Game/game.json", "/VidyaGod/[2] Other/u.json", "/VidyaGodRunners/wine/wine.json",
                                "/VidyaGodLibraries/dgvoodoo/dg.json" })
         {
@@ -358,28 +387,38 @@ private slots:
             for (auto &N : (J.is_array() ? J : (J = json::array({J})))) N.erase("CID");
             NodeFixture::WriteNodes((R + F).toStdString(), J);
         }
-        cfg["Libraries"]["VidyaGod"] = json::array();     // no row yet: the game's row is the one this publish writes
+        cfg["ShareSheet"] = json::object();                // nothing yet: what this publish writes is all there is
         const auto Five = PackageCatalog::PublishPackages(cfg, { (R + "/VidyaGod/[1] Game").toStdString() }, &Err, &Gaps);
         QVERIFY2(Five.size() == 2, (Err + Gaps).c_str());
-        QCOMPARE(RowIn("VidyaGod", "[1] Game")["needs"], json::array({ json{{"lib", "VidyaGodLibraries"}, {"pkg", "dgvoodoo"}} }));
+        QCOMPARE(Five, (std::vector<std::string>{ "VidyaGod/[1] Game", "VidyaGodLibraries/dgvoodoo" }));
+        QCOMPARE((int)RowIn("VidyaGodLibraries", "dgvoodoo")["entries"].size(), 1);
         IpfsWrapper::StopNode();
     }
 
-    // Two packages whose names collide ("Foo:1", "Foo?1" → "Foo_1") land as Foo_1 and "Foo_1 (<cid>)". Installed is
-    // judged by the FINAL name: the qualified one installed is not planned again (planned, its folder fetch was
-    // redirected onto the installed package and deleted it), and the unqualified one, not installed, still is.
-    // Teeth: check the unqualified name again and the installed qualified package is re-planned.
+    // Two of a friend's packages whose names collide ("Foo:1", "foo?1" → "Foo_1", without case) EACH land as
+    // "Foo_1 (<hash of its name>)", whatever order they arrive in. Installed is judged by the FINAL name: the one
+    // installed is not planned again, the other still is. Teeth: qualify only the second (the names depend on the
+    // order); compare with case (one folder on Windows); check the plain name for installed.
     void a_colliding_package_is_judged_installed_by_its_final_name()
     {
         QTemporaryDir RxData; QVERIFY(RxData.isValid());
         json rx = json{{"Settings", {{"Paths", {{"LibraryRoot", (RxData.path() + "/LIBRARY").toStdString()}}}}}};
-        const json Items = json::array({ json{{"cid", "bafyfirstpackage0"}, {"pkg", "Foo:1"}},
-                                         json{{"cid", "bafysecondpackage"}, {"pkg", "Foo?1"}} });
-        std::filesystem::create_directories(RxData.path().toStdString() + "/LIBRARY/Games/Foo_1 (bafysecondpa)");
+        const json Items = json::array({ json{{"cid", "bafkreifirstnode"}, {"pkg", "Foo:1"}, {"node", "a.json"}},
+                                         json{{"cid", "bafkreisecondnode"}, {"pkg", "foo?1"}, {"node", "b.json"}} });
+        const auto Both = PackageCatalog::PlanReceivedFetches(rx, "Alice", json{{"Games", Items}});
+        QCOMPARE((int)Both.size(), 2);
+        std::map<std::string, std::string> Dir;                              // cid → its folder
+        for (const auto & T : Both) Dir[T.Cid] = std::filesystem::path(T.Dest).parent_path().filename().string();
+        for (const auto & [C, D] : Dir)
+            QVERIFY2(D.size() == std::string("Foo_1 (12345678)").size() && (D.rfind("Foo_1 (", 0) == 0 || D.rfind("foo_1 (", 0) == 0), D.c_str());
+        QVERIFY(Dir["bafkreifirstnode"] != Dir["bafkreisecondnode"]);
+        const json Reversed = json::array({ Items[1], Items[0] });            // the other order: the same folders
+        for (const auto & T : PackageCatalog::PlanReceivedFetches(rx, "Alice", json{{"Games", Reversed}}))
+            QCOMPARE(std::filesystem::path(T.Dest).parent_path().filename().string(), Dir[T.Cid]);
+        std::filesystem::create_directories(RxData.path().toStdString() + "/LIBRARY/Games/" + Dir["bafkreisecondnode"]);
         const auto Plan = PackageCatalog::PlanReceivedFetches(rx, "Alice", json{{"Games", Items}});
         QCOMPARE((int)Plan.size(), 1);
-        QCOMPARE(Plan[0].Cid, std::string("bafyfirstpackage0"));
-        QVERIFY2(Plan[0].Dest.find("Foo_1/.package") != std::string::npos, Plan[0].Dest.c_str());
+        QCOMPARE(Plan[0].Cid, std::string("bafkreifirstnode"));
     }
 
     // A package received again after its installed copy was deleted is a stub again: planning it forgets the install's
@@ -394,10 +433,10 @@ private slots:
         const std::string Dest = D.path().toStdString() + "/LIBRARY/Games/[1] A";
         std::filesystem::create_directories(Dest);
         IpfsWrapper::RedirectDestsUnder(Src, Dest);
-        const std::vector<PackageCatalog::ReceivedFetch> Plan{ {"bafyfolder", Src + "/.package"} };
+        const std::vector<PackageCatalog::ReceivedFetch> Plan{ {"bafkreinode", Src + "/a.json"} };
         const auto Targets = PackageCatalog::ReceivedFetchTargets(Plan);
         QCOMPARE((int)Targets.size(), 1);
-        QVERIFY(Targets[0].Dir);
+        QVERIFY(!Targets[0].Dir);                           // one node file, not a folder
         QCOMPARE(IpfsWrapper::Redirected(Src + "/x.json"), Dest + "/x.json");       // the install is there: it holds
         std::filesystem::remove_all(Dest);                                           // the installed package deleted
         (void)PackageCatalog::ReceivedFetchTargets(Plan);
@@ -627,21 +666,36 @@ private slots:
         QVERIFY2(Distinct.size() <= 2, ("8 callers at once got " + std::to_string(Distinct.size()) + " indexes").c_str());
     }
 
-    // One entry = one package folder, landing in <pkg dir>/.package. Two folders naming the same package dir (only
-    // a hostile or a mid-change snapshot does that) both land, the second under a CID-qualified dir; the same CID
-    // twice is one target.
-    void planner_lands_one_folder_per_package()
+    // The planner lands one file per entry of a friend's sheet: CATALOG/<nick> - <lib>/<pkg>/<file>, the same entry twice
+    // once, and two CIDs claiming one file name in one package (without case) each at its bumped name. Teeth: key the
+    // plan by package (one target per package); let the second CID overwrite the first's file; bump only one.
+    void planner_lands_one_file_per_entry()
     {
         json rx = json{{"Settings", {{"Paths", {{"LibraryRoot", "/tmp/vg_rx_plan/LIBRARY"}}}}}};
         const json Items = json::array({
-            json{{"cid", "bafypkgone"}, {"pkg", "[802] Warcraft III"}},
-            json{{"cid", "bafypkgtwo"}, {"pkg", "[802] Warcraft III"}},
-            json{{"cid", "bafypkgone"}, {"pkg", "[802] Warcraft III"}} });
+            json{{"cid", "bafkreione"}, {"pkg", "[802] Warcraft III"}, {"node", "Warcraft III 1.0.json"}},
+            json{{"cid", "bafkreitwo12345678"}, {"pkg", "[802] Warcraft III"}, {"node", "warcraft iii 1.0.json"}},
+            json{{"cid", "bafkreione"}, {"pkg", "[802] Warcraft III"}, {"node", "Warcraft III 1.0.json"}},
+            json{{"cid", "bafkreithree"}, {"pkg", "[802] Warcraft III"}, {"node", "Frozen Throne"}} });
         const auto Plan = PackageCatalog::PlanReceivedFetches(rx, "Alice", json{{"Games", Items}});
-        QCOMPARE((int)Plan.size(), 2);
-        QCOMPARE(std::filesystem::path(Plan[0].Dest).filename(), std::filesystem::path(".package"));
-        QCOMPARE(std::filesystem::path(Plan[0].Dest).parent_path().filename(), std::filesystem::path("[802] Warcraft III"));
-        QVERIFY2(Plan[1].Dest.find("[802] Warcraft III (bafypkgtwo") != std::string::npos, "the colliding package's dir carries its CID");
+        QCOMPARE((int)Plan.size(), 3);
+        std::map<std::string, std::filesystem::path> At;
+        for (const auto & T : Plan) At[T.Cid] = T.Dest;
+        QCOMPARE(At["bafkreione"].parent_path().filename(), std::filesystem::path("[802] Warcraft III"));
+        QCOMPARE(At["bafkreione"].parent_path().parent_path().filename(), std::filesystem::path("Alice - Games"));
+        QCOMPARE(At["bafkreione"].filename(), std::filesystem::path("Warcraft III 1.0 [fkreione].json"));   // both bumped
+        QCOMPARE(At["bafkreitwo12345678"].filename(), std::filesystem::path("warcraft iii 1.0 [12345678].json"));
+        QCOMPARE(At["bafkreithree"].filename(), std::filesystem::path("Frozen Throne.json"));   // a node file
+        //A friend that names a file what a bump makes of another's: one file, one CID — never two fetches racing for
+        //it. Teeth: drop the planned-names guard (two targets at one dest).
+        const json Hostile = json::array({
+            json{{"cid", "bafkreione"}, {"pkg", "P"}, {"node", "x.json"}},
+            json{{"cid", "bafkreitwo12345678"}, {"pkg", "P"}, {"node", "X.json"}},
+            json{{"cid", "bafkreifour"}, {"pkg", "P"}, {"node", "x [fkreione].json"}} });
+        const auto Plan2 = PackageCatalog::PlanReceivedFetches(rx, "Alice", json{{"Games", Hostile}});
+        std::set<std::string, ContentFile::NameLess> Dests;
+        for (const auto & T : Plan2) QVERIFY2(Dests.insert(T.Dest).second, ("two CIDs planned to " + T.Dest).c_str());
+        QCOMPARE((int)Plan2.size(), 2);
     }
 
     // What the Library shows is what is HERE. A friend's node whose file is not here is not installed, whether or not
@@ -762,21 +816,34 @@ private:   // a helper, not a test: moc never sees its json parameters (no metat
     // The files of a published folder: name → bytes (fetched like a receiver would, into a throwaway dir).
     // A received package folder as the app lands it: the folder over the listed node files (referenced where they
     // landed, as a fetch leaves them), recorded as friend Alice's share entry {cid, pkg} in library `Lib`.
-    static void shareFolder(json & Rx, const std::string & Lib, const std::string & Pkg, const std::string & Dir,
-                            const std::vector<std::string> & Listed)
+    // A friend ("Alice") shares the node files Listed (names in Dir) as package Pkg of library Lib.
+    static void shareEntries(json & Rx, const std::string & Lib, const std::string & Pkg, const std::string & Dir,
+                             const std::vector<std::string> & Listed)
     {
         std::string Err;
-        std::map<std::string, std::string> E;
-        for (const std::string & C : Listed)
+        for (const std::string & F : Listed)
         {
-            QCOMPARE(IpfsWrapper::AddNoCopy(Dir + "/" + C + ".json", &Err), C);
-            E[C + ".json"] = C;
+            const std::string C = IpfsWrapper::AddNoCopy(Dir + "/" + F, &Err);
+            QVERIFY2(!C.empty(), Err.c_str());
+            Rx["FriendLibraries"]["Alice"][Lib].push_back(json{{"cid", C}, {"pkg", Pkg}, {"node", F}});   // an unknown peer files under its id
         }
-        const std::string F = IpfsWrapper::MakeDir(E, &Err);
-        QVERIFY2(!F.empty(), Err.c_str());
-        Rx["FriendLibraries"]["Alice"][Lib].push_back(json{{"cid", F}, {"pkg", Pkg}});   // an unknown peer files under its id
     }
 private slots:
+
+    // The share sheet's node at Path ("" if none).
+    static std::string cidAt(const json & Cfg, const std::string & Path)
+    {
+        if (Cfg.contains("ShareSheet"))
+            for (const auto & [C, P] : Cfg["ShareSheet"].items()) if (P == Path) return C;
+        return {};
+    }
+    // What a published node contains, read from its block (the sender's closure in SharedWith).
+    static std::vector<std::string> containsOf(const std::string & Cid)
+    {
+        std::string Err;
+        const json J = json::parse(IpfsWrapper::BlockGet(Cid, &Err), nullptr, false);
+        return J.is_discarded() ? std::vector<std::string>() : NodeRefs::Contained(J);
+    }
 
     std::map<std::string, std::string> folderFiles(const std::string & FolderCid)
     {
@@ -795,11 +862,15 @@ private slots:
 
 private:   // a helper, not a test: moc never sees its json parameters (no metatype for json on Windows)
     // Land a friend's share the way the app does: each package folder through the real queue, then complete + check.
+    // What the seeder published, by CID: one IPFS node plays both machines here, and a receiver's fetch takes a block
+    // into its landed file — so before each landing, the seeder's blocks are put back, as a seeder holds them.
+    std::map<std::string, std::string> SeederBlocks;
     void landShares(const json & Rx, const std::string & Nick, const json & Libs)
     {
+        for (const auto & [C, B] : SeederBlocks) { std::string E; IpfsWrapper::BlockPut(B, &E); }
         std::vector<IpfsWrapper::FetchTarget> B;
         for (const auto & T : PackageCatalog::PlanReceivedFetches(Rx, Nick, Libs))
-            B.push_back(IpfsWrapper::FetchTarget{ T.Cid, T.Dest, /*Optional=*/false, /*Dir=*/true, /*Verify=*/true });
+            B.push_back(IpfsWrapper::FetchTarget{ T.Cid, T.Dest, /*Optional=*/false, /*Dir=*/false, /*Verify=*/true });
         std::string WErr;
         QVERIFY2(IpfsWrapper::WaitBatch(IpfsWrapper::EnqueueBatch(B), 30000, &WErr), WErr.c_str());
         std::string LErr;
@@ -808,8 +879,8 @@ private:   // a helper, not a test: moc never sees its json parameters (no metat
 private slots:
 
 private:   // a helper, not a test: moc never sees its json parameters (no metatype for json on Windows)
-    // Helper: publish two games in one collection and return the share entries — one per PACKAGE, as
-    // PublishLibrary emits them ({cid: <package folder>, pkg, node, title, nodes}).
+    // Helper: publish two games in one collection and return the library's share entries as a friend receives them —
+    // one per NODE ({cid, pkg, node: its file name}), sorted by package and file.
     json publishTwoGames(const QString & root)
     {
         std::string Err;
@@ -840,23 +911,21 @@ private:   // a helper, not a test: moc never sees its json parameters (no metat
                   NodeFixture::Chain("b_exec", {NodeFixture::Merge({NodeFixture::Exec("win32", "b.exe"), NodeFixture::Variant("Play")})}, {"b_tile"}));
         json seeder = json{{"Settings", {{"Paths", {{"LibraryRoot", root.toStdString()}}}}}};
         PackageCatalog::PublishLibrary(seeder, &Err);
-        return seeder["Libraries"].contains("VidyaGod") ? seeder["Libraries"]["VidyaGod"] : json::array();
+        for (const auto & [C, P] : seeder.value("ShareSheet", json::object()).items()) SeederBlocks[C] = IpfsWrapper::BlockGet(C, &Err);
+        const json Wired = PackageCatalog::Wire(PackageCatalog::SheetEntries(seeder.value("ShareSheet", json::object())));
+        return Wired.contains("VidyaGod") ? Wired["VidyaGod"] : json::array();
     }
 private slots:
 
-    // The cid of the node labelled `Label` inside a package folder (its node files are named by their CIDs).
-    std::string cidOfLabel(const std::string & FolderCid, const std::string & Label)
+    // The cid of the node labelled `Label` among share entries (its file is named by its label).
+    std::string cidOfLabel(const json & Items, const std::string & Label)
     {
-        for (const auto & [Name, Bytes] : folderFiles(FolderCid))
-        {
-            const json B = json::parse(Bytes, nullptr, false);
-            if (B.is_object() && B.value("LABEL", std::string()) == Label) return Name.substr(0, Name.size() - 5);
-        }
+        for (const auto & It : Items) if (It.value("node", std::string()) == Label + ".json") return It.value("cid", std::string());
         return {};
     }
 
-    // A received share is a set of PACKAGE folders: the planner lands each at "<Nick> - <Lib>/<pkg>/.package" through
-    // the rolling queue — every node file verbatim, under its CID — and from there zero friend-specific code runs:
+    // A received share is a friend's share sheet entries: the planner lands each at "<Nick> - <Lib>/<pkg>/<file>" through
+    // the rolling queue — every node file verbatim, under its name — and from there zero friend-specific code runs:
     // the plain catalog scan indexes the landed bytes, CID identity survives, the whole package is Received with its
     // bundle the package dir, its closure is complete, and the card nests exactly as on the seeder. Hostile pkg/node
     // must never escape the CATALOG root.
@@ -867,25 +936,25 @@ private slots:
         QVERIFY2(IpfsWrapper::StartNode((Repo.path() + "/ipfs").toStdString(), &Err), Err.c_str());
         QTemporaryDir SeedRoot; QVERIFY(SeedRoot.isValid());
         const json Items = publishTwoGames(SeedRoot.path());   // blocks now in the local blockstore
-        QCOMPARE((int)Items.size(), 2);                         // packages A and B
+        QCOMPARE((int)Items.size(), 7);                         // packages A (5 nodes) and B (2)
 
         QTemporaryDir RxData; QVERIFY(RxData.isValid());
         json rx = json{{"Settings", {{"Paths", {{"LibraryRoot", (RxData.path() + "/LIBRARY").toStdString()}}}}}};
         const std::string Catalog = PackageCatalog::CatalogRootDir(rx);   // sibling of LIBRARY → RxData/CATALOG
 
         const auto Plan = PackageCatalog::PlanReceivedFetches(rx, "Alice", json{{"Games", Items}});
-        QCOMPARE((int)Plan.size(), 2);
+        QCOMPARE((int)Plan.size(), 7);
         const std::string Lib = Catalog + "/Alice - Games";     // received stubs land in CATALOG, not LIBRARY
         std::set<std::string> Dests;
         for (const auto & T : Plan) Dests.insert(T.Dest);
-        QVERIFY2(Dests.count(Lib + "/[1] A/.package"), "a package's folder lands in the seeder's package dir name");
-        QVERIFY2(Dests.count(Lib + "/[2] B/.package"), "second package gets its own dir");
+        QVERIFY2(Dests.count(Lib + "/[1] A/a_exec.json"), "a node lands in the seeder's package dir, under its name");
+        QVERIFY2(Dests.count(Lib + "/[2] B/b_exec.json"), "second package gets its own dir");
 
-        landShares(rx, "Alice", json{{"Games", Items}});   // the folders land through the REAL queue
-        QVERIFY2(!PackageCatalog::ReceivedPackagesIncomplete(rx), "every node file the manifests name is on disk");
-        const std::string ACid = cidOfLabel(Items[0].value("cid", std::string()), "a_exec");
+        landShares(rx, "Alice", json{{"Games", Items}});   // the files land through the REAL queue
+        QVERIFY2(!PackageCatalog::ReceivedPackagesIncomplete(rx), "every node file the entries name is on disk");
+        const std::string ACid = cidOfLabel(Items, "a_exec");
         {
-            std::ifstream In(Lib + "/[1] A/.package/" + ACid + ".json", std::ios::binary);
+            std::ifstream In(Lib + "/[1] A/a_exec.json", std::ios::binary);
             const std::string Landed((std::istreambuf_iterator<char>(In)), std::istreambuf_iterator<char>());
             QCOMPARE(Cid::OfBytes(Landed), ACid);                // landed VERBATIM: the file is the block
         }
@@ -893,7 +962,7 @@ private slots:
         auto Idx = PackageCatalog::BuildCatalogIndex(rx);
         const Node * A = Idx.Find("a_exec");
         QVERIFY2(A, "a landed raw block freezes back in the plain tree scan");
-        QCOMPARE(A->BundleDir, std::filesystem::path(Lib + "/[1] A"));   // content hydrates beside the folder
+        QCOMPARE(A->BundleDir, std::filesystem::path(Lib + "/[1] A"));   // content hydrates beside its node files
         QCOMPARE(A->Key(), ACid);
         QVERIFY2(A->Received, "…marked RECEIVED (it lives under CATALOG): never a graft candidate");
         const auto under = [](const std::filesystem::path &P, const std::string &Dir) {   // separators differ on Windows
@@ -948,7 +1017,7 @@ private slots:
 
         // Planner dedupe: the same snapshot plans the same targets again (stable), never duplicates within one plan.
         const auto Plan2 = PackageCatalog::PlanReceivedFetches(rx, "Alice", json{{"Games", Items}});
-        QCOMPARE((int)Plan2.size(), 2);
+        QCOMPARE((int)Plan2.size(), 7);
         std::set<std::string> D2; for (const auto & T : Plan2) D2.insert(T.Dest);
         QCOMPARE(D2.size(), Plan2.size());
 
@@ -956,7 +1025,7 @@ private slots:
         // package — you re-share what you've installed, not everything you've browsed.
         std::string PubErr;
         PackageCatalog::PublishLibrary(rx, &PubErr);
-        QVERIFY2(!rx.value("Libraries", json::object()).contains("Alice - Games"),
+        QVERIFY2(rx.value("ShareSheet", json::object()).empty(),
                  "a CATALOG browse stub is NOT published (LIBRARY-only publish; browse != share)");
 
         IpfsWrapper::DebugResetQueue();
@@ -986,20 +1055,18 @@ private slots:
                   NodeFixture::Chain("gd_exec", {NodeFixture::Exec("win32", "g.exe")}, {"gd_tile"}));
         json cfg = json{{"Settings", {{"Paths", {{"LibraryRoot", R.toStdString()}}}}}};
         PackageCatalog::PublishLibrary(cfg, &Err);   // MUST NOT throw
-        QVERIFY2(cfg.contains("Libraries"), "publish completed over a hostile block without crashing");
-        // The hostile legacy-typed object is not a node: its package has no nodes and no manifest; only Good publishes.
-        int shared = 0;
-        for (const auto & E : cfg.value("Libraries", json::object()).value("VidyaGod", json::array()))
-            if (E.value("pkg", std::string()) == "[2] Good") shared++;
-        QCOMPARE(shared, 1);
-        QCOMPARE((int)cfg["Libraries"]["VidyaGod"].size(), 1);
+        QVERIFY2(cfg.contains("ShareSheet"), "publish completed over a hostile block without crashing");
+        // The hostile legacy-typed object is not a node: its package has no nodes; only Good publishes.
+        std::set<std::string> Pkgs;
+        for (const auto & E : PackageCatalog::SheetEntries(cfg["ShareSheet"])) Pkgs.insert(E.Lib + "/" + E.Pkg);
+        QCOMPARE(Pkgs, (std::set<std::string>{ "VidyaGod/[2] Good" }));
         IpfsWrapper::StopNode();
     }
 
-    // A PUBLISH'd NAMELESS node IS shareable under Model C: identity is the CID, so a label-less node stands under its
-    // CID handle rather than a synthetic path key — the old path-leak that forced a mandatory LABEL is gone. The
-    // property that must hold is that NO share entry carries a filesystem path (uid/node/title). Teeth: reintroduce a
-    // synthetic-path handle and the assert below catches the '/' it leaks.
+    // A NAMELESS node IS shareable: identity is the CID, so a label-less node is an entry like any other, its file
+    // named "node.json" (chapter 02 §2.5) — never a synthetic path key. The property that must hold is that NO entry
+    // carries a filesystem path beyond its three segments. Teeth: name a nameless node's file by its handle (a path)
+    // and the three-segment check fails.
     void publish_skips_nameless_flagged_node()
     {
         std::string Err;
@@ -1018,22 +1085,16 @@ private slots:
                            {"SOURCE", {{"TYPE","ipfs"},{"CID","bafkreib52upmn2n6u65qll6mmj2dft4ddgnvrkcvyhiczcbjlrv2lu766e"}}}} })}});
         json cfg = json{{"Settings", {{"Paths", {{"LibraryRoot", R.toStdString()}}}}}};
         PackageCatalog::PublishLibrary(cfg, &Err);
-        QVERIFY(cfg.contains("Libraries") && cfg["Libraries"].contains("VidyaGod"));
-        // Model C: a nameless PUBLISH'd node is safe to share — its handle is its CID (identity), so it stands under
-        // that CID, never a filesystem path. THE property that matters is the absence of a path leak in ANY entry
-        // (uid/node/title), not the exclusion of nameless nodes. Teeth: the old synthetic-key leak would put the
-        // seeder's bundle PATH in uid/node here.
+        QVERIFY(cfg.contains("ShareSheet"));
+        QCOMPARE(PackageCatalog::SheetEntries(cfg["ShareSheet"]).size(), cfg["ShareSheet"].size());   // every path: three segments
         bool sawNamed = false, sawNameless = false;
-        for (const auto & E : cfg["Libraries"]["VidyaGod"])
+        for (const auto & E : PackageCatalog::SheetEntries(cfg["ShareSheet"]))
         {
-            const std::string node = E.value("node", std::string()), pkg = E.value("pkg", std::string());
-            const std::string Msg = "no filesystem path in a share entry: node=" + node + " pkg=" + pkg;
-            QVERIFY2(node.find('/') == std::string::npos && pkg.find('/') == std::string::npos, Msg.c_str());
-            if (pkg == "[1] Named") sawNamed = true;
-            if (pkg == "[2] Nameless") { sawNameless = true; QCOMPARE(E.value("nodes", 0), 1); }
+            if (E.Pkg == "[1] Named") sawNamed = true;
+            if (E.Pkg == "[2] Nameless") { sawNameless = true; QCOMPARE(E.File, std::string("node.json")); }
         }
         QVERIFY2(sawNamed, "the named game's package publishes");
-        QVERIFY2(sawNameless, "the nameless node's package publishes — a manifest links it under its CID");
+        QVERIFY2(sawNameless, "the nameless node's package publishes, its file named node.json");
         IpfsWrapper::StopNode();
     }
 
@@ -1131,26 +1192,24 @@ private slots:
         QCOMPARE(Labels, (std::set<std::string>{"good"}));
     }
 
-    // A package row shows what the package is SHARED AS: its folder CID — ours from our published rows, a received
-    // one's from the friend's snapshot, found whether it still sits in CATALOG ("<nick> - <lib>/<pkg>") or was
-    // installed (LIBRARY/<lib>/<pkg>, its name sanitised: "Baldur's" → "Baldur_s"). A same-named package in another
-    // library is a different package. Teeth: drop the library match, or the sanitised compare, and a row below
-    // reads the wrong CID or none.
-    void package_row_shows_its_folder_cid()
+    // A package row shows our package's pin folder (what a pinning service is given), by its library and folder
+    // name; a same-named package in another library is a different package, and a friend's package has none.
+    // Teeth: key Pins by the folder name alone, and the VidyaGod row reads proton's pin.
+    void package_row_shows_its_pin_folder()
     {
-        const json Cfg = json{
-            {"Libraries", {{"VidyaGod", json::array({json{{"cid", "QmOwnSH2"}, {"pkg", "[10972][v1.0] Silent Hill 2"}}})},
-                           {"VidyaGodRunners", json::array({json{{"cid", "QmOwnProton"}, {"pkg", "proton"}}})}}},
-            {"FriendLibraries", {{"12D3KooWPeer", {
-                {"VidyaGod", json::array({json{{"cid", "QmBG"}, {"pkg", "[2190][v1.0] Baldur's Gate"}}})},
-                {"VidyaGodRunners", json::array({json{{"cid", "QmFriendProton"}, {"pkg", "proton"}}})}}}}}};
-        using PackageCatalog::PackageFolderCid;
-        QCOMPARE(PackageFolderCid(Cfg, "/r/LIBRARY/VidyaGod/[10972][v1.0] Silent Hill 2"), std::string("QmOwnSH2"));
-        QCOMPARE(PackageFolderCid(Cfg, "/r/CATALOG/Alice - VidyaGod/[2190][v1.0] Baldur_s Gate"), std::string("QmBG"));
-        QCOMPARE(PackageFolderCid(Cfg, "/r/LIBRARY/VidyaGod/[2190][v1.0] Baldur_s Gate"), std::string("QmBG"));
-        QCOMPARE(PackageFolderCid(Cfg, "/r/LIBRARY/VidyaGodRunners/proton"), std::string("QmOwnProton"));   // ours wins
-        QCOMPARE(PackageFolderCid(Cfg, "/r/LIBRARY/VidyaGod/proton"), std::string());       // not proton's library
-        QCOMPARE(PackageFolderCid(Cfg, "/r/LIBRARY/VidyaGod/[1][v1.0] Nothing"), std::string());
+        const json Cfg = json{{"Pins", {{"VidyaGod/[10972][v1.0] Silent Hill 2", "bafyOwnSH2"}, {"VidyaGodRunners/proton", "bafyOwnProton"}}}};
+        using PackageCatalog::PackagePin;
+        QCOMPARE(PackagePin(Cfg, "/r/LIBRARY/VidyaGod/[10972][v1.0] Silent Hill 2"), std::string("bafyOwnSH2"));
+        QCOMPARE(PackagePin(Cfg, "/r/LIBRARY/VidyaGodRunners/proton"), std::string("bafyOwnProton"));
+        QCOMPARE(PackagePin(Cfg, "/r/LIBRARY/VidyaGod/proton"), std::string());           // not proton's library
+        QCOMPARE(PackagePin(Cfg, "/r/CATALOG/Alice - VidyaGod/[2190][v1.0] Baldur_s Gate"), std::string());
+        //A package directly under the library root is keyed in "Library", as publishing keys it. Teeth: key it by the
+        //root folder's own name.
+        QTemporaryDir Root; QVERIFY(Root.isValid());
+        std::filesystem::create_directories(Root.path().toStdString() + "/LIBRARY/[3] Loose");
+        const json Cfg2 = json{{"Settings", {{"Paths", {{"LibraryRoot", Root.path().toStdString() + "/LIBRARY"}}}}},
+                               {"Pins", {{"Library/[3] Loose", "bafyLoose"}}}};
+        QCOMPARE(PackagePin(Cfg2, Root.path().toStdString() + "/LIBRARY/[3] Loose"), std::string("bafyLoose"));
     }
 
     // Pruning an old generation's node file from one package must not un-seed the same node landed in another (a node
@@ -1169,25 +1228,26 @@ private slots:
         const std::string XB = Cid::Canonical(X), XC = Cid::OfBytes(XB), YB = Cid::Canonical(Y), YC = Cid::OfBytes(YB);
         auto land = [&](const std::string &Pkg, const std::vector<std::pair<std::string, std::string>> &Files,
                         const std::vector<std::string> &Listed) {
-            const std::string D = Cat + "/" + Pkg + "/.package";
+            const std::string D = Cat + "/" + Pkg;
             std::filesystem::create_directories(D);
-            for (const auto &[C, B] : Files) { std::ofstream O(D + "/" + C + ".json", std::ios::binary); O << B; }
-            shareFolder(rx, "Games", Pkg, D, Listed);                                    // the folder lists only these
+            for (const auto &[F, B] : Files) { std::ofstream O(D + "/" + F, std::ios::binary); O << B; }
+            shareEntries(rx, "Games", Pkg, D, Listed);                                   // the entries name only these
             return D;
         };
-        const std::string P1 = land("[1] P1", {{XC, XB}, {YC, YB}}, {YC});                // X stale here
-        land("[2] P2", {{XC, XB}}, {XC});                                                // …listed here
-        QCOMPARE(IpfsWrapper::AddNoCopy(P1 + "/" + XC + ".json", &Err), XC);             // referenced at P1's copy
+        const std::string P1 = land("[1] P1", {{"shared.json", XB}, {"only_p1.json", YB}}, {"only_p1.json"});   // X stale here
+        land("[2] P2", {{"shared.json", XB}}, {"shared.json"});                          // …listed here
+        QCOMPARE(IpfsWrapper::AddNoCopy(P1 + "/shared.json", &Err), XC);                 // referenced at P1's copy
         const NodeIndex Idx = PackageCatalog::BuildCatalogIndex(rx);
         QVERIFY(PackageCatalog::PruneStaleReceived(Idx, rx) >= 1);
-        QVERIFY2(!std::filesystem::exists(P1 + "/" + XC + ".json"), "precondition: the stale copy was pruned");
+        QVERIFY2(!std::filesystem::exists(P1 + "/shared.json"), "precondition: the stale copy was pruned");
+        QVERIFY2(std::filesystem::exists(P1 + "/only_p1.json"), "what the entries name stays");
         QVERIFY2(IpfsWrapper::HasLocal(XC) && !IpfsWrapper::CidMissing(XC), "the node stays held, from P2's copy");
         IpfsWrapper::StopNode();
     }
 
-    // The same, when the surviving copy is in an INSTALLED package (adopted into LIBRARY; its node files CID-named):
-    // not a received manifest's dir, and the index names one copy per CID (here the stale one), so the prune has to
-    // look there too. Teeth: drop the Installed copies from Elsewhere in PruneStaleReceived.
+    // The same, when the surviving copy is in an INSTALLED package (adopted into LIBRARY): no friend's entry names it,
+    // so the prune finds it through the index (whose node, held in CATALOG and LIBRARY, is the installed one's).
+    // Teeth: drop the index's file from Elsewhere in PruneStaleReceived.
     void pruning_a_stale_copy_keeps_the_same_node_held_from_an_installed_package()
     {
         std::string Err;
@@ -1198,21 +1258,21 @@ private slots:
         const json X = json{{"LABEL", "shared"}, {"LAYERS", json::array({ json{{"DIR", "s"}} })}};
         const json Y = json{{"LABEL", "only_p1"}, {"LAYERS", json::array({ json{{"DIR", "y"}} })}};
         const std::string XB = Cid::Canonical(X), XC = Cid::OfBytes(XB), YB = Cid::Canonical(Y), YC = Cid::OfBytes(YB);
-        const std::string P1 = PackageCatalog::CatalogRootDir(rx) + "/Alice - Games/[1] P1/.package";
+        const std::string P1 = PackageCatalog::CatalogRootDir(rx) + "/Alice - Games/[1] P1";
         std::filesystem::create_directories(P1);
-        for (const auto &[C, B] : std::vector<std::pair<std::string, std::string>>{{XC, XB}, {YC, YB}})
-        { std::ofstream O(P1 + "/" + C + ".json", std::ios::binary); O << B; }
-        shareFolder(rx, "Games", "[1] P1", P1, {YC});                                    // X stale: not listed
+        for (const auto &[F, B] : std::vector<std::pair<std::string, std::string>>{{"shared.json", XB}, {"only_p1.json", YB}})
+        { std::ofstream O(P1 + "/" + F, std::ios::binary); O << B; }
+        shareEntries(rx, "Games", "[1] P1", P1, {"only_p1.json"});                        // X stale: not listed
         const std::string P3 = RxData.path().toStdString() + "/LIBRARY/Games/[3] P3";
         std::filesystem::create_directories(P3);
         const json Z = json{{"LABEL", "only_p3"}, {"LAYERS", json::array({ json{{"DIR", "z"}} })}};             // its own node
         const std::string ZB = Cid::Canonical(Z), ZC = Cid::OfBytes(ZB);
-        for (const auto &[C, B] : std::vector<std::pair<std::string, std::string>>{{XC, XB}, {ZC, ZB}})       // installed
-        { std::ofstream O(P3 + "/" + C + ".json", std::ios::binary); O << B; }
-        QCOMPARE(IpfsWrapper::AddNoCopy(P1 + "/" + XC + ".json", &Err), XC);             // referenced at P1's copy
+        for (const auto &[F, B] : std::vector<std::pair<std::string, std::string>>{{"shared.json", XB}, {"only_p3.json", ZB}})   // installed
+        { std::ofstream O(P3 + "/" + F, std::ios::binary); O << B; }
+        QCOMPARE(IpfsWrapper::AddNoCopy(P1 + "/shared.json", &Err), XC);                 // referenced at P1's copy
         const NodeIndex Idx = PackageCatalog::BuildCatalogIndex(rx);
         QVERIFY(PackageCatalog::PruneStaleReceived(Idx, rx) >= 1);
-        QVERIFY2(!std::filesystem::exists(P1 + "/" + XC + ".json"), "precondition: the stale copy was pruned");
+        QVERIFY2(!std::filesystem::exists(P1 + "/shared.json"), "precondition: the stale copy was pruned");
         QVERIFY2(IpfsWrapper::HasLocal(XC) && !IpfsWrapper::CidMissing(XC), "the node stays held, from the installed copy");
         IpfsWrapper::StopNode();
     }
@@ -1228,14 +1288,14 @@ private slots:
         json rx = json{{"Settings", {{"Paths", {{"LibraryRoot", (RxData.path() + "/LIBRARY").toStdString()}}}}}};
         const std::string Catalog = PackageCatalog::CatalogRootDir(rx);
         auto receive = [&](const std::string &Lib, const std::string &Pkg, const std::vector<json> &Nodes) {
-            const std::string Dir = Catalog + "/Alice - " + Lib + "/" + Pkg + "/.package";
+            const std::string Dir = Catalog + "/Alice - " + Lib + "/" + Pkg;
             std::filesystem::create_directories(Dir);
             std::vector<std::string> Cids;
             for (const json &N : Nodes)
             {
                 const std::string Bytes = Cid::Canonical(N);
                 const std::string C = Cid::OfBytes(Bytes);
-                { std::ofstream O(Dir + "/" + C + ".json", std::ios::binary); O << Bytes; }
+                { std::ofstream O(Dir + "/" + N.value("LABEL", std::string()) + ".json", std::ios::binary); O << Bytes; }
                 Cids.push_back(C);
             }
             return Cids;
@@ -1273,7 +1333,7 @@ private slots:
         QVERIFY2(IpfsWrapper::StartNode((Repo.path() + "/ipfs").toStdString(), &Err), Err.c_str());
         QTemporaryDir SeedRoot; QVERIFY(SeedRoot.isValid());
         const json Items = publishTwoGames(SeedRoot.path());
-        QCOMPARE((int)Items.size(), 2);
+        QCOMPARE((int)Items.size(), 7);
         QTemporaryDir RxData; QVERIFY(RxData.isValid());
         json rx = json{{"Settings", {{"Paths", {{"LibraryRoot", (RxData.path() + "/LIBRARY").toStdString()}}}}},
                        {"FriendLibraries", {{"12D3KooWSeederAlice", {{"Games", Items}}}}}};   // nick = peer tail "derAlice"
@@ -1281,11 +1341,18 @@ private slots:
         const std::string Catalog = PackageCatalog::CatalogRootDir(rx);
         landShares(rx, Nick, json{{"Games", Items}});
         const std::filesystem::path Stub = std::filesystem::path(Catalog) / (Nick + " - Games") / "[1] A";
-        QVERIFY(std::filesystem::is_directory(Stub / ".package"));
-        const std::string ACid = cidOfLabel(Items[0].value("cid", std::string()), "a_exec");
-        // A node the folder did not bring is fetched ON ITS OWN into the landed folder — a file referenced in place
-        // (LandReceivedPackages). Make a_exec one of those, so installing has a reference under .package to carry.
-        std::filesystem::remove(Stub / ".package" / (ACid + ".json"));
+        QVERIFY(std::filesystem::is_regular_file(Stub / "a_exec.json"));
+        const std::string ACid = cidOfLabel(Items, "a_exec");
+        // A node file missing from a received package is fetched ON ITS OWN by LandReceivedPackages — a file
+        // referenced in place, so installing has a reference under the stub to carry. (One node plays both machines:
+        // the fetch moved the block into the landed file, so the seeder's copy is put back, as the seeder holds it.)
+        std::string AExec;
+        {
+            std::ifstream In(Stub / "a_exec.json", std::ios::binary);
+            AExec.assign(std::istreambuf_iterator<char>(In), std::istreambuf_iterator<char>());
+        }
+        std::filesystem::remove(Stub / "a_exec.json");
+        QCOMPARE(IpfsWrapper::BlockPut(AExec, &Err), ACid);
         const long long Holds = IpfsWrapper::DebugNetHolds();
         QVERIFY2(PackageCatalog::LandReceivedPackages(rx, &Err), Err.c_str());
         QVERIFY2(IpfsWrapper::DebugNetHolds() > Holds, "LandReceivedPackages fetched package after package without holding the foreground");
@@ -1295,10 +1362,9 @@ private slots:
         QVERIFY2(PackageCatalog::AdoptReceivedPackage(rx, Stub, &NewDir, &Err), Err.c_str());
         QCOMPARE(NewDir, std::filesystem::path(RxData.path().toStdString()) / "LIBRARY" / "Games" / "[1] A");
         QVERIFY2(!std::filesystem::exists(Stub), "the stub dir is gone from CATALOG");
-        QVERIFY2(std::filesystem::exists(NewDir) && !std::filesystem::exists(NewDir / ".package"), "moved, the landed folder dissolved");
-        QVERIFY2(std::filesystem::exists(NewDir / (ACid + ".json")), "its node files are the package's own now");
+        QVERIFY2(std::filesystem::exists(NewDir / "a_exec.json"), "its node files are the package's own now");
         // The references moved with the files: the installed node still reads (and so can be served / re-shared).
-        // Teeth: drop the .package→installed MoveRefs in AdoptReceivedPackage and the node reads as missing here.
+        // Teeth: drop the stub→installed MoveRefs in AdoptReceivedPackage and the node reads as missing here.
         QVERIFY2(!IpfsWrapper::CidMissing(ACid), "the installed node's reference points at its new place");
         // A download still reading the old index asks for the old place: it lands in the installed package, never
         // re-creating the stub. Teeth: drop the RedirectDestsUnder calls in AdoptReceivedPackage.
@@ -1317,11 +1383,11 @@ private slots:
         QVERIFY2(Idx.Find("b_exec") && Idx.Find("b_exec")->Received, "the un-installed package stays a stub");
         // The planner skips the adopted package (the library holds it) and still plans the other.
         const auto Plan2 = PackageCatalog::PlanReceivedFetches(rx, Nick, json{{"Games", Items}});
-        QCOMPARE((int)Plan2.size(), 1);
-        QVERIFY(Plan2[0].Dest.find("[2] B") != std::string::npos);
+        QCOMPARE((int)Plan2.size(), 2);
+        for (const auto & T : Plan2) QVERIFY2(T.Dest.find("[2] B") != std::string::npos, T.Dest.c_str());
         // A second adopt of a package whose name the library already holds is refused: never merged, never a second
         // copy of its nodes. Teeth: drop the refusal and the stub's nodes land beside the installed ones.
-        std::filesystem::create_directories(Stub / ".package");
+        std::filesystem::create_directories(Stub);
         QVERIFY(!PackageCatalog::AdoptReceivedPackage(rx, Stub, nullptr, &Err));
         QVERIFY(Err.find("already exists") != std::string::npos);
         IpfsWrapper::DebugResetQueue();
@@ -1353,9 +1419,9 @@ private slots:
         writeJson(Gd + "/g.json", NodeFixture::Chain("g_exec", {NodeFixture::Merge({NodeFixture::Exec("win32", "g.exe"), NodeFixture::Variant("Play")})}, {"libA", "g_tile"}));
         json seeder = json{{"Settings", {{"Paths", {{"LibraryRoot", R.toStdString()}}}}}};
         auto Publish = [&]{ Err.clear(); const bool Ok = !PackageCatalog::PublishLibrary(seeder, &Err).empty(); if (!Ok) qWarning("publish: %s", Err.c_str());
-                            return json{{"Libs", seeder["Libraries"]["Libs"]}, {"Games", seeder["Libraries"]["Games"]}}; };
+                            return PackageCatalog::Wire(PackageCatalog::SheetEntries(seeder["ShareSheet"])); };
         const json Gen1 = Publish();
-        const std::string LibA = cidOfLabel(Gen1["Libs"][0].value("cid", std::string()), "libA");
+        const std::string LibA = cidOfLabel(Gen1["Libs"], "libA");
 
         QTemporaryDir RxData; QVERIFY(RxData.isValid());
         const std::string Peer = "12D3KooWSeederAlice", Nick = "derAlice";
@@ -1382,7 +1448,7 @@ private slots:
         writeJson(Ld + "/c.json", NodeFixture::Chain("libC", {NodeFixture::ContentCid("zip", "extra.zip", X1)}));
         writeJson(Gd + "/g.json", NodeFixture::Chain("g_exec", {NodeFixture::Merge({NodeFixture::Exec("win32", "g.exe"), NodeFixture::Variant("Play")})}, {"libB", "g_tile"}));
         const json Gen2 = Publish();
-        QVERIFY2(Gen2["Libs"][0]["cid"] != Gen1["Libs"][0]["cid"], Gen2.dump().c_str());
+        QVERIFY2(Gen2["Libs"] != Gen1["Libs"], Gen2.dump().c_str());
         rx["FriendLibraries"] = json{{Peer, Gen2}};
         QCOMPARE((int)PackageCatalog::AvailableUpdates(rx).size(), 2);          // both installed packages have another version
         {   // Settings → Installed Packages offers it, by the friend's name
@@ -1402,7 +1468,7 @@ private slots:
         PackageCatalog::StagedUpdate S1;
         QVERIFY2(Switch(Lib, S1), Err.c_str());
         QVERIFY2(std::find(S1.Kept.begin(), S1.Kept.end(), LibA) != S1.Kept.end(), "libA stays: G still contains it");
-        QVERIFY2(std::filesystem::exists(Lib / (LibA + ".json")), "libA's node file stays");
+        QVERIFY2(std::filesystem::exists(Lib / "libA.json"), "libA's node file stays");
         const std::filesystem::path Old = Lib / ContentFile::Bumped("dx.zip", X1);
         QVERIFY2(std::filesystem::exists(Old) && !std::filesystem::exists(Lib / "dx.zip"), "the installed bytes moved to their bumped name");
         for (const auto & P : IpfsWrapper::OrphanedRefPaths())
@@ -1413,7 +1479,7 @@ private slots:
             std::filesystem::path Local; std::string C;
             ManifestModel::LayerLocator(Idx.Find(LibA)->LoweredLayers()[0], Lib, Local, C);
             QCOMPARE(Local, Old);                                                  // libA reads its own bytes
-            const std::string LibB = cidOfLabel(Gen2["Libs"][0].value("cid", std::string()), "libB");
+            const std::string LibB = cidOfLabel(Gen2["Libs"], "libB");
             ManifestModel::LayerLocator(Idx.Find(LibB)->LoweredLayers()[0], Lib, Local, C);
             QCOMPARE(Local, Lib / ContentFile::Bumped("dx.zip", X2));             // libB never reads libA's
         }
@@ -1439,7 +1505,7 @@ private slots:
         QCOMPARE(IpfsWrapper::AddNoCopy(Old.string(), &Err), X1);
         PackageCatalog::PackageUpdate U3;
         for (const auto & U : PackageCatalog::AvailableUpdates(rx)) if (U.Dir == Lib) U3 = U;
-        QVERIFY(!U3.FolderCid.empty());
+        QVERIFY(!U3.Version.empty() && !U3.Listing.empty());
         QVERIFY2(PackageCatalog::StageUpdate(rx, U3, &S3, &Err), Err.c_str());
         {   // Never under a running game (held by every launch, on every platform). Teeth: drop the check.
             const Sessions::RuntimeHold Running;
@@ -1473,7 +1539,9 @@ private slots:
             QVERIFY2(!std::filesystem::exists(Lib / "junk.bin"), "the journaled plan was applied");
         }
         QVERIFY2(std::find(S3.Removed.begin(), S3.Removed.end(), LibA) != S3.Removed.end(), "libA goes: nothing contains it");
-        QVERIFY(!std::filesystem::exists(Lib / (LibA + ".json")));
+        QVERIFY(!std::filesystem::exists(Lib / "libA.json"));
+        QVERIFY2(std::filesystem::exists(Lib / "libB.json") && std::filesystem::exists(Lib / "libC.json"),
+                 "the version's node files are named by their labels in the package");
         QVERIFY2(!std::filesystem::exists(Old), "its file goes with it");
         QVERIFY2(IpfsWrapper::HasLocal(X1) && !IpfsWrapper::CidMissing(X1), "X1 is still held: referenced at extra.zip");
         QVERIFY2(PackageCatalog::AvailableUpdates(rx).empty(), "every installed package is the friend's version now");
@@ -1491,8 +1559,7 @@ private slots:
     // Installing moves the references BEFORE the package. An install whose move fails leaves the package in CATALOG,
     // still Received, its files referenced where they are, so the next download installs it. (Moved after the rename,
     // a failure left an installed package, never adopted again, whose files read as missing for good.) Teeth: drop
-    // the point-back on failure and the node reads as missing; move the references only after the rename (the old
-    // order) and the landed folder's node, already moved up, reads as missing when the move fails.
+    // the point-back on failure and the node reads as missing.
     void a_failed_install_is_retried_by_the_next_download()
     {
         namespace fs = std::filesystem;
@@ -1507,8 +1574,14 @@ private slots:
         const std::string Nick = "derAlice";
         landShares(rx, Nick, json{{"Games", Items}});
         const fs::path Stub = fs::path(PackageCatalog::CatalogRootDir(rx)) / (Nick + " - Games") / "[1] A";
-        const std::string ACid = cidOfLabel(Items[0].value("cid", std::string()), "a_exec");
-        fs::remove(Stub / ".package" / (ACid + ".json"));                 // fetched on its own: referenced in place
+        const std::string ACid = cidOfLabel(Items, "a_exec");
+        std::string AExec;
+        {
+            std::ifstream In(Stub / "a_exec.json", std::ios::binary);
+            AExec.assign(std::istreambuf_iterator<char>(In), std::istreambuf_iterator<char>());
+        }
+        fs::remove(Stub / "a_exec.json");                                 // fetched on its own: referenced in place
+        QCOMPARE(IpfsWrapper::BlockPut(AExec, &Err), ACid);               // (the seeder's copy: one node plays both)
         QVERIFY2(PackageCatalog::LandReceivedPackages(rx, &Err), Err.c_str());
         QVERIFY2(IpfsWrapper::HasLocal(ACid) && !IpfsWrapper::CidMissing(ACid), "precondition: the landed node is referenced in place");
 
@@ -1518,7 +1591,7 @@ private slots:
         //(A FILE, not a read-only folder: on Windows a folder's read-only bit does not stop a move into it.)
         QVERIFY(!PackageCatalog::AdoptReceivedPackage(rx, Stub, nullptr, &Err));
         QVERIFY2(!fs::exists(Lib / "[1] A"), "nothing installed");
-        QVERIFY2(fs::exists(Stub / (ACid + ".json")), "the package is still in CATALOG");
+        QVERIFY2(fs::exists(Stub / "a_exec.json"), "the package is still in CATALOG");
         QVERIFY2(!IpfsWrapper::CidMissing(ACid), "its files are referenced where they are");
         NodeIndex Idx = PackageCatalog::BuildCatalogIndex(rx);
         QVERIFY2(PackageCatalog::PackagesToAdopt(Idx, {"a_exec"}, {}, rx).count(Stub), "the next download installs it");
@@ -1530,6 +1603,108 @@ private slots:
         QVERIFY2(!IpfsWrapper::CidMissing(ACid), "installed, the reference points at its new place");
         IpfsWrapper::DebugResetQueue();
         IpfsWrapper::StopNode();
+    }
+
+    // A node fetch planned before its package was installed is redirected into the installed package — and there it
+    // lands a missing file but never replaces the package's own node file: only a version switch changes an installed
+    // package. Teeth: keep Verify on a redirected target (the installed node is replaced by the friend's).
+    void a_redirected_node_fetch_never_replaces_an_installed_node()
+    {
+        std::string Err;
+        QTemporaryDir Repo; QVERIFY(Repo.isValid());
+        QVERIFY2(IpfsWrapper::StartNode((Repo.path() + "/ipfs").toStdString(), &Err), Err.c_str());
+        QTemporaryDir D; QVERIFY(D.isValid());
+        const std::string Stub = D.path().toStdString() + "/CATALOG/Alice - Games/[1] A", Installed = D.path().toStdString() + "/LIBRARY/Games/[1] A";
+        std::filesystem::create_directories(Installed);
+        const json Mine = json{{"LABEL", "a"}, {"LAYERS", json::array({ json{{"DIR", "mine"}} })}};
+        const json Theirs = json{{"LABEL", "a"}, {"LAYERS", json::array({ json{{"DIR", "theirs"}} })}};
+        std::ofstream(Installed + "/a.json", std::ios::binary) << Cid::Canonical(Mine);
+        QCOMPARE(IpfsWrapper::BlockPut(Cid::Canonical(Theirs), &Err), Cid::OfNode(Theirs));   // fetchable
+        IpfsWrapper::RedirectDestsUnder(Stub, Installed);
+        std::string WErr;
+        QVERIFY2(IpfsWrapper::WaitBatch(IpfsWrapper::EnqueueBatch({ IpfsWrapper::FetchTarget{ Cid::OfNode(Theirs), Stub + "/a.json",
+                     /*Optional=*/false, /*Dir=*/false, /*Verify=*/true } }), 30000, &WErr), WErr.c_str());
+        const auto Holds = [&]{ std::ifstream In(Installed + "/a.json", std::ios::binary);
+                                return std::string((std::istreambuf_iterator<char>(In)), std::istreambuf_iterator<char>()); };
+        QCOMPARE(Holds(), Cid::Canonical(Mine));
+        //…also when another requester of the same node asks for a refreshed file elsewhere (the job's Verify is theirs):
+        //the redirected dest is filled only if missing. Teeth: drop the per-dest Keep in RunJob. (A queue reset drops
+        //the redirects too: registered again each time.)
+        const auto Reset = [&]{ IpfsWrapper::DebugResetQueue(); IpfsWrapper::RedirectDestsUnder(Stub, Installed); };
+        const auto HoldsAt = [&](const std::string &P, const json &N) { std::ifstream In(P, std::ios::binary);
+            return std::string((std::istreambuf_iterator<char>(In)), std::istreambuf_iterator<char>()) == Cid::Canonical(N); };
+        Reset();
+        const json Theirs2 = json{{"LABEL", "a"}, {"LAYERS", json::array({ json{{"DIR", "theirs2"}} })}};
+        QCOMPARE(IpfsWrapper::BlockPut(Cid::Canonical(Theirs2), &Err), Cid::OfNode(Theirs2));
+        const std::string Elsewhere = D.path().toStdString() + "/CATALOG/Bob - Games/[1] A/a.json";
+        QVERIFY2(IpfsWrapper::WaitBatch(IpfsWrapper::EnqueueBatch({
+                     IpfsWrapper::FetchTarget{ Cid::OfNode(Theirs2), Elsewhere, /*Optional=*/false, /*Dir=*/false, /*Verify=*/true },
+                     IpfsWrapper::FetchTarget{ Cid::OfNode(Theirs2), Stub + "/a.json", /*Optional=*/false, /*Dir=*/false, /*Verify=*/true } }),
+                 30000, &WErr), WErr.c_str());
+        QVERIFY(HoldsAt(Elsewhere, Theirs2));
+        QCOMPARE(Holds(), Cid::Canonical(Mine));
+        //…when the node's fetch is done already (elsewhere) and the redirected request joins it: the installed file
+        //is there, and stays. Teeth: keep Verify on a redirected target (the join copies the friend's node over it).
+        Reset();
+        const auto Fetch = [&](const std::vector<IpfsWrapper::FetchTarget> &T) {
+            std::string E; QVERIFY2(IpfsWrapper::WaitBatch(IpfsWrapper::EnqueueBatch(T), 30000, &E), E.c_str()); };
+        const auto Node = [&](const char *Dir) { const json N = json{{"LABEL", "a"}, {"LAYERS", json::array({ json{{"DIR", Dir}} })}};
+            std::string E; IpfsWrapper::BlockPut(Cid::Canonical(N), &E); return N; };
+        const auto Target = [](const json &N, const std::string &Dest) {
+            return IpfsWrapper::FetchTarget{ Cid::OfNode(N), Dest, /*Optional=*/false, /*Dir=*/false, /*Verify=*/true }; };
+        const json Theirs3 = Node("theirs3");
+        const std::string Elsewhere3 = D.path().toStdString() + "/CATALOG/Carol - Games/[1] A/a.json";
+        Fetch({ Target(Theirs3, Elsewhere3) });
+        Fetch({ Target(Theirs3, Stub + "/a.json") });
+        QVERIFY(HoldsAt(Elsewhere3, Theirs3));
+        QCOMPARE(Holds(), Cid::Canonical(Mine));
+        //…when every dest of the fetch is there already, an older version at the other one: the fetch lands the node
+        //there — never a copy of the installed file. Teeth: take the first dest (the installed file) for the fetch.
+        Reset();
+        const json Theirs4 = Node("theirs4");
+        const std::string Elsewhere4 = D.path().toStdString() + "/CATALOG/Dave - Games/[1] A/a.json";
+        std::filesystem::create_directories(std::filesystem::path(Elsewhere4).parent_path());
+        std::ofstream(Elsewhere4, std::ios::binary) << Cid::Canonical(Theirs2);               // an older version
+        Fetch({ Target(Theirs4, Stub + "/a.json"), Target(Theirs4, Elsewhere4) });
+        QVERIFY2(HoldsAt(Elsewhere4, Theirs4), "the other dest was copied from the installed file");
+        QCOMPARE(Holds(), Cid::Canonical(Mine));
+        //…when the installed file is the only dest of a finished job and another request joins it: that request is
+        //fetched, never copied from the installed file. Teeth: let FirstExisting pick a kept dest.
+        Reset();
+        const json Theirs5 = Node("theirs5");
+        const std::string Elsewhere5 = D.path().toStdString() + "/CATALOG/Erin - Games/[1] A/a.json";
+        Fetch({ Target(Theirs5, Stub + "/a.json") });
+        QCOMPARE(IpfsWrapper::DebugJobState(Cid::OfNode(Theirs5)), 2 /* Done: the file is there */);
+        Fetch({ Target(Theirs5, Elsewhere5) });
+        QVERIFY2(HoldsAt(Elsewhere5, Theirs5), "a request was copied from the installed file");
+        QCOMPARE(Holds(), Cid::Canonical(Mine));
+        IpfsWrapper::DebugResetQueue();
+        IpfsWrapper::StopNode();
+    }
+
+    // A friend's version is compared with the package installed where that friend's package would have landed: two of
+    // the friend's packages whose names clash land (and install) under qualified names, so neither is compared with a
+    // package of the plain name. Teeth: look for the installed package under its plain name.
+    void a_version_is_compared_with_the_package_where_it_would_have_landed()
+    {
+        QTemporaryDir D; QVERIFY(D.isValid());
+        const std::string Lib = D.path().toStdString() + "/LIBRARY";
+        json rx = json{{"Settings", {{"Paths", {{"LibraryRoot", Lib}}}}}};
+        const json Items = json::array({ json{{"cid", "bafkreifoonode1"}, {"pkg", "Foo:1"}, {"node", "a.json"}},
+                                         json{{"cid", "bafkreifoonode2"}, {"pkg", "foo?1"}, {"node", "b.json"}} });
+        rx["FriendLibraries"]["Alice"]["Games"] = Items;
+        const auto Folders = PackageCatalog::ReceivedFolderNames(json{{"Games", Items}});
+        const std::string Q1 = Folders.at({"Games", "Foo:1"});
+        auto install = [&](const std::string &Folder, const std::string &Label) {
+            std::filesystem::create_directories(Lib + "/Games/" + Folder);
+            const json N = json{{"LABEL", Label}, {"LAYERS", json::array({ json{{"DIR", Label}} })}};
+            std::ofstream(Lib + "/Games/" + Folder + "/" + Label + ".json", std::ios::binary) << Cid::Canonical(N);
+        };
+        install(Q1, "mine");                                                  // Foo:1, installed earlier (another version)
+        install("Foo_1", "unrelated");                                        // a package of ours with the plain name
+        const auto Offered = PackageCatalog::AvailableUpdates(rx);
+        QCOMPARE((int)Offered.size(), 1);
+        QCOMPARE(Offered[0].Dir.filename().string(), Q1);
     }
 
     // The library NAME in a friend's snapshot is theirs to choose. Installing a received package must land it inside
@@ -1564,10 +1739,9 @@ private slots:
         IpfsWrapper::StopNode();
     }
 
-    // A RE-PUBLISHED package (same dir → same dest, a NEW folder) must land OVER the occupied dest through the REAL
-    // rolling queue — the receiver's whole update path — at EVERY dest the snapshot routes it to. The folder dir is
-    // the fetch's own, replaced whole, so the previous generation's node files go with it. Teeth: let the queue
-    // settle a new-CID job on the occupied dest and the v2 asserts fail (the dest keeps v1 forever).
+    // A RE-PUBLISHED node (same label → same file, a NEW CID) must land OVER the occupied file through the REAL rolling
+    // queue — the receiver's whole update path — at EVERY dest the snapshot routes it to. Teeth: let the queue settle
+    // a new-CID job on the occupied dest and the v2 asserts fail (the dest keeps v1 forever).
     void republished_package_lands_over_the_stale_dest()
     {
         std::string Err;
@@ -1575,9 +1749,8 @@ private slots:
         QVERIFY2(IpfsWrapper::StartNode((Repo.path() + "/ipfs").toStdString(), &Err), Err.c_str());
         QTemporaryDir SeedRoot; QVERIFY(SeedRoot.isValid());
         const json Items = publishTwoGames(SeedRoot.path());
-        QCOMPARE((int)Items.size(), 2);                         // packages A and B
-        const std::string FolderV1 = Items[0].value("cid", std::string());
-        const std::string CidV1 = cidOfLabel(FolderV1, "a_exec");
+        QCOMPARE((int)Items.size(), 7);                         // packages A (5 nodes) and B (2)
+        const std::string CidV1 = cidOfLabel(Items, "a_exec");
         QVERIFY(!CidV1.empty());
 
         QTemporaryDir RxData; QVERIFY(RxData.isValid());
@@ -1588,24 +1761,14 @@ private slots:
             rx["FriendLibraries"]["Alice"] = json{{"Games", SnapItems}, {"Favs", SnapItems}};
             landShares(rx, "Alice", json{{"Games", SnapItems}, {"Favs", SnapItems}});
         };
-        auto Has = [&](const std::string & Lib, const std::string & Cid) {
-            return std::filesystem::exists(Catalog + "/Alice - " + Lib + "/[1] A/.package/" + Cid + ".json");
-        };
-        auto Landed = [&](const std::string & Lib, const std::string & Folder) {   // the dest holds exactly the folder
-            std::map<std::string, std::string> E;
-            if (!IpfsWrapper::DirEntries(Folder, E) || E.empty()) return false;
-            const std::string D = Catalog + "/Alice - " + Lib + "/[1] A/.package";
-            size_t N = 0;
-            std::error_code Ec;
-            for (const auto & F : std::filesystem::directory_iterator(D, Ec)) if (F.path().extension() == ".json") ++N;
-            for (const auto & [Name, C] : E) if (!std::filesystem::exists(D + "/" + Name)) return false;
-            return N == E.size();
+        auto Holds = [&](const std::string & Lib, const std::string & Cid) {   // a_exec.json there holds that node
+            std::ifstream In(Catalog + "/Alice - " + Lib + "/[1] A/a_exec.json", std::ios::binary);
+            return In && Cid::OfBytes(std::string((std::istreambuf_iterator<char>(In)), std::istreambuf_iterator<char>())) == Cid;
         };
         Land(Items);
-        QVERIFY2(Landed("Games", FolderV1) && Landed("Favs", FolderV1), "v1's folder landed in both libraries");
-        QVERIFY2(Has("Games", CidV1) && Has("Favs", CidV1), "v1's node file landed in both");
+        QVERIFY2(Holds("Games", CidV1) && Holds("Favs", CidV1), "v1's node file landed in both");
 
-        // Seeder updates the node (same LABEL, new content) and re-publishes → NEW cid, NEW folder, SAME dest.
+        // Seeder updates the node (same LABEL, new content) and re-publishes → NEW cid, SAME file.
         {
             const std::string F = (SeedRoot.path() + "/VidyaGod/[1] A/a.json").toStdString();
             std::ifstream In(F);
@@ -1616,32 +1779,39 @@ private slots:
         }
         json seeder2 = json{{"Settings", {{"Paths", {{"LibraryRoot", SeedRoot.path().toStdString()}}}}}};
         PackageCatalog::PublishLibrary(seeder2, &Err);
-        json Items2 = seeder2["Libraries"]["VidyaGod"];
-        std::string FolderV2;
-        for (const auto & E : Items2) if (E.value("pkg", std::string()) == "[1] A") FolderV2 = E.value("cid", std::string());
-        const std::string CidV2 = cidOfLabel(FolderV2, "a_exec");
-        QVERIFY2(!FolderV2.empty() && FolderV2 != FolderV1, "the package re-minted to a NEW folder");
+        for (const auto & [C, P] : seeder2["ShareSheet"].items()) SeederBlocks[C] = IpfsWrapper::BlockGet(C, &Err);
+        const json Items2 = PackageCatalog::Wire(PackageCatalog::SheetEntries(seeder2["ShareSheet"]))["VidyaGod"];
+        const std::string CidV2 = cidOfLabel(Items2, "a_exec");
         QVERIFY2(!CidV2.empty() && CidV2 != CidV1, "the update re-minted the node to a NEW cid");
 
+        {   // the queue alone (what the app runs when a snapshot arrives) replaces the stale file at every dest
+            rx["FriendLibraries"]["Alice"] = json{{"Games", Items2}, {"Favs", Items2}};
+            for (const auto & [C, B] : SeederBlocks) { std::string E; IpfsWrapper::BlockPut(B, &E); }
+            std::string WErr;
+            QVERIFY2(IpfsWrapper::WaitBatch(IpfsWrapper::EnqueueBatch(PackageCatalog::ReceivedFetchTargets(
+                         PackageCatalog::PlanReceivedFetches(rx, "Alice", rx["FriendLibraries"]["Alice"]))), 30000, &WErr), WErr.c_str());
+            QVERIFY2(Holds("Games", CidV2) && Holds("Favs", CidV2), "the queue took a stale file for the node it asked for");
+        }
         Land(Items2);
-        QVERIFY2(Landed("Games", FolderV2) && Landed("Favs", FolderV2), "v2's folder REPLACED the stale one at EVERY dest");
-        QVERIFY2(Has("Games", CidV2) && Has("Favs", CidV2), "v2's node file landed in both");
-        QVERIFY2(!Has("Games", CidV1) && !Has("Favs", CidV1), "the stale v1 file went with the replaced folder");
+        QVERIFY2(Holds("Games", CidV2) && Holds("Favs", CidV2), "v2's node file REPLACED the stale one at EVERY dest");
         NodeIndex After = PackageCatalog::BuildCatalogIndex(rx);
-        QCOMPARE(PackageCatalog::PruneStaleReceived(After, rx), 0);   // nothing stale left in a folder dir
-        // …and the prune does judge these dirs: a node file their folder does not list goes.
-        const std::string Stray = Catalog + "/Alice - Games/[1] A/.package/" + CidV1 + ".json";
-        std::filesystem::copy_file(Catalog + "/Alice - Games/[1] A/.package/" + CidV2 + ".json", Stray);
+        QCOMPARE(PackageCatalog::PruneStaleReceived(After, rx), 0);   // nothing stale left
+        // …and the prune does judge these dirs: a node file their entries do not name goes.
+        const std::string Stray = Catalog + "/Alice - Games/[1] A/stray.json";
+        {   // v1's bytes, under a name no entry has
+            std::ofstream O(Stray, std::ios::binary | std::ios::trunc);
+            O << SeederBlocks.at(CidV1);
+        }
         QVERIFY(PackageCatalog::PruneStaleReceived(PackageCatalog::BuildCatalogIndex(rx), rx) >= 1);
-        QVERIFY2(!std::filesystem::exists(Stray), "a node file the current folder does not list survived the prune");
+        QVERIFY2(!std::filesystem::exists(Stray), "a node file the current entries do not name survived the prune");
 
         IpfsWrapper::DebugResetQueue();
         IpfsWrapper::StopNode();
     }
 
     // Two friends share the same library and package name — the multi-seeder normal. Each landed dir is judged against
-    // ITS friend's folder: Bob's current node is neither pruned for missing from Alice's folder, nor joined by Alice's.
-    // Teeth: map a dir to a folder by library and package name alone (whichever friend's row comes first).
+    // ITS friend's entries: Bob's current node is neither pruned for missing from Alice's, nor joined by Alice's.
+    // Teeth: judge a dir by library and package name alone (whichever friend's entries come first).
     void two_friends_packages_of_one_name_are_judged_each_by_its_own_folder()
     {
         std::string Err;
@@ -1653,78 +1823,97 @@ private slots:
         const json X = json{{"LABEL", "v1"}, {"LAYERS", json::array({ json{{"DIR", "s"}} })}};
         const json Y = json{{"LABEL", "v2"}, {"LAYERS", json::array({ json{{"DIR", "y"}} })}};
         const std::string XB = Cid::Canonical(X), XC = Cid::OfBytes(XB), YB = Cid::Canonical(Y), YC = Cid::OfBytes(YB);
-        auto land = [&](const std::string &Peer, const std::string &C, const std::string &B) {
-            const std::string D = Root + "/" + Peer + " - Games/[1] A/.package";
+        auto land = [&](const std::string &Peer, const std::string &C, const std::string &B, const std::string &F) {
+            const std::string D = Root + "/" + Peer + " - Games/[1] A";
             std::filesystem::create_directories(D);
-            { std::ofstream O(D + "/" + C + ".json", std::ios::binary); O << B; }
+            { std::ofstream O(D + "/" + F, std::ios::binary); O << B; }
             std::string E;
-            if (IpfsWrapper::AddNoCopy(D + "/" + C + ".json", &E) != C) return std::string();
-            rx["FriendLibraries"][Peer]["Games"].push_back(json{{"cid", IpfsWrapper::MakeDir({{C + ".json", C}}, &E)}, {"pkg", "[1] A"}});
+            if (IpfsWrapper::AddNoCopy(D + "/" + F, &E) != C) return std::string();
+            rx["FriendLibraries"][Peer]["Games"].push_back(json{{"cid", C}, {"pkg", "[1] A"}, {"node", F}});
             return D;
         };
-        const std::string Alice = land("Alice", XC, XB);
-        const std::string Bob = land("Bob", YC, YB);
+        const std::string Alice = land("Alice", XC, XB, "v1.json");
+        const std::string Bob = land("Bob", YC, YB, "v2.json");
         QVERIFY(!Alice.empty() && !Bob.empty());
-        QVERIFY2(!PackageCatalog::ReceivedPackagesIncomplete(rx), "each dir holds everything its own folder lists");
-        { std::ofstream O(Bob + "/.package.json"); O << "{}"; }                           // an old format's leftover
+        QVERIFY2(!PackageCatalog::ReceivedPackagesIncomplete(rx), "each dir holds everything its own entries name");
+        { std::ofstream O(Bob + "/settings.json"); O << "{}"; }                           // a .json that is no node
         QCOMPARE(PackageCatalog::PruneStaleReceived(PackageCatalog::BuildCatalogIndex(rx), rx), 0);
-        QVERIFY2(std::filesystem::exists(Bob + "/.package.json"), "a file not named by a CID was pruned as a node");
-        QVERIFY2(std::filesystem::exists(Bob + "/" + YC + ".json"), "Bob's current node was pruned against Alice's folder");
+        QVERIFY2(std::filesystem::exists(Bob + "/settings.json"), "a file that is not a node was pruned as one");
+        QVERIFY2(std::filesystem::exists(Bob + "/v2.json"), "Bob's current node was pruned against Alice's entries");
         QVERIFY2(PackageCatalog::LandReceivedPackages(rx, &Err), Err.c_str());
-        QVERIFY2(!std::filesystem::exists(Bob + "/" + XC + ".json"), "Alice's node landed in Bob's dir");
-        QVERIFY2(!std::filesystem::exists(Alice + "/" + YC + ".json"), "Bob's node landed in Alice's dir");
-        // …and Bob's dir IS judged, against Bob's folder: a stray node file there is pruned, a listed one missing is noticed.
+        QVERIFY2(!std::filesystem::exists(Bob + "/v1.json"), "Alice's node landed in Bob's dir");
+        QVERIFY2(!std::filesystem::exists(Alice + "/v2.json"), "Bob's node landed in Alice's dir");
+        // …and Bob's dir IS judged, against Bob's entries: a stray node file there is pruned, a listed one missing is noticed.
         const json Z = json{{"LABEL", "stray"}, {"LAYERS", json::array({ json{{"DIR", "z"}} })}};
-        const std::string ZB = Cid::Canonical(Z), ZC = Cid::OfBytes(ZB);
-        { std::ofstream O(Bob + "/" + ZC + ".json", std::ios::binary); O << ZB; }
+        const std::string ZB = Cid::Canonical(Z);
+        { std::ofstream O(Bob + "/stray.json", std::ios::binary); O << ZB; }
         QVERIFY(PackageCatalog::PruneStaleReceived(PackageCatalog::BuildCatalogIndex(rx), rx) >= 1);
-        QVERIFY2(!std::filesystem::exists(Bob + "/" + ZC + ".json"), "Bob's dir was never judged: a stray node survived");
-        std::filesystem::remove(Bob + "/" + YC + ".json");
+        QVERIFY2(!std::filesystem::exists(Bob + "/stray.json"), "Bob's dir was never judged: a stray node survived");
+        std::filesystem::remove(Bob + "/v2.json");
         QVERIFY2(PackageCatalog::ReceivedPackagesIncomplete(rx), "Bob's dir was never judged: a missing listed node went unnoticed");
+        // Alice's next generation puts another node under the same name: the file there (the older generation's) is
+        // replaced in one pass, never refused and left for the next. Teeth: drop LandReceivedPackages' first pass over
+        // present files.
+        const json W = json{{"LABEL", "v1"}, {"LAYERS", json::array({ json{{"DIR", "w"}} })}};
+        const std::string WB = Cid::Canonical(W), WC = Cid::OfBytes(WB);
+        {   // the friends hold their nodes (one node plays both machines): put them as seeders hold them
+            std::string E;
+            QCOMPARE(IpfsWrapper::BlockPut(WB, &E), WC);
+            QCOMPARE(IpfsWrapper::BlockPut(YB, &E), YC);
+        }
+        rx["FriendLibraries"]["Alice"]["Games"] = json::array({ json{{"cid", WC}, {"pkg", "[1] A"}, {"node", "v1.json"}} });
+        std::string LErr;
+        QVERIFY2(PackageCatalog::LandReceivedPackages(rx, &LErr), LErr.c_str());
+        {
+            std::ifstream In(Alice + "/v1.json", std::ios::binary);
+            QCOMPARE(Cid::OfBytes(std::string((std::istreambuf_iterator<char>(In)), std::istreambuf_iterator<char>())), WC);
+        }
         IpfsWrapper::DebugResetQueue();
         IpfsWrapper::StopNode();
     }
 
-    // A received package's node list is its folder's own listing, found through its share entry — also for the second
-    // of two packages that share a dir name, which lands as "<pkg> (<cid prefix>)": a node file missing from THAT
-    // folder is still noticed (and landed). Teeth: find a landed folder's CID by its plain name only.
-    void a_same_named_second_package_is_completed_from_its_own_folder()
+    // A received package's node list is its entries — also for the second of two packages whose names make one folder
+    // name, which lands as "<folder> (<hash of its name>)": a node file missing from THAT package is still noticed
+    // (and landed). Teeth: judge a landed dir by its plain folder name only.
+    void a_same_named_second_package_is_completed_from_its_own_entries()
     {
         std::string Err;
         QTemporaryDir Repo; QVERIFY(Repo.isValid());
         QVERIFY2(IpfsWrapper::StartNode((Repo.path() + "/ipfs").toStdString(), &Err), Err.c_str());
         QTemporaryDir Src; QVERIFY(Src.isValid());
-        auto folder = [&](const std::string & Label) {   // a one-node package folder
+        auto node = [&](const std::string & Label) {   // a node a friend holds
             const std::string Bytes = Cid::Canonical(json{{"LABEL", Label}, {"LAYERS", json::array({ json{{"DIR", Label}} })}});
-            const std::string C = Cid::OfBytes(Bytes);
-            const std::string F = Src.path().toStdString() + "/" + C + ".json";
+            const std::string F = Src.path().toStdString() + "/" + Label + ".json";
             { std::ofstream O(F, std::ios::binary); O << Bytes; }
             std::string E;
-            if (IpfsWrapper::AddNoCopy(F, &E) != C) return std::make_pair(std::string(), C);
-            return std::make_pair(IpfsWrapper::MakeDir({{C + ".json", C}}, &E), C);
+            return IpfsWrapper::AddNoCopy(F, &E);
         };
-        const auto [F1, C1] = folder("first");
-        const auto [F2, C2] = folder("second");
-        QVERIFY(!F1.empty() && !F2.empty());
+        const std::string C1 = node("first"), C2 = node("second");
+        QVERIFY(!C1.empty() && !C2.empty());
         QTemporaryDir RxData; QVERIFY(RxData.isValid());
-        const json Items = json::array({ json{{"cid", F1}, {"pkg", "[1] Same"}}, json{{"cid", F2}, {"pkg", "[1] Same"}} });
+        const json Items = json::array({ json{{"cid", C1}, {"pkg", "[1] Same:"}, {"node", "first.json"}},
+                                         json{{"cid", C2}, {"pkg", "[1] Same?"}, {"node", "second.json"}} });
         json rx = json{{"Settings", {{"Paths", {{"LibraryRoot", (RxData.path() + "/LIBRARY").toStdString()}}}}},
                        {"FriendLibraries", {{"Alice", {{"Games", Items}}}}}};
         landShares(rx, "Alice", json{{"Games", Items}});
-        const std::string Second = PackageCatalog::CatalogRootDir(rx) + "/Alice - Games/[1] Same (" + F2.substr(0, 12) + ")/.package";
-        QVERIFY2(std::filesystem::exists(Second + "/" + C2 + ".json"), "precondition: the second package landed qualified");
+        std::string Second;
+        for (const auto & T : PackageCatalog::PlanReceivedFetches(rx, "Alice", json{{"Games", Items}}))
+            if (T.Cid == C2) Second = std::filesystem::path(T.Dest).parent_path().string();
+        QVERIFY2(std::filesystem::path(Second).filename().string().rfind("[1] Same_ (", 0) == 0, Second.c_str());
+        QVERIFY2(std::filesystem::exists(Second + "/second.json"), "precondition: the second package landed qualified");
         QVERIFY(!PackageCatalog::ReceivedPackagesIncomplete(rx));
-        std::filesystem::remove(Second + "/" + C2 + ".json");
-        QVERIFY2(PackageCatalog::ReceivedPackagesIncomplete(rx), "a node missing from the qualified package's folder went unnoticed");
+        std::filesystem::remove(Second + "/second.json");
+        QCOMPARE(IpfsWrapper::AddNoCopy(Src.path().toStdString() + "/second.json", &Err), C2);   // the friend still holds it
+        QVERIFY2(PackageCatalog::ReceivedPackagesIncomplete(rx), "a node missing from the qualified package went unnoticed");
         QVERIFY2(PackageCatalog::LandReceivedPackages(rx, &Err), Err.c_str());
-        QVERIFY2(std::filesystem::exists(Second + "/" + C2 + ".json"), "the missing node was not landed");
+        QVERIFY2(std::filesystem::exists(Second + "/second.json"), "the missing node was not landed");
         IpfsWrapper::DebugResetQueue();
         IpfsWrapper::StopNode();
     }
 
     // UNTRUSTED-input bounds of the planner, with teeth for each: (1) every dest path SEGMENT is capped under
     // NAME_MAX even when nick/lib/uid/title/node arrive at the wire maximums (else the queue retries an
-    // ENAMETOOLONG mkdir forever); (2) an over-long cid is dropped; (3) the per-library item cap holds.
+    // ENAMETOOLONG mkdir forever); (2) an over-long or non-plain cid is dropped; (3) the entry bound takes whole packages.
     void planner_bounds_hostile_segments_and_counts()
     {
         QTemporaryDir PlanRoot; QVERIFY(PlanRoot.isValid());
@@ -1732,23 +1921,24 @@ private slots:
         const std::string Catalog = PackageCatalog::CatalogRootDir(rx);
         const std::string Long(1000, 'x');
         const json Items = json::array({ json{{"cid", "bafyplannerboundscidaaaaaaaaaaaaaaaaaaaaaa"},
-                                              {"node", Long}, {"uid", Long}, {"title", Long}} });
+                                              {"node", Long}, {"pkg", Long}} });
         const auto Plan = PackageCatalog::PlanReceivedFetches(rx, Long, json{{Long, Items}});
         QCOMPARE((int)Plan.size(), 1);
         for (const auto & T : Plan)
             for (const auto & Part : std::filesystem::path(T.Dest.substr(Catalog.size() + 1)))
                 QVERIFY2(Part.string().size() <= 130, ("segment too long: " + Part.string()).c_str());
 
-        const json BadCid = json::array({ json{{"cid", Long}} });                    // >128 bytes → not a CID → dropped
+        const json BadCid = json::array({ json{{"cid", Long}, {"pkg", "P"}, {"node", "n.json"}},             // >128 bytes → dropped
+                                          json{{"cid", "baf/../x"}, {"pkg", "P"}, {"node", "n.json"}} });  // not plain → dropped
         QCOMPARE((int)PackageCatalog::PlanReceivedFetches(rx, "A", json{{"L", BadCid}}).size(), 0);
 
         // Names Windows cannot hold as given: a trailing '.' or ' ' (dropped there, so the folder the plan names never
         // exists) and device names (no file at all). Planned the same on every platform, so a receiver on either lands
-        // the same name. Teeth: drop SafeSegment's trailing-dot/space or device-name rule.
+        // the same name. Teeth: drop NodeFiles::SafeName's trailing-dot/space or device-name rule.
         for (const auto & [Lib, Pkg] : std::vector<std::pair<std::string, std::string>>{
                  {"..", "[1] Game."}, {"Games ", "[2] B "}, {"L", "CON"}, {"L", "nul.txt"}, {"L", "Com1 .x"}})
         {
-            const json One = json::array({ json{{"cid", "bafyplannerwindowsnamesaaaaaaaaaaaaaaaaaaa"}, {"pkg", Pkg}} });
+            const json One = json::array({ json{{"cid", "bafyplannerwindowsnamesaaaaaaaaaaaaaaaaaaa"}, {"pkg", Pkg}, {"node", Pkg}} });
             const auto P = PackageCatalog::PlanReceivedFetches(rx, "derAlice", json{{Lib, One}});
             QCOMPARE((int)P.size(), 1);
             for (const auto & Part : std::filesystem::path(P[0].Dest.substr(Catalog.size() + 1)))
@@ -1762,17 +1952,21 @@ private slots:
             }
         }
 
+        // The bound counts node entries and takes a package whole or not at all: P1 (60 000 nodes) fits, P2 (50 000)
+        // would pass 100 000 and is left out entirely — never cut short, which would read complete.
         json Many = json::array();
-        for (int i = 0; i < 20001; ++i) Many.push_back(json{{"cid", "bafycap" + std::to_string(i)}});
-        QCOMPARE((int)PackageCatalog::PlanReceivedFetches(rx, "A", json{{"L", Many}}).size(), 20000);
+        for (int i = 0; i < 60000; ++i) Many.push_back(json{{"cid", "bafycap" + std::to_string(i)}, {"pkg", "P1"}, {"node", "n" + std::to_string(i)}});
+        for (int i = 0; i < 50000; ++i) Many.push_back(json{{"cid", "bafycapb" + std::to_string(i)}, {"pkg", "P2"}, {"node", "n" + std::to_string(i)}});
+        const auto Capped = PackageCatalog::PlanReceivedFetches(rx, "A", json{{"L", Many}});
+        QCOMPARE((int)Capped.size(), 60000);
+        for (const auto & T : Capped) QVERIFY(T.Dest.find("/P1/") != std::string::npos);
     }
 
-    // Publish-side bounds + the tile race: a node NAMING a tile that is not in the tree (a received share whose tile
-    // hasn't landed) is HELD OUT of the share list — emitting it would ship uid/title = the bare handle and fork
-    // receivers' trees into "[handle] handle/" dirs that never reconcile. And an over-long user TITLE is truncated at
-    // emit (UTF-8-safe), or one title would make the receiver's inbound gate reject the WHOLE snapshot — silently,
-    // at the far end. Teeth: drop the hold-back → HeldGame appears with uid "h_exec"; drop the cap → title is 500.
-    void publish_holds_unresolved_tiles_and_bounds_titles()
+    // Publish-side bounds: a node's file name is its label made a safe name of at most 120 bytes, so an over-long label
+    // never makes an entry a receiver's file system cannot hold (or its inbound gate refuses); and an object that is no
+    // node (a legacy-typed block with no LAYERS) is no entry. Teeth: drop SafeName's cap and the name is 505 bytes;
+    // index a non-node and h_exec appears.
+    void publish_bounds_file_names_and_skips_non_nodes()
     {
         std::string Err;
         QTemporaryDir Repo; QVERIFY(Repo.isValid());
@@ -1784,24 +1978,15 @@ private slots:
         writeJson(R + "/VidyaGod/[1] Held/h.json",
                   json{{"LABEL", "h_exec"}, {"TYPE", "DeclareExec"}, {"HOST", "win32"}, {"EXECUTABLE", "h.exe"},
                        {"LIBRARYITEM", "bafkreib52upmn2n6u65qll6mmj2dft4ddgnvrkcvyhiczcbjlrv2lu766e"}, {"PUBLISH", true}});
-        writeJson(R + "/VidyaGod/[2] Long/tile.json", NodeFixture::Chain("l_tile", {NodeFixture::Tile("2", std::string(500, 'T'))}));
         writeJson(R + "/VidyaGod/[2] Long/l.json",
-                  NodeFixture::Chain("l_exec", {NodeFixture::Exec("win32", "l.exe")}, {"l_tile"}, {{"PUBLISH", true}}));
+                  json{{"LABEL", std::string(500, 'T')}, {"LAYERS", json::array({ json{{"DIR", "d"}} })}});
 
         json cfg = json{{"Settings", {{"Paths", {{"LibraryRoot", R.toStdString()}}}}}};
         PackageCatalog::PublishLibrary(cfg, &Err);
-        QVERIFY(cfg["Libraries"].contains("VidyaGod"));
-        bool SawHeld = false;
-        for (const auto & E : cfg["Libraries"]["VidyaGod"])
-        {
-            if (E.value("node", std::string()) == "h_exec") SawHeld = true;
-            if (E.value("node", std::string()) == "l_exec")
-            {
-                const std::string T = E.value("title", std::string());
-                QVERIFY2(T.size() == 120 && T == std::string(120, 'T'), "over-long title truncated at emit");
-            }
-        }
-        QVERIFY2(!SawHeld, "a node with an unresolved LIBRARYITEM is held out of the share list");
+        const auto Entries = PackageCatalog::SheetEntries(cfg["ShareSheet"]);
+        QCOMPARE((int)Entries.size(), 1);
+        QCOMPARE(Entries[0].Pkg, std::string("[2] Long"));
+        QCOMPARE(Entries[0].File, std::string(120, 'T') + ".json");
         IpfsWrapper::StopNode();
     }
 
@@ -1860,9 +2045,9 @@ private slots:
                                      {"PATH", "evil.exe"}, {"PUBLISH", true}} }));
         json cfg = json{{"Settings", {{"Paths", {{"LibraryRoot", R.toStdString()}}}}}};
         PackageCatalog::PublishLibrary(cfg, &Err);
-        QVERIFY(cfg.contains("Libraries") && cfg["Libraries"].is_object());
-        QVERIFY2(cfg["Libraries"].contains("VidyaGod"), "our own library publishes");
-        QCOMPARE((int)cfg["Libraries"].size(), 1);   // ONLY VidyaGod — the _friend_ stub never entered the mint
+        std::set<std::string> Libs;
+        for (const auto & E : PackageCatalog::SheetEntries(cfg["ShareSheet"])) Libs.insert(E.Lib);
+        QCOMPARE(Libs, (std::set<std::string>{ "VidyaGod" }));   // ONLY VidyaGod — the _friend_ stub never entered the mint
         IpfsWrapper::StopNode();
     }
 
@@ -2550,15 +2735,14 @@ private slots:
         tile["LAYERS"][0]["EXEC"][0]["TILE"]["COVER"] = json{{"FILE", "cover.png"}, {"SOURCE", "QmCoverCID"}};
         writeJson(bundle + "/node.json",
                   NodeFixture::Chain("g", {NodeFixture::ContentCid("zip", "game.zip", "QmLayerCID"), tile}));
-        // A landed package folder (<pkg>/.package/): its nodes' content lives beside it, in the package dir.
-        QDir().mkpath(bundle + "/.package");
+        // A second node file of the package: its content lives beside it, in the package dir.
         { std::ofstream f((bundle + "/extra.zip").toStdString()); f << "more"; }
-        writeJson(bundle + "/.package/landed.json", NodeFixture::Chain("landed", {NodeFixture::ContentCid("zip", "extra.zip", "QmExtraCID")}));
+        writeJson(bundle + "/landed.json", NodeFixture::Chain("landed", {NodeFixture::ContentCid("zip", "extra.zip", "QmExtraCID")}));
 
         const auto all = PackageCatalog::SeedTargets(d.path().toStdString(), /*CoversOnly=*/false);
         QCOMPARE(all.at((bundle + "/game.zip").toStdString()), std::string("QmLayerCID"));
         QCOMPARE(all.at((bundle + "/cover.png").toStdString()), std::string("QmCoverCID"));   // the bug: cover was missed
-        QCOMPARE(all.at((bundle + "/extra.zip").toStdString()), std::string("QmExtraCID"));   // beside the folder
+        QCOMPARE(all.at((bundle + "/extra.zip").toStdString()), std::string("QmExtraCID"));   // beside its node file
         QCOMPARE((int)all.size(), 3);
 
         const auto covers = PackageCatalog::SeedTargets(d.path().toStdString(), /*CoversOnly=*/true);

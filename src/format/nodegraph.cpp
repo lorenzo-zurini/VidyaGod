@@ -205,8 +205,7 @@ void GatherWorkingTree(const std::filesystem::path &Root,
             if (Tree.count(Key)) continue;     // same file re-scanned (overlapping roots) → truly identical slot
         }
         Tree[Key] = std::move(Parsed[F]);
-        const std::filesystem::path Parent = Files[F].parent_path();
-        Dirs[Key] = Parent.filename() == kPackageFolderDir ? Parent.parent_path() : Parent;   // a landed package folder
+        Dirs[Key] = Files[F].parent_path();
     }
 }
 

@@ -27,7 +27,7 @@ public:
     explicit FriendSharing(AppModel & Model);
 
     // Friend library sharing (bilateral, per-(friend, library)). Seeder side: share/withdraw a named library's
-    // launchable CIDs with one friend (from config["Libraries"], produced by publishLibraries). Leecher side: ask a
+    // share sheet entries with one friend (from config["ShareSheet"], produced by publishLibraries). Leecher side: ask a
     // friend for what they share with us (replies arrive via FriendsManager::friendLibrary → stored in
     // config["FriendLibraries"][peer][lib]); install pulls a friend's game on demand (→ addGameByCid).
     void shareLibraryWithFriend(const QString & peer, const QString & lib);
@@ -44,9 +44,9 @@ public:
     // only the highest seq seen per peer and drop anything older. seq==0 (unstamped) always applies. The high-water
     // marks are in-memory/session-scoped (they reset on restart, which is safe: the sender's stamps are clock-seeded).
     void applyFriendLibrarySnapshot(const QString & peer, const QString & libsJson, quint64 seq = 0);
-    // The names of the libraries this node currently exposes (config["Libraries"] keys). Empty until publishLibraries.
+    // The names of the libraries this node currently exposes (the share sheet's libraries). Empty until publishLibraries.
     QStringList myLibraryNames() const;
-    // Re-push every active share (config["Sharing"]) into the Go layer with the CURRENT config["Libraries"] CIDs. Go's
+    // Re-push every active share (config["Sharing"]) into the Go layer with the CURRENT share sheet. Go's
     // share table is in-memory (rebuilt every launch); config["Sharing"] is the durable record. Called on startup (to
     // re-arm shares after a restart) and after a re-publish (the launchable CIDs may have moved). Without it the two
     // halves split-brain: the UI shows a friend as shared-with, but Go serves them nothing.
@@ -97,7 +97,12 @@ public:
     QStringList newPeerShareDefaults() const;
     void setNewPeerShareDefault(const QString & lib, bool on);
     void stopReceivingFromFriend(const QString & peer);
-    void dropReceivedStubs(const std::string & peer);   // remove a friend's received browse stubs (installs kept) + cancel their fetches
+    // Remove a friend's received browse stubs (installs kept) + cancel their fetches; the package dirs in Keep (what the
+    // friend still shares) stay, their files judged by the prune and the next landing.
+    //Keep: the files the snapshot names now (path → CID); their package dirs stay, and in them only the files planned
+    //for another CID, or no longer planned, are forgotten by the queue.
+    void dropReceivedStubs(const std::string & peer, const std::map<std::string, std::string> & Keep = {});
+    std::map<std::string, std::string> sharedStubFiles(const std::string & peer) const;   // the files its snapshot names → CID
     void pushPresenceDeny();                              // Settings/config PresenceDeny → Go (node-ready + on change)
     void applyNewPeerDefaults(const QString & peer);      // used by acceptPeer + the auto-accept path
     void enqueueReceivedShares(const QString & peer);     // shared node+tile CIDs → rolling queue, dest = final library path
