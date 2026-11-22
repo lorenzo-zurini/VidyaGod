@@ -43,6 +43,15 @@ def flags(build):
         if a in ("-o", "-c"): skip = a == "-o"; continue
         if a.endswith((".cpp", ".cc")) or a.startswith("-W") or a in ("-Werror", "-mno-direct-extern-access"): continue
         keep.append(a)
+    # VidyaGodFS's headers are compiled by its own target, with its own include paths and defines (fuse3 lives in
+    # /usr/include/fuse3, FUSE_USE_VERSION=31). Without them <fuse.h> found nothing — or, where the fuse2 package
+    # happens to be installed, FUSE 2's /usr/include/fuse.h, the wrong API, so the parse passed by accident.
+    # Its sources span targets (vgfs_core has no fuse3 path; the vidyagodfs helper has), so every one is merged.
+    for vgfs in (e for e in db if "/VidyaGodFS/src/" in e["file"] and e["file"].endswith(".cpp")):
+        vargs = vgfs.get("arguments") or shlex.split(vgfs["command"])
+        for i, a in enumerate(vargs):
+            if a.startswith(("-I", "-D")) and a not in keep: keep.append(a)
+            elif a == "-isystem" and i + 1 < len(vargs) and vargs[i + 1] not in keep: keep += [a, vargs[i + 1]]
     # libclang needs its own builtin headers (stddef.h & co.): the compiler that built the project is GCC
     res = subprocess.run(["clang", "-print-resource-dir"], capture_output=True, text=True).stdout.strip()
     return keep + (["-resource-dir", res] if res else []) + ["-D_FILE_OFFSET_BITS=64", "-DQT_ANNOTATE_ACCESS_SPECIFIER(x)=__attribute__((annotate(#x)))",
