@@ -6,7 +6,11 @@
 #include "uifind.h"   // Act — a press that opens a dialog answers at once
 
 #include "appmodel.h"
+#include "apppaths.h"
+#include "controllerlayout.h"
 #include "controllerservice.h"
+#include "gameoverlay.h"
+#include "layouteditor.h"
 #include "deckshell.h"
 #include "deckstyle.h"
 #include "libraryview.h"   // LibraryGameCard
@@ -87,6 +91,72 @@ json ServiceState()
     return json{{"available", S.available()}, {"unavailable", S.unavailable().toStdString()}, {"running", S.running()},
                 {"needs", Needs}, {"program", S.program().toStdString()}, {"bus", S.bus().toStdString()},
                 {"controllers", Controllers}, {"hidden", S.hiddenNodes()}, {"customLayout", !S.layout().isEmpty()}};
+}
+
+std::string LayoutsDir() { return (AppPaths::DataRoot() / "ControllerLayouts").string(); }
+
+json LayoutJson(const ControllerLayout::Layout &L)
+{
+    json Controls = json::array();
+    for (const ControllerLayout::Control &C : ControllerLayout::Controls())
+        Controls.push_back(json{{"control", C.Id}, {"label", C.Label}, {"group", C.Group}, {"does", L.summary(C.Id)}});
+    return json{{"name", L.Name}, {"description", L.Description}, {"controls", Controls}, {"profile", json::parse(L.toProfile().dump())}};
+}
+
+// What --as-is, --nothing, --pad/--key/--mouse/--overlay (+ --also-pad/--also-key/--also-mouse), --stick, --keys and
+// --speed make of a control's binding.
+ControllerLayout::Binding BindingFrom(const std::string &ControlId, const json &A)
+{
+    using namespace ControllerLayout;
+    Binding B;
+    B.Control = ControlId;
+    if (!FindControl(ControlId)) throw Command::BadArgs("no control '" + ControlId + "' — `controller layout-show Gamepad` lists them");
+    if (const std::string S = Command::Str(A, "stick", ""); !S.empty())
+    {
+        B.Mode = S;
+        B.Speed = static_cast<double>(Command::Int(A, "speed", 1000));
+        if (const std::string K = Command::Str(A, "keys", ""); !K.empty())
+        {
+            std::stringstream In(K);
+            for (std::string X; std::getline(In, X, ',');) B.Keys.push_back(X);
+        }
+        return B;
+    }
+    if (Command::Bool(A, "nothing", false)) { B.Mode = "nothing"; return B; }
+    if (Command::Bool(A, "as-is", false)) return B;
+    for (const auto &[Opt, T] : { std::pair{ "pad", Action::Type::Gamepad }, std::pair{ "key", Action::Type::Keyboard }, std::pair{ "mouse", Action::Type::Mouse } })
+        if (const std::string V = Command::Str(A, Opt, ""); !V.empty()) B.Actions.push_back({ T, V });
+    if (Command::Bool(A, "overlay", false)) B.Actions.push_back({ Action::Type::Overlay, "" });
+    for (const auto &[Opt, T] : { std::pair{ "also-pad", Action::Type::Gamepad }, std::pair{ "also-key", Action::Type::Keyboard }, std::pair{ "also-mouse", Action::Type::Mouse } })
+        if (const std::string V = Command::Str(A, Opt, ""); !V.empty()) B.Actions.push_back({ T, V });
+    if (B.Actions.empty()) throw Command::BadArgs("say what it does: --pad, --key, --mouse, --overlay, --nothing, --as-is, or --stick for a stick");
+    return B;
+}
+
+std::vector<Command::Arg> BindingArgs()
+{
+    return { Command::Opt("pad", "presses a pad button (South, East, DPadUp…)"), Command::Opt("key", "presses a key (KeyW, KeySpace…)"),
+             Command::Opt("mouse", "presses a mouse button (Left, Right, WheelUp…)"), Command::Flag("overlay", "opens the overlay"),
+             Command::Opt("also-pad", "and a pad button with it"), Command::Opt("also-key", "and a key with it"),
+             Command::Opt("also-mouse", "and a mouse button with it"), Command::Flag("nothing", "does nothing"),
+             Command::Flag("as-is", "does what the controller does"),
+             Command::Opt("stick", "a stick works as: joystick, mouse, keys, dpad", Command::Type::String, false, { "joystick", "mouse", "keys", "dpad" }),
+             Command::Opt("keys", "a stick's four keys: up,down,left,right (KeyW,KeyS,KeyA,KeyD)"),
+             Command::Opt("speed", "a stick as the mouse: pixels a second", Command::Type::Int) };
+}
+
+LayoutEditor *OpenEditor()
+{
+    for (QWidget *W : QApplication::topLevelWidgets())
+        if (auto *E = qobject_cast<LayoutEditor *>(W); E && E->isVisible()) return E;
+    return nullptr;
+}
+
+json EditorState(LayoutEditor *E)
+{
+    if (!E) return json{{"open", false}};
+    return json{{"open", true}, {"layout", LayoutJson(E->current())}, {"dirty", E->dirty()}, {"selected", E->selectedControl().toStdString()},
+                {"status", E->status().toStdString()}};
 }
 
 ControllerService::Need NeedFrom(const std::string &N)
@@ -245,6 +315,192 @@ VG_COMMANDS
             }
             return ServiceState();
         }, {} });
+
+    Command::Register({
+        "controller overlay", "the in-game overlay (the Guide button over a game): its state, and what it does",
+        "While a game VidyaGod launched runs, the controller service has InputPlumber intercept the Guide button; a press "
+        "opens this overlay and every press after it reaches VidyaGod, not the game, until it closes. --event delivers an "
+        "intercepted press as InputPlumber would (ui_guide, ui_accept, ui_down…); --game/--title give it a game without "
+        "a launch (a look at it), --no-game takes it away. --edit opens the configurator for the game.",
+        { Command::Flag("open", "open it"), Command::Flag("close", "close it"), Command::Opt("event", "an intercepted press (ui_guide, ui_accept…)"),
+          Command::Opt("game", "its game's key (without a launch)"), Command::Opt("title", "its game's title (with --game)"),
+          Command::Flag("no-game", "no game"), Command::Opt("layout", "switch the game's layout"), Command::Flag("quit", "Quit game (twice to quit)"),
+          Command::Flag("edit", "the configurator for the game") },
+        { "controller overlay", "controller overlay --game 12345 --title 'Some Game' --open", "controller overlay --event ui_down",
+          "controller overlay --layout 'Keyboard and mouse (WASD)'", "controller overlay --close" },
+        { "GameOverlay::instance", "GameOverlay::attach", "GameOverlay::setGame", "GameOverlay::clearGame", "GameOverlay::hasGame",
+          "GameOverlay::isOpen", "GameOverlay::openOverlay", "GameOverlay::closeOverlay", "GameOverlay::title", "GameOverlay::layoutName",
+          "GameOverlay::setLayout", "GameOverlay::editLayout", "GameOverlay::quitGame", "GameOverlay::quitArmed", "GameOverlay::onUiEvent",
+          "GameOverlay::onGameChanged", "GameOverlay::padPressed", "GameOverlay::padHints", "OverlayProperties", "MarkOverlayWindow",
+          "PadButtonFromUiEvent", "ControllerService::setIntercept", "ControllerService::intercept", "ControllerService::uiEvent",
+          "ControllerService::gameChanged", "ControllerService::setGameLayout", "ControllerService::gameLayout" }, Needs::Ui, false,
+        [](Command::Context &, const json &A) {
+            GameOverlay &O = GameOverlay::instance();
+            if (Command::Bool(A, "no-game", false)) O.clearGame();
+            if (const std::string G = Command::Str(A, "game", ""); !G.empty())
+                O.setGame(QString::fromStdString(Command::Str(A, "title", G)), QString::fromStdString(G), [] {});
+            if (Command::Bool(A, "open", false)) O.openOverlay();
+            if (const std::string E = Command::Str(A, "event", ""); !E.empty()) O.onUiEvent(QString::fromStdString(E), 1.0);
+            QString Err;
+            if (const std::string L = Command::Str(A, "layout", ""); !L.empty() && !O.setLayout(QString::fromStdString(L), &Err))
+                throw Command::BadArgs(Err.toStdString());
+            if (Command::Bool(A, "quit", false)) O.quitGame();
+            if (Command::Bool(A, "edit", false)) QTimer::singleShot(0, &O, [&O] { O.editLayout(); });
+            if (Command::Bool(A, "close", false)) O.closeOverlay();
+            Settle(60);
+            ControllerService &S = ControllerService::instance();
+            return json{{"open", O.isOpen()}, {"game", O.hasGame()}, {"title", O.title().toStdString()}, {"layout", O.layoutName().toStdString()},
+                        {"quitArmed", O.quitArmed()}, {"intercept", S.running() ? S.intercept() : 0u},
+                        {"gameLayout", !S.gameLayout().isEmpty()}};
+        }, {} });
+
+    Command::Register({
+        "controller layouts", "the controller layouts: VidyaGod's own, the user's, and which game uses which",
+        "VidyaGod's own are always there (Gamepad: the controller as it is). The user's are files under the data dir's "
+        "ControllerLayouts/, one per layout; games.json there says which game uses which.",
+        {}, { "controller layouts" },
+        { "ControllerLayout::Templates", "ControllerLayout::Saved", "ControllerLayout::Games" }, Needs::Config, false,
+        [](Command::Context &, const json &) {
+            json T = json::array(), Mine = json::array(), Games = json::object();
+            for (const auto &L : ControllerLayout::Templates()) T.push_back(json{{"name", L.Name}, {"description", L.Description}});
+            for (const auto &L : ControllerLayout::Saved(LayoutsDir())) Mine.push_back(json{{"name", L.Name}, {"description", L.Description}});
+            for (const auto &[K, V] : ControllerLayout::Games(LayoutsDir())) Games[K] = V;
+            return json{{"vidyagods", T}, {"yours", Mine}, {"games", Games}, {"dir", LayoutsDir()}};
+        }, {} });
+
+    Command::Register({
+        "controller layout-show", "what every control does in a controller layout, and the InputPlumber profile it makes",
+        "A control a layout does not name does what the controller does (\"As is\").",
+        { Command::Pos("name", "the layout") }, { "controller layout-show 'Keyboard and mouse (WASD)'" },
+        { "ControllerLayout::Named", "ControllerLayout::Controls", "ControllerLayout::FindControl", "ControllerLayout::Layout::summary",
+          "ControllerLayout::Layout::toProfile", "ControllerLayout::Layout::find", "ControllerLayout::KeyLabel", "ControllerLayout::GamepadLabel",
+          "ControllerLayout::MouseLabel", "ControllerLayout::TypeName" }, Needs::Config, false,
+        [](Command::Context &, const json &A) {
+            const std::string N = Command::Str(A, "name");
+            const auto L = ControllerLayout::Named(LayoutsDir(), N);
+            if (!L) throw Command::BadArgs("no layout '" + N + "' — `controller layouts` lists them");
+            return LayoutJson(*L);
+        }, {} });
+
+    {
+        std::vector<Command::Arg> Args = { Command::Pos("name", "the layout (one of yours: copy one of VidyaGod's with layout-save first)"),
+                                           Command::Pos("control", "the control (a, dpad_up, left_stick, rt, l4…)") };
+        for (Command::Arg &Ar : BindingArgs()) Args.push_back(Ar);
+        Command::Register({
+            "controller layout-bind", "change what one control does in one of your controller layouts",
+            "Only what InputPlumber can do is accepted: a trigger never presses a mouse button, a trackpad is always the "
+            "pointer, the gyro is not mapped yet. Saved at once.",
+            Args, { "controller layout-bind Mine a --key KeySpace", "controller layout-bind Mine right_stick --stick mouse --speed 1200",
+                    "controller layout-bind Mine left_stick --stick keys --keys KeyW,KeyS,KeyA,KeyD", "controller layout-bind Mine lb --mouse Right" },
+            { "ControllerLayout::Layout::set", "ControllerLayout::Check", "ControllerLayout::Save", "ControllerLayout::TypeFrom",
+              "ControllerLayout::GamepadButtons", "ControllerLayout::KeyboardKeys", "ControllerLayout::MouseButtons" }, Needs::Config, false,
+            [](Command::Context &, const json &A) {
+                const std::string N = Command::Str(A, "name");
+                auto L = ControllerLayout::Named(LayoutsDir(), N);
+                if (!L) throw Command::BadArgs("no layout '" + N + "'");
+                const ControllerLayout::Binding B = BindingFrom(Command::Str(A, "control"), A);
+                if (const std::string E = ControllerLayout::Check(B); !E.empty()) throw Command::BadArgs(B.Control + ": " + E);
+                L->set(B);
+                std::string E;
+                if (!ControllerLayout::Save(LayoutsDir(), *L, &E)) throw Command::BadArgs(E);
+                return LayoutJson(*L);
+            }, {} });
+    }
+
+    Command::Register({
+        "controller layout-save", "save a copy of a controller layout under a name of yours",
+        "From one of VidyaGod's own or one of yours. A name is a file name (no slashes, no leading dot); VidyaGod's own "
+        "names are taken.",
+        { Command::Pos("name", "the new layout's name"), Command::Opt("from", "the layout to copy", Command::Type::String, true),
+          Command::Opt("description", "what it is for") },
+        { "controller layout-save Mine --from 'Keyboard and mouse (WASD)'" },
+        { "ControllerLayout::ValidName", "ControllerLayout::Layout::toJson", "ControllerLayout::Layout::FromJson" }, Needs::Config, false,
+        [](Command::Context &, const json &A) {
+            auto L = ControllerLayout::Named(LayoutsDir(), Command::Str(A, "from"));
+            if (!L) throw Command::BadArgs("no layout '" + Command::Str(A, "from") + "'");
+            L->Name = Command::Str(A, "name");
+            if (const std::string D = Command::Str(A, "description", ""); !D.empty()) L->Description = D;
+            std::string E;
+            if (!ControllerLayout::Save(LayoutsDir(), *L, &E)) throw Command::BadArgs(E);
+            return LayoutJson(*L);
+        }, {} });
+
+    Command::Register({
+        "controller layout-remove", "delete one of your controller layouts",
+        "VidyaGod's own cannot be deleted. A game that used it plays with the controller as it is.",
+        { Command::Pos("name", "the layout") }, { "controller layout-remove Mine" },
+        { "ControllerLayout::Remove" }, Needs::Config, false,
+        [](Command::Context &, const json &A) {
+            const std::string N = Command::Str(A, "name");
+            if (!ControllerLayout::Remove(LayoutsDir(), N)) throw Command::BadArgs("no layout of yours named '" + N + "'");
+            return json{{"removed", N}};
+        }, {} });
+
+    Command::Register({
+        "controller layout-game", "the controller layout a game uses (or choose one)",
+        "By the game's key (its tile UID). While the game runs — launched by VidyaGod, with its controller service "
+        "running — the layout is on the controller; when it ends VidyaGod's is back.",
+        { Command::Opt("game", "the game's key", Command::Type::String, true), Command::Opt("layout", "use this layout"),
+          Command::Flag("clear", "the controller as it is") },
+        { "controller layout-game --game 12345", "controller layout-game --game 12345 --layout Mine", "controller layout-game --game 12345 --clear" },
+        { "ControllerLayout::ForGame", "ControllerLayout::SetForGame" }, Needs::Config, false,
+        [](Command::Context &, const json &A) {
+            const std::string G = Command::Str(A, "game");
+            if (Command::Bool(A, "clear", false)) ControllerLayout::SetForGame(LayoutsDir(), G, "");
+            else if (const std::string N = Command::Str(A, "layout", ""); !N.empty())
+            {
+                if (!ControllerLayout::Named(LayoutsDir(), N)) throw Command::BadArgs("no layout '" + N + "'");
+                ControllerLayout::SetForGame(LayoutsDir(), G, N == "Gamepad" ? "" : N);
+            }
+            const std::string Now = ControllerLayout::ForGame(LayoutsDir(), G);
+            return json{{"game", G}, {"layout", Now.empty() ? std::string("Gamepad") : Now}};
+        }, {} });
+
+    {
+        std::vector<Command::Arg> Args = { Command::Opt("game", "open it for this game (its key)"), Command::Opt("title", "the game's title"),
+                                           Command::Opt("open", "open this layout"), Command::Opt("select", "select this control"),
+                                           Command::Flag("bind", "bind the selected control (with the options below)"),
+                                           Command::Opt("save-as", "save under this name"), Command::Flag("use", "use it for the game"),
+                                           Command::Flag("try", "load it into the controller now"), Command::Flag("close", "close the editor") };
+        for (Command::Arg &Ar : BindingArgs()) Args.push_back(Ar);
+        Command::Register({
+            "controller layout-editor", "the controller layout configurator: open it, and do what its controls do",
+            "Opens the configurator (for a game, with --game), or acts on the one open: --open a layout, --select a "
+            "control, --bind it (as layout-bind's options say), --save-as, --use for the game, --try on the controller, "
+            "--close. Shows what it holds. `ui screenshot --control LayoutEditor` shows it.",
+            Args, { "controller layout-editor --game 12345 --title 'Crash Team'", "controller layout-editor --select a --bind --key KeySpace",
+                    "controller layout-editor --save-as Mine --use", "controller layout-editor --close" },
+            { "LayoutEditor::openLayout", "LayoutEditor::selectControl", "LayoutEditor::selectedControl", "LayoutEditor::bindSelected",
+              "LayoutEditor::saveAs", "LayoutEditor::useForGame", "LayoutEditor::tryNow", "LayoutEditor::status", "LayoutEditor::current",
+              "LayoutEditor::dirty", "ControllerPicture::setSelected", "ControllerPicture::selected", "ControllerPicture::hotspot",
+              "ControllerPicture::controlClicked", "ControllerPicture::sizeHint" }, Needs::Ui, false,
+            [](Command::Context &C, const json &A) {
+                LayoutEditor *E = OpenEditor();
+                if (const std::string G = Command::Str(A, "game", ""); !G.empty() || !E)
+                {
+                    if (E) E->close();
+                    E = new LayoutEditor(QString::fromStdString(LayoutsDir()), QString::fromStdString(G),
+                                         QString::fromStdString(Command::Str(A, "title", "")), C.Window);
+                    E->setAttribute(Qt::WA_DeleteOnClose);
+                    E->show();
+                    Settle(80);
+                }
+                QString Err;
+                if (const std::string N = Command::Str(A, "open", ""); !N.empty() && !E->openLayout(QString::fromStdString(N)))
+                    throw Command::BadArgs("no layout '" + N + "'");
+                if (const std::string Ctl = Command::Str(A, "select", ""); !Ctl.empty() && !E->selectControl(QString::fromStdString(Ctl)))
+                    throw Command::BadArgs("no control '" + Ctl + "'");
+                if (Command::Bool(A, "bind", false) && !E->bindSelected(BindingFrom(E->selectedControl().toStdString(), A), &Err))
+                    throw Command::BadArgs(Err.toStdString());
+                if (const std::string N = Command::Str(A, "save-as", ""); !N.empty() && !E->saveAs(QString::fromStdString(N), &Err))
+                    throw Command::BadArgs(Err.toStdString());
+                if (Command::Bool(A, "use", false) && !E->useForGame(&Err)) throw Command::BadArgs(Err.toStdString());
+                if (Command::Bool(A, "try", false) && !E->tryNow(&Err)) throw Command::BadArgs(Err.toStdString());
+                if (Command::Bool(A, "close", false)) { E->close(); Settle(40); return EditorState(nullptr); }
+                Settle(40);
+                return EditorState(E);
+            }, {} });
+    }
 
     Command::Register({
         "controller layout", "load a controller layout into the controller service",

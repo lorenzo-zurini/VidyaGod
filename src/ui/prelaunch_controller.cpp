@@ -18,10 +18,18 @@
 // choice turns with left and right as a console's settings do.
 
 #include "prelaunchwindow.h"
+
+#include "apppaths.h"
+#include "commonutils.h"
+#include "controllerlayout.h"
+#include "controllerservice.h"
+#include "gameoverlay.h"
+#include "layouteditor.h"
 #include "deckstyle.h"
 
 #include <QAbstractScrollArea>
 #include <QGridLayout>
+#include <QPushButton>
 #include <QPainter>
 #include <QPainterPath>
 #include <QRegularExpression>
@@ -117,6 +125,9 @@ void PreLaunchWindow::ArrangeForController()
     ChainRow->setParent(Right);
     Setup->addWidget(Field("Runs with"), 2, 0);
     Setup->addWidget(ChainRow, 2, 1);
+    LayoutRow->setParent(Right);
+    Setup->addWidget(Field("Controller"), 3, 0);
+    Setup->addWidget(LayoutRow, 3, 1);
     Setup->setColumnStretch(1, 1);
     RL->addLayout(Setup);
     RL->addSpacing(14 * S);
@@ -262,4 +273,40 @@ QList<PadTarget::Hint> PreLaunchWindow::padHints() const
     if (Tabs && NextTab(Tabs, 1) >= 0) Out.push_back({ Pad::Button::RB, Tabs->tabText(NextTab(Tabs, 1)) });
     if (LaunchButton && LaunchButton->isVisible() && LaunchButton->isEnabled()) Out.push_back({ Pad::Button::Start, "Play" });
     return Out;
+}
+
+// ---- The game's controller layout -----------------------------------------------------------------------------------
+
+namespace { std::string LayoutsDir() { return (AppPaths::DataRoot() / "ControllerLayouts").string(); } }
+
+QString PreLaunchWindow::LayoutKey() const { return QString::fromStdString(Face(CurrentLaunch())); }
+
+void PreLaunchWindow::RefreshLayoutRow()
+{
+    if (!LayoutNameLabel) return;
+    const std::string Name = ControllerLayout::ForGame(LayoutsDir(), LayoutKey().toStdString());
+    LayoutNameLabel->setText(Name.empty() ? tr("Gamepad (the controller as it is)") : QString::fromStdString(Name));
+}
+
+void PreLaunchWindow::EditLayout()
+{
+    LayoutEditor E(QString::fromStdString(LayoutsDir()), LayoutKey(), TitleLabel ? TitleLabel->text() : QString(), this);
+    E.exec();
+    RefreshLayoutRow();
+}
+
+void PreLaunchWindow::ApplyGameLayout(bool On)
+{
+    ControllerService &S = ControllerService::instance();
+    //The overlay's game: this one while it runs (its Quit ends it as Stop does).
+    if (On) GameOverlay::instance().setGame(TitleLabel ? TitleLabel->text() : QString(), LayoutKey(), [this] { if (KillButton->isVisible()) onKillClicked(); });
+    else GameOverlay::instance().clearGame();
+    if (!On) { if (!S.gameLayout().isEmpty()) S.setGameLayout({}); return; }
+    const std::string Name = ControllerLayout::ForGame(LayoutsDir(), LayoutKey().toStdString());
+    if (Name.empty()) return;
+    const auto L = ControllerLayout::Named(LayoutsDir(), Name);
+    if (!L) { LogWarn("PreLaunchWindow", "the controller layout '" + Name + "' this game uses is gone: the controller as it is"); return; }
+    QString Error;
+    if (!S.setGameLayout(QString::fromStdString(L->toProfile().dump()), &Error))
+        LogWarn("PreLaunchWindow", "the controller refused the layout '" + Name + "': " + Error.toStdString());
 }

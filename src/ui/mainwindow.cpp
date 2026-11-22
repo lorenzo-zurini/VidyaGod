@@ -22,6 +22,7 @@
 #include "prelaunchwindow.h"
 #include "deckshell.h"           // controller mode
 #include "controllerservice.h"   // VidyaGod's InputPlumber
+#include "gameoverlay.h"
 #include "padnav.h"             // PadRouter — controllers drive every window
 #include "commonutils.h"
 
@@ -129,6 +130,8 @@ MainWindow::MainWindow(nlohmann::ordered_json * gc, QDir * appData, QWidget * pa
     }
     if (qEnvironmentVariable("VIDYAGOD_SESSION") == QLatin1String("1"))
         ControllerService::instance().want(ControllerService::Need::Session, true);
+    //The in-game overlay: the Guide button over a game VidyaGod launched (through the controller service's intercept).
+    GameOverlay::instance().attach();
 
     //Controllers: one router for every window the app opens; Start with Back held turns controller mode on from the
     //desktop (after the press itself has been routed: queued).

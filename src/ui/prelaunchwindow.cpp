@@ -298,6 +298,21 @@ PreLaunchWindow::PreLaunchWindow(
         RV->addWidget(ChainHint);
         PickerForm->addRow(FieldLabel("Runs with"), Row);
     }
+    {
+        //The game's controller layout: its name, and the configurator to change it.
+        LayoutRow = new QWidget(ControlWidget);
+        auto *LH = new QHBoxLayout(LayoutRow);
+        LH->setContentsMargins(0, 0, 0, 0);
+        LayoutNameLabel = new QLabel(LayoutRow);
+        LayoutNameLabel->setObjectName("layoutNameLabel");
+        LayoutEditButton = new QPushButton(tr("Edit…"), LayoutRow);
+        LayoutEditButton->setObjectName("editLayoutButton");
+        LH->addWidget(LayoutNameLabel);
+        LH->addWidget(LayoutEditButton);
+        LH->addStretch(1);
+        connect(LayoutEditButton, &QPushButton::clicked, this, [this] { EditLayout(); });
+        PickerForm->addRow(FieldLabel("Controller"), LayoutRow);
+    }
 
     // ----- Tabs: Options | Add-ons | Advanced | Log -----
     Tabs = new QTabWidget(RightWidget);
@@ -502,6 +517,7 @@ PreLaunchWindow::PreLaunchWindow(
         H = std::min(H, A.height() - 80);
     }
     resize(std::max(W, 760), std::max(H, 520));
+    RefreshLayoutRow();
     //Opened inside controller mode: a screen of its own, laid out for a controller.
     if (DeckShell::On()) ArrangeForController();
 }
@@ -903,6 +919,7 @@ void PreLaunchWindow::onLaunchClicked()
 
     // Build + start the worker — native node launch via LaunchNodeId. The last launch's has finished (Launch is shown
     // only then): it goes, rather than one more thread object per launch for the dialog's life.
+    ApplyGameLayout(true);   // the game's controller layout, on the controller while it runs
     if (LaunchWorker) { LaunchWorker->wait(); delete LaunchWorker; }
     LaunchWorker = new LaunchThread();
     LaunchWorker->GlobalConfigJSON = *GlobalConfigJSON;
@@ -998,6 +1015,7 @@ void PreLaunchWindow::onProgressChanged(int value)
 
 void PreLaunchWindow::onLaunchFinished(bool success, QString errorMsg)
 {
+    ApplyGameLayout(false);
     KillButton->setEnabled(false); KillButton->setVisible(false);
     LaunchButton->setVisible(true);
     CloseButton->setEnabled(true);

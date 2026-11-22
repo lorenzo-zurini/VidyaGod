@@ -100,6 +100,12 @@ private:
     // Controller mode: the same widgets laid out as a screen of the shell's (prelaunch_controller.cpp). Called once,
     // at the end of construction, when the window opens inside controller mode.
     void ArrangeForController();
+    //The game's controller layout (Controller row): what it is, its editor, and putting it on the controller while
+    //the game runs (prelaunch_controller.cpp).
+    void RefreshLayoutRow();
+    void EditLayout();
+    void ApplyGameLayout(bool On);
+    QString LayoutKey() const;
     bool    DeckLayout = false;     // laid out for a controller
     double  DeckScale  = 1.0;       // its sizes' scale (a Deck's 800 px high screen is 1)
     QPixmap DeckWash;               // the cover, tiny and in two tones, painted behind the screen
@@ -186,6 +192,9 @@ private:
     const NodeIndex*        Index            = nullptr;   // IndexOwned.get()
     std::vector<std::string> GroupNodeIds;
     std::string              FaceUid;
+    QWidget                 *LayoutRow = nullptr;          // "Controller": the game's layout and its editor
+    QLabel                  *LayoutNameLabel = nullptr;
+    QPushButton             *LayoutEditButton = nullptr;
     std::string              TileGraft;     // the graft presenting FaceUid ("" for a variant's tile): always applied
     std::string              RowGraft;      // the chosen row is a graft that is a version: applied (on LaunchNodeId, its base)
     std::string             LaunchNodeId;   // current variant's node id

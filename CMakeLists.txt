@@ -330,6 +330,9 @@ set(SHARED_SOURCES
     src/ui/padinput.h
     src/ui/padinput.cpp
     src/ui/controllerservice.cpp
+    src/ui/controllerlayout.cpp
+    src/ui/layouteditor.cpp
+    src/ui/gameoverlay.cpp
     src/ui/padnav.h
     src/ui/padnav.cpp
     src/ui/osk.h
@@ -712,6 +715,15 @@ target_link_libraries(mock_inputplumber PRIVATE Qt6::Core Qt6::DBus)
 add_gui_test(test_controllerservice)
 add_dependencies(test_controllerservice mock_inputplumber)
 add_dependencies(test_controllerservice VidyaGod)
+# Controller layouts and their configurator; every layout VidyaGod can make is checked by InputPlumber's own code
+# (`vidyagod-inputplumber profile check`, offline, in a sandbox with no devices).
+add_gui_test(test_layouts)
+add_dependencies(test_layouts inputplumber_build)
+target_compile_definitions(test_layouts PRIVATE VG_INPUTPLUMBER="${VG_INPUTPLUMBER}")
+# The in-game overlay, driven through the mock's intercepted presses.
+add_gui_test(test_overlay)
+add_dependencies(test_overlay mock_inputplumber)
+target_compile_definitions(test_overlay PRIVATE MOCK_INPUTPLUMBER="$<TARGET_FILE:mock_inputplumber>")
 target_compile_definitions(test_controllerservice PRIVATE MOCK_INPUTPLUMBER="$<TARGET_FILE:mock_inputplumber>" VIDYAGOD_BIN="$<TARGET_FILE:VidyaGod>")
 add_gui_test(test_commands)
 # The friends test starts the embedded node to exercise the real C ABI; keep it hermetic (no swarm/DHT). The offline

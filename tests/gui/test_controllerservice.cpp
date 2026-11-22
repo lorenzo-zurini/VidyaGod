@@ -171,6 +171,35 @@ private slots:
         QVERIFY2(Error.contains(QLatin1String("not a DeviceProfile")), qPrintable(Error));
     }
 
+    // A game's layout goes over VidyaGod's while it is set; VidyaGod's waits under it (a change to it shows when the
+    // game's comes off); "" is InputPlumber's own default profile, from its device configurations. Teeth: the game's
+    // not loaded, VidyaGod's loaded over the game's, not restored, or the default never loaded.
+    void a_games_layout_goes_over_and_comes_off()
+    {
+        PrivateBus Bus;
+        QTemporaryDir Data;
+        QVERIFY(QDir().mkpath(Data.filePath(QStringLiteral("inputplumber/profiles"))));
+        QFile D(Data.filePath(QStringLiteral("inputplumber/profiles/default.yaml")));
+        QVERIFY(D.open(QIODevice::WriteOnly));
+        D.write("version: 1\nkind: DeviceProfile\nname: Default\nmapping: []\n");
+        D.close();
+        UseMock(Bus, QStringLiteral("/dev/hidraw-test3"));
+        S.setDataDir(Data.path());
+        QVERIFY(S.loadLayout(QString::fromLatin1(Layout)));
+        S.want(ControllerService::Need::ControllerMode, true);
+        QTRY_VERIFY_WITH_TIMEOUT(S.running(), 10000);
+        QTRY_COMPARE_WITH_TIMEOUT(S.devices().value(0).Profile, QStringLiteral("Trackpad Mouse"), 5000);
+        QVERIFY(S.setGameLayout(QStringLiteral("{\"version\":1,\"kind\":\"DeviceProfile\",\"name\":\"Game Keys\",\"mapping\":[]}")));
+        QCOMPARE(S.devices().value(0).Profile, QStringLiteral("Game Keys"));
+        QVERIFY(S.loadLayout(QStringLiteral("version: 1\nkind: DeviceProfile\nname: Menu Pad\nmapping: []\n")));
+        QCOMPARE(S.devices().value(0).Profile, QStringLiteral("Game Keys"));   // the game's stays on
+        QVERIFY(S.setGameLayout({}));
+        QCOMPARE(S.devices().value(0).Profile, QStringLiteral("Menu Pad"));
+        QVERIFY(S.loadLayout({}));
+        QCOMPARE(S.devices().value(0).Profile, QStringLiteral("Default from default.yaml"));
+        S.setDataDir({});
+    }
+
     // A harness running the real app (these tests, cli_sweep, a scripted drive) sets VIDYAGOD_NO_CONTROLLER_SERVICE=1
     // and the app names no InputPlumber: with every device managed it takes ANY gamepad, the machine's own included (it
     // once took this PC's own pad through cli_sweep). Run safely: the app is a hard link in a folder of its own, beside

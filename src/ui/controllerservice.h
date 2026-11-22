@@ -73,6 +73,15 @@ public:
     // "" = InputPlumber's own default. False, with Error, when a controller refuses it.
     bool loadLayout(const QString &Yaml, QString *Error = nullptr);
     QString layout() const { return Layout; }
+    // A game's layout, over the one above while it is set (a game VidyaGod launched is running); "" lets it go and
+    // the layout above is back. False, with Error, when a controller refuses it.
+    bool setGameLayout(const QString &Yaml, QString *Error = nullptr);
+    QString gameLayout() const { return GameLayout; }
+
+    // InputPlumber's intercept on every owned controller: 0 nothing; 1 only Guide (which then switches it to 2 on its
+    // own); 2 everything — the game gets no input, VidyaGod gets it all as uiEvent. The overlay's: 1 while a game runs.
+    bool setIntercept(uint Mode, QString *Error = nullptr);
+    uint intercept() const;   // the first controller's (0 when none)
 
     // The bus name InputPlumber serves (also the system service's).
     static constexpr const char *BusName = "org.shadowblip.InputPlumber";
@@ -82,9 +91,12 @@ public:
 
 signals:
     void changed();   // started, stopped, or a controller came or went
+    void gameChanged(bool Running);                     // a game VidyaGod launched began, or the last one ended
+    void uiEvent(const QString &Event, double Value);    // an intercepted input: "ui_guide", "ui_accept", … (1 down, 0 up)
 
 private slots:
     void onObjectsChanged();     // InputPlumber's ObjectManager: a controller came or went
+    void onInputEvent(const QString &Event, double Value);   // InputPlumber's DBusDevice: an intercepted input
 
 private:
     ControllerService();
@@ -93,10 +105,11 @@ private:
     void start();
     void stop();
     void onRegistered();         // InputPlumber took its bus name
-    void applyLayout();          // the layout to every owned controller
+    void applyLayout();          // the layout in force (the game's, else VidyaGod's) to every owned controller
+    bool applyTo(const QString &Yaml, QString *Error);   // one layout to every owned controller ("" = InputPlumber's default)
     QDBusConnection connection() const;
 
-    QString Program, Bus = QStringLiteral("session"), DataDir, Layout;
+    QString Program, Bus = QStringLiteral("session"), DataDir, Layout, GameLayout;
     std::uint8_t Needs = 0;
     QProcess *Proc = nullptr;
     bool Answering = false;

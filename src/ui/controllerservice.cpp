@@ -128,13 +128,16 @@ void ControllerService::want(Need N, bool On)
     const std::uint8_t Bit = static_cast<std::uint8_t>(N);
     const std::uint8_t Was = Needs;
     Needs = On ? (Needs | Bit) : (Needs & ~Bit);
-    if (Needs != Was) update();
+    if (Needs == Was) return;
+    update();
+    if (N == Need::Game) emit gameChanged(wants(Need::Game));
 }
 
 void ControllerService::reset()
 {
     Needs = 0;
     Layout.clear();
+    GameLayout.clear();
     update();
 }
 
@@ -224,6 +227,9 @@ void ControllerService::start()
                  QStringLiteral("InterfacesAdded"), this, SLOT(onObjectsChanged()));
     Conn.connect(QString::fromLatin1(BusName), QString::fromLatin1(Root), QStringLiteral("org.freedesktop.DBus.ObjectManager"),
                  QStringLiteral("InterfacesRemoved"), this, SLOT(onObjectsChanged()));
+    //What intercept sends VidyaGod: every controller's DBusDevice target (any path).
+    Conn.connect(QString::fromLatin1(BusName), QString(), QStringLiteral("org.shadowblip.Input.DBusDevice"),
+                 QStringLiteral("InputEvent"), this, SLOT(onInputEvent(QString,double)));
 
     if (!GameWatch)
     {
@@ -254,9 +260,11 @@ void ControllerService::stop()
     P->terminate();
     if (!P->waitForFinished(3000)) { P->kill(); P->waitForFinished(1000); }
     P->deleteLater();
+    const bool HadGame = wants(Need::Game);
     Needs &= ~static_cast<std::uint8_t>(Need::Game);
     refreshHidden();
     emit changed();
+    if (HadGame) emit gameChanged(false);
 }
 
 void ControllerService::onRegistered()
@@ -272,6 +280,32 @@ void ControllerService::onRegistered()
     applyLayout();
     emit changed();
     update();
+}
+
+void ControllerService::onInputEvent(const QString &Event, double Value) { emit uiEvent(Event, Value); }
+
+bool ControllerService::setIntercept(uint Mode, QString *Error)
+{
+    for (const Device &D : devices())
+    {
+        QDBusInterface Props(QString::fromLatin1(BusName), D.Path, QString::fromLatin1(PropsIface), connection());
+        const QDBusMessage R = Props.call(QStringLiteral("Set"), QString::fromLatin1(DeviceIface), QStringLiteral("InterceptMode"),
+                                          QVariant::fromValue(QDBusVariant(QVariant::fromValue(Mode))));
+        if (R.type() == QDBusMessage::ErrorMessage)
+        {
+            if (Error) *Error = D.Name + QStringLiteral(": ") + R.errorMessage();
+            return false;
+        }
+    }
+    return true;
+}
+
+uint ControllerService::intercept() const
+{
+    const QList<Device> D = devices();
+    if (D.isEmpty()) return 0;
+    QDBusInterface Dev(QString::fromLatin1(BusName), D[0].Path, QString::fromLatin1(DeviceIface), connection());
+    return Dev.property("InterceptMode").toUInt();
 }
 
 void ControllerService::onObjectsChanged()
@@ -324,11 +358,27 @@ QStringList ControllerService::sourceNodes() const
 bool ControllerService::loadLayout(const QString &Yaml, QString *Error)
 {
     Layout = Yaml;
-    if (!Answering) return true;   // loaded when it comes up
+    if (!Answering || !GameLayout.isEmpty()) return true;   // loaded when it comes up, or when the game's is let go
+    return applyTo(Layout, Error);
+}
+
+bool ControllerService::setGameLayout(const QString &Yaml, QString *Error)
+{
+    GameLayout = Yaml;
+    if (!Answering) return true;
+    return applyTo(GameLayout.isEmpty() ? Layout : GameLayout, Error);
+}
+
+bool ControllerService::applyTo(const QString &Yaml, QString *Error)
+{
+    //"" is InputPlumber's own default profile (bundled with its device configurations); without one, nothing to load.
+    const QString Default = DataDir.isEmpty() ? QString() : DataDir + QStringLiteral("/inputplumber/profiles/default.yaml");
+    if (Yaml.isEmpty() && (Default.isEmpty() || !QFileInfo::exists(Default))) { emit changed(); return true; }
     for (const Device &D : devices())
     {
         QDBusInterface Dev(QString::fromLatin1(BusName), D.Path, QString::fromLatin1(DeviceIface), connection());
-        const QDBusMessage R = Yaml.isEmpty() ? QDBusMessage() : Dev.call(QStringLiteral("LoadProfileFromYaml"), Yaml);
+        const QDBusMessage R = Yaml.isEmpty() ? Dev.call(QStringLiteral("LoadProfilePath"), Default)
+                                              : Dev.call(QStringLiteral("LoadProfileFromYaml"), Yaml);
         if (R.type() == QDBusMessage::ErrorMessage)
         {
             if (Error) *Error = D.Name + QStringLiteral(": ") + R.errorMessage();
@@ -341,7 +391,8 @@ bool ControllerService::loadLayout(const QString &Yaml, QString *Error)
 
 void ControllerService::applyLayout()
 {
-    if (Layout.isEmpty()) return;
+    const QString &InForce = GameLayout.isEmpty() ? Layout : GameLayout;
+    if (InForce.isEmpty()) return;   // nothing chosen: InputPlumber's own, as it came up
     QString Error;
-    if (!loadLayout(Layout, &Error)) LogWarn("ControllerService", "layout refused: " + Error.toStdString());
+    if (!applyTo(InForce, &Error)) LogWarn("ControllerService", "layout refused: " + Error.toStdString());
 }
