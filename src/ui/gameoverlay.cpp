@@ -7,7 +7,9 @@
 #include "layouteditor.h"
 #include "padinput.h"
 
+#include <QCheckBox>
 #include <QComboBox>
+#include <QLineEdit>
 #include <QDateTime>
 #include <QDir>
 #include <QFile>
@@ -118,6 +120,21 @@ GameOverlay::GameOverlay() : QWidget(nullptr, Qt::Window | Qt::FramelessWindowHi
     LayoutRow->addWidget(Layouts, 1);
     LayoutRow->addWidget(EditButton);
     P->addLayout(LayoutRow);
+    //A keyboard for the game: the field opens VidyaGod's on-screen keyboard (as every text field does with A), Type sends
+    //it to the game as key presses.
+    auto *TypeRow = new QHBoxLayout;
+    TypeEdit = new QLineEdit(PanelW);
+    TypeEdit->setObjectName(QStringLiteral("overlayTypeText"));
+    TypeEdit->setPlaceholderText(tr("Type into the game…"));
+    TypeEnter = new QCheckBox(tr("and press Enter"), PanelW);
+    TypeEnter->setObjectName(QStringLiteral("overlayTypeEnter"));
+    TypeEnter->setChecked(true);
+    TypeButton = new QPushButton(tr("Type"), PanelW);
+    TypeButton->setObjectName(QStringLiteral("overlayType"));
+    TypeRow->addWidget(TypeEdit, 1);
+    TypeRow->addWidget(TypeEnter);
+    TypeRow->addWidget(TypeButton);
+    P->addLayout(TypeRow);
     QuitButton = new QPushButton(tr("Quit game"), PanelW);
     QuitButton->setObjectName(QStringLiteral("quitGame"));
     P->addWidget(QuitButton);
@@ -142,12 +159,19 @@ GameOverlay::GameOverlay() : QWidget(nullptr, Qt::Window | Qt::FramelessWindowHi
         "#gameOverlay QPushButton:focus { background: %3; color: %4; }"
         "#gameOverlay QPushButton#quitGame:focus { background: %5; color: %4; }"
         "#gameOverlay QComboBox { background: %2; color: %1; border: 3px solid transparent; border-radius: 20px; padding: 6px 18px; font-size: 18px; }"
-        "#gameOverlay QComboBox:focus { border-color: %3; }")
+        "#gameOverlay QComboBox:focus { border-color: %3; }"
+        "#gameOverlay QLineEdit { background: %2; color: %1; border: 3px solid transparent; border-radius: 20px; padding: 6px 18px; font-size: 18px; }"
+        "#gameOverlay QLineEdit:focus { border-color: %3; }"
+        "#gameOverlay QCheckBox { color: %1; font-size: 18px; }")
         .arg(Text.name(), Panel.name(), Lime.name(), Ink.name(), Bad.name(), Dim.name()));
 
     connect(Resume, &QPushButton::clicked, this, &GameOverlay::closeOverlay);
     connect(EditButton, &QPushButton::clicked, this, &GameOverlay::editLayout);
     connect(QuitButton, &QPushButton::clicked, this, &GameOverlay::quitGame);
+    connect(TypeButton, &QPushButton::clicked, this, [this] {
+        QString E;
+        if (!typeIntoGame(TypeEdit->text(), &E)) Battery->setText(E);
+    });
     connect(Layouts, &QComboBox::currentIndexChanged, this, [this](int) {
         if (Layouts->signalsBlocked()) return;
         QString E;
@@ -210,6 +234,8 @@ void GameOverlay::refresh()
     Layouts->setCurrentIndex(std::max(0, Layouts->findData(Chosen.empty() ? QStringLiteral("Gamepad") : QString::fromStdString(Chosen))));
     Layouts->blockSignals(false);
     Layouts->setEnabled(R);
+    TypeEdit->setEnabled(R);
+    TypeButton->setEnabled(R);
     EditButton->setEnabled(R);
     QuitButton->setEnabled(R);
 }
@@ -249,6 +275,17 @@ void GameOverlay::quitGame()
     }
     if (QuitGame) QuitGame();
     closeOverlay();
+}
+
+bool GameOverlay::typeIntoGame(const QString &Text, QString *Error)
+{
+    if (!hasGame()) { if (Error) *Error = tr("No game is running"); return false; }
+    if (Text.isEmpty() && !TypeEnter->isChecked()) return true;
+    //Back to the game first: the keys go to whatever has the keyboard.
+    closeOverlay();
+    if (!ControllerService::instance().typeText(TypeEnter->isChecked() ? Text + QLatin1Char('\n') : Text, Error)) return false;
+    TypeEdit->clear();
+    return true;
 }
 
 void GameOverlay::openOverlay()

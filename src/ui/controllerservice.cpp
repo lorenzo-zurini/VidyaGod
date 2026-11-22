@@ -396,3 +396,52 @@ void ControllerService::applyLayout()
     QString Error;
     if (!applyTo(InForce, &Error)) LogWarn("ControllerService", "layout refused: " + Error.toStdString());
 }
+
+KeyStroke KeyStrokeFor(QChar C)
+{
+    const char16_t U = C.unicode();
+    if (U >= 'a' && U <= 'z') return { QStringLiteral("Key") + QChar(U - 'a' + 'A'), false };
+    if (U >= 'A' && U <= 'Z') return { QStringLiteral("Key") + C, true };
+    if (U >= '0' && U <= '9') return { QStringLiteral("Key") + C, false };
+    static const std::pair<char16_t, KeyStroke> Map[] = {
+        { ' ', { QStringLiteral("KeySpace"), false } }, { '\n', { QStringLiteral("KeyEnter"), false } }, { '\b', { QStringLiteral("KeyBackspace"), false } },
+        { '\t', { QStringLiteral("KeyTab"), false } }, { '.', { QStringLiteral("KeyDot"), false } }, { ',', { QStringLiteral("KeyComma"), false } },
+        { '-', { QStringLiteral("KeyMinus"), false } }, { '=', { QStringLiteral("KeyEqual"), false } }, { '/', { QStringLiteral("KeySlash"), false } },
+        { ';', { QStringLiteral("KeySemicolon"), false } }, { '\'', { QStringLiteral("KeyApostrophe"), false } }, { '[', { QStringLiteral("KeyLeftBrace"), false } },
+        { ']', { QStringLiteral("KeyRightBrace"), false } }, { '\\', { QStringLiteral("KeyBackslash"), false } }, { '`', { QStringLiteral("KeyGrave"), false } },
+        { '!', { QStringLiteral("Key1"), true } }, { '@', { QStringLiteral("Key2"), true } }, { '#', { QStringLiteral("Key3"), true } },
+        { '$', { QStringLiteral("Key4"), true } }, { '%', { QStringLiteral("Key5"), true } }, { '^', { QStringLiteral("Key6"), true } },
+        { '&', { QStringLiteral("Key7"), true } }, { '*', { QStringLiteral("Key8"), true } }, { '(', { QStringLiteral("Key9"), true } },
+        { ')', { QStringLiteral("Key0"), true } }, { '_', { QStringLiteral("KeyMinus"), true } }, { '+', { QStringLiteral("KeyEqual"), true } },
+        { ':', { QStringLiteral("KeySemicolon"), true } }, { '"', { QStringLiteral("KeyApostrophe"), true } }, { '<', { QStringLiteral("KeyComma"), true } },
+        { '>', { QStringLiteral("KeyDot"), true } }, { '?', { QStringLiteral("KeySlash"), true } }, { '{', { QStringLiteral("KeyLeftBrace"), true } },
+        { '}', { QStringLiteral("KeyRightBrace"), true } }, { '|', { QStringLiteral("KeyBackslash"), true } }, { '~', { QStringLiteral("KeyGrave"), true } },
+    };
+    for (const auto &[Ch, K] : Map) if (U == Ch) return K;
+    return {};
+}
+
+bool ControllerService::typeText(const QString &Text, QString *Error)
+{
+    const QList<Device> D = devices();
+    if (D.isEmpty()) { if (Error) *Error = QStringLiteral("no controller to type with (the controller service owns none)"); return false; }
+    QDBusInterface Dev(QString::fromLatin1(BusName), D[0].Path, QString::fromLatin1(DeviceIface), connection());
+    QString Skipped;
+    auto Send = [&](const QString &Key, bool Down) {
+        const QDBusMessage R = Dev.call(QStringLiteral("SendEvent"), QStringLiteral("Keyboard:") + Key, QVariant::fromValue(QDBusVariant(Down)));
+        return R.type() != QDBusMessage::ErrorMessage;
+    };
+    for (const QChar C : Text)
+    {
+        const KeyStroke K = KeyStrokeFor(C);
+        if (K.Key.isEmpty()) { Skipped += C; continue; }
+        bool Ok = true;
+        if (K.Shift) Ok &= Send(QStringLiteral("KeyLeftShift"), true);
+        Ok &= Send(K.Key, true);
+        Ok &= Send(K.Key, false);
+        if (K.Shift) Ok &= Send(QStringLiteral("KeyLeftShift"), false);
+        if (!Ok) { if (Error) *Error = D[0].Name + QStringLiteral(" refused the keys"); return false; }
+    }
+    if (!Skipped.isEmpty() && Error) *Error = QStringLiteral("not on a US keyboard, skipped: ") + Skipped;
+    return true;
+}

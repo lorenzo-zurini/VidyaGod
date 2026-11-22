@@ -324,7 +324,7 @@ VG_COMMANDS
         "a launch (a look at it), --no-game takes it away. --edit opens the configurator for the game.",
         { Command::Flag("open", "open it"), Command::Flag("close", "close it"), Command::Opt("event", "an intercepted press (ui_guide, ui_accept…)"),
           Command::Opt("game", "its game's key (without a launch)"), Command::Opt("title", "its game's title (with --game)"),
-          Command::Flag("no-game", "no game"), Command::Opt("layout", "switch the game's layout"), Command::Flag("quit", "Quit game (twice to quit)"),
+          Command::Flag("no-game", "no game"), Command::Opt("layout", "switch the game's layout"), Command::Flag("quit", "Quit game (twice to quit)"), Command::Opt("type", "type this into the game (and Enter)"),
           Command::Flag("edit", "the configurator for the game") },
         { "controller overlay", "controller overlay --game 12345 --title 'Some Game' --open", "controller overlay --event ui_down",
           "controller overlay --layout 'Keyboard and mouse (WASD)'", "controller overlay --close" },
@@ -332,7 +332,7 @@ VG_COMMANDS
           "GameOverlay::isOpen", "GameOverlay::openOverlay", "GameOverlay::closeOverlay", "GameOverlay::title", "GameOverlay::layoutName",
           "GameOverlay::setLayout", "GameOverlay::editLayout", "GameOverlay::quitGame", "GameOverlay::quitArmed", "GameOverlay::onUiEvent",
           "GameOverlay::onGameChanged", "GameOverlay::padPressed", "GameOverlay::padHints", "OverlayProperties", "MarkOverlayWindow",
-          "PadButtonFromUiEvent", "ControllerService::setIntercept", "ControllerService::intercept", "ControllerService::uiEvent",
+          "PadButtonFromUiEvent", "GameOverlay::typeIntoGame", "ControllerService::typeText", "KeyStrokeFor", "ControllerService::setIntercept", "ControllerService::intercept", "ControllerService::uiEvent",
           "ControllerService::gameChanged", "ControllerService::setGameLayout", "ControllerService::gameLayout" }, Needs::Ui, false,
         [](Command::Context &, const json &A) {
             GameOverlay &O = GameOverlay::instance();
@@ -345,6 +345,8 @@ VG_COMMANDS
             if (const std::string L = Command::Str(A, "layout", ""); !L.empty() && !O.setLayout(QString::fromStdString(L), &Err))
                 throw Command::BadArgs(Err.toStdString());
             if (Command::Bool(A, "quit", false)) O.quitGame();
+            if (const std::string T = Command::Str(A, "type", ""); !T.empty() && !O.typeIntoGame(QString::fromStdString(T), &Err))
+                throw Command::BadArgs(Err.toStdString());
             if (Command::Bool(A, "edit", false)) QTimer::singleShot(0, &O, [&O] { O.editLayout(); });
             if (Command::Bool(A, "close", false)) O.closeOverlay();
             Settle(60);

@@ -83,6 +83,11 @@ public:
     bool setIntercept(uint Mode, QString *Error = nullptr);
     uint intercept() const;   // the first controller's (0 when none)
 
+    // Type into whatever has the keyboard (a game): text as key presses on InputPlumber's virtual keyboard (SendEvent),
+    // with Shift for capitals and the shifted symbols of a US layout; "\n" is Enter, "\b" Backspace. Characters a US
+    // keyboard cannot type are skipped (Error names them). False when no controller takes the keys.
+    bool typeText(const QString &Text, QString *Error = nullptr);
+
     // The bus name InputPlumber serves (also the system service's).
     static constexpr const char *BusName = "org.shadowblip.InputPlumber";
 
@@ -126,3 +131,8 @@ private:
 bool IsVirtualInputNode(const QString &Node, const QString &SysRoot = QStringLiteral("/sys"));
 // The joystick nodes (/dev/input/jsN) of the same input device as an event node (/dev/input/eventN), under SysRoot.
 QStringList JoystickSiblings(const QString &EventNode, const QString &SysRoot = QStringLiteral("/sys"));
+
+// The key (InputPlumber's name, "KeyA") and whether Shift goes with it, for one character on a US keyboard; empty when
+// there is none ("é").
+struct KeyStroke { QString Key; bool Shift = false; };
+KeyStroke KeyStrokeFor(QChar C);

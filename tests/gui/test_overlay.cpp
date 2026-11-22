@@ -6,6 +6,9 @@
 #include <QComboBox>
 #include <QDBusConnection>
 #include <QDBusInterface>
+#include <QDBusReply>
+#include <QDBusVariant>
+#include <QLineEdit>
 #include <QProcess>
 #include <QPushButton>
 #include <QTemporaryDir>
@@ -151,6 +154,34 @@ private slots:
 
         S.want(ControllerService::Need::Game, false);
         QTRY_COMPARE_WITH_TIMEOUT(S.intercept(), 0u, 3000);
+    }
+
+    // Typing into the game from the overlay: back to the game, the text and Enter on its keyboard, the field emptied;
+    // without a game, nothing is typed. Teeth: Enter not added, the overlay left open over the game.
+    void the_overlay_types_into_the_game()
+    {
+        PrivateBus Bus;
+        qputenv("MOCK_IP_SOURCES", "/dev/hidraw-test8");
+        qputenv("MOCK_IP_HOTPLUG_MS", "0");
+        S.setBus(Bus.Address);
+        S.setProgram(QStringLiteral(MOCK_INPUTPLUMBER));
+        S.want(ControllerService::Need::ControllerMode, true);
+        QTRY_VERIFY_WITH_TIMEOUT(S.running(), 10000);
+        QString Err;
+        QVERIFY(!O.typeIntoGame(QStringLiteral("ok"), &Err));   // no game
+        O.setGame(QStringLiteral("Chatty"), QStringLiteral("g3"), [] {});
+        O.openOverlay();
+        auto *Field = O.findChild<QLineEdit *>(QStringLiteral("overlayTypeText"));
+        Field->setText(QStringLiteral("gg"));
+        O.findChild<QPushButton *>(QStringLiteral("overlayType"))->click();
+        QVERIFY(!O.isOpen());
+        QVERIFY(Field->text().isEmpty());
+        QDBusConnection C = QDBusConnection::connectToBus(Bus.Address, QStringLiteral("test-mock-control"));
+        QDBusInterface P(QStringLiteral("org.shadowblip.InputPlumber"), QStringLiteral("/org/shadowblip/InputPlumber/CompositeDevice0"),
+                         QStringLiteral("org.freedesktop.DBus.Properties"), C);
+        const QDBusReply<QDBusVariant> R = P.call(QStringLiteral("Get"), QStringLiteral("org.shadowblip.Input.CompositeDevice"), QStringLiteral("Sent"));
+        QCOMPARE(R.value().variant().toStringList(), (QStringList{ "Keyboard:KeyG+", "Keyboard:KeyG-", "Keyboard:KeyG+", "Keyboard:KeyG-",
+                                                                   "Keyboard:KeyEnter+", "Keyboard:KeyEnter-" }));
     }
 
     // Without a game (no intercept, so no Guide reaches it from InputPlumber; opened by hand, as `controller overlay

@@ -10,6 +10,7 @@
 // /org/vidyagod/MockControl emits an intercepted input as InputPlumber's DBusDevice does.
 #include <QCoreApplication>
 #include <QDBusConnection>
+#include <QDBusVariant>
 #include <QDBusContext>
 #include <QDBusError>
 #include <QDBusMessage>
@@ -40,7 +41,9 @@ class Device : public QObject, protected QDBusContext
     Q_PROPERTY(QString ProfileName READ profileName)
     Q_PROPERTY(QStringList SourceDevicePaths READ sources)
     Q_PROPERTY(uint InterceptMode READ intercept WRITE setIntercept)
+    Q_PROPERTY(QStringList Sent READ sent)
 public:
+    QStringList sent() const { return SentEvents; }
     uint intercept() const { return Intercept; }
     void setIntercept(uint M) { Intercept = M; }
     Device(QString N, QStringList S) : Nm(std::move(N)), Src(std::move(S)) {}
@@ -61,10 +64,13 @@ public slots:
         Profile = (M.captured(1).isEmpty() ? M.captured(2) : M.captured(1)).trimmed();
     }
     void LoadProfilePath(const QString &Path) { Profile = QStringLiteral("Default from ") + QFileInfo(Path).fileName(); }
+    // What InputPlumber's SendEvent writes to its targets; recorded as "Keyboard:KeyH+" (down) / "-" (up) for a test.
+    void SendEvent(const QString &Event, const QDBusVariant &Value) { SentEvents << Event + (Value.variant().toBool() ? QLatin1Char('+') : QLatin1Char('-')); }
 private:
     QString Nm, Profile = QStringLiteral("Default");
 public:
     uint Intercept = 0;
+    QStringList SentEvents;
 private:
     QStringList Src;
 };

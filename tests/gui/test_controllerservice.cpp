@@ -200,6 +200,33 @@ private slots:
         S.setDataDir({});
     }
 
+    // Typing into a game: each character a key on InputPlumber's virtual keyboard, Shift with capitals and shifted
+    // symbols (a US layout), "\n" Enter; a character a US keyboard cannot type is skipped and named. Teeth: no Shift, a
+    // key never released, Enter missing, a skipped character not reported.
+    void typing_reaches_the_games_keyboard()
+    {
+        QCOMPARE(KeyStrokeFor(QLatin1Char('a')).Key, QStringLiteral("KeyA"));
+        QVERIFY(KeyStrokeFor(QLatin1Char('Q')).Shift);
+        QCOMPARE(KeyStrokeFor(QLatin1Char('?')).Key, QStringLiteral("KeySlash"));
+        QVERIFY(KeyStrokeFor(QLatin1Char('?')).Shift);
+        QVERIFY(!KeyStrokeFor(QLatin1Char('/')).Shift);
+        QVERIFY(KeyStrokeFor(QChar(0xe9)).Key.isEmpty());
+        PrivateBus Bus;
+        UseMock(Bus, QStringLiteral("/dev/hidraw-test4"));
+        QString Err;
+        QVERIFY(!S.typeText(QStringLiteral("x"), &Err));   // not running: no controller to type with
+        S.want(ControllerService::Need::ControllerMode, true);
+        QTRY_VERIFY_WITH_TIMEOUT(S.running(), 10000);
+        QVERIFY(S.typeText(QStringLiteral("Hi!\n"), &Err));
+        const QStringList Want = { "Keyboard:KeyLeftShift+", "Keyboard:KeyH+", "Keyboard:KeyH-", "Keyboard:KeyLeftShift-", "Keyboard:KeyI+",
+                                   "Keyboard:KeyI-", "Keyboard:KeyLeftShift+", "Keyboard:Key1+", "Keyboard:Key1-", "Keyboard:KeyLeftShift-",
+                                   "Keyboard:KeyEnter+", "Keyboard:KeyEnter-" };
+        QCOMPARE(Prop(Bus.Address, Root + QStringLiteral("/CompositeDevice0"), QStringLiteral("org.shadowblip.Input.CompositeDevice"), QStringLiteral("Sent")).toStringList(), Want);
+        Err.clear();
+        QVERIFY(S.typeText(QStringLiteral("caf\u00e9"), &Err));
+        QVERIFY2(Err.contains(QChar(0xe9)), qPrintable(Err));
+    }
+
     // A harness running the real app (these tests, cli_sweep, a scripted drive) sets VIDYAGOD_NO_CONTROLLER_SERVICE=1
     // and the app names no InputPlumber: with every device managed it takes ANY gamepad, the machine's own included (it
     // once took this PC's own pad through cli_sweep). Run safely: the app is a hard link in a folder of its own, beside

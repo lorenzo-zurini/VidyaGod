@@ -9,7 +9,9 @@
 #include <utility>
 #include <vector>
 
+class QCheckBox;
 class QComboBox;
+class QLineEdit;
 class QLabel;
 class QPushButton;
 class QTimer;
@@ -56,6 +58,9 @@ public:
     bool setLayout(const QString &Name, QString *Error = nullptr);   // switch the game's layout, live
     void editLayout();            // the configurator, for the game
     void quitGame();              // the first press arms, the second quits
+    // Type into the game (its keyboard: InputPlumber's virtual one), then back to it. Enter after it when asked (the
+    // overlay's "and press Enter", on by default: a chat line, a name).
+    bool typeIntoGame(const QString &Text, QString *Error = nullptr);
     bool quitArmed() const;
 
     // The intercepted input, as the controller service hands it over (public: a test drives it as InputPlumber does).
@@ -79,6 +84,9 @@ private:
     QLabel *Title = nullptr, *Clock = nullptr, *Battery = nullptr, *Hints = nullptr;
     QPushButton *Resume = nullptr, *EditButton = nullptr, *QuitButton = nullptr;
     QComboBox *Layouts = nullptr;
+    QLineEdit *TypeEdit = nullptr;
+    QPushButton *TypeButton = nullptr;
+    QCheckBox *TypeEnter = nullptr;
     QTimer *Tick = nullptr;
 };
 
