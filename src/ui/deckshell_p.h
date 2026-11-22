@@ -61,7 +61,9 @@ public:
     DeckShelf(DeckShell &Shell, Kind K);
     ~DeckShelf() override;
     Kind kind() const { return K; }
-    void rebuild();                      // the catalog changed: new cards (focus stays on the same game)
+    // The catalog changed: new cards (focus stays on the same game). Returns the old ones, for the caller to delete
+    // once nothing shows them: Home shows the shelves' own cards.
+    [[nodiscard]] QList<LibraryGameCard *> rebuild();
     void refreshCovers();                // covers landed: the cards still without one look again
     const QList<LibraryGameCard *> &cards() const { return Pool; }
     LibraryGameCard *find(const QString &Key) const;

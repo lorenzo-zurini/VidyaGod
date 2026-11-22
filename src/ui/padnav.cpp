@@ -64,11 +64,14 @@ void SendKey(QWidget *W, int Key)
 }
 
 //The part of a composite control navigation never stops on by itself: a spin box's or a combo box's own line edit,
-//an editor an item view has open, a tab widget's tab bar (the shoulders turn its pages).
+//an editor an item view has open, a tab widget and its tab bar (the shoulders turn its pages).
 bool InnerPart(QWidget *W, QWidget *Window)
 {
     if (W->property("padSkip").toBool()) return true;
     if (qobject_cast<QTabBar *>(W) && qobject_cast<QTabWidget *>(W->parentWidget())) return true;
+    //A tab widget itself is no stop either: focused, it hands the focus to its tab bar (which is not one), and the
+    //next press starts over from the window's default button. Navigation goes through it to its page's controls.
+    if (qobject_cast<QTabWidget *>(W)) return true;
     for (QWidget *P = W->parentWidget(); P && P != Window; P = P->parentWidget())
     {
         if (P->property("padSkip").toBool()) return true;
@@ -165,6 +168,15 @@ bool MoveInside(QWidget *F, Pad::Button Dir)
     }
     if (!Horizontal(Dir)) return false;
     const bool Up = Dir == Pad::Button::Right;
+    //A choice that asks for it ("padAdjust": a game's option, the launch window's version) turns with left and right
+    //as a console's settings do, to its ends; A still opens its list.
+    if (auto *C = qobject_cast<QComboBox *>(F); C && C->property("padAdjust").toBool())
+    {
+        const int To = C->currentIndex() + (Up ? 1 : -1);
+        if (To < 0 || To >= C->count()) return false;
+        C->setCurrentIndex(To);
+        return true;
+    }
     if (auto *S = qobject_cast<QAbstractSlider *>(F))
     {
         const int Was = S->value();
@@ -442,7 +454,9 @@ QList<PadTarget::Hint> Hints(QWidget *W)
     }
     else if (W->property("padIndex").isValid()) A = "Open";
     if (!A.isEmpty() && W->isEnabled()) Out.push_back({ B::A, A });
-    if (qobject_cast<QAbstractSlider *>(W) || qobject_cast<QAbstractSpinBox *>(W)) Out.push_back({ B::Left, "Adjust" });
+    if (qobject_cast<QAbstractSlider *>(W) || qobject_cast<QAbstractSpinBox *>(W)
+        || (qobject_cast<QComboBox *>(W) && W->property("padAdjust").toBool()))
+        Out.push_back({ B::Left, "Adjust" });
     if (W->contextMenuPolicy() == Qt::CustomContextMenu) Out.push_back({ B::X, "Menu" });
     if (TabsOf(W)) Out.push_back({ B::LB, "Tabs" });
     QWidget *Win = W->window();

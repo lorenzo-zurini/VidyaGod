@@ -3,6 +3,8 @@
 #include "theme.h"   // the named colours
 #include "shelf.h"
 #include "prelaunchwindow.h"
+#include "deckshell.h"   // DeckShell::On — opened inside controller mode
+#include "deckstyle.h"   // the controller layout's wash
 #include "fold.h"   // a row's options and entries are its resolution's
 #include "apppaths.h"
 #include "packageeditor.h"
@@ -457,7 +459,8 @@ PreLaunchWindow::PreLaunchWindow(
         BtnLayout->addWidget(StatusBox, 1);
     }
 
-    QPushButton* PackageEditorButton = new QPushButton("Edit package", Footer);   // a button like Close; Play is the one that stands out
+    QPushButton* PackageEditorButton = new QPushButton("Edit package", Footer);
+    PackageEditorButton->setObjectName("editPackageButton");   // a button like Close; Play is the one that stands out
     PackageEditorButton->setToolTip("Open this package in the package editor");
     BtnLayout->addWidget(PackageEditorButton);
     connect(PackageEditorButton, &QPushButton::clicked, this, [this]()
@@ -499,6 +502,8 @@ PreLaunchWindow::PreLaunchWindow(
         H = std::min(H, A.height() - 80);
     }
     resize(std::max(W, 760), std::max(H, 520));
+    //Opened inside controller mode: a screen of its own, laid out for a controller.
+    if (DeckShell::On()) ArrangeForController();
 }
 
 PreLaunchWindow::~PreLaunchWindow()
@@ -593,6 +598,13 @@ void PreLaunchWindow::UpdateCoverScaled()
     if (!CoverLabel) return;
     if (CoverPixmap.isNull()) { CoverLabel->clear(); CoverLabel->setFixedHeight(0); return; }
     const QPixmap P = RoundedCover(CoverPixmap, CoverLabel->width(), devicePixelRatioF());
+    if (DeckLayout && CoverPixmap.cacheKey() != DeckWashOf)
+    {
+        DeckWashOf = CoverPixmap.cacheKey();
+        DeckWash = QPixmap::fromImage(DeckStyle::Duotone(
+            CoverPixmap.toImage().scaled(28, 42, Qt::KeepAspectRatioByExpanding, Qt::SmoothTransformation)));
+        update();
+    }
     CoverLabel->setPixmap(P);
     CoverLabel->setFixedHeight((int)(P.height() / P.devicePixelRatio()));
 }

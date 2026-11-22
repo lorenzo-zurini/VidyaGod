@@ -120,6 +120,7 @@ VG_COMMANDS
           "DeckGrid::currentChanged", "DeckHome::padPressed", "DeckShelf::padPressed", "DeckShelf::cycleSort", "DeckShelf::setSort",
           "DeckGamePage::padPressed", "DeckGamePage::press", "DeckGamePage::showGame", "DeckDownloads::padPressed",
           "DeckMenu::padPressed", "DeckMenu::choose", "DeckMenu::present", "DeckMenu::dismiss",
+          "PreLaunchWindow::padPressed",
           "OnScreenKeyboard::padPressed", "OnScreenKeyboard::Open", "OnScreenKeyboard::Ask", "OnScreenKeyboard::accept",
           "OnScreenKeyboard::cancel", "PadRouter::pushOverlay", "PadRouter::popOverlay" }, Needs::Ui, false,
         [](Command::Context &C, const json &A) {
@@ -172,7 +173,7 @@ VG_COMMANDS
         { "PadRouter::state", "PadRouter::hints", "PadRouter::ringRect", "PadNav::Describe", "PadNav::Hints", "PadTarget::padHints",
           "PadTarget::padState", "DeckShell::padState", "DeckShell::padHints", "DeckShell::section", "DeckShell::gameOpen", "DeckShell::menuOpen",
           "DeckShell::statusText", "DeckShell::SectionName", "DeckGrid::padState", "DeckGrid::current", "DeckGrid::currentIndex", "DeckGrid::count",
-          "DeckGrid::lit", "DeckGrid::tileSize", "DeckGrid::tileRect", "DeckHome::padState", "DeckHome::padHints", "DeckHome::statusText",
+          "DeckGrid::lit", "DeckGrid::tileSize", "DeckGrid::tileRect", "DeckHome::padState", "DeckHome::padHints", "DeckHome::statusText", "PreLaunchWindow::padHints",
           "DeckShelf::padState", "DeckShelf::padHints", "DeckShelf::statusText", "DeckShelf::sort", "DeckShelf::search", "DeckShelf::kind",
           "DeckShelf::grid", "DeckShelf::cards", "DeckGamePage::padState", "DeckGamePage::padHints", "DeckGamePage::buttons", "DeckGamePage::key",
           "DeckDownloads::padState", "DeckDownloads::padHints", "DeckDownloads::statusText", "DeckDownloads::keys", "DeckMenu::padState",

@@ -248,6 +248,7 @@ void PreLaunchWindow::RebuildCustomVarPickers()
                 for (int k = 0; k < Combo->count(); k++)
                     if (Combo->itemData(k).toString().toStdString() == Initial) { Combo->setCurrentIndex(k); break; }
                 connect(Combo, &QComboBox::currentIndexChanged, this, [this](int){ EvaluateVarConditions(); });
+                Combo->setProperty("padAdjust", true);   // a controller turns it with left and right
                 Field = Combo;
             }
             else if (Control == "bool")
@@ -322,8 +323,9 @@ void PreLaunchWindow::RebuildCustomVarPickers()
             if (IsRunner) Section = Section.empty() ? std::string("Runner") : "Runner/" + Section;
             Field->setProperty("CVSection", QString::fromStdString(Section));
             Field->setProperty("CVLabel", Label);
+            Field->setAccessibleName(Label);   // what a screen reader, `controller state` and `ui` call it
             //A value control keeps a readable width rather than spanning the window; a tick box is as wide as itself.
-            if (!qobject_cast<QCheckBox*>(Field)) Field->setMaximumWidth(340);
+            if (!qobject_cast<QCheckBox*>(Field)) Field->setMaximumWidth(static_cast<int>(340 * DeckScale));
             //WHEN gates this row's visibility (and, in the resolver, its value); the control carries it with the row's
             //key. Top-level preferred; UI.WHEN is a UI-era alias.
             std::string When = CV.value("WHEN", std::string());
@@ -345,9 +347,11 @@ void PreLaunchWindow::RebuildCustomVarPickers()
         Row->setText(0, R.Label);
         Row->setFlags(Qt::ItemIsEnabled);
         OptionsTree->setItemWidget(Row, 1, R.Field);
+        R.Field->setProperty("padCell", true);   // a control of its own, not the tree's open editor: a controller reaches it
         R.Field->setProperty("CVItem", QVariant::fromValue<quintptr>(reinterpret_cast<quintptr>(Row)));
     }
 
+    if (DeckLayout) OptionsTree->expandAll();   // a controller cannot open a folded row: every section open
     if (AnyCond) EvaluateVarConditions();                                       // apply initial WHEN visibility
     MarkKeyConflicts();
     SetTabShown(OptionsPage, AnyVisible);

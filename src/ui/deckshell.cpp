@@ -419,8 +419,9 @@ std::optional<DeckShell::Section> DeckShell::SectionFrom(const QString &Name)
 
 void DeckShell::rebuildAll()
 {
-    Library->rebuild();
-    Catalog->rebuild();
+    //The old cards go last: Home's rows hold the shelves' own cards, and a row reads the one it is on (to stay on the
+    //same game) as it takes the new ones. Deleted before, that read was of freed memory: a crash on a library refresh.
+    const QList<LibraryGameCard *> OldLibrary = Library->rebuild(), OldCatalog = Catalog->rebuild();
     Home->refresh();
     DownloadsPage->refresh();
     if (gameOpen())
@@ -428,6 +429,8 @@ void DeckShell::rebuildAll()
         if (!card(Game->key())) closeGame();   // gone (removed, or no longer anything to download)
         else Game->refresh();
     }
+    qDeleteAll(OldLibrary);
+    qDeleteAll(OldCatalog);
     update();
 }
 

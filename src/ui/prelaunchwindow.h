@@ -33,6 +33,7 @@
 #include <memory>
 #include "commonutils.h"
 #include "launchthread.h"   // LaunchThread (worker)
+#include "padnav.h"         // PadTarget — Start plays, in controller mode
 
 
 // ---------------------------------------------------------------------------
@@ -40,7 +41,7 @@
 // (the editions). Lets the user pick variant + runner + optional-node toggles + CustomVars, shows live log,
 // and launches the selected node via LaunchThread.LaunchNodeId (the engine resolves the rest from the graph).
 // ---------------------------------------------------------------------------
-class PreLaunchWindow : public QDialog
+class PreLaunchWindow : public QDialog, public PadTarget
 {
     Q_OBJECT
 public:
@@ -68,7 +69,13 @@ public:
     //their node into it by handle.
     void ReloadAndRebuild(std::shared_ptr<const NodeIndex> Fresh = nullptr);
 
+    //Controller mode: Start plays (prelaunch_controller.cpp).
+    bool padPressed(Pad::Button B) override;
+    QList<PadTarget::Hint> padHints() const override;
+
 protected:
+    //Controller mode paints its own ground: the shell's, the cover washed in two tones over it.
+    void paintEvent(QPaintEvent* Event) override;
     //Rescale the cover to fit its column on every resize, keeping aspect ratio + vertical centering.
     void resizeEvent(QResizeEvent* Event) override;
     //The cover label's OWN resize drives the rescale: the dialog's resizeEvent fires BEFORE the (deferred) child
@@ -90,6 +97,13 @@ private:
     // Saves RUNNER_CHAIN / SKIP_LAUNCH_DIALOG / VARIABLES / MODULES to GlobalConfigJSON (keyed by the
     // bundle UID) and flushes it to ~/.VidyaGod/GlobalConfig.JSON.
     void persistGlobalConfig();
+    // Controller mode: the same widgets laid out as a screen of the shell's (prelaunch_controller.cpp). Called once,
+    // at the end of construction, when the window opens inside controller mode.
+    void ArrangeForController();
+    bool    DeckLayout = false;     // laid out for a controller
+    double  DeckScale  = 1.0;       // its sizes' scale (a Deck's 800 px high screen is 1)
+    QPixmap DeckWash;               // the cover, tiny and in two tones, painted behind the screen
+    qint64  DeckWashOf = 0;         // the cover it was made from (QPixmap::cacheKey)
     // The currently-selected launchable node (the chosen variant). nullptr if the group is empty.
     const Node* CurrentLaunch() const;
     //The tile this window launches: its FaceUid, else (a caller that names none) the node's first tile.

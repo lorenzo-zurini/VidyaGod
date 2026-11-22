@@ -314,6 +314,7 @@ set(SHARED_SOURCES
     src/ui/prelaunch_runners.cpp
     src/ui/prelaunch_grafts.cpp
     src/ui/prelaunch_options.cpp
+    src/ui/prelaunch_controller.cpp
     src/ui/prelaunch_lan.cpp
     src/ui/prelaunch_instances.cpp
     src/ui/keycapture.h

@@ -26,6 +26,8 @@
 #include "deckgrid.h"
 #include "deckshell.h"
 #include "deckstyle.h"
+#include "prelaunchwindow.h"
+#include "manifestmodel.h"
 #include "generalpage.h"
 #include "settingstab.h"
 #include "theme.h"
@@ -33,6 +35,7 @@
 #include "instancestore.h"
 #include "keycapture.h"
 #include <cstring>
+#include <malloc.h>   // mallopt(M_PERTURB): a read of freed memory crashes
 #include <atomic>
 #include <thread>
 #include <unistd.h>
@@ -861,6 +864,121 @@ private slots:
         Sh.setActive(false);
         GeneralPage G(M);
         for (QComboBox *C : G.findChildren<QComboBox *>()) QVERIFY(C->accessibleName() != "Controller Start in");
+    }
+
+    // A library refresh rebuilds the shelves and Home's rows, which show the shelves' own cards: the old cards go only
+    // once nothing reads them. Freed memory is filled (malloc's perturb) so a read of an old card crashes here every
+    // time rather than now and then. Teeth: a shelf deletes its old cards before Home has let go of them.
+    void a_library_refresh_never_reads_a_card_it_let_go()
+    {
+        LibraryFixture L("6");
+        InstanceStore::TouchLastRun(L.Cfg, "6");
+        AppModel M(&L.Cfg, &L.AppDir);
+        M.rebuildCatalog();
+        IpfsModel Ipfs(M);
+        DownloadManager Dl(M, Ipfs);
+        DeckShell Sh(M, Ipfs, Dl);
+        Sh.resize(1280, 800);
+        Front(Sh);
+        Sh.setActive(true);
+        QTRY_COMPARE_WITH_TIMEOUT(Sh.padState()["page"]["hero"].value("title", std::string()), std::string("Foxtrot"), 10000);
+        auto *Recent = Sh.findChild<DeckGrid *>("controllerHomeRecent");
+        QVERIFY(Recent && Recent->current());
+        const QString Was = Recent->current()->GameKey;
+        mallopt(M_PERTURB, 0xA5);
+        const auto Restore = qScopeGuard([] { mallopt(M_PERTURB, 0); });
+        emit M.catalogChanged();
+        emit M.catalogChanged();
+        QVERIFY(Recent->current());
+        QCOMPARE(Recent->current()->GameKey, Was);   // still on the same game
+        Sh.setActive(false);
+    }
+
+    // The launch window, opened in controller mode, is a screen of its own laid out for a controller: Play under the
+    // game's name beside the cover, Start playing from anywhere, the shoulders turning its tabs, every option section
+    // open and each option reachable with the d-pad, a choice turning with left and right. Teeth: the desktop layout
+    // (Play in the footer, under the tabs); folded sections; an option taken for the tree's open editor (never
+    // reached); the tab widget taken for a stop (focus lost to its tab bar); a choice that does not turn; the
+    // shoulders not going round; the shoulders and Start doing nothing.
+    void the_launch_window_is_a_screen_laid_out_for_a_controller()
+    {
+        LibraryFixture L;
+        AppModel M(&L.Cfg, &L.AppDir);
+        M.rebuildCatalog();
+        IpfsModel Ipfs(M);
+        DownloadManager Dl(M, Ipfs);
+        DeckShell Sh(M, Ipfs, Dl);
+        Sh.resize(1280, 800);
+        Front(Sh);
+        Sh.setActive(true);
+
+        const auto Parse = [](const json &J) { Node N; ManifestModel::ParseNode(J, "f.json", "/tmp/vg_deck_launch", N); return N; };
+        const json Choices = json::array({ "640x480", "800x600", "1024x768" });
+        NodeIndex Idx;
+        Idx.Nodes["game"] = Parse(json{ {"CID", "game"}, {"LABEL", "game"}, {"VARIANT", "v1"},
+            {"LAYERS", json::array({ json{{"DIR", "game"}},
+                json{{"VARS", {
+                    {"lang", {{"DEFAULT", "English"}, {"UI", {{"CONTROL", "enum"}, {"LABEL", "Language"}, {"CHOICES", json::array({ "English", "French" })}}}}},
+                    {"res", {{"DEFAULT", "640x480"}, {"UI", {{"CONTROL", "enum"}, {"SECTION", "Display"}, {"LABEL", "Resolution"}, {"CHOICES", Choices}}}}}}}},
+                json{{"EXEC", json::array({ json{{"LABEL", "Play"}, {"HOST", ManifestModel::MachinePlatform()}, {"EXE", "game.exe"},
+                    {"TILE", {{"UID", "37"}, {"TITLE", "Game"}}}} })}} })} });
+        ManifestModel::DeriveFacts(Idx);
+        json Cfg = json{{"Settings", json::object()}};
+        auto *W = new PreLaunchWindow(&Cfg, &Idx, {"game"});
+        const auto Close = qScopeGuard([&] { W->close(); QApplication::processEvents(); });
+        Front(*W);
+        QTRY_VERIFY(W->isActiveWindow());
+        auto *Play = W->findChild<QPushButton *>("playButton");
+        auto *Tabs = W->findChild<QTabWidget *>("prelaunchTabs");
+        auto *Cover = W->findChild<QLabel *>("CoverLabel");
+        QVERIFY(Play && Tabs && Cover && Play->isEnabled());
+        const auto At = [W](QWidget *X) { return QRect(X->mapTo(W, QPoint(0, 0)), X->size()); };
+        QVERIFY(At(Play).bottom() < At(Tabs).top());     // Play under the name, above the options
+        QVERIFY(At(Play).left() > At(Cover).right());    // beside the cover
+        QComboBox *Res = nullptr;
+        for (QComboBox *C : W->findChildren<QComboBox *>()) if (C->property("CVKey").toString() == "res") Res = C;
+        QVERIFY(Res && Res->isVisible());                 // its section open
+        //Down, from Play, reaches the option in the section.
+        Play->setFocus();
+        for (int I = 0; I < 8 && QApplication::focusWidget() != Res; ++I) Press(B::Down);
+        QVERIFY2(QApplication::focusWidget() == Res,
+                 qPrintable(QString("focus on %1").arg(QApplication::focusWidget() ? QApplication::focusWidget()->metaObject()->className() : "nothing")));
+        Press(B::Right);
+        QCOMPARE(Res->currentText(), QStringLiteral("800x600"));
+        Press(B::Left);
+        QCOMPARE(Res->currentText(), QStringLiteral("640x480"));
+        //The shoulders turn the tabs from anywhere; the hint bar says to which.
+        QCOMPARE(Tabs->tabText(Tabs->currentIndex()), QStringLiteral("Options"));
+        Play->setFocus();
+        bool Says = false;
+        for (const PadTarget::Hint &H : PadRouter::instance().hints()) if (H.B == B::RB && H.Label == "Advanced") Says = true;
+        QVERIFY(Says);
+        Press(B::RB);
+        QCOMPARE(Tabs->tabText(Tabs->currentIndex()), QStringLiteral("Advanced"));
+        Press(B::LB);
+        QCOMPARE(Tabs->tabText(Tabs->currentIndex()), QStringLiteral("Options"));
+        //They go round: from the first tab, LB goes to the last, and says so.
+        bool Round = false;
+        for (const PadTarget::Hint &H : PadRouter::instance().hints()) if (H.B == B::LB && H.Label == Tabs->tabText(Tabs->count() - 1)) Round = true;
+        QVERIFY(Round);
+        Press(B::LB);
+        QCOMPARE(Tabs->currentIndex(), Tabs->count() - 1);
+        Press(B::RB);
+        QCOMPARE(Tabs->tabText(Tabs->currentIndex()), QStringLiteral("Options"));
+        //Start plays, wherever the focus is (the launch itself is not this test's: Play's own handler is let go).
+        QObject::disconnect(Play, &QAbstractButton::clicked, W, nullptr);
+        QSignalSpy Played(Play, &QAbstractButton::clicked);
+        Res->setFocus();
+        Press(B::Start);
+        QCOMPARE(Played.count(), 1);
+        //A game's run ends: the window reads its options back and builds them anew — still every section open.
+        QVERIFY(QMetaObject::invokeMethod(W, "onLaunchFinished", Qt::DirectConnection, Q_ARG(bool, true), Q_ARG(QString, QString())));
+        QApplication::processEvents();
+        QComboBox *Rebuilt = nullptr;
+        for (QComboBox *C : W->findChildren<QComboBox *>()) if (C->property("CVKey").toString() == "res") Rebuilt = C;
+        QVERIFY(Rebuilt && Rebuilt != Res);
+        QVERIFY(Rebuilt->isVisible());
+        Sh.setActive(false);
     }
 
     // A command runs inside its socket's read handler and may spin an event loop of its own (a press letting the UI

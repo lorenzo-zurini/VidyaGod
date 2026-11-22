@@ -138,6 +138,7 @@ void PreLaunchWindow::RebuildModuleTree()
     for (QWidget* X : { static_cast<QWidget*>(GraftUp), static_cast<QWidget*>(GraftDown),
                         static_cast<QWidget*>(AddonsPage->findChild<QLabel*>("graftOrderHint")) })
         if (X) X->setVisible(Several);
+    if (DeckLayout) ModuleTree->expandAll();   // a controller cannot open a folded row
     SyncGraftChecks();
 }
 

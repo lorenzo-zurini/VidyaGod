@@ -358,6 +358,11 @@ QString HostedStyleSheet(double S)
         "QTableWidget#IpfsStatusTable QHeaderView::section { background: @GroundLow; color: @Dim; border: none; padding: @f2px @f4px;"
         " font-size: @f12px; }"
         "QTableWidget#IpfsStatusTable::item { min-height: 0px; padding: 0px; }"
+        "QMenu { background: @Panel; color: @Text; border: 1px solid @PanelHi; border-radius: @f14px; padding: @f8px; font-size: @f18px; }"
+        "QMenu::item { padding: @f9px @f28px; border-radius: @f18px; }"
+        "QMenu::item:selected { background: @Lime; color: @Ink; }"
+        "QMenu::item:disabled { color: @Faint; }"
+        "QMenu::separator { height: 1px; background: @PanelHi; margin: @f6px @f12px; }"
         "QScrollBar:vertical { width: @f14px; }"
         "QScrollBar:horizontal { height: @f14px; }");
     //The sizes (@fN: N px at scale 1), then the colours, by name.

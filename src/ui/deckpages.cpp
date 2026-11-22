@@ -140,15 +140,15 @@ LibraryGameCard *DeckShelf::find(const QString &Key) const
     return nullptr;
 }
 
-void DeckShelf::rebuild()
+QList<LibraryGameCard *> DeckShelf::rebuild()
 {
     const QList<LibraryGameCard *> Old = Pool;
     Pool = K == Kind::Library ? CardPool::Installed(Shell.model()) : CardPool::Available(Shell.model());
     for (LibraryGameCard *C : Pool)
         if (const auto It = Active.constFind(C->GameKey); It != Active.constEnd()) { C->Downloading = true; C->DownloadPercent = It.value(); }
     apply();
-    qDeleteAll(Old);   // after the grid holds the new ones
     if (K == Kind::Library) countSizes();
+    return Old;
 }
 
 void DeckShelf::refreshCovers()
