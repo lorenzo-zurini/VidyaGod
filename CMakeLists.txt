@@ -558,7 +558,7 @@ set_tests_properties(vg_tests PROPERTIES ENVIRONMENT "HOME=${CMAKE_BINARY_DIR}/t
 # ---- GUI / integration tests (Qt Test) — drive real widgets + models + services in-process, reusing the app
 # objects via vidyagod_objs, headless under the offscreen QPA platform. One exe per subsystem (add_gui_test).
 function(add_gui_test name)
-    add_executable(${name} tests/gui/${name}.cpp)
+    add_executable(${name} tests/gui/${name}.cpp resources/vidyagod.qrc)   # the app's own fonts and mark, as the app has them
     target_link_libraries(${name} PRIVATE
         vidyagod_objs
         Qt6::Widgets Qt6::Network Qt6::OpenGL Qt6::OpenGLWidgets Qt6::Test

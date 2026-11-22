@@ -132,9 +132,7 @@ void IpfsTab::buildUi()
     IpfsStatusTable->setSelectionMode(QAbstractItemView::NoSelection);
     IpfsStatusTable->setFocusPolicy(Qt::NoFocus);
     IpfsStatusTable->setShowGrid(false);
-    IpfsStatusTable->setStyleSheet("QTableWidget{background:#20252b;border:1px solid #2c333b;border-radius:4px;}"
-                                   "QHeaderView::section{background:transparent;color:" + Theme::Dim + ";border:none;"
-                                   "padding:3px 4px;font-size:8pt;}");
+    IpfsStatusTable->setObjectName("IpfsStatusTable");   // its look is Theme's (and controller mode's)
     for (int c = 0; c < 7; ++c) {
         QTableWidgetItem * it = new QTableWidgetItem(QStringLiteral("—"));
         it->setTextAlignment(Qt::AlignCenter);
@@ -274,10 +272,6 @@ QWidget * IpfsTab::buildSidebar()
     sv->setContentsMargins(0,0,0,0);
     sv->setSpacing(4);
 
-    const char * ListStyle =
-        "QListWidget{background:#20252b;border:1px solid #2c333b;border-radius:4px;font-size:9pt;}"
-        "QListWidget::item{padding:3px 6px;}"
-        "QListWidget::item:selected{background:#2f3944;color:#e6eef5;}";
     auto sectionLabel = [side](const QString & text){
         QLabel * l = new QLabel(text, side);
         l->setStyleSheet("color:" + Theme::Dim + ";font-size:8pt;font-weight:bold;padding-left:2px;");
@@ -286,7 +280,7 @@ QWidget * IpfsTab::buildSidebar()
 
     sv->addWidget(sectionLabel("STATUS"));
     StatusFilters = new QListWidget(side);
-    StatusFilters->setStyleSheet(ListStyle);
+    StatusFilters->setObjectName("IpfsFilterList");   // its look is Theme's (and controller mode's)
     const std::pair<int, const char *> Statuses[] = {
         { SAll,         "All"         }, { SDownloading, "Downloading" }, { SSeeding, "Seeding" },
         { SQueued,      "Queued"      }, { SStalled,     "Stalled"     }, { SErrored, "Errored" },
@@ -306,7 +300,7 @@ QWidget * IpfsTab::buildSidebar()
 
     sv->addWidget(sectionLabel("CATEGORIES"));
     CategoryFilters = new QListWidget(side);
-    CategoryFilters->setStyleSheet(ListStyle);
+    CategoryFilters->setObjectName("IpfsFilterList");
     for (const char * Name : { "All", "Content", "Assets", "Meta" })
     {
         QListWidgetItem * it = new QListWidgetItem(QString::fromLatin1(Name), CategoryFilters);

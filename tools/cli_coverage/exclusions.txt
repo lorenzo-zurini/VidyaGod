@@ -111,6 +111,10 @@ KeyCaptureField::*           # the launch window's key-binding field (its button
 PadInput::captur*            # the key-binding field's capture (KeyCaptureField above): it borrows the controller queue while `ui click` has it capturing
 AddLocalPackage              # the folder picker around AppModel::importPackagesFromDir: `app import <dir>` is the same import
 DeckStyle::Draw*             # draws a glyph, a hint row or a cover onto a painter: what was drawn is read with `ui screenshot`
+DeckStyle::Capsule           # a shape for the painter (a capsule path): what it outlines is read with `ui screenshot`
+DeckStyle::ButtonWidth       # how wide a drawn button is: its effect is the layout `ui screenshot` shows
+DeckStyle::Display           # the display face a painter draws titles in: read with `ui screenshot`
+DeckStyle::Duotone           # recolours the cover behind a page in the mark's two tones: read with `ui screenshot`
 ValidationPanel::*           # the editor's validation list (its rows are `ui show`; `build validate` gives the same messages)
 AppPaths::SetConfigReadOnly  # a call carrying a path override beside the running app: set by the command line itself, every such call
 AppPaths::ConfigReadOnly     # as AppPaths::SetConfigReadOnly: read when the config would be saved

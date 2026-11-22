@@ -1,6 +1,7 @@
 #include "deckstyle.h"
 
 #include <QFontDatabase>
+#include <QRegularExpression>
 #include <QPainter>
 #include <QPainterPath>
 #include <QPixmap>
@@ -23,6 +24,118 @@ QFont Font(double Px, double S, int Weight)
     F.setWeight(static_cast<QFont::Weight>(Weight));
     F.setHintingPreference(QFont::PreferNoHinting);
     return F;
+}
+
+QFont Display(double Px, double S, bool Italic)
+{
+    //The faces ship inside the app (a Deck has neither): Noto Serif Display, Black and Bold Italic, cut to Latin.
+    static const QString Black = [] {
+        const QStringList F = QFontDatabase::applicationFontFamilies(QFontDatabase::addApplicationFont(":/fonts/NotoSerifDisplay-Black.ttf"));
+        return F.isEmpty() ? QString() : F.first();
+    }();
+    static const QString BoldItalic = [] {
+        const QStringList F = QFontDatabase::applicationFontFamilies(QFontDatabase::addApplicationFont(":/fonts/NotoSerifDisplay-BoldItalic.ttf"));
+        return F.isEmpty() ? QString() : F.first();
+    }();
+    QFont F;
+    const QString &Family = Italic ? BoldItalic : Black;
+    if (!Family.isEmpty()) F.setFamilies({ Family, QStringLiteral("Noto Serif"), QStringLiteral("serif") });
+    F.setPixelSize(std::max(8, static_cast<int>(std::lround(Px * S))));
+    F.setWeight(Italic ? QFont::Bold : QFont::Black);
+    F.setItalic(Italic);
+    F.setHintingPreference(QFont::PreferNoHinting);
+    return F;
+}
+
+QPainterPath Capsule(const QRectF &R)
+{
+    QPainterPath Path;
+    const double Rad = std::min(R.width(), R.height()) / 2;
+    Path.addRoundedRect(R, Rad, Rad);
+    return Path;
+}
+
+void DrawLift(QPainter &P, const QPainterPath &Shape, double S, double Amount)
+{
+    if (Amount <= 0) return;
+    const double O = 5 * S * Amount;
+    QColor C = Magenta;
+    C.setAlphaF(std::clamp(Amount, 0.0, 1.0));
+    P.save();
+    P.setRenderHint(QPainter::Antialiasing);
+    P.fillPath(Shape.translated(O, O), C);
+    P.restore();
+}
+
+void DrawRing(QPainter &P, const QPainterPath &Shape, double S, double Amount)
+{
+    if (Amount <= 0) return;
+    QColor C = Lime;
+    C.setAlphaF(std::clamp(Amount, 0.0, 1.0));
+    P.save();
+    P.setRenderHint(QPainter::Antialiasing);
+    P.setPen(QPen(C, 3 * S));
+    P.setBrush(Qt::NoBrush);
+    P.drawPath(Shape);
+    P.restore();
+}
+
+void DrawButton(QPainter &P, const QRectF &R, const QString &Label, bool Focused, bool Primary, double S)
+{
+    const QPainterPath Path = Capsule(R);
+    P.save();
+    P.setRenderHint(QPainter::Antialiasing);
+    if (Focused) DrawLift(P, Path, S);
+    P.fillPath(Path, Focused ? Lime : Panel);
+    if (Primary && !Focused)
+    {
+        P.setPen(QPen(Lime, 2 * S));
+        P.setBrush(Qt::NoBrush);
+        P.drawPath(Capsule(R.adjusted(S, S, -S, -S)));
+    }
+    P.setFont(Font(Primary ? 19 : 17, S, QFont::Bold));
+    P.setPen(Focused ? Ink : Primary ? LimeHi : Text);
+    P.drawText(R, Qt::AlignCenter, Label);
+    P.restore();
+}
+
+double ButtonWidth(const QString &Label, bool Primary, double S)
+{
+    return std::max((Primary ? 190 : 120) * S, QFontMetricsF(Font(Primary ? 19 : 17, S, QFont::Bold)).horizontalAdvance(Label) + 52 * S);
+}
+
+void DrawLabel(QPainter &P, const QRectF &R, const QString &Label, bool On, double S)
+{
+    P.save();
+    P.setFont(Display(19, S, true));
+    P.setPen(On ? MagentaHi : Dim);
+    P.drawText(R, Qt::AlignLeft | Qt::AlignVCenter, Label);
+    P.restore();
+}
+
+QImage Duotone(const QImage &Image)
+{
+    if (Image.isNull()) return {};
+    //Luminance from the plum ground (its darks) to the mark's magenta (its lights).
+    QImage Out = Image.convertToFormat(QImage::Format_RGB32);
+    const QColor Lo(0x12, 0x0a, 0x16), Hi(0xa8, 0x3a, 0xb4);
+    for (int Y = 0; Y < Out.height(); ++Y)
+    {
+        auto *Line = reinterpret_cast<QRgb *>(Out.scanLine(Y));
+        for (int X = 0; X < Out.width(); ++X)
+        {
+            const double L = (0.2126 * qRed(Line[X]) + 0.7152 * qGreen(Line[X]) + 0.0722 * qBlue(Line[X])) / 255.0;
+            const auto Mix = [L](int A, int B) { return static_cast<int>(std::lround(A + (B - A) * L)); };
+            Line[X] = qRgb(Mix(Lo.red(), Hi.red()), Mix(Lo.green(), Hi.green()), Mix(Lo.blue(), Hi.blue()));
+        }
+    }
+    return Out;
+}
+
+void DrawSplitRule(QPainter &P, const QRectF &R)
+{
+    P.fillRect(QRectF(R.left(), R.top(), R.width() / 2, R.height()), Lime);
+    P.fillRect(QRectF(R.left() + R.width() / 2, R.top(), R.width() / 2, R.height()), Magenta);
 }
 
 namespace
@@ -94,7 +207,7 @@ void DrawGlyph(QPainter &P, const QRectF &R, Pad::Button B, Pad::Glyphs G)
     {
         const QRectF C(R.left(), R.top(), H, H);
         P.setPen(Qt::NoPen);
-        P.setBrush(QColor(0x2a, 0x33, 0x3d));
+        P.setBrush(Panel);
         P.drawEllipse(C);
         P.setPen(QPen(FaceColour(B, G), std::max(1.0, H * 0.07)));
         P.setBrush(Qt::NoBrush);
@@ -111,8 +224,8 @@ void DrawGlyph(QPainter &P, const QRectF &R, Pad::Button B, Pad::Glyphs G)
         //Triggers are taller at the top, as they are on the controller: a pill with a flat bottom.
         const bool Trigger = B == Pad::Button::LT || B == Pad::Button::RT;
         Path.addRoundedRect(C, C.height() * (Trigger ? 0.32 : 0.5), C.height() * (Trigger ? 0.32 : 0.5));
-        P.fillPath(Path, QColor(0x2a, 0x33, 0x3d));
-        P.setPen(QPen(QColor(0x6a, 0x77, 0x84), std::max(1.0, H * 0.05)));
+        P.fillPath(Path, Panel);
+        P.setPen(QPen(Faint, std::max(1.0, H * 0.05)));
         P.drawPath(Path);
         F.setPixelSize(std::max(6, static_cast<int>(H * (T.size() > 3 ? 0.34 : 0.42))));
         P.setFont(F);
@@ -125,7 +238,7 @@ void DrawGlyph(QPainter &P, const QRectF &R, Pad::Button B, Pad::Glyphs G)
         const QRectF C(R.left(), R.top(), GlyphWidth(B, G, H), H);
         const double Arm = H * 0.3, Cx = C.center().x(), Cy = C.center().y();
         P.setPen(Qt::NoPen);
-        P.setBrush(QColor(0x4a, 0x55, 0x61));
+        P.setBrush(Faint);
         P.drawRoundedRect(QRectF(Cx - Arm / 2, C.top() + H * 0.08, Arm, H * 0.84), 2, 2);
         P.drawRoundedRect(QRectF(Cx - H * 0.42, Cy - Arm / 2, H * 0.84, Arm), 2, 2);
         P.setBrush(Text);
@@ -194,16 +307,19 @@ void DrawCover(QPainter &P, const QRectF &R, const QPixmap &Cover, const QString
     }
     else
     {
-        //No cover (yet): a tinted ground with the title, hued by the title so neighbours tell apart.
-        const int Hue = static_cast<int>(qHash(Title) % 360);
+        //No cover (yet): the title in the display face on a ground of the mark's two tones — plum or a deep green,
+        //by the title, so neighbours tell apart.
+        const uint H = qHash(Title);
+        const bool Green = H % 3 == 0;
+        const int Hue = Green ? 120 + static_cast<int>(H % 30) : 280 + static_cast<int>(H % 36);
         QLinearGradient Gr(R.topLeft(), R.bottomRight());
-        Gr.setColorAt(0, QColor::fromHsv(Hue, 70, 70));
-        Gr.setColorAt(1, QColor::fromHsv((Hue + 40) % 360, 80, 38));
+        Gr.setColorAt(0, QColor::fromHsv(Hue, Green ? 120 : 110, Green ? 70 : 82));
+        Gr.setColorAt(1, QColor::fromHsv((Hue + 18) % 360, 130, 34));
         P.fillRect(R, Gr);
-        QFont F = Font(1, 1, QFont::Bold);
-        F.setPixelSize(std::max(9, static_cast<int>(R.width() * 0.11)));
+        QFont F = Display(1, 1);
+        F.setPixelSize(std::max(9, static_cast<int>(R.width() * 0.12)));
         P.setFont(F);
-        P.setPen(QColor(255, 255, 255, 225));
+        P.setPen(QColor(255, 255, 255, 230));
         P.drawText(R.adjusted(R.width() * 0.1, R.height() * 0.1, -R.width() * 0.1, -R.height() * 0.1),
                    Qt::AlignCenter | Qt::TextWordWrap, Title);
     }
@@ -213,19 +329,45 @@ void DrawCover(QPainter &P, const QRectF &R, const QPixmap &Cover, const QString
 QString HostedStyleSheet(double S)
 {
     const auto Px = [S](double V) { return QString::number(std::lround(V * S)); };
-    return QString(
-               "QWidget { font-size: %1px; }"
-               "QPushButton, QToolButton { min-height: %2px; padding: %3px %4px; border-radius: %3px; }"
-               "QLineEdit, QComboBox, QSpinBox, QDoubleSpinBox { min-height: %2px; padding: 0 %3px; }"
-               "QCheckBox, QRadioButton { spacing: %3px; min-height: %2px; }"
-               "QCheckBox::indicator, QRadioButton::indicator { width: %5px; height: %5px; }"
-               "QHeaderView::section { padding: %3px; }"
-               "QListWidget#SettingsSidebar::item { padding: %3px %4px; }"
-               "QTableView, QTreeView, QListView { outline: none; }"
-               "QTableView::item, QTreeView::item, QListView::item { min-height: %2px; padding: 2px %3px; }"
-               "QScrollBar:vertical { width: %6px; }"
-               "QScrollBar:horizontal { height: %6px; }")
-        .arg(Px(17), Px(38), Px(6), Px(14), Px(20), Px(14));
+    QString Sheet = QStringLiteral(
+        "QWidget { font-size: @f17px; }"
+        "QPushButton, QToolButton { min-height: @f38px; padding: @f6px @f18px; border-radius: @f20px; background: @Panel;"
+        " border: 1px solid @PanelHi; color: @Text; }"
+        "QPushButton:disabled, QToolButton:disabled { color: @Faint; background: @GroundLow; border-color: @Panel; }"
+        "QPushButton:checked, QToolButton:checked { background: @Lime; color: @Ink; border-color: @Lime; }"
+        "QLineEdit, QComboBox, QSpinBox, QDoubleSpinBox { min-height: @f38px; padding: 0 @f10px; background: @GroundLow;"
+        " border: 1px solid @PanelHi; border-radius: @f8px; color: @Text; selection-background-color: @Lime; selection-color: @Ink; }"
+        "QComboBox QAbstractItemView { background: @Panel; color: @Text; selection-background-color: @Lime; selection-color: @Ink; }"
+        "QCheckBox, QRadioButton { spacing: @f8px; min-height: @f38px; }"
+        "QCheckBox::indicator, QRadioButton::indicator, QTableView::indicator { width: @f20px; height: @f20px; }"
+        "QHeaderView { background: @Panel; border: none; }"
+        "QHeaderView::section { padding: @f6px; background: @Panel; color: @Dim; border: none; border-right: 1px solid @Ground; }"
+        "QListWidget#SettingsSidebar { background: @GroundLow; }"
+        "QListWidget#SettingsSidebar::item { padding: @f6px @f14px; border-radius: @f18px; color: @Dim; }"
+        "QListWidget#SettingsSidebar::item:selected { background: @Lime; color: @Ink; }"
+        "QTableView, QTreeView, QListView { outline: none; background: @GroundLow; alternate-background-color: @Panel;"
+        " gridline-color: @Panel; border: 1px solid @Panel; }"
+        "QTableView::item, QTreeView::item, QListView::item { min-height: @f38px; padding: 2px @f6px; }"
+        "QTableView::item:selected, QTreeView::item:selected, QListView::item:selected { background: @PanelHi; color: @Text; }"
+        "QCheckBox::indicator, QTableView::indicator { background: @GroundLow; border: 2px solid @Faint; border-radius: @f5px; }"
+        "QCheckBox::indicator:checked, QTableView::indicator:checked { background: @Lime; border-color: @Lime; }"
+        "QCheckBox::indicator:disabled { border-color: @Panel; }"
+        "QListWidget#IpfsFilterList { border-radius: @f8px; font-size: @f15px; }"
+        "QListWidget#IpfsFilterList::item:selected { background: @PanelHi; color: @Text; }"
+        "QTableWidget#IpfsStatusTable { background: @GroundLow; border: 1px solid @Panel; border-radius: @f8px; }"
+        "QTableWidget#IpfsStatusTable QHeaderView::section { background: @GroundLow; color: @Dim; border: none; padding: @f2px @f4px;"
+        " font-size: @f12px; }"
+        "QTableWidget#IpfsStatusTable::item { min-height: 0px; padding: 0px; }"
+        "QScrollBar:vertical { width: @f14px; }"
+        "QScrollBar:horizontal { height: @f14px; }");
+    //The sizes (@fN: N px at scale 1), then the colours, by name.
+    static const QRegularExpression Size("@f(\\d+)");
+    for (QRegularExpressionMatch M = Size.match(Sheet); M.hasMatch(); M = Size.match(Sheet))
+        Sheet.replace(M.capturedStart(), M.capturedLength(), Px(M.captured(1).toDouble()));
+    const std::pair<const char *, QColor> Named[] = { { "@GroundLow", GroundLow }, { "@Ground", Ground }, { "@PanelHi", PanelHi },
+        { "@Panel", Panel }, { "@Text", Text }, { "@Dim", Dim }, { "@Faint", Faint }, { "@Lime", Lime }, { "@Ink", Ink } };
+    for (const auto &[Name, C] : Named) Sheet.replace(QLatin1String(Name), C.name());
+    return Sheet;
 }
 
 }

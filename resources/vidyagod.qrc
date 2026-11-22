@@ -1,5 +1,7 @@
 <RCC>
     <qresource prefix="/">
         <file alias="vidyagod.png">org.vidyagod.VidyaGod.png</file>
+        <file alias="fonts/NotoSerifDisplay-Black.ttf">fonts/NotoSerifDisplay-Black.ttf</file>
+        <file alias="fonts/NotoSerifDisplay-BoldItalic.ttf">fonts/NotoSerifDisplay-BoldItalic.ttf</file>
     </qresource>
 </RCC>

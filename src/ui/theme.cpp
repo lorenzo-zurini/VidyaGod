@@ -46,7 +46,14 @@ void Apply(QApplication &App)
         "QListWidget#SettingsSidebar::item:selected { background: #2b3e55; color: #ffffff; }"
         "QFrame#OfflineBanner { background: #2a2416; border: 1px solid #5a4a22; border-radius: 6px; }"
         "QFrame#OfflineBanner QLabel { color: #e8d6a8; }"
-        "QToolTip { color: #e6e8ea; background: #2a3038; border: 1px solid #3a4250; padding: 4px; }");
+        "QToolTip { color: #e6e8ea; background: #2a3038; border: 1px solid #3a4250; padding: 4px; }"
+        //The Node page's filter lists and its stats strip.
+        "QListWidget#IpfsFilterList { background: #20252b; border: 1px solid #2c333b; border-radius: 4px; font-size: 9pt; }"
+        "QListWidget#IpfsFilterList::item { padding: 3px 6px; }"
+        "QListWidget#IpfsFilterList::item:selected { background: #2f3944; color: #e6eef5; }"
+        "QTableWidget#IpfsStatusTable { background: #20252b; border: 1px solid #2c333b; border-radius: 4px; }"
+        "QTableWidget#IpfsStatusTable QHeaderView::section { background: transparent; color: " + Theme::Dim + "; border: none;"
+        " padding: 3px 4px; font-size: 8pt; }");
 }
 
 QWidget *Capped(QWidget *Page, int Max)

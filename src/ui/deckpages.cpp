@@ -32,8 +32,8 @@ using json = nlohmann::ordered_json;
 
 namespace
 {
-//A cover decoded off the GUI thread at the size it is drawn, and a blurred, darkened wash of it for behind the page
-//(scaled down to a handful of pixels and back up: a blur for free).
+//A cover decoded off the GUI thread at the size it is drawn, and a blurred wash of it in the mark's two tones for
+//behind the page (scaled down to a handful of pixels and back up: a blur for free).
 struct Art { QImage Cover, Wash; };
 
 Art DecodeArt(const QString &Path, QSize CoverSize, QSize WashSize)
@@ -46,7 +46,7 @@ Art DecodeArt(const QString &Path, QSize CoverSize, QSize WashSize)
         R.setScaledSize(Full.scaled(CoverSize, Qt::KeepAspectRatioByExpanding).boundedTo(Full));
     A.Cover = R.read();
     if (A.Cover.isNull()) return A;
-    QImage Small = A.Cover.scaled(28, 42, Qt::KeepAspectRatioByExpanding, Qt::SmoothTransformation);
+    QImage Small = DeckStyle::Duotone(A.Cover.scaled(28, 42, Qt::KeepAspectRatioByExpanding, Qt::SmoothTransformation));
     A.Wash = Small.scaled(WashSize, Qt::KeepAspectRatioByExpanding, Qt::SmoothTransformation);
     return A;
 }
@@ -85,7 +85,8 @@ void Wash(QPainter &P, const QRectF &R, const QPixmap &Backdrop, double Fade)
     if (!Backdrop.isNull())
     {
         P.save();
-        P.setOpacity(0.55);
+        P.setClipRect(R, Qt::IntersectClip);   // scaled to cover R, it would spill past it
+        P.setOpacity(0.5);
         const QSizeF Src = Backdrop.size();
         const double K = std::max(R.width() / Src.width(), R.height() / Src.height());
         P.drawPixmap(QRectF(R.center().x() - Src.width() * K / 2, R.center().y() - Src.height() * K / 2, Src.width() * K, Src.height() * K),
@@ -93,41 +94,21 @@ void Wash(QPainter &P, const QRectF &R, const QPixmap &Backdrop, double Fade)
         P.restore();
     }
     //Dark to the left (where the text is) and at the bottom (into the page below).
+    const auto G = [](int A) { QColor C = DeckStyle::Ground; C.setAlpha(A); return C; };
     QLinearGradient L(R.topLeft(), R.topRight());
-    L.setColorAt(0, QColor(14, 19, 25, 235));
-    L.setColorAt(0.6, QColor(14, 19, 25, 150));
-    L.setColorAt(1, QColor(14, 19, 25, 90));
+    L.setColorAt(0, G(235));
+    L.setColorAt(0.6, G(140));
+    L.setColorAt(1, G(70));
     P.fillRect(R, L);
     QLinearGradient B(R.topLeft(), R.bottomLeft());
-    B.setColorAt(0, QColor(14, 19, 25, 0));
-    B.setColorAt(Fade, QColor(14, 19, 25, 0));
+    B.setColorAt(0, G(0));
+    B.setColorAt(Fade, G(0));
     B.setColorAt(1, DeckStyle::Ground);
     P.fillRect(R, B);
 }
 
-//A button as controller mode draws it: a filled pill, lit when focused; Primary is the one that plays.
-void DrawButton(QPainter &P, const QRectF &R, const QString &Label, bool Focused, bool Primary, double S)
-{
-    QPainterPath Path;
-    Path.addRoundedRect(R, 8 * S, 8 * S);
-    QColor Fill = Primary ? QColor(0x2f, 0x6f, 0xb3) : DeckStyle::Panel;
-    if (Focused) Fill = Primary ? QColor(0x4a, 0x9a, 0xea) : DeckStyle::PanelHi;
-    P.fillPath(Path, Fill);
-    if (Focused)
-    {
-        P.setPen(QPen(QColor(0xd6, 0xe9, 0xff), 2.5 * S));
-        P.setBrush(Qt::NoBrush);
-        P.drawPath(Path);
-    }
-    P.setFont(DeckStyle::Font(Primary ? 19 : 17, S, QFont::DemiBold));
-    P.setPen(Focused || Primary ? QColor(Qt::white) : DeckStyle::Text);
-    P.drawText(R, Qt::AlignCenter, Label);
-}
-
-double ButtonWidth(const QString &Label, bool Primary, double S)
-{
-    return std::max((Primary ? 190 : 120) * S, QFontMetricsF(DeckStyle::Font(Primary ? 19 : 17, S, QFont::DemiBold)).horizontalAdvance(Label) + 44 * S);
-}
+using DeckStyle::ButtonWidth;
+using DeckStyle::DrawButton;
 }
 
 // ═════════════════════════════════════════════════════════════════════════════
@@ -362,7 +343,7 @@ void DeckShelf::paintEvent(QPaintEvent *)
     //Left: the focused game — its title large, its facts under it.
     LibraryGameCard *C = Grid->current();
     if (!C) return;
-    P.setFont(DeckStyle::Font(27, S, QFont::Bold));
+    P.setFont(DeckStyle::Display(28, S));
     P.setPen(DeckStyle::Text);
     const QFontMetricsF Tm(P.font());
     P.drawText(QRectF(Head.left(), Head.top(), Head.width() - Rw - 30 * S, 40 * S), Qt::AlignLeft | Qt::AlignVCenter,
@@ -611,20 +592,16 @@ void DeckHome::paintEvent(QPaintEvent *)
     {
         const double Ch = H.height() - 44 * S;
         const QRectF Cr(X, H.top() + 18 * S, Ch / 1.5, Ch);
-        P.setPen(Qt::NoPen);
-        P.setBrush(QColor(0, 0, 0, 120));
-        P.drawRoundedRect(Cr.translated(0, 6 * S), 10 * S, 10 * S);
+        QPainterPath Cp;
+        Cp.addRoundedRect(Cr, 10 * S, 10 * S);
+        DeckStyle::DrawLift(P, Cp, S * 1.4);
         DeckStyle::DrawCover(P, Cr, HeroCover, HeroTitle, 10 * S);
         X = Cr.right() + 36 * S;
     }
-    QFont Kf = DeckStyle::Font(13, S, QFont::Bold);
-    Kf.setLetterSpacing(QFont::PercentageSpacing, 114);
-    P.setFont(Kf);
-    P.setPen(DeckStyle::AccentHi);
-    P.drawText(QRectF(X, H.top() + 30 * S, width() - X - 40 * S, 20 * S), Qt::AlignLeft | Qt::AlignVCenter,
-               HeroKey.isEmpty() ? "GET STARTED" : "CONTINUE PLAYING");
+    DeckStyle::DrawLabel(P, QRectF(X, H.top() + 24 * S, width() - X - 40 * S, 28 * S), HeroKey.isEmpty() ? "Get started" : "Continue playing",
+                         true, S);
     //The title (two lines at most), its facts right under it.
-    P.setFont(DeckStyle::Font(38, S, QFont::Bold));
+    P.setFont(DeckStyle::Display(40, S));
     P.setPen(DeckStyle::Text);
     const QRectF TitleBox(X, H.top() + 52 * S, width() - X - 40 * S, buttonRect(0).top() - H.top() - 52 * S - 44 * S);
     const QRectF Used = QFontMetricsF(P.font()).boundingRect(TitleBox, Qt::AlignLeft | Qt::AlignTop | Qt::TextWordWrap, HeroTitle);
@@ -635,13 +612,8 @@ void DeckHome::paintEvent(QPaintEvent *)
     const QStringList B = buttons();
     for (int I = 0; I < B.size(); ++I) DrawButton(P, buttonRect(I), B[I], Area == 0 && I == Button, I == 0, S);
     //The strips' titles.
-    QFont Lf = DeckStyle::Font(15, S, QFont::Bold);
-    Lf.setLetterSpacing(QFont::PercentageSpacing, 110);
-    P.setFont(Lf);
     const auto Label = [&](DeckGrid *G, const QString &T, bool On) {
-        if (!G->isVisible()) return;
-        P.setPen(On ? DeckStyle::Text : DeckStyle::Dim);
-        P.drawText(QRectF(40 * S, G->y() - 32 * S, width() - 80 * S, 30 * S), Qt::AlignLeft | Qt::AlignVCenter, T.toUpper());
+        if (G->isVisible()) DeckStyle::DrawLabel(P, QRectF(40 * S, G->y() - 34 * S, width() - 80 * S, 32 * S), T, On, S);
     };
     bool AnyPlayed = false;
     for (LibraryGameCard *C : Shell.libraryCards()) if (C && !C->LastPlayedCache.isEmpty()) { AnyPlayed = true; break; }
@@ -879,14 +851,14 @@ void DeckGamePage::paintEvent(QPaintEvent *)
     P.fillRect(rect(), DeckStyle::Ground);
     Wash(P, rect(), Backdrop, 0.7);
     const QRectF C = coverRect();
-    P.setPen(Qt::NoPen);
-    P.setBrush(QColor(0, 0, 0, 140));
-    P.drawRoundedRect(C.translated(0, 8 * S), 12 * S, 12 * S);
+    QPainterPath Shape;
+    Shape.addRoundedRect(C, 12 * S, 12 * S);
+    DeckStyle::DrawLift(P, Shape, S * 1.6);
     DeckStyle::DrawCover(P, C, Cover, Title, 12 * S);
 
     const double X = C.right() + 48 * S, W = width() - X - 48 * S;
     double Y = C.top() + 6 * S;
-    P.setFont(DeckStyle::Font(40, S, QFont::Bold));
+    P.setFont(DeckStyle::Display(42, S));
     P.setPen(DeckStyle::Text);
     const QRectF Tr = QFontMetricsF(P.font()).boundingRect(QRectF(X, Y, W, 200 * S), Qt::TextWordWrap, Title);
     P.drawText(QRectF(X, Y, W, Tr.height()), Qt::AlignLeft | Qt::TextWordWrap, Title);
@@ -914,9 +886,8 @@ void DeckGamePage::paintEvent(QPaintEvent *)
     {
         const double Cw = QFontMetricsF(Cf).horizontalAdvance(Ch) + 22 * S;
         if (Cx + Cw > X + W) break;
-        QPainterPath Cp;
-        Cp.addRoundedRect(QRectF(Cx, Y, Cw, 28 * S), 14 * S, 14 * S);
-        P.fillPath(Cp, Ch == "Online DRM" ? QColor(0x4a, 0x2a, 0x26) : QColor(0x24, 0x2e, 0x39));
+        QPainterPath Cp = DeckStyle::Capsule(QRectF(Cx, Y, Cw, 28 * S));
+        P.fillPath(Cp, Ch == "Online DRM" ? QColor(0x4a, 0x22, 0x2a) : DeckStyle::PanelHi);
         P.setPen(Ch == "Online DRM" ? DeckStyle::Bad : DeckStyle::Text);
         P.drawText(QRectF(Cx, Y, Cw, 28 * S), Qt::AlignCenter, Ch);
         Cx += Cw + 8 * S;
@@ -930,13 +901,11 @@ void DeckGamePage::paintEvent(QPaintEvent *)
     if (!Versions.isEmpty())
     {
         const double Bottom = buttonRect(0).top() - 18 * S;
-        P.setFont(DeckStyle::Font(14, S, QFont::Bold));
-        P.setPen(DeckStyle::Dim);
         if (Y + 22 * S < Bottom)
         {
-            P.drawText(QRectF(X, Y, W, 22 * S), Qt::AlignLeft | Qt::AlignVCenter,
-                       Versions.size() == 1 ? QStringLiteral("VERSION") : QString("%1 VERSIONS").arg(Versions.size()));
-            Y += 24 * S;
+            DeckStyle::DrawLabel(P, QRectF(X, Y - 2 * S, W, 26 * S),
+                                 Versions.size() == 1 ? QStringLiteral("Version") : QString("%1 versions").arg(Versions.size()), false, S);
+            Y += 26 * S;
         }
         P.setFont(DeckStyle::Font(15, S));
         P.setPen(DeckStyle::Text);
@@ -963,19 +932,15 @@ void DeckGamePage::paintEvent(QPaintEvent *)
         {
             QPainterPath Tp;
             Tp.addRoundedRect(Bar, 5 * S, 5 * S);
-            P.fillPath(Tp, QColor(0x22, 0x2a, 0x33));
+            P.fillPath(Tp, DeckStyle::Panel);
             QPainterPath Fp;
             Fp.addRoundedRect(QRectF(Bar.left(), Bar.top(), Bar.width() * std::clamp(Percent / 100.0, 0.02, 1.0), Bar.height()), 5 * S, 5 * S);
-            P.fillPath(Fp, DeckStyle::AccentHi);
+            P.fillPath(Fp, DeckStyle::LimeHi);
         }
     }
     if (Others->isVisible())
     {
-        QFont Lf = DeckStyle::Font(15, S, QFont::Bold);
-        Lf.setLetterSpacing(QFont::PercentageSpacing, 110);
-        P.setFont(Lf);
-        P.setPen(Area == 1 ? DeckStyle::Text : DeckStyle::Dim);
-        P.drawText(QRectF(56 * S, Others->y() - 34 * S, width(), 30 * S), Qt::AlignLeft | Qt::AlignVCenter, "ALSO IN THIS PACKAGE");
+        DeckStyle::DrawLabel(P, QRectF(56 * S, Others->y() - 36 * S, width(), 32 * S), "Also in this package", Area == 1, S);
     }
 }
 
@@ -1146,8 +1111,8 @@ void DeckDownloads::paintEvent(QPaintEvent *)
     P.drawText(QRectF(40 * S, 14 * S, width() - 80 * S, 40 * S), Qt::AlignLeft | Qt::AlignVCenter, Node);
     if (Keys.isEmpty())
     {
-        P.setFont(DeckStyle::Font(22, S, QFont::DemiBold));
-        P.setPen(DeckStyle::Text);
+        P.setFont(DeckStyle::Display(30, S, true));
+        P.setPen(DeckStyle::Dim);
         P.drawText(rect().adjusted(0, static_cast<int>(60 * S), 0, 0), Qt::AlignCenter, "Nothing is downloading");
         return;
     }
@@ -1160,9 +1125,10 @@ void DeckDownloads::paintEvent(QPaintEvent *)
         const Row Rw = row(Keys[I]);
         const bool On = I == Current;
         QPainterPath Bg;
-        Bg.addRoundedRect(R, 10 * S, 10 * S);
+        Bg.addRoundedRect(R, 14 * S, 14 * S);
+        if (On) DeckStyle::DrawLift(P, Bg, S);
         P.fillPath(Bg, On ? DeckStyle::PanelHi : DeckStyle::Panel);
-        if (On) { P.setPen(QPen(QColor(0xd6, 0xe9, 0xff), 2.5 * S)); P.setBrush(Qt::NoBrush); P.drawPath(Bg); }
+        if (On) DeckStyle::DrawRing(P, Bg, S);
         //Its cover, small.
         const QRectF Cv(R.left() + 14 * S, R.top() + 10 * S, (R.height() - 20 * S) / 1.5, R.height() - 20 * S);
         LibraryGameCard *C = Shell.card(Keys[I]);
@@ -1181,12 +1147,12 @@ void DeckDownloads::paintEvent(QPaintEvent *)
         const QRectF Bar(X, R.bottom() - 22 * S, W, 8 * S);
         QPainterPath Tp;
         Tp.addRoundedRect(Bar, 4 * S, 4 * S);
-        P.fillPath(Tp, QColor(0x10, 0x15, 0x1b));
+        P.fillPath(Tp, DeckStyle::GroundLow);
         if (Rw.Percent >= 0)
         {
             QPainterPath Fp;
             Fp.addRoundedRect(QRectF(Bar.left(), Bar.top(), Bar.width() * std::clamp(Rw.Percent / 100.0, 0.01, 1.0), Bar.height()), 4 * S, 4 * S);
-            P.fillPath(Fp, Rw.Bad ? DeckStyle::Bad : DeckStyle::AccentHi);
+            P.fillPath(Fp, Rw.Bad ? DeckStyle::Bad : DeckStyle::LimeHi);
         }
     }
     P.restore();

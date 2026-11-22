@@ -233,19 +233,17 @@ void DeckGrid::paintEvent(QPaintEvent *)
         P.drawText(rect().adjusted(40 * S, 0, -40 * S, 0), Qt::AlignCenter | Qt::TextWordWrap, Empty);
         return;
     }
-    //Section headers: a small caps title and a rule.
+    //Section headers: the title in the display italic, and a rule.
     for (const auto &[Name, R0] : Headers)
     {
         const QRectF R = Strip ? R0 : R0.translated(0, -Scroll);
         if (R.bottom() < 0 || R.top() > height()) continue;
-        QFont F = DeckStyle::Font(15, S, QFont::Bold);
-        F.setLetterSpacing(QFont::PercentageSpacing, 112);
+        const QFont F = DeckStyle::Display(19, S, true);
         P.setFont(F);
-        P.setPen(DeckStyle::Dim);
-        const QString T = Name.toUpper();
-        P.drawText(R.adjusted(0, 0, 0, -22 * S), Qt::AlignLeft | Qt::AlignBottom, T);
-        const double Tw = QFontMetricsF(F).horizontalAdvance(T) + 16 * S;
-        P.fillRect(QRectF(R.left() + Tw, R.bottom() - 22 * S - QFontMetricsF(F).ascent() / 2, R.width() - Tw, 1), QColor(0x2a, 0x33, 0x3d));
+        P.setPen(DeckStyle::MagentaHi);
+        P.drawText(R.adjusted(0, 0, 0, -18 * S), Qt::AlignLeft | Qt::AlignBottom, Name);
+        const double Tw = QFontMetricsF(F).horizontalAdvance(Name) + 16 * S;
+        P.fillRect(QRectF(R.left() + Tw, R.bottom() - 18 * S - QFontMetricsF(F).ascent() / 2, R.width() - Tw, 1), DeckStyle::Panel);
     }
     const auto Draw = [&](int I, bool Focused) {
         LibraryGameCard *C = Cards[I];
@@ -254,18 +252,9 @@ void DeckGrid::paintEvent(QPaintEvent *)
         const double K = Focused ? 1.0 + 0.07 * (1 - std::pow(1 - Lift, 3)) : 1.0;
         if (K != 1.0) R = QRectF(R.center().x() - R.width() * K / 2, R.center().y() - R.height() * K / 2, R.width() * K, R.height() * K);
         const double Rad = 8 * S;
-        if (Focused)
-        {
-            //The lit cover: a soft glow behind it, a bright edge round it.
-            for (int G = 5; G >= 1; --G)
-            {
-                QColor Glow = DeckStyle::Accent;
-                Glow.setAlpha(static_cast<int>(18 * Lift));
-                P.setPen(Qt::NoPen);
-                P.setBrush(Glow);
-                P.drawRoundedRect(R.adjusted(-G * 3 * S, -G * 3 * S, G * 3 * S, G * 3 * S), Rad + G * 3 * S, Rad + G * 3 * S);
-            }
-        }
+        QPainterPath Shape;
+        Shape.addRoundedRect(R, Rad, Rad);
+        if (Focused) DeckStyle::DrawLift(P, Shape, S * 1.3, Lift);   // the lit cover, lifted off its magenta shadow
         else
         {
             P.setPen(Qt::NoPen);
@@ -282,15 +271,17 @@ void DeckGrid::paintEvent(QPaintEvent *)
         const auto Badge = [&](const QString &T, const QColor &Bg, const QColor &Fg) {
             const QRectF Br(Bx, R.top() + 7 * S, Bm.horizontalAdvance(T) + 12 * S, 20 * S);
             QPainterPath Bp;
-            Bp.addRoundedRect(Br, 4 * S, 4 * S);
+            Bp = DeckStyle::Capsule(Br);
             P.fillPath(Bp, Bg);
             P.setPen(Fg);
             P.drawText(Br, Qt::AlignCenter, T);
             Bx = Br.right() + 5 * S;
         };
         if (C->Golden) Badge("★ GOLDEN", QColor(0x3a, 0x2c, 0x08, 235), DeckStyle::Gold);
-        if (C->Local) Badge("LOCAL", QColor(0x10, 0x16, 0x1c, 220), DeckStyle::Dim);
-        if (!C->Secondaries.empty()) Badge(QString("+%1").arg(C->Secondaries.size()), QColor(0x10, 0x16, 0x1c, 220), DeckStyle::Text);
+        QColor BadgeGround = DeckStyle::GroundLow;
+        BadgeGround.setAlpha(225);
+        if (C->Local) Badge("LOCAL", BadgeGround, DeckStyle::Dim);
+        if (!C->Secondaries.empty()) Badge(QString("+%1").arg(C->Secondaries.size()), BadgeGround, DeckStyle::Text);
         if (C->Downloading)
         {
             const QRectF Bar(R.left() + 8 * S, R.bottom() - 16 * S, R.width() - 16 * S, 7 * S);
@@ -302,7 +293,7 @@ void DeckGrid::paintEvent(QPaintEvent *)
                 QPainterPath Fill;
                 Fill.addRoundedRect(QRectF(Bar.left(), Bar.top(), Bar.width() * std::clamp(C->DownloadPercent / 100.0, 0.02, 1.0), Bar.height()),
                                     Bar.height() / 2, Bar.height() / 2);
-                P.fillPath(Fill, DeckStyle::AccentHi);
+                P.fillPath(Fill, DeckStyle::LimeHi);
             }
             const QString Pct = C->DownloadPercent >= 0 ? QString("%1%").arg(static_cast<int>(C->DownloadPercent)) : QStringLiteral("Queued");
             const QRectF Tr(R.left() + 8 * S, Bar.top() - 24 * S, Bm.horizontalAdvance(Pct) + 12 * S, 19 * S);
@@ -314,9 +305,9 @@ void DeckGrid::paintEvent(QPaintEvent *)
         }
         if (Focused)
         {
-            P.setPen(QPen(QColor(0xd6, 0xe9, 0xff, static_cast<int>(255 * Lift)), 3 * S));
-            P.setBrush(Qt::NoBrush);
-            P.drawRoundedRect(R.adjusted(-1.5 * S, -1.5 * S, 1.5 * S, 1.5 * S), Rad + 1.5 * S, Rad + 1.5 * S);
+            QPainterPath Edge;
+            Edge.addRoundedRect(R.adjusted(-1.5 * S, -1.5 * S, 1.5 * S, 1.5 * S), Rad + 1.5 * S, Rad + 1.5 * S);
+            DeckStyle::DrawRing(P, Edge, S, Lift);
         }
     };
     for (int I = 0; I < Cards.size(); ++I)

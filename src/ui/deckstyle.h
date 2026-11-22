@@ -6,6 +6,8 @@
 
 #include <QColor>
 #include <QFont>
+#include <QImage>
+#include <QPainterPath>
 #include <QList>
 #include <QRectF>
 #include <QString>
@@ -15,8 +17,10 @@ class QPixmap;
 class QWidget;
 
 // ---------------------------------------------------------------------------
-// DeckStyle — controller mode's look: its colours, its type, one scale for every size (a Steam Deck's 1280×800 is
-// 1.0; a TV's 1080p is 1.35), and the controller's own button glyphs.
+// DeckStyle — controller mode's look, taken from the app's own mark (the capsule: lime green and magenta, its "VG" in
+// a heavy serif): a plum ground, lime for what the controller is on and for the action, magenta for its shadow;
+// titles in a display serif, buttons and tabs shaped as capsules. One scale for every size (a Steam Deck's 1280×800
+// is 1.0; a TV's 1080p is 1.35), and the controller's own button glyphs.
 // ---------------------------------------------------------------------------
 namespace DeckStyle
 {
@@ -25,18 +29,41 @@ double ScaleFor(int Height);
 // A font of Px pixels (at scale 1) scaled by S, in the controller mode's face.
 QFont Font(double Px, double S, int Weight = QFont::Normal);
 
-inline const QColor Ground(0x0e, 0x13, 0x19);      // the screen behind everything
-inline const QColor GroundLow(0x08, 0x0b, 0x0f);   // its bottom edge
-inline const QColor Panel(0x1a, 0x21, 0x29);       // a raised surface: a row, a button at rest
-inline const QColor PanelHi(0x25, 0x2f, 0x3a);     // a raised surface under focus
-inline const QColor Text(0xe8, 0xee, 0xf3);
-inline const QColor Dim(0x8f, 0x9b, 0xa6);
-inline const QColor Faint(0x5a, 0x66, 0x72);
-inline const QColor Accent(0x4a, 0x90, 0xd9);
-inline const QColor AccentHi(0x7d, 0xb8, 0xff);
+// A display face (the serif the app's mark is set in) of Px pixels at scale 1, scaled by S: Black for titles, Italic
+// (bold italic) for the labels over a row.
+QFont Display(double Px, double S, bool Italic = false);
+
+inline const QColor Ground(0x15, 0x0d, 0x19);      // the screen behind everything: plum, nearly black
+inline const QColor GroundLow(0x0c, 0x07, 0x0e);   // its bottom edge, the bars
+inline const QColor Panel(0x26, 0x1b, 0x2d);       // a raised surface: a row, a button at rest
+inline const QColor PanelHi(0x36, 0x27, 0x40);     // a raised surface under focus, a selection
+inline const QColor Text(0xf6, 0xee, 0xf7);
+inline const QColor Dim(0xab, 0x99, 0xb2);
+inline const QColor Faint(0x6e, 0x5c, 0x76);
+inline const QColor Lime(0x3c, 0xe0, 0x5c);       // what the controller is on; the action (the mark's green)
+inline const QColor LimeHi(0x8f, 0xf7, 0xa6);     // progress, a lit word
+inline const QColor Ink(0x16, 0x09, 0x1b);        // text on lime
+inline const QColor Magenta(0xc4, 0x12, 0xd2);    // the focus's shadow, a count (the mark's magenta)
+inline const QColor MagentaHi(0xec, 0x6a, 0xf2);  // the label over a row
 inline const QColor Gold(0xff, 0xc8, 0x3d);
-inline const QColor Good(0x5f, 0xb5, 0x5f);
-inline const QColor Bad(0xd0, 0x6a, 0x60);
+inline const QColor Good(0x4f, 0xd1, 0x6c);
+inline const QColor Bad(0xe0, 0x6a, 0x6a);
+
+// Focus, the one way controller mode shows it: the shape lifted off a solid magenta shadow (drawn first, under it)
+// and ringed in lime (drawn last, over it). Amount (0..1) eases it in.
+void DrawLift(QPainter &P, const QPainterPath &Shape, double S, double Amount = 1);
+void DrawRing(QPainter &P, const QPainterPath &Shape, double S, double Amount = 1);
+// A capsule: a rounded rect whose ends are half circles.
+QPainterPath Capsule(const QRectF &R);
+// A button: a capsule, lime when focused; Primary (the one that plays) is ringed in lime at rest.
+void DrawButton(QPainter &P, const QRectF &R, const QString &Label, bool Focused, bool Primary, double S);
+double ButtonWidth(const QString &Label, bool Primary, double S);
+// The label over a row ("Continue playing"): the display italic, magenta when it is the row the controller is in.
+void DrawLabel(QPainter &P, const QRectF &R, const QString &Label, bool On, double S);
+// A picture recoloured in the mark's two tones (its darks plum, its lights magenta): what a page shows behind itself.
+QImage Duotone(const QImage &Image);
+// The mark's two halves as a rule: lime on the left, magenta on the right.
+void DrawSplitRule(QPainter &P, const QRectF &R);
 
 // A controller button as the controller labels it, drawn in R (a face button round, a shoulder or trigger a pill,
 // a direction a d-pad): Xbox's coloured letters, PlayStation's shapes, Nintendo's letters (A is the bottom button's
@@ -52,7 +79,8 @@ double DrawHints(QPainter &P, const QRectF &R, const QList<PadTarget::Hint> &Hin
 // The cover drawn to fill R (cropped to its aspect, never stretched), with rounded corners; the placeholder (the
 // title on a tinted ground) when the cover is null.
 void DrawCover(QPainter &P, const QRectF &R, const QPixmap &Cover, const QString &Title, double Radius);
-// The style sheet the desktop pages take inside controller mode: bigger text, taller controls, room between them.
+// The style sheet the desktop pages take inside controller mode: bigger text, taller controls, room between them, and
+// its colours. Colours go in the sheet, not a palette: under a style sheet Qt hands no palette down to the children.
 QString HostedStyleSheet(double S);
 }
 

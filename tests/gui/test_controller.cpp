@@ -25,6 +25,8 @@
 #include "commandserver.h"
 #include "deckgrid.h"
 #include "deckshell.h"
+#include "deckstyle.h"
+#include "theme.h"
 #include "downloadmanager.h"
 #include "instancestore.h"
 #include "keycapture.h"
@@ -715,6 +717,83 @@ private slots:
         QCOMPARE(HeroH(), Large);
         Press(B::Down);
         QCOMPARE(Sh.padState()["page"].value("area", std::string()), std::string("recent"));
+        Sh.setActive(false);
+    }
+
+    // Controller mode is drawn in the app's own look, its mark's: titles in the display serif that ships inside the
+    // app (a Deck has none of its own), and the cover behind a page in the mark's two tones, its darks plum and its
+    // lights magenta. Teeth: the face is not loaded (the default face stands in); the duotone keeps a cover's colours.
+    void controller_mode_is_drawn_in_the_marks_own_look()
+    {
+        const QFontInfo Title(DeckStyle::Display(30, 1)), Label(DeckStyle::Display(30, 1, true));
+        QVERIFY2(Title.family().contains("Noto Serif Display"), qPrintable(Title.family()));
+        QVERIFY2(Label.family().contains("Noto Serif Display"), qPrintable(Label.family()));
+        QVERIFY(Label.italic());
+        const auto Tone = [](const QColor &In) {
+            QImage I(4, 4, QImage::Format_RGB32);
+            I.fill(In);
+            return DeckStyle::Duotone(I).pixelColor(1, 1);
+        };
+        const QColor Dark = Tone(Qt::black), Light = Tone(Qt::white), Green = Tone(QColor(0, 200, 0));
+        QVERIFY2(Dark.value() < 40 && Dark.red() > Dark.green() && Dark.blue() > Dark.green(), qPrintable(Dark.name()));   // plum
+        QVERIFY2(Light.red() > 140 && Light.blue() > 140 && Light.green() < 90, qPrintable(Light.name()));                  // magenta
+        QVERIFY2(Green.green() < Green.red() && Green.green() < Green.blue(), qPrintable(Green.name()));                    // no longer green
+    }
+
+    // The lead game's cover, washed behind the hero, stays behind the hero: scaled to cover it, it reached down over
+    // the rows under it. Teeth: the wash is not clipped to the hero.
+    void the_backdrop_stays_behind_the_hero()
+    {
+        LibraryFixture L("6");
+        InstanceStore::TouchLastRun(L.Cfg, "6");
+        AppModel M(&L.Cfg, &L.AppDir);
+        M.rebuildCatalog();
+        IpfsModel Ipfs(M);
+        DownloadManager Dl(M, Ipfs);
+        DeckShell Sh(M, Ipfs, Dl);
+        Sh.resize(1280, 800);
+        Front(Sh);
+        Sh.setActive(true);
+        //The cover and its wash are decoded together, off the GUI thread.
+        const auto HeroH = [&Sh] { const json C = Sh.padState()["page"]["hero"]["cover"]; return C.is_array() ? C[1].get<int>() : 0; };
+        QTRY_VERIFY_WITH_TIMEOUT(HeroH() > 400, 10000);
+        auto *Recent = Sh.findChild<DeckGrid *>("controllerHomeRecent");
+        QVERIFY(Recent && Recent->isVisible());
+        //Right of the one game played: nothing is drawn there but the ground.
+        const QPoint Under = Recent->mapTo(&Sh, QPoint(Recent->width() - 40, Recent->height() / 2));
+        const QColor C = Sh.grab().toImage().pixelColor(Under);
+        QVERIFY2(C.red() < 32 && C.blue() < 36, qPrintable(C.name()));
+        Sh.setActive(false);
+    }
+
+    // A desktop page in controller mode takes controller mode's colours, under the desktop's own theme as the app runs
+    // it: the Node page's filter lists too, which the desktop colours by name. Teeth: the lists keep a colour of their
+    // own; controller mode's sheet does not name them.
+    void a_desktop_page_takes_controller_modes_colours()
+    {
+        const QString SheetWas = qApp->styleSheet();
+        const QPalette PaletteWas = qApp->palette();
+        const auto Restore = qScopeGuard([&] { qApp->setStyleSheet(SheetWas); qApp->setPalette(PaletteWas); });
+        Theme::Apply(*qApp);
+        LibraryFixture L;
+        AppModel M(&L.Cfg, &L.AppDir);
+        M.rebuildCatalog();
+        IpfsModel Ipfs(M);
+        DownloadManager Dl(M, Ipfs);
+        DeckShell Sh(M, Ipfs, Dl);
+        Sh.resize(1280, 800);
+        Front(Sh);
+        Sh.setActive(true);
+        Sh.showSection(DeckShell::Section::Node);
+        QListWidget *List = nullptr;
+        for (QListWidget *W : Sh.findChildren<QListWidget *>())
+            if (W->isVisible() && W->count() > 1) { List = W; break; }
+        QVERIFY(List);
+        //The right end of a row that is not the current one: no text, no selection, the list's own ground.
+        const QImage Img = List->viewport()->grab().toImage();
+        const QRect Row = List->visualItemRect(List->item(1));
+        const QColor C = Img.pixelColor(Img.width() - 4, Row.center().y());
+        QCOMPARE(C.name(), DeckStyle::GroundLow.name());
         Sh.setActive(false);
     }
 

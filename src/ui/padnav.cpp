@@ -1,7 +1,7 @@
 #include "padnav.h"
 
 #include "osk.h"        // OnScreenKeyboard — A on a text field
-#include "palette.h"    // Theme::Accent
+#include "deckstyle.h"  // the focus ring's colours
 
 #include <QAbstractButton>
 #include <QAbstractItemView>
@@ -522,16 +522,13 @@ protected:
         if (Shown.isEmpty()) return;
         QPainter P(this);
         P.setRenderHint(QPainter::Antialiasing);
-        const QColor Accent(Theme::Accent);
-        QColor Glow = Accent;
-        for (int I = 3; I >= 1; --I)
-        {
-            Glow.setAlpha(28 * (4 - I));
-            P.setPen(QPen(Glow, 2.0 * I + 2));
-            P.drawRoundedRect(QRectF(Shown).adjusted(-3, -3, 3, 3), 7, 7);
-        }
-        P.setPen(QPen(QColor(0xd6, 0xe9, 0xff), 2.5));
-        P.drawRoundedRect(QRectF(Shown).adjusted(-3, -3, 3, 3), 7, 7);
+        //Controller mode's focus, over a control it does not draw: the magenta shadow's edge offset under a lime ring.
+        const QRectF Ring = QRectF(Shown).adjusted(-3, -3, 3, 3);
+        P.setBrush(Qt::NoBrush);
+        P.setPen(QPen(DeckStyle::Magenta, 3));
+        P.drawRoundedRect(Ring.translated(3, 3), 8, 8);
+        P.setPen(QPen(DeckStyle::Lime, 3));
+        P.drawRoundedRect(Ring, 8, 8);
     }
 
 private:

@@ -24,6 +24,7 @@
 #include <QMouseEvent>
 #include <QPainter>
 #include <QPainterPath>
+#include <QPixmap>
 #include <QLayout>
 #include <QPushButton>
 #include <QScreen>
@@ -39,6 +40,16 @@ using json = nlohmann::ordered_json;
 // ═════════════════════════════════════════════════════════════════════════════
 // ControllerMode
 // ═════════════════════════════════════════════════════════════════════════════
+
+namespace
+{
+//The app's mark (the capsule), as the header and the menu draw it: decoded once, at a size that stays sharp on a TV.
+const QPixmap &Mark()
+{
+    static const QPixmap M = QPixmap(":/vidyagod.png").scaled(96, 96, Qt::KeepAspectRatio, Qt::SmoothTransformation);
+    return M;
+}
+}
 
 namespace ControllerMode
 {
@@ -213,31 +224,36 @@ void DeckMenu::paintEvent(QPaintEvent *)
 {
     QPainter P(this);
     P.setRenderHint(QPainter::Antialiasing);
-    P.fillRect(rect(), QColor(4, 7, 11, 200));
+    QColor Scrim = DeckStyle::GroundLow;
+    Scrim.setAlpha(205);
+    P.fillRect(rect(), Scrim);
     const double S = Shell.scale();
     const QStringList I = items();
     const QRectF First = itemRect(0), Last = itemRect(static_cast<int>(I.size()) - 1);
     const QRectF Panel = First.united(Last).adjusted(-18 * S, -64 * S, 18 * S, 62 * S);
     QPainterPath Pp;
-    Pp.addRoundedRect(Panel, 14 * S, 14 * S);
+    Pp.addRoundedRect(Panel, 22 * S, 22 * S);
+    DeckStyle::DrawLift(P, Pp, S * 1.4);
     P.fillPath(Pp, DeckStyle::Panel);
-    QFont Tf = DeckStyle::Font(14, S, QFont::Bold);
-    Tf.setLetterSpacing(QFont::PercentageSpacing, 112);
-    P.setFont(Tf);
-    P.setPen(DeckStyle::Dim);
-    P.drawText(QRectF(Panel.left() + 24 * S, Panel.top() + 16 * S, Panel.width(), 30 * S), Qt::AlignLeft | Qt::AlignVCenter, "VIDYAGOD");
+    //Its title: the mark, and the name in the display face.
+    const double Mh = 30 * S;
+    if (const QPixmap &M = Mark(); !M.isNull())
+        P.drawPixmap(QRectF(Panel.left() + 22 * S, Panel.top() + 16 * S, Mh, Mh), M, QRectF(M.rect()));
+    P.setFont(DeckStyle::Display(22, S));
+    P.setPen(DeckStyle::Text);
+    P.drawText(QRectF(Panel.left() + 30 * S + Mh, Panel.top() + 14 * S, Panel.width(), 34 * S), Qt::AlignLeft | Qt::AlignVCenter, "VidyaGod");
     P.setFont(DeckStyle::Font(19, S, QFont::DemiBold));
     for (int K = 0; K < I.size(); ++K)
     {
         const QRectF R = itemRect(K);
         if (K == Current)
         {
-            QPainterPath Hp;
-            Hp.addRoundedRect(R, 8 * S, 8 * S);
-            P.fillPath(Hp, DeckStyle::Accent);
+            const QPainterPath Hp = DeckStyle::Capsule(R);
+            DeckStyle::DrawLift(P, Hp, S);
+            P.fillPath(Hp, DeckStyle::Lime);
         }
-        P.setPen(K == Current ? QColor(Qt::white) : DeckStyle::Text);
-        P.drawText(R.adjusted(20 * S, 0, 0, 0), Qt::AlignLeft | Qt::AlignVCenter, I[K]);
+        P.setPen(K == Current ? DeckStyle::Ink : DeckStyle::Text);
+        P.drawText(R.adjusted(24 * S, 0, 0, 0), Qt::AlignLeft | Qt::AlignVCenter, I[K]);
     }
     DeckStyle::DrawHints(P, QRectF(Panel.left() + 20 * S, Panel.bottom() - 46 * S, Panel.width() - 40 * S, 34 * S), padHints(),
                          PadInput::instance().glyphs(), S);
@@ -280,8 +296,8 @@ protected:
     void paintEvent(QPaintEvent *) override
     {
         QPainter P(this);
-        P.fillRect(rect(), QColor(0x0b, 0x0f, 0x14));
-        P.fillRect(QRectF(0, 0, width(), 1), QColor(0x2a, 0x33, 0x3d));
+        P.fillRect(rect(), DeckStyle::GroundLow);
+        DeckStyle::DrawSplitRule(P, QRectF(0, 0, width(), 2 * S));
         //Only while this window is the one presses go to (another window's hints would be a lie).
         if (PadRouter::targetWindow() != window()) return;
         DeckStyle::DrawHints(P, QRectF(24 * S, 0, width() - 48 * S, height()), PadRouter::instance().hints(), PadInput::instance().glyphs(), S);
@@ -591,12 +607,12 @@ void DeckShell::place()
 
 QRectF DeckShell::tabRect(int I) const
 {
+    //After the mark and LB: each section's name in a capsule of its own (the whole header's height, for a tap).
     const double S = scale();
-    const QFont F = DeckStyle::Font(16, S, QFont::Bold);
-    const QFontMetricsF M(F);
-    double X = 40 * S + DeckStyle::GlyphWidth(Pad::Button::LB, PadInput::instance().glyphs(), 26 * S) + 18 * S;
-    for (int K = 0; K < I; ++K) X += M.horizontalAdvance(SectionName(static_cast<Section>(K)).toUpper()) + 30 * S;
-    return QRectF(X - 10 * S, 0, M.horizontalAdvance(SectionName(static_cast<Section>(I)).toUpper()) + 20 * S, 64 * S);
+    const QFontMetricsF M(DeckStyle::Display(18, S));
+    double X = 40 * S + 36 * S + 16 * S + DeckStyle::GlyphWidth(Pad::Button::LB, PadInput::instance().glyphs(), 26 * S) + 10 * S;
+    for (int K = 0; K < I; ++K) X += M.horizontalAdvance(SectionName(static_cast<Section>(K))) + 30 * S + 4 * S;
+    return QRectF(X, 0, M.horizontalAdvance(SectionName(static_cast<Section>(I))) + 30 * S, 64 * S);
 }
 
 void DeckShell::mouseReleaseEvent(QMouseEvent *E)
@@ -650,36 +666,36 @@ void DeckShell::paintEvent(QPaintEvent *)
     P.fillRect(rect(), G);
     const Pad::Glyphs Gl = PadInput::instance().glyphs();
 
-    //The header: LB, the sections, RB; and on the right the node, the battery and the clock.
-    const double Hh = 64 * S, Gh = 26 * S;
-    DeckStyle::DrawGlyph(P, QRectF(40 * S, (Hh - Gh) / 2, Gh, Gh), Pad::Button::LB, Gl);
-    const QFont Tf = DeckStyle::Font(16, S, QFont::Bold);
+    //The header: the mark, LB, the sections, RB; and on the right the node, the battery and the clock.
+    const double Hh = 64 * S, Gh = 26 * S, Mh = 36 * S;
+    if (const QPixmap &M = Mark(); !M.isNull()) P.drawPixmap(QRectF(40 * S, (Hh - Mh) / 2, Mh, Mh), M, QRectF(M.rect()));
+    DeckStyle::DrawGlyph(P, QRectF(40 * S + Mh + 16 * S, (Hh - Gh) / 2, Gh, Gh), Pad::Button::LB, Gl);
+    const QFont Tf = DeckStyle::Display(18, S);
     P.setFont(Tf);
     double LastRight = 0;
     for (int I = 0; I < SectionCount; ++I)
     {
         const QRectF R = tabRect(I);
         const bool On = static_cast<int>(Current) == I;
-        P.setPen(On ? DeckStyle::Text : DeckStyle::Dim);
-        P.drawText(R, Qt::AlignCenter, SectionName(static_cast<Section>(I)).toUpper());
-        if (On) P.fillRect(QRectF(R.left() + 10 * S, Hh - 12 * S, R.width() - 20 * S, 3 * S), DeckStyle::Accent);
+        const QRectF Pill(R.left(), Hh / 2 - 18 * S, R.width(), 36 * S);
+        if (On) P.fillPath(DeckStyle::Capsule(Pill), DeckStyle::Lime);
+        P.setPen(On ? DeckStyle::Ink : DeckStyle::Dim);
+        P.drawText(Pill.translated(0, -1 * S), Qt::AlignCenter, SectionName(static_cast<Section>(I)));
         if (static_cast<Section>(I) == Section::Downloads && !Downloads.activeKeys().isEmpty())
         {
             //How many are coming down, on the section's title.
             const QString N = QString::number(Downloads.activeKeys().size());
             QFont Bf = DeckStyle::Font(11, S, QFont::Bold);
             P.setFont(Bf);
-            const QRectF Bd(R.right() - 12 * S, 12 * S, std::max(17 * S, QFontMetricsF(Bf).horizontalAdvance(N) + 9 * S), 17 * S);
-            QPainterPath Bp;
-            Bp.addRoundedRect(Bd, Bd.height() / 2, Bd.height() / 2);
-            P.fillPath(Bp, DeckStyle::Accent);
+            const QRectF Bd(R.right() - 14 * S, Pill.top() - 6 * S, std::max(18 * S, QFontMetricsF(Bf).horizontalAdvance(N) + 9 * S), 18 * S);
+            P.fillPath(DeckStyle::Capsule(Bd), DeckStyle::Magenta);
             P.setPen(Qt::white);
             P.drawText(Bd, Qt::AlignCenter, N);
             P.setFont(Tf);
         }
         LastRight = R.right();
     }
-    DeckStyle::DrawGlyph(P, QRectF(LastRight + 8 * S, (Hh - Gh) / 2, Gh, Gh), Pad::Button::RB, Gl);
+    DeckStyle::DrawGlyph(P, QRectF(LastRight + 10 * S, (Hh - Gh) / 2, Gh, Gh), Pad::Button::RB, Gl);
 
     QStringList Right;
     if (!Model.networkingEnabled()) Right << "Offline";
@@ -701,7 +717,8 @@ void DeckShell::paintEvent(QPaintEvent *)
 
     //The footer: the section's status on the left, what the buttons do on the right.
     const QRectF Foot(40 * S, height() - 58 * S, width() - 80 * S, 58 * S);
-    P.fillRect(QRectF(0, Foot.top(), width(), 1), QColor(0x22, 0x2a, 0x33));
+    P.fillRect(QRectF(0, Foot.top(), width(), Foot.height()), DeckStyle::GroundLow);
+    DeckStyle::DrawSplitRule(P, QRectF(0, Foot.top(), width(), 2 * S));
     P.setFont(DeckStyle::Font(15, S));
     P.setPen(DeckStyle::Dim);
     const QString St = statusText();

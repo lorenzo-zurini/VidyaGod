@@ -1,6 +1,5 @@
 #include "osk.h"
 
-#include "palette.h"
 #include "deckstyle.h"   // the hint row
 
 #include <QAbstractSpinBox>
@@ -342,44 +341,40 @@ void OnScreenKeyboard::paintEvent(QPaintEvent *)
 {
     QPainter P(this);
     P.setRenderHint(QPainter::Antialiasing);
-    P.fillRect(rect(), QColor(4, 8, 14, 170));
+    QColor Scrim = DeckStyle::GroundLow;
+    Scrim.setAlpha(185);
+    P.fillRect(rect(), Scrim);
     const QRectF Pn = panel();
+    const double S = std::clamp(Pn.height() / 470.0, 0.6, 1.4);
     QPainterPath Bg;
-    Bg.addRoundedRect(Pn, 14, 14);
-    P.fillPath(Bg, QColor(0x1d, 0x24, 0x2d));
-    P.setPen(QPen(QColor(0x34, 0x3e, 0x4a), 1));
-    P.drawPath(Bg);
+    Bg.addRoundedRect(Pn, 20, 20);
+    DeckStyle::DrawLift(P, Bg, S * 1.4);
+    P.fillPath(Bg, DeckStyle::Panel);
 
     //The title, then the text being typed with its cursor.
-    QFont F = font();
-    F.setPixelSize(13);
-    F.setBold(true);
-    F.setLetterSpacing(QFont::PercentageSpacing, 108);
-    P.setFont(F);
-    P.setPen(QColor(Theme::Dim));
-    P.drawText(QRectF(Pn.left() + 20, Pn.top() + 10, Pn.width() - 40, 18), Qt::AlignLeft | Qt::AlignVCenter, Title.toUpper());
+    P.setFont(DeckStyle::Display(15, 1, true));
+    P.setPen(DeckStyle::MagentaHi);
+    P.drawText(QRectF(Pn.left() + 22, Pn.top() + 8, Pn.width() - 40, 22), Qt::AlignLeft | Qt::AlignVCenter, Title);
     const QRectF Box(Pn.left() + 16, Pn.top() + 30, Pn.width() - 32, 32);
-    QPainterPath BoxPath;
-    BoxPath.addRoundedRect(Box, 6, 6);
-    P.fillPath(BoxPath, QColor(0x0f, 0x13, 0x18));
+    P.fillPath(DeckStyle::Capsule(Box), DeckStyle::GroundLow);
+    QFont F = font();
     F.setPixelSize(19);
-    F.setBold(false);
-    F.setLetterSpacing(QFont::PercentageSpacing, 100);
     P.setFont(F);
     const QFontMetricsF M(F);
     const QString Typed = Text.left(Cursor);
-    double X = Box.left() + 10, Scroll = 0;
-    const double Room = Box.width() - 20, CursorX = M.horizontalAdvance(Typed);
+    double X = Box.left() + 16, Scroll = 0;
+    const double Room = Box.width() - 32, CursorX = M.horizontalAdvance(Typed);
     if (CursorX > Room) Scroll = CursorX - Room;   // a long text scrolls so the cursor stays in sight
     P.save();
-    P.setClipRect(Box.adjusted(6, 0, -6, 0));
-    P.setPen(QColor(Theme::Text));
+    P.setClipRect(Box.adjusted(12, 0, -12, 0));
+    P.setPen(DeckStyle::Text);
     P.drawText(QPointF(X - Scroll, Box.center().y() + M.ascent() / 2 - 2), Text);
-    P.fillRect(QRectF(X - Scroll + CursorX, Box.top() + 6, 2, Box.height() - 12), QColor(Theme::Accent));
+    P.fillRect(QRectF(X - Scroll + CursorX, Box.top() + 6, 2, Box.height() - 12), DeckStyle::Lime);
     P.restore();
 
     //The keys.
     F.setPixelSize(std::clamp(static_cast<int>(Keys.isEmpty() ? 18 : Keys[0].Rect.height() * 0.42), 13, 24));
+    F.setWeight(QFont::DemiBold);
     P.setFont(F);
     for (int I = 0; I < Keys.size(); ++I)
     {
@@ -387,17 +382,15 @@ void OnScreenKeyboard::paintEvent(QPaintEvent *)
         const bool On = I == Focus;
         const bool Lit = (K.K == Kind::Shift && Shift) || (K.K == Kind::Symbols && Symbols);
         QPainterPath Kp;
-        Kp.addRoundedRect(K.Rect, 7, 7);
-        QColor Fill = K.K == Kind::Char || K.K == Kind::Space ? QColor(0x2b, 0x34, 0x3f) : QColor(0x23, 0x2a, 0x33);
-        if (K.K == Kind::Done) Fill = QColor(0x2a, 0x4d, 0x73);
-        if (Lit) Fill = QColor(0x35, 0x52, 0x70);
-        if (On) Fill = QColor(Theme::Accent);
+        Kp.addRoundedRect(K.Rect, K.Rect.height() * 0.32, K.Rect.height() * 0.32);
+        QColor Fill = K.K == Kind::Char || K.K == Kind::Space ? DeckStyle::PanelHi : QColor(0x2e, 0x21, 0x37);
+        if (K.K == Kind::Done) Fill = DeckStyle::Magenta;
+        if (Lit) Fill = QColor(0x5a, 0x2a, 0x66);
+        if (On) { Fill = DeckStyle::Lime; DeckStyle::DrawLift(P, Kp, S * 0.8); }
         P.fillPath(Kp, Fill);
-        if (On) { P.setPen(QPen(QColor(0xd6, 0xe9, 0xff), 2)); P.drawPath(Kp); }
-        P.setPen(On ? QColor(Qt::white) : QColor(Theme::Text));
+        P.setPen(On ? DeckStyle::Ink : DeckStyle::Text);
         P.drawText(K.Rect, Qt::AlignCenter, K.Label);
     }
     //What the buttons do, inside the keyboard: a dialog has no hint bar of its own, and the shell's is under it.
-    const double S = std::clamp(Pn.height() / 470.0, 0.6, 1.4);
     DeckStyle::DrawHints(P, QRectF(Pn.left() + 18, Pn.bottom() - 44, Pn.width() - 36, 38), padHints(), PadInput::instance().glyphs(), S);
 }
