@@ -1,4 +1,5 @@
 #include "catalogtab.h"
+#include "cardpool.h"
 #include "theme.h"   // the named colours
 #include "cardtoolbar.h"
 #include "offlinebanner.h"
@@ -141,74 +142,12 @@ void CatalogTab::rebuild()
     AvailableVisible.clear();
     qDeleteAll(*AvailableGameCards); AvailableGameCards->clear();
 
-    //One card per un-hydrated presentable group: at least one edition's content is still missing AND fetchable
-    //over IPFS. (A fully-hydrated group lives in the Library tab.)
-    const auto Hyd = Model.hydration();   // once per rebuild, shared with the other views — never per-launchable
-    //The cards and the launch dialogs they open read one snapshot: a later re-index replaces it, and they are rebuilt.
-    const std::shared_ptr<const NodeIndex> Snapshot = Model.catalogSnapshot();
-    for (const Shelf::Tile & Tile : Shelf::Tiles(*Snapshot))
+    *AvailableGameCards = CardPool::Available(Model);
+    for (LibraryGameCard * c : *AvailableGameCards)
     {
-        std::vector<std::string> Ids;
-        bool AnyMissing = false, AnyFetchable = false;
-        for (const Node * N : Tile.Rows)
-        {
-            Ids.push_back(N->NodeId);
-            auto H = Hyd.find(N->Key());
-            if (H == Hyd.end() || !H->second.Hydrated)
-            {
-                AnyMissing = true;
-                // Fetchable = it names content CIDs, OR a package it contains has not landed yet (or is not shared):
-                // the card stays, and its download dialog says what it is waiting for. From the one memoized pass: a
-                // closure walk per edition froze the GUI for minutes on a friend's 903 Minecraft versions.
-                if (H != Hyd.end() && (H->second.HasCid || H->second.Incomplete)) AnyFetchable = true;
-            }
-        }
-        if (!Tile.Graft.empty())   // a graft's card: the graft is the game, so a missing graft is something to download
-            if (auto H = Hyd.find(Tile.Graft); H == Hyd.end() || !H->second.Hydrated)
-            {
-                AnyMissing = true;
-                if (H != Hyd.end() && (H->second.HasCid || H->second.Incomplete)) AnyFetchable = true;
-            }
-        if (!AnyMissing || !AnyFetchable || Ids.empty()) continue;
-        auto * c = new LibraryGameCard(Model.config(), Snapshot, std::move(Ids), Tile.Uid);
-        c->InitializeClassVariables();
-
         const bool Busy = ActiveDownloads.contains(c->GameKey);
         c->Downloading = Busy;
         c->DownloadPercent = Busy ? ActiveDownloads.value(c->GameKey) : -1.0;   // carry current progress across rebuilds
-        AvailableGameCards->append(c);
-    }
-
-    // ── Per-package grouping (Catalog diverges from Library): a package with several un-hydrated games shows its
-    // base game as the main tile and the rest as small secondaries beneath it. The base is the game whose tile UID is
-    // the package's own (PackageMainCard). ──
-    // Sibling games group by FAMILY (%PackageUID%: the base game a tile's PARENTUID chain ends at) — not by
-    // directory: a received package's games may land per-tile before the seeder's dir name reaches the wire (and a
-    // dir is an on-disk accident anyway). A card with no family falls back to its bundle dir.
-    std::map<std::string, std::vector<LibraryGameCard*>> ByBundle;     // PACKAGEUID (or dir) → its un-hydrated game cards
-    std::vector<std::string> BundleOrder;
-    for (LibraryGameCard * c : *AvailableGameCards) {
-        const Node * N = Model.catalogIndex().Find(c->RepNodeId);
-        std::string Key = N ? N->PackageUid : std::string();
-        if (Key.empty()) Key = c->PackagePath.string();
-        if (ByBundle.find(Key) == ByBundle.end()) BundleOrder.push_back(Key);
-        ByBundle[Key].push_back(c);
-    }
-    for (const std::string & Key : BundleOrder) {
-        std::vector<LibraryGameCard*> & games = ByBundle[Key];
-        if (games.size() < 2) continue;                                // single-game package → normal full tile
-        std::vector<std::string> Uids;
-        for (LibraryGameCard * c : games) Uids.push_back(c->GameKey.toStdString());
-        const int M = PackageMainCard(Uids, Key);
-        if (M < 0) continue;                                           // its base is not here: nothing to nest under
-        LibraryGameCard * Main = games[(size_t)M];
-        std::vector<LibraryGameCard*> Rest;
-        for (LibraryGameCard * c : games) if (c != Main) Rest.push_back(c);
-        std::sort(Rest.begin(), Rest.end(), [](LibraryGameCard * a, LibraryGameCard * b){ return a->SortTitle < b->SortTitle; });
-        for (LibraryGameCard * c : Rest) {
-            c->IsSecondary = true;
-            Main->Secondaries.push_back(c);
-        }
     }
 
     // Point the view at the full pool, then scale every cover ONCE — BEFORE applyFilter shows them.
@@ -228,30 +167,15 @@ void CatalogTab::applyFilter()
 {
     if (!AvailableView) return;
 
-    // Repo name for a card (groups un-repo'd local entries under "Local").
     auto RepoOf = [this](LibraryGameCard * c) -> QString { return repoNameForBundle(c->PackagePath); };
 
     AvailableVisible.clear();
-    for (LibraryGameCard * c : *AvailableGameCards) {
-        if (c->IsSecondary) continue;                                 // secondaries travel with their package's main tile
-        // A package matches if its main OR any secondary game matches the search (so a search keeps the whole package).
-        bool match = AvailableSearch.isEmpty() || c->GameTitle.contains(AvailableSearch, Qt::CaseInsensitive);
-        for (LibraryGameCard * sc : c->Secondaries)
-            if (!match && sc->GameTitle.contains(AvailableSearch, Qt::CaseInsensitive)) match = true;
-        if (match) AvailableVisible.append(c);
-    }
+    for (LibraryGameCard * c : *AvailableGameCards)
+        if (!c->IsSecondary && CardPool::Matches(*c, AvailableSearch))   // secondaries travel with their main tile
+            AvailableVisible.append(c);
 
     // Sort by (repo, within-group key) so each repo is a contiguous run; then build collapsible groups.
-    auto keyOf = [this](LibraryGameCard * a) -> QString {
-        switch (AvailableSort) { case SortMode::Date:   return a->SortDate + "|" + a->SortTitle;
-                                 case SortMode::Series: return a->SortSeriesKey;
-                                 default:               return a->SortTitle; }
-    };
-    std::sort(AvailableVisible.begin(), AvailableVisible.end(), [&](LibraryGameCard * a, LibraryGameCard * b){
-        const QString ra = RepoOf(a), rb = RepoOf(b);
-        if (ra != rb) return ra < rb;
-        return keyOf(a) < keyOf(b);
-    });
+    CardPool::SortBySection(AvailableVisible, AvailableSort, *Model.config());
 
     QVector<LibraryView::Group> groups;
     const int n = AvailableVisible.count();
@@ -274,18 +198,7 @@ void CatalogTab::applyFilter()
 
 QString CatalogTab::repoNameForBundle(const std::filesystem::path & BundleDir) const
 {
-    // Each CID package source is its own named catalog section.
-    const std::string Name = PackageCatalog::PackageSourceNameForPath(*Model.config(), BundleDir);
-    if (!Name.empty()) return QString::fromStdString(Name);
-    // A RECEIVED share lives under CATALOG/"<Nick> - <Lib>"/… — that is PUBLISHED content, so it sections under its
-    // friend/library, NEVER "Local". Return the dir directly under CATALOG. Only a bundle out of BOTH trees is "Local".
-    bool afterCatalog = false;
-    for (const auto & Part : BundleDir)
-    {
-        if (afterCatalog) return QString::fromStdString(Part.string());
-        if (Part.string() == "CATALOG") afterCatalog = true;
-    }
-    return QStringLiteral("Local");   // genuinely out-of-tree / unpublished
+    return CardPool::SectionOf(*Model.config(), BundleDir);
 }
 
 // "Add CID" — manage IPFS folder-CID package sources (add/remove). The list rebuilds on packageSourcesChanged, which
@@ -353,11 +266,4 @@ void CatalogTab::openPackageSourcesDialog()
     connect(&Model, &AppModel::packageSourceFailed, dlg, [dlg](const QString & m){ QMessageBox::warning(dlg, "Package source", m); });
 
     dlg->show();
-}
-
-int PackageMainCard(const std::vector<std::string> &CardUids, const std::string &PackageUid)
-{
-    for (size_t I = 0; I < CardUids.size(); ++I)
-        if (!PackageUid.empty() && CardUids[I] == PackageUid) return (int)I;
-    return -1;
 }

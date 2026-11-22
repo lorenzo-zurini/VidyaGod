@@ -187,6 +187,7 @@ set(SHARED_SOURCES
     src/cli/commands/cmd_vfs.cpp
     src/cli/commands/cmd_launch.cpp
     src/cli/commands/cmd_appui.cpp
+    src/cli/commands/cmd_controller.cpp
     src/cli/commands/cmdutil.h
     src/cli/commands/cmdutil.cpp
     src/base/eventlog.h
@@ -317,6 +318,20 @@ set(SHARED_SOURCES
     src/ui/prelaunch_instances.cpp
     src/ui/keycapture.h
     src/ui/keycapture.cpp
+    src/ui/deckstyle.h
+    src/ui/deckstyle.cpp
+    src/ui/deckgrid.h
+    src/ui/deckgrid.cpp
+    src/ui/deckshell.h
+    src/ui/deckshell_p.h
+    src/ui/deckshell.cpp
+    src/ui/deckpages.cpp
+    src/ui/padinput.h
+    src/ui/padinput.cpp
+    src/ui/padnav.h
+    src/ui/padnav.cpp
+    src/ui/osk.h
+    src/ui/osk.cpp
 
     src/ui/launchthread.h
     src/ui/launchthread.cpp
@@ -373,6 +388,8 @@ set(SHARED_SOURCES
 
     src/ui/catalogtab.h
     src/ui/catalogtab.cpp
+    src/ui/cardpool.h
+    src/ui/cardpool.cpp
     src/ui/cardtoolbar.cpp
     src/ui/offlinebanner.cpp
 
@@ -660,6 +677,7 @@ add_gui_test(test_friends)
 add_gui_test(test_sandbox)
 add_gui_test(test_variantpicker)
 add_gui_test(test_prelaunch)
+add_gui_test(test_controller)
 add_gui_test(test_commands)
 # The friends test starts the embedded node to exercise the real C ABI; keep it hermetic (no swarm/DHT). The offline
 # switch must be in the environment at PROCESS START — Go caches its env at init, so a runtime setenv is invisible.

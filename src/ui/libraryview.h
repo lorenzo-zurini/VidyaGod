@@ -159,6 +159,7 @@ protected:
     void scrollContentsBy(int, int) override;
     void wheelEvent(QWheelEvent * e) override;
     void keyPressEvent(QKeyEvent * e) override;
+    void contextMenuEvent(QContextMenuEvent * e) override;   // the Menu key, a controller's X: the selected card's menu
     bool viewportEvent(QEvent * e) override;
 
 private:

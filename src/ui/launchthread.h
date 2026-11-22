@@ -46,6 +46,8 @@ public:
 
     // Forcibly kills the running game process (if any).
     void kill();
+    // How many launches are running now, in this process (a game is being played: controllers are the game's).
+    static int Running();
 
 signals:
     // Raw log line forwarded from the Log() callback.

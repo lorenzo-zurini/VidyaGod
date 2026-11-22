@@ -2,7 +2,10 @@
 #define UIFIND_H
 
 #include <nlohmann/json.hpp>
+#include <functional>
 #include <string>
+
+#include "command.h"   // Command::Context
 
 class QWidget;
 
@@ -16,6 +19,9 @@ QWidget *Named(const std::string &Name, const QWidget *Under = nullptr);
 std::string NameOf(const QWidget *W);
 // W's exact state (what ui tree prints), Depth levels down.
 nlohmann::ordered_json StateOf(const QWidget *W, int Depth, bool VisibleOnly);
+// Runs a person's action F and returns After()'s state — unless F opens a dialog or a menu that waits for an answer
+// (an exec()): then the call is answered at once with what opened (Context::Early), and `ui press` answers it.
+nlohmann::ordered_json Act(Command::Context &Ctx, const std::function<void()> &F, const std::function<nlohmann::ordered_json()> &After);
 }
 
 #endif // UIFIND_H

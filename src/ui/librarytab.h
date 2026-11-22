@@ -48,4 +48,8 @@ private:
     bool                      CountAgain = false;
 };
 
+// The Library's "Add Local Package": a folder picked, every package under it added (AppModel::importPackagesFromDir),
+// and what came of it said. The controller mode's menu has it too.
+void AddLocalPackage(AppModel &Model, QWidget *Parent);
+
 #endif // LIBRARYTAB_H

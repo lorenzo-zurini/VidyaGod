@@ -669,7 +669,8 @@ VG_COMMANDS
           Opt("card", "a Catalog card (its title or key): press its Download") },
         { "downloads start --games bafkreiank43ketmdy2jtdcnn5utluobf53avcuubisi3ajtdxrcnmyteka", "downloads start --card 749" },
         { "DownloadManager::beginDownload", "StartCardDownload", "AskDownload", "TickedGrafts", "DownloadManager::downloading", "IpfsModel::markQueued", "IpfsModel::clearQueued",
-          "MainWindow::catalogCard", "CatalogTab::view", "LibraryView::cardAt" , "CatalogTab::markDownloading", "CatalogTab::setDownloadProgress", "CatalogTab::clearDownloading", "IpfsFetchReady" }, Needs::Ui, true,
+          "MainWindow::catalogCard", "CatalogTab::view", "LibraryView::cardAt" , "CatalogTab::markDownloading", "CatalogTab::setDownloadProgress", "CatalogTab::clearDownloading", "IpfsFetchReady",
+          "DeckShelf::setDownload", "DeckDownloads::setProgress" }, Needs::Ui, true,
         [](Command::Context &C, const json &A) {
             MainWindow &W = Win(C);
             if (A.contains("card"))

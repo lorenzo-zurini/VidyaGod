@@ -1,4 +1,6 @@
 #include "launchthread.h"
+
+#include <atomic>
 #include "commonutils.h"
 #include "containerwrapper.h"
 #include "launchsession.h"
@@ -23,8 +25,13 @@ static QString MissingCoreMessage()
          + QStringLiteral("\n\nSettings → Dependencies shows what to install.");
 }
 
+namespace { std::atomic<int> RunningLaunches{0}; }
+
+int LaunchThread::Running() { return RunningLaunches.load(); }
+
 void LaunchThread::run()
 {
+    struct Count { Count() { ++RunningLaunches; } ~Count() { --RunningLaunches; } } Counted;   // every way out of run()
     //This launch's console and steps: every line it logs (unfiltered) and every phase it announces, from this thread
     //only — a second launch running meanwhile has its own. The last few percent are the game's own startup.
     LogSink Console([this](LogLevel Level, const std::string &Ctx, const std::string &Msg) {

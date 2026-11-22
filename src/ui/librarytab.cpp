@@ -1,4 +1,5 @@
 #include "librarytab.h"
+#include "cardpool.h"
 #include "cardtoolbar.h"
 #include "installed.h"
 #include "shelf.h"
@@ -51,6 +52,15 @@ LibraryTab::LibraryTab(AppModel &model, QWidget *parent)
     rebuild();
 }
 
+void AddLocalPackage(AppModel &Model, QWidget *Parent)
+{
+    const QString sel = QFileDialog::getExistingDirectory(Parent, "Select package or directory…");
+    if (sel.isEmpty()) return;
+    const auto [added, skipped] = Model.importPackagesFromDir(sel);
+    if (added == 0 && skipped == 0) { QMessageBox::warning(Parent, "No packages found", "No valid packages found."); return; }
+    QMessageBox::information(Parent, "Done", QString("Added %1 package(s). %2 skipped.").arg(added).arg(skipped));
+}
+
 LibraryTab::~LibraryTab()
 {
     qDeleteAll(*LibraryGameCards);
@@ -89,13 +99,7 @@ void LibraryTab::buildUi()
     connect(edBtn, &QPushButton::clicked, this, [this]{
         PackageEditor::OpenFor(Model.config(), this, "");
     });
-    connect(addBtn, &QPushButton::clicked, this, [this]{
-        const QString sel = QFileDialog::getExistingDirectory(this, "Select package or directory…");
-        if (sel.isEmpty()) return;
-        const auto [added, skipped] = Model.importPackagesFromDir(sel);
-        if (added == 0 && skipped == 0) { QMessageBox::warning(this, "No packages found", "No valid packages found."); return; }
-        QMessageBox::information(this, "Done", QString("Added %1 package(s). %2 skipped.").arg(added).arg(skipped));
-    });
+    connect(addBtn, &QPushButton::clicked, this, [this]{ AddLocalPackage(Model, this); });
 
     layout->addWidget(toolbar);
 
@@ -130,75 +134,15 @@ void LibraryTab::buildUi()
 
 void LibraryTab::buildCards()
 {
-    qDeleteAll(*LibraryGameCards); LibraryGameCards->clear();
-    //One tile per presentable GROUP of launchable nodes. Only HYDRATED groups (every edition's content present
-    //locally) appear in the Library; un-hydrated ones live in the Available tab.
-    const auto Hyd = Model.hydration();   // once per rebuild, shared with the other views — never per-launchable
-    //The cards and the launch dialogs they open read one snapshot: a later re-index replaces it, and they are rebuilt.
-    const std::shared_ptr<const NodeIndex> Snapshot = Model.catalogSnapshot();
-    for (const Shelf::Tile & Tile : Shelf::Tiles(*Snapshot))
-    {
-        std::vector<std::string> Ids;
-        bool AllHydrated = true, HasContent = false;
-        for (const Node * N : Tile.Rows)
-        {
-            Ids.push_back(N->Key());
-            auto H = Hyd.find(N->Key());
-            if (H == Hyd.end() || !H->second.Hydrated) AllHydrated = false;
-            if (H != Hyd.end() && H->second.OnDisk) HasContent = true;   // a file of it is HERE, not only declared
-        }
-        if (!Tile.Graft.empty())   // a graft's card: the graft is the game, so it must be installed too
-        {
-            auto H = Hyd.find(Tile.Graft);
-            if (H == Hyd.end() || !H->second.Hydrated) AllHydrated = false;
-        }
-        if (!AllHydrated || Ids.empty() || !HasContent)            // skip content-less/malformed (vacuously hydrated)
-        {
-            if (AllHydrated && !Ids.empty())                      // every row installed, yet nothing of its own on disk
-                LogOut("LibraryTab", "not shown: '" + Tile.Tile.value("TITLE", Tile.Uid) + "' (tile " + Tile.Uid
-                                     + ") — none of its rows has content of its own on disk");
-            continue;
-        }
-        auto * c = new LibraryGameCard(Model.config(), Snapshot, std::move(Ids), Tile.Uid);
-        c->InitializeClassVariables();
-        LibraryGameCards->append(c);
-    }
+    qDeleteAll(*LibraryGameCards);
+    *LibraryGameCards = CardPool::Installed(Model);
     LogOut("LibraryTab", "Library shows " + std::to_string(LibraryGameCards->size()) + " hydrated game(s).");
 }
 
 void LibraryTab::sortAndFilter()
 {
     auto & cards = *LibraryGameCards;
-    switch (CurrentSort) {
-    case SortMode::Name:
-        std::sort(cards.begin(), cards.end(),
-            [](auto * a, auto * b){ return a->SortTitle < b->SortTitle; });
-        break;
-    case SortMode::Date:
-        std::sort(cards.begin(), cards.end(),
-            [](auto * a, auto * b){ return a->SortDate < b->SortDate; });
-        break;
-    case SortMode::Series:
-        // Games without a series sort last, alphabetically by title within series.
-        std::sort(cards.begin(), cards.end(), [](auto * a, auto * b) {
-            bool aNoSeries = a->SeriesName.isEmpty();
-            bool bNoSeries = b->SeriesName.isEmpty();
-            if (aNoSeries != bNoSeries) return bNoSeries; // series before no-series
-            if (aNoSeries && bNoSeries) return a->SortTitle < b->SortTitle;
-            return a->SortSeriesKey < b->SortSeriesKey;
-        });
-        break;
-    case SortMode::Recent:
-        // Most recently played first; games never played after them, by title.
-        // The times are read off the GUI thread (countSizes); until they land, the order is by title, then re-sorted.
-        std::stable_sort(cards.begin(), cards.end(), [](auto * a, auto * b) {
-            const QString & A = a->LastPlayedCache, & B = b->LastPlayedCache;
-            if (A.isEmpty() != B.isEmpty()) return B.isEmpty();
-            if (A != B) return A > B;
-            return a->SortTitle < b->SortTitle;
-        });
-        break;
-    }
+    CardPool::Sort(cards, CurrentSort);
 
     // Apply the search filter to produce the visible subset the view actually shows.
     LibraryVisible.clear();

@@ -1,6 +1,7 @@
 #include "keycapture.h"
 
 #include "keynames.h"
+#include "padinput.h"   // the one reader of controllers: a capture borrows its queue
 #include "commonutils.h"   // Log*
 
 #define SDL_MAIN_HANDLED   // SDL must not rename main() (it does on Windows)
@@ -17,75 +18,6 @@
 
 #include <map>
 #include <set>
-
-namespace
-{
-//SDL's game-controller subsystem, started the first time a capture begins (never at app start: most launches never
-//rebind). Every controller is opened as it appears; Begin drops whatever was queued, so a button already held when
-//the capture starts — or pressed while the window was idle — binds nothing. An axis binds when pushed past half; one
-//already past half when the capture starts (a stick held, a trigger resting in) must come back first.
-class Gamepads
-{
-public:
-    static Gamepads &Get() { static Gamepads G; return G; }
-
-    void Begin()
-    {
-        if (!Ok) return;
-        SDL_PumpEvents();
-        for (int I = 0; I < SDL_NumJoysticks(); ++I) Open(I);
-        SDL_FlushEvents(SDL_FIRSTEVENT, SDL_LASTEVENT);
-        Held.clear();
-        for (const auto &[Id, C] : Opened)
-            for (int A = 0; A < SDL_CONTROLLER_AXIS_MAX; ++A)
-                if (Past(SDL_GameControllerGetAxis(C, SDL_GameControllerAxis(A)))) Held.insert({Id, A});
-    }
-
-    //The name of the first new press since Begin (or the last call), else "".
-    std::string Poll()
-    {
-        if (!Ok) return {};
-        SDL_Event E;
-        while (SDL_PollEvent(&E))
-        {
-            if (E.type == SDL_CONTROLLERDEVICEADDED) Open(E.cdevice.which);
-            else if (E.type == SDL_CONTROLLERBUTTONDOWN)
-            {
-                if (std::string N = KeyCapture::NameOfPadButton(E.cbutton.button); !N.empty()) return N;
-            }
-            else if (E.type == SDL_CONTROLLERAXISMOTION)
-            {
-                const std::pair<SDL_JoystickID, int> Axis{E.caxis.which, E.caxis.axis};
-                if (!Past(E.caxis.value)) { Held.erase(Axis); continue; }       // back inside half: it counts again
-                if (Held.count(Axis)) continue;
-                if (std::string N = KeyCapture::NameOfPadAxis(E.caxis.axis, E.caxis.value); !N.empty()) return N;
-            }
-        }
-        return {};
-    }
-
-private:
-    Gamepads()
-    {
-        //No window of SDL's own gets focus: the launch window has it, so controllers must report in the background.
-        SDL_SetHint(SDL_HINT_JOYSTICK_ALLOW_BACKGROUND_EVENTS, "1");
-        SDL_SetHint(SDL_HINT_NO_SIGNAL_HANDLERS, "1");     // Ctrl+C stays Qt's
-        Ok = SDL_InitSubSystem(SDL_INIT_GAMECONTROLLER) == 0;
-        if (!Ok) LogWarn("KeyCapture", std::string("gamepads unavailable: ") + SDL_GetError());
-    }
-    void Open(int Index)
-    {
-        if (!SDL_IsGameController(Index)) return;
-        const SDL_JoystickID Id = SDL_JoystickGetDeviceInstanceID(Index);
-        if (!Opened.count(Id))
-            if (SDL_GameController *C = SDL_GameControllerOpen(Index)) Opened[Id] = C;
-    }
-    static bool Past(int Value) { return Value > SDL_JOYSTICK_AXIS_MAX / 2 || Value < SDL_JOYSTICK_AXIS_MIN / 2; }
-    bool Ok = false;
-    std::map<SDL_JoystickID, SDL_GameController *> Opened;
-    std::set<std::pair<SDL_JoystickID, int>> Held;     // axes past half when the capture began
-};
-}
 
 unsigned KeyCapture::ModsOf(Qt::KeyboardModifiers M)
 {
@@ -232,7 +164,7 @@ KeyCaptureField::KeyCaptureField(const std::string &V, const std::string &Def, Q
     PadPoll = new QTimer(this);
     PadPoll->setInterval(16);
     connect(PadPoll, &QTimer::timeout, this, [this] {
-        const std::string N = Gamepads::Get().Poll();
+        const std::string N = PadInput::instance().capturePoll();
         if (N.empty()) return;
         stopCapture();
         setValue(N);
@@ -242,6 +174,13 @@ KeyCaptureField::KeyCaptureField(const std::string &V, const std::string &Def, Q
     connect(Reset, &QToolButton::clicked, this, [this] { stopCapture(); setValue(Default); });
     Value = KeyNames::IsValue(V) ? V : std::string();
     refresh();
+}
+
+KeyCaptureField::~KeyCaptureField()
+{
+    //Destroyed mid-capture (its window closed): no FocusOut reaches this class any more (~QWidget runs as QWidget),
+    //so the queue PadInput lent it would stay lent, and controller navigation dead.
+    if (Capturing) PadInput::instance().captureEnd();
 }
 
 void KeyCaptureField::setValue(const std::string &V)
@@ -263,13 +202,14 @@ void KeyCaptureField::startCapture()
     Capturing = true;
     HeldMods.clear();
     Button->setFocus(Qt::OtherFocusReason);
-    Gamepads::Get().Begin();
+    PadInput::instance().captureBegin();
     PadPoll->start();
     refresh();
 }
 
 void KeyCaptureField::stopCapture()
 {
+    if (Capturing) PadInput::instance().captureEnd();
     Capturing = false;
     PadPoll->stop();
     refresh();

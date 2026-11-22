@@ -27,6 +27,8 @@
 *::viewportEvent             # Qt viewport dispatcher: forwards to the handlers above
 *::scrollContentsBy          # Qt scroll callback: scrolling changes nothing `ui tree` reports
 *::eventFilter               # Qt event filter: intercepts the events above for another object
+*::paintEvent                # Qt paint handler: what it drew is read with `ui screenshot` (QWidget::grab paints it)
+*::contextMenuEvent          # Qt context-menu handler: the menu it opens is `ui card --menu` / `controller press x`
 *::event                     # Qt event dispatcher: forwards to the handlers above
 
 
@@ -106,6 +108,9 @@ to_json                      # a JSON conversion: runs wherever that type is wri
 
 # ---- custom controls inside windows: `ui show` reads them, `ui click` / `ui set` act on them ----
 KeyCaptureField::*           # the launch window's key-binding field (its buttons are `ui click`, its value `ui show`)
+PadInput::captur*            # the key-binding field's capture (KeyCaptureField above): it borrows the controller queue while `ui click` has it capturing
+AddLocalPackage              # the folder picker around AppModel::importPackagesFromDir: `app import <dir>` is the same import
+DeckStyle::Draw*             # draws a glyph, a hint row or a cover onto a painter: what was drawn is read with `ui screenshot`
 ValidationPanel::*           # the editor's validation list (its rows are `ui show`; `build validate` gives the same messages)
 AppPaths::SetConfigReadOnly  # a call carrying a path override beside the running app: set by the command line itself, every such call
 AppPaths::ConfigReadOnly     # as AppPaths::SetConfigReadOnly: read when the config would be saved

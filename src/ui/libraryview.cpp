@@ -1,4 +1,5 @@
 #include "libraryview.h"
+#include <QContextMenuEvent>
 #include "appmodel.h"   // networkingEnabled — what IpfsFetchReady says
 #include "theme.h"   // the named colours
 #include "installed.h"
@@ -228,6 +229,7 @@ void LibraryView::setCards(QList<LibraryGameCard *> * cards)
     Cards        = cards;
     HoveredIdx   = -1;
     SelectedIdx  = -1;
+    setProperty("padIndex", -1);
     LastCols     = 0;
     CardW        = 0;
     Rects.clear();
@@ -649,7 +651,7 @@ void LibraryView::onMousePress(QMouseEvent * e)
     {
         if (EmitDownload) return;
         for (int i = 0; i < Cards->count() && i < Rects.size(); i++)
-            if (Rects[i].contains(pos)) { SelectedIdx = i; emit cardMenuRequested(Cards->at(i), e->globalPosition().toPoint()); return; }
+            if (Rects[i].contains(pos)) { SelectedIdx = i; setProperty("padIndex", i); emit cardMenuRequested(Cards->at(i), e->globalPosition().toPoint()); return; }
         return;
     }
     if (e->button() != Qt::LeftButton) return;
@@ -662,7 +664,7 @@ void LibraryView::onMousePress(QMouseEvent * e)
     for (int i = 0; i < count; i++) {
         // A click anywhere on the card (including over the aesthetic secondary thumbnails) is the package action.
         if (!Rects[i].contains(pos)) continue;          // collapsed cards have empty rects → skipped
-        SelectedIdx = i;                                // keep keyboard focus in sync with the click
+        SelectedIdx = i; setProperty("padIndex", i);                              // keep keyboard focus in sync with the click
         if (Cards->at(i)->Downloading) { emit cancelRequested(Cards->at(i)); return; }   // in flight → offer to cancel
         if (EmitDownload) { emit downloadRequested(Cards->at(i)); return; }
         QRect editR(Rects[i].right()-EditW, Rects[i].bottom()-LineH, EditW, LineH);
@@ -690,6 +692,14 @@ void LibraryView::keyPressEvent(QKeyEvent * e)
         activateCard(SelectedIdx); return;
     default: QAbstractScrollArea::keyPressEvent(e);
     }
+}
+
+void LibraryView::contextMenuEvent(QContextMenuEvent * e)
+{
+    //A mouse's right press opens the menu in mousePressEvent; this is the keyboard's (and a controller's) way to it.
+    if (e->reason() != QContextMenuEvent::Keyboard) { QAbstractScrollArea::contextMenuEvent(e); return; }
+    if (SelectedIdx >= 0) requestCardMenu(SelectedIdx);
+    e->accept();
 }
 
 // Geometry-based move: from the selected card's centre, pick the nearest visible card in the requested
@@ -721,6 +731,7 @@ void LibraryView::moveSelection(int dx, int dy)
 void LibraryView::setSelected(int i)
 {
     SelectedIdx = i;
+    setProperty("padIndex", i);   // controller navigation reads it: an arrow that moved nothing lets focus leave the grid
     ensureCardVisible(i);
     viewport()->update();
 }

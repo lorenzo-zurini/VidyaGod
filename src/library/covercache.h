@@ -55,6 +55,7 @@ public:
     // cards draw it stretched to their own size anyway — a library's 600×900 originals were most of the app's memory.
     // Growing it drops the decoded covers taken so far' reason to stay: surfaces re-take them (coverDecoded fires).
     void setDisplaySize(QSize Max);
+    QSize displaySize() const { return DisplayMax; }   // the size set last (invalid: none yet)
     // Whether a decode of Path is under way (so a null take() means "soon", not "never").
     bool decoding(const QString &Path) const { return Decoding.contains(Path); }
 

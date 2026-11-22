@@ -33,6 +33,7 @@ struct LaunchParameters
     bool RunningHeadless = false;                                         //True when no GUI should be shown
     bool RunningInPackageDir = false;                                     //True when auto-detected as running inside a package directory
     bool StartInTray = false;                                            //--tray: come up hidden in the system tray (used by the start-on-login autostart entry)
+    bool StartController = false, StartDesktop = false;                  //--controller / --desktop: come up in controller mode or the desktop window, whatever Settings.Controller.Start says
     bool HasHeadlessPackagePath = false;                                  //True when a package path has been resolved (CLI or auto-detect)
     std::filesystem::path HeadlessPackagePath;                            //Path to the package to launch in headless mode
     std::string LaunchNodeId;                                            //--node <NODE_ID>: launch a launchable node from the global node graph (everything-is-a-node)

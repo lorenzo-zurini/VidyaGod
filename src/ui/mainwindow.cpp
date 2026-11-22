@@ -20,6 +20,9 @@
 #include "ipfswrapper.h"       // IpfsManager (transfer progress signals) + StartNode/StopNode
 #include "apppaths.h"            // AppPaths::DataRoot (the IPFS repo lives at <DataRoot>/ipfs)
 #include "prelaunchwindow.h"
+#include "deckshell.h"           // controller mode
+#include "padnav.h"             // PadRouter — controllers drive every window
+#include "commonutils.h"
 
 #include <thread>
 
@@ -27,6 +30,8 @@
 #include <QGuiApplication>
 #include <QScreen>
 #include <QTabWidget>
+#include <QStackedWidget>
+#include <QToolButton>
 #include <QTimer>
 #include <QPointer>
 #include <QVBoxLayout>
@@ -51,7 +56,7 @@
 
 MainWindow::~MainWindow() { PackageEditor::SetOnCreated({}); }
 
-MainWindow::MainWindow(nlohmann::ordered_json * gc, QDir * appData, QWidget * parent, bool FromLastIndex)
+MainWindow::MainWindow(nlohmann::ordered_json * gc, QDir * appData, QWidget * parent, bool FromLastIndex, bool StartController)
     : QMainWindow(parent)
 {
     setWindowTitle("Vidya God");
@@ -85,11 +90,13 @@ MainWindow::MainWindow(nlohmann::ordered_json * gc, QDir * appData, QWidget * pa
         setGeometry(x, y, w, h);
     }
 
-    QWidget * cw = new QWidget(this);
-    QVBoxLayout * cl = new QVBoxLayout(cw);
+    //Two pages: the desktop's tabs, and controller mode's shell (each built the first time it is shown).
+    Modes = new QStackedWidget(this);
+    setCentralWidget(Modes);
+    DesktopPage = new QWidget(Modes);
+    QVBoxLayout * cl = new QVBoxLayout(DesktopPage);
     cl->setContentsMargins(0,0,0,0); cl->setSpacing(0);
-    cw->setLayout(cl);
-    setCentralWidget(cw);
+    Modes->addWidget(DesktopPage);
 
     IpfsModelPtr = new IpfsModel(*Model, this);              // owns transfer state; single IpfsManager consumer
     connect(Model, &AppModel::ipfsHealthChanged, IpfsModelPtr, &IpfsModel::refreshNow);   // orphan heal ran → re-poll health/red→green
@@ -107,6 +114,18 @@ MainWindow::MainWindow(nlohmann::ordered_json * gc, QDir * appData, QWidget * pa
     QuitSignals::SetQuitAction([this]{ ReallyQuitting = true; close(); });
 
     BuildStaticUI();
+    if (!StartController) BuildDesktop();
+
+    //Controllers: one router for every window the app opens; Start with Back held turns controller mode on from the
+    //desktop (after the press itself has been routed: queued).
+    PadRouter::instance().install();
+    //The chord is read as the press arrives (Back is held now); the switch waits for the press to finish its routing.
+    connect(&PadInput::instance(), &PadInput::pressed, this, [this](Pad::Button B) {
+        if (B == Pad::Button::Start && PadInput::instance().held(Pad::Button::Back) && !Controller)
+            QTimer::singleShot(0, this, [this] { setControllerMode(true); });
+    });
+    if (StartController) setControllerMode(true);
+    else applyControllerSettings();
 
     // Test/dev hook: open directly on a named tab (e.g. VIDYAGOD_START_TAB=IPFS) so a headless screenshot harness
     // can land on it without coordinate-clicking. Selecting it fires currentChanged (e.g. starts the IPFS refresh).
@@ -123,12 +142,42 @@ MainWindow::MainWindow(nlohmann::ordered_json * gc, QDir * appData, QWidget * pa
     EventLog::Attach(FriendsManager::instance(), "FriendsManager");
     EventLog::Attach(IpfsManager::instance(), "IpfsManager");
     EventLog::AttachTree(this);
+    Constructed = true;
 }
 
 void MainWindow::BuildStaticUI()
 {
-    MainWindowTabWidget = new QTabWidget(centralWidget());
-    centralWidget()->layout()->addWidget(MainWindowTabWidget);
+    // Settings → Runners "Import" → the SAME download pump, fed a runner-only group (no launchables, one runner build).
+    // A runner install is not a special flow — just this batch with runner-build targets, so it inherits persistence/
+    // resume, IPFS-tab rows and cancel identically to a game download.
+    connect(Model, &AppModel::runnerImportRequested, DownloadMgr, [this](const QString & Rid){
+        DownloadMgr->beginDownload("runner:" + Rid, {}, { Rid.toStdString() }, {});
+    });
+
+    // A completed/changed download → refresh the IPFS model (pick up the new pin). Queued-row state + per-CID progress
+    // flow directly into IpfsModel (from the download queue's callback + the node's transfer events, both via
+    // IpfsManager); DownloadManager reads that progress back to paint the Catalog card (wired in its ctor).
+    connect(DownloadMgr, &DownloadManager::transfersChanged, IpfsModelPtr, &IpfsModel::refreshNow);
+
+    // Lazy cover loading: coalesce a burst of cover-ready arrivals into one model notification; the Library/Catalog
+    // tabs (and controller mode's shelves) repaint their visible cards on coversReady.
+    CoverRefreshTimer = new QTimer(this);
+    CoverRefreshTimer->setSingleShot(true);
+    CoverRefreshTimer->setInterval(200);
+    connect(CoverRefreshTimer, &QTimer::timeout, this, [this]{ Model->notifyCoversReady(); });
+    connect(CoverCache::instance(), &CoverCache::coverReady, this, [this](QString){
+        if (CoverRefreshTimer && !CoverRefreshTimer->isActive()) CoverRefreshTimer->start();
+    });
+    connect(CoverCache::instance(), &CoverCache::coverDecoded, this, [this]{
+        if (CoverRefreshTimer && !CoverRefreshTimer->isActive()) CoverRefreshTimer->start();
+    });
+}
+
+void MainWindow::BuildDesktop()
+{
+    if (MainWindowTabWidget) return;
+    MainWindowTabWidget = new QTabWidget(DesktopPage);
+    DesktopPage->layout()->addWidget(MainWindowTabWidget);
 
     LibraryTabPtr  = new LibraryTab(*Model, MainWindowTabWidget);
     CatalogTabPtr  = new CatalogTab(*Model, MainWindowTabWidget);
@@ -157,36 +206,72 @@ void MainWindow::BuildStaticUI()
     connect(CatalogTabPtr, &CatalogTab::downloadRequested, this, [this](LibraryGameCard *C) { StartCardDownload(*DownloadMgr, *Model, C, this); });
     connect(CatalogTabPtr, &CatalogTab::cancelRequested,   this, [this](LibraryGameCard *C) { CancelCardDownload(*DownloadMgr, C, this); });
 
-    // Settings → Runners "Import" → the SAME download pump, fed a runner-only group (no launchables, one runner build).
-    // A runner install is not a special flow — just this batch with runner-build targets, so it inherits persistence/
-    // resume, IPFS-tab rows and cancel identically to a game download.
-    connect(Model, &AppModel::runnerImportRequested, DownloadMgr, [this](const QString & Rid){
-        DownloadMgr->beginDownload("runner:" + Rid, {}, { Rid.toStdString() }, {});
-    });
-
     // Download controller → Catalog cards (downloading overlay + progress).
     connect(DownloadMgr, &DownloadManager::downloadStarted,  CatalogTabPtr, &CatalogTab::markDownloading);
     connect(DownloadMgr, &DownloadManager::downloadProgress, CatalogTabPtr, &CatalogTab::setDownloadProgress);
     connect(DownloadMgr, &DownloadManager::downloadFinished, CatalogTabPtr, &CatalogTab::clearDownloading);
 
-    // A completed/changed download → refresh the IPFS model (pick up the new pin). Queued-row state + per-CID progress
-    // flow directly into IpfsModel (from the download queue's callback + the node's transfer events, both via
-    // IpfsManager); DownloadManager reads that progress back to paint the Catalog card (wired in its ctor).
-    connect(DownloadMgr, &DownloadManager::transfersChanged, IpfsModelPtr, &IpfsModel::refreshNow);
+    //Controller mode, one click away (and Start with Back held on a controller).
+    auto * ToController = new QToolButton(MainWindowTabWidget);
+    ToController->setText(QStringLiteral("🎮  Controller mode"));
+    ToController->setObjectName("controllerModeButton");
+    ToController->setToolTip("Full screen, for a controller: a Steam Deck, a TV (Start with Back held on a controller)");
+    ToController->setAutoRaise(true);
+    connect(ToController, &QToolButton::clicked, this, [this] { setControllerMode(true); });
+    MainWindowTabWidget->setCornerWidget(ToController, Qt::TopRightCorner);
+    if (Constructed) EventLog::AttachTree(DesktopPage);
+}
 
-    // Lazy cover loading: coalesce a burst of cover-ready arrivals into one model notification; the Library/Catalog
-    // tabs repaint their visible cards on coversReady.
-    CoverRefreshTimer = new QTimer(this);
-    CoverRefreshTimer->setSingleShot(true);
-    CoverRefreshTimer->setInterval(200);
-    connect(CoverRefreshTimer, &QTimer::timeout, this, [this]{ Model->notifyCoversReady(); });
-    connect(CoverCache::instance(), &CoverCache::coverReady, this, [this](QString){
-        if (CoverRefreshTimer && !CoverRefreshTimer->isActive()) CoverRefreshTimer->start();
-    });
-    connect(CoverCache::instance(), &CoverCache::coverDecoded, this, [this]{
-        if (CoverRefreshTimer && !CoverRefreshTimer->isActive()) CoverRefreshTimer->start();
-    });
+void MainWindow::setControllerMode(bool On)
+{
+    if (On && !Deck)
+    {
+        Deck = new DeckShell(*Model, *IpfsModelPtr, *DownloadMgr, Modes);
+        Modes->addWidget(Deck);
+        connect(Deck, &DeckShell::desktopRequested, this, [this] { setControllerMode(false); });
+        connect(Deck, &DeckShell::quitRequested, this, [this] { ReallyQuitting = true; close(); });
+        if (Constructed) EventLog::AttachTree(Deck);
+    }
+    if (!On) BuildDesktop();
+    QWidget * Page = On ? static_cast<QWidget *>(Deck) : DesktopPage;
+    if (On == Controller && Modes->currentWidget() == Page) return;
+    Controller = On;
+    if (!On && Deck) Deck->setActive(false);
+    if (!On && MainWindowTabWidget)
+    {
+        IpfsTabPtr->setActive(MainWindowTabWidget->currentWidget() == IpfsTabPtr);
+        NetworkTabPtr->setActive(MainWindowTabWidget->currentWidget() == NetworkTabPtr);
+    }
+    Modes->setCurrentWidget(Page);
+    applyControllerSettings();
+    if (isVisible())
+    {
+        if (On)
+        {
+            if (!isFullScreen()) DesktopGeometry = geometry();
+            showFullScreen();
+        }
+        else
+        {
+            showNormal();
+            if (DesktopGeometry.isValid()) setGeometry(DesktopGeometry);
+        }
+    }
+    if (On) Deck->setActive(true);   // focus lands on the section's first control
+    LogOut("MainWindow", On ? "controller mode" : "desktop mode");
+}
 
+void MainWindow::applyControllerSettings()
+{
+    const auto & Cfg = *Model->config();
+    PadInput::instance().setHaptics(ControllerMode::Haptics(Cfg));
+    //Controller mode reads controllers at once; the desktop a moment after it is up (opening them is not free, and
+    //most starts never see one).
+    if (Controller) PadInput::instance().setEnabled(true);
+    else if (!ControllerMode::DesktopNavigation(Cfg)) PadInput::instance().setEnabled(false);
+    else QTimer::singleShot(1500, this, [this] {
+        if (ControllerMode::DesktopNavigation(*Model->config()) || Controller) PadInput::instance().setEnabled(true);
+    });
 }
 
 void MainWindow::RefreshPackage(const QString & PackagePath)
@@ -223,7 +308,14 @@ void MainWindow::closeEvent(QCloseEvent * e)
 {
     // Persist geometry on every close (hide or quit) so the window reopens where it was.
     auto * cfg = Model->config();
-    if (!isMinimized() && isVisible())   // a minimized/hidden window reports bogus geometry — keep the last good one
+    if (Controller && DesktopGeometry.isValid())   // full screen is not where the desktop window was
+    {
+        (*cfg)["Settings"]["WindowW"] = DesktopGeometry.width();
+        (*cfg)["Settings"]["WindowH"] = DesktopGeometry.height();
+        (*cfg)["Settings"]["WindowX"] = DesktopGeometry.x();
+        (*cfg)["Settings"]["WindowY"] = DesktopGeometry.y();
+    }
+    else if (!Controller && !isMinimized() && isVisible() && !isFullScreen())   // a minimized/hidden window reports bogus geometry — keep the last good one
     {
         (*cfg)["Settings"]["WindowW"] = width();
         (*cfg)["Settings"]["WindowH"] = height();
@@ -272,6 +364,11 @@ void MainWindow::startup(bool forceTray)
     {
         Tray->notifyHidden();   // make the tray icon's presence obvious on a hidden start
     }
+    else if (Controller)
+    {
+        showFullScreen();
+        if (Deck) Deck->setActive(true);
+    }
     else
     {
         show();
@@ -283,7 +380,7 @@ void MainWindow::startup(bool forceTray)
 
 void MainWindow::restoreFromTray()
 {
-    showNormal();
+    if (Controller) showFullScreen(); else showNormal();
     raise();
     activateWindow();
     if (Tray) Tray->rememberHidden(false);

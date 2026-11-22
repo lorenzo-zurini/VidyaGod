@@ -45,6 +45,7 @@ public:
     QToolButton *resetButton() const { return Reset; }
     //Marks the binding as clashing with another option ("" clears the mark).
     void setConflict(const QString &With);
+    ~KeyCaptureField() override;   // a capture still running gives the controller queue back
 
     bool eventFilter(QObject *Watched, QEvent *Ev) override;
 

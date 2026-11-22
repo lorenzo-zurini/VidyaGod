@@ -4,6 +4,7 @@
 #include <QMainWindow>
 #include <vector>
 #include <QPointer>
+#include <QRect>
 
 #include "nlohmann/json.hpp"
 
@@ -27,12 +28,16 @@ class NetworkTab;
 // transfer progress, lazy cover loading, tab-visibility). It owns no view logic — every tab reads state through the
 // AppModel and reacts to its signals. The only app-wide hook left here is RefreshPackage (driven by the editor).
 // ─────────────────────────────────────────────────────────────────────────────
+class DeckShell;
+
 class MainWindow : public QMainWindow
 {
     Q_OBJECT
 public:
     // FromLastIndex: the app's own start — its model starts from the last index kept (AppModel).
-    MainWindow(nlohmann::ordered_json * GlobalConfigJSON, QDir * AppDataDir, QWidget * parent = nullptr, bool FromLastIndex = false);
+    // Controller: come up in controller mode (the desktop tabs are built the first time desktop mode is shown).
+    MainWindow(nlohmann::ordered_json * GlobalConfigJSON, QDir * AppDataDir, QWidget * parent = nullptr, bool FromLastIndex = false,
+               bool Controller = false);
     ~MainWindow() override;   // lets go of the editor hook it installed (it holds this window and its model)
 
     //Reacts to a package being saved in the editor: rebuilds the catalog (every tab refreshes via the model) and
@@ -54,6 +59,13 @@ public:
     QString cardMiss(bool Catalog, const QString & KeyOrTitle) const;   // why no single card is that (LibraryView::cardMiss)
     TrayController * tray() const { return Tray; }
     void restoreFromTray();                        // un-hide + raise + focus (a second start of the app does it)
+    //Controller mode: the window full screen showing the DeckShell, controllers read; off, the desktop tabs as they
+    //were. Saves nothing (Settings.Controller.Start decides how the app starts).
+    void setControllerMode(bool On);
+    bool controllerMode() const { return Controller; }
+    DeckShell * deckShell() const { return Deck; }
+    //Read Settings.Controller again: whether a controller drives the desktop window, and rumbles.
+    void applyControllerSettings();
     void hideToTray();                             // hide window, remember the hidden state, hint once
 
 protected:
@@ -61,7 +73,8 @@ protected:
     void changeEvent(QEvent * e) override;         // minimize → hide to tray (if enabled)
 
 private:
-    void BuildStaticUI();
+    void BuildStaticUI();       // what both modes share: the cover refresh, the runner import
+    void BuildDesktop();        // the desktop tabs and their wiring (the first time desktop mode is shown)
 
     AppModel        * Model       = nullptr;   // owns config + catalog + persisted UI state; the signal hub
     IpfsModel       * IpfsModelPtr = nullptr;   // download/IPFS runtime state (single transfer-event consumer)
@@ -77,6 +90,12 @@ private:
     IpfsTab     * IpfsTabPtr       = nullptr;
     NetworkTab  * NetworkTabPtr    = nullptr;
     QTimer      * CoverRefreshTimer = nullptr;  // debounces lazy cover-ready bursts into one model notification
+    class QStackedWidget * Modes = nullptr;     // the desktop page and the controller shell
+    QWidget     * DesktopPage = nullptr;
+    DeckShell   * Deck = nullptr;               // built the first time controller mode is
+    bool          Controller = false;
+    bool          Constructed = false;          // the constructor's EventLog::AttachTree has run (later trees attach themselves)
+    QRect         DesktopGeometry;              // where the window was before it went full screen
 };
 
 #endif // MAINWINDOW_H

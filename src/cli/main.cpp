@@ -14,6 +14,7 @@
 #include "packagecatalog.h"
 #include "vgdelta.h"       // .vgdelta generate + verify (shared with vidyagodfs) — the --convert-delta-chain tool
 #include "prelaunchwindow.h"
+#include "deckshell.h"       // ControllerMode::StartsInController — controller mode or the desktop window at start
 #include "gamepicker.h"
 #include "containerwrapper.h"
 #include "quitsignals.h"     // a quit signal ends game sessions properly first
@@ -414,7 +415,10 @@ int main(int argc, char *argv[])
         return Application.exec();
     }
 
-    MainWindow MainWindow(&GlobalConfigJSON, &AppDataDir, nullptr, true);   // the app's start: from the last index kept
+    //Controller mode or the desktop window: --controller / --desktop, else Settings.Controller.Start (by default,
+    //controller mode inside Steam's Game Mode — the Steam Deck's, a TV's Big Picture).
+    const bool Controller = ControllerMode::StartsInController(GlobalConfigJSON, LaunchParameters.StartController, LaunchParameters.StartDesktop);
+    MainWindow MainWindow(&GlobalConfigJSON, &AppDataDir, nullptr, true, Controller);   // the app's start: from the last index kept
     //The command socket: `VidyaGod <group> <command>` from any terminal runs here, on this window's live state.
     Command::Context CmdCtx;
     CmdCtx.Config = &GlobalConfigJSON;
@@ -749,6 +753,14 @@ LaunchParameters ParseCommandLineArguments(int argc, char* argv[])
         else if (arg == "--tray")            // come up hidden in the tray (the start-on-login autostart entry uses this)
         {
             RuntimeParameters.StartInTray = true;
+        }
+        else if (arg == "--controller")      // come up in controller mode (a Steam shortcut's launch option)
+        {
+            RuntimeParameters.StartController = true;
+        }
+        else if (arg == "--desktop")         // come up in the desktop window, even inside Steam's Game Mode
+        {
+            RuntimeParameters.StartDesktop = true;
         }
         else if (arg == "--data-dir" && i + 1 < argc)
         {

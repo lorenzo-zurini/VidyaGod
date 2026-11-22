@@ -52,8 +52,16 @@ bool CommandServer::Start(const std::string &AppDataDir, std::string *Error)
 void CommandServer::Serve(QLocalSocket *S)
 {
     auto Buffer = std::make_shared<QByteArray>();
-    connect(S, &QLocalSocket::disconnected, S, &QObject::deleteLater);
-    connect(S, &QLocalSocket::readyRead, this, [this, S, Buffer] {
+    //A command runs inside this socket's readyRead, and may spin an event loop of its own (a dialog's exec(), a
+    //controller press letting the UI settle): the client can hang up meanwhile (an early answer told it everything).
+    //Deleting the socket then frees it under the readyRead still on the stack — so it goes only once that returns.
+    auto Busy = std::make_shared<int>(0);
+    auto Gone = std::make_shared<bool>(false);
+    connect(S, &QLocalSocket::disconnected, S, [S, Busy, Gone] { if (*Busy) *Gone = true; else S->deleteLater(); });
+    connect(S, &QLocalSocket::readyRead, this, [this, S, Buffer, Busy, Gone] {
+        ++*Busy;
+        struct Leave { QLocalSocket *S; std::shared_ptr<int> B; std::shared_ptr<bool> G;
+                       ~Leave() { if (--*B == 0 && *G) S->deleteLater(); } } Leaving{S, Busy, Gone};
         Buffer->append(S->readAll());
         const qsizetype Nl = Buffer->indexOf('\n');
         if (Nl < 0) return;

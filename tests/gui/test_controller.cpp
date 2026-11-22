@@ -1,0 +1,909 @@
+// The controller UI: the pure rules a controller is read by (Pad), generic navigation over any window (PadNav,
+// PadRouter), the on-screen keyboard, and the controller shell (DeckShell) over a small real library.
+
+#include <QtTest/QtTest>
+#include <QApplication>
+#include <QCheckBox>
+#include <QComboBox>
+#include <QDialog>
+#include <QGridLayout>
+#include <QGroupBox>
+#include <QLineEdit>
+#include <QListWidget>
+#include <QLocalServer>
+#include <QLocalSocket>
+#include <QMenu>
+#include <QPushButton>
+#include <QSlider>
+#include <QTabWidget>
+#include <QTableWidget>
+#include <QTemporaryDir>
+#include <QVBoxLayout>
+
+#include "appmodel.h"
+#include "command.h"
+#include "commandserver.h"
+#include "deckgrid.h"
+#include "deckshell.h"
+#include "downloadmanager.h"
+#include "instancestore.h"
+#include "keycapture.h"
+#include <cstring>
+#include <atomic>
+#include <thread>
+#include <unistd.h>
+#include <sys/un.h>
+#include <sys/socket.h>
+#include "ipfsmodel.h"
+#include "libraryview.h"
+#include "osk.h"
+#include "packagecatalog.h"
+#include "padinput.h"
+#include "padnav.h"
+#include "nodefixture.h"
+
+#include <filesystem>
+#include <fstream>
+
+using json = nlohmann::ordered_json;
+using B = Pad::Button;
+
+namespace
+{
+//A press as a controller makes it (PadInput's delivery), then the UI's queued work.
+void Press(B Btn, int N = 1)
+{
+    for (int I = 0; I < N; ++I)
+    {
+        PadInput::instance().inject(Btn);
+        QApplication::processEvents();
+    }
+}
+
+//A window shown and made the one presses go to.
+void Front(QWidget &W)
+{
+    W.show();
+    W.activateWindow();
+    QApplication::processEvents();
+    (void)QTest::qWaitForWindowActive(&W, 500);
+}
+
+//A window that counts the presses its PadTarget is offered (it takes none).
+class Counting : public QWidget, public PadTarget
+{
+public:
+    int Offered = 0;
+    bool padPressed(Pad::Button) override { ++Offered; return false; }
+};
+
+//A small library: Installed games with their zip here (the Library), and Remote ones naming a CID with none here (the
+//Catalog).
+struct LibraryFixture
+{
+    QTemporaryDir Dir;
+    QDir AppDir{Dir.path()};
+    json Cfg;
+    struct Game { std::string Uid, Title, Date, Series; bool Here; };
+    std::vector<Game> Games{
+        {"1", "Alpha", "2001-01-01", "Saga", true}, {"2", "Bravo", "1999-05-05", "", true}, {"3", "Charlie", "2005-03-03", "Saga", true},
+        {"4", "Delta", "1995-02-02", "", true}, {"5", "Echo", "2010-10-10", "", true}, {"6", "Foxtrot", "2003-06-06", "", true},
+        {"7", "Golf", "1990-01-01", "", true}, {"8", "Hotel", "2012-12-12", "", true},
+        {"9", "India", "2000-01-01", "", false}, {"10", "Juliet", "2002-01-01", "", false}, {"11", "Kilo", "2004-01-01", "", false}};
+    // CoverUid: that game's tile has a cover, a 600x900 cover.png in its package.
+    explicit LibraryFixture(const std::string &CoverUid = "")
+    {
+        const std::string Root = (Dir.path() + "/LIBRARY").toStdString();
+        Cfg = json{{"Settings", {{"Paths", {{"LibraryRoot", Root}, {"UserDataRoot", (Dir.path() + "/USERDATA").toStdString()}}}}},
+                   {"LIBRARY", json::array()}};
+        for (const Game &G : Games)
+        {
+            const std::string Pkg = Root + "/VidyaGod/[" + G.Uid + "] " + G.Title;
+            std::filesystem::create_directories(Pkg);
+            json Meta{{"RELEASEDATE", G.Date}, {"DEVELOPER", "Studio " + G.Title}};
+            if (!G.Series.empty()) Meta["SERIES"] = G.Series;
+            json T = NodeFixture::Tile(G.Uid, G.Title, Meta);
+            //The card reads SERIES and RELEASEDATE off the tile itself too (the sort keys).
+            T["LAYERS"][0]["EXEC"][0]["TILE"]["RELEASEDATE"] = G.Date;
+            if (!G.Series.empty()) T["LAYERS"][0]["EXEC"][0]["TILE"]["SERIES"] = G.Series;
+            if (G.Uid == CoverUid)
+            {
+                T["LAYERS"][0]["EXEC"][0]["TILE"]["COVER"] = {{"FILE", "cover.png"}};
+                QImage Art(600, 900, QImage::Format_RGB32);
+                Art.fill(Qt::darkCyan);
+                Art.save(QString::fromStdString(Pkg + "/cover.png"));
+            }
+            NodeFixture::WriteNodes(Pkg + "/game.json",
+                NodeFixture::Chain("g" + G.Uid, {T, NodeFixture::Exec("win32", "g.exe"),
+                                                 NodeFixture::ContentCid("zip", "game.zip", "bafkreigame" + G.Uid)}, {}, {{"VARIANT", "Edition"}}));
+            if (G.Here) std::ofstream(Pkg + "/game.zip") << "content";
+        }
+    }
+};
+}
+
+class ControllerTest : public QObject
+{
+    Q_OBJECT
+
+private slots:
+    void initTestCase() { PadRouter::instance().install(); }
+
+    // Every button has one name that reads back as it; names are read without case; there is no "select". Teeth: a
+    // name table out of step with the enum (a button reads back as another).
+    void button_names_round_trip()
+    {
+        QCOMPARE(static_cast<int>(Pad::Names().size()), Pad::ButtonCount);
+        for (const std::string &N : Pad::Names())
+        {
+            const std::optional<B> Btn = Pad::FromName(N);
+            QVERIFY2(Btn, N.c_str());
+            QCOMPARE(Pad::Name(*Btn), N);
+        }
+        QVERIFY(Pad::FromName("Start") == B::Start);
+        QVERIFY(!Pad::FromName("select"));
+        QVERIFY(Pad::IsDirection(B::Left) && !Pad::IsDirection(B::A));
+    }
+
+    // A stick holds a direction past 0.55 and lets it go under 0.35 — no chatter at the edge — and only one way at a
+    // time, the stronger. Teeth: no hysteresis (0.4 held lets go); diagonals hold both.
+    void a_stick_holds_one_direction_with_hysteresis()
+    {
+        QVERIFY(Pad::StickDirections(0.6, 0, {}).Right);
+        QVERIFY(!Pad::StickDirections(0.5, 0, {}).Right);
+        Pad::Stick Held;
+        Held.Right = true;
+        QVERIFY2(Pad::StickDirections(0.4, 0, Held).Right, "held: let go only under 0.35");
+        QVERIFY(!Pad::StickDirections(0.3, 0, Held).Right);
+        const Pad::Stick D = Pad::StickDirections(0.8, 0.6, {});
+        QVERIFY2(D.Right && !D.Down, "a diagonal moves one way: the stronger axis");
+        const Pad::Stick U = Pad::StickDirections(-0.6, -0.9, {});
+        QVERIFY(U.Up && !U.Left);
+        QVERIFY(Pad::StickDirections(-0.7, 0, {}).Left);
+        QVERIFY(Pad::StickDirections(0, 0.7, {}).Down);
+    }
+
+    // A trigger is held past 0.6 and let go under 0.3. Teeth: one threshold both ways.
+    void a_trigger_holds_with_hysteresis()
+    {
+        QVERIFY(Pad::TriggerHeld(0.61, false));
+        QVERIFY(!Pad::TriggerHeld(0.59, false));
+        QVERIFY(Pad::TriggerHeld(0.31, true));
+        QVERIFY(!Pad::TriggerHeld(0.29, true));
+    }
+
+    // A held direction repeats after 380 ms, then every 85 ms, every 45 ms once held 1.4 s; a poll that came late
+    // owes one repeat, not a burst; a face button never repeats; a released one stops. Teeth: repeat at once; catch
+    // up a late poll with a burst; never speed up; repeat A.
+    void a_held_direction_repeats_on_a_schedule()
+    {
+        Pad::Repeater R;
+        R.press(B::Down, 1000);
+        QVERIFY(R.held(B::Down));
+        std::vector<long long> At;
+        for (long long T = 1000; T <= 3000; ++T)
+            for (B Got : R.due(T)) { QCOMPARE(Got, B::Down); At.push_back(T - 1000); }
+        QVERIFY(At.size() > 5);
+        QCOMPARE(At[0], static_cast<long long>(Pad::Repeater::First));
+        QCOMPARE(At[1] - At[0], static_cast<long long>(Pad::Repeater::Every));
+        QCOMPARE(At.back() - At[At.size() - 2], static_cast<long long>(Pad::Repeater::Fast));
+        Pad::Repeater Late;
+        Late.press(B::Up, 0);
+        QCOMPARE(Late.due(5000).size(), static_cast<size_t>(1));
+        Late.release(B::Up);
+        QVERIFY(Late.due(9000).empty());
+        Pad::Repeater Face;
+        Face.press(B::A, 0);
+        QVERIFY(Face.due(5000).empty());
+    }
+
+    // Down picks the control straight below over a nearer one off to the side; nothing that way is -1. Teeth: score
+    // by plain distance (the diagonal wins); accept a candidate level with From.
+    void nearest_prefers_straight_ahead()
+    {
+        const QRect From(100, 100, 50, 50);
+        //The diagonal one is nearer centre to centre (117 px against 130) but off to the side.
+        const QVector<QRect> C{ QRect(100, 230, 50, 50), QRect(200, 160, 50, 50), QRect(300, 100, 50, 50), QRect(100, 0, 50, 50),
+                                QRect(160, 100, 50, 50) };
+        QCOMPARE(PadNav::Nearest(From, B::Down, C), 0);
+        QCOMPARE(PadNav::Nearest(From, B::Right, C), 4);
+        QCOMPARE(PadNav::Nearest(From, B::Up, C), 3);
+        QCOMPARE(PadNav::Nearest(From, B::Left, C), -1);
+        QCOMPARE(PadNav::Nearest(From, B::A, C), -1);
+    }
+
+    // With nothing focused a direction focuses the dialog's default button; then each direction the control that
+    // way. Teeth: focus the first child instead; ignore geometry.
+    void a_direction_focuses_the_nearest_control()
+    {
+        QDialog D;
+        auto *G = new QGridLayout(&D);
+        auto *A1 = new QPushButton("a1"), *A2 = new QPushButton("a2"), *B1 = new QPushButton("b1"), *B2 = new QPushButton("b2");
+        auto *E = new QLineEdit;
+        G->addWidget(A1, 0, 0); G->addWidget(A2, 0, 1); G->addWidget(B1, 1, 0); G->addWidget(B2, 1, 1); G->addWidget(E, 2, 0, 1, 2);
+        B2->setDefault(true);
+        for (QWidget *W : { static_cast<QWidget *>(A1), static_cast<QWidget *>(A2), static_cast<QWidget *>(B1), static_cast<QWidget *>(B2), static_cast<QWidget *>(E) })
+            W->setFocusPolicy(Qt::StrongFocus);
+        D.resize(400, 300);
+        Front(D);
+        if (QWidget *F = D.focusWidget()) F->clearFocus();   // no control focused yet
+        QVERIFY(PadNav::Move(&D, B::Down));
+        QCOMPARE(D.focusWidget(), B2);
+        Press(B::Left);
+        QCOMPARE(D.focusWidget(), B1);
+        Press(B::Up);
+        QCOMPARE(D.focusWidget(), A1);
+        Press(B::Right);
+        QCOMPARE(D.focusWidget(), A2);
+        Press(B::Down, 2);
+        QCOMPARE(D.focusWidget(), E);
+    }
+
+    // A by what the control is: a button is clicked, a check box ticked, a combo box opened (and a direction then A
+    // picks in it), a checkable group toggled. Teeth: click everything (the combo never opens); send A to the window.
+    void a_presses_toggles_and_opens_by_kind()
+    {
+        QDialog D;
+        auto *L = new QVBoxLayout(&D);
+        auto *Btn = new QPushButton("go");
+        auto *Chk = new QCheckBox("tick");
+        auto *Cmb = new QComboBox;
+        Cmb->addItems({ "one", "two", "three" });
+        auto *Grp = new QGroupBox("group");
+        Grp->setCheckable(true);
+        Grp->setChecked(false);
+        Grp->setFocusPolicy(Qt::StrongFocus);
+        L->addWidget(Btn); L->addWidget(Chk); L->addWidget(Cmb); L->addWidget(Grp);
+        D.resize(300, 300);
+        Front(D);
+        QSignalSpy Clicked(Btn, &QPushButton::clicked);
+        Btn->setFocus();
+        Press(B::A);
+        QCOMPARE(Clicked.count(), 1);
+        Chk->setFocus();
+        Press(B::A);
+        QVERIFY(Chk->isChecked());
+        Cmb->setFocus();
+        Press(B::A);
+        QTRY_VERIFY_WITH_TIMEOUT(Cmb->view()->isVisible(), 2000);
+        Press(B::Down);
+        Press(B::A);
+        QTRY_VERIFY_WITH_TIMEOUT(!Cmb->view()->isVisible(), 2000);
+        QCOMPARE(Cmb->currentIndex(), 1);
+        Grp->setFocus();
+        Press(B::A);
+        QVERIFY(Grp->isChecked());
+    }
+
+    // A on a text field opens the on-screen keyboard on its text; Done writes the text back as typing would (the edit
+    // signals, then Return); B leaves the field as it was. Teeth: setText (no textEdited); no Return (editingFinished
+    // never fires); B writes anyway.
+    void a_on_a_field_types_through_the_keyboard()
+    {
+        QDialog D;
+        auto *L = new QVBoxLayout(&D);
+        auto *E = new QLineEdit;
+        E->setPlaceholderText("Search");
+        L->addWidget(E);
+        D.resize(1000, 700);
+        Front(D);
+        QSignalSpy Edited(E, &QLineEdit::textEdited), Returned(E, &QLineEdit::returnPressed);
+        E->setFocus();
+        Press(B::A);
+        OnScreenKeyboard *K = OnScreenKeyboard::current();
+        QVERIFY(K);
+        QCOMPARE(K->padState().value("title", std::string()), std::string("Search"));
+        K->typeText("doom");
+        K->accept();
+        QApplication::processEvents();
+        QCOMPARE(E->text(), QString("doom"));
+        QVERIFY(Edited.count() >= 1);
+        QCOMPARE(Returned.count(), 1);
+        QVERIFY(!OnScreenKeyboard::current());
+        Press(B::A);
+        QVERIFY(OnScreenKeyboard::current());
+        OnScreenKeyboard::current()->typeText("x");
+        Press(B::B);
+        QApplication::processEvents();
+        QVERIFY(!OnScreenKeyboard::current());
+        QCOMPARE(E->text(), QString("doom"));
+    }
+
+    // While the keyboard is open every press is its: directions move between keys, A types the key, X deletes, Y is
+    // a space — and the window under it is offered nothing. Teeth: let a press through to the window's targets.
+    void the_keyboard_takes_every_press_while_open()
+    {
+        Counting W;
+        auto *L = new QVBoxLayout(&W);
+        auto *E = new QLineEdit;
+        L->addWidget(E);
+        W.resize(1000, 700);
+        Front(W);
+        E->setFocus();
+        Press(B::A);
+        QVERIFY(OnScreenKeyboard::current());
+        const int Before = W.Offered;
+        Press(B::Right, 2);
+        QCOMPARE(OnScreenKeyboard::current()->padState().value("key", std::string()), std::string("3"));
+        Press(B::A);
+        QCOMPARE(OnScreenKeyboard::current()->text(), QString("3"));
+        Press(B::Y);
+        QCOMPARE(OnScreenKeyboard::current()->text(), QString("3 "));
+        Press(B::X, 2);
+        QCOMPARE(OnScreenKeyboard::current()->text(), QString());
+        Press(B::Down);
+        Press(B::A);
+        QCOMPARE(OnScreenKeyboard::current()->text(), QString("e"));
+        QCOMPARE(W.Offered, Before);
+        Press(B::B);
+        QApplication::processEvents();
+        QVERIFY(!OnScreenKeyboard::current());
+        QCOMPARE(E->text(), QString());
+    }
+
+    // B backs out of a dialog (rejects it, as Escape); and a press in a dialog never reaches the window behind it,
+    // though that window is the dialog's parent. Teeth: walk the focus chain past the window; B does nothing.
+    void b_rejects_a_dialog_and_never_reaches_the_window_behind()
+    {
+        Counting W;
+        W.resize(600, 400);
+        Front(W);
+        auto *D = new QDialog(&W);
+        auto *L = new QVBoxLayout(D);
+        L->addWidget(new QPushButton("ok"));
+        D->resize(300, 200);
+        Front(*D);
+        QSignalSpy Rejected(D, &QDialog::rejected);
+        Press(B::Right);
+        Press(B::Down);
+        Press(B::B);
+        QCOMPARE(Rejected.count(), 1);
+        QCOMPARE(W.Offered, 0);
+        delete D;
+        //A dialog opened with no parent is backed out of too (it is no other window's child to close).
+        QDialog Alone;
+        auto *AL = new QVBoxLayout(&Alone);
+        AL->addWidget(new QPushButton("ok"));
+        Alone.resize(300, 200);
+        Front(Alone);
+        QSignalSpy AloneRejected(&Alone, &QDialog::rejected);
+        Press(B::B);
+        QCOMPARE(AloneRejected.count(), 1);
+    }
+
+    // In a list, up and down move the current row; at its end, focus leaves the list. Teeth: leave at once; stay
+    // forever.
+    void a_list_moves_inside_then_lets_focus_leave()
+    {
+        QDialog D;
+        auto *L = new QVBoxLayout(&D);
+        auto *List = new QListWidget;
+        List->addItems({ "a", "b", "c" });
+        auto *Below = new QPushButton("below");
+        L->addWidget(List); L->addWidget(Below);
+        D.resize(300, 400);
+        Front(D);
+        List->setFocus();
+        List->setCurrentRow(-1);
+        Press(B::Down);
+        QCOMPARE(List->currentRow(), 0);
+        Press(B::Down, 2);
+        QCOMPARE(List->currentRow(), 2);
+        QCOMPARE(D.focusWidget(), List);
+        Press(B::Down);
+        QCOMPARE(D.focusWidget(), Below);
+    }
+
+    // A on a table cell holding a check box presses the check box; on a plain cell it never ticks the item (every
+    // QTableWidgetItem is flagged user-checkable, ticked or not). Teeth: tick by the flag (a phantom check appears).
+    void a_cell_checkbox_toggles_and_a_plain_cell_gets_no_tick()
+    {
+        QDialog D;
+        auto *L = new QVBoxLayout(&D);
+        auto *T = new QTableWidget(1, 2);
+        auto *Holder = new QWidget;
+        auto *HL = new QHBoxLayout(Holder);
+        auto *Chk = new QCheckBox;
+        HL->addWidget(Chk);
+        T->setCellWidget(0, 0, Holder);
+        T->setItem(0, 1, new QTableWidgetItem("plain"));
+        L->addWidget(T);
+        D.resize(400, 300);
+        Front(D);
+        T->setFocus();
+        T->setCurrentCell(0, 0);
+        Press(B::A);
+        QVERIFY(Chk->isChecked());
+        T->setCurrentCell(0, 1);
+        Press(B::A);
+        QVERIFY2(!T->item(0, 1)->data(Qt::CheckStateRole).isValid(), "no phantom tick on a plain cell");
+        QVERIFY(Chk->isChecked());
+    }
+
+    // Left and right step a slider; at its end the direction moves focus on instead. Teeth: never leave; never step.
+    void left_right_adjust_a_slider_and_leave_at_its_end()
+    {
+        QDialog D;
+        auto *L = new QHBoxLayout(&D);
+        auto *S = new QSlider(Qt::Horizontal);
+        S->setRange(0, 2);
+        S->setValue(1);
+        auto *Next = new QPushButton("next");
+        L->addWidget(S); L->addWidget(Next);
+        D.resize(400, 100);
+        Front(D);
+        S->setFocus();
+        Press(B::Right);
+        QCOMPARE(S->value(), 2);
+        QCOMPARE(D.focusWidget(), S);
+        Press(B::Right);
+        QCOMPARE(D.focusWidget(), Next);
+    }
+
+    // The shoulders turn the pages of the tab widget the focus is in, focus landing on the new page's first control
+    // as the eye reads it (not the first in the tab chain, where Qt would put it); at the last page they stop.
+    // Teeth: wrap round; leave focus where Qt puts it.
+    void the_shoulders_turn_tabs()
+    {
+        QDialog D;
+        auto *L = new QVBoxLayout(&D);
+        auto *Tabs = new QTabWidget;
+        QList<QPushButton *> Btns;
+        for (const char *N : { "p0", "p1", "p2" })
+        {
+            auto *Page = new QWidget;
+            auto *PL = new QVBoxLayout(Page);
+            //Put on the page first, so first in its focus chain (where Qt would put the focus), but laid out below
+            //the page's top control.
+            PL->addWidget(new QPushButton(QString(N) + " lower"));
+            Btns << new QPushButton(N);
+            PL->insertWidget(0, Btns.back());
+            Tabs->addTab(Page, N);
+        }
+        L->addWidget(Tabs);
+        D.resize(400, 300);
+        Front(D);
+        Btns[0]->setFocus();
+        Press(B::RB);
+        QCOMPARE(Tabs->currentIndex(), 1);
+        QCOMPARE(D.focusWidget(), Btns[1]);
+        Press(B::RB, 2);
+        QCOMPARE(Tabs->currentIndex(), 2);
+        Press(B::LB);
+        QCOMPARE(Tabs->currentIndex(), 1);
+    }
+
+    // The ring shows once the controller is used, round the focused control; a click puts it away. Teeth: always
+    // show it; never show it; draw it round the window.
+    void the_focus_ring_follows_the_controller_not_the_mouse()
+    {
+        QDialog D;
+        auto *L = new QVBoxLayout(&D);
+        auto *A = new QPushButton("a"), *Bt = new QPushButton("b");
+        L->addWidget(A); L->addWidget(Bt);
+        D.resize(300, 300);
+        Front(D);
+        A->setFocus();
+        Press(B::Down);
+        QCOMPARE(D.focusWidget(), Bt);
+        QVERIFY(PadRouter::instance().padMode());
+        QTRY_COMPARE_WITH_TIMEOUT(PadRouter::instance().ringRect(), PadNav::FocusRect(Bt), 2000);
+        QTest::mouseClick(A, Qt::LeftButton);
+        QApplication::processEvents();
+        QVERIFY(!PadRouter::instance().padMode());
+        QTRY_VERIFY_WITH_TIMEOUT(PadRouter::instance().ringRect().isEmpty(), 2000);
+    }
+
+    // The hint bar reads in one order whoever said what: A first, the shoulders, B last. Teeth: the order they were
+    // collected in (B, from the window's own screen, before generic navigation's A).
+    void hints_come_in_one_order()
+    {
+        struct Says : QDialog, PadTarget
+        {
+            bool padPressed(Pad::Button) override { return false; }
+            QList<Hint> padHints() const override { return { { B::B, "Leave" } }; }
+        } D;
+        auto *L = new QVBoxLayout(&D);
+        auto *Tabs = new QTabWidget;
+        auto *Page = new QWidget;
+        auto *PL = new QVBoxLayout(Page);
+        auto *Chk = new QCheckBox("tick");
+        PL->addWidget(Chk);
+        Tabs->addTab(Page, "one");
+        Tabs->addTab(new QWidget, "two");
+        L->addWidget(Tabs);
+        D.resize(300, 300);
+        Front(D);
+        Chk->setFocus();
+        std::vector<std::string> Got;
+        for (const PadTarget::Hint &H : PadRouter::instance().hints()) Got.push_back(Pad::Name(H.B));
+        QCOMPARE(Got, (std::vector<std::string>{ "a", "lb", "b" }));
+    }
+
+    // A chord: what is held reads as held while the last button is pressed, and not after. Teeth: mark nothing held.
+    void a_chord_is_read_while_held()
+    {
+        bool HeldThen = false;
+        auto C = connect(&PadInput::instance(), &PadInput::pressed, this,
+                         [&HeldThen](B Btn) { if (Btn == B::Start) HeldThen = PadInput::instance().held(B::Back); });
+        PadInput::instance().injectChord({ B::Back }, B::Start);
+        disconnect(C);
+        QVERIFY(HeldThen);
+        QVERIFY(!PadInput::instance().held(B::Back));
+    }
+
+    // How the app starts: --controller, then --desktop, then the setting; "auto" is controller mode only inside
+    // Steam's Game Mode. Teeth: the setting over the flags; auto always one way.
+    void controller_mode_starts_by_flag_then_setting_then_game_mode()
+    {
+        qunsetenv("SteamGamepadUI");
+        qunsetenv("XDG_CURRENT_DESKTOP");
+        qunsetenv("GAMESCOPE_WAYLAND_DISPLAY");
+        json C = json::object();
+        QCOMPARE(ControllerMode::StartSetting(C), ControllerMode::Start::Auto);
+        QVERIFY(!ControllerMode::StartsInController(C, false, false));
+        QVERIFY(ControllerMode::StartsInController(C, true, false));
+        ControllerMode::SetStart(C, ControllerMode::Start::Controller);
+        QVERIFY(ControllerMode::StartsInController(C, false, false));
+        QVERIFY(!ControllerMode::StartsInController(C, false, true));
+        ControllerMode::SetStart(C, ControllerMode::Start::Auto);
+        qputenv("SteamGamepadUI", "1");
+        QVERIFY(ControllerMode::InGameMode());
+        QVERIFY(ControllerMode::StartsInController(C, false, false));
+        qunsetenv("SteamGamepadUI");
+        QVERIFY(ControllerMode::DesktopNavigation(C));
+        ControllerMode::SetDesktopNavigation(C, false);
+        QVERIFY(!ControllerMode::DesktopNavigation(C));
+        QVERIFY(!ControllerMode::Haptics(C));
+        ControllerMode::SetHaptics(C, true);
+        QVERIFY(ControllerMode::Haptics(C));
+        QVERIFY(ControllerMode::StartFrom("desktop") == ControllerMode::Start::Desktop);
+        QVERIFY(!ControllerMode::StartFrom("tv"));
+    }
+
+    // ── The shell, over a real library ──
+
+    // The shelves hold what the Library and Catalog tabs hold (CardPool): the games here, and the ones to download.
+    // The shoulders walk the sections and stop at the ends. Teeth: build the shelves by another rule; wrap round.
+    void the_shell_shows_the_shelves_and_the_shoulders_walk_its_sections()
+    {
+        LibraryFixture L;
+        AppModel M(&L.Cfg, &L.AppDir);
+        M.rebuildCatalog();
+        IpfsModel Ipfs(M);
+        DownloadManager Dl(M, Ipfs);
+        DeckShell Sh(M, Ipfs, Dl);
+        Sh.resize(1280, 800);
+        Front(Sh);
+        Sh.setActive(true);
+        QCOMPARE(Sh.libraryCards().size(), 8);
+        QCOMPARE(Sh.catalogCards().size(), 3);
+        QVERIFY(Sh.installed("1") && !Sh.installed("9") && Sh.card("9"));
+        QCOMPARE(Sh.section(), DeckShell::Section::Home);
+        Press(B::RB);
+        QCOMPARE(Sh.section(), DeckShell::Section::Library);
+        Press(B::RB, 10);
+        QCOMPARE(Sh.section(), DeckShell::Section::Settings);
+        Press(B::LB);
+        QCOMPARE(Sh.section(), DeckShell::Section::Node);
+        Press(B::B);
+        QCOMPARE(Sh.section(), DeckShell::Section::Home);
+        QCOMPARE(DeckShell::SectionFrom("catalog"), std::optional<DeckShell::Section>(DeckShell::Section::Catalog));
+        Sh.setActive(false);
+    }
+
+    // Y sorts the shelf (by name, recently played, release, series) and the sort is remembered for the next start;
+    // the focus stays on the game it was on, wherever the order puts it. Teeth: forget the sort; sort nothing.
+    void y_sorts_and_the_sort_is_remembered()
+    {
+        LibraryFixture L;
+        AppModel M(&L.Cfg, &L.AppDir);
+        M.rebuildCatalog();
+        IpfsModel Ipfs(M);
+        DownloadManager Dl(M, Ipfs);
+        {
+            DeckShell Sh(M, Ipfs, Dl);
+            Sh.resize(1280, 800);
+            Front(Sh);
+            Sh.setActive(true);
+            Sh.showSection(DeckShell::Section::Library);
+            const auto Title = [&] { return Sh.padState()["page"]["grid"]["card"].value("title", std::string()); };
+            QCOMPARE(Title(), std::string("Alpha"));
+            Press(B::Y, 2);   // Recently played, then Release date
+            QCOMPARE(Sh.padState()["page"].value("sort", std::string()), std::string("Release date"));
+            //Focus stays on the game it was on, now fourth: Golf 1990, Delta 1995, Bravo 1999, Alpha 2001.
+            QCOMPARE(Title(), std::string("Alpha"));
+            QCOMPARE(Sh.padState()["page"]["grid"].value("index", -1), 3);
+            QCOMPARE(L.Cfg["Settings"]["Controller"]["LibrarySort"].get<int>(), static_cast<int>(SortMode::Date));
+            Sh.setActive(false);
+        }
+        DeckShell Again(M, Ipfs, Dl);
+        Again.resize(1280, 800);
+        Again.showSection(DeckShell::Section::Library);
+        QCOMPARE(Again.padState()["page"].value("sort", std::string()), std::string("Release date"));
+    }
+
+    // X searches the shelf through the keyboard (live, as typed); B clears the search before it backs out. Teeth: B
+    // leaves the section with the search still on; the search filters nothing.
+    void x_searches_and_b_clears_the_search()
+    {
+        LibraryFixture L;
+        AppModel M(&L.Cfg, &L.AppDir);
+        M.rebuildCatalog();
+        IpfsModel Ipfs(M);
+        DownloadManager Dl(M, Ipfs);
+        DeckShell Sh(M, Ipfs, Dl);
+        Sh.resize(1280, 800);
+        Front(Sh);
+        Sh.setActive(true);
+        Sh.showSection(DeckShell::Section::Library);
+        Press(B::X);
+        QVERIFY(OnScreenKeyboard::current());
+        OnScreenKeyboard::current()->typeText("arl");
+        QCOMPARE(Sh.padState()["page"].value("shown", 0), 1);   // live
+        OnScreenKeyboard::current()->accept();
+        QApplication::processEvents();
+        QCOMPARE(Sh.padState()["page"].value("search", std::string()), std::string("arl"));
+        QVERIFY(Sh.statusText().contains("match"));
+        Press(B::B);
+        QCOMPARE(Sh.section(), DeckShell::Section::Library);
+        QCOMPARE(Sh.padState()["page"].value("shown", 0), 8);
+        Press(B::B);
+        QCOMPARE(Sh.section(), DeckShell::Section::Home);
+        Sh.setActive(false);
+    }
+
+    // A opens the focused game's page; B closes it, focus on that game's cover. Its page marks it golden (this
+    // machine's config only), and every card of the family shows it. Teeth: open the first card whatever is focused;
+    // leave the focus where it was when the page was another game's; mark without saving the marker.
+    void a_opens_a_games_page_b_returns_and_it_marks_golden()
+    {
+        LibraryFixture L;
+        AppModel M(&L.Cfg, &L.AppDir);
+        M.rebuildCatalog();
+        IpfsModel Ipfs(M);
+        DownloadManager Dl(M, Ipfs);
+        DeckShell Sh(M, Ipfs, Dl);
+        Sh.resize(1280, 800);
+        Front(Sh);
+        Sh.setActive(true);
+        Sh.showSection(DeckShell::Section::Library);
+        Press(B::Right);
+        Press(B::A);
+        QVERIFY(Sh.gameOpen());
+        QCOMPARE(Sh.padState()["game"].value("title", std::string()), std::string("Bravo"));
+        QCOMPARE(Sh.padState()["game"]["buttons"][2].get<std::string>(), std::string("Mark golden"));
+        Press(B::Right, 2);
+        Press(B::A);
+        QVERIFY(!PackageCatalog::GoldenSince(L.Cfg, "2").empty());
+        QVERIFY(Sh.card("2")->Golden);
+        QCOMPARE(Sh.padState()["game"]["buttons"][2].get<std::string>(), std::string("Unmark golden"));
+        Press(B::B);
+        QVERIFY(!Sh.gameOpen());
+        QCOMPARE(Sh.padState()["page"]["grid"]["card"].value("title", std::string()), std::string("Bravo"));
+        //A page opened straight onto another game (Home's hero, the CLI): back on the shelf, the focus is on it.
+        QVERIFY(Sh.openGame("5"));
+        Press(B::B);
+        QCOMPARE(Sh.padState()["page"]["grid"]["card"].value("title", std::string()), std::string("Echo"));
+        Sh.setActive(false);
+    }
+
+    // Home leads with the game played last, Play one press away, drawn from its large cover — which a burst of
+    // covers landing never swaps for the small tile one. Teeth: lead with the first by name; take the tile's cover
+    // on every refresh.
+    void home_leads_with_the_game_played_last()
+    {
+        LibraryFixture L("6");
+        InstanceStore::TouchLastRun(L.Cfg, "6");
+        AppModel M(&L.Cfg, &L.AppDir);
+        M.rebuildCatalog();
+        IpfsModel Ipfs(M);
+        DownloadManager Dl(M, Ipfs);
+        DeckShell Sh(M, Ipfs, Dl);
+        Sh.resize(1280, 800);
+        Front(Sh);
+        Sh.setActive(true);
+        //The play times are read off the GUI thread, after the shelves are built.
+        QTRY_COMPARE_WITH_TIMEOUT(Sh.padState()["page"]["hero"].value("title", std::string()), std::string("Foxtrot"), 10000);
+        QCOMPARE(Sh.padState()["page"].value("button", std::string()), std::string("▶  Play"));
+        //The large cover is decoded off the GUI thread at the hero's height (about 470 px here); a tile's is a shelf
+        //cover's (about 270 px at this scale).
+        const auto HeroH = [&Sh] { const json C = Sh.padState()["page"]["hero"]["cover"]; return C.is_array() ? C[1].get<int>() : 0; };
+        QTRY_VERIFY_WITH_TIMEOUT(HeroH() > 400, 10000);
+        const int Large = HeroH();
+        emit M.coversReady();
+        QCOMPARE(HeroH(), Large);
+        Press(B::Down);
+        QCOMPARE(Sh.padState()["page"].value("area", std::string()), std::string("recent"));
+        Sh.setActive(false);
+    }
+
+    // Start opens the menu; it takes every press; its first item leaves for the desktop. Teeth: the menu lets presses
+    // through to the shelf; choose nothing.
+    void the_menu_opens_with_start_and_leaves_for_the_desktop()
+    {
+        LibraryFixture L;
+        AppModel M(&L.Cfg, &L.AppDir);
+        M.rebuildCatalog();
+        IpfsModel Ipfs(M);
+        DownloadManager Dl(M, Ipfs);
+        DeckShell Sh(M, Ipfs, Dl);
+        Sh.resize(1280, 800);
+        Front(Sh);
+        Sh.setActive(true);
+        QSignalSpy Desktop(&Sh, &DeckShell::desktopRequested);
+        Press(B::Start);
+        QVERIFY(Sh.menuOpen());
+        Press(B::RB);
+        QCOMPARE(Sh.section(), DeckShell::Section::Home);   // the menu's
+        Press(B::Down);
+        Press(B::Up);
+        Press(B::A);
+        QVERIFY(!Sh.menuOpen());
+        QCOMPARE(Desktop.count(), 1);
+        Press(B::Start);
+        Press(B::B);
+        QVERIFY(!Sh.menuOpen());
+        Sh.setActive(false);
+    }
+
+    // A command runs inside its socket's read handler and may spin an event loop of its own (a press letting the UI
+    // settle, a dialog's exec): a client that hangs up meanwhile — an early answer told it all — must not have the
+    // socket freed under that handler. The app keeps answering. Teeth: delete the socket the moment it disconnects
+    // (the app crashes in QIODevice::channelReadyRead).
+    void a_client_hanging_up_mid_command_does_not_take_the_app_down()
+    {
+        //A press that opens a dialog answers from inside its exec(); the client has what it wanted and hangs up; a
+        //second command closes the dialog (`controller press b`); the first one's exec() returns, and it lets the UI
+        //settle — the launch window's sequence the crash was seen in.
+        static QPointer<QEventLoop> Open;
+        static QList<QPointer<QLocalSocket>> Served;   // the app's end of each connection, newest last
+        static bool FreedUnderIt = false;
+        Command::Register({ "test hangup", "answers early from inside a dialog's loop", "", {}, {}, {}, Command::Needs::Config, false,
+            [](Command::Context &C, const json &) {
+                const QPointer<QLocalSocket> Mine = Served.isEmpty() ? nullptr : Served.back();
+                if (C.Early) C.Early(json{{"early", true}});
+                QEventLoop Dialog;
+                Open = &Dialog;
+                Dialog.exec();
+                QElapsedTimer T;
+                T.start();
+                do QApplication::processEvents(QEventLoop::AllEvents, 10); while (T.elapsed() < 100);
+                //Still inside the socket's readyRead: freeing the socket now is a use-after-free once this returns
+                //(a crash in QIODevice::channelReadyRead, when the freed memory has been reused).
+                if (!Mine) FreedUnderIt = true;
+                return json{{"late", true}};
+            }, {} });
+        Command::Register({ "test close", "closes that dialog, and lets the UI settle", "", {}, {}, {}, Command::Needs::Config, false,
+            [](Command::Context &, const json &) {
+                if (Open) Open->quit();
+                QElapsedTimer T;
+                T.start();
+                do QApplication::processEvents(QEventLoop::AllEvents, 10); while (T.elapsed() < 100);
+                return json{{"closed", true}};
+            }, {} });
+        QTemporaryDir Data;
+        json Cfg = json::object();
+        QDir AppDir(Data.path());
+        Command::Context Ctx;
+        Ctx.Config = &Cfg;
+        Ctx.AppDataDir = &AppDir;
+        CommandServer Server(Ctx);
+        std::string Err;
+        QVERIFY2(Server.Start(Data.path().toStdString(), &Err), Err.c_str());
+        //The server takes each connection first (its own handler was connected first): its socket is there by now.
+        auto *Listener = Server.findChild<QLocalServer *>();
+        QVERIFY(Listener);
+        connect(Listener, &QLocalServer::newConnection, Listener, [Listener] {
+            for (QLocalSocket *S : Listener->findChildren<QLocalSocket *>())
+                if (!Served.contains(S)) Served << S;
+        });
+        //The clients are another program's (here a thread's, on plain sockets): the app's event loop answers them.
+        const std::string Path = CommandServer::SocketName(Data.path().toStdString());
+        const auto Ask = [Path](const char *Name) {
+            const int Fd = ::socket(AF_UNIX, SOCK_STREAM, 0);
+            sockaddr_un A{};
+            A.sun_family = AF_UNIX;
+            std::strncpy(A.sun_path, Path.c_str(), sizeof A.sun_path - 1);
+            std::string Got;
+            if (::connect(Fd, reinterpret_cast<sockaddr *>(&A), sizeof A) == 0)
+            {
+                const std::string Req = std::string("{\"name\": \"") + Name + "\", \"args\": {}}\n";
+                (void)!::write(Fd, Req.data(), Req.size());
+                char Buf[512];
+                for (ssize_t N; Got.find('\n') == std::string::npos && (N = ::read(Fd, Buf, sizeof Buf)) > 0;) Got.append(Buf, N);
+            }
+            ::close(Fd);   // hung up the moment it has its answer
+            return Got;
+        };
+        std::atomic<int> Rounds{0};
+        std::atomic<bool> Answered{true};
+        std::thread Clients([&] {
+            for (int Round = 0; Round < 3; ++Round)
+            {
+                Answered = Answered && Ask("test hangup").find("early") != std::string::npos;
+                std::this_thread::sleep_for(std::chrono::milliseconds(150));   // the app sees it gone, its dialog open
+                Answered = Answered && Ask("test close").find("closed") != std::string::npos;
+                std::this_thread::sleep_for(std::chrono::milliseconds(300));   // the first command settles and unwinds
+                ++Rounds;
+            }
+        });
+        QTRY_COMPARE_WITH_TIMEOUT(Rounds.load(), 3, 20000);
+        Clients.join();
+        QVERIFY(Answered);
+        QVERIFY2(!FreedUnderIt, "a socket was freed under the read handler running its command");
+    }
+
+    // A key-binding field destroyed while it captures gives the controller queue back — no FocusOut reaches it then,
+    // and navigation would stay dead. Teeth: give it back only on FocusOut.
+    void a_capture_ended_by_its_field_going_gives_the_queue_back()
+    {
+        auto *F = new KeyCaptureField("a", "a");
+        F->resize(300, 40);
+        Front(*F);
+        QTest::mouseClick(F->findChild<QPushButton *>("keycapture"), Qt::LeftButton);
+        if (!PadInput::instance().capturing()) QSKIP("no SDL game-controller subsystem here: nothing is lent");
+        delete F;
+        QVERIFY(!PadInput::instance().capturing());
+    }
+
+    // Controller mode uses Qt's own file dialogs (a native one is another program's window: no controller reaches
+    // it), and gives the desktop its own back. Teeth: never turn it on; leave it on.
+    void controller_mode_uses_dialogs_a_controller_can_drive()
+    {
+        LibraryFixture L;
+        AppModel M(&L.Cfg, &L.AppDir);
+        IpfsModel Ipfs(M);
+        DownloadManager Dl(M, Ipfs);
+        DeckShell Sh(M, Ipfs, Dl);
+        QCoreApplication::setAttribute(Qt::AA_DontUseNativeDialogs, false);   // as a desktop session has it
+        Sh.setActive(true);
+        QVERIFY(QCoreApplication::testAttribute(Qt::AA_DontUseNativeDialogs));
+        Sh.setActive(false);
+        QVERIFY(!QCoreApplication::testAttribute(Qt::AA_DontUseNativeDialogs));
+        //And the menu reaches the Library toolbar's two buttons.
+        Sh.resize(1280, 800);
+        Front(Sh);
+        Sh.setActive(true);
+        Sh.openMenu();
+        QVERIFY(Sh.menuOpen());
+        const json Items = Sh.padState()["menu"]["items"];
+        QVERIFY(std::find(Items.begin(), Items.end(), json("Add a local package…")) != Items.end());
+        QVERIFY(std::find(Items.begin(), Items.end(), json("Package editor")) != Items.end());
+        Sh.closeMenu();
+        Sh.setActive(false);
+    }
+
+    // A dialog opened in controller mode is made large and gets the hint strip; a popup menu is left as it is.
+    // Teeth: test the window flags with & Qt::Popup (every window matches, no dialog is styled).
+    void dialogs_in_controller_mode_get_hints_and_popups_do_not()
+    {
+        LibraryFixture L;
+        AppModel M(&L.Cfg, &L.AppDir);
+        IpfsModel Ipfs(M);
+        DownloadManager Dl(M, Ipfs);
+        DeckShell Sh(M, Ipfs, Dl);
+        Sh.resize(1280, 800);
+        Front(Sh);
+        Sh.setActive(true);
+        QVERIFY(DeckShell::On());
+        QDialog D;
+        auto *Lay = new QVBoxLayout(&D);
+        Lay->addWidget(new QPushButton("ok"));
+        D.show();
+        QApplication::processEvents();
+        QVERIFY(D.findChild<QWidget *>("controllerHints"));
+        QVERIFY(D.styleSheet().contains("font-size"));
+        QMenu Menu;
+        Menu.addAction("x");
+        Menu.popup(QPoint(10, 10));
+        QApplication::processEvents();
+        QVERIFY(!Menu.findChild<QWidget *>("controllerHints"));
+        Menu.close();
+        Sh.setActive(false);
+        QVERIFY(!DeckShell::On());
+    }
+};
+
+QTEST_MAIN(ControllerTest)
+#include "test_controller.moc"

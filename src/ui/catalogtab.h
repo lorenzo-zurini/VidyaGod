@@ -11,6 +11,7 @@
 #include <vector>
 
 #include "libraryview.h"    // LibraryView / LibraryGameCard / SortMode
+#include "cardpool.h"       // PackageMainCard
 
 class AppModel;
 
@@ -60,6 +61,5 @@ private:
 // The card a package's un-hydrated games nest under: the one whose tile UID is the package's own (%PackageUID%, where
 // every PARENTUID chain in it ends — [749] is The Age of Kings). -1 when that game is not among them (installed
 // already, not received yet): then nothing nests.
-int PackageMainCard(const std::vector<std::string> &CardUids, const std::string &PackageUid);
 
 #endif // CATALOGTAB_H
