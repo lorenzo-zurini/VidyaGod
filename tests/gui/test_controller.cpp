@@ -46,6 +46,7 @@
 #include "osk.h"
 #include "packagecatalog.h"
 #include "padinput.h"
+#include <SDL.h>
 #include "padnav.h"
 #include "nodefixture.h"
 
@@ -597,6 +598,30 @@ private slots:
         QCOMPARE(Sh.section(), DeckShell::Section::Home);
         QCOMPARE(DeckShell::SectionFrom("catalog"), std::optional<DeckShell::Section>(DeckShell::Section::Catalog));
         Sh.setActive(false);
+    }
+
+    // A Steam Deck without Steam running (a VidyaGod session of its own) has nothing else reading its controller, and
+    // its kernel gamepad is silent in lizard mode: controller mode reads the Deck itself, through SDL's driver for it;
+    // the desktop lets it go, so its trackpad is the mouse again. Seen on the Deck: every button dead in controller
+    // mode. Teeth: the shell not turning it on, or not off again, or the SDL hint not following.
+    void a_steam_deck_is_read_directly_in_controller_mode_only()
+    {
+        const auto Hint = [] { const char *H = SDL_GetHint("SDL_JOYSTICK_HIDAPI_STEAMDECK"); return QString::fromUtf8(H ? H : ""); };
+        PadInput &In = PadInput::instance();
+        In.setDeckDirect(false);
+        QCOMPARE(Hint(), QStringLiteral("0"));
+        LibraryFixture L;
+        AppModel M(&L.Cfg, &L.AppDir);
+        M.rebuildCatalog();
+        IpfsModel Ipfs(M);
+        DownloadManager Dl(M, Ipfs);
+        DeckShell Sh(M, Ipfs, Dl);
+        Sh.setActive(true);
+        QVERIFY(In.deckDirect());
+        QCOMPARE(Hint(), QStringLiteral("1"));
+        Sh.setActive(false);
+        QVERIFY(!In.deckDirect());
+        QCOMPARE(Hint(), QStringLiteral("0"));
     }
 
     // Y sorts the shelf (by name, recently played, release, series) and the sort is remembered for the next start;

@@ -65,7 +65,7 @@ json Pads()
     for (const PadInput::PadInfo &P : In.pads()) List.push_back(json{{"name", P.Name.toStdString()}, {"glyphs", Pad::GlyphsName(P.Glyphs)}});
     json Glyphs = json::object();
     for (const std::string &N : Pad::Names()) Glyphs[N] = DeckStyle::GlyphText(*Pad::FromName(N), In.glyphs()).toStdString();
-    return json{{"enabled", In.enabled()}, {"suspended", In.suspended()}, {"glyphs", Pad::GlyphsName(In.glyphs())},
+    return json{{"enabled", In.enabled()}, {"suspended", In.suspended()}, {"deckDirect", In.deckDirect()}, {"glyphs", Pad::GlyphsName(In.glyphs())},
                 {"labels", Glyphs}, {"controllers", List}};
 }
 
@@ -184,9 +184,10 @@ VG_COMMANDS
     Command::Register({
         "controller pads", "the controllers connected, and how their buttons are labelled",
         "Steam Input's virtual controller (a Steam Deck's, in Game Mode) is listed as the controller it says it is; its "
-        "buttons are drawn as the Deck labels them. Suspended: a launched game is running, and has the controllers.",
+        "buttons are drawn as the Deck labels them. Suspended: a launched game is running, and has the controllers. "
+        "deckDirect: a Steam Deck's own controller is read directly (controller mode; its lizard mode is off meanwhile).",
         {}, { "controller pads" },
-        { "PadInput::pads", "PadInput::glyphs", "PadInput::suspended", "PadInput::padsChanged", "PadInput::held", "Pad::Names", "Pad::Name",
+        { "PadInput::pads", "PadInput::glyphs", "PadInput::suspended", "PadInput::deckDirect", "PadInput::setDeckDirect", "PadInput::padsChanged", "PadInput::held", "Pad::Names", "Pad::Name",
           "Pad::GlyphsName", "Pad::IsDirection", "DeckStyle::GlyphText", "DeckStyle::GlyphWidth", "LaunchThread::Running" }, Needs::Ui, false,
         [](Command::Context &, const json &) { return Pads(); }, {} });
 

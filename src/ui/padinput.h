@@ -65,7 +65,8 @@ private:
 //
 // Presses reach the app only while it is the active application and no game it launched is running, so a game being
 // played never drives the window behind it; while a launch runs the controllers are closed, so the game has them to
-// itself. Steam Input's virtual controller (the Steam Deck's, in Game Mode) is a controller like any other.
+// itself. Steam Input's virtual controller (the Steam Deck's, in Game Mode) is a controller like any other; without
+// Steam, controller mode reads the Deck's own (setDeckDirect).
 // ---------------------------------------------------------------------------
 class PadInput : public QObject
 {
@@ -93,6 +94,14 @@ public:
     void tick();
     void setHaptics(bool On) { Haptics = On; }
 
+    // The Steam Deck's own controller, read directly (SDL's driver for it) rather than through Steam Input. Without
+    // Steam running — a VidyaGod session of its own, the desktop — nothing else reads it: its kernel gamepad is
+    // silent while the Deck is in lizard mode (buttons as keys, the trackpad as the mouse). Reading it turns lizard
+    // mode off for as long as it is read, so controller mode turns this on and the desktop turns it off again, giving
+    // the trackpad mouse back. A launched game always has the Deck to itself: it is let go while the game runs.
+    void setDeckDirect(bool On);
+    bool deckDirect() const { return DeckDirect && !suspended(); }   // read directly now
+
     // The launch window's press-a-key field: while a capture runs it reads the raw queue and navigation stands aside.
     // Begin drops whatever was queued (a button already held binds nothing); Poll gives the name of the first new
     // press ("pad a", "pad left stick up" — KeyCapture::NameOfPad*), else ""; End gives navigation the queue back.
@@ -118,6 +127,8 @@ private:
     bool active() const;                    // the app may take a press now
 
     bool Enabled = false, Started = false, Ok = false, Capturing = false, Haptics = false, WasSuspended = false;
+    bool DeckDirect = false;
+    void applyDeckDirect();   // SDL's Deck driver on exactly while deckDirect()
     class QTimer *Timer = nullptr;
     struct Opened;                          // SDL handles, kept out of this header
     std::vector<Opened> *Pads = nullptr;

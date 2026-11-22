@@ -533,6 +533,7 @@ void DeckShell::setActive(bool On)
         NativeDialogsWere = QCoreApplication::testAttribute(Qt::AA_DontUseNativeDialogs);
         QCoreApplication::setAttribute(Qt::AA_DontUseNativeDialogs, true);
         qApp->installEventFilter(this);
+        PadInput::instance().setDeckDirect(true);   // a Steam Deck's own buttons, Steam running or not
         Clock->start();
         //Covers as large as the shelf draws them (a TV draws them larger than the desktop's cards).
         Library->grid()->resize(Body->size());
@@ -544,6 +545,7 @@ void DeckShell::setActive(bool On)
     else
     {
         qApp->removeEventFilter(this);
+        PadInput::instance().setDeckDirect(false);   // the desktop: the Deck's trackpad mouse back
         QCoreApplication::setAttribute(Qt::AA_DontUseNativeDialogs, NativeDialogsWere);
         Clock->stop();
         if (menuOpen()) closeMenu();

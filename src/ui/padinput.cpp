@@ -187,9 +187,7 @@ bool PadInput::start()
     //takes a press is decided here (active()), not by SDL.
     SDL_SetHint(SDL_HINT_JOYSTICK_ALLOW_BACKGROUND_EVENTS, "1");
     SDL_SetHint(SDL_HINT_NO_SIGNAL_HANDLERS, "1");     // Ctrl+C stays Qt's
-    //The Steam Deck's own controller through hidraw would turn off its trackpad mouse ("lizard mode") for as long as
-    //it is open — the desktop's pointer. Steam Input's virtual controller is what to read there, in Game Mode and out.
-    SDL_SetHint("SDL_JOYSTICK_HIDAPI_STEAMDECK", "0");
+    applyDeckDirect();   // the Steam Deck's own controller: only in controller mode (setDeckDirect)
     Ok = SDL_InitSubSystem(SDL_INIT_GAMECONTROLLER) == 0;
     if (!Ok) LogWarn("PadInput", std::string("game controllers unavailable: ") + SDL_GetError());
     return Ok;
@@ -243,6 +241,17 @@ QList<PadInput::PadInfo> PadInput::pads() const
 }
 
 bool PadInput::suspended() const { return LaunchThread::Running() > 0; }
+
+void PadInput::setDeckDirect(bool On)
+{
+    if (On == DeckDirect) return;
+    DeckDirect = On;
+    applyDeckDirect();
+}
+
+//SDL watches this hint: changed while it runs, the Deck's own device comes (or goes) as a controller added (removed)
+//— and its kernel gamepad, the same hardware, goes (comes) — through the events poll() already handles.
+void PadInput::applyDeckDirect() { SDL_SetHint("SDL_JOYSTICK_HIDAPI_STEAMDECK", deckDirect() ? "1" : "0"); }
 
 bool PadInput::active() const
 {
@@ -302,13 +311,14 @@ void PadInput::poll()
     //the game — the Deck's), and open them again when it ends.
     if (suspended())
     {
-        if (!WasSuspended) { WasSuspended = true; closeAll(); }
+        if (!WasSuspended) { WasSuspended = true; closeAll(); applyDeckDirect(); }   // the Deck's lizard mode back for the game
         if (Timer->interval() != 250) Timer->setInterval(250);   // only to see the game end
         return;
     }
     if (WasSuspended)
     {
         WasSuspended = false;
+        applyDeckDirect();
         SDL_PumpEvents();
         for (int I = 0; I < SDL_NumJoysticks(); ++I) open(I);
         SDL_FlushEvents(SDL_FIRSTEVENT, SDL_LASTEVENT);   // nothing pressed in the game counts here
