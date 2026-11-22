@@ -26,6 +26,8 @@
 #include "deckgrid.h"
 #include "deckshell.h"
 #include "deckstyle.h"
+#include "generalpage.h"
+#include "settingstab.h"
 #include "theme.h"
 #include "downloadmanager.h"
 #include "instancestore.h"
@@ -824,6 +826,41 @@ private slots:
         Press(B::B);
         QVERIFY(!Sh.menuOpen());
         Sh.setActive(false);
+    }
+
+    // The menu's "Controller settings" opens Settings at its Controller page: the controller's settings are a page of
+    // Settings of their own, General keeps the tray. Teeth: the item opens Settings at whatever page it was on; the
+    // controller's settings stay on General.
+    void the_menus_controller_settings_open_the_controller_page()
+    {
+        LibraryFixture L;
+        AppModel M(&L.Cfg, &L.AppDir);
+        M.rebuildCatalog();
+        IpfsModel Ipfs(M);
+        DownloadManager Dl(M, Ipfs);
+        DeckShell Sh(M, Ipfs, Dl);
+        Sh.resize(1280, 800);
+        Front(Sh);
+        Sh.setActive(true);
+        Press(B::Start);
+        QVERIFY(Sh.menuOpen());
+        QCOMPARE(Sh.padState()["menu"]["items"][5].get<std::string>(), std::string("Controller settings"));
+        Press(B::Up, 2);   // round from the first item to the last but one
+        Press(B::A);
+        QVERIFY(!Sh.menuOpen());
+        QCOMPARE(Sh.section(), DeckShell::Section::Settings);
+        auto *T = Sh.findChild<SettingsTab *>();
+        QVERIFY(T);
+        auto *Side = T->findChild<QListWidget *>("SettingsSidebar");
+        QVERIFY(Side && Side->currentItem());
+        QCOMPARE(Side->currentItem()->text(), QStringLiteral("Controller"));
+        QComboBox *Start = nullptr;
+        for (QComboBox *C : T->findChildren<QComboBox *>())
+            if (C->accessibleName() == "Controller Start in") Start = C;
+        QVERIFY(Start && Start->isVisible());
+        Sh.setActive(false);
+        GeneralPage G(M);
+        for (QComboBox *C : G.findChildren<QComboBox *>()) QVERIFY(C->accessibleName() != "Controller Start in");
     }
 
     // A command runs inside its socket's read handler and may spin an event loop of its own (a press letting the UI

@@ -177,7 +177,11 @@ void DeckMenu::choose(const QString &Item)
     else if (Item == "Check the library for changes") Shell.model().refreshFromDisk();
     else if (Item == "Add a local package…") AddLocalPackage(Shell.model(), &Shell);
     else if (Item == "Package editor") PackageEditor::OpenFor(Shell.model().config(), &Shell, "");
-    else if (Item == "Controller settings") Shell.showSection(DeckShell::Section::Settings);
+    else if (Item == "Controller settings")
+    {
+        Shell.showSection(DeckShell::Section::Settings);
+        if (auto *T = Shell.findChild<SettingsTab *>()) T->openPage("Controller");
+    }
     else if (Item == "Quit VidyaGod") emit Shell.quitRequested();
 }
 

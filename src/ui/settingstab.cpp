@@ -1,6 +1,7 @@
 #include "settingstab.h"
 #include "appmodel.h"
 #include "generalpage.h"
+#include "controllerpage.h"
 #include "dependenciespage.h"
 #include "packagesview.h"
 #include "runnerspage.h"
@@ -35,6 +36,7 @@ SettingsTab::SettingsTab(AppModel &model, QWidget *parent)
         CategoryList->addItem(It);
     };
     Add(QStyle::SP_FileDialogDetailedView, "General");
+    Add(QStyle::SP_MediaPlay, "Controller");
     Add(QStyle::SP_MessageBoxWarning, "Dependencies");
     Add(QStyle::SP_DriveHDIcon, "Installed Packages");
     Add(QStyle::SP_DesktopIcon, "Runners");
@@ -45,13 +47,14 @@ SettingsTab::SettingsTab(AppModel &model, QWidget *parent)
     outer->addWidget(CategoryList);
 
     // Right: stacked, self-contained page widgets (each talks to the model directly). Built LAZILY on first visit —
-    // constructing all seven up front stat-ed the disk (Installed Packages hydration checks) and enumerated
+    // constructing all of them up front stat-ed the disk (Installed Packages hydration checks) and enumerated
     // runners/sources on the main thread at launch, before the window was interactive, for a tab the user may never
     // open. A placeholder holds each slot so the stack index stays aligned with the sidebar row.
     Stack = new QStackedWidget(this);
     outer->addWidget(Stack, 1);
     PageFactories = {
         [this]{ return static_cast<QWidget *>(new GeneralPage(Model, Stack)); },
+        [this]{ return static_cast<QWidget *>(new ControllerPage(Model, Stack)); },
         [this]{ return static_cast<QWidget *>(new DependenciesPage(Model, Stack)); },
         [this]{ return static_cast<QWidget *>(new PackagesView(Model, Stack)); },
         [this]{ return static_cast<QWidget *>(new RunnersPage(Model, Stack)); },
@@ -89,4 +92,15 @@ void SettingsTab::showPage(int row)
         placeholder->deleteLater();
     }
     Stack->setCurrentIndex(row);
+}
+
+bool SettingsTab::openPage(const QString &Name)
+{
+    for (int Row = 0; Row < CategoryList->count(); ++Row)
+        if (CategoryList->item(Row)->text() == Name)
+        {
+            CategoryList->setCurrentRow(Row);   // the sidebar shows it too; showPage follows
+            return true;
+        }
+    return false;
 }

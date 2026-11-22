@@ -4,6 +4,7 @@
 // no coordinates, no synthetic input: the widgets themselves.
 #include "command.h"
 #include "libraryview.h"
+#include "settingstab.h"   // ui tab --page
 #include "uifind.h"
 
 #include <QAbstractButton>
@@ -496,9 +497,13 @@ VG_COMMANDS
         [](Command::Context &, const json &A) { return StateOf(Named(Command::Str(A, "control")), 1, true); }, &RenderTree });
 
     Command::Register({
-        "ui tab", "switch to a tab", "Make a tab current, exactly as clicking its title does.",
-        { Command::Pos("tab", "the tab's title (Library, Catalog, Settings, IPFS, Network)") },
-        { "ui tab Network" }, { "QTabWidget::setCurrentIndex" , "IpfsTab::setActive", "NetworkTab::setActive", "SettingsTab::showPage" }, Command::Needs::Ui, false,
+        "ui tab", "switch to a tab", "Make a tab current, exactly as clicking its title does. --page opens one of the "
+        "Settings tab's pages, as its sidebar names it.",
+        { Command::Pos("tab", "the tab's title (Library, Catalog, Settings, IPFS, Network)"),
+          Command::Opt("page", "a Settings page (General, Controller, IPFS, …)") },
+        { "ui tab Network", "ui tab Settings --page Controller" },
+        { "QTabWidget::setCurrentIndex" , "IpfsTab::setActive", "NetworkTab::setActive", "SettingsTab::showPage", "SettingsTab::openPage" },
+        Command::Needs::Ui, false,
         [](Command::Context &Ctx, const json &A) {
             const QString T = QString::fromStdString(Command::Str(A, "tab"));
             std::function<std::pair<QTabWidget *, int>(QWidget *)> Find = [&](QWidget *W) -> std::pair<QTabWidget *, int> {
@@ -508,9 +513,22 @@ VG_COMMANDS
                 for (QObject *C : W->children()) if (auto *Cw = qobject_cast<QWidget *>(C)) if (auto R = Find(Cw); R.first) return R;
                 return { nullptr, -1 };
             };
+            const QString Page = QString::fromStdString(Command::Str(A, "page", ""));
             for (QWidget *W : Windows())
                 if (const auto [Tw, I] = Find(W); Tw)
-                    return Act(Ctx, [Tw = Tw, I = I] { Tw->setCurrentIndex(I); }, [&] { return json{{"tab", T.toStdString()}}; });
+                {
+                    SettingsTab *St = Page.isEmpty() ? nullptr : Tw->widget(I)->findChild<SettingsTab *>();
+                    if (!Page.isEmpty() && !qobject_cast<SettingsTab *>(Tw->widget(I)) && !St)
+                        throw Command::BadArgs("--page is a Settings page; '" + T.toStdString() + "' is not the Settings tab");
+                    if (!St) St = qobject_cast<SettingsTab *>(Tw->widget(I));
+                    bool Found = true;
+                    json Out = Act(Ctx, [Tw = Tw, I = I, St, Page, &Found] {
+                        Tw->setCurrentIndex(I);
+                        if (St && !Page.isEmpty()) Found = St->openPage(Page);
+                    }, [&] { return Page.isEmpty() ? json{{"tab", T.toStdString()}} : json{{"tab", T.toStdString()}, {"page", Page.toStdString()}}; });
+                    if (!Found) throw Command::BadArgs("no Settings page '" + Page.toStdString() + "'");
+                    return Out;
+                }
             throw Command::BadArgs("no tab '" + T.toStdString() + "'");
         }, {} });
 

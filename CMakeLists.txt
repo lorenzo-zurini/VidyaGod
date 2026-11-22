@@ -415,6 +415,8 @@ set(SHARED_SOURCES
 
     src/ui/generalpage.h
     src/ui/generalpage.cpp
+    src/ui/controllerpage.h
+    src/ui/controllerpage.cpp
 
     src/engine/depcheck.h
     src/engine/depcheck.cpp

@@ -48,7 +48,7 @@ private slots:
         // checkbox doesn't exist until we navigate to it. Show the IPFS page first.
         SettingsTab * settings = mw.findChild<SettingsTab *>();
         QVERIFY(settings != nullptr);
-        settings->showPage(5);   // row 5 == "IPFS" in SettingsTab's category order
+        QVERIFY(settings->openPage("IPFS"));
         QApplication::processEvents();
 
         // Tick Settings → IPFS "Enable networking" → drives the model → MainWindow starts the node off-thread.

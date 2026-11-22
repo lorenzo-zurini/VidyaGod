@@ -7,7 +7,8 @@ class AppModel;
 
 // ---------------------------------------------------------------------------
 // GeneralPage — the Settings "General" page: the tray / daemon-hybrid behavior toggles (close to tray, minimize to
-// tray, start in tray). Reads/writes Settings.Tray through the AppModel. MainWindow reads these live (no signal
+// tray, start in tray) and launch at login. The controller's settings are a page of their own (ControllerPage).
+// Reads/writes Settings.Tray through the AppModel. MainWindow reads these live (no signal
 // needed) when it decides whether a close/minimize should hide to the tray.
 // ---------------------------------------------------------------------------
 class GeneralPage : public QWidget

@@ -7,11 +7,12 @@
 
 class AppModel;
 class QListWidget;
+class QString;
 class QStackedWidget;
 
 // ---------------------------------------------------------------------------
 // SettingsTab — the "Settings" tab: a category sidebar + a stack of self-contained page widgets (GeneralPage,
-// PackagesView, RunnersPage, SourcesPage, IpfsSettingsPage, PathsPage). It is a thin container — no settings
+// ControllerPage, DependenciesPage, PackagesView, RunnersPage, SourcesPage, IpfsSettingsPage, NetworkPage, PathsPage). It is a thin container — no settings
 // logic of its own; each
 // page reads/writes through the AppModel and subscribes to the model's signals on its own.
 // ---------------------------------------------------------------------------
@@ -22,6 +23,8 @@ public:
     SettingsTab(AppModel &model, QWidget *parent = nullptr);
 
     void showPage(int row);   // build the page on first visit (lazy), then show it (also used to navigate)
+    // The page named Name ("Controller", "IPFS"), as its sidebar row reads, selected and shown. False: no such page.
+    bool openPage(const QString &Name);
 
 private:
     AppModel &Model;
