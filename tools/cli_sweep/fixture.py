@@ -17,7 +17,7 @@ class Fixture:
         self.home = f'{self.work}/home'
         self.files = f'{self.work}/files'        # the working directory: the files the examples name
         self.pristine = f'{self.work}/pristine'  # the fixture as made: restore() puts it back
-        self.env = dict(os.environ, HOME=self.home, DISPLAY='', WAYLAND_DISPLAY='', QT_QPA_PLATFORM='offscreen', NO_COLOR='1',
+        self.env = dict(os.environ, VIDYAGOD_NO_CONTROLLER_SERVICE='1', HOME=self.home, DISPLAY='', WAYLAND_DISPLAY='', QT_QPA_PLATFORM='offscreen', NO_COLOR='1',
                         XDG_CONFIG_HOME=f'{self.home}/.config', XDG_DATA_HOME=f'{self.home}/.local/share',
                         XDG_CACHE_HOME=f'{self.home}/.cache')
 

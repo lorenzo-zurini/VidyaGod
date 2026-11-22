@@ -24,7 +24,7 @@ F = fx.Fixture(a.vg, a.work)
 Real = bool(a.data_dir)
 if Real:
     F.data = os.path.abspath(a.data_dir)
-    F.env = dict(os.environ, QT_QPA_PLATFORM='offscreen', DISPLAY='', WAYLAND_DISPLAY='', NO_COLOR='1')
+    F.env = dict(os.environ, VIDYAGOD_NO_CONTROLLER_SERVICE='1', QT_QPA_PLATFORM='offscreen', DISPLAY='', WAYLAND_DISPLAY='', NO_COLOR='1')
     os.makedirs(F.files, exist_ok=True)
 else:
     F.make()

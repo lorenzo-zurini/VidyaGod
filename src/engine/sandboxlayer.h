@@ -56,6 +56,8 @@ struct Options {
     std::string              BoxRoot;                      // Windows: the box's own root, the game's prefix (BoxPrefix); "" = Sandboxie's default
     bool                     TunBridge = false;           // in-node NAT is up → sandbox-init adds a default route via the TUN
     std::vector<GameEnvVar>  GameEnv;                      // loader variables the init applies to the game only (TakeLoaderEnv)
+    std::vector<std::string> HiddenDevices;                // real controllers VidyaGod's InputPlumber owns: each node covered
+                                                           // by /dev/null, so the game sees only the virtual ones (Linux)
 };
 
 // Build the base sandbox Options from the launch params: Net (from VIDYAGOD_SANDBOX_NET), the writable binds (the
@@ -69,6 +71,10 @@ struct Options {
 // thing carried over from the real home is the GPU driver's shader cache (HomeCaches): it is the driver's, not the
 // game's, and losing it would recompile every shader on every launch.
 Options FromParams(const ContainerParams &CP);
+// The device nodes a game must not see: the real controllers VidyaGod's controller service owns (the game gets the
+// virtual ones it makes, with their layout). Set by the app (ControllerService); FromParams calls it on the launch's
+// worker thread, so Source must be safe to call from any thread. Unset: nothing is hidden.
+void SetHiddenDevicesSource(std::function<std::vector<std::string>()> Source);
 // The options a launch's sandbox runs with — the one builder Execute, the kill, the box's setup and its teardown
 // share: FromParams, the mounts BuildContainerRuntime recorded for the sandbox (SandboxMounts), the working folder
 // (the box's name comes from it, so every step reaches the box the game runs in).

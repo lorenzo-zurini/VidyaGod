@@ -7,3 +7,7 @@
 [submodule "MetaPackageFormat"]
 	path = MetaPackageFormat
 	url = https://github.com/lorenzo-zurini/MetaPackageFormat.git
+[submodule "InputPlumber"]
+	path = InputPlumber
+	url = https://github.com/lorenzo-zurini/InputPlumber.git
+	branch = vidyagod

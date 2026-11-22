@@ -30,7 +30,7 @@ def main():
     os.makedirs(os.path.join(data, "home"))
     json.dump({"Settings": {"LanEnabled": False, "IPFS": {"Enabled": False}}, "LIBRARY": []},
               open(f"{data}/GlobalConfig.JSON", "w"), indent=4)
-    env = dict(os.environ, HOME=os.path.join(data, "home"), QT_QPA_PLATFORM="offscreen")
+    env = dict(os.environ, VIDYAGOD_NO_CONTROLLER_SERVICE="1", HOME=os.path.join(data, "home"), QT_QPA_PLATFORM="offscreen")
     lock = f"{data}/vidyagod.lock"
     procs, fail = [], []
 

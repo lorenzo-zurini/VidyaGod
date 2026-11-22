@@ -101,6 +101,10 @@ public:
     // the trackpad mouse back. A launched game always has the Deck to itself: it is let go while the game runs.
     void setDeckDirect(bool On);
     bool deckDirect() const { return DeckDirect && !suspended(); }   // read directly now
+    // Only virtual controllers (uinput/uhid): while VidyaGod's InputPlumber owns the real ones (ControllerService), a
+    // real controller read here too would be read twice — once raw, once through its layout.
+    void setOnlyVirtual(bool On);
+    bool onlyVirtual() const { return OnlyVirtual; }
 
     // The launch window's press-a-key field: while a capture runs it reads the raw queue and navigation stands aside.
     // Begin drops whatever was queued (a button already held binds nothing); Poll gives the name of the first new
@@ -127,7 +131,7 @@ private:
     bool active() const;                    // the app may take a press now
 
     bool Enabled = false, Started = false, Ok = false, Capturing = false, Haptics = false, WasSuspended = false;
-    bool DeckDirect = false;
+    bool DeckDirect = false, OnlyVirtual = false;
     void applyDeckDirect();   // SDL's Deck driver on exactly while deckDirect()
     class QTimer *Timer = nullptr;
     struct Opened;                          // SDL handles, kept out of this header

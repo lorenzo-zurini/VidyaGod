@@ -56,7 +56,7 @@ start)
 { "LIBRARY": [], "Settings": { "IPFS": { "Enabled": true }, "PackageSources": [] } }
 JSON
   echo "$DATADIR" >"$STATE"
-  QT_QPA_PLATFORM=xcb setsid nohup "$ROOT/build/VidyaGod" \
+  VIDYAGOD_NO_CONTROLLER_SERVICE=1 QT_QPA_PLATFORM=xcb setsid nohup "$ROOT/build/VidyaGod" \
       --data-dir "$DATADIR" --bypass-single-instance-lock \
       >"$DATADIR/gui.log" 2>&1 </dev/null &
   for _ in $(seq 1 40); do [ -n "$(win_id)" ] && break; sleep 1; done

@@ -118,7 +118,7 @@ def snapshot(a):
         if not os.path.exists(os.path.join(w, "GlobalConfig.JSON")):
             json.dump(cfg, open(os.path.join(w, "GlobalConfig.JSON"), "w"), indent=2)
         workers.append(w)
-    env = dict(os.environ, QT_QPA_PLATFORM="offscreen")
+    env = dict(os.environ, VIDYAGOD_NO_CONTROLLER_SERVICE="1", QT_QPA_PLATFORM="offscreen")
     binary = os.path.abspath(a.binary)
 
     # A worker dir is used by one process at a time (its data dir holds the instance lock): packages are bucketed by

@@ -32,6 +32,10 @@ static std::string Var(const ContainerParams &CP, const std::string &Key)
     return It == CP.CustomVariables.end() ? std::string() : It->second;
 }
 
+namespace { std::function<std::vector<std::string>()> HiddenSource; }
+
+void SetHiddenDevicesSource(std::function<std::vector<std::string>()> Source) { HiddenSource = std::move(Source); }
+
 Options ForLaunch(const ContainerParams &CP)
 {
     Options O = FromParams(CP);
@@ -68,6 +72,7 @@ Options FromParams(const ContainerParams &CP)
     if (!CP.UserDataPath.empty()) O.BoxRoot = (CP.UserDataPath / InstanceStore::kBoxDir).string();
 #endif
 #ifndef _WIN32
+    if (HiddenSource) O.HiddenDevices = HiddenSource();
     // The private home (see the header). The real one stays out of WritableBinds: the read-only root covers it.
     const char *H = std::getenv("HOME");
     O.RealHome = H ? H : "";
@@ -252,6 +257,10 @@ void Wrap(const Options &Opts, std::string &Program, QStringList &Arguments)
     A << "--ro-bind" << "/" << "/"            // whole host READ-ONLY (native apps can't write the system)
       << "--dev-bind" << "/dev" << "/dev"     // GPU (/dev/dri) + /dev/fuse + /dev/net/tun
       << "--proc" << "/proc";
+    // The real controllers VidyaGod's InputPlumber owns: the game opens the virtual ones only (the same hardware read
+    // twice, raw and through its layout, would press every button twice).
+    for (const std::string &D : Opts.HiddenDevices)
+        if (std::error_code Ec; std::filesystem::exists(D, Ec)) A << "--ro-bind" << "/dev/null" << QString::fromStdString(D);
 
     // Writable surfaces over the RO root (the vidyagodfs mount lives under TempPath; saves under UserData/home).
     auto bindRW = [&](const std::string &P){

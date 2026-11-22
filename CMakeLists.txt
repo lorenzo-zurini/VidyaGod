@@ -58,7 +58,7 @@ set(CMAKE_AUTOUIC ON)
 set(CMAKE_AUTOMOC ON)
 set(CMAKE_AUTORCC ON)
 
-find_package(Qt6 CONFIG REQUIRED COMPONENTS Core Widgets Network OpenGL OpenGLWidgets Test)
+find_package(Qt6 CONFIG REQUIRED COMPONENTS Core Widgets Network OpenGL OpenGLWidgets Test DBus)   # DBus: the controller service (InputPlumber)
 find_package(nlohmann_json REQUIRED)
 find_package(PkgConfig REQUIRED)
 pkg_check_modules(LIBZIP REQUIRED IMPORTED_TARGET libzip)   # node-graph validation reads content zips to case-check CONTENTPATH
@@ -329,6 +329,7 @@ set(SHARED_SOURCES
     src/ui/deckpages.cpp
     src/ui/padinput.h
     src/ui/padinput.cpp
+    src/ui/controllerservice.cpp
     src/ui/padnav.h
     src/ui/padnav.cpp
     src/ui/osk.h
@@ -446,7 +447,7 @@ if(NOT WIN32)
     set(VG_XCB_LIB PkgConfig::XCB)
 endif()
 target_link_libraries(vidyagod_objs PUBLIC
-    Qt6::Widgets Qt6::Network Qt6::OpenGL Qt6::OpenGLWidgets
+    Qt6::Widgets Qt6::Network Qt6::OpenGL Qt6::OpenGLWidgets Qt6::DBus
     nlohmann_json::nlohmann_json PkgConfig::LIBZIP PkgConfig::LIBZSTD PkgConfig::SDL2 ${VG_XCB_LIB} vgfs_core vg_imgui)
 if(WIN32)
     target_link_libraries(vidyagod_objs PUBLIC shell32 ole32)   # Platform::HostFolders (SHGetKnownFolderPath)
@@ -492,6 +493,29 @@ add_subdirectory(VidyaGodIPFS)
 # (build root, and AppDir/usr/bin after bundling). Started in main.cpp; the IPFS call sites swap over in M4.
 target_link_libraries(VidyaGod PRIVATE vgipfs)
 set_target_properties(VidyaGod PROPERTIES BUILD_RPATH "$ORIGIN" INSTALL_RPATH "$ORIGIN")
+
+# ---- InputPlumber: the controller service (Linux), from our fork (git submodule) ----
+# VidyaGod runs it as its own child process, as the user (ControllerService): it owns the controllers it has a device
+# configuration for and gives games and VidyaGod virtual ones with a layout. Built with cargo into the build root as
+# `vidyagod-inputplumber` (never confused with a system-wide inputplumber); its device configurations are linked in as
+# share/inputplumber, the XDG data dir ControllerService points it at.
+if(UNIX AND NOT APPLE)
+    find_program(CARGO_EXECUTABLE cargo REQUIRED)
+    set(VG_INPUTPLUMBER ${CMAKE_BINARY_DIR}/vidyagod-inputplumber)
+    file(GLOB_RECURSE VG_INPUTPLUMBER_SRCS CONFIGURE_DEPENDS ${CMAKE_SOURCE_DIR}/InputPlumber/src/*.rs)
+    add_custom_command(
+        OUTPUT ${VG_INPUTPLUMBER}
+        COMMAND ${CMAKE_COMMAND} -E env CARGO_TARGET_DIR=${CMAKE_BINARY_DIR}/inputplumber
+                ${CARGO_EXECUTABLE} build --release --locked --jobs 6
+        COMMAND ${CMAKE_COMMAND} -E copy ${CMAKE_BINARY_DIR}/inputplumber/release/inputplumber ${VG_INPUTPLUMBER}
+        WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}/InputPlumber
+        DEPENDS ${VG_INPUTPLUMBER_SRCS} ${CMAKE_SOURCE_DIR}/InputPlumber/Cargo.toml ${CMAKE_SOURCE_DIR}/InputPlumber/Cargo.lock
+        COMMENT "Building InputPlumber (the controller service) with cargo"
+        VERBATIM)
+    add_custom_target(inputplumber_build ALL DEPENDS ${VG_INPUTPLUMBER})
+    file(MAKE_DIRECTORY ${CMAKE_BINARY_DIR}/share)
+    file(CREATE_LINK ${CMAKE_SOURCE_DIR}/InputPlumber/rootfs/usr/share/inputplumber ${CMAKE_BINARY_DIR}/share/inputplumber SYMBOLIC)
+endif()
 
 # ---- Unit tests (ctest) — pure, Qt-free logic (no MOC/Widgets), so the exe stays light ----
 enable_testing()
@@ -681,6 +705,14 @@ add_gui_test(test_sandbox)
 add_gui_test(test_variantpicker)
 add_gui_test(test_prelaunch)
 add_gui_test(test_controller)
+# The controller service, against a stand-in for InputPlumber (the real one would take the controllers of the machine
+# running the tests).
+add_executable(mock_inputplumber tests/gui/mock_inputplumber.cpp)
+target_link_libraries(mock_inputplumber PRIVATE Qt6::Core Qt6::DBus)
+add_gui_test(test_controllerservice)
+add_dependencies(test_controllerservice mock_inputplumber)
+add_dependencies(test_controllerservice VidyaGod)
+target_compile_definitions(test_controllerservice PRIVATE MOCK_INPUTPLUMBER="$<TARGET_FILE:mock_inputplumber>" VIDYAGOD_BIN="$<TARGET_FILE:VidyaGod>")
 add_gui_test(test_commands)
 # The friends test starts the embedded node to exercise the real C ABI; keep it hermetic (no swarm/DHT). The offline
 # switch must be in the environment at PROCESS START — Go caches its env at init, so a runtime setenv is invisible.
@@ -704,3 +736,9 @@ target_link_libraries(vg_screenshots PRIVATE
 target_include_directories(vg_screenshots PRIVATE ${VG_SRC_DIRS} tests)
 target_compile_options(vg_screenshots PRIVATE ${VG_WARNINGS})
 set_target_properties(vg_screenshots PROPERTIES BUILD_RPATH "$ORIGIN")
+
+# No test ever starts the real controller service: InputPlumber with every device managed takes ANY gamepad, the
+# machine's own included (it took this PC's own pad once, through cli_sweep's run of the app). Appended to whatever
+# environment a test already has.
+get_property(VG_ALL_TESTS DIRECTORY PROPERTY TESTS)
+set_property(TEST ${VG_ALL_TESTS} APPEND PROPERTY ENVIRONMENT_MODIFICATION "VIDYAGOD_NO_CONTROLLER_SERVICE=set:1")

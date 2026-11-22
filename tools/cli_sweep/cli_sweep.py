@@ -55,7 +55,7 @@ def transform(ex): return _RX.sub(lambda m: SUBST[m.group(0)], ex)   # one pass:
 # Never run: it plays a game, runs a program, mounts a filesystem, goes online, or changes the machine outside DIR.
 NEVER = {'launch run': 'runs a game', 'author run': 'runs a program under wine', 'author run-windows': 'runs an installer',
          'launch build': 'mounts a runtime', 'author start': 'mounts a runtime', 'vfs mount': 'mounts a filesystem',
-         'ipfs start': 'brings the node online', 'app autostart': 'writes the desktop autostart entry'}
+         'ipfs start': 'brings the node online', 'controller service --want': 'takes the machine\'s controllers', 'app autostart': 'writes the desktop autostart entry'}
 LIVE_NEVER = {'build uid': 'renames the package under the running app', 'app remove-package': 'removes the package under the running app',
               'app quit': 'ends the app the rest of the sweep runs in'}
 # Waits by design (until a signal, or for good): run with a short bound of their own, so a wait is no hang.

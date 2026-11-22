@@ -21,6 +21,7 @@
 #include "apppaths.h"            // AppPaths::DataRoot (the IPFS repo lives at <DataRoot>/ipfs)
 #include "prelaunchwindow.h"
 #include "deckshell.h"           // controller mode
+#include "controllerservice.h"   // VidyaGod's InputPlumber
 #include "padnav.h"             // PadRouter — controllers drive every window
 #include "commonutils.h"
 
@@ -115,6 +116,19 @@ MainWindow::MainWindow(nlohmann::ordered_json * gc, QDir * appData, QWidget * pa
 
     BuildStaticUI();
     if (!StartController) BuildDesktop();
+
+    //The controller service, VidyaGod's own InputPlumber beside the binary. Only the app names it, so a test built on
+    //the app's objects never starts the real one. A handheld's VidyaGod session (its session script sets VIDYAGOD_SESSION=1) keeps it running;
+    //on a desktop it runs only while controllers are in use (controller mode, a game).
+    //VIDYAGOD_NO_CONTROLLER_SERVICE=1: a harness running the app (the tests, a scripted drive) — InputPlumber with every
+    //device managed takes ANY gamepad, the machine's own included.
+    if (qEnvironmentVariable("VIDYAGOD_NO_CONTROLLER_SERVICE") != QLatin1String("1"))
+    {
+        ControllerService::instance().setDataDir(QCoreApplication::applicationDirPath() + QStringLiteral("/share"));
+        ControllerService::instance().setProgram(QCoreApplication::applicationDirPath() + QStringLiteral("/vidyagod-inputplumber"));
+    }
+    if (qEnvironmentVariable("VIDYAGOD_SESSION") == QLatin1String("1"))
+        ControllerService::instance().want(ControllerService::Need::Session, true);
 
     //Controllers: one router for every window the app opens; Start with Back held turns controller mode on from the
     //desktop (after the press itself has been routed: queued).

@@ -1,4 +1,5 @@
 #include "deckshell.h"
+#include "controllerservice.h"
 #include "deckshell_p.h"
 
 #include "appmodel.h"
@@ -533,7 +534,7 @@ void DeckShell::setActive(bool On)
         NativeDialogsWere = QCoreApplication::testAttribute(Qt::AA_DontUseNativeDialogs);
         QCoreApplication::setAttribute(Qt::AA_DontUseNativeDialogs, true);
         qApp->installEventFilter(this);
-        PadInput::instance().setDeckDirect(true);   // a Steam Deck's own buttons, Steam running or not
+        ControllerService::instance().want(ControllerService::Need::ControllerMode, true);   // the controllers, through InputPlumber (or the Deck's own, read directly, without it)
         Clock->start();
         //Covers as large as the shelf draws them (a TV draws them larger than the desktop's cards).
         Library->grid()->resize(Body->size());
@@ -545,7 +546,7 @@ void DeckShell::setActive(bool On)
     else
     {
         qApp->removeEventFilter(this);
-        PadInput::instance().setDeckDirect(false);   // the desktop: the Deck's trackpad mouse back
+        ControllerService::instance().want(ControllerService::Need::ControllerMode, false);   // the desktop: the controllers back to everything else
         QCoreApplication::setAttribute(Qt::AA_DontUseNativeDialogs, NativeDialogsWere);
         Clock->stop();
         if (menuOpen()) closeMenu();

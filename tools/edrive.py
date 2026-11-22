@@ -35,7 +35,7 @@ PROBE = os.path.join(os.environ.get("XDG_RUNTIME_DIR", "/tmp"), "vg-edrive-probe
 
 
 def env():
-    E = dict(os.environ, DISPLAY=DISPLAY, QT_QPA_PLATFORM="xcb", VG_UI_PROBE=PROBE, QT_LINUX_ACCESSIBILITY_ALWAYS_ON="1")
+    E = dict(os.environ, VIDYAGOD_NO_CONTROLLER_SERVICE="1", DISPLAY=DISPLAY, QT_QPA_PLATFORM="xcb", VG_UI_PROBE=PROBE, QT_LINUX_ACCESSIBILITY_ALWAYS_ON="1")
     E.pop("WAYLAND_DISPLAY", None)
     return E
 

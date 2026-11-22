@@ -6,6 +6,7 @@
 #include "uifind.h"   // Act — a press that opens a dialog answers at once
 
 #include "appmodel.h"
+#include "controllerservice.h"
 #include "deckshell.h"
 #include "deckstyle.h"
 #include "libraryview.h"   // LibraryGameCard
@@ -15,6 +16,7 @@
 #include "padnav.h"
 
 #include <QApplication>
+#include <QFile>
 #include <QElapsedTimer>
 #include <QEventLoop>
 #include <QTimer>
@@ -65,8 +67,34 @@ json Pads()
     for (const PadInput::PadInfo &P : In.pads()) List.push_back(json{{"name", P.Name.toStdString()}, {"glyphs", Pad::GlyphsName(P.Glyphs)}});
     json Glyphs = json::object();
     for (const std::string &N : Pad::Names()) Glyphs[N] = DeckStyle::GlyphText(*Pad::FromName(N), In.glyphs()).toStdString();
-    return json{{"enabled", In.enabled()}, {"suspended", In.suspended()}, {"deckDirect", In.deckDirect()}, {"glyphs", Pad::GlyphsName(In.glyphs())},
+    return json{{"enabled", In.enabled()}, {"suspended", In.suspended()}, {"deckDirect", In.deckDirect()}, {"onlyVirtual", In.onlyVirtual()},
+                {"glyphs", Pad::GlyphsName(In.glyphs())},
                 {"labels", Glyphs}, {"controllers", List}};
+}
+
+json ServiceState()
+{
+    ControllerService &S = ControllerService::instance();
+    json Controllers = json::array();
+    for (const ControllerService::Device &D : S.devices())
+    {
+        json Src = json::array();
+        for (const QString &N : D.Sources) Src.push_back(N.toStdString());
+        Controllers.push_back(json{{"path", D.Path.toStdString()}, {"name", D.Name.toStdString()}, {"layout", D.Profile.toStdString()}, {"sources", Src}});
+    }
+    json Needs = json::array();
+    for (const QString &N : S.needs()) Needs.push_back(N.toStdString());
+    return json{{"available", S.available()}, {"unavailable", S.unavailable().toStdString()}, {"running", S.running()},
+                {"needs", Needs}, {"program", S.program().toStdString()}, {"bus", S.bus().toStdString()},
+                {"controllers", Controllers}, {"hidden", S.hiddenNodes()}, {"customLayout", !S.layout().isEmpty()}};
+}
+
+ControllerService::Need NeedFrom(const std::string &N)
+{
+    if (N == "controller") return ControllerService::Need::ControllerMode;
+    if (N == "game") return ControllerService::Need::Game;
+    if (N == "session") return ControllerService::Need::Session;
+    throw Command::BadArgs("no reason '" + N + "' — controller, game or session");
 }
 
 std::string Joined(const std::vector<std::string> &V)
@@ -187,9 +215,58 @@ VG_COMMANDS
         "buttons are drawn as the Deck labels them. Suspended: a launched game is running, and has the controllers. "
         "deckDirect: a Steam Deck's own controller is read directly (controller mode; its lizard mode is off meanwhile).",
         {}, { "controller pads" },
-        { "PadInput::pads", "PadInput::glyphs", "PadInput::suspended", "PadInput::deckDirect", "PadInput::setDeckDirect", "PadInput::padsChanged", "PadInput::held", "Pad::Names", "Pad::Name",
+        { "PadInput::pads", "PadInput::glyphs", "PadInput::suspended", "PadInput::deckDirect", "PadInput::setDeckDirect", "PadInput::onlyVirtual", "PadInput::setOnlyVirtual", "PadInput::padsChanged", "PadInput::held", "Pad::Names", "Pad::Name",
           "Pad::GlyphsName", "Pad::IsDirection", "DeckStyle::GlyphText", "DeckStyle::GlyphWidth", "LaunchThread::Running" }, Needs::Ui, false,
         [](Command::Context &, const json &) { return Pads(); }, {} });
+
+    Command::Register({
+        "controller service", "VidyaGod's controller service (its own InputPlumber): whether it runs, why, and what it owns",
+        "It runs while a reason holds — controller mode, a game VidyaGod launched (which only keeps it running), or a "
+        "handheld's VidyaGod session — and owns the controllers it has a configuration for, giving VidyaGod and its games "
+        "virtual ones. `hidden`: the real controllers' nodes a game's sandbox covers. --want/--drop take or let go of a "
+        "reason (controller, game, session), as the app does.",
+        { Opt("want", "take a reason: controller, game or session"), Opt("drop", "let a reason go") },
+        { "controller service", "controller service --want controller", "controller service --drop controller" },
+        { "ControllerService::instance", "ControllerService::want", "ControllerService::wants", "ControllerService::needs",
+          "ControllerService::NeedName", "ControllerService::unavailable", "ControllerService::available", "ControllerService::running",
+          "ControllerService::devices", "ControllerService::sourceNodes", "ControllerService::hiddenNodes", "ControllerService::program",
+          "ControllerService::setProgram", "ControllerService::bus", "ControllerService::setBus", "ControllerService::setDataDir",
+          "ControllerService::changed", "IsVirtualInputNode", "JoystickSiblings", "SandboxLayer::SetHiddenDevicesSource" },
+        Needs::Ui, false,
+        [](Command::Context &, const json &A) {
+            ControllerService &S = ControllerService::instance();
+            if (const std::string W = Command::Str(A, "want", ""); !W.empty()) S.want(NeedFrom(W), true);
+            if (const std::string D = Command::Str(A, "drop", ""); !D.empty()) S.want(NeedFrom(D), false);
+            if (S.wants(ControllerService::Need::ControllerMode) && S.available() && !S.running())   // let it come up
+            {
+                QElapsedTimer T;
+                T.start();
+                while (!S.running() && T.elapsed() < 5000) QCoreApplication::processEvents(QEventLoop::AllEvents, 50);
+            }
+            return ServiceState();
+        }, {} });
+
+    Command::Register({
+        "controller layout", "load a controller layout into the controller service",
+        "A layout is an InputPlumber device profile (YAML: `kind: DeviceProfile`). It goes to every controller the "
+        "service owns, and to any that comes later; --default goes back to InputPlumber's own.",
+        { Command::OptPos("file", "the layout's YAML file"), Flag("default", "InputPlumber's own layout again") },
+        { "controller layout trackpad-mouse.yaml", "controller layout --default" },
+        { "ControllerService::loadLayout", "ControllerService::layout" }, Needs::Ui, false,
+        [](Command::Context &, const json &A) {
+            QString Yaml;
+            if (!Command::Bool(A, "default", false))
+            {
+                const std::string Path = Command::Str(A, "file", "");
+                if (Path.empty()) throw Command::BadArgs("name a layout file, or --default");
+                QFile F(QString::fromStdString(Path));
+                if (!F.open(QIODevice::ReadOnly)) throw Command::BadArgs("cannot read " + Path);
+                Yaml = QString::fromUtf8(F.readAll());
+            }
+            QString Error;
+            if (!ControllerService::instance().loadLayout(Yaml, &Error)) throw Command::BadArgs("refused: " + Error.toStdString());
+            return ServiceState();
+        }, {} });
 
     Command::Register({
         "controller type", "type into the open on-screen keyboard",

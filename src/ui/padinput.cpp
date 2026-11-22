@@ -3,6 +3,7 @@
 #include "commonutils.h"    // Log*
 #include "keycapture.h"     // KeyCapture::NameOfPad* — the capture's names
 #include "launchthread.h"   // LaunchThread::Running — a game is being played
+#include "controllerservice.h"   // IsVirtualInputNode
 
 #define SDL_MAIN_HANDLED   // SDL must not rename main() (it does on Windows)
 #include <SDL.h>
@@ -206,9 +207,21 @@ void PadInput::setEnabled(bool On)
     Timer->start();
 }
 
+void PadInput::setOnlyVirtual(bool On)
+{
+    if (On == OnlyVirtual) return;
+    OnlyVirtual = On;
+    if (!Enabled || !Ok) return;
+    closeAll();
+    SDL_PumpEvents();
+    for (int I = 0; I < SDL_NumJoysticks(); ++I) open(I);
+}
+
 void PadInput::open(int Index)
 {
     if (!SDL_IsGameController(Index)) return;
+    if (OnlyVirtual)
+        if (const char *P = SDL_GameControllerPathForIndex(Index); !P || !IsVirtualInputNode(QString::fromUtf8(P))) return;
     const SDL_JoystickID Id = SDL_JoystickGetDeviceInstanceID(Index);
     for (const Opened &O : *Pads) if (O.Id == Id) return;
     SDL_GameController *C = SDL_GameControllerOpen(Index);
