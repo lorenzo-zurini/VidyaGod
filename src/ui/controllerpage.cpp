@@ -10,6 +10,9 @@
 #include <QHBoxLayout>
 #include <QLabel>
 #include <QPushButton>
+
+#include "apppaths.h"
+#include "layouteditor.h"
 #include <QVBoxLayout>
 
 #include <algorithm>
@@ -66,6 +69,19 @@ ControllerPage::ControllerPage(AppModel & model, QWidget * parent)
     ShowPads();
     connect(&PadInput::instance(), &PadInput::padsChanged, pads, ShowPads);
     pl->addWidget(pads);
+    //Controller layouts: what each control does in a game (a game's own from its launch window, or here, any).
+    {
+        QPushButton * layouts = new QPushButton("Controller layouts…", this);
+        layouts->setObjectName("openLayouts");
+        connect(layouts, &QPushButton::clicked, this, [this] {
+            LayoutEditor E(QString::fromStdString((AppPaths::DataRoot() / "ControllerLayouts").string()), {}, {}, this);
+            E.exec();
+        });
+        auto * row = new QHBoxLayout();
+        row->addWidget(layouts);
+        row->addStretch(1);
+        pl->addLayout(row);
+    }
     //Not in controller mode itself (where this page is shown inside it): the page may be built before it is placed,
     //so ask the mode, not the window.
     if (!DeckShell::On())

@@ -1,0 +1,6 @@
+[Desktop Entry]
+Name=VidyaGod
+Comment=VidyaGod game library, in controller mode
+Exec=/usr/local/bin/vidyagod-session
+Type=Application
+DesktopNames=gamescope

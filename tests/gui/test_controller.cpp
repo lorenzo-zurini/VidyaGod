@@ -27,6 +27,7 @@
 #include "deckshell.h"
 #include "deckstyle.h"
 #include "prelaunchwindow.h"
+#include "layouteditor.h"
 #include "manifestmodel.h"
 #include "generalpage.h"
 #include "settingstab.h"
@@ -600,6 +601,34 @@ private slots:
         Sh.setActive(false);
     }
 
+    // A game's page offers its controller layout: the configurator, opened for that game. Teeth: the button missing,
+    // or the configurator opened for no game (it could not then choose the layout for it).
+    void a_games_page_opens_its_controller_layout()
+    {
+        LibraryFixture L;
+        AppModel M(&L.Cfg, &L.AppDir);
+        M.rebuildCatalog();
+        IpfsModel Ipfs(M);
+        DownloadManager Dl(M, Ipfs);
+        DeckShell Sh(M, Ipfs, Dl);
+        Sh.resize(1280, 800);
+        Front(Sh);
+        Sh.setActive(true);
+        Sh.showSection(DeckShell::Section::Library);
+        Press(B::Right);
+        Press(B::A);
+        QVERIFY(Sh.gameOpen());
+        QString Seen;
+        QTimer::singleShot(300, this, [&] {
+            for (QWidget *W : QApplication::topLevelWidgets())
+                if (auto *E = qobject_cast<LayoutEditor *>(W); E && E->isVisible()) { Seen = E->windowTitle(); E->reject(); }
+        });
+        Press(B::Right, 2);
+        Press(B::A);
+        QTRY_COMPARE_WITH_TIMEOUT(Seen, QStringLiteral("Controller layout — Bravo"), 3000);
+        Sh.setActive(false);
+    }
+
     // A Steam Deck without Steam running (a VidyaGod session of its own) has nothing else reading its controller, and
     // its kernel gamepad is silent in lizard mode: controller mode reads the Deck itself, through SDL's driver for it;
     // the desktop lets it go, so its trackpad is the mouse again. Seen on the Deck: every button dead in controller
@@ -704,12 +733,13 @@ private slots:
         Press(B::A);
         QVERIFY(Sh.gameOpen());
         QCOMPARE(Sh.padState()["game"].value("title", std::string()), std::string("Bravo"));
-        QCOMPARE(Sh.padState()["game"]["buttons"][2].get<std::string>(), std::string("Mark golden"));
-        Press(B::Right, 2);
+        QCOMPARE(Sh.padState()["game"]["buttons"][2].get<std::string>(), std::string("Controller layout"));
+        QCOMPARE(Sh.padState()["game"]["buttons"][3].get<std::string>(), std::string("Mark golden"));
+        Press(B::Right, 3);
         Press(B::A);
         QVERIFY(!PackageCatalog::GoldenSince(L.Cfg, "2").empty());
         QVERIFY(Sh.card("2")->Golden);
-        QCOMPARE(Sh.padState()["game"]["buttons"][2].get<std::string>(), std::string("Unmark golden"));
+        QCOMPARE(Sh.padState()["game"]["buttons"][3].get<std::string>(), std::string("Unmark golden"));
         Press(B::B);
         QVERIFY(!Sh.gameOpen());
         QCOMPARE(Sh.padState()["page"]["grid"]["card"].value("title", std::string()), std::string("Bravo"));

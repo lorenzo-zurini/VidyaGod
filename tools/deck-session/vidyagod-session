@@ -1,0 +1,12 @@
+#!/bin/sh
+# SDDM session for a handheld's session picker (the "vidyagod" entry): VidyaGod in controller mode inside gamescope,
+# which rotates a Steam Deck's panel and maps touch. VIDYAGOD_SESSION=1 tells VidyaGod it is the session: its controller
+# service (InputPlumber) runs for the whole session, and the Guide button opens its overlay over a game.
+# When VidyaGod quits, or dies, go back to the picker: SDDM's Relogin would otherwise start this session again, forever.
+# If the switch is refused, show the picker here instead, so the machine never loops back into VidyaGod.
+VG="${VIDYAGOD:-$HOME/Code/VidyaGod/build/VidyaGod}"
+cd "$(dirname "$VG")/.." 2>/dev/null || cd "$HOME"
+if [ -x "$VG" ]; then
+    VIDYAGOD_SESSION=1 gamescope -w 1280 -h 800 -W 1280 -H 800 --prefer-output '*,eDP-1' -- "$VG" --controller
+fi
+pkexec /usr/local/bin/deck-switch-session picker || exec /usr/local/bin/deck-picker-session

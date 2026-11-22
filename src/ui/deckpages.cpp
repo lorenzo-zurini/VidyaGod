@@ -1,5 +1,7 @@
 // The controller UI's screens: Home, the shelves, a game's page, Downloads (deckshell_p.h).
 #include "deckshell_p.h"
+#include "apppaths.h"
+#include "layouteditor.h"
 
 #include "appmodel.h"
 #include "asyncwork.h"
@@ -652,7 +654,7 @@ void DeckGamePage::showGame(const QString &K)
 
 QStringList DeckGamePage::buttons() const
 {
-    if (Installed) return { "▶  Play", "Launch options", Golden ? "Unmark golden" : "Mark golden" };
+    if (Installed) return { "▶  Play", "Launch options", "Controller layout", Golden ? "Unmark golden" : "Mark golden" };
     if (Downloading) return { Confirm == "cancel" ? "Press again to cancel" : "Cancel download" };
     return { "↓  Download" };
 }
@@ -771,6 +773,12 @@ void DeckGamePage::press(const QString &B)
     if (!C) return;
     if (B.contains("Play")) { C->play(); return; }
     if (B == "Launch options") { C->edit(); return; }
+    if (B == "Controller layout")   // the game's controller layout, in the configurator
+    {
+        LayoutEditor E(QString::fromStdString((AppPaths::DataRoot() / "ControllerLayouts").string()), C->GameKey, C->GameTitle, window());
+        E.exec();
+        return;
+    }
     if (B.endsWith("golden"))
     {
         const bool On = !Golden;

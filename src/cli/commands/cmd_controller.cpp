@@ -472,7 +472,7 @@ VG_COMMANDS
                     "controller layout-editor --save-as Mine --use", "controller layout-editor --close" },
             { "LayoutEditor::openLayout", "LayoutEditor::selectControl", "LayoutEditor::selectedControl", "LayoutEditor::bindSelected",
               "LayoutEditor::saveAs", "LayoutEditor::useForGame", "LayoutEditor::tryNow", "LayoutEditor::status", "LayoutEditor::current",
-              "LayoutEditor::dirty", "ControllerPicture::setSelected", "ControllerPicture::selected", "ControllerPicture::hotspot",
+              "LayoutEditor::dirty", "ControllerPicture::setSelected", "ControllerPicture::setChanged", "ControllerPicture::selected", "ControllerPicture::hotspot",
               "ControllerPicture::controlClicked", "ControllerPicture::sizeHint" }, Needs::Ui, false,
             [](Command::Context &C, const json &A) {
                 LayoutEditor *E = OpenEditor();
