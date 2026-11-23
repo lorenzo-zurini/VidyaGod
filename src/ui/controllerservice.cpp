@@ -262,7 +262,6 @@ void ControllerService::stop()
     P->deleteLater();
     const bool HadGame = wants(Need::Game);
     Needs &= ~static_cast<std::uint8_t>(Need::Game);
-    refreshHidden();
     emit changed();
     if (HadGame) emit gameChanged(false);
 }
