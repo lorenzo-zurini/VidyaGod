@@ -90,6 +90,7 @@ int  VgFriendCode(char **outId);                       // this node's shareable 
 int  VgSetProfile(const char *nick, const char *picCid, char **errOut);
 int  VgGetProfile(char **outJson);                     // {"nick":..,"pic":..}
 int  VgFriendList(char **outJson);                     // JSON array of contacts ({peer,nick,pic,state,online,seen,added})
+int  VgNearbyPeers(char **outJson);                    // JSON array of the VidyaGod devices on our network ({peer,nick,state}); never blocks
 
 int  VgFriendAdd(const char *peerID, const char *note, char **errOut);   // send a friend request
 int  VgFriendAccept(const char *peerID, char **errOut);

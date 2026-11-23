@@ -25,6 +25,20 @@
 #include <functional>
 #include <vector>
 
+namespace
+{
+std::function<std::vector<IpfsWrapper::NearbyPeer>()> &NearbySource()
+{
+    static std::function<std::vector<IpfsWrapper::NearbyPeer>()> S = [] { return IpfsWrapper::NearbyPeers(); };
+    return S;
+}
+}
+
+void NetworkTab::SetNearbySource(std::function<std::vector<IpfsWrapper::NearbyPeer>()> Source)
+{
+    NearbySource() = Source ? std::move(Source) : [] { return IpfsWrapper::NearbyPeers(); };
+}
+
 // NetworkTab — see networktab.h. The matrix is rebuilt wholesale on every refresh(); refresh is deferred (never
 // synchronous from a cell toggle, and never while a ⋮ menu's nested exec() is on the stack) to avoid deleting a
 // cell widget out from under a running handler.
@@ -128,6 +142,29 @@ void NetworkTab::buildUi()
 
     Root->addWidget(IdBox);
 
+    // --- On your network: one press from paired ---
+    NearbyBox = new QGroupBox("On your network", this);
+    NearbyBox->setAccessibleName("On your network");
+    auto * NearbyLayout = new QVBoxLayout(NearbyBox);
+    NearbyRows = new QVBoxLayout();
+    NearbyLayout->addLayout(NearbyRows);
+    NearbyHint = new QLabel("No other VidyaGod on this network. Start VidyaGod on another device here and it shows up: "
+                            "pair with one press.", NearbyBox);
+    NearbyHint->setWordWrap(true);
+    NearbyHint->setStyleSheet("color:" + Theme::Dim + ";");
+    NearbyLayout->addWidget(NearbyHint);
+    NearbyStatus = new QLabel(NearbyBox);
+    NearbyStatus->setWordWrap(true);
+    NearbyStatus->setObjectName("nearbyStatus");
+    NearbyStatus->setTextFormat(Qt::PlainText);   // it names a device by the nickname it chose
+    NearbyStatus->hide();
+    NearbyLayout->addWidget(NearbyStatus);
+    NearbyBox->setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Maximum);
+    Root->addWidget(NearbyBox);
+    NearbyTimer = new QTimer(this);
+    NearbyTimer->setInterval(2000);
+    connect(NearbyTimer, &QTimer::timeout, this, &NetworkTab::refreshNearby);
+
     {
         auto * HintRow = new QHBoxLayout();
         StatusHint = new QLabel(this);
@@ -159,7 +196,104 @@ void NetworkTab::buildUi()
     IdBox->setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Maximum);
 }
 
-void NetworkTab::setActive(bool on) { if (on) refresh(); }
+void NetworkTab::setActive(bool on)
+{
+    if (on) { refresh(); NearbyTimer->start(); }
+    else NearbyTimer->stop();
+}
+
+void NetworkTab::refreshNearby()
+{
+    //A row each for the devices on this network we are not friends with yet: one asking us (Accept), one we may ask
+    //(Pair), one we asked ("request sent"). Only devices on this network: a request from anywhere else is in the table
+    //below, never here under a name its sender chose. Each shows the end of its code, which its own Network tab shows
+    //in full: two devices may give the same name.
+    struct Row { QString Peer, Name, Detail; QString Kind; };   // Kind: incoming | pair | sent
+    std::vector<Row> Rows;
+    for (const auto & N : NearbySource()())
+    {
+        const QString P = QString::fromStdString(N.Peer);
+        if (N.State != "" && N.State != "incoming" && N.State != "pending") continue;   // friends are in the table; blocked: nothing
+        const QString Code = tr("code …%1").arg(P.right(10));
+        const QString Detail = N.State == "incoming" ? Code + " · " + tr("wants to pair with you")
+                             : N.State == "pending"  ? Code + " · " + tr("request sent: accept it there") : Code;
+        Rows.push_back({ P, N.Nick.empty() ? P.left(12) + "…" : QString::fromStdString(N.Nick), Detail,
+                         N.State == "incoming" ? "incoming" : N.State == "pending" ? "sent" : "pair" });
+    }
+    QString Shown;
+    for (const Row & R : Rows) Shown += R.Kind + '|' + R.Peer + '|' + R.Name + '|' + R.Detail + '\n';
+    if (Shown == NearbyShown && (NearbyRows->count() > 0 || Rows.empty())) return;
+    NearbyShown = Shown;
+
+    while (QLayoutItem * It = NearbyRows->takeAt(0)) { if (It->widget()) It->widget()->deleteLater(); delete It; }
+    NearbyHint->setVisible(Rows.empty());
+    for (const Row & R : Rows)
+    {
+        auto * W = new QWidget(NearbyBox);
+        W->setObjectName("nearby:" + R.Peer);
+        auto * L = new QHBoxLayout(W);
+        L->setContentsMargins(0, 2, 0, 2);
+        auto * Name = new QLabel("<b>" + R.Name.toHtmlEscaped() + "</b>" + (R.Detail.isEmpty() ? QString() : "  <span style='color:" + Theme::Dim + "'>" + R.Detail.toHtmlEscaped() + "</span>"), W);
+        L->addWidget(Name, 1);
+        if (R.Kind != "sent")
+        {
+            const PairTicks T = Ticks[R.Peer];
+            auto * Share = new QCheckBox(tr("Share my libraries with it"), W);
+            Share->setObjectName("shareMine:" + R.Peer);
+            Share->setChecked(T.Share);
+            connect(Share, &QCheckBox::toggled, this, [this, P = R.Peer](bool On) { Ticks[P].Share = On; });
+            auto * Receive = new QCheckBox(tr("Receive its libraries"), W);
+            Receive->setObjectName("receiveTheirs:" + R.Peer);
+            Receive->setChecked(T.Receive);
+            connect(Receive, &QCheckBox::toggled, this, [this, P = R.Peer](bool On) { Ticks[P].Receive = On; });
+            L->addWidget(Share);
+            L->addWidget(Receive);
+            if (R.Kind == "incoming")
+            {
+                auto * Accept = new QPushButton(tr("Accept"), W);
+                Accept->setObjectName("accept:" + R.Peer);
+                connect(Accept, &QPushButton::clicked, this, [this, P = R.Peer, N = R.Name] { acceptPairingClicked(P, N); });
+                auto * Decline = new QPushButton(tr("Decline"), W);
+                Decline->setObjectName("decline:" + R.Peer);
+                connect(Decline, &QPushButton::clicked, this, [this, P = R.Peer] { Model.friends().declineFriend(P); Ticks.erase(P); scheduleRefresh(); });
+                L->addWidget(Accept);
+                L->addWidget(Decline);
+            }
+            else
+            {
+                auto * Pair = new QPushButton(tr("Pair"), W);
+                Pair->setObjectName("pair:" + R.Peer);
+                connect(Pair, &QPushButton::clicked, this, [this, P = R.Peer, N = R.Name] { pairClicked(P, N); });
+                L->addWidget(Pair);
+            }
+        }
+        NearbyRows->addWidget(W);
+    }
+}
+
+void NetworkTab::pairClicked(const QString & peer, const QString & name)
+{
+    const PairTicks T = Ticks[peer];
+    std::string Err;
+    const bool Ok = Model.friends().pairWith(peer, T.Share, T.Receive, &Err);
+    NearbyStatus->setText(Ok ? tr("Asked %1 to pair: accept it on %1.").arg(name)
+                             : tr("Could not ask %1 to pair: %2").arg(name, QString::fromStdString(Err)));
+    NearbyStatus->show();
+    if (Ok) Ticks.erase(peer);
+    NearbyShown.clear();
+    scheduleRefresh();
+}
+
+void NetworkTab::acceptPairingClicked(const QString & peer, const QString & name)
+{
+    const PairTicks T = Ticks[peer];
+    const bool Ok = Model.friends().acceptPairing(peer, T.Share, T.Receive);
+    NearbyStatus->setText(Ok ? tr("Paired with %1.").arg(name) : tr("Could not accept %1: networking is off or still starting.").arg(name));
+    NearbyStatus->show();
+    if (Ok) Ticks.erase(peer);
+    NearbyShown.clear();
+    scheduleRefresh();
+}
 
 void NetworkTab::scheduleRefresh()
 {
@@ -244,6 +378,8 @@ void NetworkTab::refresh()
     if (!NickEdited)
         NickEdit->setText(QString::fromStdString(IpfsWrapper::GetProfile().Nick));
     { QSignalBlocker Block(AutoAccept); AutoAccept->setChecked(Model.friends().autoAcceptEnabled()); }
+
+    refreshNearby();
 
     const QStringList Libs = Model.friends().myLibraryNames();
     const std::vector<IpfsWrapper::Contact> Contacts = IpfsWrapper::FriendList();

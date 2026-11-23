@@ -342,6 +342,11 @@ Profile GetProfile();
 bool SetProfile(const std::string &Nick, const std::string &PicCID, std::string *Error = nullptr);
 // Every contact (any state), unordered.
 std::vector<Contact> FriendList();
+// The VidyaGod devices on our network (mDNS), by the nickname they give (VidyaGodIPFS nearby.go), for one-press
+// pairing: State is what each is to us ("" not in the address book, pending, incoming, accepted). Never waits on the
+// network: a device not asked yet shows on a later call, so a page may poll it. Empty while offline.
+struct NearbyPeer { std::string Peer, Nick, State; };
+std::vector<NearbyPeer> NearbyPeers();
 
 // Send a friend request to a peer ID (records it as pending + notifies them with our profile).
 bool FriendAdd(const std::string &PeerID, const std::string &Note = std::string(), std::string *Error = nullptr);

@@ -117,15 +117,58 @@ VG_COMMANDS
 
     Command::Register({
         "friends accept", "accept a friend request",
-        "Accept an incoming request (ticking its Accepted box): the friend is added, and the New-peer defaults applied "
-        "to them (what you share with them, receive, presence, vLAN).",
-        { Command::Pos("friend", "their nickname, friend code, or the start of it") },
-        { "friends accept LGZ-MacBook" }, { "FriendSharing::acceptPeer", "FriendSharing::applyNewPeerDefaults" }, Needs::Model, true,
+        "Accept an incoming request (ticking its Accepted box, or \"On your network\"'s Accept): the friend is added, and the "
+        "New-peer defaults applied to them (what you share with them, receive, presence, vLAN); --share and --receive "
+        "are that row's two ticks.",
+        { Command::Pos("friend", "their nickname, friend code, or the start of it"),
+          Command::Flag("share", "also share all your libraries with them"), Command::Flag("receive", "also receive their libraries") },
+        { "friends accept LGZ-MacBook", "friends accept LGZ-PC --share --receive" },
+        { "FriendSharing::acceptPeer", "FriendSharing::applyNewPeerDefaults", "FriendSharing::acceptPairing", "FriendSharing::applyPairing" },
+        Needs::Model, true,
         [](Command::Context &C, const json &A) {
             const std::string P = Peer(Command::Str(A, "friend"));
-            C.Model->friends().acceptPeer(QString::fromStdString(P));
+            if (!C.Model->friends().acceptPairing(QString::fromStdString(P), Command::Bool(A, "share", false), Command::Bool(A, "receive", false)))
+                throw std::runtime_error("could not accept: networking is off or still starting");
             for (const auto &K : IpfsWrapper::FriendList()) if (K.PeerID == P) return ContactJson(K, C.Model);
             return json{{"peer", P}};
+        }, {} });
+
+    Command::Register({
+        "friends nearby", "the VidyaGod devices on your network, by name",
+        "\"On your network\" in the Network tab: every VidyaGod found on the local network (mDNS), by the nickname it gives, "
+        "and what it is to you (\"\" = nothing yet, pending = you asked it, incoming = it asked you, accepted = a friend). "
+        "A device shows a few seconds after it is found; two may give the same name, so each shows its code.",
+        {}, { "friends nearby" }, { "IpfsWrapper::NearbyPeers" }, Needs::Model, true,
+        [](Command::Context &, const json &) {
+            json Out = json::array();
+            for (const auto &N : IpfsWrapper::NearbyPeers())
+                Out.push_back({{"name", N.Nick}, {"state", N.State}, {"peer", N.Peer}});
+            return Out;
+        }, {} });
+
+    Command::Register({
+        "friends pair", "pair with a VidyaGod device on your network",
+        "\"On your network\"'s Pair: a friend request to a nearby device, named as `friends nearby` shows it (or by the start "
+        "of its code), and in the same step the row's two ticks — share all your libraries with it, receive its libraries. "
+        "Accept it on the other device.",
+        { Command::Pos("device", "its name as `friends nearby` shows it, or the start of its code"),
+          Command::Flag("share", "share all your libraries with it"), Command::Flag("receive", "receive its libraries") },
+        { "friends pair LGZ-SteamDeck --share", "friends pair LGZ-PC --receive" },
+        { "FriendSharing::pairWith", "FriendSharing::applyPairing", "NetworkTab::pairClicked" }, Needs::Model, true,
+        [](Command::Context &C, const json &A) {
+            const std::string Q = Command::Str(A, "device");
+            std::vector<IpfsWrapper::NearbyPeer> Hits;
+            for (const auto &N : IpfsWrapper::NearbyPeers())
+                if (N.Peer == Q || N.Peer.rfind(Q, 0) == 0
+                    || QString::fromStdString(N.Nick).compare(QString::fromStdString(Q), Qt::CaseInsensitive) == 0)
+                    Hits.push_back(N);
+            if (Hits.empty()) throw Command::BadArgs("no VidyaGod device '" + Q + "' on your network (VidyaGod friends nearby shows them)");
+            if (Hits.size() > 1) throw Command::BadArgs("'" + Q + "' matches " + std::to_string(Hits.size()) + " devices: name it by the start of its code");
+            std::string Err;
+            const bool Share = Command::Bool(A, "share", false), Receive = Command::Bool(A, "receive", false);
+            if (!C.Model->friends().pairWith(QString::fromStdString(Hits[0].Peer), Share, Receive, &Err))
+                throw std::runtime_error(Fail("could not ask it to pair", Err));
+            return json{{"asked", Hits[0].Nick}, {"peer", Hits[0].Peer}, {"sharing", Share}, {"receiving", Receive}};
         }, {} });
 
     for (const auto &[Verb, Summary, Fn] : std::vector<std::tuple<const char *, const char *, void (FriendSharing::*)(const QString &)>>{

@@ -113,6 +113,7 @@ AddLocalPackage              # the folder picker around AppModel::importPackages
 DeckStyle::Draw*             # draws a glyph, a hint row or a cover onto a painter: what was drawn is read with `ui screenshot`
 DeckStyle::Capsule           # a shape for the painter (a capsule path): what it outlines is read with `ui screenshot`
 ControllerService::reset      # a test's reset of the singleton between cases (every reason let go): the app never forgets its reasons at once
+NetworkTab::SetNearbySource   # a test's seam: the nearby list is the node's (`friends nearby`); a test puts a fixed one in its place
 DeckStyle::ButtonWidth       # how wide a drawn button is: its effect is the layout `ui screenshot` shows
 DeckStyle::Display           # the display face a painter draws titles in: read with `ui screenshot`
 DeckStyle::Duotone           # recolours the cover behind a page in the mark's two tones: read with `ui screenshot`

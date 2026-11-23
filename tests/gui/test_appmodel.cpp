@@ -551,6 +551,29 @@ private slots:
     // nothing of it is kept: no record (which would list their packages, offer their builds as updates, plan fetches)
     // and no sequence stamp (which would make the fresh snapshot Receive-on asks for look stale). Teeth: drop the
     // receive gate in applyFriendLibrarySnapshot.
+    // Pairing's two ticks (the Network tab's "On your network" row): share every one of my libraries with the device,
+    // receive its libraries; an unticked box changes nothing. Teeth: a tick ignored, a library left out, an unticked
+    // box acting anyway.
+    void pairing_shares_and_receives_only_what_was_ticked()
+    {
+        QTemporaryDir d; QVERIFY(d.isValid());
+        QDir appDir(d.path());
+        json cfg = json{{"Settings", json::object()},
+                        {"ShareSheet", json{{"bafkreia", "Games/[1] A/a.json"}, {"bafkreib", "Retro/[2] B/b.json"}}}};
+        AppModel m(&cfg, &appDir);
+        QCOMPARE(m.friends().myLibraryNames(), (QStringList{ "Games", "Retro" }));
+        m.friends().applyPairing("12D3KooWDeck", true, false);
+        QVERIFY(m.friends().isSharingWithFriend("12D3KooWDeck", "Games"));
+        QVERIFY(m.friends().isSharingWithFriend("12D3KooWDeck", "Retro"));
+        QVERIFY(!m.friends().isReceivingFrom("12D3KooWDeck"));
+        m.friends().applyPairing("12D3KooWPc", false, true);
+        QVERIFY(m.friends().isReceivingFrom("12D3KooWPc"));
+        QVERIFY(!m.friends().isSharingWithFriend("12D3KooWPc", "Games"));
+        m.friends().applyPairing("12D3KooWNone", false, false);
+        QVERIFY(!m.friends().isReceivingFrom("12D3KooWNone"));
+        QVERIFY(!m.friends().isSharingWithFriend("12D3KooWNone", "Retro"));
+    }
+
     void a_snapshot_from_a_friend_you_do_not_receive_from_is_not_kept()
     {
         QTemporaryDir d; QVERIFY(d.isValid());

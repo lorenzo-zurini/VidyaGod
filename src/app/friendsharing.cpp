@@ -60,7 +60,16 @@ FriendSharing::FriendSharing(AppModel & M)
     // accepted (TestFriendMutualCrossingConverges). The New-Peer defaults (Receive/Presence/vLAN/Share) still must
     // apply, else e.g. Receive-on-by-default never kicks in. applyNewPeerDefaults is idempotent (toggles no-op if set).
     connect(FriendsManager::instance(), &FriendsManager::friendAccepted, this,
-        [this](const QString & peer, const QString &, const QString &) { applyNewPeerDefaults(peer); });
+        [this](const QString & peer, const QString &, const QString &) {
+            applyNewPeerDefaults(peer);
+            //What was ticked before it was a friend (pairing's ticks, set with the request) goes now: a push or an ask
+            //made while it was not one was dropped there (friend.go only serves friends), and the next try would be
+            //its next coming online.
+            const std::string P = peer.toStdString();
+            const auto & Sh = Model.config()->value("Sharing", nlohmann::ordered_json::object());
+            if (Sh.contains(P) && Sh[P].is_array() && !Sh[P].empty()) pushSharesTo(P);
+            if (isReceivingFrom(peer)) reconcileReceivedFriend(peer);
+        });
 }
 
 // Push Settings.LanExcludedPeers (the GLOBAL Virtual-LAN roster's un-ticked members) into the node. Called at
@@ -436,12 +445,33 @@ void FriendSharing::setInVlan(const QString & peer, bool on)
     pushLanRoster();
 }
 
-void FriendSharing::acceptPeer(const QString & peer)
+bool FriendSharing::acceptPeer(const QString & peer)
 {
     std::string Err;
     if (!IpfsWrapper::FriendAccept(peer.toStdString(), &Err))
-    { LogWarn("FriendSharing::acceptPeer", "accept " + peer.toStdString() + " failed: " + Err); return; }
+    { LogWarn("FriendSharing::acceptPeer", "accept " + peer.toStdString() + " failed: " + Err); return false; }
     applyNewPeerDefaults(peer);
+    return true;
+}
+
+bool FriendSharing::pairWith(const QString & peer, bool shareMine, bool receiveTheirs, std::string * error)
+{
+    if (!sendFriendRequest(peer, error)) return false;
+    applyPairing(peer, shareMine, receiveTheirs);
+    return true;
+}
+
+bool FriendSharing::acceptPairing(const QString & peer, bool shareMine, bool receiveTheirs)
+{
+    if (!acceptPeer(peer)) return false;
+    applyPairing(peer, shareMine, receiveTheirs);
+    return true;
+}
+
+void FriendSharing::applyPairing(const QString & peer, bool shareMine, bool receiveTheirs)
+{
+    if (shareMine) for (const QString & Lib : myLibraryNames()) shareLibraryWithFriend(peer, Lib);
+    if (receiveTheirs) setReceivingFrom(peer, true);
 }
 
 void FriendSharing::applyNewPeerDefaults(const QString & peer)

@@ -694,6 +694,21 @@ std::vector<Contact> FriendList()
     return Out;
 }
 
+std::vector<NearbyPeer> NearbyPeers()
+{
+    std::vector<NearbyPeer> Out;
+    char *J = nullptr;
+    if (VgNearbyPeers(&J) != 0) { TakeStr(J); return Out; }
+    const std::string Js = TakeStr(J);
+    try
+    {
+        for (const auto &E : nlohmann::json::parse(Js))
+            Out.push_back({ E.value("peer", std::string()), E.value("nick", std::string()), E.value("state", std::string()) });
+    }
+    catch (const std::exception &Ex) { LogWarn("IpfsWrapper::NearbyPeers", std::string("bad JSON from node: ") + Ex.what()); }
+    return Out;
+}
+
 // Small helper for the fallible peer-ID mutators that return 0/-1 with an errOut.
 static bool FriendCall(int Rc, char *Err, std::string *Error, const char *What)
 {

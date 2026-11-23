@@ -11,6 +11,9 @@
 #include <QSignalSpy>
 #include <QCoreApplication>
 #include <QTableWidget>
+#include <QCheckBox>
+#include <QPushButton>
+#include <QLabel>
 #include <QDir>
 
 #include <fstream>
@@ -18,6 +21,7 @@
 #include "ipfswrapper.h"
 #include "appmodel.h"
 #include "networktab.h"
+#include "friendsharing.h"
 
 // The node→C++ event bridges (extern "C" in ipfswrapper.cpp). Calling them directly exercises the real kind-mapping +
 // JSON parsing + queued signal emission that FriendsManager / SessionManager install.
@@ -150,6 +154,67 @@ private slots:
             if (Table->item(R, 0) && Table->item(R, 0)->text().contains("savedpal")) Found = true;
         QVERIFY2(Found, "the saved contact must render in the Network matrix");
 
+        IpfsWrapper::StopNode();
+    }
+
+    // "On your network": a request waiting on us is one press from accepted, a nearby device one press from asked, each
+    // with the two ticks; one already asked says so; a friend is in the table, not here, and so is a request from off
+    // this network (its name is anyone's to choose); each row shows the end of its code. The rows are rebuilt only
+    // when what they show changes (a controller's focus stays on its row) and keep their ticks when they are. A Pair
+    // that fails (networking off) shares nothing. Teeth: a row missing or wrong, a friend or a far request offered, no code, the rows
+    // rebuilt every poll, ticks lost, ticks applied when the request was not sent.
+    void nearby_devices_and_requests_are_one_press_from_paired()
+    {
+        QTemporaryDir Dir;
+        const QString Repo = Dir.path() + "/ipfs";
+        QDir().mkpath(Repo);
+        {
+            std::ofstream OF((Repo + "/social.json").toStdString());
+            OF << R"({"profile":{"nick":"me"},"contacts":[{"peer":"12D3KooWAsking","nick":"LGZ-MacBook","state":"incoming","added":1},)"
+                  R"({"peer":"12D3KooWFarAway","nick":"LGZ-SteamDeck","state":"incoming","added":2}]})";
+        }
+        std::string Err;
+        QVERIFY2(IpfsWrapper::StartNode(Repo.toStdString(), &Err), Err.c_str());
+        std::vector<IpfsWrapper::NearbyPeer> Near = {
+            { "12D3KooWAsking", "LGZ-MacBook", "incoming" },
+            { "12D3KooWDeckDeviceA1b2c3", "LGZ-SteamDeck", "" },
+            { "12D3KooWAsked", "Laptop", "pending" },
+            { "12D3KooWFriend", "Old friend", "accepted" } };
+        NetworkTab::SetNearbySource([&Near] { return Near; });
+
+        nlohmann::ordered_json Cfg = nlohmann::ordered_json{{"Settings", nlohmann::ordered_json::object()},
+            {"LIBRARY", nlohmann::ordered_json::array()}, {"ShareSheet", nlohmann::ordered_json{{"bafkreia", "Games/[1] A/a.json"}}}};
+        QDir AppDir(Dir.path());
+        AppModel M(&Cfg, &AppDir);
+        NetworkTab Tab(M);
+        Tab.setActive(true);
+
+        QVERIFY(Tab.findChild<QPushButton *>("accept:12D3KooWAsking"));
+        QVERIFY(Tab.findChild<QPushButton *>("decline:12D3KooWAsking"));
+        QVERIFY(Tab.findChild<QPushButton *>("pair:12D3KooWDeckDeviceA1b2c3"));
+        QVERIFY(Tab.findChild<QCheckBox *>("shareMine:12D3KooWDeckDeviceA1b2c3"));
+        QVERIFY(Tab.findChild<QCheckBox *>("receiveTheirs:12D3KooWDeckDeviceA1b2c3"));
+        QVERIFY(Tab.findChild<QWidget *>("nearby:12D3KooWAsked"));
+        QVERIFY(!Tab.findChild<QPushButton *>("pair:12D3KooWAsked"));     // asked already: nothing to press
+        QVERIFY(!Tab.findChild<QWidget *>("nearby:12D3KooWFriend"));      // a friend: in the table
+        QVERIFY(!Tab.findChild<QWidget *>("nearby:12D3KooWFarAway"));     // a request from off this network: in the table only
+        QVERIFY(Tab.findChild<QWidget *>("nearby:12D3KooWDeckDeviceA1b2c3")->findChild<QLabel *>()->text().contains("…viceA1b2c3"));   // the end of its code
+
+        QWidget * DeckRow = Tab.findChild<QWidget *>("nearby:12D3KooWDeckDeviceA1b2c3");
+        Tab.findChild<QCheckBox *>("shareMine:12D3KooWDeckDeviceA1b2c3")->setChecked(true);
+        QTest::qWait(2300);   // a poll with nothing new
+        QCOMPARE(Tab.findChild<QWidget *>("nearby:12D3KooWDeckDeviceA1b2c3"), DeckRow);
+        Near.push_back({ "12D3KooWNew", "New one", "" });
+        QTRY_VERIFY_WITH_TIMEOUT(Tab.findChild<QPushButton *>("pair:12D3KooWNew"), 3000);
+        QTRY_VERIFY_WITH_TIMEOUT(Tab.findChildren<QWidget *>("nearby:12D3KooWDeckDeviceA1b2c3").size() == 1, 3000);
+        QVERIFY(Tab.findChild<QCheckBox *>("shareMine:12D3KooWDeckDeviceA1b2c3")->isChecked());   // kept across the rebuild
+
+        Tab.findChild<QPushButton *>("pair:12D3KooWDeckDeviceA1b2c3")->click();       // offline: no friend service to ask with
+        QVERIFY(Tab.findChild<QLabel *>("nearbyStatus")->text().startsWith("Could not ask LGZ-SteamDeck"));
+        QCOMPARE(Tab.findChild<QLabel *>("nearbyStatus")->textFormat(), Qt::PlainText);   // it carries a name anyone chose
+        QVERIFY(!M.friends().isSharingWithFriend("12D3KooWDeckDeviceA1b2c3", "Games"));
+
+        NetworkTab::SetNearbySource({});
         IpfsWrapper::StopNode();
     }
 };

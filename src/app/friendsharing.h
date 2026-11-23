@@ -81,7 +81,14 @@ public:
     void setPresenceSharedWith(const QString & peer, bool on);
     bool isInVlan(const QString & peer) const;
     void setInVlan(const QString & peer, bool on);
-    void acceptPeer(const QString & peer);
+    bool acceptPeer(const QString & peer);
+    // One-press pairing with a device on our network (the Network tab's "On your network"): the friend request, or its
+    // acceptance, and in the same step what the person ticked: share all my libraries with it, receive its libraries.
+    // Ticks are consent given there and then (an unticked box changes nothing; the New-peer defaults still apply on
+    // acceptance). Nothing is pushed to the peer before it is a friend (friend.go pushSnapshot).
+    bool pairWith(const QString & peer, bool shareMine, bool receiveTheirs, std::string * error = nullptr);
+    bool acceptPairing(const QString & peer, bool shareMine, bool receiveTheirs);
+    void applyPairing(const QString & peer, bool shareMine, bool receiveTheirs);
     // The friendship itself, as the Network tab and the CLI act on it: ask a peer, set our nickname, and end a
     // friendship three ways (decline an incoming request, block, remove) — each forgets both directions of sharing.
     bool sendFriendRequest(const QString & code, std::string * error = nullptr);
