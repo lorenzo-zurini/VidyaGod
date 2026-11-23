@@ -241,6 +241,7 @@ void ControllerService::start()
             if (Now != GamesRan) { GamesRan = Now; want(Need::Game, Now); }
         });
     }
+    Managing = false;   // a new InputPlumber manages nothing until told
     LogOut("ControllerService", "starting InputPlumber for " + needs().join(QStringLiteral(", ")).toStdString());
     Proc->start(Program, {});
     GamesRan = LaunchThread::Running() > 0;
@@ -270,12 +271,8 @@ void ControllerService::onRegistered()
 {
     if (!Proc) return;
     Answering = true;
-    //It takes no controller until told to: take every one it has a configuration for.
-    QDBusInterface Props(QString::fromLatin1(BusName), QString::fromLatin1(ManagerPath), QString::fromLatin1(PropsIface), connection());
-    const QDBusMessage R = Props.call(QStringLiteral("Set"), QString::fromLatin1(ManagerIface), QStringLiteral("ManageAllDevices"),
-                                      QVariant::fromValue(QDBusVariant(true)));
-    if (R.type() == QDBusMessage::ErrorMessage) LogWarn("ControllerService", "ManageAllDevices: " + R.errorMessage().toStdString());
     LogOut("ControllerService", "InputPlumber is up");
+    takeControllers();
     applyLayout();
     emit changed();
     update();
@@ -307,8 +304,24 @@ uint ControllerService::intercept() const
     return Dev.property("InterceptMode").toUInt();
 }
 
+//It takes no controller until told to: take every one it has a configuration for. InputPlumber claims its bus name
+//before it serves its Manager (its main.rs), so this runs at the name and again as objects appear, until the Manager
+//answers: on a Steam Deck the name alone came first, and nothing took the controllers.
+void ControllerService::takeControllers()
+{
+    if (!Answering || Managing) return;
+    QDBusInterface Props(QString::fromLatin1(BusName), QString::fromLatin1(ManagerPath), QString::fromLatin1(PropsIface), connection());
+    const QDBusMessage R = Props.call(QStringLiteral("Set"), QString::fromLatin1(ManagerIface), QStringLiteral("ManageAllDevices"),
+                                      QVariant::fromValue(QDBusVariant(true)));
+    if (R.type() != QDBusMessage::ErrorMessage) { Managing = true; LogOut("ControllerService", "InputPlumber takes the controllers"); return; }
+    //Not served yet: its InterfacesAdded brings this back.
+    if (R.errorName() != QLatin1String("org.freedesktop.DBus.Error.UnknownObject"))
+        LogWarn("ControllerService", "ManageAllDevices: " + R.errorMessage().toStdString());
+}
+
 void ControllerService::onObjectsChanged()
 {
+    takeControllers();
     applyLayout();
     emit changed();
     update();

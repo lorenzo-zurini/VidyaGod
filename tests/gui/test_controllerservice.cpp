@@ -71,6 +71,7 @@ private slots:
     {
         S.reset();
         S.setProgram({});
+        qunsetenv("MOCK_IP_MANAGER_FIRST");
         QDBusConnection::disconnectFromBus(QStringLiteral("test-reader"));
     }
 
@@ -89,8 +90,9 @@ private slots:
 
     // Controller mode wants it: it starts, takes every controller it has a configuration for (ManageAllDevices),
     // and VidyaGod then reads only virtual controllers; let go, it stops and VidyaGod reads the real ones again.
-    // Teeth: ManageAllDevices never set, PadInput still reading real controllers (or reading the Deck directly) while
-    // it owns them, or the process left running.
+    // InputPlumber serves its Manager only after it takes its bus name (the mock does the same): it takes them anyway.
+    // Teeth: ManageAllDevices never set (or only tried at the name, as on the Deck), PadInput still reading real
+    // controllers (or reading the Deck directly) while it owns them, or the process left running.
     void it_runs_while_wanted_and_takes_the_controllers()
     {
         PrivateBus Bus;
@@ -98,6 +100,7 @@ private slots:
         UseMock(Bus, QStringLiteral("/dev/hidraw-test0,/dev/input/event-test0"));
         S.want(ControllerService::Need::ControllerMode, true);
         QTRY_VERIFY_WITH_TIMEOUT(S.running(), 10000);
+        QTRY_VERIFY_WITH_TIMEOUT(!S.devices().isEmpty(), 5000);   // its controllers come after its Manager, which comes after its name
         QCOMPARE(Prop(Bus.Address, Root + QStringLiteral("/Manager"), QStringLiteral("org.shadowblip.InputManager"), QStringLiteral("ManageAllDevices")).toBool(), true);
         const QList<ControllerService::Device> D = S.devices();
         QCOMPARE(D.size(), 1);
@@ -112,6 +115,18 @@ private slots:
         QVERIFY(!PadInput::instance().onlyVirtual());
         QTRY_VERIFY_WITH_TIMEOUT(!QDBusConnection::connectToBus(Bus.Address, QStringLiteral("test-reader")).interface()
                                      ->isServiceRegistered(QStringLiteral("org.shadowblip.InputPlumber")), 5000);
+    }
+
+    // An InputPlumber whose Manager is already served when its name appears (no InterfacesAdded follows for it) is
+    // told at the name. Teeth: ManageAllDevices tried only as objects appear.
+    void it_takes_them_when_the_manager_comes_first()
+    {
+        PrivateBus Bus;
+        qputenv("MOCK_IP_MANAGER_FIRST", "1");
+        UseMock(Bus, QStringLiteral("/dev/hidraw-test7"));
+        S.want(ControllerService::Need::ControllerMode, true);
+        QTRY_VERIFY_WITH_TIMEOUT(!S.devices().isEmpty(), 10000);
+        QCOMPARE(S.devices().value(0).Name, QStringLiteral("Mock Deck"));
     }
 
     // It runs as VidyaGod's own child: polkit off (only VidyaGod reaches it), its device configurations first in
@@ -153,7 +168,7 @@ private slots:
 
     // A layout reaches every controller: those there when it comes up, and one plugged in later; a layout a
     // controller refuses is reported. Teeth: the layout not loaded at start, not reaching the hotplugged one, or a
-    // refusal swallowed.
+    // refusal swallowed; InputPlumber told to take the controllers again at each arrival (it may rescan them all).
     void a_layout_reaches_every_controller_now_and_later()
     {
         PrivateBus Bus;
@@ -166,6 +181,7 @@ private slots:
         QTRY_COMPARE_WITH_TIMEOUT(S.devices().size(), 2, 8000);
         QTRY_COMPARE_WITH_TIMEOUT(S.devices().value(1).Profile, QStringLiteral("Trackpad Mouse"), 5000);
         QTRY_VERIFY_WITH_TIMEOUT(S.hiddenNodes().size() == 2, 5000);
+        QCOMPARE(Prop(Bus.Address, Root + QStringLiteral("/Manager"), QStringLiteral("org.shadowblip.InputManager"), QStringLiteral("ManageSets")).toInt(), 1);
         QString Error;
         QVERIFY(!S.loadLayout(QStringLiteral("name: not a profile\n"), &Error));
         QVERIFY2(Error.contains(QLatin1String("not a DeviceProfile")), qPrintable(Error));
@@ -217,6 +233,7 @@ private slots:
         QVERIFY(!S.typeText(QStringLiteral("x"), &Err));   // not running: no controller to type with
         S.want(ControllerService::Need::ControllerMode, true);
         QTRY_VERIFY_WITH_TIMEOUT(S.running(), 10000);
+        QTRY_VERIFY_WITH_TIMEOUT(!S.devices().isEmpty(), 5000);   // its controllers come after its Manager, which comes after its name
         QVERIFY(S.typeText(QStringLiteral("Hi!\n"), &Err));
         const QStringList Want = { "Keyboard:KeyLeftShift+", "Keyboard:KeyH+", "Keyboard:KeyH-", "Keyboard:KeyLeftShift-", "Keyboard:KeyI+",
                                    "Keyboard:KeyI-", "Keyboard:KeyLeftShift+", "Keyboard:Key1+", "Keyboard:Key1-", "Keyboard:KeyLeftShift-",

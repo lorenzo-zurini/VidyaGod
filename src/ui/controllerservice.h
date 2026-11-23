@@ -111,6 +111,7 @@ private:
     void stop();
     void onRegistered();         // InputPlumber took its bus name
     void applyLayout();          // the layout in force (the game's, else VidyaGod's) to every owned controller
+    void takeControllers();      // tell InputPlumber to manage every controller, once its Manager is served
     bool applyTo(const QString &Yaml, QString *Error);   // one layout to every owned controller ("" = InputPlumber's default)
     QDBusConnection connection() const;
 
@@ -118,6 +119,7 @@ private:
     std::uint8_t Needs = 0;
     QProcess *Proc = nullptr;
     bool Answering = false;
+    bool Managing = false;   // InputPlumber was told to take the controllers (ManageAllDevices)
     QTimer *GameWatch = nullptr; // lets go of Need::Game when VidyaGod's last launch ends
     bool GamesRan = false;       // what GameWatch saw last
     QString BusConnName;         // the named QDBusConnection for an address bus

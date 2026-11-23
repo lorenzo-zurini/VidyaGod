@@ -4,7 +4,10 @@
 //   /org/shadowblip/InputPlumber/Manager            org.shadowblip.InputManager       ManageAllDevices (rw)
 //   /org/shadowblip/InputPlumber/CompositeDeviceN   org.shadowblip.Input.CompositeDevice
 //        Name, ProfileName, SourceDevicePaths; LoadProfileFromYaml(s) (refuses YAML that is no DeviceProfile), LoadProfilePath(s)
-// Its controllers: CompositeDevice0, plus CompositeDevice1 after MOCK_IP_HOTPLUG_MS (with an InterfacesAdded signal).
+// In InputPlumber's own order (its main.rs): the bus name first, the Manager a moment later (announced with
+// InterfacesAdded on the ObjectManager at /org/shadowblip/InputPlumber), and its controllers only once ManageAllDevices
+// is set: CompositeDevice0 then, plus CompositeDevice1 MOCK_IP_HOTPLUG_MS after the start (each announced likewise).
+// MOCK_IP_MANAGER_FIRST=1 serves the Manager before the name instead.
 // Their source nodes: MOCK_IP_SOURCES ("a,b" for device 0; device 1 gets "<first>-1"). MOCK_IP_REPORT names a file
 // it writes its environment and working folder to. InterceptMode on each controller; Press(event) on
 // /org/vidyagod/MockControl emits an intercepted input as InputPlumber's DBusDevice does.
@@ -21,16 +24,22 @@
 #include <QRegularExpression>
 #include <QTimer>
 
+#include <functional>
+
 class Manager : public QObject
 {
     Q_OBJECT
     Q_CLASSINFO("D-Bus Interface", "org.shadowblip.InputManager")
     Q_PROPERTY(bool ManageAllDevices READ manageAll WRITE setManageAll)
+    Q_PROPERTY(int ManageSets READ manageSets)   // the mock's own: how often it was told (InputPlumber may rescan each time)
 public:
     bool manageAll() const { return All; }
-    void setManageAll(bool On) { All = On; }
+    int manageSets() const { return Sets; }
+    void setManageAll(bool On) { ++Sets; if (On && !All && OnManage) OnManage(); All = On; }
+    std::function<void()> OnManage;
 private:
     bool All = false;
+    int Sets = 0;
 };
 
 class Device : public QObject, protected QDBusContext
@@ -120,25 +129,41 @@ int main(int argc, char **argv)
 
     const QStringList Sources = qEnvironmentVariable("MOCK_IP_SOURCES").split(QLatin1Char(','), Qt::SkipEmptyParts);
     const QString Root = QStringLiteral("/org/shadowblip/InputPlumber");
+    auto Announce = [&](const QString &Path) {
+        QDBusMessage S = QDBusMessage::createSignal(Root, QStringLiteral("org.freedesktop.DBus.ObjectManager"), QStringLiteral("InterfacesAdded"));
+        S << QVariant::fromValue(QDBusObjectPath(Path)) << QVariantMap();
+        Conn.send(S);
+    };
     Manager M;
     Device D0(QStringLiteral("Mock Deck"), Sources);
-    Conn.registerObject(Root + QStringLiteral("/Manager"), &M, QDBusConnection::ExportAllProperties);
-    Conn.registerObject(Root + QStringLiteral("/CompositeDevice0"), &D0, QDBusConnection::ExportAllProperties | QDBusConnection::ExportAllSlots);
+    M.OnManage = [&] {
+        Conn.registerObject(Root + QStringLiteral("/CompositeDevice0"), &D0, QDBusConnection::ExportAllProperties | QDBusConnection::ExportAllSlots);
+        Announce(Root + QStringLiteral("/CompositeDevice0"));
+    };
 
     Device D1(QStringLiteral("Mock Pad"), Sources.isEmpty() ? QStringList() : QStringList{ Sources.first() + QStringLiteral("-1") });
     if (const int Ms = qEnvironmentVariableIntValue("MOCK_IP_HOTPLUG_MS"); Ms > 0)
         QTimer::singleShot(Ms, &App, [&] {
             Conn.registerObject(Root + QStringLiteral("/CompositeDevice1"), &D1, QDBusConnection::ExportAllProperties | QDBusConnection::ExportAllSlots);
-            QDBusMessage S = QDBusMessage::createSignal(Root, QStringLiteral("org.freedesktop.DBus.ObjectManager"), QStringLiteral("InterfacesAdded"));
-            S << QVariant::fromValue(QDBusObjectPath(Root + QStringLiteral("/CompositeDevice1"))) << QVariantMap();
-            Conn.send(S);
+            Announce(Root + QStringLiteral("/CompositeDevice1"));
         });
 
     Control Ctl(Conn, &D0);
     Conn.registerObject(QStringLiteral("/org/vidyagod/MockControl"), &Ctl, QDBusConnection::ExportAllSlots);
 
-    //The name last: whoever waits for it finds the objects already there (InputPlumber does the same).
+    //The name first, the Manager after it, as InputPlumber does: whoever acts on the name alone finds no Manager yet.
+    //MOCK_IP_MANAGER_FIRST=1: the other order, the Manager already served when the name appears (nothing announces it).
+    if (qEnvironmentVariableIntValue("MOCK_IP_MANAGER_FIRST") == 1)
+    {
+        Conn.registerObject(Root + QStringLiteral("/Manager"), &M, QDBusConnection::ExportAllProperties);
+        if (!Conn.registerService(QStringLiteral("org.shadowblip.InputPlumber"))) return 3;
+        return App.exec();
+    }
     if (!Conn.registerService(QStringLiteral("org.shadowblip.InputPlumber"))) return 3;
+    QTimer::singleShot(300, &App, [&] {
+        Conn.registerObject(Root + QStringLiteral("/Manager"), &M, QDBusConnection::ExportAllProperties);
+        Announce(Root + QStringLiteral("/Manager"));
+    });
     return App.exec();
 }
 

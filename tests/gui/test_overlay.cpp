@@ -114,6 +114,7 @@ private slots:
         S.setProgram(QStringLiteral(MOCK_INPUTPLUMBER));
         S.want(ControllerService::Need::ControllerMode, true);
         QTRY_VERIFY_WITH_TIMEOUT(S.running(), 10000);
+        QTRY_VERIFY_WITH_TIMEOUT(!S.devices().isEmpty(), 5000);   // its controllers come after its Manager, which comes after its name
 
         int Quits = 0;
         O.setGame(QStringLiteral("Some Game"), QStringLiteral("g1"), [&] { ++Quits; });
@@ -167,6 +168,7 @@ private slots:
         S.setProgram(QStringLiteral(MOCK_INPUTPLUMBER));
         S.want(ControllerService::Need::ControllerMode, true);
         QTRY_VERIFY_WITH_TIMEOUT(S.running(), 10000);
+        QTRY_VERIFY_WITH_TIMEOUT(!S.devices().isEmpty(), 5000);   // its controllers come after its Manager, which comes after its name
         QString Err;
         QVERIFY(!O.typeIntoGame(QStringLiteral("ok"), &Err));   // no game
         O.setGame(QStringLiteral("Chatty"), QStringLiteral("g3"), [] {});
