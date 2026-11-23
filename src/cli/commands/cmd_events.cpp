@@ -1,5 +1,5 @@
 // `VidyaGod events …` — what happens in the app, as it happens: every signal its own objects emit (a download finished,
-// a friend's library arrived, the catalog was rebuilt), with its arguments, in order (EventLog).
+// a peer's library arrived, the catalog was rebuilt), with its arguments, in order (EventLog).
 #include "command.h"
 #include "eventlog.h"
 #include "uifind.h"
@@ -40,7 +40,7 @@ VG_COMMANDS
 
     Command::Register({
         "events list", "the events so far (the last 5000), oldest first",
-        "Every signal the app's objects emitted — the model, the IPFS model, the download manager, the friend service, "
+        "Every signal the app's objects emitted — the model, the IPFS model, the download manager, the peer service, "
         "each tab and view — with its arguments and a sequence number. Filter by object or signal (a part of the name).",
         { Command::Opt("since", "only events after this sequence number", Type::Int),
           Command::Opt("object", "only from objects whose name contains this"),
@@ -61,7 +61,7 @@ VG_COMMANDS
         { Command::Opt("signal", "the signal (a part of its name)", Type::String, true),
           Command::Opt("object", "only from objects whose name contains this"),
           Command::Opt("timeout", "give up after this many seconds (default 60)", Type::Int) },
-        { "events wait --signal catalogChanged", "events wait --signal friendLibrary --timeout 120" },
+        { "events wait --signal catalogChanged", "events wait --signal peerLibrary --timeout 120" },
         { "EventLog::Since" }, Needs::App, false,
         [](Command::Context &, const json &A) {
             const std::uint64_t From = EventLog::Latest();
@@ -87,7 +87,7 @@ VG_COMMANDS
           Command::Opt("signal", "only signals whose name contains this"),
           Command::Opt("for", "stop after this many seconds", Type::Int),
           Command::Opt("since", "start after this sequence number (default: now)", Type::Int) },
-        { "events follow", "events follow --signal download", "events follow --object FriendsManager --for 30" },
+        { "events follow", "events follow --signal download", "events follow --object PeersManager --for 30" },
         { "EventLog::Since" }, Needs::App, false,
         // The CLI calls this over and over with "since": each call returns what is new (CliApp's follow loop).
         [](Command::Context &, const json &A) {

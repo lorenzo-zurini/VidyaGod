@@ -29,7 +29,7 @@ QList<LibraryGameCard *> Available(AppModel &Model);
 void Sort(QList<LibraryGameCard *> &Cards, SortMode Mode);
 // The Catalog's order: by section (SectionOf), then by Mode within it.
 void SortBySection(QList<LibraryGameCard *> &Cards, SortMode Mode, const nlohmann::ordered_json &Config);
-// The Catalog section a package belongs to: its CID source's name, the friend's "<nick> - <library>" folder it was
+// The Catalog section a package belongs to: its CID source's name, the peer's "<nick> - <library>" folder it was
 // received into, else "Local".
 QString SectionOf(const nlohmann::ordered_json &Config, const std::filesystem::path &BundleDir);
 // A search matches a card when its title, or one of its secondaries' titles, holds the text (case-insensitive).

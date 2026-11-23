@@ -35,21 +35,21 @@ namespace fs = std::filesystem;
 //a real session game launch does, with `ping` standing in for the game. Rootless (CAP_NET_ADMIN via the userns).
 #ifdef __linux__
 // RunOverlaySandbox brings up the rootless nested-sandbox overlay (a TUN with our vIP inside a bwrap netns, forwarding
-// to friends over libp2p) and runs a shell command inside it, blocking until the command exits. UserCmd empty → the
+// to peers over libp2p) and runs a shell command inside it, blocking until the command exits. UserCmd empty → the
 // default 10-packet ping smoke test; otherwise UserCmd runs with VG_SELF_VIP / VG_PEER_VIP exported (the stability
 // harness: e.g. a long-running UDP game-traffic probe to the peer's vIP).
 static int RunOverlaySandbox(const std::string &UserCmd)
 {
-    // Pull our vIP + the online friends' vIPs from the friend LAN (host-less; each vIP = f(peerID)); target the first.
+    // Pull our vIP + the online peers' vIPs from the peer LAN (host-less; each vIP = f(peerID)); target the first.
     const auto V = IpfsWrapper::LanLaunchVars();
     auto Get = [&](const char *K){ auto It = V.find(K); return It == V.end() ? std::string() : It->second; };
     const std::string MyVip = Get("VIDYAGOD_SELF_VIP"), Subnet = Get("VIDYAGOD_SUBNET");
     const std::string PeerVips = Get("VIDYAGOD_PEER_VIPS");
-    const std::string PeerVip = PeerVips.empty() ? std::string() : PeerVips.substr(0, PeerVips.find(','));   // first online friend
-    // A friend is needed only for the OVERLAY-plane ping smoke test. With --overlay-exec (a custom command, e.g. the
+    const std::string PeerVip = PeerVips.empty() ? std::string() : PeerVips.substr(0, PeerVips.find(','));   // first online peer
+    // A peer is needed only for the OVERLAY-plane ping smoke test. With --overlay-exec (a custom command, e.g. the
     // tri-plane internet/DNS/real-LAN probe) we bring the sandbox up regardless — those planes don't need a peer.
     if (MyVip.empty()) { LogErr("main.cpp", "overlay: no self vIP (LAN unavailable)"); return -1; }
-    if (UserCmd.empty() && PeerVip.empty()) { LogErr("main.cpp", "overlay: no peer vIP (need an online friend for the ping test)"); return -1; }
+    if (UserCmd.empty() && PeerVip.empty()) { LogErr("main.cpp", "overlay: no peer vIP (need an online peer for the ping test)"); return -1; }
     if (!SandboxLayer::Available()) { LogErr("main.cpp", "overlay: sandbox unavailable (no bwrap / userns disabled)"); return -1; }
 
     std::string Mask = "16";
@@ -151,20 +151,20 @@ int CliModes::RunIpfsModes(LaunchParameters &LaunchParameters, nlohmann::ordered
         return Ok ? 0 : 1;
     }
 
-    //HEADLESS: print this node's shareable friend code (its peer ID), then exit.
-    if (LaunchParameters.PrintFriendCode)
+    //HEADLESS: print this node's shareable peer code (its peer ID), then exit.
+    if (LaunchParameters.PrintPeerCode)
     {
         for (int i = 0; i < 30 && IpfsWrapper::Available() && !IpfsWrapper::DaemonRunning(); ++i)
             std::this_thread::sleep_for(std::chrono::seconds(1));
-        LogOut("main.cpp", "FriendCode: " + IpfsWrapper::FriendCode());
-        std::cout << IpfsWrapper::FriendCode() << "\n";   // machine-readable on stdout
+        LogOut("main.cpp", "PeerCode: " + IpfsWrapper::PeerCode());
+        std::cout << IpfsWrapper::PeerCode() << "\n";   // machine-readable on stdout
         return 0;
     }
 
-    //HEADLESS: print the address book (contacts + friendship state), then exit.
-    if (LaunchParameters.FriendListOnly)
+    //HEADLESS: print the address book (contacts + pairing state), then exit.
+    if (LaunchParameters.PeerListOnly)
     {
-        const std::vector<IpfsWrapper::Contact> Cs = IpfsWrapper::FriendList();
+        const std::vector<IpfsWrapper::Contact> Cs = IpfsWrapper::PeerList();
         LogOut("main.cpp", "Contacts: " + std::to_string(Cs.size()));
         for (const auto &C : Cs)
             LogOut("main.cpp", "  " + C.State + "  " + C.PeerID + "  nick='" + C.Nick + "'"
@@ -172,12 +172,12 @@ int CliModes::RunIpfsModes(LaunchParameters &LaunchParameters, nlohmann::ordered
         return 0;
     }
 
-    //HEADLESS friends test harness: --friend-serve (stay online, auto-accept incoming) and --friend-add <CODE> (send a
+    //HEADLESS peers test harness: --peer-serve (stay online, auto-accept incoming) and --peer-add <CODE> (send a
     //request). Both warm the node online, optionally --connect a known peer for a deterministic direct link (no DHT
-    //discovery needed over e.g. WireGuard), set our --friend-nick, then poll the address book for --friend-secs
+    //discovery needed over e.g. WireGuard), set our --peer-nick, then poll the address book for --peer-secs
     //seconds — auto-accepting any incoming request and logging state changes — before printing the final book. This
     //lets two machines complete a real mutual-consent handshake headlessly (see [[reference_headless_e2e_testing]]).
-    if (LaunchParameters.FriendServe || !LaunchParameters.FriendAddCode.empty())
+    if (LaunchParameters.PeerServe || !LaunchParameters.PeerAddCode.empty())
     {
         for (int i = 0; i < 30 && IpfsWrapper::PeerCount() < 1; ++i)
             std::this_thread::sleep_for(std::chrono::seconds(1));
@@ -186,26 +186,26 @@ int CliModes::RunIpfsModes(LaunchParameters &LaunchParameters, nlohmann::ordered
             const bool Ok = IpfsWrapper::Connect(LaunchParameters.ConnectAddr);
             LogOut("main.cpp", std::string("direct connect to ") + LaunchParameters.ConnectAddr + (Ok ? " : ok" : " : FAILED"));
         }
-        if (!LaunchParameters.FriendNick.empty())
-            IpfsWrapper::SetProfile(LaunchParameters.FriendNick, std::string());
-        LogOut("main.cpp", std::string("friends: online=") + (IpfsWrapper::DaemonRunning() ? "yes" : "no")
-               + " peers=" + std::to_string(IpfsWrapper::PeerCount()) + " code=" + IpfsWrapper::FriendCode());
-        if (!LaunchParameters.FriendAddCode.empty())
+        if (!LaunchParameters.PeerNick.empty())
+            IpfsWrapper::SetProfile(LaunchParameters.PeerNick, std::string());
+        LogOut("main.cpp", std::string("peers: online=") + (IpfsWrapper::DaemonRunning() ? "yes" : "no")
+               + " peers=" + std::to_string(IpfsWrapper::PeerCount()) + " code=" + IpfsWrapper::PeerCode());
+        if (!LaunchParameters.PeerAddCode.empty())
         {
             std::string Err;
-            const bool Ok = IpfsWrapper::FriendAdd(LaunchParameters.FriendAddCode, "hello from vidyagod", &Err);
-            LogOut("main.cpp", Ok ? ("friend request sent to " + LaunchParameters.FriendAddCode)
-                                  : ("friend request FAILED: " + Err));
+            const bool Ok = IpfsWrapper::PeerAdd(LaunchParameters.PeerAddCode, "hello from vidyagod", &Err);
+            LogOut("main.cpp", Ok ? ("peer request sent to " + LaunchParameters.PeerAddCode)
+                                  : ("peer request FAILED: " + Err));
         }
         std::map<std::string, std::string> LastState;   // peer → last-seen state, to log transitions
-        for (int s = 0; s < LaunchParameters.FriendSecs; ++s)
+        for (int s = 0; s < LaunchParameters.PeerSecs; ++s)
         {
-            for (const auto &C : IpfsWrapper::FriendList())
+            for (const auto &C : IpfsWrapper::PeerList())
             {
                 if (C.State == "incoming")   // auto-accept any inbound request
                 {
                     std::string Err;
-                    if (IpfsWrapper::FriendAccept(C.PeerID, &Err))
+                    if (IpfsWrapper::PeerAccept(C.PeerID, &Err))
                         LogOut("main.cpp", "auto-accepted incoming request from " + C.PeerID + " ('" + C.Nick + "')");
                 }
                 if (LastState[C.PeerID] != C.State)
@@ -218,19 +218,19 @@ int CliModes::RunIpfsModes(LaunchParameters &LaunchParameters, nlohmann::ordered
         }
         LogOut("main.cpp", "final address book:");
         int Accepted = 0;
-        for (const auto &C : IpfsWrapper::FriendList())
+        for (const auto &C : IpfsWrapper::PeerList())
         {
             if (C.State == "accepted") ++Accepted;
             LogOut("main.cpp", "  " + C.State + "  " + C.PeerID + "  nick='" + C.Nick + "'");
         }
-        LogSucc("main.cpp", "friends handler done — " + std::to_string(Accepted) + " accepted friend(s)");
+        LogSucc("main.cpp", "peers handler done — " + std::to_string(Accepted) + " accepted peer(s)");
         return 0;
     }
 
-    //HEADLESS friend-LAN harness: --lan warms online, optionally --connect a known peer (deterministic link over
-    //WireGuard) + sets --friend-nick, then prints the virtual-LAN roster (our vIP + each online friend's vIP, all
-    //host-less: vIP = f(peerID)) for --friend-secs seconds. With --overlay it brings the sandboxed overlay TUN up
-    //inside a rootless bwrap netns and pings the first online friend through the tunnel — the end-to-end LAN test.
+    //HEADLESS peer-LAN harness: --lan warms online, optionally --connect a known peer (deterministic link over
+    //WireGuard) + sets --peer-nick, then prints the virtual-LAN roster (our vIP + each online peer's vIP, all
+    //host-less: vIP = f(peerID)) for --peer-secs seconds. With --overlay it brings the sandboxed overlay TUN up
+    //inside a rootless bwrap netns and pings the first online peer through the tunnel — the end-to-end LAN test.
     if (LaunchParameters.LanHarness)
     {
         for (int i = 0; i < 30 && IpfsWrapper::PeerCount() < 1; ++i)
@@ -240,22 +240,22 @@ int CliModes::RunIpfsModes(LaunchParameters &LaunchParameters, nlohmann::ordered
             const bool Ok = IpfsWrapper::Connect(LaunchParameters.ConnectAddr);
             LogOut("main.cpp", std::string("direct connect to ") + LaunchParameters.ConnectAddr + (Ok ? " : ok" : " : FAILED"));
         }
-        if (!LaunchParameters.FriendNick.empty())
-            IpfsWrapper::SetProfile(LaunchParameters.FriendNick, std::string());
+        if (!LaunchParameters.PeerNick.empty())
+            IpfsWrapper::SetProfile(LaunchParameters.PeerNick, std::string());
         LogOut("main.cpp", std::string("lan: online=") + (IpfsWrapper::DaemonRunning() ? "yes" : "no")
-               + " peers=" + std::to_string(IpfsWrapper::PeerCount()) + " code=" + IpfsWrapper::FriendCode());
+               + " peers=" + std::to_string(IpfsWrapper::PeerCount()) + " code=" + IpfsWrapper::PeerCode());
 
         std::string LastRoster;   // print only when the LAN roster changes
         bool OverlayTried = false;
-        for (int s = 0; s < LaunchParameters.FriendSecs; ++s)
+        for (int s = 0; s < LaunchParameters.PeerSecs; ++s)
         {
             const auto V = IpfsWrapper::LanLaunchVars();
             auto Get = [&](const char *K){ auto It = V.find(K); return It == V.end() ? std::string() : It->second; };
             const std::string Peers = Get("VIDYAGOD_PEER_VIPS");
-            const std::string Now = "self " + Get("VIDYAGOD_SELF_VIP") + " | friends: " + (Peers.empty() ? "(none online)" : Peers);
+            const std::string Now = "self " + Get("VIDYAGOD_SELF_VIP") + " | peers: " + (Peers.empty() ? "(none online)" : Peers);
             if (Now != LastRoster) { LogOut("main.cpp", "lan roster: " + Now); LastRoster = Now; }
-            //Once at least one friend is online, bring the overlay up (nested sandbox — what a real game launch does)
-            //and either ping the friend (smoke test) or run --overlay-exec's command through the tunnel. Attempt once.
+            //Once at least one peer is online, bring the overlay up (nested sandbox — what a real game launch does)
+            //and either ping the peer (smoke test) or run --overlay-exec's command through the tunnel. Attempt once.
             if (LaunchParameters.OverlayUp && !OverlayTried && (!Peers.empty() || !LaunchParameters.OverlayExec.empty()))
             {
                 OverlayTried = true;
@@ -263,7 +263,7 @@ int CliModes::RunIpfsModes(LaunchParameters &LaunchParameters, nlohmann::ordered
             }
             std::this_thread::sleep_for(std::chrono::seconds(1));
         }
-        LogSucc("main.cpp", "friend-LAN handler done");
+        LogSucc("main.cpp", "peer-LAN handler done");
         return 0;
     }
 

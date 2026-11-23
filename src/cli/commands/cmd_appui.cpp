@@ -1,6 +1,6 @@
 // `VidyaGod app …` (the rest), `library …`, `keys …`, `util …` — the app's own switches (networking, card size, the
 // tray, start on login), adding and removing packages, the housekeeping it does on its own (healing references,
-// reconciling what friends share), a Library card's Play and Edit, the names keys are bound by, and the small
+// reconciling what peers share), a Library card's Play and Edit, the names keys are bound by, and the small
 // helpers everything else uses.
 #include <filesystem>
 #include <QTextDocument>
@@ -8,7 +8,7 @@
 #include "command.h"
 #include "cmdutil.h"
 #include "appmodel.h"
-#include "friendsharing.h"
+#include "peersharing.h"
 #include "autostart.h"
 #include "commonutils.h"
 #include "covercache.h"
@@ -56,7 +56,7 @@ VG_COMMANDS
     Command::RegisterGroup("util", "the small helpers: sizes in words, name patterns, natural sort, running a system tool");
 
     Command::Register({
-        "app networking", "networking on or off (the node, friends, the Catalog) — or what it is",
+        "app networking", "networking on or off (the node, peers, the Catalog) — or what it is",
         "Settings → Networking: on starts the node and the network tabs, off stops them.",
         { Opt("set", "on or off", Type::String, false, { "on", "off" }) }, { "app networking", "app networking --set off" },
         { "AppModel::networkingEnabled", "AppModel::setNetworkingEnabled", "AppModel::markNodeReady" }, Needs::Model, false,
@@ -145,24 +145,24 @@ VG_COMMANDS
         [](Command::Context &C, const json &) { Save(C); return json{{"saved", true}}; }, {} });
 
     Command::Register({
-        "app housekeeping", "what the app does on its own, now: heal references, reconcile friends' shares, push node settings",
-        "--heal re-adds orphaned content references (once per run); --reconcile re-reads what friends share and lands it; "
+        "app housekeeping", "what the app does on its own, now: heal references, reconcile peers' shares, push node settings",
+        "--heal re-adds orphaned content references (once per run); --reconcile re-reads what peers share and lands it; "
         "--reshare registers this machine's shares with the node again; --push hands the node the seed levels, the LAN "
         "roster and the presence deny list; --covers re-checks every missing cover (a sweep).",
-        { Flag("heal", "heal orphaned references"), Flag("reconcile", "reconcile friends' shares"), Flag("reshare", "re-register shares"),
+        { Flag("heal", "heal orphaned references"), Flag("reconcile", "reconcile peers' shares"), Flag("reshare", "re-register shares"),
           Flag("push", "push node settings"), Flag("covers", "sweep missing covers") },
         { "app housekeeping --heal", "app housekeeping --reconcile --push" },
-        { "AppModel::healOrphansIfAny", "FriendSharing::reconcileReceivedLibraries", "FriendSharing::enqueueReceivedShares", "FriendSharing::applyFriendLibrarySnapshot",
-          "FriendSharing::onFriendBlockLanded", "FriendSharing::reRegisterShares", "AppModel::pushSeedLevels", "FriendSharing::pushLanRoster", "FriendSharing::pushPresenceDeny",
+        { "AppModel::healOrphansIfAny", "PeerSharing::reconcileReceivedLibraries", "PeerSharing::enqueueReceivedShares", "PeerSharing::applyPeerLibrarySnapshot",
+          "PeerSharing::onPeerBlockLanded", "PeerSharing::reRegisterShares", "AppModel::pushSeedLevels", "PeerSharing::pushLanRoster", "PeerSharing::pushPresenceDeny",
           "CoverCache::instance", "CoverCache::sweepNow", "CoverCache::prefetch", "CoverCache::missCount", "CoverCache::onTransferFinished", "AppModel::notifyCoversReady",
           "LibraryTab::refreshCovers", "CatalogTab::refreshCovers" , "AsyncWork::Run", "AsyncWork::Job::Live", "AsyncWork::Job::Post" }, Needs::Model, true,
         [](Command::Context &C, const json &A) {
             AppModel &M = Model(C);
             json Out = json::object();
             if (Command::Bool(A, "heal", false)) { M.healOrphansIfAny(); Out["healing"] = true; }
-            if (Command::Bool(A, "reconcile", false)) { M.friends().reconcileReceivedLibraries(); Out["reconciling"] = true; }
-            if (Command::Bool(A, "reshare", false)) { M.friends().reRegisterShares(); Out["reshared"] = true; }
-            if (Command::Bool(A, "push", false)) { M.pushSeedLevels(); M.friends().pushLanRoster(); M.friends().pushPresenceDeny(); Out["pushed"] = true; }
+            if (Command::Bool(A, "reconcile", false)) { M.peers().reconcileReceivedLibraries(); Out["reconciling"] = true; }
+            if (Command::Bool(A, "reshare", false)) { M.peers().reRegisterShares(); Out["reshared"] = true; }
+            if (Command::Bool(A, "push", false)) { M.pushSeedLevels(); M.peers().pushLanRoster(); M.peers().pushPresenceDeny(); Out["pushed"] = true; }
             if (Command::Bool(A, "covers", false)) { CoverCache::instance()->sweepNow(); Out["covers_missing"] = CoverCache::instance()->missCount(); }
             if (Out.empty()) throw Command::BadArgs("give --heal, --reconcile, --reshare, --push or --covers");
             return Out;

@@ -18,7 +18,7 @@
 namespace NodeFiles
 {
 
-//One file or folder name from any text — a label, or a friend's (untrusted) library, package or file name: ASCII
+//One file or folder name from any text — a label, or a peer's (untrusted) library, package or file name: ASCII
 //letters, digits, space and _ - . [ ] ( ) kept, every other byte '_'; at most 120 bytes; never empty, "." or "..";
 //no trailing '.' or ' ' and no Windows device name, so every platform holds the name as given.
 std::string SafeName(const std::string &In);
@@ -27,7 +27,7 @@ std::string SafeName(const std::string &In);
 std::map<std::string, std::string> Names(const std::map<std::string, nlohmann::ordered_json> &Package);
 
 //A node file directly in a package folder. Frozen: its bytes are its canonical form (no "CID" handle, no POS) — what
-//publishing writes and a friend receives; anything else is a working-tree draft.
+//publishing writes and a peer receives; anything else is a working-tree draft.
 struct File
 {
     std::filesystem::path Path;

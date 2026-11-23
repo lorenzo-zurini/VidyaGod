@@ -344,8 +344,8 @@ int main(int argc, char *argv[])
         || !LaunchParameters.PublishMetaSrc.empty()
         || !LaunchParameters.MintDir.empty() || !LaunchParameters.HydrateCid.empty()
         || !LaunchParameters.UpgradeSourceName.empty() || !LaunchParameters.VerifyCidArg.empty()
-        || LaunchParameters.PrintFriendCode || LaunchParameters.FriendListOnly
-        || !LaunchParameters.FriendAddCode.empty() || LaunchParameters.FriendServe
+        || LaunchParameters.PrintPeerCode || LaunchParameters.PeerListOnly
+        || !LaunchParameters.PeerAddCode.empty() || LaunchParameters.PeerServe
         || LaunchParameters.LanHarness
         || !LaunchParameters.LaunchNodeId.empty() || !LaunchParameters.LaunchTile.empty();
     //--offline: a headless run that must not bring up the node (a resolve sweep over a whole library would otherwise
@@ -447,9 +447,9 @@ int main(int argc, char *argv[])
 
 
 // NO built-in package sources. Runners, shared libraries and games all arrive as IPNS sources the user ADDS — their
-// own library (their friend code, which carries Games + Libraries + Runners in one signed index) on a new machine, or
-// a friend's. The old compiled-in DefaultRunner/LibrarySourceCID constants are gone: content ships completely
-// independently of the binary, so there is nothing here that a new content set would ever bump (project_ipns_friendcode_library).
+// own library (their peer code, which carries Games + Libraries + Runners in one signed index) on a new machine, or
+// a peer's. The old compiled-in DefaultRunner/LibrarySourceCID constants are gone: content ships completely
+// independently of the binary, so there is nothing here that a new content set would ever bump (project_ipns_peercode_library).
 
 //Guarantees the GlobalConfig has the shape the app actually uses, seeding any missing piece:
 //  LIBRARY (array of packages), Settings (object), Settings.PackageSources (the CID package sources).
@@ -464,10 +464,10 @@ static bool EnsureGlobalConfigDefaults(nlohmann::ordered_json & gc)
     //Migration: git repositories were removed — drop any legacy Settings.Repositories (its LIBRARY/<repo> clones, if
     //any, become inert local dirs). Sharing is now solely via CID package sources.
     if (gc["Settings"].contains("Repositories")) { gc["Settings"].erase("Repositories"); Changed = true; }
-    //PackageSources: ordered list of sources (IPNS friend-code addresses, or legacy folder CIDs) of dehydrated
+    //PackageSources: ordered list of sources (IPNS peer-code addresses, or legacy folder CIDs) of dehydrated
     //packages, fetched into <DataRoot>/LIBRARY/<name> and indexed. NOTHING is seeded here: there are no built-in
-    //sources any more. A fresh install starts empty; the user adds their own library (their friend code — it carries
-    //runners, shared libraries and games in one signed index) or a friend's. Content ships independently of the binary.
+    //sources any more. A fresh install starts empty; the user adds their own library (their peer code — it carries
+    //runners, shared libraries and games in one signed index) or a peer's. Content ships independently of the binary.
     if (!gc["Settings"].contains("PackageSources") || !gc["Settings"]["PackageSources"].is_array())
     {
         gc["Settings"]["PackageSources"] = nlohmann::ordered_json::array();
@@ -706,33 +706,33 @@ LaunchParameters ParseCommandLineArguments(int argc, char* argv[])
             RuntimeParameters.DropRefCid       = argv[++i];
             RuntimeParameters.RunningHeadless  = true;
         }
-        else if (arg == "--friend-code")
+        else if (arg == "--peer-code")
         {
-            RuntimeParameters.PrintFriendCode  = true;
+            RuntimeParameters.PrintPeerCode  = true;
             RuntimeParameters.RunningHeadless  = true;
         }
-        else if (arg == "--friend-ls")
+        else if (arg == "--peer-ls")
         {
-            RuntimeParameters.FriendListOnly   = true;
+            RuntimeParameters.PeerListOnly   = true;
             RuntimeParameters.RunningHeadless  = true;
         }
-        else if (arg == "--friend-add" && i + 1 < argc)
+        else if (arg == "--peer-add" && i + 1 < argc)
         {
-            RuntimeParameters.FriendAddCode    = argv[++i];
+            RuntimeParameters.PeerAddCode    = argv[++i];
             RuntimeParameters.RunningHeadless  = true;
         }
-        else if (arg == "--friend-serve")
+        else if (arg == "--peer-serve")
         {
-            RuntimeParameters.FriendServe      = true;
+            RuntimeParameters.PeerServe      = true;
             RuntimeParameters.RunningHeadless  = true;
         }
-        else if (arg == "--friend-nick" && i + 1 < argc)
+        else if (arg == "--peer-nick" && i + 1 < argc)
         {
-            RuntimeParameters.FriendNick       = argv[++i];
+            RuntimeParameters.PeerNick       = argv[++i];
         }
-        else if (arg == "--friend-secs" && i + 1 < argc)
+        else if (arg == "--peer-secs" && i + 1 < argc)
         {
-            RuntimeParameters.FriendSecs       = std::max(1, std::atoi(argv[++i]));
+            RuntimeParameters.PeerSecs       = std::max(1, std::atoi(argv[++i]));
         }
         else if (arg == "--lan")
         {

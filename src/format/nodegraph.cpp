@@ -142,9 +142,9 @@ std::vector<std::filesystem::path> ListTreeFiles(const std::filesystem::path &Ro
     for (; !Ec && It != End; It.increment(Ec))
     {
         const auto &E = *It;
-        // Reserved received-stub dirs ("_friend_*"): never descend when SkipReserved (PublishLibrary must not mint a
-        // friend's stub, and a hostile stub NODE_ID must not shadow our handle by winning first-seen).
-        if (SkipReserved && E.is_directory(Ec) && E.path().filename().string().rfind("_friend_", 0) == 0)
+        // Reserved received-stub dirs ("_peer_*"): never descend when SkipReserved (PublishLibrary must not mint a
+        // peer's stub, and a hostile stub NODE_ID must not shadow our handle by winning first-seen).
+        if (SkipReserved && E.is_directory(Ec) && E.path().filename().string().rfind("_peer_", 0) == 0)
         { It.disable_recursion_pending(); continue; }
         if (E.is_directory(Ec) && IsFetchScratchDir(E.path())) { It.disable_recursion_pending(); continue; }
         if (!E.is_regular_file(Ec) || E.path().extension() != ".json") continue;
@@ -322,7 +322,7 @@ NodeIndex FreezeToIndex(const std::map<std::string, nlohmann::ordered_json> &Wor
         if (!Handle.empty() && Handle[0] == '\x01')
             if (const size_t Hash = Handle.rfind('#'); Hash != std::string::npos) N.File = Handle.substr(1, Hash - 1);
         // Two copies of one node (same content ⇒ same CID) can both be present: a LOCAL authored/installed one and a
-        // RECEIVED one inside a just-hydrated friend package's closure. They are byte-identical, but their BundleDir
+        // RECEIVED one inside a just-hydrated peer package's closure. They are byte-identical, but their BundleDir
         // differs and launch mounts/seeds from BundleDir — so the LOCAL copy must win regardless of topo order. A
         // received/synthetic-gathered node has a control-byte ('\x01') handle; an authored/local one does not.
         //A node has one home: a second folder holding it is recorded for the validator, never a second source.

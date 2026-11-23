@@ -272,11 +272,11 @@ std::string ComputeCid(const std::string &Path, std::string *Error = nullptr);
 bool DropCached(const std::string &Cid);
 
 // ----- IPNS: the mutable library-address layer (ipns.go) -----
-// Resolve /ipns/<Name> (a peer ID / friend code, with or without the /ipns/ prefix) to its current CID. DHT first,
+// Resolve /ipns/<Name> (a peer ID / peer code, with or without the /ipns/ prefix) to its current CID. DHT first,
 // then the HTTPS-gateway fallback; the record signature is verified against the name, so a forged record is rejected.
 // Returns the bare CID ("" on failure) — the "/ipfs/" prefix is stripped for callers that want a plain CID.
 std::string IpnsResolve(const std::string &Name, std::string *Error = nullptr);
-// Back up / restore the Ed25519 identity key (== your friend code + library address). Loss is PERMANENT (a new key is a
+// Back up / restore the Ed25519 identity key (== your peer code + library address). Loss is PERMANENT (a new key is a
 // new address nobody has). ImportIdentity installs the key but the node keeps the old one until RESTARTED — warn hard.
 bool ExportIdentity(const std::string &DestPath, std::string *Error = nullptr);
 bool ImportIdentity(const std::string &SrcPath, std::string *Error = nullptr);
@@ -317,13 +317,13 @@ using TransferCallback = std::function<void(const TransferEvent &)>;
 void SetTransferCallback(TransferCallback Callback);
 
 // ---------------------------------------------------------------------------
-// Friends / multiplayer social layer (VidyaGodIPFS/social.go + friend.go).
-// A friend is found by their peer ID (for the node's Ed25519 key the peer ID embeds the public key, so it IS the
-// shareable "friend code" and libp2p authenticates the friend for free). Contacts persist in the node's repo
+// Peers / multiplayer social layer (VidyaGodIPFS/social.go + peer.go).
+// A peer is found by their peer ID (for the node's Ed25519 key the peer ID embeds the public key, so it IS the
+// shareable "peer code" and libp2p authenticates the peer for free). Contacts persist in the node's repo
 // (<repo>/social.json) independently of the network; the live protocol needs networking to be up.
 // ---------------------------------------------------------------------------
 
-// One address-book entry. State is the friendship lifecycle: pending (we asked) / incoming (they asked) /
+// One address-book entry. State is the pairing lifecycle: pending (we asked) / incoming (they asked) /
 // accepted (mutual) / blocked. Online + LastSeen come from presence pings.
 struct Contact {
     std::string PeerID;
@@ -335,67 +335,67 @@ struct Contact {
 };
 struct Profile { std::string Nick; std::string PicCID; };
 
-// This node's shareable friend code (its libp2p peer ID), "" if offline.
-std::string FriendCode();
+// This node's shareable peer code (its libp2p peer ID), "" if offline.
+std::string PeerCode();
 // This node's own profile (nickname + profile-picture content CID).
 Profile GetProfile();
 bool SetProfile(const std::string &Nick, const std::string &PicCID, std::string *Error = nullptr);
 // Every contact (any state), unordered.
-std::vector<Contact> FriendList();
+std::vector<Contact> PeerList();
 // The VidyaGod devices on our network (mDNS), by the nickname they give (VidyaGodIPFS nearby.go), for one-press
 // pairing: State is what each is to us ("" not in the address book, pending, incoming, accepted). Never waits on the
 // network: a device not asked yet shows on a later call, so a page may poll it. Empty while offline.
 struct NearbyPeer { std::string Peer, Nick, State; };
 std::vector<NearbyPeer> NearbyPeers();
 
-// Send a friend request to a peer ID (records it as pending + notifies them with our profile).
-bool FriendAdd(const std::string &PeerID, const std::string &Note = std::string(), std::string *Error = nullptr);
+// Send a peer request to a peer ID (records it as pending + notifies them with our profile).
+bool PeerAdd(const std::string &PeerID, const std::string &Note = std::string(), std::string *Error = nullptr);
 // Accept an incoming request (marks accepted + notifies the peer with our profile).
-bool FriendAccept(const std::string &PeerID, std::string *Error = nullptr);
-// Decline/unfriend (removes locally + best-effort notifies the peer).
-bool FriendDecline(const std::string &PeerID, std::string *Error = nullptr);
+bool PeerAccept(const std::string &PeerID, std::string *Error = nullptr);
+// Decline/unpair (removes locally + best-effort notifies the peer).
+bool PeerDecline(const std::string &PeerID, std::string *Error = nullptr);
 // Block a peer (drops all their traffic; no notification).
-bool FriendBlock(const std::string &PeerID, std::string *Error = nullptr);
+bool PeerBlock(const std::string &PeerID, std::string *Error = nullptr);
 // Remove a contact entirely (local only).
-bool FriendRemove(const std::string &PeerID);
+bool PeerRemove(const std::string &PeerID);
 // Actively probe reachability now: 1 online, 0 offline, -1 n/a (offline node).
-int FriendPing(const std::string &PeerID);
+int PeerPing(const std::string &PeerID);
 
-// Friend library sharing (bilateral, per-(friend,library)). ShareLibrary hands a friend a named library's share
+// Peer library sharing (bilateral, per-(peer,library)). ShareLibrary hands a peer a named library's share
 // entries — a JSON array of {cid, node, uid, title, tilecid, tilenode} objects straight from config["Libraries"]
 // (the node CID plus the metadata the RECEIVER needs to route each block to its final library path) — the seeder's
-// "share" toggle; re-call to update. UnshareLibrary withdraws it; RequestFriendLibraries asks a friend for everything
-// they share with us. A friend's shared libraries arrive via FriendsManager::friendLibrary.
+// "share" toggle; re-call to update. UnshareLibrary withdraws it; RequestPeerLibraries asks a peer for everything
+// they share with us. A peer's shared libraries arrive via PeersManager::peerLibrary.
 bool ShareLibrary(const std::string &PeerID, const std::string &Lib, const nlohmann::json &Items, std::string *Error = nullptr);
 bool UnshareLibrary(const std::string &PeerID, const std::string &Lib, std::string *Error = nullptr);
-bool RequestFriendLibraries(const std::string &PeerID, std::string *Error = nullptr);
+bool RequestPeerLibraries(const std::string &PeerID, std::string *Error = nullptr);
 
-// Inbound friend event (mirrors friend.go evFriend*). Delivered on a node thread; the FriendsManager marshals it
+// Inbound peer event (mirrors peer.go evPeer*). Delivered on a node thread; the PeersManager marshals it
 // to the GUI thread as Qt signals.
-struct FriendEvent {
+struct PeerEvent {
     enum Kind { Request, Accept, Decline, Presence, Profile, Removed, Library, Sent } Kind;   // Sent: our own request
     Contact C;             // the affected contact (Request..Removed); for Removed/Library only PeerID is set
-    std::string LibsJson;  // Library: the friend's COMPLETE shared set as {libName:[launchable CIDs]} JSON — a snapshot
+    std::string LibsJson;  // Library: the peer's COMPLETE shared set as {libName:[launchable CIDs]} JSON — a snapshot
                            // to replace wholesale ("{}" = they share nothing / withdrew everything)
     quint64 LibSeq = 0;    // Library: the sender's monotonic snapshot stamp — the receiver keeps only the highest per
                            // peer (last-writer-wins), so a reordered stale snapshot delivered late can't win
 };
-using FriendCallback = std::function<void(const FriendEvent &)>;
-void SetFriendCallback(FriendCallback Callback);
+using PeerCallback = std::function<void(const PeerEvent &)>;
+void SetPeerCallback(PeerCallback Callback);
 
 // ---------------------------------------------------------------------------
-// Virtual LAN of friends (VidyaGodIPFS/friendlan.go).
-// There is NO session/host. Friends share one implicit virtual LAN (10.66.0.0/16); each peer's vIP is a pure function
-// of its peer ID, so membership + routing come from the accepted-friends set with zero coordination, and the LAN lives
+// Virtual LAN of peers (VidyaGodIPFS/peerlan.go).
+// There is NO session/host. Peers share one implicit virtual LAN (10.66.0.0/16); each peer's vIP is a pure function
+// of its peer ID, so membership + routing come from the accepted-peers set with zero coordination, and the LAN lives
 // ONLY inside a game's sandbox netns (the host stack is never touched).
 // ---------------------------------------------------------------------------
 
-// The custom variables to launch a game onto the friend LAN (VIDYAGOD_SANDBOX_NET=isolated, SELF_VIP,
+// The custom variables to launch a game onto the peer LAN (VIDYAGOD_SANDBOX_NET=isolated, SELF_VIP,
 // SUBNET, PEER_VIPS, PEER_NAMES), which a Goldberg-style LAN-emulator content node writes into its config so the
 // players find each other over the overlay. Empty if the LAN is unavailable.
 std::map<std::string, std::string> LanLaunchVars();
 
-// One friend's virtual-LAN link, as maintained by the node's always-on heartbeat loop (overlaylink.go).
+// One peer's virtual-LAN link, as maintained by the node's always-on heartbeat loop (overlaylink.go).
 struct LanPeer {
     std::string Peer;    // peer id
     std::string Nick;
@@ -404,7 +404,7 @@ struct LanPeer {
     std::string Link;    // "direct" | "relayed" | "connecting" | "down"
     long long   RttMs = -1;
 };
-// Live per-friend LAN link state (empty when the node/maintainer is down). Poll-friendly (~2s).
+// Live per-peer LAN link state (empty when the node/maintainer is down). Poll-friendly (~2s).
 std::vector<LanPeer> LanPeers();
 
 // One row of the Settings→Network firewall diagnostic. Status is "ok"/"warn"/"fail"; Detail is the sentence a
@@ -422,12 +422,12 @@ void SetLanExcluded(const std::vector<std::string> &PeerIds);
 bool SetPresenceDeny(const std::vector<std::string> &PeerIds);
 
 // ----- overlay tunnel (VidyaGodIPFS/overlay.go) -----
-// Bring up the friend-LAN: a TUN configured from lanConfig() (each friend's vIP = f(peerID)) forwarding IP packets
-// between friends over libp2p, broadcast/multicast fanned out so LAN games discover each other. Returns the TUN name,
+// Bring up the peer-LAN: a TUN configured from lanConfig() (each peer's vIP = f(peerID)) forwarding IP packets
+// between peers over libp2p, broadcast/multicast fanned out so LAN games discover each other. Returns the TUN name,
 // "" on failure. Needs CAP_NET_ADMIN. OverlayStart is a host-netns debug/CLI path; the production launch uses
 // OverlayServe. OverlayStop tears it down; OverlayActive reports whether it is forwarding.
 std::string OverlayStart(std::string *Error = nullptr);
-// Nested-sandbox variant (production): configure the friend-LAN routes and listen on SockPath for the TUN fd that the
+// Nested-sandbox variant (production): configure the peer-LAN routes and listen on SockPath for the TUN fd that the
 // in-sandbox sandbox-init hands back (it creates the TUN inside the game's OWN netns). Non-blocking. True on listen ok.
 // Bridge = in-node NAT gateway (internet + real-LAN unicast through the game's TUN); HostRelay = real-LAN
 // broadcast reflection both ways. Together with the overlay itself: the TRI-PLANE LAN, all rootless, no helpers.
@@ -462,28 +462,28 @@ private:
 };
 
 // ---------------------------------------------------------------------------
-// FriendsManager — a GUI-thread QObject that relays IpfsWrapper friend events (which fire on a node thread) as Qt
-// signals. A single shared instance (instance()) installs the friend callback once; the Friends UI + session layer
+// PeersManager — a GUI-thread QObject that relays IpfsWrapper peer events (which fire on a node thread) as Qt
+// signals. A single shared instance (instance()) installs the peer callback once; the Peers UI + session layer
 // connect to these signals. Mutations go through IpfsWrapper's free functions.
 // ---------------------------------------------------------------------------
-class FriendsManager : public QObject
+class PeersManager : public QObject
 {
     Q_OBJECT
 public:
-    static FriendsManager * instance();
+    static PeersManager * instance();
 
 signals:
-    void friendRequest(QString peer, QString nick, QString pic);   // someone wants to be our friend
-    void friendRequestSent(QString peer);                          // we asked someone (never auto-accepted)
-    void friendAccepted(QString peer, QString nick, QString pic);  // a request we sent was accepted (or crossed)
-    void friendDeclined(QString peer);                             // declined / unfriended by the peer
-    void friendPresence(QString peer, bool online);                // a friend's reachability changed
-    void friendProfile(QString peer, QString nick, QString pic);   // a friend updated their nickname/picture
-    void friendRemoved(QString peer);                              // local removal (echoed for UI symmetry)
-    void friendLibrary(QString peer, QString libsJson, quint64 seq); // friend's COMPLETE shared set {name:[cids]}; seq orders snapshots
+    void peerRequest(QString peer, QString nick, QString pic);   // someone wants to be our peer
+    void peerRequestSent(QString peer);                          // we asked someone (never auto-accepted)
+    void peerAccepted(QString peer, QString nick, QString pic);  // a request we sent was accepted (or crossed)
+    void peerDeclined(QString peer);                             // declined / unpaired by the peer
+    void peerPresence(QString peer, bool online);                // a peer's reachability changed
+    void peerProfile(QString peer, QString nick, QString pic);   // a peer updated their nickname/picture
+    void peerRemoved(QString peer);                              // local removal (echoed for UI symmetry)
+    void peerLibrary(QString peer, QString libsJson, quint64 seq); // peer's COMPLETE shared set {name:[cids]}; seq orders snapshots
 
 private:
-    explicit FriendsManager(QObject * parent = nullptr);
+    explicit PeersManager(QObject * parent = nullptr);
 };
 
 #endif // IPFSWRAPPER_H

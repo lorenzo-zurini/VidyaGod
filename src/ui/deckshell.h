@@ -51,8 +51,8 @@ bool StartsInController(const nlohmann::ordered_json &Config, bool FlagControlle
 
 // ---------------------------------------------------------------------------
 // DeckShell — the controller UI: a full-screen shell for a Steam Deck or a TV, every part of the app behind a few
-// buttons. The shoulders turn its sections (Home, Library, Catalog, Downloads, Friends, Node, Settings); a cover's
-// page plays, configures, downloads or marks it; Start opens the menu (desktop mode, networking, quit). Friends, Node
+// buttons. The shoulders turn its sections (Home, Library, Catalog, Downloads, Peers, Node, Settings); a cover's
+// page plays, configures, downloads or marks it; Start opens the menu (desktop mode, networking, quit). Peers, Node
 // and Settings are the desktop pages themselves, made large and driven by PadNav, so nothing the app does is out of
 // a controller's reach. It is a view of the same models the desktop tabs show.
 // ---------------------------------------------------------------------------
@@ -60,7 +60,7 @@ class DeckShell : public QWidget, public PadTarget
 {
     Q_OBJECT
 public:
-    enum class Section { Home, Library, Catalog, Downloads, Friends, Node, Settings };
+    enum class Section { Home, Library, Catalog, Downloads, Peers, Node, Settings };
     static constexpr int SectionCount = 7;
 
     DeckShell(AppModel &Model, IpfsModel &Ipfs, DownloadManager &Downloads, QWidget *Parent = nullptr);
@@ -133,7 +133,7 @@ private:
     DeckHome *Home = nullptr;
     DeckShelf *Library = nullptr, *Catalog = nullptr;
     DeckDownloads *DownloadsPage = nullptr;
-    DeckHosted *Friends = nullptr, *Node = nullptr, *Settings = nullptr;
+    DeckHosted *Peers = nullptr, *Node = nullptr, *Settings = nullptr;
     DeckGamePage *Game = nullptr;
     DeckMenu *Menu = nullptr;
     QTimer *Clock = nullptr;

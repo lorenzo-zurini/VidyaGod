@@ -86,15 +86,15 @@ struct LaunchParameters
     std::string MintDir;                                                 //--mint <dir>: freeze a working-tree bundle (gigagraph dag-json blocks), print the launchable root CIDs, verify by re-reading the frozen DAG, then exit
     std::string HydrateCid;                                              //--hydrate <cid>: fetch a launchable's closure from IPFS into the pretty on-disk checkout (sharing consumer), print the dir, then exit
     std::string HydrateDest;                                             //--hydrate-dest <dir>: where --hydrate writes the checkout (default: the LIBRARY root)
-    // ---- friends / multiplayer social layer (headless test harness) ----
-    bool PrintFriendCode = false;                                        //--friend-code: print this node's shareable friend code (peer ID), then exit
-    bool FriendListOnly = false;                                         //--friend-ls: print the address book (contacts + state), then exit
-    std::string FriendAddCode;                                          //--friend-add <CODE>: send a friend request to this peer ID, observe, then exit
-    bool FriendServe = false;                                           //--friend-serve: stay online, auto-accept incoming requests, observe events, then exit
-    std::string FriendNick;                                            //--friend-nick <NICK>: set this node's profile nickname before add/serve
-    int FriendSecs = 30;                                               //--friend-secs <N>: how long the add/serve handlers stay online observing (default 30)
-    bool LanHarness = false;                                           //--lan: warm online + print the friend-LAN roster (self + online friends' vIPs) for --friend-secs, then exit
-    bool OverlayUp = false;                                             //--overlay: with --lan, bring up the sandboxed overlay TUN and ping the first online friend over the virtual LAN
+    // ---- peers / multiplayer social layer (headless test harness) ----
+    bool PrintPeerCode = false;                                        //--peer-code: print this node's shareable peer code (peer ID), then exit
+    bool PeerListOnly = false;                                         //--peer-ls: print the address book (contacts + state), then exit
+    std::string PeerAddCode;                                          //--peer-add <CODE>: send a peer request to this peer ID, observe, then exit
+    bool PeerServe = false;                                           //--peer-serve: stay online, auto-accept incoming requests, observe events, then exit
+    std::string PeerNick;                                            //--peer-nick <NICK>: set this node's profile nickname before add/serve
+    int PeerSecs = 30;                                               //--peer-secs <N>: how long the add/serve handlers stay online observing (default 30)
+    bool LanHarness = false;                                           //--lan: warm online + print the peer-LAN roster (self + online peers' vIPs) for --peer-secs, then exit
+    bool OverlayUp = false;                                             //--overlay: with --lan, bring up the sandboxed overlay TUN and ping the first online peer over the virtual LAN
     std::string OverlayExec;                                            //--overlay-exec <cmd>: with --lan, bring up the sandboxed overlay TUN and run <cmd> (sh -c) inside it (env VG_PEER_VIP/VG_SELF_VIP set) until it exits — for the multiplayer stability harness
 };
 

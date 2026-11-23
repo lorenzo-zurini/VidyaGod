@@ -1,4 +1,4 @@
-// Versions of an installed package: a friend's newer version found, staged, planned and switched to (journaled).
+// Versions of an installed package: a peer's newer version found, staged, planned and switched to (journaled).
 #include "packagecatalog.h"
 #include "noderefs.h"
 #include "sessions.h"
@@ -52,8 +52,8 @@ using namespace Shelf;       // the library walks rows and grafts as the plan se
 using namespace Installed;
 
 // ---------------------------------------------------------------------------------------------------------------------
-// Versions of an installed package. A package has one home; a friend may share another version of a package installed
-// here (they re-minted it: a library, a new engine build). There is no "newer" — the user picks a friend's version, and
+// Versions of an installed package. A package has one home; a peer may share another version of a package installed
+// here (they re-minted it: a library, a new engine build). There is no "newer" — the user picks a peer's version, and
 // the package switches to it: every node it lists comes in, and an installed node it does not list goes only when
 // nothing installed still contains it (other games keep working on the version they contain).
 // ---------------------------------------------------------------------------------------------------------------------
@@ -90,7 +90,7 @@ std::string VersionId(const std::map<std::string, std::string> &Listing)
 std::string Tail(const std::string &S, size_t N) { return S.size() > N ? S.substr(S.size() - N) : S; }
 std::filesystem::path UpdateStage(const nlohmann::ordered_json &Config, const PackageUpdate &U)
 {
-    //Per friend and version: two friends' versions of one package never share a stage.
+    //Per peer and version: two peers' versions of one package never share a stage.
     return std::filesystem::path(LibraryRootDir(Config)).parent_path() / "UPDATING" / NodeFiles::SafeName(U.Lib) / NodeFiles::SafeName(U.Pkg)
            / NodeFiles::SafeName(Tail(U.Peer, 8) + "-" + U.Version);
 }
@@ -249,11 +249,11 @@ std::vector<PackageUpdate> AvailableUpdates(const nlohmann::ordered_json &Config
 {
     namespace fs = std::filesystem;
     std::vector<PackageUpdate> Out;
-    if (!Config.contains("FriendLibraries") || !Config["FriendLibraries"].is_object()) return Out;
+    if (!Config.contains("PeerLibraries") || !Config["PeerLibraries"].is_object()) return Out;
     const fs::path LibRoot = LibraryRootDir(Config);
     std::shared_ptr<const NodeIndex> Idx;   // the library's index: read only when a version's nodes are all here
     std::error_code Ec;
-    for (const auto &[Peer, Libs] : Config["FriendLibraries"].items())
+    for (const auto &[Peer, Libs] : Config["PeerLibraries"].items())
     {
         const std::string Nick = ReceivedNickLabel(Peer);
         std::map<std::pair<std::string, std::string>, std::map<std::string, std::string>> Versions;   // (lib, pkg) → cid → file

@@ -17,7 +17,7 @@ inline QString HumanBytesQ(long long N)
 }
 
 //A button's or checkbox's text as given, with every & shown as one: Qt reads a lone & as a shortcut marker, so a
-//game titled "Command & Conquer" (any text from a package or a friend) would lose it and gain an underline.
+//game titled "Command & Conquer" (any text from a package or a peer) would lose it and gain an underline.
 inline QString PlainLabel(QString S) { return S.replace('&', QStringLiteral("&&")); }
 
 //When a game was last played, from a LASTRUN (ISO-8601): "today", "yesterday", "12 days ago", else the date ("3 Mar

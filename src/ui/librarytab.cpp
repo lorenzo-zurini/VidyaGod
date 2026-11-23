@@ -105,7 +105,7 @@ void LibraryTab::buildUi()
 
     View = new LibraryView(this);
     View->setAccessibleName("Library games");   // what ui card / ui show call it
-    View->setEmptyMessage("No games yet.\n\nGet games from the Catalog tab (add a source in Settings or a friend in Network first),\nor make one: Package Editor → New package.");
+    View->setEmptyMessage("No games yet.\n\nGet games from the Catalog tab (add a source in Settings or a peer in Network first),\nor make one: Package Editor → New package.");
     layout->addWidget(View);
 
     // Persisted collapse state for the Series-view sections.

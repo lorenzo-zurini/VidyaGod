@@ -362,14 +362,14 @@ bool PackageEditorModel::saveEmptiesPackage() const
 bool PackageEditorModel::Save(QString * Error)
 {
     if (!PackageDir) return false;
-    //A received stub (CATALOG) is a friend's bytes, browsable, never ours to rewrite.
+    //A received stub (CATALOG) is a peer's bytes, browsable, never ours to rewrite.
     if (GlobalConfigJSON)
     {
         const fs::path Cat = fs::weakly_canonical(PackageCatalog::CatalogRootDir(*GlobalConfigJSON));
         const fs::path Here = fs::weakly_canonical(PackageDir->path().toStdString());
         if (std::mismatch(Cat.begin(), Cat.end(), Here.begin(), Here.end()).first == Cat.end())
         {
-            if (Error) *Error = "This package was received from a friend (" + packagePath() + "): it is theirs, and is never rewritten here.";
+            if (Error) *Error = "This package was received from a peer (" + packagePath() + "): it is theirs, and is never rewritten here.";
             return false;
         }
     }

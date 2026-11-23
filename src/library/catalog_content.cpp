@@ -93,7 +93,7 @@ std::vector<InstalledPackage> InstalledPackages(const nlohmann::ordered_json &Gl
     std::vector<InstalledPackage> Out;
     const auto Hyd = HydrationMap(Idx);
     const std::filesystem::path Root = LibraryRootDir(GlobalConfigJSON);
-    for (const auto &[Dir, B] : NodesByBundle(Idx))   // a friend's CATALOG stubs are not in it (Node::Received)
+    for (const auto &[Dir, B] : NodesByBundle(Idx))   // a peer's CATALOG stubs are not in it (Node::Received)
     {
         if (!B.RepLaunchable) continue;
         bool Installed = false;
@@ -323,7 +323,7 @@ bool Download(std::shared_ptr<const NodeIndex> Idx, const std::vector<std::strin
         for (const std::string &Id : All)
             if (const auto Missing = MissingFromClosure(*Idx, Id); !Missing.empty())
             {
-                const std::string Where = SheetPath(Config, Missing.front());   // a friend's sheet names where it lives
+                const std::string Where = SheetPath(Config, Missing.front());   // a peer's sheet names where it lives
                 return Fail("'" + Id + "' contains " + std::to_string(Missing.size()) + " node(s) from a package that has "
                             "not arrived (or is not shared with you), e.g. " + (Where.empty() ? Missing.front() : Where));
             }

@@ -131,8 +131,8 @@ Not already in A or B. DOS games pair with their modern ports.
 
 ## D. The best LAN party games
 
-Not already in A, B or C. A LAN party game **runs** when at least three friends on the virtual LAN find each other in
-the game's own LAN browser (or by a friend's vIP), play a match through, and keep their profiles. The virtual LAN fans out
+Not already in A, B or C. A LAN party game **runs** when at least three peers on the virtual LAN find each other in
+the game's own LAN browser (or by a peer's vIP), play a match through, and keep their profiles. The virtual LAN fans out
 broadcast and multicast across `10.66.0.0/16`, so these all reach it unmodified:
 
 - LAN browsers on UDP or TCP;

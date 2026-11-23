@@ -9,8 +9,9 @@
 
 #include "appmodel.h"
 #include "cid.h"
-#include "friendsharing.h"
+#include "peersharing.h"
 #include "packagecatalog.h"
+#include "platform/platform.h"
 #include <filesystem>
 #include "apppaths.h"
 #include "nodefixture.h"
@@ -81,11 +82,11 @@ private slots:
         QCOMPARE(spy.count(), 1);
     }
 
-    // What a friend receives is closed over what the shared packages contain: share "Games" and the library package a
+    // What a peer receives is closed over what the shared packages contain: share "Games" and the library package a
     // game contains comes too, as its own package under its own library (never copied into the game); a package nothing
     // shared contains stays home; a shared library with nothing published still goes out, empty. Teeth: push only the
     // explicit libraries (drop the SharedWith closure) and DxWnd is missing; drop the empty entry and "Later" is.
-    void a_friend_receives_the_packages_their_share_contains()
+    void a_peer_receives_the_packages_their_share_contains()
     {
         QTemporaryDir d; QVERIFY(d.isValid());
         QDir appDir(d.path());
@@ -105,12 +106,12 @@ private slots:
             {"Sharing", {{"PeerA", json::array({"Games", "Later"})}}}};
         AppModel m(&cfg, &appDir);
         m.rebuildCatalog();
-        const json S = m.friends().sharedWith("PeerA");
+        const json S = m.peers().sharedWith("PeerA");
         QCOMPARE((int)S["Games"].size(), 1);
         QVERIFY2(S.contains("Libs") && S["Libs"].size() == 1 && S["Libs"][0]["pkg"] == "DxWnd", S.dump().c_str());
         QCOMPARE(S["Libs"][0].value("node", std::string()), std::string("dxwnd.json"));
         QVERIFY2(S.contains("Later") && S["Later"].empty(), "an explicitly shared library with nothing published goes out empty");
-        QVERIFY2(m.friends().sharedWith("PeerB").empty(), "nothing is shared with a friend nobody shared with");
+        QVERIFY2(m.peers().sharedWith("PeerB").empty(), "nothing is shared with a peer nobody shared with");
         // The game edited since it was published (saved, not published yet): the index has moved on, and the sheet still
         // names what was published. What it contains is read from its published block, held here. Teeth: read the
         // index alone (DxWnd drops out of the share).
@@ -123,7 +124,7 @@ private slots:
         put("Games/Wipeout", Edited);
         m.rebuildCatalog();
         QVERIFY2(!m.catalogIndex().Find(GC) || m.catalogIndex().Find(GC)->Key() != GC, "precondition: the index has moved on");
-        const json S2 = m.friends().sharedWith("PeerA");
+        const json S2 = m.peers().sharedWith("PeerA");
         QVERIFY2(S2.contains("Libs") && S2["Libs"].size() == 1 && S2["Libs"][0]["pkg"] == "DxWnd", S2.dump().c_str());
         IpfsWrapper::StopNode();
     }
@@ -399,7 +400,7 @@ private slots:
         QVERIFY(!m.networkingEnabled());
     }
 
-    // markNodeReady emits nodeReady — the signal the Network tab needs so its friend code + Verify&Publish enable
+    // markNodeReady emits nodeReady — the signal the Network tab needs so its peer code + Verify&Publish enable
     // refresh once the ASYNC node start finishes (networkingChanged fires at toggle time, before the node is up, so
     // without this the tab stays stuck "networking off" with Publish disabled after startup).
     void mark_node_ready_emits_node_ready()
@@ -425,11 +426,11 @@ private slots:
         QCOMPARE(cat.count(), 1);
     }
 
-    // A friend's library snapshot REPLACES that peer's record wholesale — the core of the bilateral protocol's
+    // A peer's library snapshot REPLACES that peer's record wholesale — the core of the bilateral protocol's
     // "receiver". This is what makes a withdrawn library un-loseable: a snapshot that no longer lists a library drops
     // it, even if the specific "unshare" push was never received. An empty snapshot drops the peer entirely; an
     // identical snapshot is a no-op (no disk write, no UI refresh).
-    // A friend's received stubs (CATALOG/<Nick> - <Lib>/…) are the materialisation of ONE snapshot. A changed
+    // A peer's received stubs (CATALOG/<Nick> - <Lib>/…) are the materialisation of ONE snapshot. A changed
     // snapshot must replace them, not join them: with three publishes' worth of "v1.30.4" side by side, the index
     // held three variants of three generations and the library showed every one. An identical snapshot leaves them.
     void a_changed_snapshot_replaces_the_received_stubs()
@@ -446,8 +447,8 @@ private slots:
         const std::string OB = Cid::Canonical(Old), NB = Cid::Canonical(New);
         const auto snap = [](const std::string &C, const std::string &Pkg = "Old Game") {
             return QString::fromStdString(json{{"Games", json::array({ json{{"cid", C}, {"pkg", Pkg}, {"node", "old.json"}} })}}.dump()); };
-        m.friends().applyFriendLibrarySnapshot(peer, snap(Cid::OfBytes(OB)));
-        const auto Plan = PackageCatalog::PlanReceivedFetches(cfg, P.substr(P.size() - 8), cfg["FriendLibraries"][P]);
+        m.peers().applyPeerLibrarySnapshot(peer, snap(Cid::OfBytes(OB)));
+        const auto Plan = PackageCatalog::PlanReceivedFetches(cfg, P.substr(P.size() - 8), cfg["PeerLibraries"][P]);
         QVERIFY(!Plan.empty());
         const std::filesystem::path LibDir = std::filesystem::path(Plan.front().Dest).parent_path().parent_path();
         const auto land = [&](const std::string &Bytes) {                         // a landed node file: the package holds node files only
@@ -456,7 +457,7 @@ private slots:
         land(OB);
         QVERIFY(std::filesystem::exists(Plan.front().Dest));
         // identical snapshot → stubs stay
-        m.friends().applyFriendLibrarySnapshot(peer, snap(Cid::OfBytes(OB)));
+        m.peers().applyPeerLibrarySnapshot(peer, snap(Cid::OfBytes(OB)));
         QVERIFY(std::filesystem::exists(Plan.front().Dest));
         // an INSTALLED received package lives in the same tree (its content was fetched beside its stubs): it stays,
         // whatever the snapshot says — only pure-stub package dirs go
@@ -466,18 +467,18 @@ private slots:
         { std::ofstream S(Installed / "game.zip"); S << "bytes"; }
         // a re-publish that changes the package's node: the package is still shared, so its folder stays (only what
         // changed lands again; the prune drops what its entries no longer name). Teeth: drop every stub on a change.
-        m.friends().applyFriendLibrarySnapshot(peer, snap(Cid::OfBytes(NB)));
+        m.peers().applyPeerLibrarySnapshot(peer, snap(Cid::OfBytes(NB)));
         QVERIFY(std::filesystem::is_directory(std::filesystem::path(Plan.front().Dest).parent_path()));
         // a snapshot that no longer names the package: its stubs are gone
-        m.friends().applyFriendLibrarySnapshot(peer, snap(Cid::OfBytes(NB), "Other Game"));
+        m.peers().applyPeerLibrarySnapshot(peer, snap(Cid::OfBytes(NB), "Other Game"));
         QVERIFY(!std::filesystem::exists(Plan.front().Dest));
         QVERIFY(!std::filesystem::exists(std::filesystem::path(Plan.front().Dest).parent_path()));
         QVERIFY(std::filesystem::exists(Installed / "game.zip"));
-        QVERIFY(cfg["FriendLibraries"][P].contains("Games"));
+        QVERIFY(cfg["PeerLibraries"][P].contains("Games"));
         // an EMPTY snapshot is what a restarting seeder pushes before its library loads: a transient, nothing is dropped
-        m.friends().applyFriendLibrarySnapshot(peer, snap(Cid::OfBytes(NB)));
+        m.peers().applyPeerLibrarySnapshot(peer, snap(Cid::OfBytes(NB)));
         land(NB);
-        m.friends().applyFriendLibrarySnapshot(peer, R"({})");
+        m.peers().applyPeerLibrarySnapshot(peer, R"({})");
         QVERIFY(std::filesystem::exists(Plan.front().Dest));
         QVERIFY(std::filesystem::exists(Installed / "game.zip"));
     }
@@ -503,9 +504,9 @@ private slots:
             if (E) { *E = "no providers"; } return 1; });                           // every fetch waits: retryable
         const auto item = [](const std::string &C, const std::string &Pkg, const std::string &File) {
             return json{{"cid", C}, {"pkg", Pkg}, {"node", File}}; };
-        m.friends().applyFriendLibrarySnapshot(peer, QString::fromStdString(json{{"Games", json::array({
+        m.peers().applyPeerLibrarySnapshot(peer, QString::fromStdString(json{{"Games", json::array({
             item(CA, "Game", "a.json"), item(CB, "Game", "b.json") })}}.dump()));
-        const auto Plan = PackageCatalog::PlanReceivedFetches(cfg, P.substr(P.size() - 8), cfg["FriendLibraries"][P]);
+        const auto Plan = PackageCatalog::PlanReceivedFetches(cfg, P.substr(P.size() - 8), cfg["PeerLibraries"][P]);
         std::string OldA, OldB;
         for (const auto &T : Plan) (T.Cid == CA ? OldA : OldB) = T.Dest;
         QVERIFY(!OldA.empty() && !OldB.empty());
@@ -513,7 +514,7 @@ private slots:
                                     IpfsWrapper::FetchTarget{ CB, OldB, false, false, /*Verify=*/true } });
         QCOMPARE(IpfsWrapper::QueueDestForCid(CA), OldA);
         //Node a moves to another package; Game is still shared (b), so its folder stays.
-        m.friends().applyFriendLibrarySnapshot(peer, QString::fromStdString(json{{"Games", json::array({
+        m.peers().applyPeerLibrarySnapshot(peer, QString::fromStdString(json{{"Games", json::array({
             item(CA, "Other", "a.json"), item(CB, "Game", "b.json") })}}.dump()));
         QVERIFY(IpfsWrapper::QueueDestForCid(CA) != OldA);
         QCOMPARE(IpfsWrapper::QueueDestForCid(CB), OldB);                     // b is still planned there: its fetch stands
@@ -532,49 +533,204 @@ private slots:
         AppModel m(&cfg, &appDir);
         const QString peer = "12D3KooWSeeder";
         const std::string P = peer.toStdString();
-        m.friends().applyFriendLibrarySnapshot(peer, R"({"Games":[{"cid":"bafyold","pkg":"Old Game","node":"old.json"}]})");
-        const auto Plan = PackageCatalog::PlanReceivedFetches(cfg, P.substr(P.size() - 8), cfg["FriendLibraries"][P]);
+        m.peers().applyPeerLibrarySnapshot(peer, R"({"Games":[{"cid":"bafyold","pkg":"Old Game","node":"old.json"}]})");
+        const auto Plan = PackageCatalog::PlanReceivedFetches(cfg, P.substr(P.size() - 8), cfg["PeerLibraries"][P]);
         QVERIFY(!Plan.empty());
         const std::filesystem::path Pkg = std::filesystem::path(Plan.front().Dest).parent_path();
         std::filesystem::create_directories(Pkg);
         { std::ofstream S(Plan.front().Dest); S << "{}"; }
-        m.friends().stopReceivingFromFriend(peer);                                     // record erased, stubs swept
+        m.peers().stopReceivingFromPeer(peer);                                     // record erased, stubs swept
         QVERIFY(!std::filesystem::exists(Pkg));
-        QVERIFY(!cfg["FriendLibraries"].contains(P));
+        QVERIFY(!cfg["PeerLibraries"].contains(P));
         std::filesystem::create_directories(Pkg);                            // a late block from the in-flight pass
         { std::ofstream S(Plan.front().Dest); S << "{}"; }
-        m.friends().stopReceivingFromFriend(peer);                                     // the re-drop path with NO record
+        m.peers().stopReceivingFromPeer(peer);                                     // the re-drop path with NO record
         QVERIFY(!std::filesystem::exists(Pkg));
     }
 
-    // A friend pushes its snapshot whenever its shares change, asked or not. Until you choose to receive from them,
+    // A peer pushes its snapshot whenever its shares change, asked or not. Until you choose to receive from them,
     // nothing of it is kept: no record (which would list their packages, offer their builds as updates, plan fetches)
     // and no sequence stamp (which would make the fresh snapshot Receive-on asks for look stale). Teeth: drop the
-    // receive gate in applyFriendLibrarySnapshot.
-    // Pairing's two ticks (the Network tab's "On your network" row): share every one of my libraries with the device,
-    // receive its libraries; an unticked box changes nothing. Teeth: a tick ignored, a library left out, an unticked
-    // box acting anyway.
-    void pairing_shares_and_receives_only_what_was_ticked()
+    // receive gate in applyPeerLibrarySnapshot.
+    // Every peer is the same: pairing (or accepting) gives exactly the permissions ticked — the table's columns, one
+    // library at a time, receive, vLAN, presence — and they start as the "New peers" row. A choice stands: an acceptance
+    // landing later never applies the defaults over it, and a peer nobody chose for gets nothing of ours nor we of its.
+    // Server mode applies the row. Removing a peer forgets all of it. Teeth: a permission not applied, a library
+    // shared that was not ticked, defaults over a choice, the row never offered as the start, a forgotten choice.
+    void pairing_gives_exactly_the_permissions_ticked()
     {
         QTemporaryDir d; QVERIFY(d.isValid());
         QDir appDir(d.path());
-        json cfg = json{{"Settings", json::object()},
-                        {"ShareSheet", json{{"bafkreia", "Games/[1] A/a.json"}, {"bafkreib", "Retro/[2] B/b.json"}}}};
+        const std::string Lib = d.path().toStdString() + "/LIB";
+        for (const char *P : {"VidyaGod/[1] A", "VidyaGodRunners/wine"})
+        {
+            std::filesystem::create_directories(Lib + "/" + P);
+            NodeFixture::WriteNodes(Lib + "/" + P + "/n.json", NodeFixture::Chain(std::string("h") + P[0] + P[9], {NodeFixture::Exec("win32", "x.exe")}));
+        }
+        json cfg = json{{"Settings", {{"Paths", {{"LibraryRoot", Lib}}}}},
+                        {"NewPeerDefaults", {{"receive", true}, {"vlan", true}, {"presence", false}, {"share", {"VidyaGodRunners"}}}}};
         AppModel m(&cfg, &appDir);
-        QCOMPARE(m.friends().myLibraryNames(), (QStringList{ "Games", "Retro" }));
-        m.friends().applyPairing("12D3KooWDeck", true, false);
-        QVERIFY(m.friends().isSharingWithFriend("12D3KooWDeck", "Games"));
-        QVERIFY(m.friends().isSharingWithFriend("12D3KooWDeck", "Retro"));
-        QVERIFY(!m.friends().isReceivingFrom("12D3KooWDeck"));
-        m.friends().applyPairing("12D3KooWPc", false, true);
-        QVERIFY(m.friends().isReceivingFrom("12D3KooWPc"));
-        QVERIFY(!m.friends().isSharingWithFriend("12D3KooWPc", "Games"));
-        m.friends().applyPairing("12D3KooWNone", false, false);
-        QVERIFY(!m.friends().isReceivingFrom("12D3KooWNone"));
-        QVERIFY(!m.friends().isSharingWithFriend("12D3KooWNone", "Retro"));
+        QSignalSpy Rebuilt(&m, &AppModel::catalogChanged);
+        m.rebuildCatalog();
+        QTRY_VERIFY_WITH_TIMEOUT(Rebuilt.count() > 0 && m.catalogSnapshot(), 30000);
+        PeerSharing &F = m.peers();
+        QCOMPARE(F.myLibraryNames(), (QStringList{"VidyaGod", "VidyaGodRunners"}));
+
+        const PeerSharing::Permissions D = F.defaultPermissions();
+        QCOMPARE(D.Libraries, QStringList{"VidyaGodRunners"});
+        QVERIFY(D.Receive && D.Vlan && !D.Presence);
+
+        PeerSharing::Permissions Given;
+        Given.Libraries = {"VidyaGod"};
+        Given.Receive = false;
+        Given.Vlan = true;
+        Given.Presence = true;
+        F.applyPairing("Pal", Given);
+        QVERIFY(F.isSharingWithPeer("Pal", "VidyaGod") && !F.isSharingWithPeer("Pal", "VidyaGodRunners"));
+        QVERIFY(!F.isReceivingFrom("Pal") && F.isInVlan("Pal") && F.isPresenceSharedWith("Pal"));
+        emit PeersManager::instance()->peerAccepted("Pal", "pal", "");   // their acceptance lands later
+        QVERIFY(!F.isReceivingFrom("Pal") && !F.isSharingWithPeer("Pal", "VidyaGodRunners"));
+
+        QVERIFY(!F.hasChosen("Code"));
+        emit PeersManager::instance()->peerAccepted("Code", "code", "");   // paired with nothing chosen
+        QVERIFY(!F.isReceivingFrom("Code") && !F.isSharingWithPeer("Code", "VidyaGod") && !F.isSharingWithPeer("Code", "VidyaGodRunners"));
+        F.applyNewPeerDefaults("Srv");                                          // accepted by itself (server mode): the row
+        QVERIFY(F.isReceivingFrom("Srv") && F.isSharingWithPeer("Srv", "VidyaGodRunners") && !F.isSharingWithPeer("Srv", "VidyaGod"));
+
+        F.forgetPeer("Pal");
+        QVERIFY(!F.hasChosen("Pal") && !F.isSharingWithPeer("Pal", "VidyaGod"));
     }
 
-    void a_snapshot_from_a_friend_you_do_not_receive_from_is_not_kept()
+    // What is shared stays current by itself: a library never prepared says so (and nothing publishes it unasked);
+    // prepared once, it is up to date; edited packages are published by themselves, together, and then are; a package that cannot be
+    // shared as it is (a node too large to be one) is named, and nothing is published for it. Teeth: an unpublished
+    // library published unasked, an edit missed, a publish not started, a package that cannot be shared left unsaid.
+    void what_is_shared_is_kept_current()
+    {
+        QTemporaryDir d; QVERIFY(d.isValid());
+        QDir appDir(d.path());
+        std::string Err;
+        QVERIFY2(IpfsWrapper::StartNode((d.path() + "/ipfs").toStdString(), &Err), Err.c_str());
+        const std::string Lib = d.path().toStdString() + "/LIB";
+        for (const char *P : {"[1] A", "[2] B"})
+        {
+            std::filesystem::create_directories(Lib + "/VidyaGod/" + P);
+            NodeFixture::WriteNodes(Lib + "/VidyaGod/" + P + "/n.json",
+                                    NodeFixture::Chain(std::string("h") + P[1], {NodeFixture::Exec("win32", std::string(P) + ".exe")}));
+        }
+        json cfg = json{{"Settings", {{"Paths", {{"LibraryRoot", Lib}}}}}};
+        {
+            AppModel m(&cfg, &appDir);
+            using S = PeerSharing::ShareState;
+            PeerSharing &F = m.peers();
+            QSignalSpy Rebuilt(&m, &AppModel::catalogChanged), Done(&m, &AppModel::libraryPublished), Failed(&m, &AppModel::libraryPublishFailed);
+            const auto Rebuild = [&] { const int N = Rebuilt.count(); m.rebuildCatalog(); QTRY_VERIFY_WITH_TIMEOUT(Rebuilt.count() > N, 30000); };
+            Rebuild();
+            F.checkShares();
+            QCOMPARE(F.shareState(), S::NothingShared);
+            F.shareLibraryWithPeer("Dev", "VidyaGod");
+            F.checkShares();
+            QCOMPARE(F.shareState(), S::Unpublished);
+            QVERIFY(!m.publishing());
+
+            F.prepareSharing();
+            QTRY_COMPARE_WITH_TIMEOUT(Done.count() + Failed.count(), 1, 120000);
+            Rebuild();
+            F.checkShares();
+            QCOMPARE(F.shareState(), S::UpToDate);
+
+            const std::filesystem::path ADir = Lib + "/VidyaGod/[1] A";
+            std::filesystem::path AFile;
+            for (const auto &E : std::filesystem::directory_iterator(ADir)) if (E.path().extension() == ".json") AFile = E.path();
+            json J;
+            { std::ifstream In(AFile); J = json::parse(In); }
+            J["COMMENT"] = "v2";
+            NodeFixture::WriteNodes(AFile.string(), J);
+            //Two edited packages go out in one pass (one read of the library), not one pass each.
+            std::filesystem::path BFile;
+            for (const auto &E : std::filesystem::directory_iterator(Lib + "/VidyaGod/[2] B")) if (E.path().extension() == ".json") BFile = E.path();
+            json JB;
+            { std::ifstream In(BFile); JB = json::parse(In); }
+            JB["COMMENT"] = "v2";
+            NodeFixture::WriteNodes(BFile.string(), JB);
+            Rebuild();
+            F.checkShares();
+            QCOMPARE(F.shareState(), S::Updating);
+            QVERIFY(m.publishing());
+            QTRY_COMPARE_WITH_TIMEOUT(Done.count() + Failed.count(), 2, 120000);
+            QCOMPARE(Done.last().at(1).toString(), QString("2 package(s)"));
+            Rebuild();
+            F.checkShares();
+            QCOMPARE(F.shareState(), S::UpToDate);
+
+            //A package whose node is too large to be a node: the index refuses it, so it is never shared as it is —
+            //and the line says so by name, starting no publish.
+            std::filesystem::create_directories(Lib + "/VidyaGod/[3] Huge");
+            NodeFixture::WriteNodes(Lib + "/VidyaGod/[3] Huge/n.json",
+                                    NodeFixture::Chain("hhuge", {NodeFixture::Exec("win32", "h.exe")}, {}, json{{"COMMENT", std::string(300 * 1024, 'x')}}));
+            Rebuild();
+            F.checkShares();
+            QCOMPARE(F.shareState(), S::Failed);
+            QVERIFY2(F.shareStateText().contains("[3] Huge"), qPrintable(F.shareStateText()));
+            QVERIFY(!m.publishing());
+            QTest::qWait(2500);                                              // the debounced checks start nothing either
+            QCOMPARE(Done.count() + Failed.count(), 2);
+            std::filesystem::remove_all(Lib + "/VidyaGod/[3] Huge");
+
+            //A library added once the first is prepared: never published unasked; prepared, only its packages are (a
+            //marker pin on another package survives: no whole publish). A package deleted leaves the sheet with no
+            //publish at all. Teeth: an added library published unasked, preparing it publishing everything, a deletion
+            //publishing.
+            std::filesystem::create_directories(Lib + "/Mods/[9] Mod");
+            NodeFixture::WriteNodes(Lib + "/Mods/[9] Mod/n.json", NodeFixture::Chain("hmod", {NodeFixture::Exec("win32", "m.exe")}));
+            Rebuild();
+            F.shareLibraryWithPeer("Dev", "Mods");
+            F.checkShares();
+            QCOMPARE(F.shareState(), S::Unpublished);
+            QVERIFY2(F.shareStateText().contains("Mods"), qPrintable(F.shareStateText()));
+            QVERIFY(!m.publishing());
+            cfg["Pins"]["VidyaGod/[2] B"] = "kept";
+            const int Before = Done.count() + Failed.count();
+            F.prepareSharing();
+            QTRY_COMPARE_WITH_TIMEOUT(Done.count() + Failed.count(), Before + 1, 120000);
+            QCOMPARE(cfg["Pins"].value("VidyaGod/[2] B", std::string()), std::string("kept"));
+            bool ModShared = false;
+            for (const auto &[C, Path] : cfg["ShareSheet"].items()) ModShared = ModShared || Path.get<std::string>().rfind("Mods/", 0) == 0;
+            QVERIFY(ModShared);
+            Rebuild();
+            F.checkShares();
+            QCOMPARE(F.shareState(), S::UpToDate);
+            std::filesystem::remove_all(Lib + "/VidyaGod/[2] B");
+            Rebuild();
+            F.checkShares();
+            QVERIFY(!m.publishing());
+            for (const auto &[C, Path] : cfg["ShareSheet"].items()) QVERIFY(Path.get<std::string>().rfind("VidyaGod/[2] B/", 0) != 0);
+            QCOMPARE(F.shareState(), S::UpToDate);
+            QCOMPARE(Done.count() + Failed.count(), Before + 1);
+
+            //Another tool writing the library (the packaging scripts' flock): an edit waits, says so, and is published
+            //by itself once the lock is free — busy is no failure. Teeth: busy taken for a failure (never retried).
+            F.BusyRetryMs = 300;
+            { std::ifstream In(AFile); J = json::parse(In); }
+            J["COMMENT"] = "v3";
+            NodeFixture::WriteNodes(AFile.string(), J);
+            {
+                const Platform::ScopedFileLock Theirs(PackageCatalog::LibraryWriteLock(cfg));
+                QVERIFY(Theirs.held());
+                Rebuild();
+                F.checkShares();
+                QTRY_COMPARE_WITH_TIMEOUT(Failed.count(), 1, 120000);
+                QTRY_VERIFY_WITH_TIMEOUT(F.shareStateText().startsWith("Waiting for another tool"), 5000);
+            }
+            QTRY_COMPARE_WITH_TIMEOUT(Done.count(), 4, 120000);
+            Rebuild();
+            F.checkShares();
+            QCOMPARE(F.shareState(), S::UpToDate);
+        }
+        IpfsWrapper::StopNode();
+    }
+
+    void a_snapshot_from_a_peer_you_do_not_receive_from_is_not_kept()
     {
         QTemporaryDir d; QVERIFY(d.isValid());
         QDir appDir(d.path());
@@ -582,49 +738,49 @@ private slots:
         AppModel m(&cfg, &appDir);
         const QString peer = "12D3KooWSeeder";
         const std::string P = peer.toStdString();
-        QSignalSpy changed(&m.friends(), &FriendSharing::friendCatalogChanged);
-        m.friends().applyFriendLibrarySnapshot(peer, R"({"Games":[{"cid":"bafyx","pkg":"Game","node":"game.json"}]})", 10);
-        QVERIFY(!cfg.contains("FriendLibraries") || !cfg["FriendLibraries"].contains(P));
+        QSignalSpy changed(&m.peers(), &PeerSharing::peerCatalogChanged);
+        m.peers().applyPeerLibrarySnapshot(peer, R"({"Games":[{"cid":"bafyx","pkg":"Game","node":"game.json"}]})", 10);
+        QVERIFY(!cfg.contains("PeerLibraries") || !cfg["PeerLibraries"].contains(P));
         QCOMPARE(changed.count(), 0);
-        m.friends().setReceivingFrom(peer, true);
-        m.friends().applyFriendLibrarySnapshot(peer, R"({"Games":[{"cid":"bafyx","pkg":"Game","node":"game.json"}]})", 5);   // the reply to Receive-on
-        QVERIFY(cfg["FriendLibraries"].contains(P));
+        m.peers().setReceivingFrom(peer, true);
+        m.peers().applyPeerLibrarySnapshot(peer, R"({"Games":[{"cid":"bafyx","pkg":"Game","node":"game.json"}]})", 5);   // the reply to Receive-on
+        QVERIFY(cfg["PeerLibraries"].contains(P));
     }
 
-    void friend_snapshot_replaces_wholesale_and_dedups()
+    void peer_snapshot_replaces_wholesale_and_dedups()
     {
         QTemporaryDir d; QVERIFY(d.isValid());
         QDir appDir(d.path());
         json cfg = json{{"Settings", json::object()}, {"ReceiveFrom", json::array({"12D3KooWSeeder"})}};   // we receive from them
         AppModel m(&cfg, &appDir);
         const QString peer = "12D3KooWSeeder";
-        QSignalSpy chg(&m.friends(), &FriendSharing::friendCatalogChanged);
+        QSignalSpy chg(&m.peers(), &PeerSharing::peerCatalogChanged);
 
         // First snapshot: two libraries recorded under the peer.
-        m.friends().applyFriendLibrarySnapshot(peer, R"({"Games":[{"cid":"cidX"},{"cid":"cidY"}],"Retro":[{"cid":"cidZ"}]})");
+        m.peers().applyPeerLibrarySnapshot(peer, R"({"Games":[{"cid":"cidX"},{"cid":"cidY"}],"Retro":[{"cid":"cidZ"}]})");
         QCOMPARE(chg.count(), 1);
-        QVERIFY(cfg.contains("FriendLibraries"));
-        QCOMPARE((int)cfg["FriendLibraries"][peer.toStdString()].size(), 2);
-        QCOMPARE(cfg["FriendLibraries"][peer.toStdString()]["Games"].size(), (size_t)2);
+        QVERIFY(cfg.contains("PeerLibraries"));
+        QCOMPARE((int)cfg["PeerLibraries"][peer.toStdString()].size(), 2);
+        QCOMPARE(cfg["PeerLibraries"][peer.toStdString()]["Games"].size(), (size_t)2);
 
         // Withdraw "Games" by sending a snapshot that omits it — wholesale replace, so "Games" is gone even though no
         // explicit unshare was delivered. THE regression this whole redesign exists to prevent.
-        m.friends().applyFriendLibrarySnapshot(peer, R"({"Retro":[{"cid":"cidZ"}]})");
+        m.peers().applyPeerLibrarySnapshot(peer, R"({"Retro":[{"cid":"cidZ"}]})");
         QCOMPARE(chg.count(), 2);
-        QVERIFY(!cfg["FriendLibraries"][peer.toStdString()].contains("Games"));
-        QVERIFY(cfg["FriendLibraries"][peer.toStdString()].contains("Retro"));
+        QVERIFY(!cfg["PeerLibraries"][peer.toStdString()].contains("Games"));
+        QVERIFY(cfg["PeerLibraries"][peer.toStdString()].contains("Retro"));
 
         // Identical snapshot again → no change, no signal, no churn.
-        m.friends().applyFriendLibrarySnapshot(peer, R"({"Retro":[{"cid":"cidZ"}]})");
+        m.peers().applyPeerLibrarySnapshot(peer, R"({"Retro":[{"cid":"cidZ"}]})");
         QCOMPARE(chg.count(), 2);
 
         // Empty snapshot → the peer is dropped entirely.
-        m.friends().applyFriendLibrarySnapshot(peer, R"({})");
+        m.peers().applyPeerLibrarySnapshot(peer, R"({})");
         QCOMPARE(chg.count(), 3);
-        QVERIFY(!cfg["FriendLibraries"].contains(peer.toStdString()));
+        QVERIFY(!cfg["PeerLibraries"].contains(peer.toStdString()));
 
         // Empty again with nothing to drop → still a no-op.
-        m.friends().applyFriendLibrarySnapshot(peer, R"({})");
+        m.peers().applyPeerLibrarySnapshot(peer, R"({})");
         QCOMPARE(chg.count(), 3);
     }
 
@@ -632,7 +788,7 @@ private slots:
     // out of order. A stamp lower than or equal to the highest already seen for a peer is a reordered straggler and MUST
     // be dropped, so a stale snapshot delivered late can't resurrect a withdrawn library. seq==0 (unstamped) always
     // applies. This is the receiver-side fix for the emit-off-lock race the Go side structurally can't close.
-    void friend_snapshot_last_writer_wins_by_seq()
+    void peer_snapshot_last_writer_wins_by_seq()
     {
         QTemporaryDir d; QVERIFY(d.isValid());
         QDir appDir(d.path());
@@ -640,38 +796,38 @@ private slots:
         AppModel m(&cfg, &appDir);
         const QString peer = "12D3KooWSeeder";
         const std::string P = peer.toStdString();
-        QSignalSpy chg(&m.friends(), &FriendSharing::friendCatalogChanged);
+        QSignalSpy chg(&m.peers(), &PeerSharing::peerCatalogChanged);
 
         // seq 10: the fresh state (Retro only).
-        m.friends().applyFriendLibrarySnapshot(peer, R"({"Retro":[{"cid":"cidZ"}]})", 10);
+        m.peers().applyPeerLibrarySnapshot(peer, R"({"Retro":[{"cid":"cidZ"}]})", 10);
         QCOMPARE(chg.count(), 1);
-        QVERIFY(cfg["FriendLibraries"][P].contains("Retro"));
+        QVERIFY(cfg["PeerLibraries"][P].contains("Retro"));
 
         // seq 5 arrives LATE (a big stale snapshot that still listed Games) → must be dropped, Games stays gone.
-        m.friends().applyFriendLibrarySnapshot(peer, R"({"Games":[{"cid":"cidX"}],"Retro":[{"cid":"cidZ"}]})", 5);
+        m.peers().applyPeerLibrarySnapshot(peer, R"({"Games":[{"cid":"cidX"}],"Retro":[{"cid":"cidZ"}]})", 5);
         QCOMPARE(chg.count(), 1);                                   // no change emitted
-        QVERIFY(!cfg["FriendLibraries"][P].contains("Games"));      // the stale withdraw-loser did NOT resurrect Games
+        QVERIFY(!cfg["PeerLibraries"][P].contains("Games"));      // the stale withdraw-loser did NOT resurrect Games
 
         // An equal stamp (duplicate) is also dropped.
-        m.friends().applyFriendLibrarySnapshot(peer, R"({"Games":[{"cid":"cidX"}]})", 10);
+        m.peers().applyPeerLibrarySnapshot(peer, R"({"Games":[{"cid":"cidX"}]})", 10);
         QCOMPARE(chg.count(), 1);
-        QVERIFY(!cfg["FriendLibraries"][P].contains("Games"));
+        QVERIFY(!cfg["PeerLibraries"][P].contains("Games"));
 
         // A higher stamp is accepted.
-        m.friends().applyFriendLibrarySnapshot(peer, R"({"Games":[{"cid":"cidX"}]})", 11);
+        m.peers().applyPeerLibrarySnapshot(peer, R"({"Games":[{"cid":"cidX"}]})", 11);
         QCOMPARE(chg.count(), 2);
-        QVERIFY(cfg["FriendLibraries"][P].contains("Games"));
+        QVERIFY(cfg["PeerLibraries"][P].contains("Games"));
 
         // A malformed message must NOT advance the high-water mark: after it, a valid seq-12 still applies.
-        m.friends().applyFriendLibrarySnapshot(peer, "garbage", 99);          // parse error — ignored, mark stays at 11
-        m.friends().applyFriendLibrarySnapshot(peer, R"({"Retro":[{"cid":"cidZ"}]})", 12);
+        m.peers().applyPeerLibrarySnapshot(peer, "garbage", 99);          // parse error — ignored, mark stays at 11
+        m.peers().applyPeerLibrarySnapshot(peer, R"({"Retro":[{"cid":"cidZ"}]})", 12);
         QCOMPARE(chg.count(), 3);
-        QVERIFY(cfg["FriendLibraries"][P].contains("Retro"));
+        QVERIFY(cfg["PeerLibraries"][P].contains("Retro"));
     }
 
     // Malformed snapshots must never corrupt the store: bad JSON / a non-object is ignored (record untouched), and
     // within a valid snapshot non-array libraries and non-string CIDs are dropped, empty libraries elided.
-    void friend_snapshot_sanitizes_malformed_input()
+    void peer_snapshot_sanitizes_malformed_input()
     {
         QTemporaryDir d; QVERIFY(d.isValid());
         QDir appDir(d.path());
@@ -679,44 +835,44 @@ private slots:
         AppModel m(&cfg, &appDir);
         const QString peer = "12D3KooWSeeder";
         const std::string P = peer.toStdString();
-        QSignalSpy chg(&m.friends(), &FriendSharing::friendCatalogChanged);
+        QSignalSpy chg(&m.peers(), &PeerSharing::peerCatalogChanged);
 
-        m.friends().applyFriendLibrarySnapshot(peer, "not json at all");   // parse error → ignored
+        m.peers().applyPeerLibrarySnapshot(peer, "not json at all");   // parse error → ignored
         QCOMPARE(chg.count(), 0);
-        m.friends().applyFriendLibrarySnapshot(peer, R"(["array","not","object"])");  // wrong shape → ignored
+        m.peers().applyPeerLibrarySnapshot(peer, R"(["array","not","object"])");  // wrong shape → ignored
         QCOMPARE(chg.count(), 0);
-        QVERIFY(!cfg.contains("FriendLibraries") || !cfg["FriendLibraries"].contains(P));
+        QVERIFY(!cfg.contains("PeerLibraries") || !cfg["PeerLibraries"].contains(P));
 
         // Mixed valid/invalid: "Good" keeps only its cid-bearing objects; "Bad" (non-array) and "Empty" (no valid
         // entries — a bare string, a number, an object with no cid) are elided.
-        m.friends().applyFriendLibrarySnapshot(peer, R"({"Good":[{"cid":"ok"},42,{"cid":"ok2","node":"n"}],"Bad":"nope","Empty":[7,"cid",{"node":"x"}]})");
+        m.peers().applyPeerLibrarySnapshot(peer, R"({"Good":[{"cid":"ok"},42,{"cid":"ok2","node":"n"}],"Bad":"nope","Empty":[7,"cid",{"node":"x"}]})");
         QCOMPARE(chg.count(), 1);
-        QCOMPARE((int)cfg["FriendLibraries"][P].size(), 1);
-        QCOMPARE(cfg["FriendLibraries"][P]["Good"].size(), (size_t)2);
-        QVERIFY(!cfg["FriendLibraries"][P].contains("Bad"));
-        QVERIFY(!cfg["FriendLibraries"][P].contains("Empty"));
+        QCOMPARE((int)cfg["PeerLibraries"][P].size(), 1);
+        QCOMPARE(cfg["PeerLibraries"][P]["Good"].size(), (size_t)2);
+        QVERIFY(!cfg["PeerLibraries"][P].contains("Bad"));
+        QVERIFY(!cfg["PeerLibraries"][P].contains("Empty"));
     }
 
-    // Ending a friendship forgets BOTH directions of sharing state: what we serve them (config["Sharing"]) and what
-    // they shared with us (config["FriendLibraries"]) — and only signals when something was actually forgotten.
-    void forget_friend_clears_both_directions()
+    // Ending a pairing forgets BOTH directions of sharing state: what we serve them (config["Sharing"]) and what
+    // they shared with us (config["PeerLibraries"]) — and only signals when something was actually forgotten.
+    void forget_peer_clears_both_directions()
     {
         QTemporaryDir d; QVERIFY(d.isValid());
         QDir appDir(d.path());
-        const std::string P = "12D3KooWFriend", Q = "12D3KooWOther";
+        const std::string P = "12D3KooWPeer", Q = "12D3KooWOther";
         json cfg = json{{"Settings", json::object()},
                         {"Sharing", json{{P, json::array({"Games"})}, {Q, json::array({"Retro"})}}},
-                        {"FriendLibraries", json{{P, json{{"Games", json::array({json{{"cid","cidX"}}})}}}}}};
+                        {"PeerLibraries", json{{P, json{{"Games", json::array({json{{"cid","cidX"}}})}}}}}};
         AppModel m(&cfg, &appDir);
-        QSignalSpy chg(&m.friends(), &FriendSharing::friendCatalogChanged);
+        QSignalSpy chg(&m.peers(), &PeerSharing::peerCatalogChanged);
 
-        m.friends().forgetFriend(QString::fromStdString(P));
+        m.peers().forgetPeer(QString::fromStdString(P));
         QCOMPARE(chg.count(), 1);
         QVERIFY(!cfg["Sharing"].contains(P));            // our side dropped
-        QVERIFY(!cfg["FriendLibraries"].contains(P));    // their side dropped
-        QVERIFY(cfg["Sharing"].contains(Q));             // the OTHER friend is untouched
+        QVERIFY(!cfg["PeerLibraries"].contains(P));    // their side dropped
+        QVERIFY(cfg["Sharing"].contains(Q));             // the OTHER peer is untouched
 
-        m.friends().forgetFriend(QString::fromStdString(P));       // already gone → no-op, no signal
+        m.peers().forgetPeer(QString::fromStdString(P));       // already gone → no-op, no signal
         QCOMPARE(chg.count(), 1);
     }
     // Network-tab per-peer toggles are config-backed with the correct inversions (Receive default off; Presence
@@ -730,29 +886,29 @@ private slots:
         AppModel m(&cfg, &appDir);
         const QString peer = "12D3KooWPeerAAA";
 
-        QVERIFY(!m.friends().isReceivingFrom(peer));                 // receive: off by default
-        m.friends().setReceivingFrom(peer, true);  QVERIFY(m.friends().isReceivingFrom(peer));
-        m.friends().setReceivingFrom(peer, false); QVERIFY(!m.friends().isReceivingFrom(peer));
+        QVERIFY(!m.peers().isReceivingFrom(peer));                 // receive: off by default
+        m.peers().setReceivingFrom(peer, true);  QVERIFY(m.peers().isReceivingFrom(peer));
+        m.peers().setReceivingFrom(peer, false); QVERIFY(!m.peers().isReceivingFrom(peer));
 
-        QVERIFY(m.friends().isPresenceSharedWith(peer));             // presence: shared by default
-        m.friends().setPresenceSharedWith(peer, false);
-        QVERIFY(!m.friends().isPresenceSharedWith(peer));            // hidden → in PresenceDeny
-        m.friends().setPresenceSharedWith(peer, true);
-        QVERIFY(m.friends().isPresenceSharedWith(peer));
+        QVERIFY(m.peers().isPresenceSharedWith(peer));             // presence: shared by default
+        m.peers().setPresenceSharedWith(peer, false);
+        QVERIFY(!m.peers().isPresenceSharedWith(peer));            // hidden → in PresenceDeny
+        m.peers().setPresenceSharedWith(peer, true);
+        QVERIFY(m.peers().isPresenceSharedWith(peer));
 
-        QVERIFY(m.friends().isInVlan(peer));                         // vLAN: in by default
-        m.friends().setInVlan(peer, false);
-        QVERIFY(!m.friends().isInVlan(peer));                        // left → in LanExcludedPeers
-        m.friends().setInVlan(peer, true);
-        QVERIFY(m.friends().isInVlan(peer));
+        QVERIFY(m.peers().isInVlan(peer));                         // vLAN: in by default
+        m.peers().setInVlan(peer, false);
+        QVERIFY(!m.peers().isInVlan(peer));                        // left → in LanExcludedPeers
+        m.peers().setInVlan(peer, true);
+        QVERIFY(m.peers().isInVlan(peer));
 
-        QVERIFY(!m.friends().autoAcceptEnabled());                   // auto-accept: off by default, persists
-        m.friends().setAutoAcceptEnabled(true);
-        QVERIFY(m.friends().autoAcceptEnabled());
+        QVERIFY(!m.peers().autoAcceptEnabled());                   // auto-accept: off by default, persists
+        m.peers().setAutoAcceptEnabled(true);
+        QVERIFY(m.peers().autoAcceptEnabled());
         QVERIFY(cfg.value("AutoAcceptPeers", false));
     }
 
-    // New-Peer defaults: presence ON, receive/vLAN OFF out of the box; applyNewPeerDefaults stamps a peer; forgetFriend
+    // New-Peer defaults: presence ON, receive/vLAN OFF out of the box; applyNewPeerDefaults stamps a peer; forgetPeer
     // clears the per-peer records.
     void new_peer_defaults_and_apply()
     {
@@ -761,23 +917,23 @@ private slots:
         json cfg = json{{"Settings", json::object()}};
         AppModel m(&cfg, &appDir);
 
-        QCOMPARE(m.friends().newPeerDefault("presence"), true);
-        QCOMPARE(m.friends().newPeerDefault("receive"), false);
-        QCOMPARE(m.friends().newPeerDefault("vlan"), false);
-        m.friends().setNewPeerDefault("receive", true);
-        m.friends().setNewPeerShareDefault("Games", true);
-        QCOMPARE(m.friends().newPeerDefault("receive"), true);
-        QVERIFY(m.friends().newPeerShareDefaults().contains("Games"));
-        m.friends().setNewPeerShareDefault("Games", false);
-        QVERIFY(!m.friends().newPeerShareDefaults().contains("Games"));   // toggle back off (exercises the fixed else-if branch)
+        QCOMPARE(m.peers().newPeerDefault("presence"), true);
+        QCOMPARE(m.peers().newPeerDefault("receive"), false);
+        QCOMPARE(m.peers().newPeerDefault("vlan"), false);
+        m.peers().setNewPeerDefault("receive", true);
+        m.peers().setNewPeerShareDefault("Games", true);
+        QCOMPARE(m.peers().newPeerDefault("receive"), true);
+        QVERIFY(m.peers().newPeerShareDefaults().contains("Games"));
+        m.peers().setNewPeerShareDefault("Games", false);
+        QVERIFY(!m.peers().newPeerShareDefaults().contains("Games"));   // toggle back off (exercises the fixed else-if branch)
 
         const QString peer = "12D3KooWNewBBB";
-        m.friends().applyNewPeerDefaults(peer);
-        QVERIFY(m.friends().isReceivingFrom(peer));                       // receive default applied
-        QVERIFY(m.friends().isPresenceSharedWith(peer));                 // presence default (on) applied
+        m.peers().applyNewPeerDefaults(peer);
+        QVERIFY(m.peers().isReceivingFrom(peer));                       // receive default applied
+        QVERIFY(m.peers().isPresenceSharedWith(peer));                 // presence default (on) applied
 
-        m.friends().forgetFriend(peer);
-        QVERIFY(!m.friends().isReceivingFrom(peer));                     // forgetFriend clears the per-peer records
+        m.peers().forgetPeer(peer);
+        QVERIFY(!m.peers().isReceivingFrom(peer));                     // forgetPeer clears the per-peer records
     }
 };
 

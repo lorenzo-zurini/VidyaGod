@@ -35,7 +35,7 @@ cat > "$W/job.cmd" <<'EOF'
 @echo off
 set PATH=C:\vgswitch;%PATH%
 set QT_QPA_PLATFORM=offscreen
-set T=C:\vgswitch\test_packagecatalog.exe an_installed_package_switches_to_a_friends_version
+set T=C:\vgswitch\test_packagecatalog.exe an_installed_package_switches_to_a_peers_version
 set J=%TEMP%\VidyaGod\990999\DefaultInstance
 if exist %J%\RUNTIME rmdir %J%\RUNTIME
 %T% > C:\vgswitch\control.log 2>&1

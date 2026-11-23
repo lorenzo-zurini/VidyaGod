@@ -1,4 +1,4 @@
-// What friends share, received: planning and landing a share's node files, adopting them into the library,
+// What peers share, received: planning and landing a share's node files, adopting them into the library,
 // pruning what a newer share replaced, and whether a received closure is complete.
 #include "packagecatalog.h"
 #include "sessions.h"
@@ -50,9 +50,9 @@ using namespace ManifestModel;   // LayerLocator / IsVfsLayer / …
 
 namespace PackageCatalog {
 
-// Bounds for the received-share planner (a friend's snapshot is UNTRUSTED input).
-static constexpr size_t kMaxFriendRootsPerLib = 100000;   // node entries per library (Go caps a library at 100k too)
-static constexpr size_t kMaxFriendRootsTotal  = 100000;   // node entries across all of one peer's libraries
+// Bounds for the received-share planner (a peer's snapshot is UNTRUSTED input).
+static constexpr size_t kMaxPeerRootsPerLib = 100000;   // node entries per library (Go caps a library at 100k too)
+static constexpr size_t kMaxPeerRootsTotal  = 100000;   // node entries across all of one peer's libraries
 using namespace Shelf;       // the library walks rows and grafts as the plan sees them
 using namespace Installed;
 
@@ -90,7 +90,7 @@ std::vector<IpfsWrapper::FetchTarget> ReceivedFetchTargets(const std::vector<Rec
 }
 
 namespace {
-//The last 8 hex digits of the 64-bit FNV-1a hash of S: what tells apart two of a friend's packages whose names make
+//The last 8 hex digits of the 64-bit FNV-1a hash of S: what tells apart two of a peer's packages whose names make
 //one folder name (chapter 15 §15.5).
 std::string Fnv8(const std::string &S)
 {
@@ -108,9 +108,9 @@ bool PlainCid(const std::string &C)
 
 std::map<std::pair<std::string, std::string>, std::string> ReceivedFolderNames(const nlohmann::ordered_json &Libs)
 {
-    // A friend's package names, made folder names: names that clash (compared without case, as a case-insensitive file
+    // A peer's package names, made folder names: names that clash (compared without case, as a case-insensitive file
     // system compares them) are EACH told apart by their name's hash — never one plain and one qualified, which would
-    // make the name depend on the order the friend's packages arrive in.
+    // make the name depend on the order the peer's packages arrive in.
     std::map<std::string, std::set<std::string>> Pkgs;                                     // lib → its package names
     for (const SheetEntry &E : WireEntries(Libs)) Pkgs[E.Lib].insert(E.Pkg);
     std::map<std::pair<std::string, std::string>, std::string> Out;
@@ -130,7 +130,7 @@ std::vector<ReceivedFetch> PlanReceivedFetches(const nlohmann::ordered_json &Glo
                                                const std::string &NickLabel, const nlohmann::ordered_json &Libs)
 {
     namespace fs = std::filesystem;
-    // UNTRUSTED input (a friend's snapshot = their share sheet's entries): every path segment goes through
+    // UNTRUSTED input (a peer's snapshot = their share sheet's entries): every path segment goes through
     // NodeFiles::SafeName — a plain filename, no separators, never "", "." or "..". The sheet is the allow-list: one
     // file per entry, at that entry's path, holding that entry's CID (the fetch verifies the bytes).
     std::vector<ReceivedFetch> Out;
@@ -146,10 +146,10 @@ std::vector<ReceivedFetch> PlanReceivedFetches(const nlohmann::ordered_json &Glo
     for (auto &[LP, Entries] : ByPkg)
     {
         // Bounds count node entries, and take a package whole or not at all: a package cut short would read complete.
-        if (Total + Entries.size() > kMaxFriendRootsTotal || PerLib[LP.first] + Entries.size() > kMaxFriendRootsPerLib)
+        if (Total + Entries.size() > kMaxPeerRootsTotal || PerLib[LP.first] + Entries.size() > kMaxPeerRootsPerLib)
         {
             LogWarn("PackageCatalog::PlanReceivedFetches", "package '" + LP.second + "' of library '" + LP.first
-                    + "' is past the " + std::to_string(kMaxFriendRootsTotal) + "-entry bound — left out");
+                    + "' is past the " + std::to_string(kMaxPeerRootsTotal) + "-entry bound — left out");
             continue;
         }
         Total += Entries.size();
@@ -166,10 +166,10 @@ std::vector<ReceivedFetch> PlanReceivedFetches(const nlohmann::ordered_json &Glo
         for (const SheetEntry &E : Entries)
         {
             std::string Name = NodeFiles::SafeName(E.File);
-            if (fs::path(Name).extension() != ".json") Name += ".json";  // a node file, whatever the friend named it
+            if (fs::path(Name).extension() != ".json") Name += ".json";  // a node file, whatever the peer named it
             ByName[Name].emplace(E.Cid, Name);
         }
-        //One file, one CID: a bumped name another entry has as its own (a friend who named a file that way) is
+        //One file, one CID: a bumped name another entry has as its own (a peer who named a file that way) is
         //planned once — whichever comes first — never two fetches racing for one file.
         std::set<std::string, ContentFile::NameLess> Planned;
         for (const auto &[Name, Cids] : ByName)
@@ -211,18 +211,18 @@ void RemoveLandedNode(const std::filesystem::path &F, const std::string &Cid,
 
 std::string ReceivedNickLabel(const std::string &PeerID)
 {
-    for (const auto &C : IpfsWrapper::FriendList()) if (C.PeerID == PeerID && !C.Nick.empty()) return C.Nick;
+    for (const auto &C : IpfsWrapper::PeerList()) if (C.PeerID == PeerID && !C.Nick.empty()) return C.Nick;
     return PeerID.size() > 8 ? PeerID.substr(PeerID.size() - 8) : PeerID;   // never an empty dir prefix
 }
 
-// What each received package holds: every friend's plan replayed (package dir → file → CID). Exact per friend — two
-// friends sharing the same library and package name land in different dirs, and each dir is judged against its own
-// friend's entries, never the other's.
+// What each received package holds: every peer's plan replayed (package dir → file → CID). Exact per peer — two
+// peers sharing the same library and package name land in different dirs, and each dir is judged against its own
+// peer's entries, never the other's.
 static std::map<std::filesystem::path, std::map<std::filesystem::path, std::string>> ReceivedPackages(const nlohmann::ordered_json &Config)
 {
     std::map<std::filesystem::path, std::map<std::filesystem::path, std::string>> Out;
-    if (!Config.contains("FriendLibraries") || !Config["FriendLibraries"].is_object()) return Out;
-    for (const auto &[Peer, Libs] : Config["FriendLibraries"].items())
+    if (!Config.contains("PeerLibraries") || !Config["PeerLibraries"].is_object()) return Out;
+    for (const auto &[Peer, Libs] : Config["PeerLibraries"].items())
         for (const ReceivedFetch &T : PlanReceivedFetches(Config, ReceivedNickLabel(Peer), Libs))
         {
             const std::filesystem::path F(T.Dest);
@@ -232,11 +232,11 @@ static std::map<std::filesystem::path, std::map<std::filesystem::path, std::stri
 }
 
 // The library NAME a received lib dir ("<nick> - <lib>") was planned under: the same shape the planner builds,
-// matched against the snapshots we hold. "" when nothing matches (a dir of a forgotten friend).
+// matched against the snapshots we hold. "" when nothing matches (a dir of a forgotten peer).
 static std::string ReceivedLibraryName(const nlohmann::ordered_json &Config, const std::string &LibDirName)
 {
-    if (!Config.contains("FriendLibraries") || !Config["FriendLibraries"].is_object()) return {};
-    for (const auto &[P, Libs] : Config["FriendLibraries"].items())
+    if (!Config.contains("PeerLibraries") || !Config["PeerLibraries"].is_object()) return {};
+    for (const auto &[P, Libs] : Config["PeerLibraries"].items())
     {
         const std::string Nick = ReceivedNickLabel(P);
         if (!Libs.is_object()) continue;
@@ -265,7 +265,7 @@ bool AdoptReceivedPackage(const nlohmann::ordered_json &Config, const std::files
     { if (Error) *Error = "not a received package dir: " + PkgDir.string(); return false; }
     const std::string Lib = ReceivedLibraryName(Config, Src.parent_path().filename().string());
     if (Lib.empty()) { if (Error) *Error = "no share snapshot names " + Src.parent_path().filename().string(); return false; }
-    //The library NAME is the friend's (their snapshot): one sanitised segment, and the destination must lie inside
+    //The library NAME is the peer's (their snapshot): one sanitised segment, and the destination must lie inside
     //the library whatever it held — an absolute or ".." name would otherwise plant the package anywhere writable.
     const fs::path Dest = fs::path(LibraryRootDir(Config)) / NodeFiles::SafeName(Lib) / NodeFiles::SafeName(Src.filename().string());
     if (!NodeGraph::PathWithin(LibraryRootDir(Config), Dest))

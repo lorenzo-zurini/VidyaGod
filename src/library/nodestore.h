@@ -35,7 +35,7 @@ struct MintResult {
 // (BuildFrozenIndex), name the bundle dir from the tile ([uid] title), write each node's JSON there (readable
 // plain-CID form — re-freezes to the identical CID), and fetch every content leaf to its PATH. After this the package
 // is local + hydrated, so GatherWorkingTree picks it up and it launches like any local game. This is the sharing
-// CONSUMER: a pasted/friend launchable CID becomes a playable game. Requires the node online for not-yet-local blocks.
+// CONSUMER: a pasted/peer launchable CID becomes a playable game. Requires the node online for not-yet-local blocks.
 // Returns the checkout dir ("" + Error on failure — e.g. a block that could not be fetched). NOTE (MVP): a launchable's
 // whole closure (game content + its small shared libraries) lands in one dir; shared-lib content may duplicate across
 // games until a shared-bundle layout lands. Runners are separate roots, hydrated on their own.

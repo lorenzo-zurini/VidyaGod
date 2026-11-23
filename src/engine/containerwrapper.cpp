@@ -23,9 +23,9 @@
 #include <cstdlib>           // std::getenv (VG_CASE_CHECK)
 #include <sys/stat.h>        // ::stat (probe the mounted prefix's system.reg mtime for config_info)
 
-// The friend LAN is ALWAYS ON (no setting): whenever the node is up and the friend LAN resolves, a launch joins the
+// The peer LAN is ALWAYS ON (no setting): whenever the node is up and the peer LAN resolves, a launch joins the
 // TRI-PLANE virtual LAN — the game runs in an isolated netns whose only interface is the overlay TUN, and the node
-// itself is the gateway (no external helper): overlay unicast/broadcast to friends, an in-node gVisor NAT for
+// itself is the gateway (no external helper): overlay unicast/broadcast to peers, an in-node gVisor NAT for
 // internet + real-LAN unicast (VIDYAGOD_LAN_BRIDGE), and a userspace reflector for real-LAN broadcasts both ways
 // (VIDYAGOD_LAN_HOSTRELAY). Discovery broadcasts stay on the overlay via the 255.255.255.255/32 route pinned by the
 // sandbox-init. Escape hatches: VIDYAGOD_SANDBOX_NET=host skips the LAN; VIDYAGOD_LAN_BRIDGE=off = overlay-only;
@@ -152,7 +152,7 @@ bool ContainerWrapper::BuildContainerRuntime()
     }
     if (!Live) Live.emplace();
 
-    //Friend LAN (ALWAYS ON — see the header comment above): merge the LAN launch vars into CustomVariables up front so
+    //Peer LAN (ALWAYS ON — see the header comment above): merge the LAN launch vars into CustomVariables up front so
     //the sandbox evaluation below sees SANDBOX=on + SANDBOX_NET=isolated (records the mounts, isolates the netns) and
     //Execute picks up SELF_VIP/SUBNET/PEER_* to bring the overlay TUN up inside the game's own netns. LanLaunchVars is
     //empty when the LAN can't resolve (node down) — the launch then proceeds with plain host networking. A package/user
@@ -427,7 +427,7 @@ bool ContainerWrapper::Execute(const std::string &OverrideExe, const std::vector
             return false;
         }
         {
-            //Friend LAN: the LAN vars (SELF_VIP/SUBNET/PEER_*/SANDBOX_NET=isolated) were merged into CustomVariables in
+            //Peer LAN: the LAN vars (SELF_VIP/SUBNET/PEER_*/SANDBOX_NET=isolated) were merged into CustomVariables in
             //BuildContainerRuntime when Settings.LanEnabled. Bring up the overlay TUN INSIDE the sandbox's own netns
             //(the host stack is never touched): listen on a bound unix socket for the TUN fd the sandbox-init hands
             //back, and pass the vIP + socket to the init.

@@ -123,8 +123,8 @@ DeckShelf::DeckShelf(DeckShell &S, Kind Which) : QWidget(nullptr), Shell(S), K(W
     setProperty("padOwnFocus", true);
     Grid = new DeckGrid(this);
     Grid->setObjectName(Which == Kind::Library ? "controllerLibraryGrid" : "controllerCatalogGrid");
-    Grid->setEmptyText(Which == Kind::Library ? "No games are installed yet.\nWhat your friends share is in the Catalog."
-                                              : "Nothing to download yet.\nAdd a friend under Friends, or a package source under Settings → Sources.");
+    Grid->setEmptyText(Which == Kind::Library ? "No games are installed yet.\nWhat your peers share is in the Catalog."
+                                              : "Nothing to download yet.\nAdd a peer under Peers, or a package source under Settings → Sources.");
     connect(Grid, &DeckGrid::activated, this, [this](LibraryGameCard *C) { if (C) Shell.openGame(C->GameKey); });
     connect(Grid, &DeckGrid::currentChanged, this, [this] { update(); });
     const json &C = *Shell.model().config();
@@ -192,8 +192,8 @@ void DeckShelf::apply()
         }
     }
     Grid->setEmptyText(!Search.isEmpty() ? "Nothing matches “" + Search + "”."
-                       : K == Kind::Library ? "No games are installed yet.\nWhat your friends share is in the Catalog."
-                                            : "Nothing to download yet.\nAdd a friend under Friends, or a package source under Settings → Sources.");
+                       : K == Kind::Library ? "No games are installed yet.\nWhat your peers share is in the Catalog."
+                                            : "Nothing to download yet.\nAdd a peer under Peers, or a package source under Settings → Sources.");
     Grid->setCards(Shown, Sections);
     update();
 }
@@ -401,7 +401,7 @@ DeckHome::DeckHome(DeckShell &S) : QWidget(nullptr), Shell(S)
 
 QStringList DeckHome::buttons() const
 {
-    if (HeroKey.isEmpty()) return { "Browse the Catalog", "Add a friend" };
+    if (HeroKey.isEmpty()) return { "Browse the Catalog", "Add a peer" };
     return { "▶  Play", "Details" };
 }
 
@@ -429,8 +429,8 @@ void DeckHome::refresh()
     else
     {
         HeroTitle = "Welcome to VidyaGod";
-        HeroLine = Shell.catalogCards().isEmpty() ? "Add a friend, and the games they share show up in the Catalog."
-                                                  : "Your Library is empty — your friends' games are waiting in the Catalog.";
+        HeroLine = Shell.catalogCards().isEmpty() ? "Add a peer, and the games they share show up in the Catalog."
+                                                  : "Your Library is empty — your peers' games are waiting in the Catalog.";
         HeroCover = QPixmap();
     }
     if (HeroKey != Was) { Backdrop = QPixmap(); loadBackdrop(); }
@@ -512,7 +512,7 @@ void DeckHome::press(int I)
 {
     if (HeroKey.isEmpty())
     {
-        Shell.showSection(I == 0 ? DeckShell::Section::Catalog : DeckShell::Section::Friends);
+        Shell.showSection(I == 0 ? DeckShell::Section::Catalog : DeckShell::Section::Peers);
         return;
     }
     LibraryGameCard *C = Shell.card(HeroKey);
@@ -1017,7 +1017,7 @@ DeckDownloads::Row DeckDownloads::row(const QString &Key) const
     if (Confirm == Key) R.Line = "Press X again to cancel it";
     else if (!Error.isEmpty()) { R.Line = "Error: " + Error; R.Bad = true; }
     else if (Down) R.Line = Speed > 0 ? "Downloading · " + HumanBytesQ(static_cast<qint64>(Speed)) + "/s" : QStringLiteral("Downloading");
-    else if (Stalled) { R.Line = "Stalled — no friend is sending it right now"; R.Bad = true; }
+    else if (Stalled) { R.Line = "Stalled — no peer is sending it right now"; R.Bad = true; }
     else if (Queued) R.Line = "Queued";
     else R.Line = "Starting…";
     return R;

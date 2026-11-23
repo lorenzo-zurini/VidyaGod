@@ -89,7 +89,7 @@ struct Node {
 
     std::filesystem::path File;              // source .json path
     std::filesystem::path BundleDir;         // its home package folder — content PATHs resolve here
-    bool Received = false;                   // a browse stub gathered from a friend's catalog (not hydrated)
+    bool Received = false;                   // a browse stub gathered from a peer's catalog (not hydrated)
 
     std::string Key() const { return Cid.empty() ? NodeId : Cid; }
     bool Presentable()  const { return Meta.is_object() && !Meta.empty(); }

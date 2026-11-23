@@ -39,6 +39,19 @@ std::filesystem::path SelfExe()
     return std::filesystem::read_symlink("/proc/self/exe", ec);   // empty path on error (ec set)
 }
 
+ScopedFileLock::ScopedFileLock(const std::filesystem::path &File)
+{
+    const int Fd = ::open(File.c_str(), O_CREAT | O_RDWR | O_CLOEXEC, 0644);   // O_CLOEXEC: no child keeps it held
+    if (Fd < 0) return;
+    Handle = Fd;
+    Held = ::flock(Fd, LOCK_EX | LOCK_NB) == 0;
+}
+
+ScopedFileLock::~ScopedFileLock()
+{
+    if (Handle >= 0) ::close(static_cast<int>(Handle));   // closing the descriptor releases the flock
+}
+
 bool AcquireSingleInstanceLock(const std::string &Key, std::string *Holder)
 {
     // O_CLOEXEC is essential: spawned children (wine/proton/git/vidyagodfs) must NOT inherit this fd,

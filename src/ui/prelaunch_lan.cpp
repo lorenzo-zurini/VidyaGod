@@ -68,9 +68,9 @@ void PreLaunchWindow::BuildLanPanel(QVBoxLayout * LeftCol)
     LanRows->setSpacing(2);
     GL->addLayout(LanRows);
 
-    // The virtual LAN is host-less: every accepted friend is simply present on the shared 10.66/16, discovered by
-    // vIP with no join-a-specific-friend targeting. The panel below just shows each friend's live link status.
-    LanGroup->setVisible(false);                 // shown once the first poll finds friends / a LAN
+    // The virtual LAN is host-less: every accepted peer is simply present on the shared 10.66/16, discovered by
+    // vIP with no join-a-specific-peer targeting. The panel below just shows each peer's live link status.
+    LanGroup->setVisible(false);                 // shown once the first poll finds peers / a LAN
     LeftCol->addWidget(LanGroup);
 
     LanTimer = new QTimer(this);
@@ -101,7 +101,7 @@ void PreLaunchWindow::RefreshLanPanel()
                 if (P.is_string()) Excluded.insert(P.get<std::string>());
     }
 
-    // Reconcile rows: upsert every reported friend, drop rows for friends that vanished.
+    // Reconcile rows: upsert every reported peer, drop rows for peers that vanished.
     std::set<std::string> Seen;
     for (const IpfsWrapper::LanPeer & P : Peers)
     {

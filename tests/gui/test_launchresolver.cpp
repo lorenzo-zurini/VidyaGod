@@ -116,7 +116,7 @@ class LaunchResolverTest : public QObject
 {
     Q_OBJECT
 private slots:
-    // ---- engine-injected session vars (friend LAN / presence) ----
+    // ---- engine-injected session vars (peer LAN / presence) ----
     // These are the reason SessionVars exists at all: the LAN vars used to be merged AFTER this resolve and after
     // EXEARGS substitution, so %VIDYAGOD_*% survived into argv as a literal. And because only DECLARED keys reach
     // the fixpoint, an undeclared key handed in as an override was silently dropped.
@@ -184,7 +184,7 @@ private slots:
         QCOMPARE(cp.CustomVariables["VIDYAGOD_SELF_NAME"],    std::string("PackageChoice")); // declaration wins
     }
 
-    // A --var for a variable no node declares still sets it: the engine reads its own switches (the friend LAN's
+    // A --var for a variable no node declares still sets it: the engine reads its own switches (the peer LAN's
     // gateway, VIDYAGOD_LAN_BRIDGE=off) from the launch's variables. Teeth: drop an undeclared override (the switch is
     // never seen and the gateway stays on).
     void an_override_sets_an_engine_switch_no_node_declares()
@@ -1063,7 +1063,7 @@ private slots:
         QVERIFY(std::find(chain[0].RemoveEnv.begin(), chain[0].RemoveEnv.end(), "R") != chain[0].RemoveEnv.end());
     }
 
-    // A label may repeat (a friend's received stub of "proton" beside the local "proton"): every walk on the launch
+    // A label may repeat (a peer's received stub of "proton" beside the local "proton"): every walk on the launch
     // path is keyed by the INDEX key, or the first label match — the stub, sorted first here — is walked instead of
     // the runner that ships the build.
     void closure_walks_are_keyed_by_the_index_key_not_the_label()
@@ -1487,7 +1487,7 @@ private slots:
 
     // What a graft's row puts on disk is what it mounts: a graft that is a version runs on its base, so its content and
     // its "installed" verdict take in the base's, though the graft names the base only through ANY. Without that, a
-    // friend downloading Forgotten Empires got FE and never The Conquerors, and the card read installed. A dehydrate
+    // peer downloading Forgotten Empires got FE and never The Conquerors, and the card read installed. A dehydrate
     // still removes the graft's own content only (the base is a version with its own card). Teeth: walk only the
     // row's closure (content or hydration); walk the base on dehydrate.
     void a_graft_rows_content_includes_its_base()

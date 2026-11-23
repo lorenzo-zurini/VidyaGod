@@ -58,7 +58,7 @@ private slots:
         // The receiver: the package received (its folder landed: every node file), nothing installed.
         QTemporaryDir RxData; QVERIFY(RxData.isValid());
         json cfg = json{{"Settings", {{"Paths", {{"LibraryRoot", (RxData.path() + "/LIBRARY").toStdString()}}}}},
-                        {"FriendLibraries", {{"12D3KooWSeederAlice", {{"Games", Items}}}}}};
+                        {"PeerLibraries", {{"12D3KooWSeederAlice", {{"Games", Items}}}}}};
         const std::string Nick = "derAlice";
         {
             std::vector<IpfsWrapper::FetchTarget> B;
@@ -118,7 +118,7 @@ private slots:
         QCOMPARE((int)Items.size(), 3);                     // the package's three nodes
         QTemporaryDir RxData; QVERIFY(RxData.isValid());
         json cfg = json{{"Settings", {{"Paths", {{"LibraryRoot", (RxData.path() + "/LIBRARY").toStdString()}}}}},
-                        {"FriendLibraries", {{"12D3KooWSeederAlice", {{"Games", Items}}}}}};
+                        {"PeerLibraries", {{"12D3KooWSeederAlice", {{"Games", Items}}}}}};
         const std::string Nick = "derAlice";
         {
             std::vector<IpfsWrapper::FetchTarget> B;
@@ -158,7 +158,7 @@ private slots:
         QVERIFY2(IpfsWrapper::StartNode((Repo.path() + "/ipfs").toStdString(), &Err), Err.c_str());
         QTemporaryDir RxData; QVERIFY(RxData.isValid());
         json cfg = json{{"Settings", {{"Paths", {{"LibraryRoot", (RxData.path() + "/LIBRARY").toStdString()}}}}},
-                        {"FriendLibraries", {{"Alice", {{"Games", json::array()}}}}}};
+                        {"PeerLibraries", {{"Alice", {{"Games", json::array()}}}}}};
         const std::string Missing = Cid::OfBytes("vidyagod missing " + QUuid::createUuid().toString().toStdString());
         const std::string Dir = PackageCatalog::CatalogRootDir(cfg) + "/Alice - Games/[7] G";
         std::filesystem::create_directories(Dir);
@@ -202,7 +202,7 @@ private slots:
         QVERIFY2(IpfsWrapper::StartNode((Repo.path() + "/ipfs").toStdString(), &Err), Err.c_str());
         QTemporaryDir RxData; QVERIFY(RxData.isValid());
         json cfg = json{{"Settings", {{"Paths", {{"LibraryRoot", (RxData.path() + "/LIBRARY").toStdString()}}}}},
-                        {"FriendLibraries", {{"Alice", {{"Games", json::array()}}}}}};
+                        {"PeerLibraries", {{"Alice", {{"Games", json::array()}}}}}};
         // Content no one can have: the CID of bytes made up now (a fixed test CID may exist somewhere — one did).
         const std::string Nobody = Cid::OfBytes("vidyagod unserved " + QUuid::createUuid().toString().toStdString());
         const std::string Dir = PackageCatalog::CatalogRootDir(cfg) + "/Alice - Games/[7] G";

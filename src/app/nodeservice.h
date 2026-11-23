@@ -10,7 +10,7 @@ class QTimer;
 
 // The embedded IPFS node's life in the app: brought up when networking is on (off the GUI thread, retried with a
 // backoff while a previous instance still holds the repo), brought down when it is turned off, and the work its
-// readiness unblocks — the IPFS and Network tabs refreshed, sources synced, friend shares re-armed and received
+// readiness unblocks — the IPFS and Network tabs refreshed, sources synced, peer shares re-armed and received
 // libraries reconciled; once its network is up, interrupted downloads resumed and failed covers retried.
 class NodeService : public QObject
 {

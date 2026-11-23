@@ -244,7 +244,7 @@ int StampNodeCids(const std::filesystem::path &Root,
         if (!ManifestModel::IsNodeObject(N)) return false;
         // ONLY touch a locally-AUTHORED node — one that carries a stored "CID" handle. A node with no "CID" is a
         // fetched/received block (its handle was stripped on landing); rewriting its refs would corrupt the block it
-        // was fetched as (an installed friend package's shared node) — leave it entirely alone.
+        // was fetched as (an installed peer package's shared node) — leave it entirely alone.
         if (!(N.contains("CID") && N["CID"].is_string())) return false;
         bool Ch = false;
         // The node's own handle (its stored last-minted CID) → its fresh CID.
@@ -272,7 +272,7 @@ int StampNodeCids(const std::filesystem::path &Root,
     {
         if (Ec) { Ec.clear(); continue; }   // a permission-denied subdir mid-walk must not truncate the stamp
         const auto &E = *It;
-        if (E.is_directory(Ec) && E.path().filename().string().rfind("_friend_", 0) == 0)
+        if (E.is_directory(Ec) && E.path().filename().string().rfind("_peer_", 0) == 0)
         { It.disable_recursion_pending(); continue; }   // never rewrite a received stub (browse-only, never minted)
         if (!E.is_regular_file(Ec) || E.path().extension() != ".json") continue;
         nlohmann::ordered_json J;
@@ -348,7 +348,7 @@ std::map<std::string, std::string> ManifestTargets(const std::string &Dir, bool 
             const std::string Cid = (H.contains("SOURCE") && H["SOURCE"].is_string()) ? H["SOURCE"].get<std::string>() : std::string();
             if (Cid.empty()) continue;
             const fs::path Local = ContentFile::Path(Bundle, F.File, Cid);
-            //A node names a file of ITS package: an absolute or "../" FILE (a friend's node, landed verbatim) would
+            //A node names a file of ITS package: an absolute or "../" FILE (a peer's node, landed verbatim) would
             //have seeding read — and pin, and announce — any file on the machine, /dev/zero included (forever).
             if (!NodeGraph::PathWithin(Bundle, Local)) continue;
             if (!ExistingOnly || fs::is_regular_file(Local, Ec)) ToSeed[Local.generic_string()] = Cid;
@@ -522,7 +522,7 @@ void DropIfDead(const std::string &Cid, const std::string &Path)
 int SeedUnheld(const std::string &Dir, std::vector<SeedFailure> *Failures)
 {
     namespace fs = std::filesystem;
-    //A friend's download of a game containing a library this machine never held stalled on it: the seeder answered
+    //A peer's download of a game containing a library this machine never held stalled on it: the seeder answered
     //"block not found" for DirectShow, LAVFilters, DirectPlay and DxWnd on the replication, and only a pinning
     //gateway saved the download.
     //

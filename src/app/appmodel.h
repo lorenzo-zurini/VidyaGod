@@ -20,7 +20,7 @@
 
 #include <unordered_map>
 
-class FriendSharing;
+class PeerSharing;
 class QDir;
 class QTimer;
 
@@ -51,7 +51,7 @@ public:
     // rebuild: the Library, the Catalog and the Runners page all redraw on the same catalogChanged. GUI thread.
     const std::unordered_map<std::string, Installed::NodeHydration> & hydration() const;
     QDir *                   appDataDir()    const { return AppDataDir; }
-    FriendSharing &          friends()       const { return *Friends; }   // the friend protocol (friendsharing.h)
+    PeerSharing &          peers()       const { return *Peers; }   // the peer protocol (peersharing.h)
     int                      cardPixelWidth() const { return CardPixelWidth; }
 
     // ── Mutators (perform the change, persist, then emit so every view reacts) ──
@@ -95,8 +95,10 @@ public:
     // One package (its folder under the library root): it and the packages it contains are minted, and its share row is
     // merged into Libraries in place — the package editor's Publish. Queued behind a publish in flight, like the above.
     void publishPackage(const QString & packageDir);
+    void publishPackages(const QStringList & packageDirs);   // several, in one pass (one read of the library)
+    unsigned catalogGeneration() const { return CatalogGen; }
     bool publishing() const { return Publishing; }    // a publish is in flight (one at a time: a second runs after it)
-    // Consumer side (gigagraph sharing): add a game by a launchable CID (a friend's / pasted). Fetches its whole
+    // Consumer side (gigagraph sharing): add a game by a launchable CID (a peer's / pasted). Fetches its whole
     // closure into the pretty on-disk checkout (NodeStore::HydratePackage) off-thread, then rebuilds the catalog so
     // it appears in the Library. Emits gameAdded / gameAddFailed.
     void addGameByCid(const QString & launchableCid);
@@ -120,8 +122,8 @@ signals:
     void gameAdded(QString dir);                 // addGameByCid succeeded — the checkout dir; Library now shows it
     void gameAddFailed(QString message);         // addGameByCid failed (bad CID / offline / fetch error)
     void networkingChanged(bool enabled);   // user toggled IPFS networking — start/stop the node + grey Catalog/IPFS
-    void nodeReady();               // the embedded IPFS node finished coming up (Available() + friend code live) — tabs
-                                    // that read node state (Network: friend code + Verify&Publish enable) must refresh,
+    void nodeReady();               // the embedded IPFS node finished coming up (Available() + peer code live) — tabs
+                                    // that read node state (Network: peer code + Verify&Publish enable) must refresh,
                                     // since networkingChanged fires at TOGGLE time, before the async start completes
     void runnerImportRequested(QString runnerNodeId);   // MainWindow routes this to DownloadManager::beginDownload (unified pump)
     void ipfsHealthChanged();       // orphaned refs were repaired — the IPFS tab should re-poll health
@@ -138,7 +140,7 @@ private:
     std::shared_ptr<PackageCatalog::SourceUpgradePlan> PendingUpgrade;
     nlohmann::ordered_json * Config;
     QDir *                   AppDataDir;
-    FriendSharing *          Friends = nullptr;   // child QObject, made in the ctor
+    PeerSharing *          Peers = nullptr;   // child QObject, made in the ctor
     std::shared_ptr<const NodeIndex> Catalog = std::make_shared<const NodeIndex>();
     using HydrationMap = std::unordered_map<std::string, Installed::NodeHydration>;
     mutable std::shared_ptr<const HydrationMap> Hydration;   // of Catalog (null: worked out when first asked)

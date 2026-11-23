@@ -1,4 +1,4 @@
-// The library as shared: which library a package is in, what a friend receives, and publishing the whole library.
+// The library as shared: which library a package is in, what a peer receives, and publishing the whole library.
 #include "packagecatalog.h"
 #include "noderefs.h"
 #include "sessions.h"
@@ -92,10 +92,15 @@ std::optional<PkgKey> PackageKeyOf(const std::filesystem::path &Dir, const std::
 std::vector<std::string> Publish(nlohmann::ordered_json &Config, const std::vector<std::filesystem::path> *Only,
                                  std::string *Error, std::string *Gaps)
 {
+    //Never under another writer: the whole run, from the tree read to the sheet written, holds the library's lock.
+    const Platform::ScopedFileLock Lock(LibraryWriteLock(Config));
+    if (!Lock.opened())   // never "busy": a lock nobody can open is no other writer, and would be waited on for ever
+    { if (Error) *Error = "the library's write lock " + LibraryWriteLock(Config).string() + " cannot be opened"; return {}; }
+    if (!Lock.held()) { if (Error) *Error = LibraryBusy; return {}; }
     const std::filesystem::path Root = LibraryRootDir(Config);
     std::map<std::string, nlohmann::ordered_json> Tree;
     std::map<std::string, std::filesystem::path>  Dirs;
-    NodeGraph::GatherWorkingTree(Root, Tree, Dirs, /*SkipReserved=*/true);   // never mint a received friend stub
+    NodeGraph::GatherWorkingTree(Root, Tree, Dirs, /*SkipReserved=*/true);   // never mint a received peer stub
     if (Tree.empty()) { if (Error) *Error = "no packages to publish under " + Root.string(); return {}; }
 
     std::map<std::string, PkgKey> KeyOf;                                     // node handle → its package
@@ -154,8 +159,8 @@ std::vector<std::string> Publish(nlohmann::ordered_json &Config, const std::vect
     // folder of its node files (<cid>.json, the canonical bytes) — nothing else: the folder's own listing IS its node
     // list, and its name travels in the share entry. The folder is the unit a receiver lands (verbatim, like any
     // folder), the unit a pinning service pins (the package's own bytes; only a changed package re-pins), and
-    // `Libraries` = {lib: [{cid: <package folder>, pkg: <dir>}]} is what the share sheet pushes to a friend. Off-IPFS
-    // VidyaGod app data (friend channel).
+    // `Libraries` = {lib: [{cid: <package folder>, pkg: <dir>}]} is what the share sheet pushes to a peer. Off-IPFS
+    // VidyaGod app data (peer channel).
     std::map<std::string, std::map<std::string, std::vector<std::string>>> ByLibPkg;   // lib → package dir → node cids
     std::map<std::string, std::map<std::string, std::vector<std::string>>> HandlesOf;  // lib → package dir → node handles
     std::vector<std::string> Unfrozen;                  // "<package>/<label>" of nodes Mint skipped
@@ -185,7 +190,7 @@ std::vector<std::string> Publish(nlohmann::ordered_json &Config, const std::vect
         }
         ByLibPkg[LibName][Pkg].push_back(CidIt->second);
         HandlesOf[LibName][Pkg].push_back(Handle);
-        //A file a layer names with no SOURCE is shared as a name only: a friend sees the game and can never fetch it.
+        //A file a layer names with no SOURCE is shared as a name only: a peer sees the game and can never fetch it.
         //A %variable% path is placed at launch, a DIR is local by nature (the validator's) — neither is counted here.
         if (Doc.contains("LAYERS") && Doc["LAYERS"].is_array())
             for (const auto &L : Doc["LAYERS"])
@@ -316,7 +321,7 @@ std::vector<std::string> Publish(nlohmann::ordered_json &Config, const std::vect
         std::vector<std::string> P;
         for (const auto &[Pkg, N] : Unsourced) P.push_back(Pkg + " (" + std::to_string(N) + ")");
         Gap += (Gap.empty() ? "" : "; ") + std::to_string(Unsourced.size())
-               + " package(s) have content files that name no SOURCE — a friend sees them and can never fetch them: "
+               + " package(s) have content files that name no SOURCE — a peer sees them and can never fetch them: "
                + List(P);
     }
     if (!Gap.empty()) LogErr("PackageCatalog::PublishLibrary", "published with gaps: " + Gap);
@@ -376,8 +381,8 @@ std::string SheetPath(const nlohmann::ordered_json &GlobalConfigJSON, const std:
     if (GlobalConfigJSON.contains("ShareSheet") && GlobalConfigJSON["ShareSheet"].is_object()
         && GlobalConfigJSON["ShareSheet"].contains(Cid) && GlobalConfigJSON["ShareSheet"][Cid].is_string())
         return GlobalConfigJSON["ShareSheet"][Cid].get<std::string>();
-    if (GlobalConfigJSON.contains("FriendLibraries") && GlobalConfigJSON["FriendLibraries"].is_object())
-        for (const auto &[Peer, Libs] : GlobalConfigJSON["FriendLibraries"].items())
+    if (GlobalConfigJSON.contains("PeerLibraries") && GlobalConfigJSON["PeerLibraries"].is_object())
+        for (const auto &[Peer, Libs] : GlobalConfigJSON["PeerLibraries"].items())
             for (const SheetEntry &E : WireEntries(Libs))
                 if (E.Cid == Cid) return E.Lib + "/" + E.Pkg + "/" + E.File;
     return {};
@@ -427,6 +432,93 @@ nlohmann::ordered_json SharedWith(const nlohmann::ordered_json &Sheet, const std
     std::vector<SheetEntry> Out;
     for (const SheetEntry &E : All) if (Taken.count(E.Lib + "/" + E.Pkg)) Out.push_back(E);
     return Wire(Out);
+}
+
+std::filesystem::path LibraryWriteLock(const nlohmann::ordered_json &Config)
+{
+    return std::filesystem::absolute(LibraryRootDir(Config)).lexically_normal().parent_path() / "library-write.lock";
+}
+
+namespace {
+//PackageKeyOf by the paths alone (the index's folders are spelt from the root as given): no file system lookup per node,
+//which through a symlinked root cost two canonicalisations each, for every node, on every check.
+std::optional<PkgKey> PackageKeyLexical(const std::filesystem::path &Dir, const std::filesystem::path &Root)
+{
+    const std::filesystem::path Rel = std::filesystem::absolute(Dir).lexically_normal().lexically_relative(Root);
+    std::vector<std::string> Seg;
+    for (const auto &Part : Rel) if (Part != "." && !Part.empty()) Seg.push_back(Part.string());
+    if (Seg.empty() || Seg[0] == "..") return std::nullopt;
+    return Seg.size() >= 2 ? PkgKey{Seg[0], Seg[1]} : PkgKey{"Library", Seg[0]};
+}
+}
+
+std::vector<std::string> LibrariesOnDisk(const nlohmann::ordered_json &Config, const NodeIndex &Idx)
+{
+    const std::filesystem::path Root = std::filesystem::absolute(LibraryRootDir(Config)).lexically_normal();
+    std::set<std::string> Out;
+    for (const auto &[K, N] : Idx.Nodes)
+        if (!N.Received && !N.BundleDir.empty())
+            if (const auto P = PackageKeyLexical(N.BundleDir, Root)) Out.insert(P->first);
+    if (Config.contains("ShareSheet") && Config["ShareSheet"].is_object())
+        for (const SheetEntry &E : SheetEntries(Config["ShareSheet"])) Out.insert(E.Lib);
+    return { Out.begin(), Out.end() };
+}
+
+ShareStaleness StaleSharedPackages(const nlohmann::ordered_json &Config, const NodeIndex &Idx, const std::set<std::string> &Libs)
+{
+    ShareStaleness Out;
+    const std::filesystem::path Root = std::filesystem::absolute(LibraryRootDir(Config)).lexically_normal();
+    std::map<PkgKey, std::set<std::string>> Disk, Sheet;
+    std::map<PkgKey, std::filesystem::path> DirOf;
+    for (const auto &[K, N] : Idx.Nodes)
+    {
+        if (N.Received || N.BundleDir.empty() || N.Cid.empty()) continue;
+        const std::filesystem::path Dir = std::filesystem::absolute(N.BundleDir).lexically_normal();
+        const auto P = PackageKeyLexical(Dir, Root);
+        if (!P || !Libs.count(P->first)) continue;
+        Disk[*P].insert(N.Cid);
+        DirOf.emplace(*P, Dir);
+    }
+    std::set<std::string> SheetLibs;
+    if (Config.contains("ShareSheet") && Config["ShareSheet"].is_object())
+        for (const SheetEntry &E : SheetEntries(Config["ShareSheet"]))
+            if (Libs.count(E.Lib)) { Sheet[{E.Lib, E.Pkg}].insert(E.Cid); SheetLibs.insert(E.Lib); }
+    for (const auto &[P, Cids] : Disk)
+    {
+        std::string Sig;
+        for (const std::string &C : Cids) Sig += C + ' ';
+        const std::string Key = P.first + "/" + P.second;
+        Out.Signature[Key] = Sig;
+        if (!SheetLibs.count(P.first))                              // a library never prepared: never published unasked
+        {
+            Out.Unprepared.insert(P.first);
+            Out.UnpreparedPackages.push_back({ DirOf.at(P), Key });
+            continue;
+        }
+        if (const auto S = Sheet.find(P); S == Sheet.end() || S->second != Cids) Out.Stale.push_back({ DirOf.at(P), Key });
+    }
+    for (const auto &[P, Cids] : Sheet) if (!Disk.count(P)) Out.Removed.push_back(P.first + "/" + P.second);
+    for (const NodeIndex::Refused &R : Idx.RefusedNodes)
+        if (const auto P = PackageKeyLexical(R.BundleDir, Root); P && Libs.count(P->first))
+            Out.Refused.push_back(P->second + ": " + R.Why);
+    return Out;
+}
+
+int DropFromShareSheet(nlohmann::ordered_json &Config, const std::vector<std::string> &Packages)
+{
+    if (!Config.contains("ShareSheet") || !Config["ShareSheet"].is_object()) return 0;
+    const std::set<std::string> Gone(Packages.begin(), Packages.end());
+    int N = 0;
+    for (auto It = Config["ShareSheet"].begin(); It != Config["ShareSheet"].end();)
+    {
+        const std::string Path = It->is_string() ? It->get<std::string>() : std::string();
+        const size_t Last = Path.rfind('/');
+        if (Last != std::string::npos && Gone.count(Path.substr(0, Last))) { It = Config["ShareSheet"].erase(It); ++N; }
+        else ++It;
+    }
+    if (Config.contains("Pins") && Config["Pins"].is_object())
+        for (const std::string &P : Packages) Config["Pins"].erase(P);
+    return N;
 }
 
 std::vector<std::string> PublishLibrary(nlohmann::ordered_json &Config, std::string *Error, std::string *Gaps)

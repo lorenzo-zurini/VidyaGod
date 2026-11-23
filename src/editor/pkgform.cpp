@@ -764,7 +764,7 @@ void Field(json &Node, const PkgGraph::Field &F, Host &H, int Layer)
             else if (WriteSubKey(Node, F.Key, "FILE", P))
             {
                 //SOURCE and SIZE described the old image (publish stamps the new one's), as with a browsed cover: kept,
-                //friends would fetch the old image by its CID under the new name.
+                //peers would fetch the old image by its CID under the new name.
                 if (Node[F.Key].is_object()) { Node[F.Key].erase("SOURCE"); Node[F.Key].erase("SIZE"); }
                 H.Dirty();
             }

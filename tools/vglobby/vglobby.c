@@ -12,7 +12,7 @@
  * CreateProcess at all -- it does everything through RunApplication.
  *
  * So this is WOLOBBY with the dialog removed: the same DirectPlay calls, driven entirely by arguments, so a
- * launcher (VidyaGod) can put a player straight into a friend's session with nothing typed.
+ * launcher (VidyaGod) can put a player straight into a peer's session with nothing typed.
  *
  * It also REGISTERS the application itself. RunApplication resolves the game through
  * HKLM\SOFTWARE\Microsoft\DirectPlay\Applications\<name> (Guid/File/Path/CurrentDirectory); the shipped

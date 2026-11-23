@@ -125,7 +125,7 @@ void PathsPage::buildSpace(QVBoxLayout * pl)
     const std::filesystem::path Data = AppPaths::DataRoot();
     const std::vector<std::pair<QString, std::filesystem::path>> Parts = {
         { "Library (installed games)", PackageCatalog::LibraryRootDir(Cfg) },
-        { "Received catalog (friends' packages)", PackageCatalog::CatalogRootDir(Cfg) },
+        { "Received catalog (peers' packages)", PackageCatalog::CatalogRootDir(Cfg) },
         { "Saves and settings (USERDATA)", InstanceStore::Root(Cfg) },
         { "IPFS store", Data / "IPFS" },
         { "Covers", PackageCatalog::AssetsRootDir(Cfg) },

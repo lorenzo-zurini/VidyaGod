@@ -1,7 +1,7 @@
 #pragma once
 // Runners every install has without downloading anything: the ones a machine can host and whose whole job is to run
 // the game as itself. Each is the exact node published in VidyaGodRunners (same bytes, so the same CID): a copy on
-// disk, or one received from a friend, is the same node, never a second one.
+// disk, or one received from a peer, is the same node, never a second one.
 
 #include <filesystem>
 #include <map>

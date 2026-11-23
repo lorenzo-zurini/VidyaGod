@@ -725,7 +725,7 @@ VG_COMMANDS
         "this reaches it.",
         { Command::Pos("button", "the button's text (OK, Cancel, Yes, …)"),
           Command::Opt("dialog", "the dialog's title, when several are open") },
-        { "ui press OK", "ui press Yes --dialog 'Remove friend'", "ui press Escape" }, { "QAbstractButton::click" }, Command::Needs::Ui, false,
+        { "ui press OK", "ui press Yes --dialog 'Remove peer'", "ui press Escape" }, { "QAbstractButton::click" }, Command::Needs::Ui, false,
         [](Command::Context &, const json &A) {
             const QString Want = QString::fromStdString(Command::Str(A, "button")), Title = QString::fromStdString(Command::Str(A, "dialog", ""));
             for (QWidget *W : QApplication::topLevelWidgets())

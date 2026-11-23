@@ -19,7 +19,7 @@ class QWidget;
 // Command — everything the program can do, and everything it shows, from the command line (standing rule: every
 // function of every module is drivable from the CLI, by the same code path the GUI takes).
 //
-//   VidyaGod friends share <peer> <library>       git-style: group, command, positionals, --options
+//   VidyaGod peers share <peer> <library>       git-style: group, command, positionals, --options
 //   VidyaGod help [group [command]]               help at every level, with examples
 //   VidyaGod … --json                             the exact result as JSON (default: tables for people)
 //
@@ -27,7 +27,7 @@ class QWidget;
 // (CommandServer) and runs on its main thread against its live model and windows. With none, it runs in this
 // process: headless, with the model (and the windows, offscreen, for UI commands) brought up for the call.
 //
-// Each command names the functions it COVERS ("AppModel::shareLibraryWithFriend"). tools/cli_coverage.py holds
+// Each command names the functions it COVERS ("AppModel::shareLibraryWithPeer"). tools/cli_coverage.py holds
 // every function of every module against those names; a function that cannot be a command is listed there with
 // its reason. Nothing is uncovered silently.
 // ---------------------------------------------------------------------------
@@ -101,12 +101,12 @@ bool VerboseOutput();
 
 struct Spec
 {
-    std::string Name;                     // its words: "friends share"
+    std::string Name;                     // its words: "peers share"
     std::string Summary;                  // one line, for the group's listing
     std::string Help;                     // what it does, in full (may be several lines)
     std::vector<Arg> Args;
     std::vector<std::string> Examples;    // whole command lines, after "VidyaGod "
-    std::vector<std::string> Covers;      // the functions it drives, qualified ("AppModel::shareLibraryWithFriend")
+    std::vector<std::string> Covers;      // the functions it drives, qualified ("AppModel::shareLibraryWithPeer")
     Needs Requires = Needs::Config;
     bool Node = false;                    // needs the IPFS node up (started for a headless run)
     Fn Run;

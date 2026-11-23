@@ -186,7 +186,7 @@ VG_COMMANDS
 
     Command::Register({
         "controller mode", "controller mode on or off — or which it is",
-        "On, the window goes full screen showing the controller shell (Home, Library, Catalog, Downloads, Friends, Node, "
+        "On, the window goes full screen showing the controller shell (Home, Library, Catalog, Downloads, Peers, Node, "
         "Settings) and controllers are read; off, the desktop tabs come back where they were. How the app STARTS is "
         "`controller settings --start`.",
         { Opt("set", "on or off", Type::String, false, { "on", "off" }) }, { "controller mode", "controller mode --set on" },
@@ -548,7 +548,7 @@ VG_COMMANDS
 
     Command::Register({
         "controller section", "show a section of the controller shell",
-        "What the shoulders do one step at a time: Home, Library, Catalog, Downloads, Friends, Node, Settings.",
+        "What the shoulders do one step at a time: Home, Library, Catalog, Downloads, Peers, Node, Settings.",
         { Pos("section", "the section", Type::String) }, { "controller section Library", "controller section downloads" },
         { "DeckShell::showSection", "DeckShell::SectionFrom", "DeckShell::section", "DeckShelf::rebuild", "DeckHome::refresh",
           "DeckDownloads::refresh", "DeckShell::libraryCards", "DeckShell::catalogCards", "DeckShelf::refreshCovers",
@@ -558,7 +558,7 @@ VG_COMMANDS
         [](Command::Context &C, const json &A) {
             const QString N = QString::fromStdString(Command::Str(A, "section"));
             const std::optional<DeckShell::Section> S = DeckShell::SectionFrom(N);
-            if (!S) throw Command::BadArgs("no section '" + N.toStdString() + "' — Home, Library, Catalog, Downloads, Friends, Node, Settings");
+            if (!S) throw Command::BadArgs("no section '" + N.toStdString() + "' — Home, Library, Catalog, Downloads, Peers, Node, Settings");
             Shell(C).showSection(*S);
             Settle(60);
             return State(C);

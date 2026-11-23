@@ -48,7 +48,7 @@ def load_nodes(root):
     """cid handle -> (node, bundle dir)."""
     out = {}
     for dp, dn, fns in os.walk(root):
-        dn[:] = [d for d in dn if not d.startswith("_friend_")]
+        dn[:] = [d for d in dn if not d.startswith("_peer_")]
         for fn in fns:
             if fn.endswith(".json"):
                 try:

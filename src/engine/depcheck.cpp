@@ -283,7 +283,7 @@ const std::vector<DepItem> &AllDeps()
                      Category::Core, Kind::File, {}, "vidyagodfs",
                      {{D::Arch,"reinstall VidyaGod (must sit next to the binary)"}}, {}});
         V.push_back({"sandbox","bubblewrap (bwrap)","Every game runs inside a bubblewrap sandbox, which also carries the "
-                     "friend LAN. Required: games don't launch without it. Installed but still ✗: the sandbox can't start "
+                     "peer LAN. Required: games don't launch without it. Installed but still ✗: the sandbox can't start "
                      "here — most often unprivileged user namespaces are disabled (or bwrap is setuid).",
                      Category::Core, Kind::Sandbox, {}, "",
                      {{D::Arch,"bubblewrap"},{D::Debian,"bubblewrap"},{D::Fedora,"bubblewrap"},{D::OpenSUSE,"bubblewrap"}}, {}});

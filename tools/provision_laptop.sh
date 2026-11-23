@@ -118,7 +118,7 @@ say "provision exited $RC"
 if [ "$RC" -ne 0 ]; then exit "$RC"; fi
 
 # POST-BUILD REGRESSION: every laptop build immediately proves every user flow still works END TO END across
-# both machines over the open internet (friending, virtual LAN + game traffic, link recovery, IPFS fetch +
+# both machines over the open internet (pairing, virtual LAN + game traffic, link recovery, IPFS fetch +
 # verify). A build that provisions but breaks a flow must fail HERE, loudly, not in the field.
 # VG_SKIP_E2E=1 skips (e.g. when iterating on the provision script itself).
 if [ "${VG_SKIP_E2E:-0}" != "1" ]; then

@@ -608,7 +608,7 @@ VG_COMMANDS
         "Gather every node file under a root (recursively) as a working tree, its mint order (deps first; cycles "
         "broken), and the CID-keyed index it freezes to — what the catalog derives on load, with no block stored.",
         { Pos("root", "the folder"), Flag("untrusted", "ignore stored CID handles (as for received stubs)"),
-          Flag("skip-reserved", "skip _friend_* stub folders (as a publish does)") },
+          Flag("skip-reserved", "skip _peer_* stub folders (as a publish does)") },
         { "graph tree ~/.VidyaGod/LIBRARY/VidyaGod" },
         { "NodeGraph::GatherWorkingTree", "NodeGraph::TopoOrderForMint", "NodeGraph::FreezeToIndex", "NodeGraph::IsFetchScratchDir" }, Needs::Config, false,
         [](Command::Context &, const json &A) {

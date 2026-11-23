@@ -9,6 +9,7 @@
 // — distinct from a node's PLATFORM (win64/linux64) in the launch graph.
 // ---------------------------------------------------------------------------
 
+#include <cstdint>
 #include <filesystem>
 #include <map>
 #include <string>
@@ -46,6 +47,26 @@ bool RemoveTree(const std::filesystem::path &Root, std::vector<std::string> &Err
 // held lock with no name attached cost an hour of blind process-hunting during the 2026-09-01 overnight session —
 // "another instance is running" while every pgrep pattern missed the actual holder.
 bool AcquireSingleInstanceLock(const std::string &Key, std::string *Holder = nullptr);
+
+// An exclusive advisory lock on a file, held for a scope and never waited for: held() false when another process (or
+// another lock of this one) has it. Released when it goes out of scope, and by the system if the process dies (no
+// stale lock survives a crash). What every writer of the library shares (PackageCatalog's publish, the packaging
+// scripts' `flock <data dir>/library-write.lock`), so none rewrites node files under another.
+//   POSIX:   open + flock(LOCK_EX|LOCK_NB), close on release.
+//   Windows: CreateFile + LockFileEx(LOCKFILE_EXCLUSIVE_LOCK|LOCKFILE_FAIL_IMMEDIATELY), CloseHandle on release.
+class ScopedFileLock
+{
+public:
+    explicit ScopedFileLock(const std::filesystem::path &File);
+    ~ScopedFileLock();
+    ScopedFileLock(const ScopedFileLock &) = delete;
+    ScopedFileLock &operator=(const ScopedFileLock &) = delete;
+    bool held() const { return Held; }
+    bool opened() const { return Handle != -1; }   // false: the file could not be opened (not "someone has it")
+private:
+    std::intptr_t Handle = -1;
+    bool Held = false;
+};
 
 // Hand the memory freed so far back to the system. A long-running app that builds an index, or runs a validation, frees
 // hundreds of MB the allocator would otherwise keep (and the window's RSS would show) for the rest of the session.

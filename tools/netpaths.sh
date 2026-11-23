@@ -112,7 +112,7 @@ run() {
   local idx=$(( ${r2:-0} > ${r3:-0} ? ${r2:-0} : ${r3:-0} ))
   local attempts=$(grep -c "FetchOnce ENTER" "$log")   # each queue dispatch = one attempt (rolling retries)
   local size=$(stat -c%s "$dd/out.bin" 2>/dev/null || echo 0); local fs=$(fetchSecs "$log")
-  say "  rc=$rc wall=${dt}s fetch=${fs:-n/a}s ok=$ok size=$size gateway=${gw:-none} attempts=$attempts | providers: friend=${r0:-0} dht=${r1:-0} idxA=${r2:-0} idxB=${r3:-0}"
+  say "  rc=$rc wall=${dt}s fetch=${fs:-n/a}s ok=$ok size=$size gateway=${gw:-none} attempts=$attempts | providers: peer=${r0:-0} dht=${r1:-0} idxA=${r2:-0} idxB=${r3:-0}"
   local v="FAIL"
   case "$name" in
     baseline)         [ $ok = 1 ] && v=PASS ;;

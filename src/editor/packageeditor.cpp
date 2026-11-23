@@ -98,7 +98,7 @@ PackageEditor::PackageEditor(nlohmann::ordered_json * GlobalConfigJSON, QWidget 
     });
     QAction * SeedAct = Bar->addAction("Seed && share");
     SeedAct->setToolTip("Put this package's content (zips, files, covers) on IPFS, record each file's CID in its node,\n"
-                        "and save - so friends can fetch it.");
+                        "and save - so peers can fetch it.");
     QWidget * Spacer = new QWidget(this);
     Spacer->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Preferred);
     Bar->addWidget(Spacer);
@@ -620,7 +620,7 @@ void PackageEditor::seedAndShare()
     const bool OwnLibrary = Cfg && PackageCatalog::IsPackageSourcePath(*Cfg, Pkg);
     const bool CanPublish = isSignalConnected(QMetaMethod::fromSignal(&PackageEditor::publishToLibraryRequested));
     if (OwnLibrary && CanPublish &&
-        QMessageBox::question(this, "Seed & share", Summary + "\n\nPublish this package now, so friends see the update?",
+        QMessageBox::question(this, "Seed & share", Summary + "\n\nPublish this package now, so peers see the update?",
                               QMessageBox::Yes | QMessageBox::No, QMessageBox::Yes) == QMessageBox::Yes)
     {
         emit publishToLibraryRequested(QString::fromStdString(Pkg.string()));

@@ -167,7 +167,7 @@ public:
     //Custom variables (from CustomVar subcomponents):
     std::map<std::string, std::string> CustomVariables;             //AUTO-RESOLVED: KEY → value; priority: CLI override > GlobalConfig > DEFAULT
     std::map<std::string, std::string> VariableOverrides;           //PASSED (CLI --var KEY=VALUE); highest-priority source for CustomVariables
-    //PASSED — engine-injected per-launch facts the package did not declare: the friend LAN (SELF_VIP/PEER_*) and
+    //PASSED — engine-injected per-launch facts the package did not declare: the peer LAN (SELF_VIP/PEER_*) and
     //VIDYAGOD_SELF_NAME (the local player's own display name, for a package to write into a game config). Seeded
     //into the resolve as if they were declared DEFAULTs, so they are the LOWEST priority — a --var, a persisted
     //user setting, or a node that declares the key itself all win — but they still reach the fixpoint, which is

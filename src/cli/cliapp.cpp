@@ -184,7 +184,7 @@ void PrintRootHelp(const Style &St)
     // The groups by what they are for; a group not placed here is listed under "More" (so none is ever hidden).
     static const std::vector<std::pair<const char *, std::vector<std::string>>> Sections = {
         { "Play",                 { "library", "catalog", "launch", "instances", "runners", "deps", "grafts" } },
-        { "Share",                { "friends", "received", "updates", "sources", "downloads", "transfers", "queue", "ipfs" } },
+        { "Share",                { "peers", "received", "updates", "sources", "downloads", "transfers", "queue", "ipfs" } },
         { "Make packages",        { "packages", "build", "editor", "canvas", "author", "edits", "registry", "vfs" } },
         { "The format",           { "node", "fold", "vars", "graph", "cid", "content" } },
         { "The app",              { "app", "ui", "events", "keys", "util" } },
@@ -912,7 +912,7 @@ int Main(int argc, char **argv, const Hooks &H)
         Model = std::make_unique<AppModel>(&Config, &AppDataDir);
         Ctx.Model = Model.get();
         EventLog::Attach(Model.get(), "AppModel");
-        EventLog::Attach(FriendsManager::instance(), "FriendsManager");
+        EventLog::Attach(PeersManager::instance(), "PeersManager");
         EventLog::Attach(IpfsManager::instance(), "IpfsManager");
     }
     QCoreApplication::processEvents();

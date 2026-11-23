@@ -46,14 +46,14 @@ while IFS= read -r p; do copydeps "$p"; done < <(find "$DIST" -name '*.dll')
 # One more pass so deps-of-deps just copied are themselves satisfied.
 while IFS= read -r p; do copydeps "$p"; done < <(find "$DIST" -maxdepth 1 -name '*.dll')
 
-# Wintun runtime (the multiplayer friend-LAN overlay adapter). The Go wintun binding LoadLibrary's wintun.dll at
+# Wintun runtime (the multiplayer peer-LAN overlay adapter). The Go wintun binding LoadLibrary's wintun.dll at
 # runtime, so ship the official signed DLL beside the exe. Stage it at staging/wintun.dll (the amd64 build from
 # https://www.wintun.net). Off by default (Settings.LanEnabled), so absence only disables multiplayer.
 if [ -f staging/wintun.dll ]; then
     cp staging/wintun.dll "$DIST/"
     echo "== bundled wintun.dll (multiplayer overlay) =="
 else
-    echo "== NOTE: staging/wintun.dll not found — friend-LAN multiplayer needs it (official signed DLL from wintun.net) =="
+    echo "== NOTE: staging/wintun.dll not found — peer-LAN multiplayer needs it (official signed DLL from wintun.net) =="
 fi
 
 echo "== done =="

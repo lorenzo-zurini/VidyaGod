@@ -73,7 +73,7 @@ QList<LibraryGameCard *> Available(AppModel &Model)
                 AnyMissing = true;
                 // Fetchable = it names content CIDs, OR a package it contains has not landed yet (or is not shared):
                 // the card stays, and its download dialog says what it is waiting for. From the one memoized pass: a
-                // closure walk per edition froze the GUI for minutes on a friend's 903 Minecraft versions.
+                // closure walk per edition froze the GUI for minutes on a peer's 903 Minecraft versions.
                 if (H != Hyd.end() && (H->second.HasCid || H->second.Incomplete)) AnyFetchable = true;
             }
         }
@@ -181,7 +181,7 @@ QString SectionOf(const nlohmann::ordered_json &Config, const std::filesystem::p
     const std::string Name = PackageCatalog::PackageSourceNameForPath(Config, BundleDir);
     if (!Name.empty()) return QString::fromStdString(Name);
     // A RECEIVED share lives under CATALOG/"<Nick> - <Lib>"/… — that is PUBLISHED content, so it sections under its
-    // friend/library, NEVER "Local". Return the dir directly under CATALOG. Only a bundle out of BOTH trees is "Local".
+    // peer/library, NEVER "Local". Return the dir directly under CATALOG. Only a bundle out of BOTH trees is "Local".
     bool AfterCatalog = false;
     for (const auto &Part : BundleDir)
     {

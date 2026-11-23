@@ -27,7 +27,7 @@ public slots:
 
 private:
     void buildUi();
-    // The "Updates" section: installed packages a friend shares in another version, each with "Update from <friend>".
+    // The "Updates" section: installed packages a peer shares in another version, each with "Update from <peer>".
     // Found off the GUI thread (it builds each package's folder); applying asks first, showing what changes.
     void rebuildUpdates();
     void offerUpdate(const PackageCatalog::PackageUpdate &U, QPushButton *Button);

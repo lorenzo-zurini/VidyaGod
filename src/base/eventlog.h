@@ -8,7 +8,7 @@
 
 // ---------------------------------------------------------------------------
 // EventLog — every signal the app's own objects emit, recorded with its arguments: what `VidyaGod events` lists and
-// follows. A signal is how the app says something happened (a download finished, a friend's library arrived, the
+// follows. A signal is how the app says something happened (a download finished, a peer's library arrived, the
 // catalog changed); with this the CLI sees each one as it happens, in order, without a debugger.
 //
 // Attach(Obj) records every signal Obj's own classes declare (not Qt's: QObject::destroyed, QWidget's window-title

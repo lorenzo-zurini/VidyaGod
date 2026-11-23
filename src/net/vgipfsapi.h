@@ -53,9 +53,9 @@ char *VgVerifyCid(const char *cid);            // "" if the whole DAG READS back
                                                // Catches what VgCidMissing cannot: backing file present but bytes changed.
 int  VgHasLocal(const char *cid);              // 1 if the node holds the block locally (ref or block), 0 no, -1 n/a
 int  VgPeerID(char **outId);                   // this node's libp2p peer ID
-// IPNS (ipns.go): the peer's identity key (== friend code) signs a tiny mutable record pointing its NAME at a CID.
-int  VgIpnsResolve(const char *name, char **out, char **errOut);    // /ipns/<name or friend code> -> /ipfs/<cid>; DHT then HTTPS-gateway fallback, signature-verified
-int  VgExportIdentity(const char *destPath, char **errOut);         // back up identity.key (== friend code + library address) — loss is permanent
+// IPNS (ipns.go): the peer's identity key (== peer code) signs a tiny mutable record pointing its NAME at a CID.
+int  VgIpnsResolve(const char *name, char **out, char **errOut);    // /ipns/<name or peer code> -> /ipfs/<cid>; DHT then HTTPS-gateway fallback, signature-verified
+int  VgExportIdentity(const char *destPath, char **errOut);         // back up identity.key (== peer code + library address) — loss is permanent
 int  VgImportIdentity(const char *srcPath, char **errOut);          // install a backed-up identity.key; RESTART required to re-key
 int  VgListenAddrs(char **outJson);            // JSON array of dialable /p2p/ multiaddrs (for peering/diagnostics)
 int  VgConnect(const char *multiaddr, char **errOut); // dial + hold a connection to a peer at a full /p2p/ multiaddr
@@ -80,40 +80,40 @@ void VgClearCancel(const char *cid);
 void VgSetExpectedSize(const char *cid, long long size); // manifest SOURCE.SIZE hint → real gateway progress %; size<=0 clears
 void VgSetTransferCb(VgTransferCb cb);
 
-// ---- friends / multiplayer social layer (see VidyaGodIPFS/social.go + friend.go) ----
-// Inbound friend event: kind mirrors friend.go's evFriend* (0=request 1=accept 2=decline 3=presence 4=profile
+// ---- peers / multiplayer social layer (see VidyaGodIPFS/social.go + peer.go) ----
+// Inbound peer event: kind mirrors peer.go's evPeer* (0=request 1=accept 2=decline 3=presence 4=profile
 // 5=removed); json is the affected contact ({peer,nick,pic,state,online,seen}). Unknown kinds must be DROPPED
 // by the receiver, never defaulted. Invoked on a node goroutine — the C++ side marshals to the GUI thread.
-typedef void (*VgFriendCb)(int kind, const char *json);
+typedef void (*VgPeerCb)(int kind, const char *json);
 
-int  VgFriendCode(char **outId);                       // this node's shareable friend code (= its peer ID)
+int  VgPeerCode(char **outId);                       // this node's shareable peer code (= its peer ID)
 int  VgSetProfile(const char *nick, const char *picCid, char **errOut);
 int  VgGetProfile(char **outJson);                     // {"nick":..,"pic":..}
-int  VgFriendList(char **outJson);                     // JSON array of contacts ({peer,nick,pic,state,online,seen,added})
+int  VgPeerList(char **outJson);                     // JSON array of contacts ({peer,nick,pic,state,online,seen,added})
 int  VgNearbyPeers(char **outJson);                    // JSON array of the VidyaGod devices on our network ({peer,nick,state}); never blocks
 
-int  VgFriendAdd(const char *peerID, const char *note, char **errOut);   // send a friend request
-int  VgFriendAccept(const char *peerID, char **errOut);
-int  VgFriendDecline(const char *peerID, char **errOut);
-int  VgFriendBlock(const char *peerID, char **errOut);
-int  VgFriendRemove(const char *peerID);
-int  VgFriendPing(const char *peerID);                 // 1 reachable, 0 not, -1 n/a
-// Friend library sharing (bilateral, per-(friend,library)): the seeder shares a named library's launchable CIDs with a
-// friend; the leecher requests them. A friend's shared libraries arrive as friend-callback events (kind 6, evFriendLibrary).
+int  VgPeerAdd(const char *peerID, const char *note, char **errOut);   // send a peer request
+int  VgPeerAccept(const char *peerID, char **errOut);
+int  VgPeerDecline(const char *peerID, char **errOut);
+int  VgPeerBlock(const char *peerID, char **errOut);
+int  VgPeerRemove(const char *peerID);
+int  VgPeerPing(const char *peerID);                 // 1 reachable, 0 not, -1 n/a
+// Peer library sharing (bilateral, per-(peer,library)): the seeder shares a named library's launchable CIDs with a
+// peer; the leecher requests them. A peer's shared libraries arrive as peer-callback events (kind 6, evPeerLibrary).
 int  VgShareLibrary(const char *peerID, const char *lib, const char *cidsJson, char **errOut);  // cidsJson = JSON string array
 int  VgUnshareLibrary(const char *peerID, const char *lib, char **errOut);
-int  VgRequestFriendLibraries(const char *peerID, char **errOut);
+int  VgRequestPeerLibraries(const char *peerID, char **errOut);
 int  VgSetPresenceDeny(const char *jsonArr);           // peers we hide our online presence from (JSON string array)
-void VgSetFriendCb(VgFriendCb cb);
+void VgSetPeerCb(VgPeerCb cb);
 
-// ---- virtual LAN of friends (see VidyaGodIPFS/friendlan.go) ----
-// There is NO session/host. Friends share one implicit virtual LAN (10.66.0.0/16); each peer's vIP is a pure function
-// of its peer ID, so membership + routing come from the accepted-friends set with zero coordination.
+// ---- virtual LAN of peers (see VidyaGodIPFS/peerlan.go) ----
+// There is NO session/host. Peers share one implicit virtual LAN (10.66.0.0/16); each peer's vIP is a pure function
+// of its peer ID, so membership + routing come from the accepted-peers set with zero coordination.
 // The launch vars {VIDYAGOD_SANDBOX_NET=isolated, SELF_VIP, SELF_NAME, SUBNET, PEER_VIPS,
 // PEER_NAMES} for a sandboxed game launch that joins the LAN. PEER_VIPS/PEER_NAMES are positionally parallel and
 // ordered by peer id (deterministic across calls). -1 if the LAN is unavailable.
 int  VgLanLaunchVars(char **outJson);
-// Per-friend LAN link state for the UI: [{peer,nick,vip,online,link:"direct"|"relayed"|"connecting"|"down",rttMs}].
+// Per-peer LAN link state for the UI: [{peer,nick,vip,online,link:"direct"|"relayed"|"connecting"|"down",rttMs}].
 int  VgLanPeers(char **outJson);
 // Full network/firewall diagnostic sweep (~15s, concurrent, read-only): [{"name","status","detail"}...].
 // -1 when the node is offline.
@@ -122,7 +122,7 @@ int  VgNetworkTest(char **outJson);
 void VgLanSetExcluded(const char *csv);
 
 // ---- overlay tunnel (see VidyaGodIPFS/overlay.go) ----
-// Bring up a TUN configured from the friend LAN (lanConfig) and forward IP packets between friends over libp2p —
+// Bring up a TUN configured from the peer LAN (lanConfig) and forward IP packets between peers over libp2p —
 // broadcast/multicast fanned out so LAN games discover each other. Needs CAP_NET_ADMIN in the current netns (holds
 // inside a bubblewrap userns netns). The production path is VgOverlayServe: the TUN lives in the game's OWN sandbox
 // netns (the host stack is never touched); VgOverlayStart is a host-netns debug/CLI path.

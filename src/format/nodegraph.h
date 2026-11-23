@@ -45,7 +45,7 @@ nlohmann::ordered_json FreezeNodeJson(nlohmann::ordered_json Raw,
 // was stripped on landing, or a never-minted draft) gets a synthetic per-node key. A file holds one node or an array
 // of them; FIRST-seen wins on a duplicate handle (a stale/forged stored CID) and the loser is RE-KEYED, never dropped.
 // Recursion is required so a package's cross-package edges resolve against the whole library. Pure — FS + JSON, no IPFS.
-// SkipReserved: skip reserved "_friend_*" received-stub dirs (used by PublishLibrary so a friend's stub can never enter
+// SkipReserved: skip reserved "_peer_*" received-stub dirs (used by PublishLibrary so a peer's stub can never enter
 // the mint tree — no re-share, no hostile handle shadowing our nodes). Default false (the catalog gather wants them).
 // Cheap string-aware bracket-depth pre-scan: true iff the JSON text nests no deeper than MaxDepth. nlohmann's parser
 // is recursive-descent, so UNTRUSTED bytes (a fetched block, a landed received
@@ -56,13 +56,13 @@ bool JsonDepthWithinLimit(const std::string &S, int MaxDepth);
 // non-throwing parse. False on oversize/too-deep/unparseable. EVERY walker of the library root must use this —
 // received shares land hostile bytes there verbatim, and one unguarded recursive parse is a crash.
 bool ReadTreeJsonBounded(const std::filesystem::path &File, nlohmann::ordered_json &J);
-// The same for bytes already in hand (a file read for its text first, a friend's message): depth pre-scanned, then a
+// The same for bytes already in hand (a file read for its text first, a peer's message): depth pre-scanned, then a
 // non-throwing parse. Discarded (is_discarded()) when too deep or not JSON.
 nlohmann::ordered_json ParseBounded(const std::string &Bytes);
 
 // TrustStoredCid: whether a node's stored "CID" field may be used as its handle. TRUE for the user's OWN roots
 // (LIBRARY, externally-added local bundles) — those files are authored/installed under our control. FALSE for the
-// UNTRUSTED received root (CATALOG browse stubs a friend controls): a malicious stub can embed a "CID" equal to a
+// UNTRUSTED received root (CATALOG browse stubs a peer controls): a malicious stub can embed a "CID" equal to a
 // local node's external-dep CID to make that dep resolve intra-tree to hostile content (or forge an "authored"
 // handle to steal a launch's BundleDir). An honest frozen stub never carries "CID" (stripped at freeze), so ignoring
 // it costs nothing and makes every received node synthetic-keyed (browse-only, un-referenceable, never a handle).
@@ -71,7 +71,7 @@ void GatherWorkingTree(const std::filesystem::path &Root,
                        std::map<std::string, std::filesystem::path> &Dirs,
                        bool SkipReserved = false, bool TrustStoredCid = true);
 // The node files a GatherWorkingTree of Root reads, in the order it reads them (the same skips: fetch scratch dirs,
-// and "_friend_*" when SkipReserved). What the index cache stats to know nothing changed.
+// and "_peer_*" when SkipReserved). What the index cache stats to know nothing changed.
 std::vector<std::filesystem::path> ListTreeFiles(const std::filesystem::path &Root, bool SkipReserved = false);
 
 // Deps-first (post-order) freeze order over the working tree: a node is ordered AFTER every intra-tree node it links

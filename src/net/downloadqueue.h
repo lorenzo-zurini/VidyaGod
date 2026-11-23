@@ -50,10 +50,10 @@ bool JobUnfinished(const std::string &Cid);
 // cancelled CID sees the cancellation as a failure.
 void CancelDownload(const std::string &Cid);
 // A destination path belongs to ONE CID at a time. Forget every dest under Dir (a directory prefix) from every job:
-// called when those files are removed on purpose (a friend's stubs replaced by a new generation), so a job re-run
+// called when those files are removed on purpose (a peer's stubs replaced by a new generation), so a job re-run
 // later never materialises a path nobody asked for any more.
 void ForgetDestsUnder(const std::string &Dir);
-// Forget one dest of one CID's job: that file is no longer this node's (a friend's package changed it, or dropped it),
+// Forget one dest of one CID's job: that file is no longer this node's (a peer's package changed it, or dropped it),
 // so a job that runs later never lands it; one landing now is undone when it ends.
 void ForgetDest(const std::string &Cid, const std::string &Dest);
 // True while a queued or active job still lands a file under Dir (a download into a package in progress).

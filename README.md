@@ -179,8 +179,8 @@ Content distribution runs in-process via **[libvgipfs](VidyaGodIPFS)** — a Box
 hold to the DHT, and drives the GUI's IPFS tab. Networking is opt-in (off by default; enable in Settings → IPFS).
 
 ### GUI
-Built around **`AppModel`**, a state/signal hub; every tab (Library, Catalog, Settings, IPFS, Friends) is its own
-`QWidget` talking to the model via signals. **Friends** backs the host-less virtual LAN: peers you have exchanged codes
+Built around **`AppModel`**, a state/signal hub; every tab (Library, Catalog, Settings, IPFS, Peers) is its own
+`QWidget` talking to the model via signals. **Peers** backs the host-less virtual LAN: peers you have exchanged codes
 with appear as machines on one flat LAN, so a game's own network multiplayer works over the DHT overlay with no lobby
 server and nothing for the game to know about.
 
@@ -236,7 +236,7 @@ Already cloned without `--recursive`? `git submodule update --init --recursive`.
 ### One-shot update-and-build
 
 Idempotent command to set up a fresh machine **and** to keep it current — clones on first run, pulls on every run,
-re-syncs submodules, and rebuilds only what changed. Paste it any time (e.g. on a friend's PC) to get the latest build:
+re-syncs submodules, and rebuilds only what changed. Paste it any time (e.g. on a peer's PC) to get the latest build:
 
 ```bash
 mkdir -p ~/Code && cd ~/Code && { [ -d VidyaGod/.git ] && (cd VidyaGod && git pull) || git clone https://github.com/lorenzo-zurini/VidyaGod.git; } && cd ~/Code/VidyaGod && git submodule update --init --recursive && cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release && cmake --build build
@@ -258,7 +258,7 @@ one works, on both platforms, from nothing. Keep the [Build](#build) block in st
 
 ### GUI
 `./build/VidyaGod` — **Library** (installed games), **Catalog** (everything the configured sources offer),
-**Settings** (package sources, runners, networking, paths), **IPFS** (transfers/peers), **Friends** (the virtual LAN).
+**Settings** (package sources, runners, networking, paths), **IPFS** (transfers/peers), **Peers** (the virtual LAN).
 Add a source CID, download a game, launch it. Author or import your own via the Library toolbar (**Package Editor** /
 **Add Local Package**); locally-added packages are badged **LOCAL** until published.
 
@@ -268,8 +268,8 @@ Everything the app does and shows is a command — git-style, with help at every
 
 ```sh
 VidyaGod help                                 # the groups
-VidyaGod help friends                         # a group's commands
-VidyaGod friends share LGZ-MacBook VidyaGod   # do something
+VidyaGod help peers                         # a group's commands
+VidyaGod peers share LGZ-MacBook VidyaGod   # do something
 VidyaGod ui show Peers                        # see exactly what a view shows (tables, checkboxes, cards)
 VidyaGod catalog shelf --state downloadable --json
 eval "$(VidyaGod completion bash)"            # completion (also zsh, fish)
@@ -288,7 +288,7 @@ title). A mistyped command, option or control name gets a "did you mean".
 
 There are 34 groups and 250-odd commands: the catalog and its nodes (`catalog`, `node`, `graph`, `cid`), the format
 engine (`fold`, `vars`, `content`), packages and sharing (`packages`, `sources`, `updates`, `received`, `grafts`,
-`friends`), the network (`ipfs`, `queue`, `transfers`, `downloads`), the package builder (`build`, `editor`, `canvas`,
+`peers`), the network (`ipfs`, `queue`, `transfers`, `downloads`), the package builder (`build`, `editor`, `canvas`,
 `author`), the launch engine (`launch`, `runners`, `registry`, `edits`, `vfs`, `instances`, `deps`), and the app itself
 (`app`, `library`, `ui`, `events`, `keys`, `util`). `VidyaGod commands --json` lists every one with what it drives;
 `VidyaGod commands --check` parses every example in the help (a test runs it).
@@ -346,7 +346,7 @@ The flags below are the older form of some of these commands; they still work, f
 |------|--------|
 | `--data-dir` / `--package-dir` / `--runtime-dir` / `--userdata-dir` | Path overrides (isolation, portable, in-package). |
 | `--peer-id` / `--connect` / `--net-test` / `--lan` | Node identity, manual dial, connectivity check, virtual LAN. |
-| `--friend-add` / `--friend-ls` / `--friend-code` / `--friend-nick` | The friend graph backing the host-less virtual LAN. |
+| `--peer-add` / `--peer-ls` / `--peer-code` / `--peer-nick` | The peer graph backing the host-less virtual LAN. |
 
 ```bash
 ./build/VidyaGod --node aoe2_tc                       # launch a game by node id

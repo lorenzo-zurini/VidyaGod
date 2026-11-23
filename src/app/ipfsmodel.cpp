@@ -34,7 +34,7 @@ static const QString CatMeta    = QStringLiteral("Meta");
 static QString SourceOfBundle(const std::filesystem::path & BundleDir)
 {
     // The section a bundle belongs to = the dir right under LIBRARY (a collection: VidyaGod/…) OR under CATALOG
-    // (a received friend share: "<Nick> - <Lib>"). A share is PUBLISHED content, so it names its friend section —
+    // (a received peer share: "<Nick> - <Lib>"). A share is PUBLISHED content, so it names its peer section —
     // never "Other"/"Local". "" only when the path is truly out of both trees.
     bool afterRoot = false;
     for (const auto & Part : BundleDir)

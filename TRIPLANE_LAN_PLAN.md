@@ -9,12 +9,12 @@ broadcasts, and internet — rootless.
 
 **The insight that makes it possible**: (1) we already own the game's entire packet stream — `overlay.go
 readLoop` sees every packet the game writes to the TUN, and `isFanout` already classifies broadcast/multicast
-(that's how friend fan-out works); (2) an *unprivileged* host process CAN receive and send real-LAN UDP
+(that's how peer fan-out works); (2) an *unprivileged* host process CAN receive and send real-LAN UDP
 broadcasts — binding `0.0.0.0:<port>` with `SO_BROADCAST` needs no capabilities. So a **userspace broadcast
 reflector** in the node bridges the two broadcast domains that no kernel facility can join rootlessly.
 
 **Result — one virtual NIC, three planes**:
-- overlay plane: friends via libp2p fan-out (existing)
+- overlay plane: peers via libp2p fan-out (existing)
 - host plane: real-LAN discovery via reflected broadcasts (NEW)
 - internet plane: pasta NAT (existing)
 
@@ -22,7 +22,7 @@ reflector** in the node bridges the two broadcast domains that no kernel facilit
 
 ### Reflector (`VidyaGodIPFS/hostrelay.go`, new ~250 lines)
 
-**Outbound (game → real LAN)** — hook in `readLoop`'s fanout branch (`overlay.go:260`): in addition to the friend
+**Outbound (game → real LAN)** — hook in `readLoop`'s fanout branch (`overlay.go:260`): in addition to the peer
 fan-out, parse IPv4/UDP and hand `(srcPort S, dstPort D, payload)` to the reflector, which re-emits it as a REAL
 host broadcast: `sendto(255.255.255.255:D)` from a host UDP socket bound to `:S` (multicast dst 224.0.0.0/4 →
 `sendto(group:D)` likewise).
@@ -60,7 +60,7 @@ would silently drop them (loose mode passes; pin 0 for determinism).
 Protocols that EMBED their address in the payload (DirectPlay does): a real-LAN peer joining a game HOSTED in the
 sandbox may fail (embedded 10.66.x.x is unreachable from the real LAN) — while the sandboxed player joining a
 real-LAN-hosted game works fully (the embedded address is real, reachable via pasta). Symmetric fix would need
-per-protocol payload rewriting — explicitly out of scope; the overlay plane (friends) has no such asymmetry.
+per-protocol payload rewriting — explicitly out of scope; the overlay plane (peers) has no such asymmetry.
 
 ## Files
 
@@ -79,4 +79,4 @@ per-protocol payload rewriting — explicitly out of scope; the overlay plane (f
    announcements on UDP :6073 every second; launch AoE2 → its multiplayer browser should list the fake session
    (inbound reflection), and the fake peer's socket should receive the game's own announcements (outbound
    reflection) — verifiable from the script's recv log.
-3. Cross-plane regression: friend fan-out still works (laptop overlay peer sees the same announcements).
+3. Cross-plane regression: peer fan-out still works (laptop overlay peer sees the same announcements).

@@ -281,7 +281,7 @@ std::vector<std::string> LaunchResolver::ResolveChainIds(const NodeIndex &Idx, c
         const std::string Rec = E.is_object() ? E.value("RECOMMENDEDRUNNER", std::string()) : std::string();
         if (!Rec.empty())
         {
-            //An installed runner with the label first (a friend's catalog may hold another node of that label), and a
+            //An installed runner with the label first (a peer's catalog may hold another node of that label), and a
             //runner that is not itself this machine's gets the rest of its chain, as a pin through it would.
             const Node *Pick = nullptr;
             for (const Node *R : InstalledOf(Idx, Runners)) if (R->NodeId == Rec && RunnerServes(R, Host)) { Pick = R; break; }

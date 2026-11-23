@@ -43,6 +43,21 @@ std::filesystem::path SelfExe()
     return std::filesystem::path(std::wstring(buf, n));
 }
 
+ScopedFileLock::ScopedFileLock(const std::filesystem::path &File)
+{
+    HANDLE H = ::CreateFileW(File.wstring().c_str(), GENERIC_READ | GENERIC_WRITE, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+                             nullptr, OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
+    if (H == INVALID_HANDLE_VALUE) return;
+    Handle = reinterpret_cast<std::intptr_t>(H);
+    OVERLAPPED O{};
+    Held = ::LockFileEx(H, LOCKFILE_EXCLUSIVE_LOCK | LOCKFILE_FAIL_IMMEDIATELY, 0, 1, 0, &O) != 0;
+}
+
+ScopedFileLock::~ScopedFileLock()
+{
+    if (Handle != -1) ::CloseHandle(reinterpret_cast<HANDLE>(Handle));   // closing the handle releases the lock
+}
+
 bool AcquireSingleInstanceLock(const std::string &Key, std::string *Holder)
 {
     // A session-local named mutex derived from Key (hashed to a bounded, name-safe token). The "Local\"

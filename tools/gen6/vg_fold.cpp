@@ -1,5 +1,5 @@
 // vg_fold — the C++ resolver (src/fold.cpp) in batch, for tools/gen6/fold_gate.py.
-// argv[1] = a library root (every *.json with CID + LAYERS below it, _friend_* dirs skipped).
+// argv[1] = a library root (every *.json with CID + LAYERS below it, _peer_* dirs skipped).
 // stdin: one case per line — {"id", "root", "instance": {}, "builtins": {}, "grafts": [], "face": uid?}
 // argv[2] == --cids: print every node's canonical CID instead (handle<TAB>cid).
 // argv[2] == --entries-check: ResolveEntries(node).Exec == Resolve(node).Exec for every node.
@@ -29,7 +29,7 @@ int main(int argc, char **argv)
     std::deque<json> Store;                                    // owns the node JSON the library points into
     for (auto It = fs::recursive_directory_iterator(argv[1]); It != fs::recursive_directory_iterator(); ++It)
     {
-        if (It->is_directory() && It->path().filename().string().rfind("_friend_", 0) == 0) { It.disable_recursion_pending(); continue; }
+        if (It->is_directory() && It->path().filename().string().rfind("_peer_", 0) == 0) { It.disable_recursion_pending(); continue; }
         if (!It->is_regular_file() || It->path().extension() != ".json") continue;
         try
         {

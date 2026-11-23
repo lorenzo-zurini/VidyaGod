@@ -4,7 +4,7 @@
 #include "pkgactions.h"
 #include "asyncwork.h"
 #include "appmodel.h"
-#include "friendsharing.h"
+#include "peersharing.h"
 #include "downloadmanager.h"
 #include "nodeservice.h"
 #include "downloaddialog.h"   // a card's Download and Cancel
@@ -156,7 +156,7 @@ MainWindow::MainWindow(nlohmann::ordered_json * gc, QDir * appData, QWidget * pa
     EventLog::Attach(Model, "AppModel");
     EventLog::Attach(IpfsModelPtr, "IpfsModel");
     EventLog::Attach(DownloadMgr, "DownloadManager");
-    EventLog::Attach(FriendsManager::instance(), "FriendsManager");
+    EventLog::Attach(PeersManager::instance(), "PeersManager");
     EventLog::Attach(IpfsManager::instance(), "IpfsManager");
     EventLog::AttachTree(this);
     Constructed = true;
@@ -206,7 +206,7 @@ void MainWindow::BuildDesktop()
     MainWindowTabWidget->addTab(CatalogTabPtr,  "Catalog");
     MainWindowTabWidget->addTab(SettingsTabPtr, "Settings");
     MainWindowTabWidget->addTab(IpfsTabPtr,     "IPFS");
-    MainWindowTabWidget->addTab(NetworkTabPtr,  "Network");
+    MainWindowTabWidget->addTab(NetworkTabPtr,  "Peers");
     //Every tab on the window's own colour: Fusion's tab pane is a lighter shade, and pages that paint nothing of their
     //own (Settings, Network) showed it — a second palette beside the Library's.
     for (int I = 0; I < MainWindowTabWidget->count(); ++I) MainWindowTabWidget->widget(I)->setAutoFillBackground(true);

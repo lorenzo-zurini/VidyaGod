@@ -36,7 +36,7 @@ def safe_name(s):
 
 nodes = {}   # cid -> [path, node]
 for d, dirs, fs in os.walk(lib):
-    dirs[:] = [x for x in dirs if not x.startswith("_friend_")]
+    dirs[:] = [x for x in dirs if not x.startswith("_peer_")]
     for f in fs:
         if not f.endswith(".json"):
             continue

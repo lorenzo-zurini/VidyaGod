@@ -1,14 +1,15 @@
 // `VidyaGod packages …`, `sources …`, `updates …`, `received …`, `grafts …`, `runners …` — the package catalog's
-// functions (packagecatalog.h): what is installed and where, the sources a library syncs from, a friend's packages as
+// functions (packagecatalog.h): what is installed and where, the sources a library syncs from, a peer's packages as
 // received and installed, the optional pieces a game takes, and the runners that carry it.
 #include "nodegraph.h"
 #include "instancestore.h"
 #include "installed.h"
 #include "shelf.h"
 #include "command.h"
+#include "platform/platform.h"   // the library's write lock
 #include "cmdutil.h"
 #include "appmodel.h"
-#include "friendsharing.h"
+#include "peersharing.h"
 #include "packagecatalog.h"
 #include "packagecatalog_p.h"
 #include "nodefiles.h"
@@ -110,8 +111,8 @@ VG_COMMANDS
     using Command::Flag;
     Command::RegisterGroup("packages", "package folders: where they are, their settings, publish, seed, install, uninstall");
     Command::RegisterGroup("sources", "the package sources a library syncs from");
-    Command::RegisterGroup("updates", "newer versions of installed packages, from friends");
-    Command::RegisterGroup("received", "a friend's packages as they arrive: planned, landed, adopted");
+    Command::RegisterGroup("updates", "newer versions of installed packages, from peers");
+    Command::RegisterGroup("received", "a peer's packages as they arrive: planned, landed, adopted");
     Command::RegisterGroup("grafts", "the optional pieces a game takes (mods, fixes, soundtracks)");
     Command::RegisterGroup("runners", "what can run a game here: compatible, installed, usable, the chain");
 
@@ -325,14 +326,22 @@ VG_COMMANDS
         "folders made, and their entries put in place of their own (every other package's untouched; a contained "
         "package is redone only when it is stale). With the app up, that last step runs in the app (follow it: events "
         "wait --signal libraryPublished). "
+        "It holds the library's write lock (<data dir>/library-write.lock, the one the packaging scripts flock) for the whole "
+        "run: with another writer on it, it does nothing and says the library is busy. "
         "With --export, a copy of its node files alone is written there.", { Pos("package", "a folder path, its name, its UID, or part of its title"), Opt("export", "a folder for the node-files-only copy") },
         { "packages publish 749", "packages publish 749 --export /tmp/aoe2-nodes" },
         { "PackageCatalog::PublishPackage", "PackageCatalog::SeedNodeContent", "PackageCatalog::StampNodeCids",
-          "PackageCatalog::PublishPackages", "AppModel::publishPackage" }, Needs::Config, true,
+          "PackageCatalog::PublishPackages", "AppModel::publishPackage", "PackageCatalog::LibraryWriteLock",
+          "Platform::ScopedFileLock::held", "Platform::ScopedFileLock::opened" }, Needs::Config, true,
         [](Command::Context &C, const json &A) {
             const auto D = PackageDir(C, Command::Str(A, "package"), false);
             std::string Err;
-            if (!PackageCatalog::PublishPackage(D.string(), Command::Str(A, "export", ""), &Err)) throw std::runtime_error(Err);
+            {   // seeding writes SOURCE and SIZE into its nodes: under the library's lock too, released for the publish below
+                const Platform::ScopedFileLock Lock(PackageCatalog::LibraryWriteLock(*C.Config));
+                if (!Lock.opened()) throw std::runtime_error("the library's write lock cannot be opened");
+                if (!Lock.held()) throw std::runtime_error(PackageCatalog::LibraryBusy);
+                if (!PackageCatalog::PublishPackage(D.string(), Command::Str(A, "export", ""), &Err)) throw std::runtime_error(Err);
+            }
             if (C.Model)
             {
                 C.Model->publishPackage(QString::fromStdString(D.string()));
@@ -347,19 +356,19 @@ VG_COMMANDS
 
     Command::Register({
         "packages sheet", "the share sheet: each published node and where it lives",
-        "What publishing recorded and friends are given: node CID → <library>/<package>/<file>. With a package, its "
-        "entries only; with --cid, where that node lives (ours, or a friend's sheet); with --friend, what that friend "
+        "What publishing recorded and peers are given: node CID → <library>/<package>/<file>. With a package, its "
+        "entries only; with --cid, where that node lives (ours, or a peer's sheet); with --peer, what that peer "
         "shares with us; with --wire, the entries as they travel ({library: [{cid, pkg, node}]}).",
-        { Opt("package", "<library>/<package>"), Opt("cid", "a node CID"), Opt("friend", "a friend's peer ID"), Flag("wire", "as it travels") },
-        { "packages sheet --package 'VidyaGodLibraries/xinput'", "packages sheet --cid bafkrei…", "packages sheet --friend 12D3KooW… --wire" },
+        { Opt("package", "<library>/<package>"), Opt("cid", "a node CID"), Opt("peer", "a peer's peer ID"), Flag("wire", "as it travels") },
+        { "packages sheet --package 'VidyaGodLibraries/xinput'", "packages sheet --cid bafkrei…", "packages sheet --peer 12D3KooW… --wire" },
         { "PackageCatalog::SheetEntries", "PackageCatalog::SheetPath", "PackageCatalog::WireEntries", "PackageCatalog::Wire" }, Needs::Config, false,
         [](Command::Context &C, const json &A) {
             if (const std::string Cid = Command::Str(A, "cid", ""); !Cid.empty())
                 return json{{"cid", Cid}, {"path", PackageCatalog::SheetPath(*C.Config, Cid)}};
-            const std::string Pkg = Command::Str(A, "package", ""), Friend = Command::Str(A, "friend", "");
-            const json Friends = C.Config->value("FriendLibraries", json::object());
-            const auto All = Friend.empty() ? PackageCatalog::SheetEntries(C.Config->value("ShareSheet", json::object()))
-                                            : PackageCatalog::WireEntries(Friends.value(Friend, json::object()));
+            const std::string Pkg = Command::Str(A, "package", ""), Peer = Command::Str(A, "peer", "");
+            const json Peers = C.Config->value("PeerLibraries", json::object());
+            const auto All = Peer.empty() ? PackageCatalog::SheetEntries(C.Config->value("ShareSheet", json::object()))
+                                            : PackageCatalog::WireEntries(Peers.value(Peer, json::object()));
             std::vector<PackageCatalog::SheetEntry> Some;
             for (const auto &E : All) if (Pkg.empty() || E.Lib + "/" + E.Pkg == Pkg) Some.push_back(E);
             if (Command::Bool(A, "wire", false)) return PackageCatalog::Wire(Some);
@@ -443,7 +452,7 @@ VG_COMMANDS
     Command::Register({
         "packages meta-cid", "the CID a folder's node files would publish as",
         "Build (and store) the node-files-only folder of a package source tree and print its CID — what a source "
-        "upgrade or a friend would fetch.", { Pos("dir", "the folder") }, { "packages meta-cid ~/.VidyaGod/LIBRARY/VidyaGod" },
+        "upgrade or a peer would fetch.", { Pos("dir", "the folder") }, { "packages meta-cid ~/.VidyaGod/LIBRARY/VidyaGod" },
         { "PackageCatalog::PublishMetaCid", "PackageCatalog::MirrorDehydrated" }, Needs::Config, true,
         [](Command::Context &, const json &A) {
             std::string Err;
@@ -620,8 +629,8 @@ VG_COMMANDS
 
     // ---------------- updates ----------------
     Command::Register({
-        "updates list", "newer versions of installed packages that friends share",
-        "For each package you installed from a friend, a newer version they now share — its package, library, friend "
+        "updates list", "newer versions of installed packages that peers share",
+        "For each package you installed from a peer, a newer version they now share — its package, library, peer "
         "and folder CID.", {}, { "updates list" }, { "PackageCatalog::AvailableUpdates" }, Needs::Config, true,
         [](Command::Context &C, const json &) {
             json Out = json::array();
@@ -653,31 +662,31 @@ VG_COMMANDS
 
     // ---------------- received ----------------
     Command::Register({
-        "received plan", "where a friend's shared packages would land",
-        "The folders a friend's share snapshot lands into (CATALOG/<nick> - <library>/<package>) and the fetch each is, "
-        "and whether any received package is still incomplete.", { Pos("friend", "the friend's peer id (VidyaGod friends list)") },
+        "received plan", "where a peer's shared packages would land",
+        "The folders a peer's share snapshot lands into (CATALOG/<nick> - <library>/<package>) and the fetch each is, "
+        "and whether any received package is still incomplete.", { Pos("peer", "the peer's peer id (VidyaGod peers list)") },
         { "received plan 12D3KooW9z4dCR2LVkuc4xb4zTrss5AR9N5WcAAYdJSDat1VCfAR" },
         { "PackageCatalog::PlanReceivedFetches", "PackageCatalog::ReceivedFolderNames", "PackageCatalog::ReceivedFetchTargets", "PackageCatalog::ReceivedNickLabel",
           "PackageCatalog::ReceivedPackagesIncomplete" }, Needs::Config, false,
         [](Command::Context &C, const json &A) {
-            const std::string P = Command::Str(A, "friend");
-            const json &Fl = C.Config->value("FriendLibraries", json::object());
-            if (!Fl.contains(P)) return json{{"friend", P}, {"held", false}};
+            const std::string P = Command::Str(A, "peer");
+            const json &Fl = C.Config->value("PeerLibraries", json::object());
+            if (!Fl.contains(P)) return json{{"peer", P}, {"held", false}};
             const auto Plan = PackageCatalog::PlanReceivedFetches(*C.Config, PackageCatalog::ReceivedNickLabel(P), Fl[P]);
             json Rows = json::array();
             for (const auto &R : Plan) Rows.push_back({{"cid", R.Cid}, {"to", R.Dest}});
-            return json{{"friend", P}, {"label", PackageCatalog::ReceivedNickLabel(P)}, {"fetches", Rows},
+            return json{{"peer", P}, {"label", PackageCatalog::ReceivedNickLabel(P)}, {"fetches", Rows},
                         {"targets", Targets(PackageCatalog::ReceivedFetchTargets(Plan))},
                         {"incomplete", PackageCatalog::ReceivedPackagesIncomplete(*C.Config)}};
         }, {} });
 
     Command::Register({
         "received land", "land every received package's node files now",
-        "Fetch each package folder friends share with you (node files only — content stays lazy until install). With "
+        "Fetch each package folder peers share with you (node files only — content stays lazy until install). With "
         "the app up it lands in the app.", {}, { "received land" },
-        { "PackageCatalog::LandReceivedPackages", "FriendSharing::completeReceivedClosures" }, Needs::Config, true,
+        { "PackageCatalog::LandReceivedPackages", "PeerSharing::completeReceivedClosures" }, Needs::Config, true,
         [](Command::Context &C, const json &) {
-            if (C.Model) { C.Model->friends().completeReceivedClosures(); return json{{"started", true}}; }
+            if (C.Model) { C.Model->peers().completeReceivedClosures(); return json{{"started", true}}; }
             std::string Err;
             if (!PackageCatalog::LandReceivedPackages(*C.Config, &Err)) throw std::runtime_error(Err);
             return json{{"landed", true}};
@@ -685,13 +694,13 @@ VG_COMMANDS
 
     Command::Register({
         "received prune", "drop received node files no share lists any more",
-        "Remove the node files of older generations of friends' packages (an installed package keeps its content).", {},
+        "Remove the node files of older generations of peers' packages (an installed package keeps its content).", {},
         { "received prune" }, { "PackageCatalog::PruneStaleReceived" }, Needs::Config, false,
         [](Command::Context &C, const json &) { return json{{"pruned", PackageCatalog::PruneStaleReceived(*Index(C), *C.Config)}}; }, {} });
 
     Command::Register({
         "received adopt", "install a received package: move it into your library",
-        "What a download does first: move a friend's package folder out of CATALOG into LIBRARY/<library>/<package>, "
+        "What a download does first: move a peer's package folder out of CATALOG into LIBRARY/<library>/<package>, "
         "where it is an ordinary package of yours. --for lists every package a game's download would adopt instead.",
         { Opt("package", "the received package folder"), Opt("for", "a game's node: list what its download adopts") },
         { "received adopt --for 'Patch 2.0a'", "received adopt --package 'Age of Empires II'" },

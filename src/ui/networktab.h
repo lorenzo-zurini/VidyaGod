@@ -5,33 +5,40 @@
 
 #include <functional>
 #include <map>
+#include <set>
 #include <vector>
+
+#include "peersharing.h"   // PeerSharing::Permissions — what pairing's ticks hold
 
 class AppModel;
 class QLabel;
 class QLineEdit;
-class QTableWidget;
 class QPushButton;
 class QCheckBox;
 class QGroupBox;
+class QTableWidget;
 class QTimer;
+class QToolButton;
 class QVBoxLayout;
 namespace IpfsWrapper { struct NearbyPeer; }
 
-// NetworkTab — the unified "Network" tab (replaces the old Friends + Sharing tabs). Header: friend code + nickname,
-// add-a-peer, a global auto-accept toggle, Verify&Publish, identity backup. Body: the per-peer matrix — rows are a
-// "New peers" defaults template + one per contact; columns are Accepted, Share:<lib> (one per published library),
-// Receive, vLAN, Presence (checkboxes), plus a per-row menu for Decline/Block/Remove. Thin view over AppModel +
-// IpfsWrapper::FriendList + the FriendsManager signal hub.
-// Between them, "On your network": the VidyaGod devices nearby (IpfsWrapper::NearbyPeers) and the requests waiting on
-// us, each one press from paired (Pair / Accept), with what to share ticked in the same row — no code to type.
+// NetworkTab — the Peers page: the desktop's Peers tab and controller mode's Peers page (hosted there). Every
+// peer is the same: a row of the table with its permissions — Accepted, Share: <library> (one per library of mine),
+// Receive, vLAN, Presence — under a "New peers" row of defaults, and its menu (Decline / Block / Remove). Pairing asks
+// for those same permissions where it happens, as ticks that start as the defaults row:
+//  - what you share, in one line, and the one press it may need (prepare a library for sharing, turn networking on);
+//  - waiting on you: each request, with the ticks, accepted or declined;
+//  - the table;
+//  - add someone: the VidyaGod devices on your network, or a peer code, each with the ticks and one press;
+//  - advanced, folded: name, auto-accept, publish everything, identity backup.
+// Thin view over PeerSharing (the model of all of it) + IpfsWrapper::PeerList / NearbyPeers.
 class NetworkTab : public QWidget
 {
     Q_OBJECT
 public:
     explicit NetworkTab(AppModel & model, QWidget * parent = nullptr);
 
-    // Where "On your network" reads the nearby devices from (IpfsWrapper::NearbyPeers by default): a test sets a list.
+    // Where the nearby devices are read from (IpfsWrapper::NearbyPeers by default): a test sets a list.
     static void SetNearbySource(std::function<std::vector<IpfsWrapper::NearbyPeer>()> Source);
 
 public slots:
@@ -40,38 +47,46 @@ public slots:
 private:
     void buildUi();
     void refresh();
-    void scheduleRefresh();          // coalesced, deferred (avoids re-entrancy from a cell toggle / open menu)
+    void scheduleRefresh();          // coalesced, deferred (never rebuilds under a running handler)
+    void rebuildRows();              // the lists and the table, rebuilt only when what they show changed
+    void rebuildTable();
     void addPeerClicked();
     void setNickClicked();
     void publishClicked();
     void backupIdentityClicked();
     void restoreIdentityClicked();
-    void refreshNearby();            // rebuilds the rows only when what they show changed (a rebuild takes a pad's focus)
     void pairClicked(const QString & peer, const QString & name);
-    void acceptPairingClicked(const QString & peer, const QString & name);
+    void acceptClicked(const QString & peer, const QString & name);
+    QWidget * permissionTicks(QWidget * row, const QString & key);   // the table's columns, as ticks, for one pairing
+    PeerSharing::Permissions & ticks(const QString & key);         // a pairing's ticks (the defaults row at first)
 
     AppModel &     Model;
+    QLabel *       ShareState    = nullptr;
+    QPushButton *  PrepareButton = nullptr;   // a library's first publish, while one shared has none
+    QPushButton *  TurnOnButton  = nullptr;   // while networking is off
+    QGroupBox *    WaitingBox    = nullptr;
+    QVBoxLayout *  WaitingRows   = nullptr;
+    QTableWidget * Table         = nullptr;
+    QLabel *       EmptyHint     = nullptr;   // under the table while there is nobody
+    QGroupBox *    AddBox        = nullptr;
+    QVBoxLayout *  NearbyRows    = nullptr;
+    QLabel *       NearbyHint    = nullptr;
+    QLabel *       Status        = nullptr;   // what the last press did
     QLabel *       CodeValue     = nullptr;
     QPushButton *  CopyButton    = nullptr;
-    QLineEdit *    NickEdit      = nullptr;
     QLineEdit *    AddEdit       = nullptr;
+    QToolButton *  AdvancedToggle = nullptr;
+    QWidget *      Advanced      = nullptr;
+    QLineEdit *    NickEdit      = nullptr;
     QCheckBox *    AutoAccept    = nullptr;
     QPushButton *  PublishButton = nullptr;
     QLabel *       PublishStatus = nullptr;
-    QLabel *       StatusHint    = nullptr;
-    QPushButton *  TurnOnButton  = nullptr;   // beside StatusHint while networking is off
-    QLabel *       EmptyHint     = nullptr;   // under the table while there is no friend
-    QTableWidget * Table         = nullptr;
+    QTimer *       NearbyTimer   = nullptr;   // polls the nearby devices while the page shows
+    QString        Shown = QStringLiteral("\x01");   // what the rows show now (never what an empty page shows: the first pass builds)
+    QString        TableShown = QStringLiteral("\x01");
     bool           NickEdited    = false;
     bool           RefreshQueued = false;
-    QGroupBox *    NearbyBox     = nullptr;
-    QVBoxLayout *  NearbyRows    = nullptr;
-    QLabel *       NearbyHint    = nullptr;   // nobody nearby, nothing waiting
-    QLabel *       NearbyStatus  = nullptr;   // what the last Pair / Accept did
-    QTimer *       NearbyTimer   = nullptr;   // polls the nearby list while the page shows
-    QString        NearbyShown;               // what the rows show now
-    struct PairTicks { bool Share = false, Receive = false; };
-    std::map<QString, PairTicks> Ticks;       // per peer: kept across rebuilds of the rows
+    std::map<QString, PeerSharing::Permissions> Ticks;   // per pairing (a peer, or "code"), kept across rebuilds
 };
 
 #endif // NETWORKTAB_H

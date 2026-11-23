@@ -215,7 +215,7 @@ private slots:
         QTRY_COMPARE_WITH_TIMEOUT(IpfsWrapper::DebugJobState(C), 3 /* Failed */, 5000);
     }
 
-    // A folder fetch still in flight when its stub dir is dropped (the package was adopted, or the friend withdrew it)
+    // A folder fetch still in flight when its stub dir is dropped (the package was adopted, or the peer withdrew it)
     // must not re-create the stub when it lands: the worker holds its own copy of the dests. Teeth: stop
     // ForgetDestsUnder recording active jobs' dests (or RunJob undoing them) and the dropped dir comes back.
     void aFolderLandingAfterItsDirWasDroppedIsUndone()
@@ -288,7 +288,7 @@ private slots:
         QCOMPARE(Read(X), std::string("CID_CLAIM_NEW"));
     }
 
-    // One file forgotten from a fetch in flight (a friend's package no longer names it there): the worker's late
+    // One file forgotten from a fetch in flight (a peer's package no longer names it there): the worker's late
     // landing of it is undone, and nothing else — its folder and the fetch's other dest stay. Teeth: stop ForgetDest
     // recording an active job's dest (the file stays).
     void aFileForgottenWhileItsFetchRunsIsUndone()
@@ -333,7 +333,7 @@ private slots:
 #endif
     }
 
-    // Forgetting a directory's dests: after a friend's stubs were removed on purpose, a later run of a job that
+    // Forgetting a directory's dests: after a peer's stubs were removed on purpose, a later run of a job that
     // remembered a path under that directory must not recreate it.
     void forgottenDestsAreNeverMaterialisedAgain()
     {

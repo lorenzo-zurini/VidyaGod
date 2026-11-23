@@ -1,5 +1,5 @@
 #include "appmodel.h"
-#include "friendsharing.h"
+#include "peersharing.h"
 #include "nodestore.h"
 #include "covercache.h"
 #include "platform/platform.h"   // ReleaseFreedMemory
@@ -84,7 +84,7 @@ AppModel::AppModel(nlohmann::ordered_json * config, QDir * appDataDir, QObject *
         }
     }
 
-    Friends = new FriendSharing(*this);   // the friend protocol: shares, received libraries, per-peer toggles
+    Peers = new PeerSharing(*this);   // the peer protocol: shares, received libraries, per-peer toggles
 
     // Background serve-reliability sweep: periodically re-point any orphaned no-copy reference so content that was
     // moved/re-created MID-SESSION is repaired before (or shortly after) a peer requests it — not only on next launch.
@@ -326,12 +326,12 @@ void AppModel::syncSources()
                 emit packageSourcesChanged();
             }
             healOrphansIfAny();            // re-point any orphaned no-copy refs so the node can actually SERVE its content
-            Friends->completeReceivedClosures();    // node-ready → finish landing any received root's node closure (resumes after a restart)
-            Friends->reRegisterShares();            // node-ready → replay config["Sharing"] into the node's in-memory share table: a
+            Peers->completeReceivedClosures();    // node-ready → finish landing any received root's node closure (resumes after a restart)
+            Peers->reRegisterShares();            // node-ready → replay config["Sharing"] into the node's in-memory share table: a
                                            // restarted seeder shared NOTHING until its next publish (the durable record
-                                           // never reached Go), so friends saw empty snapshots
+                                           // never reached Go), so peers saw empty snapshots
             pushSeedLevels();              // node-ready → announce our seeded content to the DHT, meta-CIDs first
-            Friends->pushLanRoster();               // node-ready → apply the persisted Virtual-LAN roster (excluded members)
+            Peers->pushLanRoster();               // node-ready → apply the persisted Virtual-LAN roster (excluded members)
             // A source that couldn't be fetched (hostile network, provider unreachable — the node-side retries are
             // deliberately bounded so this worker can't wedge) must not be abandoned until the next app start:
             // re-run the sync in a minute. Sources already materialized are skipped, so the retry is cheap.
@@ -567,6 +567,12 @@ void AppModel::publishPackage(const QString & packageDir)
     kickPublish();
 }
 
+void AppModel::publishPackages(const QStringList & packageDirs)
+{
+    for (const QString & D : packageDirs) PendingPkgs.insert(D.toStdString());
+    if (!packageDirs.isEmpty()) kickPublish();
+}
+
 void AppModel::kickPublish()
 {
     if (Publishing) return;   // the pass in flight starts another for what was asked meanwhile
@@ -593,12 +599,12 @@ void AppModel::runPublish()
             Publishing = PendingAll || !PendingPkgs.empty();
             if (Publishing) QMetaObject::invokeMethod(this, &AppModel::runPublish, Qt::QueuedConnection);
             if (Cids->empty()) { emit libraryPublishFailed(QString::fromStdString(*Err)); return; }
-            (*Config)["ShareSheet"] = (*Cfg)["ShareSheet"];   // what friends are given (drives Share ▾)
+            (*Config)["ShareSheet"] = (*Cfg)["ShareSheet"];   // what peers are given (drives Share ▾)
             (*Config)["Pins"] = (*Cfg)["Pins"];
             save();
             pushSeedLevels();
-            Friends->reRegisterShares();   // re-push every active share with the fresh CIDs (a re-publish can move them)
-            emit libraryPublished(QString::fromStdString(IpfsWrapper::FriendCode()),
+            Peers->reRegisterShares();   // re-push every active share with the fresh CIDs (a re-publish can move them)
+            emit libraryPublished(QString::fromStdString(IpfsWrapper::PeerCode()),
                                   QString::number(static_cast<int>(Cids->size())) + " package(s)",
                                   QString::fromStdString(*Gaps));
         });

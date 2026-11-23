@@ -506,7 +506,7 @@ int CliModes::RunContentModes(LaunchParameters &LaunchParameters, nlohmann::orde
     }
 
     //HEADLESS: HYDRATE a launchable's closure from IPFS into the pretty on-disk checkout — the sharing CONSUMER: a
-    //friend's / pasted launchable CID becomes a playable, locally-hydrated game. Prints the checkout dir.
+    //peer's / pasted launchable CID becomes a playable, locally-hydrated game. Prints the checkout dir.
     if (!LaunchParameters.HydrateCid.empty())
     {
         //DHT/bitswap need a bootstrapped routing table for a not-yet-local closure; a one-shot must wait for peers.

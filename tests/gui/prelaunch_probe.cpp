@@ -80,8 +80,8 @@ int main(int argc, char **argv)
             G->setVisible(true);
             if (auto * GL = qobject_cast<QVBoxLayout*>(G->layout()))
             {
-                GL->addWidget(new QCheckBox("Friend A   ● direct · 34 ms", G));
-                GL->addWidget(new QCheckBox("Friend B   ● relayed", G));
+                GL->addWidget(new QCheckBox("Peer A   ● direct · 34 ms", G));
+                GL->addWidget(new QCheckBox("Peer B   ● relayed", G));
             }
         }
     for (int Cycle = 0; Cycle < 6; ++Cycle)

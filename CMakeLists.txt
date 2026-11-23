@@ -173,7 +173,7 @@ set(SHARED_SOURCES
     src/cli/cliapp.h
     src/cli/cliapp.cpp
     src/cli/clirender.cpp
-    src/cli/commands/cmd_friends.cpp
+    src/cli/commands/cmd_peers.cpp
     src/cli/commands/cmd_catalog.cpp
     src/cli/commands/cmd_ui.cpp
     src/cli/commands/cmd_events.cpp
@@ -369,7 +369,7 @@ set(SHARED_SOURCES
 
     src/app/appmodel.h
     src/app/appmodel.cpp
-    src/app/friendsharing.cpp
+    src/app/peersharing.cpp
     src/app/nodeservice.cpp
 
     src/app/downloadmanager.h
@@ -703,7 +703,7 @@ add_gui_test(test_manifestmodel)
 add_test(NAME cli_coverage COMMAND python3 -I ${CMAKE_SOURCE_DIR}/tools/cli_coverage/cli_coverage.py
          --binary $<TARGET_FILE:VidyaGod> --build ${CMAKE_BINARY_DIR})
 add_gui_test(test_vfsmount)
-add_gui_test(test_friends)
+add_gui_test(test_peers)
 add_gui_test(test_sandbox)
 add_gui_test(test_variantpicker)
 add_gui_test(test_prelaunch)
@@ -726,9 +726,9 @@ add_dependencies(test_overlay mock_inputplumber)
 target_compile_definitions(test_overlay PRIVATE MOCK_INPUTPLUMBER="$<TARGET_FILE:mock_inputplumber>")
 target_compile_definitions(test_controllerservice PRIVATE MOCK_INPUTPLUMBER="$<TARGET_FILE:mock_inputplumber>" VIDYAGOD_BIN="$<TARGET_FILE:VidyaGod>")
 add_gui_test(test_commands)
-# The friends test starts the embedded node to exercise the real C ABI; keep it hermetic (no swarm/DHT). The offline
+# The peers test starts the embedded node to exercise the real C ABI; keep it hermetic (no swarm/DHT). The offline
 # switch must be in the environment at PROCESS START — Go caches its env at init, so a runtime setenv is invisible.
-set_tests_properties(test_friends PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen;VIDYAGOD_IPFS_OFFLINE=1;HOME=${CMAKE_BINARY_DIR}/testhome;TMPDIR=${CMAKE_BINARY_DIR}/testtmp")
+set_tests_properties(test_peers PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen;VIDYAGOD_IPFS_OFFLINE=1;HOME=${CMAKE_BINARY_DIR}/testhome;TMPDIR=${CMAKE_BINARY_DIR}/testtmp")
 
 # ---- Offscreen screenshot tool (manual): renders real widgets to PNG via QWidget::grab(). Not a ctest.
 add_executable(vg_prelaunch_probe EXCLUDE_FROM_ALL tests/gui/prelaunch_probe.cpp)

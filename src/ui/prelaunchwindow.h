@@ -140,7 +140,7 @@ private:
     void EvaluateVarConditions();
     void MarkKeyConflicts();
     std::map<std::string, std::string> FixedVarValues;   // the row's vars without a control (facts an option's WHEN may read)
-    // Builds the "Virtual LAN" panel under the cover (friends with per-member ticks + live link badges) and starts
+    // Builds the "Virtual LAN" panel under the cover (peers with per-member ticks + live link badges) and starts
     // its 2s poll; RefreshLanPanel reconciles rows against IpfsWrapper::LanPeers(). Ticks edit the GLOBAL roster
     // (Settings.LanExcludedPeers) and apply immediately via SetLanExcluded — mid-game included.
     void RefreshDetails(const nlohmann::ordered_json &Meta);   // the details under the cover, from the tile's META
@@ -256,7 +256,7 @@ private:
     QPushButton*  LaunchButton      = nullptr;
     QPushButton*  CloseButton       = nullptr;
 
-    // Virtual LAN panel (under the cover): per-friend tick + live link badge, 2s poll while the window lives.
+    // Virtual LAN panel (under the cover): per-peer tick + live link badge, 2s poll while the window lives.
     QGroupBox*    LanGroup          = nullptr;
     QVBoxLayout*  LanRows           = nullptr;
     QLabel*       LanStatus         = nullptr;   // "Your vIP: 10.66.x.y" / "LAN offline"

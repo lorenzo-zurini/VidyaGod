@@ -711,7 +711,7 @@ private slots:
     }
 
     //A cover named by typing is a new image: the old one's SOURCE and SIZE go (publish stamps the new one's), as when
-    //it is browsed. Kept, friends fetched the old image by its CID under the new name.
+    //it is browsed. Kept, peers fetched the old image by its CID under the new name.
     void typingACoverNameDropsTheOldImagesCid()
     {
         const json Game = json{{"LABEL", "Game"}, {"LAYERS", json::array({

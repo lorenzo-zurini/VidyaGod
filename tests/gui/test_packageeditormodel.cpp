@@ -524,7 +524,7 @@ private slots:
         QVERIFY(!M2.doc().Positions().count(New));
     }
 
-    // A package received from a friend (a CATALOG stub) is theirs: the editor may show it but never saves into it.
+    // A package received from a peer (a CATALOG stub) is theirs: the editor may show it but never saves into it.
     // Teeth: drop the refusal (the stub is re-minted in place).
     void aReceivedPackageIsNeverSaved()
     {
@@ -537,7 +537,7 @@ private slots:
         json N = M.doc().Node(0); N["LABEL"] = "mine"; M.replaceNode(C, N);
         QString Err;
         QVERIFY(!M.Save(&Err));
-        QVERIFY(Err.contains("friend"));
+        QVERIFY(Err.contains("peer"));
         QVERIFY(QFile::exists(Stub + "/" + QString::fromStdString(C) + ".json"));
         QCOMPARE(CountNodes(Stub), 1);
     }

@@ -4,7 +4,7 @@
 # gates the WireGuard subnet out of libp2p, so WG stays only the ssh control channel):
 #
 #   phase 1  IDENTITY      fresh nodes + peer IDs on both machines (every run starts from zero)
-#   phase 2  FRIENDING     DHT discovery → friend request → auto-accept → accepted BOTH sides,
+#   phase 2  PAIRING     DHT discovery → peer request → auto-accept → accepted BOTH sides,
 #                          nickname propagation, presence online (retries absorb DHT cold-start)
 #   phase 3  VIRTUAL LAN   the game-traffic battery: UDP broadcast discovery (server-browser moment),
 #                          TCP lobby echo, 5MB bulk throughput, bidirectional pings
@@ -25,7 +25,7 @@
 #    — which is exactly what this file exists to prevent.
 #
 # Harness traps (each bit us once — do not reintroduce):
-#   * overlay routes are derived from ACCEPTED friends at TUN-attach time → befriend FIRST, then start --lan nodes
+#   * overlay routes are derived from ACCEPTED peers at TUN-attach time → pair FIRST, then start --lan nodes
 #   * pgrep/pkill self-match: use the [d] bracket idiom; never put a plain binary-name pattern in the command text
 #   * --log captures fd 2 only → overlay-exec payloads need `exec 1>&2` or their output is lost
 #   * catalog JSONs use nested "CID": keys; Qm CIDs may be DIRECTORY metas → pick bafkrei leaves for --fetch tests
@@ -77,9 +77,9 @@ PCVIP=$(python3 -c "import hashlib,sys;h=hashlib.sha256(sys.argv[1].encode()).di
 LAPVIP=$(python3 -c "import hashlib,sys;h=hashlib.sha256(sys.argv[1].encode()).digest();hi,lo=h[0],h[1];lo=1 if (hi==0 and lo==0) else (254 if (hi==255 and lo==255) else lo);print(f'10.66.{hi}.{lo}')" "$LAPID")
 echo "vIPs: pc=$PCVIP lap=$LAPVIP"
 
-# ---------- phase 2: friending flow ----------
-say "phase 2: friending (DHT discovery → request → accept → nick + presence)"
-# Laptop: long-lived responder — serves friend requests AND (later) the LAN battery. It warms into the DHT.
+# ---------- phase 2: pairing flow ----------
+say "phase 2: pairing (DHT discovery → request → accept → nick + presence)"
+# Laptop: long-lived responder — serves peer requests AND (later) the LAN battery. It warms into the DHT.
 SSH "cd $REPO_LAP && cat > $LAPRUN-host.py" 15 <<'LAPPY'
 import socket, sys, threading, time
 def log(*a): print("[LAPHOST]", *a, file=sys.stderr, flush=True)
@@ -109,30 +109,30 @@ def udp_srv():
 threading.Thread(target=tcp_srv,daemon=True).start(); threading.Thread(target=udp_srv,daemon=True).start()
 time.sleep(900)
 LAPPY
-# Friend-serve WITHOUT the overlay: routes are derived from ACCEPTED friends at overlay-attach time, so the
-# LAN responder must start AFTER the friendship exists (phase 3) — starting it here would bake in empty routes.
-SSH "cd $REPO_LAP && $ENVLAP nohup ./build/VidyaGod --friend-add $PCID --friend-nick Laptop --friend-serve --friend-secs 600 --data-dir $LAPRUN/data --log $LAPRUN-node.log >/dev/null 2>&1 & echo started" 20
+# Peer-serve WITHOUT the overlay: routes are derived from ACCEPTED peers at overlay-attach time, so the
+# LAN responder must start AFTER the pairing exists (phase 3) — starting it here would bake in empty routes.
+SSH "cd $REPO_LAP && $ENVLAP nohup ./build/VidyaGod --peer-add $PCID --peer-nick Laptop --peer-serve --peer-secs 600 --data-dir $LAPRUN/data --log $LAPRUN-node.log >/dev/null 2>&1 & echo started" 20
 echo "warming laptop into the DHT (90s)…"
 sleep 90
-# PC: friend-add with up to 3 attempts (cold-start FindPeer may need the announce to settle)
+# PC: peer-add with up to 3 attempts (cold-start FindPeer may need the announce to settle)
 ACCEPTED=0; T0=$(date +%s)
 for ATT in 1 2 3; do
-  timeout 75 "${ENVPC[@]}" "$BIN" --friend-add "$LAPID" --friend-nick PC --friend-serve --friend-secs 45 \
-      --data-dir "$RUN/pc-data" --log "$RUN/pc-friend-$ATT.log" >/dev/null 2>&1
-  if grep -qaE 'accepted' "$RUN/pc-friend-$ATT.log"; then ACCEPTED=1; break; fi
+  timeout 75 "${ENVPC[@]}" "$BIN" --peer-add "$LAPID" --peer-nick PC --peer-serve --peer-secs 45 \
+      --data-dir "$RUN/pc-data" --log "$RUN/pc-peer-$ATT.log" >/dev/null 2>&1
+  if grep -qaE 'accepted' "$RUN/pc-peer-$ATT.log"; then ACCEPTED=1; break; fi
   echo "attempt $ATT: not yet accepted — retrying"
 done
-if [ "$ACCEPTED" = "1" ]; then pass "friend handshake accepted (attempt $ATT, $(( $(date +%s) - T0 ))s incl. windows)"; else fail "friend handshake never reached accepted in 3 attempts"; fi
+if [ "$ACCEPTED" = "1" ]; then pass "peer handshake accepted (attempt $ATT, $(( $(date +%s) - T0 ))s incl. windows)"; else fail "peer handshake never reached accepted in 3 attempts"; fi
 # nickname + presence propagation (the address book the user sees)
-timeout 60 "${ENVPC[@]}" "$BIN" --friend-ls --data-dir "$RUN/pc-data" --log "$RUN/pc-ls.log" >/dev/null 2>&1
-grep -qaE "accepted.*$LAPID.*nick='Laptop'" "$RUN/pc-ls.log" && pass "nickname propagated (sees 'Laptop')" || fail "nickname not propagated (friend-ls)"
-SSH "grep -qaE \"(auto-accepted.*$PCID|$PCID -> accepted)\" $LAPRUN-node.log" 15 && pass "laptop side accepted too" || fail "laptop never recorded the friendship"
+timeout 60 "${ENVPC[@]}" "$BIN" --peer-ls --data-dir "$RUN/pc-data" --log "$RUN/pc-ls.log" >/dev/null 2>&1
+grep -qaE "accepted.*$LAPID.*nick='Laptop'" "$RUN/pc-ls.log" && pass "nickname propagated (sees 'Laptop')" || fail "nickname not propagated (peer-ls)"
+SSH "grep -qaE \"(auto-accepted.*$PCID|$PCID -> accepted)\" $LAPRUN-node.log" 15 && pass "laptop side accepted too" || fail "laptop never recorded the pairing"
 
 # ---------- phase 3: virtual LAN game battery ----------
 say "phase 3: virtual LAN (broadcast discovery, lobby TCP, throughput, bidirectional pings)"
-# NOW start the laptop's LAN game-host responder — the friendship exists, so its overlay routes include the PC.
+# NOW start the laptop's LAN game-host responder — the pairing exists, so its overlay routes include the PC.
 killlap; sleep 2
-SSH "cd $REPO_LAP && $ENVLAP nohup ./build/VidyaGod --lan --overlay-exec 'python3 $LAPRUN-host.py' --friend-nick Laptop --friend-secs 600 --data-dir $LAPRUN/data --log $LAPRUN-lan.log >/dev/null 2>&1 & echo lan-host up" 20
+SSH "cd $REPO_LAP && $ENVLAP nohup ./build/VidyaGod --lan --overlay-exec 'python3 $LAPRUN-host.py' --peer-nick Laptop --peer-secs 600 --data-dir $LAPRUN/data --log $LAPRUN-lan.log >/dev/null 2>&1 & echo lan-host up" 20
 sleep 20   # node up + TUN attached (peers already known — no full DHT re-warm needed)
 cat > "$RUN/pc-battery.py" <<PCPY
 import socket, subprocess, sys, time
@@ -168,7 +168,7 @@ try:
 except Exception as e: log("THROUGHPUT-FAIL",e)
 log("PC-BATTERY-DONE"); time.sleep(30)
 PCPY
-"${ENVPC[@]}" nohup "$BIN" --lan --overlay-exec "python3 $RUN/pc-battery.py" --friend-nick PC --friend-secs 240 \
+"${ENVPC[@]}" nohup "$BIN" --lan --overlay-exec "python3 $RUN/pc-battery.py" --peer-nick PC --peer-secs 240 \
     --data-dir "$RUN/pc-data" --log "$RUN/pc-lan.log" >/dev/null 2>&1 &
 for i in $(seq 1 30); do sleep 6; grep -qa 'PC-BATTERY-DONE' "$RUN/pc-lan.log" 2>/dev/null && break; done
 PINGRX=$(grep -aoE '[0-9]+ received' "$RUN/pc-lan.log" | head -1 | cut -d' ' -f1); PINGRX=${PINGRX:-0}
@@ -195,14 +195,14 @@ UDPRX=$(SSH "grep -acE 'UDP-RX' $LAPRUN-lan.log || true" 15)
 # ---------- phase 4: link recovery ----------
 say "phase 4: link recovery (kill laptop node mid-hold, restart, must reconnect)"
 killlap; sleep 2
-SSH "cd $REPO_LAP && $ENVLAP nohup ./build/VidyaGod --lan --overlay-exec 'sleep 300' --friend-nick Laptop --friend-secs 360 --data-dir $LAPRUN/data --log $LAPRUN-rec.log >/dev/null 2>&1 & echo up" 20
+SSH "cd $REPO_LAP && $ENVLAP nohup ./build/VidyaGod --lan --overlay-exec 'sleep 300' --peer-nick Laptop --peer-secs 360 --data-dir $LAPRUN/data --log $LAPRUN-rec.log >/dev/null 2>&1 & echo up" 20
 killpc; sleep 2
 "${ENVPC[@]}" nohup "$BIN" --lan --overlay-exec "sh -c 'exec 1>&2; sleep 15; ping -i 2 -c 90 -W 1 $LAPVIP; echo REC-END'" \
-    --friend-nick PC --friend-secs 260 --data-dir "$RUN/pc-data" --log "$RUN/pc-rec.log" >/dev/null 2>&1 &
+    --peer-nick PC --peer-secs 260 --data-dir "$RUN/pc-data" --log "$RUN/pc-rec.log" >/dev/null 2>&1 &
 sleep 55                       # ping flowing
 SSH "pkill -f 'VidyaGo[d] .*vg-e2e-$TS' 2>/dev/null; true" 15
 sleep 25                       # outage window
-SSH "cd $REPO_LAP && $ENVLAP nohup ./build/VidyaGod --lan --overlay-exec 'sleep 240' --friend-nick Laptop --friend-secs 300 --data-dir $LAPRUN/data --log $LAPRUN-rec2.log >/dev/null 2>&1 & echo restarted" 20
+SSH "cd $REPO_LAP && $ENVLAP nohup ./build/VidyaGod --lan --overlay-exec 'sleep 240' --peer-nick Laptop --peer-secs 300 --data-dir $LAPRUN/data --log $LAPRUN-rec2.log >/dev/null 2>&1 & echo restarted" 20
 for i in $(seq 1 30); do sleep 6; grep -qa 'REC-END' "$RUN/pc-rec.log" 2>/dev/null && break; done
 grep -qaE '\[lan\] Laptop: .*→ down' "$RUN/pc-rec.log" && pass "outage detected (link → down)" || fail "outage never detected"
 # ADVERSARY-TODO (2026-09-04): this recovery-gate correction was pushed WITHOUT a Fable adversary pass (Fable

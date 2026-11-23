@@ -345,7 +345,7 @@ DeckShell::DeckShell(AppModel &M, IpfsModel &I, DownloadManager &D, QWidget *Par
     Body->addWidget(Library);
     Body->addWidget(Catalog);
     Body->addWidget(DownloadsPage);
-    //Friends, Node and Settings are the desktop pages, built the first time they are shown (as the desktop's own tabs
+    //Peers, Node and Settings are the desktop pages, built the first time they are shown (as the desktop's own tabs
     //build theirs): placeholders hold their places.
     for (int K = 0; K < 3; ++K) Body->addWidget(new QWidget(Body));
     Game = new DeckGamePage(*this);
@@ -407,7 +407,7 @@ double DeckShell::scale() const { return DeckStyle::ScaleFor(height() > 0 ? heig
 
 QString DeckShell::SectionName(Section S)
 {
-    static const char *N[] = { "Home", "Library", "Catalog", "Downloads", "Friends", "Node", "Settings" };
+    static const char *N[] = { "Home", "Library", "Catalog", "Downloads", "Peers", "Node", "Settings" };
     return N[static_cast<int>(S)];
 }
 
@@ -454,7 +454,7 @@ void DeckShell::showSection(Section S)
     if (I >= 4 && !qobject_cast<DeckHosted *>(Body->widget(I)))
     {
         QWidget *Page = nullptr;
-        if (S == Section::Friends) Page = new NetworkTab(Model);
+        if (S == Section::Peers) Page = new NetworkTab(Model);
         else if (S == Section::Node) Page = new IpfsTab(Ipfs);
         else Page = new SettingsTab(Model);
         auto *H = new DeckHosted(Page, scale(), Body);
@@ -463,7 +463,7 @@ void DeckShell::showSection(Section S)
         Body->removeWidget(Old);
         Old->deleteLater();
     }
-    if (auto *N = qobject_cast<DeckHosted *>(Body->widget(4))) qobject_cast<NetworkTab *>(N->page())->setActive(S == Section::Friends && Active);
+    if (auto *N = qobject_cast<DeckHosted *>(Body->widget(4))) qobject_cast<NetworkTab *>(N->page())->setActive(S == Section::Peers && Active);
     if (auto *N = qobject_cast<DeckHosted *>(Body->widget(5))) qobject_cast<IpfsTab *>(N->page())->setActive(S == Section::Node && Active);
     Ipfs.setActive(Active && (S == Section::Downloads || S == Section::Node));
     Current = S;

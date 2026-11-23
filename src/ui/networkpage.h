@@ -10,7 +10,7 @@ class QLabel;
 
 // Settings → Network: the "is my firewall the problem?" panel, in two halves.
 //  LIVE SERVICE HEALTH (top): a passive introspection of every Go service (node, host, reachability, DHT,
-//  bitswap, deliverability, announce, mDNS, friends, LAN links, overlay, tri-plane, DoH) polled every few
+//  bitswap, deliverability, announce, mDNS, peers, LAN links, overlay, tri-plane, DoH) polled every few
 //  seconds while the page is visible — a service that silently died shows up here as ✗ within seconds.
 //  NETWORK TEST (bottom): the on-demand ACTIVE sweep that probes the outside world (up to ~15s) — firewall/
 //  NAT/multicast truths that passive introspection cannot know. Every network feature fails SOFT in normal

@@ -592,7 +592,7 @@ bool Unpin(const std::string &Cid)
     return Rc == 0;
 }
 
-// ----- friends / multiplayer social layer -----
+// ----- peers / multiplayer social layer -----
 
 // Parse one contact JSON object ({peer,nick,pic,state,online,seen}) into a Contact.
 static Contact ContactFromJson(const nlohmann::json &J)
@@ -607,16 +607,16 @@ static Contact ContactFromJson(const nlohmann::json &J)
     return C;
 }
 
-// Sink for inbound friend events (installed by FriendsManager). Invoked on a node thread.
-static FriendCallback g_FriendCb;
-void SetFriendCallback(FriendCallback Callback) { g_FriendCb = std::move(Callback); }
+// Sink for inbound peer events (installed by PeersManager). Invoked on a node thread.
+static PeerCallback g_PeerCb;
+void SetPeerCallback(PeerCallback Callback) { g_PeerCb = std::move(Callback); }
 
-// Bridge installed into the node (VgSetFriendCb): repackage the node's (kind, json) event as a FriendEvent and fan
+// Bridge installed into the node (VgSetPeerCb): repackage the node's (kind, json) event as a PeerEvent and fan
 // it out through the installed callback. C linkage so it matches the node's function-pointer type.
-extern "C" void IpfsNodeFriendCb(int kind, const char *json)
+extern "C" void IpfsNodePeerCb(int kind, const char *json)
 {
-    if (!g_FriendCb) return;
-    FriendEvent E;
+    if (!g_PeerCb) return;
+    PeerEvent E;
     //UNKNOWN kinds are DROPPED, never defaulted. The catch-all used to be `: Removed`, so the first event kind a
     //newer Go build adds would arrive as a contact REMOVAL and quietly delete contacts — a documented historical
     //bug this mapping re-armed once already (adversarial M4). Kind 5 is matched explicitly; anything else logs.
@@ -626,24 +626,24 @@ extern "C" void IpfsNodeFriendCb(int kind, const char *json)
     // (M7): the NEXT new kind would masquerade as a library event. So switch, no fall-through default.
     switch (kind)
     {
-    case 0: E.Kind = FriendEvent::Request;  break;
-    case 1: E.Kind = FriendEvent::Accept;   break;
-    case 2: E.Kind = FriendEvent::Decline;  break;
-    case 3: E.Kind = FriendEvent::Presence; break;
-    case 4: E.Kind = FriendEvent::Profile;  break;
-    case 5: E.Kind = FriendEvent::Removed;  break;
-    case 6: E.Kind = FriendEvent::Library;  break;
-    case 7: E.Kind = FriendEvent::Sent;     break;
+    case 0: E.Kind = PeerEvent::Request;  break;
+    case 1: E.Kind = PeerEvent::Accept;   break;
+    case 2: E.Kind = PeerEvent::Decline;  break;
+    case 3: E.Kind = PeerEvent::Presence; break;
+    case 4: E.Kind = PeerEvent::Profile;  break;
+    case 5: E.Kind = PeerEvent::Removed;  break;
+    case 6: E.Kind = PeerEvent::Library;  break;
+    case 7: E.Kind = PeerEvent::Sent;     break;
     default:
-        LogWarn("IpfsWrapper::FriendEventTrampoline", "unknown friend event kind " + std::to_string(kind) + " — dropped");
+        LogWarn("IpfsWrapper::PeerEventTrampoline", "unknown peer event kind " + std::to_string(kind) + " — dropped");
         return;
     }
     try
     {
         const nlohmann::json J = nlohmann::json::parse(json ? json : "{}");
-        if (E.Kind == FriendEvent::Library)
+        if (E.Kind == PeerEvent::Library)
         {
-            // {peer, libs:{name:[cid,…]}, seq} — a friend's COMPLETE shared set (a snapshot we replace wholesale), not
+            // {peer, libs:{name:[cid,…]}, seq} — a peer's COMPLETE shared set (a snapshot we replace wholesale), not
             // a contact. Carry the libs object verbatim as JSON; AppModel parses + replaces its record for this peer,
             // ordered by seq (last-writer-wins) so a stale snapshot delivered late can't overwrite a fresher one.
             E.C.PeerID = J.value("peer", std::string());
@@ -652,14 +652,14 @@ extern "C" void IpfsNodeFriendCb(int kind, const char *json)
         }
         else E.C = ContactFromJson(J);
     }
-    catch (const std::exception &Ex) { LogWarn("IpfsWrapper::FriendEventTrampoline", std::string("bad JSON from node: ") + Ex.what()); }
-    g_FriendCb(E);
+    catch (const std::exception &Ex) { LogWarn("IpfsWrapper::PeerEventTrampoline", std::string("bad JSON from node: ") + Ex.what()); }
+    g_PeerCb(E);
 }
 
-std::string FriendCode()
+std::string PeerCode()
 {
     char *Id = nullptr;
-    if (VgFriendCode(&Id) != 0) { TakeStr(Id); return {}; }
+    if (VgPeerCode(&Id) != 0) { TakeStr(Id); return {}; }
     return TakeStr(Id);
 }
 
@@ -683,14 +683,14 @@ bool SetProfile(const std::string &Nick, const std::string &PicCID, std::string 
     return true;
 }
 
-std::vector<Contact> FriendList()
+std::vector<Contact> PeerList()
 {
     std::vector<Contact> Out;
     char *J = nullptr;
-    if (VgFriendList(&J) != 0) { TakeStr(J); return Out; }
+    if (VgPeerList(&J) != 0) { TakeStr(J); return Out; }
     const std::string Js = TakeStr(J);
     try { for (const auto &E : nlohmann::json::parse(Js)) Out.push_back(ContactFromJson(E)); }
-    catch (const std::exception &Ex) { LogWarn("IpfsWrapper::FriendList", std::string("bad JSON from node: ") + Ex.what()); }
+    catch (const std::exception &Ex) { LogWarn("IpfsWrapper::PeerList", std::string("bad JSON from node: ") + Ex.what()); }
     return Out;
 }
 
@@ -710,48 +710,48 @@ std::vector<NearbyPeer> NearbyPeers()
 }
 
 // Small helper for the fallible peer-ID mutators that return 0/-1 with an errOut.
-static bool FriendCall(int Rc, char *Err, std::string *Error, const char *What)
+static bool PeerCall(int Rc, char *Err, std::string *Error, const char *What)
 {
     const std::string E = TakeStr(Err);
     if (Rc != 0) { if (Error) *Error = E.empty() ? What : E; return false; }
     return true;
 }
 
-bool FriendAdd(const std::string &PeerID, const std::string &Note, std::string *Error)
+bool PeerAdd(const std::string &PeerID, const std::string &Note, std::string *Error)
 {
     if (PeerID.empty()) { if (Error) *Error = "empty peer id"; return false; }
     char *Err = nullptr;
-    return FriendCall(VgFriendAdd(PeerID.c_str(), Note.c_str(), &Err), Err, Error, "friend request failed");
+    return PeerCall(VgPeerAdd(PeerID.c_str(), Note.c_str(), &Err), Err, Error, "peer request failed");
 }
 
-bool FriendAccept(const std::string &PeerID, std::string *Error)
+bool PeerAccept(const std::string &PeerID, std::string *Error)
 {
     char *Err = nullptr;
-    return FriendCall(VgFriendAccept(PeerID.c_str(), &Err), Err, Error, "accept failed");
+    return PeerCall(VgPeerAccept(PeerID.c_str(), &Err), Err, Error, "accept failed");
 }
 
-bool FriendDecline(const std::string &PeerID, std::string *Error)
+bool PeerDecline(const std::string &PeerID, std::string *Error)
 {
     char *Err = nullptr;
-    return FriendCall(VgFriendDecline(PeerID.c_str(), &Err), Err, Error, "decline failed");
+    return PeerCall(VgPeerDecline(PeerID.c_str(), &Err), Err, Error, "decline failed");
 }
 
-bool FriendBlock(const std::string &PeerID, std::string *Error)
+bool PeerBlock(const std::string &PeerID, std::string *Error)
 {
     char *Err = nullptr;
-    return FriendCall(VgFriendBlock(PeerID.c_str(), &Err), Err, Error, "block failed");
+    return PeerCall(VgPeerBlock(PeerID.c_str(), &Err), Err, Error, "block failed");
 }
 
-bool FriendRemove(const std::string &PeerID)
+bool PeerRemove(const std::string &PeerID)
 {
     if (PeerID.empty()) return false;
-    return VgFriendRemove(PeerID.c_str()) == 0;
+    return VgPeerRemove(PeerID.c_str()) == 0;
 }
 
-int FriendPing(const std::string &PeerID)
+int PeerPing(const std::string &PeerID)
 {
     if (PeerID.empty()) return -1;
-    return VgFriendPing(PeerID.c_str());
+    return VgPeerPing(PeerID.c_str());
 }
 
 bool ShareLibrary(const std::string &PeerID, const std::string &Lib, const nlohmann::json &Items, std::string *Error)
@@ -772,16 +772,16 @@ bool UnshareLibrary(const std::string &PeerID, const std::string &Lib, std::stri
     return true;
 }
 
-bool RequestFriendLibraries(const std::string &PeerID, std::string *Error)
+bool RequestPeerLibraries(const std::string &PeerID, std::string *Error)
 {
     char *Err = nullptr;
-    const int Rc = VgRequestFriendLibraries(PeerID.c_str(), &Err);
+    const int Rc = VgRequestPeerLibraries(PeerID.c_str(), &Err);
     const std::string ErrS = TakeStr(Err);
-    if (Rc != 0) { if (Error) *Error = ErrS.empty() ? "request friend libraries failed" : ErrS; return false; }
+    if (Rc != 0) { if (Error) *Error = ErrS.empty() ? "request peer libraries failed" : ErrS; return false; }
     return true;
 }
 
-// ----- virtual LAN of friends (host-less; each peer's vIP is a pure function of its peer ID — friendlan.go) -----
+// ----- virtual LAN of peers (host-less; each peer's vIP is a pure function of its peer ID — peerlan.go) -----
 
 std::map<std::string, std::string> LanLaunchVars()
 {
@@ -881,7 +881,7 @@ std::string OverlayStart(std::string *Error)
     const std::string N = TakeStr(Name);
     const std::string E = TakeStr(Err);
     if (Rc != 0) { if (Error) *Error = E.empty() ? "overlay start failed" : E; return std::string(); }
-    LogSucc("IpfsWrapper::OverlayStart", "friend-LAN overlay up on " + N);
+    LogSucc("IpfsWrapper::OverlayStart", "peer-LAN overlay up on " + N);
     return N;
 }
 
@@ -990,56 +990,56 @@ IpfsManager * IpfsManager::instance()
 }
 
 // ---------------------------------------------------------------------------
-// FriendsManager
+// PeersManager
 // ---------------------------------------------------------------------------
-FriendsManager::FriendsManager(QObject * parent) : QObject(parent)
+PeersManager::PeersManager(QObject * parent) : QObject(parent)
 {
-    //Relay backend friend events (which fire on a node thread) onto this object's (GUI) thread as Qt signals.
-    IpfsWrapper::SetFriendCallback([this](const IpfsWrapper::FriendEvent &E) {
+    //Relay backend peer events (which fire on a node thread) onto this object's (GUI) thread as Qt signals.
+    IpfsWrapper::SetPeerCallback([this](const IpfsWrapper::PeerEvent &E) {
         const QString Peer = QString::fromStdString(E.C.PeerID);
         const QString Nick = QString::fromStdString(E.C.Nick);
         const QString Pic  = QString::fromStdString(E.C.PicCID);
         const bool    On   = E.C.Online;
         switch (E.Kind)
         {
-        case IpfsWrapper::FriendEvent::Request:
-            QMetaObject::invokeMethod(this, [this, Peer, Nick, Pic]{ emit friendRequest(Peer, Nick, Pic); }, Qt::QueuedConnection);
+        case IpfsWrapper::PeerEvent::Request:
+            QMetaObject::invokeMethod(this, [this, Peer, Nick, Pic]{ emit peerRequest(Peer, Nick, Pic); }, Qt::QueuedConnection);
             break;
-        case IpfsWrapper::FriendEvent::Sent:
-            QMetaObject::invokeMethod(this, [this, Peer]{ emit friendRequestSent(Peer); }, Qt::QueuedConnection);
+        case IpfsWrapper::PeerEvent::Sent:
+            QMetaObject::invokeMethod(this, [this, Peer]{ emit peerRequestSent(Peer); }, Qt::QueuedConnection);
             break;
-        case IpfsWrapper::FriendEvent::Accept:
-            QMetaObject::invokeMethod(this, [this, Peer, Nick, Pic]{ emit friendAccepted(Peer, Nick, Pic); }, Qt::QueuedConnection);
+        case IpfsWrapper::PeerEvent::Accept:
+            QMetaObject::invokeMethod(this, [this, Peer, Nick, Pic]{ emit peerAccepted(Peer, Nick, Pic); }, Qt::QueuedConnection);
             break;
-        case IpfsWrapper::FriendEvent::Decline:
-            QMetaObject::invokeMethod(this, [this, Peer]{ emit friendDeclined(Peer); }, Qt::QueuedConnection);
+        case IpfsWrapper::PeerEvent::Decline:
+            QMetaObject::invokeMethod(this, [this, Peer]{ emit peerDeclined(Peer); }, Qt::QueuedConnection);
             break;
-        case IpfsWrapper::FriendEvent::Presence:
-            QMetaObject::invokeMethod(this, [this, Peer, On]{ emit friendPresence(Peer, On); }, Qt::QueuedConnection);
+        case IpfsWrapper::PeerEvent::Presence:
+            QMetaObject::invokeMethod(this, [this, Peer, On]{ emit peerPresence(Peer, On); }, Qt::QueuedConnection);
             break;
-        case IpfsWrapper::FriendEvent::Profile:
-            QMetaObject::invokeMethod(this, [this, Peer, Nick, Pic]{ emit friendProfile(Peer, Nick, Pic); }, Qt::QueuedConnection);
+        case IpfsWrapper::PeerEvent::Profile:
+            QMetaObject::invokeMethod(this, [this, Peer, Nick, Pic]{ emit peerProfile(Peer, Nick, Pic); }, Qt::QueuedConnection);
             break;
-        case IpfsWrapper::FriendEvent::Removed:
-            QMetaObject::invokeMethod(this, [this, Peer]{ emit friendRemoved(Peer); }, Qt::QueuedConnection);
+        case IpfsWrapper::PeerEvent::Removed:
+            QMetaObject::invokeMethod(this, [this, Peer]{ emit peerRemoved(Peer); }, Qt::QueuedConnection);
             break;
-        case IpfsWrapper::FriendEvent::Library:
+        case IpfsWrapper::PeerEvent::Library:
         {
             const QString LibsJson = QString::fromStdString(E.LibsJson);
             const quint64 Seq = E.LibSeq;
-            QMetaObject::invokeMethod(this, [this, Peer, LibsJson, Seq]{ emit friendLibrary(Peer, LibsJson, Seq); }, Qt::QueuedConnection);
+            QMetaObject::invokeMethod(this, [this, Peer, LibsJson, Seq]{ emit peerLibrary(Peer, LibsJson, Seq); }, Qt::QueuedConnection);
             break;
         }
         }
     });
 
-    //Route the embedded node's friend events into the callback just installed (→ these signals).
-    VgSetFriendCb(&IpfsWrapper::IpfsNodeFriendCb);
+    //Route the embedded node's peer events into the callback just installed (→ these signals).
+    VgSetPeerCb(&IpfsWrapper::IpfsNodePeerCb);
 }
 
-FriendsManager * FriendsManager::instance()
+PeersManager * PeersManager::instance()
 {
-    static FriendsManager * Inst = new FriendsManager(qApp);
+    static PeersManager * Inst = new PeersManager(qApp);
     return Inst;
 }
 

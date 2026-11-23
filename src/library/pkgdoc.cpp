@@ -70,8 +70,8 @@ bool WriteFileAtomic(const fs::path &P, const std::string &Bytes, std::string &E
     return true;
 }
 
-//Every frozen node file under Root (a node without a "CID" handle), with the CID of its bytes, skipping friends'
-//landed copies (`_friend_*`, never ours to rewrite) and the package being saved (Skip).
+//Every frozen node file under Root (a node without a "CID" handle), with the CID of its bytes, skipping peers'
+//landed copies (`_peer_*`, never ours to rewrite) and the package being saved (Skip).
 struct LibFile { fs::path Path; json Node; std::string Cid; };
 //False, with Err, if any part of Root could not be read: a save that cannot see every package cannot know which of
 //them name the nodes it renames, so it does not start.
@@ -89,9 +89,9 @@ bool GatherLibrary(const fs::path &Root, const fs::path &Skip, std::vector<LibFi
         std::error_code E2;
         if (It->is_directory(E2))
         {
-            //A friend's landed copy is never ours, and a fetch's scratch dir ("<dest>.tmp") is half-landed files its fetch
+            //A peer's landed copy is never ours, and a fetch's scratch dir ("<dest>.tmp") is half-landed files its fetch
             //is still writing: neither is rewritten by a save.
-            if (P.filename().string().rfind("_friend_", 0) == 0 || NodeGraph::IsFetchScratchDir(P)
+            if (P.filename().string().rfind("_peer_", 0) == 0 || NodeGraph::IsFetchScratchDir(P)
                 || fs::weakly_canonical(P, E2) == SkipCanon)
                 It.disable_recursion_pending();
             continue;
@@ -522,8 +522,8 @@ SaveReport Document::Save(const fs::path &Dir, const std::vector<fs::path> &Root
         return N.is_object() && N.contains("LABEL") && N["LABEL"].is_string() ? N["LABEL"].get<std::string>() : Fallback;
     };
     for (const auto &Part : Dir)
-        if (Part.string().rfind("_friend_", 0) == 0)
-        { R.Error = "This is a friend's package (" + Dir.string() + "): it is theirs, and is never rewritten here."; return R; }
+        if (Part.string().rfind("_peer_", 0) == 0)
+        { R.Error = "This is a peer's package (" + Dir.string() + "): it is theirs, and is never rewritten here."; return R; }
 
     // 1. This package's nodes, in the order they contain each other — a circle cannot be named (a node's name is its
     //    content, and its content names the others), so it is refused with the nodes in it.
@@ -557,7 +557,7 @@ SaveReport Document::Save(const fs::path &Dir, const std::vector<fs::path> &Root
         }
     }
 
-    // 2. Everything else that could name them: every package under the roots (friends' excepted) and the instances.
+    // 2. Everything else that could name them: every package under the roots (peers' excepted) and the instances.
     std::vector<LibFile> Lib;
     {
         std::set<fs::path> Seen;

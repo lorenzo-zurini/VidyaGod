@@ -146,8 +146,8 @@ VG_COMMANDS
         }, {} });
 
     Command::Register({
-        "ipfs stop", "stop the node (no fetching, seeding or friends until it starts again)",
-        "Close the node: every transfer stops, friends see you offline.", { Flag("yes", "yes, stop it") }, { "ipfs stop --yes" },
+        "ipfs stop", "stop the node (no fetching, seeding or peers until it starts again)",
+        "Close the node: every transfer stops, peers see you offline.", { Flag("yes", "yes, stop it") }, { "ipfs stop --yes" },
         { "IpfsWrapper::StopNode" }, Needs::Config, false,
         [](Command::Context &, const json &A) {
             if (!Command::Bool(A, "yes", false)) throw Command::BadArgs("this takes the app offline: add --yes");
@@ -372,7 +372,7 @@ VG_COMMANDS
 
     Command::Register({
         "ipfs identity", "back up the node's identity key, or restore one",
-        "The Ed25519 key that IS your friend code. --export writes it to a file (keep it safe: losing it loses your "
+        "The Ed25519 key that IS your peer code. --export writes it to a file (keep it safe: losing it loses your "
         "address for good); --import installs one (the node uses it from its next start) — --yes required.",
         { Opt("export", "write the key here"), Opt("import", "install the key from here"), Flag("yes", "yes, replace my identity") },
         { "ipfs identity --export ~/vidyagod-identity.key" }, { "IpfsWrapper::ExportIdentity", "IpfsWrapper::ImportIdentity" }, Needs::Config, true,
@@ -381,7 +381,7 @@ VG_COMMANDS
             if (A.contains("export")) { Check(IpfsWrapper::ExportIdentity(Command::Str(A, "export"), &Err), Err); return json{{"exported", Command::Str(A, "export")}}; }
             if (A.contains("import"))
             {
-                if (!Command::Bool(A, "yes", false)) throw Command::BadArgs("this replaces your identity (your friend code): add --yes");
+                if (!Command::Bool(A, "yes", false)) throw Command::BadArgs("this replaces your identity (your peer code): add --yes");
                 Check(IpfsWrapper::ImportIdentity(Command::Str(A, "import"), &Err), Err);
                 return json{{"imported", Command::Str(A, "import")}, {"restart_needed", true}};
             }
@@ -399,10 +399,10 @@ VG_COMMANDS
         }, {} });
 
     Command::Register({
-        "ipfs share", "publish (or withdraw) a library share to one friend at the node",
+        "ipfs share", "publish (or withdraw) a library share to one peer at the node",
         "What the share sheet sends: library <lib> with its package items, to one peer — the node-level call under "
-        "`friends share`. --unshare withdraws it.",
-        { Pos("peer", "the friend's peer ID"), Pos("library", "the library name"), WithSample(Opt("items", "the share items (JSON)", Type::Json), "[]"),
+        "`peers share`. --unshare withdraws it.",
+        { Pos("peer", "the peer's peer ID"), Pos("library", "the library name"), WithSample(Opt("items", "the share items (JSON)", Type::Json), "[]"),
           Flag("unshare", "withdraw the share") },
         { "ipfs share 12D3KooW… VidyaGod --items '[]'", "ipfs share 12D3KooW… VidyaGod --unshare" },
         { "IpfsWrapper::ShareLibrary", "IpfsWrapper::UnshareLibrary" }, Needs::Config, true,
@@ -416,19 +416,19 @@ VG_COMMANDS
         }, {} });
 
     Command::Register({
-        "ipfs accept", "accept a friend request at the node",
-        "The node-level accept (`friends accept` does it with the app's bookkeeping).", { Pos("peer", "the peer ID") },
-        { "ipfs accept 12D3KooW…" }, { "IpfsWrapper::FriendAccept" }, Needs::Config, true,
+        "ipfs accept", "accept a peer request at the node",
+        "The node-level accept (`peers accept` does it with the app's bookkeeping).", { Pos("peer", "the peer ID") },
+        { "ipfs accept 12D3KooW…" }, { "IpfsWrapper::PeerAccept" }, Needs::Config, true,
         [](Command::Context &, const json &A) {
             std::string Err;
-            Check(IpfsWrapper::FriendAccept(Command::Str(A, "peer"), &Err), Err);
+            Check(IpfsWrapper::PeerAccept(Command::Str(A, "peer"), &Err), Err);
             return json{{"accepted", Command::Str(A, "peer")}};
         }, {} });
 
     Command::Register({
-        "ipfs overlay", "the friend LAN overlay: its state, start it, serve a socket, stop it",
-        "The virtual LAN friends' games talk over (10.66.x.y): active or not, the launch variables a game gets, and "
-        "which friends are kept off it (--exclude) or denied presence (--deny). --start brings it up, --serve "
+        "ipfs overlay", "the peer LAN overlay: its state, start it, serve a socket, stop it",
+        "The virtual LAN peers' games talk over (10.66.x.y): active or not, the launch variables a game gets, and "
+        "which peers are kept off it (--exclude) or denied presence (--deny). --start brings it up, --serve "
         "attaches a TUN socket, --stop takes it down.",
         { Flag("start", "start it"), Opt("serve", "serve this TUN socket path"), Flag("bridge", "(--serve) bridge mode"),
           Flag("host-relay", "(--serve) relay for the host"), Flag("stop", "stop it"), Opt("exclude", "peers off the LAN (a,b)"),

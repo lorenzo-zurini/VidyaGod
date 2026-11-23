@@ -17,7 +17,7 @@
 
 class DeckGrid;
 
-// Home: the game played last, large, with Play one press away; under it what was played recently and what friends
+// Home: the game played last, large, with Play one press away; under it what was played recently and what peers
 // have to download.
 class DeckHome : public QWidget, public PadTarget
 {
@@ -172,7 +172,7 @@ private:
     QString Confirm;                 // the key whose cancel waits for a second X
 };
 
-// A desktop page (Friends, the node, Settings) made large for the couch: its own widgets, driven by PadNav.
+// A desktop page (Peers, the node, Settings) made large for the couch: its own widgets, driven by PadNav.
 class DeckHosted : public QWidget
 {
     Q_OBJECT

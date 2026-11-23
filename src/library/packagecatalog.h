@@ -48,7 +48,7 @@ std::string LibraryOf(const std::filesystem::path &BundleDir, const std::filesys
 // exists — fed to BuildNodeIndex's ExtraBundleDirs so they're indexed alongside CID-source packages.
 std::vector<std::filesystem::path> LocalPackageDirs(const nlohmann::ordered_json &GlobalConfigJSON);
 //Every tree holding packages this machine authors — LIBRARY and the local packages outside it (never CATALOG: a
-//friend's stubs). A save that renames a node follows it through all of them.
+//peer's stubs). A save that renames a node follows it through all of them.
 std::vector<std::filesystem::path> EditableRoots(const nlohmann::ordered_json &GlobalConfigJSON);
 //The libraries this machine keeps packages in: the folders directly under LIBRARY ("VidyaGod", "VidyaGodRunners" ...).
 std::vector<std::string> LibraryNames(const nlohmann::ordered_json &GlobalConfigJSON);
@@ -288,10 +288,10 @@ struct RemintEntry { std::string Level, Name, Cid; };
 struct SheetEntry { std::string Cid, Lib, Pkg, File; };
 //The entries of a sheet ({cid: path}); a path that is not exactly three non-empty segments is skipped.
 std::vector<SheetEntry> SheetEntries(const nlohmann::ordered_json &Sheet);
-//The entries of a friend's snapshot as it travels ({lib: [{cid, pkg, node}]}, node = the file name), and back.
+//The entries of a peer's snapshot as it travels ({lib: [{cid, pkg, node}]}, node = the file name), and back.
 std::vector<SheetEntry> WireEntries(const nlohmann::ordered_json &Libs);
 nlohmann::ordered_json Wire(const std::vector<SheetEntry> &Entries);
-//Where a node lives, for naming it to a person: "<library>/<package>/<file>" from our sheet or a friend's, "" if none.
+//Where a node lives, for naming it to a person: "<library>/<package>/<file>" from our sheet or a peer's, "" if none.
 std::string SheetPath(const nlohmann::ordered_json &GlobalConfigJSON, const std::string &Cid);
 
 // PublishLibrary: freeze every node of the on-disk library into its canonical bytes and STORE them (pinned, announced,
@@ -300,7 +300,7 @@ std::string SheetPath(const nlohmann::ordered_json &GlobalConfigJSON, const std:
 // empty on failure, *Error says why). What did not publish whole — nodes that did not freeze, content this machine does
 // not hold (a Pinata-only receiver could never fetch it) — is summed up in *Gaps ("" when everything published). Call
 // OFF the UI thread, node online.
-// What a friend receives for the libraries shared with them, as it travels ({lib: [{cid, pkg, node}]}): every entry of
+// What a peer receives for the libraries shared with them, as it travels ({lib: [{cid, pkg, node}]}): every entry of
 // those libraries, and every package a node of theirs contains (Contains(cid): the node's NODE references),
 // transitively, whatever library it is in. A package is shared whole and once.
 nlohmann::ordered_json SharedWith(const nlohmann::ordered_json &Sheet, const std::vector<std::string> &SharedLibs,
@@ -312,15 +312,44 @@ std::vector<std::string> NodeContains(const NodeIndex &Idx, const std::string &C
 //closes over. A package the sheet does not hold is left out.
 std::vector<std::string> PackagesContained(const nlohmann::ordered_json &Sheet, const std::vector<std::string> &Packages,
                                            const std::function<std::vector<std::string>(const std::string &)> &Contains);
+//Every publish holds the library's write lock — <the library root's parent>/library-write.lock, ~/.VidyaGod/library-write.lock
+//by default, the lock the packaging scripts take too (`flock` on it) — for its whole run, the tree read under it. Held
+//elsewhere, the publish does nothing and fails with LibraryBusy: the caller tries again later.
+inline constexpr const char *LibraryBusy = "the library is being written by another tool: trying again shortly";
+std::filesystem::path LibraryWriteLock(const nlohmann::ordered_json &Config);
 std::vector<std::string> PublishLibrary(nlohmann::ordered_json &Config, std::string *Error = nullptr,
                                         std::string *Gaps = nullptr);
+//Your libraries: the collection folders under the library root that hold a package (a peer's packages you only see
+//live under CATALOG and are not among them; one you installed lives in your library and is), with any the share sheet
+//still names. What can be shared, by name, whether or not it has been published yet.
+std::vector<std::string> LibrariesOnDisk(const nlohmann::ordered_json &Config, const NodeIndex &Idx);
+//What sharing these libraries needs published before a peer sees them as they are: each package whose nodes on disk
+//(their CIDs, as the index froze them, which is what publishing records) are not exactly its share sheet entries — a
+//new package, an edited one —, never one of a library the sheet names nothing of (never prepared: its first publish
+//names every node file by its label, a step a person starts); and the packages the sheet names that are gone.
+//Signature: per "<lib>/<pkg>" of every package of these libraries on disk, its node CIDs, so a caller can tell a
+//package changed since it last tried (a package that cannot publish whole stays different from the sheet).
+struct ShareStaleness
+{
+    struct Package { std::filesystem::path Dir; std::string Key; };   // Key: "<lib>/<pkg>"
+    std::vector<Package> Stale;
+    std::vector<std::string> Removed;               // "<lib>/<pkg>" the sheet names, no longer on disk
+    std::set<std::string> Unprepared;               // libraries on disk the sheet names nothing of
+    std::vector<Package> UnpreparedPackages;        // their packages (what preparing them publishes)
+    std::map<std::string, std::string> Signature;
+    std::vector<std::string> Refused;               // "<pkg>: why" of a node the index refused (too large, …): never shared as it is
+};
+ShareStaleness StaleSharedPackages(const nlohmann::ordered_json &Config, const NodeIndex &Idx, const std::set<std::string> &Libs);
+//Takes packages ("<lib>/<pkg>") out of the share sheet and their pins — what a peer is given of a package deleted from
+//disk. Nothing is minted or renamed. The number of entries taken out.
+int DropFromShareSheet(nlohmann::ordered_json &Config, const std::vector<std::string> &Packages);
 //PublishLibrary for some packages only (their folders under the library root): their nodes and those of every package
 //they contain are minted; the named packages are rebuilt, a contained one only when its entries are stale; their
 //entries replace their own in the sheet and every other entry is left untouched. Returns the packages published.
 std::vector<std::string> PublishPackages(nlohmann::ordered_json &Config, const std::vector<std::filesystem::path> &PackageDirs,
                                          std::string *Error = nullptr, std::string *Gaps = nullptr);
 
-// Receiver: turn a friend's share snapshot (their share sheet's entries, {lib: [{cid, pkg, node}]}) into plain
+// Receiver: turn a peer's share snapshot (their share sheet's entries, {lib: [{cid, pkg, node}]}) into plain
 // rolling-queue file fetches whose destinations are the final paths — CATALOG/<nick> - <lib>/<pkg>/<file> — one per
 // entry. The queue writes + pins each node file there like any file, and the ordinary catalog scan / hydration /
 // install / re-publish take it from there (re-publishing identical nodes yields identical CIDs — the multi-seeder
@@ -328,7 +357,7 @@ std::vector<std::string> PublishPackages(nlohmann::ordered_json &Config, const s
 // plain characters, and item counts are bounded. A package installed here is not planned. Pure planning — touches no
 // disk, fetches nothing.
 struct ReceivedFetch { std::string Cid; std::string Dest; };
-//The folder each of a friend's packages lands in ((library, package) → folder name): its name made safe, or — when names
+//The folder each of a peer's packages lands in ((library, package) → folder name): its name made safe, or — when names
 //clash without case — every clashing one qualified by its name's hash, whatever order they arrive in.
 std::map<std::pair<std::string, std::string>, std::string> ReceivedFolderNames(const nlohmann::ordered_json &Libs);
 // True when a directory holds any file that is not a node (.json): content that was fetched or authored there.
@@ -340,7 +369,7 @@ bool DirHasContent(const std::string &Dir);
 // installed, and the package never came back.
 std::vector<IpfsWrapper::FetchTarget> ReceivedFetchTargets(const std::vector<ReceivedFetch> &Plan);
 
-// The label a friend's received libraries are filed under ("<label> - <lib>"): their nickname from the address book,
+// The label a peer's received libraries are filed under ("<label> - <lib>"): their nickname from the address book,
 // else the tail of their peer ID. The ONE rule — the receiver plans with it and later finds its landed dirs by it.
 std::string ReceivedNickLabel(const std::string &PeerID);
 
@@ -348,20 +377,20 @@ std::vector<ReceivedFetch> PlanReceivedFetches(const nlohmann::ordered_json &Glo
                                                const std::string &NickLabel, const nlohmann::ordered_json &Libs);
 
 
-// ----- versions of an installed package: switching to a friend's version when the user says so -----
-// There is no "newer": two people building one package have equally good versions. A friend's entries for a package
-// installed here (Listing: node CID → file name) that differ from this package's nodes are "<friend> has a different
-// version". Peer/Nick name the friend; Version names the listing (the same listing, the same name).
+// ----- versions of an installed package: switching to a peer's version when the user says so -----
+// There is no "newer": two people building one package have equally good versions. A peer's entries for a package
+// installed here (Listing: node CID → file name) that differ from this package's nodes are "<peer> has a different
+// version". Peer/Nick name the peer; Version names the listing (the same listing, the same name).
 struct PackageUpdate
 {
     std::filesystem::path Dir; std::string Lib, Pkg, Peer, Nick, Version;
     std::map<std::string, std::string> Listing;
 };
-// Every such version, for the libraries friends share with us (local: no network).
+// Every such version, for the libraries peers share with us (local: no network).
 // A version every node of which is already here (one switched to before, the nodes it dropped kept for games that
 // still contain them) is offered only once something kept may go.
 std::vector<PackageUpdate> AvailableUpdates(const nlohmann::ordered_json &GlobalConfigJSON);
-// A friend's version fetched beside the library (never inside LIBRARY or CATALOG: nothing indexes it), and the plan to
+// A peer's version fetched beside the library (never inside LIBRARY or CATALOG: nothing indexes it), and the plan to
 // switch to it: every node it lists comes in; an installed node it does not list goes — unless another installed
 // package (or the new version itself) still contains it, then it is KEPT. Content files follow the node set: a file
 // of a removed node is deleted, two CIDs sharing a name live at bumped names (ContentFile), bytes already here under
@@ -379,7 +408,7 @@ struct StagedUpdate
     std::vector<ContentDelete> Deletes;
     unsigned long long DeleteBytes = 0;
 };
-// Fetch U's nodes into its own stage (per friend and version) and plan the switch (through the ONE queue; waits —
+// Fetch U's nodes into its own stage (per peer and version) and plan the switch (through the ONE queue; waits —
 // call off the GUI thread). Refused for a package holding never-minted (draft) node files. A stage left by a switch
 // that stopped half-way is resumed as it was planned.
 bool StageUpdate(const nlohmann::ordered_json &GlobalConfigJSON, const PackageUpdate &U, StagedUpdate *Out,
@@ -393,12 +422,12 @@ bool ApplyStagedUpdate(const nlohmann::ordered_json &GlobalConfigJSON, const Sta
 void DiscardStagedUpdate(const StagedUpdate &S);
 
 // True when a node contains (NODE) a node missing from the index: a package it needs has not landed yet, or the
-// friend does not share it. Nothing is ever fetched into the node's own package to fill the gap (a node has one home).
+// peer does not share it. Nothing is ever fetched into the node's own package to fill the gap (a node has one home).
 bool NodeClosureIncomplete(const NodeIndex &Idx, const std::string &Id);
 // The nodes Id contains, at any depth, that are not in the index (sorted, unique). Empty: the closure is complete.
 std::vector<std::string> MissingFromClosure(const NodeIndex &Idx, const std::string &Id);
 
-// Received PACKAGES: a friend's share sheet entries, one node file each (CATALOG/<nick> - <lib>/<pkg>/<file>). True
+// Received PACKAGES: a peer's share sheet entries, one node file each (CATALOG/<nick> - <lib>/<pkg>/<file>). True
 // while an entry's file is not on disk; LandReceivedPackages fetches (or renames) them through the one rolling queue and
 // verifies every file (synchronous — OFF the GUI thread); PruneStaleReceived removes the node files of a received
 // package that its entries do not name (an older generation's). Returns the number removed.
@@ -410,7 +439,7 @@ int PruneStaleReceived(const NodeIndex &Idx, const nlohmann::ordered_json &Globa
 [[nodiscard]] bool AdoptReceivedPackage(const nlohmann::ordered_json &GlobalConfigJSON, const std::filesystem::path &PkgDir,
                                         std::filesystem::path *NewDir = nullptr, std::string *Error = nullptr);
 // A package of ours' pin folder (its node files + its content: what a pinning service is given), from Config["Pins"]
-// by its library and folder name. Empty if it was never published here (a friend's package has none: a receiver never
+// by its library and folder name. Empty if it was never published here (a peer's package has none: a receiver never
 // reads a pin folder).
 std::string PackagePin(const nlohmann::ordered_json &GlobalConfigJSON, const std::filesystem::path &PkgDir);
 // The received package dirs a download must adopt before fetching: every package any node in the CLOSURE of each
@@ -464,7 +493,7 @@ std::shared_ptr<const NodeIndex> FreshCatalogIndex(const nlohmann::ordered_json 
 // drop-ref their CIDs, so the package returns to the Catalog as re-downloadable and the node stops seeding it.
 // Returns the number of files removed. Use only for managed (library-root) packages, never local/portable ones.
 int DehydrateNode(const NodeIndex &Idx, const std::string &LaunchNodeId);
-//The packages installed here, from the index: every package folder (LIBRARY's, or added locally; never a friend's
+//The packages installed here, from the index: every package folder (LIBRARY's, or added locally; never a peer's
 //CATALOG stubs) with a launchable whose content is all on disk — Settings → Installed Packages. Uid and Title are its
 //identity as ScanBundleIdentity tells it (no disk read: the index has the nodes); Variants its shelf rows; Local when
 //it was added from outside LIBRARY; Bytes what its folder holds on disk (with Sizes; a walk of each folder).

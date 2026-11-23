@@ -230,7 +230,7 @@ static PathState ResolvePathState(const nlohmann::ordered_json &Layer, const std
 // ONLY when it is FETCHABLE-MISSING: its backing file is absent AND it carries a remote source (CID) to fetch it from.
 // A missing local-only layer (no CID) is not un-hydrated — there is nothing to fetch; it is a broken/incomplete package,
 // which --validate-nodes owns, not the download button. A runtime-sourced %path% has no on-disk file at all.
-// A RECEIVED node is a friend's: a file of it that is not here is not installed, CID or not (a friend's node naming
+// A RECEIVED node is a peer's: a file of it that is not here is not installed, CID or not (a peer's node naming
 // no CID is one nobody can fetch — never one this machine has).
 static bool LayerFetchableMissing(PathState PS, const std::string &Cid)
 {

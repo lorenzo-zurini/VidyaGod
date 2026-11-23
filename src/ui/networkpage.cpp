@@ -57,7 +57,7 @@ NetworkPage::NetworkPage(AppModel &model, QWidget *parent)
     QLabel *Blurb = new QLabel(
         "Checks every network feature against this machine and network: internet reachability, DNS, "
         "peer-to-peer connectivity over TCP and UDP, whether other players can reach you, same-network (LAN) "
-        "discovery, content lookups, and the live links to your friends.\n"
+        "discovery, content lookups, and the live links to your peers.\n"
         "A firewall that silently drops UDP or multicast makes things merely feel slow — this makes it say so.",
         this);
     Blurb->setWordWrap(true);

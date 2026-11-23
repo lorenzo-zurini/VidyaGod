@@ -347,7 +347,7 @@ NodeIndex ScanCatalogIndex(const nlohmann::ordered_json &GlobalConfigJSON)
     std::map<std::string, nlohmann::ordered_json> Tree;
     std::map<std::string, std::filesystem::path>  Dirs;
     NodeGraph::GatherWorkingTree(LibraryRootDir(GlobalConfigJSON), Tree, Dirs);   // OUR nodes: stored CID handle trusted
-    // Received browse stubs (a friend controls their bytes): gather with TrustStoredCid=FALSE so a crafted "CID" can't
+    // Received browse stubs (a peer controls their bytes): gather with TrustStoredCid=FALSE so a crafted "CID" can't
     // hijack a local handle or a local node's external-dep ref, or forge an "authored" handle to steal a BundleDir.
     // They still merge in and resolve by their DERIVED CID in the frozen index (browse tiles link exec→tile fine).
     NodeGraph::GatherWorkingTree(CatalogRootDir(GlobalConfigJSON), Tree, Dirs, /*SkipReserved=*/false, /*TrustStoredCid=*/false);
@@ -363,10 +363,10 @@ NodeIndex ScanCatalogIndex(const nlohmann::ordered_json &GlobalConfigJSON)
         LogOut("PackageCatalog::BuildCatalogIndex", "Indexed " + std::to_string(Idx.Nodes.size())
                + " node(s) by CID from " + LibraryRootDir(GlobalConfigJSON) + " in " + Ms(T0, Clock::now()) + " ms (read "
                + Ms(T0, T1) + ", freeze and facts " + Ms(T1, Clock::now()) + ")");
-    //A node that lives under CATALOG is a RECEIVED stub: a friend's bytes, browsable and downloadable, never a
+    //A node that lives under CATALOG is a RECEIVED stub: a peer's bytes, browsable and downloadable, never a
     //graft candidate (it would mount un-hydrated). Decided by where its file lives — the only fact that
     //distinguishes it, since the frozen index is one flat graph.
-    //A node that is ALSO installed (a friend's stub of a package we have) is ours: it mounts and seeds from our copy.
+    //A node that is ALSO installed (a peer's stub of a package we have) is ours: it mounts and seeds from our copy.
     const std::filesystem::path Cat = std::filesystem::path(CatalogRootDir(GlobalConfigJSON)).lexically_normal();
     auto UnderCatalog = [&](const std::filesystem::path &Dir) {
         const std::filesystem::path D = Dir.lexically_normal();
@@ -374,7 +374,7 @@ NodeIndex ScanCatalogIndex(const nlohmann::ordered_json &GlobalConfigJSON)
         (void)DEnd;
         return !Cat.empty() && CatEnd == Cat.end();
     };
-    //A friend's catalog stub of a package that is installed here is a view of it, not a second home: the node reads
+    //A peer's catalog stub of a package that is installed here is a view of it, not a second home: the node reads
     //from the installed package. What is left in Duplicates after that is two installed homes — the validator's.
     for (auto &[Id, D] : Idx.Duplicates)
     {

@@ -144,13 +144,13 @@ TEST(pkgdoc_saving_an_edit_re_mints_it_and_its_referrers)
 TEST(pkgdoc_a_save_follows_renames_through_the_library_and_instances)
 {
     const fs::path Lib = Fresh("lib");
-    const fs::path Fonts = Lib / "fonts", Game = Lib / "game", Mod = Lib / "mod", Friend = Lib / "_friend_x";
-    for (const fs::path &P : {Fonts, Game, Mod, Friend}) fs::create_directories(P);
+    const fs::path Fonts = Lib / "fonts", Game = Lib / "game", Mod = Lib / "mod", Peer = Lib / "_peer_x";
+    for (const fs::path &P : {Fonts, Game, Mod, Peer}) fs::create_directories(P);
     const std::string F = Freeze(Fonts, Zip("Fonts", "f.zip"));
     Freeze(Mod, Zip("Fonts", "f.zip"));                                      // a copy of the same node
     const std::string G = Freeze(Game, Over("Game", F));
     const std::string M = Freeze(Mod, Over("Mod", G));                       // names the game, which names the fonts
-    const std::string Fr = Freeze(Friend, Over("Theirs", F));                // a friend's landed copy: never ours
+    const std::string Fr = Freeze(Peer, Over("Theirs", F));                // a peer's landed copy: never ours
     const fs::path Users = Fresh("users");
     fs::create_directories(Users / "749" / "DefaultInstance");
     std::ofstream(Users / "749" / "DefaultInstance" / "instance.json")
@@ -168,7 +168,7 @@ TEST(pkgdoc_a_save_follows_renames_through_the_library_and_instances)
     CHECK(!Has(Mod, F));
     CHECK(Has(Game, G2) && !Has(Game, G));
     CHECK(Has(Mod, M2) && !Has(Mod, M));
-    CHECK(Has(Friend, Fr));                              // untouched
+    CHECK(Has(Peer, Fr));                              // untouched
     CHECK(AllFrozen(Fonts) && AllFrozen(Game) && AllFrozen(Mod));
     const json GameNode = json::parse(Slurp(FileOf(Game, G2)), nullptr, false);
     CHECK(GameNode.is_object() && GameNode["LAYERS"][0]["NODE"] == F2);
@@ -452,10 +452,10 @@ TEST(pkgdoc_a_deleted_node_goes_unless_it_is_the_last_copy_something_names)
     CHECK_EQ((int)R.Kept.size(), 1);
 }
 
-// A friend's package is theirs: a save into it is refused.
-TEST(pkgdoc_a_friends_package_is_never_saved)
+// A peer's package is theirs: a save into it is refused.
+TEST(pkgdoc_a_peers_package_is_never_saved)
 {
-    const fs::path D = Fresh("friend") / "_friend_bob" / "game";
+    const fs::path D = Fresh("peer") / "_peer_bob" / "game";
     fs::create_directories(D);
     Freeze(D, Zip("x", "x.zip"));
     PkgDoc::Document Doc;
