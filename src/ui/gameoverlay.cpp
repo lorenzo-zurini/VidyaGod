@@ -35,7 +35,9 @@ std::vector<std::pair<const char *, unsigned>> OverlayProperties(bool Open)
     return { { "STEAM_OVERLAY", 1u }, { "STEAM_INPUT_FOCUS", Open ? 1u : 0u }, { "_NET_WM_WINDOW_OPACITY", Open ? 0xFFFFFFFFu : 0u } };
 }
 
-void MarkOverlayWindow(QWidget *W, bool Open)
+namespace {
+//Sets 32-bit CARDINAL properties on a window, when the app is on X11 itself.
+void SetCardinals(QWidget *W, const std::vector<std::pair<const char *, unsigned>> &Props)
 {
 #ifdef __linux__
     //Only on X11 itself: the offscreen platform answers for X11 too, with no connection behind it.
@@ -44,7 +46,7 @@ void MarkOverlayWindow(QWidget *W, bool Open)
     xcb_connection_t *C = X ? X->connection() : nullptr;
     if (!C) return;
     const auto Win = static_cast<xcb_window_t>(W->winId());
-    for (const auto &[Name, Value] : OverlayProperties(Open))
+    for (const auto &[Name, Value] : Props)
     {
         xcb_intern_atom_reply_t *R = xcb_intern_atom_reply(C, xcb_intern_atom(C, 0, static_cast<uint16_t>(std::strlen(Name)), Name), nullptr);
         if (!R) continue;
@@ -54,9 +56,14 @@ void MarkOverlayWindow(QWidget *W, bool Open)
     }
     xcb_flush(C);
 #else
-    (void)W; (void)Open;
+    (void)W; (void)Props;
 #endif
 }
+}
+
+void MarkExternalOverlay(QWidget *W) { SetCardinals(W, { { "GAMESCOPE_EXTERNAL_OVERLAY", 1u } }); }
+
+void MarkOverlayWindow(QWidget *W, bool Open) { SetCardinals(W, OverlayProperties(Open)); }
 
 bool PadButtonFromUiEvent(const QString &E, Pad::Button &B)
 {

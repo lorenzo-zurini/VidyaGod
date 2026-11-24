@@ -23,6 +23,8 @@
 #include "deckshell.h"           // controller mode
 #include "controllerservice.h"   // VidyaGod's InputPlumber
 #include "gameoverlay.h"
+#include "controllerlayout.h"
+#include "volumekeys.h"
 #include "padnav.h"             // PadRouter — controllers drive every window
 #include "commonutils.h"
 
@@ -129,9 +131,12 @@ MainWindow::MainWindow(nlohmann::ordered_json * gc, QDir * appData, QWidget * pa
         ControllerService::instance().setProgram(QCoreApplication::applicationDirPath() + QStringLiteral("/vidyagod-inputplumber"));
     }
     if (qEnvironmentVariable("VIDYAGOD_SESSION") == QLatin1String("1"))
+        ControllerLayout::SetVolumeKeysToVidyaGod(true);   // a handheld's +/-: nothing else in the session answers them
+    if (qEnvironmentVariable("VIDYAGOD_SESSION") == QLatin1String("1"))
         ControllerService::instance().want(ControllerService::Need::Session, true);
     //The in-game overlay: the Guide button over a game VidyaGod launched (through the controller service's intercept).
     GameOverlay::instance().attach();
+    VolumeKeys::instance().follow();   //the handheld's volume keys (through the controller service)
 
     //Controllers: one router for every window the app opens; Start with Back held turns controller mode on from the
     //desktop (after the press itself has been routed: queued).
@@ -174,7 +179,7 @@ void MainWindow::BuildStaticUI()
     // A completed/changed download → refresh the IPFS model (pick up the new pin). Queued-row state + per-CID progress
     // flow directly into IpfsModel (from the download queue's callback + the node's transfer events, both via
     // IpfsManager); DownloadManager reads that progress back to paint the Catalog card (wired in its ctor).
-    connect(DownloadMgr, &DownloadManager::transfersChanged, IpfsModelPtr, &IpfsModel::refreshNow);
+    connect(DownloadMgr, &DownloadManager::transfersChanged, IpfsModelPtr, &IpfsModel::refreshIfShown);
 
     // Lazy cover loading: coalesce a burst of cover-ready arrivals into one model notification; the Library/Catalog
     // tabs (and controller mode's shelves) repaint their visible cards on coversReady.

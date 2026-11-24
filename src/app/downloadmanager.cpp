@@ -36,6 +36,12 @@ DownloadManager::DownloadManager(AppModel &model, IpfsModel &ipfs, QObject *pare
     IpfsWrapper::OpenQueue();   // a previous manager's exit closed it (tests build several in one process)
     // Per-CID progress lives in IpfsModel now; recompute a package's averaged bar whenever one of its CIDs changes.
     connect(&Ipfs, &IpfsModel::cidChanged, this, [this](const QString &cid){ recomputeProgress(cid); });
+    //Downloads that ended while others ran are said once the catalog shows them (the coalesced rebuild, or any).
+    connect(&Model, &AppModel::catalogChanged, this, [this] {
+        if (FinishedUnsaid.isEmpty() || Model.catalogGeneration() == UnsaidSince) return;   // no new index yet (hydration only)
+        const QStringList Said = std::exchange(FinishedUnsaid, {});
+        for (const QString & K : Said) emit downloadFinished(K);
+    });
 }
 
 void DownloadManager::cancelKey(const QString &Key)
@@ -98,6 +104,7 @@ void DownloadManager::beginDownload(const QString &Key, const std::vector<std::s
                                     const std::vector<std::string> &RunnerIds, const std::map<std::string, bool> &Toggles)
 {
     if (Key.isEmpty() || DownloadingUids.contains(Key)) return;       // already in flight
+    FinishedUnsaid.removeAll(Key);   // an earlier run's end, not yet said, is not this one's
     DownloadingUids.insert(Key);
     persistActive(Key, LaunchIds, RunnerIds, Toggles);               // survive a crash/close → resumed next launch
 
@@ -145,7 +152,7 @@ void DownloadManager::beginDownload(const QString &Key, const std::vector<std::s
                 if (It != DownloadCidToUid.end()) { It->remove(Key); if (It->isEmpty()) DownloadCidToUid.erase(It); }
                 if (!DownloadCidToUid.contains(c)) IpfsWrapper::ClearCancel(c.toStdString());   // no card needs it now
                 // IpfsModel owns the transfer rows now; a still-queued CID clears itself via the queue's callback and
-                // the post-completion refresh() (transfersChanged → IpfsModel::refreshNow).
+                // the post-completion refresh (transfersChanged → IpfsModel::refreshIfShown).
             }
             DownloadUidCids.remove(Key);
             unpersistActive(Key);           // it ended normally (success/cancel/fail) → don't resume it next launch
@@ -158,8 +165,20 @@ void DownloadManager::beginDownload(const QString &Key, const std::vector<std::s
                 std::thread([Purge]{ for (const QString & c : Purge) IpfsWrapper::DropCached(c.toStdString()); }).detach();
             }
             else if (!Ok) LogErr("DownloadManager::beginDownload", "Download failed: " + Err);   // shows as a "Failed" row
-            emit downloadFinished(Key);   // the Catalog card(s) drop the "Downloading…" overlay BEFORE the rebuild reads state
-            Model.rebuildCatalog();       // emits catalogChanged → Catalog rebuild + Library rebuild + IPFS refresh
+            //The last download in flight: its end is said and the catalog rebuilt at once (whoever follows the signal
+            //reads the new catalog). Others still running: downloads ending together (dozens, a peer gone) rebuild once,
+            //and each end is said with that rebuild, never before the catalog shows it.
+            if (DownloadingUids.isEmpty())
+            {
+                emit downloadFinished(Key);   // the Catalog card(s) drop the "Downloading…" overlay BEFORE the rebuild reads state
+                Model.rebuildCatalog();       // emits catalogChanged → Catalog rebuild + Library rebuild
+            }
+            else
+            {
+                if (FinishedUnsaid.isEmpty()) UnsaidSince = Model.catalogGeneration();
+                FinishedUnsaid << Key;
+                Model.rebuildCatalogSoon();
+            }
             emit transfersChanged();
         }, Qt::QueuedConnection);
     }), Done});

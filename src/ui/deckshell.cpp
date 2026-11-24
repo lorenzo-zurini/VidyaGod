@@ -1,4 +1,5 @@
 #include "deckshell.h"
+#include "screensaver.h"
 #include "controllerservice.h"
 #include "deckshell_p.h"
 
@@ -391,6 +392,14 @@ DeckShell::DeckShell(AppModel &M, IpfsModel &I, DownloadManager &D, QWidget *Par
     connect(&PadRouter::instance(), &PadRouter::hintsChanged, this, [this] { update(QRect(0, height() - static_cast<int>(60 * scale()), width(), static_cast<int>(60 * scale()))); });
     connect(&PadInput::instance(), &PadInput::padsChanged, this, [this] { update(); });
 
+    //An OLED's whole screen: after a while with no input the rain covers it (Settings.ScreenSaverSeconds), never while
+    //a game runs or the shell is not shown.
+    Saver = new ScreenSaver(this, [this] { return ScreenSaver::SecondsIn(*Model.config()); }, this);
+    Saver->setSuspended(true);
+    connect(&ControllerService::instance(), &ControllerService::gameChanged, this, [this](bool Running) {
+        GameRunning = Running;
+        if (Active) Saver->setSuspended(Running);
+    });
     Clock = new QTimer(this);
     Clock->setInterval(15000);
     connect(Clock, &QTimer::timeout, this, [this] { update(); });
@@ -536,6 +545,7 @@ void DeckShell::setActive(bool On)
         qApp->installEventFilter(this);
         ControllerService::instance().want(ControllerService::Need::ControllerMode, true);   // the controllers, through InputPlumber (or the Deck's own, read directly, without it)
         Clock->start();
+        Saver->setSuspended(GameRunning);
         //Covers as large as the shelf draws them (a TV draws them larger than the desktop's cards).
         Library->grid()->resize(Body->size());
         const QSizeF T = Library->grid()->tileSize();
@@ -549,6 +559,7 @@ void DeckShell::setActive(bool On)
         ControllerService::instance().want(ControllerService::Need::ControllerMode, false);   // the desktop: the controllers back to everything else
         QCoreApplication::setAttribute(Qt::AA_DontUseNativeDialogs, NativeDialogsWere);
         Clock->stop();
+        Saver->setSuspended(true);
         if (menuOpen()) closeMenu();
     }
     showSection(Current);

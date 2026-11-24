@@ -347,8 +347,7 @@ bool Download(std::shared_ptr<const NodeIndex> Idx, const std::vector<std::strin
     // of content is fetched, so the content lands in the library and the package is ours from here on — launchable,
     // its grafts offered, re-published with our library. Every package the closures reach: adopt, then re-index once.
     const std::set<std::filesystem::path> Adopt = PackagesToAdopt(*Idx, LaunchIds, RunnerIds, Config);
-    for (const std::filesystem::path &D : Adopt)
-        if (std::string AErr; !AdoptReceivedPackage(Config, D, nullptr, &AErr)) return Fail(AErr);
+    if (std::string AErr; !Adopt.empty() && !AdoptReceivedPackages(Config, { Adopt.begin(), Adopt.end() }, nullptr, &AErr)) return Fail(AErr);
     if (!Adopt.empty()) Idx = FreshCatalogIndex(Config);
     // Pool EVERY fetch into ONE concurrent batch, so a game downloads TOGETHER with the runtime it needs (bounded by
     // MaxConcurrentDownloads; dedup handles a runner both resolved and asked for).

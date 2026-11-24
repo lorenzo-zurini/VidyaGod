@@ -246,7 +246,8 @@ static std::string ReceivedLibraryName(const nlohmann::ordered_json &Config, con
     return {};
 }
 
-bool AdoptReceivedPackage(const nlohmann::ordered_json &Config, const std::filesystem::path &PkgDir, std::filesystem::path *NewDir, std::string *Error)
+bool AdoptReceivedPackages(const nlohmann::ordered_json &Config, const std::vector<std::filesystem::path> &PkgDirs,
+                           std::vector<std::filesystem::path> *NewDirs, std::string *Error)
 {
     // Installing a received package MOVES it out of CATALOG into LIBRARY/<lib>/<pkg>: from then on it is an ordinary
     // local package — launchable, its grafts offered, published with the library under the same CIDs. CATALOG holds
@@ -258,62 +259,91 @@ bool AdoptReceivedPackage(const nlohmann::ordered_json &Config, const std::files
     static std::mutex AdoptMu;
     std::lock_guard<std::mutex> Lk(AdoptMu);
     std::error_code Ec;
+    if (NewDirs) NewDirs->clear();
+    const auto Fail = [&](const std::string &Why) { if (Error) *Error = Why; return false; };
+    //Every package is judged before any moves: one refused refuses them all, with nothing half-installed.
+    struct Move { fs::path Src, Dest; std::string Lib; };
+    std::vector<Move> Moves;
+    std::set<fs::path> SeenSrc, SeenDest;
     const fs::path Cat = fs::path(CatalogRootDir(Config)).lexically_normal();
-    const fs::path Src = PkgDir.lexically_normal();
-    auto [CatEnd, SrcEnd] = std::mismatch(Cat.begin(), Cat.end(), Src.begin(), Src.end());
-    if (Cat.empty() || CatEnd != Cat.end())
-    { if (Error) *Error = "not a received package dir: " + PkgDir.string(); return false; }
-    const std::string Lib = ReceivedLibraryName(Config, Src.parent_path().filename().string());
-    if (Lib.empty()) { if (Error) *Error = "no share snapshot names " + Src.parent_path().filename().string(); return false; }
-    //The library NAME is the peer's (their snapshot): one sanitised segment, and the destination must lie inside
-    //the library whatever it held — an absolute or ".." name would otherwise plant the package anywhere writable.
-    const fs::path Dest = fs::path(LibraryRootDir(Config)) / NodeFiles::SafeName(Lib) / NodeFiles::SafeName(Src.filename().string());
-    if (!NodeGraph::PathWithin(LibraryRootDir(Config), Dest))
-    { if (Error) *Error = "refused: " + Dest.string() + " is outside the library"; return false; }
-    if (!fs::is_directory(Src, Ec))
+    for (const fs::path &PkgDir : PkgDirs)
     {
-        if (fs::is_directory(Dest, Ec)) { if (NewDir) *NewDir = Dest; return true; }   // installed meanwhile
-        if (Error) *Error = "not a received package dir: " + PkgDir.string();
-        return false;
-    }
-    if (fs::exists(Dest, Ec)) { if (Error) *Error = "a package named '" + Src.filename().string() + "' already exists in library '" + Lib + "'"; return false; }
-    //Every file fetched into the package is referenced in place, and the references move to the installed place BEFORE
-    //the package does. The move is
-    //idempotent and never looks at the files, so a failure or crash anywhere up to the rename leaves a stub still
-    //Received in CATALOG, which the next download adopts again. Moved after the rename, a failure left an installed
-    //package (never adopted again) whose files read as missing, unservable for good.
-    std::string MErr;
-    if (IpfsWrapper::MoveRefs({{Src.string(), Dest.string()}}, &MErr) < 0)
-    { if (Error) *Error = "cannot re-point the references of " + Src.string() + " to " + Dest.string() + ": " + MErr; return false; }
-    auto Refuse = [&](const std::string &Why) {                            // the package stays where its files are
-        std::string BErr;
-        if (IpfsWrapper::MoveRefs({{Dest.string(), Src.string()}}, &BErr) < 0)
-            LogErr("PackageCatalog::AdoptReceivedPackage", "cannot point the references back at " + Src.string() + ": " + BErr);
-        if (Error) *Error = Why;
-        return false;
-    };
-    IpfsWrapper::ForgetDestsUnder(Src.string());      // the queue must never re-land a file into the old stub
-    fs::create_directories(Dest.parent_path(), Ec);
-    fs::rename(Src, Dest, Ec);
-    if (Ec)
-    {   // a different filesystem: copy, then remove the source; a partial copy goes, or it blocks every later install
-        Ec.clear();
-        fs::copy(Src, Dest, fs::copy_options::recursive, Ec);
-        if (Ec)
+        const fs::path Src = PkgDir.lexically_normal();
+        if (!SeenSrc.insert(Src).second) continue;   // asked twice: installed once
+        auto [CatEnd, SrcEnd] = std::mismatch(Cat.begin(), Cat.end(), Src.begin(), Src.end());
+        if (Cat.empty() || CatEnd != Cat.end()) return Fail("not a received package dir: " + PkgDir.string());
+        const std::string Lib = ReceivedLibraryName(Config, Src.parent_path().filename().string());
+        if (Lib.empty()) return Fail("no share snapshot names " + Src.parent_path().filename().string());
+        //The library NAME is the peer's (their snapshot): one sanitised segment, and the destination must lie inside
+        //the library whatever it held — an absolute or ".." name would otherwise plant the package anywhere writable.
+        const fs::path Dest = fs::path(LibraryRootDir(Config)) / NodeFiles::SafeName(Lib) / NodeFiles::SafeName(Src.filename().string());
+        if (!NodeGraph::PathWithin(LibraryRootDir(Config), Dest)) return Fail("refused: " + Dest.string() + " is outside the library");
+        if (!fs::is_directory(Src, Ec))
         {
-            const std::string Why = "cannot move " + Src.string() + " to " + Dest.string() + ": " + Ec.message();
-            fs::remove_all(Dest, Ec);
-            return Refuse(Why);
+            if (fs::is_directory(Dest, Ec)) { if (NewDirs) NewDirs->push_back(Dest); continue; }   // installed meanwhile
+            return Fail("not a received package dir: " + PkgDir.string());
         }
-        fs::remove_all(Src, Ec);
+        if (fs::exists(Dest, Ec)) return Fail("a package named '" + Src.filename().string() + "' already exists in library '" + Lib + "'");
+        //Two received packages that would install as one (one package from two peers, of different generations): never
+        //merged — refused, as the second always was when they were installed one by one.
+        if (!SeenDest.insert(Dest.lexically_normal()).second)
+            return Fail("two received packages would install as '" + Src.filename().string() + "' in library '" + Lib + "'");
+        Moves.push_back({ Src, Dest, Lib });
     }
-    // A later request for the old paths lands in the installed package; registered before the queue forgets them, so
-    // no request in between re-materialises the stub.
-    IpfsWrapper::RedirectDestsUnder(Src.string(), Dest.string());
-    IpfsWrapper::ForgetDestsUnder(Src.string());
-    if (fs::is_empty(Src.parent_path(), Ec)) fs::remove(Src.parent_path(), Ec);
-    if (NewDir) *NewDir = Dest;
-    LogOut("PackageCatalog::AdoptReceivedPackage", "installed '" + Src.filename().string() + "' into library '" + Lib + "'");
+    if (Moves.empty()) return true;
+    //Every file fetched into a package is referenced in place, and the references move to the installed place BEFORE
+    //the packages do — all of them in ONE move: each move reads the whole reference index (a game's closure reaches
+    //several packages, a scan each). The move is idempotent and never looks at the files, so a failure or crash
+    //anywhere up to the renames leaves stubs still Received in CATALOG, which the next download adopts again. Moved
+    //after the renames, a failure left an installed package (never adopted again) whose files read as missing.
+    std::vector<std::pair<std::string, std::string>> Refs;
+    for (const Move &M : Moves) Refs.push_back({ M.Src.string(), M.Dest.string() });
+    if (std::string MErr; IpfsWrapper::MoveRefs(Refs, &MErr) < 0)
+        return Fail("cannot re-point the references of the received package(s) to the library: " + MErr);
+    //Then the queue lets go of every stub, before any moves: a file landing into one later would be referenced at a path
+    //its package is about to leave. (Not before the move: refused, the stubs stay, and so must their fetches.)
+    for (const Move &M : Moves) IpfsWrapper::ForgetDestsUnder(M.Src.string());
+    std::vector<std::pair<std::string, std::string>> Back;   // packages that could not move: their references go back
+    std::string Why;
+    for (const Move &M : Moves)
+    {
+        fs::create_directories(M.Dest.parent_path(), Ec);
+        fs::rename(M.Src, M.Dest, Ec);
+        if (Ec)
+        {   //A different filesystem: copy, then remove the source. A partial copy goes, or it blocks every later install —
+            //it is all this call's: the destination did not exist (judged above, under AdoptMu), and no two packages of
+            //one call share one.
+            Ec.clear();
+            fs::copy(M.Src, M.Dest, fs::copy_options::recursive, Ec);
+            if (Ec)
+            {
+                if (Why.empty()) Why = "cannot move " + M.Src.string() + " to " + M.Dest.string() + ": " + Ec.message();
+                std::error_code Rm;
+                fs::remove_all(M.Dest, Rm);
+                Back.push_back({ M.Dest.string(), M.Src.string() });
+                continue;
+            }
+            fs::remove_all(M.Src, Ec);
+        }
+        // A later request for the old paths lands in the installed package; registered before the queue forgets them,
+        // so no request in between re-materialises the stub.
+        IpfsWrapper::RedirectDestsUnder(M.Src.string(), M.Dest.string());
+        IpfsWrapper::ForgetDestsUnder(M.Src.string());
+        if (fs::is_empty(M.Src.parent_path(), Ec)) fs::remove(M.Src.parent_path(), Ec);
+        if (NewDirs) NewDirs->push_back(M.Dest);
+        LogOut("PackageCatalog::AdoptReceivedPackages", "installed '" + M.Src.filename().string() + "' into library '" + M.Lib + "'");
+    }
+    if (Back.empty()) return true;
+    if (std::string BErr; IpfsWrapper::MoveRefs(Back, &BErr) < 0)   // the packages stay where their files are
+        LogErr("PackageCatalog::AdoptReceivedPackages", "cannot point the references back at the received package(s): " + BErr);
+    return Fail(Why);
+}
+
+bool AdoptReceivedPackage(const nlohmann::ordered_json &Config, const std::filesystem::path &PkgDir, std::filesystem::path *NewDir, std::string *Error)
+{
+    std::vector<std::filesystem::path> New;
+    if (!AdoptReceivedPackages(Config, { PkgDir }, &New, Error)) return false;
+    if (NewDir && !New.empty()) *NewDir = New.front();
     return true;
 }
 bool ReceivedPackagesIncomplete(const nlohmann::ordered_json &Config)
@@ -385,9 +415,12 @@ int PruneStaleReceived(const NodeIndex &Idx, const nlohmann::ordered_json &Confi
     for (const auto &[Dir, Files] : Packages)
     {
         if (!fs::is_directory(Dir, Ec)) continue;
-        for (const auto &[Cid, F] : NodeFiles::In(Dir))
+        //What an entry names is kept, and never read: reading every received node file (thousands, on the GUI thread
+        //after each landing) to skip them was the whole cost. Only the others are read, for their CIDs.
+        std::set<fs::path> Named;
+        for (const auto &[F, C] : Files) Named.insert(F);
+        for (const auto &[Cid, F] : NodeFiles::In(Dir, nullptr, &Named))
         {
-            if (Files.count(F.Path)) continue;
             std::vector<fs::path> Elsewhere = Where[Cid];                  // the same node's other landed copies
             if (const Node *N = Idx.Find(Cid); N && !N->File.empty()) Elsewhere.push_back(N->File);
             RemoveLandedNode(F.Path, Cid, Elsewhere);

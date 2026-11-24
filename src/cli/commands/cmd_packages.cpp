@@ -704,7 +704,7 @@ VG_COMMANDS
         "where it is an ordinary package of yours. --for lists every package a game's download would adopt instead.",
         { Opt("package", "the received package folder"), Opt("for", "a game's node: list what its download adopts") },
         { "received adopt --for 'Patch 2.0a'", "received adopt --package 'Age of Empires II'" },
-        { "PackageCatalog::PackagesToAdopt", "PackageCatalog::AdoptReceivedPackage" }, Needs::Config, false,
+        { "PackageCatalog::PackagesToAdopt", "PackageCatalog::AdoptReceivedPackage", "PackageCatalog::AdoptReceivedPackages" }, Needs::Config, false,
         [](Command::Context &C, const json &A) {
             if (A.contains("for"))
             {

@@ -59,7 +59,7 @@ std::map<std::string, std::string> Names(const std::map<std::string, nlohmann::o
     return Out;
 }
 
-std::map<std::string, File> In(const fs::path &Dir, std::vector<fs::path> *Twins)
+std::map<std::string, File> In(const fs::path &Dir, std::vector<fs::path> *Twins, const std::set<fs::path> *Skip)
 {
     std::map<std::string, File> Out;
     std::error_code Ec;
@@ -67,7 +67,7 @@ std::map<std::string, File> In(const fs::path &Dir, std::vector<fs::path> *Twins
     for (const auto &E : fs::directory_iterator(Dir, Ec))
     {
         std::error_code Fe;
-        if (E.is_regular_file(Fe) && E.path().extension() == ".json") Paths.push_back(E.path());
+        if (E.is_regular_file(Fe) && E.path().extension() == ".json" && !(Skip && Skip->count(E.path()))) Paths.push_back(E.path());
     }
     std::sort(Paths.begin(), Paths.end());   // the same file wins a twin on every machine
     for (const fs::path &P : Paths)

@@ -56,6 +56,7 @@ bool StartsInController(const nlohmann::ordered_json &Config, bool FlagControlle
 // and Settings are the desktop pages themselves, made large and driven by PadNav, so nothing the app does is out of
 // a controller's reach. It is a view of the same models the desktop tabs show.
 // ---------------------------------------------------------------------------
+class ScreenSaver;
 class DeckShell : public QWidget, public PadTarget
 {
     Q_OBJECT
@@ -88,6 +89,7 @@ public:
     const QList<LibraryGameCard *> &catalogCards() const;
 
     AppModel &model() const { return Model; }
+    ScreenSaver *screenSaver() const { return Saver; }   // the digital rain after a while with no input
     IpfsModel &ipfs() const { return Ipfs; }
     DownloadManager &downloads() const { return Downloads; }
 
@@ -137,6 +139,8 @@ private:
     DeckGamePage *Game = nullptr;
     DeckMenu *Menu = nullptr;
     QTimer *Clock = nullptr;
+    ScreenSaver *Saver = nullptr;
+    bool GameRunning = false;   // a game VidyaGod launched runs (ControllerService::gameChanged)   // never while a game runs or the shell is not shown
     mutable QString BatteryText;
     mutable qint64 BatteryAt = 0;
 };

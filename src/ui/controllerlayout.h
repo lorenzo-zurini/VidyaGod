@@ -89,6 +89,11 @@ std::string MouseLabel(const std::string &Button);    // "WheelUp" → "Wheel up
 
 // VidyaGod's own layouts, always there: "Gamepad" (everything as it is), "Keyboard and mouse (WASD)", "Desktop".
 const std::vector<Layout> &Templates();
+// Whether every profile routes a handheld's volume keys to VidyaGod (its D-Bus events): in VidyaGod's own session (a
+// handheld's, under gamescope) nothing else answers them; on a desktop the desktop does (its own volume and display),
+// and they are left to it. Off by default; the app turns it on in its session.
+void SetVolumeKeysToVidyaGod(bool On);
+bool VolumeKeysToVidyaGod();
 
 // The user's layouts, on disk under Dir (<data dir>/ControllerLayouts): saved by name, listed, removed, and which
 // game uses which (games.json: {game key: layout name}). A name is a file name: no slashes, no leading dot.

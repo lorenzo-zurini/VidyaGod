@@ -318,16 +318,17 @@ VG_COMMANDS
 
     Command::Register({
         "ipfs move-refs", "re-point filestore references from one path to another (a moved file)",
-        "After a content file moved on disk, the store's references follow it (no re-hash). Pairs of from → to.",
+        "After a content file moved on disk, the store's references follow it (no re-hash). Pairs of from → to, all in one "
+        "scan of the references; scans: how many such scans the node has made since start.",
         { WithSample(Opt("moves", "[[from, to], …] (JSON)", Type::Json, true), "[[\"/a/x.zip\",\"/b/x.zip\"]]") }, { "ipfs move-refs --moves '[[\"/a/x.zip\",\"/b/x.zip\"]]'" },
-        { "IpfsWrapper::MoveRefs" }, Needs::Config, true,
+        { "IpfsWrapper::MoveRefs", "IpfsWrapper::DebugMoveRefScans" }, Needs::Config, true,
         [](Command::Context &, const json &A) {
             std::vector<std::pair<std::string, std::string>> M;
             for (const auto &P : A["moves"]) M.emplace_back(P.at(0).get<std::string>(), P.at(1).get<std::string>());
             std::string Err;
             const long long N = IpfsWrapper::MoveRefs(M, &Err);
             if (N < 0) throw std::runtime_error(Err);
-            return json{{"moved", N}};
+            return json{{"moved", N}, {"scans", IpfsWrapper::DebugMoveRefScans()}};
         }, {} });
 
     Command::Register({
@@ -455,13 +456,16 @@ VG_COMMANDS
         "queue job", "one CID's job in the network queue: its state, where it lands, its scheduling",
         "The queue's view of a CID: state (none, queued, active, done, failed), unfinished, its destination, backing "
         "off a retry, being pre-empted to free a slot, prioritised.", { CidArg() }, { "queue job Qm…" },
-        { "IpfsWrapper::DebugJobState", "IpfsWrapper::JobUnfinished", "IpfsWrapper::QueueDestForCid", "IpfsWrapper::DebugJobBackingOff",
+        { "IpfsWrapper::DebugJobState", "IpfsWrapper::JobUnfinished", "IpfsWrapper::JobSettled", "IpfsWrapper::QueueDestForCid", "IpfsWrapper::DebugJobBackingOff",
           "IpfsWrapper::DebugIsPreempting", "IpfsWrapper::DebugJobPrioritized" }, Needs::Config, false,
         [](Command::Context &, const json &A) {
             const std::string C = Command::Str(A, "cid");
             static const char *States[] = { "queued", "active", "done", "failed" };
             const int S = IpfsWrapper::DebugJobState(C);
+            bool Landed = false;
+            const bool Settled = IpfsWrapper::JobSettled(C, &Landed);
             return json{{"cid", C}, {"state", S < 0 || S > 3 ? "none" : States[S]}, {"unfinished", IpfsWrapper::JobUnfinished(C)},
+                        {"settled", Settled}, {"landed", Landed},
                         {"dest", IpfsWrapper::QueueDestForCid(C)}, {"backing_off", IpfsWrapper::DebugJobBackingOff(C)},
                         {"preempting", IpfsWrapper::DebugIsPreempting(C)}, {"prioritized", IpfsWrapper::DebugJobPrioritized(C)}};
         }, {} });
@@ -469,10 +473,13 @@ VG_COMMANDS
     Command::Register({
         "queue net", "the network queue's foreground state",
         "Whether no fetch holds or waits for a slot and nobody holds the foreground (the node's own background work "
-        "runs then), and how many foreground holds were taken since start.", {}, { "queue net" },
-        { "IpfsWrapper::DebugNetForegroundIdle", "IpfsWrapper::DebugNetHolds" }, Needs::Config, true,
+        "runs then), and how many foreground holds were taken since start; busy: a job queued or running (the orphan "
+        "heal waits for it); orphan_check_scans: whole-index scans the orphan check has made.", {}, { "queue net" },
+        { "IpfsWrapper::DebugNetForegroundIdle", "IpfsWrapper::DebugNetHolds", "IpfsWrapper::QueueBusy", "IpfsWrapper::DebugRefScans", "IpfsWrapper::DebugClaimScans" }, Needs::Config, true,
         [](Command::Context &, const json &) {
-            return json{{"foreground_idle", IpfsWrapper::DebugNetForegroundIdle()}, {"foreground_holds", IpfsWrapper::DebugNetHolds()}};
+            return json{{"foreground_idle", IpfsWrapper::DebugNetForegroundIdle()}, {"foreground_holds", IpfsWrapper::DebugNetHolds()},
+                        {"busy", IpfsWrapper::QueueBusy()}, {"orphan_check_scans", IpfsWrapper::DebugRefScans()},
+                        {"claim_scans", IpfsWrapper::DebugClaimScans()}};
         }, {} });
 
     Command::Register({
@@ -623,7 +630,7 @@ VG_COMMANDS
           Opt("seed", "a folder"), Opt("add-source", "CID,NAME"), Flag("refresh", "re-gather now"), Opt("active", "on or off", Type::String, false, { "on", "off" }) },
         { "transfers act --cancel Qm…", "transfers act --force-recheck Qm…,Qm…", "transfers act --refresh" },
         { "IpfsModel::cancel", "IpfsModel::prioritize", "IpfsModel::recheckHealth", "IpfsModel::forceRecheck", "IpfsModel::unpinMany",
-          "IpfsModel::seedFolder", "IpfsModel::addSource", "IpfsModel::app", "IpfsModel::refreshNow", "IpfsModel::setActive" }, Needs::Ui, false,
+          "IpfsModel::seedFolder", "IpfsModel::addSource", "IpfsModel::app", "IpfsModel::refreshNow", "IpfsModel::refreshIfShown", "IpfsModel::setActive" }, Needs::Ui, false,
         [](Command::Context &C, const json &A) {
             IpfsModel &M = *Win(C).ipfsModel();
             for (const QString &X : Cids(A, "cancel")) M.cancel(X);

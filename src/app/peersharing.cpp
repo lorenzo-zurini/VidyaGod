@@ -38,19 +38,14 @@ PeerSharing::PeerSharing(AppModel & M)
     // Periodic reconcile: presence-online and snapshot-apply are EDGE-triggered — a seeder killed mid-transfer and
     // restarted while we saw no edge (or a missed presence event) would otherwise leave the receiver waiting
     // forever. Every 10 min, re-plan + re-enqueue each receiving-from peer; the queue settles repeats silently
-    // (a dest its job already wrote is a no-op at enqueue), so steady state costs nothing visible.
+    // (a dest its job already wrote is a no-op at enqueue, and awaitReceived waits only for what is still fetched),
+    // so steady state costs nothing visible.
     {
         QTimer * Resync = new QTimer(this);
         Resync->setInterval(10 * 60 * 1000);
         connect(Resync, &QTimer::timeout, this, [this]{ reconcileReceivedLibraries(); });
         Resync->start();
     }
-
-    // A received-share node block landed in the rolling queue (at its final library path) → (debounced) rebuild the
-    // catalog so it shows what arrived. Same queue as any transfer; we react only to CIDs we ourselves enqueued for
-    // received shares (PeerBrowseCids).
-    connect(IpfsManager::instance(), &IpfsManager::transferFinished, this,
-        [this](const QString & cid, bool ok, const QString &) { onPeerBlockLanded(cid, ok); });
 
     // What is shared stays current: re-checked when the library changes, a publish ends, networking comes up.
     connect(&Model, &AppModel::catalogChanged, this, &PeerSharing::checkSharesSoon);
@@ -829,20 +824,60 @@ void PeerSharing::enqueueReceivedShares(const QString & peer)
     // wrote is a no-op at enqueue), and the Go fetch hash-verifies a reused dest exactly.
     for (const auto & T : Plan) PeerBrowseCids.insert(T.Cid);
     const std::vector<IpfsWrapper::FetchTarget> Batch = PackageCatalog::ReceivedFetchTargets(Plan);
-    if (!Batch.empty()) IpfsWrapper::EnqueueBatch(Batch);
+    if (!Batch.empty()) awaitReceived(IpfsWrapper::EnqueueBatch(Batch));
 }
 
-void PeerSharing::onPeerBlockLanded(const QString & cid, bool /*ok*/)
+//What a peer shares lands as ONE batch, and the catalog is rebuilt once, when it has: a rebuild per landed file (every
+//2 s while thousands land) held the GUI thread for seconds at a time, a receiving device barely usable for minutes.
+//Only what a batch still fetches is waited for — a re-enqueue of what is in place (the 10-min resync, a peer coming
+//online) adds nothing, waits for nothing and rebuilds nothing — and ONE wait covers every batch: a peer gone
+//mid-batch leaves fetches retrying for ever, and a wait per enqueue piled up behind them. A wait still running after
+//ReceiveProgressMs shows what has landed so far, if anything did, and waits on; the rest lands, then one rebuild.
+void PeerSharing::awaitReceived(const IpfsWrapper::BatchHandle & H)
 {
-    if (!PeerBrowseCids.count(cid.toStdString())) return;   // not a received-share node block -> ignore
-    if (PeerReconcilePending) return;                       // coalesce a burst of completions into one rebuild
-    PeerReconcilePending = true;
-    QTimer::singleShot(2000, this, [this] {
-        PeerReconcilePending = false;
-        Model.rebuildCatalog();               // the landed blocks ARE ordinary tree packages — just re-scan
-        emit peerCatalogChanged();
-        completeReceivedClosures();
-    });
+    //What the queue says this enqueue will land (queued, re-queued, joined in flight) — under its own lock, so a fetch
+    //that ends before this line is still awaited — and what it put in place itself (a copy of a file already here).
+    ReceivePending.insert(H.Fetching.begin(), H.Fetching.end());
+    ReceivedUnshown = ReceivedUnshown || H.Placed > 0;
+    if (ReceiveWaiting) return;
+    if (!ReceivePending.empty()) waitReceived();
+    else if (ReceivedUnshown) showReceived();
+}
+
+void PeerSharing::showReceived()
+{
+    ReceivedUnshown = false;
+    Model.rebuildCatalog();         // the landed blocks ARE ordinary tree packages — just re-scan
+    emit peerCatalogChanged();
+    completeReceivedClosures();     // land what they contain — a stuck file elsewhere holds up nothing
+}
+
+void PeerSharing::waitReceived()
+{
+    ReceiveWaiting = true;
+    IpfsWrapper::BatchHandle H;
+    for (const std::string & Cid : ReceivePending) H.Items.emplace_back(Cid, /*Optional=*/true);
+    auto OutOfTime = std::make_shared<bool>(false);
+    AsyncWork::Run(this,
+        [H, OutOfTime, Ms = ReceiveProgressMs]{
+            *OutOfTime = !IpfsWrapper::WaitBatch(H, Ms);   // optional targets: false only when the time is up
+        },
+        [this, OutOfTime] {
+            ReceiveWaiting = false;
+            //Settled here, on this thread, over everything awaited NOW: a file that joined during the round and landed
+            //counts, and one re-asked for meanwhile (failed, then queued again) is still awaited.
+            for (auto It = ReceivePending.begin(); It != ReceivePending.end(); )
+            {
+                bool Landed = false;
+                if (!IpfsWrapper::JobSettled(*It, &Landed)) { ++It; continue; }
+                ReceivedUnshown = ReceivedUnshown || Landed;
+                It = ReceivePending.erase(It);
+            }
+            //Shown when everything has settled, or — a landing that takes long — when a round ran out of time; a round
+            //that ended while files joined meanwhile waits on for them.
+            if (ReceivedUnshown && (ReceivePending.empty() || *OutOfTime)) showReceived();
+            if (!ReceivePending.empty()) waitReceived();
+        });
 }
 
 void PeerSharing::completeReceivedClosures()
@@ -860,6 +895,7 @@ void PeerSharing::completeReceivedClosures()
         return;
     }
     PeerClosureRunning = true;
+    ++ClosurePasses;
     LogOut("PeerSharing::completeReceivedClosures", "landing received package(s)");
     auto Cfg  = std::make_shared<const nlohmann::ordered_json>(*Model.config());
     AsyncWork::Run(this,   // the pass touches nothing of this model: it can outlive it

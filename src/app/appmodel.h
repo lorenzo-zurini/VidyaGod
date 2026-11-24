@@ -57,6 +57,8 @@ public:
     // ── Mutators (perform the change, persist, then emit so every view reacts) ──
     bool save();                                       // write GlobalConfigJSON to disk
     void rebuildCatalog();                             // re-scan CatalogIndex from disk → emit catalogChanged()
+    void rebuildCatalogSoon();                         // one rebuild for a burst of asks (RebuildSoonMs after the first)
+    int RebuildSoonMs = 250;
     // Check the index and what of it is on disk against the library, off the GUI thread (what the app's start does):
     // what changed is swapped in, with catalogChanged; diskChecked says when it is done.
     void refreshFromDisk();
@@ -157,6 +159,9 @@ private:
     bool                     SyncRetryPending = false;    // a re-sync is scheduled for a source that failed to fetch
     // single-flight guard for healOrphansIfAny — shared, because the worker clears it and may outlive this model
     std::shared_ptr<std::atomic<bool>> HealInFlight = std::make_shared<std::atomic<bool>>(false);
+    bool RebuildQueued = false;   // a rebuildCatalogSoon is waiting
+    bool RebuildPending = false;  // asked for and not yet done by a rebuildCatalog
+    bool HealDeferred = false;    // the last heal waited for the queue (said once)
     bool                     SeededUnheld = false;   // SeedUnheld ran this process (healOrphansIfAny, first pass)
     std::set<std::string>    KnownUnhealable;             // orphaned paths a heal couldn't fix (content truly gone) → don't re-loop
     void runPublish();                                              // publishLibraries' one pass

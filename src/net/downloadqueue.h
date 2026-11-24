@@ -23,7 +23,12 @@ namespace IpfsWrapper {
 
 // Opaque token naming the CIDs an Enqueue call added to (or joined in) the queue — each with THIS batch's own
 // optional/required view (a CID one batch requires may be optional to another), so WaitBatch fails correctly per batch.
-struct BatchHandle { std::vector<std::pair<std::string, bool>> Items; };   // {cid, optionalForThisBatch}
+struct BatchHandle
+{
+    std::vector<std::pair<std::string, bool>> Items;   // {cid, optionalForThisBatch}
+    std::vector<std::string> Fetching;                 // CIDs this enqueue queued, re-queued or joined in flight: they land later
+    size_t Placed = 0;                                 // dests this enqueue put in place itself (from a copy already here)
+};
 
 // Enqueue a batch of fetch targets. Dedups each by CID (merging destinations for cross-dest single-fetch) and skips
 // anything already on disk / already seeded. Returns a handle to wait on. Non-blocking (the dispatcher does the work).
@@ -45,6 +50,14 @@ void OpenQueue();
 // True while a CID has a job this session that has not finished its fetch (queued, active or failed). A CID that
 // never needed a job (already in place) or whose job is done is not unfinished.
 bool JobUnfinished(const std::string &Cid);
+// True when a CID's job has settled — done, failed (a cancel too) or none (pruned, or never needed) — as WaitBatch
+// judges a batch finished; *Landed: done (its file is in place by this job).
+bool JobSettled(const std::string &Cid, bool *Landed = nullptr);
+// True while the queue fetches: a job running, or queued and due. A job waiting out a retry's backoff (a peer gone,
+// retried for ever) is not fetching: it leaves the queue idle between its tries.
+bool QueueBusy();
+// TEST ONLY: how many times a claimed dest was looked for in every job (a re-enqueue of what is in place claims none).
+long long DebugClaimScans();
 
 // Cancel a CID's download: drop it if still queued, abort it (RequestCancel) if active. A batch waiting on a required
 // cancelled CID sees the cancellation as a failure.

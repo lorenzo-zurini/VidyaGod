@@ -15,6 +15,7 @@ class QTimer;
 
 #include "nlohmann/json.hpp"
 
+namespace IpfsWrapper { struct BatchHandle; }
 class AppModel;
 
 // ---------------------------------------------------------------------------
@@ -137,7 +138,6 @@ public:
     void pushPresenceDeny();                              // Settings/config PresenceDeny → Go (node-ready + on change)
     void applyNewPeerDefaults(const QString & peer);      // used by acceptPeer + the auto-accept path
     void enqueueReceivedShares(const QString & peer);     // shared node+tile CIDs → rolling queue, dest = final library path
-    void onPeerBlockLanded(const QString & cid, bool ok); // a received node block landed → debounced catalog rebuild
     void completeReceivedClosures();                      // land the node-block closure of every received root (blocks only)
     void pushLanRoster();                              // apply Settings.LanExcludedPeers to the node's Virtual-LAN
 
@@ -149,6 +149,9 @@ private:
     void setState(ShareState S, const QString & Text);
     std::set<std::string> sharedLibraries() const;     // every library shared with anyone (all of mine for a share-all)
     void markChosen(const QString & peer);
+    void awaitReceived(const IpfsWrapper::BatchHandle & H);   // what a received batch still fetches joins the one wait
+    void waitReceived();                                     // that wait: one round of ReceiveProgressMs
+    void showReceived();                                     // what landed: the catalog rebuilt, what it contains landed
     void pump();                                       // the next queued package's publish, when none runs
 
     AppModel & Model;
@@ -157,6 +160,8 @@ private:
     QTimer * ShareCheck = nullptr;
 public:
     int BusyRetryMs = 45000;                           // the library busy with another writer: tried again after this
+    int ReceiveProgressMs = 60000;                     // a received batch still landing after this shows what has, and waits on
+    int closurePasses() const { return ClosurePasses; }   // closure passes started (a test: they run while a file is stuck)
 private:
     std::map<std::string, std::string> Attempted;      // "<lib>/<pkg>" -> its node signature when its publish was queued
     struct Queued { std::filesystem::path Dir; std::string Key; };
@@ -172,8 +177,11 @@ private:
     mutable std::map<std::string, std::pair<qint64, Received>> ReceivedCache;   // per peer: when, what
     std::map<std::string, std::set<std::string>> PushedShares;   // peer -> the library names last pushed to them
     std::map<std::string, quint64> PeerLibSeq;         // per-peer highest applied snapshot stamp (last-writer-wins; session-only)
-    std::set<std::string>          PeerBrowseCids;     // received-share CIDs we enqueued (roots+tiles) — scopes the transferFinished reaction
-    bool                           PeerReconcilePending = false;  // debounce: coalesce a burst of landed blocks into one catalog rebuild
+    std::set<std::string>          PeerBrowseCids;     // received-share CIDs we enqueued (roots+tiles) — scopes the cancels of a drop
+    std::set<std::string>          ReceivePending;                // received files enqueued and not settled: ONE wait covers them all
+    bool                           ReceiveWaiting = false;        // that wait is under way
+    bool                           ReceivedUnshown = false;       // files landed since the catalog was last rebuilt for them
+    int                            ClosurePasses = 0;
     bool                           PeerClosureRunning = false;    // a closure-completion worker is in flight
     bool                           PeerClosureAgain = false;      // blocks landed while it ran → run once more
     std::set<std::string>          PeerStubsDirtyPeers;           // peers whose stubs were dropped while a pass ran → drop again when it ends

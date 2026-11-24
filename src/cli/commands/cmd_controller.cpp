@@ -10,6 +10,9 @@
 #include "controllerlayout.h"
 #include "controllerservice.h"
 #include "gameoverlay.h"
+#include "matrixrain.h"
+#include "screensaver.h"
+#include "volumekeys.h"
 #include "layouteditor.h"
 #include "deckshell.h"
 #include "deckstyle.h"
@@ -354,6 +357,72 @@ VG_COMMANDS
             return json{{"open", O.isOpen()}, {"game", O.hasGame()}, {"title", O.title().toStdString()}, {"layout", O.layoutName().toStdString()},
                         {"quitArmed", O.quitArmed()}, {"intercept", S.running() ? S.intercept() : 0u},
                         {"gameLayout", !S.gameLayout().isEmpty()}};
+        }, {} });
+
+    Command::Register({
+        "controller screensaver", "the screensaver: the digital rain over controller mode after a while with no input",
+        "Controller mode's screen gives way to the digital rain after Settings.ScreenSaverSeconds with no input (a minute "
+        "unless set; 0 turns it off), never while a game runs; any input ends it and does nothing else. --seconds sets the "
+        "wait; --show starts it now, --hide ends it; --input stands for an input (the wait starts over); --frames steps the "
+        "rain that many frames (a look at it without waiting).",
+        { Command::Opt("seconds", "the wait, in seconds (0: off)", Command::Type::Int), Command::Flag("show", "start it now"),
+          Command::Flag("hide", "end it"), Command::Flag("input", "an input: the wait starts over"),
+          Command::Opt("frames", "step the rain this many frames", Command::Type::Int) },
+        { "controller screensaver", "controller screensaver --seconds 300", "controller screensaver --show --frames 60", "controller screensaver --hide" },
+        { "DeckShell::screenSaver", "ScreenSaver::SecondsIn", "ScreenSaver::setSuspended", "ScreenSaver::suspended", "ScreenSaver::showing",
+          "ScreenSaver::showNow", "ScreenSaver::dismiss", "ScreenSaver::activity", "ScreenSaver::idleRemainingMs", "ScreenSaver::rain",
+          "ScreenSaver::eventFilter", "MatrixRain::start", "MatrixRain::stop", "MatrixRain::running", "MatrixRain::advance",
+          "MatrixRain::columns", "MatrixRain::rows", "MatrixRain::litCells", "MatrixRain::glyphs", "MatrixRain::glyph" }, Needs::Ui, false,
+        [](Command::Context &C, const json &A) {
+            DeckShell &S = Shell(C);
+            ScreenSaver &Sv = *S.screenSaver();
+            if (A.contains("seconds"))
+            {
+                const long long Sec = Command::Int(A, "seconds");
+                if (Sec < 0) throw Command::BadArgs("--seconds: 0 or more");
+                (*S.model().config())["Settings"]["ScreenSaverSeconds"] = Sec;
+                S.model().save();
+                Sv.activity();
+            }
+            if (Command::Bool(A, "input", false)) Sv.activity();
+            if (Command::Bool(A, "show", false)) Sv.showNow();
+            if (const long long F = Command::Int(A, "frames", 0); F > 0)
+                for (long long I = 0; I < F; ++I) Sv.rain()->advance(1.0 / MatrixRain::FramesPerSecond);
+            if (Command::Bool(A, "hide", false)) Sv.dismiss();
+            Settle(30);
+            const MatrixRain &R = *Sv.rain();
+            return json{{"showing", Sv.showing()}, {"suspended", Sv.suspended()}, {"seconds", ScreenSaver::SecondsIn(*S.model().config())},
+                        {"idleRemainingMs", Sv.idleRemainingMs()}, {"running", R.running()}, {"columns", R.columns()}, {"rows", R.rows()},
+                        {"lit", R.litCells()}, {"glyphs", MatrixRain::glyphs().size()}};
+        }, {} });
+
+    Command::Register({
+        "controller volume", "the volume keys: the system volume, stepped as the handheld's keys step it",
+        "A handheld's volume keys reach VidyaGod as InputPlumber's D-Bus events (every layout maps them), and set the "
+        "default output's volume through wpctl (PipeWire), else pactl, showing the level for a moment. --up/--down step it "
+        "by 5%, --mute toggles mute, --event delivers a key as InputPlumber would (ui_volume_up, ui_volume_down, "
+        "ui_volume_mute; pressed, then released).",
+        { Command::Flag("up", "5% up"), Command::Flag("down", "5% down"), Command::Flag("mute", "toggle mute"),
+          Command::Opt("event", "a key as InputPlumber sends it (ui_volume_up…)") },
+        { "controller volume", "controller volume --up", "controller volume --event ui_volume_down" },
+        { "VolumeKeys::instance", "VolumeKeys::follow", "VolumeKeys::step", "VolumeKeys::toggleMute", "VolumeKeys::refresh", "VolumeKeys::level",
+          "VolumeKeys::tool", "VolumeKeys::onUiEvent", "Volume::ParseWpctl", "Volume::ParsePactl", "Volume::StepCommand", "Volume::MuteCommand",
+          "Volume::ReadCommands", "VolumeToast::present", "VolumeToast::level", "MarkExternalOverlay", "ControllerLayout::SetVolumeKeysToVidyaGod", "ControllerLayout::VolumeKeysToVidyaGod" }, Needs::Ui, false,
+        [](Command::Context &, const json &A) {
+            VolumeKeys &V = VolumeKeys::instance();
+            if (V.tool().isEmpty()) throw std::runtime_error("neither wpctl nor pactl is installed: no volume to set");
+            QEventLoop L;
+            QTimer::singleShot(3000, &L, &QEventLoop::quit);
+            QObject::connect(&V, &VolumeKeys::changed, &L, &QEventLoop::quit);
+            if (Command::Bool(A, "up", false)) V.step(VolumeKeys::StepPercent);
+            else if (Command::Bool(A, "down", false)) V.step(-VolumeKeys::StepPercent);
+            else if (Command::Bool(A, "mute", false)) V.toggleMute();
+            else if (const std::string E = Command::Str(A, "event", ""); !E.empty())
+            { V.onUiEvent(QString::fromStdString(E), 1.0); V.onUiEvent(QString::fromStdString(E), 0.0); }
+            else V.refresh();
+            L.exec();
+            return json{{"tool", V.tool().toStdString()}, {"percent", V.level().Percent}, {"muted", V.level().Muted},
+                        {"keys_routed", ControllerLayout::VolumeKeysToVidyaGod()}};
         }, {} });
 
     Command::Register({

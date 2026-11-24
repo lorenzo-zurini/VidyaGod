@@ -7,6 +7,7 @@
 #include <QDir>
 #include <QFile>
 #include <QSignalSpy>
+#include <QScopeGuard>
 #include <filesystem>
 #include <fstream>
 #include "appmodel.h"
@@ -21,6 +22,8 @@
 #include <QElapsedTimer>
 #include <QUuid>
 #include <future>
+#include <thread>
+#include <atomic>
 
 using json = nlohmann::ordered_json;
 
@@ -263,6 +266,59 @@ private slots:
         dm.beginDownload("9", {NKey}, {}, {});
         QCOMPARE(dm.workerCount(), 1);                                        // the first was joined, not kept
         QTRY_COMPARE_WITH_TIMEOUT(Finished.count(), 2, 30000);
+        IpfsWrapper::StopNode();
+    }
+
+    // A download that ends while another still runs is said with the catalog rebuild that shows it — never before (a
+    // script following downloadFinished read a catalog without it) — and the last one ends as ever: said, then the
+    // catalog rebuilt at once. Teeth: say it before the coalesced rebuild; coalesce the last one too.
+    void a_download_ending_while_others_run_is_said_with_its_rebuild()
+    {
+        std::string Err;
+        QTemporaryDir Repo; QVERIFY(Repo.isValid());
+        QVERIFY2(IpfsWrapper::StartNode((Repo.path() + "/ipfs").toStdString(), &Err), Err.c_str());
+        QTemporaryDir Data; QVERIFY(Data.isValid());
+        const QString R = Data.path() + "/LIBRARY";
+        QDir().mkpath(R + "/Games/[9] N");
+        writeJson(R + "/Games/[9] N/n.json", json{{"CID", "hN"}, {"LABEL", "n_exec"}, {"VARIANT", "Play"}, {"LAYERS", json::array({
+            json{{"EXEC", json::array({json{{"LABEL", "Play"}, {"HOST", "linux64"}, {"EXE", "n"}, {"TILE", {{"UID", "9"}, {"TITLE", "N"}}}}})}}})}});
+        QDir().mkpath(R + "/Games/[8] S");                                     // a game whose content takes its time
+        writeJson(R + "/Games/[8] S/tile.json", NodeFixture::Chain("s_tile", {NodeFixture::Tile("8", "S")}));
+        writeJson(R + "/Games/[8] S/content.json", NodeFixture::Chain("s_content", {NodeFixture::ContentCid("file", "data.bin",
+            "bafkreihdwdcefgh4dqkjv67uzcmw7ojee6xedzdetojuzjevtenxquvyku")}));
+        writeJson(R + "/Games/[8] S/s.json", NodeFixture::Chain("s_exec", {NodeFixture::Merge({NodeFixture::Exec("linux64", "s.sh"),
+            NodeFixture::Variant("Play")})}, {"s_content", "s_tile"}));
+        json cfg = json{{"Settings", {{"Paths", {{"LibraryRoot", R.toStdString()}}}}}};
+        QDir appDir(Data.path());
+        AppModel model(&cfg, &appDir);
+        model.rebuildCatalog();
+        const Node *N = model.catalogIndex().Find("n_exec");
+        const Node *S = model.catalogIndex().Find("s_exec");
+        QVERIFY(N && S);
+        const std::string NKey = N->Key(), SKey = S->Key();
+        std::atomic<bool> Release{false};
+        IpfsWrapper::DebugResetQueue();
+        IpfsWrapper::SetFetchOnceHook([&](const std::string &, const std::string &Dest, bool, std::string *) {
+            while (!Release) std::this_thread::sleep_for(std::chrono::milliseconds(5));
+            std::ofstream(Dest, std::ios::binary) << "data";
+            return 0; });
+        const auto Free = qScopeGuard([&] { Release = true; });              // a failed check must not leave a fetch held
+        QStringList Seq;                                                       // what happened, in order (heard before
+        connect(&model, &AppModel::catalogChanged, this, [&] { Seq << "rebuilt"; });   // the manager hears it)
+        IpfsModel ipfs(model);
+        DownloadManager dm(model, ipfs, nullptr);
+        connect(&dm, &DownloadManager::downloadFinished, this, [&](const QString &K) { Seq << "finished " + K; });
+        dm.beginDownload("8", {SKey}, {}, {});                                 // held in its fetch
+        QTRY_VERIFY_WITH_TIMEOUT(IpfsWrapper::QueueBusy(), 10000);
+        dm.beginDownload("9", {NKey}, {}, {});                                 // nothing to fetch: ends while 8 runs
+        QTRY_VERIFY_WITH_TIMEOUT(Seq.contains("finished 9"), 10000);
+        QVERIFY2(Seq.indexOf("rebuilt") >= 0 && Seq.indexOf("rebuilt") < Seq.indexOf("finished 9"), qPrintable(Seq.join(", ")));
+        Seq.clear();
+        Release = true;                                                        // 8 ends, the last in flight
+        QTRY_VERIFY_WITH_TIMEOUT(Seq.contains("finished 8"), 30000);
+        QVERIFY2(Seq.size() >= 2 && Seq[0] == "finished 8" && Seq[1] == "rebuilt", qPrintable(Seq.join(", ")));
+        IpfsWrapper::SetFetchOnceHook(nullptr);
+        IpfsWrapper::DebugResetQueue();
         IpfsWrapper::StopNode();
     }
 

@@ -22,6 +22,9 @@ class QTimer;
 std::vector<std::pair<const char *, unsigned>> OverlayProperties(bool Open);
 // Set them on a window, when the app is on X11 (under gamescope a VidyaGod session is): a no-op elsewhere.
 void MarkOverlayWindow(QWidget *W, bool Open);
+// A window drawn above a game under gamescope without taking its input (gamescope's external overlay, as MangoHud
+// is): the volume toast. A no-op off X11.
+void MarkExternalOverlay(QWidget *W);
 
 // ---------------------------------------------------------------------------
 // GameOverlay — VidyaGod's in-game overlay (Steam's Guide-button overlay): over a game VidyaGod launched, opened by the

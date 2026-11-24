@@ -3,10 +3,12 @@
 #include "appmodel.h"
 #include "apppaths.h"
 #include "autostart.h"
+#include "screensaver.h"
 
 #include <QVBoxLayout>
 #include <QHBoxLayout>
 #include <QCheckBox>
+#include <QComboBox>
 #include <QLabel>
 #include <QMessageBox>
 #include <QSystemTrayIcon>
@@ -56,6 +58,33 @@ GeneralPage::GeneralPage(AppModel & model, QWidget * parent)
               "Minimizing the window hides it to the tray instead of the taskbar.");
     addToggle("Start in tray", "StartInTray", false,
               "Launch hidden in the tray. Otherwise VidyaGod reopens the way you left it last time.");
+
+    {   // the screensaver: controller mode's screen after a while with no input (an OLED's burn-in)
+        QLabel * h = new QLabel("Screen", this);
+        h->setStyleSheet("font-weight:bold;margin-top:8px;");
+        auto * row = new QHBoxLayout();
+        row->addWidget(new QLabel("Screensaver after", this));
+        auto * combo = new QComboBox(this);
+        combo->setObjectName("screenSaver");
+        const std::pair<const char *, int> Choices[] = { { "Off", 0 }, { "30 seconds", 30 }, { "1 minute", 60 }, { "2 minutes", 120 },
+                                                         { "5 minutes", 300 }, { "10 minutes", 600 }, { "30 minutes", 1800 } };
+        const int Now = ScreenSaver::SecondsIn(*Model.config());
+        for (const auto & [Label, Seconds] : Choices) combo->addItem(Label, Seconds);
+        if (combo->findData(Now) < 0) combo->addItem(QString::number(Now) + " seconds", Now);
+        combo->setCurrentIndex(combo->findData(Now));
+        connect(combo, &QComboBox::currentIndexChanged, this, [this, combo](int) {
+            (*Model.config())["Settings"]["ScreenSaverSeconds"] = combo->currentData().toInt();
+            Model.save();
+        });
+        row->addWidget(combo);
+        row->addStretch(1);
+        QLabel * hint = new QLabel("Controller mode's screen gives way to the digital rain after this long with no input, so nothing stays lit long enough to burn into an OLED screen. Never while a game runs; any input ends it.", this);
+        hint->setWordWrap(true);
+        hint->setStyleSheet("color:" + Theme::Dim + ";font-size:9pt;");
+        pl->addWidget(h);
+        pl->addLayout(row);
+        pl->addWidget(hint);
+    }
 
     if (!QSystemTrayIcon::isSystemTrayAvailable())
     {

@@ -209,73 +209,87 @@ std::vector<std::string> Publish(nlohmann::ordered_json &Config, const std::vect
     std::map<std::string, std::string> Pins;                                           // "lib/pkg" → its pin folder
     std::vector<std::string> Published;
     size_t Renamed = 0;
+    //What each package publishes: its node files' names, and — a package the selection only contains, unchanged — the
+    //pin it keeps.
+    struct PkgJob { std::string Lib, Pkg; const std::vector<std::string> *Handles; std::map<std::string, std::string> Files; std::string Kept; };
+    std::vector<PkgJob> Jobs;
     for (auto &[LibName, Pkgs] : ByLibPkg)
-    {
         for (auto &[Pkg, Cids] : Pkgs)
         {
             std::sort(Cids.begin(), Cids.end());
             Cids.erase(std::unique(Cids.begin(), Cids.end()), Cids.end());
-            const std::vector<std::string> &Handles = HandlesOf[LibName][Pkg];
+            PkgJob J{ LibName, Pkg, &HandlesOf[LibName][Pkg], {}, {} };
             std::map<std::string, nlohmann::ordered_json> Frozen;
-            for (const std::string &H : Handles) Frozen.emplace(MR.HandleToCid.at(H), NodeGraph::FreezeNodeJson(Tree.at(H), MR.HandleToCid));
-            const std::map<std::string, std::string> Files = NodeFiles::Names(Frozen);
+            for (const std::string &H : *J.Handles) Frozen.emplace(MR.HandleToCid.at(H), NodeGraph::FreezeNodeJson(Tree.at(H), MR.HandleToCid));
+            J.Files = NodeFiles::Names(Frozen);
             const std::string Key = LibName + "/" + Pkg;
-            auto Record = [&](const std::string &Pin) {
-                for (const auto &[C, F] : Files) Sheet[C] = Key + "/" + F;
-                Pins[Key] = Pin;
-                Published.push_back(Key);
-            };
             if (Only && !Targets.count(PkgKey{LibName, Pkg}))
                 if (const auto W = Was.find(PkgKey{LibName, Pkg});
-                    W != Was.end() && W->second == Files && PinsWas.contains(Key) && PinsWas[Key].is_string())
-                { Record(PinsWas[Key].get<std::string>()); continue; }
-            //The frozen node files on disk take their names, and what refers to them follows (a received node's
-            //file is referenced in place).
-            std::vector<std::pair<std::filesystem::path, std::filesystem::path>> Moved;
-            std::string NErr;
-            if (!NodeFiles::Normalize(Dirs.at(Handles.front()), &Moved, &NErr))
-                LogWarn("PackageCatalog::PublishLibrary", "package '" + Pkg + "': " + NErr);
-            if (!Moved.empty())
-            {
-                std::vector<std::pair<std::string, std::string>> Refs;
-                for (const auto &[From, To] : Moved) Refs.push_back({ From.string(), To.string() });
-                std::string MErr;
-                if (IpfsWrapper::MoveRefs(Refs, &MErr) < 0)
-                    LogWarn("PackageCatalog::PublishLibrary", "package '" + Pkg + "': renamed its node files, but their "
-                            "references did not follow: " + MErr);
-                Renamed += Moved.size();
-            }
-            // The PIN folder: the package's node files under their names + its own content, linked — what a pinning
-            // service pins, so it holds the package whole (references inside a node are plain CIDs: nothing follows
-            // them). A library the package contains is its own package with its own pin: no byte is billed twice.
-            std::map<std::string, std::string> Entries;
-            for (const auto &[C, F] : Files) Entries[F] = C;
-            std::string MErr;
-            const std::string PCid = IpfsWrapper::MakeDir(Entries, &MErr);
-            if (PCid.empty()) { if (Error) *Error = "package folder for '" + Pkg + "' not made: " + MErr; return {}; }
-            std::map<std::string, std::string> Content;
-            for (const std::string &H : Handles)
-                for (const std::string &C : NodeContentCids(Tree.at(H))) Content[C] = C;
-            std::map<std::string, std::string> Pin{ {"package", PCid} };
-            if (!Content.empty())
-            {   // the folder of the content held whole (every block, every backing file); the rest is named, not linked
-                std::vector<std::string> NotWhole;
-                const std::string CCid = IpfsWrapper::MakeDir(Content, &MErr, &NotWhole);
-                if (CCid.empty() && NotWhole.size() != Content.size())
-                { if (Error) *Error = "content folder for '" + Pkg + "' not made: " + MErr; return {}; }
-                for (const std::string &C : NotWhole)
-                {
-                    ++Unheld[Pkg];
-                    LogWarn("PackageCatalog::PublishLibrary", "package '" + Pkg + "': content " + C
-                            + " is not held whole here (missing blocks or a moved/removed file) — its pin leaves it"
-                              " out (seed it, then publish again)");
-                }
-                if (!CCid.empty()) Pin["content"] = CCid;
-            }
-            const std::string PinCid = IpfsWrapper::MakeDir(Pin, &MErr);
-            if (PinCid.empty()) { if (Error) *Error = "pin folder for '" + Pkg + "' not made: " + MErr; return {}; }
-            Record(PinCid);
+                    W != Was.end() && W->second == J.Files && PinsWas.contains(Key) && PinsWas[Key].is_string())
+                    J.Kept = PinsWas[Key].get<std::string>();
+            Jobs.push_back(std::move(J));
         }
+    //The frozen node files on disk take their names — every package's first — and what refers to them follows, in ONE
+    //move (a received node's file is referenced in place): each move reads the whole reference index, and one per
+    //package made a library's first publish take hours. Before any folder is made: a folder over a node whose file
+    //was renamed, its reference not yet moved, is refused as not held whole.
+    std::vector<std::pair<std::string, std::string>> Refs;
+    for (const PkgJob &J : Jobs)
+    {
+        if (!J.Kept.empty()) continue;
+        std::vector<std::pair<std::filesystem::path, std::filesystem::path>> Moved;
+        std::string NErr;
+        if (!NodeFiles::Normalize(Dirs.at(J.Handles->front()), &Moved, &NErr))
+            LogWarn("PackageCatalog::PublishLibrary", "package '" + J.Pkg + "': " + NErr);
+        for (const auto &[From, To] : Moved) Refs.push_back({ From.string(), To.string() });
+        Renamed += Moved.size();
+    }
+    if (!Refs.empty())
+        if (std::string MErr; IpfsWrapper::MoveRefs(Refs, &MErr) < 0)
+            LogWarn("PackageCatalog::PublishLibrary", "renamed " + std::to_string(Refs.size()) + " node file(s), but "
+                    "their references did not follow: " + MErr);
+    for (const PkgJob &J : Jobs)
+    {
+        const std::string &Pkg = J.Pkg;
+        const std::vector<std::string> &Handles = *J.Handles;
+        const std::map<std::string, std::string> &Files = J.Files;
+        const std::string Key = J.Lib + "/" + Pkg;
+        auto Record = [&](const std::string &Pin) {
+            for (const auto &[C, F] : Files) Sheet[C] = Key + "/" + F;
+            Pins[Key] = Pin;
+            Published.push_back(Key);
+        };
+        if (!J.Kept.empty()) { Record(J.Kept); continue; }
+        // The PIN folder: the package's node files under their names + its own content, linked — what a pinning
+        // service pins, so it holds the package whole (references inside a node are plain CIDs: nothing follows
+        // them). A library the package contains is its own package with its own pin: no byte is billed twice.
+        std::map<std::string, std::string> Entries;
+        for (const auto &[C, F] : Files) Entries[F] = C;
+        std::string MErr;
+        const std::string PCid = IpfsWrapper::MakeDir(Entries, &MErr);
+        if (PCid.empty()) { if (Error) *Error = "package folder for '" + Pkg + "' not made: " + MErr; return {}; }
+        std::map<std::string, std::string> Content;
+        for (const std::string &H : Handles)
+            for (const std::string &C : NodeContentCids(Tree.at(H))) Content[C] = C;
+        std::map<std::string, std::string> Pin{ {"package", PCid} };
+        if (!Content.empty())
+        {   // the folder of the content held whole (every block, every backing file); the rest is named, not linked
+            std::vector<std::string> NotWhole;
+            const std::string CCid = IpfsWrapper::MakeDir(Content, &MErr, &NotWhole);
+            if (CCid.empty() && NotWhole.size() != Content.size())
+            { if (Error) *Error = "content folder for '" + Pkg + "' not made: " + MErr; return {}; }
+            for (const std::string &C : NotWhole)
+            {
+                ++Unheld[Pkg];
+                LogWarn("PackageCatalog::PublishLibrary", "package '" + Pkg + "': content " + C
+                        + " is not held whole here (missing blocks or a moved/removed file) — its pin leaves it"
+                          " out (seed it, then publish again)");
+            }
+            if (!CCid.empty()) Pin["content"] = CCid;
+        }
+        const std::string PinCid = IpfsWrapper::MakeDir(Pin, &MErr);
+        if (PinCid.empty()) { if (Error) *Error = "pin folder for '" + Pkg + "' not made: " + MErr; return {}; }
+        Record(PinCid);
     }
     //Recorded: the whole sheet, or the published packages' entries in place of their own (every other entry stays).
     if (Only)

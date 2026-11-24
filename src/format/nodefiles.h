@@ -5,6 +5,7 @@
 
 #include <filesystem>
 #include <map>
+#include <set>
 #include <string>
 #include <utility>
 #include <vector>
@@ -37,7 +38,9 @@ struct File
 
 //Every node file directly in Dir, by the CID of its node. A second file holding the same node (the same CID) is not
 //listed; it goes to *Twins.
-std::map<std::string, File> In(const std::filesystem::path &Dir, std::vector<std::filesystem::path> *Twins = nullptr);
+//Skip: files not even read (a caller that knows what they hold).
+std::map<std::string, File> In(const std::filesystem::path &Dir, std::vector<std::filesystem::path> *Twins = nullptr,
+                               const std::set<std::filesystem::path> *Skip = nullptr);
 
 //Names Dir's frozen node files by the rule (over the frozen nodes: a draft is not published, and keeps its name):
 //renamed in two steps, through a .json name, so swapped names never overwrite each other and a rename that stops

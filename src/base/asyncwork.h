@@ -44,13 +44,16 @@ private:
     std::shared_ptr<std::atomic<bool>> Alive;
 };
 
+//The context's destroyed connection is let go when the job is over (on the GUI thread, with the completion): kept, a
+//long-lived context (a model running a job per transfer) gathered one per job, tens of thousands in a session.
 inline void Run(QObject *Ctx, std::function<void(const Job &)> Work, std::function<void()> Done = {})
 {
     auto Alive = std::make_shared<std::atomic<bool>>(true);
-    QObject::connect(Ctx, &QObject::destroyed, Ctx, [Alive]() { Alive->store(false); }, Qt::DirectConnection);
-    std::thread([J = Job(Alive), W = std::move(Work), D = std::move(Done)]() mutable {
+    auto Watch = std::make_shared<QMetaObject::Connection>(
+        QObject::connect(Ctx, &QObject::destroyed, Ctx, [Alive]() { Alive->store(false); }, Qt::DirectConnection));
+    std::thread([J = Job(Alive), W = std::move(Work), D = std::move(Done), Watch]() mutable {
         W(J);
-        if (D) J.Post(std::move(D));
+        J.Post([D = std::move(D), Watch] { QObject::disconnect(*Watch); if (D) D(); });
     }).detach();
 }
 

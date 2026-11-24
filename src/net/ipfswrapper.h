@@ -145,6 +145,8 @@ private:
 };
 bool DebugNetForegroundIdle();   // TEST ONLY: no fetch holds or waits for a slot, nobody holds the foreground
 long long DebugNetHolds();       // TEST ONLY: foreground holds taken since start
+long long DebugRefScans();       // TEST ONLY: whole-index scans the orphan check (OrphanedRefPaths) has made since start
+long long DebugMoveRefScans();   // TEST ONLY: whole-index scans MoveRefs has made since start
 
 // One file to fetch: its CID, the destination path, and whether a failure is tolerable (covers are optional).
 struct FetchTarget {

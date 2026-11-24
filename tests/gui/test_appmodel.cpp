@@ -19,6 +19,9 @@
 #include "downloadqueue.h"
 
 #include <fstream>
+#include <thread>
+#include <atomic>
+#include <QSignalSpy>
 
 using json = nlohmann::ordered_json;
 
@@ -518,6 +521,208 @@ private slots:
             item(CA, "Other", "a.json"), item(CB, "Game", "b.json") })}}.dump()));
         QVERIFY(IpfsWrapper::QueueDestForCid(CA) != OldA);
         QCOMPARE(IpfsWrapper::QueueDestForCid(CB), OldB);                     // b is still planned there: its fetch stands
+        IpfsWrapper::SetFetchOnceHook(nullptr);
+        IpfsWrapper::DebugResetQueue();
+    }
+
+    // The 90 s orphan heal waits while the network queue fetches: every landed block writes a reference, and the check
+    // read the whole reference index again each time. Idle, it checks — and a fetch retried for ever (a peer gone) leaves
+    // it idle between tries. Teeth: heal while the queue fetches; count a retry's backoff as fetching (no heal all
+    // session).
+    void the_orphan_heal_waits_while_the_queue_fetches()
+    {
+        std::string Err;
+        QTemporaryDir d; QVERIFY(d.isValid());
+        QVERIFY2(IpfsWrapper::StartNode((d.path() + "/ipfs").toStdString(), &Err), Err.c_str());
+        QDir appDir(d.path());
+        json cfg = json{{"Settings", json::object()}};
+        AppModel m(&cfg, &appDir);
+        IpfsWrapper::DebugResetQueue();
+        std::atomic<bool> Release{false};
+        IpfsWrapper::SetFetchOnceHook([&](const std::string &, const std::string &, bool, std::string *E) {
+            while (!Release) std::this_thread::sleep_for(std::chrono::milliseconds(5));
+            if (E) *E = "gone";
+            return 2; });
+        const auto H = IpfsWrapper::EnqueueBatch({ IpfsWrapper::FetchTarget{ "CID_HEAL_WAITS", (d.path() + "/x").toStdString(), true } });
+        QTRY_VERIFY_WITH_TIMEOUT(IpfsWrapper::QueueBusy(), 5000);
+        const long long Scans = IpfsWrapper::DebugRefScans();
+        m.healOrphansIfAny();
+        QTest::qWait(1000);
+        QCOMPARE(IpfsWrapper::DebugRefScans(), Scans);                            // fetching: no check
+        Release = true;
+        IpfsWrapper::WaitBatch(H, 10000);
+        QTRY_VERIFY_WITH_TIMEOUT(!IpfsWrapper::QueueBusy(), 10000);
+        m.healOrphansIfAny();
+        QTRY_VERIFY_WITH_TIMEOUT(IpfsWrapper::DebugRefScans() > Scans, 10000);    // idle: it checks
+        // a fetch that keeps failing (its peer gone) waits out a backoff between tries: the queue is idle meanwhile
+        IpfsWrapper::SetFetchOnceHook([](const std::string &, const std::string &, bool, std::string *E) {
+            if (E) *E = "no providers"; return 1; });
+        const auto Stuck = IpfsWrapper::EnqueueBatch({ IpfsWrapper::FetchTarget{ "CID_HEAL_BACKOFF", (d.path() + "/y").toStdString(), true } });
+        QTRY_VERIFY_WITH_TIMEOUT(!IpfsWrapper::QueueBusy(), 10000);
+        { std::ofstream(d.path().toStdString() + "/z.bin") << "z"; }                // a reference written: the check has a
+        QVERIFY(!IpfsWrapper::AddNoCopy(d.path().toStdString() + "/z.bin", &Err).empty());   // new index to read
+        //(another model's first heal: this one's is still in its once-a-run seed pass, which waits for a quiet network)
+        AppModel m2(&cfg, &appDir);
+        const long long Before = IpfsWrapper::DebugRefScans();
+        m2.healOrphansIfAny();
+        QTRY_VERIFY_WITH_TIMEOUT(IpfsWrapper::DebugRefScans() > Before, 10000);   // a retry's backoff holds nothing up
+        (void)Stuck;
+        IpfsWrapper::SetFetchOnceHook(nullptr);
+        IpfsWrapper::DebugResetQueue();
+        IpfsWrapper::StopNode();
+    }
+
+    // Asked for a rebuild many times at once (downloads ending together), the catalog is rebuilt once; rebuilt at once
+    // meanwhile (the last download's own), the ask is covered — and an ask after that rebuild is not. Teeth: rebuild at
+    // each ask; rebuild again after one; judge "rebuilt meanwhile" from the first ask (a later one skipped).
+    void rebuilds_asked_together_are_one()
+    {
+        QTemporaryDir d; QVERIFY(d.isValid());
+        QDir appDir(d.path());
+        json cfg = json{{"Settings", json::object()}};
+        AppModel m(&cfg, &appDir);
+        QSignalSpy cat(&m, &AppModel::catalogChanged);
+        for (int I = 0; I < 10; ++I) m.rebuildCatalogSoon();
+        QTRY_COMPARE_WITH_TIMEOUT(cat.count(), 1, 5000);
+        QTest::qWait(600);
+        QCOMPARE(cat.count(), 1);
+        m.rebuildCatalogSoon();                                                    // a later ask: another rebuild
+        QTRY_COMPARE_WITH_TIMEOUT(cat.count(), 2, 5000);
+        m.rebuildCatalogSoon();                                                    // asked, then rebuilt at once: that one
+        m.rebuildCatalog();                                                        // covers the ask
+        QTest::qWait(600);
+        QCOMPARE(cat.count(), 3);
+        m.rebuildCatalogSoon();                                                    // asked, rebuilt, asked again before the
+        m.rebuildCatalog();                                                        // first ask's time: the second ask is
+        m.rebuildCatalogSoon();                                                    // its own
+        QTRY_COMPARE_WITH_TIMEOUT(cat.count(), 5, 5000);
+        QTest::qWait(600);
+        QCOMPARE(cat.count(), 5);
+    }
+
+    // What peers share lands as one batch and the catalog is rebuilt ONCE, when it has — however many files land, and
+    // however many peers' batches land together. A rebuild per landed file (every 2 s while thousands landed) held a
+    // receiving Steam Deck's GUI thread for seconds at a time, for minutes. Teeth: rebuild per landed file or per
+    // batch (two batches, two rebuilds); never rebuild when a batch has landed (nothing shown); rebuild when what was
+    // asked for again was already in place (a resync of a landed library: a stall every 10 minutes).
+    void a_received_library_lands_with_one_catalog_rebuild()
+    {
+        QTemporaryDir d; QVERIFY(d.isValid());
+        QDir appDir(d.path());
+        json cfg = json{{"Settings", json::object()}, {"ReceiveFrom", json::array({"12D3KooWSeederA", "12D3KooWSeederB"})}};
+        AppModel m(&cfg, &appDir);
+        std::map<std::string, std::string> Bytes;                                  // cid → its node's canonical bytes
+        const auto snap = [&](const std::string &Who, int N) {
+            json Items = json::array();
+            for (int I = 0; I < N; ++I)
+            {
+                const json Node = json{{"LABEL", Who + " " + std::to_string(I)}, {"LAYERS", json::array({ json{{"DIR", "x"}} })}};
+                Bytes[Cid::OfNode(Node)] = Cid::Canonical(Node);
+                Items.push_back(json{{"cid", Cid::OfNode(Node)}, {"pkg", Who + " game " + std::to_string(I % 4)}, {"node", std::to_string(I) + ".json"}});
+            }
+            return QString::fromStdString(json{{"Games", Items}}.dump()); };
+        const QString A = snap("a", 24), B = snap("b", 12);
+        std::atomic<bool> Release{false};
+        IpfsWrapper::DebugResetQueue();
+        IpfsWrapper::SetFetchOnceHook([&](const std::string &C, const std::string &Dest, bool, std::string *E) {
+            while (!Release) std::this_thread::sleep_for(std::chrono::milliseconds(5));   // both batches queued first
+            const auto It = Bytes.find(C);
+            if (It == Bytes.end()) { if (E) *E = "unknown"; return 1; }
+            std::filesystem::create_directories(std::filesystem::path(Dest).parent_path());
+            std::ofstream(Dest, std::ios::binary) << It->second;
+            return 0; });
+        QSignalSpy Rebuilt(&m, &AppModel::catalogChanged);
+        m.peers().applyPeerLibrarySnapshot("12D3KooWSeederA", A);
+        m.peers().reconcileReceivedLibraries();                                   // the same files asked for again
+        m.peers().applyPeerLibrarySnapshot("12D3KooWSeederB", B);
+        Release = true;
+        QTRY_COMPARE_WITH_TIMEOUT(Rebuilt.count(), 1, 20000);
+        QTest::qWait(1500);                                                        // and no more after it
+        QCOMPARE(Rebuilt.count(), 1);
+        m.peers().reconcileReceivedLibraries();                                   // the 10-min resync: all in place
+        QTest::qWait(1500);
+        QCOMPARE(Rebuilt.count(), 1);                                              // nothing landed: nothing rebuilt
+        size_t Landed = 0;                                                         // every file, at its place, whole
+        for (const std::string P : { "12D3KooWSeederA", "12D3KooWSeederB" })
+            for (const auto &T : PackageCatalog::PlanReceivedFetches(cfg, P.substr(P.size() - 8), cfg["PeerLibraries"][P]))
+            {
+                std::ifstream I(T.Dest, std::ios::binary);
+                if (I && std::string(std::istreambuf_iterator<char>(I), {}) == Bytes.at(T.Cid)) ++Landed;
+            }
+        QCOMPARE(Landed, Bytes.size());
+        IpfsWrapper::SetFetchOnceHook(nullptr);
+        IpfsWrapper::DebugResetQueue();
+    }
+
+    // A node a second peer shares is already here (the first peer's copy): the queue puts it in place at once, from that
+    // copy, and that is shown too — never awaited, so never shown, it was. Teeth: count only what is fetched.
+    void a_node_already_here_shared_by_another_peer_is_shown()
+    {
+        QTemporaryDir d; QVERIFY(d.isValid());
+        QDir appDir(d.path());
+        json cfg = json{{"Settings", json::object()}, {"ReceiveFrom", json::array({"12D3KooWSeederA", "12D3KooWSeederB"})}};
+        AppModel m(&cfg, &appDir);
+        const json N = json{{"LABEL", "shared"}, {"LAYERS", json::array({ json{{"DIR", "s"}} })}};
+        IpfsWrapper::DebugResetQueue();
+        IpfsWrapper::SetFetchOnceHook([&](const std::string &, const std::string &Dest, bool, std::string *) {
+            std::filesystem::create_directories(std::filesystem::path(Dest).parent_path());
+            std::ofstream(Dest, std::ios::binary) << Cid::Canonical(N);
+            return 0; });
+        const auto snap = [&](const std::string &Pkg) {
+            return QString::fromStdString(json{{"Games", json::array({ json{{"cid", Cid::OfNode(N)}, {"pkg", Pkg}, {"node", "shared.json"}} })}}.dump()); };
+        QSignalSpy Rebuilt(&m, &AppModel::catalogChanged);
+        m.peers().applyPeerLibrarySnapshot("12D3KooWSeederA", snap("A's"));
+        QTRY_COMPARE_WITH_TIMEOUT(Rebuilt.count(), 1, 10000);
+        m.peers().applyPeerLibrarySnapshot("12D3KooWSeederB", snap("B's"));        // the same node, elsewhere
+        QTRY_COMPARE_WITH_TIMEOUT(Rebuilt.count(), 2, 10000);
+        IpfsWrapper::SetFetchOnceHook(nullptr);
+        IpfsWrapper::DebugResetQueue();
+    }
+
+    // A batch that does not finish — a peer gone mid-batch leaves its fetches retrying — still shows what has landed,
+    // after ReceiveProgressMs, and a batch that finished while it waits is shown at its next look; the last file
+    // landing rebuilds once more — the wait's own rebuild (nothing else rebuilds while a file is still awaited). Asking
+    // again for the stuck file adds no wait (one wait covers everything). Teeth: show nothing until every batch lands
+    // (the stuck one hides all); drop the look at batches that landed meanwhile (the second peer's stays hidden); a
+    // wait per enqueue (each looks and rebuilds); no rebuild when the last file lands; no closure pass until nothing is
+    // awaited (a stuck file held up every package's contents).
+    void a_stuck_received_batch_shows_what_has_landed()
+    {
+        QTemporaryDir d; QVERIFY(d.isValid());
+        QDir appDir(d.path());
+        json cfg = json{{"Settings", json::object()}, {"ReceiveFrom", json::array({"12D3KooWSeederA", "12D3KooWSeederB"})}};
+        AppModel m(&cfg, &appDir);
+        m.peers().ReceiveProgressMs = 300;
+        const json N1 = json{{"LABEL", "landed"}, {"LAYERS", json::array({ json{{"DIR", "1"}} })}};
+        const json N2 = json{{"LABEL", "stuck"}, {"LAYERS", json::array({ json{{"DIR", "2"}} })}};
+        const json N3 = json{{"LABEL", "other peer"}, {"LAYERS", json::array({ json{{"DIR", "3"}} })}};
+        const std::string Stuck = Cid::OfNode(N2);
+        std::map<std::string, std::string> Bytes{ {Cid::OfNode(N1), Cid::Canonical(N1)}, {Stuck, Cid::Canonical(N2)}, {Cid::OfNode(N3), Cid::Canonical(N3)} };
+        std::atomic<bool> Release{false};
+        IpfsWrapper::DebugResetQueue();
+        IpfsWrapper::SetFetchOnceHook([&](const std::string &C, const std::string &Dest, bool, std::string *E) {
+            if (C == Stuck && !Release) { if (E) *E = "no providers"; return 1; }   // retryable: it waits on
+            std::filesystem::create_directories(std::filesystem::path(Dest).parent_path());
+            std::ofstream(Dest, std::ios::binary) << Bytes.at(C);
+            return 0; });
+        const auto item = [](const json &N, const std::string &Pkg, const std::string &File) {
+            return json{{"cid", Cid::OfNode(N)}, {"pkg", Pkg}, {"node", File}}; };
+        QSignalSpy Rebuilt(&m, &AppModel::catalogChanged);
+        m.peers().applyPeerLibrarySnapshot("12D3KooWSeederA", QString::fromStdString(json{{"Games", json::array({
+            item(N1, "Game", "landed.json"), item(N2, "Game", "stuck.json") })}}.dump()));
+        QTRY_VERIFY_WITH_TIMEOUT(Rebuilt.count() >= 1, 10000);                      // what landed shows, the stuck file waits
+        QVERIFY2(m.peers().closurePasses() >= 1, "what landed is landed whole (its closure) though a file is stuck");
+        QTest::qWait(1000);
+        const int Shown = Rebuilt.count();                                         // nothing new: no more rebuilds,
+        for (int I = 0; I < 3; ++I) m.peers().reconcileReceivedLibraries();       // however often it is asked for again
+        QTest::qWait(1500);
+        QCOMPARE(Rebuilt.count(), Shown);
+        m.peers().applyPeerLibrarySnapshot("12D3KooWSeederB", QString::fromStdString(json{{"Games", json::array({
+            item(N3, "Other", "other.json") })}}.dump()));
+        QTRY_VERIFY_WITH_TIMEOUT(Rebuilt.count() > Shown, 10000);                   // the other peer's landed batch shows
+        const int Before = Rebuilt.count();
+        Release = true;
+        QTRY_VERIFY_WITH_TIMEOUT(Rebuilt.count() > Before, 20000);                  // the stuck file landed: shown too
         IpfsWrapper::SetFetchOnceHook(nullptr);
         IpfsWrapper::DebugResetQueue();
     }

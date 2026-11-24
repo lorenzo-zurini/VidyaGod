@@ -30,6 +30,8 @@ void VgNetRelease(long long handle);
 long long VgNetHold(void);             // foreground mode for a multi-wave job (background at most one slot); release with VgNetRelease
 int VgDebugNetForegroundIdle(void);   // tests only: 1 when no fetch holds/waits for a slot and nobody holds the foreground
 long long VgDebugNetHolds(void);      // tests only: foreground holds taken since start
+long long VgDebugRefScans(void);      // tests only: whole-index scans the orphan check has made
+long long VgDebugMoveRefScans(void);  // tests only: whole-index scans moving references has made
 void VgSetNetSlots(int n);
 
 int  VgPinLs(char **outJson, char **errOut);   // JSON array of recursively-pinned CIDs

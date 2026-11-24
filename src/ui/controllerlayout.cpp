@@ -1,5 +1,7 @@
 #include "controllerlayout.h"
 
+#include <atomic>
+
 #include <algorithm>
 #include <cmath>
 #include <filesystem>
@@ -368,11 +370,22 @@ ojson Layout::toProfile() const
             }
         Map.push_back({ { "name", C->Label }, { "source_event", Source }, { "target_events", Targets } });
     }
+    //A handheld's volume keys (on InputPlumber's keyboard source) reach VidyaGod, which sets the volume
+    //(VolumeKeys): a D-Bus event goes to VidyaGod whatever the intercept, a game running or not. Only in VidyaGod's
+    //session: on a desktop, the desktop answers them.
+    for (const auto &[Key, Event] : { std::pair{ "KeyVolumeUp", "ui_volume_up" }, std::pair{ "KeyVolumeDown", "ui_volume_down" },
+                                     std::pair{ "KeyMute", "ui_volume_mute" } })
+        if (VolumeKeysToVidyaGod()) Map.push_back({ { "name", std::string("Volume ") + Event }, { "source_event", { { "keyboard", Key } } },
+                        { "target_events", ojson::array({ { { "dbus", Event } } }) } });
     ojson P = { { "version", 1 }, { "kind", "DeviceProfile" }, { "name", Name } };
     if (!Description.empty()) P["description"] = Description;
     P["mapping"] = Map;
     return P;
 }
+
+namespace { std::atomic<bool> VolumeRouted{false}; }
+void SetVolumeKeysToVidyaGod(bool On) { VolumeRouted = On; }
+bool VolumeKeysToVidyaGod() { return VolumeRouted; }
 
 const std::vector<Layout> &Templates()
 {

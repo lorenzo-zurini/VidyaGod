@@ -252,7 +252,8 @@ IpfsModel::IpfsModel(AppModel & model, QObject * parent)
                 }
             }
         }
-        refresh();   // a finished fetch likely added a pin
+        SeedVerdict.remove(cid);   // fetched again: its deliverability is judged again (a repaired file was shown broken)
+        refreshIfShown();   // a finished fetch likely added a pin
     });
 
     // Unservable content found by the seed-time self-check: show it as an ERROR row. Before this a stale
@@ -283,6 +284,14 @@ void IpfsModel::setActive(bool on)
     if (!RefreshTimer) return;
     if (on) { if (!RefreshTimer->isActive()) RefreshTimer->start(5000); refresh(); }
     else    RefreshTimer->stop();
+}
+
+//A transfer's end changes the pins: refreshed now while the tab shows, else when it next shows (setActive). Each
+//refresh lists every pin and asks the node about each, and a new pin reconciles every row of the tab: thousands of
+//transfers landing (a peer's library) refreshed back to back, the tab hidden or not.
+void IpfsModel::refreshIfShown()
+{
+    if (Active) refresh();   // hidden: setActive refreshes when the tab shows
 }
 
 void IpfsModel::refreshNow()
@@ -450,7 +459,7 @@ void IpfsModel::clearQueued(const QString & cid)
     if (it == Cids.end() || it->phase != CidState::Queued) return;
     if (!IpfsWrapper::HasLocal(cid.toStdString())) { Cids.erase(it); emit cidRemoved(cid); }
     else { it->phase = CidState::Seeded; emit cidChanged(cid); }
-    refresh();
+    refreshIfShown();
 }
 
 void IpfsModel::tick()

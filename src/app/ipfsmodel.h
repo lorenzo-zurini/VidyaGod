@@ -78,6 +78,7 @@ public:
     QString packagePin(const QString & pkg) const;   // our package's pin folder (what a pinning service pins), empty if none
 
 public slots:
+    void refreshIfShown();                   // a transfer's end: refresh while the tab shows, else when it does
     void setActive(bool on);                 // tab shown/hidden → start/stop the periodic refresh
     void refreshNow();                       // force a status/pin/health gather (clears cached health first if force)
     void cancel(const QString & cid);        // abort/drop a download (→ IpfsWrapper::CancelDownload)

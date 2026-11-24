@@ -9,6 +9,7 @@
 #include <cstdint>
 #include <filesystem>
 #include <map>
+#include <atomic>
 #include <mutex>
 #include <set>
 #include <string>
@@ -103,8 +104,10 @@ bool PathExists(const std::string &P)
 // collision-qualified name whose owner changes with the plan's order), and a job materialises EVERY dest it
 // remembers from its primary. Without this, a re-run of the OLD cid's job rewrote a path the NEW cid now owns —
 // three "Vanilla" files that all held the Age of Kings block, and no Conquerors.
+static std::atomic<long long> ClaimScans{0};   // ClaimDest's scans of every job (a test: a re-enqueue makes none)
 static void ClaimDest(const std::string &Cid, const std::string &Dest)
 {
+    ++ClaimScans;
     for (auto &[C, J] : Q().Jobs)
     {
         if (C == Cid) continue;
@@ -365,7 +368,12 @@ BatchHandle EnqueueBatch(const std::vector<FetchTarget> &Targets)
                 continue;
             }
             ClearCancel(T.Cid);   // a fresh request clears any prior user-cancel so a re-download is not pre-aborted
-            ClaimDest(T.Cid, T.LocalPath);   // whatever job held this path before, it is this CID's now
+            //Whatever job held this path before, it is this CID's now. A dest already this CID's is no other job's (every
+            //dest a job lists was claimed as it was added): claiming it again scanned every job — per target, under the
+            //lock, on the GUI thread — and a resync of a received library is thousands of targets over thousands of jobs.
+            if (const auto Own = Q().Jobs.find(T.Cid);
+                Own == Q().Jobs.end() || std::find(Own->second.Dests.begin(), Own->second.Dests.end(), T.LocalPath) == Own->second.Dests.end())
+                ClaimDest(T.Cid, T.LocalPath);
             auto It = Q().Jobs.find(T.Cid);
             if (It != Q().Jobs.end()) {
                 Job &J = It->second;
@@ -376,6 +384,7 @@ BatchHandle EnqueueBatch(const std::vector<FetchTarget> &Targets)
                     case Job::Queued:
                     case Job::Active:
                         AddDest(J, T.LocalPath);          // join the in-flight fetch (cross-dest)
+                        Handle.Fetching.push_back(T.Cid);
                         break;
                     case Job::Done: {
                         // Trust exactly the dests THIS job wrote/verified (J.Dests) — a repeat of one of them is a
@@ -387,14 +396,14 @@ BatchHandle EnqueueBatch(const std::vector<FetchTarget> &Targets)
                         if (!T.Verify && PathExists(T.LocalPath)) { AddDest(J, T.LocalPath); break; }   // already there
                         const std::string Src = FirstExisting(J);
                         if (!Src.empty()) { AddDest(J, T.LocalPath); Late.push_back({T.Cid, Src, T.LocalPath, T.Verify && !Keep}); }
-                        else { J.State = Job::Queued; J.Seq = ++Q().Seq; AddDest(J, T.LocalPath); Woke = true; NewlyQueued.push_back(T.Cid); }
+                        else { J.State = Job::Queued; J.Seq = ++Q().Seq; AddDest(J, T.LocalPath); Woke = true; NewlyQueued.push_back(T.Cid); Handle.Fetching.push_back(T.Cid); }
                         break;
                     }
                     case Job::Failed:                      // retry a previously-failed CID — as a FRESH queue entry:
                         // priority + backoff reset (a re-request is a fresh start; the requester re-bumps if it still
                         // wants the front); the requester re-arms the retry the rolling scheduler stopped at Failed.
                         J.State = Job::Queued; J.Error.clear(); J.Priority = 0; J.Attempts = 0; J.ReadyAt = {};
-                        J.Seq = ++Q().Seq; AddDest(J, T.LocalPath); Woke = true; NewlyQueued.push_back(T.Cid);
+                        J.Seq = ++Q().Seq; AddDest(J, T.LocalPath); Woke = true; NewlyQueued.push_back(T.Cid); Handle.Fetching.push_back(T.Cid);
                         break;
                 }
                 continue;
@@ -414,7 +423,7 @@ BatchHandle EnqueueBatch(const std::vector<FetchTarget> &Targets)
             // A Verify target ALWAYS goes to the Go fetch (it hash-verifies the dest and overwrites a stale file):
             // for a reused dest neither presence nor a local block proves the file holds THIS cid.
             if (!T.Verify && PathExists(T.LocalPath) && IpfsWrapper::HasLocal(T.Cid)) { NewJob.State = Job::Done; }
-            else { NewJob.State = Job::Queued; NewJob.Seq = ++Q().Seq; Woke = true; NewlyQueued.push_back(T.Cid); }
+            else { NewJob.State = Job::Queued; NewJob.Seq = ++Q().Seq; Woke = true; NewlyQueued.push_back(T.Cid); Handle.Fetching.push_back(T.Cid); }
             Q().Jobs.emplace(T.Cid, std::move(NewJob));
         }
         LogOut("DownloadQueue::EnqueueBatch", "targets=" + std::to_string(Targets.size())
@@ -432,6 +441,7 @@ BatchHandle EnqueueBatch(const std::vector<FetchTarget> &Targets)
             auto It = Q().Jobs.find(P.Cid);
             if (It != Q().Jobs.end()) { It->second.State = Job::Failed; It->second.Error = MErr; }
         }
+        else ++Handle.Placed;
     }
     if (!Late.empty()) Q().Cv.notify_all();   // WaitBatch may be blocked on a job we just finalized/failed
     if (Woke) Q().Cv.notify_all();
@@ -453,6 +463,26 @@ bool JobUnfinished(const std::string &Cid)
     std::lock_guard<std::mutex> Lk(Q().Mu);
     auto It = Q().Jobs.find(Cid);
     return It != Q().Jobs.end() && It->second.State != Job::Done;
+}
+
+bool JobSettled(const std::string &Cid, bool *Landed)
+{
+    std::lock_guard<std::mutex> Lk(Q().Mu);
+    auto It = Q().Jobs.find(Cid);
+    const bool Done = It != Q().Jobs.end() && It->second.State == Job::Done;
+    if (Landed) *Landed = Done;
+    return It == Q().Jobs.end() || Done || It->second.State == Job::Failed;
+}
+
+long long DebugClaimScans() { return ClaimScans.load(); }
+
+bool QueueBusy()
+{
+    std::lock_guard<std::mutex> Lk(Q().Mu);
+    const SteadyTP Now = std::chrono::steady_clock::now();
+    for (const auto &[Cid, J] : Q().Jobs)
+        if (J.State == Job::Active || (J.State == Job::Queued && J.ReadyAt <= Now)) return true;
+    return false;
 }
 
 int DebugJobState(const std::string & Cid)

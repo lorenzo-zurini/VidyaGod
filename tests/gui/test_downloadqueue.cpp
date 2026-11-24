@@ -246,6 +246,28 @@ private slots:
     // A dest belongs to ONE CID. A node path is reused across generations (same label, new CID), and a job
     // materialises every dest it remembers — so when a NEW cid claims a path, the OLD cid's job must forget it, or
     // its next run rewrites the path with the old block (three "Vanilla" files, all the Age of Kings block).
+    // Enqueueing again what the queue already holds (a resync of a received library: thousands of node files, each
+    // already this CID's at this path) is quick: claiming a path that is already the CID's scanned every job, per
+    // target, under the queue's lock, on the GUI thread — seconds on a handheld every 10 minutes. Teeth: claim it
+    // again (a scan of every job per target).
+    void enqueueingWhatIsHereAgainIsQuick()
+    {
+        QTemporaryDir dir; QVERIFY(dir.isValid());
+        IpfsWrapper::DebugResetQueue();
+        IpfsWrapper::SetFetchOnceHook([](const std::string &cid, const std::string &dest, bool, std::string *) {
+            std::ofstream(dest) << cid; return 0; });
+        std::vector<IpfsWrapper::FetchTarget> T;
+        for (int I = 0; I < 6000; ++I)
+            T.push_back({ "CID_RESYNC_" + std::to_string(I), (dir.path() + "/n" + QString::number(I) + ".json").toStdString(), true, false, true });
+        QVERIFY(IpfsWrapper::WaitBatch(IpfsWrapper::EnqueueBatch(T), 60000));
+        const long long Scans = IpfsWrapper::DebugClaimScans();
+        const auto H = IpfsWrapper::EnqueueBatch(T);
+        QVERIFY(IpfsWrapper::WaitBatch(H, 60000));
+        QCOMPARE(IpfsWrapper::DebugClaimScans() - Scans, 0LL);                    // no scan of every job, per target
+        IpfsWrapper::SetFetchOnceHook(nullptr);
+        IpfsWrapper::DebugResetQueue();
+    }
+
     void aDestClaimedByANewCidIsForgottenByTheOldOne()
     {
         QTemporaryDir dir; QVERIFY(dir.isValid());

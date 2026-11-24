@@ -100,8 +100,22 @@ bool AppModel::save()
     return JSONOps::SaveConfig(*Config, AppDataDir->absolutePath().toStdString());
 }
 
+//Downloads that end together (dozens, when a peer goes away mid-batch) rebuilt the catalog each, on the GUI thread:
+//a full index build and every view's rebuild apiece. Asked again while one waits, the one rebuild covers it.
+void AppModel::rebuildCatalogSoon()
+{
+    RebuildPending = true;
+    if (RebuildQueued) return;
+    RebuildQueued = true;
+    QTimer::singleShot(RebuildSoonMs, this, [this] {
+        RebuildQueued = false;
+        if (RebuildPending) rebuildCatalog();   // rebuilt meanwhile (a download's own rebuild): that one covered every ask
+    });
+}
+
 void AppModel::rebuildCatalog()
 {
+    RebuildPending = false;   // every ask so far is covered (an index swapped in from elsewhere is not: it may predate them)
     {
         std::string Inputs;
         std::vector<Diagnostics::Entry> Said;
@@ -408,6 +422,16 @@ void AppModel::refreshFromDisk()
 
 void AppModel::healOrphansIfAny()
 {
+    //While the queue fetches, a reference is written for every block that lands, and the check — whose list of the
+    //referenced files is good only until one is — read the whole index again every 90 s (5.8 M references: seconds of
+    //disk and CPU, beside the download). The heal is for files moved mid-session: it waits until the queue is idle.
+    if (IpfsWrapper::QueueBusy())
+    {
+        if (!HealDeferred) LogOut("AppModel::healOrphansIfAny", "the network queue is fetching: the orphan check waits until it is idle");
+        HealDeferred = true;
+        return;
+    }
+    HealDeferred = false;
     bool Expected = false;
     if (!HealInFlight->compare_exchange_strong(Expected, true)) return;  // single-flight: a heal is already running
     auto Cfg = std::make_shared<nlohmann::ordered_json>(*Config);

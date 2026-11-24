@@ -99,6 +99,8 @@ private:
     //TFT), so two cards can download the same CIDs — each tracks and averages all of its own
     QHash<QString, QSet<QString>> DownloadCidToUid;
     QHash<QString, QStringList> DownloadUidCids;
+    QStringList                 FinishedUnsaid;    // downloads ended while others ran: said with the next catalog rebuild
+    unsigned                    UnsaidSince = 0;   // the catalog's generation when the first of them ended
     QHash<QString, QStringList> CancelledCids;     // key → the CIDs its cancel aborted   // PACKAGEUID → its content CIDs (for averaging progress)
 };
 

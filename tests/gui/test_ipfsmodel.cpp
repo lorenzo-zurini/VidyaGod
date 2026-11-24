@@ -242,6 +242,28 @@ private slots:
         QVERIFY(!im.nodeStatus().available);   // node not started
     }
 
+    // A transfer's end refreshes the model while the IPFS tab shows, and only then: each refresh lists every pin and
+    // asks the node about each one, and a peer's library landing ended thousands of transfers, the tab hidden or not.
+    // Shown again, it refreshes. Teeth: refresh on every transfer's end; forget to refresh when the tab shows.
+    void a_transfers_end_refreshes_only_while_the_tab_shows()
+    {
+        std::string Err;
+        QTemporaryDir Repo; QVERIFY(Repo.isValid());
+        QVERIFY2(IpfsWrapper::StartNode((Repo.path() + "/ipfs").toStdString(), &Err), Err.c_str());
+        {
+            AppModel m(&Cfg, &AppDir); IpfsModel im(m);
+            QSignalSpy Status(&im, &IpfsModel::nodeStatusChanged);
+            for (int I = 0; I < 5; ++I) finished(QString("QmEnded%1").arg(I), true);
+            QTest::qWait(800);
+            QCOMPARE(Status.count(), 0);                   // hidden: no refresh
+            QVERIFY(!im.nodeStatus().available);
+            im.setActive(true);                            // shown: it catches up
+            QTRY_VERIFY_WITH_TIMEOUT(im.nodeStatus().available, 10000);
+            im.setActive(false);
+        }
+        IpfsWrapper::StopNode();
+    }
+
     void mutators_are_safe_with_empty_queue()
     {
         AppModel m(&Cfg, &AppDir); IpfsModel im(m);

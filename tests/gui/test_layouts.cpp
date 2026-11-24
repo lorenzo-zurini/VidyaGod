@@ -57,6 +57,32 @@ private slots:
         }
     }
 
+    // In VidyaGod's session every layout routes the handheld's volume keys to VidyaGod (its D-Bus events), so the volume
+    // works in a game and out — and InputPlumber loads that mapping; on a desktop they are the desktop's. Teeth: a layout
+    // without them (the Deck's +/- did nothing); them taken on a desktop (its own volume keys dead).
+    void every_layout_routes_the_volume_keys_to_vidyagod()
+    {
+        SetVolumeKeysToVidyaGod(false);                                  // a desktop's: its keys stay the desktop's
+        for (const Layout &T : Templates())
+            for (const auto &M : T.toProfile()["mapping"])
+                QVERIFY2(!M["source_event"].contains("keyboard"), (T.Name + ": a volume key taken from the desktop").c_str());
+        SetVolumeKeysToVidyaGod(true);                                   // VidyaGod's session
+        for (const Layout &T : Templates())
+        {
+            const ojson P = T.toProfile();
+            for (const auto &[Key, Event] : { std::pair{ "KeyVolumeUp", "ui_volume_up" }, std::pair{ "KeyVolumeDown", "ui_volume_down" },
+                                             std::pair{ "KeyMute", "ui_volume_mute" } })
+            {
+                bool Found = false;
+                for (const auto &M : P["mapping"])
+                    if (M["source_event"] == ojson{ { "keyboard", Key } } && M["target_events"] == ojson::array({ { { "dbus", Event } } })) Found = true;
+                QVERIFY2(Found, (T.Name + ": " + Key).c_str());
+            }
+        }
+        QVERIFY2(IpCheck(Templates()[0].toProfile()).isEmpty(), "InputPlumber refuses the volume mapping");
+        SetVolumeKeysToVidyaGod(false);
+    }
+
     // Everything the configurator offers is something InputPlumber loads: every key, pad button and mouse button (as
     // one chord each), the overlay, a trigger's key and pad button, and every stick mode. Teeth: a name in the lists
     // InputPlumber does not know, a malformed event (a trigger or axis source, a mouse target).

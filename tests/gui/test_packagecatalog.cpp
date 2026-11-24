@@ -269,9 +269,11 @@ private slots:
     }
 
     // Publishing names a package's frozen node files by their labels (chapter 02 §2.5): a file named by its CID, as a
-    // script or an older build wrote it, takes its label's name, and what refers to it in place follows. Two nodes of
-    // one label are both bumped. Teeth: drop the Normalize in Publish (the CID names stay); drop its MoveRefs (the
-    // node's reference dies with the old name).
+    // script or an older build wrote it, takes its label's name, and what refers to it in place follows — every
+    // package's, in one move made before any folder. Two nodes of one label are both bumped. Teeth: drop the Normalize
+    // in Publish (the CID names stay); drop its MoveRefs, or make it after the folders (the node's reference dies with
+    // the old name and its folder is refused); move only one package's references (the other's dies); move each
+    // package's in a call of its own (a scan of every reference each: a first publish took hours).
     void publish_names_frozen_node_files_by_their_labels()
     {
         std::string Err;
@@ -286,8 +288,17 @@ private slots:
         for (const json &N : {A, B, C})
             std::ofstream(Pkg + "/" + Cid::OfNode(N) + ".json", std::ios::binary) << Cid::Canonical(N);
         QCOMPARE(IpfsWrapper::AddNoCopy(Pkg + "/" + Cid::OfNode(A) + ".json", &Err), Cid::OfNode(A));   // referenced in place
+        const std::string Pkg2 = Root.path().toStdString() + "/VidyaGod/[2] H";                       // another package's,
+        std::filesystem::create_directories(Pkg2);                                                    // in the same publish
+        const json D = json{{"LABEL", "Other 2.0"}, {"LAYERS", json::array({ json{{"DIR", "d"}} })}};
+        std::ofstream(Pkg2 + "/" + Cid::OfNode(D) + ".json", std::ios::binary) << Cid::Canonical(D);
+        QCOMPARE(IpfsWrapper::AddNoCopy(Pkg2 + "/" + Cid::OfNode(D) + ".json", &Err), Cid::OfNode(D));
         json cfg = json{{"Settings", {{"Paths", {{"LibraryRoot", Root.path().toStdString()}}}}}};
-        QCOMPARE((int)PackageCatalog::PublishLibrary(cfg, &Err).size(), 1);
+        const long long Scans = IpfsWrapper::DebugMoveRefScans();
+        QVERIFY2(PackageCatalog::PublishLibrary(cfg, &Err).size() == 2, Err.c_str());
+        QCOMPARE(IpfsWrapper::DebugMoveRefScans() - Scans, 1LL);              // one scan of the references, for both
+        QCOMPARE(QDir(QString::fromStdString(Pkg2)).entryList({"*.json"}, QDir::Files), QStringList{ "Other 2.0.json" });
+        QVERIFY2(!IpfsWrapper::CidMissing(Cid::OfNode(D)), "the other package's node reference followed its file too");
         const QStringList Files = QDir(QString::fromStdString(Pkg)).entryList({"*.json"}, QDir::Files);
         const std::string BT = Cid::OfNode(B).substr(Cid::OfNode(B).size() - 8), CT = Cid::OfNode(C).substr(Cid::OfNode(C).size() - 8);
         QCOMPARE(Files, (QStringList{ "Game 1.0.json", QString::fromStdString("Mod [" + BT + "].json"), QString::fromStdString("Mod [" + CT + "].json") }));
@@ -1401,6 +1412,117 @@ private slots:
     // that package is never ours (never re-shared: a peer of ours would get proton without its wine), and on the
     // replication run it was exactly that. A package nothing reaches stays a stub. Teeth: take only the named nodes
     // (not their Closure) in PackagesToAdopt and the contained packages drop out.
+    // Installing what a download reaches moves every received package into the library with its references, in ONE
+    // scan of the references (each scan reads the whole index); a package that cannot be installed refuses them all
+    // before anything moves. Teeth: a scan per package; move the packages before judging them all (the first moves,
+    // then the collision refuses); leave a package's references behind.
+    void installing_received_packages_moves_them_and_their_references_in_one_scan()
+    {
+        std::string Err;
+        QTemporaryDir Repo; QVERIFY(Repo.isValid());
+        QVERIFY2(IpfsWrapper::StartNode((Repo.path() + "/ipfs").toStdString(), &Err), Err.c_str());
+        QTemporaryDir Data; QVERIFY(Data.isValid());
+        json cfg = json{{"Settings", {{"Paths", {{"LibraryRoot", (Data.path() + "/LIBRARY").toStdString()}}}}},
+                        {"PeerLibraries", {{"12D3KooWAlice", {{"Games", json::array()}, {"Runners", json::array()}}},
+                                           {"12D3KooWBob", {{"Games", json::array()}}}}}};
+        const std::string Cat = PackageCatalog::CatalogRootDir(cfg);
+        const auto stub = [&](const std::string &Peer, const std::string &Lib, const std::string &Pkg, std::string *C) {
+            const std::filesystem::path D = std::filesystem::path(Cat) / (PackageCatalog::ReceivedNickLabel(Peer) + " - " + Lib) / Pkg;
+            std::filesystem::create_directories(D);
+            { std::ofstream(D / "content.bin", std::ios::binary) << std::string(300000, Pkg[1]) << Peer; }
+            *C = IpfsWrapper::AddNoCopy((D / "content.bin").string(), &Err);          // fetched: referenced in place
+            return D; };
+        std::vector<std::filesystem::path> Dirs;
+        std::vector<std::string> Cids(3);
+        Dirs.push_back(stub("12D3KooWAlice", "Games", "[1] One", &Cids[0]));
+        Dirs.push_back(stub("12D3KooWAlice", "Games", "[2] Two", &Cids[1]));
+        Dirs.push_back(stub("12D3KooWAlice", "Games", "[3] Three", &Cids[2]));
+        for (const auto &C : Cids) QVERIFY2(!C.empty(), Err.c_str());
+        // a collision with the library refuses every package, and moves none
+        const std::filesystem::path Lib = std::filesystem::path(PackageCatalog::LibraryRootDir(cfg)) / "Games";
+        std::filesystem::create_directories(Lib / "[3] Three");
+        QVERIFY(!PackageCatalog::AdoptReceivedPackages(cfg, Dirs, nullptr, &Err));
+        for (const auto &D : Dirs) QVERIFY2(std::filesystem::is_directory(D), "a package moved although another was refused");
+        std::filesystem::remove_all(Lib / "[3] Three");
+        // one package from two peers would install as one: refused, nothing moved (never merged, never half-installed)
+        std::string BobCid;
+        const auto Bobs = stub("12D3KooWBob", "Games", "[1] One", &BobCid);
+        QVERIFY(!PackageCatalog::AdoptReceivedPackages(cfg, { Dirs[0], Bobs }, nullptr, &Err));
+        QVERIFY2(std::filesystem::is_directory(Dirs[0]) && std::filesystem::is_directory(Bobs), "a package moved although two would install as one");
+        QVERIFY(!std::filesystem::exists(Lib / "[1] One"));
+        // all at once (one asked for twice): one scan of the references
+        const long long Scans = IpfsWrapper::DebugMoveRefScans();
+        std::vector<std::filesystem::path> New;
+        QVERIFY2(PackageCatalog::AdoptReceivedPackages(cfg, { Dirs[0], Dirs[1], Dirs[2], Dirs[1] }, &New, &Err), Err.c_str());
+        QCOMPARE(IpfsWrapper::DebugMoveRefScans() - Scans, 1LL);
+        QCOMPARE(New.size(), size_t(3));
+        for (size_t I = 0; I < New.size(); ++I)
+        {
+            QVERIFY(std::filesystem::exists(New[I] / "content.bin"));
+            QVERIFY(!std::filesystem::exists(Dirs[I]));
+            QVERIFY2(!IpfsWrapper::CidMissing(Cids[I]), "a package's references stayed behind");
+        }
+        // one that cannot move (its library is read-only) goes back with its references; the others are installed
+        std::string RunCid, GameCid;
+        const auto Runner = stub("12D3KooWAlice", "Runners", "proton", &RunCid);
+        const auto Game = stub("12D3KooWAlice", "Games", "[4] Four", &GameCid);
+        const std::filesystem::path RO = std::filesystem::path(PackageCatalog::LibraryRootDir(cfg)) / "Runners";
+        std::filesystem::create_directories(RO);
+        std::filesystem::permissions(RO, std::filesystem::perms::owner_write, std::filesystem::perm_options::remove);
+        const bool Ok = PackageCatalog::AdoptReceivedPackages(cfg, { Runner, Game }, nullptr, &Err);
+        std::filesystem::permissions(RO, std::filesystem::perms::owner_write, std::filesystem::perm_options::add);
+        QVERIFY(!Ok);
+        QVERIFY2(std::filesystem::exists(Runner / "content.bin"), "the package that could not move is gone from where it was");
+        QVERIFY2(!IpfsWrapper::CidMissing(RunCid), "its references did not come back");
+        QVERIFY2(std::filesystem::exists(Lib / "[4] Four" / "content.bin") && !IpfsWrapper::CidMissing(GameCid), "the other package was not installed");
+        IpfsWrapper::StopNode();
+    }
+
+    // Pruning a received library reads only the files no entry names: the named ones (thousands) are kept without a
+    // read — reading every one to skip it froze a handheld's GUI for seconds after each landing. Teeth: read every file.
+    void pruning_received_packages_reads_only_what_no_entry_names()
+    {
+        std::ifstream Io("/proc/self/io");
+        if (!Io) QSKIP("reads counted from /proc");
+        const auto ReadSoFar = [] {
+            std::ifstream I("/proc/self/io");
+            for (std::string L; std::getline(I, L);) if (L.rfind("rchar: ", 0) == 0) return std::stoll(L.substr(7));
+            return 0LL;
+        };
+        QTemporaryDir Data; QVERIFY(Data.isValid());
+        json Items = json::array();
+        const std::string Pad(50000, 'x');
+        std::vector<json> Nodes;
+        for (int I = 0; I < 400; ++I)
+        {
+            const json N = json{{"LABEL", "n" + std::to_string(I)}, {"NOTE", Pad}, {"LAYERS", json::array({ json{{"DIR", "d"}} })}};
+            Items.push_back(json{{"cid", Cid::OfNode(N)}, {"pkg", "Game " + std::to_string(I % 20)}, {"node", "n" + std::to_string(I) + ".json"}});
+            Nodes.push_back(N);
+        }
+        json cfg = json{{"Settings", {{"Paths", {{"LibraryRoot", (Data.path() + "/LIBRARY").toStdString()}}}}},
+                        {"PeerLibraries", {{"12D3KooWAlice", {{"Games", Items}}}}}};
+        const auto Plan = PackageCatalog::PlanReceivedFetches(cfg, PackageCatalog::ReceivedNickLabel("12D3KooWAlice"), cfg["PeerLibraries"]["12D3KooWAlice"]);
+        QCOMPARE(Plan.size(), Nodes.size());
+        long long Named = 0;
+        for (const auto &T : Plan)
+            for (const json &N : Nodes)
+                if (Cid::OfNode(N) == T.Cid)
+                {
+                    std::filesystem::create_directories(std::filesystem::path(T.Dest).parent_path());
+                    std::ofstream(T.Dest, std::ios::binary) << Cid::Canonical(N);
+                    Named += static_cast<long long>(Cid::Canonical(N).size());
+                }
+        const json Stale = json{{"LABEL", "old"}, {"LAYERS", json::array({ json{{"DIR", "o"}} })}};   // an older generation's
+        const std::filesystem::path StalePath = std::filesystem::path(Plan.front().Dest).parent_path() / "old.json";
+        std::ofstream(StalePath, std::ios::binary) << Cid::Canonical(Stale);
+        const NodeIndex Idx = PackageCatalog::BuildCatalogIndex(cfg);
+        const long long Before = ReadSoFar();
+        QCOMPARE(PackageCatalog::PruneStaleReceived(Idx, cfg), 1);
+        const long long Read = ReadSoFar() - Before;
+        QVERIFY2(!std::filesystem::exists(StalePath), "the stale file stays");
+        QVERIFY2(Read < Named / 10, qPrintable(QString("pruning read %1 KB of %2 KB named").arg(Read / 1024).arg(Named / 1024)));
+    }
+
     void download_adopts_every_received_package_its_closures_reach()
     {
         QTemporaryDir RxData; QVERIFY(RxData.isValid());

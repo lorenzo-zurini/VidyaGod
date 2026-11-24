@@ -26,6 +26,23 @@ private slots:
         QCOMPARE(PostedOn, QCoreApplication::instance()->thread());
     }
 
+    // A job over lets go of its context: the connection that tells it the context died goes with the job. Kept, a
+    // long-lived context gathered one per job (a model running a job per transfer: tens of thousands a session).
+    // Teeth: keep the connection.
+    void a_finished_job_lets_go_of_its_context()
+    {
+        struct Probe : QObject { int Watching() const { return receivers(SIGNAL(destroyed(QObject*))); } } Ctx;
+        std::atomic<int> Ended{0};
+        for (int I = 0; I < 200; ++I)
+            AsyncWork::Run(&Ctx, [](const AsyncWork::Job &) {}, [&] { ++Ended; });
+        QTRY_COMPARE(Ended.load(), 200);
+        QCOMPARE(Ctx.Watching(), 0);
+        std::atomic<bool> Ran{false};
+        AsyncWork::Run(&Ctx, [&](const AsyncWork::Job &) { Ran = true; });   // no completion: let go all the same
+        QTRY_VERIFY(Ran.load());
+        QTRY_COMPARE(Ctx.Watching(), 0);
+    }
+
     // A context destroyed while its worker runs: the worker sees it (Live), and neither what it posts nor the
     // completion runs. Teeth: run a post whatever became of the context; never flip Live.
     void a_post_after_its_context_died_is_dropped()

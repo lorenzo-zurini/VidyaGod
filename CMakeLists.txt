@@ -215,6 +215,12 @@ set(SHARED_SOURCES
 
     src/ui/networktab.h
     src/ui/networktab.cpp
+    src/ui/matrixrain.h
+    src/ui/matrixrain.cpp
+    src/ui/screensaver.h
+    src/ui/screensaver.cpp
+    src/ui/volumekeys.h
+    src/ui/volumekeys.cpp
 
     src/engine/fileedits.h
     src/engine/fileedits.cpp
@@ -704,6 +710,8 @@ add_test(NAME cli_coverage COMMAND python3 -I ${CMAKE_SOURCE_DIR}/tools/cli_cove
          --binary $<TARGET_FILE:VidyaGod> --build ${CMAKE_BINARY_DIR})
 add_gui_test(test_vfsmount)
 add_gui_test(test_peers)
+add_gui_test(test_screensaver)
+add_gui_test(test_volumekeys)
 add_gui_test(test_sandbox)
 add_gui_test(test_variantpicker)
 add_gui_test(test_prelaunch)

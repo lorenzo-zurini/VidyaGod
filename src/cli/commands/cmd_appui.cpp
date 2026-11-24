@@ -6,6 +6,7 @@
 #include <QTextDocument>
 #include <QEventLoop>
 #include "command.h"
+#include "downloadqueue.h"
 #include "cmdutil.h"
 #include "appmodel.h"
 #include "peersharing.h"
@@ -153,14 +154,16 @@ VG_COMMANDS
           Flag("push", "push node settings"), Flag("covers", "sweep missing covers") },
         { "app housekeeping --heal", "app housekeeping --reconcile --push" },
         { "AppModel::healOrphansIfAny", "PeerSharing::reconcileReceivedLibraries", "PeerSharing::enqueueReceivedShares", "PeerSharing::applyPeerLibrarySnapshot",
-          "PeerSharing::onPeerBlockLanded", "PeerSharing::reRegisterShares", "AppModel::pushSeedLevels", "PeerSharing::pushLanRoster", "PeerSharing::pushPresenceDeny",
+          "PeerSharing::closurePasses", "PeerSharing::reRegisterShares", "AppModel::pushSeedLevels", "PeerSharing::pushLanRoster", "PeerSharing::pushPresenceDeny",
           "CoverCache::instance", "CoverCache::sweepNow", "CoverCache::prefetch", "CoverCache::missCount", "CoverCache::onTransferFinished", "AppModel::notifyCoversReady",
           "LibraryTab::refreshCovers", "CatalogTab::refreshCovers" , "AsyncWork::Run", "AsyncWork::Job::Live", "AsyncWork::Job::Post" }, Needs::Model, true,
         [](Command::Context &C, const json &A) {
             AppModel &M = Model(C);
             json Out = json::object();
-            if (Command::Bool(A, "heal", false)) { M.healOrphansIfAny(); Out["healing"] = true; }
-            if (Command::Bool(A, "reconcile", false)) { M.peers().reconcileReceivedLibraries(); Out["reconciling"] = true; }
+            if (Command::Bool(A, "heal", false))
+            { const bool Busy = IpfsWrapper::QueueBusy(); M.healOrphansIfAny(); Out["healing"] = !Busy; if (Busy) Out["deferred"] = "the queue is fetching"; }
+            if (Command::Bool(A, "reconcile", false))
+            { M.peers().reconcileReceivedLibraries(); Out["reconciling"] = true; Out["closure_passes"] = M.peers().closurePasses(); }
             if (Command::Bool(A, "reshare", false)) { M.peers().reRegisterShares(); Out["reshared"] = true; }
             if (Command::Bool(A, "push", false)) { M.pushSeedLevels(); M.peers().pushLanRoster(); M.peers().pushPresenceDeny(); Out["pushed"] = true; }
             if (Command::Bool(A, "covers", false)) { CoverCache::instance()->sweepNow(); Out["covers_missing"] = CoverCache::instance()->missCount(); }

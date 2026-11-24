@@ -436,6 +436,9 @@ bool ReceivedPackagesIncomplete(const nlohmann::ordered_json &GlobalConfigJSON);
 int PruneStaleReceived(const NodeIndex &Idx, const nlohmann::ordered_json &GlobalConfigJSON);
 // Installing a received package MOVES its dir out of CATALOG into LIBRARY/<lib>/<pkg>: an ordinary local package from
 // then on. False + *Error on a name collision or an unknown lib dir.
+// Several at once: each judged first (one refused refuses all, nothing moved), their references moved in ONE scan.
+[[nodiscard]] bool AdoptReceivedPackages(const nlohmann::ordered_json &GlobalConfigJSON, const std::vector<std::filesystem::path> &PkgDirs,
+                                         std::vector<std::filesystem::path> *NewDirs = nullptr, std::string *Error = nullptr);
 [[nodiscard]] bool AdoptReceivedPackage(const nlohmann::ordered_json &GlobalConfigJSON, const std::filesystem::path &PkgDir,
                                         std::filesystem::path *NewDir = nullptr, std::string *Error = nullptr);
 // A package of ours' pin folder (its node files + its content: what a pinning service is given), from Config["Pins"]
