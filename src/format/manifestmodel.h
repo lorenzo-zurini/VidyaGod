@@ -224,9 +224,9 @@ std::vector<std::string> LayerBaseSources(const nlohmann::ordered_json &Sub);
 // calls clean.
 bool HasLiveToken(const std::string &S);
 // Build one vidyagodfs spec-layer object from a package VFS layer, with caller-resolved Source/Target. Null json if
-// `Sub` is not a VFS layer. Centralizes the entry skeleton so mount builders never drift. A zip or delta carries its
-// own CID ("cid") and a delta the CIDs of its bases ("bases"): the FS finds each file and decides what it hides
-// (VidyaGodFS treeplan.h). A base no TAKE shows is "bytesOnly".
+// `Sub` is not a VFS layer. Centralizes the entry skeleton so mount builders never drift. A zip, a delta or a single
+// file carries its own CID ("cid") and a delta the CIDs of its bases ("bases"): the FS finds each file and decides what
+// it hides (VidyaGodFS treeplan.h). A base no TAKE shows is "bytesOnly".
 nlohmann::ordered_json MakeVfsSpecLayer(const nlohmann::ordered_json &Sub, const std::string &Source,
                                         const std::string &Target);
 // A VFS layer's locators: its expected LOCAL path (PackagePath/PATH, SOURCE.PATH overriding) and its ipfs CID

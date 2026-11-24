@@ -181,6 +181,10 @@ struct PkgCanvasState
     bool LayoutValid = false;
     bool FullLayout = true;
     std::map<std::string, float> Measured;               // drawn height (world units), by handle
+    //Whether each node's action base is here (PkgGraph::HasActionBase), until the content changes: asked per drawn node
+    //per frame, it was a walk of every node — per zip, and per delta — each frame.
+    std::map<std::string, bool> HasBase;
+    uint64_t HasBaseRev = ~0ull;
     std::set<std::string> MeasuredOnce;                  // first measurement corrects the layout; later ones do not
 
     // ---- the view ----
@@ -1383,12 +1387,15 @@ static void DrawNode(PkgCanvas &Self, PkgCanvasState &S, int Vi, std::vector<ImG
     }
     const std::vector<std::string> NoHints;
     const auto Hi = S.Hints.find(V.Handle);
-    std::vector<PkgGraph::NodeRef> Refs;
     const std::vector<PkgGraph::Action> Acts = Busy ? std::vector<PkgGraph::Action>() :
         PkgGraph::ActionsFor(D.Node(V.Doc), [&] {
-            if (PkgGraph::ContentType(D.Node(V.Doc)) != "ZIP") return false;
+            const std::string T = PkgGraph::ContentType(D.Node(V.Doc));
+            if (T != "ZIP" && T != "DELTA") return false;
+            if (S.HasBaseRev != D.ContentRevision()) { S.HasBase.clear(); S.HasBaseRev = D.ContentRevision(); }
+            if (const auto It = S.HasBase.find(V.Handle); It != S.HasBase.end()) return It->second;
+            std::vector<PkgGraph::NodeRef> Refs;
             for (int I = 0; I < D.Count(); ++I) Refs.push_back({D.Handle(I), &D.Node(I)});
-            return PkgGraph::DeltaBase(Refs, V.Doc) >= 0;
+            return S.HasBase[V.Handle] = PkgGraph::HasActionBase(Refs, V.Doc);
         }(), Hi == S.Hints.end() ? NoHints : Hi->second);
     if (!Acts.empty())
     {

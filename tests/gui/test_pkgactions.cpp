@@ -9,6 +9,7 @@
 #include "qtestjson.h"
 #include "pkgactions.h"
 #include "ipfswrapper.h"
+#include "vgdelta.h"        // GenerateDelta: a delta over a file, made here
 #include "manifestmodel.h"
 #include "pkgcanvas.h"
 #include "packageeditormodel.h"
@@ -494,6 +495,54 @@ private slots:
         QCOMPARE(PkgGraph::LayerType(Z), std::string("ZIP"));
         QVERIFY2(!Z.contains("BASE_SOURCES"), Z.dump().c_str());
         QVERIFY(F.read(F.path(QString::fromStdString(Z["ZIP"].get<std::string>()))) == V2);
+    }
+
+    // A delta built over a single file (a disc image, the extracted files rebuilt from it) is undelta'd over that file's
+    // bytes, and offered undelta only when the files it names are here. Teeth: undelta over zips only (refused); the
+    // button offered over a base that is not here.
+    void aDeltaOverAFileIsUndeltaedOverIt()
+    {
+        if (!HaveZipTools) QSKIP("zip/unzip not installed");
+        Fixture F(this);
+        QByteArray Iso(200000, '\0');
+        for (int K = 0; K < Iso.size(); ++K) Iso[K] = char((K * 131 + K / 977) & 0xff);
+        F.write(F.path("game.iso"), Iso);
+        F.makeZip("files.zip", "data/a.bin", Iso.mid(4096, 50000));
+        const QByteArray Files = F.read(F.path("files.zip"));
+        {
+            auto Dd = vgdelta::GenerateDelta((const uint8_t *)Iso.constData(), (size_t)Iso.size(), (const uint8_t *)Files.constData(), (size_t)Files.size());
+            std::ofstream O(F.path("files.vgdelta").toStdString(), std::ios::binary);
+            O.write((const char *)Dd.data(), (std::streamsize)Dd.size());
+        }
+        QFile::remove(F.path("files.zip"));
+        const std::string IsoCid = IpfsWrapper::ComputeCid(F.path("game.iso").toStdString());
+        const int b = F.addContentNode("game.iso");
+        F.setLayers(b, json::array({ json{{"FILE", "game.iso"}, {"SOURCE", IsoCid}} }));
+        const int n = F.addContentNode("files.vgdelta");
+        F.setLayers(n, json::array({ json{{"NODE", F.nodeId(b).toStdString()}},
+                                     json{{"DELTA", "files.vgdelta"}, {"BASE_SOURCES", json::array({ IsoCid })}} }));
+        F.save();
+        auto Offered = [&] {
+            std::vector<PkgGraph::NodeRef> Refs;
+            for (int K = 0; K < F.doc().Count(); ++K) Refs.push_back({F.doc().Handle(K), &F.doc().Node(K)});
+            for (const auto &A : PkgGraph::ActionsFor(F.node(n), PkgGraph::HasActionBase(Refs, n), {})) if (std::string(A.Id) == "undelta") return true;
+            return false;
+        };
+        QVERIFY(Offered());
+        F.act->perform(F.nodeId(n), "undelta");
+        QVERIFY(F.waitIdle(F.nodeId(n), 60000));
+        QVERIFY2(F.notices.isEmpty(), qUtf8Printable(F.notices.join("\n")));
+        const json Z = F.node(n)["LAYERS"][(size_t)PkgGraph::ContentIndex(F.node(n))];
+        QCOMPARE(PkgGraph::LayerType(Z), std::string("ZIP"));
+        QVERIFY(F.read(F.path(QString::fromStdString(Z["ZIP"].get<std::string>()))) == Files);
+        //A delta naming a base that is not here is offered no undelta.
+        const int m = F.addContentNode("x.vgdelta");
+        F.setLayers(m, json::array({ json{{"DELTA", "x.vgdelta"}, {"BASE_SOURCES", json::array({ "QmNotHere" })}} }));
+        std::vector<PkgGraph::NodeRef> Refs;
+        for (int K = 0; K < F.doc().Count(); ++K) Refs.push_back({F.doc().Handle(K), &F.doc().Node(K)});
+        QVERIFY(!PkgGraph::HasActionBase(Refs, m));
+        for (const auto &A : PkgGraph::ActionsFor(F.node(m), PkgGraph::HasActionBase(Refs, m), {}))
+            QVERIFY2(std::string(A.Id) != "undelta", "undelta offered over a base that is not here");
     }
 
     // Undelta turns the content layer back into a ZIP in place: its TARGET stays, the stale SOURCE/SIZE go. The

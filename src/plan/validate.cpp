@@ -95,7 +95,7 @@ ArchiveBytes ArchiveSizes(const Fold::Item &I, std::map<std::string, ArchiveByte
     if (auto It = Cache.find(Local.string()); It != Cache.end()) return It->second;
     ArchiveBytes Out;
     std::error_code Ec;
-    if (I.Kind == "ZIP")
+    if (I.Kind == "ZIP" || I.Kind == "FILE")   // a file's bytes are its size (a disc image a delta is built over)
     {
         const uint64_t N = std::filesystem::file_size(Local, Ec);
         if (!Ec) Out.View = N;

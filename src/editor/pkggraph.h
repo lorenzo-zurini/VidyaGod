@@ -116,9 +116,10 @@ std::string ContentTarget(const nlohmann::ordered_json &Node);
 //layer is a ZIP at the SAME target. Nearest first. The "-> delta" button (ActionsFor) and the action itself both ask
 //this, so the button never offers what the action refuses. The delta then NAMES it (BASE_SOURCES), by its CID.
 int DeltaBase(const std::vector<NodeRef> &Nodes, int Index);
-//The nodes holding the zips a delta node's BASE_SOURCES names, in order (indices into Nodes) — what "undelta" rebuilds
-//it over. Empty when the node's content is not a delta, or any base it names is not a plain zip among Nodes.
-std::vector<int> DeltaBaseZips(const std::vector<NodeRef> &Nodes, int Index);
+//The nodes holding the files a delta node's BASE_SOURCES names, in order (indices into Nodes) — what "undelta" rebuilds
+//it over: plain zips, or single files (a disc image). Empty when the node's content is not a delta, or any base it
+//names is neither among Nodes (a delta's rebuilt archive is not a file to read).
+std::vector<int> DeltaBaseFiles(const std::vector<NodeRef> &Nodes, int Index);
 //A starter layer of a type (valid by construction: required keys present).
 nlohmann::ordered_json NewLayer(const std::string &Type);
 //A fresh node carrying ONE starter layer ("" ⇒ a node with no layers yet).
@@ -234,10 +235,13 @@ struct Action
     bool        Heavy = false;   // long-running: runs async, gets a progress bar + cancel, locks the node
 };
 
-//The actions VALID FOR THIS NODE RIGHT NOW — contextual, not a fixed per-type list: "flatten" only on a delta,
-//"make delta" only when a parent can be its base, "re-store" only when the zip is actually DEFLATE. `Hints` are
-//facts the canvas cannot know without touching disk (e.g. "deflate"), pushed in by the host.
-std::vector<Action> ActionsFor(const nlohmann::ordered_json &Node, bool HasDeltaBase, const std::vector<std::string> &Hints);
+//The actions VALID FOR THIS NODE RIGHT NOW — contextual, not a fixed per-type list: "make delta" only when a node it
+//contains can be its base, "undelta" only when the bases its delta names are files here to rebuild from, "re-store"
+//only when the zip is actually DEFLATE. HasBase: the base the node's form needs is here (a zip: DeltaBase; a delta:
+//DeltaBaseFiles). `Hints` are facts the canvas cannot know without touching disk (e.g. "deflate"), pushed in by the host.
+std::vector<Action> ActionsFor(const nlohmann::ordered_json &Node, bool HasBase, const std::vector<std::string> &Hints);
+//HasBase for ActionsFor, for node Index of Nodes.
+bool HasActionBase(const std::vector<NodeRef> &Nodes, int Index);
 
 //A node in plain words, one line: what it runs and on what, where its files come from, what it contains or rides on,
 //what it changes and keeps ("Version "Original": runs bin/demo.exe on Windows 32-bit; files from demo.zip; keeps

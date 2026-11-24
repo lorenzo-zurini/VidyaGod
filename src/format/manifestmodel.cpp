@@ -672,7 +672,7 @@ nlohmann::ordered_json MakeVfsSpecLayer(const nlohmann::ordered_json &Sub, const
     if (LType.empty()) return nullptr;
     nlohmann::ordered_json J = {{"type", LType}, {"source", Source}, {"target", Target},
                                 {"submounts", Sub.value("SUBMOUNTS", nlohmann::ordered_json::array())}, {"rw", false}};
-    if (LType == "zip" || LType == "delta")
+    if (LType == "zip" || LType == "delta" || LType == "file")   // what a delta names by CID (a file: a disc image)
     {
         std::filesystem::path Local; std::string Cid;
         LayerLocator(Sub, std::filesystem::path(), Local, Cid);

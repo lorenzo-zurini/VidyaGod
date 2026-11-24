@@ -313,12 +313,12 @@
       "TYPE": "VFSZipLayer"
     },
     {
-      "PATH": "<DATA>/fixture/[90000000000001][v1.0] Launch Matrix",
+      "PATH": "<DATA>/fixture/[90000000000001][v1.0] Launch Matrix/libfile.txt",
       "SUBMOUNTS": [
         "libfile.txt:/drive_c/90000000000001/libs/renamed.txt"
       ],
       "TARGET": "/drive_c/90000000000001/libs",
-      "TYPE": "VFSDirLayer"
+      "TYPE": "VFSFileLayer"
     },
     {
       "PATH": "<DATA>/fixture/[90000000000001][v1.0] Launch Matrix/shareddir",

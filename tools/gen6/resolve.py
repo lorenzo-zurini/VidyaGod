@@ -769,21 +769,22 @@ _NAMES = {}
 
 def base_indices(seq, j):
     """Which items the delta seq[j] is rebuilt from (chapter 04 §4.1): for each CID its BASE_SOURCES names, in order, an
-    item carrying that SOURCE — any, anywhere in the fold (one CID is one file); None where none does."""
+    item carrying that SOURCE — a zip, a single file (a disc image) or a delta, anywhere in the fold (one CID is one
+    file); None where none does."""
     out = []
     for c in seq[j].get("base_sources") or []:
-        out.append(next((i for i, b in enumerate(seq) if b["kind"] in ("ZIP", "DELTA") and b.get("source") == c), None))
+        out.append(next((i for i, b in enumerate(seq) if b["kind"] in ("ZIP", "FILE", "DELTA") and b.get("source") == c), None))
     return out
 
 
 def _chain(seq, j):
-    """The files whose bytes seq[j] mounts, as nested lists: a ZIP's file; a DELTA's [file, [base chains…]]. None when a
-    base it names is not beneath it, or a file is not here."""
+    """The files whose bytes seq[j] mounts, as nested lists: a ZIP's or a FILE's file; a DELTA's [file, [base chains…]].
+    None when a base it names is not here, or a file is not here."""
     c = seq[j]
-    if c["kind"] not in ("ZIP", "DELTA") or not c.get("dir"):
+    if c["kind"] not in ("ZIP", "FILE", "DELTA") or not c.get("dir"):
         return None
     f = os.path.join(c["dir"], c["payload"])
-    if c["kind"] == "ZIP":
+    if c["kind"] in ("ZIP", "FILE"):
         return f
     bases = []
     for i in base_indices(seq, j):

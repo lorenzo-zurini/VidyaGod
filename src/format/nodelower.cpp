@@ -709,7 +709,8 @@ std::vector<std::pair<size_t, nlohmann::ordered_json>> ContentOps(const Fold::Pl
 {
     std::vector<std::pair<size_t, ordered_json>> Out;
     const auto Cid = [](const Fold::Item &I) { return I.Source.is_string() ? I.Source.get<std::string>() : std::string(); };
-    const auto Archive = [](const Fold::Item &I) { return I.Kind == "ZIP" || I.Kind == "DELTA"; };
+    //What a delta can be built over (named by its SOURCE): a zip, a delta's rebuilt archive, a single file (a disc image).
+    const auto Carries = [](const Fold::Item &I) { return I.Kind == "ZIP" || I.Kind == "DELTA" || I.Kind == "FILE"; };
     //Where each content item mounts: whole at its target, or (seen through a TAKE) the submounts its takes leave —
     //none when nothing of it is taken.
     struct Shape { std::string Path; std::optional<ordered_json> Mounts; bool Shown = true; };
@@ -724,7 +725,7 @@ std::vector<std::pair<size_t, nlohmann::ordered_json>> ContentOps(const Fold::Pl
                                                                                     // data; a bumped name when versions share it
         if (I.View.is_null()) continue;
         //Seen through TAKE: only what is taken mounts, where TAKE puts it — as submounts (the FS's "src:dst" view of
-        //a source). A FILE is its bundle directory with the one file submounted, so a TAKE can rename it too.
+        //a source). A FILE's submount places the file itself at a path ("its name:the path"), so a TAKE can rename it.
         const std::string Name = std::filesystem::path(I.Payload).filename().string();
         const std::string OwnAddr = I.Own.empty() ? std::string("FILES") : "FILES/" + I.Own;
         std::vector<Mount> Ms;
@@ -740,9 +741,9 @@ std::vector<std::pair<size_t, nlohmann::ordered_json>> ContentOps(const Fold::Pl
         Sh[J].Mounts = std::move(Mounts);
     }
     //A file a delta in this launch reads is mounted even when no TAKE shows it — for its bytes only, once, unless it
-    //is shown somewhere already (one CID is one file). Only a zip or a delta has bytes a delta can read.
+    //is shown somewhere already (one CID is one file). A zip, a delta or a single file has bytes a delta can read.
     std::set<std::string> Have;
-    for (size_t J = 0; J < P.Seq.size(); ++J) if (Archive(P.Seq[J]) && Sh[J].Shown && !Cid(P.Seq[J]).empty()) Have.insert(Cid(P.Seq[J]));
+    for (size_t J = 0; J < P.Seq.size(); ++J) if (Carries(P.Seq[J]) && Sh[J].Shown && !Cid(P.Seq[J]).empty()) Have.insert(Cid(P.Seq[J]));
     std::vector<bool> BytesOnly(P.Seq.size(), false);
     std::vector<std::string> Want;
     for (size_t J = 0; J < P.Seq.size(); ++J)
@@ -754,7 +755,7 @@ std::vector<std::pair<size_t, nlohmann::ordered_json>> ContentOps(const Fold::Pl
         Want.pop_back();
         if (!Have.insert(C).second) continue;
         for (size_t J = 0; J < P.Seq.size(); ++J)
-            if (Archive(P.Seq[J]) && Cid(P.Seq[J]) == C)
+            if (Carries(P.Seq[J]) && Cid(P.Seq[J]) == C)
             {
                 BytesOnly[J] = true;
                 if (P.Seq[J].Kind == "DELTA" && P.Seq[J].BaseSources.is_array())
@@ -776,9 +777,6 @@ std::vector<std::pair<size_t, nlohmann::ordered_json>> ContentOps(const Fold::Pl
         }
         if (!Sh[J].Mounts)
             Out.emplace_back(J, ContentOp(I.Kind, Sh[J].Path, I.Target, I.Source, I.Size, ordered_json(), I.BaseSources));
-        else if (I.Kind == "FILE")
-            Out.emplace_back(J, ContentOp("DIR", std::filesystem::path(Sh[J].Path).parent_path().generic_string(), I.Target,
-                                          ordered_json(), ordered_json(), *Sh[J].Mounts));
         else
             Out.emplace_back(J, ContentOp(I.Kind, Sh[J].Path, I.Target, I.Source, I.Size, *Sh[J].Mounts, I.BaseSources));
     }

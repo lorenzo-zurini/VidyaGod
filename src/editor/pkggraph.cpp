@@ -259,7 +259,7 @@ int DeltaBase(const std::vector<NodeRef> &Nodes, int Index)
     return -1;
 }
 
-std::vector<int> DeltaBaseZips(const std::vector<NodeRef> &Nodes, int Index)
+std::vector<int> DeltaBaseFiles(const std::vector<NodeRef> &Nodes, int Index)
 {
     if (Index < 0 || Index >= (int)Nodes.size() || !Nodes[(size_t)Index].Json || ContentType(*Nodes[(size_t)Index].Json) != "DELTA") return {};
     const json &L = (*Nodes[(size_t)Index].Json)["LAYERS"][(size_t)ContentIndex(*Nodes[(size_t)Index].Json)];
@@ -269,7 +269,7 @@ std::vector<int> DeltaBaseZips(const std::vector<NodeRef> &Nodes, int Index)
     {
         int Found = -1;
         for (size_t C = 0; C < Nodes.size() && Found < 0; ++C)
-            if (Nodes[C].Json && ContentType(*Nodes[C].Json) == "ZIP" && Cid.is_string()
+            if (Nodes[C].Json && (ContentType(*Nodes[C].Json) == "ZIP" || ContentType(*Nodes[C].Json) == "FILE") && Cid.is_string()
                 && StrField((*Nodes[C].Json)["LAYERS"][(size_t)ContentIndex(*Nodes[C].Json)], "SOURCE") == Cid.get<std::string>())
                 Found = (int)C;
         if (Found < 0) return {};
@@ -1293,7 +1293,16 @@ std::string NextStep(const std::vector<const json *> &Nodes)
     return {};
 }
 
-std::vector<Action> ActionsFor(const json &Node, bool HasDeltaBase, const std::vector<std::string> &Hints)
+bool HasActionBase(const std::vector<NodeRef> &Nodes, int Index)
+{
+    if (Index < 0 || Index >= (int)Nodes.size() || !Nodes[(size_t)Index].Json) return false;
+    const std::string T = ContentType(*Nodes[(size_t)Index].Json);
+    if (T == "ZIP") return DeltaBase(Nodes, Index) >= 0;
+    if (T == "DELTA") return !DeltaBaseFiles(Nodes, Index).empty();
+    return false;
+}
+
+std::vector<Action> ActionsFor(const json &Node, bool HasBase, const std::vector<std::string> &Hints)
 {
     std::vector<Action> A;
     auto HasHint = [&](const char *H) {
@@ -1323,11 +1332,12 @@ std::vector<Action> ActionsFor(const json &Node, bool HasDeltaBase, const std::v
                 A.push_back({"restore", "! re-store", "This zip is DEFLATE-compressed and cannot mount - re-pack it uncompressed.", true});
             //A delta needs a base: only offered when a node it CONTAINS is itself a zip to diff against. Must
             //match what the action actually requires, or it is a button that lies.
-            if (HasDeltaBase)
+            if (HasBase)
                 A.push_back({"to_delta", "-> delta", "Store this as a binary delta against the zip beneath it at the same target.", true});
         }
-        //The exact inverse of "-> delta": reconstruct the full archive and go back to being a plain zip.
-        if (Form == "delta")
+        //The exact inverse of "-> delta": reconstruct the full archive and go back to being a plain zip — offered only
+        //when the bases it names are files here (zips, a disc image), as the action requires.
+        if (Form == "delta" && HasBase)
             A.push_back({"undelta", "undelta", "Reconstruct the full archive from this delta and store it as a plain zip again.", true});
     }
     if (Has("REG"))

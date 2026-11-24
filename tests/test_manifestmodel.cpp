@@ -455,8 +455,8 @@ TEST(lower_plan_mounts_only_what_take_selects_where_it_lands)
     const ordered_json &Zip = Ops[0];
     CHECK(Zip["TYPE"] == "VFSZipLayer" && Zip["PATH"] == "/b/lib.zip");
     CHECK(Zip["SUBMOUNTS"] == ordered_json::array({ "a.dll:%GameDir%/b.dll", "save:%GameDir%/save" }));
-    const ordered_json &File = Ops[1];                                                // a FILE: its dir, the one file submounted
-    CHECK(File["TYPE"] == "VFSDirLayer" && File["PATH"] == "/b");
+    const ordered_json &File = Ops[1];                                                // a FILE: itself, placed by its submount
+    CHECK(File["TYPE"] == "VFSFileLayer" && File["PATH"] == "/b/a.dll");
     CHECK(File["SUBMOUNTS"] == ordered_json::array({ "a.dll:%GameDir%/c.dll" }));
     // Without a take nothing is submounted: the layer mounts whole at its placement.
     const ordered_json Whole = { {"CID", "w"}, {"LABEL", "w"}, {"LAYERS", ordered_json::array({
@@ -490,8 +490,9 @@ TEST(a_file_seen_through_take_mounts_its_bumped_name)
     L.Nodes["g"] = { &G, D.string() };
     const ordered_json Ops = NodeLower::LowerPlan(Fold::Resolve(L, "g"));
     CHECK_EQ(Ops.size(), (size_t)1);
-    CHECK(Ops.size() == 1 && Ops[0]["TYPE"] == "VFSDirLayer" && Ops[0]["PATH"] == D.generic_string());
+    CHECK(Ops.size() == 1 && Ops[0]["TYPE"] == "VFSFileLayer" && Ops[0]["PATH"] == (D / "a [22222222].dll").generic_string());
     CHECK(Ops.size() == 1 && Ops[0]["SUBMOUNTS"] == ordered_json::array({ "a [22222222].dll:%GameDir%/b.dll" }));
+    CHECK(Ops.size() == 1 && Ops[0]["SOURCE"]["CID"] == C2);                          // it keeps its CID (a delta may name it)
     std::error_code Ec;
     fs::remove_all(D, Ec);
 }
@@ -735,7 +736,7 @@ TEST(validate_refuses_a_delta_whose_base_is_not_in_its_launch)
     auto Gated = Base;
     Gated["LAYERS"][0]["WHEN"] = "%nope%==1";
     const auto D = NF::DeltaOver("d.vgdelta", { "QmB" }, "%GameDir%");
-    const std::string Msg = "it names QmB, which no zip or delta here carries";
+    const std::string Msg = "it names QmB, which no zip, delta or file here carries";
     CHECK(AnyContains(Errs({ D }), Msg));
     CHECK(AnyContains(Errs({ Gated, D }), Msg));                       // gated off: not in this launch
     CHECK(!AnyContains(Errs({ Base, D }), Msg));
@@ -767,6 +768,46 @@ TEST(validate_warns_when_a_kept_key_is_kept_in_a_view_nothing_writes)
 }
 
 // A delta over several bases needs each one beneath it, an archive (a folder is not one), and nothing at its own target.
+// A delta built over a single file (a disc image, the extracted files rebuilt from it): the file's bytes are its base,
+// and it is in the launch like any base — anywhere in it, not gated off. A file no TAKE shows that a delta names is
+// mounted for its bytes only; a file's mount spec names its CID (and bytes-only). Teeth: a file carries no CID for the
+// plan (the delta cannot rebuild); the bytes-only file left out; the spec writer naming no file's CID.
+TEST(a_delta_may_be_built_over_a_single_file)
+{
+    auto Errs = [](std::vector<ordered_json> L) {
+        NodeIndex Idx;
+        L.insert(L.end(), { NF::Exec("win32", "g.exe"), NF::Tile("1"), NF::Variant("v") });
+        AddChain(Idx, "v", { NF::Merge(L) });
+        ManifestModel::DeriveFacts(Idx);
+        return Errors(Idx);
+    };
+    const auto Iso = NF::ContentCid("file", "game.iso", "QmIso", "%GameDir%");
+    auto Gated = Iso;
+    Gated["LAYERS"][0]["WHEN"] = "%nope%==1";
+    const auto D = NF::DeltaOver("files.vgdelta", { "QmIso" }, "%GameDir%");
+    const std::string Msg = "it names QmIso";
+    CHECK(!AnyContains(Errs({ Iso, D }), Msg));
+    CHECK(AnyContains(Errs({ Gated, D }), Msg));
+    //Lowered: a file a delta names but nothing shows is there for its bytes only, with its CID.
+    const ordered_json Disc = { {"CID", "disc"}, {"LABEL", "disc"}, {"LAYERS", ordered_json::array({ {{"FILE", "game.iso"}, {"SOURCE", "QmIso"}} })} };
+    const ordered_json V = { {"CID", "v"}, {"LABEL", "v"}, {"LAYERS", ordered_json::array({
+        {{"NODE", "disc"}, {"TAKE", ordered_json::array({ "FILES/nothing" })}},
+        {{"DELTA", "files.vgdelta"}, {"SOURCE", "QmFiles"}, {"BASE_SOURCES", ordered_json::array({ "QmIso" })}, {"TARGET", "FILES/%GameDir%"}} })} };
+    Fold::Library L;
+    L.Nodes["disc"] = { &Disc, "/b" };
+    L.Nodes["v"] = { &V, "/b" };
+    const ordered_json Ops = NodeLower::LowerPlan(Fold::Resolve(L, "v"));
+    bool BytesOnlyIso = false;
+    for (const auto &Op : Ops)
+        if (Op["TYPE"] == "VFSFileLayer" && Op["PATH"] == "/b/game.iso" && Op.value("BYTES_ONLY", false) && Op["SOURCE"]["CID"] == "QmIso")
+        {
+            BytesOnlyIso = true;
+            const ordered_json Spec = ManifestModel::MakeVfsSpecLayer(Op, "/b/game.iso", "");
+            CHECK(Spec["type"] == "file" && Spec["cid"] == "QmIso" && Spec.value("bytesOnly", false));
+        }
+    CHECK(BytesOnlyIso);
+}
+
 TEST(validate_reads_a_deltas_bases)
 {
     const auto Delta = NF::DeltaOver("d.vgdelta", { "QmA", "QmB" }, "%GameDir%/out");
@@ -778,7 +819,7 @@ TEST(validate_reads_a_deltas_bases)
     ManifestModel::DeriveFacts(Good);
     ManifestModel::DeriveFacts(Short);
     CHECK(!AnyContains(Errors(Good), "beneath it"));
-    CHECK(AnyContains(Errors(Short), "it names QmB, which no zip or delta here carries"));   // a folder is not an archive
+    CHECK(AnyContains(Errors(Short), "it names QmB, which no zip, delta or file here carries"));   // a folder is not an archive
     CHECK(!AnyContains(Errors(Short), "QmA"));
 }
 
@@ -832,6 +873,12 @@ TEST(validate_checks_a_delta_against_the_bases_it_names)
     CHECK(!AnyContains(Errors({ Zip("a.zip", "QmA"), Zip("base.zip", "QmBase"), Over("over_a.vgdelta", { "QmA" }), Over("over_base.vgdelta", { "QmBase" }) }), Msg));
     //Not here to read: nothing to compare, nothing said (fetching is hydration's job).
     CHECK(!AnyContains(Errors({ Zip("base.zip", "QmBase"), Zip("absent.zip", "QmAbs"), Over("over_base.vgdelta", { "QmAbs" }) }), Msg));
+    //A single file (a disc image) is a base by its size too: the right one passes, another one is said.
+    Bytes("game.iso", 100); Bytes("other.iso", 50);
+    const auto Iso = [](const char *N, const char *Cid) { return NF::ContentCid("file", N, Cid, "%GameDir%"); };
+    CHECK(!AnyContains(Errors({ Iso("game.iso", "QmIso"), Over("over_base.vgdelta", { "QmIso" }) }), Msg));
+    CHECK(AnyContains(Errors({ Iso("other.iso", "QmOther"), Over("over_base.vgdelta", { "QmOther" }) }),
+                      "'over_base.vgdelta' was built over 100 bytes, but the bases it names are 'other.iso' (50 bytes)"));
     fs::remove_all(D);
 }
 

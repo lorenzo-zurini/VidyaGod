@@ -1722,9 +1722,9 @@ void PkgActions::undelta(const std::string & NodeId)
     // document under it, and any edit that grew the NODES array reallocated it mid-read.
     std::vector<PkgGraph::NodeRef> Refs;
     for (int K = 0; K < Model->doc().Count(); ++K) Refs.push_back({Model->doc().Handle(K), &Model->doc().Node(K)});
-    const std::vector<int> BaseNodes = PkgGraph::DeltaBaseZips(Refs, I);
+    const std::vector<int> BaseNodes = PkgGraph::DeltaBaseFiles(Refs, I);
     if (BaseNodes.empty())
-    { tell("Undelta", "This delta's bases are not all plain zips in this package (BASE_SOURCES names them by CID)."); return; }
+    { tell("Undelta", "This delta's bases are not all plain zips or files in this package (BASE_SOURCES names them by CID)."); return; }
 
     std::vector<std::filesystem::path> BaseFiles;
     for (int B : BaseNodes)

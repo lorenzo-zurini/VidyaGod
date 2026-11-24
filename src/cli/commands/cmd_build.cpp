@@ -105,7 +105,7 @@ json Facts(PackageEditorModel &M, int I)
     const int BaseNode = PkgGraph::DeltaBase(Docs, I);
     const std::string Base = BaseNode < 0 ? std::string() : PkgGraph::ContentName(D.Node(BaseNode));
     json Acts = json::array();
-    for (const auto &Ac : PkgGraph::ActionsFor(N, !Base.empty(), Hints)) Acts.push_back({{"id", Ac.Id}, {"label", Ac.Label}, {"tip", Ac.Tip}, {"long", Ac.Heavy}});
+    for (const auto &Ac : PkgGraph::ActionsFor(N, PkgGraph::HasActionBase(Docs, I), Hints)) Acts.push_back({{"id", Ac.Id}, {"label", Ac.Label}, {"tip", Ac.Tip}, {"long", Ac.Heavy}});
     json Entries = json::array(), Vars = json::object(), Reg = json::array(), Takes = json::array(), Faults = json::array();
     const json &Layers = N.value("LAYERS", json::array());
     for (size_t K = 0; K < Layers.size(); ++K)
@@ -136,7 +136,7 @@ json Facts(PackageEditorModel &M, int I)
             {"content", {{"layer", PkgGraph::ContentIndex(N)}, {"type", PkgGraph::ContentType(N)}, {"name", PkgGraph::ContentName(N)},
                          {"target", PkgGraph::ContentTarget(N)}, {"delta_base", Base}, {"delta_bases", [&] {
                              json Z = json::array();
-                             for (int B : PkgGraph::DeltaBaseZips(Docs, I)) Z.push_back(PkgGraph::ContentName(D.Node(B)));
+                             for (int B : PkgGraph::DeltaBaseFiles(Docs, I)) Z.push_back(PkgGraph::ContentName(D.Node(B)));
                              return Z; }()}}},
             {"rows", Items}, {"top_level_rows", PkgGraph::TopLevelRows(Li)}, {"actions", Acts}, {"entries", Entries}, {"variables", Vars},
             {"registry", Reg}, {"takes", Takes}, {"faults", Faults}, {"refs", Refs}, {"issues", Hints}, {"node", N}};
@@ -277,7 +277,7 @@ VG_COMMANDS
         "the actions the canvas offers it, and its validation issues.", { PkgArg(), NodeArg() },
         { "build node 749 'Patch 2.0a'", "build node 749 0 --json" },
         { "PkgDoc::Document::IndexOf", "NodeRefs::Each", "PkgDoc::LooksLikeCid", "PkgGraph::SafeId", "PkgGraph::LayerTypes", "PkgGraph::Describe",
-          "PkgGraph::ContentIndex", "PkgGraph::ContentType", "PkgGraph::ContentName", "PkgGraph::ContentTarget", "PkgGraph::DeltaBase", "PkgGraph::DeltaBaseZips",
+          "PkgGraph::ContentIndex", "PkgGraph::ContentType", "PkgGraph::ContentName", "PkgGraph::ContentTarget", "PkgGraph::DeltaBase", "PkgGraph::DeltaBaseFiles", "PkgGraph::HasActionBase",
           "PkgGraph::CollectVarFacets", "PkgGraph::LayerItems", "PkgGraph::TopLevelRows", "PkgGraph::ActionsFor", "PkgGraph::EntryTitle",
           "PkgGraph::EntrySummary", "PkgGraph::VarTitle", "PkgGraph::RegRowsOf", "PkgGraph::CountRegRows", "PkgGraph::TakeToText",
           "PkgGraph::TakeFault", "PkgGraph::StringListFault", "PkgGraph::DescribeValue", "PackageEditorModel::issuesByHandle",

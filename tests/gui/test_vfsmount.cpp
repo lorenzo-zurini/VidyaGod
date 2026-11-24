@@ -456,28 +456,34 @@ private slots:
         QVERIFY2(C.Lines.empty(), "a plan the FS will mount must produce no complaint");
     }
 
-    // A delta that cannot rebuild — a CID it names is on no zip or delta of this plan (a FILE carries no archive), or it
-    // names none — is said before the mount, by name, with what it costs: the FS leaves it out. A base placed anywhere
-    // in the plan is found (its bytes do not depend on where it is). Teeth: stay quiet; complain about a base above.
+    // A delta that cannot rebuild — a CID it names is on no zip, file or delta of this plan, or it names none — is said
+    // before the mount, by name, with what it costs: the FS leaves it out. A base placed anywhere in the plan is found
+    // (its bytes do not depend on where it is), a single file (a disc image) too. Teeth: stay quiet; complain about a
+    // base above, or a file.
     void a_delta_that_cannot_rebuild_is_reported_before_the_mount()
     {
-        for (int Case = 0; Case < 3; ++Case)
+        for (int Case = 0; Case < 2; ++Case)
         {
             Complaints C;
             ContainerParams CP = Make();
-            json F{{"TYPE", "VFSFileLayer"}, {"PATH", "f.bin"}, {"SOURCE", {{"TYPE", "ipfs"}, {"CID", "QmW"}}}};
             CP.SubComponentsArray = Case == 0 ? json::array({ DeltaLayer("d.vgdelta", "out", json::array({ "QmNone" })), ZipLayer("wine.zip", "wine", "QmW") })
-                                  : Case == 1 ? json::array({ F, DeltaLayer("d.vgdelta", "out", json::array({ "QmW" })) })
                                               : json::array({ DeltaLayer("d.vgdelta", "out", json(nullptr)), ZipLayer("wine.zip", "wine", "QmW") });
             VfsMount::BuildLayerSpec(CP);
             QVERIFY2(C.Mentions("d.vgdelta") && C.Mentions("LEAVES IT OUT"), "the delta is named, and what it costs said");
-            if (Case < 2) QVERIFY2(C.Mentions(Case == 0 ? "QmNone" : "QmW"), "and the base it could not find");
+            if (Case == 0) QVERIFY2(C.Mentions("QmNone"), "and the base it could not find");
         }
         Complaints Quiet;
         ContainerParams CP = Make();
         CP.SubComponentsArray = json::array({ DeltaLayer("d.vgdelta", "out", json::array({ "QmW" })), ZipLayer("wine.zip", "wine", "QmW") });
         VfsMount::BuildLayerSpec(CP);
         QVERIFY2(Quiet.Lines.empty(), "a base later in the plan is still the file it names");
+        Complaints QuietFile;
+        ContainerParams FP = Make();
+        json F{{"TYPE", "VFSFileLayer"}, {"PATH", "f.iso"}, {"SOURCE", {{"TYPE", "ipfs"}, {"CID", "QmIso"}}}};
+        FP.SubComponentsArray = json::array({ F, DeltaLayer("d.vgdelta", "out", json::array({ "QmIso" })) });
+        const json Spec = VfsMount::BuildLayerSpec(FP);
+        QVERIFY2(QuietFile.Lines.empty(), "a single file is a base too");
+        QCOMPARE(Spec["layers"][0].value("cid", std::string()), std::string("QmIso"));
     }
 
     // A base no TAKE shows is mounted for its bytes only; only a delta has bases. Teeth: drop the flag; carry bases on a dir.
