@@ -145,7 +145,7 @@ const Node *PickNativeTerminal(const std::vector<const Node *> &Runners, const s
 
 //Build a resolved RunnerLink for a runner node id (synthesizing a passthrough terminal for kNativeTerminalId or a
 //missing node). Build layers = the runner's content closure (PARENTS) minus the runner, in load order, absolutized.
-RunnerLink BuildLink(const NodeIndex &Idx, const std::string &Id)
+RunnerLink BuildLink(const NodeIndex &Idx, const std::string &Id, const Fold::Vars &Instance, const Fold::Vars &Builtins)
 {
     RunnerLink L;
     const std::string Machine = MachinePlatform();
@@ -160,9 +160,9 @@ RunnerLink BuildLink(const NodeIndex &Idx, const std::string &Id)
     L.WorkDir = E.value("WORKDIR", std::string());
     if (E.contains("ARGS") && E["ARGS"].is_array())             for (const auto &X : E["ARGS"])       L.Args.push_back(std::string(X));
     //The link's environment and build are its OWN resolve (the runner node and everything it contains), the same
-    //fold as a game's.
+    //fold as a game's — with the launch's variables, which its WHENs read as the game's do.
     Fold::Plan P;
-    const nlohmann::ordered_json Ops = LaunchResolver::RunnerOps(Idx, R->Key(), &P);
+    const nlohmann::ordered_json Ops = LaunchResolver::RunnerOps(Idx, R->Key(), &P, Instance, Builtins);
     L.Env = nlohmann::ordered_json::object();
     for (const auto &[K, V] : P.Env.items())
     {
@@ -333,11 +333,12 @@ std::vector<std::string> LaunchResolver::ResolveChainTail(const NodeIndex &Idx, 
 }
 
 std::vector<RunnerLink> LaunchResolver::ResolveRunnerChain(const NodeIndex &Idx, const Node &Launch,
-                                                           const struct ContainerParams &CP, const nlohmann::ordered_json &GlobalConfigJSON)
+                                                           const struct ContainerParams &CP, const nlohmann::ordered_json &GlobalConfigJSON,
+                                                           const Fold::Vars &Instance, const Fold::Vars &Builtins)
 {
     std::vector<RunnerLink> Out;
     for (const std::string &Id : ResolveChainIds(Idx, Launch, CP, GlobalConfigJSON))
-        Out.push_back(BuildLink(Idx, Id));
+        Out.push_back(BuildLink(Idx, Id, Instance, Builtins));
     return Out;
 }
 

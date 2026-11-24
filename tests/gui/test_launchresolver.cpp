@@ -184,6 +184,58 @@ private slots:
         QCOMPARE(cp.CustomVariables["VIDYAGOD_SELF_NAME"],    std::string("PackageChoice")); // declaration wins
     }
 
+    // A runner's layer WHEN reads the variables as the launch resolves them: a --var; else the game's value for a key
+    // the game declares (a game seeds a runner's knob); else a saved value only for a key the runner declares with a UI
+    // (a setting — a value saved before the option became computed is left over). Every runner fold reads them: its
+    // link's environment, its edits and declarations, its keep list. Its own resolve saw only its declared defaults,
+    // so the gated layers were dropped whatever the launch said (xemu's cache reset, 2026-11-24). Teeth: fold a runner
+    // without them (at any of the three places); the game's declaration not read; a saved value of a UI-less key used.
+    void a_runners_when_reads_the_launchs_variables()
+    {
+        struct Case { std::optional<std::string> Flag, GameDefault, Saved; bool Ui = true; };
+        auto Launch = [](const Case &C) {
+            NodeIndex idx;
+            json Decl = {{"DEFAULT", "1"}};
+            if (C.Ui) Decl["UI"] = {{"CONTROL", "bool"}, {"LABEL", "Reset the cache"}};
+            json L = json::array({
+                json{{"VARS", {{"cache_reset", Decl}}}},
+                json{{"ENV", {{"VG_CACHE_RESET", "0"}}}, {"WHEN", "%cache_reset%==0"}},
+                json{{"ENV", {{"VG_ALWAYS", "1"}}}},
+                json{{"VARS", {{"reset_note", {{"DEFAULT", "off"}}}}}, {"WHEN", "%cache_reset%==0"}},
+                json{{"KEEP", {{"FILES/%GameDir%/cache", true}}}, {"WHEN", "%cache_reset%==0"}},
+                json{{"EXEC", json::array({ json{{"LABEL", "run"}, {"HOST", ManifestModel::MachinePlatform()}, {"GUEST", {"xbox"}},
+                                                 {"EXE", "%RunnerMount%/xemu"}, {"ARGS", json::array({ "%Content%" })}} })}} });
+            idx.Nodes["xemu"] = standalone(parse(json{ {"CID", "xemu"}, {"LABEL", "xemu"}, {"LAYERS", L} }, "/tmp/vg_runner"));
+            json GameLayers = json::array();
+            if (C.GameDefault) GameLayers.push_back(json{{"VARS", {{"cache_reset", {{"DEFAULT", *C.GameDefault}}}}}});
+            idx.Nodes["game"] = launchNode("game", "xbox", {}, json::object(), GameLayers);
+            finish(idx);
+            ContainerParams cp("/tmp/vg_bundle");
+            cp.NodeIdx = &idx; cp.LaunchNodeId = "game";
+            if (C.Flag) cp.VariableOverrides = { {"cache_reset", *C.Flag} };
+            QTemporaryDir ud;   // the instance's saved values: here, never in a user-data folder another case reads
+            json cfg = json{{"Settings", {{"Paths", {{"UserDataRoot", ud.path().toStdString()}}}}}};
+            if (C.Saved) InstanceStore::MergeVariables(cfg, idx.Find("game")->PackageUid, {{"cache_reset", *C.Saved}});
+            const bool Ok = LaunchResolver::InitializeFromNode(cp, cfg);
+            bool Kept = false;
+            for (const auto &K : cp.RunnerPersistLayers) Kept = Kept || K.dump().find("cache") != std::string::npos;
+            return std::tuple<bool, json, bool, bool>(Ok, cp.RunnerEnv, cp.CustomVariables.count("reset_note") > 0, Kept);
+        };
+        auto Open = [&](const Case &C) {
+            const auto [Ok, Env, Note, Kept] = Launch(C);
+            if (!Ok || Env.value("VG_ALWAYS", std::string()) != "1") return -1;
+            const bool E = Env.value("VG_CACHE_RESET", std::string()) == "0";
+            if (E != Note || E != Kept) return -2;                    // every runner fold agrees
+            return E ? 1 : 0;
+        };
+        QCOMPARE(Open({ std::string("0") }), 1);                                        // --var
+        QCOMPARE(Open({}), 0);                                                          // its default: shut
+        QCOMPARE(Open({ std::nullopt, std::string("0") }), 1);                          // the game seeds it
+        QCOMPARE(Open({ std::string("1"), std::string("0") }), 0);                      // --var over the game
+        QCOMPARE(Open({ std::nullopt, std::nullopt, std::string("0"), true }), 1);      // a saved setting
+        QCOMPARE(Open({ std::nullopt, std::nullopt, std::string("0"), false }), 0);     // saved, no UI: left over
+    }
+
     // A --var for a variable no node declares still sets it: the engine reads its own switches (the peer LAN's
     // gateway, VIDYAGOD_LAN_BRIDGE=off) from the launch's variables. Teeth: drop an undeclared override (the switch is
     // never seen and the gateway stays on).

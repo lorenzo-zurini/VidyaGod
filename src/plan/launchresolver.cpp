@@ -45,9 +45,10 @@ using namespace ManifestModel;
 
 //A runner's build, resolved on its own node (§4.5: each runner resolves the same way a game does) and lowered in its
 //own layout (a runner's layers are written in it; GUEST_ROOTS map only a PACKAGE's guest coordinates).
-nlohmann::ordered_json LaunchResolver::RunnerOps(const NodeIndex &Idx, const std::string &RunnerId, Fold::Plan *PlanOut)
+nlohmann::ordered_json LaunchResolver::RunnerOps(const NodeIndex &Idx, const std::string &RunnerId, Fold::Plan *PlanOut,
+                                                 const Fold::Vars &Instance, const Fold::Vars &Builtins)
 {
-    const Fold::Plan P = Fold::Resolve(ManifestModel::LibraryOf(Idx), RunnerId);
+    const Fold::Plan P = Fold::Resolve(ManifestModel::LibraryOf(Idx), RunnerId, Instance, Builtins);
     if (!P.Error.empty()) LogWarn("LaunchResolver::RunnerOps", "runner '" + RunnerId + "': " + P.Error);
     if (PlanOut) *PlanOut = P;
     return NodeLower::LowerPlan(P);
@@ -197,9 +198,9 @@ bool LaunchResolver::InitializeFromNodeOnce(struct ContainerParams &ContainerPar
 
     //Phase 1 reads the instance's values and the built-ins (%UID% = the launched face, %PackageUID% = its family).
     Fold::Vars Instance;
+    const nlohmann::ordered_json SavedVars = InstanceStore::Variables(GlobalConfigJSON, CP.PackageUID, CP.InstanceName);
     {
-        const nlohmann::ordered_json Saved = InstanceStore::Variables(GlobalConfigJSON, CP.PackageUID, CP.InstanceName);
-        if (Saved.is_object()) for (const auto &[K, V] : Saved.items()) if (V.is_string()) Instance[K] = V.get<std::string>();
+        if (SavedVars.is_object()) for (const auto &[K, V] : SavedVars.items()) if (V.is_string()) Instance[K] = V.get<std::string>();
         for (const auto &[K, V] : CP.VariableOverrides) Instance[K] = V;
     }
     Fold::Vars Builtins = CP.GetVariablesMap();
@@ -298,7 +299,25 @@ bool LaunchResolver::InitializeFromNodeOnce(struct ContainerParams &ContainerPar
     {
     //The runner CHAIN (daisy-chaining): innermost→outermost links from the entry's platform to the machine, always
     //terminated by a native runner — found by capability, never named by the package.
-    CP.RunnerChain = ResolveRunnerChain(Idx, *Launch, CP, GlobalConfigJSON);
+    //The runners' folds read the variables as the launch resolves them (ResolveCustomVariables): a --var; else the
+    //game's own value for a key the game declares (a game seeds a runner's knob); else a saved value, only for a key a
+    //runner declares with a UI (a setting — a saved value of an option since made computed is left over, not used).
+    Fold::Vars RunnerFoldVars;
+    {
+        const Fold::Library Lib = ManifestModel::LibraryOf(Idx);
+        for (const std::string &Id : ResolveChainIds(Idx, *Launch, CP, GlobalConfigJSON))
+        {
+            if (!Idx.Find(Id) || !SavedVars.is_object()) continue;
+            const Fold::Plan Bare = Fold::Resolve(Lib, Id, {}, Builtins);
+            for (const auto &[K, D] : Bare.Decls.items())
+                if (D.is_object() && D.contains("UI") && D["UI"].is_object() && SavedVars.contains(K) && SavedVars[K].is_string())
+                    RunnerFoldVars[K] = SavedVars[K].get<std::string>();
+        }
+        for (const auto &[K, D] : Plan.Decls.items())
+            if (const auto It = Plan.WhenVars.find(K); It != Plan.WhenVars.end()) RunnerFoldVars[K] = It->second;
+        for (const auto &[K, V] : CP.VariableOverrides) RunnerFoldVars[K] = V;
+    }
+    CP.RunnerChain = ResolveRunnerChain(Idx, *Launch, CP, GlobalConfigJSON, RunnerFoldVars, Builtins);
     if (CP.RunnerChain.empty())
     {
         LogErr("InitializeFromNode", "No runner chain found for platform '" + CP.Platform
@@ -334,14 +353,14 @@ bool LaunchResolver::InitializeFromNodeOnce(struct ContainerParams &ContainerPar
     for (const RunnerLink &Lnk : CP.RunnerChain)
     {
         if (!Idx.Find(Lnk.NodeId)) continue;
-        for (const auto &L : RunnerOps(Idx, Lnk.NodeId))
+        for (const auto &L : RunnerOps(Idx, Lnk.NodeId, nullptr, RunnerFoldVars, Builtins))
             if (LayerType(L) == "DeclarePersist") RunnerKeep.push_back(L);
     }
     CP.RunnerPersistLayers = std::move(RunnerKeep);
 
     if (RunnerNode)
     {
-        RunnerOpsJ = RunnerOps(Idx, RunnerNode->Key());
+        RunnerOpsJ = RunnerOps(Idx, RunnerNode->Key(), nullptr, RunnerFoldVars, Builtins);
         CP.RunnerOps = RunnerOpsJ;
         //UNIFIED: the runner build is mounted in the game RUNTIME, beneath the game (first = lowest priority).
         if (CP.UnifiedRuntime) CP.Stack.push_back({ RunnerNode->NodeId + "__runner", RunnerOpsJ });

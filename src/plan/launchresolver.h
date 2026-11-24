@@ -38,8 +38,10 @@ std::vector<std::string> ResolveChainTail(const NodeIndex &Idx, const std::strin
 //Builds the full resolved RunnerLink execution chain from ResolveChainIds (synthesizing a passthrough terminal for
 //kNativeTerminalId or a missing node). The authoritative chain consumed by InitializeFromNode / BuildNestedInvocation.
 //Empty if the platform is unreachable.
+//Instance/Builtins: the launch's variables, each link's own resolve reads its WHENs with (RunnerOps).
 std::vector<RunnerLink> ResolveRunnerChain(const NodeIndex &Idx, const Node &Launch, const struct ContainerParams &CP,
-                                           const nlohmann::ordered_json &GlobalConfigJSON);
+                                           const nlohmann::ordered_json &GlobalConfigJSON,
+                                           const Fold::Vars &Instance = {}, const Fold::Vars &Builtins = {});
 
 //=====================================================================================================================
 //                              CROSS-NAMESPACE NESTING (an inner runner inside the boundary's guest fs)
@@ -105,7 +107,10 @@ nlohmann::ordered_json AnchorRegEdits(struct ContainerParams &ContainerParams, n
 std::vector<std::pair<std::string, std::string>> AnchorLayouts(struct ContainerParams &ContainerParams);
 //A runner's build: its own node resolved (Fold) and lowered in its own layout — the ops a launch mounts at the runner
 //mount (real bytes), assembles into the prefix (%runtime% layers) and applies (edits, registry, DLLs, variables).
-nlohmann::ordered_json RunnerOps(const NodeIndex &Idx, const std::string &RunnerId, Fold::Plan *PlanOut = nullptr);
+//Instance/Builtins: the launch's variables (its instance's values and --var, the built-ins): a runner's WHEN reads them
+//as the game's does (folded with its own declared defaults only, a WHEN on a runner layer never saw a --var).
+nlohmann::ordered_json RunnerOps(const NodeIndex &Idx, const std::string &RunnerId, Fold::Plan *PlanOut = nullptr,
+                                 const Fold::Vars &Instance = {}, const Fold::Vars &Builtins = {});
 [[nodiscard]] bool InitializeFromNode(struct ContainerParams &ContainerParams, const nlohmann::ordered_json &GlobalConfigJSON);
 
 
