@@ -298,25 +298,10 @@ bool LaunchResolver::InitializeFromNodeOnce(struct ContainerParams &ContainerPar
     else
     {
     //The runner CHAIN (daisy-chaining): innermost→outermost links from the entry's platform to the machine, always
-    //terminated by a native runner — found by capability, never named by the package.
-    //The runners' folds read the variables as the launch resolves them (ResolveCustomVariables): a --var; else the
-    //game's own value for a key the game declares (a game seeds a runner's knob); else a saved value, only for a key a
-    //runner declares with a UI (a setting — a saved value of an option since made computed is left over, not used).
-    Fold::Vars RunnerFoldVars;
-    {
-        const Fold::Library Lib = ManifestModel::LibraryOf(Idx);
-        for (const std::string &Id : ResolveChainIds(Idx, *Launch, CP, GlobalConfigJSON))
-        {
-            if (!Idx.Find(Id) || !SavedVars.is_object()) continue;
-            const Fold::Plan Bare = Fold::Resolve(Lib, Id, {}, Builtins);
-            for (const auto &[K, D] : Bare.Decls.items())
-                if (D.is_object() && D.contains("UI") && D["UI"].is_object() && SavedVars.contains(K) && SavedVars[K].is_string())
-                    RunnerFoldVars[K] = SavedVars[K].get<std::string>();
-        }
-        for (const auto &[K, D] : Plan.Decls.items())
-            if (const auto It = Plan.WhenVars.find(K); It != Plan.WhenVars.end()) RunnerFoldVars[K] = It->second;
-        for (const auto &[K, V] : CP.VariableOverrides) RunnerFoldVars[K] = V;
-    }
+    //terminated by a native runner — found by capability, never named by the package. The runners' folds read the
+    //variables as the launch resolves them (ResolveCustomVariables): RunnerFoldVars.
+    const Fold::Vars RunnerFoldVars = LaunchResolver::RunnerFoldVars(Idx, ResolveChainIds(Idx, *Launch, CP, GlobalConfigJSON),
+                                                                     Plan, SavedVars, CP.VariableOverrides, Builtins);
     CP.RunnerChain = ResolveRunnerChain(Idx, *Launch, CP, GlobalConfigJSON, RunnerFoldVars, Builtins);
     if (CP.RunnerChain.empty())
     {

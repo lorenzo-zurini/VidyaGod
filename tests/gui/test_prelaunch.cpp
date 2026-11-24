@@ -929,6 +929,35 @@ private slots:
         }
     }
 
+    // An option declared in a layer behind a WHEN shows as the launch would have it: the window folds the game with the
+    // instance's saved values, as the launch does (it folded with none: the layer never held, the option never showed).
+    // Teeth: fold without the saved values (the "pro" instance shows no Pro option).
+    void anOptionBehindALayersWhenShowsWhereTheLaunchHasIt()
+    {
+        NodeIndex idx;
+        idx.Nodes["game"] = parse(json{ {"CID", "game"}, {"LABEL", "game"}, {"VARIANT", "v1"},
+            {"LAYERS", json::array({ json{{"DIR", "game"}},
+                json{{"VARS", {{"mode", {{"DEFAULT", "basic"}, {"UI", {{"CONTROL", "text"}, {"LABEL", "Mode"}}}}}}}},
+                json{{"WHEN", "%mode%==pro"}, {"VARS", {{"proopt", {{"DEFAULT", "1"}, {"UI", {{"CONTROL", "bool"}, {"LABEL", "Pro option"}}}}}}}},
+                json{{"EXEC", json::array({ json{{"LABEL", "Play"}, {"HOST", ManifestModel::MachinePlatform()}, {"EXE", "game.exe"},
+                    {"TILE", {{"UID", "43"}, {"TITLE", "Game"}}}} })}} })} });
+        ManifestModel::DeriveFacts(idx);
+        const std::string Uid = idx.Find("game")->GameKey();
+        for (const char *Mode : {"pro", "basic"})
+        {
+            json Cfg = json{{"Settings", json::object()}};
+            QVERIFY(InstanceStore::WriteConfig(Cfg, Uid, "Main", json{{"VARIABLES", {{"mode", Mode}}}, {"LASTRUN", "2026-09-30T10:00:00Z"}}));
+            PreLaunchWindow W(&Cfg, &idx, {"game"});
+            W.show();
+            QCoreApplication::processEvents();
+            auto *T = W.findChild<QTreeWidget *>("optionsTree");
+            QVERIFY(T);
+            bool Pro = false;
+            for (QTreeWidgetItemIterator It(T); *It; ++It) if ((*It)->text(0) == "Pro option" && !(*It)->isHidden()) Pro = true;
+            QCOMPARE(Pro, std::string(Mode) == "pro");
+        }
+    }
+
     // A graft's SECTION puts it in a collapsed section row of the graft tree; it still ticks, and the tree read depth-
     // first is the order grafts apply in. Teeth: ignore SECTION (the graft sits at the top); read only top-level rows
     // (the sectioned graft is never collected).

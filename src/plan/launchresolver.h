@@ -35,6 +35,14 @@ std::vector<std::string> ResolveChainIds(const NodeIndex &Idx, const Node &Launc
 //native terminal.
 std::vector<std::string> ResolveChainTail(const NodeIndex &Idx, const std::string &FromPlatform, const Node &Launch);
 
+//The variables the chain runners' folds read (their layers' WHENs): a --var (Overrides); else the game's own value for
+//a key the game declares (a game seeds a runner's knob: its folded WhenVars); else a saved value, only for a key a
+//runner declares with a UI (a setting — a saved value of an option since made computed is left over, not used). The
+//launch and the launch window fold the runners with the same.
+Fold::Vars RunnerFoldVars(const NodeIndex &Idx, const std::vector<std::string> &ChainIds, const Fold::Plan &Game,
+                          const nlohmann::ordered_json &SavedVars, const std::map<std::string, std::string> &Overrides,
+                          const Fold::Vars &Builtins);
+
 //Builds the full resolved RunnerLink execution chain from ResolveChainIds (synthesizing a passthrough terminal for
 //kNativeTerminalId or a missing node). The authoritative chain consumed by InitializeFromNode / BuildNestedInvocation.
 //Empty if the platform is unreachable.

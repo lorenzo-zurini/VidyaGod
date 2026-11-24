@@ -332,6 +332,26 @@ std::vector<std::string> LaunchResolver::ResolveChainTail(const NodeIndex &Idx, 
     return Out.empty() ? ChainOver(Idx, Launch, FromPlatform, {}, Runners, Runners) : Out;
 }
 
+Fold::Vars LaunchResolver::RunnerFoldVars(const NodeIndex &Idx, const std::vector<std::string> &ChainIds, const Fold::Plan &Game,
+                                          const nlohmann::ordered_json &SavedVars, const std::map<std::string, std::string> &Overrides,
+                                          const Fold::Vars &Builtins)
+{
+    Fold::Vars Out;
+    const Fold::Library Lib = ManifestModel::LibraryOf(Idx);
+    for (const std::string &Id : ChainIds)
+    {
+        if (!Idx.Find(Id) || !SavedVars.is_object()) continue;
+        const Fold::Plan Bare = Fold::Resolve(Lib, Id, {}, Builtins);
+        for (const auto &[K, D] : Bare.Decls.items())
+            if (D.is_object() && D.contains("UI") && D["UI"].is_object() && SavedVars.contains(K) && SavedVars[K].is_string())
+                Out[K] = SavedVars[K].get<std::string>();
+    }
+    for (const auto &[K, D] : Game.Decls.items())
+        if (const auto It = Game.WhenVars.find(K); It != Game.WhenVars.end()) Out[K] = It->second;
+    for (const auto &[K, V] : Overrides) Out[K] = V;
+    return Out;
+}
+
 std::vector<RunnerLink> LaunchResolver::ResolveRunnerChain(const NodeIndex &Idx, const Node &Launch,
                                                            const struct ContainerParams &CP, const nlohmann::ordered_json &GlobalConfigJSON,
                                                            const Fold::Vars &Instance, const Fold::Vars &Builtins)

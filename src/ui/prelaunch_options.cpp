@@ -175,8 +175,17 @@ void PreLaunchWindow::RebuildCustomVarPickers()
     if (!L) { SetTabShown(OptionsPage, false); return; }
     ReadBackFromFiles();
 
-    // The knobs are the FOLDED declarations: the row's (with the ticked grafts), then every chain runner's.
+    // The knobs are the FOLDED declarations: the row's (with the ticked grafts), then every chain runner's — folded with
+    // the variables the launch folds them with (a layer's WHEN reads them: an option declared behind one shows when the
+    // launch would have it): the instance's saved values and the built-ins for the row; for the runners, what the
+    // launch hands them (LaunchResolver::RunnerFoldVars).
     const Fold::Library Lib = ManifestModel::LibraryOf(*Index);
+    const nlohmann::ordered_json SavedVars = InstanceStore::Variables(*GlobalConfigJSON, PackageUID, InstanceName);
+    Fold::Vars Instance;
+    if (SavedVars.is_object()) for (const auto& [K, V] : SavedVars.items()) if (V.is_string()) Instance[K] = V.get<std::string>();
+    Fold::Vars Builtins = ContainerParams().GetVariablesMap();
+    Builtins["UID"] = Face(L);
+    Builtins["PackageUID"] = PackageUID;
     std::vector<std::pair<nlohmann::ordered_json, bool>> Decls;   // (a CustomVar-shaped declaration, isRunnerKnob)
     auto AddDecls = [&](const Fold::Plan& P, bool IsRunner) {
         for (const auto& [K, D] : P.Decls.items())
@@ -186,14 +195,15 @@ void PreLaunchWindow::RebuildCustomVarPickers()
             Decls.push_back({ std::move(CV), IsRunner });
         }
     };
-    AddDecls(Fold::Resolve(Lib, L->Key(), {}, {}, CollectGrafts()), false);
+    const Fold::Plan Game = Fold::Resolve(Lib, L->Key(), Instance, Builtins, CollectGrafts());
+    AddDecls(Game, false);
+    const Fold::Vars RunnerVars = LaunchResolver::RunnerFoldVars(*Index, CurrentChain, Game, SavedVars, {}, Builtins);
     for (const std::string& Rid : CurrentChain)
     {
         if (Rid == LaunchResolver::kNativeTerminalId || !Index->Find(Rid)) continue;
-        AddDecls(Fold::Resolve(Lib, Rid), true);
+        AddDecls(Fold::Resolve(Lib, Rid, RunnerVars, Builtins), true);
     }
 
-    const nlohmann::ordered_json SavedVars = InstanceStore::Variables(*GlobalConfigJSON, PackageUID, InstanceName);
 
     // Sections (UI.SECTION paths; a runner's options under "Runner"), created as their first option appears.
     std::map<std::string, QTreeWidgetItem*> Sections;
