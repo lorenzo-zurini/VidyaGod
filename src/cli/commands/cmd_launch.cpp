@@ -479,14 +479,16 @@ VG_COMMANDS
     // ---------------- edits ----------------
     Command::Register({
         "edits apply", "apply one file edit to a file, as a launch does: a setting, a JSON or XML value, a line, the whole file, a deletion",
-        "--config START replaces the line that starts with START (\"Width=\") by START + --value; --json-set POINTER sets "
+        "--config START replaces the line that starts with START (\"Width=\") by START + --value (with --section, only "
+        "inside that [section], adding it there when missing); --json-set POINTER sets "
         "a JSON value; --xml PATH an XML element or attribute (to --value); --append LINE adds a line once; --line-flag LINE "
         "makes LINE there (--value 1) or gone (--value 0); --overwrite TEXT replaces the file; --delete removes it. --base checks the file stays inside that folder (a link leading out is refused).",
-        { Pos("file", "the file"), Opt("config", "the line's start (Width=)"), Opt("json-set", "a JSON pointer"), Opt("xml", "an XPath (/Config/Video/@w)"),
+        { Pos("file", "the file"), Opt("config", "the line's start (Width=)"),
+          Opt("section", "(--config) the [section] header the line is in"), Opt("json-set", "a JSON pointer"), Opt("xml", "an XPath (/Config/Video/@w)"),
           Opt("value", "(--config, --json-set, --xml) the value; (--line-flag) 1 or 0"), Opt("append", "a line"),
           Opt("line-flag", "a line whose presence is the setting"),
           Opt("overwrite", "the new text"), Flag("delete", "delete it"), Opt("base", "the folder it must stay in") },
-        { "edits apply game.ini --config 'Width=' --value 1920", "edits apply settings.json --json-set /video/width --value 1920",
+        { "edits apply game.ini --config 'Width=' --value 1920", "edits apply xemu.toml --section '[display.quality]' --config 'surface_scale = ' --value 2", "edits apply settings.json --json-set /video/width --value 1920",
           "edits apply cfg.xml --xml '/Config/Video/@w' --value 1920",
           "edits apply persistent.cfg --line-flag +EasyDragMilitary --value 1" },
         { "FileEdits::ConfigWrite", "FileEdits::JsonSet", "FileEdits::XmlSet", "FileEdits::XmlEdit", "FileEdits::AppendLine", "FileEdits::LineFlag", "FileEdits::LineFlagEdit",
@@ -502,7 +504,8 @@ VG_COMMANDS
             }
             const auto KV = [&](const char *K) { return std::make_pair(Command::Str(A, K), Command::Str(A, "value")); };
             bool Ok = true;
-            if (A.contains("config")) { const auto [K, V] = KV("config"); Ok = FileEdits::ConfigWrite(K, V, F); }
+            if (A.contains("section") && !A.contains("config")) throw Command::BadArgs("--section goes with --config");
+            if (A.contains("config")) { const auto [K, V] = KV("config"); Ok = FileEdits::ConfigWrite(K, V, F, Command::Str(A, "section", "")); }
             else if (A.contains("json-set")) { const auto [K, V] = KV("json-set"); Ok = FileEdits::JsonSet(K, V, F); }
             else if (A.contains("xml"))
             {
@@ -544,6 +547,18 @@ VG_COMMANDS
             const auto V = FileEdits::XmlGet(Command::Str(A, "path"), Slurp(Command::Str(A, "file")), Why);
             if (!V) throw std::runtime_error(Why);
             return json{{"value", *V}};
+        }, {} });
+
+    Command::Register({
+        "edits config-get", "read what follows a line's start in a settings file (how a ConfigWrite option reads its value back)",
+        "The first line starting with --key; with --section, only inside that [section]. Absent: value is null.",
+        { Pos("file", "the file"), Pos("key", "the line's start (surface_scale = )"), Opt("section", "the [section] header the line is in") },
+        { "edits config-get xemu.toml 'surface_scale = ' --section '[display.quality]'" },
+        { "FileEdits::ConfigRead", "FileEdits::IsToml" }, Needs::Config, false,
+        [](Command::Context &, const json &A) {
+            const auto V = FileEdits::ConfigRead(Slurp(Command::Str(A, "file")), Command::Str(A, "key"), Command::Str(A, "section", ""),
+                                                 FileEdits::IsToml(Command::Str(A, "file")));
+            return json{{"value", V ? json(*V) : json(nullptr)}};
         }, {} });
 
     Command::Register({

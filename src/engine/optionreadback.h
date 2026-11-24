@@ -27,6 +27,8 @@ namespace OptionReadBack
 struct Site
 {
     std::string Option, File, Mode, Key, Prefix, Suffix, Format;
+    std::string Section;                  // ConfigWrite: the section its key is in ("" = anywhere in the file)
+    std::optional<std::string> Absent;    // the option's value while its key is not in the file (ABSENT), if said
     bool IfUnsaved = false;   // the package's default only (no take-back): applied while the user has no saved copy
 };
 std::vector<Site> Sites(const ContainerParams &CP);

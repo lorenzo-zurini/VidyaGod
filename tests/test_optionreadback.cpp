@@ -121,6 +121,52 @@ TEST(readback_leaves_out_what_it_cannot_read)
     CHECK(!OptionReadBack::Read(F.CP).count("lang"));    // a link the game left is not followed
 }
 
+// A ConfigWrite in a section reads back from that section (the same key elsewhere is another setting), a quoted TOML
+// string reads back as the option holds it (the quotes are the literal text around its token), and a key the program
+// left out reads back as the op's ABSENT — in a file that has text, and only a value the option can hold. Teeth: read
+// the key in any section; ignore ABSENT (the scale is not read); take ABSENT for an empty file.
+TEST(readback_reads_a_section_and_what_an_absent_key_means)
+{
+    Fixture F;
+    F.CP.KeepFiles.push_back(PersistTarget{"game/xemu.toml", "xemu.toml"});
+    F.CP.VarDecls["scale"] = json{ {"TYPE", "CustomVar"}, {"DEFAULT", "2"}, {"UI", {{"CONTROL", "int"}, {"MIN", 1}, {"MAX", 10}}} };
+    F.CP.VarDecls["renderer"] = json{ {"TYPE", "CustomVar"}, {"DEFAULT", "OPENGL"},
+                                      {"UI", {{"CONTROL", "enum"}, {"CHOICES", json::array({ json{{"LABEL", "OpenGL"}, {"VALUE", "OPENGL"}}, json{{"LABEL", "Vulkan"}, {"VALUE", "VULKAN"}} })}}} };
+    json Scale = Fixture::Op("ConfigWrite", "game/xemu.toml", "surface_scale = ", "%scale%");
+    Scale["SECTION"] = "[display.quality]";
+    Scale["ABSENT"] = "1";
+    json Renderer = Fixture::Op("ConfigWrite", "game/xemu.toml", "renderer = ", "'%renderer%'");
+    Renderer["SECTION"] = "[display]";
+    F.CP.SubComponentsArray = json::array({ Scale, Renderer });
+    F.Put("xemu.toml", "[display]\nrenderer = 'VULKAN'\n\n[display.quality]\nsurface_scale = 4\n\n[other]\nsurface_scale = 7\n");
+    auto R = OptionReadBack::Read(F.CP);
+    CHECK(At(R, "scale") == std::optional<std::string>("4"));
+    CHECK(At(R, "renderer") == std::optional<std::string>("VULKAN"));
+    F.Put("xemu.toml", "[display]\nrenderer = 'VULKAN'\n\n[other]\nsurface_scale = 7\n");   // set back to 1x: dropped
+    R = OptionReadBack::Read(F.CP);
+    CHECK(At(R, "scale") == std::optional<std::string>("1"));
+    F.Put("xemu.toml", "  \n");                                          // a save cut short
+    CHECK(!OptionReadBack::Read(F.CP).count("scale"));
+    F.CP.SubComponentsArray[0]["ABSENT"] = "99";                          // not a value the option can hold
+    F.Put("xemu.toml", "[display]\nrenderer = 'OPENGL'\n");
+    CHECK(!OptionReadBack::Read(F.CP).count("scale"));
+}
+
+// ABSENT reads the same way for a JSON value and an XML attribute the file leaves out. Teeth: ABSENT honoured for a
+// ConfigWrite only (neither reads back).
+TEST(readback_absent_reads_for_json_and_xml)
+{
+    Fixture F;
+    F.CP.SubComponentsArray[1]["ABSENT"] = "60";                         // /video/fps
+    F.CP.SubComponentsArray[3]["ABSENT"] = "de";                         // g_language
+    F.Put("video.json", R"({"video":{"fullscreen":true}})");
+    F.Put("Profile/attributes.xml", R"(<Attributes><Attr name="jump" value="key_space"/></Attributes>)");
+    const auto R = OptionReadBack::Read(F.CP);
+    CHECK(At(R, "fps") == std::optional<std::string>("60"));
+    CHECK(At(R, "lang") == std::optional<std::string>("de"));
+    CHECK(At(R, "full") == std::optional<std::string>("1"));
+}
+
 // The adopt rule (three-way): a value the game changed (the file differs from LAST_IN_FILE) is taken while the
 // launcher's value is still the last known one; when the launcher's value changed too, the launcher wins; a value the
 // file still holds as known leaves a window change alone; a package-default-only option follows its file. Teeth: take

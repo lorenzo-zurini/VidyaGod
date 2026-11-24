@@ -253,7 +253,7 @@ std::string CheckLayer(const ordered_json &L)
         {
             if (!O.is_object() || !O.contains("MODE") || !O["MODE"].is_string()) return "every EDIT op needs a MODE";
             static const std::set<std::string> Text = { "MODE", "OFFSET", "EXPECT", "REPLACE", "VALUE", "PAYLOAD", "CAVE",
-                                                        "ANCHOR", "KEY", "SECTION", "APPLY", "COMMENT", "WHEN" };
+                                                        "ANCHOR", "KEY", "SECTION", "ABSENT", "APPLY", "COMMENT", "WHEN" };
             for (const auto &[K, V] : O.items())
             {
                 if (Text.count(K) && !V.is_string()) return "EDIT op field '" + K + "' must be a string";
@@ -278,6 +278,22 @@ std::string CheckLayer(const ordered_json &L)
                     V.find('%') == std::string::npos && V != "1" && V != "0")
                     return "a LineFlag VALUE is 1 (the line is there) or 0 (it is not), not '" + V + "'";
             }
+            //SECTION: a ConfigWrite's section, its header line as the file spells it ("[Graphics]", "[display.quality]").
+            if (O.contains("SECTION"))
+            {
+                const std::string Sx = Str(O["SECTION"]);
+                const size_t F = Sx.find_first_not_of(" \t"), B = Sx.find_last_not_of(" \t");
+                if (O["MODE"] != "ConfigWrite") return "SECTION goes on a ConfigWrite (the section its KEY is in)";
+                const std::string In = F == std::string::npos ? std::string() : Sx.substr(F, B - F + 1);
+                const bool Double = In.rfind("[[", 0) == 0 && In.size() > 4 && In.compare(In.size() - 2, 2, "]]") == 0;
+                const std::string Name = In.size() > 2 ? In.substr(Double ? 2 : 1, In.size() - (Double ? 4 : 2)) : std::string();
+                if (In.size() < 3 || In.front() != '[' || In.back() != ']' || Sx.find('\n') != std::string::npos
+                    || Name.find_first_not_of(" \t") == std::string::npos || Name.find_first_of("[]") != std::string::npos)
+                    return "a ConfigWrite SECTION is its header line, a name in brackets ([Graphics], [display.quality]), not '" + Sx + "'";
+            }
+            //ABSENT: what a keyed op's value is while its key is not in the file (the game left it out at its default).
+            if (O.contains("ABSENT") && O["MODE"] != "ConfigWrite" && O["MODE"] != "JsonSet" && O["MODE"] != "XmlSet")
+                return "ABSENT goes on a ConfigWrite, JsonSet or XmlSet (what its key's absence means)";
             //Delete removes the TARGET (a file or a folder) and nothing else: a value or a site would be read by nothing.
             if (O["MODE"] == "Delete")
                 for (const auto &[K, V] : O.items())
@@ -644,7 +660,10 @@ std::string KeptUnder(const nlohmann::ordered_json &Keep, const std::string &Add
 std::string EditAddress(const nlohmann::ordered_json &Op, const std::string &Target)
 {
     const std::string Mode = Str(Op.value("MODE", ordered_json()));
-    return "FILES/" + Target + (Mode == "ConfigWrite" || Mode == "JsonSet" || Mode == "XmlSet" || Mode == "LineFlag" ? "#" + Str(Op.value("KEY", ordered_json())) : std::string());
+    //A keyed op's address names its key — a ConfigWrite's within its section: FILES/<file>#[section]KEY.
+    const std::string Section = Mode == "ConfigWrite" ? Str(Op.value("SECTION", ordered_json())) : std::string();
+    return "FILES/" + Target + (Mode == "ConfigWrite" || Mode == "JsonSet" || Mode == "XmlSet" || Mode == "LineFlag"
+                                ? "#" + Section + Str(Op.value("KEY", ordered_json())) : std::string());
 }
 
 namespace {

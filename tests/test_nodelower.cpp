@@ -51,13 +51,13 @@ TEST(lower_content_maps_the_type_key_and_carries_placement)
 TEST(lower_edit_splits_text_and_binary_ops_onto_the_target_file)
 {
     const ordered_json L = Lower({ {"EDIT", ordered_json::array({
-            {{"MODE", "ConfigWrite"}, {"SECTION", "D"}, {"KEY", "W"}, {"VALUE", "%ScreenWidth%"}},
+            {{"MODE", "ConfigWrite"}, {"SECTION", "[D]"}, {"KEY", "W"}, {"VALUE", "%ScreenWidth%"}},
             {{"MODE", "Replace"}, {"OFFSET", "0x10"}, {"EXPECT", "00"}, {"REPLACE", "01"}},
             {{"MODE", "AppendLine"}, {"VALUE", "x"}} })},
         {"TARGET", "FILES/%GameDir%/a.bin"}, {"WHEN", "%w%==1"} });
     CHECK_EQ(L.size(), (size_t)3);
     CHECK_EQ(L[0]["TYPE"].get<std::string>(), std::string("FileEdit"));
-    CHECK_EQ(L[0]["SECTION"].get<std::string>(), std::string("D"));
+    CHECK_EQ(L[0]["SECTION"].get<std::string>(), std::string("[D]"));
     CHECK_EQ(L[0]["KEY"].get<std::string>(), std::string("W"));
     CHECK_EQ(L[1]["TYPE"].get<std::string>(), std::string("BinaryPatch"));
     CHECK_EQ(L[1]["EXPECT"].get<std::string>(), std::string("00"));
@@ -355,6 +355,31 @@ TEST(a_line_flag_names_one_line_and_a_one_or_zero)
     CHECK(Refused(Ed({ {"MODE", "LineFlag"}, {"KEY", "+X"} })));
     CHECK_EQ(NodeLower::EditAddress(Ok, "%Documents%/startup/persistent.cfg"),
              std::string("FILES/%Documents%/startup/persistent.cfg#+EasyDragMilitary"));
+}
+
+// A ConfigWrite's SECTION is its header line in brackets, and only a ConfigWrite has one; ABSENT goes on the keyed ops
+// that read back (ConfigWrite, JsonSet, XmlSet); a ConfigWrite in a section is addressed by its section and key, so KEEP
+// takes back that one key in that one section. Teeth: SECTION allowed on other modes, or without brackets; ABSENT on a
+// LineFlag; the address without its section.
+TEST(a_configwrite_section_and_absent_are_checked_and_addressed)
+{
+    const auto Ed = [](const ordered_json &Op) {
+        return ordered_json{ {"EDIT", ordered_json::array({ Op })}, {"TARGET", "FILES/%GameDir%/xemu.toml"} }; };
+    const ordered_json Ok = { {"MODE", "ConfigWrite"}, {"SECTION", "[display.quality]"}, {"KEY", "surface_scale = "},
+                              {"VALUE", "%xemu_scale%"}, {"ABSENT", "1"} };
+    CHECK(!Refused(Ed(Ok)));
+    CHECK(Refused(Ed({ {"MODE", "ConfigWrite"}, {"SECTION", "display.quality"}, {"KEY", "k="}, {"VALUE", "1"} })));
+    CHECK(Refused(Ed({ {"MODE", "ConfigWrite"}, {"SECTION", "[a]\n[b]"}, {"KEY", "k="}, {"VALUE", "1"} })));
+    CHECK(Refused(Ed({ {"MODE", "ConfigWrite"}, {"SECTION", "[ ]"}, {"KEY", "k="}, {"VALUE", "1"} })));     // never found:
+    CHECK(Refused(Ed({ {"MODE", "ConfigWrite"}, {"SECTION", "[a[b]]"}, {"KEY", "k="}, {"VALUE", "1"} })));  // a copy a launch
+    CHECK(!Refused(Ed({ {"MODE", "ConfigWrite"}, {"SECTION", "[Player 1, Keys]"}, {"KEY", "k="}, {"VALUE", "1"} })));
+    CHECK(!Refused(Ed({ {"MODE", "ConfigWrite"}, {"SECTION", "[[bindings]]"}, {"KEY", "k="}, {"VALUE", "1"} })));
+    CHECK(Refused(Ed({ {"MODE", "JsonSet"}, {"SECTION", "[a]"}, {"KEY", "/k"}, {"VALUE", "1"} })));
+    CHECK(!Refused(Ed({ {"MODE", "JsonSet"}, {"KEY", "/k"}, {"VALUE", "%v%"}, {"ABSENT", "0"} })));
+    CHECK(Refused(Ed({ {"MODE", "LineFlag"}, {"KEY", "+X"}, {"VALUE", "%v%"}, {"ABSENT", "0"} })));
+    CHECK_EQ(NodeLower::EditAddress(Ok, "%GameDir%/xemu.toml"),
+             std::string("FILES/%GameDir%/xemu.toml#[display.quality]surface_scale = "));
+    CHECK_EQ(NodeLower::EditAddress({ {"MODE", "ConfigWrite"}, {"KEY", "k="} }, "%GameDir%/a.ini"), std::string("FILES/%GameDir%/a.ini#k="));
 }
 
 // What a Delete may not reach: the user's state. A kept file, anything inside a kept folder (taken back or not: the

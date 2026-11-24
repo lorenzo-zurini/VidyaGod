@@ -159,15 +159,11 @@ bool AtSite(const OptionReadBack::Site &S, const std::string &Text, std::optiona
 {
     if (S.Mode == "ConfigWrite")
     {
-        size_t P = 0;
-        while (P <= Text.size())
-        {
-            const size_t E = std::min(Text.find('\n', P), Text.size());
-            std::string Line = Text.substr(P, E - P);
-            if (!Line.empty() && Line.back() == '\r') Line.pop_back();
-            if (Line.rfind(S.Key, 0) == 0) { Out = std::vector<std::string>{ Line.substr(S.Key.size()) }; return true; }
-            P = E + 1;
-        }
+        //The lines the edit writes (its section's, with one): a line there reads; none, it was never written — unless the
+        //op says what an absent key means (ABSENT: the game drops a value at its own default), in a file that has text.
+        if (const std::optional<std::string> V = FileEdits::ConfigRead(Text, S.Key, S.Section, FileEdits::IsToml(S.File)))
+        { Out = std::vector<std::string>{ *V }; return true; }
+        if (S.Absent && Text.find_first_not_of(" \t\r\n") != std::string::npos) { Out.reset(); return true; }
         return false;
     }
     if (S.Mode == "JsonSet")
@@ -226,6 +222,8 @@ std::vector<OptionReadBack::Site> OptionReadBack::Sites(const ContainerParams &C
             || Decl.value("EVAL", false) || Decl.contains("MAP")) continue;
         if (!S.Format.empty() && S.Format != "bool" && S.Format != "winpath" && S.Format.rfind("map:", 0) != 0) continue;
         S.Key = VarSubst::Unescape(Sub.value("KEY", std::string()));       // as the edit pass writes it out
+        if (S.Mode == "ConfigWrite") S.Section = VarSubst::Unescape(Sub.value("SECTION", std::string()));
+        if (Sub.contains("ABSENT") && Sub["ABSENT"].is_string()) S.Absent = VarSubst::Unescape(Sub["ABSENT"].get<std::string>());
         S.File = RuntimeRelative(CP, Sub.value("FILE", std::string()));
         S.IfUnsaved = Sub.value("IF_UNSAVED", false);
         if (!S.File.empty()) Out.push_back(std::move(S));
@@ -239,7 +237,9 @@ namespace {
 std::optional<std::string> ValueAt(const ContainerParams &CP, const OptionReadBack::Site &S, const std::string &Text)
 {
     std::optional<std::vector<std::string>> Texts;
-    if (!AtSite(S, Text, Texts) || !Texts) return std::nullopt;
+    if (!AtSite(S, Text, Texts)) return std::nullopt;
+    //Its key is not there: what the op says that means (ABSENT), when it says and the option can hold it.
+    if (!Texts) return S.Absent && Holds(CP.VarDecls.at(S.Option), *S.Absent) ? S.Absent : std::nullopt;
     for (const std::string &T : *Texts)
     {
         if (T.size() < S.Prefix.size() + S.Suffix.size() || T.compare(0, S.Prefix.size(), S.Prefix) != 0

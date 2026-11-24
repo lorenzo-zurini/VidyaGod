@@ -39,7 +39,16 @@ bool LinkLeadsOut(const std::filesystem::path &Base, const std::filesystem::path
                       const std::filesystem::path &BaseDir = {});
 
 //Reads FilePath line by line and replaces any line starting with Key with Key+Value (prefix-matched INI patching).
-[[nodiscard]] bool ConfigWrite(const std::string &Key, const std::string &Value, const std::filesystem::path &FilePath);
+//With a Section (its header line, "[Graphics]", "[display.quality]"): only the lines between that header and the next
+//header (an INI section, a TOML table or array of tables), the key matched by name; none there: Key+Value goes at the
+//section's end; no such section: the header and the line go at the file's end. A file absent then is created.
+[[nodiscard]] bool ConfigWrite(const std::string &Key, const std::string &Value, const std::filesystem::path &FilePath,
+                               const std::string &Section = {});
+//What a ConfigWrite of Key (in Section, "" = anywhere) finds in Text: the first matching line, its value; nullopt when
+//none. The read-back's view of the same lines the edit writes. Toml: the file is TOML (its section names keep case).
+std::optional<std::string> ConfigRead(const std::string &Text, const std::string &Key, const std::string &Section = {}, bool Toml = false);
+//A TOML file, by its extension: its section names are case-sensitive.
+bool IsToml(const std::filesystem::path &File);
 
 //Sets one value in a JSON file. Pointer is a JSON Pointer (RFC 6901: "/video/resolution/width"); Value is JSON text
 //(1920, true, "x", [1,2]) or, when it does not parse as JSON, a plain string. Objects missing on the way are created,

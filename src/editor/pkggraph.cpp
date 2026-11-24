@@ -567,7 +567,7 @@ std::vector<Field> MakeFields(const std::string &Type)
             {"TARGET", "File", FieldKind::Text, "FILES/%GameDir%/... - the file edited (Delete: the file or folder removed)", {}, {}},
             {"EDIT",   "Ops",  FieldKind::ObjArray, "", {}, {
                 {"MODE",    "Mode",    FieldKind::Enum, "", ModeOpts, {}},
-                {"SECTION", "Section", FieldKind::Text, "(not read by any mode)", {}, {}, false, "-"},
+                {"SECTION", "Section", FieldKind::Text, "ConfigWrite: the [section] / [table] its key is in - blank: anywhere in the file", {}, {}, false, "ConfigWrite"},
                 {"KEY",     "Key",     FieldKind::Text, "ConfigWrite: the line's start (Resolution=) / JsonSet: /json/pointer / XmlSet: /root/el[@k='v']/@attr / LineFlag: the whole line", {}, {}, false, "ConfigWrite JsonSet XmlSet LineFlag"},
                 {"VALUE",   "Value",   FieldKind::Text, "text value / JsonSet: JSON (else a string) / Poke: the scalar / Or: the bits / LineFlag: 1 or 0", {}, {}, false,
                  "ConfigWrite Overwrite AppendLine LineFlag JsonSet XmlSet Poke Or"},
@@ -577,6 +577,8 @@ std::vector<Field> MakeFields(const std::string &Type)
                 {"REPLACE", "Replace", FieldKind::Text, "the new bytes", {}, {}, false, "Replace ReplaceAll"},
                 {"PAYLOAD", "Payload", FieldKind::Text, "the cave's code (hex)", {}, {}, false, "Cave"},
                 {"CAVE",    "Cave at", FieldKind::Text, "'auto' or a fixed VA", {}, {}, false, "Cave"},
+                {"ABSENT",  "Absent means", FieldKind::Text, "the option's value while its key is not in the file (the program leaves it out at its default) - read back as that", {}, {}, false,
+                 "ConfigWrite JsonSet XmlSet"},
                 {"IF_EXISTS", "Only if it exists", FieldKind::Check, "skip the op while the file is absent - never create it", {}, {}, false,
                  "ConfigWrite Overwrite AppendLine LineFlag JsonSet XmlSet"},
                 {"COMMENT", "Comment", FieldKind::Text, "what this op does", {}, {}},

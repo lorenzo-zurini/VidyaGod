@@ -1068,18 +1068,18 @@ private slots:
     }
 
     // An edit op shows the fields its mode reads, and every field it carries: key = value shows Key and Value, not the
-    // byte fields; a byte replace shows Offset, Expect, Replace, not Key; an old SECTION an op still carries stays in
-    // view. Teeth: show every field; hide what the op carries.
+    // byte fields, and its SECTION; a byte replace shows Offset, Expect, Replace, not Key or Section; a SECTION an op of
+    // another mode still carries stays in view. Teeth: show every field; hide what the op carries.
     void anEditOpShowsWhatItsModeReads()
     {
         using PkgGraph::FieldApplies;
         const auto &Ops = PkgGraph::FieldsFor("EDIT")[1].Sub;
         auto Shown = [&](const json &Op) { std::set<std::string> K; for (const auto &F : Ops) if (FieldApplies(F, Op)) K.insert(F.Key); return K; };
         const auto C = Shown(json{{"MODE", "ConfigWrite"}});
-        QVERIFY(C.count("KEY") && C.count("VALUE") && C.count("COMMENT") && !C.count("OFFSET") && !C.count("REPLACE") && !C.count("SECTION"));
+        QVERIFY(C.count("KEY") && C.count("VALUE") && C.count("COMMENT") && !C.count("OFFSET") && !C.count("REPLACE") && C.count("SECTION"));
         const auto R = Shown(json{{"MODE", "Replace"}});
-        QVERIFY(R.count("OFFSET") && R.count("EXPECT") && R.count("REPLACE") && !R.count("KEY") && !R.count("VALUE"));
-        QVERIFY(Shown(json{{"MODE", "ConfigWrite"}, {"SECTION", "Video"}}).count("SECTION"));
+        QVERIFY(R.count("OFFSET") && R.count("EXPECT") && R.count("REPLACE") && !R.count("KEY") && !R.count("VALUE") && !R.count("SECTION"));
+        QVERIFY(Shown(json{{"MODE", "JsonSet"}, {"SECTION", "[Video]"}}).count("SECTION"));
         //And on the canvas: an Overwrite op draws Value, not Offset.
         H.Display = ImVec2(1400, 2400);
         auto Restore = qScopeGuard([this] { H.Display = ImVec2(1400, 900); });

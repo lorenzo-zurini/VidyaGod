@@ -4,6 +4,7 @@
 #include "varsubst.h"      // %variable% substitution in FileEdit VALUEs (e.g. config_info's %RunnerMount%/%TempPath%)
 
 #include <algorithm>
+#include <cctype>
 #include <cstring>
 #include <optional>
 #include <filesystem>
@@ -111,10 +112,12 @@ bool FileEdits::ProcessFileEdits(struct ContainerParams &ContainerParams, bool O
         std::string File  = Sub.value("FILE",  std::string());
         std::string Value = Sub.value("VALUE", std::string());
         std::string Key = Sub.value("KEY", std::string());
+        std::string Section = Sub.value("SECTION", std::string());   // ConfigWrite: the INI section / TOML table
         //The one final substitution of what the resolve handed over (it keeps a literal '%' doubled): %% → %.
         VarSubst::StringVariableSubstitution(File,  Vars);
         VarSubst::StringVariableSubstitution(Value, Vars);
         VarSubst::StringVariableSubstitution(Key,   Vars);
+        VarSubst::StringVariableSubstitution(Section, Vars);
         //An edit path is ALWAYS relative to its pass base (spec ch.15), so a path that is not is re-anchored
         //rather than followed. The overwhelmingly common way to get one is the house style
         //"%PrefixRoot%/drive_c/..." under a runner where PrefixRoot is "" (native), which yields
@@ -213,7 +216,7 @@ bool FileEdits::ProcessFileEdits(struct ContainerParams &ContainerParams, bool O
 
         bool EditOk = true;
         if (Mode == "ConfigWrite")
-            EditOk = FileEdits::ConfigWrite(Key, Value, FilePath);
+            EditOk = FileEdits::ConfigWrite(Key, Value, FilePath, Section);
         else if (Mode == "JsonSet")
             EditOk = FileEdits::JsonSet(Key, Value, FilePath);
         else if (Mode == "XmlSet")
@@ -260,9 +263,212 @@ bool FileEdits::ProcessFileEdits(struct ContainerParams &ContainerParams, bool O
 //All other lines are preserved verbatim. Used to patch INI-style config files where
 //the key acts as a line prefix (e.g. "Resolution=") rather than a standalone token.
 //Returns false if the file cannot be opened for reading or writing.
-bool FileEdits::ConfigWrite(const std::string &Key, const std::string &Value, const std::filesystem::path &FilePath)
+namespace {
+//A line without its '\r' and outer blanks (and the first line's byte-order mark).
+std::string Trimmed(std::string S)
 {
-    LogOut("FileEdits::ConfigWrite", "FilePath: " + FilePath.string() + " Key: " + Key + " Value: " + Value);
+    if (S.rfind("\xEF\xBB\xBF", 0) == 0) S.erase(0, 3);
+    while (!S.empty() && (S.back() == '\r' || S.back() == ' ' || S.back() == '\t')) S.pop_back();
+    const size_t F = S.find_first_not_of(" \t");
+    return F == std::string::npos ? std::string() : S.substr(F);
+}
+//A section header's name as compared: "[a.b]" / "[[a]]" with the blanks around its dotted parts dropped
+//("[ display . quality ]" is "[display.quality]"; "[Video Settings]" keeps its blank) and a comment after it
+//("[a] # c", "[a] ; c") gone. Empty when the line is no header: not in brackets, an empty name, or a bracket inside.
+std::string HeaderName(const std::string &Line)
+{
+    const std::string T = Trimmed(Line);
+    if (T.empty() || T[0] != '[') return {};
+    const bool Double = T.rfind("[[", 0) == 0;
+    std::vector<std::string> Parts(1);
+    bool Quoted = false;
+    char Q = 0;
+    size_t I = Double ? 2 : 1;
+    for (; I < T.size(); ++I)
+    {
+        const char C = T[I];
+        if (Quoted) { Parts.back() += C; if (C == Q) Quoted = false; continue; }
+        if (C == '"' || C == '\'') { Quoted = true; Q = C; Parts.back() += C; continue; }
+        if (C == ']') break;
+        if (C == '[') return {};
+        if (C == '.') Parts.emplace_back(); else Parts.back() += C;
+    }
+    if (I >= T.size()) return {};
+    if (Double && (I + 1 >= T.size() || T[I + 1] != ']')) return {};
+    const std::string Rest = Trimmed(T.substr(I + (Double ? 2 : 1)));
+    if (!Rest.empty() && Rest[0] != '#' && Rest[0] != ';') return {};
+    std::string Name;
+    for (size_t P = 0; P < Parts.size(); ++P) Name += (P ? "." : "") + Trimmed(Parts[P]);
+    if (Trimmed(Name).empty()) return {};
+    return (Double ? "[[" : "[") + Name + (Double ? "]]" : "]");
+}
+std::string Lower(std::string S) { for (char &C : S) C = (char)std::tolower((unsigned char)C); return S; }
+//Which lines are section headers: a header-shaped line outside a value that runs over several lines - a TOML array
+//("l = [" up to its closing ']') or a multi-line string (between triple quotes) - whose own lines can start with '['.
+std::vector<bool> HeaderLines(const std::vector<std::string> &Lines)
+{
+    std::vector<bool> Out(Lines.size(), false);
+    int Depth = 0;                 // open brackets of a multi-line array
+    std::string InString;          // the triple quote a multi-line string is open with
+    for (size_t I = 0; I < Lines.size(); ++I)
+    {
+        const std::string &L = Lines[I];
+        size_t From = 0;
+        if (!InString.empty())
+        {
+            const size_t E = L.find(InString);
+            if (E == std::string::npos) continue;
+            From = E + 3;
+            InString.clear();
+        }
+        else if (Depth == 0)
+        {
+            if (!HeaderName(L).empty()) { Out[I] = true; continue; }
+            const size_t Eq = L.find('=');                       // only a value that opens an array or a string is followed
+            if (Eq == std::string::npos) continue;
+            From = Eq + 1;
+            const std::string V = Trimmed(L.substr(From));
+            if (V.empty() || (V[0] != '[' && V.rfind("'''", 0) != 0 && V.rfind("\"\"\"", 0) != 0)) continue;
+        }
+        char Q = 0;
+        for (size_t C = From; C < L.size(); ++C)
+        {
+            const char Ch = L[C];
+            if (!Q && (L.compare(C, 3, "'''") == 0 || L.compare(C, 3, "\"\"\"") == 0))
+            {
+                const std::string Open = L.substr(C, 3);
+                const size_t E = L.find(Open, C + 3);
+                if (E == std::string::npos) { InString = Open; break; }
+                C = E + 2;
+                continue;
+            }
+            if (Q) { if (Ch == '\\' && Q == '"') ++C; else if (Ch == Q) Q = 0; continue; }
+            if (Ch == '"' || Ch == '\'') { Q = Ch; continue; }
+            if (Ch == '#') break;
+            if (Ch == '[') ++Depth;
+            else if (Ch == ']' && Depth > 0) --Depth;
+        }
+    }
+    return Out;
+}
+//A section's lines in Lines: (Header, End) - its header's index and the line after its last; false when it has none.
+//The header is found by name: exactly, else (not in TOML, where case makes another table) ignoring case - an INI's
+//[graphics] for [Graphics]. A section runs to the next header line (the next section, table or array of tables).
+bool SectionRange(const std::vector<std::string> &Lines, const std::string &Section, bool Toml, size_t &Header, size_t &End)
+{
+    const std::string Want = HeaderName(Section);
+    if (Want.empty()) return false;
+    const std::vector<bool> Is = HeaderLines(Lines);
+    std::optional<size_t> Found;
+    for (size_t I = 0; I < Lines.size() && !Found; ++I) if (Is[I] && HeaderName(Lines[I]) == Want) Found = I;
+    for (size_t I = 0; I < Lines.size() && !Found && !Toml; ++I) if (Is[I] && Lower(HeaderName(Lines[I])) == Lower(Want)) Found = I;
+    if (!Found) return false;
+    Header = *Found;
+    End = Header + 1;
+    while (End < Lines.size() && !Is[End]) ++End;
+    return true;
+}
+std::vector<std::string> LinesOf(const std::string &Text)
+{
+    std::vector<std::string> Out;
+    std::istringstream In(Text);
+    for (std::string L; std::getline(In, L);) Out.push_back(L);
+    return Out;
+}
+bool StartsWith(const std::string &Line, const std::string &Key) { return Line.size() >= Key.size() && Line.compare(0, Key.size(), Key) == 0; }
+//Where a line in a section holds Key's value: the offset of the value in the line, or npos when it is another key's
+//line. The line starting with Key as written is that; else, for a "name = " Key, the line naming the same key with
+//other spacing ("surface_scale=2", "  surface_scale = 2"), its value after the '=' and the blanks following it.
+size_t ValueAtKey(const std::string &Line, const std::string &Key)
+{
+    if (StartsWith(Line, Key)) return Key.size();
+    const size_t Eq = Key.find('=');
+    if (Eq == std::string::npos || Trimmed(Key.substr(Eq + 1)) != "") return std::string::npos;
+    const std::string Name = Trimmed(Key.substr(0, Eq));
+    if (Name.empty()) return std::string::npos;
+    size_t P = Line.find_first_not_of(" \t");
+    if (P == std::string::npos || Line.compare(P, Name.size(), Name) != 0) return std::string::npos;
+    P = Line.find_first_not_of(" \t", P + Name.size());
+    if (P == std::string::npos || Line[P] != '=') return std::string::npos;
+    P = Line.find_first_not_of(" \t", P + 1);
+    return P == std::string::npos ? Line.size() : P;
+}
+}
+
+bool FileEdits::IsToml(const std::filesystem::path &File) { return Lower(File.extension().string()) == ".toml"; }
+
+std::optional<std::string> FileEdits::ConfigRead(const std::string &Text, const std::string &Key, const std::string &Section, bool Toml)
+{
+    const std::vector<std::string> Lines = LinesOf(Text);
+    size_t From = 0, To = Lines.size(), Header = 0;
+    if (!Section.empty() && !SectionRange(Lines, Section, Toml, Header, To)) return std::nullopt;
+    if (!Section.empty()) From = Header + 1;
+    for (size_t I = From; I < To; ++I)
+    {
+        const size_t At = Section.empty() ? (StartsWith(Lines[I], Key) ? Key.size() : std::string::npos) : ValueAtKey(Lines[I], Key);
+        if (At == std::string::npos) continue;
+        std::string V = Lines[I].substr(At);
+        if (!V.empty() && V.back() == '\r') V.pop_back();
+        return V;
+    }
+    return std::nullopt;
+}
+
+bool FileEdits::ConfigWrite(const std::string &Key, const std::string &Value, const std::filesystem::path &FilePath,
+                            const std::string &Section)
+{
+    LogOut("FileEdits::ConfigWrite", "FilePath: " + FilePath.string() + (Section.empty() ? std::string() : " Section: " + Section)
+           + " Key: " + Key + " Value: " + Value);
+    if (!Section.empty())
+    {
+        //In its section: the key's line replaced (its indent kept), else added at the section's end (before the blank
+        //lines closing it), else the section made at the file's end. A file not there yet is made (an emulator's
+        //config before its first run). A file in CRLF gets CRLF lines.
+        std::string Text;
+        std::error_code Ec;
+        if (std::filesystem::exists(FilePath, Ec))
+        {
+            std::ifstream In(FilePath, std::ios::binary);
+            if (!In.is_open()) { LogErr("FileEdits::ConfigWrite", "Could not open file for reading: " + FilePath.string()); return false; }
+            Text.assign(std::istreambuf_iterator<char>(In), std::istreambuf_iterator<char>());
+        }
+        std::vector<std::string> Lines = LinesOf(Text);
+        const std::string Eol = !Lines.empty() && !Lines[0].empty() && Lines[0].back() == '\r' ? "\r" : "";
+        const bool Blank = Text.find_first_not_of(" \t\r\n") == std::string::npos;
+        size_t Header = 0, End = 0;
+        if (SectionRange(Lines, Section, IsToml(FilePath), Header, End))
+        {
+            size_t Matched = 0;
+            for (size_t I = Header + 1; I < End; ++I)
+                if (ValueAtKey(Lines[I], Key) != std::string::npos)
+                {
+                    const bool Cr = !Lines[I].empty() && Lines[I].back() == '\r';
+                    const size_t Ind = Lines[I].find_first_not_of(" \t");
+                    Lines[I] = Lines[I].substr(0, StartsWith(Lines[I], Key) ? 0 : Ind) + Key + Value + (Cr ? "\r" : "");
+                    ++Matched;
+                }
+            if (!Matched)
+            {
+                size_t At = End;
+                while (At > Header + 1 && Trimmed(Lines[At - 1]).empty()) --At;
+                Lines.insert(Lines.begin() + (std::ptrdiff_t)At, Key + Value + Eol);
+                LogWarn("FileEdits::ConfigWrite", "no '" + Key + "' in " + Section + " of " + FilePath.string() + " — added it there");
+            }
+        }
+        else
+        {
+            if (!Lines.empty() && !Trimmed(Lines.back()).empty()) Lines.push_back(Eol);
+            Lines.push_back(Trimmed(Section) + Eol);
+            Lines.push_back(Key + Value + Eol);
+            if (!Blank)
+                LogWarn("FileEdits::ConfigWrite", "no " + Section + " in " + FilePath.string() + " — added it at the end with '" + Key + "'");
+        }
+        if (FilePath.has_parent_path()) std::filesystem::create_directories(FilePath.parent_path(), Ec);
+        std::ofstream Out(FilePath, std::ios::binary | std::ios::trunc);
+        if (!Out.is_open()) { LogErr("FileEdits::ConfigWrite", "Could not open file for writing: " + FilePath.string()); return false; }
+        for (const std::string &L : Lines) Out << L << '\n';
+        return static_cast<bool>(Out.flush());
+    }
     // Binary I/O throughout (read AND the write below): on Windows a text-mode stream translates '\n' to CRLF on
     // write, so the SAME edit produced different bytes than on Linux — breaking cross-platform determinism (and
     // content hashes) and failing the round-trip tests. Binary writes '\n' verbatim (LF) on every platform and

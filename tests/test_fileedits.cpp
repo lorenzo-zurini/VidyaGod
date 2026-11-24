@@ -87,6 +87,79 @@ TEST(configwrite_replaces_every_prefixed_line)
     std::filesystem::remove_all(dir);
 }
 
+// In a section: only that section's line changes (the same key in another section stays); a key not there goes at the
+// section's end, before the blank lines closing it; a section not there is added with its line; a file not there is
+// made; a TOML array of tables ends a section too; ConfigRead reads what the write wrote, in its section. Teeth: match
+// the key in every section; append at the file's end (the wrong section); insert after the blank lines; stop a
+// section only at a [table], not at [[an array]]; read the key outside its section.
+TEST(configwrite_in_a_section)
+{
+    auto dir = TmpDir("cws"); auto cfg = dir / "xemu.toml";
+    Write(cfg, "[general]\nshow_welcome = false\n\n[display.quality]\nsurface_scale = 2\n\n[display.window]\nsurface_scale = 9\n");
+    CHECK(FileEdits::ConfigWrite("surface_scale = ", "3", cfg, "[display.quality]"));
+    CHECK_EQ(ReadAll(cfg), std::string("[general]\nshow_welcome = false\n\n[display.quality]\nsurface_scale = 3\n\n[display.window]\nsurface_scale = 9\n"));
+    CHECK(FileEdits::ConfigWrite("renderer = ", "'VULKAN'", cfg, "[display.quality]"));
+    CHECK_EQ(ReadAll(cfg), std::string("[general]\nshow_welcome = false\n\n[display.quality]\nsurface_scale = 3\nrenderer = 'VULKAN'\n\n[display.window]\nsurface_scale = 9\n"));
+    CHECK(FileEdits::ConfigWrite("aspect_ratio = ", "'4x3'", cfg, "[display.ui]"));
+    CHECK_EQ(ReadAll(cfg), std::string("[general]\nshow_welcome = false\n\n[display.quality]\nsurface_scale = 3\nrenderer = 'VULKAN'\n\n[display.window]\nsurface_scale = 9\n\n[display.ui]\naspect_ratio = '4x3'\n"));
+    CHECK(FileEdits::ConfigRead(ReadAll(cfg), "surface_scale = ", "[display.quality]") == std::optional<std::string>("3"));
+    CHECK(FileEdits::ConfigRead(ReadAll(cfg), "surface_scale = ", "[display.window]") == std::optional<std::string>("9"));
+    CHECK(!FileEdits::ConfigRead(ReadAll(cfg), "renderer = ", "[general]"));
+    CHECK(!FileEdits::ConfigRead(ReadAll(cfg), "x = ", "[nope]"));
+    auto made = dir / "sub" / "new.toml";                                  // before the program's first run
+    CHECK(FileEdits::ConfigWrite("surface_scale = ", "2", made, "[display.quality]"));
+    CHECK_EQ(ReadAll(made), std::string("[display.quality]\nsurface_scale = 2\n"));
+    auto arr = dir / "arr.toml";
+    Write(arr, "[a]\nk = 1\n[[b]]\nk = 2\n");
+    CHECK(FileEdits::ConfigWrite("j = ", "5", arr, "[a]"));
+    CHECK_EQ(ReadAll(arr), std::string("[a]\nk = 1\nj = 5\n[[b]]\nk = 2\n"));
+    std::filesystem::remove_all(dir);
+}
+
+//A section is found by its name, not its exact bytes, and the key by its name around '=': an author's spacing or an
+//INI's case never adds a second [a] or a second key (a duplicate TOML table makes the whole file unreadable).
+TEST(configwrite_in_a_section_matches_by_name)
+{
+    auto dir = TmpDir("cwsn"); auto f = dir / "c.ini";
+    auto Case = [&](const std::string &In, const std::string &Sec, const std::string &Key, const std::string &Want) {
+        Write(f, In);
+        CHECK(FileEdits::ConfigWrite(Key, "9", f, Sec));
+        CHECK_EQ(ReadAll(f), Want);
+        CHECK(FileEdits::ConfigRead(ReadAll(f), Key, Sec, FileEdits::IsToml(f)) == std::optional<std::string>("9"));
+    };
+    Case("\xEF\xBB\xBF[a]\nk=1\n", "[a]", "k=", "\xEF\xBB\xBF[a]\nk=9\n");                        // byte-order mark
+    Case("[a] # c\nk=1\n", "[a]", "k=", "[a] # c\nk=9\n");                                        // a comment after it
+    Case("[ a . b ]\nk=1\n", "[a.b]", "k=", "[ a . b ]\nk=9\n");                                    // spaces inside
+    Case("[graphics]\nk=1\n", "[Graphics]", "k=", "[graphics]\nk=9\n");                            // an INI's case
+    Case("[A]\nk=1\n[a]\nk=2\n", "[a]", "k=", "[A]\nk=1\n[a]\nk=9\n");                             // exact case first
+    Case("[a]\n  k = 1\n", "[a]", "k = ", "[a]\n  k = 9\n");                                       // indented key
+    Case("[d]\nsurface_scale=2\n", "[d]", "surface_scale = ", "[d]\nsurface_scale = 9\n");          // other spacing
+    Case("[d]\nscale = 2\n", "[d]", "s = ", "[d]\nscale = 2\ns = 9\n");                             // another key
+    Case("[a]\nk=1\n  [b]\nk=2\n", "[a]", "k=", "[a]\nk=9\n  [b]\nk=2\n");                          // an indented next header
+    Case("[a]\nl = [\n[1,2],\n]\nk = 1\n", "[a]", "k = ", "[a]\nl = [\n[1,2],\n]\nk = 9\n");        // an array's line
+    Case("[a]\nl = [\n[1, 2]\n]\nk = 1\n", "[a]", "k = ", "[a]\nl = [\n[1, 2]\n]\nk = 9\n");      // its last line
+    Case("[a]\r\nk=1\r\n", "[b]", "k=", "[a]\r\nk=1\r\n\r\n[b]\r\nk=9\r\n");                        // CRLF kept
+    Case("[a]\r\nk=1\r\n\r\n", "[a]", "j=", "[a]\r\nk=1\r\nj=9\r\n\r\n");
+    Case("[a]\nl = [\n  [1],\n  [2]\n]\nk = 1\n", "[a]", "k = ", "[a]\nl = [\n  [1],\n  [2]\n]\nk = 9\n");  // no comma
+    Case("[a]\nl = [ \"]\",\n  [2]\n]\nk = 1\n", "[a]", "k = ", "[a]\nl = [ \"]\",\n  [2]\n]\nk = 9\n");     // a ']' in quotes
+    Case("[a]\nl = [ # [ (a comment)\n  1 ]\n[b]\nk = 1\n", "[b]", "k = ", "[a]\nl = [ # [ (a comment)\n  1 ]\n[b]\nk = 9\n");
+    CHECK(!FileEdits::ConfigRead("[ ]\nk=1\n", "k=", "[ ]"));             // no name: no section to find
+    Case("[a]\nl = [ [1], [2],\n[3] ] # x\nk = 1\n", "[a]", "k = ", "[a]\nl = [ [1], [2],\n[3] ] # x\nk = 9\n");
+    Case("[a]\ns = \"\"\"\n[b]\n\"\"\"\nk = 1\n", "[a]", "k = ", "[a]\ns = \"\"\"\n[b]\n\"\"\"\nk = 9\n");  // a multi-line string
+    Case("[a]\ns = '[b]'\nk = 1\n[b]\nk = 2\n", "[a]", "k = ", "[a]\ns = '[b]'\nk = 9\n[b]\nk = 2\n");
+    Case("[Player 1, Keys]\nk=1\n", "[Player 1, Keys]", "k=", "[Player 1, Keys]\nk=9\n");          // a comma in the name
+    Case("[VideoSettings]\nk=1\n", "[Video Settings]", "k=", "[VideoSettings]\nk=1\n\n[Video Settings]\nk=9\n");
+    auto t = dir / "c.toml";                                               // TOML: case makes another table
+    Write(t, "[Display]\nk = 1\n");
+    CHECK(FileEdits::ConfigWrite("k = ", "9", t, "[display]"));
+    CHECK_EQ(ReadAll(t), std::string("[Display]\nk = 1\n\n[display]\nk = 9\n"));
+    CHECK(FileEdits::ConfigRead(ReadAll(t), "k = ", "[display]", true) == std::optional<std::string>("9"));
+    CHECK(FileEdits::ConfigRead("[Display]\nk = 1\n", "k = ", "[display]", false) == std::optional<std::string>("1"));
+    CHECK(!FileEdits::ConfigRead("[Display]\nk = 1\n", "k = ", "[display]", true));
+    std::filesystem::remove_all(dir);
+}
+
+// ---- FileOverwrite ----
 // ---- FileOverwrite ----
 
 // Whole-content write, creating parents (the WC3 .w3k key-file path).
@@ -119,6 +192,24 @@ TEST(a_fileedit_path_that_climbs_out_of_its_base_is_refused)
     const bool Ok = FileEdits::ProcessFileEdits(CP, /*OverridePass=*/false, Base);
     CHECK(!Ok);                                             // reported as a FAILED edit, not quietly skipped
     CHECK(!std::filesystem::exists(Outside));               // and nothing was written outside the base
+    std::filesystem::remove_all(Root);
+}
+
+// The edit pass hands a ConfigWrite its SECTION (a %variable% in it substituted): the key changes in that section.
+// Teeth: the pass dropping SECTION (the plain ConfigWrite finds the first key, in [a]).
+TEST(the_edit_pass_writes_a_configwrite_in_its_section)
+{
+    const std::filesystem::path Root = std::filesystem::temp_directory_path() / "vg_fe_section";
+    std::filesystem::remove_all(Root);
+    const std::filesystem::path Base = Root / "base";
+    std::filesystem::create_directories(Base);
+    Write(Base / "c.toml", "[a]\nk = 1\n[b]\nk = 2\n");
+    ContainerParams CP(Root / "PKG");
+    CP.CustomVariables["which"] = "b";
+    CP.SubComponentsArray = nlohmann::ordered_json::array({
+        nlohmann::ordered_json{{"TYPE","FileEdit"},{"FILE","c.toml"},{"MODE","ConfigWrite"},{"SECTION","[%which%]"},{"KEY","k = "},{"VALUE","9"}}});
+    CHECK(FileEdits::ProcessFileEdits(CP, /*OverridePass=*/false, Base));
+    CHECK_EQ(ReadAll(Base / "c.toml"), std::string("[a]\nk = 1\n[b]\nk = 9\n"));
     std::filesystem::remove_all(Root);
 }
 
