@@ -25,6 +25,7 @@
 #include <QApplication>
 #include <QFile>
 #include <QElapsedTimer>
+#include <QCoreApplication>
 #include <QEventLoop>
 #include <QTimer>
 
@@ -514,7 +515,7 @@ VG_COMMANDS
         { Command::Opt("game", "the game's key", Command::Type::String, true), Command::Opt("layout", "use this layout"),
           Command::Flag("clear", "the controller as it is") },
         { "controller layout-game --game 12345", "controller layout-game --game 12345 --layout Mine", "controller layout-game --game 12345 --clear" },
-        { "ControllerLayout::ForGame", "ControllerLayout::SetForGame" }, Needs::Config, false,
+        { "ControllerLayout::ForGame", "ControllerLayout::SetForGame", "ControllerLayout::GameLayout" }, Needs::Config, false,
         [](Command::Context &, const json &A) {
             const std::string G = Command::Str(A, "game");
             if (Command::Bool(A, "clear", false)) ControllerLayout::SetForGame(LayoutsDir(), G, "");
@@ -523,8 +524,33 @@ VG_COMMANDS
                 if (!ControllerLayout::Named(LayoutsDir(), N)) throw Command::BadArgs("no layout '" + N + "'");
                 ControllerLayout::SetForGame(LayoutsDir(), G, N == "Gamepad" ? "" : N);
             }
-            const std::string Now = ControllerLayout::ForGame(LayoutsDir(), G);
-            return json{{"game", G}, {"layout", Now.empty() ? std::string("Gamepad") : Now}};
+            return json{{"game", G}, {"layout", ControllerLayout::GameLayout(LayoutsDir(), G).Name}};
+        }, {} });
+
+    Command::Register({
+        "controller layout-app", "VidyaGod's own controller layout (or choose one)",
+        "What the controller does in VidyaGod itself (Settings → Controller); a game VidyaGod runs has its own, or the "
+        "controller as it is. Gamepad, the controller as it is, until one is chosen; a chosen one that is gone is Gamepad "
+        "again. Loaded on the controller at once when the controller service runs.",
+        { Command::Opt("layout", "use this layout"), Command::Flag("clear", "the controller as it is (Gamepad)") },
+        { "controller layout-app", "controller layout-app --layout Desktop", "controller layout-app --clear" },
+        { "ControllerLayout::ForApp", "ControllerLayout::SetForApp", "ControllerLayout::AppLayout", "ControllerService::loadAppLayout",
+          "ControllerService::appLayoutDir" }, Needs::Config, false,
+        [](Command::Context &, const json &A) {
+            bool Changed = false;
+            if (Command::Bool(A, "clear", false)) { ControllerLayout::SetForApp(LayoutsDir(), ""); Changed = true; }
+            else if (const std::string N = Command::Str(A, "layout", ""); !N.empty())
+            {
+                if (!ControllerLayout::Named(LayoutsDir(), N)) throw Command::BadArgs("no layout '" + N + "'");
+                if (!ControllerLayout::SetForApp(LayoutsDir(), N)) throw std::runtime_error("cannot write in " + LayoutsDir());
+                Changed = true;
+            }
+            QString Error;
+            if (Changed && !ControllerService::instance().loadAppLayout(QString::fromStdString(LayoutsDir()), &Error))
+                throw std::runtime_error("the controller refused it: " + Error.toStdString());
+            const std::string Chosen = ControllerLayout::ForApp(LayoutsDir());
+            return json{{"layout", ControllerLayout::AppLayout(LayoutsDir()).Name}, {"chosen", Chosen},
+                        {"loaded_from", ControllerService::instance().appLayoutDir().toStdString()}};
         }, {} });
 
     {
@@ -532,17 +558,20 @@ VG_COMMANDS
                                            Command::Opt("open", "open this layout"), Command::Opt("select", "select this control"),
                                            Command::Flag("bind", "bind the selected control (with the options below)"),
                                            Command::Opt("save-as", "save under this name"), Command::Flag("use", "use it for the game"),
+                                           Command::Flag("use-app", "use it for VidyaGod (its own layout)"),
                                            Command::Flag("try", "load it into the controller now"), Command::Flag("close", "close the editor") };
         for (Command::Arg &Ar : BindingArgs()) Args.push_back(Ar);
         Command::Register({
             "controller layout-editor", "the controller layout configurator: open it, and do what its controls do",
             "Opens the configurator (for a game, with --game), or acts on the one open: --open a layout, --select a "
-            "control, --bind it (as layout-bind's options say), --save-as, --use for the game, --try on the controller, "
-            "--close. Shows what it holds. `ui screenshot --control LayoutEditor` shows it.",
+            "control, --bind it (as layout-bind's options say), --save-as, --use for the game, --use-app for VidyaGod, --try "
+            "on the controller, --close (a layout tried is let go: VidyaGod's own is back). Shows what it holds. "
+            "`ui screenshot --control LayoutEditor` shows it.",
             Args, { "controller layout-editor --game 12345 --title 'Crash Team'", "controller layout-editor --select a --bind --key KeySpace",
                     "controller layout-editor --save-as Mine --use", "controller layout-editor --close" },
             { "LayoutEditor::openLayout", "LayoutEditor::selectControl", "LayoutEditor::selectedControl", "LayoutEditor::bindSelected",
-              "LayoutEditor::saveAs", "LayoutEditor::useForGame", "LayoutEditor::tryNow", "LayoutEditor::status", "LayoutEditor::current",
+              "LayoutEditor::saveAs", "LayoutEditor::useForGame", "LayoutEditor::useForApp", "LayoutEditor::done", "LayoutEditor::tryNow",
+              "LayoutEditor::status", "LayoutEditor::current",
               "LayoutEditor::dirty", "ControllerPicture::setSelected", "ControllerPicture::setChanged", "ControllerPicture::selected", "ControllerPicture::hotspot",
               "ControllerPicture::controlClicked", "ControllerPicture::sizeHint" }, Needs::Ui, false,
             [](Command::Context &C, const json &A) {
@@ -566,6 +595,7 @@ VG_COMMANDS
                 if (const std::string N = Command::Str(A, "save-as", ""); !N.empty() && !E->saveAs(QString::fromStdString(N), &Err))
                     throw Command::BadArgs(Err.toStdString());
                 if (Command::Bool(A, "use", false) && !E->useForGame(&Err)) throw Command::BadArgs(Err.toStdString());
+                if (Command::Bool(A, "use-app", false) && !E->useForApp(&Err)) throw Command::BadArgs(Err.toStdString());
                 if (Command::Bool(A, "try", false) && !E->tryNow(&Err)) throw Command::BadArgs(Err.toStdString());
                 if (Command::Bool(A, "close", false)) { E->close(); Settle(40); return EditorState(nullptr); }
                 Settle(40);

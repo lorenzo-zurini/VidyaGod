@@ -254,7 +254,8 @@ bool GameOverlay::setLayout(const QString &Name, QString *Error)
     if (!L) { if (Error) *Error = tr("No layout %1").arg(Name); return false; }
     const bool AsIs = Name == QLatin1String("Gamepad");
     ControllerLayout::SetForGame(LayoutsDir(), GameKey.toStdString(), AsIs ? std::string() : Name.toStdString());
-    if (!ControllerService::instance().setGameLayout(AsIs ? QString() : QString::fromStdString(L->toProfile().dump()), Error)) return false;
+    //As it is, too, is the game's layer (Gamepad's profile): never VidyaGod's own, under it.
+    if (!ControllerService::instance().setGameLayout(QString::fromStdString(L->toProfile().dump()), Error)) return false;
     Layouts->blockSignals(true);
     Layouts->setCurrentIndex(std::max(0, Layouts->findData(Name)));
     Layouts->blockSignals(false);

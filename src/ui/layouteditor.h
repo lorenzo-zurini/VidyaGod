@@ -43,7 +43,7 @@ private:
 // The controller layout configurator (Steam Input's): pick a layout — VidyaGod's own or one of the user's — see what
 // every control does, change any of them, save it under a name, try it on the controller now, and choose it for a game.
 // Only what InputPlumber can do is offered (ControllerLayout). Opened from a game (its launch window, its page in
-// controller mode, the overlay) it offers "Use for this game".
+// controller mode, the overlay) it offers "Use for this game"; always "Use for VidyaGod" (VidyaGod's own layout).
 class LayoutEditor : public QDialog
 {
     Q_OBJECT
@@ -65,8 +65,12 @@ public:
     bool saveAs(const QString &Name, QString *Error = nullptr);
     // Use the saved layout for the game the editor was opened for.
     bool useForGame(QString *Error = nullptr);
-    // Load it into the controller service now ("Try now").
+    // Load it into the controller service now ("Try now"); VidyaGod's own is back when the editor closes.
     bool tryNow(QString *Error = nullptr);
+    // Make the saved layout VidyaGod's own ("Use for VidyaGod"): what the controller does in VidyaGod itself (a game has
+    // its own, or the controller as it is). Loaded at once.
+    bool useForApp(QString *Error = nullptr);
+    void done(int R) override;
     QString status() const;   // the status line: saved, used, refused…
 
 private:
@@ -80,7 +84,7 @@ private:
 
     QString Dir, GameKey, GameTitle;
     ControllerLayout::Layout Current;
-    bool Dirty = false, Filling = false;
+    bool Dirty = false, Filling = false, Tried = false;
 
     QComboBox *LayoutCombo = nullptr;
     QLabel *Description = nullptr, *Status = nullptr, *UsedBy = nullptr;
@@ -97,5 +101,5 @@ private:
     QComboBox *StickKeys[4] = {};
     QLabel *Note = nullptr;
     QLineEdit *NameEdit = nullptr;
-    QPushButton *SaveButton = nullptr, *TryButton = nullptr, *UseButton = nullptr, *DeleteButton = nullptr;
+    QPushButton *SaveButton = nullptr, *TryButton = nullptr, *UseButton = nullptr, *AppButton = nullptr, *DeleteButton = nullptr;
 };

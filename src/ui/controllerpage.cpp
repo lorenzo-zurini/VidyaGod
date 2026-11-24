@@ -1,4 +1,6 @@
 #include "controllerpage.h"
+#include "controllerlayout.h"   // VidyaGod's own layout: the choices
+#include "controllerservice.h"  // loadAppLayout
 #include "theme.h"        // the named colours
 #include "appmodel.h"
 #include "deckshell.h"    // ControllerMode — the settings; DeckShell::On — whether this page is inside it
@@ -10,6 +12,7 @@
 #include <QHBoxLayout>
 #include <QLabel>
 #include <QPushButton>
+#include <QSignalBlocker>
 
 #include "apppaths.h"
 #include "layouteditor.h"
@@ -69,6 +72,38 @@ ControllerPage::ControllerPage(AppModel & model, QWidget * parent)
     ShowPads();
     connect(&PadInput::instance(), &PadInput::padsChanged, pads, ShowPads);
     pl->addWidget(pads);
+    //VidyaGod's own layout: what the controller does in VidyaGod itself (a game has its own, or the controller as it is).
+    {
+        const QString Dir = QString::fromStdString((AppPaths::DataRoot() / "ControllerLayouts").string());
+        auto * row = new QHBoxLayout();
+        row->addWidget(new QLabel("VidyaGod's layout", this));
+        auto * appCombo = new QComboBox(this);
+        appCombo->setObjectName("appLayout");
+        appCombo->setAccessibleName("VidyaGod's controller layout");
+        const auto Fill = [appCombo, Dir] {
+            const QSignalBlocker B(appCombo);
+            appCombo->clear();
+            for (const auto & L : ControllerLayout::Templates()) appCombo->addItem(QString::fromStdString(L.Name));
+            for (const auto & L : ControllerLayout::Saved(Dir.toStdString())) appCombo->addItem(QString::fromStdString(L.Name));
+            appCombo->setCurrentIndex(std::max(0, appCombo->findText(QString::fromStdString(ControllerLayout::AppLayout(Dir.toStdString()).Name))));
+        };
+        Fill();
+        connect(appCombo, &QComboBox::currentIndexChanged, this, [appCombo, Dir](int) {
+            ControllerLayout::SetForApp(Dir.toStdString(), appCombo->currentText().toStdString());
+            ControllerService::instance().loadAppLayout(Dir);
+        });
+        auto * edit = new QPushButton("Edit…", this);
+        edit->setObjectName("editAppLayout");
+        connect(edit, &QPushButton::clicked, this, [this, appCombo, Dir, Fill] {
+            LayoutEditor E(Dir, {}, {}, this);
+            E.openLayout(appCombo->currentText());
+            E.exec();
+            Fill();   // saved under a new name, chosen, deleted
+        });
+        row->addWidget(appCombo, 1);
+        row->addWidget(edit);
+        pl->addLayout(row);
+    }
     //Controller layouts: what each control does in a game (a game's own from its launch window, or here, any).
     {
         QPushButton * layouts = new QPushButton("Controller layouts…", this);

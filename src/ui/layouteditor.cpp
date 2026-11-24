@@ -267,9 +267,11 @@ void LayoutEditor::buildUi()
     UseButton = new QPushButton(tr("Use for this game"), this);
     UseButton->setObjectName(QStringLiteral("useLayout"));
     UseButton->setVisible(!GameKey.isEmpty());
+    AppButton = new QPushButton(tr("Use for VidyaGod"), this);
+    AppButton->setObjectName(QStringLiteral("useLayoutForApp"));
     auto *Close = new QPushButton(tr("Close"), this);
     Close->setObjectName(QStringLiteral("closeLayouts"));
-    for (QPushButton *Bt : { SaveButton, TryButton, UseButton, Close }) Bottom->addWidget(Bt);
+    for (QPushButton *Bt : { SaveButton, TryButton, UseButton, AppButton, Close }) Bottom->addWidget(Bt);
     Root->addLayout(Bottom);
     auto *StatusRow = new QHBoxLayout;
     UsedBy = new QLabel(this);
@@ -310,6 +312,7 @@ void LayoutEditor::buildUi()
     connect(SaveButton, &QPushButton::clicked, this, [this] { QString E; if (!saveAs(NameEdit->text().trimmed(), &E)) setStatus(E, true); });
     connect(TryButton, &QPushButton::clicked, this, [this] { QString E; if (!tryNow(&E)) setStatus(E, true); });
     connect(UseButton, &QPushButton::clicked, this, [this] { QString E; if (!useForGame(&E)) setStatus(E, true); });
+    connect(AppButton, &QPushButton::clicked, this, [this] { QString E; if (!useForApp(&E)) setStatus(E, true); });
     connect(Close, &QPushButton::clicked, this, &QDialog::reject);
     //Deleting asks once more, on the same button (a controller has no confirmation box to aim at).
     connect(DeleteButton, &QPushButton::clicked, this, [this] {
@@ -317,6 +320,11 @@ void LayoutEditor::buildUi()
         {
             const QString Gone = Q(Current.Name);
             Remove(Dir.toStdString(), Current.Name);
+            if (ForApp(Dir.toStdString()) == Gone.toStdString())   // VidyaGod's own: the controller as it is again
+            {
+                SetForApp(Dir.toStdString(), {});
+                ControllerService::instance().loadAppLayout(Dir);
+            }
             DeleteButton->setProperty("armed", false);
             DeleteButton->setText(tr("Delete"));
             refillLayouts(QStringLiteral("Gamepad"));
@@ -393,12 +401,14 @@ void LayoutEditor::refreshTree()
     for (const Binding &B : Current.Bindings) Bound << Q(B.Control);
     Picture->setChanged(Bound);
     if (!Was.isEmpty()) selectControl(Was);
-    if (GameKey.isEmpty()) UsedBy->clear();
-    else
+    QStringList Uses;
+    if (!GameKey.isEmpty())
     {
         const QString Chosen = Q(ForGame(Dir.toStdString(), GameKey.toStdString()));
-        UsedBy->setText(Chosen.isEmpty() ? tr("%1 uses: the controller as it is").arg(GameTitle) : tr("%1 uses: %2").arg(GameTitle, Chosen));
+        Uses << (Chosen.isEmpty() ? tr("%1 uses: the controller as it is").arg(GameTitle) : tr("%1 uses: %2").arg(GameTitle, Chosen));
     }
+    Uses << tr("VidyaGod uses: %1").arg(Q(AppLayout(Dir.toStdString()).Name));
+    UsedBy->setText(Uses.join(QStringLiteral(" · ")));
 }
 
 QTreeWidgetItem *LayoutEditor::itemFor(const QString &Id) const
@@ -576,6 +586,7 @@ bool LayoutEditor::saveAs(const QString &Name, QString *Error)
     Dirty = false;
     refillLayouts(Name);
     DeleteButton->setEnabled(true);
+    if (ForApp(Dir.toStdString()) == L.Name) ControllerService::instance().loadAppLayout(Dir);   // VidyaGod's own changed
     setStatus(tr("Saved as %1").arg(Name));
     return true;
 }
@@ -592,9 +603,29 @@ bool LayoutEditor::useForGame(QString *Error)
     return true;
 }
 
+bool LayoutEditor::useForApp(QString *Error)
+{
+    if (Dirty) { if (Error) *Error = tr("Save the changes first: VidyaGod uses a saved layout"); return false; }
+    if (!SetForApp(Dir.toStdString(), Current.Name)) { if (Error) *Error = tr("Cannot write in %1").arg(Dir); return false; }
+    QString E;
+    if (!ControllerService::instance().loadAppLayout(Dir, &E)) { if (Error) *Error = E; return false; }
+    Tried = false;   // what is on the controller is VidyaGod's own now
+    refreshTree();
+    setStatus(tr("VidyaGod now uses %1").arg(Q(Current.Name)));
+    return true;
+}
+
+void LayoutEditor::done(int R)
+{
+    //A layout tried here was for here: VidyaGod's own is back on the controller.
+    if (Tried) { ControllerService::instance().loadAppLayout(Dir); Tried = false; }
+    QDialog::done(R);
+}
+
 bool LayoutEditor::tryNow(QString *Error)
 {
     QString E;
+    Tried = true;
     if (!ControllerService::instance().loadLayout(Q(Current.toProfile().dump()), &E)) { if (Error) *Error = E; return false; }
     setStatus(ControllerService::instance().running() ? tr("On the controller now") : tr("The controller service is not running: it takes this when it starts"));
     return true;

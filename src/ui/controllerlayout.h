@@ -96,7 +96,8 @@ void SetVolumeKeysToVidyaGod(bool On);
 bool VolumeKeysToVidyaGod();
 
 // The user's layouts, on disk under Dir (<data dir>/ControllerLayouts): saved by name, listed, removed, and which
-// game uses which (games.json: {game key: layout name}). A name is a file name: no slashes, no leading dot.
+// game uses which (games.json: {game key: layout name}). A name is a file name: no slashes, no leading dot, and not
+// "games" or "app" (the choices' own files).
 std::vector<Layout> Saved(const std::string &Dir);
 bool Save(const std::string &Dir, const Layout &L, std::string *Error = nullptr);
 bool Remove(const std::string &Dir, const std::string &Name);
@@ -104,5 +105,13 @@ std::optional<Layout> Named(const std::string &Dir, const std::string &Name);   
 std::string ForGame(const std::string &Dir, const std::string &GameKey);         // "" = none chosen
 bool SetForGame(const std::string &Dir, const std::string &GameKey, const std::string &Name);   // "" clears
 std::map<std::string, std::string> Games(const std::string &Dir);                              // every game's choice
+// What a running game's controller does: its own layout, or Gamepad (the controller as it is) when it has none or it
+// is gone — never VidyaGod's own (a menu layout under a game: sticks as the mouse, buttons as keys).
+Layout GameLayout(const std::string &Dir, const std::string &GameKey);
+// VidyaGod's own layout: what the controller does in VidyaGod itself, while no game of its runs (app.json beside the
+// layouts: {"layout": name}). "" = none chosen: "Gamepad", the controller as it is.
+std::string ForApp(const std::string &Dir);
+bool SetForApp(const std::string &Dir, const std::string &Name);   // "" or "Gamepad": the controller as it is
+Layout AppLayout(const std::string &Dir);                          // the chosen one; Gamepad when none is, or it is gone
 bool ValidName(const std::string &Name);
 }

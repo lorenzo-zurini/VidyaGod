@@ -76,6 +76,11 @@ public:
     // A game's layout, over the one above while it is set (a game VidyaGod launched is running); "" lets it go and
     // the layout above is back. False, with Error, when a controller refuses it.
     bool setGameLayout(const QString &Yaml, QString *Error = nullptr);
+    // VidyaGod's own layout (ControllerLayout::AppLayout of the layouts in Dir) as the layout above (the game's goes over
+    // it while one runs): at the start, when another is chosen or the chosen one is saved, and when a layout tried in
+    // the configurator is let go.
+    bool loadAppLayout(const QString &Dir, QString *Error = nullptr);
+    QString appLayoutDir() const { return AppLayoutDir; }   // "" until loadAppLayout
     QString gameLayout() const { return GameLayout; }
 
     // InputPlumber's intercept on every owned controller: 0 nothing; 1 only Guide (which then switches it to 2 on its
@@ -115,7 +120,7 @@ private:
     bool applyTo(const QString &Yaml, QString *Error);   // one layout to every owned controller ("" = InputPlumber's default)
     QDBusConnection connection() const;
 
-    QString Program, Bus = QStringLiteral("session"), DataDir, Layout, GameLayout;
+    QString Program, Bus = QStringLiteral("session"), DataDir, Layout, GameLayout, AppLayoutDir;
     std::uint8_t Needs = 0;
     QProcess *Proc = nullptr;
     bool Answering = false;

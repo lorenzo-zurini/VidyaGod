@@ -51,6 +51,7 @@ class Device : public QObject, protected QDBusContext
     Q_PROPERTY(QStringList SourceDevicePaths READ sources)
     Q_PROPERTY(uint InterceptMode READ intercept WRITE setIntercept)
     Q_PROPERTY(QStringList Sent READ sent)
+    Q_PROPERTY(QString LoadedYaml READ loadedYaml)   // the text of the last LoadProfileFromYaml (a test reads its mapping)
 public:
     QStringList sent() const { return SentEvents; }
     uint intercept() const { return Intercept; }
@@ -58,6 +59,7 @@ public:
     Device(QString N, QStringList S) : Nm(std::move(N)), Src(std::move(S)) {}
     QString name() const { return Nm; }
     QString profileName() const { return Profile; }
+    QString loadedYaml() const { return Loaded; }
     QStringList sources() const { return Src; }
 public slots:
     void LoadProfileFromYaml(const QString &Yaml)
@@ -71,12 +73,13 @@ public slots:
         static const QRegularExpression N(QStringLiteral("(?m)^name:\\s*(.+)$|\"name\"\\s*:\\s*\"([^\"]*)\""));
         const QRegularExpressionMatch M = N.match(Yaml);
         Profile = (M.captured(1).isEmpty() ? M.captured(2) : M.captured(1)).trimmed();
+        Loaded = Yaml;
     }
-    void LoadProfilePath(const QString &Path) { Profile = QStringLiteral("Default from ") + QFileInfo(Path).fileName(); }
+    void LoadProfilePath(const QString &Path) { Profile = QStringLiteral("Default from ") + QFileInfo(Path).fileName(); Loaded.clear(); }
     // What InputPlumber's SendEvent writes to its targets; recorded as "Keyboard:KeyH+" (down) / "-" (up) for a test.
     void SendEvent(const QString &Event, const QDBusVariant &Value) { SentEvents << Event + (Value.variant().toBool() ? QLatin1Char('+') : QLatin1Char('-')); }
 private:
-    QString Nm, Profile = QStringLiteral("Default");
+    QString Nm, Profile = QStringLiteral("Default"), Loaded;
 public:
     uint Intercept = 0;
     QStringList SentEvents;

@@ -328,6 +328,8 @@ std::optional<Layout> Layout::FromJson(const ojson &J, std::string *Error)
     return L;
 }
 
+namespace { ojson VolumeKeyMapping(); }
+
 ojson Layout::toProfile() const
 {
     ojson Map = ojson::array();
@@ -373,17 +375,28 @@ ojson Layout::toProfile() const
     //A handheld's volume keys (on InputPlumber's keyboard source) reach VidyaGod, which sets the volume
     //(VolumeKeys): a D-Bus event goes to VidyaGod whatever the intercept, a game running or not. Only in VidyaGod's
     //session: on a desktop, the desktop answers them.
-    for (const auto &[Key, Event] : { std::pair{ "KeyVolumeUp", "ui_volume_up" }, std::pair{ "KeyVolumeDown", "ui_volume_down" },
-                                     std::pair{ "KeyMute", "ui_volume_mute" } })
-        if (VolumeKeysToVidyaGod()) Map.push_back({ { "name", std::string("Volume ") + Event }, { "source_event", { { "keyboard", Key } } },
-                        { "target_events", ojson::array({ { { "dbus", Event } } }) } });
+    if (VolumeKeysToVidyaGod())
+        for (const ojson &M : VolumeKeyMapping()) Map.push_back(M);
     ojson P = { { "version", 1 }, { "kind", "DeviceProfile" }, { "name", Name } };
     if (!Description.empty()) P["description"] = Description;
     P["mapping"] = Map;
     return P;
 }
 
-namespace { std::atomic<bool> VolumeRouted{false}; }
+namespace
+{
+//The volume keys' mapping (every layout carries it while VolumeKeysToVidyaGod): KeyVolumeUp/Down/Mute → ui_volume_*.
+ojson VolumeKeyMapping()
+{
+    ojson Map = ojson::array();
+    for (const auto &[Key, Event] : { std::pair{ "KeyVolumeUp", "ui_volume_up" }, std::pair{ "KeyVolumeDown", "ui_volume_down" },
+                                     std::pair{ "KeyMute", "ui_volume_mute" } })
+        Map.push_back({ { "name", std::string("Volume ") + Event }, { "source_event", { { "keyboard", Key } } },
+                        { "target_events", ojson::array({ { { "dbus", Event } } }) } });
+    return Map;
+}
+std::atomic<bool> VolumeRouted{false};
+}
 void SetVolumeKeysToVidyaGod(bool On) { VolumeRouted = On; }
 bool VolumeKeysToVidyaGod() { return VolumeRouted; }
 
@@ -447,7 +460,7 @@ const std::vector<Layout> &Templates()
 
 bool ValidName(const std::string &N)
 {
-    if (N.empty() || N.size() > 64 || N[0] == '.' || N == "games") return false;
+    if (N.empty() || N.size() > 64 || N[0] == '.' || N == "games" || N == "app") return false;
     for (const unsigned char Ch : N) if (Ch < 0x20 || Ch == '/' || Ch == '\\' || Ch == 0x7f) return false;
     return true;
 }
@@ -537,6 +550,34 @@ std::map<std::string, std::string> Games(const std::string &Dir)
     if (auto J = ReadJson(fs::path(Dir) / "games.json"); J && J->is_object())
         for (auto It = J->begin(); It != J->end(); ++It) if (It.value().is_string()) Out[It.key()] = It.value().get<std::string>();
     return Out;
+}
+
+std::string ForApp(const std::string &Dir)
+{
+    if (auto J = ReadJson(fs::path(Dir) / "app.json"); J && J->is_object() && J->contains("layout") && (*J)["layout"].is_string())
+        return (*J)["layout"].get<std::string>();
+    return {};
+}
+
+bool SetForApp(const std::string &Dir, const std::string &Name)
+{
+    std::error_code Ec;
+    if (Name.empty() || Name == "Gamepad") { fs::remove(fs::path(Dir) / "app.json", Ec); return !Ec; }
+    return WriteJson(fs::path(Dir) / "app.json", ojson{ { "layout", Name } });
+}
+
+Layout GameLayout(const std::string &Dir, const std::string &GameKey)
+{
+    if (const std::string N = ForGame(Dir, GameKey); !N.empty())
+        if (auto L = Named(Dir, N)) return *L;
+    return Templates().front();   // Gamepad
+}
+
+Layout AppLayout(const std::string &Dir)
+{
+    if (const std::string N = ForApp(Dir); !N.empty())
+        if (auto L = Named(Dir, N)) return *L;
+    return Templates().front();   // Gamepad
 }
 
 bool SetForGame(const std::string &Dir, const std::string &GameKey, const std::string &Name)

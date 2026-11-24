@@ -6,6 +6,7 @@
 #include <QCheckBox>
 #include <QComboBox>
 #include <QFile>
+#include <QLabel>
 #include <QProcess>
 #include <QPushButton>
 #include <QTemporaryDir>
@@ -13,6 +14,7 @@
 
 #include "controllerlayout.h"
 #include "layouteditor.h"
+#include "controllerservice.h"
 
 using namespace ControllerLayout;
 
@@ -219,6 +221,42 @@ private slots:
         QVERIFY(Saved(Dir).empty());
     }
 
+    // VidyaGod's own layout: Gamepad until one is chosen, the chosen one by name (a template or the user's), Gamepad again
+    // when it is cleared or gone; its file is no layout of the user's, and its name is taken. Teeth: ForApp read from
+    // the wrong place; a chosen layout that is gone loaded anyway (nothing); app.json listed as a layout.
+    void vidyagods_own_layout_is_chosen_by_name()
+    {
+        QTemporaryDir T;
+        const std::string Dir = T.path().toStdString();
+        QCOMPARE(AppLayout(Dir).Name, std::string("Gamepad"));
+        QCOMPARE(ForApp(Dir), std::string());
+        QVERIFY(SetForApp(Dir, "Desktop"));
+        QCOMPARE(ForApp(Dir), std::string("Desktop"));
+        QCOMPARE(AppLayout(Dir).Name, std::string("Desktop"));
+        Layout Mine = Templates()[1];
+        Mine.Name = "Menus";
+        std::string E;
+        QVERIFY2(Save(Dir, Mine, &E), E.c_str());
+        QVERIFY(SetForApp(Dir, "Menus"));
+        QCOMPARE(AppLayout(Dir).Name, std::string("Menus"));
+        QVERIFY(AppLayout(Dir).Bindings == Mine.Bindings);
+        QCOMPARE(Saved(Dir).size(), size_t(1));                                 // app.json is not a layout
+        QVERIFY(Remove(Dir, "Menus"));
+        QCOMPARE(AppLayout(Dir).Name, std::string("Gamepad"));                  // gone: the controller as it is
+        QVERIFY(SetForApp(Dir, "Desktop"));
+        QVERIFY(SetForApp(Dir, ""));
+        QCOMPARE(ForApp(Dir), std::string());
+        QVERIFY(!ValidName("app"));
+        // A game's: its own, else the controller as it is — never VidyaGod's (Desktop here). Teeth: the game's choice
+        // ignored; VidyaGod's taken for a game with none.
+        QVERIFY(SetForApp(Dir, "Desktop"));
+        QCOMPARE(GameLayout(Dir, "g").Name, std::string("Gamepad"));
+        QVERIFY(SetForGame(Dir, "g", "Keyboard and mouse (WASD)"));
+        QCOMPARE(GameLayout(Dir, "g").Name, std::string("Keyboard and mouse (WASD)"));
+        QVERIFY(SetForGame(Dir, "g", "Gone"));
+        QCOMPARE(GameLayout(Dir, "g").Name, std::string("Gamepad"));
+    }
+
     // The names people read: keys as a keyboard prints them, pad buttons as a controller labels them.
     void labels_are_what_people_read()
     {
@@ -286,6 +324,46 @@ private slots:
         QVERIFY(!QFile::exists(T.filePath(QStringLiteral("Some Game pad.json"))));
         QCOMPARE(QString::fromStdString(E.current().Name), QStringLiteral("Gamepad"));
         QVERIFY(!Del->isEnabled());                   // VidyaGod's own cannot be deleted
+    }
+
+    // The configurator makes a saved layout VidyaGod's own and puts it on the controller; a layout tried there is let go
+    // when it closes (VidyaGod's own back); deleting VidyaGod's own makes it Gamepad again. Teeth: Use for VidyaGod
+    // not loading it; Try now left on after the close; a deleted own layout left chosen.
+    void the_configurator_chooses_vidyagods_own_layout()
+    {
+        QTemporaryDir T;
+        ControllerService &S = ControllerService::instance();
+        const auto Restore = qScopeGuard([&] { S.loadLayout({}); });
+        auto Loaded = [&] { return QString::fromStdString(ojson::parse(S.layout().toStdString(), nullptr, false).value("name", std::string())); };
+        {
+            LayoutEditor E(T.path());
+            QVERIFY(E.openLayout(QStringLiteral("Desktop")));
+            QString Err;
+            QVERIFY(E.useForApp(&Err));
+            QCOMPARE(ForApp(T.path().toStdString()), std::string("Desktop"));
+            QCOMPARE(Loaded(), QStringLiteral("Desktop"));
+            QVERIFY(E.findChild<QLabel *>(QStringLiteral("usedBy"))->text().contains(QLatin1String("VidyaGod uses: Desktop")));
+            QVERIFY(E.openLayout(QStringLiteral("Keyboard and mouse (WASD)")));
+            QVERIFY(E.tryNow(&Err));
+            QCOMPARE(Loaded(), QStringLiteral("Keyboard and mouse (WASD)"));
+            E.reject();
+        }
+        QCOMPARE(Loaded(), QStringLiteral("Desktop"));                          // tried, then let go
+        {
+            LayoutEditor E(T.path());
+            QVERIFY(E.openLayout(QStringLiteral("Desktop")));
+            QVERIFY(E.selectControl(QStringLiteral("y")));
+            QString Err;
+            QVERIFY(E.bindSelected(Binding{ "y", "", { Action{ Action::Type::Keyboard, "KeySpace" } }, {}, 800 }, &Err));
+            QVERIFY(E.saveAs(QStringLiteral("Mine"), &Err));
+            QVERIFY(E.useForApp(&Err));
+            QCOMPARE(Loaded(), QStringLiteral("Mine"));
+            auto *Del = E.findChild<QPushButton *>(QStringLiteral("deleteLayout"));
+            Del->click();
+            Del->click();
+            QCOMPARE(ForApp(T.path().toStdString()), std::string());
+            QCOMPARE(Loaded(), QStringLiteral("Gamepad"));
+        }
     }
 
     // Opened for a game that has a layout, it opens that one; a refused binding says why and changes nothing.

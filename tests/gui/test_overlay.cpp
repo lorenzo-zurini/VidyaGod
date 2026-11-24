@@ -129,14 +129,24 @@ private slots:
         QCOMPARE(O.layoutName(), QStringLiteral("Gamepad"));
         QTRY_VERIFY_WITH_TIMEOUT(QApplication::focusWidget() && QApplication::focusWidget()->objectName() == QLatin1String("resume"), 3000);
 
+        //VidyaGod's own layout (its menus') is Desktop: a game put back to the controller as it is gets Gamepad, not it.
+        const std::string Dir = (AppPaths::DataRoot() / "ControllerLayouts").string();
+        QVERIFY(ControllerLayout::SetForApp(Dir, "Desktop"));
+        QVERIFY(S.loadAppLayout(QString::fromStdString(Dir)));
+        const auto Restore = qScopeGuard([&] { ControllerLayout::SetForApp(Dir, ""); S.loadLayout({}); });
         Press(Bus.Address, QStringLiteral("ui_down"));
         QTRY_VERIFY_WITH_TIMEOUT(QApplication::focusWidget() && QApplication::focusWidget()->objectName() == QLatin1String("overlayLayouts"), 3000);
         Press(Bus.Address, QStringLiteral("ui_right"));
         QTRY_COMPARE_WITH_TIMEOUT(O.layoutName(), QStringLiteral("Keyboard and mouse (WASD)"), 3000);
-        const std::string Dir = (AppPaths::DataRoot() / "ControllerLayouts").string();
         QCOMPARE(ControllerLayout::ForGame(Dir, "g1"), std::string("Keyboard and mouse (WASD)"));
         QVERIFY(S.gameLayout().contains(QLatin1String("Keyboard and mouse (WASD)")));
         QTRY_COMPARE_WITH_TIMEOUT(S.devices().value(0).Profile, QStringLiteral("Keyboard and mouse (WASD)"), 3000);
+        Press(Bus.Address, QStringLiteral("ui_left"));
+        QTRY_COMPARE_WITH_TIMEOUT(O.layoutName(), QStringLiteral("Gamepad"), 3000);
+        QCOMPARE(ControllerLayout::ForGame(Dir, "g1"), std::string());
+        QTRY_COMPARE_WITH_TIMEOUT(S.devices().value(0).Profile, QStringLiteral("Gamepad"), 3000);   // not Desktop
+        Press(Bus.Address, QStringLiteral("ui_right"));
+        QTRY_COMPARE_WITH_TIMEOUT(O.layoutName(), QStringLiteral("Keyboard and mouse (WASD)"), 3000);
 
         Press(Bus.Address, QStringLiteral("ui_back"));
         QTRY_VERIFY_WITH_TIMEOUT(!O.isOpen(), 3000);

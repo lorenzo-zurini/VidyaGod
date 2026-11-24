@@ -16,6 +16,7 @@
 #include <QTemporaryDir>
 
 #include "controllerservice.h"
+#include "controllerlayout.h"
 #include "launchparams.h"   // ContainerParams
 #include "padinput.h"
 #include "sandboxlayer.h"
@@ -214,6 +215,29 @@ private slots:
         QVERIFY(S.loadLayout({}));
         QCOMPARE(S.devices().value(0).Profile, QStringLiteral("Default from default.yaml"));
         S.setDataDir({});
+    }
+
+    // VidyaGod's own layout reaches the controllers as the layout under every game's: Gamepad until one is chosen, the
+    // chosen one by name, and in VidyaGod's session with the volume keys (it is the session's layout from the start: the
+    // Deck's +/− went nowhere while none was loaded). Teeth: loadAppLayout not loading; the session's keys left out.
+    void vidyagods_own_layout_reaches_the_controllers()
+    {
+        PrivateBus Bus;
+        QTemporaryDir Layouts;
+        ControllerLayout::SetVolumeKeysToVidyaGod(true);
+        const auto Restore = qScopeGuard([&] { ControllerLayout::SetVolumeKeysToVidyaGod(false); S.loadLayout({}); });
+        QVERIFY(S.loadAppLayout(Layouts.path()));
+        QCOMPARE(S.appLayoutDir(), Layouts.path());
+        UseMock(Bus, QStringLiteral("/dev/hidraw-test5"));
+        S.want(ControllerService::Need::ControllerMode, true);
+        QTRY_VERIFY_WITH_TIMEOUT(S.running(), 10000);
+        QTRY_COMPARE_WITH_TIMEOUT(S.devices().value(0).Profile, QStringLiteral("Gamepad"), 5000);
+        const QString Loaded = Prop(Bus.Address, S.devices().value(0).Path, QStringLiteral("org.shadowblip.Input.CompositeDevice"),
+                                    QStringLiteral("LoadedYaml")).toString();
+        QVERIFY2(Loaded.contains(QLatin1String("ui_volume_up")) && Loaded.contains(QLatin1String("ui_volume_down")), qPrintable(Loaded));
+        QVERIFY(ControllerLayout::SetForApp(Layouts.path().toStdString(), "Desktop"));
+        QVERIFY(S.loadAppLayout(Layouts.path()));
+        QCOMPARE(S.devices().value(0).Profile, QStringLiteral("Desktop"));
     }
 
     // Typing into a game: each character a key on InputPlumber's virtual keyboard, Shift with capitals and shifted

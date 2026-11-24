@@ -1,6 +1,7 @@
 #include "controllerservice.h"
 
 #include "commonutils.h"    // Log*
+#include "controllerlayout.h" // AppLayout — VidyaGod's own layout
 #include "launchthread.h"   // LaunchThread::Running — VidyaGod's games
 #include "padinput.h"
 #include "sandboxlayer.h"   // SandboxLayer::SetHiddenDevicesSource
@@ -12,6 +13,7 @@
 #include <QDBusServiceWatcher>
 #include <QDBusVariant>
 #include <QDir>
+#include <QFile>
 #include <QFileInfo>
 #include <QProcessEnvironment>
 #include <QRegularExpression>
@@ -372,6 +374,12 @@ bool ControllerService::loadLayout(const QString &Yaml, QString *Error)
     Layout = Yaml;
     if (!Answering || !GameLayout.isEmpty()) return true;   // loaded when it comes up, or when the game's is let go
     return applyTo(Layout, Error);
+}
+
+bool ControllerService::loadAppLayout(const QString &Dir, QString *Error)
+{
+    AppLayoutDir = Dir;
+    return loadLayout(QString::fromStdString(ControllerLayout::AppLayout(Dir.toStdString()).toProfile().dump()), Error);
 }
 
 bool ControllerService::setGameLayout(const QString &Yaml, QString *Error)

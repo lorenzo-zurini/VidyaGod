@@ -137,6 +137,9 @@ MainWindow::MainWindow(nlohmann::ordered_json * gc, QDir * appData, QWidget * pa
     //The in-game overlay: the Guide button over a game VidyaGod launched (through the controller service's intercept).
     GameOverlay::instance().attach();
     VolumeKeys::instance().follow();   //the handheld's volume keys (through the controller service)
+    //VidyaGod's own layout (Settings → Controller): what the controller does in VidyaGod itself (a game has its own, or
+    //the controller as it is). After the session's volume routing is set: every layout carries the keys there.
+    ControllerService::instance().loadAppLayout(QString::fromStdString((AppPaths::DataRoot() / "ControllerLayouts").string()));
 
     //Controllers: one router for every window the app opens; Start with Back held turns controller mode on from the
     //desktop (after the press itself has been routed: queued).

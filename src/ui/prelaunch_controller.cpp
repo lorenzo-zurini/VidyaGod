@@ -302,11 +302,12 @@ void PreLaunchWindow::ApplyGameLayout(bool On)
     if (On) GameOverlay::instance().setGame(TitleLabel ? TitleLabel->text() : QString(), LayoutKey(), [this] { if (KillButton->isVisible()) onKillClicked(); });
     else GameOverlay::instance().clearGame();
     if (!On) { if (!S.gameLayout().isEmpty()) S.setGameLayout({}); return; }
+    //Its own layout, or the controller as it is — never VidyaGod's own (the menus'), which waits under it.
     const std::string Name = ControllerLayout::ForGame(LayoutsDir(), LayoutKey().toStdString());
-    if (Name.empty()) return;
-    const auto L = ControllerLayout::Named(LayoutsDir(), Name);
-    if (!L) { LogWarn("PreLaunchWindow", "the controller layout '" + Name + "' this game uses is gone: the controller as it is"); return; }
+    if (!Name.empty() && !ControllerLayout::Named(LayoutsDir(), Name))
+        LogWarn("PreLaunchWindow", "the controller layout '" + Name + "' this game uses is gone: the controller as it is");
+    const ControllerLayout::Layout L = ControllerLayout::GameLayout(LayoutsDir(), LayoutKey().toStdString());
     QString Error;
-    if (!S.setGameLayout(QString::fromStdString(L->toProfile().dump()), &Error))
-        LogWarn("PreLaunchWindow", "the controller refused the layout '" + Name + "': " + Error.toStdString());
+    if (!S.setGameLayout(QString::fromStdString(L.toProfile().dump()), &Error))
+        LogWarn("PreLaunchWindow", "the controller refused the layout '" + L.Name + "': " + Error.toStdString());
 }
