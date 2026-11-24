@@ -42,8 +42,10 @@ bool LinkLeadsOut(const std::filesystem::path &Base, const std::filesystem::path
 //With a Section (its header line, "[Graphics]", "[display.quality]"): only the lines between that header and the next
 //header (an INI section, a TOML table or array of tables), the key matched by name; none there: Key+Value goes at the
 //section's end; no such section: the header and the line go at the file's end. A file absent then is created.
+//MayBeAbsent: the op says what its key's absence means (ABSENT), so the program drops it at its default and adding it
+//back is no surprise (logged plainly, not as a warning: a misspelt KEY or SECTION on another op is).
 [[nodiscard]] bool ConfigWrite(const std::string &Key, const std::string &Value, const std::filesystem::path &FilePath,
-                               const std::string &Section = {});
+                               const std::string &Section = {}, bool MayBeAbsent = false);
 //What a ConfigWrite of Key (in Section, "" = anywhere) finds in Text: the first matching line, its value; nullopt when
 //none. The read-back's view of the same lines the edit writes. Toml: the file is TOML (its section names keep case).
 std::optional<std::string> ConfigRead(const std::string &Text, const std::string &Key, const std::string &Section = {}, bool Toml = false);

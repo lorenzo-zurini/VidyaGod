@@ -39,6 +39,7 @@ struct Reading
 {
     std::string Value;
     bool DefaultOnly = false;
+    bool FromAbsent = false;   // only what an absent key means (ABSENT), not a value the file holds
 };
 //The options that read back and what the user's saved files hold for them now. Left out: no saved copy yet, a value
 //the game removed (what that means is the game's own default, which the package may not know), a value that does not
@@ -51,8 +52,10 @@ std::map<std::string, std::string> Current(const ContainerParams &CP);
 //Takes what Read found into an instance's config (instance.json). LAST_IN_FILE is what each file last held as far as
 //VidyaGod knows (what a launch wrote, or what was read back). A file holding something else was changed by the game,
 //and that value becomes the option's saved value — unless the option was changed in the launcher too since then: the
-//launcher's choice wins. A package-default-only option always follows its file. Returns the options whose saved value
-//changed; Touched says whether the config changed at all.
+//launcher's choice wins. A package-default-only option always follows its file. A key absent from a file that held no
+//known value yet (a file from before the option existed) was never written, not changed in the game: the option keeps
+//its value and the launch writes it. Returns the options whose saved value changed; Touched says whether the config
+//changed at all.
 std::vector<std::string> Adopt(nlohmann::ordered_json &InstanceConfig, const std::map<std::string, Reading> &Found,
                                const std::map<std::string, std::string> &Now, bool &Touched);
 

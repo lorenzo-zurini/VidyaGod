@@ -234,12 +234,19 @@ std::vector<OptionReadBack::Site> OptionReadBack::Sites(const ContainerParams &C
 namespace {
 
 //What one site's file holds, as the option holds it: nullopt for nothing to read (and for a removed value).
-std::optional<std::string> ValueAt(const ContainerParams &CP, const OptionReadBack::Site &S, const std::string &Text)
+std::optional<std::string> ValueAt(const ContainerParams &CP, const OptionReadBack::Site &S, const std::string &Text,
+                                   bool *FromAbsent = nullptr)
 {
     std::optional<std::vector<std::string>> Texts;
+    if (FromAbsent) *FromAbsent = false;
     if (!AtSite(S, Text, Texts)) return std::nullopt;
     //Its key is not there: what the op says that means (ABSENT), when it says and the option can hold it.
-    if (!Texts) return S.Absent && Holds(CP.VarDecls.at(S.Option), *S.Absent) ? S.Absent : std::nullopt;
+    if (!Texts)
+    {
+        if (!S.Absent || !Holds(CP.VarDecls.at(S.Option), *S.Absent)) return std::nullopt;
+        if (FromAbsent) *FromAbsent = true;
+        return S.Absent;
+    }
     for (const std::string &T : *Texts)
     {
         if (T.size() < S.Prefix.size() + S.Suffix.size() || T.compare(0, S.Prefix.size(), S.Prefix) != 0
@@ -264,11 +271,13 @@ std::map<std::string, OptionReadBack::Reading> OptionReadBack::Read(const Contai
         if (!Saved) continue;
         const std::optional<std::string> Text = SafeRead(CP.UserDataPath, *Saved);
         if (!Text) continue;
-        const std::optional<std::string> V = ValueAt(CP, S, *Text);
+        bool FromAbsent = false;
+        const std::optional<std::string> V = ValueAt(CP, S, *Text, &FromAbsent);
         if (!V) continue;
         const auto It = Out.find(S.Option);
-        if (It == Out.end()) Out[S.Option] = Reading{ *V, false };
+        if (It == Out.end()) Out[S.Option] = Reading{ *V, false, FromAbsent };
         else if (It->second.Value != *V) Disagree.insert(S.Option);
+        else It->second.FromAbsent = It->second.FromAbsent && FromAbsent;
     }
     for (const std::string &K : Disagree) Out.erase(K);
     for (auto &[K, R] : Out) R.DefaultOnly = !AnyWritten[K];
@@ -302,6 +311,9 @@ std::vector<std::string> OptionReadBack::Adopt(nlohmann::ordered_json &InstanceC
         const auto N = Now.find(K);
         const bool Differs = N == Now.end() || N->second != R.Value;
         const bool Known = Last.contains(K) && Last[K].is_string();
+        //A key absent from a file that never held a known value (one from before the option existed): never written,
+        //not changed in the game. Nothing is taken; the launch writes the option's value, and that becomes the known one.
+        if (R.FromAbsent && !Known && !R.DefaultOnly) continue;
         bool Take = false;
         if (R.DefaultOnly) Take = Differs;                                    // the launcher never writes it: the file decides
         else if (!Known) Take = Differs;                                      // first seen: the file is what the game uses

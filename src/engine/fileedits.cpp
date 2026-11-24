@@ -216,7 +216,7 @@ bool FileEdits::ProcessFileEdits(struct ContainerParams &ContainerParams, bool O
 
         bool EditOk = true;
         if (Mode == "ConfigWrite")
-            EditOk = FileEdits::ConfigWrite(Key, Value, FilePath, Section);
+            EditOk = FileEdits::ConfigWrite(Key, Value, FilePath, Section, Sub.contains("ABSENT"));
         else if (Mode == "JsonSet")
             EditOk = FileEdits::JsonSet(Key, Value, FilePath);
         else if (Mode == "XmlSet")
@@ -415,7 +415,7 @@ std::optional<std::string> FileEdits::ConfigRead(const std::string &Text, const 
 }
 
 bool FileEdits::ConfigWrite(const std::string &Key, const std::string &Value, const std::filesystem::path &FilePath,
-                            const std::string &Section)
+                            const std::string &Section, bool MayBeAbsent)
 {
     LogOut("FileEdits::ConfigWrite", "FilePath: " + FilePath.string() + (Section.empty() ? std::string() : " Section: " + Section)
            + " Key: " + Key + " Value: " + Value);
@@ -452,7 +452,8 @@ bool FileEdits::ConfigWrite(const std::string &Key, const std::string &Value, co
                 size_t At = End;
                 while (At > Header + 1 && Trimmed(Lines[At - 1]).empty()) --At;
                 Lines.insert(Lines.begin() + (std::ptrdiff_t)At, Key + Value + Eol);
-                LogWarn("FileEdits::ConfigWrite", "no '" + Key + "' in " + Section + " of " + FilePath.string() + " — added it there");
+                Log(MayBeAbsent ? LogLevel::OUT : LogLevel::WARN, "FileEdits::ConfigWrite",
+                    "no '" + Key + "' in " + Section + " of " + FilePath.string() + " — added it there");
             }
         }
         else
@@ -461,7 +462,8 @@ bool FileEdits::ConfigWrite(const std::string &Key, const std::string &Value, co
             Lines.push_back(Trimmed(Section) + Eol);
             Lines.push_back(Key + Value + Eol);
             if (!Blank)
-                LogWarn("FileEdits::ConfigWrite", "no " + Section + " in " + FilePath.string() + " — added it at the end with '" + Key + "'");
+                Log(MayBeAbsent ? LogLevel::OUT : LogLevel::WARN, "FileEdits::ConfigWrite",
+                    "no " + Section + " in " + FilePath.string() + " — added it at the end with '" + Key + "'");
         }
         if (FilePath.has_parent_path()) std::filesystem::create_directories(FilePath.parent_path(), Ec);
         std::ofstream Out(FilePath, std::ios::binary | std::ios::trunc);

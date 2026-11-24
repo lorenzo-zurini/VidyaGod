@@ -1,6 +1,7 @@
 #include "vgtest.h"
 #include "fileedits.h"
 #include "launchparams.h"   // ContainerParams — ProcessFileEdits takes one
+#include "commonutils.h"    // Diagnostics — what the edit pass warned of
 
 #include <filesystem>
 #include <fstream>
@@ -210,6 +211,21 @@ TEST(the_edit_pass_writes_a_configwrite_in_its_section)
         nlohmann::ordered_json{{"TYPE","FileEdit"},{"FILE","c.toml"},{"MODE","ConfigWrite"},{"SECTION","[%which%]"},{"KEY","k = "},{"VALUE","9"}}});
     CHECK(FileEdits::ProcessFileEdits(CP, /*OverridePass=*/false, Base));
     CHECK_EQ(ReadAll(Base / "c.toml"), std::string("[a]\nk = 1\n[b]\nk = 9\n"));
+    //A key the program drops at its default (the op says what that means: ABSENT) is added back without a warning; a
+    //key added for an op that says nothing is warned of (a misspelt KEY or SECTION). Teeth: warn for both; for neither.
+    auto Warned = [&](bool Absent) {
+        Write(Base / "c.toml", "[a]\nk = 1\n");
+        nlohmann::ordered_json Op{{"TYPE","FileEdit"},{"FILE","c.toml"},{"MODE","ConfigWrite"},{"SECTION","[d]"},{"KEY","j = "},{"VALUE","9"}};
+        if (Absent) Op["ABSENT"] = "1";
+        CP.SubComponentsArray = nlohmann::ordered_json::array({ Op });
+        Diagnostics::Begin();
+        CHECK(FileEdits::ProcessFileEdits(CP, /*OverridePass=*/false, Base));
+        const auto R = Diagnostics::Take();
+        CHECK_EQ(ReadAll(Base / "c.toml"), std::string("[a]\nk = 1\n\n[d]\nj = 9\n"));
+        return R.Warnings + R.Errors;
+    };
+    CHECK_EQ(Warned(true), (size_t)0);
+    CHECK_EQ(Warned(false), (size_t)1);
     std::filesystem::remove_all(Root);
 }
 

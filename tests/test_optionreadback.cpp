@@ -147,6 +147,23 @@ TEST(readback_reads_a_section_and_what_an_absent_key_means)
     CHECK(At(R, "scale") == std::optional<std::string>("1"));
     F.Put("xemu.toml", "  \n");                                          // a save cut short
     CHECK(!OptionReadBack::Read(F.CP).count("scale"));
+    CHECK(R.at("scale").FromAbsent && !R.at("renderer").FromAbsent);
+    //A key absent from a file that never held a known value (one from before the option existed) was never written:
+    //the option keeps its value. Once a value was known there, the key gone is the game's default. Teeth: take ABSENT
+    //with nothing known (the screen's 2x becomes 1x); never take it (a 1x picked in the game is lost).
+    json C = json::object();
+    bool Touched = false;
+    CHECK(OptionReadBack::Adopt(C, R, {{"scale", "2"}, {"renderer", "VULKAN"}}, Touched).empty());
+    CHECK(!C["VARIABLES"].contains("scale") && !C["LAST_IN_FILE"].contains("scale"));
+    C["LAST_IN_FILE"]["scale"] = "3";
+    CHECK(OptionReadBack::Adopt(C, R, {{"scale", "3"}, {"renderer", "VULKAN"}}, Touched) == std::vector<std::string>{"scale"});
+    CHECK(C["VARIABLES"]["scale"] == "1" && C["LAST_IN_FILE"]["scale"] == "1");
+    json Other = Scale;                                                   // one place holds 1, the other leaves it out:
+    Other["SECTION"] = "[other]";                                         // a value the file holds
+    F.CP.SubComponentsArray.push_back(Other);
+    F.Put("xemu.toml", "[display]\nrenderer = 'VULKAN'\n\n[other]\nsurface_scale = 1\n");
+    CHECK(At(OptionReadBack::Read(F.CP), "scale") == std::optional<std::string>("1") && !OptionReadBack::Read(F.CP).at("scale").FromAbsent);
+    F.CP.SubComponentsArray.erase(F.CP.SubComponentsArray.size() - 1);
     F.CP.SubComponentsArray[0]["ABSENT"] = "99";                          // not a value the option can hold
     F.Put("xemu.toml", "[display]\nrenderer = 'OPENGL'\n");
     CHECK(!OptionReadBack::Read(F.CP).count("scale"));
