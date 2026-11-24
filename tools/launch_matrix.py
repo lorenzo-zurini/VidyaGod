@@ -221,6 +221,10 @@ def main():
                 report.append("=== launcher: the private home at teardown")
                 report += ["  " + re.sub(r"^.*?\] ContainerWrapper::Cleanup ", "", re.sub(r"\x1b\[[0-9;]*m", "", l)).strip()
                            for l in (run.stdout + run.stderr).splitlines() if "ContainerWrapper::Cleanup Private home:" in l]
+                #How the launcher applied the binary patches: served as the mount reads the files (nothing copied), or written.
+                report.append("=== launcher: binary patches")
+                report += ["  " + re.sub(r"^.*?\] BinaryPatch::ProcessBinaryPatches ", "", re.sub(r"\x1b\[[0-9;]*m", "", l)).strip()
+                           for l in (run.stdout + run.stderr).splitlines() if "served at read time" in l]
                 text = "\n".join(normalise({"r": report}, data)["r"]) + "\n"
                 if args.update:
                     with open(rpath, "w") as F: F.write(text)

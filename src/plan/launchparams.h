@@ -109,6 +109,9 @@ public:
     std::string SteamAppId = "0";        //The launched tile's META.STEAMAPPID (else its parent's), "0" for none: %SteamAppId%
     bool IgnoreSavedChain = false;       //ResolveChainIds: the default chain, as if the instance had saved none (the launch window's "changed?" test)
     bool ReadBackOptions = false;        //a real launch: what the game changed in its saved files is read back first (LaunchSession::ResolveTakingBack), and its edits' writes noted
+    //Files whose BinaryPatches the mount serves as it reads them (BinaryPatch::PlanReadTime): the bytes it serves, by
+    //offset — checked through the mount after it is up.
+    std::map<std::filesystem::path, std::map<uint64_t, std::vector<uint8_t>>> ReadTimePatched;
     std::map<std::string, std::string> PendingWritten;   //what this launch's option edits wrote (OptionReadBack::Written), noted in the instance once the session's capture stored it
     std::map<std::string, nlohmann::ordered_json> VarDecls;   //RESOLVED: each variable's winning declaration (ResolveCustomVariables)
     std::string Platform;                //HOST_PLATFORM of the package (e.g. "win32", "snes", "custom") — matched against runner GUEST_PLATFORM

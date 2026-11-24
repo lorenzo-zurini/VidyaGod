@@ -185,3 +185,7 @@ vgdelta::ShareCachedBlockBudget           # the FS helper's main, from the spec'
 VfsState::AdoptCopy                       # as VfsState::PendingFor: a copy made before a handle took its marker (`vfs write` beside another)
 VfsState::BeginNameChange                 # as VfsState::DetachPendingLocked: every `vfs rm`, `vfs mv`, `vfs write` making a name
 VfsState::EndNameChange                   # as VfsState::BeginNameChange
+
+# ---- the BinaryPatch image interface: what ApplyOne reads and writes through; each command drives a concrete one ----
+BinaryPatch::Image::*        # the interface's own declarations (pure virtual): `edits patch` drives the SparseImage behind them
+BinaryPatch::MemoryImage::*  # a file held whole, for ApplyOne's vector form (tests, a buffer already in memory): `edits patch` reads where needed instead

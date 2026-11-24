@@ -38,6 +38,8 @@
   ./game/grafted.txt
   ./game/grafted_hd.txt
   ./game/lib.txt
+  ./game/media
+  ./game/media/disc.img
   ./game/patch.exe
   ./game/saves
   ./game/shadercache
@@ -78,6 +80,7 @@
   ff 11 12 13 14 15 16 17 18 19 1a 1b 1c 1d 1e 1f
   e9 1b 00 00 00 25 26 27
   cave region:  90 90 20 21 22 23 24 e9
+  media/disc.img at 0x8924 (a Poke on a disc image):  07 11 11
 === delta reconstruction
   chain/added.txt:     added by the delta
   deltatarget/masked.txt (beneath the delta, not its base: shows through): beneath a delta that is not built over it: shows through
@@ -108,3 +111,5 @@
 === done
 === launcher: the private home at teardown
   Private home: 1 file(s) the program wrote under ~ are not kept (to keep them, point its XDG variable into %RuntimePath% and KEEP that folder): ~/lm-unkept-save.dat
+=== launcher: binary patches
+  4 served at read time, 0 written, 0 already-patched, 0 FAILED of 4 patch(es)

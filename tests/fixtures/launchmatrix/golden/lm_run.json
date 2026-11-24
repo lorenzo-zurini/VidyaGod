@@ -279,6 +279,20 @@
       "VALUE_TEMPLATE": "flag was on\n"
     },
     {
+      "PATH": "<DATA>/fixture/[90000000000001][v1.0] Launch Matrix/disc.img",
+      "TARGET": "/drive_c/90000000000001/game/media",
+      "TYPE": "VFSFileLayer"
+    },
+    {
+      "COMMENT": "one byte of a disc image: served as the mount reads it",
+      "EXPECT": "05",
+      "FILE": "/drive_c/90000000000001/game/media/disc.img",
+      "MODE": "Poke",
+      "OFFSET": "0x8924",
+      "TYPE": "BinaryPatch",
+      "VALUE": "07"
+    },
+    {
       "COMMENT": "VA replace behind an EXPECT guard",
       "EXPECT": "000102",
       "FILE": "/drive_c/90000000000001/game/patch.exe",

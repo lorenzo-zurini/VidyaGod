@@ -3,7 +3,15 @@
 #include <cstdlib>
 #include <fstream>
 #include "binarypatch.h"
+#include "commonutils.h"   // Diagnostics — what the pass warned of
+#include "layerspec.h"   // VidyaGodFS: the spec the planner fills, opened as the mount opens it
+#include "overlay.h"
+#include "vfsops.h"
 
+#include <set>
+#include <zip.h>
+
+#include <chrono>
 #include <cstdint>
 #include <cstring>
 #include <map>
@@ -537,4 +545,274 @@ TEST(bp_reproduces_a_tools_output)
         CHECK(ReadFile((Runtime / File).string()) == ReadFile((D / "expected" / File).string()));
     }
     std::filesystem::remove_all(Runtime);
+}
+
+// ---- a file read only where the patches look (SparseImage) ----------------------------------------------------
+
+namespace
+{
+//Runs Ops in order on Start twice — held whole (MemoryImage) and read where needed in chunks of Chunk bytes
+//(SparseImage) — and checks each op's result and message agree and the bytes end the same.
+void SameEitherWay(const std::vector<uint8_t> &Start, const std::vector<nlohmann::ordered_json> &Ops, size_t Chunk)
+{
+    std::vector<uint8_t> Whole = Start;
+    BinaryPatch::SparseImage Sparse(Start.size(), [&](void *B, size_t N, uint64_t Off) -> long long {
+        if (Off >= Start.size()) return 0;
+        const size_t K = std::min<size_t>(N, Start.size() - size_t(Off));
+        std::memcpy(B, Start.data() + Off, K);
+        return (long long)K;
+    }, Chunk);
+    for (const auto &Op : Ops)
+    {
+        std::string M1, M2;
+        const Result R1 = ApplyOne(Op, Whole, NoVars, M1);
+        const Result R2 = ApplyOne(Op, Sparse, NoVars, M2);
+        CHECK(R1 == R2);
+        CHECK_EQ(M1, M2);
+    }
+    std::vector<uint8_t> Seen(Start.size());
+    CHECK(Sparse.Read(0, Seen.size(), Seen.data()));
+    CHECK(Seen == Whole);
+    std::vector<uint8_t> Laid = Start;                       // what the pass after the mount writes: the runs
+    for (const auto &[At, B] : Sparse.Written()) std::copy(B.begin(), B.end(), Laid.begin() + std::ptrdiff_t(At));
+    CHECK(Laid == Whole);
+}
+}
+
+// A file read where the patches look patches exactly as one held whole, whatever the scan's chunk (matches across a
+// chunk's edge, overlapping matches, a pattern led by wildcards, every mode, ops seeing earlier ops' bytes). Teeth: a
+// scan that drops a match on a chunk's edge; overlapping ReplaceAll matches; a read that misses earlier writes.
+TEST(bp_a_file_read_where_needed_patches_as_one_held_whole)
+{
+    std::vector<uint8_t> Code(0x300, 0x90);
+    const std::vector<uint8_t> Sig = Bytes({0x8B, 0x45, 0x08, 0x85, 0xC0, 0x74, 0x10});
+    std::copy(Sig.begin(), Sig.end(), Code.begin() + 0x101);
+    for (size_t I = 0x200; I < 0x240; ++I) Code[I] = 0xAA;                 // "aaaa…": overlapping matches of "aa aa"
+    Code[0x250] = 0x12; Code[0x251] = 0x34; Code[0x252] = 0x12; Code[0x253] = 0x34;
+    const std::vector<uint8_t> Pe = MakePe(Code);
+    const std::vector<nlohmann::ordered_json> Ops = {
+        {{"MODE", "Replace"}, {"ANCHOR", "8b 45 08 85 c0 74 ??"}, {"EXPECT", "8b450885c07410"}, {"REPLACE", "8b450885c0eb10"}},
+        {{"MODE", "ReplaceAll"}, {"EXPECT", "aaaa"}, {"REPLACE", "aabb"}},
+        {{"MODE", "ReplaceAll"}, {"EXPECT", "bbaa"}, {"REPLACE", "cccc"}},       // over what the last one wrote
+        {{"MODE", "ReplaceAll"}, {"EXPECT", "aaaa"}, {"REPLACE", "aabb"}},
+        {{"MODE", "Poke"}, {"OFFSET", "0x401010"}, {"VALUE", "0102"}},
+        {{"MODE", "Or"}, {"OFFSET", "0x401011"}, {"VALUE", "f0"}},
+        {{"MODE", "Replace"}, {"ANCHOR", "?? ?? 12 34 12 34"}, {"EXPECT", "aaaa12341234"}, {"REPLACE", "aaaa56785678"}},
+        {{"MODE", "Replace"}, {"ANCHOR", "?? 90 90 90"}, {"EXPECT", "90909090"}, {"REPLACE", "c3909090"}},   // ambiguous
+        {{"MODE", "Cave"}, {"OFFSET", "0x401101"}, {"EXPECT", "8b45088598"}, {"PAYLOAD", "90"}},          // a wrong guard
+        {{"MODE", "Cave"}, {"OFFSET", "0x401101"}, {"EXPECT", "8b45088585"}, {"PAYLOAD", "6690"}},
+        {{"MODE", "Cave"}, {"OFFSET", "0x401101"}, {"EXPECT", "8b45088585"}, {"PAYLOAD", "6690"}},        // caved: skipped
+        {{"MODE", "ReplaceAll"}, {"EXPECT", "deadbeef"}, {"REPLACE", "00000000"}},                       // nowhere
+        {{"MODE", "Poke"}, {"OFFSET", "0x9999999"}, {"VALUE", "01"}} };                                  // past the end
+    for (const size_t Chunk : { (size_t)1, (size_t)2, (size_t)3, (size_t)7, (size_t)64, (size_t)4096, (size_t)4 << 20 })
+        SameEitherWay(Pe, Ops, Chunk);
+    std::vector<uint8_t> Data(1000);
+    for (size_t I = 0; I < Data.size(); ++I) Data[I] = uint8_t(I * 7);
+    Data[997] = 0x05;
+    for (const size_t Chunk : { (size_t)1, (size_t)5, (size_t)999, (size_t)1000, (size_t)1001 })
+        SameEitherWay(Data, { {{"MODE", "Poke"}, {"OFFSET", "997"}, {"EXPECT", "05"}, {"VALUE", "07"}},
+                              {{"MODE", "Replace"}, {"ANCHOR", "07 ?? ??"}, {"EXPECT", "07"}, {"REPLACE", "08"}} }, Chunk);
+}
+
+// What a file read where needed was written keeps one run per stretch: writes that overlap or adjoin merge, a later
+// one wins, and a read sees them over the file. Teeth: overlapping runs kept apart (the older one read back).
+TEST(bp_a_sparse_images_writes_merge_into_runs)
+{
+    const std::vector<uint8_t> File(32, 0x00);
+    BinaryPatch::SparseImage S(File.size(), [&](void *B, size_t N, uint64_t Off) -> long long {
+        std::memcpy(B, File.data() + Off, N); return (long long)N; });
+    const uint8_t A[] = { 1, 1, 1, 1 }, B[] = { 2, 2 }, C[] = { 3 }, D[] = { 4, 4 };
+    S.Write(4, A, 4);    // 4..7
+    S.Write(6, B, 2);    // over 6..7
+    S.Write(8, C, 1);    // adjoins at 8
+    CHECK_EQ(S.Written().size(), (size_t)1);                            // one run, 4..8
+    S.Write(20, D, 2);   // apart
+    S.Write(3, C, 1);    // adjoins at 3
+    CHECK_EQ(S.Written().size(), (size_t)2);
+    CHECK(S.Written().count(3) && S.Written().at(3) == Bytes({3, 1, 1, 2, 2, 3}));
+    CHECK(S.Written().count(20) && S.Written().at(20) == Bytes({4, 4}));
+    uint8_t Out[10];
+    CHECK(S.Read(2, 10, Out));
+    CHECK(std::vector<uint8_t>(Out, Out + 10) == Bytes({0, 3, 1, 1, 2, 2, 3, 0, 0, 0}));
+    CHECK(!S.Read(30, 3, Out));                                        // past the end
+    S.Write(0, D, 2);
+    S.Write(1, A, 4);                                                  // over two runs' worth: one run 0..8
+    CHECK(S.Written().count(0) && S.Written().at(0).size() == 9);
+}
+
+// Before the mount, a patch on a file a lower layer serves — a disc image placed whole, a program in a zip — goes into
+// the spec, resolved against the file as the mount serves it, and the mount reads it patched while the file on disk is
+// untouched. A file the writelayer serves (the user's copy), one under a kept folder and a patch whose guard does not
+// match stay out (written, or reported, after the mount). Teeth: plan nothing; plan a writelayer copy; plan a failed
+// patch; a wrong offset (the site the mount serves the bytes at).
+TEST(bp_a_patch_on_a_file_the_layers_serve_is_planned_into_the_spec)
+{
+    const std::filesystem::path Root = std::filesystem::temp_directory_path() / "vg_bp_readtime";
+    std::filesystem::remove_all(Root);
+    const std::filesystem::path Runtime = Root / "RUNTIME", WL = Root / "WL", Src = Root / "SRC", Kept = Root / "KEPT";
+    for (const auto &D : { Runtime, WL, Src, Kept }) std::filesystem::create_directories(D);
+    auto Put = [](const std::filesystem::path &P, const std::vector<uint8_t> &B) {
+        std::filesystem::create_directories(P.parent_path());
+        std::ofstream O(P, std::ios::binary); O.write((const char *)B.data(), (std::streamsize)B.size()); };
+    auto Get = [](const std::filesystem::path &P) {
+        std::ifstream In(P, std::ios::binary); return std::vector<uint8_t>(std::istreambuf_iterator<char>(In), std::istreambuf_iterator<char>()); };
+    std::vector<uint8_t> Iso(300000, 0x11);
+    Iso[0x24924] = 0x05;
+    Put(Src / "JSRF.iso", Iso);
+    Put(Src / "Other.iso", Iso);
+    const std::vector<uint8_t> Exe = MakePe(Bytes({0x8B, 0x45, 0x08, 0x85, 0xC0, 0x74, 0x10}));
+    {
+        int Err = 0;
+        zip_t *Z = zip_open((Src / "game.zip").string().c_str(), ZIP_CREATE | ZIP_TRUNCATE, &Err);
+        zip_source_t *S = zip_source_buffer(Z, Exe.data(), Exe.size(), 0);
+        const zip_int64_t I = zip_file_add(Z, "bin/game.exe", S, ZIP_FL_ENC_UTF_8);
+        zip_set_file_compression(Z, I, ZIP_CM_STORE, 0);
+        zip_close(Z);
+    }
+    Put(Src / "cfg/saved.bin", Iso);                 // the package's copy …
+    Put(WL / "cfg/saved.bin", Iso);                  // … and the user's, which the mount serves
+    Put(Src / "save/slot.bin", Iso);
+    nlohmann::ordered_json Spec = {
+        {"mountpoint", Runtime.string()}, {"writelayer", WL.string()},
+        {"layers", nlohmann::ordered_json::array({
+            {{"type", "file"}, {"source", (Src / "JSRF.iso").string()}, {"target", "media"}},
+            {{"type", "file"}, {"source", (Src / "Other.iso").string()}, {"target", "media"}},
+            {{"type", "zip"}, {"source", (Src / "game.zip").string()}, {"target", ""}},
+            {{"type", "dir"}, {"source", (Src / "cfg").string()}, {"target", "cfg"}},
+            {{"type", "dir"}, {"source", (Src / "save").string()}, {"target", "save"}, {"rw", true}} })} };
+    auto Op = [](const char *F, nlohmann::ordered_json O) { O["TYPE"] = "BinaryPatch"; O["FILE"] = F; return O; };
+    ContainerParams CP(Root / "PKG");
+    CP.RuntimePath = Runtime;
+    CP.SubComponentsArray = nlohmann::ordered_json::array({
+        Op("media/JSRF.iso", {{"MODE", "Poke"}, {"OFFSET", "0x24924"}, {"EXPECT", "05"}, {"VALUE", "07"}}),
+        Op("bin/game.exe", {{"MODE", "Replace"}, {"ANCHOR", "85 c0 74 ??"}, {"EXPECT", "85c07410"}, {"REPLACE", "85c0eb10"}}),
+        Op("cfg/saved.bin", {{"MODE", "Poke"}, {"OFFSET", "0x24924"}, {"EXPECT", "05"}, {"VALUE", "07"}}),
+        Op("save/slot.bin", {{"MODE", "Poke"}, {"OFFSET", "0x24924"}, {"EXPECT", "05"}, {"VALUE", "07"}}),
+        Op("media/Other.iso", {{"MODE", "Poke"}, {"OFFSET", "0x10"}, {"VALUE", "07"}}),          // fine, but …
+        Op("media/Other.iso", {{"MODE", "Poke"}, {"OFFSET", "0x24924"}, {"EXPECT", "09"}, {"VALUE", "07"}}),   // … this fails
+        Op("bin/game.exe", {{"MODE", "Poke"}, {"OFFSET", "0x401000"}, {"VALUE", "cc"}}) });
+    std::map<std::filesystem::path, std::string> Left;
+    BinaryPatch::PlanReadTime(CP, Spec, &Left);
+    CHECK(Left.size() == 3);
+    CHECK(Left[Runtime / "cfg/saved.bin"].find("copy of its own") != std::string::npos);
+    CHECK(Left[Runtime / "save/slot.bin"].find("copy of its own") != std::string::npos);
+    CHECK(Left[Runtime / "media/Other.iso"].find("failed") != std::string::npos);
+    CHECK(Spec.contains("patches"));
+    std::set<std::string> Paths;
+    for (const auto &P : Spec.value("patches", nlohmann::ordered_json::array())) Paths.insert(P.value("path", std::string()));
+    CHECK(Paths == std::set<std::string>({ "media/JSRF.iso", "bin/game.exe" }));
+    std::set<std::string> Planned;
+    for (const auto &[P, Runs] : CP.ReadTimePatched) Planned.insert(P.string());
+    CHECK(Planned == std::set<std::string>({ (Runtime / "media/JSRF.iso").string(), (Runtime / "bin/game.exe").string() }));
+    CHECK(CP.ReadTimePatched[Runtime / "media/JSRF.iso"] == (std::map<uint64_t, std::vector<uint8_t>>{ { 0x24924, Bytes({0x07}) } }));
+    //The mount reads them patched; the files themselves are as they were.
+    ::Spec S;
+    std::string Err;
+    VfsState V;
+    CHECK(ParseSpecText(Spec.dump(), S, Err) && V.Init(S, Err));
+    auto Read = [&](const std::string &P, uint64_t Off, size_t N) {
+        OpenFile *F = nullptr;
+        std::vector<uint8_t> B(N);
+        if (VfsOpen(V, P, 0, F) != 0 || !F || VfsRead(F, B.data(), N, Off) != (ssize_t)N) B.clear();
+        if (F) VfsRelease(F);
+        return B;
+    };
+    CHECK(Read("media/JSRF.iso", 0x24923, 3) == Bytes({0x11, 0x07, 0x11}));
+    CHECK(Read("bin/game.exe", 0x400, 7) == Bytes({0xCC, 0x45, 0x08, 0x85, 0xC0, 0xEB, 0x10}));
+    CHECK(Read("media/Other.iso", 0x10, 1) == Bytes({0x11}));          // the whole file left to the pass after
+    CHECK(Get(Src / "JSRF.iso") == Iso);
+    std::filesystem::remove_all(Root);
+}
+
+// After the mount, a file planned for it to serve patched is checked by the bytes it serves, its ops not run again: two
+// Replaces in turn on one site (05→06, then 06→07) would find, over the served 07, neither the first one's old bytes
+// nor its result. A planned file the mount serves otherwise (a copy of its own) is patched like any, said as a
+// warning (the copy the plan saves is made after all). Teeth: run the ops over a planned file (the chain fails); trust
+// the plan without the check (the copy left unpatched); no warning.
+TEST(bp_a_file_the_mount_serves_patched_is_checked_not_patched_again)
+{
+    const std::filesystem::path Root = std::filesystem::temp_directory_path() / "vg_bp_served";
+    std::filesystem::remove_all(Root);
+    const std::filesystem::path Runtime = Root / "RUNTIME";
+    std::filesystem::create_directories(Runtime);
+    auto Put = [&](const char *N, std::vector<uint8_t> B) { std::ofstream O(Runtime / N, std::ios::binary); O.write((const char *)B.data(), (std::streamsize)B.size()); };
+    auto Get = [&](const char *N) { std::ifstream In(Runtime / N, std::ios::binary); return std::vector<uint8_t>(std::istreambuf_iterator<char>(In), std::istreambuf_iterator<char>()); };
+    auto Op = [](const char *F, const char *E, const char *R) {
+        return nlohmann::ordered_json{{"TYPE","BinaryPatch"},{"FILE",F},{"MODE","Replace"},{"OFFSET","1"},{"EXPECT",E},{"REPLACE",R}}; };
+    Put("a.bin", Bytes({0x00, 0x07, 0x00}));          // as the mount serves it: the chain's result in
+    Put("b.bin", Bytes({0x00, 0x05, 0x00}));          // a copy of its own: unpatched
+    ContainerParams CP(Root / "PKG");
+    CP.RuntimePath = Runtime;
+    CP.SubComponentsArray = nlohmann::ordered_json::array({Op("a.bin","05","06"), Op("a.bin","06","07"),
+                                                           Op("b.bin","05","06"), Op("b.bin","06","07")});
+    CP.ReadTimePatched[Runtime / "a.bin"] = { { 1, Bytes({0x07}) } };
+    CP.ReadTimePatched[Runtime / "b.bin"] = { { 1, Bytes({0x07}) } };
+    Diagnostics::Begin();
+    CHECK(BinaryPatch::ProcessBinaryPatches(CP));
+    const auto Said = Diagnostics::Take();
+    CHECK_EQ(Said.Warnings, (size_t)1);
+    CHECK_EQ(Said.Errors, (size_t)0);
+    CHECK(Get("a.bin") == Bytes({0x00, 0x07, 0x00}));
+    CHECK(Get("b.bin") == Bytes({0x00, 0x07, 0x00}));
+    std::filesystem::remove_all(Root);
+}
+
+// Writes end to end grow one run in place: a ReplaceAll over a stretch of repeats (a disc image's zero padding) makes
+// hundreds of thousands of adjoining writes, and a run copied whole at each was quadratic (19 s for 1 MiB). Teeth: copy
+// the run at each write (over the time); keep adjoining runs apart (not one run).
+TEST(bp_adjoining_writes_grow_one_run_in_linear_time)
+{
+    const uint64_t Size = uint64_t(1) << 20;
+    BinaryPatch::SparseImage S(Size, [](void *B, size_t N, uint64_t) -> long long { std::memset(B, 0, N); return (long long)N; });
+    const uint8_t Four[] = { 1, 1, 1, 1 };
+    const auto Began = std::chrono::steady_clock::now();
+    for (uint64_t At = 0; At + 4 <= Size; At += 4) S.Write(At, Four, 4);
+    const auto Ms = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - Began).count();
+    CHECK(Ms < 2000);
+    CHECK_EQ(S.Written().size(), (size_t)1);
+    CHECK(S.Written().begin()->second.size() == Size);
+    //A whole ReplaceAll of zeros over it: one pass, one run.
+    BinaryPatch::SparseImage Z(Size, [](void *B, size_t N, uint64_t) -> long long { std::memset(B, 0, N); return (long long)N; });
+    std::string Msg;
+    const auto Began2 = std::chrono::steady_clock::now();
+    CHECK(ApplyOne(nlohmann::ordered_json{{"MODE", "ReplaceAll"}, {"EXPECT", "00000000"}, {"REPLACE", "01010101"}}, Z, NoVars, Msg) == Result::Applied);
+    CHECK(std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - Began2).count() < 3000);
+    CHECK_EQ(Z.Written().size(), (size_t)1);
+}
+
+// An OFFSET in a file past 4 GiB (a dual-layer disc image) is that offset, not its low 32 bits; a number with junk after
+// it is no number. Teeth: parse 32 bits (the poke lands at 0x10); stop at the junk (0x10 again).
+TEST(bp_an_offset_past_4_gib_is_kept_whole)
+{
+    const uint64_t Size = (uint64_t(5) << 30);
+    BinaryPatch::SparseImage S(Size, [](void *B, size_t N, uint64_t) -> long long { std::memset(B, 0x05, N); return (long long)N; });
+    std::string Msg;
+    CHECK(ApplyOne(nlohmann::ordered_json{{"MODE", "Poke"}, {"OFFSET", "0x100000010"}, {"EXPECT", "05"}, {"VALUE", "07"}}, S, NoVars, Msg) == Result::Applied);
+    CHECK(S.Written().size() == 1 && S.Written().begin()->first == 0x100000010ull);
+    CHECK(ApplyOne(nlohmann::ordered_json{{"MODE", "Poke"}, {"OFFSET", "0x10zz"}, {"VALUE", "07"}}, S, NoVars, Msg) == Result::Error);
+    CHECK(ApplyOne(nlohmann::ordered_json{{"MODE", "Poke"}, {"OFFSET", "0x600000000"}, {"VALUE", "07"}}, S, NoVars, Msg) == Result::Error);
+}
+
+// Two ops naming one file by two spellings, on a mount that matches names whatever their case, patch one file: the
+// second sees the first's bytes (two Or ops on one flag byte make both bits). Teeth: an image per spelling (one bit lost).
+TEST(bp_two_spellings_of_one_file_are_planned_as_one)
+{
+    const std::filesystem::path Root = std::filesystem::temp_directory_path() / "vg_bp_spell";
+    std::filesystem::remove_all(Root);
+    const std::filesystem::path Runtime = Root / "RUNTIME", Src = Root / "SRC";
+    std::filesystem::create_directories(Runtime);
+    std::filesystem::create_directories(Src);
+    { std::ofstream O(Src / "Flags.bin", std::ios::binary); O << std::string(16, '\0'); }
+    nlohmann::ordered_json Spec = { {"mountpoint", Runtime.string()}, {"caseInsensitive", true},
+        {"layers", nlohmann::ordered_json::array({ {{"type", "file"}, {"source", (Src / "Flags.bin").string()}, {"target", "data"}} })} };
+    auto Op = [](const char *F, const char *V) {
+        return nlohmann::ordered_json{{"TYPE","BinaryPatch"},{"FILE",F},{"MODE","Or"},{"OFFSET","4"},{"VALUE",V}}; };
+    ContainerParams CP(Root / "PKG");
+    CP.RuntimePath = Runtime;
+    CP.SubComponentsArray = nlohmann::ordered_json::array({ Op("data/Flags.bin", "01"), Op("DATA/flags.BIN", "02") });
+    BinaryPatch::PlanReadTime(CP, Spec);
+    CHECK(Spec.contains("patches") && Spec["patches"].size() == 1);
+    if (Spec.contains("patches") && Spec["patches"].size() == 1) CHECK_EQ(Spec["patches"][0].value("bytes", std::string()), std::string("03"));
+    CHECK_EQ(CP.ReadTimePatched.size(), (size_t)2);
+    std::filesystem::remove_all(Root);
 }

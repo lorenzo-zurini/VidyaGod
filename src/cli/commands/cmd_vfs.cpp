@@ -11,6 +11,8 @@
 #include "overlay.h"
 #include "vfsops.h"
 #include "vgdelta.h"
+#include "binarypatch.h"     // vfs plan-patches
+#include "launchparams.h"
 #include "ziplayer.h"
 #include "zipscan.h"
 
@@ -259,7 +261,8 @@ VG_COMMANDS
         "vfs cat", "read a file of the filesystem (to stdout, or --out a file)", "",
         { SpecArg(), PathArg(), Opt("out", "write it here"), Opt("bytes", "at most this many", Type::Int), Opt("offset", "from here", Type::Int) },
         { "vfs cat spec.json 'drive_c/Games/AoE2/language.ini'", "vfs cat spec.json 'x/y.bin' --out /tmp/y.bin" },
-        { "VfsOpen", "VfsRead", "VfsReadFrom", "VfsRelease", "vgdelta::DeltaByteSource::scattered", "ConcatByteSource::scattered" }, Needs::Config, false,
+        { "VfsOpen", "VfsRead", "VfsReadFrom", "VfsRelease", "vgdelta::DeltaByteSource::scattered", "ConcatByteSource::scattered",
+          "PatchesFor", "OverlayPatches", "PatchesOverlap" }, Needs::Config, false,
         [](Command::Context &, const json &A) {
             Loaded L = Load(A);
             OpenFile *F = nullptr;
@@ -283,6 +286,33 @@ VG_COMMANDS
             VfsRelease(F);
             if (A.contains("out")) { std::ofstream(Command::Str(A, "out"), std::ios::binary) << Data; return json{{"bytes", Data.size()}, {"out", Command::Str(A, "out")}, {"from_its_file", FromFile}}; }
             return json{{"bytes", Data.size()}, {"data", Data}, {"from_its_file", FromFile}};
+        }, {} });
+
+    Command::Register({
+        "vfs plan-patches", "which BinaryPatches the mount would serve as it reads the files (and the bytes it would get)",
+        "Opens the spec's layers as the mount would and resolves each APPLY:prefix patch against the file it names under "
+        "--runtime (the mountpoint the FILEs are relative to): a file a lower layer serves is planned, a copy in the "
+        "writelayer or a kept folder and a patch that fails are left to the pass after the mount (`left` says why). "
+        "Nothing is written.",
+        { SpecArg(), WithSample(Opt("patches", "the BinaryPatch layers (JSON list; FILE relative to the runtime)", Type::Json, true),
+                               "[{\"TYPE\":\"BinaryPatch\",\"FILE\":\"media/game.iso\",\"MODE\":\"Poke\",\"OFFSET\":\"0x84924\",\"EXPECT\":\"05\",\"VALUE\":\"07\"}]"),
+          Opt("runtime", "the mountpoint (default: the spec's)") },
+        { "vfs plan-patches spec.json --patches @jsrf_fix.json" }, { "BinaryPatch::PlanReadTime" }, Needs::Config, false,
+        [](Command::Context &, const json &A) {
+            std::ifstream In(Command::Str(A, "spec"), std::ios::binary);
+            nlohmann::ordered_json Spec = nlohmann::ordered_json::parse(In, nullptr, false);
+            if (Spec.is_discarded() || !Spec.is_object()) throw Command::BadArgs("the spec is not JSON");
+            const std::filesystem::path Runtime = Command::Str(A, "runtime", Spec.value("mountpoint", std::string()));
+            ContainerParams CP(Runtime.parent_path() / "PKG");
+            CP.RuntimePath = Runtime;
+            CP.SubComponentsArray = A["patches"].is_array() ? nlohmann::ordered_json(A["patches"]) : nlohmann::ordered_json::array({ A["patches"] });
+            Spec.erase("patches");
+            std::map<std::filesystem::path, std::string> Left;
+            BinaryPatch::PlanReadTime(CP, Spec, &Left);
+            json Files = json::array(), NotPlanned = json::array();
+            for (const auto &[F, Runs] : CP.ReadTimePatched) Files.push_back(F.string());
+            for (const auto &[F, Why] : Left) NotPlanned.push_back({{"file", F.string()}, {"why", Why}});
+            return json{{"patches", Spec.value("patches", nlohmann::ordered_json::array())}, {"files", Files}, {"left", NotPlanned}};
         }, {} });
 
     Command::Register({

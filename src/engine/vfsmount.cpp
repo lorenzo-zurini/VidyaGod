@@ -1,4 +1,5 @@
 #include "vfsmount.h"
+#include "binarypatch.h"   // PlanReadTime: patches the mount serves
 #include "sessions.h"
 #include "boxprefix.h"   // RemoveTree — a wipe that never follows a link (Windows)
 #include <functional>
@@ -470,6 +471,10 @@ bool VfsMount::MountVFS(struct ContainerParams &ContainerParams)
                "over the library");
         return false;
     }
+
+    //The game's BinaryPatches on files the layers serve: put in the spec, so the mount serves them as it reads the files
+    //(a one-byte fix to a disc image copies nothing). What is not planned here is written after the mount.
+    BinaryPatch::PlanReadTime(ContainerParams, Spec);
 
     std::filesystem::path SpecPath = ContainerParams.TempPath / "vidyagodfs.spec.json";
     long long HelperPid = 0;

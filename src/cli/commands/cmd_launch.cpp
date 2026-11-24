@@ -564,21 +564,37 @@ VG_COMMANDS
     Command::Register({
         "edits patch", "apply a BinaryPatch (Replace, Cave, Poke) to a program file",
         "The patch as the node writes it (--patch JSON), --var values for its tokens; the file is changed in place "
-        "unless --dry-run (then only what it would do is said).",
+        "unless --dry-run (then only what it would do is said). As a launch does: the file is read where the patch looks "
+        "(its header, the site, one pass for a scan) and only the bytes it changes are written.",
         { Pos("file", "the program file"), WithSample(Opt("patch", "the patch (JSON)", Type::Json, true), "{\"MODE\":\"Replace\",\"OFFSET\":\"0x1234\",\"EXPECT\":\"74 05\",\"REPLACE\":\"EB 05\"}"), Opt("var", "NAME=VALUE[,…]"), Flag("dry-run", "change nothing") },
-        { "edits patch game.exe --patch @nocd.json --dry-run" }, { "BinaryPatch::ApplyOne" }, Needs::Config, false,
+        { "edits patch game.exe --patch @nocd.json --dry-run" },
+        { "BinaryPatch::ApplyOne", "BinaryPatch::SparseImage::Read", "BinaryPatch::SparseImage::Write", "BinaryPatch::SparseImage::Size",
+          "BinaryPatch::SparseImage::ScanChunk", "BinaryPatch::SparseImage::Written" }, Needs::Config, false,
         [](Command::Context &, const json &A) {
             const std::string F = Command::Str(A, "file");
-            const std::string Bytes = Slurp(F);
-            std::vector<uint8_t> Img(Bytes.begin(), Bytes.end());
+            std::error_code Ec;
+            const uint64_t Size = fs::file_size(F, Ec);
+            auto In = std::make_shared<std::ifstream>(F, std::ios::binary);
+            if (Ec || !*In) throw std::runtime_error("cannot open " + F);
+            BinaryPatch::SparseImage Img(Size, [In](void *B, size_t N, uint64_t Off) -> long long {
+                In->clear(); In->seekg(std::streamoff(Off)); In->read(static_cast<char *>(B), std::streamsize(N));
+                return In->bad() ? -1 : (long long)In->gcount(); });
             std::map<std::string, std::string> Vars;
             for (const auto &KV : List(A, "var")) { const auto Eq = KV.find('='); if (Eq != std::string::npos) Vars[KV.substr(0, Eq)] = KV.substr(Eq + 1); }
             std::string Msg;
             const auto R = BinaryPatch::ApplyOne(A["patch"], Img, Vars, Msg);
             static const char *Names[] = { "applied", "skipped", "error" };
+            json Runs = json::array();
+            for (const auto &[At, B] : Img.Written()) Runs.push_back({{"at", At}, {"bytes", B.size()}});
+            In->close();                                                 // the reader's file, closed before it is written
             if (R == BinaryPatch::Result::Applied && !Command::Bool(A, "dry-run", false))
-                std::ofstream(F, std::ios::binary).write(reinterpret_cast<const char *>(Img.data()), static_cast<std::streamsize>(Img.size()));
+            {
+                std::fstream Out(F, std::ios::binary | std::ios::in | std::ios::out);
+                for (const auto &[At, B] : Img.Written())
+                { Out.seekp(std::streamoff(At)); Out.write(reinterpret_cast<const char *>(B.data()), static_cast<std::streamsize>(B.size())); }
+                if (!Out.flush()) throw std::runtime_error("cannot write " + F);
+            }
             if (R == BinaryPatch::Result::Error) throw std::runtime_error(Msg);
-            return json{{"result", Names[static_cast<int>(R)]}, {"note", Msg}};
+            return json{{"result", Names[static_cast<int>(R)]}, {"note", Msg}, {"changed", Runs}};
         }, {} });
 }

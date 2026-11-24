@@ -54,6 +54,7 @@ echo "  --- conditional.txt (WHEN %lm_flag% == 1)"; sed 's/^/    /' game/conditi
 echo "=== BinaryPatch result (.text, where Replace/Poke landed)"
 od -An -tx1 -j 1024 -N40 game/patch.exe 2>/dev/null | tr -s ' ' | sed 's/^ */  /' || echo "  MISSING"
 echo "  cave region: $(od -An -tx1 -j 1088 -N8 game/patch.exe 2>/dev/null | tr -s ' ')"
+echo "  media/disc.img at 0x8924 (a Poke on a disc image): $(od -An -tx1 -j 35108 -N3 game/media/disc.img 2>/dev/null | tr -s ' ')"
 echo "=== delta reconstruction"
 echo "  chain/added.txt:     $(cat deltatarget/chain/added.txt 2>/dev/null || echo MISSING)"
 echo "  deltatarget/masked.txt (beneath the delta, not its base: shows through): $(cat deltatarget/masked.txt 2>/dev/null || echo MASKED)"
@@ -149,6 +150,11 @@ def make_content(B):
     # nothing to mask. A dir layer is not a byte view, is not folded, and must therefore disappear.
     write(f"{B}/maskeddir/masked.txt", "beneath a delta that is not built over it: shows through\n")
     write(f"{B}/single.txt", "single-file\n")
+    # A disc image placed whole (a FILE layer) and patched by one byte: the mount serves the byte as it reads the file,
+    # nothing is copied (the launcher's patch summary says so in the runtime golden).
+    disc = bytearray(b"\x11" * 65536)
+    disc[0x8924] = 0x05
+    write(f"{B}/disc.img", bytes(disc))
     # Grafts (see the node matrix): what a mod mounts above the launchable, what an unticked one must not, what a
     # branch off an ANCESTOR must never contribute, and a library pulled in as substance.
     write(f"{B}/graftdir/game/grafted.txt", "grafted above lm_run\n")
@@ -341,7 +347,10 @@ def nodes(B):
     fe5 = add("lm_fe_when", [node(fe4), {"EDIT": [{"MODE": "Overwrite", "VALUE": "flag was on\n"}],
                                          "TARGET": F(G + "/game/conditional.txt"), "WHEN": "%lm_flag% == 1"}])
     # Binary modes name their bytes differently: Replace->REPLACE, Poke->VALUE, Cave->PAYLOAD.
-    bp = add("lm_bp", [node(fe5), {"EDIT": [
+    bp = add("lm_bp", [node(fe5), {"FILE": "disc.img", "TARGET": F(G + "/game/media")},
+        {"EDIT": [{"MODE": "Poke", "OFFSET": "0x8924", "EXPECT": "05", "VALUE": "07",
+                   "COMMENT": "one byte of a disc image: served as the mount reads it"}],
+         "TARGET": F(G + "/game/media/disc.img")}, {"EDIT": [
         {"MODE": "Replace", "OFFSET": "0x401000", "EXPECT": "000102", "REPLACE": "aabbcc",
          "COMMENT": "VA replace behind an EXPECT guard"},
         {"MODE": "Poke", "OFFSET": "0x401010", "VALUE": "ff"},
