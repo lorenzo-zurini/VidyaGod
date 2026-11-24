@@ -300,10 +300,18 @@ std::vector<std::string> Publish(nlohmann::ordered_json &Config, const std::vect
                 for (const auto &[C, F] : Files) Sheet.emplace(C, K.first + "/" + K.second + "/" + F);
         for (const auto &[K, V] : PinsWas.items()) if (V.is_string()) Pins.emplace(K, V.get<std::string>());
     }
-    Config["ShareSheet"] = nlohmann::ordered_json::object();
-    for (const auto &[C, P] : Sheet) Config["ShareSheet"][C] = P;
-    Config["Pins"] = nlohmann::ordered_json::object();
-    for (const auto &[K, P] : Pins) Config["Pins"][K] = P;
+    //Appended, not looked up: an ordered_json object finds a key by walking its entries, so setting 7,559 of them one
+    //by one compared ~29 M keys. The map's keys are distinct and in order already.
+    const auto Fill = [](const auto &From) {
+        nlohmann::ordered_json Out = nlohmann::ordered_json::object();
+        auto &Entries = static_cast<std::vector<std::pair<const std::string, nlohmann::ordered_json>> &>(
+            Out.get_ref<nlohmann::ordered_json::object_t &>());
+        Entries.reserve(From.size());
+        for (const auto &[K, V] : From) Entries.emplace_back(K, V);
+        return Out;
+    };
+    Config["ShareSheet"] = Fill(Sheet);
+    Config["Pins"] = Fill(Pins);
     LogSucc("PackageCatalog::PublishLibrary", "published " + std::to_string(MR.HandleToCid.size())
             + " node block(s) in " + std::to_string(Published.size()) + " package(s), "
             + std::to_string(Config["ShareSheet"].size()) + " entries in the share sheet, "

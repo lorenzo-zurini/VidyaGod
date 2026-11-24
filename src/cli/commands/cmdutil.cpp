@@ -22,7 +22,8 @@ void Save(Command::Context &C)
     if (AppPaths::ConfigReadOnly())
         throw std::runtime_error("this call runs beside the app that holds the data dir, so it cannot change the config: "
                                  "run it in the app (without --bypass-single-instance-lock or a path override), or quit the app");
-    if (C.Model) { if (!C.Model->save()) throw std::runtime_error("could not save the config"); return; }
+    if (C.Background) throw std::logic_error("a command run off the app's thread cannot save the config: it holds a copy");
+    if (C.Model) { if (!C.Model->saveNow()) throw std::runtime_error("could not save the config"); return; }
     if (!JSONOps::SaveConfig(*C.Config, C.AppDataDir->absolutePath().toStdString()))
         throw std::runtime_error("could not save the config");
 }

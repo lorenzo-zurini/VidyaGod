@@ -331,7 +331,7 @@ VG_COMMANDS
                 Out["fetched"] = true;
             }
             return Out;
-        }, {} });
+        }, {}, true });
 
     // ---------------- registry ----------------
     Command::Register({

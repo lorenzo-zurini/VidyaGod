@@ -142,6 +142,14 @@ private:
     QHash<QString, qlonglong>                  LastProgress;      // CID → ms of last forward progress (stall detection)
     QHash<QString, qlonglong>                  ManifestSizes;     // CID → stamped SOURCE.SIZE from the catalog (instant, no network CidSize).
     QSet<QString>                              SizeInFlight;      // CIDs whose local size stat is running (one at a time each)
+    QSet<QString>                              SizeWanted;        // asked for while a look runs: looked up by the next
+    bool                                       SizeLooking = false;   // one look at a time, for every CID asked meanwhile
+    int                                        SizeLooks = 0;
+    void lookSizes();
+public:
+    int sizeLooks() const { return SizeLooks; }   // test observability: size look-ups started (each a worker)
+    size_t SweepChunk = 512;                       // pins (rows) a serve check asks in one pass
+private:
                                                                   // Rebuilt in rebuildLabels; feeds the Size column + per-item speed and is
                                                                   // pushed to the node (SetExpectedSize) so a gateway fetch shows real progress.
 

@@ -173,6 +173,9 @@ nlohmann::ordered_json VfsMount::BuildLayerSpec(struct ContainerParams &Containe
     Spec["mountpoint"] = ContainerParams.RuntimePath.string();
     SetMountOwner(Spec);
     Spec["readonly"] = ContainerParams.ReadOnlyVFS;
+    //The mounts this launch makes share one budget of decompressed delta blocks (the FS splits it): the game's, and the
+    //runner build's when it ships one (MountRunnerBuild, before this).
+    Spec["launchMounts"] = VfsMount::RunnerShipsMountableBuild(ContainerParams) ? 2 : 1;
     if (ContainerParams.ReadOnlyVFS)
         Spec["writelayer"] = nullptr;
     else
@@ -306,7 +309,8 @@ nlohmann::ordered_json VfsMount::BuildLayerSpec(struct ContainerParams &Containe
     //user's persisted changes win). Built by BuildDefaultData for any runner; absent for edit-less packages.
     if (!ContainerParams.DefaultDataPath.empty()
         && std::filesystem::exists(ContainerParams.DefaultDataPath))
-        Layers.push_back({{"type", "dir"}, {"source", ContainerParams.DefaultDataPath.string()}, {"target", ""}, {"rw", false}});
+        Layers.push_back({{"type", "dir"}, {"source", ContainerParams.DefaultDataPath.string()}, {"target", ""}, {"rw", false},
+                          {"fixed", true}});   // built before the mount, never changed under it
 
     //DIR persists → durable RW passthrough layers (high priority, appended after content). Each unions the durable
     //UserDataPath/<Target> over the lower layers AT its runtime <Path> (so a prefix skeleton stays visible) while
@@ -588,6 +592,7 @@ nlohmann::ordered_json VfsMount::BuildRunnerLayerSpec(struct ContainerParams &Co
     Spec["mountpoint"] = ContainerParams.RunnerMountPath.string();
     SetMountOwner(Spec);
     Spec["readonly"] = true; Spec["writelayer"] = nullptr;
+    Spec["launchMounts"] = 2;   // the game's mount follows (MountVFS): one budget of delta blocks between them
     nlohmann::ordered_json Layers = nlohmann::ordered_json::array();
     // A runner build may itself be a .vgdelta CHAIN (many Proton versions = base + deltas); MakeVfsSpecLayer handles
     // VFSDeltaLayer so pinning a specific version reconstructs it (its base zip precedes it — closure order is

@@ -18,6 +18,7 @@
 #include "nodefixture.h"
 
 #include <fstream>
+#include <filesystem>
 
 using json = nlohmann::ordered_json;
 using P    = IpfsModel::CidState;
@@ -245,6 +246,68 @@ private slots:
     // A transfer's end refreshes the model while the IPFS tab shows, and only then: each refresh lists every pin and
     // asks the node about each one, and a peer's library landing ended thousands of transfers, the tab hidden or not.
     // Shown again, it refreshes. Teeth: refresh on every transfer's end; forget to refresh when the tab shows.
+    // The sizes of many queued CIDs (a received library queues thousands) are looked up together, a look at a time —
+    // a thread each entered the node from thousands of threads. Every row still gets its size. Teeth: a look per CID
+    // (as many looks as CIDs); drop the look after (CIDs asked during the first look never get one).
+    void queued_sizes_are_looked_up_together()
+    {
+        std::string Err;
+        QTemporaryDir Repo; QVERIFY(Repo.isValid());
+        QVERIFY2(IpfsWrapper::StartNode((Repo.path() + "/ipfs").toStdString(), &Err), Err.c_str());
+        {
+            AppModel m(&Cfg, &AppDir); IpfsModel im(m);
+            QTemporaryDir D; QVERIFY(D.isValid());
+            QStringList Held;
+            for (int I = 0; I < 40; ++I)
+            {
+                const std::string F = D.path().toStdString() + "/f" + std::to_string(I);
+                std::ofstream(F) << "file " << I;
+                Held << QString::fromStdString(IpfsWrapper::AddNoCopy(F, &Err));
+            }
+            const int Before = im.sizeLooks();
+            for (const QString &C : Held) im.markQueued(C);
+            QTRY_VERIFY_WITH_TIMEOUT([&]{ for (const QString &C : Held) if (im.size(C) < 0) return false; return true; }(), 10000);
+            QVERIFY2(im.sizeLooks() - Before <= 3, std::to_string(im.sizeLooks() - Before).c_str());
+        }
+        IpfsWrapper::StopNode();
+    }
+
+    // The tab's check of every pin, a pass for many pins at a time: a pin whose file is gone turns red with why, its
+    // row says a file is missing, and the pins beside it stay as they are — the same verdicts the pin-by-pin walks gave.
+    // Teeth: take the verdicts in another order (the wrong row turns red); read "gone" from the wrong field (the row
+    // never says a file is missing).
+    void a_pin_whose_file_is_gone_turns_red_in_the_batched_check()
+    {
+        std::string Err;
+        QTemporaryDir Repo; QVERIFY(Repo.isValid());
+        QVERIFY2(IpfsWrapper::StartNode((Repo.path() + "/ipfs").toStdString(), &Err), Err.c_str());
+        {
+            QTemporaryDir D; QVERIFY(D.isValid());
+            QStringList Held;
+            for (int I = 0; I < 6; ++I)
+            {
+                const std::string F = D.path().toStdString() + "/pin" + std::to_string(I);
+                std::ofstream(F) << "pinned file " << I;
+                Held << QString::fromStdString(IpfsWrapper::AddNoCopy(F, &Err));
+            }
+            std::filesystem::remove(D.path().toStdString() + "/pin3");
+            AppModel m(&Cfg, &AppDir); IpfsModel im(m);
+            im.SweepChunk = 4;                                       // two passes over the six
+            im.setActive(true);
+            using P = IpfsModel::CidState::Phase;
+            QTRY_VERIFY_WITH_TIMEOUT(im.state(Held[3]).phase == P::Errored, 10000);
+            QVERIFY(im.state(Held[3]).error.contains("gone"));
+            QTRY_COMPARE_WITH_TIMEOUT(im.state(Held[3]).missing, 1, 10000);
+            for (int I : {0, 1, 2, 4, 5})
+            {
+                QVERIFY2(im.state(Held[I]).phase != P::Errored, qPrintable(Held[I]));
+                QTRY_COMPARE_WITH_TIMEOUT(im.state(Held[I]).missing, 0, 10000);
+            }
+            im.setActive(false);
+        }
+        IpfsWrapper::StopNode();
+    }
+
     void a_transfers_end_refreshes_only_while_the_tab_shows()
     {
         std::string Err;

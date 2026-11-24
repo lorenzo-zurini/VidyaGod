@@ -49,6 +49,9 @@ std::string HydratePackage(const std::filesystem::path &DestRoot, const std::str
 bool Mint(const std::map<std::string, nlohmann::ordered_json> &WorkingTree, MintResult &Out,
           std::string *Error = nullptr);
 
+// TEST ONLY: mints whose nodes were stored as one batch.
+long long DebugMintBatches();
+
 } // namespace NodeStore
 
 #endif // NODESTORE_H

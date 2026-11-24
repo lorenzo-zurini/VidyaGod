@@ -101,6 +101,9 @@ std::string AddNoCopyMeta(const std::string &Path, std::string *Error = nullptr)
 // file) — unless NotWhole is given: then the folder holds the whole entries and NotWhole names the rest ("" and no
 // error when none is whole: no folder).
 std::string BlockPut(const std::string &Bytes, std::string *Error = nullptr);
+// BlockPut of each, stored as one batch with one flush of their pins and one announcement (a mint's every node: a
+// node at a time was ~5 synced writes each). Their CIDs in order; empty, with Error, when any cannot be stored.
+std::vector<std::string> BlockPutMany(const std::vector<std::string> &Bytes, std::string *Error = nullptr);
 std::string BlockGet(const std::string &Cid, std::string *Error = nullptr);
 // The entries of a UnixFS folder this node holds (name → CID), from local blocks only — false when the folder is not
 // held (or is not a folder).
@@ -157,6 +160,9 @@ struct FetchTarget {
     bool        Verify   = false;   // the DEST is reusable (a node file: same path, new CID on re-publish) — never
                                     // trust its presence; the Go fetch verifies dest bytes against the CID and
                                     // overwrites a stale file (refresh semantics)
+    bool        Front    = false;   // ahead of every queued job from the moment it is queued (covers on screen) — the
+                                    // same rule as PrioritizeDownloads, under the enqueue's own lock: a job prioritized
+                                    // after its enqueue could already have had its first turn, and not be bumped
 };
 
 // Fetch every target CONCURRENTLY, each bounded by a DownloadSlot, so at most MaxConcurrentDownloads() run at once
@@ -232,10 +238,19 @@ long long MoveRefs(const std::vector<std::pair<std::string, std::string>> &Moves
 // True if every block of the CID's DAG is held here and every file it is referenced into is present — what serving it
 // needs. HasLocal is the top block only: a seeder held the roots of four library zips, and none of their leaves.
 bool HeldWhole(const std::string &Cid);
+// HeldWhole of each CID, checked together — on a worker per CPU, each backing file stat'd once — in their order. All
+// false when the node is down.
+std::vector<bool> HeldWholeMany(const std::vector<std::string> &Cids);
+// HeldWhole, and the files the CID's leaves are referenced into (*Files): the files a read of it reads.
+bool HeldWholeFiles(const std::string &Cid, std::vector<std::string> *Files);
 
 // Deletes a CID's closure (filestore references + plain blocks) and unpins it, so a subsequent AddNoCopy re-creates
 // fresh references against a new backing file (the node's filestore otherwise skips re-adding a block it already has).
 bool DropRef(const std::string &Cid);
+// DropRef of each, together: one delete batch, one round of unpins and provider writes, one compaction asked (a drop
+// per item, in a loop, was each its own). False when the node is down.
+bool DropRefs(const std::vector<std::string> &Cids);
+long long DebugDropCalls();   // TEST ONLY: reference drops made since start
 
 // Reads every block of a CID out of the local blockstore — the same path bitswap serves from — and returns "" when
 // the whole DAG is servable, else the first read error. CidMissing only stats the backing PATH, so it passes a
@@ -247,6 +262,11 @@ bool DropRef(const std::string &Cid);
 // "Seeding" should be claiming: a pin alone proves nothing about whether we can hand a peer the bytes.
 // A same-size edit still slips through; only VerifyCid's byte read catches that.
 std::string CidServeStatus(const std::string &Cid);
+// CidServeStatus and CidMissing of each CID, in one pass over all of them (a block several reach walked once, each
+// backing file stat'd once): Err "" when it serves, Gone when a file it is referenced into is gone. Empty when the
+// node is down.
+struct ServeVerdict { std::string Err; bool Gone = false; };
+std::vector<ServeVerdict> CidServeStatusMany(const std::vector<std::string> &Cids);
 
 // Blocks a PEER requested that we could not deliver, since the last call (the list drains). This is the
 // uploader-side corruption signal BitTorrent does not have: there only the downloader hashes a piece, so a

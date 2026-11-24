@@ -399,11 +399,24 @@ private slots:
         // Progress on the shared CID moves BOTH cards' bars, and only theirs. Teeth: recompute only the first card a
         // CID maps to and 803's bar never moves.
         {
+            QTest::qWait(dm.ProgressMs * 2);                         // what the starts marked is recomputed first
             QSignalSpy Prog(&dm, &DownloadManager::downloadProgress);
             emit ipfs.cidChanged(QShared);
+            QTRY_VERIFY_WITH_TIMEOUT(Prog.count() >= 2, 5000);
             QSet<QString> Moved;
             for (const QList<QVariant> &A : Prog) Moved.insert(A.at(0).toString());
             QCOMPARE(Moved, (QSet<QString>{"802", "803"}));
+        }
+        // Many of a card's CIDs changing together recompute its bar once (each recompute averages all its CIDs: a
+        // 5,000-file game averaged 5,000 CIDs for every progress event of every file). Teeth: recompute per change.
+        {
+            QTest::qWait(dm.ProgressMs * 2);
+            QSignalSpy Prog(&dm, &DownloadManager::downloadProgress);
+            const long long Before = dm.debugProgressRecomputes();
+            for (int I = 0; I < 50; ++I) { emit ipfs.cidChanged(QShared); emit ipfs.cidChanged(QOwn); }
+            QTRY_VERIFY_WITH_TIMEOUT(Prog.count() >= 3, 5000);
+            QTest::qWait(dm.ProgressMs * 2);
+            QCOMPARE(dm.debugProgressRecomputes() - Before, 3LL);    // 802, 803, 900: once each
         }
 
         // Cancelling purges the cache only for what the cancel aborted and did not finish: a shared CID (another card's

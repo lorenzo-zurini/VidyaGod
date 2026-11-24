@@ -1,5 +1,6 @@
 #include "launchsources.h"
 #include "ipfswrapper.h"     // IpfsWrapper (backend fetch/has-local)
+#include "downloadqueue.h"   // EnqueueBatch, PrioritizeDownloads, WaitBatch — the missing layers fetched together
 #include "commonutils.h"     // Log*
 #include "launchresolver.h"  // BoundaryLinkIndex (cross-namespace inner-chain runner builds)
 #include "parallel.h"        // Parallel::For (the layers' presence, asked at once)
@@ -155,6 +156,9 @@ bool LaunchSources::EnsureSources(struct ContainerParams &ContainerParams)
 bool LaunchSources::MaterializeLayers(struct ContainerParams &ContainerParams)
 {
     bool Ok = true;
+    //Every missing layer asked for at once, put at the front together, and waited for once: one at a time, each
+    //waited for in turn, a game missing several layers took their fetch times added up — and up to 120 s for each.
+    std::vector<IpfsWrapper::FetchTarget> Missing;
     for (const auto &Sub : ContainerParams.SubComponentsArray)
     {
         const std::string Type = Sub.value("TYPE", std::string());
@@ -165,17 +169,31 @@ bool LaunchSources::MaterializeLayers(struct ContainerParams &ContainerParams)
         std::error_code Ec;
         if (std::filesystem::exists(Local, Ec)) continue;                        // already local — highest priority
         if (Cid.empty()) continue;                                              // no backend (flagged by EnsureSources)
-        std::string Err;                                                        // fetch from IPFS to the expected path
-        // BOUNDED WAIT (120s): launch is a synchronous user action that must not hang. FetchToPath enqueues the
-        // layer into the rolling queue, PRIORITIZES it (a bounded caller preempts a lower-priority active download so
-        // it isn't starved), and waits up to 120 s. On timeout launch fails cleanly BUT the job KEEPS ROLLING in the
-        // queue (partial + .part on disk), so it is ready when the user retries the launch. A hydrated game's layers
-        // are already local (the exists() check above), so this only runs to self-heal missing content.
-        if (IpfsWrapper::FetchToPath(Cid, Local.string(), &Err, /*TimeoutMs=*/120000).empty())
-        {
-            Ok = false;
-            LogErr("LaunchSources::MaterializeLayers", "Could not fetch layer CID " + Cid + " -> " + Local.string() + " (" + Err + ")");
-        }
+        Missing.push_back(IpfsWrapper::FetchTarget{ Cid, Local.string(), /*Optional=*/false, /*Dir=*/false });
+    }
+    if (Missing.empty()) return Ok;
+    // BOUNDED WAIT (120s): launch is a synchronous user action that must not hang. The layers go into the rolling
+    // queue, are PRIORITIZED (a bounded caller preempts a lower-priority active download so it isn't starved), and are
+    // waited for up to 120 s. On timeout launch fails cleanly BUT the jobs KEEP ROLLING in the queue (partial + .part on
+    // disk), so they are ready when the user retries the launch. A hydrated game's layers are already local (the
+    // exists() check above), so this only runs to self-heal missing content. Required in the queue (a required job
+    // jumps ahead and preempts a bulk download; an optional one waits behind it), waited for as optional: one that
+    // cannot be had is told below with the rest, not the end of the wait for the others.
+    IpfsWrapper::BatchHandle H = IpfsWrapper::EnqueueBatch(Missing);
+    for (auto &Item : H.Items) Item.second = true;
+    std::vector<std::string> Cids;
+    for (const auto &T : Missing) Cids.push_back(T.Cid);
+    IpfsWrapper::PrioritizeDownloads(Cids);
+    std::string Err;
+    IpfsWrapper::WaitBatch(H, /*TimeoutMs=*/120000, &Err);
+    for (const auto &T : Missing)
+    {
+        std::error_code Ec;
+        if (std::filesystem::exists(T.LocalPath, Ec)) continue;
+        Ok = false;
+        const std::string Why = IpfsWrapper::FailureOf(T.Cid);
+        LogErr("LaunchSources::MaterializeLayers", "Could not fetch layer CID " + T.Cid + " -> " + T.LocalPath
+               + (!Why.empty() ? " (" + Why + ")" : Err.empty() ? "" : " (" + Err + ")"));
     }
     return Ok;
 }

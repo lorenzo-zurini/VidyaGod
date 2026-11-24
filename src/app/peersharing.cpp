@@ -32,8 +32,24 @@ PeerSharing::PeerSharing(AppModel & M)
     // Self-heal on reachability: when a peer we RECEIVE from comes online, re-materialise + re-request so the catalog
     // fills regardless of the order shares/accepts/toggles happened in (a node-ready request can fire before the peer
     // connection is up and fail silently; this retries the moment they're reachable). Fires only on the online transition.
+    //A peer seen online again within PresenceReconcileMs is not re-enqueued again: on a flaky network its presence
+    //flaps, and each "online" re-planned and re-enqueued its whole library (a fetch it stalled meanwhile retries on
+    //its own: the queue rotates it, it never fails for a peer being away). It is still asked for its libraries — one
+    //small request; a request made while it was away failed, and a changed snapshot re-enqueues when it lands.
     connect(PeersManager::instance(), &PeersManager::peerPresence, this,
-        [this](const QString & peer, bool online) { if (online) reconcileReceivedPeer(peer); });
+        [this](const QString & peer, bool online) {
+            if (!online) return;
+            const qint64 Now = QDateTime::currentMSecsSinceEpoch();
+            qint64 & Last = PresenceReconciled[peer];
+            if (Last && Now - Last < PresenceReconcileMs)
+            {
+                if (isReceivingFrom(peer)) requestPeerLibraries(peer);
+                return;
+            }
+            Last = Now;
+            ++PresenceReconciles;
+            reconcileReceivedPeer(peer);
+        });
 
     // Periodic reconcile: presence-online and snapshot-apply are EDGE-triggered — a seeder killed mid-transfer and
     // restarted while we saw no edge (or a missed presence event) would otherwise leave the receiver waiting
@@ -211,6 +227,7 @@ bool PeerSharing::isSharingWithPeer(const QString & peer, const QString & lib) c
 
 void PeerSharing::requestPeerLibraries(const QString & peer)
 {
+    ++LibraryRequests;
     std::string Err;
     if (!IpfsWrapper::RequestPeerLibraries(peer.toStdString(), &Err))
         LogWarn("PeerSharing::requestPeerLibraries", "request to " + peer.toStdString() + " failed: " + Err);
@@ -244,6 +261,7 @@ void PeerSharing::applyPeerLibrarySnapshot(const QString & peer, const QString &
         for (const auto & X : Arr) if (X.is_object() && !X.value("cid", std::string()).empty()) C.push_back(X);
         if (!C.empty()) Clean[Name] = std::move(C);
     }
+    std::optional<std::vector<PackageCatalog::ReceivedFetch>> NewPlan;   // the new snapshot's plan, once made
     auto & FL = (*Model.config())["PeerLibraries"];
     if (!FL.is_object()) FL = nlohmann::ordered_json::object();
     const bool Had = FL.contains(P);
@@ -259,16 +277,18 @@ void PeerSharing::applyPeerLibrarySnapshot(const QString & peer, const QString &
         if (Had)
         {   // a CHANGED snapshot: the packages it no longer names go; the ones it still names stay, and only what changed
             // in them lands again (the prune drops what their entries no longer name)
+            NewPlan = PackageCatalog::PlanReceivedFetches(*Model.config(), PackageCatalog::ReceivedNickLabel(P), Clean);
             std::map<std::string, std::string> Keep;
-            for (const auto & T : PackageCatalog::PlanReceivedFetches(*Model.config(), PackageCatalog::ReceivedNickLabel(P), Clean))
-                Keep[T.Dest] = T.Cid;
+            for (const auto & T : *NewPlan) Keep[T.Dest] = T.Cid;
             dropReceivedStubs(P, Keep);
         }
         FL[P] = std::move(Clean);
     }
     Model.save();
     emit peerCatalogChanged();
-    if (isReceivingFrom(peer)) enqueueReceivedShares(peer);   // route the shared blocks into the library tree
+    //Route the shared blocks into the library tree. The plan of the new snapshot made above (none, when the
+    //snapshot is gone): the folders a plan names hang on the config's other peers too, unchanged meanwhile.
+    if (isReceivingFrom(peer)) enqueueReceivedShares(peer, NewPlan ? &*NewPlan : nullptr);
 }
 
 void PeerSharing::reRegisterShares()
@@ -420,21 +440,28 @@ void PeerSharing::dropReceivedStubs(const std::string & P, const std::map<std::s
     // but node files: a dir with content is an install and stays, whatever the snapshot says. Its stale node files
     // are overwritten or joined by the new generation's — the installed bytes are never the thing at risk.
     std::error_code Ec;
-    int Removed = 0, KeptN = 0;
+    int KeptN = 0;
+    std::vector<std::filesystem::path> Gone;   // what goes: decided first, then forgotten by the queue in one pass
     for (const auto & D : LibDirs)
     {
         if (!std::filesystem::is_directory(D, Ec)) continue;
         bool Kept = false;
+        std::vector<std::filesystem::path> Pkgs;
         for (const auto & E : std::filesystem::directory_iterator(D, Ec))
         {
             if (!E.is_directory(Ec)) { std::filesystem::remove(E.path(), Ec); continue; }
             if (Keep.count(E.path())) { Kept = true; continue; }                                          // still shared
             if (PackageCatalog::DirHasContent(E.path().string())) { Kept = true; ++KeptN; continue; }   // an install — never
-            IpfsWrapper::ForgetDestsUnder(E.path().string());   // the queue must not re-materialise these paths later
-            std::filesystem::remove_all(E.path(), Ec); ++Removed;
+            Pkgs.push_back(E.path());
         }
-        if (!Kept) { IpfsWrapper::ForgetDestsUnder(D.string()); std::filesystem::remove_all(D, Ec); }
+        if (Kept) Gone.insert(Gone.end(), Pkgs.begin(), Pkgs.end());
+        else Gone.push_back(D);                                       // the library's folder, every package in it
     }
+    std::vector<std::string> GoneS;
+    for (const auto & G : Gone) GoneS.push_back(G.string());
+    IpfsWrapper::ForgetDestsUnder(GoneS);   // the queue must not re-materialise these paths later
+    int Removed = 0;
+    for (const auto & G : Gone) { std::filesystem::remove_all(G, Ec); ++Removed; }
     LogOut("PeerSharing::dropReceivedStubs", "peer " + P.substr(P.size() > 8 ? P.size() - 8 : 0) + ": " + std::to_string(Removed)
            + " stub package dir(s) removed, " + std::to_string(KeptN) + " installed package(s) kept");
 }
@@ -803,7 +830,7 @@ void PeerSharing::setNewPeerShareDefault(const QString & lib, bool on)
     Model.save();
 }
 
-void PeerSharing::enqueueReceivedShares(const QString & peer)
+void PeerSharing::enqueueReceivedShares(const QString & peer, const std::vector<PackageCatalog::ReceivedFetch> * Given)
 {
     // Receiver = ONE step, zero special machinery: each entry of the peer's share sheet becomes a plain file
     // FetchTarget whose dest is its final path — CATALOG/<Nick> - <Lib>/<pkg>/<file> (PackageCatalog::PlanReceivedFetches).
@@ -816,8 +843,8 @@ void PeerSharing::enqueueReceivedShares(const QString & peer)
     if (!Model.config()->contains("PeerLibraries") || !(*Model.config())["PeerLibraries"].is_object()
         || !(*Model.config())["PeerLibraries"].contains(P) || !(*Model.config())["PeerLibraries"][P].is_object()) return;
 
-    const auto Plan = PackageCatalog::PlanReceivedFetches(*Model.config(), PackageCatalog::ReceivedNickLabel(P),
-                                                          (*Model.config())["PeerLibraries"][P]);
+    const auto Plan = Given ? *Given : PackageCatalog::PlanReceivedFetches(*Model.config(), PackageCatalog::ReceivedNickLabel(P),
+                                                                           (*Model.config())["PeerLibraries"][P]);
     // No local "satisfied" guess: presence and even HasLocal both LIE for reusable node dests (HasLocal is GLOBAL
     // block membership — another peer's fetch of v2 would mark this peer's stale v1 file settled forever). Every
     // planned target is enqueued with Verify semantics: the QUEUE settles repeats for free (a dest its job already

@@ -17,6 +17,9 @@
 #include "cli/cliapp.h"
 #include "command.h"
 #include "commands/cmdutil.h"
+#include "commandserver.h"
+#include <atomic>
+#include <thread>
 #include "commonutils.h"
 #include "launchresolver.h"
 #include "manifestmodel.h"
@@ -40,6 +43,69 @@ private slots:
                 LogErr("Test", "the helper said: no such mount");
                 throw std::runtime_error("it did not mount");
             }, {} });
+    }
+
+    // A command the app runs off its thread (a fetch, a health check, a seed: minutes on a Deck, the window frozen for
+    // all of them) reads a config of its own — the app goes on changing its config meanwhile — and cannot save it: the
+    // copy written over the file would undo the app's changes. Teeth: hand it the app's config (it reads the change
+    // made under it); let it save (the call answers ok).
+    void a_command_off_the_apps_thread_reads_its_own_config_and_cannot_save()
+    {
+        static std::atomic<bool> Started{false}, Go{false};
+        Started = false; Go = false;
+        Command::Register({ "test bg read", "a background test command", "", {}, {}, {}, Command::Needs::Config, false,
+            [](Command::Context &C, const json &) {
+                const std::string Before = (*C.Config).value("V", std::string());
+                Started = true;
+                while (!Go) std::this_thread::sleep_for(std::chrono::milliseconds(5));
+                return json{{"before", Before}, {"after", (*C.Config).value("V", std::string())}};
+            }, {}, true });
+        Command::Register({ "test bg save", "a background test command that saves", "", {}, {}, {}, Command::Needs::Config, false,
+            [](Command::Context &C, const json &) { CmdUtil::Save(C); return json{{"saved", true}}; }, {}, true });
+        QTemporaryDir D; QVERIFY(D.isValid());
+        QDir Dir(D.path());
+        json Cfg = json{{"Settings", json::object()}, {"V", "as it was"}};
+        AppModel Model(&Cfg, &Dir);
+        Command::Context Ctx;
+        Ctx.Config = &Cfg;
+        Ctx.AppDataDir = &Dir;
+        Ctx.Model = &Model;
+        Ctx.Live = true;
+        CommandServer Server(Ctx);
+        std::string Err;
+        QVERIFY2(Server.Start(D.path().toStdString(), &Err), Err.c_str());
+        json ReadReply, SaveReply;
+        std::atomic<bool> Done{false};
+        std::thread Client([&] {
+            CommandServer::Send(D.path().toStdString(), "test bg read", json::object(), ReadReply, 10000);
+            CommandServer::Send(D.path().toStdString(), "test bg save", json::object(), SaveReply, 10000);
+            Done = true;
+        });
+        QTRY_VERIFY_WITH_TIMEOUT(Started.load(), 5000);
+        Cfg["V"] = "changed by the app";                                 // the app's thread, while the command runs
+        Go = true;
+        QTRY_VERIFY_WITH_TIMEOUT(Done.load(), 10000);
+        Client.join();
+        QCOMPARE(ReadReply["result"].value("before", std::string()), std::string("as it was"));
+        QCOMPARE(ReadReply["result"].value("after", std::string()), std::string("as it was"));
+        QVERIFY2(!SaveReply.value("ok", true), SaveReply.dump().c_str());
+    }
+
+    // The commands that take minutes (fetches, health and seed walks, an index build) run off the app's thread: in
+    // the app, each froze the window and every other command for as long as it ran. Teeth: unmark any of them.
+    void the_long_commands_run_off_the_apps_thread()
+    {
+        for (const char *N : { "ipfs fetch", "ipfs fetch-many", "queue enqueue", "ipfs health", "launch mirror",
+                               "packages seed", "packages heal", "packages held", "catalog fresh", "catalog validate" })
+        {
+            const Command::Spec *S = Command::Find(N);
+            QVERIFY2(S, N);
+            QVERIFY2(S->Background, N);
+        }
+        //Off the app's thread a command has no model and no windows (only a copy of the config): one that needs them
+        //would refuse to run there at all ('catalog validate' did). Teeth: declare one of them Needs::Model.
+        for (const auto &[Name, S] : Command::All())
+            if (S.Background) QVERIFY2(S.Requires == Command::Needs::Config, Name.c_str());
     }
 
     // Teeth: drop Act's watch (run the click bare) and Early is never called — the call would wait for the dialog,

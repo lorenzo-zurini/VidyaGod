@@ -6,6 +6,7 @@
 
 #include <filesystem>
 #include <functional>
+#include <set>
 #include <string>
 #include <unordered_map>
 #include <vector>
@@ -31,6 +32,9 @@ bool RunnerInstalled(const NodeIndex &Idx, const std::string &RunnerNodeId);
 // True if the runner is bundled INSIDE a game package (some launchable node shares its BundleDir), as opposed to a
 // standalone runner package (e.g. VidyaGodRunners/ge-proton10-30).
 bool IsEmbeddedRunner(const NodeIndex &Idx, const std::string &RunnerNodeId);
+// The keys of every embedded runner (IsEmbeddedRunner of each) in one pass over the index: asked runner by runner, a
+// page of 200 runners compared every node's folder 200 times over.
+std::set<std::string> EmbeddedRunners(const NodeIndex &Idx);
 // Compatible AND installed — the runners a game can actually launch with right now. Sorted by node id.
 std::vector<const Node*> UsableRunners(const NodeIndex &Idx, const Node &Launch);
 

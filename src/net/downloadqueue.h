@@ -40,6 +40,12 @@ bool WaitBatch(const BatchHandle &Handle, std::string *Error = nullptr);
 // Bounded wait: block up to TimeoutMs for the batch to finish; on timeout return false and LEAVE the jobs in the
 // queue (they keep rolling) — the launch semantic. TimeoutMs<=0 waits forever.
 bool WaitBatch(const BatchHandle &Handle, int TimeoutMs, std::string *Error = nullptr);
+// A wait that gives up only when the batch has not moved for StallMs: none of its items landed (or failed) and none
+// still waits for its first try behind the queue's other work. A large batch behind other downloads keeps waiting; one
+// whose last files keep failing (their peer away) ends, however busy the rest of the queue. Jobs stay queued.
+bool WaitBatchWhileMoving(const BatchHandle &Handle, int StallMs, std::string *Error = nullptr);
+// Why a fetch of Cid failed ("" when it has not): a wait's optional items fail without ending it, each with its reason.
+std::string FailureOf(const std::string &Cid);
 
 // Shut the queue for the app's exit: every queued job fails, every active fetch is aborted, and anything enqueued
 // afterwards fails at once — so every WaitBatch returns, however its fetches were doing (a retryable job otherwise
@@ -51,13 +57,17 @@ void OpenQueue();
 // never needed a job (already in place) or whose job is done is not unfinished.
 bool JobUnfinished(const std::string &Cid);
 // True when a CID's job has settled — done, failed (a cancel too) or none (pruned, or never needed) — as WaitBatch
-// judges a batch finished; *Landed: done (its file is in place by this job).
+// judges a batch finished; *Landed: done by writing its file (a job that found it already here landed nothing).
 bool JobSettled(const std::string &Cid, bool *Landed = nullptr);
 // True while the queue fetches: a job running, or queued and due. A job waiting out a retry's backoff (a peer gone,
 // retried for ever) is not fetching: it leaves the queue idle between its tries.
 bool QueueBusy();
 // TEST ONLY: how many times a claimed dest was looked for in every job (a re-enqueue of what is in place claims none).
 long long DebugClaimScans();
+// Verify jobs found already here (every dest holding the CID, the node holding it) and so never fetched.
+long long DebugAlreadyHere();
+// TEST ONLY: the items WaitBatch has looked at since start (a wake looks at what is left, not the whole batch).
+long long DebugWaitLooks();
 
 // Cancel a CID's download: drop it if still queued, abort it (RequestCancel) if active. A batch waiting on a required
 // cancelled CID sees the cancellation as a failure.
@@ -66,6 +76,9 @@ void CancelDownload(const std::string &Cid);
 // called when those files are removed on purpose (a peer's stubs replaced by a new generation), so a job re-run
 // later never materialises a path nobody asked for any more.
 void ForgetDestsUnder(const std::string &Dir);
+// ForgetDestsUnder of each folder, in one pass over the jobs: a call per folder went over every job each time (a
+// peer's library dropped: hundreds of folders over thousands of jobs, under the queue's lock).
+void ForgetDestsUnder(const std::vector<std::string> &Dirs);
 // Forget one dest of one CID's job: that file is no longer this node's (a peer's package changed it, or dropped it),
 // so a job that runs later never lands it; one landing now is undone when it ends.
 void ForgetDest(const std::string &Cid, const std::string &Dest);
@@ -84,6 +97,10 @@ void DropRedirectsUnder(const std::string &Dir);
 
 // Move a still-queued CID ahead of all other queued jobs so the dispatcher picks it next. No-op once it is active/done.
 void PrioritizeDownload(const std::string &Cid);
+// PrioritizeDownload of each, under one hold of the queue and one wake of it (the cover sweep: hundreds of covers,
+// each a wake of every wait and of the dispatcher).
+void PrioritizeDownloads(const std::vector<std::string> &Cids);
+long long DebugPrioritizeWakes();   // TEST ONLY: wakes Prioritize made
 
 // The (first) destination path a CID's queued/active job will write to — "" when the CID has no job. UI labeling:
 // a transfer is named by where it is going.

@@ -342,6 +342,27 @@ private slots:
         QVERIFY(!M.validating());
     }
 
+    // The check after a pause in editing builds its index of the library (every library node copied, every tile's facts
+    // derived again) on its own thread, not the GUI's; the index it built is what the editor reads next for this
+    // version of the package. Teeth: build it on the GUI thread before the check (a GUI build per pause); drop keeping
+    // it (the GUI builds its own on its next read).
+    void theCheckBuildsItsIndexOffTheGuiThread()
+    {
+        library();
+        PackageEditorModel M(&Cfg, nullptr);
+        M.initPackage(Pkg);
+        json N = M.doc().Node(0);
+        N["LAYERS"][0]["NODE"] = Fonts;
+        M.replaceNode(Game, N);
+        const int Before = M.execBuilds();
+        QSignalSpy Verdict(&M, &PackageEditorModel::validationChanged);
+        M.validateNow();
+        QVERIFY(Verdict.wait(5000));
+        QCOMPARE(M.execBuilds(), Before);
+        (void)M.KnownPlatforms();                                // reads the index of this version
+        QCOMPARE(M.execBuilds(), Before);
+    }
+
     // The editor reports on the package it has open: a library-wide finding about another package's nodes (two
     // runners disagreeing where %GameDir% is) is not this package's, while a broken node it CONTAINS is - whichever
     // package holds it. Teeth: keep every message (the runners' warning shows here); drop every other package's node

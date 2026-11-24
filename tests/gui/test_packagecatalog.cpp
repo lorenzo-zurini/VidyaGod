@@ -27,8 +27,10 @@
 #include "cid.h"
 #include "contentfile.h"
 #include "nodefiles.h"
+#include "nodestore.h"
 #include "vfsmount.h"
 #include "packagesview.h"
+#include "runnerspage.h"
 #include "appmodel.h"
 #include <QPushButton>
 #include "downloadqueue.h"   // EnqueueBatch/WaitBatch — the REAL rolling queue under test
@@ -268,6 +270,233 @@ private slots:
         IpfsWrapper::StopNode();
     }
 
+    // A received node file already here, holding its CID, is not fetched again when the app starts and asks for it
+    // (every received file, on every start: read twice, hashed twice and announced, one by one through the slots), and
+    // it lands nothing — the receive that asked shows nothing new. A file there holding another version is fetched.
+    // Teeth: drop the AlreadyHere check in RunJob (the fetch runs for the file in place); let it pass on presence
+    // alone (the stale file is kept); report a job found already here as landed.
+    void a_received_file_already_here_is_not_fetched_again()
+    {
+        std::string Err;
+        QTemporaryDir Repo; QVERIFY(Repo.isValid());
+        QVERIFY2(IpfsWrapper::StartNode((Repo.path() + "/ipfs").toStdString(), &Err), Err.c_str());
+        auto Stop = qScopeGuard([]{ IpfsWrapper::SetFetchOnceHook({}); IpfsWrapper::DebugResetQueue(); IpfsWrapper::StopNode(); });
+        QTemporaryDir Root; QVERIFY(Root.isValid());
+        const json A = json{{"LABEL", "Game 1.0"}, {"LAYERS", json::array({ json{{"DIR", "a"}} })}};
+        const json A2 = json{{"LABEL", "Game 1.0"}, {"LAYERS", json::array({ json{{"DIR", "a2"}} })}};
+        const std::string Here = Root.path().toStdString() + "/Game 1.0.json";
+        const std::string Stale = Root.path().toStdString() + "/Game 1.0 (old).json";
+        std::ofstream(Here, std::ios::binary) << Cid::Canonical(A);
+        std::ofstream(Stale, std::ios::binary) << Cid::Canonical(A2);       // the same path, an older version
+        QCOMPARE(IpfsWrapper::AddNoCopy(Here, &Err), Cid::OfNode(A));
+        QCOMPARE(IpfsWrapper::AddNoCopy(Stale, &Err), Cid::OfNode(A2));
+        std::atomic<int> Fetches{0};
+        IpfsWrapper::SetFetchOnceHook([&](const std::string &cid, const std::string &dest, bool, std::string *) {
+            ++Fetches; std::ofstream(dest, std::ios::binary | std::ios::trunc) << Cid::Canonical(cid == Cid::OfNode(A) ? A : A2); return 0; });
+        IpfsWrapper::DebugResetQueue();                                    // the app started again: the queue knows nothing
+        const long long Before = IpfsWrapper::DebugAlreadyHere();
+        QVERIFY(IpfsWrapper::WaitBatch(IpfsWrapper::EnqueueBatch({IpfsWrapper::FetchTarget{Cid::OfNode(A), Here, true, false, /*Verify=*/true}}), 10000));
+        QCOMPARE(Fetches.load(), 0);
+        QCOMPARE(IpfsWrapper::DebugAlreadyHere() - Before, 1LL);
+        bool Landed = true;
+        QVERIFY(IpfsWrapper::JobSettled(Cid::OfNode(A), &Landed));
+        QVERIFY2(!Landed, "a file found already here landed nothing");
+        // The stale path holds A2; A is asked for there, on another start: fetched.
+        IpfsWrapper::DebugResetQueue();
+        QVERIFY(IpfsWrapper::WaitBatch(IpfsWrapper::EnqueueBatch({IpfsWrapper::FetchTarget{Cid::OfNode(A), Stale, true, false, /*Verify=*/true}}), 10000));
+        QCOMPARE(Fetches.load(), 1);
+        QVERIFY(IpfsWrapper::JobSettled(Cid::OfNode(A), &Landed));
+        QVERIFY2(Landed, "a fetched file landed");
+    }
+
+    // A received file's job that lands one copy leaves another copy already holding its node as it is: it was copied
+    // over at every run (read, hashed, copied). Teeth: drop the check (the copy is written again: its time changes).
+    void a_copy_already_holding_its_node_is_left_as_it_is()
+    {
+        std::string Err;
+        QTemporaryDir Repo; QVERIFY(Repo.isValid());
+        QVERIFY2(IpfsWrapper::StartNode((Repo.path() + "/ipfs").toStdString(), &Err), Err.c_str());
+        auto Stop = qScopeGuard([]{ IpfsWrapper::SetFetchOnceHook({}); IpfsWrapper::DebugResetQueue(); IpfsWrapper::StopNode(); });
+        QTemporaryDir Root; QVERIFY(Root.isValid());
+        const json A = json{{"LABEL", "Game 1.0"}, {"LAYERS", json::array({ json{{"DIR", "a"}} })}};
+        const std::string Missing = Root.path().toStdString() + "/one/Game 1.0.json", Here = Root.path().toStdString() + "/two/Game 1.0.json";
+        std::filesystem::create_directories(std::filesystem::path(Here).parent_path());
+        std::ofstream(Here, std::ios::binary) << Cid::Canonical(A);
+        QCOMPARE(IpfsWrapper::AddNoCopy(Here, &Err), Cid::OfNode(A));
+        const auto Old = std::filesystem::file_time_type::clock::now() - std::chrono::hours(24);
+        std::filesystem::last_write_time(Here, Old);
+        IpfsWrapper::SetFetchOnceHook([&](const std::string &, const std::string &dest, bool, std::string *) {
+            std::filesystem::create_directories(std::filesystem::path(dest).parent_path());
+            std::ofstream(dest, std::ios::binary) << Cid::Canonical(A); return 0; });
+        IpfsWrapper::DebugResetQueue();
+        QVERIFY(IpfsWrapper::WaitBatch(IpfsWrapper::EnqueueBatch({IpfsWrapper::FetchTarget{Cid::OfNode(A), Missing, true, false, true},
+                                                                  IpfsWrapper::FetchTarget{Cid::OfNode(A), Here, true, false, true}}), 10000));
+        QVERIFY(std::filesystem::exists(Missing));
+        QVERIFY2(std::filesystem::last_write_time(Here) == Old, "the copy already holding the node was written again");
+    }
+
+    // Seeding a node's content again (Seed & share, every publish of a package) does not read back a file it read
+    // before and that has not changed since: a 50 GB game was read whole at every publish, the editor waiting. A file
+    // changed since is read, and its drift found. Teeth: drop the record (read every time); key it on the node's path,
+    // not the files the CID reads (the file changed in place stays trusted).
+    void seeding_again_reads_only_what_changed()
+    {
+        QTemporaryDir data; QVERIFY(data.isValid());
+        const std::string Saved = AppPaths::DataRootSet() ? AppPaths::DataRoot().string() : std::string();
+        const auto Restore = qScopeGuard([&] { AppPaths::SetDataRoot(Saved); IpfsWrapper::StopNode(); });
+        AppPaths::SetDataRoot(data.path().toStdString());
+        std::string Err;
+        QVERIFY2(IpfsWrapper::StartNode((data.path() + "/ipfs").toStdString(), &Err), Err.c_str());
+        const std::string Pkg = data.path().toStdString() + "/LIBRARY/VidyaGod/[9] S";
+        std::filesystem::create_directories(Pkg);
+        { std::ofstream(Pkg + "/disc.bin", std::ios::binary) << std::string(400000, 'a'); }
+        nlohmann::ordered_json Node = NodeFixture::Chain("s_content", {NodeFixture::Content("file", "disc.bin")}).back();
+        PackageCatalog::SeedReport R1, R2, R3;
+        bool Changed = false;
+        QVERIFY2(PackageCatalog::SeedNodeContent(Node, Pkg, R1, Changed, &Err), Err.c_str());
+        QCOMPARE(R1.Seeded, 1);
+        QVERIFY2(PackageCatalog::SeedNodeContent(Node, Pkg, R2, Changed, &Err), Err.c_str());
+        QCOMPARE(R2.Read, 1);                                               // the first check reads it…
+        QVERIFY2(PackageCatalog::SeedNodeContent(Node, Pkg, R3, Changed, &Err), Err.c_str());
+        QCOMPARE(R3.Read, 0);                                               // …and the next one does not
+        // The same size, other bytes, a later time: read again, found drifted, seeded anew.
+        { std::ofstream(Pkg + "/disc.bin", std::ios::binary) << std::string(400000, 'b'); }
+        std::filesystem::last_write_time(Pkg + "/disc.bin", std::filesystem::file_time_type::clock::now() + std::chrono::seconds(5));
+        PackageCatalog::SeedReport R4;
+        QVERIFY2(PackageCatalog::SeedNodeContent(Node, Pkg, R4, Changed, &Err), Err.c_str());
+        QCOMPARE(R4.Read, 1);
+        QCOMPARE(R4.Repaired, 1);
+    }
+
+    // A publish reads the record of checked files once and writes it once, whatever the package's node count (it was
+    // read and written whole per node: thousands of nodes, thousands of rewrites of a file listing every check), and
+    // what another process wrote there meanwhile stays — unless its file is gone (the record only grew). Teeth: write
+    // it at the end of each node's seed; write this process's view without reading the file first; keep gone files'.
+    void a_publish_writes_the_checked_record_once()
+    {
+        QTemporaryDir data; QVERIFY(data.isValid());
+        const std::string Saved = AppPaths::DataRootSet() ? AppPaths::DataRoot().string() : std::string();
+        const auto Restore = qScopeGuard([&] { AppPaths::SetDataRoot(Saved); IpfsWrapper::StopNode(); });
+        AppPaths::SetDataRoot(data.path().toStdString());
+        std::string Err;
+        QVERIFY2(IpfsWrapper::StartNode((data.path() + "/ipfs").toStdString(), &Err), Err.c_str());
+        const QString Pkg = data.path() + "/LIBRARY/VidyaGod/[9] V";
+        QDir().mkpath(Pkg);
+        for (const char * N : {"a", "b", "c"})
+        {
+            writeFile(Pkg + "/" + N + ".bin", std::string(200000, N[0]));
+            writeJson(Pkg + "/" + N + ".json", NodeFixture::Chain(std::string("v_") + N, {NodeFixture::Content("file", std::string(N) + ".bin")}).back());
+        }
+        QVERIFY2(PackageCatalog::PublishPackage(Pkg.toStdString(), "", &Err), Err.c_str());   // seeds: nothing checked yet
+        const QString Record = data.path() + "/CACHE/seedverified.json";
+        writeFile(data.path() + "/elsewhere.bin", "x");
+        json Other = json::parse(R"({"format": "vgseedverified 2", "cids": {"bafygone": {"/no/such/file.bin": "1 2 3 4"}}})");
+        Other["cids"]["bafyother"] = {{(data.path() + "/elsewhere.bin").toStdString(), "1 2 3 4"}};
+        QDir().mkpath(data.path() + "/CACHE");
+        writeJson(Record, Other);                                                    // another process's check
+        const long long Io = PackageCatalog::DebugVerifiedFileIo();
+        QVERIFY2(PackageCatalog::PublishPackage(Pkg.toStdString(), "", &Err), Err.c_str());   // checks all three
+        QVERIFY2(PackageCatalog::DebugVerifiedFileIo() - Io <= 2, std::to_string(PackageCatalog::DebugVerifiedFileIo() - Io).c_str());
+        std::ifstream In(Record.toStdString());
+        const json J = json::parse(In, nullptr, false);
+        QVERIFY2(J.is_object() && J["cids"].size() == 4, J.dump().c_str());          // three checked here, one kept
+        QVERIFY(J["cids"].contains("bafyother"));
+        QVERIFY(!J["cids"].contains("bafygone"));
+        In.close();
+        // Another process writing it (its lock held): this publish writes nothing over it, and what it found is written
+        // by the next pass. Teeth: write without the lock.
+        writeFile(Pkg + "/d.bin", std::string(200000, 'd'));
+        writeJson(Pkg + "/d.json", NodeFixture::Chain("v_d", {NodeFixture::Content("file", "d.bin")}).back());
+        QVERIFY2(PackageCatalog::PublishPackage(Pkg.toStdString(), "", &Err), Err.c_str());   // seeds d
+        {
+            const Platform::ScopedFileLock Theirs((Record + ".lock").toStdString());
+            QVERIFY(Theirs.held());
+            QVERIFY2(PackageCatalog::PublishPackage(Pkg.toStdString(), "", &Err), Err.c_str());   // checks d
+            std::ifstream R(Record.toStdString());
+            QCOMPARE(json::parse(R, nullptr, false)["cids"].size(), size_t(4));          // left as the other wrote it
+        }
+        QVERIFY2(PackageCatalog::PublishPackage(Pkg.toStdString(), "", &Err), Err.c_str());
+        std::ifstream R2(Record.toStdString());
+        QCOMPARE(json::parse(R2, nullptr, false)["cids"].size(), size_t(5));
+    }
+
+    // A heal that prunes what nothing references keeps a published package whole: its pin folder holds its node folder
+    // and content folder (each pinned too) and its node files (pinned directly), all referenced through the pin folder.
+    // Teeth: count only the pin folders (the package's own folders and nodes are unpinned).
+    void a_prune_keeps_what_a_published_package_holds()
+    {
+        std::string Err;
+        QTemporaryDir Repo; QVERIFY(Repo.isValid());
+        QVERIFY2(IpfsWrapper::StartNode((Repo.path() + "/ipfs").toStdString(), &Err), Err.c_str());
+        auto Stop = qScopeGuard([]{ IpfsWrapper::StopNode(); });
+        QTemporaryDir Root; QVERIFY(Root.isValid());
+        const QString Pkg = Root.path() + "/VidyaGod/[5] P";
+        QDir().mkpath(Pkg);
+        { std::ofstream(Pkg.toStdString() + "/p.bin", std::ios::binary) << std::string(5000, 'p'); }
+        const std::string Bin = IpfsWrapper::AddNoCopy(Pkg.toStdString() + "/p.bin", &Err);
+        QVERIFY(!Bin.empty());
+        writeJson(Pkg + "/c.json", NodeFixture::Chain("p_content", {NodeFixture::ContentCid("file", "p.bin", Bin)}));
+        writeJson(Pkg + "/p.json", NodeFixture::Chain("p_exec", {NodeFixture::Merge({NodeFixture::Exec("win32", "p.exe"),
+                  NodeFixture::Variant("Play"), NodeFixture::Tile("5", "P")})}, {"p_content"}));
+        json cfg = json{{"Settings", {{"Paths", {{"LibraryRoot", Root.path().toStdString()}}}}}};
+        QVERIFY2(!PackageCatalog::PublishLibrary(cfg, &Err).empty(), Err.c_str());
+        std::set<std::string> Before;
+        for (const auto &P : IpfsWrapper::Pins()) Before.insert(P.Cid);
+        cfg["Settings"]["PackageSources"] = json::array({ json{{"CID", "bafysourcefolder"}, {"NAME", "VidyaGod"}} });   // the heal's scope
+        QVERIFY(!PackageCatalog::SeedTargets(PackageCatalog::PackageSourceDir(cfg, cfg["Settings"]["PackageSources"][0])).empty());
+        PackageCatalog::HealOptions O;
+        O.PruneUnreferenced = true;
+        const auto R = PackageCatalog::HealSourceContent(cfg, O);
+        QCOMPARE(R.PrunedUnreferenced, 0);
+        std::set<std::string> After;
+        for (const auto &P : IpfsWrapper::Pins()) After.insert(P.Cid);
+        QCOMPARE(After, Before);
+    }
+
+    // Upgrading a package source keeps the content that only moves held, served from where it is now — a move of its
+    // references, not a drop and a re-add of each file (every byte read again: gigabytes for a file that only moved).
+    // Teeth: drop and re-add each moved file again (it is read whole); move nothing (the moved files' references name
+    // where they were).
+    void a_source_upgrade_moves_references_and_reads_nothing()
+    {
+#ifndef __linux__
+        QSKIP("counts reads through /proc/self/io");
+#endif
+        const auto ReadSoFar = [] {
+            std::ifstream In("/proc/self/io");
+            for (std::string L; std::getline(In, L); )
+                if (L.rfind("rchar: ", 0) == 0) return std::stoll(L.substr(7));
+            return -1LL;
+        };
+        std::string Err;
+        QTemporaryDir Repo; QVERIFY(Repo.isValid());
+        QVERIFY2(IpfsWrapper::StartNode((Repo.path() + "/ipfs").toStdString(), &Err), Err.c_str());
+        auto Stop = qScopeGuard([]{ IpfsWrapper::StopNode(); });
+        QTemporaryDir Root; QVERIFY(Root.isValid());
+        const std::string Dir = Root.path().toStdString() + "/Src", Staging = Root.path().toStdString() + "/.Src.upgrade";
+        std::filesystem::create_directories(Dir + "/[1] A");
+        std::filesystem::create_directories(Staging + "/[2] A");
+        const auto Big = [](const std::string &P, char Fill) { std::ofstream O(P, std::ios::binary); O << std::string(8 << 20, Fill); };
+        Big(Dir + "/[1] A/a.bin", 'a');
+        Big(Dir + "/[1] A/old.bin", 'o');
+        const std::string A = IpfsWrapper::AddNoCopy(Dir + "/[1] A/a.bin", &Err), O = IpfsWrapper::AddNoCopy(Dir + "/[1] A/old.bin", &Err);
+        QVERIFY(!A.empty() && !O.empty());
+        writeJson(QString::fromStdString(Staging + "/[2] A/a.json"), NodeFixture::Chain("a_content", {NodeFixture::ContentCid("file", "a.bin", A)}));
+        json cfg = json{{"Settings", {{"PackageSources", json::array({ json{{"CID", "bafyoldsource"}, {"NAME", "Src"}} })}}}};
+        PackageCatalog::SourceUpgradePlan P;
+        P.Name = "Src"; P.OldCid = ""; P.NewCid = "bafynewsource"; P.Dir = Dir; P.StagingDir = Staging;
+        P.DeprecatedDir = Root.path().toStdString() + "/.deprecated/Src/old";
+        P.ContentMove[A] = { Dir + "/[1] A/a.bin", Dir + "/[2] A/a.bin" };
+        P.ContentDeprecate[Dir + "/[1] A/old.bin"] = O;
+        P.Valid = true;
+        const long long Before = ReadSoFar();
+        PackageCatalog::ApplySourceUpgrade(cfg, P, true, &Err);
+        const long long Read = ReadSoFar() - Before;
+        QVERIFY2(Read < (8 << 20), std::to_string(Read).c_str());           // neither 8 MB file was read again
+        QVERIFY2(IpfsWrapper::HasLocal(A) && !IpfsWrapper::CidMissing(A), "the moved file is held where it is now");
+        QVERIFY2(IpfsWrapper::HasLocal(O) && !IpfsWrapper::CidMissing(O), "the deprecated file is held where it is now");
+    }
+
     // Publishing names a package's frozen node files by their labels (chapter 02 §2.5): a file named by its CID, as a
     // script or an older build wrote it, takes its label's name, and what refers to it in place follows — every
     // package's, in one move made before any folder. Two nodes of one label are both bumped. Teeth: drop the Normalize
@@ -294,9 +523,10 @@ private slots:
         std::ofstream(Pkg2 + "/" + Cid::OfNode(D) + ".json", std::ios::binary) << Cid::Canonical(D);
         QCOMPARE(IpfsWrapper::AddNoCopy(Pkg2 + "/" + Cid::OfNode(D) + ".json", &Err), Cid::OfNode(D));
         json cfg = json{{"Settings", {{"Paths", {{"LibraryRoot", Root.path().toStdString()}}}}}};
-        const long long Scans = IpfsWrapper::DebugMoveRefScans();
+        const long long Scans = IpfsWrapper::DebugMoveRefScans(), Batches = NodeStore::DebugMintBatches();
         QVERIFY2(PackageCatalog::PublishLibrary(cfg, &Err).size() == 2, Err.c_str());
         QCOMPARE(IpfsWrapper::DebugMoveRefScans() - Scans, 1LL);              // one scan of the references, for both
+        QVERIFY2(NodeStore::DebugMintBatches() > Batches, "the nodes were stored as one batch, not one by one");
         QCOMPARE(QDir(QString::fromStdString(Pkg2)).entryList({"*.json"}, QDir::Files), QStringList{ "Other 2.0.json" });
         QVERIFY2(!IpfsWrapper::CidMissing(Cid::OfNode(D)), "the other package's node reference followed its file too");
         const QStringList Files = QDir(QString::fromStdString(Pkg)).entryList({"*.json"}, QDir::Files);
@@ -1375,6 +1605,41 @@ private slots:
         IpfsWrapper::StopNode();
     }
 
+    // Pruning older generations from several received packages drops their references in one call, not one per file
+    // (each its own commit, unpins and compaction request — hundreds after a peer's re-publish). Teeth: remove each
+    // stale file on its own (a drop per file); drop per package (a drop per package).
+    void pruning_stale_copies_drops_their_references_together()
+    {
+        std::string Err;
+        QTemporaryDir Repo; QVERIFY(Repo.isValid());
+        QVERIFY2(IpfsWrapper::StartNode((Repo.path() + "/ipfs").toStdString(), &Err), Err.c_str());
+        auto Stop = qScopeGuard([]{ IpfsWrapper::StopNode(); });
+        QTemporaryDir RxData; QVERIFY(RxData.isValid());
+        json rx = json{{"Settings", {{"Paths", {{"LibraryRoot", (RxData.path() + "/LIBRARY").toStdString()}}}}}};
+        const std::string Cat = PackageCatalog::CatalogRootDir(rx) + "/Alice - Games";
+        std::vector<std::string> Old;
+        for (int I = 1; I <= 2; ++I)
+        {
+            const std::string Pkg = "[" + std::to_string(I) + "] P" + std::to_string(I), D = Cat + "/" + Pkg;
+            std::filesystem::create_directories(D);
+            const json Cur = json{{"LABEL", "now" + std::to_string(I)}, {"LAYERS", json::array({ json{{"DIR", "n"}} })}};
+            for (int J = 0; J < 3; ++J)
+            {
+                const json Was = json{{"LABEL", "was" + std::to_string(I * 10 + J)}, {"LAYERS", json::array({ json{{"DIR", "w"}} })}};
+                const std::string F = D + "/was" + std::to_string(J) + ".json";
+                { std::ofstream O(F, std::ios::binary); O << Cid::Canonical(Was); }
+                QCOMPARE(IpfsWrapper::AddNoCopy(F, &Err), Cid::OfNode(Was));
+                Old.push_back(Cid::OfNode(Was));
+            }
+            { std::ofstream O(D + "/now.json", std::ios::binary); O << Cid::Canonical(Cur); }
+            shareEntries(rx, "Games", Pkg, D, {"now.json"});
+        }
+        const long long Before = IpfsWrapper::DebugDropCalls();
+        QCOMPARE(PackageCatalog::PruneStaleReceived(PackageCatalog::BuildCatalogIndex(rx), rx), 6);
+        QCOMPARE(IpfsWrapper::DebugDropCalls() - Before, 1LL);
+        for (const std::string &C : Old) QVERIFY2(!IpfsWrapper::HasLocal(C), C.c_str());
+    }
+
     // The same, when the surviving copy is in an INSTALLED package (adopted into LIBRARY): no peer's entry names it,
     // so the prune finds it through the index (whose node, held in CATALOG and LIBRARY, is the installed one's).
     // Teeth: drop the index's file from Elsewhere in PruneStaleReceived.
@@ -1564,6 +1829,102 @@ private slots:
         QCOMPARE((int)Adopt.size(), 4);
     }
 
+    // A landing pass fetches every received package's missing files together: one package's slow file no longer holds
+    // up the next package's (each was enqueued and waited for in turn). A file that does not land fails its own package,
+    // and only its own. Teeth: enqueue and wait per package (B lands only after A's file); make the files required (A's
+    // failure ends the wait and B is never looked at, or B fails with it).
+    void received_packages_land_together_and_fail_on_their_own()
+    {
+        std::string Err;
+        QTemporaryDir Repo; QVERIFY(Repo.isValid());
+        QVERIFY2(IpfsWrapper::StartNode((Repo.path() + "/ipfs").toStdString(), &Err), Err.c_str());
+        auto Stop = qScopeGuard([]{ IpfsWrapper::SetFetchOnceHook({}); IpfsWrapper::DebugResetQueue(); IpfsWrapper::StopNode(); });
+        QTemporaryDir SeedRoot; QVERIFY(SeedRoot.isValid());
+        const json Items = publishTwoGames(SeedRoot.path());
+        QTemporaryDir RxData; QVERIFY(RxData.isValid());
+        json rx = json{{"Settings", {{"Paths", {{"LibraryRoot", (RxData.path() + "/LIBRARY").toStdString()}}}}},
+                       {"PeerLibraries", {{"12D3KooWSeederAlice", {{"Games", Items}}}}}};
+        const std::string Nick = "derAlice";
+        landShares(rx, Nick, json{{"Games", Items}});
+        const std::filesystem::path Lib = std::filesystem::path(PackageCatalog::CatalogRootDir(rx)) / (Nick + " - Games");
+        const std::filesystem::path A = Lib / "[1] A" / "a_exec.json", B = Lib / "[2] B" / "b_exec.json";
+        const auto Read = [](const std::filesystem::path &P) { std::ifstream In(P, std::ios::binary); return std::string(std::istreambuf_iterator<char>(In), {}); };
+        const std::string ABytes = Read(A), BBytes = Read(B);
+        QVERIFY(!ABytes.empty() && !BBytes.empty());
+        std::atomic<bool> BLanded{false}, ASawB{false}, FailA{false};
+        IpfsWrapper::SetFetchOnceHook([&](const std::string &, const std::string &Dest, bool, std::string *E) {
+            if (Dest == A.string())
+            {
+                if (FailA) { if (E) *E = "nobody has it"; return 2; }
+                for (int I = 0; I < 300 && !BLanded; ++I) std::this_thread::sleep_for(std::chrono::milliseconds(10));
+                ASawB = BLanded.load();
+                std::ofstream(Dest, std::ios::binary) << ABytes;
+                return 0;
+            }
+            if (Dest == B.string()) { std::ofstream(Dest, std::ios::binary) << BBytes; BLanded = true; return 0; }
+            return 2; });
+        std::filesystem::remove(A);
+        std::filesystem::remove(B);
+        QVERIFY2(PackageCatalog::LandReceivedPackages(rx, &Err), Err.c_str());
+        QVERIFY2(ASawB, "B's file landed while A's was still on its way");
+        // A's file cannot be had: A's package fails, B's lands.
+        std::filesystem::remove(A);
+        std::filesystem::remove(B);
+        FailA = true;
+        Err.clear();
+        QVERIFY(!PackageCatalog::LandReceivedPackages(rx, &Err));
+        QVERIFY2(Err.find("[1] A") != std::string::npos, Err.c_str());
+        QVERIFY2(std::filesystem::exists(B), "the other package's file landed");
+        QCOMPARE(Read(B), BBytes);
+    }
+
+    // A package hydrated from its launchable's CID fetches its content files together: file after file, each waited
+    // for in turn, took their fetch times added up. One that cannot be had leaves the package incomplete (resumable),
+    // and the others land. Teeth: wait per file (the second lands only after the first); make them required (the
+    // failed one ends the wait before the other lands).
+    void a_hydrated_package_fetches_its_content_together()
+    {
+        std::string Err;
+        QTemporaryDir Repo; QVERIFY(Repo.isValid());
+        QVERIFY2(IpfsWrapper::StartNode((Repo.path() + "/ipfs").toStdString(), &Err), Err.c_str());
+        auto Stop = qScopeGuard([]{ IpfsWrapper::SetFetchOnceHook({}); IpfsWrapper::DebugResetQueue(); IpfsWrapper::StopNode(); });
+        QTemporaryDir Seed; QVERIFY(Seed.isValid());
+        const std::string One = Cid::OfBytes("the first content file"), Two = Cid::OfBytes("the second content file");
+        const QString Pkg = Seed.path() + "/VidyaGod/[9] H";
+        QDir().mkpath(Pkg);
+        writeJson(Pkg + "/c1.json", NodeFixture::Chain("h_c1", {NodeFixture::ContentCid("file", "one.bin", One)}));
+        writeJson(Pkg + "/c2.json", NodeFixture::Chain("h_c2", {NodeFixture::ContentCid("file", "two.bin", Two)}));
+        writeJson(Pkg + "/h.json", NodeFixture::Chain("h_exec", {NodeFixture::Merge({NodeFixture::Exec("win32", "h.exe"),
+                  NodeFixture::Variant("Play"), NodeFixture::Tile("9", "H")})}, {"h_c1", "h_c2"}));
+        json seeder = json{{"Settings", {{"Paths", {{"LibraryRoot", Seed.path().toStdString()}}}}}};
+        QVERIFY2(!PackageCatalog::PublishLibrary(seeder, &Err).empty(), Err.c_str());
+        const json Wired = PackageCatalog::Wire(PackageCatalog::SheetEntries(seeder.value("ShareSheet", json::object())));
+        const std::string Launch = cidOfLabel(Wired["VidyaGod"], "h_exec");
+        QVERIFY(!Launch.empty());
+        std::atomic<bool> TwoLanded{false}, OneSawTwo{false}, FailOne{false};
+        IpfsWrapper::SetFetchOnceHook([&](const std::string &cid, const std::string &dest, bool, std::string *E) {
+            if (cid == One)
+            {
+                if (FailOne) { if (E) *E = "nobody has it"; return 2; }
+                for (int I = 0; I < 300 && !TwoLanded; ++I) std::this_thread::sleep_for(std::chrono::milliseconds(10));
+                OneSawTwo = TwoLanded.load();
+            }
+            std::ofstream(dest) << cid;
+            if (cid == Two) TwoLanded = true;
+            return 0; });
+        QTemporaryDir Dest; QVERIFY(Dest.isValid());
+        const std::string Dir = NodeStore::HydratePackage(Dest.path().toStdString(), Launch, &Err);
+        QVERIFY2(!Dir.empty(), Err.c_str());
+        QVERIFY2(OneSawTwo, "the second file landed while the first was on its way");
+        // Again, the first cannot be had: incomplete, the other landed.
+        QTemporaryDir Dest2; QVERIFY(Dest2.isValid());
+        IpfsWrapper::DebugResetQueue();
+        FailOne = true;
+        TwoLanded = false;
+        QVERIFY(NodeStore::HydratePackage(Dest2.path().toStdString(), Launch, &Err).empty());
+        QVERIFY2(TwoLanded, "the other file landed");
+    }
+
     // INSTALL = ADOPT: a received package moves out of CATALOG into LIBRARY/<lib>/<pkg> — an ordinary local package
     // from then on (not Received: launchable, grafts offered, published with the library). The planner then never
     // re-lands it as a stub beside itself, and a name collision is refused, never merged.
@@ -1692,10 +2053,19 @@ private slots:
         QVERIFY2(Gen2["Libs"] != Gen1["Libs"], Gen2.dump().c_str());
         rx["PeerLibraries"] = json{{Peer, Gen2}};
         QCOMPARE((int)PackageCatalog::AvailableUpdates(rx).size(), 2);          // both installed packages have another version
+        //Asked again with nothing changed, the installed packages' node files are not read again (every refresh of the
+        //packages page read them all). Teeth: drop the memo in PackageNodeCids; keep it whatever the files (below,
+        //after a switch, the package would still read as the old version).
+        {
+            const long long Reads = PackageCatalog::DebugNodeCidReads();
+            QCOMPARE((int)PackageCatalog::AvailableUpdates(rx).size(), 2);
+            QCOMPARE(PackageCatalog::DebugNodeCidReads() - Reads, 0LL);
+        }
         {   // Settings → Installed Packages offers it, by the peer's name
             QDir appDir(RxData.path());
             AppModel model(&rx, &appDir);
             PackagesView view(model);
+            view.show();
             QPushButton * Offer = nullptr;
             QTRY_VERIFY_WITH_TIMEOUT([&]{ for (auto * B : view.findChildren<QPushButton *>()) if (B->text() == "Use derAlice's version") Offer = B;
                                           return Offer != nullptr; }(), 20000);
@@ -1707,7 +2077,29 @@ private slots:
             return false;
         };
         PackageCatalog::StagedUpdate S1;
-        QVERIFY2(Switch(Lib, S1), Err.c_str());
+        {   // A switch refused part way (a node file cannot move in) keeps the references of what it moved: the next
+            // attempt skips a node file already in, so its reference would point into the stage for good. Teeth:
+            // refuse there without moving the references first.
+            for (const auto & U : PackageCatalog::AvailableUpdates(rx))
+                if (U.Dir == Lib) QVERIFY2(PackageCatalog::StageUpdate(rx, U, &S1, &Err), Err.c_str());
+            std::vector<std::string> Incoming;
+            for (const std::string & C : S1.Listing)
+                if (!std::filesystem::exists(Lib / (C + ".json"))) Incoming.push_back(C);
+            QVERIFY2(Incoming.size() >= 2, "two node files move in");
+            const std::filesystem::path Block = Lib / (Incoming[1] + ".json");
+            std::filesystem::create_directories(Block / "x");                          // neither renamed nor copied over
+            QVERIFY2(!PackageCatalog::ApplyStagedUpdate(rx, S1, &Err) && Err.find("cannot move") != std::string::npos, Err.c_str());
+            QVERIFY2(std::filesystem::exists(Lib / (Incoming[0] + ".json")), "the first node file moved in");
+            for (const auto & P : IpfsWrapper::OrphanedRefPaths())
+                QVERIFY2(P.find(S1.Stage.string()) == std::string::npos, P.c_str());   // its reference followed it
+            std::filesystem::remove_all(Block);
+        }
+        const long long SwitchScans = IpfsWrapper::DebugMoveRefScans();
+        QVERIFY2(PackageCatalog::ApplyStagedUpdate(rx, S1, &Err), Err.c_str());
+        //A switch moves references at most twice — the content's (when content is deleted between) and the node
+        //files' with their names: a move each was a scan of every reference each. Teeth: move the staged nodes' and
+        //their names' references in calls of their own (three).
+        QVERIFY2(IpfsWrapper::DebugMoveRefScans() - SwitchScans <= 2, std::to_string(IpfsWrapper::DebugMoveRefScans() - SwitchScans).c_str());
         QVERIFY2(std::find(S1.Kept.begin(), S1.Kept.end(), LibA) != S1.Kept.end(), "libA stays: G still contains it");
         QVERIFY2(std::filesystem::exists(Lib / "libA.json"), "libA's node file stays");
         const std::filesystem::path Old = Lib / ContentFile::Bumped("dx.zip", X1);
@@ -2443,6 +2835,85 @@ private slots:
         QCOMPARE((int)Installed::CandidateRunners(idx, "custom", "/pkg/b").size(), 0);
         QCOMPARE((int)Installed::CompatibleRunners(idx, mine).size(), 1);
         QCOMPARE((int)Installed::CompatibleRunners(idx, theirs).size(), 0);
+    }
+
+    // The runners a game package carries, found in one pass, are the ones IsEmbeddedRunner names runner by runner (the
+    // Runners page asked each of ~200 runners, every node's folder compared each time). Teeth: count a runner beside
+    // anything (the standalone one is embedded); compare against runners' folders (none is).
+    void embedded_runners_in_one_pass_agree_runner_by_runner()
+    {
+        QTemporaryDir dir; QVERIFY(dir.isValid());
+        const QString Game = dir.path() + "/Game", Wine = dir.path() + "/Wine";
+        QDir().mkpath(Game); QDir().mkpath(Wine);
+        writeJson(Game + "/game.json", NodeFixture::Chain("game", {NodeFixture::Merge({NodeFixture::Variant("Original"),
+                  NodeFixture::Tile("g"), NodeFixture::Exec("custom", "g.exe")})}));
+        writeJson(Game + "/engine.json", NodeFixture::Chain("engine", {NodeFixture::Runner(ManifestModel::MachinePlatform(), {"custom"}, "e")}));
+        writeJson(Wine + "/wine.json", NodeFixture::Chain("wine", {NodeFixture::Runner(ManifestModel::MachinePlatform(), {"win32"}, "x")}));
+        writeJson(Wine + "/notes.json", NodeFixture::Chain("notes", {NodeFixture::Content("zip", "n.zip")}));
+        NodeIndex idx;
+        ManifestModel::ScanBundleNodes(Game.toStdString(), idx);
+        ManifestModel::ScanBundleNodes(Wine.toStdString(), idx);
+        ManifestModel::DeriveFacts(idx);
+        const std::set<std::string> E = Installed::EmbeddedRunners(idx);
+        int Runners = 0;
+        for (const auto &[Id, N] : idx.Nodes)
+        {
+            if (!N.IsRunner()) continue;
+            ++Runners;
+            QCOMPARE(E.count(N.Key()) == 1, Installed::IsEmbeddedRunner(idx, N.Key()));
+        }
+        QCOMPARE(Runners, 2);
+        QCOMPARE(E.size(), size_t(1));
+    }
+
+    // The Runners page waits to be shown: hidden, a catalog change (every download's end, every peer library) does not
+    // rebuild it; shown, it is built once. Rebuilds asked while its games count runs count once more after it, not
+    // once each. Teeth: drop the isVisible gate (rebuilt while hidden); drop the showEvent rebuild (never built); drop
+    // the Counting gate (a count per rebuild).
+    void the_runners_page_waits_to_be_shown_and_counts_once_at_a_time()
+    {
+        QTemporaryDir dir; QVERIFY(dir.isValid());
+        QDir().mkpath(dir.path() + "/Runners/wine");
+        writeJson(dir.path() + "/Runners/wine/wine.json", NodeFixture::Chain("wine", {NodeFixture::Runner(ManifestModel::MachinePlatform(), {"win32"}, "x")}));
+        json cfg = json{{"Settings", {{"Paths", {{"LibraryRoot", dir.path().toStdString()}}}}}};
+        QDir appDir(dir.path());
+        AppModel model(&cfg, &appDir);
+        model.rebuildCatalog();
+        RunnersPage Page(model);
+        QCOMPARE(Page.rebuilds(), 0);
+        for (int I = 0; I < 3; ++I) emit model.catalogChanged();
+        QCOMPARE(Page.rebuilds(), 0);
+        Page.show();
+        QTRY_COMPARE_WITH_TIMEOUT(Page.rebuilds(), 1, 2000);
+        const int Counts = Page.counts();
+        for (int I = 0; I < 5; ++I) emit model.catalogChanged();
+        QCOMPARE(Page.rebuilds(), 6);
+        QTest::qWait(500);
+        QVERIFY2(Page.counts() - Counts <= 2, std::to_string(Page.counts() - Counts).c_str());
+    }
+
+    // Settings → Installed Packages waits to be shown, and looks for other versions one scan at a time: every catalog
+    // change copied the config and read the installed packages' node files off-thread, a scan per change, beside each
+    // other, page shown or not. Teeth: drop the isVisible gate (scans while hidden); drop the Updating gate (a scan
+    // per change).
+    void the_packages_page_waits_to_be_shown_and_scans_once_at_a_time()
+    {
+        std::string Err;
+        QTemporaryDir Repo; QVERIFY(Repo.isValid());
+        QVERIFY2(IpfsWrapper::StartNode((Repo.path() + "/ipfs").toStdString(), &Err), Err.c_str());
+        auto Stop = qScopeGuard([]{ IpfsWrapper::StopNode(); });
+        QTemporaryDir dir; QVERIFY(dir.isValid());
+        json cfg = json{{"Settings", {{"Paths", {{"LibraryRoot", dir.path().toStdString()}}}}}};
+        QDir appDir(dir.path());
+        AppModel model(&cfg, &appDir);
+        PackagesView View(model);
+        for (int I = 0; I < 3; ++I) emit model.catalogChanged();
+        QCOMPARE(View.updateScans(), 0);
+        View.show();
+        QTRY_COMPARE_WITH_TIMEOUT(View.updateScans(), 1, 2000);
+        for (int I = 0; I < 5; ++I) emit model.catalogChanged();
+        QTest::qWait(500);
+        QVERIFY2(View.updateScans() <= 3, std::to_string(View.updateScans()).c_str());
     }
 
     // A package download pools the game's content layers AND its runner's build layers into ONE fetch batch (so they
@@ -3424,6 +3895,21 @@ private slots:
         App.refreshFromDisk();
         QVERIFY(Checked.wait(30000));
         QCOMPARE(Checked.first().at(0).toBool(), false);
+
+        //Checks asked together (a save at every edit of a package being authored) read the library once at a time: one
+        //asked meanwhile reads it once more after, and the last one alone says it is done — with what changed in
+        //between. Teeth: drop the Refreshing gate (five reads, five answers); drop the read again (the change made
+        //during the first read is never seen).
+        Checked.clear();
+        const int Reads = App.refreshes();
+        App.refreshFromDisk();
+        Write("game edited");
+        for (int I = 0; I < 4; ++I) App.refreshFromDisk();
+        QVERIFY(Checked.wait(30000));
+        QTest::qWait(300);
+        QCOMPARE(Checked.count(), 1);
+        QCOMPARE(App.refreshes() - Reads, 2);
+        QVERIFY2(Has(App, "game edited"), "the read after shows what changed during the first");
 
         Write("game again");
         AppModel Command(&Config, &Dir);

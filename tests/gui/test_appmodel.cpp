@@ -8,6 +8,7 @@
 #include <QFile>
 
 #include "appmodel.h"
+#include "jsonoperations.h"
 #include "cid.h"
 #include "peersharing.h"
 #include "packagecatalog.h"
@@ -350,11 +351,92 @@ private slots:
 
         QVERIFY(m.save());
         const QString path = appDir.filePath("GlobalConfig.JSON");
-        QVERIFY(QFile::exists(path));
+        QTRY_VERIFY_WITH_TIMEOUT(QFile::exists(path), 5000);
+        JSONOps::FlushConfigWrites();
 
         std::ifstream f(path.toStdString());
         json onDisk; f >> onDisk;
         QCOMPARE(onDisk["Settings"].value("CardPixelWidth", 0), 199);
+    }
+
+    // Saves asked in a burst (one per received library, per download, per pairing step) write the config once, as it
+    // is after the last, and off the GUI thread. Teeth: write at every ask (as many writes as asks); drop the
+    // SaveDirty check (a write after saveNow wrote it already).
+    void saves_asked_together_write_the_config_once()
+    {
+        QTemporaryDir d; QVERIFY(d.isValid());
+        QDir appDir(d.path());
+        json cfg = json{{"Settings", {{"CardPixelWidth", 1}}}};
+        AppModel m(&cfg, &appDir);
+        JSONOps::FlushConfigWrites();
+        const long long Before = JSONOps::DebugConfigWrites();
+        for (int I = 2; I <= 40; ++I) { cfg["Settings"]["CardPixelWidth"] = I; QVERIFY(m.save()); }
+        QTRY_COMPARE_WITH_TIMEOUT(JSONOps::DebugConfigWrites() - Before, 1LL, 5000);
+        QTest::qWait(m.SaveSoonMs * 2);
+        JSONOps::FlushConfigWrites();
+        QCOMPARE(JSONOps::DebugConfigWrites() - Before, 1LL);
+        std::ifstream f(appDir.filePath("GlobalConfig.JSON").toStdString());
+        json onDisk; f >> onDisk;
+        QCOMPARE(onDisk["Settings"].value("CardPixelWidth", 0), 40);
+        // Written now (a command's save): the save still waiting has nothing left to write.
+        cfg["Settings"]["CardPixelWidth"] = 41;
+        QVERIFY(m.save());
+        QVERIFY(m.saveNow());
+        QTest::qWait(m.SaveSoonMs * 2);
+        JSONOps::FlushConfigWrites();
+        QCOMPARE(JSONOps::DebugConfigWrites() - Before, 2LL);
+    }
+
+    // A config written now (the editor's, a command's) is never overwritten by an older text still waiting for the
+    // worker: the newer config would be lost until the next save. Teeth: drop the N <= Committed check.
+    void an_older_config_text_never_overwrites_a_newer_one()
+    {
+        QTemporaryDir d; QVERIFY(d.isValid());
+        const std::filesystem::path Dir = d.path().toStdString();
+        JSONOps::DebugHoldConfigWrites(true);
+        QVERIFY(JSONOps::SaveConfigAsync(json{{"V", "older"}}, Dir));
+        QVERIFY(JSONOps::SaveConfig(json{{"V", "newer"}}, Dir));
+        JSONOps::DebugHoldConfigWrites(false);
+        JSONOps::FlushConfigWrites();
+        std::ifstream f(Dir / "GlobalConfig.JSON");
+        json onDisk; f >> onDisk;
+        QCOMPARE(onDisk.value("V", std::string()), std::string("newer"));
+    }
+
+    // Each data folder's config is ordered on its own: a newer text of one never stops an older pending one of another
+    // from being written (two models, a test's data folder beside the app's), nor replaces it while both wait. Teeth:
+    // one newest-written mark for every file; one pending slot for every file.
+    void a_config_write_waits_only_on_its_own_files_newer_text()
+    {
+        QTemporaryDir a, b; QVERIFY(a.isValid() && b.isValid());
+        const std::filesystem::path A = a.path().toStdString(), B = b.path().toStdString();
+        auto Read = [](const std::filesystem::path & D) { std::ifstream f(D / "GlobalConfig.JSON"); json J = json::parse(f, nullptr, false); return J.is_object() ? J.value("V", std::string()) : std::string("(none)"); };
+        JSONOps::DebugHoldConfigWrites(true);
+        QVERIFY(JSONOps::SaveConfigAsync(json{{"V", "a1"}}, A));
+        QVERIFY(JSONOps::SaveConfig(json{{"V", "b1"}}, B));                       // newer, another file
+        QVERIFY(JSONOps::SaveConfigAsync(json{{"V", "b2"}}, B));                  // both wait together
+        JSONOps::DebugHoldConfigWrites(false);
+        JSONOps::FlushConfigWrites();
+        QCOMPARE(Read(A), std::string("a1"));
+        QCOMPARE(Read(B), std::string("b2"));
+    }
+
+    // A model that goes away (the app's exit) writes what it was asked to save and had not yet. Teeth: drop the write
+    // in ~AppModel (the change is lost).
+    void a_model_going_away_writes_what_it_still_holds()
+    {
+        QTemporaryDir d; QVERIFY(d.isValid());
+        QDir appDir(d.path());
+        json cfg = json{{"Settings", {{"CardPixelWidth", 1}}}};
+        {
+            AppModel m(&cfg, &appDir);
+            m.SaveSoonMs = 60000;
+            cfg["Settings"]["CardPixelWidth"] = 77;
+            QVERIFY(m.save());
+        }
+        std::ifstream f(appDir.filePath("GlobalConfig.JSON").toStdString());
+        json onDisk; f >> onDisk;
+        QCOMPARE(onDisk["Settings"].value("CardPixelWidth", 0), 77);
     }
 
     // removePackageSource drops the source entry, persists, rebuilds the catalog, and signals the change.
@@ -559,8 +641,10 @@ private slots:
             if (E) *E = "no providers"; return 1; });
         const auto Stuck = IpfsWrapper::EnqueueBatch({ IpfsWrapper::FetchTarget{ "CID_HEAL_BACKOFF", (d.path() + "/y").toStdString(), true } });
         QTRY_VERIFY_WITH_TIMEOUT(!IpfsWrapper::QueueBusy(), 10000);
-        { std::ofstream(d.path().toStdString() + "/z.bin") << "z"; }                // a reference written: the check has a
-        QVERIFY(!IpfsWrapper::AddNoCopy(d.path().toStdString() + "/z.bin", &Err).empty());   // new index to read
+        { std::ofstream(d.path().toStdString() + "/z.bin") << "z"; }                // a reference dropped: the check has a
+        const std::string Z = IpfsWrapper::AddNoCopy(d.path().toStdString() + "/z.bin", &Err);   // new index to read
+        QVERIFY(!Z.empty());                                                       // (a written one only adds its file)
+        QVERIFY(IpfsWrapper::DropRef(Z));
         //(another model's first heal: this one's is still in its once-a-run seed pass, which waits for a quiet network)
         AppModel m2(&cfg, &appDir);
         const long long Before = IpfsWrapper::DebugRefScans();

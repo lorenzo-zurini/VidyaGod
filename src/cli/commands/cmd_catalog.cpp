@@ -304,7 +304,7 @@ VG_COMMANDS
         "library, or the package, UID or node given.",
         { Command::Opt("scope", "a package UID, package folder name, or node id"), Command::Flag("errors-only", "leave the warnings out") },
         { "catalog validate", "catalog validate --scope 749", "catalog validate --errors-only --json" },
-        { "Validate::Nodes", "ManifestModel::Closure" }, Needs::Model, false,
+        { "Validate::Nodes", "ManifestModel::Closure" }, Needs::Config, false,
         [](Command::Context &C, const json &A) {
             const auto Snap = CmdUtil::Index(C);
             const NodeIndex &Idx = *Snap;
@@ -335,5 +335,5 @@ VG_COMMANDS
         [](Command::Context &C, const json &) {
             const auto I = PackageCatalog::FreshCatalogIndex(*C.Config);
             return json{{"nodes", I->Nodes.size()}, {"tiles", I->Tiles.size()}, {"refused", I->RefusedNodes.size()}};
-        }, {} });
+        }, {}, true });
 }

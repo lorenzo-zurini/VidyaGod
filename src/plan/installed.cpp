@@ -86,6 +86,15 @@ bool IsEmbeddedRunner(const NodeIndex &Idx, const std::string &RunnerNodeId)
     return false;
 }
 
+std::set<std::string> EmbeddedRunners(const NodeIndex &Idx)
+{
+    std::set<std::filesystem::path> GameDirs;
+    for (const auto &[Id, N] : Idx.Nodes) if (N.IsVariant()) GameDirs.insert(N.BundleDir);
+    std::set<std::string> Out;
+    for (const auto &[Id, N] : Idx.Nodes) if (N.IsRunner() && GameDirs.count(N.BundleDir)) Out.insert(N.Key());
+    return Out;
+}
+
 std::vector<const Node*> UsableRunners(const NodeIndex &Idx, const Node &Launch)
 {
     std::vector<const Node*> Out;

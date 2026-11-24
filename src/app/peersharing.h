@@ -2,6 +2,7 @@
 #define PEERSHARING_H
 
 #include <QObject>
+#include <QHash>
 #include <QString>
 #include <QStringList>
 
@@ -24,6 +25,8 @@ class AppModel;
 // AppModel owns it (AppModel::peers()) and it reads and persists through the model: the config, the catalog, a
 // rebuild, a publish. It reacts to the node's peer events (PeersManager) and to landed transfers by itself.
 // ---------------------------------------------------------------------------
+namespace PackageCatalog { struct ReceivedFetch; }
+
 class PeerSharing : public QObject
 {
     Q_OBJECT
@@ -137,7 +140,15 @@ public:
     std::map<std::string, std::string> sharedStubFiles(const std::string & peer) const;   // the files its snapshot names → CID
     void pushPresenceDeny();                              // Settings/config PresenceDeny → Go (node-ready + on change)
     void applyNewPeerDefaults(const QString & peer);      // used by acceptPeer + the auto-accept path
-    void enqueueReceivedShares(const QString & peer);     // shared node+tile CIDs → rolling queue, dest = final library path
+    // shared node+tile CIDs → rolling queue, dest = final library path; Plan: the snapshot's plan when the caller made
+    // it already (planned again here, it was the third plan of one snapshot's apply)
+    void enqueueReceivedShares(const QString & peer, const std::vector<PackageCatalog::ReceivedFetch> * Plan = nullptr);
+    QHash<QString, qint64> PresenceReconciled;   // peer → when its coming online last reconciled it
+    int PresenceReconciles = 0;
+    int PresenceReconcileMs = 30000;
+    int presenceReconciles() const { return PresenceReconciles; }   // test observability
+    int LibraryRequests = 0;
+    int libraryRequests() const { return LibraryRequests; }         // test observability
     void completeReceivedClosures();                      // land the node-block closure of every received root (blocks only)
     void pushLanRoster();                              // apply Settings.LanExcludedPeers to the node's Virtual-LAN
 

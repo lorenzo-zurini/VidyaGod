@@ -78,7 +78,8 @@ void ReleaseFreedMemory();
 // index cache compares each node file by. A rewrite of the same size within one tick of the clock, or one that kept
 // its modification time (cp -a, rsync, unzip), still shows.
 //   POSIX:   size, modification and change times (ns), inode — the change time cannot be set back.
-//   Windows: size, last-write and creation times (100 ns).
+//   Windows: size, last-write, change and creation times (100 ns), volume serial and file index — the change time a
+//            copy keeping the write time still moves; only size and times when the file cannot be opened at all.
 // *Modified (if given) receives the modification time in seconds since the epoch (0 when it cannot be stat'd).
 std::string FileStamp(const std::filesystem::path &P, long long *Modified = nullptr);
 

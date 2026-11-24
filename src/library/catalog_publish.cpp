@@ -15,11 +15,16 @@
 #include "launchparams.h"
 #include "platform/platform.h"   // FileStamp
 
+#include <QCoreApplication>
 #include <QDir>
 #include <QFile>
+#include <atomic>
 #include <cstdint>
+#include <optional>
 #include <map>
 #include <mutex>
+#include <functional>
+#include <optional>
 #include <set>
 #include <fstream>
 #include <filesystem>
@@ -117,17 +122,161 @@ static uint64_t LocalPayloadSize(const std::filesystem::path &P)
     return Ec ? 0 : static_cast<uint64_t>(S);
 }
 
+namespace
+{
+//Content CIDs found to serve the bytes their node records, with the files a read of each reads, as they were then
+//(Platform::FileStamp): Seed & share read every byte of a package back at every publish (a 50 GB game: minutes, the
+//editor waiting) to find the same thing again. Kept in CACHE/seedverified.json; a CID one of whose files changed since,
+//or that is not held whole any more, is read again.
+const char *const kVerifiedShape = "vgseedverified 2";
+std::mutex g_VerifiedMu;
+std::filesystem::path VerifiedPath() { return AppPaths::DataRoot() / "CACHE" / "seedverified.json"; }
+using Stamps = std::map<std::string, std::string>;   // backing file → its stamp
+
+std::atomic<long long> g_VerifiedFileIo{0};
+
+std::map<std::string, Stamps> ReadVerifiedFile()   // cid → the files read, as they were (g_VerifiedMu held)
+{
+    std::map<std::string, Stamps> Out;
+    if (!AppPaths::DataRootSet()) return Out;
+    ++g_VerifiedFileIo;
+    try
+    {
+        std::ifstream In(VerifiedPath());
+        if (!In) return Out;
+        const nlohmann::json J = nlohmann::json::parse(In, nullptr, false);
+        if (!J.is_object() || J.value("format", std::string()) != kVerifiedShape) return Out;
+        for (const auto &[Cid, Files] : J.at("cids").items())
+            for (const auto &[Path, Stamp] : Files.items()) Out[Cid][Path] = Stamp.get<std::string>();
+    }
+    catch (const std::exception &) { Out.clear(); }
+    return Out;
+}
+
+void WriteVerifiedFile(const std::map<std::string, Stamps> &M)   // g_VerifiedMu held
+{
+    if (!AppPaths::DataRootSet()) return;   // a test or tool that set no data dir never writes into ~/.VidyaGod
+    ++g_VerifiedFileIo;
+    nlohmann::json Cids = nlohmann::json::object();
+    for (const auto &[Cid, Files] : M) Cids[Cid] = Files;
+    namespace fs = std::filesystem;
+    std::error_code Ec;
+    const fs::path Path = VerifiedPath();
+    fs::create_directories(Path.parent_path(), Ec);
+    const fs::path Tmp = Path.string() + "." + std::to_string(QCoreApplication::applicationPid()) + ".tmp";
+    {
+        std::ofstream Out(Tmp, std::ios::trunc);
+        if (!Out) return;
+        Out << nlohmann::json{{"format", kVerifiedShape}, {"cids", std::move(Cids)}}.dump();
+        if (!Out) { Out.close(); fs::remove(Tmp, Ec); return; }
+    }
+    fs::rename(Tmp, Path, Ec);
+    if (Ec) fs::remove(Tmp, Ec);
+}
+
+//The record, read once per data folder (a publish of a package seeds every node: it was read and written whole per
+//node), and what this process found since its last write. A pass (a publish, a seed of one node) writes what it found
+//when the outermost one on its thread ends, merged into the file as it is then (another process — the CLI beside the
+//app — writes it too; neither drops the other's).
+std::filesystem::path g_VerifiedRoot;
+std::map<std::string, Stamps> g_Verified, g_VerifiedFound;
+thread_local int t_VerifiedPasses = 0;
+
+void SyncVerifiedRoot()   // g_VerifiedMu held
+{
+    const std::filesystem::path Root = AppPaths::DataRootSet() ? AppPaths::DataRoot() : std::filesystem::path();
+    if (Root == g_VerifiedRoot && !Root.empty()) return;
+    g_VerifiedRoot = Root;
+    g_VerifiedFound.clear();
+    g_Verified = ReadVerifiedFile();
+}
+
+std::optional<Stamps> VerifiedStamps(const std::string &Cid)
+{
+    std::lock_guard<std::mutex> Lk(g_VerifiedMu);
+    SyncVerifiedRoot();
+    const auto It = g_Verified.find(Cid);
+    if (It == g_Verified.end()) return std::nullopt;
+    return It->second;
+}
+
+void NoteVerified(const std::string &Cid, const Stamps &S)
+{
+    std::lock_guard<std::mutex> Lk(g_VerifiedMu);
+    SyncVerifiedRoot();
+    g_Verified[Cid] = S;
+    g_VerifiedFound[Cid] = S;
+}
+
+struct VerifiedPass
+{
+    VerifiedPass() { ++t_VerifiedPasses; }
+    ~VerifiedPass()
+    {
+        if (--t_VerifiedPasses) return;
+        std::lock_guard<std::mutex> Lk(g_VerifiedMu);
+        SyncVerifiedRoot();
+        if (g_VerifiedFound.empty() || !AppPaths::DataRootSet()) return;
+        //Read, merged and written under the file's lock: the app and a CLI call beside it both write it. Held by the
+        //other: what this pass found waits for the next one.
+        std::error_code Ec;
+        std::filesystem::create_directories(VerifiedPath().parent_path(), Ec);
+        const Platform::ScopedFileLock FileLock(VerifiedPath().string() + ".lock");
+        if (!FileLock.held()) return;
+        std::map<std::string, Stamps> M = ReadVerifiedFile();
+        for (auto &[Cid, S] : g_VerifiedFound) M[Cid] = std::move(S);
+        g_VerifiedFound.clear();
+        //A CID one of whose files is gone (its package deleted, the file replaced under another name) goes: the record
+        //was only ever added to.
+        for (auto It = M.begin(); It != M.end();)
+        {
+            bool Gone = false;
+            for (const auto &[File, Stamp] : It->second) { (void)Stamp; if (!std::filesystem::exists(File, Ec)) { Gone = true; break; } }
+            It = Gone ? M.erase(It) : std::next(It);
+        }
+        WriteVerifiedFile(M);
+        g_Verified = std::move(M);
+    }
+    VerifiedPass(const VerifiedPass &) = delete;
+    VerifiedPass &operator=(const VerifiedPass &) = delete;
+};
+
+//The files a read of Cid reads, stamped now — empty when it is not held whole (or one cannot be stamped).
+Stamps StampsOf(const std::string &Cid)
+{
+    std::vector<std::string> Files;
+    if (!IpfsWrapper::HeldWholeFiles(Cid, &Files) || Files.empty()) return {};
+    Stamps Out;
+    for (const std::string &F : Files)
+    {
+        const std::string S = Platform::FileStamp(F);
+        if (S.empty()) return {};
+        Out[F] = S;
+    }
+    return Out;
+}
+}
+
 bool SeedNodeContent(nlohmann::ordered_json &Node, const std::filesystem::path &Pkg, SeedReport &R, bool &Changed,
                      std::string *Error)
 {
     Changed = false;
+    const VerifiedPass Pass;   // what it finds is written when the outermost pass ends
     //A recorded CID that still serves its file is kept (idempotent); a drifted one (the file changed) is re-seeded.
     auto NeedsSeed = [&](const std::string &Cid, const std::filesystem::path &Local) -> bool {
         if (Cid.empty()) return true;
         std::error_code Rc;
         if (!std::filesystem::exists(Local, Rc)) return false;          // CID-only ref, no local bytes to verify
+        const Stamps Before = StampsOf(Cid);
+        if (const auto Known = VerifiedStamps(Cid); !Before.empty() && Known && *Known == Before)
+            return false;                                               // read before, its files unchanged since, held whole
+        ++R.Read;
         const std::string Verr = IpfsWrapper::VerifyCid(Cid);
-        if (Verr.empty()) return false;
+        if (Verr.empty())
+        {
+            if (!Before.empty() && StampsOf(Cid) == Before) NoteVerified(Cid, Before);
+            return false;
+        }
         LogWarn("PackageCatalog::SeedNodeContent", "content drift: '" + Local.filename().string() + "' recorded CID "
                 + Cid + " no longer serves its bytes (" + Verr + ") - re-seeding from the file");
         ++R.Repaired;
@@ -190,6 +339,8 @@ bool PublishPackage(const std::string &PackageDir, const std::string &Dehydrated
         LogErr("PackageCatalog::PublishPackage", "SKIPPING unparseable " + F + " - if it was a node, it is ABSENT from the "
                                                  "published package.");
     SeedReport R;
+    {
+    const VerifiedPass Pass;   // the record is written once, for every node
     for (int I = 0; I < Doc.Count(); ++I)
     {
         nlohmann::ordered_json N = Doc.Node(I);
@@ -197,6 +348,7 @@ bool PublishPackage(const std::string &PackageDir, const std::string &Dehydrated
         std::string Err;
         if (!SeedNodeContent(N, Pkg, R, Changed, &Err)) return Fail(Err);
         if (Changed) Doc.Replace(I, std::move(N));
+    }
     }
     const PkgDoc::SaveReport S = Doc.Save(Pkg, Roots, UserDataRoot);
     if (!S.Ok) return Fail("could not save the seeded package: " + S.Error);
@@ -230,6 +382,8 @@ bool PublishPackage(const std::string &PackageDir, const std::string &Dehydrated
     }
     return true;
 }
+
+long long DebugVerifiedFileIo() { return g_VerifiedFileIo.load(); }
 
 int StampNodeCids(const std::filesystem::path &Root,
                   const std::map<std::string, std::string> &HandleToCid, std::string *Error)
@@ -375,10 +529,18 @@ int SeedDirectory(const std::string &Dir,
     //    skips re-adding a block it already has, so the stale reference must go before AddNoCopy can re-point it).
     int Seeded = 0, Skipped = 0, Done = 0;
     const int Total = (int)ToSeed.size();
+    //Held whole is held, its backing files all there: asked of every target at once (a heal for one moved file walked
+    //every leaf of the library one target at a time); only the rest are asked one by one.
+    std::vector<std::string> Cids;
+    Cids.reserve(ToSeed.size());
+    for (const auto &[Path, Cid] : ToSeed) Cids.push_back(Cid);
+    const std::vector<bool> Whole = IpfsWrapper::HeldWholeMany(Cids);
+    size_t At = 0;
     for (const auto &[Path, Cid] : ToSeed)
     {
-        const bool Has     = IpfsWrapper::HasLocal(Cid);
-        const bool Orphan  = Has && IpfsWrapper::CidMissing(Cid);
+        const bool IsWhole = Whole[At++];
+        const bool Has     = IsWhole || IpfsWrapper::HasLocal(Cid);
+        const bool Orphan  = !IsWhole && Has && IpfsWrapper::CidMissing(Cid);
 
         // SELF-CHECK BEFORE SKIPPING. HasLocal + CidMissing only answer "do we hold it?" and "is the backing file
         // GONE?" — neither reads a byte, so a file whose CONTENTS changed answered has=true, orphan=false and was
@@ -533,15 +695,22 @@ int SeedUnheld(const std::string &Dir, std::vector<SeedFailure> *Failures)
     std::vector<Todo> Unheld;
     std::map<std::string, Mismatch> Known = LoadMismatches();
     bool KnownChanged = false;
-    for (const auto &[Path, Cid] : SeedTargets(Dir))
+    if (!IpfsWrapper::Available()) return 0;                            // no node (adding needs no network, just a node)
+    const auto Targets = SeedTargets(Dir);
+    //Whole, not merely "has": that seeder HELD each zip's root block — and served it, and announced it — with none of
+    //the leaves. Whole also asks the files its references point into (wherever they are: this path or another copy)
+    //are there and not cut short. Asked of all of them at once: one at a time, every start read the store's 3.6 M
+    //leaf references in a row before the first file was seeded.
+    std::vector<std::string> Cids;
+    Cids.reserve(Targets.size());
+    for (const auto &[Path, Cid] : Targets) Cids.push_back(Cid);
+    const std::vector<bool> Whole = IpfsWrapper::HeldWholeMany(Cids);
+    size_t At = 0;
+    for (const auto &[Path, Cid] : Targets)
     {
-        if (!IpfsWrapper::Available()) break;                           // no node (adding needs no network, just a node)
+        if (Whole[At++]) continue;
         std::error_code Ec;
         const std::uintmax_t Size = fs::file_size(Path, Ec);
-        //Whole, not merely "has": that seeder HELD each zip's root block — and served it, and announced it — with none
-        //of the leaves. Whole also asks the files its references point into (wherever they are: this path or another
-        //copy) are there and not cut short.
-        if (IpfsWrapper::HeldWhole(Cid)) continue;
         if (const auto K = Known.find(Path); K != Known.end() && K->second.Recorded == Cid && K->second.Stamp == Platform::FileStamp(Path))
         {
             if (Failures) Failures->push_back({ Path, Cid, K->second.Actual });
@@ -627,14 +796,14 @@ HealReport HealSourceContent(const nlohmann::ordered_json &GlobalConfigJSON, con
             {
                 // Backing gone and nothing on disk to re-point at: dropping the closure is the whole repair — it
                 // stops us advertising a block we can never deliver.
-                for (const std::string &C : Cids) IpfsWrapper::DropRef(C);
+                IpfsWrapper::DropRefs({ Cids.begin(), Cids.end() });
                 ++R.PrunedUnservable;
                 continue;
             }
             // The file IS there but its bytes no longer match. A plain re-add dedup-skips (the CID is already
             // indexed and boxo will not re-reference it), so the closure MUST be dropped first — this is precisely
             // the step that makes "--seed --overwrite" appear to succeed while changing nothing.
-            for (const std::string &C : Cids) IpfsWrapper::DropRef(C);
+            IpfsWrapper::DropRefs({ Cids.begin(), Cids.end() });
             const auto It = AllTargets.find(Path);
             std::string AddErr;
             const std::string Got = IpfsWrapper::AddNoCopy(Path, &AddErr);
@@ -675,9 +844,28 @@ HealReport HealSourceContent(const nlohmann::ordered_json &GlobalConfigJSON, con
     }
     // The published packages' pin folders (their node files + their content), pinned recursively — dropping one
     // unpins the package from every pinning service.
+    //And what they hold — the package's node folder and content folder, pinned recursively themselves, and the node
+    //files pinned directly: counted unreferenced, a prune unpinned every package's own folders and nodes, and the
+    //check of each unreferenced pin walked all of that content again.
     if (GlobalConfigJSON.contains("Pins") && GlobalConfigJSON["Pins"].is_object())
         for (const auto &[Pkg, Pin] : GlobalConfigJSON["Pins"].items())
-            if (Pin.is_string() && !Pin.get<std::string>().empty()) Referenced.insert(Pin.get<std::string>());
+        {
+            if (!Pin.is_string() || Pin.get<std::string>().empty()) continue;
+            Referenced.insert(Pin.get<std::string>());
+            std::vector<std::string> Folders = { Pin.get<std::string>() };
+            for (int Depth = 0; Depth < 3 && !Folders.empty(); ++Depth)
+            {
+                std::vector<std::string> Next;
+                for (const std::string &F : Folders)
+                {
+                    std::map<std::string, std::string> Entries;
+                    if (!IpfsWrapper::DirEntries(F, Entries)) continue;   // not a folder (a file, a node)
+                    for (const auto &[Name, Cid] : Entries)
+                        if (Referenced.insert(Cid).second && Cid.rfind("bafkrei", 0) != 0) Next.push_back(Cid);   // a raw node: no folder
+                }
+                Folders = std::move(Next);
+            }
+        }
 
     // Prune: a pin that is UNREFERENCED by any source AND UNSERVABLE (a backing file is gone) is the leftover of a
     // superseded publish — a deleted .meta staging mirror, a replaced delta, a re-published package. The re-point pass

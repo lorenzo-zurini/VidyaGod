@@ -21,6 +21,8 @@
 extern "C" void IpfsNodeTransferCb(const char *cid, int kind, double percent, int ok, const char *err);
 #include <QSignalSpy>
 #include <QTemporaryDir>
+#include <atomic>
+#include <thread>
 #include <QDir>
 
 #include <fstream>
@@ -159,12 +161,21 @@ private slots:
         }
         cc->setOnlineProbe([]{ return true; });
         {
+            // Its fetch held while it is looked at (a failed try rotates it to the back, priority and all).
+            std::atomic<bool> Release{false};
+            IpfsWrapper::SetFetchOnceHook([&](const std::string &, const std::string &, bool, std::string *) {
+                while (!Release) std::this_thread::sleep_for(std::chrono::milliseconds(5));
+                return 1; });
             QueueSpy Spy;
             cc->sweepNow();
             QVERIFY2(Spy.Saw("CID_COVER_SWEEP"), "the online sweep must enqueue the recorded miss");
-            // Covers are ORDINARY items, bumped to the front on add (small, on-screen). The rolling scheduler — not a
-            // cover-specific bound — frees the slot when a dead cover stalls. Teeth: drop the PrioritizeDownload → false.
-            QVERIFY2(IpfsWrapper::DebugJobPrioritized("CID_COVER_SWEEP"), "a swept cover must be bumped to the front");
+            // Covers are ORDINARY items, put at the front as they are queued (small, on-screen) — in the enqueue: bumped
+            // after it, one could have had its turn already. Teeth: enqueue without Front → false.
+            const bool Front = IpfsWrapper::DebugJobPrioritized("CID_COVER_SWEEP");
+            Release = true;
+            IpfsWrapper::CancelDownload("CID_COVER_SWEEP");
+            IpfsWrapper::SetFetchOnceHook({});
+            QVERIFY2(Front, "a swept cover must be bumped to the front");
         }
     }
 
@@ -306,13 +317,13 @@ private slots:
 
         QSignalSpy Decoded(cc, &CoverCache::coverDecoded);
         QVERIFY(cc->take(Png).isNull());                       // the placeholder, decode started
-        QVERIFY(Decoded.wait(5000));
-        const QPixmap P = cc->take(Png);
-        QCOMPARE(P.size(), QSize(60, 90));                     // handed over…
-        QVERIFY(cc->take(Png).isNull());                       // …once: the cache keeps no copy (this starts a new decode)
-        QVERIFY(Decoded.wait(5000));
-        QVERIFY(!cc->take(Png).isNull());                      // drain it
+        //Its own decode landed (the cache is the whole binary's: a signal can be another test's decode, ending late)
+        QPixmap P;
+        QTRY_VERIFY_WITH_TIMEOUT(!(P = cc->take(Png)).isNull(), 5000);
+        QVERIFY(Decoded.count() >= 1);
+        QCOMPARE(P.size(), QSize(60, 90));                     // handed over
 
+        QTest::qWait(200);                                     // any decode still landing from before has landed
         Decoded.clear();
         const int Before = cc->decodeCount();
         QVERIFY(cc->take(Bad).isNull());
@@ -322,6 +333,35 @@ private slots:
         QTest::qWait(300);
         QCOMPARE(cc->decodeCount(), Before + 1);               // not decoded again…
         QCOMPARE(Decoded.count(), 0);                          // …and it never fired
+    }
+
+    // A decoded cover is kept, one pixmap for every surface and every rebuild's new cards, while its file is as it was
+    // decoded; a file changed since (an authored cover edited in place) is decoded again. A cover drawn at a size is
+    // scaled once. Teeth: hand a decode out once (the second take starts another); keep it whatever the file (the
+    // edited cover is never shown); scale per call.
+    void a_decoded_cover_is_shared_until_its_file_changes()
+    {
+        auto * cc = CoverCache::instance();
+        QTemporaryDir dir; QVERIFY(dir.isValid());
+        const QString Png = dir.path() + "/kept.png";
+        QImage Img(60, 90, QImage::Format_RGB32); Img.fill(Qt::red); QVERIFY(Img.save(Png));
+        QSignalSpy Decoded(cc, &CoverCache::coverDecoded);
+        QVERIFY(cc->take(Png).isNull());
+        QPixmap A;
+        QTRY_VERIFY_WITH_TIMEOUT(!(A = cc->take(Png)).isNull(), 5000);   // its own decode, whatever else signalled
+        const int Before = cc->decodeCount();
+        const QPixmap B = cc->take(Png);
+        QCOMPARE(B.cacheKey(), A.cacheKey());                  // the same pixmap, shared
+        QCOMPARE(cc->decodeCount(), Before);
+        const int Scales = cc->scaleCount();
+        const QPixmap S1 = cc->scaled(A, 30, 45), S2 = cc->scaled(B, 30, 45);
+        QCOMPARE(S1.cacheKey(), S2.cacheKey());
+        QCOMPARE(cc->scaleCount(), Scales + 1);
+        // Edited in place: another size, a later time.
+        QImage Img2(80, 120, QImage::Format_RGB32); Img2.fill(Qt::blue); QVERIFY(Img2.save(Png));
+        { QFile F(Png); QVERIFY(F.open(QIODevice::ReadWrite)); QVERIFY(F.setFileTime(QDateTime::currentDateTime().addSecs(5), QFileDevice::FileModificationTime)); }
+        QVERIFY(cc->take(Png).isNull());                       // decoded again
+        QTRY_COMPARE_WITH_TIMEOUT(cc->take(Png).size(), QSize(80, 120), 5000);
     }
 };
 

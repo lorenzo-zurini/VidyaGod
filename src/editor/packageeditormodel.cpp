@@ -1,3 +1,4 @@
+#include <optional>
 #include "nodefiles.h"
 #include "nodegraph.h"
 #include "validate.h"
@@ -428,25 +429,38 @@ const NodeIndex & PackageEditorModel::LibraryIndex() const
     return *LibraryCache;
 }
 
-NodeIndex PackageEditorModel::BuildExecIndex() const
+PackageEditorModel::ExecInputs PackageEditorModel::execInputs() const
+{
+    ExecInputs In;
+    LibraryIndex();                                   // the library's index, made now if not yet: shared, never copied
+    In.Library = LibraryCache;
+    In.Pkg = PackageDir ? fs::path(PackageDir->path().toStdString()) : fs::path();
+    for (int I = 0; I < Doc.Count(); ++I) In.Nodes.push_back({ Doc.Node(I), Doc.Handle(I), Doc.File(I) });
+    return In;
+}
+
+//Touches nothing of the model: the validation thread builds it from what execInputs copied.
+NodeIndex PackageEditorModel::BuildExecIndex(const ExecInputs & In)
 {
     NodeIndex Idx;
-    const fs::path Pkg = PackageDir ? fs::path(PackageDir->path().toStdString()) : fs::path();
-    for (const auto & [Id, N] : LibraryIndex().Nodes)
+    const fs::path & Pkg = In.Pkg;
+    for (const auto & [Id, N] : In.Library->Nodes)
         if (Pkg.empty() || !SameDir(N.BundleDir, Pkg)) Idx.Nodes.emplace(Id, N);   // this package: as edited, below
-    for (int I = 0; I < Doc.Count(); ++I)
+    for (const auto & D : In.Nodes)
     {
         Node N;
-        if (!ManifestModel::ParseNode(Doc.Node(I), Pkg / (Doc.File(I).empty() ? Doc.Handle(I) + ".json" : Doc.File(I)), Pkg, N)) continue;
-        N.Cid = Doc.Handle(I);
+        if (!ManifestModel::ParseNode(D.Json, Pkg / (D.File.empty() ? D.Handle + ".json" : D.File), Pkg, N)) continue;
+        N.Cid = D.Handle;
         //Named by its handle, as everything about this package's nodes is — a draft has no CID for the file name
         //to give, and a problem the canvas cannot place on its node is one the author does not see.
-        if (!N.LowerError.empty()) N.LowerError = NodeLower::CheckNode(Doc.Node(I), N.Cid, N.NodeId);
-        Idx.Nodes[Doc.Handle(I)] = std::move(N);
+        if (!N.LowerError.empty()) N.LowerError = NodeLower::CheckNode(D.Json, N.Cid, N.NodeId);
+        Idx.Nodes[D.Handle] = std::move(N);
     }
     ManifestModel::DeriveFacts(Idx);
     return Idx;
 }
+
+NodeIndex PackageEditorModel::BuildExecIndex() const { return BuildExecIndex(execInputs()); }
 
 std::shared_ptr<const NodeIndex> PackageEditorModel::ExecSnapshot() const
 {
@@ -454,6 +468,7 @@ std::shared_ptr<const NodeIndex> PackageEditorModel::ExecSnapshot() const
     {
         ExecIndexCache = std::make_shared<const NodeIndex>(BuildExecIndex());
         ExecIndexRev = Doc.ContentRevision();
+        ++ExecBuilds;
     }
     return ExecIndexCache;
 }
@@ -571,10 +586,21 @@ void PackageEditorModel::validateNow()
     if (!PackageDir) return;
     ValAgain = false;
     ValContentRev = Doc.ContentRevision();
-    auto Idx = ExecSnapshot();
+    //The index of the library with this package as edited is built on the validation thread too: every pause in
+    //editing built it here — a copy of every library node, every tile's facts derived again — before the check began.
+    //One already built for this revision is used as it is; one built there is kept for the GUI's own uses.
     auto Out = std::make_shared<ValResult>();
     ValOut = Out;
-    ValThread = QThread::create([Idx, Handles = bundleHandles(), Out] { *Out = Validate(*Idx, Handles); });
+    auto Built = std::make_shared<std::shared_ptr<const NodeIndex>>();
+    ValBuilt = Built;
+    std::shared_ptr<const NodeIndex> Have = (ExecIndexCache && ExecIndexRev == Doc.ContentRevision()) ? ExecIndexCache : nullptr;
+    std::optional<ExecInputs> In;
+    if (!Have) In = execInputs();
+    ValThread = QThread::create([Have, In = std::move(In), Built, Handles = bundleHandles(), Out] {
+        std::shared_ptr<const NodeIndex> Idx = Have;
+        if (!Idx) { Idx = std::make_shared<const NodeIndex>(BuildExecIndex(*In)); *Built = Idx; }
+        *Out = Validate(*Idx, Handles);
+    });
     connect(ValThread, &QThread::finished, this, &PackageEditorModel::ValidationDone);
     ValThread->start(QThread::LowPriority);
 }
@@ -583,6 +609,9 @@ void PackageEditorModel::ValidationDone()
 {
     ValThread->deleteLater();
     ValThread = nullptr;
+    if (*ValBuilt && ValContentRev == Doc.ContentRevision() && !(ExecIndexCache && ExecIndexRev == ValContentRev))
+    { ExecIndexCache = *ValBuilt; ExecIndexRev = ValContentRev; }   // built there for this document: kept
+    ValBuilt.reset();
     if (ValAgain || ValContentRev != Doc.ContentRevision()) { validateNow(); return; }   // about an older document
     ValErrors = std::move(ValOut->Errors);
     ValWarnings = std::move(ValOut->Warnings);

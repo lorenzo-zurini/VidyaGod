@@ -39,6 +39,7 @@ public:
     // FromLastIndex: start from the index and hydration the last run kept, and check them against the disk off the GUI
     // thread (refreshFromDisk) — the app's start. Otherwise the library is read here, as it is now (a command's model).
     AppModel(nlohmann::ordered_json * config, QDir * appDataDir, QObject * parent = nullptr, bool FromLastIndex = false);
+    ~AppModel() override;   // what save() still holds is written before the model goes
 
     // ── Shared state (views read directly; the model owns the lifetime) ──
     nlohmann::ordered_json * config()       const { return Config; }
@@ -55,10 +56,18 @@ public:
     int                      cardPixelWidth() const { return CardPixelWidth; }
 
     // ── Mutators (perform the change, persist, then emit so every view reacts) ──
-    bool save();                                       // write GlobalConfigJSON to disk
+    // Write GlobalConfigJSON to disk: SaveSoonMs after the first ask, once for every ask meanwhile, the write itself
+    // on a worker (JSONOps::SaveConfigAsync). The config was written whole, on the GUI thread, at every ask — a 2 MB
+    // config on a Deck, one per received library, per download started and ended, per pairing step. False only when
+    // the config cannot be written here (read-only).
+    bool save();
+    int SaveSoonMs = 250;
+    bool saveNow();                                    // written now, on this thread: false when it could not be
+    void flushPendingSave();                           // a save asked and not yet written, written now (a call's end)
     void rebuildCatalog();                             // re-scan CatalogIndex from disk → emit catalogChanged()
     void rebuildCatalogSoon();                         // one rebuild for a burst of asks (RebuildSoonMs after the first)
     int RebuildSoonMs = 250;
+    int refreshes() const { return Refreshes; }   // test observability: refreshFromDisk reads started
     // Check the index and what of it is on disk against the library, off the GUI thread (what the app's start does):
     // what changed is swapped in, with catalogChanged; diskChecked says when it is done.
     void refreshFromDisk();
@@ -160,6 +169,11 @@ private:
     // single-flight guard for healOrphansIfAny — shared, because the worker clears it and may outlive this model
     std::shared_ptr<std::atomic<bool>> HealInFlight = std::make_shared<std::atomic<bool>>(false);
     bool RebuildQueued = false;   // a rebuildCatalogSoon is waiting
+    bool SaveQueued = false;      // a save() is waiting for its SaveSoonMs
+    bool Refreshing = false;      // a refreshFromDisk is reading the library
+    bool RefreshAgain = false;    // asked again while it reads: once more after it
+    int  Refreshes = 0;
+    bool SaveDirty = false;       // asked to save since the last write
     bool RebuildPending = false;  // asked for and not yet done by a rebuildCatalog
     bool HealDeferred = false;    // the last heal waited for the queue (said once)
     bool                     SeededUnheld = false;   // SeedUnheld ran this process (healOrphansIfAny, first pass)

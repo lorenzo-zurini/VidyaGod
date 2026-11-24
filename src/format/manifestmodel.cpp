@@ -685,6 +685,8 @@ nlohmann::ordered_json MakeVfsSpecLayer(const nlohmann::ordered_json &Sub, const
     //by the time a plan is inspected the source is a resolved absolute path indistinguishable from any other.
     //A caller that is not mounting (--audit-packages builds 960 plans) must not report these as missing.
     if (IsRuntimeSourcedLayer(Sub)) J["runtimeSourced"] = true;
+    //A package's own folder does not change while its game runs: the FS answers its lookups from one listing.
+    else if (LType == "dir") J["fixed"] = true;
     return J;
 }
 

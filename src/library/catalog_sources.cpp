@@ -440,6 +440,9 @@ bool ApplySourceUpgrade(nlohmann::ordered_json &GlobalConfigJSON, const SourceUp
                     "upgrade. Re-run with force to apply anyway.");
 
     std::error_code Ec;
+    //Content that only changes its place keeps its references: they follow it, every file in one move (below). A drop
+    //and a re-add of each read every byte of it again — gigabytes, for a file that only moved.
+    std::vector<std::pair<std::string, std::string>> Followed;
 
     // 1. Demote the old version. Its manifests are COPIED (not moved) so the old collection CID keeps resolving; the
     //    content the new tree no longer wants is MOVED, since keeping two copies of gigabytes is not a kindness.
@@ -459,12 +462,7 @@ bool ApplySourceUpgrade(nlohmann::ordered_json &GlobalConfigJSON, const SourceUp
             fs::create_directories(Dest.parent_path(), Ec);
             fs::rename(Path, Dest, Ec);
             if (Ec) { Ec.clear(); continue; }
-            // The reference still points at the OLD path, which no longer exists. Re-pointing needs the closure
-            // dropped first — a plain re-add dedup-skips and would leave us advertising an unreadable block.
-            IpfsWrapper::DropRef(Cid);
-            std::string AddErr;
-            if (IpfsWrapper::AddNoCopy(Dest.string(), &AddErr).empty())
-                LogWarn("PackageCatalog::ApplySourceUpgrade", "deprecated content not re-seeded: " + Dest.string() + " (" + AddErr + ")");
+            Followed.push_back({ Path, Dest.string() });   // the reference still points at the OLD path: it follows
         }
         // Re-point the OLD collection meta-CID at the preserved copy so peers still on it keep being served.
         if (!P.OldCid.empty())
@@ -485,9 +483,21 @@ bool ApplySourceUpgrade(nlohmann::ordered_json &GlobalConfigJSON, const SourceUp
         fs::create_directories(fs::path(FromTo.second).parent_path(), Ec);
         fs::rename(FromTo.first, FromTo.second, Ec);
         if (Ec) { Ec.clear(); LogWarn("PackageCatalog::ApplySourceUpgrade", "could not move " + FromTo.first); continue; }
-        IpfsWrapper::DropRef(Cid);
-        std::string AddErr;
-        IpfsWrapper::AddNoCopy(FromTo.second, &AddErr);
+        Followed.push_back({ FromTo.first, FromTo.second });
+    }
+    if (std::string MErr; !Followed.empty() && IpfsWrapper::MoveRefs(Followed, &MErr) < 0)
+    {
+        //The references did not follow: re-pointed the long way, each dropped (a plain re-add dedup-skips and would
+        //leave an unreadable block advertised) and added again from where it is now.
+        LogWarn("PackageCatalog::ApplySourceUpgrade", "moving the references failed (" + MErr + "): re-adding the moved files");
+        for (const auto &[From, To] : Followed)
+        {
+            std::string AddErr;
+            const std::string Was = IpfsWrapper::ComputeCid(To, &AddErr);
+            if (!Was.empty()) IpfsWrapper::DropRef(Was);
+            if (IpfsWrapper::AddNoCopy(To, &AddErr).empty())
+                LogWarn("PackageCatalog::ApplySourceUpgrade", "moved content not re-seeded: " + To + " (" + AddErr + ")");
+        }
     }
 
     // 3. Swap the manifests: drop the ones the new tree no longer has, then copy the new tree over. Only *.json is
@@ -590,12 +600,15 @@ void RemovePackageSource(nlohmann::ordered_json &GlobalConfigJSON, int Index, bo
             if (i == Index) continue;
             for (const std::string &C : SourceContentCids(GlobalConfigJSON, Arr[i])) Mine.erase(C);
         }
-        int Dropped = 0;
-        for (const std::string &C : Mine) if (IpfsWrapper::DropRef(C)) ++Dropped;
-        if (Dropped)
-            LogSucc("PackageCatalog::RemovePackageSource",
-                    "un-seeded " + std::to_string(Dropped) + "/" + std::to_string(Mine.size())
-                    + " CID(s) of the removed source");
+        //Together: a drop per CID, each its own commit, unpins and compaction request, for a whole source's content.
+        //One call drops them all or none (no node to drop them in).
+        if (Mine.empty()) {}
+        else if (IpfsWrapper::DropRefs({ Mine.begin(), Mine.end() }))
+            LogSucc("PackageCatalog::RemovePackageSource", "un-seeded the " + std::to_string(Mine.size())
+                    + " CID(s) only the removed source held");
+        else
+            LogWarn("PackageCatalog::RemovePackageSource", "could not un-seed the " + std::to_string(Mine.size())
+                    + " CID(s) only the removed source held (no IPFS node): a heal drops them once their files are gone");
     }
 
     //Drop LIBRARY entries under this source's dir, then delete the fetched dir.

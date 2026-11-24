@@ -84,9 +84,15 @@ void CommandServer::Serve(QLocalSocket *S)
             //Off this thread, on the index as it is now: the window keeps painting and other commands keep answering.
             auto Bg = std::make_shared<Command::Context>(Ctx);
             Bg->Snapshot = Ctx.Model->catalogSnapshot();
+            //The config as it is now, its own: the app goes on changing its config while this reads.
+            auto Cfg = std::make_shared<nlohmann::ordered_json>(*Ctx.Config);
+            Bg->Config = Cfg.get();
+            Bg->Model = nullptr;
+            Bg->Window = nullptr;
+            Bg->Background = true;
             auto Reply = std::make_shared<nlohmann::ordered_json>();
             QPointer<QLocalSocket> To(S);
-            AsyncWork::Run(this, [Bg, Reply, Name, Args] { *Reply = Command::Run(Name, Args, *Bg); },
+            AsyncWork::Run(this, [Bg, Cfg, Reply, Name, Args] { *Reply = Command::Run(Name, Args, *Bg); },
                            [To, Reply, Answer] {
                                if (To) Answer(To, *Reply);
                                std::thread([] { Platform::ReleaseFreedMemory(); }).detach();   // off the GUI thread

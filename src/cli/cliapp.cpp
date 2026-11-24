@@ -918,6 +918,7 @@ int Main(int argc, char **argv, const Hooks &H)
     QCoreApplication::processEvents();
     //An action that opens a dialog: nothing here will answer it, so the dialog is the result and the call ends.
     Ctx.Early = [&](const json &R) {
+        if (Ctx.Model) Ctx.Model->flushPendingSave();   // the process ends here: what was asked to be saved is written
         const int Rc = Report({{"ok", true}, {"result", R}}, S, G, St, ErrSt);
         //From inside the dialog's event loop: no unwinding (the windows and the action are still on the stack) — the
         //node's store is closed first if it is open, then the process ends.
@@ -932,6 +933,9 @@ int Main(int argc, char **argv, const Hooks &H)
         QApplication::exec();
     }
     QCoreApplication::processEvents();
+    //A save the call asked for waits a moment in the app (saves asked together are one); this process ends now,
+    //without the model's destructor: written here, or the change is lost.
+    if (Ctx.Model) Ctx.Model->flushPendingSave();
     return Finish(Report(Reply, S, G, St, ErrSt));
 }
 

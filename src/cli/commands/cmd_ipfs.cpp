@@ -186,7 +186,7 @@ VG_COMMANDS
             const std::string P = Dir ? IpfsWrapper::FetchDirToPath(Cid, Dest, &Err)
                                       : IpfsWrapper::FetchToPath(Cid, Dest, &Err, static_cast<int>(Command::Int(A, "timeout", 0)));
             return json{{"landed", Must(P, Err)}};
-        }, {} });
+        }, {}, true });
 
     Command::Register({
         "ipfs fetch-many", "fetch several targets together through the queue (blocking)",
@@ -197,7 +197,7 @@ VG_COMMANDS
             std::string Err;
             Check(IpfsWrapper::FetchTargetsConcurrent(TargetsArg(A), &Err), Err);
             return json{{"fetched", A["targets"].size()}};
-        }, {} });
+        }, {}, true });
 
     Command::Register({
         "ipfs add", "add a file to the node in place (no copy), or just compute its CID",
@@ -276,12 +276,14 @@ VG_COMMANDS
         { "ipfs cid Qm…", "ipfs cid Qm… --verify --providers" },
         { "IpfsWrapper::HasLocal", "IpfsWrapper::HeldWhole", "IpfsWrapper::CidMissing", "IpfsWrapper::CidSizeLocal", "IpfsWrapper::CidSize",
           "IpfsWrapper::CidFileSizeLocal", "IpfsWrapper::CidServeStatus", "IpfsWrapper::VerifyCid", "IpfsWrapper::SeedAnnounced",
-          "IpfsWrapper::ProviderCount" }, Needs::Config, true,
+          "IpfsWrapper::ProviderCount", "IpfsWrapper::HeldWholeFiles" }, Needs::Config, true,
         [](Command::Context &, const json &A) {
             const std::string C = Command::Str(A, "cid");
             json Out = {{"cid", C}, {"held", IpfsWrapper::HasLocal(C)}, {"whole", IpfsWrapper::HeldWhole(C)}, {"backing_gone", IpfsWrapper::CidMissing(C)},
                         {"size", IpfsWrapper::CidSizeLocal(C)}, {"file_size", IpfsWrapper::CidFileSizeLocal(C)},
                         {"serves", IpfsWrapper::CidServeStatus(C)}, {"announced", IpfsWrapper::SeedAnnounced(C)}};
+            std::vector<std::string> Files;
+            if (IpfsWrapper::HeldWholeFiles(C, &Files)) Out["read_from"] = Files;   // the files a read of it reads
             if (Command::Bool(A, "network", false)) Out["network_size"] = IpfsWrapper::CidSize(C);
             std::string Unverified;
             if (Command::Bool(A, "verify", false)) { Unverified = IpfsWrapper::VerifyCid(C); Out["verified"] = Unverified.empty() ? json(true) : json(Unverified); }
@@ -289,6 +291,27 @@ VG_COMMANDS
             if (!Unverified.empty()) throw Command::CheckFailed(Out, "it does not serve: " + Unverified);
             return Out;
         }, {} });
+
+    Command::Register({
+        "ipfs serves", "whether each of several CIDs serves here, checked together",
+        "For each CID (comma-separated): what serving it would meet (a backing file gone or cut short) and whether a file "
+        "it is referenced into is gone — one pass over them all, a block several reach walked once: what the IPFS tab "
+        "asks of its pins.", { CidArg() }, { "ipfs serves Qm…,bafy…" }, { "IpfsWrapper::CidServeStatusMany" }, Needs::Config, true,
+        [](Command::Context &, const json &A) {
+            const std::string C = Command::Str(A, "cid");
+            std::vector<std::string> Cids;
+            for (size_t From = 0, At; From <= C.size(); From = At + 1)
+            {
+                At = C.find(',', From);
+                if (At == std::string::npos) At = C.size();
+                if (At > From) Cids.push_back(C.substr(From, At - From));
+            }
+            const auto V = IpfsWrapper::CidServeStatusMany(Cids);
+            json Out = json::array();
+            for (size_t I = 0; I < Cids.size() && I < V.size(); ++I)
+                Out.push_back({{"cid", Cids[I]}, {"serves", V[I].Err.empty()}, {"problem", V[I].Err}, {"file_gone", V[I].Gone}});
+            return Out;
+        }, {}, true });
 
     Command::Register({
         "ipfs pins", "every pinned CID (what this node keeps and serves)", "The pin set the IPFS tab reconciles against.", {},
@@ -304,13 +327,24 @@ VG_COMMANDS
         "--unpin stops serving it (the file on disk stays); --drop-ref drops its filestore reference (re-add to serve "
         "again); --cached purges the partial blocks a cancelled download left. One of them is required.",
         { CidArg(), Flag("unpin", "unpin it"), Flag("drop-ref", "drop its filestore reference"), Flag("cached", "purge its cached blocks") },
-        { "ipfs forget Qm… --unpin", "ipfs forget Qm… --cached" }, { "IpfsWrapper::Unpin", "IpfsWrapper::DropRef", "IpfsWrapper::DropCached" },
+        { "ipfs forget Qm… --unpin", "ipfs forget Qm… --cached", "ipfs forget Qm…,bafy… --drop-ref" }, { "IpfsWrapper::Unpin", "IpfsWrapper::DropRef", "IpfsWrapper::DropRefs", "IpfsWrapper::DropCached" },
         Needs::Config, true,
         [](Command::Context &, const json &A) {
             const std::string C = Command::Str(A, "cid");
             json Out = json::object();
             if (Command::Bool(A, "unpin", false)) Out["unpinned"] = IpfsWrapper::Unpin(C);
-            if (Command::Bool(A, "drop-ref", false)) Out["ref_dropped"] = IpfsWrapper::DropRef(C);
+            if (Command::Bool(A, "drop-ref", false) && C.find(',') != std::string::npos)
+            {   // several, comma-separated: dropped together (one delete batch, one round of unpins)
+                std::vector<std::string> Cids;
+                for (size_t From = 0, At; From <= C.size(); From = At + 1)
+                {
+                    At = C.find(',', From);
+                    if (At == std::string::npos) At = C.size();
+                    if (At > From) Cids.push_back(C.substr(From, At - From));
+                }
+                Out["refs_dropped"] = IpfsWrapper::DropRefs(Cids);
+            }
+            else if (Command::Bool(A, "drop-ref", false)) Out["ref_dropped"] = IpfsWrapper::DropRef(C);
             if (Command::Bool(A, "cached", false)) Out["purged"] = IpfsWrapper::DropCached(C);
             if (Out.empty()) throw Command::BadArgs("give --unpin, --drop-ref or --cached");
             return Out;
@@ -355,7 +389,7 @@ VG_COMMANDS
                 if (NetFails) throw Command::CheckFailed(Out, std::to_string(NetFails) + " network check(s) failed: the rows say what to unblock");
             }
             return Out;
-        }, {} });
+        }, {}, true });
 
     Command::Register({
         "ipfs connect", "dial a peer by multiaddress", "Connect the node to a peer directly (/ip4/…/p2p/<id>).",
@@ -455,9 +489,9 @@ VG_COMMANDS
     Command::Register({
         "queue job", "one CID's job in the network queue: its state, where it lands, its scheduling",
         "The queue's view of a CID: state (none, queued, active, done, failed), unfinished, its destination, backing "
-        "off a retry, being pre-empted to free a slot, prioritised.", { CidArg() }, { "queue job Qm…" },
+        "off a retry, being pre-empted to free a slot, prioritised, and why it failed (failure).", { CidArg() }, { "queue job Qm…" },
         { "IpfsWrapper::DebugJobState", "IpfsWrapper::JobUnfinished", "IpfsWrapper::JobSettled", "IpfsWrapper::QueueDestForCid", "IpfsWrapper::DebugJobBackingOff",
-          "IpfsWrapper::DebugIsPreempting", "IpfsWrapper::DebugJobPrioritized" }, Needs::Config, false,
+          "IpfsWrapper::DebugIsPreempting", "IpfsWrapper::DebugJobPrioritized", "IpfsWrapper::FailureOf" }, Needs::Config, false,
         [](Command::Context &, const json &A) {
             const std::string C = Command::Str(A, "cid");
             static const char *States[] = { "queued", "active", "done", "failed" };
@@ -467,19 +501,23 @@ VG_COMMANDS
             return json{{"cid", C}, {"state", S < 0 || S > 3 ? "none" : States[S]}, {"unfinished", IpfsWrapper::JobUnfinished(C)},
                         {"settled", Settled}, {"landed", Landed},
                         {"dest", IpfsWrapper::QueueDestForCid(C)}, {"backing_off", IpfsWrapper::DebugJobBackingOff(C)},
-                        {"preempting", IpfsWrapper::DebugIsPreempting(C)}, {"prioritized", IpfsWrapper::DebugJobPrioritized(C)}};
+                        {"preempting", IpfsWrapper::DebugIsPreempting(C)}, {"prioritized", IpfsWrapper::DebugJobPrioritized(C)},
+                        {"failure", IpfsWrapper::FailureOf(C)}};
         }, {} });
 
     Command::Register({
         "queue net", "the network queue's foreground state",
         "Whether no fetch holds or waits for a slot and nobody holds the foreground (the node's own background work "
         "runs then), and how many foreground holds were taken since start; busy: a job queued or running (the orphan "
-        "heal waits for it); orphan_check_scans: whole-index scans the orphan check has made.", {}, { "queue net" },
-        { "IpfsWrapper::DebugNetForegroundIdle", "IpfsWrapper::DebugNetHolds", "IpfsWrapper::QueueBusy", "IpfsWrapper::DebugRefScans", "IpfsWrapper::DebugClaimScans" }, Needs::Config, true,
+        "heal waits for it); orphan_check_scans: whole-index scans the orphan check has made; already_here: received files "
+        "found in place and not fetched; wait_looks: items the waits have looked at.", {}, { "queue net" },
+        { "IpfsWrapper::DebugNetForegroundIdle", "IpfsWrapper::DebugNetHolds", "IpfsWrapper::QueueBusy", "IpfsWrapper::DebugRefScans", "IpfsWrapper::DebugClaimScans",
+          "IpfsWrapper::DebugAlreadyHere", "IpfsWrapper::DebugWaitLooks" }, Needs::Config, true,
         [](Command::Context &, const json &) {
             return json{{"foreground_idle", IpfsWrapper::DebugNetForegroundIdle()}, {"foreground_holds", IpfsWrapper::DebugNetHolds()},
                         {"busy", IpfsWrapper::QueueBusy()}, {"orphan_check_scans", IpfsWrapper::DebugRefScans()},
-                        {"claim_scans", IpfsWrapper::DebugClaimScans()}};
+                        {"claim_scans", IpfsWrapper::DebugClaimScans()}, {"already_here", IpfsWrapper::DebugAlreadyHere()},
+                        {"wait_looks", IpfsWrapper::DebugWaitLooks()}};
         }, {} });
 
     Command::Register({
@@ -503,7 +541,7 @@ VG_COMMANDS
                 if (!Ok) Out["error"] = Err;
             }
             return Out;
-        }, {} });
+        }, {}, true });
 
     Command::Register({
         "queue cancel", "cancel a CID's download (or only flag it, or clear the flag)",
@@ -520,11 +558,28 @@ VG_COMMANDS
         }, {} });
 
     Command::Register({
-        "queue prioritize", "move a queued CID to the front", "The next free slot takes it.", { CidArg() }, { "queue prioritize Qm…" },
-        { "IpfsWrapper::PrioritizeDownload" }, Needs::Config, false,
+        "queue prioritize", "move a queued CID to the front", "The next free slot takes it. Several, comma-separated, "
+        "move together (one wake of the queue).", { CidArg() }, { "queue prioritize Qm…", "queue prioritize Qm…,bafy…" },
+        { "IpfsWrapper::PrioritizeDownload", "IpfsWrapper::PrioritizeDownloads", "IpfsWrapper::DebugPrioritizeWakes" }, Needs::Config, false,
         [](Command::Context &, const json &A) {
-            IpfsWrapper::PrioritizeDownload(Command::Str(A, "cid"));
-            return json{{"prioritized", IpfsWrapper::DebugJobPrioritized(Command::Str(A, "cid"))}};
+            const std::string C = Command::Str(A, "cid");
+            const long long Wakes = IpfsWrapper::DebugPrioritizeWakes();
+            if (C.find(',') == std::string::npos)
+            {
+                IpfsWrapper::PrioritizeDownload(C);
+                return json{{"prioritized", IpfsWrapper::DebugJobPrioritized(C)}, {"wakes", IpfsWrapper::DebugPrioritizeWakes() - Wakes}};
+            }
+            std::vector<std::string> Cids;
+            for (size_t From = 0, At; From <= C.size(); From = At + 1)
+            {
+                At = C.find(',', From);
+                if (At == std::string::npos) At = C.size();
+                if (At > From) Cids.push_back(C.substr(From, At - From));
+            }
+            IpfsWrapper::PrioritizeDownloads(Cids);
+            json Out = json::object();
+            for (const auto &X : Cids) Out[X] = IpfsWrapper::DebugJobPrioritized(X);
+            return json{{"prioritized", Out}, {"wakes", IpfsWrapper::DebugPrioritizeWakes() - Wakes}};
         }, {} });
 
     Command::Register({

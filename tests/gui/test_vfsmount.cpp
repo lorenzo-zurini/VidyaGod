@@ -214,6 +214,36 @@ private slots:
     }
 #endif
 
+    // A package's own folders and DEFAULTDATA do not change under the mount: they are marked fixed, so the FS answers
+    // their lookups from one listing; a KEEP folder (the user's), and one another mount fills (runtime-sourced), are
+    // not. The launch's mounts — the runner build's and the game's — say how many they are, to share one budget of
+    // delta blocks. Teeth: mark every dir layer fixed; mark none; leave launchMounts out (each mount takes the whole).
+    void package_folders_are_fixed_and_a_launchs_mounts_share_a_budget()
+    {
+        ContainerParams CP = Make();
+        CP.SubComponentsArray = json::array({ DirLayer("content", "game") });
+        CP.DefaultDataPath = std::filesystem::path(Root.path().toStdString()) / "DEFAULTDATA";
+        std::filesystem::create_directories(CP.DefaultDataPath);
+        CP.KeepDirs = { {"game/save", "save", true} };
+        const json Spec = VfsMount::BuildLayerSpec(CP);
+        QCOMPARE(Spec.value("launchMounts", 0), 1);
+        int Fixed = 0, Rw = 0;
+        for (const auto & L : Spec["layers"])
+        {
+            if (L.value("rw", false)) { ++Rw; QVERIFY2(!L.value("fixed", false), L.dump().c_str()); }
+            else { ++Fixed; QVERIFY2(L.value("fixed", false), L.dump().c_str()); }
+        }
+        QCOMPARE(Fixed, 2);
+        QCOMPARE(Rw, 1);
+        const json Late = ManifestModel::MakeVfsSpecLayer(json{{"TYPE", "VFSDirLayer"}, {"PATH", "%RunnerMount%/pfx"}}, "/x", "");
+        QVERIFY2(Late.value("runtimeSourced", false) && !Late.value("fixed", false), Late.dump().c_str());
+        CP.RunnerPackagePath = CP.PackagePath;
+        CP.RunnerShipsBuild = true;
+        CP.RunnerLayers = { DirLayer("runner") };
+        QCOMPARE(VfsMount::BuildLayerSpec(CP).value("launchMounts", 0), 2);
+        QCOMPARE(VfsMount::BuildRunnerLayerSpec(CP).value("launchMounts", 0), 2);
+    }
+
     void subcomponent_order_is_preserved_as_layer_priority()
     {
         ContainerParams CP = Make();

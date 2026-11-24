@@ -5,6 +5,7 @@
 #include <chrono>
 #include <filesystem>
 #include <fstream>
+#include <map>
 #include <mutex>
 #include <thread>
 #ifndef _WIN32
@@ -12,6 +13,8 @@
 #endif
 
 #include "downloadqueue.h"
+#include "launchsources.h"
+#include "launchparams.h"
 #include "ipfswrapper.h"
 
 static std::atomic<bool> g_stopHook{false};
@@ -283,6 +286,314 @@ private slots:
                                                                  {"CID_OLD_GEN", Y, false, false, true}}), 5000));
         QCOMPARE(Read(Y), std::string("CID_OLD_GEN"));
         QCOMPARE(Read(X), std::string("CID_NEW_GEN"));          // the old cid's job did NOT rewrite X
+    }
+
+    // A wait goes on from where it was at each wake of the queue, not over its whole batch again: 200 files landing
+    // one by one cost a wait 200 looks at 200 items (each wake, under the lock every fetch takes). A required item
+    // failing still ends the wait at once, wherever it is in the batch. Teeth: start each wake from the first item
+    // (the looks grow with the square); drop the look again on a failure (the failure is seen only when the wait
+    // reaches it — never, behind an item that does not settle).
+    void a_wait_looks_at_what_is_left_and_still_sees_a_failure()
+    {
+        QTemporaryDir dir; QVERIFY(dir.isValid());
+        IpfsWrapper::SetFetchOnceHook([](const std::string &cid, const std::string &dest, bool, std::string *E) {
+            if (cid == "CID_WL_BAD") { if (E) *E = "refused"; return 2; }
+            if (cid == "CID_WL_SLOW") { std::this_thread::sleep_for(std::chrono::milliseconds(800)); }
+            std::ofstream(dest) << cid; return 0; });
+        std::vector<IpfsWrapper::FetchTarget> T;
+        for (int I = 0; I < 200; ++I) T.push_back({"CID_WL_" + std::to_string(I), dir.path().toStdString() + "/f" + std::to_string(I), false});
+        const long long Before = IpfsWrapper::DebugWaitLooks();
+        QVERIFY(IpfsWrapper::WaitBatch(IpfsWrapper::EnqueueBatch(T), 20000));
+        const long long Looks = IpfsWrapper::DebugWaitLooks() - Before;
+        QVERIFY2(Looks < 200 * 20, std::to_string(Looks).c_str());
+        // A slow first item, a required one failing behind it: the wait ends with the failure, not after the slow one.
+        IpfsWrapper::DebugResetQueue();
+        std::string Err;
+        const auto T0 = std::chrono::steady_clock::now();
+        const bool Ok = IpfsWrapper::WaitBatch(IpfsWrapper::EnqueueBatch({{"CID_WL_SLOW", (dir.path() + "/slow").toStdString(), false},
+                                                                         {"CID_WL_BAD", (dir.path() + "/bad").toStdString(), false}}), 20000, &Err);
+        QVERIFY(!Ok);
+        QVERIFY2(Err.find("CID_WL_BAD") != std::string::npos, Err.c_str());
+        QVERIFY2(std::chrono::steady_clock::now() - T0 < std::chrono::milliseconds(700), "the failure ended the wait before the slow item settled");
+        IpfsWrapper::SetFetchOnceHook({});
+        IpfsWrapper::DebugResetQueue();
+    }
+
+    // An item a wait already passed as done that is asked for again (its file gone, a new copy wanted) is fetching again:
+    // the wait does not end until it lands (a wait that never looked back said a batch was in place over a file still
+    // on its way). Teeth: re-check only from where the wait was (it ends at once, the item still fetching).
+    void a_wait_sees_an_item_it_passed_fetching_again()
+    {
+        QTemporaryDir dir; QVERIFY(dir.isValid());
+        const std::string A = dir.path().toStdString() + "/a.bin", A2 = dir.path().toStdString() + "/a2.bin", B = dir.path().toStdString() + "/b.bin";
+        std::atomic<bool> HoldA{false}, HoldB{true};
+        g_stopHook = false;
+        IpfsWrapper::SetFetchOnceHook([&](const std::string &cid, const std::string &dest, bool, std::string *) {
+            while (((cid == "CID_RQ_A" && HoldA) || (cid == "CID_RQ_B" && HoldB)) && !g_stopHook) std::this_thread::sleep_for(std::chrono::milliseconds(5));
+            std::ofstream(dest) << cid; return 0; });
+        const auto H = IpfsWrapper::EnqueueBatch({{"CID_RQ_A", A, false}, {"CID_RQ_B", B, false}});
+        QTRY_COMPARE_WITH_TIMEOUT(IpfsWrapper::DebugJobState("CID_RQ_A"), 2, 5000);     // A done; B held
+        std::atomic<int> Result{-1};
+        std::thread W([&] { Result = IpfsWrapper::WaitBatch(H, 10000) ? 1 : 0; });
+        QTest::qWait(200);                                                               // the wait has passed A
+        HoldA = true;
+        std::filesystem::remove(A);
+        IpfsWrapper::EnqueueBatch({{"CID_RQ_A", A2, false}});                            // no copy left: fetched again
+        QTRY_VERIFY_WITH_TIMEOUT(IpfsWrapper::DebugJobState("CID_RQ_A") != 2, 5000);
+        HoldB = false;                                                                   // B lands
+        QTest::qWait(500);
+        QCOMPARE(Result.load(), -1);                                                     // still waiting for A
+        HoldA = false;
+        W.join();
+        QCOMPARE(Result.load(), 1);
+        g_stopHook = true;
+        IpfsWrapper::SetFetchOnceHook({});
+        IpfsWrapper::DebugResetQueue();
+    }
+
+    // A wait on a stall (landing every received package's files at once) goes on while files keep landing, however
+    // long it all takes, and gives up once none has for the stall time; an optional file that failed says why.
+    // Teeth: a fixed deadline (the steady landing is cut off); slide it at any wake, not a settle (the held file waits
+    // for good); FailureOf saying nothing for a failed job.
+    void a_stall_wait_goes_on_while_files_land()
+    {
+        QTemporaryDir dir; QVERIFY(dir.isValid());
+        g_stopHook = false;
+        IpfsWrapper::SetFetchOnceHook([](const std::string &cid, const std::string &dest, bool, std::string *E) {
+            if (cid == "CID_SW_BAD") { if (E) *E = "refused by the test"; return 2; }
+            if (cid == "CID_SW_HELD") { while (!g_stopHook) std::this_thread::sleep_for(std::chrono::milliseconds(5)); return 1; }
+            if (cid.rfind("CID_SW_NOISE", 0) == 0) return 1;                      // a stall: rotates, never settles
+            if (cid == "CID_SW_AWAY") return 1;                                    // its peer away: tried, failing, retried
+            if (cid.rfind("CID_SW_LAND", 0) == 0) { std::ofstream(dest) << cid; return 0; }   // someone else's install
+            const int K = cid.back() - '0';
+            std::this_thread::sleep_for(std::chrono::milliseconds(250 * K));
+            std::ofstream(dest) << cid; return 0; });
+        std::vector<IpfsWrapper::FetchTarget> T;
+        for (int K = 1; K <= 6; ++K) T.push_back({"CID_SW_" + std::to_string(K), dir.path().toStdString() + "/f" + std::to_string(K), true});
+        T.push_back({"CID_SW_BAD", dir.path().toStdString() + "/bad", true});
+        std::string Err;
+        const auto T0 = std::chrono::steady_clock::now();
+        QVERIFY2(IpfsWrapper::WaitBatchWhileMoving(IpfsWrapper::EnqueueBatch(T), 700, &Err), Err.c_str());
+        QVERIFY2(std::chrono::steady_clock::now() - T0 > std::chrono::milliseconds(1200), "the landing took longer than one stall");
+        QCOMPARE(IpfsWrapper::FailureOf("CID_SW_BAD"), std::string("refused by the test"));
+        QCOMPARE(IpfsWrapper::FailureOf("CID_SW_1"), std::string());
+        // Nothing lands, the queue busy meanwhile (fetches that stall and rotate wake every wait): given up after the
+        // stall, the job left queued.
+        const auto T1 = std::chrono::steady_clock::now();
+        const auto Held = IpfsWrapper::EnqueueBatch({{"CID_SW_HELD", dir.path().toStdString() + "/held", true}});
+        std::atomic<int> Result{-1};
+        std::thread W([&] { Result = IpfsWrapper::WaitBatchWhileMoving(Held, 700, &Err) ? 1 : 0; });
+        for (int I = 0; Result == -1 && I < 40; ++I)
+        {
+            IpfsWrapper::EnqueueBatch({{"CID_SW_NOISE" + std::to_string(I), dir.path().toStdString() + "/n" + std::to_string(I), true}});
+            std::this_thread::sleep_for(std::chrono::milliseconds(100));
+        }
+        g_stopHook = true;
+        W.join();
+        QCOMPARE(Result.load(), 0);
+        QVERIFY2(Err.find("none of it landed") != std::string::npos, Err.c_str());
+        QVERIFY2(std::chrono::steady_clock::now() - T1 < std::chrono::milliseconds(3000), "a stalled wait ends");
+        // Its last file keeps failing while another batch lands file after file: the wait ends after the stall all the
+        // same (the other batch's files are not this one moving).
+        g_stopHook = false;
+        const auto T2 = std::chrono::steady_clock::now();
+        const auto Away = IpfsWrapper::EnqueueBatch({{"CID_SW_AWAY", dir.path().toStdString() + "/away", true}});
+        std::atomic<int> Result2{-1};
+        std::string Err2;
+        std::thread W2([&] { Result2 = IpfsWrapper::WaitBatchWhileMoving(Away, 700, &Err2) ? 1 : 0; });
+        for (int I = 0; Result2 == -1 && I < 40; ++I)
+        {
+            IpfsWrapper::EnqueueBatch({{"CID_SW_LAND" + std::to_string(I), dir.path().toStdString() + "/l" + std::to_string(I), true}});
+            std::this_thread::sleep_for(std::chrono::milliseconds(100));
+        }
+        W2.join();
+        QCOMPARE(Result2.load(), 0);
+        QVERIFY2(std::chrono::steady_clock::now() - T2 < std::chrono::milliseconds(3000), "the other batch landing does not keep it waiting");
+        g_stopHook = true;
+        IpfsWrapper::SetFetchOnceHook({});
+        IpfsWrapper::DebugResetQueue();
+    }
+
+    // A stall wait counts its own batch moving the two ways the queue's other work does not: one of its files landing on
+    // a retry (tried before, then had), and one still waiting its first turn behind the other work. Teeth: count only
+    // the wait's first unsettled item reached (the retried files land after it gives up); count no file waiting its
+    // turn (it gives up before its turn).
+    void a_stall_wait_counts_its_own_files_landing_late_and_waiting_their_turn()
+    {
+        QTemporaryDir dir; QVERIFY(dir.isValid());
+        IpfsWrapper::DebugResetQueue();
+        std::mutex Mu; std::map<std::string, int> Tries;
+        IpfsWrapper::SetFetchOnceHook([&](const std::string &cid, const std::string &dest, bool, std::string *) {
+            int T; { std::lock_guard<std::mutex> g(Mu); T = ++Tries[cid]; }
+            if (cid == "CID_SL_AWAY") return 1;                                   // never had
+            if (cid.rfind("CID_SL_LATE", 0) == 0) {                               // had at the second try, one after another
+                if (T == 1) return 1;
+                std::this_thread::sleep_for(std::chrono::milliseconds(400 * (cid.back() - '0')));
+            }
+            if (cid.rfind("CID_SL_OTHER", 0) == 0) std::this_thread::sleep_for(std::chrono::milliseconds(300));
+            std::ofstream(dest) << cid; return 0; });
+        // Its first file never had; the others had at their retry, 2 s on and ~0.4 s apart — later than one stall.
+        std::vector<IpfsWrapper::FetchTarget> T{{"CID_SL_AWAY", dir.path().toStdString() + "/away", true}};
+        for (int K = 1; K <= 6; ++K) T.push_back({"CID_SL_LATE" + std::to_string(K), dir.path().toStdString() + "/late" + std::to_string(K), true});
+        QVERIFY(!IpfsWrapper::WaitBatchWhileMoving(IpfsWrapper::EnqueueBatch(T), 3000));
+        for (int K = 1; K <= 6; ++K)
+            QVERIFY2(std::filesystem::exists(dir.path().toStdString() + "/late" + std::to_string(K)), std::to_string(K).c_str());
+        IpfsWrapper::DebugResetQueue();
+        // One slot, another batch's eight files in it one after another; this batch's file waits its turn behind them.
+        const int SavedMax = IpfsWrapper::MaxConcurrentDownloads();
+        IpfsWrapper::SetMaxConcurrentDownloads(1);
+        std::vector<IpfsWrapper::FetchTarget> Other;
+        for (int I = 0; I < 8; ++I) Other.push_back({"CID_SL_OTHER" + std::to_string(I), dir.path().toStdString() + "/o" + std::to_string(I), true});
+        IpfsWrapper::EnqueueBatch(Other);
+        std::string Err;
+        const bool Ok = IpfsWrapper::WaitBatchWhileMoving(IpfsWrapper::EnqueueBatch({{"CID_SL_MINE", dir.path().toStdString() + "/mine", true}}), 700, &Err);
+        IpfsWrapper::SetMaxConcurrentDownloads(SavedMax);
+        QVERIFY2(Ok, Err.c_str());
+        IpfsWrapper::SetFetchOnceHook({});
+        IpfsWrapper::DebugResetQueue();
+    }
+
+    // Many covers prioritized together wake the queue once, not once each (each wake was every wait's look at its whole
+    // batch, and the dispatcher's at every job). Teeth: prioritize one by one in PrioritizeDownloads.
+    void many_prioritized_together_wake_the_queue_once()
+    {
+        QTemporaryDir dir; QVERIFY(dir.isValid());
+        g_stopHook = false;
+        IpfsWrapper::SetFetchOnceHook([&](const std::string &, const std::string &, bool, std::string *) {
+            while (!g_stopHook) std::this_thread::sleep_for(std::chrono::milliseconds(5));
+            return 1; });
+        std::vector<IpfsWrapper::FetchTarget> T;
+        std::vector<std::string> Cids;
+        for (int I = 0; I < 50; ++I) { Cids.push_back("CID_PW_" + std::to_string(I)); T.push_back({Cids.back(), dir.path().toStdString() + "/c" + std::to_string(I), true}); }
+        IpfsWrapper::EnqueueBatch(T);
+        const long long Before = IpfsWrapper::DebugPrioritizeWakes();
+        IpfsWrapper::PrioritizeDownloads(Cids);
+        QCOMPARE(IpfsWrapper::DebugPrioritizeWakes() - Before, 1LL);
+        QVERIFY(IpfsWrapper::DebugJobPrioritized(Cids.back()));
+        g_stopHook = true;
+        IpfsWrapper::SetFetchOnceHook({});
+        IpfsWrapper::DebugResetQueue();
+    }
+
+    // A launch missing several of its layers fetches them together, put at the front together: one at a time, each
+    // waited for in turn, its wait was every layer's fetch time added up. One that cannot be had fails the launch, and
+    // the others still land. Teeth: fetch them one by one (the second only starts when the first has landed); make
+    // them required (the failed one ends the wait before the other lands).
+    void a_launch_fetches_its_missing_layers_together()
+    {
+        QTemporaryDir dir; QVERIFY(dir.isValid());
+        const std::string Pkg = dir.path().toStdString();
+        std::atomic<bool> BLanded{false}, ASawB{false}, FailA{false};
+        IpfsWrapper::SetFetchOnceHook([&](const std::string &cid, const std::string &dest, bool, std::string *E) {
+            if (cid == "CID_ML_A")
+            {
+                if (FailA) { if (E) *E = "nobody has it"; return 2; }
+                for (int I = 0; I < 300 && !BLanded; ++I) std::this_thread::sleep_for(std::chrono::milliseconds(10));
+                ASawB = BLanded.load();
+            }
+            else std::this_thread::sleep_for(std::chrono::milliseconds(200));
+            std::filesystem::create_directories(std::filesystem::path(dest).parent_path());
+            std::ofstream(dest) << cid;
+            if (cid == "CID_ML_B") BLanded = true;
+            return 0; });
+        ContainerParams P(Pkg);
+        const auto Layer = [](const std::string &Path, const std::string &Cid) {
+            return nlohmann::ordered_json{{"TYPE", "VFSZipLayer"}, {"PATH", Path}, {"SOURCE", {{"TYPE", "ipfs"}, {"CID", Cid}}}};
+        };
+        P.SubComponentsArray = nlohmann::ordered_json::array({ Layer("a.zip", "CID_ML_A"), Layer("b.zip", "CID_ML_B") });
+        QVERIFY(LaunchSources::MaterializeLayers(P));
+        QVERIFY2(ASawB, "the second layer landed while the first was on its way");
+        QVERIFY(std::filesystem::exists(Pkg + "/a.zip") && std::filesystem::exists(Pkg + "/b.zip"));
+        // The first cannot be had: the launch fails, the other lands.
+        std::filesystem::remove(Pkg + "/a.zip"); std::filesystem::remove(Pkg + "/b.zip");
+        IpfsWrapper::DebugResetQueue();
+        FailA = true;
+        QVERIFY(!LaunchSources::MaterializeLayers(P));
+        QVERIFY2(std::filesystem::exists(Pkg + "/b.zip"), "the other layer landed");
+        IpfsWrapper::SetFetchOnceHook({});
+        IpfsWrapper::DebugResetQueue();
+    }
+
+    // A launch missing a layer while a bulk download holds every slot preempts it: the layer is required in the queue
+    // (an optional job never preempts), though one that cannot be had does not end the wait for the others. Teeth:
+    // enqueue the layers optional (the layer waits behind the bulk download; the 120 s wait would run out).
+    void a_launchs_missing_layer_preempts_a_bulk_download()
+    {
+        g_stopHook = false;
+        const int SavedMax = IpfsWrapper::MaxConcurrentDownloads();
+        IpfsWrapper::SetMaxConcurrentDownloads(1);
+        QTemporaryDir dir; QVERIFY(dir.isValid());
+        IpfsWrapper::SetFetchOnceHook([](const std::string &cid, const std::string &dest, bool, std::string *) {
+            if (cid == "CID_BULK") {
+                while (!IpfsWrapper::DebugIsPreempting("CID_BULK") && !g_stopHook) std::this_thread::sleep_for(std::chrono::milliseconds(10));
+                return 1;
+            }
+            std::filesystem::create_directories(std::filesystem::path(dest).parent_path());
+            std::ofstream(dest) << cid; return 0; });
+        IpfsWrapper::EnqueueBatch({{"CID_BULK", dir.path().toStdString() + "/bulk.bin", true}});
+        QTRY_COMPARE_WITH_TIMEOUT(IpfsWrapper::DebugJobState("CID_BULK"), 1, 5000);
+        ContainerParams P(dir.path().toStdString());
+        P.SubComponentsArray = nlohmann::ordered_json::array({ nlohmann::ordered_json{{"TYPE", "VFSZipLayer"}, {"PATH", "layer.zip"},
+                                                               {"SOURCE", {{"TYPE", "ipfs"}, {"CID", "CID_LAYER"}}}} });
+        std::atomic<bool> Done{false}, Ok{false};
+        std::thread T([&] { Ok = LaunchSources::MaterializeLayers(P); Done = true; });
+        QTRY_VERIFY_WITH_TIMEOUT(Done.load(), 10000);
+        T.join();
+        QVERIFY(Ok.load());
+        QVERIFY(std::filesystem::exists(dir.path().toStdString() + "/layer.zip"));
+        g_stopHook = true;
+        IpfsWrapper::CancelDownload("CID_BULK");
+        IpfsWrapper::SetFetchOnceHook({});
+        IpfsWrapper::SetMaxConcurrentDownloads(SavedMax);
+        IpfsWrapper::DebugResetQueue();
+    }
+
+    // Several missing layers prioritized together each take a slot of their own: every bulk download in a slot is
+    // preempted, not the same one again for each. Teeth: pick a victim already being preempted.
+    void several_required_layers_preempt_a_download_each()
+    {
+        g_stopHook = false;
+        const int SavedMax = IpfsWrapper::MaxConcurrentDownloads();
+        IpfsWrapper::SetMaxConcurrentDownloads(2);
+        QTemporaryDir dir; QVERIFY(dir.isValid());
+        IpfsWrapper::SetFetchOnceHook([](const std::string &cid, const std::string &dest, bool, std::string *) {
+            if (cid.rfind("CID_PB", 0) == 0) {
+                while (!IpfsWrapper::DebugIsPreempting(cid) && !g_stopHook) std::this_thread::sleep_for(std::chrono::milliseconds(10));
+                return 1;
+            }
+            while (!g_stopHook) std::this_thread::sleep_for(std::chrono::milliseconds(10));   // the layers: held in their slots
+            std::ofstream(dest) << cid; return 0; });
+        IpfsWrapper::EnqueueBatch({{"CID_PB1", dir.path().toStdString() + "/b1", true}, {"CID_PB2", dir.path().toStdString() + "/b2", true}});
+        QTRY_VERIFY_WITH_TIMEOUT(IpfsWrapper::DebugJobState("CID_PB1") == 1 && IpfsWrapper::DebugJobState("CID_PB2") == 1, 5000);
+        IpfsWrapper::EnqueueBatch({{"CID_PL1", dir.path().toStdString() + "/l1", false}, {"CID_PL2", dir.path().toStdString() + "/l2", false}});
+        IpfsWrapper::PrioritizeDownloads({"CID_PL1", "CID_PL2"});
+        QTRY_VERIFY_WITH_TIMEOUT(IpfsWrapper::DebugJobState("CID_PL1") == 1 && IpfsWrapper::DebugJobState("CID_PL2") == 1, 5000);
+        g_stopHook = true;
+        IpfsWrapper::SetFetchOnceHook({});
+        IpfsWrapper::SetMaxConcurrentDownloads(SavedMax);
+        IpfsWrapper::DebugResetQueue();
+    }
+
+    // Many folders forgotten at once (a peer's library dropped: hundreds of package folders) forget every dest under
+    // any of them, in one pass over the jobs, and nothing under a sibling whose name merely starts the same. Teeth:
+    // match the folder without its "/" (the sibling's dest goes too); forget only the first folder's.
+    void dests_under_many_folders_are_forgotten_at_once()
+    {
+        QTemporaryDir dir; QVERIFY(dir.isValid());
+        const std::string Root = dir.path().toStdString() + "/CATALOG/Alice - Games";
+        g_stopHook = false;
+        IpfsWrapper::SetFetchOnceHook([&](const std::string &, const std::string &, bool, std::string *) {
+            while (!g_stopHook) std::this_thread::sleep_for(std::chrono::milliseconds(5));
+            return 1; });
+        IpfsWrapper::EnqueueBatch({{"CID_FM_A", Root + "/[1] A/a.json", true}, {"CID_FM_AB", Root + "/[1] AB/b.json", true},
+                                   {"CID_FM_C", Root + "/[3] C/sub/c.json", true}});
+        IpfsWrapper::ForgetDestsUnder(std::vector<std::string>{ Root + "/[1] A", Root + "/[3] C" });
+        QCOMPARE(IpfsWrapper::QueueDestForCid("CID_FM_A"), std::string());
+        QCOMPARE(IpfsWrapper::QueueDestForCid("CID_FM_AB"), Root + "/[1] AB/b.json");
+        QCOMPARE(IpfsWrapper::QueueDestForCid("CID_FM_C"), std::string());
+        g_stopHook = true;
+        IpfsWrapper::SetFetchOnceHook({});
+        IpfsWrapper::DebugResetQueue();
     }
 
     // A path claimed by a new CID while the old CID's fetch is in flight: the old worker still lands it (it holds its

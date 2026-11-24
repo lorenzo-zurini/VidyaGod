@@ -13,6 +13,7 @@
 #include "ipfswrapper.h"
 #include "downloadqueue.h"   // IpfsWrapper::EnqueueBatch — the ONE rolling queue that browse fetches ride
 #include "jsonoperations.h"
+#include "apppaths.h"
 #include "filesystemoperations.h"   // FSOps::CheckPackageValid (local-package import)
 #include "commonutils.h"
 
@@ -97,7 +98,35 @@ AppModel::AppModel(nlohmann::ordered_json * config, QDir * appDataDir, QObject *
 
 bool AppModel::save()
 {
+    if (AppPaths::ConfigReadOnly()) return JSONOps::SaveConfig(*Config, AppDataDir->absolutePath().toStdString());   // refused, said
+    SaveDirty = true;
+    if (SaveQueued) return true;
+    SaveQueued = true;
+    QTimer::singleShot(SaveSoonMs, this, [this] {
+        SaveQueued = false;
+        if (!SaveDirty) return;                       // written meanwhile (saveNow)
+        SaveDirty = false;
+        JSONOps::SaveConfigAsync(*Config, AppDataDir->absolutePath().toStdString());
+    });
+    return true;
+}
+
+bool AppModel::saveNow()
+{
+    SaveDirty = false;
     return JSONOps::SaveConfig(*Config, AppDataDir->absolutePath().toStdString());
+}
+
+void AppModel::flushPendingSave()
+{
+    if (SaveDirty) saveNow();
+    JSONOps::FlushConfigWrites();
+}
+
+AppModel::~AppModel()
+{
+    if (SaveDirty) saveNow();
+    JSONOps::FlushConfigWrites();
 }
 
 //Downloads that end together (dozens, when a peer goes away mid-batch) rebuilt the catalog each, on the GUI thread:
@@ -375,11 +404,19 @@ void AppModel::setCatalog(NodeIndex Idx, std::string Inputs, std::vector<Diagnos
     CatalogInputs = Inputs;
     ++CatalogGen;
     PackageCatalog::PublishAppIndex(Catalog, std::move(Inputs), std::move(Said));
-    std::thread([] { Platform::ReleaseFreedMemory(); }).detach();   // the replaced index back to the system, off this thread
+    //The replaced index back to the system, off this thread — once the views have let it go (they hold it until the
+    //catalogChanged that follows this swap rebuilds them): trimmed before, it freed nothing and only contended for
+    //the allocator while the views made their cards.
+    QTimer::singleShot(0, this, [] { std::thread([] { Platform::ReleaseFreedMemory(); }).detach(); });
 }
 
+//One check at a time: two at once read the library twice, and the older one's result, landing last, was thrown away.
+//One asked while one runs runs once after it (what changed meanwhile is read then); only the last says diskChecked.
 void AppModel::refreshFromDisk()
 {
+    if (Refreshing) { RefreshAgain = true; return; }
+    Refreshing = true;
+    ++Refreshes;
     auto Cfg = std::make_shared<const nlohmann::ordered_json>(*Config);
     auto Old = Catalog;
     auto Index = std::make_shared<std::optional<NodeIndex>>();
@@ -393,12 +430,15 @@ void AppModel::refreshFromDisk()
             PackageCatalog::SaveLastHydration(**Hyd);
         },
         [this, Gen = CatalogGen, Index, Inputs, Said, Hyd]{
-            if (Gen != CatalogGen) { emit diskChecked(false); return; }   // swapped since by a build begun later: newer than this
+            Refreshing = false;
+            const bool Again = std::exchange(RefreshAgain, false);
+            const auto Done = [this, Again](bool Changed) { if (Again) refreshFromDisk(); else emit diskChecked(Changed); };
+            if (Gen != CatalogGen) { Done(false); return; }   // swapped since by a build begun later: newer than this
             if (*Index)
             {
                 setCatalog(std::move(**Index), std::move(*Inputs), std::move(*Said), *Hyd);
                 emit catalogChanged();
-                emit diskChecked(true);
+                Done(true);
                 return;
             }
             const auto Same = [](const HydrationMap &A, const HydrationMap &B) {
@@ -416,7 +456,7 @@ void AppModel::refreshFromDisk()
             const bool Changed = !Hydration || !Same(*Hydration, **Hyd);
             Hydration = *Hyd;
             if (Changed) emit catalogChanged();
-            emit diskChecked(Changed);
+            Done(Changed);
         });
 }
 

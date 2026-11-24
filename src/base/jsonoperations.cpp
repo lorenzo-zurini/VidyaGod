@@ -2,6 +2,12 @@
 #include "apppaths.h"
 
 #include <QSaveFile>
+#include <atomic>
+#include <condition_variable>
+#include <mutex>
+#include <map>
+#include <optional>
+#include <thread>
 #include "commonutils.h"
 
 JSONOps::JSONOps() {}
@@ -48,14 +54,71 @@ bool JSONOps::LoadJSON(QFile * JSONFile, nlohmann::ordered_json * JSONDocument)
     }
 }
 
-//Writes JSONDocument to JSONFile with 4-space pretty-printing.
-//Truncates the file if it already exists so stale content is never left behind.
-//Returns true on success, false if the file cannot be written.
+//The config's writes, 4-space pretty-printed.
 //
 //ATOMIC. This writes GlobalConfig.JSON — PackageSources, peers, module toggles, every persisted
-//CustomVar — and every node .json in a bundle, and it used to truncate in place. A crash, a kill or ENOSPC part
+//CustomVar — and it used to truncate in place. A crash, a kill or ENOSPC part
 //way through left the user with a half-written config or a half-written package and no second copy. QSaveFile
 //writes a sibling temp and renames on commit, so the file on disk is always either the old one or the new one.
+namespace {
+//Every config write, in the order its text was taken (the config's own order: the text is taken on the thread that
+//changes it). Gen numbers a text when taken; Committed is the newest written, per file (a newer text of one data
+//folder's config says nothing of another's). WriteMu orders the writes themselves.
+std::mutex                  WriteMu;
+std::atomic<unsigned long long> Gen{0};
+std::map<std::filesystem::path, unsigned long long> Committed;   // under WriteMu
+std::atomic<long long>      Writes{0};
+std::mutex                  QueueMu;
+std::condition_variable     QueueCv;
+struct PendingWrite { std::string Text; std::filesystem::path File; unsigned long long N = 0; };
+std::map<std::filesystem::path, PendingWrite> Waiting;   // per file, the newest text not written yet (an older one is dropped)
+bool                        WorkerBusy = false;
+bool                        Hold = false;
+
+bool WriteText(const std::string &Text, const std::filesystem::path &File, unsigned long long N)
+{
+    std::lock_guard<std::mutex> Lk(WriteMu);
+    unsigned long long &Newest = Committed[File];
+    if (N <= Newest) return true;                    // a newer text of this file is on disk already
+    QSaveFile Out(QString::fromStdString(File.string()));
+    if (!Out.open(QFile::WriteOnly))
+    {
+        LogErr("JSONOperations", "could not open for writing: " + File.string());
+        return false;
+    }
+    Out.write(Text.data(), static_cast<qint64>(Text.size()));
+    //commit() performs the rename AND reports a write that failed on flush (a full disk fails HERE, not at open).
+    if (!Out.commit())
+    {
+        LogErr("JSONOperations", "could not save " + File.string() + ": " + Out.errorString().toStdString());
+        return false;
+    }
+    Newest = N;
+    ++Writes;
+    LogOut("JSONOperations", "Saved " + File.string());
+    return true;
+}
+
+void WorkerLoop()
+{
+    for (;;)
+    {
+        PendingWrite W;
+        {
+            std::unique_lock<std::mutex> Lk(QueueMu);
+            QueueCv.wait(Lk, [] { return !Hold && !Waiting.empty(); });
+            W = std::move(Waiting.begin()->second);
+            Waiting.erase(Waiting.begin());
+        }
+        WriteText(W.Text, W.File, W.N);
+        {
+            std::lock_guard<std::mutex> Lk(QueueMu);
+            if (Waiting.empty()) { WorkerBusy = false; QueueCv.notify_all(); return; }
+        }
+    }
+}
+}
+
 bool JSONOps::SaveConfig(const nlohmann::ordered_json &Config, const std::filesystem::path &DataDir)
 {
     const std::filesystem::path File = DataDir / "GlobalConfig.JSON";
@@ -64,32 +127,42 @@ bool JSONOps::SaveConfig(const nlohmann::ordered_json &Config, const std::filesy
         LogWarn("JSONOperations", "not saving " + File.string() + ": this call runs beside the app that holds it (read-only)");
         return false;
     }
-    nlohmann::ordered_json Copy = Config;
-    QFile F(QString::fromStdString(File.string()));
-    return SaveJSON(&Copy, &F);
+    //Dumped straight from the config: a deep copy of it, then a round trip through UTF-16, cost more than the dump.
+    const std::string Text = Config.dump(4);
+    return WriteText(Text, File, ++Gen);
 }
 
-bool JSONOps::SaveJSON(nlohmann::ordered_json * JSONDocument, QFile * JSONFile)
+bool JSONOps::SaveConfigAsync(const nlohmann::ordered_json &Config, const std::filesystem::path &DataDir)
 {
-    QSaveFile Out(JSONFile->fileName());
-    if (!Out.open(QFile::WriteOnly))
+    const std::filesystem::path File = DataDir / "GlobalConfig.JSON";
+    if (AppPaths::ConfigReadOnly())
     {
-        LogErr("JSONOperations", "could not open for writing: " + JSONFile->fileName().toStdString());
+        LogWarn("JSONOperations", "not saving " + File.string() + ": this call runs beside the app that holds it (read-only)");
         return false;
     }
-    {
-        QTextStream OutFileStream(&Out);
-        OutFileStream << QString::fromStdString((*JSONDocument).dump(4));
-    }
-    //commit() performs the rename AND reports a write that failed on flush (a full disk fails HERE, not at
-    //open) — the case a plain QFile reported as success.
-    if (!Out.commit())
-    {
-        LogErr("JSONOperations", "could not save " + JSONFile->fileName().toStdString()
-                                 + ": " + Out.errorString().toStdString());
-        return false;
-    }
-    LogOut("JSONOperations", "Saved " + JSONFile->fileName().toStdString());
+    PendingWrite W{ Config.dump(4), File, 0 };
+    W.N = ++Gen;
+    std::lock_guard<std::mutex> Lk(QueueMu);
+    Waiting[File] = std::move(W);
+    if (!WorkerBusy) { WorkerBusy = true; std::thread(WorkerLoop).detach(); }
+    else QueueCv.notify_all();
     return true;
+}
+
+void JSONOps::FlushConfigWrites()
+{
+    std::unique_lock<std::mutex> Lk(QueueMu);
+    Hold = false;
+    QueueCv.notify_all();
+    QueueCv.wait(Lk, [] { return !WorkerBusy; });
+}
+
+long long JSONOps::DebugConfigWrites() { return Writes.load(); }
+
+void JSONOps::DebugHoldConfigWrites(bool H)
+{
+    std::lock_guard<std::mutex> Lk(QueueMu);
+    Hold = H;
+    QueueCv.notify_all();
 }
 

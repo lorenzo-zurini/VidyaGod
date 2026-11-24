@@ -270,12 +270,16 @@ void NetworkTab::buildUi()
 
 void NetworkTab::setActive(bool on)
 {
-    if (on) { refresh(); NearbyTimer->start(); }
+    Showing = on;
+    if (on) { Stale = false; refresh(); NearbyTimer->start(); }
     else NearbyTimer->stop();
 }
 
+//Hidden, a change waits for the page to show: every catalog change, peer's presence and share state rebuilt the rows
+//and the table — a planned fetch and a stat for each of a receiving peer's files — on a page nobody was looking at.
 void NetworkTab::scheduleRefresh()
 {
+    if (!Showing) { Stale = true; return; }
     if (RefreshQueued) return;
     RefreshQueued = true;
     QTimer::singleShot(0, this, [this] { RefreshQueued = false; refresh(); });
@@ -288,6 +292,7 @@ void NetworkTab::refresh()
         if (!RefreshQueued) { RefreshQueued = true; QTimer::singleShot(150, this, [this] { RefreshQueued = false; refresh(); }); }
         return;
     }
+    ++Refreshes;
     const std::string Code = IpfsWrapper::PeerCode();
     const bool Online = IpfsWrapper::Available() && !Code.empty();
     QString Breakable = QString::fromStdString(Code);   // breakable every 13 characters (it has no spaces); Copy copies it whole

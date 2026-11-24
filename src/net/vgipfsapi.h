@@ -31,7 +31,8 @@ long long VgNetHold(void);             // foreground mode for a multi-wave job (
 int VgDebugNetForegroundIdle(void);   // tests only: 1 when no fetch holds/waits for a slot and nobody holds the foreground
 long long VgDebugNetHolds(void);      // tests only: foreground holds taken since start
 long long VgDebugRefScans(void);      // tests only: whole-index scans the orphan check has made
-long long VgDebugMoveRefScans(void);  // tests only: whole-index scans moving references has made
+long long VgDebugMoveRefScans(void);
+long long VgDebugDropCalls(void);     // tests only: reference drops made (many asked together are one)  // tests only: whole-index scans moving references has made
 void VgSetNetSlots(int n);
 
 int  VgPinLs(char **outJson, char **errOut);   // JSON array of recursively-pinned CIDs
@@ -43,13 +44,18 @@ int  VgComputeCid(const char *path, char **outCid, char **errOut); // a file's C
 // Node blocks and package folders (blocks.go): a node is ONE raw leaf (its CID = the file CID of its bytes), a
 // package is a UnixFS folder of node files.
 int  VgBlockPut(const char *bytes, char **outCid, char **errOut);   // store one raw leaf (direct-pinned + announced) -> its CID
+int  VgDropRefs(const char *cidsJson, char **errOut);   // VgDropRef of each, together
+int  VgBlockPutMany(const char *bytesJson, char **outJson, char **errOut);   // many, one batch → JSON array of CIDs
 int  VgBlockGet(const char *cid, char **outBytes, char **errOut);   // one raw block's bytes (fetches over bitswap if remote)
 int  VgDirEntries(const char *cid, char **outJson, char **errOut);  // a held UnixFS folder's {name: CID} (local blocks only)
 int  VgMakeDir(const char *entriesJson, char **outCid, char **errOut); // folder of {name: CID} over held blocks (pinned) -> its CID
 int  VgHeldWhole(const char *cid);                 // 1 = every block held and every backing file present
+int  VgHeldWholeMany(const char *cidsJson, char **outJson);
+int  VgHeldWholeFiles(const char *cid, char **outJson);   // 1 held whole (+ its backing files, JSON), 0 not, -1 node down // VgHeldWhole of each, checked together → JSON bool array; -1 node down
 int  VgMakeWholeDir(const char *entriesJson, char **outCid, char **outNotWhole, char **errOut); // …of the entries held whole; the rest named (JSON)
 long long VgCidFileSizeLocal(const char *cid);   // UnixFS FILE size (payload bytes) from the local store, -1 unknown
 char *VgCidServeStatus(const char *cid); // "" if deliverable (cheap: stat only), else the reason (caller frees)
+int   VgCidServeStatusMany(const char *cidsJson, char **outJson); // [{err, gone}] for each, one pass; -1 node down
 int  VgServeFailures(char **outJson); // JSON [{cid,err,when}] of blocks a PEER asked for that we could not deliver (drains)
 char *VgVerifyCid(const char *cid);            // "" if the whole DAG READS back cleanly, else first read error (caller frees).
                                                // Catches what VgCidMissing cannot: backing file present but bytes changed.

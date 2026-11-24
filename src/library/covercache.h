@@ -6,6 +6,7 @@
 #include <QHash>
 #include <QImage>
 #include <QPixmap>
+#include <QDateTime>
 #include <QSize>
 #include <QSet>
 #include <functional>
@@ -46,11 +47,17 @@ public:
     // are fetched (a rebuild calls it). Offline, the misses wait for the network instead of failing.
     void prefetch(const NodeIndex &Idx);
 
-    // The image at a resolved cover Path, decoded OFF the GUI thread: once a decode has finished it is handed over
-    // (the cache keeps no copy); before that this starts it and returns a null pixmap (the placeholder), and
-    // coverDecoded() fires when it lands so surfaces re-take. Decoding a library's covers inline held the window back
-    // by seconds. A file that does not decode stays null until a transfer lands a new one.
+    // The image at a resolved cover Path, decoded OFF the GUI thread: once a decode has finished it is kept, one
+    // pixmap every surface shares, for as long as the file is as it was decoded (its time and size); before that this
+    // starts it and returns a null pixmap (the placeholder), and coverDecoded() fires when it lands so surfaces
+    // re-take. Decoding a library's covers inline held the window back by seconds; handing each decode out once made
+    // every surface decode every cover again at every catalog rebuild. A file that does not decode stays null until a
+    // transfer lands a new one.
     QPixmap take(const QString &Path);
+    // A cover drawn at W×H, scaled smoothly once per pixmap and size and kept: new cards (every rebuild makes them) no
+    // longer rescale the library's covers on the GUI thread.
+    QPixmap scaled(const QPixmap &From, int W, int H);
+    int scaleCount() const { return Scales; }   // test observability: smooth scales made
     // The largest size a cover is drawn at (the widest card): a decoded cover is kept at no more than this, since
     // cards draw it stretched to their own size anyway — a library's 600×900 originals were most of the app's memory.
     // Growing it drops the decoded covers taken so far' reason to stay: surfaces re-take them (coverDecoded fires).
@@ -101,7 +108,14 @@ private:
     QString AssetsRoot;                     // ASSETS dir for content-addressed covers ("" → in-bundle)
     QHash<QString, QString> MissDest;       // dest path → cid, every cover seen missing and not yet landed
     bool SweepSoon = false;                 // a debounced near-term sweep is already scheduled
-    QHash<QString, QImage> Decoded;         // path → decoded image, waiting for its surface to take it
+    struct Stamp { QDateTime Modified; qint64 Size = -1; bool operator==(const Stamp &) const = default; };
+    static Stamp StampOf(const QString &Path);
+    struct DecodedImage { QImage Img; Stamp At; };
+    QHash<QString, DecodedImage> Decoded;   // path → decoded image, not yet made a pixmap (on the GUI thread)
+    struct Kept { QPixmap Pix; Stamp At; };
+    QHash<QString, Kept> Pixmaps;           // path → the pixmap every surface shares, and the file it came from
+    QHash<QPair<qint64, qint64>, QPixmap> Scaled;   // (pixmap, W<<32|H) → it scaled
+    int Scales = 0;
     QSet<QString> Decoding;                 // paths a pool thread is decoding now
     QSet<QString> Undecodable;              // paths whose bytes did not decode (retried once a transfer lands)
     QSize DisplayMax;                       // the size decoded covers are kept at, at most (invalid: as decoded)

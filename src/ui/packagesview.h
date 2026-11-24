@@ -22,8 +22,13 @@ class PackagesView : public QWidget
 public:
     PackagesView(AppModel &model, QWidget *parent = nullptr);
 
+    int updateScans() const { return UpdateScans; }   // test observability: "other versions" scans started
+
 public slots:
-    void rebuildList();        // (re)build the installed-packages list (on catalogChanged)
+    void rebuildList();        // (re)build the installed-packages list (on catalogChanged; hidden: when next shown)
+
+protected:
+    void showEvent(QShowEvent *E) override;
 
 private:
     void buildUi();
@@ -37,7 +42,9 @@ private:
     QScrollArea *PackagesScrollArea = nullptr;
     QWidget *UpdatesBox = nullptr;
     bool Listing = false, ListAgain = false;   // one installed-list scan at a time; a change meanwhile asks for one more
-    unsigned UpdatesGeneration = 0;            // a refresh's result is shown only if no later refresh started
+    bool Updating = false, UpdateAgain = false; // one "other versions" scan at a time; asked meanwhile: one more after
+    bool Stale = false;                        // asked while hidden: rebuilt when shown
+    int UpdateScans = 0;
     bool Switching = false;                    // one switch at a time: every button waits while one runs
 };
 

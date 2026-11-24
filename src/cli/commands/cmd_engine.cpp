@@ -627,7 +627,7 @@ VG_COMMANDS
         "graph mint", "mint a working tree into blocks (stored, pinned, announced)",
         "Freeze and store every node under a root, deps first: each handle's CID, and the playable roots. Blocks only "
         "— node files on disk are not rewritten (`packages stamp-cids` writes the CIDs back).",
-        { Pos("root", "the folder") }, { "graph mint ~/x/'[123][v1.0] Some Game'" }, { "NodeStore::Mint" }, Needs::Config, true,
+        { Pos("root", "the folder") }, { "graph mint ~/x/'[123][v1.0] Some Game'" }, { "NodeStore::Mint", "IpfsWrapper::BlockPutMany" }, Needs::Config, true,
         [](Command::Context &, const json &A) {
             std::map<std::string, json> Tree;
             std::map<std::string, fs::path> Dirs;

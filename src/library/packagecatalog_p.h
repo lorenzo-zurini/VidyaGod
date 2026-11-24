@@ -17,6 +17,9 @@ bool PathUnder(const std::filesystem::path &Base, const std::filesystem::path &P
 
 //Removes a landed node file F (and its content claim) unless one of Elsewhere still holds that node.
 void RemoveLandedNode(const std::filesystem::path &F, const std::string &Cid, const std::vector<std::filesystem::path> &Elsewhere = {});
+//RemoveLandedNode of each, their references dropped together (one drop each was its own commit, unpins and compaction).
+struct LandedNode { std::filesystem::path File; std::string Cid; std::vector<std::filesystem::path> Elsewhere; };
+void RemoveLandedNodes(const std::vector<LandedNode> &Nodes);
 //A package folder under a package source's dir (managed: Remove takes its content; never a local package).
 bool PathUnderManagedSource(const nlohmann::ordered_json &GlobalConfigJSON, const std::filesystem::path &Path);
 

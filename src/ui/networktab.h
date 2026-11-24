@@ -41,13 +41,18 @@ public:
     // Where the nearby devices are read from (IpfsWrapper::NearbyPeers by default): a test sets a list.
     static void SetNearbySource(std::function<std::vector<IpfsWrapper::NearbyPeer>()> Source);
 
+    int refreshes() const { return Refreshes; }   // test observability: full refreshes made
+
 public slots:
     void setActive(bool on);
 
 private:
     void buildUi();
     void refresh();
-    void scheduleRefresh();          // coalesced, deferred (never rebuilds under a running handler)
+    void scheduleRefresh();          // coalesced, deferred (never rebuilds under a running handler); hidden: on show
+    bool Showing = false;            // setActive: the page is the one showing
+    bool Stale = false;              // something changed while it was hidden
+    int  Refreshes = 0;
     void rebuildRows();              // the lists and the table, rebuilt only when what they show changed
     void rebuildTable();
     void addPeerClicked();

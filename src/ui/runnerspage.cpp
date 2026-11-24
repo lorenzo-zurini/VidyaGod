@@ -111,11 +111,22 @@ void RunnersPage::filter(const QString &Text)
     }
 }
 
+void RunnersPage::showEvent(QShowEvent *E)
+{
+    QWidget::showEvent(E);
+    if (Stale) rebuild();
+}
+
+//Hidden, the table waits to be shown: every catalog change (a download's end, a peer's library) rebuilt a page nobody
+//was looking at.
 void RunnersPage::rebuild()
 {
     if (!Table) return;
+    if (!isVisible()) { Stale = true; return; }
+    Stale = false;
+    ++Rebuilds;
     Table->clear();
-    const unsigned Gen = ++Generation;
+    CountRows.clear();
 
     //Runners are the DeclareRunner-carrying nodes of the global catalog graph (Node::IsRunner() — there is no ROLE
     //field). An EMBEDDED runner (bundled inside a game package) is hidden until installed — it's offered in that
@@ -123,17 +134,18 @@ void RunnersPage::rebuild()
     std::shared_ptr<const NodeIndex> Snap = Model.catalogSnapshot();
     const NodeIndex & Idx = *Snap;
     std::vector<const Node*> Runners;
+    const std::set<std::string> Embedded = Installed::EmbeddedRunners(Idx);
     for (const auto & [Id, N] : Idx.Nodes)
     {
         (void)Id;
         if (!N.IsRunner()) continue;
-        if (Installed::IsEmbeddedRunner(Idx, N.NodeId) && !Installed::RunnerInstalled(Idx, N.NodeId)) continue;
+        if (Embedded.count(N.Key()) && !Installed::RunnerInstalled(Idx, N.NodeId)) continue;
         Runners.push_back(&N);
     }
     std::sort(Runners.begin(), Runners.end(), [](const Node* A, const Node* B){ return A->NodeId < B->NodeId; });
     // SAME fetch-based hydration model as the Catalog/Library tabs — a runner is no different from a game package:
     // its state is read from the hydration map (build content fetched?), not a bespoke runner-only predicate.
-    const auto Hyd = Model.hydration();   // once per rebuild, shared with the Library and the Catalog
+    const auto & Hyd = Model.hydration();   // once per rebuild, shared with the Library and the Catalog (not copied)
     if (Runners.empty())
     {
         auto * None = new QTreeWidgetItem(Table, { "No runners found in your repositories." });
@@ -195,9 +207,19 @@ void RunnersPage::rebuild()
     Table->expandAll();
     filter(Search->text());
 
+    CountRows = std::move(Rows);
+    countGames();
+}
+
+void RunnersPage::countGames()
+{
     //How many games each can run (CompatibleRunners of every version on the shelf): a pass over the library, off the
-    //GUI thread; shown when it lands, if this is still the latest table.
+    //GUI thread; shown when it lands, on the rows the table has then.
+    if (Counting) { CountAgain = true; return; }
+    Counting = true;
+    ++Counts;
     auto Count = std::make_shared<std::map<std::string, int>>();
+    std::shared_ptr<const NodeIndex> Snap = Model.catalogSnapshot();
     QPointer<RunnersPage> Self(this);
     AsyncWork::Run(this, [Snap, Count]{
             for (const auto & [Id, N] : Snap->Nodes)
@@ -207,9 +229,11 @@ void RunnersPage::rebuild()
                 for (const Node * R : Installed::CompatibleRunners(*Snap, N)) ++(*Count)[R->Key()];
             }
         },
-        [Self, Gen, Count, Rows]{
-            if (!Self || Gen != Self->Generation) return;
-            for (const auto & [Key, Row] : Rows)
+        [Self, Count]{
+            if (!Self) return;
+            Self->Counting = false;
+            if (std::exchange(Self->CountAgain, false)) { Self->countGames(); return; }   // counted an older table
+            for (const auto & [Key, Row] : Self->CountRows)
             {
                 const auto It = Count->find(Key);
                 Row->setText(3, QString::number(It == Count->end() ? 0 : It->second));

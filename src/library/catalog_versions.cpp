@@ -1,4 +1,5 @@
 // Versions of an installed package: a peer's newer version found, staged, planned and switched to (journaled).
+#include <atomic>
 #include "packagecatalog.h"
 #include "noderefs.h"
 #include "sessions.h"
@@ -58,11 +59,32 @@ using namespace Installed;
 // nothing installed still contains it (other games keep working on the version they contain).
 // ---------------------------------------------------------------------------------------------------------------------
 namespace {
+//A package folder's node CIDs, kept with its node files' stamps (Platform::FileStamp): the scan for other versions
+//read every installed package's node files at every refresh of the packages page; one whose files are as they were is
+//not read again.
+std::mutex g_NodeCidsMu;
+std::map<std::string, std::pair<std::string, std::vector<std::string>>> g_NodeCids;   // dir → {stamps, cids}
+std::atomic<long long> g_NodeCidReads{0};
+
 std::vector<std::string> PackageNodeCids(const std::filesystem::path &Dir)
 {
+    std::string Stamps;
+    std::error_code Ec;
+    std::vector<std::filesystem::path> Files;
+    for (const auto &E : std::filesystem::directory_iterator(Dir, Ec))
+        if (E.path().extension() == ".json") Files.push_back(E.path());
+    std::sort(Files.begin(), Files.end());
+    for (const auto &F : Files) Stamps += F.filename().string() + '\n' + Platform::FileStamp(F) + '\n';
+    {
+        std::lock_guard<std::mutex> Lk(g_NodeCidsMu);
+        if (const auto It = g_NodeCids.find(Dir.string()); It != g_NodeCids.end() && !Ec && It->second.first == Stamps)
+            return It->second.second;
+    }
+    ++g_NodeCidReads;
     std::vector<std::string> Out;
-    for (const auto &[C, F] : NodeFiles::In(Dir)) Out.push_back(C);
-    return Out;                                                        // sorted: a map's keys
+    for (const auto &[C, F] : NodeFiles::In(Dir)) Out.push_back(C);   // sorted: a map's keys
+    if (!Ec) { std::lock_guard<std::mutex> Lk(g_NodeCidsMu); g_NodeCids[Dir.string()] = { Stamps, Out }; }
+    return Out;
 }
 //A node file that is not its canonical form (a handle, a canvas position, other bytes): a draft never saved. A switch
 //cannot judge it, so it is refused.
@@ -372,6 +394,16 @@ bool ApplyStagedUpdate(const nlohmann::ordered_json &Config, const StagedUpdate 
     }
     //1. Content that stays but changes its file name (bumped beside another version, or the version's own name),
     //   never over a file already there; the references follow in one batch (a rename an earlier attempt made too).
+    //A switch refused part way keeps what it already moved: the references of those files follow before it says no
+    //(a node file moved in is skipped by the next attempt, so its reference would never follow).
+    auto RefuseFollowing = [&](const std::string &Why, std::vector<std::pair<std::string, std::string>> Moved)
+    {
+        std::string MErr;
+        if (!Moved.empty() && IpfsWrapper::MoveRefs(Moved, &MErr) < 0)
+            LogWarn("PackageCatalog::ApplyStagedUpdate", "moved " + std::to_string(Moved.size())
+                    + " file(s) of " + Pkg + ", but their references did not follow: " + MErr);
+        return Refuse(Why);
+    };
     std::vector<std::pair<std::string, std::string>> Followed;
     for (const auto &[From, To] : S.Moves)
     {
@@ -387,16 +419,21 @@ bool ApplyStagedUpdate(const nlohmann::ordered_json &Config, const StagedUpdate 
         if (!HaveFrom) continue;                                          // never landed: fetched when needed
         fs::create_directories(To.parent_path(), Rc);
         fs::rename(From, To, Rc);
-        if (Rc) return Refuse("cannot rename " + From.string() + ": " + Rc.message() + " (switch again to finish)");
+        if (Rc) return RefuseFollowing("cannot rename " + From.string() + ": " + Rc.message() + " (switch again to finish)",
+                                       std::move(Followed));
         Followed.push_back({ From.string(), To.string() });
     }
-    if (!Followed.empty())
+    //Every reference move of the switch is one scan of every reference in the store: the content's moves join the
+    //node files' below, in one, unless content is deleted in between (a delete reads where a reference points).
+    std::vector<std::pair<std::string, std::string>> Later;
+    if (!Followed.empty() && !S.Deletes.empty())
     {
         std::string MErr;
         if (IpfsWrapper::MoveRefs(Followed, &MErr) < 0)
             LogWarn("PackageCatalog::ApplyStagedUpdate", "renamed " + std::to_string(Followed.size())
                     + " file(s) but their references did not follow: " + MErr);
     }
+    else Later = std::move(Followed);
     //2. Content no node of the package names any more goes (its reference with it, when it was the reference — then
     //   the same bytes kept under another name are referenced there).
     for (const auto &D : S.Deletes)
@@ -417,12 +454,14 @@ bool ApplyStagedUpdate(const nlohmann::ordered_json &Config, const StagedUpdate 
             std::error_code Rc;
             fs::rename(From, To, Rc);
             if (Rc) { Rc.clear(); fs::copy_file(From, To, Rc); }
-            if (Rc) return Refuse("cannot move " + From.string() + " into " + Dir.string() + ": " + Rc.message() + " (switch again to finish)");
+            if (Rc)
+            {
+                Later.insert(Later.end(), Followed.begin(), Followed.end());
+                return RefuseFollowing("cannot move " + From.string() + " into " + Dir.string() + ": " + Rc.message()
+                                       + " (switch again to finish)", std::move(Later));
+            }
             Followed.push_back({ From.string(), To.string() });
         }
-        std::string MErr;
-        if (!Followed.empty() && IpfsWrapper::MoveRefs(Followed, &MErr) < 0)
-            LogWarn("PackageCatalog::ApplyStagedUpdate", "the version's nodes are in place but not referenced there: " + MErr);
         for (const std::string &C : S.Removed)
             if (const auto It = Here.find(C); It != Here.end())
             {
@@ -433,10 +472,18 @@ bool ApplyStagedUpdate(const nlohmann::ordered_json &Config, const StagedUpdate 
         std::vector<std::pair<fs::path, fs::path>> Named;
         std::string NErr;
         if (!NodeFiles::Normalize(Dir, &Named, &NErr)) LogWarn("PackageCatalog::ApplyStagedUpdate", Pkg + ": " + NErr);
-        std::vector<std::pair<std::string, std::string>> Refs;
-        for (const auto &[F, T] : Named) Refs.push_back({ F.string(), T.string() });
+        //A node file moved in and then named is one move, from the stage to its name; the rest as they are. One call:
+        //a move each — content, node files, names — was a scan of every reference each.
+        std::map<std::string, std::string> Renamed;
+        for (const auto &[F, T] : Named) Renamed[F.string()] = T.string();
+        std::vector<std::pair<std::string, std::string>> Refs = std::move(Later);
+        for (auto &[From, To] : Followed)
+            if (const auto It = Renamed.find(To); It != Renamed.end()) { To = It->second; Renamed.erase(It); }
+        Refs.insert(Refs.end(), Followed.begin(), Followed.end());
+        for (const auto &[F, T] : Renamed) Refs.push_back({ F, T });
+        std::string MErr;
         if (!Refs.empty() && IpfsWrapper::MoveRefs(Refs, &MErr) < 0)
-            LogWarn("PackageCatalog::ApplyStagedUpdate", "renamed " + Pkg + "'s node files, but their references did not follow: " + MErr);
+            LogWarn("PackageCatalog::ApplyStagedUpdate", "moved " + Pkg + "'s files, but their references did not follow: " + MErr);
     }
     fs::remove_all(S.Stage, Ec);
     LogOut("PackageCatalog::ApplyStagedUpdate", "switched '" + Pkg + "' to " + S.U.Nick + "'s version: "
@@ -464,5 +511,7 @@ std::string PackagePin(const nlohmann::ordered_json &Config, const std::filesyst
         return {};
     return Config["Pins"][Key].get<std::string>();
 }
+
+long long DebugNodeCidReads() { return g_NodeCidReads.load(); }
 
 } // namespace PackageCatalog

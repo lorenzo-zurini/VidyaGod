@@ -9,6 +9,8 @@
 #include "downloadqueue.h"
 #include "cmdutil.h"
 #include "appmodel.h"
+#include "jsonoperations.h"
+#include <QTimer>
 #include "peersharing.h"
 #include "autostart.h"
 #include "commonutils.h"
@@ -142,8 +144,19 @@ VG_COMMANDS
         }, {} });
 
     Command::Register({
-        "app save", "write the app's config to disk now", "", {}, { "app save" }, { "AppModel::save", "JSONOps::SaveConfig", "JSONOps::SaveJSON" }, Needs::Model, false,
-        [](Command::Context &C, const json &) { Save(C); return json{{"saved", true}}; }, {} });
+        "app save", "write the app's config to disk now", "--soon asks as the app asks (one write for a burst of asks, "
+        "on a worker) and waits for it.", { Flag("soon", "the app's own way: asked, written a moment later") }, { "app save", "app save --soon" },
+        { "AppModel::save", "AppModel::saveNow", "JSONOps::SaveConfig", "JSONOps::SaveConfigAsync", "JSONOps::FlushConfigWrites",
+          "AppModel::flushPendingSave" }, Needs::Model, false,
+        [](Command::Context &C, const json &A) {
+            if (!Command::Bool(A, "soon", false)) { Save(C); return json{{"saved", true}}; }
+            const bool Asked = C.Model->save();
+            QEventLoop Wait;                                   // the save's moment passes with the app's own loop running
+            QTimer::singleShot(C.Model->SaveSoonMs * 2, &Wait, &QEventLoop::quit);
+            Wait.exec();
+            JSONOps::FlushConfigWrites();
+            return json{{"saved", Asked}};
+        }, {} });
 
     Command::Register({
         "app housekeeping", "what the app does on its own, now: heal references, reconcile peers' shares, push node settings",

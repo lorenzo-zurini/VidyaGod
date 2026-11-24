@@ -41,6 +41,9 @@ bool LooksLikeCid(const std::string &S);
 
 struct Pos { float X = 0.0f, Y = 0.0f; bool operator==(const Pos &) const = default; };
 
+// TEST ONLY: library node files a save has read since start (one unchanged since it was read is not read again).
+long long DebugGatherReads();
+
 struct SaveReport
 {
     bool Ok = false;

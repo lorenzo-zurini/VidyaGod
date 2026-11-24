@@ -178,6 +178,44 @@ TEST(pkgdoc_a_save_follows_renames_through_the_library_and_instances)
     CHECK_EQ(R.InstancesUpdated, 1);
 }
 
+// A second save of a package reads none of the library's node files it read before and that have not changed since
+// (every save read, parsed and hashed every node file of the library: a second and more, the editor waiting); a file
+// changed since is read, and what it names now is what the save follows. Teeth: drop the memo (all read again);
+// key it without the file's stamp (a referrer written since is missed, and keeps a name that no longer exists).
+TEST(pkgdoc_a_save_reads_only_the_library_files_changed_since)
+{
+    const fs::path Lib = Fresh("memo");
+    const fs::path Fonts = Lib / "fonts", Game = Lib / "game", Other = Lib / "other";
+    for (const fs::path &P : {Fonts, Game, Other}) fs::create_directories(P);
+    const std::string F = Freeze(Fonts, Zip("Fonts", "f.zip"));
+    Freeze(Game, Over("Game", F));
+    for (int I = 0; I < 5; ++I) Freeze(Other, Zip("Other " + std::to_string(I), "o.zip"));
+    PkgDoc::Document Doc;
+    Doc.Load(Fonts);
+    json N = Doc.Node(0); N["LAYERS"][0]["ZIP"] = "f2.zip"; Doc.Replace(0, N);
+    CHECK(Doc.Save(Fonts, Lib, "").Ok);
+    const long long Before = PkgDoc::DebugGatherReads();
+    // Edited again: the game (rewritten by the first save, read then) is read again only to be rewritten.
+    PkgDoc::Document Doc2;
+    Doc2.Load(Fonts);
+    const std::string F2 = Doc2.Handle(0);
+    json N2 = Doc2.Node(0); N2["LAYERS"][0]["ZIP"] = "f3.zip"; Doc2.Replace(0, N2);
+    const PkgDoc::SaveReport R = Doc2.Save(Fonts, Lib, "");
+    CHECK(R.Ok);
+    CHECK(R.Renamed.count(F2) == 1);
+    CHECK(PkgDoc::DebugGatherReads() - Before <= 2);                     // the game's file (rewritten since) and its load
+    // Another package written since names the fonts: the next save reads it, and follows it.
+    const std::string F3 = R.Renamed.at(F2);
+    const std::string O = Freeze(Other, Over("Uses fonts", F3));
+    PkgDoc::Document Doc3;
+    Doc3.Load(Fonts);
+    json N3 = Doc3.Node(0); N3["LAYERS"][0]["ZIP"] = "f4.zip"; Doc3.Replace(0, N3);
+    const PkgDoc::SaveReport R3 = Doc3.Save(Fonts, Lib, "");
+    CHECK(R3.Ok);
+    CHECK(R3.Renamed.count(O) == 1);
+    CHECK(!Has(Other, O));
+}
+
 // A folder fetch lands into "<dest>.tmp" and renames it into place when complete: the half-landed node files in it are
 // its fetch's, and a save that renames a node they name leaves them alone. Teeth: walk into the scratch dir (its
 // copy is re-minted under the fetch).
@@ -321,6 +359,31 @@ TEST(pkgdoc_a_removed_node_goes_unless_another_package_contains_it)
     bool Said = false;
     for (const std::string &L : R.Log) if (L.find("kept") != std::string::npos) Said = true;
     CHECK(Said);
+}
+
+// The same after an earlier save in this process: the gather then knows the other package's file and does not read it,
+// and what it names must still keep the node (adversary review 2026-11-24: it read each file's node JSON, empty for a
+// file it knew — the node's file was deleted under the package naming it). Teeth: take what is named from each file's
+// node JSON again.
+TEST(pkgdoc_a_removed_node_another_package_contains_stays_after_an_earlier_save)
+{
+    const fs::path Lib = Fresh("remove-warm");
+    const fs::path P = Lib / "pkg", Other = Lib / "other";
+    fs::create_directories(P); fs::create_directories(Other);
+    const std::string A = Freeze(P, Zip("Lone", "a.zip"));
+    const std::string B = Freeze(P, Zip("Shared", "b.zip"));
+    Freeze(Other, Over("Elsewhere", B));
+    {   // an earlier save: the gather now knows every file of the library
+        PkgDoc::Document Warm;
+        Warm.Load(P);
+        json N = Warm.Node(Warm.IndexOf(A)); N["LAYERS"][0]["ZIP"] = "a2.zip"; Warm.Replace(Warm.IndexOf(A), N);
+        CHECK(Warm.Save(P, Lib, "").Ok);
+    }
+    PkgDoc::Document Doc;
+    Doc.Load(P);
+    CHECK(Doc.Remove(Doc.IndexOf(B)));
+    CHECK(Doc.Save(P, Lib, "").Ok);
+    CHECK(Has(P, B));                                                        // still contained elsewhere: kept
 }
 
 // ---- what a save must never do (each found by an adversarial review of the first version) ------------------------

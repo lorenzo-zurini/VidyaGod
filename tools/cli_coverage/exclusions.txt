@@ -139,3 +139,49 @@ PreLaunchUi::CollectVarValues          # private to PreLaunchWindow's files (pre
 PkgActionsUi::StrOf                    # private to PkgActions' files (pkgactions_p.h): reached through its counted functions
 PkgActionsUi::HasLayers                # private to PkgActions' files (pkgactions_p.h): reached through its counted functions
 LayerBytes::Held   # a test probe: how many layers' bytes a chain holds at once (the release rule's teeth)
+
+# ---- 2026-11-24 batching sweep: test probes (the tests' teeth: how many times a thing was done) ----
+AppModel::refreshes                       # a test probe: library reads refreshFromDisk started (one at a time)
+DownloadManager::debugProgressRecomputes  # a test probe: package progress recomputes (once per burst)
+IpfsModel::sizeLooks                      # a test probe: size look-ups started (one worker for many CIDs)
+NetworkTab::refreshes                     # a test probe: the Peers page's refreshes (none while hidden)
+PackagesView::updateScans                 # a test probe: other-version scans started (one at a time, none hidden)
+PeerSharing::presenceReconciles           # a test probe: reconciles a peer's coming online made
+RunnersPage::counts                       # a test probe: games-per-runner counts started
+RunnersPage::rebuilds                     # a test probe: the Runners page's rebuilds (none while hidden)
+PackageEditorModel::execBuilds            # a test probe: exec indexes built on the GUI thread
+CoverCache::scaleCount                    # a test probe: smooth cover scales made (once per pixmap and size)
+NodeStore::DebugMintBatches               # a test probe: mints stored as one batch
+PackageCatalog::DebugNodeCidReads         # a test probe: package folders the update scan read
+PkgDoc::DebugGatherReads                  # a test probe: library node files a save read
+IpfsWrapper::DebugDropCalls               # a test probe: reference drops made (many asked together are one)
+JSONOps::DebugConfigWrites                # a test probe: config files committed
+JSONOps::DebugHoldConfigWrites            # a test hook: holds the config writer, to order a sync write after an async one
+vgdelta::DebugDecompressions              # a test probe: ADD blocks decompressed (once per block read at once)
+vgdelta::DebugPrefetchScans               # a test probe: prefetches that went over their runs
+vgdelta::DebugSlowDecompress              # a test hook: slows decompression so readers meet in flight
+vgdelta::DeltaByteSource::runs            # a test probe: the flat map's runs
+vgdelta::DeltaByteSource::flatRuns        # a test probe: the flat map itself
+vgdelta::DeltaByteSource::runsLeftUnjoined  # a test probe: whether any run continues the one before
+DebugCaseWalks                            # a test probe: archive members submounts' case names were walked over
+DebugLazyOpens                            # a test probe: files opened for writing whose copy-up waits for a change
+DebugLazyCopies                           # a test probe: of those, copied up at their first change
+DebugMaskFolds                            # a test probe: times a deletion mask's changes were folded in
+
+# ---- 2026-11-24 batching sweep: reached through the commands and mounts they serve ----
+PackageCatalog::RemoveLandedNodes         # landed node files removed together: `received prune`, `updates apply`
+CoverCache::scaled                        # a card's cover at its size: every `ui screenshot` of the library draws it
+vgdelta::DefaultCachedBlockBudget         # the block budget a mount starts with: every delta read (`vfs cat` over a delta) keeps within it
+vgdelta::SetCachedBlockBudget             # a mount told how much to keep (tests set a small one)
+VfsState::PendingFor                      # the lazy copy-up's marker per path: `vfs write` over a lower file, every game's read-write open
+VfsState::MarkCopied                      # as VfsState::PendingFor: set by every copy-up (`vfs write`)
+MaskSnap::count                           # a deletion mask's lookup: every lookup through the writelayer (`vfs stat`)
+MaskSnap::empty                           # as MaskSnap::count: the empty-mask fast path
+PackageCatalog::DebugVerifiedFileIo       # TEST ONLY: reads and writes of CACHE/seedverified.json (a publish: one each)
+PeerSharing::libraryRequests              # TEST ONLY: library requests sent (a flapping peer is asked at every "online")
+VfsState::DetachPendingLocked             # the lazy copy-up's marker taken off a changed name: every `vfs rm`, `vfs mv`, `vfs write` over a name
+VfsState::PendingKey                      # as VfsState::PendingFor: a marker's key (folded on a case-insensitive mount)
+vgdelta::ShareCachedBlockBudget           # the FS helper's main, from the spec's launchMounts: every mount a launch makes
+VfsState::AdoptCopy                       # as VfsState::PendingFor: a copy made before a handle took its marker (`vfs write` beside another)
+VfsState::BeginNameChange                 # as VfsState::DetachPendingLocked: every `vfs rm`, `vfs mv`, `vfs write` making a name
+VfsState::EndNameChange                   # as VfsState::BeginNameChange

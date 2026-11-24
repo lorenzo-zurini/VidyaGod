@@ -281,7 +281,7 @@ void LibraryView::prescaleCovers(int cardW)
     const auto Scale = [](const QPixmap & From, QPixmap & To, qint64 & ToFrom, int W, int H) {
         if (From.isNull()) { To = QPixmap(); ToFrom = 0; return; }
         if (ToFrom == From.cacheKey() && To.size() == QSize(W, H)) return;
-        To = From.scaled(W, H, Qt::IgnoreAspectRatio, Qt::SmoothTransformation);
+        To = CoverCache::instance()->scaled(From, W, H);
         ToFrom = From.cacheKey();
     };
     auto scaleMain = [&](LibraryGameCard * c) {

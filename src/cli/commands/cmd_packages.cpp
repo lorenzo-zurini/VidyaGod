@@ -6,6 +6,7 @@
 #include "installed.h"
 #include "shelf.h"
 #include "command.h"
+#include <chrono>
 #include "platform/platform.h"   // the library's write lock
 #include "cmdutil.h"
 #include "appmodel.h"
@@ -488,7 +489,27 @@ VG_COMMANDS
                                                    Command::Bool(A, "overwrite", false), Command::Bool(A, "verify", false), &F);
             for (const auto &X : F) Fails.push_back({{"path", X.Path}, {"recorded", X.RecordedCid}, {"actual", X.ActualCid}});
             return json{{"seeded", N}, {"mismatched", Mismatched}, {"failures", Fails}};
-        }, {} });
+        }, {}, true });
+
+    Command::Register({
+        "packages held", "whether a folder's content is held whole here, checked together",
+        "Every content file a folder's nodes name, asked at once (a worker per CPU, each backing file stat'd once): how "
+        "many are held whole, the ones that are not, and how long the check took — what every start asks.",
+        { Pos("dir", "the folder (a package or a library)") },
+        { "packages held ~/.VidyaGod/LIBRARY" },
+        { "IpfsWrapper::HeldWholeMany" }, Needs::Config, true,
+        [](Command::Context &, const json &A) {
+            const auto Targets = PackageCatalog::SeedTargets(Command::Str(A, "dir"));
+            std::vector<std::string> Cids;
+            for (const auto &[Path, Cid] : Targets) Cids.push_back(Cid);
+            const auto T0 = std::chrono::steady_clock::now();
+            const std::vector<bool> Whole = IpfsWrapper::HeldWholeMany(Cids);
+            const auto Ms = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - T0).count();
+            json Not = json::array();
+            size_t At = 0, N = 0;
+            for (const auto &[Path, Cid] : Targets) { if (Whole[At++]) ++N; else Not.push_back({{"path", Path}, {"cid", Cid}}); }
+            return json{{"files", Targets.size()}, {"whole", N}, {"not_whole", Not}, {"ms", Ms}};
+        }, {}, true });
 
     Command::Register({
         "packages seed-roots", "every folder whose content this machine serves",
@@ -511,7 +532,7 @@ VG_COMMANDS
                            {"pruned_unreferenced", R.PrunedUnreferenced}, {"verified", R.Verified}, {"drift", R.Drift}, {"unrepaired", R.Unrepaired}};
             if (!R.Ok()) throw Command::CheckFailed(Out, "some references could not be repaired");
             return Out;
-        }, {} });
+        }, {}, true });
 
     Command::Register({
         "packages stamp-cids", "write minted CIDs back into a working tree",
@@ -684,7 +705,7 @@ VG_COMMANDS
         "received land", "land every received package's node files now",
         "Fetch each package folder peers share with you (node files only — content stays lazy until install). With "
         "the app up it lands in the app.", {}, { "received land" },
-        { "PackageCatalog::LandReceivedPackages", "PeerSharing::completeReceivedClosures" }, Needs::Config, true,
+        { "PackageCatalog::LandReceivedPackages", "PeerSharing::completeReceivedClosures", "IpfsWrapper::WaitBatchWhileMoving" }, Needs::Config, true,
         [](Command::Context &C, const json &) {
             if (C.Model) { C.Model->peers().completeReceivedClosures(); return json{{"started", true}}; }
             std::string Err;
@@ -809,11 +830,12 @@ VG_COMMANDS
         "runners state", "whether a runner is installed here, and whether it ships inside a game",
         "A runner node: installed (its build present and ready), and embedded (bundled inside a game's package rather "
         "than a runner package of its own).", { Pos("runner", "the runner's node (CID or LABEL)") },
-        { "runners state geproton_10_34" }, { "Installed::RunnerInstalled", "Installed::IsEmbeddedRunner" }, Needs::Config, false,
+        { "runners state geproton_10_34" }, { "Installed::RunnerInstalled", "Installed::IsEmbeddedRunner", "Installed::EmbeddedRunners" }, Needs::Config, false,
         [](Command::Context &C, const json &A) {
             const auto I = Index(C);
             const Node &N = *NodeOf(*I, Command::Str(A, "runner"));
             return json{{"runner", N.Key()}, {"installed", Installed::RunnerInstalled(*I, N.Key())},
-                        {"embedded", Installed::IsEmbeddedRunner(*I, N.Key())}};
+                        {"embedded", Installed::IsEmbeddedRunner(*I, N.Key())},
+                        {"embedded_runners", Installed::EmbeddedRunners(*I).size()}};
         }, {} });
 }

@@ -74,11 +74,19 @@ void DownloadManager::recomputeProgress(const QString &cid)
 {
     auto it = DownloadCidToUid.constFind(cid);
     if (it == DownloadCidToUid.constEnd()) return;
-    for (const QString & Key : it.value()) recomputeKeyProgress(Key);
+    ProgressDirty.unite(it.value());
+    if (ProgressQueued) return;
+    ProgressQueued = true;
+    QTimer::singleShot(ProgressMs, this, [this] {
+        ProgressQueued = false;
+        const QSet<QString> Keys = std::exchange(ProgressDirty, {});
+        for (const QString & Key : Keys) if (DownloadUidCids.contains(Key)) recomputeKeyProgress(Key);
+    });
 }
 
 void DownloadManager::recomputeKeyProgress(const QString &Key)
 {
+    ++ProgressRecomputes;
     const QStringList Cids = DownloadUidCids.value(Key);
     if (Cids.isEmpty()) { emit downloadProgress(Key, -1.0); return; }
     // SIZE-WEIGHTED average from IpfsModel (per-CID pct/size): a package's bar reflects bytes downloaded, not files
@@ -109,11 +117,13 @@ void DownloadManager::beginDownload(const QString &Key, const std::vector<std::s
     persistActive(Key, LaunchIds, RunnerIds, Toggles);               // survive a crash/close → resumed next launch
 
     QStringList Cids;
+    QSet<QString> Seen;   // a list's contains, per CID, was a scan of every CID before it
     auto AddCids = [&](const std::vector<std::string> & CidList){
         for (const auto & C : CidList)
         {
             const QString Qc = QString::fromStdString(C);
-            if (Cids.contains(Qc)) continue;
+            if (Seen.contains(Qc)) continue;
+            Seen.insert(Qc);
             Cids << Qc; DownloadCidToUid[Qc].insert(Key);
         }
     };

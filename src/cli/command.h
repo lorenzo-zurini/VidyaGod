@@ -49,6 +49,9 @@ struct Context
     bool Live = false;                    // running inside the user's GUI (not a headless bring-up)
     //The index snapshot a Background command reads (taken on the app's thread before it runs off it); else empty.
     std::shared_ptr<const NodeIndex> Snapshot;
+    //Running off the app's thread (Background): Config is a copy taken for it, Model is not to be touched, and saving
+    //the config is refused — a copy written over the file would undo whatever the app changed meanwhile.
+    bool Background = false;
     //Answers the call now with this result, though the command has not returned: an action that opened a dialog
     //(whose exec() holds the command until someone answers it) reports the dialog at once. Its eventual return is then
     //dropped. Unset where nothing can be answered early.

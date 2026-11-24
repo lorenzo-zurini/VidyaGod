@@ -41,6 +41,27 @@ private slots:
     // A test that stops half-way leaves no node and no nearby list behind for the next one.
     void cleanup() { NetworkTab::SetNearbySource({}); IpfsWrapper::StopNode(); }
 
+    // A peer whose presence flaps (a Deck on flaky Wi-Fi) is reconciled once when it comes online, not at every
+    // "online" — each re-planned and re-enqueued its whole library; a while later it is again. Each "online" still
+    // asks it for its libraries (a request made while it was away failed). Teeth: drop the PresenceReconcileMs check
+    // (three reconciles); reconcile on "offline" too; skip the request with the re-enqueue.
+    void a_flapping_peer_is_reconciled_once_a_while()
+    {
+        QTemporaryDir Dir; QVERIFY(Dir.isValid());
+        nlohmann::ordered_json Cfg = nlohmann::ordered_json{{"Settings", nlohmann::ordered_json::object()},
+                                                            {"ReceiveFrom", {"12D3KooWFlappy"}}};
+        QDir AppDir(Dir.path());
+        AppModel M(&Cfg, &AppDir);
+        PeersManager *FM = PeersManager::instance();
+        const int Before = M.peers().presenceReconciles(), Asked = M.peers().libraryRequests();
+        for (int I = 0; I < 3; ++I) { emit FM->peerPresence("12D3KooWFlappy", true); emit FM->peerPresence("12D3KooWFlappy", false); }
+        QCOMPARE(M.peers().presenceReconciles() - Before, 1);
+        QCOMPARE(M.peers().libraryRequests() - Asked, 3);
+        M.peers().PresenceReconcileMs = 0;
+        emit FM->peerPresence("12D3KooWFlappy", true);
+        QCOMPARE(M.peers().presenceReconciles() - Before, 2);
+    }
+
     // VIDYAGOD_IPFS_OFFLINE=1 is set by ctest (see CMakeLists) so the node stays purely local — no swarm/DHT — which
     // keeps this test hermetic and makes the offline-safety assertions below meaningful.
     void profile_and_persistence_roundtrip_offline()
@@ -241,6 +262,15 @@ private slots:
         QCOMPARE(Shown, 1);
         QVERIFY(Tab.findChild<QLabel *>("emptyHint")->isVisible());
         QCOMPARE(Tab.findChild<QTableWidget *>("peers")->rowCount(), 1);   // the row of defaults alone
+        // Hidden, a change does not rebuild the page (every catalog change and presence ping rebuilt it, and stat'd a
+        // receiving peer's every file); shown again, it is rebuilt once. Teeth: drop the Showing gate (three refreshes
+        // while hidden); drop the refresh on show (the page stays as it was).
+        Tab.setActive(false);
+        const int Before = Tab.refreshes();
+        for (int I = 0; I < 3; ++I) { emit M.catalogChanged(); QApplication::processEvents(); }
+        QCOMPARE(Tab.refreshes(), Before);
+        Tab.setActive(true);
+        QCOMPARE(Tab.refreshes(), Before + 1);
         NetworkTab::SetNearbySource({});
         IpfsWrapper::StopNode();
     }

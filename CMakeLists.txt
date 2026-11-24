@@ -664,6 +664,10 @@ add_test(NAME convert_delta_chain COMMAND python3 -I ${CMAKE_SOURCE_DIR}/tests/e
          --vg $<TARGET_FILE:VidyaGod> --work ${CMAKE_BINARY_DIR}/testtmp/convert_delta)
 set_tests_properties(convert_delta_chain PROPERTIES TIMEOUT 600)
 # A window run beside the app (--bypass-single-instance-lock) leaves the lock free: the app still starts on that data dir.
+# A command run on its own that changes the config leaves the change on disk (its save is not lost at the call's end).
+add_test(NAME headless_save COMMAND python3 -I ${CMAKE_SOURCE_DIR}/tests/e2e/headless_save.py
+         --vg $<TARGET_FILE:VidyaGod> --work ${CMAKE_BINARY_DIR}/testtmp/headless_save)
+set_tests_properties(headless_save PROPERTIES TIMEOUT 300)
 add_test(NAME bypass_lock COMMAND python3 -I ${CMAKE_SOURCE_DIR}/tests/e2e/bypass_lock.py
          --vg $<TARGET_FILE:VidyaGod> --work ${CMAKE_BINARY_DIR}/testtmp/bypass_lock)
 set_tests_properties(bypass_lock PROPERTIES TIMEOUT 300)

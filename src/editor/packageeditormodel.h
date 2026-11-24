@@ -100,6 +100,7 @@ public:
 
     // ---- the rest of the library --------------------------------------------------------------------------------
     NodeIndex BuildExecIndex() const;              // the library, with this package's nodes AS EDITED
+    int execBuilds() const { return ExecBuilds; }   // test observability: exec indexes built on this (the GUI) thread
     struct External { std::string Label, Package, PackageDir, Cover; };
     External externalInfo(const std::string & Cid) const;          // another package's node, by CID
     const Node * libraryNode(const std::string & Cid) const;       // ...as the library holds it (nullptr: unknown)
@@ -130,6 +131,12 @@ public slots:
     void notifyNodeChanged() { noteEdited(); emit nodeContentChanged(); }   // edited from outside the canvas
 
 private:
+    //What BuildExecIndex reads, copied out of the model: the library's index (shared, immutable) and this package's
+    //nodes as edited. The validation thread builds the index from it.
+    struct ExecInputs { std::shared_ptr<const NodeIndex> Library; std::filesystem::path Pkg;
+                        struct Doc { nlohmann::ordered_json Json; std::string Handle, File; }; std::vector<Doc> Nodes; };
+    ExecInputs execInputs() const;
+    static NodeIndex BuildExecIndex(const ExecInputs & In);
     void noteUnusedFiles();
     const NodeIndex & ExecIndex() const;           // BuildExecIndex, cached until the document changes
     const NodeIndex & LibraryIndex() const;        // the library as on disk (the other packages), cached
@@ -159,6 +166,8 @@ private:
     //Immutable once built, so a background check can keep the one it started on while the canvas moves on.
     mutable std::shared_ptr<const NodeIndex> ExecIndexCache;
     mutable uint64_t         ExecIndexRev = 0;         // the ContentRevision it was built at (0 = stale)
+    mutable int              ExecBuilds = 0;
+    std::shared_ptr<std::shared_ptr<const NodeIndex>> ValBuilt;   // the index the running validation built, if it did
     mutable std::shared_ptr<const NodeIndex> LibraryCache;   // the app's index while it is current (CurrentIndex)
 };
 

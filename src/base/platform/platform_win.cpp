@@ -20,12 +20,35 @@ namespace Platform {
 
 std::string FileStamp(const std::filesystem::path &P, long long *Modified)
 {
-    WIN32_FILE_ATTRIBUTE_DATA A {};
     if (Modified) *Modified = 0;
-    if (!GetFileAttributesExW(P.wstring().c_str(), GetFileExInfoStandard, &A)) return {};
     const auto U64 = [](DWORD Hi, DWORD Lo) { return (static_cast<unsigned long long>(Hi) << 32) | Lo; };
     //FILETIME counts 100 ns from 1601; the Unix epoch is 11644473600 s later.
-    if (Modified) *Modified = static_cast<long long>(U64(A.ftLastWriteTime.dwHighDateTime, A.ftLastWriteTime.dwLowDateTime) / 10000000ULL) - 11644473600LL;
+    const auto Seconds = [](unsigned long long T) { return static_cast<long long>(T / 10000000ULL) - 11644473600LL; };
+    //Opened for its attributes alone (any file another process holds, even exclusively for writing): the change time —
+    //which a copy keeping the modification time (robocopy, an unzip) still moves — and the file's index on its volume
+    //(the inode: a file replaced by another of the same size and times shows).
+    const HANDLE H = ::CreateFileW(P.wstring().c_str(), FILE_READ_ATTRIBUTES, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+                                   nullptr, OPEN_EXISTING, FILE_FLAG_BACKUP_SEMANTICS, nullptr);
+    if (H != INVALID_HANDLE_VALUE)
+    {
+        BY_HANDLE_FILE_INFORMATION I {};
+        FILE_BASIC_INFO B {};
+        const bool Ok = ::GetFileInformationByHandle(H, &I) && ::GetFileInformationByHandleEx(H, FileBasicInfo, &B, sizeof B);
+        ::CloseHandle(H);
+        if (Ok)
+        {
+            const unsigned long long Write = static_cast<unsigned long long>(B.LastWriteTime.QuadPart);
+            if (Modified) *Modified = Seconds(Write);
+            return std::to_string(U64(I.nFileSizeHigh, I.nFileSizeLow)) + ' ' + std::to_string(Write) + ' '
+                   + std::to_string(static_cast<unsigned long long>(B.ChangeTime.QuadPart)) + ' '
+                   + std::to_string(static_cast<unsigned long long>(B.CreationTime.QuadPart)) + ' '
+                   + std::to_string(I.dwVolumeSerialNumber) + ':' + std::to_string(U64(I.nFileIndexHigh, I.nFileIndexLow));
+        }
+    }
+    //Not openable at all (no access to its attributes): what the directory lists for it.
+    WIN32_FILE_ATTRIBUTE_DATA A {};
+    if (!GetFileAttributesExW(P.wstring().c_str(), GetFileExInfoStandard, &A)) return {};
+    if (Modified) *Modified = Seconds(U64(A.ftLastWriteTime.dwHighDateTime, A.ftLastWriteTime.dwLowDateTime));
     return std::to_string(U64(A.nFileSizeHigh, A.nFileSizeLow)) + ' ' + std::to_string(U64(A.ftLastWriteTime.dwHighDateTime, A.ftLastWriteTime.dwLowDateTime))
            + ' ' + std::to_string(U64(A.ftCreationTime.dwHighDateTime, A.ftCreationTime.dwLowDateTime));
 }

@@ -492,14 +492,40 @@ void IpfsModel::ensureSize(const QString & cid)
     //gateway — once per queued row, per started transfer and per refresh for every row still without a size: rows that
     //never get one (missing files) re-asked every refresh, each on its own thread, each opening fresh HTTPS connections.
     //That filled a home router's connection table (VidyaGodIPFS doh.go). A row gets its size when its bytes land.
-    if (SizeInFlight.contains(cid)) return;
-    SizeInFlight.insert(cid);
-    AsyncWork::Run(this, [this, cid](const AsyncWork::Job &J) {
-        const long long S = IpfsWrapper::CidSizeLocal(cid.toStdString());
-        if (!J.Live()) return;   // model destroyed while the stat ran → don't touch `this`
-        J.Post([this, cid, S]{
-            SizeInFlight.remove(cid);
-            if (S >= 0 && Cids.contains(cid)) { Cids[cid].size = S; emit cidChanged(cid); }
+    if (SizeInFlight.contains(cid) || SizeWanted.contains(cid)) return;
+    SizeWanted.insert(cid);
+    lookSizes();
+}
+
+//The sizes asked for, looked up together on one worker, one look at a time: a thread each, for every CID queued (a
+//received library queues thousands, each asked twice) was thousands of threads, each entering the node from a thread
+//of its own. What is asked meanwhile waits for the next look.
+void IpfsModel::lookSizes()
+{
+    if (SizeLooking || SizeWanted.isEmpty()) return;
+    SizeLooking = true;
+    ++SizeLooks;
+    auto Batch = std::make_shared<const QStringList>(SizeWanted.values());
+    SizeInFlight.unite(SizeWanted);
+    SizeWanted.clear();
+    AsyncWork::Run(this, [this, Batch](const AsyncWork::Job &J) {
+        auto Sizes = std::make_shared<std::vector<long long>>();
+        Sizes->reserve(Batch->size());
+        for (const QString &cid : *Batch)
+        {
+            if (!J.Live()) return;   // model destroyed while the stats ran → don't touch `this`
+            Sizes->push_back(IpfsWrapper::CidSizeLocal(cid.toStdString()));
+        }
+        J.Post([this, Batch, Sizes]{
+            SizeLooking = false;
+            for (int I = 0; I < Batch->size(); ++I)
+            {
+                const QString &cid = Batch->at(I);
+                SizeInFlight.remove(cid);
+                const long long S = (*Sizes)[size_t(I)];
+                if (S >= 0 && Cids.contains(cid)) { Cids[cid].size = S; emit cidChanged(cid); }
+            }
+            lookSizes();
         });
     });
 }
@@ -602,12 +628,20 @@ void IpfsModel::refresh()
             });
             if (Final) Sweeping->store(false);
         };
+        //Asked SweepChunk pins at a time, each chunk one pass: a block reached from several pins is walked once in it.
+        std::vector<std::string> Ask;
+        const auto AskNow = [&] {
+            const std::vector<IpfsWrapper::ServeVerdict> V = IpfsWrapper::CidServeStatusMany(Ask);
+            for (size_t I = 0; I < Ask.size() && I < V.size(); ++I) Verdicts[QString::fromStdString(Ask[I])] = QString::fromStdString(V[I].Err);
+            Ask.clear();
+            Post(Verdicts, false);
+        };
         for (const auto & P : Pins) {
             if (!J.Live()) { Sweeping->store(false); return; }   // app closing — abandon the sweep silently
-            const QString C = QString::fromStdString(P.Cid);
-            if (!Verified.contains(C)) Verdicts[C] = QString::fromStdString(IpfsWrapper::CidServeStatus(P.Cid));
-            if (Verdicts.size() >= 64) Post(Verdicts, false);
+            if (!Verified.contains(QString::fromStdString(P.Cid))) Ask.push_back(P.Cid);
+            if (Ask.size() >= SweepChunk) AskNow();
         }
+        if (!Ask.empty()) AskNow();
         Post(Verdicts, true);
     });
 }
@@ -757,34 +791,35 @@ void IpfsModel::gatherHealth()
     if (Todo->isEmpty()) return;
     HealthInFlight = true;
 
-    const int Workers = std::min<int>(5, Todo->size());
-    auto Next      = std::make_shared<std::atomic<int>>(0);
-    auto Remaining = std::make_shared<std::atomic<int>>(Workers);
-    for (int w = 0; w < Workers; ++w)
-        AsyncWork::Run(this, [this, Todo, Next, Remaining](const AsyncWork::Job &J) {
-            for (;;) {
-                if (!J.Live()) return;   // model destroyed mid-scan → stop (each ProviderCount can block for seconds)
-                const int i = Next->fetch_add(1);
-                if (i >= Todo->size()) break;
-                const QString cid = Todo->at(i);
-                const std::string C = cid.toStdString();
-                const int M = IpfsWrapper::CidMissing(C) ? 1 : 0;
-                //No provider count here: each is a full DHT walk (dozens of new flows through the home router), and
-                //sweeping every row made the IPFS tab the node's biggest traffic source — part of what filled a
-                //router's connection table (VidyaGodIPFS netgate.go). The column shows local health (missing files).
-                const int N = -1;
-                if (!J.Live()) return;
-                // Broken ref → repair (single-flight). Post to the model's thread so healOrphansIfAny touches
-                // AppModel main-thread state (KnownUnhealable) on the right thread, and only while the model is alive.
-                const bool Broken = (M == 1);
-                J.Post([this, cid, N, M, Broken]{
-                    if (Cids.contains(cid)) { Cids[cid].providers = N; Cids[cid].missing = M; emit cidChanged(cid); }
-                    if (Broken) Model.healOrphansIfAny();
-                });
-            }
-            if (Remaining->fetch_sub(1) == 1 && J.Live())
-                J.Post([this]{ HealthInFlight = false; });
-        });
+    //Whether a file each row is referenced into is gone, SweepChunk rows a pass (a block several rows reach is walked
+    //once in it): a walk per row, on five threads, walked a library's every leaf once per row that reached it.
+    //No provider count here: each is a full DHT walk (dozens of new flows through the home router), and sweeping every
+    //row made the IPFS tab the node's biggest traffic source — part of what filled a router's connection table
+    //(VidyaGodIPFS netgate.go). The column shows local health (missing files).
+    AsyncWork::Run(this, [this, Todo](const AsyncWork::Job &J) {
+        for (qsizetype From = 0; From < Todo->size(); From += SweepChunk)
+        {
+            if (!J.Live()) return;   // model destroyed mid-scan → stop
+            std::vector<std::string> Ask;
+            for (qsizetype I = From; I < std::min<qsizetype>(Todo->size(), From + SweepChunk); ++I) Ask.push_back(Todo->at(I).toStdString());
+            const std::vector<IpfsWrapper::ServeVerdict> V = IpfsWrapper::CidServeStatusMany(Ask);
+            if (!J.Live()) return;
+            auto Gone = std::make_shared<std::vector<std::pair<QString, int>>>();
+            for (size_t I = 0; I < Ask.size(); ++I) Gone->push_back({ QString::fromStdString(Ask[I]), I < V.size() && V[I].Gone ? 1 : 0 });
+            // Broken ref → repair (single-flight). Posted to the model's thread so healOrphansIfAny touches AppModel
+            // main-thread state (KnownUnhealable) on the right thread, and only while the model is alive.
+            J.Post([this, Gone]{
+                bool Broken = false;
+                for (const auto & [cid, M] : *Gone)
+                {
+                    if (Cids.contains(cid)) { Cids[cid].providers = -1; Cids[cid].missing = M; emit cidChanged(cid); }
+                    Broken = Broken || M == 1;
+                }
+                if (Broken) Model.healOrphansIfAny();
+            });
+        }
+        if (J.Live()) J.Post([this]{ HealthInFlight = false; });
+    });
 }
 
 void IpfsModel::seedFolder(const QString & dir)

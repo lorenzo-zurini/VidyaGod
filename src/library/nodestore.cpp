@@ -5,7 +5,9 @@
 
 #include <mutex>
 #include <unordered_map>
-#include "ipfswrapper.h"     // BlockGet, BlockPut, FetchToPath
+#include "ipfswrapper.h"     // BlockGet, BlockPut
+#include "downloadqueue.h"
+#include <atomic>   // EnqueueBatch, WaitBatch — the content of a package fetched together
 #include "commonutils.h"     // Log*
 #include "parallel.h"
 
@@ -118,6 +120,7 @@ std::string HydratePackage(const std::filesystem::path &DestRoot, const std::str
     // Write each closure node VERBATIM, named by its label (the block IS the file; BuildFrozenIndex verified it) +
     // fetch its content leaves to their PATHs.
     int Files = 0, Fetched = 0, FetchFailed = 0;
+    std::vector<IpfsWrapper::FetchTarget> Content;   // every content file not here: fetched together, after the nodes
     std::map<std::string, nlohmann::ordered_json> Package;
     for (const auto &[C, N] : Idx.Nodes) Package.emplace(C, N.Json);
     const std::map<std::string, std::string> Names = NodeFiles::Names(Package);
@@ -147,14 +150,24 @@ std::string HydratePackage(const std::filesystem::path &DestRoot, const std::str
                 std::error_code Fe;
                 if (fs::exists(Local, Fe)) continue;                    // already materialized
                 std::error_code Pe; fs::create_directories(Local.parent_path(), Pe);
-                std::string FErr;
-                if (IpfsWrapper::FetchToPath(Cid, Local.string(), &FErr).empty())
-                {
-                    LogWarn("NodeStore::HydratePackage", "content " + Cid + " -> " + Local.string() + " FAILED: " + FErr);
-                    ++FetchFailed;
-                }
-                else ++Fetched;
+                Content.push_back(IpfsWrapper::FetchTarget{ Cid, Local.string(), /*Optional=*/true, /*Dir=*/false });
             }
+    }
+    //One batch, one wait: file after file, each waited for in turn, a package's content took its files' fetch times
+    //added up. Optional in the queue, so a file that cannot be had is counted below, not the end of the wait for the rest.
+    if (!Content.empty())
+    {
+        std::string FErr;
+        IpfsWrapper::WaitBatch(IpfsWrapper::EnqueueBatch(Content), &FErr);
+        for (const auto &T : Content)
+        {
+            std::error_code Fe;
+            if (fs::exists(T.LocalPath, Fe)) { ++Fetched; continue; }
+            const std::string Why = IpfsWrapper::FailureOf(T.Cid);
+            LogWarn("NodeStore::HydratePackage", "content " + T.Cid + " -> " + T.LocalPath + " FAILED"
+                    + (!Why.empty() ? ": " + Why : FErr.empty() ? "" : ": " + FErr));
+            ++FetchFailed;
+        }
     }
     if (FetchFailed)   // an incomplete download is NOT a success — the game would not launch
     {
@@ -171,10 +184,11 @@ std::string HydratePackage(const std::filesystem::path &DestRoot, const std::str
     return Dir.string();
 }
 
-bool Mint(const std::map<std::string, nlohmann::ordered_json> &WorkingTree, MintResult &Out, std::string *Error)
+namespace {
+//Mint, a node at a time: what Mint falls back to when the nodes cannot be stored as one batch.
+bool MintEach(const std::map<std::string, nlohmann::ordered_json> &WorkingTree, const std::vector<std::string> &Order,
+              MintResult &Out, std::string *Error)
 {
-    const std::vector<std::string> Order = TopoOrderForMint(WorkingTree);   // deps-first; a cycle's edge is broken
-
     int Skipped = 0;
     for (const std::string &Handle : Order)
     {
@@ -204,6 +218,65 @@ bool Mint(const std::map<std::string, nlohmann::ordered_json> &WorkingTree, Mint
         if (Raw.contains("VARIANT")) Out.Launchables.push_back(Cid);
     }
     if (Skipped) LogWarn("NodeStore::Mint", "skipped " + std::to_string(Skipped) + " node(s) with dangling/bad refs");
+    return true;
+}
+}
+
+std::atomic<long long> MintBatches{0};
+long long DebugMintBatches() { return MintBatches.load(); }
+
+bool Mint(const std::map<std::string, nlohmann::ordered_json> &WorkingTree, MintResult &Out, std::string *Error)
+{
+    const std::vector<std::string> Order = TopoOrderForMint(WorkingTree);   // deps-first; a cycle's edge is broken
+
+    //Every node frozen first (a node's CID is the hash of its bytes: the ones it contains are named before it), then
+    //stored as ONE batch: a node at a time was ~5 synced writes each, a first publish of a library minutes of them. A
+    //node that does not freeze is skipped with what contains it, as ever; if the batch cannot be stored, the nodes are
+    //stored one at a time instead, each skipped on its own failure.
+    MintResult Planned;
+    Planned.HandleToCid = Out.HandleToCid;   // what the caller has named already (another package's nodes) is named so
+    std::vector<std::string> Handles, Blocks;
+    int Skipped = 0;
+    for (const std::string &Handle : Order)
+    {
+        const nlohmann::ordered_json &Raw = WorkingTree.at(Handle);
+        std::string Dangling, Err;
+        const std::string Bytes = Cid::Canonical(FreezeNodeJson(Raw, Planned.HandleToCid, &WorkingTree, &Dangling));
+        if (!Dangling.empty()) Err = "it references '" + Dangling + "', which did not freeze";
+        const std::string Want = Dangling.empty() ? Cid::OfBytes(Bytes, &Err) : std::string();
+        if (Want.empty())
+        {
+            LogWarn("NodeStore::Mint", "skipping node '" + Handle + "' (dangling ref / bad link): " + Err);
+            Planned.Skipped[Handle] = Err.empty() ? std::string("it could not be stored") : Err;
+            ++Skipped;
+            continue;
+        }
+        Planned.HandleToCid[Handle] = Want;
+        if (Raw.contains("VARIANT")) Planned.Launchables.push_back(Want);
+        Handles.push_back(Handle);
+        Blocks.push_back(Bytes);
+    }
+    std::string PutErr;
+    const std::vector<std::string> Stored = IpfsWrapper::BlockPutMany(Blocks, &PutErr);
+    if (Stored.size() != Blocks.size())
+    {
+        LogWarn("NodeStore::Mint", "storing the nodes as one batch failed (" + PutErr + "): one at a time instead");
+        if (!MintEach(WorkingTree, Order, Out, Error)) return false;
+    }
+    else
+    {
+        ++MintBatches;
+        for (size_t I = 0; I < Stored.size(); ++I)
+            if (Stored[I] != Planned.HandleToCid[Handles[I]])
+            {   // the node stored something else than the app computes: every reference to it would dangle
+                if (Error) *Error = "node '" + Handles[I] + "' stored as " + Stored[I] + " but its bytes hash to " + Planned.HandleToCid[Handles[I]];
+                return false;
+            }
+        for (auto &[H, C] : Planned.HandleToCid) Out.HandleToCid[H] = C;
+        for (auto &L : Planned.Launchables) Out.Launchables.push_back(L);
+        for (auto &[H, E] : Planned.Skipped) Out.Skipped[H] = E;
+        if (Skipped) LogWarn("NodeStore::Mint", "skipped " + std::to_string(Skipped) + " node(s) with dangling/bad refs");
+    }
     LogSucc("NodeStore::Mint", "froze " + std::to_string(Out.HandleToCid.size()) + " node(s), "
             + std::to_string(Out.Launchables.size()) + " launchable(s)");
     return true;

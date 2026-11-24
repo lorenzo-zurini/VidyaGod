@@ -195,18 +195,31 @@ std::vector<ReceivedFetch> PlanReceivedFetches(const nlohmann::ordered_json &Glo
 void RemoveLandedNode(const std::filesystem::path &F, const std::string &Cid,
                       const std::vector<std::filesystem::path> &Elsewhere)
 {
+    RemoveLandedNodes({ LandedNode{ F, Cid, Elsewhere } });
+}
+
+void RemoveLandedNodes(const std::vector<LandedNode> &Nodes)
+{
     std::error_code Ec;
-    if (!std::filesystem::remove(F, Ec)) return;
-    if (!IpfsWrapper::CidMissing(Cid)) return;                       // its reference is to another copy: nothing to do
-    IpfsWrapper::DropRef(Cid);                                       // it was to this file: gone with it
+    std::vector<const LandedNode *> Dropped;
+    std::vector<std::string> Cids;
+    for (const LandedNode &N : Nodes)
+    {
+        if (!std::filesystem::remove(N.File, Ec)) continue;
+        if (!IpfsWrapper::CidMissing(N.Cid)) continue;               // its reference is to another copy: nothing to do
+        Dropped.push_back(&N);                                       // it was to this file: gone with it
+        Cids.push_back(N.Cid);
+    }
+    IpfsWrapper::DropRefs(Cids);
     //The same node landed in another package too (a node two packages share): seed that copy, or it would be on disk
     //and silently not held — never served, never re-shared.
-    for (const std::filesystem::path &S : Elsewhere)
-        if (S != F && std::filesystem::is_regular_file(S, Ec))
-        {
-            std::string AErr;
-            if (IpfsWrapper::AddNoCopy(S.string(), &AErr) == Cid) return;
-        }
+    for (const LandedNode *N : Dropped)
+        for (const std::filesystem::path &S : N->Elsewhere)
+            if (S != N->File && std::filesystem::is_regular_file(S, Ec))
+            {
+                std::string AErr;
+                if (IpfsWrapper::AddNoCopy(S.string(), &AErr) == N->Cid) break;
+            }
 }
 
 std::string ReceivedNickLabel(const std::string &PeerID)
@@ -364,41 +377,51 @@ bool LandReceivedPackages(const nlohmann::ordered_json &Config, std::string *Err
     namespace fs = std::filesystem;
     std::error_code Ec;
     bool Ok = true;
-    for (const auto &[Dir, Files] : ReceivedPackages(Config))
-    {
-        //A file there holding another node (the entry's previous generation, under the same name) goes first: the
-        //fetch takes a file that is there for done when the node it asks for is held here.
+    //Every package's missing files in one batch, one wait: a package after another, each waited for, waited on the
+    //slowest file of each in turn; and every file was verified before and again after, fetched or not.
+    const auto Packages = ReceivedPackages(Config);
+    std::vector<IpfsWrapper::FetchTarget> Batch;
+    std::set<fs::path> Fetched;                                         // what this pass asks for: verified once landed
+    for (const auto &[Dir, Files] : Packages)
         for (const auto &[F, C] : Files)
-            if (fs::exists(F, Ec) && !NodeGraph::VerifyLanded(F, C, nullptr, nullptr))
+        {
+            //A file there holding another node (the entry's previous generation, under the same name) goes first: the
+            //fetch takes a file that is there for done when the node it asks for is held here.
+            if (fs::exists(F, Ec))
             {
+                std::string VErr;
+                if (NodeGraph::VerifyLanded(F, C, nullptr, &VErr)) continue;   // in place, and what its entry says
                 std::ifstream In(F, std::ios::binary);
                 const std::string Old = Cid::OfBytes(std::string((std::istreambuf_iterator<char>(In)), std::istreambuf_iterator<char>()));
                 In.close();
                 RemoveLandedNode(F, Old);
             }
-        std::vector<IpfsWrapper::FetchTarget> Batch;
+            if (Fetched.insert(F).second)
+                Batch.push_back(IpfsWrapper::FetchTarget{ C, F.string(), /*Optional=*/true, /*Dir=*/false, /*Verify=*/true });
+        }
+    std::string WErr;
+    //Optional: a file that does not land fails its own package (below), never the wait for every other package's.
+    //Given up only when nothing has landed for 10 minutes: one deadline for every package's files ended a large
+    //receive (thousands of node files from a slow peer) part way while it was landing steadily.
+    if (!Batch.empty() && !IpfsWrapper::WaitBatchWhileMoving(IpfsWrapper::EnqueueBatch(Batch), 10 * 60 * 1000, &WErr))
+        LogWarn("PackageCatalog::LandReceivedPackages", WErr + ": what has not landed is fetched on the next pass");
+    for (const auto &[Dir, Files] : Packages)
         for (const auto &[F, C] : Files)
         {
-            if (fs::exists(F, Ec)) continue;
-            Batch.push_back(IpfsWrapper::FetchTarget{ C, F.string(), /*Optional=*/false, /*Dir=*/false, /*Verify=*/true });
-        }
-        if (!Batch.empty())
-        {
-            std::string WErr;
-            if (!IpfsWrapper::WaitBatch(IpfsWrapper::EnqueueBatch(Batch), 10 * 60 * 1000, &WErr))
-            { if (Error) *Error = "package " + Dir.filename().string() + ": " + WErr; Ok = false; continue; }
-        }
-        for (const auto &[F, C] : Files)
-        {
+            if (!Fetched.count(F)) continue;                             // checked above: in place, as its entry says
             std::string VErr;
-            if (NodeGraph::VerifyLanded(F, C, nullptr, &VErr)) continue;
-            RemoveLandedNode(F, C);
+            if (!fs::exists(F, Ec))
+            {
+                const std::string Why = IpfsWrapper::FailureOf(C);
+                VErr = "was not fetched" + (!Why.empty() ? " (" + Why + ")" : WErr.empty() ? std::string() : " (" + WErr + ")");
+            }
+            else if (NodeGraph::VerifyLanded(F, C, nullptr, &VErr)) continue;
+            else RemoveLandedNode(F, C);
             if (Error) *Error = "package " + Dir.filename().string() + ": node " + F.filename().string() + " " + VErr;
             LogWarn("PackageCatalog::LandReceivedPackages", "package '" + Dir.filename().string() + "': node " + F.filename().string()
                     + " (" + C + ") refused: " + VErr);
             Ok = false;
         }
-    }
     return Ok;
 }
 
@@ -410,6 +433,7 @@ int PruneStaleReceived(const NodeIndex &Idx, const nlohmann::ordered_json &Confi
     std::error_code Ec;
     int Removed = 0;
     const auto Packages = ReceivedPackages(Config);                        // one read, not one per stale file
+    std::vector<LandedNode> Stale;
     std::map<std::string, std::vector<fs::path>> Where;                    // cid → every path an entry gives it
     for (const auto &[Dir, Files] : Packages) for (const auto &[F, C] : Files) Where[C].push_back(F);
     for (const auto &[Dir, Files] : Packages)
@@ -423,10 +447,11 @@ int PruneStaleReceived(const NodeIndex &Idx, const nlohmann::ordered_json &Confi
         {
             std::vector<fs::path> Elsewhere = Where[Cid];                  // the same node's other landed copies
             if (const Node *N = Idx.Find(Cid); N && !N->File.empty()) Elsewhere.push_back(N->File);
-            RemoveLandedNode(F.Path, Cid, Elsewhere);
-            if (!fs::exists(F.Path, Ec)) ++Removed;
+            Stale.push_back({ F.Path, Cid, std::move(Elsewhere) });
         }
     }
+    RemoveLandedNodes(Stale);                                              // every package's, one drop of their references
+    for (const LandedNode &N : Stale) if (!fs::exists(N.File, Ec)) ++Removed;
     return Removed;
 }
 

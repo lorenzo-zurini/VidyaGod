@@ -87,8 +87,17 @@ private:
     void persistActive(const QString & key, const std::vector<std::string> & launchIds,
                        const std::vector<std::string> & runnerIds, const std::map<std::string, bool> & toggles);
     void unpersistActive(const QString & key);
-    // Recompute a package's size-weighted download % from IpfsModel (per-CID pct/size) and emit downloadProgress.
+    // A package's size-weighted download % from IpfsModel (per-CID pct/size), as downloadProgress: each package a CID
+    // belongs to is marked, and recomputed once ProgressMs after the first mark — every CID's change averaged the
+    // whole package again (a 5,000-file game: 5,000 lookups for each of its files' progress events).
     void recomputeProgress(const QString & cid);
+    QSet<QString>               ProgressDirty;     // packages a CID's change marked since the last recompute
+    bool                        ProgressQueued = false;
+public:
+    int ProgressMs = 200;
+    long long debugProgressRecomputes() const { return ProgressRecomputes; }   // test observability
+private:
+    long long                   ProgressRecomputes = 0;
 
     AppModel & Model;
     IpfsModel & Ipfs;                            // source of truth for per-CID transfer progress + size

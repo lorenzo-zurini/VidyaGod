@@ -205,6 +205,25 @@ std::string BlockPut(const std::string &Bytes, std::string *Error)
     return CidS;
 }
 
+std::vector<std::string> BlockPutMany(const std::vector<std::string> &Bytes, std::string *Error)
+{
+    if (Bytes.empty()) return {};
+    for (const std::string &B : Bytes)
+        if (B.empty() || B.find('\0') != std::string::npos) { if (Error) *Error = "a node block is text, and not empty"; return {}; }
+    std::string In;
+    try { In = nlohmann::json(Bytes).dump(); }
+    catch (const std::exception &E) { if (Error) *Error = std::string("a node block is not UTF-8: ") + E.what(); return {}; }
+    char *Out = nullptr, *Err = nullptr;
+    const int Rc = VgBlockPutMany(In.c_str(), &Out, &Err);
+    const std::string OutS = TakeStr(Out), ErrS = TakeStr(Err);
+    if (Rc != 0) { if (Error) *Error = ErrS.empty() ? "block put failed" : ErrS; return {}; }
+    const nlohmann::json J = nlohmann::json::parse(OutS, nullptr, false);
+    if (!J.is_array() || J.size() != Bytes.size()) { if (Error) *Error = "the node answered the wrong number of CIDs"; return {}; }
+    std::vector<std::string> Cids;
+    for (const auto &C : J) Cids.push_back(C.is_string() ? C.get<std::string>() : std::string());
+    return Cids;
+}
+
 std::string BlockGet(const std::string &Cid, std::string *Error)
 {
     if (Cid.empty()) { if (Error) *Error = "empty CID"; return std::string(); }
@@ -444,6 +463,19 @@ long long CidFileSizeLocal(const std::string &Cid)
     return VgCidFileSizeLocal(Cid.c_str());
 }
 
+std::vector<ServeVerdict> CidServeStatusMany(const std::vector<std::string> &Cids)
+{
+    if (Cids.empty()) return {};
+    char *Res = nullptr;
+    if (VgCidServeStatusMany(nlohmann::json(Cids).dump().c_str(), &Res) != 0) { TakeStr(Res); return {}; }
+    const nlohmann::json J = nlohmann::json::parse(TakeStr(Res), nullptr, false);
+    if (!J.is_array() || J.size() != Cids.size()) return {};
+    std::vector<ServeVerdict> Out;
+    Out.reserve(J.size());
+    for (const auto &V : J) Out.push_back({ V.value("err", std::string()), V.value("gone", false) });
+    return Out;
+}
+
 std::string CidServeStatus(const std::string &Cid)
 {
     if (Cid.empty()) return "empty cid";
@@ -478,6 +510,31 @@ bool HasLocal(const std::string &Cid)
 
 bool HeldWhole(const std::string &Cid) { return !Cid.empty() && VgHeldWhole(Cid.c_str()) == 1; }
 
+bool HeldWholeFiles(const std::string &Cid, std::vector<std::string> *Files)
+{
+    if (Files) Files->clear();
+    if (Cid.empty()) return false;
+    char *Res = nullptr;
+    const int Rc = VgHeldWholeFiles(Cid.c_str(), &Res);
+    const std::string J = TakeStr(Res);
+    if (Rc != 1) return false;
+    const nlohmann::json A = nlohmann::json::parse(J, nullptr, false);
+    if (Files && A.is_array()) for (const auto &F : A) if (F.is_string()) Files->push_back(F.get<std::string>());
+    return true;
+}
+
+std::vector<bool> HeldWholeMany(const std::vector<std::string> &Cids)
+{
+    std::vector<bool> Out(Cids.size(), false);
+    if (Cids.empty()) return Out;
+    char *Res = nullptr;
+    if (VgHeldWholeMany(nlohmann::json(Cids).dump().c_str(), &Res) != 0) { TakeStr(Res); return Out; }
+    const nlohmann::json J = nlohmann::json::parse(TakeStr(Res), nullptr, false);
+    if (J.is_array() && J.size() == Cids.size())
+        for (size_t I = 0; I < Out.size(); ++I) Out[I] = J[I].is_boolean() && J[I].get<bool>();
+    return Out;
+}
+
 long long MoveRefs(const std::vector<std::pair<std::string, std::string>> &Moves, std::string *Error)
 {
     nlohmann::json J = nlohmann::json::array();
@@ -498,6 +555,19 @@ bool DropRef(const std::string &Cid)
     TakeStr(Err);
     return Rc == 0;
 }
+
+bool DropRefs(const std::vector<std::string> &Cids)
+{
+    std::vector<std::string> Some;
+    for (const std::string &C : Cids) if (!C.empty()) Some.push_back(C);
+    if (Some.empty()) return true;
+    char *Err = nullptr;
+    const int Rc = VgDropRefs(nlohmann::json(Some).dump().c_str(), &Err);
+    TakeStr(Err);
+    return Rc == 0;
+}
+
+long long DebugDropCalls() { return VgDebugDropCalls(); }
 
 bool DropCached(const std::string &Cid)
 {

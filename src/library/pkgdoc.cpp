@@ -1,6 +1,7 @@
 #include "nodegraph.h"
 #include "noderefs.h"
 #include "pkgdoc.h"
+#include "platform/platform.h"   // FileStamp
 
 #include "cid.h"
 #include "manifestmodel.h"   // IsNodeObject: which *.json in a package dir is a node
@@ -18,6 +19,9 @@
 #endif
 #include <fstream>
 #include <random>
+#include <mutex>
+#include <atomic>
+#include <unordered_map>
 #include <set>
 #include <sstream>
 
@@ -70,9 +74,19 @@ bool WriteFileAtomic(const fs::path &P, const std::string &Bytes, std::string &E
     return true;
 }
 
-//Every frozen node file under Root (a node without a "CID" handle), with the CID of its bytes, skipping peers'
-//landed copies (`_peer_*`, never ours to rewrite) and the package being saved (Skip).
-struct LibFile { fs::path Path; json Node; std::string Cid; };
+//Every frozen node file under Root (a node without a "CID" handle), with the CID of its bytes and what it names, skipping
+//peers' landed copies (`_peer_*`, never ours to rewrite) and the package being saved (Skip). Node: its JSON, read only
+//for the files a save goes on to rewrite (LoadNode).
+struct LibFile { fs::path Path; std::string Cid; std::vector<std::string> Refs; json Node; };
+
+//What a library node file was found to be, as it was then (Platform::FileStamp): every save of a package read, parsed
+//and hashed every node file of the library again (7,600 of them: a second and more, at every save). A file unchanged
+//since is not read. In memory, for this process.
+struct Gathered { std::string Stamp, Cid; std::vector<std::string> Refs; bool Node = false; };
+std::mutex g_GatheredMu;
+std::unordered_map<std::string, Gathered> g_Gathered;
+std::atomic<long long> g_GatherReads{0};
+
 //False, with Err, if any part of Root could not be read: a save that cannot see every package cannot know which of
 //them name the nodes it renames, so it does not start.
 bool GatherLibrary(const fs::path &Root, const fs::path &Skip, std::vector<LibFile> &Out, std::string &Err)
@@ -82,6 +96,13 @@ bool GatherLibrary(const fs::path &Root, const fs::path &Skip, std::vector<LibFi
     const fs::path SkipCanon = fs::weakly_canonical(Skip, Ec);
     auto It = fs::recursive_directory_iterator(Root, Ec);
     if (Ec) { Err = "cannot read " + Root.string() + ": " + Ec.message(); return false; }
+    //A folder's place resolved once (through the library's symlinked root), not once per file in it.
+    std::unordered_map<std::string, bool> IsSkip;
+    const auto Skipped = [&](const fs::path &Dir) {
+        const auto [At, New] = IsSkip.try_emplace(Dir.string(), false);
+        if (New) { std::error_code E; At->second = fs::weakly_canonical(Dir, E) == SkipCanon; }
+        return At->second;
+    };
     for (; It != fs::recursive_directory_iterator(); It.increment(Ec))
     {
         if (Ec) { Err = "cannot read the library under " + Root.string() + ": " + Ec.message(); return false; }
@@ -91,22 +112,54 @@ bool GatherLibrary(const fs::path &Root, const fs::path &Skip, std::vector<LibFi
         {
             //A peer's landed copy is never ours, and a fetch's scratch dir ("<dest>.tmp") is half-landed files its fetch
             //is still writing: neither is rewritten by a save.
-            if (P.filename().string().rfind("_peer_", 0) == 0 || NodeGraph::IsFetchScratchDir(P)
-                || fs::weakly_canonical(P, E2) == SkipCanon)
+            if (P.filename().string().rfind("_peer_", 0) == 0 || NodeGraph::IsFetchScratchDir(P) || Skipped(P))
                 It.disable_recursion_pending();
             continue;
         }
         if (P.extension() != ".json") continue;
-        if (fs::weakly_canonical(P.parent_path(), E2) == SkipCanon) continue;   // the package being saved is a root
+        if (Skipped(P.parent_path())) continue;                          // the package being saved is a root
+        const std::string Stamp = Platform::FileStamp(P);
+        {
+            std::lock_guard<std::mutex> Lk(g_GatheredMu);
+            if (const auto G = g_Gathered.find(P.string()); G != g_Gathered.end() && !Stamp.empty() && G->second.Stamp == Stamp)
+            {
+                if (G->second.Node) Out.push_back({P, G->second.Cid, G->second.Refs, json()});
+                continue;
+            }
+        }
         std::string Bytes;
         if (!ReadFile(P, Bytes)) { Err = "cannot read " + P.string(); return false; }
+        ++g_GatherReads;
+        Gathered G;
+        G.Stamp = Stamp;
         json J = NodeGraph::ParseBounded(Bytes);
-        if (J.is_discarded() || !ManifestModel::IsNodeObject(J) || J.contains("CID")) continue;   // a draft is its author's
-        std::string C = Cid::OfNode(J);
-        if (C.empty()) continue;
-        Out.push_back({P, std::move(J), std::move(C)});
+        if (!J.is_discarded() && ManifestModel::IsNodeObject(J) && !J.contains("CID"))   // a draft is its author's
+        {
+            G.Cid = Cid::OfNode(J);
+            if (!G.Cid.empty())
+            {
+                G.Node = true;
+                NodeRefs::Each(J, [&](const std::string &Ref) { G.Refs.push_back(Ref); });
+                Out.push_back({P, G.Cid, G.Refs, std::move(J)});
+            }
+        }
+        if (!Stamp.empty()) { std::lock_guard<std::mutex> Lk(g_GatheredMu); g_Gathered[P.string()] = std::move(G); }
     }
     if (Ec) { Err = "cannot read the library under " + Root.string() + ": " + Ec.message(); return false; }
+    return true;
+}
+
+//A library file's node, read now if the gather took it from what it knew: false, with Err, when the file is not the
+//node it was (changed since), so nothing is saved over it.
+bool LoadNode(LibFile &F, std::string &Err)
+{
+    if (!F.Node.is_null()) return true;
+    std::string Bytes;
+    if (!ReadFile(F.Path, Bytes)) { Err = "cannot read " + F.Path.string(); return false; }
+    ++g_GatherReads;
+    json J = NodeGraph::ParseBounded(Bytes);
+    if (J.is_discarded() || Cid::OfNode(J) != F.Cid) { Err = F.Path.string() + " changed while it was being saved"; return false; }
+    F.Node = std::move(J);
     return true;
 }
 
@@ -567,11 +620,12 @@ SaveReport Document::Save(const fs::path &Dir, const std::vector<fs::path> &Root
             if (!GatherLibrary(Root, Dir, Lib, Err)) { R.Error = "Nothing was saved: " + Err; return R; }
         }
         std::vector<LibFile> Unique;
+        std::unordered_map<std::string, fs::path> DirCanon;   // a folder's place, resolved once for all its files
         for (LibFile &F : Lib)
         {
-            std::error_code Ec;
-            const fs::path C = fs::weakly_canonical(F.Path, Ec);
-            if (Seen.insert(Ec ? F.Path : C).second) Unique.push_back(std::move(F));
+            const auto [At, New] = DirCanon.try_emplace(F.Path.parent_path().string());
+            if (New) { std::error_code Ec; At->second = fs::weakly_canonical(F.Path.parent_path(), Ec); if (Ec) At->second = F.Path.parent_path(); }
+            if (Seen.insert(At->second / F.Path.filename()).second) Unique.push_back(std::move(F));
         }
         Lib.swap(Unique);
         std::sort(Lib.begin(), Lib.end(), [](const LibFile &A, const LibFile &B) { return A.Path < B.Path; });
@@ -605,7 +659,7 @@ SaveReport Document::Save(const fs::path &Dir, const std::vector<fs::path> &Root
     for (size_t K = 0; K < Lib.size(); ++K)
     {
         ByName[Lib[K].Cid].push_back(K);
-        NodeRefs::Each(Lib[K].Node, [&](const std::string &Ref) { Referrers[Ref].push_back(K); });
+        for (const std::string &Ref : Lib[K].Refs) Referrers[Ref].push_back(K);
     }
     std::set<size_t> LibPending;
     {
@@ -619,6 +673,11 @@ SaveReport Document::Save(const fs::path &Dir, const std::vector<fs::path> &Root
                 for (size_t K : *Hits)
                     if (LibPending.insert(K).second) Frontier.push_back(Lib[K].Cid);
         }
+    }
+    for (size_t K : LibPending)
+    {
+        std::string Err;
+        if (!LoadNode(Lib[K], Err)) { R.Error = "Nothing was saved: " + Err; return R; }
     }
     std::set<int> DocPending;
     for (int I = 0; I < Count(); ++I) DocPending.insert(I);
@@ -712,7 +771,9 @@ SaveReport Document::Save(const fs::path &Dir, const std::vector<fs::path> &Root
     //    was deleted goes.
     //What still names a node, once everything is renamed: the library's nodes (as they will be) and the instances.
     std::set<std::string> NamedElsewhere;
-    for (const LibFile &F : Lib) NodeRefs::Each(NodeRefs::Remapped(F.Node, M), [&](const std::string &Ref) { NamedElsewhere.insert(Ref); });
+    //From what each file names (kept with it, read or not): a file the gather knew is not read, its node empty here.
+    for (const LibFile &F : Lib)
+        for (const std::string &Ref : F.Refs) { const auto It = M.find(Ref); NamedElsewhere.insert(It == M.end() ? Ref : It->second); }
     for (Instance &In : Instances)
     {
         json J = In.J;
@@ -844,5 +905,7 @@ SaveReport Document::Save(const fs::path &Dir, const std::vector<fs::path> &Root
     R.Ok = true;
     return R;
 }
+
+long long DebugGatherReads() { return g_GatherReads.load(); }
 
 }

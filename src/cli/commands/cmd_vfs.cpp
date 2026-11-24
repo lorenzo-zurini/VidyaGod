@@ -106,7 +106,7 @@ VG_COMMANDS
             json Ls = json::array();
             for (const auto &X : L.Sp.layers)
                 Ls.push_back({{"type", T[static_cast<int>(X.type)]}, {"source", X.source}, {"target", X.target}, {"bases", X.bases},
-                              {"bytes_only", X.bytesOnly}});
+                              {"bytes_only", X.bytesOnly}, {"fixed", X.fixed}});
             return json{{"mountpoint", L.Sp.mountpoint}, {"writable", L.Sp.writelayer}, {"read_only", L.Sp.readOnly},
                         {"case_insensitive", L.Sp.caseInsensitive}, {"layers", Ls}};
         }, {} });
@@ -259,7 +259,7 @@ VG_COMMANDS
         "vfs cat", "read a file of the filesystem (to stdout, or --out a file)", "",
         { SpecArg(), PathArg(), Opt("out", "write it here"), Opt("bytes", "at most this many", Type::Int), Opt("offset", "from here", Type::Int) },
         { "vfs cat spec.json 'drive_c/Games/AoE2/language.ini'", "vfs cat spec.json 'x/y.bin' --out /tmp/y.bin" },
-        { "VfsOpen", "VfsRead", "VfsRelease", "vgdelta::DeltaByteSource::scattered", "ConcatByteSource::scattered" }, Needs::Config, false,
+        { "VfsOpen", "VfsRead", "VfsReadFrom", "VfsRelease", "vgdelta::DeltaByteSource::scattered", "ConcatByteSource::scattered" }, Needs::Config, false,
         [](Command::Context &, const json &A) {
             Loaded L = Load(A);
             OpenFile *F = nullptr;
@@ -278,9 +278,11 @@ VG_COMMANDS
                 Off += static_cast<uint64_t>(N);
                 if (Max >= 0 && static_cast<long long>(Data.size()) >= Max) { Data.resize(static_cast<size_t>(Max)); break; }
             }
+            int Fd = -1; uint64_t Pos = 0; size_t Len = 0;
+            const bool FromFile = VfsReadFrom(F, 1, 0, Fd, Pos, Len);   // a mount hands such a read over from the file itself
             VfsRelease(F);
-            if (A.contains("out")) { std::ofstream(Command::Str(A, "out"), std::ios::binary) << Data; return json{{"bytes", Data.size()}, {"out", Command::Str(A, "out")}}; }
-            return json{{"bytes", Data.size()}, {"data", Data}};
+            if (A.contains("out")) { std::ofstream(Command::Str(A, "out"), std::ios::binary) << Data; return json{{"bytes", Data.size()}, {"out", Command::Str(A, "out")}, {"from_its_file", FromFile}}; }
+            return json{{"bytes", Data.size()}, {"data", Data}, {"from_its_file", FromFile}};
         }, {} });
 
     Command::Register({
@@ -375,9 +377,9 @@ VG_COMMANDS
         "vfs zip", "a zip as the filesystem serves it: its entries, stored or not, offsets; read one",
         "The archive's index (each entry's name, size, a folder or a link, stored or compressed), its first compressed "
         "entry (a zip the filesystem cannot mount), and with --entry that entry's bytes (--out a file; a link resolved "
-        "within the archive).", { Pos("zip", "the zip file"), Opt("entry", "read this entry"), Opt("out", "(--entry) write it here"), Flag("offsets", "each entry's data offset") },
+        "within the archive).", { Pos("zip", "the zip file"), Opt("entry", "read this entry"), Opt("out", "(--entry) write it here"), Flag("offsets", "each entry's data offset"), Flag("libzip", "also index it through libzip and say where the two differ") },
         { "vfs zip game.zip", "vfs zip game.zip --entry data/readme.txt" },
-        { "BuildZipIndex", "OpenZipEntry", "ReadZipEntry", "ResolveZipSymlink", "ZipDataOffset", "zipscan::WalkCentralDir", "zipscan::CentralDirOffsets",
+        { "BuildZipIndex", "BuildZipIndexLibzip", "OpenZipEntry", "ReadZipEntry", "ResolveZipSymlink", "ZipDataOffset", "zipscan::WalkCentralDir", "zipscan::WalkCentralDirFull", "zipscan::CentralDirOffsets",
           "zipscan::FirstCompressedEntry", "zipscan::LocalDataOffset", "zipscan::Rd16", "zipscan::Rd32", "zipscan::Rd64",
           "MmapByteSource::Map", "MmapByteSource::pread", "MmapByteSource::size", "ByteSource::preadAll" }, Needs::Config, false,
         [](Command::Context &, const json &A) {
@@ -386,6 +388,22 @@ VG_COMMANDS
             const auto Ix = BuildZipIndex(M, Z);
             if (!Ix) throw std::runtime_error("not a zip it can read");
             json Out = {{"entries", Ix->byName.size()}, {"first_compressed", zipscan::FirstCompressedEntry(*M)}};
+            if (Command::Bool(A, "libzip", false))
+            {   // the same archive through libzip's own reading: what a mount falls back to; the two must agree
+                const auto Lz = BuildZipIndexLibzip(M, Z);
+                size_t Differ = 0;
+                for (const auto &[N, E] : Ix->byName)
+                {
+                    const auto It = Lz ? Lz->byName.find(N) : decltype(Lz->byName)::const_iterator{};
+                    if (!Lz || It == Lz->byName.end() || It->second.size != E.size || It->second.mtime != E.mtime
+                        || It->second.isDir != E.isDir || It->second.symlink != E.symlink) ++Differ;
+                }
+                uint64_t Records = 0;
+                zipscan::WalkCentralDirFull(*M, [&](const zipscan::CdEntry &) { ++Records; return true; });
+                Out["libzip_entries"] = Lz ? Lz->byName.size() : 0;
+                Out["libzip_differ"] = Differ;
+                Out["records"] = Records;
+            }
             if (A.contains("entry"))
             {
                 const std::string N = NormalizeVPath(Command::Str(A, "entry"));

@@ -31,6 +31,7 @@
 #include <memory>
 #include <string>
 #include <QPointer>
+#include <utility>
 
 PackagesView::PackagesView(AppModel &model, QWidget *parent)
     : QWidget(parent), Model(model)
@@ -58,20 +59,32 @@ void PackagesView::buildUi()
     layout->addWidget(PackagesScrollArea);
 }
 
+void PackagesView::showEvent(QShowEvent *E)
+{
+    QWidget::showEvent(E);
+    if (Stale) rebuildList();
+}
+
 void PackagesView::rebuildUpdates()
 {
-    //Rebuilt whole each time: a stale row (a switch applied meanwhile) must not linger, and only the LATEST refresh's
-    //result is shown (two in flight would otherwise add two lists).
-    const unsigned Gen = ++UpdatesGeneration;
+    //Rebuilt whole each time: a stale row (a switch applied meanwhile) must not linger. One scan at a time — each
+    //copied the config and read the installed packages' node files — and only the latest is shown: one asked while
+    //one runs runs after it, instead of beside it.
+    if (!isVisible()) { Stale = true; return; }
+    if (Updating) { UpdateAgain = true; return; }
     QLayout *L = UpdatesBox->layout();
     while (QLayoutItem *It = L->takeAt(0)) { if (It->widget()) It->widget()->deleteLater(); delete It; }
     if (!IpfsWrapper::Available() || !Model.config()) return;
+    Updating = true;
+    ++UpdateScans;
     auto Cfg = std::make_shared<const nlohmann::ordered_json>(*Model.config());
     auto Found = std::make_shared<std::vector<PackageCatalog::PackageUpdate>>();
     QPointer<QWidget> Box = UpdatesBox;
     AsyncWork::Run(this, [Cfg, Found]{ *Found = PackageCatalog::AvailableUpdates(*Cfg); },
-        [this, Box, Found, Gen]{
-            if (!Box || Gen != UpdatesGeneration || Found->empty()) return;
+        [this, Box, Found]{
+            Updating = false;
+            if (std::exchange(UpdateAgain, false)) { rebuildUpdates(); return; }   // found for an older library
+            if (!Box || Found->empty()) return;
             QGroupBox *G = new QGroupBox("Other versions", Box);
             QGridLayout *Grid = new QGridLayout(G);
             int Row = 0;
@@ -139,6 +152,8 @@ void PackagesView::rebuildList()
     //What is installed comes from the index (the packages LIBRARY holds are its nodes; the config lists only those added
     //from outside it): found off the GUI thread — hydration stats every content file, sizes walk every folder — one
     //scan at a time.
+    if (!isVisible()) { Stale = true; return; }   // hidden: every catalog change rebuilt a page nobody looked at
+    Stale = false;
     rebuildUpdates();
     if (Listing) { ListAgain = true; return; }   // a scan is under way: one more when it ends, not a pile of them
     Listing = true;

@@ -156,7 +156,8 @@ int DehydrateNode(const NodeIndex &Idx, const std::string &LaunchNodeId)
         if (std::filesystem::exists(Local, Ec) && std::filesystem::is_regular_file(Local, Ec))
         { std::filesystem::remove(Local, Ec); if (!Ec) ++Removed; }
     }, false, false);
-    for (const std::string &C : Cids) { IpfsWrapper::Unpin(C); IpfsWrapper::DropRef(C); }
+    for (const std::string &C : Cids) IpfsWrapper::Unpin(C);
+    IpfsWrapper::DropRefs({ Cids.begin(), Cids.end() });   // together: a drop each was its own commit and compaction
     return Removed;
 }
 

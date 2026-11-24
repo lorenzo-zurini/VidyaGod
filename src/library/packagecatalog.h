@@ -173,12 +173,15 @@ void SetGolden(nlohmann::ordered_json &GlobalConfigJSON, const std::string &Pack
 struct SeedReport
 {
     int Walked = 0, Seeded = 0, Covers = 0, Repaired = 0, SizesStamped = 0, BadCovers = 0;
+    int Read = 0;   // files read back to check their CID (a file unchanged since it was checked is not)
     std::vector<std::string> Unfetchable, Unshareable;
 };
 //Seed ONE node's content — each content layer's file and each tile cover — into IPFS where its SOURCE is missing or
 //no longer serves its bytes, and write SOURCE and SIZE into the node. IN MEMORY: the node's bytes change, so the
 //caller saves it as a re-mint (PkgDoc::Document::Save), never by rewriting its file. False (Error) when a layer's file
 //exists and cannot be seeded; a cover that cannot be seeded is only reported.
+//Reads and writes of CACHE/seedverified.json since start (a publish reads it once and writes it once).
+long long DebugVerifiedFileIo();
 [[nodiscard]] bool SeedNodeContent(nlohmann::ordered_json &Node, const std::filesystem::path &PackageDir, SeedReport &R,
                                    bool &Changed, std::string *Error = nullptr);
 
@@ -389,6 +392,8 @@ struct PackageUpdate
 // Every such version, for the libraries peers share with us (local: no network).
 // A version every node of which is already here (one switched to before, the nodes it dropped kept for games that
 // still contain them) is offered only once something kept may go.
+// TEST ONLY: installed package folders whose node files the update scan read (one unchanged since is not read).
+long long DebugNodeCidReads();
 std::vector<PackageUpdate> AvailableUpdates(const nlohmann::ordered_json &GlobalConfigJSON);
 // A peer's version fetched beside the library (never inside LIBRARY or CATALOG: nothing indexes it), and the plan to
 // switch to it: every node it lists comes in; an installed node it does not list goes — unless another installed

@@ -317,12 +317,16 @@ void MainWindow::RefreshPackage(const QString & PackagePath)
     }
 
     QTimer::singleShot(0, [Mw, Dialogs]() {
-        // Rebuild the catalog through the live MainWindow's model (every tab refreshes via catalogChanged).
-        if (Mw && Mw->Model) Mw->Model->rebuildCatalog();
-        // Reload any still-open prelaunch dialog(s) for this bundle, onto the index just built: theirs is the old one.
-        const std::shared_ptr<const NodeIndex> Fresh = Mw && Mw->Model ? Mw->Model->catalogSnapshot() : nullptr;
-        for (const QPointer<PreLaunchWindow> & PL : Dialogs)
-            if (PL) PL->ReloadAndRebuild(Fresh);
+        if (!Mw || !Mw->Model) return;
+        //The library read again off the GUI thread (every tab refreshes via catalogChanged): a rebuild here held the
+        //window for the whole index build at every save of a package being authored. Any still-open prelaunch dialog
+        //for this bundle reloads once it is in: theirs is the old index.
+        AppModel *M = Mw->Model;
+        QObject::connect(M, &AppModel::diskChecked, Mw, [M, Dialogs](bool) {
+            for (const QPointer<PreLaunchWindow> & PL : Dialogs)
+                if (PL) PL->ReloadAndRebuild(M->catalogSnapshot());
+        }, Qt::SingleShotConnection);
+        M->refreshFromDisk();
     });
 }
 
