@@ -43,9 +43,13 @@ size_t ReportMissingSources(const nlohmann::ordered_json &Spec, bool SkipRuntime
 [[nodiscard]] bool MountVFS(struct ContainerParams &ContainerParams);
 
 //Writes Spec to SpecPath, spawns vidyagodfs onto Mountpoint, polls until live. The low-level mount primitive
-//shared by MountVFS, the runner mount, and runner install.
+//shared by MountVFS, the runner mount, and runner install. Uncached: the helper's --uncached (Linux; ContainerParams::
+//SandboxRemountsRuntime) — WinFsp's mount serves the game itself.
 [[nodiscard]] bool SpawnVidyagodfs(const nlohmann::ordered_json &Spec, const std::filesystem::path &Mountpoint,
-                     const std::filesystem::path &SpecPath, long long *OutPid = nullptr);
+                     const std::filesystem::path &SpecPath, long long *OutPid = nullptr, bool Uncached = false);
+//The helper's command line on Linux (after the program): spec, mountpoint, the spawner to watch, its options.
+std::vector<std::string> HelperArgs(const std::filesystem::path &SpecPath, const std::filesystem::path &Mountpoint,
+                                    const std::string &WatchPid, bool Uncached);
 
 //Mounts the selected runner's build (RunnerLayers) read-only at RunnerMountPath. No-op when the runner ships no build.
 // The runner build's mount plan (the runner's own zip/delta chain, mounted beside the runtime). Split out from

@@ -262,10 +262,15 @@ public:
     std::vector<std::filesystem::path> CleanupPersistPaths;
 
     //SANDBOX (opt-in bubblewrap): the vidyagodfs (spec, mountpoint) pairs to RE-mount inside the sandbox namespace.
-    //When sandboxed, BuildContainerRuntime still mounts on the host (to apply OVERRIDE edits into the writelayer),
-    //then unmounts and records the specs here; Execute's bwrap runs `--sandbox-init` which mounts them inside the
-    //game's own mount namespace (so the composed FS is scoped to the game, invisible to the host, self-cleaning).
+    //BuildContainerRuntime mounts on the host (to apply OVERRIDE edits into the writelayer) and records the specs here;
+    //Execute's bwrap runs `--sandbox-init`, which mounts them again inside the game's own mount namespace, on top (the
+    //composed FS is scoped to the game). The host mount stays, for teardown's captures (SandboxRemountsRuntime).
     std::vector<std::pair<std::string, std::string>> SandboxMounts;
+    //The game runs in the sandbox, on its own mount of the runtime's spec (SandboxMounts): the host mount only builds and
+    //tears down, and is mounted uncached so teardown reads what the game wrote through the other mount as it is now —
+    //its kernel's caches of misses and listings made before the game ran answered with the runtime as it was then.
+    //Not for a tool run unsandboxed on the host mount (an authoring session: ContainerWrapper::SetNotAGame).
+    bool SandboxRemountsRuntime = false;
 
     //Returns a map of all ContainerParams fields keyed by their %VARIABLE% token names.
     //Used by StringVariableSubstitution to expand tokens in runner ENV, args, and subcomponent paths.

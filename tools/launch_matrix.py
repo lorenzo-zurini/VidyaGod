@@ -195,6 +195,10 @@ def main():
             if run is not None and run.returncode != 0:
                 failures.append(f"{name}: the run exited {run.returncode}")
                 failures += ["    " + l for l in run.stdout.splitlines() if "[ERR" in l][-4:]
+            #The game ran on the sandbox's own mount; the host's, which teardown captures through, is mounted uncached
+            #(else its kernel answers from what it saw before the game wrote: a new save missing, a folder's old list).
+            if run is not None and "(uncached: the game runs on the sandbox's own mount of it)" not in run.stdout + run.stderr:
+                failures.append(f"{name}: the runtime's host mount was not mounted uncached (teardown may read it stale)")
             report = []
             inside = False
             for line in (run.stdout.splitlines() if run else []):

@@ -484,7 +484,7 @@ bool VfsMount::MountVFS(struct ContainerParams &ContainerParams)
 
     std::filesystem::path SpecPath = ContainerParams.TempPath / "vidyagodfs.spec.json";
     long long HelperPid = 0;
-    if (!VfsMount::SpawnVidyagodfs(Spec, ContainerParams.RuntimePath, SpecPath, &HelperPid))
+    if (!VfsMount::SpawnVidyagodfs(Spec, ContainerParams.RuntimePath, SpecPath, &HelperPid, ContainerParams.SandboxRemountsRuntime))
     {
         LogErr("VfsMount::MountVFS", "vidyagodfs mount did not appear at " + ContainerParams.RuntimePath.string());
         return false;
@@ -501,9 +501,17 @@ bool VfsMount::MountVFS(struct ContainerParams &ContainerParams)
     return true;
 }
 
+std::vector<std::string> VfsMount::HelperArgs(const std::filesystem::path &SpecPath, const std::filesystem::path &Mountpoint,
+                                              const std::string &WatchPid, bool Uncached)
+{
+    std::vector<std::string> A = { SpecPath.string(), Mountpoint.string(), "--watch-pid", WatchPid, "-o", "auto_cache" };
+    if (Uncached) A.push_back("--uncached");
+    return A;
+}
+
 //Low-level vidyagodfs mount: write Spec to SpecPath, spawn the helper onto Mountpoint, poll until live.
 bool VfsMount::SpawnVidyagodfs(const nlohmann::ordered_json &Spec, const std::filesystem::path &Mountpoint,
-                                       const std::filesystem::path &SpecPath, long long *OutPid)
+                                       const std::filesystem::path &SpecPath, long long *OutPid, bool Uncached)
 {
     //Every mount in the app goes through here — the runtime, the runner build, runner install — so this is the
     //one place that can guarantee a plan's writable paths exist before the helper is handed the spec. Doing it
@@ -516,7 +524,8 @@ bool VfsMount::SpawnVidyagodfs(const nlohmann::ordered_json &Spec, const std::fi
         Out << Spec.dump(2);
     }
     const std::string Helper = VidyagodfsPath();
-    LogOut("VfsMount::SpawnVidyagodfs", "Mounting " + Mountpoint.string() + " via " + Helper);
+    LogOut("VfsMount::SpawnVidyagodfs", "Mounting " + Mountpoint.string() + " via " + Helper
+           + (Uncached ? " (uncached: the game runs on the sandbox's own mount of it)" : ""));
     //--watch-pid: the helper's watchdog auto-unmounts if this (spawner) process dies, so a crash never leaks a mount.
     const std::string WatchPid = std::to_string(QCoreApplication::applicationPid());
 #ifdef _WIN32
@@ -578,7 +587,7 @@ bool VfsMount::SpawnVidyagodfs(const nlohmann::ordered_json &Spec, const std::fi
     return false;
 #else
     std::filesystem::create_directories(Mountpoint);   // FUSE mounts onto an existing empty dir
-    int result = RunCommand(Helper, {SpecPath.string(), Mountpoint.string(), "--watch-pid", WatchPid, "-o", "auto_cache"});
+    int result = RunCommand(Helper, HelperArgs(SpecPath, Mountpoint, WatchPid, Uncached));
     LogOut("VfsMount::SpawnVidyagodfs", "vidyagodfs spawn exit: " + std::to_string(result));
     if (OutPid) *OutPid = 0;   // Linux unmounts by mountpoint (fusermount3), not by pid
     for (int i = 0; i < 50; ++i)

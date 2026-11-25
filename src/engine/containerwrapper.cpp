@@ -297,6 +297,8 @@ bool ContainerWrapper::BuildContainerRuntime()
     if (Halted()) return false;
     {
         StepScope Step(9, "Assembling and mounting the runtime filesystem");
+        //A game runs on the sandbox's own mount of this spec (step 11); only a tool run (NotAGame) runs on this one.
+        ContainerParams.SandboxRemountsRuntime = !NotAGame;
         if (!VfsMount::MountVFS(this->ContainerParams)) return false;
     }
     //Case-conflict scan: a FULL walk of the freshly-mounted FUSE tree (every file, through the FS) whose
@@ -427,7 +429,7 @@ bool ContainerWrapper::Execute(const std::string &OverrideExe, const std::vector
     }
 
     //----- SANDBOX (MANDATORY): re-invoke ourselves as the nested `--sandbox-init` inside one hermetic bwrap namespace,
-    //which re-mounts the vidyagodfs spec(s) (deferred + host-unmounted in BuildContainerRuntime), optionally brings up
+    //which re-mounts the vidyagodfs spec(s) recorded in BuildContainerRuntime (over the host mount), optionally brings up
     //the overlay TUN, then execs the game. RO host root (the real home included) + writable runtime/instance + a private
     //home (FromParams); the composed FS and the virtual LAN live entirely inside the sandbox. Not applied under an
     //OverrideExe. -----

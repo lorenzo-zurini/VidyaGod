@@ -219,7 +219,7 @@ VG_COMMANDS
         With(LaunchArgs(), { Flag("yes", "yes, run it") }), { "launch run --node 'Patch 2.0a' --yes" },
         { "ContainerWrapper::BuildContainerRuntime", "ContainerWrapper::Execute", "LaunchCommand::Compose", "ContainerWrapper::Cleanup", "LaunchSources::EnsureSources",
           "LaunchSources::MaterializeLayers", "LaunchSources::VerifyDependencies", "VfsMount::MountVFS", "VfsMount::PrepareMount", "VfsMount::BuildLayerSpec",
-          "VfsMount::BuildRunnerLayerSpec", "VfsMount::MountRunnerBuild", "VfsMount::RunnerShipsMountableBuild", "VfsMount::SpawnVidyagodfs",
+          "VfsMount::BuildRunnerLayerSpec", "VfsMount::MountRunnerBuild", "VfsMount::RunnerShipsMountableBuild", "VfsMount::SpawnVidyagodfs", "VfsMount::HelperArgs",
           "VfsMount::MaterializePlanPaths", "VfsMount::ReportMissingSources", "VfsMount::CheckCaseConflicts", "Sessions::ClaimSession",
           "Sessions::ReleaseSession", "VfsMount::UnmountDurable", "VfsMount::UnmountLazy", "PersistLayer::SeedPersistFiles", "PersistLayer::CapturePersistFiles",
           "PersistLayer::PrepareWriteDir", "PersistLayer::PrepareWritePath", "PersistLayer::HasSavedCopy", "PersistLayer::SavedCopy", "PersistLayer::Printable",

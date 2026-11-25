@@ -214,6 +214,19 @@ private slots:
     }
 #endif
 
+    // The host mount of a game's runtime is uncached: the game writes through the sandbox's own mount of the spec and
+    // teardown captures through this one. A mount that serves the program itself (a tool run, the runner build) keeps
+    // the kernel's caches. Teeth: --uncached always or never; the spawner to watch, or auto_cache, dropped.
+    void only_a_host_mount_the_sandbox_mounts_again_is_uncached()
+    {
+        const auto Args = [](bool U) { return VfsMount::HelperArgs("/t/spec.json", "/t/RUNTIME", "4242", U); };
+        const std::vector<std::string> Cached = { "/t/spec.json", "/t/RUNTIME", "--watch-pid", "4242", "-o", "auto_cache" };
+        QVERIFY(Args(false) == Cached);
+        std::vector<std::string> Uncached = Cached;
+        Uncached.push_back("--uncached");
+        QVERIFY(Args(true) == Uncached);
+    }
+
     // A package's own folders and DEFAULTDATA do not change under the mount: they are marked fixed, so the FS answers
     // their lookups from one listing; a KEEP folder (the user's), and one another mount fills (runtime-sourced), are
     // not. The launch's mounts — the runner build's and the game's — say how many they are, to share one budget of
