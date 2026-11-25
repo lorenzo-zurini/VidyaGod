@@ -715,6 +715,15 @@ void Nodes(const NodeIndex &Idx, std::vector<std::string> &Errors, std::vector<s
     //maps to where the runner puts it — not a variable, and never a typo.
     std::set<std::string> Anchors;
     std::map<std::string, std::string> AnchorGuest;                      // %Anchor% -> its guest path, lowercased, '/'
+    //A host folder (%HostWindows%/…: a windows-native runner) is found on the machine at launch, not placed in a prefix:
+    //it never disagrees with a fixed guest path. Each kind is compared within itself, and the fixed place is the map
+    //packages are checked against whichever runner came first; a host folder only where no runner fixes the anchor.
+    auto IsHostFolder = [](const std::string &G) {                       // G lowercased: %hostwindows%, %hostappdata%/x
+        for (const std::string &N : Platform::HostFolderNames())
+            if (G.rfind("%host" + ToLowerAscii(N) + "%", 0) == 0) return true;
+        return false;
+    };
+    std::map<std::string, std::string> AnchorHost;                       // %Anchor% -> its host folder, as AnchorGuest
     for (const auto &[Id, N] : Idx.Nodes)
         for (const auto &L : (*N.Json)["LAYERS"])
             if (L.contains("EXEC") && L["EXEC"].is_array())
@@ -729,11 +738,12 @@ void Nodes(const NodeIndex &Idx, std::vector<std::string> &Errors, std::vector<s
                                 //own layout: nothing a package's spelling is checked against, and no disagreement.
                                 if (G.rfind("%runtimepath%", 0) == 0) continue;
                                 std::replace(G.begin(), G.end(), '\\', '/');
-                                const auto [It, New] = AnchorGuest.emplace(A, G);
+                                const auto [It, New] = (IsHostFolder(G) ? AnchorHost : AnchorGuest).emplace(A, G);
                                 if (!New && It->second != G)       // validated against one spelling: say which differ
                                     Warnings.push_back("runners disagree where " + A + " is ('" + It->second + "' vs '" + G
                                                        + "', node '" + Id + "') — packages are checked against the first one");
                             }
+    AnchorGuest.merge(AnchorHost);                                       // a fixed place kept where both exist
     //A package names places only by anchor: a drive letter (C:/…, E:\) is where one runner happens to put things —
     //and a place has ONE spelling, its most specific anchor (%SysDir32%/x, never %Windows%/syswow64/x), because
     //addresses fold and own by their spelling. A runner's own GUEST_ROOTS/DRIVES are the map, not a use.

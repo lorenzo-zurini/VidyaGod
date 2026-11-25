@@ -1073,6 +1073,56 @@ TEST(validate_places_anchors_at_the_start_of_paths_and_reads_every_value)
     CHECK(AnyContains(W, "runners disagree where %GameDir% is"));
 }
 
+// A windows-native runner finds the Windows folders on the machine at launch (%HostWindows%, …); a prefix runner puts
+// them at fixed guest paths. Both are right for their platform: no disagreement, and the fixed paths are the map
+// packages are checked against whichever runner sorts first. Two prefix runners that place a folder differently still
+// warn, and so do two host runners that name different host folders. Teeth: drop the host-folder rule and
+// "a-native"/"z-native" disagree with the prefix runners; let the host map win the merge and %Windows%/syswow64 is never
+// seen inside %SysDir32%; keep only the fixed places and %Public%/documents is never seen inside %PublicDocs%.
+TEST(validate_host_folder_runners_never_disagree_with_prefix_runners)
+{
+    NodeIndex Idx;
+    auto Native = [](const std::string &Win) {
+        ordered_json R = NF::Runner("win64", {"win32"}, "%RunnerMount%/native");
+        R["LAYERS"][0]["EXEC"][0]["GUEST_ROOTS"] = { {"%Windows%", Win}, {"%SysDir32%", "%HostSysDir32%"},
+                                                     {"%AppData%", "%HostAppData%"}, {"%Public%", "%HostPublic%"},
+                                                     {"%PublicDocs%", "%HostPublic%\\Documents"} };
+        return R;
+    };
+    auto Prefix = [](const std::string &Win) {
+        ordered_json R = NF::Runner("linux64", {"win32"}, "%RunnerMount%/proton");
+        R["LAYERS"][0]["EXEC"][0]["GUEST_ROOTS"] = { {"%Windows%", Win}, {"%SysDir32%", Win + "\\syswow64"},
+                                                     {"%AppData%", "C:\\users\\steamuser\\AppData\\Roaming"} };
+        R["LAYERS"][0]["EXEC"][0]["DRIVES"] = { {"C:", "%PrefixRoot%/drive_c"} };
+        return R;
+    };
+    AddChain(Idx, "a-native", { Native("%HostWindows%") });            // before the prefix runners…
+    AddChain(Idx, "b-proton", { Prefix("C:\\windows") });
+    AddChain(Idx, "c-proton", { Prefix("c:/Windows") });                // the same place, spelled otherwise
+    AddChain(Idx, "z-native", { Native("%HostWindows%") });            // …and after them
+    Add(Idx, { {"CID", "g"}, {"LABEL", "g"}, {"LAYERS", ordered_json::array({
+        {{"FILE", "a.dll"}, {"TARGET", "FILES/%Windows%/syswow64/a.dll"}},
+        {{"FILE", "r.txt"}, {"TARGET", "FILES/%Public%/documents/r.txt"}} })} });
+    std::vector<std::string> W;
+    const auto E = Errors(Idx, &W);
+    CHECK(!AnyContains(W, "runners disagree"));
+    CHECK(AnyContains(E, "'FILES/%Windows%/syswow64/a.dll' is inside %SysDir32%"));
+    // An anchor only host runners place is still a map: its host folders nest (%PublicDocs% inside %Public%).
+    CHECK(AnyContains(E, "'FILES/%Public%/documents/r.txt' is inside %PublicDocs%"));
+    // Two host runners that name different host folders for one anchor do disagree.
+    AddChain(Idx, "y-native", { Native("%HostSysDir64%") });
+    Errors(Idx, &W);
+    CHECK(AnyContains(W, "runners disagree where %Windows% is ('%hostwindows%' vs '%hostsysdir64%', node 'y-native')"));
+    CHECK(!AnyContains(W, "runners disagree where %SysDir32%"));
+    // Two prefix runners that place it differently still warn — against the first fixed place.
+    AddChain(Idx, "y-native", { Native("%HostWindows%") });
+    AddChain(Idx, "d-proton", { Prefix("D:\\windows") });
+    Errors(Idx, &W);
+    CHECK(AnyContains(W, "runners disagree where %Windows% is ('c:/windows' vs 'd:/windows', node 'd-proton')"));
+    CHECK(AnyContains(W, "runners disagree where %SysDir32% is ('c:/windows/syswow64' vs 'd:/windows/syswow64', node 'd-proton')"));
+    CHECK(!AnyContains(W, "runners disagree where %AppData%"));
+}
+
 static void MakeZip(const std::string &Path, bool Stored)
 {
     static const char *Data = "vgtest payload aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";   // compressible
