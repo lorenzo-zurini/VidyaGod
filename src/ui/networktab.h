@@ -16,19 +16,21 @@ class QLineEdit;
 class QPushButton;
 class QCheckBox;
 class QGroupBox;
-class QTableWidget;
+class QListWidget;
 class QTimer;
 class QToolButton;
 class QVBoxLayout;
 namespace IpfsWrapper { struct NearbyPeer; }
 
-// NetworkTab — the Peers page: the desktop's Peers tab and controller mode's Peers page (hosted there). Every
-// peer is the same: a row of the table with its permissions — Accepted, Share: <library> (one per library of mine),
-// Receive, vLAN, Presence — under a "New peers" row of defaults, and its menu (Decline / Block / Remove). Pairing asks
-// for those same permissions where it happens, as ticks that start as the defaults row:
+// NetworkTab — the Peers page (the desktop's Peers tab; controller mode's Advanced… page). Every peer is the same: a
+// row of the list — its name, online or not, how many games it shares — and, chosen, its details beside it: where it
+// stands (paired, asked, blocked) and its permissions as labelled switches, each with what it does in one sentence —
+// Share <library> (one per library of mine), Receive, Virtual LAN, Presence — and More ▾ (Block… / Remove…, asked
+// first). What a new peer is given is a small Defaults… dialog; pairing asks for the same permissions where it happens,
+// as ticks that start as those defaults:
 //  - what you share, in one line, and the one press it may need (prepare a library for sharing, turn networking on);
 //  - waiting on you: each request, with the ticks, accepted or declined;
-//  - the table;
+//  - the peers, and the chosen one's details;
 //  - add someone: the VidyaGod devices on your network, or a peer code, each with the ticks and one press;
 //  - advanced, folded: name, auto-accept, publish everything, identity backup.
 // Thin view over PeerSharing (the model of all of it) + IpfsWrapper::PeerList / NearbyPeers.
@@ -53,8 +55,11 @@ private:
     bool Showing = false;            // setActive: the page is the one showing
     bool Stale = false;              // something changed while it was hidden
     int  Refreshes = 0;
-    void rebuildRows();              // the lists and the table, rebuilt only when what they show changed
-    void rebuildTable();
+    void rebuildRows();              // the lists and the peers, rebuilt only when what they show changed
+    void rebuildPeers();             // the list of peers (keeps the chosen one)
+    void rebuildDetails();           // the chosen peer's details
+    void openDefaults();             // the Defaults… dialog (what a new peer is given)
+    QString chosenPeer() const;
     void addPeerClicked();
     void setNickClicked();
     void publishClicked();
@@ -72,7 +77,9 @@ private:
     QPushButton *  SendButton    = nullptr;   // "Send request": only while a request can go
     QGroupBox *    WaitingBox    = nullptr;
     QVBoxLayout *  WaitingRows   = nullptr;
-    QTableWidget * Table         = nullptr;
+    QListWidget *  List          = nullptr;   // the peers
+    QWidget *      Details       = nullptr;   // the chosen one's
+    QVBoxLayout *  DetailsLayout = nullptr;
     QLabel *       EmptyHint     = nullptr;   // under the table while there is nobody
     QGroupBox *    AddBox        = nullptr;
     QVBoxLayout *  NearbyRows    = nullptr;
@@ -90,6 +97,7 @@ private:
     QTimer *       NearbyTimer   = nullptr;   // polls the nearby devices while the page shows
     QString        Shown = QStringLiteral("\x01");   // what the rows show now (never what an empty page shows: the first pass builds)
     QString        TableShown = QStringLiteral("\x01");
+    QString        DetailsShown = QStringLiteral("\x01");
     bool           NickEdited    = false;
     bool           RefreshQueued = false;
     std::map<QString, PeerSharing::Permissions> Ticks;   // per pairing (a peer, or "code"), kept across rebuilds

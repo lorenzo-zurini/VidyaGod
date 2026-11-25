@@ -19,12 +19,14 @@
 #include <QPushButton>
 #include <QScrollArea>
 #include <QSignalBlocker>
-#include <QTableWidget>
-#include <QTableWidgetItem>
+#include <QDialog>
+#include <QSet>
+#include <QListWidget>
 #include <QTimer>
 #include <QToolButton>
 #include <QVBoxLayout>
 
+#include <algorithm>
 #include <functional>
 #include <vector>
 
@@ -146,18 +148,35 @@ void NetworkTab::buildUi()
     WaitingRows = new QVBoxLayout(WaitingBox);
     Root->addWidget(WaitingBox);
 
-    // --- The table: every peer and its permissions ---
-    Table = new QTableWidget(Page);
-    Table->setObjectName("peers");
-    Table->setAccessibleName("Peers");
-    Table->verticalHeader()->setVisible(false);
-    Table->setEditTriggers(QAbstractItemView::NoEditTriggers);
-    Table->setSelectionMode(QAbstractItemView::NoSelection);
-    Table->setSizeAdjustPolicy(QAbstractScrollArea::AdjustToContents);
-    Table->setVerticalScrollBarPolicy(Qt::ScrollBarAlwaysOff);   // the page scrolls: the table shows every row
-    Root->addWidget(Table);
-    EmptyHint = Dim(tr("Nobody yet. Pair with a device on your network below, or send someone your code. The first row is "
-                       "what a new peer is given: pairing starts from it."), Page);
+    // --- The peers: a list, and the chosen one's details beside it ---
+    {
+        auto * Head = new QHBoxLayout();
+        auto * Title = new QLabel("<b>" + tr("Peers") + "</b>", Page);
+        Head->addWidget(Title);
+        Head->addStretch(1);
+        auto * Defaults = new QPushButton(tr("Defaults…"), Page);
+        Defaults->setObjectName("peerDefaults");
+        Defaults->setToolTip(tr("What a new peer is given. Pairing starts from it."));
+        connect(Defaults, &QPushButton::clicked, this, &NetworkTab::openDefaults);
+        Head->addWidget(Defaults);
+        Root->addLayout(Head);
+        auto * Body = new QHBoxLayout();
+        List = new QListWidget(Page);
+        List->setObjectName("peers");
+        List->setAccessibleName("Peers");
+        List->setMinimumWidth(240);
+        List->setMaximumWidth(380);
+        List->setSizeAdjustPolicy(QAbstractScrollArea::AdjustToContents);
+        connect(List, &QListWidget::currentRowChanged, this, [this] { rebuildDetails(); });
+        Body->addWidget(List, 0, Qt::AlignTop);
+        Details = new QWidget(Page);
+        Details->setObjectName("peerDetails");
+        DetailsLayout = new QVBoxLayout(Details);
+        DetailsLayout->setContentsMargins(12, 0, 0, 0);
+        Body->addWidget(Details, 1, Qt::AlignTop);
+        Root->addLayout(Body);
+    }
+    EmptyHint = Dim(tr("Nobody yet. Pair with a device on your network below, or send someone your code."), Page);
     EmptyHint->setObjectName("emptyHint");
     Root->addWidget(EmptyHint);
 
@@ -319,7 +338,6 @@ void NetworkTab::refresh()
     SendButton->setEnabled(Online);
     SendButton->setToolTip(Online ? QString() : tr("Networking is off — turn it on to send a request."));
     rebuildRows();
-    rebuildTable();
 }
 
 PeerSharing::Permissions & NetworkTab::ticks(const QString & key)
@@ -442,153 +460,216 @@ void NetworkTab::rebuildRows()
             for (QWidget * C : findChildren<QWidget *>(FocusName))
                 if (C->isVisibleTo(this) && C != Focus) { C->setFocus(); break; }
     }
-    rebuildTable();
+    rebuildPeers();
 }
 
-void NetworkTab::rebuildTable()
+namespace
+{
+//One permission: its switch, named for the pad and the tests, and what it does in one sentence under it.
+QCheckBox * Permission(QVBoxLayout * L, QWidget * Parent, const QString & Name, const QString & Label, const QString & Says,
+                       bool On, bool Enabled)
+{
+    auto * B = new QCheckBox(Label, Parent);
+    B->setObjectName(Name);
+    B->setChecked(On);
+    B->setEnabled(Enabled);
+    B->setStyleSheet("QCheckBox { font-weight: 600; }");
+    L->addWidget(B);
+    auto * T = Dim(Says, Parent);
+    T->setContentsMargins(24, 0, 0, 6);
+    L->addWidget(T);
+    return B;
+}
+
+QString ShareSays(const QString & Lib) { return QObject::tr("They see your library “%1” in their Catalog.").arg(Lib); }
+const char * ReceiveSays = "Their shared games appear in your Catalog.";
+const char * VlanSays = "Games you launch share a private LAN with them: LAN multiplayer across the internet.";
+const char * PresenceSays = "They see whether you are online and what you play.";
+}
+
+QString NetworkTab::chosenPeer() const
+{
+    const QListWidgetItem * It = List->currentItem();
+    return It ? It->data(Qt::UserRole).toString() : QString();
+}
+
+void NetworkTab::rebuildPeers()
 {
     if (QApplication::activePopupWidget()) return;
     PeerSharing & F = Model.peers();
-    const QStringList Libs = F.myLibraryNames();
     std::vector<IpfsWrapper::Contact> Contacts;
     for (const auto & C : IpfsWrapper::PeerList()) if (C.State != "incoming") Contacts.push_back(C);   // requests: above
 
-    //What the table shows: rebuilt only when that changes (a pad keeps its cell).
-    QString Now = Libs.join(',') + '|' + (F.newPeerDefault("receive") ? "r" : "") + (F.newPeerDefault("vlan") ? "v" : "")
-                + (F.newPeerDefault("presence") ? "p" : "") + F.newPeerShareDefaults().join(',') + '\n';
+    //What the list shows: rebuilt only when that changes (a pad keeps its row).
+    QString Now;
+    std::vector<std::pair<QString, QString>> Rows;   // peer, its line
     for (const auto & C : Contacts)
     {
         const QString P = QString::fromStdString(C.PeerID);
-        Now += P + '|' + QString::fromStdString(C.Nick) + '|' + QString::fromStdString(C.State) + (C.Online ? "|on|" : "|off|");
-        for (const QString & L : Libs) Now += F.isSharingWithPeer(P, L) ? '1' : '0';
-        const PeerSharing::Received R = F.receivedFrom(P);
-        Now += QString("|%1%2%3|%4/%5\n").arg(F.isReceivingFrom(P) ? "r" : "-", F.isInVlan(P) ? "v" : "-", F.isPresenceSharedWith(P) ? "p" : "-")
-                   .arg(R.Here).arg(R.Packages);
-    }
-    if (Now == TableShown) return;
-    TableShown = Now;
-    const QWidget * Focus = QApplication::focusWidget();
-    const QString FocusName = Focus && Table->isAncestorOf(Focus) ? Focus->objectName() : QString();
-
-    const int NLibs   = Libs.size();
-    const int RecvCol = 2 + NLibs;
-    const int VlanCol = RecvCol + 1;
-    const int PresCol = RecvCol + 2;
-    const int HereCol = RecvCol + 3;
-    const int ActCol  = RecvCol + 4;
-    QStringList Headers; Headers << tr("Peer") << tr("Accepted");
-    for (const QString & L : Libs) Headers << tr("Share: %1").arg(L);
-    Headers << tr("Receive") << tr("vLAN") << tr("Presence") << tr("Their games") << "";
-
-    Table->clear();
-    Table->setColumnCount(Headers.size());
-    Table->setHorizontalHeaderLabels(Headers);
-    //What each column means, said where it is read (the headers are one word each).
-    const auto Tip = [this](int C, const QString &T) { if (QTableWidgetItem *H = Table->horizontalHeaderItem(C)) H->setToolTip(T); };
-    Tip(1, tr("You and they paired. Untick to remove the peer."));
-    for (int J = 0; J < NLibs; ++J) Tip(2 + J, tr("They see your library \"%1\" in their Catalog.").arg(Libs[J]));
-    Tip(RecvCol, tr("Their shared games appear in your Catalog."));
-    Tip(VlanCol, tr("Games you launch share a private LAN with them: LAN multiplayer across the internet."));
-    Tip(PresCol, tr("They see whether you are online and what you play."));
-    Tip(HereCol, tr("How many of the packages they share have landed here."));
-    for (int C = 0; C + 1 < Headers.size(); ++C) Table->horizontalHeader()->setSectionResizeMode(C, QHeaderView::ResizeToContents);
-    Table->horizontalHeader()->setSectionResizeMode(Headers.size() - 1, QHeaderView::Stretch);
-    Table->horizontalHeader()->setMinimumSectionSize(70);
-    Table->setRowCount(1 + int(Contacts.size()));
-    EmptyHint->setVisible(Contacts.empty());
-
-    // A centered checkbox cell. The state is set BEFORE connecting, so a rebuild never fires its toggle.
-    auto CheckCell = [this](int Row, int Col, const QString & Name, bool Checked, bool Enabled, std::function<void(bool)> OnToggle) {
-        auto * W = new QWidget(Table);
-        auto * L = new QHBoxLayout(W);
-        L->setContentsMargins(0, 0, 0, 0);
-        L->setAlignment(Qt::AlignCenter);
-        auto * CB = new QCheckBox(W);
-        CB->setObjectName(Name);
-        CB->setChecked(Checked);
-        CB->setEnabled(Enabled);
-        connect(CB, &QCheckBox::toggled, this, std::move(OnToggle));
-        L->addWidget(CB);
-        Table->setCellWidget(Row, Col, W);
-    };
-
-    // Row 0 — "New peers": what a new peer is given, and what pairing's ticks start as.
-    Table->setItem(0, 0, new QTableWidgetItem(tr("New peers (defaults)")));
-    for (int I = 0; I < NLibs; ++I)
-    {
-        const QString & Lib = Libs[I];
-        CheckCell(0, 2 + I, "default:share:" + Lib, F.newPeerShareDefaults().contains(Lib), true,
-                  [this, Lib](bool On) { Model.peers().setNewPeerShareDefault(Lib, On); });
-    }
-    CheckCell(0, RecvCol, "default:receive", F.newPeerDefault("receive"), true, [this](bool On) { Model.peers().setNewPeerDefault("receive", On); });
-    CheckCell(0, VlanCol, "default:vlan", F.newPeerDefault("vlan"), true, [this](bool On) { Model.peers().setNewPeerDefault("vlan", On); });
-    CheckCell(0, PresCol, "default:presence", F.newPeerDefault("presence"), true, [this](bool On) { Model.peers().setNewPeerDefault("presence", On); });
-
-    for (int I = 0; I < int(Contacts.size()); ++I)
-    {
-        const int Row = 1 + I;
-        const IpfsWrapper::Contact & C = Contacts[I];
-        const QString Peer = QString::fromStdString(C.PeerID);
-        const bool Accepted = C.State == "accepted";
-        const bool Pending = C.State == "pending";
-        QString Name = DisplayName(C.Nick, Peer) + "  " + CodeTail(Peer);
-        if (Pending) Name += "  " + tr("(asked: accept it there)");
-        else if (C.State == "blocked") Name += "  " + tr("(blocked)");
-        if (Accepted) Name += C.Online ? "  ●" : "  ○";
-        auto * NameItem = new QTableWidgetItem(Name);
-        NameItem->setData(Qt::UserRole, Peer);
-        Table->setItem(Row, 0, NameItem);
-
-        // Accepted: checked = accepted or asked (asked is waiting on them: disabled). Unticking a peer removes it.
-        CheckCell(Row, 1, "accepted:" + Peer, Accepted || Pending, Accepted, [this, Peer, Accepted](bool On) {
-            if (!On && Accepted
-                && QMessageBox::question(this, tr("Remove peer"),
-                       tr("Remove this peer? You stop sharing with each other and their games leave your Catalog. Games you "
-                          "installed from them stay."), QMessageBox::Yes | QMessageBox::No, QMessageBox::No) == QMessageBox::Yes)
-                Model.peers().removePeer(Peer);
-            TableShown.clear();
-            scheduleRefresh();   // a No: the rebuild ticks it again
-        });
-        for (int J = 0; J < NLibs; ++J)
+        QString Line = DisplayName(C.Nick, P);
+        if (C.State == "accepted") Line += C.Online ? "  ●" : "  ○";
+        if (C.State == "pending") Line += "  · " + tr("asked");
+        else if (C.State == "blocked") Line += "  · " + tr("blocked");
+        else if (F.isReceivingFrom(P))
         {
-            const QString & Lib = Libs[J];
-            CheckCell(Row, 2 + J, "share:" + Lib + ":" + Peer, F.isSharingWithPeer(Peer, Lib), Accepted || Pending, [this, Peer, Lib](bool On) {
-                if (On) Model.peers().shareLibraryWithPeer(Peer, Lib); else Model.peers().stopSharingWithPeer(Peer, Lib);
-                scheduleRefresh();
-            });
+            const PeerSharing::Received R = F.receivedFrom(P);
+            Line += "  · " + (R.Packages == 1 ? tr("1 game") : tr("%1 games").arg(R.Packages));
         }
-        CheckCell(Row, RecvCol, "receive:" + Peer, F.isReceivingFrom(Peer), Accepted || Pending,
-                  [this, Peer](bool On) { Model.peers().setReceivingFrom(Peer, On); scheduleRefresh(); });
-        CheckCell(Row, VlanCol, "vlan:" + Peer, F.isInVlan(Peer), Accepted || Pending,
-                  [this, Peer](bool On) { Model.peers().setInVlan(Peer, On); scheduleRefresh(); });
-        CheckCell(Row, PresCol, "presence:" + Peer, F.isPresenceSharedWith(Peer), Accepted || Pending,
-                  [this, Peer](bool On) { Model.peers().setPresenceSharedWith(Peer, On); scheduleRefresh(); });
-        const PeerSharing::Received R = F.receivedFrom(Peer);
-        auto * Here = new QTableWidgetItem(!F.isReceivingFrom(Peer) ? QString("—")
-                                           : R.Packages == 0 ? tr("none shared") : tr("%1 of %2").arg(R.Here).arg(R.Packages));
-        Here->setTextAlignment(Qt::AlignCenter);
-        Table->setItem(Row, HereCol, Here);
-
-        // ⋮: Block / Remove.
-        auto * Menu = new QPushButton("⋮", Table);
-        Menu->setObjectName("menu:" + Peer);
-        auto * M = new QMenu(Menu);
-        //Both asked first, as unticking Accepted is: each ends what you share with them, in one click.
-        connect(M->addAction(tr("Block…")), &QAction::triggered, this, [this, Peer] {
-            if (QMessageBox::question(this, tr("Block peer"), tr("Block this peer? They can no longer reach you or ask again, "
-                    "you stop sharing with each other, and their games leave your Catalog."),
-                    QMessageBox::Yes | QMessageBox::No, QMessageBox::No) != QMessageBox::Yes) return;
-            Model.peers().blockPeer(Peer); scheduleRefresh(); });
-        connect(M->addAction(tr("Remove…")), &QAction::triggered, this, [this, Peer] {
-            if (QMessageBox::question(this, tr("Remove peer"), tr("Remove this peer? You stop sharing with each other and their "
-                    "games leave your Catalog. Games you installed from them stay."),
-                    QMessageBox::Yes | QMessageBox::No, QMessageBox::No) != QMessageBox::Yes) return;
-            Model.peers().removePeer(Peer); scheduleRefresh(); });
-        Menu->setMenu(M);
-        Table->setCellWidget(Row, ActCol, Menu);
+        Rows.push_back({ P, Line });
+        Now += P + '|' + Line + '\n';
     }
+    EmptyHint->setVisible(Contacts.empty());
+    List->setVisible(!Contacts.empty());
+    Details->setVisible(!Contacts.empty());
+    if (Now != TableShown)
+    {
+        TableShown = Now;
+        const QString Was = chosenPeer();
+        const bool Focused = List->hasFocus();
+        QSignalBlocker B(List);
+        List->clear();
+        int Pick = 0;
+        for (const auto & [P, Line] : Rows)
+        {
+            auto * It = new QListWidgetItem(Line, List);
+            It->setData(Qt::UserRole, P);
+            It->setToolTip(CodeTail(P));
+            if (P == Was) Pick = List->count() - 1;
+        }
+        if (List->count() > 0) List->setCurrentRow(Pick);
+        List->setFixedHeight(std::max(60, List->sizeHintForRow(0) * std::min(List->count(), 10) + 2 * List->frameWidth() + 4));
+        if (Focused) List->setFocus();
+    }
+    rebuildDetails();
+}
+
+void NetworkTab::rebuildDetails()
+{
+    if (QApplication::activePopupWidget()) return;
+    PeerSharing & F = Model.peers();
+    const QString Peer = chosenPeer();
+    IpfsWrapper::Contact C;
+    bool Found = false;
+    for (const auto & X : IpfsWrapper::PeerList())
+        if (QString::fromStdString(X.PeerID) == Peer) { C = X; Found = true; break; }
+    const QStringList Libs = F.myLibraryNames();
+    QString Now = Peer + '|' + Libs.join(',');
+    if (Found)
+    {
+        Now += '|' + QString::fromStdString(C.Nick) + '|' + QString::fromStdString(C.State) + (C.Online ? "|on|" : "|off|");
+        for (const QString & L : Libs) Now += F.isSharingWithPeer(Peer, L) ? '1' : '0';
+        const PeerSharing::Received R = F.receivedFrom(Peer);
+        Now += QString("|%1%2%3|%4/%5").arg(F.isReceivingFrom(Peer) ? "r" : "-", F.isInVlan(Peer) ? "v" : "-",
+                                            F.isPresenceSharedWith(Peer) ? "p" : "-").arg(R.Here).arg(R.Packages);
+    }
+    if (Now == DetailsShown) return;
+    DetailsShown = Now;
+    const QWidget * Focus = QApplication::focusWidget();
+    const QString FocusName = Focus && Details->isAncestorOf(Focus) ? Focus->objectName() : QString();
+    Clear(DetailsLayout);
+    if (!Found) return;
+
+    const bool Accepted = C.State == "accepted", Pending = C.State == "pending";
+    auto * Head = new QLabel("<b style='font-size:15px'>" + DisplayName(C.Nick, Peer).toHtmlEscaped() + "</b>  <span style='color:"
+                             + Theme::Dim + "'>" + CodeTail(Peer).toHtmlEscaped() + "</span>", Details);
+    DetailsLayout->addWidget(Head);
+    const QString Where = Accepted ? (C.Online ? tr("Paired · online now") : tr("Paired · offline"))
+                        : Pending  ? tr("Asked: waiting for them to accept on their side")
+                        : C.State == "blocked" ? tr("Blocked: they cannot reach you") : QString::fromStdString(C.State);
+    auto * State = Dim(Where, Details);
+    State->setObjectName("peerState");
+    DetailsLayout->addWidget(State);
+    DetailsLayout->addSpacing(6);
+    const bool Can = Accepted || Pending;
+    for (const QString & Lib : Libs)
+        connect(Permission(DetailsLayout, Details, "share:" + Lib + ":" + Peer, tr("Share “%1”").arg(Lib), ShareSays(Lib),
+                           F.isSharingWithPeer(Peer, Lib), Can),
+                &QCheckBox::toggled, this, [this, Peer, Lib](bool On) {
+                    if (On) Model.peers().shareLibraryWithPeer(Peer, Lib); else Model.peers().stopSharingWithPeer(Peer, Lib);
+                    scheduleRefresh();
+                });
+    const PeerSharing::Received R = F.receivedFrom(Peer);
+    QString Recv = tr(ReceiveSays);
+    if (F.isReceivingFrom(Peer)) Recv += " " + (R.Packages == 0 ? tr("They share none yet.") : tr("%1 of the %2 they share have landed here.").arg(R.Here).arg(R.Packages));
+    connect(Permission(DetailsLayout, Details, "receive:" + Peer, tr("Receive their games"), Recv, F.isReceivingFrom(Peer), Can),
+            &QCheckBox::toggled, this, [this, Peer](bool On) { Model.peers().setReceivingFrom(Peer, On); scheduleRefresh(); });
+    connect(Permission(DetailsLayout, Details, "vlan:" + Peer, tr("Virtual LAN"), tr(VlanSays), F.isInVlan(Peer), Can),
+            &QCheckBox::toggled, this, [this, Peer](bool On) { Model.peers().setInVlan(Peer, On); scheduleRefresh(); });
+    connect(Permission(DetailsLayout, Details, "presence:" + Peer, tr("Presence"), tr(PresenceSays), F.isPresenceSharedWith(Peer), Can),
+            &QCheckBox::toggled, this, [this, Peer](bool On) { Model.peers().setPresenceSharedWith(Peer, On); scheduleRefresh(); });
+
+    // More ▾: Block… / Remove… — each asked first: each ends what you share with them, in one click.
+    auto * More = new QPushButton(tr("More"), Details);
+    More->setObjectName("menu:" + Peer);
+    auto * M = new QMenu(More);
+    connect(M->addAction(tr("Block…")), &QAction::triggered, this, [this, Peer] {
+        if (QMessageBox::question(this, tr("Block peer"), tr("Block this peer? They can no longer reach you or ask again, "
+                "you stop sharing with each other, and their games leave your Catalog."),
+                QMessageBox::Yes | QMessageBox::No, QMessageBox::No) != QMessageBox::Yes) return;
+        Model.peers().blockPeer(Peer); scheduleRefresh(); });
+    connect(M->addAction(tr("Remove…")), &QAction::triggered, this, [this, Peer] {
+        if (QMessageBox::question(this, tr("Remove peer"), tr("Remove this peer? You stop sharing with each other and their "
+                "games leave your Catalog. Games you installed from them stay."),
+                QMessageBox::Yes | QMessageBox::No, QMessageBox::No) != QMessageBox::Yes) return;
+        Model.peers().removePeer(Peer); scheduleRefresh(); });
+    More->setMenu(M);
+    auto * Row = new QHBoxLayout();
+    Row->addWidget(More);
+    Row->addStretch(1);
+    DetailsLayout->addLayout(Row);
     if (!FocusName.isEmpty())
-        if (QWidget * C = Table->findChild<QWidget *>(FocusName)) C->setFocus();
+        if (QWidget * W = Details->findChild<QWidget *>(FocusName)) W->setFocus();
+}
+
+void NetworkTab::openDefaults()
+{
+    auto * D = new QDialog(this);
+    D->setObjectName("peerDefaultsDialog");
+    D->setWindowTitle(tr("Defaults for new peers"));
+    D->setAttribute(Qt::WA_DeleteOnClose);
+    auto * L = new QVBoxLayout(D);
+    L->addWidget(Dim(tr("What a new peer is given when you pair. Each pairing starts from these, and you can change them there."), D));
+    L->addSpacing(6);
+    PeerSharing & F = Model.peers();
+    for (const QString & Lib : F.myLibraryNames())
+        connect(Permission(L, D, "default:share:" + Lib, tr("Share “%1”").arg(Lib), ShareSays(Lib), F.newPeerShareDefaults().contains(Lib), true),
+                &QCheckBox::toggled, this, [this, Lib](bool On) { Model.peers().setNewPeerShareDefault(Lib, On); });
+    connect(Permission(L, D, "default:receive", tr("Receive their games"), tr(ReceiveSays), F.newPeerDefault("receive"), true),
+            &QCheckBox::toggled, this, [this](bool On) { Model.peers().setNewPeerDefault("receive", On); });
+    connect(Permission(L, D, "default:vlan", tr("Virtual LAN"), tr(VlanSays), F.newPeerDefault("vlan"), true),
+            &QCheckBox::toggled, this, [this](bool On) { Model.peers().setNewPeerDefault("vlan", On); });
+    connect(Permission(L, D, "default:presence", tr("Presence"), tr(PresenceSays), F.newPeerDefault("presence"), true),
+            &QCheckBox::toggled, this, [this](bool On) { Model.peers().setNewPeerDefault("presence", On); });
+    auto * Done = new QPushButton(tr("Done"), D);
+    connect(Done, &QPushButton::clicked, D, &QDialog::accept);
+    L->addWidget(Done, 0, Qt::AlignRight);
+    //A pairing's ticks not touched yet follow the new defaults; ones the user changed stay as they are.
+    const PeerSharing::Permissions Before = F.defaultPermissions();
+    connect(D, &QDialog::finished, this, [this, Before] {
+        for (auto It = Ticks.begin(); It != Ticks.end();)
+        {
+            const PeerSharing::Permissions & T = It->second;
+            const bool Untouched = T.Receive == Before.Receive && T.Vlan == Before.Vlan && T.Presence == Before.Presence
+                                   && QSet<QString>(T.Libraries.begin(), T.Libraries.end()) == QSet<QString>(Before.Libraries.begin(), Before.Libraries.end());
+            It = Untouched ? Ticks.erase(It) : std::next(It);
+        }
+        //The code's ticks are built once (the rows are rebuilt): set them as they are now.
+        if (!Ticks.count(QStringLiteral("code")))
+        {
+            const PeerSharing::Permissions Now = ticks(QStringLiteral("code"));
+            for (QCheckBox * B : AddBox->findChildren<QCheckBox *>())
+            {
+                const QString N = B->objectName();
+                if (!N.endsWith(":code")) continue;
+                const QString K = N.chopped(5);
+                B->setChecked(K == "receive" ? Now.Receive : K == "vlan" ? Now.Vlan : K == "presence" ? Now.Presence
+                              : Now.Libraries.contains(K.mid(6)));
+            }
+        }
+        Shown.clear();
+        scheduleRefresh();
+    });
+    D->open();
 }
 
 void NetworkTab::pairClicked(const QString & peer, const QString & name)

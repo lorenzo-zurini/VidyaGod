@@ -7,10 +7,12 @@
 // --peer-add/--peer-serve CLI (cross-machine).
 
 #include <QtTest>
+#include <QListWidget>
+#include <QDialog>
+#include <QMenu>
 #include <QTemporaryDir>
 #include <QSignalSpy>
 #include <QCoreApplication>
-#include <QTableWidget>
 #include <QCheckBox>
 #include <QComboBox>
 #include <QGroupBox>
@@ -154,15 +156,17 @@ private slots:
     }
 
     // The Peers page, as it reads the address book and the network. Every peer is the same:
-    //  - the table: a row per peer (a request waiting on us is above it, not in it), its permissions in columns — Accepted,
-    //    Share: <library> each, Receive, vLAN, Presence —, what of theirs is here, under the "New peers" row;
+    //  - the list: a row per peer (a request waiting on us is above it, not in it), online or where it stands; the chosen
+    //    one's details: its permissions as switches — Share <library> each, Receive, Virtual LAN, Presence — each with
+    //    what it does in one sentence, and More (Block… / Remove…, asked first); the defaults are a dialog of their own;
     //  - a request waiting on us, and a device nearby we have nothing to do with yet, ask for those same permissions where
-    //    the press is, ticks starting as the "New peers" row; a request from off this network says to check its code;
-    //  - a tick in the table reaches the model; a Pair that fails (networking off) gives nothing;
+    //    the press is, ticks starting as the defaults; a request from off this network says to check its code;
+    //  - a switch reaches the model; a Pair that fails (networking off) gives nothing;
     //  - a code gets the same ticks; polling changes nothing on screen when nothing changed; a row keeps its ticks.
-    // Teeth: a column or a row missing, a request in the table, ticks not starting as the row, the far warning missing or
-    // on a near one, a table tick not reaching the model, permissions given on a failed Pair, rows rebuilt each poll.
-    void the_peers_page_is_a_table_of_peers_and_pairing_asks_its_permissions()
+    // Teeth: a row missing, a request in the list, the details of another peer shown, a switch without its sentence, a
+    // Remove tick, ticks not starting as the defaults, the far warning missing or on a near one, a switch not reaching the
+    // model, permissions given on a failed Pair, rows rebuilt each poll.
+    void the_peers_page_lists_peers_with_their_details_and_pairing_asks_its_permissions()
     {
         QTemporaryDir Dir;
         const QString Repo = Dir.path() + "/ipfs";
@@ -195,16 +199,37 @@ private slots:
         const auto Has = [&](const QString &Name) { return Tab.findChild<QWidget *>(Name) != nullptr; };
         const auto Box = [&](const QString &Name) { return Tab.findChild<QCheckBox *>(Name); };
 
-        auto *Table = Tab.findChild<QTableWidget *>("peers");
-        QVERIFY(Table);
-        QStringList Headers;
-        for (int C = 0; C < Table->columnCount(); ++C) Headers << (Table->horizontalHeaderItem(C) ? Table->horizontalHeaderItem(C)->text() : QString());
-        QCOMPARE(Headers.mid(0, 7), (QStringList{"Peer", "Accepted", "Share: Games", "Receive", "vLAN", "Presence", "Their games"}));
-        QCOMPARE(Table->rowCount(), 3);                                     // the row of defaults, the accepted peer, the one asked
-        QVERIFY(Table->item(0, 0)->text().startsWith("New peers"));
+        // The peers: a list (name, online dot or where it stands, their games), the chosen one's details beside it — its
+        // permissions as switches, each with what it does in one sentence. No row of defaults among them, and no tick
+        // that removes a peer.
+        auto *List = Tab.findChild<QListWidget *>("peers");
+        QVERIFY(List);
+        QCOMPARE(List->count(), 2);                                         // the accepted peer, the one asked
+        QVERIFY(List->item(0)->text().startsWith("savedpal") && (List->item(0)->text().contains("●") || List->item(0)->text().contains("○")));
+        QVERIFY(List->item(1)->text().contains("asked"));
+        List->setCurrentRow(0);
         QVERIFY(Box("share:Games:12D3KooWSavedPal")->isChecked());
-        QVERIFY(!Has("receive:12D3KooWAsking") || !Table->findChild<QCheckBox *>("receive:12D3KooWAsking"));   // a request is not in the table
-        QVERIFY(Table->item(2, 0)->text().contains("asked"));
+        QCOMPARE(Box("share:Games:12D3KooWSavedPal")->text(), QString("Share “Games”"));
+        const auto Says = [&](const QString &Sentence) {
+            for (QLabel *L : Tab.findChild<QWidget *>("peerDetails")->findChildren<QLabel *>()) if (L->text().startsWith(Sentence)) return true;
+            return false; };
+        QVERIFY(Says("Their shared games appear in your Catalog.") && Says("They see whether you are online")
+                && Says("Games you launch share a private LAN") && Says("They see your library “Games”"));
+        QVERIFY(!Has("accepted:12D3KooWSavedPal"));                        // Remove is the menu's, asked first
+        QPushButton *More = Tab.findChild<QPushButton *>("menu:12D3KooWSavedPal");
+        QVERIFY(More && More->menu());
+        QStringList Acts;
+        for (QAction *A : More->menu()->actions()) Acts << A->text();
+        QCOMPARE(Acts, (QStringList{"Block…", "Remove…"}));
+        List->setCurrentRow(1);
+        const auto Shows = [&](const QString &Name) { QWidget *W = Tab.findChild<QWidget *>(Name); return W && W->isVisibleTo(&Tab); };
+        QApplication::processEvents();                                 // a layout shows what it was given on the next pass
+        QVERIFY(!Shows("share:Games:12D3KooWSavedPal") && Shows("receive:12D3KooWAskedThem"));   // the chosen one's only
+        QString State;
+        for (QLabel *L : Tab.findChildren<QLabel *>("peerState")) if (L->isVisibleTo(&Tab)) State = L->text();
+        QVERIFY2(State.startsWith("Asked"), qPrintable(State));
+        QVERIFY(!Has("receive:12D3KooWAsking") || Tab.findChild<QWidget *>("peerDetails")->findChild<QCheckBox *>("receive:12D3KooWAsking") == nullptr);
+        List->setCurrentRow(0);
 
         for (const char *P : {"12D3KooWAsking", "12D3KooWFarAway"})
         {
@@ -223,7 +248,7 @@ private slots:
         QVERIFY(!Has("nearby:12D3KooWSavedPal") && !Has("nearby:12D3KooWAsking"));   // in the book: not offered again
         QVERIFY(Has("sendRequest") && Box("share:Games:code") && Box("receive:code"));  // a code: the same ticks
 
-        Box("receive:12D3KooWSavedPal")->setChecked(true);                    // a table tick reaches the model
+        Box("receive:12D3KooWSavedPal")->setChecked(true);                    // a switch reaches the model
         QVERIFY(M.peers().isReceivingFrom("12D3KooWSavedPal"));
         QTRY_VERIFY_WITH_TIMEOUT(Box("receive:12D3KooWSavedPal") && Box("receive:12D3KooWSavedPal")->isChecked(), 3000);
 
@@ -240,9 +265,21 @@ private slots:
         QVERIFY(Tab.findChild<QLabel *>("peersStatus")->text().startsWith("Could not ask LGZ-SteamDeck"));
         QCOMPARE(Tab.findChild<QLabel *>("peersStatus")->textFormat(), Qt::PlainText);
         QVERIFY(!M.peers().isSharingWithPeer("12D3KooWDeckDeviceA1b2c3", "Games") && !M.peers().hasChosen("12D3KooWDeckDeviceA1b2c3"));
+        // The defaults: a small dialog; a new pairing's ticks start as they are. Teeth: the dialog's switches not reaching
+        // the model; a pairing's untouched ticks not following.
+        Tab.findChild<QPushButton *>("peerDefaults")->click();
+        QDialog *Defaults = Tab.findChild<QDialog *>("peerDefaultsDialog");
+        QVERIFY(Defaults && Defaults->isVisible());
+        QVERIFY(Defaults->findChild<QCheckBox *>("default:receive")->isChecked() && !Defaults->findChild<QCheckBox *>("default:vlan")->isChecked());
+        Defaults->findChild<QCheckBox *>("default:vlan")->setChecked(true);
+        QVERIFY(M.peers().newPeerDefault("vlan"));
+        Defaults->accept();
+        QTRY_VERIFY_WITH_TIMEOUT(Box("vlan:code") && Box("vlan:code")->isChecked(), 3000);   // untouched: follows
+        QVERIFY(Box("share:Games:12D3KooWDeckDeviceA1b2c3")->isChecked());   // touched: kept
+
     }
 
-    // With nothing waiting and nobody yet, no request section shows; the table is its row of defaults, the hint
+    // With nothing waiting and nobody yet, no request section shows; the list is empty and hidden, the hint
     // under it says how to add someone.
     void an_empty_peers_page_shows_only_how_to_add_someone()
     {
@@ -261,7 +298,8 @@ private slots:
         for (QGroupBox *G : Tab.findChildren<QGroupBox *>()) if (G->isVisible()) { ++Shown; QCOMPARE(G->title(), QString("Add someone")); }
         QCOMPARE(Shown, 1);
         QVERIFY(Tab.findChild<QLabel *>("emptyHint")->isVisible());
-        QCOMPARE(Tab.findChild<QTableWidget *>("peers")->rowCount(), 1);   // the row of defaults alone
+        QCOMPARE(Tab.findChild<QListWidget *>("peers")->count(), 0);       // nobody: no row of defaults standing in
+        QVERIFY(!Tab.findChild<QListWidget *>("peers")->isVisible());
         // Hidden, a change does not rebuild the page (every catalog change and presence ping rebuilt it, and stat'd a
         // receiving peer's every file); shown again, it is rebuilt once. Teeth: drop the Showing gate (three refreshes
         // while hidden); drop the refresh on show (the page stays as it was).
