@@ -19,6 +19,7 @@
 #include <QLabel>
 #include <QMessageBox>
 #include <QPushButton>
+#include <QPointer>
 #include <QTimer>
 #include <QToolButton>
 #include <QVBoxLayout>
@@ -28,6 +29,7 @@
 #include <filesystem>
 #include <functional>
 #include <memory>
+#include <map>
 #include <set>
 #include <thread>
 
@@ -207,14 +209,20 @@ std::optional<DownloadSelection> AskDownload(AppModel &Model, const LibraryGameC
     // and the size line are re-derived for the CURRENT selection. Both derivations walk closures — so both run off
     // the GUI thread via AsyncWork against Snap, and only ever for what is actually checked. (Debounce is declared
     // above so the re-derivable runner section can connect to it.)
+    //The Download button, once made (below): the size line enables it — nothing picked, or more than the disk holds,
+    //is no download, and the button says why (it stayed on: Download with nothing ticked did nothing).
+    auto GoRef = std::make_shared<QPointer<QPushButton>>();
+    auto Blocked = std::make_shared<bool>(false);   // a package the game needs is not here (set below)
     auto RecomputeSize    = std::make_shared<std::function<void()>>();
     auto RebuildOptionals = std::make_shared<std::function<void()>>();
 
     *RecomputeSize = [&Dlg, &RunnerChecks, Snap, SelectedLaunchIds, OptStates, SizeCache, Queried,
-                      SizeLabel, FreeBytes, Alive, Debounce]() {
+                      SizeLabel, FreeBytes, Alive, Debounce, GoRef, Blocked]() {
         const std::vector<std::string> SelL = SelectedLaunchIds();
         std::vector<std::string> SelR;
         for (const auto & [Rid, cb] : RunnerChecks) if (cb->isChecked()) SelR.push_back(Rid);
+        if (QPushButton *Go = *GoRef; Go && !*Blocked && SelL.empty() && SelR.empty())
+        { Go->setEnabled(false); Go->setToolTip("Nothing is picked to download."); }
         auto Tg  = std::make_shared<std::map<std::string, bool>>(*OptStates);
         auto Out = std::make_shared<std::set<std::string>>();
         auto Stamped = std::make_shared<std::map<std::string, long long>>();   // cid → SOURCE.SIZE (instant, offline)
@@ -232,7 +240,7 @@ std::optional<DownloadSelection> AskDownload(AppModel &Model, const LibraryGameC
                     for (const auto & [C, Sz] : PackageCatalog::NodeContentSizes(*S, Rid)) (*Stamped)[C] = Sz;
                 }
             },
-            [Out, Stamped, SizeCache, Queried, SizeLabel, FreeBytes, Alive, Debounce]{
+            [Out, Stamped, SizeCache, Queried, SizeLabel, FreeBytes, Alive, Debounce, GoRef, Blocked, Picked = !SelL.empty() || !SelR.empty()]{
                 // Stamped sizes are authoritative and free — seed the cache with them so the network prober only
                 // ever runs for the rare UNSTAMPED legacy CID (it used to run for everything: ~35s each, serial —
                 // the "no size for minutes" bug).
@@ -248,8 +256,14 @@ std::optional<DownloadSelection> AskDownload(AppModel &Model, const LibraryGameC
                 SizeLabel->setText(QString("Free space: %1      Download: %2%3")
                     .arg(FreeBytes < 0 ? QStringLiteral("measuring…") : HumanBytesQ(FreeBytes))
                     .arg(HumanBytesQ(Sum)).arg(AllKnown ? "" : " (estimating…)"));
-                SizeLabel->setStyleSheet((FreeBytes >= 0 && Sum > FreeBytes) ? "color:" + Theme::Bad + "; font-weight:bold;"
-                                                                             : "color:" + Theme::Dim + ";");
+                const bool TooBig = FreeBytes >= 0 && Sum > FreeBytes;
+                SizeLabel->setStyleSheet(TooBig ? "color:" + Theme::Bad + "; font-weight:bold;" : "color:" + Theme::Dim + ";");
+                if (QPushButton *Go = *GoRef; Go && !*Blocked)
+                {
+                    Go->setEnabled(Picked && !TooBig);
+                    Go->setToolTip(!Picked ? QStringLiteral("Nothing is picked to download.")
+                                   : TooBig ? QStringLiteral("It does not fit: free some space, or pick less.") : QString());
+                }
                 if (Unknown.empty()) return;
                 // Probe the new CIDs' sizes in the background; each result lands in the cache and nudges the
                 // debounce, so the label refreshes shortly after data arrives. Alive-guarded — the dialog may close.
@@ -348,29 +362,64 @@ std::optional<DownloadSelection> AskDownload(AppModel &Model, const LibraryGameC
     // A package a variant (or its runner chain) contains has not landed yet, or is not shared with this user: nothing
     // is ever fetched INTO this package to fill the gap (a node has one home), so the download waits for that package.
     bool AnyIncomplete = false;
+    std::set<std::string> MissingNodes;   // what the closures name and the library does not have
     {
         const nlohmann::ordered_json CfgForGate = Model.config() ? *Model.config() : nlohmann::ordered_json::object();
         for (const std::string & V : Variants)
         {
-            if (PackageCatalog::NodeClosureIncomplete(**Snap, V)) { AnyIncomplete = true; break; }
+            for (const std::string & M : PackageCatalog::MissingFromClosure(**Snap, V)) MissingNodes.insert(M);
             for (const std::string & Rid : PackageCatalog::RunnerChainIds(**Snap, V, CfgForGate))
-                if (PackageCatalog::NodeClosureIncomplete(**Snap, Rid)) { AnyIncomplete = true; break; }
-            if (AnyIncomplete) break;
+                for (const std::string & M : PackageCatalog::MissingFromClosure(**Snap, Rid)) MissingNodes.insert(M);
         }
+        AnyIncomplete = !MissingNodes.empty();
     }
     if (AnyIncomplete)
     {
-        QLabel * Wait = new QLabel("Part of this game is in another package that has not arrived yet, that is not "
-                                   "shared with you, or that you have installed in an older version. The download is "
-                                   "possible once that package is here as the game needs it.", &Dlg);
+        //Which package it waits for, by name, from whom: a peer's share names its nodes (their snapshot), so a node
+        //on its way is "<package> from <peer>"; one no snapshot names is not shared with you (or an older install
+        //holds another version of it).
+        std::map<std::string, std::string> Waiting;   // "<package> (<peer>'s <library>)" → why
+        int NotShared = 0;
+        const nlohmann::ordered_json &Cfg = Model.config() ? *Model.config() : nlohmann::ordered_json::object();
+        for (const std::string & M : MissingNodes)
+        {
+            bool Named = false;
+            if (Cfg.contains("PeerLibraries") && Cfg["PeerLibraries"].is_object())
+                for (const auto & [Peer, Libs] : Cfg["PeerLibraries"].items())
+                    for (const PackageCatalog::SheetEntry & E : PackageCatalog::WireEntries(Libs))
+                        if (E.Cid == M)
+                        {
+                            Waiting[E.Pkg + " (" + PackageCatalog::ReceivedNickLabel(Cfg, Peer) + "'s " + E.Lib + ")"] = "still arriving";
+                            Named = true;
+                        }
+            if (!Named) ++NotShared;
+        }
+        QString Text = "This game needs packages that are not here yet:";
+        int Shown = 0;
+        for (const auto & [What, Why] : Waiting)
+        {
+            if (++Shown > 6) { Text += QString("\n  … and %1 more").arg(int(Waiting.size()) - 6); break; }
+            Text += "\n  • " + QString::fromStdString(What) + " — " + QString::fromStdString(Why);
+        }
+        if (NotShared)
+            Text += QString("\n  • %1 part(s) no peer shares with you%2").arg(NotShared)
+                    .arg(" (or that you have installed in an older version: update it first)");
+        Text += "\nThe download is possible once they are here.";
+        QLabel * Wait = new QLabel(Text, &Dlg);
+        Wait->setObjectName("downloadWaitsFor");
         Wait->setWordWrap(true);
+        Wait->setTextFormat(Qt::PlainText);   // package and peer names are theirs
         DL->addWidget(Wait);
     }
 
     QHBoxLayout * BR = new QHBoxLayout(); DL->addLayout(BR); BR->addStretch();
     QPushButton * CancelBtn = new QPushButton("Cancel", &Dlg);
     QPushButton * GoBtn = new QPushButton("Download", &Dlg); GoBtn->setDefault(true);
+    GoBtn->setObjectName("downloadGo");
     GoBtn->setEnabled(!AnyIncomplete);
+    *GoRef = GoBtn;
+    *Blocked = AnyIncomplete;
+    Debounce->start();   // the size line decides it now the button exists
     BR->addWidget(CancelBtn); BR->addWidget(GoBtn);
     QObject::connect(CancelBtn, &QPushButton::clicked, &Dlg, &QDialog::reject);
     QObject::connect(GoBtn,     &QPushButton::clicked, &Dlg, &QDialog::accept);

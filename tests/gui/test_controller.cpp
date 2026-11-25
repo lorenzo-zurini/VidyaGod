@@ -28,6 +28,7 @@
 #include "deckgrid.h"
 #include "deckshell.h"
 #include "cardpool.h"
+#include "downloaddialog.h"
 #include "librarytab.h"
 #include "deckstyle.h"
 #include "prelaunchwindow.h"
@@ -725,6 +726,50 @@ private slots:
         QTest::keySequence(&Tab, QKeySequence::Find);
         auto *F = qobject_cast<QLineEdit *>(QApplication::focusWidget());
         QVERIFY(F && F->placeholderText() == QStringLiteral("Search…"));
+    }
+
+    // The download dialog names what a blocked game waits for (the package, the peer whose share holds it), and its
+    // Download is off with the reason while nothing is picked. Teeth: the old generic sentence; Download left on.
+    void the_download_dialog_names_what_it_waits_for_and_needs_a_pick()
+    {
+        namespace NF = NodeFixture;
+        LibraryFixture L;
+        const std::string Base = "bafkreibasepackmissingaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+        const std::string Root = (L.Dir.path() + "/LIBRARY/VidyaGod/[14] Needs Base").toStdString();
+        std::filesystem::create_directories(Root);
+        NF::WriteNodes(Root + "/g.json", NF::Chain("nb", {NF::Tile("14", "Needs Base"), NF::Exec("win32", "g.exe"),
+                                                         NF::ContentCid("zip", "g.zip", "bafkreineedsbasezip")}, {Base}, {{"VARIANT", "Edition"}}));
+        L.Cfg["PeerLibraries"] = json{{"12D3KooWFriendBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB", {{"Games", json::array({
+            json{{"cid", Base}, {"pkg", "Base Pack"}, {"node", "base.json"}} })}}}};
+        AppModel M(&L.Cfg, &L.AppDir);
+        M.rebuildCatalog();
+        const QList<LibraryGameCard *> Get = CardPool::Available(M);
+        LibraryGameCard *Needs = nullptr, *India = nullptr;
+        for (LibraryGameCard *C : Get) { if (C->GameKey == "14") Needs = C; if (C->GameKey == "9") India = C; }
+        QVERIFY(Needs && India);
+        QString Said;
+        QTimer::singleShot(400, this, [&] {
+            if (QWidget *D = QApplication::activeModalWidget())
+            {
+                if (auto *W = D->findChild<QLabel *>("downloadWaitsFor")) Said = W->text();
+                qobject_cast<QDialog *>(D)->reject();
+            }
+        });
+        AskDownload(M, *Needs, nullptr);
+        QVERIFY2(Said.contains("Base Pack") && Said.contains("Games"), qPrintable(Said));
+        bool OffWithReason = false;
+        QTimer::singleShot(400, this, [&] {
+            QWidget *D = QApplication::activeModalWidget();
+            if (!D) return;
+            for (QCheckBox *C : D->findChildren<QCheckBox *>()) C->setChecked(false);
+            QTimer::singleShot(900, D, [&, D] {
+                if (auto *Go = D->findChild<QPushButton *>("downloadGo")) OffWithReason = !Go->isEnabled() && Go->toolTip().contains("Nothing");
+                qobject_cast<QDialog *>(D)->reject();
+            });
+        });
+        AskDownload(M, *India, nullptr);
+        QVERIFY(OffWithReason);
+        qDeleteAll(Get);
     }
 
     // A game's page offers its controller layout: the configurator, opened for that game. Teeth: the button missing,
