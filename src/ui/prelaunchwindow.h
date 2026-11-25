@@ -61,6 +61,15 @@ public:
 
     ~PreLaunchWindow() override;
 
+    //The window already open for a tile (its face and rows), or null: a tile has one launch window, raised when its card
+    //is clicked again — a second one could start a second launch of the same game.
+    static PreLaunchWindow *ExistingFor(const std::string &FaceUid, const std::vector<std::string> &GroupNodeIds);
+    //Shows it (again: one closed while its game ran is only hidden) and brings it to the front.
+    void bringBack();
+    //Whether its launch is under way (building the runtime, or the game running).
+    bool launchRunning() const;
+    void runningForTest(bool On) { RunningForTest = On; }   // TEST ONLY: as if a launch ran
+
     //The owning bundle dir of the current variant — used by MainWindow::RefreshPackage to target this dialog.
     const std::string & packagePath() const { return BundleDir; }
     //Rebuilds the variant combo + runner + module/CustomVar pickers (e.g. after the package was edited).
@@ -74,6 +83,10 @@ public:
     QList<PadTarget::Hint> padHints() const override;
 
 protected:
+    //Closed (Esc, the title bar's X, "close once the game has started") while its launch runs: hidden, the game goes on —
+    //closing a window is never how a game is stopped (that is Stop). Its game ending closes it then.
+    void done(int Result) override;
+    void closeEvent(QCloseEvent* Event) override;
     //Controller mode paints its own ground: the shell's, the cover washed in two tones over it.
     void paintEvent(QPaintEvent* Event) override;
     //Rescale the cover to fit its column on every resize, keeping aspect ratio + vertical centering.
@@ -192,6 +205,8 @@ private:
     const NodeIndex*        Index            = nullptr;   // IndexOwned.get()
     std::vector<std::string> GroupNodeIds;
     std::string              FaceUid;
+    bool                     ClosedWhileRunning = false;   // closed while its launch ran: hidden, closed when it ends
+    bool                     RunningForTest = false;
     QWidget                 *LayoutRow = nullptr;          // "Controller": the game's layout and its editor
     QLabel                  *LayoutNameLabel = nullptr;
     QPushButton             *LayoutEditButton = nullptr;

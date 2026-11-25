@@ -466,10 +466,11 @@ bool FileEdits::ConfigWrite(const std::string &Key, const std::string &Value, co
                     "no " + Section + " in " + FilePath.string() + " — added it at the end with '" + Key + "'");
         }
         if (FilePath.has_parent_path()) std::filesystem::create_directories(FilePath.parent_path(), Ec);
-        std::ofstream Out(FilePath, std::ios::binary | std::ios::trunc);
-        if (!Out.is_open()) { LogErr("FileEdits::ConfigWrite", "Could not open file for writing: " + FilePath.string()); return false; }
-        for (const std::string &L : Lines) Out << L << '\n';
-        return static_cast<bool>(Out.flush());
+        std::string Bytes;
+        for (const std::string &L : Lines) Bytes += L + '\n';
+        std::string Err;
+        if (!WriteFileAtomic(FilePath, Bytes, Err)) { LogErr("FileEdits::ConfigWrite", Err); return false; }
+        return true;
     }
     // Binary I/O throughout (read AND the write below): on Windows a text-mode stream translates '\n' to CRLF on
     // write, so the SAME edit produced different bytes than on Linux — breaking cross-platform determinism (and
@@ -493,13 +494,7 @@ bool FileEdits::ConfigWrite(const std::string &Key, const std::string &Value, co
 
     inFile.close();
 
-    std::ofstream outFile(FilePath, std::ios::binary | std::ios::trunc);
-    if (!outFile.is_open())
-    {
-        LogErr("FileEdits::ConfigWrite", "Could not open file for writing: " + FilePath.string());
-        return false;
-    }
-
+    std::string outFile;
     size_t Matched = 0;
     for (auto& currentLine : lines)
     {
@@ -509,18 +504,21 @@ bool FileEdits::ConfigWrite(const std::string &Key, const std::string &Value, co
             currentLine = Key + Value;
             ++Matched;
         }
-        outFile << currentLine << '\n';
+        outFile += currentLine + '\n';
     }
 
-    outFile.close();
-    //A KEY that matches NOTHING rewrites the file unchanged and reports success — a typo in the key, or a config
-    //whose format changed, then silently does nothing at all. This is the same class of failure as the base-pass
+    //A KEY that matches NOTHING leaves the file as it is and reports success — a typo in the key, or a config whose
+    //format changed, then silently does nothing at all. This is the same class of failure as the base-pass
     //ConfigWrite: the edit "worked", the setting never applied. Say so.
     if (Matched == 0)
+    {
         LogWarn("FileEdits::ConfigWrite",
                 "key '" + Key + "' matched NO line in " + FilePath.string()
-                + " — the file was rewritten unchanged and this setting had no effect. Check the key spelling "
+                + " — the file is unchanged and this setting had no effect. Check the key spelling "
                   "(it is matched as a literal line PREFIX, including any spaces around '=').");
+        return true;
+    }
+    if (std::string Err; !WriteFileAtomic(FilePath, outFile, Err)) { LogErr("FileEdits::ConfigWrite", Err); return false; }
     return true;
 }
 
@@ -616,10 +614,9 @@ bool FileEdits::JsonSet(const std::string &Pointer, const std::string &Value, co
     }
     std::error_code Ec;
     std::filesystem::create_directories(FilePath.parent_path(), Ec);
-    std::ofstream Out(FilePath, std::ios::binary | std::ios::trunc);   // binary: LF on every platform
-    if (!Out) { LogErr("FileEdits::JsonSet", "Could not open for writing: " + FilePath.string()); return false; }
-    Out << Text;
-    return static_cast<bool>(Out);
+    std::string Err;
+    if (!WriteFileAtomic(FilePath, Text, Err)) { LogErr("FileEdits::JsonSet", Err); return false; }
+    return true;
 }
 
 //===================================================================================================================
@@ -1228,10 +1225,9 @@ bool FileEdits::XmlSet(const std::string &Key, const std::string &Value, const s
     if (Out == Text) return true;
     std::error_code Ec;
     std::filesystem::create_directories(FilePath.parent_path(), Ec);
-    std::ofstream O(FilePath, std::ios::binary | std::ios::trunc);
-    if (!O) { LogErr("FileEdits::XmlSet", "Could not open for writing: " + FilePath.string()); return false; }
-    O << Out;
-    return static_cast<bool>(O);
+    std::string Err;
+    if (!WriteFileAtomic(FilePath, Out, Err)) { LogErr("FileEdits::XmlSet", Err); return false; }
+    return true;
 }
 
 //Writes Value as the complete content of FilePath, creating parent directories if needed.
@@ -1242,9 +1238,8 @@ bool FileEdits::FileOverwrite(const std::string &Value, const std::filesystem::p
     std::error_code ec;
     std::filesystem::create_directories(FilePath.parent_path(), ec);
     if (ec) { LogErr("FileEdits::FileOverwrite", "Could not create parent dirs: " + ec.message()); return false; }
-    std::ofstream Out(FilePath, std::ios::binary | std::ios::out | std::ios::trunc);   // binary: verbatim bytes, no CRLF translation on Windows
-    if (!Out) { LogErr("FileEdits::FileOverwrite", "Could not open for writing: " + FilePath.string()); return false; }
-    Out << Value;
+    std::string Err;   // verbatim bytes, whole or not at all
+    if (!WriteFileAtomic(FilePath, Value, Err)) { LogErr("FileEdits::FileOverwrite", Err); return false; }
     return true;
 }
 
@@ -1377,8 +1372,7 @@ bool FileEdits::LineFlag(const std::string &Key, const std::string &Value, const
         return true;
     }
     std::filesystem::create_directories(FilePath.parent_path(), Ec);
-    std::ofstream F(FilePath, std::ios::binary | std::ios::trunc);
-    if (!F || !(F << Out) || !F.flush()) { LogErr("FileEdits::LineFlag", "Could not write " + FilePath.string()); return false; }
+    if (std::string Err; !WriteFileAtomic(FilePath, Out, Err)) { LogErr("FileEdits::LineFlag", Err); return false; }
     LogOut("FileEdits::LineFlag", "'" + Key + "' " + (Value == "1" ? "added to " : "removed from ") + FilePath.string());
     return true;
 }

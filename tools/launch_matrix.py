@@ -252,6 +252,22 @@ def main():
             config = os.path.join(home, "Config")
             if not os.path.isfile(config) or "FromVar=hello-beta" not in open(config).read():
                 failures.append("KEEP file not captured: the edited config.ini is not in USERDATA as 'Config' after the run")
+            #A DRY RUN keeps nothing: the probe writes into the kept folder and the edits write the kept file, and neither
+            #reaches USERDATA (kept folders mount read-only, teardown stores nothing).
+            for P in (saved, config):
+                if os.path.exists(P): os.remove(P)
+            node, entry = RUN_CASES[0]
+            run = subprocess.run([binary, "--bypass-single-instance-lock", "--data-dir", data, "--node", node, "--dry-run"]
+                                 + entry_args(entry), capture_output=True, text=True, timeout=600)
+            checked += 1
+            if run.returncode != 0:
+                failures.append(f"dry run: the run exited {run.returncode}")
+            if "=== done" not in run.stdout:
+                failures.append("dry run: the probe never ran")
+            if os.path.exists(saved):
+                failures.append("dry run KEPT the probe's save (game/saves/save.txt is in USERDATA)")
+            if os.path.exists(config):
+                failures.append("dry run KEPT the edited config.ini (USERDATA 'Config')")
 
         #The sandbox is MANDATORY: on a machine that can't start it, a launch is REFUSED — it exits non-zero, the game
         #never runs (no probe report), and the failure names the missing sandbox. bwrap is hidden from the run by a PATH

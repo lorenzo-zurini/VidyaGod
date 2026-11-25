@@ -42,6 +42,7 @@ CliModes::LaunchRequest Request(Command::Context &C, const json &A)
     if (!Q.empty()) R.LaunchNodeId = NodeOf(*Index(C), Q)->Key();
     R.LaunchTile = Command::Str(A, "tile", "");
     R.LaunchVariant = Command::Str(A, "variant", "");
+    R.DryRun = Command::Bool(A, "dry-run", false);
     //The game, named as a person names it: a tile UID or a game's title (its shelf's default row, or --variant's), else
     //a node (a LABEL or a CID).
     if (const std::string G = Command::Str(A, "game", ""); !G.empty())
@@ -126,7 +127,8 @@ std::vector<Command::Arg> LaunchArgs()
              Command::Opt("node", "the node to launch (CID, handle or LABEL)"), Command::Opt("tile", "a tile: its row (with --variant), as the shelf shows it"),
              Command::Opt("variant", "(--tile) the row's name"), Command::Opt("entry", "which entry (its LABEL; default the first game entry)"),
              Command::Opt("instance", "which instance (default the last played)"), Command::Opt("runners", "a pinned runner chain, innermost first (a,b)"),
-             Command::Opt("grafts", "the grafts to apply, in order (a,b; '' none)"), Command::Opt("var", "option values: NAME=VALUE[,…]") };
+             Command::Opt("grafts", "the grafts to apply, in order (a,b; '' none)"), Command::Opt("var", "option values: NAME=VALUE[,…]"),
+             Command::Flag("dry-run", "keep nothing the run writes (saves, settings, registry)") };
 }
 
 std::vector<Command::Arg> With(std::vector<Command::Arg> V, std::vector<Command::Arg> More)
@@ -492,7 +494,7 @@ VG_COMMANDS
           "edits apply cfg.xml --xml '/Config/Video/@w' --value 1920",
           "edits apply persistent.cfg --line-flag +EasyDragMilitary --value 1" },
         { "FileEdits::ConfigWrite", "FileEdits::JsonSet", "FileEdits::XmlSet", "FileEdits::XmlEdit", "FileEdits::AppendLine", "FileEdits::LineFlag", "FileEdits::LineFlagEdit",
-          "FileEdits::FileOverwrite", "FileEdits::DeletePath", "FileEdits::PathEscapesBase", "FileEdits::LinkLeadsOut" }, Needs::Config, false,
+          "FileEdits::FileOverwrite", "FileEdits::DeletePath", "FileEdits::PathEscapesBase", "FileEdits::LinkLeadsOut", "WriteFileAtomic" }, Needs::Config, false,
         [](Command::Context &, const json &A) {
             const fs::path F = Command::Str(A, "file");
             if (A.contains("base"))

@@ -160,6 +160,31 @@ TEST(configwrite_in_a_section_matches_by_name)
     std::filesystem::remove_all(dir);
 }
 
+// A file is written whole or not at all: one that cannot be written (here: its folder is read-only, as a full disk
+// would refuse it) is left exactly as it was — the old code truncated it first — and a file rewritten keeps its mode
+// (an executable stays one). Teeth: write in place (the old file is truncated); drop the mode.
+TEST(an_edit_that_cannot_be_written_leaves_the_file_whole)
+{
+    auto dir = TmpDir("atomic");
+    auto f = dir / "game.ini";
+    Write(f, "Width=640\nHeight=480\n");
+    std::filesystem::permissions(f, std::filesystem::perms::owner_all, std::filesystem::perm_options::replace);
+    CHECK(FileEdits::ConfigWrite("Width=", "1920", f));
+    CHECK_EQ(ReadAll(f), std::string("Width=1920\nHeight=480\n"));
+    CHECK((std::filesystem::status(f).permissions() & std::filesystem::perms::owner_exec) != std::filesystem::perms::none);
+#ifndef _WIN32
+    if (::geteuid() != 0)                                   // root writes anywhere: no refusal to see
+    {
+        std::filesystem::permissions(dir, std::filesystem::perms::owner_read | std::filesystem::perms::owner_exec, std::filesystem::perm_options::replace);
+        CHECK(!FileEdits::ConfigWrite("Width=", "800", f));
+        CHECK(!FileEdits::FileOverwrite("gone", f));
+        CHECK_EQ(ReadAll(f), std::string("Width=1920\nHeight=480\n"));
+        std::filesystem::permissions(dir, std::filesystem::perms::owner_all, std::filesystem::perm_options::replace);
+    }
+#endif
+    std::filesystem::remove_all(dir);
+}
+
 // ---- FileOverwrite ----
 // ---- FileOverwrite ----
 

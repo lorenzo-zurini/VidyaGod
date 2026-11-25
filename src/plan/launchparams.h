@@ -145,6 +145,9 @@ public:
     std::filesystem::path RunnerPackagePath; //RESOLVED — the selected runner package's LIBRARY dir; its build layers + DEFPREFIX hydrate/resolve here
 
     //Flags
+    //SET — a dry run: nothing the run writes is kept. Kept folders mount read-only (writes go to the throwaway writelayer)
+    //and teardown stores nothing (no kept files, registry or option values).
+    bool DryRun = false;
     bool ReadOnlyVFS = false;                                       //SET — if true, no writable top layer (spec readonly=true); whole runtime is read-only
     bool UsesVFS = false;                                           //AUTO-DETECTED from SubComponentsArray
     //AUTHORING — where this session's scratch (mounts, the writable upper an installer fills with the whole game,

@@ -3,6 +3,8 @@
 // on a graft moved above the graft it needs) is refused on screen and changes nothing saved.
 
 #include <QtTest>
+#include "libraryview.h"   // LibraryGameCard — a card opens its tile's one launch window
+#include <QMessageBox>
 #include <QCheckBox>
 #include <QLineEdit>
 #include <QComboBox>
@@ -927,6 +929,87 @@ private slots:
             QVERIFY(Bars);
             QCOMPARE(Bars->isHidden(), std::string(Game) != "hota");
         }
+    }
+
+    // A tile has one launch window: its card's options opened twice raise the one open (two windows could start two
+    // launches of one game). Teeth: a new window per click.
+    void aTileHasOneLaunchWindow()
+    {
+        NodeIndex idx;
+        idx.Nodes["game"] = parse(json{ {"CID", "game"}, {"LABEL", "game"}, {"VARIANT", "v1"},
+            {"LAYERS", json::array({ json{{"DIR", "game"}},
+                json{{"EXEC", json::array({ json{{"LABEL", "Play"}, {"HOST", ManifestModel::MachinePlatform()}, {"EXE", "game.exe"},
+                    {"TILE", {{"UID", "47"}, {"TITLE", "Game"}}}} })}} })} });
+        ManifestModel::DeriveFacts(idx);
+        json Cfg = json{{"Settings", json::object()}};
+        LibraryGameCard Card(&Cfg, &idx, { "game" }, "47");
+        Card.edit();
+        Card.edit();
+        QCoreApplication::processEvents();
+        int Open = 0;
+        for (QWidget *W : QApplication::topLevelWidgets()) if (qobject_cast<PreLaunchWindow *>(W) && W->isVisible()) ++Open;
+        QCOMPARE(Open, 1);
+        for (QWidget *W : QApplication::topLevelWidgets()) if (auto *P = qobject_cast<PreLaunchWindow *>(W)) P->close();
+        QCoreApplication::processEvents();
+    }
+
+    // "Skip this window next time" shows what the instance has saved, so it can be unticked (it always showed unticked
+    // and nothing wrote false: once ticked, the window never came back). Teeth: never load it.
+    void skipThisWindowShowsTheSavedSetting()
+    {
+        NodeIndex idx;
+        idx.Nodes["game"] = parse(json{ {"CID", "game"}, {"LABEL", "game"}, {"VARIANT", "v1"},
+            {"LAYERS", json::array({ json{{"DIR", "game"}},
+                json{{"EXEC", json::array({ json{{"LABEL", "Play"}, {"HOST", ManifestModel::MachinePlatform()}, {"EXE", "game.exe"},
+                    {"TILE", {{"UID", "46"}, {"TITLE", "Game"}}}} })}} })} });
+        ManifestModel::DeriveFacts(idx);
+        json Cfg = json{{"Settings", json::object()}};
+        QVERIFY(InstanceStore::WriteConfig(Cfg, idx.Find("game")->GameKey(), "Main", json{{"SKIP_LAUNCH_DIALOG", true}, {"LASTRUN", "2026-09-30T10:00:00Z"}}));
+        PreLaunchWindow W(&Cfg, &idx, {"game"}, "46");
+        W.show();
+        QCoreApplication::processEvents();
+        QCheckBox *Skip = nullptr;
+        for (QCheckBox *C : W.findChildren<QCheckBox *>()) if (C->text().startsWith("Skip this window")) Skip = C;
+        QVERIFY(Skip);
+        QVERIFY(Skip->isChecked());
+    }
+
+    // Closing the launch window while its launch runs (Esc, the X, "close once started") hides it and the game goes on:
+    // the window was deleted and its destructor stopped the game. Its card finds it again (one window per tile), and the
+    // launch ending closes it — or brings it back when the launch failed. Teeth: close for real while running (deleted);
+    // a second window per tile; stay hidden after a failure.
+    void closingTheWindowWhileItsGameRunsHidesIt()
+    {
+        NodeIndex idx;
+        idx.Nodes["game"] = parse(json{ {"CID", "game"}, {"LABEL", "game"}, {"VARIANT", "v1"},
+            {"LAYERS", json::array({ json{{"DIR", "game"}},
+                json{{"EXEC", json::array({ json{{"LABEL", "Play"}, {"HOST", ManifestModel::MachinePlatform()}, {"EXE", "game.exe"},
+                    {"TILE", {{"UID", "45"}, {"TITLE", "Game"}}}} })}} })} });
+        ManifestModel::DeriveFacts(idx);
+        json Cfg = json{{"Settings", json::object()}};
+        QPointer<PreLaunchWindow> W = new PreLaunchWindow(&Cfg, &idx, {"game"}, "45");
+        W->show();
+        QCoreApplication::processEvents();
+        QCOMPARE(PreLaunchWindow::ExistingFor("45", {"game"}), W.data());
+        W->runningForTest(true);
+        W->reject();                                                       // Esc
+        QCoreApplication::processEvents();
+        QVERIFY(W && !W->isVisible());
+        W->bringBack();
+        QVERIFY(W->isVisible());
+        W->close();                                                        // the title bar's X
+        QCoreApplication::processEvents();
+        QVERIFY(W && !W->isVisible());
+        W->runningForTest(false);
+        QMetaObject::invokeMethod(W, "onLaunchFinished", Q_ARG(bool, false), Q_ARG(QString, "it broke"));
+        QCoreApplication::processEvents();
+        QVERIFY(W && W->isVisible());                                      // a failure is shown
+        W->runningForTest(true);
+        W->close();
+        W->runningForTest(false);
+        QMetaObject::invokeMethod(W, "onLaunchFinished", Q_ARG(bool, true), Q_ARG(QString, ""));
+        QTRY_VERIFY(!W);                                                   // ended well: closed (and deleted)
+        QVERIFY(!PreLaunchWindow::ExistingFor("45", {"game"}));
     }
 
     // An option declared in a layer behind a WHEN shows as the launch would have it: the window folds the game with the

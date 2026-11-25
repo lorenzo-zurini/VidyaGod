@@ -1,6 +1,7 @@
 #ifndef COMMONUTILS_H
 #define COMMONUTILS_H
 
+#include <filesystem>
 #include <set>
 #include <mutex>
 #include <string>
@@ -154,6 +155,11 @@ std::string HumanBytes(long long Bytes);
 //A file-name pattern: '*' matches any run of characters, '?' one; ASCII case-insensitive (the games' file systems
 //ignore case). HasWildcard: does a name use either.
 bool WildcardMatch(const std::string &Pattern, const std::string &Name);
+
+//Writes Bytes as the whole of P through a temporary sibling, flushed to the disk and renamed over; then flushes the
+//folder (POSIX). A crash, a full disk or a kill mid-write leaves the old file or the new one — never a truncated one.
+//An existing file keeps its permissions. False (Err says why) when it could not be written; the old file is untouched.
+bool WriteFileAtomic(const std::filesystem::path &P, const std::string &Bytes, std::string &Err);
 inline bool HasWildcard(const std::string &S) { return S.find_first_of("*?") != std::string::npos; }
 
 //A launch's phase: logged ("LaunchStep", "<k>/<n> <label>") and handed to this thread's LogSink as a step — what the

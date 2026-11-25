@@ -140,6 +140,7 @@ std::unique_ptr<CliModes::PreparedLaunch> CliModes::PrepareLaunch(const LaunchRe
         R.VariableOverrides = LaunchParameters.VariableOverrides;
         R.RunnerChain = LaunchParameters.RunnerChain;   // --runner, innermost first (empty: the instance's / default)
         R.ReadBack = !LaunchParameters.ResolveOnly;   // a launch reads back what the game changed in its files
+        R.DryRun = LaunchParameters.DryRun;
         Out->S = std::make_unique<LaunchSession::Session>(GlobalConfigJSON, std::move(R));
         //A row that does not resolve (blocked, malformed, no runner) has nothing to dump or run.
         if (!Out->S->Resolve(&Err)) { LogErr("main.cpp", "'" + LaunchParameters.LaunchNodeId + "': " + Err + " — aborting."); return nullptr; }
@@ -225,6 +226,7 @@ int CliModes::RunNodeLaunch(LaunchParameters &LP, nlohmann::ordered_json &Global
     R.Grafts = LP.Grafts;
     R.VariableOverrides = LP.VariableOverrides;
     R.ResolveOnly = LP.ResolveOnly;
+    R.DryRun = LP.UpgradeSourceDryRun;   // --dry-run: of a launch, nothing it writes is kept
     nlohmann::ordered_json Dump;
     const int Rc = Launch(R, GlobalConfigJSON, AppDataDir, &Dump);
     if (LP.ResolveOnly && Rc == 0)

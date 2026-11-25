@@ -318,9 +318,11 @@ nlohmann::ordered_json VfsMount::BuildLayerSpec(struct ContainerParams &Containe
     //writes land in the durable Target dir — live. A Path=="" persist (file PersistAll) passes the Target dir
     //through at the runtime ROOT (target ""). The durable source is UserDataPath/<Target>, a NAMED sibling of the
     //instance config, never the instance-dir root — so instance.json is never inside a game-writable mount.
+    //A dry run keeps nothing: the kept folders are read, not written through (the game's writes copy up into the
+    //writelayer, which goes with the runtime).
     for (const PersistTarget &D : ContainerParams.KeepDirs)
         Layers.push_back({{"type", "dir"}, {"source", (ContainerParams.UserDataPath / D.Target).string()},
-                          {"target", D.Path}, {"rw", true}});
+                          {"target", D.Path}, {"rw", !ContainerParams.DryRun}});
 
     //The mount plan IS the game's filesystem, and its ORDER IS PRIORITY — yet until now it was assembled and handed
     //to the FUSE helper without ever being stated. Print it: index, type, rw, target, source, and whether the source
@@ -775,7 +777,7 @@ int VfsMount::SweepDeadSessions(const std::filesystem::path &Root)
                 LogWarn("VfsMount::SweepDeadSessions", "A launch that did not end left " + std::to_string(Count) + " file(s) its game wrote and "
                         "nothing stored, cleared with it (" + S.string() + "): " + List);
             }
-            CleanStaleRuntime(S);
+            (void)CleanStaleRuntime(S);   // a dead session's: what does not clear stays for the next sweep
             const bool Gone = !std::filesystem::exists(S, Ec);
             Sessions::ReleaseSession(Fd, S);
             if (Existed && Gone) ++Cleared;
@@ -789,13 +791,13 @@ int VfsMount::SweepDeadSessions(const std::filesystem::path &Root)
     return Cleared;
 }
 
-void VfsMount::CleanStaleRuntime(const std::filesystem::path &TempPath)
+bool VfsMount::CleanStaleRuntime(const std::filesystem::path &TempPath)
 {
-    if (TempPath.empty()) return;
+    if (TempPath.empty()) return true;
 
     std::vector<std::string> StaleMounts = Sessions::MountpointsUnder(TempPath);
     const bool Exists = std::filesystem::exists(TempPath);
-    if (StaleMounts.empty() && !Exists) return; //nothing left over — clean slate
+    if (StaleMounts.empty() && !Exists) return true; //nothing left over — clean slate
 
     if (!StaleMounts.empty())
         LogWarn("VfsMount::CleanStaleRuntime",
@@ -820,7 +822,7 @@ void VfsMount::CleanStaleRuntime(const std::filesystem::path &TempPath)
     {
         LogErr("VfsMount::CleanStaleRuntime",
                "Stale mounts under TEMP did not clear in time; leaving it in place to protect USERDATA.");
-        return;
+        return false;
     }
 
     if (Exists)
@@ -837,6 +839,7 @@ void VfsMount::CleanStaleRuntime(const std::filesystem::path &TempPath)
         else if (!StaleMounts.empty() || Exists)
             LogSucc("VfsMount::CleanStaleRuntime", "Stale runtime cleared.");
     }
+    return true;
 }
 bool VfsMount::UnmountDurable(const std::string &Mount, int Retries)
 {

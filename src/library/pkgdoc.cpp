@@ -1,6 +1,7 @@
 #include "nodegraph.h"
 #include "noderefs.h"
 #include "pkgdoc.h"
+#include "commonutils.h"   // WriteFileAtomic
 #include "platform/platform.h"   // FileStamp
 
 #include "cid.h"
@@ -47,30 +48,6 @@ bool ReadFile(const fs::path &P, std::string &Out)
     if (!In) return false;
     std::ostringstream S; S << In.rdbuf();
     Out = S.str();
-    return true;
-}
-
-//Write through a temporary sibling, flushed to the disk, and rename over; then flush the folder (POSIX), so the new
-//name survives a power cut: a crash mid-save leaves the old file or the new one, never half and never neither.
-bool WriteFileAtomic(const fs::path &P, const std::string &Bytes, std::string &Err)
-{
-    const fs::path Tmp = P.string() + ".tmp-save";
-    std::FILE *F = std::fopen(Tmp.string().c_str(), "wb");
-    if (!F) { Err = "cannot write " + Tmp.string(); return false; }
-    const bool Wrote = std::fwrite(Bytes.data(), 1, Bytes.size(), F) == Bytes.size() && std::fflush(F) == 0;
-#ifdef _WIN32
-    const bool Synced = Wrote && _commit(_fileno(F)) == 0;
-#else
-    const bool Synced = Wrote && ::fsync(fileno(F)) == 0;
-#endif
-    const bool Closed = std::fclose(F) == 0;
-    std::error_code Ec;
-    if (!Wrote || !Synced || !Closed) { Err = "could not write " + Tmp.string() + " (disk full?)"; fs::remove(Tmp, Ec); return false; }
-    fs::rename(Tmp, P, Ec);
-    if (Ec) { Err = "cannot rename " + Tmp.string() + " -> " + P.string() + ": " + Ec.message(); fs::remove(Tmp, Ec); return false; }
-#ifndef _WIN32
-    if (const int D = ::open(P.parent_path().string().c_str(), O_RDONLY | O_DIRECTORY); D >= 0) { ::fsync(D); ::close(D); }
-#endif
     return true;
 }
 

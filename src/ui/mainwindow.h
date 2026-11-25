@@ -82,6 +82,7 @@ private:
     class NodeService *Node = nullptr;   // the IPFS node's start, retry, stop and the work its readiness unblocks
     TrayController  * Tray        = nullptr;    // tray icon + close/minimize/start-in-tray behavior
     bool              ReallyQuitting = false;   // set by the tray "Quit" path so closeEvent quits instead of hiding
+    bool QuittingAfterGames = false;   // quitting, the running game being ended first (closeEvent)
 
     QTabWidget * MainWindowTabWidget = nullptr;
     LibraryTab  * LibraryTabPtr  = nullptr;

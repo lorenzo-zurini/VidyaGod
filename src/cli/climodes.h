@@ -55,6 +55,7 @@ struct LaunchRequest
     std::optional<std::vector<std::string>> Grafts;
     std::map<std::string, std::string> VariableOverrides;
     bool ResolveOnly = false;
+    bool DryRun = false;   // nothing the run writes is kept
 };
 //Verdict: the warnings and errors the launch logged, for a caller that shows them (they are printed regardless).
 int Launch(const LaunchRequest &Req, nlohmann::ordered_json &GlobalConfigJSON, QDir &AppDataDir,

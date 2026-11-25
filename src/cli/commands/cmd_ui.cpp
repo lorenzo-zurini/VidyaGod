@@ -681,7 +681,8 @@ VG_COMMANDS
         { Command::Pos("grid", "the grid's name (ui tree shows it)"), Command::Pos("card", "the card's tile UID or title"),
           Command::Flag("menu", "open its context menu instead") },
         { "ui card 'Library games' 'Age of Empires II - The Age of Kings'", "ui card 'Catalog games' 749 --json", "ui card Library 749 --menu" },
-        { "LibraryView::activateCardAt", "LibraryView::requestCardMenu", "LibraryView::cardIndex" }, Command::Needs::Ui, false,
+        { "LibraryView::activateCardAt", "LibraryView::requestCardMenu", "LibraryView::cardIndex", "PreLaunchWindow::ExistingFor",
+          "PreLaunchWindow::bringBack", "PreLaunchWindow::launchRunning", "PreLaunchWindow::done" }, Command::Needs::Ui, false,
         [](Command::Context &Ctx, const json &A) {
             LibraryView *V = Grid(Command::Str(A, "grid"));
             const int I = V->cardIndex(QString::fromStdString(Command::Str(A, "card")));

@@ -297,7 +297,7 @@ VG_COMMANDS
         { SpecArg(), WithSample(Opt("patches", "the BinaryPatch layers (JSON list; FILE relative to the runtime)", Type::Json, true),
                                "[{\"TYPE\":\"BinaryPatch\",\"FILE\":\"media/game.iso\",\"MODE\":\"Poke\",\"OFFSET\":\"0x84924\",\"EXPECT\":\"05\",\"VALUE\":\"07\"}]"),
           Opt("runtime", "the mountpoint (default: the spec's)") },
-        { "vfs plan-patches spec.json --patches @jsrf_fix.json" }, { "BinaryPatch::PlanReadTime" }, Needs::Config, false,
+        { "vfs plan-patches spec.json --patches @jsrf_fix.json" }, { "BinaryPatch::PlanReadTime", "BinaryPatch::SparseImage::LetGo" }, Needs::Config, false,
         [](Command::Context &, const json &A) {
             std::ifstream In(Command::Str(A, "spec"), std::ios::binary);
             nlohmann::ordered_json Spec = nlohmann::ordered_json::parse(In, nullptr, false);

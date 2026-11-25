@@ -190,7 +190,13 @@ bool ContainerWrapper::BuildContainerRuntime()
             return false;
         }
         Claimed = true;
-        VfsMount::CleanStaleRuntime(ContainerParams.TempPath);
+        //A runtime left mounted that does not clear is not built over (its kept folders are the user's saves).
+        if (!VfsMount::CleanStaleRuntime(ContainerParams.TempPath))
+        {
+            LogErr("ContainerWrapper::BuildContainerRuntime", "The instance's last runtime is still mounted at "
+                   + ContainerParams.TempPath.string() + " and would not come down — not launching over it (try again, or restart).");
+            return false;
+        }
     }
 
     //Verify every dependency is satisfiable (runner build cached, DEFPREFIX present, game layers local-or-fetchable),
@@ -525,6 +531,17 @@ bool ContainerWrapper::Execute(const std::string &OverrideExe, const std::vector
 
     //(Runner output was forwarded live to our stdout/stderr above — nothing buffered to print here.)
 
+    //A program that never started (the sandbox or runner missing, not executable) is not a game that "exited with code
+    //255": it is a launch that did not start, said with the reason, so the launch names what is missing.
+    if (RunProcess.error() == QProcess::FailedToStart)
+    {
+        this->LastCrashed = false;
+        this->LastExitCode = -1;
+        LogErr("ContainerWrapper::Execute", "The game's process could not be started (" + RunProcess.program().toStdString()
+               + "): " + RunProcess.errorString().toStdString());
+        return false;
+    }
+
     if (RunProcess.exitStatus() == QProcess::CrashExit)
     {
         this->LastCrashed = true;
@@ -610,7 +627,15 @@ bool ContainerWrapper::Cleanup()
     //Windows: what the game kept outside its game folder lives in its box: brought back to the runtime first (BoxLaunch).
     RegistryWrapper BoxSession;
     bool HaveBoxSession = false;
-    bool Captured = BoxLaunch::Harvest(this->ContainerParams, BoxSession, HaveBoxSession);
+    //A dry run stores nothing of what the game wrote: no kept files, registry keys or option values.
+    if (ContainerParams.DryRun)
+    {
+        LogOut("ContainerWrapper::Cleanup", "Dry run: nothing this session wrote is stored.");
+        ContainerParams.KeepFiles.clear();
+        ContainerParams.KeepRegKeys.clear();
+        ContainerParams.PendingWritten.clear();
+    }
+    bool Captured = ContainerParams.DryRun || BoxLaunch::Harvest(this->ContainerParams, BoxSession, HaveBoxSession);
     if (!ContainerParams.KeepFiles.empty()
         && !PersistLayer::CapturePersistFiles(this->ContainerParams))
     {
@@ -716,6 +741,21 @@ bool ContainerWrapper::Cleanup()
         return false;
     }
 
+    //Nothing mounted under it may be left when it is wiped: a mount the build never registered (one that came up after
+    //the spawn gave up waiting, a stale one) can be a live view of a kept folder — the user's saves. Taken down and
+    //waited for; still there, the wipe does not happen.
+    if (!Sessions::MountpointsUnder(ContainerParams.TempPath).empty())
+    {
+        for (const std::string &M : Sessions::MountpointsUnder(ContainerParams.TempPath)) VfsMount::UnmountLazy(M);
+        bool Clear = false;
+        for (int Attempt = 0; !Clear && Attempt < 30; ++Attempt) { QThread::msleep(200); Clear = Sessions::MountpointsUnder(ContainerParams.TempPath).empty(); }
+        if (!Clear)
+        {
+            LogErr("ContainerWrapper::Cleanup", "Aborting TEMP wipe to protect USERDATA — something is still mounted under "
+                   + ContainerParams.TempPath.string() + ". TEMP left in place.");
+            return false;
+        }
+    }
     //RUNTIME/WRITELAYER/DEFPREFIX all live inside TempPath, so this single removal wipes them all.
 #ifdef _WIN32
     //MinGW's remove_all follows a junction or symlink (its lstat is stat), and the writable layer holds whatever links

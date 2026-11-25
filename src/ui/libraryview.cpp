@@ -181,6 +181,8 @@ void LibraryGameCard::play()
             skip = bool(US["SKIP_LAUNCH_DIALOG"]);
     }
     bool shift = (QGuiApplication::keyboardModifiers() & Qt::ShiftModifier) != 0;
+    //A tile has one launch window: clicked again (twice in a row, or while its game runs), the one open comes back.
+    if (PreLaunchWindow *Open = PreLaunchWindow::ExistingFor(FaceUid, GroupNodeIds)) { Open->bringBack(); return; }
     auto * dlg = new PreLaunchWindow(GlobalConfigJSON, IndexOwned, GroupNodeIds, FaceUid, nullptr);
     dlg->show();
     if (skip && !shift)
@@ -190,6 +192,7 @@ void LibraryGameCard::play()
 void LibraryGameCard::edit()
 {
     if (!Index || GroupNodeIds.empty()) return;
+    if (PreLaunchWindow *Open = PreLaunchWindow::ExistingFor(FaceUid, GroupNodeIds)) { Open->bringBack(); return; }
     (new PreLaunchWindow(GlobalConfigJSON, IndexOwned, GroupNodeIds, FaceUid, nullptr))->show();
 }
 

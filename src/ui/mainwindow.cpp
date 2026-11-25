@@ -1,5 +1,7 @@
 #include "eventlog.h"
 #include "mainwindow.h"
+#include <QMessageBox>
+#include "containerwrapper.h"   // LiveCount / StopAll / WaitNoneLive — a game running is ended before quitting
 #include "packageeditor.h"
 #include "pkgactions.h"
 #include "asyncwork.h"
@@ -230,6 +232,10 @@ void MainWindow::BuildDesktop()
     // Catalog card clicks → the download controller.
     connect(CatalogTabPtr, &CatalogTab::downloadRequested, this, [this](LibraryGameCard *C) { StartCardDownload(*DownloadMgr, *Model, C, this); });
     connect(CatalogTabPtr, &CatalogTab::cancelRequested,   this, [this](LibraryGameCard *C) { CancelCardDownload(*DownloadMgr, C, this); });
+    connect(IpfsTabPtr, &IpfsTab::sourcesRequested, this, [this] {
+        MainWindowTabWidget->setCurrentWidget(SettingsTabPtr);
+        SettingsTabPtr->openPage("Sources");
+    });
     connect(CatalogTabPtr, &CatalogTab::sourcesRequested,  this, [this] {
         MainWindowTabWidget->setCurrentWidget(SettingsTabPtr);
         SettingsTabPtr->openPage("Sources");
@@ -362,6 +368,31 @@ void MainWindow::closeEvent(QCloseEvent * e)
     {
         e->ignore();
         hideToTray();
+        return;
+    }
+    //A game running is ended first, the way a quit signal ends it: it is told to stop, its session is stored (what the
+    //package keeps — saves, settings, registry) and its runtime comes down, THEN VidyaGod exits. Exiting at once killed
+    //the game (its sandbox dies with its parent) and lost the session's saves. Asked first: quitting is not how a game
+    //is stopped by mistake.
+    if (ContainerWrapper::LiveCount() > 0)
+    {
+        e->ignore();
+        if (QuittingAfterGames) return;                 // already ending them
+        QMessageBox Ask(QMessageBox::Warning, "Quit VidyaGod", "A game is running.", QMessageBox::NoButton, this);
+        Ask.setInformativeText("Quitting closes it. Its saves and settings are stored first.");
+        QPushButton *Quit = Ask.addButton("Close the game and quit", QMessageBox::DestructiveRole);
+        QPushButton *Keep = Ask.addButton("Keep playing", QMessageBox::RejectRole);
+        Ask.setDefaultButton(Keep);
+        Ask.exec();
+        if (Ask.clickedButton() != Quit) { ReallyQuitting = false; return; }
+        QuittingAfterGames = true;
+        ReallyQuitting = true;
+        setWindowTitle(windowTitle() + " — closing the game…");
+        std::thread([this] {
+            ContainerWrapper::StopAll();
+            ContainerWrapper::WaitNoneLive();
+            QMetaObject::invokeMethod(this, [this] { close(); }, Qt::QueuedConnection);
+        }).detach();
         return;
     }
     if (Tray) Tray->rememberHidden(false);   // exiting from a visible window → relaunch visible

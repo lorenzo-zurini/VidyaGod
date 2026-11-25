@@ -60,7 +60,8 @@ bool RunnerShipsMountableBuild(const struct ContainerParams &ContainerParams);
 
 //Pre-launch hygiene: clears any runtime left under TempPath by a previously crashed/incomplete run — discovers
 //mounts from mountinfo, unmounts deepest-first, then removes TempPath (left in place if any mount refuses to detach).
-void CleanStaleRuntime(const std::filesystem::path &TempPath);
+//False when what is mounted under it did not clear (it is left in place, to protect the kept folders it can reach).
+[[nodiscard]] bool CleanStaleRuntime(const std::filesystem::path &TempPath);
 
 //At startup: every session folder under Root (<Root>/<PackageUID>/<instance>) whose owner is gone is cleared as its next
 //launch would clear it (CleanStaleRuntime), with what its writable layer held named in the log (a crash's unsaved

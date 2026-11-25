@@ -457,12 +457,14 @@ bool RegistryWrapper::SaveHiveFile(const std::filesystem::path &File, HiveRoot R
     if (It == Hives.end()) return true; // nothing loaded/authored for this hive — leave the file as-is
     const Hive &H = It->second;
 
-    std::ofstream Out(File, std::ios::binary | std::ios::trunc);
-    if (!Out) { LogErr("RegistryWrapper::SaveHiveFile", "Cannot write " + File.string()); return false; }
-
+    //Written whole or not at all: a hive cut short by a full disk is a registry wine cannot read, and the durable store
+    //(the user's kept keys) would lose every key the next capture does not touch.
+    std::ostringstream Out;
     Out << H.RawHeaderLines;
     bool AnyEmitted = false;
     if (H.RootKey) EmitKey(Out, H.RootKey.get(), "", AnyEmitted);
+    std::string Err;
+    if (!WriteFileAtomic(File, Out.str(), Err)) { LogErr("RegistryWrapper::SaveHiveFile", Err); return false; }
     return true;
 }
 

@@ -5,6 +5,7 @@
 #include <filesystem>
 #include <fstream>
 #ifndef _WIN32
+#include <unistd.h>
 #include <sys/stat.h>   // mkfifo
 #endif
 
@@ -209,4 +210,30 @@ TEST(content_args_are_recognised_with_a_format)
     CHECK(!ArgReferencesContent("waitforexitandrun"));
     CHECK(!ArgReferencesContent("%ContentRoot%"));
     CHECK(!ArgReferencesContent("%GameDir%"));
+}
+
+// A durable store that does not read (a hive cut short, a hand edit) is never written over: it is moved aside whole
+// (its keys can be recovered), and this session's keys start a new one. Teeth: load what reads and save over it (the
+// unreadable store is gone); refuse to capture at all.
+TEST(reglayer_an_unreadable_store_is_moved_aside_not_overwritten)
+{
+    auto d = RlTmp("keybroken");
+    ContainerParams CP = KeyParams(d, "");
+#ifndef _WIN32
+    if (::geteuid() == 0) { fs::remove_all(d); return; }   // root reads anything: nothing is unreadable
+#endif
+    WriteHives(CP.UserDataPath / "REGKEYS", nlohmann::ordered_json::array({ RegEdit("HKCU\\Software\\Old", {{"Kept","1"}}) }));
+    fs::permissions(CP.UserDataPath / "REGKEYS" / "user.reg", fs::perms::none, fs::perm_options::replace);   // does not read
+    WriteHives(CP.RuntimePath, nlohmann::ordered_json::array({ RegEdit("HKCU\\Software\\Game", {{"Save","3"}}) }));
+    CHECK(RegistryLayer::CapturePersistRegKeys(CP));
+    bool Aside = false;
+    for (const auto &E : fs::directory_iterator(CP.UserDataPath))
+        if (E.path().filename().string().rfind("REGKEYS.unreadable-", 0) == 0)
+        {
+            fs::permissions(E.path() / "user.reg", fs::perms::owner_read | fs::perms::owner_write, fs::perm_options::replace);
+            Aside = ReadFileAt(E.path() / "user.reg").find("\"Kept\"=\"1\"") != std::string::npos;
+        }
+    CHECK(Aside);
+    CHECK(ReadFileAt(CP.UserDataPath / "REGKEYS" / "user.reg").find("\"Save\"=\"3\"") != std::string::npos);
+    fs::remove_all(d);
 }

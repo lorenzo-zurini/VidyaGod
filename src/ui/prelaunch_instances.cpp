@@ -85,6 +85,13 @@ void PreLaunchWindow::onInstanceChanged()
 
 void PreLaunchWindow::RefreshInstanceInfo()
 {
+    //"Skip this window" shows what the instance has (it was always unticked, and nothing could untick the saved setting).
+    if (RememberCheck)
+    {
+        const auto Cfg = InstanceStore::ReadConfig(*GlobalConfigJSON, PackageUID, InstanceName);
+        const QSignalBlocker Quiet(RememberCheck);
+        RememberCheck->setChecked(Cfg.contains("SKIP_LAUNCH_DIALOG") && Cfg["SKIP_LAUNCH_DIALOG"].is_boolean() && Cfg["SKIP_LAUNCH_DIALOG"].get<bool>());
+    }
     if (!InstanceInfo) return;
     const QString Last = QString::fromStdString(InstanceStore::LastRun(*GlobalConfigJSON, PackageUID, InstanceName));
     const QString When = PlayedWhen(Last);

@@ -314,7 +314,7 @@ VG_COMMANDS
         "downloadable. Its node files and cover stay; a library its closure contains (other games' too) and a file with "
         "no CID (nothing to download it again from) are left. Only a package in the library: a local package's files are "
         "its masters.", { GameArg() },
-        { "packages dehydrate 'Patch 2.0a'" }, { "PackageCatalog::DehydrateNode" },
+        { "packages dehydrate 'Patch 2.0a'" }, { "PackageCatalog::DehydrateNode", "PackageCatalog::SourceOfPackage" },
         Needs::Config, true,
         [](Command::Context &C, const json &A) {
             const auto I = Index(C);

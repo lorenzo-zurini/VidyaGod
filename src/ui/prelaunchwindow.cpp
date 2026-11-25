@@ -54,6 +54,7 @@
 #include <QDateTime>
 #include <QLocale>
 #include <QPointer>
+#include <QCloseEvent>
 
 #include "prelaunchwindow_p.h"
 
@@ -115,6 +116,11 @@ QPixmap RoundedCover(const QPixmap& Src, int Width, qreal Dpr)
 // PreLaunchWindow — node-native launch dialog (one library tile = a GROUP of launchable nodes).
 // ============================================================================
 
+namespace {
+//Every launch window open: a tile's own is found by ExistingFor.
+QList<QPointer<PreLaunchWindow>> &OpenWindows() { static QList<QPointer<PreLaunchWindow>> W; return W; }
+}
+
 PreLaunchWindow::PreLaunchWindow(
     nlohmann::ordered_json*  GlobalConfigJSON,
     std::shared_ptr<const NodeIndex> Graph,
@@ -131,6 +137,7 @@ PreLaunchWindow::PreLaunchWindow(
     setWindowTitle("Launch");
     setMinimumSize(760, 520);
     setAttribute(Qt::WA_DeleteOnClose);
+    OpenWindows().append(this);
     setObjectName("prelaunch");
     //One quiet, consistent look over the desktop palette: secondary text dimmed, cards a shade off the window, the
     //primary action in the highlight colour. palette() keeps it right in light and dark themes alike.
@@ -410,6 +417,8 @@ PreLaunchWindow::PreLaunchWindow(
         AL->setContentsMargins(14, 12, 14, 12);
         AL->setSpacing(8);
         RememberCheck         = new QCheckBox("Skip this window next time (launch straight away)", AdvancedPage);
+        RememberCheck->setToolTip("A click on the game's card then launches it at once. To see this window again: Shift+click "
+                                  "the card, or its ⋯ corner.");
         CloseAfterLaunchCheck = new QCheckBox("Close this window once the game has started",      AdvancedPage);
         DryRunCheck           = new QCheckBox("Dry run: discard everything the game writes",       AdvancedPage);
         PreserveRuntimeCheck  = new QCheckBox("Pause after exit to inspect the runtime",           AdvancedPage);
@@ -522,8 +531,38 @@ PreLaunchWindow::PreLaunchWindow(
     if (DeckShell::On()) ArrangeForController();
 }
 
+PreLaunchWindow *PreLaunchWindow::ExistingFor(const std::string &Face, const std::vector<std::string> &Rows)
+{
+    for (const QPointer<PreLaunchWindow> &W : OpenWindows())
+        if (W && W->FaceUid == Face && W->GroupNodeIds == Rows) return W;
+    return nullptr;
+}
+
+void PreLaunchWindow::bringBack()
+{
+    ClosedWhileRunning = false;
+    show();
+    raise();
+    activateWindow();
+}
+
+bool PreLaunchWindow::launchRunning() const { return RunningForTest || (LaunchWorker && LaunchWorker->isRunning()); }
+
+void PreLaunchWindow::done(int Result)
+{
+    if (launchRunning()) { ClosedWhileRunning = true; hide(); return; }
+    QDialog::done(Result);
+}
+
+void PreLaunchWindow::closeEvent(QCloseEvent *Event)
+{
+    if (launchRunning()) { ClosedWhileRunning = true; Event->ignore(); hide(); return; }
+    QDialog::closeEvent(Event);
+}
+
 PreLaunchWindow::~PreLaunchWindow()
 {
+    OpenWindows().removeAll(this);
     if (LaunchWorker && LaunchWorker->isRunning())
     {
         LaunchWorker->kill();
@@ -901,8 +940,8 @@ void PreLaunchWindow::onLaunchClicked()
           }
           InstanceStore::SetSetting(*GlobalConfigJSON, PackageUID, "RUNNER_CHAIN",
                                                 SelectedChain == Default ? nlohmann::ordered_json() : ChainJson, InstanceName); }
-        if (RememberCheck->isChecked())
-            InstanceStore::SetSetting(*GlobalConfigJSON, PackageUID, "SKIP_LAUNCH_DIALOG", true, InstanceName);
+        //Both ways: unticked, the window shows again next time.
+        InstanceStore::SetSetting(*GlobalConfigJSON, PackageUID, "SKIP_LAUNCH_DIALOG", RememberCheck->isChecked(), InstanceName);
         persistGlobalConfig();
     }
 
@@ -911,6 +950,7 @@ void PreLaunchWindow::onLaunchClicked()
     ModuleGroup->setEnabled(false); AdvancedPage->setEnabled(false);
     InstanceCombo->setEnabled(false); InstanceMenuButton->setEnabled(false);
     LaunchButton->setVisible(false); KillButton->setVisible(true); CloseButton->setEnabled(false);
+    KillButton->setText("✕  Cancel"); KillButton->setEnabled(true);   // a launch stuck building can be called off at once
     ProgressBar->setValue(0); ProgressBar->setVisible(true);
     StatusLabel->setStyleSheet(QString());
     StatusLabel->setText("Starting…");
@@ -1009,12 +1049,20 @@ void PreLaunchWindow::onProgressChanged(int value)
     if (value >= 95)
     {
         KillButton->setEnabled(true);
+        KillButton->setText("■  Stop game");
         if (CloseAfterLaunchCheck->isChecked()) accept();
     }
 }
 
 void PreLaunchWindow::onLaunchFinished(bool success, QString errorMsg)
 {
+    //Closed while it ran: it closes now — unless the launch failed, which is shown (the user must learn why).
+    if (ClosedWhileRunning)
+    {
+        ClosedWhileRunning = false;
+        if (success) { QMetaObject::invokeMethod(this, [this]{ close(); }, Qt::QueuedConnection); }
+        else bringBack();
+    }
     ApplyGameLayout(false);
     KillButton->setEnabled(false); KillButton->setVisible(false);
     LaunchButton->setVisible(true);
@@ -1027,9 +1075,10 @@ void PreLaunchWindow::onLaunchFinished(bool success, QString errorMsg)
     else
     {
         StatusLabel->setStyleSheet("color:#e06c75;font-weight:bold;");
+        //Said once, where the user looks: the status line and the log (no modal box on top saying it a third time).
         StatusLabel->setText("Launch failed: " + errorMsg);
+        StatusLabel->setWordWrap(true);
         Tabs->setCurrentWidget(LogPage);
-        QMessageBox::warning(this, "Launch failed", errorMsg);
     }
 
     ChainContainer->setEnabled(true); VariantCombo->setEnabled(true); CustomVarGroup->setEnabled(true);

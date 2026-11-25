@@ -1,4 +1,5 @@
 #include "registrylayer.h"
+#include <ctime>
 #include "fileedits.h"       // FileEdits::ProcessFileEdits (base FileEdits → DEFAULTDATA)
 #include "registrywrapper.h" // hive load/save/merge
 #include "commonutils.h"     // Log*
@@ -274,15 +275,18 @@ bool RegistryLayer::CapturePersistRegKeys(struct ContainerParams &ContainerParam
     //Teardown is the last chance to save what the user changed. A failure here loses the session's registry
     //writes outright, and the only symptom is that the setting they just changed is gone next launch.
     if (!BoxSession && !Hives.LoadPrefix(HiveDir(ContainerParams, ContainerParams.RuntimePath)))
+    {
         LogErr("RegistryLayer::CapturePersistRegKeys", "could not read the session hives at teardown — the registry "
                    "changes made during this session are NOT being persisted.");
+        return false;   // not captured: the options' bookkeeping is not committed either
+    }
     const RegistryWrapper &Session = BoxSession ? *BoxSession : Hives;
 
     //The hive files are written by code that follows links, and the store sits in the instance folder, which the
     //sandboxed game could once write (an older build bound all of it): a link left there would have the game's
     //registry written to whatever file it names. An existing store is made a plain folder of plain files first.
     std::error_code Le;
-    const bool StoreExisted = std::filesystem::symlink_status(Store, Le).type() != std::filesystem::file_type::not_found;
+    bool StoreExisted = std::filesystem::symlink_status(Store, Le).type() != std::filesystem::file_type::not_found;
     if (StoreExisted)
         if (std::string Why; !PersistLayer::PrepareWriteDir(ContainerParams.UserDataPath, "REGKEYS", Why))
         {
@@ -293,8 +297,18 @@ bool RegistryLayer::CapturePersistRegKeys(struct ContainerParams &ContainerParam
 
     RegistryWrapper Durable;
     if (std::filesystem::exists(Store) && !Durable.LoadPrefix(Store))   // accumulate across sessions
-        LogErr("RegistryLayer::CapturePersistRegKeys", "could not load the durable store " + Store.string()
-                   + " — earlier sessions' persisted keys may be overwritten by this session's capture.");
+    {
+        //Not written over: the store that does not read is moved aside whole (its keys can be recovered by hand), and
+        //this session's keys start a new one.
+        const std::filesystem::path Aside = Store.string() + ".unreadable-" + std::to_string(std::time(nullptr));
+        std::error_code Ec;
+        std::filesystem::rename(Store, Aside, Ec);
+        LogErr("RegistryLayer::CapturePersistRegKeys", "the durable store " + Store.string() + " does not read: "
+                   + (Ec ? "it could not be moved aside (" + Ec.message() + ") — nothing is written over it" : "moved aside to " + Aside.string()));
+        if (Ec) return false;
+        Durable = RegistryWrapper();
+        StoreExisted = false;                              // made again below
+    }
 
     int Captured = 0;
     for (const std::string &RegPath : ContainerParams.KeepRegKeys)

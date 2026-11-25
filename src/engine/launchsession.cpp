@@ -81,6 +81,7 @@ bool Session::Resolve(std::string *Why)
     P.ScreenWidth       = Req.ScreenWidth;
     P.ScreenHeight      = Req.ScreenHeight;
     P.ReadBackOptions   = Req.ReadBack;
+    P.DryRun            = Req.DryRun;
     //The session facts every launch gets (lowest priority; see ContainerParams::SessionVars): the virtual LAN's
     //addresses and the player's own name — empty when the node is down, so the name has a fallback: a package writes
     //it into a game's config verbatim and must never get an empty one.
