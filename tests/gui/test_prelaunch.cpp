@@ -467,6 +467,126 @@ private slots:
         QVERIFY(Shows("(edited)"));
     }
 
+    // A script re-mints a library-scanned node (no working-tree handle) while its launch window is open: a new CID,
+    // the same node file (files are named by LABEL). The window, reloaded onto the new index, still lists that
+    // version and still has it picked — not just the versions that kept their CIDs. A graft version's row stays the
+    // picked row when the graft is re-minted, a graft's own card keeps its rows when that graft is, and a file two
+    // fresh nodes claim is no evidence of which one the version became.
+    // Teeth: follow by CID/handle alone (the version drops); compare paths unnormalised (the "./" spelling drops it);
+    // take the first of two same-file nodes; leave the remembered row's ids stale (the base's own row is picked);
+    // keep the window's tile graft from the old index (the card loses its rows).
+    void an_open_dialog_follows_a_version_a_script_re_minted()
+    {
+        const auto Node_ = [](const std::string &File, const json &J) {
+            Node N;
+            ManifestModel::ParseNode(J, File, "/lib/JSRF", N);
+            return N;
+        };
+        const auto Exec = [](const char *Uid) {
+            return json{{"EXEC", json::array({ json{{"LABEL", "Play"}, {"HOST", ManifestModel::MachinePlatform()}, {"EXE", "game.exe"},
+                {"TILE", {{"UID", Uid}, {"TITLE", "Jet Set Radio"}}}} })}};
+        };
+        const auto Version = [&](const char *Cid, const char *Variant, const std::string &File) {
+            return Node_(File, json{ {"CID", Cid}, {"LABEL", Variant}, {"VARIANT", Variant}, {"LAYERS", json::array({ Exec("31") })} });
+        };
+        const auto Index = [](std::vector<Node> Ns) {
+            auto I = std::make_shared<NodeIndex>();
+            for (Node &N : Ns) I->Nodes[N.Cid] = std::move(N);
+            ManifestModel::DeriveFacts(*I);
+            return std::shared_ptr<const NodeIndex>(I);
+        };
+        const auto Versions = [](PreLaunchWindow &W) -> QComboBox * {
+            for (QComboBox *C : W.findChildren<QComboBox *>())
+                if (C->count() && C->itemData(0).toString().contains(QChar(0x1f))) return C;
+            return nullptr;
+        };
+        const auto Rows = [](QComboBox *C) {
+            QStringList L;
+            for (int i = 0; i < C->count(); ++i) L << C->itemText(i);
+            return L;
+        };
+        json Cfg = json{{"Settings", json::object()}};
+
+        // A plain version re-minted: still listed, still picked (it is not the row a fallback to the first picks).
+        {
+            const auto Before = Index({ Version("bafkreiunleashed", "JSRF Unleashed", "/lib/JSRF/JSRF Unleashed.json"),
+                                        Version("bafkreid43j", "Xbox", "/lib/JSRF/Xbox.json") });
+            PreLaunchWindow W(&Cfg, Before, {"bafkreiunleashed", "bafkreid43j"}, "31");
+            QComboBox *V = Versions(W);
+            QVERIFY(V);
+            QCOMPARE(Rows(V), QStringList({"JSRF Unleashed", "Xbox"}));
+            V->setCurrentIndex(1);
+            W.ReloadAndRebuild(Index({ Version("bafkreiunleashed", "JSRF Unleashed", "/lib/JSRF/JSRF Unleashed.json"),
+                                       Version("bafkreic56g", "Xbox", "/lib/JSRF/./Xbox.json") }));
+            V = Versions(W);
+            QVERIFY(V);
+            QCOMPARE(Rows(V), QStringList({"JSRF Unleashed", "Xbox"}));
+            QCOMPARE(V->currentText(), QString("Xbox"));
+            QVERIFY(V->currentData().toString().startsWith("bafkreic56g\x1f"));
+        }
+        // Two fresh nodes from the old file: neither is taken for the version, which is dropped.
+        {
+            const auto Before = Index({ Version("bafkreiunleashed", "JSRF Unleashed", "/lib/JSRF/JSRF Unleashed.json"),
+                                        Version("bafkreid43j", "Xbox", "/lib/JSRF/Xbox.json") });
+            PreLaunchWindow W(&Cfg, Before, {"bafkreiunleashed", "bafkreid43j"}, "31");
+            W.ReloadAndRebuild(Index({ Version("bafkreiunleashed", "JSRF Unleashed", "/lib/JSRF/JSRF Unleashed.json"),
+                                       Version("bafkreia", "Xbox A", "/lib/JSRF/Xbox.json"),
+                                       Version("bafkreib", "Xbox B", "/lib/JSRF/Xbox.json") }));
+            QCOMPARE(Rows(Versions(W)), QStringList({"JSRF Unleashed"}));
+        }
+        // A node with no file (a received stub) under a new CID: no file to go by, so it is not taken for the old one.
+        {
+            const auto Before = Index({ Version("bafkreiunleashed", "JSRF Unleashed", "/lib/JSRF/JSRF Unleashed.json"),
+                                        Version("bafkreistubold", "Xbox", "") });
+            PreLaunchWindow W(&Cfg, Before, {"bafkreiunleashed", "bafkreistubold"}, "31");
+            QCOMPARE(Rows(Versions(W)), QStringList({"JSRF Unleashed", "Xbox"}));
+            W.ReloadAndRebuild(Index({ Version("bafkreiunleashed", "JSRF Unleashed", "/lib/JSRF/JSRF Unleashed.json"),
+                                       Version("bafkreistubnew", "Xbox (peer)", "") }));
+            QCOMPARE(Rows(Versions(W)), QStringList({"JSRF Unleashed"}));
+        }
+        // A graft version re-minted: its row (on the base, which kept its CID) stays the picked one.
+        {
+            const auto Patched = [&](const char *Cid, const char *On = "bafkreibase") {
+                return Node_("/lib/JSRF/Patched.json", json{ {"CID", Cid}, {"LABEL", "Patched"}, {"VARIANT", "Patched"},
+                    {"LAYERS", json::array({ json{{"ANY", json::array({On})}}, json{{"DIR", "patch"}} })} });
+            };
+            PreLaunchWindow W(&Cfg, Index({ Version("bafkreibase", "Xbox", "/lib/JSRF/Xbox.json"), Patched("bafkreipatchold") }),
+                              {"bafkreibase", "bafkreipatchold"}, "31");
+            QComboBox *V = Versions(W);
+            QVERIFY(V);
+            QCOMPARE(Rows(V), QStringList({"Patched", "Xbox"}));
+            V->setCurrentIndex(0);
+            QCOMPARE(V->currentData().toString(), QString("bafkreibase\x1fPlay\x1frow\x1f" "bafkreipatchold"));
+            W.ReloadAndRebuild(Index({ Version("bafkreibase", "Xbox", "/lib/JSRF/Xbox.json"), Patched("bafkreipatchnew") }));
+            V = Versions(W);
+            QVERIFY(V);
+            QCOMPARE(Rows(V), QStringList({"Patched", "Xbox"}));
+            QCOMPARE(V->currentData().toString(), QString("bafkreibase\x1fPlay\x1frow\x1f" "bafkreipatchnew"));
+            // Then the base too, the graft re-minted onto it (a repoint cascade): still the graft's row.
+            W.ReloadAndRebuild(Index({ Version("bafkreibasenew", "Xbox", "/lib/JSRF/Xbox.json"),
+                                       Patched("bafkreipatchnewer", "bafkreibasenew") }));
+            V = Versions(W);
+            QVERIFY(V);
+            QCOMPARE(Rows(V), QStringList({"Patched", "Xbox"}));
+            QCOMPARE(V->currentData().toString(), QString("bafkreibasenew\x1fPlay\x1frow\x1f" "bafkreipatchnewer"));
+        }
+        // A graft's own card (tile 70, presented by the graft) keeps its rows when the graft is re-minted.
+        {
+            const auto Mod = [&](const char *Cid) {
+                return Node_("/lib/JSRF/Mod.json", json{ {"CID", Cid}, {"LABEL", "Mod"},
+                    {"LAYERS", json::array({ json{{"ANY", json::array({"bafkreibase"})}}, Exec("70") })} });
+            };
+            const auto Before = Index({ Version("bafkreibase", "Xbox", "/lib/JSRF/Xbox.json"), Mod("bafkreimodold") });
+            QCOMPARE(Before->TileGraft.at("70"), std::string("bafkreimodold"));
+            PreLaunchWindow W(&Cfg, Before, {"bafkreibase"}, "70");
+            QVERIFY(Versions(W));
+            QCOMPARE(Rows(Versions(W)), QStringList({"Xbox"}));
+            W.ReloadAndRebuild(Index({ Version("bafkreibase", "Xbox", "/lib/JSRF/Xbox.json"), Mod("bafkreimodnew") }));
+            QVERIFY(Versions(W));
+            QCOMPARE(Rows(Versions(W)), QStringList({"Xbox"}));
+        }
+    }
+
     // A launch resolves on the graph its dialog shows (LaunchThread::Index, AppModel's snapshot), not on a re-scan of
     // the library: a node only that graph holds is found, and with no graph the launch refuses. Teeth: re-scan the
     // config in run() (the node is "not found" — the config names no library); ignore a missing graph.

@@ -119,6 +119,19 @@ QPixmap RoundedCover(const QPixmap& Src, int Width, qreal Dpr)
 namespace {
 //Every launch window open: a tile's own is found by ExistingFor.
 QList<QPointer<PreLaunchWindow>> &OpenWindows() { static QList<QPointer<PreLaunchWindow>> W; return W; }
+//A version row's combo data, split on its separator: <node>\x1f<entry>[\x1f row|graft \x1f <graft>].
+std::vector<std::string> SplitRow(const std::string &Data)
+{
+    std::vector<std::string> F;
+    for (size_t A = 0;;)
+    {
+        const size_t B = Data.find('\x1f', A);
+        F.push_back(Data.substr(A, B == std::string::npos ? std::string::npos : B - A));
+        if (B == std::string::npos) break;
+        A = B + 1;
+    }
+    return F;
+}
 }
 
 PreLaunchWindow::PreLaunchWindow(
@@ -778,27 +791,50 @@ void PreLaunchWindow::onVariantChanged()
 
 void PreLaunchWindow::ReloadAndRebuild(std::shared_ptr<const NodeIndex> Fresh)
 {
+    QString Was = VariantCombo->currentData().toString();   // the exact row: a graft version's names its graft
     if (Fresh && Fresh != IndexOwned)
     {
+        //A node re-minted since the window opened has a new CID. The editor's re-mint keeps its working-tree handle;
+        //a script's re-mint of a library-scanned node (no handle) keeps its file — node files are named by LABEL.
         const auto Follow = [&](const std::string &Id) -> std::string {
             if (Id.empty() || Fresh->Find(Id)) return Id;
             const Node *Old = Index ? Index->Find(Id) : nullptr;
             const std::string H = Old && !Old->Handle.empty() ? Old->Handle : Id;
             for (const auto &[K, N] : Fresh->Nodes) if (N.Handle == H || K == H) return K;
-            return Id;   // gone: dropped below
+            if (!Old) return Id;   // gone: dropped below
+            const std::filesystem::path F = Old->File.lexically_normal();
+            const std::string *Same = nullptr;
+            for (const auto &[K, N] : Fresh->Nodes)
+                if (!N.File.empty() && N.File.lexically_normal() == F)   // a node with no file (a received stub): no file to go by
+                {
+                    if (Same) return Id;   // two nodes from one file: no telling which it became
+                    Same = &K;
+                }
+            return Same ? *Same : Id;
         };
+        //The remembered row names its node (and a graft version's row its graft): followed alike.
+        if (!Was.isEmpty())
+        {
+            std::vector<std::string> F = SplitRow(Was.toStdString());
+            F[0] = Follow(F[0]);
+            if (F.size() > 3) F[3] = Follow(F[3]);
+            std::string Followed = F[0];
+            for (size_t I = 1; I < F.size(); ++I) Followed.append("\x1f").append(F[I]);
+            Was = QString::fromStdString(Followed);
+        }
         for (std::string &Id : GroupNodeIds) Id = Follow(Id);
         LaunchNodeId = Follow(LaunchNodeId);
         RowGraft = Follow(RowGraft);
         IndexOwned = std::move(Fresh);
         Index = IndexOwned.get();
+        const auto T = Index->TileGraft.find(FaceUid);   // the tile's graft, as the fresh index has it
+        TileGraft = T != Index->TileGraft.end() ? T->second : std::string();
     }
     // Drop editions that no longer exist (e.g. after an edit) and rebuild everything from the index.
     std::vector<std::string> Live;
     for (const std::string& Id : GroupNodeIds) if (Index && Index->Find(Id)) Live.push_back(Id);
     GroupNodeIds = Live;
     QSignalBlocker B(VariantCombo);
-    const QString Was = VariantCombo->currentData().toString();   // the exact row: a graft version's names its graft
     FillVariantCombo();
     int Sel = Was.isEmpty() ? -1 : VariantCombo->findData(Was);
     if (Sel < 0) Sel = VariantCombo->findData(QString::fromStdString(LaunchNodeId + "\x1f" + Entrypoint));
@@ -829,14 +865,7 @@ void PreLaunchWindow::UpdateLogTabTitle()
 
 void PreLaunchWindow::TakeRow(const std::string& Data)
 {
-    std::vector<std::string> F;
-    for (size_t A = 0;;)
-    {
-        const size_t B = Data.find('\x1f', A);
-        F.push_back(Data.substr(A, B == std::string::npos ? std::string::npos : B - A));
-        if (B == std::string::npos) break;
-        A = B + 1;
-    }
+    const std::vector<std::string> F = SplitRow(Data);
     LaunchNodeId = F[0];
     Entrypoint = F.size() > 1 ? F[1] : std::string();
     RowGraft = F.size() > 3 && (F[2] == "row" || F[2] == "graft") ? F[3] : std::string();   // a graft entry's row keeps it
