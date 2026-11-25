@@ -169,7 +169,7 @@ VG_COMMANDS
         "ipfs fetch", "fetch a CID to a path (a file or, with --dir, a folder)",
         "Through the ONE network queue, blocking: the file (or folder) lands at <dest>. --once is a single attempt "
         "outside the queue (what each queue job does), --verify checks bytes already at <dest> against the CID.",
-        { CidArg(), Pos("dest", "where it lands"), Flag("dir", "a folder CID"), Flag("once", "one attempt, outside the queue"),
+        { CidArg(), Command::AsPath(Pos("dest", "where it lands")), Flag("dir", "a folder CID"), Flag("once", "one attempt, outside the queue"),
           Flag("verify", "(--once) re-check bytes already at dest"), Opt("timeout", "give up after this many ms (file, queued)", Type::Int) },
         { "ipfs fetch Qm… ~/Storage/tmp/x.zip", "ipfs fetch bafybei… ~/Storage/tmp/pkg --dir" },
         { "IpfsWrapper::FetchToPath", "IpfsWrapper::FetchDirToPath", "IpfsWrapper::FetchOnce", "IpfsWrapper::ClearStaleDest", "IpfsWrapper::FetchOnceHookActive" }, Needs::Config, true,
@@ -204,7 +204,7 @@ VG_COMMANDS
         "Serve a file from where it is (filestore: no copy into the store), returning its CID; --meta adds a node "
         "file the way package folders are (raw leaves); --only-hash computes the CID without adding anything; --as adds it "
         "only when it is that CID (what seeding a library does: read once, wrong bytes never added).",
-        { Pos("path", "the file"), Flag("meta", "a node / metadata file"), Flag("only-hash", "compute the CID only"),
+        { Command::AsPath(Pos("path", "the file")), Flag("meta", "a node / metadata file"), Flag("only-hash", "compute the CID only"),
           WithSample(Opt("as", "add it only when it is this CID"), "QmQERknUMpAyepiUavR9smoKE9CbxtAVoRxViYbSYFYZVx") },
         { "ipfs add ~/x/game.zip", "ipfs add ~/x/game.zip --only-hash", "ipfs add ~/x/game.zip --as Qm…" },
         { "IpfsWrapper::AddNoCopy", "IpfsWrapper::AddNoCopyMeta", "IpfsWrapper::ComputeCid", "IpfsWrapper::AddNoCopyIf" }, Needs::Config, true,
@@ -224,8 +224,8 @@ VG_COMMANDS
     Command::Register({
         "ipfs block", "read a raw block, or store one",
         "A block's bytes by CID (printed as text, or --out to a file), or with --put the bytes of a file stored as one "
-        "block (its CID printed).", { Pos("cid-or-file", "the CID to read, or (with --put) the file to store"), Flag("put", "store the file"),
-                                       Opt("out", "write the block to this file") },
+        "block (its CID printed).", { Command::MaybeAPath(Pos("cid-or-file", "the CID to read, or (with --put) the file to store")), Flag("put", "store the file"),
+                                       Command::AsPath(Opt("out", "write the block to this file")) },
         { "ipfs block bafkrei…", "ipfs block node.json --put" }, { "IpfsWrapper::BlockGet", "IpfsWrapper::BlockPut" }, Needs::Config, true,
         [](Command::Context &, const json &A) {
             const std::string X = Command::Str(A, "cid-or-file");
@@ -409,7 +409,7 @@ VG_COMMANDS
         "ipfs identity", "back up the node's identity key, or restore one",
         "The Ed25519 key that IS your peer code. --export writes it to a file (keep it safe: losing it loses your "
         "address for good); --import installs one (the node uses it from its next start) — --yes required.",
-        { Opt("export", "write the key here"), Opt("import", "install the key from here"), Flag("yes", "yes, replace my identity") },
+        { Command::AsPath(Opt("export", "write the key here")), Command::AsPath(Opt("import", "install the key from here")), Flag("yes", "yes, replace my identity") },
         { "ipfs identity --export ~/vidyagod-identity.key" }, { "IpfsWrapper::ExportIdentity", "IpfsWrapper::ImportIdentity" }, Needs::Config, true,
         [](Command::Context &, const json &A) {
             std::string Err;
@@ -595,7 +595,7 @@ VG_COMMANDS
         "Whether any queued or active fetch lands under <dir>; where a path is now after a folder moved (--path); "
         "--move-to re-points every destination under <dir> to the new folder (a package was moved); --forget drops "
         "those destinations; --forget-file <cid> drops <dir> (a file) from that CID's fetch; --drop-redirects forgets the moves recorded under <dir>.",
-        { Pos("dir", "the folder"), Opt("path", "a path: where it is now"), Opt("move-to", "re-point destinations under dir here"),
+        { Command::AsPath(Pos("dir", "the folder")), Command::AsPath(Opt("path", "a path: where it is now")), Opt("move-to", "re-point destinations under dir here"),
           Flag("forget", "forget destinations under dir"),
           Opt("forget-file", "a CID: forget dir, a file, as its destination"), Flag("drop-redirects", "forget the moves under dir") },
         { "queue landing ~/.VidyaGod/LIBRARY/VidyaGod/x", "queue landing ~/a --move-to ~/b" },

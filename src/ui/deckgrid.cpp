@@ -149,6 +149,15 @@ bool DeckGrid::padPressed(Pad::Button B)
         emit activated(current());
         return true;
     }
+    if ((B == Pad::Button::LT || B == Pad::Button::RT) && !Cards.isEmpty())
+    {
+        //A screenful at a time: a 300-game library is a few presses end to end.
+        const int To = pageFrom(Current < 0 ? 0 : Current, B == Pad::Button::RT ? 1 : -1);
+        if (To < 0 || To == Current) return true;
+        setCurrentIndex(To);
+        PadInput::instance().tick();
+        return true;
+    }
     if (!Pad::IsDirection(B) || Cards.isEmpty()) return false;
     if (Current < 0) { setCurrentIndex(0); return true; }
     QVector<QRect> Others;
@@ -164,8 +173,46 @@ bool DeckGrid::padScrolled(double Dx, double Dy)
 {
     Target = std::clamp(Target + (Strip ? Dx + Dy : Dy), 0.0, maxScroll());
     Scroll = Target;
+    //The selection comes along (as a console's library has it): scrolled off screen, it moves to the tile on screen
+    //nearest where it was — the header and A always name a tile you can see.
+    if (Current >= 0 && Current < Rects.size() && !rect().contains(tileRect(Current).toRect()))
+    {
+        const QPointF Was = tileRect(Current).center();
+        int Best = -1;
+        double BestD = 0;
+        for (int I = 0; I < Rects.size(); ++I)
+        {
+            const QRectF R = tileRect(I);
+            if (!rect().contains(R.toRect())) continue;
+            const double D = std::abs(R.center().x() - Was.x()) * 4 + std::abs(R.center().y() - Was.y());   // its column first
+            if (Best < 0 || D < BestD) { Best = I; BestD = D; }
+        }
+        if (Best >= 0 && Best != Current)
+        {
+            Current = Best;
+            Lift = 0;
+            Anim->start();
+            emit currentChanged(current());
+        }
+    }
     update();
     return true;
+}
+
+int DeckGrid::pageFrom(int From, int Dir) const
+{
+    if (From < 0 || From >= Rects.size()) return -1;
+    //A screenful along the scroll axis, to the tile nearest that point (the last or first at the ends).
+    const QPointF P = Rects[From].center() + (Strip ? QPointF(Dir * width(), 0) : QPointF(0, Dir * height()));
+    int Best = -1;
+    double BestD = 0;
+    for (int I = 0; I < Rects.size(); ++I)
+    {
+        const QPointF C = Rects[I].center();
+        const double D = std::hypot(C.x() - P.x(), C.y() - P.y());
+        if (Best < 0 || D < BestD) { Best = I; BestD = D; }
+    }
+    return Best;
 }
 
 json DeckGrid::padState() const

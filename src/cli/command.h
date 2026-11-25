@@ -71,6 +71,12 @@ struct Arg
     //A Json one: a one-line sample of what it takes, shown in its help. Its first character says the shape the value
     //must have ('{' an object, '[' an array; anything else: any), checked before the command runs.
     std::string Sample;
+    //A file or folder on the machine the command is typed on: made absolute THERE (ParseArgs), against that shell's
+    //folder — a command forwarded to the running app runs in the app's process, whose folder is not the caller's.
+    //MaybePath: a name or a path (a package by its UID, or its folder): made absolute only when it names something
+    //there. Neither touches "" or "-" (stdin).
+    bool Path = false;
+    bool MaybePath = false;
 };
 
 // A Json option's sample (see Arg::Sample): Opt("patch", "the patch", Type::Json, true) | Sample("{\"MODE\": …}").
@@ -86,6 +92,10 @@ inline Arg OptPos(std::string Name, std::string Help)
 { return Arg{std::move(Name), Type::String, std::move(Help), true, false, {}, {}}; }
 inline Arg Flag(std::string Name, std::string Help)
 { return Arg{std::move(Name), Type::Bool, std::move(Help), false, false, {}, {}}; }
+
+// Pos("file", "…") | AsPath: see Arg::Path. MaybeAPath: Arg::MaybePath.
+inline Arg AsPath(Arg A) { A.Path = true; return A; }
+inline Arg MaybeAPath(Arg A) { A.MaybePath = true; return A; }
 
 using Fn = std::function<nlohmann::ordered_json(Context &, const nlohmann::ordered_json &Args)>;
 // How a result reads for a person (default: Render::Generic). Colour already decided by the caller.

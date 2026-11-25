@@ -175,7 +175,7 @@ VG_COMMANDS
         "author run-windows", "run a Windows program (an installer, a setup tool) in the session, under a runner",
         "(Re)builds the session's runtime under --runner (its prefix and content root; `author state` lists the runners) "
         "and runs the program with --args. Waits until it exits (--timeout). Off-screen and silent as every run here.",
-        { Pos("exe", "the program (a host path)"), Opt("runner", "the runner's id", Type::String, true), Opt("args", "its arguments (a,b)"), Timeout() },
+        { Command::AsPath(Pos("exe", "the program (a host path)")), Opt("runner", "the runner's id", Type::String, true), Opt("args", "its arguments (a,b)"), Timeout() },
         { "author run-windows ~/Downloads/setup.exe --runner geproton_10_34 --args /S" },
         { "AuthoringSessionModel::runWindows", "AuthoringWorker::runWindows", "AuthoringSession::RunWindows" }, Needs::App, false,
         [](Command::Context &, const json &A) {

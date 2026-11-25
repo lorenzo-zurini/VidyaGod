@@ -340,7 +340,7 @@ VG_COMMANDS
         "registry show", "a wine prefix's registry: a key's values and subkeys, or every key under one",
         "Reads the prefix's hives (system.reg, user.reg, userdef.reg) and shows --key: its values (in the node's "
         "notation) and subkeys (a hive's root, HKLM or HKCU: its top-level keys); --all every key under it. --arch 32 shows the key as a 32-bit program sees it.",
-        { Pos("prefix", "the prefix folder (holding system.reg)"), Opt("key", "the key (HKLM\\Software\\…)"), Opt("arch", "32 or 64"), Flag("all", "every key under it") },
+        { Command::AsPath(Pos("prefix", "the prefix folder (holding system.reg)")), Opt("key", "the key (HKLM\\Software\\…)"), Opt("arch", "32 or 64"), Flag("all", "every key under it") },
         { "registry show ~/x/pfx --key HKLM", "registry show ~/x/pfx --key 'HKLM\\Software\\Microsoft\\Microsoft Games'", "registry show ~/x/pfx --key HKCU --all" },
         { "RegistryWrapper::LoadPrefix", "RegistryWrapper::LoadHiveFile", "RegistryWrapper::GetKey", "RegistryWrapper::GetValue", "RegistryWrapper::ForEachKey",
           "RegistryWrapper::ArchPath", "RegistryWrapper::NormalizeRootPrefix", "RegistryWrapper::RootForPath", "RegistryWrapper::StripRootPrefix",
@@ -396,8 +396,8 @@ VG_COMMANDS
         "registry set", "set or delete a value or key in a prefix's registry (saved back to its hives)",
         "--value NAME --data VALUE (the node's notation: \"text\", dword:…, hex:…) sets a value (the key is made); "
         "--delete-value NAME, --delete-key remove; --copy-from PREFIX copies the key (and below) from another prefix.",
-        { Pos("prefix", "the prefix folder"), Pos("key", "the key"), Opt("value", "a value's name ('' = the default)"), Opt("data", "(--value) its data"),
-          Opt("delete-value", "a value to delete"), Flag("delete-key", "delete the key"), Opt("copy-from", "a prefix to copy the key from") },
+        { Command::AsPath(Pos("prefix", "the prefix folder")), Pos("key", "the key"), Opt("value", "a value's name ('' = the default)"), Opt("data", "(--value) its data"),
+          Opt("delete-value", "a value to delete"), Flag("delete-key", "delete the key"), Command::AsPath(Opt("copy-from", "a prefix to copy the key from")) },
         { "registry set ~/x/pfx 'HKCU\\Software\\X' --value Res --data '\"1920x1080\"'", "registry set ~/x/pfx 'HKCU\\Software\\X' --delete-key" },
         { "RegistryWrapper::SetValue", "RegistryWrapper::EnsureKey", "RegistryWrapper::DeleteValue", "RegistryWrapper::DeleteKey", "RegistryWrapper::MergeKeyFrom",
           "RegistryWrapper::SavePrefix", "RegistryWrapper::SaveHiveFile", "RegistryWrapper::ManifestStringToValue", "RegistryWrapper::SzValue" }, Needs::Config, false,
@@ -422,7 +422,7 @@ VG_COMMANDS
 
     Command::Register({
         "registry diff", "what changed between two prefixes' registries, as a node's REG edits",
-        "The edits that take --from to the prefix: the capture an authoring session makes.", { Pos("prefix", "the changed prefix"), Opt("from", "the baseline prefix", Type::String, true) },
+        "The edits that take --from to the prefix: the capture an authoring session makes.", { Command::AsPath(Pos("prefix", "the changed prefix")), Command::AsPath(Opt("from", "the baseline prefix", Type::String, true)) },
         { "registry diff ~/after/pfx --from ~/before/pfx" }, { "RegistryWrapper::DiffToRegEdits" }, Needs::Config, false,
         [](Command::Context &, const json &A) { return LoadPrefix(Command::Str(A, "prefix")).DiffToRegEdits(LoadPrefix(Command::Str(A, "from"))); }, {} });
 
@@ -430,7 +430,7 @@ VG_COMMANDS
         "registry apply", "apply REG edits to a prefix (as a launch does), with %variables% substituted",
         "--edits: the engine's RegEdit list (or one); --var NAME=VALUE substitutes first; --override applies only the "
         "edits marked OVERRIDE (what is re-applied over the user's kept registry). Saved back to the hives.",
-        { Pos("prefix", "the prefix folder"), WithSample(Opt("edits", "the RegEdit layer(s) (JSON)", Type::Json, true), "{\"REGPATH\":\"HKCU\\\\Software\\\\X\",\"KEYVALUES\":{\"V\":\"1\"}} or a list of them"), Opt("var", "NAME=VALUE[,…]"), Flag("override", "only OVERRIDE edits"),
+        { Command::AsPath(Pos("prefix", "the prefix folder")), WithSample(Opt("edits", "the RegEdit layer(s) (JSON)", Type::Json, true), "{\"REGPATH\":\"HKCU\\\\Software\\\\X\",\"KEYVALUES\":{\"V\":\"1\"}} or a list of them"), Opt("var", "NAME=VALUE[,…]"), Flag("override", "only OVERRIDE edits"),
           Flag("dry-run", "show the substituted edits, change nothing") },
         { "registry apply ~/x/pfx --edits @reg.json --var res=1920x1080" },
         { "RegistryWrapper::ApplyRegEdits", "RegistryWrapper::ApplyRegEdit", "RegistryWrapper::SubstituteRegEdit" }, Needs::Config, false,
@@ -453,8 +453,8 @@ VG_COMMANDS
         "registry regfile", "a .reg export to and from a prefix's keys (what the Windows sandbox box keeps), and its text codec",
         "--to FILE writes the prefix's registry as a regedit export (what the box keeps; counted: what the format cannot "
         "carry); --from FILE reads one (UTF-8 text) into the prefix. --decode FILE prints a UTF-16 LE file as text; --encode TEXT --out FILE writes text as UTF-16 LE.",
-        { Opt("prefix", "the prefix folder"), Opt("to", "write a .reg here"), Opt("from", "read this .reg"), Opt("decode", "a UTF-16 LE file"),
-          Opt("encode", "text to encode"), Opt("out", "(--encode) the file") },
+        { Command::AsPath(Opt("prefix", "the prefix folder")), Command::AsPath(Opt("to", "write a .reg here")), Command::AsPath(Opt("from", "read this .reg")), Opt("decode", "a UTF-16 LE file"),
+          Opt("encode", "text to encode"), Command::AsPath(Opt("out", "(--encode) the file")) },
         { "registry regfile --prefix ~/x/pfx --to x.reg", "registry regfile --decode x.reg" },
         { "BoxPrefix::ToRegFile", "BoxPrefix::FromRegFile", "BoxPrefix::Utf16LeToUtf8", "BoxPrefix::Utf8ToUtf16Le" }, Needs::Config, false,
         [](Command::Context &, const json &A) {
@@ -485,11 +485,11 @@ VG_COMMANDS
         "inside that [section], adding it there when missing); --json-set POINTER sets "
         "a JSON value; --xml PATH an XML element or attribute (to --value); --append LINE adds a line once; --line-flag LINE "
         "makes LINE there (--value 1) or gone (--value 0); --overwrite TEXT replaces the file; --delete removes it. --base checks the file stays inside that folder (a link leading out is refused).",
-        { Pos("file", "the file"), Opt("config", "the line's start (Width=)"),
+        { Command::AsPath(Pos("file", "the file")), Opt("config", "the line's start (Width=)"),
           Opt("section", "(--config) the [section] header the line is in"), Opt("json-set", "a JSON pointer"), Opt("xml", "an XPath (/Config/Video/@w)"),
           Opt("value", "(--config, --json-set, --xml) the value; (--line-flag) 1 or 0"), Opt("append", "a line"),
           Opt("line-flag", "a line whose presence is the setting"),
-          Opt("overwrite", "the new text"), Flag("delete", "delete it"), Opt("base", "the folder it must stay in") },
+          Opt("overwrite", "the new text"), Flag("delete", "delete it"), Command::AsPath(Opt("base", "the folder it must stay in")) },
         { "edits apply game.ini --config 'Width=' --value 1920", "edits apply xemu.toml --section '[display.quality]' --config 'surface_scale = ' --value 2", "edits apply settings.json --json-set /video/width --value 1920",
           "edits apply cfg.xml --xml '/Config/Video/@w' --value 1920",
           "edits apply persistent.cfg --line-flag +EasyDragMilitary --value 1" },
@@ -534,7 +534,7 @@ VG_COMMANDS
     Command::Register({
         "edits line-has", "whether a file holds a line (how a LineFlag option reads its value back: 1 there, 0 gone)",
         "Lines compare with surrounding whitespace trimmed, case kept.",
-        { Pos("file", "the file"), Pos("line", "the line") }, { "edits line-has persistent.cfg +EasyDragMilitary" },
+        { Command::AsPath(Pos("file", "the file")), Pos("line", "the line") }, { "edits line-has persistent.cfg +EasyDragMilitary" },
         { "FileEdits::LineHas" }, Needs::Config, false,
         [](Command::Context &, const json &A) {
             return json{{"value", FileEdits::LineHas(Command::Str(A, "line"), Slurp(Command::Str(A, "file"))) ? "1" : "0"}};
@@ -542,7 +542,7 @@ VG_COMMANDS
 
     Command::Register({
         "edits xml-get", "read an XML element or attribute (how an option reads its value back)", "",
-        { Pos("file", "the XML file"), Pos("path", "an XPath (/Config/Video/@w)") }, { "edits xml-get cfg.xml '/Config/Video/@w'" },
+        { Command::AsPath(Pos("file", "the XML file")), Pos("path", "an XPath (/Config/Video/@w)") }, { "edits xml-get cfg.xml '/Config/Video/@w'" },
         { "FileEdits::XmlGet" }, Needs::Config, false,
         [](Command::Context &, const json &A) {
             std::string Why;
@@ -554,7 +554,7 @@ VG_COMMANDS
     Command::Register({
         "edits config-get", "read what follows a line's start in a settings file (how a ConfigWrite option reads its value back)",
         "The first line starting with --key; with --section, only inside that [section]. Absent: value is null.",
-        { Pos("file", "the file"), Pos("key", "the line's start (surface_scale = )"), Opt("section", "the [section] header the line is in") },
+        { Command::AsPath(Pos("file", "the file")), Pos("key", "the line's start (surface_scale = )"), Opt("section", "the [section] header the line is in") },
         { "edits config-get xemu.toml 'surface_scale = ' --section '[display.quality]'" },
         { "FileEdits::ConfigRead", "FileEdits::IsToml" }, Needs::Config, false,
         [](Command::Context &, const json &A) {
@@ -568,7 +568,7 @@ VG_COMMANDS
         "The patch as the node writes it (--patch JSON), --var values for its tokens; the file is changed in place "
         "unless --dry-run (then only what it would do is said). As a launch does: the file is read where the patch looks "
         "(its header, the site, one pass for a scan) and only the bytes it changes are written.",
-        { Pos("file", "the program file"), WithSample(Opt("patch", "the patch (JSON)", Type::Json, true), "{\"MODE\":\"Replace\",\"OFFSET\":\"0x1234\",\"EXPECT\":\"74 05\",\"REPLACE\":\"EB 05\"}"), Opt("var", "NAME=VALUE[,…]"), Flag("dry-run", "change nothing") },
+        { Command::AsPath(Pos("file", "the program file")), WithSample(Opt("patch", "the patch (JSON)", Type::Json, true), "{\"MODE\":\"Replace\",\"OFFSET\":\"0x1234\",\"EXPECT\":\"74 05\",\"REPLACE\":\"EB 05\"}"), Opt("var", "NAME=VALUE[,…]"), Flag("dry-run", "change nothing") },
         { "edits patch game.exe --patch @nocd.json --dry-run" },
         { "BinaryPatch::ApplyOne", "BinaryPatch::SparseImage::Read", "BinaryPatch::SparseImage::Write", "BinaryPatch::SparseImage::Size",
           "BinaryPatch::SparseImage::ScanChunk", "BinaryPatch::SparseImage::Written" }, Needs::Config, false,

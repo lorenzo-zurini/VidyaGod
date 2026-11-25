@@ -4,6 +4,8 @@
 #include <nlohmann/json.hpp>
 #include <QString>
 #include <functional>
+#include <vector>
+#include "command.h"
 #include <string>
 
 class QDir;
@@ -37,6 +39,8 @@ std::string RenderGeneric(const nlohmann::ordered_json &Result, bool Colour);
 // The width output is laid out for (a terminal's columns; 0: not a terminal — nothing shortened). Set per call from
 // stdout; a test sets it to render as a terminal would.
 void SetOutputWidth(size_t Columns);
+// A command's words read as its arguments, as the command line reads them (paths made absolute here: Arg::Path).
+nlohmann::ordered_json ParseCommandArgs(const Command::Spec &S, const std::vector<std::string> &Words);
 
 } // namespace CliApp
 

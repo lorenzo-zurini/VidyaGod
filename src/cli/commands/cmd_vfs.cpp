@@ -85,7 +85,7 @@ std::shared_ptr<MmapByteSource> Map(const std::string &P)
     return M;
 }
 
-Command::Arg SpecArg() { return Command::Pos("spec", "the mount spec (a launch's vidyagodfs.spec.json)"); }
+Command::Arg SpecArg() { return Command::AsPath(Command::Pos("spec", "the mount spec (a launch's vidyagodfs.spec.json)")); }
 Command::Arg PathArg() { return Command::Pos("path", "a path in the filesystem ('' = its root)"); }
 
 } // namespace
@@ -259,7 +259,7 @@ VG_COMMANDS
 
     Command::Register({
         "vfs cat", "read a file of the filesystem (to stdout, or --out a file)", "",
-        { SpecArg(), PathArg(), Opt("out", "write it here"), Opt("bytes", "at most this many", Type::Int), Opt("offset", "from here", Type::Int) },
+        { SpecArg(), PathArg(), Command::AsPath(Opt("out", "write it here")), Opt("bytes", "at most this many", Type::Int), Opt("offset", "from here", Type::Int) },
         { "vfs cat spec.json 'drive_c/Games/AoE2/language.ini'", "vfs cat spec.json 'x/y.bin' --out /tmp/y.bin" },
         { "VfsOpen", "VfsRead", "VfsReadFrom", "VfsRelease", "vgdelta::DeltaByteSource::scattered", "ConcatByteSource::scattered",
           "PatchesFor", "OverlayPatches", "PatchesOverlap" }, Needs::Config, false,
@@ -318,7 +318,7 @@ VG_COMMANDS
     Command::Register({
         "vfs write", "write a file in the filesystem (it lands in the writable layer, copied up)",
         "--text or --from a host file; --append adds to the end; a file a lower layer serves is copied up first, a "
-        "deleted name made again.", { SpecArg(), PathArg(), Opt("text", "the content"), Opt("from", "a host file's content"), Flag("append", "append") },
+        "deleted name made again.", { SpecArg(), PathArg(), Opt("text", "the content"), Command::AsPath(Opt("from", "a host file's content")), Flag("append", "append") },
         { "vfs write spec.json 'drive_c/Games/AoE2/x.ini' --text 'a=1'" },
         { "VfsCreate", "VfsWrite", "VfsFsync", "VfsTruncate", "CopyUp", "EnsureWriteParent", "RemoveWhiteout", "UnhideLower" , "VfsState::CopyUpLock" }, Needs::Config, false,
         [](Command::Context &, const json &A) {
@@ -407,7 +407,7 @@ VG_COMMANDS
         "vfs zip", "a zip as the filesystem serves it: its entries, stored or not, offsets; read one",
         "The archive's index (each entry's name, size, a folder or a link, stored or compressed), its first compressed "
         "entry (a zip the filesystem cannot mount), and with --entry that entry's bytes (--out a file; a link resolved "
-        "within the archive).", { Pos("zip", "the zip file"), Opt("entry", "read this entry"), Opt("out", "(--entry) write it here"), Flag("offsets", "each entry's data offset"), Flag("libzip", "also index it through libzip and say where the two differ") },
+        "within the archive).", { Command::AsPath(Pos("zip", "the zip file")), Opt("entry", "read this entry"), Command::AsPath(Opt("out", "(--entry) write it here")), Flag("offsets", "each entry's data offset"), Flag("libzip", "also index it through libzip and say where the two differ") },
         { "vfs zip game.zip", "vfs zip game.zip --entry data/readme.txt" },
         { "BuildZipIndex", "BuildZipIndexLibzip", "OpenZipEntry", "ReadZipEntry", "ResolveZipSymlink", "ZipDataOffset", "zipscan::WalkCentralDir", "zipscan::WalkCentralDirFull", "zipscan::CentralDirOffsets",
           "zipscan::FirstCompressedEntry", "zipscan::LocalDataOffset", "zipscan::Rd16", "zipscan::Rd32", "zipscan::Rd64",
@@ -477,8 +477,8 @@ VG_COMMANDS
         "--make: the delta that rebuilds --target from --base (written to --out). --verify: rebuild --target from "
         "--base through the delta and compare every byte. --rebuild: write what the delta over --base rebuilds to "
         "--out. Several --base files are one base, concatenated in order (a delta over several sources).",
-        { Pos("delta", "the .vgdelta"), Opt("base", "the base file (again for each more: --base a --base b)", Type::String, true), Opt("target", "(--make, --verify) the target file"),
-          Opt("out", "(--make, --rebuild) write here"), Flag("make", "make it"), Flag("verify", "verify it"), Flag("rebuild", "rebuild the target"),
+        { Command::AsPath(Pos("delta", "the .vgdelta")), Command::AsPath(Opt("base", "the base file (again for each more: --base a --base b)", Type::String, true)), Opt("target", "(--make, --verify) the target file"),
+          Command::AsPath(Opt("out", "(--make, --rebuild) write here")), Flag("make", "make it"), Flag("verify", "verify it"), Flag("rebuild", "rebuild the target"),
           Opt("block", "(--make) block size", Type::Int) },
         { "vfs delta p.vgdelta --make --base a.zip --target b.zip", "vfs delta p.vgdelta --verify --base a.zip --target b.zip" },
         { "vgdelta::GenerateDeltaToFile", "vgdelta::VerifyDelta", "vgdelta::DeltaByteSource::Create", "vgdelta::DeltaByteSource::pread",

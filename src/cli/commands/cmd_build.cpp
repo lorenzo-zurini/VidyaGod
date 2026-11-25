@@ -178,7 +178,7 @@ json Fields(const std::vector<PkgGraph::Field> &Fs, const json *Entry)
     return Out;
 }
 
-Command::Arg PkgArg() { return Command::Pos("package", "the package: a folder path, its name, its UID, or part of its title"); }
+Command::Arg PkgArg() { return Command::MaybeAPath(Command::Pos("package", "the package: a folder path, its name, its UID, or part of its title")); }
 Command::Arg NodeArg(const char *Name = "node") { return Command::Pos(Name, "a node of the package: its handle, index, or LABEL"); }
 Command::Arg SaveFlag() { return Command::Flag("save", "save afterwards (a re-mint)"); }
 

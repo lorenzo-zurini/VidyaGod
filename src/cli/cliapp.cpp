@@ -1,6 +1,7 @@
 #include "cliapp.h"
 #include "cliapp_p.h"   // Style, the renderer (clirender.cpp)
 
+#include <filesystem>
 #include <fstream>
 #include "apppaths.h"
 #include "theme.h"
@@ -351,6 +352,15 @@ json ParseArgs(const Command::Spec &S, const std::vector<std::string> &Rest, boo
                 const std::string Near = Nearest(V, A.Choices);
                 throw Command::BadArgs(Placeholder(A) + " cannot be '" + V + "' (one of: " + Join(A.Choices, 0, A.Choices.size(), ", ")
                                        + ")" + (Near.empty() ? "" : " — did you mean '" + Near + "'?"));
+            }
+            //A path is the caller's: absolute here, before the command may go to the app (another process, another
+            //folder). Only while reading the real inputs (not when examples are checked).
+            if (ReadInputs && (A.Path || A.MaybePath) && !V.empty() && V != "-")
+            {
+                namespace fs = std::filesystem;
+                std::error_code Ec;
+                if (A.Path || fs::exists(fs::symlink_status(V, Ec)))
+                    if (const fs::path Abs = fs::absolute(V, Ec); !Ec) return Abs.lexically_normal().string();
             }
             return V;
         }
@@ -938,5 +948,7 @@ int Main(int argc, char **argv, const Hooks &H)
     if (Ctx.Model) Ctx.Model->flushPendingSave();
     return Finish(Report(Reply, S, G, St, ErrSt));
 }
+
+nlohmann::ordered_json ParseCommandArgs(const Command::Spec &S, const std::vector<std::string> &Words) { return ParseArgs(S, Words); }
 
 } // namespace CliApp

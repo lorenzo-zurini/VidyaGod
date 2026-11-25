@@ -607,7 +607,7 @@ VG_COMMANDS
         "controller layout", "load a controller layout into the controller service",
         "A layout is an InputPlumber device profile (YAML: `kind: DeviceProfile`). It goes to every controller the "
         "service owns, and to any that comes later; --default goes back to InputPlumber's own.",
-        { Command::OptPos("file", "the layout's YAML file"), Flag("default", "InputPlumber's own layout again") },
+        { Command::AsPath(Command::OptPos("file", "the layout's YAML file")), Flag("default", "InputPlumber's own layout again") },
         { "controller layout trackpad-mouse.yaml", "controller layout --default" },
         { "ControllerService::loadLayout", "ControllerService::layout" }, Needs::Ui, false,
         [](Command::Context &, const json &A) {

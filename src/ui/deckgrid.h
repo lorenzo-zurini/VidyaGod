@@ -65,6 +65,7 @@ private:
     void animate();     // one frame of the glide and the lift
     int hit(const QPointF &At) const;
     double maxScroll() const;
+    int pageFrom(int From, int Dir) const;   // the tile a screenful on from From (Dir ±1), or -1
 
     QList<LibraryGameCard *> Cards;
     QVector<Section> Sections;

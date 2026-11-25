@@ -96,7 +96,7 @@ VG_COMMANDS
         "app platform", "this machine: the executable, its system folders, a free drive letter, a mount's target",
         "The running executable's path; the Windows profile and system folders a native game reads its anchors as "
         "(empty off Windows) and every name they may have; a drive letter no volume holds (Windows); and with --path, "
-        "what the mount-point junction there names.", { Opt("path", "a folder: what mount it is") }, { "app platform" },
+        "what the mount-point junction there names.", { Command::AsPath(Opt("path", "a folder: what mount it is")) }, { "app platform" },
         { "Platform::SelfExe", "Platform::HostFolders", "Platform::HostFolderNames", "Platform::FreeDriveLetter", "Platform::MountPointTarget" },
         Needs::Config, false,
         [](Command::Context &, const json &A) {
@@ -126,7 +126,7 @@ VG_COMMANDS
 
     Command::Register({
         "app is-package", "whether a folder is a package (holds node files)",
-        "The check the app makes when a folder is added or the app starts inside one.", { Pos("dir", "the folder") },
+        "The check the app makes when a folder is added or the app starts inside one.", { Command::AsPath(Pos("dir", "the folder")) },
         { "app is-package ~/x/'[749][v1.0] Age of Empires II'" }, { "FSOps::CheckPackageValid" }, Needs::Config, false,
         [](Command::Context &, const json &A) {
             QDir D(QString::fromStdString(Command::Str(A, "dir")));
@@ -249,7 +249,7 @@ VG_COMMANDS
     Command::Register({
         "deps ldconfig", "parse an `ldconfig -p` listing: which libraries have their 64- and 32-bit halves",
         "The library half of the probe on a listing you give (a file, or - for stdin) — a machine's libraries without "
-        "running anything there.", { Pos("file", "the `ldconfig -p` output (- for stdin)"), Opt("lib", "only this soname") },
+        "running anything there.", { Command::AsPath(Pos("file", "the `ldconfig -p` output (- for stdin)")), Opt("lib", "only this soname") },
         { "deps ldconfig ldconfig.txt --lib libvulkan.so.1" }, { "DepCheck::ParseLdconfig" }, Needs::Config, false,
         [](Command::Context &, const json &A) {
             const std::string F = Command::Str(A, "file");

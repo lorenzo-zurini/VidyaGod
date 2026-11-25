@@ -13,6 +13,8 @@
 #include <fstream>
 
 #include "appmodel.h"
+#include "cliapp.h"
+#include "command.h"
 #include "sessions.h"
 #include "cli/cliapp.h"
 #include "command.h"
@@ -30,6 +32,30 @@ class CommandsTest : public QObject
 {
     Q_OBJECT
 private slots:
+    // A path argument is the caller's: made absolute where the command is typed (a forwarded command runs in the app,
+    // in the app's folder). A name-or-path one only when it names something there; "", "-" and other args as given.
+    // Teeth: no absolutising (the app opened its own folder's file); MaybePath absolutising a UID.
+    void a_path_argument_is_made_absolute_where_it_is_typed()
+    {
+        QTemporaryDir Here; QVERIFY(Here.isValid());
+        const std::filesystem::path Was = std::filesystem::current_path();
+        std::filesystem::current_path(Here.path().toStdString());
+        { std::ofstream("there.json") << "{}"; }
+        Command::Spec S;
+        S.Name = "test paths";
+        S.Args = { Command::AsPath(Command::Pos("file", "a file")), Command::MaybeAPath(Command::Pos("package", "a package")),
+                   Command::AsPath(Command::Opt("out", "out")), Command::Opt("name", "a name") };
+        const auto A = CliApp::ParseCommandArgs(S, { "sub/../x.txt", "749", "--out", "-", "--name", "y.txt" });
+        const auto B = CliApp::ParseCommandArgs(S, { "x.txt", "there.json" });
+        const std::string Abs = std::filesystem::current_path().lexically_normal().string();   // as the shell's folder reads
+        std::filesystem::current_path(Was);
+        QCOMPARE(QString::fromStdString(A["file"].get<std::string>()), QString::fromStdString(Abs + "/x.txt"));
+        QCOMPARE(QString::fromStdString(A["package"].get<std::string>()), QStringLiteral("749"));   // a UID: as given
+        QCOMPARE(QString::fromStdString(A["out"].get<std::string>()), QStringLiteral("-"));         // stdout
+        QCOMPARE(QString::fromStdString(A["name"].get<std::string>()), QStringLiteral("y.txt"));    // not a path arg
+        QCOMPARE(QString::fromStdString(B["package"].get<std::string>()), QString::fromStdString(Abs + "/there.json"));
+    }
+
     void initTestCase()
     {
         SetLogEcho(false);

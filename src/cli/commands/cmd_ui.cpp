@@ -762,7 +762,7 @@ VG_COMMANDS
     Command::Register({
         "ui screenshot", "save a window (or one control) as a PNG",
         "What a control looks like, rendered by the widget itself — offscreen as well as on screen.",
-        { Command::Pos("file", "the PNG to write"), Command::Opt("control", "one control or window — by its name, kind or title (default: the main window)") },
+        { Command::AsPath(Command::Pos("file", "the PNG to write")), Command::Opt("control", "one control or window — by its name, kind or title (default: the main window)") },
         { "ui screenshot /tmp/vg.png", "ui screenshot net.png --control Network", "ui screenshot editor.png --control PackageEditor" }, { "QWidget::grab" }, Command::Needs::Ui, false,
         [](Command::Context &Ctx, const json &A) {
             QWidget *W = A.contains("control") ? Named(Command::Str(A, "control")) : Ctx.Window;

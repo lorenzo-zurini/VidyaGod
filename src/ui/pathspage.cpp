@@ -1,4 +1,5 @@
 #include "pathspage.h"
+#include "deckshell.h"   // controller mode: no file manager
 #include "theme.h"   // the named colours
 #include "sessions.h"
 #include "apppaths.h"          // AppPaths::DataRoot — default TEMP/LIBRARY display roots
@@ -179,6 +180,7 @@ void PathsPage::buildSpace(QVBoxLayout * pl)
         const QString P = QString::fromStdString(Path.string());
         connect(Open, &QPushButton::clicked, this, [P]{ QDesktopServices::openUrl(QUrl::fromLocalFile(P)); });
         Grid->addWidget(Open, Row, 3);
+        Open->setVisible(!DeckShell::On());   // a file manager takes gamescope's screen, and no pad drives it
         Labels.push_back(Size);
         ++Row;
     }

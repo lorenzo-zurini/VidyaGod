@@ -222,6 +222,11 @@ private slots:
         QCOMPARE(PadNav::Nearest(From, B::Up, C), 3);
         QCOMPARE(PadNav::Nearest(From, B::Left, C), -1);
         QCOMPARE(PadNav::Nearest(From, B::A, C), -1);
+        //A wide control (an instance list): Right goes to the button beside it on its row, not to a button on the row
+        //above that starts before its right edge. Teeth: the weighed score alone (the row above: no distance along).
+        const QRect Wide(100, 300, 300, 30);
+        const QVector<QRect> Row{ QRect(380, 268, 120, 30), QRect(420, 300, 30, 30) };   // the row above: 3 px up
+        QCOMPARE(PadNav::Nearest(Wide, B::Right, Row), 1);
     }
 
     // With nothing focused a direction focuses the dialog's default button; then each direction the control that
@@ -601,6 +606,10 @@ private slots:
         Press(B::B);
         QCOMPARE(Sh.section(), DeckShell::Section::Home);
         QCOMPARE(DeckShell::SectionFrom("catalog"), std::optional<DeckShell::Section>(DeckShell::Section::Catalog));
+        //The Guide button is Home from anywhere (a console's). Teeth: Guide unhandled in the shell.
+        Sh.showSection(DeckShell::Section::Peers);
+        Press(B::Guide);
+        QCOMPARE(Sh.section(), DeckShell::Section::Home);
         Sh.setActive(false);
     }
 
@@ -638,6 +647,33 @@ private slots:
         QVERIFY(!Find(Get, "9")->InLibrary);
         qDeleteAll(Here);
         qDeleteAll(Get);
+    }
+
+    // The right stick scrolls the grid and the selection comes along (it stays a tile on screen); LT/RT move it a
+    // screenful. Teeth: scroll the view only (the selection left off screen); LT/RT doing nothing.
+    void the_stick_takes_the_selection_along_and_the_triggers_page()
+    {
+        LibraryFixture L;
+        AppModel M(&L.Cfg, &L.AppDir);
+        M.rebuildCatalog();
+        const QList<LibraryGameCard *> Cards = CardPool::Installed(M);
+        QVERIFY(Cards.size() >= 8);
+        DeckGrid G;
+        G.resize(420, 300);   // a row or so on screen
+        G.setCards(Cards);
+        G.show();
+        QCoreApplication::processEvents();
+        G.setCurrentIndex(0);
+        G.padScrolled(0, 5000);
+        QVERIFY(G.currentIndex() > 0);
+        QVERIFY(G.rect().contains(G.tileRect(G.currentIndex()).toRect()));
+        const int Was = G.currentIndex();
+        G.padPressed(Pad::Button::LT);
+        QVERIFY(G.currentIndex() < Was);
+        G.setCurrentIndex(0);
+        G.padPressed(Pad::Button::RT);
+        QVERIFY(G.currentIndex() > 0);
+        qDeleteAll(Cards);
     }
 
     // A game's page offers its controller layout: the configurator, opened for that game. Teeth: the button missing,

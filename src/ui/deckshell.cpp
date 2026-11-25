@@ -769,6 +769,11 @@ bool DeckShell::padPressed(Pad::Button B)
         return true;
     }
     case P::Start: openMenu(); return true;
+    case P::Guide:   // the console's convention: Home, from anywhere in the shell
+        if (menuOpen()) closeMenu();
+        if (gameOpen()) closeGame();
+        showSection(Section::Home);
+        return true;
     case P::B:
         if (gameOpen()) { closeGame(); return true; }
         //Inside a hosted page that has a pane to come back to (Settings' sidebar): B goes back there first, where the

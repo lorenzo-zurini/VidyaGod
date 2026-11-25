@@ -312,7 +312,7 @@ QList<PadTarget::Hint> DeckShelf::padHints() const
     QList<Hint> H;
     if (Grid->current()) H.push_back({ Pad::Button::A, "Open" });
     H.push_back({ Pad::Button::X, "Search" });
-    H.push_back({ Pad::Button::Y, "Sort: " + SortName(Sort) });
+    H.push_back({ Pad::Button::Y, "Sort" });   // which one, the header says (it said it twice)
     if (!Search.isEmpty()) H.push_back({ Pad::Button::B, "Clear search" });
     return H;
 }

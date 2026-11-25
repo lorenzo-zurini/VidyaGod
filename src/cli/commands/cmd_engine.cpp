@@ -79,7 +79,7 @@ json PlanFacts(const Fold::Plan &P)
             {"error", P.Error}};
 }
 
-Command::Arg NodeArg() { return Command::Pos("node", "a node: its CID, working handle, LABEL, or a node file's path"); }
+Command::Arg NodeArg() { return Command::MaybeAPath(Command::Pos("node", "a node: its CID, working handle, LABEL, or a node file's path")); }
 Command::Arg VarOpt() { return Command::Opt("var", "the instance's values: NAME=VALUE[,…] or a JSON object"); }
 Command::Arg BuiltinOpt() { return Command::Opt("builtin", "built-in values (%GameDir%, …): NAME=VALUE[,…]"); }
 Command::Arg GraftOpt() { return Command::Opt("grafts", "grafts applied, in order (a,b,c)"); }
@@ -253,7 +253,7 @@ VG_COMMANDS
         "node verify", "check node bytes a peer sent: one block, its CID, a node, canonical, no handle",
         "What a received node file goes through before anything reads it: at most one block, hashing to the CID it was "
         "asked for, a node object (depth-checked), canonical, and carrying no working-tree field (CID, POS).",
-        { Pos("file", "the node file"), Opt("cid", "the CID it must be (default: its file name)") },
+        { Command::AsPath(Pos("file", "the node file")), Opt("cid", "the CID it must be (default: its file name)") },
         { "node verify ~/.VidyaGod/CATALOG/x/bafkrei….json" }, { "NodeGraph::VerifyLanded", "NodeGraph::VerifyNodeBytes" }, Needs::Config, false,
         [](Command::Context &, const json &A) {
             const std::string F = Command::Str(A, "file");
@@ -544,7 +544,7 @@ VG_COMMANDS
         "bytes (--node: the file parsed as a node, or a node of the library), and the raw SHA-256. --content: a content "
         "file's CID as publishing records it in a layer's SOURCE (and a delta's BASE_SOURCES names it by) — the importer's "
         "256 KiB chunks, raw leaves, a dag-pb root; a file of one chunk is its raw leaf. Nothing is added, no node started.",
-        { Pos("file", "a file (or, with --node, a node)"), Flag("node", "the CID of its canonical node bytes"),
+        { Command::MaybeAPath(Pos("file", "a file (or, with --node, a node)")), Flag("node", "the CID of its canonical node bytes"),
           Flag("content", "a content file's CID, as its layer's SOURCE records it") },
         { "cid of x.json", "cid of 'Patch 2.0a' --node", "cid of game.zip --content" },
         { "Cid::OfBytes", "Cid::Sha256", "Cid::OfNode", "Cid::Canonical", "IpfsWrapper::ComputeCid" }, Needs::Config, false,
@@ -607,7 +607,7 @@ VG_COMMANDS
         "graph tree", "read a working tree, order it for a mint, and freeze it (nothing stored)",
         "Gather every node file under a root (recursively) as a working tree, its mint order (deps first; cycles "
         "broken), and the CID-keyed index it freezes to — what the catalog derives on load, with no block stored.",
-        { Pos("root", "the folder"), Flag("untrusted", "ignore stored CID handles (as for received stubs)"),
+        { Command::AsPath(Pos("root", "the folder")), Flag("untrusted", "ignore stored CID handles (as for received stubs)"),
           Flag("skip-reserved", "skip _peer_* stub folders (as a publish does)") },
         { "graph tree ~/.VidyaGod/LIBRARY/VidyaGod" },
         { "NodeGraph::GatherWorkingTree", "NodeGraph::TopoOrderForMint", "NodeGraph::FreezeToIndex", "NodeGraph::IsFetchScratchDir" }, Needs::Config, false,
@@ -627,7 +627,7 @@ VG_COMMANDS
         "graph mint", "mint a working tree into blocks (stored, pinned, announced)",
         "Freeze and store every node under a root, deps first: each handle's CID, and the playable roots. Blocks only "
         "— node files on disk are not rewritten (`packages stamp-cids` writes the CIDs back).",
-        { Pos("root", "the folder") }, { "graph mint ~/x/'[123][v1.0] Some Game'" }, { "NodeStore::Mint", "IpfsWrapper::BlockPutMany" }, Needs::Config, true,
+        { Command::AsPath(Pos("root", "the folder")) }, { "graph mint ~/x/'[123][v1.0] Some Game'" }, { "NodeStore::Mint", "IpfsWrapper::BlockPutMany" }, Needs::Config, true,
         [](Command::Context &, const json &A) {
             std::map<std::string, json> Tree;
             std::map<std::string, fs::path> Dirs;
@@ -661,7 +661,7 @@ VG_COMMANDS
         "graph checkout", "land a launchable's closure from IPFS as a package folder",
         "Fetch a launchable node's DAG and content into \"[uid] title\" under a folder: its node files written readable "
         "(they re-freeze to the same CIDs) and every content file at its PATH — a game from a bare CID.",
-        { Pos("cid", "the launchable's CID"), Pos("dest", "the folder to land it in") }, { "graph checkout bafkrei… ~/Storage/tmp/co" },
+        { Pos("cid", "the launchable's CID"), Command::AsPath(Pos("dest", "the folder to land it in")) }, { "graph checkout bafkrei… ~/Storage/tmp/co" },
         { "NodeStore::HydratePackage" }, Needs::Config, true,
         [](Command::Context &, const json &A) {
             std::string Err;
@@ -673,7 +673,7 @@ VG_COMMANDS
     Command::Register({
         "graph within", "whether a path stays within a folder (no .. escape)",
         "The guard on every write a node can direct: does <path> resolve inside <base> (works for paths that do not "
-        "exist yet).", { Pos("base", "the folder"), Pos("path", "the path") }, { "graph within ~/pkg ~/pkg/../etc/passwd" },
+        "exist yet).", { Command::AsPath(Pos("base", "the folder")), Pos("path", "the path") }, { "graph within ~/pkg ~/pkg/../etc/passwd" },
         { "NodeGraph::PathWithin" }, Needs::Config, false,
         [](Command::Context &, const json &A) { return json{{"within", NodeGraph::PathWithin(Command::Str(A, "base"), Command::Str(A, "path"))}}; }, {} });
 
@@ -720,7 +720,7 @@ VG_COMMANDS
         "graph platform", "this machine's platform, and whether a runner serves one",
         "The platform a runner's HOST must match here; with --runner and --platform, whether that runner serves it "
         "(\"custom\" only from its own package, --package).",
-        { Opt("runner", "a runner node"), Opt("platform", "the platform it should serve"), Opt("package", "the launch's package folder") },
+        { Opt("runner", "a runner node"), Opt("platform", "the platform it should serve"), Command::AsPath(Opt("package", "the launch's package folder")) },
         { "graph platform", "graph platform --runner geproton_10_34 --platform win32" },
         { "ManifestModel::MachinePlatform", "ManifestModel::ServesPlatform" }, Needs::Config, false,
         [](Command::Context &C, const json &A) {
@@ -739,7 +739,7 @@ VG_COMMANDS
         "content claims", "the names a package's nodes claim, and the CIDs claiming each",
         "Each content file name a package's node files name (content layers' SOURCE, tile covers) with the CIDs that "
         "claim it — a name two CIDs claim is kept at bumped names. --files: claims as they would be over just those "
-        "node files.", { Pos("package", "a folder path, its name, its UID, or part of its title"), Opt("files", "node files (a,b)") },
+        "node files.", { Command::MaybeAPath(Pos("package", "a folder path, its name, its UID, or part of its title")), Opt("files", "node files (a,b)") },
         { "content claims 749" }, { "ContentFile::Claims", "ContentFile::ClaimsOfFiles", "ContentFile::NameLess::operator()" }, Needs::Config, false,
         [](Command::Context &C, const json &A) {
             ContentFile::ClaimMap M;
@@ -760,7 +760,7 @@ VG_COMMANDS
         "Where package <package> keeps <name> holding <cid>: the name itself, or its bumped name (\"<stem> [<cid tail>]"
         "<ext>\") when its nodes claim the name for more than one CID. --also adds a hypothetical claim (planning a "
         "change).",
-        { Pos("package", "a folder path, its name, its UID, or part of its title"), Pos("name", "the content file name"), Pos("cid", "its CID"),
+        { Command::MaybeAPath(Pos("package", "a folder path, its name, its UID, or part of its title")), Pos("name", "the content file name"), Pos("cid", "its CID"),
           Opt("also", "another CID claiming the name") },
         { "content path 749 'Age of Empires II.zip' Qm…", "content path 749 dxwrapper.zip Qm… --also Qm…" },
         { "ContentFile::Path", "ContentFile::PathUnder", "ContentFile::Bumped" }, Needs::Config, false,
