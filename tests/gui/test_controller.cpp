@@ -344,22 +344,30 @@ private slots:
         Press(B::A);
         QVERIFY(OnScreenKeyboard::current());
         const int Before = W.Offered;
+        //A first keyboard opens on the letters ("q"), not the digits. Teeth: open on the first key.
+        QCOMPARE(OnScreenKeyboard::current()->padState().value("key", std::string()), std::string("q"));
         Press(B::Right, 2);
-        QCOMPARE(OnScreenKeyboard::current()->padState().value("key", std::string()), std::string("3"));
+        QCOMPARE(OnScreenKeyboard::current()->padState().value("key", std::string()), std::string("e"));
         Press(B::A);
-        QCOMPARE(OnScreenKeyboard::current()->text(), QString("3"));
+        QCOMPARE(OnScreenKeyboard::current()->text(), QString("e"));
         Press(B::Y);
-        QCOMPARE(OnScreenKeyboard::current()->text(), QString("3 "));
+        QCOMPARE(OnScreenKeyboard::current()->text(), QString("e "));
         Press(B::X, 2);
         QCOMPARE(OnScreenKeyboard::current()->text(), QString());
         Press(B::Down);
         Press(B::A);
-        QCOMPARE(OnScreenKeyboard::current()->text(), QString("e"));
+        QCOMPARE(OnScreenKeyboard::current()->text(), QString("s"));   // the row below is staggered: under "e" is "s"
         QCOMPARE(W.Offered, Before);
         Press(B::B);
         QApplication::processEvents();
         QVERIFY(!OnScreenKeyboard::current());
         QCOMPARE(E->text(), QString());
+        //The next keyboard opens on the key pressed last. Teeth: always "q".
+        Press(B::A);
+        QVERIFY(OnScreenKeyboard::current());
+        QCOMPARE(OnScreenKeyboard::current()->padState().value("key", std::string()), std::string("s"));
+        Press(B::B);
+        QApplication::processEvents();
     }
 
     // B backs out of a dialog (rejects it, as Escape); and a press in a dialog never reaches the window behind it,
@@ -779,6 +787,9 @@ private slots:
         Sh.showSection(DeckShell::Section::Library);
         Press(B::X);
         QVERIFY(OnScreenKeyboard::current());
+        //A live search docks a lower keyboard: more of the grid it filters stays in sight (under 42% of the screen, not
+        //56%). Teeth: the one height for every keyboard.
+        QVERIFY(OnScreenKeyboard::current()->padState().value("top", 0) > Sh.height() / 2);
         OnScreenKeyboard::current()->typeText("arl");
         QCOMPARE(Sh.padState()["page"].value("shown", 0), 1);   // live
         OnScreenKeyboard::current()->accept();

@@ -111,9 +111,15 @@ OnScreenKeyboard *OnScreenKeyboard::Ask(QWidget *Window, const QString &T, const
     return K;
 }
 
+//The last key pressed, for the next keyboard: it opens where the hand left off (a search typed letter by letter
+//starts on its letters, not on "1").
+static QString &LastKeyPressed() { static QString K; return K; }
+
 QRectF OnScreenKeyboard::panel() const
 {
-    const double W = std::min(width() - 24.0, 1120.0), H = std::clamp(height() * 0.56, 260.0, 470.0);
+    //A live search (OnEdit) docks a lower keyboard: the results it filters stay in sight above it.
+    const double W = std::min(width() - 24.0, 1120.0),
+                 H = OnEdit ? std::clamp(height() * 0.42, 240.0, 380.0) : std::clamp(height() * 0.56, 260.0, 470.0);
     return QRectF((width() - W) / 2, height() - H - 12, W, H);
 }
 
@@ -169,10 +175,12 @@ void OnScreenKeyboard::build()
             Keys.push_back(K);
         }
     }
-    //Focus stays on the key it was on (Shift and the page switch rebuild the keys); else it starts on the first key.
+    //Focus stays on the key it was on (Shift and the page switch rebuild the keys); a new keyboard starts on the key
+    //pressed last, else on "q" (the letters, not the digits).
+    const QString Want = !Focused.isEmpty() ? Focused : !LastKeyPressed().isEmpty() ? LastKeyPressed() : QStringLiteral("q");
     Focus = 0;
     for (int I = 0; I < Keys.size(); ++I)
-        if (!Focused.isEmpty() && Keys[I].Label.compare(Focused, Qt::CaseInsensitive) == 0) { Focus = I; break; }
+        if (Keys[I].Label.compare(Want, Qt::CaseInsensitive) == 0) { Focus = I; break; }
     update();
 }
 
@@ -214,6 +222,7 @@ void OnScreenKeyboard::typeText(const QString &S)
 
 void OnScreenKeyboard::press(const Key &K)
 {
+    if (K.K == Kind::Char) LastKeyPressed() = K.Label;
     switch (K.K)
     {
     case Kind::Char:      insert(K.Out); break;
@@ -309,6 +318,7 @@ json OnScreenKeyboard::padState() const
            {"page", Symbols ? "symbols" : "letters"}, {"shift", Shift}};
     if (Focus < Keys.size()) J["key"] = Keys[Focus].Label.toStdString();
     if (Field) J["field"] = PadNav::Describe(Field);
+    J["top"] = static_cast<int>(panel().top());   // where the keys start: what of the screen above stays in sight
     return J;
 }
 
