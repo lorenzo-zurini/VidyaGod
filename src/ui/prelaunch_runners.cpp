@@ -8,6 +8,7 @@
 #include "packageeditor.h"
 #include "mainwindow.h"
 #include "covercache.h"
+#include <map>
 #include "packagecatalog.h"
 #include "containerwrapper.h"   // StringVariableSubstitution / ContainerParams (CustomVar preview substitution)
 #include "launchsession.h"     // ResolveTakingBack — what the game changed, read back before the values show
@@ -117,6 +118,17 @@ void PreLaunchWindow::RebuildRunnerChain()
     RenderChainCombos();
 }
 
+//A platform as a person reads it ("linux64" → "Linux (64-bit)"); one this does not know, as it is.
+static QString PlatformWords(const std::string &Id)
+{
+    static const std::map<std::string, const char *> Words{
+        { "linux64", "Linux (64-bit)" }, { "linux32", "Linux (32-bit)" }, { "linuxarm64", "Linux (ARM 64-bit)" },
+        { "win64", "Windows (64-bit)" }, { "win32", "Windows (32-bit)" }, { "win16", "Windows (16-bit)" },
+        { "dos", "DOS" }, { "macos", "macOS" }, { "osx", "macOS" } };
+    const auto It = Words.find(Id);
+    return It == Words.end() ? QString::fromStdString(Id) : QString::fromUtf8(It->second);
+}
+
 void PreLaunchWindow::RenderChainCombos()
 {
     static const QString NoRunnerMsg = "No installed runner can launch this.";
@@ -163,7 +175,7 @@ void PreLaunchWindow::RenderChainCombos()
             }
             if (Sel >= 0) Combo->setCurrentIndex(Sel);
         }
-        Combo->setToolTip(QString("Runs %1 programs").arg(QString::fromStdString(Input)));
+        Combo->setToolTip(QString("Runs %1 programs").arg(PlatformWords(Input)));
         Combo->setAccessibleName(i == 0 ? QString("Runner") : i == 1 ? QString("Runner's runner") : QString("Runner %1").arg(i + 1));
         const int Step = i;
         connect(Combo, &QComboBox::currentIndexChanged, this, [this, Step](int){ onChainStepChanged(Step); });

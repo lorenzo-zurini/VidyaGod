@@ -216,6 +216,26 @@ private slots:
 
     void library_tab_constructs()   { AppModel m(&Cfg, &AppDir); LibraryTab  t(m); QVERIFY(renders(&t)); }
     void catalog_tab_constructs()   { AppModel m(&Cfg, &AppDir); CatalogTab  t(m); QVERIFY(renders(&t)); }
+    // The Catalog keeps its sort, as the Library does (it went back to Name every start). Teeth: not saved; not read.
+    void the_catalogs_sort_is_remembered()
+    {
+        json cfg = json{{"Settings", json::object()}};
+        AppModel m(&cfg, &AppDir);
+        const auto Button = [](QWidget &T, const char *Text) -> QPushButton * {
+            for (QPushButton *B : T.findChildren<QPushButton *>()) if (B->text() == Text) return B;
+            return nullptr;
+        };
+        {
+            CatalogTab t(m);
+            QPushButton *Date = Button(t, "Date");
+            QVERIFY(Date && !Date->isChecked());
+            Date->click();
+            QCOMPARE(cfg["Settings"].value("CatalogSortMode", -1), 1);
+        }
+        CatalogTab Again(m);
+        QPushButton *Date = Button(Again, "Date");
+        QVERIFY(Date && Date->isChecked());
+    }
 
     // A package's games nest under the one whose tile UID is the package's own: [749] is The Age of Kings, whatever
     // order its games come in and however lean or deep their closures (a heuristic once put Forgotten Empires on top).

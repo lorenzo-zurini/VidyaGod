@@ -628,8 +628,22 @@ void PreLaunchWindow::RebuildCover()
     }
 
     CoverLabel->clear();
+    CoverLabel->setStyleSheet(QString());
+    CoverLabel->setAlignment(Qt::AlignTop | Qt::AlignHCenter);
     CoverPixmap = QPixmap();
-    if (!Meta.is_object() || !Meta.contains("COVER")) return;
+    if (!Meta.is_object() || !Meta.contains("COVER"))
+    {
+        //No cover: the title on a card the cover's shape (an empty dark block said nothing).
+        CoverLabel->setWordWrap(true);
+        CoverLabel->setAlignment(Qt::AlignCenter);
+        //The column's width (the label's own is not laid out yet when the window builds): 2:3, a cover's shape.
+        const int ColW = std::max(CoverLabel->minimumWidth(), CoverLabel->width());   // its fixed width (laid out or not)
+        CoverLabel->setFixedHeight(ColW * 3 / 2);
+        CoverLabel->setStyleSheet("QLabel { background:#202a36; border-radius:8px; color:" + Theme::Dim
+                                  + "; font-size:15pt; padding:12px; }");
+        CoverLabel->setText(QString::fromStdString(Title));
+        return;
+    }
     const nlohmann::ordered_json& CoverNode = Meta["COVER"];
     const QString Pkg = QString::fromStdString(L->BundleDir.string());
     auto setFrom = [this](const QString& Path){
@@ -674,7 +688,11 @@ void PreLaunchWindow::RebuildCover()
 void PreLaunchWindow::UpdateCoverScaled()
 {
     if (!CoverLabel) return;
-    if (CoverPixmap.isNull()) { CoverLabel->clear(); CoverLabel->setFixedHeight(0); return; }
+    if (CoverPixmap.isNull())
+    {
+        if (!CoverLabel->text().isEmpty()) return;   // the no-cover card (RebuildCover): it keeps its shape
+        CoverLabel->clear(); CoverLabel->setFixedHeight(0); return;
+    }
     const QPixmap P = RoundedCover(CoverPixmap, CoverLabel->width(), devicePixelRatioF());
     if (DeckLayout && CoverPixmap.cacheKey() != DeckWashOf)
     {

@@ -85,13 +85,19 @@ void CatalogTab::buildUi()
     // Load persisted collapse state for repo sections.
     AvailableCollapsedRepos = LoadCollapsed(Model, "AvailableCollapsedRepos");
 
+    if (const auto & S = (*Model.config())["Settings"]; S.contains("CatalogSortMode") && S["CatalogSortMode"].is_number_integer())
+        AvailableSort = static_cast<SortMode>(std::clamp(int(S["CatalogSortMode"]), 0, int(SortMode::Series)));
     QVBoxLayout * v = new QVBoxLayout(this);
     v->setContentsMargins(0,0,0,0); v->setSpacing(0);
 
     // Sort (within each repo) + search + size: the toolbar both card tabs share; then this tab's own button.
     const CardToolbar Bar = MakeCardToolbar(this, Model,
         { {"Name", SortMode::Name}, {"Date", SortMode::Date}, {"Series", SortMode::Series} }, AvailableSort,
-        [this](SortMode Mode) { AvailableSort = Mode; applyFilter(); },        // cheap: re-sort the existing pool (no restat)
+        [this](SortMode Mode) {                                                // cheap: re-sort the existing pool (no restat)
+            AvailableSort = Mode;
+            (*Model.config())["Settings"]["CatalogSortMode"] = static_cast<int>(Mode);   // kept, as the Library's is
+            Model.save();
+            applyFilter(); },
         [this](const QString &Text) { AvailableSearch = Text; applyFilter(); });   // cheap: re-filter the pool (no restat)
     QWidget * toolbar = Bar.Bar;
     QHBoxLayout * tl = Bar.Row;

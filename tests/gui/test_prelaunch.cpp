@@ -674,6 +674,10 @@ private slots:
         auto *T = W.findChild<QTreeWidget *>("optionsTree");
         QVERIFY(T && T->topLevelItemCount() == 1);
         QVERIFY(T->topLevelItem(0)->isExpanded());
+        //No cover: the title on a cover-shaped card, not an empty block. Teeth: the label left empty.
+        bool Shown = false;
+        for (QLabel *L : W.findChildren<QLabel *>()) if (L->text() == "Game" && L->minimumHeight() > 100) Shown = true;
+        QVERIFY(Shown);
     }
 
     // A `key` option is bound by pressing it: click the button, press a key (or a mouse button) over it. The value is
