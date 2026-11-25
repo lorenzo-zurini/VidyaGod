@@ -41,11 +41,11 @@ public slots:
 signals:
     void downloadRequested(LibraryGameCard *card);          // a card was clicked to import it
     void cancelRequested(LibraryGameCard *card);            // a downloading card was clicked to cancel
+    void sourcesRequested();                                // "Add source…": the one place sources are managed (Settings → Sources)
 
 private:
     void buildUi();
     void applyFilter();                                     // sort/search/group, no restat
-    void openPackageSourcesDialog();                        // "Add CID" — manage IPFS folder-CID package sources
     QString repoNameForBundle(const std::filesystem::path &BundleDir) const;
 
     AppModel &Model;

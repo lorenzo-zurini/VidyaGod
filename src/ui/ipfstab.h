@@ -37,6 +37,9 @@ public:
 public slots:
     void setActive(bool on);   // tab shown/hidden → start/stop the model's periodic refresh
 
+signals:
+    void sourcesRequested();   // "Add source…": the one place sources are managed (Settings → Sources)
+
 private:
     // Status-filter kinds (sidebar rows); Errored also captures seeded pins whose backing files are gone.
     enum StatusFilter : int { SAll = 0, SDownloading, SSeeding, SQueued, SStalled, SErrored, SPending, SCount };

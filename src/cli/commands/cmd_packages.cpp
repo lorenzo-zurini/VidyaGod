@@ -310,13 +310,21 @@ VG_COMMANDS
 
     Command::Register({
         "packages dehydrate", "delete a game's downloaded content (keep its nodes)",
-        "Remove the content files of a game's closure from disk and stop seeding them — it goes back to the Catalog as "
-        "downloadable. Its node files and cover stay.", { GameArg() },
+        "Remove the game's own downloaded content files from disk and stop seeding them — it goes back to the Catalog as "
+        "downloadable. Its node files and cover stay; a library its closure contains (other games' too) and a file with "
+        "no CID (nothing to download it again from) are left. Only a package in the library: a local package's files are "
+        "its masters.", { GameArg() },
         { "packages dehydrate 'Patch 2.0a'" }, { "PackageCatalog::DehydrateNode" },
         Needs::Config, true,
         [](Command::Context &C, const json &A) {
             const auto I = Index(C);
-            return json{{"files_removed", PackageCatalog::DehydrateNode(*I, NodeOf(*I, Command::Str(A, "game"))->Key())}};
+            const Node *N = NodeOf(*I, Command::Str(A, "game"));
+            //As the Library's Remove: only a package one of your sources brings, which it can bring again — never an
+            //authored library's (its masters), a local package's, or one kept from a removed source.
+            if (PackageCatalog::SourceOfPackage(*C.Config, N->BundleDir).empty())
+                throw std::runtime_error(N->BundleDir.string() + " does not come from one of your sources: nothing could download "
+                                         "it again (an authored or local package's files are its masters)");
+            return json{{"files_removed", PackageCatalog::DehydrateNode(*I, N->Key())}};
         }, {} });
 
     Command::Register({
@@ -331,7 +339,7 @@ VG_COMMANDS
         "run: with another writer on it, it does nothing and says the library is busy. "
         "With --export, a copy of its node files alone is written there.", { Pos("package", "a folder path, its name, its UID, or part of its title"), Opt("export", "a folder for the node-files-only copy") },
         { "packages publish 749", "packages publish 749 --export /tmp/aoe2-nodes" },
-        { "PackageCatalog::PublishPackage", "PackageCatalog::SeedNodeContent", "PackageCatalog::StampNodeCids",
+        { "PackageCatalog::PublishPackage", "PackageCatalog::ExportDestRefused", "PackageCatalog::SeedNodeContent", "PackageCatalog::StampNodeCids",
           "PackageCatalog::PublishPackages", "AppModel::publishPackage", "PackageCatalog::LibraryWriteLock",
           "Platform::ScopedFileLock::held", "Platform::ScopedFileLock::opened" }, Needs::Config, true,
         [](Command::Context &C, const json &A) {
@@ -341,7 +349,11 @@ VG_COMMANDS
                 const Platform::ScopedFileLock Lock(PackageCatalog::LibraryWriteLock(*C.Config));
                 if (!Lock.opened()) throw std::runtime_error("the library's write lock cannot be opened");
                 if (!Lock.held()) throw std::runtime_error(PackageCatalog::LibraryBusy);
-                if (!PackageCatalog::PublishPackage(D.string(), Command::Str(A, "export", ""), &Err)) throw std::runtime_error(Err);
+                //With the library's roots and the instances: a node re-minted here is re-pointed wherever another package or a
+                //saved instance names it (without them, those were left naming a CID no file has).
+                if (!PackageCatalog::PublishPackage(D.string(), Command::Str(A, "export", ""), &Err, PackageCatalog::EditableRoots(*C.Config),
+                                                    InstanceStore::Root(*C.Config).string()))
+                    throw std::runtime_error(Err);
             }
             if (C.Model)
             {
@@ -455,9 +467,14 @@ VG_COMMANDS
         "Build (and store) the node-files-only folder of a package source tree and print its CID — what a source "
         "upgrade or a peer would fetch.", { Pos("dir", "the folder") }, { "packages meta-cid ~/.VidyaGod/LIBRARY/VidyaGod" },
         { "PackageCatalog::PublishMetaCid", "PackageCatalog::MirrorDehydrated" }, Needs::Config, true,
-        [](Command::Context &, const json &A) {
+        [](Command::Context &C, const json &A) {
             std::string Err;
-            const std::string Cid = PackageCatalog::PublishMetaCid(Command::Str(A, "dir"), &Err);
+            //Re-minting re-points the library's other packages and the saved instances: under the library's write lock.
+            const Platform::ScopedFileLock Lock(PackageCatalog::LibraryWriteLock(*C.Config));
+            if (!Lock.opened()) throw std::runtime_error("the library's write lock cannot be opened");
+            if (!Lock.held()) throw std::runtime_error(PackageCatalog::LibraryBusy);
+            const std::string Cid = PackageCatalog::PublishMetaCid(Command::Str(A, "dir"), &Err, PackageCatalog::EditableRoots(*C.Config),
+                                                                   InstanceStore::Root(*C.Config).string());
             if (Cid.empty()) throw std::runtime_error(Err);
             return json{{"cid", Cid}};
         }, {} });
@@ -579,24 +596,27 @@ VG_COMMANDS
             const std::string Cid = Command::Str(A, "cid"), Name = Command::Str(A, "name");
             if (C.Model)
             {
-                if (!C.Model->addPackageSource(QString::fromStdString(Cid), QString::fromStdString(Name))) throw std::runtime_error("empty or already added");
+                QString Why;
+                if (!C.Model->addPackageSource(QString::fromStdString(Cid), QString::fromStdString(Name), &Why)) throw std::runtime_error(Why.toStdString());
                 return json{{"added", Name}, {"syncing", true}};
             }
-            if (!PackageCatalog::AddPackageSource(*C.Config, Cid, Name)) throw std::runtime_error("empty or already added");
+            std::string Why;
+            if (!PackageCatalog::AddPackageSource(*C.Config, Cid, Name, &Why)) throw std::runtime_error(Why);
             Save(C);
             return json{{"added", Name}};
         }, {} });
 
     Command::Register({
-        "sources remove", "remove a package source (its folder and entries go)",
-        "Drop a source: its config entry, its fetched folder and its library entries. --keep-installed keeps packages "
-        "you installed from it (as local packages).",
-        { Pos("source", "its name or CID"), Flag("keep-installed", "keep what was installed from it") },
+        "sources remove", "remove a package source (its entries and fetched folder go; what you installed from it stays)",
+        "Drop a source: its config entry, its library entries and its fetched folder — packages you installed from it stay, "
+        "as local packages, unless --delete-installed. A folder the source's own fetch did not make is left in place.",
+        { Pos("source", "its name or CID"), Flag("delete-installed", "delete what was installed from it too") },
         { "sources remove 'Some library'" }, { "AppModel::removePackageSource", "PackageCatalog::RemovePackageSource" }, Needs::Config, false,
         [](Command::Context &C, const json &A) {
             const int Index = static_cast<int>(SourceIndex(C, Command::Str(A, "source")));
-            if (C.Model && !Command::Bool(A, "keep-installed", false)) C.Model->removePackageSource(Index);
-            else { PackageCatalog::RemovePackageSource(*C.Config, Index, Command::Bool(A, "keep-installed", false)); Save(C); }
+            const bool Keep = !Command::Bool(A, "delete-installed", false);
+            if (C.Model) C.Model->removePackageSource(Index, Keep);
+            else { PackageCatalog::RemovePackageSource(*C.Config, Index, Keep); Save(C); }
             return json{{"removed", Index}};
         }, {} });
 

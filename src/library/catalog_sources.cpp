@@ -60,9 +60,58 @@ std::string PackageSourceCID(const nlohmann::ordered_json &S)
 static std::string PackageSourceName(const nlohmann::ordered_json &S)
 {
     std::string N = S.is_object() ? S.value("NAME", std::string()) : std::string();
-    if (N.empty()) { const std::string C = PackageSourceCID(S); N = C.size() > 12 ? C.substr(0, 12) : C; }
     for (char &c : N) if (c == '/' || c == '\\' || c == ':') c = '_';
-    return N.empty() ? std::string("cidsource") : N;
+    //A name of only dots and blanks is no folder of its own ("." is LIBRARY, ".." the data dir): the CID's prefix instead.
+    if (N.find_first_not_of(". \t") == std::string::npos) { const std::string C = PackageSourceCID(S); N = C.size() > 12 ? C.substr(0, 12) : C; }
+    return N.find_first_not_of(". \t") == std::string::npos ? std::string("cidsource") : N;
+}
+//The file a source's own fetch leaves in its folder, holding its CID: the folder is the source's to delete.
+static constexpr const char *kSourceMarker = ".vgsource";
+static bool SourceOwnsDir(const std::string &Dir, const std::string &Cid)
+{
+    std::ifstream F(std::filesystem::path(Dir) / kSourceMarker, std::ios::binary);
+    std::string Got;
+    return F && std::getline(F, Got) && !Cid.empty() && Got == Cid;
+}
+//A library this machine publishes (its share sheet names it): its folder is the user's own, never a source's.
+static bool PublishedLibrary(const nlohmann::ordered_json &GlobalConfigJSON, const std::string &Dir)
+{
+    if (!GlobalConfigJSON.contains("ShareSheet")) return false;
+    const std::string Name = std::filesystem::path(Dir).filename().string();
+    for (const auto &E : SheetEntries(GlobalConfigJSON["ShareSheet"])) if (E.Lib == Name) return true;
+    return false;
+}
+//The packages a fetched tree holds: "." when the tree is one package, else its package folders' names.
+static std::vector<std::string> FetchedPackages(const std::string &Tree);
+//The marker, written: the source's CID, then the packages its fetch brought (one per line) — what the source indexes
+//and what removing it deletes, never a package made in its folder since. False (and said) when it cannot be written.
+static bool MarkSourceDir(const std::string &Dir, const std::string &Cid, const std::vector<std::string> &Packages)
+{
+    std::ofstream F(std::filesystem::path(Dir) / kSourceMarker, std::ios::binary | std::ios::trunc);
+    F << Cid << "\n";
+    for (const std::string &P : Packages) F << P << "\n";
+    if (F.flush()) return true;
+    LogWarn("PackageCatalog::MarkSourceDir", "could not mark " + Dir + " as the source " + Cid + "'s: removing the source will leave it in place");
+    return false;
+}
+//The packages the marker lists (FetchedPackages at the fetch): their folders under Dir ("." = Dir itself).
+static std::set<std::string> SourcePackages(const std::string &Dir)
+{
+    std::set<std::string> Out;
+    std::ifstream F(std::filesystem::path(Dir) / kSourceMarker, std::ios::binary);
+    std::string L;
+    if (!std::getline(F, L)) return Out;                // the CID
+    while (std::getline(F, L))
+        if (!L.empty()) Out.insert(L == "." ? Dir : (std::filesystem::path(Dir) / L).string());
+    return Out;
+}
+//A folder CID: a CIDv0 (Qm + 44 base58) or a CIDv1 in base32 (b…, lower case).
+static bool LooksLikeFolderCid(const std::string &C)
+{
+    static const std::string B58 = "123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz";
+    if (C.size() == 46 && C.rfind("Qm", 0) == 0) return C.find_first_not_of(B58) == std::string::npos;
+    if (C.size() >= 50 && C[0] == 'b') return C.find_first_not_of("abcdefghijklmnopqrstuvwxyz234567") == std::string::npos;
+    return false;
 }
 //CID package sources ARE the library now (git is gone): each fetches into LIBRARY/<name>. "Under a package source" =
 //"under the LIBRARY root". Local (externally-added) packages live OUTSIDE LIBRARY, so they stay distinguishable.
@@ -165,6 +214,16 @@ bool SourceDirSynced(const std::string &Dir, std::error_code &Ec)
 }
 
 
+static std::vector<std::string> FetchedPackages(const std::string &Tree)
+{
+    if (ScanBundleIdentity(Tree).Valid) return { "." };
+    std::vector<std::string> Out;
+    QDir D(QString::fromStdString(Tree));
+    for (const QString &Sub : D.entryList(QDir::Dirs | QDir::NoDotAndDotDot, QDir::Name))
+        if (ScanBundleIdentity(D.filePath(Sub).toStdString()).Valid) Out.push_back(Sub.toStdString());
+    return Out;
+}
+
 int SyncPackageSources(nlohmann::ordered_json &GlobalConfigJSON, std::string *Error)
 {
     if (!GlobalConfigJSON.contains("Settings") || !GlobalConfigJSON["Settings"].is_object()) return 0;
@@ -203,6 +262,8 @@ int SyncPackageSources(nlohmann::ordered_json &GlobalConfigJSON, std::string *Er
                 if (Error && Error->empty()) *Error = FErr;
                 continue;
             }
+            //Fetched here: the folder and the packages it brought are this source's (removing the source may delete them).
+            MarkSourceDir(Dir, Cid, FetchedPackages(Dir));
         }
 
         //A CID source is EITHER a single package (the fetched dir is itself a bundle — per-package CID) OR a collection
@@ -215,9 +276,13 @@ int SyncPackageSources(nlohmann::ordered_json &GlobalConfigJSON, std::string *Er
             if (Id.HasLaunchable) { ++Games; ++Indexed; }
         };
 
+        //Its own folder: the packages its fetch brought, as the marker lists them (a package made in the folder since is
+        //not the source's). Else, as found.
+        const std::set<std::string> Brought = SourceOwnsDir(Dir, Cid) ? SourcePackages(Dir) : std::set<std::string>{};
+        const auto Mine = [&](const std::string &PkgDir) { return !SourceOwnsDir(Dir, Cid) || Brought.count(PkgDir); };
         const BundleIdentity Self = ScanBundleIdentity(Dir);
         if (Self.Valid)
-            Upsert(Dir, Self);                                                        // single-package CID
+        { if (Mine(Dir)) Upsert(Dir, Self); }                                         // single-package CID
         else
         {
             QDir D(QString::fromStdString(Dir));                                      // collection CID → scan subdirs
@@ -225,7 +290,7 @@ int SyncPackageSources(nlohmann::ordered_json &GlobalConfigJSON, std::string *Er
             {
                 const QString PkgDir = D.filePath(Sub);
                 const BundleIdentity Id = ScanBundleIdentity(PkgDir.toStdString());
-                if (!Id.Valid) continue;
+                if (!Id.Valid || !Mine(PkgDir.toStdString())) continue;
                 Upsert(PkgDir.toStdString(), Id);
             }
         }
@@ -233,6 +298,22 @@ int SyncPackageSources(nlohmann::ordered_json &GlobalConfigJSON, std::string *Er
                + std::to_string(Packages) + " package(s), " + std::to_string(Games) + " launchable).");
     }
     return Indexed;
+}
+
+std::string SourceOfPackage(const nlohmann::ordered_json &GlobalConfigJSON, const std::filesystem::path &BundleDir)
+{
+    if (!GlobalConfigJSON.contains("LIBRARY") || !GlobalConfigJSON["LIBRARY"].is_array()) return {};
+    std::error_code Ec;
+    const auto Want = std::filesystem::weakly_canonical(BundleDir, Ec);
+    for (const auto &E : GlobalConfigJSON["LIBRARY"])
+    {
+        if (!E.is_object() || std::filesystem::weakly_canonical(E.value("PATH", std::string()), Ec) != Want) continue;
+        const std::string Cid = E.value("CIDSOURCE", std::string());
+        if (Cid.empty() || !GlobalConfigJSON.contains("Settings") || !GlobalConfigJSON["Settings"].contains("PackageSources")) return {};
+        for (const auto &S : GlobalConfigJSON["Settings"]["PackageSources"]) if (PackageSourceCID(S) == Cid) return Cid;
+        return {};
+    }
+    return {};
 }
 
 std::string LibraryEntryKey(const nlohmann::ordered_json &Entry)
@@ -289,18 +370,31 @@ void MergeListChange(nlohmann::ordered_json &Live, const nlohmann::ordered_json 
     }
 }
 
-bool AddPackageSource(nlohmann::ordered_json &GlobalConfigJSON, const std::string &Cid, const std::string &Name)
+bool AddPackageSource(nlohmann::ordered_json &GlobalConfigJSON, const std::string &Cid, const std::string &Name, std::string *Why)
 {
-    if (Cid.empty()) return false;
+    const auto No = [&](const std::string &W) { if (Why) *Why = W; return false; };
+    if (Cid.empty()) return No("Enter the source's CID.");
+    if (!LooksLikeFolderCid(Cid)) return No("'" + Cid + "' is not a CID (a folder CID starts with Qm or b).");
     if (!GlobalConfigJSON.contains("Settings") || !GlobalConfigJSON["Settings"].is_object())
         GlobalConfigJSON["Settings"] = nlohmann::ordered_json::object();
     auto &S = GlobalConfigJSON["Settings"];
     if (!S.contains("PackageSources") || !S["PackageSources"].is_array())
         S["PackageSources"] = nlohmann::ordered_json::array();
-    for (const auto &E : S["PackageSources"]) if (PackageSourceCID(E) == Cid) return false;   // already added
+    for (const auto &E : S["PackageSources"]) if (PackageSourceCID(E) == Cid) return No("That source is already added.");
     nlohmann::ordered_json Src;
     Src["CID"] = Cid;
     if (!Name.empty()) Src["NAME"] = Name;
+    //Its folder must be new: a name that is a folder already in the library (an authored library, another source's)
+    //would make that folder the source's — and removing the source would delete it.
+    {
+        const std::string Dir = PackageSourceDir(GlobalConfigJSON, Src);
+        const std::string Folder = std::filesystem::path(Dir).filename().string();
+        for (const auto &E : S["PackageSources"])
+            if (PackageSourceDir(GlobalConfigJSON, E) == Dir) return No("Another source already uses the folder '" + Folder + "': give this one another name.");
+        std::error_code Ec;
+        if (PublishedLibrary(GlobalConfigJSON, Dir) || (!std::filesystem::is_empty(Dir, Ec) && !Ec && !SourceOwnsDir(Dir, Cid)))
+            return No("A folder named '" + Folder + "' is already in the library: give the source another name.");
+    }
     S["PackageSources"].push_back(std::move(Src));
     return true;
 }
@@ -520,12 +614,14 @@ bool ApplySourceUpgrade(nlohmann::ordered_json &GlobalConfigJSON, const SourceUp
         LogWarn("PackageCatalog::ApplySourceUpgrade",
                 "re-seeded '" + P.Name + "' as " + (Got.empty() ? "nothing" : Got) + ", expected " + P.NewCid
                 + " — the source dir holds files the published tree does not");
+    const std::vector<std::string> NewPackages = FetchedPackages(P.StagingDir);   // what the new CID brings
     fs::remove_all(P.StagingDir, Ec);
 
     // 5. Point config at the new CID, and drop LIBRARY rows for packages that no longer exist so the catalog matches.
     auto &Sources = GlobalConfigJSON["Settings"]["PackageSources"];
     for (auto &S : Sources)
         if (PackageSourceName(S) == P.Name) { if (S.is_object()) S["CID"] = P.NewCid; else S = nlohmann::ordered_json{{"NAME", P.Name}, {"CID", P.NewCid}}; }
+    MarkSourceDir(P.Dir, P.NewCid, NewPackages);   // the folder is the source's at its new CID, with what it brings
     if (GlobalConfigJSON.contains("LIBRARY") && GlobalConfigJSON["LIBRARY"].is_array())
     {
         auto &Lib = GlobalConfigJSON["LIBRARY"];
@@ -565,25 +661,47 @@ void RemovePackageSource(nlohmann::ordered_json &GlobalConfigJSON, int Index, bo
     if (Index < 0 || Index >= (int)Arr.size()) return;
 
     const std::string Dir = PackageSourceDir(GlobalConfigJSON, Arr[Index]);
+    const std::string Cid = PackageSourceCID(Arr[Index]);
+    //Its files go only from a folder that is the source's (its marker: its fetch made it, or the sync marked it) and
+    //never from a library this machine publishes: otherwise the source and the entries it made go, the files stay.
+    const bool Owned = SourceOwnsDir(Dir, Cid) && !PublishedLibrary(GlobalConfigJSON, Dir)
+                    && PathUnder(PackageSourcesRoot(GlobalConfigJSON), Dir)
+                    && std::filesystem::path(Dir).lexically_normal() != std::filesystem::path(PackageSourcesRoot(GlobalConfigJSON)).lexically_normal();
+    //The packages the source's sync indexed (its rows): what is the source's in its folder — not a package the user
+    //made in there.
+    const std::set<std::string> Brought = SourcePackages(Dir);
+    const auto Ours = [&](const nlohmann::ordered_json &E) {
+        return E.is_object() && E.value("CIDSOURCE", std::string()) == Cid && PathUnder(Dir, E.value("PATH", std::string()))
+            && (!Owned || Brought.count(E.value("PATH", std::string())));
+    };
+    auto *Lib = GlobalConfigJSON.contains("LIBRARY") && GlobalConfigJSON["LIBRARY"].is_array() ? &GlobalConfigJSON["LIBRARY"] : nullptr;
+    if (!Owned)
+    {
+        if (Lib) for (auto It = Lib->begin(); It != Lib->end(); ) It = Ours(*It) ? Lib->erase(It) : std::next(It);
+        LogWarn("PackageCatalog::RemovePackageSource", "the source is removed, its folder " + Dir + " is left in place: "
+                "it is not the source's (delete it yourself if it is)");
+        Arr.erase(Arr.begin() + Index);
+        return;
+    }
+    //Whatever goes, the folder is not the source's any more: a source added again fetches into a folder of its own.
+    std::error_code EcM;
+    std::filesystem::remove(std::filesystem::path(Dir) / kSourceMarker, EcM);
 
     if (KeepInstalled)
     {
-        // Never rm a package the user has INSTALLED: dirs with hydrated content stay as local packages (files kept);
-        // only stub-only packages go. No un-seed here: stubs seed nothing, and a kept install must stay seeded. The
-        // source dir itself is removed only if it ends up empty.
-        if (GlobalConfigJSON.contains("LIBRARY") && GlobalConfigJSON["LIBRARY"].is_array())
-        {
-            auto &Lib = GlobalConfigJSON["LIBRARY"];
-            for (int i = (int)Lib.size() - 1; i >= 0; --i)
+        // Never rm a package the user has INSTALLED: dirs with hydrated content stay (files kept, still seeded), their
+        // rows kept without the source (nothing can download them again: they are not dehydrated from the Library);
+        // only stub-only packages go. The source dir itself is removed only if it ends up empty.
+        if (Lib)
+            for (int i = (int)Lib->size() - 1; i >= 0; --i)
             {
-                if (!Lib[i].is_object()) continue;
-                const std::string P = Lib[i].value("PATH", std::string());
-                if (P.empty() || !PathUnder(Dir, P)) continue;
-                if (DirHasContent(P)) continue;                         // installed → kept, a local package
-                else { std::error_code EcP; std::filesystem::remove_all(P, EcP); Lib.erase(Lib.begin() + i); }
+                if (!Ours((*Lib)[i])) continue;
+                const std::string P = (*Lib)[i].value("PATH", std::string());
+                if (DirHasContent(P)) { (*Lib)[i].erase("CIDSOURCE"); (*Lib)[i]["KEPT_FROM"] = Cid; continue; }
+                std::error_code EcP; std::filesystem::remove_all(P, EcP); Lib->erase(Lib->begin() + i);
             }
-        }
-        std::error_code EcD; std::filesystem::remove(Dir, EcD);          // removes the source dir only if now empty
+        std::error_code EcD;
+        std::filesystem::remove(Dir, EcD);                               // removes the source dir only if now empty
         Arr.erase(Arr.begin() + Index);
         return;
     }
@@ -611,17 +729,19 @@ void RemovePackageSource(nlohmann::ordered_json &GlobalConfigJSON, int Index, bo
                     + " CID(s) only the removed source held (no IPFS node): a heal drops them once their files are gone");
     }
 
-    //Drop LIBRARY entries under this source's dir, then delete the fetched dir.
-    if (GlobalConfigJSON.contains("LIBRARY") && GlobalConfigJSON["LIBRARY"].is_array())
-    {
-        auto &Lib = GlobalConfigJSON["LIBRARY"];
-        for (auto It = Lib.begin(); It != Lib.end(); )
+    //The source's packages go (each the sync indexed), then the folder if nothing else is in it — a package the user
+    //made in there stays.
+    if (Lib)
+        for (auto It = Lib->begin(); It != Lib->end(); )
         {
-            const std::string P = It->is_object() ? It->value("PATH", std::string()) : std::string();
-            if (!P.empty() && PathUnder(Dir, P)) It = Lib.erase(It); else ++It;
+            if (!Ours(*It)) { ++It; continue; }
+            std::error_code EcP; std::filesystem::remove_all(It->value("PATH", std::string()), EcP);
+            It = Lib->erase(It);
         }
-    }
-    std::error_code Ec; std::filesystem::remove_all(Dir, Ec);
+    std::error_code Ec;
+    std::filesystem::remove(Dir, Ec);
+    if (std::filesystem::exists(Dir, Ec))
+        LogWarn("PackageCatalog::RemovePackageSource", "the source's packages are deleted; its folder " + Dir + " holds other things and stays");
     Arr.erase(Arr.begin() + Index);
 }
 

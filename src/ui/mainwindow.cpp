@@ -230,6 +230,10 @@ void MainWindow::BuildDesktop()
     // Catalog card clicks → the download controller.
     connect(CatalogTabPtr, &CatalogTab::downloadRequested, this, [this](LibraryGameCard *C) { StartCardDownload(*DownloadMgr, *Model, C, this); });
     connect(CatalogTabPtr, &CatalogTab::cancelRequested,   this, [this](LibraryGameCard *C) { CancelCardDownload(*DownloadMgr, C, this); });
+    connect(CatalogTabPtr, &CatalogTab::sourcesRequested,  this, [this] {
+        MainWindowTabWidget->setCurrentWidget(SettingsTabPtr);
+        SettingsTabPtr->openPage("Sources");
+    });
 
     // Download controller → Catalog cards (downloading overlay + progress).
     connect(DownloadMgr, &DownloadManager::downloadStarted,  CatalogTabPtr, &CatalogTab::markDownloading);

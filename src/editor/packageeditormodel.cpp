@@ -333,8 +333,10 @@ QStringList PackageEditorModel::unusedFiles() const
             for (const std::string & Cid : Cids) Named.insert(Top(ContentFile::Bumped(Name, Cid)));
         }
     for (const auto & [C, F] : NodeFiles::In(PackageDir->path().toStdString())) Named.insert(F.Path.filename().string());   // node files
+    //Files only: a folder in a package can be the package's saves and runtime (USERDATA, DEFPREFIX, an in-package
+    //instance), a capture in progress or the user's own — none of it is a file a removed layer left.
     QStringList Out;
-    for (const QFileInfo & F : PackageDir->entryInfoList(QDir::Files | QDir::Dirs | QDir::NoDotAndDotDot, QDir::Name))
+    for (const QFileInfo & F : PackageDir->entryInfoList(QDir::Files | QDir::NoDotAndDotDot, QDir::Name))
     {
         const QString N = F.fileName();
         if (N.startsWith('.') || N.endsWith(".tmp") || N.contains(".tmp-")) continue;
@@ -349,7 +351,7 @@ int PackageEditorModel::deleteUnusedFiles()
     for (const QString & F : unusedFiles())
     {
         const QString P = PackageDir->filePath(F);
-        if (QFileInfo(P).isDir() ? QDir(P).removeRecursively() : QFile::remove(P)) ++N;
+        if (QFileInfo(P).isFile() && QFile::remove(P)) ++N;
     }
     return N;
 }

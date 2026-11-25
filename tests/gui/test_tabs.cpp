@@ -231,6 +231,18 @@ private slots:
     }
     void packages_view_constructs() { AppModel m(&Cfg, &AppDir); PackagesView t(m); QVERIFY(renders(&t)); }
     void settings_tab_constructs()  { AppModel m(&Cfg, &AppDir); SettingsTab t(m); QVERIFY(renders(&t)); }
+    // The library folder is shown, not typed into: a half-typed path saved on focus-out made every installed game vanish
+    // at the next start. It is changed by its button (a picker, checked and confirmed). Teeth: an editable field.
+    void the_library_folder_is_changed_by_its_button_not_typed()
+    {
+        AppModel m(&Cfg, &AppDir);
+        SettingsTab t(m);
+        QVERIFY(t.openPage("Storage & Paths"));
+        auto *F = t.findChild<QLineEdit *>("libraryFolder");
+        QVERIFY(F);
+        QVERIFY(F->isReadOnly());
+        QVERIFY(t.findChild<QPushButton *>("libraryFolderChange") && t.findChild<QPushButton *>("libraryFolderDefault"));
+    }
     void ipfs_tab_constructs()      { AppModel m(&Cfg, &AppDir); IpfsModel im(m); IpfsTab t(im); QVERIFY(renders(&t)); }
 
     // The overhauled IPFS tab: qBittorrent-style sidebar (Status + Categories filter lists), a search box, and a

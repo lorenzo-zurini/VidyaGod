@@ -69,6 +69,7 @@ bool DirHasContent(const std::string &Dir)
         if (It->is_regular_file(Ec))
         {
             const std::string Name = It->path().filename().string();
+            if (Name == ".vgsource") continue;                          // a source's marker, not content
             if (Name.size() < 5 || Name.compare(Name.size() - 5, 5, ".json") != 0) return true;
         }
     }

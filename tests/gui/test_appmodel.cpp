@@ -170,13 +170,14 @@ private slots:
         json cfg = json{{"Settings", {{"Paths", {{"LibraryRoot", d.filePath("LIBRARY").toStdString()}}}}},
                         {"LIBRARY", json::array({ json{{"PATH", Old}, {"PACKAGEUID", "1"}} })}};
         //The source is already on disk (as after its first fetch): the sync reads it and adds its package to LIBRARY.
-        const json Src = json{{"CID", "QmLocal"}, {"NAME", "Local"}};
+        const json Src = json{{"CID", "QmYwAPJzv5CZsnA625s3Xf2nemtYgPpHdWEz79ojWnPbdG"}, {"NAME", "Local"}};
         const std::string SrcDir = PackageCatalog::PackageSourceDir(cfg, Src);
         std::filesystem::create_directories(SrcDir);
         std::ofstream(SrcDir + "/game.json") << R"({"LABEL":"Synced","LAYERS":[{"ENV":{"A":"1"}}]})";
+        std::ofstream(SrcDir + "/.vgsource") << "QmYwAPJzv5CZsnA625s3Xf2nemtYgPpHdWEz79ojWnPbdG\n";                                    // its own fetch's marker
         AppModel m(&cfg, &appDir);
         QSignalSpy changed(&m, &AppModel::packageSourcesChanged);
-        QVERIFY(m.addPackageSource("QmLocal", "Local"));
+        QVERIFY(m.addPackageSource("QmYwAPJzv5CZsnA625s3Xf2nemtYgPpHdWEz79ojWnPbdG", "Local"));
         cfg["LIBRARY"].push_back(json{{"PATH", Imported}, {"PACKAGEUID", "2"}});          // an import, while the sync runs
         QTRY_VERIFY_WITH_TIMEOUT(changed.count() >= 2, 20000);                                // the sync's completion
         bool HasOld = false, HasImported = false, HasSynced = false;

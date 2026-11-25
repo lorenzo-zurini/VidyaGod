@@ -96,7 +96,7 @@ public slots:
     void unpinMany(const QStringList & cids);       // stop seeding a batch, then one refresh
     //A package source by CID, through AppModel::addPackageSource (persisted, fetched and indexed off-thread). False:
     //empty, or already a source.
-    bool addSource(const QString & cid, const QString & name);
+    bool addSource(const QString & cid, const QString & name, QString * why = nullptr);
     AppModel & app() const { return Model; }   // the model this one shows the node of
 
 signals:

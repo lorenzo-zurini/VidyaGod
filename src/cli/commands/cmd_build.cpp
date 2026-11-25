@@ -762,7 +762,7 @@ VG_COMMANDS
 
     Command::Register({
         "build unused", "files in the package folder no node names (left by a removed layer), or delete them",
-        "", { PkgArg(), Flag("delete", "delete them") }, { "build unused 749", "build unused 749 --delete" },
+        "Files only: a folder is never unused (it can hold saves, a prefix, a capture in progress).", { PkgArg(), Flag("delete", "delete them") }, { "build unused 749", "build unused 749 --delete" },
         { "PackageEditorModel::unusedFiles", "PackageEditorModel::deleteUnusedFiles" }, Needs::Model, false,
         [](Command::Context &C, const json &A) {
             Session S = Open(C, Command::Str(A, "package"));

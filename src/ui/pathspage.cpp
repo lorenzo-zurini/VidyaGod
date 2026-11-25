@@ -18,6 +18,8 @@
 #include <QLineEdit>
 #include <QPushButton>
 #include <QFileDialog>
+#include <QFileInfo>
+#include <QMessageBox>
 #include <QDir>
 #include <QDesktopServices>
 #include <QGridLayout>
@@ -50,7 +52,11 @@ PathsPage::PathsPage(AppModel &model, QWidget *parent)
     QWidget * libRow = new QWidget(this);
     QHBoxLayout * ll = new QHBoxLayout(libRow); ll->setContentsMargins(0,0,0,0);
     libRow->setLayout(ll);
+    //Shown, not typed into: a half-typed path saved as the library would make every installed game vanish at the next
+    //start. Changed through a picker, checked (a folder this user can write) and confirmed.
     QLineEdit * libEdit = new QLineEdit(libRow);
+    libEdit->setReadOnly(true);
+    libEdit->setObjectName("libraryFolder");
     libEdit->setPlaceholderText(defaultLibRoot + "  (default)");
     {
         auto & S = (*Model.config())["Settings"];
@@ -58,25 +64,47 @@ PathsPage::PathsPage(AppModel &model, QWidget *parent)
             && S["Paths"].contains("LibraryRoot") && S["Paths"]["LibraryRoot"].is_string())
             libEdit->setText(QString::fromStdString(std::string(S["Paths"]["LibraryRoot"])));
     }
-    auto writeLibRoot = [this,libEdit]{
+    ll->addWidget(libEdit, 1);
+    auto setLibRoot = [this, libEdit, defaultLibRoot](const QString & To) {
+        const QString Was = libEdit->text().isEmpty() ? defaultLibRoot : libEdit->text();
+        const QString Now = To.isEmpty() ? defaultLibRoot : To;
+        if (QDir::cleanPath(Was) == QDir::cleanPath(Now)) return;
+        //The default is made when it is not there yet; a folder of the user's is used only when it is one to hold a
+        //library: not the home folder or the disk's root (everything under it would become library and be shared).
+        const QString Home = QDir::cleanPath(QDir::homePath());
+        if (QDir::cleanPath(Now) == Home || QDir(Now).isRoot())
+        { QMessageBox::warning(this, "Library folder", "Pick a folder of its own for the library, not " + Now + "."); return; }
+        if (!To.isEmpty() && (!QFileInfo(Now).isDir() || !QFileInfo(Now).isWritable()))
+        { QMessageBox::warning(this, "Library folder", Now + " is not a folder you can write to."); return; }
+        QMessageBox Ask(QMessageBox::Question, "Library folder", QString("Keep your library in %1?").arg(Now),
+                        QMessageBox::Yes | QMessageBox::Cancel, this);
+        Ask.setInformativeText(QString("Nothing is moved: the games in %1 stay there and leave your Library until you move "
+                                       "them over yourself (or change back). The Library shows the new folder's games at once.").arg(Was));
+        Ask.setDefaultButton(QMessageBox::Cancel);
+        if (Ask.exec() != QMessageBox::Yes) return;
+        if (To.isEmpty()) QDir().mkpath(Now);                // the default, made once chosen
         auto & S = (*Model.config())["Settings"];
-        QString t = libEdit->text().trimmed();
-        if (t.isEmpty()) {
-            if (S.contains("Paths") && S["Paths"].is_object()) S["Paths"].erase("LibraryRoot");
-        } else {
+        if (To.isEmpty()) { if (S.contains("Paths") && S["Paths"].is_object()) S["Paths"].erase("LibraryRoot"); }
+        else
+        {
             if (!S.contains("Paths") || !S["Paths"].is_object()) S["Paths"] = nlohmann::ordered_json::object();
-            S["Paths"]["LibraryRoot"] = t.toStdString();
+            S["Paths"]["LibraryRoot"] = To.toStdString();
         }
         Model.save();
+        libEdit->setText(To);
+        Model.rebuildCatalog();
     };
-    connect(libEdit, &QLineEdit::editingFinished, this, writeLibRoot);
-    ll->addWidget(libEdit, 1);
-    QPushButton * libBrowse = new QPushButton("Browse…", libRow);
-    connect(libBrowse, &QPushButton::clicked, this, [this,libEdit,writeLibRoot]{
-        QString d = QFileDialog::getExistingDirectory(this, "Select library folder");
-        if (!d.isEmpty()) { libEdit->setText(d); writeLibRoot(); }
+    QPushButton * libBrowse = new QPushButton("Change…", libRow);
+    libBrowse->setObjectName("libraryFolderChange");
+    connect(libBrowse, &QPushButton::clicked, this, [this, setLibRoot]{
+        const QString d = QFileDialog::getExistingDirectory(this, "Select library folder");
+        if (!d.isEmpty()) setLibRoot(QDir::cleanPath(d));
     });
     ll->addWidget(libBrowse);
+    QPushButton * libDefault = new QPushButton("Use default", libRow);
+    libDefault->setObjectName("libraryFolderDefault");
+    connect(libDefault, &QPushButton::clicked, this, [setLibRoot]{ setLibRoot(QString()); });
+    ll->addWidget(libDefault);
     form->addRow("Library folder:", libRow);
 
     // AppData dir (read-only, informational — determined at launch, not settable here). Disabled so it's visibly
@@ -86,7 +114,7 @@ PathsPage::PathsPage(AppModel &model, QWidget *parent)
     appDataLbl->setStyleSheet("QLineEdit{color:palette(disabled-text);background:palette(window);}");
     form->addRow("App data directory:", appDataLbl);
 
-    QLabel * note = new QLabel("Path changes apply to future launches.", this);
+    QLabel * note = new QLabel("The library folder is where your games are installed and what you share.", this);
     note->setStyleSheet("color:" + Theme::Dim + ";font-size:9pt;");
     pl->addWidget(note);
 
@@ -158,6 +186,7 @@ void PathsPage::buildSpace(QVBoxLayout * pl)
     auto * FreeLabel = new QLabel(this);
     FreeLabel->setStyleSheet("color:" + Theme::Dim + ";");
     FreeLabel->setAccessibleName("Free space");
+    FreeLabel->setText("Measuring free space…");
     pl->addWidget(FreeLabel);
     std::vector<std::filesystem::path> Paths;
     for (const auto & P : Parts) Paths.push_back(P.second);
@@ -190,11 +219,15 @@ void PathsPage::buildSpace(QVBoxLayout * pl)
             std::vector<std::uintmax_t> Bytes(Pieces.size(), 0);
             Parallel::ForWith<Parallel::NoState>(Pieces.size(), [&](Parallel::NoState &, std::size_t K) { Bytes[K] = FolderBytes(Pieces[K].Dir); });
             for (std::size_t K = 0; K < Pieces.size(); ++K) (*Sizes)[Pieces[K].Part] += Bytes[K];
+            //The drive the library is on: its folder, else the nearest folder above it that is there (a library not made yet).
             std::error_code Ec;
-            *Free = std::filesystem::space(Lib, Ec);
+            std::filesystem::path On = Lib;
+            while (!On.empty() && !std::filesystem::exists(On, Ec) && On != On.parent_path()) On = On.parent_path();
+            *Free = std::filesystem::space(On, Ec);
         },
         [Ls, Fl, Sizes, Free]{
             for (size_t I = 0; I < Ls.size(); ++I) if (Ls[I]) Ls[I]->setText(QString::fromStdString(HumanBytes(static_cast<long long>((*Sizes)[I]))));
+            if (Fl && Free->capacity == 0) Fl->setText("Free space on the library's drive: unknown");
             if (Fl && Free->capacity > 0)
                 Fl->setText(QString("%1 free of %2 on the library's drive").arg(QString::fromStdString(HumanBytes(static_cast<long long>(Free->available))),
                                                                                QString::fromStdString(HumanBytes(static_cast<long long>(Free->capacity)))));

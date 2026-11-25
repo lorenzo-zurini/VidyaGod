@@ -97,7 +97,9 @@ int SyncPackageSources(nlohmann::ordered_json &GlobalConfigJSON, std::string *Er
 bool HasMissingSources(const nlohmann::ordered_json &GlobalConfigJSON);
 // Append a source (dedup on CID) — caller then SyncPackageSources + reindex + persists. Returns false if CID is empty
 // or already present.
-[[nodiscard]] bool AddPackageSource(nlohmann::ordered_json &GlobalConfigJSON, const std::string &Cid, const std::string &Name);
+//Why: what is wrong when it is refused (no CID, not a CID, already added, a folder of that name already in the library).
+[[nodiscard]] bool AddPackageSource(nlohmann::ordered_json &GlobalConfigJSON, const std::string &Cid, const std::string &Name,
+                                    std::string *Why = nullptr);
 // What a worker did to a config list on its own copy of the config (Before → After), applied to the live list: an entry
 // it removed goes, one it added comes in, one it changed (it went and came under one Key) is replaced where it stands.
 // Entries are matched by value, so two alike, or two of one key, are two. What the live list gained, lost or changed
@@ -109,7 +111,13 @@ void MergeListChange(nlohmann::ordered_json &Live, const nlohmann::ordered_json 
 std::string LibraryEntryKey(const nlohmann::ordered_json &Entry);
 std::string SourceKey(const nlohmann::ordered_json &Source);
 // KeepInstalled: a package installed from it (hydrated content) stays, as a local package; only stub-only packages go.
-void RemovePackageSource(nlohmann::ordered_json &GlobalConfigJSON, int Index, bool KeepInstalled = false);
+// Files go only from a folder that is the source's (its marker — its fetch made it or the sync marked it — and not a
+// library this machine publishes), and only its packages (its rows): otherwise the source and its entries go and the
+// folder stays. Kept packages keep their rows without the source (KEPT_FROM).
+void RemovePackageSource(nlohmann::ordered_json &GlobalConfigJSON, int Index, bool KeepInstalled = true);
+//The configured source a package in the library came from (its LIBRARY row's CIDSOURCE, when that source is still
+//configured), or "": only such a package can be dehydrated — something can download it again.
+std::string SourceOfPackage(const nlohmann::ordered_json &GlobalConfigJSON, const std::filesystem::path &BundleDir);
 
 // ----- upgrading a source to a new collection CID -----
 // Editing a source's CID in config does NOTHING on its own: SyncPackageSources fetches only when the source's
@@ -165,6 +173,9 @@ void SetGolden(nlohmann::ordered_json &GlobalConfigJSON, const std::string &Pack
 //canonical form; the layout lives in the config's EDITORLAYOUT).
 //Roots/UserDataRoot: where the save's re-mint follows renamed nodes (other packages that contain them, the instances
 //that remember them) — EditableRoots and InstanceStore::Root for a real library; none only for a throwaway folder.
+//Why an export folder is not one to replace (empty: it is): the root, the package itself or a folder inside it, one that
+//holds the package or the home folder, or a non-empty folder no export made (an export leaves .vgexport in it).
+std::string ExportDestRefused(const std::string &SrcDir, const std::string &DestDir);
 [[nodiscard]] bool PublishPackage(const std::string &PackageDir, const std::string &DehydratedDestDir,
                                   std::string *Error = nullptr, const std::vector<std::filesystem::path> &Roots = {},
                                   const std::string &UserDataRoot = std::string());
@@ -497,8 +508,9 @@ std::shared_ptr<const NodeIndex> CurrentIndex(const nlohmann::ordered_json &Glob
 // ran up to 138 scans at once: 1700 % CPU, and 3 GB of heap glibc then kept. Any caller's config is used (they name
 // the same library).
 std::shared_ptr<const NodeIndex> FreshCatalogIndex(const nlohmann::ordered_json &GlobalConfigJSON);
-// Inverse of Download: delete the node closure's local content-layer files (keep manifests + cover) and unpin +
-// drop-ref their CIDs, so the package returns to the Catalog as re-downloadable and the node stops seeding it.
+// Inverse of Download: delete the launchable's OWN content-layer files — those in its package folder that carry a CID
+// (keep manifests + cover; a library another package holds and a file nothing could download again are left) — and
+// unpin + drop-ref their CIDs, so the package returns to the Catalog as re-downloadable and the node stops seeding it.
 // Returns the number of files removed. Use only for managed (library-root) packages, never local/portable ones.
 int DehydrateNode(const NodeIndex &Idx, const std::string &LaunchNodeId);
 //The packages installed here, from the index: every package folder (LIBRARY's, or added locally; never a peer's

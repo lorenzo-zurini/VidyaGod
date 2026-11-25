@@ -437,9 +437,9 @@ void IpfsModel::unpinMany(const QStringList & cids)
     refreshNow();
 }
 
-bool IpfsModel::addSource(const QString & cid, const QString & name)
+bool IpfsModel::addSource(const QString & cid, const QString & name, QString * why)
 {
-    if (!Model.addPackageSource(cid, name)) return false;   // the one path: dedup, persist, fetch + index, signals
+    if (!Model.addPackageSource(cid, name, why)) return false;   // the one path: checks, persist, fetch + index, signals
     refresh();
     return true;
 }

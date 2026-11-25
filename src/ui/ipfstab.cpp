@@ -156,17 +156,7 @@ void IpfsTab::buildUi()
 
     QPushButton * addSrcBtn = new QPushButton("Add source…", this);
     addSrcBtn->setToolTip("Add a package or library CID someone shared with you — its packages appear in the Catalog.");
-    connect(addSrcBtn, &QPushButton::clicked, this, [this]{
-        bool ok = false;
-        const QString Cid = QInputDialog::getText(this, "Add source", "Package / library CID:",
-                                                  QLineEdit::Normal, QString(), &ok).trimmed();
-        if (!ok || Cid.isEmpty()) return;
-        const QString Name = QInputDialog::getText(this, "Add source", "Name for this source:",
-                                                   QLineEdit::Normal, Cid.left(12), &ok).trimmed();
-        if (!ok) return;
-        if (!Model.addSource(Cid, Name.isEmpty() ? Cid.left(12) : Name))
-            QMessageBox::information(this, "Add source", "That CID is already one of your sources.");
-    });
+    connect(addSrcBtn, &QPushButton::clicked, this, &IpfsTab::sourcesRequested);
     toolbar->addWidget(addSrcBtn);
 
     SeedBtn = new QPushButton("Seed folder…", this);

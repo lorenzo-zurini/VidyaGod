@@ -160,12 +160,12 @@ private slots:
         QTemporaryDir d; QVERIFY(d.isValid());
         QDir Dir(d.path());
         json cfg = json{{"Settings", {{"Paths", {{"LibraryRoot", (d.path() + "/LIBRARY").toStdString()}}},
-                                      {"PackageSources", json::array({ json{{"CID", "bafyexisting"}, {"NAME", "x"}} })}}},
+                                      {"PackageSources", json::array({ json{{"CID", "bafybeigdyrzt5sfp7udm7hu76uh7y26nf3efuylqabf3oclgtqy55fbzdi"}, {"NAME", "x"}} })}}},
                         {"LIBRARY", json::array()}};
         AppModel m(&cfg, &Dir); IpfsModel im(m);
         QSignalSpy Told(&m, &AppModel::packageSourcesChanged);
-        QVERIFY(!im.addSource("bafyexisting", "again"));
-        QVERIFY(im.addSource("bafynewsource", "new"));
+        QVERIFY(!im.addSource("bafybeigdyrzt5sfp7udm7hu76uh7y26nf3efuylqabf3oclgtqy55fbzdi", "again"));
+        QVERIFY(im.addSource("bafybeihdwdcefgh4dqkjv67uzcmw7ojee6xedzdetojuzjevtenxquvyku", "new"));
         QCOMPARE((int)cfg["Settings"]["PackageSources"].size(), 2);
         QVERIFY(Told.count() >= 1);
     }

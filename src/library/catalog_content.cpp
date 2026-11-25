@@ -148,13 +148,20 @@ int DehydrateNode(const NodeIndex &Idx, const std::string &LaunchNodeId)
     // the package returns to the Catalog as re-downloadable) and unpin + drop the references for their CIDs (so the
     // node stops "seeding" content that's no longer on disk). Cover art (META.COVER) is left in place — it's tiny,
     // git-tracked, and needed to render the catalog tile.
+    //Only the game's OWN content goes: a file in another package's folder (a library its closure contains — DirectPlay, a
+    //runner) is other games' too, and a file with no CID has no source to download again from. Both stay.
     int Removed = 0;
     std::set<std::string> Cids;
+    const Node *Launch = Idx.Find(LaunchNodeId);
+    if (!Launch || Launch->BundleDir.empty()) return 0;
+    std::error_code EcB;
+    const std::filesystem::path Own = std::filesystem::weakly_canonical(Launch->BundleDir, EcB);
     ForEachContentLayer(Idx, LaunchNodeId, {}, [&](const nlohmann::ordered_json&, const std::filesystem::path &Local, const std::string &Cid){
-        if (!Cid.empty()) Cids.insert(Cid);
         std::error_code Ec;
-        if (std::filesystem::exists(Local, Ec) && std::filesystem::is_regular_file(Local, Ec))
-        { std::filesystem::remove(Local, Ec); if (!Ec) ++Removed; }
+        const auto Rel = std::filesystem::weakly_canonical(Local, Ec).lexically_relative(Own);
+        if (Cid.empty() || Rel.empty() || *Rel.begin() == "..") return;
+        Cids.insert(Cid);                                    // unpinned whether or not its file is still there
+        if (std::filesystem::is_regular_file(Local, Ec) && std::filesystem::remove(Local, Ec)) ++Removed;
     }, false, false);
     for (const std::string &C : Cids) IpfsWrapper::Unpin(C);
     IpfsWrapper::DropRefs({ Cids.begin(), Cids.end() });   // together: a drop each was its own commit and compaction

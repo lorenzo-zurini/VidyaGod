@@ -259,11 +259,14 @@ private slots:
     }
 
     // A file in the package folder no node names (a removed layer's zip) is reported, and can be deleted; files the
-    // nodes name (a zip, a cover) and the node files are not. Teeth: report named files; skip the report; delete all.
+    // nodes name (a zip, a cover), the node files and folders are not (a folder can be the package's saves, USERDATA).
+    // Teeth: report named files; skip the report; delete all; delete a folder.
     void unusedPackageFilesAreReportedAndDeleted()
     {
         library();
         QFile Z(Pkg + "/old layer.zip"); QVERIFY(Z.open(QIODevice::WriteOnly)); Z.close();
+        QVERIFY(QDir().mkpath(Pkg + "/USERDATA/DefaultInstance/Saves"));
+        { QFile Sv(Pkg + "/USERDATA/DefaultInstance/Saves/slot1.sav"); QVERIFY(Sv.open(QIODevice::WriteOnly)); Sv.write("save"); }
         QFile C(Pkg + "/cover.png"); QVERIFY(C.open(QIODevice::WriteOnly)); C.close();
         PackageEditorModel M(&Cfg, nullptr);
         M.initPackage(Pkg);
@@ -277,7 +280,9 @@ private slots:
         QCOMPARE(PkgGraph::FixFor("package file 'x' is used by no node").Action, std::string("delete_unused"));
         QCOMPARE(M.deleteUnusedFiles(), 1);
         QVERIFY(!QFile::exists(Pkg + "/old layer.zip") && QFile::exists(Pkg + "/cover.png"));
+        QVERIFY(QFile::exists(Pkg + "/USERDATA/DefaultInstance/Saves/slot1.sav"));
         QFile::remove(Pkg + "/cover.png");
+        QDir(Pkg + "/USERDATA").removeRecursively();
     }
 
     // A file is unused only when nothing names it: a bumped name (a CID's own copy of a shared name) is named by its

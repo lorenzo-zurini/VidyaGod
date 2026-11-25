@@ -26,6 +26,7 @@
 #include <functional>
 #include <optional>
 #include <set>
+#include <cstdlib>
 #include <fstream>
 #include <filesystem>
 #include <algorithm>
@@ -322,6 +323,30 @@ bool SeedNodeContent(nlohmann::ordered_json &Node, const std::filesystem::path &
 
 // Share a local package: seed every node's content (SeedNodeContent), then SAVE the package — a generation-6 re-mint,
 // since recording a SOURCE changes a node's bytes and so its name — and optionally export a node-files-only copy.
+//The file an export leaves in its folder: a folder holding it is an export's, to be replaced by the next one.
+static constexpr const char *kExportMarker = ".vgexport";
+
+std::string ExportDestRefused(const std::string &SrcDir, const std::string &DestDir)
+{
+    namespace fs = std::filesystem;
+    std::error_code Ec, Ed;
+    const fs::path Src = fs::weakly_canonical(SrcDir, Ec), Dest = fs::weakly_canonical(DestDir, Ed);
+    if (Ec || Src.empty()) return "the package folder " + SrcDir + " cannot be read";
+    if (Ed || DestDir.empty()) return "the export folder " + DestDir + " cannot be resolved";
+    if (Dest == Dest.root_path()) return "the export folder is the root of the disk";
+    const auto Under = [](const fs::path &In, const fs::path &Of) {   // In is Of or inside it
+        const auto R = In.lexically_relative(Of);
+        return !R.empty() && *R.begin() != "..";
+    };
+    if (Under(Src, Dest)) return "the export folder " + Dest.string() + " holds the package itself";
+    if (Under(Dest, Src)) return "the export folder " + Dest.string() + " is inside the package";
+    if (const char *Home = std::getenv("HOME"); Home && *Home && Under(fs::weakly_canonical(Home, Ec), Dest))
+        return "the export folder " + Dest.string() + " holds the home folder";
+    if (fs::exists(Dest, Ec) && !fs::is_empty(Dest, Ec) && !fs::exists(Dest / kExportMarker, Ec))
+        return "the export folder " + Dest.string() + " is not empty and no export made it: give an empty or new folder";
+    return {};
+}
+
 bool PublishPackage(const std::string &PackageDir, const std::string &DehydratedDestDir, std::string *Error,
                     const std::vector<std::filesystem::path> &Roots, const std::string &UserDataRoot)
 {
@@ -329,6 +354,9 @@ bool PublishPackage(const std::string &PackageDir, const std::string &Dehydrated
     std::error_code Ec;
     const std::filesystem::path Pkg(PackageDir);
     if (!std::filesystem::is_directory(Pkg, Ec)) return Fail("not a package directory: " + PackageDir);
+    //The export folder is replaced whole: refused before anything is minted when it is not one to replace.
+    if (!DehydratedDestDir.empty())
+        if (const std::string Why = ExportDestRefused(PackageDir, DehydratedDestDir); !Why.empty()) return Fail(Why);
     if (!IpfsWrapper::DaemonRunning())
         LogWarn("PackageCatalog::PublishPackage",
                 "IPFS node not online yet - CIDs will be computed but content seeds to peers only once it connects.");
@@ -377,6 +405,10 @@ bool PublishPackage(const std::string &PackageDir, const std::string &Dehydrated
     {
         std::filesystem::remove_all(DehydratedDestDir, Ec);
         const int Copied = MirrorDehydrated(PackageDir, DehydratedDestDir);
+        std::ofstream Mark(std::filesystem::path(DehydratedDestDir) / kExportMarker, std::ios::binary);
+        Mark << "an export of " << PackageDir << "\n";
+        if (!Mark.flush())
+            LogWarn("PackageCatalog::PublishPackage", "could not mark " + DehydratedDestDir + " as an export: the next export there is refused");
         LogSucc("PackageCatalog::PublishPackage", "Exported dehydrated manifest to " + DehydratedDestDir
                 + " (" + std::to_string(Copied) + " JSON fragment(s))");
     }
@@ -908,6 +940,13 @@ HealReport HealSourceContent(const nlohmann::ordered_json &GlobalConfigJSON, con
 int MirrorDehydrated(const std::string &SrcDir, const std::string &DestDir)
 {
     std::error_code Ec;
+    //Into itself it would copy what it copies, again at each run.
+    {
+        const auto Src = std::filesystem::weakly_canonical(SrcDir, Ec), Dest = std::filesystem::weakly_canonical(DestDir, Ec);
+        const auto R = Dest.lexically_relative(Src);
+        if (!R.empty() && *R.begin() != "..")
+        { LogErr("PackageCatalog::MirrorDehydrated", DestDir + " is inside " + SrcDir + ": nothing mirrored"); return 0; }
+    }
     std::filesystem::create_directories(DestDir, Ec);
     const std::filesystem::path Src(SrcDir), Dest(DestDir);
     int Copied = 0;

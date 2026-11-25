@@ -98,8 +98,12 @@ public:
     void healOrphansIfAny();
     void importRunner(const QString & runnerNodeId);   // emit runnerImportRequested → the ONE download pump (build fetch + DEFPREFIX)
     // Package sources by IPFS folder CID (dehydrated package sets; content hydrates on demand).
-    bool addPackageSource(const QString & cid, const QString & name);   // append + fetch dehydrated tree off-thread; false if empty/duplicate
-    void removePackageSource(int index);               // drop the source: config entry + fetched dir + LIBRARY entries
+    // append + fetch the dehydrated tree off-thread; false (and why) when there is no CID, it is not one, it is already
+    // added, or its folder name is taken by another library folder
+    bool addPackageSource(const QString & cid, const QString & name, QString * why = nullptr);
+    // drop the source: config entry + LIBRARY entries + its fetched folder — what was installed from it stays (as local
+    // packages) unless keepInstalled is false
+    void removePackageSource(int index, bool keepInstalled = true);
     // Publish side (Sharing tab): freeze your library into content-addressed blocks and seed them, and record the
     // shareable launchable-CID list. Runs off-thread; emits libraryPublished / libraryPublishFailed.
     void publishLibraries();

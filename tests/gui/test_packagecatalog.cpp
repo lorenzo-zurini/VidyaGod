@@ -78,6 +78,100 @@ private slots:
     // A DIR layer is local content: no SOURCE is stamped (a peer cannot fetch a directory). SIZE is what lets a fetch
     // show a real % and a pre-fetch total instantly. Teeth: drop the SIZE stamp at the seed site → the layer QCOMPARE
     // fails; drop the cover branch → the cover QCOMPARE fails; drop the idempotent backfill → the re-mint QCOMPARE fails.
+    // A source's folder is the source's when it carries the source's marker (its fetch made it, or the sync marked one
+    // fetched before markers) and is not a library this machine publishes. Removing a source deletes only its packages
+    // (its rows) from such a folder; keeps what was installed from it by default (rows kept without the source, so
+    // nothing dehydrates them); and otherwise leaves the folder. A source is refused when it is no CID, when its name
+    // is a folder already in the library, a published library, or another source's folder; a name of only dots is no
+    // folder of its own. Teeth: accept a taken name or a shared folder; delete an unmarked or published folder; take a
+    // marker naming another CID; delete a package the user made in the folder; never mark an old source (unremovable).
+    void a_source_removes_only_a_folder_its_own_fetch_made()
+    {
+        QTemporaryDir D; QVERIFY(D.isValid());
+        const std::filesystem::path Lib = D.filePath("LIBRARY").toStdString();
+        const std::string Cid = "bafybeigdyrzt5sfp7udm7hu76uh7y26nf3efuylqabf3oclgtqy55fbzdi", Cid2 = "bafybeihdwdcefgh4dqkjv67uzcmw7ojee6xedzdetojuzjevtenxquvyku";
+        std::filesystem::create_directories(Lib / "VidyaGod" / "[1] Game");
+        std::ofstream(Lib / "VidyaGod" / "[1] Game" / "game.json") << "{}";
+        json Cfg = json{{"Settings", {{"Paths", {{"LibraryRoot", Lib.string()}}}}}, {"LIBRARY", json::array()},
+                        {"ShareSheet", {{"bafkreib52upmn2n6u65qll6mmj2dft4ddgnvrkcvyhiczcbjlrv2lu766e", "VidyaGod/[1] Game/game.json"}}}};
+        std::string Why;
+        QVERIFY(!PackageCatalog::AddPackageSource(Cfg, "not-a-cid", "x", &Why) && Why.find("not a CID") != std::string::npos);
+        QVERIFY(!PackageCatalog::AddPackageSource(Cfg, Cid, "VidyaGod", &Why) && Why.find("already in the library") != std::string::npos);
+        QVERIFY(PackageCatalog::AddPackageSource(Cfg, Cid, "..", &Why));
+        QCOMPARE(QString::fromStdString(std::filesystem::path(PackageCatalog::PackageSourceDir(Cfg, Cfg["Settings"]["PackageSources"][0])).filename().string()),
+                 QString::fromStdString(Cid.substr(0, 12)));
+        QVERIFY(!PackageCatalog::AddPackageSource(Cfg, Cid, "again", &Why) && Why.find("already added") != std::string::npos);
+        QVERIFY(!PackageCatalog::AddPackageSource(Cfg, Cid2, Cid.substr(0, 12), &Why) && Why.find("Another source") != std::string::npos);
+        //A source whose name came to be a published library's folder (a hand-edited config): the sync never marks it, and
+        //removing it leaves the folder.
+        Cfg["Settings"]["PackageSources"] = json::array({ json{{"CID", Cid2}, {"NAME", "VidyaGod"}} });
+        PackageCatalog::SyncPackageSources(Cfg);
+        QVERIFY(!std::filesystem::exists(Lib / "VidyaGod" / ".vgsource"));
+        PackageCatalog::RemovePackageSource(Cfg, 0, /*KeepInstalled=*/false);
+        QVERIFY(std::filesystem::exists(Lib / "VidyaGod" / "[1] Game" / "game.json"));
+        QVERIFY(Cfg["Settings"]["PackageSources"].empty());
+        for (const auto &E : Cfg["LIBRARY"]) QVERIFY(E.value("CIDSOURCE", std::string()) != Cid2);
+        //A folder no fetch of the source made (no marker): the sync does not take it, and removing the source leaves it.
+        {
+            const std::filesystem::path S = Lib / "Unmarked";
+            std::filesystem::create_directories(S / "[5] Pkg");
+            std::ofstream(S / "[5] Pkg" / "p.json") << R"({"LABEL":"P","LAYERS":[{"EXEC":[{"LABEL":"P","HOST":"win32","EXE":"p.exe","TILE":{"UID":"5","TITLE":"P"}}]}]})";
+            Cfg["Settings"]["PackageSources"] = json::array({ json{{"CID", Cid}, {"NAME", "Unmarked"}} });
+            PackageCatalog::SyncPackageSources(Cfg);
+            QVERIFY(!std::filesystem::exists(S / ".vgsource"));
+            PackageCatalog::RemovePackageSource(Cfg, 0, /*KeepInstalled=*/false);
+            QVERIFY(std::filesystem::exists(S / "[5] Pkg" / "p.json"));
+            Cfg["LIBRARY"] = json::array();
+        }
+        //A source's fetched folder (its marker lists what the fetch brought): removed, its packages go; a package the user
+        //made in its folder since stays, re-sync or not.
+        const auto Old = [&](const char *Name) {
+            const std::filesystem::path S = Lib / Name;
+            std::filesystem::create_directories(S / "[2] Stub");
+            std::ofstream(S / "[2] Stub" / "stub.json") << R"({"LABEL":"Stub","LAYERS":[{"EXEC":[{"LABEL":"Stub","HOST":"win32","EXE":"s.exe","TILE":{"UID":"2","TITLE":"Stub"}}]}]})";
+            std::filesystem::create_directories(S / "[3] Played");
+            std::ofstream(S / "[3] Played" / "played.json") << R"({"LABEL":"Played","LAYERS":[{"EXEC":[{"LABEL":"Played","HOST":"win32","EXE":"p.exe","TILE":{"UID":"3","TITLE":"Played"}}]}]})";
+            std::ofstream(S / "[3] Played" / "content.zip") << "bytes";
+            std::ofstream(S / ".vgsource") << Cid << "\n[2] Stub\n[3] Played\n";   // as its fetch marks it
+            Cfg["Settings"]["PackageSources"] = json::array({ json{{"CID", Cid}, {"NAME", Name}} });
+            Cfg["LIBRARY"] = json::array();
+            PackageCatalog::SyncPackageSources(Cfg);
+            return S;
+        };
+        const std::filesystem::path Gone = Old("Gone");
+        QCOMPARE((int)Cfg["LIBRARY"].size(), 2);
+        std::filesystem::create_directories(Gone / "[9] Mine");
+        std::ofstream(Gone / "[9] Mine" / "mine.json") << R"({"LABEL":"Mine","LAYERS":[{"EXEC":[{"LABEL":"Mine","HOST":"win32","EXE":"m.exe","TILE":{"UID":"9","TITLE":"Mine"}}]}]})";
+        PackageCatalog::SyncPackageSources(Cfg);                               // a start: the user's package is not the source's
+        QCOMPARE((int)Cfg["LIBRARY"].size(), 2);
+        Cfg["LIBRARY"].push_back(json{{"PATH", (Lib / "VidyaGod" / "[1] Game").string()}, {"CIDSOURCE", "another"}});
+        //…and a row naming the source for the user's package (an earlier sync's, a hand edit): the marker's list decides.
+        Cfg["LIBRARY"].push_back(json{{"PATH", (Gone / "[9] Mine").string()}, {"CIDSOURCE", Cid}});
+        PackageCatalog::RemovePackageSource(Cfg, 0, /*KeepInstalled=*/false);
+        QVERIFY(std::filesystem::exists(Lib / "VidyaGod" / "[1] Game" / "game.json"));   // another source's row: untouched
+        QCOMPARE((int)Cfg["LIBRARY"].size(), 2);
+        Cfg["LIBRARY"] = json::array();
+        QVERIFY(!std::filesystem::exists(Gone / "[2] Stub") && !std::filesystem::exists(Gone / "[3] Played"));
+        QVERIFY(std::filesystem::exists(Gone / "[9] Mine" / "mine.json"));
+        QVERIFY(Cfg["LIBRARY"].empty());
+        //Kept: the installed package stays (its row without the source: nothing dehydrates it), the stub goes, and the
+        //folder is no longer the source's — added again, the source is refused its name rather than fed a half folder.
+        const std::filesystem::path Kept = Old("Kept");
+        PackageCatalog::RemovePackageSource(Cfg, 0);
+        QVERIFY(!std::filesystem::exists(Kept / "[2] Stub") && std::filesystem::exists(Kept / "[3] Played" / "content.zip"));
+        QVERIFY(!std::filesystem::exists(Kept / ".vgsource"));
+        QCOMPARE((int)Cfg["LIBRARY"].size(), 1);
+        QVERIFY(!Cfg["LIBRARY"][0].contains("CIDSOURCE") && Cfg["LIBRARY"][0].value("KEPT_FROM", std::string()) == Cid);
+        QVERIFY(PackageCatalog::SourceOfPackage(Cfg, Kept / "[3] Played").empty());
+        QVERIFY(!PackageCatalog::AddPackageSource(Cfg, Cid, "Kept", &Why) && Why.find("already in the library") != std::string::npos);
+        //A marker naming another source: not this one's.
+        const std::filesystem::path Other = Old("Other");
+        std::ofstream(Other / ".vgsource", std::ios::trunc) << Cid2 << "\n[2] Stub\n[3] Played\n";
+        PackageCatalog::RemovePackageSource(Cfg, 0, /*KeepInstalled=*/false);
+        QVERIFY(std::filesystem::exists(Other / "[2] Stub"));
+        QVERIFY(std::filesystem::exists(Lib / "VidyaGod" / "[1] Game" / "game.json"));
+    }
+
     void publish_stamps_and_backfills_source_size()
     {
         std::string Err;
@@ -495,6 +589,10 @@ private slots:
         QVERIFY2(Read < (8 << 20), std::to_string(Read).c_str());           // neither 8 MB file was read again
         QVERIFY2(IpfsWrapper::HasLocal(A) && !IpfsWrapper::CidMissing(A), "the moved file is held where it is now");
         QVERIFY2(IpfsWrapper::HasLocal(O) && !IpfsWrapper::CidMissing(O), "the deprecated file is held where it is now");
+        //The folder is the source's at its new CID (else it could never be removed after an upgrade).
+        std::ifstream Mark(Dir + "/.vgsource");
+        std::string Marked;
+        QVERIFY(std::getline(Mark, Marked) && Marked == "bafynewsource");
     }
 
     // Publishing names a package's frozen node files by their labels (chapter 02 §2.5): a file named by its CID, as a
@@ -2623,7 +2721,7 @@ private slots:
         IpfsWrapper::StopNode();
     }
 
-    // DATA-LOSS GUARD 3: removing a source with KeepInstalled (`sources remove --keep-installed`) deletes a STUB-only
+    // DATA-LOSS GUARD 3: removing a source keeping what was installed (`sources remove`, the default) deletes a STUB-only
     // package but KEEPS a package the user INSTALLED (a dir with hydrated content), files intact, its LIBRARY entry
     // kept. Teeth: without the branch, remove_all nukes the install.
     void remove_source_keep_installed_keeps_what_was_installed()
@@ -2641,6 +2739,7 @@ private slots:
         { std::ofstream f((stubDir + "/n.json").toStdString()); f << "{}"; }              // stub-only (metadata)
         { std::ofstream f((instDir + "/n.json").toStdString()); f << "{}"; }              // installed: metadata +
         { std::ofstream f((instDir + "/game.bin").toStdString()); f << "installed"; }     //   hydrated content
+        { std::ofstream f(srcDir + "/.vgsource"); f << "QmGames\n[1] Stub\n[2] Installed\n"; }   // its own fetch made it
         cfg["LIBRARY"].push_back(json{{"PACKAGEUID", "1"}, {"PATH", stubDir.toStdString()}, {"CIDSOURCE", "QmGames"}});
         cfg["LIBRARY"].push_back(json{{"PACKAGEUID", "2"}, {"PATH", instDir.toStdString()}, {"CIDSOURCE", "QmGames"}});
 
@@ -2742,21 +2841,60 @@ private slots:
         QVERIFY(Installed::NodeHydrated(idx1, "remote"));      // now fully fetched
     }
 
-    // #8/#9: DehydrateNode deletes the content-layer files (keeping the manifest) and reports what it removed.
+    // #8/#9: DehydrateNode deletes the game's own downloaded content (keeping the manifest) and reports what it removed;
+    // a library in another package's folder (other games' too) and a file with no CID (nothing to download it again
+    // from) stay. Teeth: delete every content file of the closure (the shared library and the unsourced file go).
     void dehydrate_node_removes_content_keeps_manifest()
     {
         QTemporaryDir dir; QVERIFY(dir.isValid());
+        QTemporaryDir other; QVERIFY(other.isValid());
+        writeJson(other.path() + "/lib.json",
+                  NodeFixture::Chain("sharedlib", {NodeFixture::ContentCid("file", "shared.dll", "bafkreib52upmn2n6u65qll6mmj2dft4ddgnvrkcvyhiczcbjlrv2lu766e")}));
+        writeFile(other.path() + "/shared.dll");
         writeJson(dir.path() + "/game.json",
-                  NodeFixture::Chain("game", {NodeFixture::Content("file", "blob.bin"), NodeFixture::Exec("win32", "g.exe")}));
+                  NodeFixture::Chain("game", {json{{"NODE", "sharedlib"}},
+                                              NodeFixture::ContentCid("file", "blob.bin", "bafkreigh2akiscaildcqabsyg3dfr6chu3fgpregiymsck7e7aqa4s52zy"),
+                                              NodeFixture::Content("file", "mine.bin"), NodeFixture::Exec("win32", "g.exe")}));
         writeFile(dir.path() + "/blob.bin");
+        writeFile(dir.path() + "/mine.bin");
 
-        NodeIndex idx; ManifestModel::ScanBundleNodes(dir.path().toStdString(), idx); ManifestModel::DeriveFacts(idx);
+        NodeIndex idx; ManifestModel::ScanBundleNodes(dir.path().toStdString(), idx);
+        ManifestModel::ScanBundleNodes(other.path().toStdString(), idx); ManifestModel::DeriveFacts(idx);
         QVERIFY(Installed::NodeHydrated(idx, "game"));
 
         const int removed = PackageCatalog::DehydrateNode(idx, "game");
-        QVERIFY(removed >= 1);
+        QCOMPARE(removed, 1);
         QVERIFY(!QFile::exists(dir.path() + "/blob.bin"));       // content gone
         QVERIFY(QFile::exists(dir.path() + "/game.json"));       // manifest kept → returns to Catalog
+        QVERIFY(QFile::exists(other.path() + "/shared.dll"));    // another package's library: other games' too
+        QVERIFY(QFile::exists(dir.path() + "/mine.bin"));        // no CID: nothing to download it again from
+    }
+
+    // An export folder is replaced whole, so one that is not an export's is refused before anything is minted: the
+    // package itself, a folder inside it, one holding it, a non-empty folder no export made. An empty one and an earlier
+    // export's are fine. Teeth: accept the package's parent (the library); accept a folder of the user's.
+    void an_export_never_replaces_a_folder_that_is_not_an_exports()
+    {
+        QTemporaryDir D; QVERIFY(D.isValid());
+        const std::string Root = D.path().toStdString(), Pkg = Root + "/LIBRARY/VidyaGod/[1] Game";
+        std::filesystem::create_directories(Pkg);
+        std::ofstream(Pkg + "/game.json") << "{}";
+        std::filesystem::create_directories(Root + "/mine");
+        std::ofstream(Root + "/mine/notes.txt") << "mine";
+        std::filesystem::create_directories(Root + "/old_export");
+        std::ofstream(Root + "/old_export/.vgexport") << "an export";
+        QVERIFY(!PackageCatalog::ExportDestRefused(Pkg, Pkg).empty());
+        QVERIFY(!PackageCatalog::ExportDestRefused(Pkg, Pkg + "/out").empty());
+        QVERIFY(!PackageCatalog::ExportDestRefused(Pkg, Root + "/LIBRARY").empty());
+        std::ofstream(Root + "/LIBRARY/VidyaGod/.vgexport") << "a mistaken export's marker";
+        QVERIFY(!PackageCatalog::ExportDestRefused(Pkg, Root + "/LIBRARY/VidyaGod").empty());   // still holds the package
+        QVERIFY(!PackageCatalog::ExportDestRefused(Pkg, Root + "/mine").empty());
+        QVERIFY(PackageCatalog::ExportDestRefused(Pkg, Root + "/new_export").empty());
+        QVERIFY(PackageCatalog::ExportDestRefused(Pkg, Root + "/old_export").empty());
+        std::string Err;
+        QVERIFY(!PackageCatalog::PublishPackage(Pkg, Root + "/LIBRARY", &Err));
+        QVERIFY(std::filesystem::exists(Pkg + "/game.json") && std::filesystem::exists(Root + "/mine/notes.txt"));
+        QVERIFY(PackageCatalog::MirrorDehydrated(Pkg, Pkg + "/inside") == 0 && !std::filesystem::exists(Pkg + "/inside/game.json"));
     }
 
     // Per-package user settings persist into the INSTANCE file (InstanceStore) and read back. The temp UserDataRoot
@@ -3397,15 +3535,16 @@ private slots:
         AppPaths::SetDataRoot(data.path().toStdString());
         json cfg = json{{"Settings", json::object()}};
 
-        QVERIFY(PackageCatalog::AddPackageSource(cfg, "QmABC", "src1"));
-        QVERIFY(!PackageCatalog::AddPackageSource(cfg, "QmABC", "again"));   // dedup on CID
+        QVERIFY(PackageCatalog::AddPackageSource(cfg, "QmYwAPJzv5CZsnA625s3Xf2nemtYgPpHdWEz79ojWnPbdG", "src1"));
+        QVERIFY(!PackageCatalog::AddPackageSource(cfg, "QmYwAPJzv5CZsnA625s3Xf2nemtYgPpHdWEz79ojWnPbdG", "again"));   // dedup on CID
         QVERIFY(!PackageCatalog::AddPackageSource(cfg, "", "empty"));        // empty CID rejected
         QCOMPARE((int)cfg["Settings"]["PackageSources"].size(), 1);
 
         // Simulate a fetched dir + a LIBRARY entry under it, then remove.
         const QString dir = data.path() + "/LIBRARY/src1";
         QDir().mkpath(dir);
-        cfg["LIBRARY"] = json::array({ json{{"PACKAGEUID", "z"}, {"PATH", (dir + "/pkg").toStdString()}, {"CIDSOURCE", "QmABC"}} });
+        { std::ofstream f((dir + "/.vgsource").toStdString()); f << "QmYwAPJzv5CZsnA625s3Xf2nemtYgPpHdWEz79ojWnPbdG\npkg\n"; }       // its own fetch made it
+        cfg["LIBRARY"] = json::array({ json{{"PACKAGEUID", "z"}, {"PATH", (dir + "/pkg").toStdString()}, {"CIDSOURCE", "QmYwAPJzv5CZsnA625s3Xf2nemtYgPpHdWEz79ojWnPbdG"}} });
 
         PackageCatalog::RemovePackageSource(cfg, 0);
         QCOMPARE((int)cfg["Settings"]["PackageSources"].size(), 0);         // source gone

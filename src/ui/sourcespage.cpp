@@ -1,4 +1,5 @@
 #include "sourcespage.h"
+#include "packagecatalog.h"   // PackageSourceCID — a source found again by its CID
 #include "theme.h"   // the named colours
 #include "appmodel.h"          // AppModel — config + sync/add/remove package source
 
@@ -127,8 +128,28 @@ void SourcesPage::rebuild()
         rm->setObjectName(QString("remove_%1").arg(QString::fromStdString(Name)));
         // removePackageSource emits packageSourcesChanged SYNCHRONOUSLY → this page rebuilds and deletes these widgets
         // (including this button) mid-click. Defer to the next event-loop tick so the click fully unwinds first.
-        connect(rm, &QPushButton::clicked, this, [this, i]{
-            QMetaObject::invokeMethod(this, [this, i]{ Model.removePackageSource(i); }, Qt::QueuedConnection);
+        connect(rm, &QPushButton::clicked, this, [this, Cid, Name]{
+            //Asked first, keeping what was installed from it by default: deleting installed games is the choice made
+            //on purpose, never the one click.
+            QMessageBox Ask(QMessageBox::Question, "Remove source",
+                            QString("Remove the source \"%1\"?").arg(QString::fromStdString(Name)), QMessageBox::NoButton, this);
+            Ask.setInformativeText("Its games leave the Catalog. Games you installed from it stay installed — unless you "
+                                   "delete them too.");
+            QPushButton *Keep = Ask.addButton("Remove, keep installed games", QMessageBox::AcceptRole);
+            QPushButton *All  = Ask.addButton("Remove and delete installed games", QMessageBox::DestructiveRole);
+            Ask.addButton(QMessageBox::Cancel);
+            Ask.setDefaultButton(Keep);
+            Ask.exec();
+            if (Ask.clickedButton() != Keep && Ask.clickedButton() != All) return;
+            const bool KeepInstalled = Ask.clickedButton() == Keep;
+            //Found again by its CID now: the list can have changed while the question was open.
+            QMetaObject::invokeMethod(this, [this, Cid, KeepInstalled]{
+                const nlohmann::ordered_json & Cfg = *Model.config();
+                if (!Cfg.contains("Settings") || !Cfg["Settings"].contains("PackageSources")) return;
+                const auto & Srcs = Cfg["Settings"]["PackageSources"];
+                for (int J = 0; Srcs.is_array() && J < (int)Srcs.size(); ++J)
+                    if (PackageCatalog::PackageSourceCID(Srcs[J]) == Cid) { Model.removePackageSource(J, KeepInstalled); return; }
+            }, Qt::QueuedConnection);
         });
         row->addWidget(rm);
         v->addWidget(card);
@@ -149,14 +170,13 @@ void SourcesPage::rebuild()
     connect(addBtn, &QPushButton::clicked, this, [this, nameEdit, cidEdit]{
         const QString Cid  = cidEdit->text().trimmed();
         const QString Name = nameEdit->text();
-        if (Cid.isEmpty()) { QMessageBox::warning(this, "Add source", "Enter an IPFS folder CID."); return; }
         // addPackageSource emits packageSourcesChanged SYNCHRONOUSLY, which rebuilds THIS page and deletes these
         // widgets (including this button) WHILE this click handler is on the stack — touching addBtn afterwards was a
         // use-after-free (SIGSEGV in setEnabled). Defer the whole add so the click unwinds first; on success the page
         // rebuilds (fresh form = feedback), on duplicate we warn. `this` (the page) survives the rebuild.
         QMetaObject::invokeMethod(this, [this, Cid, Name]{
-            if (!Model.addPackageSource(Cid, Name))
-                QMessageBox::warning(this, "Add source", "That source is already configured.");
+            QString Why;
+            if (!Model.addPackageSource(Cid, Name, &Why)) QMessageBox::warning(this, "Add source", Why);
         }, Qt::QueuedConnection);
     });
     v->addWidget(add);

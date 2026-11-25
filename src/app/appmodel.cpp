@@ -281,6 +281,14 @@ QString AppModel::removePackage(const QString & which, bool * Async)
         LogWarn("AppModel::removePackage", Why.toStdString() + " (" + Path + ")");
         return Why;
     }
+    //Kept from a removed source (or its source gone): nothing can download it again, so it is not dehydrated.
+    if (Managed && PackageCatalog::SourceOfPackage(*Config, Path).empty())
+    {
+        const QString Why = "its source is no longer one of yours: nothing could download it again — delete its folder "
+                            "yourself if you mean to";
+        LogWarn("AppModel::removePackage", Why.toStdString() + " (" + Path + ")");
+        return Why;
+    }
     if (Managed)
     {
         // De-HYDRATE the managed package: delete its content + unpin/drop-ref its CIDs, but KEEP the manifests + cover
@@ -553,12 +561,17 @@ void AppModel::healOrphansIfAny()
 }
 
 // ── Package sources (IPFS folder CIDs): add fetches the dehydrated tree off-thread (requires the node online — a fetch
-//    failure is surfaced via packageSourceFailed, the source stays configured so a later sync picks it up); remove is
-//    cheap (drop config entry + fetched dir + LIBRARY entries). ──
-bool AppModel::addPackageSource(const QString & cid, const QString & name)
+//    failure is surfaced via packageSourceFailed, the source stays configured so a later sync picks it up); remove
+//    drops the config entry and LIBRARY entries, and the fetched folder — keeping what was installed from it unless
+//    told otherwise. ──
+bool AppModel::addPackageSource(const QString & cid, const QString & name, QString * why)
 {
-    if (!PackageCatalog::AddPackageSource(*Config, cid.trimmed().toStdString(), name.trimmed().toStdString()))
-        return false;   // empty or duplicate CID — caller warns
+    std::string Why;
+    if (!PackageCatalog::AddPackageSource(*Config, cid.trimmed().toStdString(), name.trimmed().toStdString(), &Why))
+    {
+        if (why) *why = QString::fromStdString(Why);
+        return false;   // no CID, not a CID, a duplicate, a name taken by a library folder — the caller says which
+    }
     save();
     emit packageSourcesChanged();   // INSTANT feedback: the source appears in the list/IPFS tab now (as pending); the
                                     // off-thread fetch below re-emits when its manifests + catalog have landed.
@@ -578,7 +591,7 @@ bool AppModel::addPackageSource(const QString & cid, const QString & name)
     return true;
 }
 
-void AppModel::removePackageSource(int index)
+void AppModel::removePackageSource(int index, bool keepInstalled)
 {
     // Abort any in-flight fetch/retry of this source's CID — a removed source must not keep a sync worker busy.
     {
@@ -592,7 +605,7 @@ void AppModel::removePackageSource(int index)
             if (!Cid.empty()) IpfsWrapper::RequestCancel(Cid);
         }
     }
-    PackageCatalog::RemovePackageSource(*Config, index);
+    PackageCatalog::RemovePackageSource(*Config, index, keepInstalled);
     save();
     rebuildCatalog();
     emit packageSourcesChanged();

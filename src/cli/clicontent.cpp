@@ -428,6 +428,8 @@ int CliModes::RunContentModes(LaunchParameters &LaunchParameters, nlohmann::orde
     if (!LaunchParameters.PublishMetaSrc.empty())
     {
         std::string Err;
+        const Platform::ScopedFileLock Lock(PackageCatalog::LibraryWriteLock(GlobalConfigJSON));
+        if (!Lock.opened() || !Lock.held()) { LogErr("main.cpp", "publish-meta: " + std::string(Lock.opened() ? PackageCatalog::LibraryBusy : "the library's write lock cannot be opened")); return 1; }
         const std::string Cid = PackageCatalog::PublishMetaCid(LaunchParameters.PublishMetaSrc, &Err,
                                                               PackageCatalog::EditableRoots(GlobalConfigJSON),
                                                               InstanceStore::Root(GlobalConfigJSON).string());
