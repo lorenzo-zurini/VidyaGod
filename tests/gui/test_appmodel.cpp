@@ -1042,6 +1042,12 @@ private slots:
         m.peers().setReceivingFrom(peer, true);
         m.peers().applyPeerLibrarySnapshot(peer, R"({"Games":[{"cid":"bafyx","pkg":"Game","node":"game.json"}]})", 5);   // the reply to Receive-on
         QVERIFY(cfg["PeerLibraries"].contains(P));
+        //A kept snapshot fixes the peer's folder label (N7/N8: kept through a rename, unique among peers). Teeth: no
+        //label chosen at the first snapshot.
+        QVERIFY(cfg.contains("PeerLabels") && cfg["PeerLabels"].contains(P) && !cfg["PeerLabels"][P].get<std::string>().empty());
+        //Forgetting the peer forgets its label (a pairing made again chooses afresh).
+        m.peers().forgetPeer(peer);
+        QVERIFY(!cfg["PeerLabels"].contains(P));
     }
 
     void peer_snapshot_replaces_wholesale_and_dedups()

@@ -383,9 +383,16 @@ bool DirHasContent(const std::string &Dir);
 // installed, and the package never came back.
 std::vector<IpfsWrapper::FetchTarget> ReceivedFetchTargets(const std::vector<ReceivedFetch> &Plan);
 
-// The label a peer's received libraries are filed under ("<label> - <lib>"): their nickname from the address book,
-// else the tail of their peer ID. The ONE rule — the receiver plans with it and later finds its landed dirs by it.
-std::string ReceivedNickLabel(const std::string &PeerID);
+// The label a peer's received libraries are filed under ("<label> - <lib>"): the one chosen at its first snapshot
+// (Config.PeerLabels, AssignReceivedLabel), else its nickname from the address book, else the tail of its peer ID. The
+// ONE rule — the receiver plans with it and later finds its landed dirs by it.
+std::string ReceivedNickLabel(const nlohmann::ordered_json &Config, const std::string &PeerID);
+// Chooses a peer's label once and keeps it (Config.PeerLabels): its nickname (LiveNick), unless another peer's label
+// is that already (two "Deck"s: one would replace the other's node files) — then with its ID's tail. Kept: a peer
+// that renames itself keeps its folders. Returns the label.
+std::string AssignReceivedLabel(nlohmann::ordered_json &Config, const std::string &PeerID, const std::string &LiveNick);
+// The nickname the address book has for the peer now ("" if none).
+std::string ReceivedLiveNick(const std::string &PeerID);
 
 std::vector<ReceivedFetch> PlanReceivedFetches(const nlohmann::ordered_json &GlobalConfigJSON,
                                                const std::string &NickLabel, const nlohmann::ordered_json &Libs);

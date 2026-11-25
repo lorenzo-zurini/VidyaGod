@@ -259,10 +259,38 @@ void RemoveLandedNodes(const std::vector<LandedNode> &Nodes)
             }
 }
 
-std::string ReceivedNickLabel(const std::string &PeerID)
+std::string ReceivedLiveNick(const std::string &PeerID)
 {
     for (const auto &C : IpfsWrapper::PeerList()) if (C.PeerID == PeerID && !C.Nick.empty()) return C.Nick;
-    return PeerID.size() > 8 ? PeerID.substr(PeerID.size() - 8) : PeerID;   // never an empty dir prefix
+    return {};
+}
+
+static std::string IdTail(const std::string &PeerID, size_t N) { return PeerID.size() > N ? PeerID.substr(PeerID.size() - N) : PeerID; }
+
+std::string ReceivedNickLabel(const nlohmann::ordered_json &Config, const std::string &PeerID)
+{
+    if (Config.contains("PeerLabels") && Config["PeerLabels"].is_object() && Config["PeerLabels"].contains(PeerID)
+        && Config["PeerLabels"][PeerID].is_string() && !Config["PeerLabels"][PeerID].get<std::string>().empty())
+        return Config["PeerLabels"][PeerID].get<std::string>();
+    const std::string Nick = ReceivedLiveNick(PeerID);
+    return Nick.empty() ? IdTail(PeerID, 8) : Nick;   // never an empty dir prefix
+}
+
+std::string AssignReceivedLabel(nlohmann::ordered_json &Config, const std::string &PeerID, const std::string &LiveNick)
+{
+    if (!Config.contains("PeerLabels") || !Config["PeerLabels"].is_object()) Config["PeerLabels"] = nlohmann::ordered_json::object();
+    auto &Labels = Config["PeerLabels"];
+    if (Labels.contains(PeerID) && Labels[PeerID].is_string() && !Labels[PeerID].get<std::string>().empty())
+        return Labels[PeerID].get<std::string>();
+    //Taken: another peer's label, compared as the folder names compare (case-insensitive file systems).
+    const auto Key = [](const std::string &L) { std::string K = NodeFiles::SafeName(L); for (char &C : K) C = static_cast<char>(std::tolower(static_cast<unsigned char>(C))); return K; };
+    std::set<std::string> Taken;
+    for (const auto &[P, L] : Labels.items()) if (P != PeerID && L.is_string()) Taken.insert(Key(L.get<std::string>()));
+    std::string Label = LiveNick.empty() ? IdTail(PeerID, 8) : LiveNick;
+    if (Taken.count(Key(Label))) Label += " [" + IdTail(PeerID, 6) + "]";
+    if (Taken.count(Key(Label))) Label = LiveNick + " [" + PeerID + "]";
+    Labels[PeerID] = Label;
+    return Label;
 }
 
 // What each received package holds: every peer's plan replayed (package dir → file → CID). Exact per peer — two
@@ -273,7 +301,7 @@ static std::map<std::filesystem::path, std::map<std::filesystem::path, std::stri
     std::map<std::filesystem::path, std::map<std::filesystem::path, std::string>> Out;
     if (!Config.contains("PeerLibraries") || !Config["PeerLibraries"].is_object()) return Out;
     for (const auto &[Peer, Libs] : Config["PeerLibraries"].items())
-        for (const ReceivedFetch &T : PlanReceivedFetches(Config, ReceivedNickLabel(Peer), Libs))
+        for (const ReceivedFetch &T : PlanReceivedFetches(Config, ReceivedNickLabel(Config, Peer), Libs))
         {
             const std::filesystem::path F(T.Dest);
             Out[F.parent_path()][F] = T.Cid;
@@ -288,7 +316,7 @@ static std::string ReceivedLibraryName(const nlohmann::ordered_json &Config, con
     if (!Config.contains("PeerLibraries") || !Config["PeerLibraries"].is_object()) return {};
     for (const auto &[P, Libs] : Config["PeerLibraries"].items())
     {
-        const std::string Nick = ReceivedNickLabel(P);
+        const std::string Nick = ReceivedNickLabel(Config, P);
         if (!Libs.is_object()) continue;
         for (const auto &[L, Items] : Libs.items())
             if (NodeFiles::SafeName(Nick + " - " + L) == LibDirName) return L;

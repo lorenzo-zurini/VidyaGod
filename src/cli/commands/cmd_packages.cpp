@@ -707,16 +707,16 @@ VG_COMMANDS
         "The folders a peer's share snapshot lands into (CATALOG/<nick> - <library>/<package>) and the fetch each is, "
         "and whether any received package is still incomplete.", { Pos("peer", "the peer's peer id (VidyaGod peers list)") },
         { "received plan 12D3KooW9z4dCR2LVkuc4xb4zTrss5AR9N5WcAAYdJSDat1VCfAR" },
-        { "PackageCatalog::PlanReceivedFetches", "PackageCatalog::ReceivedFolderNames", "PackageCatalog::ReceivedFetchTargets", "PackageCatalog::ReceivedNickLabel",
+        { "PackageCatalog::PlanReceivedFetches", "PackageCatalog::ReceivedFolderNames", "PackageCatalog::ReceivedFetchTargets", "PackageCatalog::ReceivedNickLabel", "PackageCatalog::AssignReceivedLabel", "PackageCatalog::ReceivedLiveNick",
           "PackageCatalog::ReceivedPackagesIncomplete" }, Needs::Config, false,
         [](Command::Context &C, const json &A) {
             const std::string P = Command::Str(A, "peer");
             const json &Fl = C.Config->value("PeerLibraries", json::object());
             if (!Fl.contains(P)) return json{{"peer", P}, {"held", false}};
-            const auto Plan = PackageCatalog::PlanReceivedFetches(*C.Config, PackageCatalog::ReceivedNickLabel(P), Fl[P]);
+            const auto Plan = PackageCatalog::PlanReceivedFetches(*C.Config, PackageCatalog::ReceivedNickLabel(*C.Config, P), Fl[P]);
             json Rows = json::array();
             for (const auto &R : Plan) Rows.push_back({{"cid", R.Cid}, {"to", R.Dest}});
-            return json{{"peer", P}, {"label", PackageCatalog::ReceivedNickLabel(P)}, {"fetches", Rows},
+            return json{{"peer", P}, {"label", PackageCatalog::ReceivedNickLabel(*C.Config, P)}, {"fetches", Rows},
                         {"targets", Targets(PackageCatalog::ReceivedFetchTargets(Plan))},
                         {"incomplete", PackageCatalog::ReceivedPackagesIncomplete(*C.Config)}};
         }, {} });

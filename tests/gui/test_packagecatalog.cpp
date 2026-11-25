@@ -1124,6 +1124,22 @@ private slots:
         QVERIFY2(Distinct.size() <= 2, ("8 callers at once got " + std::to_string(Distinct.size()) + " indexes").c_str());
     }
 
+    // Two peers with one nickname file their libraries under two labels (one would replace the other's node files),
+    // and a peer keeps its label through a rename (its folders stay where they are). Teeth: the live nickname as the
+    // label (both "Deck"; the renamed one moves).
+    void two_peers_named_alike_get_two_labels_and_a_rename_keeps_one()
+    {
+        json Cfg = json::object();
+        const std::string A = "12D3KooWAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAaaa111",
+                          B = "12D3KooWBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBbbb222";
+        QCOMPARE(QString::fromStdString(PackageCatalog::AssignReceivedLabel(Cfg, A, "Deck")), QStringLiteral("Deck"));
+        const std::string LB = PackageCatalog::AssignReceivedLabel(Cfg, B, "deck");   // the same folder, case aside
+        QCOMPARE(QString::fromStdString(LB), QStringLiteral("deck [bbb222]"));   // its ID's tail, short
+        QCOMPARE(QString::fromStdString(PackageCatalog::AssignReceivedLabel(Cfg, A, "Renamed")), QStringLiteral("Deck"));
+        QCOMPARE(QString::fromStdString(PackageCatalog::ReceivedNickLabel(Cfg, A)), QStringLiteral("Deck"));
+        QCOMPARE(PackageCatalog::ReceivedNickLabel(Cfg, B), LB);
+    }
+
     // The planner lands one file per entry of a peer's sheet: CATALOG/<nick> - <lib>/<pkg>/<file>, the same entry twice
     // once, and two CIDs claiming one file name in one package (without case) each at its bumped name. Teeth: key the
     // plan by package (one target per package); let the second CID overwrite the first's file; bump only one.
@@ -1800,7 +1816,7 @@ private slots:
                                            {"12D3KooWBob", {{"Games", json::array()}}}}}};
         const std::string Cat = PackageCatalog::CatalogRootDir(cfg);
         const auto stub = [&](const std::string &Peer, const std::string &Lib, const std::string &Pkg, std::string *C) {
-            const std::filesystem::path D = std::filesystem::path(Cat) / (PackageCatalog::ReceivedNickLabel(Peer) + " - " + Lib) / Pkg;
+            const std::filesystem::path D = std::filesystem::path(Cat) / (PackageCatalog::ReceivedNickLabel(cfg, Peer) + " - " + Lib) / Pkg;
             std::filesystem::create_directories(D);
             { std::ofstream(D / "content.bin", std::ios::binary) << std::string(300000, Pkg[1]) << Peer; }
             *C = IpfsWrapper::AddNoCopy((D / "content.bin").string(), &Err);          // fetched: referenced in place
@@ -1874,7 +1890,7 @@ private slots:
         }
         json cfg = json{{"Settings", {{"Paths", {{"LibraryRoot", (Data.path() + "/LIBRARY").toStdString()}}}}},
                         {"PeerLibraries", {{"12D3KooWAlice", {{"Games", Items}}}}}};
-        const auto Plan = PackageCatalog::PlanReceivedFetches(cfg, PackageCatalog::ReceivedNickLabel("12D3KooWAlice"), cfg["PeerLibraries"]["12D3KooWAlice"]);
+        const auto Plan = PackageCatalog::PlanReceivedFetches(cfg, PackageCatalog::ReceivedNickLabel(cfg, "12D3KooWAlice"), cfg["PeerLibraries"]["12D3KooWAlice"]);
         QCOMPARE(Plan.size(), Nodes.size());
         long long Named = 0;
         for (const auto &T : Plan)

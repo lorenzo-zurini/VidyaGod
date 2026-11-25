@@ -277,7 +277,7 @@ std::vector<PackageUpdate> AvailableUpdates(const nlohmann::ordered_json &Config
     std::error_code Ec;
     for (const auto &[Peer, Libs] : Config["PeerLibraries"].items())
     {
-        const std::string Nick = ReceivedNickLabel(Peer);
+        const std::string Nick = ReceivedNickLabel(Config, Peer);
         std::map<std::pair<std::string, std::string>, std::map<std::string, std::string>> Versions;   // (lib, pkg) → cid → file
         for (const SheetEntry &E : WireEntries(Libs)) Versions[{ E.Lib, E.Pkg }][E.Cid] = E.File;
         const auto Folders = ReceivedFolderNames(Libs);                 // where each would have landed, and been installed

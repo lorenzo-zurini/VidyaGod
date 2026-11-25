@@ -265,6 +265,9 @@ void PeerSharing::applyPeerLibrarySnapshot(const QString & peer, const QString &
         if (!C.empty()) Clean[Name] = std::move(C);
     }
     std::optional<std::vector<PackageCatalog::ReceivedFetch>> NewPlan;   // the new snapshot's plan, once made
+    //Its folders' label, chosen now if not yet: unique among peers, and kept through a rename (N7, N8). BEFORE any
+    //reference into the config is taken: a key added to it moves the others (an ordered map is a vector).
+    if (!Clean.empty()) PackageCatalog::AssignReceivedLabel(*Model.config(), P, PackageCatalog::ReceivedLiveNick(P));
     auto & FL = (*Model.config())["PeerLibraries"];
     if (!FL.is_object()) FL = nlohmann::ordered_json::object();
     const bool Had = FL.contains(P);
@@ -283,7 +286,7 @@ void PeerSharing::applyPeerLibrarySnapshot(const QString & peer, const QString &
         if (Had)
         {   // a CHANGED snapshot: the packages it no longer names go; the ones it still names stay, and only what changed
             // in them lands again (the prune drops what their entries no longer name)
-            NewPlan = PackageCatalog::PlanReceivedFetches(*Model.config(), PackageCatalog::ReceivedNickLabel(P), Clean);
+            NewPlan = PackageCatalog::PlanReceivedFetches(*Model.config(), PackageCatalog::ReceivedNickLabel(*Model.config(), P), Clean);
             std::map<std::string, std::string> Keep;
             for (const auto & T : *NewPlan) Keep[T.Dest] = T.Cid;
             dropReceivedStubs(P, Keep);
@@ -355,6 +358,9 @@ void PeerSharing::forgetPeer(const QString & peer)
     };
     EraseFrom("ReceiveFrom", *Model.config());
     EraseFrom("PeerChosen", *Model.config());
+    //Its folders' label goes with it (after its stubs were dropped by it): a pairing made again chooses afresh.
+    if (Model.config()->contains("PeerLabels") && (*Model.config())["PeerLabels"].is_object() && (*Model.config())["PeerLabels"].contains(P))
+    { (*Model.config())["PeerLabels"].erase(P); Changed = true; }
     bool DenyChanged = false;
     if (Model.config()->contains("PresenceDeny") && (*Model.config())["PresenceDeny"].is_array())
         for (auto It = (*Model.config())["PresenceDeny"].begin(); It != (*Model.config())["PresenceDeny"].end(); ++It)
@@ -400,7 +406,7 @@ std::map<std::string, std::string> PeerSharing::sharedStubFiles(const std::strin
     std::map<std::string, std::string> Out;
     const nlohmann::ordered_json & C = *Model.config();
     if (C.contains("PeerLibraries") && C["PeerLibraries"].is_object() && C["PeerLibraries"].contains(P))
-        for (const auto & T : PackageCatalog::PlanReceivedFetches(C, PackageCatalog::ReceivedNickLabel(P), C["PeerLibraries"][P]))
+        for (const auto & T : PackageCatalog::PlanReceivedFetches(C, PackageCatalog::ReceivedNickLabel(C, P), C["PeerLibraries"][P]))
             Out[T.Dest] = T.Cid;
     return Out;
 }
@@ -423,7 +429,7 @@ void PeerSharing::dropReceivedStubs(const std::string & P, const std::map<std::s
     if (Model.config()->contains("PeerLibraries") && (*Model.config())["PeerLibraries"].is_object()
         && (*Model.config())["PeerLibraries"].contains(P) && (*Model.config())["PeerLibraries"][P].is_object())
     {
-        for (const auto & T : PackageCatalog::PlanReceivedFetches(*Model.config(), PackageCatalog::ReceivedNickLabel(P),
+        for (const auto & T : PackageCatalog::PlanReceivedFetches(*Model.config(), PackageCatalog::ReceivedNickLabel(*Model.config(), P),
                                                                   (*Model.config())["PeerLibraries"][P]))
         {
             LibDirs.insert(std::filesystem::path(T.Dest).parent_path().parent_path());   // …/<Nick> - <Lib>
@@ -615,7 +621,7 @@ PeerSharing::Received PeerSharing::receivedFrom(const QString & peer) const
         for (const auto & E : PackageCatalog::WireEntries(Cfg["PeerLibraries"][P])) Theirs.insert({ E.Lib, E.Pkg });
         std::map<std::string, bool> Whole;           // planned package folder → every file of it here
         std::error_code Ec;
-        for (const auto & T : PackageCatalog::PlanReceivedFetches(Cfg, PackageCatalog::ReceivedNickLabel(P), Cfg["PeerLibraries"][P]))
+        for (const auto & T : PackageCatalog::PlanReceivedFetches(Cfg, PackageCatalog::ReceivedNickLabel(Cfg, P), Cfg["PeerLibraries"][P]))
         {
             const bool Here = std::filesystem::exists(T.Dest, Ec);
             auto [It, New] = Whole.emplace(std::filesystem::path(T.Dest).parent_path().string(), Here);
@@ -859,7 +865,7 @@ void PeerSharing::enqueueReceivedShares(const QString & peer, const std::vector<
     if (!Model.config()->contains("PeerLibraries") || !(*Model.config())["PeerLibraries"].is_object()
         || !(*Model.config())["PeerLibraries"].contains(P) || !(*Model.config())["PeerLibraries"][P].is_object()) return;
 
-    const auto Plan = Given ? *Given : PackageCatalog::PlanReceivedFetches(*Model.config(), PackageCatalog::ReceivedNickLabel(P),
+    const auto Plan = Given ? *Given : PackageCatalog::PlanReceivedFetches(*Model.config(), PackageCatalog::ReceivedNickLabel(*Model.config(), P),
                                                                            (*Model.config())["PeerLibraries"][P]);
     // No local "satisfied" guess: presence and even HasLocal both LIE for reusable node dests (HasLocal is GLOBAL
     // block membership — another peer's fetch of v2 would mark this peer's stale v1 file settled forever). Every
