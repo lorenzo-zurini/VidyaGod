@@ -3,6 +3,9 @@
 
 #include <QMap>
 #include <QObject>
+
+#include <functional>
+#include <vector>
 #include <QStringList>
 #include <QThread>
 
@@ -169,6 +172,12 @@ private slots:
     void onRegistryScan(QString deltaJsonDump, QStringList regPaths);
 
 private:
+    //A capture lands in the editor's document when it is free: not while a save, seed or case fix works on a copy of it
+    //(the copy put back would drop the capture) — the window doing the capture is not the one that dialog blocks.
+    void whenEditorFree(std::function<void()> Apply);
+    //A file capture's node (or the waiting layer it fills), as captured (the Pend* of its time).
+    void applyFiles(int count, const QString & DestName, const QString & Target, const QStringList & Roots, bool Contents);
+    std::vector<std::function<void()>> Waiting;   // captures held until PackageEditorModel::idle
     QString LastWhy;                       // the errors of the worker's last failed step (its why signal)
     PackageEditorModel *   Editor = nullptr;
     std::string            TargetNodeId;               // the anchor: runtime built to here, captures parented here

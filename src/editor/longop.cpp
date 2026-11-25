@@ -43,6 +43,14 @@ QString LongOp::Describe(const QString &Item, int Done, int Total, unsigned long
 
 bool LongOp::RunningIn(const QWidget *Parent) { return g_Running.count(Parent) != 0; }
 
+bool LongOp::Blocks(const QWidget *W)
+{
+    if (!W) return false;
+    for (const QWidget *P : g_Running)
+        if (P && P->window() == W->window()) return true;
+    return false;
+}
+
 bool LongOp::Run(QWidget *Parent, const QString &Title, const std::function<void(const Step &)> &Work)
 {
     g_Running.insert(Parent);

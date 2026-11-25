@@ -2,6 +2,7 @@
 // table cells and the checkboxes inside them, combo items, the card grids as painted, open dialogs) and every action
 // a person takes on them (click, type, tick, pick, switch tab, open a card, answer a dialog). No accessibility bridge,
 // no coordinates, no synthetic input: the widgets themselves.
+#include "longop.h"
 #include "command.h"
 #include "libraryview.h"
 #include "settingstab.h"   // ui tab --page
@@ -245,6 +246,17 @@ QWidget *Named(const std::string &Name, const QWidget *Under)
     const std::string Near = Command::Nearest(Name, All);
     throw Command::BadArgs("no control named '" + Name + "'" + (Near.empty() ? "" : " — did you mean '" + Near + "'?")
                            + " (VidyaGod ui tree lists them)");
+}
+
+// A control to act on (click, set, a cell, a tab, a card): one in a window a long editor action waits over is refused —
+// its window-modal dialog blocks a person's input there, and the action works on a copy of the document that an edit
+// made meanwhile would be lost under (LongOp::Blocks).
+QWidget *Reachable(QWidget *W)
+{
+    if (LongOp::Blocks(W))
+        throw std::runtime_error("'" + NameOf(W) + "' is in a window that waits for a long action (saving, seeding, fixing case): "
+                                 "try again once it is done");
+    return W;
 }
 
 // A card grid by its name — or by the name of what holds exactly one (the Library tab: its "Library games").
@@ -522,6 +534,7 @@ VG_COMMANDS
                         throw Command::BadArgs("--page is a Settings page; '" + T.toStdString() + "' is not the Settings tab");
                     if (!St) St = qobject_cast<SettingsTab *>(Tw->widget(I));
                     bool Found = true;
+                    Reachable(Tw);
                     json Out = Act(Ctx, [Tw = Tw, I = I, St, Page, &Found] {
                         Tw->setCurrentIndex(I);
                         if (St && !Page.isEmpty()) Found = St->openPage(Page);
@@ -539,7 +552,7 @@ VG_COMMANDS
         { Command::Pos("control", "the control's name") },
         { "ui click 'Verify  Publish'", "ui click 'You Send request'" }, { "QAbstractButton::click" }, Command::Needs::Ui, false,
         [](Command::Context &Ctx, const json &A) {
-            QWidget *W = Named(Command::Str(A, "control"));
+            QWidget *W = Reachable(Named(Command::Str(A, "control")));
             auto *B = qobject_cast<QAbstractButton *>(W);
             if (!B) throw Command::BadArgs("'" + NameOf(W) + "' is a " + W->metaObject()->className() + ", not something to click");
             if (!B->isEnabled()) throw std::runtime_error("'" + NameOf(W) + "' is disabled");
@@ -555,7 +568,7 @@ VG_COMMANDS
         { "ui check 'Auto-accept peer requests'", "ui check 'Close to tray' --no-on" },
         { "QAbstractButton::setChecked" }, Command::Needs::Ui, false,
         [](Command::Context &Ctx, const json &A) {
-            QWidget *W = Named(Command::Str(A, "control"));
+            QWidget *W = Reachable(Named(Command::Str(A, "control")));
             const bool On = Command::Bool(A, "on", true);
             if (auto *B = qobject_cast<QAbstractButton *>(W); B && B->isCheckable())
             {
@@ -577,7 +590,7 @@ VG_COMMANDS
         { "ui set 'Add a peer' 12D3KooW…", "ui set 'Max simultaneous downloads' 4", "ui set 'Settings pages' Network" },
         { "QLineEdit::setText", "QComboBox::setCurrentIndex", "QSpinBox::setValue", "QAbstractItemView::setCurrentIndex" }, Command::Needs::Ui, false,
         [](Command::Context &Ctx, const json &A) {
-            QWidget *W = Named(Command::Str(A, "control"));
+            QWidget *W = Reachable(Named(Command::Str(A, "control")));
             const QString V = QString::fromStdString(Command::Str(A, "value"));
             if (!W->isEnabled()) throw std::runtime_error("'" + NameOf(W) + "' is disabled");
             //What it sets is checked first (an unknown item is an error); then the setting — which may open a dialog —
@@ -624,7 +637,7 @@ VG_COMMANDS
         { "ui cell Peers LGZ-MacBook Accepted", "ui cell Peers LGZ-MacBook 'Share: VidyaGod' --no-on" },
         { "QAbstractItemView::indexWidget", "QAbstractItemView::setCurrentIndex" }, Command::Needs::Ui, false,
         [](Command::Context &Ctx, const json &A) {
-            QWidget *W = Named(Command::Str(A, "table"));
+            QWidget *W = Reachable(Named(Command::Str(A, "table")));
             auto *V = qobject_cast<QAbstractItemView *>(W);
             if (!V || !V->model()) throw Command::BadArgs("'" + NameOf(W) + "' is not a table");
             QAbstractItemModel *M = V->model();
@@ -685,6 +698,7 @@ VG_COMMANDS
           "PreLaunchWindow::bringBack", "PreLaunchWindow::launchRunning", "PreLaunchWindow::done" }, Command::Needs::Ui, false,
         [](Command::Context &Ctx, const json &A) {
             LibraryView *V = Grid(Command::Str(A, "grid"));
+            Reachable(V);
             const int I = V->cardIndex(QString::fromStdString(Command::Str(A, "card")));
             if (I < 0) throw Command::BadArgs("no single card '" + Command::Str(A, "card") + "'"
                                               + V->cardMiss(QString::fromStdString(Command::Str(A, "card"))).toStdString());

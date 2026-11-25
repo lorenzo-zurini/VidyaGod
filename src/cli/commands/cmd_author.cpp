@@ -260,12 +260,13 @@ VG_COMMANDS
         { Pos("package", "the package"), Pos("node", "the node"), Opt("mode", "what to capture", Type::String, false, { "setup", "files", "registry" }) },
         { "author window 749 'The Age of Kings' --mode files" },
         { "DeltaTree::setPaths", "DeltaTree::setSeparator", "DeltaTree::MainFolder", "DeltaTree::markCaptured", "DeltaTree::reveal", "DeltaTree::checkedRoots",
-          "DeltaTree::checkedEntries", "DeltaTree::checkAll" }, Needs::App, false,
+          "DeltaTree::checkedEntries", "DeltaTree::checkAll", "PackageEditorModel::busy" }, Needs::App, false,
         [](Command::Context &C, const json &A) {
             PackageEditor *Ed = PackageEditor::live();
             const fs::path P = PackageDir(C, Command::Str(A, "package"), false);
             if (!Ed || !Ed->model() || !fs::equivalent(Ed->bundleDir().toStdString(), P))
                 throw std::runtime_error("open the package in the editor first (VidyaGod editor open " + Command::Str(A, "package") + ")");
+            if (Ed->model()->busy()) throw std::runtime_error("the package editor is saving or working on its package: try again once it is done");
             PackageEditorModel *E = Ed->model();
             const std::string Q = Command::Str(A, "node");
             int I = E->doc().IndexOf(Q);

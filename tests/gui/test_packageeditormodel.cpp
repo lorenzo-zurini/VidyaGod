@@ -15,6 +15,8 @@
 #include "pkggraph.h"
 #include "instancestore.h"
 #include "longop.h"
+#include "appmodel.h"
+#include "authoringsessionmodel.h"
 #include "commands/cmdutil.h"
 #include "command.h"
 #include "ipfswrapper.h"
@@ -38,6 +40,7 @@
 
 #include <algorithm>
 #include <fstream>
+#include <set>
 #include <string>
 
 using json = nlohmann::ordered_json;
@@ -673,14 +676,19 @@ private slots:
         M->replaceNode(M->doc().Handle(GameIdx), N);
         QVERIFY(M->isDirty());
         const int Before = LongOp::DebugRanOnWorker();
+        QSignalSpy Idle(M, &PackageEditorModel::idle);   // each held the document busy while it ran (setBusy), then let go
         Act("Save")->trigger();
         QVERIFY(!M->isDirty());
         QCOMPARE(LongOp::DebugRanOnWorker(), Before + 1);
+        QCOMPARE(Idle.count(), 1);
         Act("Fix case collisions")->trigger();
         QCOMPARE(LongOp::DebugRanOnWorker(), Before + 2);
+        QCOMPARE(Idle.count(), 2);
         QVERIFY2(E->lastReport().contains("No cross-layer case collisions"), qPrintable(E->lastReport()));
         Act("Seed && share")->trigger();
         QCOMPARE(LongOp::DebugRanOnWorker(), Before + 4);   // the seed, then the save of what it recorded
+        QCOMPARE(Idle.count(), 3);                          // the save inside the seed: still the seed's busy
+        QVERIFY(!M->busy());
         QVERIFY2(E->lastReport().contains("1 of 1 file(s) newly seeded"), qPrintable(E->lastReport()));
         QVERIFY(!M->isDirty());
     }
@@ -742,6 +750,84 @@ private slots:
         QVERIFY(!LongOp::RunningIn(E));
         const CmdUtil::BuildSession S = CmdUtil::OpenBuild(C, Pkg.toStdString());
         QCOMPARE(S.M, E->model());
+    }
+
+    // The other ways in while a long action works on its copy of the document: the CLI's ui input into the editor's window
+    // (a button's own click(), past the dialog's modality) is refused, as a person's click is; `author window` is refused;
+    // and an authoring window already open — its own window, which the dialog does not block — lands a capture only
+    // once the editor is idle again, not into the document the action is about to put back. Teeth: no Blocks check in
+    // ui click; author window opening mid-save; a capture applied at once.
+    void otherWaysInMidSaveWaitOrAreRefused()
+    {
+        library();
+        PackageEditor *E = PackageEditor::OpenFor(&Cfg, nullptr, Pkg);
+        QVERIFY(E);
+        auto Close = qScopeGuard([E] { delete E; });
+        PackageEditorModel *M = E->model();
+        auto *Probe = new QPushButton("probe", E);
+        Probe->setObjectName("midSaveProbe");
+        bool Clicked = false;
+        connect(Probe, &QPushButton::clicked, [&] { Clicked = true; });
+        E->show();
+        QDir AppDir(Root->path());
+        AppModel App(&Cfg, &AppDir);
+        Command::Context C;
+        C.Config = &Cfg; C.Model = &App; C.Window = E;
+        std::string Anchor;
+        for (int I = 0; I < M->doc().Count(); ++I) if (M->doc().Node(I).value("LABEL", std::string()) == "Game") Anchor = M->doc().Handle(I);
+        QVERIFY(!Anchor.empty());
+        AuthoringSessionModel A(M, Anchor, CaptureMode::Registry);
+        const QString Key = "HKEY_CURRENT_USER\\Software\\Probe";
+        const json Delta = json::array({ json{{"REGPATH", Key.toStdString()}, {"KEYVALUES", {{"V", "1"}}}} });
+        QVERIFY(QMetaObject::invokeMethod(&A, "onRegistryScan", Q_ARG(QString, QString::fromStdString(Delta.dump())), Q_ARG(QStringList, QStringList{Key})));
+        const int Before = M->doc().Count();
+        json Click, Author;
+        int During = -1;
+        std::atomic<bool> Go{false};
+        QTimer::singleShot(50, [&] {
+            Click = Command::Run("ui click", {{"control", "midSaveProbe"}}, C);
+            Author = Command::Run("author window", {{"package", Pkg.toStdString()}, {"node", "Game"}, {"mode", "registry"}}, C);
+            A.captureSelectedRegistry({Key});
+            During = M->doc().Count();
+            Go = true;
+        });
+        M->setBusy(true);
+        QVERIFY(LongOp::Run(E, "Save", [&](const LongOp::Step &) {
+            for (int I = 0; I < 400 && !Go.load(); ++I) std::this_thread::sleep_for(std::chrono::milliseconds(5));
+        }));
+        QVERIFY2(!Click.value("ok", true) && !Clicked, Click.dump().c_str());
+        QVERIFY2(Click.dump().find("waits for a long action") != std::string::npos, Click.dump().c_str());
+        QVERIFY2(!Author.value("ok", true) && Author.dump().find("saving") != std::string::npos, Author.dump().c_str());
+        QCOMPARE(During, Before);                    // held, not in the document under the save
+        M->setBusy(false);                           // the save is over: the capture lands
+        QCOMPARE(M->doc().Count(), Before + 1);
+        QVERIFY(Command::Run("ui click", {{"control", "midSaveProbe"}}, C).value("ok", false));
+        QVERIFY(Clicked);
+        // A save re-mints the anchor (its handle is its CID on disk): a capture after it — or one held through it — goes
+        // under the anchor's new name, never a handle the document no longer has. Teeth: handlesRenamed not followed.
+        json G = M->doc().Node(M->doc().IndexOf(Anchor));
+        G["VARIANT"] = "Edition 2";
+        M->replaceNode(Anchor, G);
+        QAction *Save = nullptr;
+        for (QAction *X : E->findChildren<QAction *>()) if (X->text().startsWith("Save")) Save = X;
+        QVERIFY(Save);
+        Save->trigger();
+        QVERIFY(!M->isDirty());
+        QVERIFY2(M->doc().IndexOf(Anchor) < 0, "the anchor was re-minted");
+        std::set<std::string> Had;
+        for (int I = 0; I < M->doc().Count(); ++I) Had.insert(M->doc().Handle(I));
+        A.captureSelectedRegistry({Key});
+        QCOMPARE(M->doc().Count(), Before + 2);
+        bool UnderAnchor = false;
+        for (int I = 0; I < M->doc().Count(); ++I)
+        {
+            if (Had.count(M->doc().Handle(I))) continue;   // the capture just made
+            for (const json &L : M->doc().Node(I).value("LAYERS", json::array()))
+                if (L.is_object() && L.contains("NODE") && L["NODE"].is_string())
+                    if (const int At = M->doc().IndexOf(L["NODE"].get<std::string>()); At >= 0)
+                        UnderAnchor = UnderAnchor || M->doc().Node(At).value("VARIANT", std::string()) == "Edition 2";
+        }
+        QVERIFY2(UnderAnchor, "the capture names the anchor by its new handle");
     }
 
     // The canvas is Dear ImGui, which keeps ONE global context per process: OpenFor is the single door — it raises

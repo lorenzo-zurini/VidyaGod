@@ -132,8 +132,13 @@ public:
     //A captured content layer is what a node still waiting for its files (a content layer with no file, at the same
     //TARGET) was waiting for: it takes that layer's place. False when the node waits for nothing there.
     bool fillWaiting(const std::string & Handle, const nlohmann::ordered_json & Layer);
+    //A long action of the editor (save, seed, case fix) works on a copy of the document and puts it back: while one
+    //runs, what would edit the document waits for idle() (an authoring window's capture) or is refused (the CLI).
+    void setBusy(bool On) { Busy += On ? 1 : -1; if (Busy == 0) emit idle(); }
+    bool busy() const { return Busy > 0; }
 
 signals:
+    void idle();                                   // the last long action ended (setBusy)
     void documentReloaded();                       // the whole document was replaced (load, reload)
     void nodeContentChanged();                     // a node's content changed outside the canvas
     void validationChanged();
@@ -146,6 +151,7 @@ public slots:
     void notifyNodeChanged() { noteEdited(); emit nodeContentChanged(); }   // edited from outside the canvas
 
 private:
+    int Busy = 0;
     //What BuildExecIndex reads, copied out of the model: the library's index (shared, immutable) and this package's
     //nodes as edited. The validation thread builds the index from it.
     struct ExecInputs { std::shared_ptr<const NodeIndex> Library; std::filesystem::path Pkg;

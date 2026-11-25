@@ -333,8 +333,25 @@ AuthoringSessionModel::AuthoringSessionModel(PackageEditorModel * E, std::string
     connect(Worker, &AuthoringWorker::runFinished, this, &AuthoringSessionModel::onRunFinished);
     connect(Worker, &AuthoringWorker::filesCopied, this, &AuthoringSessionModel::onFilesCopied);
     connect(Worker, &AuthoringWorker::registryScan,this, &AuthoringSessionModel::onRegistryScan);
+    //A save re-mints the anchor (its handle is the CID on disk): captures — a held one too — go under its new name.
+    if (Editor)
+        connect(Editor, &PackageEditorModel::handlesRenamed, this, [this] {
+            if (const auto It = Editor->lastRenames().find(TargetNodeId); It != Editor->lastRenames().end()) TargetNodeId = It->second;
+        });
+    if (Editor)
+        connect(Editor, &PackageEditorModel::idle, this, [this] {
+            auto Now = std::move(Waiting);
+            Waiting.clear();
+            for (auto & Apply : Now) Apply();
+        });
 
     Thread.start();
+}
+
+void AuthoringSessionModel::whenEditorFree(std::function<void()> Apply)
+{
+    if (Editor && Editor->busy()) { Waiting.push_back(std::move(Apply)); return; }
+    Apply();
 }
 
 AuthoringSessionModel::~AuthoringSessionModel()
@@ -429,12 +446,13 @@ void AuthoringSessionModel::captureSelectedRegistry(const QStringList & RegPaths
         PkgGraph::RegRowsInto(Tree, Rows);
         Layers.push_back(nlohmann::ordered_json{{"REG", std::move(Tree)}, {"ARCH", nlohmann::ordered_json::array({Arch})}});
     }
-    const std::string NewId = Editor->createNode(
-        nlohmann::ordered_json::object({{"LAYERS", Layers}}), {TargetNodeId}, "captured_registry");
-    emit registryCaptured(RegPaths);
-    emit nodeCreated(QString::fromStdString(NewId));
-    emit captured(QString("Captured %1 registry key(s) → new REG node '%2'.")
-                      .arg((int)Picked.size()).arg(QString::fromStdString(NewId)));
+    whenEditorFree([this, Layers = std::move(Layers), RegPaths, N = (int)Picked.size()] {
+        const std::string NewId = Editor->createNode(
+            nlohmann::ordered_json::object({{"LAYERS", Layers}}), {TargetNodeId}, "captured_registry");
+        emit registryCaptured(RegPaths);
+        emit nodeCreated(QString::fromStdString(NewId));
+        emit captured(QString("Captured %1 registry key(s) → new REG node '%2'.").arg(N).arg(QString::fromStdString(NewId)));
+    });
 }
 
 void AuthoringSessionModel::onStarted(bool ok, QString runtimePath, QString contentRoot, bool isWine,
@@ -467,27 +485,36 @@ void AuthoringSessionModel::onFilesCopied(int count)
     emit busyChanged(false, QString());
     if (count <= 0) { emit captured("Nothing copied — check the selection."); return; }
     if (!Editor) return;
+    //Taken now: another capture may start before this one lands (whenEditorFree).
+    whenEditorFree([this, count, DestName = PendDestName, Target = PendTarget, Roots = PendRoots, Contents = PendContents] {
+        applyFiles(count, DestName, Target, Roots, Contents);
+    });
+}
+
+void AuthoringSessionModel::applyFiles(int count, const QString & DestName, const QString & Target,
+                                       const QStringList & Roots, bool Contents)
+{
     // A capture IS a node: one DIR layer holding what the run wrote, over the anchor (createNode puts the anchor
     // first, as a NODE layer) so it applies exactly where the capture was taken. The target is a guest path; a
     // layer's TARGET is its FILES address.
-    nlohmann::ordered_json Layer = nlohmann::ordered_json::object({{"DIR", PendDestName.toStdString()}});
-    if (!PendTarget.isEmpty())
-        Layer["TARGET"] = PendTarget.startsWith("FILES/") ? PendTarget.toStdString() : "FILES/" + PendTarget.toStdString();
+    nlohmann::ordered_json Layer = nlohmann::ordered_json::object({{"DIR", DestName.toStdString()}});
+    if (!Target.isEmpty())
+        Layer["TARGET"] = Target.startsWith("FILES/") ? Target.toStdString() : "FILES/" + Target.toStdString();
     //Where the captured folders were in the guest is where an installer's registry names them: remembered by anchor.
-    for (auto & G : CapturePreview::GuestAnchorsFor(PendRoots, PendTarget.toStdString(), PendContents, AnchorLayouts)) GuestAnchors.push_back(G);
+    for (auto & G : CapturePreview::GuestAnchorsFor(Roots, Target.toStdString(), Contents, AnchorLayouts)) GuestAnchors.push_back(G);
     //Longest guest path first: a folder's own anchor wins over its parent's.
     std::stable_sort(GuestAnchors.begin(), GuestAnchors.end(), [](const auto & A, const auto & B) { return A.first.size() > B.first.size(); });
     //What the anchor was still waiting for (a new package's files, before its install): they take that place.
     if (Editor->fillWaiting(TargetNodeId, Layer))
     {
-        emit filesCaptured(PendRoots);
+        emit filesCaptured(Roots);
         emit captured(QString("Captured %1 file(s) → the files this node was waiting for.").arg(count));
         return;
     }
     nlohmann::ordered_json Payload = nlohmann::ordered_json::object({
         {"LAYERS", nlohmann::ordered_json::array({std::move(Layer)})}});
-    const std::string NewId = Editor->createNode(Payload, {TargetNodeId}, PendDestName.toStdString() + "_files");
-    emit filesCaptured(PendRoots);
+    const std::string NewId = Editor->createNode(Payload, {TargetNodeId}, DestName.toStdString() + "_files");
+    emit filesCaptured(Roots);
     emit nodeCreated(QString::fromStdString(NewId));
     emit captured(QString("Captured %1 file(s) → new node '%2'.").arg(count).arg(QString::fromStdString(NewId)));
 }

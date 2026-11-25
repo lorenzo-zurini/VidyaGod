@@ -40,6 +40,18 @@
 
 #include <filesystem>
 
+namespace {
+//The document is worked on elsewhere (a long action's copy) for this scope: PackageEditorModel::setBusy.
+struct ModelBusy
+{
+    explicit ModelBusy(PackageEditorModel &M) : M(M) { M.setBusy(true); }
+    ~ModelBusy() { M.setBusy(false); }
+    ModelBusy(const ModelBusy &) = delete;
+    ModelBusy &operator=(const ModelBusy &) = delete;
+    PackageEditorModel &M;
+};
+} // namespace
+
 using json = nlohmann::ordered_json;
 
 PackageEditor * PackageEditor::Live = nullptr;
@@ -337,6 +349,7 @@ bool PackageEditor::save()
     //Reading the library for what names these nodes and re-minting them: off the GUI thread, on a copy of the document
     //(PackageEditorModel::SaveJob) — the window waits, painted, and can stop it until the writes begin.
     PackageEditorModel::SaveJob Job = Model->beginSave();
+    const ModelBusy Busy(*Model);
     if (Job.Refused.isEmpty())
         LongOp::Run(this, "Save", [&Job](const LongOp::Step &S) {
             PackageEditorModel::runSave(Job, [&S](const std::string &What, int Done, int Total) {
@@ -601,6 +614,7 @@ void PackageEditor::fixCase()
     const std::filesystem::path Scope = bundleDir().toStdString();
     const auto Idx = std::make_shared<const NodeIndex>(Model->BuildExecIndex());   // the worker reads it; nothing changes it
     int Fixed = 0;
+    const ModelBusy Busy(*Model);
     LongOp::Run(this, "Fix case collisions", [&](const LongOp::Step &S) {
         Fixed = Validate::FixCaseConflicts(*Idx, Log, &Scope, [&S](const std::string &Zip, int Done, int Total,
                                                                     unsigned long long Bytes, unsigned long long TotalBytes) {
@@ -630,6 +644,7 @@ void PackageEditor::seedAndShare()
     std::vector<std::pair<int, json>> Seeded;
     std::string Err;
     bool Failed = false, Stopped = false;
+    const ModelBusy Busy(*Model);
     LongOp::Run(this, "Seed & share", [&](const LongOp::Step &S) {
         int Total = 0, Done = 0;
         unsigned long long TotalBytes = 0, Bytes = 0;

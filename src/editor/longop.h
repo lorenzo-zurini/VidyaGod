@@ -30,6 +30,9 @@ bool Run(QWidget *Parent, const QString &Title, const std::function<void(const S
 //A Run under Parent is going on (the window waits): what changes its document is refused meanwhile (the CLI's edits),
 //as the window's own input is. GUI thread.
 bool RunningIn(const QWidget *Parent);
+//W lies in a window a Run waits over (its window-modal dialog blocks a person's input there): the CLI's input into it
+//(ui click, set, …) is refused, as a person's is.
+bool Blocks(const QWidget *W);
 //TEST ONLY: works Run has finished on a thread other than the GUI's.
 int DebugRanOnWorker();
 
