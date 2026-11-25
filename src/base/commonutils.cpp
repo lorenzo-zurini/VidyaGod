@@ -279,7 +279,7 @@ bool WildcardMatch(const std::string &Pattern, const std::string &Name)
     return P == Pattern.size();
 }
 
-bool WriteFileAtomic(const std::filesystem::path &P, const std::string &Bytes, std::string &Err)
+bool WriteFileAtomic(const std::filesystem::path &P, const std::string &Bytes, std::string &Err, bool Durable)
 {
     namespace fs = std::filesystem;
     const fs::path Tmp = P.string() + ".tmp-save";
@@ -287,18 +287,19 @@ bool WriteFileAtomic(const std::filesystem::path &P, const std::string &Bytes, s
     if (!F) { Err = "cannot write " + Tmp.string(); return false; }
     const bool Wrote = std::fwrite(Bytes.data(), 1, Bytes.size(), F) == Bytes.size() && std::fflush(F) == 0;
 #ifdef _WIN32
-    const bool Synced = Wrote && _commit(_fileno(F)) == 0;
+    const bool Synced = Wrote && (!Durable || _commit(_fileno(F)) == 0);
 #else
-    const bool Synced = Wrote && ::fsync(fileno(F)) == 0;
+    const bool Synced = Wrote && (!Durable || ::fsync(fileno(F)) == 0);
 #endif
     const bool Closed = std::fclose(F) == 0;
     std::error_code Ec;
     if (!Wrote || !Synced || !Closed) { Err = "could not write " + Tmp.string() + " (disk full?)"; fs::remove(Tmp, Ec); return false; }
     if (const fs::file_status Was = fs::status(P, Ec); !Ec && fs::exists(Was))
-        fs::permissions(Tmp, Was.permissions(), Ec);          // the file stays as executable / private as it was
+        fs::permissions(Tmp, Was.permissions() | fs::perms::owner_read | fs::perms::owner_write, Ec);   // as executable / private as it was, and still ours to write
     fs::rename(Tmp, P, Ec);
     if (Ec) { Err = "cannot rename " + Tmp.string() + " -> " + P.string() + ": " + Ec.message(); fs::remove(Tmp, Ec); return false; }
 #ifndef _WIN32
+    if (!Durable) return true;
     if (const int D = ::open(P.parent_path().empty() ? "." : P.parent_path().string().c_str(), O_RDONLY | O_DIRECTORY); D >= 0) { ::fsync(D); ::close(D); }
 #endif
     return true;

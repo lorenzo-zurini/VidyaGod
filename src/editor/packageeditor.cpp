@@ -624,7 +624,7 @@ void PackageEditor::seedAndShare()
                               QMessageBox::Yes | QMessageBox::No, QMessageBox::Yes) == QMessageBox::Yes)
     {
         emit publishToLibraryRequested(QString::fromStdString(Pkg.string()));
-        status("Publishing in the background - the Sharing tab shows the result", 8000);
+        status("Publishing in the background — the Peers tab shows the result", 8000);
     }
     else QMessageBox::information(this, "Seed & share", Summary);
 }

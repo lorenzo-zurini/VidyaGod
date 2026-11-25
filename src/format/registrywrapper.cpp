@@ -451,7 +451,7 @@ static void EmitKey(std::ostream &Out, const RegistryKey *Node, const std::strin
     }
 }
 
-bool RegistryWrapper::SaveHiveFile(const std::filesystem::path &File, HiveRoot Root) const
+bool RegistryWrapper::SaveHiveFile(const std::filesystem::path &File, HiveRoot Root, bool Durable) const
 {
     auto It = Hives.find(Root);
     if (It == Hives.end()) return true; // nothing loaded/authored for this hive — leave the file as-is
@@ -464,11 +464,11 @@ bool RegistryWrapper::SaveHiveFile(const std::filesystem::path &File, HiveRoot R
     bool AnyEmitted = false;
     if (H.RootKey) EmitKey(Out, H.RootKey.get(), "", AnyEmitted);
     std::string Err;
-    if (!WriteFileAtomic(File, Out.str(), Err)) { LogErr("RegistryWrapper::SaveHiveFile", Err); return false; }
+    if (!WriteFileAtomic(File, Out.str(), Err, Durable)) { LogErr("RegistryWrapper::SaveHiveFile", Err); return false; }
     return true;
 }
 
-bool RegistryWrapper::SavePrefix(const std::filesystem::path &PrefixPath) const
+bool RegistryWrapper::SavePrefix(const std::filesystem::path &PrefixPath, bool Durable) const
 {
     struct { const char *File; HiveRoot Root; } Files[] = {
         { "system.reg",  HiveRoot::Machine },
@@ -477,7 +477,7 @@ bool RegistryWrapper::SavePrefix(const std::filesystem::path &PrefixPath) const
     };
     bool Ok = true;
     for (const auto &F : Files)
-        if (Hives.count(F.Root)) Ok = SaveHiveFile(PrefixPath / F.File, F.Root) && Ok;
+        if (Hives.count(F.Root)) Ok = SaveHiveFile(PrefixPath / F.File, F.Root, Durable) && Ok;
     return Ok;
 }
 

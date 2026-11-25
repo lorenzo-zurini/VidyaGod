@@ -44,14 +44,14 @@ private slots:
         QVERIFY(tab != nullptr);
         QVERIFY(!tab->findChildren<QLabel *>().isEmpty());
 
-        // SettingsTab builds each subpage lazily on first visit, so the IPFS page's "Enable networking"
-        // checkbox doesn't exist until we navigate to it. Show the IPFS page first.
+        // SettingsTab builds each subpage lazily on first visit, so the Network page's "Enable networking"
+        // checkbox doesn't exist until we navigate to it. Show the Network page first.
         SettingsTab * settings = mw.findChild<SettingsTab *>();
         QVERIFY(settings != nullptr);
-        QVERIFY(settings->openPage("IPFS"));
+        QVERIFY(settings->openPage("Network"));
         QApplication::processEvents();
 
-        // Tick Settings → IPFS "Enable networking" → drives the model → MainWindow starts the node off-thread.
+        // Tick Settings → Network "Enable networking" → drives the model → MainWindow starts the node off-thread.
         QCheckBox * netCb = nullptr;
         for (QCheckBox * cb : mw.findChildren<QCheckBox *>())
             if (cb->text().contains("Enable networking")) netCb = cb;

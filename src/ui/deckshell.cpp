@@ -152,12 +152,14 @@ DeckMenu::DeckMenu(DeckShell &S) : QWidget(&S), Shell(S)
 QStringList DeckMenu::items() const
 {
     return { "Desktop mode", Shell.model().networkingEnabled() ? "Turn networking off" : "Turn networking on",
-             "Check the library for changes", "Add a local package…", "Package editor", "Controller settings", "Quit VidyaGod" };
+             "Check the library for changes", "Add a local package…", "Package editor", "Controller settings",
+             QuitArmed ? "Press A again to quit" : "Quit VidyaGod" };
 }
 
 void DeckMenu::present()
 {
     Current = 0;
+    QuitArmed = false;
     setGeometry(Shell.rect());
     show();
     raise();
@@ -173,6 +175,8 @@ void DeckMenu::dismiss()
 
 void DeckMenu::choose(const QString &Item)
 {
+    //Quitting ends a handheld session: asked twice, the menu staying open between.
+    if (Item == "Quit VidyaGod") { QuitArmed = true; update(); return; }
     dismiss();
     if (Item == "Desktop mode") emit Shell.desktopRequested();
     else if (Item.startsWith("Turn networking")) Shell.model().setNetworkingEnabled(!Shell.model().networkingEnabled());
@@ -184,7 +188,7 @@ void DeckMenu::choose(const QString &Item)
         Shell.showSection(DeckShell::Section::Settings);
         if (auto *T = Shell.findChild<SettingsTab *>()) T->openPage("Controller");
     }
-    else if (Item == "Quit VidyaGod") emit Shell.quitRequested();
+    else if (Item == "Press A again to quit") emit Shell.quitRequested();
 }
 
 bool DeckMenu::padPressed(Pad::Button B)
@@ -193,8 +197,9 @@ bool DeckMenu::padPressed(Pad::Button B)
     const QStringList I = items();
     switch (B)
     {
-    case P::Up:   Current = (Current + I.size() - 1) % I.size(); PadInput::instance().tick(); update(); break;
-    case P::Down: Current = (Current + 1) % I.size(); PadInput::instance().tick(); update(); break;
+    //No wrap: Up from the top is not three presses from quitting.
+    case P::Up:   if (Current > 0) { --Current; QuitArmed = false; PadInput::instance().tick(); } update(); break;
+    case P::Down: if (Current + 1 < I.size()) { ++Current; QuitArmed = false; PadInput::instance().tick(); } update(); break;
     case P::A:    choose(I.value(Current)); break;
     case P::B: case P::Start: dismiss(); break;
     default: break;
@@ -766,6 +771,18 @@ bool DeckShell::padPressed(Pad::Button B)
     case P::Start: openMenu(); return true;
     case P::B:
         if (gameOpen()) { closeGame(); return true; }
+        //Inside a hosted page that has a pane to come back to (Settings' sidebar): B goes back there first, where the
+        //user came from — not all the way Home.
+        if (auto *Hosted = qobject_cast<DeckHosted *>(Body->currentWidget()))
+        {
+            QWidget *F = QApplication::focusWidget();
+            for (QWidget *Pane : Hosted->findChildren<QWidget *>())
+            {
+                if (!Pane->property("padPane").toBool() || !Pane->isVisible()) continue;
+                if (F && F != Pane && !Pane->isAncestorOf(F) && Hosted->isAncestorOf(F)) { Pane->setFocus(Qt::OtherFocusReason); return true; }
+                break;
+            }
+        }
         if (Current != Section::Home) { showSection(Section::Home); return true; }
         return false;
     default: return false;

@@ -185,7 +185,23 @@ TEST(an_edit_that_cannot_be_written_leaves_the_file_whole)
     std::filesystem::remove_all(dir);
 }
 
-// ---- FileOverwrite ----
+// A file the game shipped read-only (0555 through the mount) is edited, and stays editable by the next edit: the
+// atomic write keeps its mode but never takes the owner's write away.
+TEST(a_read_only_shipped_file_stays_editable_after_an_edit)
+{
+    namespace fs = std::filesystem;
+    auto dir = TmpDir("ro");
+    auto f = dir / "game.ini";
+    Write(f, "Width=640\n");
+    fs::permissions(f, fs::perms::owner_read | fs::perms::owner_exec | fs::perms::group_read | fs::perms::others_read, fs::perm_options::replace);
+    CHECK(FileEdits::ConfigWrite("Width=", "1920", f));
+    CHECK((fs::status(f).permissions() & fs::perms::owner_write) != fs::perms::none);
+    CHECK((fs::status(f).permissions() & fs::perms::owner_exec) != fs::perms::none);
+    CHECK(FileEdits::ConfigWrite("Width=", "800", f));
+    CHECK_EQ(ReadAll(f), std::string("Width=800\n"));
+    fs::remove_all(dir);
+}
+
 // ---- FileOverwrite ----
 
 // Whole-content write, creating parents (the WC3 .w3k key-file path).

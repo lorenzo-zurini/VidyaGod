@@ -5,6 +5,9 @@
 #include "shelf.h"
 #include <QDate>
 #include <QMenu>
+#include <QToolButton>
+#include <QDesktopServices>
+#include <QUrl>
 #include "appmodel.h"          // AppModel — catalog/config + card size
 #include "covercache.h"        // re-take covers when the cards grow
 #include "packagecatalog.h"   // GoldenSince / SetGolden (the golden marker) and the rest
@@ -54,11 +57,17 @@ LibraryTab::LibraryTab(AppModel &model, QWidget *parent)
 
 void AddLocalPackage(AppModel &Model, QWidget *Parent)
 {
-    const QString sel = QFileDialog::getExistingDirectory(Parent, "Select package or directory…");
+    const QString sel = QFileDialog::getExistingDirectory(Parent, "Choose a package folder (or a folder of packages)");
     if (sel.isEmpty()) return;
     const auto [added, skipped] = Model.importPackagesFromDir(sel);
-    if (added == 0 && skipped == 0) { QMessageBox::warning(Parent, "No packages found", "No valid packages found."); return; }
-    QMessageBox::information(Parent, "Done", QString("Added %1 package(s). %2 skipped.").arg(added).arg(skipped));
+    if (added == 0 && skipped == 0)
+    {
+        QMessageBox::warning(Parent, "No packages found", "No package was found in that folder: a package is a folder "
+                                                          "holding its node files (.json) beside its content.");
+        return;
+    }
+    QMessageBox::information(Parent, "Packages added", skipped == 0 ? QString("Added %1 package(s).").arg(added)
+        : QString("Added %1 package(s). %2 were not added: already in the library, or not valid (the log says which).").arg(added).arg(skipped));
 }
 
 LibraryTab::~LibraryTab()
@@ -93,19 +102,27 @@ void LibraryTab::buildUi()
     StatusLabel = Bar.Status;
 
     // Authoring entry points — moved here from Settings → Installed Packages so they're discoverable on the main screen.
-    QPushButton * edBtn  = new QPushButton("Package Editor", toolbar);
-    QPushButton * addBtn = new QPushButton("Add Local Package", toolbar);
-    tl->addWidget(edBtn); tl->addWidget(addBtn);   // "Add CID" now lives on the Catalog tab
-    connect(edBtn, &QPushButton::clicked, this, [this]{
+    //One "Add" menu: a package folder on this computer, or a new one made in the Package Editor.
+    QToolButton * AddBtn = new QToolButton(toolbar);
+    AddBtn->setObjectName("libraryAdd");
+    AddBtn->setText("＋ Add");
+    AddBtn->setToolButtonStyle(Qt::ToolButtonTextOnly);
+    AddBtn->setPopupMode(QToolButton::InstantPopup);
+    QMenu * AddMenu = new QMenu(AddBtn);
+    QAction * addAct = AddMenu->addAction("A package folder on this computer…");
+    QAction * edAct  = AddMenu->addAction("A new package (Package Editor)…");
+    AddBtn->setMenu(AddMenu);
+    tl->addWidget(AddBtn);   // a source by its CID: the Catalog's
+    connect(edAct, &QAction::triggered, this, [this]{
         PackageEditor::OpenFor(Model.config(), this, "");
     });
-    connect(addBtn, &QPushButton::clicked, this, [this]{ AddLocalPackage(Model, this); });
+    connect(addAct, &QAction::triggered, this, [this]{ AddLocalPackage(Model, this); });
 
     layout->addWidget(toolbar);
 
     View = new LibraryView(this);
     View->setAccessibleName("Library games");   // what ui card / ui show call it
-    View->setEmptyMessage("No games yet.\n\nGet games from the Catalog tab (add a source in Settings or a peer in Network first),\nor make one: Package Editor → New package.");
+    View->setEmptyMessage("No games yet.\n\nGet games from the Catalog tab (add a source in Settings → Sources, or a peer in Peers, first),\nor add one: ＋ Add above.");
     layout->addWidget(View);
 
     // Persisted collapse state for the Series-view sections.
@@ -114,16 +131,38 @@ void LibraryTab::buildUi()
         if (collapsed) LibraryCollapsedSeries.insert(name); else LibraryCollapsedSeries.remove(name);
         SaveCollapsed(Model, "LibraryCollapsedSeries", LibraryCollapsedSeries);
     });
-    //A card's menu: the golden marker — this machine's note that the package's golden pass is done. Cosmetic and local
-    //(Settings.GoldenPackages), keyed by the family, so every card of the family shows it.
+    //A card's menu: what a game's menu has (play it, its launch options, its package, its folder), then the golden
+    //marker — this machine's note that the package's golden pass is done. Cosmetic and local (Settings.GoldenPackages),
+    //keyed by the family, so every card of the family shows it.
     connect(View, &LibraryView::cardMenuRequested, this, [this](LibraryGameCard * card, const QPoint & at){
-        if (!card || card->RepUid.empty()) return;
-        const std::string Since = PackageCatalog::GoldenSince(*Model.config(), card->RepUid);
+        if (!card) return;
         QMenu Menu(this);
-        QAction * Golden = Menu.addAction(Since.empty() ? QStringLiteral("Mark as golden")
-                                                        : QStringLiteral("Golden since %1 — unmark").arg(QString::fromStdString(Since)));
-        Golden->setObjectName("goldenToggle");
-        if (Menu.exec(at) != Golden) return;
+        QAction * Play = Menu.addAction(QStringLiteral("Play"));
+        QAction * Options = Menu.addAction(QStringLiteral("Launch options…"));
+        Options->setObjectName("launchOptions");
+        Menu.addSeparator();
+        QAction * Edit = Menu.addAction(QStringLiteral("Edit package"));
+        QAction * Folder = Menu.addAction(QStringLiteral("Open its folder"));
+        Play->setEnabled(!card->Missing);
+        Options->setEnabled(!card->Missing);
+        Folder->setEnabled(std::filesystem::is_directory(card->PackagePath));
+        QAction * Golden = nullptr;
+        std::string Since;
+        if (!card->RepUid.empty())
+        {
+            Since = PackageCatalog::GoldenSince(*Model.config(), card->RepUid);
+            Menu.addSeparator();
+            Golden = Menu.addAction(Since.empty() ? QStringLiteral("Mark as golden")
+                                                  : QStringLiteral("Golden since %1 — unmark").arg(QString::fromStdString(Since)));
+            Golden->setObjectName("goldenToggle");
+        }
+        QAction * Chosen = Menu.exec(at);
+        if (!Chosen) return;
+        if (Chosen == Play) { card->play(); return; }
+        if (Chosen == Options) { card->edit(); return; }
+        if (Chosen == Edit) { PackageEditor::OpenFor(Model.config(), this, QString::fromStdString(card->PackagePath.string())); return; }
+        if (Chosen == Folder) { QDesktopServices::openUrl(QUrl::fromLocalFile(QString::fromStdString(card->PackagePath.string()))); return; }
+        if (Chosen != Golden) return;
         PackageCatalog::SetGolden(*Model.config(), card->RepUid, Since.empty(), QDate::currentDate().toString(Qt::ISODate).toStdString());
         Model.save();
         for (LibraryGameCard * C : *LibraryGameCards)
@@ -136,7 +175,7 @@ void LibraryTab::buildCards()
 {
     qDeleteAll(*LibraryGameCards);
     *LibraryGameCards = CardPool::Installed(Model);
-    LogOut("LibraryTab", "Library shows " + std::to_string(LibraryGameCards->size()) + " hydrated game(s).");
+    LogOut("LibraryTab", "Library shows " + std::to_string(LibraryGameCards->size()) + " game(s).");
 }
 
 void LibraryTab::sortAndFilter()

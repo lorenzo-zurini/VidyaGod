@@ -65,6 +65,7 @@ public:
     // overlay's "and press Enter", on by default: a chat line, a name).
     bool typeIntoGame(const QString &Text, QString *Error = nullptr);
     bool quitArmed() const;
+    void disarmQuit();            // armed no more (focus moved off it, or it waited too long)
 
     // The intercepted input, as the controller service hands it over (public: a test drives it as InputPlumber does).
     void onUiEvent(const QString &Event, double Value);

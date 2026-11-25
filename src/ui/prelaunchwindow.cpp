@@ -303,6 +303,10 @@ PreLaunchWindow::PreLaunchWindow(
         ChainHint->setStyleSheet("QLabel { color: #e0a040; }");
         ChainHint->setWordWrap(true);
         RV->addWidget(ChainHint);
+        GetRunnerButton = new QPushButton(Row);
+        GetRunnerButton->setObjectName("getRunner");
+        GetRunnerButton->hide();
+        RV->addWidget(GetRunnerButton, 0, Qt::AlignLeft);
         PickerForm->addRow(FieldLabel("Runs with"), Row);
     }
     {
@@ -420,13 +424,25 @@ PreLaunchWindow::PreLaunchWindow(
         RememberCheck->setToolTip("A click on the game's card then launches it at once. To see this window again: Shift+click "
                                   "the card, or its ⋯ corner.");
         CloseAfterLaunchCheck = new QCheckBox("Close this window once the game has started",      AdvancedPage);
+        CloseAfterLaunchCheck->setToolTip("For every game: remembered.");
+        if (GlobalConfigJSON && (*GlobalConfigJSON)["Settings"].value("CloseLaunchWindowOnStart", false))
+            CloseAfterLaunchCheck->setChecked(true);
+        connect(CloseAfterLaunchCheck, &QCheckBox::clicked, this, [this](bool On) {   // the user's click, not a launch's error
+            if (this->GlobalConfigJSON) (*this->GlobalConfigJSON)["Settings"]["CloseLaunchWindowOnStart"] = On;
+        });
         DryRunCheck           = new QCheckBox("Dry run: discard everything the game writes",       AdvancedPage);
         PreserveRuntimeCheck  = new QCheckBox("Pause after exit to inspect the runtime",           AdvancedPage);
         DryRunCheck->setToolTip("The run's writable layer is deleted on cleanup: saves and settings from this run are not kept.");
         PreserveRuntimeCheck->setToolTip("After the game exits, pause with a dialog while this run's runtime (mounts + "
                                          "files) is still in place so you can inspect it. It's cleaned up (unmounted + "
                                          "deleted) as soon as you close that dialog — never left dangling.");
-        for (QCheckBox* C : {RememberCheck, CloseAfterLaunchCheck, DryRunCheck, PreserveRuntimeCheck}) AL->addWidget(C);
+        for (QCheckBox* C : {RememberCheck, CloseAfterLaunchCheck}) AL->addWidget(C);
+        //For package authors, apart from the player's preferences: a dry run keeps no save of this session.
+        auto* Testing = new QLabel("For testing a package", AdvancedPage);
+        Testing->setProperty("role", "dim");
+        Testing->setContentsMargins(0, 12, 0, 0);
+        AL->addWidget(Testing);
+        for (QCheckBox* C : {DryRunCheck, PreserveRuntimeCheck}) AL->addWidget(C);
         AL->addStretch(1);
     }
     Tabs->addTab(AdvancedPage, "Advanced");
@@ -560,6 +576,13 @@ void PreLaunchWindow::closeEvent(QCloseEvent *Event)
     QDialog::closeEvent(Event);
 }
 
+std::function<bool(QWidget *, const QString &)> &PreLaunchWindow::RunnerFetcher()
+{
+    static std::function<bool(QWidget *, const QString &)> F;
+    return F;
+}
+void PreLaunchWindow::SetRunnerFetcher(std::function<bool(QWidget *, const QString &)> Fetch) { RunnerFetcher() = std::move(Fetch); }
+
 PreLaunchWindow::~PreLaunchWindow()
 {
     OpenWindows().removeAll(this);
@@ -588,7 +611,7 @@ void PreLaunchWindow::RebuildCover()
     const nlohmann::ordered_json* T = Index ? Index->Tile(Face(L)) : nullptr;
     const nlohmann::ordered_json& Meta = T ? *T : L->Meta;
     const std::string Title = Meta.is_object() ? Meta.value("TITLE", LaunchNodeId) : LaunchNodeId;
-    setWindowTitle("Launch " + QString::fromStdString(Title));
+    setWindowTitle(QString::fromStdString(Title) + " — VidyaGod");   // each game its own name in the taskbar
     if (TitleLabel) TitleLabel->setText(QString::fromStdString(Title));
     if (MetaLabel)
     {
@@ -774,6 +797,8 @@ void PreLaunchWindow::SetTabShown(QWidget* Page, bool Shown)
     const int I = Tabs->indexOf(Page);
     if (I < 0 || Tabs->isTabVisible(I) == Shown) return;
     Tabs->setTabVisible(I, Shown);
+    //A version with options, picked while the window sat on Advanced (the last one had none): its options show.
+    if (Shown && Page == OptionsPage && Tabs->currentWidget() == AdvancedPage) Tabs->setCurrentWidget(OptionsPage);
 }
 
 void PreLaunchWindow::UpdateLogTabTitle()
@@ -951,6 +976,7 @@ void PreLaunchWindow::onLaunchClicked()
     InstanceCombo->setEnabled(false); InstanceMenuButton->setEnabled(false);
     LaunchButton->setVisible(false); KillButton->setVisible(true); CloseButton->setEnabled(false);
     KillButton->setText("✕  Cancel"); KillButton->setEnabled(true);   // a launch stuck building can be called off at once
+    StopRequested = false;
     ProgressBar->setValue(0); ProgressBar->setVisible(true);
     StatusLabel->setStyleSheet(QString());
     StatusLabel->setText("Starting…");
@@ -1007,7 +1033,9 @@ void PreLaunchWindow::onLaunchClicked()
 
 void PreLaunchWindow::onKillClicked()
 {
-    if (LaunchWorker) LaunchWorker->kill();
+    if (!LaunchWorker) return;
+    LaunchWorker->kill();
+    if (LaunchWorker->isRunning()) { StopRequested = true; StatusLabel->setStyleSheet(QString()); StatusLabel->setText("Stopping…"); KillButton->setEnabled(false); }
 }
 
 void PreLaunchWindow::onLogLine(int level, QString context, QString message)
@@ -1041,12 +1069,12 @@ void PreLaunchWindow::flushConsole()
     SB->setValue(SB->maximum());
 }
 
-void PreLaunchWindow::onStatusChanged(QString status) { StatusLabel->setText(status); }
+void PreLaunchWindow::onStatusChanged(QString status) { if (!StopRequested) StatusLabel->setText(status); }
 
 void PreLaunchWindow::onProgressChanged(int value)
 {
     ProgressBar->setValue(value);
-    if (value >= 95)
+    if (value >= 95 && !StopRequested)   // a launch already told to stop is not offered again, nor closed away
     {
         KillButton->setEnabled(true);
         KillButton->setText("■  Stop game");
@@ -1056,11 +1084,17 @@ void PreLaunchWindow::onProgressChanged(int value)
 
 void PreLaunchWindow::onLaunchFinished(bool success, QString errorMsg)
 {
-    //Closed while it ran: it closes now — unless the launch failed, which is shown (the user must learn why).
+    //Closed while it ran: it closes now — unless the launch failed or logged errors, which is shown (the user must
+    //learn why). It closes once the worker thread has wound down, so the close never kills a thread finishing up.
     if (ClosedWhileRunning)
     {
         ClosedWhileRunning = false;
-        if (success) { QMetaObject::invokeMethod(this, [this]{ close(); }, Qt::QueuedConnection); }
+        if (success && LogErrors == 0)
+        {
+            if (LaunchWorker && LaunchWorker->isRunning())
+                connect(LaunchWorker, &QThread::finished, this, [this]{ close(); }, static_cast<Qt::ConnectionType>(Qt::QueuedConnection | Qt::SingleShotConnection));
+            else QMetaObject::invokeMethod(this, [this]{ close(); }, Qt::QueuedConnection);
+        }
         else bringBack();
     }
     ApplyGameLayout(false);

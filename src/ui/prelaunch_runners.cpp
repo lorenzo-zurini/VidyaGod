@@ -119,7 +119,7 @@ void PreLaunchWindow::RebuildRunnerChain()
 
 void PreLaunchWindow::RenderChainCombos()
 {
-    static const QString NoRunnerMsg = "No installed runner chain — download a compatible runner from the Catalog.";
+    static const QString NoRunnerMsg = "No installed runner can launch this.";
 
     // Tear down the previous step rows.
     ChainCombos.clear();
@@ -176,10 +176,31 @@ void PreLaunchWindow::RenderChainCombos()
     if (ChainHint)
     {
         if (CurrentChain.empty())
-            ChainHint->setText(QString("⚠ Nothing installed runs this on %1 — download a runner from the Catalog.").arg(QString::fromStdString(Machine)));
+            ChainHint->setText("⚠ No installed runner runs this on this machine.");
         else if (!Reaches)
-            ChainHint->setText(QString("⚠ This chain does not reach %1.").arg(QString::fromStdString(Machine)));
+            ChainHint->setText("⚠ These runners do not reach this machine.");
         ChainHint->setVisible(!Reaches);
+    }
+    //Nothing installed runs it: the runner it can use is offered right here (the Catalog lists games, not runners).
+    if (GetRunnerButton)
+    {
+        const Node *Offer = nullptr;
+        if (!Reaches && L0 && RunnerFetcher())
+            for (const Node *R : Installed::CompatibleRunners(*Index, *L0))
+                if (!Installed::RunnerInstalled(*Index, R->NodeId)) { Offer = R; break; }
+        GetRunnerButton->setVisible(Offer != nullptr);
+        if (Offer)
+        {
+            const QString Rid = QString::fromStdString(Offer->NodeId);
+            GetRunnerButton->setText("↓  Get " + RunnerDisplayName(Offer->NodeId));
+            GetRunnerButton->setEnabled(true);
+            GetRunnerButton->disconnect();
+            connect(GetRunnerButton, &QPushButton::clicked, this, [this, Rid] {
+                if (!RunnerFetcher()(this, Rid)) return;
+                GetRunnerButton->setEnabled(false);
+                GetRunnerButton->setText("Downloading… (the Downloads tab shows it) — open the game again when it is done");
+            });
+        }
     }
     if (LaunchButton) LaunchButton->setEnabled(Reaches);
     if (StatusLabel)

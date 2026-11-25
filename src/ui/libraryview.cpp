@@ -24,17 +24,28 @@
 #include <QDateTime>
 #include <QLocale>
 #include <QMessageBox>
+#include <QPushButton>
 #include <QMetaObject>
+
+#include <utility>
+#include <vector>
 
 // True if the embedded IPFS node can fetch content right NOW (started AND its network stack is up). Otherwise
 // shows the reason and returns false. The node runs in-process — there is no external daemon to install or start.
-bool IpfsFetchReady(QWidget * parent, const AppModel & Model)
+bool IpfsFetchReady(QWidget * parent, AppModel & Model)
 {
+    //Off: the box offers the action itself (in controller mode there is no banner or settings page to point at).
     if (!IpfsWrapper::Available() && !Model.networkingEnabled())
     {
-        QMessageBox::information(parent, "Networking is off",
-            "Downloading needs the network, and networking is off.\n\n"
-            "Turn it on with the banner at the top of the Catalog, or in Settings → IPFS.");
+        QMessageBox Ask(QMessageBox::Information, "Networking is off", "Downloading needs the network, and networking is off.",
+                        QMessageBox::NoButton, parent);
+        QPushButton *On = Ask.addButton("Turn on networking", QMessageBox::AcceptRole);
+        Ask.addButton(QMessageBox::Cancel);
+        Ask.setDefaultButton(On);
+        Ask.exec();
+        if (Ask.clickedButton() != On) return false;
+        Model.setNetworkingEnabled(true);
+        QMessageBox::information(parent, "Networking is starting", "Networking is starting. Try the download again in a few seconds.");
         return false;
     }
     if (!IpfsWrapper::Available())
@@ -156,6 +167,13 @@ void LibraryGameCard::InitializeClassVariables()
 void LibraryGameCard::play()
 {
     if (!Index || GroupNodeIds.empty()) return;
+    if (Missing)
+    {
+        QMessageBox::information(nullptr, GameTitle, "The files of this game are not on this computer, and no source or peer "
+                                 "offers them.\n\nIts package is at:\n" + QString::fromStdString(PackagePath.string()) +
+                                 "\n\nPut its files back there, or remove it in Settings → Installed Packages.");
+        return;
+    }
 
     //Node-graph validity is an AUTHORING concern, checked on demand in the Package Editor ("Check Package Validity"),
     //NOT on every launch: for large packages (e.g. a 900-deep delta chain with a launchable per version) validating
@@ -165,14 +183,10 @@ void LibraryGameCard::play()
     //Gate: installed runners must carry the (representative) edition to this machine — a PATH runner present on the
     //system or a hydrated build runner, directly or through a chain (a Windows-only engine under proton). A
     //compatible-but-not-installed runner does NOT count (you can't launch without it).
+    //With none, the launch window opens (and does not start): it says so and offers the runner to download.
+    bool NoRunner = false;
     if (const Node * Rep = Index->Find(RepNodeId))
-        if (!Installed::HasUsableChain(*Index, *Rep))
-        {
-            QMessageBox::warning(nullptr, "Runner unavailable",
-                "No installed runner can launch this game on this machine. "
-                "Download its runner from the Catalog (it's offered in the download dialog), then try again.");
-            return;
-        }
+        NoRunner = !Installed::HasUsableChain(*Index, *Rep);
 
     bool skip = false;
     if (!RepUid.empty()) {
@@ -185,7 +199,7 @@ void LibraryGameCard::play()
     if (PreLaunchWindow *Open = PreLaunchWindow::ExistingFor(FaceUid, GroupNodeIds)) { Open->bringBack(); return; }
     auto * dlg = new PreLaunchWindow(GlobalConfigJSON, IndexOwned, GroupNodeIds, FaceUid, nullptr);
     dlg->show();
-    if (skip && !shift)
+    if (skip && !shift && !NoRunner)
         QMetaObject::invokeMethod(dlg, "onLaunchClicked", Qt::QueuedConnection);
 }
 
@@ -541,32 +555,33 @@ void LibraryView::onPaint(QPaintEvent * e)
             }
         }
 
-        // "LOCAL" badge — a locally-added package (bundle outside any repo), top-left of the cover, small red text.
-        if (card->Local) {
-            QFont lf = TitleFont; lf.setBold(true);
-            lf.setPointSizeF(qMax(7.0, TitleFont.pointSizeF() - 1.0));
-            p.setFont(lf);
-            const QFontMetrics lfm(lf);
-            const QString lt = QStringLiteral("LOCAL");
-            const QRect lr(r.left() + 6, r.top() + 6, lfm.horizontalAdvance(lt) + 10, lfm.height() + 4);
-            p.setPen(Qt::NoPen); p.setBrush(QColor(0, 0, 0, 150)); p.drawRoundedRect(lr, 3, 3);
-            p.setPen(QColor(0xff, 0x55, 0x55)); p.drawText(lr, Qt::AlignCenter, lt);
-            p.setFont(TitleFont);
-        }
-
-        // "GOLDEN" badge — the user marked this package's golden pass done (a local, cosmetic marker), beside LOCAL.
-        if (card->Golden) {
-            QFont gf = TitleFont; gf.setBold(true);
-            gf.setPointSizeF(qMax(7.0, TitleFont.pointSizeF() - 1.0));
-            p.setFont(gf);
-            const QFontMetrics gfm(gf);
-            const QString gt = QStringLiteral("GOLDEN");
-            int gx = r.left() + 6;
-            if (card->Local) gx += gfm.horizontalAdvance(QStringLiteral("LOCAL")) + 10 + 4;   // after the LOCAL badge
-            const QRect gr(gx, r.top() + 6, gfm.horizontalAdvance(gt) + 10, gfm.height() + 4);
-            p.setPen(Qt::NoPen); p.setBrush(QColor(0, 0, 0, 150)); p.drawRoundedRect(gr, 3, 3);
-            p.setPen(QColor(0xff, 0xc8, 0x3d)); p.drawText(gr, Qt::AlignCenter, gt);
-            p.setFont(TitleFont);
+        // Badges, top-left of the cover in a row: LOCAL (a locally-added package), IN LIBRARY (the Catalog card of a
+        // game with an edition installed), MISSING (nothing of it here, nothing to fetch it from), GOLDEN (the user
+        // marked its golden pass done: a local, cosmetic marker).
+        if (card->Missing) p.fillRect(r, QColor(0, 0, 0, 160));
+        {
+            std::vector<std::pair<QString, QColor>> Badges;
+            if (card->Local)     Badges.push_back({QStringLiteral("LOCAL"),      QColor(0xff, 0x55, 0x55)});
+            if (card->InLibrary) Badges.push_back({QStringLiteral("IN LIBRARY"), QColor(0x7e, 0xd3, 0x8a)});
+            if (card->Missing)   Badges.push_back({QStringLiteral("MISSING"),    QColor(0xff, 0x9f, 0x43)});
+            if (card->Golden)    Badges.push_back({QStringLiteral("GOLDEN"),     QColor(0xff, 0xc8, 0x3d)});
+            if (!Badges.empty())
+            {
+                QFont bf = TitleFont; bf.setBold(true);
+                bf.setPointSizeF(qMax(7.0, TitleFont.pointSizeF() - 1.0));
+                p.setFont(bf);
+                const QFontMetrics bfm(bf);
+                int bx = r.left() + 6;
+                for (const auto &[Text, Colour] : Badges)
+                {
+                    const QRect br(bx, r.top() + 6, bfm.horizontalAdvance(Text) + 10, bfm.height() + 4);
+                    if (br.right() > r.right() - 4) break;   // a narrow card shows the ones that fit
+                    p.setPen(Qt::NoPen); p.setBrush(QColor(0, 0, 0, 150)); p.drawRoundedRect(br, 3, 3);
+                    p.setPen(Colour); p.drawText(br, Qt::AlignCenter, Text);
+                    bx = br.right() + 5;
+                }
+                p.setFont(TitleFont);
+            }
         }
 
         // In-flight import (Available): darken + a centered "Downloading…" label and a progress bar; no hover.

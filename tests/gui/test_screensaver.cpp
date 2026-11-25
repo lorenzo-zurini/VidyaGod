@@ -4,6 +4,7 @@
 #include <QtTest>
 #include <QImage>
 #include <QLineEdit>
+#include <QScreen>
 #include <QVBoxLayout>
 
 #include <nlohmann/json.hpp>
@@ -92,7 +93,8 @@ private slots:
         ScreenSaver S(&Screen, [] { return 1; });
         QVERIFY(!S.showing());
         QTRY_VERIFY_WITH_TIMEOUT(S.showing(), 3000);
-        QCOMPARE(S.rain()->geometry(), Screen.rect());
+        QVERIFY(S.rain()->isWindow());                                  // over every window, not inside this one
+        QCOMPARE(S.rain()->geometry(), Screen.screen()->geometry());   // the whole screen
         QTest::keyClick(Field, Qt::Key_X);
         QVERIFY(!S.showing());
         QCOMPARE(Field->text(), QString());                            // the key that ended it typed nothing

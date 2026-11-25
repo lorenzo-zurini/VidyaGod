@@ -828,14 +828,14 @@ SaveReport Document::Save(const fs::path &Dir, const std::vector<fs::path> &Root
         const bool Existed = ReadFile(W.Path, Have);
         if (Existed && Have == W.Bytes) continue;         // already there, byte for byte
         std::string Err;
-        if (!WriteFileAtomic(W.Path, W.Bytes, Err))
+        if (!WriteFileAtomic(W.Path, W.Bytes, Err, true))
         {
             std::vector<std::string> Stuck;
             for (auto It = Journal.rbegin(); It != Journal.rend(); ++It)
             {
                 std::string E2;
                 std::error_code Ec;
-                if (It->Existed ? !WriteFileAtomic(It->Path, It->Old, E2) : !fs::remove(It->Path, Ec))
+                if (It->Existed ? !WriteFileAtomic(It->Path, It->Old, E2, true) : !fs::remove(It->Path, Ec))
                     Stuck.push_back(It->Path.string());
             }
             R.Written = 0; R.Cascaded = 0; R.InstancesUpdated = 0; R.Renamed.clear(); R.Kept.clear(); R.Log.clear();

@@ -159,6 +159,13 @@ private slots:
         Press(Bus.Address, QStringLiteral("ui_accept"));
         QTRY_VERIFY_WITH_TIMEOUT(O.quitArmed(), 3000);
         QCOMPARE(Quits, 0);
+        //Moving off it disarms it: a press there much later must not quit. (Teeth: armed until the overlay closes.)
+        Press(Bus.Address, QStringLiteral("ui_up"));
+        QTRY_VERIFY_WITH_TIMEOUT(!O.quitArmed(), 3000);
+        Quit->setFocus();
+        Press(Bus.Address, QStringLiteral("ui_accept"));
+        QTRY_VERIFY_WITH_TIMEOUT(O.quitArmed(), 3000);
+        QCOMPARE(Quits, 0);
         Press(Bus.Address, QStringLiteral("ui_accept"));
         QTRY_COMPARE_WITH_TIMEOUT(Quits, 1, 3000);
         QVERIFY(!O.isOpen());

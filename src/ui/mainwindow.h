@@ -83,6 +83,8 @@ private:
     TrayController  * Tray        = nullptr;    // tray icon + close/minimize/start-in-tray behavior
     bool              ReallyQuitting = false;   // set by the tray "Quit" path so closeEvent quits instead of hiding
     bool QuittingAfterGames = false;   // quitting, the running game being ended first (closeEvent)
+    bool AskingToQuit = false;         // the quit question is on screen: a second close does not ask twice
+    bool ForceQuit = false;            // asked again while the game was closing, and told to quit at once
 
     QTabWidget * MainWindowTabWidget = nullptr;
     LibraryTab  * LibraryTabPtr  = nullptr;

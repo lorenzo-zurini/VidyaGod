@@ -1,5 +1,7 @@
 #include "eventlog.h"
 #include "mainwindow.h"
+#include "offlinebanner.h"
+#include "libraryview.h"   // IpfsFetchReady
 #include <QMessageBox>
 #include "containerwrapper.h"   // LiveCount / StopAll / WaitNoneLive — a game running is ended before quitting
 #include "packageeditor.h"
@@ -65,18 +67,25 @@ MainWindow::~MainWindow() { PackageEditor::SetOnCreated({}); }
 MainWindow::MainWindow(nlohmann::ordered_json * gc, QDir * appData, QWidget * parent, bool FromLastIndex, bool StartController)
     : QMainWindow(parent)
 {
-    setWindowTitle("Vidya God");
+    setWindowTitle("VidyaGod");
     setWindowIcon(QIcon(":/vidyagod.png"));
     setMinimumSize(640, 480);
 
     Model = new AppModel(gc, appData, this, FromLastIndex);   // owns config + catalog + persisted UI state (card size, etc.)
     //Every package editor, wherever it opens: a save refreshes what shows the package, and Publish republishes the
     //package off the GUI thread (AppModel owns the re-mint and its persistence; the editor only asks).
+    //A launch window with no runner for its game fetches one through the same pump as Settings → Runners.
+    PreLaunchWindow::SetRunnerFetcher([this](QWidget *Parent, const QString &Rid) {
+        if (!IpfsFetchReady(Parent, *Model)) return false;
+        Model->importRunner(Rid);
+        return true;
+    });
     PackageEditor::SetOnCreated([this](PackageEditor * Ed) {
         connect(Ed, &PackageEditor::packageSaved, &MainWindow::RefreshPackage);
         connect(Ed, &PackageEditor::publishToLibraryRequested, Model, &AppModel::publishPackage);
         connect(Ed->actions(), &PkgActions::testLaunchRequested, Ed, [Ed, this](std::shared_ptr<const NodeIndex> Idx, const QString & Node) {
-            auto * Dlg = new PreLaunchWindow(Model->config(), Idx, {Node.toStdString()}, std::string(), Ed);   // the node's first tile
+            //Parentless: closing the editor never takes a running game's window (and with it the game) down.
+            auto * Dlg = new PreLaunchWindow(Model->config(), Idx, {Node.toStdString()}, std::string(), nullptr);   // the node's first tile
             Dlg->setAttribute(Qt::WA_DeleteOnClose);
             Dlg->show();
         });
@@ -204,19 +213,24 @@ void MainWindow::BuildDesktop()
 {
     if (MainWindowTabWidget) return;
     MainWindowTabWidget = new QTabWidget(DesktopPage);
+    //One banner for the whole window while networking is off, over every tab (each tab said it its own way, and the
+    //Library not at all).
+    DesktopPage->layout()->addWidget(new OfflineBanner(*Model, "Networking is off — nothing downloads or seeds, and peers "
+                                                       "cannot reach you. Installed games still play.", DesktopPage));
     DesktopPage->layout()->addWidget(MainWindowTabWidget);
 
     LibraryTabPtr  = new LibraryTab(*Model, MainWindowTabWidget);
     CatalogTabPtr  = new CatalogTab(*Model, MainWindowTabWidget);
-    SettingsTabPtr = new SettingsTab(*Model, MainWindowTabWidget);
     IpfsTabPtr     = new IpfsTab(*IpfsModelPtr, MainWindowTabWidget);
     NetworkTabPtr  = new NetworkTab(*Model, MainWindowTabWidget);
+    SettingsTabPtr = new SettingsTab(*Model, MainWindowTabWidget);
 
+    //What you have, what you can get, what is moving, who with — and the preferences last.
     MainWindowTabWidget->addTab(LibraryTabPtr,  "Library");
     MainWindowTabWidget->addTab(CatalogTabPtr,  "Catalog");
-    MainWindowTabWidget->addTab(SettingsTabPtr, "Settings");
-    MainWindowTabWidget->addTab(IpfsTabPtr,     "IPFS");
+    MainWindowTabWidget->addTab(IpfsTabPtr,     "Downloads");
     MainWindowTabWidget->addTab(NetworkTabPtr,  "Peers");
+    MainWindowTabWidget->addTab(SettingsTabPtr, "Settings");
     //Every tab on the window's own colour: Fusion's tab pane is a lighter shade, and pages that paint nothing of their
     //own (Settings, Network) showed it — a second palette beside the Library's.
     for (int I = 0; I < MainWindowTabWidget->count(); ++I) MainWindowTabWidget->widget(I)->setAutoFillBackground(true);
@@ -374,16 +388,33 @@ void MainWindow::closeEvent(QCloseEvent * e)
     //package keeps — saves, settings, registry) and its runtime comes down, THEN VidyaGod exits. Exiting at once killed
     //the game (its sandbox dies with its parent) and lost the session's saves. Asked first: quitting is not how a game
     //is stopped by mistake.
-    if (ContainerWrapper::LiveCount() > 0)
+    if (ContainerWrapper::LiveCount() > 0 && !ForceQuit)
     {
         e->ignore();
-        if (QuittingAfterGames) return;                 // already ending them
+        if (AskingToQuit) return;                       // the question is already on screen (a second Quit from the tray)
+        if (QuittingAfterGames)                         // asked again while the game is still closing: it may be stuck
+        {
+            AskingToQuit = true;
+            QMessageBox Stuck(QMessageBox::Warning, "Quit VidyaGod", "The game is still closing.", QMessageBox::NoButton, this);
+            Stuck.setInformativeText("VidyaGod quits by itself once its saves and settings are stored. Quitting now may lose what this session changed.");
+            QPushButton *Now = Stuck.addButton("Quit now", QMessageBox::DestructiveRole);
+            QPushButton *Wait = Stuck.addButton("Wait", QMessageBox::RejectRole);
+            Stuck.setDefaultButton(Wait);
+            Stuck.exec();
+            AskingToQuit = false;
+            if (Stuck.clickedButton() != Now) return;
+            ForceQuit = true;
+            QMetaObject::invokeMethod(this, [this] { close(); }, Qt::QueuedConnection);
+            return;
+        }
+        AskingToQuit = true;
         QMessageBox Ask(QMessageBox::Warning, "Quit VidyaGod", "A game is running.", QMessageBox::NoButton, this);
         Ask.setInformativeText("Quitting closes it. Its saves and settings are stored first.");
         QPushButton *Quit = Ask.addButton("Close the game and quit", QMessageBox::DestructiveRole);
         QPushButton *Keep = Ask.addButton("Keep playing", QMessageBox::RejectRole);
         Ask.setDefaultButton(Keep);
         Ask.exec();
+        AskingToQuit = false;
         if (Ask.clickedButton() != Quit) { ReallyQuitting = false; return; }
         QuittingAfterGames = true;
         ReallyQuitting = true;

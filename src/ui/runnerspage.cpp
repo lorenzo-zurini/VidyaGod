@@ -196,7 +196,7 @@ void RunnersPage::rebuild()
             connect(btn, &QPushButton::clicked, this, [this, rid, btn, Row]{
                 if (!IpfsFetchReady(this, Model)) return;              // need the embedded node online to fetch
                 btn->setEnabled(false); btn->setText("Downloading…");
-                Row->setText(2, "Downloading… (see IPFS tab)");
+                Row->setText(2, "Downloading… (see the Downloads tab)");
                 Row->setForeground(2, QColor(Theme::Warn));
                 Model.importRunner(QString::fromStdString(rid));   // → download pump; catalogChanged rebuilds this page
             });

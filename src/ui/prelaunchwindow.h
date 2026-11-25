@@ -2,6 +2,7 @@
 #define PRELAUNCHWINDOW_H
 
 #include <QDialog>
+#include <functional>
 #include <QThread>
 #include <QMutex>
 #include <QProgressBar>
@@ -64,6 +65,12 @@ public:
     //The window already open for a tile (its face and rows), or null: a tile has one launch window, raised when its card
     //is clicked again — a second one could start a second launch of the same game.
     static PreLaunchWindow *ExistingFor(const std::string &FaceUid, const std::vector<std::string> &GroupNodeIds);
+    //How a missing runner is fetched (the app's one download pump; set once by the main window). Unset: the window
+    //only says that none is installed. True: the download was queued.
+    static void SetRunnerFetcher(std::function<bool(QWidget *Parent, const QString &RunnerNodeId)> Fetch);
+private:
+    static std::function<bool(QWidget *, const QString &)> &RunnerFetcher();
+public:
     //Shows it (again: one closed while its game ran is only hidden) and brings it to the front.
     void bringBack();
     //Whether its launch is under way (building the runtime, or the game running).
@@ -219,6 +226,7 @@ private:
     std::string             InstanceName;   // the instance this window reads, saves and launches
 
     LaunchThread* LaunchWorker = nullptr;
+    bool StopRequested = false;                      // Cancel/Stop was pressed: the window says "Stopping…" until it ends
 
     // ----- widgets -----
     QLabel*       CoverLabel        = nullptr;
@@ -247,6 +255,7 @@ private:
     QWidget*      ChainContainer    = nullptr;  // holds the per-step rows
     QHBoxLayout*  ChainLayout       = nullptr;   // the steps, left to right
     QLabel*       ChainHint         = nullptr;  // "→ linux64" validity hint under the chain
+    QPushButton*  GetRunnerButton   = nullptr;  // "Get <runner>": nothing installed runs it, and the Catalog has one
     std::vector<QComboBox*>  ChainCombos;       // one per chain step (rebuilt each render)
     std::vector<std::string> CurrentChain;      // the chosen chain (innermost→outermost runner node ids)
     QComboBox*    VariantCombo      = nullptr;

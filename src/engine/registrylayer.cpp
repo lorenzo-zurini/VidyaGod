@@ -322,7 +322,7 @@ bool RegistryLayer::CapturePersistRegKeys(struct ContainerParams &ContainerParam
             LogErr("RegistryLayer::CapturePersistRegKeys", "Cannot create the durable REGKEYS store: " + Why);
             return false;
         }
-        if (!Durable.SavePrefix(Store))
+        if (!Durable.SavePrefix(Store, true))
         {
             LogErr("RegistryLayer::CapturePersistRegKeys", "Failed to write durable REGKEYS store.");
             return false;

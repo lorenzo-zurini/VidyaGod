@@ -2,6 +2,8 @@
 // PadRouter), the on-screen keyboard, and the controller shell (DeckShell) over a small real library.
 
 #include <QtTest/QtTest>
+#include <QScrollArea>
+#include <set>
 #include <QApplication>
 #include <QCheckBox>
 #include <QComboBox>
@@ -25,6 +27,7 @@
 #include "commandserver.h"
 #include "deckgrid.h"
 #include "deckshell.h"
+#include "cardpool.h"
 #include "deckstyle.h"
 #include "prelaunchwindow.h"
 #include "layouteditor.h"
@@ -601,6 +604,42 @@ private slots:
         Sh.setActive(false);
     }
 
+    // A game is in the Library as soon as one edition of it is installed (with that edition), and its Catalog card
+    // offers the rest marked IN LIBRARY; a game with nothing here and nothing to fetch it from is shown MISSING, not
+    // dropped from every tab. Teeth: the Library asking every edition installed (Lima gone), or the missing one skipped.
+    void a_game_with_one_edition_installed_is_in_the_library()
+    {
+        namespace NF = NodeFixture;
+        LibraryFixture L;
+        const std::string Root = (L.Dir.path() + "/LIBRARY/VidyaGod/").toStdString();
+        const std::string Lima = Root + "[12] Lima", Mike = Root + "[13] Mike";
+        std::filesystem::create_directories(Lima);
+        std::filesystem::create_directories(Mike);
+        NF::WriteNodes(Lima + "/a.json", NF::Chain("la", {NF::Tile("12", "Lima"), NF::Exec("win32", "g.exe"),
+                                                          NF::ContentCid("zip", "a.zip", "bafkreilimaa")}, {}, {{"VARIANT", "A"}}));
+        NF::WriteNodes(Lima + "/b.json", NF::Chain("lb", {NF::Tile("12", "Lima"), NF::Exec("win32", "g.exe"),
+                                                          NF::ContentCid("zip", "b.zip", "bafkreilimab")}, {}, {{"VARIANT", "B"}}));
+        std::ofstream(Lima + "/a.zip") << "content";
+        NF::WriteNodes(Mike + "/m.json", NF::Chain("mk", {NF::Tile("13", "Mike"), NF::Exec("win32", "g.exe"),
+                                                          NF::Content("zip", "m.zip")}, {}, {{"VARIANT", "Edition"}}));
+        AppModel M(&L.Cfg, &L.AppDir);
+        M.rebuildCatalog();
+        const QList<LibraryGameCard *> Here = CardPool::Installed(M), Get = CardPool::Available(M);
+        const auto Find = [](const QList<LibraryGameCard *> &Cards, const char *Uid) -> LibraryGameCard * {
+            for (LibraryGameCard *C : Cards) if (C->GameKey == Uid) return C;
+            return nullptr;
+        };
+        LibraryGameCard *LimaHere = Find(Here, "12"), *LimaGet = Find(Get, "12"), *MikeHere = Find(Here, "13");
+        QVERIFY(LimaHere && !LimaHere->Missing);
+        QCOMPARE(LimaHere->GroupNodeIds.size(), std::size_t(1));                   // the installed edition only
+        QVERIFY(LimaGet && LimaGet->InLibrary);
+        QVERIFY(MikeHere && MikeHere->Missing && !Find(Get, "13"));
+        QVERIFY(Find(Here, "1") && !Find(Here, "1")->Missing && !Find(Here, "9"));   // the plain cases stay as they were
+        QVERIFY(!Find(Get, "9")->InLibrary);
+        qDeleteAll(Here);
+        qDeleteAll(Get);
+    }
+
     // A game's page offers its controller layout: the configurator, opened for that game. Teeth: the button missing,
     // or the configurator opened for no game (it could not then choose the layout for it).
     void a_games_page_opens_its_controller_layout()
@@ -857,6 +896,60 @@ private slots:
         Sh.setActive(false);
     }
 
+    // A hosted page in a scroll area (Peers) is walked by pad: focus lands on a control on the page, never on the scroll
+    // area holding it, and the directions move through the page's controls. Teeth: a plain scroll area as a stop (it
+    // took focus first and no press ever left it).
+    void a_hosted_pages_controls_are_reached_by_pad()
+    {
+        LibraryFixture L;
+        AppModel M(&L.Cfg, &L.AppDir);
+        M.rebuildCatalog();
+        IpfsModel Ipfs(M);
+        DownloadManager Dl(M, Ipfs);
+        DeckShell Sh(M, Ipfs, Dl);
+        Sh.resize(1280, 800);
+        Front(Sh);
+        Sh.setActive(true);
+        Sh.showSection(DeckShell::Section::Peers);
+        QCoreApplication::processEvents();
+        QWidget *F = QApplication::focusWidget();
+        QVERIFY(F && !qobject_cast<QScrollArea *>(F));
+        std::set<QWidget *> Seen{F};
+        for (int I = 0; I < 6; ++I) { Press(B::Down); Seen.insert(QApplication::focusWidget()); }
+        QVERIFY2(Seen.size() >= 3, "the directions do not move through the page");
+        Sh.setActive(false);
+    }
+
+    // B inside a Settings page goes back to its sidebar, where the user came from; B on the sidebar goes Home. Teeth:
+    // B from the page straight Home (the place lost).
+    void b_in_a_settings_page_goes_back_to_its_sidebar()
+    {
+        LibraryFixture L;
+        AppModel M(&L.Cfg, &L.AppDir);
+        M.rebuildCatalog();
+        IpfsModel Ipfs(M);
+        DownloadManager Dl(M, Ipfs);
+        DeckShell Sh(M, Ipfs, Dl);
+        Sh.resize(1280, 800);
+        Front(Sh);
+        Sh.setActive(true);
+        Sh.showSection(DeckShell::Section::Settings);
+        QCoreApplication::processEvents();
+        auto *Side = Sh.findChild<QListWidget *>("SettingsSidebar");
+        QVERIFY(Side);
+        QWidget *InPage = nullptr;
+        for (QCheckBox *C : Sh.findChildren<QCheckBox *>()) if (C->isVisible() && !Side->isAncestorOf(C)) { InPage = C; break; }
+        QVERIFY(InPage);
+        InPage->setFocus();
+        QCoreApplication::processEvents();
+        Press(B::B);
+        QCOMPARE(Sh.section(), DeckShell::Section::Settings);
+        QCOMPARE(QApplication::focusWidget(), static_cast<QWidget *>(Side));
+        Press(B::B);
+        QCOMPARE(Sh.section(), DeckShell::Section::Home);
+        Sh.setActive(false);
+    }
+
     // Start opens the menu; it takes every press; its first item leaves for the desktop. Teeth: the menu lets presses
     // through to the shelf; choose nothing.
     void the_menu_opens_with_start_and_leaves_for_the_desktop()
@@ -903,7 +996,16 @@ private slots:
         Press(B::Start);
         QVERIFY(Sh.menuOpen());
         QCOMPARE(Sh.padState()["menu"]["items"][5].get<std::string>(), std::string("Controller settings"));
-        Press(B::Up, 2);   // round from the first item to the last but one
+        Press(B::Up);      // no wrap: Up at the first item stays there
+        QCOMPARE(Sh.padState()["menu"]["current"].get<std::string>(), std::string("Desktop mode"));
+        Press(B::Down, 6);  // the last item: Quit, asked twice
+        Press(B::A);
+        QVERIFY(Sh.menuOpen());
+        QCOMPARE(Sh.padState()["menu"]["current"].get<std::string>(), std::string("Press A again to quit"));
+        Press(B::Up);      // moving off disarms it
+        Press(B::Down);
+        QCOMPARE(Sh.padState()["menu"]["current"].get<std::string>(), std::string("Quit VidyaGod"));
+        Press(B::Up);
         Press(B::A);
         QVERIFY(!Sh.menuOpen());
         QCOMPARE(Sh.section(), DeckShell::Section::Settings);

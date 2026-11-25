@@ -248,12 +248,13 @@ void PathsPage::buildCleanUp(QVBoxLayout * pl)
         Row->addWidget(B);
         Row->addWidget(L, 1);
         pl->addLayout(Row);
-        connect(B, &QPushButton::clicked, this, [B, L, Do]{
+        connect(B, &QPushButton::clicked, this, [B, L, Do, What]{
             B->setEnabled(false);
             auto Said = std::make_shared<QString>();
             QPointer<QPushButton> Pb(B);
             QPointer<QLabel> Pl(L);
-            AsyncWork::Run(B, [Do, Said]{ *Said = Do(); }, [Pb, Pl, Said]{ if (Pb) Pb->setEnabled(true); if (Pl) Pl->setText(*Said); });
+            //The result goes under what the button does: the row still says it (it was replaced for good).
+            AsyncWork::Run(B, [Do, Said]{ *Said = Do(); }, [Pb, Pl, Said, What]{ if (Pb) Pb->setEnabled(true); if (Pl) Pl->setText(What + "\n" + *Said); });
         });
     };
     Action("Clear left-over sessions", "Game sessions whose game is no longer running (a crash, a power cut) — what VidyaGod "

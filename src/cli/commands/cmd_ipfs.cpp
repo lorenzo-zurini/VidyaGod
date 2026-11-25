@@ -1,6 +1,6 @@
 // `VidyaGod ipfs …`, `queue …`, `transfers …`, `downloads …` — the embedded IPFS node (status, fetch, add, blocks,
 // pins, the health of what it serves, identity, the LAN overlay), the ONE network queue every fetch takes a slot of,
-// the IPFS tab's per-CID state, and the Catalog's downloads.
+// the Downloads tab's per-CID state, and the Catalog's downloads.
 #include "command.h"
 #include "cmdutil.h"
 #include "downloadmanager.h"
@@ -113,7 +113,7 @@ VG_COMMANDS
     using Command::Flag;
     Command::RegisterGroup("ipfs", "the embedded IPFS node: status, fetch, add, blocks, pins, serving health, identity");
     Command::RegisterGroup("queue", "the ONE network queue: batches, jobs, where fetches land, cancel and prioritise");
-    Command::RegisterGroup("transfers", "the IPFS tab: every CID the app tracks, its phase, progress, health");
+    Command::RegisterGroup("transfers", "the Downloads tab: every CID the app tracks, its phase, progress, health");
     Command::RegisterGroup("downloads", "the Catalog's downloads: start, follow, cancel, resume");
 
     // ---------------- ipfs: the node ----------------
@@ -295,7 +295,7 @@ VG_COMMANDS
     Command::Register({
         "ipfs serves", "whether each of several CIDs serves here, checked together",
         "For each CID (comma-separated): what serving it would meet (a backing file gone or cut short) and whether a file "
-        "it is referenced into is gone — one pass over them all, a block several reach walked once: what the IPFS tab "
+        "it is referenced into is gone — one pass over them all, a block several reach walked once: what the Downloads tab "
         "asks of its pins.", { CidArg() }, { "ipfs serves Qm…,bafy…" }, { "IpfsWrapper::CidServeStatusMany" }, Needs::Config, true,
         [](Command::Context &, const json &A) {
             const std::string C = Command::Str(A, "cid");
@@ -314,7 +314,7 @@ VG_COMMANDS
         }, {}, true });
 
     Command::Register({
-        "ipfs pins", "every pinned CID (what this node keeps and serves)", "The pin set the IPFS tab reconciles against.", {},
+        "ipfs pins", "every pinned CID (what this node keeps and serves)", "The pin set the Downloads tab reconciles against.", {},
         { "ipfs pins", "ipfs pins --json" }, { "IpfsWrapper::Pins" }, Needs::Config, true,
         [](Command::Context &, const json &) {
             json Out = json::array();
@@ -625,10 +625,10 @@ VG_COMMANDS
             return json{{"ok", true}};
         }, {} });
 
-    // ---------------- transfers (the IPFS tab's model) ----------------
+    // ---------------- transfers (the Downloads tab's model) ----------------
     Command::Register({
-        "transfers list", "every CID the IPFS tab tracks, with its phase and progress, and the node strip",
-        "The IPFS tab's rows exactly: label, package, category, library, phase (pending, queued, downloading, pinning, "
+        "transfers list", "every CID the Downloads tab tracks, with its phase and progress, and the node strip",
+        "The Downloads tab's rows exactly: label, package, category, library, phase (pending, queued, downloading, pinning, "
         "stalled, errored, seeded), percent, size, speed, providers, a missing backing file, uploading, announced — "
         "and the status strip. Filter by --phase or --search.",
         { Opt("phase", "only this phase"), Opt("search", "label or package contains this") },
@@ -651,13 +651,13 @@ VG_COMMANDS
         }, {} });
 
     Command::Register({
-        "transfers show", "one CID's row in the IPFS tab", "Its full state, its size and percent as the download manager reads them.",
+        "transfers show", "one CID's row in the Downloads tab", "Its full state, its size and percent as the download manager reads them.",
         { CidArg() }, { "transfers show Qm…" },
         { "IpfsModel::has", "IpfsModel::state", "IpfsModel::stateRef", "IpfsModel::pct", "IpfsModel::size" }, Needs::Ui, false,
         [](Command::Context &C, const json &A) {
             IpfsModel &M = *Win(C).ipfsModel();
             const QString Q = QString::fromStdString(Command::Str(A, "cid"));
-            if (!M.has(Q) || !M.stateRef(Q)) throw Command::BadArgs("the IPFS tab tracks no '" + Q.toStdString() + "'");
+            if (!M.has(Q) || !M.stateRef(Q)) throw Command::BadArgs("the Downloads tab tracks no '" + Q.toStdString() + "'");
             json R = Row(Q, M.state(Q));
             R["pct_read"] = M.pct(Q);
             R["size_read"] = M.size(Q);
@@ -665,7 +665,7 @@ VG_COMMANDS
         }, {} });
 
     Command::Register({
-        "transfers package", "a package's folder in the IPFS tab, and its pin folder",
+        "transfers package", "a package's folder in the Downloads tab, and its pin folder",
         "Where the tab's package row points, and its pin folder: what a pinning service is given to hold that package.",
         { Pos("package", "the package name as the tab shows it") }, { "transfers package 'Age of Empires II'" },
         { "IpfsModel::packageDir", "IpfsModel::packagePin" }, Needs::Ui, false,
@@ -676,7 +676,7 @@ VG_COMMANDS
         }, {} });
 
     Command::Register({
-        "transfers act", "what the IPFS tab's buttons do: cancel, prioritise, recheck, unpin, seed, add a source",
+        "transfers act", "what the Downloads tab's buttons do: cancel, prioritise, recheck, unpin, seed, add a source",
         "The tab's actions on CIDs (comma-separated): --cancel aborts a download, --prioritize jumps the queue, "
         "--recheck re-counts providers and stats backing files, --force-recheck reads every block back, --unpin stops "
         "seeding; --seed adds a folder's content; --add-source CID,NAME adds a package source; --refresh re-gathers "

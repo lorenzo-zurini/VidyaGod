@@ -8,7 +8,8 @@ class QPushButton;
 class QTreeWidget;
 class QLabel;
 
-// Settings → Network: the "is my firewall the problem?" panel, in two halves.
+// Settings → Network: the networking switch and the download limit, then the "is my firewall the problem?" panel in
+// two halves.
 //  LIVE SERVICE HEALTH (top): a passive introspection of every Go service (node, host, reachability, DHT,
 //  bitswap, deliverability, announce, mDNS, peers, LAN links, overlay, tri-plane, DoH) polled every few
 //  seconds while the page is visible — a service that silently died shows up here as ✗ within seconds.

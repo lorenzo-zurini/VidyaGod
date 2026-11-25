@@ -84,8 +84,8 @@ public:
     [[nodiscard]] bool LoadPrefix(const std::filesystem::path &PrefixPath);
 
     //Saving — emits the WINE REGISTRY Version 2 format.
-    [[nodiscard]] bool SaveHiveFile(const std::filesystem::path &File, HiveRoot Root) const;
-    [[nodiscard]] bool SavePrefix(const std::filesystem::path &PrefixPath) const;
+    [[nodiscard]] bool SaveHiveFile(const std::filesystem::path &File, HiveRoot Root, bool Durable = false) const;
+    [[nodiscard]] bool SavePrefix(const std::filesystem::path &PrefixPath, bool Durable = false) const;   // Durable: flushed to the disk (the user's own store)
 
     //Path-addressed access. FullPath uses the HK* abbreviations (e.g. "HKLM\\Software\\Foo");
     //the root prefix selects the hive and is stripped to the in-hive relative path.

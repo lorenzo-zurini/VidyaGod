@@ -1,4 +1,5 @@
 #include "settingstab.h"
+#include <QScrollArea>
 #include "appmodel.h"
 #include "generalpage.h"
 #include "controllerpage.h"
@@ -6,7 +7,6 @@
 #include "packagesview.h"
 #include "runnerspage.h"
 #include "sourcespage.h"
-#include "ipfssettingspage.h"
 #include "networkpage.h"
 #include "pathspage.h"
 #include "theme.h"
@@ -27,6 +27,7 @@ SettingsTab::SettingsTab(AppModel &model, QWidget *parent)
     CategoryList = new QListWidget(this);
     CategoryList->setObjectName("SettingsSidebar");   // its look: Theme
     CategoryList->setAccessibleName("Settings pages");
+    CategoryList->setProperty("padPane", true);   // a controller's B from a page comes back here (DeckShell)
     CategoryList->setFixedWidth(200);
     CategoryList->setFrameShape(QFrame::NoFrame);
     CategoryList->setIconSize(QSize(16, 16));
@@ -37,12 +38,11 @@ SettingsTab::SettingsTab(AppModel &model, QWidget *parent)
     };
     Add(QStyle::SP_FileDialogDetailedView, "General");
     Add(QStyle::SP_MediaPlay, "Controller");
-    Add(QStyle::SP_MessageBoxWarning, "Dependencies");
+    Add(QStyle::SP_FileDialogInfoView, "Dependencies");   // not a warning sign: one that is always there is ignored
     Add(QStyle::SP_DriveHDIcon, "Installed Packages");
     Add(QStyle::SP_DesktopIcon, "Runners");
     Add(QStyle::SP_DirLinkIcon, "Sources");
-    Add(QStyle::SP_DriveNetIcon, "IPFS");
-    Add(QStyle::SP_ComputerIcon, "Network");
+    Add(QStyle::SP_DriveNetIcon, "Network");
     Add(QStyle::SP_DirIcon, "Storage & Paths");
     outer->addWidget(CategoryList);
 
@@ -59,7 +59,6 @@ SettingsTab::SettingsTab(AppModel &model, QWidget *parent)
         [this]{ return static_cast<QWidget *>(new PackagesView(Model, Stack)); },
         [this]{ return static_cast<QWidget *>(new RunnersPage(Model, Stack)); },
         [this]{ return static_cast<QWidget *>(new SourcesPage(Model, Stack)); },
-        [this]{ return static_cast<QWidget *>(new IpfsSettingsPage(Model, Stack)); },
         [this]{ return static_cast<QWidget *>(new NetworkPage(Model, Stack)); },
         [this]{ return static_cast<QWidget *>(new PathsPage(Model, Stack)); },
     };
@@ -85,7 +84,16 @@ void SettingsTab::showPage(int row)
     if (row < 0 || row >= (int)PageFactories.size()) return;
     if (!Pages[row])
     {
-        Pages[row] = Theme::Capped(PageFactories[row]());   // content no wider than a page reads well
+        //Content no wider than a page reads well, in a scroll area: a small window scrolls a long page instead of
+        //crushing its rows into each other (and never sideways: the page's text wraps).
+        auto * Scroll = new QScrollArea(Stack);
+        Scroll->setFrameShape(QFrame::NoFrame);
+        Scroll->setWidgetResizable(true);
+        Scroll->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+        Scroll->setWidget(Theme::Capped(PageFactories[row]()));
+        Scroll->viewport()->setAutoFillBackground(false);
+        Scroll->widget()->setAutoFillBackground(false);
+        Pages[row] = Scroll;
         QWidget * placeholder = Stack->widget(row);       // pointer to the slot's placeholder
         Stack->insertWidget(row, Pages[row]);             // real page takes index `row`; placeholder shifts to row+1
         Stack->removeWidget(placeholder);                 // remove by pointer — leaves index `row` intact

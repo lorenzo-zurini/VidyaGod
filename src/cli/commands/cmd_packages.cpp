@@ -538,7 +538,7 @@ VG_COMMANDS
         "packages heal", "re-point content references that broke (moved or changed files)",
         "Repair this machine's serving of the library: re-add files whose references were lost, re-seed changed bytes, "
         "drop references to what is gone. --deep reads every reference back from the store.",
-        { Flag("deep", "verify every reference's bytes (slow)"), Flag("prune-unreferenced", "also unpin healthy pins nothing references (the IPFS tab's \"unknown\")") }, { "packages heal", "packages heal --deep" },
+        { Flag("deep", "verify every reference's bytes (slow)"), Flag("prune-unreferenced", "also unpin healthy pins nothing references (the Downloads tab's \"unknown\")") }, { "packages heal", "packages heal --deep" },
         { "PackageCatalog::HealSourceContent", "PackageCatalog::HealReport::Ok" }, Needs::Config, true,
         [](Command::Context &C, const json &A) {
             PackageCatalog::HealOptions O;

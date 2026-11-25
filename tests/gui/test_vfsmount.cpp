@@ -151,7 +151,7 @@ private slots:
         Put(Live / "WRITELAYER" / "save.dat");
         QVERIFY(Sessions::SessionOwned(Live));
         QCOMPARE(Sessions::ClaimSession(Live), -2);                  // a second launch of a running instance
-        VfsMount::CleanStaleRuntime(Live);                           // what a refused launch's clear would have done
+        (void)VfsMount::CleanStaleRuntime(Live);                     // what a refused launch's clear would have done
         QVERIFY(Sessions::SessionOwned(Live));                       // the lock is not in the folder
         QCOMPARE(Sessions::ClaimSession(Live), -2);
         Put(Live / "WRITELAYER" / "save.dat");

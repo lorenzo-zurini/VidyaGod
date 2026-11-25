@@ -654,6 +654,28 @@ private slots:
         QVERIFY(!Rc->isHidden() && !OnlyA->isHidden());
     }
 
+    // A game whose options are all in one section shows them: the lone section opens by itself (a folded row over an
+    // empty pane hid them all). Teeth: no such rule (the section stays folded).
+    void aLoneSectionOpensByItself()
+    {
+        NodeIndex idx;
+        idx.Nodes["game"] = parse(json{ {"CID", "game"}, {"LABEL", "game"}, {"VARIANT", "v1"},
+            {"LAYERS", json::array({ json{{"DIR", "game"}},
+                json{{"VARS", {
+                    {"a", {{"DEFAULT", "1"}, {"UI", {{"CONTROL", "bool"}, {"SECTION", "Matrix"}, {"LABEL", "A"}}}}},
+                    {"b", {{"DEFAULT", "0"}, {"UI", {{"CONTROL", "bool"}, {"SECTION", "Matrix"}, {"LABEL", "B"}}}}}}}},
+                json{{"EXEC", json::array({ json{{"LABEL", "Play"}, {"HOST", ManifestModel::MachinePlatform()}, {"EXE", "game.exe"},
+                    {"TILE", {{"UID", "39"}, {"TITLE", "Game"}}}} })}} })} });
+        ManifestModel::DeriveFacts(idx);
+        json Cfg = json{{"Settings", json::object()}};
+        PreLaunchWindow W(&Cfg, &idx, {"game"});
+        W.show();
+        QCoreApplication::processEvents();
+        auto *T = W.findChild<QTreeWidget *>("optionsTree");
+        QVERIFY(T && T->topLevelItemCount() == 1);
+        QVERIFY(T->topLevelItem(0)->isExpanded());
+    }
+
     // A `key` option is bound by pressing it: click the button, press a key (or a mouse button) over it. The value is
     // the neutral key name a WHEN (and the launch) reads; sides of Shift come from the native key; Escape binds
     // rather than cancels; focus leaving cancels; × unbinds; two options of a section on one key are both marked.
@@ -1010,6 +1032,20 @@ private slots:
         QMetaObject::invokeMethod(W, "onLaunchFinished", Q_ARG(bool, true), Q_ARG(QString, ""));
         QTRY_VERIFY(!W);                                                   // ended well: closed (and deleted)
         QVERIFY(!PreLaunchWindow::ExistingFor("45", {"game"}));
+        // Ended "well" but logged an error while hidden: shown, since the log is the only place it is said.
+        QPointer<PreLaunchWindow> W2 = new PreLaunchWindow(&Cfg, &idx, {"game"}, "45");
+        W2->show();
+        W2->runningForTest(true);
+        W2->close();
+        QCoreApplication::processEvents();
+        QVERIFY(W2 && !W2->isVisible());
+        QMetaObject::invokeMethod(W2, "onLogLine", Q_ARG(int, 4), Q_ARG(QString, "Teardown"), Q_ARG(QString, "a save was not kept"));
+        W2->runningForTest(false);
+        QMetaObject::invokeMethod(W2, "onLaunchFinished", Q_ARG(bool, true), Q_ARG(QString, ""));
+        QCoreApplication::processEvents();
+        QVERIFY(W2 && W2->isVisible());
+        W2->close();
+        QTRY_VERIFY(!W2);
     }
 
     // An option declared in a layer behind a WHEN shows as the launch would have it: the window folds the game with the

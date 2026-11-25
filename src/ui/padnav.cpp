@@ -295,6 +295,10 @@ QList<QWidget *> Focusable(QWidget *Window)
         if (W->window() != Window || !W->isVisible() || !W->isEnabled()) continue;
         if (!(W->focusPolicy() & Qt::TabFocus)) continue;
         if (qobject_cast<QScrollBar *>(W) || W->size().isEmpty()) continue;
+        //A scroll area that only holds a page (a hosted page's own QScrollArea) is a container, never a stop: taken as
+        //one, it was the first stop on the page, and a move never goes into a stop's own children — every press on
+        //the Peers page stayed on it. (A list, a table, a text view — scroll areas with content of their own — stay.)
+        if (qobject_cast<QScrollArea *>(W)) continue;
         if (InnerPart(W, Window)) continue;
         Out.push_back(W);
     }
@@ -624,8 +628,15 @@ QString PadRouter::route(Pad::Button B)
     using P = Pad::Button;
     QString What;
     const auto Done = [&](const QString &W) { What = W; emit routed(W); emit hintsChanged(); return W; };
+    //The top overlay takes the press. One that is a window of controls (padNavInside: the in-game overlay) lets what it
+    //does not take move inside it — never into the window behind it, whichever window is active.
+    QWidget *Forced = nullptr;
     if (QWidget *O = overlay())
-        if (auto *T = dynamic_cast<PadTarget *>(O)) { T->padPressed(B); return Done("overlay"); }
+        if (auto *T = dynamic_cast<PadTarget *>(O))
+        {
+            if (T->padPressed(B) || !O->property("padNavInside").toBool()) return Done("overlay");
+            Forced = O->window();
+        }
     if (QWidget *Pop = QApplication::activePopupWidget())
     {
         QWidget *To = Pop->focusWidget() ? Pop->focusWidget() : Pop;
@@ -635,7 +646,7 @@ QString PadRouter::route(Pad::Button B)
         else return Done("");
         return Done("popup");
     }
-    QWidget *Win = targetWindow();
+    QWidget *Win = Forced ? Forced : targetWindow();
     if (!Win) return Done("");
     QWidget *F = FocusIn(Win);
     //The focus chain's PadTargets, innermost first — never past the window: a dialog's parent is the window it was

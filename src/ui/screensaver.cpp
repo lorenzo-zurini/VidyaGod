@@ -6,6 +6,7 @@
 
 #include <QApplication>
 #include <QEvent>
+#include <QScreen>
 #include <QWidget>
 
 // The rain as the controller's overlay while it shows: every press and stick ends it, and does nothing else.
@@ -26,7 +27,11 @@ ScreenSaver::ScreenSaver(QWidget *CoveredWidget, std::function<int()> SecondsFn,
 {
     Idle.setSingleShot(true);
     connect(&Idle, &QTimer::timeout, this, &ScreenSaver::showNow);
-    Rain = new View(CoveredWidget, *this);
+    //A window of its own over every other (the launch window, the on-screen keyboard, a dialog): the whole screen goes
+    //dark, not only the shell under them. It takes no focus: the input that ends it is caught app-wide (eventFilter).
+    Rain = new View(nullptr, *this);
+    Rain->setWindowFlags(Qt::Window | Qt::FramelessWindowHint | Qt::WindowStaysOnTopHint | Qt::WindowDoesNotAcceptFocus);
+    Rain->setAttribute(Qt::WA_ShowWithoutActivating);
     Rain->hide();
     if (CoveredWidget) CoveredWidget->installEventFilter(this);   // its size: the rain's
     qApp->installEventFilter(this);                                // every key, click, touch and move
@@ -39,6 +44,14 @@ ScreenSaver::~ScreenSaver()
 {
     if (qApp) qApp->removeEventFilter(this);
     if (Rain) PadRouter::instance().popOverlay(Rain);
+    delete Rain;   // a window of its own: no parent deletes it
+}
+
+//The screen the covered widget's window is on: what the rain covers.
+static QRect ScreenOf(const QWidget *Covered)
+{
+    if (const QScreen *S = Covered->window()->screen()) return S->geometry();
+    return Covered->window()->geometry();
 }
 
 bool ScreenSaver::showing() const { return Showing; }   // its own: the rain's visibility depends on its window's
@@ -57,7 +70,7 @@ void ScreenSaver::showNow()
 {
     if (Suspended || !Covered || showing()) return;
     Idle.stop();
-    Rain->setGeometry(Covered->rect());
+    Rain->setGeometry(ScreenOf(Covered));
     Rain->start();
     Showing = true;
     PadRouter::instance().pushOverlay(Rain);
@@ -89,7 +102,7 @@ void ScreenSaver::rearm()
 
 bool ScreenSaver::eventFilter(QObject *Watched, QEvent *E)
 {
-    if (Watched == Covered && E->type() == QEvent::Resize && showing()) Rain->setGeometry(Covered->rect());
+    if (Watched == Covered && (E->type() == QEvent::Resize || E->type() == QEvent::Move) && showing()) Rain->setGeometry(ScreenOf(Covered));
     if (!E->spontaneous()) return false;   // a person's input only: Qt's own moves (a widget shown under the pointer) are not
     switch (E->type())
     {

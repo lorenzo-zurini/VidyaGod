@@ -59,6 +59,7 @@ Options FromParams(const ContainerParams &CP)
         {
             const std::filesystem::path Kept = CP.UserDataPath / D.Target;
             std::error_code Ec;
+            if (CP.DryRun && !std::filesystem::is_directory(Kept, Ec)) continue;   // a dry run makes no kept folder
             if (std::filesystem::symlink_status(Kept, Ec).type() == std::filesystem::file_type::symlink)
                 LogWarn("SandboxLayer::FromParams", "The kept folder " + Kept.string() + " is a link, not a folder — not "
                         "opened to the game (it sees what the link names, read-only). Replace the link with the folder.");

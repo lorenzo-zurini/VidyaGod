@@ -1,4 +1,6 @@
 #include "gameoverlay.h"
+#include "padnav.h"
+#include <QApplication>
 
 #include "apppaths.h"
 #include "controllerlayout.h"
@@ -90,6 +92,7 @@ GameOverlay &GameOverlay::instance()
 GameOverlay::GameOverlay() : QWidget(nullptr, Qt::Window | Qt::FramelessWindowHint | Qt::WindowStaysOnTopHint)
 {
     setObjectName(QStringLiteral("gameOverlay"));
+    setProperty("padNavInside", true);   // the pad router moves inside it what it does not take itself
     setWindowTitle(tr("VidyaGod overlay"));
     setAttribute(Qt::WA_TranslucentBackground);
 
@@ -175,6 +178,8 @@ GameOverlay::GameOverlay() : QWidget(nullptr, Qt::Window | Qt::FramelessWindowHi
     connect(Resume, &QPushButton::clicked, this, &GameOverlay::closeOverlay);
     connect(EditButton, &QPushButton::clicked, this, &GameOverlay::editLayout);
     connect(QuitButton, &QPushButton::clicked, this, &GameOverlay::quitGame);
+    //Armed means "press again now": moving off it, or waiting, disarms it (a press much later must not quit).
+    connect(qApp, &QApplication::focusChanged, this, [this](QWidget *Old, QWidget *) { if (Old == QuitButton) disarmQuit(); });
     connect(TypeButton, &QPushButton::clicked, this, [this] {
         QString E;
         if (!typeIntoGame(TypeEdit->text(), &E)) Battery->setText(E);
@@ -216,6 +221,12 @@ void GameOverlay::clearGame()
 QString GameOverlay::title() const { return Title->text(); }
 QString GameOverlay::layoutName() const { return Layouts->currentData().toString(); }
 bool GameOverlay::quitArmed() const { return QuitButton->property("armed").toBool(); }
+void GameOverlay::disarmQuit()
+{
+    if (!quitArmed()) return;
+    QuitButton->setProperty("armed", false);
+    QuitButton->setText(tr("Quit game"));
+}
 
 void GameOverlay::refresh()
 {
@@ -279,6 +290,7 @@ void GameOverlay::quitGame()
     {
         QuitButton->setProperty("armed", true);
         QuitButton->setText(tr("Press again to quit"));
+        QTimer::singleShot(4000, QuitButton, [this] { disarmQuit(); });
         return;
     }
     if (QuitGame) QuitGame();
@@ -308,6 +320,9 @@ void GameOverlay::openOverlay()
     activateWindow();
     Resume->setFocus();
     Open = true;
+    //The controller's presses come here whatever window the compositor made active (the launch window behind the
+    //game must never take an A meant for the overlay).
+    PadRouter::instance().pushOverlay(this);
     Tick->start();
 }
 
@@ -315,8 +330,8 @@ void GameOverlay::closeOverlay()
 {
     if (!Open) return;
     Open = false;
-    QuitButton->setProperty("armed", false);
-    QuitButton->setText(tr("Quit game"));
+    disarmQuit();
+    PadRouter::instance().popOverlay(this);
     Tick->stop();
     MarkOverlayWindow(this, false);
     hide();
@@ -342,7 +357,9 @@ void GameOverlay::onGameChanged(bool Running)
 
 bool GameOverlay::padPressed(Pad::Button B)
 {
+    if (QApplication::activePopupWidget()) return false;   // B closes its open list first
     if (B == Pad::Button::B || B == Pad::Button::Guide) { closeOverlay(); return true; }
+    if (Pad::IsDirection(B)) disarmQuit();                 // moving off Quit; the move itself is the router's
     return false;
 }
 

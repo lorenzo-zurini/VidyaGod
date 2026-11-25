@@ -386,7 +386,7 @@ VG_COMMANDS
             const std::string P = V(L, A);
             json Out = json::object();
             if (A.contains("mode")) Ok(VfsChmod(*L.S, P, Octal(Command::Str(A, "mode"))), "chmod");
-            if (A.contains("mtime")) Ok(VfsUtimens(*L.S, P, Command::Int(A, "mtime"), Command::Int(A, "mtime")), "utimens");
+            if (A.contains("mtime")) Ok(VfsUtimens(*L.S, P, { Command::Int(A, "mtime"), 0 }, { Command::Int(A, "mtime"), 0 }), "utimens");
             if (A.contains("size")) Ok(VfsTruncate(*L.S, P, nullptr, static_cast<uint64_t>(Command::Int(A, "size"))), "truncate");
             if (Command::Bool(A, "readlink", false)) { std::string T; Ok(VfsReadlink(*L.S, P, T), "readlink"); Out["target"] = T; }
             VfsAttr T;

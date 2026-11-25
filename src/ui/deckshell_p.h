@@ -47,6 +47,7 @@ private:
     DeckGrid *Recent = nullptr, *Fresh = nullptr;
     QString HeroKey;             // the hero's game ("" when the Library is empty)
     QString HeroTitle, HeroLine;
+    bool HeroPlayed = false;     // the hero was ever played: "Continue playing", else "In your library"
     QPixmap HeroCover, Backdrop;
     int Area = 0;                // 0 the hero's buttons, 1 the first strip, 2 the second
     int Button = 0;
@@ -207,6 +208,7 @@ private:
     QRectF itemRect(int I) const;
     DeckShell &Shell;
     int Current = 0;
+    bool QuitArmed = false;   // Quit was chosen once: the next A on it quits
 };
 
 #endif // DECKSHELL_P_H

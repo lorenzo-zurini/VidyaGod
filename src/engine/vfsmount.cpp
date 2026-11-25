@@ -320,9 +320,13 @@ nlohmann::ordered_json VfsMount::BuildLayerSpec(struct ContainerParams &Containe
     //instance config, never the instance-dir root — so instance.json is never inside a game-writable mount.
     //A dry run keeps nothing: the kept folders are read, not written through (the game's writes copy up into the
     //writelayer, which goes with the runtime).
+    //A dry run of an instance never played has no kept folder yet: there is nothing to read, and none is made for it.
     for (const PersistTarget &D : ContainerParams.KeepDirs)
-        Layers.push_back({{"type", "dir"}, {"source", (ContainerParams.UserDataPath / D.Target).string()},
-                          {"target", D.Path}, {"rw", !ContainerParams.DryRun}});
+    {
+        const std::filesystem::path Kept = ContainerParams.UserDataPath / D.Target;
+        if (std::error_code Ec; ContainerParams.DryRun && !std::filesystem::is_directory(Kept, Ec)) continue;
+        Layers.push_back({{"type", "dir"}, {"source", Kept.string()}, {"target", D.Path}, {"rw", !ContainerParams.DryRun}});
+    }
 
     //The mount plan IS the game's filesystem, and its ORDER IS PRIORITY — yet until now it was assembled and handed
     //to the FUSE helper without ever being stated. Print it: index, type, rw, target, source, and whether the source

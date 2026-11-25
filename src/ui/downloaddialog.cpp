@@ -65,7 +65,7 @@ std::optional<DownloadSelection> AskDownload(AppModel &Model, const LibraryGameC
     // Derived ASYNC (a union closure walk) — the dialog opens instantly with a placeholder. ──
     QGroupBox *   EpBox = new QGroupBox("Content", &Dlg);
     QVBoxLayout * EpL   = new QVBoxLayout(EpBox);
-    QLabel *      EpPending = new QLabel("Deriving content…", EpBox);
+    QLabel *      EpPending = new QLabel("Working out what to download…", EpBox);
     EpPending->setStyleSheet("color:" + Theme::Dim + ";");
     EpL->addWidget(EpPending);
     DL->addWidget(EpBox);
@@ -246,7 +246,7 @@ std::optional<DownloadSelection> AskDownload(AppModel &Model, const LibraryGameC
                     else { AllKnown = false; if (Queried->insert(C).second) Unknown.push_back(C); }
                 }
                 SizeLabel->setText(QString("Free space: %1      Download: %2%3")
-                    .arg(FreeBytes < 0 ? QStringLiteral("?") : HumanBytesQ(FreeBytes))
+                    .arg(FreeBytes < 0 ? QStringLiteral("measuring…") : HumanBytesQ(FreeBytes))
                     .arg(HumanBytesQ(Sum)).arg(AllKnown ? "" : " (estimating…)"));
                 SizeLabel->setStyleSheet((FreeBytes >= 0 && Sum > FreeBytes) ? "color:" + Theme::Bad + "; font-weight:bold;"
                                                                              : "color:" + Theme::Dim + ";");

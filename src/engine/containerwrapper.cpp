@@ -215,7 +215,13 @@ bool ContainerWrapper::BuildContainerRuntime()
             return false;
         }
     }
-    if (Stopping()) { LogOut("ContainerWrapper::BuildContainerRuntime", "VidyaGod is quitting — the build stops here."); return false; }
+    //A Stop (the launch window's Cancel) or a quit is honoured between the build's steps, not only once it is built.
+    auto Halted = [this]{
+        if (!Stopping() && !KillAsked) return false;
+        LogOut("ContainerWrapper::BuildContainerRuntime", KillAsked ? "Stopped — the build stops here." : "VidyaGod is quitting — the build stops here.");
+        return true;
+    };
+    if (Halted()) return false;
 
     //AUTO-DETECT whether any subcomponent requires a VFS mount.
     for (auto &Sub : ContainerParams.SubComponentsArray)
@@ -243,6 +249,7 @@ bool ContainerWrapper::BuildContainerRuntime()
     //NOT gated on PrefixGenerate — a native runner ships a build without generating a wine prefix, and gating on
     //PrefixGen was why a java runner's %RunnerMount%/__jre never got mounted (execvp → 127). MountRunnerBuild self-guards
     //on RunnerShipsBuild/UnifiedRuntime, so this is a no-op for a runnerless / unified / build-less launch.
+    if (Halted()) return false;
     {
         StepScope Step(5, "Mounting the runner build");
         if (!VfsMount::MountRunnerBuild(this->ContainerParams)) return false;
@@ -286,6 +293,7 @@ bool ContainerWrapper::BuildContainerRuntime()
 
     //Build the layer-spec (DEFPREFIX + VFS subcomponents target-rooted + PERSIST dirs as RW
     //passthrough) and mount it as a single vidyagodfs filesystem at RuntimePath.
+    if (Halted()) return false;
     {
         StepScope Step(9, "Assembling and mounting the runtime filesystem");
         if (!VfsMount::MountVFS(this->ContainerParams)) return false;
@@ -300,6 +308,7 @@ bool ContainerWrapper::BuildContainerRuntime()
     //Post-mount: OVERRIDE edits operate on the mounted runtime (COW directly to WRITELAYER) — they win
     //unconditionally, over both the package content AND the user's persisted state. OVERRIDE FileEdits apply
     //to any runner; DLL overrides and OVERRIDE RegEdits are Wine-only. Base edits already live in DEFAULTDATA.
+    if (Halted()) return false;
     {
         StepScope Step(10, "Applying override edits (files, DLL overrides, registry)");
         //These are ERRORS, not warnings. A failed edit means a package setting the author declared was NOT applied,
@@ -348,6 +357,7 @@ bool ContainerWrapper::BuildContainerRuntime()
     //unsandboxed path and cleanup). The OVERRIDE edits above already landed in the writelayer, which both mounts
     //share, so the in-sandbox mount is identical. Not gated on the probe: recording paths is harmless, and Execute()
     //is the one place that probes and refuses a machine that can't sandbox. -----
+    if (Halted()) return false;
     {
         StepScope Step(11, "Preparing the sandbox");
         auto Record = [&](const std::filesystem::path &SpecPath, const std::filesystem::path &Mnt){

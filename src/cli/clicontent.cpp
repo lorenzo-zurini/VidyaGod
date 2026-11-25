@@ -347,7 +347,7 @@ int CliModes::RunContentModes(LaunchParameters &LaunchParameters, nlohmann::orde
         if (!R.Drift.empty())
             LogErr("main.cpp", std::to_string(R.Drift.size()) + " node file(s) publish a CID nobody can fetch. "
                    "Repoint each SOURCE.CID to the actual content shown above and re-seed that package; the catalog "
-                   "re-derives its CIDs on load, and re-publishing (Sharing tab) re-seeds the node blocks.");
+                   "re-derives its CIDs on load, and re-publishing (the Peers tab) re-seeds the node blocks.");
         if (R.Ok()) { LogSucc("main.cpp", "Heal done — every referenced CID is servable."); return 0; }
         LogErr("main.cpp", "Heal finished with " + std::to_string(R.Drift.size() + R.Unrepaired.size())
                + " UNRESOLVED problem(s) — see above.");

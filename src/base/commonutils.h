@@ -156,10 +156,12 @@ std::string HumanBytes(long long Bytes);
 //ignore case). HasWildcard: does a name use either.
 bool WildcardMatch(const std::string &Pattern, const std::string &Name);
 
-//Writes Bytes as the whole of P through a temporary sibling, flushed to the disk and renamed over; then flushes the
-//folder (POSIX). A crash, a full disk or a kill mid-write leaves the old file or the new one — never a truncated one.
-//An existing file keeps its permissions. False (Err says why) when it could not be written; the old file is untouched.
-bool WriteFileAtomic(const std::filesystem::path &P, const std::string &Bytes, std::string &Err);
+//Writes Bytes as the whole of P through a temporary sibling renamed over it: a full disk or a kill mid-write leaves the
+//old file or the new one — never a truncated one. Durable also flushes the file and its folder to the disk first, so a
+//power cut keeps one of the two (what only the user has: their stores and documents; a game's config edit is redone
+//by the next launch). An existing file keeps its permissions, plus the owner's read+write (a 0444 file the game
+//shipped stays editable by the next edit). False (Err says why) when it could not be written; the old file is untouched.
+bool WriteFileAtomic(const std::filesystem::path &P, const std::string &Bytes, std::string &Err, bool Durable = false);
 inline bool HasWildcard(const std::string &S) { return S.find_first_of("*?") != std::string::npos; }
 
 //A launch's phase: logged ("LaunchStep", "<k>/<n> <label>") and handed to this thread's LogSink as a step — what the

@@ -27,7 +27,7 @@
 // Otherwise shows the reason (a QMessageBox parented to `parent`) and returns false. There is no external daemon.
 // Lives here because the card grid's play()/download paths are its primary callers; MainWindow uses it too.
 class AppModel;
-bool IpfsFetchReady(QWidget * parent, const AppModel & Model);
+bool IpfsFetchReady(QWidget * parent, AppModel & Model);   // false: not now (and why was said, or networking offered)
 
 // Card ordering, shared by the Library and Catalog tabs (both render LibraryGameCards in a LibraryView).
 enum class SortMode { Name = 0, Date = 1, Series = 2, Recent = 3 };
@@ -65,6 +65,8 @@ public:
     std::filesystem::path    PackagePath;              // representative node's bundle dir
     bool                   Local = false;         // a locally-added package (bundle outside any repo) — paints a "LOCAL" badge
     bool                   Golden = false;        // marked golden on this machine (Settings.GoldenPackages) — paints a "GOLDEN" badge
+    bool                   Missing = false;       // Library: nothing of it is installed and nothing can fetch it — greyed, "MISSING"
+    bool                   InLibrary = false;     // Catalog: an edition of it is installed (the card offers the rest) — "IN LIBRARY"
     bool                   Downloading = false;   // Available tab: an import is in flight (paints a "Downloading…" overlay)
     double                 DownloadPercent = -1.0; // 0..100 aggregate IPFS progress while Downloading; -1 = unknown
     QPixmap                CoverOriginal;

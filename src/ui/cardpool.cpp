@@ -18,36 +18,46 @@ namespace CardPool
 QList<LibraryGameCard *> Installed(AppModel &Model)
 {
     QList<LibraryGameCard *> Out;
-    //One tile per presentable GROUP of launchable nodes. Only HYDRATED groups (every edition's content present
-    //locally) appear in the Library; un-hydrated ones live in the Catalog.
+    //One tile per presentable GROUP of launchable nodes, holding the editions that are INSTALLED (content present
+    //locally): a game is in the Library as soon as one edition plays — its other editions stay in the Catalog to get.
+    //A tile with nothing installed and nothing to fetch (a local package whose files are gone) is shown too, greyed
+    //as missing: it was in no tab at all.
     const auto &Hyd = Model.hydration();   // once per rebuild, shared with the other views — never per-launchable
     //The cards and the launch dialogs they open read one snapshot: a later re-index replaces it, and they are rebuilt.
     const std::shared_ptr<const NodeIndex> Snapshot = Model.catalogSnapshot();
     for (const Shelf::Tile &Tile : Shelf::Tiles(*Snapshot))
     {
-        std::vector<std::string> Ids;
-        bool AllHydrated = true, HasContent = false;
+        std::vector<std::string> Ids, All;
+        bool HasContent = false, AnyFetchable = false;
         for (const Node *N : Tile.Rows)
         {
-            Ids.push_back(N->Key());
+            All.push_back(N->Key());
             auto H = Hyd.find(N->Key());
-            if (H == Hyd.end() || !H->second.Hydrated) AllHydrated = false;
-            if (H != Hyd.end() && H->second.OnDisk) HasContent = true;   // a file of it is HERE, not only declared
+            if (H != Hyd.end() && H->second.Hydrated)
+            {
+                Ids.push_back(N->Key());
+                if (H->second.OnDisk) HasContent = true;   // a file of it is HERE, not only declared
+            }
+            else if (H != Hyd.end() && (H->second.HasCid || H->second.Incomplete)) AnyFetchable = true;
         }
+        bool GraftHere = true;
         if (!Tile.Graft.empty())   // a graft's card: the graft is the game, so it must be installed too
-        {
-            auto H = Hyd.find(Tile.Graft);
-            if (H == Hyd.end() || !H->second.Hydrated) AllHydrated = false;
-        }
-        if (!AllHydrated || Ids.empty() || !HasContent)            // skip content-less/malformed (vacuously hydrated)
-        {
-            if (AllHydrated && !Ids.empty())                      // every row installed, yet nothing of its own on disk
-                LogOut("CardPool", "not shown: '" + Tile.Tile.value("TITLE", Tile.Uid) + "' (tile " + Tile.Uid
-                                   + ") — none of its rows has content of its own on disk");
-            continue;
-        }
-        auto *C = new LibraryGameCard(Model.config(), Snapshot, std::move(Ids), Tile.Uid);
+            if (auto H = Hyd.find(Tile.Graft); H == Hyd.end() || !H->second.Hydrated)
+            {
+                GraftHere = false;
+                if (H != Hyd.end() && (H->second.HasCid || H->second.Incomplete)) AnyFetchable = true;
+            }
+        const bool Playable = !Ids.empty() && HasContent && GraftHere;
+        //Nothing of it here (its files gone — a row with nothing to fetch counts as installed, so it is the files on
+        //disk that say) and nothing to get it from: shown as missing.
+        const bool Missing  = !Playable && !AnyFetchable && !All.empty();
+        if (!Playable && !Missing) continue;   // the Catalog has it
+        if (Missing)
+            LogOut("CardPool", "missing: '" + Tile.Tile.value("TITLE", Tile.Uid) + "' (tile " + Tile.Uid
+                               + ") — none of its rows has content of its own on disk, and nothing offers it");
+        auto *C = new LibraryGameCard(Model.config(), Snapshot, Playable ? std::move(Ids) : std::move(All), Tile.Uid);
         C->InitializeClassVariables();
+        C->Missing = Missing;
         Out.append(C);
     }
     return Out;
@@ -84,8 +94,12 @@ QList<LibraryGameCard *> Available(AppModel &Model)
                 if (H != Hyd.end() && (H->second.HasCid || H->second.Incomplete)) AnyFetchable = true;
             }
         if (!AnyMissing || !AnyFetchable || Ids.empty()) continue;
+        bool AnyHere = false;   // an edition of it is installed: the game is in the Library too, this card has the rest
+        for (const Node *N : Tile.Rows)
+            if (auto H = Hyd.find(N->Key()); H != Hyd.end() && H->second.Hydrated && H->second.OnDisk) AnyHere = true;
         auto *C = new LibraryGameCard(Model.config(), Snapshot, std::move(Ids), Tile.Uid);
         C->InitializeClassVariables();
+        C->InLibrary = AnyHere;
         Out.append(C);
     }
 

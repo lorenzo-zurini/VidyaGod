@@ -1,4 +1,5 @@
 #include "networktab.h"
+#include "deckshell.h"
 #include "theme.h"   // the named colours
 #include "appmodel.h"
 #include "peersharing.h"
@@ -198,6 +199,7 @@ void NetworkTab::buildUi()
         AddLayout->addWidget(permissionTicks(AddBox, QStringLiteral("code")));
         auto * Send = new QPushButton(tr("Send request"), AddBox);
         Send->setObjectName("sendRequest");
+        SendButton = Send;
         connect(Send, &QPushButton::clicked, this, &NetworkTab::addPeerClicked);
         auto * SendRow = new QHBoxLayout();
         SendRow->addWidget(Send);
@@ -312,7 +314,10 @@ void NetworkTab::refresh()
     ShareState->setText(Line);
     PrepareButton->setVisible(Online && St == S::Unpublished);
     PrepareButton->setEnabled(!Model.publishing());
-    TurnOnButton->setVisible(!Model.networkingEnabled());
+    TurnOnButton->setVisible(!Model.networkingEnabled() && DeckShell::On());   // the desktop window's banner has its own
+    //Nobody can be asked while networking is off: the button says why instead of failing when pressed.
+    SendButton->setEnabled(Online);
+    SendButton->setToolTip(Online ? QString() : tr("Networking is off — turn it on to send a request."));
     rebuildRows();
     rebuildTable();
 }
@@ -560,8 +565,17 @@ void NetworkTab::rebuildTable()
         auto * Menu = new QPushButton("⋮", Table);
         Menu->setObjectName("menu:" + Peer);
         auto * M = new QMenu(Menu);
-        connect(M->addAction(tr("Block")), &QAction::triggered, this, [this, Peer] { Model.peers().blockPeer(Peer); scheduleRefresh(); });
-        connect(M->addAction(tr("Remove")), &QAction::triggered, this, [this, Peer] { Model.peers().removePeer(Peer); scheduleRefresh(); });
+        //Both asked first, as unticking Accepted is: each ends what you share with them, in one click.
+        connect(M->addAction(tr("Block…")), &QAction::triggered, this, [this, Peer] {
+            if (QMessageBox::question(this, tr("Block peer"), tr("Block this peer? They can no longer reach you or ask again, "
+                    "you stop sharing with each other, and their games leave your Catalog."),
+                    QMessageBox::Yes | QMessageBox::No, QMessageBox::No) != QMessageBox::Yes) return;
+            Model.peers().blockPeer(Peer); scheduleRefresh(); });
+        connect(M->addAction(tr("Remove…")), &QAction::triggered, this, [this, Peer] {
+            if (QMessageBox::question(this, tr("Remove peer"), tr("Remove this peer? You stop sharing with each other and their "
+                    "games leave your Catalog. Games you installed from them stay."),
+                    QMessageBox::Yes | QMessageBox::No, QMessageBox::No) != QMessageBox::Yes) return;
+            Model.peers().removePeer(Peer); scheduleRefresh(); });
         Menu->setMenu(M);
         Table->setCellWidget(Row, ActCol, Menu);
     }

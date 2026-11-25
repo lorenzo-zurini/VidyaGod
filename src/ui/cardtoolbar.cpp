@@ -2,7 +2,10 @@
 #include "theme.h"   // the named colours
 #include "appmodel.h"
 
+#include <QActionGroup>
 #include <QButtonGroup>
+#include <QMenu>
+#include <QToolButton>
 #include <QFrame>
 #include <QHBoxLayout>
 #include <QLabel>
@@ -47,23 +50,33 @@ CardToolbar MakeCardToolbar(QWidget *Owner, AppModel &Model, const std::vector<s
     QLineEdit *Search = new QLineEdit(T.Bar);
     Search->setPlaceholderText("Search…");
     Search->setClearButtonEnabled(true);
-    Search->setFixedWidth(180);
+    Search->setMinimumWidth(110);   // it gives way first on a narrow window; the labels never do
+    Search->setMaximumWidth(240);
+    Search->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
     QObject::connect(Search, &QLineEdit::textChanged, Owner, [OnSearch](const QString &Text) { OnSearch(Text.trimmed()); });
-    T.Row->addWidget(Search);
+    T.Row->addWidget(Search, 1);
 
+    //The card size: rarely changed, so one menu (three chips took the width the labels needed at 640 px).
+    QToolButton *Size = new QToolButton(T.Bar);
+    Size->setObjectName("cardSize");
+    Size->setText("Size");
+    Size->setToolTip("Card size");
+    Size->setPopupMode(QToolButton::InstantPopup);
+    Size->setAutoRaise(true);
+    QMenu *SizeMenu = new QMenu(Size);
+    QActionGroup *Sizes = new QActionGroup(SizeMenu);
+    Sizes->setExclusive(true);
     for (const auto &[Label, Width] : std::vector<std::pair<QString, int>>{ {"Large", 250}, {"Medium", 185}, {"Small", 120} })
     {
-        QPushButton *B = new QPushButton(Label, T.Bar);
-        B->setObjectName("size" + Label);   // sizeLarge, sizeMedium, sizeSmall: one name each
-        B->setCheckable(true);
-        B->setChecked(Model.cardPixelWidth() == Width);
-        B->setStyleSheet(
-            "QPushButton{color:" + Theme::Dim + ";background:transparent;border:none;font-size:9pt;padding:2px 8px;}"
-            "QPushButton:checked{color:" + Theme::Text + ";border-bottom:2px solid " + Theme::Accent + ";}"
-            "QPushButton:hover{color:" + Theme::Text + ";}");
-        QObject::connect(B, &QPushButton::clicked, Owner, [&Model, W = Width] { Model.setCardPixelWidth(W); });   // → cardSizeChanged
-        T.Row->addWidget(B);
+        QAction *A = SizeMenu->addAction(Label);
+        A->setObjectName("size" + Label);   // sizeLarge, sizeMedium, sizeSmall: one name each
+        A->setCheckable(true);
+        A->setChecked(Model.cardPixelWidth() == Width);
+        Sizes->addAction(A);
+        QObject::connect(A, &QAction::triggered, Owner, [&Model, W = Width] { Model.setCardPixelWidth(W); });   // → cardSizeChanged
     }
+    Size->setMenu(SizeMenu);
+    T.Row->addWidget(Size);
     QFrame *Sep = new QFrame(T.Bar);
     Sep->setFrameShape(QFrame::VLine);
     Sep->setStyleSheet("color:#3a4048;");
@@ -74,7 +87,7 @@ CardToolbar MakeCardToolbar(QWidget *Owner, AppModel &Model, const std::vector<s
 void SyncSizeButtons(QWidget *Owner, int CardWidth)
 {
     const QString Want = CardWidth >= 250 ? "Large" : CardWidth <= 120 ? "Small" : "Medium";
-    for (auto *B : Owner->findChildren<QPushButton *>(QRegularExpression("^size(Large|Medium|Small)$"))) B->setChecked(B->text() == Want);
+    for (auto *A : Owner->findChildren<QAction *>(QRegularExpression("^size(Large|Medium|Small)$"))) A->setChecked(A->text() == Want);
 }
 
 QSet<QString> LoadCollapsed(AppModel &Model, const char *Key)

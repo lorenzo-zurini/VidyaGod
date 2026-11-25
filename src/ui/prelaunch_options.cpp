@@ -362,6 +362,9 @@ void PreLaunchWindow::RebuildCustomVarPickers()
     }
 
     if (DeckLayout) OptionsTree->expandAll();   // a controller cannot open a folded row: every section open
+    //One section and nothing beside it: it opens by itself (a lone folded row over an empty pane hid every option).
+    else if (OptionsTree->topLevelItemCount() == 1 && OptionsTree->topLevelItem(0)->childCount() > 0)
+        OptionsTree->topLevelItem(0)->setExpanded(true);
     if (AnyCond) EvaluateVarConditions();                                       // apply initial WHEN visibility
     MarkKeyConflicts();
     SetTabShown(OptionsPage, AnyVisible);

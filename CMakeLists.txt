@@ -421,8 +421,6 @@ set(SHARED_SOURCES
     src/ui/a11ynames.h
     src/ui/a11ynames.cpp
 
-    src/ui/ipfssettingspage.h
-    src/ui/ipfssettingspage.cpp
 
     src/ui/generalpage.h
     src/ui/generalpage.cpp

@@ -11,7 +11,9 @@ OfflineBanner::OfflineBanner(AppModel &Model, const QString &Text, QWidget *Pare
     setAccessibleName("Networking is off");
     auto *L = new QHBoxLayout(this);
     L->setContentsMargins(12, 6, 8, 6);
-    L->addWidget(new QLabel(Text, this), 1);
+    auto *Said = new QLabel(Text, this);
+    Said->setWordWrap(true);   // a narrow window wraps it, never cuts it mid-word
+    L->addWidget(Said, 1);
     auto *On = new QPushButton("Turn on networking", this);
     connect(On, &QPushButton::clicked, this, [&Model] { Model.setNetworkingEnabled(true); });
     L->addWidget(On);

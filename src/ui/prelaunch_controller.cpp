@@ -29,6 +29,8 @@
 
 #include <QAbstractScrollArea>
 #include <QGridLayout>
+#include <QMenu>
+#include <QToolButton>
 #include <QPushButton>
 #include <QPainter>
 #include <QPainterPath>
@@ -93,7 +95,12 @@ void PreLaunchWindow::ArrangeForController()
 
     auto *Actions = new QHBoxLayout();
     Actions->setSpacing(14 * S);
-    for (QPushButton *B : { LaunchButton, KillButton, EditButton, CloseButton })
+    //Play, Stop, Close: the package editor and a file manager need a mouse and a keyboard (and a file manager takes
+    //gamescope's screen with no way back by pad), so they are not offered here.
+    if (EditButton) EditButton->hide();
+    if (InstanceMenuButton && InstanceMenuButton->menu())
+        for (QAction *A : InstanceMenuButton->menu()->actions()) if (A->text() == "Open its folder") A->setVisible(false);
+    for (QPushButton *B : { LaunchButton, KillButton, CloseButton })
         if (B) { B->setParent(Right); Actions->addWidget(B); }
     Actions->addStretch(1);
     RL->addLayout(Actions);

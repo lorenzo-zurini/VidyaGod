@@ -418,7 +418,9 @@ void DeckHome::refresh()
     {
         HeroTitle = Hero->GameTitle;
         QStringList L;
-        if (const QString W = PlayedWhen(Hero->LastPlayedCache); !W.isEmpty()) L << "Last played " + W;
+        const QString W = PlayedWhen(Hero->LastPlayedCache);
+        HeroPlayed = !W.isEmpty();
+        if (HeroPlayed) L << "Last played " + W;
         else L << "Not played yet";
         const json &T = TileOf(*Hero);
         if (const QString D = MetaStr(T, "DEVELOPER"); !D.isEmpty()) L << D;
@@ -444,7 +446,7 @@ void DeckHome::refresh()
         Played = ByName.mid(0, 14);
     }
     QList<LibraryGameCard *> Cat;
-    for (LibraryGameCard *C : Shell.catalogCards()) if (C && !C->IsSecondary) Cat.push_back(C);
+    for (LibraryGameCard *C : Shell.catalogCards()) if (C && !C->IsSecondary && !C->GameTitle.trimmed().isEmpty()) Cat.push_back(C);   // no blank "—" tile
     std::stable_sort(Cat.begin(), Cat.end(), [](LibraryGameCard *A, LibraryGameCard *B) {
         if (A->Downloading != B->Downloading) return A->Downloading;
         return A->SortTitle < B->SortTitle;
@@ -600,7 +602,8 @@ void DeckHome::paintEvent(QPaintEvent *)
         DeckStyle::DrawCover(P, Cr, HeroCover, HeroTitle, 10 * S);
         X = Cr.right() + 36 * S;
     }
-    DeckStyle::DrawLabel(P, QRectF(X, H.top() + 24 * S, width() - X - 40 * S, 28 * S), HeroKey.isEmpty() ? "Get started" : "Continue playing",
+    DeckStyle::DrawLabel(P, QRectF(X, H.top() + 24 * S, width() - X - 40 * S, 28 * S),
+                         HeroKey.isEmpty() ? "Get started" : HeroPlayed ? "Continue playing" : "In your library",
                          true, S);
     //The title (two lines at most), its facts right under it.
     P.setFont(DeckStyle::Display(40, S));

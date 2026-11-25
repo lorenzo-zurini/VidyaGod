@@ -1,5 +1,4 @@
 #include "ipfstab.h"
-#include "offlinebanner.h"
 #include "appmodel.h"
 #include "theme.h"   // the named colours
 #include "ipfsmodel.h"
@@ -119,7 +118,6 @@ void IpfsTab::buildUi()
 {
     QVBoxLayout * v = new QVBoxLayout(this);
     v->setContentsMargins(12,12,12,12);
-    v->addWidget(new OfflineBanner(Model.app(), "Networking is off — the node is stopped, nothing is seeded or fetched.", this));
 
     // Status strip: Network | Peers | Seeded | ↓ | ↑ | Repo | Disk free.
     IpfsStatusTable = new QTableWidget(1, 7, this);
@@ -165,12 +163,10 @@ void IpfsTab::buildUi()
         if (!IpfsWrapper::Available())
         {
             QMessageBox::information(this, "Seed folder", "Seeding needs the node, and it is not running — networking is off. "
-                                                          "Turn it on with the banner above, or in Settings → IPFS.");
+                                                          "Turn it on with the banner at the top of the window.");
             return;
         }
-        const QString TheVidya = QDir::homePath() + "/The Vidya";
-        const QString Def = QDir(TheVidya).exists() ? TheVidya : QDir::homePath();
-        const QString Dir = QFileDialog::getExistingDirectory(this, "Seed folder — pick the folder containing your packages", Def);
+        const QString Dir = QFileDialog::getExistingDirectory(this, "Seed folder — pick the folder containing your packages", QDir::homePath());
         if (Dir.isEmpty()) return;
         SeedBtn->setEnabled(false); SeedBtn->setText("Seeding…");
         Model.seedFolder(Dir);

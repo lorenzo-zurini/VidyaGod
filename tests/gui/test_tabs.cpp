@@ -15,7 +15,6 @@
 #include "ipfstab.h"
 #include "ipfsmodel.h"
 #include "gamepicker.h"
-#include "ipfssettingspage.h"
 #include "sourcespage.h"
 #include "a11ynames.h"
 #include "libraryview.h"
@@ -259,12 +258,12 @@ private slots:
         QCOMPARE(Trees[0]->columnCount(), 7);
     }
 
-    // The Settings → IPFS "Enable networking" checkbox drives the model (which starts the node + un-greys tabs).
-    void ipfs_page_networking_toggle_drives_model()
+    // The Settings → Network "Enable networking" checkbox drives the model (which starts the node + hides the banner).
+    void network_page_networking_toggle_drives_model()
     {
         json cfg = json{{"Settings", json::object()}};
         AppModel m(&cfg, &AppDir);
-        IpfsSettingsPage page(m);
+        NetworkPage page(m);
 
         QCheckBox * netCb = nullptr;
         for (QCheckBox * cb : page.findChildren<QCheckBox *>())

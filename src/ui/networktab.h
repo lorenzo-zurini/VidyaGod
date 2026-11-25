@@ -69,6 +69,7 @@ private:
     QLabel *       ShareState    = nullptr;
     QPushButton *  PrepareButton = nullptr;   // a library's first publish, while one shared has none
     QPushButton *  TurnOnButton  = nullptr;   // while networking is off
+    QPushButton *  SendButton    = nullptr;   // "Send request": only while a request can go
     QGroupBox *    WaitingBox    = nullptr;
     QVBoxLayout *  WaitingRows   = nullptr;
     QTableWidget * Table         = nullptr;
