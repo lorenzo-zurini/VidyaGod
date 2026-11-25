@@ -245,17 +245,17 @@ void PackagesView::showList(const std::vector<PackageCatalog::InstalledPackage> 
             rb->setToolTip(P.Local ? "Stop listing this package; its folder is not touched."
                                    : "Remove this package's content. You are told first whether it can be downloaded again.");
             const unsigned long long Bytes = P.Bytes;
-            connect(rb, &QPushButton::clicked, this, [this, Dir, Title, Bytes]{
-                const UninstallAsk A = uninstallAsk(Model.uninstallVerdict(Dir), Title, Bytes);
-                if (A.Refused) { QMessageBox::information(this, A.Title, A.Text); return; }
-                QMessageBox Box(QMessageBox::Question, A.Title, A.Text, QMessageBox::NoButton, this);
-                QPushButton *Yes = Box.addButton(A.Confirm, A.DefaultNo ? QMessageBox::DestructiveRole : QMessageBox::AcceptRole);
-                QPushButton *No = Box.addButton(QMessageBox::Cancel);
-                Box.setDefaultButton(A.DefaultNo ? No : Yes);
-                Box.exec();
-                if (Box.clickedButton() != Yes) return;
-                const bool Only = A.DefaultNo;   // the only copy's question: a yes is to delete it
-                if (const QString Why = Model.removePackage(Dir, nullptr, Only); !Why.isEmpty()) QMessageBox::warning(this, A.Title, Why);
+            connect(rb, &QPushButton::clicked, this, [this, rb, Dir, Title, Bytes]{
+                //Judged off the GUI thread (a walk of every package's closure), on the library as it is now; the button
+                //waits meanwhile, so a second click asks nothing twice.
+                rb->setEnabled(false);
+                auto V = std::make_shared<PackageCatalog::UninstallVerdict>();
+                AsyncWork::Run(this, [V, Cfg = *Model.config(), Idx = Model.catalogSnapshot(), D = Dir.toStdString()] {
+                    if (Idx) *V = PackageCatalog::JudgeUninstall(Cfg, *Idx, D);
+                }, [this, Rb = QPointer<QPushButton>(rb), V, Dir, Title, Bytes] {
+                    if (Rb) Rb->setEnabled(true);
+                    askUninstall(*V, Dir, Title, Bytes);
+                });
             });
             g->addWidget(rb, row, 3);
         }
@@ -263,6 +263,20 @@ void PackagesView::showList(const std::vector<PackageCatalog::InstalledPackage> 
     }
     g->setRowStretch(g->rowCount(), 1);
     PackagesScrollArea->setWidget(w);
+}
+
+void PackagesView::askUninstall(const PackageCatalog::UninstallVerdict &V, const QString &Dir, const QString &Title, unsigned long long Bytes)
+{
+    const UninstallAsk A = uninstallAsk(V, Title, Bytes);
+    if (A.Refused) { QMessageBox::information(this, A.Title, A.Text); return; }
+    QMessageBox Box(QMessageBox::Question, A.Title, A.Text, QMessageBox::NoButton, this);
+    QPushButton *Yes = Box.addButton(A.Confirm, A.DefaultNo ? QMessageBox::DestructiveRole : QMessageBox::AcceptRole);
+    QPushButton *No = Box.addButton(QMessageBox::Cancel);
+    Box.setDefaultButton(A.DefaultNo ? No : Yes);
+    Box.exec();
+    if (Box.clickedButton() != Yes) return;
+    const bool Only = A.DefaultNo;   // the only copy's question: a yes is to delete it
+    if (const QString Why = Model.removePackage(Dir, nullptr, Only); !Why.isEmpty()) QMessageBox::warning(this, A.Title, Why);
 }
 
 PackagesView::UninstallAsk PackagesView::uninstallAsk(const PackageCatalog::UninstallVerdict &V, const QString &Title, unsigned long long Bytes)
@@ -276,7 +290,10 @@ PackagesView::UninstallAsk PackagesView::uninstallAsk(const PackageCatalog::Unin
     const QString Shared = V.Shared ? "\n\nYou share it: peers will no longer get it from you." : QString();
     switch (V.K)
     {
-    case K::Nothing: break;
+    case K::Nothing:   // moved or gone since the list was made: nothing a yes could do
+        A = { "Uninstall", "Uninstall package", QString("%1 is no longer there (moved or deleted?): nothing to uninstall.").arg(Title),
+              QString(), false, true };
+        break;
     case K::Forget:
         A = { "Forget", "Forget package", QString("Forget %1? Its folder is not touched.").arg(Title), "Forget", false, false };
         break;
@@ -298,8 +315,11 @@ PackagesView::UninstallAsk PackagesView::uninstallAsk(const PackageCatalog::Unin
             break;
         }
         A = { "Uninstall", "Delete the only copy",
-              QString("This is the only copy of %1: it cannot be downloaded again (no source of yours has it, and no peer shares "
-                      "it).\n\nDelete anyway? Its folder (%2) goes to the trash, from where it can be restored.").arg(Title, Size)
+              QString("This is the only copy of %1: it cannot be downloaded again (no source of yours has it%3).\n\nDelete "
+                      "anyway? Its folder (%2) goes to the trash, from where it can be restored.")
+                  .arg(Title, Size, V.ListedBy.empty() ? QString(", and no peer shares it")
+                                                       : QString("; %1 lists it, but whether %1 holds its files cannot be known from here")
+                                                             .arg(QString::fromStdString(V.ListedBy)))
               + Shared + Saves, "Move to trash", true, false };
         break;
     }

@@ -541,27 +541,35 @@ struct InstalledPackage { std::filesystem::path Dir; std::string Uid, Title, Lib
                           std::vector<std::string> Variants; std::uintmax_t Bytes = 0; };
 //What uninstalling a package does, judged before anything is touched (Settings → Installed Packages, `app remove-package`):
 //  Forget    — added from outside LIBRARY: its entry goes, its folder is untouched;
-//  Download  — its content goes and it stays in the Catalog, to download again From a source of the user's or a peer that
-//              shares this very version (every node of it);
-//  OnlyCopy  — nothing could download it again: its folder goes only when the user says so, and then to the trash;
+//  Download  — its content goes for good and it stays in the Catalog, to download again From a source of the user's;
+//  OnlyCopy  — nothing proves another copy: its folder goes only when the user says so, and then to the trash. A peer
+//              listing it is no proof — a listing names node files, never whether the peer holds the content;
 //  Nothing   — no package is there.
-//NeededBy: the other installed packages whose content lives in its folder (a library they contain) — what its content
-//going breaks, or what refuses deleting it. Shared: the user's own share sheet lists it (peers download it from here).
+//NeededBy: the other installed packages whose closure reaches into its folder (a node of it, or content in it: a library
+//they contain, the base a graft runs on) — what its going breaks, or what refuses deleting it. Shared: the user's own
+//share sheet lists it (peers download it from here). ListedBy: a peer whose shared libraries list every node of it.
 struct UninstallVerdict
 {
     enum class Kind { Nothing, Forget, Download, OnlyCopy } K = Kind::Nothing;
-    std::string From;
+    std::string From, ListedBy;
     std::vector<std::string> NeededBy;
     bool Shared = false;
 };
+//Why nothing may be uninstalled now ("" when it may): a game is running (its runtime may mount the package), or a
+//download into Dir is landing.
+std::string UninstallBlocked(const std::filesystem::path &Dir);
 UninstallVerdict JudgeUninstall(const nlohmann::ordered_json &GlobalConfigJSON, const NodeIndex &Idx, const std::filesystem::path &Dir);
-//Deletes the package folder Dir the only way a slip can be undone: moved to the trash (refused when it cannot be — a
-//file system with none), then unpins and drops the references of its node files and its own content (what lies in it:
-//another package's library is not its own). The user's saves are not in it. Blocks (IPFS): call off the GUI thread.
-[[nodiscard]] bool TrashPackage(const NodeIndex &Idx, const std::filesystem::path &Dir, std::string *Error = nullptr);
-//The nickname of a peer whose shared libraries list every node of the installed package at Dir (it can be downloaded
-//again from them), "" when none does.
-std::string PeerSharingPackage(const nlohmann::ordered_json &GlobalConfigJSON, const std::filesystem::path &Dir);
+//Deletes the package folder Dir — the folder itself, where a link names it — the only way a slip can be undone: moved
+//to the trash (refused when it cannot be — a file system with none — or while UninstallBlocked), then unpins and drops
+//the references of its node files and its own content (what lies in it), and unpins its pin folder (PinFolder) — but no
+//CID another package of the index names too (a node or a file of the same bytes): that one keeps serving. The share
+//sheet lets it go at its next check (PeerSharing), telling the peers. The user's saves are not in it. Blocks (IPFS):
+//call off the GUI thread.
+[[nodiscard]] bool TrashPackage(const NodeIndex &Idx, const std::filesystem::path &Dir, std::string *Error = nullptr,
+                                const std::string &PinFolder = {});
+//The nickname of a peer whose shared libraries list every node of the installed package at Dir, "" when none does. A
+//listing is the peer's word for its node files only: not that it holds the content.
+std::string PeerListingPackage(const nlohmann::ordered_json &GlobalConfigJSON, const std::filesystem::path &Dir);
 std::vector<InstalledPackage> InstalledPackages(const nlohmann::ordered_json &GlobalConfigJSON, const NodeIndex &Idx,
                                                 bool Sizes = true);
 //The package folders (of the index) whose identity UID is Uid, or whose folder name begins with "[<Uid>]" — what a

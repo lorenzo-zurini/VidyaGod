@@ -27,6 +27,8 @@ public:
     //and the question with its consequence — what goes, where it comes back from, or that it never can.
     struct UninstallAsk { QString Button, Title, Text, Confirm; bool DefaultNo = false, Refused = false; };
     static UninstallAsk uninstallAsk(const PackageCatalog::UninstallVerdict &V, const QString &Title, unsigned long long Bytes);
+    //The question for V (uninstallAsk) and, on a yes, the uninstall: once the verdict is in (judged off the GUI thread).
+    void askUninstall(const PackageCatalog::UninstallVerdict &V, const QString &Dir, const QString &Title, unsigned long long Bytes);
 
 public slots:
     void rebuildList();        // (re)build the installed-packages list (on catalogChanged; hidden: when next shown)

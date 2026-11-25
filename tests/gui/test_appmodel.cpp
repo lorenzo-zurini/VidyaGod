@@ -18,6 +18,8 @@
 #include <filesystem>
 #include "apppaths.h"
 #include "nodefixture.h"
+#include "sessions.h"
+#include "nodefiles.h"
 #include "ipfswrapper.h"
 #include "downloadqueue.h"
 
@@ -297,6 +299,26 @@ private slots:
         QTest::qWait(1500);   // a dehydrate would run on a worker
         QVERIFY2(QFile::exists(Pkg + "/game.zip"), "its content is untouched");
         QVERIFY(!m.removePackage("1").isEmpty());   // by its UID too
+        QTest::qWait(300);
+        QVERIFY(QFile::exists(Pkg + "/game.zip"));
+        // A peer listing every node of it is no copy: still refused, its content still here (that peer may have deleted
+        // its own, "from here").
+        cfg["PeerLabels"] = json{{"12D3KooWPeerPeerPeerPeer", "Deck"}};
+        json Listed = json::array();
+        for (const auto &[C, F] : NodeFiles::In(Pkg.toStdString())) Listed.push_back(json{{"cid", C}, {"pkg", "[1] Game"}, {"node", F.Path.filename().string()}});
+        QVERIFY(!Listed.empty());
+        cfg["PeerLibraries"] = json{{"12D3KooWPeerPeerPeerPeer", json{{"VidyaGod", Listed}}}};
+        QVERIFY(!m.removePackage(Pkg, &Async).isEmpty());
+        QVERIFY(!Async);
+        QTest::qWait(1000);
+        QVERIFY2(QFile::exists(Pkg + "/game.zip"), "a peer's listing deletes nothing for good");
+        // Nothing while a game runs: its runtime may be mounting this very folder.
+        {
+            const Sessions::RuntimeHold Running;
+            const QString Busy = m.removePackage(Pkg, &Async, true);
+            QVERIFY2(Busy.contains("game is running"), qPrintable(Busy));
+            QVERIFY(!Async);
+        }
         QTest::qWait(300);
         QVERIFY(QFile::exists(Pkg + "/game.zip"));
 

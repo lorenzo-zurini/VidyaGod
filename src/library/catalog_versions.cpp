@@ -311,36 +311,51 @@ std::vector<PackageUpdate> AvailableUpdates(const nlohmann::ordered_json &Config
     return Out;
 }
 
-bool TrashPackage(const NodeIndex &Idx, const std::filesystem::path &Dir, std::string *Error)
+bool TrashPackage(const NodeIndex &Idx, const std::filesystem::path &Dir, std::string *Error, const std::string &PinFolder)
 {
     namespace fs = std::filesystem;
-    std::lock_guard<std::mutex> Lk(PackageLock(Dir));
     std::error_code Ec;
-    const fs::path Own = fs::weakly_canonical(Dir, Ec);
-    std::set<std::string> Cids;
-    for (const std::string &C : PackageNodeCids(Dir)) Cids.insert(C);
+    const fs::path Own = fs::weakly_canonical(Dir, Ec);   // the folder, not a link naming it: what the CIDs below are of
+    std::lock_guard<std::mutex> Lk(PackageLock(Own));
+    if (const std::string Why = UninstallBlocked(Own); !Why.empty()) { if (Error) *Error = Why; return false; }
+    std::map<std::string, fs::path> Canon;
+    const auto CanonDir = [&](const fs::path &P) -> const fs::path & {
+        auto It = Canon.find(P.string());
+        if (It == Canon.end()) { std::error_code E2; It = Canon.emplace(P.string(), fs::weakly_canonical(P, E2)).first; }
+        return It->second;
+    };
+    //Its own CIDs, and those another package names too (a node of the same bytes, a file of the same content kept in its
+    //own folder): dropping one of those would stop the other package serving, and reading as held whole.
+    std::set<std::string> Cids, Others;
+    for (const std::string &C : PackageNodeCids(Own)) Cids.insert(C);
     for (const auto &[K, N] : Idx.Nodes)
     {
-        if (!N.IsVariant() || fs::weakly_canonical(N.BundleDir, Ec) != Own) continue;
+        if (N.BundleDir.empty() || N.Received) continue;
+        const bool Mine = CanonDir(N.BundleDir) == Own;
+        if (!Mine) Others.insert(K);
+        if (!N.IsVariant()) continue;
         ForEachContentLayer(Idx, K, {}, [&](const nlohmann::ordered_json&, const fs::path &Local, const std::string &Cid) {
-            std::error_code E2;
-            if (!Cid.empty() && PathUnder(Own, fs::weakly_canonical(Local, E2))) Cids.insert(Cid);
+            if (Cid.empty()) return;
+            if (!PathUnder(Own, CanonDir(Local.parent_path()) / Local.filename())) Others.insert(Cid);
+            else if (Mine) Cids.insert(Cid);
         }, true, true);
     }
+    for (const std::string &C : Others) Cids.erase(C);
     //Qt makes the trash with a plain mkdir: the data folder it lives in must be there (a fresh account has none yet).
     QDir().mkpath(QStandardPaths::writableLocation(QStandardPaths::GenericDataLocation));
-    if (!QFile::moveToTrash(QString::fromStdString(Dir.string())))
+    if (!QFile::moveToTrash(QString::fromStdString(Own.string())))
     {
-        if (Error) *Error = "it could not be moved to the trash (" + Dir.string() + "), so nothing was deleted";
+        if (Error) *Error = "it could not be moved to the trash (" + Own.string() + "), so nothing was deleted";
         return false;
     }
     for (const std::string &C : Cids) IpfsWrapper::Unpin(C);
     IpfsWrapper::DropRefs({ Cids.begin(), Cids.end() });
-    LogOut("PackageCatalog::TrashPackage", "Moved " + Dir.string() + " to the trash (" + std::to_string(Cids.size()) + " CIDs let go)");
+    if (!PinFolder.empty()) IpfsWrapper::Unpin(PinFolder);   // unpinned only: its blocks are others' too (a drop takes a closure)
+    LogOut("PackageCatalog::TrashPackage", "Moved " + Own.string() + " to the trash (" + std::to_string(Cids.size()) + " CIDs let go)");
     return true;
 }
 
-std::string PeerSharingPackage(const nlohmann::ordered_json &Config, const std::filesystem::path &Dir)
+std::string PeerListingPackage(const nlohmann::ordered_json &Config, const std::filesystem::path &Dir)
 {
     namespace fs = std::filesystem;
     if (!Config.contains("PeerLibraries") || !Config["PeerLibraries"].is_object()) return {};

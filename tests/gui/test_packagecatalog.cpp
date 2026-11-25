@@ -4110,10 +4110,12 @@ private slots:
 
 private slots:
     // What uninstalling would do is said before anything is touched: a package of LIBRARY that nothing could download again
-    // is the only copy; one a source of the user's has, or a peer shares in this very version (every node of it), comes
-    // back from there; one added from outside is forgotten. Another installed game whose content lives in its folder is
-    // named, and a package the user shares says so. Teeth: a peer sharing another version of it counts; the source's
-    // name not looked up; a package needing nothing named; the share sheet not read; an outside package not forgotten.
+    // is the only copy; one a source of the user's has comes back from there; one added from outside is forgotten. A peer
+    // listing it — even every node of this very version — is said, but stays the only copy: a listing names node files,
+    // never whether the peer holds the content (two machines each deleting theirs "from the other" lost both). Another
+    // installed game whose content lives in its folder is named, and a package the user shares says so. Teeth: a peer's
+    // listing taken for a copy (Download); a listing of another version named; the source's name not looked up; a package
+    // needing nothing named; the share sheet not read; an outside package not forgotten.
     void uninstall_says_whether_a_package_can_be_downloaded_again()
     {
         QTemporaryDir D; QVERIFY(D.isValid());
@@ -4144,11 +4146,14 @@ private slots:
             return json{{"Mine", L}};
         };
         cfg["PeerLibraries"] = json{{Peer, Listing(Cids.size() - 1)}};
-        QVERIFY(Judge(Pkg).K == K::OnlyCopy);
+        V = Judge(Pkg);
+        QVERIFY(V.K == K::OnlyCopy);
+        QVERIFY(V.ListedBy.empty());
         cfg["PeerLibraries"] = json{{Peer, Listing(Cids.size())}};
         V = Judge(Pkg);
-        QVERIFY(V.K == K::Download);
-        QCOMPARE(QString::fromStdString(V.From), QString("Deck"));
+        QVERIFY(V.K == K::OnlyCopy);
+        QVERIFY(V.From.empty());
+        QCOMPARE(QString::fromStdString(V.ListedBy), QString("Deck"));
         cfg.erase("PeerLibraries");
 
         // a source of the user's: named by its name
@@ -4178,6 +4183,79 @@ private slots:
         QVERIFY(Judge(Ext.path()).K == K::Nothing);
         cfg["LIBRARY"] = json::array({ json{{"PATH", Ext.path().toStdString()}, {"PACKAGEUID", "ext"}} });
         QVERIFY(Judge(Ext.path()).K == K::Forget);
+    }
+
+    // Whatever reaches into a package's folder is named before it goes: a package containing a node of it that has no
+    // content (a library's tile, a runner), and a mod — a graft row, in a package with no launchable of its own — over
+    // the game in it. Teeth: the content walk alone (the content-less node unseen); grafts or graft-only packages skipped.
+    void uninstall_names_every_package_reaching_into_the_folder()
+    {
+        QTemporaryDir D; QVERIFY(D.isValid());
+        const QString R = D.path() + "/LIBRARY";
+        const QString Game = R + "/Mine/[1] Game", Mod = R + "/Mine/[3] Mod", Lib = R + "/Mine/[4] Lib", User = R + "/Mine/[5] User";
+        for (const QString &P : { Game, Mod, Lib, User }) QDir().mkpath(P);
+        { std::ofstream f((Game + "/game.zip").toStdString()); f << "content"; }
+        { std::ofstream f((Mod + "/mod.zip").toStdString()); f << "mod"; }
+        { std::ofstream f((User + "/user.zip").toStdString()); f << "user"; }
+        using namespace NodeFixture;
+        WriteNodes((Game + "/game.json").toStdString(), Chain("game", {Tile("1", "Game"), Exec("win32", "g.exe"),
+            Content("zip", "game.zip")}, {}, {{"VARIANT", "Edition 1"}}));
+        WriteNodes((Mod + "/mod.json").toStdString(), Chain("mod", {Merge({ Layers({ json{{"ANY", json::array({"game"})}} }),
+            Tile("3", "Mod"), Content("zip", "mod.zip") })}, {}, {{"VARIANT", "Mod"}}));
+        WriteNodes((Lib + "/lib.json").toStdString(), Chain("lib", {Tile("4", "Lib"), Exec("win32", "l.exe")}, {}, {{"VARIANT", "Lib"}}));
+        WriteNodes((User + "/user.json").toStdString(), Chain("user", {Tile("5", "User"), Exec("win32", "u.exe"),
+            Content("zip", "user.zip")}, {"lib"}, {{"VARIANT", "Edition 1"}}));
+        json cfg = json{{"Settings", {{"Paths", {{"LibraryRoot", R.toStdString()}}}}}};
+        const auto Idx = PackageCatalog::FreshCatalogIndex(cfg);
+        QVERIFY(Idx->Find("mod") && Idx->Find("mod")->IsGraft);
+        auto Needing = [&](const QString &Dir) {
+            QStringList L;
+            for (const std::string &N : PackageCatalog::JudgeUninstall(cfg, *Idx, Dir.toStdString()).NeededBy) L << QString::fromStdString(N);
+            return L;
+        };
+        QCOMPARE(Needing(Lib), QStringList{"User"});
+        QCOMPARE(Needing(Game), QStringList{"Mod"});
+        QVERIFY(Needing(User).isEmpty());
+        QVERIFY(Needing(Mod).isEmpty());
+    }
+
+    // The only copy, trashed, lets go of its own CIDs only: a file of the same bytes another package keeps in its own folder
+    // is that CID too, and dropping it stopped that package serving (no longer held whole). And a link in the library
+    // naming a package trashes the package, not the link — the CIDs let go are the folder's. Teeth: every CID of the
+    // package dropped; the link moved to the trash (the package stays, its CIDs dropped under it).
+    void trashing_a_package_keeps_what_another_package_holds_too()
+    {
+        QTemporaryDir D; QVERIFY(D.isValid());
+        const QString R = D.path() + "/LIBRARY", Game = R + "/Mine/[1] Game", Copy = R + "/Mine/[2] Copy";
+        QDir().mkpath(Game); QDir().mkpath(Copy);
+        const std::string Bytes(300000, 'z');
+        for (const QString &P : { Game, Copy }) { std::ofstream f((P + "/same.bin").toStdString(), std::ios::binary); f << Bytes; }
+        std::string Err;
+        QTemporaryDir Repo; QVERIFY(Repo.isValid());
+        QVERIFY2(IpfsWrapper::StartNode((Repo.path() + "/ipfs").toStdString(), &Err), Err.c_str());
+        auto StopNode = qScopeGuard([] { IpfsWrapper::StopNode(); });
+        const std::string Cid = IpfsWrapper::AddNoCopy((Game + "/same.bin").toStdString(), &Err);
+        QVERIFY2(!Cid.empty(), Err.c_str());
+        QCOMPARE(IpfsWrapper::AddNoCopy((Copy + "/same.bin").toStdString(), &Err), Cid);   // the reference: the last file added
+        std::vector<std::string> From;
+        QVERIFY(IpfsWrapper::HeldWholeFiles(Cid, &From));
+        QVERIFY2(!From.empty() && QString::fromStdString(From.front()).startsWith(Copy), From.empty() ? "" : From.front().c_str());
+        using namespace NodeFixture;
+        WriteNodes((Game + "/game.json").toStdString(), Chain("game", {Tile("1", "Game"), Exec("win32", "g.exe"),
+            ContentCid("file", "same.bin", Cid)}, {}, {{"VARIANT", "Edition 1"}}));
+        WriteNodes((Copy + "/copy.json").toStdString(), Chain("copy", {Tile("2", "Copy"), Exec("win32", "c.exe"),
+            ContentCid("file", "same.bin", Cid)}, {}, {{"VARIANT", "Edition 1"}}));
+        QVERIFY(QFile::link(Game, R + "/Mine/[9] Alias"));
+        json cfg = json{{"Settings", {{"Paths", {{"LibraryRoot", R.toStdString()}}}}}};
+        const auto Idx = PackageCatalog::FreshCatalogIndex(cfg);
+        QVERIFY(IpfsWrapper::HeldWhole(Cid));
+        const QByteArray WasData = qgetenv("XDG_DATA_HOME");
+        qputenv("XDG_DATA_HOME", (D.path() + "/xdgdata").toUtf8());
+        const auto Restore = qScopeGuard([&] { if (WasData.isEmpty()) qunsetenv("XDG_DATA_HOME"); else qputenv("XDG_DATA_HOME", WasData); });
+        QVERIFY2(PackageCatalog::TrashPackage(*Idx, (R + "/Mine/[9] Alias").toStdString(), &Err), Err.c_str());
+        QVERIFY2(!QFileInfo::exists(Game), "the package the link names is what went to the trash");
+        QVERIFY(QFileInfo::exists(Copy + "/same.bin"));
+        QVERIFY2(IpfsWrapper::HeldWhole(Cid), "Copy still serves its file");
     }
 
     // A seed says each file it looks at, with its size, before reading it (the editor's "file n of m · bytes"), and a no
@@ -4220,7 +4298,8 @@ private slots:
     // Every installed package can be uninstalled from Settings → Installed Packages — not only the ones with a config
     // entry — and the question says what happens: what comes back from where, or that the only copy goes to the trash
     // (asked with Cancel the default). Teeth: the old `Local || HasEntry` gate (no button on a package of LIBRARY); the
-    // only copy's question defaulting to yes; a refusal offered as a question.
+    // only copy's question defaulting to yes; a refusal offered as a question; a package gone since (Nothing) asked as a
+    // blank box whose yes uninstalls; a peer's listing not said.
     void every_installed_package_offers_uninstall_with_what_it_does()
     {
         QTemporaryDir D; QVERIFY(D.isValid());
@@ -4252,12 +4331,21 @@ private slots:
         QCOMPARE(A.Confirm, QString("Move to trash"));
         QVERIFY2(A.Text.contains("only copy") && A.Text.contains("cannot be downloaded again") && A.Text.contains("trash")
                  && A.Text.contains("peers will no longer get it from you"), qPrintable(A.Text));
+        V.ListedBy = "Deck";                         // a peer listing it: said, and still the only copy
+        A = PackagesView::uninstallAsk(V, "Game", 1);
+        QVERIFY(!A.Refused && A.DefaultNo);
+        QVERIFY2(A.Text.contains("Deck lists it") && A.Text.contains("cannot be known"), qPrintable(A.Text));
+        V.ListedBy.clear();
         V.NeededBy = { "Other" };
         A = PackagesView::uninstallAsk(V, "Game", 1);
         QVERIFY(A.Refused);
         QVERIFY2(A.Text.contains("Other uses its content"), qPrintable(A.Text));
         V.K = K::Forget;
         QCOMPARE(PackagesView::uninstallAsk(V, "Game", 1).Confirm, QString("Forget"));
+        V = {};                                      // gone since the list was made: refused, never a blank yes
+        A = PackagesView::uninstallAsk(V, "Game", 1);
+        QVERIFY(A.Refused);
+        QVERIFY2(A.Text.contains("no longer there"), qPrintable(A.Text));
     }
 
 private:

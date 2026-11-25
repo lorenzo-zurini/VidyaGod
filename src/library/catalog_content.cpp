@@ -28,6 +28,7 @@
 #include <QCoreApplication>
 #include <QDir>
 #include <QFile>
+#include <unordered_map>
 #include <QStringList>
 #include <cstdint>
 #include <map>
@@ -149,6 +150,15 @@ UninstallVerdict JudgeUninstall(const nlohmann::ordered_json &Config, const Node
     std::error_code Ec;
     if (!fs::is_directory(Dir, Ec)) return V;
     const fs::path Want = fs::weakly_canonical(Dir, Ec);
+    //Canonical paths, each folder worked out once: a library's layers are thousands of files in far fewer folders, and
+    //this runs on the GUI thread when the user asks. A file is where its folder is (a link to elsewhere lies here).
+    std::unordered_map<std::string, fs::path> Canon;
+    const auto CanonDir = [&](const fs::path &P) -> const fs::path & {
+        auto It = Canon.find(P.string());
+        if (It == Canon.end()) { std::error_code E2; It = Canon.emplace(P.string(), fs::weakly_canonical(P, E2)).first; }
+        return It->second;
+    };
+    const auto InHere = [&](const fs::path &File) { return PathUnder(Want, CanonDir(File.parent_path()) / File.filename()); };
     const fs::path Root = LibraryRootDir(Config);
     if (Root.empty() || !PathUnder(fs::weakly_canonical(Root, Ec), Want))
     {
@@ -159,24 +169,30 @@ UninstallVerdict JudgeUninstall(const nlohmann::ordered_json &Config, const Node
     }
     //A package folder of the index only: a library's folder, or any other above or beside the packages, is none.
     const auto Bundles = NodesByBundle(Idx);
-    if (std::none_of(Bundles.begin(), Bundles.end(), [&](const auto &B) { std::error_code E2; return fs::weakly_canonical(B.first, E2) == Want; }))
+    if (std::none_of(Bundles.begin(), Bundles.end(), [&](const auto &B) { return CanonDir(B.first) == Want; }))
         return V;
-    //Another installed package whose content lies in this folder (a library it contains) loses it too.
+    //Another package whose closure reaches into this folder loses it too: a node homed here (content or none — a
+    //library's runner, a tile), content lying here, the base a graft row runs on. Every variant, grafts included.
     for (const auto &[Other, B] : Bundles)
     {
-        if (fs::weakly_canonical(Other, Ec) == Want || !B.RepLaunchable) continue;
+        if (CanonDir(Other) == Want) continue;
         bool Uses = false;
         for (const Node *L : B.Variants)
-            if (!L->IsGraft && !Uses)
+        {
+            if (Uses) break;
+            for (const std::string &K : ManifestModel::Closure(Idx, L->Key()))
+                if (const Node *N = Idx.Find(K); N && !N->BundleDir.empty() && !N->Received
+                    && CanonDir(fs::path(N->BundleDir).lexically_normal()) == Want) { Uses = true; break; }
+            if (!Uses)
                 ForEachContentLayer(Idx, L->Key(), {}, [&](const nlohmann::ordered_json&, const fs::path &Local, const std::string&) {
-                    std::error_code E2;
-                    Uses = Uses || PathUnder(Want, fs::weakly_canonical(Local, E2));
-                }, false, false);
+                    Uses = Uses || InHere(Local);
+                }, false, true);
+        }
         if (Uses) V.NeededBy.push_back(B.Rep->Meta.is_object() ? B.Rep->Meta.value("TITLE", B.Rep->NodeId) : B.Rep->NodeId);
     }
     if (Config.contains("ShareSheet"))
         for (const SheetEntry &E : SheetEntries(Config["ShareSheet"]))
-            if (fs::weakly_canonical(Root / E.Lib / E.Pkg, Ec) == Want) { V.Shared = true; break; }
+            if (CanonDir(Root / E.Lib / E.Pkg) == Want) { V.Shared = true; break; }
     if (const std::string Cid = SourceOfPackage(Config, Dir); !Cid.empty())
     {
         V.K = UninstallVerdict::Kind::Download;
@@ -186,14 +202,17 @@ UninstallVerdict JudgeUninstall(const nlohmann::ordered_json &Config, const Node
                 V.From = "the source '" + S.value("NAME", std::string()) + "'";
         return V;
     }
-    if (const std::string Peer = PeerSharingPackage(Config, Dir); !Peer.empty())
-    {
-        V.K = UninstallVerdict::Kind::Download;
-        V.From = Peer;
-        return V;
-    }
+    V.ListedBy = PeerListingPackage(Config, Dir);   // said, never taken for a copy
     V.K = UninstallVerdict::Kind::OnlyCopy;
     return V;
+}
+
+std::string UninstallBlocked(const std::filesystem::path &Dir)
+{
+    if (Sessions::RuntimesLive() > 0 || !Sessions::LiveMountpointsUnder(Sessions::Root()).empty())
+        return "a game is running — close it first, then uninstall";
+    if (IpfsWrapper::LandingUnder(Dir.string())) return "a download into it is in progress — let it finish first";
+    return {};
 }
 
 int DehydrateNode(const NodeIndex &Idx, const std::string &LaunchNodeId)

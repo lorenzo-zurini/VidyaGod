@@ -275,19 +275,24 @@ QString AppModel::removePackage(const QString & which, bool * Async, bool Delete
         Managed = (P.rfind(R + "/", 0) == 0);   // strictly under the library root → a managed (repo-cloned) package
     }
 
-    //A package of LIBRARY: its content goes when it can be downloaded again (a source of the user's, or a peer sharing
-    //this very version, has it); the only copy only when the user says so, to the trash. Either way not while another
-    //installed package's content lives in its folder and nothing could bring it back.
+    //A package of LIBRARY: its content goes when it can be downloaded again (a source of the user's has it); the only
+    //copy only when the user says so, to the trash. Either way not while another installed package's content lives in
+    //its folder and nothing could bring it back, and nothing at all while a game runs (its runtime may mount it).
     if (Managed)
     {
+        if (const std::string Why = PackageCatalog::UninstallBlocked(Path); !Why.empty())
+        {
+            LogWarn("AppModel::removePackage", Why + " (" + Path + ")");
+            return QString::fromStdString(Why);
+        }
         using K = PackageCatalog::UninstallVerdict::Kind;
         const PackageCatalog::UninstallVerdict V = PackageCatalog::JudgeUninstall(*Config, *Catalog, Path);
         if (V.K == K::OnlyCopy)
         {
             const auto Fail = [&](const QString & Why) { LogWarn("AppModel::removePackage", Why.toStdString() + " (" + Path + ")"); return Why; };
             if (!DeleteOnlyCopy)
-                return Fail("this is the only copy: nothing could download it again (no source of yours has it and no peer "
-                            "shares it) — deleting it moves its folder to the trash");
+                return Fail("this is the only copy: nothing could download it again (no source of yours has it, and a peer "
+                            "listing it may not hold its files) — deleting it moves its folder to the trash");
             if (!V.NeededBy.empty())
             {
                 QStringList Names;
@@ -298,7 +303,8 @@ QString AppModel::removePackage(const QString & which, bool * Async, bool Delete
             std::shared_ptr<const NodeIndex> Idx = Catalog;
             auto Err = std::make_shared<std::string>();
             auto Ok = std::make_shared<bool>(false);
-            AsyncWork::Run(this, [Idx, Path, Err, Ok] { *Ok = PackageCatalog::TrashPackage(*Idx, Path, Err.get()); },
+            const std::string Pin = PackageCatalog::PackagePin(*Config, std::filesystem::weakly_canonical(Path, Ec));
+            AsyncWork::Run(this, [Idx, Path, Err, Ok, Pin] { *Ok = PackageCatalog::TrashPackage(*Idx, Path, Err.get(), Pin); },
                 [this, Err, Ok] {
                     if (!*Ok) emit packageRemoveFailed(QString::fromStdString(*Err));
                     rebuildCatalog();

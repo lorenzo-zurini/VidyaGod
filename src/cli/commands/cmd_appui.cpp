@@ -109,14 +109,16 @@ VG_COMMANDS
     Command::Register({
         "app remove-package", "uninstall a package (its content goes; the only copy only when asked, to the trash)",
         "As Settings → Installed Packages' Uninstall: a package added from outside LIBRARY is forgotten, its folder untouched; "
-        "one a source of yours or a peer still shares loses its content files (its nodes and cover stay, back in the Catalog "
-        "to download again). The only copy (nothing could download it again) is refused unless --delete-only-copy, and then "
-        "its folder goes to the trash — never while another installed package uses its content. Saves are never touched.",
+        "one a source of yours has loses its content files (its nodes and cover stay, back in the Catalog to download again). "
+        "The only copy (nothing proves another: a peer listing it may not hold its files) is refused unless "
+        "--delete-only-copy, and then its folder goes to the trash — never while another installed package uses it. Nothing "
+        "while a game runs or a download into it lands. Saves are never touched.",
         { Command::MaybeAPath(Pos("package", "the package's UID or folder")), Flag("yes", "yes, remove it"),
           Flag("delete-only-copy", "it is the only copy: move its folder to the trash anyway") },
         { "app remove-package 123456 --yes", "app remove-package 123456 --yes --delete-only-copy" },
         { "AppModel::removePackage", "AppModel::uninstallVerdict", "PackageCatalog::PackageDirsWithUid", "PackageCatalog::JudgeUninstall",
-          "PackageCatalog::TrashPackage", "PackageCatalog::PeerSharingPackage", "PackagesView::uninstallAsk" }, Needs::Model, false,
+          "PackageCatalog::TrashPackage", "PackageCatalog::PeerListingPackage", "PackageCatalog::UninstallBlocked",
+          "PackagesView::uninstallAsk", "PackagesView::askUninstall" }, Needs::Model, false,
         [](Command::Context &C, const json &A) {
             if (!Command::Bool(A, "yes", false)) throw Command::BadArgs("this removes the package's files: add --yes");
             const std::string Q = Command::Str(A, "package");
