@@ -15,11 +15,65 @@
 namespace CardPool
 {
 
+namespace
+{
+//A tile as the Library judges it: its rows (installed, and not installed but fetchable), whether it plays here, and
+//whether it is missing (nothing of it here, nothing to get it from). One judgement for the cards and for an open
+//launch window following the library.
+struct Judged { TileRows Rows; std::vector<std::string> All; bool Playable = false, Missing = false; };
+Judged Judge(const Shelf::Tile &Tile, const HydrationMap &Hyd)
+{
+    Judged J;
+    bool HasContent = false, AnyFetchable = false;
+    for (const Node *N : Tile.Rows)
+    {
+        J.All.push_back(N->Key());
+        auto H = Hyd.find(N->Key());
+        if (H != Hyd.end() && H->second.Hydrated)
+        {
+            J.Rows.Here.push_back(N->Key());
+            if (H->second.OnDisk) HasContent = true;   // a file of it is HERE, not only declared
+        }
+        else if (H != Hyd.end() && (H->second.HasCid || H->second.Incomplete))
+        {
+            J.Rows.ToFetch.push_back(N->Key());
+            AnyFetchable = true;
+        }
+    }
+    bool GraftHere = true;
+    if (!Tile.Graft.empty())   // a graft's card: the graft is the game, so it must be installed too
+        if (auto H = Hyd.find(Tile.Graft); H == Hyd.end() || !H->second.Hydrated)
+        {
+            GraftHere = false;
+            if (H != Hyd.end() && (H->second.HasCid || H->second.Incomplete)) AnyFetchable = true;
+        }
+    J.Playable = !J.Rows.Here.empty() && HasContent && GraftHere;
+    //Nothing of it here (its files gone — a row with nothing to fetch counts as installed, so it is the files on
+    //disk that say) and nothing to get it from: shown as missing.
+    J.Missing = !J.Playable && !AnyFetchable && !J.All.empty();
+    return J;
+}
+}
+
+std::optional<TileRows> LibraryRows(const NodeIndex &Idx, const HydrationMap &Hyd, const std::string &FaceUid)
+{
+    if (FaceUid.empty()) return std::nullopt;
+    for (const Shelf::Tile &Tile : Shelf::Tiles(Idx))
+        if (Tile.Uid == FaceUid)
+        {
+            Judged J = Judge(Tile, Hyd);
+            if (!J.Playable) return std::nullopt;
+            return std::move(J.Rows);
+        }
+    return std::nullopt;
+}
+
 QList<LibraryGameCard *> Installed(AppModel &Model)
 {
     QList<LibraryGameCard *> Out;
     //One tile per presentable GROUP of launchable nodes, holding the editions that are INSTALLED (content present
-    //locally): a game is in the Library as soon as one edition plays — its other editions stay in the Catalog to get.
+    //locally): a game is in the Library as soon as one edition plays — its other editions stay in the Catalog to get,
+    //and its launch window lists them as not installed, to download there.
     //A tile with nothing installed and nothing to fetch (a local package whose files are gone) is shown too, greyed
     //as missing: it was in no tab at all.
     const auto &Hyd = Model.hydration();   // once per rebuild, shared with the other views — never per-launchable
@@ -27,37 +81,15 @@ QList<LibraryGameCard *> Installed(AppModel &Model)
     const std::shared_ptr<const NodeIndex> Snapshot = Model.catalogSnapshot();
     for (const Shelf::Tile &Tile : Shelf::Tiles(*Snapshot))
     {
-        std::vector<std::string> Ids, All;
-        bool HasContent = false, AnyFetchable = false;
-        for (const Node *N : Tile.Rows)
-        {
-            All.push_back(N->Key());
-            auto H = Hyd.find(N->Key());
-            if (H != Hyd.end() && H->second.Hydrated)
-            {
-                Ids.push_back(N->Key());
-                if (H->second.OnDisk) HasContent = true;   // a file of it is HERE, not only declared
-            }
-            else if (H != Hyd.end() && (H->second.HasCid || H->second.Incomplete)) AnyFetchable = true;
-        }
-        bool GraftHere = true;
-        if (!Tile.Graft.empty())   // a graft's card: the graft is the game, so it must be installed too
-            if (auto H = Hyd.find(Tile.Graft); H == Hyd.end() || !H->second.Hydrated)
-            {
-                GraftHere = false;
-                if (H != Hyd.end() && (H->second.HasCid || H->second.Incomplete)) AnyFetchable = true;
-            }
-        const bool Playable = !Ids.empty() && HasContent && GraftHere;
-        //Nothing of it here (its files gone — a row with nothing to fetch counts as installed, so it is the files on
-        //disk that say) and nothing to get it from: shown as missing.
-        const bool Missing  = !Playable && !AnyFetchable && !All.empty();
-        if (!Playable && !Missing) continue;   // the Catalog has it
-        if (Missing)
+        Judged J = Judge(Tile, Hyd);
+        if (!J.Playable && !J.Missing) continue;   // the Catalog has it
+        if (J.Missing)
             LogOut("CardPool", "missing: '" + Tile.Tile.value("TITLE", Tile.Uid) + "' (tile " + Tile.Uid
                                + ") — none of its rows has content of its own on disk, and nothing offers it");
-        auto *C = new LibraryGameCard(Model.config(), Snapshot, Playable ? std::move(Ids) : std::move(All), Tile.Uid);
+        auto *C = new LibraryGameCard(Model.config(), Snapshot, J.Playable ? std::move(J.Rows.Here) : std::move(J.All), Tile.Uid);
+        if (J.Playable) C->NotInstalled = std::move(J.Rows.ToFetch);
         C->InitializeClassVariables();
-        C->Missing = Missing;
+        C->Missing = J.Missing;
         Out.append(C);
     }
     return Out;

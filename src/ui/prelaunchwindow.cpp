@@ -596,6 +596,73 @@ std::function<bool(QWidget *, const QString &)> &PreLaunchWindow::RunnerFetcher(
 }
 void PreLaunchWindow::SetRunnerFetcher(std::function<bool(QWidget *, const QString &)> Fetch) { RunnerFetcher() = std::move(Fetch); }
 
+PreLaunchWindow::VersionDownloads &PreLaunchWindow::Downloads() { static VersionDownloads D; return D; }
+void PreLaunchWindow::SetVersionDownloads(VersionDownloads D) { Downloads() = std::move(D); }
+void PreLaunchWindow::DownloadsChanged()
+{
+    for (const QPointer<PreLaunchWindow> &W : QList<QPointer<PreLaunchWindow>>(OpenWindows())) if (W) W->ApplyRowAvailability();
+}
+
+void PreLaunchWindow::FollowLibrary(std::shared_ptr<const NodeIndex> Fresh,
+                                    const std::function<bool(const std::string &, std::vector<std::string> &, std::vector<std::string> &)> &RowsFor)
+{
+    if (!Fresh || !RowsFor) return;
+    for (const QPointer<PreLaunchWindow> &W : QList<QPointer<PreLaunchWindow>>(OpenWindows()))   // a copy: a rebuild may close one
+    {
+        if (!W || W->FaceUid.empty() || W->launchRunning()) continue;   // a launch under way keeps what it launched from
+        std::vector<std::string> Here, ToFetch;
+        if (!RowsFor(W->FaceUid, Here, ToFetch)) continue;
+        if (Here == W->GroupNodeIds && ToFetch == W->AbsentIds) continue;
+        W->GroupNodeIds = std::move(Here);
+        W->AbsentIds = std::move(ToFetch);
+        W->ReloadAndRebuild(Fresh);
+    }
+}
+
+void PreLaunchWindow::setNotInstalled(std::vector<std::string> Ids)
+{
+    if (Ids == AbsentIds) return;
+    AbsentIds = std::move(Ids);
+    ReloadAndRebuild();
+}
+
+bool PreLaunchWindow::rowNotInstalled() const
+{
+    return VariantCombo && VariantCombo->currentIndex() >= 0 && VariantCombo->currentData(Qt::UserRole + 2).toBool();
+}
+
+namespace
+{
+const QString kNotInstalledMsg = QStringLiteral("This version is not installed on this computer: download it to play it.");
+const QString kDownloadingMsg  = QStringLiteral("Downloading this version (the Downloads tab shows it)…");
+}
+
+void PreLaunchWindow::ApplyRowAvailability()
+{
+    if (!LaunchButton) return;
+    if (!rowNotInstalled())
+    {
+        if (LaunchButton->property("download").toBool())
+        {
+            LaunchButton->setText("▶  Play");
+            LaunchButton->setProperty("download", false);
+        }
+        if (StatusLabel && (StatusLabel->text() == kNotInstalledMsg || StatusLabel->text() == kDownloadingMsg)) StatusLabel->setText("Ready");
+        if (DeckLayout) emit PadRouter::instance().hintsChanged();   // Start says Play again
+        return;
+    }
+    //Its runners come with it (a version's download fetches its runner chain): no runner warning, no runner offer.
+    const QString Key = QString::fromStdString(FaceUid);
+    const bool Busy = Downloads().InFlight && Downloads().InFlight(Key);
+    LaunchButton->setProperty("download", true);
+    LaunchButton->setText(Busy ? QStringLiteral("Downloading…") : QStringLiteral("↓  Download"));
+    LaunchButton->setEnabled(!Busy && Downloads().Start && !FaceUid.empty() && !launchRunning());
+    if (ChainHint) ChainHint->setVisible(false);
+    if (GetRunnerButton) GetRunnerButton->setVisible(false);
+    if (StatusLabel) { StatusLabel->setStyleSheet(QString()); StatusLabel->setText(Busy ? kDownloadingMsg : kNotInstalledMsg); }
+    if (DeckLayout) emit PadRouter::instance().hintsChanged();   // Start says Download (or nothing while it runs)
+}
+
 PreLaunchWindow::~PreLaunchWindow()
 {
     OpenWindows().removeAll(this);
@@ -823,6 +890,7 @@ void PreLaunchWindow::ReloadAndRebuild(std::shared_ptr<const NodeIndex> Fresh)
             Was = QString::fromStdString(Followed);
         }
         for (std::string &Id : GroupNodeIds) Id = Follow(Id);
+        for (std::string &Id : AbsentIds) Id = Follow(Id);
         LaunchNodeId = Follow(LaunchNodeId);
         RowGraft = Follow(RowGraft);
         IndexOwned = std::move(Fresh);
@@ -834,8 +902,12 @@ void PreLaunchWindow::ReloadAndRebuild(std::shared_ptr<const NodeIndex> Fresh)
     std::vector<std::string> Live;
     for (const std::string& Id : GroupNodeIds) if (Index && Index->Find(Id)) Live.push_back(Id);
     GroupNodeIds = Live;
+    std::erase_if(AbsentIds, [&](const std::string &Id) { return !Index || !Index->Find(Id); });
     QSignalBlocker B(VariantCombo);
     FillVariantCombo();
+    const bool Multi = VariantCombo->count() > 1;   // a version installed (or listed to download) since: the picker shows
+    VariantCombo->setVisible(Multi);
+    if (VariantLabel) VariantLabel->setVisible(Multi);
     int Sel = Was.isEmpty() ? -1 : VariantCombo->findData(Was);
     if (Sel < 0) Sel = VariantCombo->findData(QString::fromStdString(LaunchNodeId + "\x1f" + Entrypoint));
     if (Sel < 0) Sel = VariantCombo->findData(QString::fromStdString(LaunchNodeId), Qt::UserRole, Qt::MatchStartsWith);
@@ -878,9 +950,14 @@ void PreLaunchWindow::FillVariantCombo()
 {
     QSignalBlocker B(VariantCombo);
     VariantCombo->clear();
-    struct E { std::string Id; QString Lbl; bool Rec; std::string Row = {}; };   // Row: the row's node (a graft version)
+    struct E { std::string Id; QString Lbl; bool Rec; std::string Row = {}; bool Absent = false; };   // Row: the row's node (a graft version)
     std::vector<E> Es;
-    for (const std::string& Id : GroupNodeIds)
+    //The installed versions, then those not installed here (listed, marked: picked, Play becomes Download).
+    std::vector<std::pair<std::string, bool>> Rows;
+    for (const std::string& Id : GroupNodeIds) Rows.push_back({ Id, false });
+    for (const std::string& Id : AbsentIds)
+        if (std::find(GroupNodeIds.begin(), GroupNodeIds.end(), Id) == GroupNodeIds.end()) Rows.push_back({ Id, true });
+    for (const auto& [Id, Absent] : Rows)
     {
         const Node* N = Index ? Index->Find(Id) : nullptr;
         if (!N) continue;
@@ -907,7 +984,7 @@ void PreLaunchWindow::FillVariantCombo()
                     if (Here) Mine.push_back(Lb);
                 }
                 for (const std::string& Lb : Mine)
-                    Es.push_back({ Base + "\x1f" + Lb + "\x1frow\x1f" + Id, QString::fromStdString(Name + On + (Mine.size() > 1 ? " - " + Lb : std::string())), Rec && Lb == Mine.front(), Id });
+                    Es.push_back({ Base + "\x1f" + Lb + "\x1frow\x1f" + Id, QString::fromStdString(Name + On + (Mine.size() > 1 ? " - " + Lb : std::string())), Rec && Lb == Mine.front(), Id, Absent });
             }
             continue;
         }
@@ -921,7 +998,7 @@ void PreLaunchWindow::FillVariantCombo()
                     Mine.push_back(Lb);
             const std::string NodeName = !N->Variant.empty() ? N->Variant : (!N->NodeId.empty() ? N->NodeId : Id);
             for (const std::string& Lb : Mine)
-                Es.push_back({ Id + "\x1f" + Lb, QString::fromStdString(Mine.size() == 1 ? NodeName : NodeName + " - " + Lb), false });
+                Es.push_back({ Id + "\x1f" + Lb, QString::fromStdString(Mine.size() == 1 ? NodeName : NodeName + " - " + Lb), false, {}, Absent });
             continue;
         }
         //A row is (variant, entry): one per EFFECTIVE entry of this tile (own, else inherited from beneath) — an
@@ -944,19 +1021,23 @@ void PreLaunchWindow::FillVariantCombo()
             const std::string EpLabel = Ep.is_object() ? Ep.value("LABEL", std::string()) : std::string();
             //One way to run: the version's name says it. Several: each is the version's name and the entry's.
             const std::string Shown = (Labels.size() == 1 || EpLabel.empty() || EpLabel == NodeName) ? NodeName : NodeName + " - " + EpLabel;
-            Es.push_back({ Id + "\x1f" + Labels[I], QString::fromStdString(Shown), Rec && I == 0 });
+            Es.push_back({ Id + "\x1f" + Labels[I], QString::fromStdString(Shown), Rec && I == 0, {}, Absent });
         }
     }
     // Recommended first, then NATURAL version order (1.9 < 1.10 < 1.10.2, NaturalLess) — with hundreds of variants
     // (903 Minecraft versions) lexicographic order scatters versions and makes the combo unusable.
+    // Not-installed versions after every installed one: the window opens on (and Play stays with) what plays here.
     std::stable_sort(Es.begin(), Es.end(), [](const E& Ea, const E& Eb){
+        if (Ea.Absent != Eb.Absent) return Eb.Absent;
         if (Ea.Rec != Eb.Rec) return Ea.Rec;
         return NaturalLess(Ea.Lbl, Eb.Lbl);
     });
     for (const E& X : Es)
     {
-        VariantCombo->addItem((X.Rec ? QStringLiteral("⭐ ") : QString()) + X.Lbl, QString::fromStdString(X.Id));
+        VariantCombo->addItem((X.Rec ? QStringLiteral("⭐ ") : QString()) + X.Lbl + (X.Absent ? QStringLiteral("  (not installed)") : QString()),
+                              QString::fromStdString(X.Id));
         VariantCombo->setItemData(VariantCombo->count() - 1, QString::fromStdString(X.Row.empty() ? X.Id.substr(0, X.Id.find('\x1f')) : X.Row), Qt::UserRole + 1);
+        VariantCombo->setItemData(VariantCombo->count() - 1, X.Absent, Qt::UserRole + 2);
     }
     // Type-to-find once the list is big: an editable combo with a contains-matching completer over its own model
     // (the popup list view is virtualized by Qt, so the item count itself is a non-issue).
@@ -982,6 +1063,15 @@ void PreLaunchWindow::persistGlobalConfig()
 void PreLaunchWindow::onLaunchClicked()
 {
     if (LaunchNodeId.empty()) return;
+    if (rowNotInstalled())
+    {
+        //Download, not Play: the row's node (a graft that is a version, with the base it runs on) and what it runs with.
+        std::vector<std::string> Ids{ VariantCombo->currentData(Qt::UserRole + 1).toString().toStdString() };
+        if (Ids.front() != LaunchNodeId) Ids.push_back(LaunchNodeId);
+        if (Downloads().Start && !FaceUid.empty()) Downloads().Start(this, QString::fromStdString(FaceUid), Ids);
+        ApplyRowAvailability();
+        return;
+    }
     // The chosen runner daisy-chain (innermost→outermost). Persisted as RUNNER_CHAIN and passed to the worker.
     const std::vector<std::string>& SelectedChain = CurrentChain;
 

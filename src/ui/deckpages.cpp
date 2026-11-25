@@ -715,6 +715,13 @@ void DeckGamePage::refresh()
         if (std::find(N->Recommended.begin(), N->Recommended.end(), C->FaceUid) != N->Recommended.end()) Name = "★ " + Name;
         Versions << Name;
     }
+    //And those not installed here (its launch screen downloads one), after them.
+    for (const std::string &Id : C->NotInstalled)
+    {
+        const Node *N = C->Index ? C->Index->Find(Id) : nullptr;
+        if (!N) continue;
+        Versions << QString::fromStdString(!N->Variant.empty() ? N->Variant : N->Meta.is_object() ? N->Meta.value("TITLE", Id) : Id) + " (not installed)";
+    }
     QList<LibraryGameCard *> Rest(C->Secondaries.begin(), C->Secondaries.end());
     Others->setCards(Rest);
     Others->setVisible(!Rest.isEmpty());

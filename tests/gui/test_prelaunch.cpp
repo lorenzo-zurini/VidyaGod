@@ -18,6 +18,7 @@
 #include <set>
 
 #include "apppaths.h"
+#include "cardpool.h"   // CardPool::LibraryRows — the rows an open window follows
 #include "shelf.h"
 #include "instancestore.h"
 #include "manifestmodel.h"
@@ -1321,6 +1322,129 @@ private slots:
         QVERIFY2(S.size() == 3, "all three ticked");
         const auto A = Shelf::AppliedGrafts(idx, "game", S);
         QVERIFY2(std::find(A.begin(), A.end(), "x") != A.end(), "the graft that needs Base is applied, not dropped");
+    }
+
+    // A game with one version installed and another not (JSRF on a machine that took a peer's package: its Xbox
+    // version plays, its Unleashed version's files were never fetched): the card holds the installed one and names the
+    // other as not installed; the launch window lists both — the installed one first and picked, though the other is
+    // recommended — and, on the one not installed, Play becomes Download: it asks the app's download pump for that
+    // version under the tile's key, says "Downloading…" while it runs, and once the library has it the row plays.
+    // Teeth: drop the not-installed rows from the card (or the window); sort them by recommendation alone (the window
+    // opens on a version it cannot play); let Play launch a row that is not installed; leave the button as Download on
+    // an installed row; ignore an in-flight download; leave an open window on the rows it opened with, or on a
+    // version no longer offered.
+    void a_version_not_installed_is_listed_and_downloads_from_the_window()
+    {
+        const auto Version = [](const char *Cid, const char *Variant, bool Rec) {
+            json J = { {"CID", Cid}, {"LABEL", Variant}, {"VARIANT", Variant},
+                {"LAYERS", json::array({ json{{"EXEC", json::array({ json{{"LABEL", "Play"}, {"HOST", ManifestModel::MachinePlatform()},
+                    {"EXE", "game.exe"}, {"TILE", {{"UID", "31"}, {"TITLE", "Jet Set Radio"}}}} })}} })} };
+            if (Rec) J["RECOMMENDED"] = json::array({"31"});
+            Node N;
+            ManifestModel::ParseNode(J, std::string("/lib/JSRF/") + Variant + ".json", "/lib/JSRF", N);
+            return N;
+        };
+        auto Idx = std::make_shared<NodeIndex>();
+        Idx->Nodes["bafkreiunleashed"] = Version("bafkreiunleashed", "JSRF Unleashed", true);
+        Idx->Nodes["bafkreixbox"] = Version("bafkreixbox", "Xbox", false);
+        ManifestModel::DeriveFacts(*Idx);
+
+        // The card's rows: installed (its own file here), and not installed but fetchable (it names a CID).
+        CardPool::HydrationMap Hyd;
+        Hyd["bafkreixbox"] = { /*Hydrated*/ true, /*HasContent*/ true, /*OnDisk*/ true, /*HasCid*/ true, false };
+        Hyd["bafkreiunleashed"] = { false, true, true, true, false };
+        const auto R = CardPool::LibraryRows(*Idx, Hyd, "31");
+        QVERIFY(R);
+        QCOMPARE(R->Here, (std::vector<std::string>{"bafkreixbox"}));
+        QCOMPARE(R->ToFetch, (std::vector<std::string>{"bafkreiunleashed"}));
+        QVERIFY(!CardPool::LibraryRows(*Idx, Hyd, "32"));                     // no such tile
+        {
+            CardPool::HydrationMap None = Hyd;
+            None["bafkreixbox"].Hydrated = false;                              // nothing of it installed: the Catalog's
+            QVERIFY(!CardPool::LibraryRows(*Idx, None, "31"));
+            CardPool::HydrationMap NoSource = Hyd;
+            NoSource["bafkreiunleashed"].HasCid = false;                       // nothing to fetch it from: not offered
+            QCOMPARE(CardPool::LibraryRows(*Idx, NoSource, "31")->ToFetch, std::vector<std::string>{});
+        }
+
+        // The app's download pump, as the main window sets it: what was asked, and whether it runs.
+        QString AskedKey;
+        std::vector<std::string> AskedIds;
+        bool Running = false;
+        PreLaunchWindow::SetVersionDownloads({
+            [&](QWidget *, const QString &Key, const std::vector<std::string> &Ids) { AskedKey = Key; AskedIds = Ids; Running = true; return true; },
+            [&](const QString &) { return Running; } });
+
+        json Cfg = json{{"Settings", json::object()}};
+        {
+            PreLaunchWindow W(&Cfg, std::shared_ptr<const NodeIndex>(Idx), R->Here, "31");
+            W.setNotInstalled(R->ToFetch);
+            W.show();
+            QCoreApplication::processEvents();
+            QComboBox *V = nullptr;
+            for (QComboBox *C : W.findChildren<QComboBox *>())
+                if (C->count() && C->itemData(0).toString().contains(QChar(0x1f))) V = C;
+            auto *Play = W.findChild<QPushButton *>("playButton");
+            QVERIFY(V && Play);
+            QStringList Rows;
+            for (int i = 0; i < V->count(); ++i) Rows << V->itemText(i);
+            QCOMPARE(Rows, QStringList({"Xbox", "⭐ JSRF Unleashed  (not installed)"}));
+            QVERIFY(V->isVisibleTo(&W));                                        // two versions: the picker shows
+            QCOMPARE(V->currentIndex(), 0);
+            QVERIFY(!W.rowNotInstalled());
+            QVERIFY2(Play->text().contains("Play"), qPrintable(Play->text()));
+
+            V->setCurrentIndex(1);                                              // the version not installed
+            QCoreApplication::processEvents();
+            QVERIFY(W.rowNotInstalled());
+            QVERIFY2(Play->text().contains("Download"), qPrintable(Play->text()));
+            QVERIFY(Play->isEnabled());
+            QTest::mouseClick(Play, Qt::LeftButton);
+            QCOMPARE(AskedKey, QString("31"));
+            QCOMPARE(AskedIds, (std::vector<std::string>{"bafkreiunleashed"}));
+            QVERIFY2(Play->text().contains("Downloading"), qPrintable(Play->text()));
+            QVERIFY(!Play->isEnabled());                                        // one download at a time
+
+            V->setCurrentIndex(0);                                              // back on the installed one: it plays
+            QCoreApplication::processEvents();
+            QVERIFY2(Play->text().contains("Play"), qPrintable(Play->text()));
+            V->setCurrentIndex(1);
+            QCoreApplication::processEvents();
+
+            // The download ends and the library has the version: the open window follows, on the row it had picked.
+            Running = false;
+            PreLaunchWindow::DownloadsChanged();
+            QVERIFY2(Play->text().contains("Download") && Play->isEnabled(), qPrintable(Play->text()));
+            PreLaunchWindow::FollowLibrary(Idx, [](const std::string &Face, std::vector<std::string> &Here, std::vector<std::string> &ToFetch) {
+                if (Face != "31") return false;
+                Here = {"bafkreiunleashed", "bafkreixbox"};
+                ToFetch.clear();
+                return true;
+            });
+            QCoreApplication::processEvents();
+            Rows.clear();
+            for (int i = 0; i < V->count(); ++i) Rows << V->itemText(i);
+            QCOMPARE(Rows, QStringList({"⭐ JSRF Unleashed", "Xbox"}));
+            QCOMPARE(V->currentText(), QString("⭐ JSRF Unleashed"));
+            QVERIFY(!W.rowNotInstalled());
+            QVERIFY2(Play->text().contains("Play"), qPrintable(Play->text()));
+        }
+        // A version that stops being offered without being installed (its source gone): the window no longer lists it.
+        {
+            PreLaunchWindow W(&Cfg, std::shared_ptr<const NodeIndex>(Idx), {"bafkreixbox"}, "31");
+            W.setNotInstalled({"bafkreiunleashed"});
+            PreLaunchWindow::FollowLibrary(Idx, [](const std::string &, std::vector<std::string> &Here, std::vector<std::string> &ToFetch) {
+                Here = {"bafkreixbox"};
+                ToFetch.clear();
+                return true;
+            });
+            QStringList Rows;
+            for (QComboBox *C : W.findChildren<QComboBox *>())
+                if (C->count() && C->itemData(0).toString().contains(QChar(0x1f)))
+                    for (int i = 0; i < C->count(); ++i) Rows << C->itemText(i);
+            QCOMPARE(Rows, QStringList({"Xbox"}));
+        }
+        PreLaunchWindow::SetVersionDownloads({});
     }
 
 private:

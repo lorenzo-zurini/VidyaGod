@@ -5,11 +5,14 @@
 #include <QString>
 
 #include <filesystem>
+#include <optional>
 #include <string>
+#include <unordered_map>
 #include <vector>
 
 #include "nlohmann/json.hpp"
 #include "libraryview.h"   // LibraryGameCard, SortMode
+#include "installed.h"     // Installed::NodeHydration
 
 class AppModel;
 
@@ -20,6 +23,17 @@ class AppModel;
 // ---------------------------------------------------------------------------
 namespace CardPool
 {
+using HydrationMap = std::unordered_map<std::string, ::Installed::NodeHydration>;
+// A Library card's rows: the installed ones (what it plays), and the ones not installed that can be fetched (its
+// launch window lists them, to download there). Both in shelf order.
+struct TileRows
+{
+    std::vector<std::string> Here, ToFetch;
+    bool operator==(const TileRows &) const = default;
+};
+// The rows tile FaceUid's Library card holds, as Installed() builds it; nullopt when that tile has no playable card
+// (not on the shelf, nothing of it installed, or missing).
+std::optional<TileRows> LibraryRows(const NodeIndex &Idx, const HydrationMap &Hyd, const std::string &FaceUid);
 // One card per tile whose every row (and its graft) is installed, and that has content of its own on disk.
 QList<LibraryGameCard *> Installed(AppModel &Model);
 // One card per tile with something missing that can be fetched. A package with several such games shows its base

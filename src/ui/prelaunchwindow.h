@@ -68,8 +68,34 @@ public:
     //How a missing runner is fetched (the app's one download pump; set once by the main window). Unset: the window
     //only says that none is installed. True: the download was queued.
     static void SetRunnerFetcher(std::function<bool(QWidget *Parent, const QString &RunnerNodeId)> Fetch);
+    //The tile's versions that are not installed here but can be fetched: listed after the installed ones, marked so.
+    //Picked, Play becomes Download (the version's content and its runners, through the app's one download pump).
+    void setNotInstalled(std::vector<std::string> Ids);
+    //The picked row is a version that is not installed here.
+    bool rowNotInstalled() const;
+    //How a version is downloaded (the app's one download pump; set once by the main window). Start queues Ids'
+    //download under the tile's key (false: nothing queued — offline, or that tile's download is already in flight);
+    //InFlight says whether a tile's key is downloading. Unset: a version that is not installed is only listed.
+    struct VersionDownloads
+    {
+        std::function<bool(QWidget *Parent, const QString &Key, const std::vector<std::string> &Ids)> Start;
+        std::function<bool(const QString &Key)> InFlight;
+    };
+    static void SetVersionDownloads(VersionDownloads D);
+    //A download started or ended: every open window's Download button says where it stands.
+    static void DownloadsChanged();
+    //The library changed: every open window (no launch under way) whose tile's rows changed — a version installed,
+    //another gone or re-minted — takes the new rows on Fresh. RowsFor(face, here, toFetch): the rows its card would
+    //hold now (false: leave that window as it is).
+    static void FollowLibrary(std::shared_ptr<const NodeIndex> Fresh,
+                              const std::function<bool(const std::string &Face, std::vector<std::string> &Here,
+                                                       std::vector<std::string> &ToFetch)> &RowsFor);
 private:
     static std::function<bool(QWidget *, const QString &)> &RunnerFetcher();
+    static VersionDownloads &Downloads();
+    //The picked row's standing: a version not installed turns Play into Download (or "Downloading…" while its tile's
+    //download runs) and says so; an installed one plays. Called after the runner chain set the button.
+    void ApplyRowAvailability();
 public:
     //Shows it (again: one closed while its game ran is only hidden) and brings it to the front.
     void bringBack();
@@ -211,6 +237,7 @@ private:
     std::shared_ptr<const NodeIndex> IndexOwned;
     const NodeIndex*        Index            = nullptr;   // IndexOwned.get()
     std::vector<std::string> GroupNodeIds;
+    std::vector<std::string> AbsentIds;     // the tile's versions not installed here (setNotInstalled)
     std::string              FaceUid;
     bool                     ClosedWhileRunning = false;   // closed while its launch ran: hidden, closed when it ends
     bool                     RunningForTest = false;

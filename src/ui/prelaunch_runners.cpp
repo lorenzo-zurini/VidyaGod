@@ -220,6 +220,7 @@ void PreLaunchWindow::RenderChainCombos()
         if (!Reaches) StatusLabel->setText(NoRunnerMsg);
         else if (StatusLabel->text() == NoRunnerMsg) StatusLabel->clear();
     }
+    ApplyRowAvailability();   // a version not installed: Download, whatever its runners here
 }
 
 void PreLaunchWindow::onChainStepChanged(int Step)

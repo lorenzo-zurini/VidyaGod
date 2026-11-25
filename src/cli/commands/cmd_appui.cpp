@@ -266,8 +266,12 @@ VG_COMMANDS
     Command::Register({
         "library play", "a Library card's Play: the launch window for its game",
         "Opens the launch window (versions, options, instances) as clicking the card does; drive it with `ui` and press "
-        "its Play with `ui click`.", { Pos("card", "the card (its key or title)") }, { "library play 749", "library play 'Age of Empires II - The Age of Kings'" },
+        "its Play with `ui click`. A version of the game that is not installed here is listed too, marked \"(not "
+        "installed)\": picked, its Play is Download (the app's download pump, under the tile's key), and the window "
+        "follows the library as the version lands.", { Pos("card", "the card (its key or title)") }, { "library play 749", "library play 'Age of Empires II - The Age of Kings'" },
         { "LibraryGameCard::play", "MainWindow::libraryCard", "LibraryTab::view", "PreLaunchWindow::packagePath", "PreLaunchWindow::ReloadAndRebuild",
+          "PreLaunchWindow::setNotInstalled", "PreLaunchWindow::rowNotInstalled", "PreLaunchWindow::SetVersionDownloads",
+          "PreLaunchWindow::DownloadsChanged", "PreLaunchWindow::FollowLibrary", "CardPool::LibraryRows",
           "VariantPicker::setEntries", "VariantPicker::currentId", "VariantPicker::checkedIds", "LaunchThread::run" }, Needs::App, false,
         [](Command::Context &C, const json &A) {
             LibraryGameCard *Card = Win(C).libraryCard(QString::fromStdString(Command::Str(A, "card")));

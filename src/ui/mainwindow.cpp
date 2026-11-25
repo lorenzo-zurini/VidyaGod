@@ -24,6 +24,7 @@
 #include "ipfswrapper.h"       // IpfsManager (transfer progress signals) + StartNode/StopNode
 #include "apppaths.h"            // AppPaths::DataRoot (the IPFS repo lives at <DataRoot>/ipfs)
 #include "prelaunchwindow.h"
+#include "cardpool.h"            // CardPool::LibraryRows — an open launch window follows its card's rows
 #include "deckshell.h"           // controller mode
 #include "controllerservice.h"   // VidyaGod's InputPlumber
 #include "gameoverlay.h"
@@ -62,7 +63,7 @@
 // MainWindow — composition root (creates the model + tabs, wires the cross-controller signals).
 // ═════════════════════════════════════════════════════════════════════════════
 
-MainWindow::~MainWindow() { PackageEditor::SetOnCreated({}); }
+MainWindow::~MainWindow() { PackageEditor::SetOnCreated({}); PreLaunchWindow::SetVersionDownloads({}); }
 
 MainWindow::MainWindow(nlohmann::ordered_json * gc, QDir * appData, QWidget * parent, bool FromLastIndex, bool StartController)
     : QMainWindow(parent)
@@ -117,6 +118,28 @@ MainWindow::MainWindow(nlohmann::ordered_json * gc, QDir * appData, QWidget * pa
     connect(Model, &AppModel::ipfsHealthChanged, IpfsModelPtr, &IpfsModel::refreshNow);   // orphan heal ran → re-poll health/red→green
     DownloadMgr  = new DownloadManager(*Model, *IpfsModelPtr, this);   // lifetime = this
     Node         = new NodeService(*Model, *IpfsModelPtr, *DownloadMgr, this);   // the node's start, stop and ready
+    //A launch window lists its game's versions that are not installed here: picked, it downloads one through this pump
+    //(as the Catalog card's Download would, under the tile's key), and it follows the library as versions land.
+    PreLaunchWindow::SetVersionDownloads({
+        [this](QWidget *Parent, const QString &Key, const std::vector<std::string> &Ids) {
+            if (Key.isEmpty() || Ids.empty() || DownloadMgr->downloading(Key) || !IpfsFetchReady(Parent, *Model)) return false;
+            DownloadMgr->beginDownload(Key, Ids, {}, {});
+            return true;
+        },
+        [this](const QString &Key) { return DownloadMgr->downloading(Key); } });
+    connect(DownloadMgr, &DownloadManager::downloadStarted, this, [] { PreLaunchWindow::DownloadsChanged(); });
+    connect(DownloadMgr, &DownloadManager::downloadFinished, this, [] { PreLaunchWindow::DownloadsChanged(); });
+    connect(Model, &AppModel::catalogChanged, this, [this] {
+        const std::shared_ptr<const NodeIndex> Snap = Model->catalogSnapshot();
+        PreLaunchWindow::FollowLibrary(Snap, [this, &Snap](const std::string &Face, std::vector<std::string> &Here, std::vector<std::string> &ToFetch) {
+            std::optional<CardPool::TileRows> R = CardPool::LibraryRows(*Snap, Model->hydration(), Face);
+            if (!R) return false;
+            Here = std::move(R->Here);
+            ToFetch = std::move(R->ToFetch);
+            return true;
+        });
+        PreLaunchWindow::DownloadsChanged();   // a download that ended without a catalog change of its own is said too
+    });
 
     // Daemon/foreground-hybrid tray. When a tray is available the app no longer quits on the last window closing —
     // closing/minimizing hide to the tray (keeping the node seeding); the tray "Quit" is the real exit path.

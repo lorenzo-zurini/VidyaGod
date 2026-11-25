@@ -245,7 +245,7 @@ int NextTab(const QTabWidget *T, int By)
 bool PreLaunchWindow::padPressed(Pad::Button B)
 {
     if (!DeckLayout) return false;
-    //Start plays, wherever the focus is on the screen: the one thing the screen is for.
+    //Start plays (or downloads the version picked, when it is not installed), wherever the focus is on the screen.
     if (B == Pad::Button::Start)
     {
         if (!LaunchButton || !LaunchButton->isVisible() || !LaunchButton->isEnabled()) return false;
@@ -278,7 +278,8 @@ QList<PadTarget::Hint> PreLaunchWindow::padHints() const
     if (Tabs && NextTab(Tabs, -1) >= 0 && NextTab(Tabs, -1) != NextTab(Tabs, 1))
         Out.push_back({ Pad::Button::LB, Tabs->tabText(NextTab(Tabs, -1)) });
     if (Tabs && NextTab(Tabs, 1) >= 0) Out.push_back({ Pad::Button::RB, Tabs->tabText(NextTab(Tabs, 1)) });
-    if (LaunchButton && LaunchButton->isVisible() && LaunchButton->isEnabled()) Out.push_back({ Pad::Button::Start, "Play" });
+    if (LaunchButton && LaunchButton->isVisible() && LaunchButton->isEnabled())
+        Out.push_back({ Pad::Button::Start, LaunchButton->property("download").toBool() ? "Download" : "Play" });
     return Out;
 }
 

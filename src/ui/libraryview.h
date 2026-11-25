@@ -57,6 +57,7 @@ public:
     std::shared_ptr<const NodeIndex> IndexOwned;
     const NodeIndex *        Index = nullptr;          // IndexOwned.get()
     std::vector<std::string> GroupNodeIds;             // the tile's launchable node ids (editions; RECOMMENDED first)
+    std::vector<std::string> NotInstalled;             // its other rows, not installed but fetchable: its launch window offers them
     std::string              RepNodeId;                // representative node (front of GroupNodeIds): bundle, runner gate
     std::string              FaceUid;                  // the tile this card shows (title/cover/meta, %UID% at launch)
     QString                  GameKey;                 // the card's identity: its tile UID (download tracking)

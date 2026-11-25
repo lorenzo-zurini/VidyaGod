@@ -202,6 +202,7 @@ void LibraryGameCard::play()
     //A tile has one launch window: clicked again (twice in a row, or while its game runs), the one open comes back.
     if (PreLaunchWindow *Open = PreLaunchWindow::ExistingFor(FaceUid, GroupNodeIds)) { Open->bringBack(); return; }
     auto * dlg = new PreLaunchWindow(GlobalConfigJSON, IndexOwned, GroupNodeIds, FaceUid, nullptr);
+    dlg->setNotInstalled(NotInstalled);
     dlg->show();
     if (skip && !shift && !NoRunner)
         QMetaObject::invokeMethod(dlg, "onLaunchClicked", Qt::QueuedConnection);
@@ -211,7 +212,9 @@ void LibraryGameCard::edit()
 {
     if (!Index || GroupNodeIds.empty()) return;
     if (PreLaunchWindow *Open = PreLaunchWindow::ExistingFor(FaceUid, GroupNodeIds)) { Open->bringBack(); return; }
-    (new PreLaunchWindow(GlobalConfigJSON, IndexOwned, GroupNodeIds, FaceUid, nullptr))->show();
+    auto *Dlg = new PreLaunchWindow(GlobalConfigJSON, IndexOwned, GroupNodeIds, FaceUid, nullptr);
+    Dlg->setNotInstalled(NotInstalled);
+    Dlg->show();
 }
 
 
