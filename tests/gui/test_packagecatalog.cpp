@@ -14,6 +14,7 @@
 #include "shelf.h"
 #include "builtinrunners.h"
 #include "packagecatalog.h"
+#include "packagecatalog_p.h"
 #include "pkggraph.h"
 #include "packageeditormodel.h"
 #include "manifestmodel.h"
@@ -4246,6 +4247,9 @@ private slots:
         WriteNodes((Copy + "/copy.json").toStdString(), Chain("copy", {Tile("2", "Copy"), Exec("win32", "c.exe"),
             ContentCid("file", "same.bin", Cid)}, {}, {{"VARIANT", "Edition 1"}}));
         QVERIFY(QFile::link(Game, R + "/Mine/[9] Alias"));
+        //One package, one lock, however it is named: a trash through the link and a version switch by the folder exclude
+        //each other.
+        QCOMPARE(&PackageCatalog::PackageLock((R + "/Mine/[9] Alias").toStdString()), &PackageCatalog::PackageLock(Game.toStdString()));
         json cfg = json{{"Settings", {{"Paths", {{"LibraryRoot", R.toStdString()}}}}}};
         const auto Idx = PackageCatalog::FreshCatalogIndex(cfg);
         QVERIFY(IpfsWrapper::HeldWhole(Cid));

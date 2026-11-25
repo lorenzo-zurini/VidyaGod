@@ -178,6 +178,10 @@ VfsState::MarkCopied                      # as VfsState::PendingFor: set by ever
 MaskSnap::count                           # a deletion mask's lookup: every lookup through the writelayer (`vfs stat`)
 MaskSnap::empty                           # as MaskSnap::count: the empty-mask fast path
 PackageCatalog::DebugVerifiedFileIo       # TEST ONLY: reads and writes of CACHE/seedverified.json (a publish: one each)
+PackageCatalog::PackageLock               # one change of a package folder at a time, keyed by the folder: every `packages update` stage/switch and `app remove-package` takes it
+PackageCatalog::DebugJudgesOnGuiThread    # TEST ONLY: uninstall verdicts made on the GUI thread (none: removePackage judges on a worker)
+LongOp::Blocks                            # what every ui input command (click, check, set, cell, tab, card) asks first: refused into a window a long editor action waits over
+PackageEditorModel::setBusy                # the editor's Save, Seed & share and Fix case collisions, around their wait: `build save`, `fix-case` run them
 PeerSharing::libraryRequests              # TEST ONLY: library requests sent (a flapping peer is asked at every "online")
 VfsState::DetachPendingLocked             # the lazy copy-up's marker taken off a changed name: every `vfs rm`, `vfs mv`, `vfs write` over a name
 VfsState::PendingKey                      # as VfsState::PendingFor: a marker's key (folded on a case-insensitive mount)

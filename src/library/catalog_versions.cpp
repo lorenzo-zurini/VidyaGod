@@ -117,16 +117,6 @@ std::filesystem::path UpdateStage(const nlohmann::ordered_json &Config, const Pa
     return std::filesystem::path(LibraryRootDir(Config)).parent_path() / "UPDATING" / NodeFiles::SafeName(U.Lib) / NodeFiles::SafeName(U.Pkg)
            / NodeFiles::SafeName(Tail(U.Peer, 8) + "-" + U.Version);
 }
-//One switch of a package at a time (staging, applying, discarding).
-std::mutex &PackageLock(const std::filesystem::path &Dir)
-{
-    static std::mutex Mu;
-    static std::map<std::string, std::unique_ptr<std::mutex>> Locks;
-    std::lock_guard<std::mutex> L(Mu);
-    auto &P = Locks[Dir.lexically_normal().string()];
-    if (!P) P = std::make_unique<std::mutex>();
-    return *P;
-}
 nlohmann::ordered_json NodeFileJson(const std::filesystem::path &P)
 {
     nlohmann::ordered_json J;
@@ -267,6 +257,20 @@ bool LoadJournal(StagedUpdate &S)
     return !S.Listing.empty();
 }
 } // namespace
+
+std::mutex &PackageLock(const std::filesystem::path &Dir)
+{
+    //Keyed by the folder itself (links resolved): a trash, a switch and a staging of one package named two ways — through
+    //a linked library root, a link in the library — still exclude each other.
+    std::error_code Ec;
+    const std::string Key = std::filesystem::weakly_canonical(Dir, Ec).string();
+    static std::mutex Mu;
+    static std::map<std::string, std::unique_ptr<std::mutex>> Locks;
+    std::lock_guard<std::mutex> L(Mu);
+    auto &P = Locks[Ec ? Dir.lexically_normal().string() : Key];
+    if (!P) P = std::make_unique<std::mutex>();
+    return *P;
+}
 
 std::vector<PackageUpdate> AvailableUpdates(const nlohmann::ordered_json &Config)
 {

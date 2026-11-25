@@ -6,6 +6,7 @@
 #include <vector>
 
 #include <filesystem>
+#include <mutex>
 #include <optional>
 
 // Internal (cross-TU) helpers of the PackageCatalog service, shared by its catalog_*.cpp files. Not its public API.
@@ -14,6 +15,8 @@ namespace PackageCatalog {
 //The library root (Settings.Paths.LibraryRoot, else <data>/LIBRARY), and whether Path is at or under Base (lexical).
 std::string LibraryDir(const nlohmann::ordered_json &GlobalConfigJSON);
 bool PathUnder(const std::filesystem::path &Base, const std::filesystem::path &Path);
+//One change of a package's folder at a time (a version's staging, applying, discarding; its trash), by the folder.
+std::mutex &PackageLock(const std::filesystem::path &Dir);
 
 //Removes a landed node file F (and its content claim) unless one of Elsewhere still holds that node.
 void RemoveLandedNode(const std::filesystem::path &F, const std::string &Cid, const std::vector<std::filesystem::path> &Elsewhere = {});
