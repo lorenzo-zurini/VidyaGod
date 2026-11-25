@@ -50,16 +50,28 @@ void NodeService::apply(bool enabled)
         NodeRetryDelayMs = 2000;
         startAsync();
     }
-    else
-    {
-        ResumeTimer->stop();
-        IpfsWrapper::StopNode();   // bring the node fully down — no network activity until re-enabled
-        Ipfs.refreshNow();   // reflect the "node off" state
-    }
+    else stopAsync();
+}
+
+void NodeService::stopAsync()
+{
+    //Brought fully down — no network activity until re-enabled — off the GUI thread: a stop waits for the node's
+    //closes (the DHT, the host, a datastore compaction in flight), and the window froze for all of it.
+    ResumeTimer->stop();
+    if (NodeStopPending) return;
+    NodeStopPending = true;
+    AsyncWork::Run(this,
+        []{ IpfsWrapper::StopNode(); },
+        [this]{
+            NodeStopPending = false;
+            Ipfs.refreshNow();   // reflect the "node off" state
+            if (NetworkingOn) startAsync();   // turned on again while it stopped
+        });
 }
 
 void NodeService::startAsync()
 {
+    if (NodeStopPending) return;                               // a stop in flight starts it again when done
     if (IpfsWrapper::Available()) { ready(); return; }   // already running (e.g. re-enabled)
     if (NodeStartPending) return;                              // an attempt or scheduled retry is already in flight
     NodeStartPending = true;
@@ -69,6 +81,7 @@ void NodeService::startAsync()
         [Repo, Ok]{ std::string Err; *Ok = IpfsWrapper::StartNode(Repo, &Err); },   // off-thread: repo open + swarm join can take a moment
         [this, Ok]{
             NodeStartPending = false;
+            if (*Ok && !NetworkingOn) { stopAsync(); return; }   // turned off while it started: down again
             if (*Ok) { NodeRetryDelayMs = 2000; ready(); return; }
             // A start can fail transiently — most commonly the previous instance still holds the repo's
             // datastore lock while it finishes shutting down ("resource temporarily unavailable" on a quick

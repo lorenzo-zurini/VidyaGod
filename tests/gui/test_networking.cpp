@@ -60,6 +60,15 @@ private slots:
 
         QTRY_VERIFY_WITH_TIMEOUT(IpfsWrapper::Available(), 15000);   // node came up
 
+        // Off: the node comes down off the GUI thread (the window froze for the whole shutdown); flapped on and off
+        // while it stops, it ends as last asked. Teeth: no start after the stop (it stays off).
+        netCb->setChecked(false);
+        QTRY_VERIFY_WITH_TIMEOUT(!IpfsWrapper::Available(), 15000);
+        netCb->setChecked(true);
+        netCb->setChecked(false);
+        netCb->setChecked(true);                                     // flapped: it ends up on
+        QTRY_VERIFY_WITH_TIMEOUT(IpfsWrapper::Available(), 15000);
+
         IpfsWrapper::StopNode();                                     // clean up (don't leak the node into other tests)
     }
 };

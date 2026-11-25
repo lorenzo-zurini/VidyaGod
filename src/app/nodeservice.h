@@ -22,6 +22,7 @@ public:
 private:
     void apply(bool Enabled);   // networking toggled: start or stop the node
     void startAsync();          // open the repo off-thread, retrying with a backoff
+    void stopAsync();           // bring it down off-thread (a stop waits on the node's closes)
     void ready();               // the repo is open: what waited for it
 
     AppModel &Model;
@@ -30,6 +31,7 @@ private:
     QTimer *ResumeTimer = nullptr;   // polls for the node's network coming up, then resumes downloads once
     bool NetworkingOn = false;       // mirrors the runtime networking toggle (gates node-start retries)
     bool NodeStartPending = false;   // a StartNode attempt (or scheduled retry) is in flight
+    bool NodeStopPending = false;    // a StopNode is in flight (a start waits for it)
     int NodeRetryDelayMs = 2000;     // backoff for failed node starts (doubles up to 30s)
 };
 
