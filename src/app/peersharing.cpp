@@ -1,5 +1,7 @@
 #include <set>
 #include "peersharing.h"
+#include <QCryptographicHash>
+#include <QRegularExpression>
 #include "appmodel.h"
 #include "asyncwork.h"
 #include "commonutils.h"
@@ -605,6 +607,33 @@ bool Put(nlohmann::ordered_json & Cfg, const char * Key, const std::string & P, 
     A.push_back(P);
     return true;
 }
+}
+
+QString PeerSharing::ShortCode(const QString & peer)
+{
+    static const char Alphabet[] = "0123456789ABCDEFGHJKMNPQRSTVWXYZ";   // Crockford's: none that read alike
+    const QByteArray H = QCryptographicHash::hash(peer.toUtf8(), QCryptographicHash::Sha256);
+    quint32 Bits = (quint32(quint8(H[0])) << 22) | (quint32(quint8(H[1])) << 14) | (quint32(quint8(H[2])) << 6) | (quint8(H[3]) >> 2);
+    QString Out;
+    for (int I = 0; I < 6; ++I) { Out.prepend(QChar(Alphabet[Bits & 31])); Bits >>= 5; }
+    return Out.left(3) + "-" + Out.mid(3);
+}
+
+QString PeerSharing::PeerForShortCode(const QString & Typed, const QStringList & Candidates)
+{
+    QString Want = Typed.toUpper();
+    Want.remove(QRegularExpression("[^0-9A-Z]"));
+    //Read as it is said: O is 0, I and L are 1.
+    Want.replace('O', '0').replace('I', '1').replace('L', '1');
+    if (Want.size() != 6) return {};
+    QString Found;
+    for (const QString & P : Candidates)
+        if (QString(ShortCode(P)).remove('-') == Want)
+        {
+            if (!Found.isEmpty() && Found != P) return {};   // two share it: neither is meant
+            Found = P;
+        }
+    return Found;
 }
 
 bool PeerSharing::hasChosen(const QString & peer) const { return In(*Model.config(), "PeerChosen", peer.toStdString()); }

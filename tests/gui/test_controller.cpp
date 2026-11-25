@@ -55,6 +55,15 @@
 #include <SDL.h>
 #include "padnav.h"
 #include "nodefixture.h"
+#include "decklist.h"
+#include "networktab.h"
+#include "peersharing.h"
+#include "qrcode.h"
+#include "ipfswrapper.h"
+#include <QImage>
+#include <QProcess>
+#include <QScopeGuard>
+#include <QStandardPaths>
 
 #include <filesystem>
 #include <fstream>
@@ -64,6 +73,11 @@ using B = Pad::Button;
 
 namespace
 {
+int ScreenSaverSeconds(const json &Cfg)
+{
+    return Cfg.contains("Settings") && Cfg["Settings"].contains("ScreenSaverSeconds") ? Cfg["Settings"]["ScreenSaverSeconds"].get<int>() : 60;
+}
+
 //A press as a controller makes it (PadInput's delivery), then the UI's queued work.
 void Press(B Btn, int N = 1)
 {
@@ -616,7 +630,7 @@ private slots:
         Press(B::RB, 10);
         QCOMPARE(Sh.section(), DeckShell::Section::Settings);
         Press(B::LB);
-        QCOMPARE(Sh.section(), DeckShell::Section::Node);
+        QCOMPARE(Sh.section(), DeckShell::Section::Peers);
         Press(B::B);
         QCOMPARE(Sh.section(), DeckShell::Section::Home);
         QCOMPARE(DeckShell::SectionFrom("catalog"), std::optional<DeckShell::Section>(DeckShell::Section::Catalog));
@@ -1018,7 +1032,7 @@ private slots:
         Sh.resize(1280, 800);
         Front(Sh);
         Sh.setActive(true);
-        Sh.showSection(DeckShell::Section::Node);
+        Sh.openAdvanced(DeckShell::Advanced::Node);
         QListWidget *List = nullptr;
         for (QListWidget *W : Sh.findChildren<QListWidget *>())
             if (W->isVisible() && W->count() > 1) { List = W; break; }
@@ -1045,7 +1059,7 @@ private slots:
         Sh.resize(1280, 800);
         Front(Sh);
         Sh.setActive(true);
-        Sh.showSection(DeckShell::Section::Peers);
+        Sh.openAdvanced(DeckShell::Advanced::Peers);
         QCoreApplication::processEvents();
         QWidget *F = QApplication::focusWidget();
         QVERIFY(F && !qobject_cast<QScrollArea *>(F));
@@ -1068,7 +1082,7 @@ private slots:
         Sh.resize(1280, 800);
         Front(Sh);
         Sh.setActive(true);
-        Sh.showSection(DeckShell::Section::Settings);
+        Sh.openAdvanced(DeckShell::Advanced::Settings);
         QCoreApplication::processEvents();
         auto *Side = Sh.findChild<QListWidget *>("SettingsSidebar");
         QVERIFY(Side);
@@ -1083,6 +1097,10 @@ private slots:
         Press(B::B);
         QCOMPARE(Sh.section(), DeckShell::Section::Settings);
         QCOMPARE(QApplication::focusWidget(), static_cast<QWidget *>(Side));
+        Press(B::B);                                   // the sidebar: back to controller mode's own Settings page
+        QCOMPARE(Sh.section(), DeckShell::Section::Settings);
+        QVERIFY(!Sh.advanced());
+        QCOMPARE(Sh.padState()["page"]["kind"].get<std::string>(), std::string("controllerSettings"));
         Press(B::B);
         QCOMPARE(Sh.section(), DeckShell::Section::Home);
         Sh.setActive(false);
@@ -1117,6 +1135,183 @@ private slots:
         Sh.setActive(false);
     }
 
+    // Controller mode's Settings is a page of its own: what matters on a handheld, every row a toggle or a left/right
+    // value that writes the setting, nothing only a desktop has (the tray, starting at login); its Advanced… is the
+    // desktop's, and B comes back. Teeth: a value or a toggle not reaching the config; a desktop-only row; Advanced… not
+    // opening, or B leaving for Home from it.
+    void controller_settings_is_a_page_of_its_own()
+    {
+        LibraryFixture L;
+        AppModel M(&L.Cfg, &L.AppDir);
+        M.rebuildCatalog();
+        IpfsModel Ipfs(M);
+        DownloadManager Dl(M, Ipfs);
+        DeckShell Sh(M, Ipfs, Dl);
+        Sh.resize(1280, 800);
+        Front(Sh);
+        Sh.setActive(true);
+        Sh.showSection(DeckShell::Section::Settings);
+        QCoreApplication::processEvents();
+        json Page = Sh.padState()["page"];
+        QCOMPARE(Page["kind"].get<std::string>(), std::string("controllerSettings"));
+        QCOMPARE(Page["current"].get<std::string>(), std::string("controller.start"));
+        std::set<std::string> Ids;
+        for (const auto &R : Page["rows"])
+        {
+            Ids.insert(R.value("id", std::string()));
+            const QString T = QString::fromStdString(R.value("title", std::string())).toLower();
+            QVERIFY2(!T.contains("tray") && !T.contains("login"), qPrintable(T));
+        }
+        for (const char *Want : { "controller.start", "controller.haptics", "controller.desktop", "screen.saver", "net", "storage",
+                                  "sources.sync", "runners", "advanced.node", "advanced.runners", "advanced" })
+            QVERIFY2(Ids.count(Want), Want);
+        Press(B::Right);
+        QVERIFY(ControllerMode::StartSetting(L.Cfg) == ControllerMode::Start::Controller);
+        Press(B::Down);
+        QCOMPARE(Sh.padState()["page"]["current"].get<std::string>(), std::string("controller.haptics"));
+        const bool Was = ControllerMode::Haptics(L.Cfg);
+        Press(B::A);
+        QCOMPARE(ControllerMode::Haptics(L.Cfg), !Was);
+        Press(B::Down, 2);
+        QCOMPARE(Sh.padState()["page"]["current"].get<std::string>(), std::string("screen.saver"));
+        const int Before = ScreenSaverSeconds(L.Cfg);
+        Press(B::Left);
+        QVERIFY(ScreenSaverSeconds(L.Cfg) < Before);
+        QVERIFY(Sh.settingsPage()->press("advanced"));
+        QVERIFY(Sh.advanced() == DeckShell::Advanced::Settings);
+        QVERIFY(Sh.findChild<SettingsTab *>() && Sh.findChild<SettingsTab *>()->isVisible());
+        for (int I = 0; I < 3 && Sh.advanced(); ++I) Press(B::B);
+        QVERIFY(!Sh.advanced());
+        QCOMPARE(Sh.section(), DeckShell::Section::Settings);
+        QVERIFY(Sh.settingsPage()->isVisible());
+        Sh.setActive(false);
+    }
+
+    // Controller mode's Peers is a page of its own, read from the node: a request waiting (Accept / Decline), a device
+    // nearby (one press pairs), each peer with its permissions as switches and Block / Remove asked twice, and the code
+    // to pair from afar as a QR with its short code. Teeth: a switch not reaching the model; Remove on one press; the QR
+    // not the peer code; the short code not the code's.
+    void controller_peers_is_a_page_of_its_own()
+    {
+        QTemporaryDir Dir;
+        const QString Repo = Dir.path() + "/ipfs";
+        QDir().mkpath(Repo);
+        {
+            std::ofstream OF((Repo + "/social.json").toStdString());
+            OF << R"({"profile":{"nick":"me"},"contacts":[)"
+                  R"({"peer":"12D3KooWSavedPal","nick":"savedpal","state":"accepted","added":1},)"
+                  R"({"peer":"12D3KooWAsking","nick":"LGZ-MacBook","state":"incoming","added":2}]})";
+        }
+        std::string Err;
+        QVERIFY2(IpfsWrapper::StartNode(Repo.toStdString(), &Err), Err.c_str());
+        const auto Stop = qScopeGuard([] { NetworkTab::SetNearbySource({}); IpfsWrapper::StopNode(); });
+        NetworkTab::SetNearbySource([] { return std::vector<IpfsWrapper::NearbyPeer>{ { "12D3KooWDeckDeviceA1b2c3", "LGZ-SteamDeck", "" } }; });
+        json Cfg = json{{"Settings", {{"IPFS", {{"Enabled", true}}}}}, {"LIBRARY", json::array()},
+                        {"ShareSheet", json{{"bafkreia", "Games/[1] A/a.json"}}}};
+        QDir AppDir(Dir.path());
+        AppModel M(&Cfg, &AppDir);
+        IpfsModel Ipfs(M);
+        DownloadManager Dl(M, Ipfs);
+        DeckShell Sh(M, Ipfs, Dl);
+        Sh.resize(1280, 800);
+        Front(Sh);
+        Sh.setActive(true);
+        Sh.showSection(DeckShell::Section::Peers);
+        QCoreApplication::processEvents();
+        std::map<std::string, json> Rows;
+        const auto Read = [&] { Rows.clear(); for (const auto &R : Sh.padState()["page"]["rows"]) if (R.contains("id")) Rows[R["id"].get<std::string>()] = R; };
+        Read();
+        for (const char *Want : { "accept:12D3KooWAsking", "decline:12D3KooWAsking", "pair:12D3KooWDeckDeviceA1b2c3", "shortcode",
+                                  "share:Games:12D3KooWSavedPal", "receive:12D3KooWSavedPal", "vlan:12D3KooWSavedPal",
+                                  "presence:12D3KooWSavedPal", "block:12D3KooWSavedPal", "remove:12D3KooWSavedPal", "code", "advanced" })
+            QVERIFY2(Rows.count(Want), Want);
+        QVERIFY(!Rows.count("pair:12D3KooWSavedPal"));                       // in the book: not offered again
+        const QString Code = QString::fromStdString(IpfsWrapper::PeerCode());
+        QCOMPARE(QString::fromStdString(Rows["code"]["code"].get<std::string>()), Code);
+        QCOMPARE(QString::fromStdString(Rows["code"]["title"].get<std::string>()), PeerSharing::ShortCode(Code));
+        QVERIFY(Rows["pair:12D3KooWDeckDeviceA1b2c3"]["says"].get<std::string>().find(PeerSharing::ShortCode("12D3KooWDeckDeviceA1b2c3").toStdString())
+                != std::string::npos);
+
+        QVERIFY(!M.peers().isReceivingFrom("12D3KooWSavedPal"));
+        QVERIFY(Sh.peersPage()->press("receive:12D3KooWSavedPal"));
+        QVERIFY(M.peers().isReceivingFrom("12D3KooWSavedPal"));
+        QTRY_VERIFY_WITH_TIMEOUT([&] { Read(); return Rows["receive:12D3KooWSavedPal"].value("on", false); }(), 3000);
+
+        QVERIFY(Sh.peersPage()->press("remove:12D3KooWSavedPal"));         // once: asked
+        QCOMPARE(Sh.padState()["page"].value("armed", std::string()), std::string("remove:12D3KooWSavedPal"));
+        bool Still = false;
+        for (const auto &C : IpfsWrapper::PeerList()) Still = Still || C.PeerID == "12D3KooWSavedPal";
+        QVERIFY(Still);
+        Press(B::Down);                                                      // moving off disarms it
+        QVERIFY(!Sh.padState()["page"].contains("armed"));
+        Sh.setActive(false);
+    }
+
+    // The short code: six characters that never read alike, the same for the same peer, typed in any case, with or
+    // without its dash, O for 0 and I or L for 1; a code two devices share names neither. Teeth: case-sensitive
+    // matching; the dash required; a clash taken as the first.
+    void a_short_code_is_typed_as_it_is_read()
+    {
+        const QString A = "12D3KooWDeckDeviceA1b2c3", Bp = "12D3KooWLaptopXyZ";
+        const QString Sa = PeerSharing::ShortCode(A);
+        QCOMPARE(Sa, PeerSharing::ShortCode(A));
+        QCOMPARE(Sa.size(), 7);
+        QCOMPARE(Sa[3], QChar('-'));
+        for (QChar C : QString(Sa).remove('-')) QVERIFY2(QString("0123456789ABCDEFGHJKMNPQRSTVWXYZ").contains(C), qPrintable(Sa));
+        QVERIFY(Sa != PeerSharing::ShortCode(Bp));
+        QCOMPARE(PeerSharing::PeerForShortCode(Sa, { A, Bp }), A);
+        QCOMPARE(PeerSharing::PeerForShortCode(Sa.toLower().remove('-'), { A, Bp }), A);
+        QString Spoken = Sa;
+        Spoken.replace('0', 'O').replace('1', 'l');
+        QCOMPARE(PeerSharing::PeerForShortCode(Spoken, { A, Bp }), A);
+        QVERIFY(PeerSharing::PeerForShortCode(Sa, { Bp }).isEmpty());
+        QVERIFY(PeerSharing::PeerForShortCode(Sa, { A, A + "" }) == A);    // the same device twice is one
+        QVERIFY(PeerSharing::PeerForShortCode("ZZZ", { A }).isEmpty());
+        //Two devices whose codes clash: the code names neither (found by trying: 30 bits clash within ~2^15 IDs).
+        QHash<QString, QString> Seen;
+        QString P1, P2;
+        for (int I = 0; I < 400000 && P1.isEmpty(); ++I)
+        {
+            const QString Id = "12D3KooWClash" + QString::number(I);
+            const QString C = PeerSharing::ShortCode(Id);
+            if (Seen.contains(C)) { P1 = Seen[C]; P2 = Id; }
+            else Seen.insert(C, Id);
+        }
+        QVERIFY(!P1.isEmpty());
+        QVERIFY(PeerSharing::PeerForShortCode(PeerSharing::ShortCode(P1), { P1, P2 }).isEmpty());
+        QCOMPARE(PeerSharing::PeerForShortCode(PeerSharing::ShortCode(P1), { P1 }), P1);
+    }
+
+    // The QR a phone reads: what Encode draws decodes to the text, at every size a peer code (and more) takes. Teeth:
+    // any bit of the encoder wrong (the reader finds nothing, or other text). Needs zbarimg; skipped without it.
+    void the_peer_code_qr_reads_back()
+    {
+        const QString Zbar = QStandardPaths::findExecutable("zbarimg");
+        if (Zbar.isEmpty()) QSKIP("zbarimg is not installed");
+        QTemporaryDir D;
+        for (const QString &T : { QString("12D3KooWDeckDeviceA1b2c3"), QString("12D3KooW") + QString(44, 'x'),
+                                  QString(120, 'Q'), QString(200, 'z') })
+        {
+            const auto M = QrCode::Encode(T.toStdString());
+            QVERIFY(!M.empty());
+            const int N = static_cast<int>(M.size()), Cell = 6, Side = (N + 8) * Cell;
+            QImage Img(Side, Side, QImage::Format_Grayscale8);
+            Img.fill(255);
+            for (int Y = 0; Y < N; ++Y)
+                for (int X = 0; X < N; ++X)
+                    if (M[Y][X])
+                        for (int Dy = 0; Dy < Cell; ++Dy)
+                            for (int Dx = 0; Dx < Cell; ++Dx) Img.setPixel((X + 4) * Cell + Dx, (Y + 4) * Cell + Dy, qRgb(0, 0, 0));
+            const QString F = D.filePath("q.png");
+            QVERIFY(Img.save(F));
+            QProcess P;
+            P.start(Zbar, { "-q", "--raw", F });
+            QVERIFY(P.waitForFinished(20000));
+            QCOMPARE(QString::fromUtf8(P.readAllStandardOutput()).trimmed(), T);
+        }
+        QVERIFY(QrCode::Encode(std::string(300, 'x')).empty());                // past version 10: none
+    }
+
     // The menu's "Controller settings" opens Settings at its Controller page: the controller's settings are a page of
     // Settings of their own, General keeps the tray. Teeth: the item opens Settings at whatever page it was on; the
     // controller's settings stay on General.
@@ -1147,6 +1342,9 @@ private slots:
         Press(B::A);
         QVERIFY(!Sh.menuOpen());
         QCOMPARE(Sh.section(), DeckShell::Section::Settings);
+        QCOMPARE(Sh.padState()["page"]["current"].get<std::string>(), std::string("controller.start"));
+        //And its Advanced…: the desktop's Controller page, with its Start in.
+        Sh.openAdvanced(DeckShell::Advanced::Settings, "Controller");
         auto *T = Sh.findChild<SettingsTab *>();
         QVERIFY(T);
         auto *Side = T->findChild<QListWidget *>("SettingsSidebar");

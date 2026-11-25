@@ -101,6 +101,12 @@ public:
     bool acceptPairing(const QString & peer, Permissions given);                             // the acceptance + the permissions
     void applyPairing(const QString & peer, Permissions given);
     bool hasChosen(const QString & peer) const;          // its settings were chosen (pairing, accepting, a toggle)
+    // A peer's short code: six letters and digits of its ID's hash, none that read alike (no I, L, O, U), as "K7Q-2MX" —
+    // what two screens show to be checked against each other, and what is typed (in any case, with or without the dash)
+    // to pair with a device nearby. Its full code is what pairs from afar.
+    static QString ShortCode(const QString & peer);
+    // The one of Candidates (peer IDs) whose short code Typed is ("" if none, or two share it).
+    static QString PeerForShortCode(const QString & Typed, const QStringList & Candidates);
     // How much of what Peer shares with us is here: their packages, and those landed whole.
     struct Received { int Packages = 0, Here = 0; };
     Received receivedFrom(const QString & peer) const;

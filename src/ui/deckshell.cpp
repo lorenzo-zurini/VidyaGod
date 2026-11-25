@@ -1,4 +1,6 @@
 #include "deckshell.h"
+#include "peersharing.h"
+#include "decklist.h"
 #include "screensaver.h"
 #include "controllerservice.h"
 #include "deckshell_p.h"
@@ -186,7 +188,7 @@ void DeckMenu::choose(const QString &Item)
     else if (Item == "Controller settings")
     {
         Shell.showSection(DeckShell::Section::Settings);
-        if (auto *T = Shell.findChild<SettingsTab *>()) T->openPage("Controller");
+        Shell.settingsPage()->setCurrent("controller.start");
     }
     else if (Item == "Press A again to quit") emit Shell.quitRequested();
 }
@@ -351,9 +353,28 @@ DeckShell::DeckShell(AppModel &M, IpfsModel &I, DownloadManager &D, QWidget *Par
     Body->addWidget(Library);
     Body->addWidget(Catalog);
     Body->addWidget(DownloadsPage);
-    //Peers, Node and Settings are the desktop pages, built the first time they are shown (as the desktop's own tabs
-    //build theirs): placeholders hold their places.
-    for (int K = 0; K < 3; ++K) Body->addWidget(new QWidget(Body));
+    //Peers and Settings: controller pages of their own; the desktop pages behind their Advanced… come after the
+    //sections, built the first time each is opened.
+    PeersPage = new DeckList(*this, "controllerPeers", [this] { return peersRows(); });
+    SettingsPage = new DeckList(*this, "controllerSettings", [this] { return settingsRows(); });
+    Body->addWidget(PeersPage);
+    Body->addWidget(SettingsPage);
+    const auto Peers = [this] { if (Current == Section::Peers && !AdvancedOpen && PeersPage->isVisible()) PeersPage->refresh(); };
+    PeersManager * FM = PeersManager::instance();
+    for (auto Sig : { &PeersManager::peerRequestSent, &PeersManager::peerRemoved })
+        connect(FM, Sig, this, Peers);
+    connect(FM, &PeersManager::peerRequest,  this, Peers);
+    connect(FM, &PeersManager::peerAccepted, this, Peers);
+    connect(FM, &PeersManager::peerDeclined, this, Peers);
+    connect(FM, &PeersManager::peerPresence, this, Peers);
+    connect(FM, &PeersManager::peerProfile,  this, Peers);
+    connect(&Model.peers(), &PeerSharing::peerCatalogChanged, this, Peers);
+    connect(&Model.peers(), &PeerSharing::shareStateChanged, this, Peers);
+    connect(&Model, &AppModel::networkingChanged, this, [this, Peers] { Peers(); if (SettingsPage->isVisible()) SettingsPage->refresh(); });
+    connect(&Model, &AppModel::nodeReady, this, Peers);
+    NearbyPoll = new QTimer(this);
+    NearbyPoll->setInterval(2000);
+    connect(NearbyPoll, &QTimer::timeout, this, Peers);
     Game = new DeckGamePage(*this);
     Game->hide();
     Menu = new DeckMenu(*this);
@@ -421,8 +442,55 @@ double DeckShell::scale() const { return DeckStyle::ScaleFor(height() > 0 ? heig
 
 QString DeckShell::SectionName(Section S)
 {
-    static const char *N[] = { "Home", "Library", "Catalog", "Downloads", "Peers", "Node", "Settings" };
+    static const char *N[] = { "Home", "Library", "Catalog", "Downloads", "Peers", "Settings" };
     return N[static_cast<int>(S)];
+}
+
+QString DeckShell::AdvancedName(Advanced A)
+{
+    static const char *N[] = { "Peers", "Node", "Settings" };
+    return N[static_cast<int>(A)];
+}
+
+std::optional<DeckShell::Advanced> DeckShell::AdvancedFrom(const QString &Name)
+{
+    for (int I = 0; I < 3; ++I)
+        if (AdvancedName(static_cast<Advanced>(I)).compare(Name, Qt::CaseInsensitive) == 0) return static_cast<Advanced>(I);
+    return std::nullopt;
+}
+
+void DeckShell::openAdvanced(Advanced A, const QString &PageName)
+{
+    if (gameOpen()) closeGame();
+    if (menuOpen()) closeMenu();
+    const int K = static_cast<int>(A);
+    if (!Hosted[K])
+    {
+        QWidget *Page = nullptr;
+        if (A == Advanced::Peers) Page = new NetworkTab(Model);
+        else if (A == Advanced::Node) Page = new IpfsTab(Ipfs);
+        else Page = new SettingsTab(Model);
+        Hosted[K] = new DeckHosted(Page, scale(), Body);
+        Body->addWidget(Hosted[K]);
+    }
+    //Where it belongs: the node's transfers and every setting under Settings, the Peers page under Peers.
+    Current = A == Advanced::Peers ? Section::Peers : Section::Settings;
+    AdvancedOpen = A;
+    if (A == Advanced::Settings && !PageName.isEmpty()) qobject_cast<SettingsTab *>(Hosted[K]->page())->openPage(PageName);
+    if (auto *N = Hosted[0] ? qobject_cast<NetworkTab *>(Hosted[0]->page()) : nullptr) N->setActive(A == Advanced::Peers && Active);
+    if (auto *N = Hosted[1] ? qobject_cast<IpfsTab *>(Hosted[1]->page()) : nullptr) N->setActive(A == Advanced::Node && Active);
+    Ipfs.setActive(Active && A == Advanced::Node);
+    NearbyPoll->stop();
+    Body->setCurrentWidget(Hosted[K]);
+    focusSection();
+    update();
+    emit PadRouter::instance().hintsChanged();
+}
+
+void DeckShell::closeAdvanced()
+{
+    if (!AdvancedOpen) return;
+    showSection(Current);
 }
 
 std::optional<DeckShell::Section> DeckShell::SectionFrom(const QString &Name)
@@ -464,22 +532,11 @@ void DeckShell::showSection(Section S)
     if (gameOpen()) closeGame();
     if (menuOpen()) closeMenu();
     const int I = static_cast<int>(S);
-    //A desktop page the first time it is shown.
-    if (I >= 4 && !qobject_cast<DeckHosted *>(Body->widget(I)))
-    {
-        QWidget *Page = nullptr;
-        if (S == Section::Peers) Page = new NetworkTab(Model);
-        else if (S == Section::Node) Page = new IpfsTab(Ipfs);
-        else Page = new SettingsTab(Model);
-        auto *H = new DeckHosted(Page, scale(), Body);
-        QWidget *Old = Body->widget(I);
-        Body->insertWidget(I, H);
-        Body->removeWidget(Old);
-        Old->deleteLater();
-    }
-    if (auto *N = qobject_cast<DeckHosted *>(Body->widget(4))) qobject_cast<NetworkTab *>(N->page())->setActive(S == Section::Peers && Active);
-    if (auto *N = qobject_cast<DeckHosted *>(Body->widget(5))) qobject_cast<IpfsTab *>(N->page())->setActive(S == Section::Node && Active);
-    Ipfs.setActive(Active && (S == Section::Downloads || S == Section::Node));
+    AdvancedOpen.reset();
+    if (auto *N = Hosted[0] ? qobject_cast<NetworkTab *>(Hosted[0]->page()) : nullptr) N->setActive(false);
+    if (auto *N = Hosted[1] ? qobject_cast<IpfsTab *>(Hosted[1]->page()) : nullptr) N->setActive(false);
+    if (S == Section::Peers && Active) NearbyPoll->start(); else NearbyPoll->stop();
+    Ipfs.setActive(Active && S == Section::Downloads);
     Current = S;
     Body->setCurrentIndex(I);
     focusSection();
@@ -618,8 +675,7 @@ bool DeckShell::eventFilter(QObject *Watched, QEvent *Event)
 void DeckShell::resizeEvent(QResizeEvent *)
 {
     place();
-    for (int I = 4; I < Body->count(); ++I)
-        if (auto *H = qobject_cast<DeckHosted *>(Body->widget(I))) H->setScale(scale());
+    for (DeckHosted *H : Hosted) if (H) H->setScale(scale());
 }
 
 void DeckShell::place()
@@ -677,6 +733,12 @@ QString DeckShell::statusText() const
     case Section::Library:   return Library->statusText();
     case Section::Catalog:   return Catalog->statusText();
     case Section::Downloads: return DownloadsPage->statusText();
+    case Section::Peers:
+    {
+        int N = 0, Up = 0;
+        for (const auto &C : IpfsWrapper::PeerList()) if (C.State == "accepted") { ++N; Up += C.Online ? 1 : 0; }
+        return N == 0 ? QString("No peers yet") : QString("%1 peer%2 · %3 online").arg(N).arg(N == 1 ? "" : "s").arg(Up);
+    }
     default:                 return {};
     }
 }
@@ -788,6 +850,7 @@ bool DeckShell::padPressed(Pad::Button B)
                 break;
             }
         }
+        if (AdvancedOpen) { closeAdvanced(); return true; }   // back to the controller page it was opened from
         if (Current != Section::Home) { showSection(Section::Home); return true; }
         return false;
     default: return false;
@@ -813,8 +876,10 @@ json DeckShell::padState() const
     case Section::Library:   J["page"] = Library->padState(); break;
     case Section::Catalog:   J["page"] = Catalog->padState(); break;
     case Section::Downloads: J["page"] = DownloadsPage->padState(); break;
-    default: break;
+    case Section::Peers:     if (!AdvancedOpen) J["page"] = PeersPage->padState(); break;
+    case Section::Settings:  if (!AdvancedOpen) J["page"] = SettingsPage->padState(); break;
     }
+    if (AdvancedOpen) J["advanced"] = AdvancedName(*AdvancedOpen).toStdString();
     J["status"] = statusText().toStdString();
     return J;
 }

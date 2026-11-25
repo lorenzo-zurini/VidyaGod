@@ -68,6 +68,8 @@ QLabel * Dim(const QString & Text, QWidget * Parent)
 }
 }
 
+std::vector<IpfsWrapper::NearbyPeer> NetworkTab::Nearby() { return NearbySource()(); }
+
 void NetworkTab::SetNearbySource(std::function<std::vector<IpfsWrapper::NearbyPeer>()> Source)
 {
     NearbySource() = Source ? std::move(Source) : [] { return IpfsWrapper::NearbyPeers(); };

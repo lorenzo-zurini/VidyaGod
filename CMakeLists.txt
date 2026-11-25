@@ -318,6 +318,8 @@ set(SHARED_SOURCES
 
     src/base/commonutils.h
     src/base/commonutils.cpp
+    src/base/qrcode.h
+    src/base/qrcode.cpp
 
     src/ui/prelaunchwindow.h
     src/ui/prelaunchwindow.cpp
@@ -337,6 +339,9 @@ set(SHARED_SOURCES
     src/ui/deckshell_p.h
     src/ui/deckshell.cpp
     src/ui/deckpages.cpp
+    src/ui/decklist.h
+    src/ui/decklist.cpp
+    src/ui/decknative.cpp
     src/ui/padinput.h
     src/ui/padinput.cpp
     src/ui/controllerservice.cpp

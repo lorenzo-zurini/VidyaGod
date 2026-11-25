@@ -25,6 +25,8 @@ class DeckGamePage;
 class DeckDownloads;
 class DeckHosted;
 class DeckMenu;
+class DeckList;
+struct DeckRow;
 
 // ---------------------------------------------------------------------------
 // ControllerMode — the settings of the controller UI (Settings.Controller) and whether the app starts in it.
@@ -51,18 +53,29 @@ bool StartsInController(const nlohmann::ordered_json &Config, bool FlagControlle
 
 // ---------------------------------------------------------------------------
 // DeckShell — the controller UI: a full-screen shell for a Steam Deck or a TV, every part of the app behind a few
-// buttons. The shoulders turn its sections (Home, Library, Catalog, Downloads, Peers, Node, Settings); a cover's
-// page plays, configures, downloads or marks it; Start opens the menu (desktop mode, networking, quit). Peers, Node
-// and Settings are the desktop pages themselves, made large and driven by PadNav, so nothing the app does is out of
-// a controller's reach. It is a view of the same models the desktop tabs show.
+// buttons. The shoulders turn its sections (Home, Library, Catalog, Downloads, Peers, Settings); a cover's page plays,
+// configures, downloads or marks it; Start opens the menu (desktop mode, networking, quit). Peers and Settings are
+// controller pages of their own (DeckList: every row a toggle, a value or one press); each has "Advanced…", the desktop
+// page itself made large, so nothing the app does is out of a controller's reach. It is a view of the same models the
+// desktop tabs show.
 // ---------------------------------------------------------------------------
 class ScreenSaver;
 class DeckShell : public QWidget, public PadTarget
 {
     Q_OBJECT
 public:
-    enum class Section { Home, Library, Catalog, Downloads, Peers, Node, Settings };
-    static constexpr int SectionCount = 7;
+    enum class Section { Home, Library, Catalog, Downloads, Peers, Settings };
+    static constexpr int SectionCount = 6;
+    //The desktop pages behind a native page's "Advanced…" (Peers; the node's transfers; every setting), made large and
+    //driven by PadNav: nothing the desktop does is out of a controller's reach. B comes back to the native page.
+    enum class Advanced { Peers, Node, Settings };
+    static QString AdvancedName(Advanced A);                     // "Peers", "Node", "Settings"
+    static std::optional<Advanced> AdvancedFrom(const QString &Name);
+    void openAdvanced(Advanced A, const QString &Page = {});     // Settings: one of its pages by name ("Runners")
+    void closeAdvanced();
+    std::optional<Advanced> advanced() const { return AdvancedOpen; }
+    DeckList *peersPage() const { return PeersPage; }
+    DeckList *settingsPage() const { return SettingsPage; }
 
     DeckShell(AppModel &Model, IpfsModel &Ipfs, DownloadManager &Downloads, QWidget *Parent = nullptr);
     ~DeckShell() override;
@@ -135,7 +148,12 @@ private:
     DeckHome *Home = nullptr;
     DeckShelf *Library = nullptr, *Catalog = nullptr;
     DeckDownloads *DownloadsPage = nullptr;
-    DeckHosted *Peers = nullptr, *Node = nullptr, *Settings = nullptr;
+    DeckList *PeersPage = nullptr, *SettingsPage = nullptr;
+    DeckHosted *Hosted[3] = { nullptr, nullptr, nullptr };   // by Advanced, built the first time each is opened
+    std::optional<Advanced> AdvancedOpen;
+    QTimer *NearbyPoll = nullptr;                             // the devices nearby, while Peers shows
+    QList<DeckRow> peersRows();                               // decknative.cpp
+    QList<DeckRow> settingsRows();
     DeckGamePage *Game = nullptr;
     DeckMenu *Menu = nullptr;
     QTimer *Clock = nullptr;

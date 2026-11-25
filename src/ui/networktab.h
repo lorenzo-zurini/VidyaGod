@@ -42,6 +42,8 @@ public:
 
     // Where the nearby devices are read from (IpfsWrapper::NearbyPeers by default): a test sets a list.
     static void SetNearbySource(std::function<std::vector<IpfsWrapper::NearbyPeer>()> Source);
+    // The devices nearby, from that source (controller mode's Peers page reads them too).
+    static std::vector<IpfsWrapper::NearbyPeer> Nearby();
 
     int refreshes() const { return Refreshes; }   // test observability: full refreshes made
 

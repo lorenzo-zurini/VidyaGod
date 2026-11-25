@@ -7,6 +7,10 @@
 
 #include "appmodel.h"
 #include "apppaths.h"
+#include "decklist.h"
+#include "networktab.h"
+#include "peersharing.h"
+#include "qrcode.h"
 #include "controllerlayout.h"
 #include "controllerservice.h"
 #include "gameoverlay.h"
@@ -647,7 +651,7 @@ VG_COMMANDS
 
     Command::Register({
         "controller section", "show a section of the controller shell",
-        "What the shoulders do one step at a time: Home, Library, Catalog, Downloads, Peers, Node, Settings.",
+        "What the shoulders do one step at a time: Home, Library, Catalog, Downloads, Peers, Settings.",
         { Pos("section", "the section", Type::String) }, { "controller section Library", "controller section downloads" },
         { "DeckShell::showSection", "DeckShell::SectionFrom", "DeckShell::section", "DeckShelf::rebuild", "DeckHome::refresh",
           "DeckDownloads::refresh", "DeckShell::libraryCards", "DeckShell::catalogCards", "DeckShelf::refreshCovers",
@@ -657,8 +661,52 @@ VG_COMMANDS
         [](Command::Context &C, const json &A) {
             const QString N = QString::fromStdString(Command::Str(A, "section"));
             const std::optional<DeckShell::Section> S = DeckShell::SectionFrom(N);
-            if (!S) throw Command::BadArgs("no section '" + N.toStdString() + "' — Home, Library, Catalog, Downloads, Peers, Node, Settings");
+            if (!S) throw Command::BadArgs("no section '" + N.toStdString() + "' — Home, Library, Catalog, Downloads, Peers, Settings");
             Shell(C).showSection(*S);
+            Settle(60);
+            return State(C);
+        }, {} });
+
+    Command::Register({
+        "controller advanced", "open the desktop page behind a controller page's Advanced… (or come back from it)",
+        "Peers: the full Peers page. Node: every transfer and what is seeded. Settings: every setting (--page opens one of "
+        "its pages: Runners, Controller, Sources…). --close comes back to the controller page, as B does.",
+        { Opt("open", "Peers, Node or Settings"), Opt("page", "with Settings: the page of it to open"), Flag("close", "back to the controller page") },
+        { "controller advanced --open Node", "controller advanced --open Settings --page Runners", "controller advanced --close" },
+        { "DeckShell::openAdvanced", "DeckShell::closeAdvanced", "DeckShell::advanced", "DeckShell::AdvancedName", "DeckShell::AdvancedFrom" },
+        Needs::Ui, false,
+        [](Command::Context &C, const json &A) {
+            DeckShell &S = Shell(C);
+            if (Command::Bool(A, "close", false)) { S.closeAdvanced(); Settle(60); return State(C); }
+            const QString N = QString::fromStdString(Command::Str(A, "open"));
+            const std::optional<DeckShell::Advanced> W = DeckShell::AdvancedFrom(N);
+            if (!W) throw Command::BadArgs("no page '" + N.toStdString() + "' — Peers, Node, Settings (or --close)");
+            S.openAdvanced(*W, QString::fromStdString(Command::Str(A, "page")));
+            Settle(60);
+            return State(C);
+        }, {} });
+
+    Command::Register({
+        "controller row", "go to a row of controller mode's Peers or Settings page, and press A on it",
+        "By its id, as `controller state` lists the page's rows (controller.haptics, screen.saver, receive:<peer>, "
+        "pair:<peer>, advanced…). --press presses A there (a toggle turns, a value steps, an action runs; Block / Remove "
+        "ask a second press). --note shows the page's note (what its last press did).",
+        { Pos("row", "the row's id"), Flag("press", "press A on it") },
+        { "controller row controller.haptics --press", "controller row screen.saver" },
+        { "DeckShell::peersPage", "DeckShell::settingsPage", "DeckList::setCurrent", "DeckList::press", "DeckList::current", "DeckList::rows",
+          "DeckList::refresh", "DeckList::setNote", "DeckList::note", "DeckList::padState", "DeckList::padHints", "DeckList::padPressed",
+          "DeckRow::Header", "DeckRow::Info", "DeckRow::stops", "PeerSharing::ShortCode", "PeerSharing::PeerForShortCode", "QrCode::Encode",
+          "NetworkTab::Nearby" },
+        Needs::Ui, false,
+        [](Command::Context &C, const json &A) {
+            DeckShell &S = Shell(C);
+            DeckList *L = S.advanced() ? nullptr : S.section() == DeckShell::Section::Peers ? S.peersPage()
+                        : S.section() == DeckShell::Section::Settings ? S.settingsPage() : nullptr;
+            if (!L) throw Command::BadArgs("not on controller mode's Peers or Settings page: controller section Peers");
+            L->refresh();
+            const QString Id = QString::fromStdString(Command::Str(A, "row"));
+            if (!(Command::Bool(A, "press", false) ? L->press(Id) : L->setCurrent(Id)))
+                throw Command::BadArgs("no row '" + Id.toStdString() + "' to stop on (controller state lists them)");
             Settle(60);
             return State(C);
         }, {} });
