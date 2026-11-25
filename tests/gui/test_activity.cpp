@@ -133,6 +133,12 @@ private slots:
         QCOMPARE(L.running(), 1);
         emit Model.sourcesSyncFinished(false);
         QCOMPARE(Newest("Sources")->Detail, QString("Up to date"));
+        Cfg["Settings"]["PackageSources"] = json::array({ json{{"CID", "bafysourcenotfetched"}, {"NAME", "Shop"}} });
+        emit Model.sourcesSyncStarted();
+        emit Model.sourcesSyncFinished(false);       // a source not fetched: a retry comes, nothing is up to date
+        QVERIFY(Newest("Sources")->Failed);
+        QVERIFY2(Newest("Sources")->Detail.contains("could not be fetched"), qPrintable(Newest("Sources")->Detail));
+        Cfg["Settings"].erase("PackageSources");
         emit Model.packageSourceFailed("the node is offline");
         QVERIFY(Newest("Sources")->Failed && Newest("Sources")->Detail == "the node is offline");
         emit Model.packageRemoveFailed("no trash here");
@@ -147,6 +153,28 @@ private slots:
 
         QTest::qWait(200);
         QCOMPARE(Boxes, 0);
+    }
+
+    // One seed folder at a time, as one recheck: a second, asked while the first runs, starts nothing (it took the first's
+    // Stop and its end: the first ran on, uncancellable, its entry "running" for good). Once it is done, another starts.
+    // Teeth: no guard (the second starts).
+    void a_seed_asked_while_one_runs_starts_nothing()
+    {
+        QTemporaryDir D; QVERIFY(D.isValid());
+        json Cfg = json{{"Settings", {{"Paths", {{"LibraryRoot", (D.path() + "/LIBRARY").toStdString()}}}}}};
+        QDir AppDir(D.path());
+        AppModel Model(&Cfg, &AppDir);
+        IpfsModel Ipfs(Model);
+        QSignalSpy Started(&Ipfs, &IpfsModel::seedStarted), Finished(&Ipfs, &IpfsModel::seedFinished);
+        QVERIFY(Ipfs.seedFolder(D.path()));
+        QVERIFY(Ipfs.seeding());
+        QVERIFY(!Ipfs.seedFolder(D.path()));
+        QCOMPARE(Started.count(), 1);
+        QVERIFY(Finished.wait(20000));
+        QVERIFY(!Ipfs.seeding());
+        QVERIFY(Ipfs.seedFolder(D.path()));
+        QVERIFY(Finished.wait(20000));
+        QCOMPARE(Started.count(), 2);
     }
 };
 

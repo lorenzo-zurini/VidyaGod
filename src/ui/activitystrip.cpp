@@ -3,6 +3,7 @@
 #include "appmodel.h"
 #include "ipfsmodel.h"
 #include "downloadmanager.h"
+#include "packagecatalog.h"   // HasMissingSources
 #include "theme.h"
 
 #include <QDir>
@@ -98,8 +99,13 @@ void ActivityStrip::Watch(AppModel & Model, IpfsModel & Ipfs, DownloadManager & 
     QObject::connect(&Model, &AppModel::sourcesSyncStarted, &L, [&L, S] {
         if (!S->Sync) S->Sync = L.start("Sources", "Sync package sources");
     });
-    QObject::connect(&Model, &AppModel::sourcesSyncFinished, &L, [&L, S](bool Changed) {
-        if (S->Sync) L.finish(std::exchange(S->Sync, 0), true, Changed ? "The library changed: new or updated packages are listed" : "Up to date");
+    //A source not fetched (unreachable, the node's tries bounded) is not up to date: the sync tries again in a minute.
+    QObject::connect(&Model, &AppModel::sourcesSyncFinished, &L, [&L, &Model, S](bool Changed) {
+        if (!S->Sync) return;
+        const bool Missing = Model.config() && PackageCatalog::HasMissingSources(*Model.config());
+        L.finish(std::exchange(S->Sync, 0), !Missing,
+                 Missing ? QString("A package source could not be fetched yet: it is tried again in a minute while the node runs")
+                         : Changed ? "The library changed: new or updated packages are listed" : "Up to date");
     });
     QObject::connect(&Model, &AppModel::packageSourceFailed, &L, [&L](const QString & Why) { L.note("Sources", "Package source", false, Why); });
     QObject::connect(&Model, &AppModel::packageRemoveFailed, &L, [&L](const QString & Why) {

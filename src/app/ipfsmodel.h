@@ -86,7 +86,10 @@ public slots:
     void prioritize(const QString & cid);    // jump a queued CID (→ IpfsWrapper::PrioritizeDownload)
     void markQueued(const QString & cid);    // a download enqueued a CID (pre-show it as Queued)
     void clearQueued(const QString & cid);   // a queued CID was dropped/finished before starting
-    void seedFolder(const QString & dir);    // add a folder's published content to the node (off-thread)
+    //Add a folder's published content to the node (off-thread). False, nothing started, while a seed runs: one at a time,
+    //as a recheck — a second took the first's Stop and its seedFinished, the first left running and uncancellable.
+    bool seedFolder(const QString & dir);
+    bool seeding() const { return SeedInFlight; }
     void stopSeed();                         // a seed under way adds no further file (seedFinished follows)
     void stopRecheck();                      // a recheck under way reads no further item (recheckFinished follows)
     void recheckHealth(const QStringList & cids);   // drop cached health for these CIDs and re-gather
@@ -168,6 +171,7 @@ private:
     bool     HealthInFlight  = false;
     bool     RecheckInFlight = false;   // force-recheck reads whole files — never run two at once
     std::shared_ptr<std::atomic<bool>> SeedStop = std::make_shared<std::atomic<bool>>(false);
+    bool SeedInFlight = false;
     std::shared_ptr<std::atomic<bool>> RecheckStop = std::make_shared<std::atomic<bool>>(false);
 
 };

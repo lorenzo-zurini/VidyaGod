@@ -685,7 +685,7 @@ VG_COMMANDS
           Opt("seed", "a folder"), Opt("add-source", "CID,NAME"), Flag("refresh", "re-gather now"), Opt("active", "on or off", Type::String, false, { "on", "off" }) },
         { "transfers act --cancel Qm…", "transfers act --force-recheck Qm…,Qm…", "transfers act --refresh" },
         { "IpfsModel::cancel", "IpfsModel::prioritize", "IpfsModel::recheckHealth", "IpfsModel::forceRecheck", "IpfsModel::unpinMany",
-          "IpfsModel::seedFolder", "IpfsModel::addSource", "IpfsModel::app", "IpfsModel::refreshNow", "IpfsModel::refreshIfShown", "IpfsModel::setActive" }, Needs::Ui, false,
+          "IpfsModel::seedFolder", "IpfsModel::seeding", "IpfsModel::addSource", "IpfsModel::app", "IpfsModel::refreshNow", "IpfsModel::refreshIfShown", "IpfsModel::setActive" }, Needs::Ui, false,
         [](Command::Context &C, const json &A) {
             IpfsModel &M = *Win(C).ipfsModel();
             for (const QString &X : Cids(A, "cancel")) M.cancel(X);
@@ -693,7 +693,8 @@ VG_COMMANDS
             if (A.contains("recheck")) M.recheckHealth(Cids(A, "recheck"));
             if (A.contains("force-recheck")) M.forceRecheck(Cids(A, "force-recheck"));
             if (A.contains("unpin")) M.unpinMany(Cids(A, "unpin"));
-            if (A.contains("seed")) M.seedFolder(QString::fromStdString(Command::Str(A, "seed")));
+            if (A.contains("seed") && !M.seedFolder(QString::fromStdString(Command::Str(A, "seed"))))
+                throw std::runtime_error("a seed is already running (the activity strip shows it): one at a time");
             if (A.contains("add-source"))
             {
                 const auto P = List(A, "add-source");

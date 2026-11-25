@@ -828,8 +828,10 @@ void IpfsModel::gatherHealth()
 void IpfsModel::stopSeed() { SeedStop->store(true); }
 void IpfsModel::stopRecheck() { RecheckStop->store(true); }
 
-void IpfsModel::seedFolder(const QString & dir)
+bool IpfsModel::seedFolder(const QString & dir)
 {
+    if (SeedInFlight) return false;
+    SeedInFlight = true;
     SeedStop = std::make_shared<std::atomic<bool>>(false);
     emit seedStarted(dir);
     AsyncWork::Run(this, [this, dir, Stop = SeedStop](const AsyncWork::Job &J) {
@@ -841,8 +843,10 @@ void IpfsModel::seedFolder(const QString & dir)
             }, &Mismatched, false, false, false, nullptr, Stop.get());
         if (!J.Live()) return;   // model destroyed during the (potentially long) seed → don't post back
         J.Post([this, Seeded, Mismatched]{
+            SeedInFlight = false;
             emit seedFinished(Seeded, Mismatched);
             refresh();
         });
     });
+    return true;
 }
