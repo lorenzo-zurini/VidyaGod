@@ -1137,6 +1137,11 @@ private slots:
             json{{"cid", "bafkreithree"}, {"pkg", "[802] Warcraft III"}, {"node", "Frozen Throne"}} });
         const auto Plan = PackageCatalog::PlanReceivedFetches(rx, "Alice", json{{"Games", Items}});
         QCOMPARE((int)Plan.size(), 3);
+        //A node file is one raw block: a folder's or a file DAG's CID named as one is not planned (its root can say any
+        //size). Teeth: any alphanumeric CID planned.
+        QCOMPARE((int)PackageCatalog::PlanReceivedFetches(rx, "Alice", json{{"Games", json::array({
+            json{{"cid", "bafybeigdyrzt5sfp7udm7hu76uh7y26nf3efuylqabf3oclgtqy55fbzdi"}, {"pkg", "P"}, {"node", "a.json"}},
+            json{{"cid", "QmYwAPJzv5CZsnA625s3Xf2nemtYgPpHdWEz79ojWnPbdG"}, {"pkg", "P"}, {"node", "b.json"}} })}}).size(), 0);
         std::map<std::string, std::filesystem::path> At;
         for (const auto & T : Plan) At[T.Cid] = T.Dest;
         QCOMPARE(At["bafkreione"].parent_path().filename(), std::filesystem::path("[802] Warcraft III"));
@@ -2651,7 +2656,7 @@ private slots:
         json rx = json{{"Settings", {{"Paths", {{"LibraryRoot", (PlanRoot.path() + "/LIBRARY").toStdString()}}}}}};
         const std::string Catalog = PackageCatalog::CatalogRootDir(rx);
         const std::string Long(1000, 'x');
-        const json Items = json::array({ json{{"cid", "bafyplannerboundscidaaaaaaaaaaaaaaaaaaaaaa"},
+        const json Items = json::array({ json{{"cid", "bafkreiplannerboundscidaaaaaaaaaaaaaaaaaaa"},
                                               {"node", Long}, {"pkg", Long}} });
         const auto Plan = PackageCatalog::PlanReceivedFetches(rx, Long, json{{Long, Items}});
         QCOMPARE((int)Plan.size(), 1);
@@ -2669,7 +2674,7 @@ private slots:
         for (const auto & [Lib, Pkg] : std::vector<std::pair<std::string, std::string>>{
                  {"..", "[1] Game."}, {"Games ", "[2] B "}, {"L", "CON"}, {"L", "nul.txt"}, {"L", "Com1 .x"}})
         {
-            const json One = json::array({ json{{"cid", "bafyplannerwindowsnamesaaaaaaaaaaaaaaaaaaa"}, {"pkg", Pkg}, {"node", Pkg}} });
+            const json One = json::array({ json{{"cid", "bafkreiplannerwindowsnamesaaaaaaaaaaaaaaaa"}, {"pkg", Pkg}, {"node", Pkg}} });
             const auto P = PackageCatalog::PlanReceivedFetches(rx, "derAlice", json{{Lib, One}});
             QCOMPARE((int)P.size(), 1);
             for (const auto & Part : std::filesystem::path(P[0].Dest.substr(Catalog.size() + 1)))
@@ -2686,8 +2691,8 @@ private slots:
         // The bound counts node entries and takes a package whole or not at all: P1 (60 000 nodes) fits, P2 (50 000)
         // would pass 100 000 and is left out entirely — never cut short, which would read complete.
         json Many = json::array();
-        for (int i = 0; i < 60000; ++i) Many.push_back(json{{"cid", "bafycap" + std::to_string(i)}, {"pkg", "P1"}, {"node", "n" + std::to_string(i)}});
-        for (int i = 0; i < 50000; ++i) Many.push_back(json{{"cid", "bafycapb" + std::to_string(i)}, {"pkg", "P2"}, {"node", "n" + std::to_string(i)}});
+        for (int i = 0; i < 60000; ++i) Many.push_back(json{{"cid", "bafkreicap" + std::to_string(i)}, {"pkg", "P1"}, {"node", "n" + std::to_string(i)}});
+        for (int i = 0; i < 50000; ++i) Many.push_back(json{{"cid", "bafkreicapb" + std::to_string(i)}, {"pkg", "P2"}, {"node", "n" + std::to_string(i)}});
         const auto Capped = PackageCatalog::PlanReceivedFetches(rx, "A", json{{"L", Many}});
         QCOMPARE((int)Capped.size(), 60000);
         for (const auto & T : Capped) QVERIFY(T.Dest.find("/P1/") != std::string::npos);

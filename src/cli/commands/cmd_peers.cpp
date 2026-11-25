@@ -320,7 +320,7 @@ VG_COMMANDS
         "The Peers page's Advanced \"Accept every request by itself (server mode)\": with it on, a request is accepted the "
         "moment it arrives, with the defaults (`peers defaults`).", { Command::Pos("state", "on or off", Type::String, {"on", "off"}) },
         { "peers auto-accept on", "peers auto-accept off" },
-        { "PeerSharing::setAutoAcceptEnabled", "PeerSharing::autoAcceptEnabled", "PeerSharing::acceptPeer",
+        { "PeerSharing::setAutoAcceptEnabled", "PeerSharing::autoAcceptEnabled", "PeerSharing::acceptWaitingRequests", "PeerSharing::acceptPeer",
           "PeerSharing::applyNewPeerDefaults" }, Needs::Model, false,
         [](Command::Context &C, const json &A) {
             C.Model->peers().setAutoAcceptEnabled(Command::Str(A, "state") == "on");

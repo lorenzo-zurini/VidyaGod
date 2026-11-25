@@ -95,10 +95,16 @@ std::vector<IpfsWrapper::FetchTarget> ReceivedFetchTargets(const std::vector<Rec
 namespace {
 //Node files of peers' shares this run refused (they did not verify, or were larger than a node): not fetched again,
 //not counted as missing — one bad node made the receiver fetch it again, back to back, for as long as it ran.
+//Two kinds: one that did not verify (the bytes a peer gave were not the CID's) is forgotten at a peer's next changed
+//snapshot; one larger than a node is the CID's own, refused for the run.
 std::mutex RefusedMu;
-std::set<std::string> RefusedNodes;
-bool Refused(const std::string &Cid) { std::lock_guard<std::mutex> G(RefusedMu); return RefusedNodes.count(Cid) > 0; }
-void Refuse(const std::string &Cid) { std::lock_guard<std::mutex> G(RefusedMu); RefusedNodes.insert(Cid); }
+std::set<std::string> RefusedNodes, OversizeNodes;
+bool Refused(const std::string &Cid) { std::lock_guard<std::mutex> G(RefusedMu); return RefusedNodes.count(Cid) > 0 || OversizeNodes.count(Cid) > 0; }
+void Refuse(const std::string &Cid, bool Oversize = false)
+{
+    std::lock_guard<std::mutex> G(RefusedMu);
+    (Oversize ? OversizeNodes : RefusedNodes).insert(Cid);
+}
 }
 
 void ForgetRefusedNodes() { std::lock_guard<std::mutex> G(RefusedMu); RefusedNodes.clear(); }
@@ -114,9 +120,14 @@ std::string Fnv8(const std::string &S)
     std::snprintf(Buf, sizeof Buf, "%016llx", static_cast<unsigned long long>(H));
     return std::string(Buf + 8);
 }
+//A node's CID as the format makes it (Cid::OfBytes): one raw block, CIDv1 base32 sha2-256 — it starts "bafkrei".
+//Anything else a peer's snapshot names (a folder, a file DAG: "bafybei…", "Qm…") is no node file and is not fetched: a
+//file DAG's root can say any size, and a few kilobytes of it written out can fill the disk. (The fetch refuses one
+//too; a malformed rest fails to decode there.)
 bool PlainCid(const std::string &C)
 {
-    return !C.empty() && C.size() <= 128 && std::all_of(C.begin(), C.end(), [](unsigned char c) { return std::isalnum(c); });
+    return C.size() <= 128 && C.rfind("bafkrei", 0) == 0
+        && std::all_of(C.begin(), C.end(), [](unsigned char c) { return std::islower(c) || std::isdigit(c); });
 }
 } // namespace
 
@@ -407,7 +418,7 @@ bool LandReceivedPackages(const nlohmann::ordered_json &Config, std::string *Err
                 std::string VErr;
                 if (NodeGraph::VerifyLanded(F, C, nullptr, &VErr)) continue;   // in place, and what its entry says
                 //No node is larger than 256 KiB: a file that is goes without being read into memory to name it.
-                if (fs::file_size(F, Ec) > (256u << 10)) fs::remove(F, Ec);
+                if (fs::file_size(F, Ec) > Cid::MaxNodeBytes) fs::remove(F, Ec);
                 else
                 {
                     std::ifstream In(F, std::ios::binary);
@@ -442,7 +453,7 @@ bool LandReceivedPackages(const nlohmann::ordered_json &Config, std::string *Err
             else if (NodeGraph::VerifyLanded(F, C, nullptr, &VErr)) continue;
             else { RemoveLandedNode(F, C); Refuse(C); }
             //Refused in the node (larger than a node may be): as final as a node that does not verify.
-            if (const std::string Why = IpfsWrapper::FailureOf(C); Why.find("larger than it may be") != std::string::npos) Refuse(C);
+            if (const std::string Why = IpfsWrapper::FailureOf(C); Why.find("larger than it may be") != std::string::npos) Refuse(C, true);
             if (Error) *Error = "package " + Dir.filename().string() + ": node " + F.filename().string() + " " + VErr;
             LogWarn("PackageCatalog::LandReceivedPackages", "package '" + Dir.filename().string() + "': node " + F.filename().string()
                     + " (" + C + ") refused: " + VErr);

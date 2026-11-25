@@ -1,4 +1,5 @@
 #include "downloadqueue.h"
+#include "cid.h"   // MaxNodeBytes
 #include "ipfswrapper.h"
 #include "commonutils.h"
 #include "nodegraph.h"   // PathWithin
@@ -440,6 +441,9 @@ BatchHandle EnqueueBatch(const std::vector<FetchTarget> &Targets)
                 J.Optional = J.Optional && T.Optional;   // required if any requester is required
                 J.Verify   = J.Verify || T.Verify;
                 J.Small    = J.Small && T.Small;   // a requester that wants the file whatever its size lifts the bound
+                //A node file never comes from a folder, nor from a file larger than a node someone else fetched: the
+                //bound is the node file's own, whatever else this run fetched under its CID.
+                if (T.Small && J.Dir) { LogWarn("DownloadQueue", "not a node file (a folder): " + T.Cid); continue; }
                 switch (J.State) {
                     case Job::Queued:
                     case Job::Active:
@@ -455,6 +459,9 @@ BatchHandle EnqueueBatch(const std::vector<FetchTarget> &Targets)
                             && std::find(J.Dests.begin(), J.Dests.end(), T.LocalPath) != J.Dests.end()) break;
                         if (!T.Verify && PathExists(T.LocalPath)) { AddDest(J, T.LocalPath); break; }   // already there
                         const std::string Src = FirstExisting(J);
+                        if (std::error_code Ec; T.Small && !Src.empty()
+                            && (!std::filesystem::is_regular_file(Src, Ec) || std::filesystem::file_size(Src, Ec) > Cid::MaxNodeBytes))
+                        { LogWarn("DownloadQueue", "not a node file (larger than a node): " + T.Cid); break; }
                         if (!Src.empty()) { AddDest(J, T.LocalPath); Late.push_back({T.Cid, Src, T.LocalPath, T.Verify && !Keep}); }
                         else { J.State = Job::Queued; J.Seq = ++Q().Seq; ++FailEpoch; AddDest(J, T.LocalPath); Woke = true; NewlyQueued.push_back(T.Cid); Handle.Fetching.push_back(T.Cid); }
                         break;

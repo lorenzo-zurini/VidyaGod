@@ -103,6 +103,7 @@ void NodeService::ready()
     {
         Model.peers().pushPresenceDeny();   // apply the per-peer presence-hide roster now the peer service is live
         Model.peers().reRegisterShares();
+        Model.peers().acceptWaitingRequests();   // server mode: requests that came while we were away
         // Materialise every receiving-from peer's browsable stubs from our PERSISTED snapshot (so the catalog is
         // populated at startup without waiting for a fresh snapshot) AND re-request in case their shares changed. This
         // is what makes a restart show a peer's library again — applyPeerLibrarySnapshot only fires on a NEW snapshot.

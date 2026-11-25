@@ -242,7 +242,6 @@ void PeerSharing::applyPeerLibrarySnapshot(const QString & peer, const QString &
     // RECEIVE GATE: a peer pushes its snapshot whenever its shares change, asked or not. Nothing of it is kept — not
     // the record, not its sequence stamp — until you choose to receive from them; Receive-on asks for a fresh one.
     if (!isReceivingFrom(peer)) return;
-    PackageCatalog::ForgetRefusedNodes();   // a new snapshot: what it names is tried afresh
     // SEQ AUTHORITY (last-writer-wins): snapshots ride independent, concurrently-handled streams, so a stale one can be
     // delivered/emitted after a fresher one. Keep only the highest stamp per peer; drop anything older. seq==0
     // (unstamped) always applies. This is where ordering is enforced — a Go-side receive gate can't (its emit is
@@ -278,6 +277,9 @@ void PeerSharing::applyPeerLibrarySnapshot(const QString & peer, const QString &
     else
     {
         if (Had && FL[P] == Clean) return;              // identical snapshot → no-op (no disk/UI churn)
+        //A changed snapshot (past the stamp check, not the same again): a node that did not verify is tried afresh — the
+        //peer may have it right now. One larger than a node stays refused: that is the CID's own, whoever names it.
+        PackageCatalog::ForgetRefusedNodes();
         if (Had)
         {   // a CHANGED snapshot: the packages it no longer names go; the ones it still names stay, and only what changed
             // in them lands again (the prune drops what their entries no longer name)
@@ -792,6 +794,16 @@ void PeerSharing::setAutoAcceptEnabled(bool on)
     if (on == autoAcceptEnabled()) return;
     (*Model.config())["AutoAcceptPeers"] = on;
     Model.save();
+    acceptWaitingRequests();   // on: the ones already waiting too, not only the ones to come
+}
+
+void PeerSharing::acceptWaitingRequests()
+{
+    //A request is announced once (a retry that changes nothing is not): one that came while accepting by itself was
+    //off, or before the app was listening (at start), would otherwise wait for ever.
+    if (!autoAcceptEnabled()) return;
+    for (const IpfsWrapper::Contact &C : IpfsWrapper::PeerList())
+        if (C.State == "incoming") acceptPeer(QString::fromStdString(C.PeerID));
 }
 
 bool PeerSharing::newPeerDefault(const QString & key) const

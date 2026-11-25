@@ -725,7 +725,7 @@ VG_COMMANDS
         "received land", "land every received package's node files now",
         "Fetch each package folder peers share with you (node files only — content stays lazy until install). With "
         "the app up it lands in the app.", {}, { "received land" },
-        { "PackageCatalog::LandReceivedPackages", "PeerSharing::completeReceivedClosures", "IpfsWrapper::WaitBatchWhileMoving" }, Needs::Config, true,
+        { "PackageCatalog::LandReceivedPackages", "PackageCatalog::ForgetRefusedNodes", "PeerSharing::completeReceivedClosures", "IpfsWrapper::WaitBatchWhileMoving" }, Needs::Config, true,
         [](Command::Context &C, const json &) {
             if (C.Model) { C.Model->peers().completeReceivedClosures(); return json{{"started", true}}; }
             std::string Err;

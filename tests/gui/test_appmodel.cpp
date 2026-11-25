@@ -823,7 +823,7 @@ private slots:
         AppModel m(&cfg, &appDir);
         const QString peer = "12D3KooWSeeder";
         const std::string P = peer.toStdString();
-        m.peers().applyPeerLibrarySnapshot(peer, R"({"Games":[{"cid":"bafyold","pkg":"Old Game","node":"old.json"}]})");
+        m.peers().applyPeerLibrarySnapshot(peer, R"({"Games":[{"cid":"bafkreiold","pkg":"Old Game","node":"old.json"}]})");
         const auto Plan = PackageCatalog::PlanReceivedFetches(cfg, P.substr(P.size() - 8), cfg["PeerLibraries"][P]);
         QVERIFY(!Plan.empty());
         const std::filesystem::path Pkg = std::filesystem::path(Plan.front().Dest).parent_path();

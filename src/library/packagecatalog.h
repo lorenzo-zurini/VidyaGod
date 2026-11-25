@@ -449,7 +449,8 @@ std::vector<std::string> MissingFromClosure(const NodeIndex &Idx, const std::str
 // package that its entries do not name (an older generation's). Returns the number removed.
 //Missing node files of received packages — not counting one this run refused (it did not verify, or was too large).
 bool ReceivedPackagesIncomplete(const nlohmann::ordered_json &GlobalConfigJSON);
-//Forgets the refused node files (a peer's new snapshot: what it names now is tried afresh).
+//Forgets the node files refused because they did not verify (a peer's changed snapshot: tried afresh). One larger
+//than a node stays refused for the run (that is the CID's own).
 void ForgetRefusedNodes();
 [[nodiscard]] bool LandReceivedPackages(const nlohmann::ordered_json &GlobalConfigJSON, std::string *Error = nullptr);
 int PruneStaleReceived(const NodeIndex &Idx, const nlohmann::ordered_json &GlobalConfigJSON);

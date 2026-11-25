@@ -126,6 +126,7 @@ public:
     void removePeer(const QString & peer);
     bool autoAcceptEnabled() const;
     void setAutoAcceptEnabled(bool on);
+    void acceptWaitingRequests();   // accepting by itself: every request waiting now is accepted (at start, when turned on)
     // The "New Peers" defaults row, applied the instant a peer is accepted. key ∈ {receive,presence,vlan}.
     bool newPeerDefault(const QString & key) const;
     void setNewPeerDefault(const QString & key, bool on);
