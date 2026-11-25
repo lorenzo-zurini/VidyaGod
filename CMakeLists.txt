@@ -113,6 +113,8 @@ target_link_libraries(vg_imgui PUBLIC Qt6::OpenGL)
 # VidyaGod executable and the GUI test exe reuse the same objects.
 set(SHARED_SOURCES
     src/ui/mainwindow.cpp
+    src/ui/activitystrip.h
+    src/ui/activitystrip.cpp
 
     src/base/apppaths.h
     src/base/sessions.h
@@ -133,6 +135,8 @@ set(SHARED_SOURCES
 
     src/editor/packageeditor.h
     src/editor/packageeditor.cpp
+    src/editor/longop.h
+    src/editor/longop.cpp
 
     src/editor/packageeditormodel.h
     src/editor/packageeditormodel.cpp
@@ -375,6 +379,8 @@ set(SHARED_SOURCES
 
     src/app/appmodel.h
     src/app/appmodel.cpp
+    src/app/activitylog.h
+    src/app/activitylog.cpp
     src/app/peersharing.cpp
     src/app/nodeservice.cpp
 
@@ -687,6 +693,7 @@ set_tests_properties(test_canvasperf PROPERTIES RUN_SERIAL TRUE)   # it times fr
 add_gui_test(test_pkgactions)
 add_gui_test(test_packageeditormodel)
 add_gui_test(test_tray)
+add_gui_test(test_activity)
 add_gui_test(test_networking)
 add_gui_test(test_applayout)
 add_gui_test(test_launchresolver)

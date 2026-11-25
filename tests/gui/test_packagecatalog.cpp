@@ -4180,6 +4180,36 @@ private slots:
         QVERIFY(Judge(Ext.path()).K == K::Forget);
     }
 
+    // A seed says each file it looks at, with its size, before reading it (the editor's "file n of m · bytes"), and a no
+    // stops it there: the node is left as it was, the caller told "stopped". Teeth: the step not asked; a stop that
+    // keeps going; a stopped node left half-recorded.
+    void a_seed_says_each_file_and_stops_when_told()
+    {
+        QTemporaryDir D; QVERIFY(D.isValid());
+        const std::filesystem::path Pkg = D.path().toStdString();
+        { std::ofstream f(Pkg / "a.bin"); f << std::string(1000, 'a'); }
+        { std::ofstream f(Pkg / "b.bin"); f << std::string(500, 'b'); }
+        json N = json{{"LABEL", "n"}, {"LAYERS", json::array({ json{{"FILE", "a.bin"}}, json{{"FILE", "b.bin"}}, json{{"DIR", "d"}} })}};
+        const PackageCatalog::SeedWorkload W = PackageCatalog::SeedWork(N, Pkg);
+        QCOMPARE(W.Files, 2);                       // the DIR is local: not looked at
+        QCOMPARE(W.Bytes, 1500ull);
+        const json Was = N;
+        std::vector<std::pair<std::string, unsigned long long>> Told;
+        PackageCatalog::SeedReport R;
+        bool Changed = true;
+        std::string Err;
+        QVERIFY(!PackageCatalog::SeedNodeContent(N, Pkg, R, Changed, &Err, [&](const std::string &F, unsigned long long B) {
+            Told.push_back({ F, B });
+            return false;
+        }));
+        QCOMPARE(QString::fromStdString(Err), QString("stopped"));
+        QVERIFY(!Changed);
+        QCOMPARE((int)Told.size(), 1);
+        QCOMPARE(QString::fromStdString(Told[0].first), QString("a.bin"));
+        QCOMPARE(Told[0].second, 1000ull);
+        QCOMPARE(N, Was);
+    }
+
     // Every installed package can be uninstalled from Settings → Installed Packages — not only the ones with a config
     // entry — and the question says what happens: what comes back from where, or that the only copy goes to the trash
     // (asked with Cancel the default). Teeth: the old `Local || HasEntry` gate (no button on a package of LIBRARY); the

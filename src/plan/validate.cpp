@@ -1138,16 +1138,23 @@ static bool ApplyZipRenames(const std::string &ZipPath, const std::map<std::stri
     return true;
 }
 
-int FixCaseConflicts(const NodeIndex &Idx, std::vector<std::string> &Log, const std::filesystem::path *ScopeDir)
+int FixCaseConflicts(const NodeIndex &Idx, std::vector<std::string> &Log, const std::filesystem::path *ScopeDir, const FixStep &Step)
 {
     std::string Scope;
     if (ScopeDir) { std::error_code Ec; Scope = std::filesystem::weakly_canonical(*ScopeDir, Ec).string(); if (Ec) Scope = ScopeDir->string(); }
     auto Renames = ComputeCaseRenames(Idx, Log, Scope);
+    const auto Wanted = [&](const std::string &ZipPath, const auto &M) { return !M.empty() && (Scope.empty() || ZipPath.rfind(Scope, 0) == 0); };
+    int Total = 0, Done = 0;
+    unsigned long long TotalBytes = 0, Bytes = 0;
+    const auto SizeOf = [](const std::string &P) { std::error_code Ec; const auto N = std::filesystem::file_size(P, Ec); return Ec ? 0ull : (unsigned long long)N; };
+    for (const auto &[ZipPath, M] : Renames) if (Wanted(ZipPath, M)) { ++Total; TotalBytes += SizeOf(ZipPath); }
     int Fixed = 0;
     for (const auto &[ZipPath, M] : Renames)
     {
-        if (M.empty()) continue;
-        if (!Scope.empty() && ZipPath.rfind(Scope, 0) != 0) continue;   // outside the requested bundle → leave it
+        if (!Wanted(ZipPath, M)) continue;   // nothing to rename, or outside the requested bundle → leave it
+        if (Step && !Step(std::filesystem::path(ZipPath).filename().string(), ++Done, Total, Bytes, TotalBytes))
+        { Log.push_back("stopped: " + std::to_string(Total - Done + 1) + " zip(s) left as they were"); break; }
+        Bytes += SizeOf(ZipPath);
         Log.push_back("case-fix: " + std::filesystem::path(ZipPath).filename().string()
                       + " — " + std::to_string(M.size()) + (M.size() == 1 ? " entry" : " entries"));
         for (const auto &[O, Nw] : M) Log.push_back("    " + O + "  ->  " + Nw);

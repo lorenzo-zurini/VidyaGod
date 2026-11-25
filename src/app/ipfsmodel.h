@@ -2,6 +2,7 @@
 #define IPFSMODEL_H
 
 #include <atomic>
+#include <memory>
 #include <QObject>
 #include <QHash>
 #include <QString>
@@ -86,6 +87,8 @@ public slots:
     void markQueued(const QString & cid);    // a download enqueued a CID (pre-show it as Queued)
     void clearQueued(const QString & cid);   // a queued CID was dropped/finished before starting
     void seedFolder(const QString & dir);    // add a folder's published content to the node (off-thread)
+    void stopSeed();                         // a seed under way adds no further file (seedFinished follows)
+    void stopRecheck();                      // a recheck under way reads no further item (recheckFinished follows)
     void recheckHealth(const QStringList & cids);   // drop cached health for these CIDs and re-gather
     // FORCE RECHECK — the qBittorrent equivalent, and a genuinely different operation from recheckHealth():
     // that one only stats the backing file and counts providers, so it calls same-size corruption perfectly
@@ -105,7 +108,9 @@ signals:
     void modelReset();                       // the whole CID set was reconciled (pins snapshot) → rebuild the tree
     void nodeStatusChanged();                // the status strip data changed
     void seedProgress(int done, int total);  // "Seeding N/M…" for the tab's Seed button
+    void seedStarted(const QString & dir);
     void seedFinished(int seeded, int mismatched);
+    void recheckStarted(int total);
     void recheckProgress(int done, int total);
     void recheckFinished(int checked, int failed);
 
@@ -162,6 +167,8 @@ private:
     std::shared_ptr<std::atomic<bool>> SweepInFlight = std::make_shared<std::atomic<bool>>(false);
     bool     HealthInFlight  = false;
     bool     RecheckInFlight = false;   // force-recheck reads whole files — never run two at once
+    std::shared_ptr<std::atomic<bool>> SeedStop = std::make_shared<std::atomic<bool>>(false);
+    std::shared_ptr<std::atomic<bool>> RecheckStop = std::make_shared<std::atomic<bool>>(false);
 
 };
 

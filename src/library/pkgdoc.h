@@ -128,8 +128,11 @@ public:
     //library and packages added from elsewhere); an unreadable one refuses the save.
     //UserDataRoot: the instances to rename remembered CIDs in ("" = none). On success the document is clean and
     //its handles are the CIDs on disk.
+    //Progress: where the save is — reading the library (a root, then the nodes to rename), then writing — What Done of
+    //Total. Returning false while reading stops it with nothing written; once writing, it is told, never asked.
+    using SaveProgress = std::function<bool(const std::string &What, int Done, int Total)>;
     SaveReport Save(const std::filesystem::path &Dir, const std::vector<std::filesystem::path> &Roots,
-                    const std::filesystem::path &UserDataRoot);
+                    const std::filesystem::path &UserDataRoot, const SaveProgress &Progress = {});
     //One root (or none: "" = this package only, nothing else is followed — tests and throwaway folders).
     SaveReport Save(const std::filesystem::path &Dir, const std::filesystem::path &LibraryRoot,
                     const std::filesystem::path &UserDataRoot);

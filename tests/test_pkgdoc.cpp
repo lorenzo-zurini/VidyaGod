@@ -11,6 +11,7 @@
 #include <filesystem>
 #include <fstream>
 #include <set>
+#include <algorithm>
 #include <sstream>
 
 namespace fs = std::filesystem;
@@ -136,6 +137,44 @@ TEST(pkgdoc_saving_an_edit_re_mints_it_and_its_referrers)
     CHECK(R2.Ok);
     CHECK_EQ(R2.Written, 0);
     CHECK_EQ(R2.Removed, 0);
+}
+
+// A save says where it is (reading the library, the nodes to rename, then each write) and stops when told while it
+// only reads — nothing written, the document still dirty; once it writes, it is told and goes on (a stop then would
+// leave the library half renamed). Teeth: the stop not asked before the writes; a stop honoured while writing; no
+// progress said.
+TEST(pkgdoc_a_save_stops_when_told_before_it_writes_and_never_after)
+{
+    const fs::path Lib = Fresh("stoplib");
+    const fs::path Fonts = Lib / "fonts", Game = Lib / "game";
+    for (const fs::path &P : {Fonts, Game}) fs::create_directories(P);
+    const std::string F = Freeze(Fonts, Zip("Fonts", "f.zip"));
+    Freeze(Game, Over("Game", F));
+    const auto Files = [](const fs::path &D) { std::set<std::string> S; for (const auto &E : fs::directory_iterator(D)) S.insert(E.path().filename().string()); return S; };
+    const auto Before = Files(Fonts), GameBefore = Files(Game);
+    PkgDoc::Document Doc;
+    Doc.Load(Fonts);
+    json N = Doc.Node(0); N["LAYERS"][0]["ZIP"] = "f2.zip"; Doc.Replace(0, N);
+    std::vector<std::string> Said;
+    const PkgDoc::SaveReport R = Doc.Save(Fonts, std::vector<fs::path>{Lib}, "", [&](const std::string &What, int, int) {
+        Said.push_back(What);
+        return What.rfind("Reading the nodes", 0) != 0;   // stop at the nodes to rename
+    });
+    CHECK(!R.Ok);
+    CHECK_EQ(R.Error, std::string("Nothing was saved: stopped"));
+    CHECK(Files(Fonts) == Before);
+    CHECK(Files(Game) == GameBefore);
+    CHECK(Doc.Dirty());
+    CHECK(!Said.empty() && Said.front() == "Reading " + Lib.filename().string());   // the library first
+    Said.clear();
+    const PkgDoc::SaveReport R2 = Doc.Save(Fonts, std::vector<fs::path>{Lib}, "", [&](const std::string &What, int, int) {
+        Said.push_back(What);
+        return What.rfind("Writing ", 0) != 0;             // told each write: a no there changes nothing
+    });
+    CHECK(R2.Ok);
+    CHECK(R2.Cascaded >= 1);
+    CHECK(std::count_if(Said.begin(), Said.end(), [](const std::string &W) { return W.rfind("Writing ", 0) == 0; }) >= 2);
+    CHECK(!Doc.Dirty());
 }
 
 // Another package names the edited node: it is re-minted, and so is what names IT (two levels, two packages), and a

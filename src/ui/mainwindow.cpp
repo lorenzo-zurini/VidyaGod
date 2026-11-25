@@ -1,5 +1,6 @@
 #include "eventlog.h"
 #include "mainwindow.h"
+#include "activitystrip.h"
 #include "offlinebanner.h"
 #include "libraryview.h"   // IpfsFetchReady
 #include <QMessageBox>
@@ -140,6 +141,7 @@ MainWindow::MainWindow(nlohmann::ordered_json * gc, QDir * appData, QWidget * pa
         });
         PreLaunchWindow::DownloadsChanged();   // a download that ended without a catalog change of its own is said too
     });
+    ActivityStrip::Watch(*Model, *IpfsModelPtr, *DownloadMgr);   // background work reports into the activity log
 
     // Daemon/foreground-hybrid tray. When a tray is available the app no longer quits on the last window closing —
     // closing/minimizing hide to the tray (keeping the node seeding); the tray "Quit" is the real exit path.
@@ -241,6 +243,7 @@ void MainWindow::BuildDesktop()
     DesktopPage->layout()->addWidget(new OfflineBanner(*Model, "Networking is off — nothing downloads or seeds, and peers "
                                                        "cannot reach you. Installed games still play.", DesktopPage));
     DesktopPage->layout()->addWidget(MainWindowTabWidget);
+    DesktopPage->layout()->addWidget(new ActivityStrip(DesktopPage));   // what runs, and what it came to
 
     LibraryTabPtr  = new LibraryTab(*Model, MainWindowTabWidget);
     CatalogTabPtr  = new CatalogTab(*Model, MainWindowTabWidget);

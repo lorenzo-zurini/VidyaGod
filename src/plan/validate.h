@@ -6,6 +6,7 @@
 #include <filesystem>
 #include <set>
 #include <string>
+#include <functional>
 #include <vector>
 
 // Validate — what a library holds that would not work: the format's rules, each launchable as a launch would meet it,
@@ -32,8 +33,11 @@ std::vector<std::string> Shelf(const NodeIndex &Idx, const std::set<std::string>
 // resolution); ScopeDir, if given, restricts which zips are actually rewritten to those under that directory
 // (so the Package Editor button fixes only the open bundle). Returns the number of zips rewritten; Log gets a
 // human report. Used by --fix-case-conflicts and the Package Editor "Fix case conflicts" action.
+// Step (if given) is told each zip before it is rewritten (its name, n of m, bytes of the zips before it of all of
+// them): false stops there — the zips before it stay rewritten, none is left half done.
+using FixStep = std::function<bool(const std::string &Zip, int Done, int Total, unsigned long long Bytes, unsigned long long TotalBytes)>;
 int FixCaseConflicts(const NodeIndex &Idx, std::vector<std::string> &Log,
-                     const std::filesystem::path *ScopeDir = nullptr);
+                     const std::filesystem::path *ScopeDir = nullptr, const FixStep &Step = {});
 
 } // namespace Validate
 

@@ -9,6 +9,7 @@
 #include "downloadqueue.h"
 #include "cmdutil.h"
 #include "appmodel.h"
+#include "activitylog.h"
 #include "jsonoperations.h"
 #include <QTimer>
 #include "peersharing.h"
@@ -149,6 +150,37 @@ VG_COMMANDS
                 return json{{"removed", Dir.string()}};
             }
             return Async ? json{{"removing", Dir.string()}, {"follow", "VidyaGod events wait --signal catalogChanged"}} : json{{"removed", Dir.string()}};
+        }, {} });
+
+    Command::Register({
+        "app activity", "what runs in the background, and what it came to (the activity strip's list)",
+        "Downloads, publish, seeding a folder, a force recheck, a source sync, an editor's seed or case fix: each with its "
+        "progress while it runs and its result once done, kept until dismissed. --cancel stops a running one (as its "
+        "Cancel), --dismiss takes a finished one off the list, --clear every finished one.",
+        { Opt("cancel", "a running job's id", Type::Int), Opt("dismiss", "a finished job's id", Type::Int), Flag("clear", "dismiss every finished one") },
+        { "app activity", "app activity --cancel 3", "app activity --clear" },
+        { "ActivityLog::Get", "ActivityLog::start", "ActivityLog::progress", "ActivityLog::finish", "ActivityLog::note", "ActivityLog::runningOf",
+          "ActivityLog::cancel", "ActivityLog::dismiss", "ActivityLog::dismissFinished", "ActivityLog::entries", "ActivityLog::find",
+          "ActivityLog::running", "ActivityLog::failedUnseen", "ActivityLog::markSeen", "ActivityLog::changed", "ActivityStrip::Watch",
+          "ActivityStrip::summary", "ActivityStrip::list", "ActivityStrip::openList", "AppModel::publishStarted", "AppModel::sourcesSyncStarted",
+          "AppModel::sourcesSyncFinished", "AppModel::packageRemoveFailed", "IpfsModel::seedStarted", "IpfsModel::recheckStarted",
+          "IpfsModel::stopSeed", "IpfsModel::stopRecheck", "PackageEditor::lastReport" }, Needs::Model, false,
+        [](Command::Context &, const json &A) {
+            ActivityLog &L = ActivityLog::Get();
+            if (A.contains("cancel") && !A["cancel"].is_null())
+            {
+                const int Id = A["cancel"].get<int>();
+                if (!L.find(Id) || !L.find(Id)->Running) throw Command::BadArgs("no running job " + std::to_string(Id));
+                L.cancel(Id);
+            }
+            if (A.contains("dismiss") && !A["dismiss"].is_null()) L.dismiss(A["dismiss"].get<int>());
+            if (Command::Bool(A, "clear", false)) L.dismissFinished();
+            json Out = json::array();
+            for (const ActivityLog::Entry &E : L.entries())
+                Out.push_back(json{{"id", E.Id}, {"kind", E.Kind.toStdString()}, {"title", E.Title.toStdString()},
+                                   {"state", E.Running ? "running" : E.Failed ? "failed" : "done"}, {"fraction", E.Fraction},
+                                   {"detail", E.Detail.toStdString()}, {"cancellable", E.CanCancel}});
+            return json{{"running", L.running()}, {"failedUnseen", L.failedUnseen()}, {"jobs", Out}};
         }, {} });
 
     Command::Register({

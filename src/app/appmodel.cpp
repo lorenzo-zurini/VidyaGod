@@ -364,6 +364,7 @@ void AppModel::pushSeedLevels()
 
 void AppModel::syncSources()
 {
+    emit sourcesSyncStarted();
     auto Cfg = std::make_shared<nlohmann::ordered_json>(*Config);
     auto Before = std::make_shared<const nlohmann::ordered_json>(Config->value("LIBRARY", nlohmann::ordered_json::array()));
     // Snapshot LIBRARY before the sync mutates it, so we can tell whether anything actually changed. On the common
@@ -394,6 +395,7 @@ void AppModel::syncSources()
                 emit catalogChanged();
                 emit packageSourcesChanged();
             }
+            emit sourcesSyncFinished(*Changed);
             healOrphansIfAny();            // re-point any orphaned no-copy refs so the node can actually SERVE its content
             Peers->completeReceivedClosures();    // node-ready → finish landing any received root's node closure (resumes after a restart)
             Peers->reRegisterShares();            // node-ready → replay config["Sharing"] into the node's in-memory share table: a
@@ -686,6 +688,11 @@ void AppModel::runPublish()
     const std::vector<std::filesystem::path> Dirs(PendingPkgs.begin(), PendingPkgs.end());
     PendingAll = false;
     PendingPkgs.clear();
+    {
+        QStringList Names;
+        for (const auto & D : Dirs) Names << QString::fromStdString(D.filename().string());
+        emit publishStarted(All || Names.isEmpty() ? QString("the library") : Names.join(", "));
+    }
     AsyncWork::Run(this,
         [Cfg, Cids, Err, Gaps, All, Dirs]{
             *Cids = All ? PackageCatalog::PublishLibrary(*Cfg, Err.get(), Gaps.get())

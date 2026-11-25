@@ -14,6 +14,8 @@
 #include "validationpanel.h"
 #include "pkggraph.h"
 #include "instancestore.h"
+#include "longop.h"
+#include "ipfswrapper.h"
 
 #include <QDir>
 #include <QSignalSpy>
@@ -22,6 +24,15 @@
 #include <QTreeWidget>
 #include <QLabel>
 #include <QListWidget>
+#include <QAction>
+#include <QApplication>
+#include <QPushButton>
+#include <QScopeGuard>
+#include <QThread>
+#include <QTimer>
+#include <atomic>
+#include <chrono>
+#include <thread>
 
 #include <algorithm>
 #include <fstream>
@@ -580,6 +591,96 @@ private slots:
         std::ifstream In((Pkg + "/notes.json").toStdString());
         json J; In >> J;
         QCOMPARE(J, json::array({"keep", "me"}));
+    }
+
+    // A long operation runs on a worker while its window waits under a dialog that says where it is — "file n of m",
+    // bytes — and whose Cancel reaches the work; once the work says stopping would leave things half done, Cancel is
+    // off. Teeth: run the work on the GUI thread (no dialog is ever seen while it runs; it ran on the GUI's thread);
+    // leave the bytes out of the line; let Cancel through while it may not stop.
+    void aLongOpSaysWhereItIsAndStopsOnlyWhenItMay()
+    {
+        QString Shown;
+        bool Clicked = false, Phase2 = false;
+        QTimer Probe;
+        Probe.setInterval(20);
+        connect(&Probe, &QTimer::timeout, this, [&] {
+            for (QWidget *W : QApplication::topLevelWidgets())
+            {
+                if (W->objectName() != "longOpProgress" || !W->isVisible()) continue;
+                auto *L = W->findChild<QLabel *>("longOpWhat");
+                auto *C = W->findChild<QPushButton *>("longOpCancel");
+                if (!L || !C || !L->text().contains(" of ")) continue;
+                Shown = L->text();
+                if (Shown.startsWith("w")) Phase2 = true;
+                if (!Clicked || Phase2) { Clicked = true; C->click(); }
+            }
+        });
+        Probe.start();
+        bool OnGui = true, SawCancel = false;
+        const bool Done = LongOp::Run(nullptr, "Test", [&](const LongOp::Step &S) {
+            OnGui = QThread::currentThread() == qApp->thread();
+            S.Report("a.zip", 1, 2, 100, 200);
+            const auto End = std::chrono::steady_clock::now() + std::chrono::seconds(10);
+            while (!S.Cancelled() && std::chrono::steady_clock::now() < End) std::this_thread::sleep_for(std::chrono::milliseconds(10));
+            SawCancel = S.Cancelled();
+        });
+        QVERIFY(!OnGui);
+        QCOMPARE(Shown, QString("a.zip — 1 of 2 · 100 B of 200 B"));
+        QVERIFY(SawCancel);
+        QVERIFY(!Done);
+        // Stopping not possible (a save's writes): Cancel is off, the work runs to its end.
+        Shown.clear();
+        bool Stopped2 = true;
+        const bool Done2 = LongOp::Run(nullptr, "Test", [&](const LongOp::Step &S) {
+            S.CanCancel(false);
+            S.Report("w", 1, 1, 0, 0);
+            const auto End = std::chrono::steady_clock::now() + std::chrono::seconds(3);
+            while (std::chrono::steady_clock::now() < End) std::this_thread::sleep_for(std::chrono::milliseconds(10));
+            Stopped2 = S.Cancelled();
+        });
+        QVERIFY(Phase2);
+        QVERIFY(!Stopped2);
+        QVERIFY(Done2);
+    }
+
+    // The editor's long actions — Save (reading the library, re-minting), Fix case collisions (rewriting zips) and Seed &
+    // share (hashing every file) — run through LongOp, so the window paints and can stop them; their results stay in the
+    // status line, never a box. Teeth: any of the three run on the GUI thread (the worker count does not move).
+    void theEditorsLongActionsRunOffTheGuiThread()
+    {
+        library();
+        std::string Err;
+        QTemporaryDir Repo; QVERIFY(Repo.isValid());
+        QVERIFY2(IpfsWrapper::StartNode((Repo.path() + "/ipfs").toStdString(), &Err), Err.c_str());
+        auto StopNode = qScopeGuard([] { IpfsWrapper::StopNode(); });
+        std::ofstream((Pkg + "/game.bin").toStdString()) << std::string(1 << 20, 'g');
+        PackageEditor *E = PackageEditor::OpenFor(&Cfg, nullptr, Pkg);
+        QVERIFY(E);
+        auto Close = qScopeGuard([E] { delete E; });
+        auto Act = [E](const QString &Text) -> QAction * {
+            for (QAction *A : E->findChildren<QAction *>()) if (A->text().startsWith(Text)) return A;
+            return nullptr;
+        };
+        QVERIFY(Act("Save") && Act("Fix case collisions") && Act("Seed && share"));
+        PackageEditorModel *M = E->model();
+        int GameIdx = -1;
+        for (int I = 0; I < M->doc().Count(); ++I) if (M->doc().Node(I).value("LABEL", std::string()) == "Game") GameIdx = I;
+        QVERIFY(GameIdx >= 0);
+        json N = M->doc().Node(GameIdx);
+        N["LAYERS"].push_back(json{{"FILE", "game.bin"}});
+        M->replaceNode(M->doc().Handle(GameIdx), N);
+        QVERIFY(M->isDirty());
+        const int Before = LongOp::DebugRanOnWorker();
+        Act("Save")->trigger();
+        QVERIFY(!M->isDirty());
+        QCOMPARE(LongOp::DebugRanOnWorker(), Before + 1);
+        Act("Fix case collisions")->trigger();
+        QCOMPARE(LongOp::DebugRanOnWorker(), Before + 2);
+        QVERIFY2(E->lastReport().contains("No cross-layer case collisions"), qPrintable(E->lastReport()));
+        Act("Seed && share")->trigger();
+        QCOMPARE(LongOp::DebugRanOnWorker(), Before + 4);   // the seed, then the save of what it recorded
+        QVERIFY2(E->lastReport().contains("1 of 1 file(s) newly seeded"), qPrintable(E->lastReport()));
+        QVERIFY(!M->isDirty());
     }
 
     // The canvas is Dear ImGui, which keeps ONE global context per process: OpenFor is the single door — it raises

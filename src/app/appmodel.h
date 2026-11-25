@@ -136,6 +136,9 @@ signals:
     void packageSourcesChanged();   // a CID package source was added/removed/synced — refresh the Sources page + catalog
     void packageRemoveFailed(QString message);   // an uninstall under way did not happen (removePackage: why)
     void packageSourceFailed(QString message);   // a CID source fetch failed (e.g. node offline) — the dialog shows it
+    void publishStarted(QString what);           // a publish pass began (what: "the library", or the packages' names)
+    void sourcesSyncStarted();                   // syncSources began (sourcesSyncFinished follows)
+    void sourcesSyncFinished(bool changed);      // ...and ended: whether the library changed
     void libraryPublished(QString ipnsName, QString topCid, QString note);  // Verify & Publish finished (note = soft warning, "" if clean)
     void libraryPublishFailed(QString message);                             // Verify & Publish failed (mint error / offline)
     void gameAdded(QString dir);                 // addGameByCid succeeded — the checkout dir; Library now shows it

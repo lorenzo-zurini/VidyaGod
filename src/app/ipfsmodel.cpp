@@ -393,12 +393,15 @@ void IpfsModel::forceRecheck(const QStringList & cids)
 {
     if (RecheckInFlight || cids.isEmpty()) return;
     RecheckInFlight = true;
+    RecheckStop = std::make_shared<std::atomic<bool>>(false);
+    emit recheckStarted((int)cids.size());
     auto Todo = std::make_shared<QStringList>(cids);
-    AsyncWork::Run(this, [this, Todo](const AsyncWork::Job &J) {
+    AsyncWork::Run(this, [this, Todo, Stop = RecheckStop](const AsyncWork::Job &J) {
         int Failed = 0, Done = 0;
         for (const QString & cid : *Todo)
         {
             if (!J.Live()) return;                       // model destroyed mid-read (these are long) → stop
+            if (Stop->load()) break;                     // the user stopped it: what was read stands
             const std::string Why = IpfsWrapper::VerifyCid(cid.toStdString());
             ++Done;
             const int D = Done, T = (int)Todo->size();
@@ -415,7 +418,7 @@ void IpfsModel::forceRecheck(const QStringList & cids)
                 emit recheckProgress(D, T);
             });
         }
-        const int F = Failed, C = (int)Todo->size();
+        const int F = Failed, C = Done;   // stopped: the items read
         if (!J.Live()) return;
         J.Post([this, F, C]{
             RecheckInFlight = false;
@@ -822,15 +825,20 @@ void IpfsModel::gatherHealth()
     });
 }
 
+void IpfsModel::stopSeed() { SeedStop->store(true); }
+void IpfsModel::stopRecheck() { RecheckStop->store(true); }
+
 void IpfsModel::seedFolder(const QString & dir)
 {
-    AsyncWork::Run(this, [this, dir](const AsyncWork::Job &J) {
+    SeedStop = std::make_shared<std::atomic<bool>>(false);
+    emit seedStarted(dir);
+    AsyncWork::Run(this, [this, dir, Stop = SeedStop](const AsyncWork::Job &J) {
         int Mismatched = 0;
         const int Seeded = PackageCatalog::SeedDirectory(dir.toStdString(),
             [this, J](int done, int total, const std::string &){
                 if (J.Live())
                     J.Post([this, done, total]{ emit seedProgress(done, total); });
-            }, &Mismatched);
+            }, &Mismatched, false, false, false, nullptr, Stop.get());
         if (!J.Live()) return;   // model destroyed during the (potentially long) seed → don't post back
         J.Post([this, Seeded, Mismatched]{
             emit seedFinished(Seeded, Mismatched);

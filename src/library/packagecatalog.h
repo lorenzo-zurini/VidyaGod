@@ -4,6 +4,7 @@
 #include <nlohmann/json.hpp>
 #include <string>
 #include <vector>
+#include <atomic>
 #include <map>
 #include <optional>
 #include <set>
@@ -193,8 +194,14 @@ struct SeedReport
 //exists and cannot be seeded; a cover that cannot be seeded is only reported.
 //Reads and writes of CACHE/seedverified.json since start (a publish reads it once and writes it once).
 long long DebugVerifiedFileIo();
+//Step (if given) is told each file the seed looks at, with its size, before it is read: false stops the seed there
+//(false, Error "stopped": the node is left as it was; what was added to IPFS before stays added).
+using SeedStep = std::function<bool(const std::string &File, unsigned long long Bytes)>;
 [[nodiscard]] bool SeedNodeContent(nlohmann::ordered_json &Node, const std::filesystem::path &PackageDir, SeedReport &R,
-                                   bool &Changed, std::string *Error = nullptr);
+                                   bool &Changed, std::string *Error = nullptr, const SeedStep &Step = {});
+//The files SeedNodeContent(Node) tells its Step about, and their bytes on disk (for "n of m").
+struct SeedWorkload { int Files = 0; unsigned long long Bytes = 0; };
+SeedWorkload SeedWork(const nlohmann::ordered_json &Node, const std::filesystem::path &PackageDir);
 
 // Re-establish seeding from a publisher's master: walk every node bundle under Dir and add each CID-referenced file
 // (LAYER + META.COVER SOURCE.ipfs content) to the IPFS node BY REFERENCE, so the node serves it (and reprovides it
@@ -221,7 +228,8 @@ int SeedUnheld(const std::string &Dir, std::vector<SeedFailure> *Failures = null
 int SeedDirectory(const std::string &Dir,
                   const std::function<void(int, int, const std::string &)> &Progress = {},
                   int *Mismatched = nullptr, bool CoversOnly = false, bool Overwrite = false,
-                  bool Verify = false, std::vector<SeedFailure> *Failures = nullptr);
+                  bool Verify = false, std::vector<SeedFailure> *Failures = nullptr,
+                  const std::atomic<bool> *Stop = nullptr);   // set: no further file is added (one under way finishes)
 // What one heal pass did, and — more importantly — what it could NOT fix. Anything left in Drift/Unrepaired is a
 // content problem a machine must not silently "fix": both change what this node publishes, so they are reported
 // loudly and left for a human. Ok() is the one thing callers should branch on.

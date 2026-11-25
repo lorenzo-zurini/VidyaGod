@@ -174,27 +174,11 @@ void IpfsTab::buildUi()
     connect(&Model, &IpfsModel::seedProgress, this, [this](int done, int total){
         SeedBtn->setText(QString("Seeding %1/%2…").arg(done).arg(total));
     });
-    connect(&Model, &IpfsModel::seedFinished, this, [this](int seeded, int mismatched){
-        SeedBtn->setText("Seed folder…"); SeedBtn->setEnabled(true);
-        QString Msg = QString("Seeded %1 referenced file%2.").arg(seeded).arg(seeded == 1 ? "" : "s");
-        if (mismatched > 0) Msg += QString("\n\n%1 file%2 changed since publish (or couldn't be added), so the "
-                                           "recorded CID couldn't be re-seeded.").arg(mismatched).arg(mismatched == 1 ? "" : "s");
-        QMessageBox::information(this, "Seed folder", Msg);
-    });
-    // Force-recheck feedback. A full read of several GB is not instant, so the status strip carries progress and
-    // the result is reported explicitly — a silent recheck is indistinguishable from one that never ran.
-    // Progress needs no dedicated widget: each CID's row updates the moment it is verified (forceRecheck emits
-    // cidChanged per item), so the tree itself is the progress bar. Only the summary needs stating.
-    connect(&Model, &IpfsModel::recheckFinished, this, [this](int checked, int failed){
-        Model.refreshNow();
-        QMessageBox::information(this, "Force recheck",
-            failed == 0
-                ? QString("Verified %1 item%2 — every block reads back correctly and can be served.")
-                      .arg(checked).arg(checked == 1 ? "" : "s")
-                : QString("%1 of %2 item%3 FAILED verification and cannot be served as published.\n\n"
-                          "Their rows now show the reason. Re-download them, or re-seed from a good copy.")
-                      .arg(failed).arg(checked).arg(checked == 1 ? "" : "s"));
-    });
+    //The result is in the activity strip (ActivityStrip::Watch): a seed outlasts a visit to this tab.
+    connect(&Model, &IpfsModel::seedFinished, this, [this](int, int){ SeedBtn->setText("Seed folder…"); SeedBtn->setEnabled(true); });
+    // Force-recheck: each CID's row updates the moment it is verified (cidChanged per item), so the tree itself is the
+    // progress; the summary, with Cancel while it reads, is in the activity strip (ActivityStrip::Watch).
+    connect(&Model, &IpfsModel::recheckFinished, this, [this](int, int){ Model.refreshNow(); });
     toolbar->addWidget(SeedBtn);
 
     QPushButton * refreshBtn = new QPushButton("Refresh", this);

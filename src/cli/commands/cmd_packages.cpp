@@ -339,7 +339,7 @@ VG_COMMANDS
         "run: with another writer on it, it does nothing and says the library is busy. "
         "With --export, a copy of its node files alone is written there.", { Command::MaybeAPath(Pos("package", "a folder path, its name, its UID, or part of its title")), Command::AsPath(Opt("export", "a folder for the node-files-only copy")) },
         { "packages publish 749", "packages publish 749 --export /tmp/aoe2-nodes" },
-        { "PackageCatalog::PublishPackage", "PackageCatalog::ExportDestRefused", "PackageCatalog::SeedNodeContent", "PackageCatalog::StampNodeCids",
+        { "PackageCatalog::PublishPackage", "PackageCatalog::ExportDestRefused", "PackageCatalog::SeedNodeContent", "PackageCatalog::SeedWork", "PackageCatalog::StampNodeCids",
           "PackageCatalog::PublishPackages", "AppModel::publishPackage", "PackageCatalog::LibraryWriteLock",
           "Platform::ScopedFileLock::held", "Platform::ScopedFileLock::opened" }, Needs::Config, true,
         [](Command::Context &C, const json &A) {

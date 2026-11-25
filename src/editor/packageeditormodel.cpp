@@ -365,20 +365,42 @@ bool PackageEditorModel::saveEmptiesPackage() const
 bool PackageEditorModel::Save(QString * Error)
 {
     if (!PackageDir) return false;
+    SaveJob Job = beginSave();
+    if (Job.Refused.isEmpty()) runSave(Job);
+    return finishSave(std::move(Job), Error);
+}
+
+PackageEditorModel::SaveJob PackageEditorModel::beginSave() const
+{
+    SaveJob Job;
+    if (!PackageDir) { Job.Refused = "No package is open."; return Job; }
+    Job.Dir = PackageDir->path().toStdString();
     //A received stub (CATALOG) is a peer's bytes, browsable, never ours to rewrite.
     if (GlobalConfigJSON)
     {
         const fs::path Cat = fs::weakly_canonical(PackageCatalog::CatalogRootDir(*GlobalConfigJSON));
-        const fs::path Here = fs::weakly_canonical(PackageDir->path().toStdString());
+        const fs::path Here = fs::weakly_canonical(Job.Dir);
         if (std::mismatch(Cat.begin(), Cat.end(), Here.begin(), Here.end()).first == Cat.end())
         {
-            if (Error) *Error = "This package was received from a peer (" + packagePath() + "): it is theirs, and is never rewritten here.";
-            return false;
+            Job.Refused = "This package was received from a peer (" + packagePath() + "): it is theirs, and is never rewritten here.";
+            return Job;
         }
     }
-    const std::vector<fs::path> Roots = GlobalConfigJSON ? PackageCatalog::EditableRoots(*GlobalConfigJSON) : std::vector<fs::path>();
-    const std::string Users = GlobalConfigJSON ? InstanceStore::Root(*GlobalConfigJSON).string() : std::string();
-    const PkgDoc::SaveReport R = Doc.Save(PackageDir->path().toStdString(), Roots, Users);
+    Job.Roots = GlobalConfigJSON ? PackageCatalog::EditableRoots(*GlobalConfigJSON) : std::vector<fs::path>();
+    Job.Users = GlobalConfigJSON ? InstanceStore::Root(*GlobalConfigJSON).string() : std::string();
+    Job.Doc = Doc;                                        // its nodes are shared, not copied
+    return Job;
+}
+
+void PackageEditorModel::runSave(SaveJob & Job, const PkgDoc::Document::SaveProgress & Progress)
+{
+    Job.R = Job.Doc.Save(Job.Dir, Job.Roots, Job.Users, Progress);
+}
+
+bool PackageEditorModel::finishSave(SaveJob && Job, QString * Error)
+{
+    if (!Job.Refused.isEmpty()) { if (Error) *Error = Job.Refused; return false; }
+    const PkgDoc::SaveReport & R = Job.R;
     for (const std::string & L : R.Log) LogOut("PackageEditorModel", L);
     if (!R.Ok)
     {
@@ -386,6 +408,7 @@ bool PackageEditorModel::Save(QString * Error)
         if (Error) *Error = QString::fromStdString(R.Error);
         return false;
     }
+    Doc = std::move(Job.Doc);                             // the document as saved: its handles are the CIDs on disk
     LogSucc("PackageEditorModel", "Saved " + packagePath().toStdString() + ": " + std::to_string(R.Written) + " file(s) written, "
             + std::to_string(R.Removed) + " replaced" + (R.Cascaded ? ", " + std::to_string(R.Cascaded) + " node(s) in other packages re-minted" : "")
             + (R.InstancesUpdated ? ", " + std::to_string(R.InstancesUpdated) + " instance(s) updated" : ""));

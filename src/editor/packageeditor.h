@@ -60,6 +60,13 @@ private:
     void seedAndShare();
     void updateTitle();
     void status(const QString & Text, int Ms = 5000);
+    //What an action came to (a seed, a case fix, a save's notes): it stays in the status line until the next one (the
+    //full text in its tooltip) and in the app's activity log until dismissed — never a box to click away.
+    void report(const QString & What, const QString & Text, bool Ok = true);
+public:
+    QString lastReport() const { return LastReport; }   // what report() said last (the CLI and tests read it)
+private:
+    QString LastReport;
 
     static PackageEditor * Live;                  // the one open editor, or null
     static inline std::function<void(PackageEditor *)> OnCreated;

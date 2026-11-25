@@ -53,6 +53,21 @@ public:
     //Save the document (a re-mint + cascade). False with Error when it cannot be saved (a cycle, a write failure);
     //then nothing on disk changed that the report does not list.
     bool Save(QString * Error = nullptr);
+    //Save in three parts, so the heavy middle runs off the GUI thread (PackageEditor::save, under LongOp): begin copies
+    //the document and what the save reads, run saves the copy (touches nothing of the model), finish adopts it — the
+    //document as saved — and does what a save does after (layout, config, signals). Save is the three in a row.
+    struct SaveJob
+    {
+        PkgDoc::Document Doc;
+        std::filesystem::path Dir;
+        std::vector<std::filesystem::path> Roots;
+        std::string Users;
+        QString Refused;                           // not saved at all (a peer's package)
+        PkgDoc::SaveReport R;
+    };
+    SaveJob beginSave() const;
+    static void runSave(SaveJob & Job, const PkgDoc::Document::SaveProgress & Progress = {});
+    bool finishSave(SaveJob && Job, QString * Error = nullptr);
     //Saving now would leave a package that has nodes on disk with none: every node deleted (a stray key, a slip) -
     //asked about before it is written.
     bool saveEmptiesPackage() const;

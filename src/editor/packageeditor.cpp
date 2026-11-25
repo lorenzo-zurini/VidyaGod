@@ -1,4 +1,6 @@
 #include "packageeditor.h"
+#include "longop.h"
+#include "activitylog.h"
 #include "validate.h"
 #include "packageeditormodel.h"
 #include "pkgcanvaspanel.h"
@@ -315,6 +317,15 @@ void PackageEditor::status(const QString & Text, int Ms)
     QTimer::singleShot(Ms, StatusText, [L = StatusText, Text] { if (L->text() == Text) L->clear(); });
 }
 
+void PackageEditor::report(const QString & What, const QString & Text, bool Ok)
+{
+    LastReport = Text;
+    const QString Line = Text.section('\n', 0, 0);
+    StatusText->setText(QString(Ok ? "" : "⚠ ") + What + ": " + Line);
+    StatusText->setToolTip(Text);
+    ActivityLog::Get().note("Package editor", What + " — " + QDir(bundleDir()).dirName(), Ok, Text);
+}
+
 bool PackageEditor::save()
 {
     if (bundleDir().isEmpty()) return false;
@@ -323,17 +334,27 @@ bool PackageEditor::save()
                                  "nodes (its files stay in the folder).\n\nSave anyway? (Undo brings the nodes back.)",
                                  QMessageBox::Save | QMessageBox::Cancel, QMessageBox::Cancel) != QMessageBox::Save)
         return false;
-    QGuiApplication::setOverrideCursor(Qt::WaitCursor);
+    //Reading the library for what names these nodes and re-minting them: off the GUI thread, on a copy of the document
+    //(PackageEditorModel::SaveJob) — the window waits, painted, and can stop it until the writes begin.
+    PackageEditorModel::SaveJob Job = Model->beginSave();
+    if (Job.Refused.isEmpty())
+        LongOp::Run(this, "Save", [&Job](const LongOp::Step &S) {
+            PackageEditorModel::runSave(Job, [&S](const std::string &What, int Done, int Total) {
+                const bool Writing = What.rfind("Writing", 0) == 0;
+                S.CanCancel(!Writing);
+                S.Report(QString::fromStdString(What), Done, Total, 0, 0);
+                return Writing || !S.Cancelled();
+            });
+        });
     QString Err;
-    const bool Ok = Model->Save(&Err);
-    QGuiApplication::restoreOverrideCursor();
+    const bool Ok = Model->finishSave(std::move(Job), &Err);
     if (!Ok) { QMessageBox::warning(this, "Save", "The package was not saved:\n\n" + Err); return false; }
     status("Saved");
     if (!Model->saveNotes().empty())
     {
         QString Notes;
         for (const std::string & N : Model->saveNotes()) Notes += "\u2022 " + QString::fromStdString(N) + "\n\n";
-        QMessageBox::information(this, "Saved", "The package was saved. Note:\n\n" + Notes.trimmed());
+        report("Saved", "The package was saved. Note:\n\n" + Notes.trimmed());
     }
     Canvas->requestFrame();
     validate();
@@ -578,15 +599,22 @@ void PackageEditor::fixCase()
     if (Model->isDirty() && !save()) return;
     std::vector<std::string> Log;
     const std::filesystem::path Scope = bundleDir().toStdString();
-    QGuiApplication::setOverrideCursor(Qt::WaitCursor);
-    const int Fixed = Validate::FixCaseConflicts(Model->BuildExecIndex(), Log, &Scope);
-    QGuiApplication::restoreOverrideCursor();
+    const auto Idx = std::make_shared<const NodeIndex>(Model->BuildExecIndex());   // the worker reads it; nothing changes it
+    int Fixed = 0;
+    LongOp::Run(this, "Fix case collisions", [&](const LongOp::Step &S) {
+        Fixed = Validate::FixCaseConflicts(*Idx, Log, &Scope, [&S](const std::string &Zip, int Done, int Total,
+                                                                    unsigned long long Bytes, unsigned long long TotalBytes) {
+            S.Report(QString::fromStdString(Zip), Done, Total, Bytes, TotalBytes);
+            return !S.Cancelled();
+        });
+    });
     validate();
-    if (Fixed == 0) { QMessageBox::information(this, "Fix case collisions", "No cross-layer case collisions in this package."); return; }
+    const bool Stopped = !Log.empty() && Log.back().rfind("stopped:", 0) == 0;
+    if (Fixed == 0 && !Stopped) { report("Fix case collisions", "No cross-layer case collisions in this package."); return; }
     QString Report;
     for (const auto & L : Log) Report += QString::fromStdString(L) + "\n";
-    QMessageBox::information(this, "Fix case collisions",
-        QString("Rewrote %1 zip(s): entries that collided only by case now use the lower layer's case.\n\n%2").arg(Fixed).arg(Report));
+    report("Fix case collisions", QString("Rewrote %1 zip(s): entries that collided only by case now use the lower layer's case.%2\n\n%3")
+                                      .arg(Fixed).arg(Stopped ? " Stopped before the rest." : "").arg(Report), !Stopped);
 }
 
 void PackageEditor::seedAndShare()
@@ -594,24 +622,37 @@ void PackageEditor::seedAndShare()
     if (bundleDir().isEmpty()) return;
     const std::filesystem::path Pkg = bundleDir().toStdString();
     PackageCatalog::SeedReport R;
-    QGuiApplication::setOverrideCursor(Qt::WaitCursor);
     PkgDoc::Document & D = Model->doc();
-    for (int I = 0; I < D.Count(); ++I)
-    {
-        json N = D.Node(I);
-        bool Changed = false;
-        std::string Err;
-        if (!PackageCatalog::SeedNodeContent(N, Pkg, R, Changed, &Err))
+    //Hashing and adding every content file: off the GUI thread, on copies of the nodes (the window waits, so the
+    //document cannot change under it); they are written back once it is done.
+    std::vector<json> Nodes;
+    for (int I = 0; I < D.Count(); ++I) Nodes.push_back(D.Node(I));
+    std::vector<std::pair<int, json>> Seeded;
+    std::string Err;
+    bool Failed = false, Stopped = false;
+    LongOp::Run(this, "Seed & share", [&](const LongOp::Step &S) {
+        int Total = 0, Done = 0;
+        unsigned long long TotalBytes = 0, Bytes = 0;
+        for (const json & N : Nodes) { const auto W = PackageCatalog::SeedWork(N, Pkg); Total += W.Files; TotalBytes += W.Bytes; }
+        const PackageCatalog::SeedStep Step = [&](const std::string & File, unsigned long long Size) {
+            if (S.Cancelled()) return false;
+            S.Report(QString::fromStdString(File), ++Done, Total, Bytes, TotalBytes);
+            Bytes += Size;
+            return true;
+        };
+        for (size_t I = 0; I < Nodes.size(); ++I)
         {
-            QGuiApplication::restoreOverrideCursor();
-            QMessageBox::warning(this, "Seed & share", QString::fromStdString(Err));
-            return;
+            json N = Nodes[I];
+            bool Changed = false;
+            if (!PackageCatalog::SeedNodeContent(N, Pkg, R, Changed, &Err, Step)) { (S.Cancelled() ? Stopped : Failed) = true; return; }
+            if (Changed) Seeded.emplace_back((int)I, std::move(N));
         }
-        if (Changed) D.Replace(I, std::move(N));
-    }
+    });
+    if (Stopped) { report("Seed & share", "Stopped: nothing was recorded in the package."); return; }
+    if (Failed) { report("Seed & share", "Not seeded: " + QString::fromStdString(Err), false); return; }
+    for (auto & [I, N] : Seeded) D.Replace(I, std::move(N));
     D.Commit();
     Model->notifyNodeChanged();
-    QGuiApplication::restoreOverrideCursor();
     if (!save()) return;
     QString Summary = QString("%1 of %2 file(s) newly seeded, %3 cover(s).").arg(R.Seeded).arg(R.Walked).arg(R.Covers);
     if (!R.Unfetchable.empty()) Summary += QString("\n\n%1 layer(s) name a file that is not here - they cannot be fetched.").arg(R.Unfetchable.size());
@@ -626,5 +667,5 @@ void PackageEditor::seedAndShare()
         emit publishToLibraryRequested(QString::fromStdString(Pkg.string()));
         status("Publishing in the background — the Peers tab shows the result", 8000);
     }
-    else QMessageBox::information(this, "Seed & share", Summary);
+    else report("Seed & share", Summary);
 }

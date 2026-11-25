@@ -258,10 +258,31 @@ Stamps StampsOf(const std::string &Cid)
 }
 }
 
+//A file the seed looks at (a cover holder that is a file, a layer that may carry a SOURCE), and its bytes on disk.
+static bool SeedLooksAt(const FileEntry &F) { return F.MaySource && !(F.Cover && (!F.Holder->is_object() || F.File.empty())); }
+static unsigned long long SeedBytesOf(const FileEntry &F, const std::filesystem::path &Pkg)
+{
+    const nlohmann::ordered_json &H = *F.Holder;
+    const std::string Recorded = (H.is_object() && H.contains("SOURCE") && H["SOURCE"].is_string()) ? H["SOURCE"].get<std::string>() : std::string();
+    std::error_code Ec;
+    const auto N = std::filesystem::file_size(ContentFile::Path(Pkg, F.File, Recorded), Ec);
+    return Ec ? 0 : (unsigned long long)N;
+}
+
+SeedWorkload SeedWork(const nlohmann::ordered_json &Node, const std::filesystem::path &Pkg)
+{
+    nlohmann::ordered_json N = Node;   // FileEntriesOf hands out holders to write into
+    SeedWorkload W;
+    for (const FileEntry &F : FileEntriesOf(N))
+        if (SeedLooksAt(F)) { ++W.Files; W.Bytes += SeedBytesOf(F, Pkg); }
+    return W;
+}
+
 bool SeedNodeContent(nlohmann::ordered_json &Node, const std::filesystem::path &Pkg, SeedReport &R, bool &Changed,
-                     std::string *Error)
+                     std::string *Error, const SeedStep &Step)
 {
     Changed = false;
+    const nlohmann::ordered_json Was = Node;   // a stopped seed leaves the node as it was
     const VerifiedPass Pass;   // what it finds is written when the outermost pass ends
     //A recorded CID that still serves its file is kept (idempotent); a drifted one (the file changed) is re-seeded.
     auto NeedsSeed = [&](const std::string &Cid, const std::filesystem::path &Local) -> bool {
@@ -292,6 +313,13 @@ bool SeedNodeContent(nlohmann::ordered_json &Node, const std::filesystem::path &
         const std::string Recorded = (H.is_object() && H.contains("SOURCE") && H["SOURCE"].is_string()) ? H["SOURCE"].get<std::string>() : std::string();
         const std::filesystem::path Local = ContentFile::Path(Pkg, F.File, Recorded);
         std::error_code Sc;
+        if (SeedLooksAt(F) && Step && !Step(std::filesystem::path(F.File).filename().string(), SeedBytesOf(F, Pkg)))
+        {
+            Node = Was;
+            Changed = false;
+            if (Error) *Error = "stopped";
+            return false;
+        }
         if (!F.MaySource)
         {   // a DIR layer is local content: no peer can fetch it
             if (!Runtime && std::filesystem::exists(Local, Sc)) R.Unshareable.push_back(Local.string());
@@ -546,7 +574,7 @@ std::map<std::string, std::string> ManifestTargets(const std::string &Dir, bool 
 int SeedDirectory(const std::string &Dir,
                   const std::function<void(int, int, const std::string &)> &Progress,
                   int *Mismatched, bool CoversOnly, bool Overwrite, bool Verify,
-                  std::vector<SeedFailure> *Failures)
+                  std::vector<SeedFailure> *Failures, const std::atomic<bool> *Stop)
 {
     namespace fs = std::filesystem;
     if (Mismatched) *Mismatched = 0;
@@ -570,6 +598,7 @@ int SeedDirectory(const std::string &Dir,
     size_t At = 0;
     for (const auto &[Path, Cid] : ToSeed)
     {
+        if (Stop && Stop->load()) break;
         const bool IsWhole = Whole[At++];
         const bool Has     = IsWhole || IpfsWrapper::HasLocal(Cid);
         const bool Orphan  = !IsWhole && Has && IpfsWrapper::CidMissing(Cid);

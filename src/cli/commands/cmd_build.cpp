@@ -716,7 +716,7 @@ VG_COMMANDS
         "Every changed node gets the CID of its bytes; every node that names it (here, in other packages, in "
         "instances) follows. Prints the renames, what was written, and what needs the author. --allow-empty saves a "
         "package left with no nodes.", { PkgArg(), Flag("allow-empty", "even if no node is left") }, { "build save 749" },
-        { "PackageEditorModel::Save", "PkgDoc::Document::Save", "PkgDoc::Document::TakeRenames", "NodeRefs::Remapped", "PackageEditorModel::saveEmptiesPackage",
+        { "PackageEditorModel::Save", "PackageEditorModel::beginSave", "PackageEditorModel::runSave", "PackageEditorModel::finishSave", "PkgDoc::Document::Save", "PkgDoc::Document::TakeRenames", "NodeRefs::Remapped", "PackageEditorModel::saveEmptiesPackage",
           "PkgCanvas::applyRenames", "MainWindow::RefreshPackage" },
         Needs::Model, false,
         [](Command::Context &C, const json &A) {

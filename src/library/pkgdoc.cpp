@@ -544,9 +544,16 @@ SaveReport Document::Save(const fs::path &Dir, const fs::path &LibraryRoot, cons
 //and refuses before touching the disk when it cannot be done right: a circle, two nodes that would be one file, a
 //library it could not read in full. Then it writes (journalled: a failed write undoes the ones before it), and only
 //once every write has landed removes what they replace.
-SaveReport Document::Save(const fs::path &Dir, const std::vector<fs::path> &Roots, const fs::path &UserDataRoot)
+SaveReport Document::Save(const fs::path &Dir, const std::vector<fs::path> &Roots, const fs::path &UserDataRoot,
+                          const SaveProgress &Progress)
 {
     SaveReport R;
+    //Asked while nothing is written: a no stops the save there.
+    const auto Go = [&](const std::string &What, size_t Done, size_t Total) {
+        if (!Progress || Progress(What, (int)Done, (int)Total)) return true;
+        R.Error = "Nothing was saved: stopped";
+        return false;
+    };
     Commit();
     auto LabelOf = [](const json &N, const std::string &Fallback) {
         return N.is_object() && N.contains("LABEL") && N["LABEL"].is_string() ? N["LABEL"].get<std::string>() : Fallback;
@@ -591,8 +598,10 @@ SaveReport Document::Save(const fs::path &Dir, const std::vector<fs::path> &Root
     std::vector<LibFile> Lib;
     {
         std::set<fs::path> Seen;
-        for (const fs::path &Root : Roots)
+        for (size_t I = 0; I < Roots.size(); ++I)
         {
+            const fs::path &Root = Roots[I];
+            if (!Go("Reading " + Root.filename().string(), I, Roots.size())) return R;
             std::string Err;
             if (!GatherLibrary(Root, Dir, Lib, Err)) { R.Error = "Nothing was saved: " + Err; return R; }
         }
@@ -651,8 +660,10 @@ SaveReport Document::Save(const fs::path &Dir, const std::vector<fs::path> &Root
                     if (LibPending.insert(K).second) Frontier.push_back(Lib[K].Cid);
         }
     }
+    size_t Loaded = 0;
     for (size_t K : LibPending)
     {
+        if (!Go("Reading the nodes that name these", Loaded++, LibPending.size())) return R;
         std::string Err;
         if (!LoadNode(Lib[K], Err)) { R.Error = "Nothing was saved: " + Err; return R; }
     }
@@ -818,12 +829,15 @@ SaveReport Document::Save(const fs::path &Dir, const std::vector<fs::path> &Root
     }
 
     // 5. Write, journalled: a write that fails undoes every one before it, and nothing is removed.
+    if (!Go("Writing", 0, Writes.size())) return R;
     struct Undo { fs::path Path; bool Existed; std::string Old; };
     std::vector<Undo> Journal;
     std::set<fs::path> Final;                             // every file the package state ends up with, written or not
     for (const Write &W : Writes) Final.insert(W.Path);
+    size_t Wrote = 0;
     for (const Write &W : Writes)
     {
+        if (Progress) (void)Progress("Writing " + W.Path.filename().string(), (int)++Wrote, (int)Writes.size());   // told, not asked
         std::string Have;
         const bool Existed = ReadFile(W.Path, Have);
         if (Existed && Have == W.Bytes) continue;         // already there, byte for byte

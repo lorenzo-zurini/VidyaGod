@@ -30,10 +30,8 @@ SourcesPage::SourcesPage(AppModel &model, QWidget *parent)
     pl->addWidget(Scroll);
 
     connect(&Model, &AppModel::packageSourcesChanged, this, &SourcesPage::rebuild);
-    // A fetch failure (e.g. networking off) — surface it; the source stays configured for a later sync.
-    connect(&Model, &AppModel::packageSourceFailed, this, [this](const QString & msg){
-        QMessageBox::warning(this, "Package source", msg);
-    });
+    // A fetch failure (e.g. networking off) is in the activity strip (ActivityStrip::Watch), never a box from this page —
+    // the startup re-sync failed while the user was elsewhere. The source stays configured for a later sync.
     // The plan is computed off-thread and changes NOTHING until confirmed here, so the user always approves a
     // concrete diff (what is kept vs re-downloaded vs deprecated) rather than a bare "are you sure?".
     connect(&Model, &AppModel::sourceUpgradePlanned, this, [this](const QString & summary, bool unrelated){
