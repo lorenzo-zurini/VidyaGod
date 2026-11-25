@@ -290,6 +290,8 @@ std::string AssignReceivedLabel(nlohmann::ordered_json &Config, const std::strin
     //name ("Deck - Steam" + "Games" = "Deck" + "Steam - Games"); it reads " · " in a label.
     std::string Label = LiveNick.empty() ? IdTail(PeerID, 8) : LiveNick;
     for (size_t At; (At = Label.find(" - ")) != std::string::npos;) Label.replace(At, 3, " · ");
+    while (!Label.empty() && (Label.back() == '-' || Label.back() == ' ')) Label.pop_back();   // nor end on one: "Deck -"
+    if (Label.empty()) Label = IdTail(PeerID, 8);
     if (Taken.count(Key(Label))) Label += " [" + IdTail(PeerID, 6) + "]";
     if (Taken.count(Key(Label))) Label = IdTail(PeerID, 8) + " [" + PeerID + "]";
     Labels[PeerID] = Label;

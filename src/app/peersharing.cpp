@@ -339,7 +339,9 @@ void PeerSharing::reconcileReceivedLibraries()
     std::vector<std::string> Held;
     if (Model.config()->contains("PeerLibraries") && (*Model.config())["PeerLibraries"].is_object())
         for (const auto & [P, Libs] : (*Model.config())["PeerLibraries"].items()) { (void)Libs; Held.push_back(P); }
+    const nlohmann::ordered_json Before = Model.config()->value("PeerLabels", nlohmann::ordered_json::object());
     for (const std::string & P : Held) PackageCatalog::AssignReceivedLabel(*Model.config(), P, PackageCatalog::ReceivedLiveNick(P));
+    if (Model.config()->value("PeerLabels", nlohmann::ordered_json::object()) != Before) Model.save();   // the labels chosen now are kept
     if (!Model.config()->contains("ReceiveFrom") || !(*Model.config())["ReceiveFrom"].is_array()) return;
     std::vector<std::string> From;   // a copy: a reconcile may change the config under the walk
     for (const auto & X : (*Model.config())["ReceiveFrom"]) if (X.is_string()) From.push_back(X.get<std::string>());

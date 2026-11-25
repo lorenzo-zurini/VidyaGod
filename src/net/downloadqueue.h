@@ -100,6 +100,10 @@ void PrioritizeDownload(const std::string &Cid);
 // PrioritizeDownload of each, under one hold of the queue and one wake of it (the cover sweep: hundreds of covers,
 // each a wake of every wait and of the dispatcher).
 void PrioritizeDownloads(const std::vector<std::string> &Cids);
+//Networking off: nothing is dispatched — queued jobs stay queued (not retried every 30 s against a stopped node);
+//turned back on, the queue resumes at once. Off by default.
+void SetQueuePaused(bool On);
+bool QueuePaused();
 long long DebugPrioritizeWakes();   // TEST ONLY: wakes Prioritize made
 
 // The (first) destination path a CID's queued/active job will write to — "" when the CID has no job. UI labeling:

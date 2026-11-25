@@ -560,7 +560,7 @@ VG_COMMANDS
     Command::Register({
         "queue prioritize", "move a queued CID to the front", "The next free slot takes it. Several, comma-separated, "
         "move together (one wake of the queue).", { CidArg() }, { "queue prioritize Qm…", "queue prioritize Qm…,bafy…" },
-        { "IpfsWrapper::PrioritizeDownload", "IpfsWrapper::PrioritizeDownloads", "IpfsWrapper::DebugPrioritizeWakes" }, Needs::Config, false,
+        { "IpfsWrapper::PrioritizeDownload", "IpfsWrapper::PrioritizeDownloads", "IpfsWrapper::DebugPrioritizeWakes", "IpfsWrapper::SetQueuePaused", "IpfsWrapper::QueuePaused" }, Needs::Config, false,
         [](Command::Context &, const json &A) {
             const std::string C = Command::Str(A, "cid");
             const long long Wakes = IpfsWrapper::DebugPrioritizeWakes();

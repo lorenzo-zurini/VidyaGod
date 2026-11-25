@@ -1141,6 +1141,8 @@ private slots:
         //A nick holding the folder's own separator cannot make another peer's folder name. Teeth: kept as it is.
         const std::string C = "12D3KooWCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCccc333";
         QCOMPARE(QString::fromStdString(PackageCatalog::AssignReceivedLabel(Cfg, C, "Deck - Steam")), QStringLiteral("Deck · Steam"));
+        const std::string D = "12D3KooWDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDddd444";
+        QCOMPARE(QString::fromStdString(PackageCatalog::AssignReceivedLabel(Cfg, D, "Deck -")), QStringLiteral("Deck [ddd444]"));   // "Deck" is A's
     }
 
     // The planner lands one file per entry of a peer's sheet: CATALOG/<nick> - <lib>/<pkg>/<file>, the same entry twice

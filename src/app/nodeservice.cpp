@@ -7,6 +7,7 @@
 #include "peersharing.h"
 #include "ipfsmodel.h"
 #include "ipfswrapper.h"
+#include "downloadqueue.h"   // SetQueuePaused
 
 #include <QTimer>
 
@@ -40,6 +41,7 @@ void NodeService::start()
     // Deferred one turn of the event loop (the window is up first), and only when the user opted into networking.
     NetworkingOn = Model.networkingEnabled();   // arm the retry loop for this initial start too
     if (NetworkingOn) QTimer::singleShot(0, this, [this]{ startAsync(); });
+    else IpfsWrapper::SetQueuePaused(true);     // off from the start: nothing is tried until it is on
 }
 
 void NodeService::apply(bool enabled)
@@ -58,6 +60,7 @@ void NodeService::stopAsync()
     //Brought fully down — no network activity until re-enabled — off the GUI thread: a stop waits for the node's
     //closes (the DHT, the host, a datastore compaction in flight), and the window froze for all of it.
     ResumeTimer->stop();
+    IpfsWrapper::SetQueuePaused(true);   // the queued downloads wait for the network, not retry against a stopped node
     if (NodeStopPending) return;
     NodeStopPending = true;
     AsyncWork::Run(this,
@@ -96,6 +99,7 @@ void NodeService::startAsync()
 
 void NodeService::ready()
 {
+    IpfsWrapper::SetQueuePaused(false);   // the node is up: queued downloads go
     // The node's repo is open now (Available()==true); refresh the IPFS tab immediately so it's functional the moment
     // networking is enabled, instead of waiting for its periodic tick. Its network stack comes up shortly after — the
     // ResumeTimer polls for that, then resumes any interrupted downloads.

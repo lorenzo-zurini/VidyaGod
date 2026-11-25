@@ -206,6 +206,27 @@ private slots:
         IpfsWrapper::CancelDownload(C);                                        // stop it before the next test
     }
 
+    // Paused (networking off), a queued job is not attempted — no retry every 30 s against a stopped node; resumed, it
+    // runs at once. Teeth: PickReady ignoring the pause (the hook is called while paused).
+    void aPausedQueueAttemptsNothingAndResumesAtOnce()
+    {
+        std::atomic<int> Calls{0};
+        IpfsWrapper::SetFetchOnceHook([&Calls](const std::string &, const std::string &, bool, std::string *e) {
+            ++Calls;
+            if (e) *e = "no providers";
+            return 1; /* Retryable */ });
+        IpfsWrapper::SetQueuePaused(true);
+        const std::string C = "CID_PAUSED";
+        IpfsWrapper::EnqueueBatch({{C, "/nonexistent/paused.bin", true}});
+        QTest::qWait(600);
+        const int WhilePaused = Calls.load();
+        IpfsWrapper::SetQueuePaused(false);
+        QTRY_VERIFY_WITH_TIMEOUT(Calls.load() > 0, 3000);
+        IpfsWrapper::CancelDownload(C);
+        IpfsWrapper::SetFetchOnceHook({});
+        QCOMPARE(WhilePaused, 0);
+    }
+
     // A TERMINAL attempt (cancel / bad CID / disk) fails the job — no endless rotation. Teeth: RunJob rotating a
     // terminal rc → never reaches Failed.
     void aTerminalAttemptFailsTheJob()

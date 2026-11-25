@@ -1050,6 +1050,21 @@ private slots:
         QVERIFY(!cfg["PeerLabels"].contains(P));
     }
 
+    // At start every peer with a kept snapshot is labelled before anything is planned (one received before labels
+    // existed planned under its live nickname). Teeth: no labelling at start.
+    void every_held_peer_is_labelled_at_start()
+    {
+        QTemporaryDir d; QVERIFY(d.isValid());
+        QDir appDir(d.path());
+        json cfg = json{{"Settings", json::object()}, {"PeerLibraries", {
+            {"12D3KooWHeldOneAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA1", {{"Games", json::array()}}},
+            {"12D3KooWHeldTwoBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB2", {{"Games", json::array()}}}}}};
+        AppModel m(&cfg, &appDir);
+        m.peers().reconcileReceivedLibraries();
+        QVERIFY(cfg.contains("PeerLabels"));
+        QCOMPARE(int(cfg["PeerLabels"].size()), 2);
+    }
+
     void peer_snapshot_replaces_wholesale_and_dedups()
     {
         QTemporaryDir d; QVERIFY(d.isValid());

@@ -59,6 +59,7 @@ std::chrono::milliseconds RetryBackoff(int attempts)
 }
 
 struct QState {
+    bool                              Paused = false;   // networking off: nothing is dispatched (SetQueuePaused)
     std::mutex                        Mu;
     std::condition_variable           Cv;        // signalled on enqueue / completion / prioritize / cancel
     std::map<std::string, Job>        Jobs;      // CID → job (live + terminal; terminal jobs double as a session cache)
@@ -212,6 +213,7 @@ std::string FirstExisting(const Job &J)
 // still backing off is skipped — that is stall-demotion: it waits its turn while healthy work runs. Caller holds Mu.
 Job *PickReady()
 {
+    if (Q().Paused) return nullptr;   // the jobs wait, queued, for the network (no retry every 30 s while it is off)
     const SteadyTP Now = std::chrono::steady_clock::now();
     Job *Best = nullptr;
     for (auto &Kv : Q().Jobs) {
@@ -228,6 +230,7 @@ bool AnyReady() { return PickReady() != nullptr; }
 // instead of spinning when every queued job is still in backoff (the all-stalled case). Caller holds Mu.
 bool EarliestReadyAt(SteadyTP &Out)
 {
+    if (Q().Paused) return false;   // sleep until resumed (SetQueuePaused notifies), not until a backoff ends
     bool Any = false;
     for (const auto &Kv : Q().Jobs) {
         if (Kv.second.State != Job::Queued) continue;
@@ -873,6 +876,21 @@ static bool PrioritizeLocked(const std::string &Cid)
         RequestCancel(Lowest->Cid);   // under Mu: RunJob's completion cannot interleave between insert and cancel
     }
     return true;
+}
+
+void SetQueuePaused(bool On)
+{
+    std::lock_guard<std::mutex> Lk(Q().Mu);
+    if (Q().Paused == On) return;
+    Q().Paused = On;
+    ++Wakes;
+    Q().Cv.notify_all();   // resumed: the dispatcher looks again at once
+}
+
+bool QueuePaused()
+{
+    std::lock_guard<std::mutex> Lk(Q().Mu);
+    return Q().Paused;
 }
 
 void PrioritizeDownload(const std::string &Cid)
