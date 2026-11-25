@@ -76,7 +76,7 @@ RunnersPage::RunnersPage(AppModel &model, QWidget *parent)
     Table = new QTreeWidget(this);
     Table->setAccessibleName("Runners");
     Table->setColumnCount(5);
-    Table->setHeaderLabels({ "Runner", "Runs", "Status", "Games", "" });
+    Table->setHeaderLabels({ "Runner", "Runs", "Status", "Games", "Get" });
     Table->setRootIsDecorated(true);
     Table->setUniformRowHeights(true);
     Table->setAlternatingRowColors(true);

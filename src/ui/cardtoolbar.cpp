@@ -5,6 +5,7 @@
 #include <QActionGroup>
 #include <QButtonGroup>
 #include <QMenu>
+#include <QShortcut>
 #include <QToolButton>
 #include <QFrame>
 #include <QHBoxLayout>
@@ -55,6 +56,9 @@ CardToolbar MakeCardToolbar(QWidget *Owner, AppModel &Model, const std::vector<s
     Search->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
     QObject::connect(Search, &QLineEdit::textChanged, Owner, [OnSearch](const QString &Text) { OnSearch(Text.trimmed()); });
     T.Row->addWidget(Search, 1);
+    //Ctrl+F (the platform's Find) goes to the search, from anywhere in the tab.
+    auto *Find = new QShortcut(QKeySequence::Find, Owner, nullptr, nullptr, Qt::WidgetWithChildrenShortcut);
+    QObject::connect(Find, &QShortcut::activated, Search, [Search] { Search->setFocus(Qt::ShortcutFocusReason); Search->selectAll(); });
 
     //The card size: rarely changed, so one menu (three chips took the width the labels needed at 640 px).
     QToolButton *Size = new QToolButton(T.Bar);

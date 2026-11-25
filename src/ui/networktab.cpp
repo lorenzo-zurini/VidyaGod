@@ -483,6 +483,14 @@ void NetworkTab::rebuildTable()
     Table->clear();
     Table->setColumnCount(Headers.size());
     Table->setHorizontalHeaderLabels(Headers);
+    //What each column means, said where it is read (the headers are one word each).
+    const auto Tip = [this](int C, const QString &T) { if (QTableWidgetItem *H = Table->horizontalHeaderItem(C)) H->setToolTip(T); };
+    Tip(1, tr("You and they paired. Untick to remove the peer."));
+    for (int J = 0; J < NLibs; ++J) Tip(2 + J, tr("They see your library \"%1\" in their Catalog.").arg(Libs[J]));
+    Tip(RecvCol, tr("Their shared games appear in your Catalog."));
+    Tip(VlanCol, tr("Games you launch share a private LAN with them: LAN multiplayer across the internet."));
+    Tip(PresCol, tr("They see whether you are online and what you play."));
+    Tip(HereCol, tr("How many of the packages they share have landed here."));
     for (int C = 0; C + 1 < Headers.size(); ++C) Table->horizontalHeader()->setSectionResizeMode(C, QHeaderView::ResizeToContents);
     Table->horizontalHeader()->setSectionResizeMode(Headers.size() - 1, QHeaderView::Stretch);
     Table->horizontalHeader()->setMinimumSectionSize(70);

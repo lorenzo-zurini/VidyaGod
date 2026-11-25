@@ -93,6 +93,7 @@ public:
     QString                SortDate;      // RELEASEDATE string (ISO → lexicographic = chronological)
     QString                SortSeriesKey; // "SeriesName|##|SubseriesName|##" zero-padded
     QString                SeriesName;    // raw series name for grouping (empty if none)
+    QString                Developer;     // the tile's DEVELOPER (what a search also matches)
     QString                LastPlayedCache;
     bool                   LastPlayedRead = false;
 

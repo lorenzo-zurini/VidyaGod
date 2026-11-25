@@ -28,6 +28,7 @@
 #include "deckgrid.h"
 #include "deckshell.h"
 #include "cardpool.h"
+#include "librarytab.h"
 #include "deckstyle.h"
 #include "prelaunchwindow.h"
 #include "layouteditor.h"
@@ -686,6 +687,44 @@ private slots:
         G.padPressed(Pad::Button::RT);
         QVERIFY(G.currentIndex() > 0);
         qDeleteAll(Cards);
+    }
+
+    // A search matches a game's title, its series and who made it (Library and Catalog alike); the card grid takes
+    // Home, End and a page at a time from the keyboard. Teeth: title only; no Home/End/PgDn.
+    void a_search_matches_series_and_developer_and_the_grid_takes_home_end_and_pages()
+    {
+        LibraryFixture L;
+        AppModel M(&L.Cfg, &L.AppDir);
+        M.rebuildCatalog();
+        QList<LibraryGameCard *> Cards = CardPool::Installed(M);
+        LibraryGameCard *Alpha = nullptr;
+        for (LibraryGameCard *C : Cards) if (C->GameTitle == "Alpha") Alpha = C;
+        QVERIFY(Alpha);
+        QVERIFY(CardPool::Matches(*Alpha, "studio alpha"));   // its DEVELOPER
+        QVERIFY(CardPool::Matches(*Alpha, "SAGA"));           // its SERIES
+        QVERIFY(!CardPool::Matches(*Alpha, "zzz"));
+        LibraryView V;
+        V.resize(420, 300);
+        V.setCards(&Cards);
+        V.show();
+        V.layoutCards(120);
+        QApplication::processEvents();
+        V.setFocus();
+        QTest::keyClick(&V, Qt::Key_End);
+        QCOMPARE(V.property("padIndex").toInt(), int(Cards.size()) - 1);
+        QTest::keyClick(&V, Qt::Key_Home);
+        QCOMPARE(V.property("padIndex").toInt(), 0);
+        QTest::keyClick(&V, Qt::Key_PageDown);
+        QVERIFY(V.property("padIndex").toInt() > 0);
+        V.setCards(nullptr);
+        qDeleteAll(Cards);
+        //Ctrl+F goes to the tab's search. Teeth: no shortcut.
+        LibraryTab Tab(M);
+        Tab.resize(1000, 600);
+        Front(Tab);
+        QTest::keySequence(&Tab, QKeySequence::Find);
+        auto *F = qobject_cast<QLineEdit *>(QApplication::focusWidget());
+        QVERIFY(F && F->placeholderText() == QStringLiteral("Search…"));
     }
 
     // A game's page offers its controller layout: the configurator, opened for that game. Teeth: the button missing,

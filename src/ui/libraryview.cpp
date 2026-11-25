@@ -136,6 +136,10 @@ void LibraryGameCard::InitializeClassVariables()
         return QString("%1").arg(n, 5, 10, QChar('0'));
     };
     SeriesName    = strOrEmpty("SERIES");
+    Developer     = strOrEmpty("DEVELOPER");
+    if (Developer.isEmpty() && Meta.is_object() && Meta.contains("META") && Meta["META"].is_object()
+        && Meta["META"].contains("DEVELOPER") && Meta["META"]["DEVELOPER"].is_string())
+        Developer = QString::fromStdString(Meta["META"]["DEVELOPER"].get<std::string>());
     SortSeriesKey = SeriesName + "|" + numPad("SERIESSORTNUMBER") + "|"
                   + strOrEmpty("SUBSERIES") + "|" + numPad("SUBSERIESSORTNUMBER")
                   + "|" + SortTitle;
@@ -708,6 +712,25 @@ void LibraryView::keyPressEvent(QKeyEvent * e)
     case Qt::Key_Down:  moveSelection( 0, 1); return;
     case Qt::Key_Return: case Qt::Key_Enter: case Qt::Key_Space:
         activateCard(SelectedIdx); return;
+    //The first and the last card; a screenful up or down (the same column, as far as the view is tall).
+    case Qt::Key_Home: for (int i = 0; Cards && i < Cards->count(); ++i) if (!Rects[i].isNull()) { setSelected(i); break; } return;
+    case Qt::Key_End:  for (int i = Cards ? Cards->count() - 1 : -1; i >= 0; --i) if (!Rects[i].isNull()) { setSelected(i); break; } return;
+    case Qt::Key_PageUp: case Qt::Key_PageDown:
+    {
+        if (!Cards || SelectedIdx < 0 || SelectedIdx >= Cards->count()) { moveSelection(0, 1); return; }
+        const int Dir = e->key() == Qt::Key_PageDown ? 1 : -1;
+        const QPoint Want = Rects[SelectedIdx].center() + QPoint(0, Dir * viewport()->height());
+        int Best = -1; double BestD = 1e18;
+        for (int i = 0; i < Cards->count(); ++i)
+        {
+            if (Rects[i].isNull()) continue;
+            const QPoint P = Rects[i].center();
+            const double D = 3.0 * qAbs(P.x() - Want.x()) + qAbs(P.y() - Want.y());
+            if (D < BestD) { BestD = D; Best = i; }
+        }
+        if (Best >= 0) setSelected(Best);
+        return;
+    }
     default: QAbstractScrollArea::keyPressEvent(e);
     }
 }

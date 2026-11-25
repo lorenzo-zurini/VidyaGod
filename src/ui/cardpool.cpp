@@ -207,7 +207,9 @@ QString SectionOf(const nlohmann::ordered_json &Config, const std::filesystem::p
 
 bool Matches(const LibraryGameCard &Card, const QString &Search)
 {
-    if (Search.isEmpty() || Card.GameTitle.contains(Search, Qt::CaseInsensitive)) return true;
+    //Its title, its series, or who made it ("Bethesda", "Saga").
+    if (Search.isEmpty() || Card.GameTitle.contains(Search, Qt::CaseInsensitive)
+        || Card.SeriesName.contains(Search, Qt::CaseInsensitive) || Card.Developer.contains(Search, Qt::CaseInsensitive)) return true;
     for (const LibraryGameCard *S : Card.Secondaries)
         if (S && S->GameTitle.contains(Search, Qt::CaseInsensitive)) return true;
     return false;

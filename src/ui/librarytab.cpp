@@ -186,7 +186,7 @@ void LibraryTab::sortAndFilter()
     // Apply the search filter to produce the visible subset the view actually shows.
     LibraryVisible.clear();
     for (auto * c : cards)
-        if (LibrarySearch.isEmpty() || c->GameTitle.contains(LibrarySearch, Qt::CaseInsensitive))
+        if (CardPool::Matches(*c, LibrarySearch))   // one rule with the Catalog: title, series, developer
             LibraryVisible.append(c);
     View->setCards(&LibraryVisible);
 
