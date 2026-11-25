@@ -10,6 +10,7 @@
 #include <QHash>
 #include <QPixmap>
 #include <QPointer>
+class QTimer;
 #include <QRectF>
 #include <QString>
 #include <QStringList>
@@ -170,6 +171,8 @@ private:
     QHash<QString, double> Progress;
     int Current = 0;
     double Scroll = 0;
+    QString Firsted;                 // the key just put first (Y): its line says so for a moment
+    QTimer *FirstedTimer = nullptr;
     QString Confirm;                 // the key whose cancel waits for a second X
 };
 

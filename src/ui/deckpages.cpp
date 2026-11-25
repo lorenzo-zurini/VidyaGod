@@ -22,6 +22,7 @@
 #include <QDate>
 #include <QImage>
 #include <QImageReader>
+#include <QTimer>
 #include <QMouseEvent>
 #include <QPainter>
 #include <QPainterPath>
@@ -1018,6 +1019,7 @@ DeckDownloads::Row DeckDownloads::row(const QString &Key) const
         }
     }
     if (Confirm == Key) R.Line = "Press X again to cancel it";
+    else if (Firsted == Key) R.Line = "First in line now";
     else if (!Error.isEmpty()) { R.Line = "Error: " + Error; R.Bad = true; }
     else if (Down) R.Line = Speed > 0 ? "Downloading · " + HumanBytesQ(static_cast<qint64>(Speed)) + "/s" : QStringLiteral("Downloading");
     else if (Stalled) { R.Line = "Stalled — no peer is sending it right now"; R.Bad = true; }
@@ -1064,6 +1066,17 @@ bool DeckDownloads::padPressed(Pad::Button B)
         return true;
     case P::Y:
         for (const QString &Cid : Shell.downloads().cidsOf(Keys[Current])) Shell.ipfs().prioritize(Cid);
+        //Said on its row for a moment: the list keeps its order (by title), so nothing else shows it.
+        Firsted = Keys[Current];
+        if (!FirstedTimer)
+        {
+            FirstedTimer = new QTimer(this);
+            FirstedTimer->setSingleShot(true);
+            connect(FirstedTimer, &QTimer::timeout, this, [this] { Firsted.clear(); update(); });
+        }
+        FirstedTimer->start(2500);
+        PadInput::instance().tick();
+        update();
         return true;
     default: return false;
     }

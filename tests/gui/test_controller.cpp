@@ -973,6 +973,9 @@ private slots:
         QCoreApplication::processEvents();
         auto *Side = Sh.findChild<QListWidget *>("SettingsSidebar");
         QVERIFY(Side);
+        //General (the tray, starting at login) is not offered in controller mode. Teeth: no showEvent rule.
+        QVERIFY(!Side->findItems("General", Qt::MatchExactly).isEmpty() && Side->findItems("General", Qt::MatchExactly).first()->isHidden());
+        QVERIFY(Side->currentItem() && !Side->currentItem()->isHidden());
         QWidget *InPage = nullptr;
         for (QCheckBox *C : Sh.findChildren<QCheckBox *>()) if (C->isVisible() && !Side->isAncestorOf(C)) { InPage = C; break; }
         QVERIFY(InPage);

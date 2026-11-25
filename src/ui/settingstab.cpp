@@ -1,4 +1,5 @@
 #include "settingstab.h"
+#include "deckshell.h"   // DeckShell::On: controller mode
 #include <QScrollArea>
 #include "appmodel.h"
 #include "generalpage.h"
@@ -77,6 +78,19 @@ SettingsTab::SettingsTab(AppModel &model, QWidget *parent)
         if (Row >= 0 && Row != CategoryList->currentRow()) CategoryList->setCurrentRow(Row);
     });
     CategoryList->setCurrentRow(0);   // builds + shows the first page only
+}
+
+void SettingsTab::showEvent(QShowEvent *E)
+{
+    QWidget::showEvent(E);
+    //General is the tray and starting at login: a handheld session has neither. Hidden while in controller mode (a
+    //hidden row is no stop for the pad), shown again on the desktop.
+    const bool Deck = DeckShell::On();
+    for (int Row = 0; Row < CategoryList->count(); ++Row)
+        if (CategoryList->item(Row)->text() == "General") CategoryList->item(Row)->setHidden(Deck);
+    if (QListWidgetItem *Cur = CategoryList->currentItem(); Cur && Cur->isHidden())
+        for (int Row = 0; Row < CategoryList->count(); ++Row)
+            if (!CategoryList->item(Row)->isHidden()) { CategoryList->setCurrentRow(Row); break; }
 }
 
 void SettingsTab::showPage(int row)

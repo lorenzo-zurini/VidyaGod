@@ -26,6 +26,9 @@ public:
     // The page named Name ("Controller", "Network"), as its sidebar row reads, selected and shown. False: no such page.
     bool openPage(const QString &Name);
 
+protected:
+    void showEvent(QShowEvent *E) override;   // controller mode: the desktop-only pages are not offered
+
 private:
     AppModel &Model;
     QListWidget    *CategoryList = nullptr;
