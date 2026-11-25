@@ -17,6 +17,7 @@
 #include "controllerlayout.h"
 #include "controllerservice.h"
 #include "gameoverlay.h"
+#include "deckstyle.h"
 #include "padnav.h"
 
 namespace
@@ -128,6 +129,19 @@ private slots:
         QCOMPARE(O.title(), QStringLiteral("Some Game"));
         QCOMPARE(O.layoutName(), QStringLiteral("Gamepad"));
         QTRY_VERIFY_WITH_TIMEOUT(QApplication::focusWidget() && QApplication::focusWidget()->objectName() == QLatin1String("resume"), 3000);
+        //Sized for its screen (DeckStyle::ScaleFor), its hints a strip of the controller's glyphs. Teeth: fixed pixels.
+        {
+            const double Sc = DeckStyle::ScaleFor(QGuiApplication::primaryScreen()->geometry().height());
+            auto *Res = O.findChild<QPushButton *>(QStringLiteral("resume"));
+            QVERIFY(Res);
+            QCOMPARE(Res->font().pixelSize(), static_cast<int>(std::lround(20 * Sc)));
+            auto *H = O.findChild<QWidget *>(QStringLiteral("overlayHints"));
+            QVERIFY(H && H->height() == static_cast<int>(40 * Sc));
+            O.applyScale(2.0);   // a larger screen: twice the size
+            QCOMPARE(Res->font().pixelSize(), 40);
+            QCOMPARE(H->height(), 80);
+            O.applyScale(Sc);
+        }
 
         //VidyaGod's own layout (its menus') is Desktop: a game put back to the controller as it is gets Gamepad, not it.
         const std::string Dir = (AppPaths::DataRoot() / "ControllerLayouts").string();

@@ -227,6 +227,10 @@ private slots:
         const QRect Wide(100, 300, 300, 30);
         const QVector<QRect> Row{ QRect(380, 268, 120, 30), QRect(420, 300, 30, 30) };   // the row above: 3 px up
         QCOMPARE(PadNav::Nearest(Wide, B::Right, Row), 1);
+        //In line, straight ahead counts: from the overlay's Resume, Down is its layout list centred below, not the small
+        //Edit button off to the side that starts sooner (the overlay's own rectangles). Teeth: centring weighed 0.05.
+        const QVector<QRect> Below{ QRect(286, 328, 222, 65), QRect(522, 316, 102, 89) };
+        QCOMPARE(PadNav::Nearest(QRect(176, 213, 448, 89), B::Down, Below), 0);
     }
 
     // With nothing focused a direction focuses the dialog's default button; then each direction the control that

@@ -85,7 +85,14 @@ private:
     bool Open = false, Attached = false;
     QString GameTitle, GameKey;
     std::function<void()> QuitGame;
-    QLabel *Title = nullptr, *Clock = nullptr, *Battery = nullptr, *Hints = nullptr;
+    class OverlayHints;
+    friend class OverlayHints;
+    QLabel *Title = nullptr, *Clock = nullptr, *Battery = nullptr;
+    QWidget *Hints = nullptr;
+    double Scale = 1.0;
+public:
+    void applyScale(double S);   // its look at a scale (openOverlay: DeckStyle::ScaleFor its screen)
+private:
     QPushButton *Resume = nullptr, *EditButton = nullptr, *QuitButton = nullptr;
     QComboBox *Layouts = nullptr;
     QLineEdit *TypeEdit = nullptr;

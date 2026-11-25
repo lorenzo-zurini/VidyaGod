@@ -1,6 +1,7 @@
 #include "gameoverlay.h"
 #include "padnav.h"
 #include <QApplication>
+#include <cmath>
 
 #include "apppaths.h"
 #include "controllerlayout.h"
@@ -89,6 +90,22 @@ GameOverlay &GameOverlay::instance()
     return *O;
 }
 
+//The overlay's hint strip: the controller's own glyphs in capsules (DeckStyle::DrawHints), as the shell draws them.
+class GameOverlay::OverlayHints : public QWidget
+{
+public:
+    explicit OverlayHints(GameOverlay &O) : QWidget(&O), Owner(O) { setObjectName(QStringLiteral("overlayHints")); }
+protected:
+    void paintEvent(QPaintEvent *) override
+    {
+        QPainter P(this);
+        P.setRenderHint(QPainter::Antialiasing);
+        DeckStyle::DrawHints(P, QRectF(rect()), Owner.padHints(), PadInput::instance().glyphs(), Owner.Scale);
+    }
+private:
+    GameOverlay &Owner;
+};
+
 GameOverlay::GameOverlay() : QWidget(nullptr, Qt::Window | Qt::FramelessWindowHint | Qt::WindowStaysOnTopHint)
 {
     setObjectName(QStringLiteral("gameOverlay"));
@@ -155,25 +172,9 @@ GameOverlay::GameOverlay() : QWidget(nullptr, Qt::Window | Qt::FramelessWindowHi
     Root->addLayout(Center);
     Root->addStretch(1);
     //What the buttons do here, as the controller labels them.
-    Hints = new QLabel(this);
-    Hints->setObjectName(QStringLiteral("overlayHints"));
-    Hints->setAlignment(Qt::AlignRight | Qt::AlignVCenter);
+    Hints = new OverlayHints(*this);
     Root->addWidget(Hints);
-
-    using namespace DeckStyle;
-    setStyleSheet(QStringLiteral(
-        "#gameOverlay QLabel { color: %1; font-size: 18px; }"
-        "#gameOverlay QLabel#overlayTitle { color: %1; font-size: 46px; }"
-        "#gameOverlay QLabel#overlayHints { color: %6; font-size: 18px; }"
-        "#gameOverlay QPushButton { background: %2; color: %1; border: none; border-radius: 24px; padding: 12px 30px; font-size: 20px; }"
-        "#gameOverlay QPushButton:focus { background: %3; color: %4; }"
-        "#gameOverlay QPushButton#quitGame:focus { background: %5; color: %4; }"
-        "#gameOverlay QComboBox { background: %2; color: %1; border: 3px solid transparent; border-radius: 20px; padding: 6px 18px; font-size: 18px; }"
-        "#gameOverlay QComboBox:focus { border-color: %3; }"
-        "#gameOverlay QLineEdit { background: %2; color: %1; border: 3px solid transparent; border-radius: 20px; padding: 6px 18px; font-size: 18px; }"
-        "#gameOverlay QLineEdit:focus { border-color: %3; }"
-        "#gameOverlay QCheckBox { color: %1; font-size: 18px; }")
-        .arg(Text.name(), Panel.name(), Lime.name(), Ink.name(), Bad.name(), Dim.name()));
+    applyScale(1.0);
 
     connect(Resume, &QPushButton::clicked, this, &GameOverlay::closeOverlay);
     connect(EditButton, &QPushButton::clicked, this, &GameOverlay::editLayout);
@@ -220,6 +221,31 @@ void GameOverlay::clearGame()
 
 QString GameOverlay::title() const { return Title->text(); }
 QString GameOverlay::layoutName() const { return Layouts->currentData().toString(); }
+//The overlay's look at a scale (DeckStyle::ScaleFor the screen's height): its sizes were fixed pixels whatever the
+//screen — small on a 4K TV, cramped on a 720p one.
+void GameOverlay::applyScale(double S)
+{
+    using namespace DeckStyle;
+    const auto Px = [S](double V) { return QString::number(std::lround(V * S)) + QStringLiteral("px"); };
+    const QString Tx = Text.name(), Pn = Panel.name(), Li = Lime.name(), In = Ink.name(), Bd = Bad.name();
+    setStyleSheet(
+        "#gameOverlay QLabel { color: " + Tx + "; font-size: " + Px(18) + "; }"
+        "#gameOverlay QLabel#overlayTitle { color: " + Tx + "; font-size: " + Px(46) + "; }"
+        "#gameOverlay QPushButton { background: " + Pn + "; color: " + Tx + "; border: none; border-radius: " + Px(24)
+            + "; padding: " + Px(12) + " " + Px(30) + "; font-size: " + Px(20) + "; }"
+        "#gameOverlay QPushButton:focus { background: " + Li + "; color: " + In + "; }"
+        "#gameOverlay QPushButton#quitGame:focus { background: " + Bd + "; color: " + In + "; }"
+        "#gameOverlay QComboBox { background: " + Pn + "; color: " + Tx + "; border: 3px solid transparent; border-radius: " + Px(20)
+            + "; padding: " + Px(6) + " " + Px(18) + "; font-size: " + Px(18) + "; }"
+        "#gameOverlay QComboBox:focus { border-color: " + Li + "; }"
+        "#gameOverlay QLineEdit { background: " + Pn + "; color: " + Tx + "; border: 3px solid transparent; border-radius: " + Px(20)
+            + "; padding: " + Px(6) + " " + Px(18) + "; font-size: " + Px(18) + "; }"
+        "#gameOverlay QLineEdit:focus { border-color: " + Li + "; }"
+        "#gameOverlay QCheckBox { color: " + Tx + "; font-size: " + Px(18) + "; }");
+    Scale = S;
+    if (Hints) { Hints->setFixedHeight(static_cast<int>(40 * S)); Hints->update(); }
+}
+
 bool GameOverlay::quitArmed() const { return QuitButton->property("armed").toBool(); }
 void GameOverlay::disarmQuit()
 {
@@ -242,8 +268,8 @@ void GameOverlay::refresh()
     }
     Battery->setText(Bat);
     const Pad::Glyphs G = PadInput::instance().glyphs();
-    Hints->setText(tr("%1 Select     %2 Resume     %3 Resume").arg(DeckStyle::GlyphText(Pad::Button::A, G), DeckStyle::GlyphText(Pad::Button::B, G),
-                                                                   DeckStyle::GlyphText(Pad::Button::Guide, G)));
+    (void)G;
+    Hints->update();   // drawn as the controller's glyphs, like every other screen (OverlayHints)
     const std::string Chosen = R ? ControllerLayout::ForGame(LayoutsDir(), GameKey.toStdString()) : std::string();
     Layouts->blockSignals(true);
     Layouts->clear();
@@ -312,7 +338,7 @@ void GameOverlay::openOverlay()
 {
     if (Open) return;
     refresh();
-    if (QScreen *S = QGuiApplication::primaryScreen()) setGeometry(S->geometry());
+    if (QScreen *S = QGuiApplication::primaryScreen()) { setGeometry(S->geometry()); applyScale(DeckStyle::ScaleFor(S->geometry().height())); }
     winId();                        // a native window first: gamescope reads the overlay properties as it maps
     MarkOverlayWindow(this, true);
     show();

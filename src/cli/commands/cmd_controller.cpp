@@ -334,7 +334,7 @@ VG_COMMANDS
           "controller overlay --layout 'Keyboard and mouse (WASD)'", "controller overlay --close" },
         { "GameOverlay::instance", "GameOverlay::attach", "GameOverlay::setGame", "GameOverlay::clearGame", "GameOverlay::hasGame",
           "GameOverlay::isOpen", "GameOverlay::openOverlay", "GameOverlay::closeOverlay", "GameOverlay::title", "GameOverlay::layoutName",
-          "GameOverlay::setLayout", "GameOverlay::editLayout", "GameOverlay::quitGame", "GameOverlay::quitArmed", "GameOverlay::disarmQuit", "GameOverlay::onUiEvent",
+          "GameOverlay::setLayout", "GameOverlay::editLayout", "GameOverlay::quitGame", "GameOverlay::quitArmed", "GameOverlay::disarmQuit", "GameOverlay::applyScale", "GameOverlay::onUiEvent",
           "GameOverlay::onGameChanged", "GameOverlay::padPressed", "GameOverlay::padHints", "OverlayProperties", "MarkOverlayWindow",
           "PadButtonFromUiEvent", "GameOverlay::typeIntoGame", "ControllerService::typeText", "KeyStrokeFor", "ControllerService::setIntercept", "ControllerService::intercept", "ControllerService::uiEvent",
           "ControllerService::gameChanged", "ControllerService::setGameLayout", "ControllerService::gameLayout" }, Needs::Ui, false,

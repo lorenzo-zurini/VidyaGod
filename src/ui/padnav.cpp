@@ -284,7 +284,9 @@ int Nearest(const QRect &From, Pad::Button Dir, const QVector<QRect> &Candidates
         //along the way first; only when none does, the weighed score. (Weighed alone, a control a row away that started
         //"sooner" beat the one right beside: Right from the instance list went to Edit package above it.)
         const bool InLine = Gap == 0;
-        const double Score = InLine ? Along + 0.05 * Off : 1e6 + Along + 3.0 * Gap + 0.05 * Off;
+        //In line, being straight ahead counts too: the list centred below beats a small button off to the side that
+        //starts a little sooner (the overlay's Resume → its layout list, not its Edit button).
+        const double Score = InLine ? Along + 0.5 * Off : 1e6 + Along + 3.0 * Gap + 0.05 * Off;
         if (Score < BestScore) { BestScore = Score; Best = I; }
     }
     return Best;
