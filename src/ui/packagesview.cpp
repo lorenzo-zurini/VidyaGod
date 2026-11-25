@@ -39,6 +39,9 @@ PackagesView::PackagesView(AppModel &model, QWidget *parent)
     buildUi();
     connect(&Model, &AppModel::catalogChanged, this, &PackagesView::rebuildList);
     connect(&Model, &AppModel::nodeReady, this, &PackagesView::rebuildUpdates);   // versions need the node up
+    connect(&Model, &AppModel::packageRemoveFailed, this, [this](const QString &Why) {
+        if (isVisible()) QMessageBox::warning(this, "Uninstall package", "The package was not uninstalled: " + Why);
+    });
     rebuildList();
 }
 
@@ -234,21 +237,25 @@ void PackagesView::showList(const std::vector<PackageCatalog::InstalledPackage> 
         Open->setAccessibleName("Open folder of " + Title);
         connect(Open, &QPushButton::clicked, this, [Dir]{ QDesktopServices::openUrl(QUrl::fromLocalFile(Dir)); });
         g->addWidget(Open, row, 2);
-        //Only a package added from outside LIBRARY is removed here — forgotten, its folder untouched. A package of LIBRARY
-        //is not: its content can be shared with others and may have no source (AppModel::removePackage).
-        //A package source's package (under LIBRARY, named by its config entry) keeps the Remove it always had.
-        if (P.Local || P.HasEntry)
+        //Every package can be uninstalled: what that does is judged when asked (the library may have changed since), and
+        //said before anything is touched.
         {
-            const bool Local = P.Local;
-            QPushButton *rb = new QPushButton(Local ? "Forget" : "Remove", w);
-            rb->setAccessibleName((Local ? "Forget " : "Remove ") + Title);
-            rb->setToolTip(Local ? "Stop listing this package; its folder is not touched."
-                                 : "Remove this source package's downloaded content; its nodes stay, to download again.");
-            connect(rb, &QPushButton::clicked, this, [this, Dir, Title, Local]{
-                const QString Q = Local ? QString("Forget %1? Its folder is not touched:\n%2").arg(Title, Dir)
-                                        : QString("Remove %1's downloaded content? Its nodes stay, to download it again.").arg(Title);
-                if (QMessageBox::question(this, Local ? "Forget package" : "Remove package", Q) != QMessageBox::Yes) return;
-                if (const QString Why = Model.removePackage(Dir); !Why.isEmpty()) QMessageBox::warning(this, "Remove package", Why);
+            QPushButton *rb = new QPushButton(P.Local ? "Forget" : "Uninstall", w);
+            rb->setAccessibleName((P.Local ? "Forget " : "Uninstall ") + Title);
+            rb->setToolTip(P.Local ? "Stop listing this package; its folder is not touched."
+                                   : "Remove this package's content. You are told first whether it can be downloaded again.");
+            const unsigned long long Bytes = P.Bytes;
+            connect(rb, &QPushButton::clicked, this, [this, Dir, Title, Bytes]{
+                const UninstallAsk A = uninstallAsk(Model.uninstallVerdict(Dir), Title, Bytes);
+                if (A.Refused) { QMessageBox::information(this, A.Title, A.Text); return; }
+                QMessageBox Box(QMessageBox::Question, A.Title, A.Text, QMessageBox::NoButton, this);
+                QPushButton *Yes = Box.addButton(A.Confirm, A.DefaultNo ? QMessageBox::DestructiveRole : QMessageBox::AcceptRole);
+                QPushButton *No = Box.addButton(QMessageBox::Cancel);
+                Box.setDefaultButton(A.DefaultNo ? No : Yes);
+                Box.exec();
+                if (Box.clickedButton() != Yes) return;
+                const bool Only = A.DefaultNo;   // the only copy's question: a yes is to delete it
+                if (const QString Why = Model.removePackage(Dir, nullptr, Only); !Why.isEmpty()) QMessageBox::warning(this, A.Title, Why);
             });
             g->addWidget(rb, row, 3);
         }
@@ -256,6 +263,47 @@ void PackagesView::showList(const std::vector<PackageCatalog::InstalledPackage> 
     }
     g->setRowStretch(g->rowCount(), 1);
     PackagesScrollArea->setWidget(w);
+}
+
+PackagesView::UninstallAsk PackagesView::uninstallAsk(const PackageCatalog::UninstallVerdict &V, const QString &Title, unsigned long long Bytes)
+{
+    using K = PackageCatalog::UninstallVerdict::Kind;
+    UninstallAsk A;
+    const QString Size = QString::fromStdString(HumanBytes(static_cast<long long>(Bytes)));
+    QStringList Needing;
+    for (const std::string &N : V.NeededBy) Needing << QString::fromStdString(N);
+    const QString Saves = "\n\nYour saves and settings for it are kept.";
+    const QString Shared = V.Shared ? "\n\nYou share it: peers will no longer get it from you." : QString();
+    switch (V.K)
+    {
+    case K::Nothing: break;
+    case K::Forget:
+        A = { "Forget", "Forget package", QString("Forget %1? Its folder is not touched.").arg(Title), "Forget", false, false };
+        break;
+    case K::Download:
+        A = { "Uninstall", "Uninstall package",
+              QString("Uninstall %1? Its content (%2) is removed; the game stays in the Catalog to download again from %3.")
+                  .arg(Title, Size, QString::fromStdString(V.From))
+              + (Needing.isEmpty() ? QString() : "\n\n" + Needing.join(", ") + (Needing.size() == 1 ? " uses" : " use")
+                                                 + " its content too, and will need downloading again as well.")
+              + Shared + Saves, "Uninstall", false, false };
+        break;
+    case K::OnlyCopy:
+        if (!Needing.isEmpty())
+        {
+            A = { "Uninstall", "Uninstall package",
+                  QString("%1 is the only copy: nothing could download it again, and %2 %3 its content. Uninstall %4 first.")
+                      .arg(Title, Needing.join(", "), Needing.size() == 1 ? "uses" : "use", Needing.size() == 1 ? "it" : "them"),
+                  QString(), false, true };
+            break;
+        }
+        A = { "Uninstall", "Delete the only copy",
+              QString("This is the only copy of %1: it cannot be downloaded again (no source of yours has it, and no peer shares "
+                      "it).\n\nDelete anyway? Its folder (%2) goes to the trash, from where it can be restored.").arg(Title, Size)
+              + Shared + Saves, "Move to trash", true, false };
+        break;
+    }
+    return A;
 }
 
 // (addLocalPackages moved to AppModel::importPackagesFromDir, invoked from the Library tab's toolbar.)

@@ -30,6 +30,7 @@
 #include <QCoreApplication>
 #include <QDir>
 #include <QFile>
+#include <QStandardPaths>
 #include <QStringList>
 #include <cstdint>
 #include <cstdio>
@@ -308,6 +309,58 @@ std::vector<PackageUpdate> AvailableUpdates(const nlohmann::ordered_json &Config
         }
     }
     return Out;
+}
+
+bool TrashPackage(const NodeIndex &Idx, const std::filesystem::path &Dir, std::string *Error)
+{
+    namespace fs = std::filesystem;
+    std::lock_guard<std::mutex> Lk(PackageLock(Dir));
+    std::error_code Ec;
+    const fs::path Own = fs::weakly_canonical(Dir, Ec);
+    std::set<std::string> Cids;
+    for (const std::string &C : PackageNodeCids(Dir)) Cids.insert(C);
+    for (const auto &[K, N] : Idx.Nodes)
+    {
+        if (!N.IsVariant() || fs::weakly_canonical(N.BundleDir, Ec) != Own) continue;
+        ForEachContentLayer(Idx, K, {}, [&](const nlohmann::ordered_json&, const fs::path &Local, const std::string &Cid) {
+            std::error_code E2;
+            if (!Cid.empty() && PathUnder(Own, fs::weakly_canonical(Local, E2))) Cids.insert(Cid);
+        }, true, true);
+    }
+    //Qt makes the trash with a plain mkdir: the data folder it lives in must be there (a fresh account has none yet).
+    QDir().mkpath(QStandardPaths::writableLocation(QStandardPaths::GenericDataLocation));
+    if (!QFile::moveToTrash(QString::fromStdString(Dir.string())))
+    {
+        if (Error) *Error = "it could not be moved to the trash (" + Dir.string() + "), so nothing was deleted";
+        return false;
+    }
+    for (const std::string &C : Cids) IpfsWrapper::Unpin(C);
+    IpfsWrapper::DropRefs({ Cids.begin(), Cids.end() });
+    LogOut("PackageCatalog::TrashPackage", "Moved " + Dir.string() + " to the trash (" + std::to_string(Cids.size()) + " CIDs let go)");
+    return true;
+}
+
+std::string PeerSharingPackage(const nlohmann::ordered_json &Config, const std::filesystem::path &Dir)
+{
+    namespace fs = std::filesystem;
+    if (!Config.contains("PeerLibraries") || !Config["PeerLibraries"].is_object()) return {};
+    const std::vector<std::string> Home = PackageNodeCids(Dir);
+    if (Home.empty()) return {};
+    const fs::path LibRoot = LibraryRootDir(Config), Want = Dir.lexically_normal();
+    for (const auto &[Peer, Libs] : Config["PeerLibraries"].items())
+    {
+        std::map<std::pair<std::string, std::string>, std::set<std::string>> Listed;   // (lib, pkg) → its node CIDs
+        for (const SheetEntry &E : WireEntries(Libs)) Listed[{ E.Lib, E.Pkg }].insert(E.Cid);
+        const auto Folders = ReceivedFolderNames(Libs);
+        for (const auto &[LP, Cids] : Listed)
+        {
+            const auto F = Folders.find(LP);
+            if (F == Folders.end() || (LibRoot / NodeFiles::SafeName(LP.first) / F->second).lexically_normal() != Want) continue;
+            if (std::all_of(Home.begin(), Home.end(), [&](const std::string &C) { return Cids.count(C) != 0; }))
+                return ReceivedNickLabel(Config, Peer);
+        }
+    }
+    return {};
 }
 
 bool StageUpdate(const nlohmann::ordered_json &Config, const PackageUpdate &U, StagedUpdate *Out, std::string *Error)

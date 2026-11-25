@@ -6,6 +6,8 @@
 #include <QTemporaryDir>
 #include <QDir>
 #include <QFile>
+#include <QDirIterator>
+#include <QScopeGuard>
 
 #include "appmodel.h"
 #include "jsonoperations.h"
@@ -269,10 +271,11 @@ private slots:
         QVERIFY(m.hydration().at(m.catalogIndex().Find("game")->Key()).Hydrated);
     }
 
-    // A package of LIBRARY that the config's LIBRARY list does not name (every package since the node cutover) is not
-    // removed: its dehydrate would walk into other packages' shared content and delete files no source can bring back.
-    // Teeth: drop the refusal and the package's content goes (the dehydrate deletes game.zip).
-    void remove_refuses_a_library_package_the_config_does_not_name()
+    // A package of LIBRARY that nothing could download again (no source of the user's has it, no peer shares it) is the
+    // only copy: uninstalling it is refused unless the user says to delete it — and then its folder goes to the trash,
+    // whole and restorable, never deleted. Teeth: drop the refusal (the dehydrate deletes game.zip); delete instead of
+    // trashing; trash it without being asked.
+    void remove_refuses_the_only_copy_unless_asked_and_then_trashes_it()
     {
         QTemporaryDir d; QVERIFY(d.isValid());
         QDir appDir(d.path());
@@ -296,6 +299,47 @@ private slots:
         QVERIFY(!m.removePackage("1").isEmpty());   // by its UID too
         QTest::qWait(300);
         QVERIFY(QFile::exists(Pkg + "/game.zip"));
+
+        // Asked to: the folder goes to the trash (this test's own: the user's is never written to), its content whole.
+        const QString Share = d.path() + "/xdgdata";
+        const QByteArray WasData = qgetenv("XDG_DATA_HOME");
+        qputenv("XDG_DATA_HOME", Share.toUtf8());
+        const auto Restore = qScopeGuard([&] { if (WasData.isEmpty()) qunsetenv("XDG_DATA_HOME"); else qputenv("XDG_DATA_HOME", WasData); });
+        QSignalSpy Failed(&m, &AppModel::packageRemoveFailed);
+        Built.clear();
+        QVERIFY(m.removePackage(Pkg, &Async, true).isEmpty());
+        QVERIFY(Async);
+        QVERIFY(Built.wait(20000));
+        QVERIFY2(Failed.isEmpty(), qPrintable(Failed.isEmpty() ? QString() : Failed.first().value(0).toString()));
+        QVERIFY2(!QFileInfo::exists(Pkg), "the folder is gone from the library");
+        QDirIterator It(Share, { "game.zip" }, QDir::Files, QDirIterator::Subdirectories);
+        QVERIFY2(It.hasNext(), "its content is in the trash, to restore");
+        QVERIFY(!m.catalogIndex().Find("game"));
+    }
+
+    // The only copy is not deleted while another installed game's content lives in its folder (a library it contains):
+    // nothing could bring it back for that game either. Teeth: judge the package alone.
+    void the_only_copy_another_game_uses_is_not_deleted()
+    {
+        QTemporaryDir d; QVERIFY(d.isValid());
+        QDir appDir(d.path());
+        const QString Pkg = d.path() + "/LIBRARY/VidyaGod/[1] Lib", Other = d.path() + "/LIBRARY/VidyaGod/[2] Game";
+        QDir().mkpath(Pkg); QDir().mkpath(Other);
+        { std::ofstream f((Pkg + "/lib.zip").toStdString()); f << "content"; }
+        { std::ofstream f((Other + "/game.zip").toStdString()); f << "content"; }
+        NodeFixture::WriteNodes((Pkg + "/lib.json").toStdString(), NodeFixture::Chain("lib", {NodeFixture::Tile("1", "Lib"),
+            NodeFixture::Exec("win32", "l.exe"), NodeFixture::Content("zip", "lib.zip")}, {}, {{"VARIANT", "Edition 1"}}));
+        NodeFixture::WriteNodes((Other + "/game.json").toStdString(), NodeFixture::Chain("game", {NodeFixture::Tile("2", "Game"),
+            NodeFixture::Exec("win32", "g.exe"), NodeFixture::Content("zip", "game.zip")}, {"lib"}, {{"VARIANT", "Edition 1"}}));
+        json cfg = json{{"Settings", {{"Paths", {{"LibraryRoot", (d.path() + "/LIBRARY").toStdString()}}}}}, {"LIBRARY", json::array()}};
+        AppModel m(&cfg, &appDir);
+        QSignalSpy Built(&m, &AppModel::catalogChanged);
+        m.rebuildCatalog();
+        if (Built.isEmpty()) QVERIFY(Built.wait(20000));
+        const QString Why = m.removePackage(Pkg, nullptr, true);
+        QVERIFY2(Why.contains("Game"), qPrintable(Why));
+        QTest::qWait(500);
+        QVERIFY(QFile::exists(Pkg + "/lib.zip"));
     }
 
     void remove_unknown_package_is_noop()

@@ -23,6 +23,10 @@ public:
     PackagesView(AppModel &model, QWidget *parent = nullptr);
 
     int updateScans() const { return UpdateScans; }   // test observability: "other versions" scans started
+    //What Uninstall asks, from the verdict (PackageCatalog::JudgeUninstall): the button's own label ("" = no uninstall),
+    //and the question with its consequence — what goes, where it comes back from, or that it never can.
+    struct UninstallAsk { QString Button, Title, Text, Confirm; bool DefaultNo = false, Refused = false; };
+    static UninstallAsk uninstallAsk(const PackageCatalog::UninstallVerdict &V, const QString &Title, unsigned long long Bytes);
 
 public slots:
     void rebuildList();        // (re)build the installed-packages list (on catalogChanged; hidden: when next shown)

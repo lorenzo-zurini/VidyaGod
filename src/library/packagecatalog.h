@@ -531,6 +531,29 @@ int DehydrateNode(const NodeIndex &Idx, const std::string &LaunchNodeId);
 //HasEntry: the config's LIBRARY list names it (a package added from outside, or a package source's) — what Remove takes.
 struct InstalledPackage { std::filesystem::path Dir; std::string Uid, Title, Library; bool Local = false, HasEntry = false;
                           std::vector<std::string> Variants; std::uintmax_t Bytes = 0; };
+//What uninstalling a package does, judged before anything is touched (Settings → Installed Packages, `app remove-package`):
+//  Forget    — added from outside LIBRARY: its entry goes, its folder is untouched;
+//  Download  — its content goes and it stays in the Catalog, to download again From a source of the user's or a peer that
+//              shares this very version (every node of it);
+//  OnlyCopy  — nothing could download it again: its folder goes only when the user says so, and then to the trash;
+//  Nothing   — no package is there.
+//NeededBy: the other installed packages whose content lives in its folder (a library they contain) — what its content
+//going breaks, or what refuses deleting it. Shared: the user's own share sheet lists it (peers download it from here).
+struct UninstallVerdict
+{
+    enum class Kind { Nothing, Forget, Download, OnlyCopy } K = Kind::Nothing;
+    std::string From;
+    std::vector<std::string> NeededBy;
+    bool Shared = false;
+};
+UninstallVerdict JudgeUninstall(const nlohmann::ordered_json &GlobalConfigJSON, const NodeIndex &Idx, const std::filesystem::path &Dir);
+//Deletes the package folder Dir the only way a slip can be undone: moved to the trash (refused when it cannot be — a
+//file system with none), then unpins and drops the references of its node files and its own content (what lies in it:
+//another package's library is not its own). The user's saves are not in it. Blocks (IPFS): call off the GUI thread.
+[[nodiscard]] bool TrashPackage(const NodeIndex &Idx, const std::filesystem::path &Dir, std::string *Error = nullptr);
+//The nickname of a peer whose shared libraries list every node of the installed package at Dir (it can be downloaded
+//again from them), "" when none does.
+std::string PeerSharingPackage(const nlohmann::ordered_json &GlobalConfigJSON, const std::filesystem::path &Dir);
 std::vector<InstalledPackage> InstalledPackages(const nlohmann::ordered_json &GlobalConfigJSON, const NodeIndex &Idx,
                                                 bool Sizes = true);
 //The package folders (of the index) whose identity UID is Uid, or whose folder name begins with "[<Uid>]" — what a

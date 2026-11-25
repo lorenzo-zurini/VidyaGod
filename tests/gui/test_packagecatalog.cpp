@@ -4108,8 +4108,124 @@ private slots:
         QVERIFY2(Threw, "the filesystem's refusal reaches the caller as an error");
     }
 
+private slots:
+    // What uninstalling would do is said before anything is touched: a package of LIBRARY that nothing could download again
+    // is the only copy; one a source of the user's has, or a peer shares in this very version (every node of it), comes
+    // back from there; one added from outside is forgotten. Another installed game whose content lives in its folder is
+    // named, and a package the user shares says so. Teeth: a peer sharing another version of it counts; the source's
+    // name not looked up; a package needing nothing named; the share sheet not read; an outside package not forgotten.
+    void uninstall_says_whether_a_package_can_be_downloaded_again()
+    {
+        QTemporaryDir D; QVERIFY(D.isValid());
+        const QString R = D.path() + "/LIBRARY";
+        const QString Pkg = R + "/Mine/[1] Game", Other = R + "/Mine/[2] Other";
+        QDir().mkpath(Pkg); QDir().mkpath(Other);
+        { std::ofstream f((Pkg + "/game.zip").toStdString()); f << "content"; }
+        NodeFixture::WriteNodes((Pkg + "/game.json").toStdString(), NodeFixture::Chain("game", {NodeFixture::Tile("1", "Game"),
+            NodeFixture::Exec("win32", "g.exe"), NodeFixture::ContentCid("zip", "game.zip", "bafkreigamezip")}, {}, {{"VARIANT", "Edition 1"}}));
+        NodeFixture::WriteNodes((Other + "/other.json").toStdString(), NodeFixture::Chain("other", {NodeFixture::Tile("2", "Other"),
+            NodeFixture::Exec("win32", "o.exe")}, {}, {{"VARIANT", "Edition 1"}}));
+        json cfg = json{{"Settings", {{"Paths", {{"LibraryRoot", R.toStdString()}}}}}};
+        using K = PackageCatalog::UninstallVerdict::Kind;
+        auto Judge = [&](const QString &Dir) { return PackageCatalog::JudgeUninstall(cfg, *PackageCatalog::FreshCatalogIndex(cfg), Dir.toStdString()); };
+        PackageCatalog::UninstallVerdict V = Judge(Pkg);
+        QVERIFY(V.K == K::OnlyCopy);
+        QVERIFY(V.NeededBy.empty() && !V.Shared && V.From.empty());
+
+        // a peer sharing another version (one node of it): still the only copy; every node: downloadable from them
+        const std::string Peer = "12D3KooWPeerPeerPeerPeer";
+        cfg["PeerLabels"] = json{{Peer, "Deck"}};
+        std::vector<std::string> Cids;
+        for (const auto &[C, F] : NodeFiles::In(Pkg.toStdString())) Cids.push_back(C);
+        QVERIFY(Cids.size() >= 2);
+        auto Listing = [&](size_t N) {
+            json L = json::array();
+            for (size_t I = 0; I < N; ++I) L.push_back(json{{"cid", Cids[I]}, {"pkg", "[1] Game"}, {"node", Cids[I] + ".json"}});
+            return json{{"Mine", L}};
+        };
+        cfg["PeerLibraries"] = json{{Peer, Listing(Cids.size() - 1)}};
+        QVERIFY(Judge(Pkg).K == K::OnlyCopy);
+        cfg["PeerLibraries"] = json{{Peer, Listing(Cids.size())}};
+        V = Judge(Pkg);
+        QVERIFY(V.K == K::Download);
+        QCOMPARE(QString::fromStdString(V.From), QString("Deck"));
+        cfg.erase("PeerLibraries");
+
+        // a source of the user's: named by its name
+        cfg["LIBRARY"] = json::array({ json{{"PATH", Pkg.toStdString()}, {"CIDSOURCE", "bafysource"}} });
+        cfg["Settings"]["PackageSources"] = json::array({ json{{"CID", "bafysource"}, {"NAME", "Shop"}} });
+        V = Judge(Pkg);
+        QVERIFY(V.K == K::Download);
+        QCOMPARE(QString::fromStdString(V.From), QString("the source 'Shop'"));
+        cfg.erase("LIBRARY");
+        cfg["Settings"].erase("PackageSources");
+
+        // another game containing it: its content lives here, so it is named; and a package the user shares says so
+        NodeFixture::WriteNodes((Other + "/other.json").toStdString(), NodeFixture::Chain("other", {NodeFixture::Tile("2", "Other"),
+            NodeFixture::Exec("win32", "o.exe")}, {"game"}, {{"VARIANT", "Edition 1"}}));
+        cfg["ShareSheet"] = json{{Cids.front(), "Mine/[1] Game/" + Cids.front() + ".json"}};
+        V = Judge(Pkg);
+        QVERIFY(V.K == K::OnlyCopy);
+        QCOMPARE((int)V.NeededBy.size(), 1);
+        QCOMPARE(QString::fromStdString(V.NeededBy.front()), QString("Other"));
+        QVERIFY(V.Shared);
+        QVERIFY(Judge(Other).NeededBy.empty());            // nothing of Game's lives in Other's folder
+
+        // a library's folder (not a package): nothing to do, whatever is asked — never the only copy to trash
+        QVERIFY(Judge(R + "/Mine").K == K::Nothing);
+        // added from outside LIBRARY: forgotten; a folder nothing names: nothing to do
+        QTemporaryDir Ext; QVERIFY(Ext.isValid());
+        QVERIFY(Judge(Ext.path()).K == K::Nothing);
+        cfg["LIBRARY"] = json::array({ json{{"PATH", Ext.path().toStdString()}, {"PACKAGEUID", "ext"}} });
+        QVERIFY(Judge(Ext.path()).K == K::Forget);
+    }
+
+    // Every installed package can be uninstalled from Settings → Installed Packages — not only the ones with a config
+    // entry — and the question says what happens: what comes back from where, or that the only copy goes to the trash
+    // (asked with Cancel the default). Teeth: the old `Local || HasEntry` gate (no button on a package of LIBRARY); the
+    // only copy's question defaulting to yes; a refusal offered as a question.
+    void every_installed_package_offers_uninstall_with_what_it_does()
+    {
+        QTemporaryDir D; QVERIFY(D.isValid());
+        const QString R = D.path() + "/LIBRARY", Pkg = R + "/Mine/[1] Game";
+        QDir().mkpath(Pkg);
+        { std::ofstream f((Pkg + "/game.zip").toStdString()); f << "content"; }
+        NodeFixture::WriteNodes((Pkg + "/game.json").toStdString(), NodeFixture::Chain("game", {NodeFixture::Tile("1", "Game"),
+            NodeFixture::Exec("win32", "g.exe"), NodeFixture::Content("zip", "game.zip")}, {}, {{"VARIANT", "Edition 1"}}));
+        json cfg = json{{"Settings", {{"Paths", {{"LibraryRoot", R.toStdString()}}}}}};
+        QDir appDir(D.path());
+        AppModel model(&cfg, &appDir);
+        model.rebuildCatalog();
+        PackagesView View(model);
+        View.show();
+        QTRY_VERIFY_WITH_TIMEOUT([&]{ for (auto *B : View.findChildren<QPushButton *>()) if (B->accessibleName() == "Uninstall Game") return true;
+                                      return false; }(), 20000);
+
+        using K = PackageCatalog::UninstallVerdict::Kind;
+        PackageCatalog::UninstallVerdict V;
+        V.K = K::Download; V.From = "the source 'Shop'";
+        auto A = PackagesView::uninstallAsk(V, "Game", 3ull << 30);
+        QVERIFY(!A.Refused && !A.DefaultNo);
+        QVERIFY2(A.Text.contains("download again from the source 'Shop'") && A.Text.contains("3.0 GB") && A.Text.contains("saves"), qPrintable(A.Text));
+        V.NeededBy = { "Other" };
+        QVERIFY(PackagesView::uninstallAsk(V, "Game", 1).Text.contains("Other uses its content too"));
+        V.K = K::OnlyCopy; V.NeededBy.clear(); V.Shared = true;
+        A = PackagesView::uninstallAsk(V, "Game", 1);
+        QVERIFY(!A.Refused && A.DefaultNo);
+        QCOMPARE(A.Confirm, QString("Move to trash"));
+        QVERIFY2(A.Text.contains("only copy") && A.Text.contains("cannot be downloaded again") && A.Text.contains("trash")
+                 && A.Text.contains("peers will no longer get it from you"), qPrintable(A.Text));
+        V.NeededBy = { "Other" };
+        A = PackagesView::uninstallAsk(V, "Game", 1);
+        QVERIFY(A.Refused);
+        QVERIFY2(A.Text.contains("Other uses its content"), qPrintable(A.Text));
+        V.K = K::Forget;
+        QCOMPARE(PackagesView::uninstallAsk(V, "Game", 1).Confirm, QString("Forget"));
+    }
+
 private:
     QTemporaryDir *SuiteRoot = nullptr;
+
 };
 
 QTEST_MAIN(PackageCatalogTest)

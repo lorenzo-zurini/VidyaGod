@@ -106,12 +106,16 @@ VG_COMMANDS
         }, {} });
 
     Command::Register({
-        "app remove-package", "remove a package from the Library (its managed files go)",
-        "As Settings → Installed Packages' Remove: a package added from outside LIBRARY is forgotten, its folder untouched; "
-        "a source's package loses its content files (its nodes and cover stay, back in the Catalog). A package of LIBRARY "
-        "itself is not removed from here — its content can be shared with other packages and may have no source.",
-        { Command::MaybeAPath(Pos("package", "the package's UID or folder")), Flag("yes", "yes, remove it") }, { "app remove-package 123456 --yes" },
-        { "AppModel::removePackage", "PackageCatalog::PackageDirsWithUid" }, Needs::Model, false,
+        "app remove-package", "uninstall a package (its content goes; the only copy only when asked, to the trash)",
+        "As Settings → Installed Packages' Uninstall: a package added from outside LIBRARY is forgotten, its folder untouched; "
+        "one a source of yours or a peer still shares loses its content files (its nodes and cover stay, back in the Catalog "
+        "to download again). The only copy (nothing could download it again) is refused unless --delete-only-copy, and then "
+        "its folder goes to the trash — never while another installed package uses its content. Saves are never touched.",
+        { Command::MaybeAPath(Pos("package", "the package's UID or folder")), Flag("yes", "yes, remove it"),
+          Flag("delete-only-copy", "it is the only copy: move its folder to the trash anyway") },
+        { "app remove-package 123456 --yes", "app remove-package 123456 --yes --delete-only-copy" },
+        { "AppModel::removePackage", "AppModel::uninstallVerdict", "PackageCatalog::PackageDirsWithUid", "PackageCatalog::JudgeUninstall",
+          "PackageCatalog::TrashPackage", "PackageCatalog::PeerSharingPackage", "PackagesView::uninstallAsk" }, Needs::Model, false,
         [](Command::Context &C, const json &A) {
             if (!Command::Bool(A, "yes", false)) throw Command::BadArgs("this removes the package's files: add --yes");
             const std::string Q = Command::Str(A, "package");
@@ -129,15 +133,19 @@ VG_COMMANDS
                 Dir = Dirs.front();
             }
             bool Async = false;
-            if (const QString Why = Model(C).removePackage(QString::fromStdString(Dir.string()), &Async); !Why.isEmpty())
+            const bool Only = Command::Bool(A, "delete-only-copy", false);
+            if (const QString Why = Model(C).removePackage(QString::fromStdString(Dir.string()), &Async, Only); !Why.isEmpty())
                 throw std::runtime_error(Why.toStdString());
             //A dehydrate runs on a worker: here (no app to keep it going) the call waits for it, or the process would
             //end in its middle.
             if (Async && !C.Live)
             {
                 QEventLoop Wait;
+                QString Failed;
                 QObject::connect(&Model(C), &AppModel::catalogChanged, &Wait, &QEventLoop::quit);
+                QObject::connect(&Model(C), &AppModel::packageRemoveFailed, &Wait, [&](const QString &W) { Failed = W; });
                 Wait.exec();
+                if (!Failed.isEmpty()) throw std::runtime_error(Failed.toStdString());
                 return json{{"removed", Dir.string()}};
             }
             return Async ? json{{"removing", Dir.string()}, {"follow", "VidyaGod events wait --signal catalogChanged"}} : json{{"removed", Dir.string()}};

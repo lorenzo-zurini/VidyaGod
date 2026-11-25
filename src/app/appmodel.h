@@ -81,10 +81,13 @@ public:
     bool networkingEnabled() const;                    // Settings.IPFS.Enabled (default false)
     void setNetworkingEnabled(bool on);                // persist + emit networkingChanged(on) (no-op if unchanged)
     void markNodeReady() { emit nodeReady(); }         // MainWindow calls this once the async node start completes
-    //A package (folder or UID): forget one added from outside LIBRARY (its folder untouched), or de-hydrate one its
-    //config entry names (a source's — on a worker: *Async, done at catalogChanged). "" when done or under way; else
-    //why nothing was done (a package of LIBRARY the config does not name is not removed: see the .cpp).
-    QString removePackage(const QString & which, bool * Async = nullptr);
+    //Uninstall a package (folder or UID), as PackageCatalog::JudgeUninstall has it: forget one added from outside LIBRARY
+    //(its folder untouched); one that can be downloaded again loses its content (on a worker: *Async, done at
+    //catalogChanged) and stays in the Catalog; the only copy goes — to the trash — only with DeleteOnlyCopy, and never
+    //while another installed package uses its content. "" when done or under way; else why nothing was done.
+    QString removePackage(const QString & which, bool * Async = nullptr, bool DeleteOnlyCopy = false);
+    //What removePackage(Dir) would do (Settings → Installed Packages asks before it does).
+    PackageCatalog::UninstallVerdict uninstallVerdict(const QString & Dir) const;
     void notifyCoversReady();                          // a batch of covers finished loading → emit coversReady()
 
     // ── Async source / runner ops (do the IPFS work off-thread, then rebuild + emit on the GUI thread) ──
@@ -131,6 +134,7 @@ signals:
     void cardSizeChanged(int w);    // card pixel width changed — Library/Catalog relayout
     void coversReady();             // lazy cover load(s) landed — repaint visible cards
     void packageSourcesChanged();   // a CID package source was added/removed/synced — refresh the Sources page + catalog
+    void packageRemoveFailed(QString message);   // an uninstall under way did not happen (removePackage: why)
     void packageSourceFailed(QString message);   // a CID source fetch failed (e.g. node offline) — the dialog shows it
     void libraryPublished(QString ipnsName, QString topCid, QString note);  // Verify & Publish finished (note = soft warning, "" if clean)
     void libraryPublishFailed(QString message);                             // Verify & Publish failed (mint error / offline)

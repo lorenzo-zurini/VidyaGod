@@ -142,6 +142,60 @@ std::vector<std::filesystem::path> PackageDirsWithUid(const NodeIndex &Idx, cons
     return Out;
 }
 
+UninstallVerdict JudgeUninstall(const nlohmann::ordered_json &Config, const NodeIndex &Idx, const std::filesystem::path &Dir)
+{
+    namespace fs = std::filesystem;
+    UninstallVerdict V;
+    std::error_code Ec;
+    if (!fs::is_directory(Dir, Ec)) return V;
+    const fs::path Want = fs::weakly_canonical(Dir, Ec);
+    const fs::path Root = LibraryRootDir(Config);
+    if (Root.empty() || !PathUnder(fs::weakly_canonical(Root, Ec), Want))
+    {
+        if (Config.contains("LIBRARY") && Config["LIBRARY"].is_array())
+            for (const auto &E : Config["LIBRARY"])
+                if (E.is_object() && fs::weakly_canonical(E.value("PATH", std::string()), Ec) == Want) { V.K = UninstallVerdict::Kind::Forget; break; }
+        return V;
+    }
+    //A package folder of the index only: a library's folder, or any other above or beside the packages, is none.
+    const auto Bundles = NodesByBundle(Idx);
+    if (std::none_of(Bundles.begin(), Bundles.end(), [&](const auto &B) { std::error_code E2; return fs::weakly_canonical(B.first, E2) == Want; }))
+        return V;
+    //Another installed package whose content lies in this folder (a library it contains) loses it too.
+    for (const auto &[Other, B] : Bundles)
+    {
+        if (fs::weakly_canonical(Other, Ec) == Want || !B.RepLaunchable) continue;
+        bool Uses = false;
+        for (const Node *L : B.Variants)
+            if (!L->IsGraft && !Uses)
+                ForEachContentLayer(Idx, L->Key(), {}, [&](const nlohmann::ordered_json&, const fs::path &Local, const std::string&) {
+                    std::error_code E2;
+                    Uses = Uses || PathUnder(Want, fs::weakly_canonical(Local, E2));
+                }, false, false);
+        if (Uses) V.NeededBy.push_back(B.Rep->Meta.is_object() ? B.Rep->Meta.value("TITLE", B.Rep->NodeId) : B.Rep->NodeId);
+    }
+    if (Config.contains("ShareSheet"))
+        for (const SheetEntry &E : SheetEntries(Config["ShareSheet"]))
+            if (fs::weakly_canonical(Root / E.Lib / E.Pkg, Ec) == Want) { V.Shared = true; break; }
+    if (const std::string Cid = SourceOfPackage(Config, Dir); !Cid.empty())
+    {
+        V.K = UninstallVerdict::Kind::Download;
+        V.From = "the source " + Cid;
+        for (const auto &S : Config["Settings"]["PackageSources"])
+            if (PackageSourceCID(S) == Cid && S.is_object() && !S.value("NAME", std::string()).empty())
+                V.From = "the source '" + S.value("NAME", std::string()) + "'";
+        return V;
+    }
+    if (const std::string Peer = PeerSharingPackage(Config, Dir); !Peer.empty())
+    {
+        V.K = UninstallVerdict::Kind::Download;
+        V.From = Peer;
+        return V;
+    }
+    V.K = UninstallVerdict::Kind::OnlyCopy;
+    return V;
+}
+
 int DehydrateNode(const NodeIndex &Idx, const std::string &LaunchNodeId)
 {
     // Inverse of Download: delete the node closure's local content-layer files (keeping the manifests + cover, so

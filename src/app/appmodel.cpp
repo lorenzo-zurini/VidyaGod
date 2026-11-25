@@ -230,7 +230,12 @@ void AppModel::setNetworkingEnabled(bool on)
     emit networkingChanged(on);
 }
 
-QString AppModel::removePackage(const QString & which, bool * Async)
+PackageCatalog::UninstallVerdict AppModel::uninstallVerdict(const QString & Dir) const
+{
+    return PackageCatalog::JudgeUninstall(*Config, *Catalog, Dir.toStdString());
+}
+
+QString AppModel::removePackage(const QString & which, bool * Async, bool DeleteOnlyCopy)
 {
     if (Async) *Async = false;
     //A package folder, or the UID of exactly one (Installed Packages passes its folder). The packages LIBRARY holds are
@@ -270,24 +275,37 @@ QString AppModel::removePackage(const QString & which, bool * Async)
         Managed = (P.rfind(R + "/", 0) == 0);   // strictly under the library root → a managed (repo-cloned) package
     }
 
-    //A package of LIBRARY that its config entry does not name (every package since the node cutover: the entries are
-    //for sources and for packages added from outside) is not removed here. Its content's dehydrate walks the whole
-    //closure — another package's shared files (a DirectPlay several games use) and content that has no source to
-    //download again would go with it. Only what this has always removed is removed.
-    if (Managed && idx < 0)
+    //A package of LIBRARY: its content goes when it can be downloaded again (a source of the user's, or a peer sharing
+    //this very version, has it); the only copy only when the user says so, to the trash. Either way not while another
+    //installed package's content lives in its folder and nothing could bring it back.
+    if (Managed)
     {
-        const QString Why = "a package of the library is not removed from here: its content can be shared with other "
-                            "packages, and what has no source cannot be downloaded again";
-        LogWarn("AppModel::removePackage", Why.toStdString() + " (" + Path + ")");
-        return Why;
-    }
-    //Kept from a removed source (or its source gone): nothing can download it again, so it is not dehydrated.
-    if (Managed && PackageCatalog::SourceOfPackage(*Config, Path).empty())
-    {
-        const QString Why = "its source is no longer one of yours: nothing could download it again — delete its folder "
-                            "yourself if you mean to";
-        LogWarn("AppModel::removePackage", Why.toStdString() + " (" + Path + ")");
-        return Why;
+        using K = PackageCatalog::UninstallVerdict::Kind;
+        const PackageCatalog::UninstallVerdict V = PackageCatalog::JudgeUninstall(*Config, *Catalog, Path);
+        if (V.K == K::OnlyCopy)
+        {
+            const auto Fail = [&](const QString & Why) { LogWarn("AppModel::removePackage", Why.toStdString() + " (" + Path + ")"); return Why; };
+            if (!DeleteOnlyCopy)
+                return Fail("this is the only copy: nothing could download it again (no source of yours has it and no peer "
+                            "shares it) — deleting it moves its folder to the trash");
+            if (!V.NeededBy.empty())
+            {
+                QStringList Names;
+                for (const std::string & N : V.NeededBy) Names << QString::fromStdString(N);
+                return Fail("its content is also " + Names.join(", ") + "'s, and nothing could download it again: uninstall "
+                            + (Names.size() == 1 ? "that" : "those") + " first");
+            }
+            std::shared_ptr<const NodeIndex> Idx = Catalog;
+            auto Err = std::make_shared<std::string>();
+            auto Ok = std::make_shared<bool>(false);
+            AsyncWork::Run(this, [Idx, Path, Err, Ok] { *Ok = PackageCatalog::TrashPackage(*Idx, Path, Err.get()); },
+                [this, Err, Ok] {
+                    if (!*Ok) emit packageRemoveFailed(QString::fromStdString(*Err));
+                    rebuildCatalog();
+                });
+            if (Async) *Async = true;
+            return {};
+        }
     }
     if (Managed)
     {
