@@ -192,3 +192,4 @@ BinaryPatch::MemoryImage::*  # a file held whole, for ApplyOne's vector form (te
 LongOp::Run                               # the window's wait for a long job (editor Save, Seed & share, Fix case collisions): the work itself is each command's (build save, packages publish, fix-case)
 LongOp::Describe                          # the progress line LongOp::Run draws: seen with `ui screenshot` while one runs
 LongOp::DebugRanOnWorker                  # a test probe: long jobs finished off the GUI thread
+LongOp::RunningIn                         # what every build and canvas command asks first: refused while the editor saves, seeds or fixes case

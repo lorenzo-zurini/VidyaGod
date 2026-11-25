@@ -9,9 +9,9 @@ class QWidget;
 
 //A long operation as every one started from a window runs: its work on a worker (AsyncWork), the window waiting under
 //a window-modal progress dialog that says where the work is ("game.zip — file 3 of 12 · 1.2 GB of 4.0 GB") and offers
-//Cancel, which the work reads at its next safe point. Run returns when the work is done, so a caller keeps its shape;
-//meanwhile the GUI thread paints and answers, and nothing else in that window can be clicked (the document under the
-//work cannot change). The work never touches a widget: it says where it is through its Step.
+//Cancel, which the work reads at its next safe point. Run returns when the work is done (a quit too waits for it), so a
+//caller keeps its shape; meanwhile the GUI thread paints and answers, and nothing else in that window can be clicked
+//(the document under the work cannot change). The work never touches a widget: it says where it is through its Step.
 namespace LongOp {
 
 struct Step
@@ -24,8 +24,12 @@ struct Step
 
 //The dialog's text for a Report (what the label says).
 QString Describe(const QString &Item, int Done, int Total, unsigned long long Bytes, unsigned long long TotalBytes);
-//False when the user cancelled (what the work did before its safe point stays done).
+//False when the user cancelled, or the app began to quit (what the work did before its safe point stays done). Never
+//returns before the work has ended: a quit waits for it.
 bool Run(QWidget *Parent, const QString &Title, const std::function<void(const Step &)> &Work);
+//A Run under Parent is going on (the window waits): what changes its document is refused meanwhile (the CLI's edits),
+//as the window's own input is. GUI thread.
+bool RunningIn(const QWidget *Parent);
 //TEST ONLY: works Run has finished on a thread other than the GUI's.
 int DebugRanOnWorker();
 

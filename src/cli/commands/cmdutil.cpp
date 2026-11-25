@@ -7,6 +7,7 @@
 #include "appmodel.h"
 #include "jsonoperations.h"
 #include "packageeditor.h"
+#include "longop.h"
 #include "packageeditormodel.h"
 
 #include <QDir>
@@ -154,7 +155,12 @@ BuildSession OpenBuild(Command::Context &C, const std::string &Pkg)
 {
     const std::string P = Canon(PackageDir(C, Pkg, false));
     if (PackageEditor *E = PackageEditor::live(); E && E->model() && Canon(E->bundleDir().toStdString()) == P)
+    {
+        //A save, a seed or a case fix runs on a copy of the document and puts it back once done: an edit made meanwhile
+        //would be overwritten without a word.
+        if (LongOp::RunningIn(E)) throw std::runtime_error("the package editor is saving or working on this package: try again once it is done");
         return {nullptr, E->model(), "editor"};
+    }
     auto &K = BuildSessions();
     if (const auto It = K.find(P); It != K.end()) return {nullptr, It->second.get(), "session"};
     auto M = std::make_unique<PackageEditorModel>(C.Config, nullptr);

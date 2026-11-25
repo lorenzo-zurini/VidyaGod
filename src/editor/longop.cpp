@@ -12,10 +12,14 @@
 #include <QVBoxLayout>
 
 #include <atomic>
+#include <condition_variable>
+#include <set>
 #include <memory>
+#include <mutex>
 
 namespace {
 std::atomic<int> g_RanOnWorker{0};
+std::multiset<const QWidget *> g_Running;   // GUI thread: the parents of the Runs going on
 
 //Escape and the title bar's close ask to stop, as Cancel does: the dialog stays until the work has.
 class Waiting : public QDialog
@@ -37,8 +41,12 @@ QString LongOp::Describe(const QString &Item, int Done, int Total, unsigned long
     return T;
 }
 
+bool LongOp::RunningIn(const QWidget *Parent) { return g_Running.count(Parent) != 0; }
+
 bool LongOp::Run(QWidget *Parent, const QString &Title, const std::function<void(const Step &)> &Work)
 {
+    g_Running.insert(Parent);
+    struct Out { const QWidget *P; ~Out() { g_Running.erase(g_Running.find(P)); } } Leave{ Parent };
     Waiting Dlg(Parent);
     Dlg.setObjectName("longOpProgress");
     Dlg.setWindowTitle(Title);
@@ -63,9 +71,12 @@ bool LongOp::Run(QWidget *Parent, const QString &Title, const std::function<void
     Dlg.AskStop = AskStop;
     QObject::connect(Stop, &QPushButton::clicked, &Dlg, AskStop);
 
+    //The work's end as the worker says it (its completion is queued, and a quitting app runs no more of the queue).
+    struct Ended { std::mutex M; std::condition_variable Cv; bool Yes = false; };
+    auto Over = std::make_shared<Ended>();
     QEventLoop Loop;
     bool Finished = false;
-    AsyncWork::Run(&Dlg, [Work, Cancel, What, Bar, Stop](const AsyncWork::Job &J) {
+    AsyncWork::Run(&Dlg, [Work, Cancel, What, Bar, Stop, Over](const AsyncWork::Job &J) {
         Step S;
         S.Report = [J, Cancel, What, Bar](const QString &Item, int Done, int Total, unsigned long long Bytes, unsigned long long TotalBytes) {
             J.Post([Cancel, What, Bar, T = Describe(Item, Done, Total, Bytes, TotalBytes), Done, Total, Bytes, TotalBytes] {
@@ -80,9 +91,19 @@ bool LongOp::Run(QWidget *Parent, const QString &Title, const std::function<void
         S.CanCancel = [J, Stop, Cancel](bool On) { J.Post([Stop, On, Cancel] { Stop->setEnabled(On && !Cancel->load()); }); };
         Work(S);
         if (QThread::currentThread() != qApp->thread()) ++g_RanOnWorker;
+        { std::lock_guard<std::mutex> G(Over->M); Over->Yes = true; }
+        Over->Cv.notify_all();
     }, [&Finished, &Loop] { Finished = true; Loop.quit(); });
     Dlg.show();
     if (!Finished) Loop.exec();
+    if (!Finished)
+    {   //The app is quitting (QCoreApplication::exit ends every loop, and none runs again): the work is asked to stop
+        //at its next safe point and waited for here, the window no longer painted. It runs on what the caller lent it,
+        //and a save stopped halfway leaves nodes naming nodes not written; the quit goes on once Run has returned.
+        Cancel->store(true);
+        std::unique_lock<std::mutex> G(Over->M);
+        Over->Cv.wait(G, [&] { return Over->Yes; });
+    }
     Dlg.hide();
     return !Cancel->load();
 }

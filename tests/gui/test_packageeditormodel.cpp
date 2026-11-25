@@ -15,6 +15,8 @@
 #include "pkggraph.h"
 #include "instancestore.h"
 #include "longop.h"
+#include "commands/cmdutil.h"
+#include "command.h"
 #include "ipfswrapper.h"
 
 #include <QDir>
@@ -681,6 +683,65 @@ private slots:
         QCOMPARE(LongOp::DebugRanOnWorker(), Before + 4);   // the seed, then the save of what it recorded
         QVERIFY2(E->lastReport().contains("1 of 1 file(s) newly seeded"), qPrintable(E->lastReport()));
         QVERIFY(!M->isDirty());
+    }
+
+    // A quit (SIGTERM at logout, a Deck session ending: QCoreApplication::exit) while a long action runs: the app's loop
+    // and the dialog's end at once, but Run returns only once the work has — asked to stop at its next safe point — and
+    // the app's exec only after Run. The work runs on what its caller lent it (a save's document, the seed's nodes), and a
+    // save cut off halfway leaves nodes naming nodes never written. Teeth: Run returning when its loop ends (the work
+    // still running), or the quit not asking the work to stop.
+    void aQuitDuringALongActionWaitsForItsWork()
+    {
+        QWidget W;
+        std::atomic<bool> SawStop{false}, Ended{false};
+        bool Returned = false, EndedFirst = false, Result = true;
+        QTimer::singleShot(0, [&] {
+            Result = LongOp::Run(&W, "Save", [&](const LongOp::Step &S) {
+                for (int I = 0; I < 400 && !S.Cancelled(); ++I) std::this_thread::sleep_for(std::chrono::milliseconds(5));
+                SawStop = S.Cancelled();
+                std::this_thread::sleep_for(std::chrono::milliseconds(300));   // the writes it cannot stop in
+                Ended = true;
+            });
+            Returned = true;
+            EndedFirst = Ended.load();
+        });
+        QTimer::singleShot(100, [] { QCoreApplication::exit(0); });
+        QCoreApplication::exec();
+        QVERIFY(Returned);
+        QVERIFY(EndedFirst);
+        QVERIFY(SawStop.load());
+        QVERIFY(!Result);
+        for (int I = 0; I < 400 && !Ended.load(); ++I) QTest::qWait(10);   // a failing build: not used once gone
+    }
+
+    // A save runs on a copy of the document and puts it back once done: an edit reaching the editor meanwhile — the CLI
+    // into the live app, whose commands send their input straight to the window, past the dialog's modality — would be
+    // overwritten without a word. While one runs the editor's package is refused to the build commands; after, it opens
+    // again. Teeth: OpenBuild handing out the editor's model mid-save.
+    void anEditMidSaveIsRefusedNotLost()
+    {
+        library();
+        PackageEditor *E = PackageEditor::OpenFor(&Cfg, nullptr, Pkg);
+        QVERIFY(E);
+        auto Close = qScopeGuard([E] { delete E; });
+        Command::Context C;
+        C.Config = &Cfg;
+        QString Said;
+        bool Threw = false;
+        std::atomic<bool> Go{false};
+        QTimer::singleShot(50, [&] {
+            try { (void)CmdUtil::OpenBuild(C, Pkg.toStdString()); }
+            catch (const std::exception &X) { Threw = true; Said = X.what(); }
+            Go = true;
+        });
+        QVERIFY(LongOp::Run(E, "Save", [&](const LongOp::Step &) {
+            for (int I = 0; I < 400 && !Go.load(); ++I) std::this_thread::sleep_for(std::chrono::milliseconds(5));
+        }));
+        QVERIFY2(Threw, "refused while the save runs");
+        QVERIFY2(Said.contains("saving"), qPrintable(Said));
+        QVERIFY(!LongOp::RunningIn(E));
+        const CmdUtil::BuildSession S = CmdUtil::OpenBuild(C, Pkg.toStdString());
+        QCOMPARE(S.M, E->model());
     }
 
     // The canvas is Dear ImGui, which keeps ONE global context per process: OpenFor is the single door — it raises

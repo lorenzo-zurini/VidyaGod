@@ -8,6 +8,7 @@
 #include "eventlog.h"
 #include "imguiprobe.h"
 #include "packageeditor.h"
+#include "longop.h"
 #include "packageeditormodel.h"
 #include "pkgactions.h"
 #include "pkgcanvas.h"
@@ -30,20 +31,22 @@ using json = nlohmann::ordered_json;
 using namespace CmdUtil;
 namespace fs = std::filesystem;
 
-PackageEditor &Editor()
+//Reading: what it shows, which a save under way leaves as it is; anything else is refused while one runs (LongOp::RunningIn).
+PackageEditor &Editor(bool Reading = false)
 {
     PackageEditor *E = PackageEditor::live();
     if (!E || !E->model() || !E->canvas()) throw std::runtime_error("the package editor is not open (VidyaGod editor open <package>)");
+    if (!Reading && LongOp::RunningIn(E)) throw std::runtime_error("the package editor is saving or working on its package: try again once it is done");
     return *E;
 }
 
-PkgCanvas &Canvas() { return *Editor().canvas()->canvas(); }
+PkgCanvas &Canvas(bool Reading = false) { return *Editor(Reading).canvas()->canvas(); }
 
 // Let the app run until the canvas has drawn a frame after this point (or a second has passed).
 long long Settle()
 {
     ImGuiProbe::SetRecording(true);
-    PkgCanvasPanel *P = Editor().canvas();
+    PkgCanvasPanel *P = Editor(true).canvas();
     const long long From = json::parse(ImGuiProbe::FrameJson()).value("frame", 0LL);
     P->requestFrame();
     QElapsedTimer T;
@@ -160,8 +163,8 @@ VG_COMMANDS
           "PkgCanvasPanel::requestFrame" }, Needs::App, false,
         [](Command::Context &, const json &) {
             Settle();
-            PkgCanvas &Cv = Canvas();
-            const PkgDoc::Document &D = Editor().model()->doc();
+            PkgCanvas &Cv = Canvas(true);
+            const PkgDoc::Document &D = Editor(true).model()->doc();
             float X = 0, Y = 0, X0 = 0, Y0 = 0, X1 = 0, Y1 = 0;
             Cv.cameraPos(X, Y);
             const bool HasRect = Cv.canvasRect(X0, Y0, X1, Y1);
