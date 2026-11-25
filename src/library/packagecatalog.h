@@ -447,7 +447,10 @@ std::vector<std::string> MissingFromClosure(const NodeIndex &Idx, const std::str
 // while an entry's file is not on disk; LandReceivedPackages fetches (or renames) them through the one rolling queue and
 // verifies every file (synchronous — OFF the GUI thread); PruneStaleReceived removes the node files of a received
 // package that its entries do not name (an older generation's). Returns the number removed.
+//Missing node files of received packages — not counting one this run refused (it did not verify, or was too large).
 bool ReceivedPackagesIncomplete(const nlohmann::ordered_json &GlobalConfigJSON);
+//Forgets the refused node files (a peer's new snapshot: what it names now is tried afresh).
+void ForgetRefusedNodes();
 [[nodiscard]] bool LandReceivedPackages(const nlohmann::ordered_json &GlobalConfigJSON, std::string *Error = nullptr);
 int PruneStaleReceived(const NodeIndex &Idx, const nlohmann::ordered_json &GlobalConfigJSON);
 // Installing a received package MOVES its dir out of CATALOG into LIBRARY/<lib>/<pkg>: an ordinary local package from

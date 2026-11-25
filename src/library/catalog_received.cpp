@@ -85,10 +85,23 @@ std::vector<IpfsWrapper::FetchTarget> ReceivedFetchTargets(const std::vector<Rec
     {
         if (const std::string D = std::filesystem::path(T.Dest).parent_path().string(); Dirs.insert(D).second)
             IpfsWrapper::DropRedirectsUnder(D);
-        Out.push_back(IpfsWrapper::FetchTarget{ T.Cid, T.Dest, /*Optional=*/true, /*Dir=*/false, /*Verify=*/true });
+        IpfsWrapper::FetchTarget F{ T.Cid, T.Dest, /*Optional=*/true, /*Dir=*/false, /*Verify=*/true };
+        F.Small = true;                                   // a node file: a peer's snapshot names it — at most a node's size
+        Out.push_back(F);
     }
     return Out;
 }
+
+namespace {
+//Node files of peers' shares this run refused (they did not verify, or were larger than a node): not fetched again,
+//not counted as missing — one bad node made the receiver fetch it again, back to back, for as long as it ran.
+std::mutex RefusedMu;
+std::set<std::string> RefusedNodes;
+bool Refused(const std::string &Cid) { std::lock_guard<std::mutex> G(RefusedMu); return RefusedNodes.count(Cid) > 0; }
+void Refuse(const std::string &Cid) { std::lock_guard<std::mutex> G(RefusedMu); RefusedNodes.insert(Cid); }
+}
+
+void ForgetRefusedNodes() { std::lock_guard<std::mutex> G(RefusedMu); RefusedNodes.clear(); }
 
 namespace {
 //The last 8 hex digits of the 64-bit FNV-1a hash of S: what tells apart two of a peer's packages whose names make
@@ -365,7 +378,7 @@ bool ReceivedPackagesIncomplete(const nlohmann::ordered_json &Config)
     std::error_code Ec;
     for (const auto &[Dir, Files] : ReceivedPackages(Config))
         for (const auto &[F, C] : Files)
-            if (!std::filesystem::exists(F, Ec)) return true;
+            if (!std::filesystem::exists(F, Ec) && !Refused(C)) return true;
     return false;
 }
 
@@ -388,17 +401,27 @@ bool LandReceivedPackages(const nlohmann::ordered_json &Config, std::string *Err
         {
             //A file there holding another node (the entry's previous generation, under the same name) goes first: the
             //fetch takes a file that is there for done when the node it asks for is held here.
+            if (Refused(C)) continue;                                  // refused once: not fetched again this run
             if (fs::exists(F, Ec))
             {
                 std::string VErr;
                 if (NodeGraph::VerifyLanded(F, C, nullptr, &VErr)) continue;   // in place, and what its entry says
-                std::ifstream In(F, std::ios::binary);
-                const std::string Old = Cid::OfBytes(std::string((std::istreambuf_iterator<char>(In)), std::istreambuf_iterator<char>()));
-                In.close();
-                RemoveLandedNode(F, Old);
+                //No node is larger than 256 KiB: a file that is goes without being read into memory to name it.
+                if (fs::file_size(F, Ec) > (256u << 10)) fs::remove(F, Ec);
+                else
+                {
+                    std::ifstream In(F, std::ios::binary);
+                    const std::string Old = Cid::OfBytes(std::string((std::istreambuf_iterator<char>(In)), std::istreambuf_iterator<char>()));
+                    In.close();
+                    RemoveLandedNode(F, Old);
+                }
             }
             if (Fetched.insert(F).second)
-                Batch.push_back(IpfsWrapper::FetchTarget{ C, F.string(), /*Optional=*/true, /*Dir=*/false, /*Verify=*/true });
+            {
+                IpfsWrapper::FetchTarget T{ C, F.string(), /*Optional=*/true, /*Dir=*/false, /*Verify=*/true };
+                T.Small = true;
+                Batch.push_back(T);
+            }
         }
     std::string WErr;
     //Optional: a file that does not land fails its own package (below), never the wait for every other package's.
@@ -417,7 +440,9 @@ bool LandReceivedPackages(const nlohmann::ordered_json &Config, std::string *Err
                 VErr = "was not fetched" + (!Why.empty() ? " (" + Why + ")" : WErr.empty() ? std::string() : " (" + WErr + ")");
             }
             else if (NodeGraph::VerifyLanded(F, C, nullptr, &VErr)) continue;
-            else RemoveLandedNode(F, C);
+            else { RemoveLandedNode(F, C); Refuse(C); }
+            //Refused in the node (larger than a node may be): as final as a node that does not verify.
+            if (const std::string Why = IpfsWrapper::FailureOf(C); Why.find("larger than it may be") != std::string::npos) Refuse(C);
             if (Error) *Error = "package " + Dir.filename().string() + ": node " + F.filename().string() + " " + VErr;
             LogWarn("PackageCatalog::LandReceivedPackages", "package '" + Dir.filename().string() + "': node " + F.filename().string()
                     + " (" + C + ") refused: " + VErr);

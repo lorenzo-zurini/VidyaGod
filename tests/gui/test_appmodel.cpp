@@ -174,7 +174,7 @@ private slots:
         const std::string SrcDir = PackageCatalog::PackageSourceDir(cfg, Src);
         std::filesystem::create_directories(SrcDir);
         std::ofstream(SrcDir + "/game.json") << R"({"LABEL":"Synced","LAYERS":[{"ENV":{"A":"1"}}]})";
-        std::ofstream(SrcDir + "/.vgsource") << "QmYwAPJzv5CZsnA625s3Xf2nemtYgPpHdWEz79ojWnPbdG\n";                                    // its own fetch's marker
+        std::ofstream(SrcDir + "/.vgsource") << "QmYwAPJzv5CZsnA625s3Xf2nemtYgPpHdWEz79ojWnPbdG\n.\n";                                 // its own fetch's marker: one package
         AppModel m(&cfg, &appDir);
         QSignalSpy changed(&m, &AppModel::packageSourcesChanged);
         QVERIFY(m.addPackageSource("QmYwAPJzv5CZsnA625s3Xf2nemtYgPpHdWEz79ojWnPbdG", "Local"));
@@ -889,6 +889,13 @@ private slots:
 
         F.forgetPeer("Pal");
         QVERIFY(!F.hasChosen("Pal") && !F.isSharingWithPeer("Pal", "VidyaGod"));
+
+        //A peer that ends the pairing from its side: what was chosen for it ends with it (it stayed: a pairing made again
+        //served the old shares at once). Teeth: only refresh on their decline.
+        F.applyPairing("Gone", Given);
+        QVERIFY(F.hasChosen("Gone") && F.isSharingWithPeer("Gone", "VidyaGod"));
+        emit PeersManager::instance()->peerDeclined("Gone");
+        QVERIFY(!F.hasChosen("Gone") && !F.isSharingWithPeer("Gone", "VidyaGod"));
     }
 
     // What is shared stays current by itself: a library never prepared says so (and nothing publishes it unasked);

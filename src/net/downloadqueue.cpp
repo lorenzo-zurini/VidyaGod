@@ -34,6 +34,7 @@ struct Job {
     bool                     Optional = true;   // required if ANY requester is required (AND of requesters' Optional)
     bool                     Dir      = false;  // directory (meta) CID
     bool                     Verify   = false;  // any requester asked for refresh semantics (dest verified in Go)
+    bool                     Small    = false;  // every requester names a node file: bounded to a node's size
     std::set<std::string>    Keep;              // dests never replaced (redirected into an installed package): filled if missing
     enum State : std::uint8_t { Queued, Active, Done, Failed } State = Queued;
     bool                     Wrote = false;      // Done by writing a dest (a fetch, a copy); not when found already here
@@ -252,7 +253,7 @@ bool AlreadyHere(const std::string &Cid, const std::vector<std::string> &Dests)
 
 // Perform one job's fetch (off the dispatcher, holding a DownloadSlot). Fetches the CID to the first missing dest,
 // then materializes into the others, and records the terminal state.
-void RunJob(const std::string &Cid, std::vector<std::string> Dests, bool Dir, bool Verify, const std::set<std::string> &Keep)
+void RunJob(const std::string &Cid, std::vector<std::string> Dests, bool Dir, bool Verify, const std::set<std::string> &Keep, bool Small)
 {
     // Primary = a destination that still needs the node to run. Prefer one that is MISSING; but a dest that EXISTS
     // WITH a `<dest>.part` marker is a crashed finalize that must be repaired (referenced/pinned), so it also needs
@@ -269,7 +270,7 @@ void RunJob(const std::string &Cid, std::vector<std::string> Dests, bool Dir, bo
     //received node file, on every start (the queue's record of what it landed lives only as long as the app), went to
     //the node one by one — read twice, hashed twice, a Started and a Finished each, through the download slots.
     const bool Here = Verify && !Dir && AlreadyHere(Cid, Dests);
-    const int Rc = Here ? 0 : FetchOnce(Cid, Primary, Dir, &Err, Verify && !Keep.count(Primary));   // 0=Done 1=Retryable 2=Terminal — ONE attempt
+    const int Rc = Here ? 0 : FetchOnce(Cid, Primary, Dir, &Err, Verify && !Keep.count(Primary), Small);   // 0=Done 1=Retryable 2=Terminal — ONE attempt
     bool MatFail = false;
     if (Rc == 0 && !Here)
         for (const std::string &D : Dests)
@@ -367,13 +368,14 @@ void DispatcherLoop()
         const std::string Cid = J->Cid;
         const bool Dir = J->Dir;
         const bool Verify = J->Verify;
+        const bool Small = J->Small;
         std::vector<std::string> Dests = J->Dests;
         std::set<std::string> Keep = J->Keep;
         Lk.unlock();
 
         // Hand the slot to a detached worker; loop back to fill the next slot (up to MaxConcurrentDownloads workers).
-        std::thread([Cid, Dests = std::move(Dests), Dir, Verify, Keep = std::move(Keep), Slot = std::move(Slot)]() mutable {
-            RunJob(Cid, Dests, Dir, Verify, Keep);
+        std::thread([Cid, Dests = std::move(Dests), Dir, Verify, Small, Keep = std::move(Keep), Slot = std::move(Slot)]() mutable {
+            RunJob(Cid, Dests, Dir, Verify, Keep, Small);
         }).detach();
     }
 }
@@ -437,6 +439,7 @@ BatchHandle EnqueueBatch(const std::vector<FetchTarget> &Targets)
                 if (Keep) J.Keep.insert(T.LocalPath);
                 J.Optional = J.Optional && T.Optional;   // required if any requester is required
                 J.Verify   = J.Verify || T.Verify;
+                J.Small    = J.Small && T.Small;   // a requester that wants the file whatever its size lifts the bound
                 switch (J.State) {
                     case Job::Queued:
                     case Job::Active:
@@ -477,6 +480,7 @@ BatchHandle EnqueueBatch(const std::vector<FetchTarget> &Targets)
             NewJob.Optional = T.Optional;
             NewJob.Dir = T.Dir;
             NewJob.Verify = T.Verify;
+            NewJob.Small = T.Small;
             if (Keep) NewJob.Keep.insert(T.LocalPath);
             // A Verify target ALWAYS goes to the Go fetch (it hash-verifies the dest and overwrites a stale file):
             // for a reused dest neither presence nor a local block proves the file holds THIS cid.

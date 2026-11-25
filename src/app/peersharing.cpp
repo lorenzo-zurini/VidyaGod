@@ -100,6 +100,9 @@ PeerSharing::PeerSharing(AppModel & M)
 
     // Auto-accept ("server mode"): if enabled, accept every incoming peer request automatically and apply the
     // New-Peer defaults. Runs whether or not the Network tab is open.
+    //The peer ended the pairing (or we blocked it): what was chosen for it ends with it — its permissions, its received
+    //library, what we share with it. A pairing made again starts from fresh ticks.
+    connect(PeersManager::instance(), &PeersManager::peerDeclined, this, [this](const QString & peer) { forgetPeer(peer); });
     connect(PeersManager::instance(), &PeersManager::peerRequest, this,
         [this](const QString & peer, const QString &, const QString &) { if (autoAcceptEnabled()) acceptPeer(peer); });
 
@@ -239,6 +242,7 @@ void PeerSharing::applyPeerLibrarySnapshot(const QString & peer, const QString &
     // RECEIVE GATE: a peer pushes its snapshot whenever its shares change, asked or not. Nothing of it is kept — not
     // the record, not its sequence stamp — until you choose to receive from them; Receive-on asks for a fresh one.
     if (!isReceivingFrom(peer)) return;
+    PackageCatalog::ForgetRefusedNodes();   // a new snapshot: what it names is tried afresh
     // SEQ AUTHORITY (last-writer-wins): snapshots ride independent, concurrently-handled streams, so a stale one can be
     // delivered/emitted after a fresher one. Keep only the highest stamp per peer; drop anything older. seq==0
     // (unstamped) always applies. This is where ordering is enforced — a Go-side receive gate can't (its emit is
@@ -952,7 +956,11 @@ void PeerSharing::completeReceivedClosures()
             emit peerCatalogChanged();
             if (PeerClosureAgain) { PeerClosureAgain = false; completeReceivedClosures(); }
             else if (PackageCatalog::ReceivedPackagesIncomplete(*Model.config()))
-                completeReceivedClosures();   // packages still to land (a share that changed meanwhile)
+                //Files still to land (a peer away, a share that changed): tried again in a minute, not back to back — a
+                //pass holds the queue in the foreground and rebuilds the catalog twice.
+                QTimer::singleShot(60 * 1000, this, [this] {
+                    if (!PeerClosureRunning && PackageCatalog::ReceivedPackagesIncomplete(*Model.config())) completeReceivedClosures();
+                });
         });
 }
 bool PeerSharing::sendPeerRequest(const QString & code, std::string * error)

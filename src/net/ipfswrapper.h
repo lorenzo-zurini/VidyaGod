@@ -57,7 +57,8 @@ std::string FetchToPath(const std::string &Cid, const std::string &DestPath, std
 // queue (EnqueueBatch) or the FetchToPath/FetchDirToPath convenience wrappers, never this directly.
 // Verify = refresh semantics for a REUSABLE dest (node files): skip the local "already materialized" shortcut and
 // let the node hash-verify the dest against the CID (overwriting a stale file). Default keeps the fast path.
-int FetchOnce(const std::string &Cid, const std::string &Dest, bool Dir, std::string *Error = nullptr, bool Verify = false);
+int FetchOnce(const std::string &Cid, const std::string &Dest, bool Dir, std::string *Error = nullptr, bool Verify = false,
+              bool Small = false);
 //A Verify dest is a reusable path (a node file: the same name, another node): when it holds another CID's bytes, they go
 //— and their reference, when it was to this file — so the CID asked for lands there. A file that cannot be hashed (the
 //node down) is left as it is.
@@ -160,6 +161,8 @@ struct FetchTarget {
     bool        Verify   = false;   // the DEST is reusable (a node file: same path, new CID on re-publish) — never
                                     // trust its presence; the Go fetch verifies dest bytes against the CID and
                                     // overwrites a stale file (refresh semantics)
+    bool        Small    = false;   // a node file (a peer's snapshot names it): at most a node's 256 KiB, else refused
+                                    // in the node before a byte lands — terminal, never retried
     bool        Front    = false;   // ahead of every queued job from the moment it is queued (covers on screen) — the
                                     // same rule as PrioritizeDownloads, under the enqueue's own lock: a job prioritized
                                     // after its enqueue could already have had its first turn, and not be bumped

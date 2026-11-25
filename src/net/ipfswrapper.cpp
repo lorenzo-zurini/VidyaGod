@@ -299,7 +299,7 @@ void ClearStaleDest(const std::string &Dest, const std::string &Cid)
     if (CidMissing(Have)) DropRef(Have);
 }
 
-int FetchOnce(const std::string &Cid, const std::string &Dest, bool Dir, std::string *Error, bool Verify)
+int FetchOnce(const std::string &Cid, const std::string &Dest, bool Dir, std::string *Error, bool Verify, bool Small)
 {
     // Copy the hook under the lock, invoke it OUTSIDE — a detached worker must never read the std::function while a
     // test swaps it (check-then-call UB). No-op in production (hook unset).
@@ -321,7 +321,7 @@ int FetchOnce(const std::string &Cid, const std::string &Dest, bool Dir, std::st
 
     FetchDbg("FetchOnce ENTER cid=" + Cid + " dest=" + Dest + (Dir ? " [dir]" : ""));
     char *Err = nullptr;
-    const int Rc = VgFetchOnce(Cid.c_str(), Dest.c_str(), Dir ? 1 : 0, &Err);
+    const int Rc = VgFetchOnce(Cid.c_str(), Dest.c_str(), Dir ? 1 : Small ? 2 : 0, &Err);   // 2: a node file, bounded
     const std::string ErrS = TakeStr(Err);
     FetchDbg("FetchOnce RETURN rc=" + std::to_string(Rc) + " err='" + ErrS + "' cid=" + Cid);
     if (Rc != 0 && Error) *Error = ErrS.empty() ? ("fetch failed for CID " + Cid) : ErrS;
