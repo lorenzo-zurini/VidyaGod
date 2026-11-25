@@ -162,7 +162,7 @@ VG_COMMANDS
         "packages show", "one package folder: its identity, title, library, state, CIDs",
         "What a package folder is: its UID and name (from its nodes), title, library, whether it is a package source's "
         "or added locally, holds content, its pin folder, its editor-layout key, and the "
-        "content CIDs its nodes name.", { Pos("package", "a folder path, its name, its UID, or part of its title") },
+        "content CIDs its nodes name.", { Command::MaybeAPath(Pos("package", "a folder path, its name, its UID, or part of its title")) },
         { "packages show 749", "packages show 'Age of Empires II' --json" },
         { "PackageCatalog::ScanBundleIdentity", "PackageCatalog::PackageTitle", "PackageCatalog::FolderTitle", "PackageCatalog::LibraryOf",
           "PackageCatalog::IsLocalPackagePath", "PackageCatalog::IsPackageSourcePath", "PackageCatalog::PackageSourceNameForPath",
@@ -337,7 +337,7 @@ VG_COMMANDS
         "wait --signal libraryPublished). "
         "It holds the library's write lock (<data dir>/library-write.lock, the one the packaging scripts flock) for the whole "
         "run: with another writer on it, it does nothing and says the library is busy. "
-        "With --export, a copy of its node files alone is written there.", { Pos("package", "a folder path, its name, its UID, or part of its title"), Opt("export", "a folder for the node-files-only copy") },
+        "With --export, a copy of its node files alone is written there.", { Command::MaybeAPath(Pos("package", "a folder path, its name, its UID, or part of its title")), Command::AsPath(Opt("export", "a folder for the node-files-only copy")) },
         { "packages publish 749", "packages publish 749 --export /tmp/aoe2-nodes" },
         { "PackageCatalog::PublishPackage", "PackageCatalog::ExportDestRefused", "PackageCatalog::SeedNodeContent", "PackageCatalog::StampNodeCids",
           "PackageCatalog::PublishPackages", "AppModel::publishPackage", "PackageCatalog::LibraryWriteLock",
@@ -395,7 +395,7 @@ VG_COMMANDS
         "Each node file in a package folder by its node's CID: its file, whether it is the node's canonical form "
         "(frozen) or a draft, and the name the rule gives it (its label made a safe name, bumped with its CID's tail when "
         "names clash; MetaPackageFormat chapter 02 §2.5). With --apply, the frozen files are renamed to it (publishing "
-        "does this too).", { Pos("package", "a folder path, its name, its UID, or part of its title"), Flag("apply", "rename them") },
+        "does this too).", { Command::MaybeAPath(Pos("package", "a folder path, its name, its UID, or part of its title")), Flag("apply", "rename them") },
         { "packages node-files 749", "packages node-files 'VidyaGodLibraries/xinput' --apply" },
         { "NodeFiles::In", "NodeFiles::Names", "NodeFiles::Normalize", "NodeFiles::ParkedName", "NodeFiles::SafeName", "ContentFile::ClaimsOfNode" }, Needs::Config, true,
         [](Command::Context &C, const json &A) {
@@ -465,7 +465,7 @@ VG_COMMANDS
     Command::Register({
         "packages meta-cid", "the CID a folder's node files would publish as",
         "Build (and store) the node-files-only folder of a package source tree and print its CID — what a source "
-        "upgrade or a peer would fetch.", { Pos("dir", "the folder") }, { "packages meta-cid ~/.VidyaGod/LIBRARY/VidyaGod" },
+        "upgrade or a peer would fetch.", { Command::AsPath(Pos("dir", "the folder")) }, { "packages meta-cid ~/.VidyaGod/LIBRARY/VidyaGod" },
         { "PackageCatalog::PublishMetaCid", "PackageCatalog::MirrorDehydrated" }, Needs::Config, true,
         [](Command::Context &C, const json &A) {
             std::string Err;
@@ -482,7 +482,7 @@ VG_COMMANDS
     Command::Register({
         "packages mirror", "copy a tree's node files (and covers) only",
         "Copy the node files of a package tree — no content — into another folder: a dehydrated mirror.",
-        { Pos("from", "the source folder"), Pos("to", "the destination folder") }, { "packages mirror ~/.VidyaGod/LIBRARY/VidyaGod /tmp/nodes" },
+        { Command::AsPath(Pos("from", "the source folder")), Command::AsPath(Pos("to", "the destination folder")) }, { "packages mirror ~/.VidyaGod/LIBRARY/VidyaGod /tmp/nodes" },
         { "PackageCatalog::MirrorDehydrated" }, Needs::Config, false,
         [](Command::Context &, const json &A) {
             return json{{"files", PackageCatalog::MirrorDehydrated(Command::Str(A, "from"), Command::Str(A, "to"))}};
@@ -493,7 +493,7 @@ VG_COMMANDS
         "Seed every file a folder's nodes name: added in place (no copy), so this machine serves it. --verify reads "
         "each back (catches a file whose bytes changed); --unheld only re-adds what the store does not hold; "
         "--covers-only just the covers.",
-        { Pos("dir", "the folder (a package or a library)"), Flag("verify", "read every file back"), Flag("unheld", "only what is not held"),
+        { Command::AsPath(Pos("dir", "the folder (a package or a library)")), Flag("verify", "read every file back"), Flag("unheld", "only what is not held"),
           Flag("covers-only", "only the covers"), Flag("overwrite", "re-add even what is held") },
         { "packages seed ~/.VidyaGod/LIBRARY/VidyaGod/'[749][v1.0] Age of Empires II'", "packages seed ~/.VidyaGod/LIBRARY --unheld" },
         { "PackageCatalog::SeedDirectory", "PackageCatalog::SeedUnheld" }, Needs::Config, true,
@@ -512,7 +512,7 @@ VG_COMMANDS
         "packages held", "whether a folder's content is held whole here, checked together",
         "Every content file a folder's nodes name, asked at once (a worker per CPU, each backing file stat'd once): how "
         "many are held whole, the ones that are not, and how long the check took — what every start asks.",
-        { Pos("dir", "the folder (a package or a library)") },
+        { Command::AsPath(Pos("dir", "the folder (a package or a library)")) },
         { "packages held ~/.VidyaGod/LIBRARY" },
         { "IpfsWrapper::HeldWholeMany" }, Needs::Config, true,
         [](Command::Context &, const json &A) {
@@ -555,7 +555,7 @@ VG_COMMANDS
         "packages stamp-cids", "write minted CIDs back into a working tree",
         "Rename each node file in a tree to the CID a mint gave it and re-point its references — the write-back after a "
         "publish. --map is a JSON object {handle: cid}.",
-        { Pos("root", "the tree"), WithSample(Opt("map", "{handle: cid} as JSON", Type::Json, true), "{\"draft-1\":\"bafkrei…\"}") }, { "packages stamp-cids ~/.VidyaGod/LIBRARY --map '{}'" },
+        { Command::AsPath(Pos("root", "the tree")), WithSample(Opt("map", "{handle: cid} as JSON", Type::Json, true), "{\"draft-1\":\"bafkrei…\"}") }, { "packages stamp-cids ~/.VidyaGod/LIBRARY --map '{}'" },
         { "PackageCatalog::StampNodeCids" }, Needs::Config, false,
         [](Command::Context &, const json &A) {
             std::map<std::string, std::string> M;
@@ -725,7 +725,7 @@ VG_COMMANDS
         "received land", "land every received package's node files now",
         "Fetch each package folder peers share with you (node files only — content stays lazy until install). With "
         "the app up it lands in the app.", {}, { "received land" },
-        { "PackageCatalog::LandReceivedPackages", "PackageCatalog::ForgetRefusedNodes", "PeerSharing::completeReceivedClosures", "IpfsWrapper::WaitBatchWhileMoving" }, Needs::Config, true,
+        { "PackageCatalog::LandReceivedPackages", "PeerSharing::completeReceivedClosures", "IpfsWrapper::WaitBatchWhileMoving" }, Needs::Config, true,
         [](Command::Context &C, const json &) {
             if (C.Model) { C.Model->peers().completeReceivedClosures(); return json{{"started", true}}; }
             std::string Err;
@@ -743,7 +743,7 @@ VG_COMMANDS
         "received adopt", "install a received package: move it into your library",
         "What a download does first: move a peer's package folder out of CATALOG into LIBRARY/<library>/<package>, "
         "where it is an ordinary package of yours. --for lists every package a game's download would adopt instead.",
-        { Opt("package", "the received package folder"), Opt("for", "a game's node: list what its download adopts") },
+        { Command::AsPath(Opt("package", "the received package folder")), Opt("for", "a game's node: list what its download adopts") },
         { "received adopt --for 'Patch 2.0a'", "received adopt --package 'Age of Empires II'" },
         { "PackageCatalog::PackagesToAdopt", "PackageCatalog::AdoptReceivedPackage", "PackageCatalog::AdoptReceivedPackages" }, Needs::Config, false,
         [](Command::Context &C, const json &A) {
@@ -839,7 +839,7 @@ VG_COMMANDS
         "runners candidates", "the installed runners that take a platform as input",
         "The choices for one step of a runner chain: installed runners whose GUEST takes <platform> (a game's own "
         "\"custom\" engine only from its own package, --package).",
-        { Pos("platform", "the input platform (win32, dos, n64, …)"), Opt("package", "the game's package folder (for \"custom\")") },
+        { Pos("platform", "the input platform (win32, dos, n64, …)"), Command::AsPath(Opt("package", "the game's package folder (for \"custom\")")) },
         { "runners candidates win32", "runners candidates custom --package 749" }, { "Installed::CandidateRunners" }, Needs::Config, false,
         [](Command::Context &C, const json &A) {
             const std::filesystem::path P = A.contains("package") ? PackageDir(C, Command::Str(A, "package")) : std::filesystem::path();

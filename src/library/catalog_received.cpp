@@ -163,8 +163,20 @@ std::vector<ReceivedFetch> PlanReceivedFetches(const nlohmann::ordered_json &Glo
     const fs::path LibRoot = fs::path(LibraryRootDir(GlobalConfigJSON));
     const auto Folders = ReceivedFolderNames(Libs);
     std::map<std::pair<std::string, std::string>, std::vector<SheetEntry>> ByPkg;        // (lib, pkg) → its entries
+    //A package with an entry that names no node file (not a raw block's CID) is left out whole — planned without it,
+    //it would read complete — and said.
+    std::set<std::pair<std::string, std::string>> Unplannable;
     for (SheetEntry &E : WireEntries(Libs))
+    {
         if (PlainCid(E.Cid)) ByPkg[{ E.Lib, E.Pkg }].push_back(std::move(E));
+        else Unplannable.insert({ E.Lib, E.Pkg });
+    }
+    for (const auto &LP : Unplannable)
+    {
+        ByPkg.erase(LP);
+        LogWarn("PackageCatalog::PlanReceivedFetches", "package '" + LP.second + "' of library '" + LP.first
+                + "' names a file that is no node (not one raw block) — left out");
+    }
     std::map<std::string, size_t> PerLib;
     size_t Total = 0;
     std::set<fs::path> Dirs;

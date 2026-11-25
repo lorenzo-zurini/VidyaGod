@@ -1142,6 +1142,11 @@ private slots:
         QCOMPARE((int)PackageCatalog::PlanReceivedFetches(rx, "Alice", json{{"Games", json::array({
             json{{"cid", "bafybeigdyrzt5sfp7udm7hu76uh7y26nf3efuylqabf3oclgtqy55fbzdi"}, {"pkg", "P"}, {"node", "a.json"}},
             json{{"cid", "QmYwAPJzv5CZsnA625s3Xf2nemtYgPpHdWEz79ojWnPbdG"}, {"pkg", "P"}, {"node", "b.json"}} })}}).size(), 0);
+        //...and a package with one such entry is left out whole: planned short it would read complete. Teeth: drop the
+        //entry alone (one target planned).
+        QCOMPARE((int)PackageCatalog::PlanReceivedFetches(rx, "Alice", json{{"Games", json::array({
+            json{{"cid", "bafkreigoodnodeaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}, {"pkg", "Q"}, {"node", "a.json"}},
+            json{{"cid", "bafybeigdyrzt5sfp7udm7hu76uh7y26nf3efuylqabf3oclgtqy55fbzdi"}, {"pkg", "Q"}, {"node", "b.json"}} })}}).size(), 0);
         std::map<std::string, std::filesystem::path> At;
         for (const auto & T : Plan) At[T.Cid] = T.Dest;
         QCOMPARE(At["bafkreione"].parent_path().filename(), std::filesystem::path("[802] Warcraft III"));

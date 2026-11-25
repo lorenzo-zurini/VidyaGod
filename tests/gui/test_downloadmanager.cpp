@@ -442,7 +442,9 @@ private slots:
         model.rebuildCatalog();
         const std::string LKey = model.catalogIndex().Find("l_exec")->Key();
         dm.beginDownload("902", {LKey}, {}, {});
-        QTRY_COMPARE_WITH_TIMEOUT(IpfsWrapper::DebugJobState(Local), 2, 30000);        // Done
+        //Done — after a slot frees: the queue holds the earlier cards' unserved fetches, and a held file waits its turn
+        //behind them (38 s seen on a loaded machine).
+        QTRY_COMPARE_WITH_TIMEOUT(IpfsWrapper::DebugJobState(Local), 2, 60000);
         dm.cancelKey("803");
         dm.cancelKey("900");
         dm.cancelKey("902");

@@ -791,7 +791,7 @@ bool PeerSharing::autoAcceptEnabled() const { return Model.config()->value("Auto
 
 void PeerSharing::setAutoAcceptEnabled(bool on)
 {
-    if (on == autoAcceptEnabled()) return;
+    if (on == autoAcceptEnabled()) { acceptWaitingRequests(); return; }   // on again: the waiting ones still go
     (*Model.config())["AutoAcceptPeers"] = on;
     Model.save();
     acceptWaitingRequests();   // on: the ones already waiting too, not only the ones to come

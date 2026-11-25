@@ -80,7 +80,7 @@ VG_COMMANDS
 
     Command::Register({
         "app import", "add every package found under a folder to the Library (in place, as local packages)", "",
-        { Pos("dir", "the folder") }, { "app import ~/Games/packages" }, { "AppModel::importPackagesFromDir", "FSOps::CheckPackageValid" }, Needs::Model, false,
+        { Command::AsPath(Pos("dir", "the folder")) }, { "app import ~/Games/packages" }, { "AppModel::importPackagesFromDir", "FSOps::CheckPackageValid" }, Needs::Model, false,
         [](Command::Context &C, const json &A) {
             const auto [Added, Skipped] = Model(C).importPackagesFromDir(QString::fromStdString(Command::Str(A, "dir")));
             return json{{"added", Added}, {"skipped", Skipped}};
@@ -110,7 +110,7 @@ VG_COMMANDS
         "As Settings → Installed Packages' Remove: a package added from outside LIBRARY is forgotten, its folder untouched; "
         "a source's package loses its content files (its nodes and cover stay, back in the Catalog). A package of LIBRARY "
         "itself is not removed from here — its content can be shared with other packages and may have no source.",
-        { Pos("package", "the package's UID or folder"), Flag("yes", "yes, remove it") }, { "app remove-package 123456 --yes" },
+        { Command::MaybeAPath(Pos("package", "the package's UID or folder")), Flag("yes", "yes, remove it") }, { "app remove-package 123456 --yes" },
         { "AppModel::removePackage", "PackageCatalog::PackageDirsWithUid" }, Needs::Model, false,
         [](Command::Context &C, const json &A) {
             if (!Command::Bool(A, "yes", false)) throw Command::BadArgs("this removes the package's files: add --yes");
@@ -166,7 +166,7 @@ VG_COMMANDS
         { Flag("heal", "heal orphaned references"), Flag("reconcile", "reconcile peers' shares"), Flag("reshare", "re-register shares"),
           Flag("push", "push node settings"), Flag("covers", "sweep missing covers") },
         { "app housekeeping --heal", "app housekeeping --reconcile --push" },
-        { "AppModel::healOrphansIfAny", "PeerSharing::reconcileReceivedLibraries", "PeerSharing::enqueueReceivedShares", "PeerSharing::applyPeerLibrarySnapshot",
+        { "AppModel::healOrphansIfAny", "PeerSharing::reconcileReceivedLibraries", "PeerSharing::enqueueReceivedShares", "PeerSharing::applyPeerLibrarySnapshot", "PackageCatalog::ForgetRefusedNodes",
           "PeerSharing::closurePasses", "PeerSharing::reRegisterShares", "AppModel::pushSeedLevels", "PeerSharing::pushLanRoster", "PeerSharing::pushPresenceDeny",
           "CoverCache::instance", "CoverCache::sweepNow", "CoverCache::prefetch", "CoverCache::missCount", "CoverCache::onTransferFinished", "AppModel::notifyCoversReady",
           "LibraryTab::refreshCovers", "CatalogTab::refreshCovers" , "AsyncWork::Run", "AsyncWork::Job::Live", "AsyncWork::Job::Post" }, Needs::Model, true,
@@ -190,7 +190,7 @@ VG_COMMANDS
         "finds it now (\"\" while it is being fetched). --decode (in the running app) takes its image as a card does: "
         "\"decoding\" the first time, as the decode runs off the GUI thread, and its size once it has landed — the size a "
         "card keeps it at (the widest card's, 2:3), not the file's.",
-        { WithSample(Opt("cover", "the COVER (JSON)", Type::Json, true), "{\"PATH\":\"cover.jpg\"} or \"cover.png\""), Opt("package", "the package folder"), Flag("decode", "take the decoded image") },
+        { WithSample(Opt("cover", "the COVER (JSON)", Type::Json, true), "{\"PATH\":\"cover.jpg\"} or \"cover.png\""), Command::AsPath(Opt("package", "the package folder")), Flag("decode", "take the decoded image") },
         { "app covers --cover '{\"PATH\":\"cover.jpg\",\"SOURCE\":{\"TYPE\":\"ipfs\",\"CID\":\"Qm…\"}}' --package 749",
           "app covers --cover '\"cover.png\"' --package 749 --decode" },
         { "CoverCache::Locate", "CoverCache::resolve", "CoverCache::setAssetsRoot", "CoverCache::setOnlineProbe", "CoverCache::onNetworkOnline",

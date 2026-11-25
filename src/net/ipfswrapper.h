@@ -161,11 +161,12 @@ struct FetchTarget {
     bool        Verify   = false;   // the DEST is reusable (a node file: same path, new CID on re-publish) — never
                                     // trust its presence; the Go fetch verifies dest bytes against the CID and
                                     // overwrites a stale file (refresh semantics)
-    bool        Small    = false;   // a node file (a peer's snapshot names it): at most a node's 256 KiB, else refused
-                                    // in the node before a byte lands — terminal, never retried
     bool        Front    = false;   // ahead of every queued job from the moment it is queued (covers on screen) — the
                                     // same rule as PrioritizeDownloads, under the enqueue's own lock: a job prioritized
                                     // after its enqueue could already have had its first turn, and not be bumped
+    bool        Small    = false;   // a node file (a peer's snapshot names it): at most a node's 256 KiB, else refused
+                                    // in the node before a byte lands — terminal, never retried. LAST: the positional
+                                    // initialisers ({cid, path, optional, dir, verify, front}) keep their meaning
 };
 
 // Fetch every target CONCURRENTLY, each bounded by a DownloadSlot, so at most MaxConcurrentDownloads() run at once
