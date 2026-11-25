@@ -1,4 +1,5 @@
 #include "ipfstab.h"
+#include "activitylog.h"
 #include "appmodel.h"
 #include "theme.h"   // the named colours
 #include "ipfsmodel.h"
@@ -158,6 +159,7 @@ void IpfsTab::buildUi()
     toolbar->addWidget(addSrcBtn);
 
     SeedBtn = new QPushButton("Seed folder…", this);
+    SeedBtn->setObjectName("seedFolder");
     SeedBtn->setToolTip("Add a folder's published content to the IPFS node so it seeds (e.g. your master library).");
     connect(SeedBtn, &QPushButton::clicked, this, [this]{
         if (!IpfsWrapper::Available())
@@ -168,9 +170,16 @@ void IpfsTab::buildUi()
         }
         const QString Dir = QFileDialog::getExistingDirectory(this, "Seed folder — pick the folder containing your packages", QDir::homePath());
         if (Dir.isEmpty()) return;
-        SeedBtn->setEnabled(false); SeedBtn->setText("Seeding…");
-        Model.seedFolder(Dir);
+        //One seed at a time: a seed already running (started from the CLI) is said, and the button stays as it was.
+        if (!Model.seedFolder(Dir))
+        {
+            ActivityLog::Get().note("Seed folder", "Seed " + QDir(Dir).dirName(), false,
+                                    "Another seed is running (the activity strip shows it): seed this folder once it is done.");
+            return;
+        }
     });
+    //Whoever started it (this button, the CLI): while a seed runs the button says so, and is not offered.
+    connect(&Model, &IpfsModel::seedStarted, this, [this](const QString &) { SeedBtn->setEnabled(false); SeedBtn->setText("Seeding…"); });
     connect(&Model, &IpfsModel::seedProgress, this, [this](int done, int total){
         SeedBtn->setText(QString("Seeding %1/%2…").arg(done).arg(total));
     });

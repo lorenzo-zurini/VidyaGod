@@ -165,13 +165,18 @@ private slots:
         QDir AppDir(D.path());
         AppModel Model(&Cfg, &AppDir);
         IpfsModel Ipfs(Model);
+        IpfsTab Tab(Ipfs);
+        auto *Btn = Tab.findChild<QPushButton *>("seedFolder");
+        QVERIFY(Btn && Btn->isEnabled());
         QSignalSpy Started(&Ipfs, &IpfsModel::seedStarted), Finished(&Ipfs, &IpfsModel::seedFinished);
-        QVERIFY(Ipfs.seedFolder(D.path()));
+        QVERIFY(Ipfs.seedFolder(D.path()));          // as the CLI starts one: the tab's button follows
         QVERIFY(Ipfs.seeding());
+        QVERIFY(!Btn->isEnabled());
         QVERIFY(!Ipfs.seedFolder(D.path()));
         QCOMPARE(Started.count(), 1);
         QVERIFY(Finished.wait(20000));
         QVERIFY(!Ipfs.seeding());
+        QVERIFY(Btn->isEnabled());
         QVERIFY(Ipfs.seedFolder(D.path()));
         QVERIFY(Finished.wait(20000));
         QCOMPARE(Started.count(), 2);
