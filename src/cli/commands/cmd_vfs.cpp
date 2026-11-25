@@ -409,7 +409,7 @@ VG_COMMANDS
         "entry (a zip the filesystem cannot mount), and with --entry that entry's bytes (--out a file; a link resolved "
         "within the archive).", { Command::AsPath(Pos("zip", "the zip file")), Opt("entry", "read this entry"), Command::AsPath(Opt("out", "(--entry) write it here")), Flag("offsets", "each entry's data offset"), Flag("libzip", "also index it through libzip and say where the two differ") },
         { "vfs zip game.zip", "vfs zip game.zip --entry data/readme.txt" },
-        { "BuildZipIndex", "BuildZipIndexLibzip", "SafeMemberName", "OpenZipEntry", "ReadZipEntry", "ResolveZipSymlink", "ZipDataOffset", "zipscan::WalkCentralDir", "zipscan::WalkCentralDirFull", "zipscan::CentralDirOffsets",
+        { "BuildZipIndex", "BuildZipIndexLibzip", "SafeMemberName", "CleanMemberName", "OpenZipEntry", "ReadZipEntry", "ResolveZipSymlink", "ZipDataOffset", "zipscan::WalkCentralDir", "zipscan::WalkCentralDirFull", "zipscan::CentralDirOffsets",
           "zipscan::FirstCompressedEntry", "zipscan::LocalDataOffset", "zipscan::Rd16", "zipscan::Rd32", "zipscan::Rd64",
           "MmapByteSource::Map", "MmapByteSource::pread", "MmapByteSource::size", "ByteSource::preadAll" }, Needs::Config, false,
         [](Command::Context &, const json &A) {

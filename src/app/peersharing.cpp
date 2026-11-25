@@ -334,9 +334,16 @@ void PeerSharing::reconcileReceivedPeer(const QString & peer)
 
 void PeerSharing::reconcileReceivedLibraries()
 {
+    //Every peer with a kept snapshot gets its label before anything is planned (a peer received from before labels
+    //existed would plan under its live nickname — onto another's folders when two share one).
+    std::vector<std::string> Held;
+    if (Model.config()->contains("PeerLibraries") && (*Model.config())["PeerLibraries"].is_object())
+        for (const auto & [P, Libs] : (*Model.config())["PeerLibraries"].items()) { (void)Libs; Held.push_back(P); }
+    for (const std::string & P : Held) PackageCatalog::AssignReceivedLabel(*Model.config(), P, PackageCatalog::ReceivedLiveNick(P));
     if (!Model.config()->contains("ReceiveFrom") || !(*Model.config())["ReceiveFrom"].is_array()) return;
-    for (const auto & X : (*Model.config())["ReceiveFrom"])
-        if (X.is_string()) reconcileReceivedPeer(QString::fromStdString(X.get<std::string>()));
+    std::vector<std::string> From;   // a copy: a reconcile may change the config under the walk
+    for (const auto & X : (*Model.config())["ReceiveFrom"]) if (X.is_string()) From.push_back(X.get<std::string>());
+    for (const std::string & P : From) reconcileReceivedPeer(QString::fromStdString(P));
 }
 
 void PeerSharing::forgetPeer(const QString & peer)

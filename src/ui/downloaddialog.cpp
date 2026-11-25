@@ -221,8 +221,6 @@ std::optional<DownloadSelection> AskDownload(AppModel &Model, const LibraryGameC
         const std::vector<std::string> SelL = SelectedLaunchIds();
         std::vector<std::string> SelR;
         for (const auto & [Rid, cb] : RunnerChecks) if (cb->isChecked()) SelR.push_back(Rid);
-        if (QPushButton *Go = *GoRef; Go && !*Blocked && SelL.empty() && SelR.empty())
-        { Go->setEnabled(false); Go->setToolTip("Nothing is picked to download."); }
         auto Tg  = std::make_shared<std::map<std::string, bool>>(*OptStates);
         auto Out = std::make_shared<std::set<std::string>>();
         auto Stamped = std::make_shared<std::map<std::string, long long>>();   // cid → SOURCE.SIZE (instant, offline)

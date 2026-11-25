@@ -7,6 +7,8 @@
 #include <QTemporaryDir>
 #include <QDir>
 #include <QCheckBox>
+#include <QMenu>
+#include <memory>
 
 #include "appmodel.h"
 #include "traycontroller.h"
@@ -25,6 +27,30 @@ class TrayTest : public QObject
 {
     Q_OBJECT
 private slots:
+    // The tray menu: Show, networking on/off (its words follow the state), Stop the running game only while one runs,
+    // Quit. Teeth: the old two-entry menu; a networking entry whose text never changes.
+    void the_tray_menu_turns_networking_and_stops_a_game()
+    {
+        QTemporaryDir d; QDir appDir(d.path());
+        json cfg = json{{"Settings", json::object()}};
+        AppModel m(&cfg, &appDir);
+        int Shown = 0, Quits = 0;
+        std::unique_ptr<QMenu> Menu(TrayMenu(m, nullptr, [&] { ++Shown; }, [&] { ++Quits; }));
+        QAction *Net = Menu->findChild<QAction *>("trayNetworking"), *Stop = Menu->findChild<QAction *>("trayStopGame");
+        QVERIFY(Net && Stop);
+        QCOMPARE(Net->text(), QStringLiteral("Turn networking on"));
+        QVERIFY(!Stop->isVisible());                     // no game runs
+        Net->trigger();
+        QVERIFY(m.networkingEnabled());
+        QCOMPARE(Net->text(), QStringLiteral("Turn networking off"));
+        Net->trigger();
+        QVERIFY(!m.networkingEnabled());
+        Menu->actions().first()->trigger();
+        Menu->actions().last()->trigger();
+        QCOMPARE(Shown, 1);
+        QCOMPARE(Quits, 1);
+    }
+
     // On-by-default: missing Settings.Tray → close/minimize to tray ON, start-in-tray OFF.
     void settings_default_on_when_absent()
     {

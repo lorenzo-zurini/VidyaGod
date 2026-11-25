@@ -1,6 +1,7 @@
 #include "traycontroller.h"
 #include "appmodel.h"
 #include "apppaths.h"
+#include "containerwrapper.h"   // LiveCount / StopAll: the running game
 
 #include <QSystemTrayIcon>
 #include <QMenu>
@@ -16,22 +17,44 @@ TrayController::TrayController(AppModel & model, QWidget * window, QObject * par
     if (!QSystemTrayIcon::isSystemTrayAvailable()) return;   // no tray → available() stays false, normal behavior
 
     Tray = new QSystemTrayIcon(QIcon(":/vidyagod.png"), this);
-    Tray->setToolTip("VidyaGod");
-
-    QMenu * Menu = new QMenu(window);
-    QAction * ShowAct = Menu->addAction("Show VidyaGod");
-    Menu->addSeparator();
-    QAction * QuitAct = Menu->addAction("Quit");
-    Tray->setContextMenu(Menu);
-
-    connect(ShowAct, &QAction::triggered, this, [this]{ emit restoreRequested(); });
-    connect(QuitAct, &QAction::triggered, this, [this]{ emit quitRequested(); });
+    const auto Tip = [this] { Tray->setToolTip(Model.networkingEnabled() ? "VidyaGod — networking on: seeding and downloading"
+                                                                          : "VidyaGod — networking off"); };
+    Tip();
+    connect(&Model, &AppModel::networkingChanged, this, Tip);
+    Tray->setContextMenu(TrayMenu(Model, window, [this]{ emit restoreRequested(); }, [this]{ emit quitRequested(); }));
     // Left-click / double-click the tray icon restores the window (right-click shows the menu).
     connect(Tray, &QSystemTrayIcon::activated, this, [this](QSystemTrayIcon::ActivationReason r){
         if (r == QSystemTrayIcon::Trigger || r == QSystemTrayIcon::DoubleClick) emit restoreRequested();
     });
 
     Tray->show();
+}
+
+QMenu *TrayMenu(AppModel &Model, QWidget *Parent, std::function<void()> Show, std::function<void()> Quit)
+{
+    //What a program that lives in the tray for its seeding is asked from there: show it, the network on or off, the
+    //game it runs stopped (only while one runs), quit.
+    auto *Menu = new QMenu(Parent);
+    QAction *ShowAct = Menu->addAction("Show VidyaGod");
+    Menu->addSeparator();
+    QAction *Net = Menu->addAction(QString());
+    Net->setObjectName("trayNetworking");
+    QAction *Stop = Menu->addAction("Stop the running game");
+    Stop->setObjectName("trayStopGame");
+    Menu->addSeparator();
+    QAction *QuitAct = Menu->addAction("Quit");
+    const auto Refresh = [&Model, Net, Stop] {
+        Net->setText(Model.networkingEnabled() ? "Turn networking off" : "Turn networking on");
+        Stop->setVisible(ContainerWrapper::LiveCount() > 0);
+    };
+    Refresh();
+    QObject::connect(Menu, &QMenu::aboutToShow, Menu, Refresh);
+    QObject::connect(ShowAct, &QAction::triggered, Menu, [Show] { Show(); });
+    QObject::connect(QuitAct, &QAction::triggered, Menu, [Quit] { Quit(); });
+    QObject::connect(Net, &QAction::triggered, Menu, [&Model, Refresh] { Model.setNetworkingEnabled(!Model.networkingEnabled()); Refresh(); });
+    //Told to stop as the launch window's Stop does: its saves are stored, its runtime comes down.
+    QObject::connect(Stop, &QAction::triggered, Menu, [] { ContainerWrapper::StopAll(); });
+    return Menu;
 }
 
 bool TrayController::available() const { return Tray != nullptr; }

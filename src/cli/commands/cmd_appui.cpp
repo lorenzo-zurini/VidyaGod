@@ -231,7 +231,7 @@ VG_COMMANDS
         { Opt("hidden", "remember the window hidden (on) or shown (off)", Type::String, false, { "on", "off" }), Flag("notify", "show the 'still running' note") },
         { "app tray" },
         { "MainWindow::tray", "TrayController::available", "TrayController::closeToTray", "TrayController::minimizeToTray", "TrayController::startInTray",
-          "TrayController::shouldStartHidden", "TrayController::rememberHidden", "TrayController::notifyHidden" }, Needs::Ui, false,
+          "TrayController::shouldStartHidden", "TrayController::rememberHidden", "TrayController::notifyHidden", "TrayMenu" }, Needs::Ui, false,
         [](Command::Context &C, const json &A) {
             TrayController *T = Win(C).tray();
             if (!T) throw std::runtime_error("no tray controller");

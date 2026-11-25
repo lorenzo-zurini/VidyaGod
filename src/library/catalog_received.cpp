@@ -286,9 +286,12 @@ std::string AssignReceivedLabel(nlohmann::ordered_json &Config, const std::strin
     const auto Key = [](const std::string &L) { std::string K = NodeFiles::SafeName(L); for (char &C : K) C = static_cast<char>(std::tolower(static_cast<unsigned char>(C))); return K; };
     std::set<std::string> Taken;
     for (const auto &[P, L] : Labels.items()) if (P != PeerID && L.is_string()) Taken.insert(Key(L.get<std::string>()));
+    //" - " is the folder's own separator (<label> - <library>): a nick holding one could make another peer's folder
+    //name ("Deck - Steam" + "Games" = "Deck" + "Steam - Games"); it reads " · " in a label.
     std::string Label = LiveNick.empty() ? IdTail(PeerID, 8) : LiveNick;
+    for (size_t At; (At = Label.find(" - ")) != std::string::npos;) Label.replace(At, 3, " · ");
     if (Taken.count(Key(Label))) Label += " [" + IdTail(PeerID, 6) + "]";
-    if (Taken.count(Key(Label))) Label = LiveNick + " [" + PeerID + "]";
+    if (Taken.count(Key(Label))) Label = IdTail(PeerID, 8) + " [" + PeerID + "]";
     Labels[PeerID] = Label;
     return Label;
 }

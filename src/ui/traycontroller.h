@@ -2,8 +2,10 @@
 #define TRAYCONTROLLER_H
 
 #include <QObject>
+#include <functional>
 
 class AppModel;
+class QMenu;
 class QWidget;
 class QSystemTrayIcon;
 
@@ -17,6 +19,10 @@ class QSystemTrayIcon;
 // LaunchHidden=false (the remembered last state). If no system tray is available, everything degrades to normal
 // window behavior (close = quit) — available() is false and MainWindow consults it before hiding.
 // ---------------------------------------------------------------------------
+// The tray's menu: Show, networking on/off, Stop the running game (while one runs), Quit. Its own function: a test
+// drives it where there is no tray.
+QMenu *TrayMenu(AppModel &Model, QWidget *Parent, std::function<void()> Show, std::function<void()> Quit);
+
 class TrayController : public QObject
 {
     Q_OBJECT
