@@ -555,6 +555,14 @@ struct UninstallVerdict
     std::vector<std::string> NeededBy;
     bool Shared = false;
 };
+//Uninstalls the package of LIBRARY at Dir as its verdict (JudgeUninstall, made here: what the library holds now) says:
+//Download — its content dehydrated (DehydrateNode); OnlyCopy — refused unless DeleteOnlyCopy, and while another package
+//needs it, else trashed (TrashPackage, unpinning PinFolder). "" when done, else why not; *Changed: something on disk
+//went. A walk of every package's closure, then IPFS: off the GUI thread.
+std::string Uninstall(const nlohmann::ordered_json &GlobalConfigJSON, const NodeIndex &Idx, const std::filesystem::path &Dir,
+                      bool DeleteOnlyCopy, const std::string &PinFolder, bool *Changed);
+//TEST ONLY: verdicts (JudgeUninstall) made on the GUI thread since start.
+int DebugJudgesOnGuiThread();
 //Why nothing may be uninstalled now ("" when it may): a game is running (its runtime may mount the package), or a
 //download into Dir is landing.
 std::string UninstallBlocked(const std::filesystem::path &Dir);

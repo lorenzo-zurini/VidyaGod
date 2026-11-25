@@ -230,11 +230,6 @@ void AppModel::setNetworkingEnabled(bool on)
     emit networkingChanged(on);
 }
 
-PackageCatalog::UninstallVerdict AppModel::uninstallVerdict(const QString & Dir) const
-{
-    return PackageCatalog::JudgeUninstall(*Config, *Catalog, Dir.toStdString());
-}
-
 QString AppModel::removePackage(const QString & which, bool * Async, bool DeleteOnlyCopy)
 {
     if (Async) *Async = false;
@@ -277,7 +272,9 @@ QString AppModel::removePackage(const QString & which, bool * Async, bool Delete
 
     //A package of LIBRARY: its content goes when it can be downloaded again (a source of the user's has it); the only
     //copy only when the user says so, to the trash. Either way not while another installed package's content lives in
-    //its folder and nothing could bring it back, and nothing at all while a game runs (its runtime may mount it).
+    //its folder and nothing could bring it back, and nothing at all while a game runs (its runtime may mount it). Judged
+    //and done on a worker, on the library as it is then (a walk of every package's closure, then IPFS): a refusal comes
+    //back as packageRemoveFailed.
     if (Managed)
     {
         if (const std::string Why = PackageCatalog::UninstallBlocked(Path); !Why.empty())
@@ -285,58 +282,23 @@ QString AppModel::removePackage(const QString & which, bool * Async, bool Delete
             LogWarn("AppModel::removePackage", Why + " (" + Path + ")");
             return QString::fromStdString(Why);
         }
-        using K = PackageCatalog::UninstallVerdict::Kind;
-        const PackageCatalog::UninstallVerdict V = PackageCatalog::JudgeUninstall(*Config, *Catalog, Path);
-        if (V.K == K::OnlyCopy)
-        {
-            const auto Fail = [&](const QString & Why) { LogWarn("AppModel::removePackage", Why.toStdString() + " (" + Path + ")"); return Why; };
-            if (!DeleteOnlyCopy)
-                return Fail("this is the only copy: nothing could download it again (no source of yours has it, and a peer "
-                            "listing it may not hold its files) — deleting it moves its folder to the trash");
-            if (!V.NeededBy.empty())
-            {
-                QStringList Names;
-                for (const std::string & N : V.NeededBy) Names << QString::fromStdString(N);
-                return Fail("its content is also " + Names.join(", ") + "'s, and nothing could download it again: uninstall "
-                            + (Names.size() == 1 ? "that" : "those") + " first");
-            }
-            std::shared_ptr<const NodeIndex> Idx = Catalog;
-            auto Err = std::make_shared<std::string>();
-            auto Ok = std::make_shared<bool>(false);
-            const std::string Pin = PackageCatalog::PackagePin(*Config, std::filesystem::weakly_canonical(Path, Ec));
-            AsyncWork::Run(this, [Idx, Path, Err, Ok, Pin] { *Ok = PackageCatalog::TrashPackage(*Idx, Path, Err.get(), Pin); },
-                [this, Err, Ok] {
-                    if (!*Ok) emit packageRemoveFailed(QString::fromStdString(*Err));
-                    rebuildCatalog();
-                });
-            if (Async) *Async = true;
-            return {};
-        }
-    }
-    if (Managed)
-    {
-        // De-HYDRATE the managed package: delete its content + unpin/drop-ref its CIDs, but KEEP the manifests + cover
-        // so it drops back into the Catalog as re-downloadable (not deleted outright — that was the bug: it vanished
-        // from the catalog). Leave the LIBRARY index entry too (it's the repo package's record; Installed Packages
-        // filters by hydration, so the package disappears from there once its content is gone).
-        //
-        // The dehydrate itself is HEAVY (a real game's closure is thousands-to-hundreds-of-thousands of blocks: a full
-        // offline DAG walk + per-block filestore deletes + a leveldb compaction), so it MUST run off the GUI thread or
-        // the window freezes for its whole duration. Snapshot the node set + a private NodeIndex copy (the worker reads
-        // it; the GUI owns the live one), do the work on a thread, then rebuild on the GUI thread when it lands.
-        const std::string CanonPath = std::filesystem::weakly_canonical(std::filesystem::path(Path), Ec).string();
-        std::vector<std::string> ToDehydrate;
-        for (const auto & [NodeId, N] : Catalog->Nodes)
-            if (N.IsVariant() &&
-                std::filesystem::weakly_canonical(N.BundleDir, Ec).string() == CanonPath)
-                ToDehydrate.push_back(NodeId);
-        if (ToDehydrate.empty()) return "nothing of it is installed here";
-        std::shared_ptr<const NodeIndex> Idx = Catalog;            // the worker reads the index as it is now (immutable)
+        auto Cfg = std::make_shared<const nlohmann::ordered_json>(*Config);
+        std::shared_ptr<const NodeIndex> Idx = Catalog;
+        const std::string Pin = PackageCatalog::PackagePin(*Config, std::filesystem::weakly_canonical(Path, Ec));
+        auto Err = std::make_shared<std::string>();
+        auto Changed = std::make_shared<bool>(false);
         AsyncWork::Run(this,
-            [Idx, ToDehydrate = std::move(ToDehydrate)]{ for (const std::string & NodeId : ToDehydrate) PackageCatalog::DehydrateNode(*Idx, NodeId); },
-            [this]{ rebuildCatalog(); });  // emits catalogChanged
+            [Cfg, Idx, Path, Pin, DeleteOnlyCopy, Err, Changed] { *Err = PackageCatalog::Uninstall(*Cfg, *Idx, Path, DeleteOnlyCopy, Pin, Changed.get()); },
+            [this, Err, Changed, Path] {
+                if (!Err->empty())
+                {
+                    LogWarn("AppModel::removePackage", *Err + " (" + Path + ")");
+                    emit packageRemoveFailed(QString::fromStdString(*Err));
+                }
+                if (*Changed) rebuildCatalog();   // emits catalogChanged
+            });
         if (Async) *Async = true;
-        return {};   // config unchanged (manifest kept); the worker rebuilds the catalog when the content is gone
+        return {};
     }
 
     // Local/portable package added from outside the library → only drop the reference; never touch the user's files.

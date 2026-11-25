@@ -292,14 +292,20 @@ private slots:
         m.rebuildCatalog();
         if (Built.isEmpty()) QVERIFY(Built.wait(20000));
         QVERIFY2(m.catalogIndex().Find("game"), "the package is in the index (so a dehydrate would find it)");
-        bool Async = true;
-        const QString Why = m.removePackage(Pkg, &Async);
-        QVERIFY2(!Why.isEmpty(), "refused, saying why");
-        QVERIFY(!Async);
-        QTest::qWait(1500);   // a dehydrate would run on a worker
+        //Judged on a worker (a walk of the whole library): a refusal comes back as packageRemoveFailed, nothing judged on
+        //the GUI thread.
+        const int OnGui = PackageCatalog::DebugJudgesOnGuiThread();
+        bool Async = false;
+        const auto Refusal = [&](const QString &Which, bool Only = false) -> QString {
+            QSignalSpy Said(&m, &AppModel::packageRemoveFailed);
+            if (const QString Now = m.removePackage(Which, &Async, Only); !Now.isEmpty()) return Now;
+            return Said.wait(20000) ? Said.first().value(0).toString() : QString();
+        };
+        QVERIFY2(Refusal(Pkg).contains("only copy"), "refused, saying why");
+        QVERIFY(Async);
+        QTest::qWait(500);    // a dehydrate would have run by now
         QVERIFY2(QFile::exists(Pkg + "/game.zip"), "its content is untouched");
-        QVERIFY(!m.removePackage("1").isEmpty());   // by its UID too
-        QTest::qWait(300);
+        QVERIFY(Refusal("1").contains("only copy"));   // by its UID too
         QVERIFY(QFile::exists(Pkg + "/game.zip"));
         // A peer listing every node of it is no copy: still refused, its content still here (that peer may have deleted
         // its own, "from here").
@@ -308,9 +314,8 @@ private slots:
         for (const auto &[C, F] : NodeFiles::In(Pkg.toStdString())) Listed.push_back(json{{"cid", C}, {"pkg", "[1] Game"}, {"node", F.Path.filename().string()}});
         QVERIFY(!Listed.empty());
         cfg["PeerLibraries"] = json{{"12D3KooWPeerPeerPeerPeer", json{{"VidyaGod", Listed}}}};
-        QVERIFY(!m.removePackage(Pkg, &Async).isEmpty());
-        QVERIFY(!Async);
-        QTest::qWait(1000);
+        QVERIFY(Refusal(Pkg).contains("only copy"));
+        QTest::qWait(500);
         QVERIFY2(QFile::exists(Pkg + "/game.zip"), "a peer's listing deletes nothing for good");
         // Nothing while a game runs: its runtime may be mounting this very folder.
         {
@@ -321,6 +326,7 @@ private slots:
         }
         QTest::qWait(300);
         QVERIFY(QFile::exists(Pkg + "/game.zip"));
+        QCOMPARE(PackageCatalog::DebugJudgesOnGuiThread(), OnGui);
 
         // Asked to: the folder goes to the trash (this test's own: the user's is never written to), its content whole.
         const QString Share = d.path() + "/xdgdata";
@@ -358,7 +364,10 @@ private slots:
         QSignalSpy Built(&m, &AppModel::catalogChanged);
         m.rebuildCatalog();
         if (Built.isEmpty()) QVERIFY(Built.wait(20000));
-        const QString Why = m.removePackage(Pkg, nullptr, true);
+        QSignalSpy Said(&m, &AppModel::packageRemoveFailed);
+        QVERIFY(m.removePackage(Pkg, nullptr, true).isEmpty());   // judged on a worker
+        QVERIFY(Said.wait(20000));
+        const QString Why = Said.first().value(0).toString();
         QVERIFY2(Why.contains("Game"), qPrintable(Why));
         QTest::qWait(500);
         QVERIFY(QFile::exists(Pkg + "/lib.zip"));

@@ -116,7 +116,7 @@ VG_COMMANDS
         { Command::MaybeAPath(Pos("package", "the package's UID or folder")), Flag("yes", "yes, remove it"),
           Flag("delete-only-copy", "it is the only copy: move its folder to the trash anyway") },
         { "app remove-package 123456 --yes", "app remove-package 123456 --yes --delete-only-copy" },
-        { "AppModel::removePackage", "AppModel::uninstallVerdict", "PackageCatalog::PackageDirsWithUid", "PackageCatalog::JudgeUninstall",
+        { "AppModel::removePackage", "PackageCatalog::Uninstall", "PackageCatalog::PackageDirsWithUid", "PackageCatalog::JudgeUninstall",
           "PackageCatalog::TrashPackage", "PackageCatalog::PeerListingPackage", "PackageCatalog::UninstallBlocked",
           "PackagesView::uninstallAsk", "PackagesView::askUninstall" }, Needs::Model, false,
         [](Command::Context &C, const json &A) {
@@ -146,12 +146,12 @@ VG_COMMANDS
                 QEventLoop Wait;
                 QString Failed;
                 QObject::connect(&Model(C), &AppModel::catalogChanged, &Wait, &QEventLoop::quit);
-                QObject::connect(&Model(C), &AppModel::packageRemoveFailed, &Wait, [&](const QString &W) { Failed = W; });
+                QObject::connect(&Model(C), &AppModel::packageRemoveFailed, &Wait, [&](const QString &W) { Failed = W; Wait.quit(); });
                 Wait.exec();
                 if (!Failed.isEmpty()) throw std::runtime_error(Failed.toStdString());
                 return json{{"removed", Dir.string()}};
             }
-            return Async ? json{{"removing", Dir.string()}, {"follow", "VidyaGod events wait --signal catalogChanged"}} : json{{"removed", Dir.string()}};
+            return Async ? json{{"removing", Dir.string()}, {"follow", "VidyaGod app activity (a refusal or failure is listed there)"}} : json{{"removed", Dir.string()}};
         }, {} });
 
     Command::Register({

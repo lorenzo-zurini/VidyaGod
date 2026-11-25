@@ -82,12 +82,12 @@ public:
     void setNetworkingEnabled(bool on);                // persist + emit networkingChanged(on) (no-op if unchanged)
     void markNodeReady() { emit nodeReady(); }         // MainWindow calls this once the async node start completes
     //Uninstall a package (folder or UID), as PackageCatalog::JudgeUninstall has it: forget one added from outside LIBRARY
-    //(its folder untouched); one that can be downloaded again loses its content (on a worker: *Async, done at
-    //catalogChanged) and stays in the Catalog; the only copy goes — to the trash — only with DeleteOnlyCopy, and never
-    //while another installed package uses its content. "" when done or under way; else why nothing was done.
+    //(its folder untouched); a package of LIBRARY is judged and uninstalled on a worker (*Async; PackageCatalog::Uninstall):
+    //one that can be downloaded again loses its content and stays in the Catalog, the only copy goes — to the trash — only
+    //with DeleteOnlyCopy and never while another installed package uses its content. Done at catalogChanged; refused or
+    //failed there: packageRemoveFailed. "" when done or under way; else why nothing was started (no such package, a game
+    //running).
     QString removePackage(const QString & which, bool * Async = nullptr, bool DeleteOnlyCopy = false);
-    //What removePackage(Dir) would do (Settings → Installed Packages asks before it does).
-    PackageCatalog::UninstallVerdict uninstallVerdict(const QString & Dir) const;
     void notifyCoversReady();                          // a batch of covers finished loading → emit coversReady()
 
     // ── Async source / runner ops (do the IPFS work off-thread, then rebuild + emit on the GUI thread) ──

@@ -28,6 +28,7 @@
 #include <QCoreApplication>
 #include <QDir>
 #include <QFile>
+#include <QThread>
 #include <unordered_map>
 #include <QStringList>
 #include <cstdint>
@@ -143,9 +144,13 @@ std::vector<std::filesystem::path> PackageDirsWithUid(const NodeIndex &Idx, cons
     return Out;
 }
 
+namespace { std::atomic<int> g_GuiJudges{0}; }
+int DebugJudgesOnGuiThread() { return g_GuiJudges.load(); }
+
 UninstallVerdict JudgeUninstall(const nlohmann::ordered_json &Config, const NodeIndex &Idx, const std::filesystem::path &Dir)
 {
     namespace fs = std::filesystem;
+    if (QCoreApplication *App = QCoreApplication::instance(); App && QThread::currentThread() == App->thread()) ++g_GuiJudges;
     UninstallVerdict V;
     std::error_code Ec;
     if (!fs::is_directory(Dir, Ec)) return V;
@@ -205,6 +210,48 @@ UninstallVerdict JudgeUninstall(const nlohmann::ordered_json &Config, const Node
     V.ListedBy = PeerListingPackage(Config, Dir);   // said, never taken for a copy
     V.K = UninstallVerdict::Kind::OnlyCopy;
     return V;
+}
+
+std::string Uninstall(const nlohmann::ordered_json &Config, const NodeIndex &Idx, const std::filesystem::path &Dir,
+                      bool DeleteOnlyCopy, const std::string &PinFolder, bool *Changed)
+{
+    namespace fs = std::filesystem;
+    using K = UninstallVerdict::Kind;
+    if (Changed) *Changed = false;
+    const UninstallVerdict V = JudgeUninstall(Config, Idx, Dir);
+    if (V.K == K::OnlyCopy)
+    {
+        if (!DeleteOnlyCopy)
+            return "this is the only copy: nothing could download it again (no source of yours has it, and a peer listing it "
+                   "may not hold its files) — deleting it moves its folder to the trash";
+        if (!V.NeededBy.empty())
+        {
+            std::string Names;
+            for (const std::string &N : V.NeededBy) Names += (Names.empty() ? "" : ", ") + N;
+            return "its content is also " + Names + "'s, and nothing could download it again: uninstall "
+                   + (V.NeededBy.size() == 1 ? "that" : "those") + " first";
+        }
+        std::string Err;
+        if (!TrashPackage(Idx, Dir, &Err, PinFolder)) return Err;
+        if (Changed) *Changed = true;
+        return {};
+    }
+    //Download (or a folder no longer a package): its content dehydrated, its nodes and cover kept, back in the Catalog.
+    std::error_code Ec;
+    const fs::path Own = fs::weakly_canonical(Dir, Ec);
+    std::map<std::string, fs::path> Canon;
+    std::vector<std::string> Variants;
+    for (const auto &[Key, N] : Idx.Nodes)
+    {
+        if (!N.IsVariant() || N.BundleDir.empty()) continue;
+        auto It = Canon.find(N.BundleDir);
+        if (It == Canon.end()) It = Canon.emplace(N.BundleDir, fs::weakly_canonical(N.BundleDir, Ec)).first;
+        if (It->second == Own) Variants.push_back(Key);
+    }
+    if (Variants.empty()) return "nothing of it is installed here";
+    for (const std::string &Key : Variants) DehydrateNode(Idx, Key);
+    if (Changed) *Changed = true;
+    return {};
 }
 
 std::string UninstallBlocked(const std::filesystem::path &Dir)
