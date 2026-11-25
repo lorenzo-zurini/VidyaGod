@@ -142,6 +142,7 @@ LayerBytes::Held   # a test probe: how many layers' bytes a chain holds at once 
 
 # ---- 2026-11-24 batching sweep: test probes (the tests' teeth: how many times a thing was done) ----
 AppModel::refreshes                       # a test probe: library reads refreshFromDisk started (one at a time)
+AppModel::rebuilds                        # a test probe: catalog rebuilds made on the calling thread
 DownloadManager::debugProgressRecomputes  # a test probe: package progress recomputes (once per burst)
 IpfsModel::sizeLooks                      # a test probe: size look-ups started (one worker for many CIDs)
 NetworkTab::refreshes                     # a test probe: the Peers page's refreshes (none while hidden)

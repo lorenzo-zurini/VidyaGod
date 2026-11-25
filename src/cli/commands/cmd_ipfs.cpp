@@ -653,7 +653,7 @@ VG_COMMANDS
     Command::Register({
         "transfers show", "one CID's row in the Downloads tab", "Its full state, its size and percent as the download manager reads them.",
         { CidArg() }, { "transfers show Qm…" },
-        { "IpfsModel::has", "IpfsModel::state", "IpfsModel::stateRef", "IpfsModel::pct", "IpfsModel::size" }, Needs::Ui, false,
+        { "IpfsModel::has", "IpfsModel::state", "IpfsModel::stateRef", "IpfsModel::pct", "IpfsModel::size", "PackageCatalog::StagedPackageOf" }, Needs::Ui, false,
         [](Command::Context &C, const json &A) {
             IpfsModel &M = *Win(C).ipfsModel();
             const QString Q = QString::fromStdString(Command::Str(A, "cid"));

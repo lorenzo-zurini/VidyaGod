@@ -2,6 +2,7 @@
 #define PACKAGECATALOG_H
 
 #include <nlohmann/json.hpp>
+#include <atomic>
 #include <string>
 #include <vector>
 #include <atomic>
@@ -434,23 +435,42 @@ struct ContentDelete
 struct StagedUpdate
 {
     PackageUpdate U; std::filesystem::path Stage;
+    std::filesystem::path StageRoot;                                              // UPDATING: emptied folders go up to it
     std::vector<std::string> Listing, Added, Removed, Kept;
     std::vector<std::pair<std::filesystem::path, std::filesystem::path>> Moves;   // content: from → to
     std::vector<ContentDelete> Deletes;
     unsigned long long DeleteBytes = 0;
 };
+// Where a switch is: a fraction 0..1 (or -1: no measure) and a line for a person. Called on the worker's thread.
+using SwitchProgress = std::function<void(double Fraction, const std::string &Detail)>;
+// The folder every stage lives in: beside LIBRARY, never in it nor in CATALOG (nothing indexes it). Each stage is
+// UPDATING/<library>/<package>/<peer>-<version>; none outlives its switch (applied, refused, discarded or cancelled).
+std::filesystem::path UpdatesRoot(const nlohmann::ordered_json &GlobalConfigJSON);
+// The installed package a path inside a stage is for: its library and folder (as LIBRARY names them). False outside one.
+bool StagedPackageOf(const nlohmann::ordered_json &GlobalConfigJSON, const std::filesystem::path &P, std::string *Lib,
+                     std::string *Folder);
 // Fetch U's nodes into its own stage (per peer and version) and plan the switch (through the ONE queue; waits —
 // call off the GUI thread). Refused for a package holding never-minted (draft) node files. A stage left by a switch
-// that stopped half-way is resumed as it was planned.
+// that stopped half-way is resumed as it was planned. *Cancel turning true stops the wait: the stage goes, as refused.
 bool StageUpdate(const nlohmann::ordered_json &GlobalConfigJSON, const PackageUpdate &U, StagedUpdate *Out,
-                 std::string *Error = nullptr);
+                 std::string *Error = nullptr, const SwitchProgress &Say = {}, const std::atomic<bool> *Cancel = nullptr);
 // Switch the installed package to the staged version. The plan is made again under the package's lock (the library
 // may have changed while the user read it) and refused if it would now delete a file the user was not shown. Refused
 // while a game runs or a download lands in the package. Saves and kept state are untouched. The plan is journaled in
-// the stage first: staging and applying again after a failure finishes the same switch.
-bool ApplyStagedUpdate(const nlohmann::ordered_json &GlobalConfigJSON, const StagedUpdate &S, std::string *Error = nullptr);
-// Drop a staged version without applying it (its fetch forgotten, its files and their references gone).
-void DiscardStagedUpdate(const StagedUpdate &S);
+// the stage first: staging and applying again after a failure finishes the same switch (and so does the next start,
+// SweepUpdateStages). Done, the stage is gone (with the folders it leaves empty); refused, it stays for the caller to
+// apply again or discard.
+bool ApplyStagedUpdate(const nlohmann::ordered_json &GlobalConfigJSON, const StagedUpdate &S, std::string *Error = nullptr,
+                       const SwitchProgress &Say = {});
+// Drop a staged version without applying it (its fetch forgotten, its files and their references gone, and the folders
+// it leaves empty). A stage whose switch has begun (its journal written) is not dropped: the package is half-switched,
+// and only finishing the switch mends it — false then.
+bool DiscardStagedUpdate(const StagedUpdate &S);
+// What a start does with UPDATING (the node up: references move and drop): a switch whose journal is there was cut
+// short (a crash, a full disk) and is finished as the user confirmed it; any other stage is a fetch nothing will
+// apply, and goes; so does every folder left empty, UPDATING itself included. A stage a switch of this run is using
+// is left alone. Returns the packages finished; *Errors, the switches that could not be.
+std::vector<std::string> SweepUpdateStages(const nlohmann::ordered_json &GlobalConfigJSON, std::vector<std::string> *Errors = nullptr);
 
 // True when a node contains (NODE) a node missing from the index: a package it needs has not landed yet, or the
 // peer does not share it. Nothing is ever fetched into the node's own package to fill the gap (a node has one home).

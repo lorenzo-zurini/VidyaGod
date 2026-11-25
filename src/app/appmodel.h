@@ -21,6 +21,7 @@
 #include <unordered_map>
 
 class PeerSharing;
+class UpdateService;
 class QDir;
 class QTimer;
 
@@ -53,6 +54,7 @@ public:
     const std::unordered_map<std::string, Installed::NodeHydration> & hydration() const;
     QDir *                   appDataDir()    const { return AppDataDir; }
     PeerSharing &          peers()       const { return *Peers; }   // the peer protocol (peersharing.h)
+    UpdateService &        updates()     const { return *Updates; } // switching a package to a peer's version (updateservice.h)
     int                      cardPixelWidth() const { return CardPixelWidth; }
 
     // ── Mutators (perform the change, persist, then emit so every view reacts) ──
@@ -68,6 +70,7 @@ public:
     void rebuildCatalogSoon();                         // one rebuild for a burst of asks (RebuildSoonMs after the first)
     int RebuildSoonMs = 250;
     int refreshes() const { return Refreshes; }   // test observability: refreshFromDisk reads started
+    int rebuilds() const { return Rebuilds; }     // test observability: rebuildCatalog calls (an index built here, on this thread)
     // Check the index and what of it is on disk against the library, off the GUI thread (what the app's start does):
     // what changed is swapped in, with catalogChanged; diskChecked says when it is done.
     void refreshFromDisk();
@@ -163,6 +166,7 @@ private:
     nlohmann::ordered_json * Config;
     QDir *                   AppDataDir;
     PeerSharing *          Peers = nullptr;   // child QObject, made in the ctor
+    UpdateService *        Updates = nullptr; // child QObject, made in the ctor
     std::shared_ptr<const NodeIndex> Catalog = std::make_shared<const NodeIndex>();
     using HydrationMap = std::unordered_map<std::string, Installed::NodeHydration>;
     mutable std::shared_ptr<const HydrationMap> Hydration;   // of Catalog (null: worked out when first asked)
@@ -184,6 +188,7 @@ private:
     bool Refreshing = false;      // a refreshFromDisk is reading the library
     bool RefreshAgain = false;    // asked again while it reads: once more after it
     int  Refreshes = 0;
+    int  Rebuilds = 0;
     bool SaveDirty = false;       // asked to save since the last write
     bool RebuildPending = false;  // asked for and not yet done by a rebuildCatalog
     bool HealDeferred = false;    // the last heal waited for the queue (said once)

@@ -1,5 +1,6 @@
 #include "appmodel.h"
 #include "peersharing.h"
+#include "updateservice.h"
 #include "nodestore.h"
 #include "covercache.h"
 #include "platform/platform.h"   // ReleaseFreedMemory
@@ -86,6 +87,7 @@ AppModel::AppModel(nlohmann::ordered_json * config, QDir * appDataDir, QObject *
     }
 
     Peers = new PeerSharing(*this);   // the peer protocol: shares, received libraries, per-peer toggles
+    Updates = new UpdateService(*this, this);   // a package switched to a peer's version; the start's stage sweep
 
     // Background serve-reliability sweep: periodically re-point any orphaned no-copy reference so content that was
     // moved/re-created MID-SESSION is repaired before (or shortly after) a peer requests it — not only on next launch.
@@ -144,6 +146,7 @@ void AppModel::rebuildCatalogSoon()
 
 void AppModel::rebuildCatalog()
 {
+    ++Rebuilds;
     RebuildPending = false;   // every ask so far is covered (an index swapped in from elsewhere is not: it may predate them)
     {
         std::string Inputs;

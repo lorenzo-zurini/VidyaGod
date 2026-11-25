@@ -114,8 +114,48 @@ std::string Tail(const std::string &S, size_t N) { return S.size() > N ? S.subst
 std::filesystem::path UpdateStage(const nlohmann::ordered_json &Config, const PackageUpdate &U)
 {
     //Per peer and version: two peers' versions of one package never share a stage.
-    return std::filesystem::path(LibraryRootDir(Config)).parent_path() / "UPDATING" / NodeFiles::SafeName(U.Lib) / NodeFiles::SafeName(U.Pkg)
-           / NodeFiles::SafeName(Tail(U.Peer, 8) + "-" + U.Version);
+    return UpdatesRoot(Config) / NodeFiles::SafeName(U.Lib) / NodeFiles::SafeName(U.Pkg) / NodeFiles::SafeName(Tail(U.Peer, 8) + "-" + U.Version);
+}
+//The stages a switch of this run is using (staged, not yet applied or discarded): the start's sweep leaves them be.
+std::mutex g_StagesMu;
+std::set<std::string> g_Stages;
+void HoldStage(const std::filesystem::path &S) { std::lock_guard<std::mutex> Lk(g_StagesMu); g_Stages.insert(S.lexically_normal().string()); }
+void LetStage(const std::filesystem::path &S) { std::lock_guard<std::mutex> Lk(g_StagesMu); g_Stages.erase(S.lexically_normal().string()); }
+bool StageHeld(const std::filesystem::path &S) { std::lock_guard<std::mutex> Lk(g_StagesMu); return g_Stages.count(S.lexically_normal().string()) != 0; }
+//A folder, then each folder above it that it leaves empty — up to Root, Root itself included, never above it.
+void PruneEmpty(std::filesystem::path P, const std::filesystem::path &Root)
+{
+    const std::filesystem::path R = Root.lexically_normal();
+    for (P = P.lexically_normal(); !P.empty() && NodeGraph::PathWithin(R, P); P = P.parent_path())
+    {
+        std::error_code Ec;
+        if (!std::filesystem::is_directory(P, Ec) || !std::filesystem::is_empty(P, Ec) || Ec || !std::filesystem::remove(P, Ec)) return;
+        if (P == R) return;
+    }
+}
+//A stage goes: its fetches land nowhere any more (and no download row names a file in it), its node files with their
+//references when the reference was to them (Keep: where a node's own copy stays, referenced there instead), the
+//folder, and the folders above it it leaves empty.
+void DropStage(const std::filesystem::path &Stage, const std::filesystem::path &Root,
+               const std::map<std::string, std::filesystem::path> &Keep = {})
+{
+    namespace fs = std::filesystem;
+    IpfsWrapper::ForgetDestsUnder(Stage.string());
+    std::vector<LandedNode> Landed;
+    std::error_code Ec;
+    for (const auto &E : fs::directory_iterator(Stage, Ec))
+    {
+        const fs::path &P = E.path();
+        if (P.extension() != ".json" || P.filename() == "switch.json") continue;
+        const std::string C = P.stem().string();                                  // a staged node is named by its CID
+        LandedNode N{ P, C, {} };
+        if (const auto It = Keep.find(C); It != Keep.end()) N.Elsewhere.push_back(It->second);
+        Landed.push_back(std::move(N));
+    }
+    RemoveLandedNodes(Landed);
+    fs::remove_all(Stage, Ec);
+    LetStage(Stage);
+    PruneEmpty(Stage.parent_path(), Root);
 }
 nlohmann::ordered_json NodeFileJson(const std::filesystem::path &P)
 {
@@ -209,7 +249,12 @@ void PlanSwitch(const NodeIndex &Idx, StagedUpdate &S)
 constexpr const char *kSwitchJournal = "switch.json";
 bool SaveJournal(const StagedUpdate &S)
 {
-    nlohmann::ordered_json J = { {"listing", S.Listing}, {"added", S.Added}, {"removed", S.Removed}, {"kept", S.Kept},
+    //Which switch it is, too: the next start finishes it without being asked again (SweepUpdateStages).
+    nlohmann::ordered_json Listed = nlohmann::ordered_json::object();
+    for (const auto &[C, F] : S.U.Listing) Listed[C] = F;
+    nlohmann::ordered_json J = { {"update", { {"dir", S.U.Dir.string()}, {"lib", S.U.Lib}, {"pkg", S.U.Pkg}, {"peer", S.U.Peer},
+                                              {"nick", S.U.Nick}, {"version", S.U.Version}, {"listing", Listed} }},
+                                 {"listing", S.Listing}, {"added", S.Added}, {"removed", S.Removed}, {"kept", S.Kept},
                                  {"moves", nlohmann::ordered_json::array()}, {"deletes", nlohmann::ordered_json::array()},
                                  {"bytes", S.DeleteBytes} };
     for (const auto &[F, T] : S.Moves) J["moves"].push_back({ F.string(), T.string() });
@@ -238,6 +283,14 @@ bool LoadJournal(StagedUpdate &S)
         if (J.contains(K) && J[K].is_array()) for (const auto &X : J[K]) if (X.is_string()) V.push_back(X.get<std::string>());
         return V;
     };
+    if (S.U.Dir.empty() && J.contains("update") && J["update"].is_object())
+    {   // a switch found by the start's sweep: which package, from whom
+        const auto &U = J["update"];
+        S.U.Dir = U.value("dir", std::string()); S.U.Lib = U.value("lib", std::string()); S.U.Pkg = U.value("pkg", std::string());
+        S.U.Peer = U.value("peer", std::string()); S.U.Nick = U.value("nick", std::string()); S.U.Version = U.value("version", std::string());
+        if (U.contains("listing") && U["listing"].is_object())
+            for (const auto &[C, F] : U["listing"].items()) if (F.is_string()) S.U.Listing[C] = F.get<std::string>();
+    }
     S.Listing = Strs("listing"); S.Added = Strs("added"); S.Removed = Strs("removed"); S.Kept = Strs("kept");
     S.Moves.clear(); S.Deletes.clear();
     S.DeleteBytes = J.value("bytes", 0ull);
@@ -382,16 +435,36 @@ std::string PeerListingPackage(const nlohmann::ordered_json &Config, const std::
     return {};
 }
 
-bool StageUpdate(const nlohmann::ordered_json &Config, const PackageUpdate &U, StagedUpdate *Out, std::string *Error)
+std::filesystem::path UpdatesRoot(const nlohmann::ordered_json &Config)
+{
+    return std::filesystem::path(LibraryRootDir(Config)).parent_path() / "UPDATING";
+}
+
+bool StagedPackageOf(const nlohmann::ordered_json &Config, const std::filesystem::path &P, std::string *Lib, std::string *Folder)
+{
+    const std::filesystem::path Rel = P.lexically_normal().lexically_relative(UpdatesRoot(Config).lexically_normal());
+    auto It = Rel.begin();
+    if (Rel.empty() || It == Rel.end() || *It == ".." || *It == ".") return false;
+    const std::string L = (It++)->string();
+    if (It == Rel.end()) return false;
+    if (Lib) *Lib = L;
+    if (Folder) *Folder = It->string();
+    return true;
+}
+
+bool StageUpdate(const nlohmann::ordered_json &Config, const PackageUpdate &U, StagedUpdate *Out, std::string *Error,
+                 const SwitchProgress &Say, const std::atomic<bool> *Cancel)
 {
     namespace fs = std::filesystem;
     std::lock_guard<std::mutex> Lk(PackageLock(U.Dir));
     StagedUpdate S;
     S.U = U;
     S.Stage = UpdateStage(Config, U);
+    S.StageRoot = UpdatesRoot(Config);
     std::error_code Ec;
     if (HasDraftNodes(U.Dir))
     { if (Error) *Error = U.Pkg + " holds node files that were never saved under their CID (drafts): open it in the package editor and save first"; return false; }
+    HoldStage(S.Stage);
     if (fs::exists(S.Stage / kSwitchJournal, Ec) && LoadJournal(S))
     {   // a switch to this very version stopped half-way: finish it as it was planned
         if (Out) *Out = std::move(S);
@@ -399,14 +472,10 @@ bool StageUpdate(const nlohmann::ordered_json &Config, const PackageUpdate &U, S
     }
     IpfsWrapper::ForgetDestsUnder(S.Stage.string());
     fs::remove_all(S.Stage, Ec);
-    fs::create_directories(S.Stage.parent_path(), Ec);
     const IpfsWrapper::ForegroundHold Hold;
     std::string WErr;
     auto Fail = [&](const std::string &Why) {
-        IpfsWrapper::ForgetDestsUnder(S.Stage.string());            // a fetch that lands later lands nowhere
-        for (const auto &[C, F] : U.Listing) RemoveLandedNode(S.Stage / (C + ".json"), C);   // nobody here wants them
-        std::error_code Rc;
-        fs::remove_all(S.Stage, Rc);
+        DropStage(S.Stage, S.StageRoot);                             // a fetch that lands later lands nowhere; nobody wants them
         if (Error) *Error = Why;
         return false;
     };
@@ -416,21 +485,43 @@ bool StageUpdate(const nlohmann::ordered_json &Config, const PackageUpdate &U, S
     for (const auto &[C, F] : U.Listing)
         Batch.push_back(IpfsWrapper::FetchTarget{ C, (S.Stage / (C + ".json")).string(), /*Optional=*/false, /*Dir=*/false, /*Verify=*/true });
     fs::create_directories(S.Stage, Ec);
-    if (!IpfsWrapper::WaitBatch(IpfsWrapper::EnqueueBatch(Batch), 10 * 60 * 1000, &WErr))
-        return Fail("fetching " + U.Nick + "'s version of " + U.Pkg + ": " + WErr);
+    const std::string What = U.Nick + "'s version of " + U.Pkg;
+    if (Say) Say(0, "Getting " + What + " (" + std::to_string(Batch.size()) + " node file" + (Batch.size() == 1 ? "" : "s") + ")");
+    {
+        const IpfsWrapper::BatchHandle H = IpfsWrapper::EnqueueBatch(Batch);
+        //A wait in short steps: a cancel is seen within one, and each says how many of the version's files are in.
+        const auto Until = std::chrono::steady_clock::now() + std::chrono::minutes(10);
+        for (size_t Was = static_cast<size_t>(-1);;)
+        {
+            if (IpfsWrapper::WaitBatch(H, 250, &WErr)) break;
+            for (const auto &[C, F] : U.Listing)                      // a step's end is not a failure; a failed fetch is
+                if (const std::string Why = IpfsWrapper::FailureOf(C); !Why.empty())
+                    return Fail("fetching " + What + ": node " + F + ": " + Why);
+            if (Cancel && Cancel->load()) return Fail("cancelled");
+            if (std::chrono::steady_clock::now() > Until) return Fail("fetching " + What + ": timed out after 10 minutes");
+            size_t In = 0;
+            for (const auto &[C, F] : U.Listing) In += IpfsWrapper::JobSettled(C) ? 1 : 0;
+            if (Say && In != Was) Say(double(In) / double(Batch.size()), "Getting " + What + ": " + std::to_string(In) + " of "
+                                      + std::to_string(Batch.size()) + " node files");
+            Was = In;
+        }
+    }
+    if (Cancel && Cancel->load()) return Fail("cancelled");
     for (const auto &[C, F] : U.Listing)
     {
         std::string VErr;
         if (!NodeGraph::VerifyLanded(S.Stage / (C + ".json"), C, nullptr, &VErr))
-            return Fail(U.Nick + "'s version of " + U.Pkg + ": node " + F + " refused: " + VErr);
+            return Fail(What + ": node " + F + " refused: " + VErr);
         S.Listing.push_back(C);
     }
+    if (Say) Say(1, "Comparing " + What + " with the installed one");
     PlanSwitch(*CurrentIndex(Config), S);
     if (Out) *Out = std::move(S);
     return true;
 }
 
-bool ApplyStagedUpdate(const nlohmann::ordered_json &Config, const StagedUpdate &Confirmed, std::string *Error)
+bool ApplyStagedUpdate(const nlohmann::ordered_json &Config, const StagedUpdate &Confirmed, std::string *Error,
+                       const SwitchProgress &Say)
 {
     namespace fs = std::filesystem;
     std::lock_guard<std::mutex> Lk(PackageLock(Confirmed.U.Dir));
@@ -443,7 +534,10 @@ bool ApplyStagedUpdate(const nlohmann::ordered_json &Config, const StagedUpdate 
     if (IpfsWrapper::LandingUnder(Dir.string()))
         return Refuse("a download into " + Pkg + " is in progress — let it finish first");
     StagedUpdate S = Confirmed;
+    if (S.StageRoot.empty()) S.StageRoot = UpdatesRoot(Config);
     const bool Resuming = LoadJournal(S);
+    const std::string What = "Switching " + Pkg + " to " + S.U.Nick + "'s version";
+    if (Say) Say(-1, What + (Resuming ? ": finishing the switch that stopped" : ""));
     //Nothing is touched unless every node of the version is here (staged, or moved in by an earlier attempt).
     {
         const auto Here = NodeFiles::In(Dir);
@@ -464,6 +558,7 @@ bool ApplyStagedUpdate(const nlohmann::ordered_json &Config, const StagedUpdate 
                               + " would be deleted too): switch again to review it");
         if (!SaveJournal(S)) return Refuse("cannot write the switch's plan into " + S.Stage.string());
     }
+    if (Say && !S.Moves.empty()) Say(0.2, What + ": renaming " + std::to_string(S.Moves.size()) + " file(s)");
     //1. Content that stays but changes its file name (bumped beside another version, or the version's own name),
     //   never over a file already there; the references follow in one batch (a rename an earlier attempt made too).
     //A switch refused part way keeps what it already moved: the references of those files follow before it says no
@@ -506,6 +601,7 @@ bool ApplyStagedUpdate(const nlohmann::ordered_json &Config, const StagedUpdate 
                     + " file(s) but their references did not follow: " + MErr);
     }
     else Later = std::move(Followed);
+    if (Say && !S.Deletes.empty()) Say(0.4, What + ": removing " + std::to_string(S.Deletes.size()) + " file(s) it no longer has");
     //2. Content no node of the package names any more goes (its reference with it, when it was the reference — then
     //   the same bytes kept under another name are referenced there).
     for (const auto &D : S.Deletes)
@@ -514,6 +610,7 @@ bool ApplyStagedUpdate(const nlohmann::ordered_json &Config, const StagedUpdate 
         RemoveLandedNode(D.File, D.Cid, D.Elsewhere);
         if (fs::exists(D.File, Ec)) LogWarn("PackageCatalog::ApplyStagedUpdate", "could not delete " + D.File.string());
     }
+    if (Say) Say(0.6, What + ": moving its node files in");
     //3. The version's node files move in (each referenced where it now lives, so the package serves and re-shares it),
     //4. the nodes nothing contains any more go, and 5. every node file takes its name among the package's new nodes.
     {
@@ -554,23 +651,77 @@ bool ApplyStagedUpdate(const nlohmann::ordered_json &Config, const StagedUpdate 
         Refs.insert(Refs.end(), Followed.begin(), Followed.end());
         for (const auto &[F, T] : Renamed) Refs.push_back({ F, T });
         std::string MErr;
+        if (Say) Say(0.8, What + ": updating what the node seeds");
         if (!Refs.empty() && IpfsWrapper::MoveRefs(Refs, &MErr) < 0)
             LogWarn("PackageCatalog::ApplyStagedUpdate", "moved " + Pkg + "'s files, but their references did not follow: " + MErr);
     }
-    fs::remove_all(S.Stage, Ec);
+    //What is left in the stage are copies of nodes the package already had: they go (a reference to a copy goes back to
+    //the package's own file), and so does every folder the stage leaves empty — UPDATING with the last.
+    {
+        std::map<std::string, fs::path> Own;
+        for (const auto &[C, F] : NodeFiles::In(Dir)) Own[C] = F.Path;
+        DropStage(S.Stage, S.StageRoot, Own);
+    }
     LogOut("PackageCatalog::ApplyStagedUpdate", "switched '" + Pkg + "' to " + S.U.Nick + "'s version: "
            + std::to_string(S.Added.size()) + " node(s) in, " + std::to_string(S.Removed.size()) + " out, "
            + std::to_string(S.Kept.size()) + " kept for what still contains them");
     return true;
 }
 
-void DiscardStagedUpdate(const StagedUpdate &S)
+bool DiscardStagedUpdate(const StagedUpdate &S)
 {
     std::lock_guard<std::mutex> Lk(PackageLock(S.U.Dir));
-    IpfsWrapper::ForgetDestsUnder(S.Stage.string());
-    for (const auto &[C, F] : S.U.Listing) RemoveLandedNode(S.Stage / (C + ".json"), C);   // nobody here wants them
     std::error_code Ec;
-    std::filesystem::remove_all(S.Stage, Ec);
+    if (std::filesystem::exists(S.Stage / kSwitchJournal, Ec))
+    {
+        LogWarn("PackageCatalog::DiscardStagedUpdate", "kept " + S.Stage.string() + ": the switch of " + S.U.Pkg
+                + " has begun; the next start finishes it");
+        LetStage(S.Stage);                                             // this run holds it no more: a sweep may finish it
+        return false;
+    }
+    DropStage(S.Stage, S.StageRoot.empty() ? S.Stage.parent_path().parent_path().parent_path() : S.StageRoot);
+    return true;
+}
+
+std::vector<std::string> SweepUpdateStages(const nlohmann::ordered_json &Config, std::vector<std::string> *Errors)
+{
+    namespace fs = std::filesystem;
+    std::vector<std::string> Done;
+    const fs::path Root = UpdatesRoot(Config);
+    std::error_code Ec;
+    if (!fs::is_directory(Root, Ec)) return Done;
+    //UPDATING/<library>/<package>/<stage>: nothing else is ever made there.
+    std::vector<fs::path> Stages, Folders;
+    for (const auto &L : fs::directory_iterator(Root, Ec))
+    {
+        if (!L.is_directory(Ec)) continue;
+        Folders.push_back(L.path());
+        for (const auto &P : fs::directory_iterator(L.path(), Ec))
+        {
+            if (!P.is_directory(Ec)) continue;
+            Folders.push_back(P.path());
+            for (const auto &St : fs::directory_iterator(P.path(), Ec)) if (St.is_directory(Ec)) Stages.push_back(St.path());
+        }
+    }
+    for (const fs::path &St : Stages)
+    {
+        if (StageHeld(St)) continue;                                   // a switch of this run is using it
+        StagedUpdate S;
+        S.Stage = St;
+        S.StageRoot = Root;
+        if (fs::exists(St / kSwitchJournal, Ec) && LoadJournal(S) && !S.U.Dir.empty())
+        {
+            std::string Err;
+            if (ApplyStagedUpdate(Config, S, &Err)) Done.push_back(S.U.Pkg);
+            else if (Errors) Errors->push_back(S.U.Pkg + ": " + Err);
+            continue;
+        }
+        DropStage(St, Root);                                           // a fetch nothing will apply
+    }
+    //Folders an older stage left empty (each emptied stage prunes its own; these had none left in them).
+    for (auto It = Folders.rbegin(); It != Folders.rend(); ++It) PruneEmpty(*It, Root);
+    PruneEmpty(Root, Root);
+    return Done;
 }
 
 std::string PackagePin(const nlohmann::ordered_json &Config, const std::filesystem::path &PkgDir)

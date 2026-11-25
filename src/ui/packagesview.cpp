@@ -10,6 +10,7 @@
 #include "commonutils.h"
 #include "asyncwork.h"
 #include "ipfswrapper.h"
+#include "updateservice.h"
 
 #include <QVBoxLayout>
 #include <QHBoxLayout>
@@ -42,6 +43,17 @@ PackagesView::PackagesView(AppModel &model, QWidget *parent)
     connect(&Model, &AppModel::packageRemoveFailed, this, [this](const QString &Why) {
         if (isVisible()) QMessageBox::warning(this, "Uninstall package", "The package was not uninstalled: " + Why);
     });
+    //A switch says where it is under the versions, with its Cancel; what came of it is in the activity strip
+    //(ActivityStrip::Watch): a switch outlasts a visit to this page.
+    UpdateService &Svc = Model.updates();
+    connect(&Svc, &UpdateService::progress, this, [this](double, const QString &Detail) {
+        SwitchBar->show();
+        SwitchText->setText(Detail);
+    });
+    connect(&Svc, &UpdateService::finished, this, [this](UpdateService::Outcome, const QString &) {
+        SwitchBar->hide();
+        rebuildUpdates();
+    });
     rebuildList();
 }
 
@@ -51,6 +63,21 @@ void PackagesView::buildUi()
 
     // (The "Add Local Package" + "Package Editor" actions moved to the Library tab's toolbar — see LibraryTab — so the
     // authoring entry points are discoverable on the main screen instead of buried in this settings subpage.)
+
+    SwitchBar = new QWidget(this);
+    {
+        QHBoxLayout *H = new QHBoxLayout(SwitchBar);
+        H->setContentsMargins(0, 0, 0, 0);
+        SwitchText = new QLabel(SwitchBar);
+        SwitchText->setWordWrap(true);
+        SwitchCancel = new QPushButton("Cancel", SwitchBar);
+        SwitchCancel->setToolTip("Stop getting the version. A switch already being made finishes.");
+        connect(SwitchCancel, &QPushButton::clicked, this, [this] { Model.updates().cancel(); });
+        H->addWidget(SwitchText, 1);
+        H->addWidget(SwitchCancel);
+    }
+    SwitchBar->setVisible(Model.updates().busy());
+    layout->addWidget(SwitchBar);
 
     UpdatesBox = new QWidget(this);
     UpdatesBox->setLayout(new QVBoxLayout());
@@ -97,7 +124,7 @@ void PackagesView::rebuildUpdates()
                 QPushButton *B = new QPushButton(QString::fromStdString("Use " + U.Nick + "'s version"), G);
                 B->setToolTip("Switch this package to " + QString::fromStdString(U.Nick) + "'s version of it. A part other "
                               "installed games contain stays for them; what goes is listed before anything changes.");
-                B->setEnabled(!Switching);
+                B->setEnabled(!Model.updates().busy());
                 connect(B, &QPushButton::clicked, this, [this, U, B]{ offerUpdate(U, B); });
                 Grid->addWidget(B, Row++, 1);
             }
@@ -107,47 +134,41 @@ void PackagesView::rebuildUpdates()
 
 void PackagesView::offerUpdate(const PackageCatalog::PackageUpdate &U, QPushButton *Button)
 {
-    if (!Model.config() || Switching) return;
-    Switching = true;
+    if (!Model.config() || Model.updates().busy()) return;
     for (auto *B : UpdatesBox->findChildren<QPushButton *>()) B->setEnabled(false);
-    Button->setText("Fetching " + QString::fromStdString(U.Nick) + "'s version…");
-    auto Cfg = std::make_shared<const nlohmann::ordered_json>(*Model.config());
-    auto S = std::make_shared<PackageCatalog::StagedUpdate>();
-    auto Err = std::make_shared<std::string>();
-    auto Ok = std::make_shared<bool>(false);
-    auto Finish = [this]{ Switching = false; rebuildUpdates(); };
-    AsyncWork::Run(this, [Cfg, U, S, Err, Ok]{ *Ok = PackageCatalog::StageUpdate(*Cfg, U, S.get(), Err.get()); },
-        [this, U, S, Err, Ok, Finish]{
-            if (!*Ok) { QMessageBox::warning(this, "Switch version", QString::fromStdString(*Err)); Finish(); return; }
-            QString Q = QString("Switch %1 to %2's version?\n\n%3 node(s) come in and %4 go.")
-                            .arg(QString::fromStdString(U.Pkg), QString::fromStdString(U.Nick))
-                            .arg(S->Added.size()).arg(S->Removed.size());
-            if (!S->Kept.empty())
-                Q += QString(" %1 node(s) of the current version stay, because other installed games still use them.").arg(S->Kept.size());
-            if (!S->Deletes.empty())
-            {
-                Q += "\n\nThese files are deleted (" + HumanBytesQ((long long)S->DeleteBytes) + "); they are needed again only to switch back:";
-                for (size_t I = 0; I < S->Deletes.size() && I < 12; ++I)
-                    Q += "\n  " + QString::fromStdString(S->Deletes[I].File.filename().string());
-                if (S->Deletes.size() > 12) Q += QString("\n  … and %1 more").arg(S->Deletes.size() - 12);
-            }
-            Q += "\n\nSaves and the files you keep are not touched. Choices saved for removed versions go back to their "
-                 "defaults. New content downloads the next time it is needed.";
-            if (QMessageBox::question(this, "Switch version", Q) != QMessageBox::Yes)
-            {
-                AsyncWork::Run(this, [S]{ PackageCatalog::DiscardStagedUpdate(*S); }, Finish);
-                return;
-            }
-            auto Done = std::make_shared<bool>(false);
-            auto Now = std::make_shared<const nlohmann::ordered_json>(*Model.config());   // the library as it is now
-            AsyncWork::Run(this, [Now, S, Err, Done]{ *Done = PackageCatalog::ApplyStagedUpdate(*Now, *S, Err.get()); },
-                [this, Err, Done, Finish]{
-                    if (!*Done) QMessageBox::warning(this, "Switch version", QString::fromStdString(*Err));
-                    Switching = false;
-                    Model.rebuildCatalog();                                    // the package's nodes changed → rebuildList
-                    (void)Finish;
-                });
-        });
+    Button->setText("Switching…");
+    QPointer<PackagesView> Self(this);
+    Model.updates().start(U, [Self](const PackageCatalog::StagedUpdate &S, std::function<void(bool)> Answer) {
+        if (!Self) { Answer(false); return; }
+        Self->askSwitch(S, std::move(Answer));
+    });
+}
+
+void PackagesView::askSwitch(const PackageCatalog::StagedUpdate &S, std::function<void(bool)> Answer)
+{
+    QString Q = QString("Switch %1 to %2's version?\n\n%3 node(s) come in and %4 go.")
+                    .arg(QString::fromStdString(S.U.Pkg), QString::fromStdString(S.U.Nick))
+                    .arg(S.Added.size()).arg(S.Removed.size());
+    if (!S.Kept.empty())
+        Q += QString(" %1 node(s) of the current version stay, because other installed games still use them.").arg(S.Kept.size());
+    if (!S.Deletes.empty())
+    {
+        Q += "\n\nThese files are deleted (" + HumanBytesQ((long long)S.DeleteBytes) + "); they are needed again only to switch back:";
+        for (size_t I = 0; I < S.Deletes.size() && I < 12; ++I)
+            Q += "\n  " + QString::fromStdString(S.Deletes[I].File.filename().string());
+        if (S.Deletes.size() > 12) Q += QString("\n  … and %1 more").arg(S.Deletes.size() - 12);
+    }
+    Q += "\n\nSaves and the files you keep are not touched. Choices saved for removed versions go back to their "
+         "defaults. New content downloads the next time it is needed.";
+    //Not exec(): the answer comes back through the box's finished, so nothing waits in a nested loop. Answered once —
+    //the box closed, or gone with the page (a no).
+    QMessageBox *Box = new QMessageBox(QMessageBox::Question, "Switch version", Q, QMessageBox::Yes | QMessageBox::No, this);
+    Box->setAttribute(Qt::WA_DeleteOnClose);
+    auto Once = std::make_shared<std::function<void(bool)>>(std::move(Answer));
+    auto Reply = [Once](bool Yes) { if (*Once) { auto A = std::move(*Once); *Once = nullptr; A(Yes); } };
+    connect(Box, &QMessageBox::finished, Box, [Box, Reply](int) { Reply(Box->clickedButton() == Box->button(QMessageBox::Yes)); });
+    connect(Box, &QObject::destroyed, [Reply] { Reply(false); });   // no context: the page goes first, disconnected
+    Box->open();
 }
 
 void PackagesView::rebuildList()

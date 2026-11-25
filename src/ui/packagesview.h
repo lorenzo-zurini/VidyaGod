@@ -3,9 +3,12 @@
 
 #include <QWidget>
 
+#include <functional>
+
 #include "packagecatalog.h"   // PackageCatalog::PackageUpdate
 
 class QPushButton;
+class QLabel;
 
 class AppModel;
 class QScrollArea;
@@ -42,6 +45,7 @@ private:
     // Found off the GUI thread (it builds each package's folder); applying asks first, showing what changes.
     void rebuildUpdates();
     void offerUpdate(const PackageCatalog::PackageUpdate &U, QPushButton *Button);
+    void askSwitch(const PackageCatalog::StagedUpdate &S, std::function<void(bool)> Answer);   // the plan, put to the person
     void showList(const std::vector<PackageCatalog::InstalledPackage> &Pkgs);
 
     AppModel &Model;
@@ -51,7 +55,9 @@ private:
     bool Updating = false, UpdateAgain = false; // one "other versions" scan at a time; asked meanwhile: one more after
     bool Stale = false;                        // asked while hidden: rebuilt when shown
     int UpdateScans = 0;
-    bool Switching = false;                    // one switch at a time: every button waits while one runs
+    QWidget *SwitchBar = nullptr;              // a switch under way: where it is, and its Cancel (UpdateService)
+    QLabel *SwitchText = nullptr;
+    QPushButton *SwitchCancel = nullptr;
 };
 
 #endif // PACKAGESVIEW_H

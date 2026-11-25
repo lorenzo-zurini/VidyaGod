@@ -11,6 +11,8 @@
 #include "cmdutil.h"
 #include "appmodel.h"
 #include "peersharing.h"
+#include "updateservice.h"
+#include <QEventLoop>
 #include "packagecatalog.h"
 #include "packagecatalog_p.h"
 #include "nodefiles.h"
@@ -682,7 +684,7 @@ VG_COMMANDS
     Command::Register({
         "updates apply", "switch an installed package to the newer version (shows what changes)",
         "Stage the newer version beside the installed one and list the files it adds, removes and keeps; --yes switches "
-        "to it, --discard throws the stage away.",
+        "to it. Without --yes nothing changes and the stage is dropped (--discard says so explicitly).",
         { Pos("package", "the package (its name or the update's folder CID)"), Flag("yes", "switch to it"), Flag("discard", "discard the stage instead") },
         { "updates apply 'Age of Empires II'", "updates apply 'Age of Empires II' --yes" },
         { "PackageCatalog::StageUpdate", "PackageCatalog::ApplyStagedUpdate", "PackageCatalog::DiscardStagedUpdate" }, Needs::Config, true,
@@ -691,14 +693,71 @@ VG_COMMANDS
             std::string Err;
             if (!PackageCatalog::StageUpdate(*C.Config, FindUpdate(C, Command::Str(A, "package")), &S, &Err)) throw std::runtime_error(Err);
             json Out = Staged(S);
-            if (Command::Bool(A, "discard", false)) { PackageCatalog::DiscardStagedUpdate(S); Out["discarded"] = true; }
-            else if (Command::Bool(A, "yes", false))
+            //Only shown (no --yes): the stage goes with the answer — the next call stages again (its nodes are here by
+            //then). Refused: the stage goes too, unless the switch began (the next start finishes it).
+            if (!Command::Bool(A, "yes", false)) Out["discarded"] = PackageCatalog::DiscardStagedUpdate(S);
+            else
             {
-                if (!PackageCatalog::ApplyStagedUpdate(*C.Config, S, &Err)) throw std::runtime_error(Err);
+                if (!PackageCatalog::ApplyStagedUpdate(*C.Config, S, &Err)) { PackageCatalog::DiscardStagedUpdate(S); throw std::runtime_error(Err); }
                 if (C.Model) C.Model->rebuildCatalog();
                 Out["applied"] = true;
             }
             return Out;
+        }, {} });
+
+    Command::Register({
+        "updates switch", "switch an installed package to a peer's version as Settings does: off the GUI thread, with progress",
+        "The switch Settings → Installed Packages makes (UpdateService): the version's node files are fetched into its stage, "
+        "the plan is made, then — with --yes — applied, and the library read again off the GUI thread. Without --yes the plan "
+        "is declined and its stage dropped. In the running app it begins and returns (follow it with events wait --signal "
+        "finished --object UpdateService); here it waits. --cancel stops the switch under way.",
+        { Command::OptPos("package", "the package (its name or the update's folder CID)"), Flag("yes", "switch to it"),
+          Flag("cancel", "stop the switch under way") },
+        { "updates switch 'Jet Set Radio Future' --yes", "updates switch --cancel" },
+        { "AppModel::updates", "UpdateService::start", "UpdateService::busy", "UpdateService::current", "UpdateService::cancel", "UpdateService::started" },
+        Needs::Model, true,
+        [](Command::Context &C, const json &A) {
+            UpdateService &Svc = C.Model->updates();
+            if (Command::Bool(A, "cancel", false))
+            {
+                const bool Was = Svc.busy();
+                const std::string Pkg = Svc.current().toStdString();
+                Svc.cancel();
+                return json{{"cancelled", Was}, {"package", Pkg}};
+            }
+            if (Svc.busy()) throw std::runtime_error("a switch of " + Svc.current().toStdString() + " is under way");
+            const PackageCatalog::PackageUpdate U = FindUpdate(C, Command::Str(A, "package"));
+            const bool Yes = Command::Bool(A, "yes", false);
+            auto Plan = std::make_shared<json>();
+            Svc.start(U, [Yes, Plan](const PackageCatalog::StagedUpdate &S, std::function<void(bool)> Answer) {
+                *Plan = Staged(S);
+                Answer(Yes);
+            });
+            if (C.Live) return json{{"switching", Svc.busy()}, {"package", U.Pkg}, {"follow", "VidyaGod events wait --signal finished --object UpdateService"}};
+            json Out;
+            QEventLoop Wait;
+            QObject::connect(&Svc, &UpdateService::finished, &Wait, [&](UpdateService::Outcome O, const QString &R) {
+                static const char *Names[] = { "done", "failed", "declined", "cancelled" };
+                Out = json{{"outcome", Names[static_cast<int>(O)]}, {"result", R.toStdString()}, {"plan", *Plan}};
+                Wait.quit();
+            });
+            if (Svc.busy()) Wait.exec();
+            if (Out.value("outcome", std::string()) == "failed") throw Command::CheckFailed(Out, Out.value("result", std::string()));
+            return Out;
+        }, {} });
+
+    Command::Register({
+        "updates sweep", "what a start does with UPDATING: finish a switch a crash cut short, drop every other stage",
+        "A switch writes its plan into its stage before the first change; one cut short (a crash, a full disk) is finished "
+        "as confirmed. Any other stage is a fetch nothing will apply: it goes, with the folders it leaves empty — UPDATING "
+        "itself too. The app does this once the node is up.",
+        {}, { "updates sweep" }, { "PackageCatalog::SweepUpdateStages", "PackageCatalog::UpdatesRoot" }, Needs::Config, true,
+        [](Command::Context &C, const json &) {
+            std::vector<std::string> Errors;
+            const auto Done = PackageCatalog::SweepUpdateStages(*C.Config, &Errors);
+            if (C.Model && !Done.empty()) C.Model->rebuildCatalog();
+            return json{{"finished", Done}, {"errors", Errors}, {"updating", PackageCatalog::UpdatesRoot(*C.Config).string()},
+                        {"left", std::filesystem::exists(PackageCatalog::UpdatesRoot(*C.Config))}};
         }, {} });
 
     // ---------------- received ----------------

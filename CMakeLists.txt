@@ -387,6 +387,7 @@ set(SHARED_SOURCES
     src/app/activitylog.h
     src/app/activitylog.cpp
     src/app/peersharing.cpp
+    src/app/updateservice.cpp
     src/app/nodeservice.cpp
 
     src/app/downloadmanager.h

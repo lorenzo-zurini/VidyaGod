@@ -33,6 +33,12 @@
 #include "packagesview.h"
 #include "runnerspage.h"
 #include "appmodel.h"
+#include "updateservice.h"
+#include "ipfsmodel.h"
+#include "downloadmanager.h"
+#include "activitylog.h"
+#include "activitystrip.h"
+#include <QMessageBox>
 #include <QPushButton>
 #include "downloadqueue.h"   // EnqueueBatch/WaitBatch — the REAL rolling queue under test
 #include "apppaths.h"
@@ -2315,6 +2321,271 @@ private slots:
         writeJson(QString::fromStdString((Lib / "draft.json").string()), json{{"LABEL", "draft"}, {"LAYERS", json::array()}});
         PackageCatalog::StagedUpdate S4;
         QVERIFY2(!Switch(Lib, S4) && Err.find("drafts") != std::string::npos, Err.c_str());
+        IpfsWrapper::DebugResetQueue();
+        IpfsWrapper::StopNode();
+    }
+
+    // A switch leaves nothing in UPDATING, whatever its end — done, declined, refused or cancelled — and a stage is never
+    // read as a library (2026-11-25, the first real PC → Deck update: empty "UPDATING/<library>/<package>" folders were
+    // left behind, and the Deck's Node page showed the staged nodes in a section of their own). A switch cut short
+    // after its plan was journaled is finished by the start's sweep; any other leftover goes with it.
+    // Teeth: drop PruneEmpty (the library/package folders stay); stage inside LIBRARY (its node is indexed); drop the
+    // stage naming in the Downloads tab (its rows read "Other"); drop the update record in the journal (the sweep drops
+    // a half-switched package's stage, and it stays half-switched); drop the cancel check; let Discard drop a journaled
+    // stage; drop ForgetDestsUnder in DropStage (the queue still names the stage).
+    void a_switch_leaves_no_stage_behind()
+    {
+        std::string Err;
+        QTemporaryDir Repo; QVERIFY(Repo.isValid());
+        QVERIFY2(IpfsWrapper::StartNode((Repo.path() + "/ipfs").toStdString(), &Err), Err.c_str());
+        QTemporaryDir SeedRoot; QVERIFY(SeedRoot.isValid());
+        const QString R = SeedRoot.path(), Ld = R + "/Libs/[L] DxWnd";
+        QDir().mkpath(Ld);
+        writeFile(Ld + "/dx.zip", std::string(3000, '1'));
+        const std::string X1 = IpfsWrapper::AddNoCopy((Ld + "/dx.zip").toStdString(), &Err);
+        QVERIFY2(!X1.empty(), Err.c_str());
+        writeJson(Ld + "/a.json", NodeFixture::Chain("libA", {NodeFixture::ContentCid("zip", "dx.zip", X1)}));
+        json seeder = json{{"Settings", {{"Paths", {{"LibraryRoot", R.toStdString()}}}}}};
+        auto Publish = [&]{ Err.clear(); const bool Ok = !PackageCatalog::PublishLibrary(seeder, &Err).empty(); if (!Ok) qWarning("publish: %s", Err.c_str());
+                            return PackageCatalog::Wire(PackageCatalog::SheetEntries(seeder["ShareSheet"])); };
+        const json Gen1 = Publish();
+        QTemporaryDir RxData; QVERIFY(RxData.isValid());
+        const std::string Peer = "12D3KooWSeederAlice", Nick = "derAlice";
+        json rx = json{{"Settings", {{"Paths", {{"LibraryRoot", (RxData.path() + "/LIBRARY").toStdString()}}}}},
+                       {"PeerLibraries", {{Peer, Gen1}}}};
+        landShares(rx, Nick, Gen1);
+        std::filesystem::path Lib;
+        QVERIFY2(PackageCatalog::AdoptReceivedPackage(rx, std::filesystem::path(PackageCatalog::CatalogRootDir(rx)) / (Nick + " - Libs") / "[L] DxWnd", &Lib, &Err), Err.c_str());
+        // The peer's next version adds libB (its content is not here: it downloads when needed).
+        writeFile(Ld + "/b.zip", std::string(2000, '2'));
+        const std::string X2 = IpfsWrapper::AddNoCopy((Ld + "/b.zip").toStdString(), &Err);
+        writeJson(Ld + "/b.json", NodeFixture::Chain("libB", {NodeFixture::ContentCid("zip", "b.zip", X2)}));
+        const json Gen2 = Publish();
+        const std::string LibB = cidOfLabel(Gen2["Libs"], "libB");
+        rx["PeerLibraries"] = json{{Peer, Gen2}};
+        const std::filesystem::path Updating = PackageCatalog::UpdatesRoot(rx);
+        QCOMPARE(Updating, std::filesystem::path(RxData.path().toStdString()) / "UPDATING");
+        auto Offer = [&]{
+            for (const auto & U : PackageCatalog::AvailableUpdates(rx)) if (U.Dir == Lib) return U;
+            return PackageCatalog::PackageUpdate{};
+        };
+        auto Gone = [&](const char * When) {
+            if (std::filesystem::exists(Updating))
+            {
+                std::string Left;
+                for (const auto & E : std::filesystem::recursive_directory_iterator(Updating)) Left += "\n  " + E.path().string();
+                QFAIL((std::string(When) + ": UPDATING is left behind:" + Left).c_str());
+            }
+            for (const auto & P : IpfsWrapper::OrphanedRefPaths())
+                QVERIFY2(P.find(Updating.string()) == std::string::npos, (std::string(When) + ": a reference into a stage: " + P).c_str());
+        };
+        QVERIFY(!Offer().Listing.empty());
+
+        {   // Staged: beside the library, never read as one — the index is the same, built from the same files.
+            std::string Before;
+            const NodeIndex Idx0 = PackageCatalog::BuildCatalogIndex(rx, &Before);
+            PackageCatalog::StagedUpdate S;
+            QVERIFY2(PackageCatalog::StageUpdate(rx, Offer(), &S, &Err), Err.c_str());
+            QVERIFY2(NodeGraph::PathWithin(Updating, S.Stage), S.Stage.string().c_str());
+            QVERIFY(std::filesystem::exists(S.Stage / (LibB + ".json")));
+            QVERIFY2(!PackageCatalog::RefreshCatalogIndex(rx, Before), "staging changed what the index is built from");
+            const NodeIndex Idx = PackageCatalog::BuildCatalogIndex(rx);
+            QVERIFY2(!Idx.Find(LibB), "a staged node is in the index");
+            for (const auto & [Id, N] : Idx.Nodes) QVERIFY2(!NodeGraph::PathWithin(Updating, N.BundleDir), N.BundleDir.string().c_str());
+            {   // The Downloads tab (the Deck's Node page) names a staged node by the package it is for, in its library.
+                QDir appDir(RxData.path());
+                AppModel model(&rx, &appDir);
+                IpfsModel Ipfs(model);
+                Ipfs.markQueued(QString::fromStdString(LibB));
+                const IpfsModel::CidState St = Ipfs.state(QString::fromStdString(LibB));
+                QCOMPARE(St.source, QStringLiteral("Libs"));
+                QCOMPARE(St.package, QStringLiteral("DxWnd"));
+            }
+            // The start's sweep leaves a stage this run's switch is using (staged, waiting for its answer) as it is.
+            QVERIFY(PackageCatalog::SweepUpdateStages(rx).empty());
+            QVERIFY2(std::filesystem::exists(S.Stage / (LibB + ".json")), "the sweep took a stage in use");
+            // Declined: the stage goes, and every folder it leaves empty — UPDATING with the last.
+            QVERIFY(PackageCatalog::DiscardStagedUpdate(S));
+            Gone("declined");
+            QCOMPARE(IpfsWrapper::QueueDestForCid(LibB), std::string());   // no download names the stage any more
+        }
+        // (One node plays both machines: a dropped stage took the peer's blocks with its references — the peer holds
+        // them again, as a real one would.)
+        QCOMPARE(Publish(), Gen2);
+        {   // Cancelled: the wait sees it, and the stage goes as it would refused.
+            std::atomic<bool> Cancel{true};
+            PackageCatalog::StagedUpdate S;
+            QVERIFY(!PackageCatalog::StageUpdate(rx, Offer(), &S, &Err, {}, &Cancel));
+            QCOMPARE(Err, std::string("cancelled"));
+            Gone("cancelled");
+        }
+        QCOMPARE(Publish(), Gen2);
+        {   // Refused before it began (a game runs): the caller discards it, and nothing is left.
+            PackageCatalog::StagedUpdate S;
+            QVERIFY2(PackageCatalog::StageUpdate(rx, Offer(), &S, &Err), Err.c_str());
+            {
+                const Sessions::RuntimeHold Running;
+                QVERIFY(!PackageCatalog::ApplyStagedUpdate(rx, S, &Err));
+            }
+            QVERIFY(PackageCatalog::DiscardStagedUpdate(S));
+            Gone("refused");
+        }
+        QCOMPARE(Publish(), Gen2);
+        {   // Cut short after its plan was written (a node file cannot move in — as a crash would leave it): the stage
+            // stays, Discard does not drop it (the package is half-switched), and the start's sweep finishes it.
+            PackageCatalog::StagedUpdate S;
+            QVERIFY2(PackageCatalog::StageUpdate(rx, Offer(), &S, &Err), Err.c_str());
+            const std::filesystem::path Block = Lib / (LibB + ".json");
+            std::filesystem::create_directories(Block / "x");
+            QVERIFY(!PackageCatalog::ApplyStagedUpdate(rx, S, &Err));
+            QVERIFY(std::filesystem::exists(S.Stage / "switch.json"));
+            QVERIFY2(!PackageCatalog::DiscardStagedUpdate(S), "a begun switch was dropped");
+            QVERIFY(std::filesystem::exists(S.Stage / "switch.json"));
+            std::filesystem::remove_all(Block);
+            // What an older run left: an empty package folder (the Deck's) and a stage nothing applies.
+            const std::filesystem::path Empty = Updating / "VidyaGod" / "[6082][v1.0] Jet Set Radio Future";
+            const std::filesystem::path Orphan = Updating / "Libs" / "[L] DxWnd" / "deadbeef-000000000000";
+            std::filesystem::create_directories(Empty);
+            std::filesystem::create_directories(Orphan);
+            writeFile(QString::fromStdString((Orphan / (LibB + ".json")).string()), "{}");
+            IpfsWrapper::ForgetDestsUnder(S.Stage.string());   // as a new run: nothing of the last is held
+            std::vector<std::string> Errors;
+            const std::vector<std::string> Done = PackageCatalog::SweepUpdateStages(rx, &Errors);
+            QVERIFY2(Errors.empty(), Errors.empty() ? "" : Errors[0].c_str());
+            QCOMPARE(Done, std::vector<std::string>{"[L] DxWnd"});
+            QVERIFY2(std::filesystem::exists(Lib / "libB.json"), "the switch was finished");
+            QVERIFY2(PackageCatalog::AvailableUpdates(rx).empty(), "the package is the peer's version");
+            Gone("swept");
+        }
+        // One more version: switched whole, nothing is left either.
+        writeFile(Ld + "/c.zip", std::string(1000, '3'));
+        const std::string X3 = IpfsWrapper::AddNoCopy((Ld + "/c.zip").toStdString(), &Err);
+        writeJson(Ld + "/c.json", NodeFixture::Chain("libC", {NodeFixture::ContentCid("zip", "c.zip", X3)}));
+        rx["PeerLibraries"] = json{{Peer, Publish()}};
+        {
+            PackageCatalog::StagedUpdate S;
+            int Said = 0;
+            const PackageCatalog::SwitchProgress Say = [&](double, const std::string &) { ++Said; };
+            QVERIFY2(PackageCatalog::StageUpdate(rx, Offer(), &S, &Err, Say), Err.c_str());
+            QVERIFY2(Said >= 2, std::to_string(Said).c_str());               // where the fetch is, then the plan
+            Said = 0;
+            QVERIFY2(PackageCatalog::ApplyStagedUpdate(rx, S, &Err, Say), Err.c_str());
+            QVERIFY2(Said >= 3, std::to_string(Said).c_str());               // where the switch is, along the way
+            QVERIFY(std::filesystem::exists(Lib / "libC.json"));
+            Gone("applied");
+            // Every node of the package is still held where it lives: a staged copy's reference went back to it.
+            for (const auto & [C, F] : NodeFiles::In(Lib))
+                QVERIFY2(IpfsWrapper::HasLocal(C) && !IpfsWrapper::CidMissing(C), (F.Path.string() + " is not held").c_str());
+        }
+        IpfsWrapper::DebugResetQueue();
+        IpfsWrapper::StopNode();
+    }
+
+    // Settings → Installed Packages switches off the GUI thread, saying where it is: the library is read again on a
+    // worker (AppModel::refreshFromDisk) — the rebuild the page made on the GUI thread froze a Deck for 20 s — and the
+    // confirm is a box that does not wait in a loop of its own. A switch declined, or switched, leaves no stage.
+    // Teeth: rebuild the catalog on the GUI thread again (rebuilds counts it); answer before the box closes; drop the
+    // discard on No; drop the progress signal.
+    void the_packages_page_switches_off_the_gui_thread()
+    {
+        std::string Err;
+        QTemporaryDir Repo; QVERIFY(Repo.isValid());
+        QVERIFY2(IpfsWrapper::StartNode((Repo.path() + "/ipfs").toStdString(), &Err), Err.c_str());
+        QTemporaryDir SeedRoot; QVERIFY(SeedRoot.isValid());
+        const QString R = SeedRoot.path(), Ld = R + "/Libs/[L] DxWnd";
+        QDir().mkpath(Ld);
+        writeFile(Ld + "/dx.zip", std::string(3000, '1'));
+        const std::string X1 = IpfsWrapper::AddNoCopy((Ld + "/dx.zip").toStdString(), &Err);
+        writeJson(Ld + "/a.json", NodeFixture::Chain("libA", {NodeFixture::ContentCid("zip", "dx.zip", X1)}));
+        json seeder = json{{"Settings", {{"Paths", {{"LibraryRoot", R.toStdString()}}}}}};
+        auto Publish = [&]{ Err.clear(); PackageCatalog::PublishLibrary(seeder, &Err);
+                            return PackageCatalog::Wire(PackageCatalog::SheetEntries(seeder["ShareSheet"])); };
+        const json Gen1 = Publish();
+        QTemporaryDir RxData; QVERIFY(RxData.isValid());
+        const std::string Peer = "12D3KooWSeederAlice", Nick = "derAlice";
+        json rx = json{{"Settings", {{"Paths", {{"LibraryRoot", (RxData.path() + "/LIBRARY").toStdString()}}}}},
+                       {"PeerLibraries", {{Peer, Gen1}}}};
+        landShares(rx, Nick, Gen1);
+        std::filesystem::path Lib;
+        QVERIFY2(PackageCatalog::AdoptReceivedPackage(rx, std::filesystem::path(PackageCatalog::CatalogRootDir(rx)) / (Nick + " - Libs") / "[L] DxWnd", &Lib, &Err), Err.c_str());
+        writeFile(Ld + "/b.zip", std::string(2000, '2'));
+        const std::string X2 = IpfsWrapper::AddNoCopy((Ld + "/b.zip").toStdString(), &Err);
+        writeJson(Ld + "/b.json", NodeFixture::Chain("libB", {NodeFixture::ContentCid("zip", "b.zip", X2)}));
+        const json Gen2 = Publish();
+        const std::string LibB = cidOfLabel(Gen2["Libs"], "libB");
+        rx["PeerLibraries"] = json{{Peer, Gen2}};
+        const std::filesystem::path Updating = PackageCatalog::UpdatesRoot(rx);
+
+        QDir appDir(RxData.path());
+        AppModel model(&rx, &appDir);
+        IpfsModel Ipfs(model);
+        DownloadManager Downloads(model, Ipfs);
+        ActivityStrip::Watch(model, Ipfs, Downloads);
+        ActivityLog & Log = ActivityLog::Get();
+        Log.dismissFinished();
+        auto Updates = [&] { QVector<ActivityLog::Entry> Out;
+                             for (const auto & E : Log.entries()) if (E.Kind == "Update") Out.push_back(E);
+                             return Out; };
+        PackagesView view(model);
+        view.show();
+        UpdateService & Svc = model.updates();
+        std::vector<UpdateService::Outcome> Ends;
+        int Progress = 0;
+        QObject::connect(&Svc, &UpdateService::finished, &view, [&](UpdateService::Outcome O, const QString &) { Ends.push_back(O); });
+        QObject::connect(&Svc, &UpdateService::progress, &view, [&](double, const QString &) { ++Progress; });
+        auto Use = [&]{
+            QPushButton * Offer = nullptr;
+            QTRY_VERIFY_WITH_TIMEOUT([&]{ for (auto * B : view.findChildren<QPushButton *>()) if (B->text() == "Use derAlice's version" && B->isEnabled()) Offer = B;
+                                          return Offer != nullptr; }(), 20000);
+            Offer->click();
+        };
+        auto Answer = [&](QMessageBox::StandardButton Which) {
+            QMessageBox * Box = nullptr;
+            QTRY_VERIFY_WITH_TIMEOUT((Box = view.findChild<QMessageBox *>()) != nullptr && Box->isVisible(), 20000);
+            QVERIFY2(Svc.busy(), "the switch waits for the answer");
+            QVERIFY2(!Updates().isEmpty() && Updates().back().Running && Updates().back().CanCancel, "the strip lists the switch, with its Cancel");
+            Box->button(Which)->click();
+        };
+        // No: nothing changes, nothing is left.
+        Use();
+        Answer(QMessageBox::No);
+        QTRY_COMPARE_WITH_TIMEOUT(Ends.size(), size_t(1), 20000);
+        QCOMPARE(Ends.back(), UpdateService::Outcome::Declined);
+        QVERIFY(!std::filesystem::exists(Updating));
+        QVERIFY(!std::filesystem::exists(Lib / "libB.json"));
+        QVERIFY2(Updates().isEmpty(), "a declined switch leaves no entry: the person was there");
+        QCOMPARE(Publish(), Gen2);   // (one node plays both machines: the peer holds its blocks again)
+        {   // Yes, but refused (a game runs): it fails, the strip says so (no box), and the stage goes.
+            const Sessions::RuntimeHold Running;
+            Use();
+            Answer(QMessageBox::Yes);
+            QTRY_COMPARE_WITH_TIMEOUT(Ends.size(), size_t(2), 20000);
+            QCOMPARE(Ends.back(), UpdateService::Outcome::Failed);
+            QCOMPARE(Updates().size(), 1);
+            QVERIFY(!Updates().back().Running && Updates().back().Failed);
+            QVERIFY(!Updates().back().Detail.isEmpty());
+            for (auto * M : view.findChildren<QMessageBox *>()) QVERIFY2(!M->isVisible(), "a failure opens no box");
+            QVERIFY(!std::filesystem::exists(Updating));
+            QVERIFY(!std::filesystem::exists(Lib / "libB.json"));
+        }
+        QCOMPARE(Publish(), Gen2);
+        // Yes: switched, the library read again off the GUI thread, nothing left.
+        const int Rebuilds = model.rebuilds(), Refreshes = model.refreshes();
+        Progress = 0;
+        Use();
+        Answer(QMessageBox::Yes);
+        QTRY_COMPARE_WITH_TIMEOUT(Ends.size(), size_t(3), 30000);
+        QCOMPARE(Ends.back(), UpdateService::Outcome::Done);
+        QCOMPARE(model.rebuilds(), Rebuilds);                                  // no index built on the GUI thread
+        QVERIFY(model.refreshes() > Refreshes);
+        QVERIFY2(model.catalogIndex().Find(LibB), "the switched package is in the index the app shows");
+        QVERIFY2(Progress >= 7, std::to_string(Progress).c_str());   // the service's three, and the fetch's and switch's own
+        QVERIFY(std::filesystem::exists(Lib / "libB.json"));
+        QVERIFY(!std::filesystem::exists(Updating));
+        QCOMPARE(Updates().size(), 2);
+        QVERIFY(!Updates().back().Running && !Updates().back().Failed);
+        QCOMPARE(Updates().back().Detail, QString("Switched to derAlice's version"));
+        Log.dismissFinished();
         IpfsWrapper::DebugResetQueue();
         IpfsWrapper::StopNode();
     }

@@ -4,6 +4,7 @@
 #include "ipfsmodel.h"
 #include "downloadmanager.h"
 #include "packagecatalog.h"   // HasMissingSources
+#include "updateservice.h"
 #include "theme.h"
 
 #include <QDir>
@@ -40,7 +41,7 @@ void ActivityStrip::Watch(AppModel & Model, IpfsModel & Ipfs, DownloadManager & 
     {
         QHash<QString, int> Download;            // game key → its job
         QSet<QString> Cancelled;                 // downloads cancelled from the list
-        int Publish = 0, Seed = 0, Recheck = 0, Sync = 0, RecheckTotal = 0;
+        int Publish = 0, Seed = 0, Recheck = 0, Sync = 0, RecheckTotal = 0, Update = 0;
     };
     auto S = std::make_shared<State>();
 
@@ -110,6 +111,22 @@ void ActivityStrip::Watch(AppModel & Model, IpfsModel & Ipfs, DownloadManager & 
     QObject::connect(&Model, &AppModel::packageSourceFailed, &L, [&L](const QString & Why) { L.note("Sources", "Package source", false, Why); });
     QObject::connect(&Model, &AppModel::packageRemoveFailed, &L, [&L](const QString & Why) {
         L.note("Uninstall", "Uninstall", false, "The package was not uninstalled: " + Why);
+    });
+
+    //A switch to a peer's version: its steps, its Cancel (stops the fetch), and what came of it. A switch the person
+    //declined at the confirm leaves no entry: they were there.
+    UpdateService & Up = Model.updates();
+    QObject::connect(&Up, &UpdateService::started, &L, [&L, &Up, S](const QString & Pkg, const QString & Peer) {
+        S->Update = L.start("Update", "Switch " + Pkg + " to " + Peer + "'s version", [&Up] { Up.cancel(); });
+    });
+    QObject::connect(&Up, &UpdateService::progress, &L, [&L, S](double F, const QString & Detail) {
+        if (S->Update) L.progress(S->Update, F, Detail);
+    });
+    QObject::connect(&Up, &UpdateService::finished, &L, [&L, S](UpdateService::Outcome O, const QString & Result) {
+        const int Id = std::exchange(S->Update, 0);
+        if (!Id) return;
+        if (O == UpdateService::Outcome::Declined) { L.finish(Id, true, Result); L.dismiss(Id); return; }
+        L.finish(Id, O != UpdateService::Outcome::Failed, O == UpdateService::Outcome::Cancelled ? QString("Cancelled") : Result);
     });
 }
 

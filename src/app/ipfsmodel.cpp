@@ -304,12 +304,15 @@ void IpfsModel::refreshNow()
 // Fallback naming for a CID the catalog can't label (yet): the QUEUE knows where the transfer is going, so name it
 // by its destination — file name, "[uid] Title" package dir, LIBRARY collection. Received node blocks are queued
 // before their block (and thus their catalog entry) exists; this is what keeps them out of "Unknown" while in flight.
-static bool LabelFromQueueDest(const QString & cid, IpfsModel::CidState & s)
+// A peer's version being fetched for an installed package (its stage, UPDATING/<library>/<package>/<version>) is that
+// package's: named by the stage's folder, under no library, it was a section of its own beside the libraries.
+static bool LabelFromQueueDest(const nlohmann::ordered_json & Config, const QString & cid, IpfsModel::CidState & s)
 {
     const std::string D = IpfsWrapper::QueueDestForCid(cid.toStdString());
     if (D.empty()) return false;
     const std::filesystem::path P(D);
-    std::string Pkg = P.parent_path().filename().string();
+    std::string Pkg = P.parent_path().filename().string(), Lib;
+    const bool Staged = PackageCatalog::StagedPackageOf(Config, P, &Lib, &Pkg);
     {   // strip the "[uid] " prefix, same as the catalog naming above
         size_t i = 0;
         while (i < Pkg.size()) { if (Pkg[i] == '[') { size_t c = Pkg.find(']', i); if (c == std::string::npos) break; i = c + 1; }
@@ -318,7 +321,7 @@ static bool LabelFromQueueDest(const QString & cid, IpfsModel::CidState & s)
     }
     s.label    = QString::fromStdString(P.filename().string());
     s.package  = Pkg.empty() ? QStringLiteral("(unnamed)") : QString::fromStdString(Pkg);
-    const QString Src = SourceOfBundle(P.parent_path());
+    const QString Src = Staged ? QString::fromStdString(Lib) : SourceOfBundle(P.parent_path());
     s.source   = Src.isEmpty() ? QStringLiteral("Other") : Src;
     if (s.category.isEmpty()) s.category = CatContent;
     return true;
@@ -343,7 +346,7 @@ void IpfsModel::rebuildLabelCache()
 // Fill one row's naming from the cache (queue-dest fallback for a CID the catalog can't name yet).
 void IpfsModel::applyLabels(const QString & cid, CidState & s)
 {
-    if (!CachedLabels.contains(cid) && LabelFromQueueDest(cid, s)) return;
+    if (!CachedLabels.contains(cid) && LabelFromQueueDest(*Model.config(), cid, s)) return;
     s.label    = CachedLabels.value(cid, s.label.isEmpty() ? QStringLiteral("(unknown)") : s.label);
     s.package  = CachedPkgs.value(cid, s.package.isEmpty() ? QStringLiteral("Unknown / not in your library") : s.package);
     s.category = CachedCats.value(cid, s.category.isEmpty() ? CatContent : s.category);
@@ -368,7 +371,7 @@ void IpfsModel::rebuildLabels()
     for (auto it = Cids.begin(); it != Cids.end(); ++it) {
         const QString & cid = it.key();
         if (!Labels.contains(cid) && (it->label.isEmpty() || it->label == QStringLiteral("(unknown)"))
-            && LabelFromQueueDest(cid, it.value())) { /* named by its queue destination */ }
+            && LabelFromQueueDest(*Model.config(), cid, it.value())) { /* named by its queue destination */ }
         it->label    = Labels.value(cid, it->label.isEmpty() ? QStringLiteral("(unknown)") : it->label);
         it->package  = Pkgs.value(cid, it->package.isEmpty() ? QStringLiteral("Unknown / not in your library") : it->package);
         it->category = Cats.value(cid, it->category.isEmpty() ? CatContent : it->category);
