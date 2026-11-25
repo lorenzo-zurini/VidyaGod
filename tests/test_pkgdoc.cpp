@@ -166,6 +166,13 @@ TEST(pkgdoc_a_save_stops_when_told_before_it_writes_and_never_after)
     CHECK(Files(Game) == GameBefore);
     CHECK(Doc.Dirty());
     CHECK(!Said.empty() && Said.front() == "Reading " + Lib.filename().string());   // the library first
+    //A no at the last ask, just before the writes: still nothing written.
+    const PkgDoc::SaveReport R1 = Doc.Save(Fonts, std::vector<fs::path>{Lib}, "", [](const std::string &What, int, int) { return What != "Writing"; });
+    CHECK(!R1.Ok);
+    CHECK_EQ(R1.Error, std::string("Nothing was saved: stopped"));
+    CHECK(Files(Fonts) == Before);
+    CHECK(Files(Game) == GameBefore);
+    CHECK(Doc.Dirty());
     Said.clear();
     const PkgDoc::SaveReport R2 = Doc.Save(Fonts, std::vector<fs::path>{Lib}, "", [&](const std::string &What, int, int) {
         Said.push_back(What);

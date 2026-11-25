@@ -4198,15 +4198,22 @@ private slots:
         PackageCatalog::SeedReport R;
         bool Changed = true;
         std::string Err;
+        //The first file is seeded (its SOURCE written into the node), the stop comes at the second: the node goes back to
+        //as it was, never half recorded.
+        QTemporaryDir Repo; QVERIFY(Repo.isValid());
+        QVERIFY2(IpfsWrapper::StartNode((Repo.path() + "/ipfs").toStdString(), &Err), Err.c_str());
+        auto StopNode = qScopeGuard([] { IpfsWrapper::StopNode(); });
         QVERIFY(!PackageCatalog::SeedNodeContent(N, Pkg, R, Changed, &Err, [&](const std::string &F, unsigned long long B) {
             Told.push_back({ F, B });
-            return false;
+            return Told.size() < 2;
         }));
         QCOMPARE(QString::fromStdString(Err), QString("stopped"));
         QVERIFY(!Changed);
-        QCOMPARE((int)Told.size(), 1);
+        QCOMPARE((int)Told.size(), 2);
         QCOMPARE(QString::fromStdString(Told[0].first), QString("a.bin"));
         QCOMPARE(Told[0].second, 1000ull);
+        QCOMPARE(Told[1].second, 500ull);
+        QCOMPARE(R.Seeded, 1);                       // a.bin was seeded before the stop
         QCOMPARE(N, Was);
     }
 

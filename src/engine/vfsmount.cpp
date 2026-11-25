@@ -524,8 +524,7 @@ bool VfsMount::SpawnVidyagodfs(const nlohmann::ordered_json &Spec, const std::fi
         Out << Spec.dump(2);
     }
     const std::string Helper = VidyagodfsPath();
-    LogOut("VfsMount::SpawnVidyagodfs", "Mounting " + Mountpoint.string() + " via " + Helper
-           + (Uncached ? " (uncached: the game runs on the sandbox's own mount of it)" : ""));
+    LogOut("VfsMount::SpawnVidyagodfs", "Mounting " + Mountpoint.string() + " via " + Helper);
     //--watch-pid: the helper's watchdog auto-unmounts if this (spawner) process dies, so a crash never leaks a mount.
     const std::string WatchPid = std::to_string(QCoreApplication::applicationPid());
 #ifdef _WIN32
@@ -587,7 +586,11 @@ bool VfsMount::SpawnVidyagodfs(const nlohmann::ordered_json &Spec, const std::fi
     return false;
 #else
     std::filesystem::create_directories(Mountpoint);   // FUSE mounts onto an existing empty dir
-    int result = RunCommand(Helper, HelperArgs(SpecPath, Mountpoint, WatchPid, Uncached));
+    const std::vector<std::string> Args = HelperArgs(SpecPath, Mountpoint, WatchPid, Uncached);
+    //Said from the command line itself (the launch matrix reads it): what the helper is given, not what was meant.
+    if (std::find(Args.begin(), Args.end(), "--uncached") != Args.end())
+        LogOut("VfsMount::SpawnVidyagodfs", "(uncached: the game runs on the sandbox's own mount of it)");
+    int result = RunCommand(Helper, Args);
     LogOut("VfsMount::SpawnVidyagodfs", "vidyagodfs spawn exit: " + std::to_string(result));
     if (OutPid) *OutPid = 0;   // Linux unmounts by mountpoint (fusermount3), not by pid
     for (int i = 0; i < 50; ++i)

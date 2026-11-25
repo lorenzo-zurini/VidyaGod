@@ -61,6 +61,7 @@
 #include "qrcode.h"
 #include "ipfswrapper.h"
 #include <QImage>
+#include <QCryptographicHash>
 #include <QProcess>
 #include <QScopeGuard>
 #include <QStandardPaths>
@@ -1244,6 +1245,16 @@ private slots:
         QVERIFY(Still);
         Press(B::Down);                                                      // moving off disarms it
         QVERIFY(!Sh.padState()["page"].contains("armed"));
+        //Off and back with nothing in between (no rebuild to clear it): A on Remove asks again, it does not remove.
+        DeckList *Pg = Sh.peersPage();
+        QVERIFY(Pg->press("remove:12D3KooWSavedPal"));
+        QVERIFY(Pg->padPressed(B::Down) && Pg->padPressed(B::Up));
+        QCOMPARE(Pg->current(), QString("remove:12D3KooWSavedPal"));
+        QVERIFY(Pg->padPressed(B::A));
+        QCOMPARE(Pg->padState().value("armed", std::string()), std::string("remove:12D3KooWSavedPal"));
+        Still = false;
+        for (const auto &C : IpfsWrapper::PeerList()) Still = Still || C.PeerID == "12D3KooWSavedPal";
+        QVERIFY(Still);
         Sh.setActive(false);
     }
 
@@ -1310,6 +1321,20 @@ private slots:
             QCOMPARE(QString::fromUtf8(P.readAllStandardOutput()).trimmed(), T);
         }
         QVERIFY(QrCode::Encode(std::string(300, 'x')).empty());                // past version 10: none
+    }
+
+    // The symbol itself, module for module, for a short code and a version-9 text: pinned as recorded from the encoder
+    // whose output zbar reads back (above). A reader's error correction mends a misplaced column or two, so reading back
+    // alone does not see them. Teeth: the timing column not skipped in the placement (zbar still reads it).
+    void the_peer_code_qr_is_the_symbol_recorded()
+    {
+        const auto Hash = [](const std::string &T) {
+            QByteArray S;
+            for (const auto &Row : QrCode::Encode(T)) { for (bool B : Row) S += B ? '1' : '0'; S += '\n'; }
+            return QString::fromLatin1(QCryptographicHash::hash(S, QCryptographicHash::Sha256).toHex());
+        };
+        QCOMPARE(Hash("12D3KooWDeckDeviceA1b2c3"), QString("8bfd3d3b822aa04ef0dd0323189f15209febfd581fab153a6fc26ff3c8bf7eb9"));
+        QCOMPARE(Hash(std::string(200, 'z')), QString("44c601e463a39fbca8f649868b0b4b571b1fadd04f2a85e375b66bb663d5462a"));
     }
 
     // The menu's "Controller settings" opens Settings at its Controller page: the controller's settings are a page of
