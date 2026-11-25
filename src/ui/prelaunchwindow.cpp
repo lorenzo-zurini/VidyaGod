@@ -1091,9 +1091,10 @@ void PreLaunchWindow::onLaunchFinished(bool success, QString errorMsg)
         ClosedWhileRunning = false;
         if (success && LogErrors == 0)
         {
-            if (LaunchWorker && LaunchWorker->isRunning())
+            //Connected first, then looked at: a thread finishing in between still closes it (a second close is harmless).
+            if (LaunchWorker)
                 connect(LaunchWorker, &QThread::finished, this, [this]{ close(); }, static_cast<Qt::ConnectionType>(Qt::QueuedConnection | Qt::SingleShotConnection));
-            else QMetaObject::invokeMethod(this, [this]{ close(); }, Qt::QueuedConnection);
+            if (!LaunchWorker || !LaunchWorker->isRunning()) QMetaObject::invokeMethod(this, [this]{ close(); }, Qt::QueuedConnection);
         }
         else bringBack();
     }

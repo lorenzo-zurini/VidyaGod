@@ -7,6 +7,7 @@
 #include <filesystem>
 #include <cstdio>
 #include <cstring>
+#include <cerrno>
 
 // The entire sandbox-init runtime is bwrap-specific (Linux mount + network namespaces, TUN, SCM_RIGHTS).
 // It never runs on other platforms — Available() is false there and nothing invokes `--sandbox-init` — so
@@ -39,7 +40,17 @@
 
 namespace {
 
-void Warn(const char *msg) { std::fprintf(stderr, "[sandbox-init] %s\n", msg); std::fflush(stderr); }
+//Where its failures are also written (--log): the launch's own folder, which the launch reads when the sandbox exits
+//non-zero — stderr goes to VidyaGod's stdout/stderr, which no window shows (and a handheld session has no terminal).
+std::string g_LogPath;
+
+void Warn(const char *msg)
+{
+    std::fprintf(stderr, "[sandbox-init] %s\n", msg);
+    std::fflush(stderr);
+    if (g_LogPath.empty()) return;
+    if (std::FILE *F = std::fopen(g_LogPath.c_str(), "a")) { std::fprintf(F, "%s\n", msg); std::fclose(F); }
+}
 
 // Resolve the co-located vidyagodfs helper (beside this binary), mirroring VfsMount::VidyagodfsPath.
 std::string VidyagodfsPath()
@@ -71,7 +82,10 @@ bool MountOne(const std::string &helper, const std::string &spec, const std::str
     if (pid == 0)
     {
         // Child: become the FUSE daemon. -f keeps it in the foreground (no daemonize); it reparents to the sandbox
-        // init once we execvp the game, and dies with the namespace.
+        // init once we execvp the game, and dies with the namespace. What it says goes to the launch's log file, which
+        // the launch shows (why a mount failed, said by the mount itself).
+        if (!g_LogPath.empty())
+            if (const int L = ::open(g_LogPath.c_str(), O_WRONLY | O_APPEND | O_CREAT, 0644); L >= 0) { ::dup2(L, 2); ::close(L); }
         execlp(helper.c_str(), "vidyagodfs", spec.c_str(), mnt.c_str(), "-f", static_cast<char *>(nullptr));
         _exit(127);
     }
@@ -340,6 +354,7 @@ int RunSandboxInit(int argc, char **argv)
         else if (a == "--tun" && i + 4 < argc) { tunName = argv[i + 1]; tunCidr = argv[i + 2]; tunSock = argv[i + 3];
                                                  tunBridge = std::string(argv[i + 4]) == "bridge"; i += 4; }
         else if (a == "--chdir" && i + 1 < argc) { chdirTo = argv[i + 1]; i += 1; }
+        else if (a == "--log" && i + 1 < argc) { g_LogPath = argv[i + 1]; i += 1; }
         else if (a == "--cloak" && i + 1 < argc) { cloakSpec = argv[i + 1]; i += 1; }
         else if (a == "--env" && i + 1 < argc)
         {
@@ -355,7 +370,7 @@ int RunSandboxInit(int argc, char **argv)
 
     const std::string helper = VidyagodfsPath();
     for (const auto &[spec, mnt] : mounts)
-        if (!MountOne(helper, spec, mnt)) { Warn(("mount failed: " + mnt).c_str()); return 1; }
+        if (!MountOne(helper, spec, mnt)) { Warn(("the game's files could not be mounted inside the sandbox at " + mnt).c_str()); return 1; }
 
     if (!tunName.empty() && !tunSock.empty())
         BringUpTun(tunName, tunCidr, tunSock, tunBridge);   // best-effort: the game still launches if the overlay can't come up
@@ -391,7 +406,7 @@ int RunSandboxInit(int argc, char **argv)
     for (auto &s : cmd) cargv.push_back(const_cast<char *>(s.c_str()));
     cargv.push_back(nullptr);
     execvp(cargv[0], cargv.data());
-    Warn("execvp of the game failed");
+    Warn((std::string("the game's program could not be started inside the sandbox: ") + cargv[0] + " (" + std::strerror(errno) + ")").c_str());
     return 127;
 }
 

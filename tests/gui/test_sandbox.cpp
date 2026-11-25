@@ -192,6 +192,39 @@ private slots:
 #endif
     }
 
+    // The in-sandbox init writes why it failed to the launch's own file (--log), which the launch shows: its stderr
+    // reaches no window (and a handheld session has no terminal). FromParams points it into the session folder, and
+    // the wrapped command passes it. Teeth: Warn to stderr only (the file stays empty); no --log passed.
+    void the_sandbox_init_says_why_it_failed_in_the_launchs_log()
+    {
+#ifdef _WIN32
+        QSKIP("the in-sandbox init is the Linux backend");
+#else
+        QTemporaryDir Dir;
+        const std::string Log = (Dir.path() + "/sandbox-init.log").toStdString();
+        const pid_t Pid = fork();
+        if (Pid == 0)
+        {
+            std::vector<std::string> A{"VidyaGod", "--sandbox-init", "--log", Log, "--", "/nonexistent/vg-game"};
+            std::vector<char *> V; for (auto &S : A) V.push_back(S.data()); V.push_back(nullptr);
+            _exit(SandboxLayer::RunSandboxInit(int(A.size()), V.data()));
+        }
+        int Status = 0; waitpid(Pid, &Status, 0);
+        QVERIFY(WIFEXITED(Status) && WEXITSTATUS(Status) != 0);
+        QFile F(QString::fromStdString(Log)); QVERIFY(F.open(QIODevice::ReadOnly));
+        const QString Said = QString::fromUtf8(F.readAll());
+        QVERIFY2(Said.contains("could not be started") && Said.contains("/nonexistent/vg-game"), qPrintable(Said));
+        ContainerParams CP;
+        CP.TempPath = Dir.path().toStdString();
+        const SandboxLayer::Options O = SandboxLayer::FromParams(CP);
+        QCOMPARE(QString::fromStdString(O.InitLog), QString::fromStdString(Log));
+        std::string Program = "/bin/true"; QStringList Args; QProcessEnvironment Run;
+        SandboxLayer::WrapGame(O, Program, Args, Run, QProcessEnvironment::systemEnvironment());
+        const int L = Args.indexOf("--log");
+        QVERIFY(L > Args.indexOf("--sandbox-init") && Args.value(L + 1) == QString::fromStdString(Log));
+#endif
+    }
+
     // The real home is not one of the sandbox's writable binds: a runner that writes ~/.config wrote the user's own
     // ~/.config through it (2026-10-21: ~/.cache/bbport, ~/.cache/JNA). The session still is.
     void the_real_home_is_not_a_writable_bind()

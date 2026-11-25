@@ -51,6 +51,7 @@ struct Options {
     std::vector<Mount>       Mounts;          // vidyagodfs specs re-mounted inside the sandbox (game never sees the host mount);
                                                // Windows: the host WinFsp mounts, which the box is granted (BoxIniCommands)
     std::string              WorkDir;         // the game's CWD (under a mountpoint) — init chdir's here after mounting
+    std::string              InitLog;         // where the in-sandbox init writes its failures (and its mounts' output); "" = none
     std::string              TunName, TunCidr, TunSock;   // overlay TUN (Isolated + a session); empty = none
     std::string              Cloak;                        // "<caption>|<maxwidth>": X-side unmap of a game's ugly startup window (empty = off)
     std::string              BoxRoot;                      // Windows: the box's own root, the game's prefix (BoxPrefix); "" = Sandboxie's default

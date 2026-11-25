@@ -215,18 +215,20 @@ bool FileEdits::ProcessFileEdits(struct ContainerParams &ContainerParams, bool O
             }
 
         bool EditOk = true;
+        //A file in a kept folder is the user's (the edit writes through to their copy): flushed to the disk.
+        const bool Durable = !FileEdits::KeptPathMet(ContainerParams, FilePath).empty();
         if (Mode == "ConfigWrite")
-            EditOk = FileEdits::ConfigWrite(Key, Value, FilePath, Section, Sub.contains("ABSENT"));
+            EditOk = FileEdits::ConfigWrite(Key, Value, FilePath, Section, Sub.contains("ABSENT"), Durable);
         else if (Mode == "JsonSet")
-            EditOk = FileEdits::JsonSet(Key, Value, FilePath);
+            EditOk = FileEdits::JsonSet(Key, Value, FilePath, Durable);
         else if (Mode == "XmlSet")
-            EditOk = FileEdits::XmlSet(Key, Value, FilePath);
+            EditOk = FileEdits::XmlSet(Key, Value, FilePath, Durable);
         else if (Mode == "Overwrite")
-            EditOk = FileEdits::FileOverwrite(Value, FilePath);
+            EditOk = FileEdits::FileOverwrite(Value, FilePath, Durable);
         else if (Mode == "AppendLine")
             EditOk = FileEdits::AppendLine(Value, FilePath);
         else if (Mode == "LineFlag")
-            EditOk = FileEdits::LineFlag(Key, Value, FilePath);
+            EditOk = FileEdits::LineFlag(Key, Value, FilePath, Durable);
         else if (Mode == "Delete")
             EditOk = FileEdits::DeletePath(FilePath);
         else
@@ -415,7 +417,7 @@ std::optional<std::string> FileEdits::ConfigRead(const std::string &Text, const 
 }
 
 bool FileEdits::ConfigWrite(const std::string &Key, const std::string &Value, const std::filesystem::path &FilePath,
-                            const std::string &Section, bool MayBeAbsent)
+                            const std::string &Section, bool MayBeAbsent, bool Durable)
 {
     LogOut("FileEdits::ConfigWrite", "FilePath: " + FilePath.string() + (Section.empty() ? std::string() : " Section: " + Section)
            + " Key: " + Key + " Value: " + Value);
@@ -469,7 +471,7 @@ bool FileEdits::ConfigWrite(const std::string &Key, const std::string &Value, co
         std::string Bytes;
         for (const std::string &L : Lines) Bytes += L + '\n';
         std::string Err;
-        if (!WriteFileAtomic(FilePath, Bytes, Err)) { LogErr("FileEdits::ConfigWrite", Err); return false; }
+        if (!WriteFileAtomic(FilePath, Bytes, Err, Durable)) { LogErr("FileEdits::ConfigWrite", Err); return false; }
         return true;
     }
     // Binary I/O throughout (read AND the write below): on Windows a text-mode stream translates '\n' to CRLF on
@@ -518,7 +520,7 @@ bool FileEdits::ConfigWrite(const std::string &Key, const std::string &Value, co
                   "(it is matched as a literal line PREFIX, including any spaces around '=').");
         return true;
     }
-    if (std::string Err; !WriteFileAtomic(FilePath, outFile, Err)) { LogErr("FileEdits::ConfigWrite", Err); return false; }
+    if (std::string Err; !WriteFileAtomic(FilePath, outFile, Err, Durable)) { LogErr("FileEdits::ConfigWrite", Err); return false; }
     return true;
 }
 
@@ -545,7 +547,7 @@ size_t JsonDepth(const nlohmann::ordered_json &Root)
 
 }
 
-bool FileEdits::JsonSet(const std::string &Pointer, const std::string &Value, const std::filesystem::path &FilePath)
+bool FileEdits::JsonSet(const std::string &Pointer, const std::string &Value, const std::filesystem::path &FilePath, bool Durable)
 {
     LogOut("FileEdits::JsonSet", "FilePath: " + FilePath.string() + " Pointer: " + Pointer + " Value: " + Value);
     nlohmann::ordered_json Doc = nlohmann::ordered_json::object();
@@ -615,7 +617,7 @@ bool FileEdits::JsonSet(const std::string &Pointer, const std::string &Value, co
     std::error_code Ec;
     std::filesystem::create_directories(FilePath.parent_path(), Ec);
     std::string Err;
-    if (!WriteFileAtomic(FilePath, Text, Err)) { LogErr("FileEdits::JsonSet", Err); return false; }
+    if (!WriteFileAtomic(FilePath, Text, Err, Durable)) { LogErr("FileEdits::JsonSet", Err); return false; }
     return true;
 }
 
@@ -1208,7 +1210,7 @@ std::optional<std::string> FileEdits::XmlGet(const std::string &Key, const std::
     return Got;
 }
 
-bool FileEdits::XmlSet(const std::string &Key, const std::string &Value, const std::filesystem::path &FilePath)
+bool FileEdits::XmlSet(const std::string &Key, const std::string &Value, const std::filesystem::path &FilePath, bool Durable)
 {
     LogOut("FileEdits::XmlSet", "FilePath: " + FilePath.string() + " Key: " + Key + " Value: " + Value);
     std::string Text;
@@ -1226,20 +1228,20 @@ bool FileEdits::XmlSet(const std::string &Key, const std::string &Value, const s
     std::error_code Ec;
     std::filesystem::create_directories(FilePath.parent_path(), Ec);
     std::string Err;
-    if (!WriteFileAtomic(FilePath, Out, Err)) { LogErr("FileEdits::XmlSet", Err); return false; }
+    if (!WriteFileAtomic(FilePath, Out, Err, Durable)) { LogErr("FileEdits::XmlSet", Err); return false; }
     return true;
 }
 
 //Writes Value as the complete content of FilePath, creating parent directories if needed.
 //Used for files whose entire content is the value (e.g. Warcraft III .w3k CD key files).
-bool FileEdits::FileOverwrite(const std::string &Value, const std::filesystem::path &FilePath)
+bool FileEdits::FileOverwrite(const std::string &Value, const std::filesystem::path &FilePath, bool Durable)
 {
     LogOut("FileEdits::FileOverwrite", "Writing: " + FilePath.string());
     std::error_code ec;
     std::filesystem::create_directories(FilePath.parent_path(), ec);
     if (ec) { LogErr("FileEdits::FileOverwrite", "Could not create parent dirs: " + ec.message()); return false; }
     std::string Err;   // verbatim bytes, whole or not at all
-    if (!WriteFileAtomic(FilePath, Value, Err)) { LogErr("FileEdits::FileOverwrite", Err); return false; }
+    if (!WriteFileAtomic(FilePath, Value, Err, Durable)) { LogErr("FileEdits::FileOverwrite", Err); return false; }
     return true;
 }
 
@@ -1354,7 +1356,7 @@ bool FileEdits::LineFlagEdit(const std::string &Key, const std::string &Value, c
     return true;
 }
 
-bool FileEdits::LineFlag(const std::string &Key, const std::string &Value, const std::filesystem::path &FilePath)
+bool FileEdits::LineFlag(const std::string &Key, const std::string &Value, const std::filesystem::path &FilePath, bool Durable)
 {
     std::error_code Ec;
     const bool Exists = std::filesystem::exists(FilePath, Ec);
@@ -1372,7 +1374,7 @@ bool FileEdits::LineFlag(const std::string &Key, const std::string &Value, const
         return true;
     }
     std::filesystem::create_directories(FilePath.parent_path(), Ec);
-    if (std::string Err; !WriteFileAtomic(FilePath, Out, Err)) { LogErr("FileEdits::LineFlag", Err); return false; }
+    if (std::string Err; !WriteFileAtomic(FilePath, Out, Err, Durable)) { LogErr("FileEdits::LineFlag", Err); return false; }
     LogOut("FileEdits::LineFlag", "'" + Key + "' " + (Value == "1" ? "added to " : "removed from ") + FilePath.string());
     return true;
 }

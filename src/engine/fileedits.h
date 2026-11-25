@@ -44,8 +44,10 @@ bool LinkLeadsOut(const std::filesystem::path &Base, const std::filesystem::path
 //section's end; no such section: the header and the line go at the file's end. A file absent then is created.
 //MayBeAbsent: the op says what its key's absence means (ABSENT), so the program drops it at its default and adding it
 //back is no surprise (logged plainly, not as a warning: a misspelt KEY or SECTION on another op is).
+//Durable (on each write op): the file is flushed to the disk before it replaces the old one — one in a kept folder is
+//the user's own (their settings), not redone by the next launch.
 [[nodiscard]] bool ConfigWrite(const std::string &Key, const std::string &Value, const std::filesystem::path &FilePath,
-                               const std::string &Section = {}, bool MayBeAbsent = false);
+                               const std::string &Section = {}, bool MayBeAbsent = false, bool Durable = false);
 //What a ConfigWrite of Key (in Section, "" = anywhere) finds in Text: the first matching line, its value; nullopt when
 //none. The read-back's view of the same lines the edit writes. Toml: the file is TOML (its section names keep case).
 std::optional<std::string> ConfigRead(const std::string &Text, const std::string &Key, const std::string &Section = {}, bool Toml = false);
@@ -56,7 +58,7 @@ bool IsToml(const std::filesystem::path &File);
 //(1920, true, "x", [1,2]) or, when it does not parse as JSON, a plain string. Objects missing on the way are created,
 //and so is the file (absent or empty = {}). Key order is kept; comments are read but not written back. A file that
 //is not JSON, or a pointer that runs through a value that is not an object/array, fails and leaves the file alone.
-[[nodiscard]] bool JsonSet(const std::string &Pointer, const std::string &Value, const std::filesystem::path &FilePath);
+[[nodiscard]] bool JsonSet(const std::string &Pointer, const std::string &Value, const std::filesystem::path &FilePath, bool Durable = false);
 
 //Sets one value in an XML file, keeping every other byte of it. Key is a path of elements from the root, each matched by
 //name and optional attribute predicates, ending in an attribute or naming an element's text:
@@ -66,14 +68,14 @@ bool IsToml(const std::filesystem::path &File);
 //  /Attributes/Attr[@name='keybinds_settings']/@value!/keybinds/superaction[@name='jump']/control[@slot='0']/@input
 //A file that is not well-formed XML, a root that is not the path's, an element holding elements where text is set, or a
 //value with an entity only a DTD defines fails and leaves the file alone.
-[[nodiscard]] bool XmlSet(const std::string &Key, const std::string &Value, const std::filesystem::path &FilePath);
+[[nodiscard]] bool XmlSet(const std::string &Key, const std::string &Value, const std::filesystem::path &FilePath, bool Durable = false);
 //The same on text: In edited into Out (Why says why not). XmlGet reads what Key names: nullopt when it is not there (or
 //on failure, Why set).
 [[nodiscard]] bool XmlEdit(const std::string &Key, const std::string &Value, const std::string &In, std::string &Out, std::string &Why);
 std::optional<std::string> XmlGet(const std::string &Key, const std::string &In, std::string &Why);
 
 //Writes Value as the complete content of FilePath, creating parent dirs if needed.
-[[nodiscard]] bool FileOverwrite(const std::string &Value, const std::filesystem::path &FilePath);
+[[nodiscard]] bool FileOverwrite(const std::string &Value, const std::filesystem::path &FilePath, bool Durable = false);
 
 //Appends Value as its own line at the end of FilePath, IDEMPOTENTLY (skips if an identical line already exists).
 //Creates the file + parent dirs if absent, and inserts a separating newline if the file didn't end with one. The
@@ -87,7 +89,7 @@ std::optional<std::string> XmlGet(const std::string &Key, const std::string &In,
 [[nodiscard]] bool LineFlagEdit(const std::string &Key, const std::string &Value, const std::string &In, std::string &Out, std::string &Why);
 bool LineHas(const std::string &Key, const std::string &Text);
 //The file form. A missing file with "0" holds no such line, so nothing is written (no stub); "1" creates it.
-[[nodiscard]] bool LineFlag(const std::string &Key, const std::string &Value, const std::filesystem::path &FilePath);
+[[nodiscard]] bool LineFlag(const std::string &Key, const std::string &Value, const std::filesystem::path &FilePath, bool Durable = false);
 //The kept place (a kept folder's or kept file's runtime path) that removing FilePath — a resolved path under the
 //runtime — would reach: the place itself, something inside it, a folder holding it, or a file a kept pattern matches;
 //"" when none. Judged on the resolved path, lexically and through the links that exist in the runtime, so "a/../Saves",

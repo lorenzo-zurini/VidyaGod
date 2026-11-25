@@ -5,6 +5,7 @@
 #include <atomic>
 #include <condition_variable>
 #include <mutex>
+#include <fstream>
 #include <set>
 #include "boxlaunch.h"
 #include "platform/platform.h"   // SelfExe — the sandbox payload is this program
@@ -563,6 +564,18 @@ bool ContainerWrapper::Execute(const std::string &OverrideExe, const std::vector
     }
     this->LastCrashed = false;
     this->LastExitCode = RunProcess.exitCode();
+    //What the sandbox's init (and the mounts it made) said: in the launch's log — an error when the run failed (the
+    //window says why, not only "exited with code 1"), a plain line when it ran.
+    if (!SbOpts.InitLog.empty())
+    {
+        std::ifstream In(SbOpts.InitLog);
+        std::vector<std::string> Said;
+        for (std::string L; std::getline(In, L);) if (!L.empty()) Said.push_back(L);
+        const bool Failed = RunProcess.exitCode() != 0 && !this->UserKilled && !Stopping();
+        const size_t From = Said.size() > 20 ? Said.size() - 20 : 0;   // the last of it: the reason is at the end
+        for (size_t I = From; I < Said.size(); ++I)
+            Failed ? LogErr("Sandbox", Said[I]) : LogOut("Sandbox", Said[I]);
+    }
     //A non-zero code is in the launch's verdict: the sandbox failing before the game ran exits 1 too, and "0 warnings"
     //under it read as a clean run.
     if (RunProcess.exitCode() != 0 && !this->UserKilled && !Stopping())

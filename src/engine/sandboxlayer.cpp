@@ -48,7 +48,11 @@ Options FromParams(const ContainerParams &CP)
 {
     Options O;
     O.Net = (Var(CP, "VIDYAGOD_SANDBOX_NET") == "isolated") ? NetMode::Isolated : NetMode::Host;
-    if (!CP.TempPath.empty()) O.WritableBinds.push_back(CP.TempPath.string());
+    if (!CP.TempPath.empty())
+    {
+        O.WritableBinds.push_back(CP.TempPath.string());
+        O.InitLog = (CP.TempPath / "sandbox-init.log").string();   // TempPath is bound writable: the init can write it
+    }
     // Of the instance folder, only the kept folders: the in-sandbox vidyagodfs serves each one live at its runtime
     // path. Kept files and registry keys are copied in and out by this process, outside the sandbox, so the folder
     // itself (instance.json: VARIABLES, RUNNER_CHAIN) and the stores beside it stay out of the game's reach.
@@ -286,6 +290,8 @@ void Wrap(const Options &Opts, std::string &Program, QStringList &Arguments)
           << QString::fromStdString(Opts.TunSock) << (Opts.TunBridge ? "bridge" : "nobridge");
     if (!Opts.WorkDir.empty())
         A << "--chdir" << QString::fromStdString(Opts.WorkDir);
+    if (!Opts.InitLog.empty())
+        A << "--log" << QString::fromStdString(Opts.InitLog);
     if (!Opts.Cloak.empty())
         A << "--cloak" << QString::fromStdString(Opts.Cloak);
     for (const GameEnvVar &E : Opts.GameEnv)
