@@ -189,6 +189,7 @@ set(SHARED_SOURCES
     src/cli/commands/cmd_editor.cpp
     src/cli/commands/cmd_author.cpp
     src/cli/commands/cmd_vfs.cpp
+    src/cli/commands/cmd_coding.cpp
     src/cli/commands/cmd_launch.cpp
     src/cli/commands/cmd_appui.cpp
     src/cli/commands/cmd_controller.cpp

@@ -446,7 +446,7 @@ private slots:
         QCOMPARE(db(nodes({{"NODE", "hB"}}, false, "FILES/C:/other")), -1);  // elsewhere
         QCOMPARE(db(nodes({{"NODE", "hB"}, {"TARGET", "FILES/x"}}, false, "FILES/C:/g")), -1);
         QCOMPARE(db(nodes({{"NODE", "hB"}, {"TAKE", json::array({"FILES/a"})}}, false, "FILES/C:/g")), -1);
-        QCOMPARE(db(nodes({{"ANY", json::array({"hB"})}}, false, "FILES/C:/g")), -1);  // not contained
+        QCOMPARE(db(nodes({{"INTO", json::array({"hB"})}}, false, "FILES/C:/g")), -1);  // not contained
         // The button asks the same question as the action.
         auto offers = [&](const json &D) {
             const bool HasBase = PkgGraph::ContentType(D[1]) == "ZIP" && PkgGraph::DeltaBase(base(D), 1) >= 0;   // as the canvas asks

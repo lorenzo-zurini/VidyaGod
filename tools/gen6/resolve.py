@@ -11,14 +11,15 @@ is gated against. Pure: node files in, an effective plan out. Nothing is mounted
     ["keep"]    {address: value}
     ["decls"]   {key: declaration}, the folded VARS
     ["order"]   the occurrences, in expansion order (node CIDs)
-    ["events"]  moves / held mentions / cycles / unmet ANY / NOT hits
+    ["events"]  moves / held mentions / cycles / an INTO with nothing beneath / a part whose INTO is off
 
 Usage (debug): resolve.py <library-root> <cid> [--var K=V ...]
 """
 import copy, json, os, re, sys
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-TYPE_KEYS = ["ZIP", "FILE", "DELTA", "DIR", "NODE", "EDIT", "REG", "VARS", "ENV", "DLL", "EXEC", "KEEP", "ANY", "NOT"]
+TYPE_KEYS = ["ZIP", "FILE", "DELTA", "DIR", "NODE", "EDIT", "REG", "VARS", "ENV", "DLL", "EXEC", "KEEP", "INTO"]
+_NODE_CID = re.compile(r"bafkrei[a-z2-7]{52}")
 CONTENT = ("ZIP", "FILE", "DELTA", "DIR")
 
 
@@ -142,8 +143,9 @@ def subst_json(v, vars_):
 _TOK = re.compile(r"\s+|\(|\)|&&|\|\||==|!=|!|\"[^\"]*\"|'[^']*'|%[^%]*%|[^\s()!&|=\"']+")
 
 
-def when(expr, vars_):
-    """VarSubst::EvaluateCondition. Unparseable → true (as gen 5, which warns)."""
+def when(expr, vars_, present=None):
+    """VarSubst::EvaluateCondition. Unparseable → true (as gen 5, which warns). A bare word that is a node CID is
+    "true" when present(cid) says that node is in the composition, else "false" (08 §8.6)."""
     if not expr or not expr.strip():
         return True
     toks, i = [], 0
@@ -160,6 +162,8 @@ def when(expr, vars_):
             toks.append(("v", t[1:-1]))
         elif t[0] == "%":
             toks.append(("v", vars_.get(t[1:-1], "")))
+        elif _NODE_CID.fullmatch(t):
+            toks.append(("v", "true" if present is not None and present(t) else "false"))
         else:
             toks.append(("v", t))
     p = [0]
@@ -383,15 +387,23 @@ class Resolver:
             walk(g, None)
         return resolve_vars(decls, builtins, instance)
 
-    def resolve(self, root, instance=None, builtins=None, grafts=()):
+    def resolve(self, root, instance=None, builtins=None, grafts=(), selection=None):
+        """grafts: the parts applied onto the end, in order (applied_grafts); selection: what a WHEN naming a node CID
+        reads as selected (default: grafts)."""
         instance, builtins = dict(instance or {}), dict(builtins or {})
         wv = dict(builtins); wv.update(self.phase1(root, builtins, instance, grafts))
         self.wv = wv
         self.slots, self.first, self.events, self.order = [], {}, [], []
+        self.count, self.selected = {}, set(selection if selection is not None else grafts)
         self._expand(root, None, "", ())
-        for g in grafts:                                   # grafts after the variant, in instance order
+        for g in grafts:                                   # parts after the end, each after what it goes into
             self._expand(g, None, "", ())
-        return self._fold(instance, builtins)
+        plan = self._fold(instance, builtins)
+        plan["parts"] = list(grafts)
+        return plan
+
+    def _present(self, cid):
+        return cid in self.count or cid in self.selected
 
     def _occ(self, cid, view, prefix):
         return (cid, json.dumps(list(view_steps(view)), sort_keys=True) if view_takes(view) else "", prefix)
@@ -412,10 +424,14 @@ class Resolver:
             self.events.append(("missing", cid)); return
         self.first[occ] = containers
         self.order.append(occ)
+        self.count[cid] = self.count.get(cid, 0) + 1
         node, bdir = self.nodes[cid]
         inner = containers + (occ,)
-        for i, L in enumerate(node["LAYERS"]):
-            if "WHEN" in L and not when(L["WHEN"], self.wv):
+        Ls = node["LAYERS"]
+        if any("WHEN" in L and not when(L["WHEN"], self.wv, self._present) for L in into_layers(Ls)):
+            self.events.append(("into-off", cid)); return  # a part whose INTO does not hold is not applied at all
+        for i, L in enumerate(Ls):
+            if "WHEN" in L and not when(L["WHEN"], self.wv, self._present):
                 continue
             t = type_of(L)
             if t == "NODE":
@@ -427,12 +443,9 @@ class Resolver:
                         raise ValueError(f"NODE TARGET outside FILES: {tgt}")
                     sub = place(at, prefix)
                 self._expand(L["NODE"], within(view, L.get("TAKE"), at), sub, inner)
-            elif t == "ANY":
-                present = {o[0] for o in self.order}
-                if not any(m in present for m in L["ANY"]):
-                    self.events.append(("any-unmet", cid))
-            elif t == "NOT":
-                self.slots.append({"kind": "NOT", "node": L["NOT"], "occ": inner, "from": cid})
+            elif t == "INTO":
+                if not any(m in self.count for m in L["INTO"]):
+                    self.events.append(("into-unmet", cid))
             else:
                 self.slots.append({"kind": t, "layer": L, "at": i, "occ": inner, "from": cid, "dir": bdir,
                                    "prefix": prefix, "view": view})
@@ -442,6 +455,11 @@ class Resolver:
         self.slots = [s for s in self.slots if occ not in s["occ"]]
         for o in gone:
             del self.first[o]
+        for o in self.order:
+            if o in gone:
+                self.count[o[0]] -= 1
+                if not self.count[o[0]]:
+                    del self.count[o[0]]
         self.order = [o for o in self.order if o not in gone]
 
     # A fact's address through a view: each step's TAKE filters and renames it; facts are never re-rooted.
@@ -488,11 +506,9 @@ class Resolver:
         return None
 
     def _fold(self, instance, builtins):
-        seq, reg, regkeys, dll, env, exe, keep, decls, nots = [], {}, {}, {}, {}, {}, {}, {}, []
+        seq, reg, regkeys, dll, env, exe, keep, decls = [], {}, {}, {}, {}, {}, {}, {}
         for s in self.slots:
             k, L, view, prefix = s["kind"], s.get("layer"), s.get("view"), s.get("prefix", "")
-            if k == "NOT":
-                nots.append(s["node"]); continue
             if k in CONTENT:
                 ns, tp = ns_path(L.get("TARGET", "FILES"))
                 item = {"kind": k, "payload": L[k], "dir": s["dir"], "source": L.get("SOURCE"), "size": L.get("SIZE"),
@@ -554,10 +570,6 @@ class Resolver:
                     if a is None:
                         continue
                     keep.pop(a, None); keep[a] = v
-        present = {o[0] for o in self.order}
-        for n in nots:
-            if n in present:
-                self.events.append(("not-hit", n))
         return {"seq": seq, "reg": reg, "regkeys": regkeys, "dll": dll, "env": env, "exec": exe, "keep": keep,
                 "decls": decls, "order": [o[0] for o in self.order], "events": self.events, "when_vars": self.wv}
 
@@ -637,86 +649,94 @@ def plan_json(plan):
             "regkeys": sorted([[a, p, dp] for (a, p), dp in plan["regkeys"].items()], key=lambda r: (r[0] or "", r[1])),
             "dll": [[k, v] for k, v in plan["dll"].items()], "env": [[k, v] for k, v in plan["env"].items()],
             "exec": [[k, v] for k, v in plan["exec"].items()], "keep": [[k, v] for k, v in plan["keep"].items()],
-            "decls": [[k, v] for k, v in plan["decls"].items()], "order": plan["order"],
+            "decls": [[k, v] for k, v in plan["decls"].items()], "order": plan["order"], "parts": plan.get("parts", []),
             "events": [list(e) for e in plan["events"]], "when_vars": dict(sorted(plan["when_vars"].items())), "error": ""}
 
 
-# ---------------------------------------------------------------- grafts (§4.4)
+# ---------------------------------------------------------------- parts (12 §12.5, 23.0)
+def into_layers(Ls):
+    """A part's INTO layers: the run of INTO layers its list opens with (each a list of alternatives; the part goes
+    into all of them)."""
+    out = []
+    for L in Ls:
+        if type_of(L) != "INTO" or not isinstance(L["INTO"], list):
+            break
+        out.append(L)
+    return out
+
+
 def graft_index(nodes):
-    """member CID -> the grafts whose list begins with an ANY naming it."""
+    """Member of a part's FIRST INTO layer -> the parts naming it (the offer checks the other layers)."""
     idx = {}
     for h, (n, _) in nodes.items():
-        L = n["LAYERS"]
-        if L and "ANY" in L[0]:
-            for m in L[0]["ANY"]:
+        In = into_layers(n["LAYERS"])
+        if In:
+            for m in In[0]["INTO"]:
                 idx.setdefault(m, set()).add(h)
     return idx
 
 
+def _part_depth(nodes, g, seen=()):
+    """INTO steps from an end: a part into an end 1, a part into that part 2, ..."""
+    In = into_layers(nodes[g][0]["LAYERS"]) if g in nodes else []
+    if not In or g in seen:
+        return 0
+    return 1 + max((_part_depth(nodes, m, seen + (g,)) for L in In for m in L["INTO"]), default=0)
+
+
 def offered_grafts(nodes, idx, plan, face_uid=None):
-    """(offered, pre-ticked): the grafts whose ANY holds against the resolved row, in the default order; pre-ticked =
-    RECOMMENDED under the row's tile. The default order keeps related grafts together: a graft comes after every
-    offered graft its ANY/NOT names, and of the grafts that may come next, the one naming the latest listed goes first
-    (then LABEL, then CID); unrelated grafts go by LABEL."""
-    present = set(plan["order"])
-    contained = {L["NODE"] for c in present if c in nodes for L in nodes[c][0]["LAYERS"] if "NODE" in L}
-    offer = sorted({g for m in present for g in idx.get(m, ())} - contained)   # one a node of the row contains is part of it
-    names = {}
-    for g in offer:
-        for L in nodes[g][0]["LAYERS"]:
-            for m in (L.get("ANY") or []) + ([L["NOT"]] if "NOT" in L else []):
-                if m in offer and m != g:
-                    names.setdefault(g, set()).add(m)
-    at, offered, left = {}, [], list(offer)
-    while left:
-        ready = [(max([at[m] for m in names.get(g, ())], default=-1), g) for g in left if all(m in at for m in names.get(g, ()))]
-        if ready:
-            g = min(ready, key=lambda r: (-r[0], nodes[r[1]][0].get("LABEL", ""), r[1]))[1]
-        else:
-            g = left[0]                                    # grafts naming each other (a working tree): break the cycle
-        at[g] = len(offered); offered.append(g); left.remove(g)
+    """(offered, pre-ticked). THE HARD LINK: a part is offered where what it goes INTO is the end being launched (the
+    root) or a part applied to it, never a node merely beneath. A part a node of the row contains is part of it.
+    No order is chosen between parts: shown after what each goes into, then LABEL, then CID."""
+    points = ({plan["order"][0]} if plan["order"] else set()) | set(plan.get("parts", []))
+    contained = {L["NODE"] for c in plan["order"] if c in nodes for L in nodes[c][0]["LAYERS"] if "NODE" in L}
+    offer = {g for m in points for g in idx.get(m, ())}
+    # several INTO layers: offered only once EVERY layer has a member that is the end or an applied part
+    offer = {g for g in offer if all(any(m in points for m in L["INTO"]) for L in into_layers(nodes[g][0]["LAYERS"]))}
+    offer -= contained
+    offered = sorted(offer, key=lambda g: (_part_depth(nodes, g), nodes[g][0].get("LABEL", ""), g))
     ticked = [g for g in offered if face_uid is not None and face_uid in (nodes[g][0].get("RECOMMENDED") or [])]
     return offered, ticked
 
 
 def unsatisfied(plan):
-    """How many of the resolution's requirements fail: a NOT that hits, an ANY unmet."""
-    return sum(1 for e in plan["events"] if e[0] in ("not-hit", "any-unmet"))
+    """How many of the resolution's requirements fail: an INTO with nothing it goes into beneath it."""
+    return sum(1 for e in plan["events"] if e[0] == "into-unmet")
 
 
-def applied_grafts(R, idx, root, face_uid=None, requested=None, instance=None, builtins=None, dropped=None):
-    """The grafts a row applies, in order. A graft may need another graft (its ANY names it), so each is judged
-    against the row with the grafts before it applied; a graft that is not offered there, or whose application
-    leaves a requirement unmet (its NOT hits, an ANY fails), does not apply. requested = the instance's list;
-    None = a fresh instance: the grafts RECOMMENDED under the row's tile, in rounds — each round's newly offered
-    ones by LABEL — so a graft always follows the graft it needs."""
+def applied_grafts(R, idx, root, face_uid=None, requested=None, instance=None, builtins=None, dropped=None, every=False):
+    """The parts a launch applies, in order. requested = the instance's selection, a SET (order ignored); applied in
+    rounds — each round the selected parts offered with the ones before applied, siblings by CID — so a part follows
+    what it goes into. A part whose INTO's WHEN does not hold on the selection, or that leaves a requirement unmet, is
+    dropped, as is one never offered here. None = a fresh instance: the parts RECOMMENDED under the row's tile."""
     instance, builtins = instance or {}, builtins or {}
+    want = list(dict.fromkeys(requested)) if requested is not None else None
     applied, refused = [], set()
-    plan = R.resolve(root, instance, builtins)
-
-    def attempt(g):
-        nonlocal plan
-        if g in applied or g in refused:
-            return
-        if g in offered_grafts(R.nodes, idx, plan, face_uid)[0]:
-            trial = R.resolve(root, instance, builtins, applied + [g])
-            if unsatisfied(trial) <= unsatisfied(plan):
-                applied.append(g); plan = trial
-                return
-        refused.add(g)
-        if dropped is not None:
-            dropped.append(g)
-
-    if requested is not None:
-        for g in requested:
-            attempt(g)
-        return applied
+    plan = R.resolve(root, instance, builtins, [])
     while True:
-        new = [g for g in offered_grafts(R.nodes, idx, plan, face_uid)[1] if g not in applied and g not in refused]
-        if not new:
-            return applied
-        for g in new:
-            attempt(g)
+        offered, ticked = offered_grafts(R.nodes, idx, plan, face_uid)
+        if want is not None:
+            rnd = sorted(g for g in offered if g in want and g not in applied and g not in refused)
+        else:
+            rnd = sorted(g for g in (offered if every else ticked) if g not in applied and g not in refused)
+        if not rnd:
+            break
+        anyp = False
+        for g in rnd:
+            sel = list(dict.fromkeys((want if want is not None else rnd) + applied + [g]))
+            trial = R.resolve(root, instance, builtins, applied + [g], sel)
+            off = any(e[1] == g and e[0] in ("into-off", "into-unmet") for e in trial["events"])
+            if not off and unsatisfied(trial) <= unsatisfied(plan):
+                applied.append(g); plan = trial; anyp = True
+            else:
+                refused.add(g)
+                if dropped is not None:
+                    dropped.append(g)
+        if not anyp:
+            break
+    if want is not None and dropped is not None:
+        dropped.extend(g for g in want if g not in applied and g not in refused)
+    return applied
 
 
 # ---------------------------------------------------------------- the shelf (§2)
@@ -843,6 +863,9 @@ def covers(seq, j, f, vars_=None):
     return fl in p
 
 
+P1 = "bafkrei" + "b" * 52                                   # a part named in WHEN conditions: a node CID's shape
+
+
 def fixtures():
     """Rule fixtures shared by the self-test and fold_gate.py (which runs them through the C++ port too):
     [(name, {cid: node}, [(root, instance, grafts), ...])]."""
@@ -854,7 +877,7 @@ def fixtures():
          [("x", {}, []), ("y", {}, [])]),
         ("cycle+missing", {"p": N([{"NODE": "q"}, {"NODE": "nope"}]), "q": N([{"NODE": "p"}, Z("q")])}, [("p", {}, [])]),
         ("graft-when", {"base": N([Z("b")]), "v": N([{"NODE": "base"}]),
-                        "g": N([{"ANY": ["v"]}, {"VARS": {"win": {"DEFAULT": "1"}}}, {"DIR": "wnd", "TARGET": "FILES/C:/g", "WHEN": "%win%==1"},
+                        "g": N([{"INTO": ["v"]}, {"VARS": {"win": {"DEFAULT": "1"}}}, {"DIR": "wnd", "TARGET": "FILES/C:/g", "WHEN": "%win%==1"},
                                 {"DIR": "cls", "TARGET": "FILES/C:/g", "WHEN": "%win%==0"}])},
          [("v", {}, ["g"]), ("v", {"win": "0"}, ["g"])]),
         ("eval", {"v": N([{"VARS": {"red": {"DEFAULT": "1"}, "purple": {"DEFAULT": "0"}, "grey": {"DEFAULT": "1"},
@@ -926,16 +949,21 @@ def fixtures():
                                  {"REG": {"HKCU": {"T": None}}},
                                  {"DLL": {"D3D8": "n,b", "ddraw": "b"}}, {"DLL": {"d3d8": None}},
                                  {"ENV": {"A": "1", "B": "2"}}, {"ENV": {"A": None}}])}, [("r", {}, [])]),
-        ("any+not+grafts", {"base": N([Z("b")]), "m": N([{"ANY": ["base"]}, Z("m")]), "w": N([{"NOT": "base"}]),
-                            "v1": N([{"NODE": "base"}, {"EXEC": [{"LABEL": "Play", "HOST": "h", "TILE": {"UID": "9", "TITLE": "t"}}]}]),
-                            "v2": N([{"NODE": "m"}]), "v3": N([{"NODE": "base"}, {"NODE": "w"}]),
-                            "g1": N([{"ANY": ["base", "zzz"]}, Z("g1"), {"NODE": "base"}], LABEL="b-graft", RECOMMENDED=["9"]),
-                            "g2": N([{"ANY": ["v1"]}, Z("g2")], LABEL="a-graft"),
-                            "g3": N([{"ANY": ["g1"]}, Z("g3")], LABEL="a-on-b", RECOMMENDED=["9"]),
-                            "g4": N([{"ANY": ["base"]}, {"NOT": "g1"}, Z("g4")], LABEL="c-conflicts", RECOMMENDED=["9"])},
-         [("v1", {}, []), ("v1", {}, ["g2", "g1"]), ("v1", {}, ["g3", "g1"]), ("v1", {}, ["g1", "g3"]),
-          ("v1", {}, ["g1", "g4"]), ("v1", {}, ["g4", "g1"]),
-          ("v2", {}, []), ("v3", {}, [])]),
+        # parts (23.0): INTO is a hard link to the end launched or an applied part; WHEN names node CIDs; no order
+        ("into+parts", {"base": N([Z("b")]),
+                        "v1": N([{"NODE": "base"}, {"EXEC": [{"LABEL": "Play", "HOST": "h", "TILE": {"UID": "9", "TITLE": "t"}}]}]),
+                        "vup": N([{"NODE": "v1"}, Z("vup")]),                          # a later end containing v1
+                        "m": N([{"INTO": ["base"]}, Z("m")]), "v2": N([{"NODE": "base"}, {"NODE": "m"}]), "v4": N([{"NODE": "m"}]),
+                        P1: N([{"INTO": ["v1", "zzz"]}, Z("g1"), {"NODE": "base"}], LABEL="b-part", RECOMMENDED=["9"]),
+                        "g2": N([{"INTO": ["v1"]}, Z("g2")], LABEL="a-part"),
+                        "g3": N([{"INTO": [P1]}, Z("g3")], LABEL="a-on-b", RECOMMENDED=["9"]),
+                        "g4": N([{"INTO": ["v1"], "WHEN": P1 + " == false"}, Z("g4")], LABEL="c-not-with-b", RECOMMENDED=["9"]),
+                        "low": N([{"INTO": ["base"]}, Z("low")], LABEL="into-a-lower-node"),
+                        "g5": N([{"INTO": ["v1"]}, {"NODE": "base", "WHEN": P1 + " == true"}, Z("g5", "FILES/C:/h")], LABEL="d-detects-b"),
+                        "pp": N([{"INTO": [P1]}, {"INTO": ["g2"]}, Z("pp")], LABEL="e-patch-between-b-and-a")},
+         [("v1", {}, []), ("v1", {}, ["g2", P1]), ("v1", {}, ["g3", P1]), ("v1", {}, [P1, "g3"]),
+          ("v1", {}, [P1, "g4"]), ("v1", {}, ["g4"]), ("v1", {}, ["g5", P1]), ("v1", {}, ["g5"]),
+          ("vup", {}, []), ("vup", {}, [P1]), ("v2", {}, []), ("v4", {}, [])]),
     ]
 
 
@@ -997,18 +1025,23 @@ def self_test():
     nodes = {"r": N([{"REG": {"HKCU": {"T": {"x": "1", "Sub": {"y": "2"}, "K": {}}, "TT": {"z": "3"}}}}, {"REG": {"HKCU": {"T": None}}}])}
     p = R(nodes).resolve("r")
     assert [k[1] for k in p["reg"]] == ["hkcu\\tt"] and not p["regkeys"], (p["reg"], p["regkeys"])
-    # ANY / NOT
-    nodes = {"base": N([Z("b")]), "m": N([{"ANY": ["base"]}, Z("m")]), "w": N([{"NOT": "base"}]),
-             "v1": N([{"NODE": "base"}, {"NODE": "m"}]), "v2": N([{"NODE": "m"}]), "v3": N([{"NODE": "base"}, {"NODE": "w"}])}
-    assert not any(e[0] == "any-unmet" for e in R(nodes).resolve("v1")["events"])
-    assert ("any-unmet", "m") in R(nodes).resolve("v2")["events"]
-    assert ("not-hit", "base") in R(nodes).resolve("v3")["events"]
+    # INTO beneath: a part a node contains is satisfied by what that node placed beneath it; nothing beneath = unmet
+    nodes = {"base": N([Z("b")]), "m": N([{"INTO": ["base"]}, Z("m")]),
+             "v1": N([{"NODE": "base"}, {"NODE": "m"}]), "v2": N([{"NODE": "m"}])}
+    assert not any(e[0] == "into-unmet" for e in R(nodes).resolve("v1")["events"])
+    assert ("into-unmet", "m") in R(nodes).resolve("v2")["events"]
+    # WHEN over node CIDs: true when the node is in the composition (beneath, or selected), false otherwise
+    cid_a = "bafkrei" + "a" * 52
+    assert when(cid_a + " == true", {}, lambda c: c == cid_a) and not when(cid_a + " == true", {}, lambda c: False)
+    assert when(cid_a + " == false", {}, lambda c: False) and when(cid_a, {}, lambda c: True) and not when(cid_a, {})
+    assert when("%x%==1 && " + cid_a + " == true", {"x": "1"}, lambda c: True)
+    assert when("bafkrei" + "a" * 51 + " == true", {}) is False    # not a node CID: a plain word, unequal to "true"
     # covering: a FILE lands at <target>/<name>; a zip's members under its target (listing faked)
     seq = [{"kind": "EDIT", "target": "C:/g/a.cfg"},
            {"kind": "FILE", "payload": "x/a.cfg", "target": "C:/g", "dir": "/d"},
            {"kind": "ZIP", "payload": "z.zip", "target": "C:/g", "dir": "/d"}]
     assert covers(seq, 1, "C:/g/a.cfg") and not covers(seq, 1, "C:/g/b.cfg")
-    _NAMES[("/d/z.zip",)] = {"dx/x.dll", "a.cfg"}
+    _NAMES["/d/z.zip"] = {"dx/x.dll", "a.cfg"}          # a zip's key is its file (_chain)
     assert covers(seq, 2, "C:/g/dx/x.dll") and not covers(seq, 2, "C:/g/x.dll")
     # guest coordinates → a runner's layout
     roots = {"C:": "pfx/drive_c", "%UserProfile%": "pfx/drive_c/users/steamuser"}
@@ -1026,31 +1059,34 @@ def self_test():
             labs = lambda p: [it.get("payload") for it in p["seq"]]
             assert labs(r.resolve("v", {}, {}, ["g"])) == ["b", "wnd"], labs(r.resolve("v", {}, {}, ["g"]))
             assert labs(r.resolve("v", {"win": "0"}, {}, ["g"])) == ["b", "cls"]
-        if name == "any+not+grafts":
-            # a graft on a graft: offered once the graft it needs is applied — a fresh list puts it after that graft
-            # (though its LABEL sorts first); an instance order that puts it first drops it
+        if name == "into+parts":
             gi = graft_index(r.nodes)
-            assert "g3" not in offered_grafts(r.nodes, gi, r.resolve("v1"), "9")[0]
-            assert applied_grafts(r, gi, "v1", "9") == ["g1", "g3"], applied_grafts(r, gi, "v1", "9")
+            off = lambda root, parts=(): offered_grafts(r.nodes, gi, r.resolve(root, {}, {}, list(parts)), "9")[0]
+            # the hard link: offered on the end it names, never on a later end that merely contains it, never for a
+            # part that names a lower node; a part on a part only once that part is applied
+            assert off("v1") == ["g2", P1, "g4", "g5"], off("v1")
+            assert off("vup") == [] and "low" not in off("v1")
+            assert "g3" not in off("v1") and "g3" in off("v1", [P1])
+            # several INTO layers: into ALL of them (a patch between two mods), offered once both are applied
+            assert "pp" not in off("v1", [P1]) and "pp" not in off("v1", ["g2"]) and "pp" in off("v1", [P1, "g2"])
+            assert applied_grafts(r, gi, "v1", "9", ["pp", "g2", P1]) == [P1, "g2", "pp"], applied_grafts(r, gi, "v1", "9", ["pp", "g2", P1])
+            assert applied_grafts(r, gi, "v1", "9", ["pp", P1]) == [P1], applied_grafts(r, gi, "v1", "9", ["pp", P1])
+            # the selection is a set: a part follows what it goes into, whatever the order asked
+            assert applied_grafts(r, gi, "v1", "9", ["g3", P1]) == [P1, "g3"], applied_grafts(r, gi, "v1", "9", ["g3", P1])
+            assert applied_grafts(r, gi, "v1", "9", [P1, "g3", P1]) == [P1, "g3"]
+            assert applied_grafts(r, gi, "v1", "9") == [P1, "g3"], applied_grafts(r, gi, "v1", "9")   # fresh: g4 excluded by P1
+            # a part whose INTO's WHEN fails on the selection is dropped; alone it applies
             d = []
-            assert applied_grafts(r, gi, "v1", "9", ["g3", "g1"], dropped=d) == ["g1"] and d == ["g3"]
-            assert applied_grafts(r, gi, "v1", "9", ["g1", "g3", "g1"]) == ["g1", "g3"]
-            # the default order keeps related grafts together: AoE2's soundtracks (tc NOT aok, both NOT aok + NOT tc)
-            # follow each other though "patch" sorts between them by LABEL
-            o = {"base": N([Z("b")]), "v": N([{"NODE": "base"}]),
-                 "aok": N([{"ANY": ["v"]}, Z("a")], LABEL="Age of Kings"), "tc": N([{"ANY": ["v"]}, {"NOT": "aok"}, Z("t")], LABEL="The Conquerors"),
-                 "both": N([{"ANY": ["v"]}, {"NOT": "aok"}, {"NOT": "tc"}, Z("o")], LABEL="Both"),
-                 "patch": N([{"ANY": ["v"]}, Z("p")], LABEL="Patch"), "onp": N([{"ANY": ["patch"]}, Z("q")], LABEL="A on patch")}
-            ro = R(o)
-            assert offered_grafts(ro.nodes, graft_index(ro.nodes), ro.resolve("v"))[0] == ["aok", "tc", "both", "patch"], \
-                offered_grafts(ro.nodes, graft_index(ro.nodes), ro.resolve("v"))[0]
-            assert offered_grafts(ro.nodes, graft_index(ro.nodes), ro.resolve("v", {}, {}, ["patch"]))[0] == ["aok", "tc", "both", "patch", "onp"]
-            ro.nodes["m"] = (N([{"NODE": "v"}, {"NODE": "patch"}]), "/b")   # contains patch: not offered it again
-            assert offered_grafts(ro.nodes, graft_index(ro.nodes), ro.resolve("m"))[0] == ["onp", "aok", "tc", "both"]   # onp: by LABEL
-            # a graft whose NOT hits a graft already applied is not applicable; before that graft it is
-            d = []
-            assert applied_grafts(r, gi, "v1", "9", ["g1", "g4"], dropped=d) == ["g1"] and d == ["g4"]
+            assert applied_grafts(r, gi, "v1", "9", [P1, "g4"], dropped=d) == [P1] and d == ["g4"], d
             assert applied_grafts(r, gi, "v1", "9", ["g4"]) == ["g4"]
+            # a layer gated on another part's presence (FOMOD auto-detect as structure)
+            labs = lambda p: [it.get("payload") for it in p["seq"]]
+            assert "g5" in labs(r.resolve("v1", {}, {}, applied_grafts(r, gi, "v1", "9", ["g5"])))
+            assert labs(r.resolve("v1", {}, {}, ["g5"])).count("b") == 1
+            assert labs(r.resolve("v1", {}, {}, [P1, "g5"], [P1, "g5"])).count("b") == 1   # base: one occurrence (held)
+            # a part never offered here is dropped and said so
+            d = []
+            assert applied_grafts(r, gi, "vup", "9", [P1], dropped=d) == [] and d == [P1]
             assert applied_grafts(r, gi, "v1", None) == []          # no tile: nothing is pre-ticked
     print("self-test OK")
     # EVAL arithmetic: the same table as test_varsubst.cpp's eval_integer_undefined_results_fail (64-bit, C semantics)

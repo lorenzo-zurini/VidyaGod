@@ -154,7 +154,7 @@ int CliModes::RunMaintenanceModes(LaunchParameters &LaunchParameters, nlohmann::
             for (const auto &v : vs) Chain.insert(v.node->Key());
             for (const auto &[K, N] : Index.Nodes)
                 if (!Chain.count(K))
-                    for (const std::string &R : N.Refs)
+                    for (const std::string &R : NodeRefs::Linked(*N.Json))
                         if (Rewritten.count(R))
                         { LogErr("convert-delta", "node " + (N.NodeId.empty() ? K : N.NodeId) + " contains " + R + ", which this would rewrite "
                                  "and so rename — convert the chain in the package editor (-> delta) — nothing changed"); return 1; }

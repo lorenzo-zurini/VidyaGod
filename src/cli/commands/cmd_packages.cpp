@@ -848,22 +848,17 @@ VG_COMMANDS
         }, {} });
 
     Command::Register({
-        "grafts tick", "what a choice becomes when one graft is ticked (or moved)",
-        "The engine's rules for a graft choice: ticking G adds it (and unticks what excludes it); --move N shifts the "
-        "ticked graft at position --from by N places (load order). Prints the new choice; `packages settings` saves it.",
-        { GameArg(), Opt("ticked", "the current choice (a,b,c)", Type::String, true), Opt("graft", "the graft to tick"),
-          Opt("from", "the position to move from (0-based)", Type::Int), Opt("move", "places to move by (±)", Type::Int) },
-        { "grafts tick 'Patch 1.0e (Unofficial)' --ticked 'UserPatch 1.5' --graft 'Forgotten Empires 2.2'", "grafts tick 'Patch 1.0e (Unofficial)' --ticked 'UserPatch 1.5,Forgotten Empires 2.2' --from 1 --move -1" },
-        { "Shelf::TickGraft", "Shelf::MoveGraft" }, Needs::Config, false,
+        "grafts tick", "what a choice becomes when one part is ticked",
+        "The engine's rules for a choice of parts (a set: parts have no order): ticking G adds it and unticks what it "
+        "excludes or what excludes it (a condition naming the other). Prints the new choice; `packages settings` saves it.",
+        { GameArg(), Opt("ticked", "the current choice (a,b,c)", Type::String, true), Opt("graft", "the part to tick") },
+        { "grafts tick 'Patch 1.0e (Unofficial)' --ticked 'UserPatch 1.5' --graft 'Forgotten Empires 2.2'" },
+        { "Shelf::TickGraft" }, Needs::Config, false,
         [](Command::Context &C, const json &A) {
             const auto I = Index(C);
             const Node &N = *NodeOf(*I, Command::Str(A, "game"));
             std::vector<std::string> T = List(A, "ticked"), Unticked;
             if (A.contains("graft")) T = Shelf::TickGraft(*I, N.Key(), T, Command::Str(A, "graft"), &Unticked);
-            std::string Why;
-            if (A.contains("move") && !Shelf::MoveGraft(*I, N.Key(), T, static_cast<size_t>(Command::Int(A, "from")),
-                                                                 static_cast<int>(Command::Int(A, "move")), &Why))
-                throw std::runtime_error(Why);
             return json{{"ticked", T}, {"unticked", Unticked}};
         }, {} });
 

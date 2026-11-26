@@ -82,6 +82,7 @@ bool ParseNode(const nlohmann::ordered_json &J, const std::filesystem::path &Fil
     //Named by its KEY (its CID), the label alongside: a message must name exactly one node, and labels repeat.
     Out.LowerError = Out.Cid.empty() ? NodeLower::CheckNode(J, Out.NodeId) : NodeLower::CheckNode(J, Out.Cid, Out.NodeId);
     Out.Refs = NodeRefs::Contained(J, &Out.Requires);
+    Out.Into = NodeRefs::IntoOf(J);
     if (!Out.LowerError.empty())
     {
         LogWarn("ManifestModel::ParseNode", "Malformed node — " + Out.LowerError + " (" + File.string() + ")");
@@ -97,7 +98,7 @@ bool ParseNode(const nlohmann::ordered_json &J, const std::filesystem::path &Fil
         if (IsVfsLayer(T)) Out.ContentLayers.push_back(std::move(L));
     }
     const auto &Ls = J["LAYERS"];
-    Out.IsGraft = !Ls.empty() && Ls[0].contains("ANY");
+    Out.IsGraft = !Fold::IntoLayers(Ls).empty();   // a part: its list opens with INTO
     for (const auto &L : Ls)
         if (L.contains("EXEC"))
             for (const auto &E : L["EXEC"])
@@ -111,7 +112,7 @@ bool ParseNode(const nlohmann::ordered_json &J, const std::filesystem::path &Fil
 //The node's members, written and read back in one place (the static_assert below trips when one is added on the
 //platform the app is built on, so the list here is checked against the struct, not left to memory).
 #if defined(__x86_64__) && defined(__GLIBCXX__) && !defined(_WIN32)
-static_assert(sizeof(Node) == 624, "Node changed: add the new member to NodeToJson and NodeFromJson, then update this size");
+static_assert(sizeof(Node) == 648, "Node changed: add the new member to NodeToJson and NodeFromJson, then update this size");
 static_assert(sizeof(NodeIndex) == 216, "NodeIndex changed: add the new member to IndexTablesToJson and IndexTablesFromJson, then update this size");
 #endif
 
@@ -122,7 +123,7 @@ nlohmann::ordered_json NodeToJson(const Node &N)
     for (const auto &[K, D] : N.VarDefaults) V.push_back(json::array({K, D}));
     return json{{"key", N.Key()}, {"cid", N.Cid}, {"handle", N.Handle}, {"label", N.NodeId}, {"lower_error", N.LowerError},
                 {"variant", N.Variant}, {"recommended", N.Recommended}, {"json", *N.Json}, {"content_layers", N.ContentLayers},
-                {"var_defaults", V}, {"refs", N.Refs}, {"requires", N.Requires}, {"graft", N.IsGraft}, {"entries", N.Entries},
+                {"var_defaults", V}, {"refs", N.Refs}, {"into", N.Into}, {"requires", N.Requires}, {"graft", N.IsGraft}, {"entries", N.Entries},
                 {"has_exec", N.HasExec}, {"has_runner", N.HasRunner}, {"own_runner", N.OwnRunner}, {"entry", N.Label},
                 {"host", N.HostPlatform}, {"guest", N.GuestPlatform}, {"exec", N.Exec}, {"faces", N.Faces}, {"uid", N.Uid},
                 {"package_uid", N.PackageUid}, {"meta", N.Meta}, {"own_tile", N.OwnTile}, {"file", N.File.string()},
@@ -139,7 +140,7 @@ Node NodeFromJson(nlohmann::ordered_json J)
     N.Json = std::move(J["json"]);
     N.ContentLayers = std::move(J["content_layers"]);
     for (const auto &P : J["var_defaults"]) N.VarDefaults.emplace_back(P[0].get<std::string>(), P[1].get<std::string>());
-    N.Refs = Strs("refs"); N.Requires = Strs("requires"); N.IsGraft = J["graft"].get<bool>();
+    N.Refs = Strs("refs"); N.Into = Strs("into"); N.Requires = Strs("requires"); N.IsGraft = J["graft"].get<bool>();
     N.Entries = std::move(J["entries"]);
     N.HasExec = J["has_exec"].get<bool>(); N.HasRunner = J["has_runner"].get<bool>(); N.OwnRunner = J["own_runner"].get<bool>();
     N.Label = J["entry"].get<std::string>(); N.HostPlatform = J["host"].get<std::string>(); N.GuestPlatform = Strs("guest");
@@ -382,31 +383,27 @@ void DeriveFacts(NodeIndex &Idx)
 }
 
 //Node -> the nodes naming it, over the whole index: what GraftBases climbs.
-static std::map<std::string, std::vector<const std::string *>> ContainedByMap(const NodeIndex &Idx)
-{
-    std::map<std::string, std::vector<const std::string *>> ContainedBy;
-    for (const auto &[Id, N] : Idx.Nodes) for (const std::string &R : N.Refs) ContainedBy[R].push_back(&Id);
-    return ContainedBy;
-}
-
-static std::vector<std::string> GraftBasesWith(const NodeIndex &Idx, const std::string &Graft,
-                                               const std::map<std::string, std::vector<const std::string *>> &ContainedBy)
+static std::vector<std::string> GraftBasesWith(const NodeIndex &Idx, const std::string &Graft)
 {
     std::vector<std::string> Out;
     const Node *G = Idx.Find(Graft);
     if (!G || !G->IsGraft || !G->Json->contains("LAYERS") || (*G->Json)["LAYERS"].empty()) return Out;
-    const nlohmann::ordered_json &First = (*G->Json)["LAYERS"][0];
+    //The HARD LINK: the ends a part is made for are what it goes INTO, followed through parts it goes into (a part of a
+    //part) down to ends; never "whatever contains it" (a part for 1.0 is not one for 1.5 unless it says so).
     std::set<std::string> Seen;
     std::vector<std::string> Todo;
-    if (First.contains("ANY") && First["ANY"].is_array())
-        for (const auto &A : First["ANY"]) if (A.is_string()) Todo.push_back(A.get<std::string>());
+    const auto Push = [&](const nlohmann::ordered_json &Ls) {
+        for (const nlohmann::ordered_json *L : Fold::IntoLayers(Ls)) for (const auto &A : (*L)["INTO"]) if (A.is_string()) Todo.push_back(A.get<std::string>()); };
+    Push((*G->Json)["LAYERS"]);
     std::vector<const Node *> Bases;
     while (!Todo.empty())
     {
         const std::string X = Todo.back(); Todo.pop_back();
         if (!Seen.insert(X).second) continue;
-        if (const Node *V = Idx.Find(X); V && V->IsVariant() && !V->IsGraft) Bases.push_back(V);
-        if (const auto It = ContainedBy.find(X); It != ContainedBy.end()) for (const std::string *P : It->second) Todo.push_back(*P);
+        const Node *V = Idx.Find(X);
+        if (!V) continue;
+        if (V->IsGraft) { if (V->Json->contains("LAYERS")) Push((*V->Json)["LAYERS"]); }
+        else if (V->IsVariant()) Bases.push_back(V);
     }
     std::sort(Bases.begin(), Bases.end(), [](const Node *A, const Node *B) {
         return A->Variant != B->Variant ? A->Variant < B->Variant : A->Key() < B->Key(); });
@@ -416,14 +413,13 @@ static std::vector<std::string> GraftBasesWith(const NodeIndex &Idx, const std::
 
 std::vector<std::string> GraftBases(const NodeIndex &Idx, const std::string &Graft)
 {
-    return GraftBasesWith(Idx, Graft, ContainedByMap(Idx));
+    return GraftBasesWith(Idx, Graft);
 }
 
 std::map<std::string, std::vector<std::string>> AllGraftBases(const NodeIndex &Idx)
 {
-    const auto ContainedBy = ContainedByMap(Idx);   // once for every graft, not once per graft
     std::map<std::string, std::vector<std::string>> Out;
-    for (const auto &[Id, N] : Idx.Nodes) if (N.IsGraft) Out.emplace(Id, GraftBasesWith(Idx, Id, ContainedBy));
+    for (const auto &[Id, N] : Idx.Nodes) if (N.IsGraft) Out.emplace(Id, GraftBasesWith(Idx, Id));
     return Out;
 }
 

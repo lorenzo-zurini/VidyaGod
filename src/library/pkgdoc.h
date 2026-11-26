@@ -87,8 +87,9 @@ public:
     int  Add(json Node, const std::string &Handle = std::string());   // "" → a fresh draft handle; returns its index
     //Removes the node, every reference to it from the other nodes, and its position.
     bool Remove(int I);
-    //Adds a reference from Child to Parent: a NODE layer (containment), an ANY member or a NOT layer.
-    enum class RefKind : std::uint8_t { Node, Any, Not };
+    //Adds a reference from Child to Parent: a NODE layer (containment), Parent joining Child's INTO (Child goes into
+    //Parent: a part), or "never with Parent" (Parent == false in the part's INTO condition).
+    enum class RefKind : std::uint8_t { Node, Into, Not };
     //At >= 0: the reference goes in before layer At (where the wire was dropped); -1: the usual place.
     bool Link(int Child, const std::string &ParentHandle, RefKind Kind, int At = -1);
     //Consolidate: node From's layers are appended to node Into, every reference to From in the package now names

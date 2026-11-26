@@ -42,10 +42,10 @@ One bundle (generation 6: one node per file, parents are `NODE` layers), these v
 | `lm_minimal` | The least that can launch: one zip, one entry. The control — a regression that shows up *here* is in the spine, not in a feature. |
 | `lm_all` | Everything below, on the native runner (plan only: it contains the un-hydrated branch). |
 | `lm_chained` | The same content reached through a two-hop runner chain (`fixture32` → `linux64`). |
-| `lm_run` | The runtime case: mounts for real and runs the probe. The grafts `ANY`-ing it mount above it when ticked. |
+| `lm_run` | The runtime case: mounts for real and runs the probe. The parts going `INTO` it mount above it when ticked. |
 | `lm_run_chained` | `lm_run`'s resolution through the two-hop chain, at runtime (the exec-time environment order). |
 | `lm_inherits` | A variant containing `lm_run` with content and **no entry**: runs `lm_run`'s entry (folded), and — `lm_run` being in its resolution — is offered and pre-ticked `lm_run`'s grafts too. |
-| `lm_blocked` | A variant whose `NOT` names something it contains: the launch is **refused**, with the reason (no golden; the harness expects the refusal). |
+| `lm_blocked` | A variant containing a part whose `INTO` its composition does not hold: the launch is **refused**, with the reason (no golden; the harness expects the refusal). |
 | `lm_run@lm_graft_entry` | `lm_run` run through `--entrypoint lm_graft_entry`: a ticked graft that carries an entry (a mod loader) runs over the variant's mount + grafts. |
 
 Covered, by type:
@@ -68,8 +68,8 @@ Covered, by type:
   `GUEST_ROOTS`, `CONTENT_ROOT`); `ENV` beneath, on and above the variant (null removes), a two-hop chain.
 - **Tiles** — `TILE` (`UID`, `TITLE`, `META`) on the `Play` entry every variant folds.
 - **Grafts** — pre-ticked (`RECOMMENDED`), offered-not-ticked, a graft on a graft (offered once its base is
-  applied), one whose `ANY` names another variant, one containing a library, one carrying an entry, and one whose
-  `NOT` hits the row (pre-ticked, never applied).
+  applied), one going `INTO` another variant, one containing a library, one carrying an entry, and one whose
+  condition is false on the row (pre-ticked, never applied).
 
 ## Two layers of golden
 

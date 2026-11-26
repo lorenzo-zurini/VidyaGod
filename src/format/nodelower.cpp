@@ -162,12 +162,12 @@ std::string CheckLayer(const ordered_json &L)
 {
     if (!L.is_object()) return "is not an object";
     const std::string T = Fold::TypeOf(L);
-    if (T.empty()) return "needs exactly one type key (ZIP FILE DELTA DIR NODE EDIT REG VARS ENV DLL EXEC KEEP ANY NOT)";
+    if (T.empty()) return "needs exactly one type key (ZIP FILE DELTA DIR NODE EDIT REG VARS ENV DLL EXEC KEEP INTO)";
     static const std::map<std::string, std::set<std::string>> Allowed = {
         {"ZIP",   {"SOURCE", "SIZE", "TARGET"}}, {"FILE",  {"SOURCE", "SIZE", "TARGET"}},
         {"DELTA", {"SOURCE", "SIZE", "TARGET", "BASE_SOURCES"}}, {"DIR",   {"TARGET"}},
         {"NODE",  {"TAKE", "TARGET"}}, {"EDIT", {"TARGET"}}, {"REG", {"ARCH"}},
-        {"VARS", {}}, {"ENV", {}}, {"DLL", {}}, {"EXEC", {}}, {"KEEP", {}}, {"ANY", {}}, {"NOT", {}},
+        {"VARS", {}}, {"ENV", {}}, {"DLL", {}}, {"EXEC", {}}, {"KEEP", {}}, {"INTO", {}},
     };
     for (const auto &[K, V] : L.items())
     {
@@ -494,13 +494,10 @@ std::string CheckLayer(const ordered_json &L)
             }
         }
     }
-    else if (T == "ANY")
+    else if (T == "INTO")
     {
-        if (!StrArray(P) || P.empty()) return "ANY must be a non-empty list of node CIDs";
-    }
-    else if (T == "NOT")
-    {
-        if (!P.is_string() || P.get<std::string>().empty()) return "NOT must be a node CID";
+        if (!StrArray(P) || P.empty()) return "INTO must be a non-empty list of node CIDs (what the part goes into)";
+        for (const auto &M : P) if (M.get<std::string>().empty()) return "INTO names an empty node CID";
     }
     return std::string();
 }
@@ -526,6 +523,15 @@ std::string CheckNode(const nlohmann::ordered_json &J, const std::string &NodeId
     {
         const std::string Why = CheckLayer(J["LAYERS"][I]);
         if (!Why.empty()) return Tag + ": layer " + std::to_string(I) + " — " + Why;
+    }
+    //A part's INTO layers open its list (what it goes into comes before what it brings): an INTO after any other layer
+    //would read as a part that is half applied before it knows where.
+    bool Leading = true;
+    for (size_t I = 0; I < J["LAYERS"].size(); ++I)
+    {
+        const bool Into = Fold::TypeOf(J["LAYERS"][I]) == "INTO";
+        if (Into && !Leading) return Tag + ": layer " + std::to_string(I) + " — INTO layers must open the list (what a part goes into comes first)";
+        Leading = Leading && Into;
     }
     return std::string();
 }

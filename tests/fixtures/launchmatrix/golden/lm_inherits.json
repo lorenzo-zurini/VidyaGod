@@ -64,11 +64,10 @@
     "HKLM\\Software\\LaunchMatrix"
   ],
   "LaunchEnv": {
-    "LM_EXEC_ENV": "from-the-graft-entry",
+    "LM_EXEC_ENV": "arrived",
     "LM_FOLDED": "from-below",
     "LM_FROM_VAR": "%lm_derived%",
     "LM_GAMEDIR": "%GameDir%",
-    "LM_GRAFT_ENV": "grafted",
     "LM_OVERRIDDEN": "above",
     "XDG_DATA_HOME": "%RuntimePath%/lm-xdg-data"
   },
@@ -96,11 +95,10 @@
     }
   ],
   "RunnerEnv": {
-    "LM_EXEC_ENV": "from-the-graft-entry",
+    "LM_EXEC_ENV": "arrived",
     "LM_FOLDED": "from-below",
     "LM_FROM_VAR": "%lm_derived%",
     "LM_GAMEDIR": "%GameDir%",
-    "LM_GRAFT_ENV": "grafted",
     "LM_OVERRIDDEN": "above",
     "LM_RUNNER_ONLY": "from-runner",
     "XDG_DATA_HOME": "%RuntimePath%/lm-xdg-data"
@@ -348,26 +346,6 @@
     },
     {
       "PATH": "<DATA>/fixture/[90000000000001][v1.0] Launch Matrix/inheritdir",
-      "TARGET": "/drive_c/90000000000001",
-      "TYPE": "VFSDirLayer"
-    },
-    {
-      "PATH": "<DATA>/fixture/[90000000000001][v1.0] Launch Matrix/graftentry",
-      "TARGET": "/drive_c/90000000000001",
-      "TYPE": "VFSDirLayer"
-    },
-    {
-      "PATH": "<DATA>/fixture/[90000000000001][v1.0] Launch Matrix/graftdir",
-      "TARGET": "/drive_c/90000000000001",
-      "TYPE": "VFSDirLayer"
-    },
-    {
-      "PATH": "<DATA>/fixture/[90000000000001][v1.0] Launch Matrix/graftlib",
-      "TARGET": "/drive_c/90000000000001",
-      "TYPE": "VFSDirLayer"
-    },
-    {
-      "PATH": "<DATA>/fixture/[90000000000001][v1.0] Launch Matrix/grafthd",
       "TARGET": "/drive_c/90000000000001",
       "TYPE": "VFSDirLayer"
     },

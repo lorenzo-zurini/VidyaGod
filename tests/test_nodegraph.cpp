@@ -28,14 +28,16 @@ TEST(nodegraph_freeze_strips_pos_and_resolves_every_ref)
     std::map<std::string, std::string> HandleToCid = {
         {"content_node", "cidContent"},
         {"tile_node", "cidTile"},
+        {"draft-0000000000aa", "bafkreirivalnoderivalnoderivalnoderivalnoderivalnoderivalno"},
     };
     ordered_json Raw = {
         {"CID", "premint-9"},                                   // the working-tree handle (last-minted CID / draft)
         {"LABEL", "exec"},
         {"POS", ordered_json::array({100.0, 200.0})},
         {"LAYERS", ordered_json::array({
+            {{"INTO", ordered_json::array({"tile_node", "content_node"})}},
             {{"NODE", "content_node"}}, {{"NODE", "external_already_a_cid"}},
-            {{"ANY", ordered_json::array({"tile_node", "content_node"})}}, {{"NOT", "tile_node"}},
+            {{"ENV", {{"A", "1"}}}, {"WHEN", "draft-0000000000aa == false && %x% == 1"}},
             {{"ZIP", "g.zip"}, {"SOURCE", "cidBytes"}},
             {{"EXEC", ordered_json::array({ {{"LABEL", "Play"}, {"TILE", {{"UID", "1"}, {"COVER", {{"FILE", "c.png"}, {"SOURCE", "cidCover"}}}}}} })}},
         })},
@@ -45,29 +47,29 @@ TEST(nodegraph_freeze_strips_pos_and_resolves_every_ref)
     CHECK(!F.contains("POS"));                                  // non-semantic canvas coords dropped
     CHECK(!F.contains("CID"));                                  // the node's OWN handle is stripped (a file cannot hold its own hash)
     // every ref form follows a re-minted node to its CID — and stays a PLAIN string (there are no links)
-    CHECK(F["LAYERS"][0]["NODE"] == "cidContent");
-    CHECK(F["LAYERS"][1]["NODE"] == "external_already_a_cid");  // an external ref passes through
-    CHECK(F["LAYERS"][2]["ANY"][0] == "cidTile");
-    CHECK(F["LAYERS"][2]["ANY"][1] == "cidContent");
-    CHECK(F["LAYERS"][3]["NOT"] == "cidTile");
+    CHECK(F["LAYERS"][0]["INTO"][0] == "cidTile");
+    CHECK(F["LAYERS"][0]["INTO"][1] == "cidContent");
+    CHECK(F["LAYERS"][1]["NODE"] == "cidContent");
+    CHECK(F["LAYERS"][2]["NODE"] == "external_already_a_cid");  // an external ref passes through
+    CHECK(F["LAYERS"][3]["WHEN"] == "bafkreirivalnoderivalnoderivalnoderivalnoderivalnoderivalno == false && %x% == 1");   // a condition's node, the rest kept
     CHECK(F["LAYERS"][4]["SOURCE"] == "cidBytes");              // content CIDs untouched
     CHECK(F["LAYERS"][5]["EXEC"][0]["TILE"]["COVER"]["SOURCE"] == "cidCover");
     CHECK(F["LABEL"] == "exec");
 }
 
-// The CID write-back and the freeze share ONE remapper (NodeRefs::Remap): a NODE, an ANY member and a
-// NOT all follow a re-minted node to its new CID; an external ref passes through.
+// The CID write-back and the freeze share ONE remapper (NodeRefs::Remap): a NODE, an INTO member and a node a
+// condition names all follow a re-minted node to its new CID; an external ref passes through.
 TEST(nodegraph_remap_node_refs_reaches_every_ref_form)
 {
     ordered_json N = {{"LABEL", "n"}, {"LAYERS", ordered_json::array({
-        {{"NODE", "a"}}, {{"ANY", ordered_json::array({"b", "ext"})}}, {{"NOT", "c"}}, {{"ZIP", "x.zip"}} })}};
-    const std::map<std::string, std::string> Map = {{"a", "A"}, {"b", "B"}, {"c", "C"}};
+        {{"INTO", ordered_json::array({"b", "ext"})}}, {{"NODE", "a"}}, {{"ZIP", "x.zip"}, {"WHEN", "draft-00000000000c == false"}} })}};
+    const std::map<std::string, std::string> Map = {{"a", "A"}, {"b", "B"}, {"draft-00000000000c", "bafkreirivalnoderivalnoderivalnoderivalnoderivalnoderivalno"}};
     CHECK(NodeRefs::Remap(N, [&](const std::string &R) { auto It = Map.find(R); return It == Map.end() ? R : It->second; }));
-    CHECK(N["LAYERS"][0]["NODE"] == "A");
-    CHECK(N["LAYERS"][1]["ANY"][0] == "B");
-    CHECK(N["LAYERS"][1]["ANY"][1] == "ext");
-    CHECK(N["LAYERS"][2]["NOT"] == "C");
-    CHECK(N["LAYERS"][3]["ZIP"] == "x.zip");                      // a payload is not a ref
+    CHECK(N["LAYERS"][0]["INTO"][0] == "B");
+    CHECK(N["LAYERS"][0]["INTO"][1] == "ext");
+    CHECK(N["LAYERS"][1]["NODE"] == "A");
+    CHECK(N["LAYERS"][2]["WHEN"] == "bafkreirivalnoderivalnoderivalnoderivalnoderivalnoderivalno == false");
+    CHECK(N["LAYERS"][2]["ZIP"] == "x.zip");                      // a payload is not a ref
     // A node with no refs, or not a node at all, is left alone and reports no change.
     ordered_json Bare = {{"LABEL", "x"}, {"LAYERS", ordered_json::array()}};
     CHECK(!NodeRefs::Remap(Bare, [](const std::string &R) { return R + "!"; }));
@@ -77,22 +79,22 @@ TEST(nodegraph_remap_node_refs_reaches_every_ref_form)
 
 TEST(nodegraph_topo_order_is_deps_first)
 {
-    // exec contains content, which contains lib; exec's ANY names tile; its NOT names rival. Every ref form is a
-    // freeze dependency: the frozen file embeds the CID of each, NOT included.
+    // exec contains content, which contains lib; exec goes INTO tile; a condition of its names rival. Every ref form
+    // is a freeze dependency: the frozen file embeds the CID of each, a condition's included.
     std::map<std::string, ordered_json> Tree = {
         {"lib",     {{"LABEL", "lib"}, {"LAYERS", ordered_json::array()}}},
         {"content", {{"LABEL", "content"}, {"LAYERS", ordered_json::array({ {{"NODE", "lib"}} })}}},
         {"tile",    {{"LABEL", "tile"}, {"LAYERS", ordered_json::array()}}},
-        {"rival",   {{"LABEL", "rival"}, {"LAYERS", ordered_json::array()}}},
+        {"draft-00000000000d", {{"LABEL", "rival"}, {"LAYERS", ordered_json::array()}}},
         {"exec",    {{"LABEL", "exec"}, {"LAYERS", ordered_json::array({
-                        {{"NODE", "content"}}, {{"ANY", ordered_json::array({"tile", "lib"})}}, {{"NOT", "rival"}} })}}},
+                        {{"INTO", ordered_json::array({"tile", "lib"})}, {"WHEN", "draft-00000000000d == false"}}, {{"NODE", "content"}} })}}},
     };
     const std::vector<std::string> Order = NodeGraph::TopoOrderForMint(Tree);
     CHECK(Order.size() == 5);
     CHECK(IndexOf(Order, "lib")     < IndexOf(Order, "content"));
     CHECK(IndexOf(Order, "content") < IndexOf(Order, "exec"));
-    CHECK(IndexOf(Order, "tile")    < IndexOf(Order, "exec"));   // an ANY member is a freeze dependency too
-    CHECK(IndexOf(Order, "rival")   < IndexOf(Order, "exec"));   // ...and so is a NOT (it names a CID)
+    CHECK(IndexOf(Order, "tile")    < IndexOf(Order, "exec"));   // an INTO member is a freeze dependency too
+    CHECK(IndexOf(Order, "draft-00000000000d") < IndexOf(Order, "exec"));   // ...and so is a node a condition names
 }
 
 TEST(nodegraph_edit_cascades_new_cids_up_the_chain)
@@ -147,7 +149,7 @@ TEST(nodegraph_topo_external_refs_impose_no_order)
     // A ref not in the tree is an external (already-frozen) dep — it must not block ordering or error.
     std::map<std::string, ordered_json> Tree = {
         {"only", {{"LABEL", "only"},
-                  {"LAYERS", ordered_json::array({ {{"NODE", "some_external_cid"}}, {{"NOT", "another_external_cid"}} })}}},
+                  {"LAYERS", ordered_json::array({ {{"NODE", "some_external_cid"}, {"WHEN", "bafkreirivalnoderivalnoderivalnoderivalnoderivalnoderivalno == false"}} })}}},
     };
     const std::vector<std::string> Order = NodeGraph::TopoOrderForMint(Tree);
     CHECK(Order.size() == 1);

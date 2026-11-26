@@ -163,8 +163,8 @@ nlohmann::ordered_json NodeFileJson(const std::filesystem::path &P)
     return NodeGraph::ReadTreeJsonBounded(P, J) ? J : nlohmann::ordered_json(nlohmann::ordered_json::value_t::discarded);
 }
 //The installed nodes of Dir, among Candidates, that something still contains once Dir lists Listing: every other
-//installed package, and the listed version itself (a version that contains the one before it). Containment only —
-//ANY/NOT compare, never hold. NodeAt reads a node of the package or of its stage.
+//installed package, and the listed version itself (a version that contains the one before it). Hard links hold:
+//containment and INTO (a mod installed for an end keeps that end); a condition's CIDs compare, never hold. NodeAt reads a node of the package or of its stage.
 std::vector<std::string> KeptNodes(const NodeIndex &Idx, const std::filesystem::path &Dir, const std::vector<std::string> &Listing,
                                    const std::set<std::string> &Candidates,
                                    const std::function<nlohmann::ordered_json(const std::string &)> &NodeAt)
@@ -173,13 +173,16 @@ std::vector<std::string> KeptNodes(const NodeIndex &Idx, const std::filesystem::
     std::deque<std::string> Q;
     for (const auto &[Id, N] : Idx.Nodes)
         if (!N.Received && N.BundleDir.lexically_normal() != Dir.lexically_normal())
+        {
             for (const auto &R : N.Refs) Q.push_back(R);
-    for (const std::string &C : Listing) for (const auto &R : NodeRefs::Contained(NodeAt(C))) Q.push_back(R);
+            for (const auto &R : N.Into) Q.push_back(R);
+        }
+    for (const std::string &C : Listing) for (const auto &R : NodeRefs::Linked(NodeAt(C))) Q.push_back(R);
     while (!Q.empty())
     {
         const std::string C = Q.front(); Q.pop_front();
         if (!Candidates.count(C) || !Kept.insert(C).second) continue;
-        for (const auto &R : NodeRefs::Contained(NodeAt(C))) Q.push_back(R);
+        for (const auto &R : NodeRefs::Linked(NodeAt(C))) Q.push_back(R);
     }
     return { Kept.begin(), Kept.end() };
 }

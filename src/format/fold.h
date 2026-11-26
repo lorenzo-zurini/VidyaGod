@@ -12,8 +12,8 @@
 
 // ---------------------------------------------------------------------------
 // Fold — resolution of generation-6 nodes (MetaPackageFormat gen 6, §4). A node is {LABEL, VARIANT?, RECOMMENDED?,
-// LAYERS}; each layer is one typed entry (ZIP FILE DELTA DIR NODE EDIT REG VARS ENV DLL EXEC KEEP ANY NOT) that may
-// carry WHEN. A NODE layer CONTAINS another node — its ancestors are layers — selected by TAKE and placed by
+// LAYERS}; each layer is one typed entry (ZIP FILE DELTA DIR NODE EDIT REG VARS ENV DLL EXEC KEEP INTO) that may
+// carry WHEN — over variables and over node CIDs (a named node holds when it is in the composition). A NODE layer CONTAINS another node — its ancestors are layers — selected by TAKE and placed by
 // TARGET. Resolving a root:
 //   1. phase 1 — the variables a layer WHEN may read: instance values, built-ins, and the defaults of ungated VARS
 //      layers reached through ungated NODE layers;
@@ -66,7 +66,8 @@ struct Plan
     std::map<std::string, std::pair<json, std::string>> RegKeys;       // key: arch|path-lower -> (arch, path)
     json Dll = json::object(), Env = json::object(), Exec = json::object(), Keep = json::object(), Decls = json::object();
     std::vector<std::string> Order;                                     // occurrences' nodes, in expansion order
-    std::vector<std::pair<std::string, std::string>> Events;            // move/held/cycle/missing/any-unmet/not-hit
+    std::vector<std::string> Parts;                                     // the parts applied onto the end (INTO), in order
+    std::vector<std::pair<std::string, std::string>> Events;            // move/held/cycle/missing/into-unmet/into-off
     std::map<std::string, std::string> WhenVars;                       // what phase 1 resolved (layer WHEN reads these)
     std::string Error;                                                  // a malformed layer: nothing is launched from it
     //Every layer the fold applies, in order — each occurrence's (WHEN-true, not moved away), a contained node's where
@@ -78,8 +79,10 @@ struct Plan
 
 using Vars = std::map<std::string, std::string>;
 
+//Grafts: the parts applied onto the end, in order (ApplyGrafts). Selection: what a WHEN naming a node CID reads as
+//selected (default: Grafts) — parts are judged on the user's selection, so parts that exclude each other cannot loop.
 Plan Resolve(const Library &Lib, const std::string &Root, const Vars &Instance = {}, const Vars &Builtins = {},
-             const std::vector<std::string> &Grafts = {});
+             const std::vector<std::string> &Grafts = {}, const std::vector<std::string> *Selection = nullptr);
 
 //The held and moved mentions (§4.2) whose position decides a winner: a node mentioned again after it already occurred
 //is HELD at its first occurrence, or MOVED to the later mention when both sit in the same list. For each such event of
@@ -119,23 +122,27 @@ std::optional<std::string> ThroughView(const json &View, std::string Addr);
 
 //The layer's one type key, or "" when it has none or several (a malformed layer).
 std::string TypeOf(const json &Layer);
+//A part's INTO layers: the run of INTO layers its list begins with (each one a list of alternatives; the part goes into
+//all of them). Empty for a node that is not a part. Only layers whose INTO is a list count.
+std::vector<const json *> IntoLayers(const json &Layers);
 
-// ----- grafts (§4.4): a graft is a node whose list begins with ANY; it is offered to a row whose resolution
-// contains a member of that ANY, and pre-ticked when RECOMMENDED lists the row's tile.
-using GraftIndex = std::unordered_map<std::string, std::vector<std::string>>;   // member -> grafts
+// ----- parts (MetaPackageFormat 12 §12.5, 23.0): a part (a "graft") is a node whose list begins with INTO [ends]: it goes
+// into an END (a node with VARIANT) or into a part applied to it — a HARD LINK, never "somewhere beneath". Parts have
+// no order between them (one would need knowledge of every mod): they are applied after what they go into, siblings by
+// CID, and merge.
+using GraftIndex = std::unordered_map<std::string, std::vector<std::string>>;   // INTO member -> parts
 GraftIndex BuildGraftIndex(const Library &Lib);
-struct Offer { std::vector<std::string> Offered, Ticked; };                    // default order: LABEL, then CID
+struct Offer { std::vector<std::string> Offered, Ticked; };                    // shown after what each goes into, then LABEL, CID
 Offer OfferedGrafts(const Library &Lib, const GraftIndex &Idx, const Plan &P, const std::string &FaceUid);
 
-//How many of a resolution's requirements fail: a NOT that hits, an ANY unmet. A row with any is blocked.
+//How many of a resolution's requirements fail: an INTO with nothing it goes into beneath it.
 int Unsatisfied(const Plan &P);
 
-//The grafts a row applies, in order. A graft may need another graft (its ANY names it), so each is judged against
-//the row with the grafts before it applied; it applies when it is offered there and applying it leaves no
-//requirement newly unmet (its NOT hits, an ANY fails). Requested = the instance's list: the rest are dropped (and
-//listed in Dropped). No list = a fresh instance: the grafts RECOMMENDED under the row's tile — or, with
-//EveryOffered, every offered graft — in rounds, each round's newly offered ones in the default order, so a graft
-//always follows the graft it needs.
+//The parts a launch applies, in order. Requested = the instance's selection (a SET: its order is ignored); applied in
+//rounds, each round the selected parts offered with the ones before applied (so a part follows what it goes into),
+//siblings by CID. A part whose INTO's WHEN does not hold on the selection, or that leaves a requirement unmet, is
+//dropped (listed in Dropped), as is one never offered here. No list = a fresh instance: the parts RECOMMENDED under
+//the row's tile — or, with EveryOffered, every offered part — in rounds.
 std::vector<std::string> ApplyGrafts(const Library &Lib, const GraftIndex &Idx, const std::string &Root, const Vars &Instance,
                                      const Vars &Builtins, const std::string &FaceUid,
                                      const std::vector<std::string> *Requested, std::vector<std::string> *Dropped = nullptr,

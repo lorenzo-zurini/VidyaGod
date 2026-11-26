@@ -62,14 +62,14 @@ struct Link
     int         ChildIndex  = 0;
     int         ParentIndex = -1;
     std::string ExternalId;     // set when ParentIndex < 0
-    //The ordinal of this ref among the child's references FLATTENED in LAYERS order (an ANY's members count one
-    //each). Carried rather than recovered: the renderer needs it every frame to key the wire. EraseRef(child,
-    //Slot) walks the same flattening, so a detach addresses exactly this ref.
+    //The ordinal of this ref among the child's references FLATTENED in LAYERS order (an INTO's members count one
+    //each, then each node CID a layer's WHEN names). Carried rather than recovered: the renderer needs it every frame
+    //to key the wire. EraseRef(child, Slot) walks the same flattening, so a detach addresses exactly this ref.
     int         Slot        = 0;
     int         Layer       = 0;    // the LAYERS entry this ref lives in
-    int         Member      = -1;   // -1: a NODE or NOT layer; >= 0: this member of an ANY layer
-    bool        Any         = false;// an ANY member (a requirement, not containment)
-    bool        Not         = false;// a NOT layer (an exclusion)
+    int         Member      = -1;   // -1: a NODE layer or a condition; >= 0: this member of an INTO layer
+    bool        Into        = false;// an INTO member: the child is a part that goes into the parent (a hard link)
+    bool        Cond        = false;// a node CID named in a layer's WHEN (presence: drawn, edited in the condition)
 };
 
 struct Graph

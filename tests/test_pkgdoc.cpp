@@ -654,11 +654,23 @@ TEST(pkgdoc_a_dropped_wire_goes_in_where_it_was_dropped)
     CHECK_EQ(Doc.Node(X)["LAYERS"].size(), 3u);
     CHECK_EQ(Doc.Node(X)["LAYERS"][1]["NODE"].get<std::string>(), Doc.Handle(A));
     CHECK(!Doc.Link(X, Doc.Handle(A), PkgDoc::Document::RefKind::Node, 0));
-    CHECK(Doc.Link(X, Doc.Handle(A), PkgDoc::Document::RefKind::Not, 3));
-    CHECK(Doc.Node(X)["LAYERS"][3].contains("NOT"));
-    CHECK(!Doc.Link(X, Doc.Handle(A), PkgDoc::Document::RefKind::Not, 0));
-    CHECK(Doc.Link(X, Doc.Handle(A), PkgDoc::Document::RefKind::Any, 0));
-    CHECK(Doc.Node(X)["LAYERS"][0].contains("ANY"));
+    //"never with" needs a part: X is none yet
+    CHECK(!Doc.Link(X, Doc.Handle(A), PkgDoc::Document::RefKind::Not, 3));
+    const int E = Doc.Add(json{{"LABEL", "E"}, {"VARIANT", "Windows"}, {"LAYERS", json::array()}});
+    const int Y = Doc.Add(json{{"LABEL", "Y"}, {"LAYERS", json::array()}});
+    CHECK(Doc.Link(X, Doc.Handle(E), PkgDoc::Document::RefKind::Into, -1));       // X becomes a part: INTO opens its list
+    CHECK(Doc.Node(X)["LAYERS"][0]["INTO"] == json::array({Doc.Handle(E)}));
+    CHECK(!Doc.Link(X, Doc.Handle(E), PkgDoc::Document::RefKind::Into, 0));       // already there
+    CHECK(Doc.Link(X, Doc.Handle(Y), PkgDoc::Document::RefKind::Into, 0));        // an alternative in the same layer
+    CHECK_EQ(Doc.Node(X)["LAYERS"][0]["INTO"].size(), 2u);
+    CHECK(!Doc.Link(X, Doc.Handle(A), PkgDoc::Document::RefKind::Into, 5));       // past the run: refused
+    CHECK(Doc.Link(X, Doc.Handle(A), PkgDoc::Document::RefKind::Into, 1));        // a second layer: into A as well
+    CHECK(Doc.Node(X)["LAYERS"][1]["INTO"] == json::array({Doc.Handle(A)}));
+    CHECK(Doc.Node(X)["LAYERS"][2].contains("ENV"));
+    CHECK(Doc.Link(X, Doc.Handle(Y), PkgDoc::Document::RefKind::Not, -1) == false); // Y is already one of its INTOs
+    const int Z = Doc.Add(json{{"LABEL", "Z"}, {"LAYERS", json::array()}});
+    CHECK(Doc.Link(X, Doc.Handle(Z), PkgDoc::Document::RefKind::Not, -1));        // never with Z: a condition on its INTO
+    CHECK(Doc.Node(X)["LAYERS"][0]["WHEN"].get<std::string>() == Doc.Handle(Z) + " == false");
 }
 
 // Layers move to an exact place: within a node (before what is now layer At) and across nodes (moved or copied); a
@@ -690,7 +702,7 @@ TEST(pkgdoc_layers_move_within_and_across_nodes)
 
 // Merging consolidates two nodes into one: From's layers follow Into's, everything that named From names Into (once),
 // Into stops naming From, Into keeps its properties and takes over only the ones it lacks, and From is gone. Merging
-// a node into one it contains is refused and changes nothing. Teeth: skip the rewiring (D's NOT is lost with B);
+// a node into one it contains is refused and changes nothing. Teeth: skip the rewiring (D's condition keeps naming B);
 // overwrite Into's LABEL; keep a second reference to Into; drop the cycle check.
 TEST(pkgdoc_merging_a_node_into_another_consolidates_them)
 {
@@ -699,8 +711,8 @@ TEST(pkgdoc_merging_a_node_into_another_consolidates_them)
     const std::string Hb = Doc.Handle(B);
     const int A = Doc.Add(json{{"LABEL", "A"}, {"LAYERS", json::array({ json{{"ENV", {{"x", "1"}}}}, json{{"NODE", Hb}} })}});
     const std::string Ha = Doc.Handle(A);
-    Doc.Add(json{{"LABEL", "C"}, {"LAYERS", json::array({ json{{"NODE", Hb}}, json{{"NODE", Ha}}, json{{"ANY", json::array({Hb, Ha})}} })}});
-    Doc.Add(json{{"LABEL", "D"}, {"LAYERS", json::array({ json{{"NOT", Hb}} })}});
+    Doc.Add(json{{"LABEL", "C"}, {"LAYERS", json::array({ json{{"INTO", json::array({Hb, Ha})}}, json{{"NODE", Hb}}, json{{"NODE", Ha}} })}});
+    Doc.Add(json{{"LABEL", "D"}, {"LAYERS", json::array({ json{{"ENV", {{"y", "1"}}}, {"WHEN", Hb + " == false"}} })}});
     std::string Err;
     CHECK(!Doc.MergeInto(Doc.IndexOf(Ha), Doc.IndexOf(Hb), &Err));   // A contains B (not as its base): B would contain itself
     CHECK(Err.find("contain itself") != std::string::npos);
@@ -717,12 +729,12 @@ TEST(pkgdoc_merging_a_node_into_another_consolidates_them)
     for (int I = 0; I < Doc.Count(); ++I) if (Doc.Node(I)["LABEL"] == "C") C = I;
     const json &Nc = Doc.Node(C);
     CHECK_EQ(Nc["LAYERS"].size(), 2u);                          // NODE B became NODE A, the second NODE A dropped
-    CHECK_EQ(Nc["LAYERS"][0]["NODE"].get<std::string>(), Ha);
-    CHECK_EQ(Nc["LAYERS"][1]["ANY"], json::array({Ha}));        // ANY [B, A] -> [A]
+    CHECK_EQ(Nc["LAYERS"][0]["INTO"], json::array({Ha}));       // INTO [B, A] -> [A]
+    CHECK_EQ(Nc["LAYERS"][1]["NODE"].get<std::string>(), Ha);
     int Dn = -1;
     for (int I = 0; I < Doc.Count(); ++I) if (Doc.Node(I)["LABEL"] == "D") Dn = I;
-    CHECK_EQ(Doc.Node(Dn)["LAYERS"].size(), 1u);                // D excluded B: it now excludes A
-    CHECK_EQ(Doc.Node(Dn)["LAYERS"][0]["NOT"].get<std::string>(), Ha);
+    CHECK_EQ(Doc.Node(Dn)["LAYERS"].size(), 1u);                // D's condition named B: it now names A
+    CHECK_EQ(Doc.Node(Dn)["LAYERS"][0]["WHEN"].get<std::string>(), Ha + " == false");
 }
 
 // A capture taken over a version starts with the NODE naming it: merging the capture into that version folds its other

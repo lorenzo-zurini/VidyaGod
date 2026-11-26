@@ -74,9 +74,10 @@ NodeIndex BuildFrozenIndex(const std::vector<std::string> &RootCids, std::vector
         N.Cid = C;                                     // identity = the block's own CID
         auto [It, Ins] = Idx.Nodes.emplace(C, std::move(N));
         (void)Ins;                                     // Seen already guaranteed uniqueness
-        // What it contains (NODE layers). ANY/NOT are compared, never fetched; SOURCE/COVER are content CIDs
-        // fetched lazily at hydrate — never enqueued here.
+        // Its hard links: what it contains (NODE) and what it goes INTO. A condition's CIDs are compared, never
+        // fetched; SOURCE/COVER are content CIDs fetched lazily at hydrate — never enqueued here.
         for (const std::string &P : It->second.Refs) Q.push_back(P);
+        for (const std::string &P : It->second.Into) Q.push_back(P);
     }
     ManifestModel::DeriveFacts(Idx);
     return Idx;

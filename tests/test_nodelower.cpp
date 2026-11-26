@@ -181,11 +181,11 @@ TEST(a_key_held_with_modifiers_is_one_name)
 
 TEST(lower_facts_and_refs_lower_to_no_op)
 {
-    for (const ordered_json &L : { ordered_json{ {"NODE", "x"} }, ordered_json{ {"ANY", ordered_json::array({"x"})} },
+    for (const ordered_json &L : { ordered_json{ {"NODE", "x"} }, ordered_json{ {"INTO", ordered_json::array({"x"})} },
                                    ordered_json{ {"NODE", "x"}, {"TAKE", ordered_json::array({   // distinct landings; contents merge
                                        "FILES/a/", "FILES/b/", "REG", "FILES/a/x.dll", "FILES/b/y.dll",
                                        ordered_json::array({"FILES/c/x.dll", "z.dll"}) })} },
-                                   ordered_json{ {"NOT", "x"} }, ordered_json{ {"ENV", {{"A", "1"}}} },
+                                   ordered_json{ {"ENV", {{"A", "1"}}} },
                                    ordered_json{ {"EXEC", ordered_json::array({ {{"LABEL", "Play"}, {"HOST", "win32"}} })} },
                                    ordered_json{ {"EXEC", ordered_json::array({ {{"LABEL", "run"}, {"GUEST_ROOTS", {{"%GameDir%", "c:\\g"}}},  // drives: any case
                                                                                  {"DRIVES", {{"C:", "pfx/drive_c"}}}} })} } })
@@ -248,7 +248,8 @@ TEST(check_refuses_type_confused_payloads_instead_of_throwing)
         { {"EXEC", ordered_json::array({ {{"LABEL", "P"}, {"GUEST_ROOTS", {{"%GameDir%", "C:\\g"}}}} })} },                              // no DRIVES
         { {"EXEC", ordered_json::array({ {{"LABEL", "P"}, {"DRIVES", {{"C:", ordered_json::array()}}}} })} },
         { {"KEEP", {{"FILES/x", "yes"}}} }, { {"KEEP", {{"VARS/x", true}}} }, { {"KEEP", {{"FILESX/x", true}}} },
-        { {"KEEP", {{"REGISTRY/HKCU/x", true}}} }, { {"ANY", ordered_json::array()} }, { {"ANY", ordered_json::array({1})} }, { {"NOT", 1} },
+        { {"KEEP", {{"REGISTRY/HKCU/x", true}}} }, { {"INTO", ordered_json::array()} }, { {"INTO", ordered_json::array({1})} }, { {"INTO", ordered_json::array({""})} },
+        { {"NOT", "x"} }, { {"ANY", ordered_json::array({"x"})} },   // gone from the vocabulary
         { {"ZIP", "x"}, {"EXTRA", 1} },
         //a delta's bases: REQUIRED, a non-empty list of distinct CIDs, and on a delta only
         { {"DELTA", "x"} },

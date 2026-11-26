@@ -126,11 +126,13 @@ VG_COMMANDS
     Command::Register({
         "node check", "check a node against the schema, and its identity",
         "Whether a node is well-formed (one type key per layer, the fields each type allows, well-typed values), its "
-        "refs (what it contains, and what it requires: ANY members and NOT refs), its canonical bytes' size and CID. A "
+        "refs (what it contains; what it goes INTO, a part's hard links; and the node CIDs its conditions name), its "
+        "canonical bytes' size and CID. A "
         "file is read the bounded way every library walker reads one (size cap, nesting depth).",
         { NodeArg(), Opt("max-depth", "the nesting depth allowed (default 64)", Type::Int) },
         { "node check ~/.VidyaGod/LIBRARY/VidyaGod/'[749][v1.0] Age of Empires II'/bafkrei….json", "node check 'Patch 2.0a'" },
-        { "NodeLower::CheckNode", "ManifestModel::IsNodeObject", "NodeRefs::Contained", "ManifestModel::ParseNode", "Cid::Canonical",
+        { "NodeLower::CheckNode", "ManifestModel::IsNodeObject", "NodeRefs::Contained", "NodeRefs::IntoOf", "NodeRefs::Linked",
+          "NodeRefs::CidsInWhen", "Fold::IntoLayers", "VarSubst::IsNodeCid", "ManifestModel::ParseNode", "Cid::Canonical",
           "Cid::OfNode", "NodeGraph::ReadTreeJsonBounded", "NodeGraph::JsonDepthWithinLimit", "NodeGraph::ParseBounded" }, Needs::Config, false,
         [](Command::Context &C, const json &A) {
             const std::string Q = Command::Str(A, "node");
@@ -139,7 +141,15 @@ VG_COMMANDS
             const auto Refs = NodeRefs::Contained(J, &Req);
             std::string Err;
             const std::string Canon = Cid::Canonical(J), Id = Cid::OfNode(J, &Err);
+            json Conds = json::array();
+            if (J.contains("LAYERS") && J["LAYERS"].is_array())
+                for (const auto &L : J["LAYERS"])
+                    if (L.is_object() && L.contains("WHEN") && L["WHEN"].is_string())
+                        for (const auto &Cd : NodeRefs::CidsInWhen(L["WHEN"].get<std::string>()))
+                            Conds.push_back({{"cid", Cd}, {"is_node_cid", VarSubst::IsNodeCid(Cd)}});
             json Out = {{"node_object", ManifestModel::IsNodeObject(J)}, {"problem", NodeLower::CheckNode(J, Q)}, {"contains", Refs},
+                        {"into", NodeRefs::IntoOf(J)}, {"into_layers", J.contains("LAYERS") ? Fold::IntoLayers(J["LAYERS"]).size() : 0u},
+                        {"linked", NodeRefs::Linked(J)}, {"conditions_name", Conds},
                         {"requires", Req}, {"bytes", Canon.size()}, {"cid", Id.empty() ? json(Err) : json(Id)},
                         {"depth_ok", NodeGraph::JsonDepthWithinLimit(J.dump(), static_cast<int>(Command::Int(A, "max-depth", 64)))}};
             std::error_code Ec;

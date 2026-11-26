@@ -345,7 +345,7 @@
       "TYPE": "VFSFileLayer"
     },
     {
-      "PATH": "<DATA>/fixture/[90000000000001][v1.0] Launch Matrix/graftentry",
+      "PATH": "<DATA>/fixture/[90000000000001][v1.0] Launch Matrix/graftlib",
       "TARGET": "/drive_c/90000000000001",
       "TYPE": "VFSDirLayer"
     },
@@ -355,7 +355,7 @@
       "TYPE": "VFSDirLayer"
     },
     {
-      "PATH": "<DATA>/fixture/[90000000000001][v1.0] Launch Matrix/graftlib",
+      "PATH": "<DATA>/fixture/[90000000000001][v1.0] Launch Matrix/graftentry",
       "TARGET": "/drive_c/90000000000001",
       "TYPE": "VFSDirLayer"
     },

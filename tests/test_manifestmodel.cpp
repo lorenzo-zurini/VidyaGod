@@ -59,7 +59,7 @@ TEST(parse_reads_a_gen6_node)
     const ordered_json J = {
         {"CID", "h1"}, {"LABEL", "v"}, {"VARIANT", "1.0"}, {"RECOMMENDED", ordered_json::array({"7"})},
         {"LAYERS", ordered_json::array({
-            {{"NODE", "base"}}, {{"NOT", "rival"}},
+            {{"NODE", "base"}, {"WHEN", "bafkreirivalnoderivalnoderivalnoderivalnoderivalnoderivalno == false"}},
             {{"ZIP", "g.zip"}, {"SOURCE", "Qm1"}, {"SIZE", 5}, {"TARGET", "FILES/%GameDir%"}},
             {{"EDIT", ordered_json::array({ {{"MODE", "Poke"}, {"OFFSET", "0x1"}, {"VALUE", "00"}} })}, {"TARGET", "FILES/%GameDir%/g.exe"}},
             {{"EXEC", ordered_json::array({ {{"LABEL", "Play"}, {"HOST", "win32"}, {"EXE", "%GameDir%/g.exe"}, {"TILE", {{"UID", "7"}}}} })}},
@@ -72,7 +72,8 @@ TEST(parse_reads_a_gen6_node)
     CHECK_EQ(N.Variant, std::string("1.0"));
     CHECK(N.Recommended == std::vector<std::string>{"7"});
     CHECK(N.Refs == std::vector<std::string>{"base"});                // NODE refs are followed…
-    CHECK(N.Requires == std::vector<std::string>{"rival"});           // …ANY/NOT are only compared
+    CHECK(N.Requires == std::vector<std::string>{"bafkreirivalnoderivalnoderivalnoderivalnoderivalnoderivalno"});   // …a condition's node CIDs only compared
+    CHECK(N.Into.empty());
     CHECK(!N.IsGraft);
     CHECK(N.OwnTile);
     //Its own layers lowered to the engine's vocabulary: content (TARGET without the FILES namespace), edit ops; the
@@ -89,13 +90,15 @@ TEST(parse_reads_a_gen6_node)
     CHECK_EQ(Lowered[1]["FILE"].get<std::string>(), std::string("%GameDir%/g.exe"));
 }
 
-TEST(a_graft_is_a_node_whose_list_begins_with_any)
+TEST(a_part_is_a_node_whose_list_begins_with_into)
 {
     Node G, H;
-    CHECK(ManifestModel::ParseNode({{"LABEL", "g"}, {"LAYERS", ordered_json::array({ {{"ANY", ordered_json::array({"v"})}}, {{"ZIP", "m.zip"}} })}}, "f", "/b", G));
-    CHECK(ManifestModel::ParseNode({{"LABEL", "h"}, {"LAYERS", ordered_json::array({ {{"ZIP", "m.zip"}}, {{"ANY", ordered_json::array({"v"})}} })}}, "f", "/b", H));
+    CHECK(ManifestModel::ParseNode({{"LABEL", "g"}, {"LAYERS", ordered_json::array({ {{"INTO", ordered_json::array({"v"})}}, {{"ZIP", "m.zip"}} })}}, "f", "/b", G));
+    CHECK(ManifestModel::ParseNode({{"LABEL", "h"}, {"LAYERS", ordered_json::array({ {{"ZIP", "m.zip"}}, {{"INTO", ordered_json::array({"v"})}} })}}, "f", "/b", H));
     CHECK(G.IsGraft);
-    CHECK(!H.IsGraft);                                                // an ANY later in the list is a check, not an anchor
+    CHECK(G.Into == std::vector<std::string>{"v"});
+    CHECK(!H.IsGraft);                                                // INTO layers must open the list: refused
+    CHECK(!H.LowerError.empty());
 }
 
 // A layer's LABEL and SECTION name it and place it in the editor's tree; the fold never reads them, so a named layer
@@ -553,6 +556,41 @@ TEST(captured_guest_paths_are_respelled_by_their_most_specific_anchor)
 
 // ---- the validator ----------------------------------------------------------------------------------------------
 
+// What a part goes INTO is checked (the hard link): an end (a VARIANT) or another part, never a runner and never a plain
+// content node; a layer naming nothing here is warned about (a part for a version you lack); a condition naming a
+// runner is refused, one naming an absent node warned (it reads false). Teeth: accept any INTO target; skip the runner
+// check; drop the warning for an INTO with no member here.
+TEST(validate_checks_what_a_part_goes_into)
+{
+    const std::string Rn = "bafkreirunnerrunnerrunnerrunnerrunnerrunnerrunnerrunnerrunn", Gone = "bafkreigonegonegonegonegonegonegonegonegonegonegonegonegone";
+    NodeIndex Idx;
+    Add(Idx, {{"CID", "end"}, {"LABEL", "end"}, {"VARIANT", "1.0"}, {"LAYERS", ordered_json::array({
+        {{"EXEC", ordered_json::array({ {{"LABEL", "End v1.0"}, {"HOST", "win32"}, {"EXE", "g.exe"}} })}} })}});
+    Add(Idx, {{"CID", Rn}, {"LABEL", "runner"}, {"LAYERS", ordered_json::array({
+        {{"EXEC", ordered_json::array({ {{"LABEL", "run"}, {"HOST", "linux64"}, {"GUEST", ordered_json::array({"win32"})}, {"EXE", "r"}} })}} })}});
+    Add(Idx, {{"CID", "plain"}, {"LABEL", "plain"}, {"LAYERS", ordered_json::array({ {{"ZIP", "p.zip"}} })}});
+    Add(Idx, {{"CID", "ok"}, {"LABEL", "ok"}, {"LAYERS", ordered_json::array({ {{"INTO", ordered_json::array({"end"})}}, {{"ZIP", "m.zip"}} })}});
+    Add(Idx, {{"CID", "onpart"}, {"LABEL", "onpart"}, {"LAYERS", ordered_json::array({ {{"INTO", ordered_json::array({"ok"})}}, {{"INTO", ordered_json::array({"end"})}} })}});
+    Add(Idx, {{"CID", "torunner"}, {"LABEL", "torunner"}, {"LAYERS", ordered_json::array({ {{"INTO", ordered_json::array({Rn})}} })}});
+    Add(Idx, {{"CID", "toplain"}, {"LABEL", "toplain"}, {"LAYERS", ordered_json::array({ {{"INTO", ordered_json::array({"plain"})}} })}});
+    Add(Idx, {{"CID", "nowhere"}, {"LABEL", "nowhere"}, {"LAYERS", ordered_json::array({ {{"INTO", ordered_json::array({"absent"})}} })}});
+    Add(Idx, {{"CID", "cond"}, {"LABEL", "cond"}, {"LAYERS", ordered_json::array({
+        {{"INTO", ordered_json::array({"end"})}, {"WHEN", Rn + " == false && " + Gone + " == false"}} })}});
+    ManifestModel::DeriveFacts(Idx);
+    std::vector<std::string> W;
+    const auto E = Errors(Idx, &W);
+    CHECK(!AnyContains(E, "node 'ok'") && !AnyContains(E, "node 'onpart'"));
+    CHECK(AnyContains(E, "node 'torunner'") && AnyContains(E, "INTO names runner"));
+    CHECK(AnyContains(E, "node 'toplain'") && AnyContains(E, "neither an end"));
+    CHECK(AnyContains(W, "node 'nowhere'") && AnyContains(W, "names no node in this library"));
+    CHECK(AnyContains(E, "a condition names runner"));
+    CHECK(AnyContains(W, "a condition names node '" + Gone + "'"));
+    //and the facts: a part's INTO members are its hard links, every layer of them
+    CHECK(Idx.Find("onpart")->IsGraft);
+    CHECK((Idx.Find("onpart")->Into == std::vector<std::string>{"ok", "end"}));
+    CHECK((ManifestModel::GraftBases(Idx, "onpart") == std::vector<std::string>{"end"}));   // through the part, to the end
+}
+
 TEST(validate_names_missing_refs_and_cycles)
 {
     NodeIndex Idx;
@@ -699,7 +737,7 @@ TEST(validate_never_checks_a_graft_version_as_an_add_on)
 {
     NodeIndex Idx;
     const ordered_json Edit = NF::Layers({ { {"EDIT", ordered_json::array({ {{"MODE", "Overwrite"}, {"VALUE", "x"}} })}, {"TARGET", "FILES/%GameDir%/a.cfg"} } });
-    const ordered_json OnBase = NF::Layers({ { {"ANY", ordered_json::array({"b"})} } });
+    const ordered_json OnBase = NF::Layers({ { {"INTO", ordered_json::array({"b"})} } });
     AddChain(Idx, "b", { NF::Merge({ NF::Content("dir", "base", "%GameDir%"), NF::Exec("win32", "g.exe"), NF::Tile("1"), NF::Variant("v1") }) });
     AddChain(Idx, "ver", { NF::Merge({ OnBase, NF::Content("dir", "d", "%GameDir%"), NF::Variant("v2") }) });
     AddChain(Idx, "addon", { NF::Merge({ OnBase, Edit }) });
@@ -1577,7 +1615,7 @@ TEST(shelf_a_grafts_own_card_is_not_rowless)
     NodeIndex Idx;
     Add(Idx, {{"CID", "base"}, {"VARIANT", "1.0"}, {"RECOMMENDED", ordered_json::array({"7"})},
               {"LAYERS", ordered_json::array({ {{"EXEC", ordered_json::array({PlayEntry({{"UID", "7"}, {"TITLE", "Game"}})})}} })}});
-    Add(Idx, {{"CID", "mod"}, {"LAYERS", ordered_json::array({ {{"ANY", ordered_json::array({"base"})}},
+    Add(Idx, {{"CID", "mod"}, {"LAYERS", ordered_json::array({ {{"INTO", ordered_json::array({"base"})}},
               {{"EXEC", ordered_json::array({PlayEntry({{"UID", "70"}, {"TITLE", "The Mod"}})})}} })}});
     ManifestModel::DeriveFacts(Idx);
     CHECK(Idx.TileGraft.count("70") == 1);

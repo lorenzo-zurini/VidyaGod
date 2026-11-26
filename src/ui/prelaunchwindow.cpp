@@ -378,43 +378,16 @@ PreLaunchWindow::PreLaunchWindow(
         ModuleTree->setHeaderHidden(true);
         ModuleTree->setRootIsDecorated(true);   // grafts sit in collapsible SECTION rows
         ModuleTree->setIndentation(16);
-        //Single selection: the selected TICKED graft can be moved — the list order is the order grafts apply in.
+        //Add-ons have no order between them (one would need knowledge of every mod): what is ticked is a SET. Where
+        //two write the same thing the conflict is shown, never settled by a position in a list.
         ModuleTree->setSelectionMode(QAbstractItemView::SingleSelection);
         ML->addWidget(ModuleTree, 1);
-        auto* Row = new QHBoxLayout();
-        Row->setSpacing(6);
-        auto* OrderHint = new QLabel("Ticked add-ons apply top to bottom.", AddonsPage);
-        OrderHint->setObjectName("graftOrderHint");
-        OrderHint->setProperty("role", "dim");
-        Row->addWidget(OrderHint, 1);
-        GraftUp   = new QPushButton("▲ Earlier", AddonsPage);
-        GraftDown = new QPushButton("▼ Later", AddonsPage);
-        GraftUp->setToolTip("Apply the selected add-on earlier (those below it fold over it).");
-        GraftDown->setToolTip("Apply the selected add-on later (it folds over those above it).");
-        GraftUp->setObjectName("graftUp");
-        GraftDown->setObjectName("graftDown");
-        GraftUp->setFlat(true); GraftDown->setFlat(true);
-        Row->addWidget(GraftUp); Row->addWidget(GraftDown);
-        ML->addLayout(Row);
         GraftNote = new QLabel(AddonsPage);
         GraftNote->setObjectName("graftNote");
         GraftNote->setWordWrap(true);
         GraftNote->setStyleSheet("QLabel { color: #e0a040; }");
         GraftNote->setVisible(false);
         ML->addWidget(GraftNote);
-        connect(GraftUp,   &QPushButton::clicked, this, [this]{ MoveSelectedGraft(-1); });
-        connect(GraftDown, &QPushButton::clicked, this, [this]{ MoveSelectedGraft(+1); });
-        auto Enable = [this]{
-            const QTreeWidgetItem* It = ModuleTree->currentItem();
-            const bool Ticked = It && It->data(0, Qt::UserRole + 2).toBool();
-            const std::vector<std::string> T = CollectGrafts();
-            const auto At = It ? std::find(T.begin(), T.end(), It->data(0, Qt::UserRole).toString().toStdString()) : T.end();
-            GraftUp->setEnabled(Ticked && At != T.end() && At != T.begin());
-            GraftDown->setEnabled(Ticked && At != T.end() && At + 1 != T.end());
-        };
-        connect(ModuleTree, &QTreeWidget::currentItemChanged, this, Enable);
-        connect(ModuleTree, &QTreeWidget::itemChanged, this, Enable);
-        GraftUp->setEnabled(false); GraftDown->setEnabled(false);
     }
     Tabs->addTab(AddonsPage, "Add-ons");
     //A toggle rebuilds the list — deleting the very row whose setData emitted itemChanged, while Qt is still inside it

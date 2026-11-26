@@ -67,8 +67,9 @@ struct Node {
     //the resolved plan, where TAKE and TARGET have placed everything.
     nlohmann::ordered_json LoweredLayers() const;
     std::vector<std::string> Refs;           // NODE refs, in order — what it contains (followed, fetched)
-    std::vector<std::string> Requires;       // ANY members and NOT refs — compared, never followed
-    bool IsGraft = false;                    // its list begins with ANY
+    std::vector<std::string> Into;           // what it goes INTO (a part's INTO members): a HARD link, followed like Refs
+    std::vector<std::string> Requires;       // INTO members and the node CIDs its conditions name (a WHEN's are compared, never followed)
+    bool IsGraft = false;                    // a part: its list begins with INTO layers
 
     // ---- folded facts: this node's own resolve (default instance), derived by DeriveFacts ----
     nlohmann::ordered_json Entries;          // the folded EXEC: entry label -> entry, first-declared order

@@ -170,10 +170,10 @@ private slots:
         ImGui::GetIO().AddKeyEvent(ImGuiMod_Shift, false);
         H.frame();
         qInfo("M after shift-drop: %s", H.Doc.Node(H.Doc.IndexOf(M)).dump().c_str());
-        bool Any = false;
+        bool Into = false;
         for (const json &L : H.Doc.Node(H.Doc.IndexOf(M))["LAYERS"])
-            if (L.contains("ANY")) for (const json &X : L["ANY"]) if (X == A) Any = true;
-        QVERIFY2(Any, "Shift-drop did not make a requirement");
+            if (L.contains("INTO")) for (const json &X : L["INTO"]) if (X == A) Into = true;
+        QVERIFY2(Into, "Shift-drop did not make a part going INTO it");
     }
 
     // A wire is selected by clicking it and removed with Delete (its reference leaves the container; undo restores).
@@ -267,8 +267,8 @@ private slots:
         package();
         const int I = H.Canvas->addNode("NODE", 0, 0, A);
         QCOMPARE(H.Doc.Node(I)["LAYERS"][0]["NODE"].get<std::string>(), A);
-        const int J = H.Canvas->addNode("ANY", 0, 0, A);
-        QCOMPARE(H.Doc.Node(J)["LAYERS"][0]["ANY"], json::array({A}));
+        const int J = H.Canvas->addNode("INTO", 0, 0, A);
+        QCOMPARE(H.Doc.Node(J)["LAYERS"][0]["INTO"], json::array({A}));
         const int K = H.Canvas->addNode("NODE", 0, 0);
         QCOMPARE(H.Doc.Node(K)["LAYERS"][0]["NODE"].get<std::string>(), std::string());
     }
@@ -1349,7 +1349,7 @@ private slots:
         QCOMPARE(V["LAYERS"][0]["NODE"], json("base"));
         QVERIFY(!V["VARIANT"].get<std::string>().empty());
         const json M = PkgGraph::ModNode("base", "Demo");
-        QCOMPARE(M["LAYERS"][0]["ANY"], json::array({"base"}));
+        QCOMPARE(M["LAYERS"][0]["INTO"], json::array({"base"}));
         for (const json &L : M["LAYERS"]) QVERIFY(!L.contains("NODE"));
         //A library waits for its files with no place of its own (the game grafting it says where) and is nothing
         //on the shelf: no version, no entry.
@@ -1458,12 +1458,12 @@ private slots:
     void aNodeIsDescribedInWords()
     {
         const json N = json{{"VARIANT", "Original"}, {"LAYERS", json::array({
-            json{{"ZIP", "demo.zip"}}, json{{"NODE", "base"}}, json{{"ANY", json::array({"game"})}},
+            json{{"INTO", json::array({"game"})}}, json{{"ZIP", "demo.zip"}}, json{{"NODE", "base"}},
             json{{"EDIT", json::array({ json::object(), json::object() })}}, json{{"KEEP", {{"FILES/%Documents%/Demo/", true}, {"FILES/%GameDir%/cfg.ini", false}}}},
             json{{"EXEC", json::array({ json{{"LABEL", "Play"}, {"HOST", "win32"}, {"EXE", "%GameDir%/bin/demo.exe"}} })}} })}};
         const std::string D = PkgGraph::Describe(N, [](const std::string &R) { return R == "base" ? std::string("Core Files") : std::string("The Game"); });
         for (const char *Want : {"Version \"Original\"", "runs demo.exe on Windows 32-bit", "files from demo.zip", "contains \"Core Files\"",
-                                 "rides on \"The Game\"", "changes 2 settings", "keeps Documents/Demo"})
+                                 "goes into \"The Game\"", "changes 2 settings", "keeps Documents/Demo"})
             QVERIFY2(D.find(Want) != std::string::npos, (D + "  <- missing: " + Want).c_str());
         QVERIFY2(D.find("cfg.ini") == std::string::npos, (D + "  <- a key taken back (KEEP false) is not kept").c_str());
         QCOMPARE(PkgGraph::Describe(json{{"LAYERS", json::array()}}), std::string("Nothing yet"));

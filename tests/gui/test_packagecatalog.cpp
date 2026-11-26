@@ -92,6 +92,29 @@ private slots:
     // is a folder already in the library, a published library, or another source's folder; a name of only dots is no
     // folder of its own. Teeth: accept a taken name or a shared folder; delete an unmarked or published folder; take a
     // marker naming another CID; delete a package the user made in the folder; never mark an old source (unremovable).
+    // A share closes over HARD links: what a node contains and what a part goes INTO. A mod package shared alone
+    // brings the game it goes into (else a peer gets a mod for a game it cannot fetch); a node a condition merely names
+    // does not come along. Teeth: close over NODE only (the game is left out); follow condition CIDs (the rival comes).
+    void a_shared_mod_brings_the_game_it_goes_into()
+    {
+        const std::string Rival = "bafkreirivalrivalrivalrivalrivalrivalrivalrivalrivalrivalri";
+        NodeIndex Idx;
+        const auto add = [&](const std::string &Id, json Layers, json Extra = json::object()) {
+            json J = json{{"CID", Id}, {"LABEL", Id}, {"LAYERS", std::move(Layers)}};
+            for (auto &[K, V] : Extra.items()) J[K] = V;
+            Node N;
+            QVERIFY(ManifestModel::ParseNode(J, "/lib/" + Id + ".json", "/lib", N));
+            Idx.Nodes[N.Key()] = N;
+        };
+        add("game", json::array({ json{{"ZIP", "g.zip"}} }), json{{"VARIANT", "1.0"}});
+        add(Rival, json::array({ json{{"ZIP", "r.zip"}} }));
+        add("lib", json::array({ json{{"ZIP", "l.zip"}} }));
+        add("mod", json::array({ json{{"INTO", json::array({"game"})}, {"WHEN", Rival + " == false"}}, json{{"NODE", "lib"}} }));
+        const json Sheet = json{{"game", "L/Game/game.json"}, {Rival, "L/Rival/rival.json"}, {"lib", "L/Lib/lib.json"}, {"mod", "L/Mod/mod.json"}};
+        const auto Got = PackageCatalog::PackagesContained(Sheet, {"L/Mod"}, [&](const std::string &C) { return PackageCatalog::NodeContains(Idx, C); });
+        QCOMPARE(std::set<std::string>(Got.begin(), Got.end()), (std::set<std::string>{"L/Game", "L/Lib", "L/Mod"}));
+    }
+
     void a_source_removes_only_a_folder_its_own_fetch_made()
     {
         QTemporaryDir D; QVERIFY(D.isValid());
@@ -4472,7 +4495,7 @@ private slots:
         using namespace NodeFixture;
         WriteNodes((Game + "/game.json").toStdString(), Chain("game", {Tile("1", "Game"), Exec("win32", "g.exe"),
             Content("zip", "game.zip")}, {}, {{"VARIANT", "Edition 1"}}));
-        WriteNodes((Mod + "/mod.json").toStdString(), Chain("mod", {Merge({ Layers({ json{{"ANY", json::array({"game"})}} }),
+        WriteNodes((Mod + "/mod.json").toStdString(), Chain("mod", {Merge({ Layers({ json{{"INTO", json::array({"game"})}} }),
             Tile("3", "Mod"), Content("zip", "mod.zip") })}, {}, {{"VARIANT", "Mod"}}));
         WriteNodes((Lib + "/lib.json").toStdString(), Chain("lib", {Tile("4", "Lib"), Exec("win32", "l.exe")}, {}, {{"VARIANT", "Lib"}}));
         WriteNodes((User + "/user.json").toStdString(), Chain("user", {Tile("5", "User"), Exec("win32", "u.exe"),

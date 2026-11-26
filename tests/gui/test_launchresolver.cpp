@@ -28,6 +28,10 @@
 using json = nlohmann::ordered_json;
 
 namespace {
+//A node key shaped like a node CID (02 §2.3), so a condition can name it ("<cid> == false"): "bafkrei" + the name
+//(letters a-z and 2-7) padded with 'a' to the 52 base32 characters.
+std::string CidOf(const std::string &Name) { std::string C = "bafkrei" + Name; C.resize(59, 'a'); return C; }
+
 // The machine platform the chain resolver bridges TO. Hardcoding "linux64" made every chain test assume a Linux
 // host: on Windows MachinePlatform()=="win64", so a runner declared host "linux64" never reaches the machine, the
 // chain resolves EMPTY, and the tests' ids[0] indexed out of bounds (a SEGFAULT under the Windows/MinGW CI). Use
@@ -1061,7 +1065,7 @@ private slots:
         QCOMPARE(chain2[0].Layers.back().value("TARGET", std::string()), std::string("__jre"));   // own layer last = on top
     }
 
-    // A graft (a node whose list begins with ANY naming the variant) that carries an entry is a WAY TO RUN the
+    // A part (a node whose list begins with INTO naming the variant) that carries an entry is a WAY TO RUN the
     // variant: applied, its entry is in the row's fold, --entry picks it, and its HOST drives the chain — the mount
     // stays the variant's plus the graft.
     void a_grafts_entry_runs_over_the_variants_mount()
@@ -1070,7 +1074,7 @@ private slots:
         idx.Nodes["protonA"] = chainRunner("protonA", {"win32"}, kMachine);
         idx.Nodes["game"] = launchNode("game", kMachine, {});
         idx.Nodes["loader"] = parse(json{ {"CID", "loader"}, {"LABEL", "loader"}, {"LAYERS", json::array({
-            json{{"ANY", json::array({"game"})}}, json{{"DIR", "loader"}},
+            json{{"INTO", json::array({"game"})}}, json{{"DIR", "loader"}},
             json{{"EXEC", json::array({ json{{"LABEL", "Loader"}, {"HOST", "win32"}, {"EXE", "loader.exe"}} })}} })} }, "/tmp/vg_bundle");
         finish(idx);
         ContainerParams cp("/tmp/vg_bundle");
@@ -1094,7 +1098,7 @@ private slots:
         idx.Nodes["game"] = launchNode("game", kMachine, {"lib"}, json::object(),
                                        json::array({ json{{"ENV", {{"A", "game"}, {"B", nullptr}, {"HOST_ONLY", nullptr}}}} }));
         idx.Nodes["mod"] = parse(json{ {"CID", "mod"}, {"LABEL", "mod"}, {"LAYERS", json::array({
-            json{{"ANY", json::array({"game"})}}, json{{"DIR", "mod"}}, json{{"ENV", {{"C", "mod"}}}} })} }, "/tmp/vg_bundle");
+            json{{"INTO", json::array({"game"})}}, json{{"DIR", "mod"}}, json{{"ENV", {{"C", "mod"}}}} })} }, "/tmp/vg_bundle");
         idx.Nodes["rlib"] = contentNode("rlib", json::array({ json{{"ZIP", "rlib.zip"}}, json{{"ENV", {{"R", "rlib"}, {"S", "rlib"}, {"T", "rlib"}}}} }));
         idx.Nodes["native"] = chainRunner("native", {kMachine}, kMachine, "%RunnerMount%/run", {"rlib"},
                                           json::array({ json{{"ENV", {{"S", "runner"}, {"R", nullptr}}}} }));
@@ -1151,10 +1155,10 @@ private slots:
         idx.Nodes["protonA"] = chainRunner("protonA", {"win32"}, kMachine);
         idx.Nodes["game"] = launchNode("game", kMachine, {});
         idx.Nodes["loader"] = parse(json{ {"CID", "loader"}, {"LABEL", "loader"}, {"LAYERS", json::array({
-            json{{"ANY", json::array({"game"})}},
+            json{{"INTO", json::array({"game"})}},
             json{{"EXEC", json::array({ json{{"LABEL", "Loader"}, {"HOST", "win32"}, {"EXE", "loader.exe"}} })}} })} }, "/tmp/vg_bundle");
         idx.Nodes["elsewhere"] = parse(json{ {"CID", "elsewhere"}, {"LABEL", "elsewhere"}, {"LAYERS", json::array({
-            json{{"ANY", json::array({"other_game"})}},
+            json{{"INTO", json::array({"other_game"})}},
             json{{"EXEC", json::array({ json{{"LABEL", "Loader"}, {"HOST", "win32"}, {"EXE", "x.exe"}} })}} })} }, "/tmp/vg_bundle");
         finish(idx);
         ContainerParams cp("/tmp/vg_bundle");
@@ -1167,26 +1171,25 @@ private slots:
         QVERIFY(cp.AppliedGrafts.empty());
     }
 
-    // A row whose requirements fail is blocked (§4): a NOT naming something the row contains, or an ANY that finds
-    // none. A graft whose NOT would hit is not applied — the row still launches without it.
+    // A row whose parts do not hold is blocked (12 §12.5): an end that goes INTO what is not there. A part whose
+    // condition says "never with" something the row contains is not applied — the row still launches without it.
     void an_unsatisfied_row_is_blocked_and_a_conflicting_graft_is_not_applied()
     {
         NodeIndex idx;
-        idx.Nodes["base"] = contentNode("base", json::array({ json{{"DIR", "base"}} }));
-        idx.Nodes["game"] = launchNode("game", kMachine, {"base"});
-        idx.Nodes["blocked"] = launchNode("blocked", kMachine, {"base"}, json::object(), json::array({ json{{"NOT", "base"}} }));
-        idx.Nodes["needs"] = launchNode("needs", kMachine, {}, json::object(), json::array({ json{{"ANY", json::array({"nowhere"})}} }));
+        const std::string Base = CidOf("base");
+        idx.Nodes[Base] = contentNode(Base, json::array({ json{{"DIR", "base"}} }));
+        idx.Nodes["game"] = launchNode("game", kMachine, {Base});
+        idx.Nodes["needs"] = launchNode("needs", kMachine, {}, json::object(), json::array({ json{{"INTO", json::array({"nowhere"})}} }));
         idx.Nodes["conflict"] = parse(json{ {"CID", "conflict"}, {"LABEL", "conflict"}, {"RECOMMENDED", json::array({"game"})},
-            {"LAYERS", json::array({ json{{"ANY", json::array({"game"})}}, json{{"NOT", "base"}}, json{{"DIR", "c"}} })} }, "/tmp/vg_bundle");
+            {"LAYERS", json::array({ json{{"INTO", json::array({"game"})}, {"WHEN", Base + " == false"}}, json{{"DIR", "c"}} })} }, "/tmp/vg_bundle");
         idx.Nodes["fine"] = parse(json{ {"CID", "fine"}, {"LABEL", "fine"}, {"RECOMMENDED", json::array({"game"})},
-            {"LAYERS", json::array({ json{{"ANY", json::array({"game"})}}, json{{"DIR", "f"}} })} }, "/tmp/vg_bundle");
+            {"LAYERS", json::array({ json{{"INTO", json::array({"game"})}}, json{{"DIR", "f"}} })} }, "/tmp/vg_bundle");
         finish(idx);
         const json cfg = json{{"Settings", json::object()}};
-        for (const char *Row : {"blocked", "needs"})
         {
             ContainerParams cp("/tmp/vg_bundle");
-            cp.NodeIdx = &idx; cp.LaunchNodeId = Row;
-            QVERIFY2(!LaunchResolver::InitializeFromNode(cp, cfg), Row);
+            cp.NodeIdx = &idx; cp.LaunchNodeId = "needs";
+            QVERIFY(!LaunchResolver::InitializeFromNode(cp, cfg));
         }
         ContainerParams cp("/tmp/vg_bundle");
         cp.NodeIdx = &idx; cp.LaunchNodeId = "game";
@@ -1197,95 +1200,73 @@ private slots:
         QVERIFY(cp.AppliedGrafts == std::vector<std::string>{ "fine" });
     }
 
-    // The instance's graft list is ordered — the order grafts apply in — and the pre-launch window reorders it
-    // through MoveGraft. A graft applies only once the grafts it needs are applied, so a move that would leave one
-    // unapplied (a graft on a graft moved above its base) is refused and names it; an allowed move reorders.
-    void a_graft_reorder_that_would_drop_a_graft_is_refused()
+    // Parts have no order: the list shows a part after what it goes into, then by LABEL, then CID (a presentation,
+    // never a fold order). A part is offered only on the end it goes INTO (the hard link): an end that contains that
+    // end (FE holds the game) is not offered its parts. Teeth: offer by containment (mod gets the game's parts).
+    void parts_are_listed_after_what_they_go_into_then_by_label()
     {
         NodeIndex idx;
         idx.Nodes["base"] = contentNode("base", json::array({ json{{"DIR", "base"}} }));
         idx.Nodes["game"] = launchNode("game", kMachine, {"base"});
-        const auto graft = [](const char *Id, const char *On) {
-            return parse(json{ {"CID", Id}, {"LABEL", Id},
-                {"LAYERS", json::array({ json{{"ANY", json::array({On})}}, json{{"DIR", Id}} })} }, "/tmp/vg_bundle");
+        const std::string Aok = CidOf("aok"), Tc = CidOf("tc");
+        const auto graft = [](const std::string &Id, const char *Label, const std::string &When, const char *Into = "game") {
+            json In = json{{"INTO", json::array({Into})}};
+            if (!When.empty()) In["WHEN"] = When;
+            return parse(json{ {"CID", Id}, {"LABEL", Label}, {"LAYERS", json::array({ In, json{{"DIR", Id}} })} }, "/tmp/vg_bundle");
         };
-        idx.Nodes["a"] = graft("a", "game");
-        idx.Nodes["b"] = graft("b", "game");
-        idx.Nodes["ona"] = graft("ona", "a");                                     // a graft on the graft a
+        idx.Nodes[Aok] = graft(Aok, "Age of Kings", "");
+        idx.Nodes[Tc] = graft(Tc, "The Conquerors", Aok + " == false");
+        idx.Nodes["both"] = graft("both", "Both", Aok + " == false && " + Tc + " == false");
+        idx.Nodes["patch"] = graft("patch", "Patch", "");
+        idx.Nodes["onaok"] = graft("onaok", "A Aok Addon", "", "");
+        idx.Nodes["onaok"] = parse(json{ {"CID", "onaok"}, {"LABEL", "A Aok Addon"},
+            {"LAYERS", json::array({ json{{"INTO", json::array({Aok})}}, json{{"DIR", "o"}} })} }, "/tmp/vg_bundle");
         finish(idx);
-        std::vector<std::string> T{ "a", "ona", "b" };
-        QCOMPARE(Shelf::AppliedGrafts(idx, "game", T).size(), size_t(3));
-        std::string Why;
-        QVERIFY(!Shelf::MoveGraft(idx, "game", T, 1, -1, &Why));           // ona above a: it would drop
-        QVERIFY2(Why.find("'ona'") != std::string::npos, Why.c_str());
-        QVERIFY(!Shelf::MoveGraft(idx, "game", T, 0, +1));                // a below ona: the same
-        QVERIFY((T == std::vector<std::string>{ "a", "ona", "b" }));                // refused moves change nothing
-        QVERIFY(Shelf::MoveGraft(idx, "game", T, 2, -1));                 // b is independent: it moves
-        QVERIFY((T == std::vector<std::string>{ "a", "b", "ona" }));
-        QVERIFY(!Shelf::MoveGraft(idx, "game", T, 0, -1));                // nothing above the first
-        QVERIFY(!Shelf::MoveGraft(idx, "game", T, 2, +1));                // nothing below the last
-
-        // Two grafts that exclude each other: the first applies, the second not. Swapping them keeps the COUNT (one
-        // applies either way) while the one that applied stops — refused by WHICH grafts apply, not how many.
-        // Teeth: compare the sizes again and the swap is accepted.
-        const auto excl = [](const char *Id, const char *Not) {
-            return parse(json{ {"CID", Id}, {"LABEL", Id},
-                {"LAYERS", json::array({ json{{"ANY", json::array({"game"})}}, json{{"NOT", Not}}, json{{"DIR", Id}} })} }, "/tmp/vg_bundle");
-        };
-        idx.Nodes["x"] = excl("x", "y");
-        idx.Nodes["y"] = excl("y", "x");
-        finish(idx);
-        std::vector<std::string> XY{ "x", "y" };
-        QVERIFY((Shelf::AppliedGrafts(idx, "game", XY) == std::vector<std::string>{ "x" }));
-        std::string WhyX;
-        QVERIFY(!Shelf::MoveGraft(idx, "game", XY, 1, -1, &WhyX));
-        QVERIFY2(WhyX.find("'x'") != std::string::npos, WhyX.c_str());
-        // The tile decides it too: graft p brings q only under tile 7, and onq is a graft on q. Under tile 7 moving onq
-        // above p drops it; judged without the tile (the node's own, "game") onq applies in neither order and the drop
-        // goes unseen. The pre-launch window judges as the launch does (%UID% = the tile it launches).
-        // Teeth: ignore Builtins in MoveGraft and the move below is accepted.
-        idx.Nodes["q"] = contentNode("q", json::array({ json{{"DIR", "q"}} }));
-        idx.Nodes["p"] = parse(json{ {"CID", "p"}, {"LABEL", "p"},
-            {"LAYERS", json::array({ json{{"ANY", json::array({"game"})}}, json{{"NODE", "q"}, {"WHEN", "%UID%==7"}} })} }, "/tmp/vg_bundle");
-        idx.Nodes["onq"] = graft("onq", "q");
-        finish(idx);
-        std::vector<std::string> PQ{ "p", "onq" };
-        const std::map<std::string, std::string> Tile7{ {"UID", "7"} };
-        QCOMPARE(Shelf::AppliedGrafts(idx, "game", PQ, {}, Tile7).size(), size_t(2));
-        QCOMPARE(Shelf::AppliedGrafts(idx, "game", PQ).size(), size_t(1));      // not under the node's own tile
-        QVERIFY2(!Shelf::MoveGraft(idx, "game", PQ, 1, -1, nullptr, {}, Tile7), "under tile 7 the move drops onq");
-    }
-
-    // The default graft order keeps related grafts together: a graft follows every offered graft its ANY/NOT names,
-    // and the one naming the latest listed goes next; unrelated ones go by LABEL. AoE2's soundtracks stay adjacent
-    // though a patch's LABEL sorts between them. Teeth: sort by LABEL (patch lands between aok and tc).
-    void the_default_graft_order_keeps_related_grafts_together()
-    {
-        NodeIndex idx;
-        idx.Nodes["base"] = contentNode("base", json::array({ json{{"DIR", "base"}} }));
-        idx.Nodes["game"] = launchNode("game", kMachine, {"base"});
-        const auto graft = [](const char *Id, const char *Label, const json &Extra) {
-            json L = json::array({ json{{"ANY", json::array({"game"})}} });
-            for (const auto &X : Extra) L.push_back(X);
-            L.push_back(json{{"DIR", Id}});
-            return parse(json{ {"CID", Id}, {"LABEL", Label}, {"LAYERS", L} }, "/tmp/vg_bundle");
-        };
-        idx.Nodes["aok"] = graft("aok", "Age of Kings", json::array());
-        idx.Nodes["tc"] = graft("tc", "The Conquerors", json::array({ json{{"NOT", "aok"}} }));
-        idx.Nodes["both"] = graft("both", "Both", json::array({ json{{"NOT", "aok"}}, json{{"NOT", "tc"}} }));
-        idx.Nodes["patch"] = graft("patch", "Patch", json::array());
-        finish(idx);
-        QCOMPARE(Shelf::OfferedGrafts(idx, "game"), (std::vector<std::string>{ "aok", "tc", "both", "patch" }));
-        // A variant that contains a graft (FE holds UserPatch) is not offered it again. Teeth: offer contained grafts.
+        QCOMPARE(Shelf::OfferedGrafts(idx, "game"), (std::vector<std::string>{ Aok, "both", "patch", Tc }));
+        //with Aok applied, its add-on follows the parts of the end (one INTO step further), whatever its LABEL
+        std::vector<std::string> Pre;
+        QCOMPARE(Shelf::OfferedGrafts(idx, "game", &Pre, std::vector<std::string>{ Aok }), (std::vector<std::string>{ Aok, "both", "patch", Tc, "onaok" }));
         idx.Nodes["mod"] = parse(json{ {"CID", "mod"}, {"LABEL", "mod"}, {"VARIANT", "m"},
             {"LAYERS", json::array({ json{{"NODE", "game"}}, json{{"NODE", "patch"}} })} }, "/tmp/vg_bundle");
         finish(idx);
-        QCOMPARE(Shelf::OfferedGrafts(idx, "mod"), (std::vector<std::string>{ "aok", "tc", "both" }));
+        QVERIFY(Shelf::OfferedGrafts(idx, "mod").empty());
+    }
+
+    // A part with several INTO layers goes into ALL of them (a patch between two mods): it is offered, and applies,
+    // only once every layer has a member applied; each layer's members are alternatives. Teeth: offer on the first
+    // layer alone; apply it with one of its two mods.
+    void a_part_into_two_mods_needs_both()
+    {
+        NodeIndex idx;
+        idx.Nodes["game"] = launchNode("game", kMachine, {});
+        const auto part = [](const std::string &Id, const std::vector<json> &Intos) {
+            json L = json::array();
+            for (const auto &I : Intos) L.push_back(json{{"INTO", I}});
+            L.push_back(json{{"DIR", Id}});
+            return parse(json{ {"CID", Id}, {"LABEL", Id}, {"LAYERS", L} }, "/tmp/vg_bundle");
+        };
+        idx.Nodes["ma"] = part("ma", { json::array({"game"}) });
+        idx.Nodes["mb"] = part("mb", { json::array({"game"}) });
+        idx.Nodes["mb2"] = part("mb2", { json::array({"game"}) });
+        idx.Nodes["patch"] = part("patch", { json::array({"ma"}), json::array({"mb", "mb2"}) });
+        finish(idx);
+        using V = std::vector<std::string>;
+        std::vector<std::string> Pre;
+        const auto offered = [&](const V &T) { const auto O = Shelf::OfferedGrafts(idx, "game", &Pre, T); return std::set<std::string>(O.begin(), O.end()); };
+        QVERIFY(!offered({}).count("patch"));
+        QVERIFY(!offered({"ma"}).count("patch"));
+        QVERIFY(!offered({"mb"}).count("patch"));
+        QVERIFY(offered({"ma", "mb"}).count("patch"));
+        QVERIFY(offered({"ma", "mb2"}).count("patch"));                        // either member of the second layer
+        QCOMPARE(Shelf::AppliedGrafts(idx, "game", V{"patch", "ma"}), (V{"ma"}));
+        const V All = Shelf::AppliedGrafts(idx, "game", V{"patch", "mb", "ma"});
+        QCOMPARE(std::set<std::string>(All.begin(), All.end()), (std::set<std::string>{"ma", "mb", "patch"}));
+        QCOMPARE(All.back(), std::string("patch"));                             // after both it goes into
     }
 
     // Ticking a graft in the pre-launch window goes through TickGraft: the graft just ticked wins, so grafts that
-    // exclude each other (AoE2's three soundtracks: TC NOT AoK, Both NOT AoK + NOT TC — a CID can only name an earlier
-    // one) behave as a choice of one, whichever side carries the NOT. A graft the ticked one needs, or one unrelated,
+    // exclude each other (AoE2's three soundtracks: TC "never with AoK", Both "never with AoK or TC" — a CID can only
+    // name an earlier one) behave as a choice of one, whichever side carries the condition. A graft the ticked one needs, or one unrelated,
     // stays ticked. Teeth: skip the unticking (all three stay ticked); untick without judging the whole list (a graft
     // on a graft whose base is ticked unticks that base); keep G in its old place (it must go last).
     void ticking_a_graft_unticks_the_grafts_it_excludes()
@@ -1293,36 +1274,36 @@ private slots:
         NodeIndex idx;
         idx.Nodes["base"] = contentNode("base", json::array({ json{{"DIR", "base"}} }));
         idx.Nodes["game"] = launchNode("game", kMachine, {"base"});
-        const auto graft = [](const char *Id, const json &Layers) {
-            json L = json::array({ json{{"ANY", json::array({"game"})}} });
-            for (auto &X : Layers) L.push_back(X);
-            L.push_back(json{{"DIR", Id}});
-            return parse(json{ {"CID", Id}, {"LABEL", Id}, {"LAYERS", L} }, "/tmp/vg_bundle");
+        const auto graft = [](const std::string &Id, const std::string &When) {
+            json In = json{{"INTO", json::array({"game"})}};
+            if (!When.empty()) In["WHEN"] = When;
+            return parse(json{ {"CID", Id}, {"LABEL", Id}, {"LAYERS", json::array({ In, json{{"DIR", Id}} })} }, "/tmp/vg_bundle");
         };
-        idx.Nodes["aok"]  = graft("aok",  json::array());
-        idx.Nodes["tc"]   = graft("tc",   json::array({ json{{"NOT", "aok"}} }));
-        idx.Nodes["both"] = graft("both", json::array({ json{{"NOT", "aok"}}, json{{"NOT", "tc"}} }));
-        idx.Nodes["free"] = graft("free", json::array());
+        const std::string Aok = CidOf("aok"), Tc = CidOf("tc");
+        idx.Nodes[Aok]    = graft(Aok,    "");
+        idx.Nodes[Tc]     = graft(Tc,     Aok + " == false");
+        idx.Nodes["both"] = graft("both", Aok + " == false && " + Tc + " == false");
+        idx.Nodes["free"] = graft("free", "");
         idx.Nodes["ona"] = parse(json{ {"CID", "ona"}, {"LABEL", "ona"},
-            {"LAYERS", json::array({ json{{"ANY", json::array({"aok"})}}, json{{"DIR", "ona"}} })} }, "/tmp/vg_bundle");
+            {"LAYERS", json::array({ json{{"INTO", json::array({Aok})}}, json{{"DIR", "ona"}} })} }, "/tmp/vg_bundle");
         finish(idx);
         using V = std::vector<std::string>;
         V Un;
-        QCOMPARE(Shelf::TickGraft(idx, "game", V{ "free", "aok" }, "both", &Un), (V{ "free", "both" }));   // both's NOT
-        QCOMPARE(Un, V{ "aok" });
+        QCOMPARE(Shelf::TickGraft(idx, "game", V{ "free", Aok }, "both", &Un), (V{ "free", "both" }));   // both's condition
+        QCOMPARE(Un, V{ Aok });
         Un.clear();
-        QCOMPARE(Shelf::TickGraft(idx, "game", V{ "both", "free" }, "aok", &Un), (V{ "free", "aok" }));    // the other side's NOT
+        QCOMPARE(Shelf::TickGraft(idx, "game", V{ "both", "free" }, Aok, &Un), (V{ "free", Aok }));    // the other side's condition
         QCOMPARE(Un, V{ "both" });
         Un.clear();
-        QCOMPARE(Shelf::TickGraft(idx, "game", V{ "tc" }, "aok", &Un), (V{ "aok" }));
-        QCOMPARE(Un, V{ "tc" });
+        QCOMPARE(Shelf::TickGraft(idx, "game", V{ Tc }, Aok, &Un), (V{ Aok }));
+        QCOMPARE(Un, V{ Tc });
         Un.clear();
-        QCOMPARE(Shelf::TickGraft(idx, "game", V{ "aok", "free" }, "ona", &Un), (V{ "aok", "free", "ona" })); // needs aok
+        QCOMPARE(Shelf::TickGraft(idx, "game", V{ Aok, "free" }, "ona", &Un), (V{ Aok, "free", "ona" })); // needs aok
         QVERIFY(Un.empty());
-        QCOMPARE(Shelf::TickGraft(idx, "game", V{ "free", "aok" }, "ona", &Un), (V{ "free", "aok", "ona" })); // ...ticked after free:
+        QCOMPARE(Shelf::TickGraft(idx, "game", V{ "free", Aok }, "ona", &Un), (V{ "free", Aok, "ona" })); // ...ticked after free:
         QVERIFY(Un.empty());                                                     // ona cannot apply before aok, so free is not to blame
-        QCOMPARE(Shelf::AppliedGrafts(idx, "game", Shelf::TickGraft(idx, "game", V{ "aok", "tc", "both" }, "tc")),
-                 (V{ "tc" }));                                                                  // one soundtrack applies
+        QCOMPARE(Shelf::AppliedGrafts(idx, "game", Shelf::TickGraft(idx, "game", V{ Aok, Tc, "both" }, Tc)),
+                 (V{ Tc }));                                                                  // one soundtrack applies
     }
 
     // `--tile <UID> [--variant <name>]` launches what the shelf shows: the named variant under that tile, else the
@@ -1410,7 +1391,7 @@ private slots:
     }
 
     // A graft whose own entry carries a TILE (a mod with its own card: Forgotten Empires over The Conquerors) is a card:
-    // its rows are the versions it applies onto (those containing what its ANY names), and launched from that card a
+    // its rows are the ends it goes INTO (exactly those: an end containing one is another game), and launched from that card a
     // row runs with the graft applied, as the card's title, by the graft's entry. From the version's own card nothing
     // changes. Teeth: no card for a graft (ShelfTiles); launch the row without the graft (the version's own entry runs).
     void a_graft_with_its_own_tile_is_a_card_of_what_it_applies_onto()
@@ -1426,7 +1407,7 @@ private slots:
         idx.Nodes["aok"] = parse(json{ {"CID", "aok"}, {"LABEL", "aok"}, {"VARIANT", "2.0a"},
             {"LAYERS", json::array({ json{{"DIR", "aok"}}, json{{"EXEC", json::array({ entry("aok.exe", "749", "The Age of Kings") })}} })} }, "/tmp/vg_bundle");
         idx.Nodes["fe"] = parse(json{ {"CID", "fe"}, {"LABEL", "fe"},
-            {"LAYERS", json::array({ json{{"ANY", json::array({"tc"})}}, json{{"DIR", "fe"}},
+            {"LAYERS", json::array({ json{{"INTO", json::array({"tc"})}}, json{{"DIR", "fe"}},
                 json{{"EXEC", json::array({ entry("fe.exe", "749000001", "Forgotten Empires") })}} })} }, "/tmp/vg_bundle");
         finish(idx);
 
@@ -1436,7 +1417,7 @@ private slots:
         QVERIFY2(Card, "the graft's tile is not a card");
         std::set<std::string> Rows;
         for (const Node *N : Card->Rows) Rows.insert(N->NodeId);
-        QCOMPARE(Rows, (std::set<std::string>{"tc", "tc2"}));                         // what it applies onto, not aok
+        QCOMPARE(Rows, (std::set<std::string>{"tc"}));                                 // what it goes INTO: not tc2 (contains tc), not aok
         QCOMPARE(Card->Graft, std::string("fe"));
 
         const json cfg = json{{"Settings", json::object()}};
@@ -1447,7 +1428,8 @@ private slots:
             const std::string Exe = cp.ComposedExec.is_object() ? cp.ComposedExec.value("CONTENTPATH", std::string()) : std::string();
             return std::make_tuple(Ok, Exe, cp.PackageName, cp.AppliedGrafts);
         };
-        const auto [Ok, Exe, Name, Grafts] = launch("tc2", "749000001");
+        QVERIFY(!std::get<0>(launch("tc2", "749000001")));                            // the hard link: tc2 is not tc
+        const auto [Ok, Exe, Name, Grafts] = launch("tc", "749000001");
         QVERIFY(Ok);
         QVERIFY2(Exe.find("fe.exe") != std::string::npos, Exe.c_str());              // the graft's entry runs
         QCOMPARE(Name, std::string("Forgotten Empires"));
@@ -1473,13 +1455,13 @@ private slots:
             {"LAYERS", json::array({ json{{"DIR", "aok"}}, json{{"EXEC", json::array({ entry("aok.exe", "749", "The Age of Kings") })}} })} }, "/tmp/vg_bundle");
         const auto fe = [&](const char *Id, const char *Ver, const char *Exe) {
             return parse(json{ {"CID", Id}, {"LABEL", Id}, {"VARIANT", Ver},
-                {"LAYERS", json::array({ json{{"ANY", json::array({"tc"})}}, json{{"DIR", Id}},
+                {"LAYERS", json::array({ json{{"INTO", json::array({"tc"})}}, json{{"DIR", Id}},
                     json{{"EXEC", json::array({ entry(Exe, "749000001", "Forgotten Empires") })}} })} }, "/tmp/vg_bundle");
         };
         idx.Nodes["fe22"] = fe("fe22", "2.2", "fe22.exe");
         idx.Nodes["fe25"] = fe("fe25", "2.5", "fe25.exe");
         idx.Nodes["mod"] = parse(json{ {"CID", "mod"}, {"LABEL", "mod"}, {"VARIANT", "1.0e + mod"},
-            {"LAYERS", json::array({ json{{"ANY", json::array({"tc"})}}, json{{"DIR", "mod"}} })} }, "/tmp/vg_bundle");
+            {"LAYERS", json::array({ json{{"INTO", json::array({"tc"})}}, json{{"DIR", "mod"}} })} }, "/tmp/vg_bundle");
         finish(idx);
 
         std::map<std::string, std::set<std::string>> Rows;
@@ -1521,13 +1503,13 @@ private slots:
             {"LAYERS", json::array({ json{{"DIR", "tc"}}, json{{"EXEC", json::array({ entry("tc.exe", "13006", "The Conquerors") })}} })} }, "/tmp/vg_bundle");
         const auto fe = [&](const char *Id, const char *Ver, const char *Exe) {
             return parse(json{ {"CID", Id}, {"LABEL", Id}, {"VARIANT", Ver}, {"RECOMMENDED", json::array({"749000001"})},
-                {"LAYERS", json::array({ json{{"ANY", json::array({"tc"})}}, json{{"DIR", Id}},
+                {"LAYERS", json::array({ json{{"INTO", json::array({"tc"})}}, json{{"DIR", Id}},
                     json{{"EXEC", json::array({ entry(Exe, "749000001", "Forgotten Empires") })}} })} }, "/tmp/vg_bundle");
         };
         idx.Nodes["fe22"] = fe("fe22", "2.2", "fe22.exe");
         idx.Nodes["fe25"] = fe("fe25", "2.5", "fe25.exe");
         idx.Nodes["up"] = parse(json{ {"CID", "up"}, {"LABEL", "up"}, {"RECOMMENDED", json::array({"749000001"})},
-            {"LAYERS", json::array({ json{{"ANY", json::array({"tc"})}}, json{{"DIR", "up"}} })} }, "/tmp/vg_bundle");
+            {"LAYERS", json::array({ json{{"INTO", json::array({"tc"})}}, json{{"DIR", "up"}} })} }, "/tmp/vg_bundle");
         finish(idx);
 
         ContainerParams cp("/tmp/vg_bundle");
@@ -1538,7 +1520,7 @@ private slots:
     }
 
     // What a graft's row puts on disk is what it mounts: a graft that is a version runs on its base, so its content and
-    // its "installed" verdict take in the base's, though the graft names the base only through ANY. Without that, a
+    // its "installed" verdict take in the base's, though the graft names the base only through INTO. Without that, a
     // peer downloading Forgotten Empires got FE and never The Conquerors, and the card read installed. A dehydrate
     // still removes the graft's own content only (the base is a version with its own card). Teeth: walk only the
     // row's closure (content or hydration); walk the base on dehydrate.
@@ -1555,7 +1537,7 @@ private slots:
         idx.Nodes["tc"] = parse(json{ {"CID", "tc"}, {"LABEL", "tc"}, {"VARIANT", "1.0e"},
             {"LAYERS", json::array({ zip("tc.zip", "QmTc"), json{{"EXEC", json::array({ entry("tc.exe", "13006", "The Conquerors") })}} })} }, B);
         idx.Nodes["fe"] = parse(json{ {"CID", "fe"}, {"LABEL", "fe"}, {"VARIANT", "2.2"},
-            {"LAYERS", json::array({ json{{"ANY", json::array({"tc"})}}, zip("fe.zip", "QmFe"),
+            {"LAYERS", json::array({ json{{"INTO", json::array({"tc"})}}, zip("fe.zip", "QmFe"),
                 json{{"EXEC", json::array({ entry("fe.exe", "749000001", "Forgotten Empires") })}} })} }, B);
         finish(idx);
 

@@ -3,6 +3,7 @@
 
 #include <nlohmann/json.hpp>
 
+#include <functional>
 #include <map>
 #include <string>
 #include <vector>
@@ -68,6 +69,13 @@ std::vector<std::string> TokenKeys(const std::string &S);
 //Operands are resolved DURING evaluation (never blind whole-string substitution), so a value containing '&&'/'=='
 //cannot inject operators. An empty or unparseable condition returns TRUE (fail-open) and logs a warning.
 bool EvaluateCondition(const std::string &Expr, const std::map<std::string, std::string> &VariablesMap);
+//The same, where the condition may name NODE CIDs (MetaPackageFormat 08 §8.6): an operand that is a node CID is "true"
+//when Present says that node is in the composition, else "false" ("bafkrei… == true", "bafkrei… == false", or the CID
+//alone). The overload without Present treats every named node as absent.
+using Presence = std::function<bool(const std::string &Cid)>;
+bool EvaluateCondition(const std::string &Expr, const std::map<std::string, std::string> &VariablesMap, const Presence &Present);
+//A word shaped like a node's CID (CIDv1 raw sha2-256, base32: "bafkrei" + 52 characters).
+bool IsNodeCid(const std::string &Word);
 
 //Static well-formedness check for a WHEN condition (structure only — values don't affect parseability). A blank
 //condition parses. Used by the validator/audit to flag a malformed WHEN that would otherwise silently fail-open.

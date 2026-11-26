@@ -150,11 +150,11 @@ Graph Build(const std::vector<NodeRef> &Nodes)
         //layers: a wrong-shaped reference OCCUPIES a slot but draws no wire — so a slot always addresses the real
         //reference, and detaching never erases a neighbour.
         int Slot = -1, LayerIndex = -1;
-        auto Wire = [&](const json &Ref, int Member, bool Any, bool Not) {
+        auto Wire = [&](const json &Ref, int Member, bool Into, bool Cond) {
             ++Slot;
             if (!Ref.is_string() || Ref.get<std::string>().empty()) return;
             const std::string Pid = Ref.get<std::string>();
-            Link L; L.ChildIndex = I; L.Slot = Slot; L.Layer = LayerIndex; L.Member = Member; L.Any = Any; L.Not = Not;
+            Link L; L.ChildIndex = I; L.Slot = Slot; L.Layer = LayerIndex; L.Member = Member; L.Into = Into; L.Cond = Cond;
             const auto It = ByHandle.find(Pid);
             if (It != ByHandle.end()) L.ParentIndex = It->second;
             else
@@ -169,13 +169,13 @@ Graph Build(const std::vector<NodeRef> &Nodes)
             ++LayerIndex;
             const std::string T = LayerType(Ly);
             if (T == "NODE") Wire(Ly["NODE"], -1, false, false);
-            else if (T == "NOT") Wire(Ly["NOT"], -1, false, true);
-            else if (T == "ANY")
+            else if (T == "INTO")
             {
-                if (!Ly["ANY"].is_array()) { Wire(json(), -1, true, false); continue; }   // malformed: a slot, no wire
-                int M = -1;
-                for (const auto &Mm : Ly["ANY"]) { ++M; Wire(Mm, M, true, false); }
+                if (!Ly["INTO"].is_array()) Wire(json(), -1, true, false);   // malformed: a slot, no wire
+                else { int M = -1; for (const auto &Mm : Ly["INTO"]) { ++M; Wire(Mm, M, true, false); } }
             }
+            if (Ly.is_object() && Ly.contains("WHEN") && Ly["WHEN"].is_string())
+                for (const auto &Cd : NodeRefs::CidsInWhen(Ly["WHEN"].get<std::string>())) Wire(json(Cd), -1, false, true);
         }
     }
     return G;
@@ -190,7 +190,7 @@ const std::vector<TypeGroup> &TypeGroups()
         {"Transforms", {"EDIT", "REG", "DLL", "ENV"}},
         {"Facts", {"VARS", "KEEP"}},
         {"Entries", {"EXEC"}},
-        {"Composition", {"NODE", "ANY", "NOT"}},
+        {"Composition", {"NODE", "INTO"}},
     };
     return G;
 }
@@ -284,7 +284,7 @@ std::string KindOf(const json &Node)
     for (const std::string &T : LayerTypes(Node))
     {
         if (T.empty()) continue;
-        if (T == "NODE" || T == "ANY" || T == "NOT") { Refs = true; continue; }
+        if (T == "NODE" || T == "INTO") { Refs = true; continue; }
         return T;
     }
     return Refs ? std::string("NODE") : std::string();
@@ -297,8 +297,7 @@ const char *TypeHelp(const std::string &Type)
     if (Type == "FILE")  return "One file mounted INTO the TARGET directory under its own name.";
     if (Type == "DELTA") return "A binary delta rebuilding an archive from the layers beneath it that BASE_SOURCES names by CID.";
     if (Type == "NODE")  return "Contain another node here: its layers fold in at this position. TAKE selects/renames, TARGET places.";
-    if (Type == "ANY")   return "A requirement: one of these nodes must be present. First in the list = a graft onto them.";
-    if (Type == "NOT")   return "An exclusion: this node must NOT be present - the row is blocked if it is.";
+    if (Type == "INTO")  return "A part (a mod): what it goes into - an end (a launchable) or another part; the list's members are alternatives, several INTO layers mean all of them. INTO layers open the list.";
     if (Type == "EDIT")  return "Edits to one file at its position in the fold: key = value, whole file, append, or byte patches.";
     if (Type == "REG")   return "Registry keys and values, per architecture view; later wins per value, null deletes.";
     if (Type == "DLL")   return "Which DLLs resolve native vs builtin (wine's n,b notation); null removes an override.";
@@ -317,8 +316,7 @@ const char *TypeGist(const std::string &Type)
     if (Type == "FILE")  return "one file";
     if (Type == "DELTA") return "a patch onto the files it names";
     if (Type == "NODE")  return "contain another node";
-    if (Type == "ANY")   return "needs one of these nodes";
-    if (Type == "NOT")   return "never together with a node";
+    if (Type == "INTO")  return "a mod: goes into one of these";
     if (Type == "EDIT")  return "change a file: a setting, bytes...";
     if (Type == "REG")   return "registry settings";
     if (Type == "DLL")   return "native or built-in DLLs";
@@ -348,8 +346,7 @@ json NewLayer(const std::string &T)
     if (T == "ZIP" || T == "FILE" || T == "DELTA") return json::object({{T, ""}, {"TARGET", "FILES/%GameDir%"}});
     if (T == "DIR")   return json::object({{"DIR", ""}, {"TARGET", "FILES/%GameDir%"}});
     if (T == "NODE")  return json::object({{"NODE", ""}});
-    if (T == "ANY")   return json::object({{"ANY", json::array()}});
-    if (T == "NOT")   return json::object({{"NOT", ""}});
+    if (T == "INTO")  return json::object({{"INTO", json::array()}});
     if (T == "EDIT")  return json::object({{"EDIT", json::array({ json::object({{"MODE","ConfigWrite"},{"KEY",""},{"VALUE",""}}) })},
                                            {"TARGET", "FILES/%GameDir%/"}});
     if (T == "REG")   return json::object({{"REG", json::object()}, {"ARCH", json::array({"32"})}});
@@ -430,12 +427,12 @@ bool EraseRef(json &Node, int Slot)
     for (size_t I = 0; I < Ls.size(); ++I)
     {
         const std::string T = LayerType(Ls[I]);
-        if (T == "NODE" || T == "NOT") { if (++Ord == Slot) { Ls.erase(I); return true; } }
-        else if (T == "ANY")
+        if (T == "NODE") { if (++Ord == Slot) { Ls.erase(I); return true; } }
+        else if (T == "INTO")
         {
-            json &A = Ls[I]["ANY"];
-            if (!A.is_array()) { if (++Ord == Slot) { Ls.erase(I); return true; } continue; }
-            for (size_t M = 0; M < A.size(); ++M)
+            json &A = Ls[I]["INTO"];
+            if (!A.is_array()) { if (++Ord == Slot) { Ls.erase(I); return true; } }
+            else for (size_t M = 0; M < A.size(); ++M)
             {
                 if (++Ord != Slot) continue;
                 A.erase(M);
@@ -443,6 +440,9 @@ bool EraseRef(json &Node, int Slot)
                 return true;
             }
         }
+        //A node a condition names is part of the condition's text: it is edited there, never cut out of it here.
+        if (Ls[I].is_object() && Ls[I].contains("WHEN") && Ls[I]["WHEN"].is_string())
+            for (size_t K = NodeRefs::CidsInWhen(Ls[I]["WHEN"].get<std::string>()).size(); K; --K) if (++Ord == Slot) return false;
     }
     return false;
 }
@@ -555,10 +555,8 @@ std::vector<Field> MakeFields(const std::string &Type)
             {"TAKE",   "Take",   FieldKind::TakeList, "FILES/a/b.dll, FILES/dir/ (contents), X => Y (rename)", {}, {}},
             {"TARGET", "Target", FieldKind::Text,     "FILES/... - where its files land", {}, {}},
         });
-    if (Type == "ANY")
-        return WithGate({{"ANY", "Any of", FieldKind::StringList, "node CIDs - one must be present", {}, {}}});
-    if (Type == "NOT")
-        return WithGate({{"NOT", "Not with", FieldKind::Text, "a node CID that must not be present", {}, {}}});
+    if (Type == "INTO")
+        return WithGate({{"INTO", "Into", FieldKind::StringList, "ends or parts (node CIDs) - wired on the canvas; any one of them", {}, {}}});
     if (Type == "EDIT")
         //Every field the edit engine reads: text modes (key = value, whole file, append) and byte modes
         //(replace, poke, cave). An earlier table offered Cave and Poke without their PAYLOAD/VALUE, so picking
@@ -819,13 +817,12 @@ std::string PayloadSummary(const json &L, const std::string &T, const LabelFn &N
         if (V.is_array()) for (const json &E : V) K.push_back(StrField(E, "LABEL").empty() ? "?" : StrField(E, "LABEL"));
         return "Run: " + Join(K, ", ");
     }
-    if (T == "ANY")
+    if (T == "INTO")
     {
         std::vector<std::string> K;
         if (V.is_array()) for (const json &R : V) K.push_back(RefName(R, NodeLabel));
-        return "Needs " + Join(K, " or ");
+        return "Into " + Join(K, " or ");
     }
-    if (T == "NOT") return "Not with " + RefName(V, NodeLabel);
     return Join(Keys(), ", ");                    // VARS, ENV, DLL: their names
 }
 
@@ -965,7 +962,7 @@ std::string Describe(const json &Node, const LabelFn &Label)
         for (size_t I = 0; I < V.size(); ++I) Out += (I ? (I + 1 == V.size() ? " and " : ", ") : "") + V[I];
         return Out;
     };
-    std::vector<std::string> Parts, Files, Contains, Rides, Never, Keeps;
+    std::vector<std::string> Parts, Files, Contains, Rides, Keeps;
     int Edits = 0, Regs = 0, Dlls = 0, Envs = 0, Vars = 0;
     if (Node.contains("LAYERS") && Node["LAYERS"].is_array())
         for (const json &L : Node["LAYERS"])
@@ -973,8 +970,14 @@ std::string Describe(const json &Node, const LabelFn &Label)
             const std::string T = LayerType(L);
             if (T == "ZIP" || T == "DIR" || T == "FILE" || T == "DELTA") { const std::string F = StrField(L, T.c_str()); if (!F.empty()) Files.push_back(F); }
             else if (T == "NODE") Contains.push_back(Name(StrField(L, "NODE")));
-            else if (T == "NOT") Never.push_back(Name(StrField(L, "NOT")));
-            else if (T == "ANY" && L["ANY"].is_array()) for (const json &M : L["ANY"]) { if (M.is_string()) Rides.push_back(Name(M.get<std::string>())); }
+            else if (T == "INTO" && L["INTO"].is_array())
+            {
+                std::vector<std::string> Alt;
+                for (const json &M : L["INTO"]) if (M.is_string()) Alt.push_back(Name(M.get<std::string>()));
+                std::string One;
+                for (size_t K = 0; K < Alt.size(); ++K) One += (K ? " or " : "") + Alt[K];
+                if (!One.empty()) Rides.push_back(One);
+            }
             else if (T == "EDIT") Edits += L["EDIT"].is_array() ? (int)L["EDIT"].size() : 1;
             else if (T == "REG") ++Regs;
             else if (T == "DLL") ++Dlls;
@@ -1013,8 +1016,7 @@ std::string Describe(const json &Node, const LabelFn &Label)
     if (Files.size() == 1) Parts.push_back("files from " + Files[0]);
     else if (Files.size() > 1) Parts.push_back("files from " + std::to_string(Files.size()) + " sources");
     if (!Contains.empty()) Parts.push_back("contains " + List(Contains));
-    if (!Rides.empty()) Parts.push_back("rides on " + List(Rides));
-    if (!Never.empty()) Parts.push_back("never with " + List(Never));
+    if (!Rides.empty()) Parts.push_back("goes into " + List(Rides));
     if (Edits) Parts.push_back("changes " + std::to_string(Edits) + (Edits == 1 ? " setting" : " settings"));
     if (Regs) Parts.push_back("sets registry values");
     if (Dlls) Parts.push_back("picks DLLs");
@@ -1158,7 +1160,7 @@ bool ChangeUid(json &N, const std::string &Old, const std::string &New)
 json ModNode(const std::string &Base, const std::string &BaseLabel)
 {
     return json{{"LABEL", BaseLabel.empty() ? std::string("A mod") : "A mod for " + BaseLabel},
-                {"LAYERS", json::array({ json{{"ANY", json::array({Base})}}, NewLayer("ZIP") })}};
+                {"LAYERS", json::array({ json{{"INTO", json::array({Base})}}, NewLayer("ZIP") })}};
 }
 
 //The row key of N's game entry still to finish: the first with no HOST or, when Folder, the first whose Exe is a

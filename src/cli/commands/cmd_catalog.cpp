@@ -148,7 +148,7 @@ VG_COMMANDS
             const auto Hyd = Installed::HydrationMap(*Snap);
             json J = {{"cid", N.Cid}, {"label", N.NodeId}, {"variant", N.Variant}, {"package", N.BundleDir.string()},
                       {"received", N.Received}, {"graft", N.IsGraft}, {"runner", N.HasRunner}, {"contains", N.Refs},
-                      {"requires", N.Requires}, {"tiles", N.Faces}, {"family", N.PackageUid}, {"recommended", N.Recommended}};
+                      {"into", N.Into}, {"requires", N.Requires}, {"tiles", N.Faces}, {"family", N.PackageUid}, {"recommended", N.Recommended}};
             if (!N.Label.empty()) J["entry"] = N.Label;
             if (!N.LowerError.empty()) J["error"] = N.LowerError;
             if (const auto H = Hyd.find(N.Key()); H != Hyd.end()) { J["state"] = Standing(H->second); J["hydration"] = Hydration(H->second); }
@@ -275,7 +275,7 @@ VG_COMMANDS
                 for (const auto &[Id, N] : Snap->Nodes)
                     F << json{{"key", Id}, {"cid", N.Cid}, {"handle", N.Handle}, {"label", N.NodeId}, {"lower_error", N.LowerError},
                               {"variant", N.Variant}, {"recommended", N.Recommended}, {"json", *N.Json}, {"layers", N.LoweredLayers()},
-                              {"refs", N.Refs}, {"requires", N.Requires}, {"graft", N.IsGraft}, {"entries", N.Entries},
+                              {"refs", N.Refs}, {"into", N.Into}, {"requires", N.Requires}, {"graft", N.IsGraft}, {"entries", N.Entries},
                               {"has_exec", N.HasExec}, {"has_runner", N.HasRunner}, {"own_runner", N.OwnRunner}, {"entry", N.Label},
                               {"host", N.HostPlatform}, {"guest", N.GuestPlatform}, {"exec", N.Exec}, {"faces", N.Faces}, {"uid", N.Uid},
                               {"package_uid", N.PackageUid}, {"meta", N.Meta}, {"own_tile", N.OwnTile}, {"file", N.File.string()},

@@ -9,6 +9,7 @@
 #include "contentfile.h"
 #include "commonutils.h"
 #include "fold.h"        // Fold::Resolve — a node's facts are folded, never inherited by graph distance
+#include "noderefs.h"    // NodeRefs::CidsInWhen — the node CIDs a condition names
 #include "nodelower.h"   // NodeLower — the gen-6 vocabulary check and the lowering to engine ops
 #include "varsubst.h"    // VarSubst::ConditionParses — WHEN syntax lint
 #include "launchparams.h"   // ContainerParams::GetVariablesMap — the single source of truth for built-in %variables%
@@ -370,23 +371,39 @@ void Nodes(const NodeIndex &Idx, std::vector<std::string> &Errors, std::vector<s
                                  + N.BundleDir.filename().string() + "' and again in '" + Other.filename().string()
                                  + "' — a node has one home package; delete the copy and contain the node by CID");
 
-        //Refs: a contained node must exist; an ANY member or a NOT may name a node this library lacks (a graft for a
-        //version you don't have; an exclusion that cannot happen), but an ANY with no member here is unsatisfiable.
+        //Refs: a contained node must exist. What a part goes INTO may be a node this library lacks (a part for a version
+        //you don't have), but an INTO layer with no member here can never apply. A member that is here must be an END
+        //(a launchable: VARIANT) or another PART — the hard link — and never a runner (a package names a runner's
+        //capability, never its CID). A CID in a condition reads false when absent; one naming a runner is refused too.
         for (const std::string &R : N.Refs)
             if (!Idx.Find(R))
                 Res.Errors.push_back(Tag + ": contains missing node '" + R + "'"
                                  + (RefusedByName.count(R) ? " (its file is here but refused — see its error)" : ""));
-        for (const auto &L : (*N.Json)["LAYERS"])
+        const auto Name = [&](const std::string &C) { const Node *X = Idx.Find(C); return X && !X->NodeId.empty() ? "'" + X->NodeId + "' (" + C + ")" : "'" + C + "'"; };
+        for (const auto *L : Fold::IntoLayers((*N.Json)["LAYERS"]))
         {
-            if (L.contains("ANY"))
+            bool Present = false;
+            for (const auto &M : (*L)["INTO"])
             {
-                bool Present = false;
-                for (const auto &M : L["ANY"]) if (Idx.Find(M.get<std::string>())) { Present = true; break; }
-                if (!Present) Res.Warnings.push_back(Tag + ": ANY names no node in this library (nothing it applies onto is here)");
+                const Node *T = Idx.Find(M.get<std::string>());
+                if (!T) continue;
+                Present = true;
+                if (T->IsRunner() || T->OwnRunner)
+                    Res.Errors.push_back(Tag + ": INTO names runner " + Name(M.get<std::string>()) + " — a part goes into a game's end, never a runner");
+                else if (!T->IsVariant() && !T->IsGraft)
+                    Res.Errors.push_back(Tag + ": INTO names " + Name(M.get<std::string>()) + ", which is neither an end (a VARIANT) nor a part");
             }
-            if (L.contains("NOT") && !Idx.Find(L["NOT"].get<std::string>()))
-                Res.Warnings.push_back(Tag + ": NOT names node '" + L["NOT"].get<std::string>() + "', which is not in the library");
+            if (!Present) Res.Warnings.push_back(Tag + ": an INTO layer names no node in this library (nothing it goes into is here)");
         }
+        for (const auto &L : (*N.Json)["LAYERS"])
+            if (L.is_object() && L.contains("WHEN") && L["WHEN"].is_string())
+                for (const auto &C : NodeRefs::CidsInWhen(L["WHEN"].get<std::string>()))
+                {
+                    const Node *T = Idx.Find(C);
+                    if (!T) Res.Warnings.push_back(Tag + ": a condition names node " + Name(C) + ", which is not in the library (it reads false)");
+                    else if (T->IsRunner() || T->OwnRunner)
+                        Res.Errors.push_back(Tag + ": a condition names runner " + Name(C) + " — a package never names a runner's CID");
+                }
         {
             std::unordered_set<std::string> OnStack;
             std::function<bool(const std::string &)> HasCycle = [&](const std::string &Cur) -> bool {
@@ -565,9 +582,8 @@ void Nodes(const NodeIndex &Idx, std::vector<std::string> &Errors, std::vector<s
             {
                 if (Ev == "cycle")     Once(Res.Errors, Tag + ": resolving it meets a cycle through '" + Cid + "'");
                 if (Ev == "missing")   Once(Res.Errors, Tag + ": resolving it needs node '" + Cid + "', which is not in the library");
-                if (Ev == "any-unmet" && !Gs.empty()) Once(Res.Warnings, Tag + ": graft '" + Cid + "' is offered but its ANY does not hold");
-                else if (Ev == "any-unmet") Once(Res.Errors, Tag + ": '" + Cid + "' requires (ANY) something this row does not contain");
-                if (Ev == "not-hit")   Once(Res.Errors, Tag + ": its resolution contains '" + Cid + "', which a NOT excludes");
+                if (Ev == "into-unmet" && !Gs.empty()) Once(Res.Warnings, Tag + ": part '" + Cid + "' is offered but what it goes INTO is not beneath it");
+                else if (Ev == "into-unmet") Once(Res.Errors, Tag + ": '" + Cid + "' goes INTO something this row does not contain");
             }
             //A node mentioned twice: where it counts (the first mention holds; a later one in the same list moves it)
             //is a rule, not a choice the author made — warn where the other reading would change what wins.

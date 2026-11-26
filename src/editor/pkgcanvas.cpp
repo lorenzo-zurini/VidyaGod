@@ -1,5 +1,6 @@
 #include "pkgcanvas.h"
 #include "noderefs.h"
+#include "fold.h"        // Fold::IntoLayers — what a part goes into
 
 #include "pkgform.h"
 #include "pkglayout.h"
@@ -76,8 +77,7 @@ std::string ShortCid(const std::string &C)
 
 bool IsGraft(const json &N)
 {
-    return N.is_object() && N.contains("LAYERS") && N["LAYERS"].is_array() && !N["LAYERS"].empty()
-        && N["LAYERS"][0].is_object() && N["LAYERS"][0].contains("ANY");
+    return N.is_object() && N.contains("LAYERS") && !Fold::IntoLayers(N["LAYERS"]).empty();   // a part: it opens with INTO
 }
 
 bool HasExec(const json &N)
@@ -782,8 +782,7 @@ int PkgCanvas::addNode(const std::string &Type, float X, float Y, const std::str
     {
         json &L = N["LAYERS"][0];
         if (L.contains("NODE")) L["NODE"] = RefersTo;
-        else if (L.contains("NOT")) L["NOT"] = RefersTo;
-        else if (L.contains("ANY")) L["ANY"] = json::array({RefersTo});
+        else if (L.contains("INTO")) L["INTO"] = json::array({RefersTo});
     }
     json Out = json::object();
     std::string Base = Type.empty() ? std::string("New node") : "New " + Type;
@@ -1430,8 +1429,10 @@ static void DrawNode(PkgCanvas &Self, PkgCanvasState &S, int Vi, std::vector<ImG
         {
             if (Rw.Layer < 0 || Rw.Layer >= (int)Nn["LAYERS"].size()) continue;
             const std::string T = PkgGraph::LayerType(Nn["LAYERS"][(size_t)Rw.Layer]);
-            if (T != "NODE" && T != "ANY" && T != "NOT") continue;
-            const ImU32 C = T == "NOT" ? IM_COL32(230, 110, 110, 255) : T == "ANY" ? IM_COL32(120, 205, 140, 255) : IM_COL32(110, 160, 255, 255);
+            const json &Ly = Nn["LAYERS"][(size_t)Rw.Layer];
+            const bool Names = Ly.is_object() && Ly.contains("WHEN") && Ly["WHEN"].is_string() && !NodeRefs::CidsInWhen(Ly["WHEN"].get<std::string>()).empty();
+            if (T != "NODE" && T != "INTO" && !Names) continue;
+            const ImU32 C = T == "INTO" ? IM_COL32(120, 205, 140, 255) : T == "NODE" ? IM_COL32(110, 160, 255, 255) : IM_COL32(170, 170, 180, 255);
             const ImVec2 P(WinPos.x, WinPos.y + (Rw.Y0 + Rw.Y1) * 0.5f * Z);
             const bool Lit = (S.HoverWireChild == V.Handle || S.SelWireChild == V.Handle) && [&] {
                 for (const WireView &W : S.Wires)
@@ -1629,7 +1630,7 @@ static void DrawWires(PkgCanvasState &S, ImDrawList *DL, bool Hover)
         const bool Sel = S.SelWireChild == T.Handle && S.SelWireSlot == W.L.Slot;
         const bool Hot = S.HoverWireChild == T.Handle && S.HoverWireSlot == W.L.Slot;
         const bool Lit = Sel || Hot || S.Sel.count(F.Handle) || S.Sel.count(T.Handle);
-        ImU32 C = W.L.Not ? IM_COL32(230, 110, 110, 255) : WireHue(F.Title, Rank[X.W]);
+        ImU32 C = W.L.Cond ? IM_COL32(170, 170, 180, 255) : W.L.Into ? IM_COL32(120, 205, 140, 255) : WireHue(F.Title, Rank[X.W]);
         if (!Lit) C = (C & 0x00FFFFFF) | (170u << 24);
         if (Sel) C = IM_COL32(255, 196, 90, 255);
         const float Th = std::max(1.2f, (Lit ? 2.6f : 1.8f) * std::sqrt(S.Z));
@@ -1637,10 +1638,10 @@ static void DrawWires(PkgCanvasState &S, ImDrawList *DL, bool Hover)
         //length, so a long wire crossing the view — a big package has thousands — cost thousands of segments each.
         const float Len = std::hypot(G.B.x - G.A.x, G.B.y - G.A.y) + std::hypot(G.C.x - G.B.x, G.C.y - G.B.y) + std::hypot(G.D.x - G.C.x, G.D.y - G.C.y);
         const int Segs = std::clamp((int)(Len / 18.0f), 4, 40);
-        if (W.L.Any)
+        if (W.L.Into || W.L.Cond)
         {
-            //Dashed: a requirement (one of these must be present), not containment.
-            const int Dash = Segs + (Segs % 2);
+            //Dashed: a part going into an end (or into another part); finer for a condition that names a node.
+            const int Dash = (Segs + (Segs % 2)) * (W.L.Cond ? 3 : 1);
             ImVec2 Prev = G.A;
             for (int K = 1; K <= Dash; ++K)
             {
@@ -1651,13 +1652,12 @@ static void DrawWires(PkgCanvasState &S, ImDrawList *DL, bool Hover)
         }
         else DL->AddBezierCubic(G.A, G.B, G.C, G.D, C, Th, Segs);
         Arrow(DL, G.D, Bez(G.A, G.B, G.C, G.D, 0.93f), std::max(5.0f, 9.0f * S.Z), C);
-        if (W.L.Not)
-        {
+        if (W.L.Cond)
+        {   //a "?" at the middle: what this wire carries is a condition's test, not a link
             const ImVec2 Mid = Bez(G.A, G.B, G.C, G.D, 0.5f);
             const float R = std::max(4.0f, 6.0f * S.Z);
             DL->AddCircleFilled(Mid, R + 2, IM_COL32(24, 26, 31, 255));
-            DL->AddLine(ImVec2(Mid.x - R * 0.6f, Mid.y - R * 0.6f), ImVec2(Mid.x + R * 0.6f, Mid.y + R * 0.6f), C, 2.0f);
-            DL->AddLine(ImVec2(Mid.x - R * 0.6f, Mid.y + R * 0.6f), ImVec2(Mid.x + R * 0.6f, Mid.y - R * 0.6f), C, 2.0f);
+            DL->AddText(ImVec2(Mid.x - R * 0.45f, Mid.y - R * 0.9f), C, "?");
         }
     }
 }
@@ -2008,7 +2008,7 @@ void PkgCanvas::frame()
                 if (W.To == Ci->second && W.L.Slot == S.HoverWireSlot)
                 {
                     const std::string &Pn = S.Views[(size_t)W.From].Title, &Cn = S.Views[(size_t)W.To].Title;
-                    ImGui::SetTooltip("%s", (Cn + (W.L.Not ? " excludes " : W.L.Any ? " requires " : " contains ") + Pn
+                    ImGui::SetTooltip("%s", (Cn + (W.L.Cond ? " - a condition names " : W.L.Into ? " goes into " : " contains ") + Pn
                                              + "\nclick to select - Del removes - right-click for more").c_str());
                 }
     }
@@ -2325,7 +2325,7 @@ void PkgCanvas::frame()
                 const std::string Child = S.LinkFromOut ? S.DropTarget : S.LinkHandle;
                 const std::string Parent = S.LinkFromOut ? S.LinkHandle : S.DropTarget;
                 const int Ci = D.IndexOf(Child);
-                const Document::RefKind K = Io.KeyShift ? Document::RefKind::Any : Io.KeyAlt ? Document::RefKind::Not : Document::RefKind::Node;
+                const Document::RefKind K = Io.KeyShift ? Document::RefKind::Into : Io.KeyAlt ? Document::RefKind::Not : Document::RefKind::Node;
                 if (Ci >= 0 && D.Link(Ci, Parent, K, S.LinkFromOut ? S.LinkAt : -1))
                 {
                     D.Commit();
@@ -2492,9 +2492,12 @@ void PkgCanvas::frame()
                 json N = D.Node(Ci);
                 if (PkgGraph::EraseRef(N, S.SelWireSlot)) { D.Replace(Ci, std::move(N)); D.Link(Ci, Parent, K); D.Commit(); emit documentEdited(); }
             };
-            if (ImGui::MenuItem("contains it", nullptr, !W->L.Any && !W->L.Not) && (W->L.Any || W->L.Not)) Retype(Document::RefKind::Node);
-            if (ImGui::MenuItem("requires one of (ANY)", nullptr, W->L.Any) && !W->L.Any) Retype(Document::RefKind::Any);
-            if (ImGui::MenuItem("excludes it (NOT)", nullptr, W->L.Not) && !W->L.Not) Retype(Document::RefKind::Not);
+            if (W->L.Cond) ImGui::TextDisabled("a condition names it - edit the condition in the layer");
+            else
+            {
+                if (ImGui::MenuItem("contains it", nullptr, !W->L.Into) && W->L.Into) Retype(Document::RefKind::Node);
+                if (ImGui::MenuItem("goes into it (a part)", nullptr, W->L.Into) && !W->L.Into) Retype(Document::RefKind::Into);
+            }
             ImGui::Separator();
             if (ImGui::MenuItem("Go to the container")) select(S.Views[(size_t)W->To].Handle, true);
             if (ImGui::MenuItem("Go to the contained")) select(Parent, true);

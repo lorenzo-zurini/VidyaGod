@@ -307,7 +307,7 @@ VG_COMMANDS
             for (const auto &N : G.Nodes) Ns.push_back({{"index", N.Index}, {"handle", N.Id}, {"kind", N.Type}, {"form", N.Form}, {"x", N.X}, {"y", N.Y}, {"declared", N.HasPos}});
             for (const auto &L : G.Links)
                 Ls.push_back({{"child", L.ChildIndex}, {"parent", L.ParentIndex >= 0 ? json(L.ParentIndex) : json(L.ExternalId)},
-                              {"as", L.Not ? "excludes" : L.Any ? "requires" : "contains"}, {"layer", L.Layer}, {"member", L.Member}});
+                              {"as", L.Cond ? "condition" : L.Into ? "into" : "contains"}, {"layer", L.Layer}, {"member", L.Member}});
             const auto Find = [&](const std::string &H) -> const json * {
                 if (const int I = D.IndexOf(H); I >= 0) return &D.Node(I);
                 const Node *N = M.libraryNode(H);
@@ -444,12 +444,16 @@ VG_COMMANDS
         }, {} });
 
     Command::Register({
-        "build link", "wire a node into another: contains (NODE), requires (ANY), excludes (NOT)",
-        "Child gets a reference to parent: by default containment (a NODE layer); --any a requirement, --not an "
-        "exclusion; --at the layer to put it before. Parent may be a node of another package (its CID).",
-        { PkgArg(), NodeArg("child"), Pos("parent", "a node here (handle, index, LABEL) or another package's CID"), Flag("any", "a requirement (ANY)"),
-          Flag("not", "an exclusion (NOT)"), Opt("at", "before this layer", Type::Int), SaveFlag() },
-        { "build link 749 'Patch 2.0a' 'The Age of Kings'", "build link 749 'UserPatch 1.5' 'Patch 2.0a' --any" }, { "PkgDoc::Document::Link" }, Needs::Model, false,
+        "build link", "wire a node to another: contains (NODE), goes into (INTO), never with (a WHEN)",
+        "Child gets a reference to parent: by default containment (a NODE layer); --into makes child a part that goes "
+        "INTO parent (an end, or another part); --not keeps the part out wherever parent is (parent == false in its INTO "
+        "condition); --at the layer to put a NODE before, or for --into which INTO layer parent joins (0, the default: the "
+        "first, whose members are alternatives; one past the last: a new layer, so child goes into parent AS WELL, a patch "
+        "between two mods). Parent may be a node of another package (its CID).",
+        { PkgArg(), NodeArg("child"), Pos("parent", "a node here (handle, index, LABEL) or another package's CID"), Flag("into", "child goes INTO parent (a part)"),
+          Flag("not", "never with parent (a condition on the part's INTO)"), Opt("at", "before this layer", Type::Int), SaveFlag() },
+        { "build link 749 'Patch 2.0a' 'The Age of Kings'", "build link 749 'UserPatch 1.5' 'Patch 2.0a' --into",
+          "build link 489832 'SkyUI - USSEP Patch' 'SkyUI 5.2' --into --at 1" }, { "PkgDoc::Document::Link" }, Needs::Model, false,
         [](Command::Context &C, const json &A) {
             Session S = Open(C, Command::Str(A, "package"));
             PkgDoc::Document &D = S.M->doc();
@@ -458,7 +462,7 @@ VG_COMMANDS
             std::string P = PQ;
             if (!PkgDoc::LooksLikeCid(PQ) || D.IndexOf(PQ) >= 0) P = D.Handle(Ix(D, PQ));
             const auto K = Command::Bool(A, "not", false) ? PkgDoc::Document::RefKind::Not
-                         : Command::Bool(A, "any", false) ? PkgDoc::Document::RefKind::Any : PkgDoc::Document::RefKind::Node;
+                         : Command::Bool(A, "into", false) ? PkgDoc::Document::RefKind::Into : PkgDoc::Document::RefKind::Node;
             if (!D.Link(Ch, P, K, static_cast<int>(Command::Int(A, "at", -1)))) throw std::runtime_error("could not link them (already linked, or a cycle)");
             return Done(S, A, {{"child", D.Handle(Ch)}, {"parent", P}});
         }, {} });

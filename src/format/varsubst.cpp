@@ -20,7 +20,8 @@ namespace
 // that happens to contain "&&"/"==" can never be re-interpreted as an operator.
 struct CondTok { enum Kind : uint8_t { Op, Val } Kind; std::string Text; };
 
-bool TokenizeCond(const std::string &E, const std::map<std::string, std::string> &Vars, std::vector<CondTok> &Out)
+bool TokenizeCond(const std::string &E, const std::map<std::string, std::string> &Vars, std::vector<CondTok> &Out,
+                  const VarSubst::Presence *Present = nullptr)
 {
     size_t i = 0, n = E.size();
     auto isOperandStop = [](char c) {
@@ -57,7 +58,11 @@ bool TokenizeCond(const std::string &E, const std::map<std::string, std::string>
         }
         size_t j = i;                                            // bare word literal
         while (j < n && !isOperandStop(E[j])) ++j;
-        Out.push_back({CondTok::Val, E.substr(i, j - i)});
+        const std::string Word = E.substr(i, j - i);
+        //A node CID is whether that node is in the composition (MetaPackageFormat 08 §8.6): "true" / "false", so
+        //`cid == true`, `cid == false` and a bare `cid` all read as written. Without a composition to ask, absent.
+        if (VarSubst::IsNodeCid(Word)) Out.push_back({CondTok::Val, (Present && *Present && (*Present)(Word)) ? "true" : "false"});
+        else Out.push_back({CondTok::Val, Word});
         i = j;
     }
     return true;
@@ -92,7 +97,21 @@ struct CondParser
 };
 }  // namespace
 
+bool VarSubst::IsNodeCid(const std::string &W)
+{
+    //A node's CID (02 §2.3): CIDv1, raw codec, sha2-256, base32 — "bafkrei" and 52 more base32 characters.
+    if (W.size() != 59 || W.compare(0, 7, "bafkrei") != 0) return false;
+    for (char c : W) if (!((c >= 'a' && c <= 'z') || (c >= '2' && c <= '7'))) return false;
+    return true;
+}
+
 bool VarSubst::EvaluateCondition(const std::string &Expr, const std::map<std::string, std::string> &VariablesMap)
+{
+    return EvaluateCondition(Expr, VariablesMap, Presence());
+}
+
+bool VarSubst::EvaluateCondition(const std::string &Expr, const std::map<std::string, std::string> &VariablesMap,
+                                 const Presence &Present)
 {
     // An empty condition is "always" — the field is optional and its absence must not gate anything off.
     bool Blank = true;
@@ -100,7 +119,7 @@ bool VarSubst::EvaluateCondition(const std::string &Expr, const std::map<std::st
     if (Blank) return true;
 
     std::vector<CondTok> Toks;
-    if (!TokenizeCond(Expr, VariablesMap, Toks) || Toks.empty())
+    if (!TokenizeCond(Expr, VariablesMap, Toks, &Present) || Toks.empty())
     { LogWarn("EvaluateCondition", "Unparseable WHEN condition \"" + Expr + "\" — treating as always-true."); return true; }
 
     CondParser Parser(Toks);

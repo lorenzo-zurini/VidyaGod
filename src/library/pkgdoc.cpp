@@ -287,23 +287,19 @@ bool Document::Link(int Child, const std::string &Parent, RefKind Kind, int At)
     json N = Node(Child);
     bool Did = false;
     if (Kind == RefKind::Node) Did = NodeRefs::Insert(N, "NODE", Parent, At);
+    else if (Kind == RefKind::Into) Did = NodeRefs::Insert(N, "INTO", Parent, At);
     else
-    {
-        if (!N.contains("LAYERS") || !N["LAYERS"].is_array()) N["LAYERS"] = json::array();
-        if (Kind == RefKind::Not) Did = NodeRefs::Insert(N, "NOT", Parent, At);
-        else
-        {
-            json *Any = nullptr;
-            for (json &L : N["LAYERS"]) if (L.is_object() && L.contains("ANY") && L["ANY"].is_array()) { Any = &L; break; }
-            if (!Any)
-            {
-                const int Pos = At < 0 ? (int)N["LAYERS"].size() : std::min(At, (int)N["LAYERS"].size());
-                N["LAYERS"].insert(N["LAYERS"].begin() + Pos, json{{"ANY", json::array({Parent})}});
-                Did = true;
-            }
-            else if (std::find((*Any)["ANY"].begin(), (*Any)["ANY"].end(), json(Parent)) == (*Any)["ANY"].end())
-            { (*Any)["ANY"].push_back(Parent); Did = true; }
-        }
+    {   //"never with Parent": a condition on the part's INTO (08 §8.6), so the whole part stays out where Parent is
+        if (!N.contains("LAYERS") || !N["LAYERS"].is_array() || N["LAYERS"].empty() || !N["LAYERS"][0].is_object()
+            || !N["LAYERS"][0].contains("INTO"))
+            return false;
+        json &In = N["LAYERS"][0];
+        for (const auto &C : NodeRefs::IntoOf(N)) if (C == Parent) return false;   // never with what it goes into: no
+        const std::string Cond = Parent + " == false";
+        const std::string Was = In.contains("WHEN") && In["WHEN"].is_string() ? In["WHEN"].get<std::string>() : std::string();
+        for (const auto &C : NodeRefs::CidsInWhen(Was)) if (C == Parent) return false;
+        In["WHEN"] = Was.empty() ? Cond : "(" + Was + ") && " + Cond;
+        Did = true;
     }
     if (Did) Replace(Child, std::move(N));
     return Did;
@@ -358,27 +354,17 @@ bool Document::MergeInto(int From, int Into, std::string *Err)
         bool Touches = false;
         for (const json &L : Node(I)["LAYERS"]) if (NodeRefs::Names(L, Hf)) Touches = true;
         if (!Touches) continue;
-        json N = Node(I), Out = json::array();
+        json N = NodeRefs::Remapped(Node(I), { { Hf, Hi } }), Out = json::array();
+        bool SeenNode = false;
         for (json L : N["LAYERS"])
         {
-            bool Dup = false;
-            for (const char *K : {"NODE", "NOT"})
-                if (L.is_object() && L.contains(K) && L[K].is_string())
-                {
-                    if (L[K].get<std::string>() == Hf) L[K] = Hi;
-                    //It named both: one reference to Into is enough.
-                    if (L[K] == json(Hi)) for (const json &O : Out) if (O.is_object() && O.contains(K) && O[K] == json(Hi)) Dup = true;
-                }
-            if (Dup) continue;
-            if (L.is_object() && L.contains("ANY") && L["ANY"].is_array())
+            //It named both: one reference to Into is enough.
+            if (L.is_object() && L.contains("NODE") && L["NODE"] == json(Hi)) { if (SeenNode) continue; SeenNode = true; }
+            if (L.is_object() && L.contains("INTO") && L["INTO"].is_array())
             {
                 json Ms = json::array();
-                for (const json &M : L["ANY"])
-                {
-                    const json V = M.is_string() && M.get<std::string>() == Hf ? json(Hi) : M;
-                    if (std::find(Ms.begin(), Ms.end(), V) == Ms.end()) Ms.push_back(V);
-                }
-                L["ANY"] = std::move(Ms);
+                for (const json &M : L["INTO"]) if (std::find(Ms.begin(), Ms.end(), M) == Ms.end()) Ms.push_back(M);
+                L["INTO"] = std::move(Ms);
             }
             Out.push_back(std::move(L));
         }

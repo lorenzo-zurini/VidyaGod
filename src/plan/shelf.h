@@ -53,23 +53,14 @@ std::vector<std::string> AppliedGrafts(const NodeIndex &Idx, const std::string &
                                        const std::map<std::string, std::string> &Instance = {},
                                        const std::map<std::string, std::string> &Builtins = {},
                                        std::vector<std::string> *Dropped = nullptr);
-// Move the graft at Ticked[From] one place (By = -1 up, +1 down) in the instance's ordered graft list. The order is
-// the order they apply in, and a graft is only applied when it is offered with those before it applied — so a move
-// after which ANY graft that applied no longer does (a graft on a graft moved above the graft it needs, or one of two
-// grafts that exclude each other swapped in ahead) is REFUSED, *Why naming it; Ticked is changed only on success.
-// Judged as the launch judges it: Instance = the instance's values, Builtins = at least %UID% (the tile) and
-// %PackageUID% (see AppliedGrafts).
-bool MoveGraft(const NodeIndex &Idx, const std::string &LaunchNodeId, std::vector<std::string> &Ticked, size_t From,
-               int By, std::string *Why = nullptr, const std::map<std::string, std::string> &Instance = {},
-               const std::map<std::string, std::string> &Builtins = {});
 // The saved graft list as the current library sees it: a list naming a graft that no longer exists was saved against
 // an older version of the package (every edit re-mints its grafts), so the choice is stale and the tile falls back to
 // its defaults (nullopt: the grafts RECOMMENDED under it). A list whose grafts all exist is the user's choice.
 GraftChoice CurrentGraftChoice(const NodeIndex &Idx, const GraftChoice &Saved);
-// Tick graft G in the instance's ordered graft list: G goes last, and every ticked graft it cannot apply beside is
-// unticked (into *Unticked) — one whose NOT names G, or one G's NOT names. The graft just ticked wins, so grafts that
-// exclude each other behave as a choice of one. Judged in list order with the grafts kept so far in place (G or X may
-// need another ticked graft): X is unticked when adding it is what stops G applying. Instance/Builtins as MoveGraft.
+// Tick part G in the instance's choice (a set; G is listed last): every ticked part it cannot apply beside is unticked
+// (into *Unticked) — one whose condition says "never with G", or one G's condition names. The part just ticked wins,
+// so parts that exclude each other behave as a choice of one, whichever side carries the condition. Instance/Builtins:
+// the instance's values and at least %UID% (the tile) and %PackageUID% (see AppliedGrafts).
 std::vector<std::string> TickGraft(const NodeIndex &Idx, const std::string &LaunchNodeId, const std::vector<std::string> &Ticked,
                                    const std::string &G, std::vector<std::string> *Unticked = nullptr,
                                    const std::map<std::string, std::string> &Instance = {},

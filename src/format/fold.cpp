@@ -5,6 +5,7 @@
 #include <cctype>
 #include <optional>
 #include <set>
+#include <tuple>
 #include <unordered_set>
 
 namespace Fold
@@ -16,7 +17,7 @@ namespace
 const std::vector<std::string> &TypeKeys()
 {
     static const std::vector<std::string> K = { "ZIP", "FILE", "DELTA", "DIR", "NODE", "EDIT", "REG", "VARS", "ENV",
-                                                "DLL", "EXEC", "KEEP", "ANY", "NOT" };
+                                                "DLL", "EXEC", "KEEP", "INTO" };
     return K;
 }
 
@@ -62,9 +63,11 @@ std::string Subst(const std::string &S, const Vars &V)
     return Out;
 }
 
-bool When(const json &Expr, const Vars &V)
+//A layer WHEN that may name node CIDs: a named node holds when it is in the composition (beneath this point, or one of
+//the parts selected for the launch).
+bool When(const json &Expr, const Vars &V, const VarSubst::Presence &Present)
 {
-    return !Expr.is_string() || VarSubst::EvaluateCondition(Expr.get<std::string>(), V);
+    return !Expr.is_string() || VarSubst::EvaluateCondition(Expr.get<std::string>(), V, Present);
 }
 
 std::pair<std::string, std::string> NsPath(const std::string &Addr)
@@ -250,14 +253,18 @@ struct Slot
     std::string From, Dir, Prefix;
     View Through;
     int Depth = 0;             // how many NODE layers in
-    std::string Ref;           // NODE (only shown): the node the library does not hold; ANY is shown too
+    std::string Ref;           // NODE (only shown): the node the library does not hold; INTO is shown too
 };
 
 class Expander
 {
 public:
-    Expander(const Library &L, const Vars &Wv, bool ExecOnly = false, int Flip = -1)
-        : Lib(L), Wv(Wv), ExecOnly(ExecOnly), Flip(Flip) {}
+    Expander(const Library &L, const Vars &Wv, bool ExecOnly = false, int Flip = -1, const std::set<std::string> *Selected = nullptr)
+        : Lib(L), Wv(Wv), ExecOnly(ExecOnly), Flip(Flip), Selected(Selected) {}
+
+    //Is this node in the composition, for a WHEN that names it: an occurrence beneath this point, or a part selected for
+    //the launch (selected parts are judged on the selection, so parts that exclude each other cannot chase each other).
+    bool Present(const std::string &Cid) const { return Count.count(Cid) != 0 || (Selected && Selected->count(Cid) != 0); }
 
     void Expand(const std::string &Cid, const View &Through, const std::string &Prefix, Chain Containers)
     {
@@ -278,14 +285,20 @@ public:
         if (!E) { Events.push_back({ "missing", Cid }); return; }
         First[Key] = Containers;
         Order.push_back({ Key, Cid });
+        ++Count[Cid];
         const Chain Inner = std::make_shared<const Occ>(Occ{ Key, Cid, Containers });
         ++OnPath[Cid];
         struct Leave { std::unordered_map<std::string, int> &M; const std::string &C; ~Leave() { if (--M[C] == 0) M.erase(C); } } L_{ OnPath, Cid };
         const json &Layers = E->Node->contains("LAYERS") ? (*E->Node)["LAYERS"] : Empty();
+        const VarSubst::Presence Pres = [this](const std::string &C) { return Present(C); };
+        //A part whose INTO does not hold here (a WHEN on one of its INTO layers, say "only with this DLC") is not
+        //applied at all, not partly.
+        for (const json *In : IntoLayers(Layers))
+            if (In->contains("WHEN") && !When((*In)["WHEN"], Wv, Pres)) { Events.push_back({ "into-off", Cid }); return; }
         for (int I = 0; I < static_cast<int>(Layers.size()); ++I)
         {
             const json &L = Layers[I];
-            if (L.contains("WHEN") && !When(L["WHEN"], Wv)) continue;
+            if (L.contains("WHEN") && !When(L["WHEN"], Wv, Pres)) continue;
             const std::string T = TypeOf(L);
             if (T.empty()) { Error = "node " + Cid + " layer " + std::to_string(I) + " has no single type key"; continue; }
             if (T == "NODE")
@@ -305,13 +318,15 @@ public:
                 Expand(Ref, V, Sub, Inner);
                 --Depth;
             }
-            else if (T == "ANY")
+            else if (T == "INTO")
             {
+                //What a part goes into must be in the composition beneath it: for a part selected at launch that is
+                //the end or a part applied to it (the hard link is the offer's, OfferedGrafts); for a part a node
+                //contains, it is what that node placed beneath it (the container vouches for its own list).
                 if (!ExecOnly) Slots.push_back({ T, &L, I, Inner, Cid, E->Dir, Prefix, Through, Depth, {} });
                 bool Met = false;
-                for (const auto &M : L["ANY"])
-                    for (const auto &O : Order) if (O.second == Str(M)) { Met = true; break; }
-                if (!Met) Events.push_back({ "any-unmet", Cid });
+                if (L["INTO"].is_array()) for (const auto &M : L["INTO"]) if (Count.count(Str(M))) { Met = true; break; }
+                if (!Met) Events.push_back({ "into-unmet", Cid });
             }
             else if (!ExecOnly || T == "EXEC")
                 Slots.push_back({ T, &L, I, Inner, Cid, E->Dir, Prefix, Through, Depth, {} });
@@ -322,6 +337,8 @@ public:
     const Vars &Wv;
     const bool ExecOnly;
     const int Flip;                                                         // the held/move decision to take the other way
+    const std::set<std::string> *Selected;                                  // the parts selected for the launch (WHEN presence)
+    std::unordered_map<std::string, int> Count;                             // occurrences per node, for presence
     int Decisions = 0;                                                      // held/move decisions taken so far
     int Depth = 0;                                                          // NODE layers in, while expanding
     std::vector<Slot> Slots;
@@ -341,6 +358,7 @@ private:
         Slots.erase(std::remove_if(Slots.begin(), Slots.end(), [&](const Slot &S) { return ChainHasKey(S.Inner, Key); }),
                     Slots.end());
         for (const auto &K : Gone) First.erase(K);
+        for (const auto &O : Order) if (Gone.count(O.first) && --Count[O.second] == 0) Count.erase(O.second);
         Order.erase(std::remove_if(Order.begin(), Order.end(), [&](const auto &O) { return Gone.count(O.first) != 0; }),
                     Order.end());
     }
@@ -431,6 +449,18 @@ std::string TypeOf(const json &Layer)
     for (const auto &K : TypeKeys())
         if (Layer.contains(K)) { if (!Found.empty()) return std::string(); Found = K; }
     return Found;
+}
+
+std::vector<const json *> IntoLayers(const json &Layers)
+{
+    std::vector<const json *> Out;
+    if (!Layers.is_array()) return Out;
+    for (const json &L : Layers)
+    {
+        if (TypeOf(L) != "INTO" || !L["INTO"].is_array()) break;
+        Out.push_back(&L);
+    }
+    return Out;
 }
 
 Vars ResolveVars(const json &Decls, const Vars &Builtins, const Vars &Instance)
@@ -546,7 +576,8 @@ std::string ToAnchors(const std::string &Value, const std::map<std::string, std:
 }
 
 static Plan ResolveImpl(const Library &Lib, const std::string &Root, const Vars &Instance, const Vars &Builtins,
-                        const std::vector<std::string> &Grafts, bool ExecOnly, int Flip = -1)
+                        const std::vector<std::string> &Grafts, bool ExecOnly, int Flip = -1,
+                        const std::vector<std::string> *Selection = nullptr)
 {
     Plan P;
     // phase 1
@@ -560,18 +591,20 @@ static Plan ResolveImpl(const Library &Lib, const std::string &Root, const Vars 
     for (const auto &[K, V] : ResolveVars(Decls1, Builtins, Instance)) Wv[K] = V;
     P.WhenVars = Wv;
     // phase 2
-    Expander X(Lib, Wv, ExecOnly, Flip);
+    const std::vector<std::string> &Sel = Selection ? *Selection : Grafts;
+    const std::set<std::string> Selected(Sel.begin(), Sel.end());
+    Expander X(Lib, Wv, ExecOnly, Flip, &Selected);
     X.Expand(Root, nullptr, std::string(), nullptr);
-    for (const auto &G : Grafts) X.Expand(G, nullptr, std::string(), nullptr);    // grafts after the variant, in order
+    //Parts follow the end, each after what it goes into (ApplyGrafts' order: a part after its target, siblings by CID).
+    for (const auto &G : Grafts) X.Expand(G, nullptr, std::string(), nullptr);
+    P.Parts = Grafts;
     P.Error = X.Error;
     // phase 3
-    std::vector<std::string> Nots;
     for (const Slot &S : X.Slots)
     {
         const json &L = *S.Layer;
         if (!ExecOnly) P.Steps.push_back({ S.From, S.At, S.Kind, S.Depth, ViewTakes(S.Through) ? ViewJson(S.Through) : json(), S.Ref });
-        if (S.Kind == "NODE" || S.Kind == "ANY") continue;   // shown only
-        if (S.Kind == "NOT") { Nots.push_back(Str(L["NOT"])); continue; }
+        if (S.Kind == "NODE" || S.Kind == "INTO") continue;   // shown only
         if (IsContent(S.Kind))
         {
             Item It;
@@ -650,15 +683,13 @@ static Plan ResolveImpl(const Library &Lib, const std::string &Root, const Vars 
     }
     for (const auto &O : X.Order) P.Order.push_back(O.second);
     P.Events = X.Events;
-    std::unordered_set<std::string> Present(P.Order.begin(), P.Order.end());
-    for (const auto &N : Nots) if (Present.count(N)) P.Events.push_back({ "not-hit", N });
     return P;
 }
 
 Plan Resolve(const Library &Lib, const std::string &Root, const Vars &Instance, const Vars &Builtins,
-             const std::vector<std::string> &Grafts)
+             const std::vector<std::string> &Grafts, const std::vector<std::string> *Selection)
 {
-    return ResolveImpl(Lib, Root, Instance, Builtins, Grafts, false);
+    return ResolveImpl(Lib, Root, Instance, Builtins, Grafts, false, -1, Selection);
 }
 
 //Two placed targets that can hold the same file: equal, or one a folder of the other (case aside; "" is the root).
@@ -717,69 +748,77 @@ Plan ResolveEntries(const Library &Lib, const std::string &Root)
 
 GraftIndex BuildGraftIndex(const Library &Lib)
 {
+    //Keyed by the members of a part's FIRST INTO layer: every part names at least one there, and the offer checks the rest.
     GraftIndex Idx;
     for (const auto &[H, E] : Lib.Nodes)
     {
-        if (!E.Node->contains("LAYERS") || !(*E.Node)["LAYERS"].is_array() || (*E.Node)["LAYERS"].empty()) continue;
-        const json &L0 = (*E.Node)["LAYERS"][0];
-        if (!L0.is_object() || !L0.contains("ANY")) continue;
-        for (const auto &M : L0["ANY"]) Idx[Str(M)].push_back(H);
+        if (!E.Node->contains("LAYERS")) continue;
+        const auto In = IntoLayers((*E.Node)["LAYERS"]);
+        if (In.empty()) continue;
+        for (const auto &M : (*In[0])["INTO"]) Idx[Str(M)].push_back(H);
     }
     return Idx;
 }
 
+namespace
+{
+std::vector<const json *> IntoOf(const Library &Lib, const std::string &G)
+{
+    const auto *E = Lib.Find(G);
+    if (!E || !E->Node->contains("LAYERS")) return {};
+    return IntoLayers((*E->Node)["LAYERS"]);
+}
+//How many INTO steps a part is from an end (a part into an end: 1, a part into that part: 2, …): the order parts are
+//shown and applied in, so a part always follows what it goes into. Siblings have no order of their own.
+int PartDepth(const Library &Lib, const std::string &G, std::set<std::string> &Seen)
+{
+    const auto In = IntoOf(Lib, G);
+    if (In.empty() || !Seen.insert(G).second) return 0;
+    int D = 0;
+    for (const json *L : In) for (const auto &M : (*L)["INTO"]) D = std::max(D, PartDepth(Lib, Str(M), Seen));
+    Seen.erase(G);
+    return D + 1;
+}
+}
+
 Offer OfferedGrafts(const Library &Lib, const GraftIndex &Idx, const Plan &P, const std::string &FaceUid)
 {
+    //THE HARD LINK (MetaPackageFormat 12 §12.5): a part is offered where what it goes INTO is the end being launched
+    //(the root, the first occurrence) or a part applied to it — never because that node merely occurs somewhere
+    //beneath (a version under a later version, a game under a derived end). Parts off the end's path are discarded.
+    std::set<std::string> Points;
+    if (!P.Order.empty()) Points.insert(P.Order.front());
+    Points.insert(P.Parts.begin(), P.Parts.end());
     std::set<std::string> Set;
-    for (const auto &C : P.Order)
+    for (const auto &C : Points)
         if (auto It = Idx.find(C); It != Idx.end()) Set.insert(It->second.begin(), It->second.end());
-    //A graft a node of the row contains (FE holds UserPatch in a NODE layer) is part of it, not an option; an applied
-    //graft sits at the top of the list, contained by nothing, and stays offered.
+    //Several INTO layers: the part goes into ALL of them (a patch between two mods), each layer naming alternatives. It
+    //is offered only once every layer has a member that is the end or an applied part.
+    for (auto It = Set.begin(); It != Set.end();)
+    {
+        bool All = true;
+        for (const json *L : IntoOf(Lib, *It))
+        {
+            bool One = false;
+            for (const auto &M : (*L)["INTO"]) if (Points.count(Str(M))) { One = true; break; }
+            if (!One) { All = false; break; }
+        }
+        It = All ? std::next(It) : Set.erase(It);
+    }
+    //A part a node of the row contains (FE holds UserPatch in a NODE layer) is part of it, not an option; an applied
+    //part sits at the top, contained by nothing, and stays offered.
     for (const auto &C : P.Order)
         if (const auto *E = Lib.Find(C); E && E->Node->contains("LAYERS") && (*E->Node)["LAYERS"].is_array())
             for (const auto &L : (*E->Node)["LAYERS"])
                 if (L.is_object() && L.contains("NODE")) Set.erase(Str(L["NODE"]));
-    Offer O;
-    O.Offered.assign(Set.begin(), Set.end());
+    //No order is chosen between parts (none can exist: it would need knowledge of every mod): the list shows a part
+    //after what it goes into, then by LABEL, then CID — a presentation, never a fold order.
     auto Label = [&](const std::string &G) { const auto *E = Lib.Find(G); return E ? Str(E->Node->value("LABEL", json())) : std::string(); };
-    //The default order keeps related grafts together: a graft comes after every offered graft its ANY/NOT names, and of
-    //the grafts that may come next, the one naming the latest listed goes first (then LABEL, then CID) — a graft on a
-    //graft, or one excluding another, follows it; unrelated grafts go by LABEL.
-    std::map<std::string, std::set<std::string>> Names;
-    for (const auto &G : Set)
-    {
-        const auto *E = Lib.Find(G);
-        if (!E || !E->Node->contains("LAYERS") || !(*E->Node)["LAYERS"].is_array()) continue;
-        for (const auto &L : (*E->Node)["LAYERS"])
-        {
-            if (!L.is_object()) continue;
-            if (L.contains("ANY") && L["ANY"].is_array()) for (const auto &M : L["ANY"]) if (Set.count(Str(M)) && Str(M) != G) Names[G].insert(Str(M));
-            if (L.contains("NOT") && Set.count(Str(L["NOT"])) && Str(L["NOT"]) != G) Names[G].insert(Str(L["NOT"]));
-        }
-    }
-    std::map<std::string, int> At;
-    std::vector<std::string> Left(Set.begin(), Set.end()), Ordered;
-    while (!Left.empty())
-    {
-        int Best = -1, BestLatest = -2;
-        for (int I = 0; I < (int)Left.size(); ++I)
-        {
-            int Latest = -1;
-            bool Ready = true;
-            for (const auto &M : Names[Left[(size_t)I]])
-                if (const auto It = At.find(M); It == At.end()) { Ready = false; break; } else Latest = std::max(Latest, It->second);
-            if (!Ready) continue;
-            const bool Better = Best < 0 || Latest > BestLatest
-                || (Latest == BestLatest && (Label(Left[(size_t)I]) != Label(Left[(size_t)Best]) ? Label(Left[(size_t)I]) < Label(Left[(size_t)Best])
-                                                                                                  : Left[(size_t)I] < Left[(size_t)Best]));
-            if (Better) { Best = I; BestLatest = Latest; }
-        }
-        if (Best < 0) Best = 0;   // grafts naming each other (a working tree): break the cycle at the first
-        At[Left[(size_t)Best]] = (int)Ordered.size();
-        Ordered.push_back(Left[(size_t)Best]);
-        Left.erase(Left.begin() + Best);
-    }
-    O.Offered = std::move(Ordered);
+    std::vector<std::pair<std::tuple<int, std::string, std::string>, std::string>> Keyed;
+    for (const auto &G : Set) { std::set<std::string> Seen; Keyed.push_back({ { PartDepth(Lib, G, Seen), Label(G), G }, G }); }
+    std::sort(Keyed.begin(), Keyed.end());
+    Offer O;
+    for (const auto &K : Keyed) O.Offered.push_back(K.second);
     for (const auto &G : O.Offered)
     {
         const auto *E = Lib.Find(G);
@@ -792,7 +831,7 @@ Offer OfferedGrafts(const Library &Lib, const GraftIndex &Idx, const Plan &P, co
 int Unsatisfied(const Plan &P)
 {
     int N = 0;
-    for (const auto &E : P.Events) if (E.first == "not-hit" || E.first == "any-unmet") ++N;
+    for (const auto &E : P.Events) if (E.first == "into-unmet") ++N;
     return N;
 }
 
@@ -800,36 +839,44 @@ std::vector<std::string> ApplyGrafts(const Library &Lib, const GraftIndex &Idx, 
                                      const Vars &Builtins, const std::string &FaceUid,
                                      const std::vector<std::string> *Requested, std::vector<std::string> *Dropped, bool EveryOffered)
 {
+    //The selection is a SET. Parts are applied in rounds: each round applies every selected part that is offered on the
+    //end with the parts before it applied (a part after what it goes into), siblings by CID — the order the fold reads
+    //them in, never a preference. A part whose INTO does not hold (its WHEN), or that leaves a requirement unmet, is
+    //dropped and reported.
     std::vector<std::string> Applied;
     std::set<std::string> Refused;
-    Plan P = Resolve(Lib, Root, Instance, Builtins);
     const auto Has = [](const std::vector<std::string> &V, const std::string &X) { return std::find(V.begin(), V.end(), X) != V.end(); };
-    //A graft applies when it is offered here and applying it leaves no requirement newly unmet (its NOT, an ANY).
-    const auto Attempt = [&](const std::string &G) {
-        if (Has(Applied, G) || Refused.count(G)) return;
-        if (Has(OfferedGrafts(Lib, Idx, P, FaceUid).Offered, G))
-        {
-            std::vector<std::string> Trial = Applied;
-            Trial.push_back(G);
-            Plan T = Resolve(Lib, Root, Instance, Builtins, Trial);
-            if (Unsatisfied(T) <= Unsatisfied(P)) { Applied = std::move(Trial); P = std::move(T); return; }
-        }
-        Refused.insert(G);
-        if (Dropped) Dropped->push_back(G);
+    std::vector<std::string> Want;
+    if (Requested) { for (const auto &G : *Requested) if (!Has(Want, G)) Want.push_back(G); }
+    Plan P = Resolve(Lib, Root, Instance, Builtins, Applied);
+    //Judged on the whole selection: a part's WHEN sees every selected part as present (presence is the selection's).
+    const auto Trial = [&](const std::string &G, const std::vector<std::string> &Selection) {
+        std::vector<std::string> T = Applied; T.push_back(G);
+        std::vector<std::string> Sel = Selection; for (const auto &X : T) if (!Has(Sel, X)) Sel.push_back(X);
+        return Resolve(Lib, Root, Instance, Builtins, T, &Sel);   // expands T; a WHEN reads the selection
     };
-    if (Requested)
+    for (bool Fresh = !Requested;;)
     {
-        for (const std::string &G : *Requested) Attempt(G);
-        return Applied;
-    }
-    for (;;)
-    {
+        std::vector<std::string> Round;
         const Offer O = OfferedGrafts(Lib, Idx, P, FaceUid);
-        std::vector<std::string> New;
-        for (const std::string &G : EveryOffered ? O.Offered : O.Ticked) if (!Has(Applied, G) && !Refused.count(G)) New.push_back(G);
-        if (New.empty()) return Applied;
-        for (const std::string &G : New) Attempt(G);
+        if (Requested) { for (const auto &G : O.Offered) if (Has(Want, G) && !Has(Applied, G) && !Refused.count(G)) Round.push_back(G); }
+        else for (const auto &G : EveryOffered ? O.Offered : O.Ticked) if (!Has(Applied, G) && !Refused.count(G)) Round.push_back(G);
+        std::sort(Round.begin(), Round.end());
+        if (Round.empty()) break;
+        bool Any = false;
+        for (const auto &G : Round)
+        {
+            Plan T = Trial(G, Fresh ? Round : Want);
+            bool Off = false;
+            for (const auto &E : T.Events) if (E.second == G && (E.first == "into-off" || E.first == "into-unmet")) Off = true;
+            if (!Off && Unsatisfied(T) <= Unsatisfied(P)) { Applied.push_back(G); P = std::move(T); Any = true; }
+            else { Refused.insert(G); if (Dropped) Dropped->push_back(G); }
+        }
+        if (!Any) break;
     }
+    if (Requested && Dropped)
+        for (const auto &G : Want) if (!Has(Applied, G) && !Refused.count(G)) Dropped->push_back(G);   // never offered here
+    return Applied;
 }
 
 json PlanToJson(const Plan &P)
@@ -861,6 +908,7 @@ json PlanToJson(const Plan &P)
     auto Pairs = [](const json &Obj) { json A = json::array(); for (const auto &[K, V] : Obj.items()) A.push_back(json::array({ K, V })); return A; };
     J["dll"] = Pairs(P.Dll); J["env"] = Pairs(P.Env); J["exec"] = Pairs(P.Exec); J["keep"] = Pairs(P.Keep); J["decls"] = Pairs(P.Decls);
     J["order"] = P.Order;
+    J["parts"] = P.Parts;
     json Ev = json::array();
     for (const auto &[K, C] : P.Events) Ev.push_back(json::array({ K, C }));
     J["events"] = Ev;

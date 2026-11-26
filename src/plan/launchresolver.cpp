@@ -151,7 +151,7 @@ bool LaunchResolver::InitializeFromNodeOnce(struct ContainerParams &ContainerPar
     if (Launch->IsGraft)
     {
         const std::vector<std::string> Bases = Shelf::GraftBases(Idx, Launch->Key());
-        if (Bases.empty()) { LogErr("InitializeFromNode", "'" + LaunchId + "' is a graft with nothing here it applies onto."); return false; }
+        if (Bases.empty()) { LogErr("InitializeFromNode", "'" + LaunchId + "' is a part, and no end it goes INTO is here."); return false; }
         std::string B = Bases.front();
         if (!CP.GraftBase.empty())
         {
@@ -230,23 +230,19 @@ bool LaunchResolver::InitializeFromNodeOnce(struct ContainerParams &ContainerPar
         if (!Must.empty() && std::find(CP.AppliedGrafts.begin(), CP.AppliedGrafts.end(), Must) == CP.AppliedGrafts.end())
         { LogErr("InitializeFromNode", "'" + Must + "' cannot be applied to '" + LaunchKey + "' (tile '" + Face + "')."); return false; }
     for (const std::string &G : Dropped)
-        LogWarn("InitializeFromNode", "Graft '" + G + "' is not offered to '" + LaunchId + "' at its position (its ANY does not hold, or it is not installed) — not applied.");
+        LogWarn("InitializeFromNode", "Graft '" + G + "' is not offered to '" + LaunchId + "' at its position (what it goes INTO is not the end or an applied part, its condition does not hold, or it is not installed) — not applied.");
     const Fold::Plan Plan = Fold::Resolve(Lib, LaunchKey, Instance, Builtins, CP.AppliedGrafts);
     if (!Plan.Error.empty()) { LogErr("InitializeFromNode", "Node '" + LaunchId + "': " + Plan.Error); return false; }
     const auto Name = [&](const std::string &Cid) { const Node *N = Idx.Find(Cid); return N && !N->NodeId.empty() ? N->NodeId : Cid; };
     for (const auto &[Ev, Cid] : Plan.Events)
         if (Ev == "missing" || Ev == "cycle")
             LogWarn("InitializeFromNode", "Resolving '" + LaunchId + "': " + Ev + " " + Name(Cid));
-    //A row whose requirements fail is blocked (§4): a NOT names something it contains, or an ANY finds none.
+    //A row whose parts do not hold is blocked (12 §12.5): a part the row contains goes INTO something it does not.
     if (Fold::Unsatisfied(Plan) > 0)
     {
         for (const auto &[Ev, Cid] : Plan.Events)
-        {
-            if (Ev == "not-hit")
-                LogErr("InitializeFromNode", "'" + LaunchId + "' is blocked: it contains '" + Name(Cid) + "', which a NOT in it excludes.");
-            else if (Ev == "any-unmet")
-                LogErr("InitializeFromNode", "'" + LaunchId + "' is blocked: '" + Name(Cid) + "' requires one of the nodes its ANY names, and none is present.");
-        }
+            if (Ev == "into-unmet")
+                LogErr("InitializeFromNode", "'" + LaunchId + "' is blocked: '" + Name(Cid) + "' goes INTO a node this row does not contain.");
         return false;
     }
 

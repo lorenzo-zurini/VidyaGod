@@ -227,7 +227,6 @@ private:
     std::vector<std::string> CollectGrafts() const;
     std::vector<std::string> AppliedOrder;            // the ticked grafts in the order they apply (see CollectGrafts)
     std::pair<std::map<std::string, std::string>, std::map<std::string, std::string>> GraftJudging() const;   // (instance, builtins)
-    void MoveSelectedGraft(int By);                   // reorder the instance's graft list (refused if a graft would drop)
     std::optional<std::vector<std::string>> SavedGrafts() const;  // this tile's saved graft list (nullopt: none yet)
     void StoreGrafts(const std::vector<std::string>& List);       // save this tile's graft list
     void SaveGrafts();                                // the ticked rows, in order, as the instance's GRAFTS   // the ticked grafts, in list order (= the order applied)
@@ -297,8 +296,6 @@ private:
     QTreeWidget*  OptionsTree           = nullptr;   // options, in collapsible SECTION rows
     QWidget*      ModuleGroup           = nullptr;   // the grafts (Add-ons)
     QTreeWidget*  ModuleTree            = nullptr;
-    QPushButton*  GraftUp               = nullptr;   // move the selected ticked graft earlier / later in the order
-    QPushButton*  GraftDown             = nullptr;
     QLabel*       GraftNote             = nullptr;   // why a move was refused
     QTextEdit*    ConsoleEdit       = nullptr;
     QStringList   ConsolePending;                    // lines buffered between console flushes (see onLogLine)

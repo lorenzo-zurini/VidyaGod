@@ -130,10 +130,7 @@ std::vector<std::string> Publish(nlohmann::ordered_json &Config, const std::vect
             {
                 const auto K = KeyOf.find(Handle);
                 if (K == KeyOf.end() || !Sel.count(K->second)) continue;
-                std::vector<std::string> Nots;
-                std::vector<std::string> Refs = NodeRefs::Contained(Doc, &Nots);
-                Refs.insert(Refs.end(), Nots.begin(), Nots.end());
-                for (const std::string &R : Refs)
+                for (const std::string &R : NodeRefs::Linked(Doc))
                     if (const auto RK = PkgOfRef(R); RK && Sel.insert(*RK).second) Grew = true;
             }
         }
@@ -412,10 +409,10 @@ std::string SheetPath(const nlohmann::ordered_json &GlobalConfigJSON, const std:
 
 std::vector<std::string> NodeContains(const NodeIndex &Idx, const std::string &Cid)
 {
-    if (const Node *N = Idx.Find(Cid); N && N->Key() == Cid) return N->Refs;
+    if (const Node *N = Idx.Find(Cid); N && N->Key() == Cid) { auto R = N->Refs; R.insert(R.end(), N->Into.begin(), N->Into.end()); return R; }
     if (!IpfsWrapper::HasLocal(Cid)) return {};                         // never fetched to be read: a sheet is ours
     const nlohmann::ordered_json J = NodeGraph::ParseBounded(IpfsWrapper::BlockGet(Cid));
-    return ManifestModel::IsNodeObject(J) ? NodeRefs::Contained(J) : std::vector<std::string>();
+    return ManifestModel::IsNodeObject(J) ? NodeRefs::Linked(J) : std::vector<std::string>();
 }
 
 std::vector<std::string> PackagesContained(const nlohmann::ordered_json &Sheet, const std::vector<std::string> &Packages,

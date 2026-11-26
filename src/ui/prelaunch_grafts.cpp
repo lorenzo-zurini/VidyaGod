@@ -133,11 +133,6 @@ void PreLaunchWindow::RebuildModuleTree()
         It->setData(0, Qt::UserRole + 2, std::find(Ticked.begin(), Ticked.end(), G) != Ticked.end());
     }
     SetTabShown(AddonsPage, !GraftRows(ModuleTree).empty());
-    //Ordering means something only with two or more add-ons.
-    const bool Several = GraftRows(ModuleTree).size() > 1;
-    for (QWidget* X : { static_cast<QWidget*>(GraftUp), static_cast<QWidget*>(GraftDown),
-                        static_cast<QWidget*>(AddonsPage->findChild<QLabel*>("graftOrderHint")) })
-        if (X) X->setVisible(Several);
     if (DeckLayout) ModuleTree->expandAll();   // a controller cannot open a folded row
     SyncGraftChecks();
 }
@@ -241,33 +236,6 @@ std::pair<std::map<std::string, std::string>, std::map<std::string, std::string>
     return { Instance, { {"UID", Face(Index->Find(LaunchNodeId))}, {"PackageUID", PackageUID} } };
 }
 
-void PreLaunchWindow::MoveSelectedGraft(int By)
-{
-    const QTreeWidgetItem* It = ModuleTree ? ModuleTree->currentItem() : nullptr;
-    if (!It || !It->data(0, Qt::UserRole + 2).toBool()) return;
-    const std::string Key = It->data(0, Qt::UserRole).toString().toStdString();
-    std::vector<std::string> Ticked = CollectGrafts();
-    const auto At = std::find(Ticked.begin(), Ticked.end(), Key);
-    if (At == Ticked.end()) return;
-    std::string Why;
-    const auto [Instance, Builtins] = GraftJudging();
-    if (!Shelf::MoveGraft(*Index, LaunchNodeId, Ticked, (size_t)(At - Ticked.begin()), By, &Why, Instance, Builtins))
-    {
-        if (!Why.empty()) { GraftNote->setText(QString::fromStdString("Not moved: " + Why)); GraftNote->setVisible(true); }
-        return;
-    }
-    GraftNote->setVisible(false);
-    StoreGrafts(Ticked);
-    RebuildModuleTree();                 // rows follow the saved order
-    for (QTreeWidgetItem* Row : GraftRows(ModuleTree))
-        if (Row->data(0, Qt::UserRole).toString().toStdString() == Key)
-        {
-            for (QTreeWidgetItem* P = Row->parent(); P; P = P->parent()) P->setExpanded(true);   // keep it in view
-            ModuleTree->setCurrentItem(Row);
-        }
-    RebuildCustomVarPickers();
-    RefreshGraftEntryRows();             // the entries grafts add follow the order too
-}
 
 //The ticked grafts in the order they APPLY — the list the last rebuild settled on (saved, or the tile's defaults),
 //less any row unticked since. Not the tree's order: sections group grafts for display, and a graft in an earlier

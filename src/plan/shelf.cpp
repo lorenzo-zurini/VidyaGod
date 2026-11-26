@@ -141,38 +141,6 @@ std::vector<std::string> AppliedGrafts(const NodeIndex &Idx, const std::string &
     return Fold::ApplyGrafts(Lib, GIdx, L->Key(), Instance, Builtins, Face, &Local, Dropped);
 }
 
-bool MoveGraft(const NodeIndex &Idx, const std::string &LaunchNodeId, std::vector<std::string> &Ticked, size_t From,
-               int By, std::string *Why, const std::map<std::string, std::string> &Instance,
-               const std::map<std::string, std::string> &Builtins)
-{
-    const long To = (long)From + By;
-    if (From >= Ticked.size() || To < 0 || To >= (long)Ticked.size()) return false;
-    std::vector<std::string> Proposed = Ticked;
-    std::swap(Proposed[From], Proposed[(size_t)To]);
-    //By WHICH grafts apply, not how many: two that exclude each other keep the count equal when the move swaps them.
-    const std::vector<std::string> Before = AppliedGrafts(Idx, LaunchNodeId, Ticked, Instance, Builtins);
-    const std::vector<std::string> After = AppliedGrafts(Idx, LaunchNodeId, Proposed, Instance, Builtins);
-    std::vector<std::string> Dropped;
-    for (const std::string &G : Before)
-        if (std::find(After.begin(), After.end(), G) == After.end()) Dropped.push_back(G);
-    if (!Dropped.empty())
-    {
-        if (Why)
-        {
-            std::string Names;
-            for (const std::string &D : Dropped)
-            {
-                const Node *N = Idx.Find(D);
-                Names += (Names.empty() ? "" : ", ") + std::string("'") + (N && !N->NodeId.empty() ? N->NodeId : D) + "'";
-            }
-            *Why = Names + " would no longer apply: a graft applies only after the grafts it needs.";
-        }
-        return false;
-    }
-    Ticked = std::move(Proposed);
-    return true;
-}
-
 GraftChoice CurrentGraftChoice(const NodeIndex &Idx, const GraftChoice &Saved)
 {
     if (!Saved) return Saved;
@@ -215,6 +183,22 @@ std::vector<std::string> TickGraft(const NodeIndex &Idx, const std::string &Laun
         Without.erase(Without.begin() + (long)I);
         if (Applies(Without)) { if (Unticked) Unticked->push_back(Keep[I]); Keep = std::move(Without); }
         else ++I;
+    }
+    //The other way round (exclusion is a condition, and only one side may carry it: "never with aok" on tc): a ticked
+    //part that applied before G and does not once G is ticked goes too, so ticking either side unticks the other.
+    {
+        const std::vector<std::string> Before = AppliedGrafts(Idx, LaunchNodeId, Keep, Instance, Builtins);
+        std::vector<std::string> With = Keep; With.push_back(G);
+        const std::vector<std::string> After = AppliedGrafts(Idx, LaunchNodeId, With, Instance, Builtins);
+        std::vector<std::string> Still;
+        for (const std::string &X : Keep)
+        {
+            const bool Was = std::find(Before.begin(), Before.end(), X) != Before.end();
+            const bool Is = std::find(After.begin(), After.end(), X) != After.end();
+            if (Was && !Is) { if (Unticked) Unticked->push_back(X); continue; }
+            Still.push_back(X);
+        }
+        Keep = std::move(Still);
     }
     Keep.push_back(G);
     return Keep;

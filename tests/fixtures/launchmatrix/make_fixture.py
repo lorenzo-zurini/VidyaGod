@@ -169,8 +169,8 @@ def make_content(B):
     write(f"{B}/libfile.txt", "a loose FILE, taken and renamed\n")
     # A diamond: two nodes contain the same one; it mounts once.
     write(f"{B}/shareddir/diamond.txt", "one occurrence, however many containers\n")
-    # A graft whose NOT hits the row: pre-ticked, and still never mounted.
-    write(f"{B}/graftconflict/game/conflict.txt", "a graft whose NOT hits must not mount\n")
+    # A part whose condition is false on the row: pre-ticked, and still never mounted.
+    write(f"{B}/graftconflict/game/conflict.txt", "a part whose condition is false must not mount\n")
     # The final chain: a variant that inherits its entry, and a graft that carries one.
     write(f"{B}/inheritdir/game/inherited.txt", "a variant over lm_run, running lm_run's inherited entry\n")
     write(f"{B}/graftentry/game/from_graft_entry.txt", "a graft that is also a way to run\n")
@@ -240,11 +240,12 @@ def cid(path):
 
 def nodes(B):
     N = []
-    def add(label, layers, **fields):
+    def add(label, layers, handle=None, **fields):
         # The readable LABEL doubles as the working-tree handle (the stored "CID"), so NODE layers stay legible;
-        # the freeze derives the real CID and remaps every reference to it.
-        N.append(dict({"CID": label, "LABEL": label}, **fields, LAYERS=layers))
-        return label
+        # the freeze derives the real CID and remaps every reference to it. A node a CONDITION names needs a handle a
+        # condition can carry (a draft handle, "draft-" + 12 hex: a WHEN finds CIDs and draft handles only).
+        N.append(dict({"CID": handle or label, "LABEL": label}, **fields, LAYERS=layers))
+        return handle or label
     def node(ref, **kw):
         return dict({"NODE": ref}, **kw)
 
@@ -308,7 +309,7 @@ def nodes(B):
     lang1  = add("lm_c_depot_lang_v1", [node(dmain), {"ZIP": "lang_v1.zip", "SOURCE": cid(f"{B}/lang_v1.zip"), "TARGET": F(G + "/depot")}])
     lang2  = add("lm_c_depot_lang_v2", [node(lang1), {"DELTA": "lang.vgdelta", "TARGET": F(G + "/depot"),
                                                       "BASE_SOURCES": [cid(f"{B}/lang_v1.zip")]}])
-    probe  = add("lm_c_probe", [node(lang2), {"FILE": "probe.sh", "TARGET": F(G + "/bin")}])
+    probe  = add("lm_c_probe", [node(lang2), {"FILE": "probe.sh", "TARGET": F(G + "/bin")}], handle="draft-00000c0de000")
     # Un-hydrated content: present only as a CID (a real, well-formed one whose block is simply never in the local
     # store). The engine REFUSES to launch with missing sources, so this hangs off a SIDE BRANCH — only the
     # plan-level launchables contain it.
@@ -442,34 +443,36 @@ def nodes(B):
     # inner runner's ENV arriving, over the boundary's.
     add("lm_nested", [node("lm_minimal_content"), node("lm_tile"), play("fixturevm", G + "/game/data.txt", [])],
         VARIANT="lm_nested")
-    # (6) a BLOCKED variant: a NOT names something it contains — the launch is refused, naming the reason.
-    add("lm_blocked", [node("lm_minimal_content"), {"NOT": "lm_minimal_content"}, node("lm_tile"),
+    # (6) a BLOCKED variant: it contains a part whose INTO (lm_minimal) its composition does not hold — the launch
+    # is refused, naming the reason.
+    add("lm_blocked", [node("lm_minimal_content"), node("lm_graft_elsewhere"), node("lm_tile"),
                        play("linux64", G + "/game/data.txt", [])],
         VARIANT="lm_blocked")
     # (7) a variant over lm_run that declares no entry: it runs lm_run's (folded), mounts lm_run's whole
-    # resolution plus its own dir — and, lm_run being in its resolution, is offered lm_run's grafts too.
+    # resolution plus its own dir — and is NOT offered lm_run's parts: a part goes INTO lm_run exactly (the hard
+    # link), and an end containing lm_run is another end.
     add("lm_inherits", [node("lm_run"), {"DIR": "inheritdir", "TARGET": F(G)}], VARIANT="lm_inherits")
 
-    # ---- grafts: a node whose list begins with ANY (what it applies onto) ----------------------------------
-    # Offered to a row whose resolution contains a member of its ANY, applied above the variant in the
-    # instance's order; a fresh instance ticks the ones RECOMMENDED under the row's tile. The probe's "mounted
-    # tree" is the proof: grafted.txt, grafted_hd.txt (a graft on a graft: offered once lm_graft_on is applied)
-    # and lib.txt (a library the graft contains) appear; never.txt (offered, not recommended) does not, and
-    # elsewhere.txt (its ANY names lm_minimal) is offered to lm_minimal only.
-    add("lm_graft_on", [{"ANY": ["lm_run"]}, {"DIR": "graftdir", "TARGET": F(G)},
+    # ---- parts: a node whose list begins with INTO (what it goes into) -------------------------------------
+    # Offered to the end it goes INTO (or with a part it goes into applied), applied above the variant (parts
+    # are a set, applied after what they go into); a fresh instance ticks the ones RECOMMENDED under the row's
+    # tile. The probe's "mounted tree" is the proof: grafted.txt, grafted_hd.txt (a part of a part: offered once
+    # lm_graft_on is applied) and lib.txt (a library the part contains) appear; never.txt (offered, not
+    # recommended) does not, and elsewhere.txt (INTO lm_minimal) is offered to lm_minimal only.
+    add("lm_graft_on", [{"INTO": ["lm_run"]}, {"DIR": "graftdir", "TARGET": F(G)},
                         {"ENV": {"LM_GRAFT_ENV": "grafted"}}],          # a ticked graft's ENV folds above the variant's
         RECOMMENDED=[UID])
-    add("lm_graft_hd", [{"ANY": ["lm_graft_on"]}, {"DIR": "grafthd", "TARGET": F(G)}], RECOMMENDED=[UID])
-    add("lm_graft_off", [{"ANY": ["lm_run"]}, {"DIR": "graftoff", "TARGET": F(G)}])
-    # Offered (its ANY holds) and pre-ticked — but its NOT names something lm_run contains, so it does not apply.
-    add("lm_graft_conflict", [{"ANY": ["lm_run"]}, {"NOT": "lm_c_probe"}, {"DIR": "graftconflict", "TARGET": F(G)}],
+    add("lm_graft_hd", [{"INTO": ["lm_graft_on"]}, {"DIR": "grafthd", "TARGET": F(G)}], RECOMMENDED=[UID])
+    add("lm_graft_off", [{"INTO": ["lm_run"]}, {"DIR": "graftoff", "TARGET": F(G)}])
+    # Offered and pre-ticked — but its condition says "never with" something lm_run contains, so it does not apply.
+    add("lm_graft_conflict", [{"INTO": ["lm_run"], "WHEN": probe + " == false"}, {"DIR": "graftconflict", "TARGET": F(G)}],
         RECOMMENDED=[UID])
-    add("lm_graft_elsewhere", [{"ANY": ["lm_minimal"]}, {"DIR": "graftwrong", "TARGET": F(G)}], RECOMMENDED=[UID])
+    add("lm_graft_elsewhere", [{"INTO": ["lm_minimal"]}, {"DIR": "graftwrong", "TARGET": F(G)}], RECOMMENDED=[UID])
     add("lm_graft_lib", [{"DIR": "graftlib", "TARGET": F(G)}])
-    add("lm_graft_uses_lib", [{"ANY": ["lm_run"]}, node("lm_graft_lib")], RECOMMENDED=[UID])
+    add("lm_graft_uses_lib", [{"INTO": ["lm_run"]}, node("lm_graft_lib")], RECOMMENDED=[UID])
     # A graft that CARRIES an entry (a mod loader): ticked, it mounts above the variant like any graft, and its
     # entry is a way to RUN that mount (--entrypoint lm_graft_entry). Its ENV folds above lm_run's.
-    add("lm_graft_entry", [{"ANY": ["lm_run"]}, {"DIR": "graftentry", "TARGET": F(G)},
+    add("lm_graft_entry", [{"INTO": ["lm_run"]}, {"DIR": "graftentry", "TARGET": F(G)},
                            {"ENV": {"LM_EXEC_ENV": "from-the-graft-entry"}},
                            {"EXEC": [{"LABEL": "lm_graft_entry", "HOST": "linux64", "EXE": G + "/bin/probe.sh",
                                       "ARGS": ["--via-graft-entry"], "WORKDIR": G}]}],
