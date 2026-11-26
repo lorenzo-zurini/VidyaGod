@@ -61,18 +61,23 @@ DRIVER
 # was reported "SURVIVED": blind to precisely the failure this codebase spent the changeset closing (an
 # exception out of paintGL). EXIT STATUS is the thing that cannot be faked, so it is what decides; the greps
 # only surface the useful detail.
+# CAPPED, because a mutation can also make an allocation endless (a removed bound obeys a hostile count). On
+# 2026-11-26 one such test grew to 16 GB RAM + all swap and froze the PC: it inherited the Claude session's OOM
+# protection, so the OOM killer took everything else first. Every suite runs in its own cgroup with a hard memory
+# ceiling and no swap, as the OOM killer's first choice; an OOM kill exits non-zero, so it counts as caught.
+CAP=(systemd-run --user --scope -q -p MemoryMax="${MUT_MEM_MAX:-8G}" -p MemorySwapMax=0 choom -n 1000 --)
 suites() {
-  local log; log="$(cmake --build build -j"$(nproc)" 2>&1)" || { echo "$log" | grep -E " error" | head -5; return 2; }
+  local log; log="$(cmake --build build -j4 2>&1)" || { echo "$log" | grep -E " error" | head -5; return 2; }
   local bad=0
   # ctest covers every suite; the two are named so their per-test detail is in the output.
   # TIMED OUT, because a mutation can make a loop infinite — SafeId's byte walk is the obvious candidate — and
   # a hung harness is not a result. ctest brings its own 1500s default; these two had none. `timeout` exits
   # 124, which is non-zero, so a hang counts as caught exactly like a crash does.
-  timeout 600 ./build/vg_tests 2>&1 | grep -E "^\[FAIL\]"
+  "${CAP[@]}" timeout 600 ./build/vg_tests 2>&1 | grep -E "^\[FAIL\]"
   [ "${PIPESTATUS[0]}" -eq 0 ] || { bad=1; echo "  (vg_tests exited non-zero - failed, crashed or timed out)"; }
-  QT_QPA_PLATFORM=offscreen timeout 600 ./build/test_pkgcanvas 2>&1 | grep -E "^FAIL"
+  QT_QPA_PLATFORM=offscreen "${CAP[@]}" timeout 600 ./build/test_pkgcanvas 2>&1 | grep -E "^FAIL"
   [ "${PIPESTATUS[0]}" -eq 0 ] || { bad=1; echo "  (test_pkgcanvas exited non-zero - failed, crashed or timed out)"; }
-  ctest --test-dir build 2>&1 | grep -E "\(Failed\)|\(Subprocess aborted\)|\(SEGFAULT\)|\(Timeout\)"
+  "${CAP[@]}" ctest --test-dir build 2>&1 | grep -E "\(Failed\)|\(Subprocess aborted\)|\(SEGFAULT\)|\(Timeout\)"
   [ "${PIPESTATUS[0]}" -eq 0 ] || bad=1
   return $bad
 }
