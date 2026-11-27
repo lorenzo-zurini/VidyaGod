@@ -67,8 +67,18 @@ bool WorksOffline(const std::string &Name)
     return Name == "ipfs status" || Name == "launch run" || Name == "launch build";
 }
 
+bool Standalone(const std::string &Name)
+{
+    //Pure file work: they read and write only the files their arguments name (a description, a record, a spec's view, a
+    //delta made to --out), never the library, the config or the node — so they neither wait for nor hold the data dir.
+    static const std::set<std::string> One = { "vfs spec", "vfs ls", "vfs stat", "vfs cat", "vfs df", "vfs zip", "vfs delta",
+                                               "vfs tree", "vfs case", "cid of" };
+    return One.count(Name) || Name.rfind("coding ", 0) == 0;
+}
+
 bool RunsBeside(const std::string &Name)
 {
+    if (Standalone(Name)) return true;
     static const std::set<std::string> Groups = { "vars", "fold", "keys" };   // computation over what they are given
     static const std::set<std::string> One = {
         "util bytes", "util match", "util sort", "cid of", "content claims", "content path", "edits xml-get", "deps check",

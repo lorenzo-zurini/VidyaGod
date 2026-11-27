@@ -777,7 +777,8 @@ int Main(int argc, char **argv, const Hooks &H)
     // A path override is this process's: a call carrying one runs here, never in the app (whose launches keep theirs).
     const bool Overrides = !G.PackageDir.empty() || !G.RuntimeDir.empty() || !G.UserDataDir.empty();
     if (!G.Verbose) g_Ticker.Start("VidyaGod " + S->Name);
-    if (!Overrides && !G.Beside && CommandServer::Send(DataPath.toStdString(), S->Name, Args, Reply)) return Report(Reply, S, G, St, ErrSt);
+    const bool Alone = Command::Standalone(S->Name);   // pure file work: no lock, no app
+    if (!Overrides && !G.Beside && !Alone && CommandServer::Send(DataPath.toStdString(), S->Name, Args, Reply)) return Report(Reply, S, G, St, ErrSt);
 
     //Beside whatever holds the data dir, only what changes nothing it keeps: a half-done change there (a source's
     //folder gone, the config still naming it) is worse than none.
@@ -796,7 +797,7 @@ int Main(int argc, char **argv, const Hooks &H)
     }
     std::string Holder;
     const std::string LockFile = (AppDataDir.absolutePath() + "/vidyagod.lock").toStdString();
-    if (G.Beside) AppPaths::SetConfigReadOnly(true);
+    if (G.Beside || Alone) AppPaths::SetConfigReadOnly(true);
     else if (!Platform::AcquireSingleInstanceLock(LockFile, &Holder))
     {
         json Ping;

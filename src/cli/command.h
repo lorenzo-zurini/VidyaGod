@@ -107,6 +107,10 @@ bool WorksOffline(const std::string &Name);
 // command that changes nothing the app keeps — the config, the library, USERDATA, the node's store — and reads only
 // what is on disk. Everything else needs the data dir to itself, or runs in the app.
 bool RunsBeside(const std::string &Name);
+//Commands that touch only the files their arguments name (the coding algebra, a spec's view, a delta, a file's CID): they
+//run in their own process without the data dir's lock and without the app, beside anything (a long `coding mint` never
+//blocks a `launch plan`).
+bool Standalone(const std::string &Name);
 
 // -v on the command line: a renderer that sums up (repeated warnings, one line per kind) lists everything instead.
 void SetVerboseOutput(bool On);
