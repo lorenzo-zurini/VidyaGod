@@ -1311,6 +1311,11 @@ private slots:
         for (const auto &C : AB) if (C.Address.find("README.TXT") != std::string::npos || C.Address.find("Readme.txt") != std::string::npos) File = true;
         QVERIFY2(File, "one file path written by two parts with different bytes");
         QVERIFY(Shelf::PartConflicts(idx, "game", Shelf::AppliedGrafts(idx, "game", V{"a", "c"})).empty());   // identical
+        {   // identical writes with another between them (a=1, b=2, c=1): a and c agree, each disagrees with b
+            const auto Abc = Shelf::PartConflicts(idx, "game", Shelf::AppliedGrafts(idx, "game", V{"a", "b", "c"}));
+            QVERIFY(!Has(Abc, "ENV/X", "a", "c"));
+            QVERIFY(Has(Abc, "ENV/X", "a", "b") && Has(Abc, "ENV/X", "b", "c"));
+        }
         const auto P = Shelf::PartConflicts(idx, "game", Shelf::AppliedGrafts(idx, "game", V{"a", "pa", "b"}));
         QVERIFY(!Has(P, "ENV/X", "a", "pa"));                                                         // a patch on a
         QVERIFY(Has(P, "ENV/X", "pa", "b") || Has(P, "ENV/X", "a", "b"));
@@ -1325,6 +1330,18 @@ private slots:
         const auto O = Shelf::PartConflicts(idx, "game", Shelf::AppliedGrafts(idx, "game", V{"wide", "over"}));
         QCOMPARE(O.size(), size_t(1));
         if (!O.empty()) QVERIFY2(O[0].Address.find("@0x202-0x204") != std::string::npos, O[0].Address.c_str());
+        //the user's resolution (the instance's RESOLUTIONS): the part kept folds after its siblings, so its write stands;
+        //what goes into it still comes after it. Teeth: ignore the resolution (b, later by CID, keeps winning).
+        const V Ab = Shelf::AppliedGrafts(idx, "game", V{"a", "b"});
+        const auto EnvX = [&](const V &Order) {
+            const Fold::Plan Pl = Fold::Resolve(ManifestModel::LibraryOf(idx), "game", {}, {}, Order);
+            return Pl.Env.contains("X") ? Pl.Env["X"].get<std::string>() : std::string();
+        };
+        const V Kept = Shelf::OrderResolved(idx, Ab, json{{"ENV/X", "a"}});
+        QCOMPARE(EnvX(Kept), std::string("1"));
+        QCOMPARE(EnvX(Shelf::OrderResolved(idx, Ab, json{{"ENV/X", "b"}})), std::string("2"));
+        const V WithPatch = Shelf::OrderResolved(idx, Shelf::AppliedGrafts(idx, "game", V{"a", "pa", "b"}), json{{"ENV/X", "b"}});
+        QVERIFY(std::find(WithPatch.begin(), WithPatch.end(), "pa") > std::find(WithPatch.begin(), WithPatch.end(), "a"));
     }
 
     // --with adds parts to the selection the launch would use: a fresh instance keeps its RECOMMENDED parts and gains

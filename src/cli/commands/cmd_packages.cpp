@@ -882,6 +882,32 @@ VG_COMMANDS
         }, {} });
 
     Command::Register({
+        "grafts resolve", "settle a conflict between two parts: which one's write stands (kept in the instance)",
+        "Kept in the instance's RESOLUTIONS ({address: the winning part}): at launch the winner folds after the other parts "
+        "at its depth, so its write stands. --clear forgets the resolution for that address. A published resolution is a "
+        "part that goes into both (MetaPackageFormat 23 §23.4).",
+        { GameArg(), Opt("address", "the conflict's address (from grafts conflicts)", Type::String, true), Opt("keep", "the part whose write stands (CID or LABEL)"),
+          Flag("clear", "forget this address's resolution"), Opt("instance", "which instance (default the active one)") },
+        { "grafts resolve 'Wipeout XL' --address ENV/WOXL_FPS --keep 'Wipeout XL 200 fps'" },
+        { "Shelf::OrderResolved", "InstanceStore::ReadConfig", "InstanceStore::SetSetting" }, Needs::Config, false,
+        [](Command::Context &C, const json &A) {
+            const auto I = Index(C);
+            const Node &N = *NodeOf(*I, Command::Str(A, "game"));
+            const std::string Inst = Command::Str(A, "instance", "");
+            const json Cfg = InstanceStore::ReadConfig(*C.Config, N.PackageUid, Inst);
+            json R = Cfg.contains("RESOLUTIONS") && Cfg["RESOLUTIONS"].is_object() ? Cfg["RESOLUTIONS"] : json::object();
+            const std::string Addr = Command::Str(A, "address");
+            if (Command::Bool(A, "clear", false)) R.erase(Addr);
+            else
+            {
+                if (!A.contains("keep")) throw Command::BadArgs("--keep the part whose write stands, or --clear");
+                R[Addr] = NodeOf(*I, Command::Str(A, "keep"))->Key();
+            }
+            InstanceStore::SetSetting(*C.Config, N.PackageUid, "RESOLUTIONS", R, Inst);
+            return json{{"resolutions", R}};
+        }, {} });
+
+    Command::Register({
         "grafts row", "the row a tile shows for a variant",
         "Which node a tile's row named <variant> is — the variant presenting the tile under that name.",
         { Pos("tile", "the tile UID"), Pos("variant", "the variant's name") }, { "grafts row 749 'Patch 2.0a (No-CD)'" },

@@ -238,13 +238,21 @@ bool LaunchResolver::InitializeFromNodeOnce(struct ContainerParams &ContainerPar
     }
     CP.AppliedGrafts = Shelf::AppliedGrafts(Idx, LaunchKey, Chosen, Instance, Builtins, &Dropped);
     CP.DroppedGrafts = Dropped;
+    //The user's resolutions of conflicts between parts (the instance's RESOLUTIONS): a winner folds after its siblings.
+    const nlohmann::ordered_json Resolutions = [&] {
+        const nlohmann::ordered_json C = InstanceStore::ReadConfig(GlobalConfigJSON, CP.PackageUID, CP.InstanceName);
+        return C.contains("RESOLUTIONS") && C["RESOLUTIONS"].is_object() ? C["RESOLUTIONS"] : nlohmann::ordered_json::object();
+    }();
+    CP.AppliedGrafts = Shelf::OrderResolved(Idx, CP.AppliedGrafts, Resolutions);
     //Two applied parts writing one unit differently: shown, never settled by a position (23 §23.4). The fold still
     //reads them in CID order; what conflicts is reported.
     CP.PartConflicts = nlohmann::ordered_json::array();
     for (const auto &C : Shelf::PartConflicts(Idx, LaunchKey, CP.AppliedGrafts, Instance, Builtins))
     {
-        CP.PartConflicts.push_back({{"address", C.Address}, {"a", C.A}, {"b", C.B}});
-        LogWarn("InitializeFromNode", "parts '" + C.A + "' and '" + C.B + "' both write " + C.Address + ", differently — the one read later wins");
+        const std::string Kept = Resolutions.contains(C.Address) && Resolutions[C.Address].is_string() ? Resolutions[C.Address].get<std::string>() : std::string();
+        CP.PartConflicts.push_back({{"address", C.Address}, {"a", C.A}, {"b", C.B}, {"kept", Kept}});
+        if (Kept.empty())
+            LogWarn("InitializeFromNode", "parts '" + C.A + "' and '" + C.B + "' both write " + C.Address + ", differently — the one read later wins");
     }
     for (const std::string &Must : { CardGraft, RowGraft })
         if (!Must.empty() && std::find(CP.AppliedGrafts.begin(), CP.AppliedGrafts.end(), Must) == CP.AppliedGrafts.end())

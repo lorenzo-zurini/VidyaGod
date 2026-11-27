@@ -987,7 +987,7 @@ RepointReport RepointLibrary(const std::vector<fs::path> &Roots, const fs::path 
                 json J = NodeGraph::ParseBounded(B);
                 if (J.is_discarded() || !J.is_object()) continue;
                 bool Changed = false;
-                for (const char *K : { "GRAFTS", "RUNNER_CHAIN" }) if (J.contains(K)) Changed |= RenameStrings(J[K], M);
+                for (const char *K : { "GRAFTS", "RUNNER_CHAIN", "RESOLUTIONS" }) if (J.contains(K)) Changed |= RenameStrings(J[K], M);
                 if (!Changed) continue;
                 Writes.push_back({ Cfg, J.dump(4) });
                 ++R.InstancesUpdated;

@@ -140,15 +140,25 @@ void PreLaunchWindow::RebuildModuleTree()
     {
         const auto [Instance, Builtins] = GraftJudging();
         const std::vector<std::string> Applied = Shelf::AppliedGrafts(*Index, LaunchNodeId, Ticked, Instance, Builtins);
-        const auto Cs = Shelf::PartConflicts(*Index, LaunchNodeId, Applied, Instance, Builtins, 50);
+        const nlohmann::ordered_json Inst = InstanceStore::ReadConfig(*GlobalConfigJSON, PackageUID, InstanceName);
+        const nlohmann::ordered_json Res = Inst.contains("RESOLUTIONS") && Inst["RESOLUTIONS"].is_object() ? Inst["RESOLUTIONS"] : nlohmann::ordered_json::object();
+        std::vector<Shelf::PartConflict> Open;
+        for (const auto &C : Shelf::PartConflicts(*Index, LaunchNodeId, Applied, Instance, Builtins, 50))
+            if (!Res.contains(C.Address)) Open.push_back(C);
         const auto Name = [&](const std::string &C) { const Node *N = Index->Find(C); return N && !N->NodeId.empty() ? N->NodeId : C.substr(0, 12); };
-        if (Cs.empty()) GraftNote->setVisible(false);
+        if (Open.empty()) GraftNote->setVisible(false);
         else
-        {
-            std::string T = "Conflict: " + Name(Cs[0].A) + " and " + Name(Cs[0].B) + " both change " + Cs[0].Address
-                          + " differently (the one read later wins)";
-            if (Cs.size() > 1) T += ", and " + std::to_string(Cs.size() - 1) + " more";
-            GraftNote->setText(QString::fromStdString(T + "."));
+        {   //the first open conflict, with a link per side: the one the user keeps is saved in the instance (RESOLUTIONS)
+            const auto Esc = [](const std::string &S) { return QString::fromStdString(S).toHtmlEscaped(); };
+            const auto Link = [&](const std::string &Winner) {
+                return "<a href=\"keep:" + QString::fromStdString(Winner) + "|" + QString::fromStdString(Open[0].Address).toHtmlEscaped() + "\">keep "
+                       + Esc(Name(Winner)) + "</a>";
+            };
+            QString T = "Conflict: " + Esc(Name(Open[0].A)) + " and " + Esc(Name(Open[0].B)) + " both change " + Esc(Open[0].Address)
+                      + " differently — " + Link(Open[0].A) + " · " + Link(Open[0].B);
+            if (Open.size() > 1) T += QString(" (and %1 more)").arg(Open.size() - 1);
+            GraftNote->setTextFormat(Qt::RichText);
+            GraftNote->setText(T);
             GraftNote->setVisible(true);
         }
     }

@@ -59,6 +59,10 @@ std::vector<std::string> AppliedGrafts(const NodeIndex &Idx, const std::string &
 // footprint is what applying it changes over the parts applied before it; an archive's members are read from the
 // archive (VidyaGodFS's own listing). Instance/Builtins as AppliedGrafts. At most Max conflicts are returned.
 struct PartConflict { std::string Address, A, B; };
+// The user's resolutions (the instance's RESOLUTIONS: {address: the part that wins}) applied to an applied list: a winner
+// folds after the other parts at its depth (a part still after everything it goes into), so its write stands. Parts
+// named by no resolution keep their order.
+std::vector<std::string> OrderResolved(const NodeIndex &Idx, std::vector<std::string> Applied, const nlohmann::ordered_json &Resolutions);
 std::vector<PartConflict> PartConflicts(const NodeIndex &Idx, const std::string &LaunchNodeId, const std::vector<std::string> &Applied,
                                         const std::map<std::string, std::string> &Instance = {},
                                         const std::map<std::string, std::string> &Builtins = {}, size_t Max = 200);

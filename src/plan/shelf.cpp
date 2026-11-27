@@ -259,6 +259,28 @@ std::vector<PartConflict> PartConflicts(const NodeIndex &Idx, const std::string 
     return Out;
 }
 
+std::vector<std::string> OrderResolved(const NodeIndex &Idx, std::vector<std::string> Applied, const nlohmann::ordered_json &Resolutions)
+{
+    if (!Resolutions.is_object() || Resolutions.empty() || Applied.size() < 2) return Applied;
+    std::set<std::string> Winners;
+    for (const auto &[Addr, W] : Resolutions.items()) if (W.is_string()) Winners.insert(W.get<std::string>());
+    //INTO steps from the end, among what is applied: parts of one depth are siblings, and only siblings reorder
+    std::map<std::string, int> Depth;
+    std::function<int(const std::string &, int)> D = [&](const std::string &G, int Guard) -> int {
+        if (const auto It = Depth.find(G); It != Depth.end()) return It->second;
+        const Node *N = Idx.Find(G);
+        int Best = 0;
+        if (N && Guard < 64) for (const std::string &T : N->Into) if (std::find(Applied.begin(), Applied.end(), T) != Applied.end()) Best = std::max(Best, D(T, Guard + 1));
+        return Depth[G] = Best + 1;
+    };
+    for (const std::string &G : Applied) D(G, 0);
+    std::stable_sort(Applied.begin(), Applied.end(), [&](const std::string &A, const std::string &B) {
+        if (Depth[A] != Depth[B]) return Depth[A] < Depth[B];
+        return !Winners.count(A) && Winners.count(B);      // a winner after its siblings
+    });
+    return Applied;
+}
+
 GraftChoice CurrentGraftChoice(const NodeIndex &Idx, const GraftChoice &Saved)
 {
     if (!Saved) return Saved;

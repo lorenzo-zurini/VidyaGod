@@ -18,6 +18,7 @@
 #include "ipfswrapper.h"     // LanPeers/SetLanExcluded/LanLaunchVars — the Virtual LAN panel
 #include "variantpicker.h"     // NaturalLess — deterministic version-aware variant ordering
 #include "instancestore.h"     // the instance picker
+#include <QTimer>
 #include "asyncwork.h"        // the size under the cover, counted off the GUI thread
 
 #include <set>
@@ -387,6 +388,19 @@ PreLaunchWindow::PreLaunchWindow(
         GraftNote->setWordWrap(true);
         GraftNote->setStyleSheet("QLabel { color: #e0a040; }");
         GraftNote->setVisible(false);
+        GraftNote->setTextInteractionFlags(Qt::TextBrowserInteraction);
+        //"keep X": the user's resolution of a conflict between two parts, kept in the instance (23 §23.4)
+        connect(GraftNote, &QLabel::linkActivated, this, [this, GlobalConfigJSON](const QString &Url) {
+            if (!Url.startsWith("keep:")) return;
+            const QString Body = Url.mid(5);
+            const int Bar = Body.indexOf('|');
+            if (Bar < 0) return;
+            nlohmann::ordered_json Inst = InstanceStore::ReadConfig(*GlobalConfigJSON, PackageUID, InstanceName);
+            nlohmann::ordered_json R = Inst.contains("RESOLUTIONS") && Inst["RESOLUTIONS"].is_object() ? Inst["RESOLUTIONS"] : nlohmann::ordered_json::object();
+            R[Body.mid(Bar + 1).toStdString()] = Body.left(Bar).toStdString();
+            InstanceStore::SetSetting(*GlobalConfigJSON, PackageUID, "RESOLUTIONS", R, InstanceName);
+            QTimer::singleShot(0, this, [this] { RebuildModuleTree(); });
+        });
         ML->addWidget(GraftNote);
     }
     Tabs->addTab(AddonsPage, "Add-ons");
