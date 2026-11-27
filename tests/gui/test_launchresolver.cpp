@@ -1232,6 +1232,29 @@ private slots:
         QVERIFY(Shelf::OfferedGrafts(idx, "mod").empty());
     }
 
+    // --with adds parts to the selection the launch would use: a fresh instance keeps its RECOMMENDED parts and gains
+    // the named one; a part not offered here is reported dropped, never applied. Teeth: replace the selection with the
+    // --with list (the recommended part is lost); drop the dropped list.
+    void with_adds_parts_to_the_selection()
+    {
+        NodeIndex idx;
+        idx.Nodes["game"] = launchNode("game", kMachine, {});
+        const auto part = [](const char *Id, const char *Into, bool Rec) {
+            json J{ {"CID", Id}, {"LABEL", Id}, {"LAYERS", json::array({ json{{"INTO", json::array({Into})}}, json{{"DIR", Id}} })} };
+            if (Rec) J["RECOMMENDED"] = json::array({"game"});
+            return parse(J, "/tmp/vg_bundle");
+        };
+        idx.Nodes["rec"] = part("rec", "game", true);
+        idx.Nodes["extra"] = part("extra", "game", false);
+        idx.Nodes["other"] = part("other", "elsewhere", false);
+        finish(idx);
+        ContainerParams cp("/tmp/vg_bundle");
+        cp.NodeIdx = &idx; cp.LaunchNodeId = "game"; cp.WithGrafts = { "extra", "other" };
+        QVERIFY(LaunchResolver::InitializeFromNode(cp, json{{"Settings", json::object()}}));
+        QCOMPARE(std::set<std::string>(cp.AppliedGrafts.begin(), cp.AppliedGrafts.end()), (std::set<std::string>{"rec", "extra"}));
+        QVERIFY(std::find(cp.DroppedGrafts.begin(), cp.DroppedGrafts.end(), "other") != cp.DroppedGrafts.end());
+    }
+
     // A part with several INTO layers goes into ALL of them (a patch between two mods): it is offered, and applies,
     // only once every layer has a member applied; each layer's members are alternatives. Teeth: offer on the first
     // layer alone; apply it with one of its two mods.

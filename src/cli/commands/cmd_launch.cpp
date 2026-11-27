@@ -69,6 +69,7 @@ CliModes::LaunchRequest Request(Command::Context &C, const json &A)
     R.InstanceName = Command::Str(A, "instance", "");
     R.RunnerChain = List(A, "runners");
     if (A.contains("grafts")) R.Grafts = List(A, "grafts");
+    if (A.contains("with")) { const auto Ix = Index(C); for (const std::string &W : List(A, "with")) R.With.push_back(NodeOf(*Ix, W)->Key()); }
     for (const auto &KV : List(A, "var"))
     {
         const auto Eq = KV.find('=');
@@ -127,7 +128,8 @@ std::vector<Command::Arg> LaunchArgs()
              Command::Opt("node", "the node to launch (CID, handle or LABEL)"), Command::Opt("tile", "a tile: its row (with --variant), as the shelf shows it"),
              Command::Opt("variant", "(--tile) the row's name"), Command::Opt("entry", "which entry (its LABEL; default the first game entry)"),
              Command::Opt("instance", "which instance (default the last played)"), Command::Opt("runners", "a pinned runner chain, innermost first (a,b)"),
-             Command::Opt("grafts", "the grafts to apply, in order (a,b; '' none)"), Command::Opt("var", "option values: NAME=VALUE[,…]"),
+             Command::Opt("grafts", "the parts to apply, the whole selection (a,b; '' none)"),
+             Command::Opt("with", "parts to ADD to the selection the launch would use (a,b: CID or LABEL)"), Command::Opt("var", "option values: NAME=VALUE[,…]"),
              Command::Flag("dry-run", "keep nothing the run writes (saves, settings, registry)") };
 }
 

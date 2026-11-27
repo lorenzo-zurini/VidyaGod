@@ -256,7 +256,7 @@ private slots:
         qputenv("TMPDIR", T.path().toUtf8());
         const std::filesystem::path Data = D.path().toStdString(), Sessions = Sessions::Root();
         QVERIFY(Sessions.string().rfind(T.path().toStdString(), 0) == 0);
-        std::filesystem::create_directories(Data / "LIBRARY" / "[749][v1.0] Age of Empires II");
+        std::filesystem::create_directories(Data / "LIBRARY" / "[749] Age of Empires II");
         std::filesystem::create_directories(Data / "USERDATA" / "749" / "default");
         std::ofstream(Data / "USERDATA" / "749" / "default" / "save.dat") << "a save";
         std::filesystem::create_directories(Sessions / "749" / "default" / "WRITELAYER");   // a launch that died
@@ -269,7 +269,7 @@ private slots:
         qunsetenv("TMPDIR");
         QVERIFY2(R.value("ok", false), R.dump().c_str());
         QVERIFY(std::filesystem::exists(Data / "USERDATA" / "749" / "default" / "save.dat"));
-        QVERIFY(std::filesystem::is_directory(Data / "LIBRARY" / "[749][v1.0] Age of Empires II"));
+        QVERIFY(std::filesystem::is_directory(Data / "LIBRARY" / "[749] Age of Empires II"));
         QVERIFY2(!std::filesystem::exists(Sessions / "749" / "default"), "the dead session is cleared");
     }
 };

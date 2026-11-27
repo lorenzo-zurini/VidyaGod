@@ -420,7 +420,7 @@ std::map<std::string, std::string> ManifestTree(const std::string &Dir)
     }
     return Tree;
 }
-// The top-level package folder of a manifest path ("[749][v1.0] Age of Empires II/aoe2_tc.json" → the bracketed
+// The top-level package folder of a manifest path ("[749] Age of Empires II/aoe2_tc.json" → the bracketed
 // folder). Comparing these across the two trees is the lineage evidence: a genuine upgrade shares most of them.
 std::string TopFolder(const std::string &RelPath)
 {

@@ -29,7 +29,7 @@ def main():
     a = ap.parse_args()
     data = os.path.abspath(a.work)
     shutil.rmtree(data, ignore_errors=True)
-    bundle = f"{data}/fixture/[90000000000002][v1.0] Delta Chain"
+    bundle = f"{data}/fixture/[90000000000002] Delta Chain"
     os.makedirs(bundle)
     game = "".join(f"game data line {i:05d}\n" for i in range(3000))
     store_zip(f"{bundle}/v1.zip", {"game.bin": game, "old.txt": "dropped later\n"})

@@ -845,3 +845,50 @@ TEST(pkgdoc_a_save_never_writes_over_a_file_it_did_not_load)
     const std::string New = R.Renamed.at(G);
     CHECK(fs::exists(P / ("Foo [" + New.substr(New.size() - 8) + "].json")));
 }
+
+// A library-wide repoint: swapping a node's CID rewrites every node naming it — by NODE, by INTO, in a condition — and
+// so on up (the cascade), and the instances' graft lists follow; a dry run plans the same and writes nothing; the old
+// node stays. Teeth: rewrite only direct referrers (the part into the game keeps the game's old CID); skip conditions
+// (the rival's condition keeps the old CID); skip instances; write on --dry.
+TEST(repoint_cascades_through_contains_into_and_conditions)
+{
+    const fs::path Root = Fresh("repoint"), Lib = Root / "L" / "Lib", Game = Root / "L" / "Game", Mod = Root / "L" / "Mod";
+    fs::create_directories(Lib); fs::create_directories(Game); fs::create_directories(Mod);
+    const std::string L1 = Freeze(Lib, json{{"LABEL", "lib 1"}, {"LAYERS", json::array({ json{{"ZIP", "l1.zip"}} })}});
+    const std::string L2 = Freeze(Lib, json{{"LABEL", "lib 2"}, {"LAYERS", json::array({ json{{"ZIP", "l2.zip"}} })}});
+    const std::string G = Freeze(Game, json{{"LABEL", "game"}, {"VARIANT", "1.0"}, {"LAYERS", json::array({ json{{"NODE", L1}} })}});
+    const std::string P = Freeze(Mod, json{{"LABEL", "mod"}, {"LAYERS", json::array({ json{{"INTO", json::array({G})}}, json{{"ZIP", "m.zip"}} })}});
+    const std::string Q = Freeze(Mod, json{{"LABEL", "rival"}, {"LAYERS", json::array({ json{{"INTO", json::array({G})}, {"WHEN", L1 + " == false"}} })}});
+    const std::string Other = Freeze(Mod, json{{"LABEL", "other"}, {"LAYERS", json::array({ json{{"ZIP", "o.zip"}} })}});
+    const fs::path Users = Root / "USERDATA";
+    fs::create_directories(Users / "1" / "Default");
+    std::ofstream(Users / "1" / "Default" / "instance.json") << json{{"GRAFTS", {{"1", json::array({P})}}}}.dump();
+    const std::vector<fs::path> Roots{ Root / "L" };
+
+    std::string Err;
+    const auto Refs = PkgDoc::LibraryRefs(Roots, L1, Err);
+    CHECK(Err.empty());
+    std::set<std::string> How;
+    for (const auto &H : Refs) How.insert(H.Label + ":" + H.How);
+    CHECK((How == std::set<std::string>{"game:NODE", "rival:WHEN"}));
+
+    const auto Dry = PkgDoc::RepointLibrary(Roots, Users, {{L1, L2}}, true);
+    CHECK(Dry.Ok);
+    CHECK(fs::exists(Game / (G + ".json")) && Slurp(Game / (G + ".json")).find(L1) != std::string::npos);   // nothing written
+    CHECK(Dry.Renamed.count(G) && Dry.Renamed.count(P) && Dry.Renamed.count(Q) && !Dry.Renamed.count(Other));
+
+    const auto R = PkgDoc::RepointLibrary(Roots, Users, {{L1, L2}}, false);
+    CHECK(R.Ok);
+    CHECK(R.Renamed == Dry.Renamed);
+    const std::string G2 = R.Renamed.at(G), P2 = R.Renamed.at(P), Q2 = R.Renamed.at(Q);
+    const std::string Gb = Slurp(Game / (G + ".json")), Pb = Slurp(Mod / (P + ".json")), Qb = Slurp(Mod / (Q + ".json"));
+    CHECK(Gb.find(L2) != std::string::npos && Gb.find(L1) == std::string::npos);             // the file kept its name
+    CHECK(Cid::OfNode(json::parse(Gb)) == G2);
+    CHECK(Pb.find(G2) != std::string::npos && Cid::OfNode(json::parse(Pb)) == P2);          // the cascade, through INTO
+    CHECK(Qb.find(L2 + " == false") != std::string::npos && Qb.find(G2) != std::string::npos);   // the condition too
+    CHECK(Slurp(Users / "1" / "Default" / "instance.json").find(P2) != std::string::npos);  // the graft list follows
+    CHECK_EQ(R.InstancesUpdated, 1);
+    CHECK(fs::exists(Lib / (L1 + ".json")));                                                 // the old node stays
+    CHECK(!PkgDoc::RepointLibrary(Roots, Users, {{L2, L2}}, true).Ok);                       // a swap needs two CIDs
+    fs::remove_all(Root);
+}

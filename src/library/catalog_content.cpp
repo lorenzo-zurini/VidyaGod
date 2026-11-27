@@ -137,7 +137,7 @@ std::vector<std::filesystem::path> PackageDirsWithUid(const NodeIndex &Idx, cons
     std::vector<std::filesystem::path> Out;
     for (const auto &[Dir, B] : NodesByBundle(Idx))
     {
-        const std::string F = Dir.filename().string();   // "[7804][v1.0] Age of Mythology": the UID it was made under
+        const std::string F = Dir.filename().string();   // "[7804] Age of Mythology": the UID it was made under
         const bool Folder = F.size() > Uid.size() + 1 && F[0] == '[' && F.compare(1, Uid.size(), Uid) == 0 && F[Uid.size() + 1] == ']';
         if ((B.Rep && IdentityUid(*B.Rep) == Uid) || Folder) Out.push_back(Dir);
     }

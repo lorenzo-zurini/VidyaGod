@@ -225,7 +225,19 @@ bool LaunchResolver::InitializeFromNodeOnce(struct ContainerParams &ContainerPar
             }
             if (std::find(Chosen->begin(), Chosen->end(), Must) == Chosen->end()) Chosen->insert(Chosen->begin(), Must);
         }
+    //--with: parts added to the selection, whatever it was (the instance's, else a fresh one's).
+    if (!CP.WithGrafts.empty())
+    {
+        if (!Chosen) Chosen = Shelf::AppliedGrafts(Idx, LaunchKey, std::nullopt, Instance, Builtins);
+        for (const std::string &W : CP.WithGrafts)
+        {
+            const Node *Wn = Idx.Find(W);
+            const std::string K = Wn ? Wn->Key() : W;
+            if (std::find(Chosen->begin(), Chosen->end(), K) == Chosen->end()) Chosen->push_back(K);
+        }
+    }
     CP.AppliedGrafts = Shelf::AppliedGrafts(Idx, LaunchKey, Chosen, Instance, Builtins, &Dropped);
+    CP.DroppedGrafts = Dropped;
     for (const std::string &Must : { CardGraft, RowGraft })
         if (!Must.empty() && std::find(CP.AppliedGrafts.begin(), CP.AppliedGrafts.end(), Must) == CP.AppliedGrafts.end())
         { LogErr("InitializeFromNode", "'" + Must + "' cannot be applied to '" + LaunchKey + "' (tile '" + Face + "')."); return false; }

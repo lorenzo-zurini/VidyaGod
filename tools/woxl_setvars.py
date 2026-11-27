@@ -8,7 +8,7 @@ Usage:
 import collections, json, os, sys
 
 NODE = os.path.expanduser(
-    "~/.VidyaGod/LIBRARY/VidyaGod/[17260][v1.0] Wipeout XL/wipeout_xl_dgvoodoo.json")
+    "~/.VidyaGod/LIBRARY/VidyaGod/[17260] Wipeout XL/wipeout_xl_dgvoodoo.json")
 BASE = {"dgv_genext_FPSLimit": "30"}   # Wipeout XL is a 30fps game; this one always stays
 
 

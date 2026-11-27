@@ -133,7 +133,7 @@ Graph Build(const std::vector<NodeRef> &Nodes)
             Nd.Type = KindOf(*R.Json);
             //The node's first content layer is its Form: the delta-base match and the content actions key on it.
             for (const std::string &T : LayerTypes(*R.Json))
-                if (T == "ZIP" || T == "DIR" || T == "FILE" || T == "DELTA")
+                if (T == "ZIP" || T == "DIR" || T == "FILE" || T == "DELTA" || T == "CODED")
                 { Nd.Form = T; for (char &C : Nd.Form) C = (char)std::tolower((unsigned char)C); break; }
         }
         if (!Nd.Id.empty()) ByHandle[Nd.Id] = Nd.Index;
@@ -186,7 +186,7 @@ Graph Build(const std::vector<NodeRef> &Nodes)
 const std::vector<TypeGroup> &TypeGroups()
 {
     static const std::vector<TypeGroup> G = {
-        {"Content", {"ZIP", "DIR", "FILE", "DELTA"}},
+        {"Content", {"ZIP", "DIR", "FILE", "DELTA", "CODED"}},
         {"Transforms", {"EDIT", "REG", "DLL", "ENV"}},
         {"Facts", {"VARS", "KEEP"}},
         {"Entries", {"EXEC"}},
@@ -211,7 +211,7 @@ int ContentIndex(const json &Node)
     for (int I = 0; I < (int)Node["LAYERS"].size(); ++I)
     {
         const std::string T = LayerType(Node["LAYERS"][(size_t)I]);
-        if (T == "ZIP" || T == "FILE" || T == "DELTA" || T == "DIR") return I;
+        if (T == "ZIP" || T == "FILE" || T == "DELTA" || T == "CODED" || T == "DIR") return I;
     }
     return -1;
 }
@@ -296,6 +296,7 @@ const char *TypeHelp(const std::string &Type)
     if (Type == "DIR")   return "A folder mounted at TARGET - local content, or a %RunnerMount%/... path at launch.";
     if (Type == "FILE")  return "One file mounted INTO the TARGET directory under its own name.";
     if (Type == "DELTA") return "A binary delta rebuilding an archive from the layers beneath it that BASE_SOURCES names by CID.";
+    if (Type == "CODED") return "A shipped file (a compressed archive) coded back bit-exact from its decoded content and a record, through its format's description: the game sees NAME.";
     if (Type == "NODE")  return "Contain another node here: its layers fold in at this position. TAKE selects/renames, TARGET places.";
     if (Type == "INTO")  return "A part (a mod): what it goes into - an end (a launchable) or another part; the list's members are alternatives, several INTO layers mean all of them. INTO layers open the list.";
     if (Type == "EDIT")  return "Edits to one file at its position in the fold: key = value, whole file, append, or byte patches.";
@@ -315,6 +316,7 @@ const char *TypeGist(const std::string &Type)
     if (Type == "DIR")   return "a folder of files";
     if (Type == "FILE")  return "one file";
     if (Type == "DELTA") return "a patch onto the files it names";
+    if (Type == "CODED") return "a shipped file, coded back from its content";
     if (Type == "NODE")  return "contain another node";
     if (Type == "INTO")  return "a mod: goes into one of these";
     if (Type == "EDIT")  return "change a file: a setting, bytes...";
@@ -331,7 +333,7 @@ const char *TypeGist(const std::string &Type)
 void TypeColour(const std::string &Kind, int &R, int &G, int &B)
 {
     // Content = blue, transforms = amber, facts = purple, entries = green, composition = grey.
-    if (Kind == "ZIP" || Kind == "DIR" || Kind == "FILE" || Kind == "DELTA") { R = 46;  G = 96;  B = 148; return; }
+    if (Kind == "ZIP" || Kind == "DIR" || Kind == "FILE" || Kind == "DELTA" || Kind == "CODED") { R = 46;  G = 96;  B = 148; return; }
     if (Kind == "EDIT" || Kind == "REG" || Kind == "DLL" || Kind == "ENV")   { R = 136; G = 92;  B = 36;  return; }
     if (Kind == "KEEP" || Kind == "VARS")                                  { R = 92;  G = 68;  B = 128; return; }
     if (Kind == "EXEC")                                                    { R = 46;  G = 118; B = 78;  return; }
@@ -344,6 +346,7 @@ void TypeColour(const std::string &Kind, int &R, int &G, int &B)
 json NewLayer(const std::string &T)
 {
     if (T == "ZIP" || T == "FILE" || T == "DELTA") return json::object({{T, ""}, {"TARGET", "FILES/%GameDir%"}});
+    if (T == "CODED") return json::object({{"CODED", ""}, {"NAME", ""}, {"DESCRIPTION", ""}, {"BASE_SOURCES", json::array({""})}, {"TARGET", "FILES/%GameDir%"}});
     if (T == "DIR")   return json::object({{"DIR", ""}, {"TARGET", "FILES/%GameDir%"}});
     if (T == "NODE")  return json::object({{"NODE", ""}});
     if (T == "INTO")  return json::object({{"INTO", json::array()}});
@@ -546,6 +549,14 @@ std::vector<Field> MakeFields(const std::string &Type)
         std::vector<Field> F = Content("DELTA", "Delta", ".vgdelta in this bundle", true);
         F.insert(F.begin() + 2, {"BASE_SOURCES", "Bases", FieldKind::StringList,
                                  "the SOURCE CIDs it was built over - one per line, concatenated in order", {}, {}});
+        return F;
+    }
+    if (Type == "CODED")
+    {
+        std::vector<Field> F = Content("CODED", "Record", ".vgcr in this bundle (coding mint makes it)", true);
+        F.insert(F.begin() + 2, {"NAME", "Appears as", FieldKind::Text, "the shipped file's name, in Target", {}, {}});
+        F.insert(F.begin() + 3, {"DESCRIPTION", "Description", FieldKind::Text, "the SOURCE CID of its format's description (.vgcd)", {}, {}});
+        F.insert(F.begin() + 4, {"BASE_SOURCES", "Content", FieldKind::StringList, "the SOURCE CID of its decoded content (one)", {}, {}});
         return F;
     }
     if (Type == "DIR")   return Content("DIR",   "Dir",   "folder in this bundle, or %RunnerMount%/...", false);
@@ -968,7 +979,7 @@ std::string Describe(const json &Node, const LabelFn &Label)
         for (const json &L : Node["LAYERS"])
         {
             const std::string T = LayerType(L);
-            if (T == "ZIP" || T == "DIR" || T == "FILE" || T == "DELTA") { const std::string F = StrField(L, T.c_str()); if (!F.empty()) Files.push_back(F); }
+            if (T == "ZIP" || T == "DIR" || T == "FILE" || T == "DELTA" || T == "CODED") { const std::string F = StrField(L, T.c_str()); if (!F.empty()) Files.push_back(F); }
             else if (T == "NODE") Contains.push_back(Name(StrField(L, "NODE")));
             else if (T == "INTO" && L["INTO"].is_array())
             {
@@ -1079,7 +1090,7 @@ std::vector<FoldStep> FoldOrder(const std::string &Root, const std::function<con
         const json &L = (*Find(S.From))["LAYERS"][(size_t)S.At];
         const std::string &T = S.Kind;
         std::string Title = StrField(L, "LABEL");
-        if (Title.empty() && (T == "ZIP" || T == "DIR" || T == "FILE" || T == "DELTA")) Title = StrField(L, T.c_str());
+        if (Title.empty() && (T == "ZIP" || T == "DIR" || T == "FILE" || T == "DELTA" || T == "CODED")) Title = StrField(L, T.c_str());
         if (Title.empty() && T == "EXEC" && L["EXEC"].is_array())
             for (const json &E : L["EXEC"]) if (const std::string El = StrField(E, "LABEL"); !El.empty()) Title += (Title.empty() ? "" : ", ") + El;
         if (Title.empty()) Title = TypeGist(T);
@@ -1317,7 +1328,7 @@ std::vector<Action> ActionsFor(const json &Node, bool HasBase, const std::vector
     //Content actions act on the node's first content layer — its Form.
     std::string Form;
     for (const std::string &T : Types)
-        if (T == "ZIP" || T == "DIR" || T == "FILE" || T == "DELTA")
+        if (T == "ZIP" || T == "DIR" || T == "FILE" || T == "DELTA" || T == "CODED")
         { Form = T; for (char &C : Form) C = (char)std::tolower((unsigned char)C); break; }
 
     //Files come in on any node: its first ones, a fix or add-on over the ones it has (it asks), a mod's own.

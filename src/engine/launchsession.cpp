@@ -76,6 +76,7 @@ bool Session::Resolve(std::string *Why)
     P.LaunchFace        = Req.Face;
     P.InstanceName      = Req.InstanceName;
     P.Grafts            = Req.Grafts;
+    P.WithGrafts        = Req.With;
     P.VariableOverrides = Req.VariableOverrides;
     P.RunnerChainIds    = Req.RunnerChain;
     P.ScreenWidth       = Req.ScreenWidth;

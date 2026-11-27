@@ -49,8 +49,8 @@ def refs(n):
             continue
         if isinstance(L.get("NODE"), str):
             out.append(L["NODE"])
-        if isinstance(L.get("ANY"), list):
-            out += [x for x in L["ANY"] if isinstance(x, str)]
+        if isinstance(L.get("INTO"), list):
+            out += [x for x in L["INTO"] if isinstance(x, str)]
     return out
 
 
@@ -79,8 +79,8 @@ def affected(nodes, subs):
         memo[h] = h in touched or any(reaches(r, path + (h,)) for r in refs(nodes[h][0]))
         return memo[h]
     out = {v for v in variants if reaches(v)}
-    # a graft in a touched package applies to the variants its ANY names (and whatever contains them)
-    anchors = {a for h in touched for L in nodes[h][0]["LAYERS"][:1] if isinstance(L, dict) and "ANY" in L for a in L["ANY"]}
+    # a part in a touched package applies to the ends it goes INTO
+    anchors = {a for h in touched for L in nodes[h][0]["LAYERS"] if isinstance(L, dict) and isinstance(L.get("INTO"), list) for a in L["INTO"]}
     if anchors:
         memo2 = {}
 

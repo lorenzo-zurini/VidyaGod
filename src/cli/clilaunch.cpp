@@ -32,6 +32,8 @@ static nlohmann::ordered_json DumpResolution(struct ContainerParams &CP)   // no
     nlohmann::ordered_json J;
     J["PackageUID"]        = CP.PackageUID;
     J["GameName"]          = CP.GameName;
+    J["AppliedParts"]      = CP.AppliedGrafts;      // the parts applied (a set: in the order the fold reads them)
+    J["DroppedParts"]      = CP.DroppedGrafts;      // chosen but not applied: not offered here, a condition false, missing
     J["Platform"]          = CP.Platform;
     J["Stack"]             = nlohmann::ordered_json::array();   // what the launch stacks, lowest first
     for (const OpGroup &G : CP.Stack) J["Stack"].push_back(G.Name);
@@ -137,6 +139,7 @@ std::unique_ptr<CliModes::PreparedLaunch> CliModes::PrepareLaunch(const LaunchRe
         R.Face = LaunchParameters.LaunchTile;   // --tile: the row runs as that tile
         R.InstanceName = LaunchParameters.InstanceName;
         R.Grafts = LaunchParameters.Grafts;
+        R.With = LaunchParameters.With;
         R.VariableOverrides = LaunchParameters.VariableOverrides;
         R.RunnerChain = LaunchParameters.RunnerChain;   // --runner, innermost first (empty: the instance's / default)
         R.ReadBack = !LaunchParameters.ResolveOnly;   // a launch reads back what the game changed in its files

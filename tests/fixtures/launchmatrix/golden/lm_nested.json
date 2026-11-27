@@ -1,4 +1,5 @@
 {
+  "AppliedParts": [],
   "ComposedExec": {
     "CONTENTPATH": "%GameDir%/game/data.txt",
     "EXEARGS": [],
@@ -20,6 +21,7 @@
   "Drives": {
     "C:": "%PrefixRoot%/drive_c"
   },
+  "DroppedParts": [],
   "ExeArgs": [],
   "GameName": "Launch Matrix",
   "GuestRoots": {
@@ -78,7 +80,7 @@
   "RunnerExecutable": "%RunnerMount%/runner/fakerunner.sh",
   "RunnerLayers": [
     {
-      "PATH": "<DATA>/fixture/[90000000000001][v1.0] Launch Matrix/fakerunner.sh",
+      "PATH": "<DATA>/fixture/[90000000000001] Launch Matrix/fakerunner.sh",
       "TARGET": "runner/fakerunner.sh",
       "TYPE": "VFSFileLayer"
     }
@@ -86,7 +88,7 @@
   "RunnerName": "lm_runner_prefix",
   "RunnerOps": [
     {
-      "PATH": "<DATA>/fixture/[90000000000001][v1.0] Launch Matrix/fakerunner.sh",
+      "PATH": "<DATA>/fixture/[90000000000001] Launch Matrix/fakerunner.sh",
       "TARGET": "runner/fakerunner.sh",
       "TYPE": "VFSFileLayer"
     }
@@ -101,7 +103,7 @@
   ],
   "SubComponentsArray": [
     {
-      "PATH": "<DATA>/fixture/[90000000000001][v1.0] Launch Matrix/base.zip",
+      "PATH": "<DATA>/fixture/[90000000000001] Launch Matrix/base.zip",
       "TARGET": "pfx/drive_c/90000000000001",
       "TYPE": "VFSZipLayer"
     }

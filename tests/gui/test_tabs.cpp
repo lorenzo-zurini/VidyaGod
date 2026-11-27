@@ -134,7 +134,7 @@ private slots:
         QCOMPARE(PackageCatalog::GoldenSince(C, "78"), std::string());
         //A family of one package presenting tile 77: the marker reaches its card, and the package folder is untouched.
         QTemporaryDir Lib;
-        const QString Pkg = Lib.path() + "/VidyaGod/[77][v1.0] Gold";
+        const QString Pkg = Lib.path() + "/VidyaGod/[77] Gold";
         QDir().mkpath(Pkg);
         const json N = json{{"LABEL", "Gold"}, {"VARIANT", "Original"},
                             {"LAYERS", json::array({ json{{"EXEC", json::array({ json{{"LABEL", "Play"}, {"HOST", "win32"},

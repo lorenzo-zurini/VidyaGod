@@ -42,7 +42,7 @@ struct Library
 //One applied content or EDIT layer, in fold order (bottom -> top).
 struct Item
 {
-    std::string Kind;            // ZIP FILE DELTA DIR, or EDIT
+    std::string Kind;            // ZIP FILE DELTA CODED DIR, or EDIT
     std::string Payload;         // content: the file name (or a %runtime% dir) — empty for EDIT
     json        Source;          // content: SOURCE (a CID) or null
     json        Size;            // content: SIZE (bytes, stamped at publish) or null
@@ -52,7 +52,9 @@ struct Item
     std::string Dir;             // the containing node's bundle dir
     std::string Target;          // the placed target (FILES namespace stripped; guest coordinates)
     std::string Own;             // content: the layer's own target in its node (unplaced) — what TAKE addresses
-    json        BaseSources;     // DELTA: BASE_SOURCES as written, the SOURCE CIDs of its bases in order
+    json        BaseSources;     // DELTA / CODED: BASE_SOURCES as written, the SOURCE CIDs of its bases in order
+    std::string Description;     // CODED: the SOURCE CID of the layer holding its format's description
+    std::string Name;            // CODED: the file name the shipped stream appears by, in Target
     std::string From;            // the node it came from
     int         At = 0;          // its index in that node's LAYERS
 };

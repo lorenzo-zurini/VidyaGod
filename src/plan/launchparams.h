@@ -204,8 +204,12 @@ public:
     //When the launched row is a GRAFT that is a version (it carries VARIANT): the version it runs on (one of
     //Shelf::GraftBases). Empty = the first of them.
     std::string GraftBase;
+    //Parts added to the selection (CLI --with), to the instance's list or, when there is none, to the fresh one.
+    std::vector<std::string> WithGrafts;
     //AUTO-RESOLVED (out): the grafts actually applied (Grafts filtered to what this row offers), in order.
     std::vector<std::string> AppliedGrafts;
+    //AUTO-RESOLVED (out): the parts chosen that were not applied (not offered here, a condition false, not installed).
+    std::vector<std::string> DroppedGrafts;
 
     //Native node-graph launch (everything-is-a-node): when NodeIdx+LaunchNodeId are set, the engine resolves
     //EVERYTHING from the global node graph (InitializeFromNode) instead of from a MANIFESTJSON.

@@ -127,7 +127,7 @@ VG_COMMANDS
     Command::Register({
         "app is-package", "whether a folder is a package (holds node files)",
         "The check the app makes when a folder is added or the app starts inside one.", { Command::AsPath(Pos("dir", "the folder")) },
-        { "app is-package ~/x/'[749][v1.0] Age of Empires II'" }, { "FSOps::CheckPackageValid" }, Needs::Config, false,
+        { "app is-package ~/x/'[749] Age of Empires II'" }, { "FSOps::CheckPackageValid" }, Needs::Config, false,
         [](Command::Context &, const json &A) {
             QDir D(QString::fromStdString(Command::Str(A, "dir")));
             return json{{"package", FSOps::CheckPackageValid(&D)}};

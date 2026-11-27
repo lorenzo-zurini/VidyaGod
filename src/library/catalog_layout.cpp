@@ -228,7 +228,7 @@ std::filesystem::path CreatePackageFolder(const nlohmann::ordered_json &GlobalCo
         for (const auto &P : fs::directory_iterator(fs::path(LibraryDir(GlobalConfigJSON)) / L, Ec))
             if (P.path().filename().string().rfind(Tag, 0) == 0)
             { Err = "The library already has a package for game " + Uid + ": " + L + "/" + P.path().filename().string(); return {}; }
-    const fs::path Dir = fs::path(LibraryDir(GlobalConfigJSON)) / Library / (Tag + "[v1.0] " + Safe);
+    const fs::path Dir = fs::path(LibraryDir(GlobalConfigJSON)) / Library / (Tag + " " + Safe);
     if (!fs::create_directories(Dir, Ec)) { Err = "Could not create " + Dir.string() + (Ec ? ": " + Ec.message() : std::string()); return {}; }
     return Dir;
 }

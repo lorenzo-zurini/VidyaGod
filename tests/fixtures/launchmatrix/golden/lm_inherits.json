@@ -1,4 +1,5 @@
 {
+  "AppliedParts": [],
   "ComposedExec": {
     "CONTENTPATH": "%GameDir%/bin/probe.sh",
     "EXEARGS": [
@@ -30,6 +31,7 @@
   "Drives": {
     "C:": "%PrefixRoot%/drive_c"
   },
+  "DroppedParts": [],
   "ExeArgs": [
     "--matrix",
     "hello-beta"
@@ -119,17 +121,17 @@
   ],
   "SubComponentsArray": [
     {
-      "PATH": "<DATA>/fixture/[90000000000001][v1.0] Launch Matrix/base.zip",
+      "PATH": "<DATA>/fixture/[90000000000001] Launch Matrix/base.zip",
       "TARGET": "/drive_c/90000000000001",
       "TYPE": "VFSZipLayer"
     },
     {
-      "PATH": "<DATA>/fixture/[90000000000001][v1.0] Launch Matrix/patch.zip",
+      "PATH": "<DATA>/fixture/[90000000000001] Launch Matrix/patch.zip",
       "TARGET": "/drive_c/90000000000001",
       "TYPE": "VFSZipLayer"
     },
     {
-      "PATH": "<DATA>/fixture/[90000000000001][v1.0] Launch Matrix/carrier.zip",
+      "PATH": "<DATA>/fixture/[90000000000001] Launch Matrix/carrier.zip",
       "SUBMOUNTS": [
         "nested/relocated.txt:/drive_c/90000000000001/unpacked/relocated.txt"
       ],
@@ -137,22 +139,22 @@
       "TYPE": "VFSZipLayer"
     },
     {
-      "PATH": "<DATA>/fixture/[90000000000001][v1.0] Launch Matrix/loosedir",
+      "PATH": "<DATA>/fixture/[90000000000001] Launch Matrix/loosedir",
       "TARGET": "/drive_c/90000000000001/loose",
       "TYPE": "VFSDirLayer"
     },
     {
-      "PATH": "<DATA>/fixture/[90000000000001][v1.0] Launch Matrix/single.txt",
+      "PATH": "<DATA>/fixture/[90000000000001] Launch Matrix/single.txt",
       "TARGET": "/drive_c/90000000000001/loosefile",
       "TYPE": "VFSFileLayer"
     },
     {
-      "PATH": "<DATA>/fixture/[90000000000001][v1.0] Launch Matrix/maskeddir",
+      "PATH": "<DATA>/fixture/[90000000000001] Launch Matrix/maskeddir",
       "TARGET": "/drive_c/90000000000001/deltatarget",
       "TYPE": "VFSDirLayer"
     },
     {
-      "PATH": "<DATA>/fixture/[90000000000001][v1.0] Launch Matrix/base.zip",
+      "PATH": "<DATA>/fixture/[90000000000001] Launch Matrix/base.zip",
       "SOURCE": {
         "CID": "bafkreidmt6slryaa4kqf4si4zooll4cey253f37sok2oerqwyxxgskgw7i",
         "TYPE": "ipfs"
@@ -164,12 +166,12 @@
       "BASE_SOURCES": [
         "bafkreidmt6slryaa4kqf4si4zooll4cey253f37sok2oerqwyxxgskgw7i"
       ],
-      "PATH": "<DATA>/fixture/[90000000000001][v1.0] Launch Matrix/over_base.vgdelta",
+      "PATH": "<DATA>/fixture/[90000000000001] Launch Matrix/over_base.vgdelta",
       "TARGET": "/drive_c/90000000000001/deltatarget",
       "TYPE": "VFSDeltaLayer"
     },
     {
-      "PATH": "<DATA>/fixture/[90000000000001][v1.0] Launch Matrix/base.zip",
+      "PATH": "<DATA>/fixture/[90000000000001] Launch Matrix/base.zip",
       "SOURCE": {
         "CID": "bafkreidmt6slryaa4kqf4si4zooll4cey253f37sok2oerqwyxxgskgw7i",
         "TYPE": "ipfs"
@@ -178,7 +180,7 @@
       "TYPE": "VFSZipLayer"
     },
     {
-      "PATH": "<DATA>/fixture/[90000000000001][v1.0] Launch Matrix/music.zip",
+      "PATH": "<DATA>/fixture/[90000000000001] Launch Matrix/music.zip",
       "SOURCE": {
         "CID": "bafkreiemulw7uf6n6cziiu2nerz6n3dea54tqzlu3z5gneacfsftyonhzi",
         "TYPE": "ipfs"
@@ -191,17 +193,17 @@
         "bafkreidmt6slryaa4kqf4si4zooll4cey253f37sok2oerqwyxxgskgw7i",
         "bafkreiemulw7uf6n6cziiu2nerz6n3dea54tqzlu3z5gneacfsftyonhzi"
       ],
-      "PATH": "<DATA>/fixture/[90000000000001][v1.0] Launch Matrix/multi.vgdelta",
+      "PATH": "<DATA>/fixture/[90000000000001] Launch Matrix/multi.vgdelta",
       "TARGET": "/drive_c/90000000000001/multi",
       "TYPE": "VFSDeltaLayer"
     },
     {
-      "PATH": "<DATA>/fixture/[90000000000001][v1.0] Launch Matrix/depot_main.zip",
+      "PATH": "<DATA>/fixture/[90000000000001] Launch Matrix/depot_main.zip",
       "TARGET": "/drive_c/90000000000001/depot",
       "TYPE": "VFSZipLayer"
     },
     {
-      "PATH": "<DATA>/fixture/[90000000000001][v1.0] Launch Matrix/lang_v1.zip",
+      "PATH": "<DATA>/fixture/[90000000000001] Launch Matrix/lang_v1.zip",
       "SOURCE": {
         "CID": "bafkreicc7n7crmibum5mwejhxrgmh6jlbrj4pgdwp5tfzitfxw7bylphpq",
         "TYPE": "ipfs"
@@ -213,12 +215,12 @@
       "BASE_SOURCES": [
         "bafkreicc7n7crmibum5mwejhxrgmh6jlbrj4pgdwp5tfzitfxw7bylphpq"
       ],
-      "PATH": "<DATA>/fixture/[90000000000001][v1.0] Launch Matrix/lang.vgdelta",
+      "PATH": "<DATA>/fixture/[90000000000001] Launch Matrix/lang.vgdelta",
       "TARGET": "/drive_c/90000000000001/depot",
       "TYPE": "VFSDeltaLayer"
     },
     {
-      "PATH": "<DATA>/fixture/[90000000000001][v1.0] Launch Matrix/probe.sh",
+      "PATH": "<DATA>/fixture/[90000000000001] Launch Matrix/probe.sh",
       "TARGET": "/drive_c/90000000000001/bin",
       "TYPE": "VFSFileLayer"
     },
@@ -277,7 +279,7 @@
       "VALUE_TEMPLATE": "flag was on\n"
     },
     {
-      "PATH": "<DATA>/fixture/[90000000000001][v1.0] Launch Matrix/disc.img",
+      "PATH": "<DATA>/fixture/[90000000000001] Launch Matrix/disc.img",
       "TARGET": "/drive_c/90000000000001/game/media",
       "TYPE": "VFSFileLayer"
     },
@@ -317,7 +319,7 @@
       "TYPE": "BinaryPatch"
     },
     {
-      "PATH": "<DATA>/fixture/[90000000000001][v1.0] Launch Matrix/lib.zip",
+      "PATH": "<DATA>/fixture/[90000000000001] Launch Matrix/lib.zip",
       "SUBMOUNTS": [
         "bin/keep.dll:/drive_c/90000000000001/libs/kept.dll",
         "doc:/drive_c/90000000000001/libs",
@@ -327,7 +329,7 @@
       "TYPE": "VFSZipLayer"
     },
     {
-      "PATH": "<DATA>/fixture/[90000000000001][v1.0] Launch Matrix/libfile.txt",
+      "PATH": "<DATA>/fixture/[90000000000001] Launch Matrix/libfile.txt",
       "SUBMOUNTS": [
         "libfile.txt:/drive_c/90000000000001/libs/renamed.txt"
       ],
@@ -335,17 +337,17 @@
       "TYPE": "VFSFileLayer"
     },
     {
-      "PATH": "<DATA>/fixture/[90000000000001][v1.0] Launch Matrix/shareddir",
+      "PATH": "<DATA>/fixture/[90000000000001] Launch Matrix/shareddir",
       "TARGET": "/drive_c/90000000000001/shared",
       "TYPE": "VFSDirLayer"
     },
     {
-      "PATH": "<DATA>/fixture/[90000000000001][v1.0] Launch Matrix/single.txt",
+      "PATH": "<DATA>/fixture/[90000000000001] Launch Matrix/single.txt",
       "TARGET": "/drive_c/users/player/Documents/lm",
       "TYPE": "VFSFileLayer"
     },
     {
-      "PATH": "<DATA>/fixture/[90000000000001][v1.0] Launch Matrix/inheritdir",
+      "PATH": "<DATA>/fixture/[90000000000001] Launch Matrix/inheritdir",
       "TARGET": "/drive_c/90000000000001",
       "TYPE": "VFSDirLayer"
     },

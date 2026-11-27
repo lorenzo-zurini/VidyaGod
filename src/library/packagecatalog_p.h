@@ -8,6 +8,9 @@
 #include <filesystem>
 #include <mutex>
 #include <optional>
+#include <functional>
+#include <set>
+#include "manifestmodel.h"   // NodeIndex
 
 // Internal (cross-TU) helpers of the PackageCatalog service, shared by its catalog_*.cpp files. Not its public API.
 namespace PackageCatalog {
@@ -34,6 +37,12 @@ BundleIdentity ScanBundleIdentity(const std::string &BundleDir);
 //The content CIDs a node records for its own bytes — its content layers' SOURCE and its tiles' COVER SOURCE, in
 //order, deduplicated. What a package's pin folder links (packagecatalog_publish.cpp).
 std::vector<std::string> NodeContentCids(const nlohmann::ordered_json &Node);
+
+//The installed nodes of Dir, among Candidates, that something still holds by a hard link (NODE or INTO) once Dir
+//lists Listing (catalog_versions.cpp; exposed for its test).
+std::vector<std::string> KeptNodes(const NodeIndex &Idx, const std::filesystem::path &Dir, const std::vector<std::string> &Listing,
+                                   const std::set<std::string> &Candidates,
+                                   const std::function<nlohmann::ordered_json(const std::string &)> &NodeAt);
 
 } // namespace PackageCatalog
 

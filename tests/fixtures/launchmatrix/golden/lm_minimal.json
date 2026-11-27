@@ -1,4 +1,7 @@
 {
+  "AppliedParts": [
+    "bafkreibaap4c5nwgkah7fxra5kcoypa2znhphs6urcewqjjx7fjcrr6q7q"
+  ],
   "ComposedExec": {
     "CONTENTPATH": "%GameDir%/game/data.txt",
     "EXEARGS": [],
@@ -20,6 +23,7 @@
   "Drives": {
     "C:": "%PrefixRoot%/drive_c"
   },
+  "DroppedParts": [],
   "ExeArgs": [],
   "GameName": "Launch Matrix",
   "GuestRoots": {
@@ -69,12 +73,12 @@
   ],
   "SubComponentsArray": [
     {
-      "PATH": "<DATA>/fixture/[90000000000001][v1.0] Launch Matrix/base.zip",
+      "PATH": "<DATA>/fixture/[90000000000001] Launch Matrix/base.zip",
       "TARGET": "/drive_c/90000000000001",
       "TYPE": "VFSZipLayer"
     },
     {
-      "PATH": "<DATA>/fixture/[90000000000001][v1.0] Launch Matrix/graftwrong",
+      "PATH": "<DATA>/fixture/[90000000000001] Launch Matrix/graftwrong",
       "TARGET": "/drive_c/90000000000001",
       "TYPE": "VFSDirLayer"
     }

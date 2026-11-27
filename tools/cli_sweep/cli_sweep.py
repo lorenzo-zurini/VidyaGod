@@ -45,7 +45,7 @@ SUBST = {
     'bafkreiank43ketmdy2jtdcnn5utluobf53avcuubisi3ajtdxrcnmyteka': 'patch20a', 'geproton_10_34': 'fixture_wine',
     '~/.VidyaGod/LIBRARY': f'{DATA}/LIBRARY', '~/.VidyaGod/TEMP/…/vidyagodfs.spec.json': f'{FIX}/spec.json', '~/.VidyaGod': DATA,
     '~/x/pfx': f'{FIX}/pfx', '~/after/pfx': f'{FIX}/after/pfx', '~/before/pfx': f'{FIX}/before/pfx', '~/x/new': f'{FIX}/new',
-    "~/x/'[123][v1.0] Some Game'": shlex.quote(f'{FIX}/[123][v1.0] Some Game'),
+    "~/x/'[123] Some Game'": shlex.quote(f'{FIX}/[123] Some Game'),
     '~/x/game.zip': f'{FIX}/game.zip', '~/x/': f'{FIX}/', '~/Games': f'{FIX}/Games', '~/cover.png': f'{FIX}/cover.png',
     '~/Storage/tmp': f'{FIX}/tmp', '/tmp/': f'{FIX}/tmp/', '~/': f'{HOME}/',
 }

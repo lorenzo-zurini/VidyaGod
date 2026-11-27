@@ -13,7 +13,7 @@ files are named by their labels). A re-minted node is rewritten where it is; a n
 """
 import json, os, sys, importlib.util
 sys.path.insert(0, os.path.expanduser("~/Code/VidyaGod/tools/gen6"))
-from resolve import canonical, cid_of
+from resolve import canonical, cid_of, node_refs, remap_node
 
 lib, edits_path = sys.argv[1], sys.argv[2]
 apply = "--apply" in sys.argv
@@ -74,14 +74,8 @@ for pkg, n in getattr(E, "NEW", []):
     print(f"NEW  {c}  {n.get('LABEL')}  in {pkg}")
 
 def remap_refs(o, m):
-    """Replace every string that is an old CID (NODE / ANY / NOT refs) — nodes reference by CID string only."""
-    if isinstance(o, dict):
-        return {k: remap_refs(v, m) for k, v in o.items()}
-    if isinstance(o, list):
-        return [remap_refs(v, m) for v in o]
-    if isinstance(o, str) and o in m:
-        return m[o]
-    return o
+    """Every reference renamed: NODE, INTO members, and node CIDs inside a WHEN (resolve.remap_node)."""
+    return remap_node(o, m)
 
 for c, fn in E.EDITS.items():
     assert c in nodes, f"edit target {c} not in library"
@@ -90,11 +84,8 @@ for c, fn in E.EDITS.items():
 sys.setrecursionlimit(100000)
 final = {}   # original cid -> final cid (refs mapped recursively)
 def refs_of(o, out):
-    if isinstance(o, dict):
-        for v in o.values(): refs_of(v, out)
-    elif isinstance(o, list):
-        for v in o: refs_of(v, out)
-    elif isinstance(o, str) and o in nodes: out.add(o)
+    for _, r in node_refs(o):
+        if r in nodes: out.add(r)
 def fin(c):
     if c in final: return final[c]
     final[c] = c                      # cycle guard (frozen CIDs cannot cycle)

@@ -162,6 +162,8 @@ nlohmann::ordered_json NodeFileJson(const std::filesystem::path &P)
     nlohmann::ordered_json J;
     return NodeGraph::ReadTreeJsonBounded(P, J) ? J : nlohmann::ordered_json(nlohmann::ordered_json::value_t::discarded);
 }
+} // namespace
+
 //The installed nodes of Dir, among Candidates, that something still contains once Dir lists Listing: every other
 //installed package, and the listed version itself (a version that contains the one before it). Hard links hold:
 //containment and INTO (a mod installed for an end keeps that end); a condition's CIDs compare, never hold. NodeAt reads a node of the package or of its stage.
@@ -186,6 +188,8 @@ std::vector<std::string> KeptNodes(const NodeIndex &Idx, const std::filesystem::
     }
     return { Kept.begin(), Kept.end() };
 }
+
+namespace {
 //The switch of S.U.Dir to S.Listing (its node files in the package or the stage), planned against the package as it
 //is on disk now.
 void PlanSwitch(const NodeIndex &Idx, StagedUpdate &S)

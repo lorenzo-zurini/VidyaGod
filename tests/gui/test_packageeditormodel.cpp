@@ -231,8 +231,8 @@ private slots:
         json Cfg2 = json{{"Settings", {{"Paths", {{"LibraryRoot", (R.path() + "/LIBRARY").toStdString()}}}}}};
         AppPaths::SetDataRoot(R.path().toStdString());
         const QString Lib2 = R.path() + "/LIBRARY/VidyaGod";
-        const QString P = Lib2 + "/[201801010001][v1.0] Anomaly";
-        QDir().mkpath(P); QDir().mkpath(Lib2 + "/[55492][v1.0] Other");
+        const QString P = Lib2 + "/[201801010001] Anomaly";
+        QDir().mkpath(P); QDir().mkpath(Lib2 + "/[55492] Other");
         const json G = json::parse(R"({"LABEL":"G","VARIANT":"Original","RECOMMENDED":["201801010001"],"LAYERS":[{"EXEC":[{"LABEL":"Play","TILE":{"UID":"201801010001","TITLE":"A"}}]}]})");
         const json D = json::parse(R"({"LABEL":"D","LAYERS":[{"EXEC":[{"LABEL":"DLC","TILE":{"UID":"9","PARENTUID":"201801010001"}}]}]})");
         Freeze(P, G); Freeze(P, D);
@@ -246,7 +246,7 @@ private slots:
         QVERIFY(!M.changeGameId("2018-07-21", &E));               // not a number
         QVERIFY(QDir(P).exists());
         QVERIFY2(M.changeGameId("201807210001", &E), qUtf8Printable(E));
-        const QString To = Lib2 + "/[201807210001][v1.0] Anomaly";
+        const QString To = Lib2 + "/[201807210001] Anomaly";
         QVERIFY(QDir(To).exists() && !QDir(P).exists());
         QCOMPARE(M.packagePath(), To);
         QVERIFY(QDir(Users + "/201807210001/DefaultInstance").exists() && !QDir(Users + "/201801010001").exists());

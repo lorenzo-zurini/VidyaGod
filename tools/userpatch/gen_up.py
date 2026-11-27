@@ -15,8 +15,8 @@ from resolve import canonical, cid_of
 import model
 import describe
 
-D = os.path.expanduser("~/.VidyaGod/LIBRARY/VidyaGod/[749][v1.0] Age of Empires II")
-PKG = "VidyaGod/[749][v1.0] Age of Empires II"
+D = os.path.expanduser("~/.VidyaGod/LIBRARY/VidyaGod/[749] Age of Empires II")
+PKG = "VidyaGod/[749] Age of Empires II"
 EXE = "FILES/%GameDir%/age2_x1/age2_x1.exe"
 cids = {os.path.basename(l.split("\t")[1].strip()): l.split("\t")[0] for l in open(os.path.join(os.environ["UP_WORK"], "cids.txt"))}   # `VidyaGod --cid` of the base zip and the two DLLs
 BASE_ZIP = "Age of Empires II - The Conquerors - UserPatch v1.5 Build 6268 - Base.zip"

@@ -164,6 +164,29 @@ private:
     std::string NewDraftHandle() const;
 };
 
+// ---- library-wide reference work (the Packagizer's repoint, by CLI) -------------------------------------------------
+
+//Where a node is named across the library: every node file (peers' landed copies excepted) whose layers name Cid, and
+//how — "NODE" (contains it), "INTO" (a part going into it) or "WHEN" (a condition names it).
+struct RefHit { std::string File, Cid, Label, How; };
+std::vector<RefHit> LibraryRefs(const std::vector<std::filesystem::path> &Roots, const std::string &Cid, std::string &Err);
+
+//Swap node CIDs everywhere they are named (Swap: old -> new): each node naming an old one is rewritten with the new one,
+//so its own CID changes, and so on up to every node naming those (the cascade); instance graft lists follow. Planned
+//in full first and refused before touching the disk when it cannot be done (a circle, a library not fully readable);
+//then written journalled (a failed write undoes the ones before it). A rewritten file keeps its name (publishing
+//names it by the rule again). Dry: the plan only. The old nodes themselves are never removed.
+struct RepointReport
+{
+    bool Ok = false;
+    std::string Error;
+    std::map<std::string, std::string> Renamed;          // every CID that changed, the swaps' cascade included
+    std::vector<std::string> Files;                      // the node files (and instance.json) written, or to be
+    int InstancesUpdated = 0;
+};
+RepointReport RepointLibrary(const std::vector<std::filesystem::path> &Roots, const std::filesystem::path &UserDataRoot,
+                             const std::map<std::string, std::string> &Swap, bool Dry);
+
 }
 
 #endif // PKGDOC_H

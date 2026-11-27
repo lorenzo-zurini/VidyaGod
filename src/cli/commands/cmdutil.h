@@ -24,7 +24,7 @@ void Save(Command::Context &C);
 std::shared_ptr<const NodeIndex> Index(Command::Context &C);
 // A node by CID, working handle or LABEL — BadArgs when none (never null).
 const Node *NodeOf(const NodeIndex &Idx, const std::string &Id);
-// A package folder named on the command line: a path, its folder name, its UID ("749" finds "[749][v1.0] …"), or a
+// A package folder named on the command line: a path, its folder name, its UID ("749" finds "[749] …"), or a
 // unique part of its title — in the library, or (with Received) among a peer's received packages too.
 std::filesystem::path PackageDir(Command::Context &C, const std::string &Q, bool Received = true);
 // "a,b,c" or a JSON array, as a list of strings ("" / absent: none).

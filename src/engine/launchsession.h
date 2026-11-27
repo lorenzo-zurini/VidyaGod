@@ -35,6 +35,7 @@ struct Request
     std::string Face;                                     // the launched tile (its UID; "" = the node's first) — %UID%
     std::string InstanceName;                             // "" = the active one
     std::optional<std::vector<std::string>> Grafts;       // the instance's graft list (unset: the row's pre-ticked)
+    std::vector<std::string> With;                        // parts added to that selection (CLI --with)
     std::map<std::string, std::string> VariableOverrides; // the launch window's values, a command's --var
     std::vector<std::string> RunnerChain;                 // pinned (innermost first); empty = the instance's / default
     std::string ScreenWidth, ScreenHeight;                // asked of the GUI on its thread, before the launch

@@ -53,6 +53,7 @@ struct LaunchRequest
     std::string LaunchNodeId, LaunchTile, LaunchVariant, Entrypoint, InstanceName;
     std::vector<std::string> RunnerChain;
     std::optional<std::vector<std::string>> Grafts;
+    std::vector<std::string> With;   // parts added to the selection (--with): to the instance's or the fresh one
     std::map<std::string, std::string> VariableOverrides;
     bool ResolveOnly = false;
     bool DryRun = false;   // nothing the run writes is kept

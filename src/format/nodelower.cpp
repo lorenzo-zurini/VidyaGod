@@ -44,6 +44,7 @@ const char *VfsType(const std::string &T)
     if (T == "DIR")   return "VFSDirLayer";
     if (T == "FILE")  return "VFSFileLayer";
     if (T == "DELTA") return "VFSDeltaLayer";
+    if (T == "CODED") return "VFSCodedLayer";
     return nullptr;
 }
 
@@ -70,11 +71,13 @@ void EmitRegTree(const std::string &Path, const ordered_json &Tree, const ordere
 
 ordered_json ContentOp(const std::string &Kind, const std::string &Payload, const std::string &Target,
                        const ordered_json &Source, const ordered_json &Size, const ordered_json &Submounts,
-                       const ordered_json &BaseSources = ordered_json())
+                       const ordered_json &BaseSources = ordered_json(), const std::string &Description = std::string(),
+                       const std::string &Name = std::string())
 {
     ordered_json L = { {"TYPE", VfsType(Kind)}, {"PATH", Payload} };
     if (!Target.empty()) L["TARGET"] = Target;
     if (BaseSources.is_array()) L["BASE_SOURCES"] = BaseSources;   // a delta's bases, by SOURCE CID, in order
+    if (Kind == "CODED") { L["DESCRIPTION"] = Description; L["NAME"] = Name; }   // by CID, and the name it appears by
     if (Source.is_string())
     {
         L["SOURCE"] = { {"TYPE", "ipfs"}, {"CID", Source} };
@@ -166,6 +169,7 @@ std::string CheckLayer(const ordered_json &L)
     static const std::map<std::string, std::set<std::string>> Allowed = {
         {"ZIP",   {"SOURCE", "SIZE", "TARGET"}}, {"FILE",  {"SOURCE", "SIZE", "TARGET"}},
         {"DELTA", {"SOURCE", "SIZE", "TARGET", "BASE_SOURCES"}}, {"DIR",   {"TARGET"}},
+        {"CODED", {"SOURCE", "SIZE", "TARGET", "BASE_SOURCES", "DESCRIPTION", "NAME"}},
         {"NODE",  {"TAKE", "TARGET"}}, {"EDIT", {"TARGET"}}, {"REG", {"ARCH"}},
         {"VARS", {}}, {"ENV", {}}, {"DLL", {}}, {"EXEC", {}}, {"KEEP", {}}, {"INTO", {}},
     };
@@ -202,6 +206,19 @@ std::string CheckLayer(const ordered_json &L)
             if (C.empty()) return "BASE_SOURCES has an empty CID";
             if (!Seen.insert(C).second) return "BASE_SOURCES names '" + C + "' twice";
         }
+    }
+    //A coded stream (04, 22): exactly one base (its content), its format's description by CID, and the one file name
+    //it appears by.
+    if (T == "CODED")
+    {
+        if (!L.contains("BASE_SOURCES") || !StrArray(L["BASE_SOURCES"]) || L["BASE_SOURCES"].size() != 1 || L["BASE_SOURCES"][0].get<std::string>().empty())
+            return "CODED needs BASE_SOURCES: exactly one CID, its content";
+        if (!L.contains("DESCRIPTION") || !L["DESCRIPTION"].is_string() || L["DESCRIPTION"].get<std::string>().empty())
+            return "CODED needs DESCRIPTION: the SOURCE CID of its format's description";
+        if (L["DESCRIPTION"] == L["BASE_SOURCES"][0]) return "CODED: its description and its content are one file";
+        if (!L.contains("NAME") || !L["NAME"].is_string()) return "CODED needs NAME: the file name it appears by";
+        if (const std::string Why = FileNameFault(L["NAME"].get<std::string>()); !Why.empty()) return "CODED NAME " + Why;
+        if (L["NAME"].get<std::string>().find('/') != std::string::npos) return "CODED NAME is one file name, not a path";
     }
     const ordered_json &P = L[T];
     if (VfsType(T))
@@ -547,7 +564,8 @@ nlohmann::ordered_json LowerNode(const nlohmann::ordered_json &J, const std::str
         if (VfsType(T))
         {
             Ops.push_back(ContentOp(T, Str(L[T]), FilesPath(L), L.value("SOURCE", ordered_json()),
-                                    L.value("SIZE", ordered_json()), ordered_json(), L.value("BASE_SOURCES", ordered_json())));
+                                    L.value("SIZE", ordered_json()), ordered_json(), L.value("BASE_SOURCES", ordered_json()),
+                                    Str(L.value("DESCRIPTION", ordered_json())), Str(L.value("NAME", ordered_json()))));
         }
         else if (T == "EDIT")
             for (const auto &O : L["EDIT"]) Ops.push_back(EditOp(O, FilesPath(L)));
@@ -735,7 +753,7 @@ std::vector<std::pair<size_t, nlohmann::ordered_json>> ContentOps(const Fold::Pl
     std::vector<std::pair<size_t, ordered_json>> Out;
     const auto Cid = [](const Fold::Item &I) { return I.Source.is_string() ? I.Source.get<std::string>() : std::string(); };
     //What a delta can be built over (named by its SOURCE): a zip, a delta's rebuilt archive, a single file (a disc image).
-    const auto Carries = [](const Fold::Item &I) { return I.Kind == "ZIP" || I.Kind == "DELTA" || I.Kind == "FILE"; };
+    const auto Carries = [](const Fold::Item &I) { return I.Kind == "ZIP" || I.Kind == "DELTA" || I.Kind == "FILE" || I.Kind == "CODED"; };
     //Where each content item mounts: whole at its target, or (seen through a TAKE) the submounts its takes leave —
     //none when nothing of it is taken.
     struct Shape { std::string Path; std::optional<ordered_json> Mounts; bool Shown = true; };
@@ -757,6 +775,11 @@ std::vector<std::pair<size_t, nlohmann::ordered_json>> ContentOps(const Fold::Pl
         //The source is the file as it sits on disk (a bumped name when versions share it); the address keeps the
         //name the node gives it, which is what TAKE selects and places.
         if (I.Kind == "FILE") Ms.push_back({ std::filesystem::path(Sh[J].Path).filename().string(), OwnAddr + "/" + Name });
+        else if (I.Kind == "CODED")
+        {   //one file, its NAME: taken or not (a coded stream is mounted whole, at its own target)
+            Sh[J].Shown = !ApplyView({ { std::string(), OwnAddr + "/" + I.Name } }, I.View).empty();
+            continue;
+        }
         else Ms.push_back({ std::string(), OwnAddr });
         Ms = ApplyView(Ms, I.View);
         Sh[J].Shown = !Ms.empty();
@@ -771,8 +794,28 @@ std::vector<std::pair<size_t, nlohmann::ordered_json>> ContentOps(const Fold::Pl
     for (size_t J = 0; J < P.Seq.size(); ++J) if (Carries(P.Seq[J]) && Sh[J].Shown && !Cid(P.Seq[J]).empty()) Have.insert(Cid(P.Seq[J]));
     std::vector<bool> BytesOnly(P.Seq.size(), false);
     std::vector<std::string> Want;
+    //What a coded stream names (its content, its description) is bytes and never a file of the game (04): every layer
+    //carrying one of those CIDs mounts for its bytes only, wherever it is placed, whatever a TAKE would show.
+    std::set<std::string> CodedNames;
     for (size_t J = 0; J < P.Seq.size(); ++J)
-        if (P.Seq[J].Kind == "DELTA" && Sh[J].Shown && P.Seq[J].BaseSources.is_array())
+        if (P.Seq[J].Kind == "CODED" && Sh[J].Shown)
+        {
+            if (P.Seq[J].BaseSources.is_array()) for (const auto &C : P.Seq[J].BaseSources) if (C.is_string()) CodedNames.insert(C.get<std::string>());
+            if (!P.Seq[J].Description.empty()) CodedNames.insert(P.Seq[J].Description);
+        }
+    //...and what those are rebuilt from (a content that is a delta over the last build's content): bytes too.
+    for (bool Grew = true; Grew;)
+    {
+        Grew = false;
+        for (size_t J = 0; J < P.Seq.size(); ++J)
+            if (P.Seq[J].Kind == "DELTA" && CodedNames.count(Cid(P.Seq[J])) && P.Seq[J].BaseSources.is_array())
+                for (const auto &C : P.Seq[J].BaseSources) if (C.is_string() && CodedNames.insert(C.get<std::string>()).second) Grew = true;
+    }
+    for (size_t J = 0; J < P.Seq.size(); ++J)
+        if (Carries(P.Seq[J]) && P.Seq[J].Kind != "CODED" && CodedNames.count(Cid(P.Seq[J]))) { Sh[J].Shown = false; Have.erase(Cid(P.Seq[J])); }
+    for (const std::string &C : CodedNames) Want.push_back(C);
+    for (size_t J = 0; J < P.Seq.size(); ++J)
+        if ((P.Seq[J].Kind == "DELTA" || P.Seq[J].Kind == "CODED") && Sh[J].Shown && P.Seq[J].BaseSources.is_array())
             for (const auto &C : P.Seq[J].BaseSources) if (C.is_string()) Want.push_back(C.get<std::string>());
     while (!Want.empty())
     {
@@ -795,15 +838,15 @@ std::vector<std::pair<size_t, nlohmann::ordered_json>> ContentOps(const Fold::Pl
         if (!Sh[J].Shown)
         {
             if (!BytesOnly[J]) continue;                                      // nothing of it is taken, nothing reads it
-            ordered_json L = ContentOp(I.Kind, Sh[J].Path, I.Target, I.Source, I.Size, ordered_json(), I.BaseSources);
+            ordered_json L = ContentOp(I.Kind, Sh[J].Path, I.Target, I.Source, I.Size, ordered_json(), I.BaseSources, I.Description, I.Name);
             L["BYTES_ONLY"] = true;
             Out.emplace_back(J, std::move(L));
             continue;
         }
         if (!Sh[J].Mounts)
-            Out.emplace_back(J, ContentOp(I.Kind, Sh[J].Path, I.Target, I.Source, I.Size, ordered_json(), I.BaseSources));
+            Out.emplace_back(J, ContentOp(I.Kind, Sh[J].Path, I.Target, I.Source, I.Size, ordered_json(), I.BaseSources, I.Description, I.Name));
         else
-            Out.emplace_back(J, ContentOp(I.Kind, Sh[J].Path, I.Target, I.Source, I.Size, *Sh[J].Mounts, I.BaseSources));
+            Out.emplace_back(J, ContentOp(I.Kind, Sh[J].Path, I.Target, I.Source, I.Size, *Sh[J].Mounts, I.BaseSources, I.Description, I.Name));
     }
     return Out;
 }

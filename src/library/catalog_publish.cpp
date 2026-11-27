@@ -51,7 +51,7 @@ static std::vector<FileEntry> FileEntriesOf(nlohmann::ordered_json &N)
     {
         if (!L.is_object()) continue;
         const std::string K = Fold::TypeOf(L);
-        if ((K == "ZIP" || K == "FILE" || K == "DELTA" || K == "DIR") && L[K].is_string())
+        if ((K == "ZIP" || K == "FILE" || K == "DELTA" || K == "CODED" || K == "DIR") && L[K].is_string())
             Out.push_back({ &L, L[K].get<std::string>(), false, K != "DIR" });   // a DIR is local: it carries no SOURCE
         else if (K == "EXEC" && L["EXEC"].is_array())
             for (auto &E : L["EXEC"])

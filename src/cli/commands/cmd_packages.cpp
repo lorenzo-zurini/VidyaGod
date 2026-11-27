@@ -199,7 +199,7 @@ VG_COMMANDS
     Command::Register({
         "packages new", "create an empty package (a game) or library package",
         "A new, empty package folder in one of your libraries — the package editor's New package. A game is named "
-        "\"[<uid>][v1.0] <title>\"; with --library-package, a library package (dgVoodoo, a runtime) is named by its name.",
+        "\"[<uid>] <title>\"; with --library-package, a library package (dgVoodoo, a runtime) is named by its name.",
         { Pos("library", "the library to create it in (VidyaGod, VidyaGodLibraries, …)"), Pos("title", "the game's title (or the library package's name)"),
           Opt("uid", "the game's UID (digits; required for a game)"), Flag("library-package", "a library package: no UID, no tile") },
         { "packages new VidyaGod 'Some Game' --uid 123456", "packages new VidyaGodLibraries dxwrapper --library-package" },
@@ -430,7 +430,7 @@ VG_COMMANDS
         "Each named package's pin folder (its node files and its content) and those of every package it contains, "
         "transitively — what to pin so the packages are whole on a pinning service. Packages are <library>/<package>.",
         { Pos("packages", "<library>/<package>, comma-separated") },
-        { "packages pins 'VidyaGod/[749][v1.0] Age of Empires II'" },
+        { "packages pins 'VidyaGod/[749] Age of Empires II'" },
         { "PackageCatalog::PackagesContained", "PackageCatalog::NodeContains", "PackageCatalog::CurrentIndex" }, Needs::Config, false,
         [](Command::Context &C, const json &A) {
             std::vector<std::string> Named;
@@ -497,7 +497,7 @@ VG_COMMANDS
         "--covers-only just the covers.",
         { Command::AsPath(Pos("dir", "the folder (a package or a library)")), Flag("verify", "read every file back"), Flag("unheld", "only what is not held"),
           Flag("covers-only", "only the covers"), Flag("overwrite", "re-add even what is held") },
-        { "packages seed ~/.VidyaGod/LIBRARY/VidyaGod/'[749][v1.0] Age of Empires II'", "packages seed ~/.VidyaGod/LIBRARY --unheld" },
+        { "packages seed ~/.VidyaGod/LIBRARY/VidyaGod/'[749] Age of Empires II'", "packages seed ~/.VidyaGod/LIBRARY --unheld" },
         { "PackageCatalog::SeedDirectory", "PackageCatalog::SeedUnheld" }, Needs::Config, true,
         [](Command::Context &, const json &A) {
             std::vector<PackageCatalog::SeedFailure> F;
@@ -687,7 +687,7 @@ VG_COMMANDS
         "to it. Without --yes nothing changes and the stage is dropped (--discard says so explicitly).",
         { Pos("package", "the package (its name or the update's folder CID)"), Flag("yes", "switch to it"), Flag("discard", "discard the stage instead") },
         { "updates apply 'Age of Empires II'", "updates apply 'Age of Empires II' --yes" },
-        { "PackageCatalog::StageUpdate", "PackageCatalog::ApplyStagedUpdate", "PackageCatalog::DiscardStagedUpdate" }, Needs::Config, true,
+        { "PackageCatalog::StageUpdate", "PackageCatalog::ApplyStagedUpdate", "PackageCatalog::DiscardStagedUpdate", "PackageCatalog::KeptNodes" }, Needs::Config, true,
         [](Command::Context &C, const json &A) {
             PackageCatalog::StagedUpdate S;
             std::string Err;

@@ -13,6 +13,9 @@
 #include "packagecatalog.h"
 #include "cmdutil.h"
 #include "commonutils.h"   // LogBuffer
+#include "pkgdoc.h"       // PkgDoc::LibraryRefs / RepointLibrary
+#include "instancestore.h"
+#include "platform/platform.h"
 #include <QEventLoop>
 
 #include <chrono>
@@ -325,6 +328,58 @@ VG_COMMANDS
             if (!Errors.empty()) throw Command::CheckFailed(Out, std::to_string(Errors.size()) + " error(s)");
             return Out;
         }, &RenderFindings, true });
+
+    Command::Register({
+        "catalog refs", "where a node is named across the library: what contains it, goes into it, or a condition names",
+        "Every node file under the editable library roots (peers' landed copies excepted) whose layers name the CID, with "
+        "how: NODE (contains it), INTO (a part going into it), WHEN (a condition names it). Read from the files, by "
+        "content (a node's identity is the CID of its bytes, never its file name).",
+        { Command::Pos("cid", "a node's CID") }, { "catalog refs bafkrei…" },
+        { "PkgDoc::LibraryRefs", "PackageCatalog::EditableRoots" }, Needs::Config, false,
+        [](Command::Context &C, const json &A) {
+            std::string Err;
+            const auto Hits = PkgDoc::LibraryRefs(PackageCatalog::EditableRoots(*C.Config), Command::Str(A, "cid"), Err);
+            if (!Err.empty()) throw std::runtime_error(Err);
+            json Out = json::array();
+            for (const auto &H : Hits) Out.push_back({{"file", H.File}, {"cid", H.Cid}, {"label", H.Label}, {"as", H.How}});
+            return Out;
+        }, {} });
+
+    Command::Register({
+        "catalog repoint", "swap a node's CID for another everywhere it is named, re-minting what names it (the cascade)",
+        "Every node naming OLD (contains it, goes INTO it, a condition names it) is rewritten naming NEW, so its own CID "
+        "changes, and so on up to every node naming those; instance graft lists follow. Planned in full first and refused "
+        "before touching anything when it cannot be done; written journalled. Holds the library's write lock (the one the "
+        "packaging scripts flock) for the whole run: with another writer on it, it does nothing and says so. --map: a JSON "
+        "file {old: new, …} for several swaps at once. --dry: the plan only. Rebuild the app's index afterwards "
+        "(catalog rebuild). The OLD node itself is not removed.",
+        { Command::OptPos("old", "the CID to replace"), Command::OptPos("new", "the CID to put in its place"),
+          Command::AsPath(Command::Opt("map", "a JSON file of {old: new} swaps")), Command::Flag("dry", "show the plan, change nothing") },
+        { "catalog repoint bafkreiold… bafkreinew… --dry", "catalog repoint --map ~/x/remint-map.json" },
+        { "PkgDoc::RepointLibrary", "InstanceStore::Root", "PackageCatalog::LibraryWriteLock" }, Needs::Config, false,
+        [](Command::Context &C, const json &A) {
+            std::map<std::string, std::string> Swap;
+            if (A.contains("map"))
+            {
+                std::ifstream F(Command::Str(A, "map"));
+                const json M = json::parse(F, nullptr, false);
+                if (!M.is_object()) throw Command::BadArgs("--map: not a JSON object of {old: new}");
+                for (const auto &[O, N] : M.items()) if (N.is_string()) Swap[O] = N.get<std::string>();
+            }
+            if (A.contains("old") || A.contains("new"))
+            {
+                if (!A.contains("old") || !A.contains("new")) throw Command::BadArgs("give OLD and NEW, or --map");
+                Swap[Command::Str(A, "old")] = Command::Str(A, "new");
+            }
+            if (Swap.empty()) throw Command::BadArgs("nothing to swap: give OLD NEW or --map");
+            const Platform::ScopedFileLock Lock(PackageCatalog::LibraryWriteLock(*C.Config));
+            if (!Lock.opened()) throw std::runtime_error("the library's write lock " + PackageCatalog::LibraryWriteLock(*C.Config).string() + " cannot be opened");
+            if (!Lock.held()) throw std::runtime_error("the library is busy: another writer holds its lock — nothing changed");
+            const bool Dry = Command::Bool(A, "dry", false);
+            const auto R = PkgDoc::RepointLibrary(PackageCatalog::EditableRoots(*C.Config), InstanceStore::Root(*C.Config), Swap, Dry);
+            if (!R.Ok) throw std::runtime_error(R.Error);
+            return json{{"dry", Dry}, {"renamed", R.Renamed}, {"files", R.Files}, {"instances_updated", R.InstancesUpdated}};
+        }, {} });
 
     Command::Register({
         "catalog fresh", "build a new index of the library as it is on disk (the app's untouched)",

@@ -611,7 +611,8 @@ bool ZipFullyStored(const std::string &ZipPath, std::string *FirstCompressed)
 std::string VfsSpecType(const std::string &Type)
 {
     return Type == "VFSZipLayer"  ? "zip" : Type == "VFSDirLayer"   ? "dir"
-         : Type == "VFSFileLayer" ? "file": Type == "VFSDeltaLayer" ? "delta" : "";
+         : Type == "VFSFileLayer" ? "file": Type == "VFSDeltaLayer" ? "delta"
+         : Type == "VFSCodedLayer" ? "coded" : "";
 }
 
 
@@ -668,14 +669,17 @@ nlohmann::ordered_json MakeVfsSpecLayer(const nlohmann::ordered_json &Sub, const
     if (LType.empty()) return nullptr;
     nlohmann::ordered_json J = {{"type", LType}, {"source", Source}, {"target", Target},
                                 {"submounts", Sub.value("SUBMOUNTS", nlohmann::ordered_json::array())}, {"rw", false}};
-    if (LType == "zip" || LType == "delta" || LType == "file")   // what a delta names by CID (a file: a disc image)
+    if (LType == "zip" || LType == "delta" || LType == "file" || LType == "coded")   // what a delta names by CID (a file: a disc image)
     {
         std::filesystem::path Local; std::string Cid;
         LayerLocator(Sub, std::filesystem::path(), Local, Cid);
         if (!Cid.empty()) J["cid"] = Cid;
         if (Sub.contains("BYTES_ONLY") && Sub["BYTES_ONLY"].is_boolean() && Sub["BYTES_ONLY"].get<bool>()) J["bytesOnly"] = true;
     }
-    if (LType == "delta") J["bases"] = LayerBaseSources(Sub);   // by CID: the FS finds each file (treeplan.h)
+    if (LType == "delta" || LType == "coded") J["bases"] = LayerBaseSources(Sub);   // by CID: the FS finds each file (treeplan.h)
+    //A coded stream: the name it appears by, and its description — named by CID here, made the path of the layer
+    //carrying that CID once the whole spec is known (ResolveCodedDescriptions).
+    if (LType == "coded") { J["name"] = Sub.value("NAME", std::string()); J["description"] = Sub.value("DESCRIPTION", std::string()); }
     //RUNTIME-SOURCED: this layer reads from a path that only exists once something ELSE is mounted (a prefix
     //assembly layer under %RunnerMount%). Recorded here because it is the last place that still has the node —
     //by the time a plan is inspected the source is a resolved absolute path indistinguishable from any other.
@@ -684,6 +688,18 @@ nlohmann::ordered_json MakeVfsSpecLayer(const nlohmann::ordered_json &Sub, const
     //A package's own folder does not change while its game runs: the FS answers its lookups from one listing.
     else if (LType == "dir") J["fixed"] = true;
     return J;
+}
+
+void ResolveCodedDescriptions(nlohmann::ordered_json &Layers)
+{
+    if (!Layers.is_array()) return;
+    std::map<std::string, std::string> PathOf;
+    for (const auto &L : Layers)
+        if (L.is_object() && L.contains("cid") && L["cid"].is_string() && L.value("type", std::string()) != "coded")
+            PathOf.emplace(L["cid"].get<std::string>(), L.value("source", std::string()));
+    for (auto &L : Layers)
+        if (L.is_object() && L.value("type", std::string()) == "coded" && L.contains("description"))
+            if (const auto It = PathOf.find(L.value("description", std::string())); It != PathOf.end()) L["description"] = It->second;
 }
 
 //Does this string still contain an unresolved %TOKEN%? The resolver leaves reference cycles and typos literal,
@@ -704,7 +720,7 @@ std::vector<std::string> LayerBaseSources(const nlohmann::ordered_json &Sub)
 {
     std::vector<std::string> Out;
     if (!Sub.is_object() || !Sub.contains("BASE_SOURCES")) return Out;
-    const bool IsDelta = LayerType(Sub) == "VFSDeltaLayer" || Sub.value("FORM", std::string()) == "delta";
+    const bool IsDelta = LayerType(Sub) == "VFSDeltaLayer" || LayerType(Sub) == "VFSCodedLayer" || Sub.value("FORM", std::string()) == "delta";   // a coded stream: its content
     if (!IsDelta) return Out;
     const auto &B = Sub["BASE_SOURCES"];
     const bool WellFormed = B.is_array() && [&]{ for (const auto &E : B) if (!E.is_string()) return false; return true; }();

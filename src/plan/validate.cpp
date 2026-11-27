@@ -599,6 +599,11 @@ void Nodes(const NodeIndex &Idx, std::vector<std::string> &Errors, std::vector<s
             if (!DefaultTree) DefaultTree = Lt;
             for (const std::string &Why : Lt.T.problems)
                 Once(Res.Errors, Tag + ": " + Why + " — contain the node that holds the file it names");
+            //A CODED layer names its description by CID too (04): the launch must carry it.
+            for (size_t D = 0; D < Lt.S.layers.size(); ++D)
+                if (Lt.S.layers[D].type == ::LayerType::Coded && Lt.S.layers[D].description == P.Seq[Lt.ItemOf[D]].Description)
+                    Once(Res.Errors, Tag + ": CODED '" + P.Seq[Lt.ItemOf[D]].Payload + "' names its description "
+                         + P.Seq[Lt.ItemOf[D]].Description + ", which no layer of this launch carries — contain the node that holds it");
             for (size_t D = 0; D < Lt.S.layers.size(); ++D)
             {
                 if (Lt.S.layers[D].type != ::LayerType::Delta || Lt.T.broken[D]) continue;

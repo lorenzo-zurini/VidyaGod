@@ -54,7 +54,7 @@ std::vector<std::filesystem::path> LocalPackageDirs(const nlohmann::ordered_json
 std::vector<std::filesystem::path> EditableRoots(const nlohmann::ordered_json &GlobalConfigJSON);
 //The libraries this machine keeps packages in: the folders directly under LIBRARY ("VidyaGod", "VidyaGodRunners" ...).
 std::vector<std::string> LibraryNames(const nlohmann::ordered_json &GlobalConfigJSON);
-//"[749][v1.0] Age of Empires II" -> "Age of Empires II": a package's folder name without its bracketed tags.
+//"[749] Age of Empires II" -> "Age of Empires II": a package's folder name without its bracketed tags.
 std::string FolderTitle(const std::filesystem::path &Dir);
 //A package's title as its shelf shows it: the TITLE of the tile its folder is named for ([<uid>]), read from its
 //nodes - "Baldur's Gate" where the folder had to say "Baldur_s Gate"; the folder's title when no node has it.
@@ -63,7 +63,7 @@ std::string PackageTitle(const std::filesystem::path &Dir);
 //outside LIBRARY (Library ""), by title.
 struct AuthoredPackage { std::filesystem::path Dir; std::string Title, Library; };
 std::vector<AuthoredPackage> AuthoredPackages(const nlohmann::ordered_json &GlobalConfigJSON);
-//A new, empty package folder "<LIBRARY>/<Library>/[<Uid>][v1.0] <Title>" (the title made safe for a folder name), for
+//A new, empty package folder "<LIBRARY>/<Library>/[<Uid>] <Title>" (the title made safe for a folder name), for
 //the package editor's New package. Refuses (empty path, Err says why) an unknown library, a UID that is not digits,
 //an empty title, or a UID some package in LIBRARY already uses.
 std::filesystem::path CreatePackageFolder(const nlohmann::ordered_json &GlobalConfigJSON, const std::string &Library,

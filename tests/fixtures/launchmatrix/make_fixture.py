@@ -485,7 +485,7 @@ def main():
     Data = os.path.abspath(sys.argv[1])
     # Deliberately NOT under <data>/LIBRARY: that tree belongs to managed (CID) sources, and a bundle sitting
     # inside it is treated as one of their packages and indexed through the source rather than as a local path.
-    Bundle = f"{Data}/fixture/[90000000000001][v1.0] Launch Matrix"
+    Bundle = f"{Data}/fixture/[90000000000001] Launch Matrix"
     if os.path.isdir(f"{Data}/fixture"): shutil.rmtree(f"{Data}/fixture")
     os.makedirs(Bundle, exist_ok=True)
     make_content(Bundle)

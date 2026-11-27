@@ -8,10 +8,15 @@
 #include "cid.h"
 #include "layerspec.h"   // NormalizeVPath — linked from vgfs_core (the parity test below)
 #include "vgdelta.h"     // GenerateDelta — a real delta for the case lint
+#include "launchtree.h"  // LaunchTree — a launch as VidyaGodFS reads it
+#include "coding.h"      // a coded stream minted for the CODED layer test
+#include "overlay.h"
+#include "vfsops.h"      // the filesystem read in-process, as the game would see it
 
 #include <zip.h>
 
 #include <algorithm>
+#include <iostream>
 #include <chrono>
 #include <cstring>
 #include <filesystem>
@@ -571,6 +576,7 @@ TEST(validate_checks_what_a_part_goes_into)
     Add(Idx, {{"CID", "plain"}, {"LABEL", "plain"}, {"LAYERS", ordered_json::array({ {{"ZIP", "p.zip"}} })}});
     Add(Idx, {{"CID", "ok"}, {"LABEL", "ok"}, {"LAYERS", ordered_json::array({ {{"INTO", ordered_json::array({"end"})}}, {{"ZIP", "m.zip"}} })}});
     Add(Idx, {{"CID", "onpart"}, {"LABEL", "onpart"}, {"LAYERS", ordered_json::array({ {{"INTO", ordered_json::array({"ok"})}}, {{"INTO", ordered_json::array({"end"})}} })}});
+    Add(Idx, {{"CID", "partofpart"}, {"LABEL", "partofpart"}, {"LAYERS", ordered_json::array({ {{"INTO", ordered_json::array({"ok"})}} })}});
     Add(Idx, {{"CID", "torunner"}, {"LABEL", "torunner"}, {"LAYERS", ordered_json::array({ {{"INTO", ordered_json::array({Rn})}} })}});
     Add(Idx, {{"CID", "toplain"}, {"LABEL", "toplain"}, {"LAYERS", ordered_json::array({ {{"INTO", ordered_json::array({"plain"})}} })}});
     Add(Idx, {{"CID", "nowhere"}, {"LABEL", "nowhere"}, {"LAYERS", ordered_json::array({ {{"INTO", ordered_json::array({"absent"})}} })}});
@@ -588,7 +594,8 @@ TEST(validate_checks_what_a_part_goes_into)
     //and the facts: a part's INTO members are its hard links, every layer of them
     CHECK(Idx.Find("onpart")->IsGraft);
     CHECK((Idx.Find("onpart")->Into == std::vector<std::string>{"ok", "end"}));
-    CHECK((ManifestModel::GraftBases(Idx, "onpart") == std::vector<std::string>{"end"}));   // through the part, to the end
+    CHECK((ManifestModel::GraftBases(Idx, "onpart") == std::vector<std::string>{"end"}));
+    CHECK((ManifestModel::GraftBases(Idx, "partofpart") == std::vector<std::string>{"end"}));   // through the part, to the end
 }
 
 TEST(validate_names_missing_refs_and_cycles)
@@ -1658,4 +1665,107 @@ TEST(validate_replaceall_needs_its_pattern_not_a_site)
     //the launch. Teeth: compare the text; measure the token.
     CHECK(!AnyContains(With({{"MODE", "ReplaceAll"}, {"EXPECT", "aa bb"}, {"REPLACE", "1122"}}), "as long as EXPECT"));
     CHECK(!AnyContains(With({{"MODE", "ReplaceAll"}, {"EXPECT", "f6680000a0428b"}, {"REPLACE", "f6680000%fov:map:FOV%8b"}}), "as long as EXPECT"));
+}
+
+
+// A CODED layer (MetaPackageFormat 04): the shipped file appears by its NAME, rebuilt bit-exact from its content and
+// record through the description, and the content and description (named by CID) are bytes only, never files of the
+// game. A launch missing the description is a validator error. Teeth: show the content as a file; leave the description
+// as its CID (the mount cannot open it); skip the validator check.
+TEST(a_coded_layer_mounts_as_the_shipped_file_bit_exact)
+{
+    namespace fs = std::filesystem;
+    const fs::path Pkg = fs::temp_directory_path() / "vg_coded_layer";
+    fs::remove_all(Pkg); fs::create_directories(Pkg);
+    //a raw deflate stream of one final stored block: its description decodes it, and codes it back
+    std::vector<uint8_t> Data(3000);
+    for (size_t I = 0; I < Data.size(); ++I) Data[I] = static_cast<uint8_t>((I * 7) ^ (I >> 3));
+    std::vector<uint8_t> Shipped = { 0x01, 3000 & 0xFF, 3000 >> 8, static_cast<uint8_t>(~3000 & 0xFF), static_cast<uint8_t>((~3000 >> 8) & 0xFF) };
+    Shipped.insert(Shipped.end(), Data.begin(), Data.end());
+    const coding::Description Desc = coding::DeflateDescription();
+    std::vector<uint8_t> Content, Record;
+    std::string Err;
+    CHECK(coding::Mint(Desc, Shipped.data(), Shipped.size(), 0, 1u << 20, 1024, Content, Record, Err));
+    const auto Put = [&](const char *Name, const std::vector<uint8_t> &B) { std::ofstream(Pkg / Name, std::ios::binary).write(reinterpret_cast<const char *>(B.data()), static_cast<std::streamsize>(B.size())); };
+    Put("deflate.vgcd", coding::Serialize(Desc));
+    Put("a.bin.content", Content);
+    Put("a.bin.vgcr", Record);
+    const auto Layers = [](bool WithDescription) {
+        ordered_json L = ordered_json::array();
+        if (WithDescription) L.push_back({{"FILE", "deflate.vgcd"}, {"SOURCE", "QmDesc"}, {"TARGET", "FILES/C:/g/descriptions"}});
+        L.push_back({{"FILE", "a.bin.content"}, {"SOURCE", "QmContent"}, {"TARGET", "FILES/C:/g"}});
+        L.push_back({{"CODED", "a.bin.vgcr"}, {"SOURCE", "QmRecord"}, {"NAME", "a.bin"}, {"DESCRIPTION", "QmDesc"},
+                     {"BASE_SOURCES", ordered_json::array({"QmContent"})}, {"TARGET", "FILES/C:/g"}});
+        L.push_back({{"EXEC", ordered_json::array({ {{"LABEL", "Game v1.0"}, {"HOST", "win32"}, {"EXE", "C:/g/a.exe"}, {"TILE", {{"UID", "1"}, {"TITLE", "Game"}}}} })}});
+        return L;
+    };
+    NodeIndex Idx;
+    Add(Idx, {{"CID", "end"}, {"LABEL", "end"}, {"VARIANT", "Windows"}, {"LAYERS", Layers(true)}}, Pkg.string());
+    Add(Idx, {{"CID", "nodesc"}, {"LABEL", "nodesc"}, {"VARIANT", "Windows"}, {"LAYERS", Layers(false)}}, Pkg.string());
+    ManifestModel::DeriveFacts(Idx);
+    CHECK(Idx.Find("end") && Idx.Find("end")->LowerError.empty());
+    const Fold::Library Lib = ManifestModel::LibraryOf(Idx);
+    const LaunchTree L = LaunchTree::Of(Fold::Resolve(Lib, "end"));
+    for (const auto &Pr : L.T.problems) std::cerr << "  coded problem: " << Pr << "\n";
+    CHECK(L.T.problems.empty());
+    int Coded = -1, Shown = 0;
+    for (size_t I = 0; I < L.S.layers.size(); ++I)
+    {
+        if (L.S.layers[I].type == LayerType::Coded) Coded = static_cast<int>(I);
+        else if (!L.S.layers[I].bytesOnly) ++Shown;
+    }
+    CHECK(Coded >= 0);
+    CHECK_EQ(Shown, 0);                                                  // the content and the description are bytes only
+    if (Coded >= 0) CHECK_EQ(L.S.layers[static_cast<size_t>(Coded)].description, (Pkg / "deflate.vgcd").generic_string());
+    //read through VidyaGodFS, in-process: the game sees a.bin, exactly the shipped bytes, and nothing else
+    VfsState S;
+    CHECK(S.Init(L.S, Err));
+    OpenFile *F = nullptr;
+    CHECK_EQ(VfsOpen(S, "C:/g/a.bin", 0, F), 0);
+    std::vector<uint8_t> Got(Shipped.size() + 16);
+    ssize_t N = F ? VfsRead(F, Got.data(), Got.size(), 0) : -1;
+    if (F) VfsRelease(F);
+    CHECK_EQ(N, static_cast<ssize_t>(Shipped.size()));
+    Got.resize(N > 0 ? static_cast<size_t>(N) : 0);
+    CHECK(Got == Shipped);
+    OpenFile *G = nullptr;
+    CHECK(VfsOpen(S, "C:/g/a.bin.content", 0, G) < 0);
+    CHECK(VfsOpen(S, "C:/g/descriptions/deflate.vgcd", 0, G) < 0);
+    //the next build's content as a DELTA over this build's (the dedup chapter 22 measures): the delta's rebuild is the
+    //coded stream's base, bytes only, never an archive the game sees
+    std::vector<uint8_t> Prev = Content;
+    for (size_t I = 100; I < 200 && I < Prev.size(); ++I) Prev[I] ^= 0x5A;
+    Put("prev.content", Prev);
+    const auto Dl = vgdelta::GenerateDelta(Prev.data(), Prev.size(), Content.data(), Content.size());
+    CHECK(!Dl.empty());
+    Put("a.bin.vgdelta", Dl);
+    {
+        ordered_json L2 = ordered_json::array({
+            {{"FILE", "deflate.vgcd"}, {"SOURCE", "QmDesc"}, {"TARGET", "FILES/C:/g/descriptions"}},
+            {{"FILE", "prev.content"}, {"SOURCE", "QmPrev"}, {"TARGET", "FILES/C:/g"}},
+            {{"DELTA", "a.bin.vgdelta"}, {"SOURCE", "QmContent2"}, {"BASE_SOURCES", ordered_json::array({"QmPrev"})}, {"TARGET", "FILES/C:/g"}},
+            {{"CODED", "a.bin.vgcr"}, {"SOURCE", "QmRecord"}, {"NAME", "a.bin"}, {"DESCRIPTION", "QmDesc"},
+             {"BASE_SOURCES", ordered_json::array({"QmContent2"})}, {"TARGET", "FILES/C:/g"}},
+            {{"EXEC", ordered_json::array({ {{"LABEL", "Game v1.1"}, {"HOST", "win32"}, {"EXE", "C:/g/a.exe"}, {"TILE", {{"UID", "1"}, {"TITLE", "Game"}}}} })}} });
+        NodeIndex Idx2;
+        Add(Idx2, {{"CID", "next"}, {"LABEL", "next"}, {"VARIANT", "Windows"}, {"LAYERS", L2}}, Pkg.string());
+        ManifestModel::DeriveFacts(Idx2);
+        const LaunchTree L3 = LaunchTree::Of(Fold::Resolve(ManifestModel::LibraryOf(Idx2), "next"));
+        CHECK(L3.T.problems.empty());
+        VfsState S2;
+        CHECK(S2.Init(L3.S, Err));
+        OpenFile *H = nullptr;
+        CHECK_EQ(VfsOpen(S2, "C:/g/a.bin", 0, H), 0);
+        std::vector<uint8_t> Got2(Shipped.size() + 16);
+        const ssize_t N2 = H ? VfsRead(H, Got2.data(), Got2.size(), 0) : -1;
+        if (H) VfsRelease(H);
+        CHECK_EQ(N2, static_cast<ssize_t>(Shipped.size()));
+        Got2.resize(N2 > 0 ? static_cast<size_t>(N2) : 0);
+        CHECK(Got2 == Shipped);
+        CHECK(VfsOpen(S2, "C:/g/prev.content", 0, H) < 0);                  // the delta's base: bytes only
+    }
+    //without the description in its launch: refused by the validator
+    std::vector<std::string> W;
+    CHECK(AnyContains(Errors(Idx, &W), "names its description QmDesc"));
+    fs::remove_all(Pkg);
 }

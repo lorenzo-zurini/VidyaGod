@@ -6,7 +6,7 @@ runner, networking off, and the files the examples name. Made inside one work fo
 """
 import json, os, shutil, subprocess, zipfile
 
-PKG = 'VidyaGod/[749][v1.0] Age of Empires II'
+PKG = 'VidyaGod/[749] Age of Empires II'
 
 
 class Fixture:

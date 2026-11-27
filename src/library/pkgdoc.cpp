@@ -885,4 +885,122 @@ SaveReport Document::Save(const fs::path &Dir, const std::vector<fs::path> &Root
 
 long long DebugGatherReads() { return g_GatherReads.load(); }
 
+std::vector<RefHit> LibraryRefs(const std::vector<fs::path> &Roots, const std::string &Target, std::string &Err)
+{
+    std::vector<RefHit> Out;
+    std::vector<LibFile> Lib;
+    for (const fs::path &R : Roots) if (!GatherLibrary(R, fs::path(), Lib, Err)) return {};
+    for (LibFile &F : Lib)
+    {
+        if (std::find(F.Refs.begin(), F.Refs.end(), Target) == F.Refs.end()) continue;
+        if (!LoadNode(F, Err)) return {};
+        const std::string Label = F.Node.contains("LABEL") && F.Node["LABEL"].is_string() ? F.Node["LABEL"].get<std::string>() : std::string();
+        std::set<std::string> Hows;
+        for (const json &L : F.Node["LAYERS"])
+        {
+            if (!L.is_object()) continue;
+            if (L.contains("NODE") && L["NODE"] == Target) Hows.insert("NODE");
+            if (L.contains("INTO") && L["INTO"].is_array()) for (const json &M : L["INTO"]) if (M == Target) Hows.insert("INTO");
+            if (L.contains("WHEN") && L["WHEN"].is_string())
+                for (const auto &C : NodeRefs::CidsInWhen(L["WHEN"].get<std::string>())) if (C == Target) Hows.insert("WHEN");
+        }
+        for (const std::string &H : Hows) Out.push_back({ F.Path.string(), F.Cid, Label, H });
+    }
+    std::sort(Out.begin(), Out.end(), [](const RefHit &A, const RefHit &B) { return std::tie(A.File, A.How) < std::tie(B.File, B.How); });
+    return Out;
+}
+
+RepointReport RepointLibrary(const std::vector<fs::path> &Roots, const fs::path &UserDataRoot,
+                             const std::map<std::string, std::string> &Swap, bool Dry)
+{
+    RepointReport R;
+    for (const auto &[O, N] : Swap)
+        if (O.empty() || N.empty() || O == N) { R.Error = "a swap needs two different CIDs"; return R; }
+    std::vector<LibFile> Lib;
+    for (const fs::path &Root : Roots) if (!GatherLibrary(Root, fs::path(), Lib, R.Error)) { R.Error = "Nothing was changed: " + R.Error; return R; }
+    std::map<std::string, std::vector<size_t>> Referrers;
+    for (size_t K = 0; K < Lib.size(); ++K) for (const std::string &Ref : Lib[K].Refs) Referrers[Ref].push_back(K);
+    //Everything that can change: what names an old CID, what names those, and so on.
+    std::set<size_t> Pending;
+    {
+        std::vector<std::string> Frontier;
+        for (const auto &[O, N] : Swap) Frontier.push_back(O);
+        while (!Frontier.empty())
+        {
+            const std::string C = Frontier.back(); Frontier.pop_back();
+            for (size_t K : Referrers[C]) if (Pending.insert(K).second) Frontier.push_back(Lib[K].Cid);
+        }
+    }
+    for (size_t K : Pending) if (!LoadNode(Lib[K], R.Error)) { R.Error = "Nothing was changed: " + R.Error; return R; }
+    std::map<std::string, int> PendingNames;
+    for (size_t K : Pending) ++PendingNames[Lib[K].Cid];
+    std::map<std::string, std::string> M = Swap;
+    struct Write { fs::path Path; std::string Bytes; };
+    std::vector<Write> Writes;
+    while (!Pending.empty())
+    {
+        bool Progress = false;
+        for (auto It = Pending.begin(); It != Pending.end();)
+        {
+            const size_t K = *It;
+            bool Waits = false;
+            NodeRefs::Each(Lib[K].Node, [&](const std::string &Ref) { if (PendingNames.count(Ref) && Ref != Lib[K].Cid) Waits = true; });
+            if (Waits) { ++It; continue; }
+            const json Out = NodeRefs::Remapped(Lib[K].Node, M);
+            if (Out != Lib[K].Node)
+            {
+                std::string Err;
+                const std::string New = Cid::OfNode(Out, &Err);
+                if (New.empty()) { R.Error = "Nothing was changed: " + Lib[K].Path.string() + ": " + Err; return R; }
+                if (const auto Was = M.find(Lib[K].Cid); Was != M.end() && Was->second != New)
+                { R.Error = "Nothing was changed: " + Lib[K].Path.string() + " is both swapped and rewritten"; return R; }
+                M[Lib[K].Cid] = New;
+                Writes.push_back({ Lib[K].Path, Cid::Canonical(Out) });
+            }
+            if (--PendingNames[Lib[K].Cid] == 0) PendingNames.erase(Lib[K].Cid);
+            It = Pending.erase(It);
+            Progress = true;
+        }
+        if (!Progress) { R.Error = "Nothing was changed: these nodes name each other in a circle"; return R; }
+    }
+    //Instances: a graft list (or anything else) naming a renamed CID follows it.
+    std::error_code Ec, Probe;
+    if (!UserDataRoot.empty() && fs::is_directory(UserDataRoot, Probe))
+        for (fs::recursive_directory_iterator It(UserDataRoot, Ec), End; !Ec && It != End; It.increment(Ec))
+        {
+            if (It.depth() >= 2) { It.disable_recursion_pending(); }
+            if (It->path().filename() != "instance.json" || !It->is_regular_file(Probe)) continue;
+            std::string B;
+            if (!ReadFile(It->path(), B)) { R.Error = "Nothing was changed: cannot read " + It->path().string(); return R; }
+            json J = NodeGraph::ParseBounded(B);
+            if (J.is_discarded() || !RenameStrings(J, M)) continue;
+            Writes.push_back({ It->path(), J.dump(4) });
+            ++R.InstancesUpdated;
+        }
+    for (const auto &[O, N] : M) if (!Swap.count(O)) R.Renamed[O] = N;
+    for (const auto &[O, N] : Swap) R.Renamed[O] = N;
+    for (const Write &W : Writes) R.Files.push_back(W.Path.string());
+    if (Dry) { R.Ok = true; return R; }
+    struct Undo { fs::path Path; std::string Old; };
+    std::vector<Undo> Journal;
+    for (const Write &W : Writes)
+    {
+        std::string Have, Err;
+        ReadFile(W.Path, Have);
+        if (Have == W.Bytes) continue;
+        if (!WriteFileAtomic(W.Path, W.Bytes, Err, true))
+        {
+            for (auto It = Journal.rbegin(); It != Journal.rend(); ++It) { std::string E2; WriteFileAtomic(It->Path, It->Old, E2, true); }
+            R.Error = "Nothing was changed (a write failed and the ones before it were undone): " + Err;
+            R.Files.clear(); R.Renamed.clear(); R.InstancesUpdated = 0;
+            return R;
+        }
+        Journal.push_back({ W.Path, std::move(Have) });
+    }
+    //What the gather remembered of these files is stale now.
+    { std::lock_guard<std::mutex> Lk(g_GatheredMu); for (const Write &W : Writes) g_Gathered.erase(W.Path.string()); }
+    R.Ok = true;
+    return R;
+}
+
 }

@@ -310,7 +310,7 @@ QStringList PackageEditorModel::unusedFiles() const
         if (J.is_object())
             for (const auto & [K, V] : J.items())
             {
-                if ((K == "ZIP" || K == "FILE" || K == "DELTA" || K == "DIR") && V.is_string() && !V.get<std::string>().empty())
+                if ((K == "ZIP" || K == "FILE" || K == "DELTA" || K == "CODED" || K == "DIR") && V.is_string() && !V.get<std::string>().empty())
                 {
                     Named.insert(Top(V.get<std::string>()));
                     if (J.contains("SOURCE") && J["SOURCE"].is_string() && !J["SOURCE"].get<std::string>().empty())

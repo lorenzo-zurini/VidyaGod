@@ -130,7 +130,7 @@ VG_COMMANDS
         "canonical bytes' size and CID. A "
         "file is read the bounded way every library walker reads one (size cap, nesting depth).",
         { NodeArg(), Opt("max-depth", "the nesting depth allowed (default 64)", Type::Int) },
-        { "node check ~/.VidyaGod/LIBRARY/VidyaGod/'[749][v1.0] Age of Empires II'/bafkrei….json", "node check 'Patch 2.0a'" },
+        { "node check ~/.VidyaGod/LIBRARY/VidyaGod/'[749] Age of Empires II'/bafkrei….json", "node check 'Patch 2.0a'" },
         { "NodeLower::CheckNode", "ManifestModel::IsNodeObject", "NodeRefs::Contained", "NodeRefs::IntoOf", "NodeRefs::Linked",
           "NodeRefs::CidsInWhen", "Fold::IntoLayers", "VarSubst::IsNodeCid", "ManifestModel::ParseNode", "Cid::Canonical",
           "Cid::OfNode", "NodeGraph::ReadTreeJsonBounded", "NodeGraph::JsonDepthWithinLimit", "NodeGraph::ParseBounded" }, Needs::Config, false,
@@ -323,7 +323,7 @@ VG_COMMANDS
         "(its bases' files must be present) and counts what its archive holds: null where it does not rebuild.",
         { NodeArg(), VarOpt(), GraftOpt(), Flag("names", "rebuild each delta and count its archive's entries") },
         { "fold bases 'BioShock Infinite - Steam (English)'", "fold bases 'BioShock Infinite - Steam (English)' --names" },
-        { "LaunchTree::Of", "NodeLower::ContentOps", "ArchiveNames::Of" }, Needs::Config, false,
+        { "LaunchTree::Of", "NodeLower::ContentOps", "ArchiveNames::Of", "ManifestModel::ResolveCodedDescriptions" }, Needs::Config, false,
         [](Command::Context &C, const json &A) {
             const auto I = Index(C);
             const Fold::Plan P = Fold::Resolve(ManifestModel::LibraryOf(*I), NodeOf(*I, Command::Str(A, "node"))->Key(), Pairs(A, "var"),
@@ -590,7 +590,7 @@ VG_COMMANDS
         "Scan library roots (each holding package folders) and package folders directly (--bundle) into a node index, "
         "derive its facts, and report what it holds: nodes, tiles, grafts with cards, duplicates, refused node files.",
         { Pos("roots", "library roots, comma-separated"), Opt("bundle", "package folders to scan directly (a,b)"), Flag("each", "one row per node") },
-        { "graph index ~/.VidyaGod/LIBRARY", "graph index '' --bundle ~/x/'[749][v1.0] Age of Empires II'" },
+        { "graph index ~/.VidyaGod/LIBRARY", "graph index '' --bundle ~/x/'[749] Age of Empires II'" },
         { "ManifestModel::BuildNodeIndex", "ManifestModel::ScanBundleNodes", "ManifestModel::DeriveFacts" }, Needs::Config, false,
         [](Command::Context &, const json &A) {
             std::vector<fs::path> Roots, Bundles;
@@ -637,7 +637,7 @@ VG_COMMANDS
         "graph mint", "mint a working tree into blocks (stored, pinned, announced)",
         "Freeze and store every node under a root, deps first: each handle's CID, and the playable roots. Blocks only "
         "— node files on disk are not rewritten (`packages stamp-cids` writes the CIDs back).",
-        { Command::AsPath(Pos("root", "the folder")) }, { "graph mint ~/x/'[123][v1.0] Some Game'" }, { "NodeStore::Mint", "IpfsWrapper::BlockPutMany" }, Needs::Config, true,
+        { Command::AsPath(Pos("root", "the folder")) }, { "graph mint ~/x/'[123] Some Game'" }, { "NodeStore::Mint", "IpfsWrapper::BlockPutMany" }, Needs::Config, true,
         [](Command::Context &, const json &A) {
             std::map<std::string, json> Tree;
             std::map<std::string, fs::path> Dirs;
@@ -716,7 +716,7 @@ VG_COMMANDS
         "graph fix-case", "canonicalise zips whose entries clash in case with a lower layer",
         "Rewrite (unpack → rename → repack STORE) the higher layers' zips so their entries take the base layer's case — "
         "the case-conflict errors the validator reports. --scope limits the rewrites to one folder.",
-        { Opt("scope", "only rewrite zips under this folder") }, { "graph fix-case --scope ~/.VidyaGod/LIBRARY/VidyaGod/'[749][v1.0] Age of Empires II'" },
+        { Opt("scope", "only rewrite zips under this folder") }, { "graph fix-case --scope ~/.VidyaGod/LIBRARY/VidyaGod/'[749] Age of Empires II'" },
         { "Validate::FixCaseConflicts" }, Needs::Config, false,
         [](Command::Context &C, const json &A) {
             const auto I = Index(C);

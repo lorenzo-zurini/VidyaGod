@@ -115,6 +115,45 @@ private slots:
         QCOMPARE(std::set<std::string>(Got.begin(), Got.end()), (std::set<std::string>{"L/Game", "L/Lib", "L/Mod"}));
     }
 
+    // A version switch keeps an installed node something still holds by a hard link: a mod installed for an end keeps
+    // that end (INTO), as a game keeps the library it contains (NODE). Teeth: hold by NODE only (the end goes).
+    void a_switch_keeps_the_end_a_mod_goes_into()
+    {
+        NodeIndex Idx;
+        const auto add = [&](const std::string &Id, const std::string &Dir, json Layers, json Extra = json::object()) {
+            json J = json{{"CID", Id}, {"LABEL", Id}, {"LAYERS", std::move(Layers)}};
+            for (auto &[K, V] : Extra.items()) J[K] = V;
+            Node N;
+            QVERIFY(ManifestModel::ParseNode(J, Dir + "/" + Id + ".json", Dir, N));
+            Idx.Nodes[N.Key()] = N;
+        };
+        add("oldend", "/lib/Game", json::array({ json{{"ZIP", "g.zip"}} }), json{{"VARIANT", "1.0"}});
+        add("newend", "/lib/Game", json::array({ json{{"ZIP", "g2.zip"}} }), json{{"VARIANT", "1.1"}});
+        add("mod", "/lib/Mod", json::array({ json{{"INTO", json::array({"oldend"})}}, json{{"ZIP", "m.zip"}} }));
+        const auto At = [&](const std::string &C) { const Node *N = Idx.Find(C); return N ? *N->Json : json(); };
+        const auto Kept = PackageCatalog::KeptNodes(Idx, "/lib/Game", {"newend"}, {"oldend", "newend"}, At);
+        QVERIFY(std::find(Kept.begin(), Kept.end(), "oldend") != Kept.end());
+    }
+
+    // Building the index of a received closure follows hard links: a mod block brings the end block it goes into. Teeth:
+    // follow NODE only (the end is not fetched).
+    void a_frozen_closure_follows_into()
+    {
+        std::string Err;
+        QTemporaryDir Repo; QVERIFY(Repo.isValid());
+        QVERIFY2(IpfsWrapper::StartNode((Repo.path() + "/ipfs").toStdString(), &Err), Err.c_str());   // offline (ctest env)
+        auto Stop = qScopeGuard([]{ IpfsWrapper::StopNode(); });
+        const json End = json{{"LABEL", "end"}, {"VARIANT", "1.0"}, {"LAYERS", json::array({ json{{"ZIP", "e.zip"}} })}};
+        const std::string EndCid = IpfsWrapper::BlockPut(Cid::Canonical(End), &Err);
+        QVERIFY2(!EndCid.empty(), Err.c_str());
+        const json Mod = json{{"LABEL", "mod"}, {"LAYERS", json::array({ json{{"INTO", json::array({EndCid})}}, json{{"ZIP", "m.zip"}} })}};
+        const std::string ModCid = IpfsWrapper::BlockPut(Cid::Canonical(Mod), &Err);
+        QVERIFY2(!ModCid.empty(), Err.c_str());
+        const NodeIndex Idx = NodeStore::BuildFrozenIndex({ModCid});
+        QVERIFY(Idx.Find(ModCid));
+        QVERIFY2(Idx.Find(EndCid), "the end the mod goes into was not followed");
+    }
+
     void a_source_removes_only_a_folder_its_own_fetch_made()
     {
         QTemporaryDir D; QVERIFY(D.isValid());
@@ -1716,12 +1755,12 @@ private slots:
     // Teeth: key Pins by the folder name alone, and the VidyaGod row reads proton's pin.
     void package_row_shows_its_pin_folder()
     {
-        const json Cfg = json{{"Pins", {{"VidyaGod/[10972][v1.0] Silent Hill 2", "bafyOwnSH2"}, {"VidyaGodRunners/proton", "bafyOwnProton"}}}};
+        const json Cfg = json{{"Pins", {{"VidyaGod/[10972] Silent Hill 2", "bafyOwnSH2"}, {"VidyaGodRunners/proton", "bafyOwnProton"}}}};
         using PackageCatalog::PackagePin;
-        QCOMPARE(PackagePin(Cfg, "/r/LIBRARY/VidyaGod/[10972][v1.0] Silent Hill 2"), std::string("bafyOwnSH2"));
+        QCOMPARE(PackagePin(Cfg, "/r/LIBRARY/VidyaGod/[10972] Silent Hill 2"), std::string("bafyOwnSH2"));
         QCOMPARE(PackagePin(Cfg, "/r/LIBRARY/VidyaGodRunners/proton"), std::string("bafyOwnProton"));
         QCOMPARE(PackagePin(Cfg, "/r/LIBRARY/VidyaGod/proton"), std::string());           // not proton's library
-        QCOMPARE(PackagePin(Cfg, "/r/CATALOG/Alice - VidyaGod/[2190][v1.0] Baldur_s Gate"), std::string());
+        QCOMPARE(PackagePin(Cfg, "/r/CATALOG/Alice - VidyaGod/[2190] Baldur_s Gate"), std::string());
         //A package directly under the library root is keyed in "Library", as publishing keys it. Teeth: key it by the
         //root folder's own name.
         QTemporaryDir Root; QVERIFY(Root.isValid());
@@ -2466,7 +2505,7 @@ private slots:
             QVERIFY(std::filesystem::exists(S.Stage / "switch.json"));
             std::filesystem::remove_all(Block);
             // What an older run left: an empty package folder (the Deck's) and a stage nothing applies.
-            const std::filesystem::path Empty = Updating / "VidyaGod" / "[6082][v1.0] Jet Set Radio Future";
+            const std::filesystem::path Empty = Updating / "VidyaGod" / "[6082] Jet Set Radio Future";
             const std::filesystem::path Orphan = Updating / "Libs" / "[L] DxWnd" / "deadbeef-000000000000";
             std::filesystem::create_directories(Empty);
             std::filesystem::create_directories(Orphan);
@@ -3679,7 +3718,7 @@ private slots:
         QCOMPARE(v->GameKey(), tile->GameKey());
     }
 
-    // The editor's "New package": a game's folder is "[uid][v1.0] Title" in a library that exists, named so every
+    // The editor's "New package": a game's folder is "[uid] Title" in a library that exists, named so every
     // system can hold it, and never a second folder for a game the library already has (in ANY library: the UID is the
     // game's identity). Teeth: drop the duplicate check, the digits check, the library check, or the sanitizer.
     void a_new_package_gets_one_folder_named_by_its_game()
@@ -3687,14 +3726,14 @@ private slots:
         QTemporaryDir Root; QVERIFY(Root.isValid());
         const json Cfg = json{{"Settings", {{"Paths", {{"LibraryRoot", Root.path().toStdString()}}}}}};
         QDir().mkpath(Root.path() + "/VidyaGod");
-        QDir().mkpath(Root.path() + "/Mods/[123][v1.0] Taken");
+        QDir().mkpath(Root.path() + "/Mods/[123] Taken");
         writeFile(Root.path() + "/notes.txt");                  // a file beside the libraries is not one
         QCOMPARE(PackageCatalog::LibraryNames(Cfg), (std::vector<std::string>{"Mods", "VidyaGod"}));
 
         std::string Err;
         const auto Dir = PackageCatalog::CreatePackageFolder(Cfg, "VidyaGod", "9940", "Black & White 2: Gods?", Err);
         QVERIFY2(!Dir.empty(), Err.c_str());
-        QCOMPARE(Dir.filename().string(), std::string("[9940][v1.0] Black & White 2 - Gods_"));
+        QCOMPARE(Dir.filename().string(), std::string("[9940] Black & White 2 - Gods_"));
         QVERIFY(std::filesystem::is_directory(Dir));
         QCOMPARE(Dir.parent_path().filename().string(), std::string("VidyaGod"));
 
@@ -3703,7 +3742,7 @@ private slots:
         Err.clear();
         QVERIFY(PackageCatalog::CreatePackageFolder(Cfg, "VidyaGod", "123", "Again", Err).empty());
         QVERIFY2(Err.find("Mods/[123]") != std::string::npos, Err.c_str());
-        QVERIFY(!QDir(Root.path() + "/VidyaGod/[123][v1.0] Again").exists());
+        QVERIFY(!QDir(Root.path() + "/VidyaGod/[123] Again").exists());
 
         for (const auto & [Lib, Uid, Title] : std::vector<std::tuple<std::string, std::string, std::string>>{
                  {"NoSuchLibrary", "7", "Game"}, {"..", "7", "Game"}, {"VidyaGod", "", "Game"}, {"VidyaGod", "7a", "Game"},
@@ -3752,10 +3791,10 @@ private slots:
         QTemporaryDir Root, Outside; QVERIFY(Root.isValid() && Outside.isValid());
         const json Cfg = json{{"Settings", {{"Paths", {{"LibraryRoot", Root.path().toStdString()}}}, {"Repositories", json::array()}}},
                               {"LIBRARY", json::array({ json{{"PACKAGEUID", "5"}, {"PATH", Outside.path().toStdString()}} })}};
-        QDir().mkpath(Root.path() + "/VidyaGod/[749][v1.0] age of Empires II");
-        QDir().mkpath(Root.path() + "/VidyaGod/[9940][v1.0] Black & White 2");
+        QDir().mkpath(Root.path() + "/VidyaGod/[749] age of Empires II");
+        QDir().mkpath(Root.path() + "/VidyaGod/[9940] Black & White 2");
         //A title the folder could not hold, from the tile the folder is named for (not another tile of the package).
-        const QString Bg = Root.path() + "/VidyaGod/[2190][v1.0] Baldur_s Gate";
+        const QString Bg = Root.path() + "/VidyaGod/[2190] Baldur_s Gate";
         QDir().mkpath(Bg);
         writeFile(Bg + "/a.json", json{{"LAYERS", {{{"EXEC", {{{"LABEL", "Play"}, {"TILE", {{"UID", "99"}, {"TITLE", "Tales of the Sword Coast"}}}}}}}}}}.dump());
         writeFile(Bg + "/b.json", json{{"LAYERS", {{{"EXEC", {{{"LABEL", "Play"}, {"TILE", {{"UID", "2190"}, {"TITLE", "Baldur's Gate"}}}}}}}}}}.dump());

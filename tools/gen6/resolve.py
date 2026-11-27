@@ -18,9 +18,9 @@ Usage (debug): resolve.py <library-root> <cid> [--var K=V ...]
 import copy, json, os, re, sys
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-TYPE_KEYS = ["ZIP", "FILE", "DELTA", "DIR", "NODE", "EDIT", "REG", "VARS", "ENV", "DLL", "EXEC", "KEEP", "INTO"]
+TYPE_KEYS = ["ZIP", "FILE", "DELTA", "CODED", "DIR", "NODE", "EDIT", "REG", "VARS", "ENV", "DLL", "EXEC", "KEEP", "INTO"]
 _NODE_CID = re.compile(r"bafkrei[a-z2-7]{52}")
-CONTENT = ("ZIP", "FILE", "DELTA", "DIR")
+CONTENT = ("ZIP", "FILE", "DELTA", "CODED", "DIR")
 
 
 def type_of(L):
@@ -515,8 +515,11 @@ class Resolver:
                         "target": place(tp, prefix), "own": tp,
                         "view": [[t, a] for t, a in view_steps(view)] if view_takes(view) else None,
                         "from": s["from"], "at": s["at"]}
-                if k == "DELTA" and "BASE_SOURCES" in L:                     # its bases, by SOURCE CID, in order
+                if k in ("DELTA", "CODED") and "BASE_SOURCES" in L:           # its bases, by SOURCE CID, in order
                     item["base_sources"] = L["BASE_SOURCES"]
+                if k == "CODED":                                              # its description (a CID) and its name
+                    item["description"] = L.get("DESCRIPTION", "")
+                    item["name"] = L.get("NAME", "")
                 seq.append(item)
             elif k == "EDIT":
                 ns, tp = ns_path(L["TARGET"])
@@ -642,6 +645,8 @@ def plan_json(plan):
             e.update(payload=it["payload"], dir=it["dir"], source=it["source"], size=it.get("size"), view=it["view"])
             if "base_sources" in it:
                 e["base_sources"] = it["base_sources"]
+            if it["kind"] == "CODED":
+                e.update(description=it.get("description", ""), name=it.get("name", ""))
         e.update({"target": it["target"], "from": it["from"], "at": it["at"]})
         seq.append(e)
     return {"seq": seq,
@@ -651,6 +656,67 @@ def plan_json(plan):
             "exec": [[k, v] for k, v in plan["exec"].items()], "keep": [[k, v] for k, v in plan["keep"].items()],
             "decls": [[k, v] for k, v in plan["decls"].items()], "order": plan["order"], "parts": plan.get("parts", []),
             "events": [list(e) for e in plan["events"]], "when_vars": dict(sorted(plan["when_vars"].items())), "error": ""}
+
+
+# ---------------------------------------------------------------- references (for tools: remint, repoint, scans)
+_DRAFT = re.compile(r"draft-[0-9a-fA-F]{12}")
+
+
+def when_cids(expr):
+    """The node CIDs a WHEN condition names (08 §8.6), with where each starts: bare words shaped like a node CID (or an
+    editor's draft handle), never inside a quoted literal or a %token%. [(start, cid), ...]"""
+    out, i = [], 0
+    while i < len(expr):
+        m = _TOK.match(expr, i)
+        if not m:
+            break
+        t = m.group(0)
+        if (_NODE_CID.fullmatch(t) or _DRAFT.fullmatch(t)) and t[0] not in "\"'%":
+            out.append((i, t))
+        i = m.end()
+    return out
+
+
+def node_refs(n):
+    """Every reference a node makes, in layer order: NODE (contains), INTO members (goes into), CIDs its conditions
+    name. [(how, cid), ...] with how in NODE / INTO / WHEN."""
+    out = []
+    for L in n.get("LAYERS", []):
+        if not isinstance(L, dict):
+            continue
+        if isinstance(L.get("NODE"), str):
+            out.append(("NODE", L["NODE"]))
+        if isinstance(L.get("INTO"), list):
+            out += [("INTO", x) for x in L["INTO"] if isinstance(x, str)]
+        if isinstance(L.get("WHEN"), str):
+            out += [("WHEN", c) for _, c in when_cids(L["WHEN"])]
+    return out
+
+
+def hard_links(n):
+    """What a closure follows: what a node contains and what it goes into (never a condition's CIDs)."""
+    return [c for how, c in node_refs(n) if how in ("NODE", "INTO")]
+
+
+def remap_node(n, m):
+    """A copy of node n with every reference renamed by m {old: new}: NODE, INTO members, and CIDs inside a WHEN
+    (the rest of the condition kept byte for byte). Payload strings are never touched."""
+    def when(e):
+        for at, c in reversed(when_cids(e)):
+            if c in m:
+                e = e[:at] + m[c] + e[at + len(c):]
+        return e
+    o = json.loads(json.dumps(n))
+    for L in o.get("LAYERS", []):
+        if not isinstance(L, dict):
+            continue
+        if isinstance(L.get("NODE"), str) and L["NODE"] in m:
+            L["NODE"] = m[L["NODE"]]
+        if isinstance(L.get("INTO"), list):
+            L["INTO"] = [m.get(x, x) if isinstance(x, str) else x for x in L["INTO"]]
+        if isinstance(L.get("WHEN"), str):
+            L["WHEN"] = when(L["WHEN"])
+    return o
 
 
 # ---------------------------------------------------------------- parts (12 §12.5, 23.0)
@@ -914,6 +980,13 @@ def fixtures():
                                                  "BASE_SOURCES": ["Qmr", "Qmm"]}]),
                          "s": N([{"NODE": "f", "TARGET": "FILES/sub"}])},
          [("f", {}, []), ("s", {}, [])]),
+        # a coded stream: its content and description named by CID; placed by a containing node like any content
+        ("coded", {"d": N([{"FILE": "bsa105.vgcd", "SOURCE": "Qmd", "TARGET": "FILES/x"}]),
+                   "c": N([{"NODE": "d"}, {"FILE": "a.bsa.content", "SOURCE": "Qmc", "TARGET": "FILES/g/Data"},
+                           {"CODED": "a.bsa.vgcr", "SOURCE": "Qmr", "NAME": "a.bsa", "DESCRIPTION": "Qmd",
+                            "BASE_SOURCES": ["Qmc"], "TARGET": "FILES/g/Data"}]),
+                   "s": N([{"NODE": "c", "TARGET": "FILES/sub"}])},
+         [("c", {}, []), ("s", {}, [])]),
         ("placement", {"lib": N([Z("l1", "FILES/sub"), Z("l2", "FILES/C:/abs"), {"NODE": "leaf", "TARGET": "FILES/deep"},
                                  {"EDIT": [{"MODE": "Overwrite", "VALUE": "v"}], "TARGET": "FILES/sub/f.ini"},
                                  {"KEEP": {"FILES/sub/save/": True, "REG/HKCU/S": False}},
@@ -1060,6 +1133,14 @@ def self_test():
             assert labs(r.resolve("v", {}, {}, ["g"])) == ["b", "wnd"], labs(r.resolve("v", {}, {}, ["g"]))
             assert labs(r.resolve("v", {"win": "0"}, {}, ["g"])) == ["b", "cls"]
         if name == "into+parts":
+            # the reference helpers tools use: NODE, INTO, and a condition's CIDs, renamed in place
+            g4 = r.nodes["g4"][0]
+            assert node_refs(g4) == [("INTO", "v1"), ("WHEN", P1)], node_refs(g4)
+            assert hard_links(g4) == ["v1"]
+            new = "bafkrei" + "q" * 52
+            g4b = remap_node(g4, {P1: new, "v1": "v9"})
+            assert g4b["LAYERS"][0]["INTO"] == ["v9"] and g4b["LAYERS"][0]["WHEN"] == new + " == false", g4b
+            assert when_cids("'" + P1 + "' == %x% && " + P1) == [(len(P1) + 13, P1)], when_cids("'" + P1 + "' == %x% && " + P1)
             gi = graft_index(r.nodes)
             off = lambda root, parts=(): offered_grafts(r.nodes, gi, r.resolve(root, {}, {}, list(parts)), "9")[0]
             # the hard link: offered on the end it names, never on a later end that merely contains it, never for a

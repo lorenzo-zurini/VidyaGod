@@ -16,6 +16,7 @@ LaunchTree LaunchTree::Of(const Fold::Plan &P)
         L.ItemOf.push_back(J);
         Layers.push_back(std::move(X));
     }
+    ManifestModel::ResolveCodedDescriptions(Layers);
     const nlohmann::ordered_json Spec = { {"mountpoint", "/"}, {"readonly", true}, {"layers", Layers} };   // never mounted
     std::string Err;
     const bool Parsed = ParseSpecText(Spec.dump(), L.S, Err);
