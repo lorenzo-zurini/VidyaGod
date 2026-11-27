@@ -244,12 +244,16 @@ std::string CheckLayer(const ordered_json &L)
                     return "a TAKE selection is an address or an [address, new name] pair";
                 const std::string Src = Str(S.is_array() ? S[0] : S);
                 const std::string Ns = Src.substr(0, Src.find('/'));
+                //a part's footprint places its FILES: its facts (options, DLL overrides, entries) are its own, never selected
+                if (T == "INTO" && Ns != "FILES") return "an INTO's TAKE (the part's footprint) selects files only: '" + Src + "'";
                 std::string At;
                 if (S.is_array())
                 {
                     At = Str(S[1]);
                     if (At.compare(0, Ns.size() + 1, Ns + "/") != 0) At = Ns + "/" + At;
                 }
+                else if (T == "INTO" && Src.find('/') != std::string::npos && Src.back() != '/')
+                    At = Src;                                            // a footprint keeps a file it names where it is
                 else if (Src.find('/') != std::string::npos && Src.back() != '/')
                     At = Ns + "/" + Src.substr(Src.rfind('/') + 1);
                 while (!At.empty() && At.back() == '/') At.pop_back();

@@ -107,7 +107,7 @@ bool PlainTwin(const std::filesystem::path &Dir, const std::filesystem::path &De
     const uint64_t Sn = Probe->size(), Cn = Content->size();
     Probe.reset();
     //what a record says its stream is, its content must account for (ExpandInto checks it too): before any scratch exists
-    if (Sn > Cn + Cn / 8 + Rec->n + (64u << 20)) { Err = "the record claims a stream far bigger than its content"; return false; }
+    if (Sn > Cn + Cn / 8 + Rec->n + (1u << 20)) { Err = "the record claims a stream far bigger than its content"; return false; }
     //room for the scratch (the stream and its content) and the twin (about a quarter of the stream), with a margin
     if (const auto Sp = std::filesystem::space(Dir, Ec); !Ec && Sp.available < Sn + Cn + Sn / 2 + (256u << 20))
     { Err = "not enough free disk in " + Dir.string() + " (" + std::to_string((Sn + Cn + Sn / 2) >> 20) + " MiB needed, " + std::to_string(Sp.available >> 20) + " free)"; return false; }
@@ -193,7 +193,9 @@ size_t UsePlainRecords(nlohmann::ordered_json &Spec, const std::filesystem::path
             Job &J = Jobs[K];
             const LayerSpec &X = S.layers[J.I];
             try { J.Ok = PlainTwin(Dir, X.description, X.source, X.cid, J.ContentCid, J.DescCid, J.Content, J.Out, J.Err); }
-            catch (const std::exception &E) { J.Ok = false; J.Err = std::string("the expansion failed: ") + E.what(); J.Transient = true; }
+            catch (const std::bad_alloc &) { J.Ok = false; J.Err = "the expansion ran out of memory"; J.Transient = true; }
+            catch (const std::exception &E) { J.Ok = false; J.Err = std::string("the expansion failed: ") + E.what(); }   // about the data
+            catch (...) { J.Ok = false; J.Err = "the expansion failed"; J.Transient = true; }
             //what is about this machine (room, memory, a file it could not make) is tried again next launch; what is about
             //the data (a record its content cannot code back) is remembered
             if (!J.Ok && (J.Err.rfind("not enough free disk", 0) == 0 || J.Err.rfind("no room", 0) == 0 || J.Err.rfind("cannot ", 0) == 0))

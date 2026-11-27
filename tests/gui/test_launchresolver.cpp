@@ -29,6 +29,7 @@
 #include <set>
 #include <zip.h>
 #include "launchtree.h"
+#include "validate.h"
 #include <unistd.h>
 
 using json = nlohmann::ordered_json;
@@ -1292,11 +1293,6 @@ private slots:
     // environment variable to different values, two parts placing different bytes at one file path (compared without
     // case). Identical writes are one write, and a part and one it goes INTO (a patch on a mod) never conflict.
     // Teeth: compare names only (identical writes reported); skip the INTO exemption; compare paths with case.
-    // Units INSIDE files (MetaPackageFormat 23 §23.4): an archive's members are units at the addresses loose files have
-    // (two mods' BSAs replacing one texture conflict, and so does a loose replacer of it), a plugin's records are units of
-    // the plugin that owns them (two plugins overriding one Skyrim.esm record conflict; the same override twice does not;
-    // their own new records never do). Teeth: list no archive members; address a record by the plugin writing it; compare
-    // records by name only.
     // A part's INTO may carry a TAKE: its FOOTPRINT (MetaPackageFormat 23 §23.4) — what of it goes into the end, and where,
     // as a NODE's TAKE selects and renames. ENB and ReShade both ship d3d11.dll; a ReShade part taking its d3d11.dll as
     // dxgi.dll (chain-loading) mounts it there and conflicts with nothing; without the TAKE they conflict. A TAKE that
@@ -1336,11 +1332,53 @@ private slots:
         for (size_t I = 0; I < Tn.S.layers.size(); ++I)
             for (const auto &[Src, Dst] : Tn.T.mounts[I]) if (Dst.find("d3d11") != std::string::npos || Dst.find("elsewhere") != std::string::npos) ++Shown;
         QCOMPARE(Shown, size_t(0));
-        //a malformed TAKE on INTO is refused like a NODE's
+        //a malformed TAKE on INTO is refused like a NODE's, and a footprint selects files only (facts are the part's own)
         Node Bad = parse(json{ {"CID", "bad"}, {"LABEL", "bad"}, {"LAYERS", json::array({ json{{"INTO", json::array({"game"})}, {"TAKE", "FILES/x"}} })} }, "/tmp/vg_bundle");
         QVERIFY(!Bad.LowerError.empty());
+        Node Facts = parse(json{ {"CID", "facts"}, {"LABEL", "facts"}, {"LAYERS", json::array({ json{{"INTO", json::array({"game"})}, {"TAKE", json::array({"DLL"})}} })} }, "/tmp/vg_bundle");
+        QVERIFY(!Facts.LowerError.empty());
+        //a rename that lands on another part's file conflicts THERE (ENB ships dxgi.dll too)
+        idx.Nodes["enbdxgi"] = parse(json{ {"CID", "enbdxgi"}, {"LABEL", "enbdxgi"}, {"LAYERS", json::array({ json{{"INTO", json::array({"game"})}},
+                                     json{{"FILE", "dxgi.dll"}, {"SOURCE", "QmEnbDxgi"}, {"TARGET", "FILES/C:/g"}} })} }, "/tmp/vg_bundle");
+        //the part's facts are never filtered by its footprint (its DLL override, its option)
+        idx.Nodes["rsf"] = parse(json{ {"CID", "rsf"}, {"LABEL", "rsf"}, {"LAYERS", json::array({
+                                     json{{"INTO", json::array({"game"})}, {"TAKE", json::array({ json::array({"FILES/C:/g/d3d11.dll", "FILES/C:/g/dxgi.dll"}) })}},
+                                     json{{"FILE", "d3d11.dll"}, {"SOURCE", "QmRsf"}, {"TARGET", "FILES/C:/g"}},
+                                     json{{"DLL", {{"dxgi", "native,builtin"}}}}, json{{"VARS", {{"preset", {{"DEFAULT", "a"}}}}}} })} }, "/tmp/vg_bundle");
+        //a pack contains the ReShade part: its footprint holds there too
+        idx.Nodes["pack"] = parse(json{ {"CID", "pack"}, {"LABEL", "pack"}, {"LAYERS", json::array({ json{{"INTO", json::array({"game"})}}, json{{"NODE", "rs"}} })} }, "/tmp/vg_bundle");
+        //two INTO TAKEs apply in layer order: a.dll taken as b.dll, then b.dll taken
+        idx.Nodes["two"] = parse(json{ {"CID", "two"}, {"LABEL", "two"}, {"LAYERS", json::array({
+                                     json{{"INTO", json::array({"game"})}, {"TAKE", json::array({ json::array({"FILES/C:/g/a.dll", "FILES/C:/g/b.dll"}) })}},
+                                     json{{"INTO", json::array({"game"})}, {"TAKE", json::array({"FILES/C:/g/b.dll"})}},
+                                     json{{"FILE", "a.dll"}, {"SOURCE", "QmTwo"}, {"TARGET", "FILES/C:/g"}} })} }, "/tmp/vg_bundle");
+        finish(idx);
+        QVERIFY2(Addrs(V{"enbdxgi", "rs"}).count("FILES/C:/g/dxgi.dll"), "a rename onto another part's file");
+        const auto MountsOf = [&](const V &Parts) {
+            std::set<std::string> M;
+            const LaunchTree Tm = LaunchTree::Of(Fold::Resolve(ManifestModel::LibraryOf(idx), "game", {}, {}, Shelf::AppliedGrafts(idx, "game", Parts)));
+            for (size_t I = 0; I < Tm.S.layers.size(); ++I) for (const auto &[Src, Dst] : Tm.T.mounts[I]) M.insert(Dst);
+            return M;
+        };
+        {   const Fold::Plan Pf = Fold::Resolve(ManifestModel::LibraryOf(idx), "game", {}, {}, Shelf::AppliedGrafts(idx, "game", V{"rsf"}));
+            QVERIFY2(Pf.Dll.contains("dxgi"), "the part's DLL override stays");
+            QVERIFY2(Pf.Decls.contains("preset"), "the part's option stays"); }
+        {   const auto M = MountsOf(V{"pack"});
+            QVERIFY2(M.count("C:/g/dxgi.dll") && !M.count("C:/g/d3d11.dll"), "a contained part keeps its footprint"); }
+        {   const auto M = MountsOf(V{"two"});
+            QVERIFY2(M.count("C:/g/b.dll") && !M.count("C:/g/a.dll"), "two footprints, in layer order"); }
+        //a footprint that takes none of the part's files is said, never silent
+        std::vector<std::string> Errors, Warnings;
+        Validate::Nodes(idx, Errors, Warnings);
+        bool Said = false; for (const auto &W : Warnings) Said = Said || (W.find("'none'") != std::string::npos && W.find("takes none of its files") != std::string::npos);
+        QVERIFY2(Said, "the empty footprint warns");
     }
 
+    // Units INSIDE files (MetaPackageFormat 23 §23.4): an archive's members are units at the addresses loose files have
+    // (two mods' BSAs replacing one texture conflict, and so does a loose replacer of it), a plugin's records are units of
+    // the plugin that owns them (two plugins overriding one Skyrim.esm record conflict; the same override twice does not;
+    // their own new records never do). Teeth: list no archive members; address a record by the plugin writing it; compare
+    // records by name only.
     void units_inside_archives_and_plugins_conflict()
     {
         namespace fs = std::filesystem;

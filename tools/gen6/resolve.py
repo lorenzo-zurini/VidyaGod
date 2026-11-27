@@ -366,7 +366,7 @@ class Resolver:
         decls, seen = {}, set()
 
         def walk(cid, view):
-            key = (cid, json.dumps(list(view_steps(view)), sort_keys=True) if view_takes(view) else "")
+            key = (cid, json.dumps(list(view_key_steps(view)), sort_keys=True) if view_takes(view) else "")
             if key in seen or cid not in self.nodes:
                 return
             seen.add(key)
@@ -384,17 +384,9 @@ class Resolver:
                         decls.pop(k, None); decls[k] = d
         walk(root, None)
         for g in grafts:                                   # grafts follow the variant: their declarations count too
-            walk(g, self.part_view(g))
+            walk(g, None)
         return resolve_vars(decls, builtins, instance)
 
-    def part_view(self, g):
-        """A part's footprint: the TAKEs of its INTO layers (what of it goes into the end, and where), as a NODE's TAKE."""
-        view = None
-        if g in self.nodes:
-            for L in into_layers(self.nodes[g][0].get("LAYERS", [])):
-                if "TAKE" in L:
-                    view = within(view, L["TAKE"], "")
-        return view
 
     def resolve(self, root, instance=None, builtins=None, grafts=(), selection=None):
         """grafts: the parts applied onto the end, in order (applied_grafts); selection: what a WHEN naming a node CID
@@ -406,7 +398,7 @@ class Resolver:
         self.count, self.selected = {}, set(selection if selection is not None else grafts)
         self._expand(root, None, "", ())
         for g in grafts:                                   # parts after the end, each after what it goes into
-            self._expand(g, self.part_view(g), "", ())
+            self._expand(g, None, "", ())
         plan = self._fold(instance, builtins)
         plan["parts"] = list(grafts)
         return plan
@@ -415,7 +407,7 @@ class Resolver:
         return cid in self.count or cid in self.selected
 
     def _occ(self, cid, view, prefix):
-        return (cid, json.dumps(list(view_steps(view)), sort_keys=True) if view_takes(view) else "", prefix)
+        return (cid, json.dumps(list(view_key_steps(view)), sort_keys=True) if view_takes(view) else "", prefix)
 
     def _expand(self, cid, view, prefix, containers):
         """view: how this occurrence's addresses reach the root — its (TAKE, TARGET) steps, innermost first."""
@@ -435,6 +427,11 @@ class Resolver:
         Ls = node["LAYERS"]
         if any("WHEN" in L and not when(L["WHEN"], self.wv, self._present) for L in into_layers(Ls)):
             self.events.append(("into-off", cid)); return  # not applied at all, and not in the composition
+        # a part's footprint: its INTO layers' TAKEs place its files wherever it is expanded, in layer order (the
+        # first INTO's innermost), inside the container's view; never facts
+        for L in reversed(into_layers(Ls)):
+            if "TAKE" in L:
+                view = within(view, footprint_take(L["TAKE"]), "", True)
         self.first[occ] = containers
         self.order.append(occ)
         self.count[cid] = self.count.get(cid, 0) + 1
@@ -475,7 +472,12 @@ class Resolver:
     def _map_fact(self, view, addr):
         if not view_takes(view):
             return addr
-        for take, _ in view_steps(view):
+        v = view
+        while v:
+            take, files_only = v[0], v[4]
+            v = v[2]
+            if files_only:                                  # a footprint never filters facts
+                continue
             addr = self._taken(take, addr)
             if addr is None:
                 return None
@@ -611,8 +613,21 @@ class Resolver:
 
 # A view is how an occurrence's addresses reach the root: (take, at, outer view, any step takes) — a shared linked
 # list, innermost step first, so a chain 900 deep costs one tuple per level (not a copied list).
-def within(view, take, at):
-    return (take or None, at, view, bool(take) or view_takes(view))
+def footprint_take(take):
+    """A footprint's TAKE as a NODE's reads it: a file or folder it names stays where it is (the pair naming it as
+    itself); the whole namespace and pairs as they are."""
+    out = []
+    for sel in take:
+        if not isinstance(sel, str):
+            out.append(sel); continue
+        s = sel.rstrip("/")
+        out.append(s if "/" not in s else [s, s])
+    return out
+
+
+def within(view, take, at, files_only=False):
+    """files_only: a part's footprint (its INTO's TAKE) places files and never filters facts."""
+    return (take or None, at, view, bool(take) or view_takes(view), files_only)
 
 
 def view_takes(view):
@@ -623,6 +638,13 @@ def view_takes(view):
 def view_steps(view):
     while view:
         yield view[0], view[1]
+        view = view[2]
+
+
+def view_key_steps(view):
+    """The steps with their kind (a footprint's steps key apart from a NODE's: they treat facts differently)."""
+    while view:
+        yield ("F" if view[4] else "") , view[0], view[1]
         view = view[2]
 
 
@@ -1057,6 +1079,16 @@ def fixtures():
          [("v1", {}, []), ("v1", {}, ["g2", P1]), ("v1", {}, ["g3", P1]), ("v1", {}, [P1, "g3"]),
           ("v1", {}, [P1, "g4"]), ("v1", {}, ["g4"]), ("v1", {}, ["g5", P1]), ("v1", {}, ["g5"]),
           ("vup", {}, []), ("vup", {}, [P1]), ("v2", {}, []), ("v4", {}, [])]),
+        # a part's FOOTPRINT (its INTO's TAKE): files placed (renamed, left out), facts untouched; applied wherever the
+        # part is expanded (inside a pack too); two INTO TAKEs in layer order (the first innermost)
+        ("footprint", {"end": N([Z("base"), {"EXEC": [{"LABEL": "Game v1.0", "HOST": "win32", "EXE": "C:/g/g.exe"}]}], VARIANT="Windows"),
+                       "rs": N([{"INTO": ["end"], "TAKE": [["FILES/C:/g/d3d11.dll", "FILES/C:/g/dxgi.dll"]]},
+                                {"FILE": "d3d11.dll", "TARGET": "FILES/C:/g"}, Z("shaders"), {"DLL": {"dxgi": "native,builtin"}},
+                                {"VARS": {"preset": {"DEFAULT": "a"}}}]),
+                       "pack": N([{"INTO": ["end"]}, {"NODE": "rs"}, Z("pack")]),
+                       "two": N([{"INTO": ["end"], "TAKE": [["FILES/C:/g/a.dll", "FILES/C:/g/b.dll"]]},
+                                 {"INTO": ["end"], "TAKE": ["FILES/C:/g/b.dll"]}, {"FILE": "a.dll", "TARGET": "FILES/C:/g"}])},
+         [("end", {}, ["rs"]), ("end", {}, ["pack"]), ("end", {}, ["two"])]),
     ]
 
 

@@ -2,6 +2,7 @@
 #include "varsubst.h"   // EvaluateCondition / RenderValue — the one condition grammar and render formats
 
 #include <algorithm>
+#include <deque>
 #include <cctype>
 #include <optional>
 #include <set>
@@ -152,23 +153,41 @@ struct Step
     std::string At;                         // its TARGET's path ("" = placed where the container is)
     std::shared_ptr<const Step> Next;       // the container's view
     bool AnyTake;                           // this step or one outside it takes
+    bool FilesOnly = false;                 // a part's footprint (its INTO's TAKE): it places files, never filters facts
 };
 using View = std::shared_ptr<const Step>;
 
 bool Takes(const json *T) { return T && !T->is_null() && !(T->is_array() && T->empty()); }
 
-View Within(const View &V, const json *Take, std::string At)
+View Within(const View &V, const json *Take, std::string At, bool FilesOnly = false)
 {
-    return std::make_shared<const Step>(Step{ Take, std::move(At), V, Takes(Take) || (V && V->AnyTake) });
+    return std::make_shared<const Step>(Step{ Take, std::move(At), V, Takes(Take) || (V && V->AnyTake), FilesOnly });
 }
 
 bool ViewTakes(const View &V) { return V && V->AnyTake; }
+
+//A footprint's TAKE as a NODE's would read it: a file or a folder it names STAYS where it is (a NODE's TAKE left-strips
+//it under its TARGET; a footprint has no TARGET: what it does not rename keeps its place), so each such selection is
+//the pair that names it as itself; the whole namespace and pairs stay as they are.
+json FootprintTake(const json &Take)
+{
+    json Out = json::array();
+    for (const auto &Sel : Take)
+    {
+        if (!Sel.is_string()) { Out.push_back(Sel); continue; }
+        std::string S = Sel.get<std::string>();
+        while (!S.empty() && S.back() == '/') S.pop_back();
+        if (S.find('/') == std::string::npos) Out.push_back(S);            // "FILES": every file, where it is
+        else Out.push_back(json::array({ S, S }));
+    }
+    return Out;
+}
 
 std::string ViewKey(const View &V)
 {
     if (!ViewTakes(V)) return std::string();
     std::string K;
-    for (const Step *S = V.get(); S; S = S->Next.get()) { K += Takes(S->Take) ? S->Take->dump() : "-"; K += '\x1e'; K += S->At; K += '\x1d'; }
+    for (const Step *S = V.get(); S; S = S->Next.get()) { K += S->FilesOnly ? "F" : ""; K += Takes(S->Take) ? S->Take->dump() : "-"; K += '\x1e'; K += S->At; K += '\x1d'; }
     return K;
 }
 
@@ -184,7 +203,7 @@ std::optional<std::string> MapFact(const View &V, std::string Addr)
     if (!ViewTakes(V)) return Addr;
     for (const Step *S = V.get(); S; S = S->Next.get())
     {
-        if (!Takes(S->Take)) continue;
+        if (!Takes(S->Take) || S->FilesOnly) continue;                    // a footprint never filters facts
         const auto A = Taken(*S->Take, Addr);
         if (!A) return std::nullopt;
         Addr = *A;
@@ -289,6 +308,15 @@ public:
         //applied at all, not partly — and is not in the composition: nothing counts it present.
         for (const json *In : IntoLayers(Layers))
             if (In->contains("WHEN") && !When((*In)["WHEN"], Wv, Pres)) { Events.push_back({ "into-off", Cid }); return; }
+        //A part's FOOTPRINT (MetaPackageFormat 23 §23.4, the upward TAKE): its INTO layers' TAKEs place its files — what of
+        //it goes in, and where — wherever it is expanded (applied at launch, or contained in a pack). They apply in layer
+        //order (the first INTO's innermost), inside the container's view; they never filter facts.
+        View Here = Through;
+        {
+            const auto Ins = IntoLayers(Layers);
+            for (auto It = Ins.rbegin(); It != Ins.rend(); ++It)
+                if ((*It)->contains("TAKE")) { Footprints.push_back(FootprintTake((**It)["TAKE"])); Here = Within(Here, &Footprints.back(), std::string(), true); }
+        }
         First[Key] = Containers;
         Order.push_back({ Key, Cid });
         ++Count[Cid];
@@ -312,7 +340,7 @@ public:
                     At = P;
                 }
                 const std::string Ref = Str(L["NODE"]);
-                const View V = Within(Through, L.contains("TAKE") ? &L["TAKE"] : nullptr, At);
+                const View V = Within(Here, L.contains("TAKE") ? &L["TAKE"] : nullptr, At);
                 if (!ExecOnly && !Lib.Find(Ref)) Slots.push_back({ T, &L, I, Inner, Cid, E->Dir, Prefix, V, Depth, Ref });
                 ++Depth;
                 Expand(Ref, V, Sub, Inner);
@@ -323,13 +351,13 @@ public:
                 //What a part goes into must be in the composition beneath it: for a part selected at launch that is
                 //the end or a part applied to it (the hard link is the offer's, OfferedGrafts); for a part a node
                 //contains, it is what that node placed beneath it (the container vouches for its own list).
-                if (!ExecOnly) Slots.push_back({ T, &L, I, Inner, Cid, E->Dir, Prefix, Through, Depth, {} });
+                if (!ExecOnly) Slots.push_back({ T, &L, I, Inner, Cid, E->Dir, Prefix, Here, Depth, {} });
                 bool Met = false;
                 if (L["INTO"].is_array()) for (const auto &M : L["INTO"]) if (Count.count(Str(M))) { Met = true; break; }
                 if (!Met) Events.push_back({ "into-unmet", Cid });
             }
             else if (!ExecOnly || T == "EXEC")
-                Slots.push_back({ T, &L, I, Inner, Cid, E->Dir, Prefix, Through, Depth, {} });
+                Slots.push_back({ T, &L, I, Inner, Cid, E->Dir, Prefix, Here, Depth, {} });
         }
     }
 
@@ -342,6 +370,7 @@ public:
     int Decisions = 0;                                                      // held/move decisions taken so far
     int Depth = 0;                                                          // NODE layers in, while expanding
     std::vector<Slot> Slots;
+    std::deque<json> Footprints;            // the footprints views point into (a deque: they never move)
     std::unordered_map<std::string, Chain> First;
     std::unordered_map<std::string, int> OnPath;                             // nodes being expanded right now (cycle guard)
     std::vector<std::pair<std::string, std::string>> Order;                  // (occurrence key, cid)
@@ -586,16 +615,7 @@ static Plan ResolveImpl(const Library &Lib, const std::string &Root, const Vars 
     Phase1Walk(Lib, Root, nullptr, Seen, Decls1);
     //Grafts follow the variant in the list, so their plain declarations count too — a graft's own options (UserPatch's
     //installer features) gate its own layers.
-    //A part's INTO layers may carry a TAKE: its FOOTPRINT (MetaPackageFormat 23 §23.4, the upward TAKE) — what of the part
-    //goes into the end, and where, exactly as a NODE's TAKE selects and renames what it brings in.
-    const auto PartView = [&](const std::string &G) -> View {
-        View V;
-        if (const Library::Entry *E = Lib.Find(G); E && E->Node->contains("LAYERS"))
-            for (const json *In : IntoLayers((*E->Node)["LAYERS"]))
-                if (In->contains("TAKE")) V = Within(V, &(*In)["TAKE"], std::string());
-        return V;
-    };
-    for (const auto &G : Grafts) Phase1Walk(Lib, G, PartView(G), Seen, Decls1);
+    for (const auto &G : Grafts) Phase1Walk(Lib, G, nullptr, Seen, Decls1);
     Vars Wv = Builtins;
     for (const auto &[K, V] : ResolveVars(Decls1, Builtins, Instance)) Wv[K] = V;
     P.WhenVars = Wv;
@@ -605,7 +625,7 @@ static Plan ResolveImpl(const Library &Lib, const std::string &Root, const Vars 
     Expander X(Lib, Wv, ExecOnly, Flip, &Selected);
     X.Expand(Root, nullptr, std::string(), nullptr);
     //Parts follow the end, each after what it goes into (ApplyGrafts' order: a part after its target, siblings by CID).
-    for (const auto &G : Grafts) X.Expand(G, PartView(G), std::string(), nullptr);
+    for (const auto &G : Grafts) X.Expand(G, nullptr, std::string(), nullptr);
     P.Parts = Grafts;
     P.Error = X.Error;
     // phase 3

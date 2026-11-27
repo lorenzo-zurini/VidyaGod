@@ -599,6 +599,26 @@ void Nodes(const NodeIndex &Idx, std::vector<std::string> &Errors, std::vector<s
             if (!DefaultTree) DefaultTree = Lt;
             for (const std::string &Why : Lt.T.problems)
                 Once(Res.Errors, Tag + ": " + Why + " — contain the node that holds the file it names");
+            //A part's footprint (the TAKE on its INTO) that takes none of its own files mounts nothing of it: a typo or a case
+            //mismatch, never what an author means — the part is still offered, ticked and applied.
+            for (const std::string &G : Gs)
+            {
+                const Node *Gn = Idx.Find(G);
+                if (!Gn || !Gn->Json->contains("LAYERS")) continue;
+                bool Footprint = false;
+                for (const auto *In : Fold::IntoLayers((*Gn->Json)["LAYERS"])) Footprint = Footprint || In->contains("TAKE");
+                if (!Footprint) continue;
+                size_t Own = 0, Shown = 0;
+                for (size_t J = 0; J < P.Seq.size(); ++J)
+                {
+                    const Fold::Item &It = P.Seq[J];
+                    if (It.From != Gn->Key() || It.Kind == "EDIT") continue;
+                    ++Own;
+                    const auto L = Lt.LayerOf.find(J);
+                    if (L != Lt.LayerOf.end() && !Lt.S.layers[L->second].bytesOnly && !Lt.T.mounts[L->second].empty()) ++Shown;
+                }
+                if (Own && !Shown) Once(Res.Warnings, Tag + ": part '" + G + "' — its footprint (the TAKE on its INTO) takes none of its files, so nothing of it mounts");
+            }
             //A CODED layer names its description by CID too (04): the launch must carry it.
             for (size_t D = 0; D < Lt.S.layers.size(); ++D)
                 if (Lt.S.layers[D].type == ::LayerType::Coded && Lt.S.layers[D].description == P.Seq[Lt.ItemOf[D]].Description)

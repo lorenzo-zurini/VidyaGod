@@ -211,18 +211,20 @@ std::vector<PartConflict> PartConflicts(const NodeIndex &Idx, const std::string 
                 continue;
             }
             //Where the tree places a file of this layer (MetaPackageFormat 23 §23.4: a part's footprint is what it writes
-            //WHERE it lands — through any TAKE, a NODE's or its INTO's): the layer's mounts, as the mount reads them. Inner:
-            //a zip member's path, or "" for a file or coded layer's own file (Name: its name in the node).
-            const auto Placed = [&](size_t Layer, const std::string &Inner, const std::string &Name) -> std::optional<std::string> {
+            //WHERE it lands — through any TAKE, a NODE's or its INTO's): EVERY place the layer's mounts put it (selections
+            //that overlap mount it at each: a rename plus "FILES" is the file twice), as the mount reads them. Inner: a zip
+            //member's path, or "" for a file or coded layer's own file (Name: its name in the node). None: not taken.
+            const auto Placed = [&](size_t Layer, const std::string &Inner, const std::string &Name) {
+                std::vector<std::string> At;
                 for (const auto &[Src, Dst] : T.T.mounts[Layer])
                 {
                     const std::string Sep = Dst.empty() ? "" : "/";
-                    if (Inner.empty()) return Src.empty() ? Dst + Sep + Name : Dst;   // a file: under its name, or renamed
-                    if (Src.empty()) return Dst + Sep + Inner;
-                    if (Inner == Src) return Dst;
-                    if (Inner.size() > Src.size() && Inner.compare(0, Src.size() + 1, Src + "/") == 0) return Dst + Sep + Inner.substr(Src.size() + 1);
+                    if (Inner.empty()) At.push_back(Src.empty() ? Dst + Sep + Name : Dst);   // a file: under its name, or renamed
+                    else if (Src.empty()) At.push_back(Dst + Sep + Inner);
+                    else if (Inner == Src) At.push_back(Dst);
+                    else if (Inner.size() > Src.size() && Inner.compare(0, Src.size() + 1, Src + "/") == 0) At.push_back(Dst + Sep + Inner.substr(Src.size() + 1));
                 }
-                return std::nullopt;                                     // not taken: not written
+                return At;
             };
             //a file's inner units (an archive's members beside loose files, a plugin's records): in the folder it lands in
             const auto InnerOf = [&](size_t Layer, const std::string &Member, const std::string &At) {
@@ -231,25 +233,26 @@ std::vector<PartConflict> PartConflicts(const NodeIndex &Idx, const std::string 
                     for (const InnerUnit &X : *U)
                         F[X.Address.rfind("RECORD/", 0) == 0 ? X.Address : "FILES/" + Dir + (Dir.empty() ? "" : "/") + X.Address] = X.Value;
             };
+            const std::string Name = I.Kind == "CODED" ? I.Name : std::filesystem::path(I.Payload).filename().string();
+            if (T.S.layers.empty())                                      // a plan the FS could not read: where the layers say
+            {
+                if (I.Kind == "FILE" || I.Kind == "CODED") F["FILES/" + I.Target + (I.Target.empty() ? "" : "/") + Name] = Src;
+                continue;
+            }
             const auto Lay = T.LayerOf.find(J);
             if (Lay == T.LayerOf.end() || T.S.layers[Lay->second].bytesOnly) continue;   // read for its bytes only: writes nothing
             if (I.Kind == "FILE" || I.Kind == "CODED")
             {
-                const std::string Name = I.Kind == "CODED" ? I.Name : std::filesystem::path(I.Payload).filename().string();
-                const auto At = Placed(Lay->second, "", Name);
-                if (!At) continue;
-                F["FILES/" + *At] = Src;
-                InnerOf(Lay->second, "", *At);
+                for (const std::string &At : Placed(Lay->second, "", Name)) { F["FILES/" + At] = Src; InnerOf(Lay->second, "", At); }
                 continue;
             }
             if (const auto *M = Names.Of(T, Lay->second, false))
                 for (const std::string &E : *M)
-                {
-                    const auto At = Placed(Lay->second, E, "");
-                    if (!At) continue;
-                    F["FILES/" + *At] = Src + ":" + E;
-                    if (InnerUnits::KindOf(E)) InnerOf(Lay->second, E, *At);
-                }
+                    for (const std::string &At : Placed(Lay->second, E, ""))
+                    {
+                        F["FILES/" + At] = Src + ":" + E;
+                        if (InnerUnits::KindOf(E)) InnerOf(Lay->second, E, At);
+                    }
         }
         Prints.push_back(std::move(F));
         Ranges.push_back(std::move(Rs));
