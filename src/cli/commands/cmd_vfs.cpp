@@ -494,16 +494,10 @@ VG_COMMANDS
             const std::string D = Command::Str(A, "delta");
             if (Command::Bool(A, "make", false))
             {
-                //The matcher wants the base as one flat range: one base file is its mapping; several are joined in
-                //memory (they are one base, concatenated). The delta streams to the file, never resident.
-                std::vector<uint8_t> Joined(1, 0);                      // (over nothing: an empty base, never a null one)
-                const uint8_t *B = Maps.size() == 1 ? Maps.front()->p : Maps.empty() ? Joined.data() : nullptr;
-                if (!B)
-                {
-                    Joined.resize(Base->size());
-                    if (!Base->preadAll(Joined.data(), Joined.size(), 0)) throw std::runtime_error("cannot read the base");
-                    B = Joined.data();
-                }
+                //Several base files are one base, back to back: the matcher reads each where it is mapped (never joined in
+                //memory: a whole-build delta's bases are gigabytes). The delta streams to the file, never resident.
+                std::vector<std::pair<const uint8_t *, size_t>> Bases;
+                for (const auto &M : Maps) Bases.push_back({ M->p, static_cast<size_t>(M->n) });
                 auto T = Map(Command::Str(A, "target"));
                 std::error_code Ec;
                 for (const std::string &In : PathList(A, "base"))
@@ -512,7 +506,7 @@ VG_COMMANDS
                 //Made beside it, then named: a make that fails leaves a delta already there as it was.
                 const std::string Making = D + ".making";
                 std::string Err;
-                if (!vgdelta::GenerateDeltaToFile(B, Base->size(), T->p, T->n, Making, Err,
+                if (!vgdelta::GenerateDeltaToFile(Bases, T->p, T->n, Making, Err,
                                                   static_cast<uint32_t>(Command::Int(A, "block", vgdelta::DEFAULT_BLOCK)),
                                                   std::filesystem::absolute(D).parent_path().string()))   // scratch beside it, not a tmpfs
                     throw std::runtime_error("the delta could not be made: " + Err);
