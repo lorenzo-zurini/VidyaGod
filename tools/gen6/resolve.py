@@ -488,9 +488,14 @@ class Resolver:
     def _map_files(self, view, addr, prefix=""):
         if not view_takes(view):                           # no take: the composed placement alone
             return "FILES/" + place(ns_path(addr)[1], prefix)
-        for take, at in view_steps(view):
-            addr = self._taken(take, addr)
-            if addr is None:
+        v = view
+        while v:
+            take, at, files_only = v[0], v[1], v[4]
+            v = v[2]
+            a = self._taken(take, addr)
+            if a is not None:
+                addr = a
+            elif not files_only:                           # a footprint renames an edit's file or a kept folder, never drops it
                 return None
             if at:
                 addr = "FILES/" + place(ns_path(addr)[1], at)
@@ -1084,7 +1089,9 @@ def fixtures():
         ("footprint", {"end": N([Z("base"), {"EXEC": [{"LABEL": "Game v1.0", "HOST": "win32", "EXE": "C:/g/g.exe"}]}], VARIANT="Windows"),
                        "rs": N([{"INTO": ["end"], "TAKE": [["FILES/C:/g/d3d11.dll", "FILES/C:/g/dxgi.dll"]]},
                                 {"FILE": "d3d11.dll", "TARGET": "FILES/C:/g"}, Z("shaders"), {"DLL": {"dxgi": "native,builtin"}},
-                                {"VARS": {"preset": {"DEFAULT": "a"}}}]),
+                                {"VARS": {"preset": {"DEFAULT": "a"}}}, {"KEEP": {"FILES/C:/g/ReShade.ini": True}},
+                                {"EDIT": [{"MODE": "ConfigWrite", "SECTION": "[GENERAL]", "KEY": "PresetPath", "VALUE": "x"}], "TARGET": "FILES/C:/g/ReShade.ini"},
+                                {"EDIT": [{"MODE": "ConfigWrite", "SECTION": "[S]", "KEY": "K", "VALUE": "1"}], "TARGET": "FILES/C:/g/d3d11.dll"}]),
                        "pack": N([{"INTO": ["end"]}, {"NODE": "rs"}, Z("pack")]),
                        "two": N([{"INTO": ["end"], "TAKE": [["FILES/C:/g/a.dll", "FILES/C:/g/b.dll"]]},
                                  {"INTO": ["end"], "TAKE": ["FILES/C:/g/b.dll"]}, {"FILE": "a.dll", "TARGET": "FILES/C:/g"}])},

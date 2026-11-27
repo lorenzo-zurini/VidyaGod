@@ -1344,7 +1344,9 @@ private slots:
         idx.Nodes["rsf"] = parse(json{ {"CID", "rsf"}, {"LABEL", "rsf"}, {"LAYERS", json::array({
                                      json{{"INTO", json::array({"game"})}, {"TAKE", json::array({ json::array({"FILES/C:/g/d3d11.dll", "FILES/C:/g/dxgi.dll"}) })}},
                                      json{{"FILE", "d3d11.dll"}, {"SOURCE", "QmRsf"}, {"TARGET", "FILES/C:/g"}},
-                                     json{{"DLL", {{"dxgi", "native,builtin"}}}}, json{{"VARS", {{"preset", {{"DEFAULT", "a"}}}}}} })} }, "/tmp/vg_bundle");
+                                     json{{"DLL", {{"dxgi", "native,builtin"}}}}, json{{"VARS", {{"preset", {{"DEFAULT", "a"}}}}}},
+                                     json{{"KEEP", {{"FILES/C:/g/ReShade.ini", true}}}},
+                                     json{{"EDIT", json::array({ {{"MODE", "ConfigWrite"}, {"SECTION", "[S]"}, {"KEY", "K"}, {"VALUE", "1"}} })}, {"TARGET", "FILES/C:/g/ReShade.ini"}} })} }, "/tmp/vg_bundle");
         //a pack contains the ReShade part: its footprint holds there too
         idx.Nodes["pack"] = parse(json{ {"CID", "pack"}, {"LABEL", "pack"}, {"LAYERS", json::array({ json{{"INTO", json::array({"game"})}}, json{{"NODE", "rs"}} })} }, "/tmp/vg_bundle");
         //two INTO TAKEs apply in layer order: a.dll taken as b.dll, then b.dll taken
@@ -1362,7 +1364,10 @@ private slots:
         };
         {   const Fold::Plan Pf = Fold::Resolve(ManifestModel::LibraryOf(idx), "game", {}, {}, Shelf::AppliedGrafts(idx, "game", V{"rsf"}));
             QVERIFY2(Pf.Dll.contains("dxgi"), "the part's DLL override stays");
-            QVERIFY2(Pf.Decls.contains("preset"), "the part's option stays"); }
+            QVERIFY2(Pf.Decls.contains("preset"), "the part's option stays");
+            QVERIFY2(Pf.Keep.dump().find("ReShade.ini") != std::string::npos, "the part's kept file stays");
+            bool Edit = false; for (const auto &It : Pf.Seq) Edit = Edit || (It.Kind == "EDIT" && It.Target == "C:/g/ReShade.ini");
+            QVERIFY2(Edit, "the part's edit of a file its footprint does not name stays"); }
         {   const auto M = MountsOf(V{"pack"});
             QVERIFY2(M.count("C:/g/dxgi.dll") && !M.count("C:/g/d3d11.dll"), "a contained part keeps its footprint"); }
         {   const auto M = MountsOf(V{"two"});

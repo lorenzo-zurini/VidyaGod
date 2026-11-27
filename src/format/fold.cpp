@@ -220,8 +220,10 @@ std::optional<std::string> MapFiles(const View &V, std::string Addr, const std::
         if (Takes(S->Take))
         {
             const auto A = Taken(*S->Take, Addr);
-            if (!A) return std::nullopt;
-            Addr = *A;
+            if (A) Addr = *A;
+            else if (!S->FilesOnly) return std::nullopt;
+            //a footprint selects the part's CONTENT (NodeLower mounts it through the view); an edit's file or a kept folder
+            //it does not name is the part's still, where it is — a footprint renames such an address, never drops it
         }
         if (!S->At.empty()) Addr = "FILES/" + Place(NsPath(Addr).second, S->At);
     }
