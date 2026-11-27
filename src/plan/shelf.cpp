@@ -155,6 +155,7 @@ std::vector<PartConflict> PartConflicts(const NodeIndex &Idx, const std::string 
     if (!L || Applied.size() < 2) return Out;
     const Fold::Library Lib = ManifestModel::LibraryOf(Idx);
     ArchiveNames Names;
+    InnerUnits Inner;
     //A part's footprint: what applying it (after the parts before it) changes — address -> the value it writes.
     using Print = std::map<std::string, std::string>;
     std::vector<Print> Prints;
@@ -209,12 +210,32 @@ std::vector<PartConflict> PartConflicts(const NodeIndex &Idx, const std::string 
                     }
                 continue;
             }
-            if (I.Kind == "FILE") { F["FILES/" + I.Target + "/" + std::filesystem::path(I.Payload).filename().string()] = Src; continue; }
-            if (I.Kind == "CODED") { F["FILES/" + I.Target + "/" + I.Name] = Src; continue; }
+            //a file's inner units (an archive's members beside loose files, a plugin's records): in the folder the file is in
+            const auto InnerOf = [&](size_t Layer, const std::string &Member, const std::string &Dir) {
+                if (const auto *U = Inner.Of(T, Layer, Member))
+                    for (const InnerUnit &X : *U)
+                        F[X.Address.rfind("RECORD/", 0) == 0 ? X.Address : "FILES/" + Dir + (Dir.empty() ? "" : "/") + X.Address] = X.Value;
+            };
             const auto Lay = T.LayerOf.find(J);
-            if (Lay == T.LayerOf.end() || T.S.layers[Lay->second].bytesOnly) continue;
+            const bool Shown = Lay != T.LayerOf.end() && !T.S.layers[Lay->second].bytesOnly;
+            if (I.Kind == "FILE")
+            {
+                F["FILES/" + I.Target + "/" + std::filesystem::path(I.Payload).filename().string()] = Src;
+                if (Shown) InnerOf(Lay->second, "", I.Target);
+                continue;
+            }
+            if (I.Kind == "CODED") { F["FILES/" + I.Target + "/" + I.Name] = Src; if (Shown) InnerOf(Lay->second, "", I.Target); continue; }
+            if (!Shown) continue;
             if (const auto *M = Names.Of(T, Lay->second, false))
-                for (const std::string &E : *M) F["FILES/" + I.Target + (I.Target.empty() ? "" : "/") + E] = Src + ":" + E;
+                for (const std::string &E : *M)
+                {
+                    F["FILES/" + I.Target + (I.Target.empty() ? "" : "/") + E] = Src + ":" + E;
+                    if (InnerUnits::KindOf(E))
+                    {
+                        const std::string Dir = std::filesystem::path(E).parent_path().generic_string();
+                        InnerOf(Lay->second, E, I.Target + (I.Target.empty() || Dir.empty() ? "" : "/") + Dir);
+                    }
+                }
         }
         Prints.push_back(std::move(F));
         Ranges.push_back(std::move(Rs));

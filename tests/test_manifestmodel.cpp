@@ -1686,7 +1686,7 @@ TEST(validate_replaceall_needs_its_pattern_not_a_site)
 static std::vector<uint8_t> FamilyBsa(const std::vector<uint8_t> &Data, uint32_t Attempts)
 {
     auto U32 = [](std::vector<uint8_t> &V, uint32_t X) { for (int I = 0; I < 4; ++I) V.push_back(static_cast<uint8_t>(X >> (8 * I))); };
-    coding::Lz4hcParser P; std::vector<coding::Lz4Seq> Seqs; P.parse(Data.data(), Data.size(), Attempts, Seqs);
+    coding::Lz4hcParser P; std::vector<coding::Lz4Seq> Seqs; uint64_t St = 0; P.parse(Data.data(), Data.size(), Attempts, Seqs, St);
     std::vector<uint8_t> Blk;
     auto Len = [](std::vector<uint8_t> &O, size_t N) { for (; N >= 255; N -= 255) O.push_back(255); O.push_back(static_cast<uint8_t>(N)); };
     for (const auto &Q : Seqs)
@@ -1716,8 +1716,9 @@ static std::vector<uint8_t> FamilyBsa(const std::vector<uint8_t> &Data, uint32_t
 
 // A coded layer whose record is PREDICTED mounts its PLAIN twin, made once in the machine's cache (VidyaGodFS's own
 // reading of the content, here a delta over nothing: the content stored compressed), and the game reads the shipped
-// bytes; a second launch reuses the twin; the same record over other content gets a twin of its own; content with no
-// bytes keeps the predicted record. Teeth: skip the swap; re-expand every time; key the twin by the record alone.
+// bytes; a second launch reuses the twin; the same record over other content is refused and remembered; a record
+// claiming an impossible size makes no scratch; content with no bytes keeps the predicted record. Teeth: skip the swap;
+// re-expand every time; key the twin by the record alone; forget a failure; drop the size bound.
 TEST(a_predicted_coded_record_mounts_its_plain_twin)
 {
     namespace fs = std::filesystem;
@@ -1741,7 +1742,7 @@ TEST(a_predicted_coded_record_mounts_its_plain_twin)
     const auto Dl = vgdelta::GenerateDelta(None, 0, Content.data(), Content.size());
     CHECK(!Dl.empty());
     Put(Dir / "a.bsa.content.vgdelta", Dl);
-    auto Content2 = Content; Content2[40] ^= 1;                              // another content (not the record's)
+    auto Content2 = Content; Content2[Content2.size() - 100] ^= 1;          // another content (not the record's): a member's byte
     Put(Dir / "wrong.content", Content2);
     const auto SpecOf = [&](bool Right) {
         ordered_json L = ordered_json::array();
@@ -1777,12 +1778,38 @@ TEST(a_predicted_coded_record_mounts_its_plain_twin)
     ordered_json S2 = SpecOf(true);
     CHECK_EQ(CodedCache::UsePlainRecords(S2, Dir / "cache"), 1u);
     CHECK(fs::last_write_time(Twin) == T0);
-    //the same record over other content codes another stream: its twin is its own, never the first one
+    //the same record over other content codes another stream, which its segments' hashes refuse: no twin, the reason
+    //remembered (not tried at every launch, unless asked), the first twin untouched, no scratch left behind
     ordered_json S3 = SpecOf(false);
-    CHECK_EQ(CodedCache::UsePlainRecords(S3, Dir / "cache"), 1u);
-    CHECK_EQ(S3["layers"][2].value("source", std::string()), (Dir / "cache" / "QmRecord.QmOther.QmDesc.vgcr").string());
+    CHECK_EQ(CodedCache::UsePlainRecords(S3, Dir / "cache"), 0u);
+    CHECK_EQ(S3["layers"][2].value("source", std::string()), (Dir / "a.bsa.vgcq").string());
+    CHECK(!fs::exists(Dir / "cache" / "QmRecord.QmOther.QmDesc.vgcr"));
+    CHECK(fs::exists(Dir / "cache" / "QmRecord.QmOther.QmDesc.failed"));
     CHECK(fs::last_write_time(Twin) == T0);
-    CHECK(fs::exists(Dir / "cache" / "QmRecord.QmOther.QmDesc.vgcr"));
+    const auto F0 = fs::last_write_time(Dir / "cache" / "QmRecord.QmOther.QmDesc.failed");
+    ordered_json S3b = SpecOf(false);
+    CHECK_EQ(CodedCache::UsePlainRecords(S3b, Dir / "cache"), 0u);
+    CHECK(fs::last_write_time(Dir / "cache" / "QmRecord.QmOther.QmDesc.failed") == F0);   // not tried again
+    ordered_json S3c = SpecOf(false);
+    CHECK_EQ(CodedCache::UsePlainRecords(S3c, Dir / "cache", true), 0u);                  // tried again: still refused
+    {   size_t Parts = 0; for (const auto &E : fs::directory_iterator(Dir / "cache")) if (E.path().extension() == ".part") ++Parts;
+        CHECK_EQ(Parts, 0u); }
+    //a record claiming a stream far bigger than its content (a hostile peer's: 2^40 bytes) makes no scratch at all
+    {
+        auto Big = Rec; std::vector<uint8_t> H = {'V', 'G', 'C', 'Q'};
+        size_t At = 4; while (Big[At] & 0x80) ++At; ++At;                      // past the shipped size's varint
+        for (uint64_t V = 1ull << 40; V >= 0x80; V >>= 7) H.push_back(static_cast<uint8_t>(V | 0x80));
+        H.push_back(static_cast<uint8_t>((1ull << 40) >> 35));
+        H.insert(H.end(), Big.begin() + static_cast<long>(At), Big.end());
+        Put(Dir / "big.vgcq", H);
+        ordered_json S5 = SpecOf(true); S5["layers"][2]["source"] = (Dir / "big.vgcq").string(); S5["layers"][2]["cid"] = "QmBig";
+        const auto T1 = std::chrono::steady_clock::now();
+        CHECK_EQ(CodedCache::UsePlainRecords(S5, Dir / "cache4"), 0u);
+        CHECK(std::chrono::steady_clock::now() - T1 < std::chrono::seconds(20));
+        size_t Parts = 0; std::error_code Ec;
+        for (const auto &E : fs::directory_iterator(Dir / "cache4", Ec)) if (E.path().extension() == ".part") ++Parts;
+        CHECK_EQ(Parts, 0u);
+    }
     //a launch whose content has no bytes: no twin, the predicted record stays
     ordered_json S4 = SpecOf(false); S4["layers"][0]["source"] = (Dir / "missing").string();
     CHECK_EQ(CodedCache::UsePlainRecords(S4, Dir / "cache3"), 0u);

@@ -191,7 +191,8 @@ VG_COMMANDS
         "<data root>/CACHE/coded, made here if it is not there yet, so the first launch does not wait for it. The spec is the "
         "mount spec a launch writes (vidyagodfs.spec.json in its temporary folder) or any spec of that shape. --out: write "
         "the spec with the twins in place.",
-        { AsPath(Pos("spec", "a vidyagodfs mount spec (JSON)")), AsPath(Opt("out", "write the spec reading the twins here")) },
+        { AsPath(Pos("spec", "a vidyagodfs mount spec (JSON)")), AsPath(Opt("out", "write the spec reading the twins here")),
+          Flag("retry", "try again the twins that could not be made before") },
         { "coding twins /tmp/vg/vidyagodfs.spec.json" },
         { "CodedCache::UsePlainRecords", "CodedCache::PlainTwin" }, Needs::Config, false,
         [](Command::Context &, const json &A) {
@@ -200,7 +201,7 @@ VG_COMMANDS
             json Spec = json::parse(F, nullptr, false);
             if (Spec.is_discarded() || !Spec.is_object()) throw Command::BadArgs(Command::Str(A, "spec") + " is not a mount spec");
             const double T0 = Now();
-            const size_t N = CodedCache::UsePlainRecords(Spec, AppPaths::DataRoot() / "CACHE" / "coded");
+            const size_t N = CodedCache::UsePlainRecords(Spec, AppPaths::DataRoot() / "CACHE" / "coded", Command::Bool(A, "retry", false));
             json Twins = json::array();
             for (const auto &L : Spec.value("layers", json::array()))
                 if (L.is_object() && L.value("type", std::string()) == "coded") Twins.push_back({{"name", L.value("name", std::string())}, {"reads", L.value("source", std::string())}});

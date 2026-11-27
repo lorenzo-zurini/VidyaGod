@@ -26,5 +26,7 @@ bool PlainTwin(const std::filesystem::path &Dir, const std::filesystem::path &De
 //Every coded layer of a mount spec whose record is predicted: its source becomes the twin (made first where missing).
 //A layer whose twin cannot be made keeps its predicted record (it serves the same bytes, slower) and the reason is logged.
 //Returns how many layers now read a twin.
-size_t UsePlainRecords(nlohmann::ordered_json &Spec, const std::filesystem::path &Dir);
+//A twin that could not be made is remembered (<key>.failed, its reason) and not tried again unless Retry; scratch a dead
+//launch left behind is swept; at most two are made at once.
+size_t UsePlainRecords(nlohmann::ordered_json &Spec, const std::filesystem::path &Dir, bool Retry = false);
 }

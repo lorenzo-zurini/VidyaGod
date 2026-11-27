@@ -43,4 +43,27 @@ private:
     std::set<std::string> Failed;                           // archive keys whose files did not rebuild
 };
 
+// The UNITS inside a file a tree serves (MetaPackageFormat 23 §23.4: each format has its atomic unit), read once per
+// file: a Bethesda archive's (BSA 103/104/105) members, as paths relative to the folder the archive is in ('/'
+// separators: the addresses a loose file there has, so a loose replacer and an archive's member are one unit); a
+// Bethesda plugin's (.esm/.esp/.esl: Oblivion to Skyrim SE) records, as RECORD/<the plugin that owns it>/<FormID, 6 hex
+// digits> (an override of a master's record is that master's unit, whichever plugin writes it). Each with a value that
+// is the same exactly when the unit's bytes are. Null for a file that is neither, or cannot be read here.
+struct InnerUnit { std::string Address, Value; };
+class InnerUnits
+{
+public:
+    // Layer: the spec layer serving the file; Member: its name inside the layer's archive ("" for a file or coded layer).
+    const std::vector<InnerUnit> *Of(const LaunchTree &L, size_t Layer, const std::string &Member);
+    // The parsers, over a file's bytes (exposed for tests and the CLI): false when the bytes are not that format.
+    static bool BsaMembers(const std::vector<uint8_t> &Bsa, std::vector<InnerUnit> &Out);
+    static bool PluginRecords(const std::vector<uint8_t> &Plugin, const std::string &Name, std::vector<InnerUnit> &Out);
+    // Which kind a file name is: 'b' an archive, 'p' a plugin, 0 neither.
+    static char KindOf(const std::string &Name);
+
+private:
+    std::map<std::string, std::vector<InnerUnit>> Units;
+    std::set<std::string> Failed;
+};
+
 #endif // LAUNCHTREE_H

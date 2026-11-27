@@ -26,6 +26,9 @@
 #include "cid.h"
 #include <QTemporaryDir>
 #include <fstream>
+#include <set>
+#include <zip.h>
+#include <unistd.h>
 
 using json = nlohmann::ordered_json;
 
@@ -1288,6 +1291,93 @@ private slots:
     // environment variable to different values, two parts placing different bytes at one file path (compared without
     // case). Identical writes are one write, and a part and one it goes INTO (a patch on a mod) never conflict.
     // Teeth: compare names only (identical writes reported); skip the INTO exemption; compare paths with case.
+    // Units INSIDE files (MetaPackageFormat 23 §23.4): an archive's members are units at the addresses loose files have
+    // (two mods' BSAs replacing one texture conflict, and so does a loose replacer of it), a plugin's records are units of
+    // the plugin that owns them (two plugins overriding one Skyrim.esm record conflict; the same override twice does not;
+    // their own new records never do). Teeth: list no archive members; address a record by the plugin writing it; compare
+    // records by name only.
+    void units_inside_archives_and_plugins_conflict()
+    {
+        namespace fs = std::filesystem;
+        const fs::path B = fs::temp_directory_path() / ("vg_inner_units_" + std::to_string(::getpid()));
+        fs::remove_all(B); fs::create_directories(B);
+        auto u32 = [](std::string &v, uint32_t x) { for (int i = 0; i < 4; ++i) v.push_back(static_cast<char>(x >> (8 * i))); };
+        auto u16 = [](std::string &v, uint16_t x) { v.push_back(static_cast<char>(x)); v.push_back(static_cast<char>(x >> 8)); };
+        //a BSA 105 of one folder, its members stored
+        const auto bsa = [&](const std::string &Folder, const std::vector<std::pair<std::string, std::string>> &Members) {
+            std::string H; uint32_t tfin = 0; for (auto &m : Members) tfin += static_cast<uint32_t>(m.first.size()) + 1;
+            const uint32_t tfn = static_cast<uint32_t>(Folder.size()) + 1;
+            u32(H, 0x00415342); u32(H, 105); u32(H, 36); u32(H, 0x3); u32(H, 1); u32(H, static_cast<uint32_t>(Members.size())); u32(H, tfn); u32(H, tfin); u32(H, 0);
+            u32(H, 1); u32(H, 0); u32(H, static_cast<uint32_t>(Members.size())); u32(H, 0); u32(H, 0); u32(H, 0);
+            const uint32_t region = 36 + 24 + 1 + tfn + 16 * static_cast<uint32_t>(Members.size()) + tfin;
+            H.push_back(static_cast<char>(tfn)); H += Folder; H.push_back(0);
+            uint32_t at = region;
+            for (auto &m : Members) { u32(H, 7); u32(H, 0); u32(H, static_cast<uint32_t>(m.second.size())); u32(H, at); at += static_cast<uint32_t>(m.second.size()); }
+            for (auto &m : Members) { H += m.first; H.push_back(0); }
+            for (auto &m : Members) H += m.second;
+            return H;
+        };
+        //a Skyrim plugin with Skyrim.esm as its master: records (FormID, data) in one group
+        const auto esp = [&](const std::vector<std::pair<uint32_t, std::string>> &Recs) {
+            std::string D; D += "HEDR"; u16(D, 12); u32(D, 0x3FD9999A); u32(D, static_cast<uint32_t>(Recs.size())); u32(D, 0x800);
+            D += "MAST"; u16(D, 11); D += "Skyrim.esm"; D.push_back(0); D += "DATA"; u16(D, 8); u32(D, 0); u32(D, 0);
+            std::string P = "TES4"; u32(P, static_cast<uint32_t>(D.size())); u32(P, 0); u32(P, 0); u32(P, 0); u32(P, 0); P += D;
+            std::string G;
+            for (auto &r : Recs) { std::string E = "EDID"; u16(E, static_cast<uint16_t>(r.second.size() + 1)); E += r.second; E.push_back(0);
+                G += "WEAP"; u32(G, static_cast<uint32_t>(E.size())); u32(G, 0); u32(G, r.first); u32(G, 0); u32(G, 0); G += E; }
+            P += "GRUP"; u32(P, 24 + static_cast<uint32_t>(G.size())); P += "WEAP"; u32(P, 0); u32(P, 0); u32(P, 0); P += G;
+            return P;
+        };
+        const auto put = [&](const char *N, const std::string &Bytes) { std::ofstream(B / N, std::ios::binary) << Bytes; };
+        put("ModA.bsa", bsa("textures", { {"x.dds", "AAAA"}, {"a.dds", "aa"} }));
+        put("ModB.bsa", bsa("textures", { {"x.dds", "BBBB"}, {"b.dds", "bb"} }));
+        put("x.dds", "LOOSE");
+        put("A.esp", esp({ {0x00012EB7u, "IronSword"}, {0x01000800u, "NewA"} }));
+        put("A2.esp", esp({ {0x00012EB7u, "IronSword"}, {0x01000800u, "NewA"} }));
+        put("B.esp", esp({ {0x00012EB7u, "IronSwordB"}, {0x00012EB8u, "Other"} }));
+        NodeIndex idx;
+        idx.Nodes["game"] = launchNode("game", kMachine, {});
+        const auto part = [&](const char *Id, const char *File, const char *Target) {
+            return parse(json{ {"CID", Id}, {"LABEL", Id}, {"LAYERS", json::array({ json{{"INTO", json::array({"game"})}},
+                                                                                     json{{"FILE", File}, {"SOURCE", std::string("Qm") + Id}, {"TARGET", Target}} })} }, B.string());
+        };
+        idx.Nodes["ba"] = part("ba", "ModA.bsa", "FILES/C:/g/Data");
+        idx.Nodes["bb"] = part("bb", "ModB.bsa", "FILES/C:/g/Data");
+        idx.Nodes["lx"] = part("lx", "x.dds", "FILES/C:/g/Data/textures");
+        idx.Nodes["ea"] = part("ea", "A.esp", "FILES/C:/g/Data");
+        idx.Nodes["ea2"] = part("ea2", "A2.esp", "FILES/C:/g/Data");
+        idx.Nodes["eb"] = part("eb", "B.esp", "FILES/C:/g/Data");
+        {   //a mod as most are shipped: a zip (stored) holding Data/ModC.bsa
+            int Ze = 0; zip_t *Z = zip_open((B / "modc.zip").c_str(), ZIP_CREATE | ZIP_TRUNCATE, &Ze);
+            static const std::string C = bsa("textures", { {"x.dds", "CCCC"}, {"c.dds", "cc"} });
+            zip_source_t *Src = zip_source_buffer(Z, C.data(), C.size(), 0);
+            const zip_int64_t I = zip_file_add(Z, "Data/ModC.bsa", Src, ZIP_FL_ENC_UTF_8);
+            zip_set_file_compression(Z, static_cast<zip_uint64_t>(I), ZIP_CM_STORE, 0);
+            zip_close(Z);
+        }
+        idx.Nodes["zc"] = parse(json{ {"CID", "zc"}, {"LABEL", "zc"}, {"LAYERS", json::array({ json{{"INTO", json::array({"game"})}},
+                                     json{{"ZIP", "modc.zip"}, {"SOURCE", "QmZc"}, {"TARGET", "FILES/C:/g"}} })} }, B.string());
+        finish(idx);
+        using V = std::vector<std::string>;
+        const auto Addrs = [&](const V &Parts) {
+            std::set<std::string> S;
+            for (const auto &C : Shelf::PartConflicts(idx, "game", Shelf::AppliedGrafts(idx, "game", Parts))) S.insert(C.Address);
+            return S;
+        };
+        const auto Bsas = Addrs(V{"ba", "bb"});
+        QVERIFY2(Bsas.count("FILES/C:/g/Data/textures/x.dds"), "two archives replacing one member");
+        QVERIFY(!Bsas.count("FILES/C:/g/Data/textures/a.dds") && !Bsas.count("FILES/C:/g/Data/textures/b.dds"));
+        QVERIFY2(Addrs(V{"ba", "lx"}).count("FILES/C:/g/Data/textures/x.dds"), "a loose replacer of an archive's member");
+        const auto Zipped = Addrs(V{"ba", "zc"});
+        QVERIFY2(Zipped.count("FILES/C:/g/Data/textures/x.dds"), "an archive inside a mod's zip");
+        QVERIFY(!Zipped.count("FILES/C:/g/Data/textures/c.dds"));
+        const auto Esps = Addrs(V{"ea", "eb"});
+        QVERIFY2(Esps.count("RECORD/skyrim.esm/012EB7"), "two plugins overriding one master record");
+        QVERIFY(!Esps.count("RECORD/skyrim.esm/012EB8") && !Esps.count("RECORD/a.esp/000800"));
+        QVERIFY2(!Addrs(V{"ea", "ea2"}).count("RECORD/skyrim.esm/012EB7"), "the same override twice is one write");
+        fs::remove_all(B);
+    }
+
     void parts_writing_one_unit_differently_conflict()
     {
         NodeIndex idx;

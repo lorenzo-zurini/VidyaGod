@@ -869,7 +869,7 @@ VG_COMMANDS
         "variable. Identical writes do not conflict, nor do a part and one it goes into.",
         { GameArg(), Opt("ticked", "the choice (a,b,c: CIDs or LABELs)", Type::String, true), Opt("instance", "whose RESOLUTIONS (default the active one)") },
         { "grafts conflicts 'Wipeout XL' --ticked 'Wipeout XL 200 fps,Wipeout XL widescreen'" },
-        { "Shelf::PartConflicts", "Shelf::OrderResolved", "Shelf::ResolutionFor", "Shelf::ResolutionHolds" }, Needs::Config, false,
+        { "Shelf::PartConflicts", "Shelf::OrderResolved", "Shelf::ResolutionFor", "Shelf::ResolutionHolds", "InnerUnits::Of", "InnerUnits::BsaMembers", "InnerUnits::PluginRecords", "InnerUnits::KindOf" }, Needs::Config, false,
         [](Command::Context &C, const json &A) {
             const auto I = Index(C);
             const Node &N = *NodeOf(*I, Command::Str(A, "game"));
