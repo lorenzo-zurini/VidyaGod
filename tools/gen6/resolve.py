@@ -533,8 +533,8 @@ class Resolver:
                         "from": s["from"], "at": s["at"]}
                 if k in ("DELTA", "CODED") and "BASE_SOURCES" in L:           # its bases, by SOURCE CID, in order
                     item["base_sources"] = L["BASE_SOURCES"]
-                if k == "CODED":                                              # its description (a node, by CID) and its name
-                    item["description"] = L.get("DESCRIPTION", "")
+                if k == "CODED":                                              # its description (inline) and its name
+                    item["description"] = L.get("DESCRIPTION")
                     item["name"] = L.get("NAME", "")
                 seq.append(item)
             elif k == "EDIT":
@@ -682,7 +682,7 @@ def plan_json(plan):
             if "base_sources" in it:
                 e["base_sources"] = it["base_sources"]
             if it["kind"] == "CODED":
-                e.update(description=it.get("description", ""), name=it.get("name", ""))
+                e.update(description=it.get("description"), name=it.get("name", ""))
         e.update({"target": it["target"], "from": it["from"], "at": it["at"]})
         seq.append(e)
     return {"seq": seq,
@@ -715,7 +715,7 @@ def when_cids(expr):
 
 def node_refs(n):
     """Every reference a node makes, in layer order: NODE (contains), INTO members (goes into), CIDs its conditions
-    name, the node holding a coded stream's description. [(how, cid), ...] with how in NODE / INTO / WHEN / DESCRIPTION."""
+    name. [(how, cid), ...] with how in NODE / INTO / WHEN. (A coded stream's description is inline: no reference.)"""
     out = []
     for L in n.get("LAYERS", []):
         if not isinstance(L, dict):
@@ -726,8 +726,6 @@ def node_refs(n):
             out += [("INTO", x) for x in L["INTO"] if isinstance(x, str)]
         if isinstance(L.get("WHEN"), str):
             out += [("WHEN", c) for _, c in when_cids(L["WHEN"])]
-        if "CODED" in L and isinstance(L.get("DESCRIPTION"), str):
-            out.append(("DESCRIPTION", L["DESCRIPTION"]))
     return out
 
 
@@ -738,7 +736,7 @@ def hard_links(n):
 
 def remap_node(n, m):
     """A copy of node n with every reference renamed by m {old: new}: NODE, INTO members, CIDs inside a WHEN (the rest
-    of the condition kept byte for byte), and a CODED layer's DESCRIPTION. Payload strings are never touched."""
+    of the condition kept byte for byte). Payload strings are never touched."""
     def when(e):
         for at, c in reversed(when_cids(e)):
             if c in m:
@@ -754,8 +752,6 @@ def remap_node(n, m):
             L["INTO"] = [m.get(x, x) if isinstance(x, str) else x for x in L["INTO"]]
         if isinstance(L.get("WHEN"), str):
             L["WHEN"] = when(L["WHEN"])
-        if "CODED" in L and isinstance(L.get("DESCRIPTION"), str) and L["DESCRIPTION"] in m:
-            L["DESCRIPTION"] = m[L["DESCRIPTION"]]
     return o
 
 
@@ -1031,11 +1027,11 @@ def fixtures():
                                                  "BASE_SOURCES": ["Qmr", "Qmm"]}]),
                          "s": N([{"NODE": "f", "TARGET": "FILES/sub"}])},
          [("f", {}, []), ("s", {}, [])]),
-        # a coded stream: its content named by CID, its description a node (data in its DESCRIPTION); placed by a
-        # containing node like any content
-        ("coded", {"d": dict(N([]), DESCRIPTION={"NAME": "BSA 105", "ISA": 6, "CODER": "BITS", "ENTRY": "@s", "CODE": ["@s", "end"]}),
-                   "c": N([{"NODE": "d"}, {"FILE": "a.bsa.content", "SOURCE": "Qmc", "TARGET": "FILES/g/Data"},
-                           {"CODED": "a.bsa.vgcr", "SOURCE": "Qmr", "NAME": "a.bsa", "DESCRIPTION": "d",
+        # a coded stream: its content named by CID, its description inline (data, the layer's DESCRIPTION); placed by
+        # a containing node like any content
+        ("coded", {"c": N([{"FILE": "a.bsa.content", "SOURCE": "Qmc", "TARGET": "FILES/g/Data"},
+                           {"CODED": "a.bsa.vgcr", "SOURCE": "Qmr", "NAME": "a.bsa",
+                            "DESCRIPTION": {"NAME": "BSA 105", "ISA": 6, "CODER": "BITS", "ENTRY": "@s", "CODE": ["@s", "end"]},
                             "BASE_SOURCES": ["Qmc"], "TARGET": "FILES/g/Data"}]),
                    "s": N([{"NODE": "c", "TARGET": "FILES/sub"}])},
          [("c", {}, []), ("s", {}, [])]),

@@ -684,14 +684,11 @@ nlohmann::ordered_json MakeVfsSpecLayer(const nlohmann::ordered_json &Sub, const
         const bool Named = B != Sub.end() && B->is_array() && std::all_of(B->begin(), B->end(), [](const auto &E) { return E.is_string(); });
         if (Named) J["bases"] = LayerBaseSources(Sub); else J["bases"] = nullptr;
     }
-    //A coded stream: the name it appears by, and its description — the DESCRIPTION its node holds, carried here whole
-    //(data the FS reads; absent when the launch's library lacks that node: the plan then refuses the layer), and that
-    //node's CID (what a machine keys the stream's derived data by).
+    //A coded stream: the name it appears by, and its description (its layer's DESCRIPTION), carried whole: data the FS reads
     if (LType == "coded")
     {
         J["name"] = Sub.value("NAME", std::string());
-        J["description"] = Sub.contains("DESCRIPTION_TEXT") && Sub["DESCRIPTION_TEXT"].is_object() ? Sub["DESCRIPTION_TEXT"] : nlohmann::ordered_json();
-        J["descriptionCid"] = Sub.value("DESCRIPTION", std::string());
+        J["description"] = Sub.value("DESCRIPTION", nlohmann::ordered_json());
     }
     //RUNTIME-SOURCED: this layer reads from a path that only exists once something ELSE is mounted (a prefix
     //assembly layer under %RunnerMount%). Recorded here because it is the last place that still has the node —

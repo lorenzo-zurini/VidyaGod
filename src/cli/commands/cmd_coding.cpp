@@ -87,11 +87,11 @@ VG_COMMANDS
     Command::RegisterGroup("coding", "the coding algebra: check a description, mint a shipped file into content + record, verify it back");
 
     Command::Register({
-        "coding check", "read and validate a description (a node holding one, or its DESCRIPTION alone); write its canonical text",
-        "A description is data in a node (MetaPackageFormat 22.16): readable JSON, one instruction a string. It is checked "
+        "coding check", "read and validate a description (alone, or the one a node's CODED layers carry); write its canonical text",
+        "A description is data a CODED layer carries inline (MetaPackageFormat 04, 22.16): readable JSON, one instruction a string. It is checked "
         "as a package's would be (every op, register, table and label in bounds; nothing newer than this build's "
         "instruction set). --out: its canonical text (the same names; values laid out one canonical way).",
-        { AsPath(Pos("description", "a node JSON or a description JSON")), AsPath(Opt("out", "the canonical text to write")) },
+        { AsPath(Pos("description", "a description JSON, or a node whose CODED layers carry one")), AsPath(Opt("out", "the canonical text to write")) },
         { "coding check ~/x/BSA105.json", "coding check ~/x/inno.json --out ~/x/inno.canonical.json" },
         { "coding::Read", "coding::Print", "coding::Validate" }, Needs::Config, false,
         [](Command::Context &, const json &A) {
@@ -108,7 +108,7 @@ VG_COMMANDS
         "coding info", "what a description is: its name, instruction set, size, and the checkpoint spacing it suits",
         "A description is checked as the mount checks one (every op, register and table in bounds; nothing newer than "
         "this build's instruction set). --shipped: the spacing for a stream of that size.",
-        { AsPath(Pos("description", "a description node (JSON)")), Opt("shipped", "a shipped stream's size in bytes", Type::Int) },
+        { AsPath(Pos("description", "a description JSON, or a node whose CODED layers carry one")), Opt("shipped", "a shipped stream's size in bytes", Type::Int) },
         { "coding info ~/x/BSA105.json --shipped 1073741824" },
         { "coding::Parse", "coding::SuggestedSpacing" }, Needs::Config, false,
         [](Command::Context &, const json &A) {
@@ -127,7 +127,7 @@ VG_COMMANDS
         "sending; a machine reads its expansion, `coding expand`); --plain mints every decision. --spacing: shipped bytes "
         "between checkpoints (default: what the description suits). --in-memory: hold the content in an ordinary buffer "
         "(small inputs; the default reserves a lazy 4 GiB map, paid for only as the decode fills it).",
-        { AsPath(Pos("description", "a description node (JSON)")), AsPath(Pos("shipped", "the shipped file")), AsPath(Pos("content", "the content to write")),
+        { AsPath(Pos("description", "a description JSON, or a node whose CODED layers carry one")), AsPath(Pos("shipped", "the shipped file")), AsPath(Pos("content", "the content to write")),
           AsPath(Pos("record", "the record to write")), Opt("spacing", "shipped bytes between checkpoints", Type::Int),
           Flag("in-memory", "decode into an ordinary buffer"), Flag("plain", "every decision in the record (no family)") },
         { "coding mint ~/x/BSA105.json 'Skyrim - Interface.bsa' Interface.content Interface.vgcr" },
@@ -198,7 +198,7 @@ VG_COMMANDS
         "What a machine keeps beside a coded layer's content (VidyaGod does it itself, once per record, in its cache): the "
         "shipped bytes are generated through the predicted record, then minted plain, refused unless they code back "
         "bit-exact from the very same content. Takes about a mint's time. --spacing: as `coding mint`'s, for the plain record.",
-        { AsPath(Pos("description", "a description node (JSON)")), AsPath(Pos("record", "the predicted record")), AsPath(Pos("content", "the content")),
+        { AsPath(Pos("description", "a description JSON, or a node whose CODED layers carry one")), AsPath(Pos("record", "the predicted record")), AsPath(Pos("content", "the content")),
           AsPath(Pos("out", "the plain record to write")), Opt("spacing", "shipped bytes between checkpoints", Type::Int) },
         { "coding expand ~/x/BSA105.json Textures1.vgcq Textures1.content Textures1.vgcr" },
         { "coding::ExpandInto", "coding::CodedByteSource::predicted" }, Needs::Config, false,
@@ -233,7 +233,7 @@ VG_COMMANDS
     Command::Register({
         "coding verify", "rebuild the shipped bytes through the read path (checkpoints, copy runs, the pool) and compare",
         "Every byte, front to back, as a game reading the mounted file would get it. Exit status says identical or not.",
-        { AsPath(Pos("description", "a description node (JSON)")), AsPath(Pos("record", "the record")), AsPath(Pos("content", "the content")),
+        { AsPath(Pos("description", "a description JSON, or a node whose CODED layers carry one")), AsPath(Pos("record", "the record")), AsPath(Pos("content", "the content")),
           AsPath(Pos("shipped", "the shipped file to compare with")) },
         { "coding verify ~/x/BSA105.json Interface.vgcr Interface.content 'Skyrim - Interface.bsa'" },
         { "coding::CodedByteSource::Create", "coding::CodedByteSource::pread", "coding::CodedByteSource::prefetch",
@@ -250,7 +250,7 @@ VG_COMMANDS
 
     Command::Register({
         "coding cat", "rebuild the shipped bytes into a file",
-        "", { AsPath(Pos("description", "a description node (JSON)")), AsPath(Pos("record", "the record")), AsPath(Pos("content", "the content")),
+        "", { AsPath(Pos("description", "a description JSON, or a node whose CODED layers carry one")), AsPath(Pos("record", "the record")), AsPath(Pos("content", "the content")),
               AsPath(Pos("out", "the file to write")) },
         { "coding cat ~/x/BSA105.json Interface.vgcr Interface.content rebuilt.bsa" },
         { "coding::CodedByteSource::Create" }, Needs::Config, false,

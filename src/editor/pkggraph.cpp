@@ -346,7 +346,7 @@ void TypeColour(const std::string &Kind, int &R, int &G, int &B)
 json NewLayer(const std::string &T)
 {
     if (T == "ZIP" || T == "FILE" || T == "DELTA") return json::object({{T, ""}, {"TARGET", "FILES/%GameDir%"}});
-    if (T == "CODED") return json::object({{"CODED", ""}, {"NAME", ""}, {"DESCRIPTION", ""}, {"BASE_SOURCES", json::array({""})}, {"TARGET", "FILES/%GameDir%"}});
+    if (T == "CODED") return json::object({{"CODED", ""}, {"NAME", ""}, {"DESCRIPTION", json::object()}, {"BASE_SOURCES", json::array({""})}, {"TARGET", "FILES/%GameDir%"}});
     if (T == "DIR")   return json::object({{"DIR", ""}, {"TARGET", "FILES/%GameDir%"}});
     if (T == "NODE")  return json::object({{"NODE", ""}});
     if (T == "INTO")  return json::object({{"INTO", json::array()}});
@@ -555,8 +555,8 @@ std::vector<Field> MakeFields(const std::string &Type)
     {
         std::vector<Field> F = Content("CODED", "Record", ".vgcr in this bundle (coding mint makes it)", true);
         F.insert(F.begin() + 2, {"NAME", "Appears as", FieldKind::Text, "the shipped file's name, in Target", {}, {}});
-        F.insert(F.begin() + 3, {"DESCRIPTION", "Description", FieldKind::Text, "the CID of the node holding its format's description (its DESCRIPTION)", {}, {}});
-        F.insert(F.begin() + 4, {"BASE_SOURCES", "Content", FieldKind::StringList, "the SOURCE CID of its decoded content (one)", {}, {}});
+        //(its DESCRIPTION, the format's coding description, is data the Packagizer's scripts write: carried, not edited here)
+        F.insert(F.begin() + 3, {"BASE_SOURCES", "Content", FieldKind::StringList, "the SOURCE CID of its decoded content (one)", {}, {}});
         return F;
     }
     if (Type == "DIR")   return Content("DIR",   "Dir",   "folder in this bundle, or %RunnerMount%/...", false);

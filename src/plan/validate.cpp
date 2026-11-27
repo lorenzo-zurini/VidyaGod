@@ -619,16 +619,6 @@ void Nodes(const NodeIndex &Idx, std::vector<std::string> &Errors, std::vector<s
                 }
                 if (Own && !Shown) Once(Res.Warnings, Tag + ": part '" + G + "' — its footprint (the TAKE on its INTO) takes none of its files, so nothing of it mounts");
             }
-            //A CODED layer names its description's node by CID (04): the launch must contain that node, and it must hold one.
-            for (const Fold::Item &It : P.Seq)
-            {
-                if (It.Kind != "CODED") continue;
-                if (std::find(P.Order.begin(), P.Order.end(), It.Description) == P.Order.end())
-                    Once(Res.Errors, Tag + ": CODED '" + It.Payload + "' names its description node " + It.Description
-                         + ", which this launch does not contain — contain it (a NODE layer)");
-                else if (!It.DescriptionText.is_object())
-                    Once(Res.Errors, Tag + ": CODED '" + It.Payload + "' names node " + It.Description + ", which holds no DESCRIPTION");
-            }
             for (size_t D = 0; D < Lt.S.layers.size(); ++D)
             {
                 if (Lt.S.layers[D].type != ::LayerType::Delta || Lt.T.broken[D]) continue;

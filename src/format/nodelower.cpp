@@ -72,14 +72,14 @@ void EmitRegTree(const std::string &Path, const ordered_json &Tree, const ordere
 
 ordered_json ContentOp(const std::string &Kind, const std::string &Payload, const std::string &Target,
                        const ordered_json &Source, const ordered_json &Size, const ordered_json &Submounts,
-                       const ordered_json &BaseSources = ordered_json(), const std::string &Description = std::string(),
-                       const std::string &Name = std::string(), const ordered_json &DescriptionText = ordered_json())
+                       const ordered_json &BaseSources = ordered_json(), const ordered_json &Description = ordered_json(),
+                       const std::string &Name = std::string())
 {
     ordered_json L = { {"TYPE", VfsType(Kind)}, {"PATH", Payload} };
     if (!Target.empty()) L["TARGET"] = Target;
     if (BaseSources.is_array()) L["BASE_SOURCES"] = BaseSources;   // a delta's bases, by SOURCE CID, in order
-    //a coded stream: its description node (by CID) and that node's DESCRIPTION, and the name it appears by
-    if (Kind == "CODED") { L["DESCRIPTION"] = Description; if (DescriptionText.is_object()) L["DESCRIPTION_TEXT"] = DescriptionText; L["NAME"] = Name; }
+    //a coded stream: its description (the layer's own, carried whole) and the name it appears by
+    if (Kind == "CODED") { L["DESCRIPTION"] = Description; L["NAME"] = Name; }
     if (Source.is_string())
     {
         L["SOURCE"] = { {"TYPE", "ipfs"}, {"CID", Source} };
@@ -210,15 +210,17 @@ std::string CheckLayer(const ordered_json &L)
             if (!Seen.insert(C).second) return "BASE_SOURCES names '" + C + "' twice";
         }
     }
-    //A coded stream (04, 22): exactly one base (its content), its format's description (a node, by CID), and the one file name
-    //it appears by.
+    //A coded stream (04, 22): exactly one base (its content), its format's description (inline: data that must read and
+    //validate here, so a package never carries one the engine would refuse at mount time), and the one file name it
+    //appears by.
     if (T == "CODED")
     {
         if (!L.contains("BASE_SOURCES") || !StrArray(L["BASE_SOURCES"]) || L["BASE_SOURCES"].size() != 1 || L["BASE_SOURCES"][0].get<std::string>().empty())
             return "CODED needs BASE_SOURCES: exactly one CID, its content";
-        if (!L.contains("DESCRIPTION") || !L["DESCRIPTION"].is_string() || L["DESCRIPTION"].get<std::string>().empty())
-            return "CODED needs DESCRIPTION: the CID of the node holding its format's description";
-        if (L["DESCRIPTION"] == L["BASE_SOURCES"][0]) return "CODED: its description node and its content are one CID";
+        if (!L.contains("DESCRIPTION") || !L["DESCRIPTION"].is_object() || L["DESCRIPTION"].empty())
+            return "CODED needs DESCRIPTION: its format's coding description (an object, 22.16)";
+        {   coding::Description D; std::string Why;
+            if (!coding::Read(L["DESCRIPTION"].dump(), D, Why)) return "CODED DESCRIPTION — " + Why; }
         if (!L.contains("NAME") || !L["NAME"].is_string()) return "CODED needs NAME: the file name it appears by";
         if (const std::string Why = FileNameFault(L["NAME"].get<std::string>()); !Why.empty()) return "CODED NAME " + Why;
         if (L["NAME"].get<std::string>().find('/') != std::string::npos) return "CODED NAME is one file name, not a path";
@@ -535,17 +537,9 @@ std::string CheckNode(const nlohmann::ordered_json &J, const std::string &NodeId
 {
     const std::string Tag = "node '" + NodeId + "'" + (Label.empty() || Label == NodeId ? std::string() : " (" + Label + ")");
     if (!J.is_object()) return Tag + ": not an object";
-    static const std::set<std::string> Fields = { "CID", "LABEL", "POS", "COMMENT", "VARIANT", "RECOMMENDED", "SECTION", "DESCRIPTION", "LAYERS" };
+    static const std::set<std::string> Fields = { "CID", "LABEL", "POS", "COMMENT", "VARIANT", "RECOMMENDED", "SECTION", "LAYERS" };
     for (const auto &[K, V] : J.items())
-        if (!Fields.count(K)) return Tag + ": unknown field '" + K + "' (a node is CID LABEL VARIANT RECOMMENDED SECTION DESCRIPTION LAYERS)";
-    //DESCRIPTION: a format's coding description (22.16), data a CODED layer names this node for; it must read and
-    //validate here, so a package never carries one the engine would refuse at mount time.
-    if (J.contains("DESCRIPTION"))
-    {
-        if (!J["DESCRIPTION"].is_object()) return Tag + ": DESCRIPTION must be an object (a coding description)";
-        coding::Description D; std::string Why;
-        if (!coding::Read(J["DESCRIPTION"].dump(), D, Why)) return Tag + ": DESCRIPTION — " + Why;
-    }
+        if (!Fields.count(K)) return Tag + ": unknown field '" + K + "' (a node is CID LABEL VARIANT RECOMMENDED SECTION LAYERS)";
     if (J.contains("LABEL") && !J["LABEL"].is_string()) return Tag + ": LABEL must be a string";
     if (J.contains("VARIANT") && (!J["VARIANT"].is_string() || J["VARIANT"].get<std::string>().empty()))
         return Tag + ": VARIANT must be a non-empty name";
@@ -583,7 +577,7 @@ nlohmann::ordered_json LowerNode(const nlohmann::ordered_json &J, const std::str
         {
             Ops.push_back(ContentOp(T, Str(L[T]), FilesPath(L), L.value("SOURCE", ordered_json()),
                                     L.value("SIZE", ordered_json()), ordered_json(), L.value("BASE_SOURCES", ordered_json()),
-                                    Str(L.value("DESCRIPTION", ordered_json())), Str(L.value("NAME", ordered_json()))));
+                                    L.value("DESCRIPTION", ordered_json()), Str(L.value("NAME", ordered_json()))));
         }
         else if (T == "EDIT")
             for (const auto &O : L["EDIT"]) Ops.push_back(EditOp(O, FilesPath(L)));
@@ -847,15 +841,15 @@ std::vector<std::pair<size_t, nlohmann::ordered_json>> ContentOps(const Fold::Pl
         if (!Sh[J].Shown)
         {
             if (!BytesOnly[J]) continue;                                      // nothing of it is taken, nothing reads it
-            ordered_json L = ContentOp(I.Kind, Sh[J].Path, I.Target, I.Source, I.Size, ordered_json(), I.BaseSources, I.Description, I.Name, I.DescriptionText);
+            ordered_json L = ContentOp(I.Kind, Sh[J].Path, I.Target, I.Source, I.Size, ordered_json(), I.BaseSources, I.Description, I.Name);
             L["BYTES_ONLY"] = true;
             Out.emplace_back(J, std::move(L));
             continue;
         }
         if (!Sh[J].Mounts)
-            Out.emplace_back(J, ContentOp(I.Kind, Sh[J].Path, I.Target, I.Source, I.Size, ordered_json(), I.BaseSources, I.Description, I.Name, I.DescriptionText));
+            Out.emplace_back(J, ContentOp(I.Kind, Sh[J].Path, I.Target, I.Source, I.Size, ordered_json(), I.BaseSources, I.Description, I.Name));
         else
-            Out.emplace_back(J, ContentOp(I.Kind, Sh[J].Path, I.Target, I.Source, I.Size, *Sh[J].Mounts, I.BaseSources, I.Description, I.Name, I.DescriptionText));
+            Out.emplace_back(J, ContentOp(I.Kind, Sh[J].Path, I.Target, I.Source, I.Size, *Sh[J].Mounts, I.BaseSources, I.Description, I.Name));
     }
     return Out;
 }

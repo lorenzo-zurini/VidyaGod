@@ -1,6 +1,7 @@
 #include "codedcache.h"
 
 #include "bytesource.h"     // VidyaGodFS: MmapByteSource, FdByteSource
+#include "cid.h"            // the description's CID (of its canonical text)
 #include "coding.h"         // VidyaGodFS: the coding algebra (ExpandInto)
 #include "commonutils.h"    // Log*
 #include "layerspec.h"      // VidyaGodFS: ParseSpecText
@@ -166,8 +167,11 @@ size_t UsePlainRecords(nlohmann::ordered_json &Spec, const std::filesystem::path
         if (T.broken[I] || T.bases[I].empty()) { LogErr("CodedCache::UsePlainRecords", Name + ": its content is not in this launch; it reads as planned"); continue; }
         auto Content = Bytes.Get(T.bases[I][0], &Err);
         if (!Content) { LogErr("CodedCache::UsePlainRecords", Name + ": its content has no bytes (" + Err + "); it reads its predicted record"); continue; }
-        //the description's CID: the node holding it (the spec carries the text and the CID)
-        const std::string DescCid = X.descriptionCid;
+        //the description's CID: that of its canonical text (two texts that read alike key one twin)
+        std::string DescCid;
+        {   coding::Description D; std::string Why;
+            if (coding::Read(X.description, D, Why)) { const auto B = coding::Serialize(D); DescCid = Cid::OfBytes(std::string(B.begin(), B.end())); } }
+        if (DescCid.empty()) { LogErr("CodedCache::UsePlainRecords", Name + ": its description does not read; it reads as planned"); continue; }
         Job J; J.I = I; J.Name = Name; J.ContentCid = S.layers[T.bases[I][0]].cid; J.DescCid = DescCid; J.Content = std::move(Content);
         J.Key = Key(X.cid, J.ContentCid, DescCid);
         //a twin that could not be made is not tried at every launch (`coding twins --retry` tries again)
