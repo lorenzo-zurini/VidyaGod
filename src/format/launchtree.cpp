@@ -189,11 +189,27 @@ const std::vector<InnerUnit> *InnerUnits::Of(const LaunchTree &L, size_t Layer, 
             At = D; N = E.uncompSize; Found = true; return false; });
         if (!Found) Src.reset();
     }
-    //a plugin is read whole; an archive only as far as its names (they precede every member)
+    //a coded archive: its content begins with the archive's header region as it is (the BSA description's content), so
+    //its names are read there, never through its record (that would run its encoder family at every launch)
+    if (Src && Member.empty() && X.type == LayerType::Coded && Kind == 'b' && !L.T.bases[Layer].empty())
+    {
+        LayerBytes Cb(L.S, L.T, std::vector<bool>(L.S.layers.size(), false));
+        if (auto C = Cb.Get(L.T.bases[Layer][0]); C && C->size() >= 4)
+        {
+            char Mg[4] = {0};
+            if (C->preadAll(Mg, 4, 0) && std::memcmp(Mg, "BSA\0", 4) == 0) { Src = C; At = 0; N = C->size(); }
+            else Src.reset();
+        }
+        else Src.reset();
+    }
+    //a plugin is read whole; an archive only as far as its names (they precede every member). What a zip's directory
+    //claims is checked against the file (an untrusted zip must not make this allocate what is not there), and no file
+    //gives more than a few million units.
     std::vector<uint8_t> B;
     std::vector<InnerUnit> U;
     bool Ok = false;
-    if (Src && N <= (Kind == 'p' ? (2ull << 30) : UINT64_MAX))
+    if (Src && (At > Src->size() || N > Src->size() - At)) Src.reset();
+    if (Src && N <= (Kind == 'p' ? (1ull << 30) : UINT64_MAX))
     {
         if (Kind == 'b')
         {
@@ -207,7 +223,7 @@ const std::vector<InnerUnit> *InnerUnits::Of(const LaunchTree &L, size_t Layer, 
         }
         else { B.resize(static_cast<size_t>(N)); Ok = Src->preadAll(B.data(), B.size(), At) && PluginRecords(B, Name, U); }
     }
-    if (!Ok) { Failed.insert(Key); return nullptr; }
+    if (!Ok || U.size() > (4u << 20)) { Failed.insert(Key); return nullptr; }
     //an archive's member is the same write only from the same archive (its bytes are named by the archive's CID)
     if (Kind == 'b') for (InnerUnit &X2 : U) X2.Value = X.cid + ":" + Member + ":" + X2.Value;
     return &Units.emplace(Key, std::move(U)).first->second;

@@ -156,7 +156,7 @@ size_t UsePlainRecords(nlohmann::ordered_json &Spec, const std::filesystem::path
     const TreePlan T = PlanTree(S);
     LayerBytes Bytes(S, T, std::vector<bool>(S.layers.size(), true));
     //what to expand: each predicted layer with its content's bytes (got here, in order: the plan's reader is one thread's)
-    struct Job { size_t I = 0; std::string Name, Key, ContentCid, DescCid; std::shared_ptr<ByteSource> Content; std::filesystem::path Out; std::string Err; bool Ok = false; };
+    struct Job { size_t I = 0; std::string Name, Key, ContentCid, DescCid; std::shared_ptr<ByteSource> Content; std::filesystem::path Out; std::string Err; bool Ok = false, Transient = false; };
     std::vector<Job> Jobs;
     for (size_t I = 0; I < S.layers.size() && I < Layers.size(); ++I)
     {
@@ -192,14 +192,19 @@ size_t UsePlainRecords(nlohmann::ordered_json &Spec, const std::filesystem::path
         {
             Job &J = Jobs[K];
             const LayerSpec &X = S.layers[J.I];
-            J.Ok = PlainTwin(Dir, X.description, X.source, X.cid, J.ContentCid, J.DescCid, J.Content, J.Out, J.Err);
+            try { J.Ok = PlainTwin(Dir, X.description, X.source, X.cid, J.ContentCid, J.DescCid, J.Content, J.Out, J.Err); }
+            catch (const std::exception &E) { J.Ok = false; J.Err = std::string("the expansion failed: ") + E.what(); J.Transient = true; }
+            //what is about this machine (room, memory, a file it could not make) is tried again next launch; what is about
+            //the data (a record its content cannot code back) is remembered
+            if (!J.Ok && (J.Err.rfind("not enough free disk", 0) == 0 || J.Err.rfind("no room", 0) == 0 || J.Err.rfind("cannot ", 0) == 0))
+                J.Transient = true;
             std::lock_guard<std::mutex> G(LogMu);
             if (J.Ok) LogOut("CodedCache::UsePlainRecords", "  " + std::to_string(++Done) + "/" + std::to_string(Jobs.size()) + " " + J.Name);
             else
             {
                 LogErr("CodedCache::UsePlainRecords", J.Name + ": no plain twin (" + J.Err + "); it reads its predicted record (the same bytes, slower)");
                 std::error_code Ec;
-                if (std::filesystem::is_directory(Dir, Ec)) std::ofstream(Dir / (J.Key + ".failed")) << J.Err;
+                if (!J.Transient && std::filesystem::is_directory(Dir, Ec)) std::ofstream(Dir / (J.Key + ".failed")) << J.Err;
             }
         }
     };

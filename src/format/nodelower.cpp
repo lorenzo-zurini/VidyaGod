@@ -171,7 +171,7 @@ std::string CheckLayer(const ordered_json &L)
         {"DELTA", {"SOURCE", "SIZE", "TARGET", "BASE_SOURCES"}}, {"DIR",   {"TARGET"}},
         {"CODED", {"SOURCE", "SIZE", "TARGET", "BASE_SOURCES", "DESCRIPTION", "NAME"}},
         {"NODE",  {"TAKE", "TARGET"}}, {"EDIT", {"TARGET"}}, {"REG", {"ARCH"}},
-        {"VARS", {}}, {"ENV", {}}, {"DLL", {}}, {"EXEC", {}}, {"KEEP", {}}, {"INTO", {}},
+        {"VARS", {}}, {"ENV", {}}, {"DLL", {}}, {"EXEC", {}}, {"KEEP", {}}, {"INTO", {"TAKE"}},
     };
     for (const auto &[K, V] : L.items())
     {
@@ -229,10 +229,9 @@ std::string CheckLayer(const ordered_json &L)
         if (L.contains("SOURCE") && !L["SOURCE"].is_string()) return "SOURCE must be a CID (a string)";
         if (L.contains("SIZE") && !L["SIZE"].is_number()) return "SIZE must be a number";
     }
-    else if (T == "NODE")
+    //A TAKE (a NODE's: what it brings in; an INTO's: what of the part goes into the end — its footprint), checked alike
+    if ((T == "NODE" || T == "INTO") && L.contains("TAKE"))
     {
-        if (!P.is_string() || P.get<std::string>().empty()) return "NODE must be a node CID";
-        if (L.contains("TAKE"))
         {
             if (!L["TAKE"].is_array()) return "TAKE must be a list";
             //Where each named selection lands (a leaf keeps its last segment; a pair lands at its new name): two landing
@@ -260,6 +259,10 @@ std::string CheckLayer(const ordered_json &L)
                     return "TAKE selections '" + It->second + "' and '" + Src + "' both land at " + At;
             }
         }
+    }
+    if (T == "NODE")
+    {
+        if (!P.is_string() || P.get<std::string>().empty()) return "NODE must be a node CID";
         if (L.contains("TARGET") && Str(L["TARGET"]) != "FILES" && Str(L["TARGET"]).rfind("FILES/", 0) != 0)
             return "a NODE TARGET places files — it must name a FILES address";
     }

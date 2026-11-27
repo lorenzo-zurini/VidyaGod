@@ -210,31 +210,45 @@ std::vector<PartConflict> PartConflicts(const NodeIndex &Idx, const std::string 
                     }
                 continue;
             }
-            //a file's inner units (an archive's members beside loose files, a plugin's records): in the folder the file is in
-            const auto InnerOf = [&](size_t Layer, const std::string &Member, const std::string &Dir) {
+            //Where the tree places a file of this layer (MetaPackageFormat 23 §23.4: a part's footprint is what it writes
+            //WHERE it lands — through any TAKE, a NODE's or its INTO's): the layer's mounts, as the mount reads them. Inner:
+            //a zip member's path, or "" for a file or coded layer's own file (Name: its name in the node).
+            const auto Placed = [&](size_t Layer, const std::string &Inner, const std::string &Name) -> std::optional<std::string> {
+                for (const auto &[Src, Dst] : T.T.mounts[Layer])
+                {
+                    const std::string Sep = Dst.empty() ? "" : "/";
+                    if (Inner.empty()) return Src.empty() ? Dst + Sep + Name : Dst;   // a file: under its name, or renamed
+                    if (Src.empty()) return Dst + Sep + Inner;
+                    if (Inner == Src) return Dst;
+                    if (Inner.size() > Src.size() && Inner.compare(0, Src.size() + 1, Src + "/") == 0) return Dst + Sep + Inner.substr(Src.size() + 1);
+                }
+                return std::nullopt;                                     // not taken: not written
+            };
+            //a file's inner units (an archive's members beside loose files, a plugin's records): in the folder it lands in
+            const auto InnerOf = [&](size_t Layer, const std::string &Member, const std::string &At) {
+                const std::string Dir = std::filesystem::path(At).parent_path().generic_string();
                 if (const auto *U = Inner.Of(T, Layer, Member))
                     for (const InnerUnit &X : *U)
                         F[X.Address.rfind("RECORD/", 0) == 0 ? X.Address : "FILES/" + Dir + (Dir.empty() ? "" : "/") + X.Address] = X.Value;
             };
             const auto Lay = T.LayerOf.find(J);
-            const bool Shown = Lay != T.LayerOf.end() && !T.S.layers[Lay->second].bytesOnly;
-            if (I.Kind == "FILE")
+            if (Lay == T.LayerOf.end() || T.S.layers[Lay->second].bytesOnly) continue;   // read for its bytes only: writes nothing
+            if (I.Kind == "FILE" || I.Kind == "CODED")
             {
-                F["FILES/" + I.Target + "/" + std::filesystem::path(I.Payload).filename().string()] = Src;
-                if (Shown) InnerOf(Lay->second, "", I.Target);
+                const std::string Name = I.Kind == "CODED" ? I.Name : std::filesystem::path(I.Payload).filename().string();
+                const auto At = Placed(Lay->second, "", Name);
+                if (!At) continue;
+                F["FILES/" + *At] = Src;
+                InnerOf(Lay->second, "", *At);
                 continue;
             }
-            if (I.Kind == "CODED") { F["FILES/" + I.Target + "/" + I.Name] = Src; if (Shown) InnerOf(Lay->second, "", I.Target); continue; }
-            if (!Shown) continue;
             if (const auto *M = Names.Of(T, Lay->second, false))
                 for (const std::string &E : *M)
                 {
-                    F["FILES/" + I.Target + (I.Target.empty() ? "" : "/") + E] = Src + ":" + E;
-                    if (InnerUnits::KindOf(E))
-                    {
-                        const std::string Dir = std::filesystem::path(E).parent_path().generic_string();
-                        InnerOf(Lay->second, E, I.Target + (I.Target.empty() || Dir.empty() ? "" : "/") + Dir);
-                    }
+                    const auto At = Placed(Lay->second, E, "");
+                    if (!At) continue;
+                    F["FILES/" + *At] = Src + ":" + E;
+                    if (InnerUnits::KindOf(E)) InnerOf(Lay->second, E, *At);
                 }
         }
         Prints.push_back(std::move(F));

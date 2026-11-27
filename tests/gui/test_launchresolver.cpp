@@ -28,6 +28,7 @@
 #include <fstream>
 #include <set>
 #include <zip.h>
+#include "launchtree.h"
 #include <unistd.h>
 
 using json = nlohmann::ordered_json;
@@ -1296,6 +1297,50 @@ private slots:
     // the plugin that owns them (two plugins overriding one Skyrim.esm record conflict; the same override twice does not;
     // their own new records never do). Teeth: list no archive members; address a record by the plugin writing it; compare
     // records by name only.
+    // A part's INTO may carry a TAKE: its FOOTPRINT (MetaPackageFormat 23 §23.4) — what of it goes into the end, and where,
+    // as a NODE's TAKE selects and renames. ENB and ReShade both ship d3d11.dll; a ReShade part taking its d3d11.dll as
+    // dxgi.dll (chain-loading) mounts it there and conflicts with nothing; without the TAKE they conflict. A TAKE that
+    // takes none of the part's files leaves nothing of it mounted. Conflicts are read where files land. Teeth: expand parts
+    // with no view; address a footprint by its layer's TARGET.
+    void a_parts_into_take_is_its_footprint()
+    {
+        NodeIndex idx;
+        idx.Nodes["game"] = launchNode("game", kMachine, {});
+        const auto part = [](const char *Id, json Into, const char *Src) {
+            return parse(json{ {"CID", Id}, {"LABEL", Id}, {"LAYERS", json::array({ Into, json{{"FILE", "d3d11.dll"}, {"SOURCE", Src}, {"TARGET", "FILES/C:/g"}} })} }, "/tmp/vg_bundle");
+        };
+        idx.Nodes["enb"] = part("enb", json{{"INTO", json::array({"game"})}}, "QmEnb");
+        idx.Nodes["rs"] = part("rs", json{{"INTO", json::array({"game"})}, {"TAKE", json::array({ json::array({"FILES/C:/g/d3d11.dll", "FILES/C:/g/dxgi.dll"}) })}}, "QmRs");
+        idx.Nodes["rsplain"] = part("rsplain", json{{"INTO", json::array({"game"})}}, "QmRs2");
+        idx.Nodes["none"] = part("none", json{{"INTO", json::array({"game"})}, {"TAKE", json::array({"FILES/C:/elsewhere/"})}}, "QmNone");
+        finish(idx);
+        QVERIFY2(idx.Find("rs") && idx.Find("rs")->LowerError.empty(), "a TAKE on INTO is a valid layer");
+        using V = std::vector<std::string>;
+        const auto Addrs = [&](const V &Parts) {
+            std::set<std::string> S;
+            for (const auto &C : Shelf::PartConflicts(idx, "game", Shelf::AppliedGrafts(idx, "game", Parts))) S.insert(C.Address);
+            return S;
+        };
+        QVERIFY2(Addrs(V{"enb", "rsplain"}).count("FILES/C:/g/d3d11.dll"), "two parts' d3d11.dll");
+        QVERIFY2(Addrs(V{"enb", "rs"}).empty(), "ReShade taken as dxgi.dll writes another file");
+        //where it mounts: the launch's own reading of the plan
+        const Fold::Plan P = Fold::Resolve(ManifestModel::LibraryOf(idx), "game", {}, {}, Shelf::AppliedGrafts(idx, "game", V{"rs"}));
+        const LaunchTree T = LaunchTree::Of(P);
+        bool AtDxgi = false, AtD3d11 = false;
+        for (size_t I = 0; I < T.S.layers.size(); ++I)
+            for (const auto &[Src, Dst] : T.T.mounts[I]) { AtDxgi = AtDxgi || Dst == "C:/g/dxgi.dll"; AtD3d11 = AtD3d11 || Dst == "C:/g/d3d11.dll"; }
+        QVERIFY2(AtDxgi && !AtD3d11, "the part's file mounts where its footprint puts it");
+        const Fold::Plan Pn = Fold::Resolve(ManifestModel::LibraryOf(idx), "game", {}, {}, Shelf::AppliedGrafts(idx, "game", V{"none"}));
+        const LaunchTree Tn = LaunchTree::Of(Pn);
+        size_t Shown = 0;
+        for (size_t I = 0; I < Tn.S.layers.size(); ++I)
+            for (const auto &[Src, Dst] : Tn.T.mounts[I]) if (Dst.find("d3d11") != std::string::npos || Dst.find("elsewhere") != std::string::npos) ++Shown;
+        QCOMPARE(Shown, size_t(0));
+        //a malformed TAKE on INTO is refused like a NODE's
+        Node Bad = parse(json{ {"CID", "bad"}, {"LABEL", "bad"}, {"LAYERS", json::array({ json{{"INTO", json::array({"game"})}, {"TAKE", "FILES/x"}} })} }, "/tmp/vg_bundle");
+        QVERIFY(!Bad.LowerError.empty());
+    }
+
     void units_inside_archives_and_plugins_conflict()
     {
         namespace fs = std::filesystem;

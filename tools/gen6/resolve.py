@@ -384,8 +384,17 @@ class Resolver:
                         decls.pop(k, None); decls[k] = d
         walk(root, None)
         for g in grafts:                                   # grafts follow the variant: their declarations count too
-            walk(g, None)
+            walk(g, self.part_view(g))
         return resolve_vars(decls, builtins, instance)
+
+    def part_view(self, g):
+        """A part's footprint: the TAKEs of its INTO layers (what of it goes into the end, and where), as a NODE's TAKE."""
+        view = None
+        if g in self.nodes:
+            for L in into_layers(self.nodes[g][0].get("LAYERS", [])):
+                if "TAKE" in L:
+                    view = within(view, L["TAKE"], "")
+        return view
 
     def resolve(self, root, instance=None, builtins=None, grafts=(), selection=None):
         """grafts: the parts applied onto the end, in order (applied_grafts); selection: what a WHEN naming a node CID
@@ -397,7 +406,7 @@ class Resolver:
         self.count, self.selected = {}, set(selection if selection is not None else grafts)
         self._expand(root, None, "", ())
         for g in grafts:                                   # parts after the end, each after what it goes into
-            self._expand(g, None, "", ())
+            self._expand(g, self.part_view(g), "", ())
         plan = self._fold(instance, builtins)
         plan["parts"] = list(grafts)
         return plan

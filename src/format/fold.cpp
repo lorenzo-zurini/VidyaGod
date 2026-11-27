@@ -586,7 +586,16 @@ static Plan ResolveImpl(const Library &Lib, const std::string &Root, const Vars 
     Phase1Walk(Lib, Root, nullptr, Seen, Decls1);
     //Grafts follow the variant in the list, so their plain declarations count too — a graft's own options (UserPatch's
     //installer features) gate its own layers.
-    for (const auto &G : Grafts) Phase1Walk(Lib, G, nullptr, Seen, Decls1);
+    //A part's INTO layers may carry a TAKE: its FOOTPRINT (MetaPackageFormat 23 §23.4, the upward TAKE) — what of the part
+    //goes into the end, and where, exactly as a NODE's TAKE selects and renames what it brings in.
+    const auto PartView = [&](const std::string &G) -> View {
+        View V;
+        if (const Library::Entry *E = Lib.Find(G); E && E->Node->contains("LAYERS"))
+            for (const json *In : IntoLayers((*E->Node)["LAYERS"]))
+                if (In->contains("TAKE")) V = Within(V, &(*In)["TAKE"], std::string());
+        return V;
+    };
+    for (const auto &G : Grafts) Phase1Walk(Lib, G, PartView(G), Seen, Decls1);
     Vars Wv = Builtins;
     for (const auto &[K, V] : ResolveVars(Decls1, Builtins, Instance)) Wv[K] = V;
     P.WhenVars = Wv;
@@ -596,7 +605,7 @@ static Plan ResolveImpl(const Library &Lib, const std::string &Root, const Vars 
     Expander X(Lib, Wv, ExecOnly, Flip, &Selected);
     X.Expand(Root, nullptr, std::string(), nullptr);
     //Parts follow the end, each after what it goes into (ApplyGrafts' order: a part after its target, siblings by CID).
-    for (const auto &G : Grafts) X.Expand(G, nullptr, std::string(), nullptr);
+    for (const auto &G : Grafts) X.Expand(G, PartView(G), std::string(), nullptr);
     P.Parts = Grafts;
     P.Error = X.Error;
     // phase 3
