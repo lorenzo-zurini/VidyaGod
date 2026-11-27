@@ -198,3 +198,6 @@ LongOp::Run                               # the window's wait for a long job (ed
 LongOp::Describe                          # the progress line LongOp::Run draws: seen with `ui screenshot` while one runs
 LongOp::DebugRanOnWorker                  # a test probe: long jobs finished off the GUI thread
 LongOp::RunningIn                         # what every build and canvas command asks first: refused while the editor saves, seeds or fixes case
+coding::CodedByteSource::debugHoldWaiter  # a test seam: holds a reader at its wait (the read race, forced)
+coding::CodedByteSource::debugCached  # a test seam: whether a segment is in the cache
+coding::CodedByteSource::debugDropOnNextWake  # a test seam: drops the waited-for segment as its reader wakes
