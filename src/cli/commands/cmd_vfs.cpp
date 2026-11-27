@@ -476,8 +476,9 @@ VG_COMMANDS
         "vfs delta", "make a .vgdelta (target over base), verify one, or read what one rebuilds",
         "--make: the delta that rebuilds --target from --base (written to --out). --verify: rebuild --target from "
         "--base through the delta and compare every byte. --rebuild: write what the delta over --base rebuilds to "
-        "--out. Several --base files are one base, concatenated in order (a delta over several sources).",
-        { Command::AsPath(Pos("delta", "the .vgdelta")), Command::AsPath(Opt("base", "the base file (again for each more: --base a --base b)", Type::String, true)), Opt("target", "(--make, --verify) the target file"),
+        "--out. Several --base files are one base, concatenated in order (a delta over several sources). No --base: a "
+        "delta over nothing, the target's own bytes zstd-compressed with random access (a file stored compressed).",
+        { Command::AsPath(Pos("delta", "the .vgdelta")), Command::AsPath(Opt("base", "the base file (again for each more: --base a --base b; none: a delta over nothing)")), Opt("target", "(--make, --verify) the target file"),
           Command::AsPath(Opt("out", "(--make, --rebuild) write here")), Flag("make", "make it"), Flag("verify", "verify it"), Flag("rebuild", "rebuild the target"),
           Opt("block", "(--make) block size", Type::Int) },
         { "vfs delta p.vgdelta --make --base a.zip --target b.zip", "vfs delta p.vgdelta --verify --base a.zip --target b.zip" },
@@ -495,8 +496,8 @@ VG_COMMANDS
             {
                 //The matcher wants the base as one flat range: one base file is its mapping; several are joined in
                 //memory (they are one base, concatenated). The delta streams to the file, never resident.
-                std::vector<uint8_t> Joined;
-                const uint8_t *B = Maps.size() == 1 ? Maps.front()->p : nullptr;
+                std::vector<uint8_t> Joined(1, 0);                      // (over nothing: an empty base, never a null one)
+                const uint8_t *B = Maps.size() == 1 ? Maps.front()->p : Maps.empty() ? Joined.data() : nullptr;
                 if (!B)
                 {
                     Joined.resize(Base->size());

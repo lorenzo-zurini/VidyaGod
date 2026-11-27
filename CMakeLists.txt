@@ -241,6 +241,7 @@ set(SHARED_SOURCES
 
     src/engine/vfsmount.h
     src/engine/vfsmount.cpp
+    src/engine/codedcache.cpp
 
     src/plan/launchsources.h
     src/plan/launchsources.cpp
@@ -575,6 +576,7 @@ add_executable(vg_tests
     src/engine/registrylayer.cpp
     src/engine/persistlayer.cpp
     src/engine/optionreadback.cpp
+    src/engine/codedcache.cpp      # a predicted coded record's plain twin (Qt-free; the mount passes the cache)
     src/editor/pkggraph.cpp
     src/editor/pkglayout.cpp
     src/library/pkgdoc.cpp

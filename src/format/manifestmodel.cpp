@@ -676,7 +676,14 @@ nlohmann::ordered_json MakeVfsSpecLayer(const nlohmann::ordered_json &Sub, const
         if (!Cid.empty()) J["cid"] = Cid;
         if (Sub.contains("BYTES_ONLY") && Sub["BYTES_ONLY"].is_boolean() && Sub["BYTES_ONLY"].get<bool>()) J["bytesOnly"] = true;
     }
-    if (LType == "delta" || LType == "coded") J["bases"] = LayerBaseSources(Sub);   // by CID: the FS finds each file (treeplan.h)
+    if (LType == "delta" || LType == "coded")   // by CID: the FS finds each file (treeplan.h)
+    {
+        //[] is a delta over nothing (its own bytes, stored compressed); a layer that names no base list at all (or a
+        //malformed one) is null, which the plan refuses with that reason instead of reading it as a delta over nothing
+        const auto B = Sub.find("BASE_SOURCES");
+        const bool Named = B != Sub.end() && B->is_array() && std::all_of(B->begin(), B->end(), [](const auto &E) { return E.is_string(); });
+        if (Named) J["bases"] = LayerBaseSources(Sub); else J["bases"] = nullptr;
+    }
     //A coded stream: the name it appears by, and its description — named by CID here, made the path of the layer
     //carrying that CID once the whole spec is known (ResolveCodedDescriptions).
     if (LType == "coded") { J["name"] = Sub.value("NAME", std::string()); J["description"] = Sub.value("DESCRIPTION", std::string()); }

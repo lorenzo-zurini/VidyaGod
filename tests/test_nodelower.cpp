@@ -254,7 +254,6 @@ TEST(check_refuses_type_confused_payloads_instead_of_throwing)
         //a delta's bases: REQUIRED, a non-empty list of distinct CIDs, and on a delta only
         { {"DELTA", "x"} },
         { {"ZIP", "x"}, {"BASE_SOURCES", ordered_json::array({"Qm1"})} },
-        { {"DELTA", "x"}, {"BASE_SOURCES", ordered_json::array()} },
         { {"DELTA", "x"}, {"BASE_SOURCES", "Qm1"} },
         { {"DELTA", "x"}, {"BASE_SOURCES", ordered_json::array({1})} },
         { {"DELTA", "x"}, {"BASE_SOURCES", ordered_json::array({""})} },
@@ -264,6 +263,8 @@ TEST(check_refuses_type_confused_payloads_instead_of_throwing)
         { {"NODE", "x"}, {"TAKE", ordered_json::array({"FILES/a/d3d8.dll", "FILES/b/D3D8.dll"})} },
         { {"NODE", "x"}, {"TAKE", ordered_json::array({"FILES/a/x.cfg", ordered_json::array({"FILES/b/y.cfg", "x.cfg"})})} },
     };
+    //a delta over nothing (BASE_SOURCES []) is a file stored compressed, not a malformed delta
+    CHECK(!Refused(ordered_json{ {"DELTA", "x"}, {"SOURCE", "QmX"}, {"BASE_SOURCES", ordered_json::array()}, {"TARGET", "FILES/a"} }));
     for (const auto &L : Hostile)
     {
         CHECK(Refused(L));

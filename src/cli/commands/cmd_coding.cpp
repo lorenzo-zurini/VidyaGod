@@ -7,10 +7,14 @@
 #include "cmdutil.h"
 #include "bytesource.h"
 #include "coding.h"
+#include "lz4family.h"
+#include "codedcache.h"
+#include "apppaths.h"
 #include "deflatelayer.h"
 
 #include <chrono>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <fstream>
 #include <sys/mman.h>
@@ -84,9 +88,11 @@ VG_COMMANDS
 
     Command::Register({
         "coding describe", "write a format's description (data: the program that decodes, codes and prices it)",
-        "lz4 (an LZ4 block), deflate (a raw deflate stream), bsa (a Bethesda archive v105: Skyrim SE), or "
-        "lzma:lc,lp,pb,dict[,end] (an LZMA stream with those properties; end = 1 when it carries an end marker).",
-        { Pos("format", "lz4 | deflate | bsa | lzma:lc,lp,pb,dict[,end]"), AsPath(Pos("out", "the description file to write")) },
+        "lz4 (an LZ4 block), deflate (a raw deflate stream), bsa (a Bethesda archive v105: Skyrim SE, with Bethesda's packer "
+        "as its family: LZ4HC, 32768 attempts, so a record holds only what the packer did otherwise; bsa:N another number "
+        "of attempts, bsa:0 no family), or lzma:lc,lp,pb,dict[,end] (an LZMA stream with those properties; end = 1 when it "
+        "carries an end marker).",
+        { Pos("format", "lz4 | deflate | bsa[:attempts] | lzma:lc,lp,pb,dict[,end]"), AsPath(Pos("out", "the description file to write")) },
         { "coding describe bsa ~/x/bsa105.vgcd", "coding describe lzma:3,0,2,8388608 ~/x/lzma.vgcd" },
         { "coding::LzmaDescription", "coding::DeflateDescription", "coding::Lz4BlockDescription", "coding::BsaDescription",
           "coding::Serialize" }, Needs::Config, false,
@@ -96,6 +102,12 @@ VG_COMMANDS
             if (F == "lz4") D = coding::Lz4BlockDescription();
             else if (F == "deflate") D = coding::DeflateDescription();
             else if (F == "bsa") D = coding::BsaDescription();
+            else if (F.rfind("bsa:", 0) == 0)
+            {
+                char *E = nullptr; const unsigned long N = std::strtoul(F.c_str() + 4, &E, 10);
+                if (!E || *E || F.size() == 4 || N > coding::kLz4hcMaxAttempts) throw Command::BadArgs("bsa:N, N attempts from 0 to " + std::to_string(coding::kLz4hcMaxAttempts));
+                D = coding::BsaDescription(static_cast<uint32_t>(N));
+            }
             else if (F.rfind("lzma:", 0) == 0)
             {
                 unsigned Lc = 0, Lp = 0, Pb = 0, End = 1; unsigned long Dict = 0;
@@ -106,7 +118,8 @@ VG_COMMANDS
             else throw Command::BadArgs("no description named " + F + " (lz4, deflate, bsa, lzma:…)");
             const auto B = coding::Serialize(D);
             Spit(Command::Str(A, "out"), B.data(), B.size());
-            return json{{"name", D.name}, {"isa", D.isa}, {"bytes", B.size()}, {"ops", D.ops.size()}, {"expressions", D.ex.size()}};
+            return json{{"name", D.name}, {"isa", D.isa}, {"bytes", B.size()}, {"ops", D.ops.size()}, {"expressions", D.ex.size()},
+                        {"family", coding::UsesPrediction(D)}};
         }, {} });
 
     Command::Register({
@@ -119,26 +132,30 @@ VG_COMMANDS
         [](Command::Context &, const json &A) {
             const coding::Description D = Described(Command::Str(A, "description"));
             return json{{"name", D.name}, {"isa", D.isa}, {"this_build_isa", coding::kIsa}, {"ops", D.ops.size()},
-                        {"expressions", D.ex.size()}, {"slots", D.nslots}, {"window", D.window},
-                        {"spacing", coding::SuggestedSpacing(D, static_cast<uint64_t>(Command::Int(A, "shipped", 0)))}};
+                        {"expressions", D.ex.size()}, {"slots", D.nslots}, {"window", D.window}, {"family", coding::UsesPrediction(D)},
+                        {"spacing", coding::SuggestedSpacing(D, static_cast<uint64_t>(Command::Int(A, "shipped", 0)))},
+                        {"plain_spacing", coding::SuggestedSpacing(D, static_cast<uint64_t>(Command::Int(A, "shipped", 0)), true)}};
         }, {} });
 
     Command::Register({
         "coding mint", "decode a shipped file into its content and a record, and refuse unless it codes back bit-exact",
         "The content is what the description decodes (an archive's header region and members, a stream's bytes); the record "
-        "holds the decisions and checkpoints. Nothing is written unless every shipped byte codes back exactly. --spacing: "
-        "shipped bytes between checkpoints (default: what the description suits). --in-memory: hold the content in an "
-        "ordinary buffer (small inputs; the default reserves a lazy 4 GiB map, paid for only as the decode fills it).",
+        "holds the decisions and checkpoints. Nothing is written unless every shipped byte codes back exactly. A description "
+        "with a family mints a PREDICTED record (only what the encoder did otherwise than its family: small, for keeping and "
+        "sending; a machine reads its expansion, `coding expand`); --plain mints every decision. --spacing: shipped bytes "
+        "between checkpoints (default: what the description suits). --in-memory: hold the content in an ordinary buffer "
+        "(small inputs; the default reserves a lazy 4 GiB map, paid for only as the decode fills it).",
         { AsPath(Pos("description", "a .vgcd file")), AsPath(Pos("shipped", "the shipped file")), AsPath(Pos("content", "the content to write")),
           AsPath(Pos("record", "the record to write")), Opt("spacing", "shipped bytes between checkpoints", Type::Int),
-          Flag("in-memory", "decode into an ordinary buffer") },
+          Flag("in-memory", "decode into an ordinary buffer"), Flag("plain", "every decision in the record (no family)") },
         { "coding mint ~/x/bsa105.vgcd 'Skyrim - Interface.bsa' Interface.content Interface.vgcr" },
-        { "coding::MintInto", "coding::Mint" }, Needs::Config, false,
+        { "coding::MintInto", "coding::Mint", "coding::UsesPrediction", "coding::Lz4hcParser::parse" }, Needs::Config, false,
         [](Command::Context &, const json &A) {
             const coding::Description D = Described(Command::Str(A, "description"));
             MmapByteSource S;
             if (!S.Map(Command::Str(A, "shipped"))) throw Command::BadArgs("cannot read " + Command::Str(A, "shipped"));
-            const uint64_t Spacing = A.contains("spacing") ? static_cast<uint64_t>(Command::Int(A, "spacing")) : coding::SuggestedSpacing(D, S.n);
+            const bool Plain = Command::Bool(A, "plain", false);
+            const uint64_t Spacing = A.contains("spacing") ? static_cast<uint64_t>(Command::Int(A, "spacing")) : coding::SuggestedSpacing(D, S.n, Plain);
             std::vector<uint8_t> Rec;
             std::string Err;
             size_t Len = 0;
@@ -147,7 +164,7 @@ VG_COMMANDS
             {
                 std::vector<uint8_t> Content;
                 const size_t Cap = static_cast<size_t>(std::min<uint64_t>(S.n * 64 + (1u << 20), 0xFFFFFFFFu));
-                if (!coding::Mint(D, S.p, static_cast<size_t>(S.n), 0, Cap, Spacing, Content, Rec, Err))
+                if (!coding::Mint(D, S.p, static_cast<size_t>(S.n), 0, Cap, Spacing, Content, Rec, Err, !Plain))
                     throw std::runtime_error("refused: " + Err);
                 Len = Content.size();
                 Spit(Command::Str(A, "content"), Content.data(), Content.size());
@@ -158,13 +175,67 @@ VG_COMMANDS
                 void *Buf = ::mmap(nullptr, Cap, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS | MAP_NORESERVE, -1, 0);
                 if (Buf == MAP_FAILED) throw std::runtime_error("cannot reserve the content buffer");
                 struct Unmap { void *P; size_t N; ~Unmap() { ::munmap(P, N); } } U{ Buf, Cap };
-                if (!coding::MintInto(D, S.p, static_cast<size_t>(S.n), 0, static_cast<uint8_t *>(Buf), Cap, Spacing, Len, Rec, Err))
+                if (!coding::MintInto(D, S.p, static_cast<size_t>(S.n), 0, static_cast<uint8_t *>(Buf), Cap, Spacing, Len, Rec, Err, !Plain))
                     throw std::runtime_error("refused: " + Err);
                 Spit(Command::Str(A, "content"), static_cast<const uint8_t *>(Buf), Len);
             }
             Spit(Command::Str(A, "record"), Rec.data(), Rec.size());
-            return json{{"description", D.name}, {"shipped", S.n}, {"content", Len}, {"record", Rec.size()}, {"spacing", Spacing},
+            return json{{"description", D.name}, {"shipped", S.n}, {"content", Len}, {"record", Rec.size()},
+                        {"record_kind", Rec.size() > 3 && Rec[3] == 'Q' ? "predicted" : "plain"}, {"spacing", Spacing},
                         {"seconds", Now() - T0}, {"codes_back", "bit-exact"}};
+        }, {} });
+
+    Command::Register({
+        "coding twins", "make the plain twins a mount spec's predicted coded layers read (this machine's cache)",
+        "What a launch does before it mounts (VfsMount): every coded layer whose record is predicted gets its plain twin in "
+        "<data root>/CACHE/coded, made here if it is not there yet, so the first launch does not wait for it. The spec is the "
+        "mount spec a launch writes (vidyagodfs.spec.json in its temporary folder) or any spec of that shape. --out: write "
+        "the spec with the twins in place.",
+        { AsPath(Pos("spec", "a vidyagodfs mount spec (JSON)")), AsPath(Opt("out", "write the spec reading the twins here")) },
+        { "coding twins /tmp/vg/vidyagodfs.spec.json" },
+        { "CodedCache::UsePlainRecords", "CodedCache::PlainTwin" }, Needs::Config, false,
+        [](Command::Context &, const json &A) {
+            std::ifstream F(Command::Str(A, "spec"));
+            if (!F) throw Command::BadArgs("cannot read " + Command::Str(A, "spec"));
+            json Spec = json::parse(F, nullptr, false);
+            if (Spec.is_discarded() || !Spec.is_object()) throw Command::BadArgs(Command::Str(A, "spec") + " is not a mount spec");
+            const double T0 = Now();
+            const size_t N = CodedCache::UsePlainRecords(Spec, AppPaths::DataRoot() / "CACHE" / "coded");
+            json Twins = json::array();
+            for (const auto &L : Spec.value("layers", json::array()))
+                if (L.is_object() && L.value("type", std::string()) == "coded") Twins.push_back({{"name", L.value("name", std::string())}, {"reads", L.value("source", std::string())}});
+            if (A.contains("out")) { const std::string D = Spec.dump(2); Spit(Command::Str(A, "out"), reinterpret_cast<const uint8_t *>(D.data()), D.size()); }
+            return json{{"twins", N}, {"coded", Twins}, {"seconds", Now() - T0}};
+        }, {} });
+
+    Command::Register({
+        "coding expand", "a predicted record's plain twin: every decision stored, so reads never run the family",
+        "What a machine keeps beside a coded layer's content (VidyaGod does it itself, once per record, in its cache): the "
+        "shipped bytes are generated through the predicted record, then minted plain, refused unless they code back "
+        "bit-exact from the very same content. Takes about a mint's time. --spacing: as `coding mint`'s, for the plain record.",
+        { AsPath(Pos("description", "a .vgcd file")), AsPath(Pos("record", "the predicted record")), AsPath(Pos("content", "the content")),
+          AsPath(Pos("out", "the plain record to write")), Opt("spacing", "shipped bytes between checkpoints", Type::Int) },
+        { "coding expand ~/x/bsa105.vgcd Textures1.vgcq Textures1.content Textures1.vgcr" },
+        { "coding::ExpandInto", "coding::CodedByteSource::predicted" }, Needs::Config, false,
+        [](Command::Context &, const json &A) {
+            const coding::Description D = Described(Command::Str(A, "description"));
+            auto Desc = Map(Command::Str(A, "description")), Rec = Map(Command::Str(A, "record")), Con = Map(Command::Str(A, "content"));
+            std::string Err;
+            auto Probe = coding::CodedByteSource::Create(Desc, Rec, Con, 0, Err);
+            if (!Probe) throw std::runtime_error("refused: " + Err);
+            const uint64_t Sn = Probe->size(), Cn = Con->size();
+            Probe.reset();
+            const uint64_t Spacing = A.contains("spacing") ? static_cast<uint64_t>(Command::Int(A, "spacing")) : coding::SuggestedSpacing(D, Sn, true);
+            void *Sb = ::mmap(nullptr, Sn + 1, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS | MAP_NORESERVE, -1, 0);
+            void *Cb = ::mmap(nullptr, Cn + 1, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS | MAP_NORESERVE, -1, 0);
+            if (Sb == MAP_FAILED || Cb == MAP_FAILED) throw std::runtime_error("cannot reserve the buffers");
+            struct Unmap { void *P; size_t N; ~Unmap() { if (P != MAP_FAILED) ::munmap(P, N); } } U1{ Sb, Sn + 1 }, U2{ Cb, Cn + 1 };
+            std::vector<uint8_t> Plain;
+            const double T0 = Now();
+            if (!coding::ExpandInto(Desc, Rec, Con, static_cast<uint8_t *>(Sb), Sn, static_cast<uint8_t *>(Cb), Cn, Spacing, Plain, Err))
+                throw std::runtime_error("refused: " + Err);
+            Spit(Command::Str(A, "out"), Plain.data(), Plain.size());
+            return json{{"shipped", Sn}, {"predicted_record", Rec->size()}, {"plain_record", Plain.size()}, {"spacing", Spacing}, {"seconds", Now() - T0}};
         }, {} });
 
     const auto Coded = [](const json &A, uint64_t Expect) {

@@ -10,6 +10,8 @@
 #include "vgdelta.h"     // GenerateDelta — a real delta for the case lint
 #include "launchtree.h"  // LaunchTree — a launch as VidyaGodFS reads it
 #include "coding.h"      // a coded stream minted for the CODED layer test
+#include "lz4family.h"   // Bethesda's packer, as the family that predicts it (a BSA made here)
+#include "codedcache.h"  // a predicted record mounts its plain twin
 #include "overlay.h"
 #include "vfsops.h"      // the filesystem read in-process, as the game would see it
 
@@ -1678,6 +1680,115 @@ TEST(validate_replaceall_needs_its_pattern_not_a_site)
     CHECK(!AnyContains(With({{"MODE", "ReplaceAll"}, {"EXPECT", "f6680000a0428b"}, {"REPLACE", "f6680000%fov:map:FOV%8b"}}), "as long as EXPECT"));
 }
 
+
+// A Skyrim SE archive of one folder and one compressed member whose LZ4 frame is the family's own (Bethesda's packer):
+// what a PREDICTED record codes from. Returns the archive.
+static std::vector<uint8_t> FamilyBsa(const std::vector<uint8_t> &Data, uint32_t Attempts)
+{
+    auto U32 = [](std::vector<uint8_t> &V, uint32_t X) { for (int I = 0; I < 4; ++I) V.push_back(static_cast<uint8_t>(X >> (8 * I))); };
+    coding::Lz4hcParser P; std::vector<coding::Lz4Seq> Seqs; P.parse(Data.data(), Data.size(), Attempts, Seqs);
+    std::vector<uint8_t> Blk;
+    auto Len = [](std::vector<uint8_t> &O, size_t N) { for (; N >= 255; N -= 255) O.push_back(255); O.push_back(static_cast<uint8_t>(N)); };
+    for (const auto &Q : Seqs)
+    {
+        const size_t Ml = Q.ml ? Q.ml - 4 : 0;
+        Blk.push_back(static_cast<uint8_t>((std::min<size_t>(Q.lit, 15) << 4) | (Q.ml ? std::min<size_t>(Ml, 15) : 0)));
+        if (Q.lit >= 15) Len(Blk, Q.lit - 15);
+        Blk.insert(Blk.end(), Data.begin() + Q.anchor, Data.begin() + Q.anchor + Q.lit);
+        if (!Q.ml) break;
+        Blk.push_back(static_cast<uint8_t>(Q.off)); Blk.push_back(static_cast<uint8_t>(Q.off >> 8));
+        if (Ml >= 15) Len(Blk, Ml - 15);
+    }
+    std::vector<uint8_t> Member; U32(Member, static_cast<uint32_t>(Data.size()));
+    for (uint8_t B : {0x04, 0x22, 0x4D, 0x18, 0x60, 0x70, 0x73}) Member.push_back(B);
+    U32(Member, static_cast<uint32_t>(Blk.size())); Member.insert(Member.end(), Blk.begin(), Blk.end()); U32(Member, 0);
+    const std::string Folder = "f", File = "a.dds";
+    const uint32_t Region = 36 + 24 + (1 + static_cast<uint32_t>(Folder.size()) + 1) + 16 + static_cast<uint32_t>(File.size()) + 1;
+    std::vector<uint8_t> H; U32(H, 0x00415342); U32(H, 105); U32(H, 36); U32(H, 0x7); U32(H, 1); U32(H, 1);
+    U32(H, static_cast<uint32_t>(Folder.size()) + 1); U32(H, static_cast<uint32_t>(File.size()) + 1); U32(H, 0);
+    U32(H, 0x1234); U32(H, 0); U32(H, 1); U32(H, 0); U32(H, 36 + 24 + static_cast<uint32_t>(File.size()) + 1); U32(H, 0);
+    H.push_back(static_cast<uint8_t>(Folder.size() + 1)); H.insert(H.end(), Folder.begin(), Folder.end()); H.push_back(0);
+    U32(H, 0x9876); U32(H, 0); U32(H, static_cast<uint32_t>(Member.size())); U32(H, Region);
+    H.insert(H.end(), File.begin(), File.end()); H.push_back(0);
+    H.insert(H.end(), Member.begin(), Member.end());
+    return H;
+}
+
+// A coded layer whose record is PREDICTED mounts its PLAIN twin, made once in the machine's cache (VidyaGodFS's own
+// reading of the content, here a delta over nothing: the content stored compressed), and the game reads the shipped
+// bytes; a second launch reuses the twin; the same record over other content gets a twin of its own; content with no
+// bytes keeps the predicted record. Teeth: skip the swap; re-expand every time; key the twin by the record alone.
+TEST(a_predicted_coded_record_mounts_its_plain_twin)
+{
+    namespace fs = std::filesystem;
+    const fs::path Dir = fs::temp_directory_path() / ("vg_coded_twin_" + std::to_string(::getpid()));
+    fs::remove_all(Dir); fs::create_directories(Dir / "cache");
+    std::vector<uint8_t> Data(300000);
+    for (size_t I = 0; I < Data.size(); ++I) Data[I] = static_cast<uint8_t>(((I / 7) * 13) ^ ((I % 251) < 120 ? 0 : I >> 5));
+    const uint32_t Att = 256;
+    const std::vector<uint8_t> Bsa = FamilyBsa(Data, Att);
+    const coding::Description Desc = coding::BsaDescription(Att);
+    std::vector<uint8_t> Content, Rec, Plain; std::string Err;
+    CHECK(coding::Mint(Desc, Bsa.data(), Bsa.size(), 0, Data.size() * 2 + 4096, 1u << 20, Content, Rec, Err));
+    if (!Err.empty()) std::cerr << "  mint: " << Err << "\n";
+    CHECK(coding::Mint(Desc, Bsa.data(), Bsa.size(), 0, Data.size() * 2 + 4096, coding::SuggestedSpacing(Desc, Bsa.size(), true), Content, Plain, Err, false));
+    CHECK(Rec.size() > 3 && Rec[3] == 'Q');
+    const auto Put = [&](const fs::path &P, const std::vector<uint8_t> &B) { std::ofstream(P, std::ios::binary).write(reinterpret_cast<const char *>(B.data()), static_cast<std::streamsize>(B.size())); };
+    Put(Dir / "bsa.vgcd", coding::Serialize(Desc));
+    Put(Dir / "a.bsa.vgcq", Rec);
+    //the content: a delta over nothing (its bytes zstd-compressed, random access)
+    const uint8_t None[1] = {0};
+    const auto Dl = vgdelta::GenerateDelta(None, 0, Content.data(), Content.size());
+    CHECK(!Dl.empty());
+    Put(Dir / "a.bsa.content.vgdelta", Dl);
+    auto Content2 = Content; Content2[40] ^= 1;                              // another content (not the record's)
+    Put(Dir / "wrong.content", Content2);
+    const auto SpecOf = [&](bool Right) {
+        ordered_json L = ordered_json::array();
+        const std::string C = Right ? "QmContent" : "QmOther";
+        if (Right) L.push_back({{"type", "delta"}, {"source", (Dir / "a.bsa.content.vgdelta").string()}, {"target", "g"}, {"cid", C},
+                                {"bases", ordered_json::array()}, {"bytesOnly", true}, {"rw", false}});
+        else L.push_back({{"type", "file"}, {"source", (Dir / "wrong.content").string()}, {"target", "g"}, {"cid", C}, {"bytesOnly", true}, {"rw", false}});
+        L.push_back({{"type", "file"}, {"source", (Dir / "bsa.vgcd").string()}, {"target", "g"}, {"cid", "QmDesc"}, {"bytesOnly", true}, {"rw", false}});
+        L.push_back({{"type", "coded"}, {"source", (Dir / "a.bsa.vgcq").string()}, {"target", "g"}, {"cid", "QmRecord"}, {"name", "a.bsa"},
+                     {"description", (Dir / "bsa.vgcd").string()}, {"bases", ordered_json::array({C})}, {"rw", false}});
+        return ordered_json{{"mountpoint", "/"}, {"readonly", true}, {"layers", L}};
+    };
+    ordered_json S = SpecOf(true);
+    CHECK_EQ(CodedCache::UsePlainRecords(S, Dir / "cache"), 1u);
+    const fs::path Twin = Dir / "cache" / "QmRecord.QmContent.QmDesc.vgcr";
+    CHECK_EQ(S["layers"][2].value("source", std::string()), Twin.string());
+    std::vector<uint8_t> Got;
+    { std::ifstream F(Twin, std::ios::binary); Got.assign(std::istreambuf_iterator<char>(F), {}); }
+    CHECK(Got == Plain);                                                     // the plain mint's record, byte for byte
+    //the game reads the shipped archive through the twin
+    ::Spec P; CHECK(ParseSpecText(S.dump(), P, Err));
+    VfsState V; CHECK(V.Init(P, Err));
+    OpenFile *F = nullptr;
+    CHECK_EQ(VfsOpen(V, "g/a.bsa", 0, F), 0);
+    std::vector<uint8_t> Read(Bsa.size() + 16);
+    const ssize_t N = F ? VfsRead(F, Read.data(), Read.size(), 0) : -1;
+    if (F) VfsRelease(F);
+    CHECK_EQ(N, static_cast<ssize_t>(Bsa.size()));
+    Read.resize(N > 0 ? static_cast<size_t>(N) : 0);
+    CHECK(Read == Bsa);
+    //a second launch: the same twin, not made again
+    const auto T0 = fs::last_write_time(Twin);
+    ordered_json S2 = SpecOf(true);
+    CHECK_EQ(CodedCache::UsePlainRecords(S2, Dir / "cache"), 1u);
+    CHECK(fs::last_write_time(Twin) == T0);
+    //the same record over other content codes another stream: its twin is its own, never the first one
+    ordered_json S3 = SpecOf(false);
+    CHECK_EQ(CodedCache::UsePlainRecords(S3, Dir / "cache"), 1u);
+    CHECK_EQ(S3["layers"][2].value("source", std::string()), (Dir / "cache" / "QmRecord.QmOther.QmDesc.vgcr").string());
+    CHECK(fs::last_write_time(Twin) == T0);
+    CHECK(fs::exists(Dir / "cache" / "QmRecord.QmOther.QmDesc.vgcr"));
+    //a launch whose content has no bytes: no twin, the predicted record stays
+    ordered_json S4 = SpecOf(false); S4["layers"][0]["source"] = (Dir / "missing").string();
+    CHECK_EQ(CodedCache::UsePlainRecords(S4, Dir / "cache3"), 0u);
+    CHECK_EQ(S4["layers"][2].value("source", std::string()), (Dir / "a.bsa.vgcq").string());
+    fs::remove_all(Dir);
+}
 
 // A CODED layer (MetaPackageFormat 04): the shipped file appears by its NAME, rebuilt bit-exact from its content and
 // record through the description, and the content and description (named by CID) are bytes only, never files of the

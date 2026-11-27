@@ -193,12 +193,13 @@ std::string CheckLayer(const ordered_json &L)
         if (T != "NODE" && Tg != "FILES" && Tg.rfind("FILES/", 0) != 0) return T + " TARGET must name a FILES address";
     }
     //A delta names what it was built over: the SOURCE CIDs of the layers whose bytes, concatenated in order, are its
-    //base. Required — there is no implicit base — and a CID named twice is a concatenation nobody built.
+    //base. Required — there is no implicit base — and a CID named twice is a concatenation nobody built. An EMPTY list
+    //is a delta over nothing: the file's own bytes, zstd-compressed with random access (a file stored compressed).
     if (T == "DELTA")
     {
-        if (!L.contains("BASE_SOURCES")) return "DELTA needs BASE_SOURCES: the SOURCE CIDs of the layers it was built over";
+        if (!L.contains("BASE_SOURCES")) return "DELTA needs BASE_SOURCES: the SOURCE CIDs of the layers it was built over ([] for none)";
         const auto &B = L["BASE_SOURCES"];
-        if (!StrArray(B) || B.empty()) return "BASE_SOURCES must be a non-empty list of CIDs";
+        if (!StrArray(B)) return "BASE_SOURCES must be a list of CIDs";
         std::set<std::string> Seen;
         for (const auto &E : B)
         {

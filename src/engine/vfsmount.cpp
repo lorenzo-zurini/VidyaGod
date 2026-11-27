@@ -1,5 +1,7 @@
 #include "vfsmount.h"
 #include "binarypatch.h"   // PlanReadTime: patches the mount serves
+#include "codedcache.h"    // UsePlainRecords: a predicted coded record mounts its plain twin
+#include "apppaths.h"     // DataRoot: the cache of plain twins
 #include "sessions.h"
 #include "boxprefix.h"   // RemoveTree — a wipe that never follows a link (Windows)
 #include <functional>
@@ -461,6 +463,10 @@ bool VfsMount::MountVFS(struct ContainerParams &ContainerParams)
     //inspected — by a test, or by --audit-packages — without writing to the user's data directory.
 
     if (!VfsMount::PrepareMount(Spec)) return false;
+
+    //A coded layer whose record is PREDICTED (small, the package's form) mounts its plain twin from this machine's cache
+    //(made once, here, the first time): reads then never run the encoder family.
+    CodedCache::UsePlainRecords(Spec, AppPaths::DataRoot() / "CACHE" / "coded");
 
     //Zip layers are served zero-copy, which requires STORE (uncompressed). Block any compressed
     //archive up front with a re-zip dialog (GUI) / log (headless), before mounting.
