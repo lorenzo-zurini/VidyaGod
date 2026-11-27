@@ -879,10 +879,11 @@ VG_COMMANDS
             const json Res = Inst.contains("RESOLUTIONS") && Inst["RESOLUTIONS"].is_object() ? Inst["RESOLUTIONS"] : json::object();
             const auto Applied = Shelf::OrderResolved(*I, Shelf::AppliedGrafts(*I, N.Key(), T), Res);
             json Out = json::array();
-            for (const auto &X : Shelf::PartConflicts(*I, N.Key(), Applied))
+            const auto All = Shelf::PartConflicts(*I, N.Key(), Applied);
+            for (const auto &X : All)
             {
                 const std::string Kept = Shelf::ResolutionFor(Res, X.Address);
-                Out.push_back({{"address", X.Address}, {"a", X.A}, {"b", X.B}, {"kept", Kept}, {"holds", !Kept.empty() && Shelf::ResolutionHolds(Applied, X, Kept)}});
+                Out.push_back({{"address", X.Address}, {"a", X.A}, {"b", X.B}, {"kept", Kept}, {"holds", !Kept.empty() && Shelf::ResolutionHolds(Applied, X, Kept, All)}});
             }
             return json{{"applied", Applied}, {"conflicts", Out}};
         }, {} });

@@ -252,10 +252,11 @@ bool LaunchResolver::InitializeFromNodeOnce(struct ContainerParams &ContainerPar
     //Two applied parts writing one unit differently: shown, never settled by a position (23 §23.4). Settled only by
     //the user's resolution, and only where it holds in this order (its part kept is one of the two, folded later).
     CP.PartConflicts = nlohmann::ordered_json::array();
-    for (const auto &C : Shelf::PartConflicts(Idx, LaunchKey, CP.AppliedGrafts, Instance, Builtins))
+    const auto AllConflicts = Shelf::PartConflicts(Idx, LaunchKey, CP.AppliedGrafts, Instance, Builtins);
+    for (const auto &C : AllConflicts)
     {
         const std::string Asked = Shelf::ResolutionFor(Resolutions, C.Address);
-        const bool Holds = !Asked.empty() && Shelf::ResolutionHolds(CP.AppliedGrafts, C, Asked);
+        const bool Holds = !Asked.empty() && Shelf::ResolutionHolds(CP.AppliedGrafts, C, Asked, AllConflicts);
         CP.PartConflicts.push_back({{"address", C.Address}, {"a", C.A}, {"b", C.B}, {"kept", Holds ? Asked : std::string()}});
         if (!Holds)
             LogWarn("InitializeFromNode", "parts '" + C.A + "' and '" + C.B + "' both write " + C.Address + ", differently — the one read later wins"

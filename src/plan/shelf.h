@@ -73,8 +73,10 @@ std::vector<PartConflict> PartConflicts(const NodeIndex &Idx, const std::string 
 std::vector<std::string> OrderResolved(const NodeIndex &Idx, const std::vector<std::string> &Applied, const nlohmann::ordered_json &Resolutions);
 // The part kept for an address ("" when none): FILES addresses are compared without case, as the units are.
 std::string ResolutionFor(const nlohmann::ordered_json &Resolutions, const std::string &Address);
-// Whether the conflict is settled in this order: the part kept is one of its two, applied, and folded after the other.
-bool ResolutionHolds(const std::vector<std::string> &Order, const PartConflict &C, const std::string &Kept);
+// Whether the conflict is settled in this order: the part kept writes its address (one of its two, or of another conflict
+// at that address in All: a third part kept over a pair), is applied, and folds after both parts of the pair.
+bool ResolutionHolds(const std::vector<std::string> &Order, const PartConflict &C, const std::string &Kept,
+                     const std::vector<PartConflict> &All = {});
 // The saved graft list as the current library sees it: a list naming a graft that no longer exists was saved against
 // an older version of the package (every edit re-mints its grafts), so the choice is stale and the tile falls back to
 // its defaults (nullopt: the grafts RECOMMENDED under it). A list whose grafts all exist is the user's choice.

@@ -9,6 +9,7 @@
 #include "installed.h"
 #include "shelf.h"
 #include <QScopeGuard>
+#include <QTemporaryDir>
 #include "launchsession.h"
 #include "fileedits.h"
 #include "containerwrapper.h"
@@ -1354,14 +1355,31 @@ private slots:
             const V Both = Shelf::OrderResolved(idx, Ab, json{{"ENV/X", "a"}, {"ENV/Y", "b"}});
             QVERIFY(!(Shelf::ResolutionHolds(Both, {"ENV/X", "a", "b"}, "a") && Shelf::ResolutionHolds(Both, {"ENV/Y", "a", "b"}, "b")));
         }
+        //three parts at one address, b kept: b folds after both a and c, so every pair there is settled
+        {
+            idx.Nodes["c3"] = part("c3", json::array({"game"}), json::array({ json{{"ENV", {{"X", "3"}}}} }));
+            finish(idx);
+            const V Three = Shelf::OrderResolved(idx, Shelf::AppliedGrafts(idx, "game", V{"a", "b", "c3"}), json{{"ENV/X", "b"}});
+            QCOMPARE(EnvX(Three), std::string("2"));
+            const auto All = Shelf::PartConflicts(idx, "game", Three);
+            for (const auto &C : All) if (C.Address == "ENV/X") QVERIFY2(Shelf::ResolutionHolds(Three, C, "b", All), (C.A + "/" + C.B).c_str());
+        }
+        //a part whose INTO lists alternatives needs only one of them before it: a resolution elsewhere moves nothing else
+        {
+            idx.Nodes["e2"] = part("e2", json::array({"game"}), json::array({ json{{"ENV", {{"Z", "e"}}}} }));
+            idx.Nodes["alt"] = part("alt", json::array({"game", "e2"}), json::array({ json{{"ENV", {{"Z", "alt"}}}} }));
+            finish(idx);
+            const V In{"alt", "e2", "a"};                                 // alt before e2: allowed, it goes into game
+            QCOMPARE(Shelf::OrderResolved(idx, In, json{{"ENV/X", "a"}}), In);
+        }
         //a FILES address is matched without case, as its unit is
         QCOMPARE(Shelf::ResolutionFor(json{{"FILES/C:/g/README.TXT", "a"}}, "FILES/C:/g/Readme.txt"), std::string("a"));
         QVERIFY(Shelf::ResolutionFor(json{{"ENV/x", "a"}}, "ENV/X").empty());
         //and the launch reads the instance's RESOLUTIONS: the kept part stands, and the plan says so
         {
-            const json cfg = json{{"Settings", json::object()}};
+            QTemporaryDir ud;   // the instance's resolutions: here, never in a user-data folder another test reads
+            const json cfg = json{{"Settings", {{"Paths", {{"UserDataRoot", ud.path().toStdString()}}}}}};
             InstanceStore::SetSetting(cfg, "game", "RESOLUTIONS", json{{"ENV/X", "a"}});
-            auto Clean = qScopeGuard([&] { InstanceStore::SetSetting(cfg, "game", "RESOLUTIONS", json::object()); });
             NodeIndex env;                                                     // parts that only set ENV (no files to place)
             env.Nodes["game"] = launchNode("game", kMachine, {});
             env.Nodes["a"] = part("a", json::array({"game"}), json::array({ json{{"ENV", {{"X", "1"}}}} }));

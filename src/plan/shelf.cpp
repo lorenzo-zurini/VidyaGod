@@ -270,7 +270,7 @@ std::optional<std::vector<std::string>> IntoChain(const NodeIndex &Idx, const st
             const Node *Tn = Idx.Find(T);
             const std::string K = Tn ? Tn->Key() : T;
             if (K == End) { OnPath.erase(G); return std::vector<std::string>{}; }
-            if (Tn && Tn->IsGraft)
+            if (Tn && Tn->IsGraft && !Tn->Received)                     // a path through parts that are here
                 if (auto Below = Walk(K)) { Below->push_back(K); OnPath.erase(G); return Below; }
         }
         OnPath.erase(G);
@@ -287,10 +287,24 @@ std::vector<std::string> OrderResolved(const NodeIndex &Idx, const std::vector<s
     //Kahn's order over "after what it goes into" (among the applied): each step takes the earliest ready part that is
     //not kept, so every other part keeps its order (the applied order is already such an order) and a kept part goes
     //as late as its links allow.
+    //A part needs, of each INTO layer, ONE member before it (a layer's members are alternatives, as ApplyGrafts reads
+    //them).
     const std::set<std::string> In(Applied.begin(), Applied.end());
-    std::map<std::string, std::vector<std::string>> Needs;
+    std::map<std::string, std::vector<std::vector<std::string>>> Needs;
     for (const std::string &G : Applied)
-        if (const Node *N = Idx.Find(G)) for (const std::string &T : N->Into) if (In.count(T) && T != G) Needs[G].push_back(T);
+        if (const Node *N = Idx.Find(G); N && N->Json->contains("LAYERS"))
+            for (const auto *L : Fold::IntoLayers((*N->Json)["LAYERS"]))
+            {
+                //a layer with a member that is not an applied part (the end, what lies beneath) is met from the start
+                std::vector<std::string> Alt;
+                bool Met = false;
+                for (const auto &M : (*L)["INTO"])
+                {
+                    if (!M.is_string() || M.get<std::string>() == G) continue;
+                    if (In.count(M.get<std::string>())) Alt.push_back(M.get<std::string>()); else Met = true;
+                }
+                if (!Met && !Alt.empty()) Needs[G].push_back(std::move(Alt));
+            }
     std::vector<std::string> Out;
     std::set<std::string> Done;
     while (Out.size() < Applied.size())
@@ -301,7 +315,8 @@ std::vector<std::string> OrderResolved(const NodeIndex &Idx, const std::vector<s
             {
                 if (Done.count(G) || (Pass == 0 && Winners.count(G))) continue;
                 bool Ready = true;
-                for (const std::string &T : Needs[G]) if (!Done.count(T)) { Ready = false; break; }
+                for (const auto &Alt : Needs[G])
+                    if (std::none_of(Alt.begin(), Alt.end(), [&](const std::string &T) { return Done.count(T) > 0; })) { Ready = false; break; }
                 if (Ready) { Pick = G; break; }
             }
         if (Pick.empty()) return Applied;            // a cycle among the applied: leave the order as it was
@@ -322,12 +337,24 @@ std::string ResolutionFor(const nlohmann::ordered_json &Resolutions, const std::
     return {};
 }
 
-bool ResolutionHolds(const std::vector<std::string> &Order, const PartConflict &C, const std::string &Kept)
+bool ResolutionHolds(const std::vector<std::string> &Order, const PartConflict &C, const std::string &Kept,
+                     const std::vector<PartConflict> &All)
 {
-    if (Kept != C.A && Kept != C.B) return false;
-    const std::string &Other = Kept == C.A ? C.B : C.A;
-    const auto K = std::find(Order.begin(), Order.end(), Kept), O = std::find(Order.begin(), Order.end(), Other);
-    return K != Order.end() && O != Order.end() && K > O;
+    //the kept part must write this address (be one of a conflict's parts there) and fold after both parts of this pair
+    const auto Lower = [](std::string S) { std::transform(S.begin(), S.end(), S.begin(), [](unsigned char X) { return std::tolower(X); }); return S; };
+    const auto Same = [&](const std::string &X) { return X == C.Address || (X.rfind("FILES/", 0) == 0 && Lower(X) == Lower(C.Address)); };
+    bool Writes = Kept == C.A || Kept == C.B;
+    for (const auto &O : All) if (!Writes && Same(O.Address) && (O.A == Kept || O.B == Kept)) Writes = true;
+    if (!Writes) return false;
+    const auto K = std::find(Order.begin(), Order.end(), Kept);
+    if (K == Order.end()) return false;
+    for (const std::string &P : { C.A, C.B })
+    {
+        if (P == Kept) continue;
+        const auto Pi = std::find(Order.begin(), Order.end(), P);
+        if (Pi == Order.end() || Pi > K) return false;
+    }
+    return true;
 }
 
 GraftChoice CurrentGraftChoice(const NodeIndex &Idx, const GraftChoice &Saved)

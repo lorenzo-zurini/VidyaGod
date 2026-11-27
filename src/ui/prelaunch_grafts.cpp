@@ -146,10 +146,11 @@ void PreLaunchWindow::RebuildModuleTree()
         //as the launch judges it: the resolutions order the parts, and a conflict is settled only where its resolution holds
         const std::vector<std::string> Order = Shelf::OrderResolved(*Index, Applied, Res);
         std::vector<Shelf::PartConflict> Open;
-        for (const auto &C : Shelf::PartConflicts(*Index, LaunchNodeId, Order, Instance, Builtins, 50))
+        const auto All = Shelf::PartConflicts(*Index, LaunchNodeId, Order, Instance, Builtins, 50);
+        for (const auto &C : All)
         {
             const std::string Asked = Shelf::ResolutionFor(Res, C.Address);
-            if (Asked.empty() || !Shelf::ResolutionHolds(Order, C, Asked)) Open.push_back(C);
+            if (Asked.empty() || !Shelf::ResolutionHolds(Order, C, Asked, All)) Open.push_back(C);
         }
         const auto Name = [&](const std::string &C) { const Node *N = Index->Find(C); return N && !N->NodeId.empty() ? N->NodeId : C.substr(0, 12); };
         const bool Any = !Open.empty();
