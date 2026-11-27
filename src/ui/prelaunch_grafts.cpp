@@ -16,6 +16,7 @@
 #include "ipfswrapper.h"     // LanPeers/SetLanExcluded/LanLaunchVars — the Virtual LAN panel
 #include "variantpicker.h"     // NaturalLess — deterministic version-aware variant ordering
 #include "instancestore.h"     // the instance picker
+#include <QTimer>
 #include "asyncwork.h"        // the size under the cover, counted off the GUI thread
 
 #include <set>
@@ -142,26 +143,42 @@ void PreLaunchWindow::RebuildModuleTree()
         const std::vector<std::string> Applied = Shelf::AppliedGrafts(*Index, LaunchNodeId, Ticked, Instance, Builtins);
         const nlohmann::ordered_json Inst = InstanceStore::ReadConfig(*GlobalConfigJSON, PackageUID, InstanceName);
         const nlohmann::ordered_json Res = Inst.contains("RESOLUTIONS") && Inst["RESOLUTIONS"].is_object() ? Inst["RESOLUTIONS"] : nlohmann::ordered_json::object();
+        //as the launch judges it: the resolutions order the parts, and a conflict is settled only where its resolution holds
+        const std::vector<std::string> Order = Shelf::OrderResolved(*Index, Applied, Res);
         std::vector<Shelf::PartConflict> Open;
-        for (const auto &C : Shelf::PartConflicts(*Index, LaunchNodeId, Applied, Instance, Builtins, 50))
-            if (!Res.contains(C.Address)) Open.push_back(C);
+        for (const auto &C : Shelf::PartConflicts(*Index, LaunchNodeId, Order, Instance, Builtins, 50))
+        {
+            const std::string Asked = Shelf::ResolutionFor(Res, C.Address);
+            if (Asked.empty() || !Shelf::ResolutionHolds(Order, C, Asked)) Open.push_back(C);
+        }
         const auto Name = [&](const std::string &C) { const Node *N = Index->Find(C); return N && !N->NodeId.empty() ? N->NodeId : C.substr(0, 12); };
-        if (Open.empty()) GraftNote->setVisible(false);
-        else
-        {   //the first open conflict, with a link per side: the one the user keeps is saved in the instance (RESOLUTIONS)
-            const auto Esc = [](const std::string &S) { return QString::fromStdString(S).toHtmlEscaped(); };
-            const auto Link = [&](const std::string &Winner) {
-                return "<a href=\"keep:" + QString::fromStdString(Winner) + "|" + QString::fromStdString(Open[0].Address).toHtmlEscaped() + "\">keep "
-                       + Esc(Name(Winner)) + "</a>";
-            };
-            QString T = "Conflict: " + Esc(Name(Open[0].A)) + " and " + Esc(Name(Open[0].B)) + " both change " + Esc(Open[0].Address)
-                      + " differently — " + Link(Open[0].A) + " · " + Link(Open[0].B);
-            if (Open.size() > 1) T += QString(" (and %1 more)").arg(Open.size() - 1);
-            GraftNote->setTextFormat(Qt::RichText);
-            GraftNote->setText(T);
-            GraftNote->setVisible(true);
+        const bool Any = !Open.empty();
+        GraftNote->setVisible(Any);
+        if (KeepA) KeepA->setVisible(Any);
+        if (KeepB) KeepB->setVisible(Any);
+        if (Any)
+        {
+            const Shelf::PartConflict &C = Open[0];
+            ConflictAddress = C.Address; ConflictA = C.A; ConflictB = C.B;
+            std::string T = "Conflict: " + Name(C.A) + " and " + Name(C.B) + " both change " + C.Address + " differently";
+            if (!Shelf::ResolutionFor(Res, C.Address).empty()) T += " (the choice kept for it no longer holds)";
+            if (Open.size() > 1) T += " — and " + std::to_string(Open.size() - 1) + " more";
+            GraftNote->setTextFormat(Qt::PlainText);
+            GraftNote->setText(QString::fromStdString(T));
+            if (KeepA) KeepA->setText(QString::fromStdString("Keep " + Name(C.A)));
+            if (KeepB) KeepB->setText(QString::fromStdString("Keep " + Name(C.B)));
         }
     }
+}
+
+void PreLaunchWindow::KeepConflictSide(const std::string &Part)
+{
+    if (ConflictAddress.empty() || Part.empty()) return;
+    nlohmann::ordered_json Inst = InstanceStore::ReadConfig(*GlobalConfigJSON, PackageUID, InstanceName);
+    nlohmann::ordered_json R = Inst.contains("RESOLUTIONS") && Inst["RESOLUTIONS"].is_object() ? Inst["RESOLUTIONS"] : nlohmann::ordered_json::object();
+    R[ConflictAddress] = Part;
+    InstanceStore::SetSetting(*GlobalConfigJSON, PackageUID, "RESOLUTIONS", R, InstanceName);
+    QTimer::singleShot(0, this, [this] { RebuildModuleTree(); });
 }
 
 //Every row's check follows what is ticked (UserRole+2). Every row is tickable: what a graft needs is ticked with it.

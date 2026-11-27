@@ -259,26 +259,75 @@ std::vector<PartConflict> PartConflicts(const NodeIndex &Idx, const std::string 
     return Out;
 }
 
-std::vector<std::string> OrderResolved(const NodeIndex &Idx, std::vector<std::string> Applied, const nlohmann::ordered_json &Resolutions)
+std::optional<std::vector<std::string>> IntoChain(const NodeIndex &Idx, const std::string &Part, const std::string &End)
+{
+    std::set<std::string> OnPath;
+    std::function<std::optional<std::vector<std::string>>(const std::string &)> Walk = [&](const std::string &G) -> std::optional<std::vector<std::string>> {
+        const Node *N = Idx.Find(G);
+        if (!N || !OnPath.insert(G).second) return std::nullopt;
+        for (const std::string &T : N->Into)
+        {
+            const Node *Tn = Idx.Find(T);
+            const std::string K = Tn ? Tn->Key() : T;
+            if (K == End) { OnPath.erase(G); return std::vector<std::string>{}; }
+            if (Tn && Tn->IsGraft)
+                if (auto Below = Walk(K)) { Below->push_back(K); OnPath.erase(G); return Below; }
+        }
+        OnPath.erase(G);
+        return std::nullopt;
+    };
+    return Walk(Part);
+}
+
+std::vector<std::string> OrderResolved(const NodeIndex &Idx, const std::vector<std::string> &Applied, const nlohmann::ordered_json &Resolutions)
 {
     if (!Resolutions.is_object() || Resolutions.empty() || Applied.size() < 2) return Applied;
     std::set<std::string> Winners;
     for (const auto &[Addr, W] : Resolutions.items()) if (W.is_string()) Winners.insert(W.get<std::string>());
-    //INTO steps from the end, among what is applied: parts of one depth are siblings, and only siblings reorder
-    std::map<std::string, int> Depth;
-    std::function<int(const std::string &, int)> D = [&](const std::string &G, int Guard) -> int {
-        if (const auto It = Depth.find(G); It != Depth.end()) return It->second;
-        const Node *N = Idx.Find(G);
-        int Best = 0;
-        if (N && Guard < 64) for (const std::string &T : N->Into) if (std::find(Applied.begin(), Applied.end(), T) != Applied.end()) Best = std::max(Best, D(T, Guard + 1));
-        return Depth[G] = Best + 1;
-    };
-    for (const std::string &G : Applied) D(G, 0);
-    std::stable_sort(Applied.begin(), Applied.end(), [&](const std::string &A, const std::string &B) {
-        if (Depth[A] != Depth[B]) return Depth[A] < Depth[B];
-        return !Winners.count(A) && Winners.count(B);      // a winner after its siblings
-    });
-    return Applied;
+    //Kahn's order over "after what it goes into" (among the applied): each step takes the earliest ready part that is
+    //not kept, so every other part keeps its order (the applied order is already such an order) and a kept part goes
+    //as late as its links allow.
+    const std::set<std::string> In(Applied.begin(), Applied.end());
+    std::map<std::string, std::vector<std::string>> Needs;
+    for (const std::string &G : Applied)
+        if (const Node *N = Idx.Find(G)) for (const std::string &T : N->Into) if (In.count(T) && T != G) Needs[G].push_back(T);
+    std::vector<std::string> Out;
+    std::set<std::string> Done;
+    while (Out.size() < Applied.size())
+    {
+        std::string Pick;
+        for (int Pass = 0; Pass < 2 && Pick.empty(); ++Pass)
+            for (const std::string &G : Applied)
+            {
+                if (Done.count(G) || (Pass == 0 && Winners.count(G))) continue;
+                bool Ready = true;
+                for (const std::string &T : Needs[G]) if (!Done.count(T)) { Ready = false; break; }
+                if (Ready) { Pick = G; break; }
+            }
+        if (Pick.empty()) return Applied;            // a cycle among the applied: leave the order as it was
+        Out.push_back(Pick);
+        Done.insert(Pick);
+    }
+    return Out;
+}
+
+std::string ResolutionFor(const nlohmann::ordered_json &Resolutions, const std::string &Address)
+{
+    if (!Resolutions.is_object()) return {};
+    if (const auto It = Resolutions.find(Address); It != Resolutions.end() && It->is_string()) return It->get<std::string>();
+    if (Address.rfind("FILES/", 0) != 0) return {};
+    const auto Lower = [](std::string S) { std::transform(S.begin(), S.end(), S.begin(), [](unsigned char C) { return std::tolower(C); }); return S; };
+    const std::string L = Lower(Address);
+    for (const auto &[K, V] : Resolutions.items()) if (V.is_string() && Lower(K) == L) return V.get<std::string>();
+    return {};
+}
+
+bool ResolutionHolds(const std::vector<std::string> &Order, const PartConflict &C, const std::string &Kept)
+{
+    if (Kept != C.A && Kept != C.B) return false;
+    const std::string &Other = Kept == C.A ? C.B : C.A;
+    const auto K = std::find(Order.begin(), Order.end(), Kept), O = std::find(Order.begin(), Order.end(), Other);
+    return K != Order.end() && O != Order.end() && K > O;
 }
 
 GraftChoice CurrentGraftChoice(const NodeIndex &Idx, const GraftChoice &Saved)

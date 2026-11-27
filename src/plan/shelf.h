@@ -53,19 +53,28 @@ std::vector<std::string> AppliedGrafts(const NodeIndex &Idx, const std::string &
                                        const std::map<std::string, std::string> &Instance = {},
                                        const std::map<std::string, std::string> &Builtins = {},
                                        std::vector<std::string> *Dropped = nullptr);
+// The parts between a part and an end it reaches by INTO steps (FE → 1.0e → 1.0c: [1.0e]), nearest the end first: a part
+// that is itself an end runs with every end it is built on applied — those become hard links of its row. nullopt when
+// End is not reached; an empty list when Part goes INTO End directly.
+std::optional<std::vector<std::string>> IntoChain(const NodeIndex &Idx, const std::string &Part, const std::string &End);
 // Two applied parts that write one unit differently (MetaPackageFormat 23 §23.4): the address (FILES/<path> for a file,
 // FILES/<file>#<key> for a keyed edit, REG/…, ENV/…, DLL/…, VARS/…) and the two parts. Parts that write it identically
 // do not conflict, and neither do a part and one it goes INTO (a patch on a mod: structure, intended). Each part's
 // footprint is what applying it changes over the parts applied before it; an archive's members are read from the
 // archive (VidyaGodFS's own listing). Instance/Builtins as AppliedGrafts. At most Max conflicts are returned.
 struct PartConflict { std::string Address, A, B; };
-// The user's resolutions (the instance's RESOLUTIONS: {address: the part that wins}) applied to an applied list: a winner
-// folds after the other parts at its depth (a part still after everything it goes into), so its write stands. Parts
-// named by no resolution keep their order.
-std::vector<std::string> OrderResolved(const NodeIndex &Idx, std::vector<std::string> Applied, const nlohmann::ordered_json &Resolutions);
 std::vector<PartConflict> PartConflicts(const NodeIndex &Idx, const std::string &LaunchNodeId, const std::vector<std::string> &Applied,
                                         const std::map<std::string, std::string> &Instance = {},
                                         const std::map<std::string, std::string> &Builtins = {}, size_t Max = 200);
+// The user's resolutions (the instance's RESOLUTIONS: {address: the part whose write stands}) applied to an applied list:
+// an order in which every part still comes after what it goes into, the parts named as kept as late as that allows, all
+// others in their order. A resolution orders whole parts, so some cannot hold (two resolutions needing A both before and
+// after B, a kept part something else goes into): ResolutionHolds says which do.
+std::vector<std::string> OrderResolved(const NodeIndex &Idx, const std::vector<std::string> &Applied, const nlohmann::ordered_json &Resolutions);
+// The part kept for an address ("" when none): FILES addresses are compared without case, as the units are.
+std::string ResolutionFor(const nlohmann::ordered_json &Resolutions, const std::string &Address);
+// Whether the conflict is settled in this order: the part kept is one of its two, applied, and folded after the other.
+bool ResolutionHolds(const std::vector<std::string> &Order, const PartConflict &C, const std::string &Kept);
 // The saved graft list as the current library sees it: a list naming a graft that no longer exists was saved against
 // an older version of the package (every edit re-mints its grafts), so the choice is stale and the tile falls back to
 // its defaults (nullopt: the grafts RECOMMENDED under it). A list whose grafts all exist is the user's choice.

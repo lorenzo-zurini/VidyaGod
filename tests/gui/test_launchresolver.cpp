@@ -8,6 +8,7 @@
 #include "sessions.h"
 #include "installed.h"
 #include "shelf.h"
+#include <QScopeGuard>
 #include "launchsession.h"
 #include "fileedits.h"
 #include "containerwrapper.h"
@@ -1340,8 +1341,77 @@ private slots:
         const V Kept = Shelf::OrderResolved(idx, Ab, json{{"ENV/X", "a"}});
         QCOMPARE(EnvX(Kept), std::string("1"));
         QCOMPARE(EnvX(Shelf::OrderResolved(idx, Ab, json{{"ENV/X", "b"}})), std::string("2"));
+        //kept b against pa (a part one INTO step deeper, into a): b goes after pa, as its links allow, so X is b's
         const V WithPatch = Shelf::OrderResolved(idx, Shelf::AppliedGrafts(idx, "game", V{"a", "pa", "b"}), json{{"ENV/X", "b"}});
         QVERIFY(std::find(WithPatch.begin(), WithPatch.end(), "pa") > std::find(WithPatch.begin(), WithPatch.end(), "a"));
+        QCOMPARE(EnvX(WithPatch), std::string("2"));
+        QVERIFY(Shelf::ResolutionHolds(WithPatch, {"ENV/X", "pa", "b"}, "b"));
+        //a resolution that cannot hold is never reported settled: the kept part is not one of the two, or not applied
+        QVERIFY(!Shelf::ResolutionHolds(Kept, {"ENV/X", "a", "b"}, "c"));
+        QVERIFY(!Shelf::ResolutionHolds(Ab, {"ENV/X", "a", "b"}, "a"));                // a is not after b in this order
+        //two resolutions between one pair that need it both ways: one of them does not hold
+        {
+            const V Both = Shelf::OrderResolved(idx, Ab, json{{"ENV/X", "a"}, {"ENV/Y", "b"}});
+            QVERIFY(!(Shelf::ResolutionHolds(Both, {"ENV/X", "a", "b"}, "a") && Shelf::ResolutionHolds(Both, {"ENV/Y", "a", "b"}, "b")));
+        }
+        //a FILES address is matched without case, as its unit is
+        QCOMPARE(Shelf::ResolutionFor(json{{"FILES/C:/g/README.TXT", "a"}}, "FILES/C:/g/Readme.txt"), std::string("a"));
+        QVERIFY(Shelf::ResolutionFor(json{{"ENV/x", "a"}}, "ENV/X").empty());
+        //and the launch reads the instance's RESOLUTIONS: the kept part stands, and the plan says so
+        {
+            const json cfg = json{{"Settings", json::object()}};
+            InstanceStore::SetSetting(cfg, "game", "RESOLUTIONS", json{{"ENV/X", "a"}});
+            auto Clean = qScopeGuard([&] { InstanceStore::SetSetting(cfg, "game", "RESOLUTIONS", json::object()); });
+            NodeIndex env;                                                     // parts that only set ENV (no files to place)
+            env.Nodes["game"] = launchNode("game", kMachine, {});
+            env.Nodes["a"] = part("a", json::array({"game"}), json::array({ json{{"ENV", {{"X", "1"}}}} }));
+            env.Nodes["b"] = part("b", json::array({"game"}), json::array({ json{{"ENV", {{"X", "2"}}}} }));
+            finish(env);
+            ContainerParams cp("/tmp/vg_bundle");
+            cp.NodeIdx = &env; cp.LaunchNodeId = "game"; cp.Grafts = V{"a", "b"};
+            QVERIFY(LaunchResolver::InitializeFromNode(cp, cfg));
+            QCOMPARE(cp.AppliedGrafts.back(), std::string("a"));
+            QCOMPARE(cp.LaunchEnv.value("X", std::string()), std::string("1"));
+            bool Kept = false;
+            for (const auto &C : cp.PartConflicts) if (C.value("address", std::string()) == "ENV/X" && C.value("kept", std::string()) == "a") Kept = true;
+            QVERIFY(Kept);
+        }
+    }
+
+    // An end built on ends (AoE2: Forgotten Empires INTO 1.0e, an end that goes INTO 1.0c): launching it runs the root end
+    // with every end between applied — those are its row's hard links — as its own row and under its own tile. Teeth: force only the launched part (FE is offered on 1.0e only, so it "cannot be applied").
+    void an_end_built_on_ends_runs_with_the_ends_between()
+    {
+        NodeIndex idx;
+        const auto entry = [](const char *Exe, const char *Uid, const char *Title) {
+            return json{ {"LABEL", Title}, {"HOST", kMachine}, {"EXE", Exe}, {"TILE", {{"UID", Uid}, {"TITLE", Title}}} };
+        };
+        idx.Nodes["c"] = parse(json{ {"CID", "c"}, {"LABEL", "c"}, {"VARIANT", "1.0c"},
+            {"LAYERS", json::array({ json{{"DIR", "c"}}, json{{"EXEC", json::array({ entry("tc.exe", "13006", "The Conquerors v1.0c") })}} })} }, "/tmp/vg_bundle");
+        idx.Nodes["e"] = parse(json{ {"CID", "e"}, {"LABEL", "e"}, {"VARIANT", "1.0e"},
+            {"LAYERS", json::array({ json{{"INTO", json::array({"c"})}}, json{{"DIR", "e"}},
+                json{{"EXEC", json::array({ entry("tc.exe", "13006", "The Conquerors v1.0e") })}} })} }, "/tmp/vg_bundle");
+        idx.Nodes["fe"] = parse(json{ {"CID", "fe"}, {"LABEL", "fe"}, {"VARIANT", "2.2"},
+            {"LAYERS", json::array({ json{{"INTO", json::array({"e"})}}, json{{"DIR", "fe"}},
+                json{{"EXEC", json::array({ entry("fe.exe", "749000001", "Forgotten Empires v2.2") })}} })} }, "/tmp/vg_bundle");
+        finish(idx);
+        const json cfg = json{{"Settings", json::object()}};
+        {
+            ContainerParams cp("/tmp/vg_bundle");
+            cp.NodeIdx = &idx; cp.LaunchNodeId = "fe";
+            QVERIFY(LaunchResolver::InitializeFromNode(cp, cfg));
+            QCOMPARE(cp.AppliedGrafts, (std::vector<std::string>{"e", "fe"}));
+            QVERIFY(cp.ComposedExec.value("CONTENTPATH", std::string()).find("fe.exe") != std::string::npos);
+        }
+        {   // and as its card shows it (its own row, its own tile)
+            ContainerParams cp("/tmp/vg_bundle");
+            cp.NodeIdx = &idx; cp.LaunchNodeId = "fe"; cp.LaunchFace = "749000001";
+            QVERIFY(LaunchResolver::InitializeFromNode(cp, cfg));
+            QCOMPARE(cp.AppliedGrafts, (std::vector<std::string>{"e", "fe"}));
+        }
+        QCOMPARE(*Shelf::IntoChain(idx, "fe", "c"), (std::vector<std::string>{"e"}));
+        QVERIFY(Shelf::IntoChain(idx, "fe", "e")->empty());
+        QVERIFY(!Shelf::IntoChain(idx, "c", "fe"));
     }
 
     // --with adds parts to the selection the launch would use: a fresh instance keeps its RECOMMENDED parts and gains

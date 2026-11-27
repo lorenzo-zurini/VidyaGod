@@ -862,7 +862,7 @@ TEST(repoint_cascades_through_contains_into_and_conditions)
     const std::string Other = Freeze(Mod, json{{"LABEL", "other"}, {"LAYERS", json::array({ json{{"ZIP", "o.zip"}} })}});
     const fs::path Users = Root / "USERDATA";
     fs::create_directories(Users / "1" / "Default");
-    std::ofstream(Users / "1" / "Default" / "instance.json") << json{{"GRAFTS", {{"1", json::array({P})}}}, {"VARIABLES", {{"note", P}}}}.dump();
+    std::ofstream(Users / "1" / "Default" / "instance.json") << json{{"GRAFTS", {{"1", json::array({P})}}}, {"VARIABLES", {{"note", P}}}, {"RESOLUTIONS", {{"ENV/X", P}}}}.dump();
     const std::vector<fs::path> Roots{ Root / "L" };
 
     std::string Err;
@@ -895,6 +895,7 @@ TEST(repoint_cascades_through_contains_into_and_conditions)
     {   // only the fields that hold node CIDs follow: a variable that happens to hold the same string is the user's
         const json Inst = json::parse(Slurp(Users / "1" / "Default" / "instance.json"));
         CHECK(Inst["VARIABLES"]["note"] == P);
+        CHECK(Inst["RESOLUTIONS"]["ENV/X"] == R.Renamed.at(P));                      // a kept part follows its re-mint
     }
     fs::remove_all(Root);
 }

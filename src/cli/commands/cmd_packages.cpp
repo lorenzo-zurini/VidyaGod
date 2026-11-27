@@ -867,17 +867,23 @@ VG_COMMANDS
         "The parts the choice applies, and every unit two of them write differently (MetaPackageFormat 23 §23.4): a file "
         "path (compared without case), a keyed edit (file#key), a registry value, an environment variable, a DLL, a "
         "variable. Identical writes do not conflict, nor do a part and one it goes into.",
-        { GameArg(), Opt("ticked", "the choice (a,b,c: CIDs or LABELs)", Type::String, true) },
+        { GameArg(), Opt("ticked", "the choice (a,b,c: CIDs or LABELs)", Type::String, true), Opt("instance", "whose RESOLUTIONS (default the active one)") },
         { "grafts conflicts 'Wipeout XL' --ticked 'Wipeout XL 200 fps,Wipeout XL widescreen'" },
-        { "Shelf::PartConflicts" }, Needs::Config, false,
+        { "Shelf::PartConflicts", "Shelf::OrderResolved", "Shelf::ResolutionFor", "Shelf::ResolutionHolds" }, Needs::Config, false,
         [](Command::Context &C, const json &A) {
             const auto I = Index(C);
             const Node &N = *NodeOf(*I, Command::Str(A, "game"));
             std::vector<std::string> T;
             for (const std::string &G : List(A, "ticked")) T.push_back(NodeOf(*I, G)->Key());
-            const auto Applied = Shelf::AppliedGrafts(*I, N.Key(), T);
+            const json Inst = InstanceStore::ReadConfig(*C.Config, N.PackageUid, Command::Str(A, "instance", ""));
+            const json Res = Inst.contains("RESOLUTIONS") && Inst["RESOLUTIONS"].is_object() ? Inst["RESOLUTIONS"] : json::object();
+            const auto Applied = Shelf::OrderResolved(*I, Shelf::AppliedGrafts(*I, N.Key(), T), Res);
             json Out = json::array();
-            for (const auto &X : Shelf::PartConflicts(*I, N.Key(), Applied)) Out.push_back({{"address", X.Address}, {"a", X.A}, {"b", X.B}});
+            for (const auto &X : Shelf::PartConflicts(*I, N.Key(), Applied))
+            {
+                const std::string Kept = Shelf::ResolutionFor(Res, X.Address);
+                Out.push_back({{"address", X.Address}, {"a", X.A}, {"b", X.B}, {"kept", Kept}, {"holds", !Kept.empty() && Shelf::ResolutionHolds(Applied, X, Kept)}});
+            }
             return json{{"applied", Applied}, {"conflicts", Out}};
         }, {} });
 

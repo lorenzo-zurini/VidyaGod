@@ -296,7 +296,11 @@ private:
     QTreeWidget*  OptionsTree           = nullptr;   // options, in collapsible SECTION rows
     QWidget*      ModuleGroup           = nullptr;   // the grafts (Add-ons)
     QTreeWidget*  ModuleTree            = nullptr;
-    QLabel*       GraftNote             = nullptr;   // why a move was refused
+    QLabel*       GraftNote             = nullptr;   // the first open conflict between ticked parts
+    QPushButton*  KeepA                 = nullptr;   // keep one side of it (the instance's RESOLUTIONS)
+    QPushButton*  KeepB                 = nullptr;
+    std::string   ConflictAddress, ConflictA, ConflictB;   // what the two buttons settle
+    void          KeepConflictSide(const std::string &Part);
     QTextEdit*    ConsoleEdit       = nullptr;
     QStringList   ConsolePending;                    // lines buffered between console flushes (see onLogLine)
     QTimer*       ConsoleFlushTimer = nullptr;       // single-shot ~60ms batcher — one document edit per burst

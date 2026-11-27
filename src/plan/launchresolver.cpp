@@ -224,6 +224,11 @@ bool LaunchResolver::InitializeFromNodeOnce(struct ContainerParams &ContainerPar
                     if (const Node *Gn = Idx.Find(G); Gn && Gn->Variant.empty() && Gn->Faces.empty()) Chosen->push_back(G);
             }
             if (std::find(Chosen->begin(), Chosen->end(), Must) == Chosen->end()) Chosen->insert(Chosen->begin(), Must);
+            //A part that is an end built on ends (FE INTO 1.0e INTO 1.0c): the ends between it and the end launched
+            //are its row's hard links, applied with it.
+            if (const auto Chain = Shelf::IntoChain(Idx, Must, LaunchKey))
+                for (const std::string &C : *Chain)
+                    if (std::find(Chosen->begin(), Chosen->end(), C) == Chosen->end()) Chosen->insert(Chosen->begin(), C);
         }
     //--with: parts added to the selection, whatever it was (the instance's, else a fresh one's).
     if (!CP.WithGrafts.empty())
@@ -244,15 +249,17 @@ bool LaunchResolver::InitializeFromNodeOnce(struct ContainerParams &ContainerPar
         return C.contains("RESOLUTIONS") && C["RESOLUTIONS"].is_object() ? C["RESOLUTIONS"] : nlohmann::ordered_json::object();
     }();
     CP.AppliedGrafts = Shelf::OrderResolved(Idx, CP.AppliedGrafts, Resolutions);
-    //Two applied parts writing one unit differently: shown, never settled by a position (23 §23.4). The fold still
-    //reads them in CID order; what conflicts is reported.
+    //Two applied parts writing one unit differently: shown, never settled by a position (23 §23.4). Settled only by
+    //the user's resolution, and only where it holds in this order (its part kept is one of the two, folded later).
     CP.PartConflicts = nlohmann::ordered_json::array();
     for (const auto &C : Shelf::PartConflicts(Idx, LaunchKey, CP.AppliedGrafts, Instance, Builtins))
     {
-        const std::string Kept = Resolutions.contains(C.Address) && Resolutions[C.Address].is_string() ? Resolutions[C.Address].get<std::string>() : std::string();
-        CP.PartConflicts.push_back({{"address", C.Address}, {"a", C.A}, {"b", C.B}, {"kept", Kept}});
-        if (Kept.empty())
-            LogWarn("InitializeFromNode", "parts '" + C.A + "' and '" + C.B + "' both write " + C.Address + ", differently — the one read later wins");
+        const std::string Asked = Shelf::ResolutionFor(Resolutions, C.Address);
+        const bool Holds = !Asked.empty() && Shelf::ResolutionHolds(CP.AppliedGrafts, C, Asked);
+        CP.PartConflicts.push_back({{"address", C.Address}, {"a", C.A}, {"b", C.B}, {"kept", Holds ? Asked : std::string()}});
+        if (!Holds)
+            LogWarn("InitializeFromNode", "parts '" + C.A + "' and '" + C.B + "' both write " + C.Address + ", differently — the one read later wins"
+                    + (Asked.empty() ? std::string() : " (the resolution keeping '" + Asked + "' is stale or cannot hold here)"));
     }
     for (const std::string &Must : { CardGraft, RowGraft })
         if (!Must.empty() && std::find(CP.AppliedGrafts.begin(), CP.AppliedGrafts.end(), Must) == CP.AppliedGrafts.end())

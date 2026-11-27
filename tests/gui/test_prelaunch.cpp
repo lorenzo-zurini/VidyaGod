@@ -184,6 +184,39 @@ private slots:
         QCOMPARE(T2, (std::vector<std::string>{"aok"}));          // a set: aok, which no condition excludes; tc and both are excluded by it
     }
 
+    // Two ticked parts writing one variable differently show the conflict with a button per side; pressing one keeps
+    // it in the instance (RESOLUTIONS), and the conflict is settled. Teeth: show the note without buttons; save nothing.
+    void aConflictBetweenTickedPartsIsKeptByAButton()
+    {
+        NodeIndex idx;
+        idx.Nodes["game"] = parse(json{ {"CID", "game"}, {"LABEL", "game"}, {"VARIANT", "v1"},
+            {"LAYERS", json::array({ json{{"EXEC", json::array({ json{{"LABEL", "Play"},
+                {"HOST", ManifestModel::MachinePlatform()}, {"EXE", "game.exe"}, {"TILE", {{"UID", "18"}, {"TITLE", "Game"}}}} })}} })} });
+        const auto part = [](const char *Id, const char *X) {
+            return parse(json{ {"CID", Id}, {"LABEL", Id}, {"RECOMMENDED", json::array({"18"})},
+                {"LAYERS", json::array({ json{{"INTO", json::array({"game"})}}, json{{"ENV", {{"X", X}}}} })} });
+        };
+        idx.Nodes["pa"] = part("pa", "1");
+        idx.Nodes["pb"] = part("pb", "2");
+        ManifestModel::DeriveFacts(idx);
+        json Cfg = json{{"Settings", json::object()}};
+        PreLaunchWindow W(&Cfg, &idx, {"game"});
+        W.show();
+        QCoreApplication::processEvents();
+        auto *A = W.findChild<QPushButton *>("keepConflictA");
+        auto *B = W.findChild<QPushButton *>("keepConflictB");
+        QVERIFY(A && B);
+        QVERIFY(!A->isHidden() && !B->isHidden());                           // shown (on the add-ons tab)
+        QVERIFY(A->text().contains("pa") || B->text().contains("pa"));
+        QPushButton *KeepPa = A->text().contains("pa") ? A : B;
+        QTest::mouseClick(KeepPa, Qt::LeftButton);
+        QCoreApplication::processEvents();
+        QCoreApplication::processEvents();
+        const json Inst = InstanceStore::ReadConfig(Cfg, idx.Find("game")->PackageUid);
+        QVERIFY(Inst.contains("RESOLUTIONS") && Inst["RESOLUTIONS"].value("ENV/X", std::string()) == "pa");
+        QVERIFY(A->isHidden());                                            // settled: no open conflict left
+    }
+
     // A saved list naming a graft the library no longer has was saved against an older version of the package (an
     // edit re-mints its grafts): the tile opens with its defaults, not with nothing ticked. Teeth: honour the stale
     // list (the recommended graft shows unticked).
