@@ -283,18 +283,18 @@ public:
         }
         const Library::Entry *E = Lib.Find(Cid);
         if (!E) { Events.push_back({ "missing", Cid }); return; }
+        const json &Layers = E->Node->contains("LAYERS") ? (*E->Node)["LAYERS"] : Empty();
+        const VarSubst::Presence Pres = [this](const std::string &C) { return Present(C); };
+        //A part whose INTO does not hold here (a WHEN on one of its INTO layers, say "only with this DLC") is not
+        //applied at all, not partly — and is not in the composition: nothing counts it present.
+        for (const json *In : IntoLayers(Layers))
+            if (In->contains("WHEN") && !When((*In)["WHEN"], Wv, Pres)) { Events.push_back({ "into-off", Cid }); return; }
         First[Key] = Containers;
         Order.push_back({ Key, Cid });
         ++Count[Cid];
         const Chain Inner = std::make_shared<const Occ>(Occ{ Key, Cid, Containers });
         ++OnPath[Cid];
         struct Leave { std::unordered_map<std::string, int> &M; const std::string &C; ~Leave() { if (--M[C] == 0) M.erase(C); } } L_{ OnPath, Cid };
-        const json &Layers = E->Node->contains("LAYERS") ? (*E->Node)["LAYERS"] : Empty();
-        const VarSubst::Presence Pres = [this](const std::string &C) { return Present(C); };
-        //A part whose INTO does not hold here (a WHEN on one of its INTO layers, say "only with this DLC") is not
-        //applied at all, not partly.
-        for (const json *In : IntoLayers(Layers))
-            if (In->contains("WHEN") && !When((*In)["WHEN"], Wv, Pres)) { Events.push_back({ "into-off", Cid }); return; }
         for (int I = 0; I < static_cast<int>(Layers.size()); ++I)
         {
             const json &L = Layers[I];
@@ -878,6 +878,21 @@ std::vector<std::string> ApplyGrafts(const Library &Lib, const GraftIndex &Idx, 
             else { Refused.insert(G); if (Dropped) Dropped->push_back(G); }
         }
         if (!Any) break;
+    }
+    //Judged once more as it will launch: the composition is what is applied (a requested part not offered here is not
+    //present). A part off or unmet there goes, until nothing changes — else a part judged beside a part that never
+    //came would launch off, or leave the row blocked.
+    for (;;)
+    {
+        const Plan F = Resolve(Lib, Root, Instance, Builtins, Applied, &Applied);
+        std::set<std::string> Bad;
+        for (const auto &E : F.Events)
+            if ((E.first == "into-off" || E.first == "into-unmet") && Has(Applied, E.second)) Bad.insert(E.second);
+        if (Bad.empty()) break;
+        std::vector<std::string> Kept;
+        for (const auto &G : Applied) if (!Bad.count(G)) Kept.push_back(G);
+        Applied = std::move(Kept);
+        for (const auto &G : Bad) { Refused.insert(G); if (Dropped) Dropped->push_back(G); }
     }
     if (Requested && Dropped)
         for (const auto &G : Want) if (!Has(Applied, G) && !Refused.count(G)) Dropped->push_back(G);   // never offered here

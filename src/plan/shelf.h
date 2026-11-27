@@ -53,6 +53,15 @@ std::vector<std::string> AppliedGrafts(const NodeIndex &Idx, const std::string &
                                        const std::map<std::string, std::string> &Instance = {},
                                        const std::map<std::string, std::string> &Builtins = {},
                                        std::vector<std::string> *Dropped = nullptr);
+// Two applied parts that write one unit differently (MetaPackageFormat 23 §23.4): the address (FILES/<path> for a file,
+// FILES/<file>#<key> for a keyed edit, REG/…, ENV/…, DLL/…, VARS/…) and the two parts. Parts that write it identically
+// do not conflict, and neither do a part and one it goes INTO (a patch on a mod: structure, intended). Each part's
+// footprint is what applying it changes over the parts applied before it; an archive's members are read from the
+// archive (VidyaGodFS's own listing). Instance/Builtins as AppliedGrafts. At most Max conflicts are returned.
+struct PartConflict { std::string Address, A, B; };
+std::vector<PartConflict> PartConflicts(const NodeIndex &Idx, const std::string &LaunchNodeId, const std::vector<std::string> &Applied,
+                                        const std::map<std::string, std::string> &Instance = {},
+                                        const std::map<std::string, std::string> &Builtins = {}, size_t Max = 200);
 // The saved graft list as the current library sees it: a list naming a graft that no longer exists was saved against
 // an older version of the package (every edit re-mints its grafts), so the choice is stale and the tile falls back to
 // its defaults (nullopt: the grafts RECOMMENDED under it). A list whose grafts all exist is the user's choice.

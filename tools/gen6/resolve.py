@@ -422,14 +422,14 @@ class Resolver:
                 self.events.append(("held", cid)); return
         if cid not in self.nodes:
             self.events.append(("missing", cid)); return
+        node, bdir = self.nodes[cid]
+        Ls = node["LAYERS"]
+        if any("WHEN" in L and not when(L["WHEN"], self.wv, self._present) for L in into_layers(Ls)):
+            self.events.append(("into-off", cid)); return  # not applied at all, and not in the composition
         self.first[occ] = containers
         self.order.append(occ)
         self.count[cid] = self.count.get(cid, 0) + 1
-        node, bdir = self.nodes[cid]
         inner = containers + (occ,)
-        Ls = node["LAYERS"]
-        if any("WHEN" in L and not when(L["WHEN"], self.wv, self._present) for L in into_layers(Ls)):
-            self.events.append(("into-off", cid)); return  # a part whose INTO does not hold is not applied at all
         for i, L in enumerate(Ls):
             if "WHEN" in L and not when(L["WHEN"], self.wv, self._present):
                 continue
@@ -800,6 +800,17 @@ def applied_grafts(R, idx, root, face_uid=None, requested=None, instance=None, b
                     dropped.append(g)
         if not anyp:
             break
+    # judged once more as it will launch: the composition is what is applied (a requested part not offered here is
+    # not present); a part off or unmet there goes, until nothing changes
+    while True:
+        final = R.resolve(root, instance, builtins, applied, applied)
+        bad = {e[1] for e in final["events"] if e[0] in ("into-off", "into-unmet") and e[1] in applied}
+        if not bad:
+            break
+        applied = [g for g in applied if g not in bad]
+        refused |= bad
+        if dropped is not None:
+            dropped.extend(sorted(bad))
     if want is not None and dropped is not None:
         dropped.extend(g for g in want if g not in applied and g not in refused)
     return applied

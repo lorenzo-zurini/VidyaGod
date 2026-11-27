@@ -863,6 +863,25 @@ VG_COMMANDS
         }, {} });
 
     Command::Register({
+        "grafts conflicts", "where ticked parts write one thing differently (a file, a key, a value)",
+        "The parts the choice applies, and every unit two of them write differently (MetaPackageFormat 23 §23.4): a file "
+        "path (compared without case), a keyed edit (file#key), a registry value, an environment variable, a DLL, a "
+        "variable. Identical writes do not conflict, nor do a part and one it goes into.",
+        { GameArg(), Opt("ticked", "the choice (a,b,c: CIDs or LABELs)", Type::String, true) },
+        { "grafts conflicts 'Wipeout XL' --ticked 'Wipeout XL 200 fps,Wipeout XL widescreen'" },
+        { "Shelf::PartConflicts" }, Needs::Config, false,
+        [](Command::Context &C, const json &A) {
+            const auto I = Index(C);
+            const Node &N = *NodeOf(*I, Command::Str(A, "game"));
+            std::vector<std::string> T;
+            for (const std::string &G : List(A, "ticked")) T.push_back(NodeOf(*I, G)->Key());
+            const auto Applied = Shelf::AppliedGrafts(*I, N.Key(), T);
+            json Out = json::array();
+            for (const auto &X : Shelf::PartConflicts(*I, N.Key(), Applied)) Out.push_back({{"address", X.Address}, {"a", X.A}, {"b", X.B}});
+            return json{{"applied", Applied}, {"conflicts", Out}};
+        }, {} });
+
+    Command::Register({
         "grafts row", "the row a tile shows for a variant",
         "Which node a tile's row named <variant> is — the variant presenting the tile under that name.",
         { Pos("tile", "the tile UID"), Pos("variant", "the variant's name") }, { "grafts row 749 'Patch 2.0a (No-CD)'" },

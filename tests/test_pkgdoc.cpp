@@ -862,7 +862,7 @@ TEST(repoint_cascades_through_contains_into_and_conditions)
     const std::string Other = Freeze(Mod, json{{"LABEL", "other"}, {"LAYERS", json::array({ json{{"ZIP", "o.zip"}} })}});
     const fs::path Users = Root / "USERDATA";
     fs::create_directories(Users / "1" / "Default");
-    std::ofstream(Users / "1" / "Default" / "instance.json") << json{{"GRAFTS", {{"1", json::array({P})}}}}.dump();
+    std::ofstream(Users / "1" / "Default" / "instance.json") << json{{"GRAFTS", {{"1", json::array({P})}}}, {"VARIABLES", {{"note", P}}}}.dump();
     const std::vector<fs::path> Roots{ Root / "L" };
 
     std::string Err;
@@ -890,5 +890,11 @@ TEST(repoint_cascades_through_contains_into_and_conditions)
     CHECK_EQ(R.InstancesUpdated, 1);
     CHECK(fs::exists(Lib / (L1 + ".json")));                                                 // the old node stays
     CHECK(!PkgDoc::RepointLibrary(Roots, Users, {{L2, L2}}, true).Ok);                       // a swap needs two CIDs
+    CHECK(!PkgDoc::RepointLibrary(Roots, Users, {{"1", "0"}}, true).Ok);                      // node CIDs only
+    CHECK(!PkgDoc::RepointLibrary(Roots, Users, {{L2, "lib 3"}}, true).Ok);
+    {   // only the fields that hold node CIDs follow: a variable that happens to hold the same string is the user's
+        const json Inst = json::parse(Slurp(Users / "1" / "Default" / "instance.json"));
+        CHECK(Inst["VARIABLES"]["note"] == P);
+    }
     fs::remove_all(Root);
 }

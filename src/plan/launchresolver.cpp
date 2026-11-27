@@ -238,6 +238,14 @@ bool LaunchResolver::InitializeFromNodeOnce(struct ContainerParams &ContainerPar
     }
     CP.AppliedGrafts = Shelf::AppliedGrafts(Idx, LaunchKey, Chosen, Instance, Builtins, &Dropped);
     CP.DroppedGrafts = Dropped;
+    //Two applied parts writing one unit differently: shown, never settled by a position (23 §23.4). The fold still
+    //reads them in CID order; what conflicts is reported.
+    CP.PartConflicts = nlohmann::ordered_json::array();
+    for (const auto &C : Shelf::PartConflicts(Idx, LaunchKey, CP.AppliedGrafts, Instance, Builtins))
+    {
+        CP.PartConflicts.push_back({{"address", C.Address}, {"a", C.A}, {"b", C.B}});
+        LogWarn("InitializeFromNode", "parts '" + C.A + "' and '" + C.B + "' both write " + C.Address + ", differently — the one read later wins");
+    }
     for (const std::string &Must : { CardGraft, RowGraft })
         if (!Must.empty() && std::find(CP.AppliedGrafts.begin(), CP.AppliedGrafts.end(), Must) == CP.AppliedGrafts.end())
         { LogErr("InitializeFromNode", "'" + Must + "' cannot be applied to '" + LaunchKey + "' (tile '" + Face + "')."); return false; }

@@ -1232,6 +1232,81 @@ private slots:
         QVERIFY(Shelf::OfferedGrafts(idx, "mod").empty());
     }
 
+    // The selection is judged as it will launch (adversary 2026-11-27): a part whose condition names a requested part that
+    // is not offered here is judged without it, and one excluded by a part a later round brings is dropped, never listed
+    // applied. (A) a stale list {P: "only with X", Q: into P, X: for another end} launches, applying neither P nor Q.
+    // (B) a fresh instance: A "never with X" and B are recommended, X goes into B (round 2): A is not applied.
+    // Teeth: drop the final as-launched check (A blocks the row; B lists A applied).
+    void a_selection_is_judged_as_it_will_launch()
+    {
+        NodeIndex idx;
+        idx.Nodes["game"] = launchNode("game", kMachine, {});
+        idx.Nodes["other"] = launchNode("other", kMachine, {});
+        const std::string X = CidOf("x"), Xb = CidOf("xb");
+        const auto part = [](const std::string &Id, const json &Into, const std::string &When, bool Rec) {
+            json In = json{{"INTO", Into}};
+            if (!When.empty()) In["WHEN"] = When;
+            json J{ {"CID", Id}, {"LABEL", Id}, {"LAYERS", json::array({ In, json{{"DIR", Id}} })} };
+            if (Rec) J["RECOMMENDED"] = json::array({"game"});
+            return parse(J, "/tmp/vg_bundle");
+        };
+        idx.Nodes[X] = part(X, json::array({"other"}), "", false);
+        idx.Nodes["p"] = part("p", json::array({"game"}), X + " == true", false);
+        idx.Nodes["q"] = part("q", json::array({"p"}), "", false);
+        idx.Nodes["a"] = part("a", json::array({"game"}), Xb + " == false", true);
+        idx.Nodes["b"] = part("b", json::array({"game"}), "", true);
+        idx.Nodes[Xb] = part(Xb, json::array({"b"}), "", true);
+        finish(idx);
+        const json cfg = json{{"Settings", json::object()}};
+        {
+            ContainerParams cp("/tmp/vg_bundle");
+            cp.NodeIdx = &idx; cp.LaunchNodeId = "game"; cp.Grafts = std::vector<std::string>{ "p", "q", X };
+            QVERIFY(LaunchResolver::InitializeFromNode(cp, cfg));
+            QVERIFY(cp.AppliedGrafts.empty());
+        }
+        {
+            ContainerParams cp("/tmp/vg_bundle");
+            cp.NodeIdx = &idx; cp.LaunchNodeId = "game";
+            QVERIFY(LaunchResolver::InitializeFromNode(cp, cfg));
+            const std::set<std::string> A(cp.AppliedGrafts.begin(), cp.AppliedGrafts.end());
+            QCOMPARE(A, (std::set<std::string>{"b", Xb}));
+        }
+    }
+
+    // Parts that write one unit differently conflict, shown, never settled by position (23 §23.4): two parts setting one
+    // environment variable to different values, two parts placing different bytes at one file path (compared without
+    // case). Identical writes are one write, and a part and one it goes INTO (a patch on a mod) never conflict.
+    // Teeth: compare names only (identical writes reported); skip the INTO exemption; compare paths with case.
+    void parts_writing_one_unit_differently_conflict()
+    {
+        NodeIndex idx;
+        idx.Nodes["game"] = launchNode("game", kMachine, {});
+        const auto part = [](const char *Id, const json &Into, json Layers) {
+            json L = json::array({ json{{"INTO", Into}} });
+            for (auto &X : Layers) L.push_back(X);
+            return parse(json{ {"CID", Id}, {"LABEL", Id}, {"LAYERS", L} }, "/tmp/vg_bundle");
+        };
+        idx.Nodes["a"] = part("a", json::array({"game"}), json::array({ json{{"ENV", {{"X", "1"}}}}, json{{"FILE", "Readme.txt"}, {"SOURCE", "QmA"}, {"TARGET", "FILES/C:/g"}} }));
+        idx.Nodes["b"] = part("b", json::array({"game"}), json::array({ json{{"ENV", {{"X", "2"}}}}, json{{"FILE", "README.TXT"}, {"SOURCE", "QmB"}, {"TARGET", "FILES/C:/g"}} }));
+        idx.Nodes["c"] = part("c", json::array({"game"}), json::array({ json{{"ENV", {{"X", "1"}}}} }));
+        idx.Nodes["pa"] = part("pa", json::array({"a"}), json::array({ json{{"ENV", {{"X", "3"}}}} }));
+        finish(idx);
+        using V = std::vector<std::string>;
+        const auto Has = [](const std::vector<Shelf::PartConflict> &Cs, const std::string &Addr, const std::string &A, const std::string &B) {
+            for (const auto &C : Cs) if (C.Address == Addr && ((C.A == A && C.B == B) || (C.A == B && C.B == A))) return true;
+            return false;
+        };
+        const auto AB = Shelf::PartConflicts(idx, "game", Shelf::AppliedGrafts(idx, "game", V{"a", "b"}));
+        QVERIFY(Has(AB, "ENV/X", "a", "b"));
+        bool File = false;
+        for (const auto &C : AB) if (C.Address.find("README.TXT") != std::string::npos || C.Address.find("Readme.txt") != std::string::npos) File = true;
+        QVERIFY2(File, "one file path written by two parts with different bytes");
+        QVERIFY(Shelf::PartConflicts(idx, "game", Shelf::AppliedGrafts(idx, "game", V{"a", "c"})).empty());   // identical
+        const auto P = Shelf::PartConflicts(idx, "game", Shelf::AppliedGrafts(idx, "game", V{"a", "pa", "b"}));
+        QVERIFY(!Has(P, "ENV/X", "a", "pa"));                                                         // a patch on a
+        QVERIFY(Has(P, "ENV/X", "pa", "b") || Has(P, "ENV/X", "a", "b"));
+    }
+
     // --with adds parts to the selection the launch would use: a fresh instance keeps its RECOMMENDED parts and gains
     // the named one; a part not offered here is reported dropped, never applied. Teeth: replace the selection with the
     // --with list (the recommended part is lost); drop the dropped list.

@@ -34,6 +34,7 @@
   "LaunchEnv": {},
   "LaunchRemoveEnv": [],
   "PackageUID": "90000000000001",
+  "PartConflicts": [],
   "Platform": "fixturevm",
   "PrefixGenerate": false,
   "PrefixRoot": "pfx",

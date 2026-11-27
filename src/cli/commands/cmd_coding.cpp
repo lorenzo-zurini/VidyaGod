@@ -26,11 +26,17 @@ std::vector<uint8_t> Slurp(const std::string &P)
     if (!F) throw Command::BadArgs("cannot read " + P);
     return std::vector<uint8_t>(std::istreambuf_iterator<char>(F), {});
 }
+//Written beside its place and renamed over it once whole: a failed write leaves nothing half-written.
 void Spit(const std::string &P, const uint8_t *B, size_t N)
 {
-    std::ofstream F(P, std::ios::binary | std::ios::trunc);
-    F.write(reinterpret_cast<const char *>(B), static_cast<std::streamsize>(N));
-    if (!F) throw std::runtime_error("cannot write " + P);
+    const std::string Tmp = P + ".part";
+    {
+        std::ofstream F(Tmp, std::ios::binary | std::ios::trunc);
+        F.write(reinterpret_cast<const char *>(B), static_cast<std::streamsize>(N));
+        F.close();
+        if (!F) { std::remove(Tmp.c_str()); throw std::runtime_error("cannot write " + P); }
+    }
+    if (std::rename(Tmp.c_str(), P.c_str()) != 0) { std::remove(Tmp.c_str()); throw std::runtime_error("cannot write " + P); }
 }
 std::shared_ptr<ByteSource> Map(const std::string &P)
 {
@@ -140,7 +146,8 @@ VG_COMMANDS
             if (Command::Bool(A, "in-memory", false))
             {
                 std::vector<uint8_t> Content;
-                if (!coding::Mint(D, S.p, static_cast<size_t>(S.n), 0, static_cast<size_t>(S.n) * 64 + (1u << 20), Spacing, Content, Rec, Err))
+                const size_t Cap = static_cast<size_t>(std::min<uint64_t>(S.n * 64 + (1u << 20), 0xFFFFFFFFu));
+                if (!coding::Mint(D, S.p, static_cast<size_t>(S.n), 0, Cap, Spacing, Content, Rec, Err))
                     throw std::runtime_error("refused: " + Err);
                 Len = Content.size();
                 Spit(Command::Str(A, "content"), Content.data(), Content.size());
@@ -193,10 +200,14 @@ VG_COMMANDS
         { "coding::CodedByteSource::Create" }, Needs::Config, false,
         [Coded](Command::Context &, const json &A) {
             auto S = Coded(A, 0);
-            std::FILE *Out = std::fopen(Command::Str(A, "out").c_str(), "wb");
-            if (!Out) throw std::runtime_error("cannot write " + Command::Str(A, "out"));
-            struct Close { std::FILE *F; ~Close() { std::fclose(F); } } C{ Out };
-            const double T = ReadThrough(*S, nullptr, Out);
+            const std::string Path = Command::Str(A, "out"), Tmp = Path + ".part";
+            std::FILE *Out = std::fopen(Tmp.c_str(), "wb");
+            if (!Out) throw std::runtime_error("cannot write " + Path);
+            double T = 0;
+            try { T = ReadThrough(*S, nullptr, Out); }
+            catch (...) { std::fclose(Out); std::remove(Tmp.c_str()); throw; }
+            if (std::fclose(Out) != 0 || std::rename(Tmp.c_str(), Path.c_str()) != 0)
+            { std::remove(Tmp.c_str()); throw std::runtime_error("cannot write " + Path); }
             return json{{"bytes", S->size()}, {"seconds", T}};
         }, {} });
 

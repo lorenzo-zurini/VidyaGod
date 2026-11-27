@@ -36,6 +36,7 @@
   "LaunchEnv": {},
   "LaunchRemoveEnv": [],
   "PackageUID": "90000000000001",
+  "PartConflicts": [],
   "Platform": "linux64",
   "PrefixGenerate": false,
   "PrefixRoot": "",

@@ -34,6 +34,7 @@ static nlohmann::ordered_json DumpResolution(struct ContainerParams &CP)   // no
     J["GameName"]          = CP.GameName;
     J["AppliedParts"]      = CP.AppliedGrafts;      // the parts applied (a set: in the order the fold reads them)
     J["DroppedParts"]      = CP.DroppedGrafts;      // chosen but not applied: not offered here, a condition false, missing
+    J["PartConflicts"]     = CP.PartConflicts;      // applied parts writing one unit differently
     J["Platform"]          = CP.Platform;
     J["Stack"]             = nlohmann::ordered_json::array();   // what the launch stacks, lowest first
     for (const OpGroup &G : CP.Stack) J["Stack"].push_back(G.Name);

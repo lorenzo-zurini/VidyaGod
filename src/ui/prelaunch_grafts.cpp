@@ -135,6 +135,23 @@ void PreLaunchWindow::RebuildModuleTree()
     SetTabShown(AddonsPage, !GraftRows(ModuleTree).empty());
     if (DeckLayout) ModuleTree->expandAll();   // a controller cannot open a folded row
     SyncGraftChecks();
+    //Parts have no order: two ticked parts writing one thing differently are a conflict, said here (23 §23.4).
+    if (GraftNote)
+    {
+        const auto [Instance, Builtins] = GraftJudging();
+        const std::vector<std::string> Applied = Shelf::AppliedGrafts(*Index, LaunchNodeId, Ticked, Instance, Builtins);
+        const auto Cs = Shelf::PartConflicts(*Index, LaunchNodeId, Applied, Instance, Builtins, 50);
+        const auto Name = [&](const std::string &C) { const Node *N = Index->Find(C); return N && !N->NodeId.empty() ? N->NodeId : C.substr(0, 12); };
+        if (Cs.empty()) GraftNote->setVisible(false);
+        else
+        {
+            std::string T = "Conflict: " + Name(Cs[0].A) + " and " + Name(Cs[0].B) + " both change " + Cs[0].Address
+                          + " differently (the one read later wins)";
+            if (Cs.size() > 1) T += ", and " + std::to_string(Cs.size() - 1) + " more";
+            GraftNote->setText(QString::fromStdString(T + "."));
+            GraftNote->setVisible(true);
+        }
+    }
 }
 
 //Every row's check follows what is ticked (UserRole+2). Every row is tickable: what a graft needs is ticked with it.

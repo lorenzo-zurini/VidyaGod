@@ -1,5 +1,6 @@
 #include "nodegraph.h"
 #include "noderefs.h"
+#include "varsubst.h"     // VarSubst::IsNodeCid — a repoint swaps node CIDs only
 #include "pkgdoc.h"
 #include "commonutils.h"   // WriteFileAtomic
 #include "platform/platform.h"   // FileStamp
@@ -915,7 +916,12 @@ RepointReport RepointLibrary(const std::vector<fs::path> &Roots, const fs::path 
 {
     RepointReport R;
     for (const auto &[O, N] : Swap)
+    {
         if (O.empty() || N.empty() || O == N) { R.Error = "a swap needs two different CIDs"; return R; }
+        //node CIDs only: a label, a number or a condition would be spliced into nodes and instances as text
+        if (!VarSubst::IsNodeCid(O) || !VarSubst::IsNodeCid(N))
+        { R.Error = "'" + (VarSubst::IsNodeCid(O) ? N : O) + "' is not a node CID (bafkrei…): a repoint swaps node CIDs only"; return R; }
+    }
     std::vector<LibFile> Lib;
     for (const fs::path &Root : Roots) if (!GatherLibrary(Root, fs::path(), Lib, R.Error)) { R.Error = "Nothing was changed: " + R.Error; return R; }
     std::map<std::string, std::vector<size_t>> Referrers;
@@ -963,39 +969,64 @@ RepointReport RepointLibrary(const std::vector<fs::path> &Roots, const fs::path 
         }
         if (!Progress) { R.Error = "Nothing was changed: these nodes name each other in a circle"; return R; }
     }
-    //Instances: a graft list (or anything else) naming a renamed CID follows it.
-    std::error_code Ec, Probe;
-    if (!UserDataRoot.empty() && fs::is_directory(UserDataRoot, Probe))
-        for (fs::recursive_directory_iterator It(UserDataRoot, Ec), End; !Ec && It != End; It.increment(Ec))
+    //Instances: their graft lists and pinned runner chains (the fields that hold node CIDs) follow a renamed CID.
+    //USERDATA/<family>/<instance>/instance.json; a folder that cannot be read stops the repoint, as a save would.
+    if (!UserDataRoot.empty() && fs::is_directory(UserDataRoot))
+    {
+        std::error_code Ec;
+        for (fs::directory_iterator Pkg(UserDataRoot, Ec), End; !Ec && Pkg != End; Pkg.increment(Ec))
         {
-            if (It.depth() >= 2) { It.disable_recursion_pending(); }
-            if (It->path().filename() != "instance.json" || !It->is_regular_file(Probe)) continue;
-            std::string B;
-            if (!ReadFile(It->path(), B)) { R.Error = "Nothing was changed: cannot read " + It->path().string(); return R; }
-            json J = NodeGraph::ParseBounded(B);
-            if (J.is_discarded() || !RenameStrings(J, M)) continue;
-            Writes.push_back({ It->path(), J.dump(4) });
-            ++R.InstancesUpdated;
+            std::error_code Probe;
+            if (!Pkg->is_directory(Probe)) continue;
+            for (fs::directory_iterator Inst(Pkg->path(), Ec); !Ec && Inst != End; Inst.increment(Ec))
+            {
+                const fs::path Cfg = Inst->path() / "instance.json";
+                if (!Inst->is_directory(Probe) || !fs::exists(Cfg, Probe)) continue;
+                std::string B;
+                if (!ReadFile(Cfg, B)) { R.Error = "Nothing was changed: cannot read " + Cfg.string(); return R; }
+                json J = NodeGraph::ParseBounded(B);
+                if (J.is_discarded() || !J.is_object()) continue;
+                bool Changed = false;
+                for (const char *K : { "GRAFTS", "RUNNER_CHAIN" }) if (J.contains(K)) Changed |= RenameStrings(J[K], M);
+                if (!Changed) continue;
+                Writes.push_back({ Cfg, J.dump(4) });
+                ++R.InstancesUpdated;
+            }
+            if (Ec) break;
         }
+        if (Ec) { R.Error = "Nothing was changed: cannot read the instances under " + UserDataRoot.string() + ": " + Ec.message(); return R; }
+    }
     for (const auto &[O, N] : M) if (!Swap.count(O)) R.Renamed[O] = N;
     for (const auto &[O, N] : Swap) R.Renamed[O] = N;
     for (const Write &W : Writes) R.Files.push_back(W.Path.string());
     if (Dry) { R.Ok = true; return R; }
-    struct Undo { fs::path Path; std::string Old; };
+    struct Undo { fs::path Path; bool Existed; std::string Old; };
     std::vector<Undo> Journal;
     for (const Write &W : Writes)
     {
         std::string Have, Err;
-        ReadFile(W.Path, Have);
-        if (Have == W.Bytes) continue;
-        if (!WriteFileAtomic(W.Path, W.Bytes, Err, true))
+        std::error_code Probe;
+        const bool Existed = fs::exists(W.Path, Probe);
+        if (Existed && !ReadFile(W.Path, Have)) Err = "cannot read " + W.Path.string() + " to keep it for an undo";
+        else if (Existed && Have == W.Bytes) continue;
+        if (Err.empty() && WriteFileAtomic(W.Path, W.Bytes, Err, true)) { Journal.push_back({ W.Path, Existed, std::move(Have) }); continue; }
+        //a write failed: undo the ones before it; a file the undo could not restore is named, never hidden
+        std::vector<std::string> Stuck;
+        for (auto It = Journal.rbegin(); It != Journal.rend(); ++It)
         {
-            for (auto It = Journal.rbegin(); It != Journal.rend(); ++It) { std::string E2; WriteFileAtomic(It->Path, It->Old, E2, true); }
-            R.Error = "Nothing was changed (a write failed and the ones before it were undone): " + Err;
-            R.Files.clear(); R.Renamed.clear(); R.InstancesUpdated = 0;
-            return R;
+            std::string E2;
+            std::error_code Rm;
+            if (It->Existed ? !WriteFileAtomic(It->Path, It->Old, E2, true) : !fs::remove(It->Path, Rm)) Stuck.push_back(It->Path.string());
         }
-        Journal.push_back({ W.Path, std::move(Have) });
+        R.Files.clear(); R.Renamed.clear(); R.InstancesUpdated = 0;
+        if (Stuck.empty()) R.Error = "Nothing was changed (a write failed and the ones before it were undone): " + Err;
+        else
+        {
+            R.Error = "The repoint failed (" + Err + ") and could not be fully undone; these files are left as it wrote them — "
+                      "check them by hand:";
+            for (const std::string &P : Stuck) R.Error += " " + P;
+        }
+        return R;
     }
     //What the gather remembered of these files is stale now.
     { std::lock_guard<std::mutex> Lk(g_GatheredMu); for (const Write &W : Writes) g_Gathered.erase(W.Path.string()); }

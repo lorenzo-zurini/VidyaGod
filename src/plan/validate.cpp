@@ -933,6 +933,24 @@ void Nodes(const NodeIndex &Idx, std::vector<std::string> &Errors, std::vector<s
             for (const auto &C : Conds)
                 if (!VarSubst::ConditionParses(C) && InScope(Id))
                     Errors.push_back(Tag + ": malformed WHEN \"" + C + "\" — it would silently always-apply. Grammar: %KEY% == value, && || ! ( ).");
+            //A node CID is read only in a LAYER's WHEN (08 §8.6): a declaration's, an option UI's or an edit op's
+            //condition is read after the fold, where it would always be false.
+            if (InScope(Id))
+            {
+                std::vector<std::string> Late;
+                if (L.contains("VARS") && L["VARS"].is_object())
+                    for (const auto &[K, D] : L["VARS"].items())
+                    {
+                        if (D.contains("WHEN") && D["WHEN"].is_string()) Late.push_back(D["WHEN"].get<std::string>());
+                        if (D.contains("UI") && D["UI"].is_object() && D["UI"].contains("WHEN") && D["UI"]["WHEN"].is_string()) Late.push_back(D["UI"]["WHEN"].get<std::string>());
+                    }
+                if (L.contains("EDIT") && L["EDIT"].is_array())
+                    for (const auto &Op : L["EDIT"]) if (Op.is_object() && Op.contains("WHEN") && Op["WHEN"].is_string()) Late.push_back(Op["WHEN"].get<std::string>());
+                for (const auto &C : Late)
+                    if (!NodeRefs::CidsInWhen(C).empty())
+                        Errors.push_back(Tag + ": a node CID in \"" + C + "\" — a node's presence is read only in a layer's WHEN; put the "
+                                         "condition on the layer");
+            }
             if (L.contains("WHEN") && InScope(Id))
             {
                 const std::string W = L["WHEN"].get<std::string>();

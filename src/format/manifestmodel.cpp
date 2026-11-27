@@ -695,7 +695,7 @@ void ResolveCodedDescriptions(nlohmann::ordered_json &Layers)
     if (!Layers.is_array()) return;
     std::map<std::string, std::string> PathOf;
     for (const auto &L : Layers)
-        if (L.is_object() && L.contains("cid") && L["cid"].is_string() && L.value("type", std::string()) != "coded")
+        if (L.is_object() && L.contains("cid") && L["cid"].is_string() && L.value("type", std::string()) == "file")   // a description is a file
             PathOf.emplace(L["cid"].get<std::string>(), L.value("source", std::string()));
     for (auto &L : Layers)
         if (L.is_object() && L.value("type", std::string()) == "coded" && L.contains("description"))

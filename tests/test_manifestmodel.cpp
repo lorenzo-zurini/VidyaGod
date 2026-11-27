@@ -591,6 +591,17 @@ TEST(validate_checks_what_a_part_goes_into)
     CHECK(AnyContains(W, "node 'nowhere'") && AnyContains(W, "names no node in this library"));
     CHECK(AnyContains(E, "a condition names runner"));
     CHECK(AnyContains(W, "a condition names node '" + Gone + "'"));
+    {   // a node CID in a declaration's or an edit op's condition: read after the fold, refused
+        NodeIndex I2;
+        Add(I2, {{"CID", "late"}, {"LABEL", "late"}, {"LAYERS", ordered_json::array({
+            {{"VARS", {{"v", {{"DEFAULT", "1"}, {"WHEN", Gone + " == true"}}}}}},
+            {{"EDIT", ordered_json::array({ {{"MODE", "Overwrite"}, {"VALUE", "x"}, {"WHEN", Gone + " == false"}} })}, {"TARGET", "FILES/C:/g/a.ini"}} })}});
+        ManifestModel::DeriveFacts(I2);
+        const auto E2 = Errors(I2);
+        int N = 0;
+        for (const auto &X : E2) if (X.find("a node's presence is read only in a layer's WHEN") != std::string::npos) ++N;
+        CHECK_EQ(N, 2);
+    }
     //and the facts: a part's INTO members are its hard links, every layer of them
     CHECK(Idx.Find("onpart")->IsGraft);
     CHECK((Idx.Find("onpart")->Into == std::vector<std::string>{"ok", "end"}));
@@ -1733,9 +1744,16 @@ TEST(a_coded_layer_mounts_as_the_shipped_file_bit_exact)
     CHECK(VfsOpen(S, "C:/g/descriptions/deflate.vgcd", 0, G) < 0);
     //the next build's content as a DELTA over this build's (the dedup chapter 22 measures): the delta's rebuild is the
     //coded stream's base, bytes only, never an archive the game sees
+    //(the last build: its own stream over its own content, as a real chain holds it — which names prev.content)
     std::vector<uint8_t> Prev = Content;
     for (size_t I = 100; I < 200 && I < Prev.size(); ++I) Prev[I] ^= 0x5A;
+    std::vector<uint8_t> ShippedPrev(Shipped.begin(), Shipped.begin() + 5);
+    ShippedPrev.insert(ShippedPrev.end(), Prev.begin(), Prev.end());
+    std::vector<uint8_t> ContentPrev, RecordPrev;
+    CHECK(coding::Mint(Desc, ShippedPrev.data(), ShippedPrev.size(), 0, 1u << 20, 1024, ContentPrev, RecordPrev, Err));
+    CHECK(ContentPrev == Prev);
     Put("prev.content", Prev);
+    Put("a.bin.v1.vgcr", RecordPrev);
     const auto Dl = vgdelta::GenerateDelta(Prev.data(), Prev.size(), Content.data(), Content.size());
     CHECK(!Dl.empty());
     Put("a.bin.vgdelta", Dl);
@@ -1743,6 +1761,8 @@ TEST(a_coded_layer_mounts_as_the_shipped_file_bit_exact)
         ordered_json L2 = ordered_json::array({
             {{"FILE", "deflate.vgcd"}, {"SOURCE", "QmDesc"}, {"TARGET", "FILES/C:/g/descriptions"}},
             {{"FILE", "prev.content"}, {"SOURCE", "QmPrev"}, {"TARGET", "FILES/C:/g"}},
+            {{"CODED", "a.bin.v1.vgcr"}, {"SOURCE", "QmRecordPrev"}, {"NAME", "a.bin"}, {"DESCRIPTION", "QmDesc"},
+             {"BASE_SOURCES", ordered_json::array({"QmPrev"})}, {"TARGET", "FILES/C:/g"}},
             {{"DELTA", "a.bin.vgdelta"}, {"SOURCE", "QmContent2"}, {"BASE_SOURCES", ordered_json::array({"QmPrev"})}, {"TARGET", "FILES/C:/g"}},
             {{"CODED", "a.bin.vgcr"}, {"SOURCE", "QmRecord"}, {"NAME", "a.bin"}, {"DESCRIPTION", "QmDesc"},
              {"BASE_SOURCES", ordered_json::array({"QmContent2"})}, {"TARGET", "FILES/C:/g"}},
@@ -1762,7 +1782,43 @@ TEST(a_coded_layer_mounts_as_the_shipped_file_bit_exact)
         CHECK_EQ(N2, static_cast<ssize_t>(Shipped.size()));
         Got2.resize(N2 > 0 ? static_cast<size_t>(N2) : 0);
         CHECK(Got2 == Shipped);
-        CHECK(VfsOpen(S2, "C:/g/prev.content", 0, H) < 0);                  // the delta's base: bytes only
+        CHECK(VfsOpen(S2, "C:/g/prev.content", 0, H) < 0);                  // the last build's content: bytes only
+    }
+    //a stream inside a stream (a coded layer whose content is another coded layer's shipped bytes), the inner one read
+    //only for its bytes: it brings its own content and description, and neither of them, nor it, shows
+    {
+        std::vector<uint8_t> Outer = { 0x01, static_cast<uint8_t>(Shipped.size() & 0xFF), static_cast<uint8_t>(Shipped.size() >> 8),
+                                       static_cast<uint8_t>(~Shipped.size() & 0xFF), static_cast<uint8_t>((~Shipped.size() >> 8) & 0xFF) };
+        Outer.insert(Outer.end(), Shipped.begin(), Shipped.end());
+        std::vector<uint8_t> ContentO, RecordO;
+        CHECK(coding::Mint(Desc, Outer.data(), Outer.size(), 0, 1u << 20, 1024, ContentO, RecordO, Err));
+        CHECK(ContentO == Shipped);
+        Put("outer.vgcr", RecordO);
+        ordered_json L4 = ordered_json::array({
+            {{"FILE", "deflate.vgcd"}, {"SOURCE", "QmDesc"}, {"TARGET", "FILES/C:/g/descriptions"}},
+            {{"FILE", "a.bin.content"}, {"SOURCE", "QmContent"}, {"TARGET", "FILES/C:/g"}},
+            {{"CODED", "a.bin.vgcr"}, {"SOURCE", "QmRecord"}, {"NAME", "inner.bin"}, {"DESCRIPTION", "QmDesc"},
+             {"BASE_SOURCES", ordered_json::array({"QmContent"})}, {"TARGET", "FILES/C:/g"}},
+            {{"CODED", "outer.vgcr"}, {"SOURCE", "QmOuter"}, {"NAME", "outer.bin"}, {"DESCRIPTION", "QmDesc"},
+             {"BASE_SOURCES", ordered_json::array({"QmRecord"})}, {"TARGET", "FILES/C:/g"}},
+            {{"EXEC", ordered_json::array({ {{"LABEL", "Game v2"}, {"HOST", "win32"}, {"EXE", "C:/g/a.exe"}, {"TILE", {{"UID", "1"}, {"TITLE", "Game"}}}} })}} });
+        NodeIndex Idx4;
+        Add(Idx4, {{"CID", "nested"}, {"LABEL", "nested"}, {"VARIANT", "Windows"}, {"LAYERS", L4}}, Pkg.string());
+        ManifestModel::DeriveFacts(Idx4);
+        const LaunchTree L5 = LaunchTree::Of(Fold::Resolve(ManifestModel::LibraryOf(Idx4), "nested"));
+        for (const auto &Pr : L5.T.problems) std::cerr << "  nested problem: " << Pr << "\n";
+        CHECK(L5.T.problems.empty());
+        VfsState S5;
+        CHECK(S5.Init(L5.S, Err));
+        OpenFile *H = nullptr;
+        CHECK_EQ(VfsOpen(S5, "C:/g/outer.bin", 0, H), 0);
+        std::vector<uint8_t> Got5(Outer.size() + 16);
+        const ssize_t N5 = H ? VfsRead(H, Got5.data(), Got5.size(), 0) : -1;
+        if (H) VfsRelease(H);
+        Got5.resize(N5 > 0 ? static_cast<size_t>(N5) : 0);
+        CHECK(Got5 == Outer);
+        CHECK(VfsOpen(S5, "C:/g/inner.bin", 0, H) < 0);
+        CHECK(VfsOpen(S5, "C:/g/a.bin.content", 0, H) < 0);
     }
     //without the description in its launch: refused by the validator
     std::vector<std::string> W;

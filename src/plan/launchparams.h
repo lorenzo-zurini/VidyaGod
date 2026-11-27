@@ -210,6 +210,8 @@ public:
     std::vector<std::string> AppliedGrafts;
     //AUTO-RESOLVED (out): the parts chosen that were not applied (not offered here, a condition false, not installed).
     std::vector<std::string> DroppedGrafts;
+    //AUTO-RESOLVED (out): applied parts writing one unit differently, [{address, a, b}] (Shelf::PartConflicts).
+    nlohmann::ordered_json PartConflicts = nlohmann::ordered_json::array();
 
     //Native node-graph launch (everything-is-a-node): when NodeIdx+LaunchNodeId are set, the engine resolves
     //EVERYTHING from the global node graph (InitializeFromNode) instead of from a MANIFESTJSON.

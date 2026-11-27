@@ -795,28 +795,20 @@ std::vector<std::pair<size_t, nlohmann::ordered_json>> ContentOps(const Fold::Pl
     std::vector<bool> BytesOnly(P.Seq.size(), false);
     std::vector<std::string> Want;
     //What a coded stream names (its content, its description) is bytes and never a file of the game (04): every layer
-    //carrying one of those CIDs mounts for its bytes only, wherever it is placed, whatever a TAKE would show.
+    //carrying one of those CIDs mounts for its bytes only, wherever it is placed, whatever a TAKE would show — for every
+    //coded layer of the launch, shown or not (an earlier build's stream, read only as a later delta's base, still names
+    //its own content). Only what coded layers name directly: a content that is a delta keeps its bases as any delta does.
     std::set<std::string> CodedNames;
+    const auto Named = [&](const Fold::Item &I, std::vector<std::string> &To) {
+        if (I.BaseSources.is_array()) for (const auto &C : I.BaseSources) if (C.is_string()) To.push_back(C.get<std::string>());
+        if (I.Kind == "CODED" && !I.Description.empty()) To.push_back(I.Description);
+    };
     for (size_t J = 0; J < P.Seq.size(); ++J)
-        if (P.Seq[J].Kind == "CODED" && Sh[J].Shown)
-        {
-            if (P.Seq[J].BaseSources.is_array()) for (const auto &C : P.Seq[J].BaseSources) if (C.is_string()) CodedNames.insert(C.get<std::string>());
-            if (!P.Seq[J].Description.empty()) CodedNames.insert(P.Seq[J].Description);
-        }
-    //...and what those are rebuilt from (a content that is a delta over the last build's content): bytes too.
-    for (bool Grew = true; Grew;)
-    {
-        Grew = false;
-        for (size_t J = 0; J < P.Seq.size(); ++J)
-            if (P.Seq[J].Kind == "DELTA" && CodedNames.count(Cid(P.Seq[J])) && P.Seq[J].BaseSources.is_array())
-                for (const auto &C : P.Seq[J].BaseSources) if (C.is_string() && CodedNames.insert(C.get<std::string>()).second) Grew = true;
-    }
+        if (P.Seq[J].Kind == "CODED") { std::vector<std::string> N; Named(P.Seq[J], N); CodedNames.insert(N.begin(), N.end()); }
     for (size_t J = 0; J < P.Seq.size(); ++J)
-        if (Carries(P.Seq[J]) && P.Seq[J].Kind != "CODED" && CodedNames.count(Cid(P.Seq[J]))) { Sh[J].Shown = false; Have.erase(Cid(P.Seq[J])); }
-    for (const std::string &C : CodedNames) Want.push_back(C);
+        if (Carries(P.Seq[J]) && CodedNames.count(Cid(P.Seq[J]))) { Sh[J].Shown = false; Have.erase(Cid(P.Seq[J])); }   // a stream inside a stream too
     for (size_t J = 0; J < P.Seq.size(); ++J)
-        if ((P.Seq[J].Kind == "DELTA" || P.Seq[J].Kind == "CODED") && Sh[J].Shown && P.Seq[J].BaseSources.is_array())
-            for (const auto &C : P.Seq[J].BaseSources) if (C.is_string()) Want.push_back(C.get<std::string>());
+        if ((P.Seq[J].Kind == "DELTA" || P.Seq[J].Kind == "CODED") && Sh[J].Shown) Named(P.Seq[J], Want);
     while (!Want.empty())
     {
         const std::string C = Want.back();
@@ -826,8 +818,8 @@ std::vector<std::pair<size_t, nlohmann::ordered_json>> ContentOps(const Fold::Pl
             if (Carries(P.Seq[J]) && Cid(P.Seq[J]) == C)
             {
                 BytesOnly[J] = true;
-                if (P.Seq[J].Kind == "DELTA" && P.Seq[J].BaseSources.is_array())
-                    for (const auto &B : P.Seq[J].BaseSources) if (B.is_string()) Want.push_back(B.get<std::string>());
+                //a delta read for its bytes needs its bases; a coded stream, its content and its description
+                if (P.Seq[J].Kind == "DELTA" || P.Seq[J].Kind == "CODED") Named(P.Seq[J], Want);
                 break;
             }
     }

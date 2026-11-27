@@ -1,10 +1,14 @@
 #include "shelf.h"
 #include "commonutils.h"
 #include "fold.h"   // Fold — a row's grafts are what its resolution offers
+#include "launchtree.h"   // LaunchTree / ArchiveNames — an archive's members, as the mount reads them
+#include "noderefs.h"
 #include "manifestmodel.h"
 
 #include <algorithm>
 #include <set>
+#include <filesystem>
+#include <functional>
 
 namespace Shelf
 {
@@ -139,6 +143,92 @@ std::vector<std::string> AppliedGrafts(const NodeIndex &Idx, const std::string &
         if (LocalGraft(Idx, G)) Local.push_back(G);
         else if (Dropped) Dropped->push_back(G);
     return Fold::ApplyGrafts(Lib, GIdx, L->Key(), Instance, Builtins, Face, &Local, Dropped);
+}
+
+std::vector<PartConflict> PartConflicts(const NodeIndex &Idx, const std::string &LaunchNodeId, const std::vector<std::string> &Applied,
+                                        const std::map<std::string, std::string> &Instance,
+                                        const std::map<std::string, std::string> &Builtins, size_t Max)
+{
+    std::vector<PartConflict> Out;
+    const Node *L = Idx.Find(LaunchNodeId);
+    if (!L || Applied.size() < 2) return Out;
+    const Fold::Library Lib = ManifestModel::LibraryOf(Idx);
+    ArchiveNames Names;
+    //A part's footprint: what applying it (after the parts before it) changes — address -> the value it writes.
+    using Print = std::map<std::string, std::string>;
+    std::vector<Print> Prints;
+    const auto Facts = [](const Fold::Plan &P) {
+        Print F;
+        for (const auto &[K, V] : P.Reg) F["REG/" + K] = V.Value.dump();
+        for (const auto &[K, V] : P.Dll.items()) F["DLL/" + K] = V.dump();
+        for (const auto &[K, V] : P.Env.items()) F["ENV/" + K] = V.dump();
+        for (const auto &[K, V] : P.Decls.items()) F["VARS/" + K] = V.dump();
+        return F;
+    };
+    std::vector<std::string> Before;
+    Fold::Plan Prev = Fold::Resolve(Lib, L->Key(), Instance, Builtins, Before);
+    for (const std::string &G : Applied)
+    {
+        std::vector<std::string> With = Before; With.push_back(G);
+        Fold::Plan P = Fold::Resolve(Lib, L->Key(), Instance, Builtins, With);
+        Print F;
+        const Print Was = Facts(Prev), Now = Facts(P);
+        for (const auto &[K, V] : Now) if (const auto It = Was.find(K); It == Was.end() || It->second != V) F[K] = V;
+        for (const auto &[K, V] : Was) if (!Now.count(K)) F[K] = "(removed)";
+        //its own items: those after the ones before it (parts are expanded after the end, in order)
+        const LaunchTree T = LaunchTree::Of(P);
+        for (size_t J = Prev.Seq.size(); J < P.Seq.size(); ++J)
+        {
+            const Fold::Item &I = P.Seq[J];
+            const std::string Src = I.Source.is_string() ? I.Source.get<std::string>() : I.Payload;
+            if (I.Kind == "EDIT")
+            {
+                if (I.Ops.is_array())
+                    for (const auto &Op : I.Ops)
+                    {
+                        const std::string Key = Op.is_object() && Op.contains("KEY") && Op["KEY"].is_string() ? Op["KEY"].get<std::string>() : std::string();
+                        F["FILES/" + I.Target + (Key.empty() ? std::string() : "#" + Key)] += Op.dump();
+                    }
+                continue;
+            }
+            if (I.Kind == "FILE") { F["FILES/" + I.Target + "/" + std::filesystem::path(I.Payload).filename().string()] = Src; continue; }
+            if (I.Kind == "CODED") { F["FILES/" + I.Target + "/" + I.Name] = Src; continue; }
+            const auto Lay = T.LayerOf.find(J);
+            if (Lay == T.LayerOf.end() || T.S.layers[Lay->second].bytesOnly) continue;
+            if (const auto *M = Names.Of(T, Lay->second, false))
+                for (const std::string &E : *M) F["FILES/" + I.Target + (I.Target.empty() ? "" : "/") + E] = Src + ":" + E;
+        }
+        Prints.push_back(std::move(F));
+        Before = std::move(With);
+        Prev = std::move(P);
+    }
+    //what each part goes into, transitively, among the applied ones: a part and one it goes into never conflict
+    std::map<std::string, std::set<std::string>> Under;
+    const std::set<std::string> AppliedSet(Applied.begin(), Applied.end());
+    std::function<void(const std::string &, std::set<std::string> &)> Up = [&](const std::string &G, std::set<std::string> &Acc) {
+        const Node *N = Idx.Find(G);
+        if (!N) return;
+        for (const std::string &T : N->Into) if (AppliedSet.count(T) && Acc.insert(T).second) Up(T, Acc);
+    };
+    for (const std::string &G : Applied) Up(G, Under[G]);
+    const auto Lower = [](std::string S) { std::transform(S.begin(), S.end(), S.begin(), [](unsigned char C) { return std::tolower(C); }); return S; };
+    for (size_t A = 0; A < Applied.size(); ++A)
+    {
+        std::map<std::string, const std::string *> ByLower;   // FILES addresses compare without case
+        for (const auto &[K, V] : Prints[A]) ByLower[K.rfind("FILES/", 0) == 0 ? Lower(K) : K] = &V;
+        for (size_t B = A + 1; B < Applied.size(); ++B)
+        {
+            if (Under[Applied[A]].count(Applied[B]) || Under[Applied[B]].count(Applied[A])) continue;
+            for (const auto &[K, V] : Prints[B])
+            {
+                const auto It = ByLower.find(K.rfind("FILES/", 0) == 0 ? Lower(K) : K);
+                if (It == ByLower.end() || *It->second == V) continue;
+                Out.push_back({ K, Applied[A], Applied[B] });
+                if (Out.size() >= Max) return Out;
+            }
+        }
+    }
+    return Out;
 }
 
 GraftChoice CurrentGraftChoice(const NodeIndex &Idx, const GraftChoice &Saved)
