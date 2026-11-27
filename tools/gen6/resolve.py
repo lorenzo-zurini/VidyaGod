@@ -789,7 +789,7 @@ def applied_grafts(R, idx, root, face_uid=None, requested=None, instance=None, b
             break
         anyp = False
         for g in rnd:
-            sel = list(dict.fromkeys((want if want is not None else rnd) + applied + [g]))
+            sel = list(dict.fromkeys(rnd + applied + [g]))   # what can be present: offered this round, or applied
             trial = R.resolve(root, instance, builtins, applied + [g], sel)
             off = any(e[1] == g and e[0] in ("into-off", "into-unmet") for e in trial["events"])
             if not off and unsatisfied(trial) <= unsatisfied(plan):

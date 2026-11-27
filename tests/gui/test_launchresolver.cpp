@@ -1232,11 +1232,12 @@ private slots:
         QVERIFY(Shelf::OfferedGrafts(idx, "mod").empty());
     }
 
-    // The selection is judged as it will launch (adversary 2026-11-27): a part whose condition names a requested part that
-    // is not offered here is judged without it, and one excluded by a part a later round brings is dropped, never listed
-    // applied. (A) a stale list {P: "only with X", Q: into P, X: for another end} launches, applying neither P nor Q.
+    // The selection is judged as it will launch (adversary 2026-11-27): a part is judged beside what can be present (the
+    // parts offered with it and those applied, never a requested part not offered here), and one excluded by a part a
+    // later round brings is dropped, never listed applied. (A) a stale list {P: "only with X", Q: into P, X: for another end} launches, applying neither P nor Q.
     // (B) a fresh instance: A "never with X" and B are recommended, X goes into B (round 2): A is not applied.
-    // Teeth: drop the final as-launched check (A blocks the row; B lists A applied).
+    // (C) "never with X", X requested but not offered: the part applies. Teeth: drop the final as-launched check (A
+    // blocks the row; B lists A applied); judge beside every requested part (C drops "na").
     void a_selection_is_judged_as_it_will_launch()
     {
         NodeIndex idx;
@@ -1270,6 +1271,14 @@ private slots:
             QVERIFY(LaunchResolver::InitializeFromNode(cp, cfg));
             const std::set<std::string> A(cp.AppliedGrafts.begin(), cp.AppliedGrafts.end());
             QCOMPARE(A, (std::set<std::string>{"b", Xb}));
+        }
+        {   // (C) "never with X", X requested but not offered here: X is not in the launch, so the part applies
+            idx.Nodes["na"] = part("na", json::array({"game"}), X + " == false", false);
+            finish(idx);
+            ContainerParams cp("/tmp/vg_bundle");
+            cp.NodeIdx = &idx; cp.LaunchNodeId = "game"; cp.Grafts = std::vector<std::string>{ "na", X };
+            QVERIFY(LaunchResolver::InitializeFromNode(cp, cfg));
+            QVERIFY(cp.AppliedGrafts == std::vector<std::string>{ "na" });
         }
     }
 
@@ -1305,6 +1314,17 @@ private slots:
         const auto P = Shelf::PartConflicts(idx, "game", Shelf::AppliedGrafts(idx, "game", V{"a", "pa", "b"}));
         QVERIFY(!Has(P, "ENV/X", "a", "pa"));                                                         // a patch on a
         QVERIFY(Has(P, "ENV/X", "pa", "b") || Has(P, "ENV/X", "a", "b"));
+        //binary edits merge by byte range (Wipeout XL's 200 fps and widescreen patch one exe at disjoint offsets);
+        //overlapping ranges written differently conflict; appended lines are a set
+        const auto poke = [](const char *Off, const char *Val) { return json{{"MODE", "Poke"}, {"OFFSET", Off}, {"VALUE", Val}}; };
+        idx.Nodes["fps"] = part("fps", json::array({"game"}), json::array({ json{{"EDIT", json::array({ poke("0x100", "1e00"), json{{"MODE", "AppendLine"}, {"VALUE", "fps=200"}} })}, {"TARGET", "FILES/C:/g/w.exe"}} }));
+        idx.Nodes["wide"] = part("wide", json::array({"game"}), json::array({ json{{"EDIT", json::array({ poke("0x200", "aabbccdd"), json{{"MODE", "AppendLine"}, {"VALUE", "wide=1"}} })}, {"TARGET", "FILES/C:/g/w.exe"}} }));
+        idx.Nodes["over"] = part("over", json::array({"game"}), json::array({ json{{"EDIT", json::array({ poke("0x202", "ffff") })}, {"TARGET", "FILES/C:/g/W.EXE"}} }));
+        finish(idx);
+        QVERIFY(Shelf::PartConflicts(idx, "game", Shelf::AppliedGrafts(idx, "game", V{"fps", "wide"})).empty());
+        const auto O = Shelf::PartConflicts(idx, "game", Shelf::AppliedGrafts(idx, "game", V{"wide", "over"}));
+        QCOMPARE(O.size(), size_t(1));
+        if (!O.empty()) QVERIFY2(O[0].Address.find("@0x202-0x204") != std::string::npos, O[0].Address.c_str());
     }
 
     // --with adds parts to the selection the launch would use: a fresh instance keeps its RECOMMENDED parts and gains

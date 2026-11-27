@@ -7,6 +7,7 @@
 
 #include <algorithm>
 #include <set>
+#include <cstdio>
 #include <filesystem>
 #include <functional>
 
@@ -157,6 +158,9 @@ std::vector<PartConflict> PartConflicts(const NodeIndex &Idx, const std::string 
     //A part's footprint: what applying it (after the parts before it) changes — address -> the value it writes.
     using Print = std::map<std::string, std::string>;
     std::vector<Print> Prints;
+    //A binary edit's unit is its byte range (MetaPackageFormat 23 §23.4: disjoint ranges merge, overlap conflicts).
+    struct Range { std::string File; uint64_t At = 0, End = 0; std::string Value; };
+    std::vector<std::vector<Range>> Ranges;
     const auto Facts = [](const Fold::Plan &P) {
         Print F;
         for (const auto &[K, V] : P.Reg) F["REG/" + K] = V.Value.dump();
@@ -177,6 +181,7 @@ std::vector<PartConflict> PartConflicts(const NodeIndex &Idx, const std::string 
         for (const auto &[K, V] : Was) if (!Now.count(K)) F[K] = "(removed)";
         //its own items: those after the ones before it (parts are expanded after the end, in order)
         const LaunchTree T = LaunchTree::Of(P);
+        std::vector<Range> Rs;
         for (size_t J = Prev.Seq.size(); J < P.Seq.size(); ++J)
         {
             const Fold::Item &I = P.Seq[J];
@@ -186,8 +191,21 @@ std::vector<PartConflict> PartConflicts(const NodeIndex &Idx, const std::string 
                 if (I.Ops.is_array())
                     for (const auto &Op : I.Ops)
                     {
-                        const std::string Key = Op.is_object() && Op.contains("KEY") && Op["KEY"].is_string() ? Op["KEY"].get<std::string>() : std::string();
-                        F["FILES/" + I.Target + (Key.empty() ? std::string() : "#" + Key)] += Op.dump();
+                        if (!Op.is_object()) continue;
+                        const auto S = [&](const char *K) { return Op.contains(K) && Op[K].is_string() ? Op[K].get<std::string>() : std::string(); };
+                        const std::string Mode = S("MODE"), Key = S("KEY"), File = "FILES/" + I.Target;
+                        if ((Mode == "Poke" || Mode == "Replace" || Mode == "Cave" || Mode == "Or") && !S("OFFSET").empty() && S("ANCHOR").empty())
+                        {   //a range: its offset and the bytes it writes (a %variable% value: at least its first byte)
+                            uint64_t At = 0;
+                            try { At = std::stoull(S("OFFSET"), nullptr, 0); } catch (...) { F[File + "@" + S("OFFSET")] += Op.dump(); continue; }
+                            const std::string V = Mode == "Cave" ? S("PAYLOAD") : S("VALUE");
+                            const uint64_t Len = V.find('%') == std::string::npos && V.size() >= 2 ? V.size() / 2 : 1;
+                            Rs.push_back({ File, At, At + Len, Op.dump() });
+                        }
+                        else if (!S("ANCHOR").empty()) F[File + "@anchor:" + S("ANCHOR")] += Op.dump();
+                        else if (Mode == "ReplaceAll") F[File + "#replaceall:" + S("EXPECT")] += Op.dump();
+                        else if (Mode == "AppendLine") F[File + "#line:" + S("VALUE")] = "line";   // lines: a set (union)
+                        else F[File + (Key.empty() ? std::string() : "#" + Key)] += Op.dump();
                     }
                 continue;
             }
@@ -199,6 +217,7 @@ std::vector<PartConflict> PartConflicts(const NodeIndex &Idx, const std::string 
                 for (const std::string &E : *M) F["FILES/" + I.Target + (I.Target.empty() ? "" : "/") + E] = Src + ":" + E;
         }
         Prints.push_back(std::move(F));
+        Ranges.push_back(std::move(Rs));
         Before = std::move(With);
         Prev = std::move(P);
     }
@@ -226,6 +245,15 @@ std::vector<PartConflict> PartConflicts(const NodeIndex &Idx, const std::string 
                 Out.push_back({ K, Applied[A], Applied[B] });
                 if (Out.size() >= Max) return Out;
             }
+            for (const Range &Ra : Ranges[A])
+                for (const Range &Rb : Ranges[B])
+                    if (Lower(Ra.File) == Lower(Rb.File) && Ra.At < Rb.End && Rb.At < Ra.End && Ra.Value != Rb.Value)
+                    {
+                        char Buf[64];
+                        std::snprintf(Buf, sizeof Buf, "@0x%llx-0x%llx", (unsigned long long)std::max(Ra.At, Rb.At), (unsigned long long)std::min(Ra.End, Rb.End));
+                        Out.push_back({ Rb.File + Buf, Applied[A], Applied[B] });
+                        if (Out.size() >= Max) return Out;
+                    }
         }
     }
     return Out;

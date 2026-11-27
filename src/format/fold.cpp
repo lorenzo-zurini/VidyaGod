@@ -871,7 +871,9 @@ std::vector<std::string> ApplyGrafts(const Library &Lib, const GraftIndex &Idx, 
         bool Any = false;
         for (const auto &G : Round)
         {
-            Plan T = Trial(G, Fresh ? Round : Want);
+            //judged beside what can be present: the parts offered this round and those applied — never a requested part
+            //that is not offered here (it will not be in the launch); the final pass below settles later rounds
+            Plan T = Trial(G, Round);
             bool Off = false;
             for (const auto &E : T.Events) if (E.second == G && (E.first == "into-off" || E.first == "into-unmet")) Off = true;
             if (!Off && Unsatisfied(T) <= Unsatisfied(P)) { Applied.push_back(G); P = std::move(T); Any = true; }
