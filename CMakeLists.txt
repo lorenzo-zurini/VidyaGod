@@ -591,7 +591,7 @@ target_include_directories(vg_tests PRIVATE ${VG_SRC_DIRS} tests VidyaGodFS/src)
 if(WIN32)
     target_link_libraries(vg_tests PRIVATE shell32 ole32)
 endif()
-target_link_libraries(vg_tests PRIVATE nlohmann_json::nlohmann_json PkgConfig::LIBZIP PkgConfig::LIBZSTD vgfs_core)
+target_link_libraries(vg_tests PRIVATE nlohmann_json::nlohmann_json PkgConfig::LIBZIP PkgConfig::LIBZSTD vgfs_core vgfs_descbuilders)
 target_compile_options(vg_tests PRIVATE ${VG_WARNINGS} $<$<BOOL:${VIDYAGOD_WERROR}>:-Werror>)
 if(VIDYAGOD_SANITIZE)
     # The delta/registry/varsubst logic is exercised HERE — the sanitizer must cover the test exe too.
@@ -779,5 +779,15 @@ set_target_properties(vg_screenshots PROPERTIES BUILD_RPATH "$ORIGIN")
 # No test ever starts the real controller service: InputPlumber with every device managed takes ANY gamepad, the
 # machine's own included (it took this PC's own pad once, through cli_sweep's run of the app). Appended to whatever
 # environment a test already has.
+#
+# No test ever touches the owner's session audio (2026-11-27: cli_sweep's `controller volume --up` moved the real volume
+# and popped KDE's OSD): wpctl and pactl on PATH are logging stubs (tools/testaudio), and PipeWire / PulseAudio clients
+# point at sockets that do not exist, so not even a tool run by absolute path can connect. audio_is_private proves it.
+add_test(NAME audio_is_private COMMAND sh ${CMAKE_SOURCE_DIR}/tools/testaudio/check.sh)
 get_property(VG_ALL_TESTS DIRECTORY PROPERTY TESTS)
-set_property(TEST ${VG_ALL_TESTS} APPEND PROPERTY ENVIRONMENT_MODIFICATION "VIDYAGOD_NO_CONTROLLER_SERVICE=set:1")
+set_property(TEST ${VG_ALL_TESTS} APPEND PROPERTY ENVIRONMENT_MODIFICATION
+    "VIDYAGOD_NO_CONTROLLER_SERVICE=set:1"
+    "PATH=path_list_prepend:${CMAKE_SOURCE_DIR}/tools/testaudio"
+    "PIPEWIRE_REMOTE=set:${CMAKE_BINARY_DIR}/testtmp/no-pipewire-here"
+    "PULSE_SERVER=set:unix:${CMAKE_BINARY_DIR}/testtmp/no-pulse-here"
+    "VG_AUDIO_STUB_LOG=set:${CMAKE_BINARY_DIR}/testtmp/audio-stub.log")

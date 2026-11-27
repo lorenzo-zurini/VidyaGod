@@ -53,6 +53,8 @@ win_id() { xdotool search --name "$1" 2>/dev/null | tail -1; }   # newest match 
 case "${1:?usage: see header}" in
 launch)
   NODE="${2:?node id}"; LOG="${3:-$TMP.launch.log}"
+  # VidyaGod never steps the owner's volume from here (stub wpctl/pactl); the game keeps its sound device
+  VG_AUDIO_KEEP_SERVERS=1; . "$ROOT/tools/testaudio/env.sh"
   setsid nohup "$ROOT/build/VidyaGod" --node "$NODE" >"$LOG" 2>&1 </dev/null &
   # A launch dies INSTANTLY if the GUI (or any other instance) holds the single-instance lock, and the only trace
   # is one line in the log — so the game "just never appears" and you hunt the wrong thing. Surface it here.

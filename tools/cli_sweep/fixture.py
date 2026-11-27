@@ -20,6 +20,12 @@ class Fixture:
         self.env = dict(os.environ, VIDYAGOD_NO_CONTROLLER_SERVICE='1', HOME=self.home, DISPLAY='', WAYLAND_DISPLAY='', QT_QPA_PLATFORM='offscreen', NO_COLOR='1',
                         XDG_CONFIG_HOME=f'{self.home}/.config', XDG_DATA_HOME=f'{self.home}/.local/share',
                         XDG_CACHE_HOME=f'{self.home}/.cache')
+        # never the owner's session audio, however the sweep is run (ctest sets the same): wpctl / pactl are logging
+        # stubs, and PipeWire / PulseAudio clients point at sockets that do not exist (`controller volume --up` moved
+        # the real volume once)
+        stubs = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), 'tools', 'testaudio')
+        self.env.update(PATH=stubs + os.pathsep + self.env.get('PATH', ''), PIPEWIRE_REMOTE=f'{self.work}/no-pipewire-here',
+                        PULSE_SERVER=f'unix:{self.work}/no-pulse-here', VG_AUDIO_STUB_LOG=f'{self.work}/audio-stub.log')
 
     @staticmethod
     def node(path, j):

@@ -649,6 +649,8 @@ static Plan ResolveImpl(const Library &Lib, const std::string &Root, const Vars 
             if (S.Kind == "CODED")
             {   //a coded stream: its format's description (a CID, like a base) and the name it appears by
                 It.Description = L.contains("DESCRIPTION") ? Str(L["DESCRIPTION"]) : std::string();
+                if (const Library::Entry *De = It.Description.empty() ? nullptr : Lib.Find(It.Description))
+                    if (De->Node && De->Node->contains("DESCRIPTION")) It.DescriptionText = (*De->Node)["DESCRIPTION"];
                 It.Name = L.contains("NAME") ? Str(L["NAME"]) : std::string();
             }
             P.Seq.push_back(std::move(It));
@@ -719,6 +721,13 @@ static Plan ResolveImpl(const Library &Lib, const std::string &Root, const Vars 
     }
     for (const auto &O : X.Order) P.Order.push_back(O.second);
     P.Events = X.Events;
+    //a coded stream's description is the launch's own: only a node the launch CONTAINS gives it (one the library happens
+    //to hold, which a peer receiving this package would lack, does not — the layer is then refused alone)
+    {
+        const std::set<std::string> In(P.Order.begin(), P.Order.end());
+        for (Item &It : P.Seq)
+            if (It.Kind == "CODED" && !In.count(It.Description)) It.DescriptionText = json();
+    }
     return P;
 }
 

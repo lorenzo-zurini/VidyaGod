@@ -80,7 +80,7 @@ void SweepStale(const std::filesystem::path &Dir)
 #endif
 }
 
-bool PlainTwin(const std::filesystem::path &Dir, const std::filesystem::path &Description, const std::filesystem::path &Record,
+bool PlainTwin(const std::filesystem::path &Dir, const std::string &Description, const std::filesystem::path &Record,
                const std::string &RecordCid, const std::string &ContentCid, const std::string &DescriptionCid,
                const std::shared_ptr<ByteSource> &Content, std::filesystem::path &Out, std::string &Err)
 {
@@ -99,8 +99,8 @@ bool PlainTwin(const std::filesystem::path &Dir, const std::filesystem::path &De
 #else
     std::error_code Ec;
     std::filesystem::create_directories(Dir, Ec);
-    auto Desc = std::make_shared<MmapByteSource>(), Rec = std::make_shared<MmapByteSource>();
-    if (!Desc->Map(Description.string())) { Err = "cannot read its description " + Description.string(); return false; }
+    auto Desc = std::make_shared<MemByteSource>(std::vector<uint8_t>(Description.begin(), Description.end()));
+    auto Rec = std::make_shared<MmapByteSource>();
     if (!Rec->Map(Record.string())) { Err = "cannot read its record " + Record.string(); return false; }
     auto Probe = coding::CodedByteSource::Create(Desc, Rec, Content, 0, Err);
     if (!Probe) return false;
@@ -112,7 +112,7 @@ bool PlainTwin(const std::filesystem::path &Dir, const std::filesystem::path &De
     if (const auto Sp = std::filesystem::space(Dir, Ec); !Ec && Sp.available < Sn + Cn + Sn / 2 + (256u << 20))
     { Err = "not enough free disk in " + Dir.string() + " (" + std::to_string((Sn + Cn + Sn / 2) >> 20) + " MiB needed, " + std::to_string(Sp.available >> 20) + " free)"; return false; }
     coding::Description D;
-    if (!coding::Parse(Desc->p, static_cast<size_t>(Desc->n), D, Err)) return false;
+    if (!coding::Read(Description, D, Err)) return false;
     const std::string Tag = RecordKey + "." + std::to_string(::getpid()) + "." + std::to_string(++Seq);
     MappedFile Ship, Con;
     if (!Ship.Open(Dir / (Tag + ".shipped.part"), static_cast<size_t>(Sn), Err) || !Con.Open(Dir / (Tag + ".content.part"), static_cast<size_t>(Cn), Err))
@@ -166,9 +166,8 @@ size_t UsePlainRecords(nlohmann::ordered_json &Spec, const std::filesystem::path
         if (T.broken[I] || T.bases[I].empty()) { LogErr("CodedCache::UsePlainRecords", Name + ": its content is not in this launch; it reads as planned"); continue; }
         auto Content = Bytes.Get(T.bases[I][0], &Err);
         if (!Content) { LogErr("CodedCache::UsePlainRecords", Name + ": its content has no bytes (" + Err + "); it reads its predicted record"); continue; }
-        //the description's CID: the file layer it was resolved from (ResolveCodedDescriptions made it that layer's path)
-        std::string DescCid;
-        for (const LayerSpec &Y : S.layers) if (Y.type == LayerType::File && Y.source == X.description && !Y.cid.empty()) { DescCid = Y.cid; break; }
+        //the description's CID: the node holding it (the spec carries the text and the CID)
+        const std::string DescCid = X.descriptionCid;
         Job J; J.I = I; J.Name = Name; J.ContentCid = S.layers[T.bases[I][0]].cid; J.DescCid = DescCid; J.Content = std::move(Content);
         J.Key = Key(X.cid, J.ContentCid, DescCid);
         //a twin that could not be made is not tried at every launch (`coding twins --retry` tries again)

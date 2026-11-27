@@ -10,6 +10,7 @@
 #include "vgdelta.h"     // GenerateDelta — a real delta for the case lint
 #include "launchtree.h"  // LaunchTree — a launch as VidyaGodFS reads it
 #include "coding.h"      // a coded stream minted for the CODED layer test
+#include "descbuilders.h"
 #include "lz4family.h"   // Bethesda's packer, as the family that predicts it (a BSA made here)
 #include "codedcache.h"  // a predicted record mounts its plain twin
 #include "overlay.h"
@@ -1735,7 +1736,8 @@ TEST(a_predicted_coded_record_mounts_its_plain_twin)
     CHECK(coding::Mint(Desc, Bsa.data(), Bsa.size(), 0, Data.size() * 2 + 4096, coding::SuggestedSpacing(Desc, Bsa.size(), true), Content, Plain, Err, false));
     CHECK(Rec.size() > 3 && Rec[3] == 'Q');
     const auto Put = [&](const fs::path &P, const std::vector<uint8_t> &B) { std::ofstream(P, std::ios::binary).write(reinterpret_cast<const char *>(B.data()), static_cast<std::streamsize>(B.size())); };
-    Put(Dir / "bsa.vgcd", coding::Serialize(Desc));
+    const auto DescText = coding::Serialize(Desc);
+    CHECK(!DescText.empty());
     Put(Dir / "a.bsa.vgcq", Rec);
     //the content: a delta over nothing (its bytes zstd-compressed, random access)
     const uint8_t None[1] = {0};
@@ -1750,15 +1752,15 @@ TEST(a_predicted_coded_record_mounts_its_plain_twin)
         if (Right) L.push_back({{"type", "delta"}, {"source", (Dir / "a.bsa.content.vgdelta").string()}, {"target", "g"}, {"cid", C},
                                 {"bases", ordered_json::array()}, {"bytesOnly", true}, {"rw", false}});
         else L.push_back({{"type", "file"}, {"source", (Dir / "wrong.content").string()}, {"target", "g"}, {"cid", C}, {"bytesOnly", true}, {"rw", false}});
-        L.push_back({{"type", "file"}, {"source", (Dir / "bsa.vgcd").string()}, {"target", "g"}, {"cid", "QmDesc"}, {"bytesOnly", true}, {"rw", false}});
         L.push_back({{"type", "coded"}, {"source", (Dir / "a.bsa.vgcq").string()}, {"target", "g"}, {"cid", "QmRecord"}, {"name", "a.bsa"},
-                     {"description", (Dir / "bsa.vgcd").string()}, {"bases", ordered_json::array({C})}, {"rw", false}});
+                     {"description", ordered_json::parse(DescText.begin(), DescText.end())}, {"descriptionCid", "QmDesc"},
+                     {"bases", ordered_json::array({C})}, {"rw", false}});
         return ordered_json{{"mountpoint", "/"}, {"readonly", true}, {"layers", L}};
     };
     ordered_json S = SpecOf(true);
     CHECK_EQ(CodedCache::UsePlainRecords(S, Dir / "cache"), 1u);
     const fs::path Twin = Dir / "cache" / "QmRecord.QmContent.QmDesc.vgcr";
-    CHECK_EQ(S["layers"][2].value("source", std::string()), Twin.string());
+    CHECK_EQ(S["layers"][1].value("source", std::string()), Twin.string());
     std::vector<uint8_t> Got;
     { std::ifstream F(Twin, std::ios::binary); Got.assign(std::istreambuf_iterator<char>(F), {}); }
     CHECK(Got == Plain);                                                     // the plain mint's record, byte for byte
@@ -1782,7 +1784,7 @@ TEST(a_predicted_coded_record_mounts_its_plain_twin)
     //remembered (not tried at every launch, unless asked), the first twin untouched, no scratch left behind
     ordered_json S3 = SpecOf(false);
     CHECK_EQ(CodedCache::UsePlainRecords(S3, Dir / "cache"), 0u);
-    CHECK_EQ(S3["layers"][2].value("source", std::string()), (Dir / "a.bsa.vgcq").string());
+    CHECK_EQ(S3["layers"][1].value("source", std::string()), (Dir / "a.bsa.vgcq").string());
     CHECK(!fs::exists(Dir / "cache" / "QmRecord.QmOther.QmDesc.vgcr"));
     CHECK(fs::exists(Dir / "cache" / "QmRecord.QmOther.QmDesc.failed"));
     CHECK(fs::last_write_time(Twin) == T0);
@@ -1802,7 +1804,7 @@ TEST(a_predicted_coded_record_mounts_its_plain_twin)
         H.push_back(static_cast<uint8_t>((1ull << 40) >> 35));
         H.insert(H.end(), Big.begin() + static_cast<long>(At), Big.end());
         Put(Dir / "big.vgcq", H);
-        ordered_json S5 = SpecOf(true); S5["layers"][2]["source"] = (Dir / "big.vgcq").string(); S5["layers"][2]["cid"] = "QmBig";
+        ordered_json S5 = SpecOf(true); S5["layers"][1]["source"] = (Dir / "big.vgcq").string(); S5["layers"][1]["cid"] = "QmBig";
         const auto T1 = std::chrono::steady_clock::now();
         CHECK_EQ(CodedCache::UsePlainRecords(S5, Dir / "cache4"), 0u);
         CHECK(std::chrono::steady_clock::now() - T1 < std::chrono::seconds(20));
@@ -1813,14 +1815,15 @@ TEST(a_predicted_coded_record_mounts_its_plain_twin)
     //a launch whose content has no bytes: no twin, the predicted record stays
     ordered_json S4 = SpecOf(false); S4["layers"][0]["source"] = (Dir / "missing").string();
     CHECK_EQ(CodedCache::UsePlainRecords(S4, Dir / "cache3"), 0u);
-    CHECK_EQ(S4["layers"][2].value("source", std::string()), (Dir / "a.bsa.vgcq").string());
+    CHECK_EQ(S4["layers"][1].value("source", std::string()), (Dir / "a.bsa.vgcq").string());
     fs::remove_all(Dir);
 }
 
 // A CODED layer (MetaPackageFormat 04): the shipped file appears by its NAME, rebuilt bit-exact from its content and
-// record through the description, and the content and description (named by CID) are bytes only, never files of the
-// game. A launch missing the description is a validator error. Teeth: show the content as a file; leave the description
-// as its CID (the mount cannot open it); skip the validator check.
+// record through the description — data in a node (its DESCRIPTION, named by CID), carried into the mount spec whole —
+// and the content (named by CID) is bytes only, never a file of the game. A launch without the description's node, or
+// naming a node that holds none, is a validator error. Teeth: show the content as a file; drop the text on the way to
+// the spec; skip the validator check.
 TEST(a_coded_layer_mounts_as_the_shipped_file_bit_exact)
 {
     namespace fs = std::filesystem;
@@ -1836,12 +1839,14 @@ TEST(a_coded_layer_mounts_as_the_shipped_file_bit_exact)
     std::string Err;
     CHECK(coding::Mint(Desc, Shipped.data(), Shipped.size(), 0, 1u << 20, 1024, Content, Record, Err));
     const auto Put = [&](const char *Name, const std::vector<uint8_t> &B) { std::ofstream(Pkg / Name, std::ios::binary).write(reinterpret_cast<const char *>(B.data()), static_cast<std::streamsize>(B.size())); };
-    Put("deflate.vgcd", coding::Serialize(Desc));
+    const auto DescBytes = coding::Serialize(Desc);
+    const ordered_json DescNode = {{"CID", "QmDesc"}, {"LABEL", "deflate"}, {"DESCRIPTION", ordered_json::parse(DescBytes.begin(), DescBytes.end())},
+                                   {"LAYERS", ordered_json::array()}};
     Put("a.bin.content", Content);
     Put("a.bin.vgcr", Record);
     const auto Layers = [](bool WithDescription) {
         ordered_json L = ordered_json::array();
-        if (WithDescription) L.push_back({{"FILE", "deflate.vgcd"}, {"SOURCE", "QmDesc"}, {"TARGET", "FILES/C:/g/descriptions"}});
+        if (WithDescription) L.push_back({{"NODE", "QmDesc"}});
         L.push_back({{"FILE", "a.bin.content"}, {"SOURCE", "QmContent"}, {"TARGET", "FILES/C:/g"}});
         L.push_back({{"CODED", "a.bin.vgcr"}, {"SOURCE", "QmRecord"}, {"NAME", "a.bin"}, {"DESCRIPTION", "QmDesc"},
                      {"BASE_SOURCES", ordered_json::array({"QmContent"})}, {"TARGET", "FILES/C:/g"}});
@@ -1849,6 +1854,7 @@ TEST(a_coded_layer_mounts_as_the_shipped_file_bit_exact)
         return L;
     };
     NodeIndex Idx;
+    Add(Idx, DescNode, Pkg.string());
     Add(Idx, {{"CID", "end"}, {"LABEL", "end"}, {"VARIANT", "Windows"}, {"LAYERS", Layers(true)}}, Pkg.string());
     Add(Idx, {{"CID", "nodesc"}, {"LABEL", "nodesc"}, {"VARIANT", "Windows"}, {"LAYERS", Layers(false)}}, Pkg.string());
     ManifestModel::DeriveFacts(Idx);
@@ -1864,8 +1870,14 @@ TEST(a_coded_layer_mounts_as_the_shipped_file_bit_exact)
         else if (!L.S.layers[I].bytesOnly) ++Shown;
     }
     CHECK(Coded >= 0);
-    CHECK_EQ(Shown, 0);                                                  // the content and the description are bytes only
-    if (Coded >= 0) CHECK_EQ(L.S.layers[static_cast<size_t>(Coded)].description, (Pkg / "deflate.vgcd").generic_string());
+    CHECK_EQ(Shown, 0);                                                  // the content is bytes only
+    if (Coded >= 0)
+    {
+        coding::Description Back; std::string Why;
+        CHECK(coding::Read(L.S.layers[static_cast<size_t>(Coded)].description, Back, Why));   // the node's text, whole
+        CHECK(coding::Serialize(Back) == DescBytes);
+        CHECK_EQ(L.S.layers[static_cast<size_t>(Coded)].descriptionCid, std::string("QmDesc"));
+    }
     //read through VidyaGodFS, in-process: the game sees a.bin, exactly the shipped bytes, and nothing else
     VfsState S;
     CHECK(S.Init(L.S, Err));
@@ -1879,7 +1891,6 @@ TEST(a_coded_layer_mounts_as_the_shipped_file_bit_exact)
     CHECK(Got == Shipped);
     OpenFile *G = nullptr;
     CHECK(VfsOpen(S, "C:/g/a.bin.content", 0, G) < 0);
-    CHECK(VfsOpen(S, "C:/g/descriptions/deflate.vgcd", 0, G) < 0);
     //the next build's content as a DELTA over this build's (the dedup chapter 22 measures): the delta's rebuild is the
     //coded stream's base, bytes only, never an archive the game sees
     //(the last build: its own stream over its own content, as a real chain holds it — which names prev.content)
@@ -1897,7 +1908,7 @@ TEST(a_coded_layer_mounts_as_the_shipped_file_bit_exact)
     Put("a.bin.vgdelta", Dl);
     {
         ordered_json L2 = ordered_json::array({
-            {{"FILE", "deflate.vgcd"}, {"SOURCE", "QmDesc"}, {"TARGET", "FILES/C:/g/descriptions"}},
+            {{"NODE", "QmDesc"}},
             {{"FILE", "prev.content"}, {"SOURCE", "QmPrev"}, {"TARGET", "FILES/C:/g"}},
             {{"CODED", "a.bin.v1.vgcr"}, {"SOURCE", "QmRecordPrev"}, {"NAME", "a.bin"}, {"DESCRIPTION", "QmDesc"},
              {"BASE_SOURCES", ordered_json::array({"QmPrev"})}, {"TARGET", "FILES/C:/g"}},
@@ -1906,6 +1917,7 @@ TEST(a_coded_layer_mounts_as_the_shipped_file_bit_exact)
              {"BASE_SOURCES", ordered_json::array({"QmContent2"})}, {"TARGET", "FILES/C:/g"}},
             {{"EXEC", ordered_json::array({ {{"LABEL", "Game v1.1"}, {"HOST", "win32"}, {"EXE", "C:/g/a.exe"}, {"TILE", {{"UID", "1"}, {"TITLE", "Game"}}}} })}} });
         NodeIndex Idx2;
+        Add(Idx2, DescNode, Pkg.string());
         Add(Idx2, {{"CID", "next"}, {"LABEL", "next"}, {"VARIANT", "Windows"}, {"LAYERS", L2}}, Pkg.string());
         ManifestModel::DeriveFacts(Idx2);
         const LaunchTree L3 = LaunchTree::Of(Fold::Resolve(ManifestModel::LibraryOf(Idx2), "next"));
@@ -1933,7 +1945,7 @@ TEST(a_coded_layer_mounts_as_the_shipped_file_bit_exact)
         CHECK(ContentO == Shipped);
         Put("outer.vgcr", RecordO);
         ordered_json L4 = ordered_json::array({
-            {{"FILE", "deflate.vgcd"}, {"SOURCE", "QmDesc"}, {"TARGET", "FILES/C:/g/descriptions"}},
+            {{"NODE", "QmDesc"}},
             {{"FILE", "a.bin.content"}, {"SOURCE", "QmContent"}, {"TARGET", "FILES/C:/g"}},
             {{"CODED", "a.bin.vgcr"}, {"SOURCE", "QmRecord"}, {"NAME", "inner.bin"}, {"DESCRIPTION", "QmDesc"},
              {"BASE_SOURCES", ordered_json::array({"QmContent"})}, {"TARGET", "FILES/C:/g"}},
@@ -1941,6 +1953,7 @@ TEST(a_coded_layer_mounts_as_the_shipped_file_bit_exact)
              {"BASE_SOURCES", ordered_json::array({"QmRecord"})}, {"TARGET", "FILES/C:/g"}},
             {{"EXEC", ordered_json::array({ {{"LABEL", "Game v2"}, {"HOST", "win32"}, {"EXE", "C:/g/a.exe"}, {"TILE", {{"UID", "1"}, {"TITLE", "Game"}}}} })}} });
         NodeIndex Idx4;
+        Add(Idx4, DescNode, Pkg.string());
         Add(Idx4, {{"CID", "nested"}, {"LABEL", "nested"}, {"VARIANT", "Windows"}, {"LAYERS", L4}}, Pkg.string());
         ManifestModel::DeriveFacts(Idx4);
         const LaunchTree L5 = LaunchTree::Of(Fold::Resolve(ManifestModel::LibraryOf(Idx4), "nested"));
@@ -1958,8 +1971,27 @@ TEST(a_coded_layer_mounts_as_the_shipped_file_bit_exact)
         CHECK(VfsOpen(S5, "C:/g/inner.bin", 0, H) < 0);
         CHECK(VfsOpen(S5, "C:/g/a.bin.content", 0, H) < 0);
     }
-    //without the description in its launch: refused by the validator
+    //without the description's node in its launch, or naming a node that holds none: refused by the validator
     std::vector<std::string> W;
-    CHECK(AnyContains(Errors(Idx, &W), "names its description QmDesc"));
+    CHECK(AnyContains(Errors(Idx, &W), "names its description node QmDesc, which this launch does not contain"));
+    //...and the launch itself still plans: only that coded file is refused, though the library holds the node (a peer
+    //receiving the package would not)
+    {
+        const LaunchTree Ln = LaunchTree::Of(Fold::Resolve(Lib, "nodesc"));
+        CHECK(!Ln.S.layers.empty());
+        CHECK(AnyContains(Ln.T.problems, "its description node QmDesc is not in this launch"));
+        size_t Broken = 0; for (size_t I = 0; I < Ln.T.broken.size(); ++I) Broken += Ln.T.broken[I] ? 1 : 0;
+        CHECK_EQ(Broken, size_t(1));
+    }
+    {
+        NodeIndex Idx6;
+        Add(Idx6, {{"CID", "QmDesc"}, {"LABEL", "not a description"}, {"LAYERS", ordered_json::array()}}, Pkg.string());
+        Add(Idx6, {{"CID", "end"}, {"LABEL", "end"}, {"VARIANT", "Windows"}, {"LAYERS", Layers(true)}}, Pkg.string());
+        ManifestModel::DeriveFacts(Idx6);
+        std::vector<std::string> W6;
+        CHECK(AnyContains(Errors(Idx6, &W6), "names node QmDesc, which holds no DESCRIPTION"));
+    }
+    //a node whose DESCRIPTION does not read is refused where nodes are checked
+    CHECK(NodeLower::CheckNode({{"LABEL", "bad"}, {"DESCRIPTION", {{"NAME", "x"}}}, {"LAYERS", ordered_json::array()}}, "bad", "bad").find("DESCRIPTION") != std::string::npos);
     fs::remove_all(Pkg);
 }

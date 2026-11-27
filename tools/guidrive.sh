@@ -56,6 +56,8 @@ start)
 { "LIBRARY": [], "Settings": { "IPFS": { "Enabled": true }, "PackageSources": [] } }
 JSON
   echo "$DATADIR" >"$STATE"
+  # never the owner's session audio: stub wpctl/pactl, no reachable sound server (tools/testaudio/env.sh)
+  . "$ROOT/tools/testaudio/env.sh"
   VIDYAGOD_NO_CONTROLLER_SERVICE=1 QT_QPA_PLATFORM=xcb setsid nohup "$ROOT/build/VidyaGod" \
       --data-dir "$DATADIR" --bypass-single-instance-lock \
       >"$DATADIR/gui.log" 2>&1 </dev/null &

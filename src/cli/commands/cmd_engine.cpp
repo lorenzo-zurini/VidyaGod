@@ -323,7 +323,7 @@ VG_COMMANDS
         "(its bases' files must be present) and counts what its archive holds: null where it does not rebuild.",
         { NodeArg(), VarOpt(), GraftOpt(), Flag("names", "rebuild each delta and count its archive's entries") },
         { "fold bases 'BioShock Infinite - Steam (English)'", "fold bases 'BioShock Infinite - Steam (English)' --names" },
-        { "LaunchTree::Of", "NodeLower::ContentOps", "ArchiveNames::Of", "ManifestModel::ResolveCodedDescriptions" }, Needs::Config, false,
+        { "LaunchTree::Of", "NodeLower::ContentOps", "ArchiveNames::Of" }, Needs::Config, false,
         [](Command::Context &C, const json &A) {
             const auto I = Index(C);
             const Fold::Plan P = Fold::Resolve(ManifestModel::LibraryOf(*I), NodeOf(*I, Command::Str(A, "node"))->Key(), Pairs(A, "var"),

@@ -20,7 +20,8 @@ namespace CodedCache
 //is the decisions of ONE stream, and a record over other content (or under another description) codes another stream.
 //The twin for one record: made here if it is not there yet (refused unless it codes back bit-exact from the content).
 //Content: the bytes of the layer the record codes from.
-bool PlainTwin(const std::filesystem::path &Dir, const std::filesystem::path &Description, const std::filesystem::path &Record,
+//Description: the description's text (the DESCRIPTION its node holds; DescriptionCid is that node's CID).
+bool PlainTwin(const std::filesystem::path &Dir, const std::string &Description, const std::filesystem::path &Record,
                const std::string &RecordCid, const std::string &ContentCid, const std::string &DescriptionCid,
                const std::shared_ptr<ByteSource> &Content, std::filesystem::path &Out, std::string &Err);
 //Every coded layer of a mount spec whose record is predicted: its source becomes the twin (made first where missing).

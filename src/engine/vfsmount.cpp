@@ -343,7 +343,6 @@ nlohmann::ordered_json VfsMount::BuildLayerSpec(struct ContainerParams &Containe
     //There, runtime-sourced layers legitimately do not exist yet, and reporting them made a healthy library
     //emit 56 errors of pure context artifact — which is how a diagnostic stops being read.
 
-    ResolveCodedDescriptions(Layers);   // a coded layer names its description by CID: the FS opens it by path
     Spec["layers"] = Layers;
     CheckPlan(Spec, "VfsMount::BuildLayerSpec");
     return Spec;

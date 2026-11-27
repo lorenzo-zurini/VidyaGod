@@ -1,0 +1,9 @@
+#!/bin/sh
+# Test stand-in for wpctl: tests, sweeps and harnesses must never change the owner's session audio (2026-11-27: the
+# CLI sweep's `controller volume --up` moved the real volume and popped KDE's OSD). Logs each call; says a fixed level.
+printf 'wpctl %s\n' "$*" >> "${VG_AUDIO_STUB_LOG:-${TMPDIR:-/tmp}/vg-audio-stub.log}"
+case "$1" in
+  get-volume) echo "Volume: 0.50" ;;
+  status) echo "vg-test-stub: no audio here" ;;
+esac
+exit 0

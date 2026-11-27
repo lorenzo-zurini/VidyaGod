@@ -45,6 +45,8 @@ RUN="$HOME/.vidyagod-e2e/$TS"
 LAPRUN="/tmp/vg-e2e-$TS"
 BIN="$REPO_PC/build/VidyaGod"
 mkdir -p "$RUN"
+# this machine's VidyaGod never steps the owner's volume (stub wpctl/pactl); games keep their sound device
+VG_AUDIO_KEEP_SERVERS=1; . "$REPO_PC/tools/testaudio/env.sh"
 
 FAILS=0; RESULTS=()
 say()  { printf '\n\033[1m===== %s =====\033[0m\n' "$*"; }

@@ -201,3 +201,4 @@ LongOp::RunningIn                         # what every build and canvas command 
 coding::CodedByteSource::debugHoldWaiter  # a test seam: holds a reader at its wait (the read race, forced)
 coding::CodedByteSource::debugCached  # a test seam: whether a segment is in the cache
 coding::CodedByteSource::debugDropOnNextWake  # a test seam: drops the waited-for segment as its reader wakes
+coding::Serialize  # Print's text as bytes, for code holding a description in memory (tests); `coding check` covers Print

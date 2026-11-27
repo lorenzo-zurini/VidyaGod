@@ -555,7 +555,7 @@ std::vector<Field> MakeFields(const std::string &Type)
     {
         std::vector<Field> F = Content("CODED", "Record", ".vgcr in this bundle (coding mint makes it)", true);
         F.insert(F.begin() + 2, {"NAME", "Appears as", FieldKind::Text, "the shipped file's name, in Target", {}, {}});
-        F.insert(F.begin() + 3, {"DESCRIPTION", "Description", FieldKind::Text, "the SOURCE CID of its format's description (.vgcd)", {}, {}});
+        F.insert(F.begin() + 3, {"DESCRIPTION", "Description", FieldKind::Text, "the CID of the node holding its format's description (its DESCRIPTION)", {}, {}});
         F.insert(F.begin() + 4, {"BASE_SOURCES", "Content", FieldKind::StringList, "the SOURCE CID of its decoded content (one)", {}, {}});
         return F;
     }

@@ -53,7 +53,8 @@ struct Item
     std::string Target;          // the placed target (FILES namespace stripped; guest coordinates)
     std::string Own;             // content: the layer's own target in its node (unplaced) — what TAKE addresses
     json        BaseSources;     // DELTA / CODED: BASE_SOURCES as written, the SOURCE CIDs of its bases in order
-    std::string Description;     // CODED: the SOURCE CID of the layer holding its format's description
+    std::string Description;     // CODED: the CID of the node holding its format's description (its DESCRIPTION)
+    json        DescriptionText; // CODED: that node's DESCRIPTION, when the library holds the node (else null)
     std::string Name;            // CODED: the file name the shipped stream appears by, in Target
     std::string From;            // the node it came from
     int         At = 0;          // its index in that node's LAYERS

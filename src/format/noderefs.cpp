@@ -76,6 +76,7 @@ void Each(const json &Node, const std::function<void(const std::string &)> &Fn)
         if (L.contains("INTO") && L["INTO"].is_array())
             for (const json &M : L["INTO"]) if (M.is_string()) Fn(M.get<std::string>());
         if (L.contains("WHEN") && L["WHEN"].is_string()) for (const auto &C : CidsInWhen(L["WHEN"].get<std::string>())) Fn(C);
+        if (L.contains("CODED") && L.contains("DESCRIPTION") && L["DESCRIPTION"].is_string()) Fn(L["DESCRIPTION"].get<std::string>());
     }
 }
 
@@ -92,6 +93,8 @@ std::vector<std::string> Contained(const json &Node, std::vector<std::string> *R
             for (const json &M : L["INTO"]) if (M.is_string()) Requires->push_back(M.get<std::string>());
         if (L.contains("WHEN") && L["WHEN"].is_string())
             for (const auto &C : CidsInWhen(L["WHEN"].get<std::string>())) Requires->push_back(C);
+        if (L.contains("CODED") && L.contains("DESCRIPTION") && L["DESCRIPTION"].is_string())
+            Requires->push_back(L["DESCRIPTION"].get<std::string>());   // its description's node (contained by a NODE layer too)
     }
     return Out;
 }
@@ -110,6 +113,7 @@ bool Remap(json &Node, const std::function<std::string(const std::string &)> &Ma
         if (!L.is_object()) continue;
         if (L.contains("NODE")) One(L["NODE"]);
         if (L.contains("INTO") && L["INTO"].is_array()) for (json &M : L["INTO"]) One(M);
+        if (L.contains("CODED") && L.contains("DESCRIPTION")) One(L["DESCRIPTION"]);   // a coded stream's description node
         if (L.contains("WHEN") && L["WHEN"].is_string())
         {
             //a CID inside a condition is renamed in place, the rest of the condition kept byte for byte

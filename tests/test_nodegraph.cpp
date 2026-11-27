@@ -1,5 +1,6 @@
 #include "vgtest.h"
 #include "noderefs.h"
+#include <algorithm>
 #include "nodegraph.h"
 #include "cid.h"
 
@@ -57,19 +58,28 @@ TEST(nodegraph_freeze_strips_pos_and_resolves_every_ref)
     CHECK(F["LABEL"] == "exec");
 }
 
-// The CID write-back and the freeze share ONE remapper (NodeRefs::Remap): a NODE, an INTO member and a node a
-// condition names all follow a re-minted node to its new CID; an external ref passes through.
+// The CID write-back and the freeze share ONE remapper (NodeRefs::Remap): a NODE, an INTO member, a node a condition
+// names and a coded stream's description node all follow a re-minted node to its new CID; an external ref passes
+// through. Teeth: leave CODED's DESCRIPTION out of the walk.
 TEST(nodegraph_remap_node_refs_reaches_every_ref_form)
 {
     ordered_json N = {{"LABEL", "n"}, {"LAYERS", ordered_json::array({
-        {{"INTO", ordered_json::array({"b", "ext"})}}, {{"NODE", "a"}}, {{"ZIP", "x.zip"}, {"WHEN", "draft-00000000000c == false"}} })}};
-    const std::map<std::string, std::string> Map = {{"a", "A"}, {"b", "B"}, {"draft-00000000000c", "bafkreirivalnoderivalnoderivalnoderivalnoderivalnoderivalno"}};
+        {{"INTO", ordered_json::array({"b", "ext"})}}, {{"NODE", "a"}}, {{"ZIP", "x.zip"}, {"WHEN", "draft-00000000000c == false"}},
+        {{"CODED", "s.vgcr"}, {"DESCRIPTION", "d"}, {"NAME", "s"}, {"BASE_SOURCES", ordered_json::array({"Qmc"})}} })}};
+    std::vector<std::string> Seen; NodeRefs::Each(N, [&](const std::string &R) { Seen.push_back(R); });
+    CHECK(std::find(Seen.begin(), Seen.end(), "d") != Seen.end());
+    std::vector<std::string> Req; NodeRefs::Contained(N, &Req);
+    CHECK(std::find(Req.begin(), Req.end(), "d") != Req.end());
+    const std::map<std::string, std::string> Map = {{"a", "A"}, {"b", "B"}, {"d", "D"}, {"Qmc", "QmX"},
+                                                    {"draft-00000000000c", "bafkreirivalnoderivalnoderivalnoderivalnoderivalnoderivalno"}};
     CHECK(NodeRefs::Remap(N, [&](const std::string &R) { auto It = Map.find(R); return It == Map.end() ? R : It->second; }));
     CHECK(N["LAYERS"][0]["INTO"][0] == "B");
     CHECK(N["LAYERS"][0]["INTO"][1] == "ext");
     CHECK(N["LAYERS"][1]["NODE"] == "A");
     CHECK(N["LAYERS"][2]["WHEN"] == "bafkreirivalnoderivalnoderivalnoderivalnoderivalnoderivalno == false");
     CHECK(N["LAYERS"][2]["ZIP"] == "x.zip");                      // a payload is not a ref
+    CHECK(N["LAYERS"][3]["DESCRIPTION"] == "D");
+    CHECK(N["LAYERS"][3]["BASE_SOURCES"][0] == "Qmc");            // a content CID is not a node ref
     // A node with no refs, or not a node at all, is left alone and reports no change.
     ordered_json Bare = {{"LABEL", "x"}, {"LAYERS", ordered_json::array()}};
     CHECK(!NodeRefs::Remap(Bare, [](const std::string &R) { return R + "!"; }));

@@ -9,11 +9,13 @@
 #include <vector>
 
 // NodeRefs — a node's references to other nodes, edited in its LAYERS: what it contains (NODE), what it goes into
-// (INTO members), and the node CIDs its conditions name (WHEN, MetaPackageFormat 08 §8.6).
+// (INTO members), the node CIDs its conditions name (WHEN, MetaPackageFormat 08 §8.6), and the node holding a coded
+// stream's description (CODED's DESCRIPTION, 04 / 22.16).
 namespace NodeRefs
 {
 
-//The ONE walk over where references live (NODE strings, INTO members, node CIDs inside a layer's WHEN) — reading,
+//The ONE walk over where references live (NODE strings, INTO members, node CIDs inside a layer's WHEN, CODED's
+//DESCRIPTION) — reading,
 //closure walks, freeze, the CID write-back and the editor's renames all go through it, so they cannot disagree.
 //A value that is not a node object (an object with a LAYERS list) names nothing.
 

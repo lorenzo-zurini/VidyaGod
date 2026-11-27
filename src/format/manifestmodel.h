@@ -230,10 +230,6 @@ bool HasLiveToken(const std::string &S);
 // it hides (VidyaGodFS treeplan.h). A base no TAKE shows is "bytesOnly".
 nlohmann::ordered_json MakeVfsSpecLayer(const nlohmann::ordered_json &Sub, const std::string &Source,
                                         const std::string &Target);
-//A coded layer names its format's description by CID (MetaPackageFormat 04): VidyaGodFS opens it by path. Each coded
-//layer's "description" becomes the source path of the spec layer carrying that CID (left as the CID when none does:
-//the mount then refuses the layer, saying it cannot open it).
-void ResolveCodedDescriptions(nlohmann::ordered_json &Layers);
 // A VFS layer's locators: its expected LOCAL path (PackagePath/PATH, SOURCE.PATH overriding) and its ipfs CID
 // (empty if none). The local path is the content's home; the CID is a remote fallback to fetch it from.
 void LayerLocator(const nlohmann::ordered_json &Sub, const std::filesystem::path &PackagePath,

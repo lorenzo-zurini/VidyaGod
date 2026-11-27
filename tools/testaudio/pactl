@@ -1,0 +1,9 @@
+#!/bin/sh
+# Test stand-in for pactl (see wpctl beside it).
+printf 'pactl %s\n' "$*" >> "${VG_AUDIO_STUB_LOG:-${TMPDIR:-/tmp}/vg-audio-stub.log}"
+case "$1" in
+  get-sink-volume) echo "Volume: front-left: 32768 /  50% / -18.06 dB,   front-right: 32768 /  50% / -18.06 dB" ;;
+  get-sink-mute) echo "Mute: no" ;;
+  info) echo "Server Name: vg-test-stub" ;;
+esac
+exit 0

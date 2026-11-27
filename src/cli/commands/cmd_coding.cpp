@@ -84,50 +84,32 @@ VG_COMMANDS
     using Command::Opt;
     using Command::Flag;
     using Command::AsPath;
-    Command::RegisterGroup("coding", "the coding algebra: describe a format, mint a shipped file into content + record, verify it back");
+    Command::RegisterGroup("coding", "the coding algebra: check a description, mint a shipped file into content + record, verify it back");
 
     Command::Register({
-        "coding describe", "write a format's description (data: the program that decodes, codes and prices it)",
-        "lz4 (an LZ4 block), deflate (a raw deflate stream), bsa (a Bethesda archive v105: Skyrim SE, with Bethesda's packer "
-        "as its family: LZ4HC, 32768 attempts, so a record holds only what the packer did otherwise; bsa:N another number "
-        "of attempts, bsa:0 no family), or lzma:lc,lp,pb,dict[,end] (an LZMA stream with those properties; end = 1 when it "
-        "carries an end marker).",
-        { Pos("format", "lz4 | deflate | bsa[:attempts] | lzma:lc,lp,pb,dict[,end]"), AsPath(Pos("out", "the description file to write")) },
-        { "coding describe bsa ~/x/bsa105.vgcd", "coding describe lzma:3,0,2,8388608 ~/x/lzma.vgcd" },
-        { "coding::LzmaDescription", "coding::DeflateDescription", "coding::Lz4BlockDescription", "coding::BsaDescription",
-          "coding::Serialize" }, Needs::Config, false,
+        "coding check", "read and validate a description (a node holding one, or its DESCRIPTION alone); write its canonical text",
+        "A description is data in a node (MetaPackageFormat 22.16): readable JSON, one instruction a string. It is checked "
+        "as a package's would be (every op, register, table and label in bounds; nothing newer than this build's "
+        "instruction set). --out: its canonical text (the same names; values laid out one canonical way).",
+        { AsPath(Pos("description", "a node JSON or a description JSON")), AsPath(Opt("out", "the canonical text to write")) },
+        { "coding check ~/x/BSA105.json", "coding check ~/x/inno.json --out ~/x/inno.canonical.json" },
+        { "coding::Read", "coding::Print", "coding::Validate" }, Needs::Config, false,
         [](Command::Context &, const json &A) {
-            const std::string F = Command::Str(A, "format");
-            coding::Description D;
-            if (F == "lz4") D = coding::Lz4BlockDescription();
-            else if (F == "deflate") D = coding::DeflateDescription();
-            else if (F == "bsa") D = coding::BsaDescription();
-            else if (F.rfind("bsa:", 0) == 0)
-            {
-                char *E = nullptr; const unsigned long N = std::strtoul(F.c_str() + 4, &E, 10);
-                if (!E || *E || F.size() == 4 || N > coding::kLz4hcMaxAttempts) throw Command::BadArgs("bsa:N, N attempts from 0 to " + std::to_string(coding::kLz4hcMaxAttempts));
-                D = coding::BsaDescription(static_cast<uint32_t>(N));
-            }
-            else if (F.rfind("lzma:", 0) == 0)
-            {
-                unsigned Lc = 0, Lp = 0, Pb = 0, End = 1; unsigned long Dict = 0;
-                if (std::sscanf(F.c_str() + 5, "%u,%u,%u,%lu,%u", &Lc, &Lp, &Pb, &Dict, &End) < 4 || Lc > 8 || Lp > 4 || Pb > 4)
-                    throw Command::BadArgs("lzma:lc,lp,pb,dict[,end] (lc ≤ 8, lp ≤ 4, pb ≤ 4)");
-                D = coding::LzmaDescription(static_cast<int>(Lc), static_cast<int>(Lp), static_cast<int>(Pb), static_cast<uint32_t>(Dict), End != 0);
-            }
-            else throw Command::BadArgs("no description named " + F + " (lz4, deflate, bsa, lzma:…)");
-            const auto B = coding::Serialize(D);
-            Spit(Command::Str(A, "out"), B.data(), B.size());
-            return json{{"name", D.name}, {"isa", D.isa}, {"bytes", B.size()}, {"ops", D.ops.size()}, {"expressions", D.ex.size()},
-                        {"family", coding::UsesPrediction(D)}};
+            const auto B = Slurp(Command::Str(A, "description"));
+            coding::Description D; coding::TextNames N; std::string Err, Text;
+            if (!coding::Read(std::string(B.begin(), B.end()), D, Err, &N) || !coding::Print(D, Text, Err, &N))
+                throw std::runtime_error("the description " + Command::Str(A, "description") + ": " + Err);
+            if (const std::string O = Command::Str(A, "out", ""); !O.empty()) Spit(O, reinterpret_cast<const uint8_t *>(Text.data()), Text.size());
+            return json{{"name", D.name}, {"isa", D.isa}, {"instructions", D.ops.size()}, {"values", D.ex.size()},
+                        {"family", coding::UsesPrediction(D)}, {"canonical", Text == std::string(B.begin(), B.end())}};
         }, {} });
 
     Command::Register({
         "coding info", "what a description is: its name, instruction set, size, and the checkpoint spacing it suits",
-        "A description file is checked as the mount checks one (every op, register and table in bounds; nothing newer than "
+        "A description is checked as the mount checks one (every op, register and table in bounds; nothing newer than "
         "this build's instruction set). --shipped: the spacing for a stream of that size.",
-        { AsPath(Pos("description", "a .vgcd file")), Opt("shipped", "a shipped stream's size in bytes", Type::Int) },
-        { "coding info ~/x/bsa105.vgcd --shipped 1073741824" },
+        { AsPath(Pos("description", "a description node (JSON)")), Opt("shipped", "a shipped stream's size in bytes", Type::Int) },
+        { "coding info ~/x/BSA105.json --shipped 1073741824" },
         { "coding::Parse", "coding::SuggestedSpacing" }, Needs::Config, false,
         [](Command::Context &, const json &A) {
             const coding::Description D = Described(Command::Str(A, "description"));
@@ -145,11 +127,13 @@ VG_COMMANDS
         "sending; a machine reads its expansion, `coding expand`); --plain mints every decision. --spacing: shipped bytes "
         "between checkpoints (default: what the description suits). --in-memory: hold the content in an ordinary buffer "
         "(small inputs; the default reserves a lazy 4 GiB map, paid for only as the decode fills it).",
-        { AsPath(Pos("description", "a .vgcd file")), AsPath(Pos("shipped", "the shipped file")), AsPath(Pos("content", "the content to write")),
+        { AsPath(Pos("description", "a description node (JSON)")), AsPath(Pos("shipped", "the shipped file")), AsPath(Pos("content", "the content to write")),
           AsPath(Pos("record", "the record to write")), Opt("spacing", "shipped bytes between checkpoints", Type::Int),
           Flag("in-memory", "decode into an ordinary buffer"), Flag("plain", "every decision in the record (no family)") },
-        { "coding mint ~/x/bsa105.vgcd 'Skyrim - Interface.bsa' Interface.content Interface.vgcr" },
-        { "coding::MintInto", "coding::Mint", "coding::UsesPrediction", "coding::Lz4hcParser::parse" }, Needs::Config, false,
+        { "coding mint ~/x/BSA105.json 'Skyrim - Interface.bsa' Interface.content Interface.vgcr" },
+        { "coding::MintInto", "coding::Mint", "coding::UsesPrediction", "coding::Lz4hcParser::parse", "coding::ZlibParser::ValidKnob",
+          "coding::ZlibParser::ensure", "coding::ZlibParser::at", "coding::ZlibParser::reached", "coding::ZlibParser::lo", "coding::ZlibParser::kept",
+          "coding::ZlibParser::tokens" }, Needs::Config, false,
         [](Command::Context &, const json &A) {
             const coding::Description D = Described(Command::Str(A, "description"));
             MmapByteSource S;
@@ -214,9 +198,9 @@ VG_COMMANDS
         "What a machine keeps beside a coded layer's content (VidyaGod does it itself, once per record, in its cache): the "
         "shipped bytes are generated through the predicted record, then minted plain, refused unless they code back "
         "bit-exact from the very same content. Takes about a mint's time. --spacing: as `coding mint`'s, for the plain record.",
-        { AsPath(Pos("description", "a .vgcd file")), AsPath(Pos("record", "the predicted record")), AsPath(Pos("content", "the content")),
+        { AsPath(Pos("description", "a description node (JSON)")), AsPath(Pos("record", "the predicted record")), AsPath(Pos("content", "the content")),
           AsPath(Pos("out", "the plain record to write")), Opt("spacing", "shipped bytes between checkpoints", Type::Int) },
-        { "coding expand ~/x/bsa105.vgcd Textures1.vgcq Textures1.content Textures1.vgcr" },
+        { "coding expand ~/x/BSA105.json Textures1.vgcq Textures1.content Textures1.vgcr" },
         { "coding::ExpandInto", "coding::CodedByteSource::predicted" }, Needs::Config, false,
         [](Command::Context &, const json &A) {
             const coding::Description D = Described(Command::Str(A, "description"));
@@ -249,9 +233,9 @@ VG_COMMANDS
     Command::Register({
         "coding verify", "rebuild the shipped bytes through the read path (checkpoints, copy runs, the pool) and compare",
         "Every byte, front to back, as a game reading the mounted file would get it. Exit status says identical or not.",
-        { AsPath(Pos("description", "a .vgcd file")), AsPath(Pos("record", "the record")), AsPath(Pos("content", "the content")),
+        { AsPath(Pos("description", "a description node (JSON)")), AsPath(Pos("record", "the record")), AsPath(Pos("content", "the content")),
           AsPath(Pos("shipped", "the shipped file to compare with")) },
-        { "coding verify ~/x/bsa105.vgcd Interface.vgcr Interface.content 'Skyrim - Interface.bsa'" },
+        { "coding verify ~/x/BSA105.json Interface.vgcr Interface.content 'Skyrim - Interface.bsa'" },
         { "coding::CodedByteSource::Create", "coding::CodedByteSource::pread", "coding::CodedByteSource::prefetch",
           "coding::CodedByteSource::size", "coding::CodedByteSource::checkpoints", "coding::CodedByteSource::segmentsDecoded",
           "coding::CodedByteSource::bytesGenerated" }, Needs::Config, false,
@@ -266,9 +250,9 @@ VG_COMMANDS
 
     Command::Register({
         "coding cat", "rebuild the shipped bytes into a file",
-        "", { AsPath(Pos("description", "a .vgcd file")), AsPath(Pos("record", "the record")), AsPath(Pos("content", "the content")),
+        "", { AsPath(Pos("description", "a description node (JSON)")), AsPath(Pos("record", "the record")), AsPath(Pos("content", "the content")),
               AsPath(Pos("out", "the file to write")) },
-        { "coding cat ~/x/bsa105.vgcd Interface.vgcr Interface.content rebuilt.bsa" },
+        { "coding cat ~/x/BSA105.json Interface.vgcr Interface.content rebuilt.bsa" },
         { "coding::CodedByteSource::Create" }, Needs::Config, false,
         [Coded](Command::Context &, const json &A) {
             auto S = Coded(A, 0);

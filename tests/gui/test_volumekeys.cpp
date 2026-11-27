@@ -2,6 +2,8 @@
 // the layouts route the keys to VidyaGod in its session is test_layouts'.)
 
 #include <QtTest>
+#include <QFile>
+#include <QStandardPaths>
 
 #include "volumekeys.h"
 
@@ -41,6 +43,24 @@ private slots:
         QCOMPARE(Volume::MuteCommand("wpctl").second, (QStringList{ "set-mute", "@DEFAULT_AUDIO_SINK@", "toggle" }));
         QCOMPARE(Volume::MuteCommand("pactl").second, (QStringList{ "set-sink-mute", "@DEFAULT_SINK@", "toggle" }));
         QCOMPARE(Volume::ReadCommands("pactl").size(), size_t(2));
+    }
+
+    // Under test, the app's own volume path reaches the stand-in tools, never the owner's session audio (ctest puts
+    // tools/testaudio first on PATH and points PipeWire/PulseAudio at nothing). A step and a mute land in the stub's
+    // log. Run outside that environment, the test refuses before it touches anything. Teeth: drop the PATH prefix.
+    void the_volume_keys_reach_only_the_test_stand_ins()
+    {
+        const QString Wp = QStandardPaths::findExecutable(QStringLiteral("wpctl"));
+        const QByteArray Log = qgetenv("VG_AUDIO_STUB_LOG");
+        if (!Wp.contains(QLatin1String("/tools/testaudio/")) || Log.isEmpty())
+            QFAIL("not isolated from the session's audio (run it through ctest): refusing to step a real volume");
+        QFile::remove(QString::fromLocal8Bit(Log));
+        VolumeKeys::instance().step(5);
+        VolumeKeys::instance().toggleMute();
+        const auto Read = [&] { QFile F(QString::fromLocal8Bit(Log)); return F.open(QIODevice::ReadOnly) ? F.readAll() : QByteArray(); };
+        QTRY_VERIFY_WITH_TIMEOUT(Read().contains("set-mute"), 5000);
+        const QByteArray Got = Read();
+        QVERIFY2(Got.contains("wpctl set-volume -l 1.0 @DEFAULT_AUDIO_SINK@ 5%+"), Got.constData());
     }
 
     // The toast shows the level, and goes by itself.
