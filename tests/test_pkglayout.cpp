@@ -793,3 +793,22 @@ TEST(a_shallow_graph_is_never_wrapped_into_bands)
         CHECK(G.Nodes[I].X > G.Nodes[I - 1].X);
     }
 }
+
+// A part plugs into the LEFT of what it goes into (MetaPackageFormat 23): laid out before it, as a contained node is
+// before its container; a node a condition names takes no place in the flow. Teeth: lay INTO out like containment
+// (the part lands right of the end).
+TEST(a_part_is_laid_out_left_of_what_it_goes_into)
+{
+    const std::string End = "end", Mod = "mod", Patch = "patch";
+    using oj = nlohmann::ordered_json;
+    const oj E = oj{{"VARIANT", "v"}, {"LAYERS", oj::array({ oj{{"ZIP", "e.zip"}} })}};
+    const oj M = oj{{"LAYERS", oj::array({ oj{{"INTO", oj::array({End})}}, oj{{"ZIP", "m.zip"}} })}};
+    const oj P = oj{{"LAYERS", oj::array({ oj{{"INTO", oj::array({Mod})}}, oj{{"INTO", oj::array({End})}} })}};
+    std::vector<PkgGraph::NodeRef> Refs = { {End, &E}, {Mod, &M}, {Patch, &P} };
+    PkgGraph::Graph G = PkgGraph::Build(Refs);
+    PkgLayout::Compute(G);
+    std::map<std::string, float> X;
+    for (const auto &N : G.Nodes) X[N.Id] = N.X;
+    CHECK(X[Patch] < X[Mod]);
+    CHECK(X[Mod] < X[End]);
+}

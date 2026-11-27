@@ -32,8 +32,11 @@ Adjacency BuildAdjacency(const Graph &G)
         if (L.ParentIndex < 0 || L.ParentIndex >= N) continue;
         if (L.ChildIndex  < 0 || L.ChildIndex  >= N) continue;
         if (L.ParentIndex == L.ChildIndex) continue;          //a self-parent is malformed, not a layer step
-        A.Parents[L.ChildIndex].push_back(L.ParentIndex);
-        A.Children[L.ParentIndex].push_back(L.ChildIndex);
+        if (L.Cond) continue;                                 //a condition names a node: no place in the flow
+        //A part plugs into the LEFT of what it goes into: it sits before it in the flow, as a contained node does.
+        const int Before = L.Into ? L.ChildIndex : L.ParentIndex, After = L.Into ? L.ParentIndex : L.ChildIndex;
+        A.Parents[After].push_back(Before);
+        A.Children[Before].push_back(After);
     }
     return A;
 }
@@ -327,9 +330,9 @@ long long CountCrossings(const Graph &G)
     E.reserve(G.Links.size());
     for (const Link &L : G.Links)
     {
-        if (L.ParentIndex < 0 || L.ParentIndex == L.ChildIndex) continue;
-        const auto &P = G.Nodes[L.ParentIndex];
-        const auto &C = G.Nodes[L.ChildIndex];
+        if (L.ParentIndex < 0 || L.ParentIndex == L.ChildIndex || L.Cond) continue;
+        const auto &P = G.Nodes[L.Into ? L.ChildIndex : L.ParentIndex];
+        const auto &C = G.Nodes[L.Into ? L.ParentIndex : L.ChildIndex];
         E.push_back({P.X, P.Y, C.X, C.Y});
     }
     long long Crossings = 0;

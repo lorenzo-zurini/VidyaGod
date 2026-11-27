@@ -566,6 +566,8 @@ static void Layout(PkgCanvasState &S)
         PkgGraph::Link L;
         L.ParentIndex = W.From;
         L.ChildIndex = W.To;
+        L.Into = W.L.Into;      // a part plugs in to the left of what it goes into
+        L.Cond = W.L.Cond;      // a condition's node takes no place in the flow
         G.Links.push_back(L);
     }
     PkgLayout::Options O;
@@ -1431,8 +1433,8 @@ static void DrawNode(PkgCanvas &Self, PkgCanvasState &S, int Vi, std::vector<ImG
             const std::string T = PkgGraph::LayerType(Nn["LAYERS"][(size_t)Rw.Layer]);
             const json &Ly = Nn["LAYERS"][(size_t)Rw.Layer];
             const bool Names = Ly.is_object() && Ly.contains("WHEN") && Ly["WHEN"].is_string() && !NodeRefs::CidsInWhen(Ly["WHEN"].get<std::string>()).empty();
-            if (T != "NODE" && T != "INTO" && !Names) continue;
-            const ImU32 C = T == "INTO" ? IM_COL32(120, 205, 140, 255) : T == "NODE" ? IM_COL32(110, 160, 255, 255) : IM_COL32(170, 170, 180, 255);
+            if (T != "NODE" && !Names) continue;   // a part's INTO wire leaves from its out-port, not a row
+            const ImU32 C = T == "NODE" ? IM_COL32(110, 160, 255, 255) : IM_COL32(170, 170, 180, 255);
             const ImVec2 P(WinPos.x, WinPos.y + (Rw.Y0 + Rw.Y1) * 0.5f * Z);
             const bool Lit = (S.HoverWireChild == V.Handle || S.SelWireChild == V.Handle) && [&] {
                 for (const WireView &W : S.Wires)
@@ -1568,9 +1570,12 @@ static void DrawBox(PkgCanvasState &S, ImDrawList *DL, const NodeView &V)
 
 struct WireGeom { ImVec2 A, B, C, D; };
 
-static WireGeom WireShape(const PkgCanvasState &S, const NodeView &From, const NodeView &To, int Layer)
+//A containment wire runs from the contained node's out-port into the container's row. A part's INTO wire runs the other
+//way: the part plugs into the LEFT of the end (or part) it goes into — it attaches to it, the end never names it.
+static WireGeom WireShape(const PkgCanvasState &S, const NodeView &From, const NodeView &To, int Layer, bool Into = false)
 {
-    const ImVec2 A = PortScreen(S, From, true), D = RowPort(S, To, Layer);
+    const ImVec2 A = Into ? PortScreen(S, To, true) : PortScreen(S, From, true);
+    const ImVec2 D = Into ? PortScreen(S, From, false) : RowPort(S, To, Layer);
     const float Dx = std::max(std::abs(D.x - A.x) * 0.5f, 60.0f * S.Z);
     return WireGeom{A, ImVec2(A.x + Dx, A.y), ImVec2(D.x - Dx, D.y), D};
 }
@@ -1601,7 +1606,7 @@ static void DrawWires(PkgCanvasState &S, ImDrawList *DL, bool Hover)
     std::vector<Shown> Vis;
     for (const WireView &W : S.Wires)
     {
-        const WireGeom G = WireShape(S, S.Views[(size_t)W.From], S.Views[(size_t)W.To], W.L.Layer);
+        const WireGeom G = WireShape(S, S.Views[(size_t)W.From], S.Views[(size_t)W.To], W.L.Layer, W.L.Into);
         const ImVec4 Bb(std::min({G.A.x, G.B.x, G.C.x, G.D.x}), std::min({G.A.y, G.B.y, G.C.y, G.D.y}),
                         std::max({G.A.x, G.B.x, G.C.x, G.D.x}), std::max({G.A.y, G.B.y, G.C.y, G.D.y}));
         if (Overlaps(Bb, View)) Vis.push_back({&W, G});
