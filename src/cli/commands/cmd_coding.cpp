@@ -64,6 +64,24 @@ coding::Description Described(const std::string &P)
 }
 
 // ---- TREE (.vgtz) tools: a base's files, by path, as bytes (an archive's stored members, a view's files, one file)
+// Bytes named in JSON: a path (the file), or {"kind": "file", "path"}, or {"kind": "delta", "path": the .vgdelta,
+// "bases": [bytes…]} — what the delta rebuilds over its bases (back to back; none: a delta over nothing), read through
+// it at random, never written out: a build of a chain is read through its deltas down to the root base.
+std::shared_ptr<ByteSource> TreeBytes(const json &S)
+{
+    if (S.is_string()) return Map(S.get<std::string>());
+    if (!S.is_object()) throw Command::BadArgs("bytes are a path or {kind: file|delta, …}");
+    const std::string Kind = S.value("kind", std::string()), Path = S.value("path", std::string());
+    if (Kind == "file") return Map(Path);
+    if (Kind != "delta") throw Command::BadArgs("bytes of kind '" + Kind + "' (file or delta)");
+    std::vector<std::shared_ptr<ByteSource>> Parts;
+    for (const auto &B : S.value("bases", json::array())) Parts.push_back(TreeBytes(B));
+    std::shared_ptr<ByteSource> Base = Parts.size() == 1 ? Parts.front() : std::make_shared<ConcatByteSource>(Parts);
+    std::string Err;
+    auto D = vgdelta::DeltaByteSource::Create(Map(Path), Base, Err);
+    if (!D) throw std::runtime_error("the delta " + Path + " does not read over its bases: " + Err);
+    return D;
+}
 struct TreeBaseFiles
 {
     std::vector<std::pair<std::string, std::shared_ptr<ByteSource>>> files;   // path → bytes ("" a single file itself)
@@ -72,10 +90,12 @@ TreeBaseFiles LoadTreeBase(const json &B)
 {
     TreeBaseFiles Out;
     const std::string Kind = B.value("kind", std::string()), Path = B.value("path", std::string());
-    if (Kind == "file") { Out.files.push_back({ std::string(), Map(Path) }); return Out; }
+    //a file's or a zip's bytes: its path, or "bytes" (TreeBytes: a delta's rebuild, read through it)
+    const auto Own = [&]() { return B.contains("bytes") ? TreeBytes(B["bytes"]) : Map(Path); };
+    if (Kind == "file") { Out.files.push_back({ std::string(), Own() }); return Out; }
     if (Kind == "zip")
     {
-        auto Src = Map(Path);
+        auto Src = Own();
         auto Z = BuildZipIndex(Src, Path);
         if (!Z) throw std::runtime_error("the base " + Path + " is not a zip");
         for (const auto &[Name, E] : Z->byName)
@@ -90,7 +110,7 @@ TreeBaseFiles LoadTreeBase(const json &B)
     }
     if (Kind == "view")
     {
-        auto C = Map(B.value("content", std::string()));
+        auto C = TreeBytes(B.contains("content") ? B["content"] : json(std::string()));
         const auto L = Slurp(Path);
         std::vector<coding::ViewEntry> V; std::string Err;
         if (!coding::ReadViewListing(std::string(L.begin(), L.end()), V, Err, C->size())) throw std::runtime_error("the view " + Path + ": " + Err);
@@ -250,14 +270,15 @@ VG_COMMANDS
     Command::RegisterGroup("tree", "TREE (.vgtz): an install as files over the bytes of its bases (views, archives, files), readable: a zip of TREE.txt, patches and adds");
     Command::Register({
         "tree make", "make a .vgtz: the target install's files read from its bases where they are found, the rest added",
-        "--bases: a JSON list, in BASE_SOURCES order: {\"cid\", \"kind\": \"view\"|\"zip\"|\"file\", \"path\", \"content\" (a view's)}. "
+        "--bases: a JSON list, in BASE_SOURCES order: {\"cid\", \"kind\": \"view\"|\"zip\"|\"file\", \"path\", \"content\" (a view's)}; a zip's or file's "
+        "\"bytes\", and a view's \"content\", may be {\"kind\": \"delta\", \"path\": a .vgdelta, \"bases\": [bytes…]}: read through the delta, never rebuilt. "
         "Each target file is matched whole against every base file (BASE); else against the base file of its own path or name "
-        "(DELTA: the copy runs the delta matcher finds, the rest added); else ADD. --target: the install, a folder or a STORE zip. "
+        "(DELTA: the copy runs the delta matcher finds, the rest added); else ADD. --target: the install, a folder or a STORE zip; or --target-bytes: a JSON file of its bytes (a delta chain, as above). "
         "The tree is verified file by file against the target before it is named. --work: scratch (the SSD).",
-        { AsPath(Pos("tree", "the .vgtz to write")), AsPath(Opt("target", "the install: a folder or a STORE zip")), AsPath(Opt("bases", "the bases JSON")),
+        { AsPath(Pos("tree", "the .vgtz to write")), AsPath(Opt("target", "the install: a folder or a STORE zip")), AsPath(Opt("target-bytes", "the install zip's bytes as JSON (a delta over its bases)")), AsPath(Opt("bases", "the bases JSON")),
           AsPath(Opt("work", "scratch folder (default: beside the tree)")) },
         { "tree make install.vgtz --target install.zip --bases bases.json --work ~/.fastwork/m2/x" },
-        { "vgtree::WriteTree", "vgtree::TableText", "vgtree::ReadTable", "vgtree::OpenTree", "vgtree::EntryBytes", "vgtree::InsideLink", "vgtree::PatchInfo", "vgtree::SeekableZstdTo", "vgtree::Lazily", "vgtree::MakePatch", "vgtree::ApplyPatch", "vgtree::TextEncoding", "vgtree::SeekableZstd", "vgtree::SeekableZstdSource",
+        { "TreeBytes", "LoadTreeBase", "vgtree::WriteTree", "vgtree::TableText", "vgtree::ReadTable", "vgtree::OpenTree", "vgtree::EntryBytes", "vgtree::InsideLink", "vgtree::PatchInfo", "vgtree::SeekableZstdTo", "vgtree::Lazily", "vgtree::MakePatch", "vgtree::ApplyPatch", "vgtree::TextEncoding", "vgtree::SeekableZstd", "vgtree::SeekableZstdSource",
           "SliceByteSource::pread", "SliceByteSource::prefetch", "SliceByteSource::size" }, Needs::Config, false,
         [](Command::Context &, const json &A) {
             const double T0 = Now();
@@ -285,9 +306,10 @@ VG_COMMANDS
             //the target's files, links and folders
             struct Tf { std::string path; std::shared_ptr<ByteSource> bytes; uint32_t mode = 0; bool dir = false; std::string link; };
             std::vector<Tf> Target;
-            const std::string Tp = Command::Str(A, "target");
-            std::shared_ptr<MmapByteSource> TZip;
-            if (std::filesystem::is_directory(Tp))
+            const std::string TBytes = Command::Str(A, "target-bytes", std::string());
+            const std::string Tp = TBytes.empty() ? Command::Str(A, "target") : std::string();
+            std::shared_ptr<ByteSource> TZip;
+            if (!Tp.empty() && std::filesystem::is_directory(Tp))
             {
                 for (auto It = std::filesystem::recursive_directory_iterator(Tp); It != std::filesystem::recursive_directory_iterator(); ++It)
                 {
@@ -303,7 +325,7 @@ VG_COMMANDS
             }
             else
             {
-                TZip = std::static_pointer_cast<MmapByteSource>(Map(Tp));
+                TZip = TBytes.empty() ? Map(Tp) : TreeBytes(json::parse(Slurp(TBytes)));
                 bool Ok = zipscan::WalkCentralDirFull(*TZip, [&](const zipscan::CdEntry &E) {
                     Tf X; X.path = CleanMemberName(E.utf8Name);
                     if (X.path.empty()) return true;
