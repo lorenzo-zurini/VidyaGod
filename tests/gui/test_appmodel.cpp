@@ -259,8 +259,7 @@ private slots:
         QDir appDir(d.path());
         const QString Pkg = d.path() + "/LIBRARY/VidyaGod/[1] Game";
         QDir().mkpath(Pkg);
-        NodeFixture::WriteNodes((Pkg + "/game.json").toStdString(), NodeFixture::Chain("game", {NodeFixture::Tile("1", "Game"),
-            NodeFixture::Exec("win32", "g.exe"), NodeFixture::ContentCid("zip", "game.zip", "bafkreigamezip")}, {}, {{"VARIANT", "Edition 1"}}));
+        NodeFixture::WriteNodes((Pkg + "/game.json").toStdString(), NodeFixture::Chain("game", {NodeFixture::Merge({NodeFixture::Tile("1", "Game"), NodeFixture::Exec("win32", "g.exe")}), NodeFixture::ContentCid("zip", "game.zip", "bafkreigamezip")}, {}, {{"VARIANT", "Edition 1"}}));
         json cfg = json{{"Settings", {{"Paths", {{"LibraryRoot", (d.path() + "/LIBRARY").toStdString()}}}}}, {"LIBRARY", json::array()}};
         AppModel m(&cfg, &appDir);
         m.rebuildCatalog();
@@ -284,8 +283,7 @@ private slots:
         const QString Pkg = d.path() + "/LIBRARY/VidyaGod/[1] Game";
         QDir().mkpath(Pkg);
         { std::ofstream f((Pkg + "/game.zip").toStdString()); f << "content"; }
-        NodeFixture::WriteNodes((Pkg + "/game.json").toStdString(), NodeFixture::Chain("game", {NodeFixture::Tile("1", "Game"),
-            NodeFixture::Exec("win32", "g.exe"), NodeFixture::Content("zip", "game.zip")}, {}, {{"VARIANT", "Edition 1"}}));
+        NodeFixture::WriteNodes((Pkg + "/game.json").toStdString(), NodeFixture::Chain("game", {NodeFixture::Merge({NodeFixture::Tile("1", "Game"), NodeFixture::Exec("win32", "g.exe")}), NodeFixture::Content("zip", "game.zip")}, {}, {{"VARIANT", "Edition 1"}}));
         json cfg = json{{"Settings", {{"Paths", {{"LibraryRoot", (d.path() + "/LIBRARY").toStdString()}}}}}, {"LIBRARY", json::array()}};
         AppModel m(&cfg, &appDir);
         QSignalSpy Built(&m, &AppModel::catalogChanged);
@@ -355,10 +353,8 @@ private slots:
         QDir().mkpath(Pkg); QDir().mkpath(Other);
         { std::ofstream f((Pkg + "/lib.zip").toStdString()); f << "content"; }
         { std::ofstream f((Other + "/game.zip").toStdString()); f << "content"; }
-        NodeFixture::WriteNodes((Pkg + "/lib.json").toStdString(), NodeFixture::Chain("lib", {NodeFixture::Tile("1", "Lib"),
-            NodeFixture::Exec("win32", "l.exe"), NodeFixture::Content("zip", "lib.zip")}, {}, {{"VARIANT", "Edition 1"}}));
-        NodeFixture::WriteNodes((Other + "/game.json").toStdString(), NodeFixture::Chain("game", {NodeFixture::Tile("2", "Game"),
-            NodeFixture::Exec("win32", "g.exe"), NodeFixture::Content("zip", "game.zip")}, {"lib"}, {{"VARIANT", "Edition 1"}}));
+        NodeFixture::WriteNodes((Pkg + "/lib.json").toStdString(), NodeFixture::Chain("lib", {NodeFixture::Merge({NodeFixture::Tile("1", "Lib"), NodeFixture::Exec("win32", "l.exe")}), NodeFixture::Content("zip", "lib.zip")}, {}, {{"VARIANT", "Edition 1"}}));
+        NodeFixture::WriteNodes((Other + "/game.json").toStdString(), NodeFixture::Chain("game", {NodeFixture::Merge({NodeFixture::Tile("2", "Game"), NodeFixture::Exec("win32", "g.exe")}), NodeFixture::Content("zip", "game.zip")}, {"lib"}, {{"VARIANT", "Edition 1"}}));
         json cfg = json{{"Settings", {{"Paths", {{"LibraryRoot", (d.path() + "/LIBRARY").toStdString()}}}}}, {"LIBRARY", json::array()}};
         AppModel m(&cfg, &appDir);
         QSignalSpy Built(&m, &AppModel::catalogChanged);

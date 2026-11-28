@@ -712,7 +712,7 @@ void DeckGamePage::refresh()
         const Node *N = C->Index ? C->Index->Find(Id) : nullptr;
         if (!N) continue;
         QString Name = QString::fromStdString(!N->Variant.empty() ? N->Variant : N->Meta.is_object() ? N->Meta.value("TITLE", Id) : Id);
-        if (std::find(N->Recommended.begin(), N->Recommended.end(), C->FaceUid) != N->Recommended.end()) Name = "★ " + Name;
+        if (N->IsRecommended(C->FaceUid)) Name = "★ " + Name;
         Versions << Name;
     }
     //And those not installed here (its launch screen downloads one), after them.

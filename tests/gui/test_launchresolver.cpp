@@ -79,7 +79,7 @@ Node launchNode(const std::string & id, const std::string & host, const std::vec
     for (const auto & X : extraLayers) L.push_back(X);
     json E = { {"LABEL", "Play"}, {"HOST", host}, {"EXE", "game.exe"}, {"TILE", {{"UID", id}, {"TITLE", id}}} };
     for (const auto & [K, V] : entryExtra.items()) E[K] = V;
-    L.push_back({ {"EXEC", json::array({ E })} });
+    L.push_back({ {"EXEC", NodeFixture::ExecOf({ E })} });
     return standalone(parse(json{ {"CID", id}, {"LABEL", id}, {"VARIANT", id}, {"LAYERS", L} }, "/tmp/vg_bundle"));
 }
 // A prefix-generating runner (proton-like) whose build is what it contains.
@@ -91,7 +91,7 @@ Node runnerNode(const std::string & id, const std::vector<std::string> & guests,
                {"CONTENT_ROOT", "pfx/drive_c/%PackageUID%"}, {"PREFIX_GENERATE", true},
                {"ARGS", json::array({"waitforexitandrun", "%Content%"})} };
     for (const auto & [K, V] : entryExtra.items()) E[K] = V;
-    L.push_back({ {"EXEC", json::array({ E })} });
+    L.push_back({ {"EXEC", NodeFixture::ExecOf({ E })} });
     return standalone(parse(json{ {"CID", id}, {"LABEL", id}, {"LAYERS", L} }, "/tmp/vg_runner"));
 }
 bool stackHas(const ContainerParams & cp, const std::string & needle)
@@ -109,7 +109,7 @@ Node chainRunner(const std::string & id, const std::vector<std::string> & guests
     for (const auto & X : extraLayers) L.push_back(X);
     json E = { {"LABEL", "run"}, {"HOST", host}, {"GUEST", guests} };
     if (!exec.empty()) E["EXE"] = exec;
-    L.push_back({ {"EXEC", json::array({ E })} });
+    L.push_back({ {"EXEC", NodeFixture::ExecOf({ E })} });
     return standalone(parse(json{ {"CID", id}, {"LABEL", label.empty() ? id : label}, {"LAYERS", L} }, "/tmp/vg_runner"));
 }
 // A resolved RunnerLink for cross-namespace composition tests.
@@ -214,8 +214,8 @@ private slots:
                 json{{"ENV", {{"VG_ALWAYS", "1"}}}},
                 json{{"VARS", {{"reset_note", {{"DEFAULT", "off"}}}}}, {"WHEN", "%cache_reset%==0"}},
                 json{{"KEEP", {{"FILES/%GameDir%/cache", true}}}, {"WHEN", "%cache_reset%==0"}},
-                json{{"EXEC", json::array({ json{{"LABEL", "run"}, {"HOST", ManifestModel::MachinePlatform()}, {"GUEST", {"xbox"}},
-                                                 {"EXE", "%RunnerMount%/xemu"}, {"ARGS", json::array({ "%Content%" })}} })}} });
+                json{{"EXEC", json::object({ {"run", {{"HOST", ManifestModel::MachinePlatform()}, {"GUEST", {"xbox"}},
+                                                 {"EXE", "%RunnerMount%/xemu"}, {"ARGS", json::array({ "%Content%" })}}} })}} });
             idx.Nodes["xemu"] = standalone(parse(json{ {"CID", "xemu"}, {"LABEL", "xemu"}, {"LAYERS", L} }, "/tmp/vg_runner"));
             json GameLayers = json::array();
             if (C.GameDefault) GameLayers.push_back(json{{"VARS", {{"cache_reset", {{"DEFAULT", *C.GameDefault}}}}}});
@@ -454,7 +454,7 @@ private slots:
         NodeIndex idx;
         idx.Nodes["mediastack"] = contentNode("mediastack", json::array({
             json{{"DLL", {{"winegstreamer", ""}}}},
-            json{{"REG", {{"HKLM", {{"Software", {{"Lav", json::object()}}}}}}}, {"ARCH", json::array({"64"})}},
+            json{{"REG", {{"HKLM\\Software\\Lav", json::object()}}}, {"ARCH", json::array({"64"})}},
             json{{"ZIP", "codecs.zip"}, {"TARGET", "FILES/files/lib/gstreamer-1.0"}} }));
         idx.Nodes["wine"] = runnerNode("wine", {"win32"}, {"mediastack"});
         idx.Nodes["game"] = launchNode("game", "win32", {});
@@ -553,9 +553,9 @@ private slots:
         NodeIndex idx;
         idx.Nodes["emu"] = standalone(parse(json{ {"CID", "emu"}, {"LABEL", "emu"}, {"LAYERS", json::array({
             json{{"EDIT", json::array({ json{{"MODE", "Overwrite"}, {"VALUE", "x"}} })}, {"TARGET", "FILES/%GameDir%/emu/emu.cfg"}},
-            json{{"EXEC", json::array({ json{{"LABEL", "emu"}, {"HOST", ManifestModel::MachinePlatform()}, {"GUEST", {"snes"}},
+            json{{"EXEC", json::object({ {"emu", {{"HOST", ManifestModel::MachinePlatform()}, {"GUEST", {"snes"}},
                                              {"EXE", "%RunnerMount%/emu"}, {"CONTENT_ROOT", "snes/%PackageUID%"},
-                                             {"DRIVES", {{"C:", "snes"}}}, {"GUEST_ROOTS", {{"%GameDir%", "C:\\%PackageUID%"}}}} })}} })} },
+                                             {"DRIVES", {{"C:", "snes"}}}, {"GUEST_ROOTS", {{"%GameDir%", "C:\\%PackageUID%"}}}}} })}} })} },
             "/tmp/vg_runner"));
         idx.Nodes["game"] = launchNode("game", "snes", {});
         finish(idx);
@@ -576,9 +576,9 @@ private slots:
         NodeIndex idx;
         idx.Nodes["emu"] = standalone(parse(json{ {"CID", "emu"}, {"LABEL", "emu"}, {"LAYERS", json::array({
             json{{"EDIT", json::array({ json{{"MODE", "Overwrite"}, {"VALUE", "x"}} })}, {"TARGET", "FILES/E:/emu.cfg"}},
-            json{{"EXEC", json::array({ json{{"LABEL", "emu"}, {"HOST", ManifestModel::MachinePlatform()}, {"GUEST", {"snes"}},
+            json{{"EXEC", json::object({ {"emu", {{"HOST", ManifestModel::MachinePlatform()}, {"GUEST", {"snes"}},
                                              {"EXE", "%RunnerMount%/emu"}, {"CONTENT_ROOT", "snes/%PackageUID%"},
-                                             {"DRIVES", {{"C:", "snes"}}}, {"GUEST_ROOTS", {{"%GameDir%", "C:\\%PackageUID%"}}}} })}} })} },
+                                             {"DRIVES", {{"C:", "snes"}}}, {"GUEST_ROOTS", {{"%GameDir%", "C:\\%PackageUID%"}}}}} })}} })} },
             "/tmp/vg_runner"));
         idx.Nodes["game"] = launchNode("game", "snes", {});
         finish(idx);
@@ -593,9 +593,9 @@ private slots:
         NodeIndex idx;
         idx.Nodes["emu"] = standalone(parse(json{ {"CID", "emu"}, {"LABEL", "emu"}, {"LAYERS", json::array({
             json{{"EDIT", json::array({ json{{"MODE", "Overwrite"}, {"VALUE", "x"}} })}, {"TARGET", "FILES/%GameDir%/emu.cfg"}},
-            json{{"EXEC", json::array({ json{{"LABEL", "emu"}, {"HOST", ManifestModel::MachinePlatform()}, {"GUEST", {"snes"}},
+            json{{"EXEC", json::object({ {"emu", {{"HOST", ManifestModel::MachinePlatform()}, {"GUEST", {"snes"}},
                                              {"EXE", "%RunnerMount%/ge/emu"}, {"UNIFIED_RUNTIME", true}, {"CONTENT_ROOT", "ge"},
-                                             {"DRIVES", {{"C:", "ge"}}}, {"GUEST_ROOTS", {{"%GameDir%", "C:\\"}}}} })}} })} },
+                                             {"DRIVES", {{"C:", "ge"}}}, {"GUEST_ROOTS", {{"%GameDir%", "C:\\"}}}}} })}} })} },
             "/tmp/vg_runner"));
         idx.Nodes["game"] = launchNode("game", "snes", {});
         finish(idx);
@@ -673,22 +673,7 @@ private slots:
         QCOMPARE(first("zzz_proton12"), std::string("zzz_proton12"));                 // nothing installed: the one to get
     }
 
-    // The default pick prefers a runner RECOMMENDED for this tile over the alphabetically-first one. (A package never
-    // names a runner; a runner may say which tiles it is recommended for.)
-    void pick_runner_prefers_recommended()
-    {
-        NodeIndex idx;
-        idx.Nodes["aaa_wine"] = runnerNode("aaa_wine", {"win32"});   // sorts first
-        Node rec = runnerNode("zzz_wine", {"win32"}); rec.Recommended = {"game"};
-        idx.Nodes["zzz_wine"] = rec;
-        Node launch = launchNode("game", "win32", {});
-        const json cfg = json{{"Settings", json::object()}};
-
-        ContainerParams cp("/tmp/vg_bundle");
-        QCOMPARE(LaunchResolver::ResolveChainIds(idx, launch, cp, cfg)[0], std::string("zzz_wine"));   // recommended beats alphabetical
-    }
-
-    // Between equally-(non-)recommended runners, one shipped in the launch node's own package wins (embedded > global).
+    // Between runners otherwise equal, one shipped in the launch node's own package wins (embedded > global).
     void pick_runner_prefers_package_local()
     {
         NodeIndex idx;
@@ -705,17 +690,18 @@ private slots:
 
     // Among otherwise equal runners the specialist wins: a dedicated SNES emulator before a multi-system one that also
     // lists snes and sorts first by label (ares beside snes9x: the alternative never becomes every console's default).
-    // A recommended generalist still wins. Teeth: drop the guest-count step and "aaa_multi" is picked.
-    // A machine that fetched the earlier windows-native (C:\<uid> anchors, published as bafkreiaj2f2uth…) still has it
-    // beside the built-in one: same label, same guests, neither recommended nor package-local. The built-in one wins,
-    // whichever sorts first by CID (the old one does) and whichever the index holds first. Teeth: drop the built-in
-    // step and the old node is picked.
+    // Teeth: drop the guest-count step and "aaa_multi" is picked.
+    // A machine that fetched an earlier windows-native (C:\<uid> anchors) still has it beside the built-in one: same
+    // label, same guests, neither recommended nor package-local. The built-in one wins, whichever sorts first by CID and
+    // whichever the index holds first. Teeth: drop the built-in step and the old node is picked.
     void pick_runner_prefers_the_builtin_over_its_old_namesake()
     {
-        const json Old = json::parse(R"VG({"LABEL":"windows-native_exec","LAYERS":[{"COMMENT":"A Windows game on Windows runs as itself: the game's exe, started from the mounted game folder. The guest's C: is laid out inside the mount (drive_c), the way a Wine prefix lays it out, so every package places its files the same way on both hosts.","EXEC":[{"ARGS":[],"CONTENT_ROOT":"drive_c/%PackageUID%","DRIVES":{"C:":"drive_c"},"EXE":"%Content%","GUEST":["win32","win64"],"GUEST_ROOTS":{"%AppData%":"C:\\users\\steamuser\\AppData\\Roaming","%Documents%":"C:\\users\\steamuser\\Documents","%GameDir%":"C:\\%PackageUID%","%LocalAppData%":"C:\\users\\steamuser\\AppData\\Local","%ProgramData%":"C:\\ProgramData","%ProgramFiles%":"C:\\Program Files","%ProgramFiles32%":"C:\\Program Files (x86)","%SysDir32%":"C:\\windows\\syswow64","%SysDir64%":"C:\\windows\\system32","%UserProfile%":"C:\\users\\steamuser","%Windows%":"C:\\windows"},"HOST":"win64","LABEL":"windows-native_exec"}]}]})VG");
+        json Old = json::parse(R"VG({"LABEL":"windows-native_exec","LAYERS":[{"COMMENT":"A Windows game on Windows runs as itself: the game's exe, started from the mounted game folder. The guest's C: is laid out inside the mount (drive_c), the way a Wine prefix lays it out, so every package places its files the same way on both hosts.","EXEC":{"windows-native_exec":{"ARGS":[],"CONTENT_ROOT":"drive_c/%PackageUID%","DRIVES":{"C:":"drive_c"},"EXE":"%Content%","GUEST":["win32","win64"],"GUEST_ROOTS":{"%AppData%":"C:\\users\\steamuser\\AppData\\Roaming","%Documents%":"C:\\users\\steamuser\\Documents","%GameDir%":"C:\\%PackageUID%","%LocalAppData%":"C:\\users\\steamuser\\AppData\\Local","%ProgramData%":"C:\\ProgramData","%ProgramFiles%":"C:\\Program Files","%ProgramFiles32%":"C:\\Program Files (x86)","%SysDir32%":"C:\\windows\\syswow64","%SysDir64%":"C:\\windows\\system32","%UserProfile%":"C:\\users\\steamuser","%Windows%":"C:\\windows"},"HOST":"win64"}}}]})VG");
         const json New = BuiltinRunners::All().at(0).Node;
-        const std::string OldCid = Cid::OfNode(Old), NewCid = Cid::OfNode(New);
-        QVERIFY(OldCid.rfind("bafkreiaj2f2uth", 0) == 0);   // the published bytes
+        const std::string NewCid = Cid::OfNode(New);
+        //the old one sorts FIRST by CID (the teeth: a pick by CID alone would take it)
+        for (int K = 0; Cid::OfNode(Old) >= NewCid && K < 256; ++K) Old["LAYERS"][0]["COMMENT"] = "an earlier build " + std::to_string(K);
+        const std::string OldCid = Cid::OfNode(Old);
         QVERIFY(OldCid < NewCid);
         QVERIFY(BuiltinRunners::IsBuiltin(NewCid) && !BuiltinRunners::IsBuiltin(OldCid));
 
@@ -759,8 +745,6 @@ private slots:
         const json cfg = json{{"Settings", json::object()}};
         ContainerParams cp("/tmp/vg_bundle");
         QCOMPARE(LaunchResolver::ResolveChainIds(idx, launch, cp, cfg)[0], std::string("zzz_snes"));
-        idx.Nodes["aaa_multi"].Recommended = {"game"};
-        QCOMPARE(LaunchResolver::ResolveChainIds(idx, launch, cp, cfg)[0], std::string("aaa_multi"));   // recommended first
     }
 
     // DerivePersistence (unified Persist primitive): pristine by default, KEEP target classification by shape, and a
@@ -865,7 +849,7 @@ private slots:
             return std::any_of(cp.KeepDirs.begin(), cp.KeepDirs.end(), [&](const PersistTarget &d){ return d.Path == p; }); };
         NodeIndex idx;
         idx.Nodes["proton_keepset"] = contentNode("proton_keepset", json::array({
-            json{{"KEEP", {{"FILES/pfx/drive_c/users", true}, {"REG/HKCU/Software/Wine", true}}}} }));
+            json{{"KEEP", {{"FILES/pfx/drive_c/users", true}, {"REG/HKCU\\Software\\Wine", true}}}} }));
         idx.Nodes["wine"] = runnerNode("wine", {"win32"}, {"proton_keepset"});
         idx.Nodes["game"] = launchNode("game", "win32", {});
         finish(idx);
@@ -1030,8 +1014,7 @@ private slots:
         idx.Nodes["protonA"] = chainRunner("protonA", {"win32"}, kMachine);
         idx.Nodes["protonB"] = chainRunner("protonB", {"win32"}, kMachine);
         Node launch = standalone(parse(json{ {"CID", "game"}, {"LABEL", "game"}, {"VARIANT", "game"}, {"LAYERS", json::array({
-            json{{"EXEC", json::array({ json{{"LABEL", "Native"}, {"HOST", kMachine}, {"EXE", "game"}, {"TILE", {{"UID", "game"}}}},
-                                        json{{"LABEL", "Windows"}, {"HOST", "win32"}, {"EXE", "game.exe"}} })}} })} }, "/tmp/vg_bundle"));
+            json{{"EXEC", json::object({ {"Native", {{"HOST", kMachine}, {"EXE", "game"}, {"TILE", {{"UID", "game"}}}}}, {"Windows", {{"HOST", "win32"}, {"EXE", "game.exe"}}} })}} })} }, "/tmp/vg_bundle"));
         ContainerParams cp("/tmp/vg_bundle");
         const json cfg = json{{"Settings", json::object()}};
         auto def = LaunchResolver::ResolveChainIds(idx, launch, cp, cfg);
@@ -1082,7 +1065,7 @@ private slots:
         idx.Nodes["game"] = launchNode("game", kMachine, {});
         idx.Nodes["loader"] = parse(json{ {"CID", "loader"}, {"LABEL", "loader"}, {"LAYERS", json::array({
             json{{"INTO", json::array({"game"})}}, json{{"DIR", "loader"}},
-            json{{"EXEC", json::array({ json{{"LABEL", "Loader"}, {"HOST", "win32"}, {"EXE", "loader.exe"}} })}} })} }, "/tmp/vg_bundle");
+            json{{"EXEC", json::object({ {"Loader", {{"HOST", "win32"}, {"EXE", "loader.exe"}}} })}} })} }, "/tmp/vg_bundle");
         finish(idx);
         ContainerParams cp("/tmp/vg_bundle");
         cp.NodeIdx = &idx; cp.LaunchNodeId = "game";
@@ -1163,10 +1146,10 @@ private slots:
         idx.Nodes["game"] = launchNode("game", kMachine, {});
         idx.Nodes["loader"] = parse(json{ {"CID", "loader"}, {"LABEL", "loader"}, {"LAYERS", json::array({
             json{{"INTO", json::array({"game"})}},
-            json{{"EXEC", json::array({ json{{"LABEL", "Loader"}, {"HOST", "win32"}, {"EXE", "loader.exe"}} })}} })} }, "/tmp/vg_bundle");
+            json{{"EXEC", json::object({ {"Loader", {{"HOST", "win32"}, {"EXE", "loader.exe"}}} })}} })} }, "/tmp/vg_bundle");
         idx.Nodes["elsewhere"] = parse(json{ {"CID", "elsewhere"}, {"LABEL", "elsewhere"}, {"LAYERS", json::array({
             json{{"INTO", json::array({"other_game"})}},
-            json{{"EXEC", json::array({ json{{"LABEL", "Loader"}, {"HOST", "win32"}, {"EXE", "x.exe"}} })}} })} }, "/tmp/vg_bundle");
+            json{{"EXEC", json::object({ {"Loader", {{"HOST", "win32"}, {"EXE", "x.exe"}}} })}} })} }, "/tmp/vg_bundle");
         finish(idx);
         ContainerParams cp("/tmp/vg_bundle");
         cp.NodeIdx = &idx; cp.LaunchNodeId = "game"; cp.Grafts = std::vector<std::string>{};   // unticked
@@ -1187,10 +1170,10 @@ private slots:
         idx.Nodes[Base] = contentNode(Base, json::array({ json{{"DIR", "base"}} }));
         idx.Nodes["game"] = launchNode("game", kMachine, {Base});
         idx.Nodes["needs"] = launchNode("needs", kMachine, {}, json::object(), json::array({ json{{"INTO", json::array({"nowhere"})}} }));
-        idx.Nodes["conflict"] = parse(json{ {"CID", "conflict"}, {"LABEL", "conflict"}, {"RECOMMENDED", json::array({"game"})},
-            {"LAYERS", json::array({ json{{"INTO", json::array({"game"})}, {"WHEN", Base + " == false"}}, json{{"DIR", "c"}} })} }, "/tmp/vg_bundle");
-        idx.Nodes["fine"] = parse(json{ {"CID", "fine"}, {"LABEL", "fine"}, {"RECOMMENDED", json::array({"game"})},
-            {"LAYERS", json::array({ json{{"INTO", json::array({"game"})}}, json{{"DIR", "f"}} })} }, "/tmp/vg_bundle");
+        idx.Nodes["conflict"] = parse(json{ {"CID", "conflict"}, {"LABEL", "conflict"},
+            {"LAYERS", json::array({ json{{"INTO", json::array({"game"})}, {"WHEN", Base + " == false"}, {"RECOMMENDED", true}}, json{{"DIR", "c"}} })} }, "/tmp/vg_bundle");
+        idx.Nodes["fine"] = parse(json{ {"CID", "fine"}, {"LABEL", "fine"},
+            {"LAYERS", json::array({ json{{"INTO", json::array({"game"})}, {"RECOMMENDED", true}}, json{{"DIR", "f"}} })} }, "/tmp/vg_bundle");
         finish(idx);
         const json cfg = json{{"Settings", json::object()}};
         {
@@ -1254,8 +1237,8 @@ private slots:
         const auto part = [](const std::string &Id, const json &Into, const std::string &When, bool Rec) {
             json In = json{{"INTO", Into}};
             if (!When.empty()) In["WHEN"] = When;
+            if (Rec) In["RECOMMENDED"] = true;
             json J{ {"CID", Id}, {"LABEL", Id}, {"LAYERS", json::array({ In, json{{"DIR", Id}} })} };
-            if (Rec) J["RECOMMENDED"] = json::array({"game"});
             return parse(J, "/tmp/vg_bundle");
         };
         idx.Nodes[X] = part(X, json::array({"other"}), "", false);
@@ -1583,13 +1566,13 @@ private slots:
             return json{ {"LABEL", Title}, {"HOST", kMachine}, {"EXE", Exe}, {"TILE", {{"UID", Uid}, {"TITLE", Title}}} };
         };
         idx.Nodes["c"] = parse(json{ {"CID", "c"}, {"LABEL", "c"}, {"VARIANT", "1.0c"},
-            {"LAYERS", json::array({ json{{"DIR", "c"}}, json{{"EXEC", json::array({ entry("tc.exe", "13006", "The Conquerors v1.0c") })}} })} }, "/tmp/vg_bundle");
+            {"LAYERS", json::array({ json{{"DIR", "c"}}, json{{"EXEC", NodeFixture::ExecOf({ entry("tc.exe", "13006", "The Conquerors v1.0c") })}} })} }, "/tmp/vg_bundle");
         idx.Nodes["e"] = parse(json{ {"CID", "e"}, {"LABEL", "e"}, {"VARIANT", "1.0e"},
             {"LAYERS", json::array({ json{{"INTO", json::array({"c"})}}, json{{"DIR", "e"}},
-                json{{"EXEC", json::array({ entry("tc.exe", "13006", "The Conquerors v1.0e") })}} })} }, "/tmp/vg_bundle");
+                json{{"EXEC", NodeFixture::ExecOf({ entry("tc.exe", "13006", "The Conquerors v1.0e") })}} })} }, "/tmp/vg_bundle");
         idx.Nodes["fe"] = parse(json{ {"CID", "fe"}, {"LABEL", "fe"}, {"VARIANT", "2.2"},
             {"LAYERS", json::array({ json{{"INTO", json::array({"e"})}}, json{{"DIR", "fe"}},
-                json{{"EXEC", json::array({ entry("fe.exe", "749000001", "Forgotten Empires v2.2") })}} })} }, "/tmp/vg_bundle");
+                json{{"EXEC", NodeFixture::ExecOf({ entry("fe.exe", "749000001", "Forgotten Empires v2.2") })}} })} }, "/tmp/vg_bundle");
         finish(idx);
         const json cfg = json{{"Settings", json::object()}};
         {
@@ -1613,13 +1596,70 @@ private slots:
     // --with adds parts to the selection the launch would use: a fresh instance keeps its RECOMMENDED parts and gains
     // the named one; a part not offered here is reported dropped, never applied. Teeth: replace the selection with the
     // --with list (the recommended part is lost); drop the dropped list.
+    // A source port's engine as a graft (09 §9.4, 10 §10.6): a part INTO the release whose data it reads, with its own
+    // entry on the release's card and a custom-platform runner. It is a ROW of that card — never an add-on offered on
+    // the release's row — and launching it runs ITS entry over the release. Teeth: list graft rows as add-ons; launch the
+    // release's entry for the engine row.
+    void a_source_port_engine_is_a_graft_row_not_an_add_on()
+    {
+        NodeIndex idx;
+        idx.Nodes["game"] = launchNode("game", kMachine, {});
+        idx.Nodes["engine"] = parse(json{ {"CID", "engine"}, {"LABEL", "engine"}, {"VARIANT", "Open-source engine"},
+            {"LAYERS", json::array({ json{{"INTO", json::array({"game"})}},
+                json{{"EXEC", json{{"Engine", {{"HOST", kMachine}, {"EXE", "engine.bin"}, {"TILE", {{"UID", "game"}}}}}}}} })} }, "/tmp/vg_bundle");
+        idx.Nodes["mod"] = parse(json{ {"CID", "mod"}, {"LABEL", "mod"},
+            {"LAYERS", json::array({ json{{"INTO", json::array({"game"})}, {"RECOMMENDED", true}}, json{{"DIR", "mod"}} })} }, "/tmp/vg_bundle");
+        finish(idx);
+        std::vector<std::string> Pre;
+        QCOMPARE(Shelf::OfferedGrafts(idx, "game", &Pre), (std::vector<std::string>{"mod"}));   // the engine is a row, not a box to tick
+        QCOMPARE(Pre, (std::vector<std::string>{"mod"}));
+        ContainerParams cp("/tmp/vg_bundle");
+        cp.NodeIdx = &idx; cp.LaunchNodeId = "engine";
+        QVERIFY(LaunchResolver::InitializeFromNode(cp, json{{"Settings", json::object()}}));
+        QCOMPARE(cp.ComposedExec.value("LABEL", std::string()), std::string("Engine"));        // its own entry runs
+        const std::set<std::string> Applied(cp.AppliedGrafts.begin(), cp.AppliedGrafts.end());
+        QCOMPARE(Applied, (std::set<std::string>{"engine", "mod"}));                              // over the release, its mods pre-ticked
+    }
+
+    // The entry a row's launch runs (09 §9.2): its own RECOMMENDED entry on its face, else its own on its face, else
+    // an inherited RECOMMENDED one on its face, else any on its face, else the first. Teeth: drop any one step (A runs
+    // for B, X for Y, the off-face entry for the on-face one).
+    void a_launch_runs_the_rows_entry_in_the_default_order()
+    {
+        const auto E = [](const char *Exe, const char *Uid, bool Rec) {
+            json J{ {"HOST", kMachine}, {"EXE", Exe} };
+            if (*Uid) J["TILE"] = json{{"UID", Uid}};
+            if (Rec) J["RECOMMENDED"] = true;
+            return J;
+        };
+        NodeIndex idx;
+        idx.Nodes["two"] = parse(json{ {"CID", "two"}, {"LABEL", "two"}, {"VARIANT", "two"}, {"LAYERS", json::array({ json{{"DIR", "g"}},
+            json{{"EXEC", json{{"A", E("a.exe", "two", false)}, {"B", E("b.exe", "two", true)}}}} })} }, "/tmp/vg_bundle");
+        idx.Nodes["b3"] = parse(json{ {"CID", "b3"}, {"LABEL", "b3"}, {"LAYERS", json::array({ json{{"DIR", "g"}},
+            json{{"EXEC", json{{"X", E("x.exe", "inh", false)}, {"Y", E("y.exe", "inh", true)}}}} })} }, "/tmp/vg_bundle");
+        idx.Nodes["inh"] = parse(json{ {"CID", "inh"}, {"LABEL", "inh"}, {"VARIANT", "inh"}, {"LAYERS", json::array({ json{{"NODE", "b3"}} })} }, "/tmp/vg_bundle");
+        idx.Nodes["b4"] = parse(json{ {"CID", "b4"}, {"LABEL", "b4"}, {"LAYERS", json::array({ json{{"DIR", "g"}},
+            json{{"EXEC", json{{"Off", E("o.exe", "", false)}, {"On", E("n.exe", "face", false)}}}} })} }, "/tmp/vg_bundle");
+        idx.Nodes["face"] = parse(json{ {"CID", "face"}, {"LABEL", "face"}, {"VARIANT", "face"}, {"LAYERS", json::array({ json{{"NODE", "b4"}} })} }, "/tmp/vg_bundle");
+        finish(idx);
+        const auto runs = [&](const char *Id) {
+            ContainerParams cp("/tmp/vg_bundle");
+            cp.NodeIdx = &idx; cp.LaunchNodeId = Id;
+            if (!LaunchResolver::InitializeFromNode(cp, json{{"Settings", json::object()}})) return std::string("(failed)");
+            return cp.ComposedExec.value("LABEL", std::string());
+        };
+        QCOMPARE(runs("two"), std::string("B"));
+        QCOMPARE(runs("inh"), std::string("Y"));
+        QCOMPARE(runs("face"), std::string("On"));
+    }
+
     void with_adds_parts_to_the_selection()
     {
         NodeIndex idx;
         idx.Nodes["game"] = launchNode("game", kMachine, {});
         const auto part = [](const char *Id, const char *Into, bool Rec) {
             json J{ {"CID", Id}, {"LABEL", Id}, {"LAYERS", json::array({ json{{"INTO", json::array({Into})}}, json{{"DIR", Id}} })} };
-            if (Rec) J["RECOMMENDED"] = json::array({"game"});
+            if (Rec) J["LAYERS"][0]["RECOMMENDED"] = true;
             return parse(J, "/tmp/vg_bundle");
         };
         idx.Nodes["rec"] = part("rec", "game", true);
@@ -1708,17 +1748,19 @@ private slots:
     }
 
     // `--tile <UID> [--variant <name>]` launches what the shelf shows: the named variant under that tile, else the
-    // tile's default row (the variant RECOMMENDED under it). A variant presenting two tiles is a row under each.
+    // tile's default row (the variant whose entry on it is RECOMMENDED). A variant presenting two tiles is a row under each.
     void the_row_under_a_tile_is_picked_by_variant_name_or_recommendation()
     {
         NodeIndex idx;
         const auto variant = [](const char *Id, const char *Name, json Faces, json Rec) {
-            json Entries = json::array();
+            json Entries = json::object();
             for (const auto &U : Faces)
-                Entries.push_back(json{ {"LABEL", "Play " + U.get<std::string>()}, {"HOST", kMachine}, {"EXE", "g.exe"},
-                                        {"TILE", {{"UID", U}, {"TITLE", "T" + U.get<std::string>()}}} });
+            {
+                json E{ {"HOST", kMachine}, {"EXE", "g.exe"}, {"TILE", {{"UID", U}, {"TITLE", "T" + U.get<std::string>()}}} };
+                for (const auto &R : Rec) if (R == U) E["RECOMMENDED"] = true;       // the card's recommended row
+                Entries["Play " + U.get<std::string>()] = std::move(E);
+            }
             json N = { {"CID", Id}, {"LABEL", Id}, {"VARIANT", Name}, {"LAYERS", json::array({ json{{"EXEC", Entries}} })} };
-            if (!Rec.empty()) N["RECOMMENDED"] = Rec;
             return parse(N, "/tmp/vg_bundle");
         };
         idx.Nodes["old"] = variant("old", "1.00", json::array({"802"}), json::array());
@@ -1750,15 +1792,19 @@ private slots:
         // v1 presents both RoC (802) and TFT (803, child of 802); v2 presents only RoC; z and s are unrelated games.
         // Titles disagree with UID order, and s's title falls BETWEEN RoC's and TFT's: a UID sort, or a flat title sort
         // that ignores PARENTUID, both get the order wrong.
-        idx.Nodes["v1"] = parse(json{ {"CID", "v1"}, {"LABEL", "v1"}, {"VARIANT", "1.0"}, {"RECOMMENDED", json::array({"803"})},
-            {"LAYERS", json::array({ json{{"DIR", "g"}}, json{{"EXEC", json::array({ entry("Reign of Chaos", "802", nullptr, "roc.exe", "Warcraft III: Reign of Chaos"),
-                                                                                entry("The Frozen Throne", "803", "802", "tft.exe", "Warcraft III: The Frozen Throne") })}} })} }, "/tmp/vg_bundle");
-        idx.Nodes["v2"] = parse(json{ {"CID", "v2"}, {"LABEL", "v2"}, {"VARIANT", "2.0"}, {"RECOMMENDED", json::array({"802"})},
-            {"LAYERS", json::array({ json{{"NODE", "v1"}}, json{{"EXEC", json::array({ json{{"LABEL", "Reign of Chaos"}, {"EXE", "roc2.exe"}} })}} })} }, "/tmp/vg_bundle");
+        json Tft = entry("The Frozen Throne", "803", "802", "tft.exe", "Warcraft III: The Frozen Throne");
+        Tft["RECOMMENDED"] = true;
+        idx.Nodes["v1"] = parse(json{ {"CID", "v1"}, {"LABEL", "v1"}, {"VARIANT", "1.0"},
+            {"LAYERS", json::array({ json{{"DIR", "g"}}, json{{"EXEC", NodeFixture::ExecOf({ entry("Reign of Chaos", "802", nullptr, "roc.exe", "Warcraft III: Reign of Chaos"), Tft })}} })} }, "/tmp/vg_bundle");
+        //v2's own RoC entry: whole (an entry write replaces it), the recommended row of 802.
+        json Roc2 = entry("Reign of Chaos", "802", nullptr, "roc2.exe", "Warcraft III: Reign of Chaos");
+        Roc2["RECOMMENDED"] = true;
+        idx.Nodes["v2"] = parse(json{ {"CID", "v2"}, {"LABEL", "v2"}, {"VARIANT", "2.0"},
+            {"LAYERS", json::array({ json{{"NODE", "v1"}}, json{{"EXEC", NodeFixture::ExecOf({ Roc2 })}} })} }, "/tmp/vg_bundle");
         idx.Nodes["z"] = parse(json{ {"CID", "z"}, {"LABEL", "z"}, {"VARIANT", "1"},
-            {"LAYERS", json::array({ json{{"DIR", "z"}}, json{{"EXEC", json::array({ entry("Play", "9", nullptr, "z.exe", "Age of Empires II") })}} })} }, "/tmp/vg_bundle");
+            {"LAYERS", json::array({ json{{"DIR", "z"}}, json{{"EXEC", NodeFixture::ExecOf({ entry("Play", "9", nullptr, "z.exe", "Age of Empires II") })}} })} }, "/tmp/vg_bundle");
         idx.Nodes["s"] = parse(json{ {"CID", "s"}, {"LABEL", "s"}, {"VARIANT", "1"},
-            {"LAYERS", json::array({ json{{"DIR", "s"}}, json{{"EXEC", json::array({ entry("Play", "850", nullptr, "s.exe", "Warcraft III: Scenario Pack") })}} })} }, "/tmp/vg_bundle");
+            {"LAYERS", json::array({ json{{"DIR", "s"}}, json{{"EXEC", NodeFixture::ExecOf({ entry("Play", "850", nullptr, "s.exe", "Warcraft III: Scenario Pack") })}} })} }, "/tmp/vg_bundle");
         finish(idx);
 
         std::vector<std::string> Order;
@@ -1802,14 +1848,14 @@ private slots:
             return json{ {"LABEL", "Play"}, {"HOST", kMachine}, {"EXE", Exe}, {"TILE", {{"UID", Uid}, {"TITLE", Title}}} };
         };
         idx.Nodes["tc"] = parse(json{ {"CID", "tc"}, {"LABEL", "tc"}, {"VARIANT", "1.0e"},
-            {"LAYERS", json::array({ json{{"DIR", "tc"}}, json{{"EXEC", json::array({ entry("tc.exe", "13006", "The Conquerors") })}} })} }, "/tmp/vg_bundle");
+            {"LAYERS", json::array({ json{{"DIR", "tc"}}, json{{"EXEC", NodeFixture::ExecOf({ entry("tc.exe", "13006", "The Conquerors") })}} })} }, "/tmp/vg_bundle");
         idx.Nodes["tc2"] = parse(json{ {"CID", "tc2"}, {"LABEL", "tc2"}, {"VARIANT", "1.0f"},
             {"LAYERS", json::array({ json{{"NODE", "tc"}}, json{{"DIR", "tc2"}} })} }, "/tmp/vg_bundle");       // contains tc
         idx.Nodes["aok"] = parse(json{ {"CID", "aok"}, {"LABEL", "aok"}, {"VARIANT", "2.0a"},
-            {"LAYERS", json::array({ json{{"DIR", "aok"}}, json{{"EXEC", json::array({ entry("aok.exe", "749", "The Age of Kings") })}} })} }, "/tmp/vg_bundle");
+            {"LAYERS", json::array({ json{{"DIR", "aok"}}, json{{"EXEC", NodeFixture::ExecOf({ entry("aok.exe", "749", "The Age of Kings") })}} })} }, "/tmp/vg_bundle");
         idx.Nodes["fe"] = parse(json{ {"CID", "fe"}, {"LABEL", "fe"},
             {"LAYERS", json::array({ json{{"INTO", json::array({"tc"})}}, json{{"DIR", "fe"}},
-                json{{"EXEC", json::array({ entry("fe.exe", "749000001", "Forgotten Empires") })}} })} }, "/tmp/vg_bundle");
+                json{{"EXEC", NodeFixture::ExecOf({ entry("fe.exe", "749000001", "Forgotten Empires") })}} })} }, "/tmp/vg_bundle");
         finish(idx);
 
         const Shelf::Tile *Card = nullptr;
@@ -1851,13 +1897,13 @@ private slots:
             return json{ {"LABEL", "Play"}, {"HOST", kMachine}, {"EXE", Exe}, {"TILE", {{"UID", Uid}, {"TITLE", Title}}} };
         };
         idx.Nodes["tc"] = parse(json{ {"CID", "tc"}, {"LABEL", "tc"}, {"VARIANT", "1.0e"},
-            {"LAYERS", json::array({ json{{"DIR", "tc"}}, json{{"EXEC", json::array({ entry("tc.exe", "13006", "The Conquerors") })}} })} }, "/tmp/vg_bundle");
+            {"LAYERS", json::array({ json{{"DIR", "tc"}}, json{{"EXEC", NodeFixture::ExecOf({ entry("tc.exe", "13006", "The Conquerors") })}} })} }, "/tmp/vg_bundle");
         idx.Nodes["aok"] = parse(json{ {"CID", "aok"}, {"LABEL", "aok"}, {"VARIANT", "2.0a"},
-            {"LAYERS", json::array({ json{{"DIR", "aok"}}, json{{"EXEC", json::array({ entry("aok.exe", "749", "The Age of Kings") })}} })} }, "/tmp/vg_bundle");
+            {"LAYERS", json::array({ json{{"DIR", "aok"}}, json{{"EXEC", NodeFixture::ExecOf({ entry("aok.exe", "749", "The Age of Kings") })}} })} }, "/tmp/vg_bundle");
         const auto fe = [&](const char *Id, const char *Ver, const char *Exe) {
             return parse(json{ {"CID", Id}, {"LABEL", Id}, {"VARIANT", Ver},
                 {"LAYERS", json::array({ json{{"INTO", json::array({"tc"})}}, json{{"DIR", Id}},
-                    json{{"EXEC", json::array({ entry(Exe, "749000001", "Forgotten Empires") })}} })} }, "/tmp/vg_bundle");
+                    json{{"EXEC", NodeFixture::ExecOf({ entry(Exe, "749000001", "Forgotten Empires") })}} })} }, "/tmp/vg_bundle");
         };
         idx.Nodes["fe22"] = fe("fe22", "2.2", "fe22.exe");
         idx.Nodes["fe25"] = fe("fe25", "2.5", "fe25.exe");
@@ -1890,10 +1936,10 @@ private slots:
         QVERIFY(!std::get<0>(launch("fe25", "749000001", "aok")));                     // not a base it applies onto
     }
 
-    // A fresh instance launching a graft version gets the tile's RECOMMENDED add-ons with it (the GUI pre-ticks them; the
-    // CLI and the audit must launch the same game), but never a sibling version: RECOMMENDED on a version picks the
-    // default row, it is not an add-on. Teeth: replace the fresh list with the forced graft alone (no add-on); take the
-    // whole RECOMMENDED list (the sibling version applies too).
+    // A fresh instance launching a graft version gets the recommended add-ons with it (the GUI pre-ticks them; the CLI
+    // and the audit must launch the same game), but never a sibling version: a graft with an EXEC is a row, never
+    // pre-ticked, and its entry's RECOMMENDED picks the default row. Teeth: replace the fresh list with the forced graft
+    // alone (no add-on); tick grafts with an EXEC too (the sibling version applies).
     void a_fresh_graft_version_launch_keeps_recommended_add_ons_only()
     {
         NodeIndex idx;
@@ -1901,16 +1947,18 @@ private slots:
             return json{ {"LABEL", "Play"}, {"HOST", kMachine}, {"EXE", Exe}, {"TILE", {{"UID", Uid}, {"TITLE", Title}}} };
         };
         idx.Nodes["tc"] = parse(json{ {"CID", "tc"}, {"LABEL", "tc"}, {"VARIANT", "1.0e"},
-            {"LAYERS", json::array({ json{{"DIR", "tc"}}, json{{"EXEC", json::array({ entry("tc.exe", "13006", "The Conquerors") })}} })} }, "/tmp/vg_bundle");
-        const auto fe = [&](const char *Id, const char *Ver, const char *Exe) {
-            return parse(json{ {"CID", Id}, {"LABEL", Id}, {"VARIANT", Ver}, {"RECOMMENDED", json::array({"749000001"})},
+            {"LAYERS", json::array({ json{{"DIR", "tc"}}, json{{"EXEC", NodeFixture::ExecOf({ entry("tc.exe", "13006", "The Conquerors") })}} })} }, "/tmp/vg_bundle");
+        const auto fe = [&](const char *Id, const char *Ver, const char *Exe, bool Rec) {
+            json E = entry(Exe, "749000001", "Forgotten Empires");
+            if (Rec) E["RECOMMENDED"] = true;                    // the card's recommended row
+            return parse(json{ {"CID", Id}, {"LABEL", Id}, {"VARIANT", Ver},
                 {"LAYERS", json::array({ json{{"INTO", json::array({"tc"})}}, json{{"DIR", Id}},
-                    json{{"EXEC", json::array({ entry(Exe, "749000001", "Forgotten Empires") })}} })} }, "/tmp/vg_bundle");
+                    json{{"EXEC", NodeFixture::ExecOf({ E })}} })} }, "/tmp/vg_bundle");
         };
-        idx.Nodes["fe22"] = fe("fe22", "2.2", "fe22.exe");
-        idx.Nodes["fe25"] = fe("fe25", "2.5", "fe25.exe");
-        idx.Nodes["up"] = parse(json{ {"CID", "up"}, {"LABEL", "up"}, {"RECOMMENDED", json::array({"749000001"})},
-            {"LAYERS", json::array({ json{{"INTO", json::array({"tc"})}}, json{{"DIR", "up"}} })} }, "/tmp/vg_bundle");
+        idx.Nodes["fe22"] = fe("fe22", "2.2", "fe22.exe", false);
+        idx.Nodes["fe25"] = fe("fe25", "2.5", "fe25.exe", true);
+        idx.Nodes["up"] = parse(json{ {"CID", "up"}, {"LABEL", "up"},
+            {"LAYERS", json::array({ json{{"INTO", json::array({"tc"})}, {"RECOMMENDED", true}}, json{{"DIR", "up"}} })} }, "/tmp/vg_bundle");
         finish(idx);
 
         ContainerParams cp("/tmp/vg_bundle");
@@ -1936,10 +1984,10 @@ private slots:
         };
         NodeIndex idx;
         idx.Nodes["tc"] = parse(json{ {"CID", "tc"}, {"LABEL", "tc"}, {"VARIANT", "1.0e"},
-            {"LAYERS", json::array({ zip("tc.zip", "QmTc"), json{{"EXEC", json::array({ entry("tc.exe", "13006", "The Conquerors") })}} })} }, B);
+            {"LAYERS", json::array({ zip("tc.zip", "QmTc"), json{{"EXEC", NodeFixture::ExecOf({ entry("tc.exe", "13006", "The Conquerors") })}} })} }, B);
         idx.Nodes["fe"] = parse(json{ {"CID", "fe"}, {"LABEL", "fe"}, {"VARIANT", "2.2"},
             {"LAYERS", json::array({ json{{"INTO", json::array({"tc"})}}, zip("fe.zip", "QmFe"),
-                json{{"EXEC", json::array({ entry("fe.exe", "749000001", "Forgotten Empires") })}} })} }, B);
+                json{{"EXEC", NodeFixture::ExecOf({ entry("fe.exe", "749000001", "Forgotten Empires") })}} })} }, B);
         finish(idx);
 
         const std::vector<std::string> Cids = PackageCatalog::NodeContentCids(idx, "fe");
@@ -2016,20 +2064,6 @@ private slots:
         idx.Nodes["nativerun"] = chainRunner("nativerun", {kMachine}, kMachine, "");
         ids = LaunchResolver::ResolveChainIds(idx, launch, cp, json{{"Settings", json::object()}});
         QCOMPARE(ids, std::vector<std::string>({"bridge", "nativerun"}));
-    }
-
-    // BFS tie-break: a bridge runner RECOMMENDED for this tile beats the alphabetically-first one.
-    void chain_bridge_prefers_recommended()
-    {
-        NodeIndex idx;
-        idx.Nodes["aaa_proton"] = chainRunner("aaa_proton", {"win32"}, kMachine);
-        Node rec = chainRunner("zzz_proton", {"win32"}, kMachine); rec.Recommended = {"game"};
-        idx.Nodes["zzz_proton"] = rec;
-        idx.Nodes["nativerun"]  = chainRunner("nativerun", {kMachine}, kMachine, "");
-        Node launch = launchNode("game", "win32", {});
-        ContainerParams cp("/tmp/vg_bundle");
-        auto ids = LaunchResolver::ResolveChainIds(idx, launch, cp, json{{"Settings", json::object()}});
-        QCOMPARE(ids[0], std::string("zzz_proton"));
     }
 
     // A persisted RUNNER_CHAIN pin is honored over the default bridge (terminal appended if the pin omits it).
@@ -2366,7 +2400,7 @@ private slots:
     {
         nlohmann::ordered_json Exec;
         for (const auto & B : BuiltinRunners::All())
-            if (B.Folder == "windows-native") Exec = B.Node["LAYERS"][0]["EXEC"][0];
+            if (B.Folder == "windows-native") Exec = B.Node["LAYERS"][0]["EXEC"]["windows-native_exec"];
         QVERIFY(Exec.contains("GUEST_ROOTS"));
         // Its box is its prefix (BoxPrefix): C: is laid out at drive_c, the profile and system anchors are the machine's
         // real folders (Platform::HostFolders, as %Host…% variables: given here, Linux has none).
@@ -2407,9 +2441,9 @@ private slots:
     {
         NodeIndex idx;
         idx.Nodes["soh"] = standalone(parse(json{ {"CID", "soh"}, {"LABEL", "soh"}, {"LAYERS", json::array({
-            json{{"EXEC", json::array({ json{{"LABEL", "soh"}, {"HOST", ManifestModel::MachinePlatform()}, {"GUEST", {"n64"}},
+            json{{"EXEC", json::object({ {"soh", {{"HOST", ManifestModel::MachinePlatform()}, {"GUEST", {"n64"}},
                                              {"EXE", "%RunnerMount%/soh.elf"}, {"CONTENT_ROOT", "n64/%PackageUID%"},
-                                             {"GUEST_ROOTS", {{"%GameDir%", "%RuntimePath%/n64/%PackageUID%"}}}} })}} })} },
+                                             {"GUEST_ROOTS", {{"%GameDir%", "%RuntimePath%/n64/%PackageUID%"}}}}} })}} })} },
             "/tmp/vg_runner"));
         idx.Nodes["game"] = launchNode("game", "n64", {},
             json{{"EXE", "%GameDir%/oot.o2r"}, {"ARGS", json::array({"--home=%GameDir%"})}},
@@ -2513,9 +2547,9 @@ private slots:
         const auto launch = [](const json &Roots, const json &Layers) {
             NodeIndex idx;
             idx.Nodes["emu"] = standalone(parse(json{ {"CID", "emu"}, {"LABEL", "emu"}, {"LAYERS", json::array({
-                json{{"EXEC", json::array({ json{{"LABEL", "emu"}, {"HOST", ManifestModel::MachinePlatform()}, {"GUEST", {"n64"}},
+                json{{"EXEC", json::object({ {"emu", {{"HOST", ManifestModel::MachinePlatform()}, {"GUEST", {"n64"}},
                                                  {"EXE", "%RunnerMount%/emu"}, {"CONTENT_ROOT", "n64/%PackageUID%"},
-                                                 {"GUEST_ROOTS", Roots}} })}} })} }, "/tmp/vg_runner"));
+                                                 {"GUEST_ROOTS", Roots}}} })}} })} }, "/tmp/vg_runner"));
             idx.Nodes["game"] = launchNode("game", "n64", {}, json::object(), Layers);
             finish(idx);
             ContainerParams cp("/tmp/vg_bundle");
@@ -2537,7 +2571,7 @@ private slots:
             nlohmann::ordered_json E = { {"LABEL", "run"}, {"HOST", "linux64"}, {"GUEST", nlohmann::ordered_json::array({"custom"})},
                                          {"EXE", "%RunnerMount%/x"}, {"GUEST_ROOTS", Roots} };
             if (!Drives.is_null()) E["DRIVES"] = Drives;
-            return NodeLower::CheckNode({ {"LABEL", "r"}, {"LAYERS", nlohmann::ordered_json::array({ { {"EXEC", nlohmann::ordered_json::array({E})} } })} }, "r");
+            return NodeLower::CheckNode({ {"LABEL", "r"}, {"LAYERS", nlohmann::ordered_json::array({ { {"EXEC", NodeFixture::ExecOf({E})} } })} }, "r");
         };
         QVERIFY2(check({ {"%GameDir%", "%RuntimePath%/n64/%PackageUID%"} }, nullptr).empty(), "a runtime guest root was refused");
         QVERIFY(check({ {"%GameDir%", "C:\\%PackageUID%"} }, { {"C:", "pfx/drive_c"} }).empty());
@@ -2593,16 +2627,16 @@ private slots:
         for (const nlohmann::ordered_json &Roots : { nlohmann::ordered_json{ {"%A%", "%A%\\x"} },
                                                      nlohmann::ordered_json{ {"%A%", "%B%\\a"}, {"%B%", "%A%\\b"} } })
         {
-            nlohmann::ordered_json L = { {"EXEC", nlohmann::ordered_json::array({ { {"LABEL", "run"}, {"HOST", "linux64"},
+            nlohmann::ordered_json L = { {"EXEC", nlohmann::ordered_json::object({ {"run", {{"HOST", "linux64"},
                 {"GUEST", nlohmann::ordered_json::array({"win32"})}, {"EXE", "wine"}, {"GUEST_ROOTS", Roots},
-                {"DRIVES", { {"C:", "pfx/drive_c"} }} } })} };
+                {"DRIVES", { {"C:", "pfx/drive_c"} }}}} })} };
             const std::string Why = NodeLower::CheckNode({ {"LABEL", "r"}, {"LAYERS", nlohmann::ordered_json::array({L})} }, "r");
             QVERIFY2(Why.find("in a circle") != std::string::npos, Why.c_str());
         }
-        nlohmann::ordered_json Ok = { {"EXEC", nlohmann::ordered_json::array({ { {"LABEL", "run"}, {"HOST", "linux64"},
+        nlohmann::ordered_json Ok = { {"EXEC", nlohmann::ordered_json::object({ {"run", {{"HOST", "linux64"},
             {"GUEST", nlohmann::ordered_json::array({"win32"})}, {"EXE", "wine"},
             {"GUEST_ROOTS", { {"%AppData%", "%UserProfile%\\AppData"}, {"%UserProfile%", "C:\\users\\me"} }},
-            {"DRIVES", { {"C:", "pfx/drive_c"} }} } })} };
+            {"DRIVES", { {"C:", "pfx/drive_c"} }}}} })} };
         const std::string OkWhy = NodeLower::CheckNode({ {"LABEL", "r"}, {"LAYERS", nlohmann::ordered_json::array({Ok})} }, "r");
         QVERIFY2(OkWhy.empty(), OkWhy.c_str());
     }

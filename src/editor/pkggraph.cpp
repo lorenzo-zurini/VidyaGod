@@ -357,8 +357,8 @@ json NewLayer(const std::string &T)
     if (T == "ENV")   return json::object({{"ENV", json::object()}});
     if (T == "VARS")  return json::object({{"VARS", json::object()}});
     if (T == "KEEP")  return json::object({{"KEEP", json::object()}});
-    if (T == "EXEC")  return json::object({{"EXEC", json::array({ json::object({{"LABEL","Play"},{"HOST","win32"},
-                                                                                {"EXE","%GameDir%/"},{"ARGS", json::array()}}) })}});
+    if (T == "EXEC")  return json::object({{"EXEC", json::object({{"Play", json::object({{"HOST","win32"},
+                                                                                {"EXE","%GameDir%/"},{"ARGS", json::array()}})}})}});
     return json();
 }
 
@@ -597,6 +597,7 @@ std::vector<Field> MakeFields(const std::string &Type)
     if (Type == "REG")
         return WithGate({
             {"ARCH", "Views", FieldKind::Arch,    "", {}, {}},
+            {"KEY",  "Under", FieldKind::Text,    "the key the paths are under (HKCU\\Software\\Vendor) - optional", {}, {}},
             {"REG",  "Keys",  FieldKind::RegTree, "", {}, {}},
         });
     if (Type == "DLL")
@@ -614,10 +615,11 @@ std::vector<Field> MakeFields(const std::string &Type)
     if (Type == "KEEP")
         return WithGate({{"KEEP", "Keep", FieldKind::KeepMap, "FILES/... or REG/... - owned by the user", {}, {}}});
     if (Type == "EXEC")
-        //Each entry folds per LABEL. No GUEST ⇒ a game entry (a TILE puts it on the shelf); GUEST ⇒ a runner.
+        //Entries keyed by label; a later write of a label replaces the entry whole. No GUEST ⇒ a game entry (a TILE
+        //puts it on the shelf); GUEST ⇒ a runner.
         return WithGate({
-            {"EXEC", "Entries", FieldKind::ObjArray, "", {}, {
-                {"LABEL",        "Label",        FieldKind::Text,       "entries fold by label (\"Play\" = the game)", {}, {}},
+            {"EXEC", "Entries", FieldKind::EntryMap, "", {}, {
+                {"RECOMMENDED",  "Recommended",  FieldKind::Check,      "the card's recommended row (one per card)", {}, {}},
                 {"HOST",         "Host",         FieldKind::Text,       "the platform this needs (win32 / linux64 / ...)", {}, {}},
                 {"GUEST",        "Guest",        FieldKind::StringList, "platforms this PROVIDES - set => runner", {}, {}},
                 {"EXE",          "Exe",          FieldKind::Text,       "the program, by anchor (%GameDir%/...)", {}, {}},
@@ -666,29 +668,18 @@ const std::vector<Field> &FieldsFor(const std::string &Type)
 
 // ---- registry rows ---------------------------------------------------------
 
-//Rows one registry TREE contributes, by exactly the rules FlattenTree walks: a row per non-object value, one
-//"create this key" row for a key with no children at all, then the subkeys. Pinned against the real flattening
-//by the_registry_row_count_matches_the_flattening, because two readings of the same tree that drift apart is
-//precisely how the estimate would start under-reserving again.
-size_t CountRegTree(const json &Tree)
+//Rows a REG layer's path map produces, by exactly the rules RegRowsOf walks: a row per value, one row for a key
+//with no values ({} creates it, null deletes it). Pinned against the real flattening by
+//the_registry_row_count_matches_the_flattening, because two readings that drift apart is precisely how the
+//estimate would start under-reserving again.
+size_t CountRegRows(const json &Reg)
 {
+    if (!Reg.is_object()) return 0;
     size_t Rows = 0;
-    bool AnyValue = false;
-    for (const auto &[K, V] : Tree.items())
-        if (!V.is_object()) { ++Rows; AnyValue = true; }
-    if (!AnyValue && Tree.empty()) ++Rows;
-    for (const auto &[K, V] : Tree.items())
-        if (V.is_object()) Rows += CountRegTree(V);
-    return Rows;
-}
-
-//One RegEdit ENTRY: its hives are the object-valued members, everything else on it is a scalar field.
-size_t CountRegRows(const json &Entry)
-{
-    if (!Entry.is_object()) return 0;
-    size_t Rows = 0;
-    for (const auto &[K, V] : Entry.items())
-        if (V.is_object()) Rows += CountRegTree(V);
+    for (const auto &[K, V] : Reg.items())
+        if (V.is_null()) ++Rows;                                   // the key deleted
+        else if (V.is_object()) Rows += V.empty() ? 1 : V.size();  // its values, or the key alone
+    //(a path mapping to anything else is malformed: no row, as RegRowsOf skips it)
     return Rows;
 }
 
@@ -807,12 +798,13 @@ std::string PayloadSummary(const json &L, const std::string &T, const LabelFn &N
         return BaseName(Where(L)) + " (" + std::to_string(V.is_array() ? V.size() : 0) + " ops)";
     if (T == "REG")
     {
-        //The deepest single path from the hive down: where the layer writes, e.g. HKLM\...\Age of Empires\2.0.
+        //Where the layer writes: its KEY, else the one path it holds, e.g. HKLM\...\Age of Empires\2.0.
+        std::string At = StrField(L, "KEY");
+        if (At.empty() && V.is_object() && V.size() == 1) At = V.begin().key();
+        if (At.empty()) return Join(Keys(), ", ");
         std::vector<std::string> Path;
-        const json *At = &V;
-        while (At->is_object() && At->size() == 1 && At->begin().value().is_object())
-        { Path.push_back(At->begin().key()); At = &At->begin().value(); }
-        if (Path.empty()) return Join(Keys(), ", ");
+        for (size_t I = 0, S = 0; I <= At.size(); ++I)
+            if (I == At.size() || At[I] == '\\') { if (I > S) Path.push_back(At.substr(S, I - S)); S = I + 1; }
         if (Path.size() > 3) Path.erase(Path.begin() + 1, Path.end() - 2), Path.insert(Path.begin() + 1, "..");
         return Join(Path, "\\", 8);
     }
@@ -825,7 +817,7 @@ std::string PayloadSummary(const json &L, const std::string &T, const LabelFn &N
     if (T == "EXEC")
     {
         std::vector<std::string> K;
-        if (V.is_array()) for (const json &E : V) K.push_back(StrField(E, "LABEL").empty() ? "?" : StrField(E, "LABEL"));
+        if (V.is_object()) for (const auto &[Lab, E] : V.items()) K.push_back(Lab);
         return "Run: " + Join(K, ", ");
     }
     if (T == "INTO")
@@ -935,6 +927,11 @@ std::string EntrySummary(const json &E)
     return Mode;
 }
 
+std::string EntryTitle(const std::string &Label, const json &E)
+{
+    return !Label.empty() ? Label : EntryTitle(E);
+}
+
 std::string EntryTitle(const json &E)
 {
     const std::string L = StrField(E, "LABEL");
@@ -995,7 +992,7 @@ std::string Describe(const json &Node, const LabelFn &Label)
             else if (T == "ENV") ++Envs;
             else if (T == "VARS") Vars += L["VARS"].is_object() ? (int)L["VARS"].size() : 1;
             else if (T == "KEEP" && L["KEEP"].is_object())
-                for (const auto &[Addr, V] : L["KEEP"].items())   // {"FILES/%Documents%/x": true, "REG/HKCU/…": {…}}
+                for (const auto &[Addr, V] : L["KEEP"].items())   // {"FILES/%Documents%/x": true, "REG/HKCU\\…": {…}}
                 {
                     if (V.is_boolean() && !V.get<bool>()) continue;   // KEEP false takes a key back: nothing kept
                     const bool Reg = Addr.rfind("REG/", 0) == 0;
@@ -1006,8 +1003,8 @@ std::string Describe(const json &Node, const LabelFn &Label)
                     if (K.empty()) continue;
                     Keeps.push_back(Reg ? "the registry key " + K : K.rfind("GameDir", 0) == 0 ? "the game folder" + K.substr(7) : K);
                 }
-            else if (T == "EXEC" && L["EXEC"].is_array())
-                for (const json &E : L["EXEC"])
+            else if (T == "EXEC" && L["EXEC"].is_object())
+                for (const auto &[Lab, E] : L["EXEC"].items())
                 {
                     if (!E.is_object()) continue;
                     const std::string Exe = StrField(E, "EXE"), Host = StrField(E, "HOST");
@@ -1091,8 +1088,8 @@ std::vector<FoldStep> FoldOrder(const std::string &Root, const std::function<con
         const std::string &T = S.Kind;
         std::string Title = StrField(L, "LABEL");
         if (Title.empty() && (T == "ZIP" || T == "DIR" || T == "FILE" || T == "DELTA" || T == "CODED")) Title = StrField(L, T.c_str());
-        if (Title.empty() && T == "EXEC" && L["EXEC"].is_array())
-            for (const json &E : L["EXEC"]) if (const std::string El = StrField(E, "LABEL"); !El.empty()) Title += (Title.empty() ? "" : ", ") + El;
+        if (Title.empty() && T == "EXEC" && L["EXEC"].is_object())
+            for (const auto &[El, E] : L["EXEC"].items()) Title += (Title.empty() ? "" : ", ") + El;
         if (Title.empty()) Title = TypeGist(T);
         Out.push_back({S.Depth, S.From, NL, S.At, T, Title, false, Take});
     }
@@ -1114,10 +1111,15 @@ ShelfCard CardFor(const std::string &Root, const std::vector<std::string> &Packa
         if (T.contains("COVER")) C.Cover = T["COVER"].is_string() ? T["COVER"].get<std::string>() : StrField(T["COVER"], "FILE");
         break;
     }
+    //A version is the card's recommended row when one of its own entries on this tile says RECOMMENDED.
     std::set<std::string> Recommended;
     for (const std::string &H : PackageNodes)
-        if (const json *N = Find ? Find(H) : nullptr; N && N->is_object() && N->contains("RECOMMENDED") && (*N)["RECOMMENDED"].is_array())
-            for (const json &U : (*N)["RECOMMENDED"]) if (U == json(C.Uid)) Recommended.insert(H);
+        if (const json *N = Find ? Find(H) : nullptr; N && N->is_object() && N->contains("LAYERS") && (*N)["LAYERS"].is_array())
+            for (const json &L : (*N)["LAYERS"])
+                if (L.is_object() && L.contains("EXEC") && L["EXEC"].is_object())
+                    for (const auto &[Lab, E] : L["EXEC"].items())
+                        if (E.is_object() && E.value("RECOMMENDED", false) == true && E.contains("TILE") && E["TILE"].is_object()
+                            && StrField(E["TILE"], "UID") == C.Uid) Recommended.insert(H);
     for (const std::string &H : PackageNodes)
         if (const json *N = Find ? Find(H) : nullptr; N && !StrField(*N, "VARIANT").empty())
             C.Versions.push_back({StrField(*N, "VARIANT"), Recommended.count(H) > 0});
@@ -1130,35 +1132,50 @@ json RecipeNode(Recipe R, const std::string &Title, const std::string &Uid, cons
     //own - the game that grafts it says where they land (TARGET on its NODE layer).
     if (R == Recipe::Library)
         return json{{"LABEL", Title}, {"LAYERS", json::array({ json{{"ZIP", ""}} })}};
-    json Play = {{"LABEL", "Play"}};
+    json Play = json::object();
     if (R == Recipe::Dos) Play["HOST"] = "dos";
     else if (R == Recipe::Console && !Platform.empty()) Play["HOST"] = Platform;
     Play["TILE"] = {{"UID", Uid}, {"TITLE", Title}};
     return json{{"LABEL", Title}, {"VARIANT", "Original"},
                 {"LAYERS", json::array({ NewLayer("ZIP"),
                                          json{{"COMMENT", "The game's tile (title, cover, details) on its Play entry: every version of it presents this."},
-                                              {"EXEC", json::array({Play})}} })}};
+                                              {"EXEC", json{{"Play", Play}}}} })}};
 }
 
-json VersionNode(const std::string &Base, const std::string &BaseLabel)
+json VersionNode(const std::string &Base, const std::string &BaseLabel, const json *BaseNode)
 {
-    return json{{"LABEL", BaseLabel.empty() ? std::string("Another version") : BaseLabel + " - another version"}, {"VARIANT", "New version"},
-                {"LAYERS", json::array({ json{{"NODE", Base}}, NewLayer("ZIP"),
-                                         json{{"COMMENT", "Its own program: the Play entry it contains, changed where this version differs."},
-                                              {"EXEC", json::array({ json{{"LABEL", "Play"}} })}} })}};
+    json N = {{"LABEL", BaseLabel.empty() ? std::string("Another version") : BaseLabel + " - another version"}, {"VARIANT", "New version"},
+              {"LAYERS", json::array({ json{{"NODE", Base}}, NewLayer("ZIP") })}};
+    //Its own row of the same card: the base's game entry, which an entry write replaces whole - so the copy is what it
+    //changes, its TILE cut to the UID (the card's facts stay the recommended row's) and not recommended itself.
+    if (BaseNode && BaseNode->is_object() && BaseNode->contains("LAYERS") && (*BaseNode)["LAYERS"].is_array())
+        for (const json &L : (*BaseNode)["LAYERS"])
+        {
+            if (!L.is_object() || !L.contains("EXEC") || !L["EXEC"].is_object()) continue;
+            for (const auto &[Lab, E] : L["EXEC"].items())
+            {
+                if (!E.is_object() || E.contains("GUEST")) continue;
+                json Row = E;
+                Row.erase("RECOMMENDED");
+                if (Row.contains("TILE") && Row["TILE"].is_object())
+                    Row["TILE"] = json{{"UID", StrField(Row["TILE"], "UID")}};
+                N["LAYERS"].push_back(json{{"COMMENT", "Its own program: the base's entry, changed where this version differs."},
+                                           {"EXEC", json{{Lab, std::move(Row)}}}});
+                return N;
+            }
+        }
+    return N;
 }
 
 bool ChangeUid(json &N, const std::string &Old, const std::string &New)
 {
     if (!N.is_object() || Old.empty() || Old == New) return false;
     bool Changed = false;
-    if (N.contains("RECOMMENDED") && N["RECOMMENDED"].is_array())
-        for (json &R : N["RECOMMENDED"]) if (R == Old) { R = New; Changed = true; }
     if (!N.contains("LAYERS") || !N["LAYERS"].is_array()) return Changed;
     for (json &L : N["LAYERS"])
     {
-        if (!L.is_object() || !L.contains("EXEC") || !L["EXEC"].is_array()) continue;
-        for (json &E : L["EXEC"])
+        if (!L.is_object() || !L.contains("EXEC") || !L["EXEC"].is_object()) continue;
+        for (auto &[Lab, E] : L["EXEC"].items())
         {
             if (!E.is_object() || !E.contains("TILE") || !E["TILE"].is_object()) continue;
             for (const char *K : {"UID", "PARENTUID"})
@@ -1182,14 +1199,13 @@ static std::string UnfinishedEntry(const json &N, bool Folder)
     for (size_t L = 0; L < N["LAYERS"].size(); ++L)
     {
         const json &Ly = N["LAYERS"][L];
-        if (!Ly.is_object() || !Ly.contains("EXEC") || !Ly["EXEC"].is_array()) continue;
-        for (size_t I = 0; I < Ly["EXEC"].size(); ++I)
+        if (!Ly.is_object() || !Ly.contains("EXEC") || !Ly["EXEC"].is_object()) continue;
+        for (const auto &[Lab, E] : Ly["EXEC"].items())
         {
-            const json &E = Ly["EXEC"][I];
             if (!E.is_object() || E.contains("GUEST")) continue;
             const std::string X = StrField(E, "EXE");
             if (Folder ? (!X.empty() && (X.back() == '/' || X.back() == '\\')) : StrField(E, "HOST").empty())
-                return "L" + std::to_string(L) + "/EXEC/" + std::to_string(I);
+                return "L" + std::to_string(L) + "/EXEC/" + Lab;
         }
     }
     return {};
@@ -1207,7 +1223,7 @@ Fix FixFor(const std::string &M, const json *Node)
         if (K.empty()) { F.Label = "+ EXEC layer"; F.Action = "add_layer:EXEC"; }
         else { F.Label = "choose its Host"; F.Action = "open_entry:" + K; }
     }
-    else if (M.find("must be a non-empty list of entries") != std::string::npos && M.rfind("layer ", 0) == 0)
+    else if (M.find("EXEC must be {label: entry}") != std::string::npos && M.rfind("layer ", 0) == 0)
     {
         //Its last entry removed, a layer that ran something runs nothing: offered gone (its number from the message).
         F.Label = "remove the empty layer"; F.Action = "remove_layer:" + M.substr(6, M.find_first_not_of("0123456789", 6) - 6);
@@ -1277,8 +1293,8 @@ std::string NextStep(const std::vector<const json *> &Nodes)
             if (!L.is_object()) continue;
             for (const char *T : {"ZIP", "DIR", "FILE", "DELTA", "NODE"})   // its own files, or another node's
                 if (L.contains(T) && L[T].is_string()) (L[T].get<std::string>().empty() ? Waiting : Files) = true;
-            if (!L.contains("EXEC") || !L["EXEC"].is_array()) continue;
-            for (const json &E : L["EXEC"])
+            if (!L.contains("EXEC") || !L["EXEC"].is_object()) continue;
+            for (const auto &[Lab, E] : L["EXEC"].items())
             {
                 if (!E.is_object()) continue;
                 if (E.contains("GUEST")) return {};       // a runner's package: none of this applies
@@ -1366,8 +1382,8 @@ std::vector<Action> ActionsFor(const json &Node, bool HasBase, const std::vector
     bool Launchable = false, Tile = false;
     if (Node.is_object() && Node.contains("LAYERS") && Node["LAYERS"].is_array())
         for (const auto &L : Node["LAYERS"])
-            if (LayerType(L) == "EXEC" && L["EXEC"].is_array())
-                for (const auto &E : L["EXEC"])
+            if (LayerType(L) == "EXEC" && L["EXEC"].is_object())
+                for (const auto &[Lab, E] : L["EXEC"].items())
                 {
                     if (!E.is_object()) continue;
                     if (!(E.contains("GUEST") && E["GUEST"].is_array() && !E["GUEST"].empty())) Launchable = true;
@@ -1386,37 +1402,25 @@ std::vector<Action> ActionsFor(const json &Node, bool HasBase, const std::vector
 
 // ---- flattened registry editing -------------------------------------------
 
-namespace {
-
-void FlattenTree(const std::string &Path, const json &Tree, std::vector<RegRow> &Out)
+std::vector<RegRow> RegRowsOf(const json &Reg)
 {
-    bool AnyValue = false;
-    for (const auto &[K, V] : Tree.items())
-        if (!V.is_object())
+    //The layer's path map: {"HKCU\\Software\\X": {value: data}}; {} creates the key, null deletes it.
+    std::vector<RegRow> Rows;
+    if (!Reg.is_object()) return Rows;
+    for (const auto &[Path, Vals] : Reg.items())
+    {
+        if (Vals.is_null()) { RegRow R{Path, "", ""}; R.DeleteKey = true; Rows.push_back(std::move(R)); continue; }
+        if (!Vals.is_object()) continue;          // a malformed key: validation reports it
+        //create-key-only: flagged, not inferred from an empty NAME — the empty name is the key's DEFAULT value.
+        if (Vals.empty()) { RegRow R{Path, "", ""}; R.KeyOnly = true; Rows.push_back(std::move(R)); continue; }
+        for (const auto &[K, V] : Vals.items())
         {
             //Remember whether it WAS a string, so a round trip through the editor does not retype a number or
             //a bool into a string just because the row shows text.
             RegRow R{Path, K, V.is_string() ? V.get<std::string>() : V.dump()};
             R.WasString = V.is_string();
-            Out.push_back(std::move(R));
-            AnyValue = true;
+            Rows.push_back(std::move(R));
         }
-    //create-key-only: flagged, not inferred from an empty NAME — the empty name is the key's DEFAULT value.
-    if (!AnyValue && Tree.empty()) { RegRow R{Path, "", ""}; R.KeyOnly = true; Out.push_back(std::move(R)); }
-    for (const auto &[K, V] : Tree.items())
-        if (V.is_object()) FlattenTree(Path.empty() ? K : Path + "\\" + K, V, Out);
-}
-
-} // namespace
-
-std::vector<RegRow> RegRowsOf(const json &Entry)
-{
-    std::vector<RegRow> Rows;
-    if (!Entry.is_object()) return Rows;
-    for (const auto &[Hive, Tree] : Entry.items())
-    {
-        if (!Tree.is_object()) continue;      // ARCHITECTURE/OVERRIDE/WHEN/COMMENT and anything else scalar
-        FlattenTree(Hive, Tree, Rows);
     }
     return Rows;
 }
@@ -1431,53 +1435,24 @@ static json OrderedLike(const json &Rebuilt, const json &Orig)
     return Out;
 }
 
-void RegRowsInto(json &Entry, const std::vector<RegRow> &Rows)
+void RegRowsInto(json &Reg, const std::vector<RegRow> &Rows)
 {
-    // Keep the non-hive fields, rebuild the trees from scratch.
-    //Keep every NON-HIVE field, not an enumerated few: a hive is an OBJECT, everything else on the entry is
-    //the author's (ARCHITECTURE, OVERRIDE, WHEN, COMMENT — which NodeLower goes out of its way to allow —
-    //and whatever the format learns next). Enumerating them meant any row edit silently deleted the rest.
-    json Kept = json::object();
-    for (const auto &[K, V] : Entry.items())
-        if (!V.is_object()) Kept[K] = V;
-
+    json Out = json::object();
     for (const RegRow &R : Rows)
     {
         if (R.Path.empty()) continue;
-        std::vector<std::string> Parts;
-        for (size_t I = 0, S = 0; I <= R.Path.size(); ++I)
-            if (I == R.Path.size() || R.Path[I] == '\\')
-            { if (I > S) Parts.push_back(R.Path.substr(S, I - S)); S = I + 1; }
-        if (Parts.empty()) continue;
-        //A key path segment that collides with an existing VALUE of the same name. This is the SAME clash as the
-        //one guarded below, arriving from the other side — and it is the likelier side, because rows are
-        //flattened values-first: "HKLM\\A" name "B" is written before the row for key "HKLM\\A\\B" is walked.
-        //Overwriting the string with an object here dropped the value with no diagnostic. Neither is a safe
-        //guess, so keep what is there and let validation report the clash.
-        json *Cur = &Kept;
-        bool Clash = false;
-        for (const std::string &P : Parts)
-        {
-            if (Cur->contains(P) && !(*Cur)[P].is_object()) { Clash = true; break; }
-            if (!Cur->contains(P)) (*Cur)[P] = json::object();
-            Cur = &(*Cur)[P];
-        }
-        if (Clash) continue;
-        if (R.KeyOnly) continue;                  // the key itself was created by the walk above
-        //And the mirror case: a value name that collides with an already-written subkey.
-        if (Cur->contains(R.Name) && (*Cur)[R.Name].is_object()) continue;
-        if (R.WasString) { (*Cur)[R.Name] = R.Value; continue; }
+        if (R.DeleteKey) { Out[R.Path] = nullptr; continue; }
+        if (!Out.contains(R.Path) || Out[R.Path].is_null()) Out[R.Path] = json::object();
+        if (R.KeyOnly) continue;                  // the key itself, no values
+        if (R.WasString) { Out[R.Path][R.Name] = R.Value; continue; }
         //Restore the original JSON type where the text still parses as one; otherwise it is a string now
         //because the author made it one.
         json Parsed = json::parse(R.Value, nullptr, /*allow_exceptions=*/false);
-        (*Cur)[R.Name] = (Parsed.is_discarded() || Parsed.is_object() || Parsed.is_array())
-                             ? json(R.Value) : Parsed;
+        Out[R.Path][R.Name] = (Parsed.is_discarded() || Parsed.is_object() || Parsed.is_array()) ? json(R.Value) : Parsed;
     }
-    //Preserve the ORIGINAL key order, at every level. The rebuild emits the non-hive fields first and the hives after,
-    //and within a key its values before its subkeys (rows are flattened values-first), so an entry written the other
-    //way round — every received node: canonical JSON, keys sorted, "1.0" before "3D Card" — came back with the same
-    //content in a different order: same size, different bytes, a file that no longer is the node its name says.
-    Entry = OrderedLike(Kept, Entry);
+    //Preserve the ORIGINAL key order: a received node is canonical JSON (keys sorted), and a rebuild that reorders it
+    //is a file that no longer is the node its name says.
+    Reg = OrderedLike(Out, Reg.is_object() ? Reg : json::object());
 }
 
 } // namespace PkgGraph

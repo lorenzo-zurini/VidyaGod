@@ -92,7 +92,7 @@ std::vector<Tile> Tiles(const NodeIndex &Idx)
     std::vector<Tile> Out;
     for (auto &[U, S] : ByUid)
     {
-        const auto Rec = [&](const Node *N) { return std::find(N->Recommended.begin(), N->Recommended.end(), U) != N->Recommended.end(); };
+        const auto Rec = [&](const Node *N) { return N->IsRecommended(U); };
         std::stable_sort(S.Rows.begin(), S.Rows.end(), [&](const Node *A, const Node *B) {
             if (Rec(A) != Rec(B)) return Rec(A);
             if (A->Variant != B->Variant) return A->Variant < B->Variant;
@@ -472,7 +472,13 @@ std::vector<std::string> OfferedGrafts(const NodeIndex &Idx, const std::string &
     const Fold::Plan P = Fold::Resolve(Lib, L->Key(), {}, Builtins, Chosen ? AppliedGrafts(Idx, LaunchNodeId, Chosen, {}, Builtins) : Fresh);
     std::vector<std::string> Out;
     for (const auto &G : Fold::OfferedGrafts(Lib, Fold::BuildGraftIndex(Lib), P, Face).Offered)
+    {
+        //A part with an entry of its own (a source port's engine row, Forgotten Empires) is a ROW of its card, launched
+        //from it, never an add-on of this one to tick (09 §9.4) — the engine still offers it, for the rows that force it.
+        const Node *Gn = Idx.Find(G);
+        if (Gn && Fold::OwnsGameEntry(*Gn->Json)) continue;
         if (LocalGraft(Idx, G)) Out.push_back(G);
+    }
     return Out;
 }
 

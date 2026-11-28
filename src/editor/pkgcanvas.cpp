@@ -92,8 +92,8 @@ static bool HasTile(const json &N)
 {
     if (!HasExec(N)) return false;
     for (const json &L : N["LAYERS"])
-        if (L.is_object() && L.contains("EXEC") && L["EXEC"].is_array())
-            for (const json &E : L["EXEC"]) if (E.is_object() && E.contains("TILE") && E["TILE"].is_object()) return true;
+        if (L.is_object() && L.contains("EXEC") && L["EXEC"].is_object())
+            for (const auto &[Lab, E] : L["EXEC"].items()) if (E.is_object() && E.contains("TILE") && E["TILE"].is_object()) return true;
     return false;
 }
 
@@ -1690,7 +1690,7 @@ void PkgCanvas::addMenu(ImVec2 At)
     const bool Typed = TypePicker(Type, true);
     ImGui::SeparatorText("For this game");
     ImGui::BeginDisabled(Base.empty());
-    if (ImGui::Selectable("another version")) Recipe = PkgGraph::VersionNode(Base, BaseLabel);
+    if (ImGui::Selectable("another version")) Recipe = PkgGraph::VersionNode(Base, BaseLabel, &D.Node(D.IndexOf(Base)));
     if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
         ImGui::SetTooltip("%s", Base.empty() ? "Make the game's first version first" : ("A source port, a patch, a fan update: contains \"" + BaseLabel + "\" and runs its own program").c_str());
     if (ImGui::Selectable("a mod for it")) Recipe = PkgGraph::ModNode(Base, BaseLabel);
@@ -2412,7 +2412,7 @@ void PkgCanvas::frame()
             else if (Pick->Recipe)
             {
                 const std::string Bl = NodeTitle(D.Node(D.IndexOf(Base)), Base);
-                I = D.Add(Pick->Recipe == 1 ? PkgGraph::VersionNode(Base, Bl) : PkgGraph::ModNode(Base, Bl));
+                I = D.Add(Pick->Recipe == 1 ? PkgGraph::VersionNode(Base, Bl, &D.Node(D.IndexOf(Base))) : PkgGraph::ModNode(Base, Bl));
                 D.SetPos(D.Handle(I), {S.QuickWorld.x, S.QuickWorld.y});
                 D.Commit();
                 emit documentEdited();

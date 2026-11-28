@@ -17,10 +17,12 @@
 // TARGET. Resolving a root:
 //   1. phase 1 — the variables a layer WHEN may read: instance values, built-ins, and the defaults of ungated VARS
 //      layers reached through ungated NODE layers;
-//   2. expansion — walk LAYERS, expanding NODE layers in place. An OCCURRENCE is (node, take, target); reached twice
-//      it is one occurrence at its first position (a diamond), except that a later mention in the SAME list moves
-//      it there. A node never leaves the node that contains it;
-//   3. the fold — per address, the latest writer wins; null deletes.
+//   2. phase 0 + composition (gen 9, 05 §5.4) — a WHEN naming a node CID reads the FINAL composition (composed again
+//      until its members are stable). Each OCCURRENCE (node, take, target) is composed once from its own list: its own
+//      layers are provided; a child's own layers are provided to it (all a TAKE takes is); deeper ones are carried. A
+//      carried slot already composed is a stale copy (skipped); a provided one moves to the later place, except what
+//      carried slots after it in its item rewrite (kept below: the moved copy excepts them);
+//   3. the fold — per address, the latest writer wins; null deletes; EXEC subtrees are replaced whole (nothing folds).
 // The reference definition is tools/gen6/resolve.py; tools/gen6/fold_gate.py holds this port to it plan-for-plan.
 // ---------------------------------------------------------------------------
 
@@ -55,6 +57,7 @@ struct Item
     json        BaseSources;     // DELTA / CODED: BASE_SOURCES as written, the SOURCE CIDs of its bases in order
     json        Description;     // CODED: its format's coding description (the layer's DESCRIPTION, inline)
     std::string Name;            // CODED: the file name the shipped stream appears by, in Target
+    std::vector<std::string> Except;   // content: a re-provided copy — the paths (guest coordinates) it leaves to below
     std::string From;            // the node it came from
     int         At = 0;          // its index in that node's LAYERS
 };
@@ -69,7 +72,7 @@ struct Plan
     json Dll = json::object(), Env = json::object(), Exec = json::object(), Keep = json::object(), Decls = json::object();
     std::vector<std::string> Order;                                     // occurrences' nodes, in expansion order
     std::vector<std::string> Parts;                                     // the parts applied onto the end (INTO), in order
-    std::vector<std::pair<std::string, std::string>> Events;            // move/held/cycle/missing/into-unmet/into-off
+    std::vector<std::pair<std::string, std::string>> Events;            // raise/cycle/missing/into-unmet/into-off
     std::map<std::string, std::string> WhenVars;                       // what phase 1 resolved (layer WHEN reads these)
     std::string Error;                                                  // a malformed layer: nothing is launched from it
     //Every layer the fold applies, in order — each occurrence's (WHEN-true, not moved away), a contained node's where
@@ -85,15 +88,6 @@ using Vars = std::map<std::string, std::string>;
 //selected (default: Grafts) — parts are judged on the user's selection, so parts that exclude each other cannot loop.
 Plan Resolve(const Library &Lib, const std::string &Root, const Vars &Instance = {}, const Vars &Builtins = {},
              const std::vector<std::string> &Grafts = {}, const std::vector<std::string> *Selection = nullptr);
-
-//The held and moved mentions (§4.2) whose position decides a winner: a node mentioned again after it already occurred
-//is HELD at its first occurrence, or MOVED to the later mention when both sit in the same list. For each such event of
-//P (Resolve's plan for these arguments), the plan with that one decision taken the other way is compared: a changed
-//fact, or two layers whose targets overlap folding in the other order, means the position chose a winner — a WARN,
-//since the author meant one of the two. Returns those events ({"held"|"move", cid}), in order. One resolve per event.
-std::vector<std::pair<std::string, std::string>> DecidingMentions(const Library &Lib, const std::string &Root,
-                                                                  const Vars &Instance, const Vars &Builtins,
-                                                                  const std::vector<std::string> &Grafts, const Plan &P);
 
 //Resolve with only the EXEC fold built (the same expansion, occurrences and phase 1 — so the same entries — without
 //collecting or folding anything else). For facts derived over a whole library: a node's entries, runner, tiles.
@@ -127,6 +121,9 @@ std::string TypeOf(const json &Layer);
 //A part's INTO layers: the run of INTO layers its list begins with (each one a list of alternatives; the part goes into
 //all of them). Empty for a node that is not a part. Only layers whose INTO is a list count.
 std::vector<const json *> IntoLayers(const json &Layers);
+//A node's own layers write a way to run (an entry object without GUEST): for a part, it is a row, never ticked (09
+//§9.4). The one definition the engine, the shelf and the validator use (resolve.py owns_game_entry).
+bool OwnsGameEntry(const json &Node);
 
 // ----- parts (MetaPackageFormat 12 §12.5, 23.0): a part (a "graft") is a node whose list begins with INTO [ends]: it goes
 // into an END (a node with VARIANT) or into a part applied to it — a HARD LINK, never "somewhere beneath". Parts have

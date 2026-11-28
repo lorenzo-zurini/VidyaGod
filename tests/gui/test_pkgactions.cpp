@@ -7,6 +7,7 @@
 // actions ask before destroying anything, and a modal blocks a headless run forever).
 
 #include "qtestjson.h"
+#include "nodefixture.h"
 #include "pkgactions.h"
 #include "ipfswrapper.h"
 #include "vgdelta.h"        // GenerateDelta: a delta over a file, made here
@@ -305,16 +306,19 @@ private slots:
         QCOMPARE(valueOf("Install Dir"), std::string("C:\\Games\\Tonic"));   // .reg doubles backslashes
         QCOMPARE(valueOf("Says"), std::string("he said \"hi\""));            // ...and escapes quotes
         QCOMPARE(valueOf("Blob"), std::string("hex:01,02,03,04,05,06,07,08")); // the WHOLE value, not line 1
-        QCOMPARE(valueOf("Stale"), std::string("<missing>"));                // a deletion is not a write
+        QCOMPARE(valueOf("Stale"), std::string("null"));                     // a deleted value: null in the layer
         // `@` is the key's DEFAULT value, which on disk is the EMPTY name. This test previously pinned the
         // literal name "@" — the bug, not the behaviour: a value CALLED @ that nothing reads.
         QCOMPARE(valueOf(""), std::string("default"));
         QCOMPARE(deletions, 2);                                              // the value AND the [-Key] section
+        int Gone = 0;
         for (const auto &r : rows)
         {
             QVERIFY(r.Value != "should not appear");                         // nothing under a deleted key
-            QVERIFY(r.Path.find("Gone") == std::string::npos);
+            if (r.Path.find("Gone") != std::string::npos) { QVERIFY(r.DeleteKey); ++Gone; }
+            if (r.Name == "Stale") QVERIFY(!r.WasString);                    // null, not the string "null"
         }
+        QCOMPARE(Gone, 1);                                                   // the key itself, deleted
     }
 
     // ------------------------------------------------------------------------------------------------
@@ -348,7 +352,7 @@ private slots:
         Fixture F(this);
         const int n = F.addRegNode();
         F.setLayers(n, json::parse(R"([{"ZIP":"a.zip"},
-            {"REG":{"HKLM":{"Software":{"Mine":{"Keep":"precious"}}}},"ARCH":["64"]}])"));
+            {"REG":{"HKLM\\Software\\Mine":{"Keep":"precious"}},"ARCH":["64"]}])"));
         F.save();
 
         F.pickThisFile(F.writeReg("good.reg"));
@@ -357,7 +361,7 @@ private slots:
 
         const json L = F.node(n)["LAYERS"][1];
         QCOMPARE(L["ARCH"], json::array({"64"}));
-        QCOMPARE(L["REG"]["HKLM"]["Software"]["Mine"]["Keep"], json("precious"));
+        QCOMPARE(L["REG"]["HKLM\\Software\\Mine"]["Keep"], json("precious"));
         QVERIFY2(L["REG"].dump().find("TONICT") != std::string::npos, L.dump().c_str());
         QCOMPARE((int)F.node(n)["LAYERS"].size(), 2);   // no second REG layer
     }
@@ -369,7 +373,7 @@ private slots:
     {
         Fixture F(this);
         const int n = F.addRegNode();
-        const json Hand = json::parse(R"({"REG":{"HKLM":{"Software":{"Mine":{"Keep":"precious"}}}}})");
+        const json Hand = json::parse(R"({"REG":{"HKLM\\Software\\Mine":{"Keep":"precious"}}})");
         F.setLayers(n, Hand);
         F.save();
 
@@ -383,8 +387,8 @@ private slots:
         QVERIFY2(F.notices.join(" ").contains("not a list"), qUtf8Printable(F.notices.join(" ")));
     }
 
-    // The refusal holds one level down too: a REG layer whose tree is not an object. RegRowsInto would iterate it as
-    // one and write back {"": ..., "HKLM": {...}} — the shape the canvas refuses to touch, reshaped and saved.
+    // The refusal holds one level down too: a REG layer that is not a map of key paths. RegRowsInto would iterate it
+    // as one and write back a reshaped layer — the shape the canvas refuses to touch, reshaped and saved.
     void importRefusesARegLayerThatIsNotAHiveTree()
     {
         Fixture F(this);
@@ -400,7 +404,7 @@ private slots:
         QCOMPARE(F.node(n)["LAYERS"], Hand);
         const json Saved = json::parse(F.read(F.path(F.nodeFile(n))).toStdString());
         QCOMPARE(nlohmann::json(Saved["LAYERS"]), nlohmann::json(Hand));   // canonical on disk: keys sorted
-        QVERIFY2(F.notices.join(" ").contains("not a hive tree"), qUtf8Printable(F.notices.join(" ")));
+        QVERIFY2(F.notices.join(" ").contains("not a map of key paths"), qUtf8Printable(F.notices.join(" ")));
     }
 
     // A null tree IS materialised — there is nothing there to lose — and the layer's views stay as they are.
@@ -574,26 +578,25 @@ private slots:
         Fixture F(this);
         F.write(F.path("cover.png"), "png");
         const int n = F.addRegNode();
-        F.setLayers(n, json::parse(R"([{"EXEC":[{"LABEL":"Setup","HOST":"win32"},
-            {"LABEL":"Play","HOST":"win32","TILE":{"UID":"1","COVER":{"FILE":"old.png","SOURCE":"bafkreiold"}}}]}])"));
+        F.setLayers(n, json::parse(R"([{"EXEC":{"Setup":{"HOST":"win32"},"Play":{"HOST":"win32","TILE":{"UID":"1","COVER":{"FILE":"old.png","SOURCE":"bafkreiold"}}}}}])"));
         F.save();
         F.pickThisFile(F.path("cover.png"));
         F.act->perform(F.nodeId(n), "browse_cover");
         QTest::qWait(50);
         const json E = F.node(n)["LAYERS"][0]["EXEC"];
-        QCOMPARE(E[1]["TILE"]["COVER"], json::parse(R"({"FILE":"cover.png"})"));
-        QVERIFY(!E[0].contains("TILE"));
+        QCOMPARE(E["Play"]["TILE"]["COVER"], json::parse(R"({"FILE":"cover.png"})"));
+        QVERIFY(!E["Setup"].contains("TILE"));
 
-        { json N = F.node(n); N["LAYERS"][0]["EXEC"][1]["TILE"]["COVER"] = "old.png"; F.setNode(n, N); }
+        { json N = F.node(n); N["LAYERS"][0]["EXEC"]["Play"]["TILE"]["COVER"] = "old.png"; F.setNode(n, N); }
         F.act->perform(F.nodeId(n), "browse_cover");
         QTest::qWait(50);
-        QCOMPARE(F.node(n)["LAYERS"][0]["EXEC"][1]["TILE"]["COVER"], json("cover.png"));
+        QCOMPARE(F.node(n)["LAYERS"][0]["EXEC"]["Play"]["TILE"]["COVER"], json("cover.png"));
 
-        { json N = F.node(n); N["LAYERS"][0]["EXEC"][1]["TILE"]["COVER"] = 5; F.setNode(n, N); }
+        { json N = F.node(n); N["LAYERS"][0]["EXEC"]["Play"]["TILE"]["COVER"] = 5; F.setNode(n, N); }
         F.notices.clear();
         F.act->perform(F.nodeId(n), "browse_cover");
         QTest::qWait(50);
-        QCOMPARE(F.node(n)["LAYERS"][0]["EXEC"][1]["TILE"]["COVER"], json(5));
+        QCOMPARE(F.node(n)["LAYERS"][0]["EXEC"]["Play"]["TILE"]["COVER"], json(5));
         QVERIFY2(F.notices.join(" ").contains("not an object"), qUtf8Printable(F.notices.join(" ")));
     }
 
@@ -606,9 +609,7 @@ private slots:
         QTemporaryDir Dl; QVERIFY(Dl.isValid());
         QVERIFY(QImage(600, 900, QImage::Format_RGB32).save(Dl.path() + "/aoc.png"));
         const int n = F.addRegNode();
-        F.setLayers(n, json::parse(R"([{"EXEC":[{"LABEL":"Play","HOST":"win32","TILE":{"UID":"1","TITLE":"Base"}},
-            {"LABEL":"Mission pack","HOST":"win32","TILE":{"UID":"1"}},
-            {"LABEL":"Expansion","HOST":"win32","TILE":{"UID":"2","PARENTUID":"1"}}]}])"));
+        F.setLayers(n, json::parse(R"([{"EXEC":{"Play":{"HOST":"win32","TILE":{"UID":"1","TITLE":"Base"}},"Mission pack":{"HOST":"win32","TILE":{"UID":"1"}},"Expansion":{"HOST":"win32","TILE":{"UID":"2","PARENTUID":"1"}}}}])"));
         F.save();
         QStringList Offered; int Answer = 1;
         F.act->setChooseHandler([&](const QString &, const QString &, const QStringList &O) { Offered = O; return Answer; });
@@ -617,13 +618,13 @@ private slots:
         QTest::qWait(50);
         QCOMPARE(Offered, QStringList({"Base", "Expansion"}));
         const json E = F.node(n)["LAYERS"][0]["EXEC"];
-        QCOMPARE(E[2]["TILE"]["COVER"], json::parse(R"({"FILE":"aoc.png"})"));
-        QVERIFY(!E[0]["TILE"].contains("COVER") && !E[1]["TILE"].contains("COVER"));
+        QCOMPARE(E["Expansion"]["TILE"]["COVER"], json::parse(R"({"FILE":"aoc.png"})"));
+        QVERIFY(!E["Play"]["TILE"].contains("COVER") && !E["Mission pack"]["TILE"].contains("COVER"));
         Answer = -1;
-        { json N = F.node(n); N["LAYERS"][0]["EXEC"][2]["TILE"].erase("COVER"); F.setNode(n, N); }
+        { json N = F.node(n); N["LAYERS"][0]["EXEC"]["Expansion"]["TILE"].erase("COVER"); F.setNode(n, N); }
         F.act->perform(F.nodeId(n), "browse_cover");
         QTest::qWait(50);
-        QVERIFY(!F.node(n)["LAYERS"][0]["EXEC"][2]["TILE"].contains("COVER"));
+        QVERIFY(!F.node(n)["LAYERS"][0]["EXEC"]["Expansion"]["TILE"].contains("COVER"));
     }
 
     // A cover picked from anywhere (a download) is copied into the package under its own name and named by the tile;
@@ -635,12 +636,12 @@ private slots:
         QTemporaryDir Dl; QVERIFY(Dl.isValid());
         F.write(Dl.path() + "/box.png", "the box art");
         const int n = F.addRegNode();
-        F.setLayers(n, json::parse(R"([{"EXEC":[{"LABEL":"Play","HOST":"win32","TILE":{"UID":"1"}}]}])"));
+        F.setLayers(n, json::parse(R"([{"EXEC":{"Play":{"HOST":"win32","TILE":{"UID":"1"}}}}])"));
         F.save();
         F.pickThisFile(Dl.path() + "/box.png");
         F.act->perform(F.nodeId(n), "browse_cover");
         QTest::qWait(50);
-        QCOMPARE(F.node(n)["LAYERS"][0]["EXEC"][0]["TILE"]["COVER"], json::parse(R"({"FILE":"box.png"})"));
+        QCOMPARE(F.node(n)["LAYERS"][0]["EXEC"]["Play"]["TILE"]["COVER"], json::parse(R"({"FILE":"box.png"})"));
         QCOMPARE(F.read(F.path("box.png")), QByteArray("the box art"));
         QVERIFY(QFile::exists(Dl.path() + "/box.png"));
         F.act->perform(F.nodeId(n), "browse_cover");      // again: the copy there is the same image
@@ -648,11 +649,11 @@ private slots:
         QVERIFY2(F.notices.isEmpty(), qUtf8Printable(F.notices.join(" ")));
 
         F.write(Dl.path() + "/box.png", "a different image");
-        { json N = F.node(n); N["LAYERS"][0]["EXEC"][0]["TILE"].erase("COVER"); F.setNode(n, N); }
+        { json N = F.node(n); N["LAYERS"][0]["EXEC"]["Play"]["TILE"].erase("COVER"); F.setNode(n, N); }
         F.act->perform(F.nodeId(n), "browse_cover");
         QTest::qWait(50);
         QCOMPARE(F.read(F.path("box.png")), QByteArray("the box art"));
-        QVERIFY(!F.node(n)["LAYERS"][0]["EXEC"][0]["TILE"].contains("COVER"));
+        QVERIFY(!F.node(n)["LAYERS"][0]["EXEC"]["Play"]["TILE"].contains("COVER"));
         QVERIFY(F.notices.join(" ").contains("already has another"));
     }
 
@@ -665,17 +666,17 @@ private slots:
         QVERIFY(QImage(600, 900, QImage::Format_RGB32).save(Dl.path() + "/right.png"));
         QVERIFY(QImage(460, 215, QImage::Format_RGB32).save(Dl.path() + "/wide.png"));
         const int n = F.addRegNode();
-        F.setLayers(n, json::parse(R"([{"EXEC":[{"LABEL":"Play","HOST":"win32","TILE":{"UID":"1"}}]}])"));
+        F.setLayers(n, json::parse(R"([{"EXEC":{"Play":{"HOST":"win32","TILE":{"UID":"1"}}}}])"));
         F.save();
         F.pickThisFile(Dl.path() + "/wide.png");
         F.act->perform(F.nodeId(n), "browse_cover");
         QTest::qWait(50);
-        QVERIFY(!F.node(n)["LAYERS"][0]["EXEC"][0]["TILE"].contains("COVER"));
+        QVERIFY(!F.node(n)["LAYERS"][0]["EXEC"]["Play"]["TILE"].contains("COVER"));
         QVERIFY(!QFile::exists(F.path("wide.png")));
         F.pickThisFile(Dl.path() + "/right.png");
         F.act->perform(F.nodeId(n), "browse_cover");
         QTest::qWait(50);
-        QCOMPARE(F.node(n)["LAYERS"][0]["EXEC"][0]["TILE"]["COVER"], json::parse(R"({"FILE":"right.png"})"));
+        QCOMPARE(F.node(n)["LAYERS"][0]["EXEC"]["Play"]["TILE"]["COVER"], json::parse(R"({"FILE":"right.png"})"));
     }
 
     // GOG's install script, as layers: the registry values first (one REG, ARCH the game's, "$1" a hex DWORD, {app}
@@ -711,8 +712,8 @@ private slots:
         ]})");
         const auto G = PkgActions::GogInstallSteps(Script, Sup.path().toStdString(), "32");
         QCOMPARE((int)G.Layers.size(), 6);
-        QCOMPARE(G.Layers[0]["REG"], json::parse(R"({"HKLM":{"SOFTWARE":{"GSC Game World":{"STALKER-SHOC":{"InstallPath":"%GameDir:winpath%","BonusPack1":"dword:0000001a"}}},
-                                                       "Software":{"Sierra":{"CDKeys":{"EmpireEarth":"hex:e3,00,6a","Guid":"{99797420-F5F5}"}}}}})"));
+        QCOMPARE(G.Layers[0]["REG"], json::parse(R"({"HKLM\\SOFTWARE\\GSC Game World\\STALKER-SHOC":{"InstallPath":"%GameDir:winpath%","BonusPack1":"dword:0000001a"},
+                                                       "HKLM\\Software\\Sierra\\CDKeys":{"EmpireEarth":"hex:e3,00,6a","Guid":"{99797420-F5F5}"}})"));
         QCOMPARE(G.Layers[0]["ARCH"], json::array({"32"}));
         QCOMPARE(G.Layers[1]["TARGET"], json("FILES/%GameDir%/fsgame.ltx"));
         QCOMPARE(G.Layers[1]["EDIT"][0]["VALUE"], json("$app_data_root$ = true | false| %Documents:winpath%\\Stalker-SHOC\n"));
@@ -749,7 +750,7 @@ private slots:
             F.write(G + "/__redist/vcredist.exe", Pe32());
             F.write(G + "/__support/userdocs/user.cfg", "a=1");
             const int n = F.addContentNode("");
-            F.setLayers(n, json::array({ json{{"ZIP", ""}, {"TARGET", "FILES/%GameDir%"}}, json{{"EXEC", json::array({ json{{"LABEL", "Play"}} })}} }));
+            F.setLayers(n, json::array({ json{{"ZIP", ""}, {"TARGET", "FILES/%GameDir%"}}, json{{"EXEC", json::object({ {"Play", json::object()} })}} }));
             F.save();
             F.act->setChooseHandler([Answer](const QString &T, const QString &, const QStringList &) { return T.contains("GOG") ? Answer : 0; });
             F.act->dropFiles(F.nodeId(n), {G});
@@ -764,7 +765,7 @@ private slots:
             QVERIFY(zip_stat(Z, "__support/userdocs/user.cfg", 0, &St) != 0);
             zip_close(Z);
             const json L = F.node(n)["LAYERS"];
-            QCOMPARE(L[1]["EXEC"][0]["HOST"], json("win32"));
+            QCOMPARE(L[1]["EXEC"]["Play"]["HOST"], json("win32"));
             if (Answer == 0)
             {
                 QCOMPARE((int)L.size(), 4);
@@ -985,13 +986,13 @@ private slots:
             F.write(Src.path() + "/Demo/unins000.exe", Pe32());
             const int n = F.addContentNode("");
             F.setLayers(n, json::array({ json{{"ZIP", ""}, {"TARGET", "FILES/%GameDir%"}},
-                                         json{{"EXEC", json::array({ json{{"LABEL", "Play"}, {"EXE", "%GameDir%/"}} })}} }));
+                                         json{{"EXEC", json::object({ {"Play", {{"EXE", "%GameDir%/"}}} })}} }));
             F.save();
             QStringList Said;
             connect(F.act, &PkgActions::status, this, [&Said](const QString &T) { Said << T; });
             F.act->dropFiles(F.nodeId(n), {Src.path() + "/Demo"});
             QVERIFY(F.waitIdle(F.nodeId(n)));
-            const json E = F.node(n)["LAYERS"][1]["EXEC"][0];
+            const json E = F.node(n)["LAYERS"][1]["EXEC"]["Play"];
             QCOMPARE(E["EXE"], json("%GameDir%/Game.exe"));
             QCOMPARE(E["WORKDIR"], json("%GameDir%"));
             QCOMPARE(E["HOST"], json("win32"));
@@ -1007,11 +1008,11 @@ private slots:
                     R"({"playTasks":[{"category":"tool","path":"tools\\editor.exe"},{"isPrimary":true,"category":"game","path":"bin\\run.exe","arguments":"-window -nointro","workingDir":"bin"}]})");
             const int n = F.addContentNode("");
             F.setLayers(n, json::array({ json{{"ZIP", "base.zip"}, {"TARGET", "FILES/%GameDir%"}},
-                                         json{{"EXEC", json::array({ json{{"LABEL", "Play"}, {"HOST", "win32"}} })}} }));
+                                         json{{"EXEC", json::object({ {"Play", {{"HOST", "win32"}}} })}} }));
             F.save();
             F.act->dropFiles(F.nodeId(n), {Src.path() + "/G"});
             QVERIFY(F.waitIdle(F.nodeId(n)));
-            const json E = F.node(n)["LAYERS"][1]["EXEC"][0];
+            const json E = F.node(n)["LAYERS"][1]["EXEC"]["Play"];
             QCOMPARE(E["EXE"], json("%GameDir%/bin/run.exe"));
             QCOMPARE(E["ARGS"], json::array({"-window", "-nointro"}));
             QCOMPARE(E["WORKDIR"], json("%GameDir%/bin"));
@@ -1031,18 +1032,18 @@ private slots:
             F.write(Src.path() + "/T/Tunic_Data/app.info", "Andrew Shouldice\nSecret Legend");
             const int n = F.addContentNode("");
             F.setLayers(n, json::array({ json{{"ZIP", ""}, {"TARGET", "FILES/%GameDir%"}},
-                                         json{{"EXEC", json::array({ json{{"LABEL", "Play"}} })}} }));
+                                         json{{"EXEC", json::object({ {"Play", json::object()} })}} }));
             F.save();
             F.act->dropFiles(F.nodeId(n), {Src.path() + "/T"});
             QVERIFY(F.waitIdle(F.nodeId(n)));
-            const json E = F.node(n)["LAYERS"][1]["EXEC"][0];
+            const json E = F.node(n)["LAYERS"][1]["EXEC"]["Play"];
             QCOMPARE(E["EXE"], json("%GameDir%/Tunic.exe"));
             QCOMPARE(E["HOST"], json("win32"));
             //A Unity game: where it saves, from its app.info, kept - once.
             const json K = F.node(n)["LAYERS"].back();
             QVERIFY2(K.contains("KEEP"), F.node(n).dump().c_str());
             QCOMPARE(K["KEEP"], json::parse(R"({"FILES/%UserProfile%/AppData/LocalLow/Andrew Shouldice/Secret Legend/":true,
-                                                "REG/HKCU/Software/Andrew Shouldice/Secret Legend":true})"));
+                                                "REG/HKCU\\Software\\Andrew Shouldice\\Secret Legend":true})"));
         }
         {
             //A play task naming no program in the files is no guide: the likeliest program is.
@@ -1052,11 +1053,11 @@ private slots:
             F.write(Src.path() + "/G/goggame-1.info", R"({"playTasks":[{"isPrimary":true,"category":"game","path":"Launcher.exe"}]})");
             const int n = F.addContentNode("");
             F.setLayers(n, json::array({ json{{"ZIP", ""}, {"TARGET", "FILES/%GameDir%"}},
-                                         json{{"EXEC", json::array({ json{{"LABEL", "Play"}} })}} }));
+                                         json{{"EXEC", json::object({ {"Play", json::object()} })}} }));
             F.save();
             F.act->dropFiles(F.nodeId(n), {Src.path() + "/G"});
             QVERIFY(F.waitIdle(F.nodeId(n)));
-            QCOMPARE(F.node(n)["LAYERS"][1]["EXEC"][0]["EXE"], json("%GameDir%/Game.exe"));
+            QCOMPARE(F.node(n)["LAYERS"][1]["EXEC"]["Play"]["EXE"], json("%GameDir%/Game.exe"));
         }
     }
 
@@ -1071,7 +1072,7 @@ private slots:
         F.makeZip("base.zip", "Launcher.exe", Pe32());
         const int b = F.addContentNode("base.zip");
         F.setLayers(b, json::array({ json{{"ZIP", "base.zip"}, {"TARGET", "FILES/%GameDir%"}},
-                                     json{{"EXEC", json::array({ json{{"LABEL", "Play"}, {"TILE", json{{"UID", "1"}, {"TITLE", "Demo"}}}} })}} }));
+                                     json{{"EXEC", json::object({ {"Play", {{"TILE", json{{"UID", "1"}, {"TITLE", "Demo"}}}}} })}} }));
         F.save();
         const json Base = F.node(b);
         QTemporaryDir Src; QVERIFY(Src.isValid());
@@ -1085,13 +1086,13 @@ private slots:
         //A version over the node the files came into is theirs to fill.
         const int v = F.addContentNode("");
         F.setLayers(v, json::array({ json{{"NODE", F.nodeId(r).toStdString()}},
-                                     json{{"EXEC", json::array({ json{{"LABEL", "Play"}, {"TILE", json{{"UID", "1"}}}} })}} }));
+                                     json{{"EXEC", json::object({ {"Play", {{"TILE", json{{"UID", "1"}}}}} })}} }));
         F.save();
         QTemporaryDir More; QVERIFY(More.isValid());
         F.write(More.path() + "/Extra/readme.txt", "hi");
         F.act->dropFiles(F.nodeId(r), {More.path() + "/Extra"});
         QVERIFY(F.waitIdle(F.nodeId(r)));
-        QCOMPARE(F.node(v)["LAYERS"][1]["EXEC"][0]["EXE"], json("%GameDir%/eng/engine.exe"));
+        QCOMPARE(F.node(v)["LAYERS"][1]["EXEC"]["Play"]["EXE"], json("%GameDir%/eng/engine.exe"));
         QCOMPARE(F.node(b), Base);
     }
 
@@ -1105,14 +1106,14 @@ private slots:
         F.write(Src.path() + "/game.reg", "Windows Registry Editor Version 5.00\r\n\r\n[HKEY_CURRENT_USER\\Software\\Demo]\r\n\"Lang\"=\"en\"\r\n");
         F.write(Src.path() + "/readme.txt", "hi");
         const int n = F.addRegNode();
-        F.setLayers(n, json::parse(R"([{"EXEC":[{"LABEL":"Play","HOST":"win32","TILE":{"UID":"1"}}]}])"));
+        F.setLayers(n, json::parse(R"([{"EXEC":{"Play":{"HOST":"win32","TILE":{"UID":"1"}}}}])"));
         F.save();
         QStringList Said;
         connect(F.act, &PkgActions::status, this, [&Said](const QString &T) { Said << T; });
         F.act->dropFiles(F.nodeId(n), {Src.path() + "/box.jpg", Src.path() + "/game.reg", Src.path() + "/readme.txt"});
         QTest::qWait(50);
         const json N = F.node(n);
-        QCOMPARE(N["LAYERS"][0]["EXEC"][0]["TILE"]["COVER"], json::parse(R"({"FILE":"box.jpg"})"));
+        QCOMPARE(N["LAYERS"][0]["EXEC"]["Play"]["TILE"]["COVER"], json::parse(R"({"FILE":"box.jpg"})"));
         bool Reg = false;
         for (const json &L : N["LAYERS"]) if (L.contains("REG")) Reg = true;
         QVERIFY(Reg);
@@ -1432,22 +1433,22 @@ private slots:
         F.save();
         const int v = F.addContentNode("");
         F.setLayers(v, json::array({ json{{"NODE", F.nodeId(d).toStdString()}},
-                                     json{{"EXEC", json::array({ json{{"HOST", "win32"}}, json{{"HOST", "win32"}, {"WORKDIR", "%GameDir%"}} })}} }));
+                                     json{{"EXEC", json{{"Play", {{"HOST", "win32"}}}, {"Tools", {{"HOST", "win32"}, {"WORKDIR", "%GameDir%"}}}}}} }));
         F.save();
         QStringList Offered;
         F.act->setChooseHandler([&Offered](const QString &, const QString &, const QStringList &O) { Offered = O; return 0; });
-        F.act->perform(F.nodeId(v), "pick_exe:L1/0");
+        F.act->perform(F.nodeId(v), "pick_exe:L1/Play");
         QTest::qWait(50);
         QCOMPARE(Offered, (QStringList{"%GameDir%/Game/Run.EXE", "%GameDir%/Tools/cfg.sh"}));
         json E = F.node(v)["LAYERS"][1]["EXEC"];
-        QCOMPARE(E[0]["EXE"], json("%GameDir%/Game/Run.EXE"));
-        QCOMPARE(E[0]["WORKDIR"], json("%GameDir%/Game"));
+        QCOMPARE(E["Play"]["EXE"], json("%GameDir%/Game/Run.EXE"));
+        QCOMPARE(E["Play"]["WORKDIR"], json("%GameDir%/Game"));
         F.act->setChooseHandler([](const QString &, const QString &, const QStringList &) { return 1; });
-        F.act->perform(F.nodeId(v), "pick_exe:L1/1");
+        F.act->perform(F.nodeId(v), "pick_exe:L1/Tools");
         QTest::qWait(50);
         E = F.node(v)["LAYERS"][1]["EXEC"];
-        QCOMPARE(E[1]["EXE"], json("%GameDir%/Tools/cfg.sh"));
-        QCOMPARE(E[1]["WORKDIR"], json("%GameDir%"));            // the author's work dir stays
+        QCOMPARE(E["Tools"]["EXE"], json("%GameDir%/Tools/cfg.sh"));
+        QCOMPARE(E["Tools"]["WORKDIR"], json("%GameDir%"));            // the author's work dir stays
     }
 
     // The pick offers first what a GOG install's play task names (whatever its case), and a Host left blank becomes the
@@ -1460,27 +1461,27 @@ private slots:
         F.write(F.path("g/bin/XR_3DA.exe"), Pe32());
         F.write(F.path("g/goggame-1.info"), R"({"playTasks":[{"isPrimary":true,"category":"game","path":"bin\\xr_3da.exe"}]})");
         const int n = F.addContentNode("");
-        F.setLayers(n, json::array({ json{{"DIR", "g"}, {"TARGET", "FILES/%GameDir%"}}, json{{"EXEC", json::array({ json{{"LABEL", "Play"}} })}} }));
+        F.setLayers(n, json::array({ json{{"DIR", "g"}, {"TARGET", "FILES/%GameDir%"}}, json{{"EXEC", json::object({ {"Play", json::object()} })}} }));
         F.save();
         QStringList Offered;
         F.act->setChooseHandler([&Offered](const QString &, const QString &, const QStringList &O) { Offered = O; return 0; });
-        F.act->perform(F.nodeId(n), "pick_exe:L1/0");
+        F.act->perform(F.nodeId(n), "pick_exe:L1/Play");
         QTest::qWait(50);
         QCOMPARE(Offered.value(0), QString("%GameDir%/bin/XR_3DA.exe"));
-        const json E = F.node(n)["LAYERS"][1]["EXEC"][0];
+        const json E = F.node(n)["LAYERS"][1]["EXEC"]["Play"];
         QCOMPARE(E["EXE"], json("%GameDir%/bin/XR_3DA.exe"));
         QCOMPARE(E["HOST"], json("win32"));
         //Picking a 64-bit program afterwards corrects the Host the 32-bit one left; a non-Windows Host is the author's.
         auto Pe64 = [] { std::string H(256, '\0'); H[0] = 'M'; H[1] = 'Z'; H[0x3C] = 0x40; H.replace(0x40, 4, std::string("PE\0\0", 4)); H[0x44] = (char)0x64; H[0x45] = (char)0x86; return QByteArray(H.data(), (int)H.size()); };
         F.write(F.path("g/bin64/Game64.exe"), Pe64());
         F.act->setChooseHandler([](const QString &, const QString &, const QStringList &O) { return (int)O.indexOf("%GameDir%/bin64/Game64.exe"); });
-        F.act->perform(F.nodeId(n), "pick_exe:L1/0");
+        F.act->perform(F.nodeId(n), "pick_exe:L1/Play");
         QTest::qWait(50);
-        QCOMPARE(F.node(n)["LAYERS"][1]["EXEC"][0]["HOST"], json("win64"));
-        { json N = F.node(n); N["LAYERS"][1]["EXEC"][0]["HOST"] = "custom"; F.setNode(n, N); }
-        F.act->perform(F.nodeId(n), "pick_exe:L1/0");
+        QCOMPARE(F.node(n)["LAYERS"][1]["EXEC"]["Play"]["HOST"], json("win64"));
+        { json N = F.node(n); N["LAYERS"][1]["EXEC"]["Play"]["HOST"] = "custom"; F.setNode(n, N); }
+        F.act->perform(F.nodeId(n), "pick_exe:L1/Play");
         QTest::qWait(50);
-        QCOMPARE(F.node(n)["LAYERS"][1]["EXEC"][0]["HOST"], json("custom"));
+        QCOMPARE(F.node(n)["LAYERS"][1]["EXEC"]["Play"]["HOST"], json("custom"));
     }
 
     // A program two layers supply (the game's exe and a No-CD one over it) is one program at one place: offered once,
@@ -1493,11 +1494,11 @@ private slots:
         F.write(F.path("nocd/sh3.exe"), "MZ");
         const int n = F.addContentNode("");
         F.setLayers(n, json::array({ json{{"DIR", "g"}, {"TARGET", "FILES/%GameDir%"}}, json{{"DIR", "nocd"}, {"TARGET", "FILES/%GameDir%"}},
-                                     json{{"EXEC", json::array({ json{{"LABEL", "Play"}} })}} }));
+                                     json{{"EXEC", json::object({ {"Play", json::object()} })}} }));
         F.save();
         QStringList Offered;
         F.act->setChooseHandler([&Offered](const QString &, const QString &, const QStringList &O) { Offered = O; return -1; });
-        F.act->perform(F.nodeId(n), "pick_exe:L2/0");
+        F.act->perform(F.nodeId(n), "pick_exe:L2/Play");
         QTest::qWait(50);
         QCOMPARE(Offered, QStringList({"%GameDir%/sh3.exe", "%GameDir%/SH3Config.exe"}));
     }
@@ -1515,16 +1516,16 @@ private slots:
         F.write(F.path("g/gtawin/gta_uk.exe"), Pe32());
         const int n = F.addContentNode("");
         { json N = F.node(n); N["LABEL"] = "Grand Theft Auto: London 1969"; F.setNode(n, N); }
-        F.setLayers(n, json::array({ json{{"DIR", "g"}, {"TARGET", "FILES/%GameDir%"}}, json{{"EXEC", json::array({ json{{"LABEL", "Play"}} })}} }));
+        F.setLayers(n, json::array({ json{{"DIR", "g"}, {"TARGET", "FILES/%GameDir%"}}, json{{"EXEC", json::object({ {"Play", json::object()} })}} }));
         F.save();
         QStringList Offered;
         F.act->setChooseHandler([&Offered](const QString &, const QString &, const QStringList &O) { Offered = O; return -1; });
-        F.act->perform(F.nodeId(n), "pick_exe:L1/0");
+        F.act->perform(F.nodeId(n), "pick_exe:L1/Play");
         QTest::qWait(50);
         QCOMPARE(Offered.value(0), QString("%GameDir%/gtawin/gta_uk.exe"));
         //An entry said to be for DOS is not steered to the Windows build.
-        { json N = F.node(n); N["LAYERS"][1]["EXEC"][0]["HOST"] = "dos"; F.setNode(n, N); }
-        F.act->perform(F.nodeId(n), "pick_exe:L1/0");
+        { json N = F.node(n); N["LAYERS"][1]["EXEC"]["Play"]["HOST"] = "dos"; F.setNode(n, N); }
+        F.act->perform(F.nodeId(n), "pick_exe:L1/Play");
         QTest::qWait(50);
         QVERIFY(Offered.value(0) != QString("%GameDir%/gtawin/gta_uk.exe"));
     }
@@ -1546,12 +1547,12 @@ private slots:
         F.save();
         const int v = F.addContentNode("");
         F.setLayers(v, json::array({ json{{"NODE", F.nodeId(b).toStdString()}}, json{{"DIR", "rev"}, {"TARGET", "FILES/%GameDir%"}},
-                                     json{{"EXEC", json::array({ json{{"LABEL", "Play"}} })}} }));
+                                     json{{"EXEC", json::object({ {"Play", json::object()} })}} }));
         { json N = F.node(v); N["VARIANT"] = "Revision"; F.setNode(v, N); }
         F.save();
         QStringList Offered;
         F.act->setChooseHandler([&Offered](const QString &, const QString &, const QStringList &O) { Offered = O; return 0; });
-        F.act->perform(F.nodeId(v), "pick_exe:L2/0");
+        F.act->perform(F.nodeId(v), "pick_exe:L2/Play");
         QTest::qWait(50);
         QCOMPARE(Offered.value(0), QString("%GameDir%/Revision/System/Revision.exe"));
         QVERIFY(Offered.indexOf("%GameDir%/Bin/DeusEx.exe") > Offered.indexOf("%GameDir%/Revision/TNM2/TNM.exe"));
@@ -1563,17 +1564,17 @@ private slots:
     {
         Fixture F(this);
         const int v = F.addContentNode("");
-        F.setLayers(v, json::array({ json{{"EXEC", json::array({ json{{"HOST", "win32"}} })}} }));
+        F.setLayers(v, json::array({ json{{"EXEC", json::object({ {"Play", {{"HOST", "win32"}}} })}} }));
         F.save();
         F.chooseThis(0);
-        F.act->perform(F.nodeId(v), "pick_exe:L0/0");
+        F.act->perform(F.nodeId(v), "pick_exe:L0/Play");
         QTest::qWait(50);
         QVERIFY(F.notices.join(" ").contains("bring in files"));
         F.write(F.path("game/x.exe"), "mz");
-        F.setLayers(v, json::array({ json{{"DIR", "game"}}, json{{"EXEC", json::array({ json{{"HOST", "win32"}} })}} }));
+        F.setLayers(v, json::array({ json{{"DIR", "game"}}, json{{"EXEC", json::object({ {"Play", {{"HOST", "win32"}}} })}} }));
         F.save();
         const json Before = F.node(v);
-        for (const char *W : {"pick_exe:L-1/0", "pick_exe:L1/-1", "pick_exe:L1/5", "pick_exe:L0/0", "pick_exe:L9/0", "pick_exe:junk"})
+        for (const char *W : {"pick_exe:L-1/0", "pick_exe:L1/-1", "pick_exe:L1/5", "pick_exe:L0/Play", "pick_exe:L9/Play", "pick_exe:junk"})
         {
             F.act->perform(F.nodeId(v), W);
             QTest::qWait(20);

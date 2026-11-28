@@ -126,7 +126,7 @@ float BoxHeight(const std::string &T)
 
 void Field(json &Node, const Field &F, Host &H, int Layer);
 
-//A REG layer's hive tree ({HKLM: {...}}), edited as flat key-path rows. The rows are held steady while a field is
+//A REG layer's path map ({"HKLM\\Software\\X": {value: data}}), edited as rows. The rows are held steady while a field is
 //live (committing each keystroke rebuilt the tree, which re-sorts rows and merges two the moment a half-typed path
 //matches another — the row being edited moved from under the cursor) and committed when the field is finished.
 void RegTree(json &Obj, const PkgGraph::Field &F, Host &H, int Layer)
@@ -154,6 +154,14 @@ void RegTree(json &Obj, const PkgGraph::Field &F, Host &H, int Layer)
         };
         const std::string WasName = Rows[R].Name, WasValue = Rows[R].Value;
         Cell("##p", "HKLM\\Software\\...", Rows[R].Path, Row * 0.5f); ImGui::SameLine();
+        if (Rows[R].DeleteKey)
+        {
+            //null in the layer: the key goes, values and subkeys with it.
+            ImGui::TextDisabled("deletes this key"); ImGui::SameLine();
+            if (ImGui::Button("x", ImVec2(ImGui::GetFrameHeight(), 0))) DelRow = R;
+            ImGui::PopID();
+            continue;
+        }
         Cell("##n", "value", Rows[R].Name, Row * 0.25f);            ImGui::SameLine();
         Cell("##v", "data", Rows[R].Value, Row * 0.25f);             ImGui::SameLine();
         //A "create this key" row stops being key-only the moment a name or a value is typed into it.
@@ -357,7 +365,9 @@ void Field(json &Node, const PkgGraph::Field &F, Host &H, int Layer)
     case FieldKind::Check:
     {
         bool V = BoolOf(Node, F.Key);
-        if (ImGui::Checkbox(F.Label, &V)) { Node[F.Key] = V; H.Dirty(); }
+        //An entry's RECOMMENDED is only ever said true: unticked, it goes (false is the default, not a fact).
+        if (ImGui::Checkbox(F.Label, &V))
+        { if (!V && F.Key == std::string("RECOMMENDED")) Node.erase(F.Key); else Node[F.Key] = V; H.Dirty(); }
         if (ImGui::IsItemHovered() && F.Hint[0]) ImGui::SetTooltip("%s", F.Hint);
         break;
     }
@@ -458,6 +468,91 @@ void Field(json &Node, const PkgGraph::Field &F, Host &H, int Layer)
         { AskFocus(MapId, ""); H.Dirty(); }                // the new entry's name is typed into at once
         break;
     }
+    case FieldKind::EntryMap:
+    {
+        //An EXEC layer's entries, keyed by label (the entry's address: a later write of the label replaces it whole).
+        const bool Present = Node.contains(F.Key) && Node[F.Key].is_object();
+        if (!Present && Node.contains(F.Key) && !Node[F.Key].is_null())
+        { ImGui::TextDisabled("(%s is not {label: entry} - fix it in the JSON view)", F.Label); break; }
+        static json EmptyObj = json::object();           // stays empty: every write goes through Node[F.Key]
+        json &Map = Present ? Node[F.Key] : EmptyObj;
+        std::string Del;
+        std::pair<std::string, std::string> Rename;
+        int Row = 0;
+        for (auto &[Lab, E] : Map.items())
+        {
+            ImGui::PushID(Row++);
+            if (E.is_null())
+            {
+                //null: the entry of this label beneath is deleted (a version renaming the entry it inherits).
+                ImGui::AlignTextToFramePadding();
+                ImGui::TextDisabled("%s - deletes the entry beneath", Lab.c_str());
+                ImGui::SameLine();
+                if (ImGui::Button("remove")) Del = Lab;
+                ImGui::PopID();
+                continue;
+            }
+            if (!E.is_object())
+            {
+                ImGui::AlignTextToFramePadding();
+                ImGui::TextDisabled("(entry \"%s\" is not an object - fix it in the JSON view)", Lab.c_str());
+                ImGui::SameLine();
+                if (ImGui::Button("remove")) Del = Lab;
+                ImGui::PopID();
+                continue;
+            }
+            const std::string Title = EntryTitle(Lab, E) + (E.value("RECOMMENDED", false) == true ? "  (recommended)" : "");
+            const std::string Facts = EntrySummary(E);
+            const bool Open = H.Fold("L" + std::to_string(Layer) + "/" + F.Key + "/" + Lab,
+                                     FitWidth(Title, Avail(H) - ImGui::GetFrameHeight() * 1.5f));
+            if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s", (Title + (!Facts.empty() && Facts != Lab ? "\n" + Facts : std::string())).c_str());
+            if (ImGui::BeginPopupContextItem("##entrymenu"))
+            {
+                if (ImGui::Selectable("Remove this entry")) Del = Lab;
+                ImGui::EndPopup();
+            }
+            if (Open)
+            {
+                //The label IS the key: renaming moves the entry (committed when the field is finished, to a free name).
+                std::string L = Lab;
+                Label(H, "Label"); ImGui::SetNextItemWidth(H.RightW());
+                ImGui::InputTextWithHint("##label", "the entry's name (\"Play\" = the game)", &L);
+                if (ImGui::IsItemDeactivatedAfterEdit() && L != Lab && !L.empty() && !Map.contains(L)) Rename = {Lab, L};
+                const bool Runner = E.contains("GUEST") && E["GUEST"].is_array() && !E["GUEST"].empty();
+                for (const PkgGraph::Field &S : F.Sub)
+                {
+                    if (!Runner && RunnerOnly(S.Key) && !E.contains(S.Key)) continue;
+                    if (Runner && S.Key == std::string("RECOMMENDED") && !E.contains(S.Key)) continue;   // rows are games
+                    if (!PkgGraph::FieldApplies(S, E)) continue;
+                    //Which entry a host action is about (the Exe picker writes into this one).
+                    H.Entry = "L" + std::to_string(Layer) + "/" + Lab;
+                    Field(E, S, H, Layer);
+                }
+                if (ImGui::Button("remove entry")) Del = Lab;
+                ImGui::TreePop();
+            }
+            ImGui::PopID();
+        }
+        if (!Del.empty()) { Map.erase(Del); H.Dirty(); }   // an emptied EXEC stays: it is the type key
+        else if (!Rename.first.empty())
+        {
+            json Out = json::object();                  // the same place in the order, under the new name
+            for (auto &[K, V] : Map.items()) Out[K == Rename.first ? Rename.second : K] = std::move(V);
+            Map = std::move(Out);
+            H.Dirty();
+        }
+        if (ImGui::Button("+ entry"))
+        {
+            if (!Present) Node[F.Key] = json::object();   // materialised only when something is added
+            std::string Name = "Play";
+            for (int N = 2; Node[F.Key].contains(Name); ++N) Name = "Entry " + std::to_string(N);
+            json E = json::object();
+            for (const PkgGraph::Field &S : F.Sub) if (S.Kind == FieldKind::Enum && !S.Options.empty()) E[S.Key] = S.Options.front().first;
+            Node[F.Key][Name] = std::move(E);
+            H.Dirty();
+        }
+        break;
+    }
     case FieldKind::ObjArray:
     {
         const bool Present = Node.contains(F.Key) && Node[F.Key].is_array();
@@ -493,13 +588,10 @@ void Field(json &Node, const PkgGraph::Field &F, Host &H, int Layer)
             }
             if (Open)
             {
-                //A game entry (no GUEST) has no use for a runner's fields: they stay out of the way unless set.
-                const bool Runner = Arr[I].contains("GUEST") && Arr[I]["GUEST"].is_array() && !Arr[I]["GUEST"].empty();
                 for (const PkgGraph::Field &S : F.Sub)
                 {
                     //BASE_SOURCES means nothing except on a delta (NodeLower refuses it elsewhere).
                     if (S.Key == std::string("BASE_SOURCES") && StrOf(Arr[I], "FORM") != "delta") continue;
-                    if (F.Key == std::string("EXEC") && !Runner && RunnerOnly(S.Key) && !Arr[I].contains(S.Key)) continue;
                     if (!PkgGraph::FieldApplies(S, Arr[I])) continue;    // a field this entry's mode does not read
                     //Which entry a host action is about (the Exe picker writes into this one).
                     H.Entry = "L" + std::to_string(Layer) + "/" + std::to_string(I);
@@ -512,8 +604,7 @@ void Field(json &Node, const PkgGraph::Field &F, Host &H, int Layer)
             ImGui::PopID();
         }
         if (Del >= 0) { Arr.erase((size_t)Del); H.Dirty(); }   // an emptied EDIT/EXEC stays: it is the type key
-        const std::string Add = std::string("+ ") + (F.Kind == FieldKind::ObjArray && std::string(F.Key) == "EXEC" ? "entry" : "op");
-        if (ImGui::Button(Add.c_str()))
+        if (ImGui::Button("+ op"))
         {
             if (!Present) Node[F.Key] = json::array();   // materialised only when something is added
             json E = json::object();
@@ -777,12 +868,11 @@ void Field(json &Node, const PkgGraph::Field &F, Host &H, int Layer)
     ImGui::PopID();
 }
 
-//VARIANT, RECOMMENDED, SECTION describe the node itself (they never fold) — one folded row above its layers, whose
+//VARIANT, SECTION describe the node itself (they never fold) — one folded row above its layers, whose
 //title says what is set.
 void Properties(json &Node, Host &H)
 {
     const std::string Variant = StrOf(Node, "VARIANT"), Section = StrOf(Node, "SECTION");
-    json Rec = (Node.contains("RECOMMENDED") && Node["RECOMMENDED"].is_array()) ? Node["RECOMMENDED"] : json::array();
     std::string Summary = "Properties";
     if (!Variant.empty()) Summary += "  -  variant \"" + Variant + "\"";
     else if (!Section.empty()) Summary += "  -  in " + Section;
@@ -791,7 +881,7 @@ void Properties(json &Node, Host &H)
     ImGui::PopStyleColor();
     if (ImGui::IsItemHovered())
         ImGui::SetTooltip("What this node is, rather than what it holds:\nvariant - its name on the shelf (empty = not a row)"
-                          "\nsection - its folder in the pre-launch graft tree\nrecommended - tiles where it comes first / is pre-ticked");
+                          "\nsection - its folder in the pre-launch graft tree\n(the recommended row is set on its entry)");
     if (!Open) return;
     std::string V = Variant;
     Label(H, "Variant"); ImGui::SetNextItemWidth(H.RightW());
@@ -801,17 +891,6 @@ void Properties(json &Node, Host &H)
     Label(H, "Section"); ImGui::SetNextItemWidth(H.RightW());
     if (ImGui::InputTextWithHint("##section", "graft tree folder - / nests", &Sec))
     { if (Sec.empty()) Node.erase("SECTION"); else Node["SECTION"] = Sec; H.Dirty(); }
-    std::string R;
-    for (const auto &U : Rec) if (U.is_string()) R += (R.empty() ? "" : " ") + U.get<std::string>();
-    Label(H, "Recommended"); ImGui::SetNextItemWidth(H.RightW());
-    if (ImGui::InputTextWithHint("##recommended", "tile UIDs, space separated", &R))
-    {
-        json Out = json::array();
-        std::stringstream SS(R); std::string U;
-        while (SS >> U) Out.push_back(U);
-        if (Out.empty()) Node.erase("RECOMMENDED"); else Node["RECOMMENDED"] = std::move(Out);
-        H.Dirty();
-    }
     ImGui::TreePop();
 }
 

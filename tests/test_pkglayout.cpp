@@ -362,7 +362,23 @@ TEST(no_node_overlaps_another_on_a_realistic_mixed_graph)
 //The height estimate counts registry rows with its own walk instead of building the row structs, because
 //building them was 40% of a graph rebuild. Two readings of the same tree that drift apart is exactly how the
 //estimate would start under-reserving again, so they are pinned against each other here — on the shapes that
-//differ: empty keys, keys holding only subkeys, mixed values and subkeys, non-string values, deep nesting.
+//differ: empty keys, deleted keys, mixed values, non-string values, a malformed key, a wide key.
+// A REG layer edited as rows comes back as it was: a deleted key stays null (not an empty key), an empty key stays
+// {} (not a default value ""), the default value and typed values keep their name and type. Teeth: lose DeleteKey on
+// a null key; write a deleted key as {}; write a key-only row as the default value.
+TEST(registry_rows_round_trip_deleted_empty_and_default)
+{
+    const ordered_json Reg = { {"HKCU\\X", nullptr}, {"HKCU\\Y", ordered_json::object()}, {"HKCU\\Z", {{"", "d"}, {"n", 42}}} };
+    const auto Rows = PkgGraph::RegRowsOf(Reg);
+    bool XDeleted = false;
+    for (const auto &R : Rows) if (R.Path == "HKCU\\X") XDeleted = R.DeleteKey;
+    CHECK(XDeleted);
+    ordered_json Back = Reg;
+    PkgGraph::RegRowsInto(Back, Rows);
+    CHECK(Back == Reg);
+    if (Back != Reg) std::printf("    round trip: %s\n", Back.dump().c_str());
+}
+
 TEST(the_registry_row_count_matches_the_flattening)
 {
     auto Check = [](const char *What, const ordered_json &Entry) {
@@ -372,20 +388,19 @@ TEST(the_registry_row_count_matches_the_flattening)
             std::printf("    %s: flattening says %zu rows, the count says %zu\n", What, Walked, Counted);
         CHECK_EQ(Counted, Walked);
     };
-    Check("empty entry", ordered_json::object());
-    Check("scalars only", ordered_json{{"ARCHITECTURE", ordered_json::array({"64"})}, {"OVERRIDE", true}});
-    Check("one value", ordered_json{{"HKLM", {{"Software", {{"v", "d"}}}}}});
-    Check("key with no children", ordered_json{{"HKLM", {{"Software", ordered_json::object()}}}});
-    Check("values and subkeys", ordered_json{{"HKLM", {{"Software", {{"v", "d"}, {"Sub", {{"w", "e"}}}}}}}});
-    Check("non-string values", ordered_json{{"HKLM", {{"S", {{"n", 42}, {"b", true}}}}}});
-    Check("two hives", ordered_json{{"HKLM", {{"A", {{"v", "d"}}}}}, {"HKCU", {{"B", {{"w", "e"}}}}}});
-    // Deep and wide, the shape the codec libraries actually ship.
+    Check("empty layer", ordered_json::object());
+    Check("one value", ordered_json{{"HKLM\\Software", {{"v", "d"}}}});
+    Check("key with no values", ordered_json{{"HKLM\\Software", ordered_json::object()}});
+    Check("deleted key", ordered_json{{"HKLM\\Software\\Old", nullptr}});
+    Check("key and subkey", ordered_json{{"HKLM\\Software", {{"v", "d"}}}, {"HKLM\\Software\\Sub", {{"w", "e"}}}});
+    Check("non-string values", ordered_json{{"HKLM\\S", {{"n", 42}, {"b", true}, {"gone", nullptr}}}});
+    Check("two hives", ordered_json{{"HKLM\\A", {{"v", "d"}}}, {"HKCU\\B", {{"w", "e"}}}});
+    Check("malformed key", ordered_json{{"HKLM\\A", "not values"}});
+    // Wide, the shape the codec libraries actually ship.
     {
-        ordered_json Deep = ordered_json::object();
-        ordered_json *Cur = &Deep;
-        for (int I = 0; I < 8; ++I) { (*Cur)["k" + std::to_string(I)] = ordered_json::object(); Cur = &(*Cur)["k" + std::to_string(I)]; }
-        for (int I = 0; I < 20; ++I) (*Cur)["v" + std::to_string(I)] = "data";
-        Check("deep chain", ordered_json{{"HKLM", Deep}});
+        ordered_json Wide = ordered_json::object();
+        for (int I = 0; I < 20; ++I) Wide["v" + std::to_string(I)] = "data";
+        Check("wide key", ordered_json{{"HKLM\\k0\\k1\\k2\\k3\\k4\\k5\\k6\\k7", Wide}});
     }
 }
 

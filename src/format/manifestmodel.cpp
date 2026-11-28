@@ -89,7 +89,8 @@ bool ParseNode(const nlohmann::ordered_json &J, const std::filesystem::path &Fil
         return true;
     }
     if (J.contains("VARIANT")) Out.Variant = J["VARIANT"].get<std::string>();
-    if (J.contains("RECOMMENDED")) for (const auto &U : J["RECOMMENDED"]) Out.Recommended.push_back(U.get<std::string>());
+    for (const nlohmann::ordered_json *In : Fold::IntoLayers(J["LAYERS"]))            // a part ticked by default where it is offered
+        if (In->contains("RECOMMENDED") && (*In)["RECOMMENDED"].is_boolean() && (*In)["RECOMMENDED"].get<bool>()) { Out.Recommended = { "*" }; break; }
     for (auto &L : NodeLower::LowerNode(J, Out.NodeId))
     {
         const std::string T = L.is_object() ? L.value("TYPE", std::string()) : std::string();
@@ -100,8 +101,8 @@ bool ParseNode(const nlohmann::ordered_json &J, const std::filesystem::path &Fil
     const auto &Ls = J["LAYERS"];
     Out.IsGraft = !Fold::IntoLayers(Ls).empty();   // a part: its list opens with INTO
     for (const auto &L : Ls)
-        if (L.contains("EXEC"))
-            for (const auto &E : L["EXEC"])
+        if (L.contains("EXEC") && L["EXEC"].is_object())
+            for (const auto &[Lab, E] : L["EXEC"].items())
             {
                 if (E.contains("GUEST") && E["GUEST"].is_array() && !E["GUEST"].empty()) Out.OwnRunner = true;
                 if (E.contains("TILE")) Out.OwnTile = true;
@@ -183,16 +184,44 @@ void IndexTablesFromJson(const nlohmann::ordered_json &J, NodeIndex &Idx)
 
 } // namespace ManifestModel
 
-//The default entry: the first game entry (no GUEST) for a runnable node, else the first runner entry.
-static const nlohmann::ordered_json *DefaultEntry(const nlohmann::ordered_json &Entries)
+//The labels a node's own EXEC layers write (in order), and which of them it marks RECOMMENDED.
+static std::vector<std::string> OwnLabels(const nlohmann::ordered_json &J, bool RecommendedOnly)
 {
+    std::vector<std::string> Out;
+    if (!J.contains("LAYERS") || !J["LAYERS"].is_array()) return Out;
+    for (const auto &L : J["LAYERS"])
+        if (L.is_object() && L.contains("EXEC") && L["EXEC"].is_object())
+            for (const auto &[Lab, E] : L["EXEC"].items())
+                if (!RecommendedOnly || (E.is_object() && E.contains("RECOMMENDED") && E["RECOMMENDED"].is_boolean() && E["RECOMMENDED"].get<bool>()))
+                    Out.push_back(Lab);
+    return Out;
+}
+
+//The default entry (09 §9.2): the node's RECOMMENDED game entry; else the first game entry its own layers write that
+//carries a tile (its row's face: what a launch of the row runs); else an inherited RECOMMENDED entry; else the first
+//entry of its composition carrying a tile; else its first own game entry; else the first game entry of its
+//composition; else the first runner entry. The launch picks in the same order (InitializeFromNode).
+static const nlohmann::ordered_json *DefaultEntry(const nlohmann::ordered_json &Entries, const nlohmann::ordered_json &J, std::string *Label)
+{
+    const auto IsRunner = [](const nlohmann::ordered_json &E) { return E.contains("GUEST") && E["GUEST"].is_array() && !E["GUEST"].empty(); };
+    const auto Game = [&](const std::string &L) { return Entries.contains(L) && !IsRunner(Entries[L]) && Entries[L].contains("HOST"); };
+    for (const auto &L : OwnLabels(J, true)) if (Game(L)) { *Label = L; return &Entries[L]; }
+    const auto Own = OwnLabels(J, false);
+    for (const auto &L : Own)
+        if (Game(L) && Entries[L].contains("TILE") && Entries[L]["TILE"].is_object()) { *Label = L; return &Entries[L]; }
+    for (const auto &[L, E] : Entries.items())                    // inherited: the recommended one, then the row's face
+        if (Game(L) && E.contains("TILE") && E["TILE"].is_object() && E.value("RECOMMENDED", false) == true) { *Label = L; return &E; }
+    for (const auto &[L, E] : Entries.items())
+        if (Game(L) && E.contains("TILE") && E["TILE"].is_object()) { *Label = L; return &E; }
+    for (const auto &L : Own) if (Game(L)) { *Label = L; return &Entries[L]; }
     const nlohmann::ordered_json *Runner = nullptr;
+    std::string RunnerLabel;
     for (const auto &[L, E] : Entries.items())
     {
-        const bool IsRunner = E.contains("GUEST") && E["GUEST"].is_array() && !E["GUEST"].empty();
-        if (!IsRunner && E.contains("HOST")) return &E;
-        if (IsRunner && !Runner) Runner = &E;
+        if (!IsRunner(E) && E.contains("HOST")) { *Label = L; return &E; }
+        if (IsRunner(E) && !Runner) { Runner = &E; RunnerLabel = L; }
     }
+    *Label = RunnerLabel;
     return Runner;
 }
 
@@ -206,7 +235,7 @@ nlohmann::ordered_json Node::ExecFor(const std::string &Lbl) const
     if (!Entries.is_object() || Entries.empty()) return nlohmann::ordered_json();
     if (Lbl.empty()) return Exec;
     if (!Entries.contains(Lbl)) return nlohmann::ordered_json();
-    return NodeLower::LowerEntry(Entries[Lbl]);
+    return NodeLower::LowerEntry(Entries[Lbl], Lbl);
 }
 
 std::string Node::HostFor(const std::string &Lbl) const
@@ -323,6 +352,14 @@ void DeriveFacts(NodeIndex &Idx)
         N.HostPlatform.clear(); N.GuestPlatform.clear(); N.Label.clear(); N.Faces.clear();
         N.Uid.clear(); N.PackageUid.clear(); N.Meta = nlohmann::ordered_json();
         if (!N.LowerError.empty()) continue;
+        //a part ticked by default: its INTO says so (read from the node, never from a previous derivation), and it
+        //writes no way to run of its own (a part with an entry is a row)
+        bool Ticked = false;
+        for (const nlohmann::ordered_json *In : Fold::IntoLayers((*N.Json)["LAYERS"]))
+            if (In->value("RECOMMENDED", false) == true) Ticked = true;
+        Ticked = Ticked && !Fold::OwnsGameEntry(*N.Json);
+        std::vector<std::string> RecU;                                 // the cards its own RECOMMENDED entries are the row of
+        const auto Own = OwnLabels(*N.Json, true);                     // its own entries marked RECOMMENDED
         for (const auto &[L, E] : N.Entries.items())
         {
             const bool IsRunner = E.contains("GUEST") && E["GUEST"].is_array() && !E["GUEST"].empty();
@@ -332,15 +369,21 @@ void DeriveFacts(NodeIndex &Idx)
             {
                 const std::string Uid = E["TILE"]["UID"].get<std::string>();
                 if (std::find(N.Faces.begin(), N.Faces.end(), Uid) == N.Faces.end()) N.Faces.push_back(Uid);
-                ByUid[Uid].push_back({ K, E["TILE"], !N.Variant.empty(),
-                                       std::find(N.Recommended.begin(), N.Recommended.end(), Uid) != N.Recommended.end(),
-                                       N.Variant + '\x1f' + K });
+                const bool Rec = E.contains("RECOMMENDED") && E["RECOMMENDED"].is_boolean() && E["RECOMMENDED"].get<bool>()
+                                 && std::find(Own.begin(), Own.end(), L) != Own.end();
+                if (Rec && std::find(RecU.begin(), RecU.end(), Uid) == RecU.end()) RecU.push_back(Uid);
+                ByUid[Uid].push_back({ K, E["TILE"], !N.Variant.empty(), Rec, N.Variant + '\x1f' + K });
             }
         }
-        if (const nlohmann::ordered_json *D = DefaultEntry(N.Entries))
+        //A part with an entry of its own is a row, never ticked by default (09 §9.4), whatever its INTO says.
+        N.Recommended.clear();
+        if (Ticked) N.Recommended.push_back("*");
+        N.Recommended.insert(N.Recommended.end(), RecU.begin(), RecU.end());
+        std::string DefLabel;
+        if (const nlohmann::ordered_json *D = DefaultEntry(N.Entries, *N.Json, &DefLabel))
         {
-            N.Exec = NodeLower::LowerEntry(*D);
-            N.Label = D->value("LABEL", std::string());
+            N.Exec = NodeLower::LowerEntry(*D, DefLabel);
+            N.Label = DefLabel;
             N.HostPlatform = D->value("HOST", std::string());
             if (D->contains("GUEST") && (*D)["GUEST"].is_array())
                 for (const auto &G : (*D)["GUEST"]) if (G.is_string()) N.GuestPlatform.push_back(G.get<std::string>());
@@ -669,6 +712,13 @@ nlohmann::ordered_json MakeVfsSpecLayer(const nlohmann::ordered_json &Sub, const
     if (LType.empty()) return nullptr;
     nlohmann::ordered_json J = {{"type", LType}, {"source", Source}, {"target", Target},
                                 {"submounts", Sub.value("SUBMOUNTS", nlohmann::ordered_json::array())}, {"rw", false}};
+    //The places a re-provided copy leaves to the layers below it (05 §5.4), as paths in the tree.
+    if (Sub.contains("HIDE") && Sub["HIDE"].is_array() && !Sub["HIDE"].empty())
+    {
+        nlohmann::ordered_json H = nlohmann::ordered_json::array();
+        for (const auto &P : Sub["HIDE"]) if (P.is_string()) H.push_back(NormalizeTargetPath(P.get<std::string>()));
+        J["hide"] = std::move(H);
+    }
     if (LType == "zip" || LType == "delta" || LType == "file" || LType == "coded")   // what a delta names by CID (a file: a disc image)
     {
         std::filesystem::path Local; std::string Cid;

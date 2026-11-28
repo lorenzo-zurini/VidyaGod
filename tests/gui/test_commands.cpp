@@ -243,7 +243,7 @@ private slots:
         const std::string P = CliApp::RenderGeneric(Rows, false);
         QVERIFY2(P.find("bafkreiank43ketmdy2jtdcnn5utluobf53avcuubisi3ajtdxrcnmyteka") != std::string::npos, P.c_str());
         const json Layers = json::array({ {{"ZIP", "a.zip"}, {"TARGET", "%GameDir%"}}, {{"REG", {{"HKLM", {{"x", 1}}}}}, {"ARCH", {"32"}}},
-                                          {{"VARS", {{"a", 1}}}}, {{"NODE", "x"}}, {{"EXEC", json::array({ {{"LABEL", "Play"}} })}} });
+                                          {{"VARS", {{"a", 1}}}}, {{"NODE", "x"}}, {{"EXEC", json::object({ {"Play", json::object()} })}} });
         const std::string O = CliApp::RenderGeneric(Layers, false);
         QVERIFY2(O.find("- ZIP") != std::string::npos && O.find(" rows") == std::string::npos, O.c_str());
     }

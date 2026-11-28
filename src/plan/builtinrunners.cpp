@@ -12,7 +12,7 @@ const std::vector<Runner> &All()
     //profile and system anchors are the machine's real folders (%HostAppData%, …), whose package files its Sandboxie box
     //holds (BoxPrefix), laid out at drive_c by DRIVES.
     static const std::vector<Runner> R = {
-        { "windows-native", nlohmann::ordered_json::parse(R"VG({"LABEL":"windows-native_exec","LAYERS":[{"COMMENT":"A Windows game on Windows runs as itself, in a Sandboxie box that is its prefix. Its game folder is the mounted runtime's (%GameDir% is <runtime>\\drive_c\\<uid>), served to the box as it is. Its profile and system anchors are the machine's own folders, as the game reads them (%AppData% is the real AppData): what a package places there is laid out at drive_c in the runtime by DRIVES and copied into the box before the game starts, where the boxed game finds it at the real path; what it keeps there is copied back out after.","EXEC":[{"ARGS":[],"CONTENT_ROOT":"drive_c/%PackageUID%","DRIVES":{"C:":"drive_c"},"EXE":"%Content%","GUEST":["win32","win64"],"GUEST_ROOTS":{"%AppData%":"%HostAppData%","%Documents%":"%HostDocuments%","%GameDir%":"%RuntimePath%\\drive_c\\%PackageUID%","%LocalAppData%":"%HostLocalAppData%","%ProgramData%":"%HostProgramData%","%ProgramFiles%":"%HostProgramFiles%","%ProgramFiles32%":"%HostProgramFiles32%","%SysDir32%":"%HostSysDir32%","%SysDir64%":"%HostSysDir64%","%UserProfile%":"%HostUserProfile%","%Windows%":"%HostWindows%"},"HOST":"win64","LABEL":"windows-native_exec"}]}]})VG") },
+        { "windows-native", nlohmann::ordered_json::parse(R"VG({"LABEL":"windows-native_exec","LAYERS":[{"COMMENT":"A Windows game on Windows runs as itself, in a Sandboxie box that is its prefix. Its game folder is the mounted runtime's (%GameDir% is <runtime>\\drive_c\\<uid>), served to the box as it is. Its profile and system anchors are the machine's own folders, as the game reads them (%AppData% is the real AppData): what a package places there is laid out at drive_c in the runtime by DRIVES and copied into the box before the game starts, where the boxed game finds it at the real path; what it keeps there is copied back out after.","EXEC":{"windows-native_exec":{"ARGS":[],"CONTENT_ROOT":"drive_c/%PackageUID%","DRIVES":{"C:":"drive_c"},"EXE":"%Content%","GUEST":["win32","win64"],"GUEST_ROOTS":{"%AppData%":"%HostAppData%","%Documents%":"%HostDocuments%","%GameDir%":"%RuntimePath%\\drive_c\\%PackageUID%","%LocalAppData%":"%HostLocalAppData%","%ProgramData%":"%HostProgramData%","%ProgramFiles%":"%HostProgramFiles%","%ProgramFiles32%":"%HostProgramFiles32%","%SysDir32%":"%HostSysDir32%","%SysDir64%":"%HostSysDir64%","%UserProfile%":"%HostUserProfile%","%Windows%":"%HostWindows%"},"HOST":"win64"}}}]})VG") },
     };
     return R;
 }
@@ -34,7 +34,7 @@ void AddTo(std::map<std::string, nlohmann::ordered_json> &Tree, std::map<std::st
     {
         bool Hosts = false;
         for (const auto &L : B.Node["LAYERS"])
-            if (L.contains("EXEC")) for (const auto &E : L["EXEC"]) Hosts = Hosts || E.value("HOST", std::string()) == Machine;
+            if (L.contains("EXEC") && L["EXEC"].is_object()) for (const auto &[Lab, E] : L["EXEC"].items()) Hosts = Hosts || E.value("HOST", std::string()) == Machine;
         if (!Hosts) continue;
         //A synthetic key, like a node file with no stored CID: the freeze indexes it by its own CID, and an identical
         //copy on disk (or received) is the same CID, kept once — a local copy wins, as it does over a received one.

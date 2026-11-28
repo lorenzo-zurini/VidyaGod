@@ -142,6 +142,12 @@ static void CheckPlan(const nlohmann::ordered_json &Spec, const char *Ctx)
         //SUBMOUNTS relocate a subtree to another runtime path, and every submount-using node in the library carries a
         //%var% in its destination. A token surviving there is the same silent disaster as one in TARGET — the files
         //mount under a directory literally named "%dxwnd_dir%".
+        if (L.contains("hide") && L["hide"].is_array())
+            for (const auto &H : L["hide"])
+                if (H.is_string() && ManifestModel::HasLiveToken(H.get<std::string>()))
+                    LogErr(Ctx, "Layer '" + (ReadStr(L, "source").empty() ? std::string("?") : ReadStr(L, "source")) + "': a hidden place '"
+                                    + H.get<std::string>() + "' still contains a %token% after substitution — the layer "
+                                      "will show what it should leave to the layers below.");
         if (L.contains("submounts") && L["submounts"].is_array())
             for (const auto &M : L["submounts"])
                 if (M.is_string() && ManifestModel::HasLiveToken(M.get<std::string>()))
@@ -302,8 +308,12 @@ nlohmann::ordered_json VfsMount::BuildLayerSpec(struct ContainerParams &Containe
                 //variable". (The SubComponentsArray loop above keeps substituting: it is BuildLayerSpec's
                 //stated contract, and the tests feed it raw layers.)
                 const nlohmann::ordered_json Sub = SubstituteLayer(Raw);
-                Layers.push_back(MakeVfsSpecLayer(Sub, ResolveLayerSource(Sub, L.PackagePath),
-                                                  ResolveTargetPresubstituted(Base, Sub)));
+                nlohmann::ordered_json Spec = MakeVfsSpecLayer(Sub, ResolveLayerSource(Sub, L.PackagePath),
+                                                               ResolveTargetPresubstituted(Base, Sub));
+                //its hidden places are under the inner runner's mount too, as its target is
+                if (Spec.contains("hide") && Spec["hide"].is_array())
+                    for (auto &H : Spec["hide"]) if (H.is_string()) H = CheckOneTarget(Base, H.get<std::string>(), Sub, "HIDE");
+                Layers.push_back(std::move(Spec));
             }
         }
 

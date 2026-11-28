@@ -222,7 +222,7 @@ private slots:
         QCOMPARE(Fix.at(0).at(0).toString(), QString("fix_case"));
     }
 
-    // Changing the game's ID: its tiles, the tiles nested under it and RECOMMENDED follow, the folder is renamed, the
+    // Changing the game's ID: its tiles and the tiles nested under it follow, the folder is renamed, the
     // saves kept under the old ID move with it and the package reopens there. A taken ID or a non-number changes
     // nothing. Teeth: leave PARENTUID; keep the old folder; leave the saves behind; accept a taken ID.
     void theGameIdIsChangedEverywhere()
@@ -233,8 +233,8 @@ private slots:
         const QString Lib2 = R.path() + "/LIBRARY/VidyaGod";
         const QString P = Lib2 + "/[201801010001] Anomaly";
         QDir().mkpath(P); QDir().mkpath(Lib2 + "/[55492] Other");
-        const json G = json::parse(R"({"LABEL":"G","VARIANT":"Original","RECOMMENDED":["201801010001"],"LAYERS":[{"EXEC":[{"LABEL":"Play","TILE":{"UID":"201801010001","TITLE":"A"}}]}]})");
-        const json D = json::parse(R"({"LABEL":"D","LAYERS":[{"EXEC":[{"LABEL":"DLC","TILE":{"UID":"9","PARENTUID":"201801010001"}}]}]})");
+        const json G = json::parse(R"({"LABEL":"G","VARIANT":"Original","LAYERS":[{"EXEC":{"Play":{"RECOMMENDED":true,"TILE":{"UID":"201801010001","TITLE":"A"}}}}]})");
+        const json D = json::parse(R"({"LABEL":"D","LAYERS":[{"EXEC":{"DLC":{"TILE":{"UID":"9","PARENTUID":"201801010001"}}}}]})");
         Freeze(P, G); Freeze(P, D);
         const QString Users = QString::fromStdString(InstanceStore::Root(Cfg2).string());
         QDir().mkpath(Users + "/201801010001/DefaultInstance");
@@ -254,7 +254,7 @@ private slots:
         for (int I = 0; I < M.doc().Count(); ++I) All += M.doc().Node(I).dump();
         QVERIFY(All.find("201801010001") == std::string::npos);
         QVERIFY(All.find("\"PARENTUID\":\"201807210001\"") != std::string::npos);
-        QVERIFY(All.find("\"RECOMMENDED\":[\"201807210001\"]") != std::string::npos);
+        QVERIFY(All.find("\"RECOMMENDED\":true") != std::string::npos);      // the entry stays the card's recommended row
         AppPaths::SetDataRoot(Root->path().toStdString());
     }
 
@@ -287,7 +287,7 @@ private slots:
         PackageEditorModel M(&Cfg, nullptr);
         M.initPackage(Pkg);
         json N = M.doc().Node(0);
-        N["LAYERS"].push_back(json::parse(R"({"EXEC":[{"LABEL":"Play","TILE":{"UID":"1","COVER":{"FILE":"cover.png"}}}]})"));
+        N["LAYERS"].push_back(json::parse(R"({"EXEC":{"Play":{"TILE":{"UID":"1","COVER":{"FILE":"cover.png"}}}}})"));
         M.replaceNode(Game, N);
         QCOMPARE(M.unusedFiles(), QStringList{"old layer.zip"});
         M.Revalidate();
@@ -394,9 +394,8 @@ private slots:
         const QString Runners = Lib + "/Vendor/[3][v1] Runners";
         QDir().mkpath(Runners);
         auto Runner = [](const std::string &Label, const std::string &Root) {
-            return json{{"LABEL", Label}, {"LAYERS", json::array({ json{{"EXEC", json::array({
-                json{{"HOST", "linux64"}, {"GUEST", json::array({"win32"})}, {"EXE", "%RuntimePath%/run"},
-                     {"GUEST_ROOTS", {{"%GameDir%", Root}}}} })}} })}};
+            return json{{"LABEL", Label}, {"LAYERS", json::array({ json{{"EXEC", json::object({ {"Play", {{"HOST", "linux64"}, {"GUEST", json::array({"win32"})}, {"EXE", "%RuntimePath%/run"},
+                     {"GUEST_ROOTS", {{"%GameDir%", Root}}}}} })}} })}};
         };
         Freeze(Runners, Runner("Runner A", "c:/a"));
         const std::string RunnerB = Freeze(Runners, Runner("Runner B", "c:/b"));

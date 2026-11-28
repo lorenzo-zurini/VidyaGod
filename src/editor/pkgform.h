@@ -34,7 +34,7 @@ struct Host
     const PkgGraph::VarFacets *Facets = nullptr;                        // launcher facets: names WHEN-gated layers
     std::function<void()> Dirty;                                        // the node was edited
     std::function<void(const std::string &Action)> Request;             // a host action (browse_cover, …)
-    std::string Entry;                                                  // the entry being drawn ("L<layer>/<i>"), for actions about it
+    std::string Entry;                                                  // the entry being drawn ("L<layer>/<label>"), for actions about it
     std::function<const std::vector<std::string> &()> Platforms;        // what this machine's runners play (HOST's list)
     //Where each layer's row was drawn this frame (screen y; a layer inside a folded section reports that section's
     //header): wires plug into the row that holds their reference.

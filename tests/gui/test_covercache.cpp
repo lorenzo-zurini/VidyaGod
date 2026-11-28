@@ -133,8 +133,7 @@ private slots:
         cc->setAssetsRoot(assets.path());
         QTemporaryDir pkg; QVERIFY(pkg.isValid());
         auto Node = [](const std::string &Cid) {
-            return nlohmann::ordered_json{ {"LABEL", "t"}, {"LAYERS", nlohmann::ordered_json::array({ {{"EXEC", nlohmann::ordered_json::array({
-                {{"TILE", {{"UID", "1"}, {"COVER", {{"FILE", "cover.png"}, {"SOURCE", Cid}}}}}} })}} })} };
+            return nlohmann::ordered_json{ {"LABEL", "t"}, {"LAYERS", nlohmann::ordered_json::array({ {{"EXEC", nlohmann::ordered_json::object({ {"Play", {{"TILE", {{"UID", "1"}, {"COVER", {{"FILE", "cover.png"}, {"SOURCE", Cid}}}}}}} })}} })} };
         };
         { std::ofstream((pkg.path() + "/a.json").toStdString()) << Node("CIDA00000001").dump(); }
         { std::ofstream((pkg.path() + "/b.json").toStdString()) << Node("CIDB00000002").dump(); }

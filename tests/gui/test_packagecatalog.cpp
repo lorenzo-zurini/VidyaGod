@@ -184,7 +184,7 @@ private slots:
         {
             const std::filesystem::path S = Lib / "Unmarked";
             std::filesystem::create_directories(S / "[5] Pkg");
-            std::ofstream(S / "[5] Pkg" / "p.json") << R"({"LABEL":"P","LAYERS":[{"EXEC":[{"LABEL":"P","HOST":"win32","EXE":"p.exe","TILE":{"UID":"5","TITLE":"P"}}]}]})";
+            std::ofstream(S / "[5] Pkg" / "p.json") << R"({"LABEL":"P","LAYERS":[{"EXEC":{"P":{"HOST":"win32","EXE":"p.exe","TILE":{"UID":"5","TITLE":"P"}}}}]})";
             Cfg["Settings"]["PackageSources"] = json::array({ json{{"CID", Cid}, {"NAME", "Unmarked"}} });
             PackageCatalog::SyncPackageSources(Cfg);
             QVERIFY(!std::filesystem::exists(S / ".vgsource"));
@@ -197,9 +197,9 @@ private slots:
         const auto Old = [&](const char *Name) {
             const std::filesystem::path S = Lib / Name;
             std::filesystem::create_directories(S / "[2] Stub");
-            std::ofstream(S / "[2] Stub" / "stub.json") << R"({"LABEL":"Stub","LAYERS":[{"EXEC":[{"LABEL":"Stub","HOST":"win32","EXE":"s.exe","TILE":{"UID":"2","TITLE":"Stub"}}]}]})";
+            std::ofstream(S / "[2] Stub" / "stub.json") << R"({"LABEL":"Stub","LAYERS":[{"EXEC":{"Stub":{"HOST":"win32","EXE":"s.exe","TILE":{"UID":"2","TITLE":"Stub"}}}}]})";
             std::filesystem::create_directories(S / "[3] Played");
-            std::ofstream(S / "[3] Played" / "played.json") << R"({"LABEL":"Played","LAYERS":[{"EXEC":[{"LABEL":"Played","HOST":"win32","EXE":"p.exe","TILE":{"UID":"3","TITLE":"Played"}}]}]})";
+            std::ofstream(S / "[3] Played" / "played.json") << R"({"LABEL":"Played","LAYERS":[{"EXEC":{"Played":{"HOST":"win32","EXE":"p.exe","TILE":{"UID":"3","TITLE":"Played"}}}}]})";
             std::ofstream(S / "[3] Played" / "content.zip") << "bytes";
             std::ofstream(S / ".vgsource") << Cid << "\n[2] Stub\n[3] Played\n";   // as its fetch marks it
             Cfg["Settings"]["PackageSources"] = json::array({ json{{"CID", Cid}, {"NAME", Name}} });
@@ -210,7 +210,7 @@ private slots:
         const std::filesystem::path Gone = Old("Gone");
         QCOMPARE((int)Cfg["LIBRARY"].size(), 2);
         std::filesystem::create_directories(Gone / "[9] Mine");
-        std::ofstream(Gone / "[9] Mine" / "mine.json") << R"({"LABEL":"Mine","LAYERS":[{"EXEC":[{"LABEL":"Mine","HOST":"win32","EXE":"m.exe","TILE":{"UID":"9","TITLE":"Mine"}}]}]})";
+        std::ofstream(Gone / "[9] Mine" / "mine.json") << R"({"LABEL":"Mine","LAYERS":[{"EXEC":{"Mine":{"HOST":"win32","EXE":"m.exe","TILE":{"UID":"9","TITLE":"Mine"}}}}]})";
         PackageCatalog::SyncPackageSources(Cfg);                               // a start: the user's package is not the source's
         QCOMPARE((int)Cfg["LIBRARY"].size(), 2);
         Cfg["LIBRARY"].push_back(json{{"PATH", (Lib / "VidyaGod" / "[1] Game").string()}, {"CIDSOURCE", "another"}});
@@ -258,7 +258,7 @@ private slots:
         // (c) a tile with a COVER.
         writeFile(Pkg.path() + "/cover.png", std::string(777, 'C'));
         auto Tile = NodeFixture::Tile("9001", "T");
-        Tile["LAYERS"][0]["EXEC"][0]["TILE"]["COVER"] = json{{"FILE", "cover.png"}};
+        Tile["LAYERS"][0]["EXEC"]["Play"]["TILE"]["COVER"] = json{{"FILE", "cover.png"}};
         writeJson(Pkg.path() + "/tile.json", NodeFixture::Chain("tile", {Tile}));
 
         //Publishing re-mints (recording a SOURCE changes a node's bytes) and names each node file by its label, so a node
@@ -274,7 +274,7 @@ private slots:
         };
         auto Read = [&](const QString & label) { std::ifstream in((Pkg.path() + "/" + FileOf(label)).toStdString()); json J = json::parse(in, nullptr, false); return J.is_object() ? J : json::object({{"LAYERS", json::array({json::object()})}}); };
         auto Layer = [&](const QString & label) { return Read(label)["LAYERS"][0]; };
-        auto Cover = [&]() { return Read("tile")["LAYERS"][0]["EXEC"][0]["TILE"]["COVER"]; };
+        auto Cover = [&]() { return Read("tile")["LAYERS"][0]["EXEC"]["Play"]["TILE"]["COVER"]; };
 
         // 1) Fresh mint → CID + SIZE stamped on the file and the cover; the DIR carries neither.
         QVERIFY2(PackageCatalog::PublishPackage(Pkg.path().toStdString(), "", &Err), Err.c_str());
@@ -329,7 +329,7 @@ private slots:
         QDir().mkpath(R + "/VidyaGodRunners/wine");
         QDir().mkpath(R + "/VidyaGodLibraries/dgvoodoo");
         writeJson(R + "/VidyaGod/[1] Game/game.json",
-                  NodeFixture::Chain("g_exec", {NodeFixture::Merge({NodeFixture::Exec("win32", "g.exe"), NodeFixture::Variant("Play")})}, {"g_tile", "l_dg"}));
+                  NodeFixture::Chain("g_exec", {NodeFixture::Merge({NodeFixture::Merge({NodeFixture::Exec("win32", "g.exe"), NodeFixture::Variant("Play")}), NodeFixture::TakeTile("g_tile")})}, {"g_tile", "l_dg"}));
         writeJson(R + "/VidyaGodRunners/wine/wine.json",
                   NodeFixture::Chain("r_wine", {NodeFixture::Runner("linux", {"win32"}, "wine")}));
         writeFile(R + "/VidyaGodLibraries/dgvoodoo/dgvoodoo.zip", std::string(1000, 'D'));
@@ -1350,7 +1350,7 @@ private slots:
     {
         const auto &All = BuiltinRunners::All();
         QCOMPARE(All.size(), size_t(1));
-        QCOMPARE(Cid::OfBytes(Cid::Canonical(All[0].Node)), std::string("bafkreic77imjhq76wb4vb3dgl7tmo7gz42q2somalux3tek2bwut5nnjdi"));
+        QCOMPARE(Cid::OfBytes(Cid::Canonical(All[0].Node)), std::string("bafkreidrxscgpvdjaqnniwgfgcnl45eunmxm3rrb6bpbn2pijcrranper4"));   // gen 9
 
         std::map<std::string, json> Tree; std::map<std::string, std::filesystem::path> Dirs;
         BuiltinRunners::AddTo(Tree, Dirs, "/lib", "linux64");
@@ -1363,7 +1363,7 @@ private slots:
         Dirs["\x01/lib/VidyaGodRunners/windows-native/copy.json#1"] = "/lib/VidyaGodRunners/windows-native";
         const NodeIndex Idx = NodeGraph::FreezeToIndex(Tree, Dirs);
         QCOMPARE(Idx.Nodes.size(), size_t(1));
-        const Node *R = Idx.Find("bafkreic77imjhq76wb4vb3dgl7tmo7gz42q2somalux3tek2bwut5nnjdi");
+        const Node *R = Idx.Find("bafkreidrxscgpvdjaqnniwgfgcnl45eunmxm3rrb6bpbn2pijcrranper4");
         QVERIFY(R);
         QVERIFY(R->IsRunner());
         QCOMPARE(R->HostPlatform, std::string("win64"));
@@ -1457,7 +1457,7 @@ private:   // a helper, not a test: moc never sees its json parameters (no metat
                   NodeFixture::Chain("a_content", {NodeFixture::ContentCid("file", "data.bin",
                       "bafkreib52upmn2n6u65qll6mmj2dft4ddgnvrkcvyhiczcbjlrv2lu766e")}, {"a_base"}));
         writeJson(root + "/VidyaGod/[1] A/a.json",
-                  NodeFixture::Chain("a_exec", {NodeFixture::Merge({NodeFixture::Exec("win32", "a.exe"), NodeFixture::Variant("Play")})}, {"a_content", "a_tile"}));
+                  NodeFixture::Chain("a_exec", {NodeFixture::Merge({NodeFixture::Merge({NodeFixture::Exec("win32", "a.exe"), NodeFixture::Variant("Play")}), NodeFixture::TakeTile("a_tile")})}, {"a_content", "a_tile"}));
         // An EXPANSION of A: its own tile (same UID, another title), OVER the main launchable. Nesting is derived
         // from that edge — on the seeder and, once the package lands, on the receiver.
         writeJson(root + "/VidyaGod/[1] A/ax.json",
@@ -1466,7 +1466,7 @@ private:   // a helper, not a test: moc never sees its json parameters (no metat
         // B's title falls BETWEEN the base game's and its expansion's: a flat title sort would split the family.
         writeJson(root + "/VidyaGod/[2] B/tile.json", NodeFixture::Chain("b_tile", {NodeFixture::Tile("2", "A: Bonus")}));
         writeJson(root + "/VidyaGod/[2] B/b.json",
-                  NodeFixture::Chain("b_exec", {NodeFixture::Merge({NodeFixture::Exec("win32", "b.exe"), NodeFixture::Variant("Play")})}, {"b_tile"}));
+                  NodeFixture::Chain("b_exec", {NodeFixture::Merge({NodeFixture::Merge({NodeFixture::Exec("win32", "b.exe"), NodeFixture::Variant("Play")}), NodeFixture::TakeTile("b_tile")})}, {"b_tile"}));
         json seeder = json{{"Settings", {{"Paths", {{"LibraryRoot", root.toStdString()}}}}}};
         PackageCatalog::PublishLibrary(seeder, &Err);
         for (const auto & [C, P] : seeder.value("ShareSheet", json::object()).items()) SeederBlocks[C] = IpfsWrapper::BlockGet(C, &Err);
@@ -1610,7 +1610,7 @@ private slots:
         QDir().mkpath(R + "/VidyaGod/[2] Good");
         writeJson(R + "/VidyaGod/[2] Good/tile.json", NodeFixture::Chain("gd_tile", {NodeFixture::Tile("2", "Good")}));
         writeJson(R + "/VidyaGod/[2] Good/g.json",
-                  NodeFixture::Chain("gd_exec", {NodeFixture::Exec("win32", "g.exe")}, {"gd_tile"}));
+                  NodeFixture::Chain("gd_exec", {NodeFixture::Merge({NodeFixture::Exec("win32", "g.exe"), NodeFixture::TakeTile("gd_tile")})}, {"gd_tile"}));
         json cfg = json{{"Settings", {{"Paths", {{"LibraryRoot", R.toStdString()}}}}}};
         PackageCatalog::PublishLibrary(cfg, &Err);   // MUST NOT throw
         QVERIFY2(cfg.contains("ShareSheet"), "publish completed over a hostile block without crashing");
@@ -1636,7 +1636,7 @@ private slots:
         QDir().mkpath(R + "/VidyaGod/[2] Nameless");
         writeJson(R + "/VidyaGod/[1] Named/tile.json", NodeFixture::Chain("n_tile", {NodeFixture::Tile("1", "Named")}));
         writeJson(R + "/VidyaGod/[1] Named/g.json",
-                  NodeFixture::Chain("n_exec", {NodeFixture::Exec("win32", "g.exe")}, {"n_tile"}));
+                  NodeFixture::Chain("n_exec", {NodeFixture::Merge({NodeFixture::Exec("win32", "g.exe"), NodeFixture::TakeTile("n_tile")})}, {"n_tile"}));
         // A nameless node (no LABEL): a content node in a package of its own.
         writeJson(R + "/VidyaGod/[2] Nameless/c.json",
                   json{{"LAYERS", json::array({ json{{"FORM", "zip"}, {"PATH", "c.zip"},
@@ -1688,9 +1688,8 @@ private slots:
         QTemporaryDir Root; QVERIFY(Root.isValid());
         json cfg = json{{"Settings", {{"Paths", {{"LibraryRoot", (Root.path() + "/LIBRARY").toStdString()}}}}}};
         const std::filesystem::path Lib = PackageCatalog::LibraryRootDir(cfg), Cat = PackageCatalog::CatalogRootDir(cfg);
-        const json Engine = json{{"LABEL", "engine"}, {"LAYERS", json::array({ json{{"EXEC", json::array({
-            json{{"LABEL", "engine"}, {"HOST", ManifestModel::MachinePlatform()}, {"GUEST", json::array({"custom"})},
-                 {"EXE", "%RunnerMount%/engine"}} })}} })}};
+        const json Engine = json{{"LABEL", "engine"}, {"LAYERS", json::array({ json{{"EXEC", json::object({ {"engine", {{"HOST", ManifestModel::MachinePlatform()}, {"GUEST", json::array({"custom"})},
+                 {"EXE", "%RunnerMount%/engine"}}} })}} })}};
         const std::filesystem::path BG = Lib / "VidyaGod/[1] BG", Stub = Cat / "Alice - Games/[1] BG";
         for (const auto &D : { BG, Stub / ".package" })
         {
@@ -2007,13 +2006,13 @@ private slots:
         const auto Wine = receive("Runners", "proton-wine", {json{{"LABEL", "wine_11"}, {"LAYERS", json::array({
             NodeFixture::ContentCid("zip", "wine.zip", "bafkreihdwdcefgh4dqkjv67uzcmw7ojee6xedzdetojuzjevtenxquvyku")})}}});
         receive("Runners", "proton", {json{{"LABEL", "geproton_11"}, {"LAYERS", json::array({json{{"NODE", Wine[0]}},
-            json{{"EXEC", json::array({json{{"LABEL", "run"}, {"HOST", "linux"}, {"GUEST", "win64"}, {"EXE", "proton"}}})}}})}}});
+            json{{"EXEC", json::object({ {"run", {{"HOST", "linux"}, {"GUEST", "win64"}, {"EXE", "proton"}}} })}}})}}});
         const auto Lib = receive("Libraries", "dplay", {json{{"LABEL", "dplay_lib"}, {"LAYERS", json::array({
             NodeFixture::ContentCid("zip", "dplay.zip", "bafkreihdwdcefgh4dqkjv67uzcmw7ojee6xedzdetojuzjevtenxquvyku")})}}});
         receive("Games", "[7] G", {json{{"LABEL", "g_exec"}, {"VARIANT", "Play"}, {"LAYERS", json::array({json{{"NODE", Lib[0]}},
-            json{{"EXEC", json::array({json{{"LABEL", "Play"}, {"HOST", "linux"}, {"EXE", "g"}, {"TILE", {{"UID", "7"}, {"TITLE", "G"}}}}})}}})}}});
+            json{{"EXEC", json::object({ {"Play", {{"HOST", "linux"}, {"EXE", "g"}, {"TILE", {{"UID", "7"}, {"TITLE", "G"}}}}} })}}})}}});
         receive("Games", "[8] Untouched", {json{{"LABEL", "u_exec"}, {"VARIANT", "Play"}, {"LAYERS", json::array({
-            json{{"EXEC", json::array({json{{"LABEL", "Play"}, {"HOST", "linux"}, {"EXE", "u"}, {"TILE", {{"UID", "8"}, {"TITLE", "U"}}}}})}}})}}});
+            json{{"EXEC", json::object({ {"Play", {{"HOST", "linux"}, {"EXE", "u"}, {"TILE", {{"UID", "8"}, {"TITLE", "U"}}}}} })}}})}}});
 
         const NodeIndex Idx = PackageCatalog::BuildCatalogIndex(rx);
         QVERIFY2(Idx.Find("geproton_11") && Idx.Find("geproton_11")->Received, "precondition: the runner is received");
@@ -2216,7 +2215,7 @@ private slots:
         QVERIFY2(!X1.empty(), Err.c_str());
         writeJson(Ld + "/a.json", NodeFixture::Chain("libA", {NodeFixture::ContentCid("zip", "dx.zip", X1)}));
         writeJson(Gd + "/tile.json", NodeFixture::Chain("g_tile", {NodeFixture::Tile("1", "G")}));
-        writeJson(Gd + "/g.json", NodeFixture::Chain("g_exec", {NodeFixture::Merge({NodeFixture::Exec("win32", "g.exe"), NodeFixture::Variant("Play")})}, {"libA", "g_tile"}));
+        writeJson(Gd + "/g.json", NodeFixture::Chain("g_exec", {NodeFixture::Merge({NodeFixture::Merge({NodeFixture::Exec("win32", "g.exe"), NodeFixture::Variant("Play")}), NodeFixture::TakeTile("g_tile")})}, {"libA", "g_tile"}));
         json seeder = json{{"Settings", {{"Paths", {{"LibraryRoot", R.toStdString()}}}}}};
         auto Publish = [&]{ Err.clear(); const bool Ok = !PackageCatalog::PublishLibrary(seeder, &Err).empty(); if (!Ok) qWarning("publish: %s", Err.c_str());
                             return PackageCatalog::Wire(PackageCatalog::SheetEntries(seeder["ShareSheet"])); };
@@ -2246,7 +2245,7 @@ private slots:
         writeFile(Ld + "/extra.zip", std::string(3000, '1'));                   // X1's bytes, already held here
         writeJson(Ld + "/b.json", NodeFixture::Chain("libB", {NodeFixture::ContentCid("zip", "dx.zip", X2)}));
         writeJson(Ld + "/c.json", NodeFixture::Chain("libC", {NodeFixture::ContentCid("zip", "extra.zip", X1)}));
-        writeJson(Gd + "/g.json", NodeFixture::Chain("g_exec", {NodeFixture::Merge({NodeFixture::Exec("win32", "g.exe"), NodeFixture::Variant("Play")})}, {"libB", "g_tile"}));
+        writeJson(Gd + "/g.json", NodeFixture::Chain("g_exec", {NodeFixture::Merge({NodeFixture::Merge({NodeFixture::Exec("win32", "g.exe"), NodeFixture::Variant("Play")}), NodeFixture::TakeTile("g_tile")})}, {"libB", "g_tile"}));
         const json Gen2 = Publish();
         QVERIFY2(Gen2["Libs"] != Gen1["Libs"], Gen2.dump().c_str());
         rx["PeerLibraries"] = json{{Peer, Gen2}};
@@ -3134,7 +3133,7 @@ private slots:
         QDir().mkpath(R + "/VidyaGod/[1] Mine");
         writeJson(R + "/VidyaGod/[1] Mine/tile.json", NodeFixture::Chain("mytile", {NodeFixture::Tile("1", "Mine")}));
         writeJson(R + "/VidyaGod/[1] Mine/g.json",
-                  NodeFixture::Chain("mygame", {NodeFixture::Exec("win32", "g.exe")}, {"mytile"}, {{"PUBLISH", true}}));
+                  NodeFixture::Chain("mygame", {NodeFixture::Merge({NodeFixture::Exec("win32", "g.exe"), NodeFixture::TakeTile("mytile")})}, {"mytile"}, {{"PUBLISH", true}}));
         // A received peer stub, flagged PUBLISH, under a reserved _peer_ dir — must be excluded from our publish.
         QDir().mkpath(R + "/_peer_peerX_deadbeef/[9] Evil");
         writeJson(R + "/_peer_peerX_deadbeef/[9] Evil/x.json",
@@ -3426,7 +3425,7 @@ private slots:
         QTemporaryDir dir; QVERIFY(dir.isValid());
         // Dehydrated game: content zip has an IPFS CID but the file is absent → a fetch target.
         writeJson(dir.path() + "/game.json",
-                  NodeFixture::Chain("game", {NodeFixture::Tile("g"), NodeFixture::Exec("win32", "g.exe")}, {"content"}));
+                  NodeFixture::Chain("game", {NodeFixture::Merge({NodeFixture::Tile("g"), NodeFixture::Exec("win32", "g.exe")})}, {"content"}));
         writeJson(dir.path() + "/content.json",
                   NodeFixture::Chain("content", {NodeFixture::ContentCid("zip", "game.zip", "CID_GAME")}));
         // Runner with a dehydrated build (its build is a PARENT content node, per the runner closure).
@@ -3483,11 +3482,11 @@ private slots:
     {
         QTemporaryDir dir; QVERIFY(dir.isValid());
         writeJson(dir.path() + "/game1.json",
-                  NodeFixture::Chain("game1", {NodeFixture::Tile("g1"), NodeFixture::Merge({NodeFixture::Exec("win32", "g1.exe"), NodeFixture::Variant("Play")})}, {"content1", "lib"}));
+                  NodeFixture::Chain("game1", {NodeFixture::Merge({NodeFixture::Tile("g1"), NodeFixture::Exec("win32", "g1.exe"), NodeFixture::Variant("Play")})}, {"content1", "lib"}));
         writeJson(dir.path() + "/content1.json", NodeFixture::Chain("content1", {NodeFixture::ContentCid("zip", "g1.zip", "CID_G1")}));
         writeJson(dir.path() + "/lib.json",      NodeFixture::Chain("lib",      {NodeFixture::ContentCid("zip", "lib.zip", "CID_LIB")}));
         writeJson(dir.path() + "/game2.json",
-                  NodeFixture::Chain("game2", {NodeFixture::Tile("g2"), NodeFixture::Merge({NodeFixture::Exec("win32", "g2.exe"), NodeFixture::Variant("Play")})}, {"content2"}));
+                  NodeFixture::Chain("game2", {NodeFixture::Merge({NodeFixture::Tile("g2"), NodeFixture::Exec("win32", "g2.exe"), NodeFixture::Variant("Play")})}, {"content2"}));
         writeJson(dir.path() + "/content2.json", NodeFixture::Chain("content2", {NodeFixture::ContentCid("zip", "g2.zip", "CID_G2")}));
         // A runner + its dehydrated build (reached only via the IsRunner branch).
         writeJson(dir.path() + "/wine.json",
@@ -3499,9 +3498,8 @@ private slots:
         writeJson(dir.path() + "/sourceless.json", NodeFixture::Chain("sourceless", {NodeFixture::Content("zip", "nowhere.zip")}));
 
         NodeIndex idx; ManifestModel::ScanBundleNodes(dir.path().toStdString(), idx); ManifestModel::DeriveFacts(idx);
-        // 9 files, 11 nodes: NodeFixture::Chain writes a two-layer chain (Tile + Exec) as TWO nodes (a private
-        // "<id>__l0" link + the tail), and game1/game2 are the only two-layer chains here.
-        QCOMPARE((int)idx.Nodes.size(), 11);
+        // 9 files, 9 nodes: each chain here is one section (game1/game2's tile and entry are one Merge).
+        QCOMPARE((int)idx.Nodes.size(), 9);
 
         std::vector<IpfsWrapper::FetchTarget> targets;
         CliModes::CatalogTargetStats st; int sourcelessCalls = 0; std::string sourcelessId;
@@ -3511,7 +3509,7 @@ private slots:
         std::set<std::string> cids; for (const auto & t : targets) cids.insert(t.Cid);
         const std::set<std::string> want{"CID_G1", "CID_LIB", "CID_G2", "CID_WINE", "CID_ORPHAN"};
         QCOMPARE(cids, want);                   // every catalog node's content, nothing invented
-        QCOMPARE(st.Nodes, 11);                 // every indexed node visited, link nodes included
+        QCOMPARE(st.Nodes, 9);                  // every indexed node visited
         QCOMPARE(st.Launchables, 2);
         QCOMPARE(st.Runners, 1);
         QCOMPARE(st.SourcelessNodes, 1);        // counted…
@@ -3557,7 +3555,7 @@ private slots:
     {
         auto missingWithCid = [&](const QString &dir, const char *name) {
             writeJson(dir + "/game.json",
-                      NodeFixture::Chain("game", {NodeFixture::Tile("g"), NodeFixture::Exec("win32", "g.exe")},
+                      NodeFixture::Chain("game", {NodeFixture::Merge({NodeFixture::Tile("g"), NodeFixture::Exec("win32", "g.exe")})},
                                          {"content"}));
             writeJson(dir + "/content.json",
                       NodeFixture::Chain("content", {NodeFixture::ContentCid("zip", name, "CID_GAME")}));
@@ -3585,7 +3583,7 @@ private slots:
         writeJson(rt.path() + "/pfx.json",
                   NodeFixture::Chain("pfx", {NodeFixture::Content("dir", "%DefaultPfxDir%")}));
         writeJson(rt.path() + "/game.json",
-                  NodeFixture::Chain("game", {NodeFixture::Tile("g"), NodeFixture::Exec("win32", "g.exe")}, {"pfx"}));
+                  NodeFixture::Chain("game", {NodeFixture::Merge({NodeFixture::Tile("g"), NodeFixture::Exec("win32", "g.exe")})}, {"pfx"}));
         NodeIndex ridx; ManifestModel::ScanBundleNodes(rt.path().toStdString(), ridx); ManifestModel::DeriveFacts(ridx);
         QVERIFY(Installed::NodeHydrated(ridx, "game"));
     }
@@ -3652,7 +3650,7 @@ private slots:
     {
         QTemporaryDir dir; QVERIFY(dir.isValid());
         writeJson(dir.path() + "/game.json",
-                  NodeFixture::Chain("game", {NodeFixture::Tile("g"), NodeFixture::Exec("win32", "g.exe")}, {"content"}));
+                  NodeFixture::Chain("game", {NodeFixture::Merge({NodeFixture::Tile("g"), NodeFixture::Exec("win32", "g.exe")})}, {"content"}));
         writeJson(dir.path() + "/content.json",
                   NodeFixture::Chain("content", {NodeFixture::ContentCid("zip", "game.zip", "CID_GAME")}));
         writeJson(dir.path() + "/wine.json",
@@ -3679,7 +3677,7 @@ private slots:
     {
         QTemporaryDir dir; QVERIFY(dir.isValid());
         writeJson(dir.path() + "/game.json",
-                  NodeFixture::Chain("game", {NodeFixture::Tile("g"), NodeFixture::Exec(ManifestModel::MachinePlatform(), "g"),
+                  NodeFixture::Chain("game", {NodeFixture::Merge({NodeFixture::Tile("g"), NodeFixture::Exec(ManifestModel::MachinePlatform(), "g")}),
                                               NodeFixture::Exec("win32", "g.exe", "Windows")}));
         writeJson(dir.path() + "/wine.json",
                   NodeFixture::Chain("wine", {NodeFixture::Runner(ManifestModel::MachinePlatform(), {"win32"}, "x")},
@@ -3702,7 +3700,7 @@ private slots:
         QTemporaryDir dir; QVERIFY(dir.isValid());                 // an external bundle, not under any repo
         writeJson(dir.path() + "/tile.json", NodeFixture::Chain("tile", {NodeFixture::Tile("777", "My Local Game")}));
         writeJson(dir.path() + "/variant.json",
-                  NodeFixture::Chain("variant", {NodeFixture::Exec("win32", "g.exe")}, {"tile"}));
+                  NodeFixture::Chain("variant", {NodeFixture::Merge({NodeFixture::Exec("win32", "g.exe"), NodeFixture::TakeTile("tile")})}, {"tile"}));
 
         json cfg = json{{"Settings", {{"Repositories", json::array()}}},
                         {"LIBRARY", json::array({ json{{"PACKAGEUID", "777"}, {"PATH", dir.path().toStdString()}} })}};
@@ -3796,8 +3794,8 @@ private slots:
         //A title the folder could not hold, from the tile the folder is named for (not another tile of the package).
         const QString Bg = Root.path() + "/VidyaGod/[2190] Baldur_s Gate";
         QDir().mkpath(Bg);
-        writeFile(Bg + "/a.json", json{{"LAYERS", {{{"EXEC", {{{"LABEL", "Play"}, {"TILE", {{"UID", "99"}, {"TITLE", "Tales of the Sword Coast"}}}}}}}}}}.dump());
-        writeFile(Bg + "/b.json", json{{"LAYERS", {{{"EXEC", {{{"LABEL", "Play"}, {"TILE", {{"UID", "2190"}, {"TITLE", "Baldur's Gate"}}}}}}}}}}.dump());
+        writeFile(Bg + "/a.json", json{{"LAYERS", json::array({ json{{"EXEC", json{{"Play", {{"TILE", {{"UID", "99"}, {"TITLE", "Tales of the Sword Coast"}}}}}}}} })}}.dump());
+        writeFile(Bg + "/b.json", json{{"LAYERS", json::array({ json{{"EXEC", json{{"Play", {{"TILE", {{"UID", "2190"}, {"TITLE", "Baldur's Gate"}}}}}}}} })}}.dump());
         QDir().mkpath(Root.path() + "/Runners/[1][v2] Wine");
         writeFile(Root.path() + "/VidyaGod/readme.txt");
         const auto P = PackageCatalog::AuthoredPackages(Cfg);
@@ -3843,7 +3841,7 @@ private slots:
         QDir().mkpath(bundle);
         writeJson(bundle + "/tile.json", NodeFixture::Chain("cidtile", {NodeFixture::Tile("9090", "CID Game")}));
         writeJson(bundle + "/variant.json",
-                  NodeFixture::Chain("cidvariant", {NodeFixture::Exec("win32", "g.exe")}, {"cidtile"}));
+                  NodeFixture::Chain("cidvariant", {NodeFixture::Merge({NodeFixture::Exec("win32", "g.exe"), NodeFixture::TakeTile("cidtile")})}, {"cidtile"}));
 
         json cfg = json{{"Settings", {{"Repositories", json::array()},
                                       {"PackageSources", json::array({ json{{"CID", "QmSourceFolderCID"}, {"NAME", "mysource"}} })}}}};
@@ -3876,7 +3874,7 @@ private slots:
         QDir().mkpath(dir);
         writeJson(dir + "/tile.json", NodeFixture::Chain("solotile", {NodeFixture::Tile("7777", "Solo Game")}));
         writeJson(dir + "/variant.json",
-                  NodeFixture::Chain("solovariant", {NodeFixture::Merge({NodeFixture::Exec("win32", "g.exe"), NodeFixture::Variant("Play")})}, {"solotile"}));
+                  NodeFixture::Chain("solovariant", {NodeFixture::Merge({NodeFixture::Merge({NodeFixture::Exec("win32", "g.exe"), NodeFixture::Variant("Play")}), NodeFixture::TakeTile("solotile")})}, {"solotile"}));
 
         json cfg = json{{"Settings", {{"Repositories", json::array()},
                                       {"PackageSources", json::array({ json{{"CID", "QmSoloPackageCID"}, {"NAME", "solopkg"}} })}}}};
@@ -3948,7 +3946,7 @@ private slots:
         { std::ofstream f((bundle + "/cover.png").toStdString()); f << "img"; }
 
         json tile = NodeFixture::Tile("1", "G");
-        tile["LAYERS"][0]["EXEC"][0]["TILE"]["COVER"] = json{{"FILE", "cover.png"}, {"SOURCE", "QmCoverCID"}};
+        tile["LAYERS"][0]["EXEC"]["Play"]["TILE"]["COVER"] = json{{"FILE", "cover.png"}, {"SOURCE", "QmCoverCID"}};
         writeJson(bundle + "/node.json",
                   NodeFixture::Chain("g", {NodeFixture::ContentCid("zip", "game.zip", "QmLayerCID"), tile}));
         // A second node file of the package: its content lives beside it, in the package dir.
@@ -4180,7 +4178,7 @@ private slots:
         QDir().mkpath(bundle);
         writeFile(bundle + "/cover.png", "PNGBYTES");
         json tile = NodeFixture::Tile("1234", "A Game");
-        tile["LAYERS"][0]["EXEC"][0]["TILE"]["COVER"] = "cover.png";   // a bare string, not {FILE, SOURCE, SIZE}; file present
+        tile["LAYERS"][0]["EXEC"]["Play"]["TILE"]["COVER"] = "cover.png";   // a bare string, not {FILE, SOURCE, SIZE}; file present
         writeJson(bundle + "/node.json", NodeFixture::Chain("t", {}, {}, tile));
 
         std::vector<std::string> Errors;
@@ -4233,7 +4231,7 @@ private slots:
         const auto Package = [&](const QString &Dir, const std::string &Id, const std::string &Uid, bool Here, bool Cid) {
             QDir().mkpath(Dir);
             writeJson(Dir + "/" + QString::fromStdString(Id) + ".json",
-                      NodeFixture::Chain(Id, {NodeFixture::Tile(Uid, Id + " Game"), NodeFixture::Exec("win32", "g.exe"),
+                      NodeFixture::Chain(Id, {NodeFixture::Merge({NodeFixture::Tile(Uid, Id + " Game"), NodeFixture::Exec("win32", "g.exe")}),
                                               Cid ? NodeFixture::ContentCid("zip", "game.zip", "bafkreihdwdcefgh4dqkjv67uzcmw7ojee6xedzdetojuzjevtenxquvyku")
                                                   : NodeFixture::Content("zip", "game.zip")},
                                          {}, {{"VARIANT", "Edition 1"}}));
@@ -4273,8 +4271,8 @@ private slots:
         const QString Pkg = Data.path() + "/LIBRARY/VidyaGod/[1] Game";
         QDir().mkpath(Pkg);
         writeJson(Pkg + "/tile.json", NodeFixture::Chain("tile", {NodeFixture::Tile("1", "Game")}));
-        writeJson(Pkg + "/game.json", NodeFixture::Chain("game", {NodeFixture::Exec("win32", "g.exe")}, {"tile"},
-                                                         {{"VARIANT", "Edition 1"}, {"RECOMMENDED", json::array({"1"})}}));
+        writeJson(Pkg + "/game.json", NodeFixture::Chain("game", {NodeFixture::Merge({NodeFixture::Exec("win32", "g.exe"), NodeFixture::Tile("1", "Game"), NodeFixture::Recommended()})}, {"tile"},
+                                                         {{"VARIANT", "Edition 1"}}));
         writeJson(Pkg + "/bad.json", json{{"LABEL", "bad"}, {"LAYERS", json::array({ json{{"ZIP", "a.zip"}, {"FILE", "b"}} })}});
         //Node files written just now are too fresh to cache (a rewrite within the same clock tick could look the same):
         //a build over them scans and keeps nothing. Teeth: drop the freshness guard and a cache appears here.
@@ -4333,8 +4331,8 @@ private slots:
         }
 
         // An edit: another LABEL (and another size, so the check cannot hinge on the clock's resolution alone).
-        writeJson(Pkg + "/game.json", NodeFixture::Chain("game renamed", {NodeFixture::Exec("win32", "g.exe")}, {"tile"},
-                                                         {{"VARIANT", "Edition 1"}, {"RECOMMENDED", json::array({"1"})}}));
+        writeJson(Pkg + "/game.json", NodeFixture::Chain("game renamed", {NodeFixture::Merge({NodeFixture::Exec("win32", "g.exe"), NodeFixture::Tile("1", "Game"), NodeFixture::Recommended()})}, {"tile"},
+                                                         {{"VARIANT", "Edition 1"}}));
         Age();
         QVERIFY(!PackageCatalog::IndexCacheStatus(Cfg).Current);
         const NodeIndex Edited = PackageCatalog::BuildCatalogIndex(Cfg);
@@ -4365,8 +4363,8 @@ private slots:
         QDir().mkpath(Pkg);
         const auto Write = [&](const std::string &Label) {
             writeJson(Pkg + "/tile.json", NodeFixture::Chain("tile", {NodeFixture::Tile("1", "Game")}));
-            writeJson(Pkg + "/game.json", NodeFixture::Chain(Label, {NodeFixture::Exec("win32", "g.exe")}, {"tile"},
-                                                             {{"VARIANT", "Edition 1"}, {"RECOMMENDED", json::array({"1"})}}));
+            writeJson(Pkg + "/game.json", NodeFixture::Chain(Label, {NodeFixture::Merge({NodeFixture::Exec("win32", "g.exe"), NodeFixture::Tile("1", "Game"), NodeFixture::Recommended()})}, {"tile"},
+                                                             {{"VARIANT", "Edition 1"}}));
             for (const auto &E : std::filesystem::directory_iterator(Pkg.toStdString()))   // past the cache's freshness guard
                 std::filesystem::last_write_time(E.path(), std::filesystem::file_time_type::clock::now() - std::chrono::minutes(1));
         };
@@ -4428,8 +4426,8 @@ private slots:
         QTemporaryDir Lib; QVERIFY(Lib.isValid());
         const QString A = Lib.path() + "/VidyaGod/[1] One", B = Lib.path() + "/VidyaGod/[2] Two";
         QDir().mkpath(A); QDir().mkpath(B);
-        writeJson(A + "/one.json", NodeFixture::Chain("one", {NodeFixture::Tile("1", "One"), NodeFixture::Exec("win32", "a.exe")}, {}, {{"VARIANT", "v"}}));
-        writeJson(B + "/two.json", NodeFixture::Chain("two", {NodeFixture::Tile("2", "Two"), NodeFixture::Exec("win32", "b.exe"),
+        writeJson(A + "/one.json", NodeFixture::Chain("one", {NodeFixture::Merge({NodeFixture::Tile("1", "One"), NodeFixture::Exec("win32", "a.exe")})}, {}, {{"VARIANT", "v"}}));
+        writeJson(B + "/two.json", NodeFixture::Chain("two", {NodeFixture::Merge({NodeFixture::Tile("2", "Two"), NodeFixture::Exec("win32", "b.exe")}),
                                                               NodeFixture::Content("zip", std::string(300, 'z') + ".zip")}, {}, {{"VARIANT", "v"}}));
         NodeIndex Idx;
         ManifestModel::ScanBundleNodes(A.toStdString(), Idx);
@@ -4457,10 +4455,8 @@ private slots:
         const QString Pkg = R + "/Mine/[1] Game", Other = R + "/Mine/[2] Other";
         QDir().mkpath(Pkg); QDir().mkpath(Other);
         { std::ofstream f((Pkg + "/game.zip").toStdString()); f << "content"; }
-        NodeFixture::WriteNodes((Pkg + "/game.json").toStdString(), NodeFixture::Chain("game", {NodeFixture::Tile("1", "Game"),
-            NodeFixture::Exec("win32", "g.exe"), NodeFixture::ContentCid("zip", "game.zip", "bafkreigamezip")}, {}, {{"VARIANT", "Edition 1"}}));
-        NodeFixture::WriteNodes((Other + "/other.json").toStdString(), NodeFixture::Chain("other", {NodeFixture::Tile("2", "Other"),
-            NodeFixture::Exec("win32", "o.exe")}, {}, {{"VARIANT", "Edition 1"}}));
+        NodeFixture::WriteNodes((Pkg + "/game.json").toStdString(), NodeFixture::Chain("game", {NodeFixture::Merge({NodeFixture::Tile("1", "Game"), NodeFixture::Exec("win32", "g.exe")}), NodeFixture::ContentCid("zip", "game.zip", "bafkreigamezip")}, {}, {{"VARIANT", "Edition 1"}}));
+        NodeFixture::WriteNodes((Other + "/other.json").toStdString(), NodeFixture::Chain("other", {NodeFixture::Merge({NodeFixture::Tile("2", "Other"), NodeFixture::Exec("win32", "o.exe")})}, {}, {{"VARIANT", "Edition 1"}}));
         json cfg = json{{"Settings", {{"Paths", {{"LibraryRoot", R.toStdString()}}}}}};
         using K = PackageCatalog::UninstallVerdict::Kind;
         auto Judge = [&](const QString &Dir) { return PackageCatalog::JudgeUninstall(cfg, *PackageCatalog::FreshCatalogIndex(cfg), Dir.toStdString()); };
@@ -4500,8 +4496,7 @@ private slots:
         cfg["Settings"].erase("PackageSources");
 
         // another game containing it: its content lives here, so it is named; and a package the user shares says so
-        NodeFixture::WriteNodes((Other + "/other.json").toStdString(), NodeFixture::Chain("other", {NodeFixture::Tile("2", "Other"),
-            NodeFixture::Exec("win32", "o.exe")}, {"game"}, {{"VARIANT", "Edition 1"}}));
+        NodeFixture::WriteNodes((Other + "/other.json").toStdString(), NodeFixture::Chain("other", {NodeFixture::Merge({NodeFixture::Tile("2", "Other"), NodeFixture::Exec("win32", "o.exe")})}, {"game"}, {{"VARIANT", "Edition 1"}}));
         cfg["ShareSheet"] = json{{Cids.front(), "Mine/[1] Game/" + Cids.front() + ".json"}};
         V = Judge(Pkg);
         QVERIFY(V.K == K::OnlyCopy);
@@ -4536,8 +4531,8 @@ private slots:
             Content("zip", "game.zip")}, {}, {{"VARIANT", "Edition 1"}}));
         WriteNodes((Mod + "/mod.json").toStdString(), Chain("mod", {Merge({ Layers({ json{{"INTO", json::array({"game"})}} }),
             Tile("3", "Mod"), Content("zip", "mod.zip") })}, {}, {{"VARIANT", "Mod"}}));
-        WriteNodes((Lib + "/lib.json").toStdString(), Chain("lib", {Tile("4", "Lib"), Exec("win32", "l.exe")}, {}, {{"VARIANT", "Lib"}}));
-        WriteNodes((User + "/user.json").toStdString(), Chain("user", {Tile("5", "User"), Exec("win32", "u.exe"),
+        WriteNodes((Lib + "/lib.json").toStdString(), Chain("lib", {Merge({Tile("4", "Lib"), Exec("win32", "l.exe")})}, {}, {{"VARIANT", "Lib"}}));
+        WriteNodes((User + "/user.json").toStdString(), Chain("user", {Merge({Tile("5", "User"), Exec("win32", "u.exe")}),
             Content("zip", "user.zip")}, {"lib"}, {{"VARIANT", "Edition 1"}}));
         json cfg = json{{"Settings", {{"Paths", {{"LibraryRoot", R.toStdString()}}}}}};
         const auto Idx = PackageCatalog::FreshCatalogIndex(cfg);
@@ -4643,8 +4638,7 @@ private slots:
         const QString R = D.path() + "/LIBRARY", Pkg = R + "/Mine/[1] Game";
         QDir().mkpath(Pkg);
         { std::ofstream f((Pkg + "/game.zip").toStdString()); f << "content"; }
-        NodeFixture::WriteNodes((Pkg + "/game.json").toStdString(), NodeFixture::Chain("game", {NodeFixture::Tile("1", "Game"),
-            NodeFixture::Exec("win32", "g.exe"), NodeFixture::Content("zip", "game.zip")}, {}, {{"VARIANT", "Edition 1"}}));
+        NodeFixture::WriteNodes((Pkg + "/game.json").toStdString(), NodeFixture::Chain("game", {NodeFixture::Merge({NodeFixture::Tile("1", "Game"), NodeFixture::Exec("win32", "g.exe")}), NodeFixture::Content("zip", "game.zip")}, {}, {{"VARIANT", "Edition 1"}}));
         json cfg = json{{"Settings", {{"Paths", {{"LibraryRoot", R.toStdString()}}}}}};
         QDir appDir(D.path());
         AppModel model(&cfg, &appDir);

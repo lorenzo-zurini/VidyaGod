@@ -148,6 +148,7 @@ enum class FieldKind
     StringList,  // an array of strings, one per line; blank lines are typing noise and are dropped
     KeyValue,    // an object of string→string (a null value is shown as a removal)
     ObjArray,    // an array of objects, each described by `Sub`
+    EntryMap,    // an object of objects keyed by label, each described by `Sub` (an EXEC layer's entries)
     RegTree,     // a REG layer's hive tree, edited as flattened key paths
     Arch,        // a REG layer's ARCH: the 32/64-bit views, as checkboxes
     TakeList,    // a NODE layer's TAKE: selections, one per line ("FILES/a/b", "FILES/dir/" for contents, "X => Y" renames)
@@ -216,6 +217,8 @@ std::vector<LayerItem> LayerItems(const nlohmann::ordered_json &Node, const VarF
 int TopLevelRows(const std::vector<LayerItem> &Items);
 //One line naming an entry of a layer's list (an edit op, an exec entry): its LABEL, else its COMMENT, else a summary.
 std::string EntryTitle(const nlohmann::ordered_json &Entry);
+//An EXEC entry's title: its label (the key it is under).
+std::string EntryTitle(const std::string &Label, const nlohmann::ordered_json &Entry);
 //The same for an entry's facts alone (mode, site, bytes / key = value), whatever its COMMENT says.
 std::string EntrySummary(const nlohmann::ordered_json &Entry);
 //A variable's row name: its launcher LABEL with the key, else the key.
@@ -278,7 +281,9 @@ nlohmann::ordered_json RecipeNode(Recipe R, const std::string &Title, const std:
 //Recipes for a package that has a game already: another version of it (contains Base - its files and its entry -
 //with room for its own files and program: a source port, a patch) or a mod riding on it (an ANY on Base: ticked in
 //the pre-launch window, its files waiting).
-nlohmann::ordered_json VersionNode(const std::string &Base, const std::string &BaseLabel);
+//BaseNode (optional): the base's node, whose game entry the version's row starts from (its TILE cut to the UID: a
+//row of the same card).
+nlohmann::ordered_json VersionNode(const std::string &Base, const std::string &BaseLabel, const nlohmann::ordered_json *BaseNode = nullptr);
 nlohmann::ordered_json ModNode(const std::string &Base, const std::string &BaseLabel);
 //A game's ID changed (Old -> New): every tile of it (TILE.UID), every tile nesting under it (TILE.PARENTUID) and every
 //RECOMMENDED naming it, in this node. Returns whether anything changed.
@@ -314,10 +319,11 @@ struct RegRow
     //and conflating the two silently destroyed every one of them on any edit: 48 live in LAVFilters alone,
     //carrying the whole DirectShow COM registration.
     bool KeyOnly = false;
+    bool DeleteKey = false;  // the key is deleted (null in the layer), values and subkeys with it
 };
 
-//Flatten a hive tree object ({HKLM: {...}, HKCU: {...}}) into rows (the tree is the on-disk shape; rows are what a
-//human edits).
+//A REG layer's path map ({"HKLM\\Software\\X": {value: data}}) as rows: one per value, one for a key with no
+//values ({}) or a deleted key (null).
 std::vector<RegRow> RegRowsOf(const nlohmann::ordered_json &Entry);
 //How many rows RegRowsOf WOULD produce, without producing them. The height estimate needs the count on every
 //graph rebuild and building the rows for it was 40% of that rebuild; the two are pinned against each other by
@@ -357,7 +363,7 @@ std::string DescribeValue(const nlohmann::ordered_json &V, size_t MaxChars = 24)
 bool WritableObject(nlohmann::ordered_json &Node, const char *Key);
 bool WriteSubKey(nlohmann::ordered_json &Node, const char *Key, const std::string &Sub,
                  const nlohmann::ordered_json &Value);
-//Rebuild a hive tree object from rows, preserving any non-hive member.
+//Rebuild a REG layer's path map from rows, in the original key order.
 void RegRowsInto(nlohmann::ordered_json &Entry, const std::vector<RegRow> &Rows);
 
 //A NODE layer's TAKE as text, one selection per line ("X => Y" for a rename pair), and back. TextToTake drops blank

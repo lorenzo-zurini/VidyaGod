@@ -282,28 +282,49 @@ bool LaunchResolver::InitializeFromNodeOnce(struct ContainerParams &ContainerPar
         return false;
     }
 
-    //The entry that runs: the one named (the row's folded EXEC, grafts' entries included), else the launched tile's
-    //entry, else the first game entry.
+    //The entry that runs (09 §9.2): the one named (the row's EXEC, grafts' entries included), else on the launched tile:
+    //the row's own RECOMMENDED entry, its first own entry (a graft row runs its own, not the end's), an inherited
+    //RECOMMENDED one, any; else the first game entry. The same order as DeriveFacts' default entry.
     const nlohmann::ordered_json *Entry = nullptr;
+    std::string EntryLabel;
     const auto IsGame = [](const nlohmann::ordered_json &E) {
         return !(E.contains("GUEST") && E["GUEST"].is_array() && !E["GUEST"].empty()) && E.contains("HOST"); };
+    const auto Recommended = [](const nlohmann::ordered_json &E) {
+        return E.contains("RECOMMENDED") && E["RECOMMENDED"].is_boolean() && E["RECOMMENDED"].get<bool>(); };
+    const auto OnFace = [&](const nlohmann::ordered_json &E) {
+        return E.contains("TILE") && E["TILE"].is_object() && E["TILE"].value("UID", std::string()) == Face; };
     if (!CP.Entrypoint.empty())
     {
         if (!Plan.Exec.contains(CP.Entrypoint))
         { LogErr("InitializeFromNode", "Node '" + LaunchId + "' has no entry labelled '" + CP.Entrypoint + "'."); return false; }
-        Entry = &Plan.Exec[CP.Entrypoint];
+        Entry = &Plan.Exec[CP.Entrypoint]; EntryLabel = CP.Entrypoint;
     }
     else
     {
-        for (const auto &[L, E] : Plan.Exec.items())
-            if (IsGame(E) && E.contains("TILE") && E["TILE"].is_object() && E["TILE"].value("UID", std::string()) == Face) { Entry = &E; break; }
-        if (!Entry)
+        //the labels the launched ROW's own layers write (a graft row's own, not those of the end it runs on)
+        std::set<std::string> Own;
+        if (Row->Json->is_object() && Row->Json->contains("LAYERS") && (*Row->Json)["LAYERS"].is_array())
+            for (const auto &Ly : (*Row->Json)["LAYERS"])
+                if (Ly.is_object() && Ly.contains("EXEC") && Ly["EXEC"].is_object())
+                    for (const auto &[L, E] : Ly["EXEC"].items()) Own.insert(L);
+        //The first entry that satisfies Ok — or, Latest, the last (of its own entries, the one written last).
+        const auto Pick = [&](const std::function<bool(const std::string &, const nlohmann::ordered_json &)> &Ok, bool Latest) {
+            const nlohmann::ordered_json *Got = nullptr;
             for (const auto &[L, E] : Plan.Exec.items())
-                if (IsGame(E)) { Entry = &E; break; }
+                if (IsGame(E) && Ok(L, E)) { Got = &E; EntryLabel = L; if (!Latest) break; }
+            return Got;
+        };
+        //the row's own entries first: an inherited RECOMMENDED says which row of the card is the default, never which
+        //entry of another row runs (a graft row under its base's card runs its own)
+        Entry = Pick([&](const std::string &L, const nlohmann::ordered_json &E) { return OnFace(E) && Own.count(L) && Recommended(E); }, false);
+        if (!Entry) Entry = Pick([&](const std::string &L, const nlohmann::ordered_json &E) { return OnFace(E) && Own.count(L); }, false);
+        if (!Entry) Entry = Pick([&](const std::string &, const nlohmann::ordered_json &E) { return OnFace(E) && Recommended(E); }, false);
+        if (!Entry) Entry = Pick([&](const std::string &, const nlohmann::ordered_json &E) { return OnFace(E); }, false);
+        if (!Entry) Entry = Pick([](const std::string &, const nlohmann::ordered_json &) { return true; }, false);
     }
     if (!Entry && !CP.AuthoringBare)
         LogWarn("InitializeFromNode", "Node '" + LaunchId + "' has no entry to run (nothing in its fold declares one) — not runnable.");
-    CP.ComposedExec = Entry ? NodeLower::LowerEntry(*Entry) : nlohmann::ordered_json::object();
+    CP.ComposedExec = Entry ? NodeLower::LowerEntry(*Entry, EntryLabel) : nlohmann::ordered_json::object();
     CP.Platform = CP.ComposedExec.value("PLATFORM", Launch->HostPlatform);
 
     CP.Stack.clear();

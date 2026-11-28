@@ -2,6 +2,7 @@
 // what the package document looks like afterwards. Every test names what it pins and how it was made to fail.
 
 #include "qtestjson.h"
+#include "nodefixture.h"
 #include "noderefs.h"
 #include "canvasharness.h"
 #include "pkggraph.h"
@@ -412,7 +413,8 @@ private slots:
         const json Bad1 = json{{"LABEL", "Two types"}, {"LAYERS", json::array({ json{{"ZIP", "a.zip"}, {"DIR", "d"}} })}};
         const json Bad2 = json{{"LABEL", "Layers not a list"}, {"LAYERS", "nope"}};
         const json Bad3 = json{{"LABEL", "Bad fields"}, {"LAYERS", json::array({
-            json{{"EXEC", json::array({ 5, json{{"LABEL", "Play"}, {"ARGS", "not a list"}} })}},
+            json{{"EXEC", json{{"Five", 5}, {"Play", {{"ARGS", "not a list"}}}}}},
+            json{{"EXEC", json::array({ json{{"HOST", "win32"}} })}},    // the old list shape: not {label: entry}
             json{{"EDIT", "not a list"}, {"TARGET", "FILES/x"}},
             json{{"REG", json::array({1})}},
             json{{"VARS", {{"k", 7}}}},
@@ -715,8 +717,8 @@ private slots:
     void typingACoverNameDropsTheOldImagesCid()
     {
         const json Game = json{{"LABEL", "Game"}, {"LAYERS", json::array({
-            json{{"EXEC", json::array({ json{{"LABEL", "Play"}, {"HOST", "win32"}, {"EXE", "%GameDir%/g.exe"},
-                {"TILE", {{"UID", "1"}, {"TITLE", "G"}, {"COVER", {{"FILE", "a.png"}, {"SOURCE", "QmOld"}, {"SIZE", 5}}}}}} })}} })}};
+            json{{"EXEC", json::object({ {"Play", {{"HOST", "win32"}, {"EXE", "%GameDir%/g.exe"},
+                {"TILE", {{"UID", "1"}, {"TITLE", "G"}, {"COVER", {{"FILE", "a.png"}, {"SOURCE", "QmOld"}, {"SIZE", 5}}}}}}} })}} })}};
         const std::string G = Cid::OfNode(Game);
         H.Doc.Reset({{G, Game}});
         H.Display = ImVec2(1400, 2400);
@@ -725,7 +727,7 @@ private slots:
         H.frames(4);
         H.Canvas->setExpanded(G, true);
         H.settle();
-        const auto Cover = [&] { return H.Doc.Node(H.Doc.IndexOf(G))["LAYERS"][0]["EXEC"][0]["TILE"]["COVER"]; };
+        const auto Cover = [&] { return H.Doc.Node(H.Doc.IndexOf(G))["LAYERS"][0]["EXEC"]["Play"]["TILE"]["COVER"]; };
         bool Typing = false;
         for (int N = 0; N < 4 && !Typing; ++N)
         {
@@ -746,7 +748,7 @@ private slots:
     void aKeptRegistryKeyOffersItsBitnessAndADeltaItsBases()
     {
         const json Game = json{{"LABEL", "Game"}, {"LAYERS", json::array({
-            json{{"KEEP", {{"FILES/%GameDir%/Saves/", true}, {"REG/HKLM/Software/Acme/Game", true}}}},
+            json{{"KEEP", {{"FILES/%GameDir%/Saves/", true}, {"REG/HKLM\\Software\\Acme\\Game", true}}}},
             json{{"DELTA", "free.vgdelta"}, {"TARGET", "FILES/%GameDir%"}, {"BASE_SOURCES", json::array({ "QmBase" })}} })}};
         const std::string G = Cid::OfNode(Game);
         H.Doc.Reset({{G, Game}});
@@ -759,7 +761,7 @@ private slots:
         QVERIFY(H.shows("32-bit") && H.shows("64-bit"));
         QVERIFY(!H.shows("32-bit", 1));                    // the folder's row has none
         QVERIFY(H.shows("Bases"));
-        const auto Keep = [&] { return H.Doc.Node(H.Doc.IndexOf(G))["LAYERS"][0]["KEEP"]["REG/HKLM/Software/Acme/Game"]; };
+        const auto Keep = [&] { return H.Doc.Node(H.Doc.IndexOf(G))["LAYERS"][0]["KEEP"]["REG/HKLM\\Software\\Acme\\Game"]; };
         H.click(H.item("32-bit"));
         H.frames(2);
         QCOMPARE(Keep(), json({{"ARCH", {"32"}}}));
@@ -784,10 +786,9 @@ private slots:
     void anExecEntryOffersPlatformsAndAProgramPick()
     {
         const json Game = json{{"LABEL", "Game"}, {"LAYERS", json::array({ json{{"ENV", {{"A", "1"}}}},
-            json{{"EXEC", json::array({ json{{"LABEL", "Play"}, {"HOST", "win32"}, {"EXE", "%GameDir%/"}},
-                                        json{{"LABEL", "Tool"}, {"HOST", "win32"}, {"CONTENT_ROOT", "x"}} })}} })}};
+            json{{"EXEC", json::object({ {"Play", {{"HOST", "win32"}, {"EXE", "%GameDir%/"}}}, {"Tool", {{"HOST", "win32"}, {"CONTENT_ROOT", "x"}}} })}} })}};
         const json Runner = json{{"LABEL", "Runner"}, {"LAYERS", json::array({
-            json{{"EXEC", json::array({ json{{"LABEL", "Run"}, {"HOST", "linux64"}, {"GUEST", json::array({"win32"})}} })}} })}};
+            json{{"EXEC", json::object({ {"Run", {{"HOST", "linux64"}, {"GUEST", json::array({"win32"})}}} })}} })}};
         const std::string G = Cid::OfNode(Game), R = Cid::OfNode(Runner);
         H.Doc.Reset({{G, Game}, {R, Runner}});
         H.Display = ImVec2(1400, 2400);                    // both entries on screen: a clipped field draws no label
@@ -806,7 +807,7 @@ private slots:
         H.frames(2);
         QCOMPARE(Act.count(), 1);
         QCOMPARE(Act.at(0).at(0).toString().toStdString(), G);
-        QCOMPARE(Act.at(0).at(1).toString(), QString("pick_exe:L1/0"));
+        QCOMPARE(Act.at(0).at(1).toString(), QString("pick_exe:L1/Play"));
 
         H.settle();
         H.click(H.item("hostchoices"));
@@ -814,7 +815,7 @@ private slots:
         QVERIFY(H.shows("win64 - Windows, 64-bit"));
         H.click(H.item("win64 - Windows, 64-bit"));
         H.frames(2);
-        QCOMPARE(H.Doc.Node(H.Doc.IndexOf(G))["LAYERS"][1]["EXEC"][0]["HOST"], json("win64"));
+        QCOMPARE(H.Doc.Node(H.Doc.IndexOf(G))["LAYERS"][1]["EXEC"]["Play"]["HOST"], json("win64"));
         //...and what this machine's runners play, each once.
         int Asked = 0;
         H.Canvas->setPlatforms([&Asked] { ++Asked; return std::vector<std::string>{"win32", "snes", "n64"}; });
@@ -823,7 +824,7 @@ private slots:
         QVERIFY(H.shows("snes") && H.shows("n64") && !H.shows("win32"));
         H.click(H.item("snes"));
         H.frames(2);
-        QCOMPARE(H.Doc.Node(H.Doc.IndexOf(G))["LAYERS"][1]["EXEC"][0]["HOST"], json("snes"));
+        QCOMPARE(H.Doc.Node(H.Doc.IndexOf(G))["LAYERS"][1]["EXEC"]["Play"]["HOST"], json("snes"));
         QCOMPARE(Asked, 1);                                // asked once, not every frame
 
         H.Canvas->setExpanded(G, false);
@@ -844,7 +845,7 @@ private slots:
             for (const json &N : Ns) P.push_back(&N);
             return PkgGraph::NextStep(P);
         };
-        auto Entry = [](json E) { return json{{"LAYERS", json::array({ json{{"EXEC", json::array({E})}} })}}; };
+        auto Entry = [](json E) { return json{{"LAYERS", json::array({ json{{"EXEC", NodeFixture::ExecOf({E})}} })}}; };
         const json Tile = json{{"UID", "9940"}, {"TITLE", "B&W2"}};
         const json Files = Zip("data", "game.zip");
         QVERIFY(Step({Entry(json{{"LABEL", "Play"}, {"TILE", Tile}})}).find("files") != std::string::npos);
@@ -856,12 +857,12 @@ private slots:
         QVERIFY(Step({Files, Game}).find("Variant") != std::string::npos);   // only a version is on the shelf
         Game["VARIANT"] = "Original";
         QVERIFY(Step({Files, Game}).find("cover") != std::string::npos);
-        Game["LAYERS"][0]["EXEC"][0]["TILE"]["COVER"] = json{{"FILE", "cover.png"}};
+        Game["LAYERS"][0]["EXEC"]["Play"]["TILE"]["COVER"] = json{{"FILE", "cover.png"}};
         QCOMPARE(Step({Files, Game}), std::string());
         //An expansion's tile on the same node still needs its own cover; a variant naming only a covered tile's UID does not.
         json Two = Game;
-        Two["LAYERS"][0]["EXEC"].push_back(json{{"LABEL", "BotG"}, {"HOST", "win32"}, {"EXE", "%GameDir%/b.exe"},
-                                                {"TILE", {{"UID", "35496"}, {"PARENTUID", "9940"}, {"TITLE", "Battle of the Gods"}}}});
+        Two["LAYERS"][0]["EXEC"]["BotG"] = json{{"HOST", "win32"}, {"EXE", "%GameDir%/b.exe"},
+                                                {"TILE", {{"UID", "35496"}, {"PARENTUID", "9940"}, {"TITLE", "Battle of the Gods"}}}};
         QVERIFY(Step({Files, Two}).find("\"Battle of the Gods\" a cover") != std::string::npos);
         QCOMPARE(Step({Files, Game, Entry(json{{"HOST", "win32"}, {"EXE", "%GameDir%/g.exe"}, {"TILE", {{"UID", "9940"}}}})}), std::string());
         QCOMPARE(Step({Files}), std::string());                                                   // a library
@@ -1186,7 +1187,7 @@ private slots:
     {
         H.Display = ImVec2(1400, 2400);
         auto Restore = qScopeGuard([this] { H.Display = ImVec2(1400, 900); });
-        const json N = json::parse(R"({"LABEL":"N","LAYERS":[{"EXEC":[{"LABEL":"Play","HOST":"win32","EXE":"%GameDir%/g.exe"}]}]})");
+        const json N = json::parse(R"({"LABEL":"N","LAYERS":[{"EXEC":{"Play":{"HOST":"win32","EXE":"%GameDir%/g.exe"}}}]})");
         const std::string Hn = Cid::OfNode(N);
         H.Doc.Reset({{Hn, N}});
         H.Canvas->setZoom(1.0f);
@@ -1202,7 +1203,7 @@ private slots:
         H.key(ImGuiKey_Enter);
         H.type("-localdata");
         H.frames(3);
-        QCOMPARE(H.Doc.Node(H.Doc.IndexOf(Hn))["LAYERS"][0]["EXEC"][0]["ARGS"], json::parse(R"(["-skipdialog","-localdata"])"));
+        QCOMPARE(H.Doc.Node(H.Doc.IndexOf(Hn))["LAYERS"][0]["EXEC"]["Play"]["ARGS"], json::parse(R"(["-skipdialog","-localdata"])"));
     }
 
     // A field emptied is gone: no "COMMENT": "" left in the node; a layer's type key emptied stays (a ZIP waiting for
@@ -1236,11 +1237,11 @@ private slots:
     void anUnfinishedEntryIsOpenedToFinish()
     {
         const json N = json::parse(R"({"LABEL":"N","VARIANT":"Original","LAYERS":[{"ZIP":"g.zip","TARGET":"FILES/%GameDir%"},
-            {"EXEC":[{"LABEL":"Play","EXE":"%GameDir%/g.exe"}]}]})");
+            {"EXEC":{"Play":{"EXE":"%GameDir%/g.exe"}}}]})");
         const std::string Hn = Cid::OfNode(N);
-        const json M = json::parse(R"({"LABEL":"M","VARIANT":"Original","LAYERS":[{"EXEC":[{"LABEL":"Play","HOST":"win32","EXE":"%GameDir%/"}]}]})");
-        QCOMPARE(PkgGraph::FixFor("VARIANT 'Original' has no effective entry to run", &N).Action, std::string("open_entry:L1/EXEC/0"));
-        QCOMPARE(PkgGraph::FixFor("entry 'Play' runs a folder (EXE '%GameDir%/')", &M).Action, std::string("open_entry:L0/EXEC/0"));
+        const json M = json::parse(R"({"LABEL":"M","VARIANT":"Original","LAYERS":[{"EXEC":{"Play":{"HOST":"win32","EXE":"%GameDir%/"}}}]})");
+        QCOMPARE(PkgGraph::FixFor("VARIANT 'Original' has no effective entry to run", &N).Action, std::string("open_entry:L1/EXEC/Play"));
+        QCOMPARE(PkgGraph::FixFor("entry 'Play' runs a folder (EXE '%GameDir%/')", &M).Action, std::string("open_entry:L0/EXEC/Play"));
         H.Doc.Reset({{Hn, N}});
         H.Canvas->setIssues({{Hn, {"VARIANT 'Original' has no effective entry to run"}}});
         H.Canvas->setZoom(1.0f);
@@ -1271,11 +1272,11 @@ private slots:
     // and the button takes exactly that layer. Teeth: no fix; remove the wrong layer (the files).
     void anEmptiedLayerIsOfferedGone()
     {
-        const json N = json::parse(R"({"LABEL":"V","VARIANT":"Fix","LAYERS":[{"ZIP":"f.zip","TARGET":"FILES/%GameDir%"},{"EXEC":[]}]})");
+        const json N = json::parse(R"({"LABEL":"V","VARIANT":"Fix","LAYERS":[{"ZIP":"f.zip","TARGET":"FILES/%GameDir%"},{"EXEC":{}}]})");
         const std::string Hn = Cid::OfNode(N);
-        QCOMPARE(PkgGraph::FixFor("layer 1 \xe2\x80\x94 EXEC must be a non-empty list of entries", &N).Action, std::string("remove_layer:1"));
+        QCOMPARE(PkgGraph::FixFor("layer 1 \xe2\x80\x94 EXEC must be {label: entry} (09: the label is the entry's address)", &N).Action, std::string("remove_layer:1"));
         H.Doc.Reset({{Hn, N}});
-        H.Canvas->setIssues({{Hn, {"layer 1 \xe2\x80\x94 EXEC must be a non-empty list of entries"}}});
+        H.Canvas->setIssues({{Hn, {"layer 1 \xe2\x80\x94 EXEC must be {label: entry} (09: the label is the entry's address)"}}});
         H.Canvas->setZoom(1.0f);
         H.settle();
         H.click(H.item("remove the empty layer"));
@@ -1338,11 +1339,11 @@ private slots:
         QCOMPARE(PkgGraph::ContentType(W), std::string("ZIP"));
         QCOMPARE(PkgGraph::ContentName(W), std::string());
         const json *Play = nullptr;
-        for (const json &L : W["LAYERS"]) if (L.contains("EXEC")) Play = &L["EXEC"][0];
+        for (const json &L : W["LAYERS"]) if (L.contains("EXEC")) Play = &L["EXEC"]["Play"];
         QVERIFY(Play && !Play->contains("HOST"));
         QCOMPARE((*Play)["TILE"]["UID"], json("7"));
-        QCOMPARE(PkgGraph::RecipeNode(Recipe::Dos, "D", "1", "")["LAYERS"][1]["EXEC"][0]["HOST"], json("dos"));
-        QCOMPARE(PkgGraph::RecipeNode(Recipe::Console, "S", "2", "snes")["LAYERS"][1]["EXEC"][0]["HOST"], json("snes"));
+        QCOMPARE(PkgGraph::RecipeNode(Recipe::Dos, "D", "1", "")["LAYERS"][1]["EXEC"]["Play"]["HOST"], json("dos"));
+        QCOMPARE(PkgGraph::RecipeNode(Recipe::Console, "S", "2", "snes")["LAYERS"][1]["EXEC"]["Play"]["HOST"], json("snes"));
         std::vector<const json *> Ns{&W};
         QVERIFY(PkgGraph::NextStep(Ns).find("on the node") != std::string::npos);   // its waiting layer: the button there
         const json V = PkgGraph::VersionNode("base", "Demo");
@@ -1399,7 +1400,7 @@ private slots:
     void theFirstVersionBuildsOnTheTileAtTheBase()
     {
         const json Base = json{{"LABEL", "Demo files"}, {"LAYERS", json::array({ json{{"ZIP", "demo.zip"}, {"TARGET", "FILES/%GameDir%"}},
-                                 json{{"EXEC", json::array({ json{{"LABEL", "Play"}, {"TILE", {{"UID", "7"}, {"TITLE", "Demo"}}}} })}} })}};
+                                 json{{"EXEC", json::object({ {"Play", {{"TILE", {{"UID", "7"}, {"TITLE", "Demo"}}}}} })}} })}};
         const json Other = json{{"LABEL", "Other"}, {"LAYERS", json::array({ json{{"ENV", {{"A", "1"}}}} })}};
         const std::string Hb = Cid::OfNode(Base);
         H.Doc.Reset({{Cid::OfNode(Other), Other}, {Hb, Base}});
@@ -1460,14 +1461,14 @@ private slots:
         const json N = json{{"VARIANT", "Original"}, {"LAYERS", json::array({
             json{{"INTO", json::array({"game"})}}, json{{"ZIP", "demo.zip"}}, json{{"NODE", "base"}},
             json{{"EDIT", json::array({ json::object(), json::object() })}}, json{{"KEEP", {{"FILES/%Documents%/Demo/", true}, {"FILES/%GameDir%/cfg.ini", false}}}},
-            json{{"EXEC", json::array({ json{{"LABEL", "Play"}, {"HOST", "win32"}, {"EXE", "%GameDir%/bin/demo.exe"}} })}} })}};
+            json{{"EXEC", json::object({ {"Play", {{"HOST", "win32"}, {"EXE", "%GameDir%/bin/demo.exe"}}} })}} })}};
         const std::string D = PkgGraph::Describe(N, [](const std::string &R) { return R == "base" ? std::string("Core Files") : std::string("The Game"); });
         for (const char *Want : {"Version \"Original\"", "runs demo.exe on Windows 32-bit", "files from demo.zip", "contains \"Core Files\"",
                                  "goes into \"The Game\"", "changes 2 settings", "keeps Documents/Demo"})
             QVERIFY2(D.find(Want) != std::string::npos, (D + "  <- missing: " + Want).c_str());
         QVERIFY2(D.find("cfg.ini") == std::string::npos, (D + "  <- a key taken back (KEEP false) is not kept").c_str());
         QCOMPARE(PkgGraph::Describe(json{{"LAYERS", json::array()}}), std::string("Nothing yet"));
-        const json R = json{{"LAYERS", json::array({ json{{"EXEC", json::array({ json{{"HOST", "linux64"}, {"GUEST", json::array({"snes"})}} })}} })}};
+        const json R = json{{"LAYERS", json::array({ json{{"EXEC", json::object({ {"Play", {{"HOST", "linux64"}, {"GUEST", json::array({"snes"})}}} })}} })}};
         QCOMPARE(PkgGraph::Describe(R), std::string("Plays Super Nintendo games on Linux"));
     }
 
@@ -1519,13 +1520,14 @@ private slots:
     }
 
     // The shelf card a version shows: the tile its fold presents (its own, else a contained node's), and every version
-    // of the package with the recommended one marked. Teeth: look only at the node's own layers; mark none recommended.
+    // of the package with the recommended one (its entry says RECOMMENDED) marked. Teeth: look only at the node's own layers; mark none recommended.
     void aVersionsShelfCardComesFromItsFold()
     {
         std::map<std::string, json> Ns{
-            {"tile", json{{"LAYERS", json::array({ json{{"EXEC", json::array({ json{{"TILE", {{"UID", "9"}, {"TITLE", "Nine"}, {"COVER", {{"FILE", "c.png"}}}}}} })}} })}}},
+            {"tile", json{{"LAYERS", json::array({ json{{"EXEC", json::object({ {"Play", {{"TILE", {{"UID", "9"}, {"TITLE", "Nine"}, {"COVER", {{"FILE", "c.png"}}}}}}} })}} })}}},
             {"orig", json{{"VARIANT", "Original"}, {"LAYERS", json::array({ json{{"NODE", "tile"}} })}}},
-            {"port", json{{"VARIANT", "Source port"}, {"RECOMMENDED", json::array({"9"})}, {"LAYERS", json::array({ json{{"NODE", "orig"}} })}}}};
+            {"port", json{{"VARIANT", "Source port"}, {"LAYERS", json::array({ json{{"NODE", "orig"}},
+                json{{"EXEC", json::object({ {"Play", {{"RECOMMENDED", true}, {"TILE", {{"UID", "9"}, {"TITLE", "Nine"}, {"COVER", {{"FILE", "c.png"}}}}}}} })}} })}}}};
         auto Find = [&](const std::string &H) -> const json * { const auto It = Ns.find(H); return It == Ns.end() ? nullptr : &It->second; };
         const auto C = PkgGraph::CardFor("port", {"tile", "orig", "port"}, Find);
         QCOMPARE(C.Title, std::string("Nine"));
@@ -1536,16 +1538,15 @@ private slots:
         QVERIFY(PortRec && !OrigRec);
     }
 
-    // The card's tile is the folded one, as the shelf takes it: a version that renames the tile it contains shows
-    // the new title on the contained UID. Teeth: take the first layer naming a tile, unmerged (no UID, or the old
-    // title).
+    // The card's tile is the composed one, as the shelf takes it: a version whose own entry (written whole) renames the
+    // tile it contains shows the new title on the same UID. Teeth: take the first layer naming a tile (the old title).
     void aVersionsCardShowsItsFoldedTile()
     {
         const json Play = json{{"LABEL", "Play"}, {"TILE", {{"UID", "9"}, {"TITLE", "Nine"}}}};
         std::map<std::string, json> Ns{
-            {"orig", json{{"VARIANT", "Original"}, {"LAYERS", json::array({ json{{"EXEC", json::array({ Play })}} })}}},
+            {"orig", json{{"VARIANT", "Original"}, {"LAYERS", json::array({ json{{"EXEC", NodeFixture::ExecOf({ Play })}} })}}},
             {"hd", json{{"VARIANT", "HD"}, {"LAYERS", json::array({ json{{"NODE", "orig"}},
-                json{{"EXEC", json::array({ json{{"LABEL", "Play"}, {"TILE", {{"TITLE", "Nine HD"}}}} })}} })}}}};
+                json{{"EXEC", json::object({ {"Play", {{"TILE", {{"UID", "9"}, {"TITLE", "Nine HD"}}}}} })}} })}}}};
         auto Find = [&](const std::string &H) -> const json * { const auto It = Ns.find(H); return It == Ns.end() ? nullptr : &It->second; };
         const auto C = PkgGraph::CardFor("hd", {"orig", "hd"}, Find);
         QCOMPARE(C.Uid, std::string("9"));
@@ -1627,7 +1628,7 @@ private slots:
     void theProbeWritesEachItemByItsLabel()
     {
         const json N = json{{"LABEL", "n"}, {"LAYERS", json::array({
-            json{{"EXEC", json::array({ json{{"LABEL", "Say \"hi\"\\now"}, {"HOST", "win32"}} })}} })}};
+            json{{"EXEC", json::object({ {"Say \"hi\"\\now", {{"HOST", "win32"}}} })}} })}};
         H.Doc.Reset({{"n1", N}});
         H.Canvas->setZoom(1.0f);
         H.Canvas->setExpanded("n1", true);

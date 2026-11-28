@@ -133,17 +133,17 @@ struct LibraryFixture
             if (!G.Series.empty()) Meta["SERIES"] = G.Series;
             json T = NodeFixture::Tile(G.Uid, G.Title, Meta);
             //The card reads SERIES and RELEASEDATE off the tile itself too (the sort keys).
-            T["LAYERS"][0]["EXEC"][0]["TILE"]["RELEASEDATE"] = G.Date;
-            if (!G.Series.empty()) T["LAYERS"][0]["EXEC"][0]["TILE"]["SERIES"] = G.Series;
+            T["LAYERS"][0]["EXEC"]["Play"]["TILE"]["RELEASEDATE"] = G.Date;
+            if (!G.Series.empty()) T["LAYERS"][0]["EXEC"]["Play"]["TILE"]["SERIES"] = G.Series;
             if (G.Uid == CoverUid)
             {
-                T["LAYERS"][0]["EXEC"][0]["TILE"]["COVER"] = {{"FILE", "cover.png"}};
+                T["LAYERS"][0]["EXEC"]["Play"]["TILE"]["COVER"] = {{"FILE", "cover.png"}};
                 QImage Art(600, 900, QImage::Format_RGB32);
                 Art.fill(Qt::darkCyan);
                 Art.save(QString::fromStdString(Pkg + "/cover.png"));
             }
             NodeFixture::WriteNodes(Pkg + "/game.json",
-                NodeFixture::Chain("g" + G.Uid, {T, NodeFixture::Exec("win32", "g.exe"),
+                NodeFixture::Chain("g" + G.Uid, {NodeFixture::Merge({T, NodeFixture::Exec("win32", "g.exe")}),
                                                  NodeFixture::ContentCid("zip", "game.zip", "bafkreigame" + G.Uid)}, {}, {{"VARIANT", "Edition"}}));
             if (G.Here) std::ofstream(Pkg + "/game.zip") << "content";
         }
@@ -653,12 +653,12 @@ private slots:
         const std::string Lima = Root + "[12] Lima", Mike = Root + "[13] Mike";
         std::filesystem::create_directories(Lima);
         std::filesystem::create_directories(Mike);
-        NF::WriteNodes(Lima + "/a.json", NF::Chain("la", {NF::Tile("12", "Lima"), NF::Exec("win32", "g.exe"),
+        NF::WriteNodes(Lima + "/a.json", NF::Chain("la", {NF::Merge({NF::Tile("12", "Lima"), NF::Exec("win32", "g.exe")}),
                                                           NF::ContentCid("zip", "a.zip", "bafkreilimaa")}, {}, {{"VARIANT", "A"}}));
-        NF::WriteNodes(Lima + "/b.json", NF::Chain("lb", {NF::Tile("12", "Lima"), NF::Exec("win32", "g.exe"),
+        NF::WriteNodes(Lima + "/b.json", NF::Chain("lb", {NF::Merge({NF::Tile("12", "Lima"), NF::Exec("win32", "g.exe")}),
                                                           NF::ContentCid("zip", "b.zip", "bafkreilimab")}, {}, {{"VARIANT", "B"}}));
         std::ofstream(Lima + "/a.zip") << "content";
-        NF::WriteNodes(Mike + "/m.json", NF::Chain("mk", {NF::Tile("13", "Mike"), NF::Exec("win32", "g.exe"),
+        NF::WriteNodes(Mike + "/m.json", NF::Chain("mk", {NF::Merge({NF::Tile("13", "Mike"), NF::Exec("win32", "g.exe")}),
                                                           NF::Content("zip", "m.zip")}, {}, {{"VARIANT", "Edition"}}));
         AppModel M(&L.Cfg, &L.AppDir);
         M.rebuildCatalog();
@@ -752,7 +752,7 @@ private slots:
         const std::string Base = "bafkreibasepackmissingaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
         const std::string Root = (L.Dir.path() + "/LIBRARY/VidyaGod/[14] Needs Base").toStdString();
         std::filesystem::create_directories(Root);
-        NF::WriteNodes(Root + "/g.json", NF::Chain("nb", {NF::Tile("14", "Needs Base"), NF::Exec("win32", "g.exe"),
+        NF::WriteNodes(Root + "/g.json", NF::Chain("nb", {NF::Merge({NF::Tile("14", "Needs Base"), NF::Exec("win32", "g.exe")}),
                                                          NF::ContentCid("zip", "g.zip", "bafkreineedsbasezip")}, {Base}, {{"VARIANT", "Edition"}}));
         L.Cfg["PeerLibraries"] = json{{"12D3KooWFriendBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB", {{"Games", json::array({
             json{{"cid", Base}, {"pkg", "Base Pack"}, {"node", "base.json"}} })}}}};
@@ -1438,8 +1438,8 @@ private slots:
                 json{{"VARS", {
                     {"lang", {{"DEFAULT", "English"}, {"UI", {{"CONTROL", "enum"}, {"LABEL", "Language"}, {"CHOICES", json::array({ "English", "French" })}}}}},
                     {"res", {{"DEFAULT", "640x480"}, {"UI", {{"CONTROL", "enum"}, {"SECTION", "Display"}, {"LABEL", "Resolution"}, {"CHOICES", Choices}}}}}}}},
-                json{{"EXEC", json::array({ json{{"LABEL", "Play"}, {"HOST", ManifestModel::MachinePlatform()}, {"EXE", "game.exe"},
-                    {"TILE", {{"UID", "37"}, {"TITLE", "Game"}}}} })}} })} });
+                json{{"EXEC", json::object({ {"Play", {{"HOST", ManifestModel::MachinePlatform()}, {"EXE", "game.exe"},
+                    {"TILE", {{"UID", "37"}, {"TITLE", "Game"}}}}} })}} })} });
         ManifestModel::DeriveFacts(Idx);
         json Cfg = json{{"Settings", json::object()}};
         auto *W = new PreLaunchWindow(&Cfg, &Idx, {"game"});

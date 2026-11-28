@@ -174,16 +174,11 @@ VG_COMMANDS
             if (A.contains("entry"))
             {
                 const std::string L = Command::Str(A, "entry");
-                //EXEC is a list of entries (each named by its LABEL); an object of them (keyed by name) is read too.
+                //EXEC is {label: entry} (09): the label is the entry's key
                 for (const auto &Layer : J.value("LAYERS", json::array()))
-                    if (Layer.is_object() && Layer.contains("EXEC") && Layer["EXEC"].is_array())
-                    {
-                        for (const auto &E : Layer["EXEC"])
-                            if (E.is_object() && (L.empty() || E.value("LABEL", std::string()) == L)) { Out["exec"] = NodeLower::LowerEntry(E); return Out; }
-                    }
-                    else if (Layer.is_object() && Layer.contains("EXEC") && Layer["EXEC"].is_object())
+                    if (Layer.is_object() && Layer.contains("EXEC") && Layer["EXEC"].is_object())
                         for (const auto &[K, E] : Layer["EXEC"].items())
-                            if (L.empty() || K == L || (E.is_object() && E.value("LABEL", std::string()) == L)) { Out["exec"] = NodeLower::LowerEntry(E); return Out; }
+                            if (L.empty() || K == L) { Out["exec"] = NodeLower::LowerEntry(E, K); return Out; }
                 throw Command::BadArgs("no EXEC entry '" + L + "' in the node");
             }
             return Out;
@@ -279,13 +274,12 @@ VG_COMMANDS
     Command::Register({
         "fold plan", "resolve a node: the plan a launch lowers, its events, what it leaves unmet",
         "Fold::Resolve over the library: every applied layer in fold order (with where it came from and how it is "
-        "placed), the folded registry, DLL overrides, environment, entries, KEEP, declarations; the expansion's events "
-        "(moved, held, cycle, missing, an ANY unmet, a NOT hit) and the WHEN variables phase 1 settled. --lowered adds "
-        "the engine ops a launch would apply; --deciding the mentions whose position chose a winner.",
-        { NodeArg(), VarOpt(), BuiltinOpt(), GraftOpt(), Flag("lowered", "also the plan in the engine's ops"),
-          Flag("deciding", "also the held/moved mentions that decide a winner (one resolve each)") },
+        "placed), the folded registry, DLL overrides, environment, entries, KEEP, declarations; the composition's events "
+        "(a re-mention raised over what came after it, a cycle, a missing node, an INTO unmet or off) and the WHEN "
+        "variables phase 1 settled. --lowered adds the engine ops a launch would apply.",
+        { NodeArg(), VarOpt(), BuiltinOpt(), GraftOpt(), Flag("lowered", "also the plan in the engine's ops") },
         { "fold plan bafkreiank43ketmdy2jtdcnn5utluobf53avcuubisi3ajtdxrcnmyteka", "fold plan 'Patch 2.0a' --var aoe2_skip_intro=1 --lowered" },
-        { "Fold::Resolve", "Fold::PlanToJson", "Fold::Unsatisfied", "Fold::DecidingMentions", "ManifestModel::LibraryOf", "NodeLower::LowerPlan" , "Fold::Library::Find" },
+        { "Fold::Resolve", "Fold::PlanToJson", "Fold::Unsatisfied", "ManifestModel::LibraryOf", "NodeLower::LowerPlan" , "Fold::Library::Find" },
         Needs::Config, false,
         [](Command::Context &C, const json &A) {
             const auto I = Index(C);
@@ -296,12 +290,6 @@ VG_COMMANDS
             const Fold::Plan P = Fold::Resolve(L, N.Key(), Inst, Bi, G);
             json Out = PlanFacts(P);
             if (Command::Bool(A, "lowered", false)) Out["lowered"] = NodeLower::LowerPlan(P);
-            if (Command::Bool(A, "deciding", false))
-            {
-                json D = json::array();
-                for (const auto &[K, V] : Fold::DecidingMentions(L, N.Key(), Inst, Bi, G, P)) D.push_back({{"event", K}, {"node", V}});
-                Out["deciding"] = D;
-            }
             return Out;
         }, {} });
 

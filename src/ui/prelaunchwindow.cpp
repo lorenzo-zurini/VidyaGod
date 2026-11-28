@@ -181,7 +181,7 @@ PreLaunchWindow::PreLaunchWindow(
     if (!this->GroupNodeIds.empty()) LaunchNodeId = this->GroupNodeIds.front();
     for (const std::string& Id : this->GroupNodeIds)
         if (const Node* N = Index ? Index->Find(Id) : nullptr;
-            N && std::find(N->Recommended.begin(), N->Recommended.end(), Face(N)) != N->Recommended.end()) { LaunchNodeId = Id; break; }
+            N && N->IsRecommended(Face(N))) { LaunchNodeId = Id; break; }
     if (const Node* L = CurrentLaunch()) { BundleDir = L->BundleDir.string(); PackageUID = L->GameKey(); }
     if (!PackageUID.empty()) InstanceName = InstanceStore::ResolveActive(*GlobalConfigJSON, PackageUID);
 
@@ -950,7 +950,7 @@ void PreLaunchWindow::FillVariantCombo()
             //A graft that is a version: a row per version it applies onto (named by it, and by its base when it has
             //several), run by the entries presenting this card with it applied.
             const std::vector<std::string> Bases = Shelf::GraftBases(*Index, Id);
-            const bool Rec = std::find(N->Recommended.begin(), N->Recommended.end(), Face(N)) != N->Recommended.end();
+            const bool Rec = N->IsRecommended(Face(N));
             const std::string Name = !N->Variant.empty() ? N->Variant : N->NodeId;
             for (const std::string& Base : Bases)
             {
@@ -996,16 +996,19 @@ void PreLaunchWindow::FillVariantCombo()
                                 && Ep["TILE"].value("UID", std::string()) != FaceUid;
             if (!OtherTile) Labels.push_back(Lb);
         }
-        const bool Rec = std::find(N->Recommended.begin(), N->Recommended.end(), Face(N)) != N->Recommended.end();
+        const bool Rec = N->IsRecommended(Face(N));
         const std::string NodeName = !N->Variant.empty() ? N->Variant : (!N->NodeId.empty() ? N->NodeId : Id);
+        //The recommended row's recommended entry is the one marked (its entry says RECOMMENDED), else its first.
+        const auto Says = [&](const std::string &Lb) { const auto &E = N->Entries[Lb]; return E.is_object() && E.value("RECOMMENDED", false) == true; };
+        const bool AnySays = std::any_of(Labels.begin(), Labels.end(), Says);
         for (size_t I = 0; I < Labels.size(); ++I)
         {
             const auto& Ep = N->Entries[Labels[I]];
             if (Ep.is_object() && Ep.contains("GUEST") && Ep["GUEST"].is_array() && !Ep["GUEST"].empty()) continue;   // a runner entry
-            const std::string EpLabel = Ep.is_object() ? Ep.value("LABEL", std::string()) : std::string();
+            const std::string &EpLabel = Labels[I];                     // the entry's label is its key
             //One way to run: the version's name says it. Several: each is the version's name and the entry's.
-            const std::string Shown = (Labels.size() == 1 || EpLabel.empty() || EpLabel == NodeName) ? NodeName : NodeName + " - " + EpLabel;
-            Es.push_back({ Id + "\x1f" + Labels[I], QString::fromStdString(Shown), Rec && I == 0, {}, Absent });
+            const std::string Shown = (Labels.size() == 1 || EpLabel == NodeName) ? NodeName : NodeName + " - " + EpLabel;
+            Es.push_back({ Id + "\x1f" + Labels[I], QString::fromStdString(Shown), Rec && (AnySays ? Says(EpLabel) : I == 0), {}, Absent });
         }
     }
     // Recommended first, then NATURAL version order (1.9 < 1.10 < 1.10.2, NaturalLess) — with hundreds of variants

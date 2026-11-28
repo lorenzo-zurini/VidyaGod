@@ -137,8 +137,8 @@ private slots:
         const QString Pkg = Lib.path() + "/VidyaGod/[77] Gold";
         QDir().mkpath(Pkg);
         const json N = json{{"LABEL", "Gold"}, {"VARIANT", "Original"},
-                            {"LAYERS", json::array({ json{{"EXEC", json::array({ json{{"LABEL", "Play"}, {"HOST", "win32"},
-                                {"EXE", "%GameDir%/g.exe"}, {"TILE", json{{"UID", "77"}, {"TITLE", "Gold"}}}} })}} })}};
+                            {"LAYERS", json::array({ json{{"EXEC", json::object({ {"Play", {{"HOST", "win32"},
+                                {"EXE", "%GameDir%/g.exe"}, {"TILE", json{{"UID", "77"}, {"TITLE", "Gold"}}}}} })}} })}};
         const std::string Id = Cid::OfNode(N);
         std::ofstream((Pkg + "/" + QString::fromStdString(Id) + ".json").toStdString(), std::ios::binary) << Cid::Canonical(N);
         const QStringList Before = QDir(Pkg).entryList(QDir::Files);
@@ -303,8 +303,7 @@ private slots:
         NodeIndex idx;
         for (const char * id : {"g1", "g2"})
         {
-            const json j = { {"CID", id}, {"LABEL", id}, {"VARIANT", "Play"}, {"LAYERS", json::array({ json{{"EXEC", json::array({
-                json{{"LABEL", "Play"}, {"HOST", "win32"}, {"EXE", "g.exe"}, {"TILE", {{"UID", id}, {"TITLE", std::string("Game ") + id}}}} })}} })} };
+            const json j = { {"CID", id}, {"LABEL", id}, {"VARIANT", "Play"}, {"LAYERS", json::array({ json{{"EXEC", json::object({ {"Play", {{"HOST", "win32"}, {"EXE", "g.exe"}, {"TILE", {{"UID", id}, {"TITLE", std::string("Game ") + id}}}}} })}} })} };
             Node n;
             QVERIFY(ManifestModel::ParseNode(j, "f.json", "/tmp/vg_bundle", n));
             idx.Nodes[id] = n;

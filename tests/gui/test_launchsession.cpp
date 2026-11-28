@@ -3,6 +3,7 @@
 // deleted the running session's writable layer; a plan saved a pool secret and so made the instance a typo named.
 
 #include <QtTest/QtTest>
+#include "nodefixture.h"
 #include <QTemporaryDir>
 
 #include "apppaths.h"
@@ -36,7 +37,7 @@ class LaunchSessionTest : public QObject
         auto Idx = std::make_shared<NodeIndex>();
         const json E = { {"LABEL", "Play"}, {"HOST", ManifestModel::MachinePlatform()}, {"EXE", "game"},
                          {"TILE", {{"UID", "lsgame"}, {"TITLE", "lsgame"}}} };
-        json Layers = json::array({ json{{"DIR", "game"}}, json{{"EXEC", json::array({ E })}} });
+        json Layers = json::array({ json{{"DIR", "game"}}, json{{"EXEC", NodeFixture::ExecOf({ E })}} });
         if (Keeps) Layers.push_back(json{{"KEEP", {{"FILES/save.dat", true}}}});
         if (Secret)
             Layers.insert(Layers.begin(), json{{"VARS", {{"cdkey", {{"DEFAULT", ""},

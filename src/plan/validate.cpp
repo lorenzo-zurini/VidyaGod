@@ -249,14 +249,14 @@ std::vector<std::string> Shelf(const NodeIndex &Idx, const std::set<std::string>
     for (const auto &[U, T] : Idx.Tiles)
     {
         const auto &Ps = Presenters[U];
-        if (OnlyNodes && std::none_of(Ps.begin(), Ps.end(), [&](const Node *N) { return OnlyNodes->count(N->NodeId) != 0; }))
+        if (OnlyNodes && std::none_of(Ps.begin(), Ps.end(), [&](const Node *N) { return OnlyNodes->count(N->Key()) != 0; }))
             continue;
         const Node *Shown = nullptr;   // the node the presentation comes from: recommended variant, else first variant
         for (const Node *N : Ps)
         {
             if (!N->IsVariant()) continue;
-            const bool Rec = std::find(N->Recommended.begin(), N->Recommended.end(), U) != N->Recommended.end();
-            const bool ShownRec = Shown && std::find(Shown->Recommended.begin(), Shown->Recommended.end(), U) != Shown->Recommended.end();
+            const bool Rec = N->IsRecommended(U);
+            const bool ShownRec = Shown && Shown->IsRecommended(U);
             if (!Shown || (Rec && !ShownRec) || (Rec == ShownRec && N->Variant + '\x1f' + N->NodeId < Shown->Variant + '\x1f' + Shown->NodeId))
                 Shown = N;
         }
@@ -266,11 +266,11 @@ std::vector<std::string> Shelf(const NodeIndex &Idx, const std::set<std::string>
         const std::string Name = "tile " + U + (Title.empty() ? std::string() : " '" + Title + "'") + " (" + Pkg + ")";
         if (!Shown && !Idx.TileGraft.count(U))
             Out.push_back(Name + ": no VARIANT presents it — the shelf shows a card with nothing to launch. Give the node "
-                          "that presents it VARIANT and RECOMMENDED [\"" + U + "\"].");
+                          "that presents it a VARIANT (and its entry RECOMMENDED: true).");
         if (Title.empty())
             Out.push_back(Name + ": the shelf takes this tile from " + (Shown ? "variant '" + Shown->Variant + "'" : std::string("its presenting node"))
-                          + ", whose folded tile has no TITLE — the card is named by a CID. Put the full tile (TITLE, COVER, "
-                          "META) in a node every variant of the game contains (\"tile at the base\"), keeping only {\"UID\"} on the variants.");
+                          + ", whose tile has no TITLE — the card is named by a CID. Put the full tile (TITLE, COVER, META) on "
+                          "the recommended row's entry; the other rows keep only {\"UID\"}.");
     }
     return Out;
 }
@@ -333,8 +333,6 @@ void Nodes(const NodeIndex &Idx, std::vector<std::string> &Errors, std::vector<s
         }
         return false;
     };
-    std::set<std::string> KnownTiles;
-    for (const auto &[Id, N] : Idx.Nodes) for (const auto &U : N.Faces) KnownTiles.insert(U);
 
     //Packages are checked on every core: a node writes only its own findings, and the nodes of one package are checked
     //one after another on one thread, sharing its read caches (zip listings, delta listings — a version chain is listed
@@ -481,14 +479,46 @@ void Nodes(const NodeIndex &Idx, std::vector<std::string> &Errors, std::vector<s
             Res.Errors.push_back(Tag + ": VARIANT '" + N.Variant + "' has no effective entry to run");
         if (!N.Variant.empty() && N.HasExec && N.Faces.empty() && !N.IsGraft)   // a graft version: under its bases' cards
             Res.Errors.push_back(Tag + ": VARIANT '" + N.Variant + "' presents no tile (no entry in its fold carries a TILE) — it appears under no card");
-        for (const std::string &U : N.Recommended)
+        //RECOMMENDED (09): a row's entry says it is its card's default; a part's INTO layer says it is pre-ticked. A graft
+        //with an entry is a row (its own card, or under a tile it takes), never an add-on to tick.
         {
-            if (!N.Variant.empty() && !(N.IsGraft && N.Faces.empty()) && std::find(N.Faces.begin(), N.Faces.end(), U) == N.Faces.end())
-                Res.Errors.push_back(Tag + ": RECOMMENDED names tile '" + U + "', which this variant does not present");
-            else if (N.Variant.empty() && !N.IsGraft)
-                Res.Warnings.push_back(Tag + ": RECOMMENDED on a node that is neither a variant nor a graft means nothing");
-            else if (N.IsGraft && !KnownTiles.count(U))
-                Res.Warnings.push_back(Tag + ": RECOMMENDED names tile '" + U + "', which no variant in this library presents");
+            bool IntoRec = false;
+            const bool OwnGameEntry = Fold::OwnsGameEntry(*N.Json);
+            for (const auto &L : (*N.Json)["LAYERS"])
+            {
+                if (!L.is_object()) continue;
+                if (L.contains("INTO")) IntoRec = IntoRec || L.value("RECOMMENDED", false) == true;
+            }
+            if (N.IsGraft && OwnGameEntry && IntoRec)
+                Res.Warnings.push_back(Tag + ": RECOMMENDED on the INTO layer of a graft with an entry means nothing — a graft "
+                                       "that runs is a row, never pre-ticked; say RECOMMENDED on its entry to make it its card's default");
+            //(its faces: a TILE of its own, or one it TAKEs onto its entry)
+            if (N.IsGraft && OwnGameEntry && N.Faces.empty())
+                Res.Errors.push_back(Tag + ": a graft whose entry has no TILE and that TAKEs none appears on no card — give "
+                                       "the entry a TILE (its own card) or TAKE its base's tile (a row under it)");
+            //Two selections of one TAKE where one holds the other (09 D7): the inner one is taken twice, a conflict.
+            for (const auto &L : (*N.Json)["LAYERS"])
+            {
+                if (!L.is_object() || !L.contains("TAKE") || !L["TAKE"].is_array()) continue;
+                std::vector<std::string> Sel;
+                for (const auto &T : L["TAKE"])
+                    if (T.is_string()) Sel.push_back(T.get<std::string>());
+                    else if (T.is_array() && !T.empty() && T[0].is_string()) Sel.push_back(T[0].get<std::string>());
+                for (size_t A = 0; A < Sel.size(); ++A)
+                    for (size_t B = 0; B < Sel.size(); ++B)
+                    {
+                        if (A == B) continue;
+                        //inside: below a folder or entry (/), or below a registry key (\\ subkeys, # values)
+                        const bool Reg = Sel[A].rfind("REG/", 0) == 0;
+                        const auto Within = [&](const std::string &Sep) {
+                            const std::string Outer = !Sel[A].empty() && Sel[A].back() == Sep[0] ? Sel[A] : Sel[A] + Sep;
+                            return Sel[B].size() > Outer.size() && Sel[B].compare(0, Outer.size(), Outer) == 0;
+                        };
+                        if (Reg ? (Within("\\") || Within("#")) : Within("/"))
+                            Res.Errors.push_back(Tag + ": TAKE selects '" + Sel[B] + "' twice (it is inside '" + Sel[A] + "') — "
+                                                 "which one wins would hang on the order of the selections");
+                    }
+            }
         }
         if ((*N.Json)["LAYERS"].empty()) Res.Warnings.push_back(Tag + ": pointless node (no layers)");
 
@@ -585,13 +615,12 @@ void Nodes(const NodeIndex &Idx, std::vector<std::string> &Errors, std::vector<s
                 if (Ev == "into-unmet" && !Gs.empty()) Once(Res.Warnings, Tag + ": part '" + Cid + "' is offered but what it goes INTO is not beneath it");
                 else if (Ev == "into-unmet") Once(Res.Errors, Tag + ": '" + Cid + "' goes INTO something this row does not contain");
             }
-            //A node mentioned twice: where it counts (the first mention holds; a later one in the same list moves it)
-            //is a rule, not a choice the author made — warn where the other reading would change what wins.
-            for (const auto &[Ev, Cid] : Fold::DecidingMentions(Lib, Id, Inst, {}, Gs, P))
-                Once(Res.Warnings, Tag + ": '" + [&]{ const Node *M = Idx.Find(Cid); return M && !M->NodeId.empty() ? M->NodeId + "' (" + Cid + ")" : Cid + "'"; }()
-                     + " is mentioned twice and " + (Ev == "held"
-                     ? std::string("its FIRST mention counts — folding it at the later one would change what wins")
-                     : std::string("its LATER mention in the same list counts — folding it at the first would change what wins")));
+            //A re-mention that raises a node's own values over what came after it (gen 9, 05 §5.4): what its author
+            //wrote, but a silent revert when a generated list meant nothing by it — say so.
+            for (const auto &[Ev, Cid] : P.Events)
+                if (Ev == "raise")
+                    Once(Res.Warnings, Tag + ": '" + [&]{ const Node *M = Idx.Find(Cid); return M && !M->NodeId.empty() ? M->NodeId + "' (" + Cid + ")" : Cid + "'"; }()
+                         + " is mentioned again and its own layers now win over what came after its first mention — a re-mention overriding a newer value; drop the mention if it is not meant");
             //A DELTA names its bases by CID (chapter 04 §4.1): VidyaGodFS's reading of this launch says which cannot
             //rebuild (a file it names is not in it), and the bytes of the files it names must be what its header says it
             //was built over.
@@ -762,7 +791,7 @@ void Nodes(const NodeIndex &Idx, std::vector<std::string> &Errors, std::vector<s
     std::map<std::string, std::string> AnchorHost;                       // %Anchor% -> its host folder, as AnchorGuest
     for (const auto &[Id, N] : Idx.Nodes)
         for (const auto &L : (*N.Json)["LAYERS"])
-            if (L.contains("EXEC") && L["EXEC"].is_array())
+            if (L.contains("EXEC") && L["EXEC"].is_object())
                 for (const auto &E : L["EXEC"])
                     if (E.is_object() && E.contains("GUEST_ROOTS") && E["GUEST_ROOTS"].is_object())
                         for (const auto &[A, To] : E["GUEST_ROOTS"].items())
@@ -849,7 +878,7 @@ void Nodes(const NodeIndex &Idx, std::vector<std::string> &Errors, std::vector<s
                     }
             if (L.contains("KEEP") && L["KEEP"].is_object())
                 for (const auto &[K, V] : L["KEEP"].items()) PathCheck(Addr(K), Where, Out);
-            if (L.contains("EXEC") && L["EXEC"].is_array())
+            if (L.contains("EXEC") && L["EXEC"].is_object())
                 for (const auto &E : L["EXEC"])
                     for (const char *F : {"EXE", "WORKDIR"})
                         if (E.is_object() && E.contains(F) && E[F].is_string()) PathCheck(E[F].get<std::string>(), Where, Out);
@@ -860,7 +889,7 @@ void Nodes(const NodeIndex &Idx, std::vector<std::string> &Errors, std::vector<s
             std::set<std::string> Found;
             for (nlohmann::ordered_json L : (*N.Json)["LAYERS"])
             {
-                if (L.contains("EXEC") && L["EXEC"].is_array())
+                if (L.contains("EXEC") && L["EXEC"].is_object())
                     for (auto &E : L["EXEC"])
                         if (E.is_object()) { E.erase("GUEST_ROOTS"); E.erase("DRIVES"); }
                 Scan(L, "node '" + Id + "'", Found);
@@ -1030,7 +1059,7 @@ void Nodes(const NodeIndex &Idx, std::vector<std::string> &Errors, std::vector<s
             const std::string Path = L.value("PATH", std::string());
             if (L.value("SCOPE", std::string()) == "registry" && RegistryWrapper::NamesNoKey(Path))
                 Errors.push_back(Tag + ": a KEEP of a whole registry hive ('" + Path + "') — only keys persist; name them "
-                                       "(e.g. REG/HKCU/Software/<Vendor>/<Game>)");
+                                       "(e.g. REG/HKCU\\Software\\<Vendor>\\<Game>)");
             else if (Path.empty())
                 Warnings.push_back(Tag + ": a KEEP of a whole namespace persists ALL of it — prefer named addresses");
             if (L.value("SCOPE", std::string()) == "file")
@@ -1050,7 +1079,40 @@ void Nodes(const NodeIndex &Idx, std::vector<std::string> &Errors, std::vector<s
                                      "', which takes the name first - it would not be kept; give it its own NAME");
             }
         }
-    }    for (std::string &W : Shelf(Idx, OnlyNodes)) Warnings.push_back(std::move(W));
+    }
+    //One recommended row per card (09): the card's default, and where it takes its facts from. Two is a contradiction;
+    //none among several rows leaves the default to an accident of naming.
+    {
+        std::map<std::string, std::vector<const Node *>> Rows;     // UID -> the variants presenting it
+        //every row of the library counts (a scope never hides a card's recommended row); a card is reported when a
+        //row of it is in the scope (the scope holds index keys: CIDs)
+        for (const auto &[K, N] : Idx.Nodes)
+        {
+            if (!N.IsVariant()) continue;
+            for (const std::string &U : N.Faces) Rows[U].push_back(&N);
+        }
+        for (const auto &[U, Ns] : Rows)
+        {
+            if (OnlyNodes && std::none_of(Ns.begin(), Ns.end(), [&](const Node *N) { return OnlyNodes->count(N->Key()) != 0; })) continue;
+            std::vector<std::string> Rec;
+            for (const Node *N : Ns)
+                if (std::find(N->Recommended.begin(), N->Recommended.end(), U) != N->Recommended.end()) Rec.push_back(N->Variant);
+            std::sort(Rec.begin(), Rec.end());
+            auto Join = [](const std::vector<std::string> &V) { std::string S; for (const auto &X : V) S += (S.empty() ? "'" : ", '") + X + "'"; return S; };
+            if (Rec.size() > 1)
+                Errors.push_back("tile " + U + ": " + std::to_string(Rec.size()) + " rows are RECOMMENDED (" + Join(Rec)
+                                 + ") — a card has one recommended row");
+            else if (Rec.empty() && Ns.size() > 1)
+            {
+                std::vector<std::string> All;
+                for (const Node *N : Ns) All.push_back(N->Variant);
+                std::sort(All.begin(), All.end());
+                Errors.push_back("tile " + U + ": " + std::to_string(Ns.size()) + " rows (" + Join(All) + ") and none RECOMMENDED — "
+                                 "say which is the card's default (RECOMMENDED: true on its entry)");
+            }
+        }
+    }
+    for (std::string &W : Shelf(Idx, OnlyNodes)) Warnings.push_back(std::move(W));
 }
 
 

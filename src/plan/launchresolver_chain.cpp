@@ -40,13 +40,6 @@ using namespace ManifestModel;
 //  3. the winning DEFAULT (or, for a secret+POOL var with nothing persisted yet, one pool entry drawn ONCE as a
 //     seed and reported in ContainerParams.PickedSecrets for the caller to persist)
 
-//A runner RECOMMENDED under the launched tile (or its family) is preferred for it.
-static bool RecommendedFor(const Node &R, const Node &Launch)
-{
-    for (const auto &U : R.Recommended) if (U == Launch.Uid || U == Launch.PackageUid) return true;
-    return false;
-}
-
 // P6 split: the runner daisy-chain machinery (availability, BFS bridge, links, nesting) — spine in launchresolver.cpp.
 //=====================================================================================================================
 //                                          RUNNER DAISY-CHAINING
@@ -58,13 +51,12 @@ static bool RecommendedFor(const Node &R, const Node &Launch)
 //innermost→outermost: chain[0] runs the content, chain[i+1] runs chain[i]'s command, the terminal runs everything.
 namespace {
 
-//Strict-better ordering for the BFS default pick: RECOMMENDED > package-local (runner shipped in the launch's own
+//Strict-better ordering for the BFS default pick: package-local (runner shipped in the launch's own
 //bundle) > the specialist (fewer guest platforms: snes9x before a multi-system emulator that also runs SNES) > built
 //into VidyaGod > LABEL > CID. Runners are pre-sorted better-first so the first edge that discovers a platform is best.
 //The last two make the order total: a label may repeat, and two runners equal on every count were ordered by whim.
 bool RunnerBetterPtr(const Node *A, const Node *B, const Node &Launch)
 {
-    if (RecommendedFor(*A, Launch) != RecommendedFor(*B, Launch)) return RecommendedFor(*A, Launch);
     const bool LA = !Launch.BundleDir.empty() && A->BundleDir == Launch.BundleDir;
     const bool LB = !Launch.BundleDir.empty() && B->BundleDir == Launch.BundleDir;
     if (LA != LB) return LA;

@@ -163,8 +163,8 @@ std::string PackageTitle(const std::filesystem::path &Dir)
         if (!N.is_object() || !N.contains("LAYERS") || !N["LAYERS"].is_array()) continue;
         for (const auto &L : N["LAYERS"])
         {
-            if (!L.is_object() || !L.contains("EXEC") || !L["EXEC"].is_array()) continue;
-            for (const auto &En : L["EXEC"])
+            if (!L.is_object() || !L.contains("EXEC") || !L["EXEC"].is_object()) continue;
+            for (const auto &[Lab, En] : L["EXEC"].items())
             {
                 if (!En.is_object() || !En.contains("TILE") || !En["TILE"].is_object()) continue;
                 const auto &T = En["TILE"];

@@ -123,8 +123,8 @@ json * CoverEntry(json & N, int Tile = 0)
     json * First = nullptr;
     std::set<std::string> Seen;
     for (auto & L : N["LAYERS"])
-        if (PkgGraph::LayerType(L) == "EXEC" && L["EXEC"].is_array())
-            for (auto & E : L["EXEC"])
+        if (PkgGraph::LayerType(L) == "EXEC" && L["EXEC"].is_object())
+            for (auto & [Lab, E] : L["EXEC"].items())
             {
                 if (!E.is_object()) continue;
                 if (E.contains("TILE") && (TileUid(E).empty() || Seen.insert(TileUid(E)).second) && Tile-- == 0) return &E;
@@ -133,7 +133,7 @@ json * CoverEntry(json & N, int Tile = 0)
     return First;
 }
 
-//The titles of the distinct tiles a node's EXEC entries carry, in order (a tile's first entry's LABEL when it has no
+//The titles of the distinct tiles a node's EXEC entries carry, in order (a tile's first entry's label when it has no
 //TITLE here).
 QStringList TileTitles(const json & N)
 {
@@ -141,12 +141,12 @@ QStringList TileTitles(const json & N)
     if (!HasLayers(N)) return Out;
     std::set<std::string> Seen;
     for (const auto & L : N["LAYERS"])
-        if (PkgGraph::LayerType(L) == "EXEC" && L["EXEC"].is_array())
-            for (const auto & E : L["EXEC"])
+        if (PkgGraph::LayerType(L) == "EXEC" && L["EXEC"].is_object())
+            for (const auto & [Lab, E] : L["EXEC"].items())
                 if (E.is_object() && E.contains("TILE") && (TileUid(E).empty() || Seen.insert(TileUid(E)).second))
                 {
                     const std::string T = E["TILE"].is_object() ? StrOf(E["TILE"], "TITLE") : std::string();
-                    Out << QString::fromStdString(T.empty() ? StrOf(E, "LABEL") : T);
+                    Out << QString::fromStdString(T.empty() ? Lab : T);
                 }
     return Out;
 }
@@ -876,7 +876,8 @@ void PkgActions::autoDetect(const std::string & NodeId)
     };
     std::vector<int> Order{Into};
     for (int I = 0; I < D.Count(); ++I) if (I != Into && Over(I)) Order.push_back(I);
-    int Ni = -1, Li = -1, Ei = -1;
+    int Ni = -1, Li = -1;
+    std::string Ei;
     for (const int I : Order)
     {
         if (Ni >= 0) break;
@@ -885,13 +886,12 @@ void PkgActions::autoDetect(const std::string & NodeId)
         for (int L = 0; L < (int)N["LAYERS"].size() && Ni < 0; ++L)
         {
             const json & Ly = N["LAYERS"][(size_t)L];
-            if (!Ly.is_object() || !Ly.contains("EXEC") || !Ly["EXEC"].is_array()) continue;
-            for (int E = 0; E < (int)Ly["EXEC"].size(); ++E)
+            if (!Ly.is_object() || !Ly.contains("EXEC") || !Ly["EXEC"].is_object()) continue;
+            for (const auto & [Lab, En] : Ly["EXEC"].items())
             {
-                const json & En = Ly["EXEC"][(size_t)E];
                 if (!En.is_object() || En.contains("GUEST")) continue;
                 const std::string Exe = StrOf(En, "EXE");
-                if (Exe.empty() || Exe.back() == '/') { Ni = I; Li = L; Ei = E; break; }
+                if (Exe.empty() || Exe.back() == '/') { Ni = I; Li = L; Ei = Lab; break; }
             }
         }
     }
@@ -952,7 +952,7 @@ void PkgActions::autoDetect(const std::string & NodeId)
         Why = "the only likely program";
     }
     json N = D.Node(Ni);
-    json & En = N["LAYERS"][(size_t)Li]["EXEC"][(size_t)Ei];
+    json & En = N["LAYERS"][(size_t)Li]["EXEC"][Ei];
     En["EXE"] = Exe;
     if (StrOf(En, "WORKDIR").empty()) En["WORKDIR"] = WorkDir.empty() ? Exe.substr(0, Exe.find_last_of('/')) : WorkDir;
     if (!Args.empty() && !En.contains("ARGS"))
@@ -1001,8 +1001,8 @@ void PkgActions::gogSteps(const std::string & NodeId, const std::filesystem::pat
         const json & N = Model->doc().Node(K);
         if (!HasLayers(N)) continue;
         for (const json & L : N["LAYERS"])
-            if (L.is_object() && L.contains("EXEC") && L["EXEC"].is_array())
-                for (const json & E : L["EXEC"])
+            if (L.is_object() && L.contains("EXEC") && L["EXEC"].is_object())
+                for (const auto & [Lab, E] : L["EXEC"].items())
                 {
                     const std::string H = StrOf(E, "HOST");
                     if (H == "win32") Arch = "32"; else if (H == "win64") Arch = "64";
@@ -1091,9 +1091,12 @@ void PkgActions::pickExe(const std::string & NodeId, const std::string & Where)
 {
     int I = indexOf(NodeId);
     if (I < 0 || !Model->packageDir()) return;
-    //Where = "L<layer>/<entry>": the EXEC entry the pick is for.
-    int Layer = -1, Entry = -1;
-    if (std::sscanf(Where.c_str(), "L%d/%d", &Layer, &Entry) != 2 || Layer < 0 || Entry < 0) return;
+    //Where = "L<layer>/<label>": the EXEC entry the pick is for.
+    int Layer = -1;
+    const size_t Slash = Where.find('/');
+    if (std::sscanf(Where.c_str(), "L%d/", &Layer) != 1 || Layer < 0 || Slash == std::string::npos) return;
+    const std::string Entry = Where.substr(Slash + 1);
+    if (Entry.empty()) return;
     std::vector<Program> Progs, Infos;
     std::set<int> Seen;
     ProgramsIn(Model->doc(), I, Model->packageDir()->path().toStdString(), Seen, Progs, &Infos);
@@ -1134,8 +1137,8 @@ void PkgActions::pickExe(const std::string & NodeId, const std::string & Where)
     {
         const json & Nd = Model->doc().Node(I);
         if (HasLayers(Nd) && Layer < (int)Nd["LAYERS"].size() && Nd["LAYERS"][(size_t)Layer].contains("EXEC")
-            && Nd["LAYERS"][(size_t)Layer]["EXEC"].is_array() && Entry < (int)Nd["LAYERS"][(size_t)Layer]["EXEC"].size())
-            WantHost = StrOf(Nd["LAYERS"][(size_t)Layer]["EXEC"][(size_t)Entry], "HOST");
+            && Nd["LAYERS"][(size_t)Layer]["EXEC"].is_object() && Nd["LAYERS"][(size_t)Layer]["EXEC"].contains(Entry))
+            WantHost = StrOf(Nd["LAYERS"][(size_t)Layer]["EXEC"][Entry], "HOST");
     }
     auto WindowsOnes = [&](const std::vector<std::string> & L) {
         if (!WantHost.empty() && WantHost != "win32" && WantHost != "win64") return L;
@@ -1177,7 +1180,7 @@ void PkgActions::pickExe(const std::string & NodeId, const std::string & Where)
     json N = Model->doc().Node(I);
     if (!HasLayers(N) || Layer >= (int)N["LAYERS"].size() || !N["LAYERS"][Layer].contains("EXEC")) return;
     json & Ex = N["LAYERS"][Layer]["EXEC"];
-    if (!Ex.is_array() || Entry >= (int)Ex.size() || !Ex[Entry].is_object()) return;
+    if (!Ex.is_object() || !Ex.contains(Entry) || !Ex[Entry].is_object()) return;
     Ex[Entry]["EXE"] = Chosen.toStdString();
     //The Host is the program's own, read from its header as bringing files in does: set when blank, and corrected
     //when it names the other Windows bitness (left from the program picked before - a 32-bit launcher, say).
@@ -1589,10 +1592,7 @@ void PkgActions::importRegFile(const std::string & NodeId, const QString & File)
     const std::vector<PkgGraph::RegRow> Rows = ParseRegExport(Text, &Deletions);
     if (Rows.empty())
     {
-        tell("Import .reg", Deletions > 0
-                 ? QString("That file only DELETES registry entries (%1). Import brings in values; write a "
-                           "deletion as null in the JSON view.").arg(Deletions)
-                 : QString("No keys or values found in that file."));
+        tell("Import .reg", QString("No keys or values found in that file."));
         return;
     }
 
@@ -1620,7 +1620,7 @@ void PkgActions::importRegFile(const std::string & NodeId, const QString & File)
     if (!(*Layer)["REG"].is_object())
     {
         tell("Import .reg",
-             "This node's REG layer is not a hive tree, so importing would replace it and lose what is there.\n\n"
+             "This node's REG layer is not a map of key paths, so importing would replace it and lose what is there.\n\n"
              "Fix it in the JSON view first.");
         return;
     }
@@ -1631,8 +1631,7 @@ void PkgActions::importRegFile(const std::string & NodeId, const QString & File)
     commitNode(I, std::move(N), false);
     tell("Import .reg",
          QString("Imported %1 key/value row(s).").arg((int)Rows.size())
-             + (Deletions > 0 ? QString("\n\nSkipped %1 DELETION(s) - write each as null in the JSON view.").arg(Deletions)
-                              : QString()));
+             + (Deletions > 0 ? QString("\n\n%1 of them DELETE a key or a value.").arg(Deletions) : QString()));
 }
 
 // ---------------------------------------------------------------------------

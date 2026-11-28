@@ -3,6 +3,7 @@
 // on a graft moved above the graft it needs) is refused on screen and changes nothing saved.
 
 #include <QtTest>
+#include "nodefixture.h"
 #include "libraryview.h"   // LibraryGameCard — a card opens its tile's one launch window
 #include <QMessageBox>
 #include <QCheckBox>
@@ -55,22 +56,21 @@ private slots:
     void cleanupTestCase() { delete SuiteDataRoot; }
 
     // Instance settings are the family's (RoC and TFT share one), but the graft list is the TILE's: saving under one
-    // tile must neither replace the sibling's recommended pre-ticks nor drop the grafts only the sibling offers.
-    // Teeth: key GRAFTS by family again (one list) and tile 8 opens with tile 7's list instead of its own pre-tick.
+    // tile must not replace the sibling's pre-ticks (a part's RECOMMENDED, on its INTO layer, ticks it for every tile
+    // it is offered under). Teeth: key GRAFTS by family again (one list) and tile 8 opens with tile 7's saved list.
     void eachTileKeepsItsOwnGraftList()
     {
         NodeIndex idx;
         const std::string Host = ManifestModel::MachinePlatform();
         idx.Nodes["fam"] = parse(json{ {"CID", "fam"}, {"LABEL", "fam"}, {"VARIANT", "v1"},
-            {"LAYERS", json::array({ json{{"DIR", "fam"}}, json{{"EXEC", json::array({
-                json{{"LABEL", "RoC"}, {"HOST", Host}, {"EXE", "roc.exe"}, {"TILE", {{"UID", "70"}, {"TITLE", "RoC"}}}},
-                json{{"LABEL", "TFT"}, {"HOST", Host}, {"EXE", "tft.exe"}, {"TILE", {{"UID", "80"}, {"TITLE", "TFT"}}}} })}} })} });
+            {"LAYERS", json::array({ json{{"DIR", "fam"}}, json{{"EXEC", json::object({ {"RoC", {{"HOST", Host}, {"EXE", "roc.exe"}, {"TILE", {{"UID", "70"}, {"TITLE", "RoC"}}}}}, {"TFT", {{"HOST", Host}, {"EXE", "tft.exe"}, {"TILE", {{"UID", "80"}, {"TITLE", "TFT"}}}}} })}} })} });
         const auto graft = [](const char *Id, const char *Tile) {
-            return parse(json{ {"CID", Id}, {"LABEL", Id}, {"RECOMMENDED", json::array({Tile})},
-                {"LAYERS", json::array({ json{{"INTO", json::array({"fam"})}}, json{{"DIR", Id}} })} });
+            json In{{"INTO", json::array({"fam"})}};
+            if (Tile) In["RECOMMENDED"] = true;              // a part pre-ticked where it is offered
+            return parse(json{ {"CID", Id}, {"LABEL", Id}, {"LAYERS", json::array({ In, json{{"DIR", Id}} })} });
         };
         idx.Nodes["a"] = graft("a", "70");
-        idx.Nodes["b"] = graft("b", "80");
+        idx.Nodes["b"] = graft("b", nullptr);
         ManifestModel::DeriveFacts(idx);
         json Cfg = json{{"Settings", json::object()}};
         const auto ticked = [](PreLaunchWindow &W) {
@@ -93,7 +93,7 @@ private slots:
         {
             PreLaunchWindow W8(&Cfg, &idx, {"fam"}, "80");
             W8.show(); QCoreApplication::processEvents();
-            QCOMPARE(ticked(W8), (std::vector<std::string>{"b"}));               // not tile 7's (empty) list
+            QCOMPARE(ticked(W8), (std::vector<std::string>{"a"}));               // its defaults, not tile 7's (empty) list
         }
         {
             PreLaunchWindow W7(&Cfg, &idx, {"fam"}, "70");
@@ -112,8 +112,7 @@ private slots:
         NodeIndex idx;
         idx.Nodes["base"] = parse(json{ {"CID", "base"}, {"LABEL", "base"}, {"LAYERS", json::array({ json{{"DIR", "base"}} })} });
         idx.Nodes["game"] = parse(json{ {"CID", "game"}, {"LABEL", "game"}, {"VARIANT", "v1"},
-            {"LAYERS", json::array({ json{{"NODE", "base"}}, json{{"EXEC", json::array({ json{{"LABEL", "Play"},
-                {"HOST", ManifestModel::MachinePlatform()}, {"EXE", "game.exe"}, {"TILE", {{"UID", "17"}, {"TITLE", "Game"}}}} })}} })} });
+            {"LAYERS", json::array({ json{{"NODE", "base"}}, json{{"EXEC", json::object({ {"Play", {{"HOST", ManifestModel::MachinePlatform()}, {"EXE", "game.exe"}, {"TILE", {{"UID", "17"}, {"TITLE", "Game"}}}}} })}} })} });
         //node keys shaped like CIDs, so a condition can name them
         const auto cid = [](const std::string &N) { std::string C = "bafkrei" + N; C.resize(59, 'a'); return C; };
         const std::string Aok = cid("aok"), Tc = cid("tc");
@@ -121,7 +120,7 @@ private slots:
             json In = json{{"INTO", json::array({"game"})}};
             if (!When.empty()) In["WHEN"] = When;
             json G{ {"CID", Id}, {"LABEL", Label}, {"LAYERS", json::array({ In, json{{"DIR", Id}} })} };
-            if (Rec) G["RECOMMENDED"] = json::array({"17"});   // its own tile: the suite shares one data root
+            if (Rec) G["LAYERS"][0]["RECOMMENDED"] = true;    // pre-ticked: on its INTO layer
             return parse(G);
         };
         idx.Nodes[Aok] = graft(Aok, "aok", "", false);
@@ -190,11 +189,10 @@ private slots:
     {
         NodeIndex idx;
         idx.Nodes["game"] = parse(json{ {"CID", "game"}, {"LABEL", "game"}, {"VARIANT", "v1"},
-            {"LAYERS", json::array({ json{{"EXEC", json::array({ json{{"LABEL", "Play"},
-                {"HOST", ManifestModel::MachinePlatform()}, {"EXE", "game.exe"}, {"TILE", {{"UID", "18"}, {"TITLE", "Game"}}}} })}} })} });
+            {"LAYERS", json::array({ json{{"EXEC", json::object({ {"Play", {{"HOST", ManifestModel::MachinePlatform()}, {"EXE", "game.exe"}, {"TILE", {{"UID", "18"}, {"TITLE", "Game"}}}}} })}} })} });
         const auto part = [](const char *Id, const char *X) {
-            return parse(json{ {"CID", Id}, {"LABEL", Id}, {"RECOMMENDED", json::array({"18"})},
-                {"LAYERS", json::array({ json{{"INTO", json::array({"game"})}}, json{{"ENV", {{"X", X}}}} })} });
+            return parse(json{ {"CID", Id}, {"LABEL", Id},
+                {"LAYERS", json::array({ json{{"INTO", json::array({"game"})}, {"RECOMMENDED", true}}, json{{"ENV", {{"X", X}}}} })} });
         };
         idx.Nodes["pa"] = part("pa", "1");
         idx.Nodes["pb"] = part("pb", "2");
@@ -224,10 +222,9 @@ private slots:
     {
         NodeIndex idx;
         idx.Nodes["game"] = parse(json{ {"CID", "game"}, {"LABEL", "game"}, {"VARIANT", "v1"},
-            {"LAYERS", json::array({ json{{"DIR", "game"}}, json{{"EXEC", json::array({ json{{"LABEL", "Play"},
-                {"HOST", ManifestModel::MachinePlatform()}, {"EXE", "game.exe"}, {"TILE", {{"UID", "47"}, {"TITLE", "Game"}}}} })}} })} });
-        idx.Nodes["ost"] = parse(json{ {"CID", "ost"}, {"LABEL", "ost"}, {"RECOMMENDED", json::array({"47"})},
-            {"LAYERS", json::array({ json{{"INTO", json::array({"game"})}}, json{{"DIR", "ost"}} })} });
+            {"LAYERS", json::array({ json{{"DIR", "game"}}, json{{"EXEC", json::object({ {"Play", {{"HOST", ManifestModel::MachinePlatform()}, {"EXE", "game.exe"}, {"TILE", {{"UID", "47"}, {"TITLE", "Game"}}}}} })}} })} });
+        idx.Nodes["ost"] = parse(json{ {"CID", "ost"}, {"LABEL", "ost"},
+            {"LAYERS", json::array({ json{{"INTO", json::array({"game"})}, {"RECOMMENDED", true}}, json{{"DIR", "ost"}} })} });
         ManifestModel::DeriveFacts(idx);
         json Cfg = json{{"Settings", json::object()}};
         InstanceStore::SetSetting(Cfg, idx.Find("game")->PackageUid, "GRAFTS", json{{"47", json::array({"ost-before-its-remint"})}});
@@ -247,11 +244,10 @@ private slots:
     {
         NodeIndex idx;
         idx.Nodes["game"] = parse(json{ {"CID", "game"}, {"LABEL", "game"}, {"VARIANT", "v1"},
-            {"LAYERS", json::array({ json{{"DIR", "game"}}, json{{"EXEC", json::array({ json{{"LABEL", "Play"},
-                {"HOST", ManifestModel::MachinePlatform()}, {"EXE", "game.exe"}, {"TILE", {{"UID", "27"}, {"TITLE", "Game"}}}} })}} })} });
+            {"LAYERS", json::array({ json{{"DIR", "game"}}, json{{"EXEC", json::object({ {"Play", {{"HOST", ManifestModel::MachinePlatform()}, {"EXE", "game.exe"}, {"TILE", {{"UID", "27"}, {"TITLE", "Game"}}}}} })}} })} });
         const auto graft = [](const char *Id, bool Rec) {
             json G{ {"CID", Id}, {"LABEL", Id}, {"LAYERS", json::array({ json{{"INTO", json::array({"game"})}}, json{{"DIR", Id}} })} };
-            if (Rec) G["RECOMMENDED"] = json::array({"27"});
+            if (Rec) G["LAYERS"][0]["RECOMMENDED"] = true;
             return parse(G);
         };
         idx.Nodes["x"] = graft("x", false);
@@ -285,8 +281,8 @@ private slots:
         idx.Nodes["game"] = parse(json{ {"CID", "game"}, {"LABEL", "game"}, {"VARIANT", "v1"},
             {"LAYERS", json::array({ json{{"DIR", "game"}},
                 json{{"VARS", {{"opt", {{"DEFAULT", "d"}, {"UI", {{"CONTROL", "text"}, {"LABEL", "Option"}}}}}}}},
-                json{{"EXEC", json::array({ json{{"LABEL", "Play"}, {"HOST", ManifestModel::MachinePlatform()}, {"EXE", "game.exe"},
-                    {"TILE", {{"UID", "41"}, {"TITLE", "Game"}}}} })}} })} });
+                json{{"EXEC", json::object({ {"Play", {{"HOST", ManifestModel::MachinePlatform()}, {"EXE", "game.exe"},
+                    {"TILE", {{"UID", "41"}, {"TITLE", "Game"}}}}} })}} })} });
         idx.Nodes["g"] = parse(json{ {"CID", "g"}, {"LABEL", "g"}, {"LAYERS", json::array({ json{{"INTO", json::array({"game"})}}, json{{"DIR", "g"}} })} });
         ManifestModel::DeriveFacts(idx);
         json Cfg = json{{"Settings", json::object()}};
@@ -326,9 +322,9 @@ private slots:
     {
         NodeIndex idx;
         const auto Exec = [](std::vector<std::string> Labels) {
-            json E = json::array();
+            json E = json::object();
             for (const std::string &L : Labels)
-                E.push_back(json{{"LABEL", L}, {"HOST", ManifestModel::MachinePlatform()}, {"EXE", L + ".exe"}, {"TILE", {{"UID", "47"}, {"TITLE", "Game"}}}});
+                E[L] = json{{"HOST", ManifestModel::MachinePlatform()}, {"EXE", L + ".exe"}, {"TILE", {{"UID", "47"}, {"TITLE", "Game"}}}};
             return E;
         };
         idx.Nodes["one"] = parse(json{ {"CID", "one"}, {"LABEL", "one"}, {"VARIANT", "1.0"},
@@ -355,8 +351,8 @@ private slots:
         NodeIndex idx;
         idx.Nodes["game"] = parse(json{ {"CID", "game"}, {"LABEL", "game"}, {"VARIANT", "v1"}, {"LAYERS", json::array({ json{{"DIR", "game"}},
                 json{{"VARS", {{"opt", {{"DEFAULT", "100%%"}, {"UI", {{"CONTROL", "text"}, {"LABEL", "Option"}}}}}}}},
-                json{{"EXEC", json::array({ json{{"LABEL", "Play"}, {"HOST", ManifestModel::MachinePlatform()}, {"EXE", "game.exe"},
-                    {"TILE", {{"UID", "43"}, {"TITLE", "Game"}}}} })}} })} });
+                json{{"EXEC", json::object({ {"Play", {{"HOST", ManifestModel::MachinePlatform()}, {"EXE", "game.exe"},
+                    {"TILE", {{"UID", "43"}, {"TITLE", "Game"}}}}} })}} })} });
         ManifestModel::DeriveFacts(idx);
         json Cfg = json{{"Settings", json::object()}};
         PreLaunchWindow W(&Cfg, &idx, {"game"});
@@ -373,8 +369,7 @@ private slots:
     {
         const auto game = [](const char *Cid, const char *Variant) {
             Node N = parse(json{ {"CID", Cid}, {"LABEL", "game"}, {"VARIANT", Variant},
-                {"LAYERS", json::array({ json{{"EXEC", json::array({ json{{"LABEL", "Play"},
-                    {"HOST", ManifestModel::MachinePlatform()}, {"EXE", "game.exe"}, {"TILE", {{"UID", "7"}, {"TITLE", "Game"}}}} })}} })} });
+                {"LAYERS", json::array({ json{{"EXEC", json::object({ {"Play", {{"HOST", ManifestModel::MachinePlatform()}, {"EXE", "game.exe"}, {"TILE", {{"UID", "7"}, {"TITLE", "Game"}}}}} })}} })} });
             N.Handle = "gamehandle";
             return N;
         };
@@ -412,8 +407,8 @@ private slots:
             return N;
         };
         const auto Exec = [](const char *Uid) {
-            return json{{"EXEC", json::array({ json{{"LABEL", "Play"}, {"HOST", ManifestModel::MachinePlatform()}, {"EXE", "game.exe"},
-                {"TILE", {{"UID", Uid}, {"TITLE", "Jet Set Radio"}}}} })}};
+            return json{{"EXEC", json::object({ {"Play", {{"HOST", ManifestModel::MachinePlatform()}, {"EXE", "game.exe"},
+                {"TILE", {{"UID", Uid}, {"TITLE", "Jet Set Radio"}}}}} })}};
         };
         const auto Version = [&](const char *Cid, const char *Variant, const std::string &File) {
             return Node_(File, json{ {"CID", Cid}, {"LABEL", Variant}, {"VARIANT", Variant}, {"LAYERS", json::array({ Exec("31") })} });
@@ -553,13 +548,13 @@ private slots:
             return json{ {"LABEL", "Play"}, {"HOST", ManifestModel::MachinePlatform()}, {"EXE", Exe}, {"TILE", {{"UID", Uid}, {"TITLE", Uid}}} };
         };
         idx.Nodes["tc"] = parse(json{ {"CID", "tc"}, {"LABEL", "tc"}, {"VARIANT", "1.0e"},
-            {"LAYERS", json::array({ json{{"DIR", "tc"}}, json{{"EXEC", json::array({ entry("tc.exe", "53") })}} })} });
+            {"LAYERS", json::array({ json{{"DIR", "tc"}}, json{{"EXEC", NodeFixture::ExecOf({ entry("tc.exe", "53") })}} })} });
         idx.Nodes["up"] = parse(json{ {"CID", "up"}, {"LABEL", "up"},                     // a patch FE needs, and contains
             {"LAYERS", json::array({ json{{"INTO", json::array({"tc"})}}, json{{"DIR", "up"}} })} });
         idx.Nodes["fe"] = parse(json{ {"CID", "fe"}, {"LABEL", "fe"},
             {"LAYERS", json::array({ json{{"INTO", json::array({"tc"})}}, json{{"NODE", "up"}}, json{{"DIR", "fe"}},
                 json{{"VARS", {{"fe_opt", {{"DEFAULT", "1"}, {"UI", {{"CONTROL", "bool"}, {"LABEL", "FE option"}}}}}}}},
-                json{{"EXEC", json::array({ entry("fe.exe", "53001") })}} })} });
+                json{{"EXEC", NodeFixture::ExecOf({ entry("fe.exe", "53001") })}} })} });
         ManifestModel::DeriveFacts(idx);
         json Cfg = json{{"Settings", json::object()}};
         const auto look = [&](const char *Face, bool &HasOption, bool &Offered, bool &UpOffered) {
@@ -594,12 +589,12 @@ private slots:
             return json{ {"LABEL", "Play"}, {"HOST", ManifestModel::MachinePlatform()}, {"EXE", Exe}, {"TILE", {{"UID", Uid}, {"TITLE", Uid}}} };
         };
         idx.Nodes["tc"] = parse(json{ {"CID", "tc"}, {"LABEL", "tc"}, {"VARIANT", "1.0e"},
-            {"LAYERS", json::array({ json{{"DIR", "tc"}}, json{{"EXEC", json::array({ entry("tc.exe", "61") })}} })} });
+            {"LAYERS", json::array({ json{{"DIR", "tc"}}, json{{"EXEC", NodeFixture::ExecOf({ entry("tc.exe", "61") })}} })} });
         const auto fe = [&](const char *Id, const char *Ver) {
             return parse(json{ {"CID", Id}, {"LABEL", Id}, {"VARIANT", Ver},
                 {"LAYERS", json::array({ json{{"INTO", json::array({"tc"})}}, json{{"DIR", Id}},
                     json{{"VARS", {{std::string(Id) + "_opt", {{"DEFAULT", "1"}, {"UI", {{"CONTROL", "bool"}, {"LABEL", Id}}}}}}}},
-                    json{{"EXEC", json::array({ entry("fe.exe", "61001") })}} })} });
+                    json{{"EXEC", NodeFixture::ExecOf({ entry("fe.exe", "61001") })}} })} });
         };
         idx.Nodes["fe22"] = fe("fe22", "2.2");
         idx.Nodes["fe25"] = fe("fe25", "2.5");
@@ -638,8 +633,8 @@ private slots:
         NodeIndex idx;
         idx.Nodes["game"] = parse(json{ {"CID", "game"}, {"LABEL", "game"}, {"VARIANT", "v1"},
             {"LAYERS", json::array({ json{{"DIR", "game"}},
-                json{{"EXEC", json::array({ json{{"LABEL", "Play"}, {"HOST", ManifestModel::MachinePlatform()}, {"EXE", "game.exe"},
-                    {"TILE", {{"UID", "43"}, {"TITLE", "Game"}}}} })}} })} });
+                json{{"EXEC", json::object({ {"Play", {{"HOST", ManifestModel::MachinePlatform()}, {"EXE", "game.exe"},
+                    {"TILE", {{"UID", "43"}, {"TITLE", "Game"}}}}} })}} })} });
         ManifestModel::DeriveFacts(idx);
         json Cfg = json{{"Settings", json::object()}};
         PreLaunchWindow W(&Cfg, &idx, {"game"});
@@ -667,8 +662,8 @@ private slots:
                     {"a", {{"DEFAULT", "1"}, {"UI", {{"CONTROL", "bool"}, {"SECTION", "Mod/Interface"}, {"LABEL", "A"}}}}},
                     {"b", {{"DEFAULT", "0"}, {"UI", {{"CONTROL", "bool"}, {"SECTION", "Mod/Interface"}, {"LABEL", "A much, much longer label than the first"}}}}},
                     {"c", {{"DEFAULT", "x"}, {"WHEN", "%a%==1"}, {"UI", {{"CONTROL", "text"}, {"SECTION", "Mod/Only A"}, {"LABEL", "Only with A"}}}}}}}},
-                json{{"EXEC", json::array({ json{{"LABEL", "Play"}, {"HOST", ManifestModel::MachinePlatform()}, {"EXE", "game.exe"},
-                    {"TILE", {{"UID", "37"}, {"TITLE", "Game"}}}} })}} })} });
+                json{{"EXEC", json::object({ {"Play", {{"HOST", ManifestModel::MachinePlatform()}, {"EXE", "game.exe"},
+                    {"TILE", {{"UID", "37"}, {"TITLE", "Game"}}}}} })}} })} });
         ManifestModel::DeriveFacts(idx);
         json Cfg = json{{"Settings", json::object()}};
         PreLaunchWindow W(&Cfg, &idx, {"game"});
@@ -713,8 +708,8 @@ private slots:
                 json{{"VARS", {
                     {"a", {{"DEFAULT", "1"}, {"UI", {{"CONTROL", "bool"}, {"SECTION", "Matrix"}, {"LABEL", "A"}}}}},
                     {"b", {{"DEFAULT", "0"}, {"UI", {{"CONTROL", "bool"}, {"SECTION", "Matrix"}, {"LABEL", "B"}}}}}}}},
-                json{{"EXEC", json::array({ json{{"LABEL", "Play"}, {"HOST", ManifestModel::MachinePlatform()}, {"EXE", "game.exe"},
-                    {"TILE", {{"UID", "39"}, {"TITLE", "Game"}}}} })}} })} });
+                json{{"EXEC", json::object({ {"Play", {{"HOST", ManifestModel::MachinePlatform()}, {"EXE", "game.exe"},
+                    {"TILE", {{"UID", "39"}, {"TITLE", "Game"}}}}} })}} })} });
         ManifestModel::DeriveFacts(idx);
         json Cfg = json{{"Settings", json::object()}};
         PreLaunchWindow W(&Cfg, &idx, {"game"});
@@ -746,8 +741,8 @@ private slots:
                 json{{"VARS", {
                     {"fwd", key("w", "Move forward")}, {"jump", key("space", "Jump")}, {"menu", key("escape", "Menu")},
                     {"only_q", {{"DEFAULT", "x"}, {"WHEN", "%jump%==q"}, {"UI", {{"CONTROL", "text"}, {"LABEL", "Only when jump is Q"}}}}}}}},
-                json{{"EXEC", json::array({ json{{"LABEL", "Play"}, {"HOST", ManifestModel::MachinePlatform()}, {"EXE", "game.exe"},
-                    {"TILE", {{"UID", "38"}, {"TITLE", "Game"}}}} })}} })} });
+                json{{"EXEC", json::object({ {"Play", {{"HOST", ManifestModel::MachinePlatform()}, {"EXE", "game.exe"},
+                    {"TILE", {{"UID", "38"}, {"TITLE", "Game"}}}}} })}} })} });
         ManifestModel::DeriveFacts(idx);
         json Cfg = json{{"Settings", json::object()}};
         InstanceStore::MergeVariables(Cfg, idx.Find("game")->PackageUid, {{"fwd", "e"}});   // the user's own
@@ -985,8 +980,8 @@ private slots:
                     json{{"VARS", {
                         {"which", {{"DEFAULT", Game}}},
                         {"bars", {{"DEFAULT", "1"}, {"WHEN", "%which%==hota"}, {"UI", {{"CONTROL", "bool"}, {"LABEL", "Health bars"}}}}}}}},
-                    json{{"EXEC", json::array({ json{{"LABEL", "Play"}, {"HOST", ManifestModel::MachinePlatform()}, {"EXE", "game.exe"},
-                        {"TILE", {{"UID", "37"}, {"TITLE", "Game"}}}} })}} })} });
+                    json{{"EXEC", json::object({ {"Play", {{"HOST", ManifestModel::MachinePlatform()}, {"EXE", "game.exe"},
+                        {"TILE", {{"UID", "37"}, {"TITLE", "Game"}}}}} })}} })} });
             ManifestModel::DeriveFacts(*idx);
             return idx;
         };
@@ -1013,8 +1008,8 @@ private slots:
         NodeIndex idx;
         idx.Nodes["game"] = parse(json{ {"CID", "game"}, {"LABEL", "game"}, {"VARIANT", "v1"},
             {"LAYERS", json::array({ json{{"DIR", "game"}},
-                json{{"EXEC", json::array({ json{{"LABEL", "Play"}, {"HOST", ManifestModel::MachinePlatform()}, {"EXE", "game.exe"},
-                    {"TILE", {{"UID", "47"}, {"TITLE", "Game"}}}} })}} })} });
+                json{{"EXEC", json::object({ {"Play", {{"HOST", ManifestModel::MachinePlatform()}, {"EXE", "game.exe"},
+                    {"TILE", {{"UID", "47"}, {"TITLE", "Game"}}}}} })}} })} });
         ManifestModel::DeriveFacts(idx);
         json Cfg = json{{"Settings", json::object()}};
         LibraryGameCard Card(&Cfg, &idx, { "game" }, "47");
@@ -1035,8 +1030,8 @@ private slots:
         NodeIndex idx;
         idx.Nodes["game"] = parse(json{ {"CID", "game"}, {"LABEL", "game"}, {"VARIANT", "v1"},
             {"LAYERS", json::array({ json{{"DIR", "game"}},
-                json{{"EXEC", json::array({ json{{"LABEL", "Play"}, {"HOST", ManifestModel::MachinePlatform()}, {"EXE", "game.exe"},
-                    {"TILE", {{"UID", "46"}, {"TITLE", "Game"}}}} })}} })} });
+                json{{"EXEC", json::object({ {"Play", {{"HOST", ManifestModel::MachinePlatform()}, {"EXE", "game.exe"},
+                    {"TILE", {{"UID", "46"}, {"TITLE", "Game"}}}}} })}} })} });
         ManifestModel::DeriveFacts(idx);
         json Cfg = json{{"Settings", json::object()}};
         QVERIFY(InstanceStore::WriteConfig(Cfg, idx.Find("game")->GameKey(), "Main", json{{"SKIP_LAUNCH_DIALOG", true}, {"LASTRUN", "2026-09-30T10:00:00Z"}}));
@@ -1058,8 +1053,8 @@ private slots:
         NodeIndex idx;
         idx.Nodes["game"] = parse(json{ {"CID", "game"}, {"LABEL", "game"}, {"VARIANT", "v1"},
             {"LAYERS", json::array({ json{{"DIR", "game"}},
-                json{{"EXEC", json::array({ json{{"LABEL", "Play"}, {"HOST", ManifestModel::MachinePlatform()}, {"EXE", "game.exe"},
-                    {"TILE", {{"UID", "45"}, {"TITLE", "Game"}}}} })}} })} });
+                json{{"EXEC", json::object({ {"Play", {{"HOST", ManifestModel::MachinePlatform()}, {"EXE", "game.exe"},
+                    {"TILE", {{"UID", "45"}, {"TITLE", "Game"}}}}} })}} })} });
         ManifestModel::DeriveFacts(idx);
         json Cfg = json{{"Settings", json::object()}};
         QPointer<PreLaunchWindow> W = new PreLaunchWindow(&Cfg, &idx, {"game"}, "45");
@@ -1111,8 +1106,8 @@ private slots:
             {"LAYERS", json::array({ json{{"DIR", "game"}},
                 json{{"VARS", {{"mode", {{"DEFAULT", "basic"}, {"UI", {{"CONTROL", "text"}, {"LABEL", "Mode"}}}}}}}},
                 json{{"WHEN", "%mode%==pro"}, {"VARS", {{"proopt", {{"DEFAULT", "1"}, {"UI", {{"CONTROL", "bool"}, {"LABEL", "Pro option"}}}}}}}},
-                json{{"EXEC", json::array({ json{{"LABEL", "Play"}, {"HOST", ManifestModel::MachinePlatform()}, {"EXE", "game.exe"},
-                    {"TILE", {{"UID", "43"}, {"TITLE", "Game"}}}} })}} })} });
+                json{{"EXEC", json::object({ {"Play", {{"HOST", ManifestModel::MachinePlatform()}, {"EXE", "game.exe"},
+                    {"TILE", {{"UID", "43"}, {"TITLE", "Game"}}}}} })}} })} });
         ManifestModel::DeriveFacts(idx);
         const std::string Uid = idx.Find("game")->GameKey();
         for (const char *Mode : {"pro", "basic"})
@@ -1137,12 +1132,11 @@ private slots:
     {
         NodeIndex idx;
         idx.Nodes["game"] = parse(json{ {"CID", "game"}, {"LABEL", "game"}, {"VARIANT", "v1"},
-            {"LAYERS", json::array({ json{{"DIR", "game"}}, json{{"EXEC", json::array({ json{{"LABEL", "Play"},
-                {"HOST", ManifestModel::MachinePlatform()}, {"EXE", "game.exe"}, {"TILE", {{"UID", "57"}, {"TITLE", "Game"}}}} })}} })} });
+            {"LAYERS", json::array({ json{{"DIR", "game"}}, json{{"EXEC", json::object({ {"Play", {{"HOST", ManifestModel::MachinePlatform()}, {"EXE", "game.exe"}, {"TILE", {{"UID", "57"}, {"TITLE", "Game"}}}}} })}} })} });
         const auto graft = [](const char *Id, const char *Section, bool Rec) {
             json G{ {"CID", Id}, {"LABEL", Id}, {"LAYERS", json::array({ json{{"INTO", json::array({"game"})}}, json{{"DIR", Id}} })} };
             if (Section) G["SECTION"] = Section;
-            if (Rec) G["RECOMMENDED"] = json::array({"57"});
+            if (Rec) G["LAYERS"][0]["RECOMMENDED"] = true;
             return parse(G);
         };
         idx.Nodes["ost"] = graft("ost", "Music/Soundtracks", true);
@@ -1186,8 +1180,8 @@ private slots:
                 json{{"VARS", {
                     {"a", {{"DEFAULT", "1"}, {"UI", {{"CONTROL", "bool"}, {"LABEL", "A"}}}}},
                     {"c", {{"DEFAULT", "x"}, {"WHEN", "%a%==1"}, {"UI", {{"CONTROL", "text"}, {"LABEL", "Only with A"}}}}}}}},
-                json{{"EXEC", json::array({ json{{"LABEL", "Play"}, {"HOST", ManifestModel::MachinePlatform()}, {"EXE", "game.exe"},
-                    {"TILE", {{"UID", "67"}, {"TITLE", "Game"}}}} })}} })} });
+                json{{"EXEC", json::object({ {"Play", {{"HOST", ManifestModel::MachinePlatform()}, {"EXE", "game.exe"},
+                    {"TILE", {{"UID", "67"}, {"TITLE", "Game"}}}}} })}} })} });
         idx.Nodes["g"] = parse(json{ {"CID", "g"}, {"LABEL", "g"},
             {"LAYERS", json::array({ json{{"INTO", json::array({"game"})}}, json{{"DIR", "g"}} })} });
         ManifestModel::DeriveFacts(idx);
@@ -1217,8 +1211,7 @@ private slots:
     {
         NodeIndex idx;
         idx.Nodes["game"] = parse(json{ {"CID", "game"}, {"LABEL", "game"}, {"VARIANT", "v1"},
-            {"LAYERS", json::array({ json{{"DIR", "game"}}, json{{"EXEC", json::array({ json{{"LABEL", "Play"},
-                {"HOST", ManifestModel::MachinePlatform()}, {"EXE", "game.exe"}, {"TILE", {{"UID", "77"}, {"TITLE", "Game"}}}} })}} })} });
+            {"LAYERS", json::array({ json{{"DIR", "game"}}, json{{"EXEC", json::object({ {"Play", {{"HOST", ManifestModel::MachinePlatform()}, {"EXE", "game.exe"}, {"TILE", {{"UID", "77"}, {"TITLE", "Game"}}}}} })}} })} });
         const auto graft = [](const char *Id, const char *Label, const char *Section, const char *On) {
             return parse(json{ {"CID", Id}, {"LABEL", Label}, {"SECTION", Section},
                 {"LAYERS", json::array({ json{{"INTO", json::array({On})}}, json{{"DIR", Id}} })} });
@@ -1265,9 +1258,9 @@ private slots:
     {
         const auto Version = [](const char *Cid, const char *Variant, bool Rec) {
             json J = { {"CID", Cid}, {"LABEL", Variant}, {"VARIANT", Variant},
-                {"LAYERS", json::array({ json{{"EXEC", json::array({ json{{"LABEL", "Play"}, {"HOST", ManifestModel::MachinePlatform()},
-                    {"EXE", "game.exe"}, {"TILE", {{"UID", "31"}, {"TITLE", "Jet Set Radio"}}}} })}} })} };
-            if (Rec) J["RECOMMENDED"] = json::array({"31"});
+                {"LAYERS", json::array({ json{{"EXEC", json::object({ {"Play", {{"HOST", ManifestModel::MachinePlatform()},
+                    {"EXE", "game.exe"}, {"TILE", {{"UID", "31"}, {"TITLE", "Jet Set Radio"}}}}} })}} })} };
+            if (Rec) J["LAYERS"][0]["EXEC"]["Play"]["RECOMMENDED"] = true;   // the card's recommended row
             Node N;
             ManifestModel::ParseNode(J, std::string("/lib/JSRF/") + Variant + ".json", "/lib/JSRF", N);
             return N;

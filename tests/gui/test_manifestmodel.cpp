@@ -25,8 +25,8 @@ ordered_json NodeJson(const std::string &Id, const std::vector<std::string> &Par
     for (const auto &P : Parents) L.push_back({ {"NODE", P} });
     L.push_back({ {"DIR", Id} });
     if (Launchable)
-        L.push_back({ {"EXEC", ordered_json::array({ { {"LABEL", "Play"}, {"HOST", "win32"}, {"EXE", "game.exe"},
-                                                        {"TILE", { {"UID", Id}, {"TITLE", Id} }} } })} });
+        L.push_back({ {"EXEC", ordered_json::object({ {"Play", {{"HOST", "win32"}, {"EXE", "game.exe"},
+                                                        {"TILE", { {"UID", Id}, {"TITLE", Id} }}}} })} });
     ordered_json N = { {"CID", Id}, {"LABEL", Id}, {"LAYERS", L} };
     if (Launchable) N["VARIANT"] = Id;
     return N;

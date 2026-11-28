@@ -4,7 +4,7 @@
 === cwd
   <TMP>/90000000000001/DefaultInstance/RUNTIME/drive_c/90000000000001
 === env (matrix only)
-  LM_EXEC_ENV=from-the-graft-entry
+  LM_EXEC_ENV=arrived
   LM_FOLDED=from-below
   LM_FROM_VAR=hello-beta
   LM_GAMEDIR=C:\90000000000001
@@ -34,7 +34,6 @@
   ./game/data.txt
   ./game/deep
   ./game/deep/leaf.txt
-  ./game/from_graft_entry.txt
   ./game/grafted.txt
   ./game/grafted_hd.txt
   ./game/lib.txt

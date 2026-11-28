@@ -29,8 +29,9 @@ BINARY   = os.path.join(ROOT, "build", "VidyaGod")
 #chain, where the environment is assembled in a different order — a property no plan can show.
 #(node, entry label): the entry is a ticked graft's (a mod loader) — it runs over the variant's mount. None = the
 #row's own game entry.
-RUN_CASES = [("lm_run", None), ("lm_run_chained", None), ("lm_inherits", None), ("lm_run", "lm_graft_entry")]
-ENTRY_CASES = [("lm_run", "lm_graft_entry")]
+#(lm_graft_entry is a graft with an entry: a row of its own, lm_run with it applied, its entry the one that runs.)
+RUN_CASES = [("lm_run", None), ("lm_run_chained", None), ("lm_inherits", None), ("lm_graft_entry", None)]
+ENTRY_CASES = []
 #Variants the engine must REFUSE (a requirement fails): the resolve exits non-zero and says why.
 BLOCKED = {"lm_blocked": "is blocked"}
 RUN_BEGIN = "=== argv"

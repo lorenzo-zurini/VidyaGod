@@ -91,7 +91,7 @@ std::optional<DownloadSelection> AskDownload(AppModel &Model, const LibraryGameC
             const Node * N = (*Snap)->Find(Lid);
             std::string Lbl = (N && !N->Variant.empty()) ? N->Variant
                               : (N && N->Meta.is_object() ? N->Meta.value("TITLE", Lid) : Lid);
-            const bool Rec = N && std::find(N->Recommended.begin(), N->Recommended.end(), N->Uid) != N->Recommended.end();
+            const bool Rec = N && N->IsRecommended(N->Uid);
             Es.push_back({ Lid, QString::fromStdString(Lbl), Rec });
         }
         CustomPicker->setEntries(Es);                                  // nothing ticked — endpoints carry the default

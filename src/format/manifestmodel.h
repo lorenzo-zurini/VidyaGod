@@ -54,8 +54,11 @@ struct Node {
     std::string LowerError;
 
     std::string Variant;                     // VARIANT — non-empty ⇒ on the shelf under this name
-    std::vector<std::string> Recommended;    // RECOMMENDED — tile UIDs: the default row under them (a variant), or
-                                             // pre-ticked under them (a graft)
+    //Derived (09, gen 9): the tile UIDs this node is the recommended row of (its own entries marked RECOMMENDED), or
+    //{"*"} for a part ticked by default wherever it is offered (an INTO layer marked RECOMMENDED).
+    std::vector<std::string> Recommended;
+    bool IsRecommended(const std::string &Uid) const
+    { for (const auto &U : Recommended) if (U == Uid || U == "*") return true; return false; }
     SharedJson Json;                         // the node as authored — what Fold resolves
     //The node's OWN content layers (VFSZipLayer/VFSDeltaLayer/…) lowered to the engine's vocabulary, where they land
     //relative to this node: what files and CIDs it carries. Kept for every node — hydration, fetch and seeding read

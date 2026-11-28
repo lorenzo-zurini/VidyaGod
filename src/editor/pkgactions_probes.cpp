@@ -118,12 +118,12 @@ PkgActions::GogSteps PkgActions::GogInstallSteps(const json & Script, const std:
             //A step with no value only clears the key before the install writes it: a fresh prefix has nothing to clear.
             else if (Type.empty() && !Arg.contains("valueName")) continue;
             else { Skip("a registry type it does not translate (" + Type + ")"); continue; }
-            json * K = &Reg[Root];
-            std::string Part;
+            //The layer's path map: {"HKLM\\Software\\X": {value: data}}. The key's default value is the EMPTY name
+            //(what regedit shows as @); a value literally called "@" is a different value nothing reads.
+            std::string Key = Root, Part;
             std::istringstream Ss(Sub);
-            while (std::getline(Ss, Part, '\\')) if (!Part.empty()) K = &(*K)[Part];
-            const std::string Vn = StrOf(Arg, "valueName");
-            (*K)[Vn.empty() ? "@" : Vn] = Val;
+            while (std::getline(Ss, Part, '\\')) if (!Part.empty()) Key += "\\" + Part;
+            Reg[Key][StrOf(Arg, "valueName")] = Val;
             ++RegValues;
         }
         else if (Act == "supportData")
@@ -206,7 +206,7 @@ json PkgActions::UnityKeep(const std::string & AppInfo)
         return nullptr;
     return json{{"COMMENT", "The game's saves and settings: a Unity game keeps them under its company and product (" + Company + ", " + Product + ")."},
                 {"KEEP", json{{"FILES/%UserProfile%/AppData/LocalLow/" + Company + "/" + Product + "/", true},
-                              {"REG/HKCU/Software/" + Company + "/" + Product, true}}}};
+                              {"REG/HKCU\\Software\\" + Company + "\\" + Product, true}}}};
 }
 
 std::string PkgActions::PlatformOf(const std::string & Name, const std::string & Head)
@@ -296,7 +296,12 @@ std::vector<PkgGraph::RegRow> PkgActions::ParseRegExport(const QString & Text, i
         if (Line.startsWith('[') && Line.endsWith(']'))
         {
             Section = Line.mid(1, Line.size() - 2);
-            if (Section.startsWith('-')) { Section.clear(); ++Deletions; continue; }   // a deletion section
+            if (Section.startsWith('-'))
+            {
+                //A deletion section: the key goes (null in the layer), values and subkeys with it.
+                PkgGraph::RegRow R{Section.mid(1).toStdString(), "", ""}; R.DeleteKey = true; Rows.push_back(std::move(R));
+                Section.clear(); ++Deletions; continue;
+            }
             //The key ITSELF, flagged: an empty NAME is the key's default value, so without the flag this row
             //shadows a real `@=` line from the same section.
             { PkgGraph::RegRow R{Section.toStdString(), "", ""}; R.KeyOnly = true; Rows.push_back(std::move(R)); }
@@ -313,9 +318,13 @@ std::vector<PkgGraph::RegRow> PkgActions::ParseRegExport(const QString & Text, i
         // dropping empty names — that WAS true, and was the actual bug; it is fixed at the source now.)
         if (Name == "@") Name.clear();
         else if (Name.startsWith('"') && Name.endsWith('"')) Name = Name.mid(1, Name.size() - 2);
-        // `"Name"=-` DELETES the value. A RegEdit layer only ever writes, so there is nothing to import — and
-        // importing it as the literal string "-" would write exactly the opposite of what the file asks.
-        if (Val == "-") { ++Deletions; continue; }
+        // `"Name"=-` DELETES the value: null in the layer (importing it as the literal string "-" would write
+        // exactly the opposite of what the file asks).
+        if (Val == "-")
+        {
+            PkgGraph::RegRow R{Section.toStdString(), Name.toStdString(), "null"}; R.WasString = false;
+            Rows.push_back(std::move(R)); ++Deletions; continue;
+        }
         if (Val.startsWith('"') && Val.endsWith('"')) Val = Val.mid(1, Val.size() - 2);
         Val.replace("\\\"", "\"");                                          // .reg escapes quotes...
         Val.replace("\\\\", "\\");                                          // ...and backslashes

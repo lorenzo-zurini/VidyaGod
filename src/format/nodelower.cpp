@@ -52,22 +52,22 @@ const char *VfsType(const std::string &T)
 bool IsBinaryMode(const std::string &M) { return M == "Replace" || M == "ReplaceAll" || M == "Cave" || M == "Poke" || M == "Or"; }
 
 //One hive tree -> a RegEdit per key path that carries values (or is an empty object: "create this key").
-void EmitRegTree(const std::string &Path, const ordered_json &Tree, const ordered_json &Arch, ordered_json &Out)
+//A REG layer's keys (07: a path tree, its KEY in front) -> one RegEdit per key: its values (a null deletes, and is the
+//fold's, not an op's); a key with no values is created.
+void EmitRegPaths(const ordered_json &L, const ordered_json &Arch, ordered_json &Out)
 {
-    ordered_json Values = ordered_json::object();
-    std::vector<std::pair<std::string, const ordered_json *>> Subkeys;
-    for (const auto &[K, V] : Tree.items())
+    const std::string Base = L.contains("KEY") ? Str(L["KEY"]) : std::string();
+    for (const auto &[P0, Vals] : L["REG"].items())
     {
-        if (V.is_object()) Subkeys.emplace_back(K, &V);
-        else if (!V.is_null()) Values[K] = V;
+        if (!Vals.is_object()) continue;
+        const std::string P = Base.empty() ? P0 : (P0.empty() ? Base : Base + "\\" + P0);
+        ordered_json Values = ordered_json::object();
+        for (const auto &[K, V] : Vals.items()) if (!V.is_null()) Values[K] = V;
+        if (Values.empty() && !Vals.empty()) continue;
+        ordered_json Op = { {"TYPE", "RegEdit"}, {"REGPATH", P}, {"KEYVALUES", Values} };
+        if (!Arch.is_null()) Op["ARCHITECTURE"] = Arch;
+        Out.push_back(std::move(Op));
     }
-    if (!Values.empty() || (Subkeys.empty() && Tree.empty()))
-    {
-        ordered_json L = { {"TYPE", "RegEdit"}, {"REGPATH", Path}, {"KEYVALUES", Values} };
-        if (!Arch.is_null()) L["ARCHITECTURE"] = Arch;
-        Out.push_back(std::move(L));
-    }
-    for (const auto &[K, V] : Subkeys) EmitRegTree(Path.empty() ? K : Path + "\\" + K, *V, Arch, Out);
 }
 
 ordered_json ContentOp(const std::string &Kind, const std::string &Payload, const std::string &Target,
@@ -106,10 +106,9 @@ ordered_json PersistOp(const std::string &Address, const ordered_json &Val)
     ordered_json P = { {"TYPE", "DeclarePersist"} };
     if (Ns == "REG")
     {
-        std::string K = Rest;
-        std::replace(K.begin(), K.end(), '/', '\\');
+        //a key (backslashes, 07): only keys persist (a value is kept with its key; CheckLayer refuses keeping one alone)
         P["SCOPE"] = "registry";
-        P["PATH"] = K;
+        P["PATH"] = Rest;
     }
     else
     {
@@ -172,8 +171,8 @@ std::string CheckLayer(const ordered_json &L)
         {"ZIP",   {"SOURCE", "SIZE", "TARGET"}}, {"FILE",  {"SOURCE", "SIZE", "TARGET"}},
         {"DELTA", {"SOURCE", "SIZE", "TARGET", "BASE_SOURCES"}}, {"DIR",   {"TARGET"}},
         {"CODED", {"SOURCE", "SIZE", "TARGET", "BASE_SOURCES", "DESCRIPTION", "NAME"}},
-        {"NODE",  {"TAKE", "TARGET"}}, {"EDIT", {"TARGET"}}, {"REG", {"ARCH"}},
-        {"VARS", {}}, {"ENV", {}}, {"DLL", {}}, {"EXEC", {}}, {"KEEP", {}}, {"INTO", {"TAKE"}},
+        {"NODE",  {"TAKE", "TARGET"}}, {"EDIT", {"TARGET"}}, {"REG", {"ARCH", "KEY"}},
+        {"VARS", {}}, {"ENV", {}}, {"DLL", {}}, {"EXEC", {}}, {"KEEP", {}}, {"INTO", {"TAKE", "RECOMMENDED"}},
     };
     for (const auto &[K, V] : L.items())
     {
@@ -251,6 +250,8 @@ std::string CheckLayer(const ordered_json &L)
                 //a part's footprint places its FILES: its facts (options, DLL overrides, entries) are its own, never selected
                 if (T == "INTO" && Ns != "FILES") return "an INTO's TAKE (the part's footprint) selects files only: '" + Src + "'";
                 std::string At;
+                //REG is taken by key, where it is (07, D13): a registry rename has no meaning to the hives it is written to
+                if (S.is_array() && Ns == "REG") return "a TAKE pair cannot rename a registry key ('" + Src + "'): REG is taken where it is";
                 if (S.is_array())
                 {
                     At = Str(S[1]);
@@ -258,6 +259,8 @@ std::string CheckLayer(const ordered_json &L)
                 }
                 else if (T == "INTO" && Src.find('/') != std::string::npos && Src.back() != '/')
                     At = Src;                                            // a footprint keeps a file it names where it is
+                else if (Ns != "FILES")
+                    At = Src;                                            // a fact lands at its own address (never re-rooted)
                 else if (Src.find('/') != std::string::npos && Src.back() != '/')
                     At = Ns + "/" + Src.substr(Src.rfind('/') + 1);
                 while (!At.empty() && At.back() == '/') At.pop_back();
@@ -332,17 +335,35 @@ std::string CheckLayer(const ordered_json &L)
     }
     else if (T == "REG")
     {
-        if (!P.is_object()) return "REG must be a hive tree";
+        if (!P.is_object()) return "REG must be a path tree: {\"HKCU\\\\Software\\\\X\": {value: data}}";
         //ARCH is mandatory: without it a 32-bit game's HKLM\Software keys land in the 64-bit view and the game never
         //sees them (Thief 3 hung, RollerCoaster Tycoon 2 asked for its CD, Colin McRae 2005 crashed, 2026-10-26).
         if (!L.contains("ARCH")) return "REG needs ARCH: the bitness of the program that reads it ([\"32\"] and/or [\"64\"])";
         if (!StrArray(L["ARCH"]) || L["ARCH"].empty()) return "ARCH must be a list of \"32\"/\"64\"";
         for (const auto &A : L["ARCH"]) if (A != "32" && A != "64") return "ARCH must be a list of \"32\"/\"64\"";
-        for (const auto &[Hive, Keys] : P.items())
-            if (Keys.is_object())
-                for (const auto &[K, Sub] : Keys.items())
-                    if (Sub.is_object() && Sub.contains("Wow6432Node"))   // ARCH places the 32-bit view; never by hand
-                        return "REG must not name Wow6432Node (ARCH [\"32\"] puts the keys there)";
+        if (L.contains("KEY") && (!L["KEY"].is_string() || L["KEY"].get<std::string>().empty()))
+            return "REG KEY must be the key path its paths are under";
+        const std::string Base = L.contains("KEY") ? Str(L["KEY"]) : std::string();
+        for (const auto &[K, Vals] : P.items())
+        {
+            const std::string Path = Base.empty() ? K : (K.empty() ? Base : Base + "\\" + K);
+            if (Path.empty()) return "REG names an empty key path";
+            std::vector<std::string> Seg;
+            for (size_t S0 = 0, E; S0 <= Path.size(); S0 = E + 1) { E = Path.find('\\', S0); if (E == std::string::npos) E = Path.size(); Seg.push_back(LowerAscii(Path.substr(S0, E - S0))); }
+            static const std::set<std::string> Hives = {"hkcu", "hklm", "hkcr", "hku", "hkey_current_user", "hkey_local_machine", "hkey_classes_root", "hkey_users"};
+            if (!Hives.count(Seg[0])) return "REG key '" + Path + "' must start at a hive (HKCU, HKLM, HKCR, HKU)";
+            for (const auto &G : Seg)
+                if (G.empty()) return "REG key '" + Path + "' has an empty key name";
+            //ARCH ["32"] puts a 32-bit program's Software keys under Software\Wow6432Node itself; elsewhere the name is a
+            //real key (Software\Classes\Wow6432Node: a codec's 32-bit class registrations, written by the 64-bit view)
+            if (Seg.size() >= 3 && Seg[1] == "software" && Seg[2] == "wow6432node")
+                return "REG must not name Software\\Wow6432Node (ARCH [\"32\"] puts the keys there)";
+            if (Vals.is_null()) continue;                          // the key deleted, and all below it
+            if (!Vals.is_object()) return "REG key '" + Path + "' must map to its values {name: data}, {} or null";
+            for (const auto &[V, D] : Vals.items())
+                if (D.is_object() || D.is_array())
+                    return "REG is a path tree: a key's values are data, not keys — write \"" + Path + "\\\\" + V + "\": {…}";
+        }
     }
     else if (T == "VARS")
     {
@@ -390,12 +411,16 @@ std::string CheckLayer(const ordered_json &L)
     }
     else if (T == "EXEC")
     {
-        if (!P.is_array() || P.empty()) return "EXEC must be a non-empty list of entries";
-        std::set<std::string> Labels;
-        for (const auto &E : P)
+        if (!P.is_object() || P.empty()) return "EXEC must be {label: entry} (09: the label is the entry's address)";
+        for (const auto &[Lab, E] : P.items())
         {
-            if (!E.is_object() || !E.contains("LABEL") || !E["LABEL"].is_string()) return "every EXEC entry needs a LABEL";
-            if (!Labels.insert(E["LABEL"].get<std::string>()).second) return "two EXEC entries share the LABEL '" + E["LABEL"].get<std::string>() + "'";
+            if (Lab.empty()) return "an EXEC entry needs a label";
+            //'/' separates an entry's address (EXEC/<label>/TILE/COVER): a label holding one could never be taken whole
+            if (Lab.find('/') != std::string::npos) return "EXEC label '" + Lab + "' holds a '/', which separates an entry's address (EXEC/<label>/…)";
+            if (E.is_null()) continue;                                 // deletes an entry beneath (a label renamed)
+            if (!E.is_object()) return "EXEC '" + Lab + "' must be an entry object (or null, deleting it)";
+            if (E.contains("LABEL")) return "EXEC '" + Lab + "': the label is the entry's key, not a field";
+            if (E.contains("RECOMMENDED") && !E["RECOMMENDED"].is_boolean()) return "EXEC '" + Lab + "' RECOMMENDED must be true or false";
             for (const char *F : {"HOST", "EXE", "WORKDIR", "CONTENT_ROOT", "RECOMMENDEDRUNNER"})
                 if (E.contains(F) && !E[F].is_string()) return std::string("EXEC ") + F + " must be a string";
             if (E.contains("RECOMMENDEDRUNNER") && E.contains("GUEST") && E["GUEST"].is_array() && !E["GUEST"].empty())
@@ -499,15 +524,29 @@ std::string CheckLayer(const ordered_json &L)
             }
             if (Ns == "REG")
             {
-                //The segments as the key is named (a doubled separator names no extra key, and '\\' separates too).
+                //A key (backslashes, as on a REG layer, 07) or a value of it (<key>#<value>, 13), from a hive.
+                std::string Key = K.size() > 4 ? K.substr(4) : std::string();
+                if (const size_t H = Key.rfind('#'); H != std::string::npos) Key = Key.substr(0, H);
                 std::vector<std::string> Seg;
-                std::string Cur;
-                for (const char C : (K.size() > 4 ? K.substr(4) : std::string()) + "/")
-                    if (C == '/' || C == '\\') { if (!Cur.empty()) Seg.push_back(LowerAscii(Cur)); Cur.clear(); }
-                    else Cur.push_back(C);
-                //ARCH places the 32-bit view, as on a REG layer; a kept address never names it by hand.
+                for (size_t S0 = 0, E; S0 <= Key.size(); S0 = E + 1)
+                {
+                    E = Key.find('\\', S0);
+                    if (E == std::string::npos) E = Key.size();
+                    Seg.push_back(LowerAscii(Key.substr(S0, E - S0)));
+                }
+                static const std::set<std::string> Hives = {"hkcu", "hklm", "hkcr", "hku", "hkey_current_user", "hkey_local_machine", "hkey_classes_root", "hkey_users"};
+                //A value is kept with its key: at value level a KEEP only takes back (false), never keeps (13 §13.1).
+                if (K.find('#', K.rfind('\\') == std::string::npos ? 0 : K.rfind('\\')) != std::string::npos
+                    && !(V.is_boolean() && !V.get<bool>()))
+                    return "KEEP address '" + K + "' keeps one value: a value is kept with its key (KEEP the key; take values back with false)";
+                //(REG alone, the whole registry, is the validator's to refuse, with its reason)
+                if (!Key.empty() && !Hives.count(Seg[0]))
+                    return "KEEP address '" + K + "' must start at a hive, keys separated by backslashes (REG/HKCU\\Software\\X)";
                 for (const std::string &G : Seg)
-                    if (G == "wow6432node") return "KEEP address '" + K + "' must not name Wow6432Node (ARCH [\"32\"] keeps the key there)";
+                    if (G.empty() && !Key.empty()) return "KEEP address '" + K + "' has an empty key name";
+                //ARCH places the 32-bit view, as on a REG layer; a kept address never names it by hand.
+                if (Seg.size() >= 3 && Seg[1] == "software" && Seg[2] == "wow6432node")
+                    return "KEEP address '" + K + "' must not name Software\\Wow6432Node (ARCH [\"32\"] keeps the key there)";
                 if (!(V.is_boolean() && !V.get<bool>()) && !(V.is_object() && V.contains("ARCH"))
                     && Seg.size() >= 2 && (Seg[0] == "hklm" || Seg[0] == "hkey_local_machine") && Seg[1] == "software")
                     return "KEEP address '" + K + "' needs ARCH ([\"32\"] for a 32-bit program, as on its REG layer): "
@@ -526,6 +565,7 @@ std::string CheckLayer(const ordered_json &L)
     else if (T == "INTO")
     {
         if (!StrArray(P) || P.empty()) return "INTO must be a non-empty list of node CIDs (what the part goes into)";
+        if (L.contains("RECOMMENDED") && !L["RECOMMENDED"].is_boolean()) return "INTO RECOMMENDED must be true or false (the part ticked by default there)";
         for (const auto &M : P) if (M.get<std::string>().empty()) return "INTO names an empty node CID";
     }
     return std::string();
@@ -537,13 +577,14 @@ std::string CheckNode(const nlohmann::ordered_json &J, const std::string &NodeId
 {
     const std::string Tag = "node '" + NodeId + "'" + (Label.empty() || Label == NodeId ? std::string() : " (" + Label + ")");
     if (!J.is_object()) return Tag + ": not an object";
-    static const std::set<std::string> Fields = { "CID", "LABEL", "POS", "COMMENT", "VARIANT", "RECOMMENDED", "SECTION", "LAYERS" };
+    static const std::set<std::string> Fields = { "CID", "LABEL", "POS", "COMMENT", "VARIANT", "SECTION", "LAYERS" };
+    if (J.contains("RECOMMENDED"))
+        return Tag + ": RECOMMENDED is the entry's (\"RECOMMENDED\": true on its EXEC entry) or, for a part, its INTO layer's";
     for (const auto &[K, V] : J.items())
-        if (!Fields.count(K)) return Tag + ": unknown field '" + K + "' (a node is CID LABEL VARIANT RECOMMENDED SECTION LAYERS)";
+        if (!Fields.count(K)) return Tag + ": unknown field '" + K + "' (a node is CID LABEL VARIANT SECTION LAYERS)";
     if (J.contains("LABEL") && !J["LABEL"].is_string()) return Tag + ": LABEL must be a string";
     if (J.contains("VARIANT") && (!J["VARIANT"].is_string() || J["VARIANT"].get<std::string>().empty()))
         return Tag + ": VARIANT must be a non-empty name";
-    if (J.contains("RECOMMENDED") && !StrArray(J["RECOMMENDED"])) return Tag + ": RECOMMENDED must be a list of tile UIDs";
     //SECTION: where a graft sits in the pre-launch graft tree, a path ("Soundtrack", "Mods/Graphics"; '/' nests).
     if (J.contains("SECTION") && (!J["SECTION"].is_string() || J["SECTION"].get<std::string>().empty()))
         return Tag + ": SECTION must be a non-empty path";
@@ -585,7 +626,7 @@ nlohmann::ordered_json LowerNode(const nlohmann::ordered_json &J, const std::str
         {
             //No ARCH (a node folded without being checked: CheckLayer requires one) is the key as named.
             const ordered_json Arches = (L.contains("ARCH") && !L["ARCH"].empty()) ? L["ARCH"] : ordered_json::array({ nullptr });
-            for (const auto &A : Arches) EmitRegTree(std::string(), L["REG"], A, Ops);
+            for (const auto &A : Arches) EmitRegPaths(L, A, Ops);
         }
         else if (T == "DLL")
         {
@@ -615,10 +656,11 @@ nlohmann::ordered_json LowerNode(const nlohmann::ordered_json &J, const std::str
     return Out;
 }
 
-nlohmann::ordered_json LowerEntry(const nlohmann::ordered_json &E)
+nlohmann::ordered_json LowerEntry(const nlohmann::ordered_json &E, const std::string &Label)
 {
     ordered_json L = ordered_json::object();
     if (!E.is_object()) return L;
+    if (!Label.empty()) L["LABEL"] = Label;                          // the entry's key (09): the engine names it so
     const bool Runner = E.contains("GUEST") && E["GUEST"].is_array() && !E["GUEST"].empty();
     if (Runner)
     {
@@ -626,7 +668,7 @@ nlohmann::ordered_json LowerEntry(const nlohmann::ordered_json &E)
         L["GUEST"] = E["GUEST"];
         L["EXECUTABLE"] = E.value("EXE", ordered_json(""));
         L["ARGS"] = E.contains("ARGS") && E["ARGS"].is_array() ? E["ARGS"] : ordered_json::array();
-        for (const char *F : {"CONTENT_ROOT", "PREFIX_GENERATE", "UNIFIED_RUNTIME", "GUEST_ROOTS", "DRIVES", "WORKDIR", "LABEL"})
+        for (const char *F : {"CONTENT_ROOT", "PREFIX_GENERATE", "UNIFIED_RUNTIME", "GUEST_ROOTS", "DRIVES", "WORKDIR"})
             if (E.contains(F)) L[F] = E[F];
     }
     else
@@ -634,7 +676,7 @@ nlohmann::ordered_json LowerEntry(const nlohmann::ordered_json &E)
         L["PLATFORM"] = E.value("HOST", ordered_json(""));
         if (E.contains("EXE")) L["CONTENTPATH"] = E["EXE"];
         if (E.contains("ARGS") && E["ARGS"].is_array()) L["EXEARGS"] = E["ARGS"];
-        for (const char *F : {"WORKDIR", "LABEL", "RECOMMENDEDRUNNER"})
+        for (const char *F : {"WORKDIR", "RECOMMENDEDRUNNER"})
             if (E.contains(F)) L[F] = E[F];
     }
     return L;
@@ -651,7 +693,9 @@ bool UserOwned(const nlohmann::ordered_json &Keep, const std::string &Address)
         std::string Kl = LowerAscii(K);
         while (!Kl.empty() && Kl.back() == '/') Kl.pop_back();
         const std::string Hashless = A.substr(0, A.find('#'));
+        //A registry key holds its values (#) and its subkeys (\): REG/<key>\<subkey>#<value>.
         const bool Covers = A == Kl || A.rfind(Kl + "/", 0) == 0 || A.rfind(Kl + "#", 0) == 0
+                         || (A.rfind("reg/", 0) == 0 && A.rfind(Kl + "\\", 0) == 0)
                          || (HasWildcard(Kl) && Kl.rfind('/') != std::string::npos && Hashless.rfind('/') != std::string::npos
                              && Kl.substr(0, Kl.rfind('/')) == Hashless.substr(0, Hashless.rfind('/'))
                              && WildcardMatch(Kl.substr(Kl.rfind('/') + 1), Hashless.substr(Hashless.rfind('/') + 1)));   // a pattern keep: player*.hki, files in its own folder
@@ -846,10 +890,12 @@ std::vector<std::pair<size_t, nlohmann::ordered_json>> ContentOps(const Fold::Pl
             Out.emplace_back(J, std::move(L));
             continue;
         }
-        if (!Sh[J].Mounts)
-            Out.emplace_back(J, ContentOp(I.Kind, Sh[J].Path, I.Target, I.Source, I.Size, ordered_json(), I.BaseSources, I.Description, I.Name));
-        else
-            Out.emplace_back(J, ContentOp(I.Kind, Sh[J].Path, I.Target, I.Source, I.Size, *Sh[J].Mounts, I.BaseSources, I.Description, I.Name));
+        ordered_json L = ContentOp(I.Kind, Sh[J].Path, I.Target, I.Source, I.Size, Sh[J].Mounts ? *Sh[J].Mounts : ordered_json(),
+                                   I.BaseSources, I.Description, I.Name);
+        //A re-provided copy (05 §5.4): the places later layers of its composition rewrite stay with the layers below it.
+        //Guest paths, like a submount's destination (substituted with it).
+        if (!I.Except.empty()) L["HIDE"] = I.Except;
+        Out.emplace_back(J, std::move(L));
     }
     return Out;
 }
@@ -858,17 +904,22 @@ nlohmann::ordered_json LowerPlan(const Fold::Plan &P)
 {
     ordered_json Out = ordered_json::array();
 
-    //Package-owned inside a user-owned subtree: re-applied after the user's state is restored.
+    //Package-owned inside a user-owned subtree: re-applied after the user's state is restored. A registry value is
+    //inside its key (REG/<key>#<value>) and inside every key above it (\).
     const auto TakenBack = [&](const std::string &Address) {
         std::string Parent = Address;
-        const size_t Hash = Parent.find('#');
+        const bool Reg = Address.rfind("REG/", 0) == 0;
+        const size_t Hash = Reg ? Parent.rfind('#') : Parent.find('#');
         if (Hash != std::string::npos) Parent = Parent.substr(0, Hash);
+        const std::string Pl = LowerAscii(Parent);
         bool Inside = false;
         for (const auto &[K, V] : P.Keep.items())
         {
             std::string Kl = LowerAscii(K);
             while (!Kl.empty() && Kl.back() == '/') Kl.pop_back();
-            if (!(V.is_boolean() && !V.get<bool>()) && LowerAscii(Parent).rfind(Kl + "/", 0) == 0) Inside = true;
+            if (V.is_boolean() && !V.get<bool>()) continue;
+            if (Pl.rfind(Kl + "/", 0) == 0 || (Reg && Hash != std::string::npos && (Pl == Kl || Pl.rfind(Kl + "\\", 0) == 0)))
+                Inside = true;
         }
         return Inside && !UserOwned(P.Keep, Address);
     };
@@ -905,7 +956,7 @@ nlohmann::ordered_json LowerPlan(const Fold::Plan &P)
         if (const auto It = Content.find(J); It != Content.end()) Out.push_back(std::move(It->second));
     }
     //The folded registry, one RegEdit per (architecture, key, ownership) — values in fold order within a key. A value
-    //is judged by its own address (REG/<key>/<value>): one the package takes back inside a kept key (UserPatch's
+    //is judged by its own address (REG/<key>#<value>): one the package takes back inside a kept key (UserPatch's
     //options in a key whose volumes are the user's) goes to the key's OVERRIDE RegEdit, re-applied after the user's
     //state is restored.
     std::map<std::string, ordered_json> ByKey;
@@ -913,8 +964,7 @@ nlohmann::ordered_json LowerPlan(const Fold::Plan &P)
     for (const auto &[K, V] : P.Reg)
     {
         const std::string Arch = V.Arch.is_null() ? std::string() : Str(V.Arch);
-        std::string A = "REG/" + V.Path + "/" + V.Name;
-        std::replace(A.begin(), A.end(), '\\', '/');
+        const std::string A = "REG/" + V.Path + "#" + V.Name;
         const bool Over = TakenBack(A);
         const std::string Kk = Arch + '\x1f' + LowerAscii(V.Path) + '\x1f' + (Over ? "o" : "b");
         auto It = ByKey.find(Kk);

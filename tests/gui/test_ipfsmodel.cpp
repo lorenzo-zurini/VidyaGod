@@ -98,7 +98,7 @@ private slots:
         auto writeJson = [](const QString & path, const json & j) { NodeFixture::WriteNodes(path.toStdString(), j); };
         writeJson(R + "/VidyaGod/[1] Game/tile.json", NodeFixture::Chain("g_tile", {NodeFixture::Tile("1", "Game")}));
         writeJson(R + "/VidyaGod/[1] Game/game.json",
-                  NodeFixture::Chain("g_exec", {NodeFixture::Exec("win32", "g.exe")}, {"g_tile"}));
+                  NodeFixture::Chain("g_exec", {NodeFixture::Merge({NodeFixture::Exec("win32", "g.exe"), NodeFixture::TakeTile("g_tile")})}, {"g_tile"}));
 
         json cfg = json{{"Settings", {{"Paths", {{"LibraryRoot", R.toStdString()}}}}}, {"LIBRARY", json::array()}};
         AppModel m(&cfg, &AppDir);

@@ -1,5 +1,5 @@
 // vg_fold — the C++ resolver (src/fold.cpp) in batch, for tools/gen6/fold_gate.py.
-// argv[1] = a library root (every *.json with CID + LAYERS below it, _peer_* dirs skipped).
+// argv[1] = a library root (every *.json with LAYERS below it, its CID given or computed; _peer_* dirs skipped).
 // stdin: one case per line — {"id", "root", "instance": {}, "builtins": {}, "grafts": [], "face": uid?}
 // argv[2] == --cids: print every node's canonical CID instead (handle<TAB>cid).
 // argv[2] == --entries-check: ResolveEntries(node).Exec == Resolve(node).Exec for every node.
@@ -35,10 +35,14 @@ int main(int argc, char **argv)
         {
             std::ifstream F(It->path());
             json J = json::parse(F);
-            if (J.is_object() && J.contains("CID") && J.contains("LAYERS"))
+            if (J.is_object() && J.contains("LAYERS") && J["LAYERS"].is_array())
             {
+                //a label-named node (the library since 2026-11-24): its CID is that of its canonical bytes
+                std::string Err;
+                const std::string C = J.contains("CID") && J["CID"].is_string() ? J["CID"].get<std::string>() : Cid::OfNode(J, &Err);
+                if (C.empty()) continue;
                 Store.push_back(std::move(J));
-                Lib.Nodes[Store.back()["CID"].get<std::string>()] = { &Store.back(), It->path().parent_path().string() };
+                Lib.Nodes[C] = { &Store.back(), It->path().parent_path().string() };
             }
         }
         catch (const std::exception &) {}

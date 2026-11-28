@@ -65,12 +65,12 @@ static std::vector<std::string> Errors(const NodeIndex &Idx, std::vector<std::st
 TEST(parse_reads_a_gen6_node)
 {
     const ordered_json J = {
-        {"CID", "h1"}, {"LABEL", "v"}, {"VARIANT", "1.0"}, {"RECOMMENDED", ordered_json::array({"7"})},
+        {"CID", "h1"}, {"LABEL", "v"}, {"VARIANT", "1.0"},
         {"LAYERS", ordered_json::array({
             {{"NODE", "base"}, {"WHEN", "bafkreirivalnoderivalnoderivalnoderivalnoderivalnoderivalno == false"}},
             {{"ZIP", "g.zip"}, {"SOURCE", "Qm1"}, {"SIZE", 5}, {"TARGET", "FILES/%GameDir%"}},
             {{"EDIT", ordered_json::array({ {{"MODE", "Poke"}, {"OFFSET", "0x1"}, {"VALUE", "00"}} })}, {"TARGET", "FILES/%GameDir%/g.exe"}},
-            {{"EXEC", ordered_json::array({ {{"LABEL", "Play"}, {"HOST", "win32"}, {"EXE", "%GameDir%/g.exe"}, {"TILE", {{"UID", "7"}}}} })}},
+            {{"EXEC", ordered_json::object({ {"Play", {{"HOST", "win32"}, {"EXE", "%GameDir%/g.exe"}, {"TILE", {{"UID", "7"}}}, {"RECOMMENDED", true}}} })}},
         })},
     };
     Node N;
@@ -78,7 +78,7 @@ TEST(parse_reads_a_gen6_node)
     CHECK(N.LowerError.empty());
     CHECK_EQ(N.Cid, std::string("h1"));
     CHECK_EQ(N.Variant, std::string("1.0"));
-    CHECK(N.Recommended == std::vector<std::string>{"7"});
+    CHECK(N.Recommended.empty());                                     // derived from its entries (DeriveFacts)
     CHECK(N.Refs == std::vector<std::string>{"base"});                // NODE refs are followed…
     CHECK(N.Requires == std::vector<std::string>{"bafkreirivalnoderivalnoderivalnoderivalnoderivalnoderivalno"});   // …a condition's node CIDs only compared
     CHECK(N.Into.empty());
@@ -128,12 +128,12 @@ TEST(the_vocabulary_refuses_malformed_nodes_and_keeps_them_indexed)
         {{"LABEL", "b"}, {"LAYERS", ordered_json::array({ {{"PATH", "x.zip"}} })}},                          // none
         {{"LABEL", "c"}, {"OVER", ordered_json::array()}, {"LAYERS", ordered_json::array()}},                // unknown field
         {{"LABEL", "d"}, {"VARIANT", ""}, {"LAYERS", ordered_json::array()}},                                 // empty VARIANT
-        {{"LABEL", "e"}, {"RECOMMENDED", true}, {"LAYERS", ordered_json::array()}},                           // not a UID list
+        {{"LABEL", "e"}, {"RECOMMENDED", ordered_json::array({"7"})}, {"LAYERS", ordered_json::array()}},     // node-level: it is the entry's
         {{"LABEL", "f"}, {"LAYERS", ordered_json::array({ {{"EDIT", ordered_json::array({ {{"MODE", "Poke"}} })}} })}},   // no TARGET
         {{"LABEL", "g"}, {"LAYERS", ordered_json::array({ {{"KEEP", {{"EXEC/Play", true}}}} })}},             // KEEP outside FILES/REG/VARS
         {{"LABEL", "h"}, {"LAYERS", ordered_json::array({ {{"ZIP", "x.zip"}, {"TARGET", "REG/HKCU"}} })}},     // content TARGET not in FILES
         {{"LABEL", "i"}, {"LAYERS", ordered_json::array({ {{"EDIT", ordered_json::array({ {{"MODE", "Poke"}, {"VALUE", 5}} })}, {"TARGET", "FILES/x"}} })}},   // VALUE not text
-        {{"LABEL", "j"}, {"LAYERS", ordered_json::array({ {{"EXEC", ordered_json::array({ {{"LABEL", "Play"}}, {{"LABEL", "Play"}} })}} })}},   // two entries, one label
+        {{"LABEL", "j"}, {"LAYERS", ordered_json::array({ {{"EXEC", ordered_json::array({ {{"LABEL", "Play"}} })}} })}},   // EXEC a list, not {label: entry}
         {{"LABEL", "k"}, {"LAYERS", ordered_json::array({ {{"ENV", {{"A", "1"}}}, {"LABEL", ""}} })}},             // empty layer LABEL
         {{"LABEL", "l"}, {"LAYERS", ordered_json::array({ {{"ENV", {{"A", "1"}}}, {"SECTION", 3}} })}},            // SECTION not a path
     };
@@ -168,7 +168,7 @@ TEST(closure_follows_node_refs_post_order_and_reports_missing)
 {
     NodeIndex Idx;
     AddChain(Idx, "lib", { NF::Content("zip", "l.zip") });
-    AddChain(Idx, "v", { NF::Content("zip", "a.zip"), NF::Content("zip", "b.zip") }, { "lib", "ghost" });
+    AddChain(Idx, "v", { NF::Content("zip", "a.zip"), ordered_json{{"ZIP", "b.zip"}} }, { "lib", "ghost" });
     std::vector<std::string> Missing;
     const auto Order = ManifestModel::Closure(Idx, "v", &Missing);
     CHECK((Order == std::vector<std::string>{ "lib", "v__l0", "v" }));   // contained first, the root last
@@ -180,13 +180,17 @@ TEST(closure_follows_node_refs_post_order_and_reports_missing)
     CHECK(ManifestModel::Closure(Idx2, "g").size() == 2);
 }
 
-TEST(facts_fold_entries_and_tiles_along_containment)
+TEST(facts_come_from_the_entries_a_row_ends_with)
 {
-    // base carries the tile on a partial "Play" entry; the variant contains it and adds how to run.
+    // base carries the tile on an entry that does not run; a variant's own Play entry replaces it WHOLE (nothing folds):
+    // without a TILE of its own it presents no card, and with one it presents it — its own TITLE and META.
     NodeIndex Idx;
     AddChain(Idx, "base", { NF::Merge({ NF::Content("zip", "g.zip", "%GameDir%"), NF::Tile("7", "Game", {{"TGDBID", "7"}}) }) });
-    AddChain(Idx, "v", { NF::Merge({ NF::Exec("win32", "%GameDir%/g.exe"), NF::Variant("1.0") }) }, { "base" });
+    AddChain(Idx, "bare", { NF::Merge({ NF::Exec("win32", "%GameDir%/g.exe"), NF::Variant("bare") }) }, { "base" });
+    AddChain(Idx, "v", { NF::Merge({ NF::Exec("win32", "%GameDir%/g.exe"), NF::Tile("7", "Game v", {{"TGDBID", "7"}}), NF::Variant("1.0") }) }, { "base" });
     ManifestModel::DeriveFacts(Idx);
+    const Node &B = Idx.Nodes.at("bare");
+    CHECK(B.HasExec && B.Faces.empty());                                 // the base's tile went with its entry
     const Node &V = Idx.Nodes.at("v");
     CHECK(V.IsVariant());
     CHECK(V.HasExec && !V.HasRunner);
@@ -195,40 +199,138 @@ TEST(facts_fold_entries_and_tiles_along_containment)
     CHECK(V.Faces == std::vector<std::string>{"7"});
     CHECK_EQ(V.Uid, std::string("7"));
     CHECK_EQ(V.PackageUid, std::string("7"));
-    CHECK_EQ(V.Meta.value("TITLE", std::string()), std::string("Game"));
     CHECK_EQ(V.Meta.value("TGDBID", std::string()), std::string("7"));   // META hoisted flat
-    CHECK(Idx.Nodes.at("base").OwnTile && !Idx.Nodes.at("base").HasExec);   // a partial entry does not run
+    CHECK(Idx.Nodes.at("base").OwnTile && !Idx.Nodes.at("base").HasExec);   // an entry with no program does not run
+}
+
+// The default entry (09 §9.2) — what a row's card runs and shows: the node's own RECOMMENDED entry, else its own tiled
+// entry, else an inherited RECOMMENDED one, else the first tiled one. Teeth: drop any one step (the next one picks
+// another entry: A over B, Inh over Mine, X over Y).
+// One recommended row per card (09): two is a contradiction, none among several an accident of naming. A scope
+// never hides a card's recommended row, and reports only the cards a row of it is on. Teeth: accept two; accept
+// none; count only the scope's rows (s1 and s3 look unrecommended); report every card whatever the scope.
+TEST(a_card_has_one_recommended_row)
+{
+    NodeIndex Idx;
+    const auto Row = [&](const char *Id, const char *Uid, bool Rec) {
+        ordered_json E = { {"HOST", "win32"}, {"EXE", "g.exe"}, {"TILE", {{"UID", Uid}, {"TITLE", "T"}}} };
+        if (Rec) E["RECOMMENDED"] = true;
+        Add(Idx, { {"CID", Id}, {"LABEL", Id}, {"VARIANT", Id}, {"LAYERS", ordered_json::array({ {{"EXEC", {{"Play", E}}}} })} });
+    };
+    Row("r1", "5", true); Row("r2", "5", true);
+    Row("q1", "6", false); Row("q2", "6", false);
+    Row("s1", "7", false); Row("s2", "7", true); Row("s3", "7", false);
+    ManifestModel::DeriveFacts(Idx);
+    const auto E = Errors(Idx);
+    CHECK(AnyContains(E, "tile 5: 2 rows are RECOMMENDED"));
+    CHECK(AnyContains(E, "tile 6: 2 rows"));
+    CHECK(!AnyContains(E, "tile 7"));
+    std::vector<std::string> Es, Ws;
+    const std::set<std::string> Scope = { "s1", "s3" };
+    Validate::Nodes(Idx, Es, Ws, &Scope);
+    CHECK(!AnyContains(Es, "tile 7"));                       // s2, outside the scope, is its recommended row
+    CHECK(!AnyContains(Es, "tile 6") && !AnyContains(Es, "tile 5"));
+}
+
+// A graft that runs is a row: with no TILE and no TAKE of one it appears on no card. And one TAKE selecting a place
+// twice (one selection inside another: a folder's file, a key's subkey or value) is refused. Teeth: accept the
+// faceless graft; miss the registry's \ or #; double a trailing separator.
+TEST(a_faceless_graft_row_and_a_twice_taken_place_are_errors)
+{
+    NodeIndex Idx;
+    Add(Idx, { {"CID", "base"}, {"LABEL", "base"}, {"LAYERS", ordered_json::array({ ordered_json{{"ZIP", "b.zip"}} })} });
+    Add(Idx, { {"CID", "port"}, {"LABEL", "port"}, {"LAYERS", ordered_json::array({ {{"INTO", ordered_json::array({"base"})}},
+        {{"EXEC", {{"Port", {{"HOST", "linux"}, {"EXE", "port"}}}}}} })} });
+    const auto Taker = [&](const char *Id, std::initializer_list<const char *> Sel) {
+        ordered_json T = ordered_json::array();
+        for (const char *S : Sel) T.push_back(S);
+        Add(Idx, { {"CID", Id}, {"LABEL", Id}, {"LAYERS", ordered_json::array({ {{"NODE", "base"}, {"TAKE", T}} })} });
+    };
+    Taker("sub", { "REG/HKCU\\A", "REG/HKCU\\A\\B" });
+    Taker("val", { "REG/HKCU\\A", "REG/HKCU\\A#v" });
+    Taker("dir", { "FILES/Data/", "FILES/Data/x" });
+    Taker("ok", { "REG/HKCU\\A", "REG/HKCU\\AB", "FILES/Data", "FILES/DataX" });
+    ManifestModel::DeriveFacts(Idx);
+    const auto E = Errors(Idx);
+    CHECK(AnyContains(E, "appears on no card"));
+    CHECK(AnyContains(E, "'REG/HKCU\\A\\B' twice"));
+    CHECK(AnyContains(E, "'REG/HKCU\\A#v' twice"));
+    CHECK(AnyContains(E, "'FILES/Data/x' twice"));
+    CHECK(!AnyContains(E, "'REG/HKCU\\AB' twice") && !AnyContains(E, "'FILES/DataX' twice"));
+}
+
+TEST(the_default_entry_is_own_recommended_then_own_then_inherited_recommended)
+{
+    NodeIndex Idx;
+    const auto E = [](const char *Exe, const char *Uid, bool Rec = false) {
+        ordered_json J = { {"HOST", "win32"}, {"EXE", Exe}, {"TILE", {{"UID", Uid}}} };
+        if (Rec) J["RECOMMENDED"] = true;
+        return J;
+    };
+    Add(Idx, { {"CID", "two"}, {"LABEL", "two"}, {"LAYERS", ordered_json::array({ {{"EXEC", {{"A", E("a.exe", "2")}, {"B", E("b.exe", "2", true)}}}} })} });
+    Add(Idx, { {"CID", "b1"}, {"LABEL", "b1"}, {"LAYERS", ordered_json::array({ {{"EXEC", {{"Inh", E("i.exe", "1")}}}} })} });
+    Add(Idx, { {"CID", "own"}, {"LABEL", "own"}, {"LAYERS", ordered_json::array({ {{"NODE", "b1"}}, {{"EXEC", {{"Mine", E("m.exe", "1")}}}} })} });
+    Add(Idx, { {"CID", "b2"}, {"LABEL", "b2"}, {"LAYERS", ordered_json::array({ {{"EXEC", {{"X", E("x.exe", "3")}, {"Y", E("y.exe", "3", true)}}}} })} });
+    Add(Idx, { {"CID", "inh"}, {"LABEL", "inh"}, {"LAYERS", ordered_json::array({ {{"NODE", "b2"}} })} });
+    ManifestModel::DeriveFacts(Idx);
+    CHECK_EQ(Idx.Nodes.at("two").Label, std::string("B"));
+    CHECK_EQ(Idx.Nodes.at("own").Label, std::string("Mine"));
+    CHECK_EQ(Idx.Nodes.at("inh").Label, std::string("Y"));
+}
+
+// A part is ticked by default ("*" in Recommended) only when its INTO says RECOMMENDED and it writes no game entry of
+// its own (a part with one is a row); a runner's entry does not make it a row. Teeth: tick every INTO; drop the row
+// exclusion; count runner entries as game entries.
+TEST(a_part_is_ticked_by_its_into_unless_it_is_a_row)
+{
+    NodeIndex Idx;
+    const auto Star = [&](const char *Id) { const auto &R = Idx.Nodes.at(Id).Recommended; return std::find(R.begin(), R.end(), "*") != R.end(); };
+    Add(Idx, { {"CID", "base"}, {"LABEL", "base"}, {"LAYERS", ordered_json::array({ ordered_json{{"ZIP", "b.zip"}} })} });
+    Add(Idx, { {"CID", "plain"}, {"LABEL", "plain"}, {"LAYERS", ordered_json::array({ {{"INTO", ordered_json::array({"base"})}}, ordered_json{{"ZIP", "p.zip"}} })} });
+    Add(Idx, { {"CID", "rec"}, {"LABEL", "rec"}, {"LAYERS", ordered_json::array({ {{"INTO", ordered_json::array({"base"})}, {"RECOMMENDED", true}}, ordered_json{{"ZIP", "r.zip"}} })} });
+    Add(Idx, { {"CID", "row"}, {"LABEL", "row"}, {"LAYERS", ordered_json::array({ {{"INTO", ordered_json::array({"base"})}, {"RECOMMENDED", true}},
+        {{"EXEC", {{"Port", {{"HOST", "linux"}, {"EXE", "port"}}}}}} })} });
+    Add(Idx, { {"CID", "eng"}, {"LABEL", "eng"}, {"LAYERS", ordered_json::array({ {{"INTO", ordered_json::array({"base"})}, {"RECOMMENDED", true}},
+        {{"EXEC", {{"Engine", {{"HOST", "linux"}, {"GUEST", ordered_json::array({"custom"})}}}}}} })} });
+    ManifestModel::DeriveFacts(Idx);
+    CHECK(!Star("plain"));
+    CHECK(Star("rec"));
+    CHECK(!Star("row"));
+    CHECK(Star("eng"));
 }
 
 TEST(a_tiles_presentation_is_its_recommended_variants_fold)
 {
-    // Two variants of one tile; each folds a different TITLE onto the entry. The shelf shows the recommended one's.
+    // Two variants of one tile; each writes its own Play entry with a different TITLE. The shelf shows the recommended
+    // row's tile, the RECOMMENDED its entry says (one per card).
     NodeIndex Idx;
     AddChain(Idx, "base", { NF::Merge({ NF::Tile("7", "Old Title"), NF::Exec("win32", "g.exe") }) });
-    AddChain(Idx, "a", { NF::Merge({ NF::Tile("7", "Title A"), NF::Variant("a") }) }, { "base" });
-    AddChain(Idx, "b", { NF::Merge({ NF::Tile("7", "Title B"), NF::Variant("b") }) }, { "base" },
-             { {"RECOMMENDED", ordered_json::array({"7"})} });
+    AddChain(Idx, "a", { NF::Merge({ NF::Tile("7", "Title A"), NF::Exec("win32", "g.exe"), NF::Variant("a") }) }, { "base" });
+    AddChain(Idx, "b", { NF::Merge({ NF::Tile("7", "Title B"), NF::Exec("win32", "g.exe"), NF::Variant("b"), NF::Recommended() }) }, { "base" });
     ManifestModel::DeriveFacts(Idx);
+    CHECK(Idx.Nodes.at("b").Recommended == std::vector<std::string>{"7"});
+    CHECK(Idx.Nodes.at("a").Recommended.empty());
     CHECK_EQ(Idx.Nodes.at("a").Meta.value("TITLE", std::string()), std::string("Title B"));
     CHECK_EQ(Idx.Nodes.at("b").Meta.value("TITLE", std::string()), std::string("Title B"));
 }
 
-TEST(a_tiles_cover_folds_whole)
+TEST(a_tiles_entry_is_replaced_whole)
 {
-    // The expansion's entry folds over the base game's and gives its own cover file, not yet published (no SOURCE): it
-    // must not keep the base cover's SOURCE, or the card fetches and shows the base game's image. META still merges.
+    // The expansion's Play entry replaces the base game's whole (nothing folds): its own cover file, not yet published
+    // (no SOURCE), never the base cover's SOURCE (the card would fetch and show the base game's image), and only its
+    // own META.
     NodeIndex Idx;
     ordered_json Base = NF::Merge({ NF::Tile("749", "AoK", {{"YEAR", "1999"}}), NF::Exec("win32", "empires2.exe"), NF::Variant("aok") });
-    Base["LAYERS"][0]["EXEC"][0]["TILE"]["COVER"] = { {"FILE", "aok.png"}, {"SOURCE", "bafkreiaokcover"}, {"SIZE", 7} };
+    Base["LAYERS"][0]["EXEC"]["Play"]["TILE"]["COVER"] = { {"FILE", "aok.png"}, {"SOURCE", "bafkreiaokcover"}, {"SIZE", 7} };
     ordered_json Tc = NF::Merge({ NF::Tile("13006", "TC", {{"DEVELOPER", "Ensemble"}}), NF::Variant("tc") });
-    Tc["LAYERS"][0]["EXEC"][0]["TILE"]["COVER"] = { {"FILE", "tc.png"} };
+    Tc["LAYERS"][0]["EXEC"]["Play"]["TILE"]["COVER"] = { {"FILE", "tc.png"} };
     AddChain(Idx, "aok", { Base });
     AddChain(Idx, "tc", { Tc }, { "aok" });
     ManifestModel::DeriveFacts(Idx);
     const ordered_json &Cv = Idx.Nodes.at("tc").Meta["COVER"];
     CHECK_EQ(Cv.value("PATH", std::string()), std::string("tc.png"));
     CHECK(!Cv.contains("SOURCE"));
-    CHECK_EQ(Idx.Nodes.at("tc").Meta.value("YEAR", std::string()), std::string("1999"));
+    CHECK(!Idx.Nodes.at("tc").Meta.contains("YEAR"));
     CHECK_EQ(Idx.Nodes.at("tc").Meta.value("DEVELOPER", std::string()), std::string("Ensemble"));
     CHECK_EQ(Idx.Nodes.at("aok").Meta["COVER"]["SOURCE"].value("CID", std::string()), std::string("bafkreiaokcover"));
 }
@@ -248,9 +350,9 @@ TEST(a_runner_is_an_entry_with_guest_platforms)
 {
     NodeIndex Idx;
     ordered_json R = NF::Runner("linux64", {"win32", "win64"}, "%RunnerMount%/proton");
-    R["LAYERS"][0]["EXEC"][0]["GUEST_ROOTS"] = { {"%GameDir%", "C:\\%PackageUID%"} };
-    R["LAYERS"][0]["EXEC"][0]["DRIVES"] = { {"C:", "%PrefixRoot%/drive_c"} };
-    R["LAYERS"][0]["EXEC"][0]["PREFIX_GENERATE"] = true;
+    R["LAYERS"][0]["EXEC"]["run"]["GUEST_ROOTS"] = { {"%GameDir%", "C:\\%PackageUID%"} };
+    R["LAYERS"][0]["EXEC"]["run"]["DRIVES"] = { {"C:", "%PrefixRoot%/drive_c"} };
+    R["LAYERS"][0]["EXEC"]["run"]["PREFIX_GENERATE"] = true;
     AddChain(Idx, "proton", { R });
     ManifestModel::DeriveFacts(Idx);
     const Node &P = Idx.Nodes.at("proton");
@@ -307,7 +409,7 @@ TEST(user_ownership_is_decided_by_the_most_specific_keep)
     };
     CHECK(Keeps("FILES/%GameDir%/save/slot*").empty());
     CHECK(!Keeps("FILES/%GameDir%/*/profile.dat").empty());
-    CHECK(!Keeps("REG/HKCU/Software/*").empty());
+    CHECK(!Keeps("REG/HKCU\\Software\\*").empty());
     CHECK(!Keeps("FILES/%GameDir%/save*/").empty());
 }
 
@@ -325,7 +427,7 @@ TEST(lower_plan_places_folds_and_applies_edits_by_ownership)
         {{"EDIT", ordered_json::array({ {{"MODE", "Overwrite"}, {"VALUE", "p"}} })}, {"TARGET", "FILES/%UserProfile%/Saved Games/X/prefs.ini"}},
         {{"EDIT", ordered_json::array({ {{"MODE", "Poke"}, {"OFFSET", "0x10"}, {"VALUE", "ff"}} })}, {"TARGET", "FILES/%GameDir%/g.exe"}},
         {{"KEEP", {{"FILES/%UserProfile%/Saved Games/X/", {{"NAME", "X"}}}, {"FILES/%UserProfile%/Saved Games/X/ubi.ini", false}}}},
-        {{"REG", {{"HKCU", {{"Software", {{"A", {{"k1", "1"}, {"k2", "2"}}}}}}}}}, {"ARCH", ordered_json::array({"32"})}},
+        {{"REG", {{"HKCU\\Software\\A", {{"k1", "1"}, {"k2", "2"}}}}}, {"ARCH", ordered_json::array({"32"})}},
         {{"DLL", {{"d3d8", "n,b"}}}},
         {{"VARS", {{"W", {{"DEFAULT", "1"}}}}}},
     })} };
@@ -410,8 +512,10 @@ TEST(a_registry_value_taken_back_inside_a_kept_key_is_reapplied)
     // back goes to the key's OVERRIDE RegEdit, re-applied after the restore. Teeth: judge the key, not the value
     // (both values land in one base RegEdit and the user's stored option wins over the picker).
     const ordered_json Game = { {"CID", "g"}, {"LABEL", "g"}, {"LAYERS", ordered_json::array({
-        {{"REG", {{"HKCU", {{"Software", {{"K", {{"Music Volume", "dword:00000001"}, {"Numeric Age", "dword:00000000"}}}}}}}}}},
-        {{"KEEP", {{"REG/HKCU/Software/K", true}, {"REG/HKCU/Software/K/Numeric Age", false}}}},
+        {{"REG", {{"HKCU\\Software\\K", {{"Music Volume", "dword:00000001"}, {"Numeric Age", "dword:00000000"}}},
+                  {"HKCU\\Software\\K\\Sub", {{"kept", "1"}, {"back", "2"}}}}}},
+        {{"KEEP", {{"REG/HKCU\\Software\\K", true}, {"REG/HKCU\\Software\\K#Numeric Age", false},
+                   {"REG/HKCU\\Software\\K\\Sub#back", false}}}},
     })} };
     Fold::Library Lib;
     Lib.Nodes["g"] = { &Game, "/b" };
@@ -423,6 +527,13 @@ TEST(a_registry_value_taken_back_inside_a_kept_key_is_reapplied)
     CHECK(Base && Over);
     CHECK(Base && (*Base)["KEYVALUES"] == ordered_json({{"Music Volume", "dword:00000001"}}));
     CHECK(Over && (*Over)["KEYVALUES"] == ordered_json({{"Numeric Age", "dword:00000000"}}));
+    //the key holds its subkeys too: a subkey's value is the user's, one taken back in it is re-applied
+    const ordered_json *SubBase = nullptr, *SubOver = nullptr;
+    for (const auto &O : Ops)
+        if (O.value("TYPE", std::string()) == "RegEdit" && O.value("REGPATH", std::string()) == "HKCU\\Software\\K\\Sub")
+            (O.value("OVERRIDE", false) ? SubOver : SubBase) = &O;
+    CHECK(SubBase && (*SubBase)["KEYVALUES"] == ordered_json({{"kept", "1"}}));
+    CHECK(SubOver && (*SubOver)["KEYVALUES"] == ordered_json({{"back", "2"}}));
     int Persists = 0;
     for (const auto &O : Ops) if (O.value("TYPE", std::string()) == "DeclarePersist") ++Persists;
     CHECK_EQ(Persists, 1);                                              // the key; the value taken back persists nothing
@@ -573,9 +684,9 @@ TEST(validate_checks_what_a_part_goes_into)
     const std::string Rn = "bafkreirunnerrunnerrunnerrunnerrunnerrunnerrunnerrunnerrunn", Gone = "bafkreigonegonegonegonegonegonegonegonegonegonegonegonegone";
     NodeIndex Idx;
     Add(Idx, {{"CID", "end"}, {"LABEL", "end"}, {"VARIANT", "1.0"}, {"LAYERS", ordered_json::array({
-        {{"EXEC", ordered_json::array({ {{"LABEL", "End v1.0"}, {"HOST", "win32"}, {"EXE", "g.exe"}} })}} })}});
+        {{"EXEC", ordered_json::object({ {"End v1.0", {{"HOST", "win32"}, {"EXE", "g.exe"}}} })}} })}});
     Add(Idx, {{"CID", Rn}, {"LABEL", "runner"}, {"LAYERS", ordered_json::array({
-        {{"EXEC", ordered_json::array({ {{"LABEL", "run"}, {"HOST", "linux64"}, {"GUEST", ordered_json::array({"win32"})}, {"EXE", "r"}} })}} })}});
+        {{"EXEC", ordered_json::object({ {"run", {{"HOST", "linux64"}, {"GUEST", ordered_json::array({"win32"})}, {"EXE", "r"}}} })}} })}});
     Add(Idx, {{"CID", "plain"}, {"LABEL", "plain"}, {"LAYERS", ordered_json::array({ {{"ZIP", "p.zip"}} })}});
     Add(Idx, {{"CID", "ok"}, {"LABEL", "ok"}, {"LAYERS", ordered_json::array({ {{"INTO", ordered_json::array({"end"})}}, {{"ZIP", "m.zip"}} })}});
     Add(Idx, {{"CID", "onpart"}, {"LABEL", "onpart"}, {"LAYERS", ordered_json::array({ {{"INTO", ordered_json::array({"ok"})}}, {{"INTO", ordered_json::array({"end"})}} })}});
@@ -631,7 +742,7 @@ TEST(validate_refuses_keeping_the_whole_registry)
     NodeIndex Idx;
     Add(Idx, { {"CID", "whole"}, {"LABEL", "whole"}, {"LAYERS", ordered_json::array({ {{"KEEP", {{"REG", true}}}} })} });
     Add(Idx, { {"CID", "root"}, {"LABEL", "root"}, {"LAYERS", ordered_json::array({ {{"KEEP", {{"REG/HKCU", true}}}} })} });
-    Add(Idx, { {"CID", "key"}, {"LABEL", "key"}, {"LAYERS", ordered_json::array({ {{"KEEP", {{"REG/HKCU/Software/Game", true}}}} })} });
+    Add(Idx, { {"CID", "key"}, {"LABEL", "key"}, {"LAYERS", ordered_json::array({ {{"KEEP", {{"REG/HKCU\\Software\\Game", true}}}} })} });
     ManifestModel::DeriveFacts(Idx);
     const auto E = Errors(Idx);
     CHECK(AnyContains(E, "node 'whole': a KEEP of a whole registry hive"));
@@ -703,7 +814,7 @@ TEST(validate_counts_a_runner_chain_as_serving_a_platform)
     AddChain(Idx, "engine", { NF::Runner("win64", {"enginegame"}, "%RunnerMount%/engine.exe") });
     auto Game = [&](const char *Id, const char *Host) {
         Add(Idx, { {"CID", Id}, {"LABEL", Id}, {"VARIANT", "1"}, {"LAYERS", ordered_json::array({
-            {{"EXEC", ordered_json::array({ {{"LABEL", "Play"}, {"HOST", Host}, {"EXE", "%GameDir%/x"}, {"TILE", {{"UID", Id}}}} })}} })} });
+            {{"EXEC", ordered_json::object({ {"Play", {{"HOST", Host}, {"EXE", "%GameDir%/x"}, {"TILE", {{"UID", Id}}}}} })}} })} });
     };
     Game("chained", "enginegame");
     Game("stranded", "nowhere");
@@ -713,7 +824,7 @@ TEST(validate_counts_a_runner_chain_as_serving_a_platform)
     // ...and a package's own engine counts, even a Windows one (it runs under proton).
     AddChain(Idx, "own_engine", { NF::Runner("win64", {"custom"}, "%RunnerMount%/engine.exe") }, {}, ordered_json::object(), "/mine");
     Add(Idx, { {"CID", "custom_own"}, {"LABEL", "custom_own"}, {"VARIANT", "1"}, {"LAYERS", ordered_json::array({
-        {{"EXEC", ordered_json::array({ {{"LABEL", "Play"}, {"HOST", "custom"}, {"EXE", "%GameDir%/x"}, {"TILE", {{"UID", "custom_own"}}}} })}} })} }, "/mine");
+        {{"EXEC", ordered_json::object({ {"Play", {{"HOST", "custom"}, {"EXE", "%GameDir%/x"}, {"TILE", {{"UID", "custom_own"}}}}} })}} })} }, "/mine");
     ManifestModel::DeriveFacts(Idx);
     std::vector<std::string> W;
     Errors(Idx, &W);
@@ -727,13 +838,10 @@ TEST(validate_requires_a_variant_to_present_a_tile_it_recommends)
 {
     NodeIndex Idx;
     AddChain(Idx, "untiled", { NF::Merge({ NF::Exec("win32", "g.exe"), NF::Variant("x") }) });
-    AddChain(Idx, "wrongrec", { NF::Merge({ NF::Exec("win32", "g.exe"), NF::Tile("5"), NF::Variant("y") }) }, {},
-             { {"RECOMMENDED", ordered_json::array({"6"})} });
     AddChain(Idx, "norun", { NF::Merge({ NF::Tile("5"), NF::Variant("z") }) });
     ManifestModel::DeriveFacts(Idx);
     const auto E = Errors(Idx);
     CHECK(AnyContains(E, "'untiled': VARIANT 'x' presents no tile"));
-    CHECK(AnyContains(E, "RECOMMENDED names tile '6'"));
     CHECK(AnyContains(E, "'norun': VARIANT 'z' has no effective entry"));
 }
 
@@ -808,7 +916,7 @@ TEST(validate_warns_when_a_kept_key_is_kept_in_a_view_nothing_writes)
 {
     auto Game = [](const char *Hive, const char *Keep, const char *KeepArch) {
         ordered_json L = NF::Merge({ NF::Exec("win32", "g.exe"), NF::Tile("1", "G"), NF::Variant("v") });
-        L["LAYERS"].push_back({ {"REG", {{Hive, {{"Software", {{"Acme", {{"V", "1"}}}}}}}}}, {"ARCH", ordered_json::array({"32"})} });
+        L["LAYERS"].push_back({ {"REG", {{std::string(Hive) + "\\Software\\Acme", {{"V", "1"}}}}}, {"ARCH", ordered_json::array({"32"})} });
         L["LAYERS"].push_back({ {"KEEP", {{Keep, {{"ARCH", ordered_json::array({KeepArch})}}}}} });
         return L;
     };
@@ -820,10 +928,10 @@ TEST(validate_warns_when_a_kept_key_is_kept_in_a_view_nothing_writes)
         CHECK(Errors(Idx, &W).empty());
         return AnyContains(W, "the view kept is one the game never reads");
     };
-    CHECK(Warned(Game("HKLM", "REG/HKLM/Software/Acme", "64")));
-    CHECK(Warned(Game("HKLM", "REG/HKEY_LOCAL_MACHINE//software/acme", "64")));   // however the KEEP spells it
-    CHECK(!Warned(Game("HKLM", "REG/HKLM/Software/Acme", "32")));
-    CHECK(!Warned(Game("HKCU", "REG/HKCU/Software/Acme", "64")));                 // HKCU: one key for both
+    CHECK(Warned(Game("HKLM", "REG/HKLM\\Software\\Acme", "64")));
+    CHECK(Warned(Game("HKLM", "REG/HKEY_LOCAL_MACHINE\\software\\acme", "64")));   // however the KEEP spells it
+    CHECK(!Warned(Game("HKLM", "REG/HKLM\\Software\\Acme", "32")));
+    CHECK(!Warned(Game("HKCU", "REG/HKCU\\Software\\Acme", "64")));                 // HKCU: one key for both
 }
 
 // A delta over several bases needs each one beneath it, an archive (a folder is not one), and nothing at its own target.
@@ -982,7 +1090,7 @@ TEST(validate_reads_a_double_percent_as_a_literal_percent)
 {
     NodeIndex Idx;
     Add(Idx, { {"CID", "n"}, {"LABEL", "n"}, {"LAYERS", ordered_json::array({
-        {{"REG", {{"HKCU", {{"Software", {{"Plugins", {{"%%%%Value%%%%", "str(100%%)"}, {"%%x", "str(%typo2%)"}}}}}}}}}, {"ARCH", ordered_json::array({"32"})}},
+        {{"REG", {{"HKCU\\Software\\Plugins", {{"%%%%Value%%%%", "str(100%%)"}, {"%%x", "str(%typo2%)"}}}}}, {"ARCH", ordered_json::array({"32"})}},
     })} });
     const auto E = Errors(Idx);
     CHECK(!AnyContains(E, "%Value%"));
@@ -1030,17 +1138,17 @@ TEST(validate_refuses_drive_letters_and_non_canonical_anchors)
     // (GUEST_ROOTS, DRIVES) is where drive letters live.
     NodeIndex Idx;
     ordered_json R = NF::Runner("linux64", {"win32"}, "%RunnerMount%/proton");
-    R["LAYERS"][0]["EXEC"][0]["GUEST_ROOTS"] = { {"%GameDir%", "C:\\%PackageUID%"}, {"%Windows%", "C:\\windows"},
+    R["LAYERS"][0]["EXEC"]["run"]["GUEST_ROOTS"] = { {"%GameDir%", "C:\\%PackageUID%"}, {"%Windows%", "C:\\windows"},
                                                  {"%SysDir32%", "C:\\windows\\syswow64"} };
-    R["LAYERS"][0]["EXEC"][0]["DRIVES"] = { {"C:", "%PrefixRoot%/drive_c"} };
+    R["LAYERS"][0]["EXEC"]["run"]["DRIVES"] = { {"C:", "%PrefixRoot%/drive_c"} };
     AddChain(Idx, "proton", { R });
     Add(Idx, { {"CID", "g"}, {"LABEL", "g"}, {"LAYERS", ordered_json::array({
         {{"ZIP", "g.zip"}, {"TARGET", "FILES/C:/%PackageUID%"}},                              // a drive in a path
-        {{"REG", {{"HKLM", {{"Software", {{"G", {{"CDPath", "E:\\"}}}}}}}}}},                   // …and in a value
+        {{"REG", {{"HKLM\\Software\\G", {{"CDPath", "E:\\"}}}}}},                   // …and in a value
         {{"FILE", "a.dll"}, {"TARGET", "FILES/%Windows%/syswow64/a.dll"}},                     // %SysDir32% spelled long
         {{"FILE", "b.ini"}, {"TARGET", "FILES/%Windows%/win.ini"}},                            // fine: nothing narrower
         {{"FILE", "c.dll"}, {"TARGET", "FILES/%SysDir32%/c.dll"}},                             // fine
-        {{"REG", {{"HKLM", {{"Software", {{"G", {{"Path", "%GameDir%\\bin"}}}}}}}}}},            // fine
+        {{"REG", {{"HKLM\\Software\\G", {{"Path", "%GameDir%\\bin"}}}}}},            // fine
         {{"EDIT", ordered_json::array({ {{"MODE", "Overwrite"}, {"VALUE", "[Alias]\r\nHD0=.\\\r\nCD0=F:\\\r\nMODULES=.\\modules\r\n"}} })},
          {"TARGET", "FILES/%GameDir%/game.ini"}},                                               // a seed file's line
     })} });
@@ -1063,12 +1171,12 @@ TEST(validate_holds_every_anchor_in_a_value_to_its_most_specific_spelling)
 {
     NodeIndex Idx;
     ordered_json R = NF::Runner("linux64", {"win32"}, "%RunnerMount%/proton");
-    R["LAYERS"][0]["EXEC"][0]["GUEST_ROOTS"] = { {"%GameDir%", "C:\\%PackageUID%"}, {"%Windows%", "C:\\windows"},
+    R["LAYERS"][0]["EXEC"]["run"]["GUEST_ROOTS"] = { {"%GameDir%", "C:\\%PackageUID%"}, {"%Windows%", "C:\\windows"},
                                                  {"%SysDir32%", "C:\\windows\\syswow64"} };
-    R["LAYERS"][0]["EXEC"][0]["DRIVES"] = { {"C:", "%PrefixRoot%/drive_c"} };
+    R["LAYERS"][0]["EXEC"]["run"]["DRIVES"] = { {"C:", "%PrefixRoot%/drive_c"} };
     AddChain(Idx, "proton", { R });
     Add(Idx, { {"CID", "g"}, {"LABEL", "g"}, {"LAYERS", ordered_json::array({
-        {{"REG", {{"HKLM", {{"Software", {{"G", {{"Paths", "%GameDir%\\a;%Windows%\\syswow64\\x.dll"}}}}}}}}}},
+        {{"REG", {{"HKLM\\Software\\G", {{"Paths", "%GameDir%\\a;%Windows%\\syswow64\\x.dll"}}}}}},
     })} });
     CHECK(AnyContains(Errors(Idx), "is inside %SysDir32%"));
 }
@@ -1077,17 +1185,17 @@ TEST(validate_places_anchors_at_the_start_of_paths_and_reads_every_value)
 {
     NodeIndex Idx;
     ordered_json R = NF::Runner("linux64", {"win32"}, "%RunnerMount%/proton");
-    R["LAYERS"][0]["EXEC"][0]["GUEST_ROOTS"] = { {"%GameDir%", "C:\\%PackageUID%"}, {"%ProgramFiles32%", "C:\\Program Files (x86)"} };
-    R["LAYERS"][0]["EXEC"][0]["DRIVES"] = { {"C:", "%PrefixRoot%/drive_c"} };
+    R["LAYERS"][0]["EXEC"]["run"]["GUEST_ROOTS"] = { {"%GameDir%", "C:\\%PackageUID%"}, {"%ProgramFiles32%", "C:\\Program Files (x86)"} };
+    R["LAYERS"][0]["EXEC"]["run"]["DRIVES"] = { {"C:", "%PrefixRoot%/drive_c"} };
     AddChain(Idx, "proton", { R });
     Add(Idx, { {"CID", "g"}, {"LABEL", "g"}, {"LAYERS", ordered_json::array({
         {{"ZIP", "g.zip"}, {"TARGET", "FILES/mods/%GameDir%/x"}},                              // anchor mid-path
         {{"KEEP", {{"FILES/saves/%GameDir%/", true}}}},                                         // …in a KEEP
-        {{"REG", {{"HKLM", {{"Software", {{"G", {{"CD", "E:"}}}}}}}}}},                          // a bare drive value
+        {{"REG", {{"HKLM\\Software\\G", {{"CD", "E:"}}}}}},                          // a bare drive value
         {{"EDIT", ordered_json::array({ {{"MODE", "ConfigWrite"}, {"KEY", "/W:"}, {"VALUE", "1"}} })}, {"TARGET", "FILES/%GameDir%/c.cfg"}},  // a key, not a drive
-        {{"REG", {{"HKLM", {{"Software", {{"G", {{"U", "RunDll32 %ProgramFiles32%\\x.dll"}}}}}}}}}, // a value may embed one
+        {{"REG", {{"HKLM\\Software\\G", {{"U", "RunDll32 %ProgramFiles32%\\x.dll"}}}}}, // a value may embed one
          {"COMMENT", "the installer wrote C:\\Program Files (x86)\\G"}},                     // prose is not a place
-        {{"EXEC", ordered_json::array({ {{"LABEL", "Play"}, {"EXE", "%GameDir%/g.exe"}, {"WORKDIR", "bin/%GameDir%"}} })}},
+        {{"EXEC", ordered_json::object({ {"Play", {{"EXE", "%GameDir%/g.exe"}, {"WORKDIR", "bin/%GameDir%"}}} })}},
         // TAKE destinations: with the namespace or without (Fold::Taken adds it) the path starts at the anchor —
         // only an anchor INSIDE the path is refused.
         {{"NODE", "lib"}, {"TAKE", ordered_json::array({ ordered_json::array({"FILES/a/", "FILES/%GameDir%/a"}),
@@ -1111,21 +1219,21 @@ TEST(validate_places_anchors_at_the_start_of_paths_and_reads_every_value)
     // A native runner's anchor is a folder of its own runtime, not a guest path packages are checked against: no
     // disagreement. Teeth: drop the %runtimepath% skip in Validate and this warns.
     ordered_json Nat = NF::Runner("linux64", {"n64"}, "%RunnerMount%/emu");
-    Nat["LAYERS"][0]["EXEC"][0]["GUEST_ROOTS"] = { {"%GameDir%", "%RuntimePath%/n64/%PackageUID%"} };
+    Nat["LAYERS"][0]["EXEC"]["run"]["GUEST_ROOTS"] = { {"%GameDir%", "%RuntimePath%/n64/%PackageUID%"} };
     AddChain(Idx, "native", { Nat });
     std::vector<std::string> NW;
     Errors(Idx, &NW);
     CHECK(!AnyContains(NW, "runners disagree where %GameDir% is"));
     // …and an anchor only native runners declare still starts a path. Teeth: check paths against AnchorGuest only.
-    Nat["LAYERS"][0]["EXEC"][0]["GUEST_ROOTS"]["%SaveDir%"] = "%RuntimePath%/n64/saves";
+    Nat["LAYERS"][0]["EXEC"]["run"]["GUEST_ROOTS"]["%SaveDir%"] = "%RuntimePath%/n64/saves";
     AddChain(Idx, "native", { Nat });
     Add(Idx, { {"CID", "natpkg"}, {"LABEL", "natpkg"}, {"LAYERS", ordered_json::array({
         {{"ZIP", "s.zip"}, {"TARGET", "FILES/mods/%SaveDir%/x"}} })} });
     CHECK(AnyContains(Errors(Idx), "path 'mods/%SaveDir%/x' has %SaveDir% inside it"));
     // Two runners that place an anchor differently: packages are checked against one of them — said out loud.
     ordered_json R2 = NF::Runner("linux64", {"win64"}, "%RunnerMount%/other");
-    R2["LAYERS"][0]["EXEC"][0]["GUEST_ROOTS"] = { {"%GameDir%", "D:\\%PackageUID%"} };
-    R2["LAYERS"][0]["EXEC"][0]["DRIVES"] = { {"D:", "%PrefixRoot%/drive_d"} };
+    R2["LAYERS"][0]["EXEC"]["run"]["GUEST_ROOTS"] = { {"%GameDir%", "D:\\%PackageUID%"} };
+    R2["LAYERS"][0]["EXEC"]["run"]["DRIVES"] = { {"D:", "%PrefixRoot%/drive_d"} };
     AddChain(Idx, "other", { R2 });
     std::vector<std::string> W;
     Errors(Idx, &W);
@@ -1143,16 +1251,16 @@ TEST(validate_host_folder_runners_never_disagree_with_prefix_runners)
     NodeIndex Idx;
     auto Native = [](const std::string &Win) {
         ordered_json R = NF::Runner("win64", {"win32"}, "%RunnerMount%/native");
-        R["LAYERS"][0]["EXEC"][0]["GUEST_ROOTS"] = { {"%Windows%", Win}, {"%SysDir32%", "%HostSysDir32%"},
+        R["LAYERS"][0]["EXEC"]["run"]["GUEST_ROOTS"] = { {"%Windows%", Win}, {"%SysDir32%", "%HostSysDir32%"},
                                                      {"%AppData%", "%HostAppData%"}, {"%Public%", "%HostPublic%"},
                                                      {"%PublicDocs%", "%HostPublic%\\Documents"} };
         return R;
     };
     auto Prefix = [](const std::string &Win) {
         ordered_json R = NF::Runner("linux64", {"win32"}, "%RunnerMount%/proton");
-        R["LAYERS"][0]["EXEC"][0]["GUEST_ROOTS"] = { {"%Windows%", Win}, {"%SysDir32%", Win + "\\syswow64"},
+        R["LAYERS"][0]["EXEC"]["run"]["GUEST_ROOTS"] = { {"%Windows%", Win}, {"%SysDir32%", Win + "\\syswow64"},
                                                      {"%AppData%", "C:\\users\\steamuser\\AppData\\Roaming"} };
-        R["LAYERS"][0]["EXEC"][0]["DRIVES"] = { {"C:", "%PrefixRoot%/drive_c"} };
+        R["LAYERS"][0]["EXEC"]["run"]["DRIVES"] = { {"C:", "%PrefixRoot%/drive_c"} };
         return R;
     };
     AddChain(Idx, "a-native", { Native("%HostWindows%") });            // before the prefix runners…
@@ -1454,41 +1562,26 @@ TEST(identity_is_the_kubo_cid_of_the_canonical_bytes)
     CHECK(!Err.empty());
 }
 
-// §4.2: a node mentioned twice counts once — at its FIRST mention (held), or at a later mention in the same list
-// (moved). The validator warns where that rule, not the author, picked a winner: the other reading must change what
-// wins, and a reordering of layers at unrelated targets does not.
-TEST(deciding_mentions_are_the_ones_whose_position_picks_a_winner)
+// A re-mention re-provides that node's OWN layers (later wins): dgVoodoo mentioned again after b's files is raised over
+// them, and the plan says so ("raise": the validator warns, as a re-mention overriding a newer value may not be meant).
+// Mentioned first, it is composed once and nothing is raised. Teeth: a held first mention (no raise), or an event for
+// every repeat (c2 raises nothing).
+TEST(a_re_mention_that_overrides_newer_layers_is_a_raise)
 {
-    const auto Zip = [](const char *F, const char *T) { return ordered_json{{"ZIP", F}, {"TARGET", T}}; };
-    const auto N = [](ordered_json Layers) { return ordered_json{{"LABEL", "n"}, {"LAYERS", std::move(Layers)}}; };
-    const ordered_json A = N(ordered_json::array({ Zip("a.zip", "FILES/%GameDir%") }));
-    // held, deciding: B puts its own zip at A's target and mentions A AFTER it — folded there, A would win
-    const ordered_json B1 = N(ordered_json::array({ Zip("b.zip", "FILES/%GameDir%"), {{"NODE", "a"}} }));
-    // held, not deciding: B's zip is elsewhere
-    const ordered_json B2 = N(ordered_json::array({ Zip("b.zip", "FILES/%Documents%/other"), {{"NODE", "a"}} }));
-    const ordered_json V1 = N(ordered_json::array({ {{"NODE", "a"}}, {{"NODE", "b1"}} }));
-    const ordered_json V2 = N(ordered_json::array({ {{"NODE", "a"}}, {{"NODE", "b2"}} }));
-    // moved, deciding: V3's own zip sits between the two mentions of A at A's target
-    const ordered_json V3 = N(ordered_json::array({ {{"NODE", "a"}}, Zip("v.zip", "FILES/%GameDir%/sub"), {{"NODE", "a"}} }));
-    // a held fact: B3 sets ENV X after A's value; holding A keeps B3's
-    const ordered_json EA = N(ordered_json::array({ {{"ENV", {{"X", "a"}}}} }));
-    const ordered_json B3 = N(ordered_json::array({ {{"ENV", {{"X", "b"}}}}, {{"NODE", "ea"}} }));
-    const ordered_json V4 = N(ordered_json::array({ {{"NODE", "ea"}}, {{"NODE", "b3"}} }));
+    auto N = [](ordered_json L) { return ordered_json{ {"LAYERS", std::move(L)} }; };
+    auto Z = [](const char *Name) { return ordered_json{ {"ZIP", Name}, {"TARGET", "FILES/C:/g"} }; };
+    const ordered_json Dgv = N({ Z("dgv") }), A = N({ Z("game"), {{"NODE", "dgv"}} }), B = N({ {{"NODE", "a"}}, Z("b-over") });
+    const ordered_json C = N({ {{"NODE", "b"}}, {{"NODE", "dgv"}} }), C2 = N({ {{"NODE", "dgv"}}, {{"NODE", "b"}} });
     Fold::Library L;
     for (const auto &[K, J] : std::vector<std::pair<std::string, const ordered_json *>>{
-             {"a", &A}, {"b1", &B1}, {"b2", &B2}, {"v1", &V1}, {"v2", &V2}, {"v3", &V3}, {"ea", &EA}, {"b3", &B3}, {"v4", &V4}})
+             {"dgv", &Dgv}, {"a", &A}, {"b", &B}, {"c", &C}, {"c2", &C2}})
         L.Nodes[K] = { J, "/b" };
-    const auto Deciding = [&](const std::string &Root) { return Fold::DecidingMentions(L, Root, {}, {}, {}, Fold::Resolve(L, Root)); };
-    using Ev = std::vector<std::pair<std::string, std::string>>;
-    CHECK(Deciding("v1") == Ev({ {"held", "a"} }));
-    CHECK(Deciding("v2").empty());                                   // held, but nothing it overlaps sits in between
-    CHECK(Deciding("v3") == Ev({ {"move", "a"} }));
-    CHECK(Deciding("v4") == Ev({ {"held", "ea"} }));
-    // the rule itself is unchanged: the first mention holds, a same-list mention moves
-    const Fold::Plan P1 = Fold::Resolve(L, "v1");
-    CHECK(P1.Seq.size() == 2 && P1.Seq[0].Payload == "a.zip" && P1.Seq[1].Payload == "b.zip");
-    const Fold::Plan P3 = Fold::Resolve(L, "v3");
-    CHECK(P3.Seq.size() == 2 && P3.Seq[0].Payload == "v.zip" && P3.Seq[1].Payload == "a.zip");
+    const Fold::Plan P = Fold::Resolve(L, "c"), P2 = Fold::Resolve(L, "c2");
+    using Ev = std::pair<std::string, std::string>;
+    CHECK(std::find(P.Events.begin(), P.Events.end(), Ev{"raise", "dgv"}) != P.Events.end());
+    CHECK(P.Seq.size() == 3 && P.Seq.back().Payload == "dgv");          // game, b-over, then dgv raised over them
+    CHECK(std::none_of(P2.Events.begin(), P2.Events.end(), [](const Ev &E) { return E.first == "raise"; }));
+    CHECK(P2.Seq.size() == 3 && P2.Seq.back().Payload == "b-over");
 }
 
 // A published (generation-6) package names each node by its file, <cid>.json; the node carries no "CID" field. The
@@ -1547,7 +1640,7 @@ TEST(a_launch_option_in_a_kept_file_must_be_taken_back)
         ordered_json Keep = { {"FILES/%GameDir%/cfg/", true} };
         if (TakeBack) Keep["FILES/%GameDir%/cfg/settings.json#/video/fullscreen"] = Keep["FILES/%GameDir%/cfg/settings.json#/video/real"] = false;
         return ordered_json{ {"CID", "g"}, {"LABEL", "g"}, {"VARIANT", "1"}, {"LAYERS", ordered_json::array({
-            {{"EXEC", ordered_json::array({ {{"LABEL", "Play"}, {"HOST", "win32"}, {"EXE", "%GameDir%/g.exe"}, {"TILE", {{"UID", "7"}}}} })}},
+            {{"EXEC", ordered_json::object({ {"Play", {{"HOST", "win32"}, {"EXE", "%GameDir%/g.exe"}, {"TILE", {{"UID", "7"}}}}} })}},
             {{"VARS", {{"fs", {{"DEFAULT", "1"}, {"UI", {{"CONTROL", "bool"}, {"LABEL", "Fullscreen"}}}}}}}},
             {{"EDIT", ordered_json::array({ {{"MODE", "JsonSet"}, {"KEY", "/video/fullscreen"}, {"VALUE", "%fs:bool%"}},
                                             {{"MODE", "JsonSet"}, {"KEY", "/video/real"}, {"VALUE", "true"}, {"WHEN", "%fs%==1"}} })},
@@ -1583,13 +1676,15 @@ static ordered_json PlayEntry(const ordered_json &Tile, bool Runnable = true)
     if (Runnable) { E["HOST"] = "win32"; E["EXE"] = "%GameDir%/g.exe"; }
     return E;
 }
+// The entry as its card's recommended row.
+static ordered_json Rec(ordered_json E) { E["RECOMMENDED"] = true; return E; }
 
 // A package whose only node carries the tile and the entry but no VARIANT: the card has no row to launch. Found on
 // 2026-10-21 in 29 freshly made packages that launched fine by --node and passed every other check.
 TEST(shelf_reports_a_tile_no_variant_presents)
 {
     NodeIndex Idx;
-    Add(Idx, {{"CID", "g"}, {"LAYERS", ordered_json::array({ {{"EXEC", ordered_json::array({PlayEntry({{"UID", "7"}, {"TITLE", "Game"}})})}} })}});
+    Add(Idx, {{"CID", "g"}, {"LAYERS", ordered_json::array({ {{"EXEC", NodeFixture::ExecOf({PlayEntry({{"UID", "7"}, {"TITLE", "Game"}})})}} })}});
     ManifestModel::DeriveFacts(Idx);
     const auto W = Validate::Shelf(Idx);
     CHECK(AnyContains(W, "tile 7 'Game'") && AnyContains(W, "no VARIANT presents it"));
@@ -1597,33 +1692,32 @@ TEST(shelf_reports_a_tile_no_variant_presents)
     CHECK(AnyContains(VW, "no VARIANT presents it"));          // part of --validate-nodes
 
     NodeIndex Fixed;
-    Add(Fixed, {{"CID", "g"}, {"VARIANT", "Windows"}, {"RECOMMENDED", ordered_json::array({"7"})},
-                {"LAYERS", ordered_json::array({ {{"EXEC", ordered_json::array({PlayEntry({{"UID", "7"}, {"TITLE", "Game"}})})}} })}});
+    Add(Fixed, {{"CID", "g"}, {"VARIANT", "Windows"},
+                {"LAYERS", ordered_json::array({ {{"EXEC", NodeFixture::ExecOf({Rec(PlayEntry({{"UID", "7"}, {"TITLE", "Game"}}))})}} })}});
     ManifestModel::DeriveFacts(Fixed);
     CHECK(Validate::Shelf(Fixed).empty());
 }
 
-// The shelf shows a tile as its RECOMMENDED variant's folded tile. A recommended port carrying only {"UID"}, beside
-// an original whose variant held the title, put a CID on 24 cards (2026-10-21).
+// The shelf shows a tile as its recommended row's tile. A recommended port carrying only {"UID"}, beside an original
+// whose row held the title, put a CID on 24 cards (2026-10-21).
 TEST(shelf_reports_a_presentation_without_a_title)
 {
     const ordered_json Full = {{"UID", "7"}, {"TITLE", "Game"}, {"META", {{"DEVELOPER", "Studio"}}}};
     NodeIndex Idx;
     Add(Idx, {{"CID", "orig"}, {"VARIANT", "Original"},
-              {"LAYERS", ordered_json::array({ {{"EXEC", ordered_json::array({PlayEntry(Full)})}} })}});
-    Add(Idx, {{"CID", "port"}, {"VARIANT", "Port"}, {"RECOMMENDED", ordered_json::array({"7"})},
-              {"LAYERS", ordered_json::array({ {{"EXEC", ordered_json::array({PlayEntry({{"UID", "7"}})})}} })}});
+              {"LAYERS", ordered_json::array({ {{"EXEC", NodeFixture::ExecOf({PlayEntry(Full)})}} })}});
+    Add(Idx, {{"CID", "port"}, {"VARIANT", "Port"},
+              {"LAYERS", ordered_json::array({ {{"EXEC", NodeFixture::ExecOf({Rec(PlayEntry({{"UID", "7"}}))})}} })}});
     ManifestModel::DeriveFacts(Idx);
     const auto W = Validate::Shelf(Idx);
     CHECK(AnyContains(W, "tile 7") && AnyContains(W, "variant 'Port'") && AnyContains(W, "no TITLE"));
 
-    // The fix: the tile at the base — one node every variant contains, the variants keeping only {"UID"}.
+    // The fix: the recommended row carries the card's facts, the other rows only {"UID"}.
     NodeIndex Fixed;
-    Add(Fixed, {{"CID", "tile"}, {"LAYERS", ordered_json::array({ {{"EXEC", ordered_json::array({PlayEntry(Full, false)})}} })}});
     Add(Fixed, {{"CID", "orig"}, {"VARIANT", "Original"}, {"LAYERS", ordered_json::array({
-                   {{"NODE", "tile"}}, {{"EXEC", ordered_json::array({PlayEntry({{"UID", "7"}})})}} })}});
-    Add(Fixed, {{"CID", "port"}, {"VARIANT", "Port"}, {"RECOMMENDED", ordered_json::array({"7"})}, {"LAYERS", ordered_json::array({
-                   {{"NODE", "tile"}}, {{"EXEC", ordered_json::array({PlayEntry({{"UID", "7"}})})}} })}});
+                   {{"EXEC", NodeFixture::ExecOf({PlayEntry({{"UID", "7"}})})}} })}});
+    Add(Fixed, {{"CID", "port"}, {"VARIANT", "Port"}, {"LAYERS", ordered_json::array({
+                   {{"EXEC", NodeFixture::ExecOf({Rec(PlayEntry(Full))})}} })}});
     ManifestModel::DeriveFacts(Fixed);
     CHECK(Validate::Shelf(Fixed).empty());
     CHECK(Fixed.Tile("7") && Fixed.Tile("7")->value("TITLE", std::string()) == "Game");
@@ -1634,10 +1728,10 @@ TEST(shelf_reports_a_presentation_without_a_title)
 TEST(shelf_a_grafts_own_card_is_not_rowless)
 {
     NodeIndex Idx;
-    Add(Idx, {{"CID", "base"}, {"VARIANT", "1.0"}, {"RECOMMENDED", ordered_json::array({"7"})},
-              {"LAYERS", ordered_json::array({ {{"EXEC", ordered_json::array({PlayEntry({{"UID", "7"}, {"TITLE", "Game"}})})}} })}});
+    Add(Idx, {{"CID", "base"}, {"VARIANT", "1.0"},
+              {"LAYERS", ordered_json::array({ {{"EXEC", NodeFixture::ExecOf({Rec(PlayEntry({{"UID", "7"}, {"TITLE", "Game"}}))})}} })}});
     Add(Idx, {{"CID", "mod"}, {"LAYERS", ordered_json::array({ {{"INTO", ordered_json::array({"base"})}},
-              {{"EXEC", ordered_json::array({PlayEntry({{"UID", "70"}, {"TITLE", "The Mod"}})})}} })}});
+              {{"EXEC", NodeFixture::ExecOf({PlayEntry({{"UID", "70"}, {"TITLE", "The Mod"}})})}} })}});
     ManifestModel::DeriveFacts(Idx);
     CHECK(Idx.TileGraft.count("70") == 1);
     CHECK(!AnyContains(Validate::Shelf(Idx), "tile 70"));
@@ -1850,7 +1944,7 @@ TEST(a_coded_layer_mounts_as_the_shipped_file_bit_exact)
         L.push_back({{"FILE", "a.bin.content"}, {"SOURCE", "QmContent"}, {"TARGET", "FILES/C:/g"}});
         L.push_back({{"CODED", "a.bin.vgcr"}, {"SOURCE", "QmRecord"}, {"NAME", "a.bin"}, {"DESCRIPTION", DescJ},
                      {"BASE_SOURCES", ordered_json::array({"QmContent"})}, {"TARGET", "FILES/C:/g"}});
-        L.push_back({{"EXEC", ordered_json::array({ {{"LABEL", "Game v1.0"}, {"HOST", "win32"}, {"EXE", "C:/g/a.exe"}, {"TILE", {{"UID", "1"}, {"TITLE", "Game"}}}} })}});
+        L.push_back({{"EXEC", ordered_json::object({ {"Game v1.0", {{"HOST", "win32"}, {"EXE", "C:/g/a.exe"}, {"TILE", {{"UID", "1"}, {"TITLE", "Game"}}}}} })}});
         return L;
     };
     NodeIndex Idx;
@@ -1911,7 +2005,7 @@ TEST(a_coded_layer_mounts_as_the_shipped_file_bit_exact)
             {{"DELTA", "a.bin.vgdelta"}, {"SOURCE", "QmContent2"}, {"BASE_SOURCES", ordered_json::array({"QmPrev"})}, {"TARGET", "FILES/C:/g"}},
             {{"CODED", "a.bin.vgcr"}, {"SOURCE", "QmRecord"}, {"NAME", "a.bin"}, {"DESCRIPTION", DescJ},
              {"BASE_SOURCES", ordered_json::array({"QmContent2"})}, {"TARGET", "FILES/C:/g"}},
-            {{"EXEC", ordered_json::array({ {{"LABEL", "Game v1.1"}, {"HOST", "win32"}, {"EXE", "C:/g/a.exe"}, {"TILE", {{"UID", "1"}, {"TITLE", "Game"}}}} })}} });
+            {{"EXEC", ordered_json::object({ {"Game v1.1", {{"HOST", "win32"}, {"EXE", "C:/g/a.exe"}, {"TILE", {{"UID", "1"}, {"TITLE", "Game"}}}}} })}} });
         NodeIndex Idx2;
         Add(Idx2, {{"CID", "next"}, {"LABEL", "next"}, {"VARIANT", "Windows"}, {"LAYERS", L2}}, Pkg.string());
         ManifestModel::DeriveFacts(Idx2);
@@ -1945,7 +2039,7 @@ TEST(a_coded_layer_mounts_as_the_shipped_file_bit_exact)
              {"BASE_SOURCES", ordered_json::array({"QmContent"})}, {"TARGET", "FILES/C:/g"}},
             {{"CODED", "outer.vgcr"}, {"SOURCE", "QmOuter"}, {"NAME", "outer.bin"}, {"DESCRIPTION", DescJ},
              {"BASE_SOURCES", ordered_json::array({"QmRecord"})}, {"TARGET", "FILES/C:/g"}},
-            {{"EXEC", ordered_json::array({ {{"LABEL", "Game v2"}, {"HOST", "win32"}, {"EXE", "C:/g/a.exe"}, {"TILE", {{"UID", "1"}, {"TITLE", "Game"}}}} })}} });
+            {{"EXEC", ordered_json::object({ {"Game v2", {{"HOST", "win32"}, {"EXE", "C:/g/a.exe"}, {"TILE", {{"UID", "1"}, {"TITLE", "Game"}}}}} })}} });
         NodeIndex Idx4;
         Add(Idx4, {{"CID", "nested"}, {"LABEL", "nested"}, {"VARIANT", "Windows"}, {"LAYERS", L4}}, Pkg.string());
         ManifestModel::DeriveFacts(Idx4);

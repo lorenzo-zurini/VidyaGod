@@ -112,15 +112,15 @@ json Facts(PackageEditorModel &M, int I)
     {
         const json &L = Layers[K];
         if (!L.is_object()) continue;
-        if (L.contains("EXEC") && L["EXEC"].is_array())
-            for (const auto &E : L["EXEC"])
-                Entries.push_back({{"layer", K}, {"title", PkgGraph::EntryTitle(E)}, {"summary", PkgGraph::EntrySummary(E)}});
+        if (L.contains("EXEC") && L["EXEC"].is_object())
+            for (const auto &[Lab, E] : L["EXEC"].items())
+                Entries.push_back({{"layer", K}, {"label", Lab}, {"title", PkgGraph::EntryTitle(Lab, E)}, {"summary", PkgGraph::EntrySummary(E)}});
         if (L.contains("VARS") && L["VARS"].is_object())
             for (const auto &[Key, Decl] : L["VARS"].items()) Vars[Key] = PkgGraph::VarTitle(Key, Decl);
         if (L.contains("REG"))
         {
             json Rows = json::array();
-            for (const auto &R : PkgGraph::RegRowsOf(L["REG"])) Rows.push_back({{"path", R.Path}, {"name", R.Name}, {"value", R.Value}, {"key_only", R.KeyOnly}});
+            for (const auto &R : PkgGraph::RegRowsOf(L["REG"])) Rows.push_back({{"path", R.Path}, {"name", R.Name}, {"value", R.Value}, {"key_only", R.KeyOnly}, {"delete_key", R.DeleteKey}});
             Reg.push_back({{"layer", K}, {"count", PkgGraph::CountRegRows(L["REG"])}, {"rows", Rows}});
         }
         if (L.contains("NODE") && L.contains("TAKE"))
@@ -376,7 +376,7 @@ VG_COMMANDS
                 const bool Ver = A.contains("version-of");
                 const int B = Ix(D, Command::Str(A, Ver ? "version-of" : "mod-of"));
                 const std::string BL = D.Node(B).value("LABEL", std::string());
-                N = Ver ? PkgGraph::VersionNode(D.Handle(B), BL) : PkgGraph::ModNode(D.Handle(B), BL);
+                N = Ver ? PkgGraph::VersionNode(D.Handle(B), BL, &D.Node(B)) : PkgGraph::ModNode(D.Handle(B), BL);
             }
             else throw Command::BadArgs("give --from, --recipe, --version-of, --mod-of or --layer");
             if (!Label.empty()) N["LABEL"] = Label;
@@ -592,8 +592,11 @@ VG_COMMANDS
                     PkgGraph::RegRow X;
                     X.Path = R.value("path", std::string());
                     X.Name = R.value("name", std::string());
-                    X.Value = R.value("value", std::string());
+                    //A non-string value (a dword as a number, null = delete the value) keeps its JSON type.
+                    X.Value = !R.contains("value") ? std::string() : R["value"].is_string() ? R["value"].get<std::string>() : R["value"].dump();
                     X.KeyOnly = R.value("key_only", false);
+                    X.DeleteKey = R.value("delete_key", false);
+                    X.WasString = !R.contains("value") || R["value"].is_string();
                     Rows.push_back(X);
                 }
                 {

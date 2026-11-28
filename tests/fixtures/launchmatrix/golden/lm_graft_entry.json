@@ -1,9 +1,9 @@
 {
   "AppliedParts": [
-    "bafkreidxn23phuerzybcmkrb22g4lsqfhqai4oa5j4bxor2mwmsnexsdza",
-    "bafkreifeo72b4wnicyaqmyhtwxwaye5dncx4qaoomo5vpamvc5paiip3qy",
-    "bafkreifuybg3kt4rswvq3v2e6nyx5x4j5ja4x5tu7lu4jbw3j75unodel4",
-    "bafkreiah4lovckbqxeokyeisq2ork5ydci6gopi5qde5zunzuxkxb3es34"
+    "bafkreib7figgpx4lqulfgw3mr4wceoce4w7ceihehfec2n4pedccyygqmu",
+    "bafkreicaeuzyhzwvqxafswtm3dbukbc2fvlljnype6oei7yppwfaff2qii",
+    "bafkreiccnzzrtit3hp7nhjc7ixnkroi3p22buqg2cxp3mt4ilveop63mui",
+    "bafkreibthdgp3eblljdgzdn55fhimkyueqdsuyzel3dh4dvrykbeijfuaq"
   ],
   "ComposedExec": {
     "CONTENTPATH": "%GameDir%/bin/probe.sh",
@@ -97,7 +97,7 @@
       ],
       "Host": "linux64",
       "Native": true,
-      "NodeId": "bafkreiclbditqnvr7dfugtxdcouvyqfz6mecord4owyjn2l55ni2mrfcry",
+      "NodeId": "bafkreieri4ra2xodlvbs7r2sxzfjhlzg3jecw6yhs7ar37ezl6ni4mgniq",
       "WorkDir": ""
     }
   ],
@@ -123,7 +123,7 @@
   ],
   "RunnerShipsBuild": false,
   "Stack": [
-    "lm_run"
+    "lm_graft_entry"
   ],
   "SubComponentsArray": [
     {
@@ -353,7 +353,7 @@
       "TYPE": "VFSFileLayer"
     },
     {
-      "PATH": "<DATA>/fixture/[90000000000001] Launch Matrix/graftlib",
+      "PATH": "<DATA>/fixture/[90000000000001] Launch Matrix/graftentry",
       "TARGET": "/drive_c/90000000000001",
       "TYPE": "VFSDirLayer"
     },
@@ -363,7 +363,7 @@
       "TYPE": "VFSDirLayer"
     },
     {
-      "PATH": "<DATA>/fixture/[90000000000001] Launch Matrix/graftentry",
+      "PATH": "<DATA>/fixture/[90000000000001] Launch Matrix/graftlib",
       "TARGET": "/drive_c/90000000000001",
       "TYPE": "VFSDirLayer"
     },

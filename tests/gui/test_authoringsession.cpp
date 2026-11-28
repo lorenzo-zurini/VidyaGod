@@ -40,7 +40,7 @@ private slots:
     {
         const QStringList R = CapturePreview::RunnerChoices({{"a", "geproton_9_27"}, {"b", "geproton_11_3"}, {"c", "geproton_10_34"}, {"d", "geproton_11_7"}});
         QCOMPARE(R, (QStringList{"geproton_11_7\td", "geproton_11_3\tb", "geproton_10_34\tc", "geproton_9_27\ta"}));
-        const json N = json::parse(R"({"LABEL":"S.T.A.L.K.E.R.: Shadow of Chernobyl","LAYERS":[{"ZIP":"","TARGET":"FILES/%GameDir%"},{"EXEC":[{"LABEL":"Play"}]}]})");
+        const json N = json::parse(R"({"LABEL":"S.T.A.L.K.E.R.: Shadow of Chernobyl","LAYERS":[{"ZIP":"","TARGET":"FILES/%GameDir%"},{"EXEC":{"Play":{}}}]})");
         QCOMPARE(CapturePreview::WaitingTarget(N), QString("%GameDir%"));
         QCOMPARE(CapturePreview::WaitingTarget(json::parse(R"({"LAYERS":[{"ZIP":"g.zip","TARGET":"FILES/%GameDir%"}]})")), QString());
         QCOMPARE(CapturePreview::CaptureName(N, "x"), QString("S.T.A.L.K.E.R. - Shadow of Chernobyl"));
@@ -95,7 +95,7 @@ private slots:
     {
         NodeIndex Idx;
         const json W = json::parse(R"({"LABEL":"G","VARIANT":"Original","LAYERS":[{"ZIP":"","TARGET":"FILES/%GameDir%"},{"ZIP":"base.zip"},
-            {"EXEC":[{"LABEL":"Play","TILE":{"UID":"9"}}]}]})");
+            {"EXEC":{"Play":{"TILE":{"UID":"9"}}}}]})");
         Node N;
         QVERIFY(ManifestModel::ParseNode(W, "w.json", "/b", N));
         QVERIFY(!N.LowerError.empty());
@@ -151,7 +151,7 @@ private slots:
         NodeIndex Idx;
         Node N;
         QVERIFY(ManifestModel::ParseNode(json::parse(R"({"LABEL":"G","VARIANT":"Original","LAYERS":[
-            {"EXEC":[{"LABEL":"Play","TILE":{"UID":"77"}}]}]})"), "g.json", D.path().toStdString(), N));
+            {"EXEC":{"Play":{"TILE":{"UID":"77"}}}}]})"), "g.json", D.path().toStdString(), N));
         N.Cid = "g";
         Idx.Nodes["g"] = N;
         ManifestModel::DeriveFacts(Idx);
@@ -174,7 +174,7 @@ private slots:
         NodeIndex Idx;
         Node N;
         QVERIFY(ManifestModel::ParseNode(json::parse(R"({"LABEL":"G","VARIANT":"Original","LAYERS":[
-            {"EXEC":[{"LABEL":"Play","TILE":{"UID":"78"}}]}]})"), "g.json", D.path().toStdString(), N));
+            {"EXEC":{"Play":{"TILE":{"UID":"78"}}}}]})"), "g.json", D.path().toStdString(), N));
         N.Cid = "g";
         Idx.Nodes["g"] = N;
         ManifestModel::DeriveFacts(Idx);

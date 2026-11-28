@@ -52,7 +52,7 @@ private slots:
                   NodeFixture::Chain("a_content", {NodeFixture::ContentCid("file", "data.bin",
                       "bafkreib52upmn2n6u65qll6mmj2dft4ddgnvrkcvyhiczcbjlrv2lu766e")}));
         writeJson(R + "/Games/[1] A/a.json",
-                  NodeFixture::Chain("a_exec", {NodeFixture::Merge({NodeFixture::Exec("linux64", "a.sh"), NodeFixture::Variant("Play")})}, {"a_content", "a_tile"}));
+                  NodeFixture::Chain("a_exec", {NodeFixture::Merge({NodeFixture::Merge({NodeFixture::Exec("linux64", "a.sh"), NodeFixture::Variant("Play")}), NodeFixture::TakeTile("a_tile")})}, {"a_content", "a_tile"}));
         json seeder = json{{"Settings", {{"Paths", {{"LibraryRoot", R.toStdString()}}}}}};
         PackageCatalog::PublishLibrary(seeder, &Err);
         const json Items = PackageCatalog::Wire(PackageCatalog::SheetEntries(seeder["ShareSheet"]))["Games"];
@@ -114,7 +114,7 @@ private slots:
         writeJson(R + "/Games/[1] A/content.json",
                   NodeFixture::Chain("a_content", {NodeFixture::Content("file", "data.bin")}));   // names no SOURCE
         writeJson(R + "/Games/[1] A/a.json",
-                  NodeFixture::Chain("a_exec", {NodeFixture::Merge({NodeFixture::Exec("linux64", "a.sh"), NodeFixture::Variant("Play")})}, {"a_content", "a_tile"}));
+                  NodeFixture::Chain("a_exec", {NodeFixture::Merge({NodeFixture::Merge({NodeFixture::Exec("linux64", "a.sh"), NodeFixture::Variant("Play")}), NodeFixture::TakeTile("a_tile")})}, {"a_content", "a_tile"}));
         json seeder = json{{"Settings", {{"Paths", {{"LibraryRoot", R.toStdString()}}}}}};
         PackageCatalog::PublishLibrary(seeder, &Err);
         const json Items = PackageCatalog::Wire(PackageCatalog::SheetEntries(seeder["ShareSheet"]))["Games"];
@@ -170,7 +170,7 @@ private slots:
         { std::ofstream O(Dir + "/" + BCid + ".json", std::ios::binary); O << BBytes; }
         const json Game = json{{"LABEL", "g_exec"}, {"VARIANT", "Play"}, {"LAYERS", json::array({
             json{{"NODE", BCid}},
-            json{{"EXEC", json::array({json{{"LABEL", "Play"}, {"HOST", "linux64"}, {"EXE", "g"}, {"TILE", {{"UID", "7"}, {"TITLE", "G"}}}}})}}})}};
+            json{{"EXEC", json::object({ {"Play", {{"HOST", "linux64"}, {"EXE", "g"}, {"TILE", {{"UID", "7"}, {"TITLE", "G"}}}}} })}}})}};
         const std::string Bytes = Cid::Canonical(Game), GCid = Cid::OfBytes(Bytes);
         { std::ofstream O(Dir + "/g_exec.json", std::ios::binary); O << Bytes; }
 
@@ -212,7 +212,7 @@ private slots:
         std::filesystem::create_directories(Dir);
         const json Game = json{{"LABEL", "g_exec"}, {"VARIANT", "Play"}, {"LAYERS", json::array({
             json{{"ZIP", "g.zip"}, {"SOURCE", Nobody}},
-            json{{"EXEC", json::array({json{{"LABEL", "Play"}, {"HOST", "linux64"}, {"EXE", "g"}, {"TILE", {{"UID", "7"}, {"TITLE", "G"}}}}})}}})}};
+            json{{"EXEC", json::object({ {"Play", {{"HOST", "linux64"}, {"EXE", "g"}, {"TILE", {{"UID", "7"}, {"TITLE", "G"}}}}} })}}})}};
         const std::string Bytes = Cid::Canonical(Game), GCid = Cid::OfBytes(Bytes);
         { std::ofstream O(Dir + "/g_exec.json", std::ios::binary); O << Bytes; }
 
@@ -246,7 +246,7 @@ private slots:
         const QString R = Data.path() + "/LIBRARY";
         QDir().mkpath(R + "/Games/[9] N");
         writeJson(R + "/Games/[9] N/n.json", json{{"CID", "hN"}, {"LABEL", "n_exec"}, {"VARIANT", "Play"}, {"LAYERS", json::array({
-            json{{"EXEC", json::array({json{{"LABEL", "Play"}, {"HOST", "linux64"}, {"EXE", "n"}, {"TILE", {{"UID", "9"}, {"TITLE", "N"}}}}})}}})}});
+            json{{"EXEC", json::object({ {"Play", {{"HOST", "linux64"}, {"EXE", "n"}, {"TILE", {{"UID", "9"}, {"TITLE", "N"}}}}} })}}})}});
         json cfg = json{{"Settings", {{"Paths", {{"LibraryRoot", R.toStdString()}}}}}};
         QDir appDir(Data.path());
         AppModel model(&cfg, &appDir);
@@ -281,13 +281,13 @@ private slots:
         const QString R = Data.path() + "/LIBRARY";
         QDir().mkpath(R + "/Games/[9] N");
         writeJson(R + "/Games/[9] N/n.json", json{{"CID", "hN"}, {"LABEL", "n_exec"}, {"VARIANT", "Play"}, {"LAYERS", json::array({
-            json{{"EXEC", json::array({json{{"LABEL", "Play"}, {"HOST", "linux64"}, {"EXE", "n"}, {"TILE", {{"UID", "9"}, {"TITLE", "N"}}}}})}}})}});
+            json{{"EXEC", json::object({ {"Play", {{"HOST", "linux64"}, {"EXE", "n"}, {"TILE", {{"UID", "9"}, {"TITLE", "N"}}}}} })}}})}});
         QDir().mkpath(R + "/Games/[8] S");                                     // a game whose content takes its time
         writeJson(R + "/Games/[8] S/tile.json", NodeFixture::Chain("s_tile", {NodeFixture::Tile("8", "S")}));
         writeJson(R + "/Games/[8] S/content.json", NodeFixture::Chain("s_content", {NodeFixture::ContentCid("file", "data.bin",
             "bafkreihdwdcefgh4dqkjv67uzcmw7ojee6xedzdetojuzjevtenxquvyku")}));
-        writeJson(R + "/Games/[8] S/s.json", NodeFixture::Chain("s_exec", {NodeFixture::Merge({NodeFixture::Exec("linux64", "s.sh"),
-            NodeFixture::Variant("Play")})}, {"s_content", "s_tile"}));
+        writeJson(R + "/Games/[8] S/s.json", NodeFixture::Chain("s_exec", {NodeFixture::Merge({NodeFixture::Merge({NodeFixture::Exec("linux64", "s.sh"),
+            NodeFixture::Variant("Play")}), NodeFixture::TakeTile("s_tile")})}, {"s_content", "s_tile"}));
         json cfg = json{{"Settings", {{"Paths", {{"LibraryRoot", R.toStdString()}}}}}};
         QDir appDir(Data.path());
         AppModel model(&cfg, &appDir);

@@ -216,7 +216,8 @@ def make_deltas(B, tool):
     return True
 
 # ---------------------------------------------------------------------------------------------------------
-# the node matrix (generation 6: a node is {LABEL, VARIANT?, RECOMMENDED?, LAYERS}; its parents are NODE layers)
+# the node matrix (generation 9: a node is {LABEL, VARIANT?, LAYERS}; its parents are NODE layers; EXEC is
+# {label: entry}, each written whole; RECOMMENDED on the card's recommended entry and on a pre-ticked part's INTO)
 # ---------------------------------------------------------------------------------------------------------
 
 UID = "90000000000001"
@@ -249,9 +250,12 @@ def nodes(B):
     def node(ref, **kw):
         return dict({"NODE": ref}, **kw)
 
-    # ---- identity: the tile rides the "Play" entry — a partial entry every variant folds with its own -----
-    add("lm_tile", [{"EXEC": [{"LABEL": "Play", "TILE": {"UID": UID, "TITLE": "Launch Matrix",
-                                                           "META": {"SERIES": "Fixtures", "YEAR": "2026"}}}]}])
+    # ---- identity: the tile, on a "Play" entry of its own; every variant writes its own whole entry and then TAKEs
+    # the tile onto it (EXEC/Play/TILE: a deeper address placed over the entry the composition holds)
+    add("lm_tile", [{"EXEC": {"Play": {"TILE": {"UID": UID, "TITLE": "Launch Matrix",
+                                                "META": {"SERIES": "Fixtures", "YEAR": "2026"}}}}}])
+    def tile(entry="Play"):
+        return node("lm_tile", TAKE=[["EXEC/Play/TILE", f"EXEC/{entry}/TILE"]] if entry != "Play" else ["EXEC/Play/TILE"])
 
     # ---- runners: a native terminal, and a two-hop chain through a synthetic "prefix" runner ------------
     # Runs the content through an explicit interpreter rather than exec'ing it directly, so the fixture does
@@ -264,17 +268,17 @@ def nodes(B):
         # is a real assertion that an outer wrapper cannot strip a key the GAME declared.
         {"ENV": {"LM_RUNNER_ONLY": "from-runner", "LM_SHOULD_BE_GONE": "runner-set-this",
                  "LM_EXEC_ENV": "runner-loses", "LM_GAME_KEEPS_THIS": None}},
-        {"EXEC": [{"LABEL": "lm_runner_native", "HOST": "linux64", "GUEST": ["linux64"], "EXE": "/bin/sh",
-                   "ARGS": ["%Content%"], "GUEST_ROOTS": ROOTS, "DRIVES": DRIVES}]}])
+        {"EXEC": {"lm_runner_native": {"HOST": "linux64", "GUEST": ["linux64"], "EXE": "/bin/sh",
+                                       "ARGS": ["%Content%"], "GUEST_ROOTS": ROOTS, "DRIVES": DRIVES}}}])
     add("lm_runner_content", [{"FILE": "fakerunner.sh", "TARGET": F("runner/fakerunner.sh")}])
     # HOST linux64 / GUEST fixture32 ⇒ running fixture32 content takes two hops: this, then the native one.
     add("lm_runner_prefix", [
         node("lm_runner_content"),
         {"ENV": {"LM_RUNNER_ENV": "set", "LM_FROM_VAR": "%lm_text%", "LM_UNWANTED": None}},
-        {"EXEC": [{"LABEL": "lm_runner_prefix", "HOST": "linux64", "GUEST": ["fixture32"],
-                   "EXE": "%RunnerMount%/runner/fakerunner.sh", "ARGS": ["--run"],
-                   "CONTENT_ROOT": "pfx/drive_c/%PackageUID%", "PREFIX_GENERATE": False,
-                   "GUEST_ROOTS": ROOTS, "DRIVES": DRIVES}]}])
+        {"EXEC": {"lm_runner_prefix": {"HOST": "linux64", "GUEST": ["fixture32"],
+                                       "EXE": "%RunnerMount%/runner/fakerunner.sh", "ARGS": ["--run"],
+                                       "CONTENT_ROOT": "pfx/drive_c/%PackageUID%", "PREFIX_GENERATE": False,
+                                       "GUEST_ROOTS": ROOTS, "DRIVES": DRIVES}}}])
 
     # HOST fixture32 / GUEST fixturevm ⇒ a THREE-hop chain whose first link runs INSIDE lm_runner_prefix's guest:
     # its build mounts at <CONTENT_ROOT>/__runner_<id>__, and its ENV joins the launch's — over the boundary's (the
@@ -282,8 +286,8 @@ def nodes(B):
     add("lm_runner_inner", [
         {"FILE": "fakerunner.sh", "TARGET": F("inner")},
         {"ENV": {"LM_INNER_ENV": "%RunnerMount%", "LM_RUNNER_ENV": "inner-beats-boundary"}},
-        {"EXEC": [{"LABEL": "lm_runner_inner", "HOST": "fixture32", "GUEST": ["fixturevm"],
-                   "EXE": "%RunnerMount%/inner/fakerunner.sh", "ARGS": ["%Content%"]}]}])
+        {"EXEC": {"lm_runner_inner": {"HOST": "fixture32", "GUEST": ["fixturevm"],
+                                      "EXE": "%RunnerMount%/inner/fakerunner.sh", "ARGS": ["%Content%"]}}}])
 
     # ---- content: every payload type, every TARGET shape, one file taken out of an archive, deltas ------
     base   = add("lm_c_zip_base", [{"ZIP": "base.zip", "TARGET": F(G), "COMMENT": "the base layer"}])
@@ -360,14 +364,14 @@ def nodes(B):
          "CAVE": "auto", "COMMENT": "cave into section slack the patcher picks itself"}],
         "TARGET": F(G + "/game/patch.exe")}])
 
-    # ---- REG: both views, a default value, a key-only entry, a gated layer ---------------------------------
+    # ---- REG: both views, a default value, a key-only entry, a gated layer, a layer KEY ---------------------
     reg = add("lm_reg", [node(bp),
-        {"REG": {"HKLM": {"Software": {"LaunchMatrix": {"Value": "plain", "Number": "dword:0000002a",
-                                                        "FromVar": "%lm_mode%"}}}},
+        {"REG": {"HKLM\\Software\\LaunchMatrix": {"Value": "plain", "Number": "dword:0000002a", "FromVar": "%lm_mode%"}},
          "ARCH": ["32", "64"], "COMMENT": "written into both views"},
-        {"REG": {"HKCU": {"Software": {"LaunchMatrix": {"": "this is the key's DEFAULT value", "EmptyKey": {}}}}},
+        {"REG": {"HKCU\\Software\\LaunchMatrix": {"": "this is the key's DEFAULT value"},
+                 "HKCU\\Software\\LaunchMatrix\\EmptyKey": {}},
          "ARCH": ["64"]},
-        {"REG": {"HKLM": {"Software": {"LaunchMatrixConditional": {"Only": "when the flag is on"}}}},
+        {"KEY": "HKLM\\Software", "REG": {"LaunchMatrixConditional": {"Only": "when the flag is on"}},
          "ARCH": ["64"], "WHEN": "%lm_flag% == 1"}])
 
     # ---- DLL ---------------------------------------------------------------------------------------------
@@ -378,8 +382,8 @@ def nodes(B):
         F(G + "/game/saves/"): {"NAME": "Saves"},
         F(G + "/game/config.ini"): {"NAME": "Config"},
         F(G + "/game/shadercache/"): {"NAME": "ShaderCache", "CLOUD": False},
-        "REG/HKCU/Software/LaunchMatrix": True,
-        "REG/HKLM/Software/LaunchMatrix": {"ARCH": ["32", "64"]}}}])
+        "REG/HKCU\\Software\\LaunchMatrix": True,
+        "REG/HKLM\\Software\\LaunchMatrix": {"ARCH": ["32", "64"]}}}])
 
     # ---- TAKE: a library contained selectively and placed. Left-strip: a file lands under its own name, a
     # directory's CONTENTS ("FILES/doc/") land at the target; a pair renames. Facts are taken too: lm_lib_var
@@ -408,75 +412,76 @@ def nodes(B):
                            {"FILE": "single.txt", "TARGET": F("%Documents%/lm")}])
 
     def play(host, exe, args, **kw):
-        return {"EXEC": [dict({"LABEL": "Play", "HOST": host, "EXE": exe, "ARGS": args}, **kw)]}
+        return {"EXEC": {"Play": dict({"HOST": host, "EXE": exe, "ARGS": args}, **kw)}}
 
     # ---- variants --------------------------------------------------------------------------------------
     # (1) the whole matrix, on the native runner (plan only: it contains the un-hydrated branch).
-    add("lm_all", [node(grp), node("lm_unhydrated"), node("lm_tile"),
+    # (the card's recommended row)
+    add("lm_all", [node(grp), node("lm_unhydrated"),
                    {"ENV": {"LM_EXEC_ENV": "does-this-arrive"}},
-                   play("linux64", G + "/probe.sh", ["--matrix", "%lm_derived%"])],
-        VARIANT="lm_all", RECOMMENDED=[UID])
+                   play("linux64", G + "/probe.sh", ["--matrix", "%lm_derived%"], RECOMMENDED=True), tile()],
+        VARIANT="lm_all")
     # (2) THE RUNTIME CASE: mounts for real and runs the probe, whose stdout is its own golden. WORKDIR anchors
     # the probe's report; its own ENV (with a %var%) is the end-to-end proof a game's environment reaches it.
-    add("lm_run", [node(grp), node("lm_tile"),
+    add("lm_run", [node(grp),
                    {"ENV": {"LM_EXEC_ENV": "arrived", "LM_FROM_VAR": "%lm_derived%", "LM_OVERRIDDEN": "above",
                             "LM_SHOULD_BE_GONE": None, "LM_REMOVED_ABOVE": None}},
-                   play("linux64", G + "/bin/probe.sh", ["--matrix", "%lm_derived%"], WORKDIR=G)],
+                   play("linux64", G + "/bin/probe.sh", ["--matrix", "%lm_derived%"], WORKDIR=G), tile()],
         VARIANT="lm_run")
     # (3) THE RUNTIME TWO-HOP CASE: the same resolution through the chain; its ENV collides with the OUTER link's
     # on purpose — the game's value must survive (an exec-time property no plan can show).
-    add("lm_run_chained", [node(grp), node("lm_tile"),
+    add("lm_run_chained", [node(grp),
                            {"ENV": {"LM_EXEC_ENV": "game-beats-the-outer-link",
                                     "LM_GAME_KEEPS_THIS": "survived-the-outer-remove"}},
-                           play("fixture32", G + "/bin/probe.sh", ["--chained"], WORKDIR=G)],
+                           play("fixture32", G + "/bin/probe.sh", ["--chained"], WORKDIR=G), tile()],
         VARIANT="lm_run_chained")
     # (4) the matrix through the two-hop chain, plus the un-hydrated branch (plan only).
-    add("lm_chained", [node(grp), node("lm_unhydrated"), node("lm_tile"),
+    add("lm_chained", [node(grp), node("lm_unhydrated"),
                        {"ENV": {"LM_EXEC_ENV": "game-wins-over-the-chain"}},
-                       play("fixture32", G + "/probe.sh", [])],
+                       play("fixture32", G + "/probe.sh", []), tile()],
         VARIANT="lm_chained")
     # (5) the minimum that can launch at all — the control case a regression shows up against first.
     add("lm_minimal_content", [{"ZIP": "base.zip", "TARGET": F(G)}])
-    add("lm_minimal", [node("lm_minimal_content"), node("lm_tile"), play("linux64", G + "/game/data.txt", [])],
+    add("lm_minimal", [node("lm_minimal_content"), play("linux64", G + "/game/data.txt", []), tile()],
         VARIANT="lm_minimal")
     # (5b) a nested chain [lm_runner_inner, lm_runner_prefix, native] (plan only): the plan's RunnerEnv shows the
     # inner runner's ENV arriving, over the boundary's.
-    add("lm_nested", [node("lm_minimal_content"), node("lm_tile"), play("fixturevm", G + "/game/data.txt", [])],
+    add("lm_nested", [node("lm_minimal_content"), play("fixturevm", G + "/game/data.txt", []), tile()],
         VARIANT="lm_nested")
     # (6) a BLOCKED variant: it contains a part whose INTO (lm_minimal) its composition does not hold — the launch
     # is refused, naming the reason.
-    add("lm_blocked", [node("lm_minimal_content"), node("lm_graft_elsewhere"), node("lm_tile"),
-                       play("linux64", G + "/game/data.txt", [])],
+    add("lm_blocked", [node("lm_minimal_content"), node("lm_graft_elsewhere"),
+                       play("linux64", G + "/game/data.txt", []), tile()],
         VARIANT="lm_blocked")
-    # (7) a variant over lm_run that declares no entry: it runs lm_run's (folded), mounts lm_run's whole
+    # (7) a variant over lm_run that declares no entry: it runs lm_run's (contained), mounts lm_run's whole
     # resolution plus its own dir — and is NOT offered lm_run's parts: a part goes INTO lm_run exactly (the hard
     # link), and an end containing lm_run is another end.
     add("lm_inherits", [node("lm_run"), {"DIR": "inheritdir", "TARGET": F(G)}], VARIANT="lm_inherits")
 
     # ---- parts: a node whose list begins with INTO (what it goes into) -------------------------------------
     # Offered to the end it goes INTO (or with a part it goes into applied), applied above the variant (parts
-    # are a set, applied after what they go into); a fresh instance ticks the ones RECOMMENDED under the row's
-    # tile. The probe's "mounted tree" is the proof: grafted.txt, grafted_hd.txt (a part of a part: offered once
+    # are a set, applied after what they go into); a fresh instance ticks the ones whose INTO says RECOMMENDED. The probe's "mounted tree" is the proof: grafted.txt, grafted_hd.txt (a part of a part: offered once
     # lm_graft_on is applied) and lib.txt (a library the part contains) appear; never.txt (offered, not
     # recommended) does not, and elsewhere.txt (INTO lm_minimal) is offered to lm_minimal only.
-    add("lm_graft_on", [{"INTO": ["lm_run"]}, {"DIR": "graftdir", "TARGET": F(G)},
-                        {"ENV": {"LM_GRAFT_ENV": "grafted"}}],          # a ticked graft's ENV folds above the variant's
-        RECOMMENDED=[UID])
-    add("lm_graft_hd", [{"INTO": ["lm_graft_on"]}, {"DIR": "grafthd", "TARGET": F(G)}], RECOMMENDED=[UID])
+    add("lm_graft_on", [{"INTO": ["lm_run"], "RECOMMENDED": True}, {"DIR": "graftdir", "TARGET": F(G)},
+                        {"ENV": {"LM_GRAFT_ENV": "grafted"}}])          # a ticked graft's ENV composes above the variant's
+    add("lm_graft_hd", [{"INTO": ["lm_graft_on"], "RECOMMENDED": True}, {"DIR": "grafthd", "TARGET": F(G)}])
     add("lm_graft_off", [{"INTO": ["lm_run"]}, {"DIR": "graftoff", "TARGET": F(G)}])
     # Offered and pre-ticked — but its condition says "never with" something lm_run contains, so it does not apply.
-    add("lm_graft_conflict", [{"INTO": ["lm_run"], "WHEN": probe + " == false"}, {"DIR": "graftconflict", "TARGET": F(G)}],
-        RECOMMENDED=[UID])
-    add("lm_graft_elsewhere", [{"INTO": ["lm_minimal"]}, {"DIR": "graftwrong", "TARGET": F(G)}], RECOMMENDED=[UID])
+    add("lm_graft_conflict", [{"INTO": ["lm_run"], "WHEN": probe + " == false", "RECOMMENDED": True},
+                              {"DIR": "graftconflict", "TARGET": F(G)}])
+    add("lm_graft_elsewhere", [{"INTO": ["lm_minimal"], "RECOMMENDED": True}, {"DIR": "graftwrong", "TARGET": F(G)}])
     add("lm_graft_lib", [{"DIR": "graftlib", "TARGET": F(G)}])
-    add("lm_graft_uses_lib", [{"INTO": ["lm_run"]}, node("lm_graft_lib")], RECOMMENDED=[UID])
-    # A graft that CARRIES an entry (a mod loader): ticked, it mounts above the variant like any graft, and its
-    # entry is a way to RUN that mount (--entrypoint lm_graft_entry). Its ENV folds above lm_run's.
+    add("lm_graft_uses_lib", [{"INTO": ["lm_run"], "RECOMMENDED": True}, node("lm_graft_lib")])
+    # A graft that CARRIES an entry (a mod loader): a ROW under the card it takes its tile from, never a part to
+    # tick. Launched, it is lm_run with it applied (and lm_run's pre-ticked parts); its entry runs. Its ENV composes
+    # above lm_run's.
     add("lm_graft_entry", [{"INTO": ["lm_run"]}, {"DIR": "graftentry", "TARGET": F(G)},
                            {"ENV": {"LM_EXEC_ENV": "from-the-graft-entry"}},
-                           {"EXEC": [{"LABEL": "lm_graft_entry", "HOST": "linux64", "EXE": G + "/bin/probe.sh",
-                                      "ARGS": ["--via-graft-entry"], "WORKDIR": G}]}],
-        RECOMMENDED=[UID])
+                           {"EXEC": {"lm_graft_entry": {"HOST": "linux64", "EXE": G + "/bin/probe.sh",
+                                                        "ARGS": ["--via-graft-entry"], "WORKDIR": G}}},
+                           tile("lm_graft_entry")],
+        VARIANT="lm_graft_entry")
     return N
 
 def main():

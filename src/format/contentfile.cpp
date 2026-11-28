@@ -37,8 +37,8 @@ void ClaimsOfNode(const nlohmann::ordered_json &J, ClaimMap &Out)
         if (!L.is_object()) continue;
         for (const char *K : {"ZIP", "FILE", "DELTA", "CODED"})
             if (L.contains(K)) Claim(L[K], L.contains("SOURCE") ? L["SOURCE"] : nlohmann::ordered_json());
-        if (L.contains("EXEC") && L["EXEC"].is_array())
-            for (const auto &E : L["EXEC"])
+        if (L.contains("EXEC") && L["EXEC"].is_object())
+            for (const auto &[Lab, E] : L["EXEC"].items())
                 if (E.is_object() && E.contains("TILE") && E["TILE"].is_object() && E["TILE"].contains("COVER")
                     && E["TILE"]["COVER"].is_object())
                 {

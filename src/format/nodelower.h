@@ -38,7 +38,7 @@ nlohmann::ordered_json LowerNode(const nlohmann::ordered_json &J, const std::str
 //An EXEC entry → the engine's exec block. A launchable entry lowers to {PLATFORM, CONTENTPATH, EXEARGS, WORKDIR,
 //LABEL}; a runner entry (non-empty GUEST) to {HOST, GUEST, EXECUTABLE, ARGS, CONTENT_ROOT, PREFIX_GENERATE,
 //UNIFIED_RUNTIME, GUEST_ROOTS, DRIVES, LABEL}. Paths stay as the package wrote them (by anchor).
-nlohmann::ordered_json LowerEntry(const nlohmann::ordered_json &Entry);
+nlohmann::ordered_json LowerEntry(const nlohmann::ordered_json &Entry, const std::string &Label);
 
 //A resolved plan → the engine's ordered ops: content (PATH absolute from the node's bundle dir; TARGET and SUBMOUNT
 //destinations as the package addresses them — by anchor; the launch maps them into the runner's layout once

@@ -40,7 +40,7 @@ TEST(nodegraph_freeze_strips_pos_and_resolves_every_ref)
             {{"NODE", "content_node"}}, {{"NODE", "external_already_a_cid"}},
             {{"ENV", {{"A", "1"}}}, {"WHEN", "draft-0000000000aa == false && %x% == 1"}},
             {{"ZIP", "g.zip"}, {"SOURCE", "cidBytes"}},
-            {{"EXEC", ordered_json::array({ {{"LABEL", "Play"}, {"TILE", {{"UID", "1"}, {"COVER", {{"FILE", "c.png"}, {"SOURCE", "cidCover"}}}}}} })}},
+            {{"EXEC", ordered_json::object({ {"Play", {{"TILE", {{"UID", "1"}, {"COVER", {{"FILE", "c.png"}, {"SOURCE", "cidCover"}}}}}}} })}},
         })},
     };
     const ordered_json F = NodeGraph::FreezeNodeJson(Raw, HandleToCid);
@@ -54,7 +54,7 @@ TEST(nodegraph_freeze_strips_pos_and_resolves_every_ref)
     CHECK(F["LAYERS"][2]["NODE"] == "external_already_a_cid");  // an external ref passes through
     CHECK(F["LAYERS"][3]["WHEN"] == "bafkreirivalnoderivalnoderivalnoderivalnoderivalnoderivalno == false && %x% == 1");   // a condition's node, the rest kept
     CHECK(F["LAYERS"][4]["SOURCE"] == "cidBytes");              // content CIDs untouched
-    CHECK(F["LAYERS"][5]["EXEC"][0]["TILE"]["COVER"]["SOURCE"] == "cidCover");
+    CHECK(F["LAYERS"][5]["EXEC"]["Play"]["TILE"]["COVER"]["SOURCE"] == "cidCover");
     CHECK(F["LABEL"] == "exec");
 }
 

@@ -3,6 +3,7 @@
 #include <regex>
 #include <sstream>
 #include <map>
+#include "fold.h"        // Fold::OwnsGameEntry
 #include "cli/cliapp.h"   // RenderGeneric
 #include "installed.h"
 #include "shelf.h"
@@ -144,14 +145,19 @@ VG_COMMANDS
         "tile, its default entry, its install state — and with --json-node the node as authored.",
         { Command::Pos("node", "a CID, working handle, or LABEL"), Command::Flag("json-node", "include the node as authored") },
         { "catalog node 'Patch 2.0a'", "catalog node 'The Age of Kings' --json-node" },
-        { "NodeIndex::Find", "Installed::HydrationMap", "PackageCatalog::MissingFromClosure" }, Needs::Model, false,
+        { "NodeIndex::Find", "Installed::HydrationMap", "PackageCatalog::MissingFromClosure", "Node::IsRecommended", "Fold::OwnsGameEntry" }, Needs::Model, false,
         [](Command::Context &C, const json &A) {
             const auto Snap = C.Model->catalogSnapshot();
             const Node &N = *FindNode(*Snap, Command::Str(A, "node"));
+            //recommended: the cards it is the recommended row of (its entry says so); a part ticked by default (its INTO)
+            json Rec = json::array();
+            const bool Row = !N.IsGraft || Fold::OwnsGameEntry(*N.Json);
+            if (Row) for (const std::string &U : N.Faces) if (N.IsRecommended(U)) Rec.push_back(U);
             const auto Hyd = Installed::HydrationMap(*Snap);
             json J = {{"cid", N.Cid}, {"label", N.NodeId}, {"variant", N.Variant}, {"package", N.BundleDir.string()},
                       {"received", N.Received}, {"graft", N.IsGraft}, {"runner", N.HasRunner}, {"contains", N.Refs},
-                      {"into", N.Into}, {"requires", N.Requires}, {"tiles", N.Faces}, {"family", N.PackageUid}, {"recommended", N.Recommended}};
+                      {"into", N.Into}, {"requires", N.Requires}, {"tiles", N.Faces}, {"family", N.PackageUid}, {"recommended", Rec}};
+            if (!Row) J["ticked_by_default"] = N.IsRecommended("*");
             if (!N.Label.empty()) J["entry"] = N.Label;
             if (!N.LowerError.empty()) J["error"] = N.LowerError;
             if (const auto H = Hyd.find(N.Key()); H != Hyd.end()) { J["state"] = Standing(H->second); J["hydration"] = Hydration(H->second); }

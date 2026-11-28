@@ -301,6 +301,9 @@ bool LaunchResolver::BuildSubComponentsArray(struct ContainerParams &ContainerPa
                             const size_t C = X.find(':');
                             if (C != std::string::npos) Sm = X.substr(0, C + 1) + GuestToLayout(ContainerParams, X.substr(C + 1));
                         }
+                    //the places a re-provided copy leaves below: guest paths like a submount's destination
+                    if (Sub.contains("HIDE") && Sub["HIDE"].is_array())
+                        for (auto &H : Sub["HIDE"]) if (H.is_string()) H = GuestToLayout(ContainerParams, H.get<std::string>());
                 }
                 else if ((T == "FileEdit" || T == "BinaryPatch") && Sub.contains("FILE") && Sub["FILE"].is_string())
                     Sub["FILE"] = GuestToLayout(ContainerParams, Sub["FILE"]);

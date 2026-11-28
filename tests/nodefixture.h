@@ -10,7 +10,7 @@
 #include <vector>
 
 // ---------------------------------------------------------------------------
-// Test scaffolding for generation-6 nodes: {CID, LABEL, VARIANT?, RECOMMENDED?, LAYERS}.
+// Test scaffolding for nodes: {CID, LABEL, VARIANT?, LAYERS}.
 //
 // A SECTION is a partial node — {"LAYERS": [...]} and/or node fields ({"VARIANT": …}). `Chain` builds a chain of
 // nodes from sections — one node per section, each CONTAINING the previous through a leading NODE layer (the
@@ -18,26 +18,58 @@
 //
 // The LAST node owns the bare `Id`: a launchable is the head of its chain (it contains its content), and tests
 // address it by its natural name. Earlier links get "<Id>__l<N>". `Over` refs are contained by the FIRST node.
-// Node fields for the head (VARIANT, RECOMMENDED) go in TailFields or in the last section.
+// Node fields for the head (VARIANT) go in TailFields or in the last section.
 // ---------------------------------------------------------------------------
 
 namespace NodeFixture
 {
 
-// Merge sections into ONE node object: LAYERS concatenate in order, other fields are set.
+// Merge sections into ONE node object: LAYERS concatenate in order, other fields are set. The shorthands' EXEC
+// layers become the node's ONE EXEC layer, an entry's fields combined across them: Exec(...) and Tile(...) in one
+// Merge write one Play entry that runs and has a tile (an entry is replaced whole, so two layers would not).
 inline nlohmann::ordered_json Merge(const std::vector<nlohmann::ordered_json> &Sections)
 {
     nlohmann::ordered_json Out = nlohmann::ordered_json::object();
+    int ExecAt = -1;
     for (const auto &S : Sections)
         for (const auto &[K, V] : S.items())
         {
             if (K == "LAYERS")
             {
                 if (!Out.contains("LAYERS")) Out["LAYERS"] = nlohmann::ordered_json::array();
-                for (const auto &L : V) Out["LAYERS"].push_back(L);
+                for (const auto &L : V)
+                {
+                    if (L.is_object() && L.size() == 1 && L.contains("EXEC") && L["EXEC"].is_object())
+                    {
+                        if (ExecAt < 0) { ExecAt = (int)Out["LAYERS"].size(); Out["LAYERS"].push_back({ {"EXEC", nlohmann::ordered_json::object()} }); }
+                        auto &Ex = Out["LAYERS"][(size_t)ExecAt]["EXEC"];
+                        for (const auto &[Lab, E] : L["EXEC"].items())
+                        {
+                            if (!Ex.contains(Lab)) Ex[Lab] = nlohmann::ordered_json::object();
+                            for (const auto &[F, X] : E.items()) Ex[Lab][F] = X;
+                        }
+                        continue;
+                    }
+                    Out["LAYERS"].push_back(L);
+                }
             }
             else Out[K] = V;
         }
+    return Out;
+}
+
+// An EXEC object from built entries, keyed by each entry's LABEL ("Play" when it has none), the LABEL moving to the
+// key: for tests whose helpers build entries one by one.
+template <class J>
+inline J ExecOf(std::initializer_list<J> Entries)
+{
+    J Out = J::object();
+    for (J E : Entries)
+    {
+        const std::string Lab = E.contains("LABEL") && E["LABEL"].is_string() ? E["LABEL"].template get<std::string>() : std::string("Play");
+        E.erase("LABEL");
+        Out[Lab] = std::move(E);
+    }
     return Out;
 }
 
@@ -112,9 +144,9 @@ inline nlohmann::ordered_json ContentCid(const char *Form, const std::string &Pa
 // A game entry ("Play"; no GUEST ⇒ it runs content).
 inline nlohmann::ordered_json Exec(const std::string &Host, const std::string &Path, const std::string &Label = "Play")
 {
-    nlohmann::ordered_json E{ {"LABEL", Label}, {"HOST", Host} };
+    nlohmann::ordered_json E{ {"HOST", Host} };
     if (!Path.empty()) E["EXE"] = Path;
-    return { {"LAYERS", nlohmann::ordered_json::array({ { {"EXEC", nlohmann::ordered_json::array({ E })} } })} };
+    return { {"LAYERS", nlohmann::ordered_json::array({ { {"EXEC", nlohmann::ordered_json{ {Label, E} }} } })} };
 }
 
 // On the shelf: a variant named `Name` (it also needs a tiled entry in its fold to present a tile).
@@ -126,11 +158,11 @@ inline nlohmann::ordered_json Runner(const std::string &Host, const std::vector<
 {
     nlohmann::ordered_json G = nlohmann::ordered_json::array();
     for (const std::string &X : Guest) G.push_back(X);
-    nlohmann::ordered_json E{ {"LABEL", "run"}, {"HOST", Host}, {"GUEST", G}, {"EXE", Path} };
-    return { {"LAYERS", nlohmann::ordered_json::array({ { {"EXEC", nlohmann::ordered_json::array({ E })} } })} };
+    nlohmann::ordered_json E{ {"HOST", Host}, {"GUEST", G}, {"EXE", Path} };
+    return { {"LAYERS", nlohmann::ordered_json::array({ { {"EXEC", nlohmann::ordered_json{ {"run", E} }} } })} };
 }
 
-// A tile rides the "Play" entry: a partial entry carrying TILE, folded with the entry that runs.
+// A tile rides the "Play" entry: in a Merge with Exec(...), the same entry; alone, an entry that only has a tile.
 inline nlohmann::ordered_json Tile(const std::string &Uid, const std::string &Title = {},
                                    const nlohmann::ordered_json &Meta = nlohmann::ordered_json::object(),
                                    const std::string &ParentUid = {})
@@ -139,8 +171,24 @@ inline nlohmann::ordered_json Tile(const std::string &Uid, const std::string &Ti
     if (!ParentUid.empty()) T["PARENTUID"] = ParentUid;
     if (!Title.empty()) T["TITLE"] = Title;
     if (Meta.is_object() && !Meta.empty()) T["META"] = Meta;
-    nlohmann::ordered_json E{ {"LABEL", "Play"}, {"TILE", T} };
-    return { {"LAYERS", nlohmann::ordered_json::array({ { {"EXEC", nlohmann::ordered_json::array({ E })} } })} };
+    nlohmann::ordered_json E{ {"TILE", T} };
+    return { {"LAYERS", nlohmann::ordered_json::array({ { {"EXEC", nlohmann::ordered_json{ {"Play", E} }} } })} };
+}
+
+// The tile of a tile node, taken onto this node's Play entry (EXEC/Play/TILE, placed over the entry it writes): how a
+// row keeps the card's tile kept in one node of its package. As a LATER section than the entry.
+inline nlohmann::ordered_json TakeTile(const std::string &TileNode, const std::string &Label = "Play")
+{
+    nlohmann::ordered_json T = nlohmann::ordered_json::array();
+    if (Label == "Play") T.push_back("EXEC/Play/TILE");
+    else T.push_back(nlohmann::ordered_json::array({"EXEC/Play/TILE", "EXEC/" + Label + "/TILE"}));
+    return { {"LAYERS", nlohmann::ordered_json::array({ { {"NODE", TileNode}, {"TAKE", T} } })} };
+}
+
+// In a Merge: the Play entry is its card's recommended row.
+inline nlohmann::ordered_json Recommended(const std::string &Label = "Play")
+{
+    return { {"LAYERS", nlohmann::ordered_json::array({ { {"EXEC", nlohmann::ordered_json{ {Label, { {"RECOMMENDED", true} }} }} } })} };
 }
 
 // A section holding arbitrary layers.

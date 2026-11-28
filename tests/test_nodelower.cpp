@@ -71,7 +71,7 @@ TEST(lower_edit_splits_text_and_binary_ops_onto_the_target_file)
 
 TEST(lower_reg_flattens_the_hive_tree_per_architecture)
 {
-    const ordered_json L = Lower({ {"REG", {{"HKCU", {{"Software", {{"A", {{"k", "v"}, {"Sub", {{"k2", "v2"}}}}}, {"Empty", ordered_json::object()}}}}}}},
+    const ordered_json L = Lower({ {"REG", {{"HKCU\\Software\\A", {{"k", "v"}}}, {"HKCU\\Software\\A\\Sub", {{"k2", "v2"}}}, {"HKCU\\Software\\Empty", ordered_json::object()}}},
                                    {"ARCH", ordered_json::array({"32", "64"})} });
     int A = 0, Sub = 0, Empty = 0;
     for (const auto &R : L)
@@ -102,7 +102,7 @@ TEST(lower_dll_vars_and_keep)
 
     const ordered_json K = Lower({ {"KEEP", {{"FILES/%UserProfile%/Saves/", {{"NAME", "Saves"}, {"CLOUD", false}}},
                                             {"FILES/%UserProfile%/Saves/cfg.ini", false},
-                                            {"REG/HKCU/Software/Game", true}}} });
+                                            {"REG/HKCU\\Software\\Game", true}}} });
     CHECK_EQ(K.size(), (size_t)2);                                         // a KEEP false persists nothing
     CHECK_EQ(K[0]["SCOPE"].get<std::string>(), std::string("file"));
     CHECK_EQ(K[0]["PATH"].get<std::string>(), std::string("%UserProfile%/Saves/"));
@@ -117,29 +117,30 @@ TEST(lower_dll_vars_and_keep)
 // capture looked in the 64-bit view). HKCU is shared by both, so it needs none. A take-back judges by address alone.
 TEST(a_kept_hklm_key_names_the_programs_bitness)
 {
-    const ordered_json K = Lower({ {"KEEP", {{"REG/HKLM/Software/EA GAMES/NFSU2", {{"ARCH", {"32", "64"}}, {"CLOUD", false}}}}} });
+    const ordered_json K = Lower({ {"KEEP", {{"REG/HKLM\\Software\\EA GAMES\\NFSU2", {{"ARCH", {"32", "64"}}, {"CLOUD", false}}}}} });
     CHECK_EQ(K.size(), (size_t)2);
     CHECK_EQ(K[0]["ARCHITECTURE"].get<std::string>(), std::string("32"));
     CHECK_EQ(K[1]["ARCHITECTURE"].get<std::string>(), std::string("64"));
     CHECK_EQ(K[0]["PATH"].get<std::string>(), std::string("HKLM\\Software\\EA GAMES\\NFSU2"));
     CHECK(!K[0]["CLOUD"].get<bool>());
 
-    CHECK(!Refused({ {"KEEP", {{"REG/HKLM/Software/X", {{"ARCH", {"32"}}}}}} }));
-    CHECK(!Refused({ {"KEEP", {{"REG/HKCU/Software/X", true}}} }));
-    CHECK(!Refused({ {"KEEP", {{"REG/HKCU/Software/X", {{"ARCH", {"32"}}}}}} }));
-    CHECK(!Refused({ {"KEEP", {{"REG/HKLM/Software/X/Volume", false}}} }));
-    CHECK(Refused({ {"KEEP", {{"REG/HKLM/Software/X", true}}} }));
-    CHECK(Refused({ {"KEEP", {{"REG/hkey_local_machine/SOFTWARE/X", {{"CLOUD", false}}}}} }));
-    CHECK(Refused({ {"KEEP", {{"REG/HKLM/Software", true}}} }));
-    CHECK(Refused({ {"KEEP", {{"REG/HKLM/Software/X", {{"ARCH", ordered_json::array()}}}}} }));
-    CHECK(Refused({ {"KEEP", {{"REG/HKLM/Software/X", {{"ARCH", {"86"}}}}}} }));
-    CHECK(Refused({ {"KEEP", {{"REG/HKLM/Software/X", {{"ARCH", "32"}}}}} }));
-    CHECK(Refused({ {"KEEP", {{"REG/HKLM/Software/X", {{"ARCH", {"32", "32"}}}}}} }));
-    CHECK(Refused({ {"KEEP", {{"FILES/%GameDir%/x.cfg", {{"ARCH", {"32"}}}}}} }));
-    CHECK(Refused({ {"KEEP", {{"REG/HKLM//Software/X", true}}} }));            // however the key is spelled
+    CHECK(!Refused({ {"KEEP", {{"REG/HKLM\\Software\\X", {{"ARCH", {"32"}}}}}} }));
+    CHECK(!Refused({ {"KEEP", {{"REG/HKCU\\Software\\X", true}}} }));
+    CHECK(!Refused({ {"KEEP", {{"REG/HKCU\\Software\\X", {{"ARCH", {"32"}}}}}} }));
+    CHECK(!Refused({ {"KEEP", {{"REG/HKLM\\Software\\X#Volume", false}}} }));           // a value of the key, taken back
+    CHECK(Refused({ {"KEEP", {{"REG/HKCU\\Software\\X#Volume", true}}} }));             // ...never kept alone
     CHECK(Refused({ {"KEEP", {{"REG/HKLM\\Software\\X", true}}} }));
-    CHECK(Refused({ {"KEEP", {{"REG/HKLM/Software/Wow6432Node/X", {{"ARCH", {"32"}}}}}} }));   // ARCH places the view
-    CHECK(Refused({ {"KEEP", {{"REG/HKCU/Software/Wow6432Node/X", false}}} }));
+    CHECK(Refused({ {"KEEP", {{"REG/hkey_local_machine\\SOFTWARE\\X", {{"CLOUD", false}}}}} }));
+    CHECK(Refused({ {"KEEP", {{"REG/HKLM\\Software", true}}} }));
+    CHECK(Refused({ {"KEEP", {{"REG/HKLM\\Software\\X", {{"ARCH", ordered_json::array()}}}}} }));
+    CHECK(Refused({ {"KEEP", {{"REG/HKLM\\Software\\X", {{"ARCH", {"86"}}}}}} }));
+    CHECK(Refused({ {"KEEP", {{"REG/HKLM\\Software\\X", {{"ARCH", "32"}}}}} }));
+    CHECK(Refused({ {"KEEP", {{"REG/HKLM\\Software\\X", {{"ARCH", {"32", "32"}}}}}} }));
+    CHECK(Refused({ {"KEEP", {{"FILES/%GameDir%/x.cfg", {{"ARCH", {"32"}}}}}} }));
+    CHECK(Refused({ {"KEEP", {{"REG/HKLM\\\\Software\\X", {{"ARCH", {"32"}}}}}} }));   // an empty key name
+    CHECK(Refused({ {"KEEP", {{"REG/HKLM/Software/X", {{"ARCH", {"32"}}}}}} }));         // '/' is no separator: no such hive
+    CHECK(Refused({ {"KEEP", {{"REG/HKLM\\Software\\Wow6432Node\\X", {{"ARCH", {"32"}}}}}} }));   // ARCH places the view
+    CHECK(Refused({ {"KEEP", {{"REG/HKCU\\Software\\Wow6432Node\\X", false}}} }));
 }
 
 TEST(check_accepts_key_options_holding_a_key_name_unbound_or_computed)
@@ -186,9 +187,9 @@ TEST(lower_facts_and_refs_lower_to_no_op)
                                        "FILES/a/", "FILES/b/", "REG", "FILES/a/x.dll", "FILES/b/y.dll",
                                        ordered_json::array({"FILES/c/x.dll", "z.dll"}) })} },
                                    ordered_json{ {"ENV", {{"A", "1"}}} },
-                                   ordered_json{ {"EXEC", ordered_json::array({ {{"LABEL", "Play"}, {"HOST", "win32"}} })} },
-                                   ordered_json{ {"EXEC", ordered_json::array({ {{"LABEL", "run"}, {"GUEST_ROOTS", {{"%GameDir%", "c:\\g"}}},  // drives: any case
-                                                                                 {"DRIVES", {{"C:", "pfx/drive_c"}}}} })} } })
+                                   ordered_json{ {"EXEC", ordered_json::object({ {"Play", {{"HOST", "win32"}}} })} },
+                                   ordered_json{ {"EXEC", ordered_json::object({ {"run", {{"GUEST_ROOTS", {{"%GameDir%", "c:\\g"}}},  // drives: any case
+                                                                                 {"DRIVES", {{"C:", "pfx/drive_c"}}}}} })} } })
     {
         CHECK(!Refused(L));
         CHECK(Lower(L).empty());
@@ -197,17 +198,18 @@ TEST(lower_facts_and_refs_lower_to_no_op)
 
 TEST(lower_entry_splits_a_game_entry_from_a_runner_entry)
 {
-    const ordered_json G = NodeLower::LowerEntry({ {"LABEL", "Play"}, {"HOST", "win32"}, {"EXE", "%GameDir%/g.exe"},
-                                                  {"ARGS", ordered_json::array({"-w"})}, {"WORKDIR", "%GameDir%"} });
+    const ordered_json G = NodeLower::LowerEntry({ {"HOST", "win32"}, {"EXE", "%GameDir%/g.exe"},
+                                                  {"ARGS", ordered_json::array({"-w"})}, {"WORKDIR", "%GameDir%"} }, "Play");
+    CHECK_EQ(G["LABEL"].get<std::string>(), std::string("Play"));                  // the key it is under
     CHECK_EQ(G["PLATFORM"].get<std::string>(), std::string("win32"));
     CHECK_EQ(G["CONTENTPATH"].get<std::string>(), std::string("%GameDir%/g.exe"));
     CHECK_EQ(G["EXEARGS"][0].get<std::string>(), std::string("-w"));
     CHECK_EQ(G["WORKDIR"].get<std::string>(), std::string("%GameDir%"));
     CHECK(!G.contains("GUEST"));
-    const ordered_json R = NodeLower::LowerEntry({ {"LABEL", "run"}, {"HOST", "linux64"}, {"GUEST", ordered_json::array({"win32"})},
+    const ordered_json R = NodeLower::LowerEntry({ {"HOST", "linux64"}, {"GUEST", ordered_json::array({"win32"})},
                                                   {"EXE", "%RunnerMount%/proton"}, {"CONTENT_ROOT", "pfx/drive_c/%PackageUID%"},
                                                   {"PREFIX_GENERATE", true}, {"GUEST_ROOTS", {{"%GameDir%", "C:\\%PackageUID%"}}},
-                                                  {"DRIVES", {{"C:", "%PrefixRoot%/drive_c"}}} });
+                                                  {"DRIVES", {{"C:", "%PrefixRoot%/drive_c"}}} }, "run");
     CHECK_EQ(R["HOST"].get<std::string>(), std::string("linux64"));
     CHECK_EQ(R["EXECUTABLE"].get<std::string>(), std::string("%RunnerMount%/proton"));
     CHECK(R["ARGS"].is_array() && R["ARGS"].empty());
@@ -226,7 +228,7 @@ TEST(check_refuses_type_confused_payloads_instead_of_throwing)
         { {"EDIT", "x"}, {"TARGET", "FILES/f"} }, { {"EDIT", ordered_json::array({ {{"MODE", 1}} })}, {"TARGET", "FILES/f"} },
         { {"REG", "x"} }, { {"REG", ordered_json::object()}, {"ARCH", "32"} }, { {"REG", ordered_json::object()}, {"ARCH", ordered_json::array({"16"})} },
         { {"REG", ordered_json::object()} }, { {"REG", ordered_json::object()}, {"ARCH", ordered_json::array()} },     // ARCH is mandatory
-        { {"REG", {{"HKLM", {{"Software", {{"Wow6432Node", {{"A", ordered_json::object()}}}}}}}}}, {"ARCH", ordered_json::array({"32"})} },
+        { {"REG", {{"HKLM\\Software\\Wow6432Node\\A", ordered_json::object()}}}, {"ARCH", ordered_json::array({"32"})} },
         { {"VARS", {{"K", "not-an-object"}}} }, { {"VARS", {{"K", {{"DEFAULT", 3}}}}} }, { {"VARS", {{"K", {{"UI", "x"}}}}} },
         { {"VARS", {{"K", {{"UI", {{"CONTROL", "slider"}}}}}}} },                                   // no such control
         { {"VARS", {{"K", {{"DEFAULT", "shift"}, {"UI", {{"CONTROL", "key"}}}}}}} },                 // not a key name
@@ -236,17 +238,27 @@ TEST(check_refuses_type_confused_payloads_instead_of_throwing)
         { {"VARS", {{"T", {{"MAP", {{"a", "A"}}}, {"ELSE", 0}}}}} },
         { {"VARS", {{"T", {{"DEFAULT", "1"}, {"ELSE", "x"}}}}} },                                  // ELSE belongs to a table
         { {"ENV", {{"A", 1}}} }, { {"DLL", ordered_json::array()} }, { {"DLL", {{"", "n,b"}}} }, { {"ENV", {{"", "1"}}} },
-        { {"EXEC", ordered_json::array({ {{"HOST", "win32"}} })} },                                  // no LABEL
-        { {"EXEC", ordered_json::array({ {{"LABEL", "P"}, {"ARGS", ordered_json::array({1})}} })} },
-        { {"EXEC", ordered_json::array({ {{"LABEL", "P"}, {"TILE", "x"}} })} },
-        { {"EXEC", ordered_json::array({ {{"LABEL", "P"}, {"TILE", {{"UID", 802}}}} })} },
-        { {"EXEC", ordered_json::array({ {{"LABEL", "P"}, {"PREFIX_GENERATE", "yes"}} })} },
-        { {"EXEC", ordered_json::array({ {{"LABEL", "P"}, {"GUEST_ROOTS", {{"C:", "%PrefixRoot%/drive_c"}}}} })} },  // a drive is not an anchor
-        { {"EXEC", ordered_json::array({ {{"LABEL", "P"}, {"GUEST_ROOTS", {{"%GameDir%", 1}}}} })} },
-        { {"EXEC", ordered_json::array({ {{"LABEL", "P"}, {"DRIVES", "C:"}} })} },
-        { {"EXEC", ordered_json::array({ {{"LABEL", "P"}, {"GUEST_ROOTS", {{"%Media%", "E:\\"}}}, {"DRIVES", {{"C:", "pfx/drive_c"}}}} })} },  // E: unmapped
-        { {"EXEC", ordered_json::array({ {{"LABEL", "P"}, {"GUEST_ROOTS", {{"%GameDir%", "C:\\g"}}}} })} },                              // no DRIVES
-        { {"EXEC", ordered_json::array({ {{"LABEL", "P"}, {"DRIVES", {{"C:", ordered_json::array()}}}} })} },
+        { {"EXEC", ordered_json::object({ {"", {{"HOST", "win32"}}} })} },                                      // an empty label
+        { {"EXEC", ordered_json::object({ {"Elf Bowling 1/7", {{"HOST", "win32"}}} })} },                       // '/' splits the address
+        { {"EXEC", ordered_json::object({ {"Play", {{"LABEL", "Play"}, {"HOST", "win32"}}} })} },               // LABEL: the key's
+        { {"EXEC", ordered_json::array({ {{"LABEL", "Play"}, {"HOST", "win32"}} })} },                         // a list
+        { {"EXEC", ordered_json::object({ {"Play", {{"RECOMMENDED", "yes"}}} })} },
+        { {"REG", {{"HKLM\\Software\\A", {{"v", {{"nested", "x"}}}}}}}, {"ARCH", ordered_json::array({"32"})} },   // values are data
+        { {"REG", {{"Software\\A", ordered_json::object()}}}, {"ARCH", ordered_json::array({"32"})} },            // no hive
+        { {"REG", {{"HKLM\\\\A", ordered_json::object()}}}, {"ARCH", ordered_json::array({"32"})} },             // an empty key name
+        { {"REG", {{"HKLM\\A", "x"}}}, {"ARCH", ordered_json::array({"32"})} },
+        { {"REG", ordered_json::object()}, {"ARCH", ordered_json::array({"32"})}, {"KEY", ""} },
+        { {"INTO", ordered_json::array({"x"})}, {"RECOMMENDED", "yes"} },
+        { {"EXEC", ordered_json::object({ {"P", {{"ARGS", ordered_json::array({1})}}} })} },
+        { {"EXEC", ordered_json::object({ {"P", {{"TILE", "x"}}} })} },
+        { {"EXEC", ordered_json::object({ {"P", {{"TILE", {{"UID", 802}}}}} })} },
+        { {"EXEC", ordered_json::object({ {"P", {{"PREFIX_GENERATE", "yes"}}} })} },
+        { {"EXEC", ordered_json::object({ {"P", {{"GUEST_ROOTS", {{"C:", "%PrefixRoot%/drive_c"}}}}} })} },  // a drive is not an anchor
+        { {"EXEC", ordered_json::object({ {"P", {{"GUEST_ROOTS", {{"%GameDir%", 1}}}}} })} },
+        { {"EXEC", ordered_json::object({ {"P", {{"DRIVES", "C:"}}} })} },
+        { {"EXEC", ordered_json::object({ {"P", {{"GUEST_ROOTS", {{"%Media%", "E:\\"}}}, {"DRIVES", {{"C:", "pfx/drive_c"}}}}} })} },  // E: unmapped
+        { {"EXEC", ordered_json::object({ {"P", {{"GUEST_ROOTS", {{"%GameDir%", "C:\\g"}}}}} })} },                              // no DRIVES
+        { {"EXEC", ordered_json::object({ {"P", {{"DRIVES", {{"C:", ordered_json::array()}}}}} })} },
         { {"KEEP", {{"FILES/x", "yes"}}} }, { {"KEEP", {{"VARS/x", true}}} }, { {"KEEP", {{"FILESX/x", true}}} },
         { {"KEEP", {{"REGISTRY/HKCU/x", true}}} }, { {"INTO", ordered_json::array()} }, { {"INTO", ordered_json::array({1})} }, { {"INTO", ordered_json::array({""})} },
         { {"NOT", "x"} }, { {"ANY", ordered_json::array({"x"})} },   // gone from the vocabulary
@@ -262,7 +274,14 @@ TEST(check_refuses_type_confused_payloads_instead_of_throwing)
         //two selections landing on one address (the same leaf name, a pair renamed onto a leaf, case aside)
         { {"NODE", "x"}, {"TAKE", ordered_json::array({"FILES/a/d3d8.dll", "FILES/b/D3D8.dll"})} },
         { {"NODE", "x"}, {"TAKE", ordered_json::array({"FILES/a/x.cfg", ordered_json::array({"FILES/b/y.cfg", "x.cfg"})})} },
+        { {"NODE", "x"}, {"TAKE", ordered_json::array({ ordered_json::array({"REG/HKCU\\Software\\A", "REG/HKCU\\Software\\B"}) })} },   // no REG renames
     };
+    //a null entry deletes an inherited label (a version renaming its entry); Wow6432Node is refused only as
+    //Software\Wow6432Node (the 32-bit view the ARCH names), never inside Classes
+    CHECK(!Refused(ordered_json{ {"EXEC", ordered_json::object({ {"Play", nullptr} })} }));
+    CHECK(!Refused(ordered_json{ {"REG", {{"HKLM\\Software\\Classes\\Wow6432Node\\CLSID\\{X}", ordered_json::object()}}}, {"ARCH", ordered_json::array({"32"})} }));
+    //an entry's parts land at their own addresses: two tiles of two entries never collide
+    CHECK(!Refused(ordered_json{ {"NODE", "x"}, {"TAKE", ordered_json::array({"EXEC/Reign of Chaos/TILE", "EXEC/The Frozen Throne/TILE"})} }));
     //a delta over nothing (BASE_SOURCES []) is a file stored compressed, not a malformed delta
     CHECK(!Refused(ordered_json{ {"DELTA", "x"}, {"SOURCE", "QmX"}, {"BASE_SOURCES", ordered_json::array()}, {"TARGET", "FILES/a"} }));
     for (const auto &L : Hostile)
@@ -291,7 +310,7 @@ TEST(check_refuses_content_and_cover_names_that_leave_the_package)
     for (const char *Ok : { "x.zip", "sub/x.zip", "%RunnerMount%/extra", "..x.zip", "a..b/c.zip" })
         CHECK(!Refused({ {"ZIP", Ok} }));
     auto Tile = [](const ordered_json &Cover) {
-        return ordered_json{ {"EXEC", ordered_json::array({ { {"LABEL", "Play"}, {"TILE", { {"UID", "1"}, {"COVER", Cover} }} } })} };
+        return ordered_json{ {"EXEC", ordered_json::object({ {"Play", {{"TILE", { {"UID", "1"}, {"COVER", Cover} }}}} })} };
     };
     CHECK(!Refused(Tile({ {"FILE", "cover.png"}, {"SOURCE", "bafkrei"} })));
     CHECK(Refused(Tile({ {"FILE", "../cover.png"} })));
@@ -392,7 +411,7 @@ TEST(kept_under_finds_the_users_state_a_delete_would_reach)
 {
     const ordered_json Keep = {
         {"FILES/%GameDir%/Saves/", true}, {"FILES/%GameDir%/Saves/cfg.ini", false}, {"FILES/%GameDir%/profile.dat", true},
-        {"FILES/%Documents%/X/*.sav", true}, {"FILES/%GameDir%/game.ini#Lang=", true}, {"REG/HKCU/Software/X", true} };
+        {"FILES/%Documents%/X/*.sav", true}, {"FILES/%GameDir%/game.ini#Lang=", true}, {"REG/HKCU\\Software\\X", true} };
     CHECK(!NodeLower::KeptUnder(Keep, "FILES/%GameDir%/Saves/a.sav").empty());        // inside a kept folder
     CHECK(!NodeLower::KeptUnder(Keep, "FILES/%GameDir%/Saves/cfg.ini").empty());      // taken back, still in the live folder
     CHECK(!NodeLower::KeptUnder(Keep, "FILES/%GameDir%").empty());                    // holds a kept folder
@@ -453,4 +472,34 @@ TEST(kept_under_sees_through_dot_segments)
     CHECK(!NodeLower::KeptUnder(Keep, "FILES/%GameDir%/./Saves").empty());
     CHECK(!NodeLower::KeptUnder(Keep, "FILES/%GameDir%//Saves/a.sav").empty());
     CHECK(NodeLower::KeptUnder(Keep, "FILES/%GameDir%/Saves/../videos/intro.bik").empty());
+}
+
+// A re-provided copy (05 §5.4) leaves the places later layers of its composition rewrite to the layers below it: the
+// lowering says so (HIDE, guest paths) and the mount spec carries them (hide) for the FS to mask. dgVoodoo raised over
+// b's files keeps cfg's edited dgVoodoo.conf from below. Teeth: drop Except in the lowering, or hide on the first copy.
+TEST(a_re_provided_copy_hides_what_later_layers_rewrote)
+{
+    auto N = [](ordered_json L) { return ordered_json{ {"LAYERS", std::move(L)} }; };
+    auto Z = [](const char *Name) { return ordered_json{ {"ZIP", Name}, {"TARGET", "FILES/C:/g"} }; };
+    const ordered_json Dgv = N({ Z("dgv"), {{"NODE", "cfg"}} });
+    const ordered_json Cfg = N({ {{"EDIT", ordered_json::array({ {{"MODE", "AppendLine"}, {"VALUE", "x"}} })}, {"TARGET", "FILES/C:/g/dgVoodoo.conf"}} });
+    const ordered_json A = N({ Z("game"), {{"NODE", "dgv"}} }), B = N({ {{"NODE", "a"}}, Z("b-over") });
+    const ordered_json C = N({ {{"NODE", "b"}}, {{"NODE", "dgv"}} });
+    Fold::Library L;
+    for (const auto &[K, J] : std::vector<std::pair<std::string, const ordered_json *>>{
+             {"dgv", &Dgv}, {"cfg", &Cfg}, {"a", &A}, {"b", &B}, {"c", &C}})
+        L.Nodes[K] = { J, "/b" };
+    const Fold::Plan P = Fold::Resolve(L, "c");
+    const auto Ops = NodeLower::ContentOps(P);
+    std::vector<ordered_json> Hides;
+    for (const auto &[J, Op] : Ops) Hides.push_back(Op.contains("HIDE") ? Op["HIDE"] : ordered_json());
+    CHECK(Hides.size() == 4);                                           // game, dgv, b-over, dgv again
+    if (Hides.size() != 4) return;
+    CHECK(Hides[0].is_null() && Hides[1].is_null() && Hides[2].is_null());
+    CHECK(Hides[3] == ordered_json::array({"C:/g/dgVoodoo.conf"}));
+    const ordered_json Spec = ManifestModel::MakeVfsSpecLayer(Ops.back().second, "/x/dgv.zip", "C:/g");
+    CHECK(Spec["hide"] == ordered_json::array({"C:/g/dgVoodoo.conf"}));
+    ordered_json Op = Ops.back().second;                                // a hidden path is a tree path, however written
+    Op["HIDE"] = ordered_json::array({ "C:\\g\\dgVoodoo.conf" });
+    CHECK(ManifestModel::MakeVfsSpecLayer(Op, "/x/dgv.zip", "C:/g")["hide"] == ordered_json::array({"C:/g/dgVoodoo.conf"}));
 }

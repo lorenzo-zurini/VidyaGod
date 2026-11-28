@@ -39,7 +39,8 @@ def main():
     for v in ("v1", "v2", "v3"):
         layers = [{"ZIP": f"{v}.zip", "TARGET": "FILES/%GameDir%"}]
         if v == "v1":
-            layers.append({"EXEC": [{"LABEL": "Play", "HOST": "win32", "EXE": "game.bin", "TILE": {"UID": "90000000000002", "TITLE": "Delta Chain"}}]})
+            layers.append({"EXEC": {"Play": {"HOST": "win32", "EXE": "game.bin", "RECOMMENDED": True,
+                                             "TILE": {"UID": "90000000000002", "TITLE": "Delta Chain"}}}})
         # Published-shape nodes: a file each, no handle (the working tree is the editor's).
         json.dump({"LABEL": v, "VARIANT": v, "LAYERS": layers}, open(f"{bundle}/{v}.json", "w"), indent=2)
     json.dump({"Settings": {"LanEnabled": False, "IPFS": {"Enabled": False}}, "LIBRARY": [{"PATH": bundle}]},
