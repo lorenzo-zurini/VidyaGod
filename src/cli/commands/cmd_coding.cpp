@@ -373,8 +373,9 @@ VG_COMMANDS
             std::set<std::string> Dirs;
             for (Tf &X : Target)
             {
-                if (X.dir) { Dirs.insert(X.path); continue; }
+                //every parent a folder, whether the target lists it or not (a zip may imply its folders)
                 for (size_t S = X.path.find('/'); S != std::string::npos; S = X.path.find('/', S + 1)) Dirs.insert(X.path.substr(0, S));
+                if (X.dir) { Dirs.insert(X.path); continue; }
                 vgtree::Entry E; E.path = X.path;
                 if (!X.link.empty()) { E.kind = vgtree::Entry::Link; E.link = X.link; T.entries.push_back(std::move(E)); continue; }
                 E.size = X.bytes->size(); E.mode = X.mode;
