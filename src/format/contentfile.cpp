@@ -35,7 +35,7 @@ void ClaimsOfNode(const nlohmann::ordered_json &J, ClaimMap &Out)
     for (const auto &L : J["LAYERS"])
     {
         if (!L.is_object()) continue;
-        for (const char *K : {"ZIP", "FILE", "DELTA", "CODED"})
+        for (const char *K : {"ZIP", "FILE", "DELTA", "CODED", "VIEW"})
             if (L.contains(K)) Claim(L[K], L.contains("SOURCE") ? L["SOURCE"] : nlohmann::ordered_json());
         if (L.contains("EXEC") && L["EXEC"].is_object())
             for (const auto &[Lab, E] : L["EXEC"].items())

@@ -17,12 +17,12 @@ namespace
 
 const std::vector<std::string> &TypeKeys()
 {
-    static const std::vector<std::string> K = { "ZIP", "FILE", "DELTA", "CODED", "DIR", "NODE", "EDIT", "REG", "VARS", "ENV",
+    static const std::vector<std::string> K = { "ZIP", "FILE", "DELTA", "CODED", "VIEW", "DIR", "NODE", "EDIT", "REG", "VARS", "ENV",
                                                 "DLL", "EXEC", "KEEP", "INTO" };
     return K;
 }
 
-bool IsContent(const std::string &T) { return T == "ZIP" || T == "FILE" || T == "DELTA" || T == "CODED" || T == "DIR"; }
+bool IsContent(const std::string &T) { return T == "ZIP" || T == "FILE" || T == "DELTA" || T == "CODED" || T == "VIEW" || T == "DIR"; }
 
 std::string Lower(std::string S)
 {
@@ -905,7 +905,7 @@ static Plan ResolveImpl(const Library &Lib, const std::string &Root, const Vars 
             It.Size = L.contains("SIZE") ? L["SIZE"] : json();
             It.Own = NsPath(L.contains("TARGET") ? Str(L["TARGET"]) : std::string("FILES")).second;
             It.Target = Place(It.Own, S.Prefix);
-            if ((S.Kind == "DELTA" || S.Kind == "CODED") && L.contains("BASE_SOURCES")) It.BaseSources = L["BASE_SOURCES"];
+            if ((S.Kind == "DELTA" || S.Kind == "CODED" || S.Kind == "VIEW") && L.contains("BASE_SOURCES")) It.BaseSources = L["BASE_SOURCES"];
             if (S.Kind == "CODED")
             {   //a coded stream: its format's description (the layer's own) and the name it appears by
                 It.Description = L.contains("DESCRIPTION") ? L["DESCRIPTION"] : json();

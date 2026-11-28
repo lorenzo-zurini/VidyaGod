@@ -503,3 +503,36 @@ TEST(a_re_provided_copy_hides_what_later_layers_rewrote)
     Op["HIDE"] = ordered_json::array({ "C:\\g\\dgVoodoo.conf" });
     CHECK(ManifestModel::MakeVfsSpecLayer(Op, "/x/dgv.zip", "C:/g")["hide"] == ordered_json::array({"C:/g/dgVoodoo.conf"}));
 }
+
+// A VIEW layer (ISA 10, 04): its listing mounts as a folder over its one content, which mounts for its bytes when nothing
+// shows it; a TAKE of part of it is a submount. Teeth: lower a view without its base; leave its content unmounted;
+// accept a codec as its description; accept a listing not named .vgview.
+TEST(a_view_lowers_over_its_content)
+{
+    const ordered_json Desc = { {"NAME", "v"}, {"ISA", 10}, {"MODE", "VIEW"}, {"NAMES", "ascii"}, {"ENTRY", "@v"}, {"CODE", ordered_json::array({"@v", "end"})} };
+    const ordered_json Disc = { {"CID", "d"}, {"LABEL", "d"}, {"LAYERS", ordered_json::array({
+        {{"FILE", "disc.iso"}, {"SOURCE", "QmDisc"}, {"TARGET", "FILES/media"}},
+        {{"VIEW", "disc.vgview"}, {"SOURCE", "QmList"}, {"BASE_SOURCES", ordered_json::array({"QmDisc"})}, {"DESCRIPTION", Desc}, {"TARGET", "FILES/C:/g"}} })} };
+    const ordered_json Take = { {"CID", "t"}, {"LABEL", "t"}, {"LAYERS", ordered_json::array({ {{"NODE", "d"}, {"TAKE", ordered_json::array({"FILES/C:/g/DATA/"})}} })} };
+    Fold::Library Lib;
+    Lib.Nodes["d"] = { &Disc, "/b" };
+    Lib.Nodes["t"] = { &Take, "/b" };
+    const auto Ops = NodeLower::ContentOps(Fold::Resolve(Lib, "t"));
+    const ordered_json *View = nullptr, *File = nullptr;
+    for (const auto &[J, Op] : Ops) { if (Op.value("TYPE", std::string()) == "VFSViewLayer") View = &Op; if (Op.value("TYPE", std::string()) == "VFSFileLayer") File = &Op; }
+    CHECK(View && (*View)["BASE_SOURCES"] == ordered_json::array({"QmDisc"}));
+    CHECK(View && View->contains("SUBMOUNTS") && (*View)["SUBMOUNTS"] == ordered_json::array({"DATA:"}));   // DATA/'s contents, at the NODE's place
+    CHECK(File && File->value("BYTES_ONLY", false));                     // the disc: read by the view, shown nowhere
+    if (View) {
+        const ordered_json Spec = ManifestModel::MakeVfsSpecLayer(*View, "/x/disc.vgview", "");
+        CHECK_EQ(Spec.value("type", std::string()), std::string("view"));
+        CHECK(Spec["bases"] == ordered_json::array({"QmDisc"}));
+        CHECK_EQ(Spec.value("cid", std::string()), std::string("QmList"));
+    }
+    ordered_json Bad = Disc["LAYERS"][1];
+    Bad.erase("BASE_SOURCES"); CHECK(Refused(Bad));
+    Bad = Disc["LAYERS"][1]; Bad["BASE_SOURCES"] = ordered_json::array({"a", "b"}); CHECK(Refused(Bad));
+    Bad = Disc["LAYERS"][1]; Bad["DESCRIPTION"] = { {"NAME", "c"}, {"ISA", 10}, {"CODER", "BITS"}, {"ENTRY", "@v"}, {"CODE", ordered_json::array({"@v", "end"})} }; CHECK(Refused(Bad));
+    Bad = Disc["LAYERS"][1]; Bad["VIEW"] = "disc.txt"; CHECK(Refused(Bad));
+    CHECK(!Refused(Disc["LAYERS"][1]));
+}

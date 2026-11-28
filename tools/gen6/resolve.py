@@ -21,9 +21,9 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 # Case folding is ASCII-only, as the C++ engine's (fold.cpp Lower): addresses compare by it everywhere.
 _LO = str.maketrans("ABCDEFGHIJKLMNOPQRSTUVWXYZ", "abcdefghijklmnopqrstuvwxyz")
 
-TYPE_KEYS = ["ZIP", "FILE", "DELTA", "CODED", "DIR", "NODE", "EDIT", "REG", "VARS", "ENV", "DLL", "EXEC", "KEEP", "INTO"]
+TYPE_KEYS = ["ZIP", "FILE", "DELTA", "CODED", "VIEW", "DIR", "NODE", "EDIT", "REG", "VARS", "ENV", "DLL", "EXEC", "KEEP", "INTO"]
 _NODE_CID = re.compile(r"bafkrei[a-z2-7]{52}")
-CONTENT = ("ZIP", "FILE", "DELTA", "CODED", "DIR")
+CONTENT = ("ZIP", "FILE", "DELTA", "CODED", "VIEW", "DIR")
 MEMBERSHIP_ROUNDS = 64                                      # the membership fixpoint's bound (12 §12.1): beyond it, refused
 
 
@@ -691,7 +691,7 @@ class Resolver:
                         "target": place(tp, prefix), "own": tp,
                         "view": [[t, a] for t, a in view_steps(view)] if view_takes(view) else None,
                         "from": s["from"], "at": s["at"]}
-                if k in ("DELTA", "CODED") and "BASE_SOURCES" in L:           # its bases, by SOURCE CID, in order
+                if k in ("DELTA", "CODED", "VIEW") and "BASE_SOURCES" in L:   # its bases (a view: its content), by SOURCE CID, in order
                     item["base_sources"] = L["BASE_SOURCES"]
                 if k == "CODED":                                              # its description (inline) and its name
                     item["description"] = L.get("DESCRIPTION")
@@ -1428,6 +1428,13 @@ def fixtures():
                             "BASE_SOURCES": ["Qmc"], "TARGET": "FILES/g/Data"}]),
                    "s": N([{"NODE": "c", "TARGET": "FILES/sub"}])},
          [("c", {}, []), ("s", {}, [])]),
+        # a view (ISA 10): the files its listing finds in its content, placed and taken like an archive's
+        ("view", {"d": N([{"FILE": "disc.iso", "SOURCE": "Qmd", "TARGET": "FILES/media"},
+                          {"VIEW": "disc.vgview", "SOURCE": "Qml", "BASE_SOURCES": ["Qmd"], "TARGET": "FILES/C:/g",
+                           "DESCRIPTION": {"NAME": "v", "ISA": 10, "MODE": "VIEW", "NAMES": "ascii", "ENTRY": "@v", "CODE": ["@v", "end"]}}]),
+                  "s": N([{"NODE": "d", "TARGET": "FILES/sub"}]),
+                  "t": N([{"NODE": "d", "TAKE": ["FILES/C:/g/DATA/"]}])},
+         [("d", {}, []), ("s", {}, []), ("t", {}, [])]),
         ("placement", {"lib": N([Z("l1", "FILES/sub"), Z("l2", "FILES/C:/abs"), {"NODE": "leaf", "TARGET": "FILES/deep"},
                                  {"EDIT": [{"MODE": "Overwrite", "VALUE": "v"}], "TARGET": "FILES/sub/f.ini"},
                                  {"KEEP": {"FILES/sub/save/": True, "REG/HKCU\\S": False, "REG/HKCU\\V#a": False, "REG/HKCU\\V#b": True, "REG/HKCU\\W": {"ARCH": ["32"]}}},

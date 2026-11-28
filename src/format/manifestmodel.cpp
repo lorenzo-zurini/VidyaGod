@@ -336,7 +336,7 @@ void DeriveFacts(NodeIndex &Idx)
 {
     const Fold::Library Lib = LibraryOf(Idx);
     // 1. Each node's own fold: its effective entries (the folded EXEC) and the tiles they present.
-    struct Presented { std::string Node; nlohmann::ordered_json Tile; bool Variant = false, Recommended = false; std::string Sort; };
+    struct Presented { std::string Node; nlohmann::ordered_json Tile; bool Variant = false, Recommended = false; std::string Sort; bool Full = false; };
     std::map<std::string, std::vector<Presented>> ByUid;
     //Each node's entries, resolved in parallel: the library is read-only and every resolve is independent.
     std::vector<std::pair<const std::string *, Node *>> Work;
@@ -372,7 +372,9 @@ void DeriveFacts(NodeIndex &Idx)
                 const bool Rec = E.contains("RECOMMENDED") && E["RECOMMENDED"].is_boolean() && E["RECOMMENDED"].get<bool>()
                                  && std::find(Own.begin(), Own.end(), L) != Own.end();
                 if (Rec && std::find(RecU.begin(), RecU.end(), Uid) == RecU.end()) RecU.push_back(Uid);
-                ByUid[Uid].push_back({ K, E["TILE"], !N.Variant.empty(), Rec, N.Variant + '\x1f' + K });
+                bool Full = false;                                         // more than the {UID} stub naming the card
+                for (const auto &[Tk, Tv] : E["TILE"].items()) if (Tk != "UID") { Full = true; break; }
+                ByUid[Uid].push_back({ K, E["TILE"], !N.Variant.empty(), Rec, N.Variant + '\x1f' + K, Full });
             }
         }
         //A part with an entry of its own is a row, never ticked by default (09 §9.4), whatever its INTO says.
@@ -389,12 +391,14 @@ void DeriveFacts(NodeIndex &Idx)
                 for (const auto &G : (*D)["GUEST"]) if (G.is_string()) N.GuestPlatform.push_back(G.get<std::string>());
         }
     }
-    // 2. The tile table: faces with one UID are one tile. Its presentation is its recommended variant's folded tile,
-    //    else its first variant's (by VARIANT, then handle), else — no variant presents it — any node's.
+    // 2. The tile table: faces with one UID are one tile. Its presentation is the FULL tile (more than the {UID} stub a
+    //    row names its card by, 09 §9.3) of its recommended variant, else of its first variant carrying one (by VARIANT,
+    //    then handle), else of any node; only when no node carries a full tile, the stub itself.
     std::map<std::string, nlohmann::ordered_json> Tiles;
     for (auto &[Uid, Ps] : ByUid)
     {
         std::stable_sort(Ps.begin(), Ps.end(), [](const Presented &A, const Presented &B) {
+            if (A.Full != B.Full) return A.Full;
             if (A.Variant != B.Variant) return A.Variant;
             if (A.Recommended != B.Recommended) return A.Recommended;
             return A.Sort < B.Sort;
@@ -655,7 +659,7 @@ std::string VfsSpecType(const std::string &Type)
 {
     return Type == "VFSZipLayer"  ? "zip" : Type == "VFSDirLayer"   ? "dir"
          : Type == "VFSFileLayer" ? "file": Type == "VFSDeltaLayer" ? "delta"
-         : Type == "VFSCodedLayer" ? "coded" : "";
+         : Type == "VFSCodedLayer" ? "coded" : Type == "VFSViewLayer" ? "view" : "";
 }
 
 
@@ -719,14 +723,14 @@ nlohmann::ordered_json MakeVfsSpecLayer(const nlohmann::ordered_json &Sub, const
         for (const auto &P : Sub["HIDE"]) if (P.is_string()) H.push_back(NormalizeTargetPath(P.get<std::string>()));
         J["hide"] = std::move(H);
     }
-    if (LType == "zip" || LType == "delta" || LType == "file" || LType == "coded")   // what a delta names by CID (a file: a disc image)
+    if (LType == "zip" || LType == "delta" || LType == "file" || LType == "coded" || LType == "view")   // what a delta names by CID (a file: a disc image); a view: its listing's
     {
         std::filesystem::path Local; std::string Cid;
         LayerLocator(Sub, std::filesystem::path(), Local, Cid);
         if (!Cid.empty()) J["cid"] = Cid;
         if (Sub.contains("BYTES_ONLY") && Sub["BYTES_ONLY"].is_boolean() && Sub["BYTES_ONLY"].get<bool>()) J["bytesOnly"] = true;
     }
-    if (LType == "delta" || LType == "coded")   // by CID: the FS finds each file (treeplan.h)
+    if (LType == "delta" || LType == "coded" || LType == "view")   // by CID: the FS finds each file (treeplan.h)
     {
         //[] is a delta over nothing (its own bytes, stored compressed); a layer that names no base list at all (or a
         //malformed one) is null, which the plan refuses with that reason instead of reading it as a delta over nothing
@@ -768,7 +772,7 @@ std::vector<std::string> LayerBaseSources(const nlohmann::ordered_json &Sub)
 {
     std::vector<std::string> Out;
     if (!Sub.is_object() || !Sub.contains("BASE_SOURCES")) return Out;
-    const bool IsDelta = LayerType(Sub) == "VFSDeltaLayer" || LayerType(Sub) == "VFSCodedLayer" || Sub.value("FORM", std::string()) == "delta";   // a coded stream: its content
+    const bool IsDelta = LayerType(Sub) == "VFSDeltaLayer" || LayerType(Sub) == "VFSCodedLayer" || LayerType(Sub) == "VFSViewLayer" || Sub.value("FORM", std::string()) == "delta";   // a coded stream, a view: its content
     if (!IsDelta) return Out;
     const auto &B = Sub["BASE_SOURCES"];
     const bool WellFormed = B.is_array() && [&]{ for (const auto &E : B) if (!E.is_string()) return false; return true; }();

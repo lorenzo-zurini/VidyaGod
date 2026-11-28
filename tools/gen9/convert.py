@@ -343,7 +343,7 @@ def main():
                 newnodes[pc] = (part, d)
                 rel = os.path.relpath(p, lib)[:-5] + f" (registry part {i + 1}).json"
                 os.makedirs(os.path.join(a.out, os.path.dirname(rel)), exist_ok=True)
-                json.dump(part, open(os.path.join(a.out, rel), "w"), indent=1, ensure_ascii=False)
+                open(os.path.join(a.out, rel), "wb").write(R.canonical(part))        # a node file is its canonical bytes
             report.setdefault("split", []).append({"node": os.path.relpath(p, lib), "parts": len(parts)})
         try:
             nc = R.cid_of(R.canonical(n))
@@ -354,7 +354,7 @@ def main():
         newcid[c] = nc; newnodes[nc] = (n, d)
         rel = os.path.relpath(p, lib)
         os.makedirs(os.path.join(a.out, os.path.dirname(rel)), exist_ok=True)
-        json.dump(n, open(os.path.join(a.out, rel), "w"), indent=1, ensure_ascii=False)
+        open(os.path.join(a.out, rel), "wb").write(R.canonical(n))           # a node file is its canonical bytes (02 §2.5)
     json.dump(newcid, open(os.path.join(a.out, "cid_map.json"), "w"), indent=0, sort_keys=True)
     report["nodes"] = len(order); report["filled_count"] = len(report["filled"])
     report["default_value_renamed"] = [list(x) for x in DEFAULT_RENAMED]

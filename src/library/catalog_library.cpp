@@ -191,7 +191,7 @@ std::vector<std::string> Publish(nlohmann::ordered_json &Config, const std::vect
         //A %variable% path is placed at launch, a DIR is local by nature (the validator's) — neither is counted here.
         if (Doc.contains("LAYERS") && Doc["LAYERS"].is_array())
             for (const auto &L : Doc["LAYERS"])
-                for (const char *K : { "ZIP", "DELTA", "FILE", "CODED" })
+                for (const char *K : { "ZIP", "DELTA", "FILE", "CODED", "VIEW" })
                     if (L.is_object() && L.contains(K) && L[K].is_string() && !L.contains("SOURCE")
                         && L[K].get<std::string>().find('%') == std::string::npos)
                         ++Unsourced[Pkg];

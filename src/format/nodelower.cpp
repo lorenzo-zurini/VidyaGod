@@ -46,6 +46,7 @@ const char *VfsType(const std::string &T)
     if (T == "FILE")  return "VFSFileLayer";
     if (T == "DELTA") return "VFSDeltaLayer";
     if (T == "CODED") return "VFSCodedLayer";
+    if (T == "VIEW")  return "VFSViewLayer";
     return nullptr;
 }
 
@@ -166,11 +167,12 @@ std::string CheckLayer(const ordered_json &L)
 {
     if (!L.is_object()) return "is not an object";
     const std::string T = Fold::TypeOf(L);
-    if (T.empty()) return "needs exactly one type key (ZIP FILE DELTA DIR NODE EDIT REG VARS ENV DLL EXEC KEEP INTO)";
+    if (T.empty()) return "needs exactly one type key (ZIP FILE DELTA CODED VIEW DIR NODE EDIT REG VARS ENV DLL EXEC KEEP INTO)";
     static const std::map<std::string, std::set<std::string>> Allowed = {
         {"ZIP",   {"SOURCE", "SIZE", "TARGET"}}, {"FILE",  {"SOURCE", "SIZE", "TARGET"}},
         {"DELTA", {"SOURCE", "SIZE", "TARGET", "BASE_SOURCES"}}, {"DIR",   {"TARGET"}},
         {"CODED", {"SOURCE", "SIZE", "TARGET", "BASE_SOURCES", "DESCRIPTION", "NAME"}},
+        {"VIEW",  {"SOURCE", "SIZE", "TARGET", "BASE_SOURCES", "DESCRIPTION"}},
         {"NODE",  {"TAKE", "TARGET"}}, {"EDIT", {"TARGET"}}, {"REG", {"ARCH", "KEY"}},
         {"VARS", {}}, {"ENV", {}}, {"DLL", {}}, {"EXEC", {}}, {"KEEP", {}}, {"INTO", {"TAKE", "RECOMMENDED"}},
     };
@@ -223,6 +225,20 @@ std::string CheckLayer(const ordered_json &L)
         if (!L.contains("NAME") || !L["NAME"].is_string()) return "CODED needs NAME: the file name it appears by";
         if (const std::string Why = FileNameFault(L["NAME"].get<std::string>()); !Why.empty()) return "CODED NAME " + Why;
         if (L["NAME"].get<std::string>().find('/') != std::string::npos) return "CODED NAME is one file name, not a path";
+    }
+    //A view (04, 22.17): the files its listing (the payload, a .vgview) finds in its one content (BASE_SOURCES), and the
+    //VIEW description that lists them (inline: provenance, what `view verify` runs; the mount reads the listing).
+    if (T == "VIEW")
+    {
+        if (!L.contains("BASE_SOURCES") || !StrArray(L["BASE_SOURCES"]) || L["BASE_SOURCES"].size() != 1 || L["BASE_SOURCES"][0].get<std::string>().empty())
+            return "VIEW needs BASE_SOURCES: exactly one CID, its content";
+        if (!L.contains("DESCRIPTION") || !L["DESCRIPTION"].is_object() || L["DESCRIPTION"].empty())
+            return "VIEW needs DESCRIPTION: the VIEW description that lists its files (an object, 22.17)";
+        {   coding::Description D; std::string Why;
+            if (!coding::Read(L["DESCRIPTION"].dump(), D, Why)) return "VIEW DESCRIPTION — " + Why;
+            if (!D.view) return "VIEW DESCRIPTION is a codec (MODE \"VIEW\" lists files)"; }
+        if (L["VIEW"].is_string() && L["VIEW"].get<std::string>().size() < 8 + 1) return "VIEW names its listing: <name>.vgview";
+        if (L["VIEW"].is_string()) { const std::string V = L["VIEW"].get<std::string>(); if (V.compare(V.size() - 7, 7, ".vgview") != 0) return "VIEW names its listing: <name>.vgview"; }
     }
     const ordered_json &P = L[T];
     if (VfsType(T))
@@ -831,6 +847,7 @@ std::vector<std::pair<size_t, nlohmann::ordered_json>> ContentOps(const Fold::Pl
         //The source is the file as it sits on disk (a bumped name when versions share it); the address keeps the
         //name the node gives it, which is what TAKE selects and places.
         if (I.Kind == "FILE") Ms.push_back({ std::filesystem::path(Sh[J].Path).filename().string(), OwnAddr + "/" + Name });
+        else if (I.Kind == "VIEW") Ms.push_back({ std::string(), OwnAddr });       // a folder of files, like an archive
         else if (I.Kind == "CODED")
         {   //one file, its NAME: taken or not (a coded stream is mounted whole, at its own target)
             Sh[J].Shown = !ApplyView({ { std::string(), OwnAddr + "/" + I.Name } }, I.View).empty();
@@ -863,7 +880,7 @@ std::vector<std::pair<size_t, nlohmann::ordered_json>> ContentOps(const Fold::Pl
     for (size_t J = 0; J < P.Seq.size(); ++J)
         if (Carries(P.Seq[J]) && CodedNames.count(Cid(P.Seq[J]))) { Sh[J].Shown = false; Have.erase(Cid(P.Seq[J])); }   // a stream inside a stream too
     for (size_t J = 0; J < P.Seq.size(); ++J)
-        if ((P.Seq[J].Kind == "DELTA" || P.Seq[J].Kind == "CODED") && Sh[J].Shown) Named(P.Seq[J], Want);
+        if ((P.Seq[J].Kind == "DELTA" || P.Seq[J].Kind == "CODED" || P.Seq[J].Kind == "VIEW") && Sh[J].Shown) Named(P.Seq[J], Want);   // a view reads its content
     while (!Want.empty())
     {
         const std::string C = Want.back();

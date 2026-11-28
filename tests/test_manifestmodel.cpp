@@ -307,6 +307,22 @@ TEST(a_part_is_ticked_by_its_into_unless_it_is_a_row)
     CHECK(Star("eng"));
 }
 
+// A card's face is the FULL tile wherever a row carries it: AoE2's The Conquerors card has its full tile on 1.0c and
+// the recommended 1.0e names it by {UID} only. Teeth: present the recommended row's stub (the card named by a CID).
+TEST(a_cards_face_is_its_full_tile_on_any_row)
+{
+    NodeIndex Idx;
+    AddChain(Idx, "c", { NF::Merge({ NF::Tile("13006", "The Conquerors", {{"YEAR", "2000"}}), NF::Exec("win32", "age2_x1.exe"), NF::Variant("1.0c") }) });
+    AddChain(Idx, "e", { NF::Merge({ NF::Tile("13006"), NF::Exec("win32", "age2_x1.exe"), NF::Variant("1.0e"), NF::Recommended() }) }, { "c" });
+    ManifestModel::DeriveFacts(Idx);
+    CHECK(Idx.Nodes.at("e").Recommended == std::vector<std::string>{"13006"});
+    CHECK_EQ(Idx.Nodes.at("e").Meta.value("TITLE", std::string()), std::string("The Conquerors"));
+    CHECK_EQ(Idx.Tiles.at("13006").value("TITLE", std::string()), std::string("The Conquerors"));
+    std::vector<std::string> W;
+    Errors(Idx, &W);
+    CHECK(!AnyContains(W, "has no TITLE"));
+}
+
 TEST(a_tiles_presentation_is_its_recommended_variants_fold)
 {
     // Two variants of one tile; each writes its own Play entry with a different TITLE. The shelf shows the recommended
@@ -1706,8 +1722,9 @@ TEST(shelf_reports_a_tile_no_variant_presents)
     CHECK(Validate::Shelf(Fixed).empty());
 }
 
-// The shelf shows a tile as its recommended row's tile. A recommended port carrying only {"UID"}, beside an original
-// whose row held the title, put a CID on 24 cards (2026-10-21).
+// The shelf shows a card by its FULL tile, whichever row carries it (09 §9.3): a recommended port carrying only
+// {"UID"} beside an original whose row holds the title shows the title (in 2026-10 it put a CID on 24 cards). A card
+// no row gives a full tile is named by a CID, and reported.
 TEST(shelf_reports_a_presentation_without_a_title)
 {
     const ordered_json Full = {{"UID", "7"}, {"TITLE", "Game"}, {"META", {{"DEVELOPER", "Studio"}}}};
@@ -1717,8 +1734,15 @@ TEST(shelf_reports_a_presentation_without_a_title)
     Add(Idx, {{"CID", "port"}, {"VARIANT", "Port"},
               {"LAYERS", ordered_json::array({ {{"EXEC", NodeFixture::ExecOf({Rec(PlayEntry({{"UID", "7"}}))})}} })}});
     ManifestModel::DeriveFacts(Idx);
-    const auto W = Validate::Shelf(Idx);
-    CHECK(AnyContains(W, "tile 7") && AnyContains(W, "variant 'Port'") && AnyContains(W, "no TITLE"));
+    CHECK(!AnyContains(Validate::Shelf(Idx), "no TITLE"));
+    NodeIndex Stubs;
+    Add(Stubs, {{"CID", "orig"}, {"VARIANT", "Original"},
+                {"LAYERS", ordered_json::array({ {{"EXEC", NodeFixture::ExecOf({PlayEntry({{"UID", "7"}})})}} })}});
+    Add(Stubs, {{"CID", "port"}, {"VARIANT", "Port"},
+                {"LAYERS", ordered_json::array({ {{"EXEC", NodeFixture::ExecOf({Rec(PlayEntry({{"UID", "7"}}))})}} })}});
+    ManifestModel::DeriveFacts(Stubs);
+    const auto W = Validate::Shelf(Stubs);
+    CHECK(AnyContains(W, "tile 7") && AnyContains(W, "no TITLE"));
 
     // The fix: the recommended row carries the card's facts, the other rows only {"UID"}.
     NodeIndex Fixed;

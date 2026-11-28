@@ -7,6 +7,7 @@
 #include "cmdutil.h"
 #include "bytesource.h"
 #include "coding.h"
+#include "viewmode.h"
 #include "lz4family.h"
 #include "codedcache.h"
 #include "apppaths.h"
@@ -102,6 +103,50 @@ VG_COMMANDS
             if (const std::string O = Command::Str(A, "out", ""); !O.empty()) Spit(O, reinterpret_cast<const uint8_t *>(Text.data()), Text.size());
             return json{{"name", D.name}, {"isa", D.isa}, {"instructions", D.ops.size()}, {"values", D.ex.size()},
                         {"family", coding::UsesPrediction(D)}, {"canonical", Text == std::string(B.begin(), B.end())}};
+        }, {} });
+
+    Command::RegisterGroup("view", "VIEW descriptions (ISA 10): the file table a description reads out of a disc image or archive");
+    Command::Register({
+        "view ls", "run a VIEW description over a content and list the files in it (the canonical .vgview listing)",
+        "A VIEW (MetaPackageFormat 22.17) is data: run over a content (a disc image, an archive), it lists the folders and "
+        "files in it, each file's bytes as ranges of the content. The run is bounded (entries, names, fuel) and refused for "
+        "anything a view may not list. --out: the listing to write (its CID is the VIEW layer's identity).",
+        { AsPath(Pos("description", "a VIEW description JSON")), AsPath(Pos("content", "the content it reads")), AsPath(Opt("out", "the .vgview listing to write")) },
+        { "view ls 'ISO9660 view v1.json' disc.iso --out disc.vgview" },
+        { "coding::RunView", "coding::ViewListing", "coding::DecodeViewName" }, Needs::Config, false,
+        [](Command::Context &, const json &A) {
+            const auto B = Slurp(Command::Str(A, "description"));
+            coding::Description D; std::string Err;
+            if (!coding::Read(std::string(B.begin(), B.end()), D, Err)) throw std::runtime_error("the description: " + Err);
+            const auto C = Map(Command::Str(A, "content"));
+            std::vector<coding::ViewEntry> V;
+            const double T0 = Now();
+            if (!coding::RunView(D, *C, V, Err)) throw std::runtime_error("the view: " + Err);
+            const std::string L = coding::ViewListing(V);
+            if (const std::string O = Command::Str(A, "out", ""); !O.empty()) Spit(O, reinterpret_cast<const uint8_t *>(L.data()), L.size());
+            uint64_t Files = 0, Bytes = 0;
+            for (const auto &E : V) if (!E.dir) { ++Files; Bytes += E.size(); }
+            return json{{"name", D.name}, {"entries", V.size()}, {"files", Files}, {"folders", V.size() - Files}, {"bytes", Bytes},
+                        {"content", C->size()}, {"listing_bytes", L.size()}, {"seconds", Now() - T0}};
+        }, {} });
+    Command::Register({
+        "view verify", "check a stored .vgview listing: well formed, and what its description lists over its content",
+        "Reads the listing as a mount would (refusing anything a listing may not hold), then runs the description over the "
+        "content and compares byte for byte.",
+        { AsPath(Pos("description", "the VIEW description JSON")), AsPath(Pos("content", "the content it reads")), AsPath(Pos("listing", "the .vgview listing")) },
+        { "view verify 'ISO9660 view v1.json' disc.iso disc.vgview" },
+        { "coding::ReadViewListing" }, Needs::Config, false,
+        [](Command::Context &, const json &A) {
+            const auto B = Slurp(Command::Str(A, "description")), Ls = Slurp(Command::Str(A, "listing"));
+            coding::Description D; std::string Err;
+            if (!coding::Read(std::string(B.begin(), B.end()), D, Err)) throw std::runtime_error("the description: " + Err);
+            const auto C = Map(Command::Str(A, "content"));
+            std::vector<coding::ViewEntry> Stored, V;
+            if (!coding::ReadViewListing(std::string(Ls.begin(), Ls.end()), Stored, Err, C->size())) throw std::runtime_error("the listing: " + Err);
+            if (!coding::RunView(D, *C, V, Err)) throw std::runtime_error("the view: " + Err);
+            const bool Same = coding::ViewListing(V) == std::string(Ls.begin(), Ls.end());
+            if (!Same) throw std::runtime_error("the listing is NOT what the description lists over this content");
+            return json{{"entries", Stored.size()}, {"identical", true}};
         }, {} });
 
     Command::Register({
