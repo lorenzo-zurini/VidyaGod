@@ -1,0 +1,107 @@
+VGRECIPE 1 (prototype)	AoE2 TC 1.0e + UserPatch 1.5: what is decided at launch
+# offered parts (a launch-time choice): Forgotten Empires 2.2, UserPatch 1.5
+file	%GameDir%%aoe2_subdir%/dxwplay.dll	same	zip 'DxWnd-2.06.15.zip' of dxwnd_2_06_15: dxwplay.dll
+file	%GameDir%%aoe2_subdir%/libogg.dll	same	zip 'DxWnd-2.06.15.zip' of dxwnd_2_06_15: libogg.dll
+file	%GameDir%%aoe2_subdir%/libvorbis.dll	same	zip 'DxWnd-2.06.15.zip' of dxwnd_2_06_15: libvorbis.dll
+file	%GameDir%%aoe2_subdir%/libvorbisfile.dll	same	zip 'DxWnd-2.06.15.zip' of dxwnd_2_06_15: libvorbisfile.dll
+file	%GameDir%%aoe2_subdir%/winmm.dll	same	zip 'DxWnd-2.06.15.zip' of dxwnd_2_06_15: vcda/winmm.dll
+file	%GameDir%/age2_x1/age2_x1.exe	same	zip 'Age of Empires II - The Conquerors - UserPatch 1.5 (Build 6268).zip' of UserPatch 1.5: age2_x1.exe + 48 edit op(s) from UserPatch 1.5
+file	%gamedir%%aoe2_subdir%/winmm.ini	edited, its file from elsewhere (1 ops)
+reg	HKCU\Software\Microsoft\Microsoft Games\Age of Empires II: The Conquerors Expansion\1.0#Adjust Terrains [32]	= "%up_snow_removal:dword%"
+reg	HKCU\Software\Microsoft\Microsoft Games\Age of Empires II: The Conquerors Expansion\1.0#Disable Help Text [32]	= "%up_no_help_text:dword%"
+reg	HKCU\Software\Microsoft\Microsoft Games\Age of Empires II: The Conquerors Expansion\1.0#Extend Population [32]	= "%up_extend_population:dword%"
+reg	HKCU\Software\Microsoft\Microsoft Games\Age of Empires II: The Conquerors Expansion\1.0#Friend Foe Ids [32]	= "%up_friend_foe_dword:dword%"
+reg	HKCU\Software\Microsoft\Microsoft Games\Age of Empires II: The Conquerors Expansion\1.0#Hidden Civs [32]	= "%up_hidden_civs:dword%"
+reg	HKCU\Software\Microsoft\Microsoft Games\Age of Empires II: The Conquerors Expansion\1.0#Mini-map Colors [32]	= "%up_minimap_colors:dword%"
+reg	HKCU\Software\Microsoft\Microsoft Games\Age of Empires II: The Conquerors Expansion\1.0#Multiple Queue [32]	= "%up_multiple_queue:dword%"
+reg	HKCU\Software\Microsoft\Microsoft Games\Age of Empires II: The Conquerors Expansion\1.0#Numeric Age [32]	= "%up_numeric_age_flags:dword%"
+reg	HKCU\Software\Microsoft\Microsoft Games\Age of Empires II: The Conquerors Expansion\1.0#Patrol Delay [32]	= "%up_patrol_delay:dword%"
+reg	HKCU\Software\Microsoft\Microsoft Games\Age of Empires II: The Conquerors Expansion\1.0#Setup Terrain [32]	= "%up_setup_terrain:dword%"
+reg	HKCU\Software\Microsoft\Microsoft Games\Age of Empires II: The Conquerors Expansion\1.0#Spec Default [32]	= "%up_spec_default:dword%"
+reg	HKCU\Software\Microsoft\Microsoft Games\Age of Empires II: The Conquerors Expansion\1.0#Spec Join Delay [32]	= "%up_spec_join_delay:dword%"
+reg	HKCU\Software\Microsoft\Microsoft Games\Age of Empires II: The Conquerors Expansion\1.0#Spec Late Join [32]	= "%up_spec_late_join:dword%"
+exec	Age of Empires II: The Conquerors v1.0e	{"ARGS": ["%aoe2_nostartup%"], "EXE": "%GameDir%/age2_x1/age2_x1.exe", "HOST": "win32", "RECOMMENDED": true, "TILE": {"UID": "13006"}}
+var	aoe2_soundtrack	option 'Soundtrack' default "game"
+var	dxw_cd_pause	option 'Allow pause' default "0"
+var	dxw_cd_repeat	option 'Auto-repeat' default "0"
+var	dxw_cd_volume	option 'CD audio volume' default "80"
+var	up_20fps	option 'Restore 20 fps for single player' default "0"
+var	up_alt_chat_wine	option 'Alternate chat box for Wine' default "0"
+var	up_background_audio	option 'Keep audio playing in the background' default "0"
+var	up_background_mode	option 'Start in background mode' default "0"
+var	up_custom_mouse	option 'Custom normal mouse cursor' default "1"
+var	up_dark_grey	option 'Darken mini-map grey' default "1"
+var	up_dark_purple	option 'Darken mini-map purple' default "0"
+var	up_dark_red	option 'Darken mini-map red' default "0"
+var	up_delink_volume	option 'Delink from system volume' default "0"
+var	up_extend_population	option 'Population caps to 1000' default "1"
+var	up_force_new_gameplay	option 'Force new gameplay features (sync)' default "0"
+var	up_friend_foe_ids	option 'Friend/foe colours (0xEESSNNAA)' default "0x01000603"
+var	up_hidden_civs	option 'Hidden civilization selection' default "0"
+var	up_keydown_hotkeys	option 'Hotkeys act on key down' default "1"
+var	up_lower_quality	option 'Lower quality environment' default "0"
+var	up_mp_sp_speed	option 'Multiplayer speed in single player (sync)' default "0"
+var	up_multiple_queue	option 'Multiple building queue' default "1"
+var	up_new_save_names	option 'Dated save file names (rec.yyyymmdd…)' default "1"
+var	up_no_anti_cheat	option 'Disable multiplayer anti-cheat' default "0"
+var	up_no_civilian_attack	option 'Disable civilian attack switch (sync)' default "0"
+var	up_no_custom_terrains	option 'Disable custom terrains' default "0"
+var	up_no_ext_hotkeys	option 'Disable F6/F7/F8 hotkeys' default "0"
+var	up_no_help_text	option 'Disable event help text' default "0"
+var	up_no_underwater	option 'Disable terrain underwater' default "0"
+var	up_no_water_movement	option 'Disable water movement' default "0"
+var	up_no_weather	option 'Disable weather system' default "0"
+var	up_numeric_age	option 'Numeric age display' default "0"
+var	up_ore_display	option 'Ore resource display (sync)' default "0"
+var	up_patrol_delay	option 'Original 10-second patrol default' default "0"
+var	up_port_forwarding	option 'UPnP port forwarding (miniupnpc.dll)' default "1"
+var	up_precision_scroll	option 'Precision scrolling' default "1"
+var	up_rec_market	option 'Show market events in rec/spec' default "0"
+var	up_rec_no_score	option 'Disable rec/spec score stats' default "0"
+var	up_rec_research	option 'Show research events in rec/spec' default "0"
+var	up_rms_debug	option 'RMS/SCX debug logging (sync)' default "0"
+var	up_shift_group	option 'Shift+number appends to a group' default "1"
+var	up_small_farms	option 'Handle small farm selections (sync)' default "0"
+var	up_snow_removal	option 'Snow/ice terrain removal' default "0"
+var	up_spec_default	option 'Default spectator slots' default "0"
+var	up_spec_join_delay	option 'Spectator join delay (ms)' default "5000"
+var	up_spec_late_join	option 'Spectator late join (game turns)' default "19200"
+var	up_stats_font	option 'Change statistics font style' default "0"
+var	up_store_sx_spec	option 'Show Sx spectator connections' default "0"
+var	up_style	option 'Command bar style' default "centered"
+var	up_touch	option 'Touch screen control' default "0"
+var	up_water_anim	option 'Water animation' default "1"
+var	up_windowed	option 'Windowed mode support (wndmode.dll)' default "0"
+var	up_windowed_fullscreen	option '32-bit windowed fullscreen' default "0"
+gated	Soundtrack layer 2	WHEN %aoe2_soundtrack%==aok || (%aoe2_soundtrack%==game && %aoe2_game%==aok)
+gated	Soundtrack layer 3	WHEN %aoe2_soundtrack%==tc || (%aoe2_soundtrack%==game && %aoe2_game%==tc)
+gated	UserPatch 1.5 layer 3	WHEN %up_windowed%==1
+gated	UserPatch 1.5 layer 4	WHEN %up_port_forwarding%==1
+gated	UserPatch 1.5 layer 5	WHEN %up_style%==widescreen
+gated	UserPatch 1.5 layer 6	WHEN %up_style%==left
+gated	UserPatch 1.5 layer 7	WHEN %up_water_anim%==1
+gated	UserPatch 1.5 layer 8	WHEN %up_precision_scroll%==1
+gated	UserPatch 1.5 layer 9	WHEN %up_shift_group%==1
+gated	UserPatch 1.5 layer 10	WHEN %up_keydown_hotkeys%==1
+gated	UserPatch 1.5 layer 11	WHEN %up_new_save_names%==1
+gated	UserPatch 1.5 layer 12	WHEN %up_touch%==1
+gated	UserPatch 1.5 layer 13	WHEN %up_store_sx_spec%==1
+gated	UserPatch 1.5 layer 14	WHEN %up_custom_mouse%==1
+gated	UserPatch 1.5 layer 15	WHEN %up_delink_volume%==1
+gated	UserPatch 1.5 layer 16	WHEN %up_alt_chat_wine%==1
+gated	UserPatch 1.5 layer 17	WHEN %up_lower_quality%==1
+gated	UserPatch 1.5 layer 18	WHEN %up_20fps%==1
+gated	UserPatch 1.5 layer 19	WHEN %up_no_ext_hotkeys%==1
+gated	UserPatch 1.5 layer 20	WHEN %up_force_new_gameplay%==1
+gated	UserPatch 1.5 layer 21	WHEN %up_ore_display%==1
+gated	UserPatch 1.5 layer 22	WHEN %up_no_anti_cheat%==1
+gated	UserPatch 1.5 layer 23	WHEN %up_background_mode%==1
+gated	UserPatch 1.5 layer 24	WHEN %up_windowed_fullscreen%==1
+gated	UserPatch 1.5 layer 25	WHEN %up_mp_sp_speed%==1
+gated	UserPatch 1.5 layer 26	WHEN %up_rms_debug%==1
+gated	UserPatch 1.5 layer 27	WHEN %up_background_audio%==1
+gated	UserPatch 1.5 layer 28	WHEN %up_no_civilian_attack%==1
+gated	UserPatch 1.5 layer 29	WHEN %up_small_farms%==1
+gated	UserPatch 1.5 layer 30	WHEN %up_rec_research%==1
+gated	UserPatch 1.5 layer 31	WHEN %up_rec_market%==1
+gated	UserPatch 1.5 layer 32	WHEN %up_rec_no_score%==1

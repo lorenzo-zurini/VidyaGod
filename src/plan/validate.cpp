@@ -207,7 +207,12 @@ std::optional<std::set<std::string>> Provided(const Fold::Plan &P, const LaunchT
 
 bool Covers(const Fold::Plan &P, const LaunchTree &L, size_t J, const std::string &File, TreeNames &Tn)
 {
+    //a layer read only for its bytes (a coded stream's content, a delta's base) or mounted nowhere replaces no file
+    const auto Lo = L.LayerOf.find(J);
+    if (Lo == L.LayerOf.end() || Lo->second >= L.S.layers.size() || L.S.layers[Lo->second].bytesOnly || L.T.whole[Lo->second]) return false;
     const std::string F = ToLowerAscii(File);
+    //a coded stream is one file, its NAME at its target: known without reading anything
+    if (P.Seq[J].Kind == "CODED") return F == ToLowerAscii(P.Seq[J].Target.empty() ? P.Seq[J].Name : P.Seq[J].Target + "/" + P.Seq[J].Name);
     const auto Pv = Provided(P, L, J, Tn);
     if (!Pv)
     {
@@ -1175,11 +1180,12 @@ ComputeCaseRenames(const NodeIndex &Idx, std::vector<std::string> &Log, const st
         for (const auto &[I, M] : CaseRenames(L.S, L.T, Archives))
         {
             const LayerSpec &X = L.S.layers[I];
-            if (X.type == ::LayerType::Delta)
+            if (X.type == ::LayerType::Delta || X.type == ::LayerType::View || X.type == ::LayerType::Tree)
             {
+                const char *What = X.type == ::LayerType::Delta ? "delta" : X.type == ::LayerType::View ? "view" : "tree";
                 for (const auto &[Entry, To] : M)
-                    Log.push_back("case-fix: '" + Entry + "' inside the delta " + X.source
-                                  + " is spelled unlike the layers beneath it — a delta cannot be renamed; rebuild it (skipped)");
+                    Log.push_back("case-fix: '" + Entry + "' inside the " + What + " " + X.source
+                                  + " is spelled unlike the layers beneath it — a " + What + " is not a zip to rename in; remake it (skipped)");
                 continue;
             }
             if (!X.cid.empty() && Named.count(X.cid))

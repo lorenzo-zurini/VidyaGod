@@ -536,3 +536,27 @@ TEST(a_view_lowers_over_its_content)
     Bad = Disc["LAYERS"][1]; Bad["VIEW"] = "disc.txt"; CHECK(Refused(Bad));
     CHECK(!Refused(Disc["LAYERS"][1]));
 }
+
+// A TREE over a VIEW of a disc (22.18): the tree mounts; the view is its file source only and the disc its view's bytes
+// only — neither shows. Teeth: leave the view showing beside the install; leave the disc unmounted.
+TEST(a_tree_lowers_over_its_view_and_disc)
+{
+    const ordered_json Desc = { {"NAME", "v"}, {"ISA", 10}, {"MODE", "VIEW"}, {"NAMES", "ascii"}, {"ENTRY", "@v"}, {"CODE", ordered_json::array({"@v", "end"})} };
+    const ordered_json Pkg = { {"CID", "p"}, {"LABEL", "p"}, {"LAYERS", ordered_json::array({
+        {{"FILE", "disc.iso"}, {"SOURCE", "QmDisc"}, {"TARGET", "FILES/media"}},
+        {{"VIEW", "disc.vgview"}, {"SOURCE", "QmList"}, {"BASE_SOURCES", ordered_json::array({"QmDisc"})}, {"DESCRIPTION", Desc}, {"TARGET", "FILES/C:/g"}},
+        {{"TREE", "install.vgtz"}, {"SOURCE", "QmTree"}, {"BASE_SOURCES", ordered_json::array({"QmList"})}, {"TARGET", "FILES/C:/g/Game"}} })} };
+    Fold::Library Lib;
+    Lib.Nodes["p"] = { &Pkg, "/b" };
+    std::map<std::string, const ordered_json *> By;
+    const auto Ops = NodeLower::ContentOps(Fold::Resolve(Lib, "p"));
+    for (const auto &[J, Op] : Ops) By[Op.value("TYPE", std::string())] = &Op;
+    CHECK(By.count("VFSTreeLayer") && !By["VFSTreeLayer"]->value("BYTES_ONLY", false));
+    CHECK(By.count("VFSTreeLayer") && (*By["VFSTreeLayer"])["BASE_SOURCES"] == ordered_json::array({"QmList"}));
+    CHECK(By.count("VFSViewLayer") && By["VFSViewLayer"]->value("BYTES_ONLY", false));
+    CHECK(By.count("VFSFileLayer"));                                     // the disc: mounted (placed at media/, as the node puts it)
+    if (By.count("VFSTreeLayer")) CHECK_EQ(ManifestModel::MakeVfsSpecLayer(*By["VFSTreeLayer"], "/x/install.vgtz", "").value("type", std::string()), std::string("tree"));
+    ordered_json Bad = Pkg["LAYERS"][2]; Bad["TREE"] = "install.zip"; CHECK(Refused(Bad));
+    Bad = Pkg["LAYERS"][2]; Bad["BASE_SOURCES"] = ordered_json::array({"a", "a"}); CHECK(Refused(Bad));
+    Bad = Pkg["LAYERS"][2]; Bad.erase("BASE_SOURCES"); CHECK(Refused(Bad));
+}

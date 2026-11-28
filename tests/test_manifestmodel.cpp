@@ -2105,3 +2105,21 @@ TEST(a_coded_layer_mounts_as_the_shipped_file_bit_exact)
     }
     fs::remove_all(Pkg);
 }
+
+// An EDIT beneath a layer read only for its bytes (a per-file chain's .content delta, read only by a coded stream) is not
+// "beneath a layer that replaces its file": that layer shows nothing; nor is a coded stream, which is one file, its NAME
+// (Skyrim SE 489832, 2026-11-28). Teeth: count a bytes-only layer, or a coded stream, as covering its whole TARGET.
+TEST(a_bytes_only_layer_replaces_no_file)
+{
+    NodeIndex Idx;
+    const ordered_json Desc = { {"NAME", "d"}, {"ISA", 6}, {"CODER", "BITS"}, {"ENTRY", "@s"}, {"CODE", ordered_json::array({"@s", "end"})} };
+    Add(Idx, { {"CID", "b1"}, {"LABEL", "b1"}, {"VARIANT", "1"}, {"LAYERS", ordered_json::array({
+        {{"FILE", "Patch.bsa"}, {"SOURCE", "QmPatch"}, {"TARGET", "FILES/C:/g/Data"}},
+        {{"EDIT", ordered_json::array({ {{"MODE", "Delete"}} })}, {"TARGET", "FILES/C:/g/Data/Patch.bsa"}},
+        {{"FILE", "i.content"}, {"SOURCE", "QmC1"}, {"TARGET", "FILES/C:/g/Data"}},
+        {{"DELTA", "i2.content.vgdelta"}, {"SOURCE", "QmC2"}, {"BASE_SOURCES", ordered_json::array({"QmC1"})}, {"TARGET", "FILES/C:/g/Data"}},
+        {{"CODED", "i.vgcr"}, {"SOURCE", "QmRec"}, {"NAME", "Interface.bsa"}, {"DESCRIPTION", Desc}, {"BASE_SOURCES", ordered_json::array({"QmC2"})}, {"TARGET", "FILES/C:/g/Data"}},
+        {{"EXEC", {{"Play", {{"HOST", "win32"}, {"EXE", "C:/g/g.exe"}, {"TILE", {{"UID", "1"}, {"TITLE", "G"}}}, {"RECOMMENDED", true}}}}}} })} });
+    ManifestModel::DeriveFacts(Idx);
+    CHECK(!AnyContains(Errors(Idx), "lies beneath"));
+}

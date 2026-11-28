@@ -659,7 +659,7 @@ std::string VfsSpecType(const std::string &Type)
 {
     return Type == "VFSZipLayer"  ? "zip" : Type == "VFSDirLayer"   ? "dir"
          : Type == "VFSFileLayer" ? "file": Type == "VFSDeltaLayer" ? "delta"
-         : Type == "VFSCodedLayer" ? "coded" : Type == "VFSViewLayer" ? "view" : "";
+         : Type == "VFSCodedLayer" ? "coded" : Type == "VFSViewLayer" ? "view" : Type == "VFSTreeLayer" ? "tree" : "";
 }
 
 
@@ -723,14 +723,14 @@ nlohmann::ordered_json MakeVfsSpecLayer(const nlohmann::ordered_json &Sub, const
         for (const auto &P : Sub["HIDE"]) if (P.is_string()) H.push_back(NormalizeTargetPath(P.get<std::string>()));
         J["hide"] = std::move(H);
     }
-    if (LType == "zip" || LType == "delta" || LType == "file" || LType == "coded" || LType == "view")   // what a delta names by CID (a file: a disc image); a view: its listing's
+    if (LType == "zip" || LType == "delta" || LType == "file" || LType == "coded" || LType == "view" || LType == "tree")   // what a delta names by CID (a file: a disc image); a view, a tree: what a tree names it by
     {
         std::filesystem::path Local; std::string Cid;
         LayerLocator(Sub, std::filesystem::path(), Local, Cid);
         if (!Cid.empty()) J["cid"] = Cid;
         if (Sub.contains("BYTES_ONLY") && Sub["BYTES_ONLY"].is_boolean() && Sub["BYTES_ONLY"].get<bool>()) J["bytesOnly"] = true;
     }
-    if (LType == "delta" || LType == "coded" || LType == "view")   // by CID: the FS finds each file (treeplan.h)
+    if (LType == "delta" || LType == "coded" || LType == "view" || LType == "tree")   // by CID: the FS finds each file (treeplan.h)
     {
         //[] is a delta over nothing (its own bytes, stored compressed); a layer that names no base list at all (or a
         //malformed one) is null, which the plan refuses with that reason instead of reading it as a delta over nothing
@@ -772,7 +772,7 @@ std::vector<std::string> LayerBaseSources(const nlohmann::ordered_json &Sub)
 {
     std::vector<std::string> Out;
     if (!Sub.is_object() || !Sub.contains("BASE_SOURCES")) return Out;
-    const bool IsDelta = LayerType(Sub) == "VFSDeltaLayer" || LayerType(Sub) == "VFSCodedLayer" || LayerType(Sub) == "VFSViewLayer" || Sub.value("FORM", std::string()) == "delta";   // a coded stream, a view: its content
+    const bool IsDelta = LayerType(Sub) == "VFSDeltaLayer" || LayerType(Sub) == "VFSCodedLayer" || LayerType(Sub) == "VFSViewLayer" || LayerType(Sub) == "VFSTreeLayer" || Sub.value("FORM", std::string()) == "delta";   // a coded stream, a view: its content; a tree: its bases
     if (!IsDelta) return Out;
     const auto &B = Sub["BASE_SOURCES"];
     const bool WellFormed = B.is_array() && [&]{ for (const auto &E : B) if (!E.is_string()) return false; return true; }();

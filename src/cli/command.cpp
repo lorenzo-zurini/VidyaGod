@@ -73,7 +73,8 @@ bool Standalone(const std::string &Name)
     //delta made to --out), never the library, the config or the node — so they neither wait for nor hold the data dir.
     static const std::set<std::string> One = { "vfs spec", "vfs ls", "vfs stat", "vfs cat", "vfs df", "vfs zip", "vfs delta",
                                                "vfs tree", "vfs case", "cid of" };
-    return One.count(Name) || Name.rfind("coding ", 0) == 0;
+    static const std::set<std::string> Files = { "view ls", "view verify", "tree make", "tree ls" };   // a VIEW, a TREE: only the files named
+    return One.count(Name) || Files.count(Name) || Name.rfind("coding ", 0) == 0;
 }
 
 bool RunsBeside(const std::string &Name)

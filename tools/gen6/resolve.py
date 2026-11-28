@@ -21,9 +21,9 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 # Case folding is ASCII-only, as the C++ engine's (fold.cpp Lower): addresses compare by it everywhere.
 _LO = str.maketrans("ABCDEFGHIJKLMNOPQRSTUVWXYZ", "abcdefghijklmnopqrstuvwxyz")
 
-TYPE_KEYS = ["ZIP", "FILE", "DELTA", "CODED", "VIEW", "DIR", "NODE", "EDIT", "REG", "VARS", "ENV", "DLL", "EXEC", "KEEP", "INTO"]
+TYPE_KEYS = ["ZIP", "FILE", "DELTA", "CODED", "VIEW", "TREE", "DIR", "NODE", "EDIT", "REG", "VARS", "ENV", "DLL", "EXEC", "KEEP", "INTO"]
 _NODE_CID = re.compile(r"bafkrei[a-z2-7]{52}")
-CONTENT = ("ZIP", "FILE", "DELTA", "CODED", "VIEW", "DIR")
+CONTENT = ("ZIP", "FILE", "DELTA", "CODED", "VIEW", "TREE", "DIR")
 MEMBERSHIP_ROUNDS = 64                                      # the membership fixpoint's bound (12 §12.1): beyond it, refused
 
 
@@ -456,11 +456,13 @@ class Resolver:
 
     @staticmethod
     def _identity(s):
-        """Content by what it is (its SOURCE at its placed target, through its view): one CID placed twice at one
-        place is one value. EDITs and facts by their writer (the occurrence and layer)."""
+        """Content by what it is (its SOURCE, and a rebuilt layer's BASE_SOURCES: the same bytes over other bases are
+        another value; at its placed target, through its view): one CID placed twice at one place is one value. EDITs
+        and facts by their writer (the occurrence and layer)."""
         L = s["layer"]
         if s["kind"] in CONTENT and L.get("SOURCE"):
-            return ("C", s["kind"], L["SOURCE"], L.get("TARGET", "FILES"), s["prefix"],
+            return ("C", s["kind"], L["SOURCE"], json.dumps(L.get("BASE_SOURCES"), separators=(",", ":"), ensure_ascii=False) if "BASE_SOURCES" in L else "",
+                    L.get("TARGET", "FILES"), s["prefix"],
                     json.dumps(list(view_key_steps(s["view"])), sort_keys=True) if view_takes(s["view"]) else "")
         return ("W", s["owner"], s["at"])
 
@@ -691,7 +693,7 @@ class Resolver:
                         "target": place(tp, prefix), "own": tp,
                         "view": [[t, a] for t, a in view_steps(view)] if view_takes(view) else None,
                         "from": s["from"], "at": s["at"]}
-                if k in ("DELTA", "CODED", "VIEW") and "BASE_SOURCES" in L:   # its bases (a view: its content), by SOURCE CID, in order
+                if k in ("DELTA", "CODED", "VIEW", "TREE") and "BASE_SOURCES" in L:   # its bases (a view: its content), by SOURCE CID, in order
                     item["base_sources"] = L["BASE_SOURCES"]
                 if k == "CODED":                                              # its description (inline) and its name
                     item["description"] = L.get("DESCRIPTION")
@@ -1428,6 +1430,16 @@ def fixtures():
                             "BASE_SOURCES": ["Qmc"], "TARGET": "FILES/g/Data"}]),
                    "s": N([{"NODE": "c", "TARGET": "FILES/sub"}])},
          [("c", {}, []), ("s", {}, [])]),
+        # a per-file chain: build 2's coded record is byte-identical to build 1's (SOURCE Qmrec) over NEW content; two
+        # values, never one moved (Skyrim SE's 489831 chain; BallisticNG's identical deltas)
+        ("same-record", {"b1": N([{"FILE": "c1", "SOURCE": "Qmc1", "TARGET": "FILES/g"},
+                                  {"CODED": "s.vgcr", "SOURCE": "Qmrec", "NAME": "s.bsa", "BASE_SOURCES": ["Qmc1"], "TARGET": "FILES/g",
+                                   "DESCRIPTION": {"NAME": "d"}}]),
+                         "b2": N([{"NODE": "b1"}, {"DELTA": "c2.vgdelta", "SOURCE": "Qmc2", "BASE_SOURCES": ["Qmc1"], "TARGET": "FILES/g"},
+                                  {"CODED": "s.vgcr", "SOURCE": "Qmrec", "NAME": "s.bsa", "BASE_SOURCES": ["Qmc2"], "TARGET": "FILES/g",
+                                   "DESCRIPTION": {"NAME": "d"}}]),
+                         "b3": N([{"NODE": "b2"}, {"FILE": "x", "SOURCE": "Qmx", "TARGET": "FILES/g"}])},
+         [("b2", {}, []), ("b3", {}, [])]),
         # a view (ISA 10): the files its listing finds in its content, placed and taken like an archive's
         ("view", {"d": N([{"FILE": "disc.iso", "SOURCE": "Qmd", "TARGET": "FILES/media"},
                           {"VIEW": "disc.vgview", "SOURCE": "Qml", "BASE_SOURCES": ["Qmd"], "TARGET": "FILES/C:/g",
@@ -1573,6 +1585,10 @@ def self_test():
     assert h["dll"] == {"d3d9": "b"} and h["decls"]["a"]["DEFAULT"] == "2" and h["env"]["X"] == "2", (h["dll"], h["decls"])
     assert R(fk).resolve("r")["decls"]["z"]["DEFAULT"] == "2"                                 # renamed: c's value still wins
     assert list(R(fk).resolve("k")["keep"].values()) == [False]                              # the take-back stays
+    fs = dict(next(f for n, f, _ in fixtures() if n == "same-record"))
+    p = R(fs).resolve("b3")
+    coded = [it for it in p["seq"] if it["kind"] == "CODED"]
+    assert [c["base_sources"] for c in coded] == [["Qmc1"], ["Qmc2"]] and not p["events"], (coded, p["events"])
     fm = dict(next(f for n, f, _ in fixtures() if n == "reprovide-more"))
     rv = lambda root: {k[1] + "#" + k[2]: v[2] for k, v in R(fm).resolve(root)["reg"].items()}
     assert rv("r1") == {"hkcu\\k#a": "2"} and rv("rs") == {} and rv("rd") == {"hkcu\\k#a": "1", "hkcu\\k#b": "2"}, (rv("r1"), rv("rd"))

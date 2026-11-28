@@ -47,6 +47,7 @@ const char *VfsType(const std::string &T)
     if (T == "DELTA") return "VFSDeltaLayer";
     if (T == "CODED") return "VFSCodedLayer";
     if (T == "VIEW")  return "VFSViewLayer";
+    if (T == "TREE")  return "VFSTreeLayer";
     return nullptr;
 }
 
@@ -167,12 +168,13 @@ std::string CheckLayer(const ordered_json &L)
 {
     if (!L.is_object()) return "is not an object";
     const std::string T = Fold::TypeOf(L);
-    if (T.empty()) return "needs exactly one type key (ZIP FILE DELTA CODED VIEW DIR NODE EDIT REG VARS ENV DLL EXEC KEEP INTO)";
+    if (T.empty()) return "needs exactly one type key (ZIP FILE DELTA CODED VIEW TREE DIR NODE EDIT REG VARS ENV DLL EXEC KEEP INTO)";
     static const std::map<std::string, std::set<std::string>> Allowed = {
         {"ZIP",   {"SOURCE", "SIZE", "TARGET"}}, {"FILE",  {"SOURCE", "SIZE", "TARGET"}},
         {"DELTA", {"SOURCE", "SIZE", "TARGET", "BASE_SOURCES"}}, {"DIR",   {"TARGET"}},
         {"CODED", {"SOURCE", "SIZE", "TARGET", "BASE_SOURCES", "DESCRIPTION", "NAME"}},
         {"VIEW",  {"SOURCE", "SIZE", "TARGET", "BASE_SOURCES", "DESCRIPTION"}},
+        {"TREE",  {"SOURCE", "SIZE", "TARGET", "BASE_SOURCES"}},
         {"NODE",  {"TAKE", "TARGET"}}, {"EDIT", {"TARGET"}}, {"REG", {"ARCH", "KEY"}},
         {"VARS", {}}, {"ENV", {}}, {"DLL", {}}, {"EXEC", {}}, {"KEEP", {}}, {"INTO", {"TAKE", "RECOMMENDED"}},
     };
@@ -237,8 +239,22 @@ std::string CheckLayer(const ordered_json &L)
         {   coding::Description D; std::string Why;
             if (!coding::Read(L["DESCRIPTION"].dump(), D, Why)) return "VIEW DESCRIPTION — " + Why;
             if (!D.view) return "VIEW DESCRIPTION is a codec (MODE \"VIEW\" lists files)"; }
-        if (L["VIEW"].is_string() && L["VIEW"].get<std::string>().size() < 8 + 1) return "VIEW names its listing: <name>.vgview";
+        if (L["VIEW"].is_string() && L["VIEW"].get<std::string>().size() < 8) return "VIEW names its listing: <name>.vgview";
         if (L["VIEW"].is_string()) { const std::string V = L["VIEW"].get<std::string>(); if (V.compare(V.size() - 7, 7, ".vgview") != 0) return "VIEW names its listing: <name>.vgview"; }
+    }
+    //A tree (04, 22.18): an install as files over its bases (archives, views, trees, single files, by CID, in its table's
+    //order; none: a tree of its own bytes only), its .vgtz the payload.
+    if (T == "TREE")
+    {
+        if (!L.contains("BASE_SOURCES") || !StrArray(L["BASE_SOURCES"])) return "TREE needs BASE_SOURCES: the CIDs its files are read from, in its table's order ([] for none)";
+        std::set<std::string> Seen;
+        for (const auto &E : L["BASE_SOURCES"])
+        {
+            const std::string C = E.get<std::string>();
+            if (C.empty()) return "BASE_SOURCES has an empty CID";
+            if (!Seen.insert(C).second) return "BASE_SOURCES names '" + C + "' twice";
+        }
+        if (L["TREE"].is_string()) { const std::string V = L["TREE"].get<std::string>(); if (V.size() < 6 || V.compare(V.size() - 5, 5, ".vgtz") != 0) return "TREE names its file: <name>.vgtz"; }
     }
     const ordered_json &P = L[T];
     if (VfsType(T))
@@ -847,7 +863,7 @@ std::vector<std::pair<size_t, nlohmann::ordered_json>> ContentOps(const Fold::Pl
         //The source is the file as it sits on disk (a bumped name when versions share it); the address keeps the
         //name the node gives it, which is what TAKE selects and places.
         if (I.Kind == "FILE") Ms.push_back({ std::filesystem::path(Sh[J].Path).filename().string(), OwnAddr + "/" + Name });
-        else if (I.Kind == "VIEW") Ms.push_back({ std::string(), OwnAddr });       // a folder of files, like an archive
+        else if (I.Kind == "VIEW" || I.Kind == "TREE") Ms.push_back({ std::string(), OwnAddr });   // a folder of files, like an archive
         else if (I.Kind == "CODED")
         {   //one file, its NAME: taken or not (a coded stream is mounted whole, at its own target)
             Sh[J].Shown = !ApplyView({ { std::string(), OwnAddr + "/" + I.Name } }, I.View).empty();
@@ -864,7 +880,7 @@ std::vector<std::pair<size_t, nlohmann::ordered_json>> ContentOps(const Fold::Pl
     //A file a delta in this launch reads is mounted even when no TAKE shows it — for its bytes only, once, unless it
     //is shown somewhere already (one CID is one file). A zip, a delta or a single file has bytes a delta can read.
     std::set<std::string> Have;
-    for (size_t J = 0; J < P.Seq.size(); ++J) if (Carries(P.Seq[J]) && Sh[J].Shown && !Cid(P.Seq[J]).empty()) Have.insert(Cid(P.Seq[J]));
+    for (size_t J = 0; J < P.Seq.size(); ++J) if ((Carries(P.Seq[J]) || P.Seq[J].Kind == "VIEW" || P.Seq[J].Kind == "TREE") && Sh[J].Shown && !Cid(P.Seq[J]).empty()) Have.insert(Cid(P.Seq[J]));
     std::vector<bool> BytesOnly(P.Seq.size(), false);
     std::vector<std::string> Want;
     //What a coded stream names (its content) is bytes and never a file of the game (04): every layer
@@ -879,19 +895,26 @@ std::vector<std::pair<size_t, nlohmann::ordered_json>> ContentOps(const Fold::Pl
         if (P.Seq[J].Kind == "CODED") { std::vector<std::string> N; Named(P.Seq[J], N); CodedNames.insert(N.begin(), N.end()); }
     for (size_t J = 0; J < P.Seq.size(); ++J)
         if (Carries(P.Seq[J]) && CodedNames.count(Cid(P.Seq[J]))) { Sh[J].Shown = false; Have.erase(Cid(P.Seq[J])); }   // a stream inside a stream too
+    //A view a tree of the launch reads is that tree's file source, never a folder of its own (a disc's files appear as
+    //the install the tree makes of them, not beside it)
+    std::set<std::string> TreeNames;
     for (size_t J = 0; J < P.Seq.size(); ++J)
-        if ((P.Seq[J].Kind == "DELTA" || P.Seq[J].Kind == "CODED" || P.Seq[J].Kind == "VIEW") && Sh[J].Shown) Named(P.Seq[J], Want);   // a view reads its content
+        if (P.Seq[J].Kind == "TREE" && Sh[J].Shown) { std::vector<std::string> T; Named(P.Seq[J], T); TreeNames.insert(T.begin(), T.end()); }   // (a tree a TAKE leaves out hides nothing)
+    for (size_t J = 0; J < P.Seq.size(); ++J)
+        if (P.Seq[J].Kind == "VIEW" && TreeNames.count(Cid(P.Seq[J]))) { Sh[J].Shown = false; Have.erase(Cid(P.Seq[J])); }
+    for (size_t J = 0; J < P.Seq.size(); ++J)
+        if ((P.Seq[J].Kind == "DELTA" || P.Seq[J].Kind == "CODED" || P.Seq[J].Kind == "VIEW" || P.Seq[J].Kind == "TREE") && Sh[J].Shown) Named(P.Seq[J], Want);   // a view reads its content, a tree its bases
     while (!Want.empty())
     {
         const std::string C = Want.back();
         Want.pop_back();
         if (!Have.insert(C).second) continue;
         for (size_t J = 0; J < P.Seq.size(); ++J)
-            if (Carries(P.Seq[J]) && Cid(P.Seq[J]) == C)
+            if ((Carries(P.Seq[J]) || P.Seq[J].Kind == "VIEW" || P.Seq[J].Kind == "TREE") && Cid(P.Seq[J]) == C)
             {
-                BytesOnly[J] = true;
-                //a delta read for its bytes needs its bases; a coded stream, its content
-                if (P.Seq[J].Kind == "DELTA" || P.Seq[J].Kind == "CODED") Named(P.Seq[J], Want);
+                BytesOnly[J] = true;                                         // (a view or a tree: read for its files)
+                //a delta read for its bytes needs its bases; a coded stream or a view, its content; a tree, its bases
+                if (P.Seq[J].Kind == "DELTA" || P.Seq[J].Kind == "CODED" || P.Seq[J].Kind == "VIEW" || P.Seq[J].Kind == "TREE") Named(P.Seq[J], Want);
                 break;
             }
     }

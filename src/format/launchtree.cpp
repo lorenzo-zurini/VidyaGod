@@ -1,4 +1,6 @@
 #include "launchtree.h"
+#include "treelayer.h"
+#include "viewmode.h"
 #include "manifestmodel.h"   // MakeVfsSpecLayer — the spec entry the launch builds from the same op
 #include "nodelower.h"       // ContentOps — what the launch mounts
 #include "zipscan.h"         // VidyaGodFS: a zip's central directory, from any byte source
@@ -33,6 +35,31 @@ const std::vector<std::string> *ArchiveNames::Of(const LaunchTree &L, size_t Lay
 {
     if (Layer >= L.S.layers.size()) return nullptr;
     const LayerSpec &X = L.S.layers[Layer];
+    if (X.type == LayerType::View || X.type == LayerType::Tree)
+    {   //a view's names are its listing's, a tree's its table's (each its own file: no base read)
+        if (Folders) { const auto It = All.find(X.source); if (It != All.end()) return &It->second; }
+        else { const auto It = Files.find(X.source); if (It != Files.end()) return &It->second; }
+        if (Failed.count(X.source)) return nullptr;
+        std::vector<std::string> A, F;
+        std::string Err;
+        auto Src = std::make_shared<MmapByteSource>();
+        bool Ok = Src->Map(X.source) && (X.type == LayerType::Tree || Src->n <= (256ull << 20));   // a listing over 256 MiB is refused, as a mount refuses it (a tree: its table's own limits)
+        if (Ok && X.type == LayerType::View)
+        {
+            std::vector<coding::ViewEntry> V;
+            Ok = coding::ReadViewListing(std::string(reinterpret_cast<const char *>(Src->p), (size_t)Src->n), V, Err);
+            for (const auto &E : V) { A.push_back(E.dir ? E.path + "/" : E.path); if (!E.dir) F.push_back(E.path); }
+        }
+        else if (Ok)
+        {
+            vgtree::Opened Tr;
+            Ok = vgtree::OpenTree(Src, Tr, Err);
+            for (const auto &E : Tr.table.entries) { A.push_back(E.kind == vgtree::Entry::Dir ? E.path + "/" : E.path); if (E.kind != vgtree::Entry::Dir) F.push_back(E.path); }
+        }
+        if (!Ok) { Failed.insert(X.source); return nullptr; }
+        All.emplace(X.source, std::move(A)); Files.emplace(X.source, std::move(F));
+        return Folders ? &All[X.source] : &Files[X.source];
+    }
     if (X.type != LayerType::Zip && X.type != LayerType::Delta) return nullptr;
     //A zip is its file; a delta, its file over the bases it names.
     const auto Key = [](const LayerSpec &Y) {

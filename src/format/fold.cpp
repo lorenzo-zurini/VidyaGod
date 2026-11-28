@@ -17,12 +17,12 @@ namespace
 
 const std::vector<std::string> &TypeKeys()
 {
-    static const std::vector<std::string> K = { "ZIP", "FILE", "DELTA", "CODED", "VIEW", "DIR", "NODE", "EDIT", "REG", "VARS", "ENV",
+    static const std::vector<std::string> K = { "ZIP", "FILE", "DELTA", "CODED", "VIEW", "TREE", "DIR", "NODE", "EDIT", "REG", "VARS", "ENV",
                                                 "DLL", "EXEC", "KEEP", "INTO" };
     return K;
 }
 
-bool IsContent(const std::string &T) { return T == "ZIP" || T == "FILE" || T == "DELTA" || T == "CODED" || T == "VIEW" || T == "DIR"; }
+bool IsContent(const std::string &T) { return T == "ZIP" || T == "FILE" || T == "DELTA" || T == "CODED" || T == "VIEW" || T == "TREE" || T == "DIR"; }
 
 std::string Lower(std::string S)
 {
@@ -294,9 +294,12 @@ public:
     static std::string Identity(const Slot &S)
     {
         const json &L = *S.Layer;
+        //Content by what it is: its SOURCE — and, for a layer rebuilt over bases (a delta, a coded stream, a view, a tree),
+        //its BASE_SOURCES too: the same bytes over other bases are another value (a per-file chain's record unchanged
+        //while its content moved on) — at its placed target, through its view.
         if (IsContent(S.Kind) && L.contains("SOURCE") && L["SOURCE"].is_string() && !Str(L["SOURCE"]).empty())
-            return "C\x1f" + S.Kind + '\x1f' + Str(L["SOURCE"]) + '\x1f' + (L.contains("TARGET") ? Str(L["TARGET"]) : std::string("FILES"))
-                 + '\x1f' + S.Prefix + '\x1f' + ViewKey(S.Through);
+            return "C\x1f" + S.Kind + '\x1f' + Str(L["SOURCE"]) + '\x1f' + (L.contains("BASE_SOURCES") ? L["BASE_SOURCES"].dump() : std::string())
+                 + '\x1f' + (L.contains("TARGET") ? Str(L["TARGET"]) : std::string("FILES")) + '\x1f' + S.Prefix + '\x1f' + ViewKey(S.Through);
         return "W\x1f" + S.Owner + '\x1f' + std::to_string(S.At);
     }
 
@@ -905,7 +908,7 @@ static Plan ResolveImpl(const Library &Lib, const std::string &Root, const Vars 
             It.Size = L.contains("SIZE") ? L["SIZE"] : json();
             It.Own = NsPath(L.contains("TARGET") ? Str(L["TARGET"]) : std::string("FILES")).second;
             It.Target = Place(It.Own, S.Prefix);
-            if ((S.Kind == "DELTA" || S.Kind == "CODED" || S.Kind == "VIEW") && L.contains("BASE_SOURCES")) It.BaseSources = L["BASE_SOURCES"];
+            if ((S.Kind == "DELTA" || S.Kind == "CODED" || S.Kind == "VIEW" || S.Kind == "TREE") && L.contains("BASE_SOURCES")) It.BaseSources = L["BASE_SOURCES"];
             if (S.Kind == "CODED")
             {   //a coded stream: its format's description (the layer's own) and the name it appears by
                 It.Description = L.contains("DESCRIPTION") ? L["DESCRIPTION"] : json();
