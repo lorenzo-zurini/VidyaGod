@@ -159,6 +159,10 @@ def convert_node(n, keys, vals):
             for a, v in L["KEEP"].items():
                 if a.startswith("REG/"):
                     k, vn = reg_addr(a, keys, vals)
+                    # a value is only ever taken BACK (false) inside a kept key (13); anything kept is a key — a key
+                    # the game creates at run time is unknown to the library (Rise of Nations' ...\RiseOfNations)
+                    if vn and v is not False:
+                        k, vn = k + "\\" + vn, None
                     kp["REG/" + k + ("#" + vn if vn else "")] = v   # a value: <key>#<value> (13)
                 else:
                     kp[a] = v

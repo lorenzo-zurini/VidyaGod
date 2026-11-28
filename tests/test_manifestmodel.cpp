@@ -290,12 +290,20 @@ TEST(a_part_is_ticked_by_its_into_unless_it_is_a_row)
     Add(Idx, { {"CID", "rec"}, {"LABEL", "rec"}, {"LAYERS", ordered_json::array({ {{"INTO", ordered_json::array({"base"})}, {"RECOMMENDED", true}}, ordered_json{{"ZIP", "r.zip"}} })} });
     Add(Idx, { {"CID", "row"}, {"LABEL", "row"}, {"LAYERS", ordered_json::array({ {{"INTO", ordered_json::array({"base"})}, {"RECOMMENDED", true}},
         {{"EXEC", {{"Port", {{"HOST", "linux"}, {"EXE", "port"}}}}}} })} });
+    Add(Idx, { {"CID", "card"}, {"LABEL", "card"}, {"LAYERS", ordered_json::array({ {{"EXEC", {{"Play", {{"HOST", "win32"}, {"EXE", "g.exe"}, {"TILE", {{"UID", "4"}}}}}}}} })} });
+    Add(Idx, { {"CID", "taken"}, {"LABEL", "taken"}, {"LAYERS", ordered_json::array({ {{"INTO", ordered_json::array({"base"})}, {"RECOMMENDED", true}},
+        {{"EXEC", {{"Port", {{"HOST", "linux"}, {"EXE", "port"}}}}}},
+        {{"NODE", "card"}, {"TAKE", ordered_json::array({ ordered_json::array({"EXEC/Play/TILE", "EXEC/Port/TILE"}) })}} })} });
     Add(Idx, { {"CID", "eng"}, {"LABEL", "eng"}, {"LAYERS", ordered_json::array({ {{"INTO", ordered_json::array({"base"})}, {"RECOMMENDED", true}},
         {{"EXEC", {{"Engine", {{"HOST", "linux"}, {"GUEST", ordered_json::array({"custom"})}}}}}} })} });
     ManifestModel::DeriveFacts(Idx);
     CHECK(!Star("plain"));
     CHECK(Star("rec"));
     CHECK(!Star("row"));
+    CHECK(!Star("taken"));                                   // a row under the card whose tile it takes
+    CHECK((Idx.Nodes.at("taken").Faces == std::vector<std::string>{"4"}));
+    for (const auto &E : Errors(Idx))                        // on a card: no "appears on no card"
+        CHECK(!(E.find("node 'taken'") != std::string::npos && E.find("appears on no card") != std::string::npos));
     CHECK(Star("eng"));
 }
 

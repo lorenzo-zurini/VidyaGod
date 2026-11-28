@@ -1475,7 +1475,10 @@ def fixtures():
                         "pp": N([{"INTO": [P1]}, {"INTO": ["g2"]}, Z("pp")], LABEL="e-patch-between-b-and-a"),
                         # a part whose only entry is a runner's (GUEST) is an add-on, not a row: still ticked
                         "rp": N([{"INTO": ["v1"], "RECOMMENDED": True}, Z("rp"), {"EXEC": {"Engine": {"HOST": "linux", "GUEST": ["custom"]}}}],
-                                LABEL="f-runner-part")},
+                                LABEL="f-runner-part"),
+                        # a part whose untiled entry takes its base's tile (a NODE layer's TAKE): a row under that card
+                        "tk": N([{"INTO": ["v1"], "RECOMMENDED": True}, {"EXEC": {"Port": {"HOST": "h", "EXE": "port"}}},
+                                 {"NODE": "v1", "TAKE": [["EXEC/Play/TILE", "EXEC/Port/TILE"]]}], LABEL="h-port-row")},
          [("v1", {}, []), ("v1", {}, ["g2", P1]), ("v1", {}, ["g3", P1]), ("v1", {}, [P1, "g3"]),
           ("v1", {}, [P1, "g4"]), ("v1", {}, ["g4"]), ("v1", {}, ["g5", P1]), ("v1", {}, ["g5"]),
           ("vup", {}, []), ("vup", {}, [P1]), ("v2", {}, []), ("v4", {}, [])]),
@@ -1671,8 +1674,9 @@ def self_test():
             off = lambda root, parts=(): offered_grafts(r.nodes, gi, r.resolve(root, {}, {}, list(parts)), "9")[0]
             # the hard link: offered on the end it names, never on a later end that merely contains it, never for a
             # part that names a lower node; a part on a part only once that part is applied
-            assert off("v1") == ["g2", P1, "g4", "g5", "rp"], off("v1")
-            assert "rp" in offered_grafts(r.nodes, gi, r.resolve("v1"), "9")[1]                  # a runner part is ticked
+            assert off("v1") == ["g2", P1, "g4", "g5", "rp", "tk"], off("v1")
+            tk = offered_grafts(r.nodes, gi, r.resolve("v1"), "9")[1]
+            assert "rp" in tk and "tk" not in tk, tk                   # a runner part is ticked; a row never is
             assert off("vup") == [] and "low" not in off("v1")
             assert "g3" not in off("v1") and "g3" in off("v1", [P1])
             # several INTO layers: into ALL of them (a patch between two mods), offered once both are applied
